@@ -4,6 +4,7 @@ mod history;
 mod generate;
 mod interp;
 mod lexer;
+mod merge;
 mod parser;
 mod printer;
 mod resolve;
@@ -17,7 +18,7 @@ use ast::*;
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::Read;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 use store::Codebase;
 
 const USAGE: &str = "strata — an experimental language for working with agents
@@ -42,6 +43,16 @@ Codebase (stored as a database of syntax trees in .strata/):
   render [--split DIR]         print the full codebase as source (L3), or one file per module
   (`--file` and `add` accept a folder: each .strata file is a module named after its path;
    `edit --module m` puts unqualified definitions into module m)
+
+Git (the programs to check are listed in strata.toml, as `programs = [PATH, ...]`):
+  merge-file O A B [P]         git merge driver: merge each definition separately, then
+                               type-check; writes the result to A, fails on a conflict
+  setup-git                    use merge-file for `git merge` / `git pull` in this clone
+  sync [BRANCH]                merge BRANCH (default main; origin's if there is a remote)
+                               into this branch with the driver, then check; commits the
+                               merge only if every program checks
+  ci [--fix]                   what CI requires: every program in strata.toml checks and
+                               every .strata file is in canonical format (--fix rewrites them)
 
 Views:
   ui [--port 7777]                live viewer in the browser (map, levels, holes, activity)
@@ -349,6 +360,109 @@ fn run() -> Result<bool, String> {
             println!();
             print!("{}", diff::render_text(&j));
         }
+        "merge-file" => {
+            let (Some(o), Some(a), Some(b)) = (args.pos.get(1), args.pos.get(2), args.pos.get(3)) else {
+                return Err("usage: strata merge-file BASE OURS THEIRS [PATH]  (git: `strata merge-file %O %A %B %P`)".into());
+            };
+            let path = args.pos.get(4).unwrap_or(a);
+            let read = |f: &str| std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"));
+            let (base, ours, theirs) = (read(o)?, read(a)?, read(b)?);
+            match merge::merge(&base, &ours, &theirs) {
+                Ok(m) => {
+                    std::fs::write(a, &m.text).map_err(|e| format!("{a}: {e}"))?;
+                    let mut ok = m.conflicts.is_empty();
+                    for n in &m.notes {
+                        eprintln!("strata: {path}: {n}");
+                    }
+                    for c in &m.conflicts {
+                        eprintln!("strata: {path}: conflict in {c}");
+                    }
+                    if ok {
+                        match merge::new_errors(path, &m.text, &ours, &theirs) {
+                            Ok(errs) if !errs.is_empty() => {
+                                ok = false;
+                                eprintln!("strata: {path}: merged definition by definition, but the result doesn't check:");
+                                for e in errs {
+                                    eprintln!("    {e}");
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(e) => eprintln!("strata: {path}: not type-checked: {e}"),
+                        }
+                    }
+                    return Ok(ok);
+                }
+                Err(e) => {
+                    eprintln!("strata: {path}: {e}; merging it as text");
+                    let (text, clean) = merge::text_merge(&base, &ours, &theirs)?;
+                    std::fs::write(a, text).map_err(|e| format!("{a}: {e}"))?;
+                    return Ok(clean);
+                }
+            }
+        }
+        "setup-git" => {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let driver = format!("'{}' merge-file %O %A %B %P", exe.display());
+            git_out(&["config", "merge.strata.name", "Strata: merge each definition separately, then type-check"])?;
+            git_out(&["config", "merge.strata.driver", &driver])?;
+            println!("git will merge .strata files with: {driver}");
+            let top = git_out(&["rev-parse", "--show-toplevel"])?;
+            let attrs = std::fs::read_to_string(std::path::Path::new(top.trim()).join(".gitattributes")).unwrap_or_default();
+            if !attrs.lines().any(|l| l.starts_with("*.strata") && l.split_whitespace().any(|w| w == "merge=strata")) {
+                println!("add `*.strata merge=strata` to .gitattributes (and commit it) so git uses it");
+            }
+        }
+        "sync" => {
+            let branch = args.pos.get(1).map(|s| s.as_str()).unwrap_or("main");
+            if !git_out(&["status", "--porcelain", "--untracked-files=no"])?.trim().is_empty() {
+                return Err("there are uncommitted changes; commit them first".into());
+            }
+            let target = if git_out(&["remote", "get-url", "origin"]).is_ok() {
+                git_out(&["fetch", "origin", branch])?;
+                format!("origin/{branch}")
+            } else {
+                branch.to_string()
+            };
+            git_out(&["rev-parse", "--verify", &format!("{target}^{{commit}}")]).map_err(|_| format!("no branch `{target}`"))?;
+            let is_ancestor = |a: &str, b: &str| Command::new("git").args(["merge-base", "--is-ancestor", a, b]).status().is_ok_and(|s| s.success());
+            if is_ancestor(&target, "HEAD") {
+                println!("already up to date with {target}");
+                return Ok(true);
+            }
+            if is_ancestor("HEAD", &target) {
+                git_out(&["merge", "--ff-only", &target])?;
+                println!("fast-forwarded to {target}");
+                return ci(false);
+            }
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let attrs = git_out(&["rev-parse", "--git-path", "strata-sync-attributes"])?.trim().to_string();
+            std::fs::write(&attrs, "*.strata merge=strata\n").map_err(|e| format!("{attrs}: {e}"))?;
+            let status = Command::new("git")
+                .args(["-c", "merge.strata.name=strata", "-c"])
+                .arg(format!("merge.strata.driver='{}' merge-file %O %A %B %P", exe.display()))
+                .args(["-c", &format!("core.attributesFile={attrs}"), "merge", "--no-ff", "--no-commit", &target])
+                .status()
+                .map_err(|e| format!("git: {e}"));
+            let _ = std::fs::remove_file(&attrs);
+            status?;
+            let conflicted = git_out(&["diff", "--name-only", "--diff-filter=U"])?;
+            if !conflicted.trim().is_empty() {
+                eprintln!("\nconflicts with {target} in:");
+                for f in conflicted.lines() {
+                    eprintln!("  {f}");
+                }
+                eprintln!("resolve them, run `strata ci`, then `git commit` (or `git merge --abort`)");
+                return Ok(false);
+            }
+            if !ci(false)? {
+                eprintln!("\nthe merge with {target} doesn't check, so it is staged but not committed:");
+                eprintln!("fix it, run `strata ci`, then `git commit` (or `git merge --abort`)");
+                return Ok(false);
+            }
+            git_out(&["commit", "--no-edit"])?;
+            println!("merged {target}");
+        }
+        "ci" => return ci(args.flag("--fix")),
         "log" => {
             let Source::Db(cb) = load(&args)? else { return Err("`log` needs a codebase".into()) };
             for e in cb.log() {
@@ -656,6 +770,72 @@ fn run() -> Result<bool, String> {
         other => return Err(format!("unknown command `{other}` (try `strata help`)")),
     }
     Ok(true)
+}
+
+fn git_out(args: &[&str]) -> Result<String, String> {
+    let o = Command::new("git").args(args).output().map_err(|e| format!("git: {e}"))?;
+    if !o.status.success() {
+        return Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&o.stdout).to_string())
+}
+
+/// Every program in strata.toml checks, and every `.strata` file is in
+/// canonical format (what `render` prints). `fix` rewrites the files that aren't.
+fn ci(fix: bool) -> Result<bool, String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let m = merge::manifest(&cwd)?.ok_or("no strata.toml here or above (it lists the programs: `programs = [\"src\"]`)")?;
+    let mut ok = true;
+    for prog in &m.programs {
+        let path = m.dir.join(prog);
+        let files = merge::program_files(&path).map_err(|e| format!("strata.toml lists {prog}: {e}"))?;
+        let mut parsed = true;
+        for (rel, src) in &files {
+            let shown = if rel.as_os_str().is_empty() { prog.clone() } else { format!("{prog}/{}", rel.display()) };
+            match parser::parse_module_file(src, "") {
+                Err(e) => {
+                    ok = false;
+                    parsed = false;
+                    println!("✗ {shown}: doesn't parse: {e}");
+                }
+                Ok(p) if printer::program(&p) != *src => {
+                    if fix {
+                        std::fs::write(m.dir.join(&shown), printer::program(&p)).map_err(|e| format!("{shown}: {e}"))?;
+                        println!("  {shown}: rewritten in canonical format");
+                    } else {
+                        ok = false;
+                        println!("✗ {shown}: not in canonical format (`strata ci --fix` rewrites it)");
+                    }
+                }
+                Ok(_) => {}
+            }
+        }
+        if !parsed {
+            continue;
+        }
+        let p = merge::parse_program_files(merge::program_files(&path)?)?;
+        let rep = full_check(&p);
+        if rep.ok() {
+            println!("✓ {prog}: {} definitions check ({} open holes)", p.decls.len(), rep.holes.len());
+        } else {
+            ok = false;
+            println!("✗ {prog}:");
+            for e in &rep.errors {
+                println!("    error in {}: {}", e.decl, e.msg);
+            }
+        }
+    }
+    // a file the manifest forgot would go unchecked
+    let top = m.dir.to_string_lossy().to_string();
+    if let Ok(listed) = Command::new("git").args(["-C", &top, "ls-files", "--", "*.strata"]).output() {
+        for f in String::from_utf8_lossy(&listed.stdout).lines() {
+            if m.program_of(f).is_none() {
+                ok = false;
+                println!("✗ {f}: not in any program in strata.toml");
+            }
+        }
+    }
+    Ok(ok)
 }
 
 fn main() -> ExitCode {

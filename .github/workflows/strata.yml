@@ -1,0 +1,33 @@
+# GitHub doesn't run custom merge drivers, so a pull request is checked on
+# GitHub's merge ref (refs/pull/N/merge, what actions/checkout uses for
+# pull_request events): the branch merged with its base, as it would land.
+# Make the `strata ci` job a required check and require branches to be up to
+# date before merging; `strata sync main` brings a branch up to date locally,
+# with the merge driver.
+name: strata
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  strata-ci:
+    name: strata ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      # every program in strata.toml type-checks, every .strata file is canonical
+      - run: ./target/release/strata ci
+
+  cargo-test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --release

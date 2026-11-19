@@ -296,6 +296,19 @@ Every view is Strata text, so an agent can edit what it sees and send it back wi
 
 Because results are keyed by content, `verify` reruns only what is affected by a change.
 
+## Git: merging definition by definition
+
+The `.strata` files are what you commit. `strata.toml` lists the programs in the repository (a file, or a folder of modules):
+
+```toml
+programs = ["examples/tasks", "examples/bank.strata"]
+```
+
+- **`strata merge-file %O %A %B %P`** is a git merge driver. It pairs each side's definitions with the base's. A definition that only one side changed comes from that side, so edits to two functions never conflict, even when they sit on neighbouring lines. When both sides changed the same definition, its canonical text is merged line by line, and the result is kept only if it parses back into that one definition; otherwise conflict markers go around that definition alone. A rename on one side (a definition gone, and a new one that is the base's after `strata rename`) is applied to the other side, so new calls to the old name follow it. Then the file is type-checked inside its program: an error that neither side had on its own (ours changed a signature, theirs added a call to the old one) fails the merge. Sides that don't parse are merged as text.
+- **`strata setup-git`** points this clone's git config at the driver, and `.gitattributes` has `*.strata merge=strata`, so `git merge` and `git pull` use it.
+- **`strata sync [main]`** merges `origin/main` (or the local branch, without a remote) into the current branch with the driver, whether or not `setup-git` was run. It then runs `strata ci` and commits the merge only if that passes; otherwise the merge is left staged, so you can fix it or `git merge --abort`.
+- **`strata ci [--fix]`** is what CI runs: every program checks, every `.strata` file is in canonical format (exactly what `render` prints; `--fix` rewrites it), and no tracked `.strata` file is missing from `strata.toml`. GitHub doesn't run merge drivers, so `.github/workflows/strata.yml` runs `strata ci` on the pull request's merge ref. Make it a required check, and require branches to be up to date before merging. Then a branch lands only once it was merged with `main` by `strata sync` and the result checks.
+
 ## Source layout
 
 | File | What it is |
@@ -308,6 +321,7 @@ Because results are keyed by content, `verify` reruns only what is affected by a
 | `src/generate.rs` | value generators derived from types and refinements (used by mocks and fuzzing) |
 | `src/verify.rs` | compile-time refinement checks on literals; contract fuzzing |
 | `src/store.rs` | content-addressed codebase, dependency graph, patch log |
+| `src/merge.rs` | `strata merge-file`: three-way merge per definition, renames, `strata.toml` |
 | `src/view.rs` | level-of-detail projections and selectors |
 | `src/ui.rs`, `src/ui/index.html` | `strata ui`: the live viewer (a std-only HTTP server and one page) |
 

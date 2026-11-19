@@ -619,3 +619,174 @@ fn diff_shows_changes_structurally() {
     let (ok, out) = strata(&["diff"], &d, None);
     assert!(ok && out.contains("◀ stronger guarantee") && out.contains("{+, never below zero+}"), "{out}");
 }
+
+/// Run `strata merge-file` on three texts: (exit ok, merged text, output).
+fn merge3(name: &str, base: &str, ours: &str, theirs: &str) -> (bool, String, String) {
+    let d = tmp(name);
+    for (f, t) in [("o.strata", base), ("a.strata", ours), ("b.strata", theirs)] {
+        std::fs::write(d.join(f), t).unwrap();
+    }
+    let (ok, out) = strata(&["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"], &d, None);
+    (ok, std::fs::read_to_string(d.join("a.strata")).unwrap(), out)
+}
+
+#[test]
+fn merge_file_merges_each_definition_separately() {
+    let base = "fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g(x: Int) -> Int {\n  x * 2\n}\n";
+    // ours changes f and adds k; theirs changes g and adds h
+    let ours = "fn f(x: Int) -> Int {\n  x + 10\n}\n\nfn g(x: Int) -> Int {\n  x * 2\n}\n\nfn k() -> Int {\n  f(2)\n}\n";
+    let theirs = "fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g(x: Int) -> Int {\n  x * 20\n}\n\nfn h() -> Int {\n  g(1)\n}\n";
+    let (ok, text, out) = merge3("merge-sep", base, ours, theirs);
+    assert!(ok, "{out}\n{text}");
+    assert_eq!(text, "fn f(x: Int) -> Int {\n  x + 10\n}\n\nfn g(x: Int) -> Int {\n  x * 20\n}\n\nfn h() -> Int {\n  g(1)\n}\n\nfn k() -> Int {\n  f(2)\n}\n");
+
+    // ours deletes f, theirs changes the next line (g's signature): a conflict as text, not here
+    let ours = "fn g(x: Int) -> Int {\n  x * 2\n}\n";
+    let theirs = "fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g(y: Int) -> Int {\n  y * 2\n}\n";
+    let (ok, text, out) = merge3("merge-adjacent", base, ours, theirs);
+    assert!(ok && text == "fn g(y: Int) -> Int {\n  y * 2\n}\n", "{out}\n{text}");
+    let d = tmp("merge-sep-text");
+    for (f, t) in [("o", base), ("a", ours), ("b", theirs)] {
+        std::fs::write(d.join(f), t).unwrap();
+    }
+    let plain = Command::new("git").args(["merge-file", "-p", "a", "o", "b"]).current_dir(&d).output().unwrap();
+    assert_eq!(plain.status.code(), Some(1), "plain git conflicts on these");
+
+    // one definition changed on both sides, in different places: merged line by line
+    let base = "fn f(x: Int) -> Int {\n  let a = x + 1\n  let b = a * 2\n  let c = b - 3\n  c\n}\n";
+    let ours = "fn f(x: Int) -> Int {\n  let a = x + 100\n  let b = a * 2\n  let c = b - 3\n  c\n}\n";
+    let theirs = "fn f(x: Int) -> Int {\n  let a = x + 1\n  let b = a * 2\n  let c = b - 300\n  c\n}\n";
+    let (ok, text, out) = merge3("merge-lines", base, ours, theirs);
+    assert!(ok && text.contains("x + 100") && text.contains("b - 300"), "{out}\n{text}");
+
+    // the same line changed on both sides: markers around that definition only
+    let base = "fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g(x: Int) -> Int {\n  x * 2\n}\n";
+    let ours = "fn f(x: Int) -> Int {\n  x + 2\n}\n\nfn g(x: Int) -> Int {\n  x * 2\n}\n";
+    let theirs = "fn f(x: Int) -> Int {\n  x + 3\n}\n\nfn g(x: Int) -> Int {\n  x * 3\n}\n";
+    let (ok, text, out) = merge3("merge-conflict", base, ours, theirs);
+    assert!(!ok && out.contains("conflict in f"), "{out}");
+    assert!(text.contains("<<<<<<< ours\n") && text.contains("||||||| base\n") && text.contains(">>>>>>> theirs"), "{text}");
+    assert!(text.ends_with("fn g(x: Int) -> Int {\n  x * 3\n}\n"), "g merges cleanly: {text}");
+
+    // changed on one side, deleted on the other
+    let (ok, _, out) = merge3("merge-delete", base, "fn g(x: Int) -> Int {\n  x * 2\n}\n", ours);
+    assert!(!ok && out.contains("f (deleted in ours, changed in theirs)"), "{out}");
+}
+
+#[test]
+fn merge_file_follows_renames_and_type_checks() {
+    let base = "fn area(w: Int, h: Int) -> Int {\n  w * h\n}\n\nfn square(s: Int) -> Int {\n  area(s, s)\n}\n";
+    // ours renames `area` (as `strata rename` would); theirs adds a caller of the old name
+    let ours = "fn rect_area(w: Int, h: Int) -> Int {\n  w * h\n}\n\nfn square(s: Int) -> Int {\n  rect_area(s, s)\n}\n";
+    let theirs = format!("{base}\nfn double_square(s: Int) -> Int {{\n  area(s, s) * 2\n}}\n");
+    let (ok, text, out) = merge3("merge-rename", base, ours, &theirs);
+    assert!(ok, "{out}\n{text}");
+    assert!(out.contains("ours renamed area → rect_area; applied to theirs"), "{out}");
+    assert!(text.contains("rect_area(s, s) * 2") && !text.contains(" area(") && !text.contains("fn area"), "{text}");
+
+    // renamed and edited: recognised by the callers that follow the new name
+    let ours = "/// width times height\nfn rect_area(w: Int, h: Int) -> Int {\n  h * w\n}\n\nfn square(s: Int) -> Int {\n  rect_area(s, s)\n}\n";
+    let (ok, text, out) = merge3("merge-rename-edit", base, ours, &theirs);
+    assert!(ok && text.contains("rect_area(s, s) * 2") && text.contains("h * w") && !text.contains(" area("), "{out}\n{text}");
+    // a new definition that merely looks like a deleted one is not a rename
+    let ours = "fn square(s: Int) -> Int {\n  s * s\n}\n\nfn cube(s: Int) -> Int {\n  s * s * s\n}\n";
+    let (_, _, out) = merge3("merge-not-rename", base, ours, base);
+    assert!(!out.contains("renamed"), "{out}");
+
+    // each side checks on its own, but not together: ours adds a parameter, theirs a call without it
+    let ours = "fn area(w: Int, h: Int, d: Int) -> Int {\n  w * h * d\n}\n\nfn square(s: Int) -> Int {\n  area(s, s, 1)\n}\n";
+    let (ok, _, out) = merge3("merge-semantic", base, ours, &theirs);
+    assert!(!ok && out.contains("doesn't check") && out.contains("double_square"), "{out}");
+
+    // sides that don't parse are merged as text
+    let (ok, text, out) = merge3("merge-text", "fn (\n", "fn (\nours\n", "fn (\n");
+    assert!(ok && text == "fn (\nours\n" && out.contains("merging it as text"), "{out}");
+}
+
+fn git(dir: &std::path::Path, args: &[&str]) -> String {
+    let o = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stdout).to_string()
+}
+
+fn strata_git(args: &[&str], dir: &std::path::Path) -> (bool, String) {
+    let o = Command::new(env!("CARGO_BIN_EXE_strata"))
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .output()
+        .unwrap();
+    (o.status.success(), String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr))
+}
+
+#[test]
+fn ci_checks_programs_and_canonical_format() {
+    let d = tmp("ci");
+    git(&d, &["init", "-q", "-b", "main"]);
+    std::fs::create_dir_all(d.join("shop")).unwrap();
+    std::fs::write(d.join("strata.toml"), "programs = [\"shop\"]\n").unwrap();
+    std::fs::write(d.join("shop/orders.strata"), "pub fn total(xs: List[Int]) -> Int { sum(xs) }\n").unwrap();
+    std::fs::write(d.join("shop/main.strata"), "use orders.total\nfn run() -> Int { total([1, 2]) }\n").unwrap();
+    git(&d, &["add", "."]);
+    let (ok, out) = strata_git(&["ci"], &d);
+    assert!(!ok && out.contains("shop/orders.strata: not in canonical format") && out.contains("✓ shop:"), "{out}");
+    let (ok, out) = strata_git(&["ci", "--fix"], &d);
+    assert!(ok, "{out}");
+    let (ok, out) = strata_git(&["ci"], &d);
+    assert!(ok, "{out}");
+    // a tracked file outside every program would go unchecked
+    std::fs::write(d.join("loose.strata"), "fn x() -> Int {\n  1\n}\n").unwrap();
+    git(&d, &["add", "."]);
+    let (ok, out) = strata_git(&["ci"], &d);
+    assert!(!ok && out.contains("loose.strata: not in any program"), "{out}");
+}
+
+#[test]
+fn sync_merges_main_with_the_driver_then_checks() {
+    let d = tmp("sync");
+    git(&d, &["init", "-q", "-b", "main"]);
+    std::fs::write(d.join("strata.toml"), "programs = [\"app.strata\"]\n").unwrap();
+    let base = "fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g(x: Int) -> Int {\n  x * 2\n}\n";
+    std::fs::write(d.join("app.strata"), base).unwrap();
+    git(&d, &["add", "."]);
+    git(&d, &["commit", "-q", "-m", "base"]);
+    git(&d, &["checkout", "-q", "-b", "feature"]);
+    std::fs::write(d.join("app.strata"), "fn g(x: Int) -> Int {\n  x * 2\n}\n").unwrap();
+    git(&d, &["commit", "-q", "-am", "feature: drop f"]);
+    git(&d, &["checkout", "-q", "main"]);
+    std::fs::write(d.join("app.strata"), base.replace("g(x: Int) -> Int {\n  x * 2", "g(y: Int) -> Int {\n  y * 20")).unwrap();
+    git(&d, &["commit", "-q", "-am", "main: g"]);
+    git(&d, &["checkout", "-q", "feature"]);
+
+    // plain git conflicts: f's deletion touches the line before g's signature
+    let (ok, out) = strata_git(&["sync", "main"], &d);
+    assert!(ok && out.contains("merged main") && out.contains("✓ app.strata"), "{out}");
+    let merged = std::fs::read_to_string(d.join("app.strata")).unwrap();
+    assert_eq!(merged, "fn g(y: Int) -> Int {\n  y * 20\n}\n");
+    assert!(git(&d, &["log", "-1", "--format=%p"]).split_whitespace().count() == 2, "a merge commit");
+    let (ok, out) = strata_git(&["sync", "main"], &d);
+    assert!(ok && out.contains("already up to date"), "{out}");
+
+    // a merge that doesn't check is left staged, not committed
+    git(&d, &["checkout", "-q", "main"]);
+    std::fs::write(d.join("app.strata"), merged.replace("fn g(y: Int)", "fn g(x: Int, y: Int)").replace("y * 20", "x * y")).unwrap();
+    git(&d, &["commit", "-q", "-am", "main: g takes two"]);
+    git(&d, &["checkout", "-q", "feature"]);
+    std::fs::write(d.join("app.strata"), merged.clone() + "\nfn h() -> Int {\n  g(1)\n}\n").unwrap();
+    git(&d, &["commit", "-q", "-am", "feature: h"]);
+    let head = git(&d, &["rev-parse", "HEAD"]);
+    let (ok, out) = strata_git(&["sync", "main"], &d);
+    assert!(!ok && out.contains("doesn't check"), "{out}");
+    assert_eq!(git(&d, &["rev-parse", "HEAD"]), head, "nothing committed");
+}

@@ -1,1 +1,1 @@
-*.strata linguist-language=Rust
+*.strata linguist-language=Rust merge=strata

@@ -1,0 +1,10 @@
+# The Strata programs in this repository: a file, or a folder of modules.
+# `strata ci` checks each one, and `strata merge-file` type-checks a merged
+# file inside its program.
+programs = [
+  "examples/tasks",
+  "examples/bank.strata",
+  "examples/builtins.strata",
+  "examples/orders.strata",
+  "examples/traits.strata",
+]
