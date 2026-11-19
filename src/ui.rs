@@ -114,8 +114,11 @@ fn snapshot(target: &Target) -> Json {
                 .cloned()
                 .collect();
             let is_own_impl = |n: &String| impl_of.get(n).is_some_and(|(tr, ty)| *tr == name || *ty == name);
-            let references: Vec<String> = graph.iter().filter(|(n, ds)| ds.contains(&name) && !is_own_impl(n)).map(|(n, _)| n.clone()).collect();
-            let impls: Vec<String> = impl_of.keys().filter(|n| is_own_impl(n)).cloned().collect();
+            let mut references: Vec<String> = graph.iter().filter(|(n, ds)| ds.contains(&name) && !is_own_impl(n)).map(|(n, _)| n.clone()).collect();
+            let mut impls: Vec<String> = impl_of.keys().filter(|n| is_own_impl(n)).cloned().collect();
+            // the maps are unordered; sort so the lists don't reshuffle on every refresh
+            references.sort();
+            impls.sort();
             let label = match &d.kind {
                 DeclKind::Test(t) => t.name.clone(),
                 _ => d.name(),
@@ -200,7 +203,8 @@ fn snapshot(target: &Target) -> Json {
             }
             refs.sort();
             refs.dedup();
-            let implementors: Vec<String> = env.impls.iter().filter(|i| i.trait_name == t.name).map(|i| crate::printer::ty(&i.for_type)).collect();
+            let mut implementors: Vec<String> = env.impls.iter().filter(|i| i.trait_name == t.name).map(|i| crate::printer::ty(&i.for_type)).collect();
+            implementors.sort();
             structure.push(json!({
                 "name": t.name, "kind": "trait", "params": t.params, "doc": d.doc.join("\n"),
                 "methods": t.methods.iter().map(|m| json!({"name": m.decl.name, "sig": crate::printer::fn_signature(&m.decl).lines().next().unwrap_or("").trim_start_matches("fn ").to_string(), "default": m.default})).collect::<Vec<_>>(),
@@ -213,7 +217,8 @@ fn snapshot(target: &Target) -> Json {
     // which traits each type implements
     for s in structure.iter_mut() {
         let name = s["name"].as_str().unwrap_or("").to_string();
-        let traits: Vec<String> = env.impls.iter().filter(|i| crate::types::texpr_head(&i.for_type) == name).map(|i| i.trait_name.clone()).collect();
+        let mut traits: Vec<String> = env.impls.iter().filter(|i| crate::types::texpr_head(&i.for_type) == name).map(|i| i.trait_name.clone()).collect();
+        traits.sort();
         s["impls"] = json!(traits);
     }
 

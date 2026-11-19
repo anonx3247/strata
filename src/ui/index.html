@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Strata</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&display=swap">
 <style>
 :root {
   --bg: #f7f7f5; --panel: #ffffff; --line: #e3e3df; --text: #1d1d1b; --muted: #74746f; --faint: #a5a5a0;
@@ -11,7 +14,8 @@
   --type: #7048e8; --effect: #c2255c; --fn: #1c7ed6; --test: #5c940d;
   --ok: #2f9e44; --warn: #e67700; --bad: #e03131;
   --code-bg: #fbfbfa; --kw: #9c36b5; --str: #2b8a3e; --num: #c92a2a; --com: #8d8d88; --hole-bg: #fff3bf;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --kw-ctl: #1864ab; --kw-spec: #c2255c; --base: #0b7285; --utype: #b35c00;
+  --mono: "Fira Code", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
 }
 @media (prefers-color-scheme: dark) {
@@ -21,6 +25,7 @@
     --type: #b197fc; --effect: #f783ac; --fn: #74c0fc; --test: #a9e34b;
     --ok: #51cf66; --warn: #ffa94d; --bad: #ff6b6b;
     --code-bg: #1a1a18; --kw: #da77f2; --str: #8ce99a; --num: #ffa8a8; --com: #6f6f69; --hole-bg: #4a3d0a;
+    --kw-ctl: #74c0fc; --kw-spec: #f783ac; --base: #66d9e8; --utype: #ffc078;
   }
 }
 * { box-sizing: border-box; }
@@ -85,13 +90,17 @@ a.tog .br { font-family: var(--mono); font-size: 12.5px; }
 .toolbar button.plain { font: inherit; font-size: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 7px; padding: 3px 9px; cursor: pointer; }
 .toolbar button.plain:hover { color: var(--text); }
 .navb button { font-size: 13px; padding: 2px 9px; }
+#nav .navb { background: var(--bg); }
 .navb button:disabled { color: var(--faint); opacity: .5; cursor: default; }
 .doc code { font-family: var(--mono); font-size: 11.5px; color: var(--text); }
 .badge { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
 .badge.ok { color: var(--ok); } .badge.warn { color: var(--warn); } .badge.bad { color: var(--bad); } .badge.muted { color: var(--faint); }
-pre { margin: 0; padding: 10px 14px; background: var(--code-bg); font: 12.5px/1.55 var(--mono); overflow-x: auto; white-space: pre; }
+pre { margin: 0; padding: 10px 14px; background: var(--code-bg); font: 12.5px/1.55 var(--mono); overflow-x: auto; white-space: pre; font-variant-ligatures: contextual; font-feature-settings: "calt", "liga"; }
 .t-kw { color: var(--kw); } .t-str { color: var(--str); } .t-num { color: var(--num); } .t-com { color: var(--com); font-style: italic; }
-.t-ty { color: var(--type); } .t-doc { color: var(--com); }
+.t-ty { color: var(--base); } .t-uty { color: var(--utype); } .t-doc { color: var(--com); }
+.t-ctl { color: var(--kw-ctl); } .t-spec { color: var(--kw-spec); } .t-lit { color: var(--num); }
+/* a reference keeps its token colour; only the underline marks it clickable */
+a.ref.t-ty { color: var(--base); } a.ref.t-uty { color: var(--utype); }
 .t-hole { background: var(--hole-bg); border-radius: 3px; padding: 0 2px; font-weight: 600; }
 a.ref { color: inherit; text-decoration: underline dotted var(--faint); text-underline-offset: 3px; cursor: pointer; }
 a.ref:hover { color: var(--accent); text-decoration-color: var(--accent); }
@@ -325,6 +334,7 @@ del { background: color-mix(in srgb, var(--bad) 22%, transparent); text-decorati
 <body>
 <header>
   <span class="brand">Strata</span>
+  <span id="nav"></span>
   <span class="path" id="path"></span>
   <div class="chips" id="chips"></div>
   <span class="spacer"></span>
@@ -365,7 +375,18 @@ function status(d) {
 }
 
 // ---------- syntax highlighting with clickable references ----------
-const KW = new Set('type distinct fn test let mut if else match while for in loop break continue return except mock where requires ensures true false is assert trait impl law pub use module'.split(' '));
+// Keywords in three groups: what declares things, what steers control flow
+// (including matching), and what states rules the checker and fuzzer hold
+// the code to. `true`/`false` are literals.
+const KW_GROUPS = {
+  'kw': 'type distinct fn test let mut trait impl pub use module',
+  'ctl': 'if else match is while for in loop break continue return except',
+  'spec': 'where requires ensures assert law mock it',
+  'lit': 'true false',
+};
+const KW = new Map(Object.entries(KW_GROUPS).flatMap(([c, ws]) => ws.split(' ').map(w => [w, 't-' + c])));
+// Types the language and prelude provide; every other capitalised name is the user's.
+const BASE = new Set('Int Float Bool String Unit List Set Dict Self Option Some None Result Ok Err Natural Positive Negative NonZero Probability Percentage NonEmpty NonEmptyString'.split(' '));
 // Code says `Queue`; definitions are known by qualified name (`core.Queue`).
 // Resolve a name as the definition's module sees it: its own module first,
 // then public definitions of the modules it imports.
@@ -401,9 +422,13 @@ function highlight(src, resolve) {
     else if (str) out += `<span class="t-str">${esc(t)}</span>`;
     else if (hole) out += `<span class="t-hole">${esc(t)}</span>`;
     else if (num) out += `<span class="t-num">${t}</span>`;
-    else if (KW.has(id)) out += `<span class="t-kw">${id}</span>`;
+    else if (KW.has(id)) {
+      // `impl Trait for Type`: here `for` declares, it does not loop
+      const decl = id === 'for' && /\bimpl\b[^\n{]*$/.test(src.slice(0, m.index));
+      out += `<span class="${decl ? 't-kw' : KW.get(id)}">${id}</span>`;
+    }
     else {
-      const cls = /^[A-Z]/.test(id) ? 't-ty' : '';
+      const cls = /^[A-Z]/.test(id) ? (BASE.has(id) ? 't-ty' : 't-uty') : '';
       // a lowercase name is a function only where it is called; elsewhere it
       // may be a parameter or local that shadows one (`policy`)
       const called = /^\s*[([]/.test(src.slice(re.lastIndex, re.lastIndex + 3));
@@ -480,6 +505,7 @@ function renderHeader() {
     `<span class="chip ${holes ? 'warn' : ''}"><b>${holes}</b> holes</span>`,
     `<span class="chip ${cex ? 'bad' : pr + fz ? 'ok' : ''}"><b>${pr}/${fns}</b> proven · <b>${fz}</b> fuzzed${cex ? ` · <b>${cex}</b> failing` : ''}</span>`,
   ].join('');
+  $('#nav').innerHTML = navButtons();
   for (const b of $('#levels').children) b.classList.toggle('on', lv(b.dataset.l) === S.level);
   $('#banner').innerHTML = S.data.errors.length
     ? S.data.errors.map(e => `<div class="err"><a data-go="${esc(e.decl)}">${esc(e.decl)}</a>: ${esc(e.msg)}</div>`).join('') : '';
@@ -860,7 +886,7 @@ function renderCode() {
   }
   const all = `<button class="plain" data-all="${S.allOpen ? 0 : 1}" title="Keys: 1 collapse all, 2 expand all">${S.allOpen ? 'collapse all' : 'expand all'}</button>`;
   const scope = S.sel ? `<div class="seg"><button data-s="slice" class="${S.scope !== 'all' ? 'on' : ''}">Around ${esc(by[S.sel]?.label || '')}</button><button data-s="all" class="${S.scope === 'all' ? 'on' : ''}">Everything</button></div>` : '<span>Select a definition to see it with its dependencies and references.</span>';
-  $('#main').innerHTML = `<div id="code"><div class="toolbar">${navButtons()}${scope}${all}<span>hover a name to see where it is · click to go there</span></div>${body}</div>`;
+  $('#main').innerHTML = `<div id="code"><div class="toolbar">${scope}${all}<span>hover a name to see where it is · click to go there</span></div>${body}</div>`;
 }
 
 // ---------- inspector: description, neighbours, status, history ----------
