@@ -653,6 +653,7 @@ impl<'a> Interp<'a> {
                     xs.reverse();
                     List(xs)
                 }
+                Str(s) => Str(s.chars().rev().collect()),
                 _ => return self.fail(FaultKind::Runtime, "bad args"),
             },
             "join" => {
@@ -763,6 +764,7 @@ impl<'a> Interp<'a> {
             "get" => {
                 let found = match (nx(), nx()) {
                     (List(xs), Int(i)) => (i >= 0).then(|| xs.get(i as usize).cloned()).flatten(),
+                    (Str(s), Int(i)) => (i >= 0).then(|| s.chars().nth(i as usize).map(|c| Str(c.to_string()))).flatten(),
                     (Dict(kvs), k) => kvs.into_iter().find(|(k2, _)| *k2 == k).map(|(_, v)| v),
                     _ => return self.fail(FaultKind::Runtime, "bad args"),
                 };
@@ -816,6 +818,83 @@ impl<'a> Interp<'a> {
                 Bool(s.starts_with(&p))
             }
             "to_string" => Str(show(&nx())),
+            "ends_with" => {
+                let (Str(s), Str(p)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                Bool(s.ends_with(&p))
+            }
+            "chars" => match nx() {
+                Str(s) => List(s.chars().map(|c| Str(c.to_string())).collect()),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            // `slice(x, start, end)`: elements start..end, clamped to the bounds (as in Python)
+            "slice" => {
+                let (x, Int(a), Int(b)) = (nx(), nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                let clamp = |n: usize| (a.clamp(0, n as i64) as usize, b.clamp(0, n as i64) as usize);
+                match x {
+                    Str(s) => {
+                        let (a, b) = clamp(s.chars().count());
+                        Str(s.chars().skip(a).take(b.saturating_sub(a)).collect())
+                    }
+                    List(xs) => {
+                        let (a, b) = clamp(xs.len());
+                        List(if a < b { xs[a..b].to_vec() } else { vec![] })
+                    }
+                    _ => return self.fail(FaultKind::Runtime, "bad args"),
+                }
+            }
+            "index_of" => {
+                let (Str(s), Str(sub)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                match s.find(&sub) {
+                    Some(byte) => Variant("Some".into(), Fields::Pos(vec![Int(s[..byte].chars().count() as i64)])),
+                    None => Variant("None".into(), Fields::None),
+                }
+            }
+            "replace" => {
+                let (Str(s), Str(from), Str(to)) = (nx(), nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                if from.is_empty() {
+                    return self.fail(FaultKind::Runtime, "replace: empty pattern");
+                }
+                Str(s.replace(&from, &to))
+            }
+            "lines" => match nx() {
+                Str(s) => List(s.lines().map(|l| Str(l.to_string())).collect()),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            "repeat" => {
+                let (Str(s), Int(n)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                if n < 0 || (s.len() as i64).saturating_mul(n) > 100_000_000 {
+                    return self.fail(FaultKind::Runtime, format!("repeat: bad count {n}"));
+                }
+                Str(s.repeat(n as usize))
+            }
+            "to_upper" | "to_lower" => match nx() {
+                Str(s) => Str(if name == "to_upper" { s.to_uppercase() } else { s.to_lowercase() }),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            // true when the string is not empty and every character is of the class
+            "is_digit" | "is_alpha" | "is_space" => match nx() {
+                Str(s) => Bool(
+                    !s.is_empty()
+                        && s.chars().all(|c| match name {
+                            "is_digit" => c.is_ascii_digit(),
+                            "is_alpha" => c.is_alphabetic(),
+                            _ => c.is_whitespace(),
+                        }),
+                ),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            "ord" => match nx() {
+                Str(s) if s.chars().count() == 1 => Int(s.chars().next().unwrap() as i64),
+                Str(s) => return self.fail(FaultKind::Runtime, format!("ord needs a single character, got {s:?}")),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            "chr" => match nx() {
+                Int(n) => match u32::try_from(n).ok().and_then(char::from_u32) {
+                    Some(c) => Str(c.to_string()),
+                    None => return self.fail(FaultKind::Runtime, format!("chr: {n} is not a character")),
+                },
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
             _ => return self.fail(FaultKind::Runtime, format!("unknown builtin `{name}`")),
         })
     }

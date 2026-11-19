@@ -546,3 +546,34 @@ test "fstrings" {
     check_fails("fbad", "fn f() -> String { f\"{1 +}\" }", "in f-string");
     check_fails("fvar", "fn f() -> String { f\"{nope}\" }", "unknown variable `nope`");
 }
+
+#[test]
+fn string_primitives() {
+    run_tests(
+        "strings",
+        r##"fn count_digits(s: String) -> Int { s.chars().count(c -> is_digit(c)) }
+
+test "strings" {
+  let s = "héllo wörld"
+  assert len(s) == 11
+  assert s.chars().take(2) == ["h", "é"]
+  assert s.get(1) == Some("é") && s.get(99) == None
+  assert s.slice(6, 11) == "wörld" && s.slice(-3, 2) == "hé" && s.slice(8, 3) == ""
+  assert [1, 2, 3, 4].slice(1, 3) == [2, 3]
+  assert s.index_of("wö") == Some(6) && s.index_of("z") == None
+  assert s.ends_with("rld") && s.starts_with("hé")
+  assert s.replace("l", "L") == "héLLo wörLd"
+  assert "a\nb\n".lines() == ["a", "b"]
+  assert "ab".repeat(3) == "ababab"
+  assert "abc".reverse() == "cba"
+  assert "Ab".to_upper() == "AB" && "Ab".to_lower() == "ab"
+  assert is_digit("42") && !is_digit("4a") && !is_digit("")
+  assert is_alpha("é") && is_space(" \t")
+  assert ord("A") == 65 && chr(233) == "é"
+  assert count_digits("a1b22") == 3
+  assert "a,b".split(",") == ["a", "b"] && contains("abc", "bc")
+}
+"##,
+        "1 passed",
+    );
+}
