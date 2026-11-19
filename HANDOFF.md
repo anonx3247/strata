@@ -122,6 +122,7 @@ Bootstrap plan: write the frontend (lexer, parser, printer) in Strata and test i
 - When implementing, update the parser, printer, examples, README and tests; `render` must still round-trip.
 
 ### Requested cleanups (user, not implemented yet)
-- **String concatenation uses `+`**, not `++`: `"a" + "b"`. Decide with the user whether lists also move to `+` or keep `++`. Update the checker (`numeric` currently rejects `String` for `+`), the interpreter, the printer and all examples.
+- **String concatenation uses `+`**, not `++`: `"a" + "b"`. Lists use `+` too (`[1] + [2]`, decided), so `++` goes away entirely. Update the checker (`numeric` currently rejects `String` for `+`), the interpreter, the printer and all examples.
 - **Use `len` everywhere, not `str_len`.** `len` is already overloaded for `String`, so remove `str_len` from the builtins and the prelude refinements, and update the examples.
 - **Bring every example up to date with the current language**: `examples/*.strata` and `examples/tasks/`, plus the README snippets. Use the prelude types (`Natural`, `Positive`, `NonEmptyString`), inline refinements where a constraint is used once, `let mut` / loops where procedural code reads better, and (once implemented) arrow lambdas.
+- **GitHub syntax highlighting**: label Strata code blocks in the README and docs as ```` ```rust ````. Rust is the closest match (`fn`, `trait`, `impl`, `let mut`, `match … =>`, `///`, `->`), and GitHub's highlighter for it is solid. Also add a `.gitattributes` with `*.strata linguist-language=Rust`, so `.strata` files are highlighted on GitHub and counted as code.
