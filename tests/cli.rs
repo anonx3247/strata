@@ -324,3 +324,52 @@ fn label(s: Status) -> String {
     assert_ne!(a.0, b.0);
     assert_eq!(a.1, b.1);
 }
+
+#[test]
+fn rename_updates_every_reference() {
+    let d = tmp("rename");
+    let src = r#"module a {
+  /// The size of `xs`; see also size_of.
+  pub fn size(xs: List[Int]) -> Int { len(xs) }
+  pub type Box = { items: List[Int] }
+  pub fn twice(xs: List[Int]) -> Int {
+    let n = size(xs)
+    let tally = |x| x + n
+    tally(size(xs))
+  }
+}
+module b {
+  use a.{size, Box}
+  fn count(x: Int) -> Int { x }
+  fn total(b: Box) -> Int { a.size(b.items) + size([]) + count(1) }
+  test "boxes" {
+    assert total(Box { items: [1, 2] }) == 3
+  }
+}
+"#;
+    std::fs::write(d.join("r.strata"), src).unwrap();
+    assert!(strata(&["init"], &d, None).0);
+    assert!(strata(&["add", "r.strata"], &d, None).0);
+
+    // names that a local or another definition would capture are refused
+    let (ok, out) = strata(&["rename", "a.size", "count"], &d, None);
+    assert!(!ok && out.contains("would change what other names refer to"), "{out}");
+    let (ok, out) = strata(&["rename", "size", "tally"], &d, None);
+    assert!(!ok && out.contains("would change what other names refer to"), "{out}");
+    let (ok, out) = strata(&["rename", "Box", "crate"], &d, None);
+    assert!(!ok && out.contains("uppercase"), "{out}");
+
+    let (ok, out) = strata(&["rename", "size", "length"], &d, None);
+    assert!(ok && out.contains("renamed a.size → a.length") && out.contains("a.twice") && out.contains("b.total"), "{out}");
+    assert!(out.contains("docs or comments still mention `size` in: a.length"), "{out}");
+    let (ok, out) = strata(&["rename", "a.Box", "Crate"], &d, None);
+    assert!(ok, "{out}");
+    let (_, r) = strata(&["render"], &d, None);
+    for s in ["pub fn length(xs: List[Int])", "let n = length(xs)", "tally(length(xs))", "use a.{length, Crate}", "a.length(b.items) + length([])", "fn total(b: Crate)", "Crate { items: [1, 2] }"] {
+        assert!(r.contains(s), "missing {s:?} in\n{r}");
+    }
+    let (ok, out) = strata(&["test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    let (_, log) = strata(&["log", "--json"], &d, None);
+    assert!(log.contains(r#""from":"a.size""#) && log.contains(r#""to":"a.length""#), "{log}");
+}

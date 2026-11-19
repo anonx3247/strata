@@ -341,6 +341,11 @@ impl Codebase {
 
     /// Replace the program with `new`, writing objects and a log entry.
     pub fn commit(&mut self, new: Program, message: &str) -> Result<Vec<Change>, String> {
+        self.commit_with(new, message, serde_json::json!({}))
+    }
+
+    /// Commit, adding `extra`'s fields to the log entry (e.g. `"rename"`).
+    pub fn commit_with(&mut self, new: Program, message: &str, extra: serde_json::Value) -> Result<Vec<Change>, String> {
         let old: HashMap<String, &Decl> = self.program.decls.iter().map(|d| (d.qname(), d)).collect();
         let newm: HashMap<String, &Decl> = new.decls.iter().map(|d| (d.qname(), d)).collect();
         let mut changes = Vec::new();
@@ -382,11 +387,14 @@ impl Codebase {
             idx.defs.push((d.qname(), h));
         }
         fs::write(self.dir().join("index.json"), serde_json::to_string_pretty(&idx).unwrap()).map_err(|e| e.to_string())?;
-        let entry = serde_json::json!({
+        let mut entry = serde_json::json!({
             "time": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
             "message": message,
             "changes": changes,
         });
+        if let (Some(e), Some(x)) = (entry.as_object_mut(), extra.as_object()) {
+            e.extend(x.clone());
+        }
         use std::io::Write;
         let mut f = fs::OpenOptions::new().create(true).append(true).open(self.dir().join("log.jsonl")).map_err(|e| e.to_string())?;
         writeln!(f, "{entry}").map_err(|e| e.to_string())?;

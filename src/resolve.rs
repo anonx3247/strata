@@ -37,6 +37,51 @@ pub fn resolve(p: &Program) -> Resolution {
     if p.decls.iter().all(|d| d.module.is_empty() && !matches!(d.kind, DeclKind::Use(_))) {
         return Resolution { program: p.clone(), errors: vec![] };
     }
+    run(p, None)
+}
+
+/// Rename the definition `old` (a qualified name) to `new` (a short name in
+/// the same module), and every reference to it. Names are looked up exactly
+/// as the checker does (locals shadow globals, `use` brings names in), and
+/// everything else is written back as it was.
+pub fn rename(p: &Program, old: &str, new: &str) -> Result<Program, String> {
+    let d = p.decls.iter().find(|d| d.qname() == old).ok_or(format!("no definition `{old}`"))?;
+    if !matches!(d.kind, DeclKind::Fn(_) | DeclKind::Type(_) | DeclKind::Trait(_)) {
+        return Err(format!("only functions, types and traits can be renamed (`{old}` is a {})", d.kind_str()));
+    }
+    let valid = new.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_') && new.chars().all(|c| c.is_alphanumeric() || c == '_');
+    if !valid {
+        return Err(format!("`{new}` is not a name (give the new short name, without the module)"));
+    }
+    let upper = |s: &str| s.chars().next().is_some_and(|c| c.is_uppercase());
+    if upper(&d.name()) != upper(new) {
+        return Err(format!("`{new}` must start with {} like `{}`", if upper(new) { "a lowercase letter" } else { "an uppercase letter" }, d.name()));
+    }
+    let new_q = if d.module.is_empty() { new.to_string() } else { format!("{}.{new}", d.module) };
+    if p.decls.iter().any(|x| x.qname() == new_q) {
+        return Err(format!("`{new_q}` already exists"));
+    }
+    let out = run(p, Some((old.to_string(), new.to_string())));
+    let mut program = out.program;
+    for (r, d) in program.decls.iter_mut().zip(&p.decls) {
+        r.module = d.module.clone();
+    }
+    // the rename must not change what any other name refers to
+    // (`use` lists are compared by the names they bring in, which the resolution already covers)
+    let resolved = |p: &Program| {
+        let mut r = resolve(p).program;
+        r.decls.retain(|d| !matches!(d.kind, DeclKind::Use(_)));
+        serde_json::to_string(&r).unwrap()
+    };
+    let (before, after) = (resolved(p), resolved(&program));
+    let expect = before.replace(&format!("\"{old}\""), &format!("\"{new_q}\""));
+    if after != expect {
+        return Err(format!("renaming `{old}` to `{new}` would change what other names refer to (something visible there is already called `{new}`)"));
+    }
+    Ok(program)
+}
+
+fn run(p: &Program, rename: Option<(String, String)>) -> Resolution {
     let mut table: HashMap<String, Item> = HashMap::new();
     // children of a type (its constructors) or a trait (its methods), as (short, qualified)
     let mut children: HashMap<String, Vec<(String, String)>> = HashMap::new();
@@ -148,8 +193,15 @@ pub fn resolve(p: &Program) -> Resolution {
         .collect();
     let mut decls = Vec::new();
     for d in &p.decls {
-        let mut r = Rw { scope: &scopes[&d.module], table: &table, modules: &modules, module: &d.module, imports: &imports[&d.module], decl: d.qname(), locals: vec![], tparams: vec![], errors: vec![] };
-        let kind = r.decl(&d.kind);
+        let mut r = Rw { scope: &scopes[&d.module], table: &table, modules: &modules, module: &d.module, imports: &imports[&d.module], decl: d.qname(), locals: vec![], tparams: vec![], errors: vec![], rename: rename.as_ref() };
+        let kind = match (&d.kind, rename.as_ref()) {
+            // `use core.{same_ids}` names what it imports
+            (DeclKind::Use(u), Some((old, new))) => DeclKind::Use(UseDecl {
+                path: u.path.clone(),
+                items: u.items.as_ref().map(|is| is.iter().map(|i| if &format!("{}.{i}", u.path) == old { new.clone() } else { i.clone() }).collect()),
+            }),
+            _ => r.decl(&d.kind),
+        };
         errors.extend(r.errors);
         decls.push(Decl { comments: d.comments.clone(), doc: d.doc.clone(), kind, module: String::new(), public: d.public });
     }
@@ -167,6 +219,9 @@ struct Rw<'a> {
     locals: Vec<HashSet<String>>,
     tparams: Vec<HashSet<String>>,
     errors: Vec<Diag>,
+    /// Rename mode: (old qualified name, new short name). Names are then
+    /// written back as they were, except those that resolve to `old`.
+    rename: Option<&'a (String, String)>,
 }
 
 impl Rw<'_> {
@@ -185,8 +240,27 @@ impl Rw<'_> {
         self.locals.pop();
     }
 
-    /// Resolve a (possibly qualified) global name.
+    /// Resolve a (possibly qualified) global name; in rename mode, give it
+    /// back as written, renamed if it refers to the renamed definition.
     fn name(&mut self, n: &str) -> String {
+        let q = self.lookup(n);
+        self.written(n, &q)
+    }
+    fn written(&self, n: &str, q: &str) -> String {
+        match self.rename {
+            None => q.to_string(),
+            Some((old, new)) if q == old => match n.rsplit_once('.') {
+                Some((path, _)) => format!("{path}.{new}"),
+                None => new.clone(),
+            },
+            Some(_) => n.to_string(),
+        }
+    }
+    /// The name of a definition being declared, `name` in module `m`.
+    fn declared(&self, m: &str, name: &str) -> String {
+        self.written(name, &qualify(m, name))
+    }
+    fn lookup(&mut self, n: &str) -> String {
         if let Some(q) = self.scope.get(n) {
             return q.clone();
         }
@@ -301,15 +375,28 @@ impl Rw<'_> {
                 if let Some(path) = self.module_path(recv) {
                     // `orders.ship(x)`: a qualified call, not a method
                     let f = self.name(&format!("{path}.{m}"));
+                    if self.rename.is_some() {
+                        let m = f.rsplit('.').next().unwrap_or(m).to_string();
+                        return Expr::Method(recv.clone(), m, self.exprs(args));
+                    }
                     return Expr::Call(Box::new(Expr::Var(f)), self.exprs(args));
                 }
                 let recv = self.expr(recv);
-                let m = if self.is_local(m) { m.clone() } else { self.scope.get(m).cloned().unwrap_or_else(|| m.clone()) };
+                let m = if self.is_local(m) {
+                    m.clone()
+                } else {
+                    let q = self.scope.get(m).cloned().unwrap_or_else(|| m.clone());
+                    self.written(m, &q)
+                };
                 Expr::Method(Box::new(recv), m, self.exprs(args))
             }
             Expr::Field(r, f) => {
                 if let Some(path) = self.module_path(r) {
-                    return Expr::Var(self.name(&format!("{path}.{f}")));
+                    let q = self.name(&format!("{path}.{f}"));
+                    if self.rename.is_some() {
+                        return Expr::Field(r.clone(), q.rsplit('.').next().unwrap_or(f).to_string());
+                    }
+                    return Expr::Var(q);
                 }
                 Expr::Field(Box::new(self.expr(r)), f.clone())
             }
@@ -414,7 +501,7 @@ impl Rw<'_> {
                         vs.iter()
                             .map(|v| Variant {
                                 comments: v.comments.clone(),
-                                name: qualify(&m, &v.name),
+                                name: self.declared(&m, &v.name),
                                 payload: match &v.payload {
                                     Payload::None => Payload::None,
                                     Payload::Positional(ts) => Payload::Positional(ts.iter().map(|t| self.ty(t)).collect()),
@@ -428,11 +515,11 @@ impl Rw<'_> {
                 let refinement = t.refinement.as_ref().map(|r| self.expr(r));
                 self.pop();
                 self.tparams.pop();
-                DeclKind::Type(TypeDecl { distinct: t.distinct, name: qualify(&m, &t.name), params: t.params.clone(), body, refinement })
+                DeclKind::Type(TypeDecl { distinct: t.distinct, name: self.declared(&m, &t.name), params: t.params.clone(), body, refinement })
             }
-            DeclKind::Fn(f) => DeclKind::Fn(self.func(f, qualify(&m, &f.name))),
+            DeclKind::Fn(f) => DeclKind::Fn(self.func(f, self.declared(&m, &f.name))),
             DeclKind::Test(t) => {
-                let name = if m.is_empty() { t.name.clone() } else { format!("{m}: {}", t.name) };
+                let name = if m.is_empty() || self.rename.is_some() { t.name.clone() } else { format!("{m}: {}", t.name) };
                 DeclKind::Test(TestDecl { name, body: self.expr(&t.body) })
             }
             DeclKind::Trait(t) => {
@@ -441,7 +528,7 @@ impl Rw<'_> {
                 let methods = t
                     .methods
                     .iter()
-                    .map(|tm| TraitMethod { comments: tm.comments.clone(), doc: tm.doc.clone(), decl: self.func(&tm.decl, qualify(&m, &tm.decl.name)), default: tm.default })
+                    .map(|tm| TraitMethod { comments: tm.comments.clone(), doc: tm.doc.clone(), decl: self.func(&tm.decl, self.declared(&m, &tm.decl.name)), default: tm.default })
                     .collect();
                 let laws = t
                     .laws
@@ -456,7 +543,7 @@ impl Rw<'_> {
                     })
                     .collect();
                 self.tparams.pop();
-                DeclKind::Trait(TraitDecl { name: qualify(&m, &t.name), params: t.params.clone(), supers, methods, laws })
+                DeclKind::Trait(TraitDecl { name: self.declared(&m, &t.name), params: t.params.clone(), supers, methods, laws })
             }
             DeclKind::Impl(i) => {
                 self.tparams.push(i.type_params.iter().cloned().collect());
@@ -466,7 +553,7 @@ impl Rw<'_> {
                 let for_type = self.ty(&i.for_type);
                 // impl methods are named like the trait's methods
                 let tm = module_of(&trait_name).to_string();
-                let methods = i.methods.iter().map(|f| self.func(f, qualify(&tm, &f.name))).collect();
+                let methods = i.methods.iter().map(|f| self.func(f, self.declared(&tm, &f.name))).collect();
                 self.tparams.pop();
                 DeclKind::Impl(ImplDecl { type_params: i.type_params.clone(), bounds, trait_name, trait_args, for_type, methods })
             }

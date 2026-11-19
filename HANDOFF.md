@@ -35,12 +35,12 @@ Still open: **type map as a side panel** instead of a full tab. The user suggest
 - **Git stays the base.** Commit the `.strata` text files and the log (`log.jsonl`, append-only, entries with ids, `merge=union` in `.gitattributes`). Objects and index become a local cache rebuilt from the files. Optionally commit the verification cache.
 - **Structural diff** between two git revisions: load both snapshots, pair definitions, compare trees. The log entries present at HEAD but not at the base are the atomic steps in between (for stepping through, renames, messages). A PR = merge-base..HEAD.
 - **Change kinds**: added/removed; renamed/moved (one line, "N references updated", folded); signature change marked in place, with contract stronger/weaker; body change shown in place with unchanged statements folded, **falling back to a line diff of the canonical text when most of the body changed**; type field/variant changes (with "N matches must handle it"); trait changes; doc comments as a word diff; verification before → after. Ordered types → interfaces → implementations → tests.
-- **`strata rename old new`**: one checked patch that updates every reference, logged as a rename. Do this first.
+- **`strata rename old new`**: done (`resolve::rename`). It reuses the resolver's scoping, so locals shadow and `use` imports work as the checker sees them, and it refuses a rename that would change what any other name refers to. Functions, types and traits only: variants, fields and trait methods can't be renamed yet, and docs and comments aren't rewritten (the command lists the ones that mention the old name). The log entry has `"rename": {"from", "to", "references"}`. Database only for now (like `edit`).
 - **Merge driver**: `strata merge-file %O %A %B %P` per definition, then type-check. GitHub won't run it, so: `strata sync main` merges main into the branch locally, branch protection requires branches to be up to date, and a required CI check runs `strata check` + canonical-format check on GitHub's merge ref.
 - **jj**: compatible (runs on git) but not a dependency.
 - The tour is later. The user wants to settle the look first: offer a static mockup of the *Changes* view.
 
-Order: `strata rename` → diff core in Rust → `strata diff <rev>..<rev>` → *Changes* view in the viewer → merge driver.
+Order: ~~`strata rename`~~ → diff core in Rust → `strata diff <rev>..<rev>` → *Changes* view in the viewer → merge driver.
 
 ## Open topics the user wants to discuss and decide on (do not implement without agreement)
 

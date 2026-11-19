@@ -121,6 +121,10 @@ $ strata edit < breaking_change.strata
 error in test "totals": call to `total`, argument 1: expected `Int`, found `Line`
 rejected: the codebase would not check; nothing was changed
 
+$ strata rename total order_total
+renamed total → order_total
+updated 1 definition that refers to it: test "totals"
+
 $ strata run ship '["ord_abc123","TRK1"]' --mock --trace
 {"event":"call","fn":"ship","args":["ord_abc123","TRK1"],"depth":1}
 {"event":"perform","op":"Db.load","args":["ord_abc123"],"result":{"Some":{"Cancelled":{"id":"ord_so7f76","reason":"ju_4p-"}}}}

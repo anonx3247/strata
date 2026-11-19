@@ -28,6 +28,8 @@ Codebase (stored as a database of syntax trees in .strata/):
   add <file.strata> [-m MSG]   import definitions from a file (checked, atomic)
   edit [-m MSG] [--rm NAME]..  read definitions from stdin; replace/add them by name;
                                commit only if the whole codebase still checks
+  rename <old> <new> [-m MSG]  rename a function, type or trait and every reference to it
+                               (`old` may be qualified, `new` is the short name)
   log                          show the patch history
   interface <module>           a module's public contract: what other modules can use
   render [--split DIR]         print the full codebase as source (L3), or one file per module
@@ -253,6 +255,63 @@ fn run() -> Result<bool, String> {
             }
             if !rep.holes.is_empty() {
                 println!("{} open hole(s) — see `strata holes`", rep.holes.len());
+            }
+        }
+        "rename" => {
+            let Source::Db(mut cb) = load(&args)? else { return Err("`rename` needs a codebase (it commits the change)".into()) };
+            let (Some(old), Some(new)) = (args.pos.get(1), args.pos.get(2)) else { return Err("usage: strata rename <old> <new>".into()) };
+            // `old` is a qualified name, or a short name that only one module defines
+            let old_q = if cb.program.decls.iter().any(|d| &d.qname() == old) {
+                old.clone()
+            } else {
+                let found: Vec<String> = cb.program.decls.iter().filter(|d| &d.name() == old).map(|d| d.qname()).collect();
+                match found.as_slice() {
+                    [one] => one.clone(),
+                    [] => return Err(format!("no definition `{old}`")),
+                    many => return Err(format!("`{old}` is ambiguous: {}", many.join(", "))),
+                }
+            };
+            let renamed = resolve::rename(&cb.program, &old_q, new)?;
+            let rep = full_check(&renamed);
+            if !rep.ok() {
+                print_errors(&rep);
+                eprintln!("\nrejected: the codebase would not check; nothing was changed");
+                return Ok(false);
+            }
+            let new_q = match old_q.rsplit_once('.') {
+                Some((m, _)) => format!("{m}.{new}"),
+                None => new.clone(),
+            };
+            let before: HashMap<String, String> = cb.program.decls.iter().map(|d| (d.qname(), store::self_hash(d))).collect();
+            let updated: Vec<String> = renamed
+                .decls
+                .iter()
+                .filter(|d| d.qname() != new_q && before.get(&d.qname()).is_some_and(|h| *h != store::self_hash(d)))
+                .map(|d| d.qname())
+                .collect();
+            // prose is not rewritten: point at docs and comments that still say the old name
+            let short = old_q.rsplit('.').next().unwrap_or(&old_q).to_string();
+            let word = |t: &str| t.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| w == short);
+            let mentions: Vec<String> = renamed
+                .decls
+                .iter()
+                .filter(|d| d.doc.iter().chain(&d.comments).any(|l| word(l)))
+                .map(|d| d.qname())
+                .collect();
+            let default_msg = format!("rename {old_q} → {new_q}");
+            let msg = args.val("-m").unwrap_or(&default_msg);
+            cb.commit_with(renamed, msg, json!({"rename": {"from": old_q, "to": new_q, "references": updated}}))?;
+            if json_out {
+                println!("{}", json!({"from": old_q, "to": new_q, "references": updated, "mentions": mentions}));
+                return Ok(true);
+            }
+            println!("renamed {old_q} → {new_q}");
+            match updated.len() {
+                0 => println!("no other definition refers to it"),
+                n => println!("updated {n} definition{} that refer{} to it: {}", if n > 1 { "s" } else { "" }, if n > 1 { "" } else { "s" }, updated.join(", ")),
+            }
+            if !mentions.is_empty() {
+                println!("docs or comments still mention `{short}` in: {}", mentions.join(", "));
             }
         }
         "log" => {
