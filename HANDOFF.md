@@ -88,3 +88,11 @@ The compiler should eventually be written in Strata. Gaps to close first:
 - **A small native runtime**: GC, I/O, and binding to the SMT solver.
 
 Bootstrap plan: write the frontend (lexer, parser, printer) in Strata and test it against the Rust one, then the checker, then compile the Strata compiler with itself and check that its output stops changing (a fixed point).
+
+### Error handling, strings and mutation (decided)
+- **V-style `or` blocks** handle a failed `Result` or a missing `Option` value inline, and chain: `let cfg = load(path) or { default_config() }`.
+- **Propagation operators**: `!` propagates a `Result` error (`let x = parse(s)!`); `?` propagates an `Option` none (`let y = find(xs, p)?`). Both work in chains (`a.b()!.c()?`).
+- **Strings are pure UTF-8**, with no other string types. Add good string primitives: characters, slicing, searching, splitting.
+- **String interpolation in the style of Python f-strings**: `f"{name} has {len(xs)} items"`.
+- **Mutation of a `mut` value happens in place**, with no copying, whenever nothing else holds the value. The hard part is knowing when that's the case: use the absence of shared references plus ownership or reference counting (as in Koka's Perceus) so updates through a mutable binding are real in-place updates.
+- **Self-hosting is a long-term goal**, after the language matures. The compiler would be written in Strata, target LLVM, and use the LLVM libraries.
