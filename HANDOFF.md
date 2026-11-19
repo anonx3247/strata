@@ -42,3 +42,34 @@ Still open: **type map as a side panel** instead of a full tab. The user suggest
 - `strata verify` on the tasks example takes about 35s; the slowest part is generating `MemQueue` values that satisfy its invariants.
 - `src/flow.rs` and the `flows` data in `ui.rs` are no longer used by the viewer, now that the Flow view is gone. They can be removed.
 - Hover arrows in the viewer have not been checked visually; headless Chrome can't hover.
+
+## Decided direction (user, end of session 1)
+
+### Verification: automatic theorem prover (SMT), with layered results
+- Use an SMT solver (Z3 or cvc5) as the main verifier. Contracts (refinements, `requires` / `ensures`, trait laws) become proof obligations.
+- Report one of four **layered results** per obligation:
+  - `proven` (the solver proved it);
+  - `fuzzed` (not proven, but no counterexample found);
+  - `failed` (with the solver's or fuzzer's counterexample);
+  - `assumed` (trusted: outside libraries, I/O).
+  A project policy can require `proven` for chosen modules.
+- **Loop invariants**: infer them where possible (e.g. bounds and accumulators). Explicit `invariant …` annotations only where they really help; agents may write them and the solver checks them.
+- Callers are checked against a callee's **contract**, not its body, which fits modules meeting through contracts. Cache results by content hash, as `verify` already does.
+- Suggested order:
+  1. integer, length and string-format refinements;
+  2. `requires` / `ensures` across calls;
+  3. loop invariants;
+  4. trait laws.
+  Fuzzing remains the fallback for whatever the solver can't decide.
+- Interactive proofs (Lean/Coq-style) come later, as a bigger separate project.
+
+### Compilation before transpilation
+1. **Native compilation through LLVM** to machine code, with a garbage-collected runtime (no borrow checker in Strata). This comes before transpiling.
+2. **A standard library** with batteries included. The user cited "VLAN" as inspiration; most likely the V language (vlang), so confirm with the user. Priorities:
+   - basic I/O, files and the OS / processes, for CLIs;
+   - networking (HTTP client and server);
+   - web apps and views: HTML / CSS generation and serving, a first-class target because agents write web UIs for people;
+   - agentic systems built in, e.g. LLM calls and tools as standard-library capabilities.
+   These are capabilities (traits) implemented by the runtime, consistent with the decision that there are no effects; their contracts are `assumed`.
+3. **Interop** with Python, TypeScript and Rust using **JSON as the boundary**: generate types and codecs (Pydantic models, zod / TS types, serde structs) from Strata types and contracts.
+4. **Transpilation** to Python / TypeScript later. Rust transpilation is harder without a borrow checker (it would need a GC or reference counting in the generated code), so it has lower priority than LLVM.
