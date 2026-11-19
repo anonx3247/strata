@@ -12,6 +12,7 @@ Read `README.md` first; it describes the language and tools as they are now.
   `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu --hide-scrollbars --window-size=1700,1000 --virtual-time-budget=4000 --screenshot=out.png "http://127.0.0.1:PORT/#level=1&sel=core.run_worker"`.
   Start `strata ui --file examples/tasks --port PORT` in the background, and kill **only that port** afterwards (`kill $(lsof -ti tcp:PORT)`); the user may have their own viewers running.
   Viewer errors show in the page banner.
+  To check hover: start Chrome with `--headless=new --remote-debugging-port=9333 --user-data-dir=<scratch>`, then a small Node 22 script (built-in `WebSocket`, Chrome DevTools protocol) opens the page, sends `Input.dispatchMouseEvent` (`mouseMoved`) over an `a.ref`, and calls `Page.captureScreenshot`. Kill only that port afterwards.
 - macOS: no `timeout` command (use `perl -e 'alarm N; exec @ARGV' cmd`), and BSD `sed`.
 
 ## Design decisions the user has made (do not revisit without asking)
@@ -54,7 +55,6 @@ Order: `strata rename` → diff core in Rust → `strata diff <rev>..<rev>` → 
 - No host bindings (FFI), so a real SQLite backend isn't possible yet.
 - `strata verify` on the tasks example takes about 35s; the slowest part is generating `MemQueue` values that satisfy its invariants.
 - `src/flow.rs` and the `flows` data in `ui.rs` are no longer used by the viewer, now that the Flow view is gone. They can be removed.
-- Hover arrows in the viewer have not been checked visually; headless Chrome can't hover.
 
 ## Decided direction (user, end of session 1)
 
