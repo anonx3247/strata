@@ -37,14 +37,13 @@ strata ui                          # open http://127.0.0.1:7777: the live viewer
 
 `strata ui` serves a local, read-only viewer. It re-reads the codebase every 1.5 seconds, so edits made through the CLI (by you or by agents) appear as they are committed.
 
-- **Types**: a graph of types, traits and effects. Relations: *implements* (a type points at every trait it implements, so this is a graph, not a hierarchy), *extends* (supertraits), *contains* (a field or variant mentions it), *refines*, and *mentioned by an operation*. The layout puts the most connected definitions at the centre of their group, keeps unrelated groups apart, and puts lone definitions in a row at the bottom. Trait cards list methods, laws and implementers. Click a card to highlight its relations; drag cards (positions are remembered), scroll to zoom, or use *re-layout*.
-- **Flow**: execution from an entry point or a test, as a **graph** (flowchart) or an **outline**. The graph shows calls as boxes you can open, `match` / `if` as labelled alternative paths, loops over collections, and handler scopes ("effects performed inside this box are answered here"). Each effect operation names the handler that answers it. A trait method call branches over the possible implementations, and `self` calls inside an implementation resolve to that implementation. The *detail* control (1–4, all) sets how deep calls open by default.
-- **Interfaces / Outline / Source**: levels 1–3 for every definition. Each card has its own L1/L2/L3 switch, so you can open one definition fully while everything else stays folded.
-- **Slice around a definition**: show only that definition, what it uses, and what uses it.
-- **Inspector**: doc comment, hashes, effects, holes (goal, context, what they must satisfy), the verification result with any counterexample, and the definition's history.
+- **Interface / Source**: the code view, at two levels. With a definition selected (the default once you click something), it shows that definition, then what it uses, what uses it, its implementations and its tests, each as a card you can switch between *interface* and *source*. *Everything* shows the whole codebase.
+- **Hover a name** in the code to get an arrow to where that definition is on screen (or which way to scroll); click it to go there.
+- **Inspector** (right): the selected definition's full source, a small graph of its neighbours (what it uses on the left, what uses it on the right, all clickable), its holes and verification result with any counterexample, and its history.
+- **Type map**: a graph of types and traits and how they relate: *implements* (a type points at every trait it implements, so it is a graph, not a hierarchy), *extends* (supertraits), *contains* (a field or variant mentions it), *refines*. Each module is a region. The layout puts the most connected definitions at the centre of their module. Clicking a card shows its source in the inspector; double-click opens it in the code view. Drag cards (positions are remembered), scroll to zoom, or *re-layout*.
 - **Activity**: the patch log. Definitions changed since your last look are highlighted.
-- The URL keeps the view, e.g. `#level=2&sel=refund&scope=slice`, so you can send someone or an agent exactly what you're looking at.
-- Keys: `t` types, `f` flow, `1`–`3` code levels, `/` filters, `Esc` clears the selection.
+- The URL keeps the view, e.g. `#level=1&sel=refund`, so you can send someone or an agent exactly what you're looking at.
+- Keys: `1` interface, `3` source, `t` type map, `/` filters, `Esc` clears the selection.
 
 `strata ui --file some.strata` views a single file instead of a codebase.
 

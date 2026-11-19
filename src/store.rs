@@ -170,6 +170,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             out.remove(&t.name);
         }
         DeclKind::Fn(f) => {
+            f.bounds.iter().flat_map(|b| &b.traits).for_each(|t| ty(t, &mut out));
             f.params.iter().for_each(|p| ty(&p.ty, &mut out));
             ty(&f.ret, &mut out);
             f.requires.iter().chain(&f.ensures).for_each(|e| ex(e, &mut out, ctor_types));
@@ -228,9 +229,26 @@ pub fn graph(p: &Program) -> BTreeMap<String, BTreeSet<String>> {
             }
         }
     }
+    // a call to a trait method depends on the trait
+    let mut method_trait: HashMap<String, String> = HashMap::new();
+    for d in &p.decls {
+        if let DeclKind::Trait(t) = &d.kind {
+            for m in &t.methods {
+                method_trait.insert(m.decl.name.clone(), t.name.clone());
+            }
+        }
+    }
     p.decls
         .iter()
-        .map(|d| (to_q[&d.name()].clone(), refs(d, &ct).into_iter().filter(|r| names.contains(r) && r != &d.name()).map(|r| to_q[&r].clone()).collect()))
+        .map(|d| {
+            let deps = refs(d, &ct)
+                .into_iter()
+                .map(|r| method_trait.get(&r).cloned().unwrap_or(r))
+                .filter(|r| names.contains(r) && r != &d.name())
+                .map(|r| to_q[&r].clone())
+                .collect();
+            (to_q[&d.name()].clone(), deps)
+        })
         .collect()
 }
 

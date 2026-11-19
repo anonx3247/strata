@@ -114,6 +114,22 @@ a.ref:hover { color: var(--accent); text-decoration-color: var(--accent); }
 .lg { display: inline-block; width: 18px; height: 0; border-top: 2px solid var(--muted); }
 .lg.refines { border-top: 2px dashed var(--type); } .lg.op { border-top: 2px dotted var(--effect); }
 .muted { color: var(--muted); }
+/* code view sections, inspector source, mini graph, hover arrow */
+h2.sect { font: 600 11px var(--sans); text-transform: uppercase; letter-spacing: .7px; color: var(--faint); margin: 22px 0 8px; }
+.card.hover { border-color: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 25%, transparent); }
+.insp-src { max-height: 42vh; overflow: auto; border: 1px solid var(--line); border-radius: 7px; margin-top: 6px; font-size: 11.5px; }
+.mg { display: block; overflow: visible; }
+.mg-h { display: flex; justify-content: space-between; color: var(--faint); font-size: 10.5px; padding: 0 20px; }
+.mg-e { fill: none; stroke: var(--faint); stroke-width: 1.2; }
+.mg-c { fill: var(--accent); }
+.mg-n { cursor: pointer; }
+.mg-n text { font: 11.5px var(--mono); fill: var(--text); }
+.mg-n:hover text { fill: var(--accent); text-decoration: underline; }
+.mg-n text.k-type, .mg-n text.k-trait { fill: var(--type); } .mg-n text.k-fn { fill: var(--fn); } .mg-n text.k-impl { fill: var(--accent); } .mg-n text.k-test { fill: var(--test); }
+#arrow { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 10; }
+#arrow path { fill: none; stroke: var(--warn); stroke-width: 2; stroke-dasharray: 5 4; }
+#arrow circle { fill: var(--warn); }
+#arrow text { font: 600 12px var(--mono); fill: var(--warn); paint-order: stroke; stroke: var(--bg); stroke-width: 4px; }
 /* modules */
 .mod-h { padding: 8px 14px 2px; cursor: pointer; font-size: 12.5px; }
 .mod-h b { font-family: var(--mono); }
@@ -228,11 +244,9 @@ a.ref:hover { color: var(--accent); text-decoration-color: var(--accent); }
   <div class="chips" id="chips"></div>
   <span class="spacer"></span>
   <div class="seg" id="levels">
-    <button data-l="types" title="Types, effects and how they relate (key t)">Types</button>
-    <button data-l="flow" title="Execution paths from an entry point (key f)">Flow</button>
-    <button data-l="1" title="Types, signatures and contracts (key 1)">Interfaces</button>
-    <button data-l="2" title="Signatures plus body summaries (key 2)">Outline</button>
+    <button data-l="1" title="Types, signatures and contracts (key 1)">Interface</button>
     <button data-l="3" title="Full source (key 3)">Source</button>
+    <button data-l="types" title="Types and traits and how they relate (key t)">Type map</button>
   </div>
   <input type="search" id="q" placeholder="Filter  ( / )">
   <span class="live" id="live"><i></i><span>live</span></span>
@@ -241,10 +255,11 @@ a.ref:hover { color: var(--accent); text-decoration-color: var(--accent); }
 <aside id="left"></aside>
 <main id="main"></main>
 <aside id="right"></aside>
+<svg id="arrow"></svg>
 
 <script>
 const lv = x => isNaN(+x) ? x : +x;
-const S = { data: null, raw: '', level: 1, sel: null, scope: 'all', q: '', over: {}, prevHash: {}, flash: new Set(), prevLog: 0, newLog: 0, showTests: false };
+const S = { data: null, raw: '', level: 1, sel: null, scope: 'slice', q: '', over: {}, prevHash: {}, flash: new Set(), prevLog: 0, newLog: 0, showTests: false };
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const KIND = { type: 'T', effect: 'E', fn: 'ƒ', test: '✓', trait: '◆', impl: '⊢' };
@@ -346,29 +361,6 @@ function renderLeft() {
     const open = !S.closedMods?.has(m);
     return `<div class="mod"><div class="mod-h" data-mod="${esc(m)}">${open ? '▾' : '▸'} <b>${esc(m || '(root)')}</b> <span class="muted">${decls.length}</span>${uses.length ? `<div class="mod-uses">uses ${esc(uses.join(', '))}</div>` : ''}</div>${open ? section(decls) : ''}</div>`;
   }).join('');
-}
-
-function renderCode() {
-  const names = new Set(S.data.decls.map(d => d.name));
-  const list = visible();
-  const scopeSeg = `<div class="seg" id="scope">
-      <button data-s="all" class="${S.scope === 'all' ? 'on' : ''}">Everything</button>
-      <button data-s="slice" class="${S.scope === 'slice' ? 'on' : ''}" ${S.sel ? '' : 'disabled title="Select a definition first"'}>Slice around ${S.sel ? esc(byName()[S.sel]?.label) : 'selection'}</button></div>`;
-  const cards = list.map(d => {
-    const lvl = S.over[d.name] ?? S.level;
-    const [cls, txt] = status(d);
-    const lv = [1, 2, 3].map(l => `<button data-card-level="${l}" data-name="${esc(d.name)}" class="${l === lvl ? 'on' : ''}">L${l}</button>`).join('');
-    return `<div class="card ${d.name === S.sel ? 'sel' : ''} ${S.flash.has(d.name) ? 'flash' : ''}" id="card-${esc(d.name)}">
-      <div class="card-h" data-pick="${esc(d.name)}">
-        <span class="kind k-${d.kind}">${KIND[d.kind]}</span><span class="name">${esc(d.label)}</span>
-        ${d.effects.length ? `<span class="badge muted">/ {${esc(d.effects.join(', '))}}</span>` : ''}
-        ${txt ? `<span class="badge ${cls === 'none' ? 'muted' : cls}">${esc(txt)}</span>` : ''}
-        <span class="spacer"></span><span class="hash">#${d.hash.slice(0, 8)}</span>
-        <div class="seg">${lv}</div>
-      </div>
-      <pre>${highlight(d.text[String(lvl)], names)}</pre></div>`;
-  }).join('');
-  $('#main').innerHTML = `<div id="code"><div class="toolbar">${scopeSeg}<span>${list.length} of ${S.data.decls.length} shown · click L1/L2/L3 on a card to zoom just that definition</span></div>${cards || '<div class="empty">Nothing matches.</div>'}</div>`;
 }
 
 // ---------- type map: types, effects (and later traits) as a general graph ----------
@@ -673,170 +665,66 @@ function tmEvents() {
   });
 }
 
-// ---------- flow graph: an execution flowchart with levels of detail ----------
-S.gOpen = new Map(); S.detail = 2; S.flowView = 'graph';
-const gOpen = (path, depth) => S.gOpen.has(path) ? S.gOpen.get(path) : depth < S.detail;
-
-function gSeq(steps, ctx, stack, path, depth) {
-  if (!steps.length) return '<div class="g-seq"><div class="g-node g-quiet">no calls or effects</div></div>';
-  return '<div class="g-seq">' + steps.map((s, i) => gStep(s, ctx, stack, path + '.' + i, depth)).join('') + '</div>';
+// The code view: the selection and what surrounds it, organised by relationship.
+function sectionsFor(sel) {
+  const by = byName(), d = by[sel];
+  if (!d) return [];
+  const isImpl = n => by[n]?.kind === 'impl';
+  const users = d.used_by.filter(n => !isImpl(n) && by[n]?.kind !== 'test');
+  const impls = d.used_by.filter(isImpl);
+  const tests = d.used_by.filter(n => by[n]?.kind === 'test');
+  return [
+    ['', [sel]],
+    ['Uses', d.deps.filter(n => by[n])],
+    ['Used by', users],
+    ['Implementations', impls],
+    ['Tests', tests],
+  ].filter(([, ns]) => ns.length);
 }
 
-function gFrame(cls, path, head, body, open) {
-  // `body` is a function: folded boxes never build their contents
-  if (!open) return `<div class="g-node ${cls}" data-gtoggle="${path}" data-open="0" title="expand">${head} <span class="g-more">▸</span></div>`;
-  return `<div class="g-frame ${cls}"><div class="g-frame-h" data-gtoggle="${path}" data-open="1" title="collapse">${head} <span class="g-more">▾</span></div>${body()}</div>`;
+function card(d, names) {
+  const lvl = S.over[d.name] ?? S.level;
+  const [cls, txt] = status(d);
+  return `<div class="card ${d.name === S.sel ? 'sel' : ''} ${S.flash.has(d.name) ? 'flash' : ''}" id="card-${esc(d.name)}">
+    <div class="card-h" data-pick="${esc(d.name)}">
+      <span class="kind k-${d.kind}">${KIND[d.kind] || ''}</span><span class="name">${esc(d.label)}</span>
+      ${d.module ? `<span class="hash">${esc(d.module)}</span>` : ''}
+      ${txt ? `<span class="badge ${cls === 'none' ? 'muted' : cls}">${esc(txt)}</span>` : ''}
+      <span class="spacer"></span>
+      <div class="seg"><button data-card-level="1" data-name="${esc(d.name)}" class="${lvl === 1 ? 'on' : ''}">interface</button><button data-card-level="3" data-name="${esc(d.name)}" class="${lvl === 3 ? 'on' : ''}">source</button></div>
+    </div>
+    <pre>${highlight(d.text[String(lvl)], names)}</pre></div>`;
 }
 
-function gStep(s, ctx, stack, path, depth) {
-  const F = S.data.flows;
-  if (s.k === 'call') {
-    const f = F[s.f], head = `<span class="k-fn">ƒ</span> ${esc(s.f)}<span class="fargs">(${esc(s.args)})</span>`;
-    if (stack.includes(s.f)) return `<div class="g-node g-call">${head} <span class="badge muted">↻ recursive</span></div>`;
-    if (!f) return `<div class="g-node g-call">${head}</div>`;
-    if (f.info.hole) return `<div class="g-node g-call">${head} <span class="badge warn">hole</span></div>`;
-    if (!f.steps.length) return `<div class="g-node g-call g-leaf">${head}</div>`;
-    return gFrame('g-call', path, head, () => gSeq(f.steps, ctx, [...stack, s.f], path, depth + 1), gOpen(path, depth + 1));
+function renderCode() {
+  const names = new Set(S.data.decls.map(d => d.name));
+  const by = byName();
+  let body;
+  if (S.sel && by[S.sel] && S.scope !== 'all') {
+    body = sectionsFor(S.sel).map(([title, ns]) =>
+      (title ? `<h2 class="sect">${title} <span class="muted">${ns.length}</span></h2>` : '') + ns.map(n => card(by[n], names)).join('')).join('');
+  } else {
+    body = visible().map(d => card(d, names)).join('') || '<div class="empty">Nothing matches.</div>';
   }
-  if (s.k === 'perform') {
-    let j = ctx.length - 1;
-    while (j >= 0 && ctx[j].effect !== s.effect) j--;
-    const head = `<span class="k-effect">⚡</span> <b class="eff">${esc(s.effect)}.${esc(s.op)}</b><span class="fargs">(${esc(s.args)})</span>`;
-    if (j < 0) {
-      const declared = (F[stack[0]]?.info.effects || []).some(e => e.split('[')[0] === s.effect);
-      return `<div class="g-node g-eff">${head} <span class="g-ans">${declared ? 'answered by whoever calls ' + esc(stack[0]) : '<span class="bad">no handler</span>'}</span></div>`;
-    }
-    const h = ctx[j], c = h.clauses.find(c => c.op === s.op);
-    const ans = `<span class="g-ans">answered by the ${esc(s.effect)} handler in ${esc(h.owner)}${h.mock ? ' (mock)' : ''}</span>`;
-    if (h.mock || !c || !c.steps.length) return `<div class="g-node g-eff">${head} ${ans}</div>`;
-    return gFrame('g-eff', path, head + ' ' + ans, () => gSeq(c.steps, ctx.slice(0, j), stack, path + 'h', depth + 1), gOpen(path, depth + 1));
-  }
-  if (s.k === 'handle') {
-    const owner = stack[stack.length - 1];
-    const inner = ctx.concat(s.handlers.map(h => ({ ...h, owner })));
-    const chips = s.handlers.map(h => `<span class="g-chip"><b class="eff">${esc(h.effect)}</b>${h.mock ? ' mock' : h.stateful ? ' · keeps state' : ''}</span>`).join(' ');
-    let body = gSeq(s.body, inner, stack, path + 'b', depth);
-    if (s.returns.length) body += `<div class="g-sub">when the code inside finishes</div>` + gSeq(s.returns, ctx, stack, path + 'r', depth);
-    return `<div class="g-scope"><div class="g-scope-h">effects performed inside this box are answered here: ${chips}</div>${body}</div>`;
-  }
-  if (s.k === 'branch') {
-    const arms = s.arms.map((a, k) => `<div class="g-arm"><div class="g-label">${esc(a.label)}</div>${a.steps.length ? gSeq(a.steps, ctx, stack, path + 'a' + k, depth) : ''}<div class="g-fill"></div></div>`).join('');
-    return `<div class="g-split"><div class="g-node g-cond">◇ ${esc(s.on)}</div><div class="g-arms">${arms}</div><div class="g-join"></div></div>`;
-  }
-  if (s.k === 'each') {
-    return `<div class="g-loop"><div class="g-loop-h">↻ for each element of <b>${esc(s.over)}</b> <span class="muted">(${esc(s.via)})</span></div>${gSeq(s.steps, ctx, stack, path, depth)}</div>`;
-  }
-  if (s.k === 'dispatch') {
-    // inside an implementation, `self` has a known type: only that path is possible
-    const selfCall = /^self\b/.test(s.args) && ctx.selfTy;
-    const targets = selfCall ? s.targets.filter(t => t.ty === ctx.selfTy) : s.targets;
-    const arms = targets.map((t, k) => {
-      const f = F[t.key], p = path + 'd' + k, label = `<span class="k-fn">ƒ</span> ${esc(t.ty)}.${esc(s.method)}`;
-      const node = stack.includes(t.key)
-        ? `<div class="g-node g-call">${label} <span class="badge muted">↻ recursive</span></div>`
-        : !f || !f.steps.length
-        ? `<div class="g-node g-call g-leaf">${label}</div>`
-        : gFrame('g-call', p, label, () => { const c2 = ctx.slice(); c2.selfTy = t.ty; return gSeq(f.steps, c2, [...stack, t.key], p, depth + 1); }, gOpen(p, depth + 1));
-      if (selfCall) return node;
-      return `<div class="g-arm"><div class="g-label">if it is ${esc(t.ty)}</div>${node}<div class="g-fill"></div></div>`;
-    }).join('') || '<div class="g-arm"><div class="g-label">no implementations</div></div>';
-    if (selfCall && targets.length === 1) return arms;
-    return `<div class="g-split"><div class="g-node g-cond g-disp">⇉ <b>${esc(s.method)}</b>(${esc(s.args)}) <span class="muted">· ${esc(s.trait_name)}, chosen by the receiver's type</span></div><div class="g-arms">${arms}</div><div class="g-join"></div></div>`;
-  }
-  return '';
+  const scope = S.sel ? `<div class="seg"><button data-s="slice" class="${S.scope !== 'all' ? 'on' : ''}">Around ${esc(by[S.sel]?.label || '')}</button><button data-s="all" class="${S.scope === 'all' ? 'on' : ''}">Everything</button></div>` : '<span>Select a definition to see it with what it uses and what uses it.</span>';
+  $('#main').innerHTML = `<div id="code"><div class="toolbar">${scope}<span>hover a name to see where it is · click to go there</span></div>${body}</div>`;
 }
 
-function renderFlowGraph(entry) {
-  const f = S.data.flows[entry];
-  const sig = f?.info.sig || entry;
-  return `<div class="g-wrap"><div class="g-seq">
-      <div class="g-node g-start">▶ ${esc(sig)}</div>
-      ${f ? gSeq(f.steps, [], [entry], 'r', 0) : ''}
-      <div class="g-node g-end">■ returns</div>
-    </div></div>`;
+// ---------- inspector: source and a small graph of neighbours ----------
+function miniGraph(d) {
+  const by = byName(), MAX = 8, RH = 22, W = 300;
+  const left = d.deps.filter(n => by[n]).slice(0, MAX), right = d.used_by.slice(0, MAX);
+  const rows = Math.max(left.length, right.length, 1);
+  const H = rows * RH + 16, cy = H / 2;
+  const lbl = n => trunc(by[n]?.label || n, 15);
+  const node = (n, x, y, anchor) => `<g class="mg-n" data-go="${esc(n)}"><text x="${x}" y="${y + 4}" text-anchor="${anchor}" class="k-${by[n]?.kind}">${esc(lbl(n))}</text></g>`;
+  let out = '';
+  left.forEach((n, i) => { const y = 8 + RH / 2 + i * RH + (rows - left.length) * RH / 2; out += `<path class="mg-e" d="M104,${y} C130,${y} 125,${cy} 150,${cy}"/>` + node(n, 100, y, 'end'); });
+  right.forEach((n, i) => { const y = 8 + RH / 2 + i * RH + (rows - right.length) * RH / 2; out += `<path class="mg-e" d="M150,${cy} C175,${cy} 170,${y} 196,${y}"/>` + node(n, 200, y, 'start'); });
+  out += `<circle cx="150" cy="${cy}" r="5" class="mg-c"/>`;
+  const more = (d.deps.length > MAX ? `+${d.deps.length - MAX} uses ` : '') + (d.used_by.length > MAX ? `+${d.used_by.length - MAX} users` : '');
+  return `<div class="mg-h"><span>uses</span><span>used by</span></div><svg class="mg" width="${W}" height="${H}">${out}</svg>${more ? `<div class="empty">${more}</div>` : ''}`;
 }
-
-// ---------- flow map: execution paths from an entry point ----------
-S.flowOpen = new Map();
-function renderFlow() {
-  const F = S.data.flows;
-  const tests = S.data.decls.filter(d => d.kind === 'test').map(d => d.name);
-  if (!S.flowEntry || !F[S.flowEntry]) S.flowEntry = (S.sel && F[S.sel]) ? S.sel : (S.data.entries[0] || tests[0]);
-  const entry = S.flowEntry;
-  const lbl = n => byName()[n]?.label ?? n;
-  const chips = list => list.map(n => `<a class="echip ${n === entry ? 'on' : ''}" data-entry="${esc(n)}">${esc(lbl(n))}</a>`).join('');
-  const f = F[entry];
-  const tree = S.flowView === 'graph' ? renderFlowGraph(entry) : (f ? '<div class="ftree">' + stepsHTML(f.steps, [], [entry], 'r', 0) + '</div>' : '<div class="empty">Select a function or test.</div>');
-  const ctl = `<div class="fctl"><div class="seg"><button data-fview="graph" class="${S.flowView === 'graph' ? 'on' : ''}">Graph</button><button data-fview="outline" class="${S.flowView === 'outline' ? 'on' : ''}">Outline</button></div>
-    <span class="muted">detail</span><div class="seg">${[1, 2, 3, 4, 9].map(n => `<button data-detail="${n}" class="${S.detail === n ? 'on' : ''}">${n === 9 ? 'all' : n}</button>`).join('')}</div>
-    <span class="muted">click a box to open or fold it</span></div>`;
-  $('#main').innerHTML = `<div id="flow">
-    <div class="entries"><span class="elab">Entry points</span>${chips(S.data.entries)}</div>
-    <div class="entries"><span class="elab">Tests</span>${chips(tests)}</div>
-    <div class="ehint">Entry points are functions nothing else uses; pick any function in the sidebar to trace from it instead.</div>
-    ${ctl}
-    ${tree}</div>`;
-}
-
-function det(path, depth, summary, inner) {
-  const open = S.flowOpen.has(path) ? S.flowOpen.get(path) : depth < 3;
-  return `<details data-path="${path}" ${open ? 'open' : ''}><summary>${summary}</summary><div class="fkids">${inner}</div></details>`;
-}
-const leaf = s => `<div class="fleaf">${s}</div>`;
-
-function stepsHTML(steps, ctx, stack, path, depth) {
-  if (!steps.length) return leaf('<span class="muted">no calls or effects</span>');
-  return steps.map((s, i) => stepHTML(s, ctx, stack, path + '.' + i, depth)).join('');
-}
-
-function stepHTML(s, ctx, stack, path, depth) {
-  const F = S.data.flows;
-  const fnLink = n => `<a data-go="${esc(n)}" class="fname">${esc(n)}</a>`;
-  if (s.k === 'call') {
-    const f = F[s.f];
-    const row = `<span class="fic k-fn">ƒ</span>${fnLink(s.f)}<span class="fargs">(${esc(s.args)})</span>`;
-    const trace = `<a class="retarget" data-entry="${esc(s.f)}" title="trace from here">⤷</a>`;
-    if (stack.includes(s.f)) return leaf(row + ' <span class="badge muted">recursive</span>');
-    if (!f) return leaf(row);
-    if (f.info.hole) return leaf(row + ' <span class="badge warn">hole: not implemented yet</span>');
-    if (!f.steps.length) return leaf(row + ' <span class="muted">· pure, no further calls</span>');
-    return det(path, depth + 1, row + trace, stepsHTML(f.steps, ctx, [...stack, s.f], path, depth + 1));
-  }
-  if (s.k === 'perform') {
-    let j = ctx.length - 1;
-    while (j >= 0 && ctx[j].effect !== s.effect) j--;
-    const row = `<span class="fic k-effect">⚡</span><span class="eff">${esc(s.effect)}.${esc(s.op)}</span><span class="fargs">(${esc(s.args)})</span>`;
-    if (j < 0) {
-      const declared = (F[stack[0]]?.info.effects || []).some(e => e.split('[')[0] === s.effect);
-      return leaf(row + (declared ? ` <span class="badge muted">provided by whoever calls ${esc(stack[0])}</span>` : ' <span class="badge bad">no handler</span>'));
-    }
-    const h = ctx[j];
-    if (h.mock) return leaf(row + ` <span class="badge muted">mock in ${esc(h.owner)}</span>`);
-    const c = h.clauses.find(c => c.op === s.op);
-    const tag = ` <span class="badge handled">→ handler in ${esc(h.owner)}${h.stateful ? ' (stateful)' : ''}</span>`;
-    if (!c || !c.steps.length) return leaf(row + tag);
-    return det(path, depth + 1, row + tag, stepsHTML(c.steps, ctx.slice(0, j), stack, path, depth + 1));
-  }
-  if (s.k === 'handle') {
-    const owner = stack[stack.length - 1];
-    const inner = ctx.concat(s.handlers.map(h => ({ ...h, owner })));
-    const names = s.handlers.map(h => `<span class="eff">${esc(h.effect)}</span>${h.mock ? ' (mock)' : h.stateful ? ' (stateful)' : ''}`).join(', ');
-    let body = stepsHTML(s.body, inner, stack, path + 'b', depth);
-    if (s.returns.length) body += `<div class="fnote">then, as the handlers return:</div>` + stepsHTML(s.returns, ctx, stack, path + 'r', depth);
-    return det(path, depth, `<span class="fic">⛨</span>handle with ${names}`, body);
-  }
-  if (s.k === 'branch') {
-    const arms = s.arms.map((a, k) => a.steps.length
-      ? det(path + 'a' + k, depth, `<span class="arm">${esc(a.label)} ⇒</span>`, stepsHTML(a.steps, ctx, stack, path + 'a' + k, depth))
-      : leaf(`<span class="arm">${esc(a.label)} ⇒</span> <span class="muted">—</span>`)).join('');
-    return det(path, depth, `<span class="fic">◇</span><span class="muted">${esc(s.on)}</span> <span class="badge muted">${s.arms.length} paths</span>`, arms);
-  }
-  if (s.k === 'each') {
-    return det(path, depth, `<span class="fic">↻</span><span class="muted">for each element of ${esc(s.over)} (${esc(s.via)})</span>`, stepsHTML(s.steps, ctx, stack, path, depth));
-  }
-  return '';
-}
-document.addEventListener('toggle', e => { if (e.target.dataset?.path) S.flowOpen.set(e.target.dataset.path, e.target.open); }, true);
 
 function verdictBox(v) {
   if (!v) return '';
@@ -851,24 +739,21 @@ function verdictBox(v) {
 
 function renderRight() {
   const d = S.sel && byName()[S.sel];
-  const refs = xs => xs.length ? `<div class="refs">${xs.map(n => `<a data-go="${esc(n)}">${esc(byName()[n]?.label ?? n)}</a>`).join('')}</div>` : '<span class="empty">none</span>';
-  let insp = '<div class="sec"><div class="empty">Select a definition to inspect it. Keys: t types, f flow, 1–3 code levels, / filters, Esc clears.</div></div>';
+  const names = new Set(S.data.decls.map(x => x.name));
+  let insp = '<div class="sec"><div class="empty">Select a definition to see its source here. Keys: 1 interface, 3 source, t type map, / filter, Esc clears.</div></div>';
   if (d) {
     const history = S.data.log.map((e, i) => ({ e, i, c: (e.changes || []).find(c => c.name === d.name) })).filter(x => x.c).reverse();
-    insp = `<div class="sec"><h3><span>${d.kind}</span><span>#${d.hash.slice(0, 8)}</span></h3>
-        <div class="insp-name">${esc(d.label)}</div>${d.doc ? `<div class="doc">${esc(d.doc)}</div>` : ''}
-        <dl class="kv"><dt>interface</dt><dd>#${d.interface_hash.slice(0, 8)}</dd>
-        ${d.effects.length ? `<dt>effects</dt><dd>{${esc(d.effects.join(', '))}}</dd>` : ''}</dl></div>
+    insp = `<div class="sec"><h3><span>${d.kind}${d.module ? ' · ' + esc(d.module) : ''}</span><span>#${d.hash.slice(0, 8)}</span></h3>
+        <div class="insp-name">${esc(d.label)}</div>
+        <pre class="insp-src">${highlight(d.text['3'], names)}</pre></div>
+      ${d.deps.length || d.used_by.length ? `<div class="sec"><h3>Neighbours</h3>${miniGraph(d)}</div>` : ''}
       ${d.errors.length || d.holes.length || d.verdict ? `<div class="sec"><h3>Status</h3>
         ${d.errors.map(e => `<div class="box bad">${esc(e)}</div>`).join('')}
         ${d.holes.map(h => `<div class="box warn"><b class="mono">?${esc(h.name)}</b>
           <div class="row"><b>goal</b> <code>${esc(h.goal)}</code></div>
           ${h.context.length ? `<div class="row"><b>context</b> <code>${esc(h.context.map(([n, t]) => n + ': ' + t).join(', '))}</code></div>` : ''}
-          ${h.effects.length ? `<div class="row"><b>effects</b> <code>{${esc(h.effects.join(', '))}}</code></div>` : ''}
           ${h.obligations.map(o => `<div class="row"><b>must</b> <code>${esc(o)}</code></div>`).join('')}</div>`).join('')}
         ${verdictBox(d.verdict)}</div>` : ''}
-      <div class="sec"><h3>Uses</h3>${refs(d.deps)}</div>
-      <div class="sec"><h3>Used by</h3>${refs(d.used_by)}</div>
       ${history.length ? `<div class="sec"><h3>History</h3>${history.map(({ e, c }) =>
         `<div class="log-e"><span class="when">${ago(e.time)}</span><div class="msg">${esc(e.message)}</div>
          <div class="ch"><span class="tag ${tagCls(c)}">${tagTxt(c)}</span>${c.new ? '#' + c.new.slice(0, 8) : ''}</div></div>`).join('')}</div>` : ''}`;
@@ -877,9 +762,37 @@ function renderRight() {
   const act = log.length ? log.map(({ e, i }) => `<div class="log-e ${i >= S.newLog ? 'new' : ''}"><span class="when">${ago(e.time)}</span><div class="msg">${esc(e.message)}</div>
       ${(e.changes || []).slice(0, 8).map(c => `<div class="ch" data-go="${esc(c.name)}"><span class="tag ${tagCls(c)}">${tagTxt(c)}</span><span class="n">${esc(c.name)}</span></div>`).join('')}
       ${(e.changes || []).length > 8 ? `<div class="empty">+ ${(e.changes.length - 8)} more</div>` : ''}</div>`).join('')
-    : '<div class="empty">No history (viewing a file, or nothing committed yet).</div>';
+    : '<div class="empty">No history (viewing files, or nothing committed yet).</div>';
   $('#right').innerHTML = insp + `<div class="sec"><h3><span>Activity</span><span>${S.data.log.length} patches</span></h3>${act}</div>`;
 }
+
+// ---------- hover: an arrow from a name to where it is in the code view ----------
+function clearArrow() {
+  $('#arrow').innerHTML = '';
+  document.querySelectorAll('.card.hover').forEach(c => c.classList.remove('hover'));
+}
+function showArrow(fromEl, name) {
+  clearArrow();
+  const target = document.getElementById('card-' + name);
+  if (!target || target.contains(fromEl)) return;
+  target.classList.add('hover');
+  const a = fromEl.getBoundingClientRect(), main = $('#main').getBoundingClientRect();
+  const h = target.querySelector('.card-h').getBoundingClientRect();
+  // aim at the card header, clamped to the visible part of the code area
+  const tx = h.left + 6, ty = Math.min(Math.max(h.top + h.height / 2, main.top + 8), main.bottom - 8);
+  const offscreen = h.top < main.top || h.top > main.bottom;
+  const sx = a.left < tx ? a.right : a.left, sy = a.top + a.height / 2;
+  const bend = Math.max(60, Math.abs(tx - sx) / 2), dir = sx > tx ? -1 : 1;
+  $('#arrow').innerHTML = `<path d="M${sx},${sy} C${sx + dir * bend},${sy} ${tx - dir * bend},${ty} ${tx},${ty}"/>
+    <circle cx="${tx}" cy="${ty}" r="3.5"/>${offscreen ? `<text x="${tx + 8}" y="${ty + (h.top < main.top ? 14 : -6)}">${h.top < main.top ? '↑' : '↓'} ${esc(byName()[name]?.label || name)}</text>` : ''}`;
+}
+document.addEventListener('mouseover', e => {
+  const r = e.target.closest('a.ref[data-go], .mg-n[data-go], .refs a[data-go]');
+  if (r) showArrow(r, r.dataset.go);
+});
+document.addEventListener('mouseout', e => { if (e.target.closest('a.ref, .mg-n, .refs a')) clearArrow(); });
+document.addEventListener('scroll', clearArrow, true);
+
 const tagTxt = c => c.old == null ? '+ added' : c.new == null ? '− removed' : c.interface_changed ? '~ interface' : '~ impl';
 const tagCls = c => c.old == null ? 'add' : c.new == null ? 'del' : c.interface_changed ? 'iface' : '';
 function ago(t) {
@@ -895,6 +808,7 @@ function syncHash() {
 (function readHash() {
   const h = new URLSearchParams(location.hash.slice(1));
   if (h.has('level')) S.level = lv(h.get('level'));
+  if (!['types', 1, 3].includes(S.level)) S.level = 1;
   if (h.has('sel')) S.sel = h.get('sel');
   if (h.has('scope')) S.scope = h.get('scope');
 })();
@@ -904,7 +818,7 @@ var render = function () {
   syncHash();
   const scroll = $('#main').scrollTop;
   renderHeader(); renderLeft();
-  S.level === 'types' ? renderTypes() : S.level === 'flow' ? renderFlow() : renderCode();
+  S.level === 'types' ? renderTypes() : renderCode();
   renderRight();
   $('#main').scrollTop = scroll;
 }
@@ -937,25 +851,20 @@ async function poll() {
 
 // ---------- events ----------
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-card-level],[data-go],[data-pick],[data-l],[data-s],[data-entry],[data-fview],[data-detail],[data-gtoggle],[data-mod]');
+  const t = e.target.closest('[data-card-level],[data-go],[data-pick],[data-l],[data-s],[data-mod]');
   if (!t) return;
   if (t.dataset.cardLevel) { S.over[t.dataset.name] = +t.dataset.cardLevel; render(); return; }
   if (t.dataset.l) { S.level = lv(t.dataset.l); S.over = {}; render(); return; }
   if (t.dataset.mod !== undefined) { S.closedMods ||= new Set(); S.closedMods.has(t.dataset.mod) ? S.closedMods.delete(t.dataset.mod) : S.closedMods.add(t.dataset.mod); render(); return; }
-  if (t.dataset.fview) { S.flowView = t.dataset.fview; render(); return; }
-  if (t.dataset.detail) { S.detail = +t.dataset.detail; S.gOpen = new Map(); render(); return; }
-  if (t.dataset.gtoggle) { S.gOpen.set(t.dataset.gtoggle, t.dataset.open !== '1'); render(); return; }
-  if (t.dataset.entry) { S.flowEntry = t.dataset.entry; S.sel = t.dataset.entry; render(); return; }
   if (t.dataset.s) { if (!t.disabled) { S.scope = t.dataset.s; render(); } return; }
-  if (t.dataset.go) { if (S.level === 'flow' && e.target.closest('#left') && S.data.flows[t.dataset.go]) S.flowEntry = t.dataset.go; select(t.dataset.go, typeof S.level === 'number'); return; }
+  if (t.dataset.go) { clearArrow(); if (S.scope === 'all') S.scope = 'slice'; select(t.dataset.go, typeof S.level === 'number'); return; }
   if (t.dataset.pick) select(t.dataset.pick, false);
 });
 $('#q').addEventListener('input', e => { S.q = e.target.value; render(); });
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') { if (e.key === 'Escape') { e.target.value = ''; S.q = ''; e.target.blur(); render(); } return; }
-  if ('123'.includes(e.key)) { S.level = +e.key; S.over = {}; render(); }
-  else if (e.key === 't' || e.key === '0') { S.level = 'types'; render(); }
-  else if (e.key === 'f') { S.level = 'flow'; render(); }
+  if (e.key === '1' || e.key === '3') { S.level = +e.key; S.over = {}; render(); }
+  else if (e.key === 't') { S.level = 'types'; render(); }
   else if (e.key === '/') { e.preventDefault(); $('#q').focus(); }
   else if (e.key === 'Escape') { S.sel = null; S.scope = 'all'; render(); }
 });

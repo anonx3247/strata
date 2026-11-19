@@ -20,6 +20,19 @@ pub enum Target {
     File(PathBuf),
 }
 
+fn unwrap_module(text: &str) -> String {
+    match text.strip_prefix("module ").and_then(|t| t.split_once(" {\n")) {
+        Some((_, rest)) if rest.ends_with('}') => rest[..rest.len() - 1]
+            .lines()
+            .map(|l| l.strip_prefix("  ").unwrap_or(l))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim_end()
+            .to_string(),
+        _ => text.to_string(),
+    }
+}
+
 fn snapshot(target: &Target) -> Json {
     let (program, log, cache, label) = match target {
         Target::Db(root) => match Codebase::open(root) {
@@ -75,7 +88,8 @@ fn snapshot(target: &Target) -> Json {
         .map(|d| {
             let name = d.qname();
             let one: BTreeSet<String> = [name.clone()].into();
-            let render = |lvl| view::render(p, &one, lvl, &status).trim_end().to_string();
+            // a card already shows its module, so drop the `module m { ... }` wrapper
+            let render = |lvl| unwrap_module(view::render(p, &one, lvl, &status).trim_end());
             let effects = match &d.kind {
                 _ => Vec::<String>::new(),
             };
