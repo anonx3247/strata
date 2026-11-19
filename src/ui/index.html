@@ -285,7 +285,7 @@ function status(d) {
 }
 
 // ---------- syntax highlighting with clickable references ----------
-const KW = new Set('type effect fn test let if else match handle with mock where requires ensures true false is assert'.split(' '));
+const KW = new Set('type distinct fn test let mut if else match while for in loop break continue return except mock where requires ensures true false is assert trait impl law pub use module'.split(' '));
 // Code says `Queue`; definitions are known by qualified name (`core.Queue`).
 // Resolve a name as the definition's module sees it: its own module first,
 // then public definitions of the modules it imports.
