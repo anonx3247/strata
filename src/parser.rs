@@ -634,7 +634,8 @@ impl Parser {
     fn args(&mut self) -> R<Vec<Expr>> {
         let old = self.no_struct;
         self.no_struct = false;
-        let r = self.list(")", |p| p.expr());
+        // `f(mut x)`: the call may change `x` (its parameter is `mut`)
+        let r = self.list(")", |p| if p.eat_kw("mut") { Ok(Expr::Mut(Box::new(p.expr()?))) } else { p.expr() });
         self.no_struct = old;
         r
     }

@@ -44,7 +44,7 @@ fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
             w(r);
             xs.iter().for_each(&mut w)
         }
-        Expr::Field(r, _) | Expr::Is(r, _) | Expr::Un(_, r) | Expr::Lambda(_, r) | Expr::Return(r) | Expr::Try(r, _) => w(r),
+        Expr::Field(r, _) | Expr::Is(r, _) | Expr::Un(_, r) | Expr::Lambda(_, r) | Expr::Return(r) | Expr::Mut(r) | Expr::Try(r, _) => w(r),
         Expr::Except(r, _, fb) => {
             w(r);
             w(fb)

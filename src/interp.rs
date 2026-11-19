@@ -1016,6 +1016,10 @@ impl<'a> Interp<'a> {
     }
 
     fn assign_place(&mut self, place: &Expr, v: Value, s: &Scope) -> R<()> {
+        let place = match place {
+            Expr::Mut(x) => &**x,
+            p => p,
+        };
         let mut path = Vec::new();
         let mut root = place;
         while let Expr::Field(r, f) = root {
@@ -1097,6 +1101,7 @@ impl<'a> Interp<'a> {
                 self.enforce(&TypeExpr::Named(tname.clone(), vec![]), &v, &format!("constructing `{c}`"))?;
                 v
             }
+            Expr::Mut(x) => self.eval(x, s)?,
             Expr::Call(f, args) => {
                 let fv = self.eval(f, s)?;
                 let avs = args.iter().map(|a| self.eval(a, s)).collect::<R<Vec<_>>>()?;

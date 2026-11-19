@@ -106,7 +106,7 @@ test "shipping a pending order saves it as shipped" {
   let mut db = OneOrder {
     order: Some(Pending { id: "ord_abc123", lines: [line] }),
   }
-  let r = ship(db, "ord_abc123", "TRK1")
+  let r = ship(mut db, "ord_abc123", "TRK1")
   assert r is Ok
   assert db.order == Some(
     Shipped { id: "ord_abc123", lines: [line], tracking: "TRK1" },
@@ -117,13 +117,13 @@ test "shipping a cancelled order is rejected" {
   let mut db = OneOrder {
     order: Some(Cancelled { id: "ord_abc123", reason: "fraud" }),
   }
-  let r = ship(db, "ord_abc123", "TRK1")
+  let r = ship(mut db, "ord_abc123", "TRK1")
   assert r == Err(NotPending)
 }
 
 test "a mocked store never breaks ship's contract" {
   let mut db = mock Db
-  let r = ship(db, "ord_zzz999", "TRK9")
+  let r = ship(mut db, "ord_zzz999", "TRK9")
   assert r is Ok || r is Err
 }
 

@@ -245,8 +245,8 @@ fn procedural_mutation_is_explicit() {
         "type Line = { qty: Int where 1 <= it && it <= 99 }\n\
          fn restock(mut line: Line, extra: Int) -> () { line.qty = line.qty + extra }\n\
          fn sum(xs: List[Int]) -> Int {\n  let mut s = 0\n  for x in xs { s = s + x }\n  s\n}\n\
-         test \"ok\" {\n  let mut l = Line { qty: 2 }\n  restock(l, 3)\n  assert l.qty == 5\n  assert sum([1, 2, 3]) == 6\n}\n\
-         test \"refined\" {\n  let mut l = Line { qty: 98 }\n  restock(l, 5)\n}\n",
+         test \"ok\" {\n  let mut l = Line { qty: 2 }\n  restock(mut l, 3)\n  assert l.qty == 5\n  assert sum([1, 2, 3]) == 6\n}\n\
+         test \"refined\" {\n  let mut l = Line { qty: 98 }\n  restock(mut l, 5)\n}\n",
     )
     .unwrap();
     let (ok, out) = strata(&["--file", "m.strata", "test"], &d, None);
@@ -254,6 +254,29 @@ fn procedural_mutation_is_explicit() {
     std::fs::write(d.join("e.strata"), "fn f() -> Int {\n  let x = 1\n  x = 2\n  x\n}\nfn g() -> Int {\n  let mut y = 0\n  let add = z -> { y = y + z; y }\n  add(1)\n}\n").unwrap();
     let (ok, out) = strata(&["--file", "e.strata", "check"], &d, None);
     assert!(!ok && out.contains("`x`: it is not mutable") && out.contains("a closure cannot change `y`"), "{out}");
+
+    // a call that can change an argument says so: `mut` at the call site
+    std::fs::write(
+        d.join("c.strata"),
+        "type Line = { qty: Int }\n\
+         trait Counter { fn tick(mut self) -> () }\n\
+         impl Counter for Line { fn tick(mut self) -> () { self.qty = self.qty + 1 } }\n\
+         fn restock(mut line: Line, extra: Int) -> () { line.qty = line.qty + extra }\n\
+         fn qty(line: Line) -> Int { line.qty }\n\
+         fn unmarked() -> Int {\n  let mut l = Line { qty: 1 }\n  restock(l, 2)\n  l.qty\n}\n\
+         fn needless() -> Int {\n  let mut l = Line { qty: 1 }\n  qty(mut l)\n}\n\
+         fn builtin() -> Int {\n  let mut xs = [1]\n  len(mut xs)\n}\n\
+         fn receiver() -> Int {\n  let mut l = Line { qty: 1 }\n  l.tick()\n  restock(mut l, 1)\n  l.qty\n}\n",
+    )
+    .unwrap();
+    let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
+    assert!(!ok, "{out}");
+    assert!(out.contains("in unmarked: `restock` can change its `mut line` parameter: write `mut l` to show that `l` may change"), "{out}");
+    assert!(out.contains("in needless: `mut` on an argument of `qty`, but its parameter `line` is not `mut`"), "{out}");
+    assert!(out.contains("in builtin:"), "{out}");
+    assert!(!out.contains("in receiver"), "{out}");
+    let (ok, out) = strata(&["--file", "c.strata", "render"], &d, None);
+    assert!(ok && out.contains("restock(mut l, 1)"), "{out}");
 }
 
 #[test]
@@ -1023,7 +1046,7 @@ fn ok_list() -> Int {
 }
 fn bad_mut() -> Int {
   let mut cs = [Circle { radius: 1 }]
-  grow(cs)
+  grow(mut cs)
   len(cs)
 }
 fn inner() -> Result[Int, TooBig] { Err(TooBig) }
@@ -1056,13 +1079,13 @@ fn lit() -> Int {
 fn set_neg(mut k: Int) -> () { k = -3 }
 fn wb() -> Int {
   let mut p: Positive = 4
-  set_neg(p)
+  set_neg(mut p)
   p
 }
 fn bump(mut k: Positive) -> () { k = k + 1 }
 fn wb_ok() -> Int {
   let mut p: Natural = 1
-  bump(p)
+  bump(mut p)
   p
 }
 "#;

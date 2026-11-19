@@ -306,6 +306,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         }
         Expr::Block(..) => block(e, d),
         Expr::Mock(t) => format!("mock {}", ty(t)),
+        Expr::Mut(x) => format!("mut {}", expr(x, d)),
         Expr::Interp(parts) => {
             let mut s = "f\"".to_string();
             for p in parts {

@@ -81,8 +81,8 @@ pub fn demo() -> DemoReport {
   let policy = TaskPolicy { max_workers: 4, tasks_per_worker: 2, retries: 3 }
   let mut queue = empty_queue(policy)
   let mut worker = PrintWorker { console: Log { lines: [] } }
-  let enqueued = run_producer(queue, PrintProducer { count: 5 })
-  let batches = drain(queue, worker, policy, 100)
+  let enqueued = run_producer(mut queue, PrintProducer { count: 5 })
+  let batches = drain(mut queue, mut worker, policy, 100)
   let log = match worker.console {
     Log { lines } => lines,
     _ => [],

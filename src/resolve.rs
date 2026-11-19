@@ -419,6 +419,7 @@ impl Rw<'_> {
                     .collect(),
             ),
             Expr::Return(x) => Expr::Return(Box::new(self.expr(x))),
+            Expr::Mut(x) => Expr::Mut(Box::new(self.expr(x))),
             Expr::Try(x, k) => Expr::Try(Box::new(self.expr(x)), *k),
             Expr::Except(x, name, fb) => {
                 let x = self.expr(x);

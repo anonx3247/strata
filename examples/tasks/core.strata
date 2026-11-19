@@ -145,7 +145,7 @@ pub fn drain[P, E, Q: Queue[P, E], W: Worker[P, E]](
   let mut batches = 0
   while batches < max_batches {
     // an empty batch means nothing is left to claim
-    if run_worker(queue, worker, policy) == Ok([]) {
+    if run_worker(mut queue, mut worker, policy) == Ok([]) {
       break
     }
     batches = batches + 1
