@@ -13,10 +13,6 @@ use std::collections::HashSet;
 pub enum Step {
     /// A call to a user-defined function.
     Call { f: String, args: String },
-    /// An effect operation, answered by the nearest enclosing handler.
-    Perform { effect: String, op: String, args: String },
-    /// Handlers installed around a computation.
-    Handle { handlers: Vec<HandlerInfo>, body: Vec<Step>, returns: Vec<Step> },
     /// `if` / `match`: alternative paths.
     Branch { on: String, arms: Vec<ArmInfo> },
     /// A closure run for each element (`map`, `filter`, `fold`, ...).
@@ -31,21 +27,6 @@ pub struct Target {
     pub ty: String,
     /// Key of the implementation's outline in the flow table.
     pub key: String,
-}
-
-#[derive(Serialize, Debug, Clone)]
-pub struct HandlerInfo {
-    pub effect: String,
-    pub stateful: bool,
-    pub mock: bool,
-    pub clauses: Vec<ClauseInfo>,
-}
-
-#[derive(Serialize, Debug, Clone)]
-pub struct ClauseInfo {
-    pub op: String,
-    pub params: Vec<String>,
-    pub steps: Vec<Step>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -95,35 +76,6 @@ impl Outliner<'_> {
                 // `xs.map(f)` is `map(xs, f)`
                 let all: Vec<Expr> = std::iter::once((**recv).clone()).chain(args.iter().cloned()).collect();
                 self.call(Some(m), &all, out);
-            }
-            Expr::Perform(eff, op, args) => {
-                for a in args {
-                    self.walk(a, out);
-                }
-                out.push(Step::Perform { effect: eff.clone(), op: op.clone(), args: args_text(args) });
-            }
-            Expr::Handle(body, hs) => {
-                let handlers = hs
-                    .iter()
-                    .map(|h| HandlerInfo {
-                        effect: h.effect.clone(),
-                        stateful: h.state.is_some(),
-                        mock: matches!(h.kind, HandlerKind::MockAuto),
-                        clauses: match &h.kind {
-                            HandlerKind::Clauses(cs) => {
-                                cs.iter().map(|c| ClauseInfo { op: c.op.clone(), params: c.params.clone(), steps: self.steps(&c.body) }).collect()
-                            }
-                            HandlerKind::MockAuto => vec![],
-                        },
-                    })
-                    .collect();
-                let mut returns = Vec::new();
-                for h in hs {
-                    if let Some((_, b)) = &h.on_return {
-                        self.walk(b, &mut returns);
-                    }
-                }
-                out.push(Step::Handle { handlers, body: self.steps(body), returns });
             }
             Expr::If(c, t, f) => {
                 self.walk(c, out);

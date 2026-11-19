@@ -5,7 +5,7 @@
 use crate::ast::*;
 use crate::parser::Parser;
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 
 pub const PRELUDE: &str = r#"
 /// An optional value.
@@ -18,9 +18,6 @@ type Result[T, E] =
   | Ok(T)
   | Err(E)
 
-/// What a stateful handler clause answers: the value for the operation,
-/// and the handler's next state.
-type Resume[R, S] = { value: R, state: S }
 
 // Common refinements. They are structural: an `Int` can be passed wherever a
 // `Natural` is expected (checked at the boundary), and a `Positive` is a `Natural`.
@@ -135,8 +132,6 @@ pub struct HoleInfo {
     pub goal: String,
     /// What is in scope at the hole.
     pub context: Vec<(String, String)>,
-    /// Effects available at the hole.
-    pub effects: Vec<String>,
     /// Contracts the hole's enclosing function must satisfy.
     pub obligations: Vec<String>,
 }
@@ -159,7 +154,6 @@ pub struct Env {
     pub types: HashMap<String, TypeDecl>,
     /// ctor name -> (type name)
     pub ctors: HashMap<String, String>,
-    pub effects: HashMap<String, EffectDecl>,
     pub fns: HashMap<String, FnDecl>,
     pub traits: HashMap<String, TraitDecl>,
     pub impls: Vec<ImplDecl>,
@@ -185,7 +179,6 @@ impl Env {
         let mut env = Env {
             types: HashMap::new(),
             ctors: HashMap::new(),
-            effects: HashMap::new(),
             fns: HashMap::new(),
             traits: HashMap::new(),
             impls: Vec::new(),
@@ -215,7 +208,6 @@ impl Env {
                     }
                     env.types.insert(t.name.clone(), t.clone()).is_some()
                 }
-                DeclKind::Effect(e) => env.effects.insert(e.name.clone(), e.clone()).is_some(),
                 DeclKind::Fn(f) => env.fns.insert(f.name.clone(), f.clone()).is_some(),
                 DeclKind::Test(_) | DeclKind::Use(_) => false,
                 DeclKind::Trait(t) => {
@@ -332,12 +324,10 @@ struct Checker<'a> {
     env: &'a Env,
     subst: Vec<Option<Ty>>,
     scopes: Vec<HashMap<String, Ty>>,
-    /// Effects available here, with their type arguments.
-    effects: BTreeMap<String, Vec<Ty>>,
     rigid: BTreeSet<String>,
     decl: String,
     errors: Vec<Diag>,
-    holes: Vec<(String, Ty, Vec<(String, Ty)>, Vec<String>)>,
+    holes: Vec<(String, Ty, Vec<(String, Ty)>)>,
     matches: Vec<(Ty, Vec<Pattern>)>,
     /// What `Self` means here (inside a trait or impl).
     self_ty: Option<Ty>,
@@ -497,23 +487,7 @@ impl<'a> Checker<'a> {
         let self_t = self.fresh();
         let saved = self.self_ty.replace(self_t.clone());
         let fty = self.lower(&Self::fn_scheme(&m), &vars);
-        let mut missing = Vec::new();
-        for e in &m.effects {
-            if let Some((en, args)) = self.lower_effect(e, &vars) {
-                match self.effects.get(&en).cloned() {
-                    Some(have) => {
-                        for (a, b) in have.iter().zip(&args) {
-                            let _ = self.unify(a, b);
-                        }
-                    }
-                    None => missing.push(en),
-                }
-            }
-        }
         self.self_ty = saved;
-        if !missing.is_empty() {
-            self.err(format!("`{name}` performs {{{}}}, which is neither declared by `{}` nor handled here", missing.join(", "), self.decl));
-        }
         let args: Vec<Ty> = tr.params.iter().map(|p| vars[p].clone()).collect();
         self.pending.push((self_t, trait_name.to_string(), args, format!("calling `{name}`")));
         fty
@@ -593,14 +567,13 @@ impl<'a> Checker<'a> {
             let ft = self.lower(&imp.for_type, &vars);
             let targs: Vec<Ty> = imp.trait_args.iter().map(|a| self.lower(a, &vars)).collect();
             self.rigid = saved_rigid;
-            let mut ok = self.unify(&ft, &t).is_ok() && targs.len() == args.len() && targs.iter().zip(args).all(|(a, b)| self.unify(a, b).is_ok());
+            let ok = self.unify(&ft, &t).is_ok() && targs.len() == args.len() && targs.iter().zip(args).all(|(a, b)| self.unify(a, b).is_ok());
             if ok {
                 for b in &imp.bounds {
                     for btr in &b.traits {
                         if let TypeExpr::Named(bn, bargs) = btr {
                             let ba: Vec<Ty> = bargs.iter().map(|a| self.lower(a, &vars)).collect();
                             if let Err(e) = self.satisfies(&vars[&b.param], bn, &ba, depth + 1) {
-                                ok = false;
                                 self.subst = snapshot.clone();
                                 return Err(format!("`{}` implements `{tr}` only when {e}", show_ty(&t)));
                             }
@@ -645,13 +618,6 @@ impl<'a> Checker<'a> {
     fn check_fn(&mut self, f: &FnDecl, obligations: &mut Vec<String>) {
         self.rigid.extend(f.type_params.iter().cloned());
         self.add_bounds(&f.bounds);
-        let mut effs = BTreeMap::new();
-        for e in &f.effects {
-            if let Some((n, args)) = self.lower_effect(e, &HashMap::new()) {
-                effs.insert(n, args);
-            }
-        }
-        self.effects = effs;
         self.scopes.push(HashMap::new());
         for p in &f.params {
             self.check_refined(&p.ty);
@@ -672,36 +638,13 @@ impl<'a> Checker<'a> {
         self.expect(&ret, &bt, "function body");
         self.scopes.push(HashMap::new());
         self.bind("it", ret.clone());
-        let saved = std::mem::take(&mut self.effects);
         for en in &f.ensures {
             let t = self.infer(en);
             self.expect(&Ty::Bool, &t, "ensures clause");
             obligations.push(format!("ensures {}", crate::printer::expr(en, 0)));
         }
-        self.effects = saved;
         self.scopes.pop();
         self.scopes.pop();
-    }
-
-    /// Lower an effect reference such as `Queue[P, E]`. Omitted type arguments become fresh.
-    fn lower_effect(&mut self, e: &TypeExpr, vars: &HashMap<String, Ty>) -> Option<(String, Vec<Ty>)> {
-        let TypeExpr::Named(n, args) = e else {
-            self.err(format!("`{}` is not an effect", crate::printer::ty(e)));
-            return None;
-        };
-        let Some(ed) = self.env.effects.get(n).cloned() else {
-            self.err(format!("unknown effect `{n}`"));
-            return None;
-        };
-        if !args.is_empty() && args.len() != ed.params.len() {
-            self.err(format!("effect `{n}` expects {} type arguments, got {}", ed.params.len(), args.len()));
-        }
-        let tys = if args.is_empty() {
-            ed.params.iter().map(|_| self.fresh()).collect()
-        } else {
-            args.iter().map(|a| self.lower(a, vars)).collect()
-        };
-        Some((n.clone(), tys))
     }
 
     /// Type-check the predicates of inline refinements inside a written type.
@@ -755,27 +698,6 @@ impl<'a> Checker<'a> {
                         self.pending.push((vars[&b.param].clone(), tn.clone(), args, format!("calling `{name}`")));
                     }
                 }
-            }
-            let mut missing = Vec::new();
-            for e in &f.effects {
-                let Some((en, args)) = self.lower_effect(e, &vars) else { continue };
-                match self.effects.get(&en).cloned() {
-                    Some(have) => {
-                        for (a, b) in have.iter().zip(&args) {
-                            if let Err(msg) = self.unify(a, b) {
-                                self.err(format!("`{name}` performs `{en}` at a different type: {msg}"));
-                            }
-                        }
-                    }
-                    None => missing.push(en),
-                }
-            }
-            if !missing.is_empty() {
-                self.err(format!(
-                    "`{name}` performs {{{}}}, which is neither declared by `{}` nor handled here",
-                    missing.join(", "),
-                    self.decl
-                ));
             }
             return Some(fty);
         }
@@ -846,7 +768,7 @@ impl<'a> Checker<'a> {
             }
         }
         ctx.sort_by(|a, b| a.0.cmp(&b.0));
-        self.holes.push((name.to_string(), t, ctx, self.effects.keys().cloned().collect()));
+        self.holes.push((name.to_string(), t, ctx));
     }
 
     fn ctor_type(&mut self, c: &str) -> Option<(Ty, Vec<(Option<String>, Ty)>)> {
@@ -902,6 +824,10 @@ impl<'a> Checker<'a> {
             }
             Expr::Ctor(c, args) => {
                 let Some((rt, fields)) = self.ctor_type(c) else {
+                    if self.env.traits.contains_key(c) {
+                        self.err(format!("`{c}` is a trait, not a value: call its methods on a value that implements it (e.g. a `{}` parameter)", c.to_lowercase()));
+                        return self.fresh();
+                    }
                     self.err(format!("unknown constructor `{c}`"));
                     return self.fresh();
                 };
@@ -984,30 +910,6 @@ impl<'a> Checker<'a> {
                     return self.fresh();
                 };
                 self.call(ft, &all, &format!("call to `{m}`"))
-            }
-            Expr::Perform(eff, op, args) => {
-                let Some(ed) = self.env.effects.get(eff).cloned() else {
-                    self.err(format!("unknown effect `{eff}`"));
-                    return self.fresh();
-                };
-                let Some(sig) = ed.ops.iter().find(|o| &o.name == op) else {
-                    self.err(format!("effect `{eff}` has no operation `{op}`"));
-                    return self.fresh();
-                };
-                let args_ty = match self.effects.get(eff).cloned() {
-                    Some(a) => a,
-                    None => {
-                        self.err(format!(
-                            "performs `{eff}.{op}` but `{eff}` is neither declared by `{}` nor handled here",
-                            self.decl
-                        ));
-                        ed.params.iter().map(|_| self.fresh()).collect()
-                    }
-                };
-                let vars: HashMap<String, Ty> = ed.params.iter().cloned().zip(args_ty).collect();
-                let sig = sig.clone();
-                let ft = self.lower(&TypeExpr::Fn(sig.params.iter().map(|p| p.ty.clone()).collect(), Box::new(sig.ret.clone())), &vars);
-                self.call(ft, args, &format!("`{eff}.{op}`"))
             }
             Expr::Field(r, f) => {
                 let rt = self.infer(r);
@@ -1135,67 +1037,6 @@ impl<'a> Checker<'a> {
                         self.fresh()
                     }
                 }
-            }
-            Expr::Handle(body, handlers) => {
-                let outer = self.effects.clone();
-                let mut installed: Vec<(String, Vec<Ty>, Option<Ty>)> = Vec::new();
-                for h in handlers {
-                    let Some(ed) = self.env.effects.get(&h.effect).cloned() else {
-                        self.err(format!("unknown effect `{}`", h.effect));
-                        continue;
-                    };
-                    let args: Vec<Ty> = ed.params.iter().map(|_| self.fresh()).collect();
-                    let vars: HashMap<String, Ty> = ed.params.iter().cloned().zip(args.iter().cloned()).collect();
-                    let state_ty = h.state.as_ref().map(|(_, init)| self.infer(init));
-                    if let HandlerKind::Clauses(cs) = &h.kind {
-                        for op in &ed.ops {
-                            if !cs.iter().any(|c| c.op == op.name) {
-                                self.err(format!("handler for `{}` is missing operation `{}`", h.effect, op.name));
-                            }
-                        }
-                        for c in cs {
-                            let Some(sig) = ed.ops.iter().find(|o| o.name == c.op) else {
-                                self.err(format!("effect `{}` has no operation `{}`", h.effect, c.op));
-                                continue;
-                            };
-                            if sig.params.len() != c.params.len() {
-                                self.err(format!("`{}.{}` takes {} parameters", h.effect, c.op, sig.params.len()));
-                            }
-                            self.scopes.push(HashMap::new());
-                            for (p, sp) in c.params.iter().zip(&sig.params) {
-                                let t = self.lower(&sp.ty, &vars);
-                                self.bind(p, t);
-                            }
-                            let mut rt = self.lower(&sig.ret, &vars);
-                            if let (Some((sv, _)), Some(st)) = (&h.state, &state_ty) {
-                                self.bind(sv, st.clone());
-                                rt = Ty::Con("Resume".into(), vec![rt, st.clone()]);
-                            }
-                            let bt = self.infer_with(&c.body, Some(&rt));
-                            self.expect(&rt, &bt, &format!("result of handler `{}.{}`", h.effect, c.op));
-                            self.scopes.pop();
-                        }
-                    }
-                    installed.push((h.effect.clone(), args, state_ty));
-                }
-                for (e, args, _) in &installed {
-                    self.effects.insert(e.clone(), args.clone());
-                }
-                let mut t = self.infer(body);
-                self.effects = outer;
-                // return clauses run innermost (last listed) first, with the final state in scope
-                for (h, (_, _, st)) in handlers.iter().zip(&installed).rev() {
-                    if let Some((p, b)) = &h.on_return {
-                        self.scopes.push(HashMap::new());
-                        self.bind(p, t.clone());
-                        if let (Some((sv, _)), Some(st)) = (&h.state, st) {
-                            self.bind(sv, st.clone());
-                        }
-                        t = self.infer(b);
-                        self.scopes.pop();
-                    }
-                }
-                t
             }
         }
     }
@@ -1543,7 +1384,6 @@ pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<String, TypeExpr>>
         env,
         subst: Vec::new(),
         scopes: vec![HashMap::new()],
-        effects: BTreeMap::new(),
         rigid: BTreeSet::new(),
         decl: f.name.clone(),
         errors: Vec::new(),
@@ -1615,8 +1455,7 @@ pub fn check(prog: &Program) -> CheckReport {
             env: &env,
             subst: Vec::new(),
             scopes: vec![HashMap::new()],
-            effects: BTreeMap::new(),
-            rigid: BTreeSet::new(),
+                rigid: BTreeSet::new(),
             decl: d.name(),
             errors: Vec::new(),
             holes: Vec::new(),
@@ -1664,27 +1503,6 @@ pub fn check(prog: &Program) -> CheckReport {
                     c.bind("it", self_ty);
                     let rt = c.infer(r);
                     c.expect(&Ty::Bool, &rt, "refinement");
-                }
-            }
-            DeclKind::Effect(e) => {
-                c.rigid = e.params.iter().cloned().collect();
-                for op in &e.ops {
-                    c.scopes.push(HashMap::new());
-                    for p in &op.params {
-                        let t = c.lower(&p.ty, &HashMap::new());
-                        c.bind(&p.name, t);
-                    }
-                    let rt = c.lower(&op.ret, &HashMap::new());
-                    for r in &op.requires {
-                        let t = c.infer(r);
-                        c.expect(&Ty::Bool, &t, "requires clause");
-                    }
-                    c.bind("it", rt);
-                    for en in &op.ensures {
-                        let t = c.infer(en);
-                        c.expect(&Ty::Bool, &t, "ensures clause");
-                    }
-                    c.scopes.pop();
                 }
             }
             DeclKind::Fn(f) => {
@@ -1781,12 +1599,6 @@ pub fn check(prog: &Program) -> CheckReport {
                                     if let Err(e) = c.unify(&want, &got) {
                                         c.err(format!("`{}` does not match the signature in trait `{}`: {e}", im.name, tr.name));
                                     }
-                                    let allowed = tm.decl.effect_names();
-                                    for e in im.effect_names() {
-                                        if !allowed.contains(&e) {
-                                            c.err(format!("`{}` performs `{e}`, which trait `{}` does not allow for this method", im.name, tr.name));
-                                        }
-                                    }
                                 }
                             }
                         }
@@ -1815,7 +1627,7 @@ pub fn check(prog: &Program) -> CheckReport {
             DeclKind::Fn(f) if matches!(f.body, Expr::Hole(_)) => Some(crate::printer::ty(&f.ret)),
             _ => None,
         };
-        for (name, t, ctx, effs) in std::mem::take(&mut c.holes) {
+        for (name, t, ctx) in std::mem::take(&mut c.holes) {
             let inferred = c.show(&t);
             holes.push(HoleInfo {
                 decl: d.name(),
@@ -1825,7 +1637,6 @@ pub fn check(prog: &Program) -> CheckReport {
                     _ => inferred,
                 },
                 context: ctx.iter().map(|(n, t)| (n.clone(), c.show(t))).collect(),
-                effects: effs,
                 obligations: obligations.clone(),
             });
         }

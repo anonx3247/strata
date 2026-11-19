@@ -385,9 +385,6 @@ fn run() -> Result<bool, String> {
                 if !h.context.is_empty() {
                     println!("  context: {}", h.context.iter().map(|(n, t)| format!("{n}: {t}")).collect::<Vec<_>>().join(", "));
                 }
-                if !h.effects.is_empty() {
-                    println!("  effects: {{{}}}", h.effects.join(", "));
-                }
                 for o in &h.obligations {
                     println!("  must:    {o}");
                 }
@@ -508,12 +505,6 @@ fn run() -> Result<bool, String> {
             let mut vals = Vec::new();
             for (pm, j) in f.params.iter().zip(&raw) {
                 vals.push(it.from_json(&pm.ty, j, &pm.name).map_err(|e| format!("invalid input: {e}"))?);
-            }
-            if !f.effects.is_empty() {
-                if !args.flag("--mock") {
-                    return Err(format!("`{name}` performs {{{}}}; pass --mock to handle them with generated values", f.effect_names().join(", ")));
-                }
-                it.mock_effects(&f.effect_names());
             }
             let res = it.call_fn(name, vals);
             if it.tracing {

@@ -18,10 +18,6 @@ fn fields(fs: &[Field]) -> String {
     fs.iter().map(|f| format!("{}: {}", f.name, ty(&f.ty))).collect::<Vec<_>>().join(", ")
 }
 
-fn params(ps: &[Param]) -> String {
-    ps.iter().map(|p| format!("{}: {}", p.name, ty(&p.ty))).collect::<Vec<_>>().join(", ")
-}
-
 fn ind(n: usize) -> String {
     "  ".repeat(n)
 }
@@ -124,7 +120,6 @@ pub fn expr(e: &Expr, d: usize) -> String {
             format!("{c} {{ {} }}", parts.join(", "))
         }
         Expr::Call(f, es) => format!("{}({})", wrap(f, 8, d), args(es, d)),
-        Expr::Perform(eff, op, es) => format!("{eff}.{op}({})", args(es, d)),
         Expr::Method(r, m, es) => format!("{}.{m}({})", wrap(r, 8, d), args(es, d)),
         Expr::Field(r, f) => format!("{}.{f}", wrap(r, 8, d)),
         Expr::Lambda(ps, b) => {
@@ -159,34 +154,6 @@ pub fn expr(e: &Expr, d: usize) -> String {
         }
         Expr::Block(..) => block(e, d),
         Expr::Mock(t) => format!("mock {}", ty(t)),
-        Expr::Handle(body, hs) => {
-            let mut out = format!("handle {}", expr(body, d));
-            for h in hs {
-                match &h.kind {
-                    HandlerKind::MockAuto => out += &format!(" with mock {}", h.effect),
-                    HandlerKind::Clauses(cs) => {
-                        match &h.state {
-                            Some((v, init)) => out += &format!(" with {}({v} = {}) {{\n", h.effect, expr(init, d)),
-                            None => out += &format!(" with {} {{\n", h.effect),
-                        }
-                        for c in cs {
-                            out += &format!(
-                                "{}{}({}) => {},\n",
-                                ind(d + 1),
-                                c.op,
-                                c.params.join(", "),
-                                expr(&c.body, d + 1)
-                            );
-                        }
-                        if let Some((p, b)) = &h.on_return {
-                            out += &format!("{}return({p}) => {},\n", ind(d + 1), expr(b, d + 1));
-                        }
-                        out += &format!("{}}}", ind(d));
-                    }
-                }
-            }
-            out
-        }
     }
 }
 
@@ -245,24 +212,6 @@ pub fn type_decl(t: &TypeDecl) -> String {
     s
 }
 
-pub fn effect_decl(e: &EffectDecl) -> String {
-    let tp = if e.params.is_empty() { String::new() } else { format!("[{}]", e.params.join(", ")) };
-    let mut s = format!("effect {}{tp} {{\n", e.name);
-    for op in &e.ops {
-        for d in &op.doc {
-            s += &format!("  /// {d}\n");
-        }
-        s += &format!("  fn {}({}) -> {}\n", op.name, params(&op.params), ty(&op.ret));
-        for r in &op.requires {
-            s += &format!("    requires {}\n", expr(r, 2));
-        }
-        for e in &op.ensures {
-            s += &format!("    ensures {}\n", expr(e, 2));
-        }
-    }
-    s + "}"
-}
-
 fn bounded(names: &[String], bounds: &[Bound]) -> String {
     if names.is_empty() {
         return String::new();
@@ -305,14 +254,6 @@ pub fn trait_decl(t: &TraitDecl) -> String {
     s + "}"
 }
 
-pub fn impl_signatures(i: &ImplDecl) -> String {
-    let mut s = impl_head(i) + " {\n";
-    for m in &i.methods {
-        s += &format!("  {}\n", fn_signature(m).replace('\n', "\n  "));
-    }
-    s + "}"
-}
-
 fn impl_head(i: &ImplDecl) -> String {
     let tr = ty(&TypeExpr::Named(i.trait_name.clone(), i.trait_args.clone()));
     format!("impl{} {tr} for {}", bounded(&i.type_params, &i.bounds), ty(&i.for_type))
@@ -333,9 +274,6 @@ pub fn impl_decl(i: &ImplDecl) -> String {
 pub fn fn_signature(f: &FnDecl) -> String {
     let tp = bounded(&f.type_params, &f.bounds);
     let mut s = format!("fn {}{}({}) -> {}", f.name, tp, param_list(&f.params), ty(&f.ret));
-    if !f.effects.is_empty() {
-        s += &format!(" / {{{}}}", f.effects.iter().map(ty).collect::<Vec<_>>().join(", "));
-    }
     for r in &f.requires {
         s += &format!("\n  requires {}", expr(r, 1));
     }
@@ -349,9 +287,6 @@ pub fn fn_decl(f: &FnDecl) -> String {
     let sig = fn_signature(f);
     match &f.body {
         Expr::Hole(_) => format!("{sig}\n  = {}", expr(&f.body, 0)),
-        b @ (Expr::Block(..) | Expr::Match(..) | Expr::If(..) | Expr::Handle(..)) => {
-            format!("{sig} {}", block(b, 0))
-        }
         b => format!("{sig} {}", block(b, 0)),
     }
 }
@@ -364,7 +299,6 @@ pub fn doc(d: &Decl) -> String {
 pub fn decl(d: &Decl) -> String {
     let body = match &d.kind {
         DeclKind::Type(t) => type_decl(t),
-        DeclKind::Effect(e) => effect_decl(e),
         DeclKind::Fn(f) => fn_decl(f),
         DeclKind::Test(t) => format!("test {:?} {}", t.name, block(&t.body, 0)),
         DeclKind::Trait(t) => trait_decl(t),

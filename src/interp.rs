@@ -1,4 +1,4 @@
-//! Tree-walking interpreter with effect handlers, runtime contract checks
+//! Tree-walking interpreter with runtime contract checks
 //! (refinements, requires, ensures) and an execution trace.
 
 use crate::ast::*;
@@ -91,23 +91,8 @@ pub struct Fault {
 
 type R<T> = Result<T, Fault>;
 
-#[derive(Clone)]
-enum HandlerImpl {
-    Clauses(Rc<Vec<HandlerClause>>, Scope),
-    Mock,
-}
-
-#[derive(Clone)]
-struct HFrame {
-    effect: String,
-    imp: HandlerImpl,
-    /// For stateful handlers: the state variable and its current value.
-    state: Option<(String, Value)>,
-}
-
 pub struct Interp<'a> {
     pub env: &'a Env,
-    handlers: Vec<HFrame>,
     stack: Vec<String>,
     pub trace: Vec<Json>,
     pub tracing: bool,
@@ -213,7 +198,6 @@ impl<'a> Interp<'a> {
     pub fn new(env: &'a Env, seed: u64) -> Self {
         Interp {
             env,
-            handlers: vec![],
             stack: vec![],
             trace: vec![],
             tracing: false,
@@ -228,21 +212,11 @@ impl<'a> Interp<'a> {
         Err(Fault { kind, msg: msg.into(), stack: self.stack.clone() })
     }
 
-    /// Install `mock` handlers for the given effects (used by `run --mock` and `verify`).
-    pub fn mock_effects(&mut self, effects: &[String]) {
-        for e in effects {
-            self.handlers.push(HFrame { effect: e.clone(), imp: HandlerImpl::Mock, state: None });
-        }
-    }
-
     // ---------------- contracts ----------------
 
-    /// Evaluate a contract expression with no handlers installed.
+    /// Evaluate a contract expression.
     fn pure_eval(&mut self, e: &Expr, s: &Scope) -> R<Value> {
-        let saved = std::mem::take(&mut self.handlers);
-        let r = self.eval(e, s);
-        self.handlers = saved;
-        r
+        self.eval(e, s)
     }
 
     /// Check a value against a declared type, including every refinement
@@ -493,19 +467,15 @@ impl<'a> Interp<'a> {
         }
         if !f.ensures.is_empty() {
             let s2 = extend(&scope, "it", result.clone());
-            // contracts are pure: evaluate them without access to handlers
-            let saved = std::mem::take(&mut self.handlers);
             for en in &f.ensures {
                 let ok = self.eval(en, &s2);
                 if !matches!(ok, Ok(Value::Bool(true))) {
-                    self.handlers = saved;
                     return self.fail(
                         FaultKind::Ensures,
                         format!("postcondition of `{name}` violated: ensures {} (it = {})", crate::printer::expr(en, 0), to_json(&result)),
                     );
                 }
             }
-            self.handlers = saved;
         }
         if self.tracing {
             self.trace.push(json!({"event": "return", "fn": name, "value": to_json(&result), "depth": self.depth}));
@@ -808,112 +778,6 @@ impl<'a> Interp<'a> {
         })
     }
 
-    fn perform(&mut self, eff: &str, op: &str, args: Vec<Value>) -> R<Value> {
-        let Some(idx) = self.handlers.iter().rposition(|h| h.effect == eff) else {
-            return self.fail(FaultKind::Runtime, format!("no handler installed for effect `{eff}` (performing `{eff}.{op}`)"));
-        };
-        let frame = self.handlers[idx].clone();
-        let ed = self.env.effects[eff].clone();
-        let sig = ed.ops.iter().find(|o| o.name == op).unwrap().clone();
-        // The caller must respect the operation's contract…
-        let mut cscope: Scope = None;
-        for (p, a) in sig.params.iter().zip(&args) {
-            self.enforce(&p.ty, a, &format!("argument `{}` of `{eff}.{op}`", p.name))?;
-            cscope = extend(&cscope, &p.name, a.clone());
-        }
-        for r in &sig.requires {
-            if self.pure_eval(r, &cscope)? != Value::Bool(true) {
-                return self.fail(FaultKind::Requires, format!("precondition of `{eff}.{op}` violated: requires {}", crate::printer::expr(r, 0)));
-            }
-        }
-        let result = match frame.imp {
-            HandlerImpl::Mock => {
-                // Generic effects are mocked at `Int`, like generic functions in `verify`.
-                let inst: HashMap<String, TypeExpr> = ed.params.iter().map(|p| (p.clone(), TypeExpr::Named("Int".into(), vec![]))).collect();
-                let ret = subst_texpr(&sig.ret, &inst);
-                let env = self.env;
-                let mut last_err = String::new();
-                let mut found = None;
-                // Mocks honour the operation's `ensures` too (by rejection sampling).
-                for _ in 0..200 {
-                    let mut g = std::mem::replace(&mut self.generator, Gen::new(0));
-                    let v = g.value(env, &ret, self);
-                    self.generator = g;
-                    match v {
-                        Ok(v) => {
-                            let s2 = extend(&cscope, "it", v.clone());
-                            let mut ok = true;
-                            for en in &sig.ensures {
-                                if self.pure_eval(en, &s2)? != Value::Bool(true) {
-                                    ok = false;
-                                }
-                            }
-                            if ok {
-                                found = Some(v);
-                                break;
-                            }
-                            last_err = "could not generate a result satisfying the operation's `ensures`".into();
-                        }
-                        Err(e) => {
-                            last_err = e;
-                            break;
-                        }
-                    }
-                }
-                found.ok_or_else(|| fault(FaultKind::Runtime, format!("mock {eff}.{op}: {last_err}")))?
-            }
-            HandlerImpl::Clauses(cs, scope) => {
-                let c = cs.iter().find(|c| c.op == op).unwrap();
-                let mut s = scope;
-                if let Some((sv, st)) = &frame.state {
-                    s = extend(&s, sv, st.clone());
-                }
-                for (p, a) in c.params.iter().zip(args.iter()) {
-                    s = extend(&s, p, a.clone());
-                }
-                // the handler body runs with the handlers that were outside it
-                let saved = self.handlers.split_off(idx);
-                let r = self.eval(&c.body, &s);
-                self.handlers.extend(saved);
-                let r = r?;
-                match (&frame.state, r) {
-                    (Some((sv, _)), Value::Record(_, fs)) => {
-                        let mut value = Value::Unit;
-                        for (k, v) in fs {
-                            if k == "value" {
-                                value = v;
-                            } else if k == "state" {
-                                self.handlers[idx].state = Some((sv.clone(), v));
-                            }
-                        }
-                        value
-                    }
-                    (Some(_), other) => return self.fail(FaultKind::Runtime, format!("stateful handler must answer `Resume {{ value, state }}`, got {}", to_json(&other))),
-                    (None, r) => r,
-                }
-            }
-        };
-        // …and every handler must honour it: this is the backend interface contract.
-        if let Some(e) = self.check_type(&sig.ret, &result)? {
-            return self.fail(FaultKind::Ensures, format!("handler for `{eff}.{op}` broke the interface: result {e}"));
-        }
-        let s2 = extend(&cscope, "it", result.clone());
-        for en in &sig.ensures {
-            if self.pure_eval(en, &s2)? != Value::Bool(true) {
-                return self.fail(
-                    FaultKind::Ensures,
-                    format!("handler for `{eff}.{op}` broke the interface: ensures {} (it = {})", crate::printer::expr(en, 0), to_json(&result)),
-                );
-            }
-        }
-        let entry = json!({"event": "perform", "op": format!("{eff}.{op}"), "args": args.iter().map(to_json).collect::<Vec<_>>(), "result": to_json(&result)});
-        self.effect_log.push(entry.clone());
-        if self.tracing {
-            self.trace.push(entry);
-        }
-        Ok(result)
-    }
-
     // ---------------- evaluation ----------------
 
     pub fn eval(&mut self, e: &Expr, s: &Scope) -> R<Value> {
@@ -980,10 +844,6 @@ impl<'a> Interp<'a> {
                 }
                 let f = lookup(s, m).unwrap_or(Value::FnRef(m.clone()));
                 self.apply(f, avs)?
-            }
-            Expr::Perform(eff, op, args) => {
-                let avs = args.iter().map(|a| self.eval(a, s)).collect::<R<Vec<_>>>()?;
-                self.perform(eff, op, avs)?
             }
             Expr::Field(r, f) => match self.eval(r, s)? {
                 Value::Distinct(_, x) if f == "value" => *x,
@@ -1118,40 +978,6 @@ impl<'a> Interp<'a> {
                 self.eval(last, &sc)?
             }
             Expr::Mock(t) => Value::Mock(t.clone()),
-            Expr::Handle(body, hs) => {
-                let base = self.handlers.len();
-                for h in hs {
-                    let imp = match &h.kind {
-                        HandlerKind::MockAuto => HandlerImpl::Mock,
-                        HandlerKind::Clauses(cs) => HandlerImpl::Clauses(Rc::new(cs.clone()), s.clone()),
-                    };
-                    let state = match &h.state {
-                        Some((v, init)) => match self.eval(init, s) {
-                            Ok(x) => Some((v.clone(), x)),
-                            Err(e) => {
-                                self.handlers.truncate(base);
-                                return Err(e);
-                            }
-                        },
-                        None => None,
-                    };
-                    self.handlers.push(HFrame { effect: h.effect.clone(), imp, state });
-                }
-                let r = self.eval(body, s);
-                let frames = self.handlers.split_off(base);
-                let mut v = r?;
-                // return clauses: innermost (last listed) first, with the final state in scope
-                for (h, f) in hs.iter().zip(frames.iter()).rev() {
-                    if let Some((p, b)) = &h.on_return {
-                        let mut sc = extend(s, p, v);
-                        if let Some((sv, st)) = &f.state {
-                            sc = extend(&sc, sv, st.clone());
-                        }
-                        v = self.eval(b, &sc)?;
-                    }
-                }
-                v
-            }
         })
     }
 

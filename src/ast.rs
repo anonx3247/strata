@@ -64,28 +64,6 @@ pub struct Param {
     pub ty: TypeExpr,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct OpSig {
-    #[serde(default)]
-    pub doc: Vec<String>,
-    pub name: String,
-    pub params: Vec<Param>,
-    pub ret: TypeExpr,
-    /// Contract every handler of this operation must honour.
-    #[serde(default)]
-    pub requires: Vec<Expr>,
-    #[serde(default)]
-    pub ensures: Vec<Expr>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EffectDecl {
-    pub name: String,
-    #[serde(default)]
-    pub params: Vec<String>,
-    pub ops: Vec<OpSig>,
-}
-
 /// `T: Ord + Hash` on a type parameter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Bound {
@@ -102,21 +80,10 @@ pub struct FnDecl {
     pub bounds: Vec<Bound>,
     pub params: Vec<Param>,
     pub ret: TypeExpr,
-    /// Effects this function may perform, e.g. `Db` or `Queue[P, E]`.
-    pub effects: Vec<TypeExpr>,
     pub requires: Vec<Expr>,
     /// Postconditions; `it` is the return value.
     pub ensures: Vec<Expr>,
     pub body: Expr,
-}
-
-impl FnDecl {
-    pub fn effect_names(&self) -> Vec<String> {
-        self.effects.iter().map(|e| match e {
-            TypeExpr::Named(n, _) => n.clone(),
-            other => crate::printer::ty(other),
-        }).collect()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -173,7 +140,6 @@ impl ImplDecl {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DeclKind {
     Type(TypeDecl),
-    Effect(EffectDecl),
     Fn(FnDecl),
     Test(TestDecl),
     Trait(TraitDecl),
@@ -211,7 +177,6 @@ impl Decl {
     pub fn name(&self) -> String {
         match &self.kind {
             DeclKind::Type(t) => t.name.clone(),
-            DeclKind::Effect(e) => e.name.clone(),
             DeclKind::Fn(f) => f.name.clone(),
             DeclKind::Test(t) => format!("test \"{}\"", t.name),
             DeclKind::Trait(t) => t.name.clone(),
@@ -222,7 +187,6 @@ impl Decl {
     pub fn kind_str(&self) -> &'static str {
         match &self.kind {
             DeclKind::Type(_) => "type",
-            DeclKind::Effect(_) => "effect",
             DeclKind::Fn(_) => "fn",
             DeclKind::Test(_) => "test",
             DeclKind::Trait(_) => "trait",
@@ -317,35 +281,6 @@ pub enum Stmt {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum HandlerKind {
-    /// `with Db { load(id) => ..., save(o) => () }`
-    Clauses(Vec<HandlerClause>),
-    /// `with mock Db` — every op returns a generated value of its return type
-    MockAuto,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct HandlerClause {
-    pub op: String,
-    pub params: Vec<String>,
-    pub body: Expr,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Handler {
-    pub effect: String,
-    pub kind: HandlerKind,
-    /// Stateful handler: `with Queue(q = init) { ... }`. Clauses see the state
-    /// as `q` and answer with `Resume { value, state }`.
-    #[serde(default)]
-    pub state: Option<(String, Expr)>,
-    /// `return(r) => expr`: transforms the handled computation's result
-    /// (with the final state in scope).
-    #[serde(default)]
-    pub on_return: Option<(String, Expr)>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Expr {
     Int(i64),
     Float(f64),
@@ -361,8 +296,6 @@ pub enum Expr {
     /// `Some(x)`, `None`, `Line { sku: s, qty: 1 }`
     Ctor(String, CtorArgs),
     Call(Box<Expr>, Vec<Expr>),
-    /// `Db.save(o)` — perform an effect operation
-    Perform(String, String, Vec<Expr>),
     /// `e.f(args)` — method-call sugar for `f(e, args)`
     Method(Box<Expr>, String, Vec<Expr>),
     Field(Box<Expr>, String),
@@ -374,7 +307,6 @@ pub enum Expr {
     If(Box<Expr>, Box<Expr>, Box<Expr>),
     Match(Box<Expr>, Vec<Arm>),
     Block(Vec<Stmt>, Box<Expr>),
-    Handle(Box<Expr>, Vec<Handler>),
     /// `mock Db`: an implementation of a trait whose methods return generated
     /// values that satisfy the trait's contracts.
     Mock(TypeExpr),

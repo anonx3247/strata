@@ -40,7 +40,6 @@ fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
             w(g);
             xs.iter().for_each(&mut w)
         }
-        Expr::Perform(_, _, xs) => xs.iter().for_each(&mut w),
         Expr::Method(r, _, xs) => {
             w(r);
             xs.iter().for_each(&mut w)
@@ -66,20 +65,6 @@ fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
                 }
             }
             w(last)
-        }
-        Expr::Handle(b, hs) => {
-            w(b);
-            for h in hs {
-                if let HandlerKind::Clauses(cs) = &h.kind {
-                    cs.iter().for_each(|c| w(&c.body));
-                }
-                if let Some((_, init)) = &h.state {
-                    w(init);
-                }
-                if let Some((_, b)) = &h.on_return {
-                    w(b);
-                }
-            }
         }
         _ => {}
     }
@@ -203,7 +188,6 @@ pub fn check_law(env: &Env, imp: &ImplDecl, law: &Law, cases: usize, seed: u64) 
         bounds: vec![],
         params: law.params.clone(),
         ret: TypeExpr::Named("Bool".into(), vec![]),
-        effects: vec![],
         requires: vec![],
         ensures: vec![],
         body: law.body.clone(),
@@ -282,7 +266,6 @@ fn fuzz_call(env: &Env, f: &FnDecl, cases: usize, seed: u64, method: bool) -> Ve
             discarded += 1;
             continue;
         }
-        it.mock_effects(&f.effect_names());
         let res = if method { it.call_method(&f.name, args.clone()) } else { it.call_fn(&f.name, args.clone()) };
         match res {
             Ok(_) => ok += 1,

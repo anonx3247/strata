@@ -85,10 +85,7 @@ pub fn render(p: &Program, names: &BTreeSet<String>, level: u8, st: &Status) -> 
         let text = match level {
             0 => {
                 let deps = g.get(&d.qname()).cloned().unwrap_or_default();
-                let effs = match &d.kind {
-                    DeclKind::Fn(f) if !f.effects.is_empty() => format!(" / {{{}}}", f.effects.iter().map(printer::ty).collect::<Vec<_>>().join(", ")),
-                    _ => String::new(),
-                };
+                let effs = "";
                 let deps = if deps.is_empty() { String::new() } else { format!("  → {}", deps.into_iter().collect::<Vec<_>>().join(", ")) };
                 let name = match &d.kind {
                     DeclKind::Test(t) => format!("{:?}", t.name),

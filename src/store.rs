@@ -108,10 +108,6 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                 go(f, out);
                 xs.iter().for_each(|x| go(x, out));
             }
-            Expr::Perform(eff, _, xs) => {
-                out.insert(eff.clone());
-                xs.iter().for_each(|x| go(x, out));
-            }
             Expr::Method(r, m, xs) => {
                 out.insert(m.clone());
                 go(r, out);
@@ -154,21 +150,6 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                 }
                 go(last, out);
             }
-            Expr::Handle(b, hs) => {
-                go(b, out);
-                for h in hs {
-                    out.insert(h.effect.clone());
-                    if let HandlerKind::Clauses(cs) = &h.kind {
-                        cs.iter().for_each(|c| go(&c.body, out));
-                    }
-                    if let Some((_, init)) = &h.state {
-                        go(init, out);
-                    }
-                    if let Some((_, b)) = &h.on_return {
-                        go(b, out);
-                    }
-                }
-            }
             _ => {}
         }
     }
@@ -188,14 +169,9 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             }
             out.remove(&t.name);
         }
-        DeclKind::Effect(e) => e.ops.iter().for_each(|o| {
-            o.params.iter().for_each(|p| ty(&p.ty, &mut out));
-            ty(&o.ret, &mut out);
-        }),
         DeclKind::Fn(f) => {
             f.params.iter().for_each(|p| ty(&p.ty, &mut out));
             ty(&f.ret, &mut out);
-            f.effects.iter().for_each(|e| ty(e, &mut out));
             f.requires.iter().chain(&f.ensures).for_each(|e| ex(e, &mut out, ctor_types));
             ex(&f.body, &mut out, ctor_types);
             out.remove(&f.name);
@@ -224,7 +200,6 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             for m in &i.methods {
                 m.params.iter().for_each(|p| ty(&p.ty, &mut out));
                 ty(&m.ret, &mut out);
-                m.effects.iter().for_each(|e| ty(e, &mut out));
                 ex(&m.body, &mut out, ctor_types);
             }
             out.remove("Self");

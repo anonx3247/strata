@@ -77,8 +77,7 @@ fn snapshot(target: &Target) -> Json {
             let one: BTreeSet<String> = [name.clone()].into();
             let render = |lvl| view::render(p, &one, lvl, &status).trim_end().to_string();
             let effects = match &d.kind {
-                DeclKind::Fn(f) => f.effects.iter().map(crate::printer::ty).collect(),
-                _ => vec![],
+                _ => Vec::<String>::new(),
             };
             let label = match &d.kind {
                 DeclKind::Test(t) => t.name.clone(),
@@ -108,7 +107,7 @@ fn snapshot(target: &Target) -> Json {
     let declared: std::collections::HashSet<String> = rp
         .decls
         .iter()
-        .filter(|d| matches!(d.kind, DeclKind::Type(_) | DeclKind::Effect(_)))
+        .filter(|d| matches!(d.kind, DeclKind::Type(_) | DeclKind::Trait(_)))
         .map(|d| d.name())
         .collect();
     let refs_of = |t: &TypeExpr| -> Vec<String> {
@@ -158,29 +157,6 @@ fn snapshot(target: &Target) -> Json {
                     "refinement": t.refinement.as_ref().map(|r| crate::printer::expr(r, 0)),
                     "base": base, "fields": fields, "variants": variants, "methods": methods,
                 }));
-            }
-            DeclKind::Effect(e) => {
-                let ops: Vec<Json> = e
-                    .ops
-                    .iter()
-                    .map(|o| {
-                        let mut r = Vec::new();
-                        for p in &o.params {
-                            r.extend(refs_of(&p.ty));
-                        }
-                        r.extend(refs_of(&o.ret));
-                        r.dedup();
-                        let params: Vec<String> = o.params.iter().map(|p| format!("{}: {}", p.name, crate::printer::ty(&p.ty))).collect();
-                        json!({
-                            "name": o.name,
-                            "sig": format!("{}({}) -> {}", o.name, params.join(", "), crate::printer::ty(&o.ret)),
-                            "refs": r,
-                            "contract": o.requires.iter().map(|x| format!("requires {}", crate::printer::expr(x, 0)))
-                                .chain(o.ensures.iter().map(|x| format!("ensures {}", crate::printer::expr(x, 0)))).collect::<Vec<_>>(),
-                        })
-                    })
-                    .collect();
-                structure.push(json!({"name": e.name, "kind": "effect", "params": e.params, "doc": d.doc.join("\n"), "ops": ops, "methods": []}));
             }
             _ => {}
         }
@@ -246,7 +222,7 @@ fn snapshot(target: &Target) -> Json {
     let mut called: std::collections::HashSet<String> = std::collections::HashSet::new();
     for d in &rp.decls {
         let (body, sig) = match &d.kind {
-            DeclKind::Fn(f) => (&f.body, json!({"effects": f.effects.iter().map(crate::printer::ty).collect::<Vec<_>>(), "sig": crate::printer::fn_signature(f).lines().next().unwrap_or("").to_string(), "hole": matches!(f.body, Expr::Hole(_))})),
+            DeclKind::Fn(f) => (&f.body, json!({"effects": [], "sig": crate::printer::fn_signature(f).lines().next().unwrap_or("").to_string(), "hole": matches!(f.body, Expr::Hole(_))})),
             DeclKind::Test(t) => (&t.body, json!({"effects": [], "sig": format!("test {:?}", t.name), "hole": false})),
             _ => continue,
         };

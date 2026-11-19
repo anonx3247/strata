@@ -6,8 +6,8 @@ Four modules, one per file, which use each other only through their public contr
 
 | Module | What it holds |
 |---|---|
-| `core` | the model (`Task`, `TaskResult`, `TaskPolicy`), the `Producer` / `Worker` / `Queue` effects, and the `run_producer` / `run_worker` / `drain` entrypoints |
-| `memory` | the in-memory backend: the reference SQLite semantics as a pure state machine with invariants |
+| `core` | the model (`Task`, `TaskResult`, `TaskPolicy`), the `Producer` / `Worker` / `Queue` traits, and the `run_producer` / `run_worker` / `drain` entrypoints |
+| `memory` | the in-memory backend: a `MemQueue` value implementing `Queue`, with the reference SQLite semantics and invariants |
 | `print` | the reference's example task family and its `demo` entrypoint |
 | `sim` | model-based verification (`simulate`) and the reference test suite |
 
@@ -26,9 +26,9 @@ strata ui --file examples/tasks                   # browse it
 | `Task[T: BaseModel]` (Pydantic) | `type Task[P] = { id: TaskId, kind: Kind, payload: P }`. Every type is JSON-serialisable, so no bound is needed. |
 | `TaskResult(result: Literal[...], error: BaseModel \| None)` | `Succeeded \| Failed { error: E } \| Skipped`: "success with an error" cannot be represented |
 | `TaskPolicy` with `Field(ge=1)` validators | refined field types (`Positive`, `Retries`): an invalid policy can't be constructed |
-| `Producer` / `Worker` protocols + `resources` | `effect Producer[P]` / `effect Worker[P, E]`: a handler closes over its own resources |
-| `TaskQueue` ABC + `SqliteTaskQueue` | `effect Queue[P, E]` (enqueue / claim / record / release, **with contracts**) + one handler per backend |
-| "entrypoints contain only wiring" | an entrypoint *is* only handlers. See `demo`. |
+| `Producer` / `Worker` protocols + `resources` | `trait Producer[P]` / `trait Worker[P, E]`: an implementation carries its resources in its fields (`PrintWorker { console }`) |
+| `TaskQueue` ABC + `SqliteTaskQueue` | `trait Queue[P, E]` (enqueue / claim / record / release, **with contracts**) + one implementation per backend; operations return the backend's next state |
+| "entrypoints contain only wiring" | entrypoints take the queue and worker as values; see `demo` |
 | worker raises → claim released, exception re-raised | a worker can't raise. A misreport comes back as `Err(ResultsMismatch {..})` and the claim is released. |
 | SQLite tables and statuses | `MemQueue[P, E]`: a pure state machine whose invariants are part of its type |
 | decoder dispatching on `kind` (TS) | not needed: JSON is parsed against the declared types |
@@ -47,7 +47,7 @@ The reference has the same bug in both Python and TypeScript. `_release` puts ta
 
 ## Gaps compared with the reference
 
-- **No SQLite / SQS backend yet.** These need host bindings (calling out to existing libraries), which the language doesn't have. They would be further handlers of the same `Queue` effect, held to the same interface contracts.
-- **No async yet.** `discover` returns a list rather than an async iterator; generators and async will come from fully resumable effect handlers.
+- **No SQLite / SQS backend yet.** These need host bindings (calling out to existing libraries), which the language doesn't have. They would be further implementations of the `Queue` trait, held to the same contracts. Testing implementations against the trait's contract already caught `MemQueue.record` demanding more than `Queue.record` promises.
+- **No async yet.** `discover` returns a list rather than an async iterator; async and iterators will be designed as language features.
 - **Different JSON for results.** The wire format differs for `TaskResult` (`{"Failed": {...}}` instead of `"result": "failure"`); matching the reference byte for byte would need serialisation annotations.
 - **`max_workers` is unused**, since there is no concurrency.

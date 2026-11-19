@@ -44,7 +44,7 @@ fn is_upper(s: &str) -> bool {
 }
 
 const KEYWORDS: &[&str] = &[
-    "type", "effect", "fn", "test", "let", "if", "else", "match", "handle", "with", "mock", "where",
+    "type", "fn", "test", "let", "if", "else", "match", "mock", "where",
     "requires", "ensures", "true", "false", "is", "assert", "trait", "impl", "law", "for", "pub", "use",
 ];
 
@@ -236,8 +236,8 @@ impl Parser {
             DeclKind::Type(t)
         } else if self.eat_kw("type") {
             DeclKind::Type(self.type_decl()?)
-        } else if self.eat_kw("effect") {
-            DeclKind::Effect(self.effect_decl()?)
+        } else if self.is_kw("effect") {
+            return Err(self.err("`effect` was removed: declare a `trait` and pass a value that implements it"));
         } else if self.eat_kw("fn") {
             DeclKind::Fn(self.fn_decl()?)
         } else if self.eat_kw("trait") {
@@ -415,38 +415,6 @@ impl Parser {
         })
     }
 
-    fn effect_decl(&mut self) -> R<EffectDecl> {
-        let name = self.ident()?;
-        let params = self.type_params()?;
-        self.expect_sym("{")?;
-        let mut ops = Vec::new();
-        while !self.eat_sym("}") {
-            let mut doc = Vec::new();
-            while let Tok::Doc(d) = self.peek().clone() {
-                doc.push(d);
-                self.next();
-            }
-            self.expect_kw("fn")?;
-            let oname = self.ident()?;
-            let params = self.params()?;
-            let ret = if self.eat_sym("->") { self.type_expr()? } else { TypeExpr::Unit };
-            let (mut requires, mut ensures) = (Vec::new(), Vec::new());
-            loop {
-                if self.eat_kw("requires") {
-                    requires.push(self.expr_ns()?);
-                } else if self.eat_kw("ensures") {
-                    ensures.push(self.expr_ns()?);
-                } else {
-                    break;
-                }
-            }
-            ops.push(OpSig { doc, name: oname, params, ret, requires, ensures });
-            self.eat_sym(",");
-            self.eat_sym(";");
-        }
-        Ok(EffectDecl { name, params, ops })
-    }
-
     fn fn_decl(&mut self) -> R<FnDecl> {
         let (f, has_body) = self.fn_rest(false)?;
         if !has_body {
@@ -462,10 +430,8 @@ impl Parser {
         let (type_params, bounds) = self.bounded_params()?;
         let params = self.params()?;
         let ret = if self.eat_sym("->") { self.type_expr()? } else { TypeExpr::Unit };
-        let mut effects = Vec::new();
-        if self.eat_sym("/") {
-            self.expect_sym("{")?;
-            effects = self.list("}", |p| p.type_expr())?;
+        if self.is_sym("/") {
+            return Err(self.err("effect lists (`/ {...}`) were removed: pass the capability as a parameter instead"));
         }
         let (mut requires, mut ensures) = (Vec::new(), Vec::new());
         loop {
@@ -485,7 +451,7 @@ impl Parser {
         } else {
             self.block()?
         };
-        Ok((FnDecl { name, type_params, bounds, params, ret, effects, requires, ensures, body }, has_body))
+        Ok((FnDecl { name, type_params, bounds, params, ret, requires, ensures, body }, has_body))
     }
 
     // ---------- expressions ----------
@@ -686,51 +652,6 @@ impl Parser {
                 self.next();
                 Ok(Expr::Mock(self.type_expr_plain()?))
             }
-            Tok::Ident(kw) if kw == "handle" => {
-                self.next();
-                let body = self.expr_ns()?;
-                let mut handlers = Vec::new();
-                while self.eat_kw("with") {
-                    if self.eat_kw("mock") {
-                        handlers.push(Handler { effect: self.path()?, kind: HandlerKind::MockAuto, state: None, on_return: None });
-                        continue;
-                    }
-                    let effect = self.path()?;
-                    let state = if self.eat_sym("(") {
-                        let v = self.ident()?;
-                        self.expect_sym("=")?;
-                        let init = self.expr()?;
-                        self.expect_sym(")")?;
-                        Some((v, init))
-                    } else {
-                        None
-                    };
-                    self.expect_sym("{")?;
-                    let mut clauses = Vec::new();
-                    let mut on_return = None;
-                    while !self.eat_sym("}") {
-                        let op = self.ident()?;
-                        self.expect_sym("(")?;
-                        let params = self.list(")", |p| p.ident())?;
-                        self.expect_sym("=>")?;
-                        let body = self.expr()?;
-                        self.eat_sym(",");
-                        if op == "return" {
-                            if params.len() != 1 {
-                                return Err(self.err("`return` clause takes exactly one parameter"));
-                            }
-                            on_return = Some((params[0].clone(), body));
-                        } else {
-                            clauses.push(HandlerClause { op, params, body });
-                        }
-                    }
-                    handlers.push(Handler { effect, kind: HandlerKind::Clauses(clauses), state, on_return });
-                }
-                if handlers.is_empty() {
-                    return Err(self.err("expected `with` after handled expression"));
-                }
-                Ok(Expr::Handle(Box::new(body), handlers))
-            }
             Tok::Ident(name) if !KEYWORDS.contains(&name.as_str()) => {
                 let name = match self.qualified_upper() {
                     Some(q) => q,
@@ -741,17 +662,6 @@ impl Parser {
                 };
                 if !is_upper(name.rsplit('.').next().unwrap_or(&name)) {
                     return Ok(Expr::Var(name));
-                }
-                // Effect operation: `Db.load(x)`
-                if self.is_sym(".") {
-                    if let (Tok::Ident(op), Tok::Sym("(")) = (self.peek_at(1).clone(), self.peek_at(2)) {
-                        if !is_upper(&op) {
-                            self.next();
-                            self.next();
-                            self.next();
-                            return Ok(Expr::Perform(name, op, self.args()?));
-                        }
-                    }
                 }
                 if self.is_sym("(") && !self.nl_before() {
                     self.next();

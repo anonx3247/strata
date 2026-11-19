@@ -69,7 +69,7 @@ pub fn resolve(p: &Program) -> Resolution {
                     children.entry(q.clone()).or_default().push((m.decl.name.clone(), mq));
                 }
             }
-            DeclKind::Effect(_) | DeclKind::Fn(_) => {
+            DeclKind::Fn(_) => {
                 table.insert(qualify(&d.module, &d.name()), item);
             }
             DeclKind::Test(_) | DeclKind::Impl(_) | DeclKind::Use(_) => {}
@@ -313,7 +313,6 @@ impl Rw<'_> {
                 }
                 Expr::Field(Box::new(self.expr(r)), f.clone())
             }
-            Expr::Perform(eff, op, args) => Expr::Perform(self.name(eff), op.clone(), self.exprs(args)),
             Expr::Mock(t) => Expr::Mock(self.ty(t)),
             Expr::Lambda(ps, b) => {
                 self.push(ps);
@@ -357,36 +356,6 @@ impl Rw<'_> {
                 self.pop();
                 Expr::Block(stmts, Box::new(last))
             }
-            Expr::Handle(body, hs) => {
-                let hs = hs
-                    .iter()
-                    .map(|h| {
-                        let state = h.state.as_ref().map(|(v, init)| (v.clone(), self.expr(init)));
-                        let sv: Vec<String> = h.state.iter().map(|(v, _)| v.clone()).collect();
-                        let kind = match &h.kind {
-                            HandlerKind::MockAuto => HandlerKind::MockAuto,
-                            HandlerKind::Clauses(cs) => HandlerKind::Clauses(
-                                cs.iter()
-                                    .map(|c| {
-                                        self.push(&[c.params.clone(), sv.clone()].concat());
-                                        let body = self.expr(&c.body);
-                                        self.pop();
-                                        HandlerClause { op: c.op.clone(), params: c.params.clone(), body }
-                                    })
-                                    .collect(),
-                            ),
-                        };
-                        let on_return = h.on_return.as_ref().map(|(p, b)| {
-                            self.push(&[vec![p.clone()], sv.clone()].concat());
-                            let b = self.expr(b);
-                            self.pop();
-                            (p.clone(), b)
-                        });
-                        Handler { effect: self.name(&h.effect), kind, state, on_return }
-                    })
-                    .collect();
-                Expr::Handle(Box::new(self.expr(body)), hs)
-            }
             _ => e.clone(),
         }
     }
@@ -403,7 +372,6 @@ impl Rw<'_> {
         let names: Vec<String> = f.params.iter().map(|p| p.name.clone()).collect();
         self.push(&names);
         let ret = self.ty(&f.ret);
-        let effects = f.effects.iter().map(|e| self.ty(e)).collect();
         let requires = self.exprs(&f.requires);
         let body = self.expr(&f.body);
         self.push(&["it".into()]);
@@ -411,7 +379,7 @@ impl Rw<'_> {
         self.pop();
         self.pop();
         self.tparams.pop();
-        FnDecl { name, type_params: f.type_params.clone(), bounds, params, ret, effects, requires, ensures, body }
+        FnDecl { name, type_params: f.type_params.clone(), bounds, params, ret, requires, ensures, body }
     }
 
     fn decl(&mut self, k: &DeclKind) -> DeclKind {
@@ -440,24 +408,6 @@ impl Rw<'_> {
                 self.pop();
                 self.tparams.pop();
                 DeclKind::Type(TypeDecl { distinct: t.distinct, name: qualify(&m, &t.name), params: t.params.clone(), body, refinement })
-            }
-            DeclKind::Effect(e) => {
-                self.tparams.push(e.params.iter().cloned().collect());
-                let ops = e
-                    .ops
-                    .iter()
-                    .map(|o| {
-                        let params: Vec<Param> = o.params.iter().map(|p| Param { name: p.name.clone(), ty: self.ty(&p.ty) }).collect();
-                        let names: Vec<String> = o.params.iter().map(|p| p.name.clone()).collect();
-                        self.push(&[names, vec!["it".into()]].concat());
-                        let requires = self.exprs(&o.requires);
-                        let ensures = self.exprs(&o.ensures);
-                        self.pop();
-                        OpSig { doc: o.doc.clone(), name: o.name.clone(), params, ret: self.ty(&o.ret), requires, ensures }
-                    })
-                    .collect();
-                self.tparams.pop();
-                DeclKind::Effect(EffectDecl { name: qualify(&m, &e.name), params: e.params.clone(), ops })
             }
             DeclKind::Fn(f) => DeclKind::Fn(self.func(f, qualify(&m, &f.name))),
             DeclKind::Test(t) => {
