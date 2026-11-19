@@ -30,9 +30,26 @@ strata add path/to/examples/orders.strata
 strata view --level 0              # map of everything
 strata view slice:Order --level 1  # Order, what it uses, what uses it: interfaces only
 strata holes                       # what's left to implement
+strata ui                          # open http://127.0.0.1:7777: the live viewer
 ```
 
+## The viewer
+
+`strata ui` serves a local, read-only viewer. It re-reads the codebase every 1.5 seconds, so edits made through the CLI (by you or by agents) appear as they are committed.
+
+- **Map**: the dependency graph, arranged in layers from foundations to the code built on them. Click a node to highlight what it uses and what uses it; double-click to open its slice.
+- **Interfaces / Outline / Source**: levels 1–3 for every definition. Each card has its own L1/L2/L3 switch, so you can open one definition fully while everything else stays folded.
+- **Slice around a definition**: show only that definition, what it uses, and what uses it.
+- **Inspector**: doc comment, hashes, effects, holes (goal, context, what they must satisfy), the verification result with any counterexample, and the definition's history.
+- **Activity**: the patch log. Definitions changed since your last look are highlighted.
+- The URL keeps the view, e.g. `#level=2&sel=refund&scope=slice`, so you can send someone or an agent exactly what you're looking at.
+- Keys: `0`–`3` switch level, `/` filters, `Esc` clears the selection.
+
+`strata ui --file some.strata` views a single file instead of a codebase.
+
 ## A taste
+
+`examples/bank.strata` is the smallest complete example. `examples/orders.strata` is the larger one excerpted below.
 
 ```
 type OrderId  = String where matches(it, "ord_[a-z0-9]{6}")
@@ -146,6 +163,7 @@ Because results are keyed by content, `verify` reruns only what is affected by a
 | `src/verify.rs` | compile-time refinement checks on literals; contract fuzzing |
 | `src/store.rs` | content-addressed codebase, dependency graph, patch log |
 | `src/view.rs` | level-of-detail projections and selectors |
+| `src/ui.rs`, `src/ui/index.html` | `strata ui`: the live viewer (a std-only HTTP server and one page) |
 
 ## Known limitations of this draft
 
@@ -154,14 +172,14 @@ Because results are keyed by content, `verify` reruns only what is affected by a
 - **Limited effect handlers.** A handler returns one value straight back to the operation; it cannot resume the computation later or run it more than once (no generators or async yet). Handlers also cannot keep state between calls.
 - **Lambdas are not effect-polymorphic.** A closure's effects are checked where it is defined, not where it is called.
 - Refinements on generic type arguments, such as `Option[Quantity]`, are not checked when values are constructed.
-- **No modules, no agent server or UI, no compilation backend.** It is a tree-walking interpreter.
+- **No modules and no compilation backend.** It is a tree-walking interpreter.
 
 ## Roadmap
 
 1. **SMT-backed refinements**: obligations proven automatically where possible; counterexamples from the solver.
 2. **Traits with laws**: e.g. `trait Monoid { … law assoc(a, b, c): … }`; laws are verified or fuzzed for every implementation.
-3. **An agent API (MCP server)**: `view`, `edit`, `check`, `holes`, `verify`, `run` and trace queries as tools; scoped workspaces and leases for multiple agents.
+3. **Agent-friendly CLI everywhere**: `--json` on every command, trace queries, and scoped workspaces and leases so several agents can work on different slices at once. The CLI *is* the agent API; no server is needed.
 4. **Better effects**: full continuations, stateful handlers, `mock record` / `mock replay` for integration tests, and deterministic replay debugging.
-5. **A map UI**: a zoomable L0→L3 view showing live agent activity, open holes, and verification status.
+5. **Viewer**: show which agent is working on which slice, and add a diff view for each patch.
 6. **Structural records with row polymorphism**: "anything with `.id: OrderId`".
 7. **A compilation backend** (WasmGC or Cranelift).

@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strata</title>
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --line: #e3e3df; --text: #1d1d1b; --muted: #74746f; --faint: #a5a5a0;
+  --accent: #3b5bdb; --accent-soft: #e8edfd;
+  --type: #7048e8; --effect: #c2255c; --fn: #1c7ed6; --test: #5c940d;
+  --ok: #2f9e44; --warn: #e67700; --bad: #e03131;
+  --code-bg: #fbfbfa; --kw: #9c36b5; --str: #2b8a3e; --num: #c92a2a; --com: #8d8d88; --hole-bg: #fff3bf;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615; --panel: #1e1e1c; --line: #2f2f2c; --text: #e9e9e6; --muted: #9a9a94; --faint: #5f5f5a;
+    --accent: #748ffc; --accent-soft: #232a45;
+    --type: #b197fc; --effect: #f783ac; --fn: #74c0fc; --test: #a9e34b;
+    --ok: #51cf66; --warn: #ffa94d; --bad: #ff6b6b;
+    --code-bg: #1a1a18; --kw: #da77f2; --str: #8ce99a; --num: #ffa8a8; --com: #6f6f69; --hole-bg: #4a3d0a;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { font: 13px/1.45 var(--sans); background: var(--bg); color: var(--text); display: grid;
+  grid-template-rows: auto auto 1fr; grid-template-columns: 240px 1fr 340px; grid-template-areas: "top top top" "banner banner banner" "left main right"; }
+header { grid-area: top; display: flex; align-items: center; gap: 14px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+header .brand { font-weight: 650; letter-spacing: .2px; }
+header .path { color: var(--muted); font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 28ch; }
+.chips { display: flex; gap: 6px; }
+.chip { font-size: 11.5px; padding: 2px 8px; border-radius: 999px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.chip b { color: var(--text); font-weight: 600; }
+.chip.warn b { color: var(--warn); } .chip.bad b { color: var(--bad); } .chip.ok b { color: var(--ok); }
+.spacer { flex: 1; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.seg button { font: inherit; font-size: 12px; border: 0; background: transparent; color: var(--muted); padding: 4px 10px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.seg button:hover:not(.on) { color: var(--text); }
+input[type=search] { font: inherit; padding: 4px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); width: 180px; }
+.live { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11.5px; }
+.live i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); display: inline-block; }
+.live.off i { background: var(--bad); }
+
+#banner { grid-area: banner; }
+#banner .err { background: color-mix(in srgb, var(--bad) 12%, var(--panel)); border-bottom: 1px solid var(--line); padding: 6px 14px; font-family: var(--mono); font-size: 12px; }
+#banner .err a { color: var(--bad); cursor: pointer; font-weight: 600; }
+
+aside, main { overflow: auto; min-height: 0; }
+#left { grid-area: left; border-right: 1px solid var(--line); background: var(--panel); padding: 8px 0 20px; }
+#right { grid-area: right; border-left: 1px solid var(--line); background: var(--panel); }
+main { grid-area: main; position: relative; }
+
+.group h4 { margin: 12px 14px 4px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .7px; color: var(--faint); font-weight: 600; }
+.item { display: flex; align-items: center; gap: 8px; padding: 3px 14px; cursor: pointer; font-family: var(--mono); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 2px solid transparent; }
+.item:hover { background: var(--bg); }
+.item.sel { background: var(--accent-soft); border-left-color: var(--accent); }
+.item.dim { opacity: .35; }
+.item .lbl { overflow: hidden; text-overflow: ellipsis; }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--line); }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); } .dot.none { background: transparent; border: 1px solid var(--faint); }
+.kind { font-size: 10px; font-weight: 700; width: 14px; text-align: center; flex: none; font-family: var(--sans); }
+.k-type { color: var(--type); } .k-effect { color: var(--effect); } .k-fn { color: var(--fn); } .k-test { color: var(--test); }
+
+/* code view */
+#code { padding: 16px 22px 60px; max-width: 980px; }
+.toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; color: var(--muted); font-size: 12px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 9px; margin-bottom: 12px; overflow: hidden; scroll-margin-top: 12px; }
+.card.sel { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.card.flash { animation: flash 2.4s ease-out; }
+@keyframes flash { 0% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 60%, transparent); } 100% { box-shadow: 0 0 0 0 transparent; } }
+.card-h { display: flex; align-items: center; gap: 8px; padding: 6px 10px 6px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.card-h .name { font-family: var(--mono); font-weight: 600; }
+.card-h .hash { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+.badge { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.badge.ok { color: var(--ok); } .badge.warn { color: var(--warn); } .badge.bad { color: var(--bad); } .badge.muted { color: var(--faint); }
+.card-h .seg button { padding: 1px 7px; font-size: 11px; }
+pre { margin: 0; padding: 10px 14px; background: var(--code-bg); font: 12.5px/1.55 var(--mono); overflow-x: auto; white-space: pre; }
+.t-kw { color: var(--kw); } .t-str { color: var(--str); } .t-num { color: var(--num); } .t-com { color: var(--com); font-style: italic; }
+.t-ty { color: var(--type); } .t-doc { color: var(--com); }
+.t-hole { background: var(--hole-bg); border-radius: 3px; padding: 0 2px; font-weight: 600; }
+a.ref { color: inherit; text-decoration: underline dotted var(--faint); text-underline-offset: 3px; cursor: pointer; }
+a.ref:hover { color: var(--accent); text-decoration-color: var(--accent); }
+
+/* map */
+#map { display: block; }
+#map .node rect { fill: var(--panel); stroke: var(--line); stroke-width: 1; rx: 7; }
+#map .node { cursor: pointer; }
+#map .node text { font: 12px var(--mono); fill: var(--text); }
+#map .node text.k { font: 700 10px var(--sans); }
+#map .node.sel rect { stroke: var(--accent); stroke-width: 2; }
+#map .edge.fade { opacity: .15; }
+#map .node.fade text, #map .node.fade circle { opacity: .3; }
+#map .node.fade rect { stroke-opacity: .5; }
+#map .edge { fill: none; stroke: var(--faint); stroke-width: 1.2; }
+#map .edge.hot-in { stroke: var(--accent); stroke-width: 1.8; }
+#map .edge.hot-out { stroke: var(--warn); stroke-width: 1.8; }
+#map .col-label { font: 600 10.5px var(--sans); fill: var(--faint); text-transform: uppercase; letter-spacing: .7px; }
+.legend { position: fixed; left: 254px; bottom: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; color: var(--muted); font-size: 11.5px; display: flex; gap: 14px; }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.legend i { display: inline-block; width: 16px; height: 2px; }
+
+/* inspector */
+.sec { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.sec h3 { margin: 0 0 8px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .7px; color: var(--faint); font-weight: 600; display: flex; justify-content: space-between; }
+.insp-name { font: 600 15px var(--mono); margin: 2px 0 6px; word-break: break-all; }
+.doc { color: var(--muted); white-space: pre-wrap; margin-bottom: 8px; }
+.kv { display: grid; grid-template-columns: 92px 1fr; gap: 3px 8px; font-size: 12px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; font-family: var(--mono); word-break: break-all; }
+.refs { display: flex; flex-wrap: wrap; gap: 4px; }
+.refs a { font: 12px var(--mono); padding: 1px 7px; border-radius: 5px; background: var(--bg); border: 1px solid var(--line); cursor: pointer; }
+.refs a:hover { border-color: var(--accent); color: var(--accent); }
+.box { border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; margin-top: 6px; font-size: 12px; }
+.box.warn { border-color: color-mix(in srgb, var(--warn) 50%, var(--line)); }
+.box.bad { border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
+.box.ok { border-color: color-mix(in srgb, var(--ok) 50%, var(--line)); }
+.box code, .box .mono { font-family: var(--mono); font-size: 11.5px; word-break: break-all; }
+.box .row { margin-top: 3px; } .box .row b { color: var(--muted); font-weight: 500; display: inline-block; min-width: 58px; }
+.empty { color: var(--faint); font-size: 12px; }
+.log-e { padding: 7px 0; border-bottom: 1px dashed var(--line); }
+.log-e:last-child { border-bottom: 0; }
+.log-e .msg { font-weight: 600; }
+.log-e .when { color: var(--faint); font-size: 11px; float: right; }
+.log-e .ch { font: 11.5px var(--mono); margin-top: 2px; display: flex; gap: 6px; cursor: pointer; }
+.log-e .ch:hover .n { color: var(--accent); }
+.tag { width: 86px; flex: none; color: var(--muted); white-space: nowrap; }
+.tag.add { color: var(--ok); } .tag.del { color: var(--bad); } .tag.iface { color: var(--warn); }
+.log-e.new { background: linear-gradient(90deg, color-mix(in srgb, var(--warn) 14%, transparent), transparent); }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">Strata</span>
+  <span class="path" id="path"></span>
+  <div class="chips" id="chips"></div>
+  <span class="spacer"></span>
+  <div class="seg" id="levels">
+    <button data-l="0" title="Dependency map (key 0)">Map</button>
+    <button data-l="1" title="Types, signatures and contracts (key 1)">Interfaces</button>
+    <button data-l="2" title="Signatures plus body summaries (key 2)">Outline</button>
+    <button data-l="3" title="Full source (key 3)">Source</button>
+  </div>
+  <input type="search" id="q" placeholder="Filter  ( / )">
+  <span class="live" id="live"><i></i><span>live</span></span>
+</header>
+<div id="banner"></div>
+<aside id="left"></aside>
+<main id="main"></main>
+<aside id="right"></aside>
+
+<script>
+const S = { data: null, raw: '', level: 1, sel: null, scope: 'all', q: '', over: {}, prevHash: {}, flash: new Set(), prevLog: 0, newLog: 0, showTests: false };
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const KIND = { type: 'T', effect: 'E', fn: 'ƒ', test: '✓' };
+const byName = () => Object.fromEntries(S.data.decls.map(d => [d.name, d]));
+
+function status(d) {
+  if (d.errors.length) return ['bad', 'error'];
+  const v = d.verdict;
+  if (v && v.status === 'counterexample') return ['bad', 'counterexample'];
+  if (d.holes.length) return ['warn', d.holes.length + ' hole' + (d.holes.length > 1 ? 's' : '')];
+  if (v && v.status === 'incomplete') return ['warn', 'incomplete'];
+  if (v && v.status === 'fuzzed') return ['ok', 'fuzzed ' + v.cases];
+  if (d.kind === 'fn') return ['none', 'unverified'];
+  return ['', ''];
+}
+
+// ---------- syntax highlighting with clickable references ----------
+const KW = new Set('type effect fn test let if else match handle with mock where requires ensures true false is assert'.split(' '));
+function highlight(src, names) {
+  const re = /(\/\/\/[^\n]*)|(\/\/[^\n]*)|("(?:[^"\\]|\\.)*")|(\?[A-Za-z_]\w*)|(\b\d+\b)|([A-Za-z_]\w*)/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(src))) {
+    out += esc(src.slice(last, m.index)); last = re.lastIndex;
+    const [t, doc, com, str, hole, num, id] = m;
+    if (doc) out += `<span class="t-doc">${esc(t)}</span>`;
+    else if (com) out += `<span class="t-com">${esc(t)}</span>`;
+    else if (str) out += `<span class="t-str">${esc(t)}</span>`;
+    else if (hole) out += `<span class="t-hole">${esc(t)}</span>`;
+    else if (num) out += `<span class="t-num">${t}</span>`;
+    else if (KW.has(id)) out += `<span class="t-kw">${id}</span>`;
+    else {
+      const cls = /^[A-Z]/.test(id) ? 't-ty' : '';
+      out += names.has(id) ? `<a class="ref ${cls}" data-go="${esc(id)}">${id}</a>` : (cls ? `<span class="${cls}">${id}</span>` : id);
+    }
+  }
+  return out + esc(src.slice(last));
+}
+
+// ---------- selection & scope ----------
+function visible() {
+  const all = S.data.decls;
+  const q = S.q.toLowerCase();
+  let set = all;
+  if (S.scope === 'slice' && S.sel) {
+    const d = byName()[S.sel];
+    const keep = new Set([S.sel, ...(d?.deps || []), ...(d?.used_by || [])]);
+    set = all.filter(x => keep.has(x.name));
+  }
+  if (q) set = set.filter(x => x.label.toLowerCase().includes(q) || (S.level === 3 && x.text['3'].toLowerCase().includes(q)));
+  return set;
+}
+
+function select(name, scroll = true) {
+  S.sel = name;
+  render();
+  if (scroll) {
+    const el = document.getElementById('card-' + CSS.escape(name));
+    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+}
+
+// ---------- rendering ----------
+function renderHeader() {
+  const D = S.data.decls;
+  $('#path').textContent = S.data.label; $('#path').title = S.data.label;
+  const holes = D.reduce((n, d) => n + d.holes.length, 0);
+  const cex = D.filter(d => d.verdict?.status === 'counterexample').length;
+  const fz = D.filter(d => d.verdict?.status === 'fuzzed').length;
+  const fns = D.filter(d => d.kind === 'fn').length;
+  $('#chips').innerHTML = [
+    `<span class="chip"><b>${D.length}</b> definitions</span>`,
+    `<span class="chip ${S.data.errors.length ? 'bad' : 'ok'}"><b>${S.data.errors.length ? S.data.errors.length + ' errors' : 'checks'}</b></span>`,
+    `<span class="chip ${holes ? 'warn' : ''}"><b>${holes}</b> holes</span>`,
+    `<span class="chip ${cex ? 'bad' : fz ? 'ok' : ''}"><b>${fz}/${fns}</b> fuzzed${cex ? ` · <b>${cex}</b> failing` : ''}</span>`,
+  ].join('');
+  for (const b of $('#levels').children) b.classList.toggle('on', +b.dataset.l === S.level);
+  $('#banner').innerHTML = S.data.errors.length
+    ? S.data.errors.map(e => `<div class="err"><a data-go="${esc(e.decl)}">${esc(e.decl)}</a>: ${esc(e.msg)}</div>`).join('') : '';
+}
+
+function renderLeft() {
+  const groups = [['type', 'Types'], ['effect', 'Effects'], ['fn', 'Functions'], ['test', 'Tests']];
+  const vis = new Set(visible().map(d => d.name));
+  $('#left').innerHTML = groups.map(([k, title]) => {
+    const items = S.data.decls.filter(d => d.kind === k);
+    if (!items.length) return '';
+    return `<div class="group"><h4>${title}</h4>${items.map(d => {
+      const [cls] = status(d);
+      return `<div class="item ${d.name === S.sel ? 'sel' : ''} ${vis.has(d.name) ? '' : 'dim'}" data-go="${esc(d.name)}" title="${esc(d.label)}">
+        <span class="kind k-${d.kind}">${KIND[d.kind]}</span><span class="lbl">${esc(d.label)}</span><span class="spacer"></span><span class="dot ${cls}"></span></div>`;
+    }).join('')}</div>`;
+  }).join('');
+}
+
+function renderCode() {
+  const names = new Set(S.data.decls.map(d => d.name));
+  const list = visible();
+  const scopeSeg = `<div class="seg" id="scope">
+      <button data-s="all" class="${S.scope === 'all' ? 'on' : ''}">Everything</button>
+      <button data-s="slice" class="${S.scope === 'slice' ? 'on' : ''}" ${S.sel ? '' : 'disabled title="Select a definition first"'}>Slice around ${S.sel ? esc(byName()[S.sel]?.label) : 'selection'}</button></div>`;
+  const cards = list.map(d => {
+    const lvl = S.over[d.name] ?? S.level;
+    const [cls, txt] = status(d);
+    const lv = [1, 2, 3].map(l => `<button data-card-level="${l}" data-name="${esc(d.name)}" class="${l === lvl ? 'on' : ''}">L${l}</button>`).join('');
+    return `<div class="card ${d.name === S.sel ? 'sel' : ''} ${S.flash.has(d.name) ? 'flash' : ''}" id="card-${esc(d.name)}">
+      <div class="card-h" data-pick="${esc(d.name)}">
+        <span class="kind k-${d.kind}">${KIND[d.kind]}</span><span class="name">${esc(d.label)}</span>
+        ${d.effects.length ? `<span class="badge muted">/ {${esc(d.effects.join(', '))}}</span>` : ''}
+        ${txt ? `<span class="badge ${cls === 'none' ? 'muted' : cls}">${esc(txt)}</span>` : ''}
+        <span class="spacer"></span><span class="hash">#${d.hash.slice(0, 8)}</span>
+        <div class="seg">${lv}</div>
+      </div>
+      <pre>${highlight(d.text[String(lvl)], names)}</pre></div>`;
+  }).join('');
+  $('#main').innerHTML = `<div id="code"><div class="toolbar">${scopeSeg}<span>${list.length} of ${S.data.decls.length} shown · click L1/L2/L3 on a card to zoom just that definition</span></div>${cards || '<div class="empty">Nothing matches.</div>'}</div>`;
+}
+
+function renderMap() {
+  const all = S.data.decls.filter(d => S.showTests || d.kind !== 'test');
+  const by = Object.fromEntries(all.map(d => [d.name, d]));
+  const layer = {}, visiting = new Set();
+  const L = n => {
+    if (layer[n] !== undefined) return layer[n];
+    if (visiting.has(n)) return 0;
+    visiting.add(n);
+    const deps = (by[n]?.deps || []).filter(x => by[x] && x !== n);
+    layer[n] = deps.length ? 1 + Math.max(...deps.map(L)) : 0;
+    return layer[n];
+  };
+  all.forEach(d => L(d.name));
+  const cols = [];
+  all.forEach(d => (cols[layer[d.name]] ||= []).push(d));
+  const W = 168, H = 30, GX = 54, GY = 12, PAD = 24;
+  const pos = {};
+  cols.forEach((col, ci) => {
+    if (ci > 0) { // barycentre ordering reduces edge crossings
+      const bc = d => { const ys = d.deps.filter(x => pos[x]).map(x => pos[x].y); return ys.length ? ys.reduce((a, b) => a + b) / ys.length : 1e9; };
+      col.sort((a, b) => bc(a) - bc(b));
+    } else col.sort((a, b) => a.kind.localeCompare(b.kind) || a.label.localeCompare(b.label));
+    col.forEach((d, i) => pos[d.name] = { x: PAD + ci * (W + GX), y: PAD + 26 + i * (H + GY) });
+  });
+  const sel = S.sel && by[S.sel] ? by[S.sel] : null;
+  const near = sel ? new Set([sel.name, ...sel.deps, ...sel.used_by]) : null;
+  let edges = '';
+  for (const d of all) for (const dep of d.deps) {
+    if (!pos[dep] || dep === d.name) continue;
+    const a = pos[dep], b = pos[d.name];
+    const x1 = a.x + W, y1 = a.y + H / 2, x2 = b.x, y2 = b.y + H / 2, mx = (x1 + x2) / 2;
+    let cls = 'edge';
+    if (sel) cls += d.name === sel.name ? ' hot-in' : dep === sel.name ? ' hot-out' : ' fade';
+    edges += `<path class="${cls}" d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}"/>`;
+  }
+  let nodes = '';
+  for (const d of all) {
+    const p = pos[d.name], [cls] = status(d);
+    const col = { ok: 'var(--ok)', warn: 'var(--warn)', bad: 'var(--bad)' }[cls];
+    const label = d.label.length > 18 ? d.label.slice(0, 17) + '…' : d.label;
+    nodes += `<g class="node ${sel && d.name === sel.name ? 'sel' : ''} ${near && !near.has(d.name) ? 'fade' : ''}" data-pick="${esc(d.name)}" transform="translate(${p.x},${p.y})">
+      <title>${esc(d.label)}${d.effects.length ? ' / {' + esc(d.effects.join(', ')) + '}' : ''}</title>
+      <rect width="${W}" height="${H}"/>
+      <text class="k" x="10" y="19" fill="var(--${d.kind === 'fn' ? 'fn' : d.kind})" style="fill:var(--${d.kind})">${KIND[d.kind]}</text>
+      <text x="26" y="19">${esc(label)}</text>
+      ${col ? `<circle cx="${W - 12}" cy="${H / 2}" r="4" fill="${col}"/>` : ''}</g>`;
+  }
+  const heads = ['foundations', ...cols.slice(1).map((_, i) => 'layer ' + (i + 1))].map((t, i) =>
+    `<text class="col-label" x="${PAD + i * (W + GX)}" y="${PAD + 8}">${t}</text>`).join('');
+  const width = PAD * 2 + cols.length * (W + GX), height = PAD * 2 + 30 + Math.max(...cols.map(c => c.length)) * (H + GY);
+  $('#main').innerHTML = `<svg id="map" width="${width}" height="${height + 50}" viewBox="0 0 ${width} ${height + 50}">${heads}${edges}${nodes}</svg>
+    <div class="legend"><span>arrows run from a definition to what uses it</span>
+      <span><i style="background:var(--accent)"></i>uses</span><span><i style="background:var(--warn)"></i>used by</span>
+      <span><label><input type="checkbox" id="tests" ${S.showTests ? 'checked' : ''}> tests</label></span></div>`;
+}
+
+function verdictBox(v) {
+  if (!v) return '';
+  if (v.status === 'fuzzed') return `<div class="box ok">✓ Every contract held on <b>${v.cases}</b> generated inputs${v.discarded ? ` (${v.discarded} discarded by requires)` : ''}.</div>`;
+  if (v.status === 'counterexample') return `<div class="box bad"><b>✗ ${esc(v.kind)} violation</b>
+      <div class="row"><b>input</b> <code>${esc(JSON.stringify(v.args))}</code></div>
+      ${v.effects?.length ? `<div class="row"><b>effects</b> <code>${esc(JSON.stringify(v.effects))}</code></div>` : ''}
+      <div class="row mono">${esc(v.message)}</div></div>`;
+  if (v.status === 'incomplete') return `<div class="box warn">○ ${esc(v.message)}</div>`;
+  return `<div class="box">– ${esc(v.reason)}</div>`;
+}
+
+function renderRight() {
+  const d = S.sel && byName()[S.sel];
+  const refs = xs => xs.length ? `<div class="refs">${xs.map(n => `<a data-go="${esc(n)}">${esc(byName()[n]?.label ?? n)}</a>`).join('')}</div>` : '<span class="empty">none</span>';
+  let insp = '<div class="sec"><div class="empty">Select a definition to inspect it. Keys: 0–3 change level, / filters, Esc clears.</div></div>';
+  if (d) {
+    const history = S.data.log.map((e, i) => ({ e, i, c: (e.changes || []).find(c => c.name === d.name) })).filter(x => x.c).reverse();
+    insp = `<div class="sec"><h3><span>${d.kind}</span><span>#${d.hash.slice(0, 8)}</span></h3>
+        <div class="insp-name">${esc(d.label)}</div>${d.doc ? `<div class="doc">${esc(d.doc)}</div>` : ''}
+        <dl class="kv"><dt>interface</dt><dd>#${d.interface_hash.slice(0, 8)}</dd>
+        ${d.effects.length ? `<dt>effects</dt><dd>{${esc(d.effects.join(', '))}}</dd>` : ''}</dl></div>
+      ${d.errors.length || d.holes.length || d.verdict ? `<div class="sec"><h3>Status</h3>
+        ${d.errors.map(e => `<div class="box bad">${esc(e)}</div>`).join('')}
+        ${d.holes.map(h => `<div class="box warn"><b class="mono">?${esc(h.name)}</b>
+          <div class="row"><b>goal</b> <code>${esc(h.goal)}</code></div>
+          ${h.context.length ? `<div class="row"><b>context</b> <code>${esc(h.context.map(([n, t]) => n + ': ' + t).join(', '))}</code></div>` : ''}
+          ${h.effects.length ? `<div class="row"><b>effects</b> <code>{${esc(h.effects.join(', '))}}</code></div>` : ''}
+          ${h.obligations.map(o => `<div class="row"><b>must</b> <code>${esc(o)}</code></div>`).join('')}</div>`).join('')}
+        ${verdictBox(d.verdict)}</div>` : ''}
+      <div class="sec"><h3>Uses</h3>${refs(d.deps)}</div>
+      <div class="sec"><h3>Used by</h3>${refs(d.used_by)}</div>
+      ${history.length ? `<div class="sec"><h3>History</h3>${history.map(({ e, c }) =>
+        `<div class="log-e"><span class="when">${ago(e.time)}</span><div class="msg">${esc(e.message)}</div>
+         <div class="ch"><span class="tag ${tagCls(c)}">${tagTxt(c)}</span>${c.new ? '#' + c.new.slice(0, 8) : ''}</div></div>`).join('')}</div>` : ''}`;
+  }
+  const log = S.data.log.map((e, i) => ({ e, i })).reverse().slice(0, 30);
+  const act = log.length ? log.map(({ e, i }) => `<div class="log-e ${i >= S.newLog ? 'new' : ''}"><span class="when">${ago(e.time)}</span><div class="msg">${esc(e.message)}</div>
+      ${(e.changes || []).slice(0, 8).map(c => `<div class="ch" data-go="${esc(c.name)}"><span class="tag ${tagCls(c)}">${tagTxt(c)}</span><span class="n">${esc(c.name)}</span></div>`).join('')}
+      ${(e.changes || []).length > 8 ? `<div class="empty">+ ${(e.changes.length - 8)} more</div>` : ''}</div>`).join('')
+    : '<div class="empty">No history (viewing a file, or nothing committed yet).</div>';
+  $('#right').innerHTML = insp + `<div class="sec"><h3><span>Activity</span><span>${S.data.log.length} patches</span></h3>${act}</div>`;
+}
+const tagTxt = c => c.old == null ? '+ added' : c.new == null ? '− removed' : c.interface_changed ? '~ interface' : '~ impl';
+const tagCls = c => c.old == null ? 'add' : c.new == null ? 'del' : c.interface_changed ? 'iface' : '';
+function ago(t) {
+  if (!t) return '';
+  const s = Date.now() / 1000 - t;
+  return s < 60 ? 'just now' : s < 3600 ? Math.floor(s / 60) + 'm ago' : s < 86400 ? Math.floor(s / 3600) + 'h ago' : Math.floor(s / 86400) + 'd ago';
+}
+
+function syncHash() {
+  const h = new URLSearchParams({ level: S.level, ...(S.sel ? { sel: S.sel } : {}), ...(S.scope !== 'all' ? { scope: S.scope } : {}) });
+  history.replaceState(null, '', '#' + h);
+}
+(function readHash() {
+  const h = new URLSearchParams(location.hash.slice(1));
+  if (h.has('level')) S.level = +h.get('level');
+  if (h.has('sel')) S.sel = h.get('sel');
+  if (h.has('scope')) S.scope = h.get('scope');
+})();
+
+function render() {
+  if (!S.data) return;
+  syncHash();
+  const scroll = $('#main').scrollTop;
+  renderHeader(); renderLeft();
+  S.level === 0 ? renderMap() : renderCode();
+  renderRight();
+  $('#main').scrollTop = scroll;
+}
+
+// ---------- live polling ----------
+async function poll() {
+  try {
+    const r = await fetch('/api/state', { cache: 'no-store' });
+    const txt = await r.text();
+    $('#live').classList.remove('off'); $('#live span').textContent = 'live';
+    if (txt !== S.raw) {
+      S.raw = txt;
+      const data = JSON.parse(txt);
+      if (data.fatal) { $('#banner').innerHTML = `<div class="err">${esc(data.fatal)}</div>`; return; }
+      if (S.data) {
+        for (const d of data.decls) if (S.prevHash[d.name] && S.prevHash[d.name] !== d.hash || !S.prevHash[d.name]) S.flash.add(d.name);
+        S.newLog = S.prevLog;
+        setTimeout(() => { S.flash.clear(); }, 2500);
+      } else S.newLog = data.log.length;
+      S.prevHash = Object.fromEntries(data.decls.map(d => [d.name, d.hash]));
+      S.prevLog = data.log.length;
+      S.data = data;
+      if (S.sel && !byName()[S.sel]) S.sel = null;
+      render();
+    }
+  } catch (e) {
+    $('#live').classList.add('off'); $('#live span').textContent = 'disconnected';
+  }
+}
+
+// ---------- events ----------
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-card-level],[data-go],[data-pick],[data-l],[data-s]');
+  if (!t) return;
+  if (t.dataset.cardLevel) { S.over[t.dataset.name] = +t.dataset.cardLevel; render(); return; }
+  if (t.dataset.l) { S.level = +t.dataset.l; S.over = {}; render(); return; }
+  if (t.dataset.s) { if (!t.disabled) { S.scope = t.dataset.s; render(); } return; }
+  if (t.dataset.go) { if (S.level === 0 && e.target.closest('#right,#left,#banner') == null) S.level = 1; select(t.dataset.go); return; }
+  if (t.dataset.pick) select(t.dataset.pick, false);
+});
+document.addEventListener('dblclick', e => {
+  const t = e.target.closest('#map [data-pick]');
+  if (t) { S.level = 1; S.scope = 'slice'; select(t.dataset.pick); }
+});
+document.addEventListener('change', e => { if (e.target.id === 'tests') { S.showTests = e.target.checked; render(); } });
+$('#q').addEventListener('input', e => { S.q = e.target.value; render(); });
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') { if (e.key === 'Escape') { e.target.value = ''; S.q = ''; e.target.blur(); render(); } return; }
+  if ('0123'.includes(e.key)) { S.level = +e.key; S.over = {}; render(); }
+  else if (e.key === '/') { e.preventDefault(); $('#q').focus(); }
+  else if (e.key === 'Escape') { S.sel = null; S.scope = 'all'; render(); }
+});
+poll(); setInterval(poll, 1500);
+</script>
+</body>
+</html>

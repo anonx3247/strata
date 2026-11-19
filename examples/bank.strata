@@ -1,0 +1,26 @@
+/// Money in cents. Can never be negative.
+type Cents = Int where it >= 0
+
+type Account = { owner: String, balance: Cents }
+
+type WithdrawError =
+  | Insufficient { short_by: Cents }
+
+/// Take money out of an account, if there is enough.
+fn withdraw(a: Account, amount: Cents) -> Result[Account, WithdrawError]
+  ensures match it {
+    Ok(b) => b.balance == a.balance - amount,
+    Err(_) => amount > a.balance,
+  }
+{
+  if amount <= a.balance {
+    Ok(Account { owner: a.owner, balance: a.balance - amount })
+  } else {
+    Err(Insufficient { short_by: amount - a.balance })
+  }
+}
+
+test "can't overdraw" {
+  let a = Account { owner: "ana", balance: 500 }
+  assert withdraw(a, 800) == Err(Insufficient { short_by: 300 })
+}

@@ -6,6 +6,7 @@ mod parser;
 mod printer;
 mod store;
 mod types;
+mod ui;
 mod verify;
 mod view;
 
@@ -29,6 +30,7 @@ Codebase (stored as a database of syntax trees in .strata/):
   render                       print the full codebase as source (L3)
 
 Views:
+  ui [--port 7777]                live viewer in the browser (map, levels, holes, activity)
   view [SELECTOR] [--level 0-3]   SELECTOR: name | prefix* | slice:Name | a,b
   ast <name>                      the stored syntax tree as JSON
 
@@ -54,7 +56,7 @@ struct Args {
 impl Args {
     fn parse() -> Args {
         let raw: Vec<String> = std::env::args().skip(1).collect();
-        let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed"];
+        let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed", "--port"];
         let (mut pos, mut flags) = (Vec::new(), HashMap::<String, Vec<String>>::new());
         let mut i = 0;
         while i < raw.len() {
@@ -205,6 +207,17 @@ fn run() -> Result<bool, String> {
                     println!("    {:<12} {}", tag, c["name"].as_str().unwrap_or(""));
                 }
             }
+        }
+        "ui" => {
+            let port: u16 = args.val("--port").unwrap_or("7777").parse().map_err(|_| "bad --port")?;
+            let target = match args.val("--file") {
+                Some(f) => ui::Target::File(f.into()),
+                None => {
+                    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+                    ui::Target::Db(Codebase::find(&cwd).ok_or("no .strata codebase here (run `strata init`, or pass --file)")?)
+                }
+            };
+            ui::serve(target, port)?;
         }
         "render" => print!("{}", printer::program(load(&args)?.program())),
         "ast" => {
