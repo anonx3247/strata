@@ -229,21 +229,22 @@ fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, (ac
 
 ## Modules: units that meet only through contracts
 
+A **file is a module**, named after its path in the package: `shop/orders.strata` is `shop.orders`, and `main.strata` is the root module. There are no `module { }` blocks.
+
 ```rust
-module orders {
-  pub type Order = { id: OrderId, lines: NonEmpty[Line] }
-  pub fn ship[D: Db](mut db: D, id: OrderId) -> Result[Order, ShipError]  ensures ...
-  fn helper() -> Int { ... }            // private: invisible outside `orders`
-}
-module billing {
-  use orders.{Order, ship}              // or `use orders.*`, or write `orders.ship(x)`
-  pub fn invoice(o: Order) -> Cents { ... }
-}
+// orders.strata
+pub type Order = { id: OrderId, lines: NonEmpty[Line] }
+pub fn ship[D: Db](mut db: D, id: OrderId) -> Result[Order, ShipError]  ensures ...
+fn helper() -> Int { ... }            // private: invisible outside `orders`
+
+// billing.strata
+use orders.{Order, ship}              // or `use orders.*`, or write `orders.ship(x)`
+pub fn invoice(o: Order) -> Cents { ... }
 ```
 
 - A module is used **only through its public contract**: `pub` types, function signatures, `requires`/`ensures`, trait laws. Anything else is private, and using it from another module is an error ("`secret` is private to module `a`").
 - `strata interface orders` prints that contract, with a hash. Editing a private definition, or a function body without touching its signature, is reported as "implementation only": nothing outside the module can be affected. Changing a `pub` signature or type says so ("module core: its public contract changed").
-- **Files or database, your choice.** `--file` and `add` accept a folder, where each `.strata` file is a module named after its path (`shop/orders.strata` → `shop.orders`, `main.strata` → the root module). `render --split DIR` writes the codebase back out one file per module, and it round-trips. In the database, definitions are stored under qualified names, so `orders.Line` and `billing.Line` can coexist. `edit --module m` targets a module, and `view module:m` shows one.
+- **Files or database, your choice.** `--file` and `add` accept a folder, where each `.strata` file is a module named after its path (`shop/orders.strata` → `shop.orders`, `main.strata` → the root module). `render MODULE` prints one module (its file), and `render --split DIR` writes the codebase back out one file per module; both round-trip. A view that spans several modules (`view a,b`) labels each group with a `// ── module m` comment. In the database, definitions are stored under qualified names, so `orders.Line` and `billing.Line` can coexist. `edit --module m` targets a module, and `view module:m` shows one.
 - The viewer groups the sidebar by module (private definitions in italics) and lays the type map out as one region per module, with the modules others depend on placed first.
 - `examples/tasks/` is now four modules (`core`, `memory`, `print`, `sim`) that use each other only through their contracts.
 
@@ -344,6 +345,32 @@ Every view is Strata text, so an agent can edit what it sees and send it back wi
 
 Because results are keyed by content, `verify` reruns only what is affected by a change.
 
+## Packages
+
+A folder with a `strata.toml` is a **package**. Its `.strata` files are its modules, named after their path inside it (`shop/orders.strata` is `shop.orders`). `main.strata` is the root module and the default entry point; a library has none. A folder inside a package that has its own `strata.toml` is a separate package. A `.strata` file outside every package is a standalone script (like `examples/bank.strata`).
+
+```toml
+name = "tasks"                         # `strata init` uses the folder's name; it stays when the folder moves (a worktree, a rename)
+exports = ["core", "memory.MemQueue"]  # optional: modules or definitions other packages can use; default every `pub`
+
+[deps]                                 # accepted, not fetched yet
+json = "https://example.com/strata-json"
+
+[verify]                               # accepted, not enforced yet
+proven = ["core"]
+```
+
+`strata ci` rejects an export that names nothing, or a definition that isn't `pub`.
+
+## Git: merging definition by definition
+
+The `.strata` files are what you commit.
+
+- **`strata merge-file %O %A %B %P`** is a git merge driver. It pairs each side's definitions with the base's. A definition that only one side changed comes from that side, so edits to two functions never conflict, even when they sit on neighbouring lines. When both sides changed the same definition, its canonical text is merged line by line, and the result is kept only if it parses back into that one definition; otherwise conflict markers go around that definition alone. A rename on one side (a definition gone, and a new one that is the base's after `strata rename`) is applied to the other side, so new calls to the old name follow it. Then the file is type-checked inside its package: an error that neither side had on its own (ours changed a signature, theirs added a call to the old one) fails the merge. Sides that don't parse are merged as text.
+- **`strata setup-git`** points this clone's git config at the driver, and `.gitattributes` has `*.strata merge=strata`, so `git merge` and `git pull` use it.
+- **`strata sync [main]`** merges `origin/main` (or the local branch, without a remote) into the current branch with the driver, whether or not `setup-git` was run. It then runs `strata ci` and commits the merge only if that passes; otherwise the merge is left staged, so you can fix it or `git merge --abort`.
+- **`strata ci [--fix]`** is what CI runs: every package and script in the repository checks, every package's exports exist, and every `.strata` file is in canonical format (exactly what `render` prints; `--fix` rewrites it). GitHub doesn't run merge drivers, so `.github/workflows/strata.yml` runs `strata ci` on the pull request's merge ref. Make it a required check, and require branches to be up to date before merging. Then a branch lands only once it was merged with `main` by `strata sync` and the result checks.
+
 ## Source layout
 
 | File | What it is |
@@ -356,6 +383,8 @@ Because results are keyed by content, `verify` reruns only what is affected by a
 | `src/generate.rs` | value generators derived from types and refinements (used by mocks and fuzzing) |
 | `src/verify.rs` | compile-time refinement checks on literals; contract fuzzing |
 | `src/store.rs` | content-addressed codebase, dependency graph, patch log |
+| `src/merge.rs` | `strata merge-file`: three-way merge per definition, renames |
+| `src/package.rs` | packages: `strata.toml`, their files, finding packages and scripts |
 | `src/view.rs` | level-of-detail projections and selectors |
 | `src/ui.rs`, `src/ui/index.html` | `strata ui`: the live viewer (a std-only HTTP server and one page) |
 

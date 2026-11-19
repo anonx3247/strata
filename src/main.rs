@@ -4,6 +4,8 @@ mod history;
 mod generate;
 mod interp;
 mod lexer;
+mod merge;
+mod package;
 mod parser;
 mod printer;
 mod resolve;
@@ -17,7 +19,7 @@ use ast::*;
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::Read;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 use store::Codebase;
 
 const USAGE: &str = "strata — an experimental language for working with agents
@@ -25,7 +27,8 @@ const USAGE: &str = "strata — an experimental language for working with agents
 USAGE: strata [--file F.strata] <command> [args]
 
 Codebase (stored as a database of syntax trees in .strata/):
-  init                         create a codebase in the current directory
+  init                         create a codebase in the current directory, and its
+                               strata.toml (named after the folder) if there is none
   add <file.strata> [-m MSG]   import definitions from a file (checked, atomic)
   edit [-m MSG] [--rm NAME]..  read definitions from stdin; replace/add them by name;
                                commit only if the whole codebase still checks
@@ -39,9 +42,26 @@ Codebase (stored as a database of syntax trees in .strata/):
                                with --file, git: `diff [BASE]` compares BASE (default HEAD)
                                with the working tree, one step per commit
   interface <module>           a module's public contract: what other modules can use
-  render [--split DIR]         print the full codebase as source (L3), or one file per module
+  render [MODULE] [--split DIR]
+                               print a module as source (L3): the file that holds it (the
+                               root module is `main`); --split writes one file per module
   (`--file` and `add` accept a folder: each .strata file is a module named after its path;
    `edit --module m` puts unqualified definitions into module m)
+
+Packages: a folder with a strata.toml (`name = \"...\"`, optional `exports = [...]`);
+its .strata files are modules named after their path, main.strata is the entry point.
+A .strata file outside every package is a script.
+
+Git:
+  merge-file O A B [P]         git merge driver: merge each definition separately, then
+                               type-check; writes the result to A, fails on a conflict
+  setup-git                    use merge-file for `git merge` / `git pull` in this clone
+  sync [BRANCH]                merge BRANCH (default main; origin's if there is a remote)
+                               into this branch with the driver, then check; commits the
+                               merge only if `ci` passes
+  ci [--fix]                   what CI requires: every package and script in the repository
+                               checks, exports exist, and every .strata file is in canonical
+                               format (--fix rewrites them)
 
 Views:
   ui [--port 7777]                live viewer in the browser (map, levels, holes, activity)
@@ -120,22 +140,8 @@ fn read_sources(path: &str, module: Option<&str>) -> Result<Program, String> {
         let src = std::fs::read_to_string(root).map_err(|e| format!("{path}: {e}"))?;
         return parser::parse_module_file(&src, module.unwrap_or("")).map_err(|e| format!("{path}:{e}"));
     }
-    let mut files = Vec::new();
-    let mut todo = vec![root.to_path_buf()];
-    while let Some(dir) = todo.pop() {
-        for entry in std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-            let p = entry.map_err(|e| e.to_string())?.path();
-            if p.is_dir() {
-                if !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')) {
-                    todo.push(p);
-                }
-            } else if p.extension().is_some_and(|e| e == "strata") {
-                let src = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-                files.push((p.strip_prefix(root).unwrap().to_path_buf(), src));
-            }
-        }
-    }
-    parse_files(files)
+    // packages nested in this folder are separate programs
+    parse_files(package::files(root)?)
 }
 
 /// Parse a folder's `.strata` files, given as (path relative to the folder,
@@ -201,8 +207,14 @@ fn run() -> Result<bool, String> {
     match cmd {
         "help" | "--help" => println!("{USAGE}"),
         "init" => {
-            Codebase::init(&std::env::current_dir().map_err(|e| e.to_string())?)?;
+            let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+            Codebase::init(&cwd)?;
             println!("initialized empty Strata codebase in {}/", store::DIR);
+            if !cwd.join(package::FILE).exists() {
+                let toml = package::template(&cwd);
+                std::fs::write(cwd.join(package::FILE), &toml).map_err(|e| e.to_string())?;
+                println!("wrote {}: {}", package::FILE, toml.trim());
+            }
         }
         "add" | "edit" => {
             let Source::Db(mut cb) = load(&args)? else { return Err("`add`/`edit` need a codebase".into()) };
@@ -349,6 +361,109 @@ fn run() -> Result<bool, String> {
             println!();
             print!("{}", diff::render_text(&j));
         }
+        "merge-file" => {
+            let (Some(o), Some(a), Some(b)) = (args.pos.get(1), args.pos.get(2), args.pos.get(3)) else {
+                return Err("usage: strata merge-file BASE OURS THEIRS [PATH]  (git: `strata merge-file %O %A %B %P`)".into());
+            };
+            let path = args.pos.get(4).unwrap_or(a);
+            let read = |f: &str| std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"));
+            let (base, ours, theirs) = (read(o)?, read(a)?, read(b)?);
+            match merge::merge(&base, &ours, &theirs) {
+                Ok(m) => {
+                    std::fs::write(a, &m.text).map_err(|e| format!("{a}: {e}"))?;
+                    let mut ok = m.conflicts.is_empty();
+                    for n in &m.notes {
+                        eprintln!("strata: {path}: {n}");
+                    }
+                    for c in &m.conflicts {
+                        eprintln!("strata: {path}: conflict in {c}");
+                    }
+                    if ok {
+                        match merge::new_errors(path, &m.text, &ours, &theirs) {
+                            Ok(errs) if !errs.is_empty() => {
+                                ok = false;
+                                eprintln!("strata: {path}: merged definition by definition, but the result doesn't check:");
+                                for e in errs {
+                                    eprintln!("    {e}");
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(e) => eprintln!("strata: {path}: not type-checked: {e}"),
+                        }
+                    }
+                    return Ok(ok);
+                }
+                Err(e) => {
+                    eprintln!("strata: {path}: {e}; merging it as text");
+                    let (text, clean) = merge::text_merge(&base, &ours, &theirs)?;
+                    std::fs::write(a, text).map_err(|e| format!("{a}: {e}"))?;
+                    return Ok(clean);
+                }
+            }
+        }
+        "setup-git" => {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let driver = format!("'{}' merge-file %O %A %B %P", exe.display());
+            git_out(&["config", "merge.strata.name", "Strata: merge each definition separately, then type-check"])?;
+            git_out(&["config", "merge.strata.driver", &driver])?;
+            println!("git will merge .strata files with: {driver}");
+            let top = git_out(&["rev-parse", "--show-toplevel"])?;
+            let attrs = std::fs::read_to_string(std::path::Path::new(top.trim()).join(".gitattributes")).unwrap_or_default();
+            if !attrs.lines().any(|l| l.starts_with("*.strata") && l.split_whitespace().any(|w| w == "merge=strata")) {
+                println!("add `*.strata merge=strata` to .gitattributes (and commit it) so git uses it");
+            }
+        }
+        "sync" => {
+            let branch = args.pos.get(1).map(|s| s.as_str()).unwrap_or("main");
+            if !git_out(&["status", "--porcelain", "--untracked-files=no"])?.trim().is_empty() {
+                return Err("there are uncommitted changes; commit them first".into());
+            }
+            let target = if git_out(&["remote", "get-url", "origin"]).is_ok() {
+                git_out(&["fetch", "origin", branch])?;
+                format!("origin/{branch}")
+            } else {
+                branch.to_string()
+            };
+            git_out(&["rev-parse", "--verify", &format!("{target}^{{commit}}")]).map_err(|_| format!("no branch `{target}`"))?;
+            let is_ancestor = |a: &str, b: &str| Command::new("git").args(["merge-base", "--is-ancestor", a, b]).status().is_ok_and(|s| s.success());
+            if is_ancestor(&target, "HEAD") {
+                println!("already up to date with {target}");
+                return Ok(true);
+            }
+            if is_ancestor("HEAD", &target) {
+                git_out(&["merge", "--ff-only", &target])?;
+                println!("fast-forwarded to {target}");
+                return ci(false);
+            }
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let attrs = git_out(&["rev-parse", "--git-path", "strata-sync-attributes"])?.trim().to_string();
+            std::fs::write(&attrs, "*.strata merge=strata\n").map_err(|e| format!("{attrs}: {e}"))?;
+            let status = Command::new("git")
+                .args(["-c", "merge.strata.name=strata", "-c"])
+                .arg(format!("merge.strata.driver='{}' merge-file %O %A %B %P", exe.display()))
+                .args(["-c", &format!("core.attributesFile={attrs}"), "merge", "--no-ff", "--no-commit", &target])
+                .status()
+                .map_err(|e| format!("git: {e}"));
+            let _ = std::fs::remove_file(&attrs);
+            status?;
+            let conflicted = git_out(&["diff", "--name-only", "--diff-filter=U"])?;
+            if !conflicted.trim().is_empty() {
+                eprintln!("\nconflicts with {target} in:");
+                for f in conflicted.lines() {
+                    eprintln!("  {f}");
+                }
+                eprintln!("resolve them, run `strata ci`, then `git commit` (or `git merge --abort`)");
+                return Ok(false);
+            }
+            if !ci(false)? {
+                eprintln!("\nthe merge with {target} doesn't check, so it is staged but not committed:");
+                eprintln!("fix it, run `strata ci`, then `git commit` (or `git merge --abort`)");
+                return Ok(false);
+            }
+            git_out(&["commit", "--no-edit"])?;
+            println!("merged {target}");
+        }
+        "ci" => return ci(args.flag("--fix")),
         "log" => {
             let Source::Db(cb) = load(&args)? else { return Err("`log` needs a codebase".into()) };
             for e in cb.log() {
@@ -399,7 +514,26 @@ fn run() -> Result<bool, String> {
             let src = load(&args)?;
             let p = src.program();
             match args.val("--split") {
-                None => print!("{}", printer::program(p)),
+                None => {
+                    // a module is a file: print one
+                    let mut mods: Vec<String> = p.decls.iter().map(|d| d.module.clone()).collect();
+                    mods.sort();
+                    mods.dedup();
+                    let m = match (args.pos.get(1), mods.as_slice()) {
+                        (Some(m), _) if m == "main" => String::new(),
+                        (Some(m), _) if mods.contains(m) => m.clone(),
+                        (Some(m), _) => return Err(format!("no module `{m}` (modules: {})", mods.iter().map(|m| if m.is_empty() { "main" } else { m }).collect::<Vec<_>>().join(", "))),
+                        (None, [] | [_]) => mods.first().cloned().unwrap_or_default(),
+                        (None, _) => {
+                            return Err(format!(
+                                "{} modules, one file each: `render MODULE` prints one ({}), `render --split DIR` writes them all",
+                                mods.len(),
+                                mods.iter().map(|m| if m.is_empty() { "main" } else { m }).collect::<Vec<_>>().join(", ")
+                            ))
+                        }
+                    };
+                    print!("{}", printer::module_file(p, &m));
+                }
                 Some(dir) => {
                     // one file per module; the root module goes to main.strata
                     let mut mods: Vec<String> = p.decls.iter().map(|d| d.module.clone()).collect();
@@ -649,6 +783,78 @@ fn run() -> Result<bool, String> {
         other => return Err(format!("unknown command `{other}` (try `strata help`)")),
     }
     Ok(true)
+}
+
+fn git_out(args: &[&str]) -> Result<String, String> {
+    let o = Command::new("git").args(args).output().map_err(|e| format!("git: {e}"))?;
+    if !o.status.success() {
+        return Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&o.stdout).to_string())
+}
+
+/// What CI requires, over the whole repository (or the current folder outside
+/// git): every package and every script checks, every package's exports name
+/// something, and every `.strata` file is in canonical format (what `render`
+/// prints). `fix` rewrites the files that aren't.
+fn ci(fix: bool) -> Result<bool, String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let top = git_out(&["rev-parse", "--show-toplevel"]).map(|t| std::path::PathBuf::from(t.trim())).unwrap_or(cwd);
+    let top = std::fs::canonicalize(&top).unwrap_or(top);
+    let (packages, scripts) = package::discover(&top)?;
+    if packages.is_empty() && scripts.is_empty() {
+        return Err(format!("no .strata files under {}", top.display()));
+    }
+    let mut ok = true;
+    for path in packages.iter().chain(&scripts) {
+        let shown = path.strip_prefix(&top).unwrap_or(path).display().to_string();
+        let pkg = if path.is_dir() { Some(package::load(path)?) } else { None };
+        let files = package::files(path)?;
+        let mut parsed = true;
+        for (rel, src) in &files {
+            let file = if rel.as_os_str().is_empty() { shown.clone() } else { format!("{shown}/{}", rel.display()) };
+            match parser::parse_module_file(src, "") {
+                Err(e) => {
+                    ok = false;
+                    parsed = false;
+                    println!("✗ {file}: doesn't parse: {e}");
+                }
+                Ok(p) if printer::program(&p) != *src => {
+                    if fix {
+                        std::fs::write(top.join(&file), printer::program(&p)).map_err(|e| format!("{file}: {e}"))?;
+                        println!("  {file}: rewritten in canonical format");
+                    } else {
+                        ok = false;
+                        println!("✗ {file}: not in canonical format (`strata ci --fix` rewrites it)");
+                    }
+                }
+                Ok(_) => {}
+            }
+        }
+        if !parsed {
+            continue;
+        }
+        let p = package::parse(package::files(path)?)?;
+        let rep = full_check(&p);
+        let mut errors: Vec<String> = rep.errors.iter().map(|e| format!("error in {}: {}", e.decl, e.msg)).collect();
+        if let Some(pkg) = &pkg {
+            errors.extend(package::bad_exports(pkg, &p).into_iter().map(|e| format!("{}: {e}", package::FILE)));
+        }
+        let label = match &pkg {
+            Some(pkg) => format!("package {} ({shown})", pkg.name),
+            None => shown.clone(),
+        };
+        if errors.is_empty() {
+            println!("✓ {label}: {} definitions check ({} open holes)", p.decls.len(), rep.holes.len());
+        } else {
+            ok = false;
+            println!("✗ {label}:");
+            for e in errors {
+                println!("    {e}");
+            }
+        }
+    }
+    Ok(ok)
 }
 
 fn main() -> ExitCode {

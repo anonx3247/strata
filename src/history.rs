@@ -178,7 +178,7 @@ pub fn git_range(path: &Path, base: Option<&str>) -> Result<Range, String> {
         prev = after;
     }
     let head = crate::read_sources(&path.to_string_lossy(), None)?;
-    if crate::printer::program(&head) != crate::printer::program(&prev) {
+    if head != prev {
         steps.push(Step { id: steps.len() + 1, title: "uncommitted changes".into(), group: "working tree".into(), when: None, before: prev, after: head.clone(), renames: vec![] });
     }
     Ok(Range {
