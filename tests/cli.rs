@@ -76,6 +76,237 @@ fn verify_finds_counterexamples() {
     assert!(!ok && out.contains("does not satisfy `Cents`"), "{out}");
 }
 
+/// `name` passed `verify`: proven, or (without a solver) fuzzed.
+fn passed(out: &str, name: &str) -> bool {
+    out.contains(&format!("✓ {name} ")) || out.contains(&format!("~ {name} "))
+}
+
+fn has_solver() -> bool {
+    let bin = std::env::var("STRATA_SOLVER").unwrap_or("z3".into());
+    Command::new(bin).arg("--version").output().is_ok_and(|o| o.status.success())
+}
+
+#[test]
+fn termination_is_shown_or_flagged() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("termination");
+    let src = "fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }
+fn gcd(a: Natural, b: Natural) -> Natural { if b == 0 { a } else { gcd(b, a % b) } }
+fn length(xs: List[Int]) -> Natural { match xs { [] => 0, [_, ..rest] => 1 + length(rest) } }
+fn count_up(n: Natural) -> Natural {
+  let mut i = 0
+  while i < n {
+    i = i + 1
+  }
+  i
+}
+fn forever(n: Int) -> Int { forever(n) }
+fn spin(n: Int) -> Int {
+  let mut k = n
+  loop {
+    if k == 1 { break }
+    k = k - 1
+  }
+  k
+}
+fn trusted(n: Int) -> Int
+  terminates
+{
+  spin(n)
+}
+fn uses_spin(n: Int) -> Int { spin(n) + 1 }
+fn uses_trusted(n: Int) -> Int { trusted(n) + 1 }
+fn up(n: Int) -> Int { if n > 100 { n } else { up(n + 1) } }
+fn search(xs: List[Int], t: Int, lo: Int, hi: Int) -> Bool {
+  if lo >= hi {
+    false
+  } else {
+    let mid = (lo + hi) / 2
+    match get(xs, mid) {
+      Some(x) => if x < t { search(xs, t, mid + 1, hi) } else { x == t || search(xs, t, lo, mid) },
+      None => false,
+    }
+  }
+}
+fn ack(m: Natural, n: Natural) -> Natural {
+  if m == 0 { n + 1 } else { if n == 0 { ack(m - 1, 1) } else { ack(m - 1, ack(m, n - 1)) } }
+}
+fn total(xs: List[Int]) -> Int { if len(xs) == 0 { 0 } else { total(drop(xs, 1)) } }
+fn skip2(n: Int) -> Int { if n == 0 { 0 } else { skip2(n - 2) } }
+";
+    std::fs::write(d.join("t.strata"), src).unwrap();
+    let (_, out) = strata(&["--file", "t.strata", "verify", "--checks", "--cases", "20"], &d, None);
+    let after = |name: &str| -> String {
+        let mut lines = out.lines().skip_while(|l| l.split_whitespace().nth(1) != Some(name));
+        lines.next();
+        lines.take_while(|l| l.starts_with("    ")).collect::<Vec<_>>().join("\n")
+    };
+    let measured = |name: &str, m: &str| after(name).contains(&format!("terminates: {m} goes down on every recursive call"));
+    assert!(measured("fact", "`n`") && measured("gcd", "`b`") && measured("up", "`100 - n`") && measured("search", "`hi - lo`"), "{out}");
+    assert!(measured("ack", "the pair (`m`, `n`), compared in order,") && measured("total", "`len(xs)`"), "{out}");
+    assert!(after("skip2").contains("may not terminate"), "skip2(1) never ends: {out}");
+    assert!(after("length").contains("smaller piece of `xs`"), "{out}");
+    assert!(after("count_up").contains("`n - i` goes down"), "{out}");
+    assert!(after("forever").contains("may not terminate: it calls itself"), "{out}");
+    assert!(after("spin").contains("may not terminate: it has a `loop`"), "{out}");
+    assert!(after("uses_spin").contains("it calls `spin`, which may not terminate"), "{out}");
+    assert!(after("uses_trusted").contains("terminates if `trusted` does (marked `terminates`"), "{out}");
+    // policies
+    let (ok, out) = strata(&["--file", "t.strata", "verify", "--require", "terminates", "--cases", "20"], &d, None);
+    assert!(!ok && out.contains("policy: `spin` may not terminate") && !out.contains("policy: `uses_trusted`"), "{out}");
+    let (ok, out) = strata(&["--file", "t.strata", "verify", "fact,count_up", "--require", "no-recursion"], &d, None);
+    assert!(!ok && out.contains("policy: `fact` is recursive") && !out.contains("`count_up` is recursive"), "{out}");
+    let (ok, out) = strata(&["--file", "t.strata", "verify", "count_up", "--require", "terminates,proven"], &d, None);
+    assert!(ok, "{out}");
+    // `terminates` round-trips
+    let (_, r) = strata(&["--file", "t.strata", "render"], &d, None);
+    assert!(r.contains("fn trusted(n: Int) -> Int\n  terminates {"), "{r}");
+    std::fs::write(d.join("r.strata"), &r).unwrap();
+    let (_, r2) = strata(&["--file", "r.strata", "render"], &d, None);
+    assert_eq!(r, r2);
+}
+
+#[test]
+fn contracts_see_through_helpers_that_terminate() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("transparent");
+    let src = "fn small(n: Int) -> Bool { 0 <= n && n < 10 }
+type Digit = Int where small(it)
+fn zero() -> Digit { 0 }
+fn ten() -> Digit { 10 }
+fn up(n: Int) -> Bool { if n > 100 { true } else { up(n + 1) } }
+type Odd = Int where up(it)
+fn odd() -> Odd { 1 }
+";
+    std::fs::write(d.join("h.strata"), src).unwrap();
+    let (_, out) = strata(&["--file", "h.strata", "verify", "zero,ten,odd", "--cases", "20"], &d, None);
+    assert!(out.contains("✓ zero") && out.contains("proven"), "a terminating helper is seen through: {out}");
+    assert!(out.contains("✗ ten") && out.contains("found by the solver"), "{out}");
+    assert!(out.contains("~ odd") && out.contains("the result of `up` (only its contract is known)"), "a helper that may not terminate is not unfolded: {out}");
+}
+
+#[test]
+fn smt_handles_variants_patterns_and_declared_types() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("smt-patterns");
+    let src = "type Shape =
+  | Square { side: Positive }
+  | Circle { radius: Positive }
+fn area(s: Shape) -> Positive { match s { Square { side } => side * side, Circle { radius } => 3 * radius * radius } }
+fn grow(c: Circle) -> Circle { Circle { radius: c.radius + 1 } }
+fn small(n: Int) -> Natural { match n { 0 | 1 | 2 => n, where it < 0 => 0, _ => 3 } }
+fn bad_small(n: Int) -> Natural { match n { 0 | 1 | -2 => n, _ => 3 } }
+fn countdown(start: Natural) -> Natural {
+  let mut k: Natural = start
+  while k > 0 {
+    k = k - 1
+  }
+  k
+}
+fn bad_countdown(start: Natural) -> Int {
+  let mut k: Natural = start
+  k = k - 1
+  k
+}
+";
+    std::fs::write(d.join("p.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", "p.strata", "verify", "--cases", "20"], &d, None);
+    assert!(!ok, "{out}");
+    for name in ["area", "grow", "small", "countdown"] {
+        assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
+    }
+    assert!(out.contains("✗ bad_small") && out.contains("input:   [-2]"), "{out}");
+    assert!(out.contains("✗ bad_countdown") && out.contains("assigning `k`: -1 does not satisfy `Natural`"), "a declared type holds after assignment: {out}");
+    // what a `mut` argument held before the call is forgotten, field or not
+    let src = "type Box = { n: Int }
+fn bump(mut x: Int) -> () { x = x - 5 }
+fn stale(a: Natural) -> Natural {
+  let mut x = a
+  bump(mut x)
+  x
+}
+fn stale_field(a: Natural) -> Natural {
+  let mut b = Box { n: a }
+  bump(mut b.n)
+  b.n
+}
+fn fine(a: Natural) -> Natural {
+  let mut x = a
+  bump(mut x)
+  a
+}
+";
+    std::fs::write(d.join("m.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", "m.strata", "verify", "--cases", "20"], &d, None);
+    assert!(!ok && out.contains("✗ stale ") && out.contains("✗ stale_field") && out.contains("✓ fine"), "{out}");
+}
+
+#[test]
+fn smt_proves_contracts_and_refutes_bugs() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("smt");
+    let src = r#"type Cents = Int where it >= 0
+type Quantity = Int where 1 <= it && it <= 99
+type Code = String where matches(it, "ord_[a-z0-9]{6}")
+type Line = { qty: Quantity, unit_price: Cents }
+
+fn dec(n: Int where it > 0) -> Natural { n - 1 }
+fn dec2(n: Int where it > 0) -> Natural { n - 2 }
+fn discount(amount: Cents) -> Cents
+  ensures it <= amount
+{
+  if amount >= 10000 { amount - amount / 10 } else { amount }
+}
+fn half(n: Int) -> Int { 100 / n }
+fn bump(q: Quantity) -> Quantity { q + 1 }
+fn code(s: String where matches(it, "[a-z]{6}")) -> Code { "ord_" + s }
+fn bad_code(s: String) -> Code { "ord_" + s }
+fn caller(x: Int) -> Natural { if x > 0 { dec(x) } else { 0 } }
+fn bad_caller(x: Int) -> Natural { dec(x) }
+fn count_up(n: Natural) -> Natural {
+  let mut i = 0
+  while i < n {
+    i = i + 1
+  }
+  i
+}
+fn first_qty(xs: List[Quantity]) -> Quantity { match xs { [] => 1, [x, ..] => x } }
+fn line_total(l: Line) -> Cents { l.qty * l.unit_price }
+fn total(lines: List[Line]) -> Cents { sum(lines.map(line_total)) }
+fn checked(a: Int, b: Int) -> Int requires b != 0 { a % b }
+fn use_checked(a: Int) -> Int { checked(a, a - 3) }
+"#;
+    std::fs::write(d.join("s.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", "s.strata", "verify"], &d, None);
+    assert!(!ok, "{out}");
+    let line = |name: &str| out.lines().find(|l| l.split_whitespace().nth(1) == Some(name)).unwrap_or("").to_string();
+    for name in ["dec", "discount", "code", "caller", "count_up", "first_qty", "line_total", "total", "checked"] {
+        assert!(line(name).starts_with("✓") && line(name).contains("proven"), "{name} should be proven: {out}");
+    }
+    for name in ["dec2", "half", "bump", "bad_code", "bad_caller", "use_checked"] {
+        assert!(line(name).starts_with("✗") && line(name).contains("found by the solver"), "{name} should be refuted: {out}");
+    }
+    assert!(out.contains("division by zero") && out.contains("100 does not satisfy `Quantity`"), "{out}");
+    // what can't be proven is fuzzed, with the reason
+    std::fs::write(d.join("f.strata"), "fn mean(xs: List[Int]) -> Int where it >= 0 { if len(xs) == 0 { 0 } else { abs(xs.fold(0, (a, x) -> a + x)) / len(xs) } }\nfn neg(xs: List[Int]) -> Natural { xs.fold(0, (a, x) -> a + x) }\n").unwrap();
+    let (ok, out) = strata(&["--file", "f.strata", "verify"], &d, None);
+    assert!(!ok && out.contains("~ mean") && out.contains("not proven: result of `mean`") && out.contains("`fold` is not modelled") && out.contains("✗ neg") && out.contains("found by the fuzzer"), "{out}");
+    let (ok, out) = strata(&["--file", "s.strata", "verify", "bad_caller", "--smt"], &d, None);
+    assert!(ok && out.contains("(check-sat)") && out.contains("(assert (not (> v0 0)))"), "{out}");
+}
+
 #[test]
 fn codebase_edits_are_checked_and_atomic() {
     let d = tmp("db");
@@ -159,7 +390,7 @@ fn inline_refinements_in_signatures() {
     )
     .unwrap();
     let (ok, out) = strata(&["--file", "i.strata", "verify"], &d, None);
-    assert!(!ok && out.contains("✓ pick") && out.contains("does not satisfy `Int where it * 2 <= n`"), "{out}");
+    assert!(!ok && passed(&out, "pick") && out.contains("does not satisfy `Int where it * 2 <= n`"), "{out}");
     std::fs::write(d.join("c.strata"), "fn pick(level: Int where 5 <= it && it <= 13) -> Int { level }\nfn caller() -> Int { pick(20) }\n").unwrap();
     let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
     assert!(!ok && out.contains("20 does not satisfy `Int where 5 <= it && it <= 13`"), "{out}");
@@ -172,8 +403,8 @@ fn traits_laws_and_distinct_types() {
     let (ok, out) = strata(&["--file", &ex, "test"], &d, None);
     assert!(ok && out.contains("0 failed"), "{out}");
     let (ok, out) = strata(&["--file", &ex, "verify"], &d, None);
-    assert!(!ok && out.contains("law `associative` does not hold for `Midpoint`") && out.contains("✓ law associative for Money"), "{out}");
-    assert!(out.contains("✓ combine_all") && out.contains("✓ receipt"), "bounded generics fuzzed at an implementing type: {out}");
+    assert!(!ok && out.contains("law `associative` does not hold for `Midpoint`") && out.contains("~ law associative for Money"), "{out}");
+    assert!(passed(&out, "combine_all") && passed(&out, "receipt"), "bounded generics checked at an implementing type: {out}");
     std::fs::write(
         d.join("e.strata"),
         "type Name = String\n\
@@ -251,8 +482,8 @@ fn procedural_mutation_is_explicit() {
         "type Line = { qty: Int where 1 <= it && it <= 99 }\n\
          fn restock(mut line: Line, extra: Int) -> () { line.qty = line.qty + extra }\n\
          fn sum(xs: List[Int]) -> Int {\n  let mut s = 0\n  for x in xs { s = s + x }\n  s\n}\n\
-         test \"ok\" {\n  let mut l = Line { qty: 2 }\n  restock(l, 3)\n  assert l.qty == 5\n  assert sum([1, 2, 3]) == 6\n}\n\
-         test \"refined\" {\n  let mut l = Line { qty: 98 }\n  restock(l, 5)\n}\n",
+         test \"ok\" {\n  let mut l = Line { qty: 2 }\n  restock(mut l, 3)\n  assert l.qty == 5\n  assert sum([1, 2, 3]) == 6\n}\n\
+         test \"refined\" {\n  let mut l = Line { qty: 98 }\n  restock(mut l, 5)\n}\n",
     )
     .unwrap();
     let (ok, out) = strata(&["--file", "m.strata", "test"], &d, None);
@@ -260,6 +491,29 @@ fn procedural_mutation_is_explicit() {
     std::fs::write(d.join("e.strata"), "fn f() -> Int {\n  let x = 1\n  x = 2\n  x\n}\nfn g() -> Int {\n  let mut y = 0\n  let add = z -> { y = y + z; y }\n  add(1)\n}\n").unwrap();
     let (ok, out) = strata(&["--file", "e.strata", "check"], &d, None);
     assert!(!ok && out.contains("`x`: it is not mutable") && out.contains("a closure cannot change `y`"), "{out}");
+
+    // a call that can change an argument says so: `mut` at the call site
+    std::fs::write(
+        d.join("c.strata"),
+        "type Line = { qty: Int }\n\
+         trait Counter { fn tick(mut self) -> () }\n\
+         impl Counter for Line { fn tick(mut self) -> () { self.qty = self.qty + 1 } }\n\
+         fn restock(mut line: Line, extra: Int) -> () { line.qty = line.qty + extra }\n\
+         fn qty(line: Line) -> Int { line.qty }\n\
+         fn unmarked() -> Int {\n  let mut l = Line { qty: 1 }\n  restock(l, 2)\n  l.qty\n}\n\
+         fn needless() -> Int {\n  let mut l = Line { qty: 1 }\n  qty(mut l)\n}\n\
+         fn builtin() -> Int {\n  let mut xs = [1]\n  len(mut xs)\n}\n\
+         fn receiver() -> Int {\n  let mut l = Line { qty: 1 }\n  l.tick()\n  restock(mut l, 1)\n  l.qty\n}\n",
+    )
+    .unwrap();
+    let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
+    assert!(!ok, "{out}");
+    assert!(out.contains("in unmarked: `restock` can change its `mut line` parameter: write `mut l` to show that `l` may change"), "{out}");
+    assert!(out.contains("in needless: `mut` on an argument of `qty`, but its parameter `line` is not `mut`"), "{out}");
+    assert!(out.contains("in builtin:"), "{out}");
+    assert!(!out.contains("in receiver"), "{out}");
+    let (ok, out) = strata(&["--file", "c.strata", "render"], &d, None);
+    assert!(ok && out.contains("restock(mut l, 1)"), "{out}");
 }
 
 #[test]
@@ -1034,7 +1288,7 @@ fn ok_list() -> Int {
 }
 fn bad_mut() -> Int {
   let mut cs = [Circle { radius: 1 }]
-  grow(cs)
+  grow(mut cs)
   len(cs)
 }
 fn inner() -> Result[Int, TooBig] { Err(TooBig) }
@@ -1067,13 +1321,13 @@ fn lit() -> Int {
 fn set_neg(mut k: Int) -> () { k = -3 }
 fn wb() -> Int {
   let mut p: Positive = 4
-  set_neg(p)
+  set_neg(mut p)
   p
 }
 fn bump(mut k: Positive) -> () { k = k + 1 }
 fn wb_ok() -> Int {
   let mut p: Natural = 1
-  bump(p)
+  bump(mut p)
   p
 }
 "#;

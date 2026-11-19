@@ -64,7 +64,8 @@ Diff, not yet: trait-method/variant renames; "N matches must handle the new vari
 
 ## Open topics the user wants to discuss and decide on (do not implement without agreement)
 
-- **Verification strategy.** Today: compile-time checks on literals, runtime contract checks, and fuzzing (`strata verify`, with results cached by content hash). The options discussed are summarised at the end of the last conversation and in `README.md` under the roadmap.
+- **Policy file.** `verify --require proven,terminates,no-recursion` exists as flags. The user wants policies per project or module ("require `proven` for these modules", "ban recursion"). Where they live (a file next to the code, or in the codebase) is not decided.
+- **Complexity / cost.** Separate from termination: a function can terminate and still take exponential time (naive `fib`, Ackermann). The user raised it as "another issue"; nothing is designed yet.
 - **Transpilation / interop** with Python (Pydantic, JSON as the boundary), TypeScript and Rust. Later.
 - **Strata IDE**: the viewer as a standalone desktop app (Tauri; the backend is already Rust), speaking ACP (Agent Client Protocol) so agents such as Claude Code or Codex run inside it, with a Strata MCP server giving them structural tools (slices, check, edit, rename). The viewer would show live where each agent is working (log entries tagged with the agent's session). Idea stage.
 
@@ -73,7 +74,7 @@ Diff, not yet: trait-method/variant renames; "N matches must handle the new vari
 
 - Trait methods must take `self`; there is no `fn empty() -> Self` dispatch yet, and method names must be unique across traits.
 - No host bindings (FFI), so a real SQLite backend isn't possible yet.
-- `strata verify` on the tasks example takes about 35s; the slowest part is generating `MemQueue` values that satisfy its invariants.
+- `strata verify --force` on the tasks example takes a few seconds (proven functions are not fuzzed); the slowest part is still generating `MemQueue` values that satisfy its invariants.
 - Typed lambda parameters (`(n: Positive) -> …`) are checked statically but their refinements are not enforced at runtime yet.
 - `!` converts errors only by fitting (a variant into its sum, a member into a union), not with a conversion function. f-strings have no format specs (`{x:.2}`).
 
@@ -96,6 +97,20 @@ Diff, not yet: trait-method/variant renames; "N matches must handle the new vari
   4. trait laws.
   Fuzzing remains the fallback for whatever the solver can't decide.
 - Interactive proofs (Lean/Coq-style) come later, as a bigger separate project.
+
+**Built (step 1 and most of 2)**: `src/smt.rs` and `verify::check_fn`. See README › Verification. Results: `Proven { checks }`, `Fuzzed { cases, discarded, proven, unproven }` (each unproven check with its reason), `Counterexample { .., found_by: solver|fuzzer }` (a solver model is replayed in the interpreter first, and counts only if it really fails), `Incomplete`. Z3 through SMT-LIB text over a pipe (`z3 -in`, `rlimit` for determinism, solver version in the cache key); `verify --smt` prints the queries, `--checks` lists proven checks. Calls already use the callee's contract (requires checked, ensures assumed), and the same call with the same arguments gets the same result (memo), so refinements re-evaluated in assumptions and goals line up. Impl methods are proven against their trait's contract; laws are still fuzzed only.
+Not yet: `assumed` (no outside code exists yet); loop invariants (loops forget what they change); list contents (a list's elements are known only as "all valid values of type T" when it crossed a checked boundary or came from `map` with a named function); floats, dicts, sets; `sum` is modelled only as "≥ 0 for non-negative elements, 0 when empty", `all`/`any` only when empty; generic callees lose precision (a result `MemQueue[P, E]` doesn't satisfy a `MemQueue[Int, String]` check, because element types are compared syntactically); regexes with `\d`, `\w`, `\s` or flags are not translated (Rust's are Unicode-aware); values of a union type (`Square | Circle`) are unknowns, so checks on them are fuzzed (variants used as types, or-patterns, `where` patterns and type-name patterns are modelled); cvc5 is not wired in (`STRATA_SOLVER` picks the binary, but the flags are Z3's).
+
+### Termination and helpers (decided with the user, session 3; built)
+- Termination is reported for every function: terminates (with how) / may not terminate (with why) / assumed (`terminates` marker, after the contract). See README › Verification. The viewer shows "may not terminate" in orange; diffs show it in the verification word.
+- **No `decreases` clauses** for now (user: a `for` loop covers the case where you can name the bound). Instead the bound is inferred. For `while a < b`, the solver tries `b - a` (and the other comparisons). For recursion, a smaller piece of a parameter is detected first. Otherwise candidate measures are tried (`termination::candidate_measures`): integer parameters, `len` of list or string parameters, both differences of each comparison of parameters in the body, then pairs compared in order (Ackermann). Not covered: mutual recursion, measures built from more than a difference (`n * n - k`), recursion through a lambda.
+- **Helpers are seen through in contracts** when they terminate and cannot fail (`termination::analyze` → `transparent`): no `requires`, no refined parameters, no `mut`, no division by a non-literal, no `assert`, no hole, no refined constructors, and only such helpers or total builtins called. A helper whose termination is only assumed is still seen through, and the proof lists it. In function bodies, calls are still checked against contracts only.
+- Policies: `--require terminates` accepts an explicit `terminates`; `--require no-recursion` rejects any recursion, even structural.
+
+### Integers and floats (decided, user, session 3)
+- **`Int` is a big integer that is a machine integer while it fits** (like Python). The prover already treats `Int` as a mathematical integer. The interpreter still uses checked `i64` and reports overflow as a runtime fault: switch it to a big integer with a small-int fast path.
+- **Sized types live in the standard library as refinements of `Int`**: `U8 = Int where 0 <= it && it <= 255`, `I8`, `U16`, `I16`, `U32`, `I32`, `U64`, `I64`… They are verified like any refinement, and LLVM compiles each to its own width. `U64`'s bound doesn't fit an `i64` literal today, which is one more reason for big-integer literals.
+- **`Float` is `F64`**; `F32`, `BF16` and similar exist alongside, with their own LLVM representations. (Floats are not modelled by the prover yet; SMT-LIB has a floating-point theory for when they are.)
 
 ### Compilation before transpilation
 1. **Native compilation through LLVM** to machine code, with a garbage-collected runtime (no borrow checker in Strata). This comes before transpiling.
@@ -145,6 +160,11 @@ Bootstrap plan: write the frontend (lexer, parser, printer) in Strata and test i
 
 ### Match coverage with the SMT solver (assessed 2026-11-19, not started)
 The `smt-verification` worktree (uncommitted, on old main) already has: symbolic values for parameters with their refinements as facts (`havoc`), `Vc::pattern` turning a pattern into an SMT condition on the matched value, per-arm path conditions in `Expr::Match`, obligations solved with Z3. To decide coverage of undecidable conditions it still needs: (1) an obligation per `match` that some arm holds (the `or` of the arm conditions, under the facts), and one per arm that it can hold (unreachable when proven impossible); (2) the new pattern forms in `Vc::pattern`: type names, `where`, or-patterns, and `Match`'s `as` name (it predates the `unions` branch, so merge first); (3) a policy between `check` and `verify`: `check` would report such a `match` as "needs proof" instead of an error, and `verify` proves it, reports a counterexample, or leaves it runtime-checked (a `no match arm` fault). Floats are not modelled there; the checker's own `reals` covers them.
+
+### Mutation at the call site, references, and unproven checks (decided 2026-11-19)
+- **`mut` at the call site (done)**: an argument to a `mut` parameter is written `f(mut x)`; missing it, or writing it for a parameter that is not `mut` (or a builtin, or a closure), is an error. A `mut self` method's receiver is not marked (`queue.claim(2)`), as in Swift; the receiver must still be a mutable variable. `Expr::Mut`, checked in `check_mut_args`.
+- **References**: immutable values can always be shared (no copying in the compiled form); a mutable reference only exists as a `mut` parameter (copy-in/copy-out today, in place later). Recommended to the user: keep references second-class (never stored or returned), like Swift `inout` / Hylo, since first-class ones would need a borrow checker; a possible local form is `let mut l = mut order.lines[0]`. Not decided beyond the call-site marker.
+- **Unproven checks are reported by default** (with the runtime check kept); a project policy can require `proven` for chosen modules. For the SMT work: an assignment to a refined variable is one more obligation (e.g. `x = f(x) - 3` with `x: Positive` needs `f`'s contract to imply it).
 
 ### Lambda syntax (done)
 - Replace the Rust-style `|x| body` with a **bare arrow**: `x -> body` and `(a, b) -> body`, with optional parameter types such as `(s: String) -> …`. For a longer body, use a block: `x -> { ... }`.

@@ -1101,7 +1101,11 @@ impl<'a> Checker<'a> {
                     self.err(format!("{what}, argument {}: expected exactly `{want}`, found `{got}` (the parameter is `mut`, so the function can put any `{want}` into the caller's variable)", i + 1));
                 } else if let Some(x) = place_path(a).map(|q| q.split('.').next().unwrap_or("").to_string()) {
                     // ... including values the variable's own refinement rules out
-                    if let (Expr::Var(_), Some(vw)) = (a, self.written_of(&x)) {
+                    let bare = match a {
+                        Expr::Mut(x) => &**x,
+                        x => x,
+                    };
+                    if let (Expr::Var(_), Some(vw)) = (bare, self.written_of(&x)) {
                         if self.refinement_within(pw, &vw) == Some(false) {
                             self.err(format!(
                                 "{what}, argument {}: `{x}` is declared `{}`, but the `mut` parameter is `{}`: the function could store a value `{x}` must never hold",
@@ -1127,6 +1131,9 @@ impl<'a> Checker<'a> {
                     return self.lambda(ps, Some(pts), body);
                 }
             }
+        }
+        if let Expr::Mut(x) = e {
+            return self.infer_with(x, expected);
         }
         if let (Expr::Hole(h), Some(exp)) = (e, expected) {
             self.record_hole(h, exp.clone());
@@ -1335,7 +1342,11 @@ impl<'a> Checker<'a> {
             Expr::Call(f, args) => {
                 if let Expr::Var(n) = &**f {
                     if self.lookup(n).is_none() {
-                        self.check_mut_args(n, args);
+                        self.check_mut_args(n, args, false);
+                    } else {
+                        for a in args.iter().filter(|a| matches!(a, Expr::Mut(_))) {
+                            self.err(format!("`{}`: the closure `{n}` has no `mut` parameters", crate::printer::expr(a, 0)));
+                        }
                     }
                     if let Some(t) = self.overloaded(n, args) {
                         return t;
@@ -1356,7 +1367,7 @@ impl<'a> Checker<'a> {
                 let mut all = vec![(**recv).clone()];
                 all.extend(args.iter().cloned());
                 if self.lookup(m).is_none() {
-                    self.check_mut_args(m, &all);
+                    self.check_mut_args(m, &all, true);
                 }
                 if let Some(t) = self.overloaded(m, &all) {
                     return t;
@@ -1696,6 +1707,8 @@ impl<'a> Checker<'a> {
                 self.scopes.pop();
                 inner
             }
+            // only parsed as an argument; `check_mut_args` says whether it belongs there
+            Expr::Mut(x) => self.infer(x),
             Expr::Mock(t) => {
                 let ty = self.lower(t, &HashMap::new());
                 match self.resolve(&ty) {
@@ -1734,7 +1747,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Arguments passed to `mut` parameters are changed by the call.
-    fn check_mut_args(&mut self, callee: &str, args: &[Expr]) {
+    fn check_mut_args(&mut self, callee: &str, args: &[Expr], receiver: bool) {
         let params: Option<Vec<Param>> = self
             .env
             .fns
@@ -1744,9 +1757,28 @@ impl<'a> Checker<'a> {
                 let tr = self.env.method_trait.get(callee)?;
                 self.env.traits[tr].methods.iter().find(|m| m.decl.name == callee).map(|m| m.decl.params.clone())
             });
-        for (p, a) in params.unwrap_or_default().iter().zip(args) {
+        let Some(params) = params else {
+            // a builtin or a closure: no parameter is `mut`
+            for a in args.iter().filter(|a| matches!(a, Expr::Mut(_))) {
+                self.err(format!("`{}`: `{callee}` has no `mut` parameters", crate::printer::expr(a, 0)));
+            }
+            return;
+        };
+        for (i, (p, a)) in params.iter().zip(args).enumerate() {
+            // a method's receiver is the value it works on: `queue.claim(2)` needs no marker
+            let marked = matches!(a, Expr::Mut(_));
+            let place = match a {
+                Expr::Mut(x) => &**x,
+                x => x,
+            };
             if p.mutable {
-                self.check_place(a, &format!("let `{callee}` change (its `mut {}` parameter)", p.name));
+                self.check_place(place, &format!("let `{callee}` change (its `mut {}` parameter)", p.name));
+                if !marked && !(receiver && i == 0) {
+                    let shown = crate::printer::expr(place, 0);
+                    self.err(format!("`{callee}` can change its `mut {}` parameter: write `mut {shown}` to show that `{shown}` may change", p.name));
+                }
+            } else if marked {
+                self.err(format!("`mut` on an argument of `{callee}`, but its parameter `{}` is not `mut`", p.name));
             }
         }
     }
@@ -2190,6 +2222,7 @@ impl<'a> Checker<'a> {
 /// `x`, `o.status`: the written path of a variable or field access.
 fn place_path(e: &Expr) -> Option<String> {
     match e {
+        Expr::Mut(x) => place_path(x),
         Expr::Var(x) => Some(x.clone()),
         Expr::Field(r, f) => Some(format!("{}.{f}", place_path(r)?)),
         _ => None,

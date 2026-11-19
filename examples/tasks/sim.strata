@@ -64,7 +64,7 @@ pub fn run_steps(
   for step in steps {
     match step {
       Produce { ids } => {
-        run_producer(q, Fixed {
+        run_producer(mut q, Fixed {
           tasks: ids.map(
             i -> Task { id: f"t{i}", kind: "sim", payload: i },
           ),
@@ -73,7 +73,7 @@ pub fn run_steps(
       },
       Work { behaviour } => {
         let mut w = Scripted { behaviour }
-        run_worker(q, w, policy)
+        run_worker(mut q, mut w, policy)
         ()
       },
     }
@@ -91,7 +91,7 @@ pub fn simulate(
     retries,
   }
   let mut q = empty_queue(policy)
-  run_steps(q, policy, steps)
+  run_steps(mut q, policy, steps)
   describe(q)
 }
 
@@ -100,7 +100,7 @@ pub fn simulate(
 /// Run steps on a fresh in-memory queue and return the final queue.
 pub fn queue_after(policy: TaskPolicy, steps: List[Step]) -> MemQueue[Int, String] {
   let mut q = empty_queue(policy)
-  run_steps(q, policy, steps)
+  run_steps(mut q, policy, steps)
   q
 }
 

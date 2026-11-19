@@ -448,6 +448,7 @@ impl Rw<'_> {
                     .collect(),
             ),
             Expr::Return(x) => Expr::Return(Box::new(self.expr(x))),
+            Expr::Mut(x) => Expr::Mut(Box::new(self.expr(x))),
             Expr::Try(x, k) => Expr::Try(Box::new(self.expr(x)), *k),
             Expr::Except(x, name, fb) => {
                 let x = self.expr(x);
@@ -542,7 +543,7 @@ impl Rw<'_> {
         self.pop();
         self.pop();
         self.tparams.pop();
-        FnDecl { doc: f.doc.clone(), comments: f.comments.clone(), name, type_params: f.type_params.clone(), bounds, params, ret, requires, ensures, body }
+        FnDecl { doc: f.doc.clone(), comments: f.comments.clone(), name, type_params: f.type_params.clone(), bounds, params, ret, requires, ensures, terminates: f.terminates, body }
     }
 
     fn decl(&mut self, k: &DeclKind) -> DeclKind {

@@ -103,6 +103,10 @@ pub struct FnDecl {
     pub requires: Vec<Expr>,
     /// Postconditions; `it` is the return value.
     pub ensures: Vec<Expr>,
+    /// `terminates`: the author asserts the function always finishes, where
+    /// `verify` can't show it. Reported as assumed, never as proven.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub terminates: bool,
     pub body: Expr,
 }
 
@@ -359,6 +363,8 @@ pub enum Expr {
     /// `match e { … }`, or `match e as x { … }` to name the value; a matched
     /// variable (or the `as` name) is narrowed to each arm's pattern.
     Match(Box<Expr>, Option<String>, Vec<Arm>),
+    /// `mut x` as an argument: passed to a `mut` parameter, which changes it.
+    Mut(Box<Expr>),
     Block(Vec<Stmt>, Box<Expr>),
     /// `mock Db`: an implementation of a trait whose methods return generated
     /// values that satisfy the trait's contracts.
