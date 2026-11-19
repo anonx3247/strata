@@ -61,6 +61,7 @@ fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
         Expr::Block(stmts, last) => {
             for s in stmts {
                 match s {
+                    Stmt::Comment(_) => {}
                     Stmt::Let(_, _, x) | Stmt::Var(_, _, x) | Stmt::Expr(x) | Stmt::Assert(x) => w(x),
                     Stmt::Assign(a, b) | Stmt::While(a, b) | Stmt::For(_, a, b) => {
                         w(a);
@@ -189,6 +190,8 @@ pub fn fuzz_impl_method(env: &Env, imp: &ImplDecl, method: &str, cases: usize, s
 /// Check a trait law for one implementation with generated inputs.
 pub fn check_law(env: &Env, imp: &ImplDecl, law: &Law, cases: usize, seed: u64) -> Verdict {
     let as_fn = FnDecl {
+        doc: vec![],
+        comments: vec![],
         name: law.name.clone(),
         type_params: vec![],
         bounds: vec![],

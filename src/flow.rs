@@ -97,6 +97,7 @@ impl Outliner<'_> {
             Expr::Block(stmts, last) => {
                 for s in stmts {
                     match s {
+                        Stmt::Comment(_) => {}
                         Stmt::Let(_, _, x) | Stmt::Var(_, _, x) | Stmt::Expr(x) | Stmt::Assert(x) => self.walk(x, out),
                         Stmt::Assign(a, b) | Stmt::While(a, b) | Stmt::For(_, a, b) => {
                             self.walk(a, out);

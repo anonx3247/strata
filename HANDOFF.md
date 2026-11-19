@@ -29,6 +29,18 @@ Doc comments are shown as the description in the right panel (and stripped from 
 
 Still open: **type map as a side panel** instead of a full tab. The user suggested it; ask before doing it.
 
+## Decided with the user: git, diffs and review (not built yet)
+
+- **Git stays the base.** Commit the `.strata` text files and the log (`log.jsonl`, append-only, entries with ids, `merge=union` in `.gitattributes`). Objects and index become a local cache rebuilt from the files. Optionally commit the verification cache.
+- **Structural diff** between two git revisions: load both snapshots, pair definitions, compare trees. The log entries present at HEAD but not at the base are the atomic steps in between (for stepping through, renames, messages). A PR = merge-base..HEAD.
+- **Change kinds**: added/removed; renamed/moved (one line, "N references updated", folded); signature change marked in place, with contract stronger/weaker; body change shown in place with unchanged statements folded, **falling back to a line diff of the canonical text when most of the body changed**; type field/variant changes (with "N matches must handle it"); trait changes; doc comments as a word diff; verification before → after. Ordered types → interfaces → implementations → tests.
+- **`strata rename old new`**: one checked patch that updates every reference, logged as a rename. Do this first.
+- **Merge driver**: `strata merge-file %O %A %B %P` per definition, then type-check. GitHub won't run it, so: `strata sync main` merges main into the branch locally, branch protection requires branches to be up to date, and a required CI check runs `strata check` + canonical-format check on GitHub's merge ref.
+- **jj**: compatible (runs on git) but not a dependency.
+- The tour is later. The user wants to settle the look first: offer a static mockup of the *Changes* view.
+
+Order: `strata rename` → diff core in Rust → `strata diff <rev>..<rev>` → *Changes* view in the viewer → merge driver.
+
 ## Open topics the user wants to discuss and decide on (do not implement without agreement)
 
 - **Verification strategy.** Today: compile-time checks on literals, runtime contract checks, and fuzzing (`strata verify`, with results cached by content hash). The options discussed are summarised at the end of the last conversation and in `README.md` under the roadmap.
@@ -38,6 +50,7 @@ Still open: **type map as a side panel** instead of a full tab. The user suggest
 
 - Trait methods must take `self`; there is no `fn empty() -> Self` dispatch yet, and method names must be unique across traits.
 - Exhaustiveness checking ignores refinements: a `match` on `NonEmpty` still needs a `[]` arm.
+- Comments before a trait `law` are rejected (not stored yet). Blank lines inside bodies are not kept.
 - No host bindings (FFI), so a real SQLite backend isn't possible yet.
 - `strata verify` on the tasks example takes about 35s; the slowest part is generating `MemQueue` values that satisfy its invariants.
 - `src/flow.rs` and the `flows` data in `ui.rs` are no longer used by the viewer, now that the Flow view is gone. They can be removed.

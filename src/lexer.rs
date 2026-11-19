@@ -26,11 +26,24 @@ const SYMS: &[&str] = &[
     "[", "]", ",", ":", ";", ".", "=", "<", ">", "+", "-", "*", "/", "%", "!", "|",
 ];
 
-pub fn lex(src: &str) -> Result<Vec<Token>, String> {
+/// A `//` comment. The parser attaches it to the definition, field, variant,
+/// method, statement or match arm it belongs to.
+#[derive(Debug, Clone)]
+pub struct Comment {
+    pub line: usize,
+    pub col: usize,
+    /// The comment as written, starting with `//`.
+    pub text: String,
+    /// It follows code on the same line (`x = 1 // why`).
+    pub trailing: bool,
+}
+
+pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), String> {
     let chars: Vec<char> = src.chars().collect();
     let mut i = 0;
     let (mut line, mut col) = (1usize, 1usize);
     let mut out = Vec::new();
+    let mut comments = Vec::new();
     let mut nl = true;
     while i < chars.len() {
         let c = chars[i];
@@ -59,6 +72,8 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
             let text: String = chars[start..i].iter().collect();
             if let Some(doc) = text.strip_prefix("///") {
                 push(Tok::Doc(doc.trim().to_string()), &mut nl);
+            } else {
+                comments.push(Comment { line: sl, col: sc, text: text.trim_end().to_string(), trailing: !nl });
             }
             col += i - start;
             continue;
@@ -143,5 +158,5 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
         return Err(format!("{line}:{col}: unexpected character {c:?}"));
     }
     out.push(Token { tok: Tok::Eof, line, col, nl_before: true });
-    Ok(out)
+    Ok((out, comments))
 }

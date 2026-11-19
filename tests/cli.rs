@@ -252,3 +252,75 @@ fn loops_chains_and_80_columns() {
     // a couple of deeply nested lines still exceed 80 columns
     assert!(long <= 2, "rendered lines over 80 columns: {long}");
 }
+
+#[test]
+fn comments_are_kept_in_the_tree() {
+    let d = tmp("comments");
+    let src = r#"// file header
+//
+// second paragraph
+
+// section banner
+/// A status.
+pub type Status =
+  // waiting
+  | Pending
+  | Done // finished
+
+pub type Point = { x: Int, y: Int } // the y axis points down
+
+pub trait Shape {
+  // area, never negative
+  /// The area.
+  fn area(self) -> Int
+    ensures it >= 0
+}
+
+impl Shape for Point {
+  // a point has no area
+  /// Always zero.
+  fn area(self) -> Int {
+    0
+  }
+}
+
+fn label(s: Status) -> String {
+  // the common case first
+  let n = 1 // one
+  match s {
+    // still going
+    Pending => "pending",
+    Done => "done", // all good
+  }
+}
+"#;
+    std::fs::write(d.join("c.strata"), src).unwrap();
+    let (ok, r1) = strata(&["--file", "c.strata", "render"], &d, None);
+    assert!(ok, "{r1}");
+    for c in ["// file header\n//\n// second paragraph\n\n// section banner\n/// A status.", "  // waiting\n  | Pending", "  // finished\n  | Done",
+        "// the y axis points down", "  // area, never negative\n  /// The area.", "  // a point has no area\n  /// Always zero.",
+        "  // the common case first\n  // one\n  let n = 1", "    // still going\n    Pending", "    // all good\n    Done"] {
+        assert!(r1.contains(c), "missing {c:?} in\n{r1}");
+    }
+    std::fs::write(d.join("r1.strata"), &r1).unwrap();
+    let (_, r2) = strata(&["--file", "r1.strata", "render"], &d, None);
+    assert_eq!(r1, r2);
+    let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
+    assert!(ok, "{out}");
+
+    // a comment the tree has no place for is an error, not silently dropped
+    std::fs::write(d.join("bad.strata"), "fn f(a: Int, // why\n  b: Int) -> Int { a }\n").unwrap();
+    let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
+    assert!(!ok && out.contains("bad.strata:1:14: this comment would be lost"), "{out}");
+
+    // editing a comment changes the definition, but not its interface
+    let hash = |file: &str| {
+        let (_, out) = strata(&["--file", file, "ast", "Point"], &d, None);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        (v["hash"].as_str().unwrap().to_string(), v["interface_hash"].as_str().unwrap().to_string())
+    };
+    std::fs::write(d.join("c2.strata"), src.replace("points down", "points up")).unwrap();
+    let (a, b) = (hash("c.strata"), hash("c2.strata"));
+    assert_ne!(a.0, b.0);
+    assert_eq!(a.1, b.1);
+}

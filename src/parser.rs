@@ -1,37 +1,37 @@
 use crate::ast::*;
-use crate::lexer::{lex, Tok, Token};
+use crate::lexer::{lex_with_comments, Comment, Tok, Token};
 
 pub struct Parser {
     toks: Vec<Token>,
     pos: usize,
     no_struct: bool,
+    comments: Vec<Comment>,
+    used: Vec<bool>,
+    /// comments above a `module m {` line, given to its first definition
+    pending: Vec<String>,
 }
 
 type R<T> = Result<T, String>;
 
 pub fn parse_program(src: &str) -> R<Program> {
-    let mut p = Parser { toks: lex(src)?, pos: 0, no_struct: false };
-    let mut decls = Vec::new();
-    while p.peek() != &Tok::Eof {
-        p.decls_into("", &mut decls)?;
-    }
-    Ok(Program { decls })
+    parse_module_file(src, "")
 }
 
 /// Parse a file as the given module (e.g. `orders.strata` -> `orders`).
 /// `module` blocks inside it nest under that path.
 pub fn parse_module_file(src: &str, module: &str) -> R<Program> {
-    let mut p = Parser { toks: lex(src)?, pos: 0, no_struct: false };
+    let mut p = Parser::new(src)?;
     let mut decls = Vec::new();
     while p.peek() != &Tok::Eof {
         p.decls_into(module, &mut decls)?;
     }
+    p.check_comments()?;
     Ok(Program { decls })
 }
 
 #[allow(dead_code)] // used by upcoming REPL / agent API
 pub fn parse_expr(src: &str) -> R<Expr> {
-    let mut p = Parser { toks: lex(src)?, pos: 0, no_struct: false };
+    let mut p = Parser::new(src)?;
     let e = p.expr()?;
     if p.peek() != &Tok::Eof {
         return Err(p.err("trailing input after expression"));
@@ -50,7 +50,65 @@ const KEYWORDS: &[&str] = &[
 
 impl Parser {
     pub fn from_str(src: &str) -> Parser {
-        Parser { toks: lex(src).expect("lexes"), pos: 0, no_struct: false }
+        Parser::new(src).expect("lexes")
+    }
+    fn new(src: &str) -> R<Parser> {
+        let (toks, comments) = lex_with_comments(src)?;
+        let used = vec![false; comments.len()];
+        Ok(Parser { toks, pos: 0, no_struct: false, comments, used, pending: vec![] })
+    }
+
+    // ---------- comments ----------
+
+    /// Take the comments between the previous token and the next one, as
+    /// lines with "" wherever a blank line separates them from what follows.
+    fn leading(&mut self) -> Vec<String> {
+        let next = (self.toks[self.pos].line, self.toks[self.pos].col);
+        let prev = if self.pos > 0 { Some((self.toks[self.pos - 1].line, self.toks[self.pos - 1].col)) } else { None };
+        let mut out = Vec::new();
+        let mut last_line = None;
+        for (i, c) in self.comments.iter().enumerate() {
+            if self.used[i] || prev.is_some_and(|p| (c.line, c.col) < p) || (c.line, c.col) > next {
+                continue;
+            }
+            if let Some(l) = last_line {
+                if c.line > l + 1 {
+                    out.push(String::new());
+                }
+            }
+            out.push(c.text.clone());
+            last_line = Some(c.line);
+            self.used[i] = true;
+        }
+        if last_line.is_some_and(|l| next.0 > l + 1) {
+            out.push(String::new());
+        }
+        out
+    }
+
+    /// Take a comment that ends the line of the token just consumed (`x = 1 // why`).
+    fn trailing(&mut self) -> Vec<String> {
+        let Some(prev) = self.pos.checked_sub(1).map(|i| &self.toks[i]) else { return vec![] };
+        let (line, col) = (prev.line, prev.col);
+        let mut out = Vec::new();
+        for (i, c) in self.comments.iter().enumerate() {
+            if !self.used[i] && c.trailing && c.line == line && c.col > col {
+                out.push(c.text.clone());
+                self.used[i] = true;
+            }
+        }
+        out
+    }
+
+    /// Every comment must have found a place in the tree, or it would be lost.
+    fn check_comments(&self) -> R<()> {
+        match self.comments.iter().zip(&self.used).find(|(_, u)| !**u) {
+            Some((c, _)) => Err(format!(
+                "{}:{}: this comment would be lost: put comments on their own line before a definition, field, variant, method, statement or match arm",
+                c.line, c.col
+            )),
+            None => Ok(()),
+        }
     }
     fn peek(&self) -> &Tok {
         &self.toks[self.pos].tok
@@ -179,10 +237,13 @@ impl Parser {
     /// One declaration, or a whole `module name { ... }` block.
     fn decls_into(&mut self, module: &str, out: &mut Vec<Decl>) -> R<()> {
         if self.is_kw("module") && !matches!(self.peek_at(1), Tok::Sym(_)) {
+            let mut pre = std::mem::take(&mut self.pending);
+            pre.extend(self.leading());
             self.next();
             let name = self.path()?;
             let full = if module.is_empty() { name } else { format!("{module}.{name}") };
             self.expect_sym("{")?;
+            self.pending = pre;
             while !self.eat_sym("}") {
                 self.decls_into(&full, out)?;
             }
@@ -195,11 +256,23 @@ impl Parser {
     }
 
     pub fn decl(&mut self) -> R<Decl> {
+        let mut comments = std::mem::take(&mut self.pending);
+        comments.extend(self.leading());
+        let mut d = self.decl_inner()?;
+        comments.append(&mut d.comments);
+        comments.extend(self.trailing());
+        d.comments = comments;
+        Ok(d)
+    }
+
+    fn decl_inner(&mut self) -> R<Decl> {
         let mut doc = Vec::new();
         while let Tok::Doc(d) = self.peek().clone() {
             doc.push(d);
             self.next();
         }
+        // comments between the doc and the definition move above the doc
+        let comments = self.leading();
         let public = self.eat_kw("pub");
         if self.eat_kw("use") {
             let mut path = self.ident()?;
@@ -222,7 +295,7 @@ impl Parser {
                 path.push('.');
                 path.push_str(&seg);
             }
-            return Ok(Decl { doc, kind: DeclKind::Use(UseDecl { path, items }), module: String::new(), public });
+            return Ok(Decl { comments, doc, kind: DeclKind::Use(UseDecl { path, items }), module: String::new(), public });
         }
         // `distinct` is only a keyword at the start of a declaration
         let kind = if self.is_kw("distinct") && matches!(self.peek_at(1), Tok::Ident(t) if t == "type") {
@@ -253,7 +326,7 @@ impl Parser {
         } else {
             return Err(self.err("expected `type`, `effect`, `trait`, `impl`, `fn` or `test`"));
         };
-        Ok(Decl { doc, kind, module: String::new(), public })
+        Ok(Decl { comments, doc, kind, module: String::new(), public })
     }
 
     fn type_params(&mut self) -> R<Vec<String>> {
@@ -293,10 +366,15 @@ impl Parser {
         self.expect_sym("{")?;
         let (mut methods, mut laws) = (Vec::new(), Vec::new());
         while !self.eat_sym("}") {
+            let mut comments = self.leading();
             let mut doc = Vec::new();
             while let Tok::Doc(d) = self.peek().clone() {
                 doc.push(d);
                 self.next();
+            }
+            comments.extend(self.leading());
+            if self.is_kw("law") && !comments.is_empty() {
+                return Err(self.err("comments before a `law` are not supported yet"));
             }
             if self.eat_kw("law") {
                 let lname = self.ident()?;
@@ -310,7 +388,8 @@ impl Parser {
             if decl.params.first().map(|p| p.name.as_str()) != Some("self") {
                 return Err(self.err(&format!("trait method `{}` must take `self` as its first parameter", decl.name)));
             }
-            methods.push(TraitMethod { doc, decl, default });
+            comments.extend(self.trailing());
+            methods.push(TraitMethod { comments, doc, decl, default });
         }
         Ok(TraitDecl { name, params, supers, methods, laws })
     }
@@ -324,14 +403,20 @@ impl Parser {
         self.expect_sym("{")?;
         let mut methods = Vec::new();
         while !self.eat_sym("}") {
-            while let Tok::Doc(_) = self.peek() {
+            let mut comments = self.leading();
+            let mut doc = Vec::new();
+            while let Tok::Doc(d) = self.peek().clone() {
+                doc.push(d);
                 self.next();
             }
+            comments.extend(self.leading());
             self.expect_kw("fn")?;
-            let (decl, has_body) = self.fn_rest(false)?;
+            let (mut decl, has_body) = self.fn_rest(false)?;
             if !has_body {
                 return Err(self.err(&format!("`{}` in an impl needs a body", decl.name)));
             }
+            comments.extend(self.trailing());
+            (decl.doc, decl.comments) = (doc, comments);
             methods.push(decl);
         }
         Ok(ImplDecl { type_params, bounds, trait_name, trait_args, for_type, methods })
@@ -343,10 +428,13 @@ impl Parser {
         self.expect_sym("=")?;
         let body = if self.is_sym("|") {
             let mut vs = Vec::new();
-            while self.eat_sym("|") {
+            while self.is_sym("|") {
+                let mut comments = self.leading();
+                self.next();
                 let vname = self.ident()?;
                 let payload = self.payload()?;
-                vs.push(Variant { name: vname, payload });
+                comments.extend(self.trailing());
+                vs.push(Variant { comments, name: vname, payload });
             }
             TypeBody::Sum(vs)
         } else if self.eat_sym("{") {
@@ -360,9 +448,12 @@ impl Parser {
 
     fn fields(&mut self) -> R<Vec<Field>> {
         self.list("}", |p| {
+            let mut comments = p.leading();
             let name = p.ident()?;
             p.expect_sym(":")?;
-            Ok(Field { name, ty: p.type_expr()? })
+            let ty = p.type_expr()?;
+            comments.extend(p.trailing());
+            Ok(Field { comments, name, ty })
         })
     }
 
@@ -452,7 +543,7 @@ impl Parser {
         } else {
             self.block()?
         };
-        Ok((FnDecl { name, type_params, bounds, params, ret, requires, ensures, body }, has_body))
+        Ok((FnDecl { doc: vec![], comments: vec![], name, type_params, bounds, params, ret, requires, ensures, body }, has_body))
     }
 
     // ---------- expressions ----------
@@ -641,11 +732,13 @@ impl Parser {
                 self.expect_sym("{")?;
                 let mut arms = Vec::new();
                 while !self.eat_sym("}") {
+                    let mut comments = self.leading();
                     let pat = self.pattern()?;
                     self.expect_sym("=>")?;
                     let body = self.expr()?;
                     self.eat_sym(",");
-                    arms.push(Arm { pat, body });
+                    comments.extend(self.trailing());
+                    arms.push(Arm { comments, pat, body });
                 }
                 Ok(Expr::Match(Box::new(scrut), arms))
             }
@@ -699,6 +792,10 @@ impl Parser {
         self.no_struct = false;
         let mut stmts = Vec::new();
         while !self.is_sym("}") {
+            let above = self.leading();
+            if !above.is_empty() {
+                stmts.push(Stmt::Comment(above));
+            }
             if self.eat_kw("let") {
                 if self.eat_kw("mut") {
                     let name = self.ident()?;
@@ -739,6 +836,16 @@ impl Parser {
                 }
             }
             while self.eat_sym(";") {}
+            // a comment ending the statement's line goes above the statement
+            let t = self.trailing();
+            if !t.is_empty() {
+                let s = stmts.pop().unwrap();
+                match stmts.last_mut() {
+                    Some(Stmt::Comment(cs)) => cs.extend(t),
+                    _ => stmts.push(Stmt::Comment(t)),
+                }
+                stmts.push(s);
+            }
         }
         self.expect_sym("}")?;
         self.no_struct = old;

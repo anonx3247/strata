@@ -103,9 +103,9 @@ pub fn render(p: &Program, names: &BTreeSet<String>, level: u8, st: &Status) -> 
                     DeclKind::Impl(i) if level < 3 => format!("{}{note}", printer::impl_interface(i)),
                     DeclKind::Trait(t) if level < 3 => format!("{}{note}", printer::trait_interface(t)),
                     DeclKind::Test(t) if level < 3 => format!("test {:?} {{ … }}", t.name),
-                    _ => format!("{}{note}", printer::decl(d).trim_start_matches(&printer::doc(d))),
+                    _ => format!("{}{note}", printer::decl_body(d)),
                 };
-                let doc = if level >= 1 { printer::doc(d) } else { String::new() };
+                let doc = printer::comments(&d.comments, 0) + &printer::doc(d);
                 let pubk = if d.public && !body.starts_with("pub ") { "pub " } else { "" };
                 format!("{doc}{pubk}{body}")
             }

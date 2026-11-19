@@ -1106,6 +1106,7 @@ impl<'a> Interp<'a> {
                         Stmt::Expr(x) => {
                             self.eval(x, &sc)?;
                         }
+                        Stmt::Comment(_) => {}
                         Stmt::Assert(x) => {
                             if self.eval(x, &sc)? != Value::Bool(true) {
                                 let detail = match x {

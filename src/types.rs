@@ -1089,6 +1089,7 @@ impl<'a> Checker<'a> {
                         Stmt::Expr(e) => {
                             self.infer(e);
                         }
+                        Stmt::Comment(_) => {}
                         Stmt::Assert(e) => {
                             let t = self.infer(e);
                             self.expect(&Ty::Bool, &t, "assert");

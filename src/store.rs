@@ -49,7 +49,7 @@ pub fn interface_hash(d: &Decl) -> String {
     let text = match &d.kind {
         DeclKind::Fn(f) => printer::fn_signature(f),
         DeclKind::Test(t) => format!("test {:?}", t.name),
-        _ => printer::decl(d),
+        _ => printer::without_comments(|| printer::decl(d)),
     };
     sha(&format!("module {} pub {}\n{text}", d.module, d.public))
 }
@@ -163,6 +163,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                             go(x, out);
                         }
                         Stmt::Expr(x) | Stmt::Assert(x) => go(x, out),
+                        Stmt::Comment(_) => {}
                     }
                 }
                 go(last, out);
@@ -274,7 +275,8 @@ pub fn graph(p: &Program) -> BTreeMap<String, BTreeSet<String>> {
 /// the result still holds.
 pub fn closure_hash(p: &Program, name: &str) -> String {
     let g = graph(p);
-    let hashes: HashMap<String, String> = p.decls.iter().map(|d| (d.qname(), self_hash(d))).collect();
+    // comments don't change what a definition does, so they don't invalidate results
+    let hashes: HashMap<String, String> = p.decls.iter().map(|d| (d.qname(), printer::without_comments(|| self_hash(d)))).collect();
     let mut seen = BTreeSet::new();
     let mut todo = vec![name.to_string()];
     while let Some(n) = todo.pop() {

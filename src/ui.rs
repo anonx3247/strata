@@ -33,9 +33,19 @@ fn unwrap_module(text: &str) -> String {
     }
 }
 
-/// Drop the leading `///` lines (the declaration's doc comment).
+/// Drop the declaration's doc comment (the `///` lines above it, which may
+/// follow `//` comments); the viewer shows it as the description instead.
 fn strip_doc(text: &str) -> String {
-    text.lines().skip_while(|l| l.trim_start().starts_with("///")).collect::<Vec<_>>().join("\n")
+    let mut head = true;
+    let mut out = Vec::new();
+    for l in text.lines() {
+        let t = l.trim_start();
+        head = head && (t.is_empty() || t.starts_with("//"));
+        if !(head && t.starts_with("///")) {
+            out.push(l);
+        }
+    }
+    out.join("\n")
 }
 
 fn snapshot(target: &Target) -> Json {

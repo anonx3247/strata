@@ -18,6 +18,9 @@ pub enum TypeExpr {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Field {
+    /// `//` comment lines just above it, as written ("" is a blank line between groups).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<String>,
     pub name: String,
     pub ty: TypeExpr,
 }
@@ -31,6 +34,9 @@ pub enum Payload {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Variant {
+    /// `//` comment lines just above it, as written ("" is a blank line between groups).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<String>,
     pub name: String,
     pub payload: Payload,
 }
@@ -78,6 +84,13 @@ pub struct Bound {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FnDecl {
+    /// Doc and comments of a method inside an `impl` (a top-level function
+    /// keeps them on its `Decl`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub doc: Vec<String>,
+    /// `//` comment lines just above it, as written ("" is a blank line between groups).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<String>,
     pub name: String,
     pub type_params: Vec<String>,
     #[serde(default)]
@@ -98,6 +111,9 @@ pub struct TestDecl {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraitMethod {
+    /// `//` comment lines just above it, as written ("" is a blank line between groups).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<String>,
     pub doc: Vec<String>,
     /// Signature (and default body when `default` is true). The first
     /// parameter is always `self: Self`.
@@ -153,6 +169,9 @@ pub enum DeclKind {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Decl {
+    /// `//` comment lines just above it, as written ("" is a blank line between groups).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<String>,
     /// `///` doc comment lines, kept in the tree so text round-trips.
     pub doc: Vec<String>,
     pub kind: DeclKind,
@@ -273,6 +292,9 @@ pub enum CtorPat {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Arm {
+    /// `//` comment lines just above it, as written ("" is a blank line between groups).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<String>,
     pub pat: Pattern,
     pub body: Expr,
 }
@@ -294,6 +316,8 @@ pub enum Stmt {
     Continue,
     Expr(Expr),
     Assert(Expr),
+    /// `//` comment lines before the next statement; no effect when run.
+    Comment(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

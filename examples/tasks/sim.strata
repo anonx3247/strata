@@ -1,4 +1,5 @@
-// tasks/sim — model-based verification of the backend, and the reference test suite.
+// tasks/sim — model-based verification of the backend, and the reference
+// test suite.
 
 use core.*
 use memory.*

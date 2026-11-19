@@ -14,6 +14,46 @@ pub fn ty(t: &TypeExpr) -> String {
     }
 }
 
+thread_local! {
+    static NO_COMMENTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with `//` comments left out of everything printed, for hashes that
+/// a comment edit must not change (interfaces, verification results).
+pub fn without_comments<T>(f: impl FnOnce() -> T) -> T {
+    let old = NO_COMMENTS.with(|c| c.replace(true));
+    let out = f();
+    NO_COMMENTS.with(|c| c.set(old));
+    out
+}
+
+fn has_comments(cs: &[String]) -> bool {
+    !cs.is_empty() && !NO_COMMENTS.with(|c| c.get())
+}
+
+/// `//` lines at depth `d`, each ending in a newline ("" is a blank line).
+pub fn comments(cs: &[String], d: usize) -> String {
+    if !has_comments(cs) {
+        return String::new();
+    }
+    cs.iter()
+        .map(|c| match c.as_str() {
+            "" => "\n".to_string(),
+            t => format!("{}{t}\n", ind(d)),
+        })
+        .collect()
+}
+
+/// Fields one per line, each under its comments.
+fn fields_broken(fs: &[Field], d: usize) -> String {
+    let mut s = "{\n".to_string();
+    for f in fs {
+        s += &comments(&f.comments, d + 1);
+        s += &format!("{}{}: {},\n", ind(d + 1), f.name, ty(&f.ty));
+    }
+    s + &ind(d) + "}"
+}
+
 fn fields(fs: &[Field]) -> String {
     fs.iter().map(|f| format!("{}: {}", f.name, ty(&f.ty))).collect::<Vec<_>>().join(", ")
 }
@@ -235,6 +275,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Match(s, arms) => {
             let mut out = format!("match {} {{\n", expr(s, d));
             for a in arms {
+                out += &comments(&a.comments, d + 1);
                 out += &format!("{}{} => {},\n", ind(d + 1), pat(&a.pat), expr(&a.body, d + 1));
             }
             out + &ind(d) + "}"
@@ -252,6 +293,11 @@ pub fn block(e: &Expr, d: usize) -> String {
     };
     let mut out = "{\n".to_string();
     for s in stmts {
+        if let Stmt::Comment(cs) = s {
+            // blank lines inside a body are not kept
+            out += &comments(&cs.iter().filter(|c| !c.is_empty()).cloned().collect::<Vec<_>>(), d + 1);
+            continue;
+        }
         out += &ind(d + 1);
         out += &match s {
             Stmt::Let(p, t, e) => match t {
@@ -270,11 +316,13 @@ pub fn block(e: &Expr, d: usize) -> String {
             Stmt::For(p, it, b) => format!("for {} in {} {}", pat(p), expr(it, d + 1), block(b, d + 1)),
             Stmt::Expr(e) => expr(e, d + 1),
             Stmt::Assert(e) => format!("assert {}", expr(e, d + 1)),
+            Stmt::Comment(_) => unreachable!(),
         };
         out += "\n";
     }
     // a trailing `()` is implied after `let`/`assert`, but not after an expression statement
-    if *last != Expr::Unit || stmts.is_empty() || matches!(stmts.last(), Some(Stmt::Expr(_))) {
+    let last_stmt = stmts.iter().rev().find(|s| !matches!(s, Stmt::Comment(_)));
+    if *last != Expr::Unit || last_stmt.is_none() || matches!(last_stmt, Some(Stmt::Expr(_))) {
         out += &format!("{}{}\n", ind(d + 1), expr(last, d + 1));
     }
     out + &ind(d) + "}"
@@ -290,21 +338,27 @@ pub fn type_decl(t: &TypeDecl) -> String {
         TypeBody::Alias(a) => s += &ty(a),
         TypeBody::Record(fs) => {
             let one = format!("{{ {} }}", fields(fs));
-            if s.chars().count() + one.chars().count() > WIDTH {
-                s += &broken("{", fs.iter().map(|f| format!("{}: {}", f.name, ty(&f.ty))).collect(), "}", 0);
+            if s.chars().count() + one.chars().count() > WIDTH || fs.iter().any(|f| has_comments(&f.comments)) {
+                s += &fields_broken(fs, 0);
             } else {
                 s += &one;
             }
         }
         TypeBody::Sum(vs) => {
             for v in vs {
-                s += "\n  | ";
+                s += "\n";
+                s += comments(&v.comments, 1).trim_end_matches('\n');
+                if has_comments(&v.comments) {
+                    s += "\n";
+                }
+                s += "  | ";
                 s += &v.name;
                 match &v.payload {
                     Payload::None => {}
                     Payload::Positional(ts) => {
                         s += &format!("({})", ts.iter().map(ty).collect::<Vec<_>>().join(", "))
                     }
+                    Payload::Record(fs) if fs.iter().any(|f| has_comments(&f.comments)) => s += &format!(" {}", fields_broken(fs, 1)),
                     Payload::Record(fs) => s += &format!(" {{ {} }}", fields(fs)),
                 }
             }
@@ -354,6 +408,7 @@ fn trait_text(t: &TraitDecl, bodies: bool) -> String {
     let sup = if t.supers.is_empty() { String::new() } else { format!(": {}", t.supers.iter().map(ty).collect::<Vec<_>>().join(" + ")) };
     let mut s = format!("trait {}{tp}{sup} {{\n", t.name);
     for m in &t.methods {
+        s += &comments(&m.comments, 1);
         for d in &m.doc {
             s += &format!("  /// {d}\n");
         }
@@ -387,6 +442,7 @@ pub fn impl_decl(i: &ImplDecl) -> String {
         if k > 0 {
             s += "\n";
         }
+        s += &method_notes(m);
         let body = fn_decl(m).lines().map(|l| format!("  {l}\n")).collect::<String>();
         s += &body;
     }
@@ -394,9 +450,14 @@ pub fn impl_decl(i: &ImplDecl) -> String {
 }
 
 /// An implementation with method bodies left out (the interface level).
+fn method_notes(m: &FnDecl) -> String {
+    comments(&m.comments, 1) + &m.doc.iter().map(|d| format!("  /// {d}\n")).collect::<String>()
+}
+
 pub fn impl_interface(i: &ImplDecl) -> String {
     let mut s = impl_head(i) + " {\n";
     for m in &i.methods {
+        s += &method_notes(m);
         s += &fn_signature(m).lines().map(|l| format!("  {l}\n")).collect::<String>();
     }
     s + "}"
@@ -451,6 +512,11 @@ pub fn doc(d: &Decl) -> String {
 
 /// Full (L3) rendering of a declaration.
 pub fn decl(d: &Decl) -> String {
+    comments(&d.comments, 0) + &doc(d) + &decl_body(d)
+}
+
+/// A declaration without its comments and doc: `pub` and the definition itself.
+pub fn decl_body(d: &Decl) -> String {
     let body = match &d.kind {
         DeclKind::Type(t) => type_decl(t),
         DeclKind::Fn(f) => fn_decl(f),
@@ -463,7 +529,7 @@ pub fn decl(d: &Decl) -> String {
             Some(items) => format!("use {}.{{{}}}", u.path, items.join(", ")),
         },
     };
-    doc(d) + if d.public { "pub " } else { "" } + &body
+    (if d.public { "pub " } else { "" }).to_string() + &body
 }
 
 /// Render declarations, grouping each module's into one `module m { ... }` block.

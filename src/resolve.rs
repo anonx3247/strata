@@ -151,7 +151,7 @@ pub fn resolve(p: &Program) -> Resolution {
         let mut r = Rw { scope: &scopes[&d.module], table: &table, modules: &modules, module: &d.module, imports: &imports[&d.module], decl: d.qname(), locals: vec![], tparams: vec![], errors: vec![] };
         let kind = r.decl(&d.kind);
         errors.extend(r.errors);
-        decls.push(Decl { doc: d.doc.clone(), kind, module: String::new(), public: d.public });
+        decls.push(Decl { comments: d.comments.clone(), doc: d.doc.clone(), kind, module: String::new(), public: d.public });
     }
     Resolution { program: Program { decls }, errors }
 }
@@ -333,7 +333,7 @@ impl Rw<'_> {
                         let pat = self.pat(&a.pat);
                         let body = self.expr(&a.body);
                         self.pop();
-                        Arm { pat, body }
+                        Arm { comments: a.comments.clone(), pat, body }
                     })
                     .collect();
                 Expr::Match(Box::new(s), arms)
@@ -369,6 +369,7 @@ impl Rw<'_> {
                         }
                         Stmt::Expr(x) => Stmt::Expr(self.expr(x)),
                         Stmt::Assert(x) => Stmt::Assert(self.expr(x)),
+                        Stmt::Comment(c) => Stmt::Comment(c.clone()),
                     })
                     .collect();
                 let last = self.expr(last);
@@ -398,7 +399,7 @@ impl Rw<'_> {
         self.pop();
         self.pop();
         self.tparams.pop();
-        FnDecl { name, type_params: f.type_params.clone(), bounds, params, ret, requires, ensures, body }
+        FnDecl { doc: f.doc.clone(), comments: f.comments.clone(), name, type_params: f.type_params.clone(), bounds, params, ret, requires, ensures, body }
     }
 
     fn decl(&mut self, k: &DeclKind) -> DeclKind {
@@ -408,15 +409,16 @@ impl Rw<'_> {
                 self.tparams.push(t.params.iter().cloned().collect());
                 let body = match &t.body {
                     TypeBody::Alias(a) => TypeBody::Alias(self.ty(a)),
-                    TypeBody::Record(fs) => TypeBody::Record(fs.iter().map(|f| Field { name: f.name.clone(), ty: self.ty(&f.ty) }).collect()),
+                    TypeBody::Record(fs) => TypeBody::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), name: f.name.clone(), ty: self.ty(&f.ty) }).collect()),
                     TypeBody::Sum(vs) => TypeBody::Sum(
                         vs.iter()
                             .map(|v| Variant {
+                                comments: v.comments.clone(),
                                 name: qualify(&m, &v.name),
                                 payload: match &v.payload {
                                     Payload::None => Payload::None,
                                     Payload::Positional(ts) => Payload::Positional(ts.iter().map(|t| self.ty(t)).collect()),
-                                    Payload::Record(fs) => Payload::Record(fs.iter().map(|f| Field { name: f.name.clone(), ty: self.ty(&f.ty) }).collect()),
+                                    Payload::Record(fs) => Payload::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), name: f.name.clone(), ty: self.ty(&f.ty) }).collect()),
                                 },
                             })
                             .collect(),
@@ -439,7 +441,7 @@ impl Rw<'_> {
                 let methods = t
                     .methods
                     .iter()
-                    .map(|tm| TraitMethod { doc: tm.doc.clone(), decl: self.func(&tm.decl, qualify(&m, &tm.decl.name)), default: tm.default })
+                    .map(|tm| TraitMethod { comments: tm.comments.clone(), doc: tm.doc.clone(), decl: self.func(&tm.decl, qualify(&m, &tm.decl.name)), default: tm.default })
                     .collect();
                 let laws = t
                     .laws
