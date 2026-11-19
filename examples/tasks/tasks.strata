@@ -1,0 +1,489 @@
+// tasks — backend-agnostic task queues, ported from the Python/TypeScript
+// reference (github: tasks). Producers discover tasks and enqueue them;
+// workers claim batches of attempts and report results.
+//
+// The Strata idiom: Producer, Worker and the queue backend are *effects*.
+// Library code performs them; an entrypoint is nothing but handlers.
+// Swapping SQLite for SQS means swapping one handler, which is the reference
+// design's "only the queue object changes", enforced by the type system.
+
+// ─────────────────────────────── core model ───────────────────────────────
+
+/// Identifies a task. The reference uses a uuid4 hex string.
+type TaskId = String where matches(it, "[A-Za-z0-9_-]{1,64}")
+
+/// The task family, e.g. "print".
+type Kind = String where str_len(it) > 0
+
+/// A unit of work. Every Strata type is JSON-serialisable, so the payload
+/// needs no `BaseModel` bound.
+type Task[P] = { id: TaskId, kind: Kind, payload: P }
+
+/// Attempt numbers are 1-based.
+type AttemptNo = Int where it >= 1
+
+/// A single attempt at running a task.
+type TaskAttempt[P] = { task: Task[P], attempt: AttemptNo }
+
+/// The outcome a worker reports for one attempt. Unlike the reference
+/// (`result` + optional `error`), an error can only exist on a failure:
+/// "success with an error" is unrepresentable.
+type TaskResult[P, E] =
+  | Succeeded { task: Task[P] }
+  | Failed { task: Task[P], error: E }
+  | Skipped { task: Task[P] }
+
+fn task_of[P, E](r: TaskResult[P, E]) -> Task[P] {
+  match r {
+    Succeeded { task } => task,
+    Failed { task, .. } => task,
+    Skipped { task } => task,
+  }
+}
+
+type Positive = Int where it >= 1
+type Retries = Int where it >= 0
+
+/// Standard scheduling policy. The `ge=1` / `ge=0` checks from the Pydantic
+/// model are now types: an invalid policy cannot be constructed.
+type TaskPolicy = { max_workers: Positive, tasks_per_worker: Positive, retries: Retries }
+
+/// Total runs of a task: the first try plus `retries` retries.
+fn max_attempts(p: TaskPolicy) -> Positive
+  ensures it == p.retries + 1
+{
+  p.retries + 1
+}
+
+// ───────────────────────── the three capabilities ─────────────────────────
+// The reference passes `resources` to producers and workers. Here a handler
+// simply closes over whatever resources it needs, and declares the effects it uses.
+
+/// Discovers tasks to run (the reference `Producer` protocol).
+effect Producer[P] {
+  fn discover() -> List[Task[P]]
+}
+
+/// Runs a batch of attempts and reports one result per attempt
+/// (the reference `Worker` protocol).
+effect Worker[P, E] {
+  fn run(attempts: List[TaskAttempt[P]]) -> List[TaskResult[P, E]]
+}
+
+/// A queue backend. This is the only thing that changes between SQLite, SQS, Redis…
+/// The contracts below bind every backend (and every mock): a backend that
+/// returns more than `limit` attempts is caught at the boundary.
+effect Queue[P, E] {
+  /// Enqueue tasks, ignoring ids already present; returns how many were new.
+  fn enqueue(tasks: List[Task[P]]) -> Int
+    ensures 0 <= it && it <= len(tasks)
+  /// Claim up to `limit` pending tasks, oldest first, bumping their attempt counts.
+  fn claim(limit: Positive) -> List[TaskAttempt[P]]
+    ensures len(it) <= limit
+  /// Record the results of claimed attempts.
+  fn record(results: List[TaskResult[P, E]]) -> ()
+  /// Put claimed-but-unreported attempts back.
+  fn release(attempts: List[TaskAttempt[P]]) -> ()
+}
+
+// ───────────────────────────── entrypoints ─────────────────────────────────
+
+/// Run the producer once and enqueue every task it discovers.
+fn run_producer[P, E]() -> Int / {Producer[P], Queue[P, E]}
+  ensures it >= 0
+{
+  Queue.enqueue(Producer.discover())
+}
+
+/// A worker broke the contract of reporting exactly one result per attempt.
+type WorkerError =
+  | ResultsMismatch { claimed: List[TaskId], reported: List[TaskId] }
+
+/// Claim one batch, run it, record the results. If the worker does not report
+/// exactly one result per claimed attempt, the claim is released and the
+/// mismatch is returned as a value instead of an exception.
+fn run_worker[P, E](policy: TaskPolicy) -> Result[List[TaskResult[P, E]], WorkerError] / {Queue[P, E], Worker[P, E]}
+  ensures match it {
+    Ok(rs) => len(rs) <= policy.tasks_per_worker,
+    Err(_) => true,
+  }
+{
+  let attempts = Queue.claim(policy.tasks_per_worker)
+  if len(attempts) == 0 {
+    Ok([])
+  } else {
+    let results = Worker.run(attempts)
+    let claimed = attempts.map(|a| a.task.id)
+    let reported = results.map(|r| task_of(r).id)
+    if same_ids(claimed, reported) {
+      Queue.record(results)
+      Ok(results)
+    } else {
+      Queue.release(attempts)
+      Err(ResultsMismatch { claimed, reported })
+    }
+  }
+}
+
+/// Exactly the same ids, each reported once.
+fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool {
+  len(claimed) == len(reported) && all(claimed, |c| count(reported, |r| r == c) == 1)
+}
+
+/// The worker entrypoint's loop: run batches until the queue has nothing
+/// claimable (or `max_batches` is reached). Returns the number of batches run.
+fn drain[P, E](policy: TaskPolicy, max_batches: Int) -> Int / {Queue[P, E], Worker[P, E]}
+  requires max_batches >= 0
+  ensures 0 <= it && it <= max_batches
+{
+  if max_batches == 0 {
+    0
+  } else {
+    match run_worker(policy) {
+      Ok([]) => 0,
+      Ok(_) => 1 + drain(policy, max_batches - 1),
+      Err(_) => 1 + drain(policy, max_batches - 1),
+    }
+  }
+}
+
+// ───────────────────────── in-memory backend ──────────────────────────────
+// The SQLite backend's semantics as a pure state machine. Its invariants are
+// part of the type, so every state the queue passes through is checked,
+// and `strata verify` explores random operation sequences against them.
+
+/// Mirrors the reference SQLite `status` column.
+type Status =
+  | Pending
+  | Running
+  | Done
+  | Exhausted
+
+type Entry[P] = { task: Task[P], status: Status, attempts: Int }
+
+/// One row of the reference `results` table.
+type Row[P, E] = { attempt: AttemptNo, result: TaskResult[P, E] }
+
+type MemQueue[P, E] = { policy: TaskPolicy, entries: List[Entry[P]], history: List[Row[P, E]] }
+  where unique_ids(it.entries)
+    && all(it.entries, |e| 0 <= e.attempts && e.attempts <= max_attempts(it.policy))
+    && all(it.entries, |e| e.status is Running ==> e.attempts >= 1)
+    && all(it.entries, |e| e.status is Exhausted ==> e.attempts == max_attempts(it.policy))
+    && all(it.entries, |e| e.status is Pending ==> e.attempts < max_attempts(it.policy))
+
+fn unique_ids[P](entries: List[Entry[P]]) -> Bool {
+  all(entries, |e| count(entries, |o| o.task.id == e.task.id) == 1)
+}
+
+fn empty_queue[P, E](policy: TaskPolicy) -> MemQueue[P, E] {
+  MemQueue { policy, entries: [], history: [] }
+}
+
+fn status_of[P, E](q: MemQueue[P, E], id: TaskId) -> Option[Status] {
+  match find(q.entries, |e| e.task.id == id) {
+    Some(e) => Some(e.status),
+    None => None,
+  }
+}
+
+fn attempts_of[P, E](q: MemQueue[P, E], id: TaskId) -> Int {
+  match find(q.entries, |e| e.task.id == id) {
+    Some(e) => e.attempts,
+    None => 0,
+  }
+}
+
+/// INSERT OR IGNORE: tasks whose id is already known are skipped.
+fn mem_enqueue[P, E](q: MemQueue[P, E], tasks: List[Task[P]]) -> Resume[Int, MemQueue[P, E]]
+  ensures 0 <= it.value && it.value <= len(tasks)
+  ensures len(it.state.entries) == len(q.entries) + it.value
+{
+  fold(tasks, Resume { value: 0, state: q }, |acc, t| {
+    if any(acc.state.entries, |e| e.task.id == t.id) {
+      acc
+    } else {
+      let fresh = Entry { task: t, status: Pending, attempts: 0 }
+      Resume { value: acc.value + 1, state: MemQueue { ..acc.state, entries: push(acc.state.entries, fresh) } }
+    }
+  })
+}
+
+/// Claim up to `limit` pending tasks with attempts left, oldest first.
+fn mem_claim[P, E](q: MemQueue[P, E], limit: Positive) -> Resume[List[TaskAttempt[P]], MemQueue[P, E]]
+  ensures len(it.value) <= limit
+  ensures all(it.value, |a| status_of(q, a.task.id) == Some(Pending))
+  ensures all(it.value, |a| status_of(it.state, a.task.id) == Some(Running))
+  ensures all(it.value, |a| a.attempt == attempts_of(q, a.task.id) + 1)
+{
+  let max = max_attempts(q.policy)
+  let chosen = take(filter(q.entries, |e| e.status is Pending && e.attempts < max), limit)
+  let ids = chosen.map(|e| e.task.id)
+  let entries = q.entries.map(|e| {
+    if contains(ids, e.task.id) { Entry { ..e, status: Running, attempts: e.attempts + 1 } } else { e }
+  })
+  Resume {
+    value: chosen.map(|e| TaskAttempt { task: e.task, attempt: e.attempts + 1 }),
+    state: MemQueue { ..q, entries },
+  }
+}
+
+/// Failures go back to Pending until attempts run out, then become Exhausted;
+/// successes and skips are Done. Every attempt is kept in the history.
+fn mem_record[P, E](q: MemQueue[P, E], results: List[TaskResult[P, E]]) -> Resume[(), MemQueue[P, E]]
+  requires all(results, |r| status_of(q, task_of(r).id) == Some(Running))
+  ensures all(results, |r| settled(it.state, r))
+  ensures len(it.state.history) == len(q.history) + len(results)
+{
+  let max = max_attempts(q.policy)
+  let entries = q.entries.map(|e| {
+    match find(results, |r| task_of(r).id == e.task.id) {
+      None => e,
+      Some(Failed { .. }) => Entry { ..e, status: if e.attempts < max { Pending } else { Exhausted } },
+      Some(_) => Entry { ..e, status: Done },
+    }
+  })
+  let rows = results.map(|r| Row { attempt: attempts_of(q, task_of(r).id), result: r })
+  Resume { value: (), state: MemQueue { ..q, entries, history: q.history ++ rows } }
+}
+
+fn settled[P, E](q: MemQueue[P, E], r: TaskResult[P, E]) -> Bool {
+  let s = status_of(q, task_of(r).id)
+  match r {
+    Failed { .. } => s == Some(Pending) || s == Some(Exhausted),
+    _ => s == Some(Done),
+  }
+}
+
+/// Put claimed-but-unreported tasks back to Pending, keeping attempt counts.
+///
+/// Fix over the reference: `_release` sets status back to `pending` even when the
+/// attempt it released was the last one. Since `_claim` only picks tasks with
+/// `attempts < max_attempts`, such a task stays `pending` forever: never retried,
+/// never marked `failed`. `strata verify simulate` found this through the
+/// `Pending ==> attempts < max` invariant on `MemQueue` (retries = 0, a worker
+/// that drops a result). Here those tasks become Exhausted instead.
+fn mem_release[P, E](q: MemQueue[P, E], attempts: List[TaskAttempt[P]]) -> Resume[(), MemQueue[P, E]]
+  ensures all(attempts, |a| status_of(it.state, a.task.id) != Some(Running))
+{
+  let ids = attempts.map(|a| a.task.id)
+  let max = max_attempts(q.policy)
+  let entries = q.entries.map(|e| {
+    if e.status is Running && contains(ids, e.task.id) {
+      Entry { ..e, status: if e.attempts < max { Pending } else { Exhausted } }
+    } else {
+      e
+    }
+  })
+  Resume { value: (), state: MemQueue { ..q, entries } }
+}
+
+/// A one-line summary per task, for reports and assertions.
+fn describe[P, E](q: MemQueue[P, E]) -> List[String] {
+  q.entries.map(|e| e.task.id ++ ": " ++ to_string(e.status) ++ " after " ++ to_string(e.attempts))
+}
+
+// ─────────────────────── example task family: print ──────────────────────
+
+type PrintJob = { message: String, fail_times: Retries }
+
+type Boom = { reason: String }
+
+/// Where the print worker writes. A handler decides: stdout, a log, a test buffer.
+effect Console {
+  fn print(line: String) -> ()
+}
+
+/// Fresh task ids. In production this would be a uuid4 source; in tests a counter.
+effect Ids {
+  fn fresh() -> TaskId
+}
+
+/// The example producer: a fixed batch of five jobs; job #3 fails once.
+fn print_jobs() -> List[Task[PrintJob]] / {Ids} {
+  range(0, 5).map(|i| Task {
+    id: Ids.fresh(),
+    kind: "print",
+    payload: PrintJob { message: "job #" ++ to_string(i), fail_times: if i == 3 { 1 } else { 0 } },
+  })
+}
+
+/// The example worker: prints, and fails the first `fail_times` attempts.
+fn print_worker(attempts: List[TaskAttempt[PrintJob]]) -> List[TaskResult[PrintJob, Boom]] / {Console} {
+  attempts.map(|a| {
+    Console.print("[attempt " ++ to_string(a.attempt) ++ "] " ++ a.task.payload.message)
+    if a.attempt <= a.task.payload.fail_times {
+      Failed { task: a.task, error: Boom { reason: "boom" } }
+    } else {
+      Succeeded { task: a.task }
+    }
+  })
+}
+
+type DemoReport = { enqueued: Int, batches: Int, log: List[String], tasks: List[String] }
+
+/// The reference's producer + worker entrypoints, wired to the in-memory
+/// backend. Only the `Queue` handler would change for SQLite or SQS.
+fn demo() -> DemoReport {
+  let policy = TaskPolicy { max_workers: 4, tasks_per_worker: 2, retries: 3 }
+  handle {
+    let enqueued = handle run_producer() with Producer { discover() => print_jobs() }
+    let batches = handle drain(policy, 100) with Worker { run(attempts) => print_worker(attempts) }
+    DemoReport { enqueued, batches, log: [], tasks: [] }
+  }
+  with Ids(next = 0) {
+    fresh() => Resume { value: "task-" ++ to_string(next), state: next + 1 },
+  }
+  with Console(lines = []) {
+    print(line) => Resume { value: (), state: push(lines, line) },
+    return(report) => DemoReport { ..report, log: lines },
+  }
+  with Queue(q = empty_queue(policy)) {
+    enqueue(tasks) => mem_enqueue(q, tasks),
+    claim(limit) => mem_claim(q, limit),
+    record(results) => mem_record(q, results),
+    release(attempts) => mem_release(q, attempts),
+    return(report) => DemoReport { ..report, tasks: describe(q) },
+  }
+}
+
+// ─────────────────── model-based verification of the backend ───────────────
+// `strata verify simulate` generates random policies and random sequences of
+// producer runs and worker batches (including misbehaving workers), runs them
+// through the real entrypoints and the in-memory backend, and checks every
+// contract and every queue invariant along the way.
+
+type Behaviour =
+  | AllSucceed
+  | AllFail
+  | AllSkip
+  | DropOne
+
+type SmallId = Int where 0 <= it && it <= 5
+type SmallBatch = Int where 1 <= it && it <= 3
+type SmallRetries = Int where 0 <= it && it <= 2
+
+type Step =
+  | Produce { ids: List[SmallId] }
+  | Work { behaviour: Behaviour }
+
+fn scripted(b: Behaviour, attempts: List[TaskAttempt[Int]]) -> List[TaskResult[Int, String]] {
+  match b {
+    AllSucceed => attempts.map(|a| Succeeded { task: a.task }),
+    AllFail => attempts.map(|a| Failed { task: a.task, error: "boom" }),
+    AllSkip => attempts.map(|a| Skipped { task: a.task }),
+    DropOne => drop(attempts, 1).map(|a| Succeeded { task: a.task }),
+  }
+}
+
+fn run_steps(policy: TaskPolicy, steps: List[Step]) -> () / {Queue[Int, String]} {
+  match steps {
+    [] => (),
+    [step, ..rest] => {
+      match step {
+        Produce { ids } => {
+          let tasks = ids.map(|i| Task { id: "t" ++ to_string(i), kind: "sim", payload: i })
+          handle run_producer() with Producer { discover() => tasks }
+          ()
+        },
+        Work { behaviour } => {
+          handle run_worker(policy) with Worker { run(attempts) => scripted(behaviour, attempts) }
+          ()
+        },
+      }
+      run_steps(policy, rest)
+    },
+  }
+}
+
+fn simulate(per_worker: SmallBatch, retries: SmallRetries, steps: List[Step]) -> List[String] {
+  let policy = TaskPolicy { max_workers: 1, tasks_per_worker: per_worker, retries }
+  handle run_steps(policy, steps) with Queue(q = empty_queue(policy)) {
+    enqueue(tasks) => mem_enqueue(q, tasks),
+    claim(limit) => mem_claim(q, limit),
+    record(results) => mem_record(q, results),
+    release(attempts) => mem_release(q, attempts),
+    return(r) => describe(q),
+  }
+}
+
+// ──────────────────────── the reference test suite ─────────────────────────
+
+/// Run steps on a fresh in-memory queue and return the final queue.
+fn queue_after(policy: TaskPolicy, steps: List[Step]) -> MemQueue[Int, String] {
+  handle {
+    run_steps(policy, steps)
+    empty_queue(policy)
+  }
+  with Queue(q = empty_queue(policy)) {
+    enqueue(tasks) => mem_enqueue(q, tasks),
+    claim(limit) => mem_claim(q, limit),
+    record(results) => mem_record(q, results),
+    release(attempts) => mem_release(q, attempts),
+    return(r) => q,
+  }
+}
+
+fn statuses(q: MemQueue[Int, String]) -> List[Status] {
+  q.entries.map(|e| e.status)
+}
+
+fn policy(per_worker: Positive, retries: Retries) -> TaskPolicy {
+  TaskPolicy { max_workers: 1, tasks_per_worker: per_worker, retries }
+}
+
+test "end to end: batches of two, everything succeeds" {
+  let q = queue_after(policy(2, 3), [
+    Produce { ids: [1, 2, 3] },
+    Work { behaviour: AllSucceed },
+    Work { behaviour: AllSucceed },
+  ])
+  assert statuses(q) == [Done, Done, Done]
+  assert len(q.history) == 3
+}
+
+test "retry then success" {
+  let q = queue_after(policy(1, 2), [Produce { ids: [1] }, Work { behaviour: AllFail }])
+  assert statuses(q) == [Pending]
+  let q2 = queue_after(policy(1, 2), [Produce { ids: [1] }, Work { behaviour: AllFail }, Work { behaviour: AllSucceed }])
+  assert statuses(q2) == [Done]
+  assert q2.history.map(|r| r.attempt) == [1, 2]
+}
+
+test "retries exhausted marks the task failed and it is never claimed again" {
+  let q = queue_after(policy(1, 1), [
+    Produce { ids: [1] },
+    Work { behaviour: AllFail },
+    Work { behaviour: AllFail },
+    Work { behaviour: AllSucceed },
+  ])
+  assert statuses(q) == [Exhausted]
+  assert q.history.map(|r| r.attempt) == [1, 2]
+}
+
+test "skipped counts as done" {
+  let q = queue_after(policy(1, 3), [Produce { ids: [1] }, Work { behaviour: AllSkip }])
+  assert statuses(q) == [Done]
+}
+
+test "producer re-run is idempotent" {
+  let q = queue_after(policy(1, 3), [Produce { ids: [4] }, Produce { ids: [4] }])
+  assert len(q.entries) == 1
+}
+
+test "a worker that misreports gets its claim released" {
+  let q = queue_after(policy(2, 3), [Produce { ids: [1, 2] }, Work { behaviour: DropOne }])
+  assert statuses(q) == [Pending, Pending]
+  assert q.entries.map(|e| e.attempts) == [1, 1]
+}
+
+test "a claim released on the last attempt is exhausted, not stuck pending" {
+  let q = queue_after(policy(1, 0), [Produce { ids: [1] }, Work { behaviour: DropOne }])
+  assert statuses(q) == [Exhausted]
+}
+
+test "demo: job #3 fails once, then everything is done" {
+  let r = demo()
+  assert r.enqueued == 5
+  assert all(r.tasks, |t| contains(["task-0: Done after 1", "task-1: Done after 1", "task-2: Done after 1", "task-3: Done after 2", "task-4: Done after 1"], t))
+  assert len(r.log) == 6
+}

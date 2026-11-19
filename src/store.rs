@@ -96,6 +96,10 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                 match args {
                     CtorArgs::Positional(xs) => xs.iter().for_each(|x| go(x, out)),
                     CtorArgs::Record(fs) => fs.iter().for_each(|(_, x)| go(x, out)),
+                    CtorArgs::Update(b, fs) => {
+                        go(b, out);
+                        fs.iter().for_each(|(_, x)| go(x, out));
+                    }
                     CtorArgs::None => {}
                 }
             }
@@ -155,6 +159,12 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                     if let HandlerKind::Clauses(cs) = &h.kind {
                         cs.iter().for_each(|c| go(&c.body, out));
                     }
+                    if let Some((_, init)) = &h.state {
+                        go(init, out);
+                    }
+                    if let Some((_, b)) = &h.on_return {
+                        go(b, out);
+                    }
                 }
             }
             _ => {}
@@ -183,9 +193,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
         DeclKind::Fn(f) => {
             f.params.iter().for_each(|p| ty(&p.ty, &mut out));
             ty(&f.ret, &mut out);
-            f.effects.iter().for_each(|e| {
-                out.insert(e.clone());
-            });
+            f.effects.iter().for_each(|e| ty(e, &mut out));
             f.requires.iter().chain(&f.ensures).for_each(|e| ex(e, &mut out, ctor_types));
             ex(&f.body, &mut out, ctor_types);
             out.remove(&f.name);

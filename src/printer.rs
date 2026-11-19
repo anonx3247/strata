@@ -106,6 +106,14 @@ pub fn expr(e: &Expr, d: usize) -> String {
                 .collect();
             format!("{c} {{ {} }}", parts.join(", "))
         }
+        Expr::Ctor(c, CtorArgs::Update(base, fs)) => {
+            let mut parts = vec![format!("..{}", expr(base, d))];
+            parts.extend(fs.iter().map(|(f, e)| match e {
+                Expr::Var(v) if v == f => f.clone(),
+                _ => format!("{f}: {}", expr(e, d)),
+            }));
+            format!("{c} {{ {} }}", parts.join(", "))
+        }
         Expr::Call(f, es) => format!("{}({})", wrap(f, 8, d), args(es, d)),
         Expr::Perform(eff, op, es) => format!("{eff}.{op}({})", args(es, d)),
         Expr::Method(r, m, es) => format!("{}.{m}({})", wrap(r, 8, d), args(es, d)),
@@ -147,7 +155,10 @@ pub fn expr(e: &Expr, d: usize) -> String {
                 match &h.kind {
                     HandlerKind::MockAuto => out += &format!(" with mock {}", h.effect),
                     HandlerKind::Clauses(cs) => {
-                        out += &format!(" with {} {{\n", h.effect);
+                        match &h.state {
+                            Some((v, init)) => out += &format!(" with {}({v} = {}) {{\n", h.effect, expr(init, d)),
+                            None => out += &format!(" with {} {{\n", h.effect),
+                        }
                         for c in cs {
                             out += &format!(
                                 "{}{}({}) => {},\n",
@@ -156,6 +167,9 @@ pub fn expr(e: &Expr, d: usize) -> String {
                                 c.params.join(", "),
                                 expr(&c.body, d + 1)
                             );
+                        }
+                        if let Some((p, b)) = &h.on_return {
+                            out += &format!("{}return({p}) => {},\n", ind(d + 1), expr(b, d + 1));
                         }
                         out += &format!("{}}}", ind(d));
                     }
@@ -221,9 +235,19 @@ pub fn type_decl(t: &TypeDecl) -> String {
 }
 
 pub fn effect_decl(e: &EffectDecl) -> String {
-    let mut s = format!("effect {} {{\n", e.name);
+    let tp = if e.params.is_empty() { String::new() } else { format!("[{}]", e.params.join(", ")) };
+    let mut s = format!("effect {}{tp} {{\n", e.name);
     for op in &e.ops {
+        for d in &op.doc {
+            s += &format!("  /// {d}\n");
+        }
         s += &format!("  fn {}({}) -> {}\n", op.name, params(&op.params), ty(&op.ret));
+        for r in &op.requires {
+            s += &format!("    requires {}\n", expr(r, 2));
+        }
+        for e in &op.ensures {
+            s += &format!("    ensures {}\n", expr(e, 2));
+        }
     }
     s + "}"
 }
@@ -232,7 +256,7 @@ pub fn fn_signature(f: &FnDecl) -> String {
     let tp = if f.type_params.is_empty() { String::new() } else { format!("[{}]", f.type_params.join(", ")) };
     let mut s = format!("fn {}{}({}) -> {}", f.name, tp, params(&f.params), ty(&f.ret));
     if !f.effects.is_empty() {
-        s += &format!(" / {{{}}}", f.effects.join(", "));
+        s += &format!(" / {{{}}}", f.effects.iter().map(ty).collect::<Vec<_>>().join(", "));
     }
     for r in &f.requires {
         s += &format!("\n  requires {}", expr(r, 1));

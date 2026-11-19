@@ -97,3 +97,15 @@ fn json_inputs_are_validated_against_refinements() {
     let (ok, out) = strata(&["--file", &example(), "run", "total", r#"[[{"sku":"a","qty":2,"unit_price":5}]]"#], &d, None);
     assert!(ok && out.trim() == "10", "{out}");
 }
+
+#[test]
+fn tasks_port_checks_tests_and_verifies() {
+    let d = tmp("tasks");
+    let ex = format!("{}/examples/tasks/tasks.strata", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["--file", &ex, "test"], &d, None);
+    assert!(ok && out.contains("0 failed"), "{out}");
+    let (ok, out) = strata(&["--file", &ex, "verify", "simulate,run_worker,mem_claim", "--cases", "300"], &d, None);
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", &ex, "run", "demo"], &d, None);
+    assert!(ok && out.contains("task-3: Done after 2"), "{out}");
+}

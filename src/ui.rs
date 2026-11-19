@@ -76,7 +76,7 @@ fn snapshot(target: &Target) -> Json {
             let one: BTreeSet<String> = [name.clone()].into();
             let render = |lvl| view::render(p, &one, lvl, &status).trim_end().to_string();
             let effects = match &d.kind {
-                DeclKind::Fn(f) => f.effects.clone(),
+                DeclKind::Fn(f) => f.effects.iter().map(crate::printer::ty).collect(),
                 _ => vec![],
             };
             let label = match &d.kind {

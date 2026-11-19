@@ -59,14 +59,23 @@ pub struct Param {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OpSig {
+    #[serde(default)]
+    pub doc: Vec<String>,
     pub name: String,
     pub params: Vec<Param>,
     pub ret: TypeExpr,
+    /// Contract every handler of this operation must honour.
+    #[serde(default)]
+    pub requires: Vec<Expr>,
+    #[serde(default)]
+    pub ensures: Vec<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EffectDecl {
     pub name: String,
+    #[serde(default)]
+    pub params: Vec<String>,
     pub ops: Vec<OpSig>,
 }
 
@@ -76,11 +85,21 @@ pub struct FnDecl {
     pub type_params: Vec<String>,
     pub params: Vec<Param>,
     pub ret: TypeExpr,
-    pub effects: Vec<String>,
+    /// Effects this function may perform, e.g. `Db` or `Queue[P, E]`.
+    pub effects: Vec<TypeExpr>,
     pub requires: Vec<Expr>,
     /// Postconditions; `it` is the return value.
     pub ensures: Vec<Expr>,
     pub body: Expr,
+}
+
+impl FnDecl {
+    pub fn effect_names(&self) -> Vec<String> {
+        self.effects.iter().map(|e| match e {
+            TypeExpr::Named(n, _) => n.clone(),
+            other => crate::printer::ty(other),
+        }).collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -224,6 +243,14 @@ pub struct HandlerClause {
 pub struct Handler {
     pub effect: String,
     pub kind: HandlerKind,
+    /// Stateful handler: `with Queue(q = init) { ... }`. Clauses see the state
+    /// as `q` and answer with `Resume { value, state }`.
+    #[serde(default)]
+    pub state: Option<(String, Expr)>,
+    /// `return(r) => expr`: transforms the handled computation's result
+    /// (with the final state in scope).
+    #[serde(default)]
+    pub on_return: Option<(String, Expr)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -260,6 +287,8 @@ pub enum CtorArgs {
     None,
     Positional(Vec<Expr>),
     Record(Vec<(String, Expr)>),
+    /// `Entry { ..e, status: Done }`: copy of `e` with some fields replaced
+    Update(Box<Expr>, Vec<(String, Expr)>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

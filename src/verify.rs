@@ -32,6 +32,10 @@ fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
         Expr::List(xs) => xs.iter().for_each(&mut w),
         Expr::Ctor(_, CtorArgs::Positional(xs)) => xs.iter().for_each(&mut w),
         Expr::Ctor(_, CtorArgs::Record(fs)) => fs.iter().for_each(|(_, x)| w(x)),
+        Expr::Ctor(_, CtorArgs::Update(b, fs)) => {
+            w(b);
+            fs.iter().for_each(|(_, x)| w(x))
+        }
         Expr::Call(g, xs) => {
             w(g);
             xs.iter().for_each(&mut w)
@@ -68,6 +72,12 @@ fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
             for h in hs {
                 if let HandlerKind::Clauses(cs) = &h.kind {
                     cs.iter().for_each(|c| w(&c.body));
+                }
+                if let Some((_, init)) = &h.state {
+                    w(init);
+                }
+                if let Some((_, b)) = &h.on_return {
+                    w(b);
                 }
             }
         }
@@ -150,9 +160,9 @@ impl Verdict {
 }
 
 pub fn fuzz_fn(env: &Env, f: &FnDecl, cases: usize, seed: u64) -> Verdict {
-    if !f.type_params.is_empty() {
-        return Verdict::Skipped { reason: "generic functions are not fuzzed yet".into() };
-    }
+    // Generic functions are fuzzed at one instance: every type parameter becomes `Int`.
+    let inst: std::collections::HashMap<String, TypeExpr> =
+        f.type_params.iter().map(|p| (p.clone(), TypeExpr::Named("Int".into(), vec![]))).collect();
     if f.params.iter().any(|p| matches!(p.ty, TypeExpr::Fn(..))) {
         return Verdict::Skipped { reason: "higher-order parameters are not generated yet".into() };
     }
@@ -163,7 +173,7 @@ pub fn fuzz_fn(env: &Env, f: &FnDecl, cases: usize, seed: u64) -> Verdict {
         }
         let mut it = Interp::new(env, seed.wrapping_add(i as u64));
         let mut generator = std::mem::replace(&mut it.generator, crate::generate::Gen::new(0));
-        let args: Result<Vec<crate::interp::Value>, String> = f.params.iter().map(|p| generator.value(env, &p.ty, &mut it)).collect();
+        let args: Result<Vec<crate::interp::Value>, String> = f.params.iter().map(|p| generator.value(env, &crate::types::subst_texpr(&p.ty, &inst), &mut it)).collect();
         it.generator = generator;
         let args = match args {
             Ok(a) => a,
@@ -178,7 +188,7 @@ pub fn fuzz_fn(env: &Env, f: &FnDecl, cases: usize, seed: u64) -> Verdict {
             discarded += 1;
             continue;
         }
-        it.mock_effects(&f.effects);
+        it.mock_effects(&f.effect_names());
         match it.call_fn(&f.name, args.clone()) {
             Ok(_) => ok += 1,
             Err(fault) if fault.kind == FaultKind::Hole => {

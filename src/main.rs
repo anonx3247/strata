@@ -111,7 +111,11 @@ fn load(args: &Args) -> Result<Source, String> {
 fn full_check(p: &Program) -> types::CheckReport {
     let mut rep = types::check(p);
     let (env, _) = types::Env::new(p);
-    rep.errors.extend(verify::static_refinements(p, &env));
+    for d in verify::static_refinements(p, &env) {
+        if !rep.errors.iter().any(|e| e.decl == d.decl && e.msg == d.msg) {
+            rep.errors.push(d);
+        }
+    }
     rep
 }
 
@@ -367,16 +371,16 @@ fn run() -> Result<bool, String> {
             }
             if !f.effects.is_empty() {
                 if !args.flag("--mock") {
-                    return Err(format!("`{name}` performs {{{}}}; pass --mock to handle them with generated values", f.effects.join(", ")));
+                    return Err(format!("`{name}` performs {{{}}}; pass --mock to handle them with generated values", f.effect_names().join(", ")));
                 }
-                it.mock_effects(&f.effects);
+                it.mock_effects(&f.effect_names());
             }
             let res = it.call_fn(name, vals);
             if it.tracing {
                 for t in &it.trace {
                     eprintln!("{t}");
                 }
-            } else if !it.effect_log.is_empty() {
+            } else if args.flag("--mock") && !it.effect_log.is_empty() {
                 for t in &it.effect_log {
                     eprintln!("{t}");
                 }

@@ -209,18 +209,34 @@ impl Parser {
 
     fn effect_decl(&mut self) -> R<EffectDecl> {
         let name = self.ident()?;
+        let params = self.type_params()?;
         self.expect_sym("{")?;
         let mut ops = Vec::new();
         while !self.eat_sym("}") {
+            let mut doc = Vec::new();
+            while let Tok::Doc(d) = self.peek().clone() {
+                doc.push(d);
+                self.next();
+            }
             self.expect_kw("fn")?;
             let oname = self.ident()?;
             let params = self.params()?;
             let ret = if self.eat_sym("->") { self.type_expr()? } else { TypeExpr::Unit };
-            ops.push(OpSig { name: oname, params, ret });
+            let (mut requires, mut ensures) = (Vec::new(), Vec::new());
+            loop {
+                if self.eat_kw("requires") {
+                    requires.push(self.expr_ns()?);
+                } else if self.eat_kw("ensures") {
+                    ensures.push(self.expr_ns()?);
+                } else {
+                    break;
+                }
+            }
+            ops.push(OpSig { doc, name: oname, params, ret, requires, ensures });
             self.eat_sym(",");
             self.eat_sym(";");
         }
-        Ok(EffectDecl { name, ops })
+        Ok(EffectDecl { name, params, ops })
     }
 
     fn fn_decl(&mut self) -> R<FnDecl> {
@@ -231,7 +247,7 @@ impl Parser {
         let mut effects = Vec::new();
         if self.eat_sym("/") {
             self.expect_sym("{")?;
-            effects = self.list("}", |p| p.ident())?;
+            effects = self.list("}", |p| p.type_expr())?;
         }
         let (mut requires, mut ensures) = (Vec::new(), Vec::new());
         loop {
@@ -431,12 +447,22 @@ impl Parser {
                 let mut handlers = Vec::new();
                 while self.eat_kw("with") {
                     if self.eat_kw("mock") {
-                        handlers.push(Handler { effect: self.ident()?, kind: HandlerKind::MockAuto });
+                        handlers.push(Handler { effect: self.ident()?, kind: HandlerKind::MockAuto, state: None, on_return: None });
                         continue;
                     }
                     let effect = self.ident()?;
+                    let state = if self.eat_sym("(") {
+                        let v = self.ident()?;
+                        self.expect_sym("=")?;
+                        let init = self.expr()?;
+                        self.expect_sym(")")?;
+                        Some((v, init))
+                    } else {
+                        None
+                    };
                     self.expect_sym("{")?;
                     let mut clauses = Vec::new();
+                    let mut on_return = None;
                     while !self.eat_sym("}") {
                         let op = self.ident()?;
                         self.expect_sym("(")?;
@@ -444,9 +470,16 @@ impl Parser {
                         self.expect_sym("=>")?;
                         let body = self.expr()?;
                         self.eat_sym(",");
-                        clauses.push(HandlerClause { op, params, body });
+                        if op == "return" {
+                            if params.len() != 1 {
+                                return Err(self.err("`return` clause takes exactly one parameter"));
+                            }
+                            on_return = Some((params[0].clone(), body));
+                        } else {
+                            clauses.push(HandlerClause { op, params, body });
+                        }
                     }
-                    handlers.push(Handler { effect, kind: HandlerKind::Clauses(clauses) });
+                    handlers.push(Handler { effect, kind: HandlerKind::Clauses(clauses), state, on_return });
                 }
                 if handlers.is_empty() {
                     return Err(self.err("expected `with` after handled expression"));
@@ -475,6 +508,17 @@ impl Parser {
                 }
                 if self.is_sym("{") && !self.no_struct {
                     self.next();
+                    if self.eat_sym("..") {
+                        let base = self.expr()?;
+                        let mut fields = Vec::new();
+                        while self.eat_sym(",") && !self.is_sym("}") {
+                            let f = self.ident()?;
+                            let v = if self.eat_sym(":") { self.expr()? } else { Expr::Var(f.clone()) };
+                            fields.push((f, v));
+                        }
+                        self.expect_sym("}")?;
+                        return Ok(Expr::Ctor(name, CtorArgs::Update(Box::new(base), fields)));
+                    }
                     let fields = self.list("}", |p| {
                         let f = p.ident()?;
                         if p.eat_sym(":") { Ok((f, p.expr()?)) } else { Ok((f.clone(), Expr::Var(f))) }
