@@ -101,9 +101,131 @@ fn snapshot(target: &Target) -> Json {
             })
         })
         .collect();
+    // ---- structure for the type map ----
+    let declared: std::collections::HashSet<String> = p
+        .decls
+        .iter()
+        .filter(|d| matches!(d.kind, DeclKind::Type(_) | DeclKind::Effect(_)))
+        .map(|d| d.name())
+        .collect();
+    let refs_of = |t: &TypeExpr| -> Vec<String> {
+        let mut m = Vec::new();
+        crate::flow::mentions(t, &mut m);
+        m.into_iter().filter(|n| declared.contains(n)).collect()
+    };
+    let field_json = |name: Option<&str>, t: &TypeExpr| json!({"name": name, "ty": crate::printer::ty(t), "refs": refs_of(t)});
+    let mut structure = Vec::new();
+    for d in &p.decls {
+        // functions whose first parameter is this record/sum type act as its methods
+        let has_methods = matches!(&d.kind, DeclKind::Type(t) if !matches!(t.body, TypeBody::Alias(_)));
+        let methods: Vec<Json> = p
+            .decls
+            .iter()
+            .filter(|_| has_methods)
+            .filter_map(|m| match &m.kind {
+                DeclKind::Fn(f) if f.params.first().and_then(|x| crate::flow::head(&x.ty)).as_deref() == Some(&d.name()) => {
+                    Some(json!({"name": f.name, "sig": crate::printer::fn_signature(f).lines().next().unwrap_or("").trim_start_matches("fn ").to_string()}))
+                }
+                _ => None,
+            })
+            .collect();
+        match &d.kind {
+            DeclKind::Type(t) => {
+                let (kind, base, fields, variants) = match &t.body {
+                    TypeBody::Alias(a) => ("alias", Some(json!({"ty": crate::printer::ty(a), "refs": refs_of(a)})), vec![], vec![]),
+                    TypeBody::Record(fs) => ("record", None, fs.iter().map(|f| field_json(Some(&f.name), &f.ty)).collect(), vec![]),
+                    TypeBody::Sum(vs) => (
+                        "sum",
+                        None,
+                        vec![],
+                        vs.iter()
+                            .map(|v| {
+                                let fs: Vec<Json> = match &v.payload {
+                                    Payload::None => vec![],
+                                    Payload::Positional(ts) => ts.iter().map(|t| field_json(None, t)).collect(),
+                                    Payload::Record(fs) => fs.iter().map(|f| field_json(Some(&f.name), &f.ty)).collect(),
+                                };
+                                json!({"name": v.name, "fields": fs})
+                            })
+                            .collect(),
+                    ),
+                };
+                structure.push(json!({
+                    "name": t.name, "kind": kind, "params": t.params, "doc": d.doc.join("\n"),
+                    "refinement": t.refinement.as_ref().map(|r| crate::printer::expr(r, 0)),
+                    "base": base, "fields": fields, "variants": variants, "methods": methods,
+                }));
+            }
+            DeclKind::Effect(e) => {
+                let ops: Vec<Json> = e
+                    .ops
+                    .iter()
+                    .map(|o| {
+                        let mut r = Vec::new();
+                        for p in &o.params {
+                            r.extend(refs_of(&p.ty));
+                        }
+                        r.extend(refs_of(&o.ret));
+                        r.dedup();
+                        let params: Vec<String> = o.params.iter().map(|p| format!("{}: {}", p.name, crate::printer::ty(&p.ty))).collect();
+                        json!({
+                            "name": o.name,
+                            "sig": format!("{}({}) -> {}", o.name, params.join(", "), crate::printer::ty(&o.ret)),
+                            "refs": r,
+                            "contract": o.requires.iter().map(|x| format!("requires {}", crate::printer::expr(x, 0)))
+                                .chain(o.ensures.iter().map(|x| format!("ensures {}", crate::printer::expr(x, 0)))).collect::<Vec<_>>(),
+                        })
+                    })
+                    .collect();
+                structure.push(json!({"name": e.name, "kind": "effect", "params": e.params, "doc": d.doc.join("\n"), "ops": ops, "methods": []}));
+            }
+            _ => {}
+        }
+    }
+
+    // ---- execution outlines for the flow map ----
+    let fn_names: std::collections::HashSet<String> = p.decls.iter().filter(|d| matches!(d.kind, DeclKind::Fn(_))).map(|d| d.name()).collect();
+    let outliner = crate::flow::Outliner { fns: &fn_names };
+    let mut flows = serde_json::Map::new();
+    let mut called: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for d in &p.decls {
+        let (body, sig) = match &d.kind {
+            DeclKind::Fn(f) => (&f.body, json!({"effects": f.effects.iter().map(crate::printer::ty).collect::<Vec<_>>(), "sig": crate::printer::fn_signature(f).lines().next().unwrap_or("").to_string(), "hole": matches!(f.body, Expr::Hole(_))})),
+            DeclKind::Test(t) => (&t.body, json!({"effects": [], "sig": format!("test {:?}", t.name), "hole": false})),
+            _ => continue,
+        };
+        let steps = outliner.steps(body);
+        if matches!(d.kind, DeclKind::Fn(_)) {
+            let s = serde_json::to_string(&steps).unwrap_or_default();
+            for n in &fn_names {
+                if *n != d.name() && s.contains(&format!("\"f\":\"{n}\"")) {
+                    called.insert(n.clone());
+                }
+            }
+        }
+        flows.insert(d.name(), json!({"steps": steps, "info": sig}));
+    }
+    // entry points: functions nothing else uses (calls, contracts or refinements; tests don't count)
+    let used: std::collections::HashSet<String> = p
+        .decls
+        .iter()
+        .filter(|d| !matches!(d.kind, DeclKind::Test(_)))
+        .flat_map(|d| graph.get(&d.name()).cloned().unwrap_or_default().into_iter().filter(move |n| *n != d.name()))
+        .chain(called.iter().cloned())
+        .collect();
+    let entries: Vec<String> = p
+        .decls
+        .iter()
+        .filter(|d| matches!(d.kind, DeclKind::Fn(_)) && !used.contains(&d.name()))
+        .map(|d| d.name())
+        .collect();
+
     json!({
         "label": label,
         "decls": decls,
+        "structure": structure,
+        "flows": flows,
+        "entries": entries,
         "errors": rep.errors,
         "log": log,
     })

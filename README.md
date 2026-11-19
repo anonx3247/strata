@@ -37,13 +37,14 @@ strata ui                          # open http://127.0.0.1:7777: the live viewer
 
 `strata ui` serves a local, read-only viewer. It re-reads the codebase every 1.5 seconds, so edits made through the CLI (by you or by agents) appear as they are committed.
 
-- **Map**: the dependency graph, arranged in layers from foundations to the code built on them. Click a node to highlight what it uses and what uses it; double-click to open its slice.
+- **Types**: a graph of types and effects and how they relate: *contains* (a field or variant mentions it), *refines* (a refinement of another type), *used by operation* (an effect's operations mention it). It is a general graph, not a hierarchy. Each card shows the type's fields or variants and the functions that take it first (its methods). Click a card to highlight its relations; drag cards (positions are remembered), scroll to zoom. Traits will show up here with *implements* edges.
+- **Flow**: execution paths from an entry point (a function nothing else uses) or a test: calls, branches (`match` / `if`, each path separately), loops over collections, handlers, and effect operations. Each effect operation shows **which handler answers it**, so you can follow `Queue.claim` from `run_worker` into the in-memory backend.
 - **Interfaces / Outline / Source**: levels 1–3 for every definition. Each card has its own L1/L2/L3 switch, so you can open one definition fully while everything else stays folded.
 - **Slice around a definition**: show only that definition, what it uses, and what uses it.
 - **Inspector**: doc comment, hashes, effects, holes (goal, context, what they must satisfy), the verification result with any counterexample, and the definition's history.
 - **Activity**: the patch log. Definitions changed since your last look are highlighted.
 - The URL keeps the view, e.g. `#level=2&sel=refund&scope=slice`, so you can send someone or an agent exactly what you're looking at.
-- Keys: `0`–`3` switch level, `/` filters, `Esc` clears the selection.
+- Keys: `t` types, `f` flow, `1`–`3` code levels, `/` filters, `Esc` clears the selection.
 
 `strata ui --file some.strata` views a single file instead of a codebase.
 
