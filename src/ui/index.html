@@ -367,7 +367,9 @@ function status(d) {
   if (v && v.status === 'counterexample') return ['bad', 'counterexample'];
   if (d.holes.length) return ['warn', d.holes.length + ' hole' + (d.holes.length > 1 ? 's' : '')];
   if (v && v.status === 'incomplete') return ['warn', 'incomplete'];
-  if (v && v.status === 'fuzzed') return ['ok', 'fuzzed ' + v.cases];
+  const loops = v?.terminates?.status === 'unknown' ? ' · may not terminate' : '';
+  if (v && v.status === 'proven') return [loops ? 'warn' : 'ok', 'proven' + loops];
+  if (v && v.status === 'fuzzed') return [loops ? 'warn' : 'ok', 'fuzzed ' + v.cases + loops];
   if (d.kind === 'fn') return ['none', 'unverified'];
   return ['', ''];
 }
@@ -495,12 +497,13 @@ function renderHeader() {
   const holes = D.reduce((n, d) => n + d.holes.length, 0);
   const cex = D.filter(d => d.verdict?.status === 'counterexample').length;
   const fz = D.filter(d => d.verdict?.status === 'fuzzed').length;
-  const fns = D.filter(d => d.kind === 'fn').length;
+  const pr = D.filter(d => d.verdict?.status === 'proven').length;
+  const fns = D.filter(d => d.kind === 'fn' || d.kind === 'impl').length;
   $('#chips').innerHTML = [
     `<span class="chip"><b>${D.length}</b> definitions</span>`,
     `<span class="chip ${S.data.errors.length ? 'bad' : 'ok'}"><b>${S.data.errors.length ? S.data.errors.length + ' errors' : 'checks'}</b></span>`,
     `<span class="chip ${holes ? 'warn' : ''}"><b>${holes}</b> holes</span>`,
-    `<span class="chip ${cex ? 'bad' : fz ? 'ok' : ''}"><b>${fz}/${fns}</b> fuzzed${cex ? ` · <b>${cex}</b> failing` : ''}</span>`,
+    `<span class="chip ${cex ? 'bad' : pr + fz ? 'ok' : ''}"><b>${pr}/${fns}</b> proven · <b>${fz}</b> fuzzed${cex ? ` · <b>${cex}</b> failing` : ''}</span>`,
   ].join('');
   $('#nav').innerHTML = navButtons();
   for (const b of $('#levels').children) b.classList.toggle('on', lv(b.dataset.l) === S.level);
@@ -920,10 +923,24 @@ function implSec(d) {
   return `<div class="sec"><h3>${title}</h3><div class="impls">${items.join(', ')}</div></div>`;
 }
 
+function terminationBox(t) {
+  if (!t) return '';
+  if (t.status === 'proven') return `<div class="box ok">✓ Terminates: ${esc(t.how)}.</div>`;
+  if (t.status === 'assumed') return `<div class="box warn">○ Terminates if ${t.by.map(b => `<code>${esc(b)}</code>`).join(', ')} does: marked <code>terminates</code>, not proven.</div>`;
+  return `<div class="box warn">⚠ May not terminate: ${esc(t.reason)}.</div>`;
+}
+
 function verdictBox(v) {
   if (!v) return '';
-  if (v.status === 'fuzzed') return `<div class="box ok">✓ Every contract held on <b>${v.cases}</b> generated inputs${v.discarded ? ` (${v.discarded} discarded by requires)` : ''}.</div>`;
-  if (v.status === 'counterexample') return `<div class="box bad"><b>✗ ${esc(v.kind)} violation</b>
+  return verdictOnly(v) + terminationBox(v.terminates);
+}
+
+function verdictOnly(v) {
+  if (v.status === 'proven') return `<div class="box ok">✓ Proven by the SMT solver${v.checks.length ? `: <b>${v.checks.length}</b> check${v.checks.length > 1 ? 's' : ''}` : ' (nothing to check)'}.
+      ${v.checks.map(c => `<div class="row mono">${esc(c)}</div>`).join('')}</div>`;
+  if (v.status === 'fuzzed') return `<div class="box ok">~ Every contract held on <b>${v.cases}</b> generated inputs${v.discarded ? ` (${v.discarded} discarded by requires)` : ''}${v.proven + (v.unproven?.length || 0) ? `; <b>${v.proven}</b> of ${v.proven + v.unproven.length} checks proven` : ''}.
+      ${(v.unproven || []).map(u => `<div class="row mono">not proven: ${esc(u)}</div>`).join('')}</div>`;
+  if (v.status === 'counterexample') return `<div class="box bad"><b>✗ ${esc(v.kind)} violation</b>${v.found_by ? ` (found by the ${esc(v.found_by)})` : ''}
       <div class="row"><b>input</b> <code>${esc(JSON.stringify(v.args))}</code></div>
       <div class="row mono">${esc(v.message)}</div></div>`;
   if (v.status === 'incomplete') return `<div class="box warn">○ ${esc(v.message)}</div>`;
@@ -1010,7 +1027,7 @@ function chLine(l, resolve, key) {
 }
 // worth showing: the result is known and differs from before
 const verdictChanged = v => v && v.after && v.after !== 'unverified' && v.before !== v.after || v && v.before && v.before !== 'unverified' && v.before !== v.after;
-const vword = w => w == null ? 'new' : /^fuzzed/.test(w) ? `<span class="v-ok">${esc(w)} ✓</span>` : w === 'counterexample' ? `<span class="v-bad">${esc(w)} ✗</span>` : esc(w);
+const vword = w => w == null ? 'new' : /^(fuzzed|proven)/.test(w) ? `<span class="v-ok">${esc(w)} ✓</span>` : w === 'counterexample' ? `<span class="v-bad">${esc(w)} ✗</span>` : esc(w);
 function chCard(it) {
   const resolve = resolver(it.module);
   const what = it.what.map(words).join(', ');

@@ -538,6 +538,9 @@ pub fn fn_signature(f: &FnDecl) -> String {
     for e in &f.ensures {
         s += &format!("\n  ensures {}", expr(e, 1));
     }
+    if f.terminates {
+        s += "\n  terminates";
+    }
     s
 }
 
