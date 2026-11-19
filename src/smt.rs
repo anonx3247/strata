@@ -104,9 +104,9 @@ pub struct Vc<'a> {
     /// deterministic, so the same call gives the same result.
     memo: HashMap<String, Val>,
     pub loops: Vec<LoopInfo>,
-    /// For each recursive call: per parameter, the obligation "this integer
-    /// argument is smaller, and the parameter is not negative".
-    pub rec_calls: Vec<Vec<(usize, usize)>>,
+    /// Each recursive call: the path it is made on and its arguments, to
+    /// check candidate measures against (`measure_check`).
+    pub rec_sites: Vec<(Vec<T>, Vec<Val>)>,
     self_name: String,
     /// Functions whose bodies contracts may see through (`termination.rs`);
     /// `true` if their termination is only assumed.
@@ -183,7 +183,7 @@ impl<'a> Vc<'a> {
             params: vec![],
             memo: HashMap::new(),
             loops: vec![],
-            rec_calls: vec![],
+            rec_sites: vec![],
             self_name: String::new(),
             transparent: HashMap::new(),
             relied_on: Default::default(),
@@ -1374,15 +1374,8 @@ impl<'a> Vc<'a> {
         }
         let binds: Vec<(String, Val)> = f.params.iter().map(|p| p.name.clone()).zip(args.iter().cloned()).collect();
         if label == self.self_name && self.spec == 0 && !self.dead {
-            // a recursive call: does some integer argument get smaller?
-            let mut per = vec![];
-            for (i, (a, (_, p))) in args.iter().zip(self.params.clone()).enumerate() {
-                if let (Val::Int(a), Val::Int(p)) = (a, &p) {
-                    let k = self.oblige_termination(format!("recursive call of `{label}`"), format!("(and (>= {p} 0) (< {a} {p}))"));
-                    per.push((i, k));
-                }
-            }
-            self.rec_calls.push(per);
+            // a recursive call: remembered, to check measures against
+            self.rec_sites.push((self.pc.clone(), args.to_vec()));
         }
         for (p, a) in f.params.iter().zip(args) {
             if self.refined(&p.ty, 0) {
@@ -1773,6 +1766,39 @@ impl<'a> Vc<'a> {
                 self.set(&x, nv);
             }
         }
+    }
+
+    /// An integer expression over the parameters, evaluated with `binds`.
+    fn int_of(&mut self, e: &Expr, binds: Vec<(String, Val)>) -> T {
+        let saved = std::mem::replace(&mut self.scopes, vec![binds.into_iter().collect()]);
+        self.spec += 1;
+        let v = self.eval(e);
+        self.spec -= 1;
+        self.scopes = saved;
+        self.as_int(&v)
+    }
+
+    /// The obligation that, at recursive call `site`, the measure goes down:
+    /// the measures `ms` compared in order (lexicographically), each never
+    /// negative where it decides. Returns the obligation's index.
+    pub fn measure_check(&mut self, site: usize, ms: &[Expr]) -> usize {
+        let (pc, args) = self.rec_sites[site].clone();
+        let before_binds = self.params.clone();
+        let after_binds: Vec<(String, Val)> = self.params.iter().map(|p| p.0.clone()).zip(args).collect();
+        let mut alts = vec![];
+        let mut equal_so_far = vec![];
+        for m in ms {
+            let b = self.int_of(m, before_binds.clone());
+            let a = self.int_of(m, after_binds.clone());
+            let mut here = equal_so_far.clone();
+            here.push(format!("(>= {b} 0)"));
+            here.push(format!("(< {a} {b})"));
+            alts.push(and(&here));
+            equal_so_far.push(format!("(= {a} {b})"));
+        }
+        let shown = ms.iter().map(|m| crate::printer::expr(m, 0)).collect::<Vec<_>>().join(", ");
+        self.obligations.push(Obligation { what: format!("measure ({shown}) goes down"), goal: or(&alts), pc, facts: self.facts.len(), termination: true });
+        self.obligations.len() - 1
     }
 
     /// The obligations of a function: its body under its parameters'

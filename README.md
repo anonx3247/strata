@@ -373,13 +373,17 @@ How it works (`src/smt.rs`): the body is run symbolically, with values as SMT te
   - no recursion, and only `for` loops;
   - a `while a < b` loop (also `<=`, `>`, `>=`, `!=`) whose bound `b - a` the solver proves goes down on every pass, unless the pass ends the loop;
   - recursion where some argument is a smaller piece of a parameter, taken apart by a `match` (`[_, ..rest] => 1 + length(rest)`);
-  - recursion on a smaller non-negative integer (`fact(n - 1)`, `fib(n - 2)`, `gcd(b, a % b)`).
+  - recursion with a *measure*: an integer expression of the parameters that the solver proves is never negative at each recursive call, and smaller for the call's arguments. The candidates are tried automatically:
+    - each integer parameter (`fact(n - 1)`, `gcd(b, a % b)`);
+    - the length of each list or string parameter (`total(drop(xs, 1))`);
+    - for each comparison in the body, the distance between its sides (`100 - n` in `up(n + 1)` under `n <= 100`, `hi - lo` in a binary search);
+    - pairs of these compared in order, like words in a dictionary (`(m, n)` for Ackermann's function).
 
   It also needs everything the function calls to terminate.
 - **may not terminate**, with the reason: a `loop`, other recursion, mutual recursion, or a call to such a function. The viewer marks these.
 - **assumed**: the function is marked `terminates` (after its contract, `fn f(x: Int) -> Int terminates { … }`). Its callers say they terminate *if* it does.
 
-**Policies.** `verify --require proven,terminates,no-recursion` fails the run when a checked function is not proven, may not terminate (an explicit `terminates` is accepted), or is recursive.
+**Policies.** Recursion is allowed by default. `verify --require proven,terminates,no-recursion` fails the run when a checked function is not proven, may not terminate (an explicit `terminates` is accepted), or is recursive at all (even when it is shown to terminate).
 
 Z3 is found on the `PATH` (or `STRATA_SOLVER`). Without it, everything is fuzzed. Each query has a resource limit rather than a timeout, so results are deterministic and can be cached by content hash (with the solver version in the key).
 

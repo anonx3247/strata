@@ -119,6 +119,23 @@ fn trusted(n: Int) -> Int
 }
 fn uses_spin(n: Int) -> Int { spin(n) + 1 }
 fn uses_trusted(n: Int) -> Int { trusted(n) + 1 }
+fn up(n: Int) -> Int { if n > 100 { n } else { up(n + 1) } }
+fn search(xs: List[Int], t: Int, lo: Int, hi: Int) -> Bool {
+  if lo >= hi {
+    false
+  } else {
+    let mid = (lo + hi) / 2
+    match get(xs, mid) {
+      Some(x) => if x < t { search(xs, t, mid + 1, hi) } else { x == t || search(xs, t, lo, mid) },
+      None => false,
+    }
+  }
+}
+fn ack(m: Natural, n: Natural) -> Natural {
+  if m == 0 { n + 1 } else { if n == 0 { ack(m - 1, 1) } else { ack(m - 1, ack(m, n - 1)) } }
+}
+fn total(xs: List[Int]) -> Int { if len(xs) == 0 { 0 } else { total(drop(xs, 1)) } }
+fn skip2(n: Int) -> Int { if n == 0 { 0 } else { skip2(n - 2) } }
 ";
     std::fs::write(d.join("t.strata"), src).unwrap();
     let (_, out) = strata(&["--file", "t.strata", "verify", "--checks", "--cases", "20"], &d, None);
@@ -127,8 +144,10 @@ fn uses_trusted(n: Int) -> Int { trusted(n) + 1 }
         lines.next();
         lines.take_while(|l| l.starts_with("    ")).collect::<Vec<_>>().join("\n")
     };
-    assert!(after("fact").contains("terminates: each recursive call gets a smaller `n`"), "{out}");
-    assert!(after("gcd").contains("smaller `b`"), "{out}");
+    let measured = |name: &str, m: &str| after(name).contains(&format!("terminates: {m} goes down on every recursive call"));
+    assert!(measured("fact", "`n`") && measured("gcd", "`b`") && measured("up", "`100 - n`") && measured("search", "`hi - lo`"), "{out}");
+    assert!(measured("ack", "the pair (`m`, `n`), compared in order,") && measured("total", "`len(xs)`"), "{out}");
+    assert!(after("skip2").contains("may not terminate"), "skip2(1) never ends: {out}");
     assert!(after("length").contains("smaller piece of `xs`"), "{out}");
     assert!(after("count_up").contains("`n - i` goes down"), "{out}");
     assert!(after("forever").contains("may not terminate: it calls itself"), "{out}");

@@ -6,7 +6,12 @@
 //!   proves goes down on every pass through the body;
 //! * recursion where some argument is a piece of the same parameter, taken
 //!   apart by a `match` (`[x, ..rest] => f(rest)`, `Node { left, .. } => f(left)`):
-//!   values are finite, so this can't go on forever.
+//!   values are finite, so this can't go on forever;
+//! * recursion with a measure: an integer expression of the parameters that
+//!   the solver proves is never negative at a recursive call and smaller for
+//!   its arguments (`n` in `fact(n - 1)`, `100 - n` in `up(n + 1)` under
+//!   `n <= 100`, `hi - lo` in a binary search), or a pair of them compared in
+//!   order (`(m, n)` for Ackermann's function).
 //!
 //! A function also needs everything it calls to terminate. Anything else
 //! (a `loop`, other recursion, mutual recursion) "may not terminate", unless
@@ -383,17 +388,81 @@ fn structural(f: &FnDecl) -> Option<String> {
     common.and_then(|c| c.into_iter().next()).map(|i| f.params[i].name.clone())
 }
 
-/// If every recursive call passes, in the same position, an integer smaller
-/// than the parameter, which is not negative when the call is made (as in
-/// `fact(n - 1)` under `n > 0`): that parameter's name. Checked by the solver.
-fn int_recursion(env: &Env, f: &FnDecl, solver: Option<&str>) -> Option<String> {
+/// Candidate measures of a recursive function: integer expressions of its
+/// parameters that might go down on every recursive call. Each integer
+/// parameter, the length of each list or string parameter, and, for every
+/// comparison of parameters in the body (`n <= 100`, `lo < hi`), the distance
+/// between its two sides, both ways (`100 - n`, `hi - lo`).
+fn candidate_measures(env: &Env, f: &FnDecl) -> Vec<Expr> {
+    let assigned = assigned(&f.body);
+    let params: HashSet<&str> = f.params.iter().filter(|p| !p.mutable && !assigned.contains(&p.name)).map(|p| p.name.as_str()).collect();
+    let var = |n: &str| Expr::Var(n.to_string());
+    let mut out: Vec<Expr> = vec![];
+    for p in &f.params {
+        if !params.contains(p.name.as_str()) {
+            continue;
+        }
+        match env.expand_alias(&p.ty) {
+            TypeExpr::Named(n, _) if n == "Int" => out.push(var(&p.name)),
+            TypeExpr::Named(n, _) if ["List", "String", "Dict", "Set"].contains(&n.as_str()) => out.push(Expr::Call(Box::new(var("len")), vec![var(&p.name)])),
+            _ => {}
+        }
+    }
+    // only expressions of the parameters (and functions) can be measures
+    let only_params = |e: &Expr| {
+        let mut ok = true;
+        crate::verify::walk(e, &mut |x| match x {
+            Expr::Var(n) => ok &= params.contains(n.as_str()) || env.fns.contains_key(n) || crate::types::BUILTINS.iter().any(|b| b.0 == n),
+            Expr::Lambda(..) | Expr::Hole(_) | Expr::Float(_) | Expr::Str(_) => ok = false,
+            _ => {}
+        });
+        ok
+    };
+    crate::verify::walk(&f.body, &mut |x| {
+        if let Expr::Bin(BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Ne | BinOp::Eq, a, b) = x {
+            if only_params(a) && only_params(b) {
+                let sub = |l: &Expr, r: &Expr| Expr::Bin(BinOp::Sub, Box::new(l.clone()), Box::new(r.clone()));
+                out.push(sub(b, a));
+                out.push(sub(a, b));
+            }
+        }
+    });
+    let mut seen = HashSet::new();
+    out.retain(|m| seen.insert(crate::printer::expr(m, 0)));
+    out.truncate(8);
+    out
+}
+
+/// Find a measure that goes down on every recursive call and is never
+/// negative there: one candidate, or else a pair compared in order (as for
+/// Ackermann's function). Checked by the solver; returns the measure, shown.
+fn measured_recursion(env: &Env, f: &FnDecl, solver: Option<&str>) -> Option<String> {
     let bin = solver?;
     let mut vc = crate::smt::Vc::new(env);
     vc.function(f, &f.name);
-    if vc.rec_calls.is_empty() {
+    if vc.rec_sites.is_empty() {
         return None;
     }
-    (0..f.params.len()).find(|i| vc.rec_calls.iter().all(|call| call.iter().any(|(j, k)| j == i && matches!(vc.solve(bin, *k), crate::smt::Outcome::Proven)))).map(|i| f.params[i].name.clone())
+    let cands = candidate_measures(env, f);
+    let mut tries: Vec<Vec<Expr>> = cands.iter().map(|c| vec![c.clone()]).collect();
+    for a in &cands {
+        for b in &cands {
+            if crate::printer::expr(a, 0) != crate::printer::expr(b, 0) {
+                tries.push(vec![a.clone(), b.clone()]);
+            }
+        }
+    }
+    for ms in tries {
+        let all = (0..vc.rec_sites.len()).all(|s| {
+            let k = vc.measure_check(s, &ms);
+            matches!(vc.solve(bin, k), crate::smt::Outcome::Proven)
+        });
+        if all {
+            let shown: Vec<String> = ms.iter().map(|m| crate::printer::expr(m, 0)).collect();
+            return Some(if shown.len() == 1 { format!("`{}`", shown[0]) } else { format!("the pair ({}), compared in order,", shown.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(", ")) });
+        }
+    }
+    None
 }
 
 // ---- transparency ----
@@ -484,9 +553,9 @@ pub fn analyze(env: &Env, solver: Option<&str>) -> Analysis {
                 } else if n.calls.contains(name) {
                     match n.decl.as_ref().and_then(structural) {
                         Some(p) => Ok(format!("each recursive call gets a smaller piece of `{p}`")),
-                        None => match n.decl.as_ref().and_then(|f| int_recursion(env, f, solver)) {
-                            Some(p) => Ok(format!("each recursive call gets a smaller `{p}`, which is never negative")),
-                            None => Err("it calls itself, and no argument gets smaller on every call (a smaller piece of a parameter, or a smaller non-negative integer)".into()),
+                        None => match n.decl.as_ref().and_then(|f| measured_recursion(env, f, solver)) {
+                            Some(m) => Ok(format!("{m} goes down on every recursive call and is never negative there")),
+                            None => Err("it calls itself, and nothing was found that gets smaller on every call (a piece of a parameter, or a non-negative measure of the parameters)".into()),
                         },
                     }
                 } else if hows.is_empty() {
