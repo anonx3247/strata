@@ -114,6 +114,53 @@ a.ref:hover { color: var(--accent); text-decoration-color: var(--accent); }
 .lg { display: inline-block; width: 18px; height: 0; border-top: 2px solid var(--muted); }
 .lg.refines { border-top: 2px dashed var(--type); } .lg.op { border-top: 2px dotted var(--effect); }
 .muted { color: var(--muted); }
+/* types: traits */
+.tnode.k-trait rect.head { fill: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
+.tnode.k-trait .tn { fill: var(--accent); }
+.tnode.k-distinct rect.head { fill: color-mix(in srgb, var(--type) 18%, var(--panel)); }
+.tedge.implements, .tedge.extends { stroke: var(--accent); stroke-width: 1.6; }
+.tedge.extends { stroke-dasharray: 7 3; }
+.lg.impl { border-top: 2px solid var(--accent); }
+.k-trait { color: var(--accent); } .k-impl { color: var(--accent); }
+/* flow graph */
+.fctl { display: flex; align-items: center; gap: 10px; margin: 4px 0 10px; font-size: 11.5px; }
+.fctl .seg button { padding: 2px 9px; font-size: 11.5px; }
+.g-wrap { padding: 10px 0 40px; overflow-x: auto; }
+.g-wrap > .g-seq { width: max-content; min-width: 100%; margin: 0 auto; }
+.g-seq { display: flex; flex-direction: column; align-items: center; }
+.g-seq > * + * { margin-top: 24px; position: relative; }
+.g-seq > * + *::before { content: ''; position: absolute; top: -22px; left: 50%; height: 16px; border-left: 1.5px solid var(--faint); }
+.g-seq > * + *::after { content: ''; position: absolute; top: -7px; left: calc(50% - 4px); border: 4px solid transparent; border-top: 6px solid var(--faint); border-bottom: 0; }
+.g-node { font: 12px var(--mono); padding: 5px 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); white-space: nowrap; max-width: 520px; overflow: hidden; text-overflow: ellipsis; }
+.g-node[data-gtoggle], .g-frame-h[data-gtoggle] { cursor: pointer; }
+.g-node[data-gtoggle]:hover, .g-frame-h[data-gtoggle]:hover { border-color: var(--accent); color: var(--accent); }
+.g-more { color: var(--faint); font-size: 10px; }
+.g-start, .g-end { border-radius: 16px; background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.g-quiet { color: var(--faint); border-style: dashed; }
+.g-call { border-color: color-mix(in srgb, var(--fn) 45%, var(--line)); }
+.g-eff { border-radius: 16px; border-color: color-mix(in srgb, var(--effect) 55%, var(--line)); }
+.g-ans { color: var(--muted); font-family: var(--sans); font-size: 11px; margin-left: 6px; }
+.g-ans .bad { color: var(--bad); }
+.g-frame { border: 1px solid var(--line); border-radius: 10px; padding: 0 16px 14px; background: color-mix(in srgb, var(--fn) 3%, var(--panel)); display: flex; flex-direction: column; align-items: center; }
+.g-frame.g-eff { background: color-mix(in srgb, var(--effect) 4%, var(--panel)); border-radius: 12px; }
+.g-frame-h { align-self: stretch; font: 600 12px var(--mono); padding: 6px 2px; border-bottom: 1px solid var(--line); margin-bottom: 14px; white-space: nowrap; }
+.g-scope { border: 1.5px dashed color-mix(in srgb, var(--effect) 45%, var(--line)); border-radius: 12px; padding: 0 16px 14px; display: flex; flex-direction: column; align-items: center; }
+.g-scope-h { align-self: stretch; color: var(--muted); font-size: 11.5px; padding: 7px 0 12px; }
+.g-chip { font: 11.5px var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px; margin-left: 3px; }
+.g-sub { color: var(--faint); font-size: 11px; margin: 14px 0 0; }
+.g-split { display: flex; flex-direction: column; align-items: center; }
+.g-cond { border-radius: 4px; transform: none; border-color: color-mix(in srgb, var(--type) 50%, var(--line)); background: color-mix(in srgb, var(--type) 6%, var(--panel)); }
+.g-disp { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
+.g-arms { display: flex; gap: 22px; align-items: stretch; margin-top: 18px; border-top: 1.5px solid var(--faint); border-bottom: 1.5px solid var(--faint); position: relative; }
+.g-arms::before { content: ''; position: absolute; top: -19px; left: 50%; height: 18px; border-left: 1.5px solid var(--faint); }
+.g-arm { display: flex; flex-direction: column; align-items: center; padding-top: 14px; position: relative; min-width: 60px; }
+.g-arm::before { content: ''; position: absolute; top: 0; left: 50%; height: 13px; border-left: 1.5px solid var(--faint); }
+.g-arm > .g-seq, .g-arm > .g-node, .g-arm > .g-frame { margin-top: 10px; }
+.g-label { font: 11px var(--mono); color: var(--type); background: var(--bg); border: 1px dashed var(--line); border-radius: 10px; padding: 1px 8px; white-space: nowrap; }
+.g-fill { flex: 1; min-height: 12px; border-left: 1.5px solid var(--faint); margin-top: 6px; }
+.g-join { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); margin-top: 0; }
+.g-loop { border: 1.5px solid color-mix(in srgb, var(--type) 45%, var(--line)); border-radius: 14px; padding: 0 16px 14px; display: flex; flex-direction: column; align-items: center; }
+.g-loop-h { align-self: stretch; font-size: 11.5px; color: var(--text); padding: 7px 0 12px; }
 /* flow */
 #flow { padding: 14px 22px 60px; font-size: 12.5px; }
 .entries { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-bottom: 6px; }
@@ -193,7 +240,7 @@ const lv = x => isNaN(+x) ? x : +x;
 const S = { data: null, raw: '', level: 1, sel: null, scope: 'all', q: '', over: {}, prevHash: {}, flash: new Set(), prevLog: 0, newLog: 0, showTests: false };
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const KIND = { type: 'T', effect: 'E', fn: 'ƒ', test: '✓' };
+const KIND = { type: 'T', effect: 'E', fn: 'ƒ', test: '✓', trait: '◆', impl: '⊢' };
 const byName = () => Object.fromEntries(S.data.decls.map(d => [d.name, d]));
 
 function status(d) {
@@ -272,7 +319,7 @@ function renderHeader() {
 }
 
 function renderLeft() {
-  const groups = [['type', 'Types'], ['effect', 'Effects'], ['fn', 'Functions'], ['test', 'Tests']];
+  const groups = [['type', 'Types'], ['trait', 'Traits'], ['impl', 'Implementations'], ['effect', 'Effects'], ['fn', 'Functions'], ['test', 'Tests']];
   const vis = new Set(visible().map(d => d.name));
   $('#left').innerHTML = groups.map(([k, title]) => {
     const items = S.data.decls.filter(d => d.kind === k);
@@ -328,6 +375,9 @@ function typeGraph() {
     for (const v of t.variants || []) for (const f of v.fields) f.refs.forEach(r => add(t.name, r, 'has', v.name));
     if (t.base) t.base.refs.forEach(r => add(t.name, r, t.refinement ? 'refines' : 'alias', ''));
     for (const o of t.ops || []) o.refs.forEach(r => add(t.name, r, 'op', o.name));
+    for (const tr of t.impls || []) add(t.name, tr, 'implements', '');
+    for (const sp of t.supers || []) add(t.name, sp, 'extends', '');
+    if (t.kind === 'trait') for (const r of t.refs) add(t.name, r, 'op', '');
   }
   return { nodes: st, edges: [...edges.values()] };
 }
@@ -345,8 +395,13 @@ function cardLines(t) {
     L.push([`| ${v.name}${fs}`, '']);
   }
   for (const o of t.ops || []) L.push([o.sig, '']);
+  if (t.kind === 'trait') {
+    for (const m of t.methods) L.push(['fn ' + m.sig + (m.default ? '  (default)' : ''), '']);
+    for (const l of t.laws) L.push(['law ' + l.name + ': ' + l.text, 'muted']);
+    if (t.implementors.length) L.push(['implemented by ' + t.implementors.join(', '), 'meth']);
+  }
   if (t.kind !== 'alias' && t.refinement) L.push(['where ' + t.refinement, 'muted']);
-  if (tmOpt.methods && t.methods.length) L.push(['fns: ' + t.methods.map(m => m.name).join(', '), 'meth']);
+  if (t.kind !== 'trait' && tmOpt.methods && t.methods.length) L.push(['fns: ' + t.methods.map(m => m.name).join(', '), 'meth']);
   return L.map(([s, c]) => [trunc(s, 46), c]);
 }
 const LH = 16, HEAD = 24, CW = 7.1;
@@ -363,46 +418,89 @@ function layoutTypes(g) {
   g.nodes.forEach(n => size[n.name] = cardSize(n));
   const fresh = g.nodes.filter(n => !P[n.name]);
   if (!fresh.length) return size;
-  // seed new nodes near placed neighbours, otherwise on a spiral
-  fresh.forEach((n, i) => {
-    const nb = g.edges.filter(e => e.from === n.name || e.to === n.name).map(e => e.from === n.name ? e.to : e.from).filter(x => P[x]);
-    if (nb.length) {
-      const c = nb.reduce((a, x) => ({ x: a.x + P[x].x / nb.length, y: a.y + P[x].y / nb.length }), { x: 0, y: 0 });
-      P[n.name] = { x: c.x + 120 * Math.cos(i * 2.4), y: c.y + 120 * Math.sin(i * 2.4) };
-    } else {
-      const a = i * 2.4, r = 90 * Math.sqrt(i + 1);
-      P[n.name] = { x: r * Math.cos(a), y: r * Math.sin(a) };
+  if (fresh.length === g.nodes.length) fullLayout(g, size, P);
+  else placeNew(g, size, P, fresh);
+  localStorage.setItem(key, JSON.stringify(P));
+  return size;
+}
+
+// Stress layout per connected component: graph distance ≈ drawing distance,
+// so the most connected types end up in the middle of their group.
+function fullLayout(g, size, P) {
+  const names = g.nodes.map(n => n.name), idx = new Map(names.map((n, i) => [n, i]));
+  const adj = names.map(() => new Set());
+  for (const e of g.edges) { const a = idx.get(e.from), b = idx.get(e.to); adj[a].add(b); adj[b].add(a); }
+  const bfs = s => { const d = new Map([[s, 0]]), q = [s]; while (q.length) { const u = q.shift(); for (const v of adj[u]) if (!d.has(v)) { d.set(v, d.get(u) + 1); q.push(v); } } return d; };
+  const seen = new Set(), comps = [];
+  for (let i = 0; i < names.length; i++) if (!seen.has(i)) { const c = [...bfs(i).keys()]; c.forEach(x => seen.add(x)); comps.push(c); }
+  comps.sort((a, b) => b.length - a.length);
+  const diam = i => Math.hypot(size[names[i]].w, size[names[i]].h);
+  const blocks = [];  // { nodes, x, y relative, w, h }
+  const singles = [];
+  for (const c of comps) {
+    if (c.length === 1) { singles.push(c[0]); continue; }
+    const D = new Map(c.map(i => [i, bfs(i)]));
+    const L = c.reduce((a, i) => a + diam(i), 0) / c.length * 0.75 + 50;
+    const hub = c.reduce((a, b) => adj[b].size > adj[a].size ? b : a);
+    const X = new Map(), rings = [];
+    for (const [v, d] of D.get(hub)) (rings[d] ||= []).push(v);
+    rings.forEach((ring, r) => {
+      if (r === 0) { X.set(ring[0], { x: 0, y: 0 }); return; }
+      // order each ring by the angle of its already placed neighbours
+      const ang = v => { const ps = [...adj[v]].filter(u => X.has(u)).map(u => Math.atan2(X.get(u).y, X.get(u).x)); return ps.length ? ps.reduce((a, b) => a + b) / ps.length : 0; };
+      ring.sort((a, b) => ang(a) - ang(b));
+      ring.forEach((v, k) => { const a = (k / ring.length) * 2 * Math.PI + r * 0.4; X.set(v, { x: r * L * Math.cos(a), y: r * L * Math.sin(a) }); });
+    });
+    for (let it = 0; it < 250; it++) {
+      for (const i of c) {
+        let nx = 0, ny = 0, den = 0; const pi = X.get(i);
+        for (const j of c) {
+          if (i === j) continue;
+          const d = D.get(i).get(j), w = 1 / (d * d), pj = X.get(j);
+          const dx = pi.x - pj.x, dy = pi.y - pj.y, dist = Math.hypot(dx, dy) || 0.01, t = L * d;
+          nx += w * (pj.x + t * dx / dist); ny += w * (pj.y + t * dy / dist); den += w;
+        }
+        X.set(i, { x: nx / den, y: ny / den });
+      }
     }
-  });
-  const movable = new Set(fresh.map(n => n.name)), all = g.nodes.map(n => n.name);
-  const rad = n => (size[n].w + size[n].h) / 4;
-  for (let it = 0, N = 900; it < N; it++) {
-    const F = {}; all.forEach(n => F[n] = { x: 0, y: 0 });
-    for (let a = 0; a < all.length; a++) for (let b = a + 1; b < all.length; b++) {
-      const A = all[a], B = all[b], dx = P[B].x - P[A].x, dy = P[B].y - P[A].y, d = Math.hypot(dx, dy) || 0.01;
-      const gap = Math.max(10, d - rad(A) - rad(B)), f = 20000 / (gap * gap);
-      F[A].x -= dx / d * f; F[A].y -= dy / d * f; F[B].x += dx / d * f; F[B].y += dy / d * f;
-    }
-    for (const e of g.edges) {
-      const A = e.from, B = e.to, dx = P[B].x - P[A].x, dy = P[B].y - P[A].y, d = Math.hypot(dx, dy) || 0.01;
-      const f = (d - (90 + rad(A) + rad(B))) * 0.08;
-      F[A].x += dx / d * f; F[A].y += dy / d * f; F[B].x -= dx / d * f; F[B].y -= dy / d * f;
-    }
-    for (const n of all) { F[n].x -= P[n].x * 0.006; F[n].y -= P[n].y * 0.006; }
-    const step = 30 * (1 - it / N) + 0.5;
-    for (const n of movable) {
-      const m = Math.hypot(F[n].x, F[n].y) || 1, s = Math.min(m, step);
-      P[n].x += F[n].x / m * s; P[n].y += F[n].y / m * s;
-    }
+    for (const i of c) P[names[i]] = X.get(i);
+    removeOverlaps(c.map(i => names[i]), size, P, new Set(c.map(i => names[i])));
+    const bb = bbox(c.map(i => names[i]), size, P);
+    blocks.push({ nodes: c.map(i => names[i]), bb });
   }
-  // remove any remaining overlap
-  for (let pass = 0; pass < 80; pass++) {
+  // largest group in the middle, the others on shelves below, lone types last
+  let y = 0, maxW = Math.max(1200, ...blocks.map(b => b.bb.w));
+  let x = 0, rowH = 0;
+  blocks.forEach((b, k) => {
+    if (k > 0 && x + b.bb.w > maxW) { y += rowH + 70; x = 0; rowH = 0; }
+    if (k === 1 && x === 0) { y = blocks[0].bb.h + 90; }
+    const ox = (k === 0 ? (maxW - b.bb.w) / 2 : x) - b.bb.x, oy = y - b.bb.y;
+    for (const n of b.nodes) { P[n].x += ox; P[n].y += oy; }
+    if (k === 0) { y = 0; x = maxW; } else { x += b.bb.w + 70; }
+    rowH = Math.max(rowH, b.bb.h);
+  });
+  let sy = (blocks.length ? Math.max(...blocks.flatMap(b => b.nodes.map(n => P[n].y + size[n].h / 2))) : 0) + 90, sx = 0, srow = 0;
+  for (const i of singles) {
+    const n = names[i], s = size[n];
+    if (sx + s.w > maxW) { sy += srow + 30; sx = 0; srow = 0; }
+    P[n] = { x: sx + s.w / 2, y: sy + s.h / 2 };
+    sx += s.w + 30; srow = Math.max(srow, s.h);
+  }
+}
+
+function bbox(ns, size, P) {
+  const x0 = Math.min(...ns.map(n => P[n].x - size[n].w / 2)), x1 = Math.max(...ns.map(n => P[n].x + size[n].w / 2));
+  const y0 = Math.min(...ns.map(n => P[n].y - size[n].h / 2)), y1 = Math.max(...ns.map(n => P[n].y + size[n].h / 2));
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+function removeOverlaps(all, size, P, movable) {
+  for (let pass = 0; pass < 120; pass++) {
     let moved = false;
     for (let a = 0; a < all.length; a++) for (let b = a + 1; b < all.length; b++) {
-      const A = all[a], B = all[b], pa = P[A], pb = P[B];
-      const ma = movable.has(A), mb = movable.has(B);
+      const A = all[a], B = all[b], pa = P[A], pb = P[B], ma = movable.has(A), mb = movable.has(B);
       if (!ma && !mb) continue;
-      const ox = (size[A].w + size[B].w) / 2 + 18 - Math.abs(pb.x - pa.x), oy = (size[A].h + size[B].h) / 2 + 18 - Math.abs(pb.y - pa.y);
+      const ox = (size[A].w + size[B].w) / 2 + 24 - Math.abs(pb.x - pa.x), oy = (size[A].h + size[B].h) / 2 + 24 - Math.abs(pb.y - pa.y);
       if (ox > 0 && oy > 0) {
         moved = true;
         const wa = ma && mb ? .5 : ma ? 1 : 0, wb = 1 - wa;
@@ -412,8 +510,21 @@ function layoutTypes(g) {
     }
     if (!moved) break;
   }
-  localStorage.setItem(key, JSON.stringify(P));
-  return size;
+}
+
+// New definitions appear next to what they relate to; nothing else moves.
+function placeNew(g, size, P, fresh) {
+  fresh.forEach((n, i) => {
+    const nb = g.edges.filter(e => e.from === n.name || e.to === n.name).map(e => e.from === n.name ? e.to : e.from).filter(x => P[x]);
+    if (nb.length) {
+      const c = nb.reduce((a, x) => ({ x: a.x + P[x].x / nb.length, y: a.y + P[x].y / nb.length }), { x: 0, y: 0 });
+      P[n.name] = { x: c.x + 60 * Math.cos(i * 2.4), y: c.y + 60 * Math.sin(i * 2.4) };
+    } else {
+      const ys = Object.keys(P).filter(k => size[k]).map(k => P[k].y + size[k].h / 2);
+      P[n.name] = { x: i * 220, y: (ys.length ? Math.max(...ys) : 0) + 120 };
+    }
+  });
+  removeOverlaps(g.nodes.map(n => n.name), size, P, new Set(fresh.map(n => n.name)));
 }
 
 function clip(c, s, tx, ty) {
@@ -455,7 +566,7 @@ function renderTypes() {
   const mk = (id, col) => `<marker id="ar-${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="${col}"/></marker>`;
   const cs = getComputedStyle(document.documentElement), cv = n => cs.getPropertyValue(n).trim();
   main.innerHTML = `<svg id="tmap" width="100%" height="100%">
-      <defs>${mk('has', cv('--muted'))}${mk('refines', cv('--type'))}${mk('alias', cv('--type'))}${mk('op', cv('--effect'))}</defs>
+      <defs>${mk('has', cv('--muted'))}${mk('refines', cv('--type'))}${mk('alias', cv('--type'))}${mk('op', cv('--effect'))}${mk('implements', cv('--accent'))}${mk('extends', cv('--accent'))}</defs>
       <g id="tview" transform="translate(${v.x},${v.y}) scale(${v.k})">${edges}${nodes}${labels}</g></svg>
     <div class="maptools">
       <label><input type="checkbox" data-opt="effects" ${tmOpt.effects ? 'checked' : ''}> effects</label>
@@ -463,7 +574,7 @@ function renderTypes() {
       <label><input type="checkbox" data-opt="methods" ${tmOpt.methods ? 'checked' : ''}> functions</label>
       <button id="relayout">re-layout</button><button id="fit">fit</button>
       <span class="sep"></span>
-      <span><i class="lg has"></i>contains</span><span><i class="lg refines"></i>refines</span><span><i class="lg op"></i>used by operation</span>
+      <span><i class="lg has"></i>contains</span><span><i class="lg impl"></i>implements</span><span><i class="lg refines"></i>refines</span><span><i class="lg op"></i>mentioned by an operation</span>
       <span class="muted">click a card to see its relations · drag cards · scroll to zoom · double-click to open</span>
     </div>`;
 }
@@ -511,6 +622,89 @@ function tmEvents() {
   });
 }
 
+// ---------- flow graph: an execution flowchart with levels of detail ----------
+S.gOpen = new Map(); S.detail = 2; S.flowView = 'graph';
+const gOpen = (path, depth) => S.gOpen.has(path) ? S.gOpen.get(path) : depth < S.detail;
+
+function gSeq(steps, ctx, stack, path, depth) {
+  if (!steps.length) return '<div class="g-seq"><div class="g-node g-quiet">no calls or effects</div></div>';
+  return '<div class="g-seq">' + steps.map((s, i) => gStep(s, ctx, stack, path + '.' + i, depth)).join('') + '</div>';
+}
+
+function gFrame(cls, path, head, body, open) {
+  // `body` is a function: folded boxes never build their contents
+  if (!open) return `<div class="g-node ${cls}" data-gtoggle="${path}" data-open="0" title="expand">${head} <span class="g-more">▸</span></div>`;
+  return `<div class="g-frame ${cls}"><div class="g-frame-h" data-gtoggle="${path}" data-open="1" title="collapse">${head} <span class="g-more">▾</span></div>${body()}</div>`;
+}
+
+function gStep(s, ctx, stack, path, depth) {
+  const F = S.data.flows;
+  if (s.k === 'call') {
+    const f = F[s.f], head = `<span class="k-fn">ƒ</span> ${esc(s.f)}<span class="fargs">(${esc(s.args)})</span>`;
+    if (stack.includes(s.f)) return `<div class="g-node g-call">${head} <span class="badge muted">↻ recursive</span></div>`;
+    if (!f) return `<div class="g-node g-call">${head}</div>`;
+    if (f.info.hole) return `<div class="g-node g-call">${head} <span class="badge warn">hole</span></div>`;
+    if (!f.steps.length) return `<div class="g-node g-call g-leaf">${head}</div>`;
+    return gFrame('g-call', path, head, () => gSeq(f.steps, ctx, [...stack, s.f], path, depth + 1), gOpen(path, depth + 1));
+  }
+  if (s.k === 'perform') {
+    let j = ctx.length - 1;
+    while (j >= 0 && ctx[j].effect !== s.effect) j--;
+    const head = `<span class="k-effect">⚡</span> <b class="eff">${esc(s.effect)}.${esc(s.op)}</b><span class="fargs">(${esc(s.args)})</span>`;
+    if (j < 0) {
+      const declared = (F[stack[0]]?.info.effects || []).some(e => e.split('[')[0] === s.effect);
+      return `<div class="g-node g-eff">${head} <span class="g-ans">${declared ? 'answered by whoever calls ' + esc(stack[0]) : '<span class="bad">no handler</span>'}</span></div>`;
+    }
+    const h = ctx[j], c = h.clauses.find(c => c.op === s.op);
+    const ans = `<span class="g-ans">answered by the ${esc(s.effect)} handler in ${esc(h.owner)}${h.mock ? ' (mock)' : ''}</span>`;
+    if (h.mock || !c || !c.steps.length) return `<div class="g-node g-eff">${head} ${ans}</div>`;
+    return gFrame('g-eff', path, head + ' ' + ans, () => gSeq(c.steps, ctx.slice(0, j), stack, path + 'h', depth + 1), gOpen(path, depth + 1));
+  }
+  if (s.k === 'handle') {
+    const owner = stack[stack.length - 1];
+    const inner = ctx.concat(s.handlers.map(h => ({ ...h, owner })));
+    const chips = s.handlers.map(h => `<span class="g-chip"><b class="eff">${esc(h.effect)}</b>${h.mock ? ' mock' : h.stateful ? ' · keeps state' : ''}</span>`).join(' ');
+    let body = gSeq(s.body, inner, stack, path + 'b', depth);
+    if (s.returns.length) body += `<div class="g-sub">when the code inside finishes</div>` + gSeq(s.returns, ctx, stack, path + 'r', depth);
+    return `<div class="g-scope"><div class="g-scope-h">effects performed inside this box are answered here: ${chips}</div>${body}</div>`;
+  }
+  if (s.k === 'branch') {
+    const arms = s.arms.map((a, k) => `<div class="g-arm"><div class="g-label">${esc(a.label)}</div>${a.steps.length ? gSeq(a.steps, ctx, stack, path + 'a' + k, depth) : ''}<div class="g-fill"></div></div>`).join('');
+    return `<div class="g-split"><div class="g-node g-cond">◇ ${esc(s.on)}</div><div class="g-arms">${arms}</div><div class="g-join"></div></div>`;
+  }
+  if (s.k === 'each') {
+    return `<div class="g-loop"><div class="g-loop-h">↻ for each element of <b>${esc(s.over)}</b> <span class="muted">(${esc(s.via)})</span></div>${gSeq(s.steps, ctx, stack, path, depth)}</div>`;
+  }
+  if (s.k === 'dispatch') {
+    // inside an implementation, `self` has a known type: only that path is possible
+    const selfCall = /^self\b/.test(s.args) && ctx.selfTy;
+    const targets = selfCall ? s.targets.filter(t => t.ty === ctx.selfTy) : s.targets;
+    const arms = targets.map((t, k) => {
+      const f = F[t.key], p = path + 'd' + k, label = `<span class="k-fn">ƒ</span> ${esc(t.ty)}.${esc(s.method)}`;
+      const node = stack.includes(t.key)
+        ? `<div class="g-node g-call">${label} <span class="badge muted">↻ recursive</span></div>`
+        : !f || !f.steps.length
+        ? `<div class="g-node g-call g-leaf">${label}</div>`
+        : gFrame('g-call', p, label, () => { const c2 = ctx.slice(); c2.selfTy = t.ty; return gSeq(f.steps, c2, [...stack, t.key], p, depth + 1); }, gOpen(p, depth + 1));
+      if (selfCall) return node;
+      return `<div class="g-arm"><div class="g-label">if it is ${esc(t.ty)}</div>${node}<div class="g-fill"></div></div>`;
+    }).join('') || '<div class="g-arm"><div class="g-label">no implementations</div></div>';
+    if (selfCall && targets.length === 1) return arms;
+    return `<div class="g-split"><div class="g-node g-cond g-disp">⇉ <b>${esc(s.method)}</b>(${esc(s.args)}) <span class="muted">· ${esc(s.trait_name)}, chosen by the receiver's type</span></div><div class="g-arms">${arms}</div><div class="g-join"></div></div>`;
+  }
+  return '';
+}
+
+function renderFlowGraph(entry) {
+  const f = S.data.flows[entry];
+  const sig = f?.info.sig || entry;
+  return `<div class="g-wrap"><div class="g-seq">
+      <div class="g-node g-start">▶ ${esc(sig)}</div>
+      ${f ? gSeq(f.steps, [], [entry], 'r', 0) : ''}
+      <div class="g-node g-end">■ returns</div>
+    </div></div>`;
+}
+
 // ---------- flow map: execution paths from an entry point ----------
 S.flowOpen = new Map();
 function renderFlow() {
@@ -521,13 +715,16 @@ function renderFlow() {
   const lbl = n => byName()[n]?.label ?? n;
   const chips = list => list.map(n => `<a class="echip ${n === entry ? 'on' : ''}" data-entry="${esc(n)}">${esc(lbl(n))}</a>`).join('');
   const f = F[entry];
-  const tree = f ? stepsHTML(f.steps, [], [entry], 'r', 0) : '<div class="empty">Select a function or test.</div>';
+  const tree = S.flowView === 'graph' ? renderFlowGraph(entry) : (f ? '<div class="ftree">' + stepsHTML(f.steps, [], [entry], 'r', 0) + '</div>' : '<div class="empty">Select a function or test.</div>');
+  const ctl = `<div class="fctl"><div class="seg"><button data-fview="graph" class="${S.flowView === 'graph' ? 'on' : ''}">Graph</button><button data-fview="outline" class="${S.flowView === 'outline' ? 'on' : ''}">Outline</button></div>
+    <span class="muted">detail</span><div class="seg">${[1, 2, 3, 4, 9].map(n => `<button data-detail="${n}" class="${S.detail === n ? 'on' : ''}">${n === 9 ? 'all' : n}</button>`).join('')}</div>
+    <span class="muted">click a box to open or fold it</span></div>`;
   $('#main').innerHTML = `<div id="flow">
     <div class="entries"><span class="elab">Entry points</span>${chips(S.data.entries)}</div>
     <div class="entries"><span class="elab">Tests</span>${chips(tests)}</div>
-    <div class="ehint">Entry points are functions nothing else uses. Pick any function in the sidebar to trace from it. Effect operations show which handler answers them.</div>
-    <div class="froot"><span class="kind k-${byName()[entry]?.kind}">${KIND[byName()[entry]?.kind] || ''}</span> <a data-go="${esc(entry)}" class="fname">${esc(f?.info.sig || entry)}</a></div>
-    <div class="ftree">${tree}</div></div>`;
+    <div class="ehint">Entry points are functions nothing else uses; pick any function in the sidebar to trace from it instead.</div>
+    ${ctl}
+    ${tree}</div>`;
 }
 
 function det(path, depth, summary, inner) {
@@ -651,7 +848,7 @@ function syncHash() {
   if (h.has('scope')) S.scope = h.get('scope');
 })();
 
-function render() {
+var render = function () {
   if (!S.data) return;
   syncHash();
   const scroll = $('#main').scrollTop;
@@ -689,10 +886,13 @@ async function poll() {
 
 // ---------- events ----------
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-card-level],[data-go],[data-pick],[data-l],[data-s],[data-entry]');
+  const t = e.target.closest('[data-card-level],[data-go],[data-pick],[data-l],[data-s],[data-entry],[data-fview],[data-detail],[data-gtoggle]');
   if (!t) return;
   if (t.dataset.cardLevel) { S.over[t.dataset.name] = +t.dataset.cardLevel; render(); return; }
   if (t.dataset.l) { S.level = lv(t.dataset.l); S.over = {}; render(); return; }
+  if (t.dataset.fview) { S.flowView = t.dataset.fview; render(); return; }
+  if (t.dataset.detail) { S.detail = +t.dataset.detail; S.gOpen = new Map(); render(); return; }
+  if (t.dataset.gtoggle) { S.gOpen.set(t.dataset.gtoggle, t.dataset.open !== '1'); render(); return; }
   if (t.dataset.entry) { S.flowEntry = t.dataset.entry; S.sel = t.dataset.entry; render(); return; }
   if (t.dataset.s) { if (!t.disabled) { S.scope = t.dataset.s; render(); } return; }
   if (t.dataset.go) { if (S.level === 'flow' && e.target.closest('#left') && S.data.flows[t.dataset.go]) S.flowEntry = t.dataset.go; select(t.dataset.go, typeof S.level === 'number'); return; }
@@ -707,6 +907,10 @@ document.addEventListener('keydown', e => {
   else if (e.key === '/') { e.preventDefault(); $('#q').focus(); }
   else if (e.key === 'Escape') { S.sel = null; S.scope = 'all'; render(); }
 });
+// never fail silently: show viewer errors in the banner
+window.addEventListener('error', e => { $('#banner').innerHTML = `<div class="err">viewer error: ${esc(e.message)} (line ${e.lineno})</div>`; });
+const _render = render;
+render = function () { try { _render(); } catch (err) { $('#banner').innerHTML = `<div class="err">viewer error: ${esc(err.message)} ${esc((err.stack || '').split('\n')[1] || '')}</div>`; } };
 tmEvents();
 poll(); setInterval(poll, 1500);
 </script>

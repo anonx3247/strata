@@ -183,10 +183,63 @@ fn snapshot(target: &Target) -> Json {
         }
     }
 
+    // ---- traits for the type map ----
+    for d in &p.decls {
+        if let DeclKind::Trait(t) = &d.kind {
+            let mut refs = Vec::new();
+            for m in &t.methods {
+                for p in &m.decl.params {
+                    refs.extend(refs_of(&p.ty));
+                }
+                refs.extend(refs_of(&m.decl.ret));
+            }
+            refs.sort();
+            refs.dedup();
+            let implementors: Vec<String> = env.impls.iter().filter(|i| i.trait_name == t.name).map(|i| crate::printer::ty(&i.for_type)).collect();
+            structure.push(json!({
+                "name": t.name, "kind": "trait", "params": t.params, "doc": d.doc.join("\n"),
+                "methods": t.methods.iter().map(|m| json!({"name": m.decl.name, "sig": crate::printer::fn_signature(&m.decl).lines().next().unwrap_or("").trim_start_matches("fn ").to_string(), "default": m.default})).collect::<Vec<_>>(),
+                "laws": t.laws.iter().map(|l| json!({"name": l.name, "text": crate::printer::expr(&l.body, 0)})).collect::<Vec<_>>(),
+                "supers": t.supers.iter().map(crate::types::texpr_head).collect::<Vec<_>>(),
+                "refs": refs, "implementors": implementors,
+            }));
+        }
+    }
+    // which traits each type implements
+    for s in structure.iter_mut() {
+        let name = s["name"].as_str().unwrap_or("").to_string();
+        let traits: Vec<String> = env.impls.iter().filter(|i| crate::types::texpr_head(&i.for_type) == name).map(|i| i.trait_name.clone()).collect();
+        s["impls"] = json!(traits);
+    }
+
     // ---- execution outlines for the flow map ----
     let fn_names: std::collections::HashSet<String> = p.decls.iter().filter(|d| matches!(d.kind, DeclKind::Fn(_))).map(|d| d.name()).collect();
-    let outliner = crate::flow::Outliner { fns: &fn_names };
+    let mut methods: HashMap<String, (String, Vec<crate::flow::Target>)> = HashMap::new();
+    for (m, tr) in &env.method_trait {
+        let targets = env
+            .impls
+            .iter()
+            .filter(|i| &i.trait_name == tr)
+            .map(|i| crate::flow::Target { ty: crate::printer::ty(&i.for_type), key: format!("{}::{m}", i.name()) })
+            .collect();
+        methods.insert(m.clone(), (tr.clone(), targets));
+    }
+    let outliner = crate::flow::Outliner { fns: &fn_names, methods: &methods };
     let mut flows = serde_json::Map::new();
+    // implementations get outlines too, keyed `impl T for X::method`
+    for i in &env.impls {
+        let Some(tr) = env.traits.get(&i.trait_name) else { continue };
+        for tm in &tr.methods {
+            let decl = i.methods.iter().find(|m| m.name == tm.decl.name).unwrap_or(&tm.decl);
+            if !i.methods.iter().any(|m| m.name == tm.decl.name) && !tm.default {
+                continue;
+            }
+            flows.insert(
+                format!("{}::{}", i.name(), tm.decl.name),
+                json!({"steps": outliner.steps(&decl.body), "info": {"effects": [], "sig": crate::printer::fn_signature(decl).lines().next().unwrap_or(""), "hole": false}}),
+            );
+        }
+    }
     let mut called: std::collections::HashSet<String> = std::collections::HashSet::new();
     for d in &p.decls {
         let (body, sig) = match &d.kind {

@@ -21,6 +21,16 @@ pub enum Step {
     Branch { on: String, arms: Vec<ArmInfo> },
     /// A closure run for each element (`map`, `filter`, `fold`, ...).
     Each { via: String, over: String, steps: Vec<Step> },
+    /// A trait method call: which implementation runs depends on the receiver's type.
+    Dispatch { method: String, trait_name: String, args: String, targets: Vec<Target> },
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct Target {
+    /// The implementing type, e.g. `Item`.
+    pub ty: String,
+    /// Key of the implementation's outline in the flow table.
+    pub key: String,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -58,6 +68,8 @@ fn args_text(es: &[Expr]) -> String {
 
 pub struct Outliner<'a> {
     pub fns: &'a HashSet<String>,
+    /// trait method -> (trait, implementations)
+    pub methods: &'a std::collections::HashMap<String, (String, Vec<Target>)>,
 }
 
 impl Outliner<'_> {
@@ -157,6 +169,13 @@ impl Outliner<'_> {
 
     fn call(&self, name: Option<&str>, args: &[Expr], out: &mut Vec<Step>) {
         let is_loop = name.is_some_and(|n| LOOPS.contains(&n) && !self.fns.contains(n));
+        if let Some((tr, targets)) = name.and_then(|n| self.methods.get(n)) {
+            for a in args {
+                self.walk(a, out);
+            }
+            out.push(Step::Dispatch { method: name.unwrap().to_string(), trait_name: tr.clone(), args: args_text(args), targets: targets.clone() });
+            return;
+        }
         if is_loop {
             // non-closure args evaluate first; the closure runs per element
             let mut inner = Vec::new();
@@ -164,6 +183,10 @@ impl Outliner<'_> {
                 match a {
                     Expr::Lambda(_, b) => self.walk(b, &mut inner),
                     Expr::Var(f) if self.fns.contains(f) => inner.push(Step::Call { f: f.clone(), args: "each element".into() }),
+                    Expr::Var(f) if self.methods.contains_key(f) => {
+                        let (tr, targets) = &self.methods[f];
+                        inner.push(Step::Dispatch { method: f.clone(), trait_name: tr.clone(), args: "each element".into(), targets: targets.clone() })
+                    }
                     other => self.walk(other, out),
                 }
             }
