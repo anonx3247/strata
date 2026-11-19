@@ -51,7 +51,7 @@ strata ui                          # open http://127.0.0.1:7777: the live viewer
 
 `examples/bank.strata` is the smallest complete example. `examples/orders.strata` is the larger one excerpted below. `examples/tasks/` is a port of a real library, with a write-up of what verification found.
 
-```
+```rust
 type OrderId  = String where matches(it, "ord_[a-z0-9]{6}")
 type Quantity = Int where 1 <= it && it <= 99
 type Cents    = Int where it >= 0
@@ -135,7 +135,7 @@ $ strata run ship '["ord_abc123","TRK1"]' --mock --trace
 
 Refinements are structural: `type Quantity = Int where 1 <= it && it <= 99` is an `Int` plus a check, not a new nominal type. Any `Int` can be passed where a `Quantity` is expected, with no cast, and the check happens where the value crosses the boundary: at compile time for literals, at runtime otherwise, and under `verify`. A constraint used in one place doesn't need a name at all:
 
-```
+```rust
 fn pick(level: Int where 5 <= it && it <= 13) -> Positive { level - 4 }
 fn halve(n: Natural) -> Int where it >= 0 && it * 2 <= n { n / 2 }   // results may mention parameters
 ```
@@ -144,7 +144,7 @@ The prelude provides the common ones: `Natural`, `Positive`, `Negative`, `NonZer
 
 A bare alias adds nothing, so `type Name = String` is an error. Constrain it with `where`, or make it a separate nominal type:
 
-```
+```rust
 distinct type UserId = String where matches(it, "u_[0-9]+")
 let id = UserId("u_42")      // explicit construction, checked
 id.value                     // the underlying String
@@ -156,7 +156,7 @@ A `distinct` type never mixes with its base or with other distinct types (`Order
 
 A trait describes what a *type* can do. The implementation is chosen by the type of the value. A type can implement any number of traits, so they form a graph rather than a hierarchy.
 
-```
+```rust
 trait Describe { fn describe(self) -> String  ensures len(it) > 0 }
 trait Summary: Describe + Priced {                       // supertraits
   fn summary(self) -> String { self.describe() ++ ": " ++ to_string(self.price()) ++ "c" }   // default method
@@ -180,7 +180,7 @@ fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, |ac
 
 ## Modules: units that meet only through contracts
 
-```
+```rust
 module orders {
   pub type Order = { id: OrderId, lines: NonEmpty[Line] }
   pub fn ship(id: OrderId) -> Result[Order, ShipError] / {Db}  ensures ...
@@ -200,7 +200,7 @@ module billing {
 
 ## Mutation: immutable by default, mutable when you say so
 
-```
+```rust
 fn total(lines: List[Line]) -> Natural {
   let mut sum = 0
   for line in lines { sum = sum + line.qty * line.price }
@@ -211,7 +211,7 @@ fn restock(mut line: Line, extra: Int) -> () { line.qty = line.qty + extra }   /
 
 Procedural code is normal Strata: `loop { … }` repeats until `break`, and `continue` skips to the next iteration. Method chains can be split across lines:
 
-```
+```rust
 let best = scores
   .filter(|s| s > 0)
   .sort()
@@ -260,7 +260,7 @@ Every view is Strata text, so an agent can edit what it sees and send it back wi
 
 ## How it is stored
 
-```
+```text
 .strata/
   index.json          name → hash, in order
   objects/<hash>.json the syntax tree of one definition (content-addressed)

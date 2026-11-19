@@ -144,7 +144,7 @@ fn snapshot(target: &Target) -> Json {
         .collect();
     let refs_of = |t: &TypeExpr| -> Vec<String> {
         let mut m = Vec::new();
-        crate::flow::mentions(t, &mut m);
+        mentions(t, &mut m);
         m.into_iter().filter(|n| declared.contains(n)).collect()
     };
     let field_json = |name: Option<&str>, t: &TypeExpr| json!({"name": name, "ty": crate::printer::ty(t), "refs": refs_of(t)});
@@ -157,7 +157,7 @@ fn snapshot(target: &Target) -> Json {
             .iter()
             .filter(|_| has_methods)
             .filter_map(|m| match &m.kind {
-                DeclKind::Fn(f) if f.params.first().and_then(|x| crate::flow::head(&x.ty)).as_deref() == Some(&d.name()) => {
+                DeclKind::Fn(f) if f.params.first().and_then(|x| type_head(&x.ty)).as_deref() == Some(&d.name()) => {
                     Some(json!({"name": f.name, "sig": crate::printer::fn_signature(f).lines().next().unwrap_or("").trim_start_matches("fn ").to_string()}))
                 }
                 _ => None,
@@ -223,73 +223,10 @@ fn snapshot(target: &Target) -> Json {
         s["impls"] = json!(traits);
     }
 
-    // ---- execution outlines for the flow map ----
-    let fn_names: std::collections::HashSet<String> = rp.decls.iter().filter(|d| matches!(d.kind, DeclKind::Fn(_))).map(|d| d.name()).collect();
-    let mut methods: HashMap<String, (String, Vec<crate::flow::Target>)> = HashMap::new();
-    for (m, tr) in &env.method_trait {
-        let targets = env
-            .impls
-            .iter()
-            .filter(|i| &i.trait_name == tr)
-            .map(|i| crate::flow::Target { ty: crate::printer::ty(&i.for_type), key: format!("{}::{m}", i.name()) })
-            .collect();
-        methods.insert(m.clone(), (tr.clone(), targets));
-    }
-    let outliner = crate::flow::Outliner { fns: &fn_names, methods: &methods };
-    let mut flows = serde_json::Map::new();
-    // implementations get outlines too, keyed `impl T for X::method`
-    for i in &env.impls {
-        let Some(tr) = env.traits.get(&i.trait_name) else { continue };
-        for tm in &tr.methods {
-            let decl = i.methods.iter().find(|m| m.name == tm.decl.name).unwrap_or(&tm.decl);
-            if !i.methods.iter().any(|m| m.name == tm.decl.name) && !tm.default {
-                continue;
-            }
-            flows.insert(
-                format!("{}::{}", i.name(), tm.decl.name),
-                json!({"steps": outliner.steps(&decl.body), "info": {"effects": [], "sig": crate::printer::fn_signature(decl).lines().next().unwrap_or(""), "hole": false}}),
-            );
-        }
-    }
-    let mut called: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for d in &rp.decls {
-        let (body, sig) = match &d.kind {
-            DeclKind::Fn(f) => (&f.body, json!({"effects": [], "sig": crate::printer::fn_signature(f).lines().next().unwrap_or("").to_string(), "hole": matches!(f.body, Expr::Hole(_))})),
-            DeclKind::Test(t) => (&t.body, json!({"effects": [], "sig": format!("test {:?}", t.name), "hole": false})),
-            _ => continue,
-        };
-        let steps = outliner.steps(body);
-        if matches!(d.kind, DeclKind::Fn(_)) {
-            let s = serde_json::to_string(&steps).unwrap_or_default();
-            for n in &fn_names {
-                if *n != d.name() && s.contains(&format!("\"f\":\"{n}\"")) {
-                    called.insert(n.clone());
-                }
-            }
-        }
-        flows.insert(qname_of[&d.name()].clone(), json!({"steps": steps, "info": sig}));
-    }
-    // entry points: functions nothing else uses (calls, contracts or refinements; tests don't count)
-    let used: std::collections::HashSet<String> = rp
-        .decls
-        .iter()
-        .filter(|d| !matches!(d.kind, DeclKind::Test(_)))
-        .flat_map(|d| graph.get(&d.name()).cloned().unwrap_or_default().into_iter().filter(move |n| *n != d.name()))
-        .chain(called.iter().cloned())
-        .collect();
-    let entries: Vec<String> = rp
-        .decls
-        .iter()
-        .filter(|d| matches!(d.kind, DeclKind::Fn(_)) && !used.contains(&d.name()))
-        .map(|d| d.name())
-        .collect();
-
     json!({
         "label": label,
         "decls": decls,
         "structure": structure,
-        "flows": flows,
-        "entries": entries,
         "errors": rep.errors,
         "log": log,
     })
@@ -323,4 +260,30 @@ pub fn serve(target: Target, port: u16) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The type a type expression names, if it is a named type.
+fn type_head(t: &TypeExpr) -> Option<String> {
+    match t {
+        TypeExpr::Named(n, _) => Some(n.clone()),
+        _ => None,
+    }
+}
+
+/// Every named type mentioned in a type expression.
+fn mentions(t: &TypeExpr, out: &mut Vec<String>) {
+    match t {
+        TypeExpr::Named(n, args) => {
+            if !out.contains(n) {
+                out.push(n.clone());
+            }
+            args.iter().for_each(|a| mentions(a, out));
+        }
+        TypeExpr::Fn(ps, r) => {
+            ps.iter().for_each(|a| mentions(a, out));
+            mentions(r, out);
+        }
+        TypeExpr::Unit => {}
+        TypeExpr::Refined(b, _) => mentions(b, out),
+    }
 }

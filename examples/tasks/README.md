@@ -37,7 +37,7 @@ strata ui --file examples/tasks                   # browse it
 
 `MemQueue` states its invariants in its type, including *a pending task always has an attempt left*. `strata verify` runs `simulate` on random policies and random sequences of producer runs and worker batches (including workers that drop results), through the real `run_producer` / `run_worker` and the in-memory backend. It found a counterexample in about 3 steps:
 
-```
+```text
 retries = 0
 Produce [t2, t0, t5]  →  Work (worker drops one result)  →  release
 ⇒ t2, t0, t5 are Pending with attempts == max_attempts
