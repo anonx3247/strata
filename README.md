@@ -191,7 +191,7 @@ fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, (ac
 ```rust
 module orders {
   pub type Order = { id: OrderId, lines: NonEmpty[Line] }
-  pub fn ship(id: OrderId) -> Result[Order, ShipError] / {Db}  ensures ...
+  pub fn ship[D: Db](mut db: D, id: OrderId) -> Result[Order, ShipError]  ensures ...
   fn helper() -> Int { ... }            // private: invisible outside `orders`
 }
 module billing {
