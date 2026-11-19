@@ -5,6 +5,7 @@ mod generate;
 mod interp;
 mod lexer;
 mod merge;
+mod package;
 mod parser;
 mod printer;
 mod resolve;
@@ -26,7 +27,8 @@ const USAGE: &str = "strata — an experimental language for working with agents
 USAGE: strata [--file F.strata] <command> [args]
 
 Codebase (stored as a database of syntax trees in .strata/):
-  init                         create a codebase in the current directory
+  init                         create a codebase in the current directory, and its
+                               strata.toml (named after the folder) if there is none
   add <file.strata> [-m MSG]   import definitions from a file (checked, atomic)
   edit [-m MSG] [--rm NAME]..  read definitions from stdin; replace/add them by name;
                                commit only if the whole codebase still checks
@@ -44,15 +46,20 @@ Codebase (stored as a database of syntax trees in .strata/):
   (`--file` and `add` accept a folder: each .strata file is a module named after its path;
    `edit --module m` puts unqualified definitions into module m)
 
-Git (the programs to check are listed in strata.toml, as `programs = [PATH, ...]`):
+Packages: a folder with a strata.toml (`name = \"...\"`, optional `exports = [...]`);
+its .strata files are modules named after their path, main.strata is the entry point.
+A .strata file outside every package is a script.
+
+Git:
   merge-file O A B [P]         git merge driver: merge each definition separately, then
                                type-check; writes the result to A, fails on a conflict
   setup-git                    use merge-file for `git merge` / `git pull` in this clone
   sync [BRANCH]                merge BRANCH (default main; origin's if there is a remote)
                                into this branch with the driver, then check; commits the
-                               merge only if every program checks
-  ci [--fix]                   what CI requires: every program in strata.toml checks and
-                               every .strata file is in canonical format (--fix rewrites them)
+                               merge only if `ci` passes
+  ci [--fix]                   what CI requires: every package and script in the repository
+                               checks, exports exist, and every .strata file is in canonical
+                               format (--fix rewrites them)
 
 Views:
   ui [--port 7777]                live viewer in the browser (map, levels, holes, activity)
@@ -131,22 +138,8 @@ fn read_sources(path: &str, module: Option<&str>) -> Result<Program, String> {
         let src = std::fs::read_to_string(root).map_err(|e| format!("{path}: {e}"))?;
         return parser::parse_module_file(&src, module.unwrap_or("")).map_err(|e| format!("{path}:{e}"));
     }
-    let mut files = Vec::new();
-    let mut todo = vec![root.to_path_buf()];
-    while let Some(dir) = todo.pop() {
-        for entry in std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-            let p = entry.map_err(|e| e.to_string())?.path();
-            if p.is_dir() {
-                if !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')) {
-                    todo.push(p);
-                }
-            } else if p.extension().is_some_and(|e| e == "strata") {
-                let src = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-                files.push((p.strip_prefix(root).unwrap().to_path_buf(), src));
-            }
-        }
-    }
-    parse_files(files)
+    // packages nested in this folder are separate programs
+    parse_files(package::files(root)?)
 }
 
 /// Parse a folder's `.strata` files, given as (path relative to the folder,
@@ -212,8 +205,14 @@ fn run() -> Result<bool, String> {
     match cmd {
         "help" | "--help" => println!("{USAGE}"),
         "init" => {
-            Codebase::init(&std::env::current_dir().map_err(|e| e.to_string())?)?;
+            let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+            Codebase::init(&cwd)?;
             println!("initialized empty Strata codebase in {}/", store::DIR);
+            if !cwd.join(package::FILE).exists() {
+                let toml = package::template(&cwd);
+                std::fs::write(cwd.join(package::FILE), &toml).map_err(|e| e.to_string())?;
+                println!("wrote {}: {}", package::FILE, toml.trim());
+            }
         }
         "add" | "edit" => {
             let Source::Db(mut cb) = load(&args)? else { return Err("`add`/`edit` need a codebase".into()) };
@@ -780,31 +779,39 @@ fn git_out(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&o.stdout).to_string())
 }
 
-/// Every program in strata.toml checks, and every `.strata` file is in
-/// canonical format (what `render` prints). `fix` rewrites the files that aren't.
+/// What CI requires, over the whole repository (or the current folder outside
+/// git): every package and every script checks, every package's exports name
+/// something, and every `.strata` file is in canonical format (what `render`
+/// prints). `fix` rewrites the files that aren't.
 fn ci(fix: bool) -> Result<bool, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let m = merge::manifest(&cwd)?.ok_or("no strata.toml here or above (it lists the programs: `programs = [\"src\"]`)")?;
+    let top = git_out(&["rev-parse", "--show-toplevel"]).map(|t| std::path::PathBuf::from(t.trim())).unwrap_or(cwd);
+    let top = std::fs::canonicalize(&top).unwrap_or(top);
+    let (packages, scripts) = package::discover(&top)?;
+    if packages.is_empty() && scripts.is_empty() {
+        return Err(format!("no .strata files under {}", top.display()));
+    }
     let mut ok = true;
-    for prog in &m.programs {
-        let path = m.dir.join(prog);
-        let files = merge::program_files(&path).map_err(|e| format!("strata.toml lists {prog}: {e}"))?;
+    for path in packages.iter().chain(&scripts) {
+        let shown = path.strip_prefix(&top).unwrap_or(path).display().to_string();
+        let pkg = if path.is_dir() { Some(package::load(path)?) } else { None };
+        let files = package::files(path)?;
         let mut parsed = true;
         for (rel, src) in &files {
-            let shown = if rel.as_os_str().is_empty() { prog.clone() } else { format!("{prog}/{}", rel.display()) };
+            let file = if rel.as_os_str().is_empty() { shown.clone() } else { format!("{shown}/{}", rel.display()) };
             match parser::parse_module_file(src, "") {
                 Err(e) => {
                     ok = false;
                     parsed = false;
-                    println!("✗ {shown}: doesn't parse: {e}");
+                    println!("✗ {file}: doesn't parse: {e}");
                 }
                 Ok(p) if printer::program(&p) != *src => {
                     if fix {
-                        std::fs::write(m.dir.join(&shown), printer::program(&p)).map_err(|e| format!("{shown}: {e}"))?;
-                        println!("  {shown}: rewritten in canonical format");
+                        std::fs::write(top.join(&file), printer::program(&p)).map_err(|e| format!("{file}: {e}"))?;
+                        println!("  {file}: rewritten in canonical format");
                     } else {
                         ok = false;
-                        println!("✗ {shown}: not in canonical format (`strata ci --fix` rewrites it)");
+                        println!("✗ {file}: not in canonical format (`strata ci --fix` rewrites it)");
                     }
                 }
                 Ok(_) => {}
@@ -813,25 +820,23 @@ fn ci(fix: bool) -> Result<bool, String> {
         if !parsed {
             continue;
         }
-        let p = merge::parse_program_files(merge::program_files(&path)?)?;
+        let p = package::parse(package::files(path)?)?;
         let rep = full_check(&p);
-        if rep.ok() {
-            println!("✓ {prog}: {} definitions check ({} open holes)", p.decls.len(), rep.holes.len());
+        let mut errors: Vec<String> = rep.errors.iter().map(|e| format!("error in {}: {}", e.decl, e.msg)).collect();
+        if let Some(pkg) = &pkg {
+            errors.extend(package::bad_exports(pkg, &p).into_iter().map(|e| format!("{}: {e}", package::FILE)));
+        }
+        let label = match &pkg {
+            Some(pkg) => format!("package {} ({shown})", pkg.name),
+            None => shown.clone(),
+        };
+        if errors.is_empty() {
+            println!("✓ {label}: {} definitions check ({} open holes)", p.decls.len(), rep.holes.len());
         } else {
             ok = false;
-            println!("✗ {prog}:");
-            for e in &rep.errors {
-                println!("    error in {}: {}", e.decl, e.msg);
-            }
-        }
-    }
-    // a file the manifest forgot would go unchecked
-    let top = m.dir.to_string_lossy().to_string();
-    if let Ok(listed) = Command::new("git").args(["-C", &top, "ls-files", "--", "*.strata"]).output() {
-        for f in String::from_utf8_lossy(&listed.stdout).lines() {
-            if m.program_of(f).is_none() {
-                ok = false;
-                println!("✗ {f}: not in any program in strata.toml");
+            println!("✗ {label}:");
+            for e in errors {
+                println!("    {e}");
             }
         }
     }

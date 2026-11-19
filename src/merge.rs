@@ -11,9 +11,8 @@
 //! into the other side, so its new references follow the rename.
 
 use crate::ast::{Decl, DeclKind, Program};
-use crate::{parser, printer, resolve};
+use crate::{package, parser, printer, resolve};
 use std::collections::HashMap;
-use std::path::Path;
 use std::process::Command;
 
 pub struct Merged {
@@ -254,92 +253,26 @@ pub fn merge(base: &str, ours: &str, theirs: &str) -> Result<Merged, String> {
     Ok(Merged { text, conflicts, notes })
 }
 
-/// `strata.toml`: the programs in this repository, each a file or a folder
-/// of modules, relative to the file's directory.
-pub struct Manifest {
-    pub dir: std::path::PathBuf,
-    pub programs: Vec<String>,
-}
-
-pub fn manifest(start: &Path) -> Result<Option<Manifest>, String> {
-    let start = std::fs::canonicalize(start).unwrap_or(start.to_path_buf());
-    let Some(dir) = start.ancestors().find(|d| d.join("strata.toml").is_file()) else { return Ok(None) };
-    let src = std::fs::read_to_string(dir.join("strata.toml")).map_err(|e| format!("strata.toml: {e}"))?;
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Raw {
-        programs: Vec<String>,
-    }
-    let raw: Raw = toml::from_str(&src).map_err(|e| format!("strata.toml: {e}"))?;
-    Ok(Some(Manifest { dir: dir.to_path_buf(), programs: raw.programs.into_iter().map(|p| p.trim_end_matches('/').to_string()).collect() }))
-}
-
-impl Manifest {
-    /// The program a file (relative to the manifest's directory) belongs to.
-    pub fn program_of(&self, rel: &str) -> Option<&str> {
-        self.programs.iter().map(|p| p.as_str()).filter(|p| rel == *p || rel.starts_with(&format!("{p}/"))).max_by_key(|p| p.len())
-    }
-}
-
-/// The `.strata` files of a program, relative to the program's folder (or the
-/// file itself, as `""`), with their text.
-pub fn program_files(path: &Path) -> Result<Vec<(std::path::PathBuf, String)>, String> {
-    if !path.is_dir() {
-        let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        return Ok(vec![(std::path::PathBuf::new(), src)]);
-    }
-    let mut files = Vec::new();
-    let mut todo = vec![path.to_path_buf()];
-    while let Some(dir) = todo.pop() {
-        for entry in std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-            let p = entry.map_err(|e| e.to_string())?.path();
-            if p.is_dir() {
-                if !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')) {
-                    todo.push(p);
-                }
-            } else if p.extension().is_some_and(|e| e == "strata") {
-                let src = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-                files.push((p.strip_prefix(path).unwrap().to_path_buf(), src));
-            }
-        }
-    }
-    files.sort();
-    Ok(files)
-}
-
-/// Parse a program's files (as `program_files` gives them).
-pub fn parse_program_files(files: Vec<(std::path::PathBuf, String)>) -> Result<Program, String> {
-    match files.as_slice() {
-        [(rel, src)] if rel.as_os_str().is_empty() => parser::parse_module_file(src, ""),
-        _ => crate::parse_files(files),
-    }
-}
-
 /// The type errors of the merged file that neither side had on its own:
-/// what the merge broke. The file is checked inside its program (from
-/// `strata.toml`), with the program's other files as they are on disk.
+/// what the merge broke. The file is checked inside its package, with the
+/// package's other files as they are on disk; a script is checked alone.
 pub fn new_errors(path: &str, merged: &str, ours: &str, theirs: &str) -> Result<Vec<String>, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let (files, slot) = match manifest(&cwd)? {
-        Some(m) => {
-            let full = std::fs::canonicalize(cwd.join(path)).unwrap_or(cwd.join(path));
-            let rel = full.strip_prefix(&m.dir).map(|r| r.to_string_lossy().to_string()).unwrap_or(path.to_string());
-            match m.program_of(&rel) {
-                Some(prog) => {
-                    let files = program_files(&m.dir.join(prog))?;
-                    let inner = std::path::PathBuf::from(rel.strip_prefix(prog).unwrap_or("").trim_start_matches('/'));
-                    let mut files: Vec<_> = files.into_iter().filter(|(r, _)| *r != inner).collect();
-                    files.push((inner.clone(), String::new()));
-                    (files, inner)
-                }
-                None => (vec![(std::path::PathBuf::new(), String::new())], std::path::PathBuf::new()),
-            }
+    let full = cwd.join(path);
+    let parent = full.parent().unwrap_or(&cwd);
+    let (files, slot) = match package::find(parent)? {
+        Some(pkg) => {
+            let full = std::fs::canonicalize(parent).unwrap_or(parent.to_path_buf()).join(full.file_name().unwrap_or_default());
+            let inner = full.strip_prefix(&pkg.dir).map(|r| r.to_path_buf()).unwrap_or_default();
+            let mut files: Vec<_> = package::files(&pkg.dir)?.into_iter().filter(|(r, _)| *r != inner).collect();
+            files.push((inner.clone(), String::new()));
+            (files, inner)
         }
         None => (vec![(std::path::PathBuf::new(), String::new())], std::path::PathBuf::new()),
     };
     let errors = |text: &str| -> Option<Vec<String>> {
         let fs = files.iter().map(|(r, s)| (r.clone(), if *r == slot { text.to_string() } else { s.clone() })).collect();
-        let p = parse_program_files(fs).ok()?;
+        let p = package::parse(fs).ok()?;
         Some(crate::full_check(&p).errors.iter().map(|e| format!("{}: {}", e.decl, e.msg)).collect())
     };
     let Some(mine) = errors(merged) else { return Err("the merged file doesn't parse".into()) };

@@ -731,32 +731,45 @@ fn strata_git(args: &[&str], dir: &std::path::Path) -> (bool, String) {
 }
 
 #[test]
-fn ci_checks_programs_and_canonical_format() {
+fn ci_checks_packages_scripts_and_canonical_format() {
     let d = tmp("ci");
     git(&d, &["init", "-q", "-b", "main"]);
-    std::fs::create_dir_all(d.join("shop")).unwrap();
-    std::fs::write(d.join("strata.toml"), "programs = [\"shop\"]\n").unwrap();
+    std::fs::create_dir_all(d.join("shop/tools")).unwrap();
+    std::fs::write(d.join("shop/strata.toml"), "name = \"shop\"\nexports = [\"orders.total\"]\n").unwrap();
     std::fs::write(d.join("shop/orders.strata"), "pub fn total(xs: List[Int]) -> Int { sum(xs) }\n").unwrap();
-    std::fs::write(d.join("shop/main.strata"), "use orders.total\nfn run() -> Int { total([1, 2]) }\n").unwrap();
-    git(&d, &["add", "."]);
+    std::fs::write(d.join("shop/main.strata"), "use orders.total\n\nfn run() -> Int {\n  total([1, 2])\n}\n").unwrap();
+    // a package nested in another is a separate program: its `use` doesn't see shop's modules
+    std::fs::write(d.join("shop/tools/strata.toml"), "name = \"tools\"\n").unwrap();
+    std::fs::write(d.join("shop/tools/main.strata"), "fn one() -> Int {\n  1\n}\n").unwrap();
+    // a file outside every package is a script
+    std::fs::write(d.join("loose.strata"), "fn x() -> Int {\n  1\n}\n").unwrap();
     let (ok, out) = strata_git(&["ci"], &d);
-    assert!(!ok && out.contains("shop/orders.strata: not in canonical format") && out.contains("✓ shop:"), "{out}");
+    assert!(!ok && out.contains("shop/orders.strata: not in canonical format"), "{out}");
+    assert!(out.contains("✓ package shop (shop): 3 definitions") && out.contains("✓ package tools (shop/tools): 1 definitions") && out.contains("✓ loose.strata"), "{out}");
     let (ok, out) = strata_git(&["ci", "--fix"], &d);
     assert!(ok, "{out}");
     let (ok, out) = strata_git(&["ci"], &d);
     assert!(ok, "{out}");
-    // a tracked file outside every program would go unchecked
-    std::fs::write(d.join("loose.strata"), "fn x() -> Int {\n  1\n}\n").unwrap();
-    git(&d, &["add", "."]);
+
+    // exports must name a module or a `pub` definition
+    std::fs::write(d.join("shop/strata.toml"), "name = \"shop\"\nexports = [\"orders.totl\", \"run\"]\n").unwrap();
     let (ok, out) = strata_git(&["ci"], &d);
-    assert!(!ok && out.contains("loose.strata: not in any program"), "{out}");
+    assert!(!ok && out.contains("exports `orders.totl`, which is neither") && out.contains("exports `run`, which isn't `pub`"), "{out}");
+    std::fs::write(d.join("shop/strata.toml"), "name = \"shop\"\nversion = 1\n").unwrap();
+    let (_, out) = strata_git(&["ci"], &d);
+    assert!(out.contains("unknown field `version`"), "{out}");
+
+    // `init` names the package after its folder; the name stays when the folder moves
+    let e = d.join("billing");
+    std::fs::create_dir_all(&e).unwrap();
+    let (ok, out) = strata(&["init"], &e, None);
+    assert!(ok && std::fs::read_to_string(e.join("strata.toml")).unwrap() == "name = \"billing\"\n", "{out}");
 }
 
 #[test]
 fn sync_merges_main_with_the_driver_then_checks() {
     let d = tmp("sync");
     git(&d, &["init", "-q", "-b", "main"]);
-    std::fs::write(d.join("strata.toml"), "programs = [\"app.strata\"]\n").unwrap();
     let base = "fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g(x: Int) -> Int {\n  x * 2\n}\n";
     std::fs::write(d.join("app.strata"), base).unwrap();
     git(&d, &["add", "."]);

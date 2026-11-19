@@ -20,7 +20,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
-      # every program in strata.toml type-checks, every .strata file is canonical
+      # every package and script type-checks, every .strata file is canonical
       - run: ./target/release/strata ci
 
   cargo-test:
