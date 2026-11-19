@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strata · Changes (mockup)</title>
+<!--
+  Static mockup of the viewer's Changes view. The change set is invented but
+  written against the real tasks example: branch `cancel-tasks`, 2 commits,
+  7 steps (patches). Nothing here is computed; it shows how a structural diff
+  would read. Styles follow src/ui/index.html.
+-->
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --line: #e3e3df; --text: #1d1d1b; --muted: #74746f; --faint: #a5a5a0;
+  --accent: #3b5bdb; --accent-soft: #e8edfd;
+  --type: #7048e8; --fn: #1c7ed6; --test: #5c940d;
+  --ok: #2f9e44; --warn: #e67700; --bad: #e03131; --ren: #1c7ed6;
+  --code-bg: #fbfbfa; --kw: #9c36b5; --str: #2b8a3e; --num: #c92a2a; --com: #8d8d88;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615; --panel: #1e1e1c; --line: #2f2f2c; --text: #e9e9e6; --muted: #9a9a94; --faint: #5f5f5a;
+    --accent: #748ffc; --accent-soft: #232a45;
+    --type: #b197fc; --fn: #74c0fc; --test: #a9e34b;
+    --ok: #51cf66; --warn: #ffa94d; --bad: #ff6b6b; --ren: #74c0fc;
+    --code-bg: #1a1a18; --kw: #da77f2; --str: #8ce99a; --num: #ffa8a8; --com: #6f6f69;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { font: 13px/1.45 var(--sans); background: var(--bg); color: var(--text); display: grid;
+  grid-template-rows: auto auto 1fr; grid-template-columns: 260px 1fr 340px; grid-template-areas: "top top top" "steps steps steps" "left main right"; }
+header { grid-area: top; display: flex; align-items: center; gap: 14px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+header .brand { font-weight: 650; }
+.range { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.range b { color: var(--text); font-weight: 600; }
+.chips { display: flex; gap: 6px; }
+.chip { font-size: 11.5px; padding: 2px 8px; border-radius: 999px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.chip b { color: var(--text); font-weight: 600; } .chip.ok b { color: var(--ok); } .chip.warn b { color: var(--warn); }
+.spacer { flex: 1; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.seg button { font: inherit; font-size: 12px; border: 0; background: transparent; color: var(--muted); padding: 4px 10px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+
+/* steps: commits and the patches inside them */
+#steps { grid-area: steps; display: flex; align-items: stretch; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel); overflow-x: auto; }
+.commit { border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px 6px; background: var(--bg); }
+.commit-h { font-size: 11.5px; color: var(--muted); margin-bottom: 4px; white-space: nowrap; }
+.commit-h code { font-family: var(--mono); color: var(--faint); margin-right: 4px; }
+.commit-h b { color: var(--text); font-weight: 600; }
+.patches { display: flex; gap: 4px; }
+.patch { font: 11.5px var(--sans); border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 6px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
+.patch i { font-style: normal; color: var(--faint); margin-right: 4px; font-family: var(--mono); }
+.patch:hover { border-color: var(--accent); }
+.patch.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.steps-l { align-self: center; color: var(--faint); font-size: 10.5px; text-transform: uppercase; letter-spacing: .7px; font-weight: 600; margin-right: 4px; }
+.steps-hint { align-self: center; color: var(--faint); font-size: 11.5px; white-space: nowrap; }
+
+aside, main { overflow: auto; min-height: 0; }
+#left { grid-area: left; border-right: 1px solid var(--line); background: var(--panel); padding: 8px 0 20px; }
+#right { grid-area: right; border-left: 1px solid var(--line); background: var(--panel); }
+main { grid-area: main; }
+.group h4 { margin: 12px 14px 4px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .7px; color: var(--faint); font-weight: 600; }
+.item { display: flex; align-items: center; gap: 8px; padding: 3px 14px; cursor: pointer; font-family: var(--mono); font-size: 12.5px; white-space: nowrap; overflow: hidden; border-left: 2px solid transparent; }
+.item:hover { background: var(--bg); }
+.item.sel { background: var(--accent-soft); border-left-color: var(--accent); }
+.item.dim { opacity: .3; }
+.item .lbl { overflow: hidden; text-overflow: ellipsis; }
+.item .sub { color: var(--faint); font-family: var(--sans); font-size: 11px; margin-left: auto; }
+.mk { font: 700 12px var(--mono); width: 14px; text-align: center; flex: none; }
+.mk.add { color: var(--ok); } .mk.del { color: var(--bad); } .mk.chg { color: var(--warn); } .mk.ren { color: var(--ren); }
+
+/* the change list */
+#code { padding: 14px 22px 80px; max-width: 1000px; }
+.summary { color: var(--muted); font-size: 12.5px; margin: 2px 0 4px; }
+.summary b { color: var(--text); }
+h2.sect { font: 600 11px var(--sans); text-transform: uppercase; letter-spacing: .7px; color: var(--faint); margin: 22px 0 8px; }
+h2.sect span { font-weight: 500; text-transform: none; letter-spacing: 0; margin-left: 6px; }
+.cgroup { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.card { display: grid; grid-template-columns: 26px 1fr; border-left: 2px solid transparent; scroll-margin-top: 12px; transition: opacity .15s; }
+.card + .card { border-top: 1px solid var(--line); }
+.card.sel { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent-soft) 40%, var(--code-bg)); }
+.card.dim { opacity: .28; }
+.card .gut { display: flex; justify-content: center; padding-top: 9px; cursor: pointer; }
+.what { font: 11.5px var(--sans); color: var(--muted); padding: 8px 14px 0 2px; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.what .k { font-weight: 600; }
+.what .k.add { color: var(--ok); } .what .k.chg { color: var(--warn); } .what .k.ren { color: var(--ren); } .what .k.del { color: var(--bad); }
+.what .meta { margin-left: auto; color: var(--faint); }
+.what .v { white-space: nowrap; }
+.v .ok { color: var(--ok); } .v .bad { color: var(--bad); }
+.docd { font: 12.5px/1.5 var(--sans); color: var(--muted); margin: 6px 14px 0 2px; padding: 6px 10px; border-left: 2px solid var(--line); }
+.docd .tag { font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; color: var(--faint); font-weight: 600; margin-right: 6px; }
+pre { margin: 0; padding: 6px 14px 10px 2px; font: 12.5px/1.6 var(--mono); overflow-x: auto; white-space: pre; background: transparent; }
+.ln { display: block; position: relative; padding-left: 16px; border-radius: 3px; }
+.ln .sg { position: absolute; left: 2px; color: var(--faint); user-select: none; }
+.ln.add { background: color-mix(in srgb, var(--ok) 11%, transparent); } .ln.add .sg { color: var(--ok); }
+.ln.del { background: color-mix(in srgb, var(--bad) 10%, transparent); } .ln.del .sg { color: var(--bad); }
+.ln.del .code { opacity: .75; }
+.ln.chg .sg { color: var(--warn); }
+.ln.fold { color: var(--faint); font: italic 11.5px var(--sans); cursor: pointer; padding-top: 1px; padding-bottom: 1px; }
+.ln.fold:hover { color: var(--accent); }
+ins, del { text-decoration: none; border-radius: 3px; padding: 0 1px; }
+ins { background: color-mix(in srgb, var(--ok) 26%, transparent); }
+del { background: color-mix(in srgb, var(--bad) 22%, transparent); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--bad) 70%, transparent); }
+.ann { float: right; font: 11px var(--sans); color: var(--muted); margin-left: 18px; }
+.ann.warn { color: var(--warn); } .ann.ok { color: var(--ok); } .ann.ren { color: var(--ren); }
+.refs-upd { font: 11.5px var(--sans); color: var(--muted); margin: 0 14px 8px 2px; }
+.refs-upd code { font-family: var(--mono); font-size: 12px; color: var(--text); }
+.t-kw { color: var(--kw); } .t-str { color: var(--str); } .t-num { color: var(--num); } .t-com { color: var(--com); font-style: italic; } .t-ty { color: var(--type); } .t-doc { color: var(--com); }
+.vtable { width: 100%; border-collapse: collapse; font-size: 12px; }
+.vtable td { padding: 6px 12px; border-top: 1px solid var(--line); }
+.vtable tr:first-child td { border-top: 0; }
+.vtable td:first-child { font-family: var(--mono); }
+.vtable .why { color: var(--faint); }
+
+/* inspector */
+.sec { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.sec h3 { margin: 0 0 8px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .7px; color: var(--faint); font-weight: 600; display: flex; justify-content: space-between; }
+.insp-name { font: 600 15px var(--mono); margin: 2px 0 6px; }
+.doc { color: var(--muted); }
+.doc code, .sec code { font-family: var(--mono); font-size: 11.5px; color: var(--text); }
+.aff { display: flex; align-items: center; gap: 8px; font: 12px var(--mono); padding: 2px 0; }
+.aff .why { font: 11px var(--sans); color: var(--faint); margin-left: auto; }
+.aff .ok { color: var(--ok); font-family: var(--sans); }
+.stepl { padding: 5px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }
+.stepl:last-child { border-bottom: 0; }
+.stepl i { font-style: normal; font-family: var(--mono); color: var(--faint); margin-right: 6px; }
+.stepl .c { color: var(--faint); font-size: 11px; }
+.box { border: 1px solid color-mix(in srgb, var(--ok) 50%, var(--line)); border-radius: 7px; padding: 8px 10px; font-size: 12px; margin-top: 6px; }
+#steps a, .stepnav a { color: var(--accent); text-decoration: none; }
+#steps a:hover, .stepnav a:hover { text-decoration: underline; }
+.stepnav { display: flex; justify-content: space-between; margin-top: 18px; font-size: 12.5px; }
+.note { color: var(--faint); font-size: 11.5px; padding: 10px 14px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">Strata</span>
+  <span class="range"><b>cancel-tasks</b> → main · 2 commits · 7 steps</span>
+  <div class="chips">
+    <span class="chip"><b>1</b> renamed · <b>2</b> added · <b>6</b> changed</span>
+    <span class="chip warn"><b>2</b> interface changes</span>
+    <span class="chip ok"><b>checks</b></span>
+    <span class="chip ok"><b>1</b> newly fuzzed · <b>2</b> re-fuzzed</span>
+  </div>
+  <span class="spacer"></span>
+  <div class="seg"><button>Code</button><button class="on">Changes</button><button>Type map</button></div>
+</header>
+
+<div id="steps"></div>
+<aside id="left"></aside>
+<main id="main"><div id="code"></div></main>
+<aside id="right"></aside>
+
+<script>
+// ---------- the change set ----------
+// Line prefixes: ' ' unchanged, '+' added, '-' removed, '~' changed in place
+// ([-old-] {+new+}), '…' folded unchanged lines. Text after a tab is a note.
+const COMMITS = [
+  { sha: 'a1b2c3d', msg: 'Rename same_ids to reported_exactly', steps: [1] },
+  { sha: 'e4f5a6b', msg: 'Tasks can be cancelled', steps: [2, 3, 4, 5, 6, 7] },
+];
+const STEPS = {
+  1: 'rename same_ids → reported_exactly',
+  2: 'Cancelled status',
+  3: 'Queue.cancel; claims report attempts',
+  4: 'in-memory cancel',
+  5: 'describe cancelled tasks',
+  6: 'empty claim check',
+  7: 'test cancellation',
+};
+const CHANGES = [
+  { sect: 'Types', id: 'memory.Status', mk: 'chg', kind: 'type', steps: [2],
+    what: ['chg', 'variant added'], detail: 'no <code>match</code> on Status needs a new arm · 4 uses compare with <code>is</code> / <code>==</code>',
+    lines: [
+      ' pub type Status =',
+      '   | Pending',
+      '   | Running',
+      '   | Done',
+      '   | Exhausted',
+      '+  // never claimed again; counts as settled',
+      '+  | Cancelled',
+    ] },
+  { sect: 'Types', id: 'core.TaskPolicy', mk: 'chg', kind: 'type', steps: [5],
+    what: ['chg', 'doc changed'], detail: 'interface unchanged',
+    doc: 'Standard scheduling policy. The <code>ge=1</code> / <code>ge=0</code> checks from the Pydantic model are the prelude\'s <code>Positive</code> / <code>Natural</code>: an invalid policy cannot be constructed.<ins> Cancelled tasks are never retried, whatever <code>retries</code> says.</ins>',
+    lines: [
+      ' pub type TaskPolicy = {',
+      '… 3 fields unchanged',
+      ' }',
+    ] },
+
+  { sect: 'Interfaces', id: 'core.reported_exactly', label: 'core.same_ids → reported_exactly', mk: 'ren', kind: 'fn', steps: [1],
+    what: ['ren', 'renamed'], detail: 'signature and body unchanged',
+    lines: [
+      '~fn [-same_ids-]{+reported_exactly+}(claimed: List[TaskId], reported: List[TaskId]) -> Bool',
+    ],
+    refs: '1 reference updated: <code>core.run_worker</code> (shown there, folded into this rename)' },
+  { sect: 'Interfaces', id: 'core.Queue', mk: 'chg', kind: 'trait', steps: [3],
+    what: ['chg', 'interface: method added, contract stronger'], detail: 'every implementation is affected · 1 in the codebase, updated here',
+    lines: [
+      ' pub trait Queue[P, E] {',
+      '   /// Enqueue tasks, ignoring ids already present; returns how many were new.',
+      '   fn enqueue(mut self, tasks: List[Task[P]]) -> Int',
+      '     ensures 0 <= it && it <= len(tasks)',
+      '   /// Claim up to `limit` pending tasks, oldest first, bumping their attempt counts.',
+      '   fn claim(mut self, limit: Positive) -> List[TaskAttempt[P]]',
+      '     ensures len(it) <= limit',
+      '+    ensures all(it, |a| a.attempt >= 1)\tstronger: implementations must guarantee it · callers may rely on it',
+      '… record, release unchanged',
+      '+  /// Cancel pending tasks; returns how many were cancelled.',
+      '+  fn cancel(mut self, ids: List[TaskId]) -> Int',
+      '+    ensures 0 <= it && it <= len(ids)\tnew method: every implementation must provide it',
+      ' }',
+    ] },
+
+  { sect: 'Implementations', id: 'memory.mem_cancel', mk: 'add', kind: 'fn', steps: [4],
+    what: ['add', 'added'], detail: 'Cancel the pending tasks among <code>ids</code>; running and settled tasks are left alone.',
+    verdict: ['new', 'fuzzed 200'],
+    lines: [
+      '+pub fn mem_cancel[P, E](',
+      '+  q: MemQueue[P, E],',
+      '+  ids: List[TaskId],',
+      '+) -> (MemQueue[P, E], Int)',
+      '+  ensures it.1 <= len(ids) {',
+      '+  let hit = |e| e.status is Pending && contains(ids, e.task.id)',
+      '+  let entries = q.entries.map(',
+      '+    |e| if hit(e) { Entry { ..e, status: Cancelled } } else { e },',
+      '+  )',
+      '+  (MemQueue { ..q, entries }, len(filter(q.entries, hit)))',
+      '+}',
+    ] },
+  { sect: 'Implementations', id: 'memory.impl Queue for MemQueue', label: 'impl Queue for MemQueue', mk: 'chg', kind: 'impl', steps: [4],
+    what: ['chg', 'method added'], detail: 'implements the new <code>Queue.cancel</code> · claim now checked against the stronger <code>ensures</code>',
+    verdict: ['fuzzed 200', 'fuzzed 200'],
+    lines: [
+      ' impl[P, E] Queue[P, E] for MemQueue[P, E] {',
+      '… enqueue, claim, record, release unchanged',
+      '+',
+      '+  fn cancel(mut self, ids: List[TaskId]) -> Int {',
+      '+    let (next, n) = mem_cancel(self, ids)',
+      '+    self = next',
+      '+    n',
+      '+  }',
+      ' }',
+    ] },
+  { sect: 'Implementations', id: 'core.run_worker', mk: 'chg', kind: 'fn', steps: [6, 1],
+    what: ['chg', 'body changed'], detail: 'implementation only · nothing else needs re-checking',
+    lines: [
+      ' pub fn run_worker[P, E, Q: Queue[P, E], W: Worker[P, E]](',
+      '… parameters, return type and contracts unchanged (9 lines)',
+      '   let attempts = queue.claim(policy.tasks_per_worker)',
+      '~  if [-len(attempts) == 0-]{+attempts == []+} {',
+      '     Ok([])',
+      '   } else {',
+      '… 3 lines unchanged',
+      '~    if [-same_ids-]{+reported_exactly+}(claimed, reported) {\tfrom the rename (step 1)',
+      '… 6 lines unchanged',
+      ' }',
+    ] },
+  { sect: 'Implementations', id: 'memory.describe', mk: 'chg', kind: 'fn', steps: [5],
+    what: ['chg', 'body rewritten'], detail: 'most of the body changed, so it is shown as a line diff',
+    lines: [
+      ' pub fn describe[P, E](q: MemQueue[P, E]) -> List[String] {',
+      '-  q.entries.map(',
+      '-    |e| e.task.id',
+      '-      ++ ": "',
+      '-      ++ to_string(e.status)',
+      '-      ++ " after "',
+      '-      ++ to_string(e.attempts),',
+      '-  )',
+      '+  q.entries.map(|e| {',
+      '+    let what = match e.status {',
+      '+      Cancelled => "cancelled",',
+      '+      _ => to_string(e.status) ++ " after " ++ to_string(e.attempts),',
+      '+    }',
+      '+    e.task.id ++ ": " ++ what',
+      '+  })',
+      ' }',
+    ] },
+
+  { sect: 'Tests', id: 'sim.test "cancelled tasks are never claimed"', label: 'test "cancelled tasks are never claimed"', mk: 'add', kind: 'test', steps: [7],
+    what: ['add', 'added'], detail: 'passes',
+    lines: [
+      '+test "cancelled tasks are never claimed" {',
+      '+  let mut q = empty_queue(policy(2, 1))',
+      '+  q.enqueue([',
+      '+    Task { id: "a", kind: "sim", payload: 1 },',
+      '+    Task { id: "b", kind: "sim", payload: 2 },',
+      '+  ])',
+      '+  assert q.cancel(["a"]) == 1',
+      '+  assert q.claim(2).map(|a| a.task.id) == ["b"]',
+      '+}',
+    ] },
+];
+const VERIFY = [
+  ['memory.mem_cancel', 'new', 'fuzzed 200', 'new definition'],
+  ['impl Queue for MemQueue', 'fuzzed 200', 'fuzzed 200', 're-run: Queue contracts changed'],
+  ['sim.simulate', 'fuzzed 200', 'fuzzed 200', 're-run: depends on Status'],
+  ['core.run_worker', 'unverified', 'unverified', 'no contract on its own; covered by sim.simulate'],
+];
+const SECTS = [
+  ['Types', 'new fields, variants and shapes first: everything else builds on them'],
+  ['Interfaces', 'signatures and contracts: what other code can rely on'],
+  ['Implementations', 'bodies'],
+  ['Tests', ''],
+];
+
+// ---------- rendering ----------
+const S = { sel: 'core.Queue', step: null };
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const KW = new Set('type fn test let if else match where requires ensures true false is assert trait impl pub mut for in while loop'.split(' '));
+function hl(src) {
+  const re = /(\/\/\/[^\n]*)|(\/\/[^\n]*)|("(?:[^"\\]|\\.)*")|(\b\d+\b)|([A-Za-z_]\w*)/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(src))) {
+    out += esc(src.slice(last, m.index)); last = re.lastIndex;
+    const [t, doc, com, str, num, id] = m;
+    if (doc) out += `<span class="t-doc">${esc(t)}</span>`;
+    else if (com) out += `<span class="t-com">${esc(t)}</span>`;
+    else if (str) out += `<span class="t-str">${esc(t)}</span>`;
+    else if (num) out += `<span class="t-num">${t}</span>`;
+    else if (KW.has(id)) out += `<span class="t-kw">${id}</span>`;
+    else out += /^[A-Z]/.test(id) ? `<span class="t-ty">${id}</span>` : id;
+  }
+  return out + esc(src.slice(last));
+}
+// highlight a line with [-old-] / {+new+} marks
+function hlMarked(s) {
+  return s.split(/(\[-.*?-\]|\{\+.*?\+\})/).map(p =>
+    p.startsWith('[-') ? `<del>${hl(p.slice(2, -2))}</del>` : p.startsWith('{+') ? `<ins>${hl(p.slice(2, -2))}</ins>` : hl(p)).join('');
+}
+function line(l) {
+  const [body, note] = l.split('\t');
+  const sign = body[0], text = body.slice(1);
+  if (sign === '…') return `<span class="ln fold" title="click to show">… ${esc(text.trim())} ▸</span>`;
+  const cls = { '+': 'add', '-': 'del', '~': 'chg', ' ': '' }[sign];
+  const sg = { '+': '+', '-': '−', '~': '~', ' ': '' }[sign];
+  const annCls = /^stronger|^new method/.test(note || '') ? 'warn' : /rename/.test(note || '') ? 'ren' : '';
+  const ann = note ? `<span class="ann ${annCls}">${esc(note)}</span>` : '';
+  return `<span class="ln ${cls}"><span class="sg">${sg}</span>${ann}<span class="code">${sign === '~' ? hlMarked(text) : hl(text)}</span></span>`;
+}
+const vtxt = v => v === 'fuzzed 200' ? `<span class="ok">${v} ✓</span>` : v;
+const touched = c => S.step == null || c.steps.includes(S.step);
+
+function card(c) {
+  const v = c.verdict ? `<span class="v">${vtxt(c.verdict[0])} → ${vtxt(c.verdict[1])}</span>` : '';
+  return `<div class="card ${c.id === S.sel ? 'sel' : ''} ${touched(c) ? '' : 'dim'}" id="c-${esc(c.id)}">
+    <div class="gut" data-pick="${esc(c.id)}"><span class="mk ${c.mk}">${{ add: '+', del: '−', chg: '~', ren: '↪' }[c.mk]}</span></div>
+    <div>
+      <div class="what"><span class="k ${c.what[0]}">${c.what[1]}</span><span>${c.detail}</span>${v}<span class="meta">${c.id.split('.')[0]} · step ${c.steps.join(', ')}</span></div>
+      ${c.doc ? `<div class="docd"><span class="tag">doc</span>${c.doc}</div>` : ''}
+      <pre>${c.lines.map(line).join('')}</pre>
+      ${c.refs ? `<div class="refs-upd">${c.refs}</div>` : ''}
+    </div></div>`;
+}
+
+function render() {
+  // steps strip
+  document.getElementById('steps').innerHTML = `<span class="steps-l">Steps</span>` + COMMITS.map(c => `<div class="commit">
+      <div class="commit-h"><code>${c.sha}</code><b>${esc(c.msg)}</b></div>
+      <div class="patches">${c.steps.map(s => `<button class="patch ${S.step === s ? 'on' : ''}" data-step="${s}"><i>${s}</i>${esc(STEPS[s])}</button>`).join('')}</div></div>`).join('')
+    + `<span class="steps-hint">${S.step ? `showing step ${S.step} · <a href="#" data-step="0">show the whole change</a>` : 'click a step to see just that change · ← → to walk through them'}</span>`;
+
+  // left: the changes, grouped like the main list
+  document.getElementById('left').innerHTML = SECTS.map(([s]) => {
+    const cs = CHANGES.filter(c => c.sect === s);
+    return `<div class="group"><h4>${s}</h4>${cs.map(c => `<div class="item ${c.id === S.sel ? 'sel' : ''} ${touched(c) ? '' : 'dim'}" data-pick="${esc(c.id)}">
+      <span class="mk ${c.mk}">${{ add: '+', del: '−', chg: '~', ren: '↪' }[c.mk]}</span><span class="lbl">${esc((c.label || c.id).replace(/^[a-z]+\./, ''))}</span><span class="sub">${c.id.split('.')[0]}</span></div>`).join('')}</div>`;
+  }).join('') + `<div class="group"><h4>Verification</h4><div class="item" data-pick="verify"><span class="mk add">✓</span><span class="lbl">1 new · 2 re-fuzzed</span></div></div>`;
+
+  // main
+  const n = CHANGES.filter(touched).length;
+  document.getElementById('code').innerHTML = `<div class="summary">${S.step ? `Step ${S.step}: <b>${esc(STEPS[S.step])}</b> · ${n} definition${n > 1 ? 's' : ''}` : `<b>9 definitions</b> changed across 3 modules, in dependency order: types, then interfaces, then implementations, then tests.`}</div>`
+    + SECTS.map(([s, why]) => {
+      // a single step shows only what it changed
+      const cs = CHANGES.filter(c => c.sect === s && touched(c));
+      return cs.length ? `<h2 class="sect">${s} ${cs.length}<span>${why}</span></h2><div class="cgroup">${cs.map(card).join('')}</div>` : '';
+    }).join('')
+    + (S.step ? `<div class="stepnav">${S.step > 1 ? `<a href="#" data-step="${S.step - 1}">← step ${S.step - 1}: ${esc(STEPS[S.step - 1])}</a>` : '<span></span>'}${S.step < 7 ? `<a href="#" data-step="${S.step + 1}">step ${S.step + 1}: ${esc(STEPS[S.step + 1])} →</a>` : '<a href="#" data-step="0">back to the whole change</a>'}</div>` : '')
+    + (S.step ? '' : `<h2 class="sect" id="c-verify">Verification<span>before → after, for what this change touches</span></h2><div class="cgroup"><table class="vtable">${VERIFY.map(([n, a, b, why]) => `<tr><td>${esc(n)}</td><td>${vtxt(a)} → ${vtxt(b)}</td><td class="why">${why}</td></tr>`).join('')}</table></div>`);
+
+  // right: the selected change
+  document.getElementById('right').innerHTML = S.sel === 'core.Queue' ? `
+    <div class="sec"><h3><span>trait · core</span><span>interface changed</span></h3>
+      <div class="insp-name">Queue</div>
+      <div class="doc">A queue backend. This is the only thing that changes between SQLite, SQS, Redis… The contracts below bind every implementation: a backend that returns more than <code>limit</code> attempts is caught at the call.</div></div>
+    <div class="sec"><h3>Affected</h3>
+      <div class="aff">impl Queue for MemQueue <span class="ok">updated here ✓</span></div>
+      <div class="aff">core.run_worker <span class="why">calls claim · re-checked ✓</span></div>
+      <div class="aff">core.run_producer <span class="why">calls enqueue · re-checked ✓</span></div>
+      <div class="aff">core.drain <span class="why">via run_worker · re-checked ✓</span></div>
+      <div class="aff">sim.simulate <span class="why">re-fuzzed ✓</span></div></div>
+    <div class="sec"><h3>Steps</h3>
+      <div class="stepl"><i>3</i>Queue.cancel; claims report attempts <div class="c">e4f5a6b · Tasks can be cancelled</div></div></div>
+    <div class="sec"><h3>Before / after</h3>
+      <div class="box">The interface hash changed: <code>#4c1e…</code> → <code>#9a07…</code>. Code that only <em>calls</em> <code>Queue</code> keeps working; every <em>implementation</em> must add <code>cancel</code> and guarantee <code>a.attempt >= 1</code>.</div></div>`
+    : `<div class="note">The inspector shows the selected change: its description, what it affects, the steps that made it, and its verification before and after. (Mockup: only <code>Queue</code> is filled in.)</div>`;
+}
+
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-step],[data-pick]');
+  if (!t) return;
+  e.preventDefault();
+  if (t.dataset.step !== undefined) { const s = +t.dataset.step; S.step = s && (S.step !== s || !t.classList.contains('patch')) ? s : null; render(); document.getElementById('main').scrollTop = 0; return; }
+  S.sel = t.dataset.pick; render();
+  document.getElementById('c-' + S.sel)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+  const d = e.key === 'ArrowRight' ? 1 : -1;
+  S.step = S.step == null ? (d > 0 ? 1 : 7) : S.step + d;
+  if (S.step < 1 || S.step > 7) S.step = null;
+  render();
+});
+const h = new URLSearchParams(location.hash.slice(1));
+if (h.has('step')) S.step = +h.get('step');
+S.step = S.step || null;
+if (h.has('sel')) S.sel = h.get('sel');
+render();
+</script>
+</body>
+</html>
