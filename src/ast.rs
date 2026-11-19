@@ -359,6 +359,8 @@ pub enum Expr {
     /// `match e { … }`, or `match e as x { … }` to name the value; a matched
     /// variable (or the `as` name) is narrowed to each arm's pattern.
     Match(Box<Expr>, Option<String>, Vec<Arm>),
+    /// `mut x` as an argument: passed to a `mut` parameter, which changes it.
+    Mut(Box<Expr>),
     Block(Vec<Stmt>, Box<Expr>),
     /// `mock Db`: an implementation of a trait whose methods return generated
     /// values that satisfy the trait's contracts.

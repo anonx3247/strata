@@ -90,7 +90,7 @@ fn refund(o: Order) -> Cents
 
 test "a mocked store never breaks ship's contract" {
   let mut db = mock Db
-  let r = ship(db, "ord_zzz999", "TRK9")
+  let r = ship(mut db, "ord_zzz999", "TRK9")
   assert r is Ok || r is Err
 }
 ```
@@ -257,6 +257,7 @@ fn total(lines: List[Line]) -> Natural {
   sum
 }
 fn restock(mut line: Line, extra: Int) -> () { line.qty = line.qty + extra }   // changes the caller's variable
+restock(mut line, 5)                                                         // and the call says so
 ```
 
 Procedural code is normal Strata: `loop { … }` repeats until `break`, and `continue` skips to the next iteration. Method chains can be split across lines:
@@ -270,7 +271,7 @@ let best = scores
 ```
 
  Variables are immutable unless declared `let mut`. `while` and `for` loops are available, and fields can be assigned (`line.qty = …`). Mutation is always *visible*:
-- a function that changes an argument declares it `mut`, and the caller must pass a mutable variable, which is updated when the call returns;
+- a function that changes an argument declares it `mut`, and the caller passes a mutable variable marked `mut` at the call (`restock(mut line, 5)`), which is updated when the call returns. The marker is required there, and an error anywhere else;
 - a method that changes its receiver takes `mut self`.
 
 There are no shared references, so nothing changes behind your back. A declared type holds for the variable's whole life: every assignment is checked against it (`line.qty = 120` fails if `qty` is a `Quantity`; `x = -1` fails if `x` was declared `let mut x: Positive`), at compile time for literals and at runtime otherwise, and so is the value a `mut` argument writes back. Passing a `Positive` variable to a `mut k: Int` parameter is a compile error, since the function could store any `Int` in it. Closures cannot change outer variables.
