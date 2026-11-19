@@ -97,6 +97,17 @@ fn snapshot(target: &Target) -> Json {
         }
     }
 
+    // An impl block is not a dependency of its trait or its type, nor a reference
+    // to them: it is how that type implements that trait. Keep that relation apart.
+    let impl_of: HashMap<String, (String, String)> = rp
+        .decls
+        .iter()
+        .zip(&p.decls)
+        .filter_map(|(r, d)| match &r.kind {
+            DeclKind::Impl(i) => Some((d.qname(), (i.trait_name.clone(), crate::types::texpr_head(&i.for_type)))),
+            _ => None,
+        })
+        .collect();
     let decls: Vec<Json> = p
         .decls
         .iter()
@@ -107,9 +118,17 @@ fn snapshot(target: &Target) -> Json {
             // the doc comment is shown as the description, so drop it from the code too
             let render = |lvl| strip_doc(&unwrap_module(view::render(p, &one, lvl, &status).trim_end()));
             let (iface, source) = (render(1), render(3));
-            let effects = match &d.kind {
-                _ => Vec::<String>::new(),
-            };
+            let own = impl_of.get(&name);
+            let deps: Vec<String> = graph
+                .get(&name)
+                .into_iter()
+                .flatten()
+                .filter(|n| own.is_none_or(|(tr, ty)| *n != tr && *n != ty))
+                .cloned()
+                .collect();
+            let is_own_impl = |n: &String| impl_of.get(n).is_some_and(|(tr, ty)| *tr == name || *ty == name);
+            let references: Vec<String> = graph.iter().filter(|(n, ds)| ds.contains(&name) && !is_own_impl(n)).map(|(n, _)| n.clone()).collect();
+            let impls: Vec<String> = impl_of.keys().filter(|n| is_own_impl(n)).cloned().collect();
             let label = match &d.kind {
                 DeclKind::Test(t) => t.name.clone(),
                 _ => d.name(),
@@ -123,9 +142,10 @@ fn snapshot(target: &Target) -> Json {
                 "doc": d.doc.join("\n"),
                 "hash": store::self_hash(d),
                 "interface_hash": store::interface_hash(d),
-                "effects": effects,
-                "deps": graph.get(&name).cloned().unwrap_or_default(),
-                "used_by": graph.iter().filter(|(_, ds)| ds.contains(&name)).map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+                "deps": deps,
+                "refs": references,
+                "impls": impls,
+                "impl_of": own.map(|(tr, ty)| json!({"trait": tr, "type": ty})),
                 "holes": holes.get(&name).cloned().unwrap_or_default(),
                 "verdict": verdicts.get(&name),
                 "errors": rep.errors.iter().filter(|e| qname_of.get(&e.decl).unwrap_or(&e.decl) == &name || e.decl == name).map(|e| e.msg.clone()).collect::<Vec<_>>(),
@@ -150,19 +170,6 @@ fn snapshot(target: &Target) -> Json {
     let field_json = |name: Option<&str>, t: &TypeExpr| json!({"name": name, "ty": crate::printer::ty(t), "refs": refs_of(t)});
     let mut structure = Vec::new();
     for d in &rp.decls {
-        // functions whose first parameter is this record/sum type act as its methods
-        let has_methods = matches!(&d.kind, DeclKind::Type(t) if !matches!(t.body, TypeBody::Alias(_)));
-        let methods: Vec<Json> = p
-            .decls
-            .iter()
-            .filter(|_| has_methods)
-            .filter_map(|m| match &m.kind {
-                DeclKind::Fn(f) if f.params.first().and_then(|x| type_head(&x.ty)).as_deref() == Some(&d.name()) => {
-                    Some(json!({"name": f.name, "sig": crate::printer::fn_signature(f).lines().next().unwrap_or("").trim_start_matches("fn ").to_string()}))
-                }
-                _ => None,
-            })
-            .collect();
         match &d.kind {
             DeclKind::Type(t) => {
                 let (kind, base, fields, variants) = match &t.body {
@@ -187,7 +194,7 @@ fn snapshot(target: &Target) -> Json {
                 structure.push(json!({
                     "name": t.name, "kind": kind, "params": t.params, "doc": d.doc.join("\n"),
                     "refinement": t.refinement.as_ref().map(|r| crate::printer::expr(r, 0)),
-                    "base": base, "fields": fields, "variants": variants, "methods": methods,
+                    "base": base, "fields": fields, "variants": variants,
                 }));
             }
             _ => {}
@@ -308,14 +315,6 @@ pub fn serve(target: Target, port: u16) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-/// The type a type expression names, if it is a named type.
-fn type_head(t: &TypeExpr) -> Option<String> {
-    match t {
-        TypeExpr::Named(n, _) => Some(n.clone()),
-        _ => None,
-    }
 }
 
 /// Every named type mentioned in a type expression.

@@ -400,13 +400,16 @@ function highlight(src, resolve) {
 }
 
 // ---------- selection & scope ----------
+// Everything a definition is related to: what it depends on, what refers to it,
+// and how it takes part in implementations (its impl blocks, or an impl's trait and type).
+const related = d => d ? [...d.deps, ...d.refs, ...d.impls, ...(d.impl_of ? [d.impl_of.trait, d.impl_of.type] : [])] : [];
 function visible() {
   const all = S.data.decls;
   const q = S.q.toLowerCase();
   let set = all;
   if (S.scope === 'slice' && S.sel) {
     const d = byName()[S.sel];
-    const keep = new Set([S.sel, ...(d?.deps || []), ...(d?.used_by || [])]);
+    const keep = new Set([S.sel, ...related(d)]);
     set = all.filter(x => keep.has(x.name));
   }
   if (q) set = set.filter(x => x.label.toLowerCase().includes(q) || x.text['3'].toLowerCase().includes(q));
@@ -467,7 +470,7 @@ function renderHeader() {
 }
 
 function renderLeft() {
-  const groups = [['type', 'Types'], ['trait', 'Traits'], ['impl', 'Implementations'], ['effect', 'Effects'], ['fn', 'Functions'], ['test', 'Tests']];
+  const groups = [['type', 'Types'], ['trait', 'Traits'], ['impl', 'Implementations'], ['fn', 'Functions'], ['test', 'Tests']];
   const vis = new Set(visible().map(d => d.name));
   const mods = [...new Set(S.data.decls.map(d => d.module))];
   const many = mods.length > 1 || mods[0] !== '';
@@ -489,12 +492,14 @@ function renderLeft() {
   }).join('');
 }
 
-// ---------- type map: types, effects (and later traits) as a general graph ----------
+// ---------- type map: types and traits as a general graph ----------
 const TM = { pos: null, view: null, drag: null, moved: false };
-const tmOpt = { effects: true, aliases: false, methods: true };
+// what a type contains or refines, and what a trait's methods mention, are always
+// shown; which types implement which traits is an extra layer
+const tmOpt = { aliases: false, impls: false };
 
 function typeGraph() {
-  const st = S.data.structure.filter(t => (tmOpt.effects || t.kind !== 'effect') && (tmOpt.aliases || t.kind !== 'alias'));
+  const st = S.data.structure.filter(t => tmOpt.aliases || t.kind !== 'alias');
   const names = new Set(st.map(t => t.name));
   const edges = new Map();
   const add = (from, to, kind, label) => {
@@ -508,8 +513,7 @@ function typeGraph() {
     for (const f of t.fields || []) f.refs.forEach(r => add(t.name, r, 'has', f.name));
     for (const v of t.variants || []) for (const f of v.fields) f.refs.forEach(r => add(t.name, r, 'has', v.name));
     if (t.base) t.base.refs.forEach(r => add(t.name, r, t.refinement ? 'refines' : 'alias', ''));
-    for (const o of t.ops || []) o.refs.forEach(r => add(t.name, r, 'op', o.name));
-    for (const tr of t.impls || []) add(t.name, tr, 'implements', '');
+    if (tmOpt.impls) for (const tr of t.impls || []) add(t.name, tr, 'implements', '');
     for (const sp of t.supers || []) add(t.name, sp, 'extends', '');
     if (t.kind === 'trait') for (const r of t.refs) add(t.name, r, 'op', '');
   }
@@ -528,14 +532,12 @@ function cardLines(t) {
     const fs = v.fields.length ? (v.fields[0].name ? ' { ' + v.fields.map(f => f.name).join(', ') + ' }' : '(' + v.fields.map(f => f.ty).join(', ') + ')') : '';
     L.push([`| ${v.name}${fs}`, '']);
   }
-  for (const o of t.ops || []) L.push([o.sig, '']);
   if (t.kind === 'trait') {
     for (const m of t.methods) L.push(['fn ' + m.sig + (m.default ? '  (default)' : ''), '']);
     for (const l of t.laws) L.push(['law ' + l.name + ': ' + l.text, 'muted']);
-    if (t.implementors.length) L.push(['implemented by ' + t.implementors.join(', '), 'meth']);
+    if (tmOpt.impls && t.implementors.length) L.push(['implemented by ' + t.implementors.join(', '), 'meth']);
   }
   if (t.kind !== 'alias' && t.refinement) L.push(['where ' + t.refinement, 'muted']);
-  if (t.kind !== 'trait' && tmOpt.methods && t.methods.length) L.push(['fns: ' + t.methods.map(m => m.name).join(', '), 'meth']);
   // inside a module's own region its prefix is noise; other modules keep theirs
   const own = modOf(t.name);
   const strip = x => own ? x.split(own + '.').join('') : x;
@@ -738,12 +740,11 @@ function renderTypes() {
       <defs>${mk('has', cv('--muted'))}${mk('refines', cv('--type'))}${mk('alias', cv('--type'))}${mk('op', cv('--effect'))}${mk('implements', cv('--accent'))}${mk('extends', cv('--accent'))}</defs>
       <g id="tview" transform="translate(${v.x},${v.y}) scale(${v.k})">${regions}${edges}${nodes}${labels}</g></svg>
     <div class="maptools">
-      <label><input type="checkbox" data-opt="effects" ${tmOpt.effects ? 'checked' : ''}> effects</label>
-      <label><input type="checkbox" data-opt="aliases" ${tmOpt.aliases ? 'checked' : ''}> refined aliases</label>
-      <label><input type="checkbox" data-opt="methods" ${tmOpt.methods ? 'checked' : ''}> functions</label>
+      <label title="Show which types implement which traits"><input type="checkbox" data-opt="impls" ${tmOpt.impls ? 'checked' : ''}> implementations</label>
+      <label title="Types that narrow another with a where clause, such as type TaskId = Int where it > 0"><input type="checkbox" data-opt="aliases" ${tmOpt.aliases ? 'checked' : ''}> refinement types</label>
       <button id="relayout">re-layout</button><button id="fit">fit</button>
       <span class="sep"></span>
-      <span><i class="lg has"></i>contains</span><span><i class="lg impl"></i>implements</span><span><i class="lg refines"></i>refines</span><span><i class="lg op"></i>mentioned by an operation</span>
+      <span><i class="lg has"></i>contains</span><span><i class="lg refines"></i>refines</span><span><i class="lg op"></i>in a trait method</span>${tmOpt.impls ? '<span><i class="lg impl"></i>implements</span>' : ''}
       <span class="muted">click a card to see its relations · drag cards · scroll to zoom · double-click to open</span>
     </div>`;
 }
@@ -795,16 +796,16 @@ function tmEvents() {
 function sectionsFor(sel) {
   const by = byName(), d = by[sel];
   if (!d) return [];
-  const isImpl = n => by[n]?.kind === 'impl';
-  const users = d.used_by.filter(n => !isImpl(n) && by[n]?.kind !== 'test');
-  const impls = d.used_by.filter(isImpl);
-  const tests = d.used_by.filter(n => by[n]?.kind === 'test');
+  const isTest = n => by[n]?.kind === 'test';
+  const known = ns => ns.filter(n => by[n]);
   return [
     ['', [sel]],
-    ['Uses', d.deps.filter(n => by[n])],
-    ['Used by', users],
-    ['Implementations', impls],
-    ['Tests', tests],
+    ['Trait', known(d.impl_of ? [d.impl_of.trait] : [])],
+    ['For', known(d.impl_of ? [d.impl_of.type] : [])],
+    [d.kind === 'trait' ? 'Implementations' : 'Implements', d.impls],
+    ['Dependencies', known(d.deps)],
+    ['References', d.refs.filter(n => !isTest(n))],
+    ['Tests', d.refs.filter(isTest)],
   ].filter(([, ns]) => ns.length);
 }
 
@@ -842,7 +843,7 @@ function renderCode() {
     body = vs.length ? `<div class="cgroup">${vs.map(d => card(d)).join('')}</div>` : '<div class="empty">Nothing matches.</div>';
   }
   const all = `<button class="plain" data-all="${S.allOpen ? 0 : 1}" title="Keys: 1 collapse all, 2 expand all">${S.allOpen ? 'collapse all' : 'expand all'}</button>`;
-  const scope = S.sel ? `<div class="seg"><button data-s="slice" class="${S.scope !== 'all' ? 'on' : ''}">Around ${esc(by[S.sel]?.label || '')}</button><button data-s="all" class="${S.scope === 'all' ? 'on' : ''}">Everything</button></div>` : '<span>Select a definition to see it with what it uses and what uses it.</span>';
+  const scope = S.sel ? `<div class="seg"><button data-s="slice" class="${S.scope !== 'all' ? 'on' : ''}">Around ${esc(by[S.sel]?.label || '')}</button><button data-s="all" class="${S.scope === 'all' ? 'on' : ''}">Everything</button></div>` : '<span>Select a definition to see it with its dependencies and references.</span>';
   $('#main').innerHTML = `<div id="code"><div class="toolbar">${navButtons()}${scope}${all}<span>hover a name to see where it is · click to go there</span></div>${body}</div>`;
 }
 
@@ -851,7 +852,7 @@ function renderCode() {
 const docHtml = t => esc(t).replace(/([^\n])\n(?=[^\n])/g, '$1 ').replace(/`([^`]+)`/g, '<code>$1</code>');
 function miniGraph(d) {
   const by = byName(), MAX = 8, RH = 22, W = 300;
-  const left = d.deps.filter(n => by[n]).slice(0, MAX), right = d.used_by.slice(0, MAX);
+  const deps = d.deps.filter(n => by[n]), left = deps.slice(0, MAX), right = d.refs.slice(0, MAX);
   const rows = Math.max(left.length, right.length, 1);
   const H = rows * RH + 16, cy = H / 2;
   const lbl = n => trunc(by[n]?.label || n, 15);
@@ -860,8 +861,24 @@ function miniGraph(d) {
   left.forEach((n, i) => { const y = 8 + RH / 2 + i * RH + (rows - left.length) * RH / 2; out += `<path class="mg-e" d="M104,${y} C130,${y} 125,${cy} 150,${cy}"/>` + node(n, 100, y, 'end'); });
   right.forEach((n, i) => { const y = 8 + RH / 2 + i * RH + (rows - right.length) * RH / 2; out += `<path class="mg-e" d="M150,${cy} C175,${cy} 170,${y} 196,${y}"/>` + node(n, 200, y, 'start'); });
   out += `<circle cx="150" cy="${cy}" r="5" class="mg-c"/>`;
-  const more = (d.deps.length > MAX ? `+${d.deps.length - MAX} uses ` : '') + (d.used_by.length > MAX ? `+${d.used_by.length - MAX} users` : '');
-  return `<div class="mg-h"><span>uses</span><span>used by</span></div><svg class="mg" width="${W}" height="${H}">${out}</svg>${more ? `<div class="empty">${more}</div>` : ''}`;
+  const more = (deps.length > MAX ? `+${deps.length - MAX} dependencies ` : '') + (d.refs.length > MAX ? `+${d.refs.length - MAX} references` : '');
+  return `<div class="mg-h"><span>dependencies</span><span>references</span></div><svg class="mg" width="${W}" height="${H}">${out}</svg>${more ? `<div class="empty">${more}</div>` : ''}`;
+}
+
+// a type lists the traits it implements, a trait the types implementing it,
+// and an impl block its trait and type; each links to the impl block
+function implSec(d) {
+  const by = byName(), go = (n, t) => `<a class="ref" data-go="${esc(n)}">${esc(t)}</a>`;
+  const short = n => by[n]?.label || n;
+  let title, items;
+  if (d.impl_of) { title = 'Implements'; items = [go(d.impl_of.trait, short(d.impl_of.trait)) + ' for ' + go(d.impl_of.type, short(d.impl_of.type))]; }
+  else if (!d.impls.length) return '';
+  else {
+    title = d.kind === 'trait' ? 'Implemented by' : 'Implements';
+    const other = i => { const o = by[i]?.impl_of; return o ? short(d.kind === 'trait' ? o.type : o.trait) : i; };
+    items = d.impls.map(i => go(i, other(i)));
+  }
+  return `<div class="sec"><h3>${title}</h3><div class="impls">${items.join(', ')}</div></div>`;
 }
 
 function verdictBox(v) {
@@ -883,7 +900,8 @@ function renderRight() {
     insp = `<div class="sec"><h3><span>${d.kind}${d.module ? ' · ' + esc(d.module) : ''}</span><span>#${d.hash.slice(0, 8)}</span></h3>
         <div class="insp-name">${esc(d.label)}</div>
         ${d.doc ? `<div class="doc">${docHtml(d.doc)}</div>` : '<div class="empty">No description. Add a <code>///</code> comment above the definition.</div>'}</div>
-      ${d.deps.length || d.used_by.length ? `<div class="sec"><h3>Neighbours</h3>${miniGraph(d)}</div>` : ''}
+      ${implSec(d)}
+      ${d.deps.length || d.refs.length ? `<div class="sec"><h3>Neighbours</h3>${miniGraph(d)}</div>` : ''}
       ${d.errors.length || d.holes.length || d.verdict ? `<div class="sec"><h3>Status</h3>
         ${d.errors.map(e => `<div class="box bad">${esc(e)}</div>`).join('')}
         ${d.holes.map(h => `<div class="box warn"><b class="mono">?${esc(h.name)}</b>
