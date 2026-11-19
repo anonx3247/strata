@@ -30,7 +30,7 @@ Doc comments are shown as the description in the right panel (and stripped from 
 
 Still open: **type map as a side panel** instead of a full tab. The user suggested it; ask before doing it.
 
-## Decided with the user: git, diffs and review (not built yet)
+## Decided with the user: git, diffs and review
 
 - **Git stays the base.** Commit the `.strata` text files and the log (`log.jsonl`, append-only, entries with ids, `merge=union` in `.gitattributes`). Objects and index become a local cache rebuilt from the files. Optionally commit the verification cache.
 - **Structural diff** between two git revisions: load both snapshots, pair definitions, compare trees. The log entries present at HEAD but not at the base are the atomic steps in between (for stepping through, renames, messages). A PR = merge-base..HEAD.
@@ -40,7 +40,10 @@ Still open: **type map as a side panel** instead of a full tab. The user suggest
 - **jj**: compatible (runs on git) but not a dependency.
 - The tour is later. The user wants to settle the look first: offer a static mockup of the *Changes* view.
 
-Order: ~~`strata rename`~~ → diff core in Rust → `strata diff <rev>..<rev>` → *Changes* view in the viewer → merge driver.
+Order: ~~`strata rename`~~ → ~~diff core~~ → ~~`strata diff`~~ → ~~*Changes* view~~ → merge driver.
+
+**Built:** `src/diff.rs` (pairing through renames, words per change, line diff with in-place marks and folds that keep enclosing headers, line-diff fallback at ≥60% changed, contract notes, rename references, verification before/after), `src/history.rs` (a codebase's log replayed with `Codebase::states`, one step per patch; or git: `BASE..HEAD` commits plus the working tree, read with `git show`), `strata diff [--from N] [--to N] [--step K] [--json]` / `strata --file DIR diff [BASE]`, `/api/changes` and the viewer's *Changes* tab. The mockup is still in `design/changes-mockup.html`.
+Not yet: the log is not committed to git yet, so git ranges have no renames or patch steps inside commits; trait-method/variant renames; "N matches must handle the new variant"; moves between modules. Closure hashes (verification cache keys) now ignore docs and comments, and interface hashes ignore docs.
 
 ## Open topics the user wants to discuss and decide on (do not implement without agreement)
 

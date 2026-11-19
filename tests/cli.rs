@@ -373,3 +373,45 @@ module b {
     let (_, log) = strata(&["log", "--json"], &d, None);
     assert!(log.contains(r#""from":"a.size""#) && log.contains(r#""to":"a.length""#), "{log}");
 }
+
+#[test]
+fn diff_shows_changes_structurally() {
+    let d = tmp("diff");
+    assert!(strata(&["init"], &d, None).0);
+    assert!(strata(&["add", &example()], &d, None).0);
+    assert!(strata(&["rename", "line_total", "line_cents"], &d, None).0);
+    let (ok, out) = strata(&["edit", "-m", "stronger discount"], &d, Some("/// 10% off orders of 100.00 or more, never below zero.\nfn discount(amount: Cents) -> Cents\n  ensures it <= amount\n  ensures it >= 0 {\n  if amount >= 10000 { amount - amount / 10 } else { amount }\n}\n"));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["edit", "-m", "a new error"], &d, Some("type ShipError =\n  | NotFound\n  | NotPending\n  | Locked\n"));
+    assert!(ok, "{out}");
+
+    let (ok, out) = strata(&["diff", "--json"], &d, None);
+    assert!(ok, "{out}");
+    let j: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(j["steps"].as_array().unwrap().len(), 3, "{out}");
+    let items: Vec<&serde_json::Value> = j["sections"].as_array().unwrap().iter().flat_map(|s| s["items"].as_array().unwrap()).collect();
+    let item = |id: &str| *items.iter().find(|i| i["id"] == id).unwrap_or_else(|| panic!("no change for {id} in {out}"));
+
+    // the rename is one change, and what only follows it is folded into it
+    let r = item("line_cents");
+    assert_eq!(r["mk"], "ren");
+    assert!(r["refs"].as_array().unwrap().iter().any(|x| x == "total"), "{r}");
+    assert!(!items.iter().any(|i| i["id"] == "total"), "a reference that only follows the rename is not its own change");
+
+    // a new ensures is a stronger guarantee; the doc is a word diff
+    let dc = item("discount");
+    assert!(dc["what"].as_array().unwrap().iter().any(|w| w == "stronger guarantee"), "{dc}");
+    assert!(dc["lines"].as_array().unwrap().iter().any(|l| l["s"] == "+" && l["note"] == "stronger guarantee" && l["t"].as_str().unwrap().contains("ensures it >= 0")), "{dc}");
+    assert!(dc["doc_diff"].as_array().unwrap().iter().any(|s| s[0] == "+" && s[1].as_str().unwrap().contains("never below zero")), "{dc}");
+
+    // a new variant, with the unchanged ones folded
+    let se = item("ShipError");
+    assert!(se["what"][0].as_str().unwrap().contains("variant `Locked` added"), "{se}");
+    assert!(se["lines"].as_array().unwrap().iter().any(|l| l["s"] == "fold" && l["t"].as_str().unwrap().contains("NotFound and NotPending unchanged")), "{se}");
+
+    // one step on its own, and the text form
+    let (ok, out) = strata(&["diff", "--step", "1"], &d, None);
+    assert!(ok && out.contains("↪ line_cents") && !out.contains("ShipError"), "{out}");
+    let (ok, out) = strata(&["diff"], &d, None);
+    assert!(ok && out.contains("◀ stronger guarantee") && out.contains("{+, never below zero+}"), "{out}");
+}

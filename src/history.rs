@@ -1,0 +1,170 @@
+//! The ranges a diff is taken over, and the steps they are made of: the
+//! patches in a codebase's log, or the git commits of a folder of sources
+//! (plus uncommitted changes in the working tree).
+
+use crate::ast::Program;
+use crate::diff;
+use crate::store::{self, Codebase};
+use crate::verify::Verdict;
+use serde_json::{json, Value as Json};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+pub struct Step {
+    /// stable id: the log index, or the position in the commit list
+    pub id: usize,
+    pub title: String,
+    /// the commit a patch belongs to, or the commit itself (`a1b2c3d`)
+    pub group: String,
+    pub when: Option<u64>,
+    pub before: Program,
+    pub after: Program,
+    pub renames: Vec<(String, String)>,
+}
+
+pub struct Range {
+    pub kind: &'static str,
+    pub label: String,
+    pub base: Program,
+    pub head: Program,
+    pub steps: Vec<Step>,
+    pub verdicts: HashMap<String, Verdict>,
+    /// what the base can be set to, for the viewer
+    pub options: Json,
+}
+
+/// Definitions a step touched (by content hash).
+fn touched(s: &Step) -> Vec<String> {
+    let before: HashMap<String, String> = s.before.decls.iter().map(|d| (d.qname(), store::self_hash(d))).collect();
+    let after: HashMap<String, String> = s.after.decls.iter().map(|d| (d.qname(), store::self_hash(d))).collect();
+    let mut out: Vec<String> = after.iter().filter(|(n, h)| before.get(*n) != Some(h)).map(|(n, _)| n.clone()).collect();
+    out.extend(before.keys().filter(|n| !after.contains_key(*n)).cloned());
+    out.sort();
+    out
+}
+
+impl Range {
+    /// The diff of the whole range, or of one step.
+    pub fn diff(&self, step: Option<usize>) -> Result<Json, String> {
+        let names: diff::StepNames = self.steps.iter().map(|s| (s.id, touched(s))).collect();
+        let (d, range_label) = match step {
+            None => {
+                let renames: Vec<(String, String)> = self.steps.iter().flat_map(|s| s.renames.clone()).collect();
+                (diff::diff(&self.base, &self.head, &renames, &names, &self.verdicts), self.label.clone())
+            }
+            Some(k) => {
+                let s = self.steps.iter().find(|s| s.id == k).ok_or(format!("no step {k} in this range"))?;
+                let mine: diff::StepNames = names.into_iter().filter(|(id, _)| *id == k).collect();
+                (diff::diff(&s.before, &s.after, &s.renames, &mine, &self.verdicts), s.title.clone())
+            }
+        };
+        let mut d = d;
+        d["range"] = json!({"kind": self.kind, "label": range_label, "step": step});
+        d["steps"] = Json::Array(
+            self.steps
+                .iter()
+                .enumerate()
+                .map(|(i, s)| json!({"id": s.id, "n": i + 1, "title": s.title, "group": s.group, "when": s.when, "names": touched(s)}))
+                .collect(),
+        );
+        d["options"] = self.options.clone();
+        Ok(d)
+    }
+}
+
+/// A codebase's log: the patches from entry `from` (default: everything after
+/// the first import) to `to` (default: the latest).
+pub fn log_range(cb: &Codebase, from: Option<usize>, to: Option<usize>) -> Result<Range, String> {
+    let log = cb.log();
+    let states = cb.states()?;
+    let to = to.unwrap_or(log.len()).min(log.len());
+    let from = from.unwrap_or(if log.len() > 1 { 1 } else { 0 }).min(to);
+    let steps = (from..to)
+        .map(|k| {
+            let e = &log[k];
+            let renames = match (e["rename"]["from"].as_str(), e["rename"]["to"].as_str()) {
+                (Some(f), Some(t)) => vec![(f.to_string(), t.to_string())],
+                _ => vec![],
+            };
+            Step { id: k, title: e["message"].as_str().unwrap_or("").to_string(), group: String::new(), when: e["time"].as_u64(), before: states[k].clone(), after: states[k + 1].clone(), renames }
+        })
+        .collect();
+    let options = json!({"entries": log.iter().enumerate().map(|(i, e)| json!({"index": i, "message": e["message"], "time": e["time"]})).collect::<Vec<_>>(), "from": from, "to": to});
+    Ok(Range {
+        kind: "log",
+        label: format!("patches {}–{} of {}", from + 1, to, log.len()),
+        base: states[from].clone(),
+        head: states[to].clone(),
+        steps,
+        verdicts: cb.load_verdicts(),
+        options,
+    })
+}
+
+fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let o = Command::new("git").arg("-C").arg(dir).args(args).output().map_err(|e| format!("git: {e}"))?;
+    if !o.status.success() {
+        return Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&o.stdout).to_string())
+}
+
+/// The sources at a git revision: a file, or a folder of `.strata` files.
+fn sources_at(path: &Path, rev: &str) -> Result<Program, String> {
+    if path.is_dir() {
+        let mut files = Vec::new();
+        for rel in git(path, &["ls-tree", "-r", "--name-only", rev, "--", "."])?.lines().filter(|l| l.ends_with(".strata")) {
+            files.push((PathBuf::from(rel), git(path, &["show", &format!("{rev}:./{rel}")])?));
+        }
+        crate::parse_files(files)
+    } else {
+        let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let name = path.file_name().ok_or("not a file")?.to_string_lossy().to_string();
+        match git(dir, &["show", &format!("{rev}:./{name}")]) {
+            Ok(src) => crate::parser::parse_module_file(&src, "").map_err(|e| format!("{name} at {rev}: {e}")),
+            Err(_) => Ok(Program::default()),
+        }
+    }
+}
+
+/// Source files under git: the commits from `base` (default `HEAD`) to
+/// `HEAD`, then uncommitted changes in the working tree.
+pub fn git_range(path: &Path, base: Option<&str>) -> Result<Range, String> {
+    let dir = if path.is_dir() { path.to_path_buf() } else { path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")).to_path_buf() };
+    git(&dir, &["rev-parse", "--show-toplevel"]).map_err(|_| format!("{} is not in a git repository, so there is nothing to compare it with", path.display()))?;
+    let base = base.unwrap_or("HEAD");
+    let base_sha = git(&dir, &["rev-parse", "--short", base])?.trim().to_string();
+    let base_prog = sources_at(path, base)?;
+    let mut steps = Vec::new();
+    let mut prev = base_prog.clone();
+    let commits = git(&dir, &["log", "--reverse", "--format=%h%x09%ct%x09%s", &format!("{base}..HEAD"), "--", "."])?;
+    for (i, l) in commits.lines().enumerate() {
+        let mut parts = l.splitn(3, '\t');
+        let (sha, when, subject) = (parts.next().unwrap_or(""), parts.next().and_then(|t| t.parse().ok()), parts.next().unwrap_or(""));
+        let after = sources_at(path, sha)?;
+        steps.push(Step { id: i + 1, title: subject.to_string(), group: sha.to_string(), when, before: prev.clone(), after: after.clone(), renames: vec![] });
+        prev = after;
+    }
+    let head = crate::read_sources(&path.to_string_lossy(), None)?;
+    if crate::printer::program(&head) != crate::printer::program(&prev) {
+        steps.push(Step { id: steps.len() + 1, title: "uncommitted changes".into(), group: "working tree".into(), when: None, before: prev, after: head.clone(), renames: vec![] });
+    }
+    let recent: Vec<Json> = git(&dir, &["log", "-15", "--format=%h%x09%s", "--", "."])?
+        .lines()
+        .map(|l| {
+            let (h, s) = l.split_once('\t').unwrap_or((l, ""));
+            json!({"rev": h, "message": s})
+        })
+        .collect();
+    let branches: Vec<String> = git(&dir, &["branch", "--format=%(refname:short)"])?.lines().map(|s| s.to_string()).collect();
+    Ok(Range {
+        kind: "git",
+        label: format!("{base} ({base_sha}) → working tree"),
+        base: base_prog,
+        head,
+        steps,
+        verdicts: HashMap::new(),
+        options: json!({"base": base, "commits": recent, "branches": branches}),
+    })
+}

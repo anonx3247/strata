@@ -44,12 +44,18 @@ pub fn self_hash(d: &Decl) -> String {
     sha(&format!("module {}\n{}", d.module, printer::decl(d)))
 }
 
+/// Hash of what a definition does: without its doc and comments.
+pub fn code_hash(d: &Decl) -> String {
+    sha(&format!("module {}\n{}", d.module, printer::without_comments(|| printer::decl_body(d))))
+}
+
 /// Hash of what other definitions may depend on: the signature, contracts and type shapes.
 pub fn interface_hash(d: &Decl) -> String {
     let text = match &d.kind {
         DeclKind::Fn(f) => printer::fn_signature(f),
         DeclKind::Test(t) => format!("test {:?}", t.name),
-        _ => printer::without_comments(|| printer::decl(d)),
+        // docs and comments are not part of what other code relies on
+        _ => printer::without_comments(|| printer::decl_body(d)),
     };
     sha(&format!("module {} pub {}\n{text}", d.module, d.public))
 }
@@ -275,8 +281,8 @@ pub fn graph(p: &Program) -> BTreeMap<String, BTreeSet<String>> {
 /// the result still holds.
 pub fn closure_hash(p: &Program, name: &str) -> String {
     let g = graph(p);
-    // comments don't change what a definition does, so they don't invalidate results
-    let hashes: HashMap<String, String> = p.decls.iter().map(|d| (d.qname(), printer::without_comments(|| self_hash(d)))).collect();
+    // docs and comments don't change what a definition does, so they don't invalidate results
+    let hashes: HashMap<String, String> = p.decls.iter().map(|d| (d.qname(), code_hash(d))).collect();
     let mut seen = BTreeSet::new();
     let mut todo = vec![name.to_string()];
     while let Some(n) = todo.pop() {
@@ -408,6 +414,42 @@ impl Codebase {
             .lines()
             .filter_map(|l| serde_json::from_str(l).ok())
             .collect()
+    }
+
+    /// The program after each log entry, by replaying the log: `[0]` is the
+    /// empty codebase, `[k]` the codebase after the first `k` entries.
+    pub fn states(&self) -> Result<Vec<Program>, String> {
+        let mut cache: HashMap<String, Decl> = HashMap::new();
+        let mut cur: Vec<(String, String)> = Vec::new();
+        let mut out = vec![Program::default()];
+        for e in self.log() {
+            // a rename keeps the definition's place
+            if let (Some(f), Some(t)) = (e["rename"]["from"].as_str(), e["rename"]["to"].as_str()) {
+                if let Some(slot) = cur.iter_mut().find(|(n, _)| n == f) {
+                    slot.0 = t.to_string();
+                }
+            }
+            for c in e["changes"].as_array().into_iter().flatten() {
+                let Some(name) = c["name"].as_str() else { continue };
+                match c["new"].as_str() {
+                    Some(h) => match cur.iter_mut().find(|(n, _)| n == name) {
+                        Some(slot) => slot.1 = h.to_string(),
+                        None => cur.push((name.to_string(), h.to_string())),
+                    },
+                    None => cur.retain(|(n, _)| n != name),
+                }
+            }
+            let mut decls = Vec::new();
+            for (_, h) in &cur {
+                if !cache.contains_key(h) {
+                    let s = fs::read_to_string(self.dir().join("objects").join(format!("{h}.json"))).map_err(|e| format!("object {h}: {e}"))?;
+                    cache.insert(h.clone(), serde_json::from_str(&s).map_err(|e| format!("object {h}: {e}"))?);
+                }
+                decls.push(cache[h].clone());
+            }
+            out.push(Program { decls });
+        }
+        Ok(out)
     }
 
     pub fn load_verdicts(&self) -> HashMap<String, crate::verify::Verdict> {

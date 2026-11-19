@@ -218,6 +218,67 @@ h2.sect { font: 600 11px var(--sans); text-transform: uppercase; letter-spacing:
 .retarget { color: var(--faint); margin-left: 6px; cursor: pointer; text-decoration: none; }
 .retarget:hover { color: var(--accent); }
 .badge.handled { color: var(--ok); }
+/* changes */
+#changes { padding: 12px 22px 80px; max-width: 1040px; }
+.ch-range { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+.ch-range b { color: var(--text); font-family: var(--mono); font-weight: 600; }
+.ch-range select, .ch-range input { font: inherit; font-size: 12px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); }
+.ch-steps { display: flex; gap: 8px; flex-wrap: wrap; align-items: stretch; margin-bottom: 10px; }
+.ch-commit { border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px 5px; background: var(--panel); }
+.ch-commit-h { font: 11px var(--mono); color: var(--faint); margin: 0 2px 3px; }
+.ch-patches { display: flex; gap: 4px; flex-wrap: wrap; }
+.patch { font: 11.5px var(--sans); border: 1px solid var(--line); background: var(--bg); color: var(--text); border-radius: 6px; padding: 2px 8px; cursor: pointer; white-space: nowrap; max-width: 340px; overflow: hidden; text-overflow: ellipsis; }
+.patch i { font-style: normal; color: var(--faint); margin-right: 4px; font-family: var(--mono); }
+.patch:hover { border-color: var(--accent); }
+.patch.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.ch-sum { color: var(--muted); font-size: 12.5px; margin: 6px 0 4px; }
+.ch-sum b { color: var(--text); }
+a.lnk, .stepnav a { color: var(--accent); cursor: pointer; text-decoration: none; }
+a.lnk:hover, .stepnav a:hover { text-decoration: underline; }
+h2.sect .why { font-weight: 500; text-transform: none; letter-spacing: 0; margin-left: 6px; }
+.what { font: 11.5px var(--sans); color: var(--muted); padding: 8px 14px 0 2px; display: flex; gap: 6px 10px; align-items: baseline; flex-wrap: wrap; }
+.what .k { font-weight: 600; }
+.what .k.add { color: var(--ok); } .what .k.chg { color: var(--warn); } .what .k.ren { color: var(--fn); } .what .k.del { color: var(--bad); }
+.what .meta { margin-left: auto; color: var(--faint); white-space: nowrap; }
+.what code, .docd code, .refs-upd code { font-family: var(--mono); font-size: 11.5px; color: var(--text); }
+.mk { font: 700 12px var(--mono); width: 14px; text-align: center; flex: none; }
+.mk.add { color: var(--ok); } .mk.del { color: var(--bad); } .mk.chg { color: var(--warn); } .mk.ren { color: var(--fn); }
+.docd { font: 12.5px/1.5 var(--sans); color: var(--muted); margin: 6px 14px 0 2px; padding: 5px 10px; border-left: 2px solid var(--line); }
+.docd .tag { font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; color: var(--faint); font-weight: 600; margin-right: 6px; }
+.card pre.d { padding: 5px 14px 9px 2px; }
+.ln { display: block; position: relative; padding-left: 16px; border-radius: 3px; }
+.ln .sg { position: absolute; left: 2px; color: var(--faint); user-select: none; }
+.ln.add { background: color-mix(in srgb, var(--ok) 11%, transparent); } .ln.add .sg { color: var(--ok); }
+.ln.del { background: color-mix(in srgb, var(--bad) 10%, transparent); } .ln.del .sg { color: var(--bad); }
+.ln.del .code { opacity: .75; }
+.ln.chg .sg { color: var(--warn); }
+.ln.strong, .ln.weak { background: color-mix(in srgb, var(--warn) 13%, transparent); box-shadow: inset 3px 0 0 var(--warn); }
+.ln.strong .sg, .ln.weak .sg { color: var(--warn); }
+.ln.strong .code { font-weight: 700; }
+.ln.weak .code { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--warn) 70%, transparent); }
+.ln.fold { color: var(--faint); font: italic 11.5px var(--sans); cursor: pointer; padding-top: 1px; padding-bottom: 1px; }
+.ln.fold:hover { color: var(--accent); }
+ins, del { text-decoration: none; border-radius: 3px; padding: 0 1px; }
+ins { background: color-mix(in srgb, var(--ok) 26%, transparent); }
+del { background: color-mix(in srgb, var(--bad) 22%, transparent); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--bad) 70%, transparent); }
+.pill { font: 600 10.5px var(--sans); padding: 1px 7px; border-radius: 999px; margin-left: 10px; vertical-align: 1px; border: 1px solid color-mix(in srgb, var(--ok) 55%, transparent); color: var(--ok); white-space: nowrap; font-style: normal; text-decoration: none; display: inline-block; }
+.pill.contract { background: var(--warn); border-color: var(--warn); color: var(--bg); }
+.pill.ren { border-color: color-mix(in srgb, var(--fn) 55%, transparent); color: var(--fn); }
+.refs-upd { font: 11.5px var(--sans); color: var(--muted); margin: 0 14px 8px 2px; }
+.vtable { width: 100%; border-collapse: collapse; font-size: 12px; }
+.vtable td { padding: 6px 12px; border-top: 1px solid var(--line); }
+.vtable tr:first-child td { border-top: 0; }
+.vtable td:first-child { font-family: var(--mono); }
+.vtable .why { color: var(--faint); }
+.v-ok { color: var(--ok); } .v-bad { color: var(--bad); font-weight: 600; }
+.stepnav { display: flex; justify-content: space-between; margin-top: 18px; font-size: 12.5px; }
+.aff { display: flex; align-items: center; gap: 8px; font: 12px var(--mono); padding: 2px 0; cursor: pointer; }
+.aff:hover { color: var(--accent); }
+.aff .why { font: 11px var(--sans); color: var(--faint); margin-left: auto; }
+.aff .ok { color: var(--ok); font-family: var(--sans); font-size: 11px; margin-left: auto; }
+.stepl { padding: 4px 0; font-size: 12px; cursor: pointer; }
+.stepl i { font-style: normal; font-family: var(--mono); color: var(--faint); margin-right: 6px; }
+.stepl:hover { color: var(--accent); }
 /* inspector */
 .sec { padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .sec h3 { margin: 0 0 8px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .7px; color: var(--faint); font-weight: 600; display: flex; justify-content: space-between; }
@@ -254,6 +315,7 @@ h2.sect { font: 600 11px var(--sans); text-transform: uppercase; letter-spacing:
   <span class="spacer"></span>
   <div class="seg" id="levels">
     <button data-l="1" title="Code around the selection (key c)">Code</button>
+    <button data-l="changes" title="What changed, structurally (key d)">Changes</button>
     <button data-l="types" title="Types and traits and how they relate (key t)">Type map</button>
   </div>
   <input type="search" id="q" placeholder="Filter  ( / )">
@@ -813,6 +875,123 @@ function renderRight() {
   $('#right').innerHTML = insp + `<div class="sec"><h3><span>Activity</span><span>${S.data.log.length} patches</span></h3>${act}</div>`;
 }
 
+// ---------- changes: structural diffs over patches or git history ----------
+const CH = { data: null, key: null, loading: false, step: null, from: null, base: null, sel: null, open: new Set() };
+const chQuery = () => new URLSearchParams({ ...(CH.step != null ? { step: CH.step } : {}), ...(CH.from != null ? { from: CH.from } : {}), ...(CH.base ? { base: CH.base } : {}) }).toString();
+async function loadChanges(force) {
+  const key = chQuery() + '|' + S.raw.length + ':' + (S.data?.log?.length || 0);
+  if (!force && (CH.loading || key === CH.key)) return;
+  CH.loading = true;
+  try {
+    const r = await fetch('/api/changes?' + chQuery(), { cache: 'no-store' });
+    CH.data = await r.json(); CH.key = key;
+  } catch (e) { CH.data = { error: String(e) }; }
+  CH.loading = false;
+  if (S.level === 'changes') render();
+}
+const chItems = () => (CH.data?.sections || []).flatMap(s => s.items);
+const MK = { add: '+', del: '−', chg: '~', ren: '↪' };
+const UP = new Set(['stronger guarantee', 'stricter precondition']), DOWN = new Set(['weaker guarantee', 'looser precondition']);
+const TIPS = {
+  'stronger guarantee': 'It now promises more: every implementation must guarantee this, and callers may rely on it.',
+  'weaker guarantee': 'It promises less: callers can no longer rely on this.',
+  'stricter precondition': 'Callers must now satisfy this before calling.',
+  'looser precondition': 'Callers no longer need to satisfy this.',
+  'contract changed': 'This contract was changed in place.',
+  'new method': 'Every implementation must provide it.',
+  'from the rename': 'This only follows a rename made in the same change.',
+};
+const words = t => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>');
+function segHtml(segs, resolve) {
+  // a comment line stays a comment, whichever part of it changed
+  const isCom = segs.filter(([k]) => k !== '-').map(([, t]) => t).join('').trim().startsWith('//');
+  const h = t => isCom ? `<span class="${segs.map(([, x]) => x).join('').trim().startsWith('///') ? 't-doc' : 't-com'}">${esc(t)}</span>` : highlight(t, resolve);
+  return segs.map(([k, t]) => k === '-' ? `<del>${h(t)}</del>` : k === '+' ? `<ins>${h(t)}</ins>` : h(t)).join('');
+}
+function chLine(l, resolve, key) {
+  if (l.s === 'fold') {
+    if (CH.open.has(key)) return l.hidden.map((h, i) => chLine(h, resolve, key + '.' + i)).join('');
+    return `<span class="ln fold" data-fold="${esc(key)}" title="show">… ${esc(l.t)} ▸</span>`;
+  }
+  const note = l.note;
+  let cls = { '+': 'add', '-': 'del', '~': 'chg', ' ': '' }[l.s];
+  if (UP.has(note) && l.s === '+') cls = 'add strong';
+  if (DOWN.has(note) && l.s === '-') cls = 'del weak';
+  const sg = { '+': '+', '-': '−', '~': '~', ' ': '' }[l.s];
+  const pc = UP.has(note) || DOWN.has(note) || note === 'contract changed' ? 'pill contract' : note === 'from the rename' ? 'pill ren' : 'pill';
+  const label = UP.has(note) ? '▲ ' + note : DOWN.has(note) ? '▼ ' + note : note;
+  const pill = note ? ` <span class="${pc}" title="${esc(TIPS[note] || '')}">${esc(label)}</span>` : '';
+  const code = l.s === '~' && l.segs ? segHtml(l.segs, resolve) : highlight(l.t, resolve);
+  return `<span class="ln ${cls}"><span class="sg">${sg}</span><span class="code">${code}</span>${pill}</span>`;
+}
+// worth showing: the result is known and differs from before
+const verdictChanged = v => v && v.after && v.after !== 'unverified' && v.before !== v.after || v && v.before && v.before !== 'unverified' && v.before !== v.after;
+const vword = w => w == null ? 'new' : /^fuzzed/.test(w) ? `<span class="v-ok">${esc(w)} ✓</span>` : w === 'counterexample' ? `<span class="v-bad">${esc(w)} ✗</span>` : esc(w);
+function chCard(it) {
+  const resolve = resolver(it.module);
+  const what = it.what.map(words).join(', ');
+  const v = verdictChanged(it.verdict) ? `<span>${vword(it.verdict.before)} → ${vword(it.verdict.after)}</span>` : '';
+  const steps = it.steps.length && CH.step == null ? ` · step ${it.steps.map(id => CH.data.steps.find(s => s.id === id)?.n ?? id).join(', ')}` : '';
+  const refs = it.refs.length ? `<div class="refs-upd">${it.refs.length} reference${it.refs.length > 1 ? 's' : ''} updated: ${it.refs.map(r => `<code>${esc(r)}</code>${it.refs_folded.includes(r) ? '' : ' <span class="muted">(also changed otherwise, shown on its own)</span>'}`).join(', ')}</div>` : '';
+  return `<div class="card ${it.id === CH.sel ? 'sel' : ''}" id="ch-${esc(it.id)}">
+    <div class="gut" data-chpick="${esc(it.id)}"><span class="mk ${it.mk}">${MK[it.mk]}</span></div>
+    <div>
+      <div class="what"><span class="k ${it.mk}">${what}</span>${it.detail.map(d => `<span>${words(d)}</span>`).join('')}${v}<span class="meta">${esc(it.module || '(root)')}${steps}</span></div>
+      ${it.doc_diff ? `<div class="docd"><span class="tag">doc</span>${it.doc_diff.map(([k, t]) => k === '-' ? `<del>${words(t)}</del>` : k === '+' ? `<ins>${words(t)}</ins>` : words(t)).join('')}</div>` : ''}
+      <pre class="d">${it.lines.map((l, i) => chLine(l, resolve, it.id + ':' + i)).join('')}</pre>
+      ${refs}
+    </div></div>`;
+}
+function renderChanges() {
+  const d = CH.data;
+  if (!d) { $('#main').innerHTML = '<div id="changes"><div class="empty">Loading changes…</div></div>'; loadChanges(); return; }
+  if (d.error) { $('#main').innerHTML = `<div id="changes"><div class="empty">${esc(d.error)}</div></div>`; return; }
+  const o = d.options || {};
+  // the range: which patches, or which git base
+  const range = d.range.kind === 'log'
+    ? `<span>Changes since</span><select id="ch-from">${(o.entries || []).slice(0, -1).map(e => `<option value="${e.index + 1}" ${e.index + 1 === o.from ? 'selected' : ''}>patch ${e.index + 1}: ${esc(e.message)}</option>`).join('')}<option value="0" ${o.from === 0 ? 'selected' : ''}>the beginning</option></select><span>${d.steps.length} patch${d.steps.length === 1 ? '' : 'es'}</span>`
+    : `<span>Comparing</span><input id="ch-base" size="14" value="${esc(o.base || 'HEAD')}" title="a git revision: HEAD, main, a commit…"><span>with the working tree</span>${(o.branches || []).slice(0, 6).map(b => `<a class="lnk" data-base="${esc(b)}">${esc(b)}</a>`).join(' ')}`;
+  // steps: patches, or commits (and uncommitted changes)
+  const groups = [];
+  for (const st of d.steps) { const g = groups.at(-1); if (g && g.group === st.group && st.group === '') g.steps.push(st); else groups.push({ group: st.group, steps: [st] }); }
+  const steps = d.steps.length ? `<div class="ch-steps">${groups.map(g => `<div class="ch-commit">${g.group ? `<div class="ch-commit-h">${esc(g.group)}</div>` : ''}<div class="ch-patches">${g.steps.map(st =>
+      `<button class="patch ${CH.step === st.id ? 'on' : ''}" data-chstep="${st.id}" title="${esc(st.title)} · ${st.names.length} definition${st.names.length === 1 ? '' : 's'}"><i>${st.n}</i>${esc(st.title)}</button>`).join('')}</div></div>`).join('')}
+      <span class="muted" style="align-self:center;font-size:11.5px">${CH.step != null ? '<a class="lnk" data-chstep="all">show the whole change</a>' : 'click a step to see only that change · ← → walk through them'}</span></div>` : '';
+  const sm = d.summary, parts = [];
+  for (const [k, w] of [['renamed', 'renamed'], ['added', 'added'], ['removed', 'removed'], ['changed', 'changed']]) if (sm[k]) parts.push(`<b>${sm[k]}</b> ${w}`);
+  const cur = CH.step != null ? d.steps.find(s => s.id === CH.step) : null;
+  const summary = parts.length ? `<div class="ch-sum">${cur ? `Step ${cur.n}: <b>${esc(cur.title)}</b> · ` : ''}${parts.join(' · ')}${sm.interface_changes ? ` · <b>${sm.interface_changes}</b> interface change${sm.interface_changes > 1 ? 's' : ''}` : ''}${sm.follow_renames ? ` · ${sm.follow_renames} only follow a rename` : ''}</div>` : `<div class="ch-sum">No changes${cur ? ' in this step' : ''}.</div>`;
+  const body = d.sections.map(s => `<h2 class="sect">${esc(s.name)} <span class="muted">${s.items.length}</span><span class="why">${esc(s.why)}</span></h2><div class="cgroup">${s.items.map(chCard).join('')}</div>`).join('');
+  const ver = d.verification.length || d.rechecked_same ? `<h2 class="sect">Verification<span class="why">before → after, for what this change touches</span></h2><div class="cgroup"><table class="vtable">${d.verification.map(x => `<tr><td>${esc(x.name)}</td><td>${vword(x.before)} → ${vword(x.after)}</td><td class="why">${esc(x.why)}</td></tr>`).join('')}${d.rechecked_same ? `<tr><td colspan="3" class="why">and ${d.rechecked_same} definition${d.rechecked_same > 1 ? 's' : ''} that depend on these, re-verified with the same result</td></tr>` : ''}</table></div>` : '';
+  let nav = '';
+  if (cur) {
+    const i = d.steps.indexOf(cur), p = d.steps[i - 1], n = d.steps[i + 1];
+    nav = `<div class="stepnav">${p ? `<a data-chstep="${p.id}">← step ${p.n}: ${esc(p.title)}</a>` : '<span></span>'}${n ? `<a data-chstep="${n.id}">step ${n.n}: ${esc(n.title)} →</a>` : '<a data-chstep="all">back to the whole change</a>'}</div>`;
+  }
+  $('#main').innerHTML = `<div id="changes"><div class="ch-range">${range}</div>${steps}${summary}${body}${ver}${nav}</div>`;
+}
+function renderChangesLeft() {
+  const d = CH.data;
+  if (!d || d.error) { $('#left').innerHTML = ''; return; }
+  $('#left').innerHTML = d.sections.map(s => `<div class="group"><h4>${esc(s.name)}</h4>${s.items.map(it =>
+    `<div class="item ${it.id === CH.sel ? 'sel' : ''}" data-chpick="${esc(it.id)}" title="${esc(it.id)}"><span class="mk ${it.mk}">${MK[it.mk]}</span><span class="lbl">${esc(it.label)}</span><span class="spacer"></span><span class="muted" style="font:11px var(--sans)">${esc(it.module)}</span></div>`).join('')}</div>`).join('')
+    || '<div class="group"><h4>No changes</h4></div>';
+}
+function renderChangesRight() {
+  const it = chItems().find(x => x.id === CH.sel);
+  if (!it) { $('#right').innerHTML = '<div class="sec"><div class="empty">Select a change to see what it affects, the steps that made it and its verification. Keys: ← → steps, c code, t type map.</div></div>'; return; }
+  const steps = (CH.data.steps || []).filter(s => it.steps.includes(s.id));
+  const v = it.verdict || {};
+  $('#right').innerHTML = `<div class="sec"><h3><span>${esc(it.kind)}${it.module ? ' · ' + esc(it.module) : ''}</span><span>${it.interface_changed ? 'interface changed' : 'implementation only'}</span></h3>
+      <div class="insp-name">${esc(it.label)}</div>
+      ${it.doc ? `<div class="doc">${docHtml(it.doc)}</div>` : ''}
+      <div style="margin-top:8px"><a class="lnk" data-gocode="${esc(it.id)}">open in the code view</a></div></div>
+    <div class="sec"><h3>What changed</h3>${it.what.map(w => `<div>${words(w)}</div>`).join('')}${it.detail.map(w => `<div class="muted">${words(w)}</div>`).join('')}</div>
+    ${it.affected.length ? `<div class="sec"><h3><span>Used by</span><span>${it.affected.length}${it.affected_total > it.affected.length ? ` · ${it.affected_total} depend on it in all` : ''}</span></h3>${it.affected.slice(0, 14).map(a => `<div class="aff" data-gocode="${esc(a.name)}">${esc(a.name)}${a.updated ? '<span class="ok">updated here ✓</span>' : '<span class="why">re-checked ✓</span>'}</div>`).join('')}${it.affected.length > 14 ? `<div class="empty">+ ${it.affected.length - 14} more</div>` : ''}</div>` : ''}
+    ${steps.length ? `<div class="sec"><h3>Steps</h3>${steps.map(s => `<div class="stepl" data-chstep="${s.id}"><i>${s.n}</i>${esc(s.title)}</div>`).join('')}</div>` : ''}
+    ${(v.before && v.before !== 'unverified') || (v.after && v.after !== 'unverified') ? `<div class="sec"><h3>Verification</h3>${vword(v.before)} → ${vword(v.after)}</div>` : ''}`;
+}
+
 // ---------- hover: an arrow from a name to where it is in the code view ----------
 function clearArrow() {
   $('#arrow').innerHTML = '';
@@ -851,14 +1030,19 @@ function ago(t) {
 }
 
 function syncHash() {
-  const h = new URLSearchParams({ level: S.level, ...(S.allOpen ? { all: 1 } : {}), ...(S.sel ? { sel: S.sel } : {}), ...(S.scope !== 'all' ? { scope: S.scope } : {}) });
+  const h = new URLSearchParams({ level: S.level, ...(S.allOpen ? { all: 1 } : {}),
+    ...(S.level === 'changes' ? { ...(CH.step != null ? { step: CH.step } : {}), ...(CH.from != null ? { from: CH.from } : {}), ...(CH.base ? { base: CH.base } : {}), ...(CH.sel ? { change: CH.sel } : {}) } : {}), ...(S.sel ? { sel: S.sel } : {}), ...(S.scope !== 'all' ? { scope: S.scope } : {}) });
   history.replaceState(null, '', '#' + h);
 }
 (function readHash() {
   const h = new URLSearchParams(location.hash.slice(1));
   if (h.has('level')) S.level = lv(h.get('level'));
   S.allOpen = h.get('all') === '1';
-  if (!['types', 1].includes(S.level)) S.level = 1;
+  if (!['types', 'changes', 1].includes(S.level)) S.level = 1;
+  if (h.has('step')) CH.step = +h.get('step');
+  if (h.has('from')) CH.from = +h.get('from');
+  if (h.has('base')) CH.base = h.get('base');
+  if (h.has('change')) CH.sel = h.get('change');
   if (h.has('sel')) S.sel = h.get('sel');
   if (h.has('scope')) S.scope = h.get('scope');
 })();
@@ -867,9 +1051,9 @@ var render = function () {
   if (!S.data) return;
   syncHash();
   const scroll = $('#main').scrollTop;
-  renderHeader(); renderLeft();
-  S.level === 'types' ? renderTypes() : renderCode();
-  renderRight();
+  renderHeader(); if (S.level !== 'changes') renderLeft();
+  if (S.level === 'changes') { renderChanges(); renderChangesLeft(); renderChangesRight(); }
+  else { S.level === 'types' ? renderTypes() : renderCode(); renderRight(); }
   $('#main').scrollTop = scroll;
 }
 
@@ -893,6 +1077,7 @@ async function poll() {
       S.data = data;
       if (S.sel && !byName()[S.sel]) S.sel = null;
       render();
+      if (S.level === 'changes') loadChanges();
     }
   } catch (e) {
     $('#live').classList.add('off'); $('#live span').textContent = 'disconnected';
@@ -901,22 +1086,40 @@ async function poll() {
 
 // ---------- events ----------
 document.addEventListener('click', e => {
+  const c = e.target.closest('[data-chstep],[data-chpick],[data-fold],[data-gocode],[data-base]');
+  if (c) {
+    e.preventDefault();
+    if (c.dataset.chstep) { CH.step = c.dataset.chstep === 'all' || (c.classList.contains('patch') && CH.step === +c.dataset.chstep) ? null : +c.dataset.chstep; CH.open.clear(); syncHash(); loadChanges(true); $('#main').scrollTop = 0; return; }
+    if (c.dataset.fold) { CH.open.add(c.dataset.fold); render(); return; }
+    if (c.dataset.base) { CH.base = c.dataset.base; CH.step = null; loadChanges(true); return; }
+    if (c.dataset.gocode) { S.level = 1; S.scope = 'slice'; select(c.dataset.gocode); return; }
+    if (c.dataset.chpick) { CH.sel = c.dataset.chpick; render(); document.getElementById('ch-' + CSS.escape(CH.sel))?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); return; }
+  }
   const t = e.target.closest('[data-toggle],[data-all],[data-go],[data-pick],[data-l],[data-s],[data-mod]');
   if (!t) return;
   if (t.dataset.toggle) { const d = byName()[t.dataset.toggle]; if (d) { S.open[d.name] = !isOpen(d); render(); } return; }
   if (t.dataset.all) { S.allOpen = t.dataset.all === '1'; S.open = {}; render(); return; }
-  if (t.dataset.l) { S.level = lv(t.dataset.l); render(); return; }
+  if (t.dataset.l) { S.level = lv(t.dataset.l); render(); if (S.level === 'changes') loadChanges(); return; }
   if (t.dataset.mod !== undefined) { S.closedMods ||= new Set(); S.closedMods.has(t.dataset.mod) ? S.closedMods.delete(t.dataset.mod) : S.closedMods.add(t.dataset.mod); render(); return; }
   if (t.dataset.s) { if (!t.disabled) { S.scope = t.dataset.s; render(); } return; }
   if (t.dataset.go) { clearArrow(); if (S.scope === 'all') S.scope = 'slice'; select(t.dataset.go, typeof S.level === 'number'); return; }
   if (t.dataset.pick) select(t.dataset.pick, false);
 });
 $('#q').addEventListener('input', e => { S.q = e.target.value; render(); });
+document.addEventListener('change', e => { if (e.target.id === 'ch-from') { CH.from = +e.target.value; CH.step = null; syncHash(); loadChanges(true); } });
+document.addEventListener('keydown', e => { if (e.target.id === 'ch-base' && e.key === 'Enter') { CH.base = e.target.value.trim() || null; CH.step = null; syncHash(); loadChanges(true); } });
 document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'SELECT') return;
   if (e.target.tagName === 'INPUT') { if (e.key === 'Escape') { e.target.value = ''; S.q = ''; e.target.blur(); render(); } return; }
   if (e.key === '1' || e.key === '2') { S.level = 1; S.allOpen = e.key === '2'; S.open = {}; render(); }
   else if (e.key === 'c') { S.level = 1; render(); }
   else if (e.key === 't') { S.level = 'types'; render(); }
+  else if (e.key === 'd') { S.level = 'changes'; render(); loadChanges(); }
+  else if (S.level === 'changes' && (e.key === 'ArrowRight' || e.key === 'ArrowLeft') && CH.data?.steps?.length) {
+    const ids = CH.data.steps.map(s => s.id), i = CH.step == null ? -1 : ids.indexOf(CH.step);
+    const j = e.key === 'ArrowRight' ? i + 1 : (i === -1 ? ids.length - 1 : i - 1);
+    CH.step = j >= 0 && j < ids.length ? ids[j] : null; CH.open.clear(); syncHash(); loadChanges(true);
+  }
   else if (e.key === '/') { e.preventDefault(); $('#q').focus(); }
   else if (e.key === 'Escape') { S.sel = null; S.scope = 'all'; render(); }
 });
