@@ -274,6 +274,9 @@ pub trait Shape {
   /// The area.
   fn area(self) -> Int
     ensures it >= 0
+  // checked by verify
+  /// Areas are never negative.
+  law nonneg(s: Self): s.area() >= 0
 }
 
 impl Shape for Point {
@@ -298,7 +301,7 @@ fn label(s: Status) -> String {
     let (ok, r1) = strata(&["--file", "c.strata", "render"], &d, None);
     assert!(ok, "{r1}");
     for c in ["// file header\n//\n// second paragraph\n\n// section banner\n/// A status.", "  // waiting\n  | Pending", "  // finished\n  | Done",
-        "// the y axis points down", "  // area, never negative\n  /// The area.", "  // a point has no area\n  /// Always zero.",
+        "// the y axis points down", "  // area, never negative\n  /// The area.", "  // checked by verify\n  /// Areas are never negative.\n  law nonneg", "  // a point has no area\n  /// Always zero.",
         "  // the common case first\n  // one\n  let n = 1", "    // still going\n    Pending", "    // all good\n    Done"] {
         assert!(r1.contains(c), "missing {c:?} in\n{r1}");
     }

@@ -373,14 +373,13 @@ impl Parser {
                 self.next();
             }
             comments.extend(self.leading());
-            if self.is_kw("law") && !comments.is_empty() {
-                return Err(self.err("comments before a `law` are not supported yet"));
-            }
             if self.eat_kw("law") {
                 let lname = self.ident()?;
                 let params = self.params()?;
                 self.expect_sym(":")?;
-                laws.push(Law { name: lname, params, body: self.expr()? });
+                let body = self.expr()?;
+                comments.extend(self.trailing());
+                laws.push(Law { comments, doc, name: lname, params, body });
                 continue;
             }
             self.expect_kw("fn")?;

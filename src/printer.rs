@@ -460,6 +460,10 @@ fn trait_text(t: &TraitDecl, bodies: bool) -> String {
         }
     }
     for l in &t.laws {
+        s += &comments(&l.comments, 1);
+        for d in &l.doc {
+            s += &format!("  /// {d}\n");
+        }
         let head = format!("  law {}({}):", l.name, param_list(&l.params));
         let body = expr(&l.body, 2);
         if head.chars().count() + 1 + body.lines().next().map_or(0, |x| x.chars().count()) > WIDTH {
