@@ -280,7 +280,22 @@ impl<'a> Interp<'a> {
             }
             return Ok(None);
         }
+        if let TypeExpr::Union(ms) = t {
+            for m in ms {
+                if self.shape_fits(m, v) && self.check_type_in(m, v, scope)?.is_none() {
+                    return Ok(None);
+                }
+            }
+            return Ok(Some(format!("{} is not a `{}`", to_json(v), crate::printer::ty(t))));
+        }
         let TypeExpr::Named(n, args) = t else { return Ok(None) };
+        if let Some(p) = self.env.variant_parent(n) {
+            let own = matches!(v, Value::Variant(c, _) if c == n);
+            if !own {
+                return Ok(Some(format!("{} is not a `{n}`", to_json(v))));
+            }
+            return self.check_type_in(&TypeExpr::Named(p, args.clone()), v, scope);
+        }
         if n == "Tuple" {
             if let Value::Tuple(xs) = v {
                 for (i, (t, x)) in args.iter().zip(xs).enumerate() {
@@ -379,6 +394,48 @@ impl<'a> Interp<'a> {
         Ok(None)
     }
 
+    /// Whether a value is one of the type's values: the right shape, and every
+    /// refinement holds. This is what a type pattern and `is` test.
+    pub fn value_in(&mut self, t: &TypeExpr, v: &Value) -> R<bool> {
+        Ok(self.shape_fits(t, v) && self.check_type(t, v)?.is_none())
+    }
+
+    /// Whether a value has the shape of a type, ignoring refinements (which
+    /// `check_type` tests). Type parameters accept anything.
+    fn shape_fits(&self, t: &TypeExpr, v: &Value) -> bool {
+        let t = self.env.expand_alias(t);
+        match &t {
+            TypeExpr::Unit => matches!(v, Value::Unit),
+            TypeExpr::Refined(b, _) => self.shape_fits(b, v),
+            TypeExpr::Union(ms) => ms.iter().any(|m| self.shape_fits(m, v)),
+            TypeExpr::Fn(..) => matches!(v, Value::Closure(..) | Value::FnRef(_)),
+            TypeExpr::Named(n, args) => match (n.as_str(), v) {
+                ("Int", Value::Int(_)) | ("Float", Value::Float(_)) | ("Bool", Value::Bool(_)) | ("String", Value::Str(_)) | ("Unit", Value::Unit) => true,
+                ("Int" | "Float" | "Bool" | "String" | "Unit", _) => false,
+                ("List", Value::List(xs)) | ("Set", Value::Set(xs)) => args.first().is_none_or(|a| xs.iter().all(|x| self.shape_fits(a, x))),
+                ("Tuple", Value::Tuple(xs)) => xs.len() == args.len() && args.iter().zip(xs).all(|(a, x)| self.shape_fits(a, x)),
+                ("Dict", Value::Dict(_)) => true,
+                ("List" | "Set" | "Tuple" | "Dict", _) => false,
+                _ if self.env.traits.contains_key(n) => match v {
+                    Value::Mock(m) => crate::types::texpr_head(m) == *n,
+                    _ => {
+                        let head = self.head_of(v);
+                        let own = match v { Value::Variant(c, _) => c.clone(), _ => head.clone() };
+                        self.env.impls.iter().any(|i| i.trait_name == *n && [&head, &own].contains(&&crate::types::texpr_head(&i.for_type)))
+                    }
+                },
+                _ if self.env.variant_parent(n).is_some() => matches!(v, Value::Variant(c, _) if c == n),
+                _ => match self.env.types.get(n) {
+                    Some(td) if td.distinct => matches!(v, Value::Distinct(c, _) if c == n),
+                    Some(TypeDecl { body: TypeBody::Record(_), .. }) => matches!(v, Value::Record(c, _) if c == n),
+                    Some(TypeDecl { body: TypeBody::Sum(vs), .. }) => matches!(v, Value::Variant(c, _) if vs.iter().any(|x| &x.name == c)),
+                    // a type parameter, or something unknown
+                    _ => true,
+                },
+            },
+        }
+    }
+
     fn enforce(&mut self, t: &TypeExpr, v: &Value, ctx: &str) -> R<()> {
         if let Some(e) = self.check_type(t, v)? {
             return self.fail(FaultKind::Refinement, format!("{ctx}: {e}"));
@@ -421,7 +478,12 @@ impl<'a> Interp<'a> {
             return self.mock_call(&mt, name, args);
         }
         let head = args.first().map(|v| self.head_of(v)).unwrap_or_default();
-        let Some((mut decl, req, ens)) = self.env.resolve_method(name, &head) else {
+        // a variant may have an impl of its own; else its sum's applies
+        let own = match args.first() {
+            Some(Value::Variant(c, _)) => self.env.resolve_method(name, c),
+            _ => None,
+        };
+        let Some((mut decl, req, ens)) = own.or_else(|| self.env.resolve_method(name, &head)) else {
             let tr = self.env.method_trait.get(name).cloned().unwrap_or_default();
             return self.fail(FaultKind::Runtime, format!("`{head}` does not implement `{tr}` (calling `{name}`)"));
         };
@@ -1112,6 +1174,10 @@ impl<'a> Interp<'a> {
                 _ => return self.fail(FaultKind::Runtime, "bad operand"),
             },
             Expr::Un(UnOp::Not, x) => Value::Bool(self.eval(x, s)? != Value::Bool(true)),
+            Expr::Is(x, c) if !self.env.ctors.contains_key(c) && self.env.is_type_name(c) => {
+                let v = self.eval(x, s)?;
+                Value::Bool(self.value_in(&TypeExpr::Named(c.clone(), vec![]), &v)?)
+            }
             Expr::Is(x, c) => Value::Bool(match self.eval(x, s)? {
                 Value::Variant(n, _) | Value::Record(n, _) | Value::Distinct(n, _) => &n == c,
                 _ => false,
@@ -1119,8 +1185,12 @@ impl<'a> Interp<'a> {
             Expr::If(c, t, f) => {
                 if self.eval(c, s)? == Value::Bool(true) { self.eval(t, s)? } else { self.eval(f, s)? }
             }
-            Expr::Match(x, arms) => {
+            Expr::Match(x, name, arms) => {
                 let v = self.eval(x, s)?;
+                let s = &match name {
+                    Some(n) => extend(s, n, v.clone()),
+                    None => s.clone(),
+                };
                 for a in arms {
                     if let Some(s2) = self.matches(&a.pat, &v, s) {
                         return self.eval(&a.body, &s2);
@@ -1254,6 +1324,11 @@ impl<'a> Interp<'a> {
     fn matches(&mut self, p: &Pattern, v: &Value, s: &Scope) -> Option<Scope> {
         match (p, v) {
             (Pattern::Wild, _) => Some(s.clone()),
+            (Pattern::Cond(c), v) => (self.eval(c, &extend(s, "it", v.clone())).ok()? == Value::Bool(true)).then(|| s.clone()),
+            // a type's name matches the values of that type
+            (Pattern::Ctor(c, CtorPat::None), v) if !self.env.ctors.contains_key(c) && self.env.is_type_name(c) => {
+                self.value_in(&TypeExpr::Named(c.clone(), vec![]), v).ok()?.then(|| s.clone())
+            }
             (Pattern::Bind(x), v) => Some(extend(s, x, v.clone())),
             (Pattern::Int(a), Value::Int(b)) if a == b => Some(s.clone()),
             (Pattern::Str(a), Value::Str(b)) if a == b => Some(s.clone()),
@@ -1330,6 +1405,20 @@ impl<'a> Interp<'a> {
         match &t {
             TypeExpr::Unit => Ok(Value::Unit),
             TypeExpr::Refined(b, _) => self.from_json_raw(b, j, path),
+            // the first member the JSON is a valid value of
+            TypeExpr::Union(ms) => {
+                for m in ms {
+                    if let Ok(v) = self.from_json(m, j, path) {
+                        return Ok(v);
+                    }
+                }
+                bad(&format!("a `{}`", crate::printer::ty(&t)))
+            }
+            TypeExpr::Named(n, args) if self.env.variant_parent(n).is_some() => {
+                let p = self.env.variant_parent(n).unwrap();
+                let v = self.from_json_raw(&TypeExpr::Named(p, args.clone()), j, path)?;
+                if matches!(&v, Value::Variant(c, _) if c == n) { Ok(v) } else { bad(&format!("a `{}`", short(n))) }
+            }
             TypeExpr::Fn(..) => bad("a function (not representable in JSON)"),
             TypeExpr::Named(n, args) => match n.as_str() {
                 "Int" => j.as_i64().map(Value::Int).map_or_else(|| bad("an integer"), Ok),

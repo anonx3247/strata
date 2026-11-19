@@ -313,6 +313,7 @@ impl Rw<'_> {
             }
             TypeExpr::Fn(ps, r) => TypeExpr::Fn(ps.iter().map(|a| self.ty(a)).collect(), Box::new(self.ty(r))),
             TypeExpr::Unit => TypeExpr::Unit,
+            TypeExpr::Union(ms) => TypeExpr::Union(ms.iter().map(|m| self.ty(m)).collect()),
             TypeExpr::Refined(b, p) => {
                 let b = self.ty(b);
                 self.push(&["it".into()]);
@@ -346,6 +347,12 @@ impl Rw<'_> {
                 Pattern::List(items, rest.clone())
             }
             Pattern::Tuple(ps) => Pattern::Tuple(ps.iter().map(|x| self.pat(x)).collect()),
+            Pattern::Cond(c) => {
+                self.push(&["it".into()]);
+                let c = self.expr(c);
+                self.pop();
+                Pattern::Cond(Box::new(c))
+            }
             other => other.clone(),
         }
     }
@@ -430,19 +437,19 @@ impl Rw<'_> {
             Expr::Un(op, x) => Expr::Un(op.clone(), Box::new(self.expr(x))),
             Expr::Is(x, c) => Expr::Is(Box::new(self.expr(x)), self.name(c)),
             Expr::If(c, t, f) => Expr::If(Box::new(self.expr(c)), Box::new(self.expr(t)), Box::new(self.expr(f))),
-            Expr::Match(s, arms) => {
+            Expr::Match(s, name, arms) => {
                 let s = self.expr(s);
                 let arms = arms
                     .iter()
                     .map(|a| {
-                        self.push(&[]);
+                        self.push(&name.iter().cloned().collect::<Vec<_>>());
                         let pat = self.pat(&a.pat);
                         let body = self.expr(&a.body);
                         self.pop();
                         Arm { comments: a.comments.clone(), pat, body }
                     })
                     .collect();
-                Expr::Match(Box::new(s), arms)
+                Expr::Match(Box::new(s), name.clone(), arms)
             }
             Expr::Block(stmts, last) => {
                 self.push(&[]);

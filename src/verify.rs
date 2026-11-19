@@ -63,7 +63,7 @@ fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
             w(t);
             w(x)
         }
-        Expr::Match(s, arms) => {
+        Expr::Match(s, _, arms) => {
             w(s);
             arms.iter().for_each(|a| w(&a.body))
         }

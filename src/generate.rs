@@ -136,6 +136,10 @@ impl Gen {
             }
             return Err(format!("could not generate a value satisfying `{}` after 300 attempts", crate::printer::ty(t)));
         }
+        if let TypeExpr::Union(ms) = t {
+            let m = &ms[self.rng.random_range(0..ms.len())];
+            return self.produce(env, m, it, depth, h);
+        }
         let TypeExpr::Named(n, args) = t else {
             return match t {
                 TypeExpr::Unit => Ok(Value::Unit),
@@ -188,6 +192,11 @@ impl Gen {
         if env.traits.contains_key(n) {
             return Ok(Value::Mock(t.clone()));
         }
+        // a variant's type: generate its sum, keeping only that variant
+        let (n, only) = match env.variant_parent(n) {
+            Some(p) => (&p.clone(), Some(n.clone())),
+            None => (n, None),
+        };
         let Some(td) = env.types.get(n).cloned() else {
             return Err(format!("cannot generate a value of unknown type `{n}` (generic parameters are not supported)"));
         };
@@ -206,7 +215,10 @@ impl Gen {
                     self.produce(env, &subst_texpr(a, &sub), it, depth, &h2)?
                 }
                 TypeBody::Record(_) | TypeBody::Sum(_) => {
-                    let variants = env.variants_of(n, args).unwrap();
+                    let mut variants = env.variants_of(n, args).unwrap();
+                    if let Some(o) = &only {
+                        variants.retain(|v| &v.0 == o);
+                    }
                     // Past a certain depth prefer the variant with the fewest fields so recursion ends.
                     let idx = if depth > 3 {
                         (0..variants.len()).min_by_key(|i| variants[*i].2.len()).unwrap()

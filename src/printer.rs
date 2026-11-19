@@ -11,6 +11,15 @@ pub fn ty(t: &TypeExpr) -> String {
         TypeExpr::Named(n, args) => format!("{n}[{}]", args.iter().map(ty).collect::<Vec<_>>().join(", ")),
         TypeExpr::Fn(ps, r) => format!("({}) -> {}", ps.iter().map(ty).collect::<Vec<_>>().join(", "), ty(r)),
         TypeExpr::Refined(b, p) => format!("{} where {}", ty(b), expr(p, 0)),
+        // a refined or function member needs parentheses, or `where` / `->` would take in the rest
+        TypeExpr::Union(ms) => ms
+            .iter()
+            .map(|m| match m {
+                TypeExpr::Refined(..) | TypeExpr::Fn(..) | TypeExpr::Union(_) => format!("({})", ty(m)),
+                _ => ty(m),
+            })
+            .collect::<Vec<_>>()
+            .join(" | "),
     }
 }
 
@@ -70,6 +79,7 @@ pub fn pat(p: &Pattern) -> String {
         Pattern::Tuple(ps) => format!("({})", ps.iter().map(pat).collect::<Vec<_>>().join(", ")),
         Pattern::Str(s) => format!("{s:?}"),
         Pattern::Bool(b) => b.to_string(),
+        Pattern::Cond(c) => format!("where {}", expr(c, 0)),
         Pattern::Ctor(c, CtorPat::None) => c.clone(),
         Pattern::Ctor(c, CtorPat::Positional(ps)) => {
             format!("{c}({})", ps.iter().map(pat).collect::<Vec<_>>().join(", "))
@@ -284,8 +294,9 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             }
             s
         }
-        Expr::Match(s, arms) => {
-            let mut out = format!("match {} {{\n", expr(s, d));
+        Expr::Match(s, name, arms) => {
+            let as_name = name.as_ref().map(|n| format!(" as {n}")).unwrap_or_default();
+            let mut out = format!("match {}{as_name} {{\n", expr(s, d));
             for a in arms {
                 out += &comments(&a.comments, d + 1);
                 out += &format!("{}{} => {},\n", ind(d + 1), pat(&a.pat), expr(&a.body, d + 1));

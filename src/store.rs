@@ -75,6 +75,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             }
             TypeExpr::Unit => {}
             TypeExpr::Refined(b, _) => ty(b, out),
+            TypeExpr::Union(ms) => ms.iter().for_each(|m| ty(m, out)),
         }
     }
     fn pat(p: &Pattern, out: &mut BTreeSet<String>, ct: &HashMap<String, String>) {
@@ -88,6 +89,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                 }
             }
             Pattern::List(ps, _) | Pattern::Tuple(ps) => ps.iter().for_each(|p| pat(p, out, ct)),
+            Pattern::Cond(c) => ex(c, out, ct),
             _ => {}
         }
     }
@@ -147,7 +149,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                 go(t, out);
                 go(f, out);
             }
-            Expr::Match(s, arms) => {
+            Expr::Match(s, _, arms) => {
                 go(s, out);
                 for a in arms {
                     pat(&a.pat, out, ct);

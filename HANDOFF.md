@@ -58,7 +58,7 @@ Not yet: the log is not committed to git yet, so git ranges have no renames or p
 ## Known gaps
 
 - Trait methods must take `self`; there is no `fn empty() -> Self` dispatch yet, and method names must be unique across traits.
-- Exhaustiveness checking ignores refinements: a `match` on `NonEmpty` still needs a `[]` arm.
+- Exhaustiveness uses the refinements of the patterns (integer intervals), but not of the matched value: a `match` on `NonEmpty` still needs a `[]` arm.
 - No host bindings (FFI), so a real SQLite backend isn't possible yet.
 - `strata verify` on the tasks example takes about 35s; the slowest part is generating `MemQueue` values that satisfy its invariants.
 - Typed lambda parameters (`(n: Positive) -> …`) are checked statically but their refinements are not enforced at runtime yet.
@@ -119,7 +119,7 @@ Bootstrap plan: write the frontend (lexer, parser, printer) in Strata and test i
 - **A small native core in Rust** (C is possible for the system-call layer; decide when we get there): the GC, the system-call / OS boundary, and bindings to LLVM and the SMT solver.
 - **Most of the standard library in Strata itself**: collections, strings, the ORM, HTTP / web views, CLI helpers, and agent tooling. Only the thin OS / runtime layer is native.
 
-### Unions, variants as types, and match patterns (decided 2026-11-19)
+### Unions, variants as types, and match patterns (decided 2026-11-19, built)
 - **`Option` and `Result` stay as they are**, and so do `!` / `?` propagation. No `T?` / `T ! E` syntax.
 - **Unions are sets of values**: `A | B` holds any value of `A` or of `B`. Unions normalize: `Int | Positive` is `Int`; `(Int where p) | (Int where q)` is `Int where p || q`; different bases stay a union. `A` fits `A | B`; `A | B` fits `C` when both do. Type parameters can be members (`T | E` with bounds); if they end up the same type, it collapses, harmlessly.
 - **Variants are types.** `type ShapeError = | NonEmptyErr | TooBig { max: Int }` declares the types `NonEmptyErr` and `TooBig`, and `ShapeError` is `NonEmptyErr | TooBig`. So `Result[Circle, NonEmptyErr]` or a parameter of type `TooBig` are allowed.
@@ -128,6 +128,7 @@ Bootstrap plan: write the frontend (lexer, parser, printer) in Strata and test i
 - **Patterns are sets of values**: a type name (`Positive =>`, `Square =>`), a variant as today, a literal, a condition (`where 3 <= it && it <= 5 =>`, base type = the scrutinee's), `_`. An arm takes what no earlier arm took. Exhaustive = the scrutinee's (normalized) type is covered by the arms; an arm already covered by earlier ones is an error (unreachable).
 - **Narrowing, no new name**: `match x { Positive => { x … } }` narrows `x` itself in the arm. For an expression: `match f(y) as x { … }`. Field paths (`o.status`) narrow too. Narrowing of a `let mut` lasts until it is assigned.
 - **Coverage**: integer (and `len(it)`) comparisons with constants, combined with `&&` / `||`, are decided exactly as interval sets. Anything else waits for the SMT solver; until then such an arm needs a later `_`. This also lets a match on `NonEmpty` skip the `[]` arm.
+- **Built** (branch `unions`): `Ty::Union` normalized by `Checker::union_of`; subsumption in `fits` (used by `expect`: union members, variants into their sum; type arguments stay invariant); `infer_at` passes the expected type through `if` / `match` / blocks / lists / constructors; `pattern` returns the narrowed type and a value set `P`; exhaustiveness and unreachable arms use atoms (`atoms`, `covers`, `missing`, `useful`) with integer intervals in `types::ints`. Interpreter: `value_in` / `shape_fits` for type patterns and `is`, unions in `check_type` and JSON input, impls on variants. Not yet: or-patterns, the `NonEmpty`-without-`[]` case (refinements are erased from `Ty`), implicit unions for `if` branches (an error asks for the annotation).
 
 ### Lambda syntax (done)
 - Replace the Rust-style `|x| body` with a **bare arrow**: `x -> body` and `(a, b) -> body`, with optional parameter types such as `(s: String) -> …`. For a longer body, use a block: `x -> { ... }`.

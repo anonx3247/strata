@@ -455,7 +455,7 @@ impl Parser {
         } else if self.eat_sym("{") {
             TypeBody::Record(self.fields()?)
         } else {
-            TypeBody::Alias(self.type_expr_plain()?)
+            TypeBody::Alias(self.type_union()?)
         };
         let refinement = if self.eat_kw("where") { Some(self.expr()?) } else { None };
         Ok(TypeDecl { distinct: false, name, params, body, refinement })
@@ -482,13 +482,27 @@ impl Parser {
         }
     }
 
-    /// A type, optionally refined inline: `Int where it > 0`.
+    /// A type, optionally a union (`Square | Circle`) and refined inline
+    /// (`Int where it > 0`; the refinement applies to the whole union).
     pub fn type_expr(&mut self) -> R<TypeExpr> {
-        let t = self.type_expr_plain()?;
+        let t = self.type_union()?;
         if self.eat_kw("where") {
             return Ok(TypeExpr::Refined(Box::new(t), Box::new(self.expr_ns()?)));
         }
         Ok(t)
+    }
+
+    /// `A | B | C`, or a single type.
+    fn type_union(&mut self) -> R<TypeExpr> {
+        let first = self.type_expr_plain()?;
+        if !self.is_sym("|") {
+            return Ok(first);
+        }
+        let mut ms = vec![first];
+        while self.eat_sym("|") {
+            ms.push(self.type_expr_plain()?);
+        }
+        Ok(TypeExpr::Union(ms))
     }
 
     pub fn type_expr_plain(&mut self) -> R<TypeExpr> {
@@ -786,6 +800,12 @@ impl Parser {
             Tok::Ident(kw) if kw == "match" => {
                 self.next();
                 let scrut = self.expr_ns()?;
+                let name = if matches!(self.peek(), Tok::Ident(s) if s == "as") {
+                    self.next();
+                    Some(self.ident()?)
+                } else {
+                    None
+                };
                 self.expect_sym("{")?;
                 let mut arms = Vec::new();
                 while !self.eat_sym("}") {
@@ -797,7 +817,7 @@ impl Parser {
                     comments.extend(self.trailing());
                     arms.push(Arm { comments, pat, body });
                 }
-                Ok(Expr::Match(Box::new(scrut), arms))
+                Ok(Expr::Match(Box::new(scrut), name, arms))
             }
             Tok::Ident(kw) if kw == "return" => {
                 self.next();
@@ -996,6 +1016,10 @@ impl Parser {
             Tok::Ident(s) if s == "_" => {
                 self.next();
                 Ok(Pattern::Wild)
+            }
+            Tok::Ident(s) if s == "where" => {
+                self.next();
+                Ok(Pattern::Cond(Box::new(self.expr()?)))
             }
             Tok::Ident(s) if s == "true" || s == "false" => {
                 self.next();

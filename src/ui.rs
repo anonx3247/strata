@@ -332,5 +332,6 @@ fn mentions(t: &TypeExpr, out: &mut Vec<String>) {
         }
         TypeExpr::Unit => {}
         TypeExpr::Refined(b, _) => mentions(b, out),
+        TypeExpr::Union(ms) => ms.iter().for_each(|m| mentions(m, out)),
     }
 }

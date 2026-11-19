@@ -99,7 +99,7 @@ test "a mocked store never breaks ship's contract" {
 
 ```text
 $ strata check                               # static errors are caught before running
-error in status: non-exhaustive match on `Order`: `Cancelled { .. }` is not covered
+error in status: non-exhaustive match on `Order`: `Cancelled` is not covered
 error in sneaky: calling `load`: `String` does not implement `Db`
 error in bad_qty: refinement violated at compile time in field `Line.qty`: 120 does not satisfy `Quantity` (where 1 <= it && it <= 99)
 
@@ -159,6 +159,42 @@ id.value                     // the underlying String
 ```
 
 A `distinct` type never mixes with its base or with other distinct types (`OrderId` ≠ `UserId`), it can have trait implementations, and it serialises to JSON as its underlying value.
+
+## Unions, variants and patterns
+
+A union holds a value of any of its members. It is a union of sets, so it normalizes: `Int | Positive` is just `Int`, and different types stay apart.
+
+```rust
+type Square = { side: Positive }
+type Circle = { radius: Positive }
+type Shape = Square | Circle
+
+fn area(s: Shape) -> Int {
+  match s {
+    Square => s.side * s.side,      // s: Square in this arm
+    Circle => 3 * s.radius * s.radius,
+  }
+}
+fn describe(v: Int | String) -> String {
+  match v { Int => f"number {v}", String => f"text {len(v)}" }
+}
+```
+
+**Variants are types.** `type ShapeError = | Empty | TooBig { max: Int }` declares the types `Empty` and `TooBig`, and `ShapeError` is `Empty | TooBig`. A function can take `e: TooBig` (and read `e.max`), or return `Result[Shape, TooBig]`. Constructors still need wrapping (`Err(TooBig { max: 9 })`), so `Result[Int, Int]` stays unambiguous. Since a variant is a type, its name must be unique across the project: no other variant, type or trait in any module may share it.
+
+**Patterns are sets of values**, and an arm takes what the arms above it left:
+
+- a type's name: `Positive =>`, `String =>`, `Circle =>` (a variant, whatever its fields), or a trait (`Named =>`, values that implement it);
+- a variant or record with fields, as before: `Some(x)`, `Pending { id, .. }`;
+- a literal: `0`, `"x"`, `true`;
+- a condition on the value `it`: `where 3 <= it && it <= 5 =>`;
+- `_`.
+
+**Narrowing.** Inside an arm, the matched variable has the arm's type (`s` is a `Square` above), and no new name is needed. To match the result of an expression, name it: `match lines(text) as ls { … }`. A matched field (`match t.status { Closed => t.status.why, … }`) narrows too. Assigning to a narrowed `let mut` variable ends its narrowing.
+
+**Exhaustive and reachable.** The checker splits the matched type into variants, union members and, for integers, the intervals the arms' bounds cut out. It reports a value no arm takes (`` `where 3 <= it && it <= 5` is not covered``), and an arm the arms above already cover (`unreachable match arm `Positive``). Integer conditions that compare `it` with constants (with `&&`, `||`, `!`) are decided exactly. Any other condition (`matches(it, …)`, a call) covers nothing until the SMT backend exists, so such a match needs a `_` arm.
+
+A field that every member of a union has can be read without matching. A trait method can be called on a union when every member implements the trait. `if` branches and list elements must still agree on one type: when both are meant, write the union (`let s: Square | Circle = if …`).
 
 ## Traits
 
@@ -322,6 +358,8 @@ Because results are keyed by content, `verify` reruns only what is affected by a
 
 - **Verification is fuzzing plus runtime checks, not proof.** Next step: an SMT backend (Z3 or cvc5) that proves what it can and tags the rest as `fuzzed` or `runtime-checked`.
 - Refinements on generic type arguments, such as `Option[Quantity]`, are not checked when values are constructed.
+- A `match` on a refined list type such as `NonEmpty` still needs a `[]` arm: the checker does not yet carry refinements to the matched value.
+- No or-patterns (`Square | Circle =>`) yet: name a union type for them, or use two arms.
 - **No compilation backend.** It is a tree-walking interpreter.
 
 ## Roadmap

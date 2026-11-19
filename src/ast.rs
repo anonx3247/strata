@@ -14,6 +14,9 @@ pub enum TypeExpr {
     /// Inline refinement: `Int where 5 <= it && it <= 13`. Structural: any
     /// value of the base type is accepted where the predicate holds.
     Refined(Box<TypeExpr>, Box<Expr>),
+    /// `Square | Circle`: any value of any member (a set union, so
+    /// `Int | Positive` is just `Int`).
+    Union(Vec<TypeExpr>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -283,6 +286,8 @@ pub enum Pattern {
     List(Vec<Pattern>, Option<String>),
     /// `(a, _)`
     Tuple(Vec<Pattern>),
+    /// `where 3 <= it && it <= 5`: the values for which the condition holds.
+    Cond(Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -349,7 +354,9 @@ pub enum Expr {
     /// `e is Shipped`
     Is(Box<Expr>, String),
     If(Box<Expr>, Box<Expr>, Box<Expr>),
-    Match(Box<Expr>, Vec<Arm>),
+    /// `match e { … }`, or `match e as x { … }` to name the value; a matched
+    /// variable (or the `as` name) is narrowed to each arm's pattern.
+    Match(Box<Expr>, Option<String>, Vec<Arm>),
     Block(Vec<Stmt>, Box<Expr>),
     /// `mock Db`: an implementation of a trait whose methods return generated
     /// values that satisfy the trait's contracts.

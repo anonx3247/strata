@@ -61,7 +61,7 @@ fn bad_qty() -> Line { Line { sku: "x", qty: 1200, unit_price: 5 } }
     std::fs::write(d.join("bad.strata"), src).unwrap();
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok);
-    assert!(out.contains("`Cancelled { .. }` is not covered"), "{out}");
+    assert!(out.contains("`Cancelled` is not covered"), "{out}");
     assert!(out.contains("`String` does not implement `Db`"), "{out}");
     assert!(out.contains("refinement violated at compile time"), "{out}");
 }
@@ -625,3 +625,223 @@ fn diff_shows_changes_structurally() {
     let (ok, out) = strata(&["diff"], &d, None);
     assert!(ok && out.contains("◀ stronger guarantee") && out.contains("{+, never below zero+}"), "{out}");
 }
+
+#[test]
+fn unions_variants_as_types_and_narrowing() {
+    let d = tmp("unions");
+    std::fs::write(d.join("u.strata"), UNIONS).unwrap();
+    std::fs::write(d.join("t.strata"), TRAITS_PATHS).unwrap();
+    for f in ["u.strata", "t.strata"] {
+        let (ok, out) = strata(&["--file", f, "test"], &d, None);
+        assert!(ok && out.contains("1 passed"), "{out}");
+        let (ok, r1) = strata(&["--file", f, "render"], &d, None);
+        assert!(ok, "{r1}");
+        std::fs::write(d.join("r.strata"), &r1).unwrap();
+        let (_, r2) = strata(&["--file", "r.strata", "render"], &d, None);
+        assert_eq!(r1, r2);
+    }
+    // JSON input picks the union member it is a valid value of
+    let (ok, out) = strata(&["--file", "u.strata", "run", "area", r#"[{"radius": 2}]"#], &d, None);
+    assert!(ok && out.trim() == "12", "{out}");
+    let (ok, out) = strata(&["--file", "u.strata", "run", "max_of", r#"["NonEmptyErr"]"#], &d, None);
+    assert!(!ok && out.contains("expected a `TooBig`"), "{out}");
+
+    std::fs::write(d.join("bad.strata"), BAD).unwrap();
+    let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
+    assert!(!ok);
+    for e in [
+        "non-exhaustive match on `Int`: `where 3 <= it && it <= 5` is not covered",
+        "non-exhaustive match on `Int | String`: `String` is not covered",
+        "unreachable match arm `Positive`",
+        "unreachable match arm `7`",
+        "pattern `String`: expected `Circle | Square`, found `String`",
+        "non-exhaustive match on `String`: `_` is not covered",
+        "not every `Circle | Square` does",
+        "if both are meant, write the type: `Square | Circle`",
+    ] {
+        assert!(out.contains(e), "missing {e:?} in\n{out}");
+    }
+    assert!(!out.contains("unreachable match arm `String`"), "{out}");
+
+    // a variant is a type, so its name is unique across the project
+    std::fs::write(d.join("clash.strata"), "module a {\n  pub type Status = | Done | Open\n}\nmodule b {\n  pub type Outcome = | Done | Failed\n}\n").unwrap();
+    let (ok, out) = strata(&["--file", "clash.strata", "check"], &d, None);
+    assert!(!ok && out.contains("variant `a.Done` of `a.Status` has the same name as the variant `b.Done` of `b.Outcome`"), "{out}");
+}
+
+const UNIONS: &str = r#"type Square = { side: Positive }
+type Circle = { radius: Positive }
+type Triangle = { base: Positive, height: Positive }
+type Shape = Square | Circle | Triangle
+
+type ShapeError = | NonEmptyErr | TooBig { max: Int }
+
+fn area(s: Shape) -> Int {
+  match s {
+    Square => s.side * s.side,
+    Circle => 3 * s.radius * s.radius,
+    Triangle => s.base * s.height / 2,
+  }
+}
+
+fn size(n: Int) -> String {
+  match n {
+    where it < 3 => "small",
+    where 3 <= it && it <= 5 => "medium",
+    where it > 5 => "large",
+  }
+}
+
+fn sign(x: Int) -> String {
+  match x {
+    Positive => "positive",
+    0 => "zero",
+    where it < 0 => "negative",
+  }
+}
+
+fn describe(v: Int | String) -> String {
+  match v {
+    Int => f"number {v + 1}",
+    String => f"text {len(v)}",
+  }
+}
+
+fn check(s: Shape) -> Result[Shape, ShapeError] {
+  if area(s) > 100 { Err(TooBig { max: 100 }) } else { Ok(s) }
+}
+
+fn max_of(e: TooBig) -> Int { e.max }
+
+fn explain(r: Result[Shape, ShapeError]) -> String {
+  match r {
+    Ok(s) => f"ok {area(s)}",
+    Err(e) => match e {
+      NonEmptyErr => "empty",
+      TooBig => f"too big, max {max_of(e)}",
+    },
+  }
+}
+
+fn first_word(s: String) -> String {
+  match lines(s) as ls {
+    [] => "",
+    _ => match get(ls, 0) { Some(w) => w, None => "" },
+  }
+}
+
+test "unions and narrowing" {
+  assert area(Square { side: 3 }) == 9
+  assert area(Circle { radius: 2 }) == 12
+  assert size(4) == "medium"
+  assert size(-10) == "small"
+  assert sign(-2) == "negative"
+  assert sign(0) == "zero"
+  assert describe(41) == "number 42"
+  assert describe("abc") == "text 3"
+  assert explain(check(Square { side: 20 })) == "too big, max 100"
+  assert explain(check(Circle { radius: 1 })) == "ok 3"
+  assert Square { side: 1 } is Square
+  assert 5 is Positive
+  assert !(-5 is Positive)
+}
+"#;
+
+const TRAITS_PATHS: &str = r#"trait Named { fn name(self) -> String }
+type Dog = { n: String }
+type Cat = { n: String }
+type Status = | Open | Closed { why: String }
+type Ticket = { id: Int, status: Status }
+impl Named for Dog { fn name(self) -> String { "dog " + self.n } }
+impl Named for Cat { fn name(self) -> String { "cat " + self.n } }
+impl Named for Closed { fn name(self) -> String { "closed: " + self.why } }
+
+fn greet(p: Dog | Cat) -> String { p.name() }
+fn label(t: Ticket) -> String {
+  match t.status {
+    Open => "open",
+    Closed => t.status.why,
+  }
+}
+fn closed_name(c: Closed) -> String { c.name() }
+fn reset(n: Int) -> Int {
+  let mut x = n
+  match x {
+    Positive => {
+      x = -1
+      x
+    }
+    _ => 0,
+  }
+}
+fn maybe(n: Int) -> Int | () {
+  if n > 0 { n } else { () }
+}
+fn use_maybe(n: Int) -> Int {
+  match maybe(n) as m {
+    Int => m,
+    Unit => 0,
+  }
+}
+test "traits, paths, mut" {
+  assert greet(Cat { n: "tom" }) == "cat tom"
+  assert label(Ticket { id: 1, status: Closed { why: "done" } }) == "done"
+  assert closed_name(Closed { why: "x" }) == "closed: x"
+  assert reset(5) == -1
+  assert use_maybe(3) == 3
+  assert use_maybe(-3) == 0
+}
+"#;
+
+const BAD: &str = r#"type Square = { side: Positive }
+type Circle = { radius: Positive }
+type Shape = Square | Circle
+
+fn gap(n: Int) -> String {
+  match n {
+    where it < 3 => "small",
+    where it > 5 => "large",
+  }
+}
+
+fn missing_member(v: Int | String) -> String {
+  match v {
+    Int => "n",
+  }
+}
+
+fn dead(n: Int) -> String {
+  match n {
+    Int => "any",
+    Positive => "never",
+  }
+}
+
+fn dead2(n: Int) -> String {
+  match n {
+    where it >= 0 => "a",
+    where it < 0 => "b",
+    7 => "c",
+  }
+}
+
+fn wrong(s: Shape) -> Int {
+  match s {
+    String => 1,
+    _ => 2,
+  }
+}
+
+fn opaque(s: String) -> Int {
+  match s {
+    NonEmptyString => 1,
+  }
+}
+
+fn no_field(s: Shape) -> Int { s.side }
+
+fn mixed() -> Int {
+  let x = if true { Square { side: 1 } } else { Circle { radius: 1 } }
+  1
+}
+"#;
