@@ -33,6 +33,11 @@ fn unwrap_module(text: &str) -> String {
     }
 }
 
+/// Drop the leading `///` lines (the declaration's doc comment).
+fn strip_doc(text: &str) -> String {
+    text.lines().skip_while(|l| l.trim_start().starts_with("///")).collect::<Vec<_>>().join("\n")
+}
+
 fn snapshot(target: &Target) -> Json {
     let (program, log, cache, label) = match target {
         Target::Db(root) => match Codebase::open(root) {
@@ -88,8 +93,10 @@ fn snapshot(target: &Target) -> Json {
         .map(|d| {
             let name = d.qname();
             let one: BTreeSet<String> = [name.clone()].into();
-            // a card already shows its module, so drop the `module m { ... }` wrapper
-            let render = |lvl| unwrap_module(view::render(p, &one, lvl, &status).trim_end());
+            // a card already shows its module, so drop the `module m { ... }` wrapper;
+            // the doc comment is shown as the description, so drop it from the code too
+            let render = |lvl| strip_doc(&unwrap_module(view::render(p, &one, lvl, &status).trim_end()));
+            let (iface, source) = (render(1), render(3));
             let effects = match &d.kind {
                 _ => Vec::<String>::new(),
             };
@@ -113,7 +120,8 @@ fn snapshot(target: &Target) -> Json {
                 "verdict": verdicts.get(&name),
                 "errors": rep.errors.iter().filter(|e| qname_of.get(&e.decl).unwrap_or(&e.decl) == &name || e.decl == name).map(|e| e.msg.clone()).collect::<Vec<_>>(),
                 "last_change": last_change.get(&name),
-                "text": { "1": render(1), "2": render(2), "3": render(3) },
+                "has_body": iface != source,
+                "text": { "1": iface, "2": render(2), "3": source },
             })
         })
         .collect();

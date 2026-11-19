@@ -100,6 +100,8 @@ pub fn render(p: &Program, names: &BTreeSet<String>, level: u8, st: &Status) -> 
                         format!("{}\n  = {}{note}", printer::fn_signature(f), printer::expr(&f.body, 0))
                     }
                     DeclKind::Fn(f) if level == 2 => format!("{} {}{note}", printer::fn_signature(f), body_summary(d, f, p)),
+                    DeclKind::Impl(i) if level < 3 => format!("{}{note}", printer::impl_interface(i)),
+                    DeclKind::Trait(t) if level < 3 => format!("{}{note}", printer::trait_interface(t)),
                     DeclKind::Test(t) if level < 3 => format!("test {:?} {{ … }}", t.name),
                     _ => format!("{}{note}", printer::decl(d).trim_start_matches(&printer::doc(d))),
                 };

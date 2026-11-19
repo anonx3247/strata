@@ -341,6 +341,15 @@ fn param_list(ps: &[Param]) -> String {
 }
 
 pub fn trait_decl(t: &TraitDecl) -> String {
+    trait_text(t, true)
+}
+
+/// A trait with default method bodies left out (the interface level).
+pub fn trait_interface(t: &TraitDecl) -> String {
+    trait_text(t, false)
+}
+
+fn trait_text(t: &TraitDecl, bodies: bool) -> String {
     let tp = if t.params.is_empty() { String::new() } else { format!("[{}]", t.params.join(", ")) };
     let sup = if t.supers.is_empty() { String::new() } else { format!(": {}", t.supers.iter().map(ty).collect::<Vec<_>>().join(" + ")) };
     let mut s = format!("trait {}{tp}{sup} {{\n", t.name);
@@ -349,7 +358,7 @@ pub fn trait_decl(t: &TraitDecl) -> String {
             s += &format!("  /// {d}\n");
         }
         let sig = fn_signature(&m.decl).replace('\n', "\n  ");
-        if m.default {
+        if m.default && bodies {
             s += &format!("  {} {}\n", sig, block(&m.decl.body, 1));
         } else {
             s += &format!("  {sig}\n");
@@ -380,6 +389,15 @@ pub fn impl_decl(i: &ImplDecl) -> String {
         }
         let body = fn_decl(m).lines().map(|l| format!("  {l}\n")).collect::<String>();
         s += &body;
+    }
+    s + "}"
+}
+
+/// An implementation with method bodies left out (the interface level).
+pub fn impl_interface(i: &ImplDecl) -> String {
+    let mut s = impl_head(i) + " {\n";
+    for m in &i.methods {
+        s += &fn_signature(m).lines().map(|l| format!("  {l}\n")).collect::<String>();
     }
     s + "}"
 }

@@ -1,6 +1,6 @@
 # Handoff
 
-State as of commit `1a4f611` (all 14 integration tests pass: `cargo test --release`).
+State as of the viewer UI commit (all 14 integration tests pass: `cargo test --release`).
 Read `README.md` first; it describes the language and tools as they are now.
 
 ## Working conventions
@@ -23,16 +23,11 @@ Read `README.md` first; it describes the language and tools as they are now.
 - **Rendered code wraps at about 80 columns** by breaking lines, not soft-wrapping.
 - **Viewer**: two levels (interface/source), the code view sliced around the selection, a type map as a separate view, and no Flow view.
 
-## Next task: viewer UI changes the user asked for (not started)
+## Viewer UI changes (done)
 
-All of these are in `src/ui/index.html` (functions `card`, `renderCode`, `renderRight`) and `src/ui.rs` (`snapshot`):
+Doc comments are shown as the description in the right panel (and stripped from the code, `strip_doc` in `ui.rs`); the inspector has no source block; code items are plain code with a margin marker; bodies open inline (`has_body` in the snapshot; impls and traits now have a signatures-only level 1 in `view.rs`); the header has *Code* / *Type map* tabs and the code toolbar has *expand all*. The selected definition starts open.
 
-1. **Doc comments**: `///` lines are stored on declarations (`Decl.doc`). Remove them from the rendered code in cards, and show them in the right panel under the name, as the description. The JSON already has `doc`.
-2. **Right panel**: remove the source block (`insp-src`). Keep the name, description, the mini graph of neighbours, status (holes, verdict), and history.
-3. **Code items**: drop the boxed card header. Items should look like plain code with light separators and a small kind/status marker; the name is already in the code.
-4. **Interface/source**: show the toggle only where the two texts differ (functions with bodies, impls, traits with default methods), as an inline "show body ▸" / "hide body ▾" control in the code. Remove the global Interface/Source buttons; keep a "Type map" tab, and maybe add "expand all".
-5. **Sections**: the main item, then *uses*, *used by*, implementations and tests, following each other in that order.
-6. **Type map** (optional): the user suggested it could become a side panel rather than a full tab; ask before doing this.
+Still open: **type map as a side panel** instead of a full tab. The user suggested it; ask before doing it.
 
 ## Open topics the user wants to discuss and decide on (do not implement without agreement)
 

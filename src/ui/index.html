@@ -68,16 +68,25 @@ main { grid-area: main; position: relative; }
 /* code view */
 #code { padding: 16px 22px 60px; max-width: 980px; }
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; color: var(--muted); font-size: 12px; }
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: 9px; margin-bottom: 12px; overflow: hidden; scroll-margin-top: 12px; }
-.card.sel { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.cgroup { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.card { display: grid; grid-template-columns: 26px 1fr; scroll-margin-top: 12px; border-left: 2px solid transparent; }
+.card + .card { border-top: 1px solid var(--line); }
+.card.sel { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent-soft) 45%, var(--code-bg)); }
 .card.flash { animation: flash 2.4s ease-out; }
-@keyframes flash { 0% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 60%, transparent); } 100% { box-shadow: 0 0 0 0 transparent; } }
-.card-h { display: flex; align-items: center; gap: 8px; padding: 6px 10px 6px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
-.card-h .name { font-family: var(--mono); font-weight: 600; }
-.card-h .hash { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+@keyframes flash { 0% { background: color-mix(in srgb, var(--warn) 22%, var(--code-bg)); } 100% { background: transparent; } }
+.card .gut { display: flex; flex-direction: column; align-items: center; gap: 5px; padding-top: 12px; cursor: pointer; }
+.card .gut .kind { font-size: 10.5px; }
+.card pre { background: transparent; padding: 9px 14px 9px 2px; }
+.meta { float: right; display: inline-flex; gap: 8px; align-items: baseline; font: 11px var(--sans); color: var(--faint); margin-left: 16px; }
+.meta .ok { color: var(--ok); } .meta .warn { color: var(--warn); } .meta .bad { color: var(--bad); }
+a.tog { font: 11px var(--sans); color: var(--muted); cursor: pointer; border-radius: 4px; padding: 0 4px; white-space: nowrap; }
+a.tog:hover { color: var(--accent); background: var(--accent-soft); }
+a.tog .br { font-family: var(--mono); font-size: 12.5px; }
+.toolbar button.plain { font: inherit; font-size: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 7px; padding: 3px 9px; cursor: pointer; }
+.toolbar button.plain:hover { color: var(--text); }
+.doc code { font-family: var(--mono); font-size: 11.5px; color: var(--text); }
 .badge { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
 .badge.ok { color: var(--ok); } .badge.warn { color: var(--warn); } .badge.bad { color: var(--bad); } .badge.muted { color: var(--faint); }
-.card-h .seg button { padding: 1px 7px; font-size: 11px; }
 pre { margin: 0; padding: 10px 14px; background: var(--code-bg); font: 12.5px/1.55 var(--mono); overflow-x: auto; white-space: pre; }
 .t-kw { color: var(--kw); } .t-str { color: var(--str); } .t-num { color: var(--num); } .t-com { color: var(--com); font-style: italic; }
 .t-ty { color: var(--type); } .t-doc { color: var(--com); }
@@ -116,8 +125,7 @@ a.ref:hover { color: var(--accent); text-decoration-color: var(--accent); }
 .muted { color: var(--muted); }
 /* code view sections, inspector source, mini graph, hover arrow */
 h2.sect { font: 600 11px var(--sans); text-transform: uppercase; letter-spacing: .7px; color: var(--faint); margin: 22px 0 8px; }
-.card.hover { border-color: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 25%, transparent); }
-.insp-src { max-height: 42vh; overflow: auto; border: 1px solid var(--line); border-radius: 7px; margin-top: 6px; font-size: 11.5px; }
+.card.hover { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 9%, var(--code-bg)); }
 .mg { display: block; overflow: visible; }
 .mg-h { display: flex; justify-content: space-between; color: var(--faint); font-size: 10.5px; padding: 0 20px; }
 .mg-e { fill: none; stroke: var(--faint); stroke-width: 1.2; }
@@ -244,8 +252,7 @@ h2.sect { font: 600 11px var(--sans); text-transform: uppercase; letter-spacing:
   <div class="chips" id="chips"></div>
   <span class="spacer"></span>
   <div class="seg" id="levels">
-    <button data-l="1" title="Types, signatures and contracts (key 1)">Interface</button>
-    <button data-l="3" title="Full source (key 3)">Source</button>
+    <button data-l="1" title="Code around the selection (key c)">Code</button>
     <button data-l="types" title="Types and traits and how they relate (key t)">Type map</button>
   </div>
   <input type="search" id="q" placeholder="Filter  ( / )">
@@ -259,7 +266,7 @@ h2.sect { font: 600 11px var(--sans); text-transform: uppercase; letter-spacing:
 
 <script>
 const lv = x => isNaN(+x) ? x : +x;
-const S = { data: null, raw: '', level: 1, sel: null, scope: 'slice', q: '', over: {}, prevHash: {}, flash: new Set(), prevLog: 0, newLog: 0, showTests: false };
+const S = { data: null, raw: '', level: 1, sel: null, scope: 'slice', q: '', over: {}, prevHash: {}, flash: new Set(), prevLog: 0, newLog: 0, showTests: false, open: {}, allOpen: false };
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const KIND = { type: 'T', effect: 'E', fn: 'ƒ', test: '✓', trait: '◆', impl: '⊢' };
@@ -308,7 +315,7 @@ function visible() {
     const keep = new Set([S.sel, ...(d?.deps || []), ...(d?.used_by || [])]);
     set = all.filter(x => keep.has(x.name));
   }
-  if (q) set = set.filter(x => x.label.toLowerCase().includes(q) || (S.level === 3 && x.text['3'].toLowerCase().includes(q)));
+  if (q) set = set.filter(x => x.label.toLowerCase().includes(q) || x.text['3'].toLowerCase().includes(q));
   return set;
 }
 
@@ -682,18 +689,26 @@ function sectionsFor(sel) {
   ].filter(([, ns]) => ns.length);
 }
 
+// A definition shows its interface; where the full text differs (a body), an
+// inline control shows or hides it. The selected definition starts open.
+const isOpen = d => d.has_body && (S.open[d.name] ?? (S.allOpen || d.name === S.sel));
 function card(d, names) {
-  const lvl = S.over[d.name] ?? S.level;
   const [cls, txt] = status(d);
-  return `<div class="card ${d.name === S.sel ? 'sel' : ''} ${S.flash.has(d.name) ? 'flash' : ''}" id="card-${esc(d.name)}">
-    <div class="card-h" data-pick="${esc(d.name)}">
-      <span class="kind k-${d.kind}">${KIND[d.kind] || ''}</span><span class="name">${esc(d.label)}</span>
-      ${d.module ? `<span class="hash">${esc(d.module)}</span>` : ''}
-      ${txt ? `<span class="badge ${cls === 'none' ? 'muted' : cls}">${esc(txt)}</span>` : ''}
-      <span class="spacer"></span>
-      <div class="seg"><button data-card-level="1" data-name="${esc(d.name)}" class="${lvl === 1 ? 'on' : ''}">interface</button><button data-card-level="3" data-name="${esc(d.name)}" class="${lvl === 3 ? 'on' : ''}">source</button></div>
-    </div>
-    <pre>${highlight(d.text[String(lvl)], names)}</pre></div>`;
+  const n = esc(d.name), open = isOpen(d);
+  const meta = `<span class="meta">${d.module ? `<span>${esc(d.module)}</span>` : ''}${txt ? `<span class="${cls === 'none' ? '' : cls}">${esc(txt)}</span>` : ''}${open ? `<a class="tog" data-toggle="${n}" title="Show the interface only">hide body ▾</a>` : ''}</span>`;
+  let code;
+  if (open) code = highlight(d.text['3'], names);
+  else if (!d.has_body) code = highlight(d.text['1'], names);
+  else {
+    const iface = d.text['1'].replace(/\s*\{ … \}$/, '');
+    const fnLike = d.kind === 'fn' || d.kind === 'test';
+    code = highlight(iface, names) + (fnLike
+      ? ` <a class="tog" data-toggle="${n}"><span class="br">{ … }</span> show body ▸</a>`
+      : `  <a class="tog" data-toggle="${n}">show bodies ▸</a>`);
+  }
+  return `<div class="card ${d.name === S.sel ? 'sel' : ''} ${S.flash.has(d.name) ? 'flash' : ''}" id="card-${n}">
+    <div class="gut" data-pick="${n}" title="${esc(d.kind)}${txt ? ' · ' + esc(txt) : ''}"><span class="kind k-${d.kind}">${KIND[d.kind] || ''}</span><span class="dot ${cls}"></span></div>
+    <pre>${meta}${code}</pre></div>`;
 }
 
 function renderCode() {
@@ -702,15 +717,19 @@ function renderCode() {
   let body;
   if (S.sel && by[S.sel] && S.scope !== 'all') {
     body = sectionsFor(S.sel).map(([title, ns]) =>
-      (title ? `<h2 class="sect">${title} <span class="muted">${ns.length}</span></h2>` : '') + ns.map(n => card(by[n], names)).join('')).join('');
+      (title ? `<h2 class="sect">${title} <span class="muted">${ns.length}</span></h2>` : '') + `<div class="cgroup">${ns.map(n => card(by[n], names)).join('')}</div>`).join('');
   } else {
-    body = visible().map(d => card(d, names)).join('') || '<div class="empty">Nothing matches.</div>';
+    const vs = visible();
+    body = vs.length ? `<div class="cgroup">${vs.map(d => card(d, names)).join('')}</div>` : '<div class="empty">Nothing matches.</div>';
   }
+  const all = `<button class="plain" data-all="${S.allOpen ? 0 : 1}" title="Keys: 1 collapse all, 3 expand all">${S.allOpen ? 'collapse all' : 'expand all'}</button>`;
   const scope = S.sel ? `<div class="seg"><button data-s="slice" class="${S.scope !== 'all' ? 'on' : ''}">Around ${esc(by[S.sel]?.label || '')}</button><button data-s="all" class="${S.scope === 'all' ? 'on' : ''}">Everything</button></div>` : '<span>Select a definition to see it with what it uses and what uses it.</span>';
-  $('#main').innerHTML = `<div id="code"><div class="toolbar">${scope}<span>hover a name to see where it is · click to go there</span></div>${body}</div>`;
+  $('#main').innerHTML = `<div id="code"><div class="toolbar">${scope}${all}<span>hover a name to see where it is · click to go there</span></div>${body}</div>`;
 }
 
-// ---------- inspector: source and a small graph of neighbours ----------
+// ---------- inspector: description, neighbours, status, history ----------
+// doc lines were wrapped for the source; reflow them (a blank line keeps a paragraph break)
+const docHtml = t => esc(t).replace(/([^\n])\n(?=[^\n])/g, '$1 ').replace(/`([^`]+)`/g, '<code>$1</code>');
 function miniGraph(d) {
   const by = byName(), MAX = 8, RH = 22, W = 300;
   const left = d.deps.filter(n => by[n]).slice(0, MAX), right = d.used_by.slice(0, MAX);
@@ -740,12 +759,12 @@ function verdictBox(v) {
 function renderRight() {
   const d = S.sel && byName()[S.sel];
   const names = new Set(S.data.decls.map(x => x.name));
-  let insp = '<div class="sec"><div class="empty">Select a definition to see its source here. Keys: 1 interface, 3 source, t type map, / filter, Esc clears.</div></div>';
+  let insp = '<div class="sec"><div class="empty">Select a definition to see it here. Keys: c code, t type map, 1 collapse all, 3 expand all, / filter, Esc clears.</div></div>';
   if (d) {
     const history = S.data.log.map((e, i) => ({ e, i, c: (e.changes || []).find(c => c.name === d.name) })).filter(x => x.c).reverse();
     insp = `<div class="sec"><h3><span>${d.kind}${d.module ? ' · ' + esc(d.module) : ''}</span><span>#${d.hash.slice(0, 8)}</span></h3>
         <div class="insp-name">${esc(d.label)}</div>
-        <pre class="insp-src">${highlight(d.text['3'], names)}</pre></div>
+        ${d.doc ? `<div class="doc">${docHtml(d.doc)}</div>` : '<div class="empty">No description. Add a <code>///</code> comment above the definition.</div>'}</div>
       ${d.deps.length || d.used_by.length ? `<div class="sec"><h3>Neighbours</h3>${miniGraph(d)}</div>` : ''}
       ${d.errors.length || d.holes.length || d.verdict ? `<div class="sec"><h3>Status</h3>
         ${d.errors.map(e => `<div class="box bad">${esc(e)}</div>`).join('')}
@@ -777,8 +796,8 @@ function showArrow(fromEl, name) {
   if (!target || target.contains(fromEl)) return;
   target.classList.add('hover');
   const a = fromEl.getBoundingClientRect(), main = $('#main').getBoundingClientRect();
-  const h = target.querySelector('.card-h').getBoundingClientRect();
-  // aim at the card header, clamped to the visible part of the code area
+  const r = target.getBoundingClientRect(), h = { left: r.left, top: r.top, height: 30 };
+  // aim at the item's first line, clamped to the visible part of the code area
   const tx = h.left + 6, ty = Math.min(Math.max(h.top + h.height / 2, main.top + 8), main.bottom - 8);
   const offscreen = h.top < main.top || h.top > main.bottom;
   const sx = a.left < tx ? a.right : a.left, sy = a.top + a.height / 2;
@@ -802,13 +821,14 @@ function ago(t) {
 }
 
 function syncHash() {
-  const h = new URLSearchParams({ level: S.level, ...(S.sel ? { sel: S.sel } : {}), ...(S.scope !== 'all' ? { scope: S.scope } : {}) });
+  const h = new URLSearchParams({ level: S.level === 'types' ? 'types' : S.allOpen ? 3 : 1, ...(S.sel ? { sel: S.sel } : {}), ...(S.scope !== 'all' ? { scope: S.scope } : {}) });
   history.replaceState(null, '', '#' + h);
 }
 (function readHash() {
   const h = new URLSearchParams(location.hash.slice(1));
   if (h.has('level')) S.level = lv(h.get('level'));
-  if (!['types', 1, 3].includes(S.level)) S.level = 1;
+  if (S.level === 3) { S.level = 1; S.allOpen = true; }
+  if (!['types', 1].includes(S.level)) S.level = 1;
   if (h.has('sel')) S.sel = h.get('sel');
   if (h.has('scope')) S.scope = h.get('scope');
 })();
@@ -851,10 +871,11 @@ async function poll() {
 
 // ---------- events ----------
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-card-level],[data-go],[data-pick],[data-l],[data-s],[data-mod]');
+  const t = e.target.closest('[data-toggle],[data-all],[data-go],[data-pick],[data-l],[data-s],[data-mod]');
   if (!t) return;
-  if (t.dataset.cardLevel) { S.over[t.dataset.name] = +t.dataset.cardLevel; render(); return; }
-  if (t.dataset.l) { S.level = lv(t.dataset.l); S.over = {}; render(); return; }
+  if (t.dataset.toggle) { const d = byName()[t.dataset.toggle]; if (d) { S.open[d.name] = !isOpen(d); render(); } return; }
+  if (t.dataset.all) { S.allOpen = t.dataset.all === '1'; S.open = {}; render(); return; }
+  if (t.dataset.l) { S.level = lv(t.dataset.l); render(); return; }
   if (t.dataset.mod !== undefined) { S.closedMods ||= new Set(); S.closedMods.has(t.dataset.mod) ? S.closedMods.delete(t.dataset.mod) : S.closedMods.add(t.dataset.mod); render(); return; }
   if (t.dataset.s) { if (!t.disabled) { S.scope = t.dataset.s; render(); } return; }
   if (t.dataset.go) { clearArrow(); if (S.scope === 'all') S.scope = 'slice'; select(t.dataset.go, typeof S.level === 'number'); return; }
@@ -863,7 +884,8 @@ document.addEventListener('click', e => {
 $('#q').addEventListener('input', e => { S.q = e.target.value; render(); });
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') { if (e.key === 'Escape') { e.target.value = ''; S.q = ''; e.target.blur(); render(); } return; }
-  if (e.key === '1' || e.key === '3') { S.level = +e.key; S.over = {}; render(); }
+  if (e.key === '1' || e.key === '3') { S.level = 1; S.allOpen = e.key === '3'; S.open = {}; render(); }
+  else if (e.key === 'c') { S.level = 1; render(); }
   else if (e.key === 't') { S.level = 'types'; render(); }
   else if (e.key === '/') { e.preventDefault(); $('#q').focus(); }
   else if (e.key === 'Escape') { S.sel = null; S.scope = 'all'; render(); }
