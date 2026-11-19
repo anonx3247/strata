@@ -2,8 +2,10 @@
 // test suite.
 
 use core.*
+
 use memory.*
-use print.{demo}
+
+use print.demo
 
 // ─────────────────── model-based verification of the backend ───────────────
 // `strata verify simulate` generates random policies and random sequences of
@@ -17,12 +19,14 @@ pub type Behaviour =
   | AllSkip
   | DropOne
 
-
 pub type Step =
   | Produce { ids: List[Int where 0 <= it && it <= 5] }
   | Work { behaviour: Behaviour }
 
-pub fn scripted(b: Behaviour, attempts: List[TaskAttempt[Int]]) -> List[TaskResult[Int, String]] {
+pub fn scripted(
+  b: Behaviour,
+  attempts: List[TaskAttempt[Int]],
+) -> List[TaskResult[Int, String]] {
   match b {
     AllSucceed => attempts.map(a -> Succeeded { task: a.task }),
     AllFail => attempts.map(a -> Failed { task: a.task, error: "boom" }),
@@ -35,7 +39,10 @@ pub fn scripted(b: Behaviour, attempts: List[TaskAttempt[Int]]) -> List[TaskResu
 pub type Scripted = { behaviour: Behaviour }
 
 impl Worker[Int, String] for Scripted {
-  fn run(mut self, attempts: List[TaskAttempt[Int]]) -> List[TaskResult[Int, String]] {
+  fn run(
+    mut self,
+    attempts: List[TaskAttempt[Int]],
+  ) -> List[TaskResult[Int, String]] {
     scripted(self.behaviour, attempts)
   }
 }
@@ -44,14 +51,24 @@ impl Worker[Int, String] for Scripted {
 pub type Fixed = { tasks: List[Task[Int]] }
 
 impl Producer[Int] for Fixed {
-  fn discover(self) -> List[Task[Int]] { self.tasks }
+  fn discover(self) -> List[Task[Int]] {
+    self.tasks
+  }
 }
 
-pub fn run_steps(mut q: MemQueue[Int, String], policy: TaskPolicy, steps: List[Step]) -> () {
+pub fn run_steps(
+  mut q: MemQueue[Int, String],
+  policy: TaskPolicy,
+  steps: List[Step],
+) -> () {
   for step in steps {
     match step {
       Produce { ids } => {
-        run_producer(q, Fixed { tasks: ids.map(i -> Task { id: f"t{i}", kind: "sim", payload: i }) })
+        run_producer(q, Fixed {
+          tasks: ids.map(
+            i -> Task { id: f"t{i}", kind: "sim", payload: i },
+          ),
+        })
         ()
       },
       Work { behaviour } => {
@@ -63,8 +80,16 @@ pub fn run_steps(mut q: MemQueue[Int, String], policy: TaskPolicy, steps: List[S
   }
 }
 
-pub fn simulate(per_worker: Int where 1 <= it && it <= 3, retries: Int where 0 <= it && it <= 2, steps: List[Step]) -> List[String] {
-  let policy = TaskPolicy { max_workers: 1, tasks_per_worker: per_worker, retries }
+pub fn simulate(
+  per_worker: Int where 1 <= it && it <= 3,
+  retries: Int where 0 <= it && it <= 2,
+  steps: List[Step],
+) -> List[String] {
+  let policy = TaskPolicy {
+    max_workers: 1,
+    tasks_per_worker: per_worker,
+    retries,
+  }
   let mut q = empty_queue(policy)
   run_steps(q, policy, steps)
   describe(q)
@@ -84,7 +109,11 @@ pub fn statuses(q: MemQueue[Int, String]) -> List[Status] {
 }
 
 pub fn policy(per_worker: Positive, retries: Natural) -> TaskPolicy {
-  TaskPolicy { max_workers: 1, tasks_per_worker: per_worker, retries }
+  TaskPolicy {
+    max_workers: 1,
+    tasks_per_worker: per_worker,
+    retries,
+  }
 }
 
 test "end to end: batches of two, everything succeeds" {
@@ -98,9 +127,16 @@ test "end to end: batches of two, everything succeeds" {
 }
 
 test "retry then success" {
-  let q = queue_after(policy(1, 2), [Produce { ids: [1] }, Work { behaviour: AllFail }])
+  let q = queue_after(
+    policy(1, 2),
+    [Produce { ids: [1] }, Work { behaviour: AllFail }],
+  )
   assert statuses(q) == [Pending]
-  let q2 = queue_after(policy(1, 2), [Produce { ids: [1] }, Work { behaviour: AllFail }, Work { behaviour: AllSucceed }])
+  let q2 = queue_after(policy(1, 2), [
+    Produce { ids: [1] },
+    Work { behaviour: AllFail },
+    Work { behaviour: AllSucceed },
+  ])
   assert statuses(q2) == [Done]
   assert q2.history.map(r -> r.attempt) == [1, 2]
 }
@@ -117,29 +153,47 @@ test "retries exhausted marks the task failed and it is never claimed again" {
 }
 
 test "skipped counts as done" {
-  let q = queue_after(policy(1, 3), [Produce { ids: [1] }, Work { behaviour: AllSkip }])
+  let q = queue_after(
+    policy(1, 3),
+    [Produce { ids: [1] }, Work { behaviour: AllSkip }],
+  )
   assert statuses(q) == [Done]
 }
 
 test "producer re-run is idempotent" {
-  let q = queue_after(policy(1, 3), [Produce { ids: [4] }, Produce { ids: [4] }])
+  let q = queue_after(
+    policy(1, 3),
+    [Produce { ids: [4] }, Produce { ids: [4] }],
+  )
   assert len(q.entries) == 1
 }
 
 test "a worker that misreports gets its claim released" {
-  let q = queue_after(policy(2, 3), [Produce { ids: [1, 2] }, Work { behaviour: DropOne }])
+  let q = queue_after(
+    policy(2, 3),
+    [Produce { ids: [1, 2] }, Work { behaviour: DropOne }],
+  )
   assert statuses(q) == [Pending, Pending]
   assert q.entries.map(e -> e.attempts) == [1, 1]
 }
 
 test "a claim released on the last attempt is exhausted, not stuck pending" {
-  let q = queue_after(policy(1, 0), [Produce { ids: [1] }, Work { behaviour: DropOne }])
+  let q = queue_after(
+    policy(1, 0),
+    [Produce { ids: [1] }, Work { behaviour: DropOne }],
+  )
   assert statuses(q) == [Exhausted]
 }
 
 test "demo: job #3 fails once, then everything is done" {
   let r = demo()
   assert r.enqueued == 5
-  assert all(r.tasks, t -> contains(["task-0: Done after 1", "task-1: Done after 1", "task-2: Done after 1", "task-3: Done after 2", "task-4: Done after 1"], t))
+  assert all(r.tasks, t -> contains([
+    "task-0: Done after 1",
+    "task-1: Done after 1",
+    "task-2: Done after 1",
+    "task-3: Done after 2",
+    "task-4: Done after 1",
+  ], t))
   assert len(r.log) == 6
 }

@@ -1,11 +1,14 @@
 /// Order identifiers: `ord_` followed by 6 lowercase letters or digits.
-type OrderId = String where matches(it, "ord_[a-z0-9]{6}")
+type OrderId = String
+  where matches(it, "ord_[a-z0-9]{6}")
 
 /// How many units of an item can be on a single line.
-type Quantity = Int where 1 <= it && it <= 99
+type Quantity = Int
+  where 1 <= it && it <= 99
 
 /// Prices are in cents and never negative.
-type Cents = Int where it >= 0
+type Cents = Int
+  where it >= 0
 
 type Line = { sku: NonEmptyString, qty: Quantity, unit_price: Cents }
 
@@ -30,10 +33,15 @@ type OneOrder = { order: Option[Order] }
 impl Db for OneOrder {
   fn load(self, id: OrderId) -> Option[Order] {
     match self.order {
-      Some(o) => if order_id(o) == id { Some(o) } else { None },
+      Some(o) => if order_id(o) == id {
+        Some(o)
+      } else {
+        None
+      },
       None => None,
     }
   }
+
   fn save(mut self, o: Order) -> () {
     self.order = Some(o)
   }
@@ -48,8 +56,7 @@ fn order_id(o: Order) -> OrderId {
 }
 
 fn line_total(l: Line) -> Cents
-  ensures it == l.qty * l.unit_price
-{
+  ensures it == l.qty * l.unit_price {
   l.qty * l.unit_price
 }
 
@@ -59,22 +66,31 @@ fn total(lines: NonEmpty[Line]) -> Cents {
 
 /// 10% off orders of 100.00 or more.
 fn discount(amount: Cents) -> Cents
-  ensures it <= amount
-{
-  if amount >= 10000 { amount - amount / 10 } else { amount }
+  ensures it <= amount {
+  if amount >= 10000 {
+    amount - amount / 10
+  } else {
+    amount
+  }
 }
 
 /// Works with any `Db`: pass the real one in production, a fake in tests.
-fn ship[D: Db](mut db: D, id: OrderId, tracking: NonEmptyString) -> Result[Order, ShipError]
-  ensures match it { Ok(o) => o is Shipped, Err(_) => true }
-{
+fn ship[D: Db](
+  mut db: D,
+  id: OrderId,
+  tracking: NonEmptyString,
+) -> Result[Order, ShipError]
+  ensures match it {
+    Ok(o) => o is Shipped,
+    Err(_) => true,
+  } {
   let order = db.load(id) except { return Err(NotFound) }
   match order {
     Pending { id, lines } => {
       let o = Shipped { id, lines, tracking }
       db.save(o)
       Ok(o)
-    }
+    },
     _ => Err(NotPending),
   }
 }
@@ -87,14 +103,20 @@ fn refund(o: Order) -> Cents
 
 test "shipping a pending order saves it as shipped" {
   let line = Line { sku: "tea", qty: 2, unit_price: 450 }
-  let mut db = OneOrder { order: Some(Pending { id: "ord_abc123", lines: [line] }) }
+  let mut db = OneOrder {
+    order: Some(Pending { id: "ord_abc123", lines: [line] }),
+  }
   let r = ship(db, "ord_abc123", "TRK1")
   assert r is Ok
-  assert db.order == Some(Shipped { id: "ord_abc123", lines: [line], tracking: "TRK1" })
+  assert db.order == Some(
+    Shipped { id: "ord_abc123", lines: [line], tracking: "TRK1" },
+  )
 }
 
 test "shipping a cancelled order is rejected" {
-  let mut db = OneOrder { order: Some(Cancelled { id: "ord_abc123", reason: "fraud" }) }
+  let mut db = OneOrder {
+    order: Some(Cancelled { id: "ord_abc123", reason: "fraud" }),
+  }
   let r = ship(db, "ord_abc123", "TRK1")
   assert r == Err(NotPending)
 }
@@ -106,7 +128,10 @@ test "a mocked store never breaks ship's contract" {
 }
 
 test "totals" {
-  let lines = [Line { sku: "a", qty: 3, unit_price: 100 }, Line { sku: "b", qty: 1, unit_price: 50 }]
+  let lines = [
+    Line { sku: "a", qty: 3, unit_price: 100 },
+    Line { sku: "b", qty: 1, unit_price: 50 },
+  ]
   assert total(lines) == 350
   assert discount(20000) == 18000
 }

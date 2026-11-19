@@ -578,32 +578,13 @@ pub fn decl_body(d: &Decl) -> String {
     (if d.public { "pub " } else { "" }).to_string() + &body
 }
 
-/// Render declarations, grouping each module's into one `module m { ... }` block.
+/// The text of a file: its declarations in order, in canonical form. A file
+/// is one module, so `p` holds one module's declarations (see `module_file`).
 pub fn program(p: &Program) -> String {
-    let mut order: Vec<String> = Vec::new();
-    for d in &p.decls {
-        if !order.contains(&d.module) {
-            order.push(d.module.clone());
-        }
-    }
-    let mut out = Vec::new();
-    for m in order {
-        let body: Vec<String> = p.decls.iter().filter(|d| d.module == m).map(decl).collect();
-        if m.is_empty() {
-            out.extend(body);
-        } else {
-            out.push(module_block(&m, &body.join("\n\n")));
-        }
-    }
-    out.join("\n\n") + "\n"
+    p.decls.iter().map(decl).collect::<Vec<_>>().join("\n\n") + "\n"
 }
 
-pub fn module_block(m: &str, body: &str) -> String {
-    let inner: String = body.lines().map(|l| if l.is_empty() { "\n".to_string() } else { format!("  {l}\n") }).collect();
-    format!("module {m} {{\n{inner}}}")
-}
-
-/// Render one module's declarations as a standalone file (no `module` wrapper).
+/// One module's declarations, as the file that holds it.
 pub fn module_file(p: &Program, m: &str) -> String {
     p.decls.iter().filter(|d| d.module == m).map(decl).collect::<Vec<_>>().join("\n\n") + "\n"
 }

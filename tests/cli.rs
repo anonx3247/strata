@@ -126,7 +126,7 @@ fn builtin_collections_work() {
 #[test]
 fn every_example_round_trips_through_render() {
     let d = tmp("roundtrip");
-    for ex in ["bank.strata", "orders.strata", "builtins.strata", "traits.strata", "tasks"] {
+    for ex in ["bank.strata", "orders.strata", "builtins.strata", "traits.strata"] {
         let path = format!("{}/examples/{ex}", env!("CARGO_MANIFEST_DIR"));
         let (_, r1) = strata(&["--file", &path, "render"], &d, None);
         std::fs::write(d.join("r.strata"), &r1).unwrap();
@@ -135,6 +135,18 @@ fn every_example_round_trips_through_render() {
         let (ok, out) = strata(&["--file", "r.strata", "test"], &d, None);
         assert!(ok, "{ex} tests fail after round-trip: {out}");
     }
+    // a package: one file per module
+    let path = format!("{}/examples/tasks", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["--file", &path, "render", "--split", "t1"], &d, None);
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "t1", "render", "--split", "t2"], &d, None);
+    assert!(ok, "{out}");
+    for m in ["core", "memory", "print", "sim"] {
+        let f = format!("{m}.strata");
+        assert_eq!(std::fs::read_to_string(d.join("t1").join(&f)).unwrap(), std::fs::read_to_string(d.join("t2").join(&f)).unwrap(), "tasks/{f} does not round-trip");
+    }
+    let (ok, out) = strata(&["--file", "t2", "test"], &d, None);
+    assert!(ok, "tasks tests fail after round-trip: {out}");
 }
 
 #[test]
@@ -191,12 +203,22 @@ fn traits_laws_and_distinct_types() {
 fn modules_contracts_and_files() {
     let d = tmp("modules");
     let ex = format!("{}/examples/tasks", env!("CARGO_MANIFEST_DIR"));
-    // a folder of files is a set of modules; render --split writes it back identically
+    // a folder of files is a set of modules, one per file; render --split writes it back identically
     let (ok, out) = strata(&["--file", &ex, "render", "--split", "split"], &d, None);
     assert!(ok, "{out}");
-    let (_, a) = strata(&["--file", &ex, "render"], &d, None);
-    let (_, b) = strata(&["--file", "split", "render"], &d, None);
-    assert_eq!(a, b);
+    for m in ["core", "memory", "print", "sim"] {
+        let f = format!("{m}.strata");
+        assert_eq!(std::fs::read_to_string(format!("{ex}/{f}")).unwrap(), std::fs::read_to_string(d.join("split").join(&f)).unwrap(), "{f}");
+    }
+    // `render` prints one module; with several it asks which
+    let (ok, out) = strata(&["--file", &ex, "render", "core"], &d, None);
+    assert!(ok && out == std::fs::read_to_string(format!("{ex}/core.strata")).unwrap(), "{out}");
+    let (ok, out) = strata(&["--file", &ex, "render"], &d, None);
+    assert!(!ok && out.contains("4 modules, one file each"), "{out}");
+    // `module` blocks are gone: a file is a module
+    std::fs::write(d.join("blocks.strata"), "module a {\n  fn f() -> Int {\n    1\n  }\n}\n").unwrap();
+    let (ok, _) = strata(&["--file", "blocks.strata", "check"], &d, None);
+    assert!(!ok, "`module a {{ }}` must not parse");
     // the contract shows public definitions only
     let (ok, out) = strata(&["--file", &ex, "interface", "core"], &d, None);
     assert!(ok && out.contains("pub fn run_worker") && !out.contains("same_ids"), "{out}");
@@ -334,28 +356,27 @@ fn label(s: Status) -> String {
 #[test]
 fn rename_updates_every_reference() {
     let d = tmp("rename");
-    let src = r#"module a {
-  /// The size of `xs`; see also size_of.
-  pub fn size(xs: List[Int]) -> Int { len(xs) }
-  pub type Box = { items: List[Int] }
-  pub fn twice(xs: List[Int]) -> Int {
-    let n = size(xs)
-    let tally = x -> x + n
-    tally(size(xs))
-  }
-}
-module b {
-  use a.{size, Box}
-  fn count(x: Int) -> Int { x }
-  fn total(b: Box) -> Int { a.size(b.items) + size([]) + count(1) }
-  test "boxes" {
-    assert total(Box { items: [1, 2] }) == 3
-  }
+    let a = r#"/// The size of `xs`; see also size_of.
+pub fn size(xs: List[Int]) -> Int { len(xs) }
+pub type Box = { items: List[Int] }
+pub fn twice(xs: List[Int]) -> Int {
+  let n = size(xs)
+  let tally = x -> x + n
+  tally(size(xs))
 }
 "#;
-    std::fs::write(d.join("r.strata"), src).unwrap();
+    let b = r#"use a.{size, Box}
+fn count(x: Int) -> Int { x }
+fn total(b: Box) -> Int { a.size(b.items) + size([]) + count(1) }
+test "boxes" {
+  assert total(Box { items: [1, 2] }) == 3
+}
+"#;
+    std::fs::create_dir_all(d.join("src")).unwrap();
+    std::fs::write(d.join("src/a.strata"), a).unwrap();
+    std::fs::write(d.join("src/b.strata"), b).unwrap();
     assert!(strata(&["init"], &d, None).0);
-    assert!(strata(&["add", "r.strata"], &d, None).0);
+    assert!(strata(&["add", "src"], &d, None).0);
 
     // names that a local or another definition would capture are refused
     let (ok, out) = strata(&["rename", "a.size", "count"], &d, None);
@@ -370,7 +391,7 @@ module b {
     assert!(out.contains("docs or comments still mention `size` in: a.length"), "{out}");
     let (ok, out) = strata(&["rename", "a.Box", "Crate"], &d, None);
     assert!(ok, "{out}");
-    let (_, r) = strata(&["render"], &d, None);
+    let r = strata(&["render", "a"], &d, None).1 + &strata(&["render", "b"], &d, None).1;
     for s in ["pub fn length(xs: List[Int])", "let n = length(xs)", "tally(length(xs))", "use a.{length, Crate}", "a.length(b.items) + length([])", "fn total(b: Crate)", "Crate { items: [1, 2] }"] {
         assert!(r.contains(s), "missing {s:?} in\n{r}");
     }
@@ -624,4 +645,188 @@ fn diff_shows_changes_structurally() {
     assert!(ok && out.contains("↪ line_cents") && !out.contains("ShipError"), "{out}");
     let (ok, out) = strata(&["diff"], &d, None);
     assert!(ok && out.contains("◀ stronger guarantee") && out.contains("{+, never below zero+}"), "{out}");
+}
+
+/// Run `strata merge-file` on three texts: (exit ok, merged text, output).
+fn merge3(name: &str, base: &str, ours: &str, theirs: &str) -> (bool, String, String) {
+    let d = tmp(name);
+    for (f, t) in [("o.strata", base), ("a.strata", ours), ("b.strata", theirs)] {
+        std::fs::write(d.join(f), t).unwrap();
+    }
+    let (ok, out) = strata(&["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"], &d, None);
+    (ok, std::fs::read_to_string(d.join("a.strata")).unwrap(), out)
+}
+
+#[test]
+fn merge_file_merges_each_definition_separately() {
+    let base = "fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g(x: Int) -> Int {\n  x * 2\n}\n";
+    // ours changes f and adds k; theirs changes g and adds h
+    let ours = "fn f(x: Int) -> Int {\n  x + 10\n}\n\nfn g(x: Int) -> Int {\n  x * 2\n}\n\nfn k() -> Int {\n  f(2)\n}\n";
+    let theirs = "fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g(x: Int) -> Int {\n  x * 20\n}\n\nfn h() -> Int {\n  g(1)\n}\n";
+    let (ok, text, out) = merge3("merge-sep", base, ours, theirs);
+    assert!(ok, "{out}\n{text}");
+    assert_eq!(text, "fn f(x: Int) -> Int {\n  x + 10\n}\n\nfn g(x: Int) -> Int {\n  x * 20\n}\n\nfn h() -> Int {\n  g(1)\n}\n\nfn k() -> Int {\n  f(2)\n}\n");
+
+    // ours deletes f, theirs changes the next line (g's signature): a conflict as text, not here
+    let ours = "fn g(x: Int) -> Int {\n  x * 2\n}\n";
+    let theirs = "fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g(y: Int) -> Int {\n  y * 2\n}\n";
+    let (ok, text, out) = merge3("merge-adjacent", base, ours, theirs);
+    assert!(ok && text == "fn g(y: Int) -> Int {\n  y * 2\n}\n", "{out}\n{text}");
+    let d = tmp("merge-sep-text");
+    for (f, t) in [("o", base), ("a", ours), ("b", theirs)] {
+        std::fs::write(d.join(f), t).unwrap();
+    }
+    let plain = Command::new("git").args(["merge-file", "-p", "a", "o", "b"]).current_dir(&d).output().unwrap();
+    assert_eq!(plain.status.code(), Some(1), "plain git conflicts on these");
+
+    // one definition changed on both sides, in different places: merged line by line
+    let base = "fn f(x: Int) -> Int {\n  let a = x + 1\n  let b = a * 2\n  let c = b - 3\n  c\n}\n";
+    let ours = "fn f(x: Int) -> Int {\n  let a = x + 100\n  let b = a * 2\n  let c = b - 3\n  c\n}\n";
+    let theirs = "fn f(x: Int) -> Int {\n  let a = x + 1\n  let b = a * 2\n  let c = b - 300\n  c\n}\n";
+    let (ok, text, out) = merge3("merge-lines", base, ours, theirs);
+    assert!(ok && text.contains("x + 100") && text.contains("b - 300"), "{out}\n{text}");
+
+    // the same line changed on both sides: markers around that definition only
+    let base = "fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g(x: Int) -> Int {\n  x * 2\n}\n";
+    let ours = "fn f(x: Int) -> Int {\n  x + 2\n}\n\nfn g(x: Int) -> Int {\n  x * 2\n}\n";
+    let theirs = "fn f(x: Int) -> Int {\n  x + 3\n}\n\nfn g(x: Int) -> Int {\n  x * 3\n}\n";
+    let (ok, text, out) = merge3("merge-conflict", base, ours, theirs);
+    assert!(!ok && out.contains("conflict in f"), "{out}");
+    assert!(text.contains("<<<<<<< ours\n") && text.contains("||||||| base\n") && text.contains(">>>>>>> theirs"), "{text}");
+    assert!(text.ends_with("fn g(x: Int) -> Int {\n  x * 3\n}\n"), "g merges cleanly: {text}");
+
+    // changed on one side, deleted on the other
+    let (ok, _, out) = merge3("merge-delete", base, "fn g(x: Int) -> Int {\n  x * 2\n}\n", ours);
+    assert!(!ok && out.contains("f (deleted in ours, changed in theirs)"), "{out}");
+}
+
+#[test]
+fn merge_file_follows_renames_and_type_checks() {
+    let base = "fn area(w: Int, h: Int) -> Int {\n  w * h\n}\n\nfn square(s: Int) -> Int {\n  area(s, s)\n}\n";
+    // ours renames `area` (as `strata rename` would); theirs adds a caller of the old name
+    let ours = "fn rect_area(w: Int, h: Int) -> Int {\n  w * h\n}\n\nfn square(s: Int) -> Int {\n  rect_area(s, s)\n}\n";
+    let theirs = format!("{base}\nfn double_square(s: Int) -> Int {{\n  area(s, s) * 2\n}}\n");
+    let (ok, text, out) = merge3("merge-rename", base, ours, &theirs);
+    assert!(ok, "{out}\n{text}");
+    assert!(out.contains("ours renamed area → rect_area; applied to theirs"), "{out}");
+    assert!(text.contains("rect_area(s, s) * 2") && !text.contains(" area(") && !text.contains("fn area"), "{text}");
+
+    // renamed and edited: recognised by the callers that follow the new name
+    let ours = "/// width times height\nfn rect_area(w: Int, h: Int) -> Int {\n  h * w\n}\n\nfn square(s: Int) -> Int {\n  rect_area(s, s)\n}\n";
+    let (ok, text, out) = merge3("merge-rename-edit", base, ours, &theirs);
+    assert!(ok && text.contains("rect_area(s, s) * 2") && text.contains("h * w") && !text.contains(" area("), "{out}\n{text}");
+    // a new definition that merely looks like a deleted one is not a rename
+    let ours = "fn square(s: Int) -> Int {\n  s * s\n}\n\nfn cube(s: Int) -> Int {\n  s * s * s\n}\n";
+    let (_, _, out) = merge3("merge-not-rename", base, ours, base);
+    assert!(!out.contains("renamed"), "{out}");
+
+    // each side checks on its own, but not together: ours adds a parameter, theirs a call without it
+    let ours = "fn area(w: Int, h: Int, d: Int) -> Int {\n  w * h * d\n}\n\nfn square(s: Int) -> Int {\n  area(s, s, 1)\n}\n";
+    let (ok, _, out) = merge3("merge-semantic", base, ours, &theirs);
+    assert!(!ok && out.contains("doesn't check") && out.contains("double_square"), "{out}");
+
+    // sides that don't parse are merged as text
+    let (ok, text, out) = merge3("merge-text", "fn (\n", "fn (\nours\n", "fn (\n");
+    assert!(ok && text == "fn (\nours\n" && out.contains("merging it as text"), "{out}");
+}
+
+fn git(dir: &std::path::Path, args: &[&str]) -> String {
+    let o = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stdout).to_string()
+}
+
+fn strata_git(args: &[&str], dir: &std::path::Path) -> (bool, String) {
+    let o = Command::new(env!("CARGO_BIN_EXE_strata"))
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .output()
+        .unwrap();
+    (o.status.success(), String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr))
+}
+
+#[test]
+fn ci_checks_packages_scripts_and_canonical_format() {
+    let d = tmp("ci");
+    git(&d, &["init", "-q", "-b", "main"]);
+    std::fs::create_dir_all(d.join("shop/tools")).unwrap();
+    std::fs::write(d.join("shop/strata.toml"), "name = \"shop\"\nexports = [\"orders.total\"]\n").unwrap();
+    std::fs::write(d.join("shop/orders.strata"), "pub fn total(xs: List[Int]) -> Int { sum(xs) }\n").unwrap();
+    std::fs::write(d.join("shop/main.strata"), "use orders.total\n\nfn run() -> Int {\n  total([1, 2])\n}\n").unwrap();
+    // a package nested in another is a separate program: its `use` doesn't see shop's modules
+    std::fs::write(d.join("shop/tools/strata.toml"), "name = \"tools\"\n").unwrap();
+    std::fs::write(d.join("shop/tools/main.strata"), "fn one() -> Int {\n  1\n}\n").unwrap();
+    // a file outside every package is a script
+    std::fs::write(d.join("loose.strata"), "fn x() -> Int {\n  1\n}\n").unwrap();
+    let (ok, out) = strata_git(&["ci"], &d);
+    assert!(!ok && out.contains("shop/orders.strata: not in canonical format"), "{out}");
+    assert!(out.contains("✓ package shop (shop): 3 definitions") && out.contains("✓ package tools (shop/tools): 1 definitions") && out.contains("✓ loose.strata"), "{out}");
+    let (ok, out) = strata_git(&["ci", "--fix"], &d);
+    assert!(ok, "{out}");
+    let (ok, out) = strata_git(&["ci"], &d);
+    assert!(ok, "{out}");
+
+    // exports must name a module or a `pub` definition
+    std::fs::write(d.join("shop/strata.toml"), "name = \"shop\"\nexports = [\"orders.totl\", \"run\"]\n").unwrap();
+    let (ok, out) = strata_git(&["ci"], &d);
+    assert!(!ok && out.contains("exports `orders.totl`, which is neither") && out.contains("exports `run`, which isn't `pub`"), "{out}");
+    std::fs::write(d.join("shop/strata.toml"), "name = \"shop\"\nversion = 1\n").unwrap();
+    let (_, out) = strata_git(&["ci"], &d);
+    assert!(out.contains("unknown field `version`"), "{out}");
+
+    // `init` names the package after its folder; the name stays when the folder moves
+    let e = d.join("billing");
+    std::fs::create_dir_all(&e).unwrap();
+    let (ok, out) = strata(&["init"], &e, None);
+    assert!(ok && std::fs::read_to_string(e.join("strata.toml")).unwrap() == "name = \"billing\"\n", "{out}");
+}
+
+#[test]
+fn sync_merges_main_with_the_driver_then_checks() {
+    let d = tmp("sync");
+    git(&d, &["init", "-q", "-b", "main"]);
+    let base = "fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g(x: Int) -> Int {\n  x * 2\n}\n";
+    std::fs::write(d.join("app.strata"), base).unwrap();
+    git(&d, &["add", "."]);
+    git(&d, &["commit", "-q", "-m", "base"]);
+    git(&d, &["checkout", "-q", "-b", "feature"]);
+    std::fs::write(d.join("app.strata"), "fn g(x: Int) -> Int {\n  x * 2\n}\n").unwrap();
+    git(&d, &["commit", "-q", "-am", "feature: drop f"]);
+    git(&d, &["checkout", "-q", "main"]);
+    std::fs::write(d.join("app.strata"), base.replace("g(x: Int) -> Int {\n  x * 2", "g(y: Int) -> Int {\n  y * 20")).unwrap();
+    git(&d, &["commit", "-q", "-am", "main: g"]);
+    git(&d, &["checkout", "-q", "feature"]);
+
+    // plain git conflicts: f's deletion touches the line before g's signature
+    let (ok, out) = strata_git(&["sync", "main"], &d);
+    assert!(ok && out.contains("merged main") && out.contains("✓ app.strata"), "{out}");
+    let merged = std::fs::read_to_string(d.join("app.strata")).unwrap();
+    assert_eq!(merged, "fn g(y: Int) -> Int {\n  y * 20\n}\n");
+    assert!(git(&d, &["log", "-1", "--format=%p"]).split_whitespace().count() == 2, "a merge commit");
+    let (ok, out) = strata_git(&["sync", "main"], &d);
+    assert!(ok && out.contains("already up to date"), "{out}");
+
+    // a merge that doesn't check is left staged, not committed
+    git(&d, &["checkout", "-q", "main"]);
+    std::fs::write(d.join("app.strata"), merged.replace("fn g(y: Int)", "fn g(x: Int, y: Int)").replace("y * 20", "x * y")).unwrap();
+    git(&d, &["commit", "-q", "-am", "main: g takes two"]);
+    git(&d, &["checkout", "-q", "feature"]);
+    std::fs::write(d.join("app.strata"), merged.clone() + "\nfn h() -> Int {\n  g(1)\n}\n").unwrap();
+    git(&d, &["commit", "-q", "-am", "feature: h"]);
+    let head = git(&d, &["rev-parse", "HEAD"]);
+    let (ok, out) = strata_git(&["sync", "main"], &d);
+    assert!(!ok && out.contains("doesn't check"), "{out}");
+    assert_eq!(git(&d, &["rev-parse", "HEAD"]), head, "nothing committed");
 }

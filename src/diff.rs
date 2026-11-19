@@ -129,7 +129,7 @@ fn fine_segments(a: &str, b: &str) -> Vec<(char, String)> {
     out
 }
 
-fn similarity(a: &str, b: &str) -> f64 {
+pub fn similarity(a: &str, b: &str) -> f64 {
     let (ta, tb): (Vec<&str>, Vec<&str>) = (tokens(a).into_iter().filter(|t| !t.trim().is_empty()).collect(), tokens(b).into_iter().filter(|t| !t.trim().is_empty()).collect());
     if ta.is_empty() && tb.is_empty() {
         return 1.0;
