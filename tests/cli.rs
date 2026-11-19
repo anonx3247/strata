@@ -115,7 +115,7 @@ fn builtin_collections_work() {
     let d = tmp("builtins");
     let ex = format!("{}/examples/builtins.strata", env!("CARGO_MANIFEST_DIR"));
     let (ok, out) = strata(&["--file", &ex, "test"], &d, None);
-    assert!(ok && out.contains("1 passed"), "{out}");
+    assert!(ok && out.contains("2 passed"), "{out}");
     let (ok, out) = strata(&["--file", &ex, "verify"], &d, None);
     assert!(ok, "{out}");
     std::fs::write(d.join("e.strata"), "fn f(x: Int) -> Float { x * 1.5 }\nfn g(b: Bool) -> Int { len(b) }\n").unwrap();

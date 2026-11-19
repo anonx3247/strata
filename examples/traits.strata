@@ -17,7 +17,7 @@ trait Describe {
 /// `summary` for free; implementing it requires `Describe` and `Priced`.
 trait Summary: Describe + Priced {
   fn summary(self) -> String {
-    self.describe() + ": " + to_string(self.price()) + "c"
+    f"{self.describe()}: {self.price()}c"
   }
 }
 
@@ -57,14 +57,14 @@ impl Summary for Bundle {}
 
 /// Traits can be implemented for built-in types too.
 impl Describe for Int {
-  fn describe(self) -> String { "the number " + to_string(self) }
+  fn describe(self) -> String { f"the number {self}" }
 }
 
 /// A stock-keeping unit: a separate type, so it can't be confused with any other string.
 distinct type Sku = String where matches(it, "[A-Z]{3}-[0-9]{1,4}")
 
 impl Describe for Sku {
-  fn describe(self) -> String { "SKU " + self.value }
+  fn describe(self) -> String { f"SKU {self.value}" }
 }
 
 type Money = { cents: Int }

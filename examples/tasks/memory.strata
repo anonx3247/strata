@@ -15,14 +15,14 @@ pub type Status =
   | Done
   | Exhausted
 
-pub type Entry[P] = { task: Task[P], status: Status, attempts: Int }
+pub type Entry[P] = { task: Task[P], status: Status, attempts: Natural }
 
 /// One row of the reference `results` table.
-pub type Row[P, E] = { attempt: AttemptNo, result: TaskResult[P, E] }
+pub type Row[P, E] = { attempt: Positive, result: TaskResult[P, E] }
 
 pub type MemQueue[P, E] = { policy: TaskPolicy, entries: List[Entry[P]], history: List[Row[P, E]] }
   where unique_ids(it.entries)
-    && all(it.entries, e -> 0 <= e.attempts && e.attempts <= max_attempts(it.policy))
+    && all(it.entries, e -> e.attempts <= max_attempts(it.policy))
     && all(it.entries, e -> e.status is Running ==> e.attempts >= 1)
     && all(it.entries, e -> e.status is Exhausted ==> e.attempts == max_attempts(it.policy))
     && all(it.entries, e -> e.status is Pending ==> e.attempts < max_attempts(it.policy))
@@ -36,17 +36,12 @@ pub fn empty_queue[P, E](policy: TaskPolicy) -> MemQueue[P, E] {
 }
 
 fn status_of[P, E](q: MemQueue[P, E], id: TaskId) -> Option[Status] {
-  match find(q.entries, e -> e.task.id == id) {
-    Some(e) => Some(e.status),
-    None => None,
-  }
+  Some(q.entries.find(e -> e.task.id == id)?.status)
 }
 
-fn attempts_of[P, E](q: MemQueue[P, E], id: TaskId) -> Int {
-  match find(q.entries, e -> e.task.id == id) {
-    Some(e) => e.attempts,
-    None => 0,
-  }
+fn attempts_of[P, E](q: MemQueue[P, E], id: TaskId) -> Natural {
+  let entry = q.entries.find(e -> e.task.id == id) except { return 0 }
+  entry.attempts
 }
 
 /// INSERT OR IGNORE: tasks whose id is already known are skipped.
@@ -54,15 +49,16 @@ pub fn mem_enqueue[P, E](q: MemQueue[P, E], tasks: List[Task[P]]) -> (MemQueue[P
   ensures 0 <= it.1 && it.1 <= len(tasks)
   ensures len(it.0.entries) == len(q.entries) + it.1
 {
-  fold(tasks, (q, 0), (acc, t) -> {
-    let (s, n) = acc
-    if any(s.entries, e -> e.task.id == t.id) {
-      acc
-    } else {
+  let mut next = q
+  let mut added = 0
+  for t in tasks {
+    if !any(next.entries, e -> e.task.id == t.id) {
       let fresh = Entry { task: t, status: Pending, attempts: 0 }
-      (MemQueue { ..s, entries: push(s.entries, fresh) }, n + 1)
+      next = MemQueue { ..next, entries: push(next.entries, fresh) }
+      added = added + 1
     }
-  })
+  }
+  (next, added)
 }
 
 /// Claim up to `limit` pending tasks with attempts left, oldest first.
@@ -156,5 +152,5 @@ impl[P, E] Queue[P, E] for MemQueue[P, E] {
 
 /// A one-line summary per task, for reports and assertions.
 pub fn describe[P, E](q: MemQueue[P, E]) -> List[String] {
-  q.entries.map(e -> e.task.id + ": " + to_string(e.status) + " after " + to_string(e.attempts))
+  q.entries.map(e -> f"{e.task.id}: {e.status} after {e.attempts}")
 }

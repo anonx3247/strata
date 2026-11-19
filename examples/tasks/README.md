@@ -23,9 +23,9 @@ strata ui --file examples/tasks                   # browse it
 
 | Reference (Python / TS) | Strata |
 |---|---|
-| `Task[T: BaseModel]` (Pydantic) | `type Task[P] = { id: TaskId, kind: Kind, payload: P }`. Every type is JSON-serialisable, so no bound is needed. |
+| `Task[T: BaseModel]` (Pydantic) | `type Task[P] = { id: TaskId, kind: NonEmptyString, payload: P }`. Every type is JSON-serialisable, so no bound is needed. |
 | `TaskResult(result: Literal[...], error: BaseModel \| None)` | `Succeeded \| Failed { error: E } \| Skipped`: "success with an error" cannot be represented |
-| `TaskPolicy` with `Field(ge=1)` validators | refined field types (`Positive`, `Retries`): an invalid policy can't be constructed |
+| `TaskPolicy` with `Field(ge=1)` validators | refined field types (`Positive`, `Natural`): an invalid policy can't be constructed |
 | `Producer` / `Worker` protocols + `resources` | `trait Producer[P]` / `trait Worker[P, E]`: an implementation carries its resources in its fields (`PrintWorker { console }`) |
 | `TaskQueue` ABC + `SqliteTaskQueue` | `trait Queue[P, E]` (enqueue / claim / record / release, **with contracts**) + one implementation per backend; operations return the backend's next state |
 | "entrypoints contain only wiring" | entrypoints take the queue and worker as values; see `demo` |

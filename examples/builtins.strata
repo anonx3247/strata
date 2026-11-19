@@ -23,7 +23,7 @@ fn frequencies(ws: List[NonEmptyString]) -> Dict[NonEmptyString, Int]
 fn top(freq: Dict[NonEmptyString, Int], n: Natural) -> List[(NonEmptyString, Int)]
   ensures len(it) <= n
 {
-  take(sort_by(items(freq), pair -> (0 - pair.1, pair.0)), n)
+  take(sort_by(items(freq), pair -> (-pair.1, pair.0)), n)
 }
 
 /// Share of words that occur only once.
@@ -68,4 +68,27 @@ test "dicts, sets, tuples and floats" {
   assert keys(dict([("b", 2), ("a", 1)])) == ["a", "b"]
   assert parse_int(" 42 ") == Some(42)
   assert round(2.6) == 3
+}
+
+// Strings are UTF-8 and indexed by character.
+
+/// "ada lovelace" -> "Ada Lovelace"
+fn title_case(s: String) -> String {
+  join(split(s, " ").map(w -> to_upper(slice(w, 0, 1)) + slice(w, 1, len(w))), " ")
+}
+
+/// The digits of a string, as a number, if it has any.
+fn digits(s: String) -> Option[Natural] {
+  let ds = s.chars().filter(is_digit)
+  parse_int(join(ds, ""))
+}
+
+test "strings" {
+  assert title_case("ada lovelace") == "Ada Lovelace"
+  assert digits("tel: 06-12") == Some(612)
+  assert digits("none") == None
+  let name = "Zoë"
+  assert f"{name} has {len(name)} letters" == "Zoë has 3 letters"
+  assert name.get(2) == Some("ë") && name.index_of("ë") == Some(2)
+  assert "a-b-c".replace("-", "+") == "a+b+c"
 }

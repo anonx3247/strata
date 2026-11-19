@@ -3,9 +3,9 @@
 use core.*
 use memory.*
 
-pub type PrintJob = { message: String, fail_times: Natural }
+pub type PrintJob = { message: NonEmptyString, fail_times: Natural }
 
-pub type Boom = { reason: String }
+pub type Boom = { reason: NonEmptyString }
 
 /// Where the print worker writes.
 pub trait Console {
@@ -27,9 +27,9 @@ pub type PrintProducer = { count: Natural }
 impl Producer[PrintJob] for PrintProducer {
   fn discover(self) -> List[Task[PrintJob]] {
     range(0, self.count).map(i -> Task {
-      id: "task-" + to_string(i),
+      id: f"task-{i}",
       kind: "print",
-      payload: PrintJob { message: "job #" + to_string(i), fail_times: if i == 3 { 1 } else { 0 } },
+      payload: PrintJob { message: f"job #{i}", fail_times: if i == 3 { 1 } else { 0 } },
     })
   }
 }
@@ -42,7 +42,7 @@ impl Worker[PrintJob, Boom] for PrintWorker {
   fn run(mut self, attempts: List[TaskAttempt[PrintJob]]) -> List[TaskResult[PrintJob, Boom]] {
     let mut results = []
     for a in attempts {
-      self.console.print("[attempt " + to_string(a.attempt) + "] " + a.task.payload.message)
+      self.console.print(f"[attempt {a.attempt}] {a.task.payload.message}")
       if a.attempt <= a.task.payload.fail_times {
         results = push(results, Failed { task: a.task, error: Boom { reason: "boom" } })
       } else {
