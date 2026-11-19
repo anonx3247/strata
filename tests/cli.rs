@@ -376,7 +376,7 @@ module b {
 
 /// Run the `test` blocks of `src` and check that it round-trips through `render`.
 fn run_tests(name: &str, src: &str, passed: &str) {
-    let d = tmp(name);
+    let d = tmp(&format!("lang-{name}"));
     std::fs::write(d.join("a.strata"), src).unwrap();
     let (ok, out) = strata(&["--file", "a.strata", "test"], &d, None);
     assert!(ok && out.contains(passed), "{out}");
@@ -388,7 +388,7 @@ fn run_tests(name: &str, src: &str, passed: &str) {
 
 /// `check` on `src` fails with a message containing `msg`.
 fn check_fails(name: &str, src: &str, msg: &str) {
-    let d = tmp(name);
+    let d = tmp(&format!("lang-{name}"));
     std::fs::write(d.join("a.strata"), src).unwrap();
     let (ok, out) = strata(&["--file", "a.strata", "check"], &d, None);
     assert!(!ok && out.contains(msg), "{out}");
@@ -438,4 +438,82 @@ test "arrows" {
     );
     check_fails("oldlambda", "fn f() -> List[Int] { [1].map(|x| x) }", "lambdas are written `x -> body`");
     check_fails("lambdatype", "fn f() -> List[Int] { [1].map((s: String) -> 1) }", "lambda parameter `s`");
+}
+
+#[test]
+fn return_propagation_and_except() {
+    run_tests(
+        "errors",
+        r#"type ParseError =
+  | Empty
+  | NotANumber(String)
+
+fn parse(s: String) -> Result[Int, ParseError] {
+  if s == "" { return Err(Empty) }
+  match parse_int(s) {
+    Some(n) => Ok(n),
+    None => Err(NotANumber(s)),
+  }
+}
+
+fn sum_two(a: String, b: String) -> Result[Int, ParseError] {
+  let x = parse(a)!
+  Ok(x + parse(b)!)
+}
+
+fn first_even(xs: List[Int]) -> Option[Int] {
+  let x = xs.find(x -> x % 2 == 0)?
+  Some(x * 10)
+}
+
+fn or_zero(s: String) -> Int { parse(s) except { 0 } }
+
+fn describe(s: String) -> String {
+  let n = parse(s) except e {
+    return match e {
+      Empty => "empty",
+      NotANumber(t) => "not a number: " + t,
+    }
+  }
+  "the number " + to_string(n)
+}
+
+fn first_negative(xs: List[Int]) -> Int {
+  for x in xs {
+    if x < 0 { return x }
+  }
+  0
+}
+
+test "errors" {
+  assert sum_two("1", "2") == Ok(3)
+  assert sum_two("1", "x") == Err(NotANumber("x"))
+  assert sum_two("", "x") == Err(Empty)
+  assert first_even([1, 4, 5]) == Some(40)
+  assert first_even([1, 3]) == None
+  assert or_zero("12") == 12
+  assert or_zero("zz") == 0
+  assert first_negative([3, -2, -5]) == -2
+  assert first_negative([3]) == 0
+  let f = x -> {
+    if x > 1 { return "big" }
+    "small"
+  }
+  assert describe("7") == "the number 7"
+  assert describe("q") == "not a number: q"
+  assert describe("") == "empty"
+  assert f(5) == "big" && f(0) == "small"
+  assert [1, 2, 3].find(x -> x > 5) except { 9 } == 9
+}
+"#,
+        "1 passed",
+    );
+    let pre = "fn p(s: String) -> Result[Int, String] { Err(s) }\n";
+    check_fails("bang", &format!("{pre}fn f() -> Int {{ p(\"a\")! }}"), "`!` returns the error early, so the result type must be `Result[");
+    check_fails("bangerr", &format!("{pre}fn f() -> Result[Int, Int] {{ Ok(p(\"a\")!) }}"), "`!` returns the error early");
+    check_fails("qonresult", &format!("{pre}fn f() -> Option[Int] {{ Some(p(\"a\")?) }}"), "`?` needs an Option");
+    check_fails("exceptname", "fn f() -> Int { [1].find(x -> x > 0) except e { 0 } }", "an Option has no error to name");
+    check_fails("exceptint", "fn f() -> Int { 1 except { 0 } }", "`except` handles a Result or an Option");
+    check_fails("returntest", "test \"t\" { return 1 }", "`return` outside a function");
+    check_fails("returntype", "fn f() -> Int { return \"a\" }", "`return` value");
 }

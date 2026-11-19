@@ -108,7 +108,8 @@ fn prec(e: &Expr) -> u8 {
             BinOp::Mul | BinOp::Div | BinOp::Mod => 6,
         },
         Expr::Is(..) => 3,
-        Expr::Lambda(..) => 0,
+        Expr::Lambda(..) | Expr::Return(..) => 0,
+        Expr::Except(..) => 7,
         Expr::Un(..) => 7,
         _ => 8,
     }
@@ -293,6 +294,24 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         }
         Expr::Block(..) => block(e, d),
         Expr::Mock(t) => format!("mock {}", ty(t)),
+        Expr::Return(x) if **x == Expr::Unit => "return".into(),
+        Expr::Return(x) => format!("return {}", expr(x, d)),
+        Expr::Try(x, k) => format!("{}{}", wrap(x, 8, d), if *k == TryKind::Result { "!" } else { "?" }),
+        Expr::Except(x, name, fb) => {
+            let head = match name {
+                Some(n) => format!("{} except {n}", wrap(x, 8, d)),
+                None => format!("{} except", wrap(x, 8, d)),
+            };
+            // a short fallback stays on the line: `load(p) except { default() }`
+            let short = match &**fb {
+                Expr::Block(..) => None,
+                e => Some(expr(e, d + 1)).filter(|s| !s.contains('\n') && !too_long(&format!("{head} {{ {s} }}"), d)),
+            };
+            match short {
+                Some(s) => format!("{head} {{ {s} }}"),
+                None => format!("{head} {}", block(fb, d)),
+            }
+        }
     }
 }
 

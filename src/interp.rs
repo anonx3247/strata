@@ -114,6 +114,9 @@ pub enum FaultKind {
     /// Control flow, caught by the enclosing loop.
     Break,
     Continue,
+    /// `return`, `!` or `?`, caught by the enclosing function or lambda; the
+    /// value is in `Interp::returning`.
+    Return,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -140,6 +143,8 @@ pub struct Interp<'a> {
     /// Final values of the `mut` parameters of the call that just returned,
     /// to be written back to the caller's variables.
     writeback: Vec<(usize, Value)>,
+    /// The value of the `return` (or `!` / `?`) being carried out.
+    returning: Option<Value>,
 }
 
 fn short(c: &str) -> &str {
@@ -244,6 +249,7 @@ impl<'a> Interp<'a> {
             depth: 0,
             regexes: HashMap::new(),
             writeback: vec![],
+            returning: None,
         }
     }
 
@@ -500,7 +506,7 @@ impl<'a> Interp<'a> {
                 );
             }
         }
-        let result = self.eval(&f.body, &scope)?;
+        let result = self.eval_body(&f.body, &scope)?;
         if let Some(e) = self.check_type_in(&f.ret, &result, &scope)? {
             return self.fail(FaultKind::Refinement, format!("result of `{name}`: {e}"));
         }
@@ -544,7 +550,7 @@ impl<'a> Interp<'a> {
                 for (p, a) in ps.iter().zip(args) {
                     s = extend(&s, p, a);
                 }
-                self.eval(&body, &s)
+                self.eval_body(&body, &s)
             }
             other => self.fail(FaultKind::Runtime, format!("{} is not a function", to_json(&other))),
         }
@@ -815,6 +821,19 @@ impl<'a> Interp<'a> {
     }
 
     // ---------------- evaluation ----------------
+
+    /// Evaluate a function or lambda body, catching an early `return`.
+    fn eval_body(&mut self, body: &Expr, s: &Scope) -> R<Value> {
+        match self.eval(body, s) {
+            Err(f) if f.kind == FaultKind::Return => Ok(self.returning.take().unwrap_or(Value::Unit)),
+            r => r,
+        }
+    }
+
+    fn early_return<T>(&mut self, v: Value) -> R<T> {
+        self.returning = Some(v);
+        Err(Fault { kind: FaultKind::Return, msg: "`return` outside a function".into(), stack: vec![] })
+    }
 
     /// Run one iteration; `Ok(true)` means the loop should stop (`break`).
     fn loop_body(&mut self, b: &Expr, s: &Scope) -> R<bool> {
@@ -1122,6 +1141,27 @@ impl<'a> Interp<'a> {
                 self.eval(last, &sc)?
             }
             Expr::Mock(t) => Value::Mock(t.clone()),
+            Expr::Return(x) => {
+                let v = self.eval(x, s)?;
+                return self.early_return(v);
+            }
+            Expr::Try(x, _) => match self.eval(x, s)? {
+                Value::Variant(c, Fields::Pos(mut xs)) if (c == "Ok" || c == "Some") && xs.len() == 1 => xs.pop().unwrap(),
+                v @ Value::Variant(..) => return self.early_return(v),
+                other => return self.fail(FaultKind::Runtime, format!("`!` / `?` on {}, not a Result or Option", to_json(&other))),
+            },
+            Expr::Except(x, name, fb) => match self.eval(x, s)? {
+                Value::Variant(c, Fields::Pos(mut xs)) if (c == "Ok" || c == "Some") && xs.len() == 1 => xs.pop().unwrap(),
+                Value::Variant(c, Fields::Pos(mut xs)) if c == "Err" && xs.len() == 1 => {
+                    let s2 = match name {
+                        Some(n) => extend(s, n, xs.pop().unwrap()),
+                        None => s.clone(),
+                    };
+                    self.eval(fb, &s2)?
+                }
+                Value::Variant(..) => self.eval(fb, s)?,
+                other => return self.fail(FaultKind::Runtime, format!("`except` on {}, not a Result or Option", to_json(&other))),
+            },
         })
     }
 

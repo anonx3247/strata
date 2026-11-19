@@ -352,6 +352,23 @@ pub enum Expr {
     /// `mock Db`: an implementation of a trait whose methods return generated
     /// values that satisfy the trait's contracts.
     Mock(TypeExpr),
+    /// `return e` (`return` alone returns `()`): leave the enclosing function
+    /// or lambda early.
+    Return(Box<Expr>),
+    /// `e!`: the `Ok` value of a `Result`, or return its `Err` from the function.
+    /// `e?`: the `Some` value of an `Option`, or return `None` from the function.
+    Try(Box<Expr>, TryKind),
+    /// `e except { fallback }`, `e except err { fallback }`: the `Ok` / `Some`
+    /// value, or else the fallback, which can use the error under `err`.
+    Except(Box<Expr>, Option<String>, Box<Expr>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum TryKind {
+    /// `!` on a `Result`
+    Result,
+    /// `?` on an `Option`
+    Option,
 }
 
 /// A lambda parameter, with an optional type: `x` or `x: Int`.

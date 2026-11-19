@@ -45,7 +45,7 @@ fn is_upper(s: &str) -> bool {
 
 const KEYWORDS: &[&str] = &[
     "type", "fn", "test", "let", "if", "else", "match", "mock", "where", "mut", "while", "for", "in", "loop", "break", "continue",
-    "requires", "ensures", "true", "false", "is", "assert", "trait", "impl", "law", "for", "pub", "use",
+    "requires", "ensures", "true", "false", "is", "assert", "trait", "impl", "law", "for", "pub", "use", "return", "except",
 ];
 
 impl Parser {
@@ -652,6 +652,21 @@ impl Parser {
                 } else {
                     e = Expr::Field(Box::new(e), name);
                 }
+            } else if self.is_sym("!") && !self.nl_before() {
+                self.next();
+                e = Expr::Try(Box::new(e), TryKind::Result);
+            } else if self.is_sym("?") && !self.nl_before() {
+                self.next();
+                e = Expr::Try(Box::new(e), TryKind::Option);
+            } else if self.eat_kw("except") {
+                let name = match self.peek().clone() {
+                    Tok::Ident(n) if !KEYWORDS.contains(&n.as_str()) => {
+                        self.next();
+                        Some(n)
+                    }
+                    _ => None,
+                };
+                e = Expr::Except(Box::new(e), name, Box::new(self.block()?));
             } else {
                 break;
             }
@@ -746,6 +761,13 @@ impl Parser {
                     arms.push(Arm { comments, pat, body });
                 }
                 Ok(Expr::Match(Box::new(scrut), arms))
+            }
+            Tok::Ident(kw) if kw == "return" => {
+                self.next();
+                if self.nl_before() || matches!(self.peek(), Tok::Sym("}" | ")" | "," | ";") | Tok::Eof) {
+                    return Ok(Expr::Return(Box::new(Expr::Unit)));
+                }
+                Ok(Expr::Return(Box::new(self.expr()?)))
             }
             Tok::Ident(kw) if kw == "mock" => {
                 self.next();
