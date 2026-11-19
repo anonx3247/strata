@@ -659,6 +659,9 @@ fn run() -> Result<bool, String> {
             let analysis = termination::analyze(&env, solver_bin);
             let transparent = &analysis.transparent;
             let require: Vec<String> = args.val("--require").map(|r| r.split(',').map(|s| s.trim().to_string()).collect()).unwrap_or_default();
+            // the package's `[verify]` rules apply too
+            let policy = package::find(std::path::Path::new(args.val("--file").unwrap_or("."))).ok().flatten().map(|p| p.verify).unwrap_or_default();
+            let mut module_of: HashMap<String, String> = HashMap::new();
             for r in &require {
                 if !["proven", "terminates", "no-recursion"].contains(&r.as_str()) {
                     return Err(format!("unknown requirement `{r}` (use proven, terminates, no-recursion)"));
@@ -668,7 +671,7 @@ fn run() -> Result<bool, String> {
                 // show the queries instead of running them
                 for d in &resolved.decls {
                     if let (true, DeclKind::Fn(f)) = (names.contains(&d.qname()), &d.kind) {
-                        for (what, q) in verify::smt_queries(&env, f, transparent) {
+                        for (what, q) in verify::smt_queries(&env, f, transparent).into_iter().chain(termination::queries(&env, f, solver_bin)) {
                             println!("; {} — {what}\n{q}", f.name);
                         }
                     }
@@ -718,6 +721,7 @@ fn run() -> Result<bool, String> {
                     if worst.as_ref().map_or(true, |w| verdict.rank() > w.rank()) {
                         worst = Some(verdict.clone());
                     }
+                    module_of.insert(label.clone(), orig.module.clone());
                     results.push((label, verdict, cached));
                 }
                 // the viewer shows one status per definition
@@ -734,16 +738,31 @@ fn run() -> Result<bool, String> {
                 if n.starts_with("law ") {
                     continue;
                 }
-                if require.iter().any(|r| r == "proven") && !matches!(v, verify::Verdict::Proven { .. }) {
-                    violations.push(format!("`{n}` is not proven"));
-                }
-                if require.iter().any(|r| r == "terminates") {
-                    if let Some(termination::Termination::Unknown { .. }) = v.termination() {
-                        violations.push(format!("`{n}` may not terminate"));
+                let module = module_of.get(n).map(|m| m.as_str()).unwrap_or("");
+                // a rule applies from the command line (everywhere) or from strata.toml (its modules)
+                let rule = |flag: &str, listed: &[String]| -> Option<String> {
+                    if require.iter().any(|r| r == flag) {
+                        Some(String::new())
+                    } else if package::Policy::covers(listed, module) {
+                        Some(format!(" ({} [verify])", package::FILE))
+                    } else {
+                        None
+                    }
+                };
+                if let Some(src) = rule("proven", &policy.proven) {
+                    if !matches!(v, verify::Verdict::Proven { .. }) {
+                        violations.push(format!("`{n}` is not proven{src}"));
                     }
                 }
-                if require.iter().any(|r| r == "no-recursion") && analysis.recursive.contains(n) {
-                    violations.push(format!("`{n}` is recursive"));
+                if let Some(src) = rule("terminates", &policy.terminates) {
+                    if let Some(termination::Termination::Unknown { .. }) = v.termination() {
+                        violations.push(format!("`{n}` may not terminate{src}"));
+                    }
+                }
+                if let Some(src) = rule("no-recursion", &policy.no_recursion) {
+                    if analysis.recursive.contains(n) {
+                        violations.push(format!("`{n}` is recursive{src}"));
+                    }
                 }
             }
             if !violations.is_empty() {
@@ -928,7 +947,7 @@ fn ci(fix: bool) -> Result<bool, String> {
         let rep = full_check(&p);
         let mut errors: Vec<String> = rep.errors.iter().map(|e| format!("error in {}: {}", e.decl, e.msg)).collect();
         if let Some(pkg) = &pkg {
-            errors.extend(package::bad_exports(pkg, &p).into_iter().map(|e| format!("{}: {e}", package::FILE)));
+            errors.extend(package::bad_exports(pkg, &p).into_iter().chain(package::bad_policy(pkg, &p)).map(|e| format!("{}: {e}", package::FILE)));
         }
         let label = match &pkg {
             Some(pkg) => format!("package {} ({shown})", pkg.name),

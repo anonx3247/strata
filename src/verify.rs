@@ -297,7 +297,7 @@ pub fn smt_queries(env: &Env, f: &FnDecl, transparent: &std::collections::HashMa
     let mut vc = crate::smt::Vc::new(env);
     vc.transparent = transparent.clone();
     vc.function(f, &f.name);
-    (0..vc.obligations.len()).map(|i| (vc.obligations[i].what.clone(), vc.smtlib(i))).collect()
+    (0..vc.obligations.len()).filter(|&i| !vc.obligations[i].termination).map(|i| (vc.obligations[i].what.clone(), vc.smtlib(i))).collect()
 }
 
 enum Case {

@@ -87,6 +87,32 @@ fn has_solver() -> bool {
 }
 
 #[test]
+fn package_verify_policies() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("policy");
+    std::fs::write(d.join("strata.toml"), "name = \"pol\"\n\n[verify]\nterminates = [\"*\"]\nno_recursion = [\"core\"]\nproven = [\"core\"]\n").unwrap();
+    std::fs::write(
+        d.join("core.strata"),
+        "pub fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }\npub fn spin(n: Int) -> Int {\n  let mut k = n\n  loop {\n    if k == 1 { break }\n    k = k - 1\n  }\n  k\n}\n",
+    )
+    .unwrap();
+    std::fs::write(d.join("main.strata"), "use core.*\nfn fib(n: Natural) -> Natural { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\n").unwrap();
+    let (ok, out) = strata(&["--file", ".", "verify", "--cases", "20"], &d, None);
+    assert!(!ok && out.contains("policy: `core.fact` is recursive (strata.toml [verify])") && out.contains("policy: `core.spin` may not terminate"), "{out}");
+    assert!(!out.contains("`fib` is recursive"), "no_recursion covers only `core`: {out}");
+    // --smt shows the termination queries too
+    let (_, out) = strata(&["--file", ".", "verify", "fib", "--smt"], &d, None);
+    assert!(out.contains("termination: measure (n) goes down at recursive call 1") && out.contains("termination: measure (n) goes down at recursive call 2"), "{out}");
+    // a rule must name a module of the package
+    std::fs::write(d.join("strata.toml"), "name = \"pol\"\n\n[verify]\nproven = [\"nope\"]\n").unwrap();
+    let (ok, out) = strata(&["ci"], &d, None);
+    assert!(!ok && out.contains("[verify] proven names `nope`, which is not a module of this package"), "{out}");
+}
+
+#[test]
 fn termination_is_shown_or_flagged() {
     if !has_solver() {
         eprintln!("z3 is not installed: skipping");
