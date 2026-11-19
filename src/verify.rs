@@ -276,6 +276,10 @@ fn fuzz_call(env: &Env, f: &FnDecl, cases: usize, seed: u64, method: bool) -> Ve
                 };
                 inst.insert(tp.clone(), t);
             }
+            // nothing implements the bounds: test against a mock of the (first) bound
+            None if needs.len() == 1 => {
+                inst.insert(tp.clone(), TypeExpr::Named(needs[0].clone(), vec![]));
+            }
             None => return Verdict::Skipped { reason: format!("no type implements {} to test `{tp}` with", needs.join(" + ")) },
         }
     }

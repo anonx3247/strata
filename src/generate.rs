@@ -183,6 +183,10 @@ impl Gen {
             }
             _ => {}
         }
+        // a trait as a type: generate a mock implementation
+        if env.traits.contains_key(n) {
+            return Ok(Value::Mock(t.clone()));
+        }
         let Some(td) = env.types.get(n).cloned() else {
             return Err(format!("cannot generate a value of unknown type `{n}` (generic parameters are not supported)"));
         };

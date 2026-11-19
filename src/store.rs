@@ -118,6 +118,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                 xs.iter().for_each(|x| go(x, out));
             }
             Expr::Field(r, _) | Expr::Un(_, r) | Expr::Lambda(_, r) => go(r, out),
+            Expr::Mock(t) => ty(t, out),
             Expr::Is(r, c) => {
                 out.insert(ct.get(c).cloned().unwrap_or(c.clone()));
                 go(r, out);

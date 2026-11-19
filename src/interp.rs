@@ -35,6 +35,8 @@ pub enum Value {
     FnRef(String),
     /// A value of a `distinct` type, e.g. `UserId("u_1")`.
     Distinct(String, Box<Value>),
+    /// `mock Db`: answers every method with a generated value.
+    Mock(TypeExpr),
 }
 
 #[derive(Debug, PartialEq)]
@@ -150,6 +152,7 @@ pub fn to_json(v: &Value) -> Json {
     match v {
         // distinct types serialise as their underlying value
         Value::Distinct(_, x) => to_json(x),
+        Value::Mock(t) => json!(format!("<mock {}>", crate::printer::ty(t))),
         Value::Int(n) => json!(n),
         Value::Float(f) => json!(f),
         Value::Tuple(xs) | Value::Set(xs) => Json::Array(xs.iter().map(to_json).collect()),
@@ -389,12 +392,17 @@ impl<'a> Interp<'a> {
             Value::Variant(c, _) => self.env.ctors.get(c).cloned().unwrap_or_else(|| c.clone()),
             Value::Closure(..) | Value::FnRef(_) => "Fn".into(),
             Value::Distinct(n, _) => n.clone(),
+            Value::Mock(_) => "Mock".into(),
         }
     }
 
     /// Call a trait method: pick the implementation from the receiver's type.
     /// The trait's own `requires`/`ensures` apply on top of the impl's.
     pub fn call_method(&mut self, name: &str, args: Vec<Value>) -> R<Value> {
+        if let Some(Value::Mock(mt)) = args.first() {
+            let mt = mt.clone();
+            return self.mock_call(&mt, name, args);
+        }
         let head = args.first().map(|v| self.head_of(v)).unwrap_or_default();
         let Some((mut decl, req, ens)) = self.env.resolve_method(name, &head) else {
             let tr = self.env.method_trait.get(name).cloned().unwrap_or_default();
@@ -404,6 +412,51 @@ impl<'a> Interp<'a> {
         decl.ensures.splice(0..0, ens);
         let label = format!("{head}.{name}");
         self.call_decl(&decl, &label, args)
+    }
+
+    /// A method call on `mock T`: check the trait's `requires`, then generate a
+    /// result that satisfies its `ensures` (rejection sampling). `Self` in the
+    /// result is the mock itself.
+    fn mock_call(&mut self, mt: &TypeExpr, name: &str, args: Vec<Value>) -> R<Value> {
+        let tn = crate::types::texpr_head(mt);
+        let Some(tr) = self.env.traits.get(&tn).cloned() else { return self.fail(FaultKind::Runtime, format!("unknown trait `{tn}`")) };
+        let Some(tm) = tr.methods.iter().find(|m| m.decl.name == name) else {
+            return self.fail(FaultKind::Runtime, format!("`{tn}` has no method `{name}`"));
+        };
+        let targs = match mt {
+            TypeExpr::Named(_, a) if !a.is_empty() => a.clone(),
+            _ => tr.params.iter().map(|_| TypeExpr::Named("Int".into(), vec![])).collect(),
+        };
+        let mut sub: HashMap<String, TypeExpr> = tr.params.iter().cloned().zip(targs).collect();
+        sub.insert("Self".into(), mt.clone());
+        let mut scope: Scope = None;
+        for (p, a) in tm.decl.params.iter().zip(&args) {
+            scope = extend(&scope, &p.name, a.clone());
+        }
+        for r in &tm.decl.requires {
+            if self.pure_eval(r, &scope)? != Value::Bool(true) {
+                return self.fail(FaultKind::Requires, format!("precondition of `{tn}.{name}` violated: requires {}", crate::printer::expr(r, 0)));
+            }
+        }
+        let ret = subst_texpr(&tm.decl.ret, &sub);
+        let env = self.env;
+        for _ in 0..200 {
+            let mut g = std::mem::replace(&mut self.generator, Gen::new(0));
+            let v = g.value(env, &ret, self);
+            self.generator = g;
+            let v = v.map_err(|e| fault(FaultKind::Runtime, format!("mock {tn}.{name}: {e}")))?;
+            let s2 = extend(&scope, "it", v.clone());
+            let mut ok = true;
+            for en in &tm.decl.ensures {
+                if self.pure_eval(en, &s2)? != Value::Bool(true) {
+                    ok = false;
+                }
+            }
+            if ok {
+                return Ok(v);
+            }
+        }
+        self.fail(FaultKind::Runtime, format!("mock {tn}.{name}: could not generate a result satisfying its `ensures`"))
     }
 
     pub fn call_decl(&mut self, f: &FnDecl, name: &str, args: Vec<Value>) -> R<Value> {
@@ -1060,6 +1113,7 @@ impl<'a> Interp<'a> {
                 }
                 self.eval(last, &sc)?
             }
+            Expr::Mock(t) => Value::Mock(t.clone()),
             Expr::Handle(body, hs) => {
                 let base = self.handlers.len();
                 for h in hs {

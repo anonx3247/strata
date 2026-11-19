@@ -405,6 +405,12 @@ impl<'a> Checker<'a> {
                 }
                 self.unify(r1, r2)
             }
+            // A trait used as a type (`Console`) accepts any value whose type
+            // implements it; that obligation is checked with the others.
+            (Ty::Con(t, targs), other) | (other, Ty::Con(t, targs)) if self.env.traits.contains_key(t) => {
+                self.pending.push((other.clone(), t.clone(), targs.clone(), format!("using it as a `{t}`")));
+                Ok(())
+            }
             _ => Err(format!("expected `{}`, found `{}`", show_ty(&a), show_ty(&b))),
         }
     }
@@ -437,9 +443,14 @@ impl<'a> Checker<'a> {
                 if self.rigid.contains(n) {
                     return Ty::Rigid(n.clone());
                 }
-                if self.env.traits.contains_key(n) {
-                    self.err(format!("`{n}` is a trait, not a type: take a type parameter instead, e.g. `fn f[T: {n}](x: T)`"));
-                    return self.fresh();
+                if let Some(tr) = self.env.traits.get(n) {
+                    // a trait as a type: any implementation of it
+                    let tr = tr.clone();
+                    let largs: Vec<Ty> = if args.is_empty() { tr.params.iter().map(|_| self.fresh()).collect() } else { args.iter().map(|a| self.lower(a, vars)).collect() };
+                    if tr.params.len() != largs.len() {
+                        self.err(format!("trait `{n}` takes {} type arguments", tr.params.len()));
+                    }
+                    return Ty::Con(n.clone(), largs);
                 }
                 let largs: Vec<Ty> = args.iter().map(|a| self.lower(a, vars)).collect();
                 match n.as_str() {
@@ -558,6 +569,22 @@ impl<'a> Checker<'a> {
             Ty::Fn(..) => "Fn".into(),
             Ty::Con(n, _) => n.clone(),
         };
+        // a value typed by a trait implements that trait (and its supertraits)
+        if let Ty::Con(n, nargs) = &t {
+            if self.env.traits.contains_key(n) {
+                let mut all = vec![(n.clone(), nargs.clone())];
+                all.extend(self.supers_of(n, nargs, 0));
+                return match all.iter().find(|(b, _)| b == tr) {
+                    Some((_, bargs)) => {
+                        for (a, b) in args.iter().zip(bargs) {
+                            self.unify(a, b)?;
+                        }
+                        Ok(())
+                    }
+                    None => Err(format!("a `{n}` is not known to be a `{tr}`")),
+                };
+            }
+        }
         let cands: Vec<ImplDecl> = self.env.impls.iter().filter(|i| i.trait_name == tr && texpr_head(&i.for_type) == head).cloned().collect();
         for imp in cands {
             let snapshot = self.subst.clone();
@@ -1098,6 +1125,16 @@ impl<'a> Checker<'a> {
                 let t = self.infer(last);
                 self.scopes.pop();
                 t
+            }
+            Expr::Mock(t) => {
+                let ty = self.lower(t, &HashMap::new());
+                match self.resolve(&ty) {
+                    Ty::Con(n, _) if self.env.traits.contains_key(&n) => ty,
+                    other => {
+                        self.err(format!("`mock` needs a trait, found `{}`", show_ty(&other)));
+                        self.fresh()
+                    }
+                }
             }
             Expr::Handle(body, handlers) => {
                 let outer = self.effects.clone();

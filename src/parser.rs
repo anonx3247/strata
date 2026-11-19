@@ -682,6 +682,10 @@ impl Parser {
                 }
                 Ok(Expr::Match(Box::new(scrut), arms))
             }
+            Tok::Ident(kw) if kw == "mock" => {
+                self.next();
+                Ok(Expr::Mock(self.type_expr_plain()?))
+            }
             Tok::Ident(kw) if kw == "handle" => {
                 self.next();
                 let body = self.expr_ns()?;

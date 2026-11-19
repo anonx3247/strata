@@ -314,6 +314,7 @@ impl Rw<'_> {
                 Expr::Field(Box::new(self.expr(r)), f.clone())
             }
             Expr::Perform(eff, op, args) => Expr::Perform(self.name(eff), op.clone(), self.exprs(args)),
+            Expr::Mock(t) => Expr::Mock(self.ty(t)),
             Expr::Lambda(ps, b) => {
                 self.push(ps);
                 let b = self.expr(b);

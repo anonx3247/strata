@@ -158,6 +158,7 @@ pub fn expr(e: &Expr, d: usize) -> String {
             out + &ind(d) + "}"
         }
         Expr::Block(..) => block(e, d),
+        Expr::Mock(t) => format!("mock {}", ty(t)),
         Expr::Handle(body, hs) => {
             let mut out = format!("handle {}", expr(body, d));
             for h in hs {

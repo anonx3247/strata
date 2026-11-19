@@ -375,6 +375,9 @@ pub enum Expr {
     Match(Box<Expr>, Vec<Arm>),
     Block(Vec<Stmt>, Box<Expr>),
     Handle(Box<Expr>, Vec<Handler>),
+    /// `mock Db`: an implementation of a trait whose methods return generated
+    /// values that satisfy the trait's contracts.
+    Mock(TypeExpr),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
