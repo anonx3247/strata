@@ -54,7 +54,9 @@ Order: ~~`strata rename`~~ → diff core in Rust → `strata diff <rev>..<rev>` 
 - Comments before a trait `law` are rejected (not stored yet). Blank lines inside bodies are not kept.
 - No host bindings (FFI), so a real SQLite backend isn't possible yet.
 - `strata verify` on the tasks example takes about 35s; the slowest part is generating `MemQueue` values that satisfy its invariants.
-- `src/flow.rs` and the `flows` data in `ui.rs` are no longer used by the viewer, now that the Flow view is gone. They can be removed.
+- Typed lambda parameters (`(n: Positive) -> …`) are checked statically but their refinements are not enforced at runtime yet.
+- `!` does no error conversion: the function's `Result` must have the same error type. f-strings have no format specs (`{x:.2}`).
+- Some README tool output is stale from the effects era: the `strata run ship … --mock --trace` sample (`ship` now takes the `Db` as an argument).
 
 ## Decided direction (user, end of session 1)
 
@@ -103,10 +105,7 @@ The compiler should eventually be written in Strata. Gaps to close first:
 Bootstrap plan: write the frontend (lexer, parser, printer) in Strata and test it against the Rust one, then the checker, then compile the Strata compiler with itself and check that its output stops changing (a fixed point).
 
 ### Error handling, strings and mutation (decided)
-- **`except` blocks** (V's `or` blocks, with Python's keyword) handle a failed `Result` or a missing `Option` value inline, and chain: `let cfg = load(path) except { default_config() }`. Inside the block, the error should be available under a name (to be decided, e.g. `except e { ... }`).
-- **Propagation operators**: `!` propagates a `Result` error (`let x = parse(s)!`); `?` propagates an `Option` none (`let y = find(xs, p)?`). Both work in chains (`a.b()!.c()?`).
-- **Strings are pure UTF-8**, with no other string types. Add good string primitives: characters, slicing, searching, splitting.
-- **String interpolation in the style of Python f-strings**: `f"{name} has {len(xs)} items"`.
+- **Done** (branch `language-cleanups`): `except` blocks (`e except { fallback }`, `e except err { ... }`, the fallback may `return`), `!` / `?` propagation, early `return`, f-strings, and string primitives (`chars`, `get`, `slice`, `index_of`, `replace`, `lines`, `repeat`, `reverse`, case, `is_digit` / `is_alpha` / `is_space`, `ord` / `chr`). Strings are indexed by character. See the README section "Errors".
 - **Mutation of a `mut` value happens in place**, with no copying, whenever nothing else holds the value. The hard part is knowing when that's the case: use the absence of shared references plus ownership or reference counting (as in Koka's Perceus) so updates through a mutable binding are real in-place updates.
 - **Self-hosting is a long-term goal**, after the language matures. The compiler would be written in Strata, target LLVM, and use the LLVM libraries.
 
@@ -114,14 +113,14 @@ Bootstrap plan: write the frontend (lexer, parser, printer) in Strata and test i
 - **A small native core in Rust** (C is possible for the system-call layer; decide when we get there): the GC, the system-call / OS boundary, and bindings to LLVM and the SMT solver.
 - **Most of the standard library in Strata itself**: collections, strings, the ORM, HTTP / web views, CLI helpers, and agent tooling. Only the thin OS / runtime layer is native.
 
-### Lambda syntax (decided; not implemented yet)
+### Lambda syntax (done)
 - Replace the Rust-style `|x| body` with a **bare arrow**: `x -> body` and `(a, b) -> body`, with optional parameter types such as `(s: String) -> …`. For a longer body, use a block: `x -> { ... }`.
 - `->` is never an operator inside expressions, so there is no ambiguity; `=>` stays reserved for `match` arms.
 - **No shorthand lambdas** (no `$`, `_` or implicit parameter) and **no separate anonymous-`fn` form**.
 - **Refinements keep `it`** for "the value" (`where it > 0`).
 - When implementing, update the parser, printer, examples, README and tests; `render` must still round-trip.
 
-### Requested cleanups (user, not implemented yet)
+### Requested cleanups (done on branch `language-cleanups`)
 - **String concatenation uses `+`**, not `++`: `"a" + "b"`. Lists use `+` too (`[1] + [2]`, decided), so `++` goes away entirely. Update the checker (`numeric` currently rejects `String` for `+`), the interpreter, the printer and all examples.
 - **Use `len` everywhere, not `str_len`.** `len` is already overloaded for `String`, so remove `str_len` from the builtins and the prelude refinements, and update the examples.
 - **Bring every example up to date with the current language**: `examples/*.strata` and `examples/tasks/`, plus the README snippets. Use the prelude types (`Natural`, `Positive`, `NonEmptyString`), inline refinements where a constraint is used once, `let mut` / loops where procedural code reads better, and (once implemented) arrow lambdas.

@@ -55,31 +55,30 @@ strata ui                          # open http://127.0.0.1:7777: the live viewer
 type OrderId  = String where matches(it, "ord_[a-z0-9]{6}")
 type Quantity = Int where 1 <= it && it <= 99
 type Cents    = Int where it >= 0
-type NonEmpty[T] = List[T] where len(it) > 0
 
-type Line = { sku: String, qty: Quantity, unit_price: Cents }
+type Line = { sku: NonEmptyString, qty: Quantity, unit_price: Cents }
 
 type Order =
-  | Pending   { id: OrderId, lines: NonEmpty[Line] }
-  | Shipped   { id: OrderId, lines: NonEmpty[Line], tracking: String }
-  | Cancelled { id: OrderId, reason: String }
+  | Pending   { id: OrderId, lines: NonEmpty[Line] }       // NonEmpty, NonEmptyString: from the prelude
+  | Shipped   { id: OrderId, lines: NonEmpty[Line], tracking: NonEmptyString }
+  | Cancelled { id: OrderId, reason: NonEmptyString }
 
 trait Db {
   fn load(self, id: OrderId) -> Option[Order]
   fn save(mut self, o: Order) -> ()        // `mut self`: saving changes the store
 }
 
-fn ship[D: Db](mut db: D, id: OrderId, tracking: String) -> Result[Order, ShipError]
+fn ship[D: Db](mut db: D, id: OrderId, tracking: NonEmptyString) -> Result[Order, ShipError]
   ensures match it { Ok(o) => o is Shipped, Err(_) => true }
 {
-  match db.load(id) {
-    None => Err(NotFound),
-    Some(Pending { id, lines }) => {
+  let order = db.load(id) except { return Err(NotFound) }
+  match order {
+    Pending { id, lines } => {
       let o = Shipped { id, lines, tracking }
       db.save(o)
       Ok(o)
     }
-    Some(_) => Err(NotPending),
+    _ => Err(NotPending),
   }
 }
 
@@ -99,7 +98,7 @@ test "a mocked store never breaks ship's contract" {
 ```text
 $ strata check                               # static errors are caught before running
 error in status: non-exhaustive match on `Order`: `Cancelled { .. }` is not covered
-error in sneaky: performs `Db.load` but `Db` is neither declared by `sneaky` nor handled here
+error in sneaky: calling `load`: `String` does not implement `Db`
 error in bad_qty: refinement violated at compile time in field `Line.qty`: 120 does not satisfy `Quantity` (where 1 <= it && it <= 99)
 
 $ strata holes
@@ -159,7 +158,7 @@ A trait describes what a *type* can do. The implementation is chosen by the type
 ```rust
 trait Describe { fn describe(self) -> String  ensures len(it) > 0 }
 trait Summary: Describe + Priced {                       // supertraits
-  fn summary(self) -> String { self.describe() + ": " + to_string(self.price()) + "c" }   // default method
+  fn summary(self) -> String { f"{self.describe()}: {self.price()}c" }   // default method
 }
 trait Combine {
   fn combine(self, other: Self) -> Self
@@ -225,6 +224,29 @@ let best = scores
 
 There are no shared references, so nothing changes behind your back. Refinements still hold after every assignment: `line.qty = 120` fails if `qty` is a `Quantity`. Closures cannot change outer variables.
 
+Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7`, with optional parameter types (`(s: String) -> len(s)`) and a block for a longer body (`x -> { ... }`). `return e` leaves the enclosing function or lambda early.
+
+## Errors: `Result`, `Option`, `!`, `?` and `except`
+
+A function that can fail returns a `Result` (or an `Option` for "maybe absent"). Three operators keep the happy path straight:
+
+```rust
+fn transfer(from: Account, to: Account, amount: Cents) -> Result[(Account, Account), WithdrawError] {
+  let from = withdraw(from, amount)!        // an Err is returned from `transfer` as is
+  Ok((from, Account { ..to, balance: to.balance + amount }))
+}
+fn status_of(q: MemQueue, id: TaskId) -> Option[Status] {
+  Some(q.entries.find(e -> e.task.id == id)?.status)  // None is returned from `status_of`
+}
+let port = parse_int(text) except { 8080 }                  // handle it here: a fallback value
+let n = parse(s) except e { return describe_error(e) }      // the error, by name; the block may return
+```
+
+- `e!` takes the `Ok` value of a `Result`, or returns its `Err` from the function. The function's result must be a `Result` with the same error type (there is no automatic conversion).
+- `e?` does the same for an `Option`: the `Some` value, or return `None`.
+- `e except { fallback }` handles a failed `Result` or a missing `Option` value inline. `except err { ... }` names the error (an `Option` has none). The fallback must produce the same type, or leave with `return`.
+- They chain: `load(path)!.lines()`, `find(xs, p)?.name`.
+
 ## Built-in types
 
 | Type | Notes |
@@ -237,6 +259,8 @@ There are no shared references, so nothing changes behind your back. Refinements
 | `(A, B, …)` | tuples, `(word, 3)`, destructured with `let (w, n) = …`, accessed with `t.0` |
 | `Dict[K, V]` | `dict([("a", 1)])`, `get`, `insert`, `remove`, `keys`, `values`, `items`; JSON object when keys are strings |
 | `Set[T]` | `set([1, 2])`, `insert`, `union`, `intersection`, `difference`, `to_list` |
+
+`+` adds numbers and joins strings and lists (`"a" + "b"`, `[1] + [2]`). **Strings** are UTF-8 and indexed by character: `len`, `chars`, `get(s, i)`, `slice(s, start, end)` (clamped, as in Python; also on lists), `index_of`, `contains`, `starts_with`, `ends_with`, `split`, `join`, `lines`, `trim`, `replace`, `repeat`, `reverse`, `to_upper`, `to_lower`, `is_digit` / `is_alpha` / `is_space`, `ord` / `chr`, `parse_int`, `matches` (regex). **f-strings** interpolate any expression, shown as by `to_string`: `f"{name} has {len(xs)} items"` (`{{` and `}}` are literal braces).
 
 All values are immutable (`insert` returns a new dict). Dicts and sets are kept in canonical order, so equal collections are equal values and serialise identically. `len`, `contains`, `get`, `insert`, `remove`, `sum`, `min`, `max` and `abs` work across the types they make sense for. `strata builtins` lists every builtin with its signature. See `examples/builtins.strata`.
 
