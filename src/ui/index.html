@@ -722,7 +722,7 @@ function renderCode() {
     const vs = visible();
     body = vs.length ? `<div class="cgroup">${vs.map(d => card(d, names)).join('')}</div>` : '<div class="empty">Nothing matches.</div>';
   }
-  const all = `<button class="plain" data-all="${S.allOpen ? 0 : 1}" title="Keys: 1 collapse all, 3 expand all">${S.allOpen ? 'collapse all' : 'expand all'}</button>`;
+  const all = `<button class="plain" data-all="${S.allOpen ? 0 : 1}" title="Keys: 1 collapse all, 2 expand all">${S.allOpen ? 'collapse all' : 'expand all'}</button>`;
   const scope = S.sel ? `<div class="seg"><button data-s="slice" class="${S.scope !== 'all' ? 'on' : ''}">Around ${esc(by[S.sel]?.label || '')}</button><button data-s="all" class="${S.scope === 'all' ? 'on' : ''}">Everything</button></div>` : '<span>Select a definition to see it with what it uses and what uses it.</span>';
   $('#main').innerHTML = `<div id="code"><div class="toolbar">${scope}${all}<span>hover a name to see where it is · click to go there</span></div>${body}</div>`;
 }
@@ -759,7 +759,7 @@ function verdictBox(v) {
 function renderRight() {
   const d = S.sel && byName()[S.sel];
   const names = new Set(S.data.decls.map(x => x.name));
-  let insp = '<div class="sec"><div class="empty">Select a definition to see it here. Keys: c code, t type map, 1 collapse all, 3 expand all, / filter, Esc clears.</div></div>';
+  let insp = '<div class="sec"><div class="empty">Select a definition to see it here. Keys: c code, t type map, 1 collapse all, 2 expand all, / filter, Esc clears.</div></div>';
   if (d) {
     const history = S.data.log.map((e, i) => ({ e, i, c: (e.changes || []).find(c => c.name === d.name) })).filter(x => x.c).reverse();
     insp = `<div class="sec"><h3><span>${d.kind}${d.module ? ' · ' + esc(d.module) : ''}</span><span>#${d.hash.slice(0, 8)}</span></h3>
@@ -821,13 +821,13 @@ function ago(t) {
 }
 
 function syncHash() {
-  const h = new URLSearchParams({ level: S.level === 'types' ? 'types' : S.allOpen ? 3 : 1, ...(S.sel ? { sel: S.sel } : {}), ...(S.scope !== 'all' ? { scope: S.scope } : {}) });
+  const h = new URLSearchParams({ level: S.level, ...(S.allOpen ? { all: 1 } : {}), ...(S.sel ? { sel: S.sel } : {}), ...(S.scope !== 'all' ? { scope: S.scope } : {}) });
   history.replaceState(null, '', '#' + h);
 }
 (function readHash() {
   const h = new URLSearchParams(location.hash.slice(1));
   if (h.has('level')) S.level = lv(h.get('level'));
-  if (S.level === 3) { S.level = 1; S.allOpen = true; }
+  S.allOpen = h.get('all') === '1';
   if (!['types', 1].includes(S.level)) S.level = 1;
   if (h.has('sel')) S.sel = h.get('sel');
   if (h.has('scope')) S.scope = h.get('scope');
@@ -884,7 +884,7 @@ document.addEventListener('click', e => {
 $('#q').addEventListener('input', e => { S.q = e.target.value; render(); });
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') { if (e.key === 'Escape') { e.target.value = ''; S.q = ''; e.target.blur(); render(); } return; }
-  if (e.key === '1' || e.key === '3') { S.level = 1; S.allOpen = e.key === '3'; S.open = {}; render(); }
+  if (e.key === '1' || e.key === '2') { S.level = 1; S.allOpen = e.key === '2'; S.open = {}; render(); }
   else if (e.key === 'c') { S.level = 1; render(); }
   else if (e.key === 't') { S.level = 'types'; render(); }
   else if (e.key === '/') { e.preventDefault(); $('#q').focus(); }

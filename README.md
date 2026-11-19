@@ -43,7 +43,7 @@ strata ui                          # open http://127.0.0.1:7777: the live viewer
 - **Type map**: a graph of types and traits and how they relate: *implements* (a type points at every trait it implements, so it is a graph, not a hierarchy), *extends* (supertraits), *contains* (a field or variant mentions it), *refines*. Each module is a region. The layout puts the most connected definitions at the centre of their module. Clicking a card shows it in the inspector; double-click opens it in the code view. Drag cards (positions are remembered), scroll to zoom, or *re-layout*.
 - **Activity**: the patch log. Definitions changed since your last look are highlighted.
 - The URL keeps the view, e.g. `#level=1&sel=refund`, so you can send someone or an agent exactly what you're looking at.
-- Keys: `c` code, `t` type map, `1` collapse all, `3` expand all, `/` filters, `Esc` clears the selection.
+- Keys: `c` code, `t` type map, `1` collapse all, `2` expand all, `/` filters, `Esc` clears the selection.
 
 `strata ui --file some.strata` views a single file instead of a codebase.
 
