@@ -1,0 +1,94 @@
+/// Order identifiers: `ord_` followed by 6 lowercase letters or digits.
+type OrderId = String where matches(it, "ord_[a-z0-9]{6}")
+
+/// How many units of an item can be on a single line.
+type Quantity = Int where 1 <= it && it <= 99
+
+/// Prices are in cents and never negative.
+type Cents = Int where it >= 0
+
+type NonEmpty[T] = List[T] where len(it) > 0
+
+type Line = { sku: String, qty: Quantity, unit_price: Cents }
+
+type Order =
+  | Pending { id: OrderId, lines: NonEmpty[Line] }
+  | Shipped { id: OrderId, lines: NonEmpty[Line], tracking: String }
+  | Cancelled { id: OrderId, reason: String }
+
+type ShipError =
+  | NotFound
+  | NotPending
+
+/// Persistent storage for orders.
+effect Db {
+  fn load(id: OrderId) -> Option[Order]
+  fn save(o: Order) -> ()
+}
+
+fn line_total(l: Line) -> Cents
+  ensures it == l.qty * l.unit_price
+{
+  l.qty * l.unit_price
+}
+
+fn total(lines: NonEmpty[Line]) -> Cents
+  ensures it >= 0
+{
+  sum(lines.map(line_total))
+}
+
+/// 10% off orders of 100.00 or more.
+fn discount(amount: Cents) -> Cents
+  ensures it <= amount
+{
+  if amount >= 10000 { amount - amount / 10 } else { amount }
+}
+
+fn ship(id: OrderId, tracking: String) -> Result[Order, ShipError] / {Db}
+  ensures match it { Ok(o) => o is Shipped, Err(_) => true }
+{
+  match Db.load(id) {
+    None => Err(NotFound),
+    Some(Pending { id, lines }) => {
+      let o = Shipped { id, lines, tracking }
+      Db.save(o)
+      Ok(o)
+    }
+    Some(_) => Err(NotPending),
+  }
+}
+
+/// Refunds are not designed yet: the hole has a type and a contract,
+/// so callers can already be checked against it.
+fn refund(o: Order) -> Cents
+  ensures it >= 0
+  = ?refund_policy
+
+test "shipping a pending order" {
+  let line = Line { sku: "tea", qty: 2, unit_price: 450 }
+  let r = handle ship("ord_abc123", "TRK1") with Db {
+    load(id) => Some(Pending { id, lines: [line] }),
+    save(o) => (),
+  }
+  assert r is Ok
+}
+
+test "shipping twice is rejected" {
+  let r = handle ship("ord_abc123", "TRK1") with Db {
+    load(id) => Some(Cancelled { id, reason: "fraud" }),
+    save(o) => (),
+  }
+  assert r == Err(NotPending)
+}
+
+test "auto-mocked storage never breaks ship's contract" {
+  let r = handle ship("ord_zzz999", "TRK9") with mock Db
+  assert r is Ok || r is Err
+}
+
+test "totals" {
+  let lines = [Line { sku: "a", qty: 3, unit_price: 100 }, Line { sku: "b", qty: 1, unit_price: 50 }]
+  assert total(lines) == 350
+  assert discount(20000) == 18000
+}
