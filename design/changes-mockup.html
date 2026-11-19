@@ -106,6 +106,12 @@ pre { margin: 0; padding: 6px 14px 10px 2px; font: 12.5px/1.6 var(--mono); overf
 ins, del { text-decoration: none; border-radius: 3px; padding: 0 1px; }
 ins { background: color-mix(in srgb, var(--ok) 26%, transparent); }
 del { background: color-mix(in srgb, var(--bad) 22%, transparent); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--bad) 70%, transparent); }
+.ln.strong, .ln.weak { background: color-mix(in srgb, var(--warn) 13%, transparent); box-shadow: inset 3px 0 0 var(--warn); }
+.ln.strong .sg, .ln.weak .sg { color: var(--warn); }
+.ln.strong .code, .ln.weak .code { font-weight: 700; }
+.pill { font: 600 10.5px var(--sans); padding: 1px 7px; border-radius: 999px; margin-left: 10px; vertical-align: 1px; border: 1px solid color-mix(in srgb, var(--ok) 55%, transparent); color: var(--ok); white-space: nowrap; }
+.pill.contract { background: var(--warn); border-color: var(--warn); color: var(--bg); }
+.pill.ren { border-color: color-mix(in srgb, var(--ren) 55%, transparent); color: var(--ren); }
 .ann { float: right; font: 11px var(--sans); color: var(--muted); margin-left: 18px; }
 .ann.warn { color: var(--warn); } .ann.ok { color: var(--ok); } .ann.ren { color: var(--ren); }
 .refs-upd { font: 11.5px var(--sans); color: var(--muted); margin: 0 14px 8px 2px; }
@@ -201,20 +207,17 @@ const CHANGES = [
     ],
     refs: '1 reference updated: <code>core.run_worker</code> (shown there, folded into this rename)' },
   { sect: 'Interfaces', id: 'core.Queue', mk: 'chg', kind: 'trait', steps: [3],
-    what: ['chg', 'interface: method added, contract stronger'], detail: 'every implementation is affected · 1 in the codebase, updated here',
+    what: ['chg', 'interface: method added, contract stronger'], detail: 'every implementation must provide <code>cancel</code> and guarantee the new <code>ensures</code> · 1 in the codebase, updated here',
     lines: [
       ' pub trait Queue[P, E] {',
-      '   /// Enqueue tasks, ignoring ids already present; returns how many were new.',
-      '   fn enqueue(mut self, tasks: List[Task[P]]) -> Int',
-      '     ensures 0 <= it && it <= len(tasks)',
-      '   /// Claim up to `limit` pending tasks, oldest first, bumping their attempt counts.',
+      '… enqueue unchanged',
       '   fn claim(mut self, limit: Positive) -> List[TaskAttempt[P]]',
       '     ensures len(it) <= limit',
-      '+    ensures all(it, |a| a.attempt >= 1)\tstronger: implementations must guarantee it · callers may rely on it',
+      '▲    ensures all(it, |a| a.attempt >= 1)\tstronger',
       '… record, release unchanged',
       '+  /// Cancel pending tasks; returns how many were cancelled.',
       '+  fn cancel(mut self, ids: List[TaskId]) -> Int',
-      '+    ensures 0 <= it && it <= len(ids)\tnew method: every implementation must provide it',
+      '+    ensures 0 <= it && it <= len(ids)\tnew method',
       ' }',
     ] },
 
@@ -338,11 +341,17 @@ function line(l) {
   const [body, note] = l.split('\t');
   const sign = body[0], text = body.slice(1);
   if (sign === '…') return `<span class="ln fold" title="click to show">… ${esc(text.trim())} ▸</span>`;
-  const cls = { '+': 'add', '-': 'del', '~': 'chg', ' ': '' }[sign];
-  const sg = { '+': '+', '-': '−', '~': '~', ' ': '' }[sign];
-  const annCls = /^stronger|^new method/.test(note || '') ? 'warn' : /rename/.test(note || '') ? 'ren' : '';
-  const ann = note ? `<span class="ann ${annCls}">${esc(note)}</span>` : '';
-  return `<span class="ln ${cls}"><span class="sg">${sg}</span>${ann}<span class="code">${sign === '~' ? hlMarked(text) : hl(text)}</span></span>`;
+  // ▲ / ▼: a contract made stronger / weaker
+  const cls = { '+': 'add', '-': 'del', '~': 'chg', ' ': '', '▲': 'add strong', '▼': 'add weak' }[sign];
+  const sg = { '+': '+', '-': '−', '~': '~', ' ': '', '▲': '+', '▼': '+' }[sign];
+  const TIPS = {
+    stronger: 'A stronger contract: every implementation must now guarantee this, and callers may rely on it.',
+    weaker: 'A weaker contract: callers can no longer rely on this; implementations have less to guarantee.',
+    'new method': 'Every implementation of the trait must provide it.',
+  };
+  const pillCls = note === 'stronger' || note === 'weaker' ? 'pill contract' : /rename/.test(note || '') ? 'pill ren' : 'pill';
+  const pill = note ? ` <span class="${pillCls}" title="${esc(TIPS[note] || '')}">${note === 'stronger' ? '▲ stronger contract' : note === 'weaker' ? '▼ weaker contract' : esc(note)}</span>` : '';
+  return `<span class="ln ${cls}"><span class="sg">${sg}</span><span class="code">${sign === '~' ? hlMarked(text) : hl(text)}</span>${pill}</span>`;
 }
 const vtxt = v => v === 'fuzzed 200' ? `<span class="ok">${v} ✓</span>` : v;
 const touched = c => S.step == null || c.steps.includes(S.step);
