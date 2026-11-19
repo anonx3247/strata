@@ -26,9 +26,10 @@ const USAGE: &str = "strata — an experimental language for working with agents
 
 USAGE: strata [--file F.strata] <command> [args]
 
-Codebase (stored as a database of syntax trees in .strata/):
-  init                         create a codebase in the current directory, and its
-                               strata.toml (named after the folder) if there is none
+Codebase (the package around the current folder: its files, and strata.log, the log of
+every change made through strata, committed with them):
+  init                         make the current folder a package (a strata.toml named
+                               after the folder)
   add <file.strata> [-m MSG]   import definitions from a file (checked, atomic)
   edit [-m MSG] [--rm NAME]..  read definitions from stdin; replace/add them by name;
                                commit only if the whole codebase still checks
@@ -165,7 +166,7 @@ fn load(args: &Args) -> Result<Source, String> {
         return Ok(Source::File(read_sources(f, args.val("--module"))?));
     }
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let root = Codebase::find(&cwd).ok_or("no .strata codebase here (run `strata init`, or pass --file)")?;
+    let root = Codebase::find(&cwd).ok_or("no package here (no strata.toml in this folder or above: run `strata init`, or pass --file)")?;
     Ok(Source::Db(Codebase::open(&root)?))
 }
 
@@ -208,13 +209,8 @@ fn run() -> Result<bool, String> {
         "help" | "--help" => println!("{USAGE}"),
         "init" => {
             let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-            Codebase::init(&cwd)?;
-            println!("initialized empty Strata codebase in {}/", store::DIR);
-            if !cwd.join(package::FILE).exists() {
-                let toml = package::template(&cwd);
-                std::fs::write(cwd.join(package::FILE), &toml).map_err(|e| e.to_string())?;
-                println!("wrote {}: {}", package::FILE, toml.trim());
-            }
+            let toml = Codebase::init(&cwd)?;
+            println!("wrote {}: {}", package::FILE, toml.trim());
         }
         "add" | "edit" => {
             let Source::Db(mut cb) = load(&args)? else { return Err("`add`/`edit` need a codebase".into()) };
@@ -489,7 +485,7 @@ fn run() -> Result<bool, String> {
                 Some(f) => ui::Target::File(f.into()),
                 None => {
                     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-                    ui::Target::Db(Codebase::find(&cwd).ok_or("no .strata codebase here (run `strata init`, or pass --file)")?)
+                    ui::Target::Db(Codebase::find(&cwd).ok_or("no package here (no strata.toml in this folder or above: run `strata init`, or pass --file)")?)
                 }
             };
             ui::serve(target, port)?;

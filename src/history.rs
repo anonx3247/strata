@@ -94,13 +94,15 @@ pub fn git_options(path: &Path, base: Option<&str>) -> Json {
     json!({"kind": "git", "base": base.unwrap_or("HEAD"), "commits": recent, "branches": branches})
 }
 
-/// A codebase's log: the patches from entry `from` (default: everything after
-/// the first import) to `to` (default: the latest).
+/// A codebase's log: the patches from entry `from` to `to` (default: the
+/// latest). By default it starts at the first entry, or after it when that
+/// entry built the package from nothing (an import).
 pub fn log_range(cb: &Codebase, from: Option<usize>, to: Option<usize>) -> Result<Range, String> {
     let log = cb.log();
     let states = cb.states()?;
     let to = to.unwrap_or(log.len()).min(log.len());
-    let from = from.unwrap_or(if log.len() > 1 { 1 } else { 0 }).min(to);
+    let import = log.len() > 1 && states[0].decls.is_empty();
+    let from = from.unwrap_or(if import { 1 } else { 0 }).min(to);
     let steps = (from..to)
         .map(|k| {
             let e = &log[k];
@@ -149,8 +151,53 @@ fn sources_at(path: &Path, rev: &str) -> Result<Program, String> {
     }
 }
 
+/// The log entries of a package (a folder with a `strata.log`) at a revision.
+fn log_at(dir: &Path, rev: &str) -> Vec<Json> {
+    git(dir, &["show", &format!("{rev}:./{}", store::LOG)]).map(|t| store::parse_log(&t)).unwrap_or_default()
+}
+
+fn ids(log: &[Json]) -> std::collections::HashSet<String> {
+    log.iter().filter_map(|e| e["id"].as_str().map(|s| s.to_string())).collect()
+}
+
+/// The same definitions, whatever their order.
+fn same(a: &Program, b: &Program) -> bool {
+    let set = |p: &Program| p.decls.iter().map(|d| (d.qname(), store::self_hash(d))).collect::<std::collections::BTreeSet<_>>();
+    set(a) == set(b)
+}
+
+fn renames_of(e: &Json) -> Vec<(String, String)> {
+    match (e["rename"]["from"].as_str(), e["rename"]["to"].as_str()) {
+        (Some(f), Some(t)) => vec![(f.to_string(), t.to_string())],
+        _ => vec![],
+    }
+}
+
+/// The steps from `before` to `after`, one per log entry that is in `log`
+/// but not in `known`, replayed in order; what the entries don't explain
+/// (edits made outside strata) is a last step titled `rest`.
+fn log_steps(steps: &mut Vec<Step>, before: &Program, after: &Program, log: &[Json], known: &std::collections::HashSet<String>, group: &str, when: Option<u64>, rest: &str) {
+    let mut cur = before.clone();
+    let mut any = false;
+    for e in log.iter().filter(|e| e["id"].as_str().is_some_and(|id| !known.contains(id))) {
+        let mut next = cur.clone();
+        if store::apply(&mut next, e).is_err() {
+            break; // an entry that no longer applies: the rest is one step
+        }
+        any = true;
+        steps.push(Step { id: steps.len() + 1, title: e["message"].as_str().unwrap_or("").to_string(), group: group.to_string(), when: e["time"].as_u64().or(when), before: cur, after: next.clone(), renames: renames_of(e) });
+        cur = next;
+    }
+    if !same(&cur, after) {
+        let title = if any { format!("{rest}: edits outside strata") } else { rest.to_string() };
+        steps.push(Step { id: steps.len() + 1, title, group: group.to_string(), when, before: cur, after: after.clone(), renames: vec![] });
+    }
+}
+
 /// Source files under git: the commits from `base` (default `HEAD`) to
-/// `HEAD`, then uncommitted changes in the working tree.
+/// `HEAD`, then uncommitted changes in the working tree. In a package with a
+/// `strata.log`, each commit is split into the log entries it added (with
+/// their renames), plus a step for edits made outside strata.
 pub fn git_range(path: &Path, base: Option<&str>) -> Result<Range, String> {
     let dir = if path.is_dir() { path.to_path_buf() } else { path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")).to_path_buf() };
     git(&dir, &["rev-parse", "--show-toplevel"]).map_err(|_| format!("{} is not in a git repository, so there is nothing to compare it with", path.display()))?;
@@ -160,6 +207,8 @@ pub fn git_range(path: &Path, base: Option<&str>) -> Result<Range, String> {
         .trim()
         .to_string();
     let base_prog = sources_at(path, base).map_err(|e| format!("the sources at `{base}` don't parse with this version of strata ({e}), so there is nothing to compare with; pick another base"))?;
+    let package = path.is_dir();
+    let mut known = if package { ids(&log_at(&dir, base)) } else { Default::default() };
     let mut steps = Vec::new();
     let mut prev = base_prog.clone();
     let commits = git(&dir, &["log", "--reverse", "--format=%h%x09%ct%x09%s", &format!("{base}..HEAD"), "--", "."])?;
@@ -174,13 +223,14 @@ pub fn git_range(path: &Path, base: Option<&str>) -> Result<Range, String> {
         };
         let title = if skipped.is_empty() { subject.to_string() } else { format!("{subject} (with {}, which doesn't parse)", skipped.join(", ")) };
         skipped.clear();
-        steps.push(Step { id: steps.len() + 1, title, group: sha.to_string(), when, before: prev.clone(), after: after.clone(), renames: vec![] });
+        let log = if package { log_at(&dir, sha) } else { vec![] };
+        log_steps(&mut steps, &prev, &after, &log, &known, sha, when, &title);
+        known.extend(ids(&log));
         prev = after;
     }
     let head = crate::read_sources(&path.to_string_lossy(), None)?;
-    if head != prev {
-        steps.push(Step { id: steps.len() + 1, title: "uncommitted changes".into(), group: "working tree".into(), when: None, before: prev, after: head.clone(), renames: vec![] });
-    }
+    let log = if package { store::parse_log(&std::fs::read_to_string(dir.join(store::LOG)).unwrap_or_default()) } else { vec![] };
+    log_steps(&mut steps, &prev, &head, &log, &known, "working tree", None, "uncommitted changes");
     Ok(Range {
         kind: "git",
         label: format!("{base} ({base_sha}) → working tree"),

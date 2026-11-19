@@ -1,22 +1,19 @@
-//! The codebase database. Definitions are stored as JSON syntax trees,
-//! addressed by the hash of their canonical form. Names point at hashes.
-//! Every change is an atomic, checked patch recorded in the log.
+//! The codebase: a package's files, plus its log. Definitions are identified
+//! by the hash of their canonical form. Every change made through strata is
+//! an atomic, checked patch: the files are rewritten and an entry is appended
+//! to `strata.log`, which is committed with them. Entries carry the changed
+//! definitions' text, so the log replays on its own (for diffs and merges).
 
 use crate::ast::*;
 use crate::printer;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// The local cache folder (verification results), never committed.
 pub const DIR: &str = ".strata";
-
-#[derive(Serialize, Deserialize, Default)]
-struct Index {
-    /// (name, hash) in declaration order
-    defs: Vec<(String, String)>,
-}
 
 pub struct Codebase {
     root: PathBuf,
@@ -324,155 +321,255 @@ pub fn dependents(p: &Program, name: &str) -> Vec<String> {
 }
 
 impl Codebase {
+    /// The package a folder is in: the nearest folder at or above it with a `strata.toml`.
     pub fn find(start: &Path) -> Option<PathBuf> {
-        let mut cur = Some(start);
-        while let Some(d) = cur {
-            if d.join(DIR).is_dir() {
-                return Some(d.to_path_buf());
-            }
-            cur = d.parent();
-        }
-        None
+        let start = fs::canonicalize(start).unwrap_or(start.to_path_buf());
+        start.ancestors().find(|d| d.join(crate::package::FILE).is_file()).map(|d| d.to_path_buf())
     }
 
-    pub fn init(root: &Path) -> Result<(), String> {
-        let dir = root.join(DIR);
-        if dir.exists() {
-            return Err(format!("{} already exists", dir.display()));
+    /// Make the current folder a package: a `strata.toml` named after the folder.
+    pub fn init(root: &Path) -> Result<String, String> {
+        let toml = root.join(crate::package::FILE);
+        if toml.exists() {
+            return Err(format!("{} already exists", toml.display()));
         }
-        fs::create_dir_all(dir.join("objects")).map_err(|e| e.to_string())?;
-        fs::write(dir.join("index.json"), serde_json::to_string_pretty(&Index::default()).unwrap()).map_err(|e| e.to_string())?;
-        Ok(())
+        let text = crate::package::template(root);
+        fs::write(&toml, &text).map_err(|e| e.to_string())?;
+        Ok(text)
     }
 
+    /// The package's modules, read from its files.
     pub fn open(root: &Path) -> Result<Codebase, String> {
-        let dir = root.join(DIR);
-        let idx: Index = serde_json::from_str(&fs::read_to_string(dir.join("index.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        let mut decls = Vec::new();
-        for (_, h) in &idx.defs {
-            let s = fs::read_to_string(dir.join("objects").join(format!("{h}.json"))).map_err(|e| format!("object {h}: {e}"))?;
-            decls.push(serde_json::from_str(&s).map_err(|e| format!("object {h}: {e}"))?);
-        }
-        Ok(Codebase { root: root.to_path_buf(), program: Program { decls } })
+        let program = crate::package::parse(crate::package::files(root)?)?;
+        Ok(Codebase { root: root.to_path_buf(), program })
     }
 
-    fn dir(&self) -> PathBuf {
+    /// The local cache (verification results); not committed.
+    fn cache(&self) -> PathBuf {
         self.root.join(DIR)
     }
 
-    /// Replace the program with `new`, writing objects and a log entry.
+    /// Replace the program with `new`, rewriting its files and appending a log entry.
     pub fn commit(&mut self, new: Program, message: &str) -> Result<Vec<Change>, String> {
         self.commit_with(new, message, serde_json::json!({}))
     }
 
     /// Commit, adding `extra`'s fields to the log entry (e.g. `"rename"`).
     pub fn commit_with(&mut self, new: Program, message: &str, extra: serde_json::Value) -> Result<Vec<Change>, String> {
-        let old: HashMap<String, &Decl> = self.program.decls.iter().map(|d| (d.qname(), d)).collect();
-        let newm: HashMap<String, &Decl> = new.decls.iter().map(|d| (d.qname(), d)).collect();
-        let mut changes = Vec::new();
-        for d in &new.decls {
-            let n = d.qname();
-            let h = self_hash(d);
-            match old.get(&n) {
-                Some(o) if self_hash(o) == h => {}
-                Some(o) => {
-                    let ic = interface_hash(o) != interface_hash(d);
-                    changes.push(Change {
-                        name: n.clone(),
-                        kind: d.kind_str().into(),
-                        old: Some(self_hash(o)),
-                        new: Some(h),
-                        interface_changed: ic,
-                        affected: if ic { dependents(&new, &n) } else { vec![] },
-                    })
-                }
-                None => changes.push(Change { name: n.clone(), kind: d.kind_str().into(), old: None, new: Some(h), interface_changed: true, affected: vec![] }),
-            }
-        }
-        for d in &self.program.decls {
-            if !newm.contains_key(&d.qname()) {
-                changes.push(Change { name: d.qname(), kind: d.kind_str().into(), old: Some(self_hash(d)), new: None, interface_changed: true, affected: dependents(&self.program, &d.qname()) });
-            }
-        }
+        let changes = changes(&self.program, &new);
         if changes.is_empty() {
             return Ok(changes);
         }
-        let objs = self.dir().join("objects");
-        let mut idx = Index::default();
-        for d in &new.decls {
-            let h = self_hash(d);
-            let p = objs.join(format!("{h}.json"));
-            if !p.exists() {
-                fs::write(&p, serde_json::to_string_pretty(d).unwrap()).map_err(|e| e.to_string())?;
+        // one file per module; a module left with no definitions loses its file
+        let mut mods: BTreeSet<String> = self.program.decls.iter().map(|d| d.module.clone()).collect();
+        mods.extend(new.decls.iter().map(|d| d.module.clone()));
+        for m in mods {
+            let path = self.root.join(module_path(&m));
+            if new.decls.iter().any(|d| d.module == m) {
+                let text = printer::module_file(&new, &m);
+                if fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+                    if let Some(dir) = path.parent() {
+                        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                    }
+                    fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+                }
+            } else if path.exists() {
+                fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             }
-            idx.defs.push((d.qname(), h));
         }
-        fs::write(self.dir().join("index.json"), serde_json::to_string_pretty(&idx).unwrap()).map_err(|e| e.to_string())?;
+        let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let texts: HashMap<String, (String, String)> = new.decls.iter().map(|d| (d.qname(), (d.module.clone(), printer::decl(d)))).collect();
+        let old_texts: HashMap<String, (String, String)> = self.program.decls.iter().map(|d| (d.qname(), (d.module.clone(), printer::decl(d)))).collect();
+        let changes_json: Vec<serde_json::Value> = changes
+            .iter()
+            .map(|c| {
+                let mut j = serde_json::to_value(c).unwrap();
+                // the entry carries the texts before and after, so the log replays
+                // either way without an object store
+                if let (Some(_), Some((m, t))) = (&c.new, texts.get(&c.name)) {
+                    j["module"] = serde_json::json!(m);
+                    j["text"] = serde_json::json!(t);
+                }
+                if let (Some(_), Some((m, t))) = (&c.old, old_texts.get(&c.name)) {
+                    j["module"] = serde_json::json!(m);
+                    j["old_text"] = serde_json::json!(t);
+                }
+                j
+            })
+            .collect();
         let mut entry = serde_json::json!({
-            "time": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+            "id": sha(&format!("{time}{message}{}", serde_json::to_string(&changes_json).unwrap())),
+            "time": (time / 1_000_000_000) as u64,
             "message": message,
-            "changes": changes,
+            "changes": changes_json,
         });
         if let (Some(e), Some(x)) = (entry.as_object_mut(), extra.as_object()) {
             e.extend(x.clone());
         }
         use std::io::Write;
-        let mut f = fs::OpenOptions::new().create(true).append(true).open(self.dir().join("log.jsonl")).map_err(|e| e.to_string())?;
+        let mut f = fs::OpenOptions::new().create(true).append(true).open(self.root.join(LOG)).map_err(|e| e.to_string())?;
         writeln!(f, "{entry}").map_err(|e| e.to_string())?;
         self.program = new;
         Ok(changes)
     }
 
     pub fn log(&self) -> Vec<serde_json::Value> {
-        fs::read_to_string(self.dir().join("log.jsonl"))
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .collect()
+        parse_log(&fs::read_to_string(self.root.join(LOG)).unwrap_or_default())
     }
 
-    /// The program after each log entry, by replaying the log: `[0]` is the
-    /// empty codebase, `[k]` the codebase after the first `k` entries.
+    /// The program around each log entry: `[k]` is the codebase after the
+    /// first `k` entries, so the last one is the files as they are. The log is
+    /// replayed backwards from the files, so code written by hand before the
+    /// first entry is `[0]`.
     pub fn states(&self) -> Result<Vec<Program>, String> {
-        let mut cache: HashMap<String, Decl> = HashMap::new();
-        let mut cur: Vec<(String, String)> = Vec::new();
-        let mut out = vec![Program::default()];
-        for e in self.log() {
-            // a rename keeps the definition's place
-            if let (Some(f), Some(t)) = (e["rename"]["from"].as_str(), e["rename"]["to"].as_str()) {
-                if let Some(slot) = cur.iter_mut().find(|(n, _)| n == f) {
-                    slot.0 = t.to_string();
-                }
-            }
-            for c in e["changes"].as_array().into_iter().flatten() {
-                let Some(name) = c["name"].as_str() else { continue };
-                match c["new"].as_str() {
-                    Some(h) => match cur.iter_mut().find(|(n, _)| n == name) {
-                        Some(slot) => slot.1 = h.to_string(),
-                        None => cur.push((name.to_string(), h.to_string())),
-                    },
-                    None => cur.retain(|(n, _)| n != name),
-                }
-            }
-            let mut decls = Vec::new();
-            for (_, h) in &cur {
-                if !cache.contains_key(h) {
-                    let s = fs::read_to_string(self.dir().join("objects").join(format!("{h}.json"))).map_err(|e| format!("object {h}: {e}"))?;
-                    cache.insert(h.clone(), serde_json::from_str(&s).map_err(|e| format!("object {h}: {e}"))?);
-                }
-                decls.push(cache[h].clone());
-            }
-            out.push(Program { decls });
+        let log = self.log();
+        let mut cur = self.program.clone();
+        let mut out = vec![cur.clone()];
+        for e in log.iter().rev() {
+            undo(&mut cur, e)?;
+            out.push(cur.clone());
         }
+        out.reverse();
         Ok(out)
     }
 
     pub fn load_verdicts(&self) -> HashMap<String, crate::verify::Verdict> {
-        fs::read_to_string(self.dir().join("verdicts.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        fs::read_to_string(self.cache().join("verdicts.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
 
     pub fn save_verdicts(&self, v: &HashMap<String, crate::verify::Verdict>) {
-        let _ = fs::write(self.dir().join("verdicts.json"), serde_json::to_string_pretty(v).unwrap());
+        let _ = fs::create_dir_all(self.cache());
+        let _ = fs::write(self.cache().join("verdicts.json"), serde_json::to_string_pretty(v).unwrap());
+    }
+}
+
+/// The log file at a package's root, committed with the sources.
+pub const LOG: &str = "strata.log";
+
+/// Where a module's file is, relative to its package: `shop.orders` is
+/// `shop/orders.strata`, the root module `main.strata`.
+pub fn module_path(m: &str) -> PathBuf {
+    if m.is_empty() { PathBuf::from("main.strata") } else { PathBuf::from(format!("{}.strata", m.replace('.', "/"))) }
+}
+
+pub fn parse_log(text: &str) -> Vec<serde_json::Value> {
+    text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+}
+
+/// What changed from `old` to `new`, definition by definition.
+pub fn changes(old_p: &Program, new: &Program) -> Vec<Change> {
+    let old: HashMap<String, &Decl> = old_p.decls.iter().map(|d| (d.qname(), d)).collect();
+    let newm: HashMap<String, &Decl> = new.decls.iter().map(|d| (d.qname(), d)).collect();
+    let mut changes = Vec::new();
+    for d in &new.decls {
+        let n = d.qname();
+        let h = self_hash(d);
+        match old.get(&n) {
+            Some(o) if self_hash(o) == h => {}
+            Some(o) => {
+                let ic = interface_hash(o) != interface_hash(d);
+                changes.push(Change {
+                    name: n.clone(),
+                    kind: d.kind_str().into(),
+                    old: Some(self_hash(o)),
+                    new: Some(h),
+                    interface_changed: ic,
+                    affected: if ic { dependents(new, &n) } else { vec![] },
+                })
+            }
+            None => changes.push(Change { name: n.clone(), kind: d.kind_str().into(), old: None, new: Some(h), interface_changed: true, affected: vec![] }),
+        }
+    }
+    for d in &old_p.decls {
+        if !newm.contains_key(&d.qname()) {
+            changes.push(Change { name: d.qname(), kind: d.kind_str().into(), old: Some(self_hash(d)), new: None, interface_changed: true, affected: dependents(old_p, &d.qname()) });
+        }
+    }
+    changes
+}
+
+/// Apply one log entry to a program: a rename keeps the definition's place,
+/// a changed definition is replaced by the entry's text, a removed one goes.
+pub fn apply(p: &mut Program, e: &serde_json::Value) -> Result<(), String> {
+    if let (Some(f), Some(t)) = (e["rename"]["from"].as_str(), e["rename"]["to"].as_str()) {
+        // the renamed definition's new text comes with the entry; keep its slot
+        if let Some(i) = p.decls.iter().position(|d| d.qname() == f) {
+            let module = p.decls[i].module.clone();
+            let short = t.rsplit('.').next().unwrap_or(t);
+            set_name(&mut p.decls[i], short);
+            p.decls[i].module = module;
+        }
+    }
+    for c in e["changes"].as_array().into_iter().flatten() {
+        let Some(name) = c["name"].as_str() else { continue };
+        match (c["new"].as_str(), c["text"].as_str()) {
+            (Some(_), Some(text)) => {
+                let module = c["module"].as_str().unwrap_or("");
+                let parsed = crate::parser::parse_module_file(text, module).map_err(|err| format!("log entry {}: {name}: {err}", e["id"]))?;
+                let Some(d) = parsed.decls.into_iter().next() else { continue };
+                match p.decls.iter_mut().find(|x| x.qname() == name) {
+                    Some(slot) => *slot = d,
+                    None => p.decls.push(d),
+                }
+            }
+            (Some(_), None) => return Err(format!("log entry {} has no text for {name}", e["id"])),
+            (None, _) => p.decls.retain(|x| x.qname() != name),
+        }
+    }
+    Ok(())
+}
+
+/// Undo one log entry: the definitions it changed get their old text back,
+/// the ones it added go, and a rename gives the definition its old name in
+/// the same place.
+pub fn undo(p: &mut Program, e: &serde_json::Value) -> Result<(), String> {
+    let parse = |c: &serde_json::Value, text: &str| -> Result<Option<Decl>, String> {
+        let module = c["module"].as_str().unwrap_or("");
+        let parsed = crate::parser::parse_module_file(text, module).map_err(|err| format!("log entry {}: {}: {err}", e["id"], c["name"]))?;
+        Ok(parsed.decls.into_iter().next())
+    };
+    let renamed = match (e["rename"]["from"].as_str(), e["rename"]["to"].as_str()) {
+        (Some(f), Some(t)) => Some((f.to_string(), t.to_string())),
+        _ => None,
+    };
+    for c in e["changes"].as_array().into_iter().flatten() {
+        let Some(name) = c["name"].as_str() else { continue };
+        // the renamed definition comes back under its old name, in the new one's slot
+        if let Some((f, t)) = &renamed {
+            if name == t {
+                continue;
+            }
+            if name == f {
+                if let (Some(text), Some(i)) = (c["old_text"].as_str(), p.decls.iter().position(|d| d.qname() == *t)) {
+                    if let Some(d) = parse(c, text)? {
+                        p.decls[i] = d;
+                    }
+                }
+                continue;
+            }
+        }
+        match (c["old"].as_str(), c["old_text"].as_str()) {
+            (Some(_), Some(text)) => {
+                let Some(d) = parse(c, text)? else { continue };
+                match p.decls.iter_mut().find(|x| x.qname() == name) {
+                    Some(slot) => *slot = d,
+                    None => p.decls.push(d),
+                }
+            }
+            (Some(_), None) => return Err(format!("log entry {} has no old text for {name}", e["id"])),
+            (None, _) => p.decls.retain(|x| x.qname() != name),
+        }
+    }
+    Ok(())
+}
+
+/// Give a function, type or trait a new short name.
+pub fn set_name(d: &mut Decl, name: &str) {
+    match &mut d.kind {
+        DeclKind::Fn(f) => f.name = name.to_string(),
+        DeclKind::Type(t) => t.name = name.to_string(),
+        DeclKind::Trait(t) => t.name = name.to_string(),
+        _ => {}
     }
 }
 

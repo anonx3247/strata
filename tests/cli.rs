@@ -228,12 +228,18 @@ fn modules_contracts_and_files() {
     std::fs::write(d.join("p/b.strata"), "use a.*\nfn f() -> Int { open() + secret() }\nfn g() -> Int { a.secret() }\n").unwrap();
     let (ok, out) = strata(&["--file", "p", "check"], &d, None);
     assert!(!ok && out.contains("`secret` is private to module `a`") && out.contains("`a.secret` is private to module `a`"), "{out}");
-    // the codebase database stores qualified names; a private edit leaves dependents alone
-    assert!(strata(&["init"], &d, None).0);
-    assert!(strata(&["add", &ex], &d, None).0);
-    let (ok, out) = strata(&["edit", "--module", "core"], &d, Some("fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool { len(claimed) == len(reported) && all(claimed, c -> count(reported, r -> r == c) == 1) && all(reported, r -> contains(claimed, r)) }"));
+    // a package keeps qualified names; a private edit leaves dependents alone
+    let pkg = d.join("pkg");
+    std::fs::create_dir_all(&pkg).unwrap();
+    assert!(strata(&["init"], &pkg, None).0);
+    assert!(strata(&["add", &ex], &pkg, None).0);
+    for m in ["core", "memory", "print", "sim"] {
+        assert!(pkg.join(format!("{m}.strata")).is_file(), "add writes one file per module: {m}");
+    }
+    let (ok, out) = strata(&["edit", "--module", "core"], &pkg, Some("fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool { len(claimed) == len(reported) && all(claimed, c -> count(reported, r -> r == c) == 1) && all(reported, r -> contains(claimed, r)) }"));
     assert!(ok && out.contains("core.same_ids") && out.contains("implementation only"), "{out}");
-    let (ok, out) = strata(&["test"], &d, None);
+    assert!(std::fs::read_to_string(pkg.join("core.strata")).unwrap().contains("all(reported, r -> contains(claimed, r))"), "the edit is in the file");
+    let (ok, out) = strata(&["test"], &pkg, None);
     assert!(ok && out.contains("0 failed"), "{out}");
 }
 
@@ -372,11 +378,10 @@ test "boxes" {
   assert total(Box { items: [1, 2] }) == 3
 }
 "#;
-    std::fs::create_dir_all(d.join("src")).unwrap();
-    std::fs::write(d.join("src/a.strata"), a).unwrap();
-    std::fs::write(d.join("src/b.strata"), b).unwrap();
+    // a package written by hand: its files are its modules
+    std::fs::write(d.join("a.strata"), a).unwrap();
+    std::fs::write(d.join("b.strata"), b).unwrap();
     assert!(strata(&["init"], &d, None).0);
-    assert!(strata(&["add", "src"], &d, None).0);
 
     // names that a local or another definition would capture are refused
     let (ok, out) = strata(&["rename", "a.size", "count"], &d, None);
@@ -399,6 +404,12 @@ test "boxes" {
     assert!(ok && out.contains("1 passed"), "{out}");
     let (_, log) = strata(&["log", "--json"], &d, None);
     assert!(log.contains(r#""from":"a.size""#) && log.contains(r#""to":"a.length""#), "{log}");
+    // the files are the source; the log is next to them, to be committed
+    assert!(std::fs::read_to_string(d.join("b.strata")).unwrap().contains("fn total(b: Crate)"));
+    assert_eq!(std::fs::read_to_string(d.join("strata.log")).unwrap().lines().count(), 2);
+    // the log replays backwards from the files: the first step starts from what was written by hand
+    let (ok, out) = strata(&["diff", "--from", "0", "--step", "0"], &d, None);
+    assert!(ok && out.contains("↪ a.length  (renamed from `size`)") && out.contains("3 references updated") && !out.contains("a.Crate  (renamed"), "{out}");
 }
 
 /// Run the `test` blocks of `src` and check that it round-trips through `render`.
@@ -1249,4 +1260,39 @@ fn sync_merges_main_with_the_driver_then_checks() {
     let (ok, out) = strata_git(&["sync", "main"], &d);
     assert!(!ok && out.contains("doesn't check"), "{out}");
     assert_eq!(git(&d, &["rev-parse", "HEAD"]), head, "nothing committed");
+}
+
+#[test]
+fn the_log_is_committed_and_splits_git_diffs_into_steps() {
+    let d = tmp("gitlog");
+    git(&d, &["init", "-q", "-b", "main"]);
+    std::fs::write(d.join("a.strata"), "pub fn area(w: Int, h: Int) -> Int {\n  w * h\n}\n").unwrap();
+    std::fs::write(d.join("b.strata"), "use a.area\n\nfn square(s: Int) -> Int {\n  area(s, s)\n}\n").unwrap();
+    assert!(strata(&["init"], &d, None).0);
+    git(&d, &["add", "."]);
+    git(&d, &["commit", "-q", "-m", "base"]);
+
+    // one commit: a rename and an edit through strata, then a change by hand
+    assert!(strata(&["rename", "area", "rect_area"], &d, None).0);
+    let (ok, out) = strata(&["edit", "--module", "a", "-m", "areas are never negative"], &d, Some("pub fn rect_area(w: Int, h: Int) -> Int requires w >= 0 && h >= 0 {\n  w * h\n}\n"));
+    assert!(ok, "{out}");
+    let b = std::fs::read_to_string(d.join("b.strata")).unwrap();
+    assert!(b.contains("rect_area(s, s)"), "the rename rewrote the other file: {b}");
+    std::fs::write(d.join("b.strata"), b.replace("rect_area(s, s)\n}", "rect_area(s, s)\n}\n\nfn cube(s: Int) -> Int {\n  square(s) * s\n}")).unwrap();
+    git(&d, &["add", "."]);
+    git(&d, &["commit", "-q", "-m", "rect areas"]);
+
+    let (ok, out) = strata(&["--file", ".", "diff", "HEAD~1"], &d, None);
+    assert!(ok, "{out}");
+    let steps: Vec<&str> = out.lines().filter(|l| l.trim_start().starts_with("step ")).collect();
+    assert_eq!(steps.len(), 3, "{out}");
+    assert!(steps[0].contains("rename a.area → a.rect_area") && steps[1].contains("areas are never negative") && steps[2].contains("rect areas: edits outside strata"), "{out}");
+    // the range knows the rename from the log, so the callers fold into it
+    assert!(out.contains("a.rect_area  (renamed from `area`, signature changed, stricter precondition)") && out.contains("+ b.cube  (added)"), "{out}");
+    let (ok, out) = strata(&["--file", ".", "diff", "HEAD~1", "--step", "3"], &d, None);
+    assert!(ok && out.contains("b.cube") && !out.contains("rect_area  (renamed"), "{out}");
+
+    // the log merges by union (both sides only append)
+    let attrs = std::fs::read_to_string(format!("{}/.gitattributes", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    assert!(attrs.lines().any(|l| l.starts_with("strata.log") && l.contains("merge=union")), "{attrs}");
 }
