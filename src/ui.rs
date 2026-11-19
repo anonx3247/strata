@@ -132,7 +132,7 @@ fn snapshot(target: &Target) -> Json {
         match &d.kind {
             DeclKind::Type(t) => {
                 let (kind, base, fields, variants) = match &t.body {
-                    TypeBody::Alias(a) => ("alias", Some(json!({"ty": crate::printer::ty(a), "refs": refs_of(a)})), vec![], vec![]),
+                    TypeBody::Alias(a) => (if t.distinct { "distinct" } else { "alias" }, Some(json!({"ty": crate::printer::ty(a), "refs": refs_of(a)})), vec![], vec![]),
                     TypeBody::Record(fs) => ("record", None, fs.iter().map(|f| field_json(Some(&f.name), &f.ty)).collect(), vec![]),
                     TypeBody::Sum(vs) => (
                         "sum",

@@ -161,12 +161,34 @@ pub struct Env {
     pub ctors: HashMap<String, String>,
     pub effects: HashMap<String, EffectDecl>,
     pub fns: HashMap<String, FnDecl>,
+    pub traits: HashMap<String, TraitDecl>,
+    pub impls: Vec<ImplDecl>,
+    /// trait method name -> trait name (method names are unique across traits)
+    pub method_trait: HashMap<String, String>,
+}
+
+/// The name used to find an implementation: `List[Int]` -> `List`, `Line` -> `Line`.
+pub fn texpr_head(t: &TypeExpr) -> String {
+    match t {
+        TypeExpr::Named(n, _) => n.clone(),
+        TypeExpr::Unit => "Unit".into(),
+        TypeExpr::Fn(..) => "Fn".into(),
+        TypeExpr::Refined(b, _) => texpr_head(b),
+    }
 }
 
 impl Env {
     pub fn new(prog: &Program) -> (Env, Vec<Diag>) {
         let prelude = crate::parser::parse_program(PRELUDE).expect("prelude parses");
-        let mut env = Env { types: HashMap::new(), ctors: HashMap::new(), effects: HashMap::new(), fns: HashMap::new() };
+        let mut env = Env {
+            types: HashMap::new(),
+            ctors: HashMap::new(),
+            effects: HashMap::new(),
+            fns: HashMap::new(),
+            traits: HashMap::new(),
+            impls: Vec::new(),
+            method_trait: HashMap::new(),
+        };
         let mut errs = Vec::new();
         let prelude_names: Vec<String> = prelude.decls.iter().map(|d| d.name()).collect();
         for d in prelude.decls.iter().chain(prog.decls.iter()) {
@@ -184,6 +206,9 @@ impl Env {
                         TypeBody::Record(_) => {
                             env.ctors.insert(t.name.clone(), t.name.clone());
                         }
+                        TypeBody::Alias(_) if t.distinct => {
+                            env.ctors.insert(t.name.clone(), t.name.clone());
+                        }
                         TypeBody::Alias(_) => {}
                     }
                     env.types.insert(t.name.clone(), t.clone()).is_some()
@@ -191,6 +216,22 @@ impl Env {
                 DeclKind::Effect(e) => env.effects.insert(e.name.clone(), e.clone()).is_some(),
                 DeclKind::Fn(f) => env.fns.insert(f.name.clone(), f.clone()).is_some(),
                 DeclKind::Test(_) => false,
+                DeclKind::Trait(t) => {
+                    for m in &t.methods {
+                        if let Some(other) = env.method_trait.insert(m.decl.name.clone(), t.name.clone()) {
+                            errs.push(Diag { decl: name.clone(), msg: format!("method `{}` is also defined by trait `{other}`; method names must be unique across traits for now", m.decl.name) });
+                        }
+                    }
+                    env.traits.insert(t.name.clone(), t.clone()).is_some()
+                }
+                DeclKind::Impl(i) => {
+                    let head = texpr_head(&i.for_type);
+                    if env.impls.iter().any(|o| o.trait_name == i.trait_name && texpr_head(&o.for_type) == head) {
+                        errs.push(Diag { decl: name.clone(), msg: format!("`{}` is already implemented for `{head}`", i.trait_name) });
+                    }
+                    env.impls.push(i.clone());
+                    false
+                }
             };
             if dup {
                 let msg = if prelude_names.contains(&name) {
@@ -201,7 +242,27 @@ impl Env {
                 errs.push(Diag { decl: name.clone(), msg });
             }
         }
+        for (m, tr) in &env.method_trait {
+            if env.fns.contains_key(m) {
+                errs.push(Diag { decl: m.clone(), msg: format!("`{m}` is both a function and a method of trait `{tr}`") });
+            }
+        }
         (env, errs)
+    }
+
+    /// The implementation of `method` for values whose type head is `head`:
+    /// the impl's own method, or the trait's default.
+    pub fn resolve_method(&self, method: &str, head: &str) -> Option<(FnDecl, Vec<Expr>, Vec<Expr>)> {
+        let tr = self.traits.get(self.method_trait.get(method)?)?;
+        let tm = tr.methods.iter().find(|m| m.decl.name == method)?;
+        let imp = self.impls.iter().find(|i| i.trait_name == tr.name && texpr_head(&i.for_type) == head)?;
+        let decl = match imp.methods.iter().find(|m| m.name == method) {
+            Some(m) => m.clone(),
+            None if tm.default => tm.decl.clone(),
+            None => return None,
+        };
+        // the trait's contract binds every implementation
+        Some((decl, tm.decl.requires.clone(), tm.decl.ensures.clone()))
     }
 
     /// Follow refinement aliases to the underlying (unrefined) type expression.
@@ -210,7 +271,7 @@ impl Env {
             return self.expand_alias(b);
         }
         if let TypeExpr::Named(n, args) = t {
-            if let Some(TypeDecl { body: TypeBody::Alias(a), params, .. }) = self.types.get(n) {
+            if let Some(TypeDecl { body: TypeBody::Alias(a), params, distinct: false, .. }) = self.types.get(n) {
                 let sub: HashMap<String, TypeExpr> = params.iter().cloned().zip(args.iter().cloned()).collect();
                 return self.expand_alias(&subst_texpr(a, &sub));
             }
@@ -242,6 +303,7 @@ impl Env {
                 Some(fs.iter().map(|f| f.name.clone()).collect()),
                 fs.iter().map(|f| s(&f.ty)).collect(),
             )]),
+            TypeBody::Alias(a) if td.distinct => Some(vec![(name.to_string(), None, vec![s(a)])]),
             TypeBody::Alias(_) => None,
         }
     }
@@ -275,6 +337,12 @@ struct Checker<'a> {
     errors: Vec<Diag>,
     holes: Vec<(String, Ty, Vec<(String, Ty)>, Vec<String>)>,
     matches: Vec<(Ty, Vec<Pattern>)>,
+    /// What `Self` means here (inside a trait or impl).
+    self_ty: Option<Ty>,
+    /// Trait bounds on the rigid type parameters in scope (`T: Ord`).
+    bounds: HashMap<String, Vec<(String, Vec<Ty>)>>,
+    /// Obligations `type implements trait[args]`, solved at the end of the declaration.
+    pending: Vec<(Ty, String, Vec<Ty>, String)>,
 }
 
 impl<'a> Checker<'a> {
@@ -355,8 +423,21 @@ impl<'a> Checker<'a> {
                 if let Some(v) = vars.get(n) {
                     return v.clone();
                 }
+                if n == "Self" && args.is_empty() {
+                    return match &self.self_ty {
+                        Some(t) => t.clone(),
+                        None => {
+                            self.err("`Self` only means something inside a trait or an impl");
+                            self.fresh()
+                        }
+                    };
+                }
                 if self.rigid.contains(n) {
                     return Ty::Rigid(n.clone());
+                }
+                if self.env.traits.contains_key(n) {
+                    self.err(format!("`{n}` is a trait, not a type: take a type parameter instead, e.g. `fn f[T: {n}](x: T)`"));
+                    return self.fresh();
                 }
                 let largs: Vec<Ty> = args.iter().map(|a| self.lower(a, vars)).collect();
                 match n.as_str() {
@@ -374,7 +455,7 @@ impl<'a> Checker<'a> {
                             if td.params.len() != largs.len() {
                                 self.err(format!("type `{n}` expects {} type arguments, got {}", td.params.len(), largs.len()));
                             }
-                            if let TypeBody::Alias(a) = &td.body {
+                            if let (TypeBody::Alias(a), false) = (&td.body, td.distinct) {
                                 let sub: HashMap<String, Ty> = td.params.iter().cloned().zip(largs).collect();
                                 let a = a.clone();
                                 return self.lower(&a, &sub);
@@ -389,6 +470,188 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+    }
+
+    /// The type of a trait method used anywhere: `Self` is a fresh type that
+    /// must implement the trait (checked when the declaration is finished).
+    fn trait_method(&mut self, name: &str, trait_name: &str) -> Ty {
+        let tr = self.env.traits[trait_name].clone();
+        let m = tr.methods.iter().find(|m| m.decl.name == name).unwrap().decl.clone();
+        let mut vars: HashMap<String, Ty> = tr.params.iter().map(|p| (p.clone(), self.fresh())).collect();
+        for p in &m.type_params {
+            vars.insert(p.clone(), self.fresh());
+        }
+        let self_t = self.fresh();
+        let saved = self.self_ty.replace(self_t.clone());
+        let fty = self.lower(&Self::fn_scheme(&m), &vars);
+        let mut missing = Vec::new();
+        for e in &m.effects {
+            if let Some((en, args)) = self.lower_effect(e, &vars) {
+                match self.effects.get(&en).cloned() {
+                    Some(have) => {
+                        for (a, b) in have.iter().zip(&args) {
+                            let _ = self.unify(a, b);
+                        }
+                    }
+                    None => missing.push(en),
+                }
+            }
+        }
+        self.self_ty = saved;
+        if !missing.is_empty() {
+            self.err(format!("`{name}` performs {{{}}}, which is neither declared by `{}` nor handled here", missing.join(", "), self.decl));
+        }
+        let args: Vec<Ty> = tr.params.iter().map(|p| vars[p].clone()).collect();
+        self.pending.push((self_t, trait_name.to_string(), args, format!("calling `{name}`")));
+        fty
+    }
+
+    /// Supertraits of `tr[args]`, transitively, with arguments substituted.
+    fn supers_of(&mut self, tr: &str, args: &[Ty], depth: usize) -> Vec<(String, Vec<Ty>)> {
+        let Some(td) = self.env.traits.get(tr).cloned() else { return vec![] };
+        if depth > 8 {
+            return vec![];
+        }
+        let vars: HashMap<String, Ty> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+        let mut out = Vec::new();
+        for s in &td.supers {
+            if let TypeExpr::Named(sn, sargs) = s {
+                let sa: Vec<Ty> = sargs.iter().map(|a| self.lower(a, &vars)).collect();
+                out.extend(self.supers_of(sn, &sa, depth + 1));
+                out.push((sn.clone(), sa));
+            }
+        }
+        out
+    }
+
+    /// Does `t` implement `tr[args]`?
+    fn satisfies(&mut self, t: &Ty, tr: &str, args: &[Ty], depth: usize) -> Result<(), String> {
+        if depth > 8 {
+            return Err(format!("trait resolution for `{tr}` is too deep"));
+        }
+        let t = self.resolve(t);
+        let head = match &t {
+            Ty::Rigid(n) => {
+                let known = self.bounds.get(n).cloned().unwrap_or_default();
+                let mut all = known.clone();
+                for (b, bargs) in &known {
+                    all.extend(self.supers_of(b, bargs, 0));
+                }
+                return match all.iter().find(|(b, _)| b == tr) {
+                    Some((_, bargs)) => {
+                        for (a, b) in args.iter().zip(bargs) {
+                            self.unify(a, b)?;
+                        }
+                        Ok(())
+                    }
+                    None => Err(format!("`{n}` is not known to implement `{tr}` (add a bound: `[{n}: {tr}]`)")),
+                };
+            }
+            Ty::Var(_) => return Err(format!("could not work out which type must implement `{tr}`; add a type annotation")),
+            Ty::Int => "Int".to_string(),
+            Ty::Float => "Float".into(),
+            Ty::Bool => "Bool".into(),
+            Ty::Str => "String".into(),
+            Ty::Unit => "Unit".into(),
+            Ty::Fn(..) => "Fn".into(),
+            Ty::Con(n, _) => n.clone(),
+        };
+        let cands: Vec<ImplDecl> = self.env.impls.iter().filter(|i| i.trait_name == tr && texpr_head(&i.for_type) == head).cloned().collect();
+        for imp in cands {
+            let snapshot = self.subst.clone();
+            let vars: HashMap<String, Ty> = imp.type_params.iter().map(|p| (p.clone(), self.fresh())).collect();
+            let saved_rigid = std::mem::take(&mut self.rigid);
+            let ft = self.lower(&imp.for_type, &vars);
+            let targs: Vec<Ty> = imp.trait_args.iter().map(|a| self.lower(a, &vars)).collect();
+            self.rigid = saved_rigid;
+            let mut ok = self.unify(&ft, &t).is_ok() && targs.len() == args.len() && targs.iter().zip(args).all(|(a, b)| self.unify(a, b).is_ok());
+            if ok {
+                for b in &imp.bounds {
+                    for btr in &b.traits {
+                        if let TypeExpr::Named(bn, bargs) = btr {
+                            let ba: Vec<Ty> = bargs.iter().map(|a| self.lower(a, &vars)).collect();
+                            if let Err(e) = self.satisfies(&vars[&b.param], bn, &ba, depth + 1) {
+                                ok = false;
+                                self.subst = snapshot.clone();
+                                return Err(format!("`{}` implements `{tr}` only when {e}", show_ty(&t)));
+                            }
+                        }
+                    }
+                }
+            }
+            if ok {
+                return Ok(());
+            }
+            self.subst = snapshot;
+        }
+        Err(format!("`{}` does not implement `{tr}`", show_ty(&t)))
+    }
+
+    fn solve_pending(&mut self) {
+        let pending = std::mem::take(&mut self.pending);
+        for (t, tr, args, ctx) in pending {
+            if let Err(e) = self.satisfies(&t, &tr, &args, 0) {
+                self.err(format!("{ctx}: {e}"));
+            }
+        }
+    }
+
+    /// Bounds written on type parameters (`[T: Ord + Show]`), lowered.
+    fn add_bounds(&mut self, bounds: &[Bound]) {
+        for b in bounds {
+            for tr in &b.traits {
+                match tr {
+                    TypeExpr::Named(tn, targs) if self.env.traits.contains_key(tn) => {
+                        let args: Vec<Ty> = targs.iter().map(|a| self.lower(a, &HashMap::new())).collect();
+                        self.bounds.entry(b.param.clone()).or_default().push((tn.clone(), args));
+                    }
+                    other => self.err(format!("`{}` is not a trait", crate::printer::ty(other))),
+                }
+            }
+        }
+    }
+
+    /// Check a function body against its signature (top-level functions,
+    /// impl methods and default trait methods).
+    fn check_fn(&mut self, f: &FnDecl, obligations: &mut Vec<String>) {
+        self.rigid.extend(f.type_params.iter().cloned());
+        self.add_bounds(&f.bounds);
+        let mut effs = BTreeMap::new();
+        for e in &f.effects {
+            if let Some((n, args)) = self.lower_effect(e, &HashMap::new()) {
+                effs.insert(n, args);
+            }
+        }
+        self.effects = effs;
+        self.scopes.push(HashMap::new());
+        for p in &f.params {
+            self.check_refined(&p.ty);
+        }
+        for p in &f.params {
+            let t = self.lower(&p.ty, &HashMap::new());
+            self.bind(&p.name, t);
+        }
+        // the result's refinement may mention the parameters
+        self.check_refined(&f.ret);
+        let ret = self.lower(&f.ret, &HashMap::new());
+        for r in &f.requires {
+            let t = self.infer(r);
+            self.expect(&Ty::Bool, &t, "requires clause");
+            obligations.push(format!("requires {}", crate::printer::expr(r, 0)));
+        }
+        let bt = self.infer_with(&f.body, Some(&ret));
+        self.expect(&ret, &bt, "function body");
+        self.scopes.push(HashMap::new());
+        self.bind("it", ret.clone());
+        let saved = std::mem::take(&mut self.effects);
+        for en in &f.ensures {
+            let t = self.infer(en);
+            self.expect(&Ty::Bool, &t, "ensures clause");
+            obligations.push(format!("ensures {}", crate::printer::expr(en, 0)));
+        }
+        self.effects = saved;
+        self.scopes.pop();
+        self.scopes.pop();
     }
 
     /// Lower an effect reference such as `Queue[P, E]`. Omitted type arguments become fresh.
@@ -456,6 +719,14 @@ impl<'a> Checker<'a> {
             let f = f.clone();
             let vars: HashMap<String, Ty> = f.type_params.iter().map(|p| (p.clone(), self.fresh())).collect();
             let fty = self.lower(&Self::fn_scheme(&f), &vars);
+            for b in &f.bounds {
+                for tr in &b.traits {
+                    if let TypeExpr::Named(tn, targs) = tr {
+                        let args: Vec<Ty> = targs.iter().map(|a| self.lower(a, &vars)).collect();
+                        self.pending.push((vars[&b.param].clone(), tn.clone(), args, format!("calling `{name}`")));
+                    }
+                }
+            }
             let mut missing = Vec::new();
             for e in &f.effects {
                 let Some((en, args)) = self.lower_effect(e, &vars) else { continue };
@@ -478,6 +749,9 @@ impl<'a> Checker<'a> {
                 ));
             }
             return Some(fty);
+        }
+        if let Some(tn) = self.env.method_trait.get(name).cloned() {
+            return Some(self.trait_method(name, &tn));
         }
         if let Some((_, ps, sig)) = BUILTINS.iter().find(|(n, ..)| *n == name) {
             let ps: Vec<String> = ps.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
@@ -561,7 +835,7 @@ impl<'a> Checker<'a> {
                     Payload::Record(fs) => fs.iter().map(|f| (Some(f.name.clone()), self.lower(&f.ty, &vars))).collect(),
                 }
             }
-            TypeBody::Alias(_) => vec![],
+            TypeBody::Alias(a) => vec![(None, self.lower(a, &vars))],
         };
         Some((result, fields))
     }
@@ -953,6 +1227,13 @@ impl<'a> Checker<'a> {
                 };
             }
         }
+        if let Ty::Con(n, _) = &rt {
+            if f == "value" && self.env.types.get(n).is_some_and(|t| t.distinct) {
+                let (ct, fields) = self.ctor_type(&n.clone()).unwrap();
+                self.expect(&ct, &rt, "field access");
+                return fields[0].1.clone();
+            }
+        }
         match &rt {
             Ty::Con(n, _) => {
                 let n = n.clone();
@@ -1124,6 +1405,7 @@ impl Checker<'_> {
                 let ctors: Vec<String> = match &td.body {
                     TypeBody::Sum(vs) => vs.iter().map(|v| v.name.clone()).collect(),
                     TypeBody::Record(_) => vec![n.clone()],
+                    TypeBody::Alias(_) if td.distinct => vec![n.clone()],
                     TypeBody::Alias(_) => return None,
                 };
                 let mut out = Vec::new();
@@ -1214,10 +1496,20 @@ pub fn check(prog: &Program) -> CheckReport {
             errors: Vec::new(),
             holes: Vec::new(),
             matches: Vec::new(),
+            self_ty: None,
+            bounds: HashMap::new(),
+            pending: Vec::new(),
         };
         let mut obligations = Vec::new();
         match &d.kind {
             DeclKind::Type(t) => {
+                if matches!(t.body, TypeBody::Alias(_)) && t.refinement.is_none() && !t.distinct {
+                    c.err(format!(
+                        "`type {0} = {1}` adds nothing: constrain it (`type {0} = {1} where …`) or make it a separate type (`distinct type {0} = {1}`)",
+                        t.name,
+                        match &t.body { TypeBody::Alias(a) => crate::printer::ty(a), _ => String::new() }
+                    ));
+                }
                 c.rigid = t.params.iter().cloned().collect();
                 let self_ty = match &t.body {
                     TypeBody::Alias(a) => c.lower(a, &HashMap::new()),
@@ -1271,46 +1563,127 @@ pub fn check(prog: &Program) -> CheckReport {
                 }
             }
             DeclKind::Fn(f) => {
-                c.rigid = f.type_params.iter().cloned().collect();
-                let mut effs = BTreeMap::new();
-                for e in &f.effects {
-                    if let Some((n, args)) = c.lower_effect(e, &HashMap::new()) {
-                        effs.insert(n, args);
+                c.check_fn(f, &mut obligations);
+            }
+            DeclKind::Trait(t) => {
+                c.rigid = t.params.iter().cloned().collect();
+                c.rigid.insert("Self".into());
+                c.self_ty = Some(Ty::Rigid("Self".into()));
+                let own: Vec<Ty> = t.params.iter().map(|p| Ty::Rigid(p.clone())).collect();
+                c.bounds.insert("Self".into(), vec![(t.name.clone(), own)]);
+                for s in &t.supers {
+                    match s {
+                        TypeExpr::Named(sn, _) if env.traits.contains_key(sn) => {}
+                        other => c.err(format!("supertrait `{}` is not a trait", crate::printer::ty(other))),
                     }
                 }
-                c.effects = effs;
-                for p in &f.params {
-                    c.check_refined(&p.ty);
+                for m in &t.methods {
+                    let mut ob = Vec::new();
+                    let saved = c.rigid.clone();
+                    if m.default {
+                        c.check_fn(&m.decl, &mut ob);
+                    } else {
+                        c.rigid.extend(m.decl.type_params.iter().cloned());
+                        for p in &m.decl.params {
+                            c.check_refined(&p.ty);
+                            c.lower(&p.ty, &HashMap::new());
+                        }
+                        c.lower(&m.decl.ret, &HashMap::new());
+                        c.scopes.push(HashMap::new());
+                        for p in &m.decl.params {
+                            let t = c.lower(&p.ty, &HashMap::new());
+                            c.bind(&p.name, t);
+                        }
+                        for r in &m.decl.requires {
+                            let t = c.infer(r);
+                            c.expect(&Ty::Bool, &t, "requires clause");
+                        }
+                        let rt = c.lower(&m.decl.ret, &HashMap::new());
+                        c.bind("it", rt);
+                        for en in &m.decl.ensures {
+                            let t = c.infer(en);
+                            c.expect(&Ty::Bool, &t, "ensures clause");
+                        }
+                        c.scopes.pop();
+                    }
+                    c.rigid = saved;
                 }
-                for p in &f.params {
-                    let t = c.lower(&p.ty, &HashMap::new());
-                    c.bind(&p.name, t);
+                for l in &t.laws {
+                    c.scopes.push(HashMap::new());
+                    for p in &l.params {
+                        let t = c.lower(&p.ty, &HashMap::new());
+                        c.bind(&p.name, t);
+                    }
+                    let lt = c.infer(&l.body);
+                    c.expect(&Ty::Bool, &lt, &format!("law `{}`", l.name));
+                    c.scopes.pop();
                 }
-                // the result's refinement may mention the parameters
-                c.check_refined(&f.ret);
-                let ret = c.lower(&f.ret, &HashMap::new());
-                for r in &f.requires {
-                    let t = c.infer(r);
-                    c.expect(&Ty::Bool, &t, "requires clause");
-                    obligations.push(format!("requires {}", crate::printer::expr(r, 0)));
+            }
+            DeclKind::Impl(i) => {
+                c.rigid = i.type_params.iter().cloned().collect();
+                c.add_bounds(&i.bounds);
+                let head = texpr_head(&i.for_type);
+                if env.types.get(&head).is_some_and(|t| matches!(t.body, TypeBody::Alias(_)) && !t.distinct) {
+                    c.err(format!("`{head}` is a refined alias of another type; implement the trait for the underlying type"));
                 }
-                let bt = c.infer_with(&f.body, Some(&ret));
-                c.expect(&ret, &bt, "function body");
-                c.scopes.push(HashMap::new());
-                c.bind("it", ret.clone());
-                let saved = std::mem::take(&mut c.effects);
-                for en in &f.ensures {
-                    let t = c.infer(en);
-                    c.expect(&Ty::Bool, &t, "ensures clause");
-                    obligations.push(format!("ensures {}", crate::printer::expr(en, 0)));
+                let self_ty = c.lower(&i.for_type, &HashMap::new());
+                c.self_ty = Some(self_ty.clone());
+                match env.traits.get(&i.trait_name).cloned() {
+                    None => c.err(format!("unknown trait `{}`", i.trait_name)),
+                    Some(tr) => {
+                        if tr.params.len() != i.trait_args.len() {
+                            c.err(format!("trait `{}` takes {} type arguments", tr.name, tr.params.len()));
+                        }
+                        let targs: Vec<Ty> = i.trait_args.iter().map(|a| c.lower(a, &HashMap::new())).collect();
+                        let vars: HashMap<String, Ty> = tr.params.iter().cloned().zip(targs.iter().cloned()).collect();
+                        // supertraits must be implemented too
+                        for (sn, sa) in c.supers_of(&tr.name, &targs, 0) {
+                            c.pending.push((self_ty.clone(), sn.clone(), sa, format!("`{}` requires `{sn}`", tr.name)));
+                        }
+                        for tm in &tr.methods {
+                            match i.methods.iter().find(|m| m.name == tm.decl.name) {
+                                None if !tm.default => c.err(format!("missing method `{}` required by `{}`", tm.decl.name, tr.name)),
+                                None => {}
+                                Some(im) => {
+                                    // same shape as the trait's signature, with Self and the trait's parameters filled in
+                                    let mut mvars = vars.clone();
+                                    for p in &tm.decl.type_params {
+                                        mvars.insert(p.clone(), Ty::Rigid(p.clone()));
+                                    }
+                                    c.rigid.extend(im.type_params.iter().cloned());
+                                    let want = c.lower(&Checker::fn_scheme(&tm.decl), &mvars);
+                                    let got = c.lower(&Checker::fn_scheme(im), &HashMap::new());
+                                    if let Err(e) = c.unify(&want, &got) {
+                                        c.err(format!("`{}` does not match the signature in trait `{}`: {e}", im.name, tr.name));
+                                    }
+                                    let allowed = tm.decl.effect_names();
+                                    for e in im.effect_names() {
+                                        if !allowed.contains(&e) {
+                                            c.err(format!("`{}` performs `{e}`, which trait `{}` does not allow for this method", im.name, tr.name));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        for im in &i.methods {
+                            if !tr.methods.iter().any(|m| m.decl.name == im.name) {
+                                c.err(format!("`{}` is not a method of trait `{}`", im.name, tr.name));
+                            }
+                        }
+                    }
                 }
-                c.effects = saved;
-                c.scopes.pop();
+                for im in &i.methods {
+                    let saved = c.rigid.clone();
+                    let mut ob = Vec::new();
+                    c.check_fn(im, &mut ob);
+                    c.rigid = saved;
+                }
             }
             DeclKind::Test(t) => {
                 c.infer(&t.body);
             }
         }
+        c.solve_pending();
         c.check_matches();
         let declared_goal = match &d.kind {
             DeclKind::Fn(f) if matches!(f.body, Expr::Hole(_)) => Some(crate::printer::ty(&f.ret)),

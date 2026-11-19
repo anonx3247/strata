@@ -138,6 +138,42 @@ fn halve(n: Natural) -> Int where it >= 0 && it * 2 <= n { n / 2 }   // results 
 
 The prelude provides the common ones: `Natural`, `Positive`, `Negative`, `NonZero`, `Probability`, `Percentage`, `NonEmpty[T]`, `NonEmptyString`. `strata builtins` lists them with every builtin function.
 
+A bare alias adds nothing, so `type Name = String` is an error. Constrain it with `where`, or make it a separate nominal type:
+
+```
+distinct type UserId = String where matches(it, "u_[0-9]+")
+let id = UserId("u_42")      // explicit construction, checked
+id.value                     // the underlying String
+```
+
+A `distinct` type never mixes with its base or with other distinct types (`OrderId` ≠ `UserId`), it can have trait implementations, and it serialises to JSON as its underlying value.
+
+## Traits
+
+A trait describes what a *type* can do. The implementation is chosen by the type of the value. A type can implement any number of traits, so they form a graph rather than a hierarchy.
+
+```
+trait Describe { fn describe(self) -> String  ensures len(it) > 0 }
+trait Summary: Describe + Priced {                       // supertraits
+  fn summary(self) -> String { self.describe() ++ ": " ++ to_string(self.price()) ++ "c" }   // default method
+}
+trait Combine {
+  fn combine(self, other: Self) -> Self
+  law associative(a: Self, b: Self, c: Self): a.combine(b).combine(c) == a.combine(b.combine(c))
+}
+impl Combine for Money { ... }
+impl[T] Combine for List[T] { ... }                      // generic impls; built-in types work too
+fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, |acc, x| acc.combine(x)) }
+```
+
+- **Contracts** (`requires` / `ensures`) on a trait method bind every implementation.
+- **Laws** are checked by `strata verify` against every implementation, with generated inputs. In `examples/traits.strata`, `verify` finds that averaging (`Midpoint`) is not associative.
+- **Generic functions** are fuzzed with a type that actually implements their bounds.
+
+**Traits vs effects.** If you *have a value* and want to do something with it, use a trait (`Ord`, `Describe`, `Combine`). If the code *needs the world* to do something (storage, time, I/O, "the queue"), use an effect. An effect's implementation is chosen by the enclosing handler, not by any type.
+
+**Not yet:** methods without `self` (such as `fn empty() -> Self`), which need dispatch on the expected type; method names shared between traits; and trait methods whose effects are chosen by each implementation (effect polymorphism).
+
 ## Built-in types
 
 | Type | Notes |
@@ -197,7 +233,6 @@ Because results are keyed by content, `verify` reruns only what is affected by a
 ## Known limitations of this draft
 
 - **Verification is fuzzing plus runtime checks, not proof.** Next step: an SMT backend (Z3 or cvc5) that proves what it can and tags the rest as `fuzzed` or `runtime-checked`.
-- **No traits or protocols yet.** Generics exist, but there is no way to constrain them.
 - **Limited effect handlers.** A handler returns one value straight back to the operation; it cannot resume the computation later or run it more than once (no generators or async yet). Handlers also cannot keep state between calls.
 - **Lambdas are not effect-polymorphic.** A closure's effects are checked where it is defined, not where it is called.
 - Refinements on generic type arguments, such as `Option[Quantity]`, are not checked when values are constructed.

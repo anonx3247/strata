@@ -192,6 +192,10 @@ impl Gen {
         }
         for _attempt in 0..300 {
             let v = match &td.body {
+                TypeBody::Alias(a) if td.distinct => {
+                    let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+                    Value::Distinct(n.clone(), Box::new(self.produce(env, &subst_texpr(a, &sub), it, depth, &h2)?))
+                }
                 TypeBody::Alias(a) => {
                     let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
                     self.produce(env, &subst_texpr(a, &sub), it, depth, &h2)?

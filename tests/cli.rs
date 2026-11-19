@@ -126,7 +126,7 @@ fn builtin_collections_work() {
 #[test]
 fn every_example_round_trips_through_render() {
     let d = tmp("roundtrip");
-    for ex in ["bank.strata", "orders.strata", "builtins.strata", "tasks/tasks.strata"] {
+    for ex in ["bank.strata", "orders.strata", "builtins.strata", "traits.strata", "tasks/tasks.strata"] {
         let path = format!("{}/examples/{ex}", env!("CARGO_MANIFEST_DIR"));
         let (_, r1) = strata(&["--file", &path, "render"], &d, None);
         std::fs::write(d.join("r.strata"), &r1).unwrap();
@@ -151,4 +151,38 @@ fn inline_refinements_in_signatures() {
     std::fs::write(d.join("c.strata"), "fn pick(level: Int where 5 <= it && it <= 13) -> Int { level }\nfn caller() -> Int { pick(20) }\n").unwrap();
     let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
     assert!(!ok && out.contains("20 does not satisfy `Int where 5 <= it && it <= 13`"), "{out}");
+}
+
+#[test]
+fn traits_laws_and_distinct_types() {
+    let d = tmp("traits");
+    let ex = format!("{}/examples/traits.strata", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["--file", &ex, "test"], &d, None);
+    assert!(ok && out.contains("0 failed"), "{out}");
+    let (ok, out) = strata(&["--file", &ex, "verify"], &d, None);
+    assert!(!ok && out.contains("law `associative` does not hold for `Midpoint`") && out.contains("✓ law associative for Money"), "{out}");
+    assert!(out.contains("✓ combine_all") && out.contains("✓ receipt"), "bounded generics fuzzed at an implementing type: {out}");
+    std::fs::write(
+        d.join("e.strata"),
+        "type Name = String\n\
+         distinct type UserId = String where matches(it, \"u_[0-9]+\")\n\
+         distinct type OrderId = String where matches(it, \"o_[0-9]+\")\n\
+         trait Priced { fn price(self) -> Int }\n\
+         fn mixed(o: OrderId) -> UserId { o }\n\
+         fn lit() -> UserId { UserId(\"alice\") }\n\
+         fn nobound[T](xs: List[T]) -> Int { sum(xs.map(price)) }\n\
+         fn notimpl() -> Int { true.price() }\n",
+    )
+    .unwrap();
+    let (ok, out) = strata(&["--file", "e.strata", "check"], &d, None);
+    assert!(!ok, "{out}");
+    for needle in [
+        "`type Name = String` adds nothing",
+        "expected `UserId`, found `OrderId`",
+        "\"alice\" does not satisfy `UserId`",
+        "`T` is not known to implement `Priced` (add a bound: `[T: Priced]`)",
+        "`Bool` does not implement `Priced`",
+    ] {
+        assert!(out.contains(needle), "missing {needle:?} in:\n{out}");
+    }
 }

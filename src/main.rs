@@ -318,24 +318,50 @@ fn run() -> Result<bool, String> {
             let mut all_ok = true;
             let mut results = Vec::new();
             for d in &p.decls {
-                let DeclKind::Fn(f) = &d.kind else { continue };
-                if !names.contains(&f.name) {
+                if !names.contains(&d.name()) {
                     continue;
                 }
-                let key = format!("{}:{cases}", store::closure_hash(p, &f.name));
-                let (verdict, cached) = match cache.get(&key) {
-                    Some(v) if !args.flag("--force") => (v.clone(), true),
-                    _ => {
-                        let v = verify::fuzz_fn(&env, f, cases, seed);
-                        cache.insert(key.clone(), v.clone());
-                        cache.insert(store::closure_hash(p, &f.name), v.clone());
-                        (v, false)
+                let env = &env;
+                // (label, cache key, how to check)
+                let mut jobs: Vec<(String, String, Box<dyn Fn() -> verify::Verdict + '_>)> = Vec::new();
+                let base = store::closure_hash(p, &d.name());
+                match &d.kind {
+                    DeclKind::Fn(f) => jobs.push((f.name.clone(), format!("{base}:{cases}"), Box::new(move || verify::fuzz_fn(env, f, cases, seed)))),
+                    DeclKind::Impl(imp) => {
+                        let Some(tr) = env.traits.get(&imp.trait_name) else { continue };
+                        let ty = printer::ty(&imp.for_type);
+                        for m in &tr.methods {
+                            let mname = m.decl.name.clone();
+                            jobs.push((format!("{ty}.{mname}"), format!("{base}:{mname}:{cases}"), Box::new(move || verify::fuzz_impl_method(env, imp, &mname, cases, seed))));
+                        }
+                        for law in &tr.laws {
+                            jobs.push((format!("law {} for {ty}", law.name), format!("{base}:law:{}:{cases}", law.name), Box::new(move || verify::check_law(env, imp, law, cases, seed))));
+                        }
                     }
-                };
-                if matches!(verdict, verify::Verdict::Counterexample { .. }) {
-                    all_ok = false;
+                    _ => {}
                 }
-                results.push((f.name.clone(), verdict, cached));
+                let mut worst: Option<verify::Verdict> = None;
+                for (label, key, job) in jobs {
+                    let (verdict, cached) = match cache.get(&key) {
+                        Some(v) if !args.flag("--force") => (v.clone(), true),
+                        _ => {
+                            let v = job();
+                            cache.insert(key.clone(), v.clone());
+                            (v, false)
+                        }
+                    };
+                    if matches!(verdict, verify::Verdict::Counterexample { .. }) {
+                        all_ok = false;
+                    }
+                    if worst.is_none() || matches!(verdict, verify::Verdict::Counterexample { .. }) {
+                        worst = Some(verdict.clone());
+                    }
+                    results.push((label, verdict, cached));
+                }
+                // the viewer shows one status per definition
+                if let Some(w) = worst {
+                    cache.insert(base, w);
+                }
             }
             if let Source::Db(cb) = &src {
                 cb.save_verdicts(&cache);

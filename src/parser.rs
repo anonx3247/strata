@@ -34,7 +34,7 @@ fn is_upper(s: &str) -> bool {
 
 const KEYWORDS: &[&str] = &[
     "type", "effect", "fn", "test", "let", "if", "else", "match", "handle", "with", "mock", "where",
-    "requires", "ensures", "true", "false", "is", "assert",
+    "requires", "ensures", "true", "false", "is", "assert", "trait", "impl", "law", "for",
 ];
 
 impl Parser {
@@ -120,12 +120,26 @@ impl Parser {
             doc.push(d);
             self.next();
         }
-        let kind = if self.eat_kw("type") {
+        // `distinct` is only a keyword at the start of a declaration
+        let kind = if self.is_kw("distinct") && matches!(self.peek_at(1), Tok::Ident(t) if t == "type") {
+            self.next();
+            self.expect_kw("type")?;
+            let mut t = self.type_decl()?;
+            if !matches!(t.body, TypeBody::Alias(_)) {
+                return Err(self.err("only an alias can be `distinct` (records and sum types already are)"));
+            }
+            t.distinct = true;
+            DeclKind::Type(t)
+        } else if self.eat_kw("type") {
             DeclKind::Type(self.type_decl()?)
         } else if self.eat_kw("effect") {
             DeclKind::Effect(self.effect_decl()?)
         } else if self.eat_kw("fn") {
             DeclKind::Fn(self.fn_decl()?)
+        } else if self.eat_kw("trait") {
+            DeclKind::Trait(self.trait_decl()?)
+        } else if self.eat_kw("impl") {
+            DeclKind::Impl(self.impl_decl()?)
         } else if self.eat_kw("test") {
             let name = match self.next() {
                 Tok::Str(s) => s,
@@ -133,13 +147,90 @@ impl Parser {
             };
             DeclKind::Test(TestDecl { name, body: self.block()? })
         } else {
-            return Err(self.err("expected `type`, `effect`, `fn` or `test`"));
+            return Err(self.err("expected `type`, `effect`, `trait`, `impl`, `fn` or `test`"));
         };
         Ok(Decl { doc, kind })
     }
 
     fn type_params(&mut self) -> R<Vec<String>> {
-        if self.eat_sym("[") { self.list("]", |p| p.ident()) } else { Ok(vec![]) }
+        Ok(self.bounded_params()?.0)
+    }
+
+    /// `[T: Ord + Hash, U]`
+    fn bounded_params(&mut self) -> R<(Vec<String>, Vec<Bound>)> {
+        if !self.eat_sym("[") {
+            return Ok((vec![], vec![]));
+        }
+        let mut bounds = Vec::new();
+        let names = self.list("]", |p| {
+            let n = p.ident()?;
+            if p.eat_sym(":") {
+                let mut traits = vec![p.type_expr_plain()?];
+                while p.eat_sym("+") {
+                    traits.push(p.type_expr_plain()?);
+                }
+                bounds.push(Bound { param: n.clone(), traits });
+            }
+            Ok(n)
+        })?;
+        Ok((names, bounds))
+    }
+
+    fn trait_decl(&mut self) -> R<TraitDecl> {
+        let name = self.ident()?;
+        let params = self.type_params()?;
+        let mut supers = Vec::new();
+        if self.eat_sym(":") {
+            supers.push(self.type_expr_plain()?);
+            while self.eat_sym("+") {
+                supers.push(self.type_expr_plain()?);
+            }
+        }
+        self.expect_sym("{")?;
+        let (mut methods, mut laws) = (Vec::new(), Vec::new());
+        while !self.eat_sym("}") {
+            let mut doc = Vec::new();
+            while let Tok::Doc(d) = self.peek().clone() {
+                doc.push(d);
+                self.next();
+            }
+            if self.eat_kw("law") {
+                let lname = self.ident()?;
+                let params = self.params()?;
+                self.expect_sym(":")?;
+                laws.push(Law { name: lname, params, body: self.expr()? });
+                continue;
+            }
+            self.expect_kw("fn")?;
+            let (decl, default) = self.fn_rest(true)?;
+            if decl.params.first().map(|p| p.name.as_str()) != Some("self") {
+                return Err(self.err(&format!("trait method `{}` must take `self` as its first parameter", decl.name)));
+            }
+            methods.push(TraitMethod { doc, decl, default });
+        }
+        Ok(TraitDecl { name, params, supers, methods, laws })
+    }
+
+    fn impl_decl(&mut self) -> R<ImplDecl> {
+        let (type_params, bounds) = self.bounded_params()?;
+        let trait_name = self.ident()?;
+        let trait_args = if self.eat_sym("[") { self.list("]", |p| p.type_expr())? } else { vec![] };
+        self.expect_kw("for")?;
+        let for_type = self.type_expr_plain()?;
+        self.expect_sym("{")?;
+        let mut methods = Vec::new();
+        while !self.eat_sym("}") {
+            while let Tok::Doc(_) = self.peek() {
+                self.next();
+            }
+            self.expect_kw("fn")?;
+            let (decl, has_body) = self.fn_rest(false)?;
+            if !has_body {
+                return Err(self.err(&format!("`{}` in an impl needs a body", decl.name)));
+            }
+            methods.push(decl);
+        }
+        Ok(ImplDecl { type_params, bounds, trait_name, trait_args, for_type, methods })
     }
 
     fn type_decl(&mut self) -> R<TypeDecl> {
@@ -160,7 +251,7 @@ impl Parser {
             TypeBody::Alias(self.type_expr_plain()?)
         };
         let refinement = if self.eat_kw("where") { Some(self.expr()?) } else { None };
-        Ok(TypeDecl { name, params, body, refinement })
+        Ok(TypeDecl { distinct: false, name, params, body, refinement })
     }
 
     fn fields(&mut self) -> R<Vec<Field>> {
@@ -211,6 +302,10 @@ impl Parser {
         self.expect_sym("(")?;
         self.list(")", |p| {
             let name = p.ident()?;
+            // `self` alone means `self: Self`
+            if name == "self" && !p.is_sym(":") {
+                return Ok(Param { name, ty: TypeExpr::Named("Self".into(), vec![]) });
+            }
             p.expect_sym(":")?;
             Ok(Param { name, ty: p.type_expr()? })
         })
@@ -249,8 +344,18 @@ impl Parser {
     }
 
     fn fn_decl(&mut self) -> R<FnDecl> {
+        let (f, has_body) = self.fn_rest(false)?;
+        if !has_body {
+            return Err(self.err(&format!("`{}` needs a body (use `= ?todo` for a hole)", f.name)));
+        }
+        Ok(f)
+    }
+
+    /// Everything after `fn`. In a trait (`optional_body`), a method may end
+    /// without a body; it is then a required method.
+    fn fn_rest(&mut self, optional_body: bool) -> R<(FnDecl, bool)> {
         let name = self.ident()?;
-        let type_params = self.type_params()?;
+        let (type_params, bounds) = self.bounded_params()?;
         let params = self.params()?;
         let ret = if self.eat_sym("->") { self.type_expr()? } else { TypeExpr::Unit };
         let mut effects = Vec::new();
@@ -268,8 +373,15 @@ impl Parser {
                 break;
             }
         }
-        let body = if self.eat_sym("=") { self.expr()? } else { self.block()? };
-        Ok(FnDecl { name, type_params, params, ret, effects, requires, ensures, body })
+        let has_body = !optional_body || self.is_sym("=") || self.is_sym("{");
+        let body = if !has_body {
+            Expr::Unit
+        } else if self.eat_sym("=") {
+            self.expr()?
+        } else {
+            self.block()?
+        };
+        Ok((FnDecl { name, type_params, bounds, params, ret, effects, requires, ensures, body }, has_body))
     }
 
     // ---------- expressions ----------

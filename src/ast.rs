@@ -47,6 +47,10 @@ pub enum TypeBody {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeDecl {
+    /// `distinct type UserId = String`: a new nominal type, built with
+    /// `UserId(s)` and unwrapped with `.value`; never mixed up with its base.
+    #[serde(default)]
+    pub distinct: bool,
     pub name: String,
     pub params: Vec<String>,
     pub body: TypeBody,
@@ -82,10 +86,20 @@ pub struct EffectDecl {
     pub ops: Vec<OpSig>,
 }
 
+/// `T: Ord + Hash` on a type parameter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Bound {
+    pub param: String,
+    /// Trait references, e.g. `Worker[P, E]`.
+    pub traits: Vec<TypeExpr>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FnDecl {
     pub name: String,
     pub type_params: Vec<String>,
+    #[serde(default)]
+    pub bounds: Vec<Bound>,
     pub params: Vec<Param>,
     pub ret: TypeExpr,
     /// Effects this function may perform, e.g. `Db` or `Queue[P, E]`.
@@ -112,11 +126,58 @@ pub struct TestDecl {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TraitMethod {
+    pub doc: Vec<String>,
+    /// Signature (and default body when `default` is true). The first
+    /// parameter is always `self: Self`.
+    pub decl: FnDecl,
+    pub default: bool,
+}
+
+/// `law associative(a: Self, b: Self, c: Self): ...`, a property every
+/// implementation must satisfy. Checked by `strata verify`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Law {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub body: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TraitDecl {
+    pub name: String,
+    pub params: Vec<String>,
+    /// Supertraits: implementing this trait requires implementing these.
+    pub supers: Vec<TypeExpr>,
+    pub methods: Vec<TraitMethod>,
+    pub laws: Vec<Law>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImplDecl {
+    pub type_params: Vec<String>,
+    pub bounds: Vec<Bound>,
+    pub trait_name: String,
+    pub trait_args: Vec<TypeExpr>,
+    pub for_type: TypeExpr,
+    pub methods: Vec<FnDecl>,
+}
+
+impl ImplDecl {
+    pub fn name(&self) -> String {
+        let tr = crate::printer::ty(&TypeExpr::Named(self.trait_name.clone(), self.trait_args.clone()));
+        format!("impl {tr} for {}", crate::printer::ty(&self.for_type))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DeclKind {
     Type(TypeDecl),
     Effect(EffectDecl),
     Fn(FnDecl),
     Test(TestDecl),
+    Trait(TraitDecl),
+    Impl(ImplDecl),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -133,6 +194,8 @@ impl Decl {
             DeclKind::Effect(e) => e.name.clone(),
             DeclKind::Fn(f) => f.name.clone(),
             DeclKind::Test(t) => format!("test \"{}\"", t.name),
+            DeclKind::Trait(t) => t.name.clone(),
+            DeclKind::Impl(i) => i.name(),
         }
     }
     pub fn kind_str(&self) -> &'static str {
@@ -141,6 +204,8 @@ impl Decl {
             DeclKind::Effect(_) => "effect",
             DeclKind::Fn(_) => "fn",
             DeclKind::Test(_) => "test",
+            DeclKind::Trait(_) => "trait",
+            DeclKind::Impl(_) => "impl",
         }
     }
 }

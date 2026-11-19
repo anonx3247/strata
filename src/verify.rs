@@ -115,6 +115,12 @@ pub fn static_refinements(prog: &Program, env: &Env) -> Vec<Diag> {
                             }
                         }
                     }
+                    Expr::Ctor(c, CtorArgs::Positional(xs)) if env.types.get(c).is_some_and(|t| t.distinct) && xs.len() == 1 && literal(&xs[0]) => {
+                        // constructing the value runs its checks
+                        if let Err(fault) = it.eval(e, &None) {
+                            out.push(Diag { decl: d.name(), msg: format!("refinement violated at compile time: {}", fault.msg) });
+                        }
+                    }
                     Expr::Ctor(c, CtorArgs::Record(fs)) => {
                         let tname = env.ctors.get(c).cloned().unwrap_or_default();
                         if let Some(vs) = env.variants_of(&tname, &[]) {
@@ -160,9 +166,117 @@ impl Verdict {
 }
 
 pub fn fuzz_fn(env: &Env, f: &FnDecl, cases: usize, seed: u64) -> Verdict {
+    fuzz_call(env, f, cases, seed, false)
+}
+
+/// Replace `Self` (and the impl's type parameters, at `Int`) in a method
+/// signature so its inputs can be generated.
+fn for_impl(imp: &ImplDecl, f: &FnDecl) -> FnDecl {
+    let mut sub: std::collections::HashMap<String, TypeExpr> =
+        imp.type_params.iter().map(|p| (p.clone(), TypeExpr::Named("Int".into(), vec![]))).collect();
+    let self_ty = crate::types::subst_texpr(&imp.for_type, &sub);
+    sub.insert("Self".into(), self_ty);
+    let mut g = f.clone();
+    for p in &mut g.params {
+        p.ty = crate::types::subst_texpr(&p.ty, &sub);
+    }
+    g.ret = crate::types::subst_texpr(&g.ret, &sub);
+    g
+}
+
+/// Fuzz every method of an implementation (the trait's contracts included).
+pub fn fuzz_impl_method(env: &Env, imp: &ImplDecl, method: &str, cases: usize, seed: u64) -> Verdict {
+    let tr = &env.traits[&imp.trait_name];
+    let Some(decl) = imp.methods.iter().find(|m| m.name == method).or_else(|| tr.methods.iter().find(|m| m.decl.name == method).map(|m| &m.decl)) else {
+        return Verdict::Skipped { reason: format!("no method `{method}`") };
+    };
+    fuzz_call(env, &for_impl(imp, decl), cases, seed, true)
+}
+
+/// Check a trait law for one implementation with generated inputs.
+pub fn check_law(env: &Env, imp: &ImplDecl, law: &Law, cases: usize, seed: u64) -> Verdict {
+    let as_fn = FnDecl {
+        name: law.name.clone(),
+        type_params: vec![],
+        bounds: vec![],
+        params: law.params.clone(),
+        ret: TypeExpr::Named("Bool".into(), vec![]),
+        effects: vec![],
+        requires: vec![],
+        ensures: vec![],
+        body: law.body.clone(),
+    };
+    let f = for_impl(imp, &as_fn);
+    for i in 0..cases {
+        let mut it = Interp::new(env, seed.wrapping_add(i as u64));
+        let mut generator = std::mem::replace(&mut it.generator, crate::generate::Gen::new(0));
+        let args: Result<Vec<crate::interp::Value>, String> = f.params.iter().map(|p| generator.value(env, &p.ty, &mut it)).collect();
+        it.generator = generator;
+        let args = match args {
+            Ok(a) => a,
+            Err(e) => return Verdict::Skipped { reason: e },
+        };
+        let mut scope: crate::interp::Scope = None;
+        for (p, a) in f.params.iter().zip(&args) {
+            scope = Some(std::rc::Rc::new(crate::interp::Frame::new(&p.name, a.clone(), scope)));
+        }
+        match it.eval(&f.body, &scope) {
+            Ok(crate::interp::Value::Bool(true)) => {}
+            Ok(_) => {
+                let shown: Vec<String> = f.params.iter().zip(&args).map(|(p, a)| format!("{} = {}", p.name, to_json(a))).collect();
+                return Verdict::Counterexample {
+                    args: Json::Array(args.iter().map(to_json).collect()),
+                    effects: Json::Array(vec![]),
+                    kind: "Law".into(),
+                    message: format!("law `{}` does not hold for `{}` with {}", law.name, crate::printer::ty(&imp.for_type), shown.join(", ")),
+                };
+            }
+            Err(fault) => {
+                return Verdict::Counterexample {
+                    args: Json::Array(args.iter().map(to_json).collect()),
+                    effects: Json::Array(vec![]),
+                    kind: format!("{:?}", fault.kind),
+                    message: format!("evaluating law `{}`: {}", law.name, fault.msg),
+                };
+            }
+        }
+    }
+    Verdict::Fuzzed { cases, discarded: 0 }
+}
+
+fn fuzz_call(env: &Env, f: &FnDecl, cases: usize, seed: u64, method: bool) -> Verdict {
     // Generic functions are fuzzed at one instance: every type parameter becomes `Int`.
-    let inst: std::collections::HashMap<String, TypeExpr> =
-        f.type_params.iter().map(|p| (p.clone(), TypeExpr::Named("Int".into(), vec![]))).collect();
+    // Generic functions are fuzzed at one instance: unbounded type parameters
+    // become `Int`; bounded ones become a type that implements every bound.
+    let mut inst: std::collections::HashMap<String, TypeExpr> = std::collections::HashMap::new();
+    for tp in &f.type_params {
+        let needs: Vec<String> = f
+            .bounds
+            .iter()
+            .filter(|b| &b.param == tp)
+            .flat_map(|b| b.traits.iter().map(crate::types::texpr_head))
+            .collect();
+        let int = TypeExpr::Named("Int".into(), vec![]);
+        if needs.is_empty() {
+            inst.insert(tp.clone(), int);
+            continue;
+        }
+        let pick = env.impls.iter().map(|i| &i.for_type).find(|t| {
+            let head = crate::types::texpr_head(t);
+            needs.iter().all(|tr| env.impls.iter().any(|i| &i.trait_name == tr && crate::types::texpr_head(&i.for_type) == head))
+        });
+        match pick {
+            Some(t) => {
+                // the impl's own type parameters become Int
+                let t = match t {
+                    TypeExpr::Named(n, args) => TypeExpr::Named(n.clone(), args.iter().map(|_| int.clone()).collect()),
+                    other => other.clone(),
+                };
+                inst.insert(tp.clone(), t);
+            }
+            None => return Verdict::Skipped { reason: format!("no type implements {} to test `{tp}` with", needs.join(" + ")) },
+        }
+    }
     if f.params.iter().any(|p| matches!(p.ty, TypeExpr::Fn(..))) {
         return Verdict::Skipped { reason: "higher-order parameters are not generated yet".into() };
     }
@@ -189,7 +303,8 @@ pub fn fuzz_fn(env: &Env, f: &FnDecl, cases: usize, seed: u64) -> Verdict {
             continue;
         }
         it.mock_effects(&f.effect_names());
-        match it.call_fn(&f.name, args.clone()) {
+        let res = if method { it.call_method(&f.name, args.clone()) } else { it.call_fn(&f.name, args.clone()) };
+        match res {
             Ok(_) => ok += 1,
             Err(fault) if fault.kind == FaultKind::Hole => {
                 return Verdict::Incomplete { message: format!("{} (via {})", fault.msg, fault.stack.join(" -> ")) };

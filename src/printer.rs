@@ -217,7 +217,7 @@ pub fn block(e: &Expr, d: usize) -> String {
 
 pub fn type_decl(t: &TypeDecl) -> String {
     let tp = if t.params.is_empty() { String::new() } else { format!("[{}]", t.params.join(", ")) };
-    let mut s = format!("type {}{} =", t.name, tp);
+    let mut s = format!("{}type {}{} =", if t.distinct { "distinct " } else { "" }, t.name, tp);
     if !matches!(t.body, TypeBody::Sum(_)) {
         s.push(' ');
     }
@@ -262,9 +262,76 @@ pub fn effect_decl(e: &EffectDecl) -> String {
     s + "}"
 }
 
+fn bounded(names: &[String], bounds: &[Bound]) -> String {
+    if names.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = names
+        .iter()
+        .map(|n| match bounds.iter().find(|b| &b.param == n) {
+            Some(b) => format!("{n}: {}", b.traits.iter().map(ty).collect::<Vec<_>>().join(" + ")),
+            None => n.clone(),
+        })
+        .collect();
+    format!("[{}]", parts.join(", "))
+}
+
+fn param_list(ps: &[Param]) -> String {
+    ps.iter()
+        .map(|p| if p.name == "self" && matches!(&p.ty, TypeExpr::Named(n, a) if n == "Self" && a.is_empty()) { "self".into() } else { format!("{}: {}", p.name, ty(&p.ty)) })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+pub fn trait_decl(t: &TraitDecl) -> String {
+    let tp = if t.params.is_empty() { String::new() } else { format!("[{}]", t.params.join(", ")) };
+    let sup = if t.supers.is_empty() { String::new() } else { format!(": {}", t.supers.iter().map(ty).collect::<Vec<_>>().join(" + ")) };
+    let mut s = format!("trait {}{tp}{sup} {{\n", t.name);
+    for m in &t.methods {
+        for d in &m.doc {
+            s += &format!("  /// {d}\n");
+        }
+        let sig = fn_signature(&m.decl).replace('\n', "\n  ");
+        if m.default {
+            s += &format!("  {} {}\n", sig, block(&m.decl.body, 1));
+        } else {
+            s += &format!("  {sig}\n");
+        }
+    }
+    for l in &t.laws {
+        s += &format!("  law {}({}): {}\n", l.name, param_list(&l.params), expr(&l.body, 1));
+    }
+    s + "}"
+}
+
+pub fn impl_signatures(i: &ImplDecl) -> String {
+    let mut s = impl_head(i) + " {\n";
+    for m in &i.methods {
+        s += &format!("  {}\n", fn_signature(m).replace('\n', "\n  "));
+    }
+    s + "}"
+}
+
+fn impl_head(i: &ImplDecl) -> String {
+    let tr = ty(&TypeExpr::Named(i.trait_name.clone(), i.trait_args.clone()));
+    format!("impl{} {tr} for {}", bounded(&i.type_params, &i.bounds), ty(&i.for_type))
+}
+
+pub fn impl_decl(i: &ImplDecl) -> String {
+    let mut s = impl_head(i) + " {\n";
+    for (k, m) in i.methods.iter().enumerate() {
+        if k > 0 {
+            s += "\n";
+        }
+        let body = fn_decl(m).lines().map(|l| format!("  {l}\n")).collect::<String>();
+        s += &body;
+    }
+    s + "}"
+}
+
 pub fn fn_signature(f: &FnDecl) -> String {
-    let tp = if f.type_params.is_empty() { String::new() } else { format!("[{}]", f.type_params.join(", ")) };
-    let mut s = format!("fn {}{}({}) -> {}", f.name, tp, params(&f.params), ty(&f.ret));
+    let tp = bounded(&f.type_params, &f.bounds);
+    let mut s = format!("fn {}{}({}) -> {}", f.name, tp, param_list(&f.params), ty(&f.ret));
     if !f.effects.is_empty() {
         s += &format!(" / {{{}}}", f.effects.iter().map(ty).collect::<Vec<_>>().join(", "));
     }
@@ -299,6 +366,8 @@ pub fn decl(d: &Decl) -> String {
         DeclKind::Effect(e) => effect_decl(e),
         DeclKind::Fn(f) => fn_decl(f),
         DeclKind::Test(t) => format!("test {:?} {}", t.name, block(&t.body, 0)),
+        DeclKind::Trait(t) => trait_decl(t),
+        DeclKind::Impl(i) => impl_decl(i),
     };
     doc(d) + &body
 }

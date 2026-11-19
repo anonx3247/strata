@@ -199,6 +199,35 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             ex(&f.body, &mut out, ctor_types);
             out.remove(&f.name);
         }
+        DeclKind::Trait(t) => {
+            t.supers.iter().for_each(|s| ty(s, &mut out));
+            for m in &t.methods {
+                m.decl.params.iter().for_each(|p| ty(&p.ty, &mut out));
+                ty(&m.decl.ret, &mut out);
+                m.decl.requires.iter().chain(&m.decl.ensures).for_each(|e| ex(e, &mut out, ctor_types));
+                if m.default {
+                    ex(&m.decl.body, &mut out, ctor_types);
+                }
+            }
+            for l in &t.laws {
+                l.params.iter().for_each(|p| ty(&p.ty, &mut out));
+                ex(&l.body, &mut out, ctor_types);
+            }
+            out.remove(&t.name);
+            out.remove("Self");
+        }
+        DeclKind::Impl(i) => {
+            out.insert(i.trait_name.clone());
+            i.trait_args.iter().for_each(|a| ty(a, &mut out));
+            ty(&i.for_type, &mut out);
+            for m in &i.methods {
+                m.params.iter().for_each(|p| ty(&p.ty, &mut out));
+                ty(&m.ret, &mut out);
+                m.effects.iter().for_each(|e| ty(e, &mut out));
+                ex(&m.body, &mut out, ctor_types);
+            }
+            out.remove("Self");
+        }
         DeclKind::Test(t) => ex(&t.body, &mut out, ctor_types),
     }
     out
