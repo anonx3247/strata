@@ -86,6 +86,8 @@ fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
 }
 
 pub fn static_refinements(prog: &Program, env: &Env) -> Vec<Diag> {
+    let resolved = crate::resolve::resolve(prog);
+    let prog = &resolved.program;
     let mut out = Vec::new();
     let mut it = Interp::new(env, 0);
     for d in &prog.decls {

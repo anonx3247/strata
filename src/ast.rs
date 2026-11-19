@@ -178,6 +178,7 @@ pub enum DeclKind {
     Test(TestDecl),
     Trait(TraitDecl),
     Impl(ImplDecl),
+    Use(UseDecl),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -185,9 +186,28 @@ pub struct Decl {
     /// `///` doc comment lines, kept in the tree so text round-trips.
     pub doc: Vec<String>,
     pub kind: DeclKind,
+    /// Dotted module path (`shop.orders`); empty for the root module.
+    #[serde(default)]
+    pub module: String,
+    /// `pub`: part of the module's contract, visible to other modules.
+    #[serde(default)]
+    pub public: bool,
+}
+
+/// `use orders.{Order, ship}` / `use orders.*`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UseDecl {
+    pub path: String,
+    /// `None` means everything public (`.*`).
+    pub items: Option<Vec<String>>,
 }
 
 impl Decl {
+    /// The definition's identity in the codebase: `module.name`.
+    pub fn qname(&self) -> String {
+        if self.module.is_empty() { self.name() } else { format!("{}.{}", self.module, self.name()) }
+    }
+
     pub fn name(&self) -> String {
         match &self.kind {
             DeclKind::Type(t) => t.name.clone(),
@@ -196,6 +216,7 @@ impl Decl {
             DeclKind::Test(t) => format!("test \"{}\"", t.name),
             DeclKind::Trait(t) => t.name.clone(),
             DeclKind::Impl(i) => i.name(),
+            DeclKind::Use(u) => format!("use {}", u.path),
         }
     }
     pub fn kind_str(&self) -> &'static str {
@@ -206,6 +227,7 @@ impl Decl {
             DeclKind::Test(_) => "test",
             DeclKind::Trait(_) => "trait",
             DeclKind::Impl(_) => "impl",
+            DeclKind::Use(_) => "use",
         }
     }
 }

@@ -1,0 +1,145 @@
+// tasks/core — backend-agnostic task queues, ported from the Python/TypeScript
+// reference (github: tasks). Producers discover tasks and enqueue them;
+// workers claim batches of attempts and report results.
+//
+// The Strata idiom: Producer, Worker and the queue backend are *effects*.
+// Library code performs them; an entrypoint is nothing but handlers.
+// Swapping SQLite for SQS means swapping one handler, which is the reference
+// design's "only the queue object changes", enforced by the type system.
+
+// ─────────────────────────────── core model ───────────────────────────────
+
+/// Identifies a task. The reference uses a uuid4 hex string.
+pub type TaskId = String where matches(it, "[A-Za-z0-9_-]{1,64}")
+
+/// The task family, e.g. "print".
+pub type Kind = String where str_len(it) > 0
+
+/// A unit of work. Every Strata type is JSON-serialisable, so the payload
+/// needs no `BaseModel` bound.
+pub type Task[P] = { id: TaskId, kind: Kind, payload: P }
+
+/// Attempt numbers are 1-based.
+pub type AttemptNo = Int where it >= 1
+
+/// A single attempt at running a task.
+pub type TaskAttempt[P] = { task: Task[P], attempt: AttemptNo }
+
+/// The outcome a worker reports for one attempt. Unlike the reference
+/// (`result` + optional `error`), an error can only exist on a failure:
+/// "success with an error" is unrepresentable.
+pub type TaskResult[P, E] =
+  | Succeeded { task: Task[P] }
+  | Failed { task: Task[P], error: E }
+  | Skipped { task: Task[P] }
+
+pub fn task_of[P, E](r: TaskResult[P, E]) -> Task[P] {
+  match r {
+    Succeeded { task } => task,
+    Failed { task, .. } => task,
+    Skipped { task } => task,
+  }
+}
+
+/// Standard scheduling policy. The `ge=1` / `ge=0` checks from the Pydantic
+/// model are the prelude's `Positive` / `Natural`: an invalid policy cannot be constructed.
+pub type TaskPolicy = { max_workers: Positive, tasks_per_worker: Positive, retries: Natural }
+
+/// Total runs of a task: the first try plus `retries` retries.
+pub fn max_attempts(p: TaskPolicy) -> Positive
+  ensures it == p.retries + 1
+{
+  p.retries + 1
+}
+
+// ───────────────────────── the three capabilities ─────────────────────────
+// The reference passes `resources` to producers and workers. Here a handler
+// simply closes over whatever resources it needs, and declares the effects it uses.
+
+/// Discovers tasks to run (the reference `Producer` protocol).
+pub effect Producer[P] {
+  fn discover() -> List[Task[P]]
+}
+
+/// Runs a batch of attempts and reports one result per attempt
+/// (the reference `Worker` protocol).
+pub effect Worker[P, E] {
+  fn run(attempts: List[TaskAttempt[P]]) -> List[TaskResult[P, E]]
+}
+
+/// A queue backend. This is the only thing that changes between SQLite, SQS, Redis…
+/// The contracts below bind every backend (and every mock): a backend that
+/// returns more than `limit` attempts is caught at the boundary.
+pub effect Queue[P, E] {
+  /// Enqueue tasks, ignoring ids already present; returns how many were new.
+  fn enqueue(tasks: List[Task[P]]) -> Int
+    ensures 0 <= it && it <= len(tasks)
+  /// Claim up to `limit` pending tasks, oldest first, bumping their attempt counts.
+  fn claim(limit: Positive) -> List[TaskAttempt[P]]
+    ensures len(it) <= limit
+  /// Record the results of claimed attempts.
+  fn record(results: List[TaskResult[P, E]]) -> ()
+  /// Put claimed-but-unreported attempts back.
+  fn release(attempts: List[TaskAttempt[P]]) -> ()
+}
+
+// ───────────────────────────── entrypoints ─────────────────────────────────
+
+/// Run the producer once and enqueue every task it discovers.
+pub fn run_producer[P, E]() -> Int / {Producer[P], Queue[P, E]}
+  ensures it >= 0
+{
+  Queue.enqueue(Producer.discover())
+}
+
+/// A worker broke the contract of reporting exactly one result per attempt.
+pub type WorkerError =
+  | ResultsMismatch { claimed: List[TaskId], reported: List[TaskId] }
+
+/// Claim one batch, run it, record the results. If the worker does not report
+/// exactly one result per claimed attempt, the claim is released and the
+/// mismatch is returned as a value instead of an exception.
+pub fn run_worker[P, E](policy: TaskPolicy) -> Result[List[TaskResult[P, E]], WorkerError] / {Queue[P, E], Worker[P, E]}
+  ensures match it {
+    Ok(rs) => len(rs) <= policy.tasks_per_worker,
+    Err(_) => true,
+  }
+{
+  let attempts = Queue.claim(policy.tasks_per_worker)
+  if len(attempts) == 0 {
+    Ok([])
+  } else {
+    let results = Worker.run(attempts)
+    let claimed = attempts.map(|a| a.task.id)
+    let reported = results.map(|r| task_of(r).id)
+    if same_ids(claimed, reported) {
+      Queue.record(results)
+      Ok(results)
+    } else {
+      Queue.release(attempts)
+      Err(ResultsMismatch { claimed, reported })
+    }
+  }
+}
+
+/// Exactly the same ids, each reported once.
+fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool {
+  len(claimed) == len(reported) && all(claimed, |c| count(reported, |r| r == c) == 1)
+}
+
+/// The worker entrypoint's loop: run batches until the queue has nothing
+/// claimable (or `max_batches` is reached). Returns the number of batches run.
+pub fn drain[P, E](policy: TaskPolicy, max_batches: Int) -> Int / {Queue[P, E], Worker[P, E]}
+  requires max_batches >= 0
+  ensures 0 <= it && it <= max_batches
+{
+  if max_batches == 0 {
+    0
+  } else {
+    match run_worker(policy) {
+      Ok([]) => 0,
+      Ok(_) => 1 + drain(policy, max_batches - 1),
+      Err(_) => 1 + drain(policy, max_batches - 1),
+    }
+  }
+}

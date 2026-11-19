@@ -174,6 +174,26 @@ fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, |ac
 
 **Not yet:** methods without `self` (such as `fn empty() -> Self`), which need dispatch on the expected type; method names shared between traits; and trait methods whose effects are chosen by each implementation (effect polymorphism).
 
+## Modules: units that meet only through contracts
+
+```
+module orders {
+  pub type Order = { id: OrderId, lines: NonEmpty[Line] }
+  pub fn ship(id: OrderId) -> Result[Order, ShipError] / {Db}  ensures ...
+  fn helper() -> Int { ... }            // private: invisible outside `orders`
+}
+module billing {
+  use orders.{Order, ship}              // or `use orders.*`, or write `orders.ship(x)`
+  pub fn invoice(o: Order) -> Cents { ... }
+}
+```
+
+- A module is used **only through its public contract**: `pub` types, function signatures, `requires`/`ensures`, trait laws. Anything else is private, and using it from another module is an error ("`secret` is private to module `a`").
+- `strata interface orders` prints that contract, with a hash. Editing a private definition, or a function body without touching its signature, is reported as "implementation only": nothing outside the module can be affected. Changing a `pub` signature or type says so ("module core: its public contract changed").
+- **Files or database, your choice.** `--file` and `add` accept a folder, where each `.strata` file is a module named after its path (`shop/orders.strata` → `shop.orders`, `main.strata` → the root module). `render --split DIR` writes the codebase back out one file per module, and it round-trips. In the database, definitions are stored under qualified names, so `orders.Line` and `billing.Line` can coexist. `edit --module m` targets a module, and `view module:m` shows one.
+- The viewer groups the sidebar by module (private definitions in italics) and lays the type map out as one region per module, with the modules others depend on placed first.
+- `examples/tasks/` is now four modules (`core`, `memory`, `print`, `sim`) that use each other only through their contracts.
+
 ## Built-in types
 
 | Type | Notes |
@@ -236,7 +256,7 @@ Because results are keyed by content, `verify` reruns only what is affected by a
 - **Limited effect handlers.** A handler returns one value straight back to the operation; it cannot resume the computation later or run it more than once (no generators or async yet). Handlers also cannot keep state between calls.
 - **Lambdas are not effect-polymorphic.** A closure's effects are checked where it is defined, not where it is called.
 - Refinements on generic type arguments, such as `Option[Quantity]`, are not checked when values are constructed.
-- **No modules and no compilation backend.** It is a tree-walking interpreter.
+- **No compilation backend.** It is a tree-walking interpreter.
 
 ## Roadmap
 

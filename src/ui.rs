@@ -30,15 +30,16 @@ fn snapshot(target: &Target) -> Json {
             }
             Err(e) => return json!({"fatal": e}),
         },
-        Target::File(f) => {
-            let src = std::fs::read_to_string(f).unwrap_or_default();
-            match crate::parser::parse_program(&src) {
-                Ok(p) => (p, vec![], HashMap::new(), f.display().to_string()),
-                Err(e) => return json!({"fatal": format!("{}:{e}", f.display())}),
-            }
-        }
+        Target::File(f) => match crate::read_sources(&f.to_string_lossy(), None) {
+            Ok(p) => (p, vec![], HashMap::new(), f.display().to_string()),
+            Err(e) => return json!({"fatal": e}),
+        },
     };
     let p = &program;
+    // modules: work on qualified names, report under each definition's qname
+    let resolved = crate::resolve::resolve(p);
+    let rp = &resolved.program;
+    let qname_of: HashMap<String, String> = rp.decls.iter().zip(&p.decls).map(|(r, d)| (r.name(), d.qname())).collect();
     let mut rep = types::check(p);
     let (env, _) = types::Env::new(p);
     rep.errors.extend(verify::static_refinements(p, &env));
@@ -46,12 +47,12 @@ fn snapshot(target: &Target) -> Json {
     let graph = store::graph(p);
     let mut holes: HashMap<String, Vec<&types::HoleInfo>> = HashMap::new();
     for h in &rep.holes {
-        holes.entry(h.decl.clone()).or_default().push(h);
+        holes.entry(qname_of.get(&h.decl).cloned().unwrap_or(h.decl.clone())).or_default().push(h);
     }
     let mut verdicts: HashMap<String, verify::Verdict> = HashMap::new();
     for d in &p.decls {
-        if let Some(v) = cache.get(&store::closure_hash(p, &d.name())) {
-            verdicts.insert(d.name(), v.clone());
+        if let Some(v) = cache.get(&store::closure_hash(p, &d.qname())) {
+            verdicts.insert(d.qname(), v.clone());
         }
     }
     let status = view::Status {
@@ -72,7 +73,7 @@ fn snapshot(target: &Target) -> Json {
         .decls
         .iter()
         .map(|d| {
-            let name = d.name();
+            let name = d.qname();
             let one: BTreeSet<String> = [name.clone()].into();
             let render = |lvl| view::render(p, &one, lvl, &status).trim_end().to_string();
             let effects = match &d.kind {
@@ -81,10 +82,12 @@ fn snapshot(target: &Target) -> Json {
             };
             let label = match &d.kind {
                 DeclKind::Test(t) => t.name.clone(),
-                _ => name.clone(),
+                _ => d.name(),
             };
             json!({
                 "name": name,
+                "module": d.module,
+                "public": d.public,
                 "label": label,
                 "kind": d.kind_str(),
                 "doc": d.doc.join("\n"),
@@ -95,14 +98,14 @@ fn snapshot(target: &Target) -> Json {
                 "used_by": graph.iter().filter(|(_, ds)| ds.contains(&name)).map(|(n, _)| n.clone()).collect::<Vec<_>>(),
                 "holes": holes.get(&name).cloned().unwrap_or_default(),
                 "verdict": verdicts.get(&name),
-                "errors": rep.errors.iter().filter(|e| e.decl == name).map(|e| e.msg.clone()).collect::<Vec<_>>(),
+                "errors": rep.errors.iter().filter(|e| qname_of.get(&e.decl).unwrap_or(&e.decl) == &name || e.decl == name).map(|e| e.msg.clone()).collect::<Vec<_>>(),
                 "last_change": last_change.get(&name),
                 "text": { "1": render(1), "2": render(2), "3": render(3) },
             })
         })
         .collect();
     // ---- structure for the type map ----
-    let declared: std::collections::HashSet<String> = p
+    let declared: std::collections::HashSet<String> = rp
         .decls
         .iter()
         .filter(|d| matches!(d.kind, DeclKind::Type(_) | DeclKind::Effect(_)))
@@ -115,7 +118,7 @@ fn snapshot(target: &Target) -> Json {
     };
     let field_json = |name: Option<&str>, t: &TypeExpr| json!({"name": name, "ty": crate::printer::ty(t), "refs": refs_of(t)});
     let mut structure = Vec::new();
-    for d in &p.decls {
+    for d in &rp.decls {
         // functions whose first parameter is this record/sum type act as its methods
         let has_methods = matches!(&d.kind, DeclKind::Type(t) if !matches!(t.body, TypeBody::Alias(_)));
         let methods: Vec<Json> = p
@@ -184,7 +187,7 @@ fn snapshot(target: &Target) -> Json {
     }
 
     // ---- traits for the type map ----
-    for d in &p.decls {
+    for d in &rp.decls {
         if let DeclKind::Trait(t) = &d.kind {
             let mut refs = Vec::new();
             for m in &t.methods {
@@ -213,7 +216,7 @@ fn snapshot(target: &Target) -> Json {
     }
 
     // ---- execution outlines for the flow map ----
-    let fn_names: std::collections::HashSet<String> = p.decls.iter().filter(|d| matches!(d.kind, DeclKind::Fn(_))).map(|d| d.name()).collect();
+    let fn_names: std::collections::HashSet<String> = rp.decls.iter().filter(|d| matches!(d.kind, DeclKind::Fn(_))).map(|d| d.name()).collect();
     let mut methods: HashMap<String, (String, Vec<crate::flow::Target>)> = HashMap::new();
     for (m, tr) in &env.method_trait {
         let targets = env
@@ -241,7 +244,7 @@ fn snapshot(target: &Target) -> Json {
         }
     }
     let mut called: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for d in &p.decls {
+    for d in &rp.decls {
         let (body, sig) = match &d.kind {
             DeclKind::Fn(f) => (&f.body, json!({"effects": f.effects.iter().map(crate::printer::ty).collect::<Vec<_>>(), "sig": crate::printer::fn_signature(f).lines().next().unwrap_or("").to_string(), "hole": matches!(f.body, Expr::Hole(_))})),
             DeclKind::Test(t) => (&t.body, json!({"effects": [], "sig": format!("test {:?}", t.name), "hole": false})),
@@ -256,17 +259,17 @@ fn snapshot(target: &Target) -> Json {
                 }
             }
         }
-        flows.insert(d.name(), json!({"steps": steps, "info": sig}));
+        flows.insert(qname_of[&d.name()].clone(), json!({"steps": steps, "info": sig}));
     }
     // entry points: functions nothing else uses (calls, contracts or refinements; tests don't count)
-    let used: std::collections::HashSet<String> = p
+    let used: std::collections::HashSet<String> = rp
         .decls
         .iter()
         .filter(|d| !matches!(d.kind, DeclKind::Test(_)))
         .flat_map(|d| graph.get(&d.name()).cloned().unwrap_or_default().into_iter().filter(move |n| *n != d.name()))
         .chain(called.iter().cloned())
         .collect();
-    let entries: Vec<String> = p
+    let entries: Vec<String> = rp
         .decls
         .iter()
         .filter(|d| matches!(d.kind, DeclKind::Fn(_)) && !used.contains(&d.name()))

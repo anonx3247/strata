@@ -41,7 +41,7 @@ pub fn sha(s: &str) -> String {
 
 /// Hash of a definition's canonical text (its identity in the store).
 pub fn self_hash(d: &Decl) -> String {
-    sha(&printer::decl(d))
+    sha(&format!("module {}\n{}", d.module, printer::decl(d)))
 }
 
 /// Hash of what other definitions may depend on: the signature, contracts and type shapes.
@@ -51,7 +51,7 @@ pub fn interface_hash(d: &Decl) -> String {
         DeclKind::Test(t) => format!("test {:?}", t.name),
         _ => printer::decl(d),
     };
-    sha(&text)
+    sha(&format!("module {} pub {}\n{text}", d.module, d.public))
 }
 
 /// Names of other top-level definitions this one refers to.
@@ -229,12 +229,18 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             out.remove("Self");
         }
         DeclKind::Test(t) => ex(&t.body, &mut out, ctor_types),
+        DeclKind::Use(_) => {}
     }
     out
 }
 
 /// Dependency graph restricted to names defined in the program.
 pub fn graph(p: &Program) -> BTreeMap<String, BTreeSet<String>> {
+    // compute on resolved (qualified) names, report by each definition's qname
+    let original = p;
+    let resolved = crate::resolve::resolve(p);
+    let p = &resolved.program;
+    let to_q: HashMap<String, String> = p.decls.iter().zip(&original.decls).map(|(r, d)| (r.name(), d.qname())).collect();
     let names: BTreeSet<String> = p.decls.iter().map(|d| d.name()).collect();
     let mut ct = HashMap::new();
     for d in &p.decls {
@@ -246,7 +252,10 @@ pub fn graph(p: &Program) -> BTreeMap<String, BTreeSet<String>> {
             }
         }
     }
-    p.decls.iter().map(|d| (d.name(), refs(d, &ct).into_iter().filter(|r| names.contains(r)).collect())).collect()
+    p.decls
+        .iter()
+        .map(|d| (to_q[&d.name()].clone(), refs(d, &ct).into_iter().filter(|r| names.contains(r) && r != &d.name()).map(|r| to_q[&r].clone()).collect()))
+        .collect()
 }
 
 /// Hash of a definition together with everything it (transitively) depends on.
@@ -254,7 +263,7 @@ pub fn graph(p: &Program) -> BTreeMap<String, BTreeSet<String>> {
 /// the result still holds.
 pub fn closure_hash(p: &Program, name: &str) -> String {
     let g = graph(p);
-    let hashes: HashMap<String, String> = p.decls.iter().map(|d| (d.name(), self_hash(d))).collect();
+    let hashes: HashMap<String, String> = p.decls.iter().map(|d| (d.qname(), self_hash(d))).collect();
     let mut seen = BTreeSet::new();
     let mut todo = vec![name.to_string()];
     while let Some(n) = todo.pop() {
@@ -319,11 +328,11 @@ impl Codebase {
 
     /// Replace the program with `new`, writing objects and a log entry.
     pub fn commit(&mut self, new: Program, message: &str) -> Result<Vec<Change>, String> {
-        let old: HashMap<String, &Decl> = self.program.decls.iter().map(|d| (d.name(), d)).collect();
-        let newm: HashMap<String, &Decl> = new.decls.iter().map(|d| (d.name(), d)).collect();
+        let old: HashMap<String, &Decl> = self.program.decls.iter().map(|d| (d.qname(), d)).collect();
+        let newm: HashMap<String, &Decl> = new.decls.iter().map(|d| (d.qname(), d)).collect();
         let mut changes = Vec::new();
         for d in &new.decls {
-            let n = d.name();
+            let n = d.qname();
             let h = self_hash(d);
             match old.get(&n) {
                 Some(o) if self_hash(o) == h => {}
@@ -342,8 +351,8 @@ impl Codebase {
             }
         }
         for d in &self.program.decls {
-            if !newm.contains_key(&d.name()) {
-                changes.push(Change { name: d.name(), kind: d.kind_str().into(), old: Some(self_hash(d)), new: None, interface_changed: true, affected: dependents(&self.program, &d.name()) });
+            if !newm.contains_key(&d.qname()) {
+                changes.push(Change { name: d.qname(), kind: d.kind_str().into(), old: Some(self_hash(d)), new: None, interface_changed: true, affected: dependents(&self.program, &d.qname()) });
             }
         }
         if changes.is_empty() {
@@ -357,7 +366,7 @@ impl Codebase {
             if !p.exists() {
                 fs::write(&p, serde_json::to_string_pretty(d).unwrap()).map_err(|e| e.to_string())?;
             }
-            idx.defs.push((d.name(), h));
+            idx.defs.push((d.qname(), h));
         }
         fs::write(self.dir().join("index.json"), serde_json::to_string_pretty(&idx).unwrap()).map_err(|e| e.to_string())?;
         let entry = serde_json::json!({
@@ -392,9 +401,9 @@ impl Codebase {
 /// Merge edited declarations into a program: same-named definitions are
 /// replaced in place, new ones appended.
 pub fn merge(base: &Program, edits: Program, delete: &[String]) -> Program {
-    let mut decls: Vec<Decl> = base.decls.iter().filter(|d| !delete.contains(&d.name())).cloned().collect();
+    let mut decls: Vec<Decl> = base.decls.iter().filter(|d| !delete.contains(&d.qname())).cloned().collect();
     for e in edits.decls {
-        match decls.iter_mut().find(|d| d.name() == e.name()) {
+        match decls.iter_mut().find(|d| d.qname() == e.qname()) {
             Some(slot) => *slot = e,
             None => decls.push(e),
         }

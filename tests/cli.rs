@@ -101,12 +101,12 @@ fn json_inputs_are_validated_against_refinements() {
 #[test]
 fn tasks_port_checks_tests_and_verifies() {
     let d = tmp("tasks");
-    let ex = format!("{}/examples/tasks/tasks.strata", env!("CARGO_MANIFEST_DIR"));
+    let ex = format!("{}/examples/tasks", env!("CARGO_MANIFEST_DIR"));
     let (ok, out) = strata(&["--file", &ex, "test"], &d, None);
     assert!(ok && out.contains("0 failed"), "{out}");
-    let (ok, out) = strata(&["--file", &ex, "verify", "simulate,run_worker,mem_claim", "--cases", "300"], &d, None);
+    let (ok, out) = strata(&["--file", &ex, "verify", "sim.simulate,core.run_worker,memory.mem_claim", "--cases", "300"], &d, None);
     assert!(ok, "{out}");
-    let (ok, out) = strata(&["--file", &ex, "run", "demo"], &d, None);
+    let (ok, out) = strata(&["--file", &ex, "run", "print.demo"], &d, None);
     assert!(ok && out.contains("task-3: Done after 2"), "{out}");
 }
 
@@ -126,7 +126,7 @@ fn builtin_collections_work() {
 #[test]
 fn every_example_round_trips_through_render() {
     let d = tmp("roundtrip");
-    for ex in ["bank.strata", "orders.strata", "builtins.strata", "traits.strata", "tasks/tasks.strata"] {
+    for ex in ["bank.strata", "orders.strata", "builtins.strata", "traits.strata", "tasks"] {
         let path = format!("{}/examples/{ex}", env!("CARGO_MANIFEST_DIR"));
         let (_, r1) = strata(&["--file", &path, "render"], &d, None);
         std::fs::write(d.join("r.strata"), &r1).unwrap();
@@ -185,4 +185,32 @@ fn traits_laws_and_distinct_types() {
     ] {
         assert!(out.contains(needle), "missing {needle:?} in:\n{out}");
     }
+}
+
+#[test]
+fn modules_contracts_and_files() {
+    let d = tmp("modules");
+    let ex = format!("{}/examples/tasks", env!("CARGO_MANIFEST_DIR"));
+    // a folder of files is a set of modules; render --split writes it back identically
+    let (ok, out) = strata(&["--file", &ex, "render", "--split", "split"], &d, None);
+    assert!(ok, "{out}");
+    let (_, a) = strata(&["--file", &ex, "render"], &d, None);
+    let (_, b) = strata(&["--file", "split", "render"], &d, None);
+    assert_eq!(a, b);
+    // the contract shows public definitions only
+    let (ok, out) = strata(&["--file", &ex, "interface", "core"], &d, None);
+    assert!(ok && out.contains("pub fn run_worker") && !out.contains("same_ids"), "{out}");
+    // private definitions are not part of the contract
+    std::fs::create_dir_all(d.join("p")).unwrap();
+    std::fs::write(d.join("p/a.strata"), "pub fn open() -> Int { secret() }\nfn secret() -> Int { 1 }\n").unwrap();
+    std::fs::write(d.join("p/b.strata"), "use a.*\nfn f() -> Int { open() + secret() }\nfn g() -> Int { a.secret() }\n").unwrap();
+    let (ok, out) = strata(&["--file", "p", "check"], &d, None);
+    assert!(!ok && out.contains("`secret` is private to module `a`") && out.contains("`a.secret` is private to module `a`"), "{out}");
+    // the codebase database stores qualified names; a private edit leaves dependents alone
+    assert!(strata(&["init"], &d, None).0);
+    assert!(strata(&["add", &ex], &d, None).0);
+    let (ok, out) = strata(&["edit", "--module", "core"], &d, Some("fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool { len(claimed) == len(reported) && all(claimed, |c| count(reported, |r| r == c) == 1) && all(reported, |r| contains(claimed, r)) }"));
+    assert!(ok && out.contains("core.same_ids") && out.contains("implementation only"), "{out}");
+    let (ok, out) = strata(&["test"], &d, None);
+    assert!(ok && out.contains("0 failed"), "{out}");
 }

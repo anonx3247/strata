@@ -115,6 +115,10 @@ pub struct Interp<'a> {
     depth: usize,
 }
 
+fn short(c: &str) -> &str {
+    c.rsplit('.').next().unwrap_or(c)
+}
+
 fn canon(v: &Value) -> String {
     to_json(v).to_string()
 }
@@ -158,11 +162,12 @@ pub fn to_json(v: &Value) -> Json {
         Value::Unit => Json::Null,
         Value::List(xs) => Json::Array(xs.iter().map(to_json).collect()),
         Value::Record(_, fs) => Json::Object(fs.iter().map(|(k, v)| (k.clone(), to_json(v))).collect()),
-        Value::Variant(c, Fields::None) => json!(c),
-        Value::Variant(c, Fields::Pos(xs)) if xs.len() == 1 => json!({ c: to_json(&xs[0]) }),
-        Value::Variant(c, Fields::Pos(xs)) => json!({ c: xs.iter().map(to_json).collect::<Vec<_>>() }),
+        // module paths belong to the code, not the data: `memory.Done` is "Done"
+        Value::Variant(c, Fields::None) => json!(short(c)),
+        Value::Variant(c, Fields::Pos(xs)) if xs.len() == 1 => json!({ short(c): to_json(&xs[0]) }),
+        Value::Variant(c, Fields::Pos(xs)) => json!({ short(c): xs.iter().map(to_json).collect::<Vec<_>>() }),
         Value::Variant(c, Fields::Rec(fs)) => {
-            json!({ c: Json::Object(fs.iter().map(|(k, v)| (k.clone(), to_json(v))).collect()) })
+            json!({ short(c): Json::Object(fs.iter().map(|(k, v)| (k.clone(), to_json(v))).collect()) })
         }
         Value::Closure(ps, ..) => json!(format!("<closure |{}|>", ps.join(", "))),
         Value::FnRef(n) => json!(format!("<fn {n}>")),
@@ -172,7 +177,7 @@ pub fn to_json(v: &Value) -> Json {
 pub fn show(v: &Value) -> String {
     match v {
         Value::Str(s) => s.clone(),
-        Value::Variant(c, Fields::None) => c.clone(),
+        Value::Variant(c, Fields::None) => short(c).to_string(),
         other => to_json(other).to_string(),
     }
 }
@@ -1233,7 +1238,7 @@ impl<'a> Interp<'a> {
                         let names: Vec<_> = variants.iter().map(|v| v.0.clone()).collect();
                         return bad(&format!("one of {}", names.join(" | ")));
                     };
-                    let Some((_, names, ftys)) = variants.iter().find(|v| v.0 == cname) else {
+                    let Some((cname, names, ftys)) = variants.iter().find(|v| v.0 == cname || short(&v.0) == cname).map(|v| (v.0.clone(), &v.1, &v.2)) else {
                         return Err(format!("{path}: `{cname}` is not a constructor of `{n}`"));
                     };
                     let p = format!("{path}.{cname}");

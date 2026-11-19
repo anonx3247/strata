@@ -2,11 +2,21 @@
 
 A port of the [tasks](../../../tasks) reference (Python and TypeScript): backend-agnostic task queues, where producers enqueue tasks and workers claim batches of attempts and report results.
 
+Four modules, one per file, which use each other only through their public contracts:
+
+| Module | What it holds |
+|---|---|
+| `core` | the model (`Task`, `TaskResult`, `TaskPolicy`), the `Producer` / `Worker` / `Queue` effects, and the `run_producer` / `run_worker` / `drain` entrypoints |
+| `memory` | the in-memory backend: the reference SQLite semantics as a pure state machine with invariants |
+| `print` | the reference's example task family and its `demo` entrypoint |
+| `sim` | model-based verification (`simulate`) and the reference test suite |
+
 ```sh
-strata --file examples/tasks/tasks.strata test           # the reference test suite
-strata --file examples/tasks/tasks.strata run demo       # producer + worker entrypoints
-strata --file examples/tasks/tasks.strata verify         # contracts + model-based simulation
-strata ui --file examples/tasks/tasks.strata             # browse it
+strata --file examples/tasks test                 # the reference test suite
+strata --file examples/tasks run print.demo       # producer + worker entrypoints
+strata --file examples/tasks verify               # contracts + model-based simulation
+strata --file examples/tasks interface core       # what the other modules can use
+strata ui --file examples/tasks                   # browse it
 ```
 
 ## How the reference maps onto Strata

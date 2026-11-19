@@ -179,6 +179,8 @@ pub fn texpr_head(t: &TypeExpr) -> String {
 
 impl Env {
     pub fn new(prog: &Program) -> (Env, Vec<Diag>) {
+        let resolved = crate::resolve::resolve(prog);
+        let prog = &resolved.program;
         let prelude = crate::parser::parse_program(PRELUDE).expect("prelude parses");
         let mut env = Env {
             types: HashMap::new(),
@@ -215,7 +217,7 @@ impl Env {
                 }
                 DeclKind::Effect(e) => env.effects.insert(e.name.clone(), e.clone()).is_some(),
                 DeclKind::Fn(f) => env.fns.insert(f.name.clone(), f.clone()).is_some(),
-                DeclKind::Test(_) => false,
+                DeclKind::Test(_) | DeclKind::Use(_) => false,
                 DeclKind::Trait(t) => {
                     for m in &t.methods {
                         if let Some(other) = env.method_trait.insert(m.decl.name.clone(), t.name.clone()) {
@@ -1483,7 +1485,10 @@ impl Checker<'_> {
 // ------------------------------------------------------------------
 
 pub fn check(prog: &Program) -> CheckReport {
+    let resolved = crate::resolve::resolve(prog);
+    let prog = &resolved.program;
     let (env, mut errors) = Env::new(prog);
+    errors.splice(0..0, resolved.errors);
     let mut holes = Vec::new();
     for d in &prog.decls {
         let mut c = Checker {
@@ -1682,6 +1687,7 @@ pub fn check(prog: &Program) -> CheckReport {
             DeclKind::Test(t) => {
                 c.infer(&t.body);
             }
+            DeclKind::Use(_) => {}
         }
         c.solve_pending();
         c.check_matches();

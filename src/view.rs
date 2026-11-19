@@ -29,12 +29,14 @@ fn glob(pat: &str, name: &str) -> bool {
 /// Resolve a selector to the set of definition names it covers.
 /// `a,b` (union), `prefix*`, `slice:Name` (Name, what it uses, and what uses it).
 pub fn select(p: &Program, selector: Option<&str>) -> BTreeSet<String> {
-    let all: Vec<String> = p.decls.iter().map(|d| d.name()).collect();
+    let all: Vec<String> = p.decls.iter().map(|d| d.qname()).collect();
     let Some(sel) = selector else { return all.into_iter().collect() };
     let g = store::graph(p);
     let mut out = BTreeSet::new();
     for term in sel.split(',').map(str::trim) {
-        if let Some(n) = term.strip_prefix("slice:") {
+        if let Some(m) = term.strip_prefix("module:") {
+            out.extend(p.decls.iter().filter(|d| d.module == m || d.module.starts_with(&format!("{m}."))).map(|d| d.qname()));
+        } else if let Some(n) = term.strip_prefix("slice:") {
             for (name, deps) in &g {
                 if glob(n, name) {
                     out.insert(name.clone());
@@ -53,10 +55,10 @@ pub fn select(p: &Program, selector: Option<&str>) -> BTreeSet<String> {
 
 fn status_note(d: &Decl, st: &Status) -> String {
     let mut parts = Vec::new();
-    if let Some(hs) = st.holes.get(&d.name()) {
+    if let Some(hs) = st.holes.get(&d.qname()) {
         parts.push(format!("holes: {}", hs.iter().map(|h| format!("?{h}")).collect::<Vec<_>>().join(" ")));
     }
-    if let Some(v) = st.verdicts.get(&d.name()) {
+    if let Some(v) = st.verdicts.get(&d.qname()) {
         parts.push(v.clone());
     }
     if parts.is_empty() { String::new() } else { format!("  // [{}]", parts.join(", ")) }
@@ -65,8 +67,8 @@ fn status_note(d: &Decl, st: &Status) -> String {
 fn body_summary(d: &Decl, f: &FnDecl, p: &Program) -> String {
     let lines = printer::fn_decl(f).lines().count().saturating_sub(1);
     let g = store::graph(p);
-    let kinds: HashMap<String, &'static str> = p.decls.iter().map(|d| (d.name(), d.kind_str())).collect();
-    let deps = g.get(&d.name()).cloned().unwrap_or_default();
+    let kinds: HashMap<String, &'static str> = p.decls.iter().map(|d| (d.qname(), d.kind_str())).collect();
+    let deps = g.get(&d.qname()).cloned().unwrap_or_default();
     let calls: Vec<_> = deps.iter().filter(|n| kinds.get(*n) == Some(&"fn")).cloned().collect();
     let mut s = format!("{{ … {lines} lines");
     if !calls.is_empty() {
@@ -77,12 +79,12 @@ fn body_summary(d: &Decl, f: &FnDecl, p: &Program) -> String {
 
 pub fn render(p: &Program, names: &BTreeSet<String>, level: u8, st: &Status) -> String {
     let g = store::graph(p);
-    let mut out = Vec::new();
-    for d in p.decls.iter().filter(|d| names.contains(&d.name())) {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for d in p.decls.iter().filter(|d| names.contains(&d.qname())) {
         let note = status_note(d, st);
         let text = match level {
             0 => {
-                let deps = g.get(&d.name()).cloned().unwrap_or_default();
+                let deps = g.get(&d.qname()).cloned().unwrap_or_default();
                 let effs = match &d.kind {
                     DeclKind::Fn(f) if !f.effects.is_empty() => format!(" / {{{}}}", f.effects.iter().map(printer::ty).collect::<Vec<_>>().join(", ")),
                     _ => String::new(),
@@ -90,7 +92,7 @@ pub fn render(p: &Program, names: &BTreeSet<String>, level: u8, st: &Status) -> 
                 let deps = if deps.is_empty() { String::new() } else { format!("  → {}", deps.into_iter().collect::<Vec<_>>().join(", ")) };
                 let name = match &d.kind {
                     DeclKind::Test(t) => format!("{:?}", t.name),
-                    _ => d.name(),
+                    _ => d.qname(),
                 };
                 format!("{:<6} {name}{effs}{deps}{note}", d.kind_str())
             }
@@ -105,10 +107,30 @@ pub fn render(p: &Program, names: &BTreeSet<String>, level: u8, st: &Status) -> 
                     _ => format!("{}{note}", printer::decl(d).trim_start_matches(&printer::doc(d))),
                 };
                 let doc = if level >= 1 { printer::doc(d) } else { String::new() };
-                format!("{doc}{body}")
+                let pubk = if d.public && !body.starts_with("pub ") { "pub " } else { "" };
+                format!("{doc}{pubk}{body}")
             }
         };
-        out.push(text);
+        out.push((d.module.clone(), text));
     }
-    if level == 0 { out.join("\n") + "\n" } else { out.join("\n\n") + "\n" }
+    if level == 0 {
+        return out.into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n") + "\n";
+    }
+    // keep each module's definitions inside a `module m { ... }` block, so views stay valid Strata
+    let mut order: Vec<String> = Vec::new();
+    for (m, _) in &out {
+        if !order.contains(m) {
+            order.push(m.clone());
+        }
+    }
+    let mut parts = Vec::new();
+    for m in order {
+        let body: Vec<String> = out.iter().filter(|(mm, _)| *mm == m).map(|(_, t)| t.clone()).collect();
+        if m.is_empty() {
+            parts.extend(body);
+        } else {
+            parts.push(printer::module_block(&m, &body.join("\n\n")));
+        }
+    }
+    parts.join("\n\n") + "\n"
 }

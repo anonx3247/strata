@@ -5,6 +5,7 @@ mod interp;
 mod lexer;
 mod parser;
 mod printer;
+mod resolve;
 mod store;
 mod types;
 mod ui;
@@ -28,7 +29,10 @@ Codebase (stored as a database of syntax trees in .strata/):
   edit [-m MSG] [--rm NAME]..  read definitions from stdin; replace/add them by name;
                                commit only if the whole codebase still checks
   log                          show the patch history
-  render                       print the full codebase as source (L3)
+  interface <module>           a module's public contract: what other modules can use
+  render [--split DIR]         print the full codebase as source (L3), or one file per module
+  (`--file` and `add` accept a folder: each .strata file is a module named after its path;
+   `edit --module m` puts unqualified definitions into module m)
 
 Views:
   ui [--port 7777]                live viewer in the browser (map, levels, holes, activity)
@@ -58,7 +62,7 @@ struct Args {
 impl Args {
     fn parse() -> Args {
         let raw: Vec<String> = std::env::args().skip(1).collect();
-        let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed", "--port"];
+        let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed", "--port", "--module", "--split"];
         let (mut pos, mut flags) = (Vec::new(), HashMap::<String, Vec<String>>::new());
         let mut i = 0;
         while i < raw.len() {
@@ -98,11 +102,47 @@ impl Source {
     }
 }
 
+/// Read source: a single file, or a folder where each `.strata` file is a
+/// module named after its path (`shop/orders.strata` -> `shop.orders`,
+/// `main.strata` -> the root module).
+fn read_sources(path: &str, module: Option<&str>) -> Result<Program, String> {
+    let root = std::path::Path::new(path);
+    if !root.is_dir() {
+        let src = std::fs::read_to_string(root).map_err(|e| format!("{path}: {e}"))?;
+        return parser::parse_module_file(&src, module.unwrap_or("")).map_err(|e| format!("{path}:{e}"));
+    }
+    let mut files = Vec::new();
+    let mut todo = vec![root.to_path_buf()];
+    while let Some(dir) = todo.pop() {
+        for entry in std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+            let p = entry.map_err(|e| e.to_string())?.path();
+            if p.is_dir() {
+                if !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')) {
+                    todo.push(p);
+                }
+            } else if p.extension().is_some_and(|e| e == "strata") {
+                files.push(p);
+            }
+        }
+    }
+    files.sort();
+    let mut decls = Vec::new();
+    for f in files {
+        let rel = f.strip_prefix(root).unwrap().with_extension("");
+        let mut m = rel.to_string_lossy().replace(std::path::MAIN_SEPARATOR, ".");
+        if m == "main" {
+            m.clear();
+        }
+        let src = std::fs::read_to_string(&f).map_err(|e| format!("{}: {e}", f.display()))?;
+        let p = parser::parse_module_file(&src, &m).map_err(|e| format!("{}:{e}", f.display()))?;
+        decls.extend(p.decls);
+    }
+    Ok(Program { decls })
+}
+
 fn load(args: &Args) -> Result<Source, String> {
     if let Some(f) = args.val("--file") {
-        let src = std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?;
-        let p = parser::parse_program(&src).map_err(|e| format!("{f}:{e}"))?;
-        return Ok(Source::File(p));
+        return Ok(Source::File(read_sources(f, args.val("--module"))?));
     }
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let root = Codebase::find(&cwd).ok_or("no .strata codebase here (run `strata init`, or pass --file)")?;
@@ -133,7 +173,7 @@ fn verdicts_for(src: &Source) -> HashMap<String, String> {
     cb.program
         .decls
         .iter()
-        .filter_map(|d| cache.get(&store::closure_hash(&cb.program, &d.name())).map(|v| (d.name(), v.tag())))
+        .filter_map(|d| cache.get(&store::closure_hash(&cb.program, &d.qname())).map(|v| (d.qname(), v.tag())))
         .collect()
 }
 
@@ -152,15 +192,14 @@ fn run() -> Result<bool, String> {
         }
         "add" | "edit" => {
             let Source::Db(mut cb) = load(&args)? else { return Err("`add`/`edit` need a codebase".into()) };
-            let text = if cmd == "add" {
-                let f = args.pos.get(1).ok_or("usage: strata add <file.strata>")?;
-                std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?
+            let edits = if cmd == "add" {
+                let f = args.pos.get(1).ok_or("usage: strata add <file.strata | folder>")?;
+                read_sources(f, args.val("--module"))?
             } else {
                 let mut s = String::new();
                 std::io::stdin().read_to_string(&mut s).map_err(|e| e.to_string())?;
-                s
+                parser::parse_module_file(&s, args.val("--module").unwrap_or("")).map_err(|e| format!("parse error at {e}"))?
             };
-            let edits = parser::parse_program(&text).map_err(|e| format!("parse error at {e}"))?;
             let deletes: Vec<String> = args.flags.get("--rm").cloned().unwrap_or_default();
             let new = store::merge(&cb.program, edits, &deletes);
             let rep = full_check(&new);
@@ -187,9 +226,30 @@ fn run() -> Result<bool, String> {
                     _ => unreachable!(),
                 };
                 println!("{:<6} {:<24} {what}", c.kind, c.name);
-                if !c.affected.is_empty() {
+                if c.affected.len() > 6 {
+                    // summarise by module
+                    let mut per: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+                    for a in &c.affected {
+                        let m = cb.program.decls.iter().find(|d| &d.qname() == a).map(|d| d.module.clone()).unwrap_or_default();
+                        *per.entry(if m.is_empty() { "(root)".into() } else { m }).or_default() += 1;
+                    }
+                    let parts: Vec<String> = per.iter().map(|(m, n)| format!("{m} ({n})")).collect();
+                    println!("         re-check {} dependents in: {}", c.affected.len(), parts.join(", "));
+                } else if !c.affected.is_empty() {
                     println!("         re-check dependents: {}", c.affected.join(", "));
                 }
+            }
+            // a module's contract is its public definitions
+            let mut contracts: Vec<String> = Vec::new();
+            for c in changes.iter().filter(|c| c.interface_changed && c.old.is_some()) {
+                if let Some(d) = cb.program.decls.iter().find(|d| d.qname() == c.name) {
+                    if d.public && !d.module.is_empty() && !contracts.contains(&d.module) {
+                        contracts.push(d.module.clone());
+                    }
+                }
+            }
+            for m in contracts {
+                println!("module {m}: its public contract changed (see `strata interface {m}`)");
             }
             if !rep.holes.is_empty() {
                 println!("{} open hole(s) — see `strata holes`", rep.holes.len());
@@ -241,11 +301,46 @@ fn run() -> Result<bool, String> {
                 }
             }
         }
-        "render" => print!("{}", printer::program(load(&args)?.program())),
+        "render" => {
+            let src = load(&args)?;
+            let p = src.program();
+            match args.val("--split") {
+                None => print!("{}", printer::program(p)),
+                Some(dir) => {
+                    // one file per module; the root module goes to main.strata
+                    let mut mods: Vec<String> = p.decls.iter().map(|d| d.module.clone()).collect();
+                    mods.sort();
+                    mods.dedup();
+                    for m in mods {
+                        let rel = if m.is_empty() { "main".to_string() } else { m.replace('.', "/") };
+                        let path = std::path::Path::new(dir).join(format!("{rel}.strata"));
+                        if let Some(parent) = path.parent() {
+                            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                        }
+                        std::fs::write(&path, printer::module_file(p, &m)).map_err(|e| e.to_string())?;
+                        println!("wrote {}", path.display());
+                    }
+                }
+            }
+        }
+        "interface" => {
+            // what other modules can see: public definitions at interface level
+            let src = load(&args)?;
+            let p = src.program();
+            let m = args.pos.get(1).ok_or("usage: strata interface <module>")?;
+            let names: std::collections::BTreeSet<String> = p.decls.iter().filter(|d| &d.module == m && d.public).map(|d| d.qname()).collect();
+            if names.is_empty() {
+                return Err(format!("module `{m}` has no public definitions (or does not exist)"));
+            }
+            let hashes: Vec<String> = p.decls.iter().filter(|d| names.contains(&d.qname())).map(store::interface_hash).collect();
+            println!("// contract of module {m}  #{}\n", store::sha(&hashes.join(",")));
+            let st = view::Status { holes: HashMap::new(), verdicts: verdicts_for(&src) };
+            print!("{}", view::render(p, &names, 1, &st));
+        }
         "ast" => {
             let src = load(&args)?;
             let name = args.pos.get(1).ok_or("usage: strata ast <name>")?;
-            let d = src.program().decls.iter().find(|d| &d.name() == name).ok_or(format!("no definition `{name}`"))?;
+            let d = src.program().decls.iter().find(|d| &d.qname() == name).ok_or(format!("no definition `{name}`"))?;
             println!("{}", serde_json::to_string_pretty(&json!({"name": name, "hash": store::self_hash(d), "interface_hash": store::interface_hash(d), "node": d})).unwrap());
         }
         "view" => {
@@ -317,14 +412,15 @@ fn run() -> Result<bool, String> {
             };
             let mut all_ok = true;
             let mut results = Vec::new();
-            for d in &p.decls {
-                if !names.contains(&d.name()) {
+            let resolved = resolve::resolve(p).program;
+            for (orig, d) in p.decls.iter().zip(&resolved.decls) {
+                if !names.contains(&orig.qname()) {
                     continue;
                 }
                 let env = &env;
                 // (label, cache key, how to check)
                 let mut jobs: Vec<(String, String, Box<dyn Fn() -> verify::Verdict + '_>)> = Vec::new();
-                let base = store::closure_hash(p, &d.name());
+                let base = store::closure_hash(p, &orig.qname());
                 match &d.kind {
                     DeclKind::Fn(f) => jobs.push((f.name.clone(), format!("{base}:{cases}"), Box::new(move || verify::fuzz_fn(env, f, cases, seed)))),
                     DeclKind::Impl(imp) => {
@@ -448,7 +544,8 @@ fn run() -> Result<bool, String> {
             let (env, _) = types::Env::new(p);
             let filter = args.pos.get(1).cloned().unwrap_or_default();
             let (mut pass, mut fail) = (0, 0);
-            for d in &p.decls {
+            let resolved = resolve::resolve(p).program;
+            for d in &resolved.decls {
                 let DeclKind::Test(t) = &d.kind else { continue };
                 if !t.name.contains(&filter) {
                     continue;

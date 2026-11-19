@@ -114,6 +114,13 @@ a.ref:hover { color: var(--accent); text-decoration-color: var(--accent); }
 .lg { display: inline-block; width: 18px; height: 0; border-top: 2px solid var(--muted); }
 .lg.refines { border-top: 2px dashed var(--type); } .lg.op { border-top: 2px dotted var(--effect); }
 .muted { color: var(--muted); }
+/* modules */
+.mod-h { padding: 8px 14px 2px; cursor: pointer; font-size: 12.5px; }
+.mod-h b { font-family: var(--mono); }
+.mod-uses { color: var(--faint); font-size: 11px; font-family: var(--mono); margin: 1px 0 0 14px; }
+.item.private .lbl { color: var(--muted); font-style: italic; }
+.region { fill: color-mix(in srgb, var(--accent) 4%, transparent); stroke: color-mix(in srgb, var(--accent) 30%, var(--line)); stroke-dasharray: 6 5; }
+.region-l { font: 600 13px var(--mono); fill: var(--accent); }
 /* types: traits */
 .tnode.k-trait rect.head { fill: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
 .tnode.k-trait .tn { fill: var(--accent); }
@@ -321,14 +328,23 @@ function renderHeader() {
 function renderLeft() {
   const groups = [['type', 'Types'], ['trait', 'Traits'], ['impl', 'Implementations'], ['effect', 'Effects'], ['fn', 'Functions'], ['test', 'Tests']];
   const vis = new Set(visible().map(d => d.name));
-  $('#left').innerHTML = groups.map(([k, title]) => {
-    const items = S.data.decls.filter(d => d.kind === k);
+  const mods = [...new Set(S.data.decls.map(d => d.module))];
+  const many = mods.length > 1 || mods[0] !== '';
+  const section = (decls) => groups.map(([k, title]) => {
+    const items = decls.filter(d => d.kind === k);
     if (!items.length) return '';
     return `<div class="group"><h4>${title}</h4>${items.map(d => {
       const [cls] = status(d);
-      return `<div class="item ${d.name === S.sel ? 'sel' : ''} ${vis.has(d.name) ? '' : 'dim'}" data-go="${esc(d.name)}" title="${esc(d.label)}">
+      const priv = many && d.module && !d.public && d.kind !== 'test' && d.kind !== 'impl';
+      return `<div class="item ${d.name === S.sel ? 'sel' : ''} ${vis.has(d.name) ? '' : 'dim'} ${priv ? 'private' : ''}" data-go="${esc(d.name)}" title="${esc(d.name)}${priv ? ' (private to its module)' : ''}">
         <span class="kind k-${d.kind}">${KIND[d.kind]}</span><span class="lbl">${esc(d.label)}</span><span class="spacer"></span><span class="dot ${cls}"></span></div>`;
     }).join('')}</div>`;
+  }).join('');
+  $('#left').innerHTML = !many ? section(S.data.decls) : mods.map(m => {
+    const decls = S.data.decls.filter(d => d.module === m && d.kind !== 'use');
+    const uses = S.data.decls.filter(d => d.module === m && d.kind === 'use').map(d => d.label.replace(/^use /, ''));
+    const open = !S.closedMods?.has(m);
+    return `<div class="mod"><div class="mod-h" data-mod="${esc(m)}">${open ? '▾' : '▸'} <b>${esc(m || '(root)')}</b> <span class="muted">${decls.length}</span>${uses.length ? `<div class="mod-uses">uses ${esc(uses.join(', '))}</div>` : ''}</div>${open ? section(decls) : ''}</div>`;
   }).join('');
 }
 
@@ -402,10 +418,13 @@ function cardLines(t) {
   }
   if (t.kind !== 'alias' && t.refinement) L.push(['where ' + t.refinement, 'muted']);
   if (t.kind !== 'trait' && tmOpt.methods && t.methods.length) L.push(['fns: ' + t.methods.map(m => m.name).join(', '), 'meth']);
-  return L.map(([s, c]) => [trunc(s, 46), c]);
+  // inside a module's own region its prefix is noise; other modules keep theirs
+  const own = modOf(t.name);
+  const strip = x => own ? x.split(own + '.').join('') : x;
+  return L.map(([s, c]) => [trunc(strip(s), 46), c]);
 }
 const LH = 16, HEAD = 24, CW = 7.1;
-const title = t => t.name + (t.params.length ? '[' + t.params.join(', ') + ']' : '');
+const title = t => t.name.slice(t.name.lastIndexOf('.') + 1) + (t.params.length ? '[' + t.params.join(', ') + ']' : '');
 function cardSize(t) {
   const L = cardLines(t);
   return { w: Math.max(120, Math.min(340, 26 + CW * Math.max(title(t).length + 8, ...L.map(l => l[0].length)))), h: HEAD + 10 + L.length * LH };
@@ -418,7 +437,7 @@ function layoutTypes(g) {
   g.nodes.forEach(n => size[n.name] = cardSize(n));
   const fresh = g.nodes.filter(n => !P[n.name]);
   if (!fresh.length) return size;
-  if (fresh.length === g.nodes.length) fullLayout(g, size, P);
+  if (fresh.length === g.nodes.length) layoutByModule(g, size, P);
   else placeNew(g, size, P, fresh);
   localStorage.setItem(key, JSON.stringify(P));
   return size;
@@ -485,6 +504,29 @@ function fullLayout(g, size, P) {
     if (sx + s.w > maxW) { sy += srow + 30; sx = 0; srow = 0; }
     P[n] = { x: sx + s.w / 2, y: sy + s.h / 2 };
     sx += s.w + 30; srow = Math.max(srow, s.h);
+  }
+}
+
+const modOf = n => n.includes('.') ? n.slice(0, n.lastIndexOf('.')) : '';
+
+// One region per module: each module is laid out on its own, then modules
+// are packed with the most depended-on first (core contracts before users).
+function layoutByModule(g, size, P) {
+  const mods = [...new Set(g.nodes.map(n => modOf(n.name)))];
+  if (mods.length < 2) return fullLayout(g, size, P);
+  const incoming = m => g.edges.filter(e => modOf(e.to) === m && modOf(e.from) !== m).length;
+  mods.sort((a, b) => incoming(b) - incoming(a) || a.localeCompare(b));
+  let x = 0, y = 0, rowH = 0;
+  const maxW = 2200, PAD = 40, HEAD = 30;
+  for (const m of mods) {
+    const nodes = g.nodes.filter(n => modOf(n.name) === m), names = new Set(nodes.map(n => n.name));
+    const sub = { nodes, edges: g.edges.filter(e => names.has(e.from) && names.has(e.to)) };
+    fullLayout(sub, size, P);
+    const bb = bbox([...names], size, P);
+    const w = bb.w + 2 * PAD, h = bb.h + 2 * PAD + HEAD;
+    if (x > 0 && x + w > maxW) { x = 0; y += rowH + 60; rowH = 0; }
+    for (const n of names) { P[n].x += x + PAD - bb.x; P[n].y += y + PAD + HEAD - bb.y; }
+    x += w + 60; rowH = Math.max(rowH, h);
   }
 }
 
@@ -565,9 +607,18 @@ function renderTypes() {
   const v = TM.view || { x: 0, y: 0, k: 1 };
   const mk = (id, col) => `<marker id="ar-${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="${col}"/></marker>`;
   const cs = getComputedStyle(document.documentElement), cv = n => cs.getPropertyValue(n).trim();
+  // module regions, drawn behind everything
+  let regions = '';
+  const mods = [...new Set(g.nodes.map(n => modOf(n.name)))];
+  if (mods.length > 1) for (const m of mods) {
+    const ns = g.nodes.filter(n => modOf(n.name) === m).map(n => n.name);
+    const bb = bbox(ns, size, P);
+    regions += `<rect class="region" x="${bb.x - 24}" y="${bb.y - 44}" width="${bb.w + 48}" height="${bb.h + 68}" rx="16"/>
+      <text class="region-l" x="${bb.x - 12}" y="${bb.y - 22}">${esc(m || '(root)')}</text>`;
+  }
   main.innerHTML = `<svg id="tmap" width="100%" height="100%">
       <defs>${mk('has', cv('--muted'))}${mk('refines', cv('--type'))}${mk('alias', cv('--type'))}${mk('op', cv('--effect'))}${mk('implements', cv('--accent'))}${mk('extends', cv('--accent'))}</defs>
-      <g id="tview" transform="translate(${v.x},${v.y}) scale(${v.k})">${edges}${nodes}${labels}</g></svg>
+      <g id="tview" transform="translate(${v.x},${v.y}) scale(${v.k})">${regions}${edges}${nodes}${labels}</g></svg>
     <div class="maptools">
       <label><input type="checkbox" data-opt="effects" ${tmOpt.effects ? 'checked' : ''}> effects</label>
       <label><input type="checkbox" data-opt="aliases" ${tmOpt.aliases ? 'checked' : ''}> refined aliases</label>
@@ -886,10 +937,11 @@ async function poll() {
 
 // ---------- events ----------
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-card-level],[data-go],[data-pick],[data-l],[data-s],[data-entry],[data-fview],[data-detail],[data-gtoggle]');
+  const t = e.target.closest('[data-card-level],[data-go],[data-pick],[data-l],[data-s],[data-entry],[data-fview],[data-detail],[data-gtoggle],[data-mod]');
   if (!t) return;
   if (t.dataset.cardLevel) { S.over[t.dataset.name] = +t.dataset.cardLevel; render(); return; }
   if (t.dataset.l) { S.level = lv(t.dataset.l); S.over = {}; render(); return; }
+  if (t.dataset.mod !== undefined) { S.closedMods ||= new Set(); S.closedMods.has(t.dataset.mod) ? S.closedMods.delete(t.dataset.mod) : S.closedMods.add(t.dataset.mod); render(); return; }
   if (t.dataset.fview) { S.flowView = t.dataset.fview; render(); return; }
   if (t.dataset.detail) { S.detail = +t.dataset.detail; S.gOpen = new Map(); render(); return; }
   if (t.dataset.gtoggle) { S.gOpen.set(t.dataset.gtoggle, t.dataset.open !== '1'); render(); return; }

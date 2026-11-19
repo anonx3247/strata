@@ -13,7 +13,18 @@ pub fn parse_program(src: &str) -> R<Program> {
     let mut p = Parser { toks: lex(src)?, pos: 0, no_struct: false };
     let mut decls = Vec::new();
     while p.peek() != &Tok::Eof {
-        decls.push(p.decl()?);
+        p.decls_into("", &mut decls)?;
+    }
+    Ok(Program { decls })
+}
+
+/// Parse a file as the given module (e.g. `orders.strata` -> `orders`).
+/// `module` blocks inside it nest under that path.
+pub fn parse_module_file(src: &str, module: &str) -> R<Program> {
+    let mut p = Parser { toks: lex(src)?, pos: 0, no_struct: false };
+    let mut decls = Vec::new();
+    while p.peek() != &Tok::Eof {
+        p.decls_into(module, &mut decls)?;
     }
     Ok(Program { decls })
 }
@@ -34,7 +45,7 @@ fn is_upper(s: &str) -> bool {
 
 const KEYWORDS: &[&str] = &[
     "type", "effect", "fn", "test", "let", "if", "else", "match", "handle", "with", "mock", "where",
-    "requires", "ensures", "true", "false", "is", "assert", "trait", "impl", "law", "for",
+    "requires", "ensures", "true", "false", "is", "assert", "trait", "impl", "law", "for", "pub", "use",
 ];
 
 impl Parser {
@@ -114,11 +125,104 @@ impl Parser {
 
     // ---------- declarations ----------
 
+    /// If the tokens ahead are `lower(.lower)*.Upper`, consume them and return
+    /// the qualified name (`shop.orders.Pending`). Field names are lowercase and
+    /// constructors uppercase, so this can only be a module path.
+    fn qualified_upper(&mut self) -> Option<String> {
+        let mut k = 0;
+        let mut parts = Vec::new();
+        loop {
+            let Tok::Ident(seg) = self.peek_at(k).clone() else { return None };
+            if KEYWORDS.contains(&seg.as_str()) {
+                return None;
+            }
+            parts.push(seg.clone());
+            if is_upper(&seg) {
+                break;
+            }
+            if !matches!(self.peek_at(k + 1), Tok::Sym(".")) {
+                return None;
+            }
+            k += 2;
+        }
+        if parts.len() < 2 {
+            return None;
+        }
+        for _ in 0..=k {
+            self.next();
+        }
+        Some(parts.join("."))
+    }
+
+    fn qualified_upper_ahead(&self) -> bool {
+        let mut k = 0;
+        loop {
+            match self.peek_at(k) {
+                Tok::Ident(seg) if is_upper(seg) => return k > 0,
+                Tok::Ident(_) if matches!(self.peek_at(k + 1), Tok::Sym(".")) => k += 2,
+                _ => return false,
+            }
+        }
+    }
+
+    /// A dotted path: `shop.orders`, `orders.Line`.
+    fn path(&mut self) -> R<String> {
+        let mut s = self.ident()?;
+        while self.is_sym(".") && matches!(self.peek_at(1), Tok::Ident(_)) {
+            self.next();
+            s.push('.');
+            s.push_str(&self.ident()?);
+        }
+        Ok(s)
+    }
+
+    /// One declaration, or a whole `module name { ... }` block.
+    fn decls_into(&mut self, module: &str, out: &mut Vec<Decl>) -> R<()> {
+        if self.is_kw("module") && !matches!(self.peek_at(1), Tok::Sym(_)) {
+            self.next();
+            let name = self.path()?;
+            let full = if module.is_empty() { name } else { format!("{module}.{name}") };
+            self.expect_sym("{")?;
+            while !self.eat_sym("}") {
+                self.decls_into(&full, out)?;
+            }
+            return Ok(());
+        }
+        let mut d = self.decl()?;
+        d.module = module.to_string();
+        out.push(d);
+        Ok(())
+    }
+
     pub fn decl(&mut self) -> R<Decl> {
         let mut doc = Vec::new();
         while let Tok::Doc(d) = self.peek().clone() {
             doc.push(d);
             self.next();
+        }
+        let public = self.eat_kw("pub");
+        if self.eat_kw("use") {
+            let mut path = self.ident()?;
+            let mut items = Some(vec![]);
+            while self.eat_sym(".") {
+                if self.eat_sym("*") {
+                    items = None;
+                    break;
+                }
+                if self.eat_sym("{") {
+                    items = Some(self.list("}", |p| p.ident())?);
+                    break;
+                }
+                let seg = self.ident()?;
+                // `use orders.Line` imports one item
+                if seg.chars().next().is_some_and(|c| c.is_uppercase()) || !self.is_sym(".") {
+                    items = Some(vec![seg]);
+                    break;
+                }
+                path.push('.');
+                path.push_str(&seg);
+            }
+            return Ok(Decl { doc, kind: DeclKind::Use(UseDecl { path, items }), module: String::new(), public });
         }
         // `distinct` is only a keyword at the start of a declaration
         let kind = if self.is_kw("distinct") && matches!(self.peek_at(1), Tok::Ident(t) if t == "type") {
@@ -149,7 +253,7 @@ impl Parser {
         } else {
             return Err(self.err("expected `type`, `effect`, `trait`, `impl`, `fn` or `test`"));
         };
-        Ok(Decl { doc, kind })
+        Ok(Decl { doc, kind, module: String::new(), public })
     }
 
     fn type_params(&mut self) -> R<Vec<String>> {
@@ -213,7 +317,7 @@ impl Parser {
 
     fn impl_decl(&mut self) -> R<ImplDecl> {
         let (type_params, bounds) = self.bounded_params()?;
-        let trait_name = self.ident()?;
+        let trait_name = self.path()?;
         let trait_args = if self.eat_sym("[") { self.list("]", |p| p.type_expr())? } else { vec![] };
         self.expect_kw("for")?;
         let for_type = self.type_expr_plain()?;
@@ -293,7 +397,7 @@ impl Parser {
                 _ => Ok(TypeExpr::Named("Tuple".into(), args)),
             };
         }
-        let name = self.ident()?;
+        let name = self.path()?;
         let args = if self.eat_sym("[") { self.list("]", |p| p.type_expr())? } else { vec![] };
         Ok(TypeExpr::Named(name, args))
     }
@@ -426,7 +530,7 @@ impl Parser {
         let mut lhs = self.binary(level + 1)?;
         loop {
             if level == 2 && self.eat_kw("is") {
-                let ctor = self.ident()?;
+                let ctor = self.path()?;
                 lhs = Expr::Is(Box::new(lhs), ctor);
                 continue;
             }
@@ -584,10 +688,10 @@ impl Parser {
                 let mut handlers = Vec::new();
                 while self.eat_kw("with") {
                     if self.eat_kw("mock") {
-                        handlers.push(Handler { effect: self.ident()?, kind: HandlerKind::MockAuto, state: None, on_return: None });
+                        handlers.push(Handler { effect: self.path()?, kind: HandlerKind::MockAuto, state: None, on_return: None });
                         continue;
                     }
-                    let effect = self.ident()?;
+                    let effect = self.path()?;
                     let state = if self.eat_sym("(") {
                         let v = self.ident()?;
                         self.expect_sym("=")?;
@@ -624,8 +728,14 @@ impl Parser {
                 Ok(Expr::Handle(Box::new(body), handlers))
             }
             Tok::Ident(name) if !KEYWORDS.contains(&name.as_str()) => {
-                self.next();
-                if !is_upper(&name) {
+                let name = match self.qualified_upper() {
+                    Some(q) => q,
+                    None => {
+                        self.next();
+                        name
+                    }
+                };
+                if !is_upper(name.rsplit('.').next().unwrap_or(&name)) {
                     return Ok(Expr::Var(name));
                 }
                 // Effect operation: `Db.load(x)`
@@ -750,8 +860,14 @@ impl Parser {
                 self.next();
                 Ok(Pattern::Bool(s == "true"))
             }
-            Tok::Ident(s) if is_upper(&s) => {
-                self.next();
+            Tok::Ident(s) if is_upper(&s) || self.qualified_upper_ahead() => {
+                let s = match self.qualified_upper() {
+                    Some(q) => q,
+                    None => {
+                        self.next();
+                        s
+                    }
+                };
                 if self.eat_sym("(") {
                     return Ok(Pattern::Ctor(s, CtorPat::Positional(self.list(")", |p| p.pattern())?)));
                 }
