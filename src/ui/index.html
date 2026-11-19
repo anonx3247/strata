@@ -125,6 +125,7 @@ a.ref:hover { color: var(--accent); text-decoration-color: var(--accent); }
 .muted { color: var(--muted); }
 /* code view sections, inspector source, mini graph, hover arrow */
 h2.sect { font: 600 11px var(--sans); text-transform: uppercase; letter-spacing: .7px; color: var(--faint); margin: 22px 0 8px; }
+.item.hover { background: color-mix(in srgb, var(--warn) 14%, transparent); }
 .card.hover { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 9%, var(--code-bg)); }
 .mg { display: block; overflow: visible; }
 .mg-h { display: flex; justify-content: space-between; color: var(--faint); font-size: 10.5px; padding: 0 20px; }
@@ -285,7 +286,31 @@ function status(d) {
 
 // ---------- syntax highlighting with clickable references ----------
 const KW = new Set('type effect fn test let if else match handle with mock where requires ensures true false is assert'.split(' '));
-function highlight(src, names) {
+// Code says `Queue`; definitions are known by qualified name (`core.Queue`).
+// Resolve a name as the definition's module sees it: its own module first,
+// then public definitions of the modules it imports.
+let refIdx = null, refIdxData = null;
+function resolver(mod) {
+  if (refIdxData !== S.data) {
+    refIdx = new Map(); refIdxData = S.data;
+    for (const d of S.data.decls) {
+      if (d.kind === 'impl' || d.kind === 'use' || d.kind === 'test') continue;
+      const short = d.module ? d.name.slice(d.module.length + 1) : d.name;
+      if (!refIdx.has(short)) refIdx.set(short, []);
+      refIdx.get(short).push(d);
+    }
+  }
+  // modules this one imports with `use`
+  const imports = new Set(S.data.decls.filter(d => d.kind === 'use' && d.module === mod).map(d => d.label.replace(/^use /, '')));
+  return id => {
+    const ds = refIdx.get(id);
+    if (!ds) return null;
+    const d = ds.find(d => d.module === mod) || ds.find(d => d.public && imports.has(d.module));
+    return d ? d.name : null;
+  };
+}
+
+function highlight(src, resolve) {
   const re = /(\/\/\/[^\n]*)|(\/\/[^\n]*)|("(?:[^"\\]|\\.)*")|(\?[A-Za-z_]\w*)|(\b\d+\b)|([A-Za-z_]\w*)/g;
   let out = '', last = 0, m;
   while ((m = re.exec(src))) {
@@ -299,7 +324,11 @@ function highlight(src, names) {
     else if (KW.has(id)) out += `<span class="t-kw">${id}</span>`;
     else {
       const cls = /^[A-Z]/.test(id) ? 't-ty' : '';
-      out += names.has(id) ? `<a class="ref ${cls}" data-go="${esc(id)}">${id}</a>` : (cls ? `<span class="${cls}">${id}</span>` : id);
+      // a lowercase name is a function only where it is called; elsewhere it
+      // may be a parameter or local that shadows one (`policy`)
+      const called = /^\s*[([]/.test(src.slice(re.lastIndex, re.lastIndex + 3));
+      const target = cls || called ? resolve(id) : null;
+      out += target ? `<a class="ref ${cls}" data-go="${esc(target)}">${id}</a>` : (cls ? `<span class="${cls}">${id}</span>` : id);
     }
   }
   return out + esc(src.slice(last));
@@ -692,7 +721,8 @@ function sectionsFor(sel) {
 // A definition shows its interface; where the full text differs (a body), an
 // inline control shows or hides it. The selected definition starts open.
 const isOpen = d => d.has_body && (S.open[d.name] ?? (S.allOpen || d.name === S.sel));
-function card(d, names) {
+function card(d) {
+  const names = resolver(d.module);
   const [cls, txt] = status(d);
   const n = esc(d.name), open = isOpen(d);
   const meta = `<span class="meta">${d.module ? `<span>${esc(d.module)}</span>` : ''}${txt ? `<span class="${cls === 'none' ? '' : cls}">${esc(txt)}</span>` : ''}${open ? `<a class="tog" data-toggle="${n}" title="Show the interface only">hide body ▾</a>` : ''}</span>`;
@@ -712,15 +742,14 @@ function card(d, names) {
 }
 
 function renderCode() {
-  const names = new Set(S.data.decls.map(d => d.name));
   const by = byName();
   let body;
   if (S.sel && by[S.sel] && S.scope !== 'all') {
     body = sectionsFor(S.sel).map(([title, ns]) =>
-      (title ? `<h2 class="sect">${title} <span class="muted">${ns.length}</span></h2>` : '') + `<div class="cgroup">${ns.map(n => card(by[n], names)).join('')}</div>`).join('');
+      (title ? `<h2 class="sect">${title} <span class="muted">${ns.length}</span></h2>` : '') + `<div class="cgroup">${ns.map(n => card(by[n])).join('')}</div>`).join('');
   } else {
     const vs = visible();
-    body = vs.length ? `<div class="cgroup">${vs.map(d => card(d, names)).join('')}</div>` : '<div class="empty">Nothing matches.</div>';
+    body = vs.length ? `<div class="cgroup">${vs.map(d => card(d)).join('')}</div>` : '<div class="empty">Nothing matches.</div>';
   }
   const all = `<button class="plain" data-all="${S.allOpen ? 0 : 1}" title="Keys: 1 collapse all, 2 expand all">${S.allOpen ? 'collapse all' : 'expand all'}</button>`;
   const scope = S.sel ? `<div class="seg"><button data-s="slice" class="${S.scope !== 'all' ? 'on' : ''}">Around ${esc(by[S.sel]?.label || '')}</button><button data-s="all" class="${S.scope === 'all' ? 'on' : ''}">Everything</button></div>` : '<span>Select a definition to see it with what it uses and what uses it.</span>';
@@ -758,7 +787,6 @@ function verdictBox(v) {
 
 function renderRight() {
   const d = S.sel && byName()[S.sel];
-  const names = new Set(S.data.decls.map(x => x.name));
   let insp = '<div class="sec"><div class="empty">Select a definition to see it here. Keys: c code, t type map, 1 collapse all, 2 expand all, / filter, Esc clears.</div></div>';
   if (d) {
     const history = S.data.log.map((e, i) => ({ e, i, c: (e.changes || []).find(c => c.name === d.name) })).filter(x => x.c).reverse();
@@ -788,16 +816,18 @@ function renderRight() {
 // ---------- hover: an arrow from a name to where it is in the code view ----------
 function clearArrow() {
   $('#arrow').innerHTML = '';
-  document.querySelectorAll('.card.hover').forEach(c => c.classList.remove('hover'));
+  document.querySelectorAll('.card.hover, .item.hover').forEach(c => c.classList.remove('hover'));
 }
 function showArrow(fromEl, name) {
   clearArrow();
-  const target = document.getElementById('card-' + name);
+  // the definition's code item if it is in the view, else its sidebar entry
+  const target = document.getElementById('card-' + name) || document.querySelector(`#left .item[data-go="${CSS.escape(name)}"]`);
   if (!target || target.contains(fromEl)) return;
   target.classList.add('hover');
-  const a = fromEl.getBoundingClientRect(), main = $('#main').getBoundingClientRect();
-  const r = target.getBoundingClientRect(), h = { left: r.left, top: r.top, height: 30 };
-  // aim at the item's first line, clamped to the visible part of the code area
+  const side = !target.classList.contains('card');
+  const a = fromEl.getBoundingClientRect(), main = (side ? $('#left') : $('#main')).getBoundingClientRect();
+  const r = target.getBoundingClientRect(), h = { left: side ? r.right - 8 : r.left, top: r.top, height: side ? r.height : 30 };
+  // aim at the item's first line, clamped to the visible part of its panel
   const tx = h.left + 6, ty = Math.min(Math.max(h.top + h.height / 2, main.top + 8), main.bottom - 8);
   const offscreen = h.top < main.top || h.top > main.bottom;
   const sx = a.left < tx ? a.right : a.left, sy = a.top + a.height / 2;
