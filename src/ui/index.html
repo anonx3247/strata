@@ -84,6 +84,8 @@ a.tog:hover { color: var(--accent); background: var(--accent-soft); }
 a.tog .br { font-family: var(--mono); font-size: 12.5px; }
 .toolbar button.plain { font: inherit; font-size: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 7px; padding: 3px 9px; cursor: pointer; }
 .toolbar button.plain:hover { color: var(--text); }
+.navb button { font-size: 13px; padding: 2px 9px; }
+.navb button:disabled { color: var(--faint); opacity: .5; cursor: default; }
 .doc code { font-family: var(--mono); font-size: 11.5px; color: var(--text); }
 .badge { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
 .badge.ok { color: var(--ok); } .badge.warn { color: var(--warn); } .badge.bad { color: var(--bad); } .badge.muted { color: var(--faint); }
@@ -410,10 +412,35 @@ function visible() {
   return set;
 }
 
-function select(name, scroll = true) {
+// Navigation history: every definition you go to, so ← → step back and forth.
+const NAV = { stack: [], pos: -1 };
+function navPush(name) {
+  if (NAV.stack[NAV.pos] === name) return;
+  NAV.stack = NAV.stack.slice(0, NAV.pos + 1);
+  NAV.stack.push(name);
+  NAV.pos = NAV.stack.length - 1;
+}
+function navGo(d) {
+  const p = NAV.pos + d;
+  if (p < 0 || p >= NAV.stack.length) return;
+  NAV.pos = p;
+  const name = NAV.stack[p];
+  if (name && S.scope === 'all') S.scope = 'slice';
+  if (!name) S.scope = 'all';
+  select(name, true, false);
+  $('#main').scrollTop = 0;
+}
+function navButtons() {
+  const lbl = n => n ? (byName()[n]?.label || n) : 'everything';
+  const back = NAV.stack[NAV.pos - 1], fwd = NAV.stack[NAV.pos + 1];
+  return `<div class="seg navb"><button data-nav="-1" ${NAV.pos > 0 ? '' : 'disabled'} title="${NAV.pos > 0 ? 'back to ' + esc(lbl(back)) + ' (←)' : 'back (←)'}">←</button><button data-nav="1" ${NAV.pos < NAV.stack.length - 1 ? '' : 'disabled'} title="${NAV.pos < NAV.stack.length - 1 ? 'forward to ' + esc(lbl(fwd)) + ' (→)' : 'forward (→)'}">→</button></div>`;
+}
+
+function select(name, scroll = true, record = true) {
   S.sel = name;
+  if (record) navPush(name);
   render();
-  if (scroll) {
+  if (scroll && name) {
     const el = document.getElementById('card-' + CSS.escape(name));
     el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
@@ -815,7 +842,7 @@ function renderCode() {
   }
   const all = `<button class="plain" data-all="${S.allOpen ? 0 : 1}" title="Keys: 1 collapse all, 2 expand all">${S.allOpen ? 'collapse all' : 'expand all'}</button>`;
   const scope = S.sel ? `<div class="seg"><button data-s="slice" class="${S.scope !== 'all' ? 'on' : ''}">Around ${esc(by[S.sel]?.label || '')}</button><button data-s="all" class="${S.scope === 'all' ? 'on' : ''}">Everything</button></div>` : '<span>Select a definition to see it with what it uses and what uses it.</span>';
-  $('#main').innerHTML = `<div id="code"><div class="toolbar">${scope}${all}<span>hover a name to see where it is · click to go there</span></div>${body}</div>`;
+  $('#main').innerHTML = `<div id="code"><div class="toolbar">${navButtons()}${scope}${all}<span>hover a name to see where it is · click to go there</span></div>${body}</div>`;
 }
 
 // ---------- inspector: description, neighbours, status, history ----------
@@ -945,7 +972,13 @@ function chCard(it) {
 function renderChanges() {
   const d = CH.data;
   if (!d) { $('#main').innerHTML = '<div id="changes"><div class="empty">Loading changes…</div></div>'; loadChanges(); return; }
-  if (d.error) { $('#main').innerHTML = `<div id="changes"><div class="empty">${esc(d.error)}</div></div>`; return; }
+  if (d.error) {
+    // keep a way out: the base can be changed from here
+    const way = CH.base || CH.from != null || CH.step != null ? `<div style="margin-top:10px"><a class="lnk" data-chreset="1">back to the default range</a></div>` : '';
+    const base = CH.base ? `<div class="ch-range"><span>Comparing</span><input id="ch-base" size="14" value="${esc(CH.base)}"><span>with the working tree</span></div>` : '';
+    $('#main').innerHTML = `<div id="changes">${base}<div class="box warn">${esc(d.error)}</div>${way}</div>`;
+    return;
+  }
   const o = d.options || {};
   // the range: which patches, or which git base
   const range = d.range.kind === 'log'
@@ -1044,6 +1077,7 @@ function syncHash() {
   if (h.has('base')) CH.base = h.get('base');
   if (h.has('change')) CH.sel = h.get('change');
   if (h.has('sel')) S.sel = h.get('sel');
+  navPush(S.sel || null);
   if (h.has('scope')) S.scope = h.get('scope');
 })();
 
@@ -1086,15 +1120,18 @@ async function poll() {
 
 // ---------- events ----------
 document.addEventListener('click', e => {
-  const c = e.target.closest('[data-chstep],[data-chpick],[data-fold],[data-gocode],[data-base]');
+  const c = e.target.closest('[data-chstep],[data-chpick],[data-fold],[data-gocode],[data-base],[data-chreset]');
   if (c) {
     e.preventDefault();
+    if (c.dataset.chreset) { CH.base = null; CH.from = null; CH.step = null; syncHash(); loadChanges(true); return; }
     if (c.dataset.chstep) { CH.step = c.dataset.chstep === 'all' || (c.classList.contains('patch') && CH.step === +c.dataset.chstep) ? null : +c.dataset.chstep; CH.open.clear(); syncHash(); loadChanges(true); $('#main').scrollTop = 0; return; }
     if (c.dataset.fold) { CH.open.add(c.dataset.fold); render(); return; }
     if (c.dataset.base) { CH.base = c.dataset.base; CH.step = null; loadChanges(true); return; }
     if (c.dataset.gocode) { S.level = 1; S.scope = 'slice'; select(c.dataset.gocode); return; }
     if (c.dataset.chpick) { CH.sel = c.dataset.chpick; render(); document.getElementById('ch-' + CSS.escape(CH.sel))?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); return; }
   }
+  const nb = e.target.closest('[data-nav]');
+  if (nb) { if (!nb.disabled) navGo(+nb.dataset.nav); return; }
   const t = e.target.closest('[data-toggle],[data-all],[data-go],[data-pick],[data-l],[data-s],[data-mod]');
   if (!t) return;
   if (t.dataset.toggle) { const d = byName()[t.dataset.toggle]; if (d) { S.open[d.name] = !isOpen(d); render(); } return; }
@@ -1121,7 +1158,10 @@ document.addEventListener('keydown', e => {
     CH.step = j >= 0 && j < ids.length ? ids[j] : null; CH.open.clear(); syncHash(); loadChanges(true);
   }
   else if (e.key === '/') { e.preventDefault(); $('#q').focus(); }
-  else if (e.key === 'Escape') { S.sel = null; S.scope = 'all'; render(); }
+  else if (e.key === 'Escape') { S.sel = null; S.scope = 'all'; navPush(null); render(); }
+  else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && S.level !== 'changes' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    e.preventDefault(); navGo(e.key === 'ArrowLeft' ? -1 : 1);
+  }
 });
 // never fail silently: show viewer errors in the banner
 window.addEventListener('error', e => { $('#banner').innerHTML = `<div class="err">viewer error: ${esc(e.message)} (line ${e.lineno})</div>`; });

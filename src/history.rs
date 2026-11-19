@@ -135,15 +135,22 @@ pub fn git_range(path: &Path, base: Option<&str>) -> Result<Range, String> {
     git(&dir, &["rev-parse", "--show-toplevel"]).map_err(|_| format!("{} is not in a git repository, so there is nothing to compare it with", path.display()))?;
     let base = base.unwrap_or("HEAD");
     let base_sha = git(&dir, &["rev-parse", "--short", base])?.trim().to_string();
-    let base_prog = sources_at(path, base)?;
+    let base_prog = sources_at(path, base).map_err(|e| format!("the sources at `{base}` don't parse with this version of strata ({e}), so there is nothing to compare with; pick another base"))?;
     let mut steps = Vec::new();
     let mut prev = base_prog.clone();
     let commits = git(&dir, &["log", "--reverse", "--format=%h%x09%ct%x09%s", &format!("{base}..HEAD"), "--", "."])?;
-    for (i, l) in commits.lines().enumerate() {
+    // a commit whose sources don't parse is folded into the next one that does
+    let mut skipped: Vec<String> = Vec::new();
+    for l in commits.lines() {
         let mut parts = l.splitn(3, '\t');
         let (sha, when, subject) = (parts.next().unwrap_or(""), parts.next().and_then(|t| t.parse().ok()), parts.next().unwrap_or(""));
-        let after = sources_at(path, sha)?;
-        steps.push(Step { id: i + 1, title: subject.to_string(), group: sha.to_string(), when, before: prev.clone(), after: after.clone(), renames: vec![] });
+        let Ok(after) = sources_at(path, sha) else {
+            skipped.push(sha.to_string());
+            continue;
+        };
+        let title = if skipped.is_empty() { subject.to_string() } else { format!("{subject} (with {}, which doesn't parse)", skipped.join(", ")) };
+        skipped.clear();
+        steps.push(Step { id: steps.len() + 1, title, group: sha.to_string(), when, before: prev.clone(), after: after.clone(), renames: vec![] });
         prev = after;
     }
     let head = crate::read_sources(&path.to_string_lossy(), None)?;
