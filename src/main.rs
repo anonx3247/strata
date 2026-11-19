@@ -374,7 +374,10 @@ fn run() -> Result<bool, String> {
                     for c in &m.conflicts {
                         eprintln!("strata: {path}: conflict in {c}");
                     }
-                    if ok {
+                    // under `strata sync`, the check waits until every file is merged and the
+                    // logged renames are followed: while git merges, the other files are still ours
+                    let in_sync = std::env::var_os("STRATA_MERGE_BASE").is_some();
+                    if ok && !in_sync {
                         match merge::new_errors(path, &m.text, &ours, &theirs) {
                             Ok(errs) if !errs.is_empty() => {
                                 ok = false;
@@ -433,11 +436,15 @@ fn run() -> Result<bool, String> {
             }
             let exe = std::env::current_exe().map_err(|e| e.to_string())?;
             let attrs = git_out(&["rev-parse", "--git-path", "strata-sync-attributes"])?.trim().to_string();
-            std::fs::write(&attrs, "*.strata merge=strata\n").map_err(|e| format!("{attrs}: {e}"))?;
+            std::fs::write(&attrs, "*.strata merge=strata\nstrata.log merge=union\n").map_err(|e| format!("{attrs}: {e}"))?;
+            let base = git_out(&["merge-base", "HEAD", &target])?.trim().to_string();
             let status = Command::new("git")
                 .args(["-c", "merge.strata.name=strata", "-c"])
                 .arg(format!("merge.strata.driver='{}' merge-file %O %A %B %P", exe.display()))
                 .args(["-c", &format!("core.attributesFile={attrs}"), "merge", "--no-ff", "--no-commit", &target])
+                // the driver reads the renames both sides logged since the merge base
+                .env("STRATA_MERGE_BASE", &base)
+                .env("STRATA_MERGE_THEIRS", &target)
                 .status()
                 .map_err(|e| format!("git: {e}"));
             let _ = std::fs::remove_file(&attrs);
@@ -450,6 +457,11 @@ fn run() -> Result<bool, String> {
                 }
                 eprintln!("resolve them, run `strata ci`, then `git commit` (or `git merge --abort`)");
                 return Ok(false);
+            }
+            // a rename on one side reaches the other side's new calls, in any file
+            let top = std::path::PathBuf::from(git_out(&["rev-parse", "--show-toplevel"])?.trim());
+            for note in merge::follow_renames(&top, &base, &target)? {
+                println!("{note}");
             }
             if !ci(false)? {
                 eprintln!("\nthe merge with {target} doesn't check, so it is staged but not committed:");

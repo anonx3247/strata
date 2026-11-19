@@ -13,6 +13,7 @@
 use crate::ast::{Decl, DeclKind, Program};
 use crate::{package, parser, printer, resolve};
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::Command;
 
 pub struct Merged {
@@ -263,4 +264,101 @@ pub fn new_errors(path: &str, merged: &str, ours: &str, theirs: &str) -> Result<
     let Some(mine) = errors(merged) else { return Err("the merged file doesn't parse".into()) };
     let known: Vec<String> = errors(ours).unwrap_or_default().into_iter().chain(errors(theirs).unwrap_or_default()).collect();
     Ok(mine.into_iter().filter(|e| !known.contains(e)).collect())
+}
+
+/// The references a merge left to a name that one side renamed: with the
+/// renamed definition back under its old name, `resolve::rename` finds every
+/// reference to it (including the other side's new ones) and renames them.
+/// `None` when there is nothing to follow.
+pub fn follow_rename(p: &Program, from: &str, to: &str) -> Option<Program> {
+    if p.decls.iter().any(|d| d.qname() == from) {
+        return None; // the old name is defined again (the other side kept or re-added it)
+    }
+    let i = p.decls.iter().position(|d| d.qname() == to)?;
+    let mut back = p.clone();
+    crate::store::set_name(&mut back.decls[i], short(from));
+    // `use` lists that name the new name (the renaming side's, kept by the
+    // merge) name the old one again, so the other side's bare references resolve
+    let module = to.rsplit_once('.').map(|(m, _)| m).unwrap_or("");
+    for d in &mut back.decls {
+        if let DeclKind::Use(u) = &mut d.kind {
+            if u.path == module {
+                for item in u.items.iter_mut().flatten() {
+                    if item == short(to) {
+                        *item = short(from).to_string();
+                    }
+                }
+            }
+        }
+    }
+    let r = resolve::follow(p, &back, from, short(to)).ok()?;
+    let changed = r.decls.iter().zip(&p.decls).any(|(a, b)| canon(a) != canon(b));
+    changed.then_some(r)
+}
+
+/// The renames each side of a merge recorded in a package's log since
+/// `base`: (from, to, "ours" | "theirs"). `log` is the log's path from the
+/// repository's top.
+pub fn logged_renames(top: &Path, log: &str, base: &str, theirs: &str) -> Vec<(String, String, &'static str)> {
+    let show = |rev: &str| -> Vec<serde_json::Value> {
+        Command::new("git")
+            .arg("-C")
+            .arg(top)
+            .args(["show", &format!("{rev}:{log}")])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| crate::store::parse_log(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or_default()
+    };
+    let known: std::collections::HashSet<String> = show(base).iter().filter_map(|e| e["id"].as_str().map(|s| s.to_string())).collect();
+    let mut out = Vec::new();
+    for (rev, side) in [("HEAD", "ours"), (theirs, "theirs")] {
+        for e in show(rev) {
+            if e["id"].as_str().is_some_and(|id| known.contains(id)) {
+                continue;
+            }
+            if let (Some(f), Some(t)) = (e["rename"]["from"].as_str(), e["rename"]["to"].as_str()) {
+                out.push((f.to_string(), t.to_string(), side));
+            }
+        }
+    }
+    out
+}
+
+/// The package log's path from the repository's top, for a package folder.
+fn log_rel(top: &Path, dir: &Path) -> String {
+    let top = std::fs::canonicalize(top).unwrap_or(top.to_path_buf());
+    let dir = std::fs::canonicalize(dir).unwrap_or(dir.to_path_buf());
+    dir.strip_prefix(&top).unwrap_or(&dir).join(crate::store::LOG).to_string_lossy().replace('\\', "/")
+}
+
+/// After a merge: renames recorded in either side's log since `base` are
+/// applied to every package in the working tree, so the other side's new
+/// references, in any file, follow them. Each package that changed gets a
+/// log entry and is staged. Returns what was done, one line each.
+pub fn follow_renames(top: &Path, base: &str, theirs: &str) -> Result<Vec<String>, String> {
+    let mut notes = Vec::new();
+    let (packages, _) = package::discover(top)?;
+    for dir in packages {
+        let renames = logged_renames(top, &log_rel(top, &dir), base, theirs);
+        if renames.is_empty() {
+            continue;
+        }
+        let mut cb = crate::store::Codebase::open(&dir)?;
+        for (from, to, side) in renames {
+            let Some(next) = follow_rename(&cb.program, &from, &to) else { continue };
+            let before: HashMap<String, String> = cb.program.decls.iter().map(|d| (d.qname(), canon(d))).collect();
+            let updated: Vec<String> = next.decls.iter().filter(|d| before.get(&d.qname()).is_some_and(|t| *t != canon(d))).map(|d| d.qname()).collect();
+            let other = if side == "ours" { "theirs" } else { "ours" };
+            let msg = format!("merge: {other} code follows the rename {from} → {to}");
+            cb.commit_with(next, &msg, serde_json::json!({"follows": {"from": from, "to": to, "references": updated}}))?;
+            notes.push(format!("{msg} ({})", updated.join(", ")));
+        }
+        let o = Command::new("git").arg("-C").arg(top).args(["add", "--"]).arg(&dir).output().map_err(|e| format!("git add: {e}"))?;
+        if !o.status.success() {
+            return Err(format!("git add {}: {}", dir.display(), String::from_utf8_lossy(&o.stderr).trim()));
+        }
+    }
+    Ok(notes)
 }

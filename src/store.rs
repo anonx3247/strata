@@ -335,6 +335,10 @@ impl Codebase {
         }
         let text = crate::package::template(root);
         fs::write(&toml, &text).map_err(|e| e.to_string())?;
+        // there from the start, so `git add` picks it up with the package
+        if !root.join(LOG).exists() {
+            fs::write(root.join(LOG), "").map_err(|e| e.to_string())?;
+        }
         Ok(text)
     }
 

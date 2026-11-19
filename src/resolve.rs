@@ -81,6 +81,35 @@ pub fn rename(p: &Program, old: &str, new: &str) -> Result<Program, String> {
     Ok(program)
 }
 
+/// After a merge: `merged` has the renamed definition (`new`) but also
+/// references to its old name `old`. `back` is `merged` with that definition
+/// under its old name again. Rename the references to `old` in `back`, and
+/// check, definition by definition, that what changed resolves as before
+/// (with `old` now `new`) and everything else as in `merged`.
+pub fn follow(merged: &Program, back: &Program, old: &str, new: &str) -> Result<Program, String> {
+    let out = run(back, Some((old.to_string(), new.to_string())));
+    let mut program = out.program;
+    for (r, d) in program.decls.iter_mut().zip(&back.decls) {
+        r.module = d.module.clone();
+    }
+    let module = old.rsplit_once('.').map(|(m, _)| m).unwrap_or("");
+    let new_q = if module.is_empty() { new.to_string() } else { format!("{module}.{new}") };
+    let each = |p: &Program| resolve(p).program.decls.iter().map(|d| serde_json::to_string(d).unwrap()).collect::<Vec<_>>();
+    let (rm, rb, ra) = (each(merged), each(back), each(&program));
+    for (i, d) in program.decls.iter().enumerate() {
+        if matches!(d.kind, DeclKind::Use(_)) {
+            continue;
+        }
+        // the renamed definition, and what the rename didn't touch, are as merged
+        let touched = program.decls[i] != back.decls[i] && back.decls[i].qname() != old;
+        let expect = if touched { rb[i].replace(&format!("\"{old}\""), &format!("\"{new_q}\"")) } else { rm[i].clone() };
+        if ra[i] != expect {
+            return Err(format!("following the rename of `{old}` to `{new}` would change what `{}` refers to", d.qname()));
+        }
+    }
+    Ok(program)
+}
+
 fn run(p: &Program, rename: Option<(String, String)>) -> Resolution {
     let mut table: HashMap<String, Item> = HashMap::new();
     // children of a type (its constructors) or a trait (its methods), as (short, qualified)

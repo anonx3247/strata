@@ -1296,3 +1296,62 @@ fn the_log_is_committed_and_splits_git_diffs_into_steps() {
     let attrs = std::fs::read_to_string(format!("{}/.gitattributes", env!("CARGO_MANIFEST_DIR"))).unwrap();
     assert!(attrs.lines().any(|l| l.starts_with("strata.log") && l.contains("merge=union")), "{attrs}");
 }
+
+#[test]
+fn sync_carries_logged_renames_into_the_other_sides_files() {
+    let d = tmp("follow");
+    git(&d, &["init", "-q", "-b", "main"]);
+    std::fs::write(d.join("a.strata"), "pub fn area(w: Int, h: Int) -> Int {\n  w * h\n}\n").unwrap();
+    std::fs::write(d.join("b.strata"), "use a.area\n\nfn square(s: Int) -> Int {\n  area(s, s)\n}\n").unwrap();
+    assert!(strata(&["init"], &d, None).0);
+    git(&d, &["add", "."]);
+    git(&d, &["commit", "-q", "-m", "base"]);
+
+    // feature renames `area`; main adds a new file that calls it by its old name
+    git(&d, &["checkout", "-q", "-b", "feature"]);
+    assert!(strata(&["rename", "area", "rect_area"], &d, None).0);
+    git(&d, &["commit", "-q", "-am", "rename area"]);
+    git(&d, &["checkout", "-q", "main"]);
+    std::fs::write(d.join("c.strata"), "use a.area\n\nfn cube(s: Int) -> Int {\n  area(s, s) * s\n}\n").unwrap();
+    git(&d, &["add", "."]);
+    git(&d, &["commit", "-q", "-m", "cubes"]);
+    git(&d, &["checkout", "-q", "feature"]);
+
+    let (ok, out) = strata_git(&["sync", "main"], &d);
+    assert!(ok && out.contains("merged main"), "{out}");
+    assert!(out.contains("merge: theirs code follows the rename a.area → a.rect_area (c.use a, c.cube)"), "{out}");
+    let c = std::fs::read_to_string(d.join("c.strata")).unwrap();
+    assert_eq!(c, "use a.rect_area\n\nfn cube(s: Int) -> Int {\n  rect_area(s, s) * s\n}\n");
+    // the fix is logged, and part of the merge commit
+    let log = std::fs::read_to_string(d.join("strata.log")).unwrap();
+    assert!(log.contains("\"follows\""), "{log}");
+    assert!(git(&d, &["status", "--porcelain"]).trim().is_empty(), "everything committed");
+    assert!(git(&d, &["log", "-1", "--format=%p"]).split_whitespace().count() == 2, "a merge commit");
+
+    // the other way round: main renames, feature's new call follows
+    git(&d, &["checkout", "-q", "main"]);
+    git(&d, &["merge", "-q", "feature"]);
+    assert!(strata(&["rename", "rect_area", "surface"], &d, None).0);
+    git(&d, &["commit", "-q", "-am", "rename rect_area"]);
+    git(&d, &["checkout", "-q", "feature"]);
+    std::fs::write(d.join("b.strata"), std::fs::read_to_string(d.join("b.strata")).unwrap() + "\nfn twice(s: Int) -> Int {\n  rect_area(s, s) * 2\n}\n").unwrap();
+    git(&d, &["commit", "-q", "-am", "twice"]);
+    let (ok, out) = strata_git(&["sync", "main"], &d);
+    assert!(ok && out.contains("merged main"), "{out}");
+    let b = std::fs::read_to_string(d.join("b.strata")).unwrap();
+    assert!(b.contains("surface(s, s) * 2") && !b.contains("rect_area"), "{b}");
+
+    // a rename the other side's code can't follow (a local would capture the new name) is left alone
+    git(&d, &["checkout", "-q", "main"]);
+    git(&d, &["merge", "-q", "feature"]);
+    assert!(strata(&["rename", "surface", "extent"], &d, None).0);
+    git(&d, &["commit", "-q", "-am", "rename surface"]);
+    git(&d, &["checkout", "-q", "feature"]);
+    std::fs::write(d.join("b.strata"), b.clone() + "\nfn padded(s: Int) -> Int {\n  let extent = 2\n  surface(s, s) + extent\n}\n").unwrap();
+    git(&d, &["commit", "-q", "-am", "padded"]);
+    let head = git(&d, &["rev-parse", "HEAD"]);
+    let (ok, out) = strata_git(&["sync", "main"], &d);
+    assert!(!ok && out.contains("doesn't check") && out.contains("b.padded"), "{out}");
+    assert!(std::fs::read_to_string(d.join("b.strata")).unwrap().contains("surface(s, s) + extent"), "not captured");
+    assert_eq!(git(&d, &["rev-parse", "HEAD"]), head, "nothing committed");
+}
