@@ -103,6 +103,10 @@ pub struct FnDecl {
     pub requires: Vec<Expr>,
     /// Postconditions; `it` is the return value.
     pub ensures: Vec<Expr>,
+    /// `terminates`: the author asserts the function always finishes, where
+    /// `verify` can't show it. Reported as assumed, never as proven.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub terminates: bool,
     pub body: Expr,
 }
 

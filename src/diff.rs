@@ -536,13 +536,21 @@ fn substitute(text: &str, renames: &[(String, String)]) -> String {
 }
 
 fn verdict_word(v: Option<&Verdict>) -> String {
-    match v {
+    // "terminates → may not terminate" is a change worth showing
+    let t = match v.and_then(|v| v.termination()) {
+        Some(crate::termination::Termination::Unknown { .. }) => ", may not terminate",
+        Some(crate::termination::Termination::Assumed { .. }) => ", terminates (assumed)",
+        _ => "",
+    };
+    let w: String = match v {
+        Some(Verdict::Proven { .. }) => "proven".into(),
         Some(Verdict::Fuzzed { cases, .. }) => format!("fuzzed {cases}"),
         Some(Verdict::Counterexample { .. }) => "counterexample".into(),
         Some(Verdict::Incomplete { .. }) => "incomplete".into(),
         Some(Verdict::Skipped { .. }) => "not checkable".into(),
         None => "unverified".into(),
-    }
+    };
+    w + t
 }
 
 fn section(kind: &str, mk: &str, interface_changed: bool) -> &'static str {

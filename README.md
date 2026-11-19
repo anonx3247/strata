@@ -9,8 +9,8 @@ An experimental programming language designed for working with agents.
 - **Capabilities are values.** A database, clock or console is a trait (`trait Db { ... }`). Code that needs one takes it as a parameter or carries it in a field, so the signature shows what the code can touch. A test passes a fake implementation, or `mock Db`, which answers with generated values that satisfy the trait's contracts.
 - **Everything is JSON.** Every value serializes to JSON automatically. JSON inputs are parsed against the types, with every refinement validated and errors pointing at the exact path.
 
-> Status: **first experimental draft** (~4.3k lines of Rust). Contracts are checked at runtime and by
-> property-based fuzzing, not yet *proven*. See [the roadmap](#roadmap).
+> Status: **first experimental draft**. Contracts are proven by an SMT solver (Z3) where it can, and
+> what it can't prove is fuzzed. See [Verification](#verification) and [the roadmap](#roadmap).
 
 ## Try it
 
@@ -109,11 +109,17 @@ $ strata holes
   context: o: Order
   must:    ensures it >= 0
 
-$ strata verify                              # fuzz every contract with generated inputs (and mocks of traits)
-✓ ship                     200 cases, 0 discarded by `requires`
-✗ refund                   Refinement violation
-    input:   [{"Shipped":{"id":"ord_1t6kdl","lines":[{"sku":"vbehwh","qty":993,"unit_price":0}],"tracking":"27c7p"}}]
-    result of `refund`: -500 does not satisfy `Cents` (where it >= 0) (stack: refund)
+$ strata verify                              # prove every contract with Z3; fuzz what it can't prove
+✓ line_total               proven (2 checks)
+✓ total                    proven (3 checks)
+✓ discount                 proven (2 checks)
+✓ ship                     proven (5 checks)
+○ refund                   incomplete: reached unfilled hole `?refund_policy` (via refund)
+
+$ strata verify bump                         # fn bump(q: Quantity) -> Quantity { q + 1 }
+✗ bump                     Refinement violation (found by the solver)
+    input:   [99]
+    result of `bump`: 100 does not satisfy `Quantity` (where 1 <= it && it <= 99) (stack: bump)
 
 $ strata edit -m "steeper discount" < discount.strata
 fn     discount                 changed  #fc40aad7… → #2e54e58d…  (implementation only — dependents unaffected)
@@ -346,6 +352,37 @@ Every view is Strata text, so an agent can edit what it sees and send it back wi
 
 Because results are keyed by content, `verify` reruns only what is affected by a change.
 
+## Verification
+
+`strata verify` turns every contract into proof obligations and gives each function one of these results:
+
+- **proven** (`✓`): the SMT solver proved every check. `--checks` lists them.
+- **fuzzed** (`~`): some checks could not be proven, so the function was run on generated inputs and nothing failed. Each unproven check says why, for example *depends on `fold` is not modelled*.
+- **failed** (`✗`): a counterexample. When the solver finds one, it is run in the interpreter first, and reported only if it really fails. Otherwise the fuzzer looks for one.
+- **incomplete** (`○`): the function still has a hole.
+
+The checks are exactly the interpreter's runtime checks: a callee's parameter refinements and `requires`, the refinements of constructed values and assigned fields, annotated `let`s, `assert`, division by zero, and the function's own result type and `ensures`. Calls are checked against the callee's contract, never its body, which is how modules meet. A function passed by name (`lines.map(line_total)`) is checked against one arbitrary element of the list.
+
+How it works (`src/smt.rs`): the body is run symbolically, with values as SMT terms. Records and sums become structures of terms, lists are tracked by their length, branches are merged with `ite`, and a loop forgets the variables it changes. Each check becomes the question "can the negation be true under what is known here?", which is sent to Z3 as SMT-LIB text (`verify --smt` prints the queries). `unsat` means proven; `sat` comes with a model, which becomes the counterexample. Anything not modelled (floats, dicts, sets, list contents, most higher-order builtins) becomes an unknown value. That can only make a proof fail, never make a false proof succeed, and the reason is kept for the report. `Int` is a mathematical integer. `matches(s, "regex")` becomes a regular-expression constraint when the pattern uses only literals, classes, groups, alternation and quantifiers.
+
+**Helpers in contracts.** A contract can use an ordinary function, such as `type Digit = Int where small(it)` with `fn small(n: Int) -> Bool { 0 <= n && n < 10 }`. Inside a contract, a helper that terminates and cannot fail is *seen through*: its body is used, not just its contract. So `fn zero() -> Digit { 0 }` is proven and `fn ten() -> Digit { 10 }` is refuted. A helper that may not terminate is never seen through. Unfolding one would let the solver prove false things. A helper marked `terminates` is seen through, and the proof says it relied on that.
+
+**Termination.** `verify` also says whether each function always finishes:
+
+- **terminates**, when shown automatically:
+  - no recursion, and only `for` loops;
+  - a `while a < b` loop (also `<=`, `>`, `>=`, `!=`) whose bound `b - a` the solver proves goes down on every pass, unless the pass ends the loop;
+  - recursion where some argument is a smaller piece of a parameter, taken apart by a `match` (`[_, ..rest] => 1 + length(rest)`);
+  - recursion on a smaller non-negative integer (`fact(n - 1)`, `fib(n - 2)`, `gcd(b, a % b)`).
+
+  It also needs everything the function calls to terminate.
+- **may not terminate**, with the reason: a `loop`, other recursion, mutual recursion, or a call to such a function. The viewer marks these.
+- **assumed**: the function is marked `terminates` (after its contract, `fn f(x: Int) -> Int terminates { … }`). Its callers say they terminate *if* it does.
+
+**Policies.** `verify --require proven,terminates,no-recursion` fails the run when a checked function is not proven, may not terminate (an explicit `terminates` is accepted), or is recursive.
+
+Z3 is found on the `PATH` (or `STRATA_SOLVER`). Without it, everything is fuzzed. Each query has a resource limit rather than a timeout, so results are deterministic and can be cached by content hash (with the solver version in the key).
+
 ## Packages
 
 A folder with a `strata.toml` is a **package**. Its `.strata` files are its modules, named after their path inside it (`shop/orders.strata` is `shop.orders`). `main.strata` is the root module and the default entry point; a library has none. A folder inside a package that has its own `strata.toml` is a separate package. A `.strata` file outside every package is a standalone script (like `examples/bank.strata`).
@@ -382,7 +419,9 @@ The `.strata` files are what you commit.
 | `src/types.rs` | type inference, traits, exhaustiveness, holes |
 | `src/interp.rs` | interpreter: trait dispatch, mocks, runtime contracts, JSON in/out, traces |
 | `src/generate.rs` | value generators derived from types and refinements (used by mocks and fuzzing) |
-| `src/verify.rs` | compile-time refinement checks on literals; contract fuzzing |
+| `src/smt.rs` | SMT verification: symbolic execution of bodies into proof obligations, Z3 queries, models back to values |
+| `src/termination.rs` | termination: call graph, loop bounds, structural and integer recursion; which helpers contracts may see through |
+| `src/verify.rs` | compile-time refinement checks on literals; the layered check (prove, confirm counterexamples, fuzz the rest); contract fuzzing |
 | `src/store.rs` | content-addressed codebase, dependency graph, patch log |
 | `src/merge.rs` | `strata merge-file`: three-way merge per definition, renames |
 | `src/package.rs` | packages: `strata.toml`, their files, finding packages and scripts |
@@ -391,14 +430,14 @@ The `.strata` files are what you commit.
 
 ## Known limitations of this draft
 
-- **Verification is fuzzing plus runtime checks, not proof.** Next step: an SMT backend (Z3 or cvc5) that proves what it can and tags the rest as `fuzzed` or `runtime-checked`.
+- **Proofs cover integers, strings, records, sums and list lengths.** Loops forget what they change (no invariants yet), list elements are tracked only when the whole list is known to be valid, floats, dicts and sets are not modelled, and trait laws are fuzzed only.
 - Refinements on generic type arguments, such as `Option[Quantity]`, are not checked when values are constructed.
 - Length conditions on a list are only decided as "empty" or "not empty" (`where len(it) == 1` with `where len(it) >= 2` needs a `[]` or `_` arm).
 - **No compilation backend.** It is a tree-walking interpreter.
 
 ## Roadmap
 
-1. **SMT-backed refinements**: obligations proven automatically where possible; counterexamples from the solver.
+1. **SMT verification, continued**: loop invariants (inferred where possible, written where it helps), list contents, trait laws, and an `assumed` result for trusted outside code.
 2. **Traits with laws**: e.g. `trait Monoid { … law assoc(a, b, c): … }`; laws are verified or fuzzed for every implementation.
 3. **Agent-friendly CLI everywhere**: `--json` on every command, trace queries, and scoped workspaces and leases so several agents can work on different slices at once. The CLI *is* the agent API; no server is needed.
 4. **Async and iterators** as language features; `mock record` / `mock replay` for integration tests; deterministic replay debugging.

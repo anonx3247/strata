@@ -9,6 +9,8 @@ mod package;
 mod parser;
 mod printer;
 mod resolve;
+mod smt;
+mod termination;
 mod store;
 mod types;
 mod ui;
@@ -71,8 +73,14 @@ Views:
 Checking:
   check [--json]               types, exhaustiveness, literal refinements
   holes [--json]               typed holes with goal type, context and obligations
-  verify [SELECTOR] [--cases N] [--json]
-                               fuzz every contract; results cached by content hash
+  verify [SELECTOR] [--cases N] [--checks] [--smt] [--require R,..] [--json]
+                               prove every contract with an SMT solver (z3), confirm
+                               its counterexamples by running them, fuzz the rest;
+                               results cached by content hash. --checks lists the
+                               proven checks, --smt prints the solver queries.
+                               Each function also says whether it terminates.
+                               --require (proven, terminates, no-recursion) fails
+                               the run when a checked function falls short
 
 Running:
   run <fn> [JSON-ARGS] [--trace]
@@ -91,7 +99,7 @@ struct Args {
 impl Args {
     fn parse() -> Args {
         let raw: Vec<String> = std::env::args().skip(1).collect();
-        let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed", "--port", "--module", "--split", "--from", "--to", "--step", "--base"];
+        let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed", "--port", "--module", "--split", "--from", "--to", "--step", "--base", "--require"];
         let (mut pos, mut flags) = (Vec::new(), HashMap::<String, Vec<String>>::new());
         let mut i = 0;
         while i < raw.len() {
@@ -638,6 +646,29 @@ fn run() -> Result<bool, String> {
             let mut all_ok = true;
             let mut results = Vec::new();
             let resolved = resolve::resolve(p).program;
+            let solver = smt::solver();
+            let solver_bin = solver.as_ref().map(|s| s.0.as_str());
+            let analysis = termination::analyze(&env, solver_bin);
+            let transparent = &analysis.transparent;
+            let require: Vec<String> = args.val("--require").map(|r| r.split(',').map(|s| s.trim().to_string()).collect()).unwrap_or_default();
+            for r in &require {
+                if !["proven", "terminates", "no-recursion"].contains(&r.as_str()) {
+                    return Err(format!("unknown requirement `{r}` (use proven, terminates, no-recursion)"));
+                }
+            }
+            if args.flag("--smt") {
+                // show the queries instead of running them
+                for d in &resolved.decls {
+                    if let (true, DeclKind::Fn(f)) = (names.contains(&d.qname()), &d.kind) {
+                        for (what, q) in verify::smt_queries(&env, f, transparent) {
+                            println!("; {} — {what}\n{q}", f.name);
+                        }
+                    }
+                }
+                return Ok(true);
+            }
+            // results depend on the solver: it is part of the cache key
+            let skey = solver.as_ref().map(|s| s.1.clone()).unwrap_or("no-solver".into());
             for (orig, d) in p.decls.iter().zip(&resolved.decls) {
                 if !names.contains(&orig.qname()) {
                     continue;
@@ -647,13 +678,17 @@ fn run() -> Result<bool, String> {
                 let mut jobs: Vec<(String, String, Box<dyn Fn() -> verify::Verdict + '_>)> = Vec::new();
                 let base = store::closure_hash(p, &orig.qname());
                 match &d.kind {
-                    DeclKind::Fn(f) => jobs.push((f.name.clone(), format!("{base}:{cases}"), Box::new(move || verify::fuzz_fn(env, f, cases, seed)))),
+                    DeclKind::Fn(f) => jobs.push((f.name.clone(), format!("{base}:{cases}:{skey}"), Box::new(move || verify::check_fn(env, f, None, solver_bin, transparent, cases, seed)))),
                     DeclKind::Impl(imp) => {
                         let Some(tr) = env.traits.get(&imp.trait_name) else { continue };
                         let ty = printer::ty(&imp.for_type);
                         for m in &tr.methods {
                             let mname = m.decl.name.clone();
-                            jobs.push((format!("{ty}.{mname}"), format!("{base}:{mname}:{cases}"), Box::new(move || verify::fuzz_impl_method(env, imp, &mname, cases, seed))));
+                            let decl = imp.methods.iter().find(|x| x.name == mname).or(if m.default { Some(&m.decl) } else { None });
+                            match decl {
+                                Some(decl) => jobs.push((format!("{ty}.{mname}"), format!("{base}:{mname}:{cases}:{skey}"), Box::new(move || verify::check_fn(env, decl, Some(imp), solver_bin, transparent, cases, seed)))),
+                                None => jobs.push((format!("{ty}.{mname}"), format!("{base}:{mname}:{cases}"), Box::new(move || verify::fuzz_impl_method(env, imp, &mname, cases, seed)))),
+                            }
                         }
                         for law in &tr.laws {
                             jobs.push((format!("law {} for {ty}", law.name), format!("{base}:law:{}:{cases}", law.name), Box::new(move || verify::check_law(env, imp, law, cases, seed))));
@@ -665,16 +700,14 @@ fn run() -> Result<bool, String> {
                 for (label, key, job) in jobs {
                     let (verdict, cached) = match cache.get(&key) {
                         Some(v) if !args.flag("--force") => (v.clone(), true),
-                        _ => {
-                            let v = job();
-                            cache.insert(key.clone(), v.clone());
-                            (v, false)
-                        }
+                        _ => (job(), false),
                     };
+                    let verdict = verdict.with_termination(analysis.status.get(&label).cloned());
+                    cache.insert(key.clone(), verdict.clone());
                     if matches!(verdict, verify::Verdict::Counterexample { .. }) {
                         all_ok = false;
                     }
-                    if worst.is_none() || matches!(verdict, verify::Verdict::Counterexample { .. }) {
+                    if worst.as_ref().map_or(true, |w| verdict.rank() > w.rank()) {
                         worst = Some(verdict.clone());
                     }
                     results.push((label, verdict, cached));
@@ -687,6 +720,27 @@ fn run() -> Result<bool, String> {
             if let Source::Db(cb) = &src {
                 cb.save_verdicts(&cache);
             }
+            // the project's policy
+            let mut violations = vec![];
+            for (n, v, _) in &results {
+                if n.starts_with("law ") {
+                    continue;
+                }
+                if require.iter().any(|r| r == "proven") && !matches!(v, verify::Verdict::Proven { .. }) {
+                    violations.push(format!("`{n}` is not proven"));
+                }
+                if require.iter().any(|r| r == "terminates") {
+                    if let Some(termination::Termination::Unknown { .. }) = v.termination() {
+                        violations.push(format!("`{n}` may not terminate"));
+                    }
+                }
+                if require.iter().any(|r| r == "no-recursion") && analysis.recursive.contains(n) {
+                    violations.push(format!("`{n}` is recursive"));
+                }
+            }
+            if !violations.is_empty() {
+                all_ok = false;
+            }
             if json_out {
                 let out: Vec<_> = results.iter().map(|(n, v, c)| json!({"fn": n, "cached": c, "verdict": v})).collect();
                 println!("{}", serde_json::to_string_pretty(&out).unwrap());
@@ -695,16 +749,44 @@ fn run() -> Result<bool, String> {
             for (n, v, cached) in &results {
                 let c = if *cached { " (cached)" } else { "" };
                 match v {
-                    verify::Verdict::Fuzzed { cases, discarded } => {
-                        println!("✓ {n:<24} {cases} cases, {discarded} discarded by `requires`{c}")
+                    verify::Verdict::Proven { checks, .. } => {
+                        match checks.len() {
+                            0 => println!("✓ {n:<24} proven (nothing to check){c}"),
+                            k => println!("✓ {n:<24} proven ({k} check{}){c}", if k == 1 { "" } else { "s" }),
+                        }
+                        if args.flag("--checks") {
+                            for ch in checks {
+                                println!("    proven:  {ch}");
+                            }
+                        }
                     }
-                    verify::Verdict::Counterexample { args, kind, message } => {
-                        println!("✗ {n:<24} {kind} violation{c}\n    input:   {args}");
+                    verify::Verdict::Fuzzed { cases, discarded, proven, unproven, .. } => {
+                        let total = proven + unproven.len();
+                        let p = if total > 0 { format!("; {proven} of {total} checks proven") } else { String::new() };
+                        println!("~ {n:<24} fuzzed: {cases} cases, {discarded} discarded by `requires`{p}{c}");
+                        for u in unproven {
+                            println!("    not proven: {u}");
+                        }
+                    }
+                    verify::Verdict::Counterexample { args, kind, message, found_by, .. } => {
+                        let by = if found_by.is_empty() { String::new() } else { format!(" (found by the {found_by})") };
+                        println!("✗ {n:<24} {kind} violation{by}{c}\n    input:   {args}");
                         println!("    {message}");
                     }
-                    verify::Verdict::Incomplete { message } => println!("○ {n:<24} incomplete: {message}{c}"),
+                    verify::Verdict::Incomplete { message, .. } => println!("○ {n:<24} incomplete: {message}{c}"),
                     verify::Verdict::Skipped { reason } => println!("- {n:<24} skipped: {reason}"),
                 }
+                match v.termination() {
+                    Some(termination::Termination::Unknown { reason }) => println!("    may not terminate: {reason}"),
+                    Some(termination::Termination::Assumed { by }) => {
+                        println!("    terminates if {} does (marked `terminates`, not proven)", by.iter().map(|b| format!("`{b}`")).collect::<Vec<_>>().join(", "))
+                    }
+                    Some(termination::Termination::Proven { how }) if args.flag("--checks") => println!("    terminates: {how}"),
+                    _ => {}
+                }
+            }
+            for v in &violations {
+                println!("policy: {v}");
             }
             return Ok(all_ok);
         }
