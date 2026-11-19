@@ -127,6 +127,17 @@ $ strata run ship '["ord_abc123","TRK1"]' --mock --trace
 {"event":"return","fn":"ship","value":{"Err":"NotPending"},"depth":1}
 ```
 
+## Refinements: named, inline, and structural
+
+Refinements are structural: `type Quantity = Int where 1 <= it && it <= 99` is an `Int` plus a check, not a new nominal type. Any `Int` can be passed where a `Quantity` is expected, with no cast, and the check happens where the value crosses the boundary: at compile time for literals, at runtime otherwise, and under `verify`. A constraint used in one place doesn't need a name at all:
+
+```
+fn pick(level: Int where 5 <= it && it <= 13) -> Positive { level - 4 }
+fn halve(n: Natural) -> Int where it >= 0 && it * 2 <= n { n / 2 }   // results may mention parameters
+```
+
+The prelude provides the common ones: `Natural`, `Positive`, `Negative`, `NonZero`, `Probability`, `Percentage`, `NonEmpty[T]`, `NonEmptyString`. `strata builtins` lists them with every builtin function.
+
 ## Built-in types
 
 | Type | Notes |

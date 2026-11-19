@@ -41,12 +41,9 @@ fn task_of[P, E](r: TaskResult[P, E]) -> Task[P] {
   }
 }
 
-type Positive = Int where it >= 1
-type Retries = Int where it >= 0
-
 /// Standard scheduling policy. The `ge=1` / `ge=0` checks from the Pydantic
-/// model are now types: an invalid policy cannot be constructed.
-type TaskPolicy = { max_workers: Positive, tasks_per_worker: Positive, retries: Retries }
+/// model are the prelude's `Positive` / `Natural`: an invalid policy cannot be constructed.
+type TaskPolicy = { max_workers: Positive, tasks_per_worker: Positive, retries: Natural }
 
 /// Total runs of a task: the first try plus `retries` retries.
 fn max_attempts(p: TaskPolicy) -> Positive
@@ -284,7 +281,7 @@ fn describe[P, E](q: MemQueue[P, E]) -> List[String] {
 
 // ─────────────────────── example task family: print ──────────────────────
 
-type PrintJob = { message: String, fail_times: Retries }
+type PrintJob = { message: String, fail_times: Natural }
 
 type Boom = { reason: String }
 
@@ -358,12 +355,9 @@ type Behaviour =
   | AllSkip
   | DropOne
 
-type SmallId = Int where 0 <= it && it <= 5
-type SmallBatch = Int where 1 <= it && it <= 3
-type SmallRetries = Int where 0 <= it && it <= 2
 
 type Step =
-  | Produce { ids: List[SmallId] }
+  | Produce { ids: List[Int where 0 <= it && it <= 5] }
   | Work { behaviour: Behaviour }
 
 fn scripted(b: Behaviour, attempts: List[TaskAttempt[Int]]) -> List[TaskResult[Int, String]] {
@@ -395,7 +389,7 @@ fn run_steps(policy: TaskPolicy, steps: List[Step]) -> () / {Queue[Int, String]}
   }
 }
 
-fn simulate(per_worker: SmallBatch, retries: SmallRetries, steps: List[Step]) -> List[String] {
+fn simulate(per_worker: Int where 1 <= it && it <= 3, retries: Int where 0 <= it && it <= 2, steps: List[Step]) -> List[String] {
   let policy = TaskPolicy { max_workers: 1, tasks_per_worker: per_worker, retries }
   handle run_steps(policy, steps) with Queue(q = empty_queue(policy)) {
     enqueue(tasks) => mem_enqueue(q, tasks),
@@ -427,7 +421,7 @@ fn statuses(q: MemQueue[Int, String]) -> List[Status] {
   q.entries.map(|e| e.status)
 }
 
-fn policy(per_worker: Positive, retries: Retries) -> TaskPolicy {
+fn policy(per_worker: Positive, retries: Natural) -> TaskPolicy {
   TaskPolicy { max_workers: 1, tasks_per_worker: per_worker, retries }
 }
 

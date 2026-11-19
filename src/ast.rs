@@ -11,6 +11,9 @@ pub enum TypeExpr {
     /// `(A, B) -> C`
     Fn(Vec<TypeExpr>, Box<TypeExpr>),
     Unit,
+    /// Inline refinement: `Int where 5 <= it && it <= 13`. Structural: any
+    /// value of the base type is accepted where the predicate holds.
+    Refined(Box<TypeExpr>, Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -10,6 +10,7 @@ pub fn ty(t: &TypeExpr) -> String {
         TypeExpr::Named(n, args) if args.is_empty() => n.clone(),
         TypeExpr::Named(n, args) => format!("{n}[{}]", args.iter().map(ty).collect::<Vec<_>>().join(", ")),
         TypeExpr::Fn(ps, r) => format!("({}) -> {}", ps.iter().map(ty).collect::<Vec<_>>().join(", "), ty(r)),
+        TypeExpr::Refined(b, p) => format!("{} where {}", ty(b), expr(p, 0)),
     }
 }
 

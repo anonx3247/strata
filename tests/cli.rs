@@ -136,3 +136,19 @@ fn every_example_round_trips_through_render() {
         assert!(ok, "{ex} tests fail after round-trip: {out}");
     }
 }
+
+#[test]
+fn inline_refinements_in_signatures() {
+    let d = tmp("inline");
+    std::fs::write(
+        d.join("i.strata"),
+        "fn pick(level: Int where 5 <= it && it <= 13) -> Positive { level - 4 }\n\
+         fn halve_up(n: Natural) -> Int where it * 2 <= n { (n + 1) / 2 }\n",
+    )
+    .unwrap();
+    let (ok, out) = strata(&["--file", "i.strata", "verify"], &d, None);
+    assert!(!ok && out.contains("✓ pick") && out.contains("does not satisfy `Int where it * 2 <= n`"), "{out}");
+    std::fs::write(d.join("c.strata"), "fn pick(level: Int where 5 <= it && it <= 13) -> Int { level }\nfn caller() -> Int { pick(20) }\n").unwrap();
+    let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
+    assert!(!ok && out.contains("20 does not satisfy `Int where 5 <= it && it <= 13`"), "{out}");
+}

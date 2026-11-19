@@ -206,5 +206,6 @@ pub fn mentions(t: &TypeExpr, out: &mut Vec<String>) {
             mentions(r, out);
         }
         TypeExpr::Unit => {}
+        TypeExpr::Refined(b, _) => mentions(b, out),
     }
 }

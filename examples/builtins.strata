@@ -1,8 +1,7 @@
 // A tour of the built-in types: Int, Float, Bool, String, () (unit, the
 // "nothing" value), List, tuples, Dict, Set, Option and Result.
 
-type Word = String where str_len(it) > 0
-type Ratio = Float where 0.0 <= it && it <= 1.0
+type Word = NonEmptyString
 
 /// Split text on spaces into non-empty words.
 fn words(text: String) -> List[Word] {
@@ -23,15 +22,14 @@ fn frequencies(ws: List[Word]) -> Dict[Word, Int]
 }
 
 /// The `n` most frequent words, most frequent first (ties alphabetical).
-fn top(freq: Dict[Word, Int], n: Int) -> List[(Word, Int)]
-  requires n >= 0
+fn top(freq: Dict[Word, Int], n: Natural) -> List[(Word, Int)]
   ensures len(it) <= n
 {
   take(sort_by(items(freq), |pair| (0 - pair.1, pair.0)), n)
 }
 
 /// Share of words that occur only once.
-fn hapax_ratio(freq: Dict[Word, Int]) -> Ratio {
+fn hapax_ratio(freq: Dict[Word, Int]) -> Probability {
   if len(freq) == 0 {
     0.0
   } else {
@@ -46,7 +44,7 @@ fn mean(xs: List[Float]) -> Option[Float] {
   }
 }
 
-type Stats = { distinct: Int, top: List[(Word, Int)], hapax: Ratio, mean_length: Option[Float] }
+type Stats = { distinct: Natural, top: List[(Word, Positive)], hapax: Probability, mean_length: Option[Float] }
 
 fn stats(text: String) -> Stats {
   let ws = words(text)

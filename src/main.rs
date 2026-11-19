@@ -230,6 +230,11 @@ fn run() -> Result<bool, String> {
                 let out: Vec<_> = types::BUILTINS.iter().map(|(n, ps, s)| json!({"name": n, "type_params": ps, "signature": s})).collect();
                 println!("{}", serde_json::to_string_pretty(&out).unwrap());
             } else {
+                println!("// prelude types\n");
+                for d in parser::parse_program(types::PRELUDE).expect("prelude parses").decls {
+                    println!("{}\n", printer::decl(&d));
+                }
+                println!("// builtin functions\n");
                 for (n, ps, s) in types::BUILTINS {
                     let tp = if ps.is_empty() { String::new() } else { format!("[{ps}]") };
                     println!("{n}{tp}{s}");

@@ -235,6 +235,22 @@ impl<'a> Interp<'a> {
     /// Check a value against a declared type, including every refinement
     /// reachable through it. Returns a description of the violation.
     pub fn check_type(&mut self, t: &TypeExpr, v: &Value) -> R<Option<String>> {
+        self.check_type_in(t, v, &None)
+    }
+
+    /// Like `check_type`, with extra bindings visible to inline refinements
+    /// (a function's parameters, for its result type).
+    pub fn check_type_in(&mut self, t: &TypeExpr, v: &Value, scope: &Scope) -> R<Option<String>> {
+        if let TypeExpr::Refined(b, pred) = t {
+            if let Some(e) = self.check_type(b, v)? {
+                return Ok(Some(e));
+            }
+            let ok = self.pure_eval(pred, &extend(scope, "it", v.clone()))?;
+            if ok != Value::Bool(true) {
+                return Ok(Some(format!("{} does not satisfy `{}`", to_json(v), crate::printer::ty(t))));
+            }
+            return Ok(None);
+        }
         let TypeExpr::Named(n, args) = t else { return Ok(None) };
         if n == "Tuple" {
             if let Value::Tuple(xs) = v {
@@ -356,7 +372,9 @@ impl<'a> Interp<'a> {
             }
         }
         let result = self.eval(&f.body, &scope)?;
-        self.enforce(&f.ret, &result, &format!("result of `{name}`"))?;
+        if let Some(e) = self.check_type_in(&f.ret, &result, &scope)? {
+            return self.fail(FaultKind::Refinement, format!("result of `{name}`: {e}"));
+        }
         if !f.ensures.is_empty() {
             let s2 = extend(&scope, "it", result.clone());
             // contracts are pure: evaluate them without access to handlers
@@ -1088,6 +1106,7 @@ impl<'a> Interp<'a> {
         let bad = |what: &str| Err(format!("{path}: expected {what}, got {j}"));
         match &t {
             TypeExpr::Unit => Ok(Value::Unit),
+            TypeExpr::Refined(b, _) => self.from_json_raw(b, j, path),
             TypeExpr::Fn(..) => bad("a function (not representable in JSON)"),
             TypeExpr::Named(n, args) => match n.as_str() {
                 "Int" => j.as_i64().map(Value::Int).map_or_else(|| bad("an integer"), Ok),

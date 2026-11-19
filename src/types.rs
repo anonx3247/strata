@@ -21,6 +21,24 @@ type Result[T, E] =
 /// What a stateful handler clause answers: the value for the operation,
 /// and the handler's next state.
 type Resume[R, S] = { value: R, state: S }
+
+// Common refinements. They are structural: an `Int` can be passed wherever a
+// `Natural` is expected (checked at the boundary), and a `Positive` is a `Natural`.
+
+/// 0, 1, 2, ...
+type Natural = Int where it >= 0
+/// 1, 2, 3, ...
+type Positive = Int where it > 0
+/// -1, -2, ...
+type Negative = Int where it < 0
+type NonZero = Int where it != 0
+/// A share between 0.0 and 1.0.
+type Probability = Float where 0.0 <= it && it <= 1.0
+type Percentage = Float where 0.0 <= it && it <= 100.0
+/// A list with at least one element.
+type NonEmpty[T] = List[T] where len(it) > 0
+/// A string with at least one character.
+type NonEmptyString = String where len(it) > 0
 "#;
 
 /// Builtin functions and their type schemes.
@@ -150,6 +168,7 @@ impl Env {
         let prelude = crate::parser::parse_program(PRELUDE).expect("prelude parses");
         let mut env = Env { types: HashMap::new(), ctors: HashMap::new(), effects: HashMap::new(), fns: HashMap::new() };
         let mut errs = Vec::new();
+        let prelude_names: Vec<String> = prelude.decls.iter().map(|d| d.name()).collect();
         for d in prelude.decls.iter().chain(prog.decls.iter()) {
             let name = d.name();
             let dup = match &d.kind {
@@ -174,7 +193,12 @@ impl Env {
                 DeclKind::Test(_) => false,
             };
             if dup {
-                errs.push(Diag { decl: name.clone(), msg: format!("`{name}` is defined twice") });
+                let msg = if prelude_names.contains(&name) {
+                    format!("`{name}` is already defined in the prelude (use it, or pick another name)")
+                } else {
+                    format!("`{name}` is defined twice")
+                };
+                errs.push(Diag { decl: name.clone(), msg });
             }
         }
         (env, errs)
@@ -182,6 +206,9 @@ impl Env {
 
     /// Follow refinement aliases to the underlying (unrefined) type expression.
     pub fn expand_alias(&self, t: &TypeExpr) -> TypeExpr {
+        if let TypeExpr::Refined(b, _) = t {
+            return self.expand_alias(b);
+        }
         if let TypeExpr::Named(n, args) = t {
             if let Some(TypeDecl { body: TypeBody::Alias(a), params, .. }) = self.types.get(n) {
                 let sub: HashMap<String, TypeExpr> = params.iter().cloned().zip(args.iter().cloned()).collect();
@@ -226,6 +253,7 @@ pub fn subst_texpr(t: &TypeExpr, sub: &HashMap<String, TypeExpr>) -> TypeExpr {
         TypeExpr::Named(n, args) => TypeExpr::Named(n.clone(), args.iter().map(|a| subst_texpr(a, sub)).collect()),
         TypeExpr::Fn(ps, r) => TypeExpr::Fn(ps.iter().map(|a| subst_texpr(a, sub)).collect(), Box::new(subst_texpr(r, sub))),
         TypeExpr::Unit => TypeExpr::Unit,
+        TypeExpr::Refined(b, p) => TypeExpr::Refined(Box::new(subst_texpr(b, sub)), p.clone()),
     }
 }
 
@@ -321,6 +349,7 @@ impl<'a> Checker<'a> {
     fn lower(&mut self, t: &TypeExpr, vars: &HashMap<String, Ty>) -> Ty {
         match t {
             TypeExpr::Unit => Ty::Unit,
+            TypeExpr::Refined(b, _) => self.lower(b, vars),
             TypeExpr::Fn(ps, r) => Ty::Fn(ps.iter().map(|p| self.lower(p, vars)).collect(), Box::new(self.lower(r, vars))),
             TypeExpr::Named(n, args) => {
                 if let Some(v) = vars.get(n) {
@@ -381,6 +410,27 @@ impl<'a> Checker<'a> {
             args.iter().map(|a| self.lower(a, vars)).collect()
         };
         Some((n.clone(), tys))
+    }
+
+    /// Type-check the predicates of inline refinements inside a written type.
+    fn check_refined(&mut self, t: &TypeExpr) {
+        match t {
+            TypeExpr::Refined(b, pred) => {
+                self.check_refined(b);
+                let bt = self.lower(b, &HashMap::new());
+                self.scopes.push(HashMap::new());
+                self.bind("it", bt);
+                let pt = self.infer(pred);
+                self.expect(&Ty::Bool, &pt, &format!("refinement `where {}`", crate::printer::expr(pred, 0)));
+                self.scopes.pop();
+            }
+            TypeExpr::Named(_, args) => args.iter().for_each(|a| self.check_refined(a)),
+            TypeExpr::Fn(ps, r) => {
+                ps.iter().for_each(|a| self.check_refined(a));
+                self.check_refined(r);
+            }
+            TypeExpr::Unit => {}
+        }
     }
 
     fn instantiate(&mut self, params: &[String], t: &TypeExpr) -> Ty {
@@ -1174,6 +1224,7 @@ pub fn check(prog: &Program) -> CheckReport {
                     TypeBody::Record(fs) => {
                         for f in fs {
                             c.lower(&f.ty, &HashMap::new());
+                            c.check_refined(&f.ty);
                         }
                         Ty::Con(t.name.clone(), t.params.iter().map(|p| Ty::Rigid(p.clone())).collect())
                     }
@@ -1229,9 +1280,14 @@ pub fn check(prog: &Program) -> CheckReport {
                 }
                 c.effects = effs;
                 for p in &f.params {
+                    c.check_refined(&p.ty);
+                }
+                for p in &f.params {
                     let t = c.lower(&p.ty, &HashMap::new());
                     c.bind(&p.name, t);
                 }
+                // the result's refinement may mention the parameters
+                c.check_refined(&f.ret);
                 let ret = c.lower(&f.ret, &HashMap::new());
                 for r in &f.requires {
                     let t = c.infer(r);

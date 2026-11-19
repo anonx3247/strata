@@ -157,7 +157,7 @@ impl Parser {
         } else if self.eat_sym("{") {
             TypeBody::Record(self.fields()?)
         } else {
-            TypeBody::Alias(self.type_expr()?)
+            TypeBody::Alias(self.type_expr_plain()?)
         };
         let refinement = if self.eat_kw("where") { Some(self.expr()?) } else { None };
         Ok(TypeDecl { name, params, body, refinement })
@@ -181,7 +181,16 @@ impl Parser {
         }
     }
 
+    /// A type, optionally refined inline: `Int where it > 0`.
     pub fn type_expr(&mut self) -> R<TypeExpr> {
+        let t = self.type_expr_plain()?;
+        if self.eat_kw("where") {
+            return Ok(TypeExpr::Refined(Box::new(t), Box::new(self.expr_ns()?)));
+        }
+        Ok(t)
+    }
+
+    pub fn type_expr_plain(&mut self) -> R<TypeExpr> {
         if self.eat_sym("(") {
             let args = self.list(")", |p| p.type_expr())?;
             if self.eat_sym("->") {

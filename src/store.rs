@@ -68,6 +68,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                 ty(r, out);
             }
             TypeExpr::Unit => {}
+            TypeExpr::Refined(b, _) => ty(b, out),
         }
     }
     fn pat(p: &Pattern, out: &mut BTreeSet<String>, ct: &HashMap<String, String>) {

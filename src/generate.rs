@@ -124,6 +124,17 @@ impl Gen {
     }
 
     fn produce(&mut self, env: &Env, t: &TypeExpr, it: &mut Interp, depth: usize, h: &Hints) -> Result<Value, String> {
+        if let TypeExpr::Refined(b, pred) = t {
+            let mut h2 = h.clone();
+            hints(pred, &mut h2);
+            for _ in 0..300 {
+                let v = self.produce(env, b, it, depth, &h2)?;
+                if let Ok(None) = it.check_type(t, &v) {
+                    return Ok(v);
+                }
+            }
+            return Err(format!("could not generate a value satisfying `{}` after 300 attempts", crate::printer::ty(t)));
+        }
         let TypeExpr::Named(n, args) = t else {
             return match t {
                 TypeExpr::Unit => Ok(Value::Unit),
