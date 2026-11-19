@@ -290,6 +290,9 @@ impl Shape for Point {
 fn label(s: Status) -> String {
   // the common case first
   let n = 1 // one
+
+
+  let m = n
   match s {
     // still going
     Pending => "pending",
@@ -302,7 +305,7 @@ fn label(s: Status) -> String {
     assert!(ok, "{r1}");
     for c in ["// file header\n//\n// second paragraph\n\n// section banner\n/// A status.", "  // waiting\n  | Pending", "  // finished\n  | Done",
         "// the y axis points down", "  // area, never negative\n  /// The area.", "  // checked by verify\n  /// Areas are never negative.\n  law nonneg", "  // a point has no area\n  /// Always zero.",
-        "  // the common case first\n  // one\n  let n = 1", "    // still going\n    Pending", "    // all good\n    Done"] {
+        "  // the common case first\n  // one\n  let n = 1\n\n  let m = n\n  match", "    // still going\n    Pending", "    // all good\n    Done"] {
         assert!(r1.contains(c), "missing {c:?} in\n{r1}");
     }
     std::fs::write(d.join("r1.strata"), &r1).unwrap();

@@ -86,6 +86,22 @@ impl Parser {
         out
     }
 
+    /// Whether a blank line separates the previous token from what comes next
+    /// (the next token, or a comment before it).
+    fn blank_line_before(&self) -> bool {
+        let Some(prev) = self.pos.checked_sub(1).map(|i| &self.toks[i]) else { return false };
+        let next = &self.toks[self.pos];
+        let first = self
+            .comments
+            .iter()
+            .zip(&self.used)
+            .filter(|(c, u)| !**u && (c.line, c.col) > (prev.line, prev.col) && (c.line, c.col) < (next.line, next.col))
+            .map(|(c, _)| c.line)
+            .min()
+            .unwrap_or(next.line);
+        first > prev.line + 1
+    }
+
     /// Take a comment that ends the line of the token just consumed (`x = 1 // why`).
     fn trailing(&mut self) -> Vec<String> {
         let Some(prev) = self.pos.checked_sub(1).map(|i| &self.toks[i]) else { return vec![] };
@@ -861,7 +877,12 @@ impl Parser {
         self.no_struct = false;
         let mut stmts = Vec::new();
         while !self.is_sym("}") {
-            let above = self.leading();
+            // a blank line between statements is kept, as "" before what follows
+            let blank = !stmts.is_empty() && self.blank_line_before();
+            let mut above = self.leading();
+            if blank {
+                above.insert(0, String::new());
+            }
             if !above.is_empty() {
                 stmts.push(Stmt::Comment(above));
             }

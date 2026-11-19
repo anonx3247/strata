@@ -57,7 +57,6 @@ Not yet: the log is not committed to git yet, so git ranges have no renames or p
 
 - Trait methods must take `self`; there is no `fn empty() -> Self` dispatch yet, and method names must be unique across traits.
 - Exhaustiveness checking ignores refinements: a `match` on `NonEmpty` still needs a `[]` arm.
-- Blank lines inside bodies are not kept.
 - No host bindings (FFI), so a real SQLite backend isn't possible yet.
 - `strata verify` on the tasks example takes about 35s; the slowest part is generating `MemQueue` values that satisfy its invariants.
 - Typed lambda parameters (`(n: Positive) -> …`) are checked statically but their refinements are not enforced at runtime yet.
