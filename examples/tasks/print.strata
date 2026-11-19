@@ -7,16 +7,18 @@ pub type PrintJob = { message: String, fail_times: Natural }
 
 pub type Boom = { reason: String }
 
-/// Where the print worker writes. Writing returns the console's next state.
+/// Where the print worker writes.
 pub trait Console {
-  fn print(self, line: String) -> Self
+  fn print(mut self, line: String) -> ()
 }
 
 /// A console that keeps the lines in memory.
 pub type Log = { lines: List[String] }
 
 impl Console for Log {
-  fn print(self, line: String) -> Self { Log { lines: push(self.lines, line) } }
+  fn print(mut self, line: String) -> () {
+    self.lines = push(self.lines, line)
+  }
 }
 
 /// The example producer: `count` jobs; job #3 fails once.
@@ -37,16 +39,17 @@ impl Producer[PrintJob] for PrintProducer {
 pub type PrintWorker = { console: Console }
 
 impl Worker[PrintJob, Boom] for PrintWorker {
-  fn run(self, attempts: List[TaskAttempt[PrintJob]]) -> (Self, List[TaskResult[PrintJob, Boom]]) {
-    let console = fold(attempts, self.console, |c, a| c.print("[attempt " ++ to_string(a.attempt) ++ "] " ++ a.task.payload.message))
-    let results = attempts.map(|a| {
+  fn run(mut self, attempts: List[TaskAttempt[PrintJob]]) -> List[TaskResult[PrintJob, Boom]] {
+    let mut results = []
+    for a in attempts {
+      self.console.print("[attempt " ++ to_string(a.attempt) ++ "] " ++ a.task.payload.message)
       if a.attempt <= a.task.payload.fail_times {
-        Failed { task: a.task, error: Boom { reason: "boom" } }
+        results = push(results, Failed { task: a.task, error: Boom { reason: "boom" } })
       } else {
-        Succeeded { task: a.task }
+        results = push(results, Succeeded { task: a.task })
       }
-    })
-    (PrintWorker { console }, results)
+    }
+    results
   }
 }
 
@@ -56,11 +59,13 @@ pub type DemoReport = { enqueued: Int, batches: Int, log: List[String], tasks: L
 /// For SQLite or SQS, only the queue value passed in would change.
 pub fn demo() -> DemoReport {
   let policy = TaskPolicy { max_workers: 4, tasks_per_worker: 2, retries: 3 }
-  let (queue, enqueued) = run_producer(empty_queue(policy), PrintProducer { count: 5 })
-  let (queue2, worker, batches) = drain(queue, PrintWorker { console: Log { lines: [] } }, policy, 100)
+  let mut queue = empty_queue(policy)
+  let mut worker = PrintWorker { console: Log { lines: [] } }
+  let enqueued = run_producer(queue, PrintProducer { count: 5 })
+  let batches = drain(queue, worker, policy, 100)
   let log = match worker.console {
     Log { lines } => lines,
     _ => [],
   }
-  DemoReport { enqueued, batches, log, tasks: describe(queue2) }
+  DemoReport { enqueued, batches, log, tasks: describe(queue) }
 }

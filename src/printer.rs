@@ -171,6 +171,13 @@ pub fn block(e: &Expr, d: usize) -> String {
                 Some(t) => format!("let {}: {} = {}", pat(p), ty(t), expr(e, d + 1)),
                 None => format!("let {} = {}", pat(p), expr(e, d + 1)),
             },
+            Stmt::Var(n, t, e) => match t {
+                Some(t) => format!("let mut {n}: {} = {}", ty(t), expr(e, d + 1)),
+                None => format!("let mut {n} = {}", expr(e, d + 1)),
+            },
+            Stmt::Assign(p, e) => format!("{} = {}", expr(p, d + 1), expr(e, d + 1)),
+            Stmt::While(c, b) => format!("while {} {}", expr(c, d + 1), block(b, d + 1)),
+            Stmt::For(p, it, b) => format!("for {} in {} {}", pat(p), expr(it, d + 1), block(b, d + 1)),
             Stmt::Expr(e) => expr(e, d + 1),
             Stmt::Assert(e) => format!("assert {}", expr(e, d + 1)),
         };
@@ -228,7 +235,10 @@ fn bounded(names: &[String], bounds: &[Bound]) -> String {
 
 fn param_list(ps: &[Param]) -> String {
     ps.iter()
-        .map(|p| if p.name == "self" && matches!(&p.ty, TypeExpr::Named(n, a) if n == "Self" && a.is_empty()) { "self".into() } else { format!("{}: {}", p.name, ty(&p.ty)) })
+        .map(|p| {
+            let m = if p.mutable { "mut " } else { "" };
+            if p.name == "self" && matches!(&p.ty, TypeExpr::Named(n, a) if n == "Self" && a.is_empty()) { format!("{m}self") } else { format!("{m}{}: {}", p.name, ty(&p.ty)) }
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }

@@ -138,6 +138,21 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             Expr::Block(stmts, last) => {
                 for s in stmts {
                     match s {
+                        Stmt::Var(_, t, x) => {
+                            if let Some(t) = t {
+                                ty(t, out);
+                            }
+                            go(x, out);
+                        }
+                        Stmt::Assign(a, b) | Stmt::While(a, b) => {
+                            go(a, out);
+                            go(b, out);
+                        }
+                        Stmt::For(p, a, b) => {
+                            pat(p, out, ct);
+                            go(a, out);
+                            go(b, out);
+                        }
                         Stmt::Let(p, t, x) => {
                             pat(p, out, ct);
                             if let Some(t) = t {

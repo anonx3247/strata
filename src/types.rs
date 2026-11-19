@@ -335,6 +335,8 @@ struct Checker<'a> {
     bounds: HashMap<String, Vec<(String, Vec<Ty>)>>,
     /// Obligations `type implements trait[args]`, solved at the end of the declaration.
     pending: Vec<(Ty, String, Vec<Ty>, String)>,
+    /// Scopes below this index belong outside the closure being checked.
+    lambda_floor: usize,
 }
 
 impl<'a> Checker<'a> {
@@ -625,6 +627,9 @@ impl<'a> Checker<'a> {
         for p in &f.params {
             let t = self.lower(&p.ty, &HashMap::new());
             self.bind(&p.name, t);
+            if p.mutable {
+                self.bind(&format!("mut:{}", p.name), Ty::Unit);
+            }
         }
         // the result's refinement may mention the parameters
         self.check_refined(&f.ret);
@@ -762,7 +767,7 @@ impl<'a> Checker<'a> {
     fn record_hole(&mut self, name: &str, t: Ty) {
         let mut ctx: Vec<(String, Ty)> = Vec::new();
         for s in &self.scopes {
-            for (k, v) in s {
+            for (k, v) in s.iter().filter(|(k, _)| !k.starts_with("mut:")) {
                 ctx.retain(|(n, _)| n != k);
                 ctx.push((k.clone(), v.clone()));
             }
@@ -888,6 +893,9 @@ impl<'a> Checker<'a> {
             }
             Expr::Call(f, args) => {
                 if let Expr::Var(n) = &**f {
+                    if self.lookup(n).is_none() {
+                        self.check_mut_args(n, args);
+                    }
                     if let Some(t) = self.overloaded(n, args) {
                         return t;
                     }
@@ -902,6 +910,9 @@ impl<'a> Checker<'a> {
             Expr::Method(recv, m, args) => {
                 let mut all = vec![(**recv).clone()];
                 all.extend(args.iter().cloned());
+                if self.lookup(m).is_none() {
+                    self.check_mut_args(m, &all);
+                }
                 if let Some(t) = self.overloaded(m, &all) {
                     return t;
                 }
@@ -921,7 +932,9 @@ impl<'a> Checker<'a> {
                 for (p, t) in ps.iter().zip(&pts) {
                     self.bind(p, t.clone());
                 }
+                let floor = std::mem::replace(&mut self.lambda_floor, self.scopes.len() - 1);
                 let r = self.infer(body);
+                self.lambda_floor = floor;
                 self.scopes.pop();
                 Ty::Fn(pts, Box::new(r))
             }
@@ -1015,6 +1028,46 @@ impl<'a> Checker<'a> {
                                 self.matches.push((t, vec![p.clone()]));
                             }
                         }
+                        Stmt::Var(n, ann, e) => {
+                            let ann = ann.as_ref().map(|a| self.lower(a, &HashMap::new()));
+                            let t = self.infer_with(e, ann.as_ref());
+                            if let Some(a) = &ann {
+                                self.expect(a, &t, "let annotation");
+                            }
+                            self.bind(n, t);
+                            self.bind(&format!("mut:{n}"), Ty::Unit);
+                        }
+                        Stmt::Assign(place, e) => {
+                            self.check_place(place, "assign to");
+                            let pt = self.infer(place);
+                            let et = self.infer_with(e, Some(&pt));
+                            self.expect(&pt, &et, "assignment");
+                        }
+                        Stmt::While(c, b) => {
+                            let ct = self.infer(c);
+                            self.expect(&Ty::Bool, &ct, "while condition");
+                            self.infer(b);
+                        }
+                        Stmt::For(p, it, b) => {
+                            let itt = self.infer(it);
+                            let el = match self.resolve(&itt) {
+                                Ty::Con(n, args) if (n == "List" || n == "Set") && args.len() == 1 => args[0].clone(),
+                                Ty::Con(n, args) if n == "Dict" && args.len() == 2 => Ty::Con("Tuple".into(), args.clone()),
+                                Ty::Var(_) => {
+                                    let el = self.fresh();
+                                    self.expect(&Ty::Con("List".into(), vec![el.clone()]), &itt, "for loop");
+                                    el
+                                }
+                                other => {
+                                    self.err(format!("`for` needs a List, Set or Dict, found `{}`", show_ty(&other)));
+                                    self.fresh()
+                                }
+                            };
+                            self.scopes.push(HashMap::new());
+                            self.pattern(p, &el);
+                            self.infer(b);
+                            self.scopes.pop();
+                        }
                         Stmt::Expr(e) => {
                             self.infer(e);
                         }
@@ -1037,6 +1090,46 @@ impl<'a> Checker<'a> {
                         self.fresh()
                     }
                 }
+            }
+        }
+    }
+
+    /// A place (`x`, `x.f.g`) that is about to change must be rooted at a
+    /// mutable local, declared outside no closure.
+    fn check_place(&mut self, place: &Expr, what: &str) {
+        let mut root = place;
+        while let Expr::Field(r, _) = root {
+            root = r;
+        }
+        let Expr::Var(x) = root else {
+            self.err(format!("can only {what} a variable or one of its fields"));
+            return;
+        };
+        let Some(idx) = self.scopes.iter().rposition(|s| s.contains_key(x)) else {
+            self.err(format!("can only {what} a local variable, not `{x}`"));
+            return;
+        };
+        if !self.scopes[idx].contains_key(&format!("mut:{x}")) {
+            self.err(format!("cannot {what} `{x}`: it is not mutable (declare it with `let mut {x}`, or make it a `mut` parameter)"));
+        } else if idx < self.lambda_floor {
+            self.err(format!("a closure cannot change `{x}`, which belongs to the enclosing function"));
+        }
+    }
+
+    /// Arguments passed to `mut` parameters are changed by the call.
+    fn check_mut_args(&mut self, callee: &str, args: &[Expr]) {
+        let params: Option<Vec<Param>> = self
+            .env
+            .fns
+            .get(callee)
+            .map(|f| f.params.clone())
+            .or_else(|| {
+                let tr = self.env.method_trait.get(callee)?;
+                self.env.traits[tr].methods.iter().find(|m| m.decl.name == callee).map(|m| m.decl.params.clone())
+            });
+        for (p, a) in params.unwrap_or_default().iter().zip(args) {
+            if p.mutable {
+                self.check_place(a, &format!("let `{callee}` change (its `mut {}` parameter)", p.name));
             }
         }
     }
@@ -1392,6 +1485,7 @@ pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<String, TypeExpr>>
         self_ty: None,
         bounds: HashMap::new(),
         pending: Vec::new(),
+        lambda_floor: 0,
     };
     let vars: HashMap<String, Ty> = f.type_params.iter().map(|p| (p.clone(), c.fresh())).collect();
     let bounded: Vec<&Bound> = f.bounds.iter().collect();
@@ -1463,6 +1557,7 @@ pub fn check(prog: &Program) -> CheckReport {
             self_ty: None,
             bounds: HashMap::new(),
             pending: Vec::new(),
+            lambda_floor: 0,
         };
         let mut obligations = Vec::new();
         match &d.kind {
@@ -1598,6 +1693,11 @@ pub fn check(prog: &Program) -> CheckReport {
                                     let got = c.lower(&Checker::fn_scheme(im), &HashMap::new());
                                     if let Err(e) = c.unify(&want, &got) {
                                         c.err(format!("`{}` does not match the signature in trait `{}`: {e}", im.name, tr.name));
+                                    }
+                                    for (tp, ip) in tm.decl.params.iter().zip(&im.params) {
+                                        if tp.mutable != ip.mutable {
+                                            c.err(format!("`{}`: parameter `{}` must be {}as in trait `{}`", im.name, ip.name, if tp.mutable { "`mut` " } else { "not `mut` " }, tr.name));
+                                        }
                                     }
                                 }
                             }

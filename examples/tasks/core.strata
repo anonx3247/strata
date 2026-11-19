@@ -5,8 +5,7 @@
 // Producer, Worker and the queue backend are traits. Entrypoints take a
 // backend value and work with any implementation: swapping SQLite for SQS
 // means passing a different queue value (the reference's "only the queue
-// object changes"). Strata values are immutable, so a stateful backend
-// returns its next state from each operation.
+// object changes"). Methods that change a backend say `mut self`.
 
 // ─────────────────────────────── core model ───────────────────────────────
 
@@ -63,32 +62,32 @@ pub trait Producer[P] {
 }
 
 /// Runs a batch of attempts and reports one result per attempt (the
-/// reference `Worker` protocol). Returns its next state, e.g. a console it wrote to.
+/// reference `Worker` protocol). A worker may change as it runs (e.g. a console it writes to).
 pub trait Worker[P, E] {
-  fn run(self, attempts: List[TaskAttempt[P]]) -> (Self, List[TaskResult[P, E]])
+  fn run(mut self, attempts: List[TaskAttempt[P]]) -> List[TaskResult[P, E]]
 }
 
 /// A queue backend. This is the only thing that changes between SQLite, SQS, Redis…
 /// The contracts below bind every implementation: a backend that returns
 /// more than `limit` attempts is caught at the call.
 pub trait Queue[P, E] {
-  /// Enqueue tasks, ignoring ids already present; also returns how many were new.
-  fn enqueue(self, tasks: List[Task[P]]) -> (Self, Int)
-    ensures 0 <= it.1 && it.1 <= len(tasks)
+  /// Enqueue tasks, ignoring ids already present; returns how many were new.
+  fn enqueue(mut self, tasks: List[Task[P]]) -> Int
+    ensures 0 <= it && it <= len(tasks)
   /// Claim up to `limit` pending tasks, oldest first, bumping their attempt counts.
-  fn claim(self, limit: Positive) -> (Self, List[TaskAttempt[P]])
-    ensures len(it.1) <= limit
+  fn claim(mut self, limit: Positive) -> List[TaskAttempt[P]]
+    ensures len(it) <= limit
   /// Record the results of claimed attempts.
-  fn record(self, results: List[TaskResult[P, E]]) -> Self
+  fn record(mut self, results: List[TaskResult[P, E]]) -> ()
   /// Put claimed-but-unreported attempts back.
-  fn release(self, attempts: List[TaskAttempt[P]]) -> Self
+  fn release(mut self, attempts: List[TaskAttempt[P]]) -> ()
 }
 
 // ───────────────────────────── entrypoints ─────────────────────────────────
 
 /// Run the producer once and enqueue every task it discovers.
-pub fn run_producer[P, E, Q: Queue[P, E], R: Producer[P]](queue: Q, producer: R) -> (Q, Int)
-  ensures it.1 >= 0
+pub fn run_producer[P, E, Q: Queue[P, E], R: Producer[P]](mut queue: Q, producer: R) -> Int
+  ensures it >= 0
 {
   queue.enqueue(producer.discover())
 }
@@ -100,23 +99,25 @@ pub type WorkerError =
 /// Claim one batch, run it, record the results. If the worker does not report
 /// exactly one result per claimed attempt, the claim is released and the
 /// mismatch is returned as a value instead of an exception.
-pub fn run_worker[P, E, Q: Queue[P, E], W: Worker[P, E]](queue: Q, worker: W, policy: TaskPolicy) -> (Q, W, Result[List[TaskResult[P, E]], WorkerError])
-  ensures match it.2 {
+pub fn run_worker[P, E, Q: Queue[P, E], W: Worker[P, E]](mut queue: Q, mut worker: W, policy: TaskPolicy) -> Result[List[TaskResult[P, E]], WorkerError]
+  ensures match it {
     Ok(rs) => len(rs) <= policy.tasks_per_worker,
     Err(_) => true,
   }
 {
-  let (q, attempts) = queue.claim(policy.tasks_per_worker)
+  let attempts = queue.claim(policy.tasks_per_worker)
   if len(attempts) == 0 {
-    (q, worker, Ok([]))
+    Ok([])
   } else {
-    let (w, results) = worker.run(attempts)
+    let results = worker.run(attempts)
     let claimed = attempts.map(|a| a.task.id)
     let reported = results.map(|r| task_of(r).id)
     if same_ids(claimed, reported) {
-      (q.record(results), w, Ok(results))
+      queue.record(results)
+      Ok(results)
     } else {
-      (q.release(attempts), w, Err(ResultsMismatch { claimed, reported }))
+      queue.release(attempts)
+      Err(ResultsMismatch { claimed, reported })
     }
   }
 }
@@ -127,20 +128,17 @@ fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool {
 }
 
 /// The worker entrypoint's loop: run batches until the queue has nothing
-/// claimable (or `max_batches` is reached). Also returns the number of batches run.
-pub fn drain[P, E, Q: Queue[P, E], W: Worker[P, E]](queue: Q, worker: W, policy: TaskPolicy, max_batches: Natural) -> (Q, W, Int)
-  ensures 0 <= it.2 && it.2 <= max_batches
+/// claimable (or `max_batches` is reached). Returns the number of batches run.
+pub fn drain[P, E, Q: Queue[P, E], W: Worker[P, E]](mut queue: Q, mut worker: W, policy: TaskPolicy, max_batches: Natural) -> Int
+  ensures 0 <= it && it <= max_batches
 {
-  if max_batches == 0 {
-    (queue, worker, 0)
-  } else {
-    let (q, w, outcome) = run_worker(queue, worker, policy)
-    match outcome {
-      Ok([]) => (q, w, 0),
-      _ => {
-        let (q2, w2, n) = drain(q, w, policy, max_batches - 1)
-        (q2, w2, n + 1)
-      },
+  let mut batches = 0
+  let mut done = false
+  while !done && batches < max_batches {
+    match run_worker(queue, worker, policy) {
+      Ok([]) => { done = true },
+      _ => { batches = batches + 1 },
     }
   }
+  batches
 }

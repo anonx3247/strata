@@ -61,7 +61,11 @@ fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
         Expr::Block(stmts, last) => {
             for s in stmts {
                 match s {
-                    Stmt::Let(_, _, x) | Stmt::Expr(x) | Stmt::Assert(x) => w(x),
+                    Stmt::Let(_, _, x) | Stmt::Var(_, _, x) | Stmt::Expr(x) | Stmt::Assert(x) => w(x),
+                    Stmt::Assign(a, b) | Stmt::While(a, b) | Stmt::For(_, a, b) => {
+                        w(a);
+                        w(b)
+                    }
                 }
             }
             w(last)

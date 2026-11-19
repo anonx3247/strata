@@ -34,8 +34,8 @@ pub fn scripted(b: Behaviour, attempts: List[TaskAttempt[Int]]) -> List[TaskResu
 pub type Scripted = { behaviour: Behaviour }
 
 impl Worker[Int, String] for Scripted {
-  fn run(self, attempts: List[TaskAttempt[Int]]) -> (Self, List[TaskResult[Int, String]]) {
-    (self, scripted(self.behaviour, attempts))
+  fn run(mut self, attempts: List[TaskAttempt[Int]]) -> List[TaskResult[Int, String]] {
+    scripted(self.behaviour, attempts)
   }
 }
 
@@ -46,32 +46,36 @@ impl Producer[Int] for Fixed {
   fn discover(self) -> List[Task[Int]] { self.tasks }
 }
 
-pub fn run_steps(q: MemQueue[Int, String], policy: TaskPolicy, steps: List[Step]) -> MemQueue[Int, String] {
-  match steps {
-    [] => q,
-    [step, ..rest] => {
-      let next = match step {
-        Produce { ids } => {
-          let tasks = ids.map(|i| Task { id: "t" ++ to_string(i), kind: "sim", payload: i })
-          run_producer(q, Fixed { tasks }).0
-        },
-        Work { behaviour } => run_worker(q, Scripted { behaviour }, policy).0,
-      }
-      run_steps(next, policy, rest)
-    },
+pub fn run_steps(mut q: MemQueue[Int, String], policy: TaskPolicy, steps: List[Step]) -> () {
+  for step in steps {
+    match step {
+      Produce { ids } => {
+        run_producer(q, Fixed { tasks: ids.map(|i| Task { id: "t" ++ to_string(i), kind: "sim", payload: i }) })
+        ()
+      },
+      Work { behaviour } => {
+        let mut w = Scripted { behaviour }
+        run_worker(q, w, policy)
+        ()
+      },
+    }
   }
 }
 
 pub fn simulate(per_worker: Int where 1 <= it && it <= 3, retries: Int where 0 <= it && it <= 2, steps: List[Step]) -> List[String] {
   let policy = TaskPolicy { max_workers: 1, tasks_per_worker: per_worker, retries }
-  describe(run_steps(empty_queue(policy), policy, steps))
+  let mut q = empty_queue(policy)
+  run_steps(q, policy, steps)
+  describe(q)
 }
 
 // ──────────────────────── the reference test suite ─────────────────────────
 
 /// Run steps on a fresh in-memory queue and return the final queue.
 pub fn queue_after(policy: TaskPolicy, steps: List[Step]) -> MemQueue[Int, String] {
-  run_steps(empty_queue(policy), policy, steps)
+  let mut q = empty_queue(policy)
+  run_steps(q, policy, steps)
+  q
 }
 
 pub fn statuses(q: MemQueue[Int, String]) -> List[Status] {

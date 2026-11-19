@@ -214,3 +214,22 @@ fn modules_contracts_and_files() {
     let (ok, out) = strata(&["test"], &d, None);
     assert!(ok && out.contains("0 failed"), "{out}");
 }
+
+#[test]
+fn procedural_mutation_is_explicit() {
+    let d = tmp("mutation");
+    std::fs::write(
+        d.join("m.strata"),
+        "type Line = { qty: Int where 1 <= it && it <= 99 }\n\
+         fn restock(mut line: Line, extra: Int) -> () { line.qty = line.qty + extra }\n\
+         fn sum(xs: List[Int]) -> Int {\n  let mut s = 0\n  for x in xs { s = s + x }\n  s\n}\n\
+         test \"ok\" {\n  let mut l = Line { qty: 2 }\n  restock(l, 3)\n  assert l.qty == 5\n  assert sum([1, 2, 3]) == 6\n}\n\
+         test \"refined\" {\n  let mut l = Line { qty: 98 }\n  restock(l, 5)\n}\n",
+    )
+    .unwrap();
+    let (ok, out) = strata(&["--file", "m.strata", "test"], &d, None);
+    assert!(!ok && out.contains("✓ ok") && out.contains("103 does not satisfy"), "{out}");
+    std::fs::write(d.join("e.strata"), "fn f() -> Int {\n  let x = 1\n  x = 2\n  x\n}\nfn g() -> Int {\n  let mut y = 0\n  let add = |z| { y = y + z; y }\n  add(1)\n}\n").unwrap();
+    let (ok, out) = strata(&["--file", "e.strata", "check"], &d, None);
+    assert!(!ok && out.contains("`x`: it is not mutable") && out.contains("a closure cannot change `y`"), "{out}");
+}

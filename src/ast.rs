@@ -62,6 +62,10 @@ pub struct TypeDecl {
 pub struct Param {
     pub name: String,
     pub ty: TypeExpr,
+    /// `mut x: T` / `mut self`: the function may change it, and the caller's
+    /// variable is updated when the call returns.
+    #[serde(default)]
+    pub mutable: bool,
 }
 
 /// `T: Ord + Hash` on a type parameter.
@@ -276,6 +280,14 @@ pub struct Arm {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Stmt {
     Let(Pattern, Option<TypeExpr>, Expr),
+    /// `let mut x = e`
+    Var(String, Option<TypeExpr>, Expr),
+    /// `x = e`, `x.field = e`
+    Assign(Expr, Expr),
+    /// `while cond { ... }`
+    While(Expr, Expr),
+    /// `for pattern in xs { ... }`
+    For(Pattern, Expr, Expr),
     Expr(Expr),
     Assert(Expr),
 }

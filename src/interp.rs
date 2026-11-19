@@ -42,14 +42,15 @@ pub enum Value {
 #[derive(Debug, PartialEq)]
 pub struct Frame {
     name: String,
-    value: Value,
+    /// A cell, so `let mut` variables can be assigned.
+    value: std::cell::RefCell<Value>,
     parent: Scope,
 }
 pub type Scope = Option<Rc<Frame>>;
 
 impl Frame {
     pub fn new(name: &str, value: Value, parent: Scope) -> Frame {
-        Frame { name: name.to_string(), value, parent }
+        Frame { name: name.to_string(), value: std::cell::RefCell::new(value), parent }
     }
 }
 
@@ -57,7 +58,7 @@ fn lookup(s: &Scope, x: &str) -> Option<Value> {
     let mut cur = s;
     while let Some(f) = cur {
         if f.name == x {
-            return Some(f.value.clone());
+            return Some(f.value.borrow().clone());
         }
         cur = &f.parent;
     }
@@ -65,7 +66,38 @@ fn lookup(s: &Scope, x: &str) -> Option<Value> {
 }
 
 fn extend(s: &Scope, x: &str, v: Value) -> Scope {
-    Some(Rc::new(Frame { name: x.to_string(), value: v, parent: s.clone() }))
+    Some(Rc::new(Frame::new(x, v, s.clone())))
+}
+
+/// Set the innermost variable called `x`.
+fn assign(s: &Scope, x: &str, v: Value) -> bool {
+    let mut cur = s;
+    while let Some(f) = cur {
+        if f.name == x {
+            *f.value.borrow_mut() = v;
+            return true;
+        }
+        cur = &f.parent;
+    }
+    false
+}
+
+/// `base` with the field at `path` replaced (values, not references).
+fn set_path(base: Value, path: &[String], v: Value) -> Option<Value> {
+    let Some((first, rest)) = path.split_first() else { return Some(v) };
+    match base {
+        Value::Record(n, mut fs) => {
+            let slot = fs.iter_mut().find(|(k, _)| k == first)?;
+            slot.1 = set_path(std::mem::replace(&mut slot.1, Value::Unit), rest, v)?;
+            Some(Value::Record(n, fs))
+        }
+        Value::Variant(n, Fields::Rec(mut fs)) => {
+            let slot = fs.iter_mut().find(|(k, _)| k == first)?;
+            slot.1 = set_path(std::mem::replace(&mut slot.1, Value::Unit), rest, v)?;
+            Some(Value::Variant(n, Fields::Rec(fs)))
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -102,6 +134,9 @@ pub struct Interp<'a> {
     depth: usize,
     /// compiled regexes for `matches`, which refinements call constantly
     regexes: HashMap<String, regex::Regex>,
+    /// Final values of the `mut` parameters of the call that just returned,
+    /// to be written back to the caller's variables.
+    writeback: Vec<(usize, Value)>,
 }
 
 fn short(c: &str) -> &str {
@@ -205,6 +240,7 @@ impl<'a> Interp<'a> {
             effect_log: vec![],
             depth: 0,
             regexes: HashMap::new(),
+            writeback: vec![],
         }
     }
 
@@ -482,6 +518,7 @@ impl<'a> Interp<'a> {
         }
         self.stack.pop();
         self.depth -= 1;
+        self.writeback = f.params.iter().enumerate().filter(|(_, p)| p.mutable).filter_map(|(i, p)| lookup(&scope, &p.name).map(|v| (i, v))).collect();
         Ok(result)
     }
 
@@ -780,6 +817,43 @@ impl<'a> Interp<'a> {
 
     // ---------------- evaluation ----------------
 
+    /// After a call: copy the final values of `mut` parameters back into the
+    /// caller's variables.
+    fn write_back(&mut self, places: &[&Expr], s: &Scope) -> R<()> {
+        for (i, v) in std::mem::take(&mut self.writeback) {
+            if let Some(p) = places.get(i) {
+                self.assign_place(p, v, s)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn assign_place(&mut self, place: &Expr, v: Value, s: &Scope) -> R<()> {
+        let mut path = Vec::new();
+        let mut root = place;
+        while let Expr::Field(r, f) = root {
+            path.push(f.clone());
+            root = r;
+        }
+        path.reverse();
+        let Expr::Var(x) = root else { return self.fail(FaultKind::Runtime, "can only assign to a variable or its fields") };
+        let Some(base) = lookup(s, x) else { return self.fail(FaultKind::Runtime, format!("no variable `{x}`")) };
+        let Some(new) = set_path(base, &path, v) else { return self.fail(FaultKind::Runtime, format!("cannot assign to `{}`", crate::printer::expr(place, 0))) };
+        // field types may be refined: the changed value must still be valid
+        if !path.is_empty() {
+            let tname = match &new {
+                Value::Record(n, _) => Some(n.clone()),
+                Value::Variant(c, _) => self.env.ctors.get(c).cloned(),
+                _ => None,
+            };
+            if let Some(t) = tname {
+                self.enforce(&TypeExpr::Named(t, vec![]), &new, &format!("assigning `{}`", crate::printer::expr(place, 0)))?;
+            }
+        }
+        assign(s, x, new);
+        Ok(())
+    }
+
     pub fn eval(&mut self, e: &Expr, s: &Scope) -> R<Value> {
         Ok(match e {
             Expr::Int(n) => Value::Int(*n),
@@ -835,7 +909,11 @@ impl<'a> Interp<'a> {
             Expr::Call(f, args) => {
                 let fv = self.eval(f, s)?;
                 let avs = args.iter().map(|a| self.eval(a, s)).collect::<R<Vec<_>>>()?;
-                self.apply(fv, avs)?
+                self.writeback.clear();
+                let r = self.apply(fv, avs)?;
+                let places: Vec<&Expr> = args.iter().collect();
+                self.write_back(&places, s)?;
+                r
             }
             Expr::Method(r, m, args) => {
                 let mut avs = vec![self.eval(r, s)?];
@@ -843,7 +921,11 @@ impl<'a> Interp<'a> {
                     avs.push(self.eval(a, s)?);
                 }
                 let f = lookup(s, m).unwrap_or(Value::FnRef(m.clone()));
-                self.apply(f, avs)?
+                self.writeback.clear();
+                let out = self.apply(f, avs)?;
+                let places: Vec<&Expr> = std::iter::once(&**r).chain(args.iter()).collect();
+                self.write_back(&places, s)?;
+                out
             }
             Expr::Field(r, f) => match self.eval(r, s)? {
                 Value::Distinct(_, x) if f == "value" => *x,
@@ -954,6 +1036,40 @@ impl<'a> Interp<'a> {
                             match self.matches(p, &v, &sc) {
                                 Some(s2) => sc = s2,
                                 None => return self.fail(FaultKind::Runtime, format!("let pattern did not match {}", to_json(&v))),
+                            }
+                        }
+                        Stmt::Var(n, ann, x) => {
+                            let v = self.eval(x, &sc)?;
+                            if let Some(t) = ann {
+                                self.enforce(t, &v, "let binding")?;
+                            }
+                            sc = extend(&sc, n, v);
+                        }
+                        Stmt::Assign(place, x) => {
+                            let v = self.eval(x, &sc)?;
+                            self.assign_place(place, v, &sc)?;
+                        }
+                        Stmt::While(c, b) => {
+                            let mut n = 0u64;
+                            while self.eval(c, &sc)? == Value::Bool(true) {
+                                n += 1;
+                                if n > 1_000_000 {
+                                    return self.fail(FaultKind::Runtime, "`while` ran more than 1,000,000 times");
+                                }
+                                self.eval(b, &sc)?;
+                            }
+                        }
+                        Stmt::For(p, it, b) => {
+                            let items = match self.eval(it, &sc)? {
+                                Value::List(xs) | Value::Set(xs) => xs,
+                                Value::Dict(kvs) => kvs.into_iter().map(|(k, v)| Value::Tuple(vec![k, v])).collect(),
+                                other => return self.fail(FaultKind::Runtime, format!("cannot loop over {}", to_json(&other))),
+                            };
+                            for item in items {
+                                let Some(s2) = self.matches(p, &item, &sc) else {
+                                    return self.fail(FaultKind::Runtime, format!("for-loop pattern did not match {}", to_json(&item)));
+                                };
+                                self.eval(b, &s2)?;
                             }
                         }
                         Stmt::Expr(x) => {

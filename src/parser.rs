@@ -44,7 +44,7 @@ fn is_upper(s: &str) -> bool {
 }
 
 const KEYWORDS: &[&str] = &[
-    "type", "fn", "test", "let", "if", "else", "match", "mock", "where",
+    "type", "fn", "test", "let", "if", "else", "match", "mock", "where", "mut", "while", "for", "in",
     "requires", "ensures", "true", "false", "is", "assert", "trait", "impl", "law", "for", "pub", "use",
 ];
 
@@ -405,13 +405,14 @@ impl Parser {
     fn params(&mut self) -> R<Vec<Param>> {
         self.expect_sym("(")?;
         self.list(")", |p| {
-            let name = p.ident()?;
+            let mutable = p.eat_kw("mut");
+            let name = if p.is_kw("self") { p.next(); "self".to_string() } else { p.ident()? };
             // `self` alone means `self: Self`
             if name == "self" && !p.is_sym(":") {
-                return Ok(Param { name, ty: TypeExpr::Named("Self".into(), vec![]) });
+                return Ok(Param { name, ty: TypeExpr::Named("Self".into(), vec![]), mutable });
             }
             p.expect_sym(":")?;
-            Ok(Param { name, ty: p.type_expr()? })
+            Ok(Param { name, ty: p.type_expr()?, mutable })
         })
     }
 
@@ -699,14 +700,37 @@ impl Parser {
         let mut stmts = Vec::new();
         while !self.is_sym("}") {
             if self.eat_kw("let") {
-                let pat = self.pattern()?;
-                let ty = if self.eat_sym(":") { Some(self.type_expr()?) } else { None };
-                self.expect_sym("=")?;
-                stmts.push(Stmt::Let(pat, ty, self.expr()?));
+                if self.eat_kw("mut") {
+                    let name = self.ident()?;
+                    let ty = if self.eat_sym(":") { Some(self.type_expr()?) } else { None };
+                    self.expect_sym("=")?;
+                    stmts.push(Stmt::Var(name, ty, self.expr()?));
+                } else {
+                    let pat = self.pattern()?;
+                    let ty = if self.eat_sym(":") { Some(self.type_expr()?) } else { None };
+                    self.expect_sym("=")?;
+                    stmts.push(Stmt::Let(pat, ty, self.expr()?));
+                }
             } else if self.eat_kw("assert") {
                 stmts.push(Stmt::Assert(self.expr()?));
+            } else if self.eat_kw("while") {
+                let cond = self.expr_ns()?;
+                stmts.push(Stmt::While(cond, self.block()?));
+            } else if self.eat_kw("for") {
+                let pat = self.pattern()?;
+                self.expect_kw("in")?;
+                let iter = self.expr_ns()?;
+                stmts.push(Stmt::For(pat, iter, self.block()?));
             } else {
-                stmts.push(Stmt::Expr(self.expr()?));
+                let e = self.expr()?;
+                if self.eat_sym("=") {
+                    if !matches!(e, Expr::Var(_) | Expr::Field(..)) {
+                        return Err(self.err("only a variable or a field (`x`, `x.f`) can be assigned"));
+                    }
+                    stmts.push(Stmt::Assign(e, self.expr()?));
+                } else {
+                    stmts.push(Stmt::Expr(e));
+                }
             }
             while self.eat_sym(";") {}
         }

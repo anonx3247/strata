@@ -348,6 +348,22 @@ impl Rw<'_> {
                             let t = t.as_ref().map(|t| self.ty(t));
                             Stmt::Let(self.pat(p), t, x)
                         }
+                        Stmt::Var(n, t, x) => {
+                            let x = self.expr(x);
+                            let t = t.as_ref().map(|t| self.ty(t));
+                            self.bind(n);
+                            Stmt::Var(n.clone(), t, x)
+                        }
+                        Stmt::Assign(p, x) => Stmt::Assign(self.expr(p), self.expr(x)),
+                        Stmt::While(c, b) => Stmt::While(self.expr(c), self.expr(b)),
+                        Stmt::For(p, it, b) => {
+                            let it = self.expr(it);
+                            self.push(&[]);
+                            let p = self.pat(p);
+                            let b = self.expr(b);
+                            self.pop();
+                            Stmt::For(p, it, b)
+                        }
                         Stmt::Expr(x) => Stmt::Expr(self.expr(x)),
                         Stmt::Assert(x) => Stmt::Assert(self.expr(x)),
                     })
@@ -368,7 +384,7 @@ impl Rw<'_> {
     fn func(&mut self, f: &FnDecl, name: String) -> FnDecl {
         self.tparams.push(f.type_params.iter().cloned().collect());
         let bounds = self.bounds(&f.bounds);
-        let params: Vec<Param> = f.params.iter().map(|p| Param { name: p.name.clone(), ty: self.ty(&p.ty) }).collect();
+        let params: Vec<Param> = f.params.iter().map(|p| Param { name: p.name.clone(), ty: self.ty(&p.ty), mutable: p.mutable }).collect();
         let names: Vec<String> = f.params.iter().map(|p| p.name.clone()).collect();
         self.push(&names);
         let ret = self.ty(&f.ret);
@@ -426,7 +442,7 @@ impl Rw<'_> {
                     .laws
                     .iter()
                     .map(|l| {
-                        let params: Vec<Param> = l.params.iter().map(|p| Param { name: p.name.clone(), ty: self.ty(&p.ty) }).collect();
+                        let params: Vec<Param> = l.params.iter().map(|p| Param { name: p.name.clone(), ty: self.ty(&p.ty), mutable: p.mutable }).collect();
                         let names: Vec<String> = l.params.iter().map(|p| p.name.clone()).collect();
                         self.push(&names);
                         let body = self.expr(&l.body);

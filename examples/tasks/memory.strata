@@ -131,16 +131,27 @@ pub fn mem_release[P, E](q: MemQueue[P, E], attempts: List[TaskAttempt[P]]) -> M
   MemQueue { ..q, entries }
 }
 
-/// The in-memory queue is a `Queue` backend like any other.
+/// The in-memory queue is a `Queue` backend like any other. Each operation
+/// runs the verified state-machine step above and keeps the new state.
 impl[P, E] Queue[P, E] for MemQueue[P, E] {
-  fn enqueue(self, tasks: List[Task[P]]) -> (Self, Int) { mem_enqueue(self, tasks) }
-  fn claim(self, limit: Positive) -> (Self, List[TaskAttempt[P]]) { mem_claim(self, limit) }
+  fn enqueue(mut self, tasks: List[Task[P]]) -> Int {
+    let (next, added) = mem_enqueue(self, tasks)
+    self = next
+    added
+  }
+  fn claim(mut self, limit: Positive) -> List[TaskAttempt[P]] {
+    let (next, attempts) = mem_claim(self, limit)
+    self = next
+    attempts
+  }
   /// The trait accepts any results, so results for tasks that are not running
   /// (unknown, or already settled) are ignored rather than trusted.
-  fn record(self, results: List[TaskResult[P, E]]) -> Self {
-    mem_record(self, filter(results, |r| status_of(self, task_of(r).id) == Some(Running)))
+  fn record(mut self, results: List[TaskResult[P, E]]) -> () {
+    self = mem_record(self, filter(results, |r| status_of(self, task_of(r).id) == Some(Running)))
   }
-  fn release(self, attempts: List[TaskAttempt[P]]) -> Self { mem_release(self, attempts) }
+  fn release(mut self, attempts: List[TaskAttempt[P]]) -> () {
+    self = mem_release(self, attempts)
+  }
 }
 
 /// A one-line summary per task, for reports and assertions.

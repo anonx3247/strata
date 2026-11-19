@@ -66,19 +66,20 @@ type Order =
 
 trait Db {
   fn load(self, id: OrderId) -> Option[Order]
-  fn save(self, o: Order) -> Self          // values are immutable: saving returns the next state
+  fn save(mut self, o: Order) -> ()        // `mut self`: saving changes the store
 }
 
-fn ship[D: Db](db: D, id: OrderId, tracking: String) -> (D, Result[Order, ShipError])
-  ensures match it.1 { Ok(o) => o is Shipped, Err(_) => true }
+fn ship[D: Db](mut db: D, id: OrderId, tracking: String) -> Result[Order, ShipError]
+  ensures match it { Ok(o) => o is Shipped, Err(_) => true }
 {
   match db.load(id) {
-    None => (db, Err(NotFound)),
+    None => Err(NotFound),
     Some(Pending { id, lines }) => {
       let o = Shipped { id, lines, tracking }
-      (db.save(o), Ok(o))
+      db.save(o)
+      Ok(o)
     }
-    Some(_) => (db, Err(NotPending)),
+    Some(_) => Err(NotPending),
   }
 }
 
@@ -87,7 +88,8 @@ fn refund(o: Order) -> Cents
   = ?refund_policy          // a typed hole: callers still check
 
 test "a mocked store never breaks ship's contract" {
-  let (_, r) = ship(mock Db, "ord_zzz999", "TRK9")
+  let mut db = mock Db
+  let r = ship(db, "ord_zzz999", "TRK9")
   assert r is Ok || r is Err
 }
 ```
@@ -168,7 +170,7 @@ fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, |ac
 - **Laws** are checked by `strata verify` against every implementation, with generated inputs. In `examples/traits.strata`, `verify` finds that averaging (`Midpoint`) is not associative.
 - **Generic functions** are fuzzed with a type that actually implements their bounds.
 
-**Capabilities are traits too.** There are no separate effects: a backend (database, queue, console, clock) is a trait, and code that uses one takes an implementation as a parameter or holds it in a field: `fn ship[D: Db](db: D, ...)`, `type PrintWorker = { console: Console }`. A trait can be used as a type, meaning "any implementation". Values are immutable, so a stateful backend returns its next state (`fn save(self, o: Order) -> Self`). Tests pass a fake implementation or `mock Db`. Async and iterators will be designed as their own language features.
+**Capabilities are traits too.** There are no separate effects: a backend (database, queue, console, clock) is a trait, and code that uses one takes an implementation as a parameter or holds it in a field: `fn ship[D: Db](db: D, ...)`, `type PrintWorker = { console: Console }`. A trait can be used as a type, meaning "any implementation". A method that changes its value says `mut self` (`fn save(mut self, o: Order)`). Tests pass a fake implementation or `mock Db`. Async and iterators will be designed as their own language features.
 
 **Not yet:** methods without `self` (such as `fn empty() -> Self`), which need dispatch on the expected type; method names shared between traits.
 
@@ -191,6 +193,23 @@ module billing {
 - **Files or database, your choice.** `--file` and `add` accept a folder, where each `.strata` file is a module named after its path (`shop/orders.strata` → `shop.orders`, `main.strata` → the root module). `render --split DIR` writes the codebase back out one file per module, and it round-trips. In the database, definitions are stored under qualified names, so `orders.Line` and `billing.Line` can coexist. `edit --module m` targets a module, and `view module:m` shows one.
 - The viewer groups the sidebar by module (private definitions in italics) and lays the type map out as one region per module, with the modules others depend on placed first.
 - `examples/tasks/` is now four modules (`core`, `memory`, `print`, `sim`) that use each other only through their contracts.
+
+## Mutation: immutable by default, mutable when you say so
+
+```
+fn total(lines: List[Line]) -> Natural {
+  let mut sum = 0
+  for line in lines { sum = sum + line.qty * line.price }
+  sum
+}
+fn restock(mut line: Line, extra: Int) -> () { line.qty = line.qty + extra }   // changes the caller's variable
+```
+
+Procedural code is normal Strata. Variables are immutable unless declared `let mut`. `while` and `for` loops are available, and fields can be assigned (`line.qty = …`). Mutation is always *visible*:
+- a function that changes an argument declares it `mut`, and the caller must pass a mutable variable, which is updated when the call returns;
+- a method that changes its receiver takes `mut self`.
+
+There are no shared references, so nothing changes behind your back. Refinements still hold after every assignment: `line.qty = 120` fails if `qty` is a `Quantity`. Closures cannot change outer variables.
 
 ## Built-in types
 
