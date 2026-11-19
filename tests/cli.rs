@@ -657,7 +657,6 @@ fn unions_variants_as_types_and_narrowing() {
         "pattern `String`: expected `Circle | Square`, found `String`",
         "non-exhaustive match on `String`: `_` is not covered",
         "not every `Circle | Square` does",
-        "if both are meant, write the type: `Square | Circle`",
     ] {
         assert!(out.contains(e), "missing {e:?} in\n{out}");
     }

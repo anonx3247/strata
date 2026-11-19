@@ -550,9 +550,27 @@ impl<'a> Checker<'a> {
             }
             (Ty::Con(s, ea), Ty::Con(v, aa)) if self.env.variant_parent(v).as_deref() == Some(s.as_str()) && ea.len() == aa.len() => {
                 for (x, y) in ea.iter().zip(aa) {
-                    self.unify(x, y)?;
+                    self.fits(x, y).map_err(|_| mismatch())?;
                 }
                 Ok(())
+            }
+            // Values are never shared, so a `List[Circle]` can be read as a
+            // `List[Shape]` (type arguments fit member-wise). Only a `mut`
+            // parameter, which writes back into the caller's variable, needs
+            // the exact type; `call` checks that with `unify`. A trait's type
+            // arguments stay exact.
+            (Ty::Con(n1, ea), Ty::Con(n2, aa)) if n1 == n2 && ea.len() == aa.len() && !self.env.traits.contains_key(n1) => {
+                for (x, y) in ea.iter().zip(aa) {
+                    self.fits(x, y).map_err(|_| mismatch())?;
+                }
+                Ok(())
+            }
+            // a function that accepts more and returns less fits
+            (Ty::Fn(ep, er), Ty::Fn(ap, ar)) if ep.len() == ap.len() => {
+                for (x, y) in ep.iter().zip(ap) {
+                    self.fits(y, x).map_err(|_| mismatch())?;
+                }
+                self.fits(er, ar).map_err(|_| mismatch())
             }
             _ => self.unify(&e, &a),
         }
@@ -564,8 +582,35 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// The type of two things that must agree (`if` branches, list elements):
-    /// whichever holds the other, else an error.
+    /// The type of alternatives (`if` branches, `match` arms, list elements):
+    /// whichever holds the other, else, when both are fully known, their union.
+    fn join_union(&mut self, a: &Ty, b: &Ty, what: &str) -> Ty {
+        for (x, y) in [(a, b), (b, a)] {
+            let snap = (self.subst.clone(), self.pending.len());
+            if self.fits(x, y).is_ok() {
+                return x.clone();
+            }
+            self.subst = snap.0;
+            self.pending.truncate(snap.1);
+        }
+        let (ra, rb) = (self.resolve(a), self.resolve(b));
+        if !self.has_var(&ra) && !self.has_var(&rb) {
+            return self.union_of(vec![ra, rb]);
+        }
+        self.join(a, b, what)
+    }
+
+    fn has_var(&self, t: &Ty) -> bool {
+        match self.resolve(t) {
+            Ty::Var(_) => true,
+            Ty::Con(_, xs) | Ty::Union(xs) => xs.iter().any(|x| self.has_var(x)),
+            Ty::Fn(ps, r) => ps.iter().any(|x| self.has_var(x)) || self.has_var(&r),
+            _ => false,
+        }
+    }
+
+    /// The type of two things that must be the same (`==` operands): whichever
+    /// holds the other, else an error.
     fn join(&mut self, a: &Ty, b: &Ty, what: &str) -> Ty {
         for (x, y) in [(a, b), (b, a)] {
             let snap = (self.subst.clone(), self.pending.len());
@@ -576,7 +621,7 @@ impl<'a> Checker<'a> {
             self.pending.truncate(snap.1);
         }
         let (sa, sb) = (self.show(a), self.show(b));
-        self.err(format!("{what}: expected `{sa}`, found `{sb}` (if both are meant, write the type: `{sa} | {sb}`)"));
+        self.err(format!("{what}: expected `{sa}`, found `{sb}`"));
         a.clone()
     }
 
@@ -916,7 +961,19 @@ impl<'a> Checker<'a> {
         None
     }
 
-    fn call(&mut self, fty: Ty, args: &[Expr], what: &str) -> Ty {
+    /// Which parameters of a named function or trait method are `mut`.
+    fn mut_mask(&self, name: &str) -> Vec<bool> {
+        if self.lookup(name).is_some() {
+            return vec![];
+        }
+        if let Some(f) = self.env.fns.get(name) {
+            return f.params.iter().map(|p| p.mutable).collect();
+        }
+        let tm = self.env.method_trait.get(name).and_then(|t| self.env.traits.get(t)).and_then(|tr| tr.methods.iter().find(|m| m.decl.name == name));
+        tm.map(|m| m.decl.params.iter().map(|p| p.mutable).collect()).unwrap_or_default()
+    }
+
+    fn call_with(&mut self, fty: Ty, args: &[Expr], what: &str, muts: &[bool]) -> Ty {
         let fty = self.resolve(&fty);
         let (ps, r) = match fty {
             Ty::Fn(ps, r) => (ps, *r),
@@ -937,7 +994,15 @@ impl<'a> Checker<'a> {
         }
         for (i, (p, a)) in ps.iter().zip(args).enumerate() {
             let at = self.infer_with(a, Some(p));
-            self.expect(p, &at, &format!("{what}, argument {}", i + 1));
+            if muts.get(i).copied().unwrap_or(false) {
+                // the callee may put any value of its parameter type into the caller's variable
+                if self.unify(p, &at).is_err() {
+                    let (want, got) = (self.show(p), self.show(&at));
+                    self.err(format!("{what}, argument {}: expected exactly `{want}`, found `{got}` (the parameter is `mut`, so the function can put any `{want}` into the caller's variable)", i + 1));
+                }
+            } else {
+                self.expect(p, &at, &format!("{what}, argument {}", i + 1));
+            }
         }
         r
     }
@@ -1060,7 +1125,7 @@ impl<'a> Checker<'a> {
                     let et = self.infer_with(el, Some(&t));
                     match &want {
                         Some(w) => self.expect(w, &et, "list element"),
-                        None => t = self.join(&t, &et, "list element"),
+                        None => t = self.join_union(&t, &et, "list element"),
                     }
                 }
                 Ty::Con("List".into(), vec![t])
@@ -1166,7 +1231,11 @@ impl<'a> Checker<'a> {
                     _ => "call".into(),
                 };
                 let ft = self.infer(f);
-                self.call(ft, args, &what)
+                let muts = match &**f {
+                    Expr::Var(n) => self.mut_mask(n),
+                    _ => vec![],
+                };
+                self.call_with(ft, args, &what, &muts)
             }
             Expr::Method(recv, m, args) => {
                 let mut all = vec![(**recv).clone()];
@@ -1181,7 +1250,8 @@ impl<'a> Checker<'a> {
                     self.err(format!("unknown function `{m}`"));
                     return self.fresh();
                 };
-                self.call(ft, &all, &format!("call to `{m}`"))
+                let muts = self.mut_mask(m);
+                self.call_with(ft, &all, &format!("call to `{m}`"), &muts)
             }
             Expr::Field(r, f) => {
                 // `o.status` narrowed by an enclosing `match o.status { … }`
@@ -1269,7 +1339,7 @@ impl<'a> Checker<'a> {
                     None => {
                         let tt = self.infer(t);
                         let ft = self.infer_with(f, Some(&tt));
-                        self.join(&tt, &ft, "if branches")
+                        self.join_union(&tt, &ft, "if branches")
                     }
                 }
             }
@@ -1301,7 +1371,7 @@ impl<'a> Checker<'a> {
                             self.expect(&r, &bt, "match arm");
                             r
                         }
-                        Some(r) => self.join(&r, &bt, "match arms"),
+                        Some(r) => self.join_union(&r, &bt, "match arms"),
                         None => bt,
                     });
                     self.scopes.pop();
@@ -1442,7 +1512,7 @@ impl<'a> Checker<'a> {
                 }
                 match self.ret.clone() {
                     Some(r) => {
-                        if self.unify(&r, &passed).is_err() {
+                        if self.fits(&r, &passed).is_err() {
                             let (want, shown) = (self.show(&passed), self.show(&r));
                             let what = if *kind == TryKind::Result { "the error" } else { "`None`" };
                             self.err(format!("`{op}` returns {what} early, so the result type must be `{want}`, found `{shown}` (handle it here with `except`)"));
