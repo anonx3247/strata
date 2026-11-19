@@ -104,12 +104,12 @@ fn prec(e: &Expr) -> u8 {
             BinOp::Or => 1,
             BinOp::And => 2,
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => 3,
-            BinOp::Concat => 4,
             BinOp::Add | BinOp::Sub => 5,
             BinOp::Mul | BinOp::Div | BinOp::Mod => 6,
         },
         Expr::Is(..) => 3,
-        Expr::Lambda(..) => 0,
+        Expr::Lambda(..) | Expr::Return(..) => 0,
+        Expr::Except(..) => 7,
         Expr::Un(..) => 7,
         _ => 8,
     }
@@ -151,7 +151,7 @@ fn broken(open: &str, items: Vec<String>, close: &str, d: usize) -> String {
 pub fn expr(e: &Expr, d: usize) -> String {
     let inline = expr_inline(e, d);
     // a chain whose parts had to break is laid out one item per line
-    let chain = matches!(e, Expr::Method(..) | Expr::Bin(BinOp::And | BinOp::Or | BinOp::Concat, ..));
+    let chain = matches!(e, Expr::Method(..) | Expr::Bin(BinOp::And | BinOp::Or | BinOp::Add, ..));
     if !too_long(&inline, d) && !(chain && inline.contains('\n')) {
         return inline;
     }
@@ -189,13 +189,10 @@ pub fn expr(e: &Expr, d: usize) -> String {
             d,
         ),
         Expr::Ctor(c, CtorArgs::Positional(es)) => format!("{c}{}", broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d)),
-        // |x| long body  ->  body on its own line
-        Expr::Lambda(ps, b) => {
-            let head = if ps.is_empty() { "||".to_string() } else { format!("|{}|", ps.join(", ")) };
-            format!("{head}\n{}{}", ind(d + 1), expr(b, d + 1))
-        }
-        // a && b && c  ->  one operand per line
-        Expr::Bin(op @ (BinOp::And | BinOp::Or | BinOp::Concat), _, _) => {
+        // x -> long body  ->  body on its own line (a block body breaks by itself)
+        Expr::Lambda(ps, b) if !matches!(**b, Expr::Block(..)) => format!("{} ->\n{}{}", lambda_params(ps), ind(d + 1), expr(b, d + 1)),
+        // a && b && c, "x" + y + "z"  ->  one operand per line
+        Expr::Bin(op @ (BinOp::And | BinOp::Or | BinOp::Add), _, _) => {
             let mut parts = Vec::new();
             let mut cur = e;
             while let Expr::Bin(o, l, r) = cur {
@@ -212,6 +209,23 @@ pub fn expr(e: &Expr, d: usize) -> String {
             s
         }
         _ => inline,
+    }
+}
+
+/// `x`, `(a, b)`, `(s: String)`, `()`
+fn lambda_params(ps: &[LamParam]) -> String {
+    match ps {
+        [p] if p.ty.is_none() => p.name.clone(),
+        _ => {
+            let parts: Vec<String> = ps
+                .iter()
+                .map(|p| match &p.ty {
+                    Some(t) => format!("{}: {}", p.name, ty(t)),
+                    None => p.name.clone(),
+                })
+                .collect();
+            format!("({})", parts.join(", "))
+        }
     }
 }
 
@@ -249,9 +263,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Call(f, es) => format!("{}({})", wrap(f, 8, d), args(es, d)),
         Expr::Method(r, m, es) => format!("{}.{m}({})", wrap(r, 8, d), args(es, d)),
         Expr::Field(r, f) => format!("{}.{f}", wrap(r, 8, d)),
-        Expr::Lambda(ps, b) => {
-            if ps.is_empty() { format!("|| {}", expr(b, d)) } else { format!("|{}| {}", ps.join(", "), expr(b, d)) }
-        }
+        Expr::Lambda(ps, b) => format!("{} -> {}", lambda_params(ps), expr(b, d)),
         Expr::Bin(op, l, r) => {
             let p = prec(e);
             if *op == BinOp::Implies {
@@ -282,6 +294,34 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         }
         Expr::Block(..) => block(e, d),
         Expr::Mock(t) => format!("mock {}", ty(t)),
+        Expr::Interp(parts) => {
+            let mut s = "f\"".to_string();
+            for p in parts {
+                match p {
+                    StrPart::Lit(l) => s += &l.replace('"', "\\\"").replace('\n', "\\n").replace('{', "{{").replace('}', "}}"),
+                    StrPart::Expr(e) => s += &format!("{{{}}}", expr_inline(e, 0)),
+                }
+            }
+            s + "\""
+        }
+        Expr::Return(x) if **x == Expr::Unit => "return".into(),
+        Expr::Return(x) => format!("return {}", expr(x, d)),
+        Expr::Try(x, k) => format!("{}{}", wrap(x, 8, d), if *k == TryKind::Result { "!" } else { "?" }),
+        Expr::Except(x, name, fb) => {
+            let head = match name {
+                Some(n) => format!("{} except {n}", wrap(x, 8, d)),
+                None => format!("{} except", wrap(x, 8, d)),
+            };
+            // a short fallback stays on the line: `load(p) except { default() }`
+            let short = match &**fb {
+                Expr::Block(..) => None,
+                e => Some(expr(e, d + 1)).filter(|s| !s.contains('\n') && !too_long(&format!("{head} {{ {s} }}"), d)),
+            };
+            match short {
+                Some(s) => format!("{head} {{ {s} }}"),
+                None => format!("{head} {}", block(fb, d)),
+            }
+        }
     }
 }
 

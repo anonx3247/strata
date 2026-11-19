@@ -3,12 +3,35 @@ pub enum Tok {
     Int(i64),
     Float(f64),
     Str(String),
+    /// `f"..."`: literal text and the source of each `{expr}`, with the
+    /// line and column where it starts.
+    FStr(Vec<FPart>),
     Ident(String),
     /// `?name`
     Hole(String),
     Doc(String),
     Sym(&'static str),
     Eof,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FPart {
+    Lit(String),
+    Code(String, usize, usize),
+}
+
+/// The character an escape like `\n` stands for (regex escapes like `\d` are kept).
+fn escape(c: char, s: &mut String) {
+    match c {
+        'n' => s.push('\n'),
+        't' => s.push('\t'),
+        '"' => s.push('"'),
+        '\\' => s.push('\\'),
+        other => {
+            s.push('\\');
+            s.push(other);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -23,7 +46,7 @@ pub struct Token {
 
 const SYMS: &[&str] = &[
     "==>", "...", "..", "->", "=>", "==", "!=", "<=", ">=", "&&", "||", "++", "(", ")", "{", "}",
-    "[", "]", ",", ":", ";", ".", "=", "<", ">", "+", "-", "*", "/", "%", "!", "|",
+    "[", "]", ",", ":", ";", ".", "=", "<", ">", "+", "-", "*", "/", "%", "!", "|", "?",
 ];
 
 /// A `//` comment. The parser attaches it to the definition, field, variant,
@@ -103,6 +126,98 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), String
             push(Tok::Int(n), &mut nl);
             continue;
         }
+        if c == 'f' && chars.get(i + 1) == Some(&'"') {
+            i += 2;
+            col += 2;
+            let mut parts = Vec::new();
+            let mut lit = String::new();
+            loop {
+                let Some(&ch) = chars.get(i) else { return Err(format!("{sl}:{sc}: unterminated f-string")) };
+                match ch {
+                    '"' => {
+                        i += 1;
+                        col += 1;
+                        break;
+                    }
+                    '\\' if i + 1 < chars.len() => {
+                        escape(chars[i + 1], &mut lit);
+                        i += 2;
+                        col += 2;
+                    }
+                    '{' if chars.get(i + 1) == Some(&'{') => {
+                        lit.push('{');
+                        i += 2;
+                        col += 2;
+                    }
+                    '}' if chars.get(i + 1) == Some(&'}') => {
+                        lit.push('}');
+                        i += 2;
+                        col += 2;
+                    }
+                    '}' => return Err(format!("{line}:{col}: a lone `}}` in an f-string: write `}}}}`")),
+                    '{' => {
+                        if !lit.is_empty() {
+                            parts.push(FPart::Lit(std::mem::take(&mut lit)));
+                        }
+                        i += 1;
+                        col += 1;
+                        let (cl, cc) = (line, col);
+                        let start = i;
+                        let mut depth = 0;
+                        // find the matching `}`, skipping over nested strings
+                        loop {
+                            let Some(&k) = chars.get(i) else { return Err(format!("{cl}:{cc}: unterminated `{{` in an f-string")) };
+                            match k {
+                                '{' | '(' | '[' => depth += 1,
+                                ')' | ']' => depth -= 1,
+                                '}' if depth == 0 => break,
+                                '}' => depth -= 1,
+                                '"' => {
+                                    i += 1;
+                                    col += 1;
+                                    while i < chars.len() && chars[i] != '"' {
+                                        if chars[i] == '\\' {
+                                            i += 1;
+                                            col += 1;
+                                        }
+                                        i += 1;
+                                        col += 1;
+                                    }
+                                }
+                                '\n' => {
+                                    line += 1;
+                                    col = 0;
+                                }
+                                _ => {}
+                            }
+                            i += 1;
+                            col += 1;
+                        }
+                        let code: String = chars[start..i].iter().collect();
+                        if code.trim().is_empty() {
+                            return Err(format!("{cl}:{cc}: empty `{{}}` in an f-string"));
+                        }
+                        parts.push(FPart::Code(code, cl, cc));
+                        i += 1;
+                        col += 1;
+                    }
+                    _ => {
+                        if ch == '\n' {
+                            line += 1;
+                            col = 0;
+                        }
+                        lit.push(ch);
+                        i += 1;
+                        col += 1;
+                    }
+                }
+            }
+            if !lit.is_empty() {
+                parts.push(FPart::Lit(lit));
+            }
+            push(Tok::FStr(parts), &mut nl);
+            continue;
+        }
         if c.is_alphabetic() || c == '_' || (c == '?' && i + 1 < chars.len() && chars[i + 1].is_alphabetic()) {
             let hole = c == '?';
             let start = if hole { i + 1 } else { i };
@@ -121,17 +236,7 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), String
             while i < chars.len() && chars[i] != '"' {
                 if chars[i] == '\\' && i + 1 < chars.len() {
                     i += 1;
-                    match chars[i] {
-                        'n' => s.push('\n'),
-                        't' => s.push('\t'),
-                        '"' => s.push('"'),
-                        '\\' => s.push('\\'),
-                        // keep regex escapes like \d intact
-                        other => {
-                            s.push('\\');
-                            s.push(other);
-                        }
-                    }
+                    escape(chars[i], &mut s);
                 } else {
                     if chars[i] == '\n' {
                         line += 1;

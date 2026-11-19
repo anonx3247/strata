@@ -221,12 +221,12 @@ impl Decl {
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum BinOp {
+    /// Numbers, and joining strings or lists (`"a" + "b"`, `[1] + [2]`).
     Add,
     Sub,
     Mul,
     Div,
     Mod,
-    Concat,
     Eq,
     Ne,
     Lt,
@@ -247,7 +247,6 @@ impl BinOp {
             Mul => "*",
             Div => "/",
             Mod => "%",
-            Concat => "++",
             Eq => "==",
             Ne => "!=",
             Lt => "<",
@@ -339,7 +338,8 @@ pub enum Expr {
     /// `e.f(args)` — method-call sugar for `f(e, args)`
     Method(Box<Expr>, String, Vec<Expr>),
     Field(Box<Expr>, String),
-    Lambda(Vec<String>, Box<Expr>),
+    /// `x -> body`, `(a, b) -> body`, `(s: String) -> body`
+    Lambda(Vec<LamParam>, Box<Expr>),
     Bin(BinOp, Box<Expr>, Box<Expr>),
     Un(UnOp, Box<Expr>),
     /// `e is Shipped`
@@ -350,6 +350,38 @@ pub enum Expr {
     /// `mock Db`: an implementation of a trait whose methods return generated
     /// values that satisfy the trait's contracts.
     Mock(TypeExpr),
+    /// `return e` (`return` alone returns `()`): leave the enclosing function
+    /// or lambda early.
+    Return(Box<Expr>),
+    /// `e!`: the `Ok` value of a `Result`, or return its `Err` from the function.
+    /// `e?`: the `Some` value of an `Option`, or return `None` from the function.
+    Try(Box<Expr>, TryKind),
+    /// `e except { fallback }`, `e except err { fallback }`: the `Ok` / `Some`
+    /// value, or else the fallback, which can use the error under `err`.
+    Except(Box<Expr>, Option<String>, Box<Expr>),
+    /// `f"{name} has {len(xs)} items"`: each part shown as by `to_string`.
+    Interp(Vec<StrPart>),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum StrPart {
+    Lit(String),
+    Expr(Expr),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum TryKind {
+    /// `!` on a `Result`
+    Result,
+    /// `?` on an `Option`
+    Option,
+}
+
+/// A lambda parameter, with an optional type: `x` or `x: Int`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LamParam {
+    pub name: String,
+    pub ty: Option<TypeExpr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

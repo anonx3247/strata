@@ -99,8 +99,25 @@ pub const BUILTINS: &[(&str, &str, &str)] = &[
     ("max", "", "(Int, Int) -> Int"),
     ("max", "", "(Float, Float) -> Float"),
     ("matches", "", "(String, String) -> Bool"),
-    ("str_len", "", "(String) -> Int"),
     ("starts_with", "", "(String, String) -> Bool"),
+    // strings are UTF-8 and indexed by character
+    ("ends_with", "", "(String, String) -> Bool"),
+    ("chars", "", "(String) -> List[String]"),
+    ("get", "", "(String, Int) -> Option[String]"),
+    ("slice", "", "(String, Int, Int) -> String"),
+    ("slice", "A", "(List[A], Int, Int) -> List[A]"),
+    ("index_of", "", "(String, String) -> Option[Int]"),
+    ("replace", "", "(String, String, String) -> String"),
+    ("lines", "", "(String) -> List[String]"),
+    ("repeat", "", "(String, Int) -> String"),
+    ("reverse", "", "(String) -> String"),
+    ("to_upper", "", "(String) -> String"),
+    ("to_lower", "", "(String) -> String"),
+    ("is_digit", "", "(String) -> Bool"),
+    ("is_alpha", "", "(String) -> Bool"),
+    ("is_space", "", "(String) -> Bool"),
+    ("ord", "", "(String) -> Int"),
+    ("chr", "", "(Int) -> String"),
     ("to_string", "A", "(A) -> String"),
 ];
 
@@ -339,6 +356,9 @@ struct Checker<'a> {
     lambda_floor: usize,
     /// How many loops enclose the code being checked (for `break`/`continue`).
     loops: usize,
+    /// What `return`, `!` and `?` return from: the enclosing function or
+    /// lambda's result type (`None` in tests, laws and refinements).
+    ret: Option<Ty>,
 }
 
 impl<'a> Checker<'a> {
@@ -641,7 +661,9 @@ impl<'a> Checker<'a> {
             self.expect(&Ty::Bool, &t, "requires clause");
             obligations.push(format!("requires {}", crate::printer::expr(r, 0)));
         }
+        let outer = self.ret.replace(ret.clone());
         let bt = self.infer_with(&f.body, Some(&ret));
+        self.ret = outer;
         self.expect(&ret, &bt, "function body");
         self.scopes.push(HashMap::new());
         self.bind("it", ret.clone());
@@ -749,13 +771,7 @@ impl<'a> Checker<'a> {
         if let (Expr::Lambda(ps, body), Some(exp)) = (e, expected) {
             if let Ty::Fn(pts, _) = self.resolve(exp) {
                 if pts.len() == ps.len() {
-                    self.scopes.push(HashMap::new());
-                    for (p, t) in ps.iter().zip(pts.iter()) {
-                        self.bind(p, t.clone());
-                    }
-                    let r = self.infer(body);
-                    self.scopes.pop();
-                    return Ty::Fn(pts, Box::new(r));
+                    return self.lambda(ps, Some(pts), body);
                 }
             }
         }
@@ -764,6 +780,37 @@ impl<'a> Checker<'a> {
             return exp.clone();
         }
         self.infer(e)
+    }
+
+    /// A lambda, with parameter types from context when they are known.
+    /// Written parameter types must agree with them.
+    fn lambda(&mut self, ps: &[LamParam], from_context: Option<Vec<Ty>>, body: &Expr) -> Ty {
+        let pts: Vec<Ty> = match from_context {
+            Some(ts) => ts,
+            None => ps.iter().map(|_| self.fresh()).collect(),
+        };
+        for (p, t) in ps.iter().zip(&pts) {
+            if let Some(w) = &p.ty {
+                self.check_refined(w);
+                let wt = self.lower(w, &HashMap::new());
+                self.expect(&wt, t, &format!("lambda parameter `{}`", p.name));
+            }
+        }
+        self.scopes.push(HashMap::new());
+        for (p, t) in ps.iter().zip(&pts) {
+            self.bind(&p.name, t.clone());
+        }
+        let floor = std::mem::replace(&mut self.lambda_floor, self.scopes.len() - 1);
+        let loops = std::mem::take(&mut self.loops);
+        let r = self.fresh();
+        let outer = self.ret.replace(r.clone());
+        let bt = self.infer(body);
+        self.expect(&r, &bt, "lambda body");
+        self.ret = outer;
+        self.loops = loops;
+        self.lambda_floor = floor;
+        self.scopes.pop();
+        Ty::Fn(pts, Box::new(r))
     }
 
     fn record_hole(&mut self, name: &str, t: Ty) {
@@ -928,35 +975,18 @@ impl<'a> Checker<'a> {
                 let rt = self.infer(r);
                 self.field_type(&rt, f)
             }
-            Expr::Lambda(ps, body) => {
-                self.scopes.push(HashMap::new());
-                let pts: Vec<Ty> = ps.iter().map(|_| self.fresh()).collect();
-                for (p, t) in ps.iter().zip(&pts) {
-                    self.bind(p, t.clone());
-                }
-                let floor = std::mem::replace(&mut self.lambda_floor, self.scopes.len() - 1);
-                let loops = std::mem::take(&mut self.loops);
-                let r = self.infer(body);
-                self.loops = loops;
-                self.lambda_floor = floor;
-                self.scopes.pop();
-                Ty::Fn(pts, Box::new(r))
-            }
+            Expr::Lambda(ps, body) => self.lambda(ps, None, body),
             Expr::Bin(op, l, r) => {
                 let (lt, rt) = (self.infer(l), self.infer(r));
                 use BinOp::*;
                 match op {
-                    Add | Sub | Mul | Div | Mod => {
-                        self.numeric(&lt, &rt, op);
+                    // `+` also joins strings and lists
+                    Add if [&lt, &rt].iter().any(|t| joinable(&self.resolve(t))) => {
+                        self.expect(&lt, &rt, "`+` operands");
                         lt
                     }
-                    Concat => {
-                        self.expect(&lt, &rt, "`++` operands");
-                        match self.resolve(&lt) {
-                            Ty::Str | Ty::Var(_) => {}
-                            Ty::Con(n, _) if n == "List" => {}
-                            t => self.err(format!("`++` works on String or List, found `{}`", show_ty(&t))),
-                        }
+                    Add | Sub | Mul | Div | Mod => {
+                        self.numeric(&lt, &rt, op);
                         lt
                     }
                     Eq | Ne => {
@@ -1099,6 +1129,90 @@ impl<'a> Checker<'a> {
                 let t = self.infer(last);
                 self.scopes.pop();
                 t
+            }
+            Expr::Interp(parts) => {
+                for p in parts {
+                    if let StrPart::Expr(e) = p {
+                        self.infer(e);
+                    }
+                }
+                Ty::Str
+            }
+            Expr::Return(x) => {
+                match self.ret.clone() {
+                    Some(r) => {
+                        let t = self.infer_with(x, Some(&r));
+                        self.expect(&r, &t, "`return` value");
+                    }
+                    None => {
+                        self.err("`return` outside a function");
+                        self.infer(x);
+                    }
+                }
+                // `return` never produces a value where it stands
+                self.fresh()
+            }
+            Expr::Try(x, kind) => {
+                let t = self.infer(x);
+                let (op, ty_name) = match kind {
+                    TryKind::Result => ("!", "Result"),
+                    TryKind::Option => ("?", "Option"),
+                };
+                let inner = self.fresh();
+                let (wrapped, passed) = match kind {
+                    TryKind::Result => {
+                        let e = self.fresh();
+                        let out = self.fresh();
+                        (Ty::Con("Result".into(), vec![inner.clone(), e.clone()]), Ty::Con("Result".into(), vec![out, e]))
+                    }
+                    TryKind::Option => {
+                        let out = self.fresh();
+                        (Ty::Con("Option".into(), vec![inner.clone()]), Ty::Con("Option".into(), vec![out]))
+                    }
+                };
+                if self.unify(&wrapped, &t).is_err() {
+                    let shown = self.show(&t);
+                    let hint = if *kind == TryKind::Result { "use `?` on an Option" } else { "use `!` on a Result" };
+                    let article = if *kind == TryKind::Result { "a" } else { "an" };
+                    self.err(format!("`{op}` needs {article} {ty_name}, found `{shown}` ({hint})"));
+                    return inner;
+                }
+                match self.ret.clone() {
+                    Some(r) => {
+                        if self.unify(&r, &passed).is_err() {
+                            let (want, shown) = (self.show(&passed), self.show(&r));
+                            let what = if *kind == TryKind::Result { "the error" } else { "`None`" };
+                            self.err(format!("`{op}` returns {what} early, so the result type must be `{want}`, found `{shown}` (handle it here with `except`)"));
+                        }
+                    }
+                    None => self.err(format!("`{op}` outside a function: handle the {ty_name} with `except` or `match`")),
+                }
+                inner
+            }
+            Expr::Except(x, name, fb) => {
+                let t = self.infer(x);
+                let (inner, err_ty) = match self.resolve(&t) {
+                    Ty::Con(n, args) if n == "Result" && args.len() == 2 => (args[0].clone(), Some(args[1].clone())),
+                    Ty::Con(n, args) if n == "Option" && args.len() == 1 => {
+                        if let Some(n) = name {
+                            self.err(format!("`except {n}`: an Option has no error to name (`None` carries no value), write `except {{ ... }}`"));
+                        }
+                        (args[0].clone(), None)
+                    }
+                    other => {
+                        let shown = show_ty(&other);
+                        self.err(format!("`except` handles a Result or an Option, found `{shown}`"));
+                        (self.fresh(), None)
+                    }
+                };
+                self.scopes.push(HashMap::new());
+                if let (Some(n), Some(et)) = (name, err_ty) {
+                    self.bind(n, et);
+                }
+                let ft = self.infer_with(fb, Some(&inner));
+                self.expect(&inner, &ft, "`except` fallback");
+                self.scopes.pop();
+                inner
             }
             Expr::Mock(t) => {
                 let ty = self.lower(t, &HashMap::new());
@@ -1313,6 +1427,15 @@ impl<'a> Checker<'a> {
     }
 }
 
+/// Types that `+` joins rather than adds.
+fn joinable(t: &Ty) -> bool {
+    match t {
+        Ty::Str => true,
+        Ty::Con(n, _) => n == "List",
+        _ => false,
+    }
+}
+
 pub fn irrefutable(p: &Pattern) -> bool {
     matches!(p, Pattern::Wild | Pattern::Bind(_))
 }
@@ -1506,6 +1629,7 @@ pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<String, TypeExpr>>
         pending: Vec::new(),
         lambda_floor: 0,
         loops: 0,
+        ret: None,
     };
     let vars: HashMap<String, Ty> = f.type_params.iter().map(|p| (p.clone(), c.fresh())).collect();
     let bounded: Vec<&Bound> = f.bounds.iter().collect();
@@ -1579,6 +1703,7 @@ pub fn check(prog: &Program) -> CheckReport {
             pending: Vec::new(),
             lambda_floor: 0,
             loops: 0,
+            ret: None,
         };
         let mut obligations = Vec::new();
         match &d.kind {

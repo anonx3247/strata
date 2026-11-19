@@ -23,9 +23,9 @@ strata ui --file examples/tasks                   # browse it
 
 | Reference (Python / TS) | Strata |
 |---|---|
-| `Task[T: BaseModel]` (Pydantic) | `type Task[P] = { id: TaskId, kind: Kind, payload: P }`. Every type is JSON-serialisable, so no bound is needed. |
+| `Task[T: BaseModel]` (Pydantic) | `type Task[P] = { id: TaskId, kind: NonEmptyString, payload: P }`. Every type is JSON-serialisable, so no bound is needed. |
 | `TaskResult(result: Literal[...], error: BaseModel \| None)` | `Succeeded \| Failed { error: E } \| Skipped`: "success with an error" cannot be represented |
-| `TaskPolicy` with `Field(ge=1)` validators | refined field types (`Positive`, `Retries`): an invalid policy can't be constructed |
+| `TaskPolicy` with `Field(ge=1)` validators | refined field types (`Positive`, `Natural`): an invalid policy can't be constructed |
 | `Producer` / `Worker` protocols + `resources` | `trait Producer[P]` / `trait Worker[P, E]`: an implementation carries its resources in its fields (`PrintWorker { console }`) |
 | `TaskQueue` ABC + `SqliteTaskQueue` | `trait Queue[P, E]` (enqueue / claim / record / release, **with contracts**) + one implementation per backend; operations return the backend's next state |
 | "entrypoints contain only wiring" | entrypoints take the queue and worker as values; see `demo` |
@@ -37,7 +37,7 @@ strata ui --file examples/tasks                   # browse it
 
 `MemQueue` states its invariants in its type, including *a pending task always has an attempt left*. `strata verify` runs `simulate` on random policies and random sequences of producer runs and worker batches (including workers that drop results), through the real `run_producer` / `run_worker` and the in-memory backend. It found a counterexample in about 3 steps:
 
-```
+```text
 retries = 0
 Produce [t2, t0, t5]  →  Work (worker drops one result)  →  release
 ⇒ t2, t0, t5 are Pending with attempts == max_attempts

@@ -53,35 +53,34 @@ strata ui                          # open http://127.0.0.1:7777: the live viewer
 
 `examples/bank.strata` is the smallest complete example. `examples/orders.strata` is the larger one excerpted below. `examples/tasks/` is a port of a real library, with a write-up of what verification found.
 
-```
+```rust
 type OrderId  = String where matches(it, "ord_[a-z0-9]{6}")
 type Quantity = Int where 1 <= it && it <= 99
 type Cents    = Int where it >= 0
-type NonEmpty[T] = List[T] where len(it) > 0
 
-type Line = { sku: String, qty: Quantity, unit_price: Cents }
+type Line = { sku: NonEmptyString, qty: Quantity, unit_price: Cents }
 
 type Order =
-  | Pending   { id: OrderId, lines: NonEmpty[Line] }
-  | Shipped   { id: OrderId, lines: NonEmpty[Line], tracking: String }
-  | Cancelled { id: OrderId, reason: String }
+  | Pending   { id: OrderId, lines: NonEmpty[Line] }       // NonEmpty, NonEmptyString: from the prelude
+  | Shipped   { id: OrderId, lines: NonEmpty[Line], tracking: NonEmptyString }
+  | Cancelled { id: OrderId, reason: NonEmptyString }
 
 trait Db {
   fn load(self, id: OrderId) -> Option[Order]
   fn save(mut self, o: Order) -> ()        // `mut self`: saving changes the store
 }
 
-fn ship[D: Db](mut db: D, id: OrderId, tracking: String) -> Result[Order, ShipError]
+fn ship[D: Db](mut db: D, id: OrderId, tracking: NonEmptyString) -> Result[Order, ShipError]
   ensures match it { Ok(o) => o is Shipped, Err(_) => true }
 {
-  match db.load(id) {
-    None => Err(NotFound),
-    Some(Pending { id, lines }) => {
+  let order = db.load(id) except { return Err(NotFound) }
+  match order {
+    Pending { id, lines } => {
       let o = Shipped { id, lines, tracking }
       db.save(o)
       Ok(o)
     }
-    Some(_) => Err(NotPending),
+    _ => Err(NotPending),
   }
 }
 
@@ -101,7 +100,7 @@ test "a mocked store never breaks ship's contract" {
 ```text
 $ strata check                               # static errors are caught before running
 error in status: non-exhaustive match on `Order`: `Cancelled { .. }` is not covered
-error in sneaky: performs `Db.load` but `Db` is neither declared by `sneaky` nor handled here
+error in sneaky: calling `load`: `String` does not implement `Db`
 error in bad_qty: refinement violated at compile time in field `Line.qty`: 120 does not satisfy `Quantity` (where 1 <= it && it <= 99)
 
 $ strata holes
@@ -137,7 +136,7 @@ $ strata run ship '["ord_abc123","TRK1"]' --mock --trace
 
 Refinements are structural: `type Quantity = Int where 1 <= it && it <= 99` is an `Int` plus a check, not a new nominal type. Any `Int` can be passed where a `Quantity` is expected, with no cast, and the check happens where the value crosses the boundary: at compile time for literals, at runtime otherwise, and under `verify`. A constraint used in one place doesn't need a name at all:
 
-```
+```rust
 fn pick(level: Int where 5 <= it && it <= 13) -> Positive { level - 4 }
 fn halve(n: Natural) -> Int where it >= 0 && it * 2 <= n { n / 2 }   // results may mention parameters
 ```
@@ -146,7 +145,7 @@ The prelude provides the common ones: `Natural`, `Positive`, `Negative`, `NonZer
 
 A bare alias adds nothing, so `type Name = String` is an error. Constrain it with `where`, or make it a separate nominal type:
 
-```
+```rust
 distinct type UserId = String where matches(it, "u_[0-9]+")
 let id = UserId("u_42")      // explicit construction, checked
 id.value                     // the underlying String
@@ -158,10 +157,10 @@ A `distinct` type never mixes with its base or with other distinct types (`Order
 
 A trait describes what a *type* can do. The implementation is chosen by the type of the value. A type can implement any number of traits, so they form a graph rather than a hierarchy.
 
-```
+```rust
 trait Describe { fn describe(self) -> String  ensures len(it) > 0 }
 trait Summary: Describe + Priced {                       // supertraits
-  fn summary(self) -> String { self.describe() ++ ": " ++ to_string(self.price()) ++ "c" }   // default method
+  fn summary(self) -> String { f"{self.describe()}: {self.price()}c" }   // default method
 }
 trait Combine {
   fn combine(self, other: Self) -> Self
@@ -169,7 +168,7 @@ trait Combine {
 }
 impl Combine for Money { ... }
 impl[T] Combine for List[T] { ... }                      // generic impls; built-in types work too
-fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, |acc, x| acc.combine(x)) }
+fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, (acc, x) -> acc.combine(x)) }
 ```
 
 - **Contracts** (`requires` / `ensures`) on a trait method bind every implementation.
@@ -182,7 +181,7 @@ fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, |ac
 
 ## Modules: units that meet only through contracts
 
-```
+```rust
 module orders {
   pub type Order = { id: OrderId, lines: NonEmpty[Line] }
   pub fn ship(id: OrderId) -> Result[Order, ShipError] / {Db}  ensures ...
@@ -202,7 +201,7 @@ module billing {
 
 ## Mutation: immutable by default, mutable when you say so
 
-```
+```rust
 fn total(lines: List[Line]) -> Natural {
   let mut sum = 0
   for line in lines { sum = sum + line.qty * line.price }
@@ -213,9 +212,9 @@ fn restock(mut line: Line, extra: Int) -> () { line.qty = line.qty + extra }   /
 
 Procedural code is normal Strata: `loop { … }` repeats until `break`, and `continue` skips to the next iteration. Method chains can be split across lines:
 
-```
+```rust
 let best = scores
-  .filter(|s| s > 0)
+  .filter(s -> s > 0)
   .sort()
   .reverse()
   .take(3)
@@ -226,6 +225,29 @@ let best = scores
 - a method that changes its receiver takes `mut self`.
 
 There are no shared references, so nothing changes behind your back. Refinements still hold after every assignment: `line.qty = 120` fails if `qty` is a `Quantity`. Closures cannot change outer variables.
+
+Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7`, with optional parameter types (`(s: String) -> len(s)`) and a block for a longer body (`x -> { ... }`). `return e` leaves the enclosing function or lambda early.
+
+## Errors: `Result`, `Option`, `!`, `?` and `except`
+
+A function that can fail returns a `Result` (or an `Option` for "maybe absent"). Three operators keep the happy path straight:
+
+```rust
+fn transfer(from: Account, to: Account, amount: Cents) -> Result[(Account, Account), WithdrawError] {
+  let from = withdraw(from, amount)!        // an Err is returned from `transfer` as is
+  Ok((from, Account { ..to, balance: to.balance + amount }))
+}
+fn status_of(q: MemQueue, id: TaskId) -> Option[Status] {
+  Some(q.entries.find(e -> e.task.id == id)?.status)  // None is returned from `status_of`
+}
+let port = parse_int(text) except { 8080 }                  // handle it here: a fallback value
+let n = parse(s) except e { return describe_error(e) }      // the error, by name; the block may return
+```
+
+- `e!` takes the `Ok` value of a `Result`, or returns its `Err` from the function. The function's result must be a `Result` with the same error type (there is no automatic conversion).
+- `e?` does the same for an `Option`: the `Some` value, or return `None`.
+- `e except { fallback }` handles a failed `Result` or a missing `Option` value inline. `except err { ... }` names the error (an `Option` has none). The fallback must produce the same type, or leave with `return`.
+- They chain: `load(path)!.lines()`, `find(xs, p)?.name`.
 
 ## Built-in types
 
@@ -239,6 +261,8 @@ There are no shared references, so nothing changes behind your back. Refinements
 | `(A, B, …)` | tuples, `(word, 3)`, destructured with `let (w, n) = …`, accessed with `t.0` |
 | `Dict[K, V]` | `dict([("a", 1)])`, `get`, `insert`, `remove`, `keys`, `values`, `items`; JSON object when keys are strings |
 | `Set[T]` | `set([1, 2])`, `insert`, `union`, `intersection`, `difference`, `to_list` |
+
+`+` adds numbers and joins strings and lists (`"a" + "b"`, `[1] + [2]`). **Strings** are UTF-8 and indexed by character: `len`, `chars`, `get(s, i)`, `slice(s, start, end)` (clamped, as in Python; also on lists), `index_of`, `contains`, `starts_with`, `ends_with`, `split`, `join`, `lines`, `trim`, `replace`, `repeat`, `reverse`, `to_upper`, `to_lower`, `is_digit` / `is_alpha` / `is_space`, `ord` / `chr`, `parse_int`, `matches` (regex). **f-strings** interpolate any expression, shown as by `to_string`: `f"{name} has {len(xs)} items"` (`{{` and `}}` are literal braces).
 
 All values are immutable (`insert` returns a new dict). Dicts and sets are kept in canonical order, so equal collections are equal values and serialise identically. `len`, `contains`, `get`, `insert`, `remove`, `sum`, `min`, `max` and `abs` work across the types they make sense for. `strata builtins` lists every builtin with its signature. See `examples/builtins.strata`.
 
@@ -255,14 +279,14 @@ All values are immutable (`insert` returns a new dict). Dicts and sets are kept 
 
 Comments are part of the tree, so they survive every edit and render. A `//` comment belongs to what follows it: a definition (comments separated from it by a blank line, such as a file header or a section banner, keep that blank line), a field, a variant, a trait or impl method, a statement or a match arm. A comment at the end of a line moves above the thing it follows. A comment anywhere else (inside an argument list, after the last statement of a block) is an error, never silently dropped. `///` doc comments work the same way and are the description the viewer shows. Comments are printed as written; changing one changes the definition's hash but not its interface hash, and does not invalidate verification results.
 
-All rendered code is formatted to about 80 columns: long argument lists, record literals, method chains, `&&` / `||` / `++` chains, parameter lists and doc comments are broken across lines.
+All rendered code is formatted to about 80 columns: long argument lists, record literals, method chains, `&&` / `||` / `+` chains, parameter lists and doc comments are broken across lines.
 
 Selectors: `name`, `prefix*`, `slice:Name` (Name, what it uses, and what uses it), or a comma-separated combination.
 Every view is Strata text, so an agent can edit what it sees and send it back with `strata edit`.
 
 ## How it is stored
 
-```
+```text
 .strata/
   index.json          name → hash, in order
   objects/<hash>.json the syntax tree of one definition (content-addressed)

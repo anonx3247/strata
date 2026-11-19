@@ -114,6 +114,9 @@ pub enum FaultKind {
     /// Control flow, caught by the enclosing loop.
     Break,
     Continue,
+    /// `return`, `!` or `?`, caught by the enclosing function or lambda; the
+    /// value is in `Interp::returning`.
+    Return,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -140,6 +143,8 @@ pub struct Interp<'a> {
     /// Final values of the `mut` parameters of the call that just returned,
     /// to be written back to the caller's variables.
     writeback: Vec<(usize, Value)>,
+    /// The value of the `return` (or `!` / `?`) being carried out.
+    returning: Option<Value>,
 }
 
 fn short(c: &str) -> &str {
@@ -195,7 +200,7 @@ pub fn to_json(v: &Value) -> Json {
         Value::Variant(c, Fields::Rec(fs)) => {
             json!({ short(c): Json::Object(fs.iter().map(|(k, v)| (k.clone(), to_json(v))).collect()) })
         }
-        Value::Closure(ps, ..) => json!(format!("<closure |{}|>", ps.join(", "))),
+        Value::Closure(ps, ..) => json!(format!("<closure ({}) -> …>", ps.join(", "))),
         Value::FnRef(n) => json!(format!("<fn {n}>")),
     }
 }
@@ -244,6 +249,7 @@ impl<'a> Interp<'a> {
             depth: 0,
             regexes: HashMap::new(),
             writeback: vec![],
+            returning: None,
         }
     }
 
@@ -500,7 +506,7 @@ impl<'a> Interp<'a> {
                 );
             }
         }
-        let result = self.eval(&f.body, &scope)?;
+        let result = self.eval_body(&f.body, &scope)?;
         if let Some(e) = self.check_type_in(&f.ret, &result, &scope)? {
             return self.fail(FaultKind::Refinement, format!("result of `{name}`: {e}"));
         }
@@ -544,7 +550,7 @@ impl<'a> Interp<'a> {
                 for (p, a) in ps.iter().zip(args) {
                     s = extend(&s, p, a);
                 }
-                self.eval(&body, &s)
+                self.eval_body(&body, &s)
             }
             other => self.fail(FaultKind::Runtime, format!("{} is not a function", to_json(&other))),
         }
@@ -647,6 +653,7 @@ impl<'a> Interp<'a> {
                     xs.reverse();
                     List(xs)
                 }
+                Str(s) => Str(s.chars().rev().collect()),
                 _ => return self.fail(FaultKind::Runtime, "bad args"),
             },
             "join" => {
@@ -698,10 +705,6 @@ impl<'a> Interp<'a> {
                 Float(f) if f >= 0.0 => Float(f.sqrt()),
                 Float(f) => return self.fail(FaultKind::Runtime, format!("sqrt of negative number {f}")),
                 _ => return self.fail(FaultKind::Runtime, "bad args"),
-            },
-            "str_len" => match nx() {
-                Str(s) => Int(s.chars().count() as i64),
-                _ => Int(0),
             },
             "map" | "filter" | "all" | "any" => {
                 let (List(xs), f) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
@@ -761,6 +764,7 @@ impl<'a> Interp<'a> {
             "get" => {
                 let found = match (nx(), nx()) {
                     (List(xs), Int(i)) => (i >= 0).then(|| xs.get(i as usize).cloned()).flatten(),
+                    (Str(s), Int(i)) => (i >= 0).then(|| s.chars().nth(i as usize).map(|c| Str(c.to_string()))).flatten(),
                     (Dict(kvs), k) => kvs.into_iter().find(|(k2, _)| *k2 == k).map(|(_, v)| v),
                     _ => return self.fail(FaultKind::Runtime, "bad args"),
                 };
@@ -814,11 +818,101 @@ impl<'a> Interp<'a> {
                 Bool(s.starts_with(&p))
             }
             "to_string" => Str(show(&nx())),
+            "ends_with" => {
+                let (Str(s), Str(p)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                Bool(s.ends_with(&p))
+            }
+            "chars" => match nx() {
+                Str(s) => List(s.chars().map(|c| Str(c.to_string())).collect()),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            // `slice(x, start, end)`: elements start..end, clamped to the bounds (as in Python)
+            "slice" => {
+                let (x, Int(a), Int(b)) = (nx(), nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                let clamp = |n: usize| (a.clamp(0, n as i64) as usize, b.clamp(0, n as i64) as usize);
+                match x {
+                    Str(s) => {
+                        let (a, b) = clamp(s.chars().count());
+                        Str(s.chars().skip(a).take(b.saturating_sub(a)).collect())
+                    }
+                    List(xs) => {
+                        let (a, b) = clamp(xs.len());
+                        List(if a < b { xs[a..b].to_vec() } else { vec![] })
+                    }
+                    _ => return self.fail(FaultKind::Runtime, "bad args"),
+                }
+            }
+            "index_of" => {
+                let (Str(s), Str(sub)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                match s.find(&sub) {
+                    Some(byte) => Variant("Some".into(), Fields::Pos(vec![Int(s[..byte].chars().count() as i64)])),
+                    None => Variant("None".into(), Fields::None),
+                }
+            }
+            "replace" => {
+                let (Str(s), Str(from), Str(to)) = (nx(), nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                if from.is_empty() {
+                    return self.fail(FaultKind::Runtime, "replace: empty pattern");
+                }
+                Str(s.replace(&from, &to))
+            }
+            "lines" => match nx() {
+                Str(s) => List(s.lines().map(|l| Str(l.to_string())).collect()),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            "repeat" => {
+                let (Str(s), Int(n)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                if n < 0 || (s.len() as i64).saturating_mul(n) > 100_000_000 {
+                    return self.fail(FaultKind::Runtime, format!("repeat: bad count {n}"));
+                }
+                Str(s.repeat(n as usize))
+            }
+            "to_upper" | "to_lower" => match nx() {
+                Str(s) => Str(if name == "to_upper" { s.to_uppercase() } else { s.to_lowercase() }),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            // true when the string is not empty and every character is of the class
+            "is_digit" | "is_alpha" | "is_space" => match nx() {
+                Str(s) => Bool(
+                    !s.is_empty()
+                        && s.chars().all(|c| match name {
+                            "is_digit" => c.is_ascii_digit(),
+                            "is_alpha" => c.is_alphabetic(),
+                            _ => c.is_whitespace(),
+                        }),
+                ),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            "ord" => match nx() {
+                Str(s) if s.chars().count() == 1 => Int(s.chars().next().unwrap() as i64),
+                Str(s) => return self.fail(FaultKind::Runtime, format!("ord needs a single character, got {s:?}")),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            "chr" => match nx() {
+                Int(n) => match u32::try_from(n).ok().and_then(char::from_u32) {
+                    Some(c) => Str(c.to_string()),
+                    None => return self.fail(FaultKind::Runtime, format!("chr: {n} is not a character")),
+                },
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
             _ => return self.fail(FaultKind::Runtime, format!("unknown builtin `{name}`")),
         })
     }
 
     // ---------------- evaluation ----------------
+
+    /// Evaluate a function or lambda body, catching an early `return`.
+    fn eval_body(&mut self, body: &Expr, s: &Scope) -> R<Value> {
+        match self.eval(body, s) {
+            Err(f) if f.kind == FaultKind::Return => Ok(self.returning.take().unwrap_or(Value::Unit)),
+            r => r,
+        }
+    }
+
+    fn early_return<T>(&mut self, v: Value) -> R<T> {
+        self.returning = Some(v);
+        Err(Fault { kind: FaultKind::Return, msg: "`return` outside a function".into(), stack: vec![] })
+    }
 
     /// Run one iteration; `Ok(true)` means the loop should stop (`break`).
     fn loop_body(&mut self, b: &Expr, s: &Scope) -> R<bool> {
@@ -952,7 +1046,7 @@ impl<'a> Interp<'a> {
                 },
                 other => return self.fail(FaultKind::Runtime, format!("no field `{f}` on {}", to_json(&other))),
             },
-            Expr::Lambda(ps, body) => Value::Closure(ps.clone(), Rc::new((**body).clone()), s.clone()),
+            Expr::Lambda(ps, body) => Value::Closure(ps.iter().map(|p| p.name.clone()).collect(), Rc::new((**body).clone()), s.clone()),
             Expr::Bin(op, l, r) => {
                 use BinOp::*;
                 // short-circuiting operators
@@ -972,8 +1066,8 @@ impl<'a> Interp<'a> {
                 match (op, lv, rv) {
                     (Eq, a, b) => Value::Bool(a == b),
                     (Ne, a, b) => Value::Bool(a != b),
-                    (Concat, Value::Str(a), Value::Str(b)) => Value::Str(a + &b),
-                    (Concat, Value::List(mut a), Value::List(b)) => {
+                    (Add, Value::Str(a), Value::Str(b)) => Value::Str(a + &b),
+                    (Add, Value::List(mut a), Value::List(b)) => {
                         a.extend(b);
                         Value::List(a)
                     }
@@ -1126,6 +1220,37 @@ impl<'a> Interp<'a> {
                 self.eval(last, &sc)?
             }
             Expr::Mock(t) => Value::Mock(t.clone()),
+            Expr::Interp(parts) => {
+                let mut out = String::new();
+                for p in parts {
+                    match p {
+                        StrPart::Lit(l) => out += l,
+                        StrPart::Expr(e) => out += &show(&self.eval(e, s)?),
+                    }
+                }
+                Value::Str(out)
+            }
+            Expr::Return(x) => {
+                let v = self.eval(x, s)?;
+                return self.early_return(v);
+            }
+            Expr::Try(x, _) => match self.eval(x, s)? {
+                Value::Variant(c, Fields::Pos(mut xs)) if (c == "Ok" || c == "Some") && xs.len() == 1 => xs.pop().unwrap(),
+                v @ Value::Variant(..) => return self.early_return(v),
+                other => return self.fail(FaultKind::Runtime, format!("`!` / `?` on {}, not a Result or Option", to_json(&other))),
+            },
+            Expr::Except(x, name, fb) => match self.eval(x, s)? {
+                Value::Variant(c, Fields::Pos(mut xs)) if (c == "Ok" || c == "Some") && xs.len() == 1 => xs.pop().unwrap(),
+                Value::Variant(c, Fields::Pos(mut xs)) if c == "Err" && xs.len() == 1 => {
+                    let s2 = match name {
+                        Some(n) => extend(s, n, xs.pop().unwrap()),
+                        None => s.clone(),
+                    };
+                    self.eval(fb, &s2)?
+                }
+                Value::Variant(..) => self.eval(fb, s)?,
+                other => return self.fail(FaultKind::Runtime, format!("`except` on {}, not a Result or Option", to_json(&other))),
+            },
         })
     }
 

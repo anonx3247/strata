@@ -7,12 +7,12 @@ type Quantity = Int where 1 <= it && it <= 99
 /// Prices are in cents and never negative.
 type Cents = Int where it >= 0
 
-type Line = { sku: String, qty: Quantity, unit_price: Cents }
+type Line = { sku: NonEmptyString, qty: Quantity, unit_price: Cents }
 
 type Order =
   | Pending { id: OrderId, lines: NonEmpty[Line] }
-  | Shipped { id: OrderId, lines: NonEmpty[Line], tracking: String }
-  | Cancelled { id: OrderId, reason: String }
+  | Shipped { id: OrderId, lines: NonEmpty[Line], tracking: NonEmptyString }
+  | Cancelled { id: OrderId, reason: NonEmptyString }
 
 type ShipError =
   | NotFound
@@ -53,9 +53,7 @@ fn line_total(l: Line) -> Cents
   l.qty * l.unit_price
 }
 
-fn total(lines: NonEmpty[Line]) -> Cents
-  ensures it >= 0
-{
+fn total(lines: NonEmpty[Line]) -> Cents {
   sum(lines.map(line_total))
 }
 
@@ -67,17 +65,17 @@ fn discount(amount: Cents) -> Cents
 }
 
 /// Works with any `Db`: pass the real one in production, a fake in tests.
-fn ship[D: Db](mut db: D, id: OrderId, tracking: String) -> Result[Order, ShipError]
+fn ship[D: Db](mut db: D, id: OrderId, tracking: NonEmptyString) -> Result[Order, ShipError]
   ensures match it { Ok(o) => o is Shipped, Err(_) => true }
 {
-  match db.load(id) {
-    None => Err(NotFound),
-    Some(Pending { id, lines }) => {
+  let order = db.load(id) except { return Err(NotFound) }
+  match order {
+    Pending { id, lines } => {
       let o = Shipped { id, lines, tracking }
       db.save(o)
       Ok(o)
     }
-    Some(_) => Err(NotPending),
+    _ => Err(NotPending),
   }
 }
 

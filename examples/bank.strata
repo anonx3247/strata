@@ -1,7 +1,7 @@
 /// Money in cents. Can never be negative.
 type Cents = Int where it >= 0
 
-type Account = { owner: String, balance: Cents }
+type Account = { owner: NonEmptyString, balance: Cents }
 
 type WithdrawError =
   | Insufficient { short_by: Cents }
@@ -20,7 +20,25 @@ fn withdraw(a: Account, amount: Cents) -> Result[Account, WithdrawError]
   }
 }
 
+/// Move money between accounts: `!` hands a failed withdrawal straight back.
+fn transfer(from: Account, to: Account, amount: Cents) -> Result[(Account, Account), WithdrawError]
+  ensures match it {
+    Ok((f, t)) => f.balance + t.balance == from.balance + to.balance,
+    Err(_) => true,
+  }
+{
+  let from = withdraw(from, amount)!
+  Ok((from, Account { ..to, balance: to.balance + amount }))
+}
+
 test "can't overdraw" {
   let a = Account { owner: "ana", balance: 500 }
   assert withdraw(a, 800) == Err(Insufficient { short_by: 300 })
+}
+
+test "transfers keep the total" {
+  let a = Account { owner: "ana", balance: 500 }
+  let b = Account { owner: "bo", balance: 0 }
+  assert transfer(a, b, 200) == Ok((Account { owner: "ana", balance: 300 }, Account { owner: "bo", balance: 200 }))
+  assert transfer(a, b, 900) == Err(Insufficient { short_by: 400 })
 }

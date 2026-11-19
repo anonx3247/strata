@@ -1,5 +1,5 @@
 use crate::ast::*;
-use crate::lexer::{lex_with_comments, Comment, Tok, Token};
+use crate::lexer::{lex_with_comments, Comment, FPart, Tok, Token};
 
 pub struct Parser {
     toks: Vec<Token>,
@@ -45,7 +45,7 @@ fn is_upper(s: &str) -> bool {
 
 const KEYWORDS: &[&str] = &[
     "type", "fn", "test", "let", "if", "else", "match", "mock", "where", "mut", "while", "for", "in", "loop", "break", "continue",
-    "requires", "ensures", "true", "false", "is", "assert", "trait", "impl", "law", "for", "pub", "use",
+    "requires", "ensures", "true", "false", "is", "assert", "trait", "impl", "law", "for", "pub", "use", "return", "except",
 ];
 
 impl Parser {
@@ -573,16 +573,15 @@ impl Parser {
             0 => &[("||", Or)],
             1 => &[("&&", And)],
             2 => &[("==", Eq), ("!=", Ne), ("<=", Le), (">=", Ge), ("<", Lt), (">", Gt)],
-            3 => &[("++", Concat)],
-            4 => &[("+", Add), ("-", Sub)],
-            5 => &[("*", Mul), ("/", Div), ("%", Mod)],
+            3 => &[("+", Add), ("-", Sub)],
+            4 => &[("*", Mul), ("/", Div), ("%", Mod)],
             _ => &[],
         };
         table.iter().find(|(t, _)| t == s).map(|(_, op)| *op)
     }
 
     fn binary(&mut self, level: usize) -> R<Expr> {
-        if level > 5 {
+        if level > 4 {
             return self.unary();
         }
         let mut lhs = self.binary(level + 1)?;
@@ -595,6 +594,9 @@ impl Parser {
             // `|` cannot be a binary op; `-` on a new line starts a new statement
             if self.nl_before() && matches!(self.peek(), Tok::Sym("-")) {
                 break;
+            }
+            if self.is_sym("++") {
+                return Err(self.err("`++` is gone: join strings and lists with `+`"));
             }
             match self.binop_at(level) {
                 Some(op) => {
@@ -650,6 +652,21 @@ impl Parser {
                 } else {
                     e = Expr::Field(Box::new(e), name);
                 }
+            } else if self.is_sym("!") && !self.nl_before() {
+                self.next();
+                e = Expr::Try(Box::new(e), TryKind::Result);
+            } else if self.is_sym("?") && !self.nl_before() {
+                self.next();
+                e = Expr::Try(Box::new(e), TryKind::Option);
+            } else if self.eat_kw("except") {
+                let name = match self.peek().clone() {
+                    Tok::Ident(n) if !KEYWORDS.contains(&n.as_str()) => {
+                        self.next();
+                        Some(n)
+                    }
+                    _ => None,
+                };
+                e = Expr::Except(Box::new(e), name, Box::new(self.block()?));
             } else {
                 break;
             }
@@ -675,6 +692,43 @@ impl Parser {
                 self.next();
                 Ok(Expr::Hole(h))
             }
+            Tok::FStr(parts) => {
+                self.next();
+                let mut out = Vec::new();
+                for part in parts {
+                    out.push(match part {
+                        FPart::Lit(s) => StrPart::Lit(s),
+                        FPart::Code(code, line, col) => {
+                            let at = |e: String| format!("{line}:{col}: in f-string: {e}");
+                            let mut p = Parser::new(&code).map_err(at)?;
+                            let e = p.expr().map_err(at)?;
+                            if p.peek() != &Tok::Eof {
+                                return Err(at(p.err("expected `}` after the expression")));
+                            }
+                            if !p.comments.is_empty() {
+                                return Err(at("comments are not allowed inside `{}`".into()));
+                            }
+                            StrPart::Expr(e)
+                        }
+                    });
+                }
+                Ok(Expr::Interp(out))
+            }
+            Tok::Sym("(") if self.lambda_ahead() => {
+                self.next();
+                let ps = self.list(")", |p| {
+                    let name = p.ident()?;
+                    let ty = if p.eat_sym(":") { Some(p.type_expr()?) } else { None };
+                    Ok(LamParam { name, ty })
+                })?;
+                self.expect_sym("->")?;
+                Ok(Expr::Lambda(ps, Box::new(self.expr()?)))
+            }
+            Tok::Ident(name) if !KEYWORDS.contains(&name.as_str()) && !is_upper(&name) && matches!(self.peek_at(1), Tok::Sym("->")) => {
+                self.next();
+                self.next();
+                Ok(Expr::Lambda(vec![LamParam { name, ty: None }], Box::new(self.expr()?)))
+            }
             Tok::Sym("(") => {
                 self.next();
                 if self.eat_sym(")") {
@@ -698,19 +752,7 @@ impl Parser {
                 Ok(Expr::List(self.list("]", |p| p.expr())?))
             }
             Tok::Sym("{") => self.block(),
-            Tok::Sym("||") => {
-                self.next();
-                Ok(Expr::Lambda(vec![], Box::new(self.expr()?)))
-            }
-            Tok::Sym("|") => {
-                self.next();
-                let mut ps = Vec::new();
-                while !self.eat_sym("|") {
-                    ps.push(self.ident()?);
-                    self.eat_sym(",");
-                }
-                Ok(Expr::Lambda(ps, Box::new(self.expr()?)))
-            }
+            Tok::Sym("|" | "||") => Err(self.err("lambdas are written `x -> body`, `(a, b) -> body` or `() -> body`")),
             Tok::Ident(kw) if kw == "true" || kw == "false" => {
                 self.next();
                 Ok(Expr::Bool(kw == "true"))
@@ -741,6 +783,13 @@ impl Parser {
                     arms.push(Arm { comments, pat, body });
                 }
                 Ok(Expr::Match(Box::new(scrut), arms))
+            }
+            Tok::Ident(kw) if kw == "return" => {
+                self.next();
+                if self.nl_before() || matches!(self.peek(), Tok::Sym("}" | ")" | "," | ";") | Tok::Eof) {
+                    return Ok(Expr::Return(Box::new(Expr::Unit)));
+                }
+                Ok(Expr::Return(Box::new(self.expr()?)))
             }
             Tok::Ident(kw) if kw == "mock" => {
                 self.next();
@@ -784,6 +833,27 @@ impl Parser {
             }
             _ => Err(self.err("expected expression")),
         }
+    }
+
+    /// At a `(`: is this the parameter list of a lambda, `(a, b) -> ...`?
+    fn lambda_ahead(&self) -> bool {
+        let mut depth = 0;
+        let mut i = self.pos;
+        while i < self.toks.len() {
+            match &self.toks[i].tok {
+                Tok::Sym("(" | "[" | "{") => depth += 1,
+                Tok::Sym(")" | "]" | "}") => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return matches!(self.toks.get(i + 1).map(|t| &t.tok), Some(Tok::Sym("->")));
+                    }
+                }
+                Tok::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
     }
 
     fn block(&mut self) -> R<Expr> {

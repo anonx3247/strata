@@ -115,7 +115,7 @@ fn builtin_collections_work() {
     let d = tmp("builtins");
     let ex = format!("{}/examples/builtins.strata", env!("CARGO_MANIFEST_DIR"));
     let (ok, out) = strata(&["--file", &ex, "test"], &d, None);
-    assert!(ok && out.contains("1 passed"), "{out}");
+    assert!(ok && out.contains("2 passed"), "{out}");
     let (ok, out) = strata(&["--file", &ex, "verify"], &d, None);
     assert!(ok, "{out}");
     std::fs::write(d.join("e.strata"), "fn f(x: Int) -> Float { x * 1.5 }\nfn g(b: Bool) -> Int { len(b) }\n").unwrap();
@@ -209,7 +209,7 @@ fn modules_contracts_and_files() {
     // the codebase database stores qualified names; a private edit leaves dependents alone
     assert!(strata(&["init"], &d, None).0);
     assert!(strata(&["add", &ex], &d, None).0);
-    let (ok, out) = strata(&["edit", "--module", "core"], &d, Some("fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool { len(claimed) == len(reported) && all(claimed, |c| count(reported, |r| r == c) == 1) && all(reported, |r| contains(claimed, r)) }"));
+    let (ok, out) = strata(&["edit", "--module", "core"], &d, Some("fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool { len(claimed) == len(reported) && all(claimed, c -> count(reported, r -> r == c) == 1) && all(reported, r -> contains(claimed, r)) }"));
     assert!(ok && out.contains("core.same_ids") && out.contains("implementation only"), "{out}");
     let (ok, out) = strata(&["test"], &d, None);
     assert!(ok && out.contains("0 failed"), "{out}");
@@ -229,7 +229,7 @@ fn procedural_mutation_is_explicit() {
     .unwrap();
     let (ok, out) = strata(&["--file", "m.strata", "test"], &d, None);
     assert!(!ok && out.contains("✓ ok") && out.contains("103 does not satisfy"), "{out}");
-    std::fs::write(d.join("e.strata"), "fn f() -> Int {\n  let x = 1\n  x = 2\n  x\n}\nfn g() -> Int {\n  let mut y = 0\n  let add = |z| { y = y + z; y }\n  add(1)\n}\n").unwrap();
+    std::fs::write(d.join("e.strata"), "fn f() -> Int {\n  let x = 1\n  x = 2\n  x\n}\nfn g() -> Int {\n  let mut y = 0\n  let add = z -> { y = y + z; y }\n  add(1)\n}\n").unwrap();
     let (ok, out) = strata(&["--file", "e.strata", "check"], &d, None);
     assert!(!ok && out.contains("`x`: it is not mutable") && out.contains("a closure cannot change `y`"), "{out}");
 }
@@ -240,7 +240,7 @@ fn loops_chains_and_80_columns() {
     std::fs::write(
         d.join("l.strata"),
         "fn steps(start: Positive) -> Natural {\n  let mut n = start\n  let mut k = 0\n  loop {\n    if n == 1 { break }\n    n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 }\n    k = k + 1\n  }\n  k\n}\n\
-         fn top(xs: List[Int]) -> Int {\n  xs\n    .filter(|x| x > 0)\n    .sort()\n    .reverse()\n    .take(3)\n    .sum()\n}\n\
+         fn top(xs: List[Int]) -> Int {\n  xs\n    .filter(x -> x > 0)\n    .sort()\n    .reverse()\n    .take(3)\n    .sum()\n}\n\
          test \"t\" {\n  assert steps(6) == 8\n  assert top([5, -1, 9, 2, 7]) == 21\n}\n",
     )
     .unwrap();
@@ -334,7 +334,7 @@ fn rename_updates_every_reference() {
   pub type Box = { items: List[Int] }
   pub fn twice(xs: List[Int]) -> Int {
     let n = size(xs)
-    let tally = |x| x + n
+    let tally = x -> x + n
     tally(size(xs))
   }
 }
@@ -372,6 +372,210 @@ module b {
     assert!(ok && out.contains("1 passed"), "{out}");
     let (_, log) = strata(&["log", "--json"], &d, None);
     assert!(log.contains(r#""from":"a.size""#) && log.contains(r#""to":"a.length""#), "{log}");
+}
+
+/// Run the `test` blocks of `src` and check that it round-trips through `render`.
+fn run_tests(name: &str, src: &str, passed: &str) {
+    let d = tmp(&format!("lang-{name}"));
+    std::fs::write(d.join("a.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", "a.strata", "test"], &d, None);
+    assert!(ok && out.contains(passed), "{out}");
+    let (_, r1) = strata(&["--file", "a.strata", "render"], &d, None);
+    std::fs::write(d.join("r1.strata"), &r1).unwrap();
+    let (_, r2) = strata(&["--file", "r1.strata", "render"], &d, None);
+    assert_eq!(r1, r2);
+}
+
+/// `check` on `src` fails with a message containing `msg`.
+fn check_fails(name: &str, src: &str, msg: &str) {
+    let d = tmp(&format!("lang-{name}"));
+    std::fs::write(d.join("a.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", "a.strata", "check"], &d, None);
+    assert!(!ok && out.contains(msg), "{out}");
+}
+
+#[test]
+fn plus_joins_strings_and_lists() {
+    run_tests(
+        "plus",
+        r#"
+fn greet(name: String) -> String { "hello " + name + "!" }
+test "join" {
+  assert greet("ana") == "hello ana!"
+  assert [1, 2] + [3] == [1, 2, 3]
+  assert len("héllo") == 5
+  assert 1 + 2 == 3
+}
+"#,
+        "1 passed",
+    );
+    check_fails("plusplus", "fn f() -> String { \"a\" ++ \"b\" }", "join strings and lists with `+`");
+    check_fails("plusmix", "fn f() -> String { \"a\" + 1 }", "`+` operands");
+    check_fails("strlen", "fn f() -> Int { str_len(\"a\") }", "str_len");
+}
+
+#[test]
+fn arrow_lambdas() {
+    run_tests(
+        "lambdas",
+        r#"
+fn apply(f: (Int) -> Int, x: Int) -> Int { f(x) }
+test "arrows" {
+  assert [1, 2, 3].map(x -> x * 2) == [2, 4, 6]
+  assert fold([1, 2, 3], 0, (acc, x) -> acc + x) == 6
+  assert apply((n: Int) -> n + 1, 1) == 2
+  let k = () -> 7
+  assert k() == 7
+  let f = x -> {
+    let y = x + 1
+    y * y
+  }
+  assert f(2) == 9
+  assert (1, x -> x).0 == 1
+}
+"#,
+        "1 passed",
+    );
+    check_fails("oldlambda", "fn f() -> List[Int] { [1].map(|x| x) }", "lambdas are written `x -> body`");
+    check_fails("lambdatype", "fn f() -> List[Int] { [1].map((s: String) -> 1) }", "lambda parameter `s`");
+}
+
+#[test]
+fn return_propagation_and_except() {
+    run_tests(
+        "errors",
+        r#"type ParseError =
+  | Empty
+  | NotANumber(String)
+
+fn parse(s: String) -> Result[Int, ParseError] {
+  if s == "" { return Err(Empty) }
+  match parse_int(s) {
+    Some(n) => Ok(n),
+    None => Err(NotANumber(s)),
+  }
+}
+
+fn sum_two(a: String, b: String) -> Result[Int, ParseError] {
+  let x = parse(a)!
+  Ok(x + parse(b)!)
+}
+
+fn first_even(xs: List[Int]) -> Option[Int] {
+  let x = xs.find(x -> x % 2 == 0)?
+  Some(x * 10)
+}
+
+fn or_zero(s: String) -> Int { parse(s) except { 0 } }
+
+fn describe(s: String) -> String {
+  let n = parse(s) except e {
+    return match e {
+      Empty => "empty",
+      NotANumber(t) => "not a number: " + t,
+    }
+  }
+  "the number " + to_string(n)
+}
+
+fn first_negative(xs: List[Int]) -> Int {
+  for x in xs {
+    if x < 0 { return x }
+  }
+  0
+}
+
+test "errors" {
+  assert sum_two("1", "2") == Ok(3)
+  assert sum_two("1", "x") == Err(NotANumber("x"))
+  assert sum_two("", "x") == Err(Empty)
+  assert first_even([1, 4, 5]) == Some(40)
+  assert first_even([1, 3]) == None
+  assert or_zero("12") == 12
+  assert or_zero("zz") == 0
+  assert first_negative([3, -2, -5]) == -2
+  assert first_negative([3]) == 0
+  let f = x -> {
+    if x > 1 { return "big" }
+    "small"
+  }
+  assert describe("7") == "the number 7"
+  assert describe("q") == "not a number: q"
+  assert describe("") == "empty"
+  assert f(5) == "big" && f(0) == "small"
+  assert [1, 2, 3].find(x -> x > 5) except { 9 } == 9
+}
+"#,
+        "1 passed",
+    );
+    let pre = "fn p(s: String) -> Result[Int, String] { Err(s) }\n";
+    check_fails("bang", &format!("{pre}fn f() -> Int {{ p(\"a\")! }}"), "`!` returns the error early, so the result type must be `Result[");
+    check_fails("bangerr", &format!("{pre}fn f() -> Result[Int, Int] {{ Ok(p(\"a\")!) }}"), "`!` returns the error early");
+    check_fails("qonresult", &format!("{pre}fn f() -> Option[Int] {{ Some(p(\"a\")?) }}"), "`?` needs an Option");
+    check_fails("exceptname", "fn f() -> Int { [1].find(x -> x > 0) except e { 0 } }", "an Option has no error to name");
+    check_fails("exceptint", "fn f() -> Int { 1 except { 0 } }", "`except` handles a Result or an Option");
+    check_fails("returntest", "test \"t\" { return 1 }", "`return` outside a function");
+    check_fails("returntype", "fn f() -> Int { return \"a\" }", "`return` value");
+}
+
+#[test]
+fn f_string_interpolation() {
+    run_tests(
+        "fstrings",
+        r##"type Color =
+  | Red
+  | Rgb(Int, Int, Int)
+
+fn report(name: String, xs: List[Int]) -> String { f"{name} has {len(xs)} items" }
+
+test "fstrings" {
+  assert report("ana", [1, 2]) == "ana has 2 items"
+  let n = 3
+  assert f"{n} + 1 = {n + 1}" == "3 + 1 = 4"
+  assert f"{{literal}} {n}" == "{literal} 3"
+  assert f"quote \" and {join(["a", "b"], "-")}" == "quote \" and a-b"
+  assert f"{Red} {[1, 2]} {Some(1)}" == "Red [1,2] {\"Some\":1}"
+  assert f"no parts" == "no parts"
+  assert f"{if n > 2 { "big" } else { "small" }}" == "big"
+}
+"##,
+        "1 passed",
+    );
+    check_fails("fempty", "fn f() -> String { f\"a {} b\" }", "empty `{}` in an f-string");
+    check_fails("fbrace", "fn f() -> String { f\"a } b\" }", "a lone `}` in an f-string");
+    check_fails("fbad", "fn f() -> String { f\"{1 +}\" }", "in f-string");
+    check_fails("fvar", "fn f() -> String { f\"{nope}\" }", "unknown variable `nope`");
+}
+
+#[test]
+fn string_primitives() {
+    run_tests(
+        "strings",
+        r##"fn count_digits(s: String) -> Int { s.chars().count(c -> is_digit(c)) }
+
+test "strings" {
+  let s = "héllo wörld"
+  assert len(s) == 11
+  assert s.chars().take(2) == ["h", "é"]
+  assert s.get(1) == Some("é") && s.get(99) == None
+  assert s.slice(6, 11) == "wörld" && s.slice(-3, 2) == "hé" && s.slice(8, 3) == ""
+  assert [1, 2, 3, 4].slice(1, 3) == [2, 3]
+  assert s.index_of("wö") == Some(6) && s.index_of("z") == None
+  assert s.ends_with("rld") && s.starts_with("hé")
+  assert s.replace("l", "L") == "héLLo wörLd"
+  assert "a\nb\n".lines() == ["a", "b"]
+  assert "ab".repeat(3) == "ababab"
+  assert "abc".reverse() == "cba"
+  assert "Ab".to_upper() == "AB" && "Ab".to_lower() == "ab"
+  assert is_digit("42") && !is_digit("4a") && !is_digit("")
+  assert is_alpha("é") && is_space(" \t")
+  assert ord("A") == 65 && chr(233) == "é"
+  assert count_digits("a1b22") == 3
+  assert "a,b".split(",") == ["a", "b"] && contains("abc", "bc")
+}
+"##,
+        "1 passed",
+    );
 }
 
 #[test]

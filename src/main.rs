@@ -1,7 +1,6 @@
 mod ast;
 mod diff;
 mod history;
-mod flow;
 mod generate;
 mod interp;
 mod lexer;

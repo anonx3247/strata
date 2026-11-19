@@ -401,11 +401,30 @@ impl Rw<'_> {
                 Expr::Field(Box::new(self.expr(r)), f.clone())
             }
             Expr::Mock(t) => Expr::Mock(self.ty(t)),
+            Expr::Interp(parts) => Expr::Interp(
+                parts
+                    .iter()
+                    .map(|p| match p {
+                        StrPart::Lit(l) => StrPart::Lit(l.clone()),
+                        StrPart::Expr(e) => StrPart::Expr(self.expr(e)),
+                    })
+                    .collect(),
+            ),
+            Expr::Return(x) => Expr::Return(Box::new(self.expr(x))),
+            Expr::Try(x, k) => Expr::Try(Box::new(self.expr(x)), *k),
+            Expr::Except(x, name, fb) => {
+                let x = self.expr(x);
+                self.push(&name.iter().cloned().collect::<Vec<_>>());
+                let fb = self.expr(fb);
+                self.pop();
+                Expr::Except(Box::new(x), name.clone(), Box::new(fb))
+            }
             Expr::Lambda(ps, b) => {
-                self.push(ps);
+                let ps: Vec<LamParam> = ps.iter().map(|p| LamParam { name: p.name.clone(), ty: p.ty.as_ref().map(|t| self.ty(t)) }).collect();
+                self.push(&ps.iter().map(|p| p.name.clone()).collect::<Vec<_>>());
                 let b = self.expr(b);
                 self.pop();
-                Expr::Lambda(ps.clone(), Box::new(b))
+                Expr::Lambda(ps, Box::new(b))
             }
             Expr::Bin(op, l, r) => Expr::Bin(*op, Box::new(self.expr(l)), Box::new(self.expr(r))),
             Expr::Un(op, x) => Expr::Un(op.clone(), Box::new(self.expr(x))),

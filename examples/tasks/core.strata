@@ -12,18 +12,12 @@
 /// Identifies a task. The reference uses a uuid4 hex string.
 pub type TaskId = String where matches(it, "[A-Za-z0-9_-]{1,64}")
 
-/// The task family, e.g. "print".
-pub type Kind = String where str_len(it) > 0
+/// A unit of work. `kind` is the task family, e.g. "print". Every Strata
+/// type is JSON-serialisable, so the payload needs no `BaseModel` bound.
+pub type Task[P] = { id: TaskId, kind: NonEmptyString, payload: P }
 
-/// A unit of work. Every Strata type is JSON-serialisable, so the payload
-/// needs no `BaseModel` bound.
-pub type Task[P] = { id: TaskId, kind: Kind, payload: P }
-
-/// Attempt numbers are 1-based.
-pub type AttemptNo = Int where it >= 1
-
-/// A single attempt at running a task.
-pub type TaskAttempt[P] = { task: Task[P], attempt: AttemptNo }
+/// A single attempt at running a task. Attempt numbers are 1-based.
+pub type TaskAttempt[P] = { task: Task[P], attempt: Positive }
 
 /// The outcome a worker reports for one attempt. Unlike the reference
 /// (`result` + optional `error`), an error can only exist on a failure:
@@ -107,24 +101,22 @@ pub fn run_worker[P, E, Q: Queue[P, E], W: Worker[P, E]](mut queue: Q, mut worke
 {
   let attempts = queue.claim(policy.tasks_per_worker)
   if len(attempts) == 0 {
-    Ok([])
-  } else {
-    let results = worker.run(attempts)
-    let claimed = attempts.map(|a| a.task.id)
-    let reported = results.map(|r| task_of(r).id)
-    if same_ids(claimed, reported) {
-      queue.record(results)
-      Ok(results)
-    } else {
-      queue.release(attempts)
-      Err(ResultsMismatch { claimed, reported })
-    }
+    return Ok([])
   }
+  let results = worker.run(attempts)
+  let claimed = attempts.map(a -> a.task.id)
+  let reported = results.map(r -> task_of(r).id)
+  if !same_ids(claimed, reported) {
+    queue.release(attempts)
+    return Err(ResultsMismatch { claimed, reported })
+  }
+  queue.record(results)
+  Ok(results)
 }
 
 /// Exactly the same ids, each reported once.
 fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool {
-  len(claimed) == len(reported) && all(claimed, |c| count(reported, |r| r == c) == 1)
+  len(claimed) == len(reported) && all(claimed, c -> count(reported, r -> r == c) == 1)
 }
 
 /// The worker entrypoint's loop: run batches until the queue has nothing
@@ -133,12 +125,12 @@ pub fn drain[P, E, Q: Queue[P, E], W: Worker[P, E]](mut queue: Q, mut worker: W,
   ensures 0 <= it && it <= max_batches
 {
   let mut batches = 0
-  let mut done = false
-  while !done && batches < max_batches {
-    match run_worker(queue, worker, policy) {
-      Ok([]) => { done = true },
-      _ => { batches = batches + 1 },
+  while batches < max_batches {
+    // an empty batch means nothing is left to claim
+    if run_worker(queue, worker, policy) == Ok([]) {
+      break
     }
+    batches = batches + 1
   }
   batches
 }
