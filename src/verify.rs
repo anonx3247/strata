@@ -3,7 +3,7 @@
 //! * `static_refinements`: compile-time evaluation of refinements on literal
 //!   arguments (`make_port(80)` is rejected before anything runs).
 //! * `fuzz_fn`: property-based checking of every contract of a function with
-//!   inputs generated from its parameter types, effects handled by mocks.
+//!   inputs generated from its parameter types.
 //!
 //! Neither is a proof. The plan is to put an SMT backend in front of both:
 //! obligations it proves become `proven`; the rest fall back to these.
@@ -150,7 +150,7 @@ pub enum Verdict {
     /// All generated cases satisfied every contract.
     Fuzzed { cases: usize, discarded: usize },
     /// A contract was violated; here is a concrete counterexample.
-    Counterexample { args: Json, effects: Json, kind: String, message: String },
+    Counterexample { args: Json, kind: String, message: String },
     /// The function (or something it calls) still contains a hole.
     Incomplete { message: String },
     /// Could not be checked automatically.
@@ -230,7 +230,6 @@ pub fn check_law(env: &Env, imp: &ImplDecl, law: &Law, cases: usize, seed: u64) 
                 let shown: Vec<String> = f.params.iter().zip(&args).map(|(p, a)| format!("{} = {}", p.name, to_json(a))).collect();
                 return Verdict::Counterexample {
                     args: Json::Array(args.iter().map(to_json).collect()),
-                    effects: Json::Array(vec![]),
                     kind: "Law".into(),
                     message: format!("law `{}` does not hold for `{}` with {}", law.name, crate::printer::ty(&imp.for_type), shown.join(", ")),
                 };
@@ -238,7 +237,6 @@ pub fn check_law(env: &Env, imp: &ImplDecl, law: &Law, cases: usize, seed: u64) 
             Err(fault) => {
                 return Verdict::Counterexample {
                     args: Json::Array(args.iter().map(to_json).collect()),
-                    effects: Json::Array(vec![]),
                     kind: format!("{:?}", fault.kind),
                     message: format!("evaluating law `{}`: {}", law.name, fault.msg),
                 };
@@ -293,7 +291,6 @@ fn fuzz_call(env: &Env, f: &FnDecl, cases: usize, seed: u64, method: bool) -> Ve
             Err(fault) => {
                 return Verdict::Counterexample {
                     args: Json::Array(args.iter().map(to_json).collect()),
-                    effects: Json::Array(it.effect_log.clone()),
                     kind: format!("{:?}", fault.kind),
                     message: format!("{} (stack: {})", fault.msg, fault.stack.join(" -> ")),
                 };

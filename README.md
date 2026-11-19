@@ -126,10 +126,17 @@ $ strata rename total order_total
 renamed total → order_total
 updated 1 definition that refers to it: test "totals"
 
-$ strata run ship '["ord_abc123","TRK1"]' --mock --trace
-{"event":"call","fn":"ship","args":["ord_abc123","TRK1"],"depth":1}
-{"event":"perform","op":"Db.load","args":["ord_abc123"],"result":{"Some":{"Cancelled":{"id":"ord_so7f76","reason":"ju_4p-"}}}}
-{"event":"return","fn":"ship","value":{"Err":"NotPending"},"depth":1}
+$ strata run total '[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]]' --trace
+{"event":"call","fn":"total","args":[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]],"depth":1}
+{"event":"call","fn":"line_total","args":[{"sku":"tea","qty":2,"unit_price":450}],"depth":2}
+{"event":"return","fn":"line_total","value":900,"depth":2}
+{"event":"call","fn":"line_total","args":[{"sku":"cup","qty":1,"unit_price":1200}],"depth":2}
+{"event":"return","fn":"line_total","value":1200,"depth":2}
+{"event":"return","fn":"total","value":2100,"depth":1}
+2100
+
+$ strata run total '[[]]'                    # arguments are checked against the types
+error: invalid input: lines: [] does not satisfy `NonEmpty` (where len(it) > 0)
 ```
 
 ## Refinements: named, inline, and structural

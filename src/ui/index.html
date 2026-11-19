@@ -335,7 +335,7 @@ const lv = x => isNaN(+x) ? x : +x;
 const S = { data: null, raw: '', level: 1, sel: null, scope: 'slice', q: '', over: {}, prevHash: {}, flash: new Set(), prevLog: 0, newLog: 0, showTests: false, open: {}, allOpen: false };
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const KIND = { type: 'T', effect: 'E', fn: 'ƒ', test: '✓', trait: '◆', impl: '⊢' };
+const KIND = { type: 'T', fn: 'ƒ', test: '✓', trait: '◆', impl: '⊢' };
 const byName = () => Object.fromEntries(S.data.decls.map(d => [d.name, d]));
 
 function status(d) {
@@ -886,7 +886,6 @@ function verdictBox(v) {
   if (v.status === 'fuzzed') return `<div class="box ok">✓ Every contract held on <b>${v.cases}</b> generated inputs${v.discarded ? ` (${v.discarded} discarded by requires)` : ''}.</div>`;
   if (v.status === 'counterexample') return `<div class="box bad"><b>✗ ${esc(v.kind)} violation</b>
       <div class="row"><b>input</b> <code>${esc(JSON.stringify(v.args))}</code></div>
-      ${v.effects?.length ? `<div class="row"><b>effects</b> <code>${esc(JSON.stringify(v.effects))}</code></div>` : ''}
       <div class="row mono">${esc(v.message)}</div></div>`;
   if (v.status === 'incomplete') return `<div class="box warn">○ ${esc(v.message)}</div>`;
   return `<div class="box">– ${esc(v.reason)}</div>`;

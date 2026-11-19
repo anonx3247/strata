@@ -62,7 +62,6 @@ Not yet: the log is not committed to git yet, so git ranges have no renames or p
 - `strata verify` on the tasks example takes about 35s; the slowest part is generating `MemQueue` values that satisfy its invariants.
 - Typed lambda parameters (`(n: Positive) -> …`) are checked statically but their refinements are not enforced at runtime yet.
 - `!` does no error conversion: the function's `Result` must have the same error type. f-strings have no format specs (`{x:.2}`).
-- Some README tool output is stale from the effects era: the `strata run ship … --mock --trace` sample (`ship` now takes the `Db` as an argument).
 
 ## Decided direction (user, end of session 1)
 
