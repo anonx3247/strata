@@ -334,8 +334,10 @@ pub fn block(e: &Expr, d: usize) -> String {
     let mut out = "{\n".to_string();
     for s in stmts {
         if let Stmt::Comment(cs) = s {
-            // blank lines inside a body are not kept
-            out += &comments(&cs.iter().filter(|c| !c.is_empty()).cloned().collect::<Vec<_>>(), d + 1);
+            // "" is a blank line; several in a row print as one
+            let mut cs = cs.clone();
+            cs.dedup_by(|a, b| a.is_empty() && b.is_empty());
+            out += &comments(&cs, d + 1);
             continue;
         }
         out += &ind(d + 1);
@@ -460,6 +462,10 @@ fn trait_text(t: &TraitDecl, bodies: bool) -> String {
         }
     }
     for l in &t.laws {
+        s += &comments(&l.comments, 1);
+        for d in &l.doc {
+            s += &format!("  /// {d}\n");
+        }
         let head = format!("  law {}({}):", l.name, param_list(&l.params));
         let body = expr(&l.body, 2);
         if head.chars().count() + 1 + body.lines().next().map_or(0, |x| x.chars().count()) > WIDTH {

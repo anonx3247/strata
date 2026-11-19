@@ -558,7 +558,7 @@ impl Rw<'_> {
                         self.push(&names);
                         let body = self.expr(&l.body);
                         self.pop();
-                        Law { name: l.name.clone(), params, body }
+                        Law { comments: l.comments.clone(), doc: l.doc.clone(), name: l.name.clone(), params, body }
                     })
                     .collect();
                 self.tparams.pop();

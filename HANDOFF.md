@@ -31,6 +31,8 @@ Doc comments are shown as the description in the right panel (and stripped from 
 
 Still open: **type map as a side panel** instead of a full tab. The user suggested it; ask before doing it.
 
+Relations (decided): a definition has **dependencies** (what it mentions) and **references** (what mentions it). Implementing a trait is a separate relation, never a reference or a dependency: an `impl T for X` block is listed under *Implements* on `X` and *Implementations* on `T`, and its own trait and type are shown as *Trait* / *For*. The snapshot carries `deps`, `refs`, `impls` and `impl_of`. The type map shows dependency edges by default; *implementations* and *refinement types* are opt-in. There are no effects and no functions in the type map. The user wondered about a traits-only view, showing how traits work together; not decided.
+
 ## Decided with the user: git, diffs and review
 
 - **Git stays the base.** Commit the `.strata` text files and the log (`log.jsonl`, append-only, entries with ids, `merge=union` in `.gitattributes`). Objects and index become a local cache rebuilt from the files. Optionally commit the verification cache.
@@ -50,17 +52,17 @@ Not yet: the log is not committed to git yet, so git ranges have no renames or p
 
 - **Verification strategy.** Today: compile-time checks on literals, runtime contract checks, and fuzzing (`strata verify`, with results cached by content hash). The options discussed are summarised at the end of the last conversation and in `README.md` under the roadmap.
 - **Transpilation / interop** with Python (Pydantic, JSON as the boundary), TypeScript and Rust. Later.
+- **Strata IDE**: the viewer as a standalone desktop app (Tauri; the backend is already Rust), speaking ACP (Agent Client Protocol) so agents such as Claude Code or Codex run inside it, with a Strata MCP server giving them structural tools (slices, check, edit, rename). The viewer would show live where each agent is working (log entries tagged with the agent's session). Idea stage.
+- **Union types and `?` / `!` type syntax**: `Square | Circle | Triangle` as a type with exhaustive matching on the member types; `T?` for an optional, `T ! E` for a result. Pros and cons were discussed (see the conversation of 2026-11-19); not decided.
 
 ## Known gaps
 
 - Trait methods must take `self`; there is no `fn empty() -> Self` dispatch yet, and method names must be unique across traits.
 - Exhaustiveness checking ignores refinements: a `match` on `NonEmpty` still needs a `[]` arm.
-- Comments before a trait `law` are rejected (not stored yet). Blank lines inside bodies are not kept.
 - No host bindings (FFI), so a real SQLite backend isn't possible yet.
 - `strata verify` on the tasks example takes about 35s; the slowest part is generating `MemQueue` values that satisfy its invariants.
 - Typed lambda parameters (`(n: Positive) -> …`) are checked statically but their refinements are not enforced at runtime yet.
 - `!` does no error conversion: the function's `Result` must have the same error type. f-strings have no format specs (`{x:.2}`).
-- Some README tool output is stale from the effects era: the `strata run ship … --mock --trace` sample (`ship` now takes the `Db` as an argument).
 
 ## Decided direction (user, end of session 1)
 
@@ -84,7 +86,7 @@ Not yet: the log is not committed to git yet, so git ranges have no renames or p
 
 ### Compilation before transpilation
 1. **Native compilation through LLVM** to machine code, with a garbage-collected runtime (no borrow checker in Strata). This comes before transpiling.
-2. **A standard library** with batteries included. The user cited "VLAN" as inspiration; most likely the V language (vlang), so confirm with the user. Priorities:
+2. **A standard library** with batteries included. The user cited the V language (vlang) as inspiration (confirmed). Priorities:
    - basic I/O, files and the OS / processes, for CLIs;
    - networking (HTTP client and server);
    - web apps and views: HTML / CSS generation and serving, a first-class target because agents write web UIs for people;

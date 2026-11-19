@@ -49,15 +49,15 @@ Views:
   ast <name>                      the stored syntax tree as JSON
 
 Checking:
-  check [--json]               types, effects, exhaustiveness, literal refinements
+  check [--json]               types, exhaustiveness, literal refinements
   holes [--json]               typed holes with goal type, context and obligations
   verify [SELECTOR] [--cases N] [--json]
                                fuzz every contract; results cached by content hash
 
 Running:
-  run <fn> [JSON-ARGS] [--mock] [--trace]
+  run <fn> [JSON-ARGS] [--trace]
                                args are a JSON array validated against the types;
-                               --mock handles the function's effects with generated values
+                               --trace prints each call and return to stderr
   test [FILTER]                run test blocks
   builtins [--json]            list built-in functions and their signatures
 
@@ -163,7 +163,7 @@ fn load(args: &Args) -> Result<Source, String> {
     Ok(Source::Db(Codebase::open(&root)?))
 }
 
-/// Full static check: types, effects, exhaustiveness, then literal refinements.
+/// Full static check: types, exhaustiveness, then literal refinements.
 fn full_check(p: &Program) -> types::CheckReport {
     let mut rep = types::check(p);
     let (env, _) = types::Env::new(p);
@@ -564,11 +564,8 @@ fn run() -> Result<bool, String> {
                     verify::Verdict::Fuzzed { cases, discarded } => {
                         println!("✓ {n:<24} {cases} cases, {discarded} discarded by `requires`{c}")
                     }
-                    verify::Verdict::Counterexample { args, effects, kind, message } => {
+                    verify::Verdict::Counterexample { args, kind, message } => {
                         println!("✗ {n:<24} {kind} violation{c}\n    input:   {args}");
-                        if effects.as_array().is_some_and(|a| !a.is_empty()) {
-                            println!("    effects: {effects}");
-                        }
                         println!("    {message}");
                     }
                     verify::Verdict::Incomplete { message } => println!("○ {n:<24} incomplete: {message}{c}"),
@@ -603,10 +600,6 @@ fn run() -> Result<bool, String> {
             let res = it.call_fn(name, vals);
             if it.tracing {
                 for t in &it.trace {
-                    eprintln!("{t}");
-                }
-            } else if args.flag("--mock") && !it.effect_log.is_empty() {
-                for t in &it.effect_log {
                     eprintln!("{t}");
                 }
             }

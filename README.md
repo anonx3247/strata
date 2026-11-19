@@ -37,15 +37,15 @@ strata ui                          # open http://127.0.0.1:7777: the live viewer
 
 `strata ui` serves a local, read-only viewer. It re-reads the codebase every 1.5 seconds, so edits made through the CLI (by you or by agents) appear as they are committed.
 
-- **Code**: with a definition selected (the default once you click something), it shows that definition, then what it uses, what uses it, its implementations and its tests, as plain code with a small kind/status marker in the margin. Each definition shows its interface; where there is more (a function body, an implementation's methods, a trait's default methods), an inline *show body ▸* / *hide body ▾* control reveals it. The selected definition starts open, and *expand all* opens everything. *Everything* shows the whole codebase.
+- **Code**: with a definition selected (the default once you click something), it shows that definition, then how it takes part in implementations (the impl blocks of a type or a trait; an impl block's trait and type), its dependencies, its references and its tests, as plain code with a small kind/status marker in the margin. Each definition shows its interface; where there is more (a function body, an implementation's methods, a trait's default methods), an inline *show body ▸* / *hide body ▾* control reveals it. The selected definition starts open, and *expand all* opens everything. *Everything* shows the whole codebase.
 - **Hover a name** in the code to get an arrow to where that definition is on screen (or which way to scroll); click it to go there.
-- **Inspector** (right): the selected definition's name and description (its `///` doc comment, which is not repeated in the code), a small graph of its neighbours (what it uses on the left, what uses it on the right, all clickable), its holes and verification result with any counterexample, and its history.
-- **Type map**: a graph of types and traits and how they relate: *implements* (a type points at every trait it implements, so it is a graph, not a hierarchy), *extends* (supertraits), *contains* (a field or variant mentions it), *refines*. Each module is a region. The layout puts the most connected definitions at the centre of their module. Clicking a card shows it in the inspector; double-click opens it in the code view. Drag cards (positions are remembered), scroll to zoom, or *re-layout*.
+- **Inspector** (right): the selected definition's name and description (its `///` doc comment, which is not repeated in the code), the traits it implements (or, for a trait, the types implementing it), a small graph of its neighbours (dependencies on the left, references on the right, all clickable), its holes and verification result with any counterexample, and its history.
+- **Type map**: a graph of types and traits and how they depend on each other: *contains* (a field or variant mentions it), *refines*, *in a trait method* (a trait's method signatures mention it) and *extends* (supertraits). *implementations* adds the edges from each type to the traits it implements; *refinement types* adds types such as `type TaskId = Int where it > 0`. Both are off by default. Each module is a region. The layout puts the most connected definitions at the centre of their module. Clicking a card shows it in the inspector; double-click opens it in the code view. Drag cards (positions are remembered), scroll to zoom, or *re-layout*.
 - **Activity**: the patch log. Definitions changed since your last look are highlighted.
 - **Changes** (key `d`): a structural diff. On a codebase it covers patches from the log (by default everything after the first import; pick another start), one step per patch. On files (`--file`) under git it compares a revision (default `HEAD`, or a branch or commit you type) with the working tree, one step per commit plus uncommitted changes. Click a step, or use ← →, to see only that step.
   Each changed definition says what happened in words (a variant added, a method added, a stronger guarantee, renamed) and shows its code with the changes marked in place: unchanged members and lines fold away, keeping the lines that enclose each change; a new `ensures` is bold with a *stronger guarantee* pill (a removed one: *weaker*, a new `requires`: *stricter precondition*); a mostly rewritten body falls back to a line diff; a doc change is a word diff. A rename is one change, and definitions that only follow it are folded into it. Changes are ordered types → interfaces → implementations → tests, then verification before → after. The inspector shows what uses the selected definition, the steps that made the change, and its verification. `strata diff` prints the same thing as text (or `--json`).
 - The URL keeps the view, e.g. `#level=1&sel=refund`, so you can send someone or an agent exactly what you're looking at.
-- Keys: `c` code, `d` changes, `t` type map, `1` collapse all, `2` expand all, `/` filters, `Esc` clears the selection, `←` / `→` go back and forward through the definitions you have visited (the toolbar has the same buttons; in *Changes* they walk through the steps).
+- Keys: `⌘P` / `Ctrl+P` opens a palette to jump to any definition by name (fuzzy, recent ones first), `c` code, `d` changes, `t` type map, `1` collapse all, `2` expand all, `/` filters, `Esc` clears the selection, `←` / `→` go back and forward through the definitions you have visited (the toolbar has the same buttons; in *Changes* they walk through the steps).
 
 `strata ui --file some.strata` views a single file instead of a codebase.
 
@@ -126,10 +126,17 @@ $ strata rename total order_total
 renamed total → order_total
 updated 1 definition that refers to it: test "totals"
 
-$ strata run ship '["ord_abc123","TRK1"]' --mock --trace
-{"event":"call","fn":"ship","args":["ord_abc123","TRK1"],"depth":1}
-{"event":"perform","op":"Db.load","args":["ord_abc123"],"result":{"Some":{"Cancelled":{"id":"ord_so7f76","reason":"ju_4p-"}}}}
-{"event":"return","fn":"ship","value":{"Err":"NotPending"},"depth":1}
+$ strata run total '[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]]' --trace
+{"event":"call","fn":"total","args":[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]],"depth":1}
+{"event":"call","fn":"line_total","args":[{"sku":"tea","qty":2,"unit_price":450}],"depth":2}
+{"event":"return","fn":"line_total","value":900,"depth":2}
+{"event":"call","fn":"line_total","args":[{"sku":"cup","qty":1,"unit_price":1200}],"depth":2}
+{"event":"return","fn":"line_total","value":1200,"depth":2}
+{"event":"return","fn":"total","value":2100,"depth":1}
+2100
+
+$ strata run total '[[]]'                    # arguments are checked against the types
+error: invalid input: lines: [] does not satisfy `NonEmpty` (where len(it) > 0)
 ```
 
 ## Refinements: named, inline, and structural
@@ -184,7 +191,7 @@ fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, (ac
 ```rust
 module orders {
   pub type Order = { id: OrderId, lines: NonEmpty[Line] }
-  pub fn ship(id: OrderId) -> Result[Order, ShipError] / {Db}  ensures ...
+  pub fn ship[D: Db](mut db: D, id: OrderId) -> Result[Order, ShipError]  ensures ...
   fn helper() -> Int { ... }            // private: invisible outside `orders`
 }
 module billing {
@@ -277,7 +284,7 @@ All values are immutable (`insert` returns a new dict). Dicts and sets are kept 
 | `--level 2` | an outline: L1 plus a one-line summary of each body |
 | `--level 3` | full source; `render` output parses back to the same tree |
 
-Comments are part of the tree, so they survive every edit and render. A `//` comment belongs to what follows it: a definition (comments separated from it by a blank line, such as a file header or a section banner, keep that blank line), a field, a variant, a trait or impl method, a statement or a match arm. A comment at the end of a line moves above the thing it follows. A comment anywhere else (inside an argument list, after the last statement of a block) is an error, never silently dropped. `///` doc comments work the same way and are the description the viewer shows. Comments are printed as written; changing one changes the definition's hash but not its interface hash, and does not invalidate verification results.
+Comments are part of the tree, so they survive every edit and render. A `//` comment belongs to what follows it: a definition (comments separated from it by a blank line, such as a file header or a section banner, keep that blank line), a field, a variant, a trait or impl method, a law, a statement or a match arm. Blank lines between statements are kept too (several in a row become one). A comment at the end of a line moves above the thing it follows. A comment anywhere else (inside an argument list, after the last statement of a block) is an error, never silently dropped. `///` doc comments work the same way and are the description the viewer shows. Comments are printed as written; changing one changes the definition's hash but not its interface hash, and does not invalidate verification results.
 
 All rendered code is formatted to about 80 columns: long argument lists, record literals, method chains, `&&` / `||` / `+` chains, parameter lists and doc comments are broken across lines.
 

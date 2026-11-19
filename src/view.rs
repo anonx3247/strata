@@ -1,7 +1,7 @@
 //! Level-of-detail projections of the codebase.
 //!
-//! L0  map: one line per definition, with effects, dependencies and status
-//! L1  interfaces: types, effects, signatures and contracts (bodies elided)
+//! L0  map: one line per definition, with dependencies and status
+//! L1  interfaces: types, traits, signatures and contracts (bodies elided)
 //! L2  outline: L1 plus a one-line summary of each body
 //! L3  full source
 //!

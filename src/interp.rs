@@ -135,8 +135,6 @@ pub struct Interp<'a> {
     pub trace: Vec<Json>,
     pub tracing: bool,
     pub generator: Gen,
-    /// Every effect operation performed: (effect.op, args, result)
-    pub effect_log: Vec<Json>,
     depth: usize,
     /// compiled regexes for `matches`, which refinements call constantly
     regexes: HashMap<String, regex::Regex>,
@@ -245,7 +243,6 @@ impl<'a> Interp<'a> {
             trace: vec![],
             tracing: false,
             generator: Gen::new(seed),
-            effect_log: vec![],
             depth: 0,
             regexes: HashMap::new(),
             writeback: vec![],
