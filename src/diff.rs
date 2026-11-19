@@ -98,7 +98,8 @@ fn segments(a: &str, b: &str) -> Vec<(char, String)> {
     let words = |s: &str| tokens(s).iter().filter(|t| !t.trim().is_empty()).count();
     let kept: usize = fine[f..=l].iter().filter(|(k, _)| *k == '=').map(|(_, s)| words(s)).sum();
     let changed: usize = fine[f..=l].iter().filter(|(k, _)| *k != '=').map(|(_, s)| words(s)).sum();
-    if kept == 0 || changed <= kept {
+    // (only spaces kept between the edits counts as nothing kept)
+    if changed <= kept {
         return fine;
     }
     let old: String = fine[f..=l].iter().filter(|(k, _)| *k != '+').map(|(_, s)| s.as_str()).collect();
@@ -107,6 +108,7 @@ fn segments(a: &str, b: &str) -> Vec<(char, String)> {
     out.push(('-', old));
     out.push(('+', new));
     out.extend(fine[l + 1..].iter().cloned());
+    out.retain(|(_, t)| !t.is_empty());
     out
 }
 
@@ -202,8 +204,12 @@ fn line_diff(a: &str, b: &str) -> (Vec<Line>, bool) {
             continue;
         }
         let mut next_ins = 0;
+        // prose (comments) is paired only when it is mostly the same line;
+        // a rewrapped paragraph reads better as lines removed and added
+        let is_com = |l: &str| l.trim_start().starts_with("//");
+        let close = |d: &str, i: &str| similarity(d, i) >= if is_com(d) && is_com(i) { 0.75 } else { 0.5 };
         for d in &dels {
-            match (next_ins..ins.len()).find(|&j| similarity(d, ins[j]) >= 0.5) {
+            match (next_ins..ins.len()).find(|&j| close(d, ins[j])) {
                 Some(j) => {
                     out.extend(ins[next_ins..j].iter().map(|i| Line::new('+', i)));
                     let mut l = Line::new('~', ins[j]);
@@ -874,4 +880,33 @@ fn text_segs(segs: &[Json]) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mostly_changed_spans_are_one_replacement() {
+        // only spaces in common between the edits: one replacement, not word by word
+        let s = segments("// x\"). Strata values are immutable, so a stateful backend", "// x\"). Methods that change a backend say `mut self`");
+        assert_eq!(s.iter().filter(|(k, _)| *k == '-').count(), 1, "{s:?}");
+        assert_eq!(s.iter().filter(|(k, _)| *k == '+').count(), 1, "{s:?}");
+        assert_eq!(s[0], ('=', "// x\"). ".to_string()));
+        // a small edit stays small
+        let s = segments("if len(xs) == 0 {", "if len(ys) == 0 {");
+        assert_eq!(s, vec![('=', "if len(".into()), ('-', "xs".into()), ('+', "ys".into()), ('=', ") == 0 {".into())]);
+    }
+
+    #[test]
+    fn rewrapped_comments_are_lines_removed_and_added() {
+        let old = "// object changes\"). Strata values are immutable, so a stateful backend\n// returns its next state from each operation.\ntype T = Int";
+        let new = "// object changes\"). Methods that change a backend say `mut self`.\ntype T = Int";
+        let (lines, _) = line_diff(old, new);
+        let kinds: Vec<char> = lines.iter().map(|l| l.s).collect();
+        assert_eq!(kinds, vec!['-', '-', '+', ' '], "{lines:?}");
+        // a light touch-up of a comment is still marked in place
+        let (lines, _) = line_diff("// claim the next batch\nfn f() -> Int", "// claim the next batches\nfn f() -> Int");
+        assert_eq!(lines[0].s, '~', "{lines:?}");
+    }
 }
