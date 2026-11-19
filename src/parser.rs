@@ -1,5 +1,5 @@
 use crate::ast::*;
-use crate::lexer::{lex_with_comments, Comment, Tok, Token};
+use crate::lexer::{lex_with_comments, Comment, FPart, Tok, Token};
 
 pub struct Parser {
     toks: Vec<Token>,
@@ -691,6 +691,28 @@ impl Parser {
             Tok::Hole(h) => {
                 self.next();
                 Ok(Expr::Hole(h))
+            }
+            Tok::FStr(parts) => {
+                self.next();
+                let mut out = Vec::new();
+                for part in parts {
+                    out.push(match part {
+                        FPart::Lit(s) => StrPart::Lit(s),
+                        FPart::Code(code, line, col) => {
+                            let at = |e: String| format!("{line}:{col}: in f-string: {e}");
+                            let mut p = Parser::new(&code).map_err(at)?;
+                            let e = p.expr().map_err(at)?;
+                            if p.peek() != &Tok::Eof {
+                                return Err(at(p.err("expected `}` after the expression")));
+                            }
+                            if !p.comments.is_empty() {
+                                return Err(at("comments are not allowed inside `{}`".into()));
+                            }
+                            StrPart::Expr(e)
+                        }
+                    });
+                }
+                Ok(Expr::Interp(out))
             }
             Tok::Sym("(") if self.lambda_ahead() => {
                 self.next();

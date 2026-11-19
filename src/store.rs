@@ -122,6 +122,11 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                 go(r, out);
                 go(fb, out);
             }
+            Expr::Interp(parts) => parts.iter().for_each(|p| {
+                if let StrPart::Expr(e) = p {
+                    go(e, out)
+                }
+            }),
             Expr::Mock(t) => ty(t, out),
             Expr::Is(r, c) => {
                 out.insert(ct.get(c).cloned().unwrap_or(c.clone()));

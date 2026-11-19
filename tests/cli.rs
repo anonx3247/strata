@@ -517,3 +517,32 @@ test "errors" {
     check_fails("returntest", "test \"t\" { return 1 }", "`return` outside a function");
     check_fails("returntype", "fn f() -> Int { return \"a\" }", "`return` value");
 }
+
+#[test]
+fn f_string_interpolation() {
+    run_tests(
+        "fstrings",
+        r##"type Color =
+  | Red
+  | Rgb(Int, Int, Int)
+
+fn report(name: String, xs: List[Int]) -> String { f"{name} has {len(xs)} items" }
+
+test "fstrings" {
+  assert report("ana", [1, 2]) == "ana has 2 items"
+  let n = 3
+  assert f"{n} + 1 = {n + 1}" == "3 + 1 = 4"
+  assert f"{{literal}} {n}" == "{literal} 3"
+  assert f"quote \" and {join(["a", "b"], "-")}" == "quote \" and a-b"
+  assert f"{Red} {[1, 2]} {Some(1)}" == "Red [1,2] {\"Some\":1}"
+  assert f"no parts" == "no parts"
+  assert f"{if n > 2 { "big" } else { "small" }}" == "big"
+}
+"##,
+        "1 passed",
+    );
+    check_fails("fempty", "fn f() -> String { f\"a {} b\" }", "empty `{}` in an f-string");
+    check_fails("fbrace", "fn f() -> String { f\"a } b\" }", "a lone `}` in an f-string");
+    check_fails("fbad", "fn f() -> String { f\"{1 +}\" }", "in f-string");
+    check_fails("fvar", "fn f() -> String { f\"{nope}\" }", "unknown variable `nope`");
+}

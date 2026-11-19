@@ -1112,6 +1112,14 @@ impl<'a> Checker<'a> {
                 self.scopes.pop();
                 t
             }
+            Expr::Interp(parts) => {
+                for p in parts {
+                    if let StrPart::Expr(e) = p {
+                        self.infer(e);
+                    }
+                }
+                Ty::Str
+            }
             Expr::Return(x) => {
                 match self.ret.clone() {
                     Some(r) => {

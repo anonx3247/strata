@@ -200,7 +200,7 @@ pub fn to_json(v: &Value) -> Json {
         Value::Variant(c, Fields::Rec(fs)) => {
             json!({ short(c): Json::Object(fs.iter().map(|(k, v)| (k.clone(), to_json(v))).collect()) })
         }
-        Value::Closure(ps, ..) => json!(format!("<closure |{}|>", ps.join(", "))),
+        Value::Closure(ps, ..) => json!(format!("<closure ({}) -> …>", ps.join(", "))),
         Value::FnRef(n) => json!(format!("<fn {n}>")),
     }
 }
@@ -1141,6 +1141,16 @@ impl<'a> Interp<'a> {
                 self.eval(last, &sc)?
             }
             Expr::Mock(t) => Value::Mock(t.clone()),
+            Expr::Interp(parts) => {
+                let mut out = String::new();
+                for p in parts {
+                    match p {
+                        StrPart::Lit(l) => out += l,
+                        StrPart::Expr(e) => out += &show(&self.eval(e, s)?),
+                    }
+                }
+                Value::Str(out)
+            }
             Expr::Return(x) => {
                 let v = self.eval(x, s)?;
                 return self.early_return(v);

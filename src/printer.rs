@@ -294,6 +294,16 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         }
         Expr::Block(..) => block(e, d),
         Expr::Mock(t) => format!("mock {}", ty(t)),
+        Expr::Interp(parts) => {
+            let mut s = "f\"".to_string();
+            for p in parts {
+                match p {
+                    StrPart::Lit(l) => s += &l.replace('"', "\\\"").replace('\n', "\\n").replace('{', "{{").replace('}', "}}"),
+                    StrPart::Expr(e) => s += &format!("{{{}}}", expr_inline(e, 0)),
+                }
+            }
+            s + "\""
+        }
         Expr::Return(x) if **x == Expr::Unit => "return".into(),
         Expr::Return(x) => format!("return {}", expr(x, d)),
         Expr::Try(x, k) => format!("{}{}", wrap(x, 8, d), if *k == TryKind::Result { "!" } else { "?" }),

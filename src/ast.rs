@@ -361,6 +361,14 @@ pub enum Expr {
     /// `e except { fallback }`, `e except err { fallback }`: the `Ok` / `Some`
     /// value, or else the fallback, which can use the error under `err`.
     Except(Box<Expr>, Option<String>, Box<Expr>),
+    /// `f"{name} has {len(xs)} items"`: each part shown as by `to_string`.
+    Interp(Vec<StrPart>),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum StrPart {
+    Lit(String),
+    Expr(Expr),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

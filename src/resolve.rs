@@ -401,6 +401,15 @@ impl Rw<'_> {
                 Expr::Field(Box::new(self.expr(r)), f.clone())
             }
             Expr::Mock(t) => Expr::Mock(self.ty(t)),
+            Expr::Interp(parts) => Expr::Interp(
+                parts
+                    .iter()
+                    .map(|p| match p {
+                        StrPart::Lit(l) => StrPart::Lit(l.clone()),
+                        StrPart::Expr(e) => StrPart::Expr(self.expr(e)),
+                    })
+                    .collect(),
+            ),
             Expr::Return(x) => Expr::Return(Box::new(self.expr(x))),
             Expr::Try(x, k) => Expr::Try(Box::new(self.expr(x)), *k),
             Expr::Except(x, name, fb) => {

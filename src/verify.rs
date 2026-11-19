@@ -49,6 +49,11 @@ fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
             w(r);
             w(fb)
         }
+        Expr::Interp(parts) => parts.iter().for_each(|p| {
+            if let StrPart::Expr(e) = p {
+                w(e)
+            }
+        }),
         Expr::Bin(_, l, r) => {
             w(l);
             w(r)
