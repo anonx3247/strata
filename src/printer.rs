@@ -6,6 +6,7 @@ use crate::ast::*;
 pub fn ty(t: &TypeExpr) -> String {
     match t {
         TypeExpr::Unit => "()".into(),
+        TypeExpr::Named(n, args) if n == "Tuple" => format!("({})", args.iter().map(ty).collect::<Vec<_>>().join(", ")),
         TypeExpr::Named(n, args) if args.is_empty() => n.clone(),
         TypeExpr::Named(n, args) => format!("{n}[{}]", args.iter().map(ty).collect::<Vec<_>>().join(", ")),
         TypeExpr::Fn(ps, r) => format!("({}) -> {}", ps.iter().map(ty).collect::<Vec<_>>().join(", "), ty(r)),
@@ -29,6 +30,7 @@ pub fn pat(p: &Pattern) -> String {
         Pattern::Wild => "_".into(),
         Pattern::Bind(n) => n.clone(),
         Pattern::Int(n) => n.to_string(),
+        Pattern::Tuple(ps) => format!("({})", ps.iter().map(pat).collect::<Vec<_>>().join(", ")),
         Pattern::Str(s) => format!("{s:?}"),
         Pattern::Bool(b) => b.to_string(),
         Pattern::Ctor(c, CtorPat::None) => c.clone(),
@@ -85,9 +87,15 @@ fn args(es: &[Expr], d: usize) -> String {
     es.iter().map(|e| expr(e, d)).collect::<Vec<_>>().join(", ")
 }
 
+pub fn float(f: f64) -> String {
+    if f.fract() == 0.0 && f.abs() < 1e15 { format!("{f:.1}") } else { format!("{f}") }
+}
+
 pub fn expr(e: &Expr, d: usize) -> String {
     match e {
         Expr::Int(n) => n.to_string(),
+        Expr::Float(f) => float(*f),
+        Expr::Tuple(es) => format!("({})", args(es, d)),
         Expr::Str(s) => format!("\"{}\"", s.replace('"', "\\\"").replace('\n', "\\n")),
         Expr::Bool(b) => b.to_string(),
         Expr::Unit => "()".into(),
@@ -199,7 +207,8 @@ pub fn block(e: &Expr, d: usize) -> String {
         };
         out += "\n";
     }
-    if *last != Expr::Unit || stmts.is_empty() {
+    // a trailing `()` is implied after `let`/`assert`, but not after an expression statement
+    if *last != Expr::Unit || stmts.is_empty() || matches!(stmts.last(), Some(Stmt::Expr(_))) {
         out += &format!("{}{}\n", ind(d + 1), expr(last, d + 1));
     }
     out + &ind(d) + "}"

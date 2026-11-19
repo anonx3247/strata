@@ -49,7 +49,7 @@ strata ui                          # open http://127.0.0.1:7777: the live viewer
 
 ## A taste
 
-`examples/bank.strata` is the smallest complete example. `examples/orders.strata` is the larger one excerpted below.
+`examples/bank.strata` is the smallest complete example. `examples/orders.strata` is the larger one excerpted below. `examples/tasks/` is a port of a real library, with a write-up of what verification found.
 
 ```
 type OrderId  = String where matches(it, "ord_[a-z0-9]{6}")
@@ -125,6 +125,23 @@ $ strata run ship '["ord_abc123","TRK1"]' --mock --trace
 {"event":"perform","op":"Db.load","args":["ord_abc123"],"result":{"Some":{"Cancelled":{"id":"ord_so7f76","reason":"ju_4p-"}}}}
 {"event":"return","fn":"ship","value":{"Err":"NotPending"},"depth":1}
 ```
+
+## Built-in types
+
+| Type | Notes |
+|---|---|
+| `Int`, `Float`, `Bool`, `String` | `Float` is never NaN or infinite; there is no implicit Int/Float mixing (`float(n)`, `round(x)`) |
+| `()` | the unit type: "no meaningful value", Python's `None` as a *type* |
+| `Option[T]` | `None` or `Some(x)`: a value that may be absent |
+| `Result[T, E]` | `Ok(x)` or `Err(e)`: an operation that may fail |
+| `List[T]` | an ordered sequence, `[1, 2, 3]` |
+| `(A, B, …)` | tuples, `(word, 3)`, destructured with `let (w, n) = …`, accessed with `t.0` |
+| `Dict[K, V]` | `dict([("a", 1)])`, `get`, `insert`, `remove`, `keys`, `values`, `items`; JSON object when keys are strings |
+| `Set[T]` | `set([1, 2])`, `insert`, `union`, `intersection`, `difference`, `to_list` |
+
+All values are immutable (`insert` returns a new dict). Dicts and sets are kept in canonical order, so equal collections are equal values and serialise identically. `len`, `contains`, `get`, `insert`, `remove`, `sum`, `min`, `max` and `abs` work across the types they make sense for. `strata builtins` lists every builtin with its signature. See `examples/builtins.strata`.
+
+**Not yet:** lazy iterators and generators. These, and async, will come from fully resumable effect handlers: a generator is a `Yield[T]` effect.
 
 ## Views (levels of detail)
 

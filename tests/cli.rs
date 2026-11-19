@@ -109,3 +109,30 @@ fn tasks_port_checks_tests_and_verifies() {
     let (ok, out) = strata(&["--file", &ex, "run", "demo"], &d, None);
     assert!(ok && out.contains("task-3: Done after 2"), "{out}");
 }
+
+#[test]
+fn builtin_collections_work() {
+    let d = tmp("builtins");
+    let ex = format!("{}/examples/builtins.strata", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["--file", &ex, "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    let (ok, out) = strata(&["--file", &ex, "verify"], &d, None);
+    assert!(ok, "{out}");
+    std::fs::write(d.join("e.strata"), "fn f(x: Int) -> Float { x * 1.5 }\nfn g(b: Bool) -> Int { len(b) }\n").unwrap();
+    let (ok, out) = strata(&["--file", "e.strata", "check"], &d, None);
+    assert!(!ok && out.contains("no version of `len` accepts (Bool)") && out.contains("expected `Int`, found `Float`"), "{out}");
+}
+
+#[test]
+fn every_example_round_trips_through_render() {
+    let d = tmp("roundtrip");
+    for ex in ["bank.strata", "orders.strata", "builtins.strata", "tasks/tasks.strata"] {
+        let path = format!("{}/examples/{ex}", env!("CARGO_MANIFEST_DIR"));
+        let (_, r1) = strata(&["--file", &path, "render"], &d, None);
+        std::fs::write(d.join("r.strata"), &r1).unwrap();
+        let (_, r2) = strata(&["--file", "r.strata", "render"], &d, None);
+        assert_eq!(r1, r2, "{ex} does not round-trip");
+        let (ok, out) = strata(&["--file", "r.strata", "test"], &d, None);
+        assert!(ok, "{ex} tests fail after round-trip: {out}");
+    }
+}

@@ -1,0 +1,75 @@
+// A tour of the built-in types: Int, Float, Bool, String, () (unit, the
+// "nothing" value), List, tuples, Dict, Set, Option and Result.
+
+type Word = String where str_len(it) > 0
+type Ratio = Float where 0.0 <= it && it <= 1.0
+
+/// Split text on spaces into non-empty words.
+fn words(text: String) -> List[Word] {
+  split(text, " ").map(trim).filter(|w| len(w) > 0)
+}
+
+/// How many times each word occurs.
+fn frequencies(ws: List[Word]) -> Dict[Word, Int]
+  ensures len(it) == len(set(ws))
+  ensures all(ws, |w| contains(it, w))
+{
+  fold(ws, dict([]), |acc, w| {
+    match get(acc, w) {
+      Some(n) => insert(acc, w, n + 1),
+      None => insert(acc, w, 1),
+    }
+  })
+}
+
+/// The `n` most frequent words, most frequent first (ties alphabetical).
+fn top(freq: Dict[Word, Int], n: Int) -> List[(Word, Int)]
+  requires n >= 0
+  ensures len(it) <= n
+{
+  take(sort_by(items(freq), |pair| (0 - pair.1, pair.0)), n)
+}
+
+/// Share of words that occur only once.
+fn hapax_ratio(freq: Dict[Word, Int]) -> Ratio {
+  if len(freq) == 0 {
+    0.0
+  } else {
+    float(count(values(freq), |c| c == 1)) / float(len(freq))
+  }
+}
+
+fn mean(xs: List[Float]) -> Option[Float] {
+  match xs {
+    [] => None,
+    _ => Some(sum(xs) / float(len(xs))),
+  }
+}
+
+type Stats = { distinct: Int, top: List[(Word, Int)], hapax: Ratio, mean_length: Option[Float] }
+
+fn stats(text: String) -> Stats {
+  let ws = words(text)
+  let freq = frequencies(ws)
+  Stats {
+    distinct: len(freq),
+    top: top(freq, 3),
+    hapax: hapax_ratio(freq),
+    mean_length: mean(ws.map(|w| float(len(w)))),
+  }
+}
+
+test "dicts, sets, tuples and floats" {
+  let s = stats("the cat and the hat and the bat")
+  assert s.distinct == 5
+  assert s.top == [("the", 3), ("and", 2), ("bat", 1)]
+  assert s.hapax == 0.6
+  assert set([3, 1, 3, 2]) == set([1, 2, 3])
+  assert union(set(["a"]), set(["b"])) == set(["b", "a"])
+  let (word, n) = match s.top { [first, ..] => first, [] => ("", 0) }
+  assert word == "the" && n == 3
+  assert (word, n).1 == 3
+  assert keys(dict([("b", 2), ("a", 1)])) == ["a", "b"]
+  assert parse_int(" 42 ") == Some(42)
+  assert round(2.6) == 3
+}

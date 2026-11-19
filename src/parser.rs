@@ -190,7 +190,7 @@ impl Parser {
             return match args.len() {
                 0 => Ok(TypeExpr::Unit),
                 1 => Ok(args.into_iter().next().unwrap()),
-                _ => Err(self.err("tuples are not supported yet")),
+                _ => Ok(TypeExpr::Named("Tuple".into(), args)),
             };
         }
         let name = self.ident()?;
@@ -329,6 +329,7 @@ impl Parser {
         if self.eat_sym("-") {
             return Ok(match self.unary()? {
                 Expr::Int(n) => Expr::Int(-n),
+                Expr::Float(f) => Expr::Float(-f),
                 e => Expr::Un(UnOp::Neg, Box::new(e)),
             });
         }
@@ -354,6 +355,11 @@ impl Parser {
                 e = Expr::Call(Box::new(e), self.args()?);
             } else if self.is_sym(".") {
                 self.next();
+                if let Tok::Int(n) = self.peek().clone() {
+                    self.next();
+                    e = Expr::Field(Box::new(e), n.to_string());
+                    continue;
+                }
                 let name = self.ident()?;
                 if self.is_sym("(") && !self.nl_before() {
                     self.next();
@@ -374,6 +380,10 @@ impl Parser {
                 self.next();
                 Ok(Expr::Int(n))
             }
+            Tok::Float(f) => {
+                self.next();
+                Ok(Expr::Float(f))
+            }
             Tok::Str(s) => {
                 self.next();
                 Ok(Expr::Str(s))
@@ -390,6 +400,12 @@ impl Parser {
                 let old = self.no_struct;
                 self.no_struct = false;
                 let e = self.expr()?;
+                if self.eat_sym(",") {
+                    let mut items = vec![e];
+                    items.extend(self.list(")", |p| p.expr())?);
+                    self.no_struct = old;
+                    return Ok(Expr::Tuple(items));
+                }
                 self.no_struct = old;
                 self.expect_sym(")")?;
                 Ok(e)
@@ -582,6 +598,11 @@ impl Parser {
             Tok::Str(s) => {
                 self.next();
                 Ok(Pattern::Str(s))
+            }
+            Tok::Sym("(") => {
+                self.next();
+                let items = self.list(")", |p| p.pattern())?;
+                Ok(if items.len() == 1 { items.into_iter().next().unwrap() } else { Pattern::Tuple(items) })
             }
             Tok::Sym("[") => {
                 self.next();

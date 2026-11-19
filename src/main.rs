@@ -45,6 +45,7 @@ Running:
                                args are a JSON array validated against the types;
                                --mock handles the function's effects with generated values
   test [FILTER]                run test blocks
+  builtins [--json]            list built-in functions and their signatures
 
 With --file, commands operate on a source file instead of a codebase.";
 
@@ -222,6 +223,17 @@ fn run() -> Result<bool, String> {
                 }
             };
             ui::serve(target, port)?;
+        }
+        "builtins" => {
+            if json_out {
+                let out: Vec<_> = types::BUILTINS.iter().map(|(n, ps, s)| json!({"name": n, "type_params": ps, "signature": s})).collect();
+                println!("{}", serde_json::to_string_pretty(&out).unwrap());
+            } else {
+                for (n, ps, s) in types::BUILTINS {
+                    let tp = if ps.is_empty() { String::new() } else { format!("[{ps}]") };
+                    println!("{n}{tp}{s}");
+                }
+            }
         }
         "render" => print!("{}", printer::program(load(&args)?.program())),
         "ast" => {

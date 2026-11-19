@@ -18,10 +18,17 @@ pub enum Fields {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Int(i64),
+    Float(f64),
     Bool(bool),
     Str(String),
     Unit,
     List(Vec<Value>),
+    Tuple(Vec<Value>),
+    /// Kept sorted by key (canonical order), so equal dicts are equal values
+    /// and serialise identically.
+    Dict(Vec<(Value, Value)>),
+    /// Kept sorted and duplicate-free.
+    Set(Vec<Value>),
     Record(String, Vec<(String, Value)>),
     Variant(String, Fields),
     Closure(Vec<String>, Rc<Expr>, Scope),
@@ -106,9 +113,42 @@ pub struct Interp<'a> {
     depth: usize,
 }
 
+fn canon(v: &Value) -> String {
+    to_json(v).to_string()
+}
+
+pub fn make_dict(pairs: Vec<(Value, Value)>) -> Value {
+    let mut out: Vec<(Value, Value)> = Vec::new();
+    for (k, v) in pairs {
+        match out.iter_mut().find(|(k2, _)| *k2 == k) {
+            Some(slot) => slot.1 = v, // later entries win, like Python's dict()
+            None => out.push((k, v)),
+        }
+    }
+    out.sort_by(|a, b| compare(&a.0, &b.0));
+    Value::Dict(out)
+}
+
+pub fn make_set(items: Vec<Value>) -> Value {
+    let mut out: Vec<Value> = Vec::new();
+    for x in items {
+        if !out.contains(&x) {
+            out.push(x);
+        }
+    }
+    out.sort_by(compare);
+    Value::Set(out)
+}
+
 pub fn to_json(v: &Value) -> Json {
     match v {
         Value::Int(n) => json!(n),
+        Value::Float(f) => json!(f),
+        Value::Tuple(xs) | Value::Set(xs) => Json::Array(xs.iter().map(to_json).collect()),
+        Value::Dict(kvs) if kvs.iter().all(|(k, _)| matches!(k, Value::Str(_))) => Json::Object(
+            kvs.iter().map(|(k, v)| (if let Value::Str(s) = k { s.clone() } else { unreachable!() }, to_json(v))).collect(),
+        ),
+        Value::Dict(kvs) => Json::Array(kvs.iter().map(|(k, v)| json!([to_json(k), to_json(v)])).collect()),
         Value::Bool(b) => json!(b),
         Value::Str(s) => json!(s),
         Value::Unit => Json::Null,
@@ -130,6 +170,26 @@ pub fn show(v: &Value) -> String {
         Value::Str(s) => s.clone(),
         Value::Variant(c, Fields::None) => c.clone(),
         other => to_json(other).to_string(),
+    }
+}
+
+/// A total order on values, used by `sort`: numbers numerically, strings
+/// lexicographically, everything else by canonical JSON.
+pub fn compare(a: &Value, b: &Value) -> std::cmp::Ordering {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x.cmp(y),
+        (Value::Float(x), Value::Float(y)) => x.total_cmp(y),
+        (Value::Str(x), Value::Str(y)) => x.cmp(y),
+        (Value::Tuple(xs), Value::Tuple(ys)) | (Value::List(xs), Value::List(ys)) => {
+            for (x, y) in xs.iter().zip(ys) {
+                let o = compare(x, y);
+                if o.is_ne() {
+                    return o;
+                }
+            }
+            xs.len().cmp(&ys.len())
+        }
+        _ => canon(a).cmp(&canon(b)),
     }
 }
 
@@ -176,6 +236,39 @@ impl<'a> Interp<'a> {
     /// reachable through it. Returns a description of the violation.
     pub fn check_type(&mut self, t: &TypeExpr, v: &Value) -> R<Option<String>> {
         let TypeExpr::Named(n, args) = t else { return Ok(None) };
+        if n == "Tuple" {
+            if let Value::Tuple(xs) = v {
+                for (i, (t, x)) in args.iter().zip(xs).enumerate() {
+                    if let Some(e) = self.check_type(t, x)? {
+                        return Ok(Some(format!(".{i}: {e}")));
+                    }
+                }
+            }
+            return Ok(None);
+        }
+        if n == "Set" {
+            if let (Value::Set(xs), Some(et)) = (v, args.first()) {
+                for x in xs {
+                    if let Some(e) = self.check_type(et, x)? {
+                        return Ok(Some(format!("element {}: {e}", to_json(x))));
+                    }
+                }
+            }
+            return Ok(None);
+        }
+        if n == "Dict" {
+            if let (Value::Dict(kvs), [kt, vt]) = (v, args.as_slice()) {
+                for (k, x) in kvs {
+                    if let Some(e) = self.check_type(kt, k)? {
+                        return Ok(Some(format!("key {}: {e}", to_json(k))));
+                    }
+                    if let Some(e) = self.check_type(vt, x)? {
+                        return Ok(Some(format!("[{}]: {e}", to_json(k))));
+                    }
+                }
+            }
+            return Ok(None);
+        }
         if n == "List" {
             if let (Value::List(xs), Some(et)) = (v, args.first()) {
                 for (i, x) in xs.iter().enumerate() {
@@ -317,8 +410,148 @@ impl<'a> Interp<'a> {
         let mut nx = || a.next().unwrap_or(Unit);
         Ok(match name {
             "len" => match nx() {
-                List(xs) => Int(xs.len() as i64),
+                List(xs) | Set(xs) => Int(xs.len() as i64),
+                Str(s) => Int(s.chars().count() as i64),
+                Dict(kvs) => Int(kvs.len() as i64),
                 _ => Int(0),
+            },
+            "dict" => match nx() {
+                List(xs) => make_dict(xs.into_iter().filter_map(|p| if let Tuple(mut kv) = p { let v = kv.pop()?; let k = kv.pop()?; Some((k, v)) } else { None }).collect()),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            "set" => match nx() {
+                List(xs) => make_set(xs),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            "insert" => match (nx(), nx()) {
+                (Dict(mut kvs), k) => {
+                    let v = nx();
+                    kvs.push((k, v));
+                    make_dict(kvs)
+                }
+                (Set(mut xs), x) => {
+                    xs.push(x);
+                    make_set(xs)
+                }
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            "remove" => match (nx(), nx()) {
+                (Dict(kvs), k) => Dict(kvs.into_iter().filter(|(k2, _)| *k2 != k).collect()),
+                (Set(xs), x) => Set(xs.into_iter().filter(|y| *y != x).collect()),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            "keys" | "values" | "items" => match nx() {
+                Dict(kvs) => List(
+                    kvs.into_iter()
+                        .map(|(k, v)| match name {
+                            "keys" => k,
+                            "values" => v,
+                            _ => Tuple(vec![k, v]),
+                        })
+                        .collect(),
+                ),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            "map_values" => {
+                let (Dict(kvs), f) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                let mut out = Vec::new();
+                for (k, v) in kvs {
+                    out.push((k, self.apply(f.clone(), vec![v])?));
+                }
+                Dict(out)
+            }
+            "to_list" => match nx() {
+                Set(xs) => List(xs),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            "union" | "intersection" | "difference" => {
+                let (Set(a), Set(b)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                match name {
+                    "union" => make_set([a, b].concat()),
+                    "intersection" => Set(a.into_iter().filter(|x| b.contains(x)).collect()),
+                    _ => Set(a.into_iter().filter(|x| !b.contains(x)).collect()),
+                }
+            }
+            "zip" => {
+                let (List(a), List(b)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                List(a.into_iter().zip(b).map(|(x, y)| Tuple(vec![x, y])).collect())
+            }
+            "enumerate" => match nx() {
+                List(xs) => List(xs.into_iter().enumerate().map(|(i, x)| Tuple(vec![Int(i as i64), x])).collect()),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            "sort" => match nx() {
+                List(mut xs) => {
+                    xs.sort_by(compare);
+                    List(xs)
+                }
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            "sort_by" => {
+                let (List(xs), f) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                let mut keyed = Vec::new();
+                for x in xs {
+                    keyed.push((self.apply(f.clone(), vec![x.clone()])?, x));
+                }
+                keyed.sort_by(|a, b| compare(&a.0, &b.0)); // stable
+                List(keyed.into_iter().map(|(_, x)| x).collect())
+            }
+            "reverse" => match nx() {
+                List(mut xs) => {
+                    xs.reverse();
+                    List(xs)
+                }
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            "join" => {
+                let (List(xs), Str(sep)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                Str(xs.iter().map(show).collect::<Vec<_>>().join(&sep))
+            }
+            "split" => {
+                let (Str(s), Str(sep)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                if sep.is_empty() {
+                    return self.fail(FaultKind::Runtime, "split: empty separator");
+                }
+                List(s.split(sep.as_str()).map(|p| Str(p.to_string())).collect())
+            }
+            "trim" => match nx() {
+                Str(s) => Str(s.trim().to_string()),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            "parse_int" | "parse_float" => {
+                let Str(s) = nx() else { return self.fail(FaultKind::Runtime, "bad args") };
+                let parsed = if name == "parse_int" {
+                    s.trim().parse::<i64>().ok().map(Int)
+                } else {
+                    s.trim().parse::<f64>().ok().filter(|f| f.is_finite()).map(Float)
+                };
+                match parsed {
+                    Some(v) => Variant("Some".into(), Fields::Pos(vec![v])),
+                    None => Variant("None".into(), Fields::None),
+                }
+            }
+            "float" => match nx() {
+                Int(n) => Float(n as f64),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            "floor" | "ceil" | "round" => match nx() {
+                Float(f) => {
+                    let r = match name {
+                        "floor" => f.floor(),
+                        "ceil" => f.ceil(),
+                        _ => f.round(),
+                    };
+                    if !(i64::MIN as f64..=i64::MAX as f64).contains(&r) {
+                        return self.fail(FaultKind::Runtime, format!("{f} does not fit in an Int"));
+                    }
+                    Int(r as i64)
+                }
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
+            "sqrt" => match nx() {
+                Float(f) if f >= 0.0 => Float(f.sqrt()),
+                Float(f) => return self.fail(FaultKind::Runtime, format!("sqrt of negative number {f}")),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
             },
             "str_len" => match nx() {
                 Str(s) => Int(s.chars().count() as i64),
@@ -350,10 +583,12 @@ impl<'a> Interp<'a> {
                 }
                 acc
             }
-            "contains" => {
-                let (List(xs), x) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
-                Bool(xs.contains(&x))
-            }
+            "contains" => match (nx(), nx()) {
+                (List(xs) | Set(xs), x) => Bool(xs.contains(&x)),
+                (Dict(kvs), k) => Bool(kvs.iter().any(|(k2, _)| *k2 == k)),
+                (Str(s), Str(sub)) => Bool(s.contains(&sub)),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
             "take" | "drop" => {
                 let (List(xs), Int(n)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
                 let n = (n.max(0) as usize).min(xs.len());
@@ -378,14 +613,21 @@ impl<'a> Interp<'a> {
                 List(xs)
             }
             "get" => {
-                let (List(xs), Int(i)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
-                match (i >= 0).then(|| xs.get(i as usize)).flatten() {
+                let found = match (nx(), nx()) {
+                    (List(xs), Int(i)) => (i >= 0).then(|| xs.get(i as usize).cloned()).flatten(),
+                    (Dict(kvs), k) => kvs.into_iter().find(|(k2, _)| *k2 == k).map(|(_, v)| v),
+                    _ => return self.fail(FaultKind::Runtime, "bad args"),
+                };
+                match found.as_ref() {
                     Some(v) => Variant("Some".into(), Fields::Pos(vec![v.clone()])),
                     None => Variant("None".into(), Fields::None),
                 }
             }
             "sum" => match nx() {
                 List(xs) => {
+                    if let Some(Float(_)) = xs.first() {
+                        return Ok(Float(xs.iter().map(|x| if let Float(f) = x { *f } else { 0.0 }).sum()));
+                    }
                     let mut t: i64 = 0;
                     for x in xs {
                         if let Int(n) = x {
@@ -405,12 +647,14 @@ impl<'a> Interp<'a> {
             }
             "abs" => match nx() {
                 Int(n) => Int(n.abs()),
+                Float(f) => Float(f.abs()),
                 _ => Unit,
             },
-            "min" | "max" => {
-                let (Int(x), Int(y)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
-                Int(if name == "min" { x.min(y) } else { x.max(y) })
-            }
+            "min" | "max" => match (nx(), nx()) {
+                (Int(x), Int(y)) => Int(if name == "min" { x.min(y) } else { x.max(y) }),
+                (Float(x), Float(y)) => Float(if name == "min" { x.min(y) } else { x.max(y) }),
+                _ => return self.fail(FaultKind::Runtime, "bad args"),
+            },
             "matches" => {
                 let (Str(s), Str(re)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
                 let re = regex::Regex::new(&format!("^(?:{re})$")).map_err(|e| fault(FaultKind::Runtime, format!("bad regex: {e}")))?;
@@ -536,6 +780,8 @@ impl<'a> Interp<'a> {
     pub fn eval(&mut self, e: &Expr, s: &Scope) -> R<Value> {
         Ok(match e {
             Expr::Int(n) => Value::Int(*n),
+            Expr::Float(f) => Value::Float(*f),
+            Expr::Tuple(es) => Value::Tuple(es.iter().map(|x| self.eval(x, s)).collect::<R<_>>()?),
             Expr::Str(x) => Value::Str(x.clone()),
             Expr::Bool(b) => Value::Bool(*b),
             Expr::Unit => Value::Unit,
@@ -599,6 +845,10 @@ impl<'a> Interp<'a> {
                 self.perform(eff, op, avs)?
             }
             Expr::Field(r, f) => match self.eval(r, s)? {
+                Value::Tuple(xs) => match f.parse::<usize>().ok().and_then(|i| xs.get(i).cloned()) {
+                    Some(v) => v,
+                    None => return self.fail(FaultKind::Runtime, format!("tuple has no element {f}")),
+                },
                 Value::Record(_, fs) | Value::Variant(_, Fields::Rec(fs)) => match fs.into_iter().find(|(n, _)| n == f) {
                     Some((_, v)) => v,
                     None => return self.fail(FaultKind::Runtime, format!("no field `{f}`")),
@@ -630,6 +880,25 @@ impl<'a> Interp<'a> {
                         a.extend(b);
                         Value::List(a)
                     }
+                    (op, Value::Float(a), Value::Float(b)) => {
+                        let r = match op {
+                            Add => a + b,
+                            Sub => a - b,
+                            Mul => a * b,
+                            Div => a / b,
+                            Mod => a.rem_euclid(b),
+                            Lt => return Ok(Value::Bool(a < b)),
+                            Le => return Ok(Value::Bool(a <= b)),
+                            Gt => return Ok(Value::Bool(a > b)),
+                            Ge => return Ok(Value::Bool(a >= b)),
+                            _ => return self.fail(FaultKind::Runtime, "bad operands"),
+                        };
+                        // no NaN or infinity: they have no JSON form and break equality
+                        if !r.is_finite() {
+                            return self.fail(FaultKind::Runtime, format!("{a} {} {b} is not a finite number", op.symbol()));
+                        }
+                        Value::Float(r)
+                    }
                     (op, Value::Int(a), Value::Int(b)) => {
                         let ov = || fault(FaultKind::Runtime, format!("integer overflow in {a} {} {b}", op.symbol()));
                         match op {
@@ -651,6 +920,7 @@ impl<'a> Interp<'a> {
             }
             Expr::Un(UnOp::Neg, x) => match self.eval(x, s)? {
                 Value::Int(n) => Value::Int(-n),
+                Value::Float(f) => Value::Float(-f),
                 _ => return self.fail(FaultKind::Runtime, "bad operand"),
             },
             Expr::Un(UnOp::Not, x) => Value::Bool(self.eval(x, s)? != Value::Bool(true)),
@@ -749,6 +1019,13 @@ impl<'a> Interp<'a> {
             (Pattern::Int(a), Value::Int(b)) if a == b => Some(s.clone()),
             (Pattern::Str(a), Value::Str(b)) if a == b => Some(s.clone()),
             (Pattern::Bool(a), Value::Bool(b)) if a == b => Some(s.clone()),
+            (Pattern::Tuple(ps), Value::Tuple(xs)) if ps.len() == xs.len() => {
+                let mut sc = s.clone();
+                for (p, x) in ps.iter().zip(xs) {
+                    sc = self.matches(p, x, &sc)?;
+                }
+                Some(sc)
+            }
             (Pattern::List(items, rest), Value::List(xs)) => {
                 if xs.len() < items.len() || (rest.is_none() && xs.len() != items.len()) {
                     return None;
@@ -814,6 +1091,38 @@ impl<'a> Interp<'a> {
             TypeExpr::Fn(..) => bad("a function (not representable in JSON)"),
             TypeExpr::Named(n, args) => match n.as_str() {
                 "Int" => j.as_i64().map(Value::Int).map_or_else(|| bad("an integer"), Ok),
+                "Float" => j.as_f64().map(Value::Float).map_or_else(|| bad("a number"), Ok),
+                "Tuple" => match j.as_array().filter(|a| a.len() == args.len()) {
+                    Some(xs) => Ok(Value::Tuple(
+                        args.iter().zip(xs).enumerate().map(|(i, (t, x))| self.from_json_raw(t, x, &format!("{path}.{i}"))).collect::<Result<_, _>>()?,
+                    )),
+                    None => bad(&format!("an array of {} values", args.len())),
+                },
+                "Set" => match j.as_array() {
+                    Some(xs) => Ok(make_set(
+                        xs.iter().enumerate().map(|(i, x)| self.from_json_raw(&args[0], x, &format!("{path}[{i}]"))).collect::<Result<_, _>>()?,
+                    )),
+                    None => bad("an array"),
+                },
+                "Dict" => {
+                    let mut pairs = Vec::new();
+                    if let Some(o) = j.as_object() {
+                        for (k, v) in o {
+                            let kv = self.from_json_raw(&args[0], &Json::String(k.clone()), &format!("{path} key {k:?}"))?;
+                            pairs.push((kv, self.from_json_raw(&args[1], v, &format!("{path}[{k:?}]"))?));
+                        }
+                    } else if let Some(xs) = j.as_array() {
+                        for (i, x) in xs.iter().enumerate() {
+                            let Some([k, v]) = x.as_array().map(|a| a.as_slice()).and_then(|a| <&[Json; 2]>::try_from(a).ok()) else {
+                                return Err(format!("{path}[{i}]: expected a [key, value] pair"));
+                            };
+                            pairs.push((self.from_json_raw(&args[0], k, &format!("{path}[{i}].key"))?, self.from_json_raw(&args[1], v, &format!("{path}[{i}].value"))?));
+                        }
+                    } else {
+                        return bad("an object or an array of [key, value] pairs");
+                    }
+                    Ok(make_dict(pairs))
+                }
                 "Bool" => j.as_bool().map(Value::Bool).map_or_else(|| bad("a boolean"), Ok),
                 "String" => j.as_str().map(|s| Value::Str(s.into())).map_or_else(|| bad("a string"), Ok),
                 "List" => match j.as_array() {

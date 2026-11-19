@@ -132,6 +132,33 @@ impl Gen {
         };
         match n.as_str() {
             "Int" => return Ok(Value::Int(self.int(h))),
+            "Float" => {
+                let whole = self.int(h) as f64;
+                let frac: f64 = self.rng.random_range(0.0..1.0);
+                // stay inside integer bounds when there are any
+                let f = if h.hi.is_some_and(|hi| whole + frac > hi as f64) { whole } else { whole + frac };
+                return Ok(Value::Float(f));
+            }
+            "Tuple" => {
+                return Ok(Value::Tuple(args.iter().map(|t| self.produce(env, t, it, depth + 1, &Hints::default())).collect::<Result<_, _>>()?));
+            }
+            "Set" | "Dict" => {
+                let len = if depth > 3 { 0 } else { self.rng.random_range(0..=4) };
+                let mut items = Vec::new();
+                for _ in 0..len {
+                    let k = self.produce(env, &args[0], it, depth + 1, &Hints::default())?;
+                    if n == "Set" {
+                        items.push((k, Value::Unit));
+                    } else {
+                        items.push((k, self.produce(env, &args[1], it, depth + 1, &Hints::default())?));
+                    }
+                }
+                return Ok(if n == "Set" {
+                    crate::interp::make_set(items.into_iter().map(|(k, _)| k).collect())
+                } else {
+                    crate::interp::make_dict(items)
+                });
+            }
             "Bool" => return Ok(Value::Bool(self.rng.random_bool(0.5))),
             "String" => return Ok(Value::Str(self.string(h)?)),
             "Unit" => return Ok(Value::Unit),

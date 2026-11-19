@@ -16,8 +16,8 @@ use serde_json::Value as Json;
 
 fn literal(e: &Expr) -> bool {
     match e {
-        Expr::Int(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Unit => true,
-        Expr::List(xs) => xs.iter().all(literal),
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Unit => true,
+        Expr::List(xs) | Expr::Tuple(xs) => xs.iter().all(literal),
         Expr::Ctor(_, CtorArgs::None) => true,
         Expr::Ctor(_, CtorArgs::Positional(xs)) => xs.iter().all(literal),
         Expr::Ctor(_, CtorArgs::Record(fs)) => fs.iter().all(|(_, x)| literal(x)),
@@ -29,7 +29,7 @@ fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
     f(e);
     let mut w = |x: &Expr| walk(x, f);
     match e {
-        Expr::List(xs) => xs.iter().for_each(&mut w),
+        Expr::List(xs) | Expr::Tuple(xs) => xs.iter().for_each(&mut w),
         Expr::Ctor(_, CtorArgs::Positional(xs)) => xs.iter().for_each(&mut w),
         Expr::Ctor(_, CtorArgs::Record(fs)) => fs.iter().for_each(|(_, x)| w(x)),
         Expr::Ctor(_, CtorArgs::Update(b, fs)) => {

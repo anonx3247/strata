@@ -26,6 +26,42 @@ type Resume[R, S] = { value: R, state: S }
 /// Builtin functions and their type schemes.
 pub const BUILTINS: &[(&str, &str, &str)] = &[
     ("len", "A", "(List[A]) -> Int"),
+    ("len", "", "(String) -> Int"),
+    ("len", "K,V", "(Dict[K, V]) -> Int"),
+    ("len", "A", "(Set[A]) -> Int"),
+    ("contains", "A", "(Set[A], A) -> Bool"),
+    ("contains", "K,V", "(Dict[K, V], K) -> Bool"),
+    ("contains", "", "(String, String) -> Bool"),
+    ("get", "K,V", "(Dict[K, V], K) -> Option[V]"),
+    ("dict", "K,V", "(List[(K, V)]) -> Dict[K, V]"),
+    ("insert", "K,V", "(Dict[K, V], K, V) -> Dict[K, V]"),
+    ("insert", "A", "(Set[A], A) -> Set[A]"),
+    ("remove", "K,V", "(Dict[K, V], K) -> Dict[K, V]"),
+    ("remove", "A", "(Set[A], A) -> Set[A]"),
+    ("keys", "K,V", "(Dict[K, V]) -> List[K]"),
+    ("values", "K,V", "(Dict[K, V]) -> List[V]"),
+    ("items", "K,V", "(Dict[K, V]) -> List[(K, V)]"),
+    ("map_values", "K,V,W", "(Dict[K, V], (V) -> W) -> Dict[K, W]"),
+    ("set", "A", "(List[A]) -> Set[A]"),
+    ("to_list", "A", "(Set[A]) -> List[A]"),
+    ("union", "A", "(Set[A], Set[A]) -> Set[A]"),
+    ("intersection", "A", "(Set[A], Set[A]) -> Set[A]"),
+    ("difference", "A", "(Set[A], Set[A]) -> Set[A]"),
+    ("zip", "A,B", "(List[A], List[B]) -> List[(A, B)]"),
+    ("enumerate", "A", "(List[A]) -> List[(Int, A)]"),
+    ("sort", "A", "(List[A]) -> List[A]"),
+    ("sort_by", "A,B", "(List[A], (A) -> B) -> List[A]"),
+    ("reverse", "A", "(List[A]) -> List[A]"),
+    ("join", "", "(List[String], String) -> String"),
+    ("split", "", "(String, String) -> List[String]"),
+    ("trim", "", "(String) -> String"),
+    ("parse_int", "", "(String) -> Option[Int]"),
+    ("parse_float", "", "(String) -> Option[Float]"),
+    ("float", "", "(Int) -> Float"),
+    ("floor", "", "(Float) -> Int"),
+    ("ceil", "", "(Float) -> Int"),
+    ("round", "", "(Float) -> Int"),
+    ("sqrt", "", "(Float) -> Float"),
     ("map", "A,B", "(List[A], (A) -> B) -> List[B]"),
     ("filter", "A", "(List[A], (A) -> Bool) -> List[A]"),
     ("fold", "A,B", "(List[A], B, (B, A) -> B) -> B"),
@@ -39,10 +75,14 @@ pub const BUILTINS: &[(&str, &str, &str)] = &[
     ("count", "A", "(List[A], (A) -> Bool) -> Int"),
     ("get", "A", "(List[A], Int) -> Option[A]"),
     ("sum", "", "(List[Int]) -> Int"),
+    ("sum", "", "(List[Float]) -> Float"),
     ("range", "", "(Int, Int) -> List[Int]"),
     ("abs", "", "(Int) -> Int"),
+    ("abs", "", "(Float) -> Float"),
     ("min", "", "(Int, Int) -> Int"),
+    ("min", "", "(Float, Float) -> Float"),
     ("max", "", "(Int, Int) -> Int"),
+    ("max", "", "(Float, Float) -> Float"),
     ("matches", "", "(String, String) -> Bool"),
     ("str_len", "", "(String) -> Int"),
     ("starts_with", "", "(String, String) -> Bool"),
@@ -52,6 +92,7 @@ pub const BUILTINS: &[(&str, &str, &str)] = &[
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ty {
     Int,
+    Float,
     Bool,
     Str,
     Unit,
@@ -291,6 +332,10 @@ impl<'a> Checker<'a> {
                 let largs: Vec<Ty> = args.iter().map(|a| self.lower(a, vars)).collect();
                 match n.as_str() {
                     "Int" => Ty::Int,
+                    "Float" => Ty::Float,
+                    "Tuple" if largs.len() >= 2 => Ty::Con("Tuple".into(), largs),
+                    "Dict" if largs.len() == 2 => Ty::Con("Dict".into(), largs),
+                    "Set" if largs.len() == 1 => Ty::Con("Set".into(), largs),
                     "Bool" => Ty::Bool,
                     "String" => Ty::Str,
                     "Unit" => Ty::Unit,
@@ -474,6 +519,8 @@ impl<'a> Checker<'a> {
     fn infer(&mut self, e: &Expr) -> Ty {
         match e {
             Expr::Int(_) => Ty::Int,
+            Expr::Float(_) => Ty::Float,
+            Expr::Tuple(es) => Ty::Con("Tuple".into(), es.iter().map(|e| self.infer(e)).collect()),
             Expr::Str(_) => Ty::Str,
             Expr::Bool(_) => Ty::Bool,
             Expr::Unit => Ty::Unit,
@@ -561,6 +608,11 @@ impl<'a> Checker<'a> {
                 rt
             }
             Expr::Call(f, args) => {
+                if let Expr::Var(n) = &**f {
+                    if let Some(t) = self.overloaded(n, args) {
+                        return t;
+                    }
+                }
                 let what = match &**f {
                     Expr::Var(n) => format!("call to `{n}`"),
                     _ => "call".into(),
@@ -571,6 +623,9 @@ impl<'a> Checker<'a> {
             Expr::Method(recv, m, args) => {
                 let mut all = vec![(**recv).clone()];
                 all.extend(args.iter().cloned());
+                if let Some(t) = self.overloaded(m, &all) {
+                    return t;
+                }
                 let Some(ft) = self.lookup(m).or_else(|| self.global_fn(m)) else {
                     self.err(format!("unknown function `{m}`"));
                     return self.fresh();
@@ -620,9 +675,8 @@ impl<'a> Checker<'a> {
                 use BinOp::*;
                 match op {
                     Add | Sub | Mul | Div | Mod => {
-                        self.expect(&Ty::Int, &lt, &format!("left of `{}`", op.symbol()));
-                        self.expect(&Ty::Int, &rt, &format!("right of `{}`", op.symbol()));
-                        Ty::Int
+                        self.numeric(&lt, &rt, op);
+                        lt
                     }
                     Concat => {
                         self.expect(&lt, &rt, "`++` operands");
@@ -638,8 +692,7 @@ impl<'a> Checker<'a> {
                         Ty::Bool
                     }
                     Lt | Le | Gt | Ge => {
-                        self.expect(&Ty::Int, &lt, &format!("left of `{}`", op.symbol()));
-                        self.expect(&Ty::Int, &rt, &format!("right of `{}`", op.symbol()));
+                        self.numeric(&lt, &rt, op);
                         Ty::Bool
                     }
                     And | Or | Implies => {
@@ -651,8 +704,12 @@ impl<'a> Checker<'a> {
             }
             Expr::Un(UnOp::Neg, x) => {
                 let t = self.infer(x);
-                self.expect(&Ty::Int, &t, "operand of `-`");
-                Ty::Int
+                match self.resolve(&t) {
+                    Ty::Int | Ty::Float => {}
+                    Ty::Var(_) => self.expect(&Ty::Int, &t, "operand of `-`"),
+                    other => self.err(format!("operand of `-` must be Int or Float, found `{}`", show_ty(&other))),
+                }
+                t
             }
             Expr::Un(UnOp::Not, x) => {
                 let t = self.infer(x);
@@ -780,6 +837,44 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Arithmetic and comparison: both sides the same numeric type, no implicit
+    /// Int/Float mixing. Unknown operands default to Int.
+    fn numeric(&mut self, lt: &Ty, rt: &Ty, op: &BinOp) {
+        self.expect(lt, rt, &format!("`{}` operands", op.symbol()));
+        match self.resolve(lt) {
+            Ty::Int | Ty::Float => {}
+            Ty::Var(_) => self.expect(&Ty::Int, lt, &format!("`{}` operands", op.symbol())),
+            other => self.err(format!("`{}` needs Int or Float operands, found `{}` (convert with `float(n)` / `round(x)`)", op.symbol(), show_ty(&other))),
+        }
+    }
+
+    /// Builtins with several signatures (`len`, `contains`, `get`, ...): pick the
+    /// first whose parameters unify with the argument types.
+    fn overloaded(&mut self, name: &str, args: &[Expr]) -> Option<Ty> {
+        if self.lookup(name).is_some() || self.env.fns.contains_key(name) {
+            return None;
+        }
+        let cands: Vec<_> = BUILTINS.iter().filter(|(n, ..)| *n == name).collect();
+        if cands.len() < 2 {
+            return None;
+        }
+        let arg_tys: Vec<Ty> = args.iter().map(|a| self.infer(a)).collect();
+        for (_, ps, sig) in &cands {
+            let snapshot = self.subst.clone();
+            let ps: Vec<String> = ps.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
+            if let Ty::Fn(params, ret) = self.instantiate(&ps, &parse_type_str(sig)) {
+                if params.len() == arg_tys.len() && params.iter().zip(&arg_tys).all(|(p, a)| self.unify(p, a).is_ok()) {
+                    return Some(*ret);
+                }
+            }
+            self.subst = snapshot;
+        }
+        let shown: Vec<String> = arg_tys.iter().map(|t| self.show(t)).collect();
+        let sigs: Vec<String> = cands.iter().map(|(_, _, s)| format!("  {name}{}", s)).collect();
+        self.err(format!("no version of `{name}` accepts ({}); available:\n{}", shown.join(", "), sigs.join("\n")));
+        Some(self.fresh())
+    }
+
     fn field_type(&mut self, rt: &Ty, f: &str) -> Ty {
         let mut rt = self.resolve(rt);
         if let Ty::Var(_) = rt {
@@ -795,6 +890,17 @@ impl<'a> Checker<'a> {
                 let (ct, _) = self.ctor_type(&cands[0]).unwrap();
                 self.expect(&ct, &rt, "field access");
                 rt = self.resolve(&ct);
+            }
+        }
+        if let (Ty::Con(n, items), Ok(i)) = (&rt, f.parse::<usize>()) {
+            if n == "Tuple" {
+                return match items.get(i) {
+                    Some(t) => t.clone(),
+                    None => {
+                        self.err(format!("tuple `{}` has no element {i}", show_ty(&rt)));
+                        self.fresh()
+                    }
+                };
             }
         }
         match &rt {
@@ -822,6 +928,13 @@ impl<'a> Checker<'a> {
             Pattern::Wild => {}
             Pattern::Bind(x) => self.bind(x, t.clone()),
             Pattern::Int(_) => self.expect(&Ty::Int, t, "pattern"),
+            Pattern::Tuple(ps) => {
+                let items: Vec<Ty> = ps.iter().map(|_| self.fresh()).collect();
+                self.expect(&Ty::Con("Tuple".into(), items.clone()), t, "tuple pattern");
+                for (p, it) in ps.iter().zip(&items) {
+                    self.pattern(p, it);
+                }
+            }
             Pattern::Str(_) => self.expect(&Ty::Str, t, "pattern"),
             Pattern::Bool(_) => self.expect(&Ty::Bool, t, "pattern"),
             Pattern::List(items, rest) => {
@@ -884,6 +997,8 @@ pub fn irrefutable(p: &Pattern) -> bool {
 pub fn show_ty(t: &Ty) -> String {
     match t {
         Ty::Int => "Int".into(),
+        Ty::Float => "Float".into(),
+        Ty::Con(n, a) if n == "Tuple" => format!("({})", a.iter().map(show_ty).collect::<Vec<_>>().join(", ")),
         Ty::Bool => "Bool".into(),
         Ty::Str => "String".into(),
         Ty::Unit => "()".into(),
@@ -909,6 +1024,7 @@ fn norm(c: &Checker, p: &Pattern) -> P {
     match p {
         Pattern::Wild | Pattern::Bind(_) => P::Any,
         Pattern::Int(_) | Pattern::Str(_) => P::Lit,
+        Pattern::Tuple(ps) => P::C("(,)".into(), ps.iter().map(|p| norm(c, p)).collect()),
         Pattern::Bool(b) => P::C(b.to_string(), vec![]),
         Pattern::List(items, rest) => {
             let mut acc = match rest {
@@ -946,6 +1062,8 @@ impl Checker<'_> {
     fn signature(&mut self, t: &Ty) -> Option<Vec<(String, Vec<Ty>)>> {
         match self.resolve(t) {
             Ty::Bool => Some(vec![("true".into(), vec![]), ("false".into(), vec![])]),
+            Ty::Con(n, args) if n == "Tuple" => Some(vec![("(,)".into(), args.clone())]),
+            Ty::Con(n, _) if n == "Dict" || n == "Set" => None,
             Ty::Unit => Some(vec![("()".into(), vec![])]),
             Ty::Con(n, args) if n == "List" => {
                 let l = Ty::Con("List".into(), args.clone());
@@ -996,6 +1114,7 @@ impl Checker<'_> {
                         let named = self.env.ctors.get(&c).and_then(|t| self.env.variants_of(t, &[])).and_then(|vs| vs.into_iter().find(|v| v.0 == c)).and_then(|v| v.1);
                         let shown = match c.as_str() {
                             "::" => format!("[{}, ..]", args[0]),
+                            "(,)" => format!("({})", args.join(", ")),
                             _ if n == 0 => c.clone(),
                             _ if named.is_some() && args.iter().all(|a| a == "_") => format!("{c} {{ .. }}"),
                             _ if named.is_some() => {

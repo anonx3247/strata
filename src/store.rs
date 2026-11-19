@@ -80,7 +80,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                     CtorPat::None => {}
                 }
             }
-            Pattern::List(ps, _) => ps.iter().for_each(|p| pat(p, out, ct)),
+            Pattern::List(ps, _) | Pattern::Tuple(ps) => ps.iter().for_each(|p| pat(p, out, ct)),
             _ => {}
         }
     }
@@ -90,7 +90,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             Expr::Var(v) => {
                 out.insert(v.clone());
             }
-            Expr::List(xs) => xs.iter().for_each(|x| go(x, out)),
+            Expr::List(xs) | Expr::Tuple(xs) => xs.iter().for_each(|x| go(x, out)),
             Expr::Ctor(c, args) => {
                 out.insert(ct.get(c).cloned().unwrap_or(c.clone()));
                 match args {

@@ -201,6 +201,8 @@ pub enum Pattern {
     Ctor(String, CtorPat),
     /// `[]`, `[a, b]`, `[x, ..rest]`
     List(Vec<Pattern>, Option<String>),
+    /// `(a, _)`
+    Tuple(Vec<Pattern>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -256,6 +258,9 @@ pub struct Handler {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Expr {
     Int(i64),
+    Float(f64),
+    /// `(a, b)`
+    Tuple(Vec<Expr>),
     Str(String),
     Bool(bool),
     Unit,

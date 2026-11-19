@@ -1,6 +1,7 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
     Int(i64),
+    Float(f64),
     Str(String),
     Ident(String),
     /// `?name`
@@ -66,6 +67,20 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
             let start = i;
             while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
                 i += 1;
+            }
+            // a fraction makes it a Float: `1.5` (but not `xs.0.1` or `1..n`)
+            let after_dot = i + 1 < chars.len() && chars[i + 1].is_ascii_digit();
+            let prev_dot = start > 0 && chars[start - 1] == '.';
+            if i < chars.len() && chars[i] == '.' && after_dot && !prev_dot {
+                i += 1;
+                while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
+                    i += 1;
+                }
+                let s: String = chars[start..i].iter().filter(|c| **c != '_').collect();
+                let f = s.parse::<f64>().map_err(|e| format!("{line}:{col}: bad float: {e}"))?;
+                col += i - start;
+                push(Tok::Float(f), &mut nl);
+                continue;
             }
             let s: String = chars[start..i].iter().filter(|c| **c != '_').collect();
             let n = s.parse::<i64>().map_err(|e| format!("{line}:{col}: bad int: {e}"))?;
