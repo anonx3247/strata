@@ -45,7 +45,7 @@ fn is_upper(s: &str) -> bool {
 
 const KEYWORDS: &[&str] = &[
     "type", "fn", "test", "let", "if", "else", "match", "mock", "where", "mut", "while", "for", "in", "loop", "break", "continue",
-    "requires", "ensures", "true", "false", "is", "assert", "trait", "impl", "law", "for", "pub", "use", "return", "except",
+    "requires", "ensures", "terminates", "true", "false", "is", "assert", "trait", "impl", "law", "for", "pub", "use", "return", "except",
 ];
 
 impl Parser {
@@ -532,9 +532,11 @@ impl Parser {
         if self.is_sym("/") {
             return Err(self.err("effect lists (`/ {...}`) were removed: pass the capability as a parameter instead"));
         }
-        let (mut requires, mut ensures) = (Vec::new(), Vec::new());
+        let (mut requires, mut ensures, mut terminates) = (Vec::new(), Vec::new(), false);
         loop {
-            if self.eat_kw("requires") {
+            if self.eat_kw("terminates") {
+                terminates = true;
+            } else if self.eat_kw("requires") {
                 requires.push(self.expr_ns()?);
             } else if self.eat_kw("ensures") {
                 ensures.push(self.expr_ns()?);
@@ -550,7 +552,7 @@ impl Parser {
         } else {
             self.block()?
         };
-        Ok((FnDecl { doc: vec![], comments: vec![], name, type_params, bounds, params, ret, requires, ensures, body }, has_body))
+        Ok((FnDecl { doc: vec![], comments: vec![], name, type_params, bounds, params, ret, requires, ensures, terminates, body }, has_body))
     }
 
     // ---------- expressions ----------
