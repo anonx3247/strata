@@ -125,6 +125,10 @@ pub struct TraitMethod {
 /// implementation must satisfy. Checked by `strata verify`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Law {
+    /// `//` comment lines just above it, as written ("" is a blank line between groups).
+    pub comments: Vec<String>,
+    /// `///` doc comment lines.
+    pub doc: Vec<String>,
     pub name: String,
     pub params: Vec<Param>,
     pub body: Expr,
