@@ -318,13 +318,24 @@ fn parse_query(q: &str) -> HashMap<String, String> {
 
 /// The structural diff for the viewer's Changes view: patches of the
 /// codebase's log, or git history of the source files.
-fn changes(target: &Target, q: &HashMap<String, String>) -> Result<Json, String> {
+/// On an error (a base that doesn't exist or doesn't parse), the options
+/// still come back, so the viewer can always offer another range.
+fn changes(target: &Target, q: &HashMap<String, String>) -> Json {
     let num = |k: &str| q.get(k).and_then(|v| v.parse::<usize>().ok());
-    let range = match target {
-        Target::Db(root) => crate::history::log_range(&Codebase::open(root)?, num("from"), num("to"))?,
-        Target::File(f) => crate::history::git_range(f, q.get("base").map(|s| s.as_str()))?,
-    };
-    range.diff(num("step"))
+    let base = q.get("base").map(|s| s.as_str());
+    match target {
+        Target::Db(root) => match Codebase::open(root) {
+            Ok(cb) => match crate::history::log_range(&cb, num("from"), num("to")).and_then(|r| r.diff(num("step"))) {
+                Ok(j) => j,
+                Err(e) => json!({"error": e, "options": crate::history::log_options(&cb, num("from"), num("to"))}),
+            },
+            Err(e) => json!({"error": e}),
+        },
+        Target::File(f) => match crate::history::git_range(f, base).and_then(|r| r.diff(num("step"))) {
+            Ok(j) => j,
+            Err(e) => json!({"error": e, "options": crate::history::git_options(f, base)}),
+        },
+    }
 }
 
 fn respond(mut s: TcpStream, status: &str, ctype: &str, body: &[u8]) {
@@ -348,7 +359,7 @@ pub fn serve(target: Target, port: u16) -> Result<(), String> {
         let (path, query) = target_path.split_once('?').unwrap_or((target_path, ""));
         match path {
             "/api/changes" => {
-                let body = changes(&target, &parse_query(query)).unwrap_or_else(|e| json!({"error": e})).to_string();
+                let body = changes(&target, &parse_query(query)).to_string();
                 respond(stream, "200 OK", "application/json", body.as_bytes())
             }
             "/" | "/index.html" => respond(stream, "200 OK", "text/html; charset=utf-8", PAGE.as_bytes()),

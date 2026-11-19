@@ -224,6 +224,7 @@ h2.sect { font: 600 11px var(--sans); text-transform: uppercase; letter-spacing:
 #changes { padding: 12px 22px 80px; max-width: 1040px; }
 .ch-range { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
 .ch-range b { color: var(--text); font-family: var(--mono); font-weight: 600; }
+.ch-range select { max-width: 260px; }
 .ch-range select, .ch-range input { font: inherit; font-size: 12px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); }
 .ch-steps { display: flex; gap: 8px; flex-wrap: wrap; align-items: stretch; margin-bottom: 10px; }
 .ch-commit { border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px 5px; background: var(--panel); }
@@ -969,21 +970,29 @@ function chCard(it) {
       ${refs}
     </div></div>`;
 }
+// which patches (a codebase), or which git base (files)
+function rangeControls(o, steps) {
+  if (o.kind === 'log') {
+    const n = steps ? `<span>${steps.length} patch${steps.length === 1 ? '' : 'es'}</span>` : '';
+    return `<span>Changes since</span><select id="ch-from">${(o.entries || []).slice(0, -1).map(e => `<option value="${e.index + 1}" ${e.index + 1 === o.from ? 'selected' : ''}>patch ${e.index + 1}: ${esc(e.message)}</option>`).join('')}<option value="0" ${o.from === 0 ? 'selected' : ''}>the beginning</option></select>${n}`;
+  }
+  if (o.kind === 'git') {
+    const recent = (o.commits || []).length ? `<select id="ch-commit" title="compare with a recent commit"><option value="">recent commits…</option>${o.commits.map(c => `<option value="${esc(c.rev)}" ${c.rev === o.base ? 'selected' : ''}>${esc(c.rev)} ${esc(c.message)}</option>`).join('')}</select>` : '';
+    return `<span>Comparing</span><input id="ch-base" size="14" value="${esc(o.base || 'HEAD')}" title="a git revision: HEAD, main, a commit… (Enter)"><span>with the working tree</span>${['HEAD', ...(o.branches || []).slice(0, 6)].filter((b, i, a) => a.indexOf(b) === i).map(b => `<a class="lnk" data-base="${esc(b)}">${esc(b)}</a>`).join(' ')}${recent}`;
+  }
+  return '';
+}
+
 function renderChanges() {
   const d = CH.data;
   if (!d) { $('#main').innerHTML = '<div id="changes"><div class="empty">Loading changes…</div></div>'; loadChanges(); return; }
+  // the range controls are always there, even when the range gives an error
+  const range = rangeControls(d.options || {}, d.steps);
   if (d.error) {
-    // keep a way out: the base can be changed from here
     const way = CH.base || CH.from != null || CH.step != null ? `<div style="margin-top:10px"><a class="lnk" data-chreset="1">back to the default range</a></div>` : '';
-    const base = CH.base ? `<div class="ch-range"><span>Comparing</span><input id="ch-base" size="14" value="${esc(CH.base)}"><span>with the working tree</span></div>` : '';
-    $('#main').innerHTML = `<div id="changes">${base}<div class="box warn">${esc(d.error)}</div>${way}</div>`;
+    $('#main').innerHTML = `<div id="changes"><div class="ch-range">${range}</div><div class="box warn">${esc(d.error)}</div>${way}</div>`;
     return;
   }
-  const o = d.options || {};
-  // the range: which patches, or which git base
-  const range = d.range.kind === 'log'
-    ? `<span>Changes since</span><select id="ch-from">${(o.entries || []).slice(0, -1).map(e => `<option value="${e.index + 1}" ${e.index + 1 === o.from ? 'selected' : ''}>patch ${e.index + 1}: ${esc(e.message)}</option>`).join('')}<option value="0" ${o.from === 0 ? 'selected' : ''}>the beginning</option></select><span>${d.steps.length} patch${d.steps.length === 1 ? '' : 'es'}</span>`
-    : `<span>Comparing</span><input id="ch-base" size="14" value="${esc(o.base || 'HEAD')}" title="a git revision: HEAD, main, a commit…"><span>with the working tree</span>${(o.branches || []).slice(0, 6).map(b => `<a class="lnk" data-base="${esc(b)}">${esc(b)}</a>`).join(' ')}`;
   // steps: patches, or commits (and uncommitted changes)
   const groups = [];
   for (const st of d.steps) { const g = groups.at(-1); if (g && g.group === st.group && st.group === '') g.steps.push(st); else groups.push({ group: st.group, steps: [st] }); }
@@ -1126,7 +1135,7 @@ document.addEventListener('click', e => {
     if (c.dataset.chreset) { CH.base = null; CH.from = null; CH.step = null; syncHash(); loadChanges(true); return; }
     if (c.dataset.chstep) { CH.step = c.dataset.chstep === 'all' || (c.classList.contains('patch') && CH.step === +c.dataset.chstep) ? null : +c.dataset.chstep; CH.open.clear(); syncHash(); loadChanges(true); $('#main').scrollTop = 0; return; }
     if (c.dataset.fold) { CH.open.add(c.dataset.fold); render(); return; }
-    if (c.dataset.base) { CH.base = c.dataset.base; CH.step = null; loadChanges(true); return; }
+    if (c.dataset.base) { CH.base = c.dataset.base === 'HEAD' ? null : c.dataset.base; CH.step = null; syncHash(); loadChanges(true); return; }
     if (c.dataset.gocode) { S.level = 1; S.scope = 'slice'; select(c.dataset.gocode); return; }
     if (c.dataset.chpick) { CH.sel = c.dataset.chpick; render(); document.getElementById('ch-' + CSS.escape(CH.sel))?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); return; }
   }
@@ -1143,7 +1152,10 @@ document.addEventListener('click', e => {
   if (t.dataset.pick) select(t.dataset.pick, false);
 });
 $('#q').addEventListener('input', e => { S.q = e.target.value; render(); });
-document.addEventListener('change', e => { if (e.target.id === 'ch-from') { CH.from = +e.target.value; CH.step = null; syncHash(); loadChanges(true); } });
+document.addEventListener('change', e => {
+  if (e.target.id === 'ch-from') { CH.from = +e.target.value; CH.step = null; syncHash(); loadChanges(true); }
+  if (e.target.id === 'ch-commit' && e.target.value) { CH.base = e.target.value; CH.step = null; syncHash(); loadChanges(true); }
+});
 document.addEventListener('keydown', e => { if (e.target.id === 'ch-base' && e.key === 'Enter') { CH.base = e.target.value.trim() || null; CH.step = null; syncHash(); loadChanges(true); } });
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'SELECT') return;

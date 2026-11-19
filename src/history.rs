@@ -73,6 +73,27 @@ impl Range {
     }
 }
 
+/// What a log range can be set to: its entries, and the current bounds.
+pub fn log_options(cb: &Codebase, from: Option<usize>, to: Option<usize>) -> Json {
+    let log = cb.log();
+    json!({"kind": "log", "entries": log.iter().enumerate().map(|(i, e)| json!({"index": i, "message": e["message"], "time": e["time"]})).collect::<Vec<_>>(), "from": from, "to": to})
+}
+
+/// What a git range can be set to: the current base, branches, recent commits.
+pub fn git_options(path: &Path, base: Option<&str>) -> Json {
+    let dir = if path.is_dir() { path.to_path_buf() } else { path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")).to_path_buf() };
+    let recent: Vec<Json> = git(&dir, &["log", "-15", "--format=%h%x09%s", "--", "."])
+        .unwrap_or_default()
+        .lines()
+        .map(|l| {
+            let (h, s) = l.split_once('\t').unwrap_or((l, ""));
+            json!({"rev": h, "message": s})
+        })
+        .collect();
+    let branches: Vec<String> = git(&dir, &["branch", "--format=%(refname:short)"]).unwrap_or_default().lines().map(|s| s.to_string()).collect();
+    json!({"kind": "git", "base": base.unwrap_or("HEAD"), "commits": recent, "branches": branches})
+}
+
 /// A codebase's log: the patches from entry `from` (default: everything after
 /// the first import) to `to` (default: the latest).
 pub fn log_range(cb: &Codebase, from: Option<usize>, to: Option<usize>) -> Result<Range, String> {
@@ -90,7 +111,7 @@ pub fn log_range(cb: &Codebase, from: Option<usize>, to: Option<usize>) -> Resul
             Step { id: k, title: e["message"].as_str().unwrap_or("").to_string(), group: String::new(), when: e["time"].as_u64(), before: states[k].clone(), after: states[k + 1].clone(), renames }
         })
         .collect();
-    let options = json!({"entries": log.iter().enumerate().map(|(i, e)| json!({"index": i, "message": e["message"], "time": e["time"]})).collect::<Vec<_>>(), "from": from, "to": to});
+    let options = log_options(cb, Some(from), Some(to));
     Ok(Range {
         kind: "log",
         label: format!("patches {}–{} of {}", from + 1, to, log.len()),
@@ -134,7 +155,10 @@ pub fn git_range(path: &Path, base: Option<&str>) -> Result<Range, String> {
     let dir = if path.is_dir() { path.to_path_buf() } else { path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")).to_path_buf() };
     git(&dir, &["rev-parse", "--show-toplevel"]).map_err(|_| format!("{} is not in a git repository, so there is nothing to compare it with", path.display()))?;
     let base = base.unwrap_or("HEAD");
-    let base_sha = git(&dir, &["rev-parse", "--short", base])?.trim().to_string();
+    let base_sha = git(&dir, &["rev-parse", "--short", "--verify", &format!("{base}^{{commit}}")])
+        .map_err(|_| format!("`{base}` is not a branch or commit in this repository"))?
+        .trim()
+        .to_string();
     let base_prog = sources_at(path, base).map_err(|e| format!("the sources at `{base}` don't parse with this version of strata ({e}), so there is nothing to compare with; pick another base"))?;
     let mut steps = Vec::new();
     let mut prev = base_prog.clone();
@@ -157,14 +181,6 @@ pub fn git_range(path: &Path, base: Option<&str>) -> Result<Range, String> {
     if crate::printer::program(&head) != crate::printer::program(&prev) {
         steps.push(Step { id: steps.len() + 1, title: "uncommitted changes".into(), group: "working tree".into(), when: None, before: prev, after: head.clone(), renames: vec![] });
     }
-    let recent: Vec<Json> = git(&dir, &["log", "-15", "--format=%h%x09%s", "--", "."])?
-        .lines()
-        .map(|l| {
-            let (h, s) = l.split_once('\t').unwrap_or((l, ""));
-            json!({"rev": h, "message": s})
-        })
-        .collect();
-    let branches: Vec<String> = git(&dir, &["branch", "--format=%(refname:short)"])?.lines().map(|s| s.to_string()).collect();
     Ok(Range {
         kind: "git",
         label: format!("{base} ({base_sha}) → working tree"),
@@ -172,6 +188,6 @@ pub fn git_range(path: &Path, base: Option<&str>) -> Result<Range, String> {
         head,
         steps,
         verdicts: HashMap::new(),
-        options: json!({"base": base, "commits": recent, "branches": branches}),
+        options: git_options(path, Some(base)),
     })
 }
