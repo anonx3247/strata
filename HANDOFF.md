@@ -53,7 +53,7 @@ Not yet: the log is not committed to git yet, so git ranges have no renames or p
 - **Verification strategy.** Today: compile-time checks on literals, runtime contract checks, and fuzzing (`strata verify`, with results cached by content hash). The options discussed are summarised at the end of the last conversation and in `README.md` under the roadmap.
 - **Transpilation / interop** with Python (Pydantic, JSON as the boundary), TypeScript and Rust. Later.
 - **Strata IDE**: the viewer as a standalone desktop app (Tauri; the backend is already Rust), speaking ACP (Agent Client Protocol) so agents such as Claude Code or Codex run inside it, with a Strata MCP server giving them structural tools (slices, check, edit, rename). The viewer would show live where each agent is working (log entries tagged with the agent's session). Idea stage.
-- **Union types and `?` / `!` type syntax**: `Square | Circle | Triangle` as a type with exhaustive matching on the member types; `T?` for an optional, `T ! E` for a result. Pros and cons were discussed (see the conversation of 2026-11-19); not decided.
+
 
 ## Known gaps
 
@@ -118,6 +118,16 @@ Bootstrap plan: write the frontend (lexer, parser, printer) in Strata and test i
 ### Runtime and standard library (decided)
 - **A small native core in Rust** (C is possible for the system-call layer; decide when we get there): the GC, the system-call / OS boundary, and bindings to LLVM and the SMT solver.
 - **Most of the standard library in Strata itself**: collections, strings, the ORM, HTTP / web views, CLI helpers, and agent tooling. Only the thin OS / runtime layer is native.
+
+### Unions, variants as types, and match patterns (decided 2026-11-19)
+- **`Option` and `Result` stay as they are**, and so do `!` / `?` propagation. No `T?` / `T ! E` syntax.
+- **Unions are sets of values**: `A | B` holds any value of `A` or of `B`. Unions normalize: `Int | Positive` is `Int`; `(Int where p) | (Int where q)` is `Int where p || q`; different bases stay a union. `A` fits `A | B`; `A | B` fits `C` when both do. Type parameters can be members (`T | E` with bounds); if they end up the same type, it collapses, harmlessly.
+- **Variants are types.** `type ShapeError = | NonEmptyErr | TooBig { max: Int }` declares the types `NonEmptyErr` and `TooBig`, and `ShapeError` is `NonEmptyErr | TooBig`. So `Result[Circle, NonEmptyErr]` or a parameter of type `TooBig` are allowed.
+- **Names are unique across the project**: no variant may share its name with a type or with another variant. A clash between modules is fixed by renaming on import (`use shapes.{Circle as Round}`).
+- **No automatic wrapping**: always write `Ok(…)`, `Err(…)`, `Some(…)` (`Result[Int, Int]` would be ambiguous otherwise).
+- **Patterns are sets of values**: a type name (`Positive =>`, `Square =>`), a variant as today, a literal, a condition (`where 3 <= it && it <= 5 =>`, base type = the scrutinee's), `_`. An arm takes what no earlier arm took. Exhaustive = the scrutinee's (normalized) type is covered by the arms; an arm already covered by earlier ones is an error (unreachable).
+- **Narrowing, no new name**: `match x { Positive => { x … } }` narrows `x` itself in the arm. For an expression: `match f(y) as x { … }`. Field paths (`o.status`) narrow too. Narrowing of a `let mut` lasts until it is assigned.
+- **Coverage**: integer (and `len(it)`) comparisons with constants, combined with `&&` / `||`, are decided exactly as interval sets. Anything else waits for the SMT solver; until then such an arm needs a later `_`. This also lets a match on `NonEmpty` skip the `[]` arm.
 
 ### Lambda syntax (done)
 - Replace the Rust-style `|x| body` with a **bare arrow**: `x -> body` and `(a, b) -> body`, with optional parameter types such as `(s: String) -> …`. For a longer body, use a block: `x -> { ... }`.
