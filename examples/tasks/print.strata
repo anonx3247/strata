@@ -1,6 +1,7 @@
 // tasks/print — the reference example task family and its entrypoints.
 
 use core.*
+
 use memory.*
 
 pub type PrintJob = { message: NonEmptyString, fail_times: Natural }
@@ -26,11 +27,17 @@ pub type PrintProducer = { count: Natural }
 
 impl Producer[PrintJob] for PrintProducer {
   fn discover(self) -> List[Task[PrintJob]] {
-    range(0, self.count).map(i -> Task {
-      id: f"task-{i}",
-      kind: "print",
-      payload: PrintJob { message: f"job #{i}", fail_times: if i == 3 { 1 } else { 0 } },
-    })
+    range(0, self.count).map(
+      i -> Task {
+        id: f"task-{i}",
+        kind: "print",
+        payload: PrintJob { message: f"job #{i}", fail_times: if i == 3 {
+          1
+        } else {
+          0
+        } },
+      },
+    )
   }
 }
 
@@ -39,12 +46,20 @@ impl Producer[PrintJob] for PrintProducer {
 pub type PrintWorker = { console: Console }
 
 impl Worker[PrintJob, Boom] for PrintWorker {
-  fn run(mut self, attempts: List[TaskAttempt[PrintJob]]) -> List[TaskResult[PrintJob, Boom]] {
+  fn run(
+    mut self,
+    attempts: List[TaskAttempt[PrintJob]],
+  ) -> List[TaskResult[PrintJob, Boom]] {
     let mut results = []
     for a in attempts {
-      self.console.print(f"[attempt {a.attempt}] {a.task.payload.message}")
+      self.console.print(
+        f"[attempt {a.attempt}] {a.task.payload.message}",
+      )
       if a.attempt <= a.task.payload.fail_times {
-        results = push(results, Failed { task: a.task, error: Boom { reason: "boom" } })
+        results = push(
+          results,
+          Failed { task: a.task, error: Boom { reason: "boom" } },
+        )
       } else {
         results = push(results, Succeeded { task: a.task })
       }
@@ -53,7 +68,12 @@ impl Worker[PrintJob, Boom] for PrintWorker {
   }
 }
 
-pub type DemoReport = { enqueued: Int, batches: Int, log: List[String], tasks: List[String] }
+pub type DemoReport = {
+  enqueued: Int,
+  batches: Int,
+  log: List[String],
+  tasks: List[String],
+}
 
 /// The reference's producer + worker entrypoints with the in-memory backend.
 /// For SQLite or SQS, only the queue value passed in would change.

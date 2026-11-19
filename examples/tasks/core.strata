@@ -10,7 +10,8 @@
 // ─────────────────────────────── core model ───────────────────────────────
 
 /// Identifies a task. The reference uses a uuid4 hex string.
-pub type TaskId = String where matches(it, "[A-Za-z0-9_-]{1,64}")
+pub type TaskId = String
+  where matches(it, "[A-Za-z0-9_-]{1,64}")
 
 /// A unit of work. `kind` is the task family, e.g. "print". Every Strata
 /// type is JSON-serialisable, so the payload needs no `BaseModel` bound.
@@ -36,13 +37,17 @@ pub fn task_of[P, E](r: TaskResult[P, E]) -> Task[P] {
 }
 
 /// Standard scheduling policy. The `ge=1` / `ge=0` checks from the Pydantic
-/// model are the prelude's `Positive` / `Natural`: an invalid policy cannot be constructed.
-pub type TaskPolicy = { max_workers: Positive, tasks_per_worker: Positive, retries: Natural }
+/// model are the prelude's `Positive` / `Natural`: an invalid policy cannot
+/// be constructed.
+pub type TaskPolicy = {
+  max_workers: Positive,
+  tasks_per_worker: Positive,
+  retries: Natural,
+}
 
 /// Total runs of a task: the first try plus `retries` retries.
 pub fn max_attempts(p: TaskPolicy) -> Positive
-  ensures it == p.retries + 1
-{
+  ensures it == p.retries + 1 {
   p.retries + 1
 }
 
@@ -56,12 +61,14 @@ pub trait Producer[P] {
 }
 
 /// Runs a batch of attempts and reports one result per attempt (the
-/// reference `Worker` protocol). A worker may change as it runs (e.g. a console it writes to).
+/// reference `Worker` protocol). A worker may change as it runs (e.g. a
+/// console it writes to).
 pub trait Worker[P, E] {
   fn run(mut self, attempts: List[TaskAttempt[P]]) -> List[TaskResult[P, E]]
 }
 
-/// A queue backend. This is the only thing that changes between SQLite, SQS, Redis…
+/// A queue backend. This is the only thing that changes between SQLite, SQS,
+/// Redis…
 /// The contracts below bind every implementation: a backend that returns
 /// more than `limit` attempts is caught at the call.
 pub trait Queue[P, E] {
@@ -80,9 +87,11 @@ pub trait Queue[P, E] {
 // ───────────────────────────── entrypoints ─────────────────────────────────
 
 /// Run the producer once and enqueue every task it discovers.
-pub fn run_producer[P, E, Q: Queue[P, E], R: Producer[P]](mut queue: Q, producer: R) -> Int
-  ensures it >= 0
-{
+pub fn run_producer[P, E, Q: Queue[P, E], R: Producer[P]](
+  mut queue: Q,
+  producer: R,
+) -> Int
+  ensures it >= 0 {
   queue.enqueue(producer.discover())
 }
 
@@ -93,12 +102,15 @@ pub type WorkerError =
 /// Claim one batch, run it, record the results. If the worker does not report
 /// exactly one result per claimed attempt, the claim is released and the
 /// mismatch is returned as a value instead of an exception.
-pub fn run_worker[P, E, Q: Queue[P, E], W: Worker[P, E]](mut queue: Q, mut worker: W, policy: TaskPolicy) -> Result[List[TaskResult[P, E]], WorkerError]
+pub fn run_worker[P, E, Q: Queue[P, E], W: Worker[P, E]](
+  mut queue: Q,
+  mut worker: W,
+  policy: TaskPolicy,
+) -> Result[List[TaskResult[P, E]], WorkerError]
   ensures match it {
     Ok(rs) => len(rs) <= policy.tasks_per_worker,
     Err(_) => true,
-  }
-{
+  } {
   let attempts = queue.claim(policy.tasks_per_worker)
   if len(attempts) == 0 {
     return Ok([])
@@ -116,14 +128,20 @@ pub fn run_worker[P, E, Q: Queue[P, E], W: Worker[P, E]](mut queue: Q, mut worke
 
 /// Exactly the same ids, each reported once.
 fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool {
-  len(claimed) == len(reported) && all(claimed, c -> count(reported, r -> r == c) == 1)
+  len(claimed) == len(reported)
+    && all(claimed, c -> count(reported, r -> r == c) == 1)
 }
 
 /// The worker entrypoint's loop: run batches until the queue has nothing
-/// claimable (or `max_batches` is reached). Returns the number of batches run.
-pub fn drain[P, E, Q: Queue[P, E], W: Worker[P, E]](mut queue: Q, mut worker: W, policy: TaskPolicy, max_batches: Natural) -> Int
-  ensures 0 <= it && it <= max_batches
-{
+/// claimable (or `max_batches` is reached). Returns the number of batches
+/// run.
+pub fn drain[P, E, Q: Queue[P, E], W: Worker[P, E]](
+  mut queue: Q,
+  mut worker: W,
+  policy: TaskPolicy,
+  max_batches: Natural,
+) -> Int
+  ensures 0 <= it && it <= max_batches {
   let mut batches = 0
   while batches < max_batches {
     // an empty batch means nothing is left to claim

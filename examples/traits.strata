@@ -24,7 +24,8 @@ trait Summary: Describe + Priced {
 /// Combining two values of the same kind into one.
 trait Combine {
   fn combine(self, other: Self) -> Self
-  law associative(a: Self, b: Self, c: Self): a.combine(b).combine(c) == a.combine(b.combine(c))
+  law associative(a: Self, b: Self, c: Self):
+    a.combine(b).combine(c) == a.combine(b.combine(c))
 }
 
 type Item = { name: NonEmptyString, cents: Natural }
@@ -32,14 +33,19 @@ type Item = { name: NonEmptyString, cents: Natural }
 type Bundle = { items: NonEmpty[Item], discount: Int where 0 <= it && it <= 50 }
 
 impl Priced for Item {
-  fn price(self) -> Natural { self.cents }
+  fn price(self) -> Natural {
+    self.cents
+  }
 }
 
 impl Describe for Item {
-  fn describe(self) -> String { self.name }
+  fn describe(self) -> String {
+    self.name
+  }
 }
 
-impl Summary for Item {}
+impl Summary for Item {
+}
 
 impl Priced for Bundle {
   fn price(self) -> Natural {
@@ -53,36 +59,49 @@ impl Describe for Bundle {
   }
 }
 
-impl Summary for Bundle {}
+impl Summary for Bundle {
+}
 
 /// Traits can be implemented for built-in types too.
 impl Describe for Int {
-  fn describe(self) -> String { f"the number {self}" }
+  fn describe(self) -> String {
+    f"the number {self}"
+  }
 }
 
-/// A stock-keeping unit: a separate type, so it can't be confused with any other string.
-distinct type Sku = String where matches(it, "[A-Z]{3}-[0-9]{1,4}")
+/// A stock-keeping unit: a separate type, so it can't be confused with any
+/// other string.
+distinct type Sku = String
+  where matches(it, "[A-Z]{3}-[0-9]{1,4}")
 
 impl Describe for Sku {
-  fn describe(self) -> String { f"SKU {self.value}" }
+  fn describe(self) -> String {
+    f"SKU {self.value}"
+  }
 }
 
 type Money = { cents: Int }
 
 impl Combine for Money {
-  fn combine(self, other: Self) -> Self { Money { cents: self.cents + other.cents } }
+  fn combine(self, other: Self) -> Self {
+    Money { cents: self.cents + other.cents }
+  }
 }
 
 /// One implementation for every list, whatever its elements.
 impl[T] Combine for List[T] {
-  fn combine(self, other: Self) -> Self { self + other }
+  fn combine(self, other: Self) -> Self {
+    self + other
+  }
 }
 
 /// Wrong on purpose: averaging is not associative, and `verify` says so.
 type Midpoint = { at: Int }
 
 impl Combine for Midpoint {
-  fn combine(self, other: Self) -> Self { Midpoint { at: (self.at + other.at) / 2 } }
+  fn combine(self, other: Self) -> Self {
+    Midpoint { at: (self.at + other.at) / 2 }
+  }
 }
 
 /// Generic code states what it needs from a type, nothing more.
@@ -111,6 +130,9 @@ test "default methods, supertraits and generic bounds" {
 }
 
 test "one generic function, several implementations" {
-  assert combine_all(Money { cents: 1 }, [Money { cents: 2 }, Money { cents: 3 }]) == Money { cents: 6 }
+  assert combine_all(
+    Money { cents: 1 },
+    [Money { cents: 2 }, Money { cents: 3 }],
+  ) == Money { cents: 6 }
   assert combine_all([1], [[2, 3], [4]]) == [1, 2, 3, 4]
 }
