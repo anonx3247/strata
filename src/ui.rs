@@ -232,6 +232,49 @@ fn snapshot(target: &Target) -> Json {
     })
 }
 
+fn parse_query(q: &str) -> HashMap<String, String> {
+    let decode = |s: &str| {
+        let b = s.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < b.len() {
+            match b[i] {
+                b'+' => out.push(b' '),
+                b'%' if i + 2 < b.len() => {
+                    out.push(u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or("3f"), 16).unwrap_or(b'?'));
+                    i += 2;
+                }
+                c => out.push(c),
+            }
+            i += 1;
+        }
+        String::from_utf8_lossy(&out).to_string()
+    };
+    q.split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (decode(k), decode(v))).filter(|(_, v)| !v.is_empty()).collect()
+}
+
+/// The structural diff for the viewer's Changes view: patches of the
+/// codebase's log, or git history of the source files.
+/// On an error (a base that doesn't exist or doesn't parse), the options
+/// still come back, so the viewer can always offer another range.
+fn changes(target: &Target, q: &HashMap<String, String>) -> Json {
+    let num = |k: &str| q.get(k).and_then(|v| v.parse::<usize>().ok());
+    let base = q.get("base").map(|s| s.as_str());
+    match target {
+        Target::Db(root) => match Codebase::open(root) {
+            Ok(cb) => match crate::history::log_range(&cb, num("from"), num("to")).and_then(|r| r.diff(num("step"))) {
+                Ok(j) => j,
+                Err(e) => json!({"error": e, "options": crate::history::log_options(&cb, num("from"), num("to"))}),
+            },
+            Err(e) => json!({"error": e}),
+        },
+        Target::File(f) => match crate::history::git_range(f, base).and_then(|r| r.diff(num("step"))) {
+            Ok(j) => j,
+            Err(e) => json!({"error": e, "options": crate::history::git_options(f, base)}),
+        },
+    }
+}
+
 fn respond(mut s: TcpStream, status: &str, ctype: &str, body: &[u8]) {
     let head = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
@@ -249,8 +292,13 @@ pub fn serve(target: Target, port: u16) -> Result<(), String> {
         if BufReader::new(&stream).read_line(&mut line).is_err() {
             continue;
         }
-        let path = line.split_whitespace().nth(1).unwrap_or("/").split('?').next().unwrap_or("/");
+        let target_path = line.split_whitespace().nth(1).unwrap_or("/");
+        let (path, query) = target_path.split_once('?').unwrap_or((target_path, ""));
         match path {
+            "/api/changes" => {
+                let body = changes(&target, &parse_query(query)).to_string();
+                respond(stream, "200 OK", "application/json", body.as_bytes())
+            }
             "/" | "/index.html" => respond(stream, "200 OK", "text/html; charset=utf-8", PAGE.as_bytes()),
             "/api/state" => {
                 let body = snapshot(&target).to_string();

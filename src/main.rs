@@ -1,4 +1,6 @@
 mod ast;
+mod diff;
+mod history;
 mod generate;
 mod interp;
 mod lexer;
@@ -30,6 +32,12 @@ Codebase (stored as a database of syntax trees in .strata/):
   rename <old> <new> [-m MSG]  rename a function, type or trait and every reference to it
                                (`old` may be qualified, `new` is the short name)
   log                          show the patch history
+  diff [--from N] [--to N] [--step K] [--json]
+                               what changed, structurally: renames, new variants, stronger
+                               contracts, bodies with changes marked in place. In a codebase
+                               the range is patches (default: all after the first import);
+                               with --file, git: `diff [BASE]` compares BASE (default HEAD)
+                               with the working tree, one step per commit
   interface <module>           a module's public contract: what other modules can use
   render [--split DIR]         print the full codebase as source (L3), or one file per module
   (`--file` and `add` accept a folder: each .strata file is a module named after its path;
@@ -63,7 +71,7 @@ struct Args {
 impl Args {
     fn parse() -> Args {
         let raw: Vec<String> = std::env::args().skip(1).collect();
-        let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed", "--port", "--module", "--split"];
+        let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed", "--port", "--module", "--split", "--from", "--to", "--step", "--base"];
         let (mut pos, mut flags) = (Vec::new(), HashMap::<String, Vec<String>>::new());
         let mut i = 0;
         while i < raw.len() {
@@ -122,20 +130,25 @@ fn read_sources(path: &str, module: Option<&str>) -> Result<Program, String> {
                     todo.push(p);
                 }
             } else if p.extension().is_some_and(|e| e == "strata") {
-                files.push(p);
+                let src = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+                files.push((p.strip_prefix(root).unwrap().to_path_buf(), src));
             }
         }
     }
+    parse_files(files)
+}
+
+/// Parse a folder's `.strata` files, given as (path relative to the folder,
+/// source): each file is a module named after its path (`main` is the root).
+fn parse_files(mut files: Vec<(std::path::PathBuf, String)>) -> Result<Program, String> {
     files.sort();
     let mut decls = Vec::new();
-    for f in files {
-        let rel = f.strip_prefix(root).unwrap().with_extension("");
-        let mut m = rel.to_string_lossy().replace(std::path::MAIN_SEPARATOR, ".");
+    for (rel, src) in files {
+        let mut m = rel.with_extension("").to_string_lossy().replace(std::path::MAIN_SEPARATOR, ".");
         if m == "main" {
             m.clear();
         }
-        let src = std::fs::read_to_string(&f).map_err(|e| format!("{}: {e}", f.display()))?;
-        let p = parser::parse_module_file(&src, &m).map_err(|e| format!("{}:{e}", f.display()))?;
+        let p = parser::parse_module_file(&src, &m).map_err(|e| format!("{}:{e}", rel.display()))?;
         decls.extend(p.decls);
     }
     Ok(Program { decls })
@@ -312,6 +325,29 @@ fn run() -> Result<bool, String> {
             if !mentions.is_empty() {
                 println!("docs or comments still mention `{short}` in: {}", mentions.join(", "));
             }
+        }
+        "diff" => {
+            let num = |k: &str| args.val(k).map(|v| v.parse::<usize>().map_err(|_| format!("{k} needs a number"))).transpose();
+            let range = match args.val("--file") {
+                Some(f) => history::git_range(std::path::Path::new(f), args.pos.get(1).map(|s| s.as_str()).or(args.val("--base")))?,
+                None => {
+                    let Source::Db(cb) = load(&args)? else { unreachable!() };
+                    history::log_range(&cb, num("--from")?, num("--to")?)?
+                }
+            };
+            let j = range.diff(num("--step")?)?;
+            if json_out {
+                println!("{}", serde_json::to_string_pretty(&j).unwrap());
+                return Ok(true);
+            }
+            println!("{}", j["range"]["label"].as_str().unwrap_or(""));
+            for st in j["steps"].as_array().into_iter().flatten() {
+                let g = st["group"].as_str().filter(|g| !g.is_empty()).map(|g| format!("{g}  ")).unwrap_or_default();
+                let n = st["names"].as_array().map_or(0, |a| a.len());
+                println!("  step {:<3} {g}{}  ({n} definition{})", st["id"], st["title"].as_str().unwrap_or(""), if n == 1 { "" } else { "s" });
+            }
+            println!();
+            print!("{}", diff::render_text(&j));
         }
         "log" => {
             let Source::Db(cb) = load(&args)? else { return Err("`log` needs a codebase".into()) };

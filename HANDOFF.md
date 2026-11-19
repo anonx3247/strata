@@ -21,6 +21,7 @@ Read `README.md` first; it describes the language and tools as they are now.
 - **Immutable by default, mutable when declared**: `let mut`, field assignment, `mut` parameters and `mut self` with write-back to the caller's variable. Procedural code is normal, and there are no shared references.
 - **Refinements are structural**; `type X = Y` with no `where` is an error, so use `distinct type` for a nominal type.
 - **Modules meet only through their public (`pub`) contracts.** A folder of `.strata` files loads as modules, and `render --split` writes them back.
+- **No backward compatibility.** Breaking changes are expected: never add shims so that older stored trees (`.strata/` objects) or old syntax keep working. Re-import from source instead.
 - **Rendered code wraps at about 80 columns** by breaking lines, not soft-wrapping.
 - **Viewer**: two levels (interface/source), the code view sliced around the selection, a type map as a separate view, and no Flow view.
 
@@ -30,7 +31,7 @@ Doc comments are shown as the description in the right panel (and stripped from 
 
 Still open: **type map as a side panel** instead of a full tab. The user suggested it; ask before doing it.
 
-## Decided with the user: git, diffs and review (not built yet)
+## Decided with the user: git, diffs and review
 
 - **Git stays the base.** Commit the `.strata` text files and the log (`log.jsonl`, append-only, entries with ids, `merge=union` in `.gitattributes`). Objects and index become a local cache rebuilt from the files. Optionally commit the verification cache.
 - **Structural diff** between two git revisions: load both snapshots, pair definitions, compare trees. The log entries present at HEAD but not at the base are the atomic steps in between (for stepping through, renames, messages). A PR = merge-base..HEAD.
@@ -40,7 +41,10 @@ Still open: **type map as a side panel** instead of a full tab. The user suggest
 - **jj**: compatible (runs on git) but not a dependency.
 - The tour is later. The user wants to settle the look first: offer a static mockup of the *Changes* view.
 
-Order: ~~`strata rename`~~ → diff core in Rust → `strata diff <rev>..<rev>` → *Changes* view in the viewer → merge driver.
+Order: ~~`strata rename`~~ → ~~diff core~~ → ~~`strata diff`~~ → ~~*Changes* view~~ → merge driver.
+
+**Built:** `src/diff.rs` (pairing through renames, words per change, line diff with in-place marks and folds that keep enclosing headers, line-diff fallback at ≥60% changed, contract notes, rename references, verification before/after), `src/history.rs` (a codebase's log replayed with `Codebase::states`, one step per patch; or git: `BASE..HEAD` commits plus the working tree, read with `git show`), `strata diff [--from N] [--to N] [--step K] [--json]` / `strata --file DIR diff [BASE]`, `/api/changes` and the viewer's *Changes* tab. The mockup is still in `design/changes-mockup.html`.
+Not yet: the log is not committed to git yet, so git ranges have no renames or patch steps inside commits; trait-method/variant renames; "N matches must handle the new variant"; moves between modules. Closure hashes (verification cache keys) now ignore docs and comments, and interface hashes ignore docs.
 
 ## Open topics the user wants to discuss and decide on (do not implement without agreement)
 
@@ -105,7 +109,7 @@ The compiler should eventually be written in Strata. Gaps to close first:
 Bootstrap plan: write the frontend (lexer, parser, printer) in Strata and test it against the Rust one, then the checker, then compile the Strata compiler with itself and check that its output stops changing (a fixed point).
 
 ### Error handling, strings and mutation (decided)
-- **Done** (branch `language-cleanups`): `except` blocks (`e except { fallback }`, `e except err { ... }`, the fallback may `return`), `!` / `?` propagation, early `return`, f-strings, and string primitives (`chars`, `get`, `slice`, `index_of`, `replace`, `lines`, `repeat`, `reverse`, case, `is_digit` / `is_alpha` / `is_space`, `ord` / `chr`). Strings are indexed by character. See the README section "Errors".
+- **Done**: `except` blocks (`e except { fallback }`, `e except err { ... }`, the fallback may `return`), `!` / `?` propagation, early `return`, f-strings, and string primitives (`chars`, `get`, `slice`, `index_of`, `replace`, `lines`, `repeat`, `reverse`, case, `is_digit` / `is_alpha` / `is_space`, `ord` / `chr`). Strings are indexed by character. See the README section "Errors".
 - **Mutation of a `mut` value happens in place**, with no copying, whenever nothing else holds the value. The hard part is knowing when that's the case: use the absence of shared references plus ownership or reference counting (as in Koka's Perceus) so updates through a mutable binding are real in-place updates.
 - **Self-hosting is a long-term goal**, after the language matures. The compiler would be written in Strata, target LLVM, and use the LLVM libraries.
 
@@ -120,7 +124,7 @@ Bootstrap plan: write the frontend (lexer, parser, printer) in Strata and test i
 - **Refinements keep `it`** for "the value" (`where it > 0`).
 - When implementing, update the parser, printer, examples, README and tests; `render` must still round-trip.
 
-### Requested cleanups (done on branch `language-cleanups`)
+### Requested cleanups (done)
 - **String concatenation uses `+`**, not `++`: `"a" + "b"`. Lists use `+` too (`[1] + [2]`, decided), so `++` goes away entirely. Update the checker (`numeric` currently rejects `String` for `+`), the interpreter, the printer and all examples.
 - **Use `len` everywhere, not `str_len`.** `len` is already overloaded for `String`, so remove `str_len` from the builtins and the prelude refinements, and update the examples.
 - **Bring every example up to date with the current language**: `examples/*.strata` and `examples/tasks/`, plus the README snippets. Use the prelude types (`Natural`, `Positive`, `NonEmptyString`), inline refinements where a constraint is used once, `let mut` / loops where procedural code reads better, and (once implemented) arrow lambdas.
