@@ -52,6 +52,8 @@ Not yet: the log is not committed to git yet, so git ranges have no renames or p
 
 - **Verification strategy.** Today: compile-time checks on literals, runtime contract checks, and fuzzing (`strata verify`, with results cached by content hash). The options discussed are summarised at the end of the last conversation and in `README.md` under the roadmap.
 - **Transpilation / interop** with Python (Pydantic, JSON as the boundary), TypeScript and Rust. Later.
+- **Strata IDE**: the viewer as a standalone desktop app (Tauri; the backend is already Rust), speaking ACP (Agent Client Protocol) so agents such as Claude Code or Codex run inside it, with a Strata MCP server giving them structural tools (slices, check, edit, rename). The viewer would show live where each agent is working (log entries tagged with the agent's session). Idea stage.
+- **Union types and `?` / `!` type syntax**: `Square | Circle | Triangle` as a type with exhaustive matching on the member types; `T?` for an optional, `T ! E` for a result. Pros and cons were discussed (see the conversation of 2026-11-19); not decided.
 
 ## Known gaps
 
