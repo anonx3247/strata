@@ -655,7 +655,7 @@ fn unions_variants_as_types_and_narrowing() {
         "unreachable match arm `Positive`",
         "unreachable match arm `7`",
         "pattern `String`: expected `Circle | Square`, found `String`",
-        "non-exhaustive match on `String`: `_` is not covered",
+        "non-exhaustive match on `String`: `where len(it) == 0` is not covered",
         "not every `Circle | Square` does",
     ] {
         assert!(out.contains(e), "missing {e:?} in\n{out}");
@@ -843,4 +843,164 @@ fn mixed() -> Int {
   let x = if true { Square { side: 1 } } else { Circle { radius: 1 } }
   1
 }
+"#;
+
+#[test]
+fn or_patterns_refined_scrutinees_lengths_floats_and_variance() {
+    let d = tmp("patterns2");
+    for (f, src) in [("or.strata", OR_PATTERNS), ("dom.strata", DOMAINS)] {
+        std::fs::write(d.join(f), src).unwrap();
+        let (ok, out) = strata(&["--file", f, "test"], &d, None);
+        assert!(ok && out.contains("1 passed"), "{out}");
+        let (ok, r1) = strata(&["--file", f, "render"], &d, None);
+        assert!(ok, "{r1}");
+        std::fs::write(d.join("r.strata"), &r1).unwrap();
+        let (_, r2) = strata(&["--file", "r.strata", "render"], &d, None);
+        assert_eq!(r1, r2);
+    }
+    let check = |name: &str, src: &str| {
+        std::fs::write(d.join(name), src).unwrap();
+        strata(&["--file", name, "check"], &d, None)
+    };
+    let (ok, out) = check("bad.strata", DOMAINS_BAD);
+    assert!(!ok);
+    for e in [
+        "non-exhaustive match on `Positive`: `2` is not covered",
+        "unreachable match arm `where it <= 0`: no `Positive` matches it",
+        "non-exhaustive match on `Float`: `where it == 0.0` is not covered",
+        "non-exhaustive match on `String`: `where len(it) <= 3` is not covered",
+        // a mutable variable can change, so its refinement is not relied on
+        "non-exhaustive match on `Int`: `where it <= 0` is not covered",
+    ] {
+        assert!(out.contains(e), "missing {e:?} in\n{out}");
+    }
+    let (ok, out) = check("or_bad.strata", "type Light = | Red | Amber | Green\nfn a(l: Light) -> Bool { match l { Red | Amber => false } }\nfn b(p: (Int, Int)) -> Int { match p { (0, x) | (y, 0) => 1, _ => 2 } }\n");
+    assert!(!ok && out.contains("`Green` is not covered") && out.contains("must bind the same names"), "{out}");
+    let (ok, out) = check("variance.strata", VARIANCE);
+    assert!(!ok, "{out}");
+    let errors: Vec<&str> = out.lines().filter(|l| l.starts_with("error")).collect();
+    assert_eq!(errors.len(), 1, "{out}");
+    assert!(errors[0].contains("in bad_mut") && errors[0].contains("expected exactly `List[Circle | Square]`, found `List[Circle]`"), "{out}");
+}
+
+const OR_PATTERNS: &str = r#"type Square = { side: Positive }
+type Circle = { radius: Positive }
+type Triangle = { base: Positive, height: Positive }
+type Shape = Square | Circle | Triangle
+type Light = | Red | Amber | Green
+
+fn round(s: Shape) -> Bool {
+  match s {
+    Circle => true,
+    Square | Triangle => false,
+  }
+}
+fn go(l: Light) -> Bool {
+  match l { Green => true, Red | Amber => false }
+}
+fn small(n: Int) -> String {
+  match n { 0 | 1 | 2 => "tiny", _ => "big" }
+}
+fn pair_val(p: (Int, Int)) -> Int {
+  match p { (0, x) | (x, 0) => x, (a, b) => a * b }
+}
+test "or" {
+  assert round(Circle { radius: 1 })
+  assert !round(Square { side: 2 })
+  assert go(Green) && !go(Red)
+  assert small(2) == "tiny" && small(3) == "big"
+  assert pair_val((0, 5)) == 5 && pair_val((4, 0)) == 4 && pair_val((2, 3)) == 6
+}
+"#;
+
+const DOMAINS: &str = r#"type Chance = Float where 0.0 <= it && it <= 1.0
+
+fn f(n: Positive) -> String {
+  match n { 1 => "one", where it > 1 => "more" }
+}
+fn head(xs: NonEmpty[Int]) -> Int {
+  match xs { [x, ..] => x }
+}
+fn word(s: String) -> String {
+  match s { where len(it) == 0 => "empty", where len(it) > 0 => "some" }
+}
+fn ne(s: NonEmptyString) -> String {
+  match s { where len(it) == 1 => "char", where len(it) >= 2 => "word" }
+}
+fn temp(x: Float) -> String {
+  match x { where it < 0.0 => "freezing", where 0.0 <= it && it < 20.0 => "mild", where it >= 20.0 => "warm" }
+}
+fn odds(p: Chance) -> String {
+  match p { where it < 0.5 => "unlikely", where it >= 0.5 => "likely" }
+}
+fn nested(n: Int) -> String {
+  match n {
+    Positive => match n { 1 => "one", where it >= 2 => "many" },
+    _ => "none",
+  }
+}
+fn of_result() -> String {
+  match five() { 5 => "five" }
+}
+fn five() -> Int where it == 5 { 5 }
+fn lst(xs: List[Int]) -> Int {
+  match xs { [] => 0, where len(it) > 0 => 1 }
+}
+test "domains" {
+  assert f(1) == "one" && f(7) == "more"
+  assert head([4, 5]) == 4
+  assert word("") == "empty" && ne("ab") == "word"
+  assert temp(25.0) == "warm" && temp(5.5) == "mild" && temp(-1.0) == "freezing"
+  assert odds(0.7) == "likely"
+  assert nested(3) == "many"
+  assert lst([1]) == 1
+}
+"#;
+
+const DOMAINS_BAD: &str = r#"fn f(n: Positive) -> String {
+  match n { 1 => "one", where it > 2 => "more" }
+}
+fn g(n: Positive) -> String {
+  match n { where it <= 0 => "never", _ => "x" }
+}
+fn temp(x: Float) -> String {
+  match x { where it < 0.0 => "a", where it > 0.0 => "b" }
+}
+fn word(s: String) -> String {
+  match s { where len(it) > 3 => "long" }
+}
+fn m(mut n: Positive) -> String {
+  match n { 1 => "one", where it > 1 => "more" }
+}
+"#;
+
+const VARIANCE: &str = r#"type Square = { side: Positive }
+type Circle = { radius: Positive }
+type Shape = Square | Circle
+type Err1 = | TooBig | TooSmall
+
+fn total(shapes: List[Shape]) -> Int { len(shapes) }
+fn grow(mut shapes: List[Shape]) -> () { shapes = shapes + [Square { side: 1 }] }
+fn mixed(big: Bool) -> Int {
+  let s = if big { Square { side: 2 } } else { Circle { radius: 1 } }
+  let xs = [Square { side: 1 }, Circle { radius: 1 }]
+  total(xs)
+}
+fn ok_list() -> Int {
+  let cs = [Circle { radius: 1 }]
+  total(cs)
+}
+fn bad_mut() -> Int {
+  let mut cs = [Circle { radius: 1 }]
+  grow(cs)
+  len(cs)
+}
+fn inner() -> Result[Int, TooBig] { Err(TooBig) }
+fn outer() -> Result[Int, Err1] {
+  let x = inner()!
+  Ok(x)
+}
+fn apply(f: (Circle) -> Shape) -> Int { 1 }
+fn id_shape(s: Shape) -> Circle { Circle { radius: 1 } }
+fn use_apply() -> Int { apply(id_shape) }
 "#;

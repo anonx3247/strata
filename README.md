@@ -187,14 +187,19 @@ fn describe(v: Int | String) -> String {
 - a type's name: `Positive =>`, `String =>`, `Circle =>` (a variant, whatever its fields), or a trait (`Named =>`, values that implement it);
 - a variant or record with fields, as before: `Some(x)`, `Pending { id, .. }`;
 - a literal: `0`, `"x"`, `true`;
-- a condition on the value `it`: `where 3 <= it && it <= 5 =>`;
+- a condition on the value `it`: `where 3 <= it && it <= 5 =>`, `where len(it) > 0 =>`, `where it < 0.5 =>`;
+- alternatives: `Square | Triangle =>`, `0 | 1 | 2 =>`, `(0, x) | (x, 0) =>` (they bind the same names);
 - `_`.
 
 **Narrowing.** Inside an arm, the matched variable has the arm's type (`s` is a `Square` above), and no new name is needed. To match the result of an expression, name it: `match lines(text) as ls { … }`. A matched field (`match t.status { Closed => t.status.why, … }`) narrows too. Assigning to a narrowed `let mut` variable ends its narrowing.
 
-**Exhaustive and reachable.** The checker splits the matched type into variants, union members and, for integers, the intervals the arms' bounds cut out. It reports a value no arm takes (`` `where 3 <= it && it <= 5` is not covered``), and an arm the arms above already cover (`unreachable match arm `Positive``). Integer conditions that compare `it` with constants (with `&&`, `||`, `!`) are decided exactly. Any other condition (`matches(it, …)`, a call) covers nothing until the SMT backend exists, so such a match needs a `_` arm.
+**Exhaustive and reachable.** The checker splits the matched type into variants, union members, and the ranges the arms' bounds cut out: of an `Int`, of a `Float`, or of the length of a `String` or `List`. It reports a value no arm takes (`` `where 3 <= it && it <= 5` is not covered``), and an arm the arms above already cover (`unreachable match arm `Positive``). Conditions that compare `it` (or `len(it)`) with constants, combined with `&&`, `||`, `!` and `==>`, are decided exactly. Any other condition (`matches(it, …)`, a call, another variable) covers nothing until the SMT backend decides it, so such a match needs a `_` arm.
 
-A field that every member of a union has can be read without matching. A trait method can be called on a union when every member implements the trait. `if` branches and list elements must still agree on one type: when both are meant, write the union (`let s: Square | Circle = if …`).
+**The matched value's own refinement counts.** In `fn f(n: Positive)`, `match n { 1 => …, where it > 1 => … }` is exhaustive, `match xs { [x, ..] => … }` is exhaustive for `xs: NonEmpty[Int]`, and a `where it <= 0` arm on `n` is unreachable (`no `Positive` matches it`). This holds for immutable variables, fields of immutable variables, a function's result type, and inside a narrowing arm. A `mut` variable's refinement is not relied on, because it may change (even on a later pass of a loop).
+
+A field that every member of a union has can be read without matching. A trait method can be called on a union when every member implements the trait. Alternatives of different types (`if` branches, `match` arms, list elements) get their union when no expected type says otherwise: `if big { Square {…} } else { Circle {…} }` is a `Square | Circle`.
+
+**Type arguments fit member-wise.** A `List[Circle]` can be passed where a `List[Shape]` is wanted, because values are never shared: the callee works on its own copy. A function fits when it accepts more and returns less. The exception is a `mut` parameter, which writes back into the caller's variable: its argument needs exactly the parameter's type (`grow(mut shapes: List[Shape])` could put a `Square` into a `List[Circle]`). For the same reason, `!` passes an error into a wider error type (a `TooBig` into a `Result[_, ShapeError]`).
 
 ## Traits
 
@@ -287,7 +292,7 @@ let port = parse_int(text) except { 8080 }                  // handle it here: a
 let n = parse(s) except e { return describe_error(e) }      // the error, by name; the block may return
 ```
 
-- `e!` takes the `Ok` value of a `Result`, or returns its `Err` from the function. The function's result must be a `Result` with the same error type (there is no automatic conversion).
+- `e!` takes the `Ok` value of a `Result`, or returns its `Err` from the function. The error must fit the function's error type: the same type, or a variant of it, or a member of a union (there is no conversion function).
 - `e?` does the same for an `Option`: the `Some` value, or return `None`.
 - `e except { fallback }` handles a failed `Result` or a missing `Option` value inline. `except err { ... }` names the error (an `Option` has none). The fallback must produce the same type, or leave with `return`.
 - They chain: `load(path)!.lines()`, `find(xs, p)?.name`.
@@ -358,8 +363,7 @@ Because results are keyed by content, `verify` reruns only what is affected by a
 
 - **Verification is fuzzing plus runtime checks, not proof.** Next step: an SMT backend (Z3 or cvc5) that proves what it can and tags the rest as `fuzzed` or `runtime-checked`.
 - Refinements on generic type arguments, such as `Option[Quantity]`, are not checked when values are constructed.
-- A `match` on a refined list type such as `NonEmpty` still needs a `[]` arm: the checker does not yet carry refinements to the matched value.
-- No or-patterns (`Square | Circle =>`) yet: name a union type for them, or use two arms.
+- Length conditions on a list are only decided as "empty" or "not empty" (`where len(it) == 1` with `where len(it) >= 2` needs a `[]` or `_` arm).
 - **No compilation backend.** It is a tree-walking interpreter.
 
 ## Roadmap

@@ -400,7 +400,7 @@ struct Checker<'a> {
     holes: Vec<(String, Ty, Vec<(String, Ty)>)>,
     /// Each `match` (and refutable `let`): the scrutinee's type, and each arm's
     /// value set with its text (for messages).
-    matches: Vec<(Ty, Vec<(P, String)>)>,
+    matches: Vec<Coverage>,
     /// What `Self` means here (inside a trait or impl).
     self_ty: Option<Ty>,
     /// Trait bounds on the rigid type parameters in scope (`T: Ord`).
@@ -411,6 +411,9 @@ struct Checker<'a> {
     lambda_floor: usize,
     /// How many loops enclose the code being checked (for `break`/`continue`).
     loops: usize,
+    /// Written types of immutable variables, for the refinements a `match`
+    /// can rely on (`n: Positive`); scopes hold `written:x` -> index here.
+    written: Vec<TypeExpr>,
     /// What `return`, `!` and `?` return from: the enclosing function or
     /// lambda's result type (`None` in tests, laws and refinements).
     ret: Option<Ty>,
@@ -872,6 +875,8 @@ impl<'a> Checker<'a> {
             self.bind(&p.name, t);
             if p.mutable {
                 self.bind(&format!("mut:{}", p.name), Ty::Unit);
+            } else {
+                self.bind_written(&p.name, &p.ty);
             }
         }
         // the result's refinement may mention the parameters
@@ -1044,6 +1049,9 @@ impl<'a> Checker<'a> {
         self.scopes.push(HashMap::new());
         for (p, t) in ps.iter().zip(&pts) {
             self.bind(&p.name, t.clone());
+            if let Some(w) = &p.ty {
+                self.bind_written(&p.name, w);
+            }
         }
         let floor = std::mem::replace(&mut self.lambda_floor, self.scopes.len() - 1);
         let loops = std::mem::take(&mut self.loops);
@@ -1061,7 +1069,7 @@ impl<'a> Checker<'a> {
     fn record_hole(&mut self, name: &str, t: Ty) {
         let mut ctx: Vec<(String, Ty)> = Vec::new();
         for s in &self.scopes {
-            for (k, v) in s.iter().filter(|(k, _)| !k.starts_with("mut:")) {
+            for (k, v) in s.iter().filter(|(k, _)| !k.contains(':')) {
                 ctx.retain(|(n, _)| n != k);
                 ctx.push((k.clone(), v.clone()));
             }
@@ -1351,6 +1359,9 @@ impl<'a> Checker<'a> {
                     _ => None,
                 });
                 let path = if name.is_none() { place_path(s).filter(|p| p.contains('.')) } else { None };
+                // what the matched value's written type already rules out (`n: Positive`)
+                let written = self.written_scrutinee(s);
+                let excluded = written.as_ref().and_then(|w| self.excluded_by(w).map(|p| (p, crate::printer::ty(w))));
                 let mut rt: Option<Ty> = expected.cloned();
                 let mut rows = Vec::new();
                 for a in arms {
@@ -1360,6 +1371,17 @@ impl<'a> Checker<'a> {
                         self.bind(x, nt.clone());
                         if name.is_none() {
                             self.bind(&format!("narrowed:{x}"), st.clone());
+                        }
+                        // the arm's own refinement, for matches inside it
+                        let arm_written = match &a.pat {
+                            Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(c) && self.env.is_type_name(c) => Some(TypeExpr::Named(c.clone(), vec![])),
+                            Pattern::Cond(pred) => Some(TypeExpr::Refined(Box::new(written.clone().unwrap_or_else(|| ty_to_texpr(&self.resolve(&st)))), pred.clone())),
+                            Pattern::Wild | Pattern::Bind(_) => written.clone(),
+                            _ => None,
+                        };
+                        let mutable = self.lookup(&format!("mut:{x}")).is_some();
+                        if let (Some(w), false) = (arm_written, mutable) {
+                            self.bind_written(x, &w);
                         }
                     }
                     if let Some(pth) = &path {
@@ -1377,7 +1399,7 @@ impl<'a> Checker<'a> {
                     self.scopes.pop();
                     rows.push((p, crate::printer::pat(&a.pat)));
                 }
-                self.matches.push((st, rows));
+                self.matches.push(Coverage { ty: st, arms: rows, excluded });
                 rt.unwrap_or_else(|| self.fresh())
             }
             Expr::Block(stmts, last) => {
@@ -1385,14 +1407,18 @@ impl<'a> Checker<'a> {
                 for s in stmts {
                     match s {
                         Stmt::Let(p, ann, e) => {
+                            let ann_written = ann.as_ref();
                             let ann = ann.as_ref().map(|a| self.lower(a, &HashMap::new()));
                             let t = self.infer_with(e, ann.as_ref());
                             if let Some(a) = &ann {
                                 self.expect(a, &t, "let annotation");
                             }
                             let (_, pp) = self.pattern(p, &t);
+                            if let (Pattern::Bind(x), Some(w)) = (p, ann_written) {
+                                self.bind_written(x, w);
+                            }
                             if !irrefutable(p) {
-                                self.matches.push((t, vec![(pp, crate::printer::pat(p))]));
+                                self.matches.push(Coverage { ty: t, arms: vec![(pp, crate::printer::pat(p))], excluded: None });
                             }
                         }
                         Stmt::Var(n, ann, e) => {
@@ -1784,7 +1810,7 @@ impl<'a> Checker<'a> {
                 let ct = self.infer(c);
                 self.expect(&Ty::Bool, &ct, &format!("pattern `where {}`", crate::printer::expr(c, 0)));
                 self.scopes.pop();
-                (t.clone(), ints::of_pred(c).map_or(P::Lit, P::Ints))
+                (t.clone(), self.cond_set(t, c))
             }
             Pattern::Tuple(ps) => {
                 let items: Vec<Ty> = ps.iter().map(|_| self.fresh()).collect();
@@ -1824,6 +1850,8 @@ impl<'a> Checker<'a> {
                 let set = match self.int_refinement(&TypeExpr::Named(c.clone(), vec![])) {
                     Refn::Plain => P::Ty(pt.clone()),
                     Refn::Ints(s) => P::Ints(s),
+                    Refn::Lens(s) => P::Lens(s),
+                    Refn::Reals(r) => P::Reals(r),
                     Refn::Opaque => P::Lit,
                 };
                 (pt, set)
@@ -1928,9 +1956,13 @@ impl<'a> Checker<'a> {
     /// What a written type's refinements say, as far as patterns are concerned.
     fn int_refinement(&self, t: &TypeExpr) -> Refn {
         match t {
-            TypeExpr::Refined(b, pred) => match (self.int_refinement(b), ints::of_pred(pred)) {
-                (Refn::Plain, Some(s)) if self.int_based(b) => Refn::Ints(s),
-                (Refn::Ints(a), Some(s)) => Refn::Ints(ints::and(&a, &s)),
+            TypeExpr::Refined(b, pred) => match (self.int_refinement(b), self.base_of(b)) {
+                (Refn::Plain, Base::Int) => ints::of_pred(pred).map_or(Refn::Opaque, Refn::Ints),
+                (Refn::Ints(a), _) => ints::of_pred(pred).map_or(Refn::Opaque, |s| Refn::Ints(ints::and(&a, &s))),
+                (Refn::Plain, Base::Sized) => ints::of_len_pred(pred).map_or(Refn::Opaque, Refn::Lens),
+                (Refn::Lens(a), _) => ints::of_len_pred(pred).map_or(Refn::Opaque, |s| Refn::Lens(ints::and(&a, &s))),
+                (Refn::Plain, Base::Float) => reals::of_pred(pred).map_or(Refn::Opaque, Refn::Reals),
+                (Refn::Reals(a), _) => reals::of_pred(pred).and_then(|s| a.and(s)).map_or(Refn::Opaque, Refn::Reals),
                 _ => Refn::Opaque,
             },
             TypeExpr::Named(n, args) => match self.env.types.get(n) {
@@ -1958,8 +1990,82 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn int_based(&self, t: &TypeExpr) -> bool {
-        matches!(self.env.expand_alias(t), TypeExpr::Named(n, _) if n == "Int")
+    fn base_of(&self, t: &TypeExpr) -> Base {
+        match self.env.expand_alias(t) {
+            TypeExpr::Named(n, _) => match n.as_str() {
+                "Int" => Base::Int,
+                "Float" => Base::Float,
+                "String" | "List" => Base::Sized,
+                _ => Base::Other,
+            },
+            _ => Base::Other,
+        }
+    }
+
+    /// The value set a condition on a value of type `t` stands for.
+    fn cond_set(&self, t: &Ty, pred: &Expr) -> P {
+        let set = match self.resolve(t) {
+            Ty::Int => ints::of_pred(pred).map(P::Ints),
+            Ty::Float => reals::of_pred(pred).map(P::Reals),
+            Ty::Str => ints::of_len_pred(pred).map(P::Lens),
+            Ty::Con(n, _) if n == "List" => ints::of_len_pred(pred).map(P::Lens),
+            _ => None,
+        };
+        set.unwrap_or(P::Lit)
+    }
+
+    /// The values a written type leaves out, as a set (for `match` coverage):
+    /// `Positive` leaves out `it <= 0`, `NonEmpty` leaves out length 0.
+    fn excluded_by(&self, t: &TypeExpr) -> Option<P> {
+        match self.int_refinement(t) {
+            Refn::Ints(s) => Some(P::Ints(ints::not(&s))),
+            Refn::Lens(s) => Some(P::Lens(ints::and(&ints::not(&s), &vec![(0, ints::MAX)]))),
+            Refn::Reals(r) => Some(P::Reals(r.not())),
+            Refn::Plain | Refn::Opaque => None,
+        }
+    }
+
+    /// Remember the written type of an immutable variable (a mutable one can
+    /// change, even later in a loop, so its refinement is not relied on).
+    fn bind_written(&mut self, x: &str, t: &TypeExpr) {
+        self.written.push(t.clone());
+        let i = self.written.len() - 1;
+        self.bind(&format!("written:{x}"), Ty::Rigid(format!("#{i}")));
+    }
+
+    fn written_of(&self, x: &str) -> Option<TypeExpr> {
+        if self.lookup(&format!("mut:{x}")).is_some() {
+            return None;
+        }
+        match self.lookup(&format!("written:{x}"))? {
+            Ty::Rigid(i) => self.written.get(i[1..].parse::<usize>().ok()?).cloned(),
+            _ => None,
+        }
+    }
+
+    /// The written type of what a `match` looks at: an immutable variable, a
+    /// field of one, or the result of a function.
+    fn written_scrutinee(&mut self, s: &Expr) -> Option<TypeExpr> {
+        match s {
+            Expr::Var(x) => self.written_of(x),
+            Expr::Field(r, f) => {
+                let Expr::Var(x) = &**r else { return None };
+                if self.lookup(&format!("mut:{x}")).is_some() {
+                    return None;
+                }
+                let Ty::Con(n, args) = self.resolve(&self.lookup(x)?) else { return None };
+                let td = self.env.types.get(&n)?;
+                let TypeBody::Record(fs) = &td.body else { return None };
+                let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().map(ty_to_texpr)).collect();
+                fs.iter().find(|x| x.name == *f).map(|x| subst_texpr(&x.ty, &sub))
+            }
+            Expr::Call(f, _) => match &**f {
+                Expr::Var(n) if self.lookup(n).is_none() => self.env.fns.get(n).map(|f| f.ret.clone()),
+                _ => None,
+            },
+            Expr::Method(_, m, _) if self.lookup(m).is_none() => self.env.fns.get(m).map(|f| f.ret.clone()),
+            _ => None,
+        }
     }
 }
 
@@ -1972,12 +2078,32 @@ fn place_path(e: &Expr) -> Option<String> {
     }
 }
 
+/// One `match` to check: the matched type, each arm's value set and text,
+/// and the values the matched value's own refinement rules out (with that
+/// refinement, for messages).
+struct Coverage {
+    ty: Ty,
+    arms: Vec<(P, String)>,
+    excluded: Option<(P, String)>,
+}
+
 /// A refinement as far as patterns can tell: none, a set of integers, or a
 /// condition we cannot decide yet (it covers nothing for exhaustiveness).
 enum Refn {
     Plain,
     Ints(ints::Ints),
+    Lens(ints::Ints),
+    Reals(reals::Reals),
     Opaque,
+}
+
+/// What kind of values a refinement's `it` ranges over, for patterns.
+#[derive(PartialEq)]
+enum Base {
+    Int,
+    Float,
+    Sized,
+    Other,
 }
 
 /// Types that `+` joins rather than adds.
@@ -2031,6 +2157,10 @@ pub enum P {
     Ty(Ty),
     /// These integers (a literal, `where 3 <= it && it <= 5`, `Positive`).
     Ints(ints::Ints),
+    /// Strings or lists with these lengths (`where len(it) > 0`, `NonEmpty`).
+    Lens(ints::Ints),
+    /// These floats (`where 0.0 <= it && it < 1.0`).
+    Reals(reals::Reals),
     /// Any of these.
     Or(Vec<P>),
 }
@@ -2051,7 +2181,42 @@ fn expand(rows: &[Vec<P>]) -> Vec<Vec<P>> {
 enum AtomKey {
     Ctor(String),
     Region(i128, i128),
+    /// Strings whose length is in this range.
+    Len(i128, i128),
+    /// Floats: a single point, or the open interval between two (±inf).
+    Real { lo: f64, hi: f64, point: bool },
     Opaque(String),
+}
+
+impl AtomKey {
+    /// A float inside the region, to test a condition on.
+    fn sample(&self) -> f64 {
+        match self {
+            AtomKey::Real { lo, point: true, .. } => *lo,
+            AtomKey::Real { lo, hi, .. } => match (lo.is_infinite(), hi.is_infinite()) {
+                (true, true) => 0.0,
+                (true, false) => hi - 1.0,
+                (false, true) => lo + 1.0,
+                _ => (lo + hi) / 2.0,
+            },
+            _ => 0.0,
+        }
+    }
+}
+
+/// Elementary integer regions cut by the sets' bounds, within [from, MAX].
+fn regions(sets: &[&ints::Ints], from: i128) -> Vec<(i128, i128)> {
+    let mut cuts: Vec<i128> = vec![from];
+    for s in sets {
+        for (lo, hi) in s.iter() {
+            cuts.push(*lo);
+            cuts.push(hi + 1);
+        }
+    }
+    cuts.retain(|c| *c >= from && *c <= ints::MAX);
+    cuts.sort();
+    cuts.dedup();
+    cuts.iter().enumerate().map(|(i, lo)| (*lo, cuts.get(i + 1).map_or(ints::MAX, |n| n - 1))).collect()
 }
 
 struct Atom {
@@ -2070,19 +2235,26 @@ impl Checker<'_> {
             Ty::Bool => vec![atom(ctor("true"), vec![], &t), atom(ctor("false"), vec![], &t)],
             Ty::Unit => vec![atom(ctor("()"), vec![], &t)],
             Ty::Int => {
-                let mut cuts: Vec<i128> = vec![ints::MIN];
-                for p in col {
-                    if let P::Ints(s) = p {
-                        for (lo, hi) in s {
-                            cuts.push(*lo);
-                            cuts.push(hi + 1);
-                        }
-                    }
-                }
-                cuts.retain(|c| *c >= ints::MIN && *c <= ints::MAX);
-                cuts.sort();
+                let sets: Vec<&ints::Ints> = col.iter().filter_map(|p| if let P::Ints(s) = p { Some(s) } else { None }).collect();
+                regions(&sets, ints::MIN).into_iter().map(|(lo, hi)| atom(AtomKey::Region(lo, hi), vec![], &t)).collect()
+            }
+            Ty::Str => {
+                let sets: Vec<&ints::Ints> = col.iter().filter_map(|p| if let P::Lens(s) = p { Some(s) } else { None }).collect();
+                regions(&sets, 0).into_iter().map(|(lo, hi)| atom(AtomKey::Len(lo, hi), vec![], &t)).collect()
+            }
+            Ty::Float => {
+                let mut cuts: Vec<f64> = col.iter().filter_map(|p| if let P::Reals(r) = p { Some(r.cuts.clone()) } else { None }).flatten().collect();
+                cuts.sort_by(|a, b| a.partial_cmp(b).unwrap());
                 cuts.dedup();
-                cuts.iter().enumerate().map(|(i, lo)| atom(AtomKey::Region(*lo, cuts.get(i + 1).map_or(ints::MAX, |n| n - 1)), vec![], &t)).collect()
+                let mut out = Vec::new();
+                let mut lo = f64::NEG_INFINITY;
+                for c in &cuts {
+                    out.push(atom(AtomKey::Real { lo, hi: *c, point: false }, vec![], &t));
+                    out.push(atom(AtomKey::Real { lo: *c, hi: *c, point: true }, vec![], &t));
+                    lo = *c;
+                }
+                out.push(atom(AtomKey::Real { lo, hi: f64::INFINITY, point: false }, vec![], &t));
+                out
             }
             Ty::Union(ms) => ms.iter().flat_map(|m| self.atoms(m, col)).collect(),
             Ty::Con(n, args) if n == "Tuple" => vec![atom(ctor("(,)"), args.clone(), &t)],
@@ -2119,6 +2291,14 @@ impl Checker<'_> {
                 AtomKey::Region(lo, hi) if ints::contains(s, lo, hi) => Some(vec![]),
                 _ => None,
             },
+            P::Lens(s) => match &a.key {
+                AtomKey::Len(lo, hi) if ints::contains(s, *lo, *hi) => Some(vec![]),
+                // a list is `[]` (length 0) or `x :: rest` (length 1 and more)
+                AtomKey::Ctor(c) if c == "[]" && ints::contains(s, 0, 0) => Some(vec![]),
+                AtomKey::Ctor(c) if c == "::" && ints::contains(s, 1, ints::MAX) => Some(any()),
+                _ => None,
+            },
+            P::Reals(r) => (matches!(a.key, AtomKey::Real { .. }) && r.holds(a.key.sample())).then(Vec::new),
             P::Ty(pt) => {
                 let pt = self.resolve(pt);
                 if let Ty::Con(tr, targs) = &pt {
@@ -2131,7 +2311,7 @@ impl Checker<'_> {
                     }
                 }
                 let inside = self.atoms(&pt, &[]).iter().any(|b| match (&a.key, &b.key) {
-                    (AtomKey::Region(..), AtomKey::Region(..)) => true,
+                    (AtomKey::Region(..), AtomKey::Region(..)) | (AtomKey::Len(..), AtomKey::Len(..)) | (AtomKey::Real { .. }, AtomKey::Real { .. }) => true,
                     (x, y) => x == y,
                 });
                 inside.then(any)
@@ -2142,6 +2322,20 @@ impl Checker<'_> {
     fn show_atom(&self, a: &Atom, args: &[String], in_union: bool) -> String {
         match &a.key {
             AtomKey::Opaque(k) => if in_union { k.clone() } else { "_".into() },
+            AtomKey::Len(lo, hi) => match (*lo, *hi) {
+                (0, ints::MAX) => if in_union { "String".into() } else { "_".into() },
+                (l, h) if l == h => format!("where len(it) == {l}"),
+                (l, ints::MAX) => format!("where len(it) >= {l}"),
+                (0, h) => format!("where len(it) <= {h}"),
+                (l, h) => format!("where {l} <= len(it) && len(it) <= {h}"),
+            },
+            AtomKey::Real { lo, hi, point } => match (*point, lo.is_infinite(), hi.is_infinite()) {
+                (true, ..) => format!("where it == {lo:?}"),
+                (false, true, true) => if in_union { "Float".into() } else { "_".into() },
+                (false, true, false) => format!("where it < {hi:?}"),
+                (false, false, true) => format!("where it > {lo:?}"),
+                _ => format!("where {lo:?} < it && it < {hi:?}"),
+            },
             AtomKey::Region(lo, hi) => {
                 let full = *lo == ints::MIN && *hi == ints::MAX;
                 match (*lo == ints::MIN, *hi == ints::MAX) {
@@ -2223,8 +2417,12 @@ impl Checker<'_> {
         let atoms = self.atoms(&tys[0], &col.iter().collect::<Vec<_>>());
         for a in atoms {
             let Some(qs) = self.covers(&q[0], &a) else {
-                // part of an opaque type (a `Log` among a trait's values): it may match something
+                // part of an opaque type (a `Log` among a trait's values), or some of
+                // a list's lengths: it may match something
                 if matches!(a.key, AtomKey::Opaque(_)) && !matches!(q[0], P::Any) {
+                    return true;
+                }
+                if matches!(q[0], P::Lens(_)) && matches!(&a.key, AtomKey::Ctor(c) if c == "::") {
                     return true;
                 }
                 continue;
@@ -2240,15 +2438,24 @@ impl Checker<'_> {
 
     fn check_matches(&mut self) {
         let ms = std::mem::take(&mut self.matches);
-        for (t, arms) in ms {
-            let rows: Vec<Vec<P>> = arms.iter().map(|(p, _)| vec![p.clone()]).collect();
+        for Coverage { ty: t, arms, excluded } in ms {
+            // the values the refinement rules out count as covered, by a hidden first row
+            let pre: Vec<Vec<P>> = excluded.iter().map(|(p, _)| vec![p.clone()]).collect();
+            let rows: Vec<Vec<P>> = pre.iter().cloned().chain(arms.iter().map(|(p, _)| vec![p.clone()])).collect();
+            let k = pre.len();
             for (i, (_, text)) in arms.iter().enumerate() {
-                if !self.useful(&rows[..i], &rows[i], &[t.clone()], 0) {
-                    self.err(format!("unreachable match arm `{text}`: the arms above already cover it"));
+                if !self.useful(&rows[..k + i], &rows[k + i], &[t.clone()], 0) {
+                    match &excluded {
+                        Some((_, w)) if !self.useful(&pre, &rows[k + i], &[t.clone()], 0) => {
+                            self.err(format!("unreachable match arm `{text}`: no `{w}` matches it"));
+                        }
+                        _ => self.err(format!("unreachable match arm `{text}`: the arms above already cover it")),
+                    }
                 }
             }
             if let Some(w) = self.missing(&rows, &[t.clone()], 0) {
-                self.err(format!("non-exhaustive match on `{}`: `{}` is not covered", self.show(&t), w[0]));
+                let shown = excluded.as_ref().map_or(self.show(&t), |(_, w)| w.clone());
+                self.err(format!("non-exhaustive match on `{shown}`: `{}` is not covered", w[0]));
             }
         }
     }
@@ -2303,6 +2510,21 @@ pub mod ints {
     /// The integers `it` for which a condition holds, when it only compares
     /// `it` with constants (combined with `&&`, `||`, `!`, `==>`).
     pub fn of_pred(e: &Expr) -> Option<Ints> {
+        of_pred_on(e, &|e| matches!(e, Expr::Var(x) if x == "it"))
+    }
+
+    /// The lengths for which a condition on `len(it)` holds (never negative).
+    pub fn of_len_pred(e: &Expr) -> Option<Ints> {
+        let is_len = |e: &Expr| match e {
+            Expr::Call(f, a) => matches!(&**f, Expr::Var(n) if n == "len") && matches!(a.as_slice(), [Expr::Var(x)] if x == "it"),
+            Expr::Method(r, m, a) => m == "len" && a.is_empty() && matches!(&**r, Expr::Var(x) if x == "it"),
+            _ => false,
+        };
+        Some(and(&of_pred_on(e, &is_len)?, &vec![(0, MAX)]))
+    }
+
+    fn of_pred_on(e: &Expr, subject: &dyn Fn(&Expr) -> bool) -> Option<Ints> {
+        let of_pred = |e: &Expr| of_pred_on(e, subject);
         let konst = |e: &Expr| match e {
             Expr::Int(n) => Some(*n as i128),
             Expr::Un(UnOp::Neg, x) => match &**x {
@@ -2311,7 +2533,7 @@ pub mod ints {
             },
             _ => None,
         };
-        let is_it = |e: &Expr| matches!(e, Expr::Var(x) if x == "it");
+        let is_it = subject;
         Some(match e {
             Expr::Bool(true) => vec![(MIN, MAX)],
             Expr::Bool(false) => vec![],
@@ -2342,6 +2564,100 @@ pub mod ints {
                     Ge => vec![(c, MAX)],
                     Eq => point(c),
                     Ne => not(&point(c)),
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        })
+    }
+}
+
+/// Sets of floats described by a condition that compares `it` with
+/// constants. Between two consecutive constants the condition cannot change,
+/// so testing one point per region decides it exactly.
+pub mod reals {
+    use crate::ast::{BinOp, Expr, UnOp};
+
+    #[derive(Clone, Debug)]
+    pub struct Reals {
+        /// The constants the conditions compare with.
+        pub cuts: Vec<f64>,
+        /// All must hold (`negated`: the set is the complement).
+        pub preds: Vec<Expr>,
+        pub negated: bool,
+    }
+
+    impl Reals {
+        pub fn holds(&self, x: f64) -> bool {
+            self.preds.iter().all(|p| eval(p, x).unwrap_or(false)) != self.negated
+        }
+        pub fn and(mut self, other: Reals) -> Option<Reals> {
+            if self.negated || other.negated {
+                return None;
+            }
+            self.cuts.extend(other.cuts);
+            self.preds.extend(other.preds);
+            Some(self)
+        }
+        pub fn not(mut self) -> Reals {
+            self.negated = !self.negated;
+            self
+        }
+    }
+
+    pub fn of_pred(e: &Expr) -> Option<Reals> {
+        eval(e, 0.0)?;
+        let mut cuts = Vec::new();
+        consts(e, &mut cuts);
+        Some(Reals { cuts, preds: vec![e.clone()], negated: false })
+    }
+
+    fn konst(e: &Expr) -> Option<f64> {
+        match e {
+            Expr::Float(f) => Some(*f),
+            Expr::Int(n) => Some(*n as f64),
+            Expr::Un(UnOp::Neg, x) => konst(x).map(|v| -v),
+            _ => None,
+        }
+    }
+
+    fn consts(e: &Expr, out: &mut Vec<f64>) {
+        match e {
+            Expr::Un(_, x) => consts(x, out),
+            Expr::Bin(_, l, r) => {
+                if let Some(c) = konst(l).or(konst(r)) {
+                    out.push(c);
+                }
+                consts(l, out);
+                consts(r, out);
+            }
+            _ => {}
+        }
+    }
+
+    /// The condition at `it = x`, or `None` if it is not of a form we decide.
+    fn eval(e: &Expr, x: f64) -> Option<bool> {
+        let is_it = |e: &Expr| matches!(e, Expr::Var(v) if v == "it");
+        Some(match e {
+            Expr::Bool(b) => *b,
+            Expr::Un(UnOp::Not, a) => !eval(a, x)?,
+            Expr::Bin(BinOp::And, l, r) => eval(l, x)? & eval(r, x)?,
+            Expr::Bin(BinOp::Or, l, r) => eval(l, x)? | eval(r, x)?,
+            Expr::Bin(BinOp::Implies, l, r) => !eval(l, x)? | eval(r, x)?,
+            Expr::Bin(op, l, r) => {
+                let (a, b) = match (is_it(l), is_it(r)) {
+                    (true, false) => (x, konst(r)?),
+                    (false, true) => (konst(l)?, x),
+                    _ => return None,
+                };
+                use BinOp::*;
+                match op {
+                    Lt => a < b,
+                    Le => a <= b,
+                    Gt => a > b,
+                    Ge => a >= b,
+                    Eq => a == b,
+                    Ne => a != b,
                     _ => return None,
                 }
             }
@@ -2386,6 +2702,7 @@ pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<String, TypeExpr>>
         lambda_floor: 0,
         loops: 0,
         ret: None,
+        written: Vec::new(),
     };
     let vars: HashMap<String, Ty> = f.type_params.iter().map(|p| (p.clone(), c.fresh())).collect();
     let bounded: Vec<&Bound> = f.bounds.iter().collect();
@@ -2460,6 +2777,7 @@ pub fn check(prog: &Program) -> CheckReport {
             lambda_floor: 0,
             loops: 0,
             ret: None,
+            written: Vec::new(),
         };
         let mut obligations = Vec::new();
         match &d.kind {
