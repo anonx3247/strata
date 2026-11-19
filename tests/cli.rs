@@ -126,7 +126,7 @@ fn builtin_collections_work() {
 #[test]
 fn every_example_round_trips_through_render() {
     let d = tmp("roundtrip");
-    for ex in ["bank.strata", "orders.strata", "builtins.strata", "traits.strata", "tasks"] {
+    for ex in ["bank.strata", "orders.strata", "builtins.strata", "traits.strata"] {
         let path = format!("{}/examples/{ex}", env!("CARGO_MANIFEST_DIR"));
         let (_, r1) = strata(&["--file", &path, "render"], &d, None);
         std::fs::write(d.join("r.strata"), &r1).unwrap();
@@ -135,6 +135,18 @@ fn every_example_round_trips_through_render() {
         let (ok, out) = strata(&["--file", "r.strata", "test"], &d, None);
         assert!(ok, "{ex} tests fail after round-trip: {out}");
     }
+    // a package: one file per module
+    let path = format!("{}/examples/tasks", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["--file", &path, "render", "--split", "t1"], &d, None);
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "t1", "render", "--split", "t2"], &d, None);
+    assert!(ok, "{out}");
+    for m in ["core", "memory", "print", "sim"] {
+        let f = format!("{m}.strata");
+        assert_eq!(std::fs::read_to_string(d.join("t1").join(&f)).unwrap(), std::fs::read_to_string(d.join("t2").join(&f)).unwrap(), "tasks/{f} does not round-trip");
+    }
+    let (ok, out) = strata(&["--file", "t2", "test"], &d, None);
+    assert!(ok, "tasks tests fail after round-trip: {out}");
 }
 
 #[test]
@@ -191,12 +203,22 @@ fn traits_laws_and_distinct_types() {
 fn modules_contracts_and_files() {
     let d = tmp("modules");
     let ex = format!("{}/examples/tasks", env!("CARGO_MANIFEST_DIR"));
-    // a folder of files is a set of modules; render --split writes it back identically
+    // a folder of files is a set of modules, one per file; render --split writes it back identically
     let (ok, out) = strata(&["--file", &ex, "render", "--split", "split"], &d, None);
     assert!(ok, "{out}");
-    let (_, a) = strata(&["--file", &ex, "render"], &d, None);
-    let (_, b) = strata(&["--file", "split", "render"], &d, None);
-    assert_eq!(a, b);
+    for m in ["core", "memory", "print", "sim"] {
+        let f = format!("{m}.strata");
+        assert_eq!(std::fs::read_to_string(format!("{ex}/{f}")).unwrap(), std::fs::read_to_string(d.join("split").join(&f)).unwrap(), "{f}");
+    }
+    // `render` prints one module; with several it asks which
+    let (ok, out) = strata(&["--file", &ex, "render", "core"], &d, None);
+    assert!(ok && out == std::fs::read_to_string(format!("{ex}/core.strata")).unwrap(), "{out}");
+    let (ok, out) = strata(&["--file", &ex, "render"], &d, None);
+    assert!(!ok && out.contains("4 modules, one file each"), "{out}");
+    // `module` blocks are gone: a file is a module
+    std::fs::write(d.join("blocks.strata"), "module a {\n  fn f() -> Int {\n    1\n  }\n}\n").unwrap();
+    let (ok, _) = strata(&["--file", "blocks.strata", "check"], &d, None);
+    assert!(!ok, "`module a {{ }}` must not parse");
     // the contract shows public definitions only
     let (ok, out) = strata(&["--file", &ex, "interface", "core"], &d, None);
     assert!(ok && out.contains("pub fn run_worker") && !out.contains("same_ids"), "{out}");
@@ -328,28 +350,27 @@ fn label(s: Status) -> String {
 #[test]
 fn rename_updates_every_reference() {
     let d = tmp("rename");
-    let src = r#"module a {
-  /// The size of `xs`; see also size_of.
-  pub fn size(xs: List[Int]) -> Int { len(xs) }
-  pub type Box = { items: List[Int] }
-  pub fn twice(xs: List[Int]) -> Int {
-    let n = size(xs)
-    let tally = x -> x + n
-    tally(size(xs))
-  }
-}
-module b {
-  use a.{size, Box}
-  fn count(x: Int) -> Int { x }
-  fn total(b: Box) -> Int { a.size(b.items) + size([]) + count(1) }
-  test "boxes" {
-    assert total(Box { items: [1, 2] }) == 3
-  }
+    let a = r#"/// The size of `xs`; see also size_of.
+pub fn size(xs: List[Int]) -> Int { len(xs) }
+pub type Box = { items: List[Int] }
+pub fn twice(xs: List[Int]) -> Int {
+  let n = size(xs)
+  let tally = x -> x + n
+  tally(size(xs))
 }
 "#;
-    std::fs::write(d.join("r.strata"), src).unwrap();
+    let b = r#"use a.{size, Box}
+fn count(x: Int) -> Int { x }
+fn total(b: Box) -> Int { a.size(b.items) + size([]) + count(1) }
+test "boxes" {
+  assert total(Box { items: [1, 2] }) == 3
+}
+"#;
+    std::fs::create_dir_all(d.join("src")).unwrap();
+    std::fs::write(d.join("src/a.strata"), a).unwrap();
+    std::fs::write(d.join("src/b.strata"), b).unwrap();
     assert!(strata(&["init"], &d, None).0);
-    assert!(strata(&["add", "r.strata"], &d, None).0);
+    assert!(strata(&["add", "src"], &d, None).0);
 
     // names that a local or another definition would capture are refused
     let (ok, out) = strata(&["rename", "a.size", "count"], &d, None);
@@ -364,7 +385,7 @@ module b {
     assert!(out.contains("docs or comments still mention `size` in: a.length"), "{out}");
     let (ok, out) = strata(&["rename", "a.Box", "Crate"], &d, None);
     assert!(ok, "{out}");
-    let (_, r) = strata(&["render"], &d, None);
+    let r = strata(&["render", "a"], &d, None).1 + &strata(&["render", "b"], &d, None).1;
     for s in ["pub fn length(xs: List[Int])", "let n = length(xs)", "tally(length(xs))", "use a.{length, Crate}", "a.length(b.items) + length([])", "fn total(b: Crate)", "Crate { items: [1, 2] }"] {
         assert!(r.contains(s), "missing {s:?} in\n{r}");
     }

@@ -181,21 +181,22 @@ fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, (ac
 
 ## Modules: units that meet only through contracts
 
+A **file is a module**, named after its path in the package: `shop/orders.strata` is `shop.orders`, and `main.strata` is the root module. There are no `module { }` blocks.
+
 ```rust
-module orders {
-  pub type Order = { id: OrderId, lines: NonEmpty[Line] }
-  pub fn ship(id: OrderId) -> Result[Order, ShipError] / {Db}  ensures ...
-  fn helper() -> Int { ... }            // private: invisible outside `orders`
-}
-module billing {
-  use orders.{Order, ship}              // or `use orders.*`, or write `orders.ship(x)`
-  pub fn invoice(o: Order) -> Cents { ... }
-}
+// orders.strata
+pub type Order = { id: OrderId, lines: NonEmpty[Line] }
+pub fn ship(id: OrderId) -> Result[Order, ShipError] / {Db}  ensures ...
+fn helper() -> Int { ... }            // private: invisible outside `orders`
+
+// billing.strata
+use orders.{Order, ship}              // or `use orders.*`, or write `orders.ship(x)`
+pub fn invoice(o: Order) -> Cents { ... }
 ```
 
 - A module is used **only through its public contract**: `pub` types, function signatures, `requires`/`ensures`, trait laws. Anything else is private, and using it from another module is an error ("`secret` is private to module `a`").
 - `strata interface orders` prints that contract, with a hash. Editing a private definition, or a function body without touching its signature, is reported as "implementation only": nothing outside the module can be affected. Changing a `pub` signature or type says so ("module core: its public contract changed").
-- **Files or database, your choice.** `--file` and `add` accept a folder, where each `.strata` file is a module named after its path (`shop/orders.strata` → `shop.orders`, `main.strata` → the root module). `render --split DIR` writes the codebase back out one file per module, and it round-trips. In the database, definitions are stored under qualified names, so `orders.Line` and `billing.Line` can coexist. `edit --module m` targets a module, and `view module:m` shows one.
+- **Files or database, your choice.** `--file` and `add` accept a folder, where each `.strata` file is a module named after its path (`shop/orders.strata` → `shop.orders`, `main.strata` → the root module). `render MODULE` prints one module (its file), and `render --split DIR` writes the codebase back out one file per module; both round-trip. A view that spans several modules (`view a,b`) labels each group with a `// ── module m` comment. In the database, definitions are stored under qualified names, so `orders.Line` and `billing.Line` can coexist. `edit --module m` targets a module, and `view module:m` shows one.
 - The viewer groups the sidebar by module (private definitions in italics) and lays the type map out as one region per module, with the modules others depend on placed first.
 - `examples/tasks/` is now four modules (`core`, `memory`, `print`, `sim`) that use each other only through their contracts.
 

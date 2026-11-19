@@ -42,7 +42,9 @@ Codebase (stored as a database of syntax trees in .strata/):
                                with --file, git: `diff [BASE]` compares BASE (default HEAD)
                                with the working tree, one step per commit
   interface <module>           a module's public contract: what other modules can use
-  render [--split DIR]         print the full codebase as source (L3), or one file per module
+  render [MODULE] [--split DIR]
+                               print a module as source (L3): the file that holds it (the
+                               root module is `main`); --split writes one file per module
   (`--file` and `add` accept a folder: each .strata file is a module named after its path;
    `edit --module m` puts unqualified definitions into module m)
 
@@ -512,7 +514,26 @@ fn run() -> Result<bool, String> {
             let src = load(&args)?;
             let p = src.program();
             match args.val("--split") {
-                None => print!("{}", printer::program(p)),
+                None => {
+                    // a module is a file: print one
+                    let mut mods: Vec<String> = p.decls.iter().map(|d| d.module.clone()).collect();
+                    mods.sort();
+                    mods.dedup();
+                    let m = match (args.pos.get(1), mods.as_slice()) {
+                        (Some(m), _) if m == "main" => String::new(),
+                        (Some(m), _) if mods.contains(m) => m.clone(),
+                        (Some(m), _) => return Err(format!("no module `{m}` (modules: {})", mods.iter().map(|m| if m.is_empty() { "main" } else { m }).collect::<Vec<_>>().join(", "))),
+                        (None, [] | [_]) => mods.first().cloned().unwrap_or_default(),
+                        (None, _) => {
+                            return Err(format!(
+                                "{} modules, one file each: `render MODULE` prints one ({}), `render --split DIR` writes them all",
+                                mods.len(),
+                                mods.iter().map(|m| if m.is_empty() { "main" } else { m }).collect::<Vec<_>>().join(", ")
+                            ))
+                        }
+                    };
+                    print!("{}", printer::module_file(p, &m));
+                }
                 Some(dir) => {
                     // one file per module; the root module goes to main.strata
                     let mut mods: Vec<String> = p.decls.iter().map(|d| d.module.clone()).collect();

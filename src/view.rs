@@ -115,7 +115,8 @@ pub fn render(p: &Program, names: &BTreeSet<String>, level: u8, st: &Status) -> 
     if level == 0 {
         return out.into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n") + "\n";
     }
-    // keep each module's definitions inside a `module m { ... }` block, so views stay valid Strata
+    // a module is a file: a view of one module is that file's text (so it can go
+    // back through `edit --module m`); a view across modules names each one
     let mut order: Vec<String> = Vec::new();
     for (m, _) in &out {
         if !order.contains(m) {
@@ -123,13 +124,12 @@ pub fn render(p: &Program, names: &BTreeSet<String>, level: u8, st: &Status) -> 
         }
     }
     let mut parts = Vec::new();
-    for m in order {
-        let body: Vec<String> = out.iter().filter(|(mm, _)| *mm == m).map(|(_, t)| t.clone()).collect();
-        if m.is_empty() {
-            parts.extend(body);
-        } else {
-            parts.push(printer::module_block(&m, &body.join("\n\n")));
+    for m in &order {
+        let body: Vec<String> = out.iter().filter(|(mm, _)| mm == m).map(|(_, t)| t.clone()).collect();
+        if order.len() > 1 {
+            parts.push(if m.is_empty() { "// ── root module".to_string() } else { format!("// ── module {m}") });
         }
+        parts.extend(body);
     }
     parts.join("\n\n") + "\n"
 }

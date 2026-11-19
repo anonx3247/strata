@@ -7,8 +7,6 @@ pub struct Parser {
     no_struct: bool,
     comments: Vec<Comment>,
     used: Vec<bool>,
-    /// comments above a `module m {` line, given to its first definition
-    pending: Vec<String>,
 }
 
 type R<T> = Result<T, String>;
@@ -17,13 +15,15 @@ pub fn parse_program(src: &str) -> R<Program> {
     parse_module_file(src, "")
 }
 
-/// Parse a file as the given module (e.g. `orders.strata` -> `orders`).
-/// `module` blocks inside it nest under that path.
+/// Parse a file as the given module (e.g. `orders.strata` -> `orders`): a
+/// file is one module, and every definition in it belongs to that module.
 pub fn parse_module_file(src: &str, module: &str) -> R<Program> {
     let mut p = Parser::new(src)?;
     let mut decls = Vec::new();
     while p.peek() != &Tok::Eof {
-        p.decls_into(module, &mut decls)?;
+        let mut d = p.decl()?;
+        d.module = module.to_string();
+        decls.push(d);
     }
     p.check_comments()?;
     Ok(Program { decls })
@@ -55,7 +55,7 @@ impl Parser {
     fn new(src: &str) -> R<Parser> {
         let (toks, comments) = lex_with_comments(src)?;
         let used = vec![false; comments.len()];
-        Ok(Parser { toks, pos: 0, no_struct: false, comments, used, pending: vec![] })
+        Ok(Parser { toks, pos: 0, no_struct: false, comments, used })
     }
 
     // ---------- comments ----------
@@ -234,30 +234,8 @@ impl Parser {
         Ok(s)
     }
 
-    /// One declaration, or a whole `module name { ... }` block.
-    fn decls_into(&mut self, module: &str, out: &mut Vec<Decl>) -> R<()> {
-        if self.is_kw("module") && !matches!(self.peek_at(1), Tok::Sym(_)) {
-            let mut pre = std::mem::take(&mut self.pending);
-            pre.extend(self.leading());
-            self.next();
-            let name = self.path()?;
-            let full = if module.is_empty() { name } else { format!("{module}.{name}") };
-            self.expect_sym("{")?;
-            self.pending = pre;
-            while !self.eat_sym("}") {
-                self.decls_into(&full, out)?;
-            }
-            return Ok(());
-        }
-        let mut d = self.decl()?;
-        d.module = module.to_string();
-        out.push(d);
-        Ok(())
-    }
-
     pub fn decl(&mut self) -> R<Decl> {
-        let mut comments = std::mem::take(&mut self.pending);
-        comments.extend(self.leading());
+        let mut comments = self.leading();
         let mut d = self.decl_inner()?;
         comments.append(&mut d.comments);
         comments.extend(self.trailing());

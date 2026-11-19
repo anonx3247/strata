@@ -20,19 +20,6 @@ pub enum Target {
     File(PathBuf),
 }
 
-fn unwrap_module(text: &str) -> String {
-    match text.strip_prefix("module ").and_then(|t| t.split_once(" {\n")) {
-        Some((_, rest)) if rest.ends_with('}') => rest[..rest.len() - 1]
-            .lines()
-            .map(|l| l.strip_prefix("  ").unwrap_or(l))
-            .collect::<Vec<_>>()
-            .join("\n")
-            .trim_end()
-            .to_string(),
-        _ => text.to_string(),
-    }
-}
-
 /// Drop the declaration's doc comment (the `///` lines above it, which may
 /// follow `//` comments); the viewer shows it as the description instead.
 fn strip_doc(text: &str) -> String {
@@ -105,7 +92,7 @@ fn snapshot(target: &Target) -> Json {
             let one: BTreeSet<String> = [name.clone()].into();
             // a card already shows its module, so drop the `module m { ... }` wrapper;
             // the doc comment is shown as the description, so drop it from the code too
-            let render = |lvl| strip_doc(&unwrap_module(view::render(p, &one, lvl, &status).trim_end()));
+            let render = |lvl| strip_doc(view::render(p, &one, lvl, &status).trim_end());
             let (iface, source) = (render(1), render(3));
             let effects = match &d.kind {
                 _ => Vec::<String>::new(),

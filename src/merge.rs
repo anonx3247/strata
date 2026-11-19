@@ -226,29 +226,14 @@ pub fn merge(base: &str, ours: &str, theirs: &str) -> Result<Merged, String> {
         notes.push(format!("{by_line} definition{} changed on both sides, merged line by line", if by_line == 1 { "" } else { "s" }));
     }
 
-    // grouped by module, as `printer::program` does
-    let mut mods: Vec<String> = Vec::new();
-    for (m, _) in &pieces {
-        if !mods.contains(m) {
-            mods.push(m.clone());
-        }
-    }
-    let mut out = Vec::new();
-    for m in mods {
-        let body: Vec<String> = pieces
-            .iter()
-            .filter(|(pm, _)| *pm == m)
-            .map(|(_, p)| match p {
-                Piece::Decl(d) => canon(d),
-                Piece::Text(t) => t.clone(),
-            })
-            .collect();
-        if m.is_empty() {
-            out.extend(body);
-        } else {
-            out.push(printer::module_block(&m, &body.join("\n\n")));
-        }
-    }
+    // a file is one module: its definitions in order, as `printer::program` writes them
+    let out: Vec<String> = pieces
+        .iter()
+        .map(|(_, p)| match p {
+            Piece::Decl(d) => canon(d),
+            Piece::Text(t) => t.clone(),
+        })
+        .collect();
     let text = if out.is_empty() { String::new() } else { out.join("\n\n") + "\n" };
     Ok(Merged { text, conflicts, notes })
 }
