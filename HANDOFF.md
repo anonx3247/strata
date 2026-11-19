@@ -113,3 +113,10 @@ Bootstrap plan: write the frontend (lexer, parser, printer) in Strata and test i
 ### Runtime and standard library (decided)
 - **A small native core in Rust** (C is possible for the system-call layer; decide when we get there): the GC, the system-call / OS boundary, and bindings to LLVM and the SMT solver.
 - **Most of the standard library in Strata itself**: collections, strings, the ORM, HTTP / web views, CLI helpers, and agent tooling. Only the thin OS / runtime layer is native.
+
+### Lambda syntax (decided; not implemented yet)
+- Replace the Rust-style `|x| body` with a **bare arrow**: `x -> body` and `(a, b) -> body`, with optional parameter types such as `(s: String) -> …`. For a longer body, use a block: `x -> { ... }`.
+- `->` is never an operator inside expressions, so there is no ambiguity; `=>` stays reserved for `match` arms.
+- **No shorthand lambdas** (no `$`, `_` or implicit parameter) and **no separate anonymous-`fn` form**.
+- **Refinements keep `it`** for "the value" (`where it > 0`).
+- When implementing, update the parser, printer, examples, README and tests; `render` must still round-trip.
