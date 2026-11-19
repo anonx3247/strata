@@ -17,7 +17,7 @@ trait Describe {
 /// `summary` for free; implementing it requires `Describe` and `Priced`.
 trait Summary: Describe + Priced {
   fn summary(self) -> String {
-    self.describe() ++ ": " ++ to_string(self.price()) ++ "c"
+    self.describe() + ": " + to_string(self.price()) + "c"
   }
 }
 
@@ -49,7 +49,7 @@ impl Priced for Bundle {
 
 impl Describe for Bundle {
   fn describe(self) -> String {
-    "bundle of " ++ join(self.items.map(describe), ", ")
+    "bundle of " + join(self.items.map(describe), ", ")
   }
 }
 
@@ -57,14 +57,14 @@ impl Summary for Bundle {}
 
 /// Traits can be implemented for built-in types too.
 impl Describe for Int {
-  fn describe(self) -> String { "the number " ++ to_string(self) }
+  fn describe(self) -> String { "the number " + to_string(self) }
 }
 
 /// A stock-keeping unit: a separate type, so it can't be confused with any other string.
 distinct type Sku = String where matches(it, "[A-Z]{3}-[0-9]{1,4}")
 
 impl Describe for Sku {
-  fn describe(self) -> String { "SKU " ++ self.value }
+  fn describe(self) -> String { "SKU " + self.value }
 }
 
 type Money = { cents: Int }
@@ -75,7 +75,7 @@ impl Combine for Money {
 
 /// One implementation for every list, whatever its elements.
 impl[T] Combine for List[T] {
-  fn combine(self, other: Self) -> Self { self ++ other }
+  fn combine(self, other: Self) -> Self { self + other }
 }
 
 /// Wrong on purpose: averaging is not associative, and `verify` says so.

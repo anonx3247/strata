@@ -13,7 +13,7 @@
 pub type TaskId = String where matches(it, "[A-Za-z0-9_-]{1,64}")
 
 /// The task family, e.g. "print".
-pub type Kind = String where str_len(it) > 0
+pub type Kind = String where len(it) > 0
 
 /// A unit of work. Every Strata type is JSON-serialisable, so the payload
 /// needs no `BaseModel` bound.

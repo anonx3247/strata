@@ -104,7 +104,6 @@ fn prec(e: &Expr) -> u8 {
             BinOp::Or => 1,
             BinOp::And => 2,
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => 3,
-            BinOp::Concat => 4,
             BinOp::Add | BinOp::Sub => 5,
             BinOp::Mul | BinOp::Div | BinOp::Mod => 6,
         },
@@ -151,7 +150,7 @@ fn broken(open: &str, items: Vec<String>, close: &str, d: usize) -> String {
 pub fn expr(e: &Expr, d: usize) -> String {
     let inline = expr_inline(e, d);
     // a chain whose parts had to break is laid out one item per line
-    let chain = matches!(e, Expr::Method(..) | Expr::Bin(BinOp::And | BinOp::Or | BinOp::Concat, ..));
+    let chain = matches!(e, Expr::Method(..) | Expr::Bin(BinOp::And | BinOp::Or | BinOp::Add, ..));
     if !too_long(&inline, d) && !(chain && inline.contains('\n')) {
         return inline;
     }
@@ -194,8 +193,8 @@ pub fn expr(e: &Expr, d: usize) -> String {
             let head = if ps.is_empty() { "||".to_string() } else { format!("|{}|", ps.join(", ")) };
             format!("{head}\n{}{}", ind(d + 1), expr(b, d + 1))
         }
-        // a && b && c  ->  one operand per line
-        Expr::Bin(op @ (BinOp::And | BinOp::Or | BinOp::Concat), _, _) => {
+        // a && b && c, "x" + y + "z"  ->  one operand per line
+        Expr::Bin(op @ (BinOp::And | BinOp::Or | BinOp::Add), _, _) => {
             let mut parts = Vec::new();
             let mut cur = e;
             while let Expr::Bin(o, l, r) = cur {

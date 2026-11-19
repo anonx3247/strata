@@ -99,7 +99,6 @@ pub const BUILTINS: &[(&str, &str, &str)] = &[
     ("max", "", "(Int, Int) -> Int"),
     ("max", "", "(Float, Float) -> Float"),
     ("matches", "", "(String, String) -> Bool"),
-    ("str_len", "", "(String) -> Int"),
     ("starts_with", "", "(String, String) -> Bool"),
     ("to_string", "A", "(A) -> String"),
 ];
@@ -946,17 +945,13 @@ impl<'a> Checker<'a> {
                 let (lt, rt) = (self.infer(l), self.infer(r));
                 use BinOp::*;
                 match op {
-                    Add | Sub | Mul | Div | Mod => {
-                        self.numeric(&lt, &rt, op);
+                    // `+` also joins strings and lists
+                    Add if [&lt, &rt].iter().any(|t| joinable(&self.resolve(t))) => {
+                        self.expect(&lt, &rt, "`+` operands");
                         lt
                     }
-                    Concat => {
-                        self.expect(&lt, &rt, "`++` operands");
-                        match self.resolve(&lt) {
-                            Ty::Str | Ty::Var(_) => {}
-                            Ty::Con(n, _) if n == "List" => {}
-                            t => self.err(format!("`++` works on String or List, found `{}`", show_ty(&t))),
-                        }
+                    Add | Sub | Mul | Div | Mod => {
+                        self.numeric(&lt, &rt, op);
                         lt
                     }
                     Eq | Ne => {
@@ -1310,6 +1305,15 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+    }
+}
+
+/// Types that `+` joins rather than adds.
+fn joinable(t: &Ty) -> bool {
+    match t {
+        Ty::Str => true,
+        Ty::Con(n, _) => n == "List",
+        _ => false,
     }
 }
 

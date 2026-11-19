@@ -221,12 +221,14 @@ impl Decl {
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum BinOp {
+    /// Numbers, and joining strings or lists (`"a" + "b"`, `[1] + [2]`).
+    /// Older trees spelled list/string joining `Concat` (`++`).
+    #[serde(alias = "Concat")]
     Add,
     Sub,
     Mul,
     Div,
     Mod,
-    Concat,
     Eq,
     Ne,
     Lt,
@@ -247,7 +249,6 @@ impl BinOp {
             Mul => "*",
             Div => "/",
             Mod => "%",
-            Concat => "++",
             Eq => "==",
             Ne => "!=",
             Lt => "<",

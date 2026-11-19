@@ -51,8 +51,8 @@ fn hints(e: &Expr, h: &mut Hints) {
                 _ => return,
             };
             let is_len = |s: &Expr| match s {
-                Expr::Call(f, a) => matches!(&**f, Expr::Var(n) if n == "len" || n == "str_len") && a.len() == 1 && is_it(&a[0]),
-                Expr::Method(r, m, a) => (m == "len" || m == "str_len") && a.is_empty() && is_it(r),
+                Expr::Call(f, a) => matches!(&**f, Expr::Var(n) if n == "len") && a.len() == 1 && is_it(&a[0]),
+                Expr::Method(r, m, a) => m == "len" && a.is_empty() && is_it(r),
                 _ => false,
             };
             let (lo, hi) = if is_it(subject) {

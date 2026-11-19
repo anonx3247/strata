@@ -159,7 +159,7 @@ A trait describes what a *type* can do. The implementation is chosen by the type
 ```rust
 trait Describe { fn describe(self) -> String  ensures len(it) > 0 }
 trait Summary: Describe + Priced {                       // supertraits
-  fn summary(self) -> String { self.describe() ++ ": " ++ to_string(self.price()) ++ "c" }   // default method
+  fn summary(self) -> String { self.describe() + ": " + to_string(self.price()) + "c" }   // default method
 }
 trait Combine {
   fn combine(self, other: Self) -> Self
@@ -253,7 +253,7 @@ All values are immutable (`insert` returns a new dict). Dicts and sets are kept 
 
 Comments are part of the tree, so they survive every edit and render. A `//` comment belongs to what follows it: a definition (comments separated from it by a blank line, such as a file header or a section banner, keep that blank line), a field, a variant, a trait or impl method, a statement or a match arm. A comment at the end of a line moves above the thing it follows. A comment anywhere else (inside an argument list, after the last statement of a block) is an error, never silently dropped. `///` doc comments work the same way and are the description the viewer shows. Comments are printed as written; changing one changes the definition's hash but not its interface hash, and does not invalidate verification results.
 
-All rendered code is formatted to about 80 columns: long argument lists, record literals, method chains, `&&` / `||` / `++` chains, parameter lists and doc comments are broken across lines.
+All rendered code is formatted to about 80 columns: long argument lists, record literals, method chains, `&&` / `||` / `+` chains, parameter lists and doc comments are broken across lines.
 
 Selectors: `name`, `prefix*`, `slice:Name` (Name, what it uses, and what uses it), or a comma-separated combination.
 Every view is Strata text, so an agent can edit what it sees and send it back with `strata edit`.

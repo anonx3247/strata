@@ -573,16 +573,15 @@ impl Parser {
             0 => &[("||", Or)],
             1 => &[("&&", And)],
             2 => &[("==", Eq), ("!=", Ne), ("<=", Le), (">=", Ge), ("<", Lt), (">", Gt)],
-            3 => &[("++", Concat)],
-            4 => &[("+", Add), ("-", Sub)],
-            5 => &[("*", Mul), ("/", Div), ("%", Mod)],
+            3 => &[("+", Add), ("-", Sub)],
+            4 => &[("*", Mul), ("/", Div), ("%", Mod)],
             _ => &[],
         };
         table.iter().find(|(t, _)| t == s).map(|(_, op)| *op)
     }
 
     fn binary(&mut self, level: usize) -> R<Expr> {
-        if level > 5 {
+        if level > 4 {
             return self.unary();
         }
         let mut lhs = self.binary(level + 1)?;
@@ -595,6 +594,9 @@ impl Parser {
             // `|` cannot be a binary op; `-` on a new line starts a new statement
             if self.nl_before() && matches!(self.peek(), Tok::Sym("-")) {
                 break;
+            }
+            if self.is_sym("++") {
+                return Err(self.err("`++` is gone: join strings and lists with `+`"));
             }
             match self.binop_at(level) {
                 Some(op) => {

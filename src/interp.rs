@@ -699,10 +699,6 @@ impl<'a> Interp<'a> {
                 Float(f) => return self.fail(FaultKind::Runtime, format!("sqrt of negative number {f}")),
                 _ => return self.fail(FaultKind::Runtime, "bad args"),
             },
-            "str_len" => match nx() {
-                Str(s) => Int(s.chars().count() as i64),
-                _ => Int(0),
-            },
             "map" | "filter" | "all" | "any" => {
                 let (List(xs), f) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
                 let mut out = Vec::new();
@@ -972,8 +968,8 @@ impl<'a> Interp<'a> {
                 match (op, lv, rv) {
                     (Eq, a, b) => Value::Bool(a == b),
                     (Ne, a, b) => Value::Bool(a != b),
-                    (Concat, Value::Str(a), Value::Str(b)) => Value::Str(a + &b),
-                    (Concat, Value::List(mut a), Value::List(b)) => {
+                    (Add, Value::Str(a), Value::Str(b)) => Value::Str(a + &b),
+                    (Add, Value::List(mut a), Value::List(b)) => {
                         a.extend(b);
                         Value::List(a)
                     }

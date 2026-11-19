@@ -373,3 +373,43 @@ module b {
     let (_, log) = strata(&["log", "--json"], &d, None);
     assert!(log.contains(r#""from":"a.size""#) && log.contains(r#""to":"a.length""#), "{log}");
 }
+
+/// Run the `test` blocks of `src` and check that it round-trips through `render`.
+fn run_tests(name: &str, src: &str, passed: &str) {
+    let d = tmp(name);
+    std::fs::write(d.join("a.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", "a.strata", "test"], &d, None);
+    assert!(ok && out.contains(passed), "{out}");
+    let (_, r1) = strata(&["--file", "a.strata", "render"], &d, None);
+    std::fs::write(d.join("r1.strata"), &r1).unwrap();
+    let (_, r2) = strata(&["--file", "r1.strata", "render"], &d, None);
+    assert_eq!(r1, r2);
+}
+
+/// `check` on `src` fails with a message containing `msg`.
+fn check_fails(name: &str, src: &str, msg: &str) {
+    let d = tmp(name);
+    std::fs::write(d.join("a.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", "a.strata", "check"], &d, None);
+    assert!(!ok && out.contains(msg), "{out}");
+}
+
+#[test]
+fn plus_joins_strings_and_lists() {
+    run_tests(
+        "plus",
+        r#"
+fn greet(name: String) -> String { "hello " + name + "!" }
+test "join" {
+  assert greet("ana") == "hello ana!"
+  assert [1, 2] + [3] == [1, 2, 3]
+  assert len("héllo") == 5
+  assert 1 + 2 == 3
+}
+"#,
+        "1 passed",
+    );
+    check_fails("plusplus", "fn f() -> String { \"a\" ++ \"b\" }", "join strings and lists with `+`");
+    check_fails("plusmix", "fn f() -> String { \"a\" + 1 }", "`+` operands");
+    check_fails("strlen", "fn f() -> Int { str_len(\"a\") }", "str_len");
+}

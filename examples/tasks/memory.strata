@@ -97,7 +97,7 @@ pub fn mem_record[P, E](q: MemQueue[P, E], results: List[TaskResult[P, E]]) -> M
     }
   })
   let rows = results.map(|r| Row { attempt: attempts_of(q, task_of(r).id), result: r })
-  MemQueue { ..q, entries, history: q.history ++ rows }
+  MemQueue { ..q, entries, history: q.history + rows }
 }
 
 fn settled[P, E](q: MemQueue[P, E], r: TaskResult[P, E]) -> Bool {
@@ -156,5 +156,5 @@ impl[P, E] Queue[P, E] for MemQueue[P, E] {
 
 /// A one-line summary per task, for reports and assertions.
 pub fn describe[P, E](q: MemQueue[P, E]) -> List[String] {
-  q.entries.map(|e| e.task.id ++ ": " ++ to_string(e.status) ++ " after " ++ to_string(e.attempts))
+  q.entries.map(|e| e.task.id + ": " + to_string(e.status) + " after " + to_string(e.attempts))
 }

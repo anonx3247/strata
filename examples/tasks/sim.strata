@@ -51,7 +51,7 @@ pub fn run_steps(mut q: MemQueue[Int, String], policy: TaskPolicy, steps: List[S
   for step in steps {
     match step {
       Produce { ids } => {
-        run_producer(q, Fixed { tasks: ids.map(|i| Task { id: "t" ++ to_string(i), kind: "sim", payload: i }) })
+        run_producer(q, Fixed { tasks: ids.map(|i| Task { id: "t" + to_string(i), kind: "sim", payload: i }) })
         ()
       },
       Work { behaviour } => {
