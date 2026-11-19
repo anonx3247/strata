@@ -209,7 +209,7 @@ fn modules_contracts_and_files() {
     // the codebase database stores qualified names; a private edit leaves dependents alone
     assert!(strata(&["init"], &d, None).0);
     assert!(strata(&["add", &ex], &d, None).0);
-    let (ok, out) = strata(&["edit", "--module", "core"], &d, Some("fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool { len(claimed) == len(reported) && all(claimed, |c| count(reported, |r| r == c) == 1) && all(reported, |r| contains(claimed, r)) }"));
+    let (ok, out) = strata(&["edit", "--module", "core"], &d, Some("fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool { len(claimed) == len(reported) && all(claimed, c -> count(reported, r -> r == c) == 1) && all(reported, r -> contains(claimed, r)) }"));
     assert!(ok && out.contains("core.same_ids") && out.contains("implementation only"), "{out}");
     let (ok, out) = strata(&["test"], &d, None);
     assert!(ok && out.contains("0 failed"), "{out}");
@@ -229,7 +229,7 @@ fn procedural_mutation_is_explicit() {
     .unwrap();
     let (ok, out) = strata(&["--file", "m.strata", "test"], &d, None);
     assert!(!ok && out.contains("✓ ok") && out.contains("103 does not satisfy"), "{out}");
-    std::fs::write(d.join("e.strata"), "fn f() -> Int {\n  let x = 1\n  x = 2\n  x\n}\nfn g() -> Int {\n  let mut y = 0\n  let add = |z| { y = y + z; y }\n  add(1)\n}\n").unwrap();
+    std::fs::write(d.join("e.strata"), "fn f() -> Int {\n  let x = 1\n  x = 2\n  x\n}\nfn g() -> Int {\n  let mut y = 0\n  let add = z -> { y = y + z; y }\n  add(1)\n}\n").unwrap();
     let (ok, out) = strata(&["--file", "e.strata", "check"], &d, None);
     assert!(!ok && out.contains("`x`: it is not mutable") && out.contains("a closure cannot change `y`"), "{out}");
 }
@@ -240,7 +240,7 @@ fn loops_chains_and_80_columns() {
     std::fs::write(
         d.join("l.strata"),
         "fn steps(start: Positive) -> Natural {\n  let mut n = start\n  let mut k = 0\n  loop {\n    if n == 1 { break }\n    n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 }\n    k = k + 1\n  }\n  k\n}\n\
-         fn top(xs: List[Int]) -> Int {\n  xs\n    .filter(|x| x > 0)\n    .sort()\n    .reverse()\n    .take(3)\n    .sum()\n}\n\
+         fn top(xs: List[Int]) -> Int {\n  xs\n    .filter(x -> x > 0)\n    .sort()\n    .reverse()\n    .take(3)\n    .sum()\n}\n\
          test \"t\" {\n  assert steps(6) == 8\n  assert top([5, -1, 9, 2, 7]) == 21\n}\n",
     )
     .unwrap();
@@ -334,7 +334,7 @@ fn rename_updates_every_reference() {
   pub type Box = { items: List[Int] }
   pub fn twice(xs: List[Int]) -> Int {
     let n = size(xs)
-    let tally = |x| x + n
+    let tally = x -> x + n
     tally(size(xs))
   }
 }
@@ -412,4 +412,30 @@ test "join" {
     check_fails("plusplus", "fn f() -> String { \"a\" ++ \"b\" }", "join strings and lists with `+`");
     check_fails("plusmix", "fn f() -> String { \"a\" + 1 }", "`+` operands");
     check_fails("strlen", "fn f() -> Int { str_len(\"a\") }", "str_len");
+}
+
+#[test]
+fn arrow_lambdas() {
+    run_tests(
+        "lambdas",
+        r#"
+fn apply(f: (Int) -> Int, x: Int) -> Int { f(x) }
+test "arrows" {
+  assert [1, 2, 3].map(x -> x * 2) == [2, 4, 6]
+  assert fold([1, 2, 3], 0, (acc, x) -> acc + x) == 6
+  assert apply((n: Int) -> n + 1, 1) == 2
+  let k = () -> 7
+  assert k() == 7
+  let f = x -> {
+    let y = x + 1
+    y * y
+  }
+  assert f(2) == 9
+  assert (1, x -> x).0 == 1
+}
+"#,
+        "1 passed",
+    );
+    check_fails("oldlambda", "fn f() -> List[Int] { [1].map(|x| x) }", "lambdas are written `x -> body`");
+    check_fails("lambdatype", "fn f() -> List[Int] { [1].map((s: String) -> 1) }", "lambda parameter `s`");
 }

@@ -402,10 +402,11 @@ impl Rw<'_> {
             }
             Expr::Mock(t) => Expr::Mock(self.ty(t)),
             Expr::Lambda(ps, b) => {
-                self.push(ps);
+                let ps: Vec<LamParam> = ps.iter().map(|p| LamParam { name: p.name.clone(), ty: p.ty.as_ref().map(|t| self.ty(t)) }).collect();
+                self.push(&ps.iter().map(|p| p.name.clone()).collect::<Vec<_>>());
                 let b = self.expr(b);
                 self.pop();
-                Expr::Lambda(ps.clone(), Box::new(b))
+                Expr::Lambda(ps, Box::new(b))
             }
             Expr::Bin(op, l, r) => Expr::Bin(*op, Box::new(self.expr(l)), Box::new(self.expr(r))),
             Expr::Un(op, x) => Expr::Un(op.clone(), Box::new(self.expr(x))),

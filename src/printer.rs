@@ -188,11 +188,8 @@ pub fn expr(e: &Expr, d: usize) -> String {
             d,
         ),
         Expr::Ctor(c, CtorArgs::Positional(es)) => format!("{c}{}", broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d)),
-        // |x| long body  ->  body on its own line
-        Expr::Lambda(ps, b) => {
-            let head = if ps.is_empty() { "||".to_string() } else { format!("|{}|", ps.join(", ")) };
-            format!("{head}\n{}{}", ind(d + 1), expr(b, d + 1))
-        }
+        // x -> long body  ->  body on its own line (a block body breaks by itself)
+        Expr::Lambda(ps, b) if !matches!(**b, Expr::Block(..)) => format!("{} ->\n{}{}", lambda_params(ps), ind(d + 1), expr(b, d + 1)),
         // a && b && c, "x" + y + "z"  ->  one operand per line
         Expr::Bin(op @ (BinOp::And | BinOp::Or | BinOp::Add), _, _) => {
             let mut parts = Vec::new();
@@ -211,6 +208,23 @@ pub fn expr(e: &Expr, d: usize) -> String {
             s
         }
         _ => inline,
+    }
+}
+
+/// `x`, `(a, b)`, `(s: String)`, `()`
+fn lambda_params(ps: &[LamParam]) -> String {
+    match ps {
+        [p] if p.ty.is_none() => p.name.clone(),
+        _ => {
+            let parts: Vec<String> = ps
+                .iter()
+                .map(|p| match &p.ty {
+                    Some(t) => format!("{}: {}", p.name, ty(t)),
+                    None => p.name.clone(),
+                })
+                .collect();
+            format!("({})", parts.join(", "))
+        }
     }
 }
 
@@ -248,9 +262,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Call(f, es) => format!("{}({})", wrap(f, 8, d), args(es, d)),
         Expr::Method(r, m, es) => format!("{}.{m}({})", wrap(r, 8, d), args(es, d)),
         Expr::Field(r, f) => format!("{}.{f}", wrap(r, 8, d)),
-        Expr::Lambda(ps, b) => {
-            if ps.is_empty() { format!("|| {}", expr(b, d)) } else { format!("|{}| {}", ps.join(", "), expr(b, d)) }
-        }
+        Expr::Lambda(ps, b) => format!("{} -> {}", lambda_params(ps), expr(b, d)),
         Expr::Bin(op, l, r) => {
             let p = prec(e);
             if *op == BinOp::Implies {

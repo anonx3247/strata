@@ -677,6 +677,21 @@ impl Parser {
                 self.next();
                 Ok(Expr::Hole(h))
             }
+            Tok::Sym("(") if self.lambda_ahead() => {
+                self.next();
+                let ps = self.list(")", |p| {
+                    let name = p.ident()?;
+                    let ty = if p.eat_sym(":") { Some(p.type_expr()?) } else { None };
+                    Ok(LamParam { name, ty })
+                })?;
+                self.expect_sym("->")?;
+                Ok(Expr::Lambda(ps, Box::new(self.expr()?)))
+            }
+            Tok::Ident(name) if !KEYWORDS.contains(&name.as_str()) && !is_upper(&name) && matches!(self.peek_at(1), Tok::Sym("->")) => {
+                self.next();
+                self.next();
+                Ok(Expr::Lambda(vec![LamParam { name, ty: None }], Box::new(self.expr()?)))
+            }
             Tok::Sym("(") => {
                 self.next();
                 if self.eat_sym(")") {
@@ -700,19 +715,7 @@ impl Parser {
                 Ok(Expr::List(self.list("]", |p| p.expr())?))
             }
             Tok::Sym("{") => self.block(),
-            Tok::Sym("||") => {
-                self.next();
-                Ok(Expr::Lambda(vec![], Box::new(self.expr()?)))
-            }
-            Tok::Sym("|") => {
-                self.next();
-                let mut ps = Vec::new();
-                while !self.eat_sym("|") {
-                    ps.push(self.ident()?);
-                    self.eat_sym(",");
-                }
-                Ok(Expr::Lambda(ps, Box::new(self.expr()?)))
-            }
+            Tok::Sym("|" | "||") => Err(self.err("lambdas are written `x -> body`, `(a, b) -> body` or `() -> body`")),
             Tok::Ident(kw) if kw == "true" || kw == "false" => {
                 self.next();
                 Ok(Expr::Bool(kw == "true"))
@@ -786,6 +789,27 @@ impl Parser {
             }
             _ => Err(self.err("expected expression")),
         }
+    }
+
+    /// At a `(`: is this the parameter list of a lambda, `(a, b) -> ...`?
+    fn lambda_ahead(&self) -> bool {
+        let mut depth = 0;
+        let mut i = self.pos;
+        while i < self.toks.len() {
+            match &self.toks[i].tok {
+                Tok::Sym("(" | "[" | "{") => depth += 1,
+                Tok::Sym(")" | "]" | "}") => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return matches!(self.toks.get(i + 1).map(|t| &t.tok), Some(Tok::Sym("->")));
+                    }
+                }
+                Tok::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
     }
 
     fn block(&mut self) -> R<Expr> {

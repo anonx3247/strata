@@ -95,7 +95,7 @@ fn total[T: Priced](xs: List[T]) -> Natural {
 }
 
 fn combine_all[T: Combine](first: T, rest: List[T]) -> T {
-  fold(rest, first, |acc, x| acc.combine(x))
+  fold(rest, first, (acc, x) -> acc.combine(x))
 }
 
 test "default methods, supertraits and generic bounds" {

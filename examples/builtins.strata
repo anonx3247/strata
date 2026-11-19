@@ -3,15 +3,15 @@
 
 /// Split text on spaces into non-empty words.
 fn words(text: String) -> List[NonEmptyString] {
-  split(text, " ").map(trim).filter(|w| len(w) > 0)
+  split(text, " ").map(trim).filter(w -> len(w) > 0)
 }
 
 /// How many times each word occurs.
 fn frequencies(ws: List[NonEmptyString]) -> Dict[NonEmptyString, Int]
   ensures len(it) == len(set(ws))
-  ensures all(ws, |w| contains(it, w))
+  ensures all(ws, w -> contains(it, w))
 {
-  fold(ws, dict([]), |acc, w| {
+  fold(ws, dict([]), (acc, w) -> {
     match get(acc, w) {
       Some(n) => insert(acc, w, n + 1),
       None => insert(acc, w, 1),
@@ -23,7 +23,7 @@ fn frequencies(ws: List[NonEmptyString]) -> Dict[NonEmptyString, Int]
 fn top(freq: Dict[NonEmptyString, Int], n: Natural) -> List[(NonEmptyString, Int)]
   ensures len(it) <= n
 {
-  take(sort_by(items(freq), |pair| (0 - pair.1, pair.0)), n)
+  take(sort_by(items(freq), pair -> (0 - pair.1, pair.0)), n)
 }
 
 /// Share of words that occur only once.
@@ -31,7 +31,7 @@ fn hapax_ratio(freq: Dict[NonEmptyString, Int]) -> Probability {
   if len(freq) == 0 {
     0.0
   } else {
-    float(count(values(freq), |c| c == 1)) / float(len(freq))
+    float(count(values(freq), c -> c == 1)) / float(len(freq))
   }
 }
 
@@ -51,7 +51,7 @@ fn stats(text: String) -> Stats {
     distinct: len(freq),
     top: top(freq, 3),
     hapax: hapax_ratio(freq),
-    mean_length: mean(ws.map(|w| float(len(w)))),
+    mean_length: mean(ws.map(w -> float(len(w)))),
   }
 }
 

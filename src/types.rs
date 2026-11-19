@@ -748,13 +748,7 @@ impl<'a> Checker<'a> {
         if let (Expr::Lambda(ps, body), Some(exp)) = (e, expected) {
             if let Ty::Fn(pts, _) = self.resolve(exp) {
                 if pts.len() == ps.len() {
-                    self.scopes.push(HashMap::new());
-                    for (p, t) in ps.iter().zip(pts.iter()) {
-                        self.bind(p, t.clone());
-                    }
-                    let r = self.infer(body);
-                    self.scopes.pop();
-                    return Ty::Fn(pts, Box::new(r));
+                    return self.lambda(ps, Some(pts), body);
                 }
             }
         }
@@ -763,6 +757,33 @@ impl<'a> Checker<'a> {
             return exp.clone();
         }
         self.infer(e)
+    }
+
+    /// A lambda, with parameter types from context when they are known.
+    /// Written parameter types must agree with them.
+    fn lambda(&mut self, ps: &[LamParam], from_context: Option<Vec<Ty>>, body: &Expr) -> Ty {
+        let pts: Vec<Ty> = match from_context {
+            Some(ts) => ts,
+            None => ps.iter().map(|_| self.fresh()).collect(),
+        };
+        for (p, t) in ps.iter().zip(&pts) {
+            if let Some(w) = &p.ty {
+                self.check_refined(w);
+                let wt = self.lower(w, &HashMap::new());
+                self.expect(&wt, t, &format!("lambda parameter `{}`", p.name));
+            }
+        }
+        self.scopes.push(HashMap::new());
+        for (p, t) in ps.iter().zip(&pts) {
+            self.bind(&p.name, t.clone());
+        }
+        let floor = std::mem::replace(&mut self.lambda_floor, self.scopes.len() - 1);
+        let loops = std::mem::take(&mut self.loops);
+        let r = self.infer(body);
+        self.loops = loops;
+        self.lambda_floor = floor;
+        self.scopes.pop();
+        Ty::Fn(pts, Box::new(r))
     }
 
     fn record_hole(&mut self, name: &str, t: Ty) {
@@ -927,20 +948,7 @@ impl<'a> Checker<'a> {
                 let rt = self.infer(r);
                 self.field_type(&rt, f)
             }
-            Expr::Lambda(ps, body) => {
-                self.scopes.push(HashMap::new());
-                let pts: Vec<Ty> = ps.iter().map(|_| self.fresh()).collect();
-                for (p, t) in ps.iter().zip(&pts) {
-                    self.bind(p, t.clone());
-                }
-                let floor = std::mem::replace(&mut self.lambda_floor, self.scopes.len() - 1);
-                let loops = std::mem::take(&mut self.loops);
-                let r = self.infer(body);
-                self.loops = loops;
-                self.lambda_floor = floor;
-                self.scopes.pop();
-                Ty::Fn(pts, Box::new(r))
-            }
+            Expr::Lambda(ps, body) => self.lambda(ps, None, body),
             Expr::Bin(op, l, r) => {
                 let (lt, rt) = (self.infer(l), self.infer(r));
                 use BinOp::*;

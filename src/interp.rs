@@ -948,7 +948,7 @@ impl<'a> Interp<'a> {
                 },
                 other => return self.fail(FaultKind::Runtime, format!("no field `{f}` on {}", to_json(&other))),
             },
-            Expr::Lambda(ps, body) => Value::Closure(ps.clone(), Rc::new((**body).clone()), s.clone()),
+            Expr::Lambda(ps, body) => Value::Closure(ps.iter().map(|p| p.name.clone()).collect(), Rc::new((**body).clone()), s.clone()),
             Expr::Bin(op, l, r) => {
                 use BinOp::*;
                 // short-circuiting operators

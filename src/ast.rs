@@ -340,7 +340,8 @@ pub enum Expr {
     /// `e.f(args)` — method-call sugar for `f(e, args)`
     Method(Box<Expr>, String, Vec<Expr>),
     Field(Box<Expr>, String),
-    Lambda(Vec<String>, Box<Expr>),
+    /// `x -> body`, `(a, b) -> body`, `(s: String) -> body`
+    Lambda(Vec<LamParam>, Box<Expr>),
     Bin(BinOp, Box<Expr>, Box<Expr>),
     Un(UnOp, Box<Expr>),
     /// `e is Shipped`
@@ -351,6 +352,40 @@ pub enum Expr {
     /// `mock Db`: an implementation of a trait whose methods return generated
     /// values that satisfy the trait's contracts.
     Mock(TypeExpr),
+}
+
+/// A lambda parameter, with an optional type: `x` or `x: Int`.
+/// Stored as a plain string when it has no type, as lambdas always were.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "LamParamRepr", into = "LamParamRepr")]
+pub struct LamParam {
+    pub name: String,
+    pub ty: Option<TypeExpr>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum LamParamRepr {
+    Name(String),
+    Typed { name: String, ty: TypeExpr },
+}
+
+impl From<LamParamRepr> for LamParam {
+    fn from(r: LamParamRepr) -> Self {
+        match r {
+            LamParamRepr::Name(name) => LamParam { name, ty: None },
+            LamParamRepr::Typed { name, ty } => LamParam { name, ty: Some(ty) },
+        }
+    }
+}
+
+impl From<LamParam> for LamParamRepr {
+    fn from(p: LamParam) -> Self {
+        match p.ty {
+            None => LamParamRepr::Name(p.name),
+            Some(ty) => LamParamRepr::Typed { name: p.name, ty },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

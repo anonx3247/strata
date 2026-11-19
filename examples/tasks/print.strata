@@ -26,7 +26,7 @@ pub type PrintProducer = { count: Natural }
 
 impl Producer[PrintJob] for PrintProducer {
   fn discover(self) -> List[Task[PrintJob]] {
-    range(0, self.count).map(|i| Task {
+    range(0, self.count).map(i -> Task {
       id: "task-" + to_string(i),
       kind: "print",
       payload: PrintJob { message: "job #" + to_string(i), fail_times: if i == 3 { 1 } else { 0 } },

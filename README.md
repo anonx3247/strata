@@ -167,7 +167,7 @@ trait Combine {
 }
 impl Combine for Money { ... }
 impl[T] Combine for List[T] { ... }                      // generic impls; built-in types work too
-fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, |acc, x| acc.combine(x)) }
+fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, (acc, x) -> acc.combine(x)) }
 ```
 
 - **Contracts** (`requires` / `ensures`) on a trait method bind every implementation.
@@ -213,7 +213,7 @@ Procedural code is normal Strata: `loop { … }` repeats until `break`, and `con
 
 ```rust
 let best = scores
-  .filter(|s| s > 0)
+  .filter(s -> s > 0)
   .sort()
   .reverse()
   .take(3)
