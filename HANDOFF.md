@@ -66,16 +66,15 @@ Diff, not yet: the log is not committed to git yet, so git ranges have no rename
 - **Verification strategy.** Today: compile-time checks on literals, runtime contract checks, and fuzzing (`strata verify`, with results cached by content hash). The options discussed are summarised at the end of the last conversation and in `README.md` under the roadmap.
 - **Transpilation / interop** with Python (Pydantic, JSON as the boundary), TypeScript and Rust. Later.
 - **Strata IDE**: the viewer as a standalone desktop app (Tauri; the backend is already Rust), speaking ACP (Agent Client Protocol) so agents such as Claude Code or Codex run inside it, with a Strata MCP server giving them structural tools (slices, check, edit, rename). The viewer would show live where each agent is working (log entries tagged with the agent's session). Idea stage.
-- **Union types and `?` / `!` type syntax**: `Square | Circle | Triangle` as a type with exhaustive matching on the member types; `T?` for an optional, `T ! E` for a result. Pros and cons were discussed (see the conversation of 2026-11-19); not decided.
+
 
 ## Known gaps
 
 - Trait methods must take `self`; there is no `fn empty() -> Self` dispatch yet, and method names must be unique across traits.
-- Exhaustiveness checking ignores refinements: a `match` on `NonEmpty` still needs a `[]` arm.
 - No host bindings (FFI), so a real SQLite backend isn't possible yet.
 - `strata verify` on the tasks example takes about 35s; the slowest part is generating `MemQueue` values that satisfy its invariants.
 - Typed lambda parameters (`(n: Positive) -> …`) are checked statically but their refinements are not enforced at runtime yet.
-- `!` does no error conversion: the function's `Result` must have the same error type. f-strings have no format specs (`{x:.2}`).
+- `!` converts errors only by fitting (a variant into its sum, a member into a union), not with a conversion function. f-strings have no format specs (`{x:.2}`).
 
 ## Decided direction (user, end of session 1)
 
@@ -131,6 +130,20 @@ Bootstrap plan: write the frontend (lexer, parser, printer) in Strata and test i
 ### Runtime and standard library (decided)
 - **A small native core in Rust** (C is possible for the system-call layer; decide when we get there): the GC, the system-call / OS boundary, and bindings to LLVM and the SMT solver.
 - **Most of the standard library in Strata itself**: collections, strings, the ORM, HTTP / web views, CLI helpers, and agent tooling. Only the thin OS / runtime layer is native.
+
+### Unions, variants as types, and match patterns (decided 2026-11-19, built)
+- **`Option` and `Result` stay as they are**, and so do `!` / `?` propagation. No `T?` / `T ! E` syntax.
+- **Unions are sets of values**: `A | B` holds any value of `A` or of `B`. Unions normalize: `Int | Positive` is `Int`; `(Int where p) | (Int where q)` is `Int where p || q`; different bases stay a union. `A` fits `A | B`; `A | B` fits `C` when both do. Type parameters can be members (`T | E` with bounds); if they end up the same type, it collapses, harmlessly.
+- **Variants are types.** `type ShapeError = | NonEmptyErr | TooBig { max: Int }` declares the types `NonEmptyErr` and `TooBig`, and `ShapeError` is `NonEmptyErr | TooBig`. So `Result[Circle, NonEmptyErr]` or a parameter of type `TooBig` are allowed.
+- **Names are unique across the project**: no variant may share its name with a type or with another variant. A clash is fixed by renaming one of them (there is no renaming on import).
+- **No automatic wrapping**: always write `Ok(…)`, `Err(…)`, `Some(…)` (`Result[Int, Int]` would be ambiguous otherwise).
+- **Patterns are sets of values**: a type name (`Positive =>`, `Square =>`), a variant as today, a literal, a condition (`where 3 <= it && it <= 5 =>`, base type = the scrutinee's), `_`. An arm takes what no earlier arm took. Exhaustive = the scrutinee's (normalized) type is covered by the arms; an arm already covered by earlier ones is an error (unreachable).
+- **Narrowing, no new name**: `match x { Positive => { x … } }` narrows `x` itself in the arm. For an expression: `match f(y) as x { … }`. Field paths (`o.status`) narrow too. Narrowing of a `let mut` lasts until it is assigned.
+- **Coverage**: integer (and `len(it)`) comparisons with constants, combined with `&&` / `||`, are decided exactly as interval sets. Anything else waits for the SMT solver; until then such an arm needs a later `_`. This also lets a match on `NonEmpty` skip the `[]` arm.
+- **Built** (branch `unions`): `Ty::Union` normalized by `Checker::union_of`; subsumption in `fits` (used by `expect`: union members, variants into their sum; type arguments stay invariant); `infer_at` passes the expected type through `if` / `match` / blocks / lists / constructors; `pattern` returns the narrowed type and a value set `P`; exhaustiveness and unreachable arms use atoms (`atoms`, `covers`, `missing`, `useful`) with integer intervals in `types::ints`. Interpreter: `value_in` / `shape_fits` for type patterns and `is`, unions in `check_type` and JSON input, impls on variants. Since then (decided with the user): or-patterns; unions inferred for alternatives when no expected type decides; type arguments fit member-wise (values are never shared) except for arguments to `mut` parameters, which must be exact; `!` passes errors into wider error types; length (`len(it)`) and `Float` conditions are decided (`types::reals` tests one point per region); the matched value's written refinement counts (`Coverage.excluded`), taken from variables' declared types (mutable ones too: the interpreter checks every assignment and write-back against the declared type, `Frame::declared`), their fields and function results (`Checker::written`). Narrowing in an arm is skipped for a `mut` variable the arm assigns (`Checker::assigns_to`), so loops stay sound. A `mut` argument's declared refinement must contain the parameter's (`refinement_within`); assignments of literals are checked at compile time (`literal_outside`). Not yet: list lengths other than empty / not empty; conditions beyond constant comparisons (the SMT branch has the pieces, see below).
+
+### Match coverage with the SMT solver (assessed 2026-11-19, not started)
+The `smt-verification` worktree (uncommitted, on old main) already has: symbolic values for parameters with their refinements as facts (`havoc`), `Vc::pattern` turning a pattern into an SMT condition on the matched value, per-arm path conditions in `Expr::Match`, obligations solved with Z3. To decide coverage of undecidable conditions it still needs: (1) an obligation per `match` that some arm holds (the `or` of the arm conditions, under the facts), and one per arm that it can hold (unreachable when proven impossible); (2) the new pattern forms in `Vc::pattern`: type names, `where`, or-patterns, and `Match`'s `as` name (it predates the `unions` branch, so merge first); (3) a policy between `check` and `verify`: `check` would report such a `match` as "needs proof" instead of an error, and `verify` proves it, reports a counterexample, or leaves it runtime-checked (a `no match arm` fault). Floats are not modelled there; the checker's own `reals` covers them.
 
 ### Lambda syntax (done)
 - Replace the Rust-style `|x| body` with a **bare arrow**: `x -> body` and `(a, b) -> body`, with optional parameter types such as `(s: String) -> …`. For a longer body, use a block: `x -> { ... }`.
