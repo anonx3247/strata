@@ -347,6 +347,7 @@ impl Rw<'_> {
                 Pattern::List(items, rest.clone())
             }
             Pattern::Tuple(ps) => Pattern::Tuple(ps.iter().map(|x| self.pat(x)).collect()),
+            Pattern::Or(ps) => Pattern::Or(ps.iter().map(|x| self.pat(x)).collect()),
             Pattern::Cond(c) => {
                 self.push(&["it".into()]);
                 let c = self.expr(c);

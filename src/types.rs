@@ -1748,6 +1748,36 @@ impl<'a> Checker<'a> {
                 self.expect(t, &Ty::Bool, "pattern");
                 (Ty::Bool, P::C(b.to_string(), vec![]))
             }
+            Pattern::Or(ps) => {
+                // each alternative in its own scope; they must bind the same names
+                let mut results = Vec::new();
+                let mut binds: Vec<HashMap<String, Ty>> = Vec::new();
+                for alt in ps {
+                    self.scopes.push(HashMap::new());
+                    results.push(self.pattern(alt, t));
+                    binds.push(self.scopes.pop().unwrap());
+                }
+                let mut names: Vec<&String> = binds[0].keys().collect();
+                names.sort();
+                for (alt, b) in ps.iter().zip(&binds).skip(1) {
+                    let mut other: Vec<&String> = b.keys().collect();
+                    other.sort();
+                    if other != names {
+                        self.err(format!("the alternatives of `{}` must bind the same names (`{}` binds {:?})", crate::printer::pat(p), crate::printer::pat(alt), other));
+                    }
+                }
+                for n in names {
+                    let mut t0 = binds[0][n].clone();
+                    for b in &binds[1..] {
+                        if let Some(t1) = b.get(n) {
+                            t0 = self.join_union(&t0, t1, &format!("`{n}` in `{}`", crate::printer::pat(p)));
+                        }
+                    }
+                    self.bind(n, t0);
+                }
+                let narrowed = self.union_of(results.iter().map(|r| self.resolve(&r.0)).collect());
+                (narrowed, P::Or(results.into_iter().map(|r| r.1).collect()))
+            }
             Pattern::Cond(c) => {
                 self.scopes.push(HashMap::new());
                 self.bind("it", t.clone());
@@ -2001,6 +2031,20 @@ pub enum P {
     Ty(Ty),
     /// These integers (a literal, `where 3 <= it && it <= 5`, `Positive`).
     Ints(ints::Ints),
+    /// Any of these.
+    Or(Vec<P>),
+}
+
+/// Rows with alternatives in their first column become one row per alternative.
+fn expand(rows: &[Vec<P>]) -> Vec<Vec<P>> {
+    let mut out = Vec::new();
+    for r in rows {
+        match &r[0] {
+            P::Or(ps) => out.extend(expand(&ps.iter().map(|p| [vec![p.clone()], r[1..].to_vec()].concat()).collect::<Vec<_>>())),
+            _ => out.push(r.clone()),
+        }
+    }
+    out
 }
 
 #[derive(Clone, PartialEq)]
@@ -2070,7 +2114,7 @@ impl Checker<'_> {
         match p {
             P::Any => Some(any()),
             P::C(name, subs) => (a.key == AtomKey::Ctor(name.clone())).then(|| subs.clone()),
-            P::Lit => None,
+            P::Lit | P::Or(_) => None,
             P::Ints(s) => match a.key {
                 AtomKey::Region(lo, hi) if ints::contains(s, lo, hi) => Some(vec![]),
                 _ => None,
@@ -2135,6 +2179,7 @@ impl Checker<'_> {
         if depth > 12 {
             return None;
         }
+        let rows = &expand(rows);
         // only wildcards here: every value of this column behaves the same
         if rows.iter().all(|r| matches!(r[0], P::Any)) {
             let def: Vec<Vec<P>> = rows.iter().map(|r| r[1..].to_vec()).collect();
@@ -2165,6 +2210,10 @@ impl Checker<'_> {
         if depth > 12 || matches!(q[0], P::Lit) {
             return true;
         }
+        if let P::Or(alts) = &q[0] {
+            return alts.iter().any(|a| self.useful(rows, &[vec![a.clone()], q[1..].to_vec()].concat(), tys, depth));
+        }
+        let rows = &expand(rows);
         if matches!(q[0], P::Any) && rows.iter().all(|r| matches!(r[0], P::Any)) {
             let def: Vec<Vec<P>> = rows.iter().map(|r| r[1..].to_vec()).collect();
             return self.useful(&def, &q[1..], &tys[1..], depth + 1);

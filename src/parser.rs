@@ -974,7 +974,20 @@ impl Parser {
 
     // ---------- patterns ----------
 
+    /// A pattern, or alternatives: `Square | Circle`.
     fn pattern(&mut self) -> R<Pattern> {
+        let first = self.pattern_one()?;
+        if !self.is_sym("|") {
+            return Ok(first);
+        }
+        let mut alts = vec![first];
+        while self.eat_sym("|") {
+            alts.push(self.pattern_one()?);
+        }
+        Ok(Pattern::Or(alts))
+    }
+
+    fn pattern_one(&mut self) -> R<Pattern> {
         match self.peek().clone() {
             Tok::Int(n) => {
                 self.next();

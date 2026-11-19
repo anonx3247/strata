@@ -88,7 +88,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                     CtorPat::None => {}
                 }
             }
-            Pattern::List(ps, _) | Pattern::Tuple(ps) => ps.iter().for_each(|p| pat(p, out, ct)),
+            Pattern::List(ps, _) | Pattern::Tuple(ps) | Pattern::Or(ps) => ps.iter().for_each(|p| pat(p, out, ct)),
             Pattern::Cond(c) => ex(c, out, ct),
             _ => {}
         }

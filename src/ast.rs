@@ -288,6 +288,8 @@ pub enum Pattern {
     Tuple(Vec<Pattern>),
     /// `where 3 <= it && it <= 5`: the values for which the condition holds.
     Cond(Box<Expr>),
+    /// `Square | Circle`, `0 | 1`: any of the alternatives (they bind the same names).
+    Or(Vec<Pattern>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

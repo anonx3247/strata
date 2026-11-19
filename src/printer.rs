@@ -80,6 +80,7 @@ pub fn pat(p: &Pattern) -> String {
         Pattern::Str(s) => format!("{s:?}"),
         Pattern::Bool(b) => b.to_string(),
         Pattern::Cond(c) => format!("where {}", expr(c, 0)),
+        Pattern::Or(ps) => ps.iter().map(pat).collect::<Vec<_>>().join(" | "),
         Pattern::Ctor(c, CtorPat::None) => c.clone(),
         Pattern::Ctor(c, CtorPat::Positional(ps)) => {
             format!("{c}({})", ps.iter().map(pat).collect::<Vec<_>>().join(", "))

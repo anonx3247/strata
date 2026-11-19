@@ -1324,6 +1324,7 @@ impl<'a> Interp<'a> {
     fn matches(&mut self, p: &Pattern, v: &Value, s: &Scope) -> Option<Scope> {
         match (p, v) {
             (Pattern::Wild, _) => Some(s.clone()),
+            (Pattern::Or(ps), v) => ps.iter().find_map(|p| self.matches(p, v, s)),
             (Pattern::Cond(c), v) => (self.eval(c, &extend(s, "it", v.clone())).ok()? == Value::Bool(true)).then(|| s.clone()),
             // a type's name matches the values of that type
             (Pattern::Ctor(c, CtorPat::None), v) if !self.env.ctors.contains_key(c) && self.env.is_type_name(c) => {
