@@ -73,3 +73,18 @@ Still open: **type map as a side panel** instead of a full tab. The user suggest
    These are capabilities (traits) implemented by the runtime, consistent with the decision that there are no effects; their contracts are `assumed`.
 3. **Interop** with Python, TypeScript and Rust using **JSON as the boundary**: generate types and codecs (Pydantic models, zod / TS types, serde structs) from Strata types and contracts.
 4. **Transpilation** to Python / TypeScript later. Rust transpilation is harder without a borrow checker (it would need a GC or reference counting in the generated code), so it has lower priority than LLVM.
+
+### ORM built into the language (decided)
+- Records map directly to tables, building on the automatic JSON serialisation and on types being structural and validated. Refinements become column checks (`CHECK` constraints) and are validated on load. `distinct` ids map to keys.
+- The first backend is SQLite. The database is a capability (a trait), so tests can use an in-memory implementation or `mock`.
+- Queries should be typed (checked against the record's fields), not strings.
+
+### Long-term goal: self-hosting
+The compiler should eventually be written in Strata. Gaps to close first:
+- **Native compilation**: the interpreter is too slow to run a compiler.
+- **Efficient mutation of collections**: in-place updates when a value has a single owner (as in Swift / Koka), instead of copying.
+- **String and byte primitives**: characters, slicing and indexing.
+- **Early `return`, and a `?` operator** to propagate `Result` errors.
+- **A small native runtime**: GC, I/O, and binding to the SMT solver.
+
+Bootstrap plan: write the frontend (lexer, parser, printer) in Strata and test it against the Rust one, then the checker, then compile the Strata compiler with itself and check that its output stops changing (a fixed point).
