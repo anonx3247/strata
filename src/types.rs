@@ -875,9 +875,8 @@ impl<'a> Checker<'a> {
             self.bind(&p.name, t);
             if p.mutable {
                 self.bind(&format!("mut:{}", p.name), Ty::Unit);
-            } else {
-                self.bind_written(&p.name, &p.ty);
             }
+            self.bind_written(&p.name, &p.ty);
         }
         // the result's refinement may mention the parameters
         self.check_refined(&f.ret);
@@ -966,19 +965,115 @@ impl<'a> Checker<'a> {
         None
     }
 
-    /// Which parameters of a named function or trait method are `mut`.
-    fn mut_mask(&self, name: &str) -> Vec<bool> {
+    /// The written type of each `mut` parameter of a named function or trait method.
+    fn mut_mask(&self, name: &str) -> Vec<Option<TypeExpr>> {
         if self.lookup(name).is_some() {
             return vec![];
         }
-        if let Some(f) = self.env.fns.get(name) {
-            return f.params.iter().map(|p| p.mutable).collect();
-        }
-        let tm = self.env.method_trait.get(name).and_then(|t| self.env.traits.get(t)).and_then(|tr| tr.methods.iter().find(|m| m.decl.name == name));
-        tm.map(|m| m.decl.params.iter().map(|p| p.mutable).collect()).unwrap_or_default()
+        let ps = match self.env.fns.get(name) {
+            Some(f) => f.params.clone(),
+            None => {
+                let tm = self.env.method_trait.get(name).and_then(|t| self.env.traits.get(t)).and_then(|tr| tr.methods.iter().find(|m| m.decl.name == name));
+                tm.map(|m| m.decl.params.clone()).unwrap_or_default()
+            }
+        };
+        ps.iter().map(|p| p.mutable.then(|| p.ty.clone())).collect()
     }
 
-    fn call_with(&mut self, fty: Ty, args: &[Expr], what: &str, muts: &[bool]) -> Ty {
+    /// Whether `e` may change the variable `root`: an assignment to it or one of
+    /// its fields, or passing it to a `mut` parameter (or a `mut self` method).
+    fn assigns_to(&self, e: &Expr, root: &str) -> bool {
+        let rooted = |p: &Expr| place_path(p).is_some_and(|q| q == root || q.starts_with(&format!("{root}.")));
+        let any = |es: &[&Expr]| es.iter().any(|x| self.assigns_to(x, root));
+        match e {
+            Expr::Call(f, args) => {
+                let muts = match &**f {
+                    Expr::Var(n) => self.mut_mask(n),
+                    _ => vec![],
+                };
+                args.iter().enumerate().any(|(i, a)| muts.get(i).is_some_and(|m| m.is_some()) && rooted(a)) || self.assigns_to(f, root) || args.iter().any(|a| self.assigns_to(a, root))
+            }
+            Expr::Method(r, m, args) => {
+                let muts = self.mut_mask(m);
+                let all: Vec<&Expr> = std::iter::once(&**r).chain(args.iter()).collect();
+                all.iter().enumerate().any(|(i, a)| muts.get(i).is_some_and(|m| m.is_some()) && rooted(a)) || any(&all)
+            }
+            Expr::Block(stmts, last) => {
+                stmts.iter().any(|s| match s {
+                    Stmt::Assign(p, x) => rooted(p) || self.assigns_to(x, root),
+                    // a new variable of that name: what follows is about the new one
+                    Stmt::Let(Pattern::Bind(n), _, x) | Stmt::Var(n, _, x) if n == root => self.assigns_to(x, root),
+                    Stmt::Let(_, _, x) | Stmt::Var(_, _, x) | Stmt::Expr(x) | Stmt::Assert(x) => self.assigns_to(x, root),
+                    Stmt::While(c, b) | Stmt::For(_, c, b) => self.assigns_to(c, root) || self.assigns_to(b, root),
+                    Stmt::Loop(b) => self.assigns_to(b, root),
+                    Stmt::Break | Stmt::Continue | Stmt::Comment(_) => false,
+                }) || self.assigns_to(last, root)
+            }
+            Expr::Tuple(xs) | Expr::List(xs) => xs.iter().any(|x| self.assigns_to(x, root)),
+            Expr::Ctor(_, args) => match args {
+                CtorArgs::None => false,
+                CtorArgs::Positional(xs) => xs.iter().any(|x| self.assigns_to(x, root)),
+                CtorArgs::Record(fs) => fs.iter().any(|(_, x)| self.assigns_to(x, root)),
+                CtorArgs::Update(b, fs) => self.assigns_to(b, root) || fs.iter().any(|(_, x)| self.assigns_to(x, root)),
+            },
+            Expr::Field(r, _) | Expr::Un(_, r) | Expr::Is(r, _) | Expr::Return(r) | Expr::Try(r, _) => self.assigns_to(r, root),
+            Expr::Bin(_, l, r) => any(&[l, r]),
+            Expr::If(c, t, f) => any(&[c, t, f]),
+            Expr::Match(s, _, arms) => self.assigns_to(s, root) || arms.iter().any(|a| self.assigns_to(&a.body, root)),
+            Expr::Except(x, _, fb) => any(&[x, fb]),
+            Expr::Interp(parts) => parts.iter().any(|p| matches!(p, StrPart::Expr(x) if self.assigns_to(x, root))),
+            // a closure cannot change the enclosing function's variables
+            Expr::Lambda(..) => false,
+            _ => false,
+        }
+    }
+
+    /// Whether a literal is outside a written type's refinement (decided for
+    /// integer, float and string-length refinements).
+    fn literal_outside(&self, w: &TypeExpr, e: &Expr) -> bool {
+        let int = match e {
+            Expr::Int(n) => Some(*n as i128),
+            Expr::Un(UnOp::Neg, x) => match &**x {
+                Expr::Int(n) => Some(-(*n as i128)),
+                _ => None,
+            },
+            _ => None,
+        };
+        match (self.int_refinement(w), int, e) {
+            (Refn::Ints(s), Some(n), _) => !ints::contains(&s, n, n),
+            (Refn::Reals(r), _, Expr::Float(f)) => !r.holds(*f),
+            (Refn::Lens(s), _, Expr::Str(x)) => !ints::contains(&s, x.chars().count() as i128, x.chars().count() as i128),
+            _ => false,
+        }
+    }
+
+    /// Whether every value of `narrow` is a value of `wide`, as far as their
+    /// refinements can be compared (`None`: they cannot be).
+    fn refinement_within(&self, narrow: &TypeExpr, wide: &TypeExpr) -> Option<bool> {
+        // a type parameter (`T`, `Self`) or anything not built on Int, Float,
+        // String or List is left to the runtime check of the write-back
+        if self.base_of(narrow) == Base::Other || self.base_of(narrow) != self.base_of(wide) {
+            return None;
+        }
+        match (self.int_refinement(narrow), self.int_refinement(wide)) {
+            (_, Refn::Plain) => Some(true),
+            (Refn::Plain, Refn::Ints(_) | Refn::Lens(_) | Refn::Reals(_)) => Some(false),
+            (Refn::Ints(a), Refn::Ints(b)) | (Refn::Lens(a), Refn::Lens(b)) => Some(ints::and(&a, &ints::not(&b)).is_empty()),
+            (Refn::Reals(a), Refn::Reals(b)) => {
+                let mut cuts = [a.cuts.clone(), b.cuts.clone()].concat();
+                cuts.sort_by(|x, y| x.partial_cmp(y).unwrap());
+                let mut points: Vec<f64> = cuts.clone();
+                points.extend(cuts.windows(2).map(|w| (w[0] + w[1]) / 2.0));
+                points.extend(cuts.first().map(|c| c - 1.0));
+                points.extend(cuts.last().map(|c| c + 1.0));
+                points.push(0.0);
+                Some(points.iter().all(|x| !a.holds(*x) || b.holds(*x)))
+            }
+            _ => None,
+        }
+    }
+
+    fn call_with(&mut self, fty: Ty, args: &[Expr], what: &str, muts: &[Option<TypeExpr>]) -> Ty {
         let fty = self.resolve(&fty);
         let (ps, r) = match fty {
             Ty::Fn(ps, r) => (ps, *r),
@@ -999,11 +1094,23 @@ impl<'a> Checker<'a> {
         }
         for (i, (p, a)) in ps.iter().zip(args).enumerate() {
             let at = self.infer_with(a, Some(p));
-            if muts.get(i).copied().unwrap_or(false) {
+            if let Some(Some(pw)) = muts.get(i) {
                 // the callee may put any value of its parameter type into the caller's variable
                 if self.unify(p, &at).is_err() {
                     let (want, got) = (self.show(p), self.show(&at));
                     self.err(format!("{what}, argument {}: expected exactly `{want}`, found `{got}` (the parameter is `mut`, so the function can put any `{want}` into the caller's variable)", i + 1));
+                } else if let Some(x) = place_path(a).map(|q| q.split('.').next().unwrap_or("").to_string()) {
+                    // ... including values the variable's own refinement rules out
+                    if let (Expr::Var(_), Some(vw)) = (a, self.written_of(&x)) {
+                        if self.refinement_within(pw, &vw) == Some(false) {
+                            self.err(format!(
+                                "{what}, argument {}: `{x}` is declared `{}`, but the `mut` parameter is `{}`: the function could store a value `{x}` must never hold",
+                                i + 1,
+                                crate::printer::ty(&vw),
+                                crate::printer::ty(pw)
+                            ));
+                        }
+                    }
                 }
             } else {
                 self.expect(p, &at, &format!("{what}, argument {}", i + 1));
@@ -1367,6 +1474,11 @@ impl<'a> Checker<'a> {
                 for a in arms {
                     self.scopes.push(HashMap::new());
                     let (nt, p) = self.pattern(&a.pat, &st);
+                    // narrowing follows the code: an arm that changes the matched variable
+                    // (even later, or on a later pass of a loop) keeps its declared type
+                    let changed = |c: &Self, root: &str| c.lookup(&format!("mut:{root}")).is_some() && c.assigns_to(&a.body, root);
+                    let target = target.clone().filter(|x| name.is_some() || !changed(self, x));
+                    let path = path.clone().filter(|p| !changed(self, p.split('.').next().unwrap_or("")));
                     if let Some(x) = &target {
                         self.bind(x, nt.clone());
                         if name.is_none() {
@@ -1379,8 +1491,7 @@ impl<'a> Checker<'a> {
                             Pattern::Wild | Pattern::Bind(_) => written.clone(),
                             _ => None,
                         };
-                        let mutable = self.lookup(&format!("mut:{x}")).is_some();
-                        if let (Some(w), false) = (arm_written, mutable) {
+                        if let Some(w) = arm_written {
                             self.bind_written(x, &w);
                         }
                     }
@@ -1422,6 +1533,7 @@ impl<'a> Checker<'a> {
                             }
                         }
                         Stmt::Var(n, ann, e) => {
+                            let written = ann.clone();
                             let ann = ann.as_ref().map(|a| self.lower(a, &HashMap::new()));
                             let t = self.infer_with(e, ann.as_ref());
                             if let Some(a) = &ann {
@@ -1429,12 +1541,23 @@ impl<'a> Checker<'a> {
                             }
                             self.bind(n, t);
                             self.bind(&format!("mut:{n}"), Ty::Unit);
+                            if let Some(w) = &written {
+                                self.bind_written(n, w);
+                            }
                         }
                         Stmt::Assign(place, e) => {
                             self.check_place(place, "assign to");
                             let pt = self.end_narrowing(place).unwrap_or_else(|| self.infer(place));
                             let et = self.infer_with(e, Some(&pt));
                             self.expect(&pt, &et, "assignment");
+                            // a literal that breaks the variable's declared refinement
+                            if let Expr::Var(x) = place {
+                                if let Some(w) = self.written_of(x) {
+                                    if self.literal_outside(&w, e) {
+                                        self.err(format!("refinement violated at compile time in assigning `{x}`: {} does not satisfy `{}`", crate::printer::expr(e, 0), crate::printer::ty(&w)));
+                                    }
+                                }
+                            }
                         }
                         Stmt::While(c, b) => {
                             let ct = self.infer(c);
@@ -2025,8 +2148,9 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Remember the written type of an immutable variable (a mutable one can
-    /// change, even later in a loop, so its refinement is not relied on).
+    /// Remember the written type of a variable. A declared type holds for the
+    /// variable's whole life (every assignment is checked against it), so a
+    /// `match` can rely on its refinement.
     fn bind_written(&mut self, x: &str, t: &TypeExpr) {
         self.written.push(t.clone());
         let i = self.written.len() - 1;
@@ -2034,9 +2158,6 @@ impl<'a> Checker<'a> {
     }
 
     fn written_of(&self, x: &str) -> Option<TypeExpr> {
-        if self.lookup(&format!("mut:{x}")).is_some() {
-            return None;
-        }
         match self.lookup(&format!("written:{x}"))? {
             Ty::Rigid(i) => self.written.get(i[1..].parse::<usize>().ok()?).cloned(),
             _ => None,
@@ -2050,9 +2171,6 @@ impl<'a> Checker<'a> {
             Expr::Var(x) => self.written_of(x),
             Expr::Field(r, f) => {
                 let Expr::Var(x) = &**r else { return None };
-                if self.lookup(&format!("mut:{x}")).is_some() {
-                    return None;
-                }
                 let Ty::Con(n, args) = self.resolve(&self.lookup(x)?) else { return None };
                 let td = self.env.types.get(&n)?;
                 let TypeBody::Record(fs) = &td.body else { return None };

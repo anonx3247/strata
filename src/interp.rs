@@ -44,14 +44,35 @@ pub struct Frame {
     name: String,
     /// A cell, so `let mut` variables can be assigned.
     value: std::cell::RefCell<Value>,
+    /// The declared type of a mutable variable: every value assigned to it
+    /// (including a `mut` argument written back) must satisfy it.
+    declared: Option<TypeExpr>,
     parent: Scope,
 }
 pub type Scope = Option<Rc<Frame>>;
 
 impl Frame {
     pub fn new(name: &str, value: Value, parent: Scope) -> Frame {
-        Frame { name: name.to_string(), value: std::cell::RefCell::new(value), parent }
+        Frame { name: name.to_string(), value: std::cell::RefCell::new(value), declared: None, parent }
     }
+}
+
+fn extend_declared(s: &Scope, x: &str, v: Value, t: &TypeExpr) -> Scope {
+    let mut f = Frame::new(x, v, s.clone());
+    f.declared = Some(t.clone());
+    Some(Rc::new(f))
+}
+
+/// The declared type of the innermost variable called `x`, if it has one.
+fn declared(s: &Scope, x: &str) -> Option<TypeExpr> {
+    let mut cur = s;
+    while let Some(f) = cur {
+        if f.name == x {
+            return f.declared.clone();
+        }
+        cur = &f.parent;
+    }
+    None
 }
 
 fn lookup(s: &Scope, x: &str) -> Option<Value> {
@@ -554,7 +575,7 @@ impl<'a> Interp<'a> {
         let mut scope: Scope = None;
         for (p, a) in f.params.iter().zip(args.iter()) {
             self.enforce(&p.ty, a, &format!("argument `{}` of `{name}`", p.name))?;
-            scope = extend(&scope, &p.name, a.clone());
+            scope = if p.mutable { extend_declared(&scope, &p.name, a.clone(), &p.ty) } else { extend(&scope, &p.name, a.clone()) };
         }
         for r in &f.requires {
             if self.eval(r, &scope)? != Value::Bool(true) {
@@ -1006,6 +1027,10 @@ impl<'a> Interp<'a> {
         let Some(base) = lookup(s, x) else { return self.fail(FaultKind::Runtime, format!("no variable `{x}`")) };
         let Some(new) = set_path(base, &path, v) else { return self.fail(FaultKind::Runtime, format!("cannot assign to `{}`", crate::printer::expr(place, 0))) };
         // field types may be refined: the changed value must still be valid
+        // the variable's declared type holds after every assignment
+        if let Some(t) = declared(s, x) {
+            self.enforce(&t, &new, &format!("assigning `{}`", crate::printer::expr(place, 0)))?;
+        }
         if !path.is_empty() {
             let tname = match &new {
                 Value::Record(n, _) => Some(n.clone()),
@@ -1217,7 +1242,10 @@ impl<'a> Interp<'a> {
                             if let Some(t) = ann {
                                 self.enforce(t, &v, "let binding")?;
                             }
-                            sc = extend(&sc, n, v);
+                            sc = match ann {
+                                Some(t) => extend_declared(&sc, n, v, t),
+                                None => extend(&sc, n, v),
+                            };
                         }
                         Stmt::Assign(place, x) => {
                             let v = self.eval(x, &sc)?;

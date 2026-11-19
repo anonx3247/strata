@@ -869,11 +869,19 @@ fn or_patterns_refined_scrutinees_lengths_floats_and_variance() {
         "unreachable match arm `where it <= 0`: no `Positive` matches it",
         "non-exhaustive match on `Float`: `where it == 0.0` is not covered",
         "non-exhaustive match on `String`: `where len(it) <= 3` is not covered",
-        // a mutable variable can change, so its refinement is not relied on
-        "non-exhaustive match on `Int`: `where it <= 0` is not covered",
     ] {
         assert!(out.contains(e), "missing {e:?} in\n{out}");
     }
+    // a declared type holds for a variable's whole life, mutable or not
+    let (ok, out) = check("mut.strata", MUT_REFINED);
+    assert!(!ok);
+    let errors: Vec<&str> = out.lines().filter(|l| l.starts_with("error")).collect();
+    assert_eq!(errors.len(), 2, "{out}");
+    assert!(out.contains("in lit: refinement violated at compile time in assigning `x`: -1 does not satisfy `Positive`"), "{out}");
+    assert!(out.contains("in wb: call to `set_neg`, argument 1: `p` is declared `Positive`, but the `mut` parameter is `Int`"), "{out}");
+    std::fs::write(d.join("mut_run.strata"), "fn a(mut n: Positive) -> Int {\n  n = n - 10\n  n\n}\n").unwrap();
+    let (ok, out) = strata(&["--file", "mut_run.strata", "run", "a", "[3]"], &d, None);
+    assert!(!ok && out.contains("assigning `n`: -7 does not satisfy `Positive`"), "{out}");
     let (ok, out) = check("or_bad.strata", "type Light = | Red | Amber | Green\nfn a(l: Light) -> Bool { match l { Red | Amber => false } }\nfn b(p: (Int, Int)) -> Int { match p { (0, x) | (y, 0) => 1, _ => 2 } }\n");
     assert!(!ok && out.contains("`Green` is not covered") && out.contains("must bind the same names"), "{out}");
     let (ok, out) = check("variance.strata", VARIANCE);
@@ -1003,4 +1011,35 @@ fn outer() -> Result[Int, Err1] {
 fn apply(f: (Circle) -> Shape) -> Int { 1 }
 fn id_shape(s: Shape) -> Circle { Circle { radius: 1 } }
 fn use_apply() -> Int { apply(id_shape) }
+"#;
+
+const MUT_REFINED: &str = r#"fn m(mut n: Positive) -> String {
+  match n { 1 => "one", where it > 1 => "more" }
+}
+fn changes_in_arm(mut n: Positive) -> String {
+  match n {
+    where it > 5 => {
+      n = n - 1
+      match n { where it > 4 => "big", 1 | 2 | 3 | 4 => "small" }
+    },
+    _ => "tiny",
+  }
+}
+fn lit() -> Int {
+  let mut x: Positive = 3
+  x = -1
+  x
+}
+fn set_neg(mut k: Int) -> () { k = -3 }
+fn wb() -> Int {
+  let mut p: Positive = 4
+  set_neg(p)
+  p
+}
+fn bump(mut k: Positive) -> () { k = k + 1 }
+fn wb_ok() -> Int {
+  let mut p: Natural = 1
+  bump(p)
+  p
+}
 "#;
