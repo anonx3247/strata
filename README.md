@@ -2,7 +2,7 @@
 
 An experimental programming language designed for working with agents.
 
-- **Code is a database, not files.** Definitions are stored as syntax trees, addressed by content hash. Text is a *view*, rendered at whatever level of detail you need, and edits are parsed back into the tree.
+- **You work on definitions, not files.** Definitions are syntax trees, identified by content hash. Text is a *view*, rendered at whatever level of detail you need, and edits are parsed back into the tree. The files (one per module, in canonical form) and a log of every change are what git stores.
 - **Every change is checked and atomic.** An edit is committed only if the *whole* codebase still type-checks. The log records whether each change touched an interface or only an implementation, and which definitions depend on it.
 - **Incomplete programs still check.** Typed holes (`?name`) have a goal type, a context and contract obligations, so a sketch made of signatures and contracts can be verified before it is implemented, and each hole is a precise task to hand to an agent.
 - **Constraints live in the types.** Refinement types (`Int where 1 <= it && it <= 99`, `String where matches(it, "...")`), `requires` / `ensures` contracts, exhaustive pattern matching, and algebraic data types.
@@ -23,7 +23,7 @@ strata --file examples/orders.strata check
 strata --file examples/orders.strata test
 strata --file examples/orders.strata verify
 
-# …or in a codebase database
+# …or in a package, where every change is checked and logged
 mkdir /tmp/shop && cd /tmp/shop
 strata init
 strata add path/to/examples/orders.strata
@@ -343,14 +343,17 @@ Every view is Strata text, so an agent can edit what it sees and send it back wi
 ## How it is stored
 
 ```text
-.strata/
-  index.json          name → hash, in order
-  objects/<hash>.json the syntax tree of one definition (content-addressed)
-  log.jsonl           one entry per commit: which definitions changed, interface vs. implementation, which dependents are affected
-  verdicts.json       verification results, keyed by the hash of a definition *and everything it depends on*
+strata.toml           the package: name, exports, dependencies, verifier policy
+main.strata, a/b.strata, …
+                      one file per module, in canonical form (rewritten by `edit`, `add`, `rename`)
+strata.log            one JSON entry per change made through strata: its id, message, which
+                      definitions changed (with their text before and after), interface vs.
+                      implementation, which dependents are affected, and renames
+.strata/verdicts.json local cache (not committed): verification results, keyed by the hash of a
+                      definition *and everything it depends on*
 ```
 
-Because results are keyed by content, `verify` reruns only what is affected by a change.
+The files and `strata.log` are committed. The log is append-only and merges by union (`.gitattributes`), and each entry carries the definitions' text, so it replays without anything else: `strata diff` splits a git commit into the changes made through strata (with their renames), plus a step for edits made by hand. Because verification results are keyed by content, `verify` reruns only what is affected by a change.
 
 ## Verification
 
@@ -410,7 +413,7 @@ The `.strata` files are what you commit.
 
 - **`strata merge-file %O %A %B %P`** is a git merge driver. It pairs each side's definitions with the base's. A definition that only one side changed comes from that side, so edits to two functions never conflict, even when they sit on neighbouring lines. When both sides changed the same definition, its canonical text is merged line by line, and the result is kept only if it parses back into that one definition; otherwise conflict markers go around that definition alone. A rename on one side (a definition gone, and a new one that is the base's after `strata rename`) is applied to the other side, so new calls to the old name follow it. Then the file is type-checked inside its package: an error that neither side had on its own (ours changed a signature, theirs added a call to the old one) fails the merge. Sides that don't parse are merged as text.
 - **`strata setup-git`** points this clone's git config at the driver, and `.gitattributes` has `*.strata merge=strata`, so `git merge` and `git pull` use it.
-- **`strata sync [main]`** merges `origin/main` (or the local branch, without a remote) into the current branch with the driver, whether or not `setup-git` was run. It then runs `strata ci` and commits the merge only if that passes; otherwise the merge is left staged, so you can fix it or `git merge --abort`.
+- **`strata sync [main]`** merges `origin/main` (or the local branch, without a remote) into the current branch with the driver, whether or not `setup-git` was run. Renames that either side made with `strata rename` (read from both sides' `strata.log`) are then applied to the other side's code, in every file: a call that main added to `area` becomes a call to `rect_area` if your branch renamed it, unless a local named `rect_area` would capture it. Then it runs `strata ci` and commits the merge only if that passes; otherwise the merge is left staged, so you can fix it or `git merge --abort`.
 - **`strata ci [--fix]`** is what CI runs: every package and script in the repository checks, every package's exports exist, and every `.strata` file is in canonical format (exactly what `render` prints; `--fix` rewrites it). GitHub doesn't run merge drivers, so `.github/workflows/strata.yml` runs `strata ci` on the pull request's merge ref. Make it a required check, and require branches to be up to date before merging. Then a branch lands only once it was merged with `main` by `strata sync` and the result checks.
 
 ## Source layout

@@ -28,9 +28,10 @@ const USAGE: &str = "strata — an experimental language for working with agents
 
 USAGE: strata [--file F.strata] <command> [args]
 
-Codebase (stored as a database of syntax trees in .strata/):
-  init                         create a codebase in the current directory, and its
-                               strata.toml (named after the folder) if there is none
+Codebase (the package around the current folder: its files, and strata.log, the log of
+every change made through strata, committed with them):
+  init                         make the current folder a package (a strata.toml named
+                               after the folder)
   add <file.strata> [-m MSG]   import definitions from a file (checked, atomic)
   edit [-m MSG] [--rm NAME]..  read definitions from stdin; replace/add them by name;
                                commit only if the whole codebase still checks
@@ -173,7 +174,7 @@ fn load(args: &Args) -> Result<Source, String> {
         return Ok(Source::File(read_sources(f, args.val("--module"))?));
     }
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let root = Codebase::find(&cwd).ok_or("no .strata codebase here (run `strata init`, or pass --file)")?;
+    let root = Codebase::find(&cwd).ok_or("no package here (no strata.toml in this folder or above: run `strata init`, or pass --file)")?;
     Ok(Source::Db(Codebase::open(&root)?))
 }
 
@@ -216,13 +217,8 @@ fn run() -> Result<bool, String> {
         "help" | "--help" => println!("{USAGE}"),
         "init" => {
             let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-            Codebase::init(&cwd)?;
-            println!("initialized empty Strata codebase in {}/", store::DIR);
-            if !cwd.join(package::FILE).exists() {
-                let toml = package::template(&cwd);
-                std::fs::write(cwd.join(package::FILE), &toml).map_err(|e| e.to_string())?;
-                println!("wrote {}: {}", package::FILE, toml.trim());
-            }
+            let toml = Codebase::init(&cwd)?;
+            println!("wrote {}: {}", package::FILE, toml.trim());
         }
         "add" | "edit" => {
             let Source::Db(mut cb) = load(&args)? else { return Err("`add`/`edit` need a codebase".into()) };
@@ -386,7 +382,10 @@ fn run() -> Result<bool, String> {
                     for c in &m.conflicts {
                         eprintln!("strata: {path}: conflict in {c}");
                     }
-                    if ok {
+                    // under `strata sync`, the check waits until every file is merged and the
+                    // logged renames are followed: while git merges, the other files are still ours
+                    let in_sync = std::env::var_os("STRATA_MERGE_BASE").is_some();
+                    if ok && !in_sync {
                         match merge::new_errors(path, &m.text, &ours, &theirs) {
                             Ok(errs) if !errs.is_empty() => {
                                 ok = false;
@@ -445,11 +444,15 @@ fn run() -> Result<bool, String> {
             }
             let exe = std::env::current_exe().map_err(|e| e.to_string())?;
             let attrs = git_out(&["rev-parse", "--git-path", "strata-sync-attributes"])?.trim().to_string();
-            std::fs::write(&attrs, "*.strata merge=strata\n").map_err(|e| format!("{attrs}: {e}"))?;
+            std::fs::write(&attrs, "*.strata merge=strata\nstrata.log merge=union\n").map_err(|e| format!("{attrs}: {e}"))?;
+            let base = git_out(&["merge-base", "HEAD", &target])?.trim().to_string();
             let status = Command::new("git")
                 .args(["-c", "merge.strata.name=strata", "-c"])
                 .arg(format!("merge.strata.driver='{}' merge-file %O %A %B %P", exe.display()))
                 .args(["-c", &format!("core.attributesFile={attrs}"), "merge", "--no-ff", "--no-commit", &target])
+                // the driver reads the renames both sides logged since the merge base
+                .env("STRATA_MERGE_BASE", &base)
+                .env("STRATA_MERGE_THEIRS", &target)
                 .status()
                 .map_err(|e| format!("git: {e}"));
             let _ = std::fs::remove_file(&attrs);
@@ -462,6 +465,11 @@ fn run() -> Result<bool, String> {
                 }
                 eprintln!("resolve them, run `strata ci`, then `git commit` (or `git merge --abort`)");
                 return Ok(false);
+            }
+            // a rename on one side reaches the other side's new calls, in any file
+            let top = std::path::PathBuf::from(git_out(&["rev-parse", "--show-toplevel"])?.trim());
+            for note in merge::follow_renames(&top, &base, &target)? {
+                println!("{note}");
             }
             if !ci(false)? {
                 eprintln!("\nthe merge with {target} doesn't check, so it is staged but not committed:");
@@ -497,7 +505,7 @@ fn run() -> Result<bool, String> {
                 Some(f) => ui::Target::File(f.into()),
                 None => {
                     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-                    ui::Target::Db(Codebase::find(&cwd).ok_or("no .strata codebase here (run `strata init`, or pass --file)")?)
+                    ui::Target::Db(Codebase::find(&cwd).ok_or("no package here (no strata.toml in this folder or above: run `strata init`, or pass --file)")?)
                 }
             };
             ui::serve(target, port)?;

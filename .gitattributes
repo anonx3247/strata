@@ -1,1 +1,3 @@
 *.strata linguist-language=Rust merge=strata
+# append-only, one JSON entry per line: keep both sides' entries
+strata.log merge=union
