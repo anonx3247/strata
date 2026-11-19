@@ -44,7 +44,7 @@ fn is_upper(s: &str) -> bool {
 }
 
 const KEYWORDS: &[&str] = &[
-    "type", "fn", "test", "let", "if", "else", "match", "mock", "where", "mut", "while", "for", "in",
+    "type", "fn", "test", "let", "if", "else", "match", "mock", "where", "mut", "while", "for", "in", "loop", "break", "continue",
     "requires", "ensures", "true", "false", "is", "assert", "trait", "impl", "law", "for", "pub", "use",
 ];
 
@@ -713,6 +713,12 @@ impl Parser {
                 }
             } else if self.eat_kw("assert") {
                 stmts.push(Stmt::Assert(self.expr()?));
+            } else if self.eat_kw("loop") {
+                stmts.push(Stmt::Loop(self.block()?));
+            } else if self.eat_kw("break") {
+                stmts.push(Stmt::Break);
+            } else if self.eat_kw("continue") {
+                stmts.push(Stmt::Continue);
             } else if self.eat_kw("while") {
                 let cond = self.expr_ns()?;
                 stmts.push(Stmt::While(cond, self.block()?));

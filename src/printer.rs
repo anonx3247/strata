@@ -88,7 +88,94 @@ pub fn float(f: f64) -> String {
     if f.fract() == 0.0 && f.abs() < 1e15 { format!("{f:.1}") } else { format!("{f}") }
 }
 
+/// Target line width for rendered code.
+pub const WIDTH: usize = 80;
+
+/// Would this single-line text overflow the width at indent depth `d`?
+/// (12 columns are kept for whatever precedes it on the line, e.g. `let x = `.)
+fn too_long(s: &str, d: usize) -> bool {
+    let mut lines = s.lines();
+    lines.next().map_or(0, |l| l.chars().count()) + 2 * d + 12 > WIDTH || lines.any(|l| l.chars().count() > WIDTH)
+}
+
+/// Items one per line between `open` and `close`, with trailing commas.
+fn broken(open: &str, items: Vec<String>, close: &str, d: usize) -> String {
+    let mut s = format!("{open}\n");
+    for it in items {
+        s += &format!("{}{it},\n", ind(d + 1));
+    }
+    s + &ind(d) + close
+}
+
+/// Render an expression, breaking lines so the result stays within ~80 columns.
 pub fn expr(e: &Expr, d: usize) -> String {
+    let inline = expr_inline(e, d);
+    // a chain whose parts had to break is laid out one item per line
+    let chain = matches!(e, Expr::Method(..) | Expr::Bin(BinOp::And | BinOp::Or | BinOp::Concat, ..));
+    if !too_long(&inline, d) && !(chain && inline.contains('\n')) {
+        return inline;
+    }
+    match e {
+        // a.b().c().d()  ->  one call per line
+        Expr::Method(..) => {
+            let mut chain = Vec::new();
+            let mut cur = e;
+            while let Expr::Method(r, m, es) = cur {
+                chain.push((m, es));
+                cur = r;
+            }
+            if chain.len() < 2 {
+                let (m, es) = chain[0];
+                return format!("{}.{m}{}", wrap(cur, 8, d), broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d));
+            }
+            let mut s = wrap(cur, 8, d);
+            for (m, es) in chain.into_iter().rev() {
+                s += &format!("\n{}.{m}({})", ind(d + 1), args(es, d + 1));
+            }
+            s
+        }
+        Expr::Call(f, es) if !es.is_empty() => format!("{}{}", wrap(f, 8, d), broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d)),
+        Expr::List(es) if !es.is_empty() => broken("[", es.iter().map(|a| expr(a, d + 1)).collect(), "]", d),
+        Expr::Tuple(es) => broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d),
+        Expr::Ctor(c, CtorArgs::Record(fs)) => broken(
+            &format!("{c} {{"),
+            fs.iter()
+                .map(|(f, x)| match x {
+                    Expr::Var(v) if v == f => f.clone(),
+                    _ => format!("{f}: {}", expr(x, d + 1)),
+                })
+                .collect(),
+            "}",
+            d,
+        ),
+        Expr::Ctor(c, CtorArgs::Positional(es)) => format!("{c}{}", broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d)),
+        // |x| long body  ->  body on its own line
+        Expr::Lambda(ps, b) => {
+            let head = if ps.is_empty() { "||".to_string() } else { format!("|{}|", ps.join(", ")) };
+            format!("{head}\n{}{}", ind(d + 1), expr(b, d + 1))
+        }
+        // a && b && c  ->  one operand per line
+        Expr::Bin(op @ (BinOp::And | BinOp::Or | BinOp::Concat), _, _) => {
+            let mut parts = Vec::new();
+            let mut cur = e;
+            while let Expr::Bin(o, l, r) = cur {
+                if o != op {
+                    break;
+                }
+                parts.push(r);
+                cur = l;
+            }
+            let mut s = wrap(cur, prec(e), d + 1);
+            for p in parts.into_iter().rev() {
+                s += &format!("\n{}{} {}", ind(d + 1), op.symbol(), wrap(p, prec(e) + 1, d + 1));
+            }
+            s
+        }
+        _ => inline,
+    }
+}
+
+fn expr_inline(e: &Expr, d: usize) -> String {
     match e {
         Expr::Int(n) => n.to_string(),
         Expr::Float(f) => float(*f),
@@ -177,6 +264,9 @@ pub fn block(e: &Expr, d: usize) -> String {
             },
             Stmt::Assign(p, e) => format!("{} = {}", expr(p, d + 1), expr(e, d + 1)),
             Stmt::While(c, b) => format!("while {} {}", expr(c, d + 1), block(b, d + 1)),
+            Stmt::Loop(b) => format!("loop {}", block(b, d + 1)),
+            Stmt::Break => "break".into(),
+            Stmt::Continue => "continue".into(),
             Stmt::For(p, it, b) => format!("for {} in {} {}", pat(p), expr(it, d + 1), block(b, d + 1)),
             Stmt::Expr(e) => expr(e, d + 1),
             Stmt::Assert(e) => format!("assert {}", expr(e, d + 1)),
@@ -198,7 +288,14 @@ pub fn type_decl(t: &TypeDecl) -> String {
     }
     match &t.body {
         TypeBody::Alias(a) => s += &ty(a),
-        TypeBody::Record(fs) => s += &format!("{{ {} }}", fields(fs)),
+        TypeBody::Record(fs) => {
+            let one = format!("{{ {} }}", fields(fs));
+            if s.chars().count() + one.chars().count() > WIDTH {
+                s += &broken("{", fs.iter().map(|f| format!("{}: {}", f.name, ty(&f.ty))).collect(), "}", 0);
+            } else {
+                s += &one;
+            }
+        }
         TypeBody::Sum(vs) => {
             for v in vs {
                 s += "\n  | ";
@@ -259,7 +356,13 @@ pub fn trait_decl(t: &TraitDecl) -> String {
         }
     }
     for l in &t.laws {
-        s += &format!("  law {}({}): {}\n", l.name, param_list(&l.params), expr(&l.body, 1));
+        let head = format!("  law {}({}):", l.name, param_list(&l.params));
+        let body = expr(&l.body, 2);
+        if head.chars().count() + 1 + body.lines().next().map_or(0, |x| x.chars().count()) > WIDTH {
+            s += &format!("{head}\n    {body}\n");
+        } else {
+            s += &format!("{head} {body}\n");
+        }
     }
     s + "}"
 }
@@ -284,6 +387,13 @@ pub fn impl_decl(i: &ImplDecl) -> String {
 pub fn fn_signature(f: &FnDecl) -> String {
     let tp = bounded(&f.type_params, &f.bounds);
     let mut s = format!("fn {}{}({}) -> {}", f.name, tp, param_list(&f.params), ty(&f.ret));
+    // keep 2 columns for an enclosing `module { }` block
+    if s.chars().count() > WIDTH - 2 && !f.params.is_empty() {
+        let ps: Vec<String> = param_list(&f.params).split(", ").map(|p| p.to_string()).collect();
+        // split(", ") is safe only when no parameter type itself contains ", "
+        let ps = if ps.len() == f.params.len() { ps } else { f.params.iter().map(|p| param_list(std::slice::from_ref(p))).collect() };
+        s = format!("fn {}{}{} -> {}", f.name, tp, broken("(", ps, ")", 0), ty(&f.ret));
+    }
     for r in &f.requires {
         s += &format!("\n  requires {}", expr(r, 1));
     }
@@ -302,7 +412,23 @@ pub fn fn_decl(f: &FnDecl) -> String {
 }
 
 pub fn doc(d: &Decl) -> String {
-    d.doc.iter().map(|l| format!("/// {l}\n")).collect()
+    // long doc lines are re-wrapped at word boundaries to fit the width
+    let mut out = String::new();
+    for l in &d.doc {
+        let mut line = String::new();
+        for w in l.split(' ') {
+            if !line.is_empty() && line.chars().count() + 1 + w.chars().count() > WIDTH - 6 {
+                out += &format!("/// {line}\n");
+                line.clear();
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(w);
+        }
+        out += &format!("/// {line}\n");
+    }
+    out
 }
 
 /// Full (L3) rendering of a declaration.

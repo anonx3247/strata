@@ -148,6 +148,8 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                             go(a, out);
                             go(b, out);
                         }
+                        Stmt::Loop(b) => go(b, out),
+                        Stmt::Break | Stmt::Continue => {}
                         Stmt::For(p, a, b) => {
                             pat(p, out, ct);
                             go(a, out);

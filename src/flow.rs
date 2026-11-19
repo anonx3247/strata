@@ -102,6 +102,8 @@ impl Outliner<'_> {
                             self.walk(a, out);
                             self.walk(b, out);
                         }
+                        Stmt::Loop(b) => self.walk(b, out),
+                        Stmt::Break | Stmt::Continue => {}
                     }
                 }
                 self.walk(last, out);

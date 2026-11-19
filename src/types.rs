@@ -337,6 +337,8 @@ struct Checker<'a> {
     pending: Vec<(Ty, String, Vec<Ty>, String)>,
     /// Scopes below this index belong outside the closure being checked.
     lambda_floor: usize,
+    /// How many loops enclose the code being checked (for `break`/`continue`).
+    loops: usize,
 }
 
 impl<'a> Checker<'a> {
@@ -933,7 +935,9 @@ impl<'a> Checker<'a> {
                     self.bind(p, t.clone());
                 }
                 let floor = std::mem::replace(&mut self.lambda_floor, self.scopes.len() - 1);
+                let loops = std::mem::take(&mut self.loops);
                 let r = self.infer(body);
+                self.loops = loops;
                 self.lambda_floor = floor;
                 self.scopes.pop();
                 Ty::Fn(pts, Box::new(r))
@@ -1046,7 +1050,19 @@ impl<'a> Checker<'a> {
                         Stmt::While(c, b) => {
                             let ct = self.infer(c);
                             self.expect(&Ty::Bool, &ct, "while condition");
+                            self.loops += 1;
                             self.infer(b);
+                            self.loops -= 1;
+                        }
+                        Stmt::Loop(b) => {
+                            self.loops += 1;
+                            self.infer(b);
+                            self.loops -= 1;
+                        }
+                        Stmt::Break | Stmt::Continue => {
+                            if self.loops == 0 {
+                                self.err(format!("`{}` outside a loop", if matches!(s, Stmt::Break) { "break" } else { "continue" }));
+                            }
                         }
                         Stmt::For(p, it, b) => {
                             let itt = self.infer(it);
@@ -1065,7 +1081,9 @@ impl<'a> Checker<'a> {
                             };
                             self.scopes.push(HashMap::new());
                             self.pattern(p, &el);
+                            self.loops += 1;
                             self.infer(b);
+                            self.loops -= 1;
                             self.scopes.pop();
                         }
                         Stmt::Expr(e) => {
@@ -1486,6 +1504,7 @@ pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<String, TypeExpr>>
         bounds: HashMap::new(),
         pending: Vec::new(),
         lambda_floor: 0,
+        loops: 0,
     };
     let vars: HashMap<String, Ty> = f.type_params.iter().map(|p| (p.clone(), c.fresh())).collect();
     let bounded: Vec<&Bound> = f.bounds.iter().collect();
@@ -1558,6 +1577,7 @@ pub fn check(prog: &Program) -> CheckReport {
             bounds: HashMap::new(),
             pending: Vec::new(),
             lambda_floor: 0,
+            loops: 0,
         };
         let mut obligations = Vec::new();
         match &d.kind {

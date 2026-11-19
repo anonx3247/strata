@@ -233,3 +233,21 @@ fn procedural_mutation_is_explicit() {
     let (ok, out) = strata(&["--file", "e.strata", "check"], &d, None);
     assert!(!ok && out.contains("`x`: it is not mutable") && out.contains("a closure cannot change `y`"), "{out}");
 }
+
+#[test]
+fn loops_chains_and_80_columns() {
+    let d = tmp("fmt");
+    std::fs::write(
+        d.join("l.strata"),
+        "fn steps(start: Positive) -> Natural {\n  let mut n = start\n  let mut k = 0\n  loop {\n    if n == 1 { break }\n    n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 }\n    k = k + 1\n  }\n  k\n}\n\
+         fn top(xs: List[Int]) -> Int {\n  xs\n    .filter(|x| x > 0)\n    .sort()\n    .reverse()\n    .take(3)\n    .sum()\n}\n\
+         test \"t\" {\n  assert steps(6) == 8\n  assert top([5, -1, 9, 2, 7]) == 21\n}\n",
+    )
+    .unwrap();
+    let (ok, out) = strata(&["--file", "l.strata", "test"], &d, None);
+    assert!(ok, "{out}");
+    let ex = format!("{}/examples/tasks", env!("CARGO_MANIFEST_DIR"));
+    let (_, r) = strata(&["--file", &ex, "render"], &d, None);
+    let long = r.lines().filter(|l| l.chars().count() > 82).count();
+    assert!(long <= 1, "rendered lines over 80 columns: {long}");
+}

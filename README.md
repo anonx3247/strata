@@ -205,7 +205,17 @@ fn total(lines: List[Line]) -> Natural {
 fn restock(mut line: Line, extra: Int) -> () { line.qty = line.qty + extra }   // changes the caller's variable
 ```
 
-Procedural code is normal Strata. Variables are immutable unless declared `let mut`. `while` and `for` loops are available, and fields can be assigned (`line.qty = …`). Mutation is always *visible*:
+Procedural code is normal Strata: `loop { … }` repeats until `break`, and `continue` skips to the next iteration. Method chains can be split across lines:
+
+```
+let best = scores
+  .filter(|s| s > 0)
+  .sort()
+  .reverse()
+  .take(3)
+```
+
+ Variables are immutable unless declared `let mut`. `while` and `for` loops are available, and fields can be assigned (`line.qty = …`). Mutation is always *visible*:
 - a function that changes an argument declares it `mut`, and the caller must pass a mutable variable, which is updated when the call returns;
 - a method that changes its receiver takes `mut self`.
 
@@ -236,6 +246,8 @@ All values are immutable (`insert` returns a new dict). Dicts and sets are kept 
 | `--level 1` | interfaces only: types, traits, signatures and contracts |
 | `--level 2` | an outline: L1 plus a one-line summary of each body |
 | `--level 3` | full source; `render` output parses back to the same tree |
+
+All rendered code is formatted to about 80 columns: long argument lists, record literals, method chains, `&&` / `||` / `++` chains, parameter lists and doc comments are broken across lines.
 
 Selectors: `name`, `prefix*`, `slice:Name` (Name, what it uses, and what uses it), or a comma-separated combination.
 Every view is Strata text, so an agent can edit what it sees and send it back with `strata edit`.

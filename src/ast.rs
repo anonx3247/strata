@@ -288,6 +288,10 @@ pub enum Stmt {
     While(Expr, Expr),
     /// `for pattern in xs { ... }`
     For(Pattern, Expr, Expr),
+    /// `loop { ... }`: repeat until `break`
+    Loop(Expr),
+    Break,
+    Continue,
     Expr(Expr),
     Assert(Expr),
 }

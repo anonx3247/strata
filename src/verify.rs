@@ -66,6 +66,8 @@ fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
                         w(a);
                         w(b)
                     }
+                    Stmt::Loop(b) => w(b),
+                    Stmt::Break | Stmt::Continue => {}
                 }
             }
             w(last)

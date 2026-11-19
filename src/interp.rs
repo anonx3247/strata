@@ -111,6 +111,9 @@ pub enum FaultKind {
     Assert,
     /// Arithmetic, missing handler, etc.
     Runtime,
+    /// Control flow, caught by the enclosing loop.
+    Break,
+    Continue,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -817,6 +820,16 @@ impl<'a> Interp<'a> {
 
     // ---------------- evaluation ----------------
 
+    /// Run one iteration; `Ok(true)` means the loop should stop (`break`).
+    fn loop_body(&mut self, b: &Expr, s: &Scope) -> R<bool> {
+        match self.eval(b, s) {
+            Ok(_) => Ok(false),
+            Err(f) if f.kind == FaultKind::Break => Ok(true),
+            Err(f) if f.kind == FaultKind::Continue => Ok(false),
+            Err(f) => Err(f),
+        }
+    }
+
     /// After a call: copy the final values of `mut` parameters back into the
     /// caller's variables.
     fn write_back(&mut self, places: &[&Expr], s: &Scope) -> R<()> {
@@ -1056,9 +1069,25 @@ impl<'a> Interp<'a> {
                                 if n > 1_000_000 {
                                     return self.fail(FaultKind::Runtime, "`while` ran more than 1,000,000 times");
                                 }
-                                self.eval(b, &sc)?;
+                                if self.loop_body(b, &sc)? {
+                                    break;
+                                }
                             }
                         }
+                        Stmt::Loop(b) => {
+                            let mut n = 0u64;
+                            loop {
+                                n += 1;
+                                if n > 1_000_000 {
+                                    return self.fail(FaultKind::Runtime, "`loop` ran more than 1,000,000 times without `break`");
+                                }
+                                if self.loop_body(b, &sc)? {
+                                    break;
+                                }
+                            }
+                        }
+                        Stmt::Break => return Err(Fault { kind: FaultKind::Break, msg: "break".into(), stack: vec![] }),
+                        Stmt::Continue => return Err(Fault { kind: FaultKind::Continue, msg: "continue".into(), stack: vec![] }),
                         Stmt::For(p, it, b) => {
                             let items = match self.eval(it, &sc)? {
                                 Value::List(xs) | Value::Set(xs) => xs,
@@ -1069,7 +1098,9 @@ impl<'a> Interp<'a> {
                                 let Some(s2) = self.matches(p, &item, &sc) else {
                                     return self.fail(FaultKind::Runtime, format!("for-loop pattern did not match {}", to_json(&item)));
                                 };
-                                self.eval(b, &s2)?;
+                                if self.loop_body(b, &s2)? {
+                                    break;
+                                }
                             }
                         }
                         Stmt::Expr(x) => {

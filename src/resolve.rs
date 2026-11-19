@@ -356,6 +356,9 @@ impl Rw<'_> {
                         }
                         Stmt::Assign(p, x) => Stmt::Assign(self.expr(p), self.expr(x)),
                         Stmt::While(c, b) => Stmt::While(self.expr(c), self.expr(b)),
+                        Stmt::Loop(b) => Stmt::Loop(self.expr(b)),
+                        Stmt::Break => Stmt::Break,
+                        Stmt::Continue => Stmt::Continue,
                         Stmt::For(p, it, b) => {
                             let it = self.expr(it);
                             self.push(&[]);
