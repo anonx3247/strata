@@ -115,6 +115,8 @@ pub struct Interp<'a> {
     /// Every effect operation performed: (effect.op, args, result)
     pub effect_log: Vec<Json>,
     depth: usize,
+    /// compiled regexes for `matches`, which refinements call constantly
+    regexes: HashMap<String, regex::Regex>,
 }
 
 fn short(c: &str) -> &str {
@@ -126,25 +128,23 @@ fn canon(v: &Value) -> String {
 }
 
 pub fn make_dict(pairs: Vec<(Value, Value)>) -> Value {
-    let mut out: Vec<(Value, Value)> = Vec::new();
+    // stable sort by key, then keep the last value per key (later entries win, like Python's dict())
+    let mut pairs = pairs;
+    pairs.sort_by(|a, b| compare(&a.0, &b.0));
+    let mut out: Vec<(Value, Value)> = Vec::with_capacity(pairs.len());
     for (k, v) in pairs {
-        match out.iter_mut().find(|(k2, _)| *k2 == k) {
-            Some(slot) => slot.1 = v, // later entries win, like Python's dict()
-            None => out.push((k, v)),
+        match out.last_mut() {
+            Some(last) if last.0 == k => last.1 = v,
+            _ => out.push((k, v)),
         }
     }
-    out.sort_by(|a, b| compare(&a.0, &b.0));
     Value::Dict(out)
 }
 
 pub fn make_set(items: Vec<Value>) -> Value {
-    let mut out: Vec<Value> = Vec::new();
-    for x in items {
-        if !out.contains(&x) {
-            out.push(x);
-        }
-    }
+    let mut out = items;
     out.sort_by(compare);
+    out.dedup();
     Value::Set(out)
 }
 
@@ -220,6 +220,7 @@ impl<'a> Interp<'a> {
             generator: Gen::new(seed),
             effect_log: vec![],
             depth: 0,
+            regexes: HashMap::new(),
         }
     }
 
@@ -792,8 +793,11 @@ impl<'a> Interp<'a> {
             },
             "matches" => {
                 let (Str(s), Str(re)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
-                let re = regex::Regex::new(&format!("^(?:{re})$")).map_err(|e| fault(FaultKind::Runtime, format!("bad regex: {e}")))?;
-                Bool(re.is_match(&s))
+                if !self.regexes.contains_key(&re) {
+                    let compiled = regex::Regex::new(&format!("^(?:{re})$")).map_err(|e| fault(FaultKind::Runtime, format!("bad regex: {e}")))?;
+                    self.regexes.insert(re.clone(), compiled);
+                }
+                Bool(self.regexes[&re].is_match(&s))
             }
             "starts_with" => {
                 let (Str(s), Str(p)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };

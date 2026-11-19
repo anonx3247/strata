@@ -3,66 +3,64 @@
 use core.*
 use memory.*
 
-// ─────────────────────── example task family: print ──────────────────────
-
 pub type PrintJob = { message: String, fail_times: Natural }
 
 pub type Boom = { reason: String }
 
-/// Where the print worker writes. A handler decides: stdout, a log, a test buffer.
-pub effect Console {
-  fn print(line: String) -> ()
+/// Where the print worker writes. Writing returns the console's next state.
+pub trait Console {
+  fn print(self, line: String) -> Self
 }
 
-/// Fresh task ids. In production this would be a uuid4 source; in tests a counter.
-pub effect Ids {
-  fn fresh() -> TaskId
+/// A console that keeps the lines in memory.
+pub type Log = { lines: List[String] }
+
+impl Console for Log {
+  fn print(self, line: String) -> Self { Log { lines: push(self.lines, line) } }
 }
 
-/// The example producer: a fixed batch of five jobs; job #3 fails once.
-pub fn print_jobs() -> List[Task[PrintJob]] / {Ids} {
-  range(0, 5).map(|i| Task {
-    id: Ids.fresh(),
-    kind: "print",
-    payload: PrintJob { message: "job #" ++ to_string(i), fail_times: if i == 3 { 1 } else { 0 } },
-  })
+/// The example producer: `count` jobs; job #3 fails once.
+pub type PrintProducer = { count: Natural }
+
+impl Producer[PrintJob] for PrintProducer {
+  fn discover(self) -> List[Task[PrintJob]] {
+    range(0, self.count).map(|i| Task {
+      id: "task-" ++ to_string(i),
+      kind: "print",
+      payload: PrintJob { message: "job #" ++ to_string(i), fail_times: if i == 3 { 1 } else { 0 } },
+    })
+  }
 }
 
-/// The example worker: prints, and fails the first `fail_times` attempts.
-pub fn print_worker(attempts: List[TaskAttempt[PrintJob]]) -> List[TaskResult[PrintJob, Boom]] / {Console} {
-  attempts.map(|a| {
-    Console.print("[attempt " ++ to_string(a.attempt) ++ "] " ++ a.task.payload.message)
-    if a.attempt <= a.task.payload.fail_times {
-      Failed { task: a.task, error: Boom { reason: "boom" } }
-    } else {
-      Succeeded { task: a.task }
-    }
-  })
+/// The example worker: prints to the console it carries, and fails the
+/// first `fail_times` attempts of each job.
+pub type PrintWorker = { console: Console }
+
+impl Worker[PrintJob, Boom] for PrintWorker {
+  fn run(self, attempts: List[TaskAttempt[PrintJob]]) -> (Self, List[TaskResult[PrintJob, Boom]]) {
+    let console = fold(attempts, self.console, |c, a| c.print("[attempt " ++ to_string(a.attempt) ++ "] " ++ a.task.payload.message))
+    let results = attempts.map(|a| {
+      if a.attempt <= a.task.payload.fail_times {
+        Failed { task: a.task, error: Boom { reason: "boom" } }
+      } else {
+        Succeeded { task: a.task }
+      }
+    })
+    (PrintWorker { console }, results)
+  }
 }
 
 pub type DemoReport = { enqueued: Int, batches: Int, log: List[String], tasks: List[String] }
 
-/// The reference's producer + worker entrypoints, wired to the in-memory
-/// backend. Only the `Queue` handler would change for SQLite or SQS.
+/// The reference's producer + worker entrypoints with the in-memory backend.
+/// For SQLite or SQS, only the queue value passed in would change.
 pub fn demo() -> DemoReport {
   let policy = TaskPolicy { max_workers: 4, tasks_per_worker: 2, retries: 3 }
-  handle {
-    let enqueued = handle run_producer() with Producer { discover() => print_jobs() }
-    let batches = handle drain(policy, 100) with Worker { run(attempts) => print_worker(attempts) }
-    DemoReport { enqueued, batches, log: [], tasks: [] }
+  let (queue, enqueued) = run_producer(empty_queue(policy), PrintProducer { count: 5 })
+  let (queue2, worker, batches) = drain(queue, PrintWorker { console: Log { lines: [] } }, policy, 100)
+  let log = match worker.console {
+    Log { lines } => lines,
+    _ => [],
   }
-  with Ids(next = 0) {
-    fresh() => Resume { value: "task-" ++ to_string(next), state: next + 1 },
-  }
-  with Console(lines = []) {
-    print(line) => Resume { value: (), state: push(lines, line) },
-    return(report) => DemoReport { ..report, log: lines },
-  }
-  with Queue(q = empty_queue(policy)) {
-    enqueue(tasks) => mem_enqueue(q, tasks),
-    claim(limit) => mem_claim(q, limit),
-    record(results) => mem_record(q, results),
-    release(attempts) => mem_release(q, attempts),
-    return(report) => DemoReport { ..report, tasks: describe(q) },
-  }
+  DemoReport { enqueued, batches, log, tasks: describe(queue2) }
 }

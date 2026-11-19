@@ -55,14 +55,14 @@ fn static_errors_are_reported() {
     let src = std::fs::read_to_string(example()).unwrap()
         + r#"
 fn status(o: Order) -> String { match o { Pending { .. } => "p", Shipped { .. } => "s" } }
-fn sneaky(id: OrderId) -> Bool { Db.load(id) is Some }
+fn sneaky(id: OrderId) -> Bool { id.load(id) is Some }
 fn bad_qty() -> Line { Line { sku: "x", qty: 1200, unit_price: 5 } }
 "#;
     std::fs::write(d.join("bad.strata"), src).unwrap();
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok);
     assert!(out.contains("`Cancelled { .. }` is not covered"), "{out}");
-    assert!(out.contains("neither declared by `sneaky`"), "{out}");
+    assert!(out.contains("`String` does not implement `Db`"), "{out}");
     assert!(out.contains("refinement violated at compile time"), "{out}");
 }
 

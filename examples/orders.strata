@@ -18,10 +18,31 @@ type ShipError =
   | NotFound
   | NotPending
 
-/// Persistent storage for orders.
-effect Db {
-  fn load(id: OrderId) -> Option[Order]
-  fn save(o: Order) -> ()
+/// Persistent storage for orders. Saving returns the store's next state.
+trait Db {
+  fn load(self, id: OrderId) -> Option[Order]
+  fn save(self, o: Order) -> Self
+}
+
+/// A store holding a single order: enough for tests, and it records saves.
+type OneOrder = { order: Option[Order] }
+
+impl Db for OneOrder {
+  fn load(self, id: OrderId) -> Option[Order] {
+    match self.order {
+      Some(o) => if order_id(o) == id { Some(o) } else { None },
+      None => None,
+    }
+  }
+  fn save(self, o: Order) -> Self { OneOrder { order: Some(o) } }
+}
+
+fn order_id(o: Order) -> OrderId {
+  match o {
+    Pending { id, .. } => id,
+    Shipped { id, .. } => id,
+    Cancelled { id, .. } => id,
+  }
 }
 
 fn line_total(l: Line) -> Cents
@@ -43,17 +64,17 @@ fn discount(amount: Cents) -> Cents
   if amount >= 10000 { amount - amount / 10 } else { amount }
 }
 
-fn ship(id: OrderId, tracking: String) -> Result[Order, ShipError] / {Db}
-  ensures match it { Ok(o) => o is Shipped, Err(_) => true }
+/// Works with any `Db`: pass the real one in production, a fake in tests.
+fn ship[D: Db](db: D, id: OrderId, tracking: String) -> (D, Result[Order, ShipError])
+  ensures match it.1 { Ok(o) => o is Shipped, Err(_) => true }
 {
-  match Db.load(id) {
-    None => Err(NotFound),
+  match db.load(id) {
+    None => (db, Err(NotFound)),
     Some(Pending { id, lines }) => {
       let o = Shipped { id, lines, tracking }
-      Db.save(o)
-      Ok(o)
+      (db.save(o), Ok(o))
     }
-    Some(_) => Err(NotPending),
+    Some(_) => (db, Err(NotPending)),
   }
 }
 
@@ -63,25 +84,22 @@ fn refund(o: Order) -> Cents
   ensures it >= 0
   = ?refund_policy
 
-test "shipping a pending order" {
+test "shipping a pending order saves it as shipped" {
   let line = Line { sku: "tea", qty: 2, unit_price: 450 }
-  let r = handle ship("ord_abc123", "TRK1") with Db {
-    load(id) => Some(Pending { id, lines: [line] }),
-    save(o) => (),
-  }
+  let db = OneOrder { order: Some(Pending { id: "ord_abc123", lines: [line] }) }
+  let (db2, r) = ship(db, "ord_abc123", "TRK1")
   assert r is Ok
+  assert db2.order == Some(Shipped { id: "ord_abc123", lines: [line], tracking: "TRK1" })
 }
 
-test "shipping twice is rejected" {
-  let r = handle ship("ord_abc123", "TRK1") with Db {
-    load(id) => Some(Cancelled { id, reason: "fraud" }),
-    save(o) => (),
-  }
+test "shipping a cancelled order is rejected" {
+  let db = OneOrder { order: Some(Cancelled { id: "ord_abc123", reason: "fraud" }) }
+  let (_, r) = ship(db, "ord_abc123", "TRK1")
   assert r == Err(NotPending)
 }
 
-test "auto-mocked storage never breaks ship's contract" {
-  let r = handle ship("ord_zzz999", "TRK9") with mock Db
+test "a mocked store never breaks ship's contract" {
+  let (_, r) = ship(mock Db, "ord_zzz999", "TRK9")
   assert r is Ok || r is Err
 }
 

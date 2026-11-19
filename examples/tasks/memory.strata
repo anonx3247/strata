@@ -1,5 +1,5 @@
 // tasks/memory — the in-memory backend: the reference SQLite semantics as a
-// pure state machine, used through `core`'s public contract only.
+// pure state machine implementing `core`'s `Queue` trait.
 
 use core.*
 
@@ -28,7 +28,7 @@ pub type MemQueue[P, E] = { policy: TaskPolicy, entries: List[Entry[P]], history
     && all(it.entries, |e| e.status is Pending ==> e.attempts < max_attempts(it.policy))
 
 fn unique_ids[P](entries: List[Entry[P]]) -> Bool {
-  all(entries, |e| count(entries, |o| o.task.id == e.task.id) == 1)
+  len(set(entries.map(|e| e.task.id))) == len(entries)
 }
 
 pub fn empty_queue[P, E](policy: TaskPolicy) -> MemQueue[P, E] {
@@ -50,26 +50,27 @@ fn attempts_of[P, E](q: MemQueue[P, E], id: TaskId) -> Int {
 }
 
 /// INSERT OR IGNORE: tasks whose id is already known are skipped.
-pub fn mem_enqueue[P, E](q: MemQueue[P, E], tasks: List[Task[P]]) -> Resume[Int, MemQueue[P, E]]
-  ensures 0 <= it.value && it.value <= len(tasks)
-  ensures len(it.state.entries) == len(q.entries) + it.value
+pub fn mem_enqueue[P, E](q: MemQueue[P, E], tasks: List[Task[P]]) -> (MemQueue[P, E], Int)
+  ensures 0 <= it.1 && it.1 <= len(tasks)
+  ensures len(it.0.entries) == len(q.entries) + it.1
 {
-  fold(tasks, Resume { value: 0, state: q }, |acc, t| {
-    if any(acc.state.entries, |e| e.task.id == t.id) {
+  fold(tasks, (q, 0), |acc, t| {
+    let (s, n) = acc
+    if any(s.entries, |e| e.task.id == t.id) {
       acc
     } else {
       let fresh = Entry { task: t, status: Pending, attempts: 0 }
-      Resume { value: acc.value + 1, state: MemQueue { ..acc.state, entries: push(acc.state.entries, fresh) } }
+      (MemQueue { ..s, entries: push(s.entries, fresh) }, n + 1)
     }
   })
 }
 
 /// Claim up to `limit` pending tasks with attempts left, oldest first.
-pub fn mem_claim[P, E](q: MemQueue[P, E], limit: Positive) -> Resume[List[TaskAttempt[P]], MemQueue[P, E]]
-  ensures len(it.value) <= limit
-  ensures all(it.value, |a| status_of(q, a.task.id) == Some(Pending))
-  ensures all(it.value, |a| status_of(it.state, a.task.id) == Some(Running))
-  ensures all(it.value, |a| a.attempt == attempts_of(q, a.task.id) + 1)
+pub fn mem_claim[P, E](q: MemQueue[P, E], limit: Positive) -> (MemQueue[P, E], List[TaskAttempt[P]])
+  ensures len(it.1) <= limit
+  ensures all(it.1, |a| status_of(q, a.task.id) == Some(Pending))
+  ensures all(it.1, |a| status_of(it.0, a.task.id) == Some(Running))
+  ensures all(it.1, |a| a.attempt == attempts_of(q, a.task.id) + 1)
 {
   let max = max_attempts(q.policy)
   let chosen = take(filter(q.entries, |e| e.status is Pending && e.attempts < max), limit)
@@ -77,18 +78,15 @@ pub fn mem_claim[P, E](q: MemQueue[P, E], limit: Positive) -> Resume[List[TaskAt
   let entries = q.entries.map(|e| {
     if contains(ids, e.task.id) { Entry { ..e, status: Running, attempts: e.attempts + 1 } } else { e }
   })
-  Resume {
-    value: chosen.map(|e| TaskAttempt { task: e.task, attempt: e.attempts + 1 }),
-    state: MemQueue { ..q, entries },
-  }
+  (MemQueue { ..q, entries }, chosen.map(|e| TaskAttempt { task: e.task, attempt: e.attempts + 1 }))
 }
 
 /// Failures go back to Pending until attempts run out, then become Exhausted;
 /// successes and skips are Done. Every attempt is kept in the history.
-pub fn mem_record[P, E](q: MemQueue[P, E], results: List[TaskResult[P, E]]) -> Resume[(), MemQueue[P, E]]
+pub fn mem_record[P, E](q: MemQueue[P, E], results: List[TaskResult[P, E]]) -> MemQueue[P, E]
   requires all(results, |r| status_of(q, task_of(r).id) == Some(Running))
-  ensures all(results, |r| settled(it.state, r))
-  ensures len(it.state.history) == len(q.history) + len(results)
+  ensures all(results, |r| settled(it, r))
+  ensures len(it.history) == len(q.history) + len(results)
 {
   let max = max_attempts(q.policy)
   let entries = q.entries.map(|e| {
@@ -99,7 +97,7 @@ pub fn mem_record[P, E](q: MemQueue[P, E], results: List[TaskResult[P, E]]) -> R
     }
   })
   let rows = results.map(|r| Row { attempt: attempts_of(q, task_of(r).id), result: r })
-  Resume { value: (), state: MemQueue { ..q, entries, history: q.history ++ rows } }
+  MemQueue { ..q, entries, history: q.history ++ rows }
 }
 
 fn settled[P, E](q: MemQueue[P, E], r: TaskResult[P, E]) -> Bool {
@@ -115,11 +113,11 @@ fn settled[P, E](q: MemQueue[P, E], r: TaskResult[P, E]) -> Bool {
 /// Fix over the reference: `_release` sets status back to `pending` even when the
 /// attempt it released was the last one. Since `_claim` only picks tasks with
 /// `attempts < max_attempts`, such a task stays `pending` forever: never retried,
-/// never marked `failed`. `strata verify simulate` found this through the
+/// never marked `failed`. `strata verify` found this through the
 /// `Pending ==> attempts < max` invariant on `MemQueue` (retries = 0, a worker
 /// that drops a result). Here those tasks become Exhausted instead.
-pub fn mem_release[P, E](q: MemQueue[P, E], attempts: List[TaskAttempt[P]]) -> Resume[(), MemQueue[P, E]]
-  ensures all(attempts, |a| status_of(it.state, a.task.id) != Some(Running))
+pub fn mem_release[P, E](q: MemQueue[P, E], attempts: List[TaskAttempt[P]]) -> MemQueue[P, E]
+  ensures all(attempts, |a| status_of(it, a.task.id) != Some(Running))
 {
   let ids = attempts.map(|a| a.task.id)
   let max = max_attempts(q.policy)
@@ -130,7 +128,19 @@ pub fn mem_release[P, E](q: MemQueue[P, E], attempts: List[TaskAttempt[P]]) -> R
       e
     }
   })
-  Resume { value: (), state: MemQueue { ..q, entries } }
+  MemQueue { ..q, entries }
+}
+
+/// The in-memory queue is a `Queue` backend like any other.
+impl[P, E] Queue[P, E] for MemQueue[P, E] {
+  fn enqueue(self, tasks: List[Task[P]]) -> (Self, Int) { mem_enqueue(self, tasks) }
+  fn claim(self, limit: Positive) -> (Self, List[TaskAttempt[P]]) { mem_claim(self, limit) }
+  /// The trait accepts any results, so results for tasks that are not running
+  /// (unknown, or already settled) are ignored rather than trusted.
+  fn record(self, results: List[TaskResult[P, E]]) -> Self {
+    mem_record(self, filter(results, |r| status_of(self, task_of(r).id) == Some(Running)))
+  }
+  fn release(self, attempts: List[TaskAttempt[P]]) -> Self { mem_release(self, attempts) }
 }
 
 /// A one-line summary per task, for reports and assertions.

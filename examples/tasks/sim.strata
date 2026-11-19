@@ -30,52 +30,48 @@ pub fn scripted(b: Behaviour, attempts: List[TaskAttempt[Int]]) -> List[TaskResu
   }
 }
 
-pub fn run_steps(policy: TaskPolicy, steps: List[Step]) -> () / {Queue[Int, String]} {
+/// A worker that behaves as scripted.
+pub type Scripted = { behaviour: Behaviour }
+
+impl Worker[Int, String] for Scripted {
+  fn run(self, attempts: List[TaskAttempt[Int]]) -> (Self, List[TaskResult[Int, String]]) {
+    (self, scripted(self.behaviour, attempts))
+  }
+}
+
+/// A producer that always discovers the same tasks.
+pub type Fixed = { tasks: List[Task[Int]] }
+
+impl Producer[Int] for Fixed {
+  fn discover(self) -> List[Task[Int]] { self.tasks }
+}
+
+pub fn run_steps(q: MemQueue[Int, String], policy: TaskPolicy, steps: List[Step]) -> MemQueue[Int, String] {
   match steps {
-    [] => (),
+    [] => q,
     [step, ..rest] => {
-      match step {
+      let next = match step {
         Produce { ids } => {
           let tasks = ids.map(|i| Task { id: "t" ++ to_string(i), kind: "sim", payload: i })
-          handle run_producer() with Producer { discover() => tasks }
-          ()
+          run_producer(q, Fixed { tasks }).0
         },
-        Work { behaviour } => {
-          handle run_worker(policy) with Worker { run(attempts) => scripted(behaviour, attempts) }
-          ()
-        },
+        Work { behaviour } => run_worker(q, Scripted { behaviour }, policy).0,
       }
-      run_steps(policy, rest)
+      run_steps(next, policy, rest)
     },
   }
 }
 
 pub fn simulate(per_worker: Int where 1 <= it && it <= 3, retries: Int where 0 <= it && it <= 2, steps: List[Step]) -> List[String] {
   let policy = TaskPolicy { max_workers: 1, tasks_per_worker: per_worker, retries }
-  handle run_steps(policy, steps) with Queue(q = empty_queue(policy)) {
-    enqueue(tasks) => mem_enqueue(q, tasks),
-    claim(limit) => mem_claim(q, limit),
-    record(results) => mem_record(q, results),
-    release(attempts) => mem_release(q, attempts),
-    return(r) => describe(q),
-  }
+  describe(run_steps(empty_queue(policy), policy, steps))
 }
 
 // ──────────────────────── the reference test suite ─────────────────────────
 
 /// Run steps on a fresh in-memory queue and return the final queue.
 pub fn queue_after(policy: TaskPolicy, steps: List[Step]) -> MemQueue[Int, String] {
-  handle {
-    run_steps(policy, steps)
-    empty_queue(policy)
-  }
-  with Queue(q = empty_queue(policy)) {
-    enqueue(tasks) => mem_enqueue(q, tasks),
-    claim(limit) => mem_claim(q, limit),
-    record(results) => mem_record(q, results),
-    release(attempts) => mem_release(q, attempts),
-    return(r) => q,
-  }
+  run_steps(empty_queue(policy), policy, steps)
 }
 
 pub fn statuses(q: MemQueue[Int, String]) -> List[Status] {

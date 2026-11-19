@@ -99,7 +99,8 @@ impl Gen {
 
     fn int(&mut self, h: &Hints) -> i64 {
         let lo = h.lo.unwrap_or_else(|| h.hi.map_or(-1000, |x| x - 1000));
-        let hi = h.hi.unwrap_or(lo.max(-1000) + 2000).max(lo);
+        // with only a lower bound (`Natural`), stay near it: edge cases live there
+        let hi = h.hi.unwrap_or(if h.lo.is_some() { lo + 100 } else { lo.max(-1000) + 2000 }).max(lo);
         // Boundary values find most bugs: pick them often.
         match self.rng.random_range(0..10) {
             0 => lo,

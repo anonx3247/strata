@@ -1521,6 +1521,89 @@ impl Checker<'_> {
 
 // ------------------------------------------------------------------
 
+fn ty_to_texpr(t: &Ty) -> TypeExpr {
+    let n = |s: &str| TypeExpr::Named(s.into(), vec![]);
+    match t {
+        Ty::Int | Ty::Var(_) | Ty::Rigid(_) => n("Int"),
+        Ty::Float => n("Float"),
+        Ty::Bool => n("Bool"),
+        Ty::Str => n("String"),
+        Ty::Unit => TypeExpr::Unit,
+        Ty::Con(c, args) => TypeExpr::Named(c.clone(), args.iter().map(ty_to_texpr).collect()),
+        Ty::Fn(ps, r) => TypeExpr::Fn(ps.iter().map(ty_to_texpr).collect(), Box::new(ty_to_texpr(r))),
+    }
+}
+
+/// Concrete types to test a generic function with: every bounded type
+/// parameter gets an implementation of its bounds (or a mock of the trait),
+/// chosen so that all the bounds agree (`Q: Queue[P, E]` and `W: Worker[P, E]`
+/// must share `P` and `E`). Unbounded parameters become `Int`.
+pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<String, TypeExpr>> {
+    let mut c = Checker {
+        env,
+        subst: Vec::new(),
+        scopes: vec![HashMap::new()],
+        effects: BTreeMap::new(),
+        rigid: BTreeSet::new(),
+        decl: f.name.clone(),
+        errors: Vec::new(),
+        holes: Vec::new(),
+        matches: Vec::new(),
+        self_ty: None,
+        bounds: HashMap::new(),
+        pending: Vec::new(),
+    };
+    let vars: HashMap<String, Ty> = f.type_params.iter().map(|p| (p.clone(), c.fresh())).collect();
+    let bounded: Vec<&Bound> = f.bounds.iter().collect();
+    // candidate types per bounded parameter: implementations first, then a mock
+    let mut cands: Vec<Vec<TypeExpr>> = Vec::new();
+    for b in &bounded {
+        let first = b.traits.first().map(texpr_head).unwrap_or_default();
+        let mut cs: Vec<TypeExpr> = env.impls.iter().filter(|i| i.trait_name == first).map(|i| i.for_type.clone()).collect();
+        cs.push(b.traits[0].clone());
+        cands.push(cs);
+    }
+    let total: usize = cands.iter().map(|c| c.len()).product();
+    for k in 0..total.min(256) {
+        let snapshot = c.subst.clone();
+        let mut idx = k;
+        let mut ok = true;
+        for (bi, b) in bounded.iter().enumerate() {
+            let choice = &cands[bi][idx % cands[bi].len()];
+            idx /= cands[bi].len();
+            // an impl's own type parameters are left open, to be fixed by the other bounds
+            let mut open: HashMap<String, Ty> = vars.clone();
+            if let Some(imp) = env.impls.iter().find(|i| &i.for_type == choice) {
+                for p in &imp.type_params {
+                    open.insert(p.clone(), c.fresh());
+                }
+            }
+            let t = c.lower(choice, &open);
+            if c.unify(&vars[&b.param], &t).is_err() {
+                ok = false;
+                break;
+            }
+            for tr in &b.traits {
+                if let TypeExpr::Named(tn, targs) = tr {
+                    let args: Vec<Ty> = targs.iter().map(|a| c.lower(a, &vars)).collect();
+                    if c.satisfies(&vars[&b.param], tn, &args, 0).is_err() {
+                        ok = false;
+                    }
+                }
+            }
+            if !ok {
+                break;
+            }
+        }
+        c.pending.clear();
+        if ok {
+            return Some(f.type_params.iter().map(|p| (p.clone(), ty_to_texpr(&c.resolve(&vars[p])))).collect());
+        }
+        c.subst = snapshot;
+    }
+    None
+}
+
 pub fn check(prog: &Program) -> CheckReport {
     let resolved = crate::resolve::resolve(prog);
     let prog = &resolved.program;

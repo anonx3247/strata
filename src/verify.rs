@@ -248,41 +248,15 @@ pub fn check_law(env: &Env, imp: &ImplDecl, law: &Law, cases: usize, seed: u64) 
 
 fn fuzz_call(env: &Env, f: &FnDecl, cases: usize, seed: u64, method: bool) -> Verdict {
     // Generic functions are fuzzed at one instance: every type parameter becomes `Int`.
-    // Generic functions are fuzzed at one instance: unbounded type parameters
-    // become `Int`; bounded ones become a type that implements every bound.
-    let mut inst: std::collections::HashMap<String, TypeExpr> = std::collections::HashMap::new();
-    for tp in &f.type_params {
-        let needs: Vec<String> = f
-            .bounds
-            .iter()
-            .filter(|b| &b.param == tp)
-            .flat_map(|b| b.traits.iter().map(crate::types::texpr_head))
-            .collect();
-        let int = TypeExpr::Named("Int".into(), vec![]);
-        if needs.is_empty() {
-            inst.insert(tp.clone(), int);
-            continue;
+    // Generic functions are fuzzed at one consistent instance (see `test_instance`).
+    let inst = if f.type_params.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        match crate::types::test_instance(env, f) {
+            Some(i) => i,
+            None => return Verdict::Skipped { reason: "no combination of types satisfies the bounds".into() },
         }
-        let pick = env.impls.iter().map(|i| &i.for_type).find(|t| {
-            let head = crate::types::texpr_head(t);
-            needs.iter().all(|tr| env.impls.iter().any(|i| &i.trait_name == tr && crate::types::texpr_head(&i.for_type) == head))
-        });
-        match pick {
-            Some(t) => {
-                // the impl's own type parameters become Int
-                let t = match t {
-                    TypeExpr::Named(n, args) => TypeExpr::Named(n.clone(), args.iter().map(|_| int.clone()).collect()),
-                    other => other.clone(),
-                };
-                inst.insert(tp.clone(), t);
-            }
-            // nothing implements the bounds: test against a mock of the (first) bound
-            None if needs.len() == 1 => {
-                inst.insert(tp.clone(), TypeExpr::Named(needs[0].clone(), vec![]));
-            }
-            None => return Verdict::Skipped { reason: format!("no type implements {} to test `{tp}` with", needs.join(" + ")) },
-        }
-    }
+    };
     if f.params.iter().any(|p| matches!(p.ty, TypeExpr::Fn(..))) {
         return Verdict::Skipped { reason: "higher-order parameters are not generated yet".into() };
     }
