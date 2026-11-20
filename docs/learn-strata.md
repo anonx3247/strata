@@ -476,7 +476,7 @@ test "a mocked capability" {
 
 - **Write canonical code.** `strata ci` rejects any `.strata` file that isn't exactly what `strata render` prints (it's what the code above looks like: a refinement's `where` on its own line, `ensures … {`, trailing commas in multi-line lists, about 80 columns). `strata ci --fix` rewrites files; `strata edit` and `strata add` store canonical text anyway.
 - **Every name a variant introduces is a type**, so it must be unique across the project: no other variant, type or trait anywhere may share it (`Empty` as a variant would clash with a trait `Empty`).
-- **A function can't share a name with a trait method** (`fn describe` next to `trait Describe { fn describe … }` is an error).
+- **In one module, a function can't share a name with a trait method** (`fn describe` next to `trait Describe { fn describe … }`), since `x.describe()` could mean either. Across modules it can: `x.describe()` is the method, `describe(x)` the function.
 - **Overloaded builtins can't be passed by name** (`len`, `get`, `contains`, `sum`…): write `xs.map(x -> len(x))`. Ordinary functions can: `lines.map(line_total)`. Methods whose meaning depends on the receiver also need a lambda: `xs.map(x -> x.describe())`.
 - **`type Name = String` is an error**: a bare alias adds nothing. Add a `where`, or say `distinct type`.
 - **Any function can be called as a method** on its first argument: `xs.filter(p)` is `filter(xs, p)`, `line.line_total()` is `line_total(line)`.
