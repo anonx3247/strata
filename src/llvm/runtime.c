@@ -189,6 +189,8 @@ Str *strata_json_str(Str *s) {
     case '\n': p += sprintf(p, "\\n"); break;
     case '\r': p += sprintf(p, "\\r"); break;
     case '\t': p += sprintf(p, "\\t"); break;
+    case '\b': p += sprintf(p, "\\b"); break;
+    case '\f': p += sprintf(p, "\\f"); break;
     default:
       if (c < 0x20) p += sprintf(p, "\\u%04x", c);
       else *p++ = (char)c;
@@ -204,6 +206,28 @@ double strata_finite(double r, double a, double b, Str *op) {
   if (isfinite(r)) return r;
   Str *m = strata_concat(strata_concat(strata_concat(show_float_plain(a), str_c(" ")), op), str_c(" "));
   strata_fault(4, strata_concat(strata_concat(m, show_float_plain(b)), str_c(" is not a finite number")));
+}
+
+// A block for a record, a variant or a tuple (never freed yet).
+void *strata_alloc(int64_t n) {
+  void *p = malloc((size_t)n);
+  if (!p) {
+    fputs("fault (Limit): out of memory\n", stderr);
+    exit(101);
+  }
+  return p;
+}
+
+// `floor`, `ceil`, `round`: the result must fit in an Int.
+int64_t strata_float_to_int(double x, Str *op) {
+  if (x >= -9223372036854775808.0 && x < 9223372036854775808.0) return (int64_t)x;
+  strata_fault(4, strata_concat(strata_concat(op, str_c(" of ")), strata_concat(show_float_plain(x), str_c(" does not fit in an Int"))));
+}
+
+// `main` returned `Err(e)`.
+void strata_main_error(Str *shown) {
+  fflush(stdout);
+  fprintf(stderr, "error: %.*s\n", (int)shown->len, shown->bytes);
 }
 
 // ---- output ----

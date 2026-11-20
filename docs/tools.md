@@ -103,14 +103,16 @@ gcd = 6, 2^10 = 1024, A(2, 3) = 9
 fault (Refinement): result of `next_digit`: 10 does not satisfy `Digit` (where 0 <= it && it <= 9)
 ```
 
-A compiled program behaves as `strata run`: the same output, and contracts are checked at run time with the same fault messages (refinements of parameters, results, annotated `let`s and declared variables, `requires`, `ensures`, `assert`), exiting with 101. It is the first step, so only part of the language compiles:
+A compiled program behaves as `strata run`: the same output, and contracts are checked at run time with the same fault messages (refinements of parameters, results, annotated `let`s, declared variables and new values, `requires`, `ensures`, `assert`), exiting with 101. Only part of the language compiles so far:
 
 - `Int` (64 bits for now: an overflow is a fault, where the interpreter switches to a big integer), `Float`, `Bool`, `String`, `()`, and refinements of them;
-- functions and recursion, `let`, `let mut` and assignment, `if`, `match` on literals, `where` conditions and refinement types, `while`, `loop`, `for` over `range(a, b)`, `break`, `continue`, `return`, `assert`;
-- f-strings without format specs, and `print`, `to_string`, `len` (of a string), `abs`, `min`, `max`;
-- `main` takes no parameters, and returns `()` or an exit code.
+- records, variants (`Option`, `Result` and your own), tuples, `distinct` types, unions of variants; field access, `{ ..e, f: x }`, assigning a field (`x.a.b = e`), `is`, `==` on any of them, and printing them as the interpreter does;
+- generic functions and types (each compiled once per set of type arguments), and a type's own methods (`impl Item { ... }`);
+- functions and recursion, `let` (with patterns), `let mut` and assignment, `if`, `match` with every pattern but list patterns, `while`, `loop`, `for` over `range(a, b)`, `break`, `continue`, `return`, `assert`, `!`, `?`, `except`;
+- f-strings without format specs, and `print`, `to_string`, `len` (of a string), `abs`, `min`, `max`, `float`, `floor`, `ceil`, `round`, `sqrt`;
+- `main` takes no parameters, and returns `()`, an exit code, or a `Result` of either.
 
-Anything else (records, variants, lists, lambdas, traits, `mut` parameters, capabilities) is refused, naming the function and what it uses: `can't compile `main`: a list is not compiled yet`. Memory is never freed yet.
+Anything else (lists and the other collections, lambdas, traits, `mut` parameters, capabilities) is refused, naming the function and what it uses: `can't compile `main`: a list is not compiled yet`. Memory is never freed yet.
 
 ### The JIT
 

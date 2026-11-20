@@ -325,6 +325,17 @@ pub fn split_trait_call(name: &str) -> Option<(&str, &str)> {
 /// type's own method a direct call `Item.m(x, ..)`. Everything that runs or
 /// verifies code works on this.
 pub fn elaborate(prog: &Program) -> crate::resolve::Resolution {
+    elaborate_with(prog, false).0
+}
+
+/// The elaborated program, and the type the checker inferred for each of its
+/// expressions, by node address (in a generic function, with its type
+/// parameters as `Ty::Rigid`). The compiler works from these.
+pub fn elaborate_typed(prog: &Program) -> (crate::resolve::Resolution, HashMap<usize, Ty>) {
+    elaborate_with(prog, true)
+}
+
+fn elaborate_with(prog: &Program, typed: bool) -> (crate::resolve::Resolution, HashMap<usize, Ty>) {
     let mut r = crate::resolve::resolve(prog);
     let (env, _) = Env::build(&r.program);
     let shared = env.method_traits.values().any(|v| v.len() > 1);
@@ -335,10 +346,10 @@ pub fn elaborate(prog: &Program) -> crate::resolve::Resolution {
     let like_builtin = shorts.iter().any(|s| BUILTINS.iter().any(|b| b.name == *s));
     shorts.sort();
     let across = shorts.windows(2).any(|w| w[0] == w[1]);
-    if env.inherent.is_empty() && !shared && !statics && !like_builtin && !across {
-        return r;
+    if env.inherent.is_empty() && !shared && !statics && !like_builtin && !across && !typed {
+        return (r, HashMap::new());
     }
-    let (_, _, targets) = check_decls(&r.program, &env);
+    let (_, _, targets, mut types) = check_decls(&r.program, &env);
     let targets: HashMap<usize, Target> = targets.into_iter().collect();
     for d in &mut r.program.decls {
         // a type parameter with a static method to call is passed when the function runs
@@ -358,9 +369,14 @@ pub fn elaborate(prog: &Program) -> crate::resolve::Resolution {
                 }
             }
             (Target::Own(f), Expr::Method(recv, _, args)) => {
+                let moved = &**recv as *const Expr as usize;
                 let mut all = vec![std::mem::replace(&mut **recv, Expr::Unit)];
                 all.append(args);
                 *e = Expr::Call(Box::new(Expr::Var(f.clone())), all);
+                // the receiver now lives in the argument list
+                if let (Some(t), Expr::Call(_, all)) = (types.remove(&moved), &*e) {
+                    types.insert(&all[0] as *const Expr as usize, t);
+                }
             }
             (Target::Own(f), Expr::Call(g, _)) => **g = Expr::Var(f.clone()),
             (Target::Static(tr, ty), Expr::Method(_, m, args)) => {
@@ -377,7 +393,7 @@ pub fn elaborate(prog: &Program) -> crate::resolve::Resolution {
         }
         });
     }
-    r
+    (r, types)
 }
 
 pub fn subst_texpr(t: &TypeExpr, sub: &HashMap<String, TypeExpr>) -> TypeExpr {
@@ -436,6 +452,8 @@ struct Checker<'a> {
     /// Set just before typing a call's callee, so a function needing type
     /// arguments can tell a call from its use as a value.
     callee: bool,
+    /// The type of each expression, by node address (resolved at the end).
+    types: Vec<(usize, Ty)>,
 }
 
 impl<'a> Checker<'a> {
@@ -1574,6 +1592,12 @@ impl<'a> Checker<'a> {
     /// The type of `e`; `expected` (when known) is what the context wants, used
     /// to pick a variant's own type and to check branches against it.
     fn infer_at(&mut self, e: &Expr, expected: Option<&Ty>) -> Ty {
+        let t = self.infer_node(e, expected);
+        self.types.push((e as *const Expr as usize, t.clone()));
+        t
+    }
+
+    fn infer_node(&mut self, e: &Expr, expected: Option<&Ty>) -> Ty {
         match e {
             Expr::Int(_) | Expr::BigInt(_) => Ty::Int,
             Expr::Float(_) => Ty::Float,
@@ -2763,6 +2787,7 @@ pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<String, TypeExpr>>
         last_inst: None,
         insts: Vec::new(),
         callee: false,
+        types: Vec::new(),
     };
     let vars: HashMap<String, Ty> = f.type_params.iter().map(|p| (p.clone(), c.fresh())).collect();
     let bounded: Vec<&Bound> = f.bounds.iter().collect();
@@ -2821,15 +2846,15 @@ pub fn check(prog: &Program) -> CheckReport {
     let prog = &resolved.program;
     let (env, mut errors) = Env::build(prog);
     errors.splice(0..0, resolved.errors);
-    let (errs, holes, _) = check_decls(prog, &env);
+    let (errs, holes, _, _) = check_decls(prog, &env);
     errors.extend(errs);
     CheckReport { errors, holes }
 }
 
 /// Check every declaration of a resolved program: errors, holes, and the
 /// method-call decisions `elaborate` writes into the program.
-fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usize, Target)>) {
-    let (mut errors, mut holes, mut targets) = (Vec::new(), Vec::new(), Vec::new());
+fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usize, Target)>, HashMap<usize, Ty>) {
+    let (mut errors, mut holes, mut targets, mut types) = (Vec::new(), Vec::new(), Vec::new(), HashMap::new());
     for d in &prog.decls {
         let mut c = Checker {
             env: &env,
@@ -2851,6 +2876,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
         last_inst: None,
         insts: Vec::new(),
         callee: false,
+        types: Vec::new(),
         };
         let mut obligations = Vec::new();
         match &d.kind {
@@ -3056,10 +3082,13 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
             });
         }
         c.finish_insts();
+        for (at, t) in std::mem::take(&mut c.types) {
+            types.insert(at, c.resolve(&t));
+        }
         errors.extend(c.errors);
         targets.extend(c.targets);
     }
-    (errors, holes, targets)
+    (errors, holes, targets, types)
 }
 
 /// A type's own method as the function it is called as (`Item.new`, or
