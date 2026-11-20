@@ -2288,6 +2288,18 @@ fn strata_with_editor(args: &[&str], dir: &std::path::Path, editor: &str) -> (bo
 }
 
 #[test]
+fn renames_leave_string_literals_alone() {
+    // a string equal to the old name is text, not a reference: the rename goes ahead and keeps it
+    let d = tmp("rename-literal");
+    std::fs::write(d.join("main.strata"), "fn greet() -> String {\n  \"hello\"\n}\n\nfn label() -> String {\n  \"greet\"\n}\n").unwrap();
+    assert!(strata(&["init"], &d, None).0);
+    let (ok, out) = strata(&["rename", "greet", "welcome", "--no-commit"], &d, None);
+    assert!(ok, "{out}");
+    let src = std::fs::read_to_string(d.join("main.strata")).unwrap();
+    assert!(src.contains("fn welcome()") && src.contains("\"greet\""), "{src}");
+}
+
+#[test]
 fn edit_opens_the_code_in_an_editor() {
     let d = tmp("editor");
     let pkg = d.join("pkg");
