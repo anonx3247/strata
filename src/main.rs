@@ -6,6 +6,7 @@ mod interp;
 mod lexer;
 mod merge;
 mod package;
+mod pending;
 mod parser;
 mod printer;
 mod resolve;
@@ -36,12 +37,19 @@ every change made through strata, committed with them):
   add <file.strata> [-m MSG]   import definitions from a file (checked, atomic)
   edit [-m MSG] [--rm NAME]..  read definitions from stdin; replace/add them by name;
                                commit only if the whole codebase still checks
+  edit [SELECTOR] [--module m] with nothing piped in (or --editor): open the definitions
+                               (or the module) in $VISUAL / $EDITOR, and apply what you save
   rename <old> <new> [<old> <new>]... [-m MSG]
                                rename functions, types, traits, variants, trait methods or
                                fields (`Owner.field`) and every reference, in one step
                                (`old` may be qualified, `new` is the short name)
   move <name> <module>         move a function, type or trait to another module (its file),
                                updating references and imports (`main` is the root module)
+  status                       the pending change, if any: its holes, filled or not
+  done [--keep-holes] [-m MSG] record the pending change as one log entry
+  abort                        undo the pending change: every file as it was before it
+  (an `edit` that breaks code elsewhere turns each broken use into a hole, ?pending_N, and
+   opens a pending change; further edits, renames and moves join it)
   log                          show the patch history
   diff [--from N] [--to N] [--step K] [--json]
                                what changed, structurally: renames, new variants, stronger
@@ -240,6 +248,10 @@ fn run() -> Result<bool, String> {
         }
         "add" | "edit" => {
             let Source::Db(mut cb) = load(&args)? else { return Err("`add`/`edit` need a codebase".into()) };
+            // `strata edit` at a terminal, with nothing piped in: edit the code in an editor
+            if cmd == "edit" && (args.flag("--editor") || std::io::IsTerminal::is_terminal(&std::io::stdin())) {
+                return edit_in_editor(&mut cb, &args, json_out);
+            }
             let edits = if cmd == "add" {
                 let f = args.pos.get(1).ok_or("usage: strata add <file.strata | folder>")?;
                 read_sources(f, args.val("--module"))?
@@ -249,59 +261,8 @@ fn run() -> Result<bool, String> {
                 parser::parse_module_file(&s, args.val("--module").unwrap_or("")).map_err(|e| format!("parse error at {e}"))?
             };
             let deletes: Vec<String> = args.flags.get("--rm").cloned().unwrap_or_default();
-            let new = store::merge(&cb.program, edits, &deletes);
-            let rep = full_check(&new);
-            if !rep.ok() {
-                print_errors(&rep);
-                eprintln!("\nrejected: the codebase would not check; nothing was changed");
-                return Ok(false);
-            }
             let msg = args.val("-m").unwrap_or(if cmd == "add" { "import" } else { "edit" });
-            let changes = cb.commit(new, msg)?;
-            if json_out {
-                println!("{}", serde_json::to_string_pretty(&changes).unwrap());
-                return Ok(true);
-            }
-            if changes.is_empty() {
-                println!("no changes");
-            }
-            for c in &changes {
-                let what = match (&c.old, &c.new) {
-                    (None, Some(h)) => format!("added    #{h}"),
-                    (Some(h), None) => format!("removed  #{h}"),
-                    (Some(a), Some(b)) if c.interface_changed => format!("changed  #{a} → #{b}  (interface changed)"),
-                    (Some(a), Some(b)) => format!("changed  #{a} → #{b}  (implementation only — dependents unaffected)"),
-                    _ => unreachable!(),
-                };
-                println!("{:<6} {:<24} {what}", c.kind, c.name);
-                if c.affected.len() > 6 {
-                    // summarise by module
-                    let mut per: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-                    for a in &c.affected {
-                        let m = cb.program.decls.iter().find(|d| &d.qname() == a).map(|d| d.module.clone()).unwrap_or_default();
-                        *per.entry(if m.is_empty() { "(root)".into() } else { m }).or_default() += 1;
-                    }
-                    let parts: Vec<String> = per.iter().map(|(m, n)| format!("{m} ({n})")).collect();
-                    println!("         re-check {} dependents in: {}", c.affected.len(), parts.join(", "));
-                } else if !c.affected.is_empty() {
-                    println!("         re-check dependents: {}", c.affected.join(", "));
-                }
-            }
-            // a module's contract is its public definitions
-            let mut contracts: Vec<String> = Vec::new();
-            for c in changes.iter().filter(|c| c.interface_changed && c.old.is_some()) {
-                if let Some(d) = cb.program.decls.iter().find(|d| d.qname() == c.name) {
-                    if d.public && !d.module.is_empty() && !contracts.contains(&d.module) {
-                        contracts.push(d.module.clone());
-                    }
-                }
-            }
-            for m in contracts {
-                println!("module {m}: its public contract changed (see `strata interface {m}`)");
-            }
-            if !rep.holes.is_empty() {
-                println!("{} open hole(s) — see `strata holes`", rep.holes.len());
-            }
+            return Ok(apply_edit(&mut cb, cmd, edits, deletes, msg, json_out)?.is_ok());
         }
         "rename" => {
             let Source::Db(mut cb) = load(&args)? else { return Err("`rename` needs a codebase (it commits the change)".into()) };
@@ -368,7 +329,7 @@ fn run() -> Result<bool, String> {
             let default_msg = format!("rename {}", arrows.join(", "));
             let msg = args.val("-m").unwrap_or(&default_msg);
             let entries: Vec<serde_json::Value> = pairs.iter().zip(&news).map(|((o, _, k), n)| json!({"from": o, "to": n, "kind": k})).collect();
-            cb.commit_with(renamed, msg, json!({"renames": entries, "references": updated}))?;
+            record(&mut cb, renamed, msg, json!({"renames": entries, "references": updated}))?;
             if json_out {
                 println!("{}", json!({"renames": entries, "references": updated, "mentions": mentions}));
                 return Ok(true);
@@ -416,7 +377,7 @@ fn run() -> Result<bool, String> {
             let from_m = old_q.rsplit_once('.').map(|(m, _)| m.to_string()).unwrap_or_default();
             let default_msg = format!("move {old_q} → {}", shown(&target));
             let msg = args.val("-m").unwrap_or(&default_msg);
-            cb.commit_with(moved, msg, json!({"renames": [{"from": old_q, "to": new_q, "kind": "move"}], "references": updated}))?;
+            record(&mut cb, moved, msg, json!({"renames": [{"from": old_q, "to": new_q, "kind": "move"}], "references": updated}))?;
             if json_out {
                 println!("{}", json!({"from": old_q, "to": new_q, "references": updated}));
                 return Ok(true);
@@ -429,6 +390,54 @@ fn run() -> Result<bool, String> {
             if !imports.is_empty() {
                 println!("imports: {}", imports.join("; "));
             }
+        }
+        "status" => {
+            let Source::Db(cb) = load(&args)? else { return Err("`status` needs a package".into()) };
+            let Some(p) = pending::load(&cb) else {
+                println!("no pending change");
+                return Ok(true);
+            };
+            let open: std::collections::HashSet<String> = types::check(&cb.program).holes.into_iter().map(|h| h.name).collect();
+            let (left, filled): (Vec<&pending::Hole>, Vec<&pending::Hole>) = p.holes.iter().partition(|h| open.contains(&h.name));
+            println!("pending change: {}  ({} hole{} left, {} filled)", p.message, left.len(), if left.len() == 1 { "" } else { "s" }, filled.len());
+            for h in &left {
+                println!("  ?{}  in {}\n      was: {}", h.name, h.decl, h.was);
+            }
+            println!("{}", if left.is_empty() { "`strata done` records it as one change; `strata abort` undoes it" } else { "fill the holes with `strata edit`; `strata done --keep-holes` records it as is; `strata abort` undoes it" });
+        }
+        "done" => {
+            let Source::Db(mut cb) = load(&args)? else { return Err("`done` needs a package".into()) };
+            let p = pending::load(&cb).ok_or("no pending change")?;
+            let open: std::collections::HashSet<String> = types::check(&cb.program).holes.into_iter().map(|h| h.name).collect();
+            let left: Vec<&pending::Hole> = p.holes.iter().filter(|h| open.contains(&h.name)).collect();
+            if !left.is_empty() && !args.flag("--keep-holes") {
+                eprintln!("{} hole{} of this change {} still open:", left.len(), if left.len() == 1 { "" } else { "s" }, if left.len() == 1 { "is" } else { "are" });
+                for h in &left {
+                    eprintln!("  ?{}  in {}  (was: {})", h.name, h.decl, h.was);
+                }
+                eprintln!("fill them with `strata edit`, keep them with `strata done --keep-holes`, or undo the change with `strata abort`");
+                return Ok(false);
+            }
+            if !left.is_empty() {
+                let kept = pending::keep_holes(&cb.program);
+                cb.write(kept)?;
+            }
+            let before = pending::before_program(&p)?;
+            let msg = args.val("-m").unwrap_or(&p.message).to_string();
+            let extra = if p.renames.is_empty() { json!({}) } else { json!({"renames": p.renames}) };
+            let changes = cb.log_entry(&before, &msg, extra)?;
+            pending::clear(&cb);
+            println!("recorded \"{msg}\" as one change: {} definition{}", changes.len(), if changes.len() == 1 { "" } else { "s" });
+            if !left.is_empty() {
+                println!("{} hole{} kept as ?todo_…, see `strata holes`", left.len(), if left.len() == 1 { "" } else { "s" });
+            }
+        }
+        "abort" => {
+            let Source::Db(cb) = load(&args)? else { return Err("`abort` needs a package".into()) };
+            let p = pending::load(&cb).ok_or("no pending change")?;
+            pending::restore(&cb, &p)?;
+            pending::clear(&cb);
+            println!("undid the pending change \"{}\": every file is as it was before it", p.message);
         }
         "diff" => {
             let num = |k: &str| args.val(k).map(|v| v.parse::<usize>().map_err(|_| format!("{k} needs a number"))).transpose();
@@ -712,8 +721,15 @@ fn run() -> Result<bool, String> {
             if rep.holes.is_empty() {
                 println!("no holes");
             }
+            let open = match &src {
+                Source::Db(cb) => pending::load(cb),
+                _ => None,
+            };
             for h in &rep.holes {
                 println!("?{}  in {}\n  goal:    {}", h.name, h.decl, h.goal);
+                if let Some(ph) = open.as_ref().and_then(|p| p.holes.iter().find(|x| x.name == h.name)) {
+                    println!("  was:     {}\n  why:     {}", ph.was, ph.why.join("; "));
+                }
                 if !h.context.is_empty() {
                     println!("  context: {}", h.context.iter().map(|(n, t)| format!("{n}: {t}")).collect::<Vec<_>>().join(", "));
                 }
@@ -1010,6 +1026,217 @@ fn run() -> Result<bool, String> {
     Ok(true)
 }
 
+/// Apply edited definitions (and deletions) to the package: committed if the
+/// whole package checks; if they check but break code elsewhere, the broken
+/// uses become holes in a pending change. `Err` holds the errors of a rejected edit.
+fn apply_edit(cb: &mut Codebase, cmd: &str, edits: Program, deletes: Vec<String>, msg: &str, json_out: bool) -> Result<Result<(), Vec<String>>, String> {
+    let mut edited: Vec<String> = edits.decls.iter().map(|d| d.qname()).collect();
+    edited.extend(deletes.iter().cloned());
+    let new = store::merge(&cb.program, edits, &deletes);
+    let rep = full_check(&new);
+    if !rep.ok() {
+        // an edit that breaks code elsewhere: the broken uses become holes, in a pending change
+        let open = pending::load(cb);
+        let first = open.as_ref().map_or(1, |p| p.holes.len() + 1);
+        match (cmd, pending::holeify(&cb.program, &new, &edited, &rep.errors, first)) {
+            ("edit", Ok((with_holes, holes, notes))) => {
+                let mut p = match open {
+                    Some(p) => p,
+                    None => pending::start(cb, msg)?,
+                };
+                cb.write(with_holes)?;
+                p.holes.extend(holes.iter().cloned());
+                pending::save(cb, &p)?;
+                println!("the edit breaks {} use{} elsewhere; {}, in a pending change:", holes.len(), if holes.len() == 1 { "" } else { "s" }, if holes.len() == 1 { "it is now a hole" } else { "they are now holes" });
+                for h in &holes {
+                    if h.was.is_empty() {
+                        println!("  ?{}  in {}\n      why: {}", h.name, h.decl, h.why.join("; "));
+                    } else {
+                        println!("  ?{}  in {}\n      was: {}\n      why: {}", h.name, h.decl, h.was, h.why.join("; "));
+                    }
+                }
+                for n in &notes {
+                    println!("  {n}");
+                }
+                println!("fill them with `strata edit`, then `strata done` (or `strata abort` to undo the whole change)");
+                return Ok(Ok(()));
+            }
+            _ => {
+                print_errors(&rep);
+                eprintln!("\nrejected: the codebase would not check; nothing was changed");
+                return Ok(Err(rep.errors.iter().map(|e| format!("error in {}: {}", e.decl, e.msg)).collect()));
+            }
+        }
+    }
+    let changes = record(cb, new, msg, json!({}))?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&changes).unwrap());
+        return Ok(Ok(()));
+    }
+    if changes.is_empty() {
+        println!("no changes");
+    }
+    for c in &changes {
+        let what = match (&c.old, &c.new) {
+            (None, Some(h)) => format!("added    #{h}"),
+            (Some(h), None) => format!("removed  #{h}"),
+            (Some(a), Some(b)) if c.interface_changed => format!("changed  #{a} → #{b}  (interface changed)"),
+            (Some(a), Some(b)) => format!("changed  #{a} → #{b}  (implementation only — dependents unaffected)"),
+            _ => unreachable!(),
+        };
+        println!("{:<6} {:<24} {what}", c.kind, c.name);
+        if c.affected.len() > 6 {
+            // summarise by module
+            let mut per: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+            for a in &c.affected {
+                let m = cb.program.decls.iter().find(|d| &d.qname() == a).map(|d| d.module.clone()).unwrap_or_default();
+                *per.entry(if m.is_empty() { "(root)".into() } else { m }).or_default() += 1;
+            }
+            let parts: Vec<String> = per.iter().map(|(m, n)| format!("{m} ({n})")).collect();
+            println!("         re-check {} dependents in: {}", c.affected.len(), parts.join(", "));
+        } else if !c.affected.is_empty() {
+            println!("         re-check dependents: {}", c.affected.join(", "));
+        }
+    }
+    // a module's contract is its public definitions
+    let mut contracts: Vec<String> = Vec::new();
+    for c in changes.iter().filter(|c| c.interface_changed && c.old.is_some()) {
+        if let Some(d) = cb.program.decls.iter().find(|d| d.qname() == c.name) {
+            if d.public && !d.module.is_empty() && !contracts.contains(&d.module) {
+                contracts.push(d.module.clone());
+            }
+        }
+    }
+    for m in contracts {
+        println!("module {m}: its public contract changed (see `strata interface {m}`)");
+    }
+    if !rep.holes.is_empty() {
+        println!("{} open hole(s) — see `strata holes`", rep.holes.len());
+    }
+    Ok(Ok(()))
+}
+
+/// Commit a change, or, during a pending change, only write it: the change
+/// is logged as one entry when it is done.
+fn record(cb: &mut Codebase, new: Program, msg: &str, extra: serde_json::Value) -> Result<Vec<store::Change>, String> {
+    match pending::load(cb) {
+        None => cb.commit_with(new, msg, extra),
+        Some(mut p) => {
+            let changes = store::changes(&cb.program, &new);
+            cb.write(new)?;
+            p.renames.extend(extra["renames"].as_array().cloned().unwrap_or_default());
+            // the holes' definitions keep their names
+            for (from, to) in store::renames_of(&extra) {
+                for h in p.holes.iter_mut().filter(|h| h.decl == from) {
+                    h.decl = to.clone();
+                }
+            }
+            pending::save(cb, &p)?;
+            Ok(changes)
+        }
+    }
+}
+
+/// Lines the editor buffer starts with when an edit didn't go through; they
+/// are dropped when the buffer is read back.
+const EDIT_MARK: &str = "// ✗ ";
+
+/// The user's editor: `$VISUAL`, `$EDITOR`, git's, or `vi`.
+fn editor_command() -> String {
+    for var in ["VISUAL", "EDITOR"] {
+        if let Ok(e) = std::env::var(var) {
+            if !e.trim().is_empty() {
+                return e;
+            }
+        }
+    }
+    git_out(&["var", "GIT_EDITOR"]).map(|e| e.trim().to_string()).ok().filter(|e| !e.is_empty()).unwrap_or_else(|| "vi".into())
+}
+
+/// `strata edit [SELECTOR]` with nothing piped in: open the code in the
+/// user's editor (the definitions a selector picks, or a whole module), and
+/// apply what is saved as an edit. Definitions deleted from the buffer are
+/// removed. If the edit doesn't parse or check, the editor opens again with
+/// the errors at the top; saving it unchanged gives up.
+fn edit_in_editor(cb: &mut Codebase, args: &Args, json_out: bool) -> Result<bool, String> {
+    let p = cb.program.clone();
+    let mut mods: Vec<String> = p.decls.iter().map(|d| d.module.clone()).collect();
+    mods.sort();
+    mods.dedup();
+    let shown_name = |m: &str| if m.is_empty() { "main".to_string() } else { m.to_string() };
+    let (module, shown, text): (String, Vec<String>, String) = match args.pos.get(1) {
+        Some(sel) => {
+            let names = view::select(&p, Some(sel));
+            let picked: Vec<&Decl> = p.decls.iter().filter(|d| names.contains(&d.qname())).collect();
+            if picked.is_empty() {
+                return Err(format!("`{sel}` picks no definition"));
+            }
+            let mut ms: Vec<&str> = picked.iter().map(|d| d.module.as_str()).collect();
+            ms.sort();
+            ms.dedup();
+            if ms.len() > 1 {
+                return Err(format!("`{sel}` picks definitions in several modules ({}): edit one module at a time", ms.iter().map(|m| shown_name(m)).collect::<Vec<_>>().join(", ")));
+            }
+            let text = picked.iter().map(|d| printer::decl(d)).collect::<Vec<_>>().join("\n\n") + "\n";
+            (ms[0].to_string(), picked.iter().map(|d| d.qname()).collect(), text)
+        }
+        None => {
+            let m = match args.val("--module") {
+                Some("main") => String::new(),
+                Some(m) => m.to_string(),
+                None if mods.len() <= 1 => mods.first().cloned().unwrap_or_default(),
+                None => {
+                    return Err(format!(
+                        "this package has several modules ({}): pick one with `strata edit --module m`, or definitions with `strata edit NAME`",
+                        mods.iter().map(|m| shown_name(m)).collect::<Vec<_>>().join(", ")
+                    ))
+                }
+            };
+            let shown = p.decls.iter().filter(|d| d.module == m).map(|d| d.qname()).collect();
+            let text = if p.decls.iter().any(|d| d.module == m) { printer::module_file(&p, &m) } else { String::new() };
+            (m, shown, text)
+        }
+    };
+    let path = cb.cache_dir().join(format!("edit-{}.strata", shown_name(&module).replace('.', "-")));
+    let editor = editor_command();
+    let msg = args.val("-m").unwrap_or("edit").to_string();
+    let mut buffer = text.clone();
+    let mut last = text.clone();
+    loop {
+        std::fs::write(&path, &buffer).map_err(|e| format!("{}: {e}", path.display()))?;
+        let status = Command::new("sh").arg("-c").arg(format!("{editor} \"$1\"")).arg("strata-edit").arg(&path).status().map_err(|e| format!("could not start the editor `{editor}`: {e}"))?;
+        if !status.success() {
+            return Err(format!("the editor `{editor}` failed; nothing was changed"));
+        }
+        let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let written: String = raw.lines().filter(|l| !l.starts_with(EDIT_MARK)).collect::<Vec<_>>().join("\n").trim_start_matches('\n').to_string() + "\n";
+        if written.trim() == last.trim() {
+            let _ = std::fs::remove_file(&path);
+            println!("{}", if buffer == text { "no changes" } else { "gave up: nothing was changed" });
+            return Ok(buffer == text);
+        }
+        last = written.clone();
+        let errors = match parser::parse_module_file(&written, &module) {
+            Err(e) => vec![format!("parse error at {e}")],
+            Ok(edits) => {
+                let kept: std::collections::HashSet<String> = edits.decls.iter().map(|d| d.qname()).collect();
+                let deletes: Vec<String> = shown.iter().filter(|q| !kept.contains(*q)).cloned().collect();
+                match apply_edit(cb, "edit", edits, deletes, &msg, json_out)? {
+                    Ok(()) => {
+                        let _ = std::fs::remove_file(&path);
+                        return Ok(true);
+                    }
+                    Err(errors) => errors,
+                }
+            }
+        };
+        // again, with the errors on top
+        let mut head: Vec<String> = errors.iter().flat_map(|e| e.lines().map(|l| format!("{EDIT_MARK}{l}")).collect::<Vec<_>>()).collect();
+        head.push(format!("{EDIT_MARK}not applied: fix it and save, or save it unchanged to give up"));
+        buffer = head.join("\n") + "\n\n" + &written;
+    }
+}
+
 fn git_out(args: &[&str]) -> Result<String, String> {
     let o = Command::new("git").args(args).output().map_err(|e| format!("git: {e}"))?;
     if !o.status.success() {
@@ -1062,6 +1289,10 @@ fn ci(fix: bool) -> Result<bool, String> {
         let p = package::program(path)?;
         let rep = full_check(&p);
         let mut errors: Vec<String> = rep.errors.iter().map(|e| format!("error in {}: {}", e.decl, e.msg)).collect();
+        // holes of an unfinished change are not to be merged
+        errors.extend(rep.holes.iter().filter(|h| h.name.starts_with(pending::PREFIX)).map(|h| {
+            format!("?{} in {} belongs to an unfinished change: fill it and run `strata done`, or `strata abort`", h.name, h.decl)
+        }));
         if let Some(pkg) = &pkg {
             errors.extend(package::bad_exports(pkg, &p).into_iter().chain(package::bad_policy(pkg, &p)).map(|e| format!("{}: {e}", package::FILE)));
         }
