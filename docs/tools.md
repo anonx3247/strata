@@ -69,8 +69,11 @@ fill them with `strata edit`, then `strata done` (or `strata abort` to undo the 
 $ strata done                             # once the holes are filled: one log entry for it all
 recorded "tax takes a rate" as one change: 3 definitions
 
-$ strata edit total                       # nothing piped in: opens `total` in $VISUAL / $EDITOR
-                                          # (no name: the whole module); what you save is the edit
+$ strata edit total                       # nothing piped in: opens `total` in $VISUAL / $EDITOR;
+                                          # what you save is the edit
+$ strata edit shop                        # the module `shop` (or `shop.strata`, also a new module)
+$ strata edit                             # the whole package, one file per module
+$ strata edit shop < defs.strata          # piped: the definitions go into the module `shop`
 
 $ strata run total '[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]]' --trace
 {"event":"call","fn":"total","args":[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]],"depth":1}
