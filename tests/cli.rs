@@ -404,10 +404,15 @@ fn codebase_edits_are_checked_and_atomic() {
     assert!(strata(&["add", &example()], &d, None).0);
     let (ok, out) = strata(&["edit"], &d, Some("fn discount(amount: Cents) -> Cents ensures it <= amount { amount }"));
     assert!(ok && out.contains("implementation only"), "{out}");
-    let (ok, out) = strata(&["edit"], &d, Some("fn total(lines: List[Cents]) -> Cents { sum(lines) }"));
+    // an edit that doesn't check in itself is rejected
+    let (ok, out) = strata(&["edit"], &d, Some("fn total(lines: List[Cents]) -> Cents { sum(lines) + true }"));
     assert!(!ok && out.contains("rejected"), "{out}");
+    // one that breaks a caller isn't committed: it opens a pending change, with a hole for the caller
+    let (ok, out) = strata(&["edit"], &d, Some("fn total(lines: List[Cents]) -> Cents { sum(lines) }"));
+    assert!(ok && out.contains("it is now a hole, in a pending change") && out.contains("was: total(lines)"), "{out}");
+    assert!(strata(&["abort"], &d, None).0);
     let (_, render) = strata(&["render"], &d, None);
-    assert!(render.contains("fn total(lines: NonEmpty[Line])"), "breaking edit must not be committed");
+    assert!(render.contains("fn total(lines: NonEmpty[Line])"), "aborted: nothing changed");
 }
 
 #[test]
@@ -1953,6 +1958,140 @@ fn sync_follows_moves() {
     assert!(r.contains("use orders.Order") && r.contains("use billing.charge") && r.contains("charge(o) + billing.charge(o)"), "{r}");
 }
 
+const TAXES: &str = "fn tax(amount: Int) -> Int {\n  amount / 10\n}\n\nfn total(amount: Int) -> Int {\n  amount + tax(amount)\n}\n\nfn double_tax(a: Int) -> Int {\n  tax(a) * 2\n}\n\ntest \"totals\" {\n  assert total(100) == 110\n}\n";
+
+#[test]
+fn a_breaking_edit_opens_a_pending_change_with_holes() {
+    let d = tmp("pending");
+    std::fs::write(d.join("main.strata"), TAXES).unwrap();
+    assert!(strata(&["init"], &d, None).0);
+
+    // the edit itself checks; the uses it breaks become holes that remember what they were
+    let (ok, out) = strata(&["edit", "-m", "tax takes a rate"], &d, Some("fn tax(amount: Int, rate: Int) -> Int { amount * rate / 100 }"));
+    assert!(ok && out.contains("the edit breaks 2 uses elsewhere"), "{out}");
+    assert!(out.contains("?pending_1  in total\n      was: tax(amount)\n      why: call to `tax`: expects 2 arguments, got 1"), "{out}");
+    let m = std::fs::read_to_string(d.join("main.strata")).unwrap();
+    assert!(m.contains("amount + ?pending_1") && m.contains("?pending_2 * 2"), "{m}");
+    assert_eq!(std::fs::read_to_string(d.join("strata.log")).unwrap(), "", "nothing logged yet");
+    let (_, out) = strata(&["holes"], &d, None);
+    assert!(out.contains("?pending_1  in total\n  goal:    Int\n  was:     tax(amount)"), "{out}");
+    // a pending change's holes don't get merged
+    let (ok, out) = strata(&["ci"], &d, None);
+    assert!(!ok && out.contains("?pending_1 in total belongs to an unfinished change"), "{out}");
+
+    // an edit that doesn't check in itself is still rejected
+    let (ok, out) = strata(&["edit"], &d, Some("fn total(amount: Int) -> Int { amount + true }"));
+    assert!(!ok && out.contains("rejected"), "{out}");
+
+    // fill one, rename along the way (it joins the change), and `done` waits for the other
+    assert!(strata(&["edit"], &d, Some("fn total(amount: Int) -> Int { amount + tax(amount, 10) }")).0);
+    assert!(strata(&["rename", "double_tax", "twice_tax"], &d, None).0);
+    let (ok, out) = strata(&["status"], &d, None);
+    assert!(ok && out.contains("pending change: tax takes a rate  (1 hole left, 1 filled)") && out.contains("?pending_2  in twice_tax"), "{out}");
+    let (ok, out) = strata(&["done"], &d, None);
+    assert!(!ok && out.contains("1 hole of this change is still open"), "{out}");
+    assert!(strata(&["edit"], &d, Some("fn twice_tax(a: Int) -> Int { tax(a, 10) * 2 }")).0);
+    let (ok, out) = strata(&["done"], &d, None);
+    assert!(ok && out.contains("recorded \"tax takes a rate\" as one change"), "{out}");
+
+    // one log entry for the whole change, with its rename
+    let log = std::fs::read_to_string(d.join("strata.log")).unwrap();
+    assert_eq!(log.lines().count(), 1, "{log}");
+    assert!(log.contains(r#""from":"double_tax""#), "{log}");
+    let (ok, out) = strata(&["test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    let (_, out) = strata(&["status"], &d, None);
+    assert!(out.contains("no pending change"), "{out}");
+}
+
+#[test]
+fn a_pending_change_can_be_aborted_or_kept_with_its_holes() {
+    let d = tmp("pending-abort");
+    std::fs::write(d.join("main.strata"), TAXES).unwrap();
+    assert!(strata(&["init"], &d, None).0);
+    assert!(strata(&["edit"], &d, Some("fn tax(amount: Int, rate: Int) -> Int { amount * rate / 100 }")).0);
+    assert!(strata(&["edit", "--module", "extra"], &d, Some("fn more() -> Int { 1 }")).0);
+    assert!(d.join("extra.strata").exists());
+    // abort: every file as it was, including the module the change added
+    let (ok, out) = strata(&["abort"], &d, None);
+    assert!(ok && out.contains("undid the pending change"), "{out}");
+    assert_eq!(std::fs::read_to_string(d.join("main.strata")).unwrap(), TAXES);
+    assert!(!d.join("extra.strata").exists());
+    assert_eq!(std::fs::read_to_string(d.join("strata.log")).unwrap(), "");
+
+    // keep: recorded as is, the holes become ordinary ones
+    assert!(strata(&["edit"], &d, Some("fn tax(amount: Int, rate: Int) -> Int { amount * rate / 100 }")).0);
+    let (ok, out) = strata(&["done", "--keep-holes", "-m", "rates, callers to do"], &d, None);
+    assert!(ok && out.contains("2 holes kept as ?todo_"), "{out}");
+    let m = std::fs::read_to_string(d.join("main.strata")).unwrap();
+    assert!(m.contains("amount + ?todo_1") && m.contains("?todo_2 * 2"), "{m}");
+    let (ok, out) = strata(&["ci"], &d, None);
+    assert!(ok, "ordinary holes are fine: {out}");
+}
+
+/// A stand-in editor: on its n-th run it keeps what it was shown as
+/// `seen<n>.strata` and saves `v<n>.strata` (or leaves the file as it is).
+fn fake_editor(d: &std::path::Path, versions: &[&str]) -> String {
+    for (i, v) in versions.iter().enumerate() {
+        std::fs::write(d.join(format!("v{}.strata", i + 1)), v).unwrap();
+    }
+    let script = d.join("editor.sh");
+    let dir = d.display();
+    std::fs::write(&script, format!("#!/bin/sh\nn=$(cat '{dir}/count' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{dir}/count'\ncp \"$1\" '{dir}/seen'$n.strata\nif [ -f '{dir}/v'$n.strata ]; then cp '{dir}/v'$n.strata \"$1\"; fi\n")).unwrap();
+    format!("sh '{}'", script.display())
+}
+
+fn strata_with_editor(args: &[&str], dir: &std::path::Path, editor: &str) -> (bool, String) {
+    let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(args).current_dir(dir).env("EDITOR", editor).env_remove("VISUAL").stdin(Stdio::null()).output().unwrap();
+    (o.status.success(), String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr))
+}
+
+#[test]
+fn edit_opens_the_code_in_an_editor() {
+    let d = tmp("editor");
+    let pkg = d.join("pkg");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("main.strata"), TAXES).unwrap();
+    assert!(strata(&["init"], &pkg, None).0);
+
+    // one definition: the editor shows it alone, and what is saved is the edit
+    let ed = d.join("one");
+    std::fs::create_dir_all(&ed).unwrap();
+    let editor = fake_editor(&ed, &["fn tax(amount: Int) -> Int {\n  amount / 5\n}\n"]);
+    let (ok, out) = strata_with_editor(&["edit", "tax", "--editor", "-m", "more tax"], &pkg, &editor);
+    assert!(ok && out.contains("changed"), "{out}");
+    assert_eq!(std::fs::read_to_string(ed.join("seen1.strata")).unwrap(), "fn tax(amount: Int) -> Int {\n  amount / 10\n}\n");
+    assert!(std::fs::read_to_string(pkg.join("main.strata")).unwrap().contains("amount / 5"));
+    assert!(std::fs::read_to_string(pkg.join("strata.log")).unwrap().contains("more tax"));
+
+    // an edit that doesn't check: the editor opens again with the errors on top
+    let ed = d.join("retry");
+    std::fs::create_dir_all(&ed).unwrap();
+    let editor = fake_editor(&ed, &["fn total(amount: Int) -> Int {\n  amount + true\n}\n", "fn total(amount: Int) -> Int {\n  amount + tax(amount) + 1\n}\n"]);
+    let (ok, out) = strata_with_editor(&["edit", "total", "--editor"], &pkg, &editor);
+    assert!(ok, "{out}");
+    let second = std::fs::read_to_string(ed.join("seen2.strata")).unwrap();
+    assert!(second.starts_with("// ✗ error in total") && second.contains("// ✗ not applied") && second.contains("amount + true"), "{second}");
+    assert!(std::fs::read_to_string(pkg.join("main.strata")).unwrap().contains("amount + tax(amount) + 1"));
+
+    // the whole module; a definition deleted from the buffer is removed
+    let ed = d.join("module");
+    std::fs::create_dir_all(&ed).unwrap();
+    let without = std::fs::read_to_string(pkg.join("main.strata")).unwrap().replace("fn double_tax(a: Int) -> Int {\n  tax(a) * 2\n}\n\n", "");
+    let editor = fake_editor(&ed, &[&without]);
+    let (ok, out) = strata_with_editor(&["edit", "--editor"], &pkg, &editor);
+    assert!(ok && out.contains("removed"), "{out}");
+    assert!(!std::fs::read_to_string(pkg.join("main.strata")).unwrap().contains("double_tax"));
+
+    // saved unchanged: nothing happens
+    let ed = d.join("same");
+    std::fs::create_dir_all(&ed).unwrap();
+    let editor = fake_editor(&ed, &[]);
+    let (ok, out) = strata_with_editor(&["edit", "--editor"], &pkg, &editor);
+    assert!(ok && out.contains("no changes"), "{out}");
+    assert_eq!(std::fs::read_to_string(pkg.join("strata.log")).unwrap().lines().count(), 3);
+}
+
 #[test]
 fn lambda_parameter_refinements_hold_at_runtime() {
     let d = tmp("lambda-refine");
@@ -2479,4 +2618,35 @@ fn main(opts: Options) -> () {
     // field docs round-trip
     let (_, r1) = strata(&["--file", "tool", "render", "main"], &d, None);
     assert!(r1.contains("  /// How many copies.\n  copies: Positive,"), "{r1}");
+}
+
+#[test]
+fn a_pending_change_handles_removed_and_added_variants() {
+    let d = tmp("pending-variants");
+    std::fs::write(
+        d.join("main.strata"),
+        "type Status =\n  | Pending\n  | Shipped { tracking: String }\n  | Cancelled\n\nfn label(s: Status) -> String {\n  match s {\n    Pending => \"pending\",\n    Shipped { tracking, .. } => \"shipped \" + tracking,\n    Cancelled => \"cancelled\",\n  }\n}\n\nfn done(s: Status) -> Bool {\n  match s {\n    Shipped { .. } | Cancelled => true,\n    Pending => false,\n  }\n}\n\nfn only_cancelled(s: Status) -> Int {\n  match s {\n    Cancelled => 1,\n  }\n}\n\nfn cancel() -> Status {\n  Cancelled\n}\n\ntest \"labels\" {\n  assert label(Pending) == \"pending\"\n}\n",
+    )
+    .unwrap();
+    assert!(strata(&["init"], &d, None).0);
+    let (ok, out) = strata(&["edit", "-m", "lost parcels"], &d, Some("type Status =\n  | Pending\n  | Shipped { tracking: String }\n  | Lost(Int)\n"));
+    assert!(ok, "{out}");
+    // a removed variant's arms go (or just its alternative); an added one gets an arm with a hole
+    assert!(out.contains("in label: dropped the arm for `Cancelled` (removed)") && out.contains("in done: dropped `Cancelled` (removed) from an arm"), "{out}");
+    assert!(out.contains("in label\n      why: `Lost` is a new variant of `Status`"), "{out}");
+    let m = std::fs::read_to_string(d.join("main.strata")).unwrap();
+    assert!(m.contains("    Shipped { tracking, .. } => \"shipped \" + tracking,\n    Lost(_) => ?pending_"), "{m}");
+    assert!(m.contains("    Shipped { .. } => true,\n    Pending => false,\n    Lost(_) => ?pending_"), "{m}");
+    // a match with no arm left is a hole; so is building the removed variant
+    assert!(m.contains("fn only_cancelled(s: Status) -> Int\n  = ?pending_") && m.contains("fn cancel() -> Status\n  = ?pending_"), "{m}");
+    let (_, out) = strata(&["holes"], &d, None);
+    assert!(out.contains("was:     Cancelled"), "{out}");
+    // filled, the change is one entry
+    assert!(strata(&["edit"], &d, Some("fn label(s: Status) -> String {\n  match s {\n    Pending => \"pending\",\n    Shipped { tracking, .. } => \"shipped \" + tracking,\n    Lost(n) => f\"lost {n}\",\n  }\n}\n")).0);
+    assert!(strata(&["edit"], &d, Some("fn done(s: Status) -> Bool {\n  match s {\n    Shipped { .. } | Lost(_) => true,\n    Pending => false,\n  }\n}\n")).0);
+    assert!(strata(&["edit", "--rm", "only_cancelled", "--rm", "cancel"], &d, Some("")).0);
+    let (ok, out) = strata(&["done"], &d, None);
+    assert!(ok && out.contains("recorded \"lost parcels\" as one change"), "{out}");
+    let (ok, out) = strata(&["test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
 }
