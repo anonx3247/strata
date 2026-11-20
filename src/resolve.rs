@@ -37,10 +37,7 @@ pub fn resolve(p: &Program) -> Resolution {
     // call into the host, which `run` reports). The standard library goes
     // after the program's own definitions, so index `i` of the result is
     // still index `i` of the input.
-    let calls_host = || {
-        let text = serde_json::to_string(p).unwrap();
-        crate::stdlib::HOST.iter().any(|h| text.contains(&format!("\"{}\"", h.name)))
-    };
+    let calls_host = || p.decls.iter().any(|d| names_in(&d.kind).iter().any(|n| crate::stdlib::is_host(n)));
     let mut r = if let Some(full) = crate::stdlib::with_std(p) {
         run(&full, None)
     } else if p.decls.iter().all(|d| d.module.is_empty() && !matches!(d.kind, DeclKind::Use(_))) && !calls_host() {
@@ -478,15 +475,9 @@ pub fn rename(p: &Program, old: &str, new: &str) -> Result<Program, String> {
         r.module = d.module.clone();
     }
     // the rename must not change what any other name refers to
-    // (`use` lists are compared by the names they bring in, which the resolution already covers)
-    let resolved = |p: &Program| {
-        let mut r = resolve(p).program;
-        r.decls.retain(|d| !matches!(d.kind, DeclKind::Use(_)));
-        serde_json::to_string(&r).unwrap()
-    };
-    let (before, after) = (resolved(p), resolved(&program));
-    let expect = before.replace(&format!("\"{old}\""), &format!("\"{new_q}\""));
-    if after != expect {
+    let map = HashMap::from([(old.to_string(), new_q.clone())]);
+    let expect: Vec<Decl> = resolved_defs(p).iter().map(|d| renamed(d, &map)).collect();
+    if resolved_defs(&program) != expect {
         return Err(format!("renaming `{old}` to `{new}` would change what other names refer to (something visible there is already called `{new}`)"));
     }
     Ok(program)
@@ -505,20 +496,100 @@ pub fn follow(merged: &Program, back: &Program, old: &str, new: &str) -> Result<
     }
     let module = old.rsplit_once('.').map(|(m, _)| m).unwrap_or("");
     let new_q = if module.is_empty() { new.to_string() } else { format!("{module}.{new}") };
-    let each = |p: &Program| resolve(p).program.decls.iter().map(|d| serde_json::to_string(d).unwrap()).collect::<Vec<_>>();
+    let each = |p: &Program| resolve(p).program.decls;
     let (rm, rb, ra) = (each(merged), each(back), each(&program));
+    let map = HashMap::from([(old.to_string(), new_q.clone())]);
     for (i, d) in program.decls.iter().enumerate() {
         if matches!(d.kind, DeclKind::Use(_)) {
             continue;
         }
         // the renamed definition, and what the rename didn't touch, are as merged
         let touched = program.decls[i] != back.decls[i] && back.decls[i].qname() != old;
-        let expect = if touched { rb[i].replace(&format!("\"{old}\""), &format!("\"{new_q}\"")) } else { rm[i].clone() };
+        let expect = if touched { renamed(&rb[i], &map) } else { rm[i].clone() };
         if ra[i] != expect {
             return Err(format!("following the rename of `{old}` to `{new}` would change what `{}` refers to", d.qname()));
         }
     }
     Ok(program)
+}
+
+/// Apply `f` to every name in a definition that can refer to another
+/// definition (variables and calls, constructors, methods, `is` tests,
+/// types, traits, `use`s), and to the names definitions are declared under.
+/// Not string literals, fields, local bindings, docs or comments.
+fn names_mut(d: &mut DeclKind, f: &mut dyn FnMut(&mut String)) {
+    struct Names<'a>(&'a mut dyn FnMut(&mut String));
+    impl VisitMut for Names<'_> {
+        fn expr(&mut self, e: &mut Expr) {
+            if let Expr::Var(n) | Expr::Ctor(n, _) | Expr::Method(_, n, _) | Expr::Is(_, n) = e {
+                (self.0)(n)
+            }
+            walk_expr_mut(self, e)
+        }
+        fn pattern(&mut self, p: &mut Pattern) {
+            if let Pattern::Ctor(n, _) = p {
+                (self.0)(n)
+            }
+            walk_pattern_mut(self, p)
+        }
+        fn ty(&mut self, t: &mut TypeExpr) {
+            if let TypeExpr::Named(n, _) = t {
+                (self.0)(n)
+            }
+            walk_ty_mut(self, t)
+        }
+    }
+    walk_decl_mut(&mut Names(&mut *f), d);
+    match d {
+        DeclKind::Type(t) => {
+            f(&mut t.name);
+            if let TypeBody::Sum(vs) = &mut t.body {
+                vs.iter_mut().for_each(|v| f(&mut v.name));
+            }
+        }
+        DeclKind::Fn(fd) => f(&mut fd.name),
+        DeclKind::Trait(t) => {
+            f(&mut t.name);
+            t.methods.iter_mut().for_each(|m| f(&mut m.decl.name));
+        }
+        DeclKind::Impl(i) => {
+            if !i.trait_name.is_empty() {
+                f(&mut i.trait_name);
+            }
+            i.methods.iter_mut().for_each(|m| f(&mut m.name));
+        }
+        DeclKind::Use(u) => {
+            f(&mut u.path);
+            u.items.iter_mut().flatten().for_each(|n| f(n));
+        }
+        DeclKind::Test(_) => {}
+    }
+}
+
+/// The names in a definition, as `names_mut` visits them.
+fn names_in(d: &DeclKind) -> HashSet<String> {
+    let mut out = HashSet::new();
+    names_mut(&mut d.clone(), &mut |n| {
+        out.insert(n.clone());
+    });
+    out
+}
+
+/// A definition with names replaced: `renames` maps old qualified names to new.
+fn renamed(d: &Decl, renames: &HashMap<String, String>) -> Decl {
+    let mut d = d.clone();
+    names_mut(&mut d.kind, &mut |n| {
+        if let Some(new) = renames.get(n.as_str()) {
+            *n = new.clone();
+        }
+    });
+    d
+}
+
+/// A program resolved, without its `use`s (they are compared through the
+/// names they bring in, which resolution already covers).
+fn resolved_defs(p: &Program) -> Vec<Decl> {
+    resolve(p).program.decls.into_iter().filter(|d| !matches!(d.kind, DeclKind::Use(_))).collect()
 }
 
 fn run(p: &Program, rename: Option<(String, String)>) -> Resolution {
@@ -1189,13 +1260,13 @@ fn move_apply(p: &Program, old: &str, target: &str) -> Result<(Program, String),
     program.decls[i].module = target.to_string();
     // what the moved definition uses from its old module (or that module's imports)
     // must be imported where it goes: names it writes short
-    let text = serde_json::to_string(&p.decls[i].kind).unwrap_or_default();
+    let written = names_in(&p.decls[i].kind);
     let deps = crate::store::graph(p).get(old).cloned().unwrap_or_default();
     let mut imports: Vec<(String, String, String)> = Vec::new();
     for dep in deps {
         let m = module_of(&dep).to_string();
         let short = dep.rsplit('.').next().unwrap_or(&dep).to_string();
-        if m != target && !m.is_empty() && !moves.contains_key(&dep) && text.contains(&format!("\"{short}\"")) {
+        if m != target && !m.is_empty() && !moves.contains_key(&dep) && written.contains(&short) {
             imports.push((target.to_string(), m, short));
         }
     }
@@ -1267,16 +1338,8 @@ pub fn move_def(p: &Program, old: &str, target: &str) -> Result<Program, String>
     }
     let (program, _) = move_apply(p, old, target)?;
     // every name must refer to what it did, with the moved names moved
-    let resolved = |p: &Program| {
-        let mut r = resolve(p).program;
-        r.decls.retain(|d| !matches!(d.kind, DeclKind::Use(_)));
-        serde_json::to_string(&r).unwrap()
-    };
-    let mut expect = resolved(p);
-    for (o, n) in &moves {
-        expect = expect.replace(&format!("\"{o}\""), &format!("\"{n}\""));
-    }
-    if resolved(&program) != expect {
+    let expect: Vec<Decl> = resolved_defs(p).iter().map(|d| renamed(d, &moves)).collect();
+    if resolved_defs(&program) != expect {
         return Err(format!("moving `{old}` to `{target}` would change what some names refer to (something visible there already has its name)"));
     }
     Ok(program)
@@ -1297,20 +1360,14 @@ pub fn follow_move(merged: &Program, old: &str, new: &str) -> Option<Program> {
     back.decls[i].module = source;
     let moves = moved_names(&back, old, &target).ok()?;
     let (program, _) = move_apply(&back, old, &target).ok()?;
-    let by_name = |p: &Program| -> HashMap<String, String> {
-        resolve(p).program.decls.iter().zip(&p.decls).filter(|(_, d)| !matches!(d.kind, DeclKind::Use(_))).map(|(r, d)| (d.qname(), serde_json::to_string(r).unwrap())).collect()
-    };
+    let by_name = |p: &Program| -> HashMap<String, Decl> { resolve(p).program.decls.into_iter().zip(&p.decls).filter(|(_, d)| !matches!(d.kind, DeclKind::Use(_))).map(|(r, d)| (d.qname(), r)).collect() };
     let (rm, rb, ra) = (by_name(merged), by_name(&back), by_name(&program));
     let tb: HashMap<String, Decl> = back.decls.iter().filter(|d| !matches!(d.kind, DeclKind::Use(_))).map(|d| (d.qname(), d.clone())).collect();
     for d in program.decls.iter().filter(|d| !matches!(d.kind, DeclKind::Use(_))) {
         let q = d.qname();
         let touched = q != new && tb.get(&q).is_some_and(|b| b != d);
         let expect = if touched {
-            let mut e = rb.get(&q)?.clone();
-            for (o, n) in &moves {
-                e = e.replace(&format!("\"{o}\""), &format!("\"{n}\""));
-            }
-            e
+            renamed(rb.get(&q)?, &moves)
         } else {
             rm.get(&q)?.clone()
         };
