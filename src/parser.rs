@@ -596,18 +596,26 @@ impl Parser {
             0 => &[("||", Or)],
             1 => &[("&&", And)],
             2 => &[("==", Eq), ("!=", Ne), ("<=", Le), (">=", Ge), ("<", Lt), (">", Gt)],
-            3 => &[("+", Add), ("-", Sub)],
-            4 => &[("*", Mul), ("/", Div), ("%", Mod)],
+            4 => &[("+", Add), ("-", Sub)],
+            5 => &[("*", Mul), ("/", Div), ("%", Mod)],
             _ => &[],
         };
         table.iter().find(|(t, _)| t == s).map(|(_, op)| *op)
     }
 
     fn binary(&mut self, level: usize) -> R<Expr> {
-        if level > 4 {
+        if level > 5 {
             return self.unary();
         }
         let mut lhs = self.binary(level + 1)?;
+        // `a ?? b`: `a`'s `Ok` / `Some` value, or else `b` (`a except { b }`); `a ?? b ?? c` is `a ?? (b ?? c)`
+        if level == 3 {
+            if self.eat_sym("??") {
+                let rhs = self.binary(3)?;
+                return Ok(Expr::Except(Box::new(lhs), None, Box::new(rhs)));
+            }
+            return Ok(lhs);
+        }
         loop {
             if level == 2 && self.eat_kw("is") {
                 let ctor = self.path()?;

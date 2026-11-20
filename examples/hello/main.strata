@@ -29,7 +29,7 @@ fn greeting(opts: Options) -> String {
 }
 
 fn main(opts: Options) -> () {
-  for _ in 0..opts.times except { 1 } {
+  for _ in 0..opts.times ?? 1 {
     print(greeting(opts))
   }
 }

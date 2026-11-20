@@ -3256,3 +3256,17 @@ fn ranges_slices_and_comprehensions() {
         assert!(!ok && out.contains(err), "{code}: {out}");
     }
 }
+
+#[test]
+fn coalesce() {
+    let d = tmp("coalesce");
+    let src = format!("{}/tests/data/coalesce.strata", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["--file", &src, "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    let (ok, out) = strata(&["--file", &src, "render"], &d, None);
+    assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
+    // a short `except { value }` is written `??`
+    std::fs::write(d.join("e.strata"), "fn f(s: String) -> Int { parse_int(s) except { 0 } }\n").unwrap();
+    let (ok, out) = strata(&["--file", "e.strata", "render"], &d, None);
+    assert!(ok && out.contains("parse_int(s) ?? 0"), "{out}");
+}

@@ -133,10 +133,17 @@ fn prec(e: &Expr) -> u8 {
         },
         Expr::Is(..) => 3,
         Expr::Lambda(..) | Expr::Return(..) | Expr::Range(..) => 0,
+        Expr::Except(..) if coalesce(e) => 4,
         Expr::Except(..) => 7,
         Expr::Un(..) => 7,
         _ => 8,
     }
+}
+
+/// `x except { fallback }` is written `x ?? fallback` when the fallback is a
+/// plain value: no error name, no block, no `return`.
+fn coalesce(e: &Expr) -> bool {
+    matches!(e, Expr::Except(_, None, fb) if !matches!(**fb, Expr::Block(..) | Expr::If(..) | Expr::Match(..) | Expr::Return(..) | Expr::Lambda(..)))
 }
 
 fn wrap(e: &Expr, min: u8, d: usize) -> String {
@@ -349,6 +356,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Return(x) if **x == Expr::Unit => "return".into(),
         Expr::Return(x) => format!("return {}", expr(x, d)),
         Expr::Try(x, k) => format!("{}{}", wrap(x, 8, d), if *k == TryKind::Result { "!" } else { "?" }),
+        Expr::Except(x, _, fb) if coalesce(e) => format!("{} ?? {}", wrap(x, 5, d), wrap(fb, 4, d)),
         Expr::Except(x, name, fb) => {
             let head = match name {
                 Some(n) => format!("{} except {n}", wrap(x, 8, d)),

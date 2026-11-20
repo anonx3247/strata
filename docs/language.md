@@ -239,13 +239,14 @@ fn transfer(from: Account, to: Account, amount: Cents) -> Result[(Account, Accou
 fn status_of(q: MemQueue, id: TaskId) -> Option[Status] {
   Some(q.entries.find(e -> e.task.id == id)?.status)  // None is returned from `status_of`
 }
-let port = parse_int(text) except { 8080 }                  // handle it here: a fallback value
+let port = parse_int(text) ?? 8080                          // handle it here: a fallback value
 let n = parse(s) except e { return describe_error(e) }      // the error, by name; the block may return
 ```
 
 - `e!` takes the `Ok` value of a `Result`, or returns its `Err` from the function. The error must fit the function's error type: the same type, or a variant of it, or a member of a union (there is no conversion function).
 - `e?` does the same for an `Option`: the `Some` value, or return `None`.
-- `e except { fallback }` handles a failed `Result` or a missing `Option` value inline. `except err { ... }` names the error (an `Option` has none). The fallback must produce the same type, or leave with `return`.
+- `e ?? fallback` handles a failed `Result` or a missing `Option` value inline: `e`'s value, or else the fallback (`a ?? b ?? 0` tries each in turn). It binds tighter than comparisons and looser than arithmetic: `n ?? 0 + 1` is `n ?? (0 + 1)`, `n ?? 0 == 1` is `(n ?? 0) == 1`.
+- `e except { fallback }` is the same with a block, for a longer fallback or one that leaves with `return`; a plain value is always written with `??`. `except err { ... }` names the error (an `Option` has none). The fallback must produce the same type, or leave with `return`.
 - They chain: `load(path)!.lines()`, `find(xs, p)?.name`.
 
 ## Built-in types
@@ -289,7 +290,7 @@ impl CommandLine for Options {}
 
 fn main(opts: Options) -> () {
   let who = if len(opts.names) == 0 { "world" } else { join(opts.names, " and ") }
-  for _ in 0..opts.times except { 1 } {
+  for _ in 0..opts.times ?? 1 {
     print(if opts.loud { to_upper(f"hello, {who}!") } else { f"hello, {who}!" })
   }
 }
