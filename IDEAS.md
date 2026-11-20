@@ -169,13 +169,62 @@ Steps:
    validity is compared on types whose unrefined type arguments are erased
    (`erased`), so a generic helper's result `Html[M]` matches its use as
    `Html[Msg]`. Not yet: `javascript:` URLs in `href` are not rejected.
-2. `strata serve`: a low-level handler `fn handle(req: Request) -> Response`
-   for JSON APIs and static files; bodies and query strings read into records
-   like `CommandLine`. The HTTP layer is native, next to the `host_*`
-   functions (`ui.rs` already has a std-only server).
-3. `App` and the JS client: sessions, messages, swapping the HTML in.
-4. Forms: `on_submit(constructor)` fills a record from the fields, with
-   refinement errors shown next to each field.
+2. `strata serve` (**built**, branch `worktree-web-serve`): `std.http`
+   (`Request`, `Response`, `Method` as a refined `String`, response helpers)
+   and `fn handle(req: Request) -> Response`, called once per request with a
+   fresh interpreter (`src/serve.rs`, std-only, one request at a time).
+   Routes as in Hono (asked for by the user): `Router` with `app.get(pattern,
+   handler)` etc., `:name` segments, `req.param(name)` an `Option`, HEAD via
+   GET, 404 / 405. As with `Html`, the refinements (`Method`, `Pattern`) are
+   on `Router.on`'s parameters and the stored `Route` is private and plain,
+   so `Router` has nothing to prove (CI's older z3 gave up on regex
+   refinements inside a list of routes). Building it fixed three things: a type's own method now
+   comes before a function of another module with the same name when called
+   as `x.m()` (`app.handle(req)` inside `fn handle`); termination no longer
+   takes a local named like a function for a call of it (`let mut app` in
+   `fn app`); the prover knows a function value's result is a valid value of
+   its result type (`Val::FnOf`), and a lambda passed for a function-typed
+   parameter gets valid arguments. Not yet: reading bodies and forms into
+   records (step 4), static files, typed route parameters (a pattern's names
+   checked against what the handler reads; `/users/:id` with `id: UserId`),
+   `*` wildcards, several requests at once, URL-encoding helpers for links.
+3. Apps (**built**, branch `worktree-web-app`): no `App` trait in the end,
+   but three functions found by name, like `main` and `handle`: `fn init()
+   -> Model`, `fn update(model: Model, msg: Msg) -> Model` (pure, returns the
+   new model, as in Elm), `fn view(model: Model) -> Html[Msg]`. `strata
+   serve` runs them when there is no `handle`: sessions in memory (a random
+   id per page load, at most 1000), `/_strata/app.js` sends
+   `data-on-{click,dblclick,submit,change}` messages one at a time and swaps
+   the view in; messages are read against `Msg` (refinements checked);
+   faults are 500s shown in a banner; an unknown session reloads the page.
+   `examples/counter` is proven, `update` included. For the view to be proven
+   when `Msg` has refined fields, the prover treats a type argument that is a
+   record or sum without a refinement of its own as adding nothing *to
+   prove* (its values are checked when made): `Attr[Msg]` from a generic
+   `on_click`. Facts to assume keep the checks (skipping them there lost
+   proofs in `examples/orders`). Not yet: the whole page re-rendered on
+   every message (no diffing; focus and scroll inside the app are lost);
+   input values in messages (step 4); an app and routes in one program;
+   sessions are lost on restart.
+4. Forms (**built**, branch `worktree-web-forms`; the user asked for the
+   logic to be in Strata): handlers that make a message from what was
+   entered, `on_input` / `on_change` (`(String) -> M`) and `on_submit_form`
+   (`(Dict[String, String]) -> M`). Functions can't go into the page, so
+   `std.web.render` numbers them in page order (a `mut` counter) and
+   `std.web.dispatch(page, n, value, fields)` (Strata) makes the message;
+   the server only re-runs `view` on the current model and calls it. The
+   client patches the page instead of replacing it (a small morph): focus
+   and scroll stay, and the field being typed in keeps its text (after a
+   submit, the view's value wins). Validation is ordinary Strata in
+   `update`; `examples/todos` shows errors next to the field and is proven
+   (titles within `Title`, at most 50 to-dos). Prover fixes on the way: an
+   empty list literal is valid at any element type, and an element of
+   `[] ⊕ xs` (merged branches, concatenation) is an element of `xs`. Not yet:
+   reading a form straight into a typed record (`decode[NewTodo](fields)`,
+   with each refinement's error by field: needs a builtin that knows its
+   type argument at runtime); a handler number can be stale if the page
+   changes between an event and its turn in the queue; keyed lists (the
+   morph patches children by position).
 5. Later: capabilities in `update` (database, LLM calls, HTTP client); the
    wasm build.
 

@@ -147,7 +147,7 @@ let tea = Item.new("tea").priced(42)
 **Shared method names.** Two traits may declare methods with the same name, and each implementation keeps its own body. A call picks by what is known about the value it is called on:
 
 - known only through a trait (`d: Describe`, `T: Describe`): that trait's implementation;
-- a known type: its own method if it has one (`impl Item { fn describe(self) … }`), else the one trait of the type that declares the name;
+- a known type: its own method if it has one (`impl Item { fn describe(self) … }`), else the one trait of the type that declares the name. This holds even when a function of another module has the same name: inside your own `fn handle`, `app.handle(req)` is `Router`'s method (`handle(app, req)` would be the function);
 - otherwise it is a compile error: a type implementing two traits that both have `describe`, with no `describe` of its own; a value known only as `Describe | Log` or `T: Describe + Log`. In the last two cases a type's own `describe` doesn't help: it says what `describe` means on an `Item`, not which trait's meaning the call wants.
 
 This holds whichever modules the traits come from: with `Console` (`std.io`) and `Files` (`std.fs`) both imported, `console.write(s)` and `files.write(path, s)` each mean their own trait's `write`. A method named like a builtin (`Files.remove`) doesn't hide the builtin: on a value whose type has no trait declaring the name (a dict, a list, a string…), `d.remove(k)` and `remove(d, k)` are the builtin's.
@@ -306,7 +306,57 @@ The **standard library** is the `std/` package, written in Strata and built into
 | `std.fs` | `Files` (`read`, `write`, `append`, `exists`, `list`, `make_dir`, `remove`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
 | `std.process` | `Environment` (`args`, `var`), `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
 | `std.cli` | `CommandLine`: a record of options read from the arguments |
+| `std.http` | `Request`, `Response`, `Method`; `ok_html`, `ok_text`, `ok_json`, `not_found`, `redirect`, …; `Router` (`app.get("/users/:id", handler)`, `req.param("id")`), for `strata serve` |
 | `std.web` | `Html[M]` and `Attr[M]`: HTML as values, one function per element (`div`, `p`, `table`, `button`, …) and attribute (`class`, `href`, `on_click(msg)`, …); `render`, `document(title, head, body)` |
+
+**Web servers** (`std.http`) define `fn handle(req: Request) -> Response`, which `strata serve` calls for each request. Routes are written as with Hono or Express, on a `Router`:
+
+```rust
+fn app() -> Router {
+  let mut app = Router.new()
+  app.get("/", req -> redirect("/users"))
+  app.get("/users/:id", show_user)
+  app
+}
+
+fn show_user(req: Request) -> Response {
+  let id = req.param("id") except { return not_found() }
+  ok_text(f"user {id}")
+}
+
+fn handle(req: Request) -> Response {
+  app().handle(req)
+}
+```
+
+Routes are tried in order; `:name` segments are captured, and `req.param(name)` is an `Option` (a handler can be called without its route). A `HEAD` request uses the `GET` routes; no route for the path is a 404, and routes for it but not for its method a 405.
+
+**Apps** follow the Elm architecture: a model, messages, and three functions that `strata serve` runs (see `examples/counter`):
+
+```rust
+type Model = { count: Int where 0 <= it && it <= 100 }
+
+type Msg =
+  | Increment
+  | Reset
+
+fn init() -> Model { Model { count: 0 } }
+
+fn update(model: Model, msg: Msg) -> Model {
+  match msg {
+    Increment => Model { count: min(model.count + 1, 100) },
+    Reset => Model { count: 0 },
+  }
+}
+
+fn view(model: Model) -> Html[Msg] {
+  div([], [text(f"{model.count}"), button([on_click(Increment)], [text("+")])])
+}
+```
+
+`update` is a plain function: tests call it, and `strata verify` proves that every message keeps the model valid.
+
+Events carry a message (`on_click(Reset)`), or make one from what the user entered: `on_input(s -> Typed { text: s })` for a field's value as it is typed, `on_change(make)` for a select or a checkbox (`"true"` / `"false"`), and `on_submit_form(fields -> Submitted { fields })` for a form's fields by name (a `Dict[String, String]`). Checking what was entered is ordinary code in `update`, so a refused form can keep its error in the model and show it next to the field (see `examples/todos`).
 
 **HTML** (`std.web`) is built as values and rendered to text; see `examples/page`. Text is always escaped. Tag and attribute names are checked where they are written: `element` and `attr` take a `TagName` and an `AttrName`, and an attribute can't be an inline script (`attr("onclick", …)` is rejected when checking). `Html` and `Attr` are records around private types, so only those functions make them; the types themselves have nothing left to check, and the verifier passes over views. Events are attributes too: `on_click(msg)` carries a value of the page's message type `M`, written as JSON in a `data-on-click` attribute for the runtime to send back (the server that does so isn't built yet). A page without events is an `Html[()]`. The text inside a `<style>` element (`style_sheet(css)`) isn't escaped, but can't close the element.
 

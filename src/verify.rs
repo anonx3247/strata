@@ -204,6 +204,8 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&c
     };
     let fuzz = |proven: usize, unproven: Vec<String>| match fuzz_call(env, &decl, cases, seed, method) {
         Verdict::Fuzzed { cases, discarded, .. } => Verdict::Fuzzed { cases, discarded, proven, unproven, terminates: None },
+        // not fuzzed either: say what the solver couldn't prove
+        Verdict::Skipped { reason } if !unproven.is_empty() => Verdict::Skipped { reason: format!("{reason}; not proven: {}", unproven.join("; ")) },
         other => other,
     };
     let Some(bin) = solver else {
