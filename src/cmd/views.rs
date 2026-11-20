@@ -90,7 +90,7 @@ pub fn render(args: &Args) -> Result<bool, String> {
     match args.val("--split") {
         None => {
             // a module is a file: print one
-            let mut mods: Vec<String> = p.decls.iter().map(|d| d.module.clone()).collect();
+            let mut mods: Vec<String> = p.decls.iter().map(|d| d.module.to_string()).collect();
             mods.sort();
             mods.dedup();
             let m = match (args.pos.get(1), mods.as_slice()) {
@@ -204,7 +204,7 @@ fn module_rel(m: &str) -> String {
 
 /// One file per module, in canonical form; the root module goes to main.strata.
 fn write_modules(p: &Program, dir: &std::path::Path) -> Result<bool, String> {
-    let mut mods: Vec<String> = p.decls.iter().map(|d| d.module.clone()).collect();
+    let mut mods: Vec<String> = p.decls.iter().map(|d| d.module.to_string()).collect();
     mods.sort();
     mods.dedup();
     for m in mods {

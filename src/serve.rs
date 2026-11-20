@@ -10,7 +10,7 @@
 //! written back. One request at a time, each with a fresh interpreter, so
 //! nothing a request does is seen by the next.
 
-use crate::ast::{FnDecl, TypeExpr};
+use crate::ast::{FnDecl, Symbol, TypeExpr};
 use crate::interp::{self, Interp, Value};
 use crate::types::Env;
 use serde_json::{json, Map, Value as Json};
@@ -28,7 +28,7 @@ const MAX_BODY: usize = 16 << 20;
 fn handler(env: &Env) -> Result<FnDecl, String> {
     let f = env
         .fns
-        .get("handle")
+        .get(&Symbol::new("handle"))
         .ok_or("no `handle` function to serve: write `fn handle(req: Request) -> Response` (with `use std.http.{Request, Response}`)")?
         .clone();
     let usage = "`handle` takes a `Request` (std.http) and may ask for `Console`, `Files` and `Environment`";
@@ -58,7 +58,7 @@ enum Mode {
 }
 
 pub fn serve(env: &Env, port: u16, name: &str) -> Result<(), String> {
-    let mut mode = if env.fns.contains_key("handle") || !env.fns.contains_key("view") {
+    let mut mode = if env.fns.contains_key(&Symbol::new("handle")) || !env.fns.contains_key(&Symbol::new("view")) {
         Mode::Handle(handler(env)?)
     } else {
         Mode::App(App::new(env, name)?)
@@ -124,7 +124,7 @@ impl App {
     /// Check the three functions' signatures.
     fn new(env: &Env, name: &str) -> Result<App, String> {
         let usage = "an app is `fn init() -> Model`, `fn update(model: Model, msg: Msg) -> Model` and `fn view(model: Model) -> Html[Msg]` (std.web), for your own `Model` and `Msg` types";
-        let get = |n: &str| env.fns.get(n).cloned().ok_or(format!("no `{n}` function: {usage}"));
+        let get = |n: &str| env.fns.get(&Symbol::new(n)).cloned().ok_or(format!("no `{n}` function: {usage}"));
         let (init, update, view) = (get("init")?, get("update")?, get("view")?);
         let ty = crate::printer::ty;
         let model = ty(&init.ret);

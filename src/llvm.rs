@@ -46,7 +46,7 @@ fn vars_in(e: &Expr) -> Vec<String> {
     impl Visit for Vars {
         fn expr(&mut self, e: &Expr) {
             if let Expr::Var(x) = e {
-                self.0.push(x.clone());
+                self.0.push(x.to_string());
             }
             walk_expr(self, e)
         }
@@ -104,11 +104,11 @@ fn key(t: &Ty) -> String {
         Ty::Str => "String".into(),
         Ty::Unit => "()".into(),
         Ty::Con(n, a) if n == "Tuple" => format!("({})", list(a)),
-        Ty::Con(n, a) if a.is_empty() => n.clone(),
+        Ty::Con(n, a) if a.is_empty() => n.to_string(),
         Ty::Con(n, a) => format!("{n}[{}]", list(a)),
         Ty::Fn(ps, r) => format!("({}) -> {}", list(ps), key(r)),
         Ty::Union(ms) => ms.iter().map(key).collect::<Vec<_>>().join(" | "),
-        Ty::Rigid(n) => n.clone(),
+        Ty::Rigid(n) => n.to_string(),
         Ty::Var(_) => "?".into(),
     }
 }
@@ -121,40 +121,56 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
     with.decls.extend(crate::parser::parse_module_file(PRELUDE, PRELUDE_MODULE).map_err(|e| format!("llvm/prelude.strata: {e}"))?.decls);
     let (resolved, types) = crate::types::elaborate_typed(&with);
     let (env, _) = Env::build(&resolved.program);
-    let main = env.fns.get(entry).ok_or(format!("no `{entry}` function to compile"))?.clone();
+    let main = env.fns.get(&Symbol::new(entry)).ok_or(format!("no `{entry}` function to compile"))?.clone();
     if !main.params.is_empty() {
         return Err(format!("`{entry}` takes parameters; compiled programs can't ask for capabilities or options yet"));
     }
     // every constructor gets a tag of its own, so a value's tag says what it is
-    let mut ctors: Vec<&String> = env.ctors.keys().collect();
+    let mut ctors: Vec<&Symbol> = env.ctors.keys().collect();
     ctors.sort();
-    let tags = ctors.iter().enumerate().map(|(i, c)| ((*c).clone(), i as i64 + 1)).collect();
+    let tags = ctors.iter().enumerate().map(|(i, c)| (c.to_string(), i as i64 + 1)).collect();
     // bodies as the checker saw them (its types are by node); signatures from `env`
     let mut bodies: HashMap<String, &FnDecl> = HashMap::new();
     for d in &resolved.program.decls {
         match &d.kind {
             DeclKind::Fn(f) => {
-                bodies.insert(f.name.clone(), f);
+                bodies.insert(f.name.to_string(), f);
             }
             DeclKind::Impl(i) if i.is_inherent() => {
                 for mth in &i.methods {
-                    bodies.insert(crate::types::static_fn(i, mth).name, mth);
+                    bodies.insert((crate::types::static_fn(i, mth).name).to_string(), mth);
                 }
             }
             _ => {}
         }
     }
-    let refinements = resolved.program.decls.iter().filter_map(|d| match &d.kind {
-        DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.clone(), r)),
+    let traits = resolved.program.decls.iter().filter_map(|d| match &d.kind {
+        DeclKind::Trait(t) => Some((t.name.clone(), t)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, refinements, tags, globals: String::new(), strings: HashMap::new(), body: String::new(), queue: VecDeque::new(), seen: HashSet::new(), helpers: HashSet::new(), lambdas: 0 };
+    let impls = resolved.program.decls.iter().filter_map(|d| match &d.kind {
+        DeclKind::Impl(i) if !i.is_inherent() => Some(i),
+        _ => None,
+    }).collect();
+    let refinements = resolved.program.decls.iter().filter_map(|d| match &d.kind {
+        DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
+        _ => None,
+    }).collect();
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::new(), body: String::new(), queue: VecDeque::new(), seen: HashSet::new(), helpers: HashSet::new(), lambdas: 0 };
     let ret = m.lower(&main.ret, &HashMap::new())?;
     m.want(entry, vec![]);
-    while let Some((name, targs)) = m.queue.pop_front() {
-        let f = env.fns[&name].clone();
-        let shown = if targs.is_empty() { name.clone() } else { format!("{name}[{}]", targs.iter().map(key).collect::<Vec<_>>().join(", ")) };
-        m.function(&name, &targs, &f).map_err(|e| format!("can't compile `{shown}`: {e}"))?;
+    while let Some(job) = m.queue.pop_front() {
+        match job {
+            Job::Fn(name, targs) => {
+                let f = env.fns[&Symbol::new(&name)].clone();
+                let shown = if targs.is_empty() { name.clone() } else { format!("{name}[{}]", targs.iter().map(key).collect::<Vec<_>>().join(", ")) };
+                m.function(&name, &targs, &f).map_err(|e| format!("can't compile `{shown}`: {e}"))?;
+            }
+            Job::Method(mi) => {
+                let shown = format!("{}.{} for {}", mi.tr, mi.method, key(&mi.recv));
+                m.method(&mi).map_err(|e| format!("can't compile `{shown}`: {e}"))?;
+            }
+        }
     }
     m.entry(entry, &ret)?;
     let mut out = String::from("; Strata, compiled by `strata build`\n\n");
@@ -214,6 +230,49 @@ fn sym(name: &str, targs: &[Ty]) -> String {
     }
 }
 
+/// What to compile: a function, or a trait method, for some types.
+enum Job {
+    Fn(String, Vec<Ty>),
+    Method(MethodInst),
+}
+
+/// A trait method for one receiver type (and type arguments of its own).
+#[derive(Clone)]
+struct MethodInst {
+    tr: String,
+    method: String,
+    /// The type it is called on, and the name of its implementation's type
+    /// (a variant with an impl of its own, or the type).
+    recv: Ty,
+    head: String,
+    targs: Vec<Ty>,
+}
+
+impl MethodInst {
+    fn symbol(&self) -> String {
+        let own = if self.targs.is_empty() { String::new() } else { format!("[{}]", self.targs.iter().map(key).collect::<Vec<_>>().join(", ")) };
+        format!("@\"strata:{}::{}@{}{own}\"", self.tr, self.method, key(&self.recv))
+    }
+}
+
+/// One instance of a function to compile.
+struct Instance<'a> {
+    /// Its name in messages (`total`, `Item.price`).
+    label: String,
+    symbol: String,
+    /// The signature (written types, lowered with `sub`).
+    params: Vec<Param>,
+    ret: TypeExpr,
+    /// The declaration's own nodes, which the checker typed.
+    own_params: &'a [Param],
+    own_ret: &'a TypeExpr,
+    requires: Vec<&'a Expr>,
+    ensures: Vec<&'a Expr>,
+    body: &'a Expr,
+    /// Type parameters (and `Self`) -> types.
+    sub: HashMap<Symbol, Ty>,
+}
+
 /// A constructor's fields: name (positional ones have none), written type,
 /// and type, with the type's parameters filled in.
 struct FieldInfo {
@@ -228,6 +287,9 @@ struct Module<'a> {
     types: &'a HashMap<usize, Ty>,
     /// Each function's own declaration in the program (its body, `requires`, `ensures`).
     bodies: HashMap<String, &'a FnDecl>,
+    /// Traits and their implementations, as written (their bodies are what the checker typed).
+    traits: HashMap<Symbol, &'a TraitDecl>,
+    impls: Vec<&'a ImplDecl>,
     /// Each type's refinement as written in the program (the prelude's from `env`).
     refinements: HashMap<String, &'a Expr>,
     /// Constructor -> tag.
@@ -238,7 +300,7 @@ struct Module<'a> {
     /// Compiled functions.
     body: String,
     /// Functions still to compile (with their type arguments): those the compiled ones call.
-    queue: VecDeque<(String, Vec<Ty>)>,
+    queue: VecDeque<Job>,
     seen: HashSet<String>,
     /// Generated helpers (equality, JSON) already emitted.
     helpers: HashSet<String>,
@@ -249,8 +311,85 @@ struct Module<'a> {
 impl<'a> Module<'a> {
     fn want(&mut self, name: &str, targs: Vec<Ty>) {
         if self.seen.insert(sym(name, &targs)) {
-            self.queue.push_back((name.to_string(), targs));
+            self.queue.push_back(Job::Fn(name.to_string(), targs));
         }
+    }
+
+    fn want_method(&mut self, mi: MethodInst) -> String {
+        let s = mi.symbol();
+        if self.seen.insert(s.clone()) {
+            self.queue.push_back(Job::Method(mi));
+        }
+        s
+    }
+
+    /// The type named `head` as it runs (a value's head, for method dispatch).
+    fn head(t: &Ty) -> Option<String> {
+        Some(match t {
+            Ty::Int => "Int".into(),
+            Ty::Float => "Float".into(),
+            Ty::Bool => "Bool".into(),
+            Ty::Str => "String".into(),
+            Ty::Unit => "Unit".into(),
+            Ty::Con(n, _) => n.to_string(),
+            _ => return None,
+        })
+    }
+
+    /// The trait and method a call of `name` on a value whose type is `head` means.
+    fn resolve_method(&self, name: &str, head: &str) -> Option<(String, String)> {
+        match crate::types::split_trait_call(name) {
+            Some((tr, m)) => Some((tr.to_string(), m.to_string())),
+            None => match self.env.traits_with(name, head).as_slice() {
+                [tr] => Some((tr.to_string(), name.to_string())),
+                _ => None,
+            },
+        }
+    }
+
+    /// The implementation of trait `tr` for type `head`, as written.
+    fn impl_of(&self, tr: &str, head: &str) -> Option<&'a ImplDecl> {
+        self.impls.iter().copied().find(|i| i.trait_name == tr && crate::types::texpr_head(&i.for_type) == head)
+    }
+
+    /// The trait method `m` of `tr`, as written.
+    fn trait_method(&self, tr: &str, m: &str) -> Option<&'a TraitMethod> {
+        self.traits.get(&Symbol::new(tr))?.methods.iter().find(|x| x.decl.name == m)
+    }
+
+    /// Compile one instance of a trait method: the impl's own, or the trait's default.
+    /// A method instance's types (`Self`, the impl's and trait's
+    /// parameters, its own), and its declaration (the impl's, or the default).
+    fn method_sub(&self, mi: &MethodInst) -> Res<(HashMap<Symbol, Ty>, &'a FnDecl, &'a TraitMethod)> {
+        let tm = self.trait_method(&mi.tr, &mi.method).ok_or(format!("trait `{}` has no method `{}`", mi.tr, mi.method))?;
+        let imp = self.impl_of(&mi.tr, &mi.head).ok_or(format!("`{}` does not implement `{}`", mi.head, mi.tr))?;
+        let own = imp.methods.iter().find(|m| m.name == mi.method).unwrap_or(&tm.decl);
+        let mut sub = HashMap::new();
+        sub.insert(Symbol::new("Self"), mi.recv.clone());
+        self.bind_targs(&imp.for_type, &mi.recv, &imp.type_params, &mut sub);
+        let tr = self.traits[&Symbol::new(&mi.tr)];
+        for (p, a) in tr.params.iter().zip(&imp.trait_args) {
+            let t = self.lower(a, &sub)?;
+            sub.insert(p.clone(), t);
+        }
+        for (p, t) in own.type_params.iter().zip(&mi.targs) {
+            sub.insert(p.clone(), t.clone());
+        }
+        Ok((sub, own, tm))
+    }
+
+    fn method(&mut self, mi: &MethodInst) -> Res<()> {
+        let (sub, own, tm) = self.method_sub(mi)?;
+        // the trait's contract binds every implementation
+        let mut requires: Vec<&Expr> = tm.decl.requires.iter().collect();
+        let mut ensures: Vec<&Expr> = tm.decl.ensures.iter().collect();
+        if !std::ptr::eq(own, &tm.decl) {
+            requires.extend(&own.requires);
+            ensures.extend(&own.ensures);
+        }
+        let label = format!("{}.{}", crate::names::short(&mi.head), mi.method);
+        let inst = Instance { label, symbol: mi.symbol(), params: own.params.clone(), ret: own.ret.clone(), own_params: &own.params, own_ret: &own.ret, requires, ensures, body: &own.body, sub };
+        self.instance(&inst)
     }
 
     /// A string constant, laid out as the runtime's `Str`: its length, then its bytes.
@@ -284,11 +423,11 @@ impl<'a> Module<'a> {
 
     /// The refinement of the type named `n`, as the checker saw it.
     fn refinement(&self, n: &str) -> Option<&'a Expr> {
-        self.refinements.get(n).copied().or_else(|| self.env.types.get(n)?.refinement.as_ref())
+        self.refinements.get(n).copied().or_else(|| self.env.types.get(&Symbol::new(n))?.refinement.as_ref())
     }
 
     fn is_distinct(&self, n: &str) -> bool {
-        self.env.types.get(n).is_some_and(|t| t.distinct)
+        self.env.types.get(&Symbol::new(n)).is_some_and(|t| t.distinct)
     }
 
     /// The type a value is represented as: a `distinct` type is its underlying one.
@@ -329,18 +468,19 @@ impl<'a> Module<'a> {
     }
 
     /// A written type as a type, with type parameters from `sub`.
-    fn lower(&self, t: &TypeExpr, sub: &HashMap<String, Ty>) -> Res<Ty> {
+    fn lower(&self, t: &TypeExpr, sub: &HashMap<Symbol, Ty>) -> Res<Ty> {
         Ok(match t {
             TypeExpr::Unit => Ty::Unit,
             TypeExpr::Refined(b, _) => self.lower(b, sub)?,
             TypeExpr::Fn(ps, r) => Ty::Fn(ps.iter().map(|p| self.lower(p, sub)).collect::<Res<_>>()?, Box::new(self.lower(r, sub)?)),
             TypeExpr::Union(ms) => Ty::Union(ms.iter().map(|m| self.lower(m, sub)).collect::<Res<_>>()?),
             TypeExpr::Named(n, args) => {
-                if let Some(t) = sub.get(n) {
+                if let Some(t) = sub.get(&n.sym()) {
                     return Ok(t.clone());
                 }
                 let args: Vec<Ty> = args.iter().map(|a| self.lower(a, sub)).collect::<Res<_>>()?;
                 match n.as_str() {
+                    crate::types::TYPE_ARG => Ty::Unit,
                     "Int" => Ty::Int,
                     "Float" => Ty::Float,
                     "Bool" => Ty::Bool,
@@ -364,9 +504,9 @@ impl<'a> Module<'a> {
         match t {
             Ty::Con(n, _) if n == "Tuple" => vec![],
             Ty::Con(n, _) => match self.env.types.get(n).map(|td| &td.body) {
-                Some(TypeBody::Sum(vs)) => vs.iter().map(|v| v.name.clone()).collect(),
-                Some(TypeBody::Record(_)) => vec![n.clone()],
-                _ if self.env.ctors.contains_key(n) => vec![n.clone()],
+                Some(TypeBody::Sum(vs)) => vs.iter().map(|v| v.name.to_string()).collect(),
+                Some(TypeBody::Record(_)) => vec![n.to_string()],
+                _ if self.env.ctors.contains_key(n) => vec![n.to_string()],
                 _ => vec![],
             },
             Ty::Union(ms) => ms.iter().flat_map(|m| self.ctors_of(m)).collect(),
@@ -384,18 +524,18 @@ impl<'a> Module<'a> {
 
     /// The fields of constructor `c` (of a type with arguments `args`).
     fn fields(&self, c: &str, args: &[Ty]) -> Res<Vec<FieldInfo>> {
-        let tname = self.env.ctors.get(c).ok_or(format!("unknown constructor `{c}`"))?;
+        let tname = self.env.ctors.get(&Symbol::new(c)).ok_or(format!("unknown constructor `{c}`"))?;
         let td = &self.env.types[tname];
-        let sub: HashMap<String, Ty> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+        let sub: HashMap<Symbol, Ty> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
         let mk = |name: Option<String>, te: &TypeExpr| -> Res<FieldInfo> { Ok(FieldInfo { name, texpr: te.clone(), ty: self.lower(te, &sub)? }) };
         match &td.body {
-            TypeBody::Record(fs) => fs.iter().map(|f| mk(Some(f.name.clone()), &f.ty)).collect(),
+            TypeBody::Record(fs) => fs.iter().map(|f| mk(Some(f.name.to_string()), &f.ty)).collect(),
             TypeBody::Sum(vs) => {
                 let v = vs.iter().find(|v| v.name == c).unwrap();
                 match &v.payload {
                     Payload::None => Ok(vec![]),
                     Payload::Positional(ts) => ts.iter().map(|t| mk(None, t)).collect(),
-                    Payload::Record(fs) => fs.iter().map(|f| mk(Some(f.name.clone()), &f.ty)).collect(),
+                    Payload::Record(fs) => fs.iter().map(|f| mk(Some(f.name.to_string()), &f.ty)).collect(),
                 }
             }
             TypeBody::Alias(a) => Ok(vec![mk(None, a)?]),
@@ -403,11 +543,28 @@ impl<'a> Module<'a> {
     }
 
     fn function(&mut self, name: &str, targs: &[Ty], f: &FnDecl) -> Res<()> {
-        let own = *self.bodies.get(name).ok_or("trait methods are not compiled yet")?;
-        let sub: HashMap<String, Ty> = f.type_params.iter().cloned().zip(targs.iter().cloned()).collect();
-        if f.params.iter().any(|p| matches!(&p.ty, TypeExpr::Named(n, _) if n == crate::types::TYPE_ARG)) {
-            return Err("trait methods without `self` are not compiled yet".into());
-        }
+        let own = *self.bodies.get(name).ok_or(format!("no declaration of `{name}`"))?;
+        let sub: HashMap<Symbol, Ty> = f.type_params.iter().cloned().zip(targs.iter().cloned()).collect();
+        let inst = Instance {
+            label: name.to_string(),
+            symbol: sym(name, targs),
+            params: f.params.clone(),
+            ret: f.ret.clone(),
+            own_params: &own.params,
+            own_ret: &own.ret,
+            requires: own.requires.iter().collect(),
+            ensures: own.ensures.iter().collect(),
+            body: &own.body,
+            sub,
+        };
+        self.instance(&inst)
+    }
+
+    /// Compile a function's instance: its parameters' and result's
+    /// refinements, its contract, its body.
+    fn instance(&mut self, inst: &Instance<'a>) -> Res<()> {
+        let (name, sub, own) = (&inst.label, inst.sub.clone(), inst);
+        let f = inst;
         let mut params = Vec::new();
         for p in &f.params {
             if p.mutable {
@@ -430,11 +587,11 @@ impl<'a> Module<'a> {
             c.store(&(t.clone(), format!("%p.{}", p.name)), &slot)?;
         }
         // the written types of the program's own declaration (inline refinements are its nodes)
-        for p in &own.params {
+        for p in own.own_params {
             let v = c.load(&p.name)?;
             c.check(&p.ty, &v, &format!("argument `{}` of `{name}`", p.name), false)?;
         }
-        for r in &own.requires {
+        for r in own.requires.clone() {
             let ok = c.expr(r)?;
             let (pass, fail) = (c.fresh_label("requires.ok"), c.fresh_label("requires.fail"));
             c.cond_br(&ok, &pass, &fail);
@@ -457,7 +614,7 @@ impl<'a> Module<'a> {
         } else {
             c.ret_slot = Some((ret.clone(), String::new()));
         }
-        let v = c.expr(&own.body)?;
+        let v = c.expr(own.body)?;
         c.return_value(&v)?;
         // every way out: the result's refinement, then the postconditions
         c.block("exit");
@@ -469,12 +626,12 @@ impl<'a> Module<'a> {
         } else {
             (ret.clone(), String::new())
         };
-        c.check(&own.ret, &result, &format!("result of `{name}`"), true)?;
+        c.check(own.own_ret, &result, &format!("result of `{name}`"), true)?;
         if !own.ensures.is_empty() {
             c.scopes.push(HashMap::new());
             let slot = c.local("it", &ret, None)?;
             c.store(&result, &slot)?;
-            for en in &own.ensures {
+            for en in own.ensures.clone() {
                 let ok = c.expr(en)?;
                 let (pass, fail) = (c.fresh_label("ensures.ok"), c.fresh_label("ensures.fail"));
                 c.cond_br(&ok, &pass, &fail);
@@ -494,7 +651,7 @@ impl<'a> Module<'a> {
             c.emit("ret void".into());
         }
         let text = c.finish();
-        writeln!(self.body, "define {} {}({}) {{\n{text}}}\n", self.ll(&ret)?, sym(name, targs), sig.join(", ")).unwrap();
+        writeln!(self.body, "define {} {}({}) {{\n{text}}}\n", self.ll(&ret)?, inst.symbol, sig.join(", ")).unwrap();
         Ok(())
     }
 
@@ -562,7 +719,7 @@ struct Local {
 struct Func<'m, 'a> {
     m: &'m mut Module<'a>,
     /// The type arguments of the instance being compiled.
-    sub: HashMap<String, Ty>,
+    sub: HashMap<Symbol, Ty>,
     /// Slots of the variables, in the entry block (so LLVM keeps them in registers).
     allocas: String,
     code: String,
@@ -579,7 +736,7 @@ struct Func<'m, 'a> {
 }
 
 impl<'m, 'a> Func<'m, 'a> {
-    fn new(m: &'m mut Module<'a>, sub: HashMap<String, Ty>) -> Self {
+    fn new(m: &'m mut Module<'a>, sub: HashMap<Symbol, Ty>) -> Self {
         Func { m, sub, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![HashMap::new()], loops: vec![], ret_slot: None, cur: String::new(), terminated: true }
     }
 
@@ -644,7 +801,7 @@ impl<'m, 'a> Func<'m, 'a> {
     /// left open (`[]` never used, `None` printed) is `()`.
     fn concrete(&self, t: &Ty) -> Ty {
         match t {
-            Ty::Rigid(n) => self.sub.get(n).cloned().unwrap_or(Ty::Unit),
+            Ty::Rigid(n) => self.sub.get(&n.sym()).cloned().unwrap_or(Ty::Unit),
             Ty::Var(_) => Ty::Unit,
             Ty::Con(n, a) => Ty::Con(n.clone(), a.iter().map(|x| self.concrete(x)).collect()),
             Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(|x| self.concrete(x)).collect(), Box::new(self.concrete(r))),
@@ -1127,7 +1284,7 @@ impl<'m, 'a> Func<'m, 'a> {
                     let tc = t.clone();
                     h.on_ctor(&a, "", |h, c| {
                         let fs = h.m.fields(c, &h.m.ctor_args(c, &tc))?;
-                        let is_record = matches!(h.m.env.types.get(c).map(|td| &td.body), Some(TypeBody::Record(_)));
+                        let is_record = matches!(h.m.env.types.get(&Symbol::new(c)).map(|td| &td.body), Some(TypeBody::Record(_)));
                         let named = |c: &str| serde_json::to_string(crate::names::short(c)).unwrap();
                         let mut parts = vec![];
                         if is_record {
@@ -1194,12 +1351,12 @@ impl<'m, 'a> Func<'m, 'a> {
                 })?;
             }
             TypeExpr::Named(n, args) => {
-                let n = match self.m.env.variant_parent(n) {
+                let n = match self.m.env.variant_parent(n.sym()) {
                     Some(p) => p,
                     None => n.clone(),
                 };
                 let Some(td) = self.m.env.types.get(&n).cloned() else { return Ok(()) };
-                let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+                let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
                 match &td.body {
                     TypeBody::Alias(a) => self.check_in(&crate::types::subst_texpr(a, &sub), v, ctx, false)?,
                     _ => {
@@ -1239,13 +1396,13 @@ impl<'m, 'a> Func<'m, 'a> {
         match t {
             TypeExpr::Refined(..) => true,
             TypeExpr::Named(n, args) => {
-                if self.sub.contains_key(n) {
+                if self.sub.contains_key(&n.sym()) {
                     return false;
                 }
                 if n == "List" {
                     return args.iter().any(|x| self.needs_check(x));
                 }
-                let n = self.m.env.variant_parent(n).unwrap_or(n.clone());
+                let n = self.m.env.variant_parent(n.sym()).unwrap_or(n.clone());
                 match self.m.env.types.get(&n) {
                     Some(td) if td.distinct => false,
                     Some(td) => match &td.body {
@@ -1271,7 +1428,7 @@ impl<'m, 'a> Func<'m, 'a> {
 
     /// The refinement of the type itself (`type Range = { lo: Int, hi: Int } where it.lo <= it.hi`).
     fn check_type_refinement(&mut self, c: &str, v: &V) -> Res<()> {
-        let tname = self.m.env.ctors[c].clone();
+        let tname = self.m.env.ctors[&Symbol::new(c)].clone();
         if let Some(r) = self.m.refinement(&tname) {
             let ok = self.with_it(v, false, |s| s.expr(r))?;
             self.fail_unless(&ok, &format!("constructing `{c}`"), v, format!("does not satisfy `{tname}` (where {})", crate::printer::expr(&r, 0)))?;
@@ -1299,11 +1456,11 @@ impl<'m, 'a> Func<'m, 'a> {
     fn holds(&mut self, name: &str, v: &V) -> Res<V> {
         let mut conds = vec![];
         if self.m.nominal(&self.m.repr(&v.0)?) {
-            let target = Ty::Con(name.to_string(), Module::args_of(&v.0));
+            let target = Ty::Con(Symbol::from(Symbol::from(name)), Module::args_of(&v.0));
             let cs = self.m.ctors_of(&target);
             conds.push(self.tag_in(v, &cs)?);
         }
-        let mut t = TypeExpr::Named(name.to_string(), vec![]);
+        let mut t = TypeExpr::Named(Symbol::from(Symbol::from(name)), vec![]);
         loop {
             match t {
                 TypeExpr::Refined(b, pred) => {
@@ -1393,12 +1550,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
             },
             // method-call sugar: `e.f(args)` is `f(e, args)`
-            Expr::Method(recv, m, args) => {
-                if m.contains("::") {
-                    return self.unsupported(&format!("the trait method `{m}`"));
-                }
-                self.call_named(e, m, std::iter::once(&**recv).chain(args.iter()).collect())?
-            }
+            Expr::Method(recv, m, args) => self.call_named(e, m, std::iter::once(&**recv).chain(args.iter()).collect())?,
             Expr::Bin(op, l, r) => self.binary(*op, l, r)?,
             Expr::Un(UnOp::Not, x) => {
                 let v = self.expr(x)?;
@@ -1485,7 +1637,7 @@ impl<'m, 'a> Func<'m, 'a> {
             Expr::Is(x, name) => {
                 let v = self.expr(x)?;
                 if self.m.env.ctors.contains_key(name) && !self.m.is_distinct(name) {
-                    self.tag_in(&v, &[name.clone()])?
+                    self.tag_in(&v, &[name.to_string()])?
                 } else if self.m.env.is_type_name(name) {
                     self.holds(name, &v)?
                 } else {
@@ -1728,9 +1880,32 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             return self.call_closure(&f, vs);
         }
-        let env = self.m.env;
-        if crate::stdlib::is_host(name) || (env.is_method(name) && !env.fns.contains_key(name)) {
+        if crate::stdlib::is_host(name) {
             return self.unsupported(&format!("`{name}`"));
+        }
+        // `Trait::m(type, ..)`: a trait method without `self`, for a type known here
+        if let Some((tr, m)) = crate::types::split_trait_call(name) {
+            let takes_self = self.m.trait_method(tr, m).map(|tm| crate::resolve::takes_self(&tm.decl)).unwrap_or(true);
+            if !takes_self {
+                let hint = self.ty_of(call).ok();
+                let recv = match args.first() {
+                    Some(Expr::Str(h)) => match (h.as_str(), &hint) {
+                        ("Int", _) => Ty::Int,
+                        ("Float", _) => Ty::Float,
+                        ("Bool", _) => Ty::Bool,
+                        ("String", _) => Ty::Str,
+                        (_, Some(t @ Ty::Con(n, _))) if n == h => t.clone(),
+                        _ => Ty::Con(Symbol::new(h), vec![]),
+                    },
+                    Some(Expr::Var(x)) if x.starts_with("type:") => self.sub.get(&Symbol::new(&x["type:".len()..])).cloned().ok_or(format!("the type `{x}` is not known here"))?,
+                    _ => return Err(format!("`{name}` needs the type it is called on")),
+                };
+                let mut vs = vec![];
+                for a in &args[1..] {
+                    vs.push(self.expr(a)?);
+                }
+                return self.call_method(name, recv, vs, hint);
+            }
         }
         let mut vs = vec![];
         for a in &args {
@@ -1746,8 +1921,15 @@ impl<'m, 'a> Func<'m, 'a> {
     /// Call the function or built-in `name` on values; `hint` is the call's
     /// type, when known (a type argument only the result mentions).
     fn call_values(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>) -> Res<V> {
-        if self.m.env.fns.contains_key(name) {
+        if self.m.env.fns.contains_key(&Symbol::new(name)) {
             return self.call_fn(name, vs, hint);
+        }
+        if self.m.env.is_method(Symbol::new(name)) {
+            if let Some(recv) = vs.first().map(|v| v.0.clone()) {
+                if Module::head(&recv).is_some_and(|h| self.m.resolve_method(name, &h).is_some() || self.m.ctors_of(&recv).iter().any(|c| self.m.resolve_method(name, c).is_some())) {
+                    return self.call_method(name, recv, vs, hint);
+                }
+            }
         }
         // the list built-ins written in Strata (llvm/prelude.strata)
         if let Some(Ty::Con(l, et)) = vs.first().map(|v| self.m.repr(&v.0)).transpose()? {
@@ -1764,7 +1946,7 @@ impl<'m, 'a> Func<'m, 'a> {
                         let less = self.less(&b)?;
                         return self.call_fn(&prelude("sort_by_with"), vec![vs[0].clone(), vs[1].clone(), less], hint);
                     }
-                    (n, _) if self.m.env.fns.contains_key(&prelude(n)) => Some(n.to_string()),
+                    (n, _) if self.m.env.fns.contains_key(&Symbol::new(&(prelude(n)))) => Some(n.to_string()),
                     _ => None,
                 };
                 if let Some(own) = own {
@@ -1775,22 +1957,90 @@ impl<'m, 'a> Func<'m, 'a> {
         self.builtin(name, vs)
     }
 
+    /// Call trait method `name` on a value of type `recv` (`vs` includes it,
+    /// unless the method has no `self`). The implementation is chosen here,
+    /// from the type; a variant with an implementation of its own is chosen
+    /// by its tag.
+    fn call_method(&mut self, name: &str, recv: Ty, vs: Vec<V>, hint: Option<Ty>) -> Res<V> {
+        if vs.iter().any(|v| is_never(&v.0)) {
+            return Ok(never());
+        }
+        let head = Module::head(&recv).ok_or(format!("`{name}` on a `{}`", key(&recv)))?;
+        if self.m.traits.contains_key(&Symbol::new(&head)) {
+            return self.unsupported(&format!("calling `{name}` on a value of the trait type `{head}`"));
+        }
+        let args = Module::args_of(&recv);
+        let own: Vec<String> = self.m.ctors_of(&recv).into_iter().filter(|c| *c != head && self.m.resolve_method(name, c).is_some_and(|(tr, _)| self.m.impl_of(&tr, c).is_some())).collect();
+        if own.is_empty() {
+            return self.method_target(name, recv, head, vs, hint);
+        }
+        // by constructor: its own implementation, or the type's
+        let ret = hint.clone().ok_or(format!("the result type of `{name}`"))?;
+        let slot = self.fresh("mres");
+        if has_value(&ret) {
+            writeln!(self.allocas, "  {slot} = alloca {}", self.m.ll(&ret)?).unwrap();
+        }
+        let end = self.fresh_label("dispatched");
+        let v0 = vs[0].clone();
+        self.on_ctor(&v0, &end, |c, ctor| {
+            let (r, h) = if own.iter().any(|o| o == ctor) { (Ty::Con(Symbol::new(ctor), args.clone()), ctor.to_string()) } else { (recv.clone(), head.clone()) };
+            let out = c.method_target(name, r, h, vs.clone(), hint.clone())?;
+            if has_value(&ret) && !is_never(&out.0) {
+                let ll = c.m.ll(&ret)?;
+                c.emit(format!("store {ll} {}, ptr {slot}", out.1));
+            }
+            c.br(&end);
+            Ok(())
+        })?;
+        self.block(&end);
+        if !has_value(&ret) {
+            return Ok((ret, String::new()));
+        }
+        let r = self.fresh("mr");
+        let ll = self.m.ll(&ret)?;
+        self.emit(format!("{r} = load {ll}, ptr {slot}"));
+        Ok((ret, r))
+    }
+
+    /// Call the implementation of `name` for type `head` (on a `recv`).
+    fn method_target(&mut self, name: &str, recv: Ty, head: String, vs: Vec<V>, hint: Option<Ty>) -> Res<V> {
+        let (tr, m) = self.m.resolve_method(name, &head).ok_or(format!("`{head}` has no method `{name}`"))?;
+        let tm = self.m.trait_method(&tr, &m).ok_or(format!("trait `{tr}` has no method `{m}`"))?;
+        let imp = self.m.impl_of(&tr, &head).ok_or(format!("`{head}` does not implement `{tr}`"))?;
+        let own = imp.methods.iter().find(|x| x.name == m).unwrap_or(&tm.decl);
+        // the method's own type parameters, from the arguments and the result
+        let mut targs = HashMap::new();
+        for (p, v) in own.params.iter().zip(&vs) {
+            self.m.bind_targs(&p.ty, &v.0, &own.type_params, &mut targs);
+        }
+        if let Some(rt) = &hint {
+            self.m.bind_targs(&own.ret, rt, &own.type_params, &mut targs);
+        }
+        let targs: Vec<Ty> = own.type_params.iter().map(|p| targs.get(p).cloned().unwrap_or(Ty::Unit)).collect();
+        let mi = MethodInst { tr, method: m, recv, head, targs };
+        let sub = self.m.method_sub(&mi)?.0;
+        let symbol = self.m.want_method(mi);
+        let ret = self.m.lower(&own.ret, &sub)?;
+        let vs: Vec<V> = own.params.iter().zip(vs).map(|(p, v)| Ok((self.m.lower(&p.ty, &sub)?, v.1))).collect::<Res<_>>()?;
+        self.call(&ret, &symbol, &vs)
+    }
+
     /// Call a function of the program (one instance of it, if generic).
     fn call_fn(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>) -> Res<V> {
-        let f = &self.m.env.fns[name];
+        let f = &self.m.env.fns[&Symbol::new(name)];
         if f.params.len() != vs.len() {
             return Err(format!("`{name}` takes {} arguments", f.params.len()));
         }
         // the type arguments: the declared types against the actual ones
         let mut targs = HashMap::new();
         for (p, v) in f.params.iter().zip(&vs) {
-            self.bind_targs(&p.ty, &v.0, &f.type_params, &mut targs);
+            self.m.bind_targs(&p.ty, &v.0, &f.type_params, &mut targs);
         }
         if let Some(rt) = hint {
-            self.bind_targs(&f.ret, &rt, &f.type_params, &mut targs);
+            self.m.bind_targs(&f.ret, &rt, &f.type_params, &mut targs);
         }
         let targs: Vec<Ty> = f.type_params.iter().map(|p| targs.get(p).cloned().unwrap_or(Ty::Unit)).collect();
-        let sub: HashMap<String, Ty> = f.type_params.iter().cloned().zip(targs.iter().cloned()).collect();
+        let sub: HashMap<Symbol, Ty> = f.type_params.iter().cloned().zip(targs.iter().cloned()).collect();
         let ret = self.m.lower(&f.ret, &sub)?;
         // an argument's own type may differ from the parameter's (a variant for its sum): same representation
         let vs: Vec<V> = f.params.iter().zip(vs).map(|(p, v)| Ok((self.m.lower(&p.ty, &sub)?, v.1))).collect::<Res<_>>()?;
@@ -1993,8 +2243,8 @@ impl<'m, 'a> Func<'m, 'a> {
     fn lambda(&mut self, e: &Expr, ps: &[LamParam], body: &Expr) -> Res<V> {
         let t = self.ty_of(e)?;
         let Ty::Fn(pts, rt) = t.clone() else { return Err("a lambda without a function type".into()) };
-        let names: Vec<String> = ps.iter().map(|p| p.name.clone()).collect();
-        let mut free: Vec<String> = vars_in(body).into_iter().filter(|x| !names.contains(x) && self.lookup(x).is_some()).collect();
+        let names: Vec<Symbol> = ps.iter().map(|p| p.name.clone()).collect();
+        let mut free: Vec<String> = vars_in(body).into_iter().filter(|x| !names.iter().any(|n| n == x.as_str()) && self.lookup(x).is_some()).collect();
         free.sort();
         free.dedup();
         let mut captured = vec![];
@@ -2092,36 +2342,6 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok((Ty::Fn(vec![t.clone(), t.clone()], Box::new(Ty::Bool)), p))
     }
 
-    /// Bind type parameters by matching a written type against an actual one.
-    fn bind_targs(&self, te: &TypeExpr, t: &Ty, params: &[String], out: &mut HashMap<String, Ty>) {
-        match (te, t) {
-            (TypeExpr::Refined(b, _), t) => self.bind_targs(b, t, params, out),
-            (TypeExpr::Named(n, args), t) if args.is_empty() && params.contains(n) => {
-                out.entry(n.clone()).or_insert_with(|| t.clone());
-            }
-            (TypeExpr::Named(n, args), t) => {
-                if let Some(td) = self.m.env.types.get(n) {
-                    if let (TypeBody::Alias(a), false) = (&td.body, td.distinct) {
-                        let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
-                        return self.bind_targs(&crate::types::subst_texpr(a, &sub), t, params, out);
-                    }
-                }
-                if let Ty::Con(_, targs) = t {
-                    for (a, x) in args.iter().zip(targs) {
-                        self.bind_targs(a, x, params, out);
-                    }
-                }
-            }
-            (TypeExpr::Fn(ps, r), Ty::Fn(qs, s)) => {
-                for (p, q) in ps.iter().zip(qs) {
-                    self.bind_targs(p, q, params, out);
-                }
-                self.bind_targs(r, s, params, out);
-            }
-            _ => {}
-        }
-    }
-
     /// `Some(x)`, `None`, `Line { sku: s, qty: 1 }`, `Entry { ..e, done: true }`, `UserId(s)`.
     fn construct(&mut self, e: &Expr, c: &str, args: &CtorArgs) -> Res<V> {
         let t = self.ty_of(e)?;
@@ -2129,7 +2349,7 @@ impl<'m, 'a> Func<'m, 'a> {
         if self.m.is_distinct(c) {
             let CtorArgs::Positional(xs) = args else { return Err(format!("`{c}` takes one value")) };
             let v = self.expr(&xs[0])?;
-            self.check(&TypeExpr::Named(c.to_string(), vec![]), &v, &format!("constructing `{c}`"), false)?;
+            self.check(&TypeExpr::Named(Symbol::from(Symbol::from(c)), vec![]), &v, &format!("constructing `{c}`"), false)?;
             if let Some(r) = self.m.refinement(c) {
                 let ok = self.with_it(&v, false, |s| s.expr(r))?;
                 self.fail_unless(&ok, &format!("constructing `{c}`"), &v, format!("does not satisfy `{c}` (where {})", crate::printer::expr(r, 0)))?;
@@ -2153,7 +2373,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 // in declaration order
                 let mut vs = vec![];
                 for f in &fs {
-                    let x = given.iter().find(|(n, _)| Some(n) == f.name.as_ref()).ok_or(format!("`{c}` needs its field `{}`", f.name.clone().unwrap_or_default()))?;
+                    let x = given.iter().find(|(n, _)| f.name.as_ref().map(|s| s.as_str()) == Some(n.as_str())).ok_or(format!("`{c}` needs its field `{}`", f.name.clone().unwrap_or_default()))?;
                     vs.push(self.expr(&x.1)?);
                 }
                 vs
@@ -2165,7 +2385,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
                 let mut vs = vec![];
                 for (i, f) in fs.iter().enumerate() {
-                    match changed.iter().find(|(n, _)| Some(n) == f.name.as_ref()) {
+                    match changed.iter().find(|(n, _)| f.name.as_ref().map(|s| s.as_str()) == Some(n.as_str())) {
                         Some((_, x)) => vs.push(self.expr(x)?),
                         None => vs.push(self.field(&b, i, &f.ty)?),
                     }
@@ -2305,7 +2525,7 @@ impl<'m, 'a> Func<'m, 'a> {
                     }
                     return Ok(());
                 }
-                let ok = self.tag_in(v, &[c.clone()])?;
+                let ok = self.tag_in(v, &[c.to_string()])?;
                 test(self, ok);
                 let fs = self.m.fields(c, &self.m.ctor_args(c, &v.0))?;
                 match cp {
@@ -2318,7 +2538,7 @@ impl<'m, 'a> Func<'m, 'a> {
                     }
                     CtorPat::Record(fps, _) => {
                         for (name, sp) in fps {
-                            let i = fs.iter().position(|f| f.name.as_ref() == Some(name)).ok_or(format!("`{c}` has no field `{name}`"))?;
+                            let i = fs.iter().position(|f| f.name.as_ref() == Some(&name.to_string())).ok_or(format!("`{c}` has no field `{name}`"))?;
                             let x = self.field(v, i, &fs[i].ty)?;
                             self.pattern(sp, &x, fail)?;
                         }
@@ -2414,7 +2634,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
                 let shown = crate::printer::expr(place, 0);
                 let cur = self.load(x)?;
-                let new = self.set_path(&cur, &path, v, &shown)?;
+                let new = self.set_path(&cur, &path.iter().map(|s| s.to_string()).collect::<Vec<_>>(), v, &shown)?;
                 if let Some(t) = &l.declared {
                     self.check(t, &new, &format!("assigning `{shown}`"), false)?;
                 }
@@ -2438,7 +2658,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.block(&end);
             }
             Stmt::For(p, xs, body) => {
-                let is_range = matches!(xs, Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if n == "range") && args.len() == 2 && !self.m.env.fns.contains_key("range"));
+                let is_range = matches!(xs, Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if n == "range") && args.len() == 2 && !self.m.env.fns.contains_key(&Symbol::new("range")));
                 if !is_range {
                     let v = self.expr(xs)?;
                     if is_never(&v.0) {
@@ -2570,7 +2790,7 @@ impl<'m, 'a> Func<'m, 'a> {
         // the changed field's refinement, and the type's own
         let ctx = format!("assigning `{shown}`");
         self.check(&fs[i].texpr, &new_inner, &format!("{ctx}: {}.{f}", crate::names::short(&c)), false)?;
-        let tname = self.m.env.ctors[&c].clone();
+        let tname = self.m.env.ctors[&Symbol::new(&c)].clone();
         if let Some(r) = self.m.refinement(&tname) {
             let ok = self.with_it(&new, false, |s| s.expr(r))?;
             self.fail_unless(&ok, &ctx, &new, format!("does not satisfy `{tname}` (where {})", crate::printer::expr(&r, 0)))?;
@@ -2589,10 +2809,40 @@ impl<'m, 'a> Func<'m, 'a> {
 }
 
 impl Module<'_> {
+    /// Bind type parameters by matching a written type against an actual one.
+    fn bind_targs(&self, te: &TypeExpr, t: &Ty, params: &[Symbol], out: &mut HashMap<Symbol, Ty>) {
+        match (te, t) {
+            (TypeExpr::Refined(b, _), t) => self.bind_targs(b, t, params, out),
+            (TypeExpr::Named(n, args), t) if args.is_empty() && params.contains(n) => {
+                out.entry(n.clone()).or_insert_with(|| t.clone());
+            }
+            (TypeExpr::Named(n, args), t) => {
+                if let Some(td) = self.env.types.get(n) {
+                    if let (TypeBody::Alias(a), false) = (&td.body, td.distinct) {
+                        let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+                        return self.bind_targs(&crate::types::subst_texpr(a, &sub), t, params, out);
+                    }
+                }
+                if let Ty::Con(_, targs) = t {
+                    for (a, x) in args.iter().zip(targs) {
+                        self.bind_targs(a, x, params, out);
+                    }
+                }
+            }
+            (TypeExpr::Fn(ps, r), Ty::Fn(qs, s)) => {
+                for (p, q) in ps.iter().zip(qs) {
+                    self.bind_targs(p, q, params, out);
+                }
+                self.bind_targs(r, s, params, out);
+            }
+            _ => {}
+        }
+    }
+
     /// The type arguments of constructor `c`'s type, from a value's type `t`
     /// (the sum, the variant, or a union containing it).
     fn ctor_args(&self, c: &str, t: &Ty) -> Vec<Ty> {
-        let parent = self.env.ctors.get(c).cloned().unwrap_or_default();
+        let parent = self.env.ctors.get(&Symbol::new(c)).cloned().unwrap_or_default();
         match t {
             Ty::Con(n, a) if *n == parent || n == c => a.clone(),
             Ty::Union(ms) => ms.iter().find_map(|m| match m {

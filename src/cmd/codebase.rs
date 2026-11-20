@@ -44,7 +44,7 @@ pub fn rename(args: &Args, json_out: bool) -> Result<bool, String> {
     }
     // each `old` is a qualified name, or one that only one module defines: a
     // definition, a variant, a trait method, or a field as `Owner.field`
-    let mut mods: Vec<String> = cb.program.decls.iter().map(|d| d.module.clone()).collect();
+    let mut mods: Vec<String> = cb.program.decls.iter().map(|d| d.module.to_string()).collect();
     mods.sort();
     mods.dedup();
     let mut pairs: Vec<(String, String, &str)> = Vec::new();
@@ -147,8 +147,8 @@ pub fn move_def(args: &Args, json_out: bool) -> Result<bool, String> {
     let updated: Vec<String> = moved.decls.iter().filter(|d| !is_use(d) && d.qname() != new_q && before.get(&d.qname()).is_some_and(|h| *h != store::self_hash(d))).map(|d| d.qname()).collect();
     let shown = |m: &str| if m.is_empty() { "main".to_string() } else { m.to_string() };
     // imports the move added or changed, by module
-    let old_uses: std::collections::HashSet<(String, String)> = cb.program.decls.iter().filter(|d| is_use(d)).map(|d| (d.module.clone(), printer::decl(d))).collect();
-    let imports: Vec<String> = moved.decls.iter().filter(|d| is_use(d) && !old_uses.contains(&(d.module.clone(), printer::decl(d)))).map(|d| format!("{}: {}", shown(&d.module), printer::decl(d))).collect();
+    let old_uses: std::collections::HashSet<(String, String)> = cb.program.decls.iter().filter(|d| is_use(d)).map(|d| (d.module.to_string(), printer::decl(d))).collect();
+    let imports: Vec<String> = moved.decls.iter().filter(|d| is_use(d) && !old_uses.contains(&(d.module.to_string(), printer::decl(d)))).map(|d| format!("{}: {}", shown(&d.module), printer::decl(d))).collect();
     let from_m = old_q.rsplit_once('.').map(|(m, _)| m.to_string()).unwrap_or_default();
     let default_msg = format!("move {old_q} → {}", shown(&target));
     let msg = args.val("-m").unwrap_or(&default_msg);
@@ -290,7 +290,7 @@ pub fn apply_edit(cb: &mut Codebase, cmd: &str, edits: Program, deletes: Vec<Str
             let mut per: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
             for a in &c.affected {
                 let m = cb.program.decls.iter().find(|d| &d.qname() == a).map(|d| d.module.clone()).unwrap_or_default();
-                *per.entry(if m.is_empty() { "(root)".into() } else { m }).or_default() += 1;
+                *per.entry(if m.is_empty() { "(root)".into() } else { m.to_string() }).or_default() += 1;
             }
             let parts: Vec<String> = per.iter().map(|(m, n)| format!("{m} ({n})")).collect();
             println!("         re-check {} dependents in: {}", c.affected.len(), parts.join(", "));
@@ -302,8 +302,8 @@ pub fn apply_edit(cb: &mut Codebase, cmd: &str, edits: Program, deletes: Vec<Str
     let mut contracts: Vec<String> = Vec::new();
     for c in changes.iter().filter(|c| c.interface_changed && c.old.is_some()) {
         if let Some(d) = cb.program.decls.iter().find(|d| d.qname() == c.name) {
-            if d.public && !d.module.is_empty() && !contracts.contains(&d.module) {
-                contracts.push(d.module.clone());
+            if d.public && !d.module.is_empty() && !contracts.contains(&d.module.to_string()) {
+                contracts.push(d.module.to_string());
             }
         }
     }
@@ -391,7 +391,7 @@ pub struct EditFile {
 /// it unchanged gives up.
 pub fn edit_in_editor(cb: &mut Codebase, args: &Args, json_out: bool) -> Result<bool, String> {
     let p = cb.program.clone();
-    let mut mods: Vec<String> = p.decls.iter().map(|d| d.module.clone()).collect();
+    let mut mods: Vec<String> = p.decls.iter().map(|d| d.module.to_string()).collect();
     mods.sort();
     mods.dedup();
     let whole = |m: &str| -> (Vec<String>, String) {

@@ -568,8 +568,8 @@ impl<'a> Vc<'a> {
     /// The function an argument expression denotes, if it can be kept.
     fn func_of(&self, e: &Expr) -> Option<Func> {
         match e {
-            Expr::Lambda(ps, body) if ps.len() == 1 => Some(Func::Lambda { param: ps[0].name.clone(), body: (**body).clone(), scopes: self.scopes.clone() }),
-            Expr::Var(n) if self.is_fn(e) => Some(Func::Named(n.clone())),
+            Expr::Lambda(ps, body) if ps.len() == 1 => Some(Func::Lambda { param: ps[0].name.to_string(), body: (**body).clone(), scopes: self.scopes.clone() }),
+            Expr::Var(n) if self.is_fn(e) => Some(Func::Named(n.to_string())),
             _ => None,
         }
     }
@@ -648,10 +648,10 @@ impl<'a> Vc<'a> {
     fn shape(&mut self, t: &TypeExpr, depth: usize) -> Val {
         match t {
             TypeExpr::Union(ms) => self.union_shape(ms, depth).unwrap_or_else(|| Val::Opaque("values of this union type are not modelled (members of overlapping or unknown shapes)".into())),
-            TypeExpr::Named(n, args) if self.env.variant_parent(n).is_some() => {
+            TypeExpr::Named(n, args) if self.env.variant_parent(n.sym()).is_some() => {
                 // a variant as a type: a value of its sum with that tag
-                let parent = self.env.variant_parent(n).unwrap();
-                let v = self.shape(&TypeExpr::Named(parent, args.clone()), depth);
+                let parent = self.env.variant_parent(n.sym()).unwrap();
+                let v = self.shape(&TypeExpr::Named(Symbol::from(parent), args.clone()), depth);
                 if let (Val::Sum { tag, ctors, .. }, true) = (&v, true) {
                     if let Some(k) = ctors.iter().position(|c| &c.0 == n) {
                         self.facts.push(format!("(= {tag} {k})"));
@@ -681,26 +681,26 @@ impl<'a> Vc<'a> {
                     self.new_list(len, Gen::Unknown)
                 }
                 _ => {
-                    let Some(td) = self.env.types.get(n).cloned() else {
+                    let Some(td) = self.env.types.get(&n.sym()).cloned() else {
                         return Val::Opaque(format!("values of the generic type `{n}` are not known"));
                     };
-                    let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+                    let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
                     match &td.body {
-                        TypeBody::Alias(a) if td.distinct => Val::Distinct(n.clone(), Box::new(self.shape(&subst_texpr(a, &sub), depth))),
+                        TypeBody::Alias(a) if td.distinct => Val::Distinct(n.to_string(), Box::new(self.shape(&subst_texpr(a, &sub), depth))),
                         TypeBody::Alias(a) => self.shape(&subst_texpr(a, &sub), depth),
                         _ if depth > 3 => Val::Opaque(format!("`{n}` is recursive; only its outer levels are modelled")),
                         TypeBody::Record(_) => {
                             let vs = self.env.variants_of(n, args).unwrap_or_default();
                             let (_, names, tys) = vs.into_iter().next().unwrap_or_default();
                             let names = names.unwrap_or_default();
-                            Val::Rec(n.clone(), names.into_iter().zip(tys.iter()).map(|(f, t)| (f, self.shape(t, depth + 1))).collect())
+                            Val::Rec(n.to_string(), names.into_iter().zip(tys.iter()).map(|(f, t)| (f.to_string(), self.shape(t, depth + 1))).collect())
                         }
                         TypeBody::Sum(_) => {
                             let vs = self.env.variants_of(n, args).unwrap_or_default();
                             let tag = self.fresh("Int");
                             self.facts.push(format!("(and (<= 0 {tag}) (< {tag} {}))", vs.len()));
-                            let ctors = vs.iter().map(|(c, _, tys)| (c.clone(), tys.iter().map(|t| self.shape(t, depth + 1)).collect())).collect();
-                            Val::Sum { ty: n.clone(), args: args.clone(), tag, ctors }
+                            let ctors = vs.iter().map(|(c, _, tys)| (c.to_string(), tys.iter().map(|t| self.shape(t, depth + 1)).collect())).collect();
+                            Val::Sum { ty: n.to_string(), args: args.clone(), tag, ctors }
                         }
                     }
                 }
@@ -716,14 +716,14 @@ impl<'a> Vc<'a> {
         match self.env.expand_alias(t) {
             TypeExpr::Unit => Some("Unit".into()),
             TypeExpr::Named(n, args) => match n.as_str() {
-                "Int" | "Bool" | "String" | "Unit" => Some(n),
+                "Int" | "Bool" | "String" | "Unit" => Some(n.to_string()),
                 "List" | "Dict" | "Set" => Some("List*".into()),
                 "Tuple" => Some(format!("Tuple/{}", args.len())),
                 _ => {
-                    if let Some(p) = self.env.variant_parent(&n) {
+                    if let Some(p) = self.env.variant_parent(n.sym()) {
                         return Some(format!("sum:{p}"));
                     }
-                    let td = self.env.types.get(&n)?;
+                    let td = self.env.types.get(&n.sym())?;
                     match &td.body {
                         TypeBody::Alias(_) if td.distinct => Some(format!("distinct:{n}")),
                         TypeBody::Record(_) => Some(format!("rec:{n}")),
@@ -741,10 +741,10 @@ impl<'a> Vc<'a> {
     fn flatten_union(&self, t: &TypeExpr, out: &mut Vec<TypeExpr>) {
         match t {
             TypeExpr::Union(ms) => ms.iter().for_each(|m| self.flatten_union(m, out)),
-            TypeExpr::Named(n, args) => match self.env.types.get(n) {
+            TypeExpr::Named(n, args) => match self.env.types.get(&n.sym()) {
                 Some(td) if !td.distinct && td.refinement.is_none() && matches!(&td.body, TypeBody::Alias(TypeExpr::Union(_))) => {
                     let TypeBody::Alias(a) = &td.body else { unreachable!() };
-                    let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+                    let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
                     self.flatten_union(&subst_texpr(a, &sub), out)
                 }
                 _ => out.push(t.clone()),
@@ -787,10 +787,10 @@ impl<'a> Vc<'a> {
                     if n == sum {
                         ctors = None;
                     } else if let Some(cs) = &mut ctors {
-                        cs.push(n.clone());
+                        cs.push(n.to_string());
                     }
                 }
-                let v = self.shape(&TypeExpr::Named(sum.to_string(), args.unwrap_or_default()), depth);
+                let v = self.shape(&TypeExpr::Named(Symbol::from(sum), args.unwrap_or_default()), depth);
                 if let (Some(cs), Val::Sum { tag: inner, ctors: all, .. }) = (&ctors, &v) {
                     let ks: Vec<T> = cs.iter().filter_map(|c| all.iter().position(|x| &x.0 == c)).map(|j| format!("(= {inner} {j})")).collect();
                     self.facts.push(implies(&format!("(= {tag} {i})"), &or(&ks)));
@@ -801,7 +801,7 @@ impl<'a> Vc<'a> {
             } else {
                 match k.as_str() {
                     // `Positive | Negative`: both are integers
-                    "Int" | "Bool" | "String" | "Unit" => self.shape(&TypeExpr::Named(k.clone(), vec![]), depth),
+                    "Int" | "Bool" | "String" | "Unit" => self.shape(&TypeExpr::Named(Symbol::from(k.as_str()), vec![]), depth),
                     _ => return None,
                 }
             };
@@ -850,7 +850,7 @@ impl<'a> Vc<'a> {
                 }
                 _ => match (self.type_key(&te), val_key(v)) {
                     (Some(a), Some(b)) if a != b => "false".into(),
-                    (Some(_), Some(_)) => match (self.env.variant_parent(n), v) {
+                    (Some(_), Some(_)) => match (self.env.variant_parent(n.sym()), v) {
                         (Some(_), Val::Sum { tag, ctors, .. }) => match ctors.iter().position(|c| &c.0 == n) {
                             Some(k) => format!("(= {tag} {k})"),
                             None => "false".into(),
@@ -907,7 +907,7 @@ impl<'a> Vc<'a> {
 
     /// Is `t` a name for another type (a non-distinct alias)?
     fn is_alias(&self, t: &TypeExpr) -> bool {
-        matches!(t, TypeExpr::Named(n, _) if matches!(self.env.types.get(n), Some(td) if !td.distinct && matches!(td.body, TypeBody::Alias(_))))
+        matches!(t, TypeExpr::Named(n, _) if matches!(self.env.types.get(&n.sym()), Some(td) if !td.distinct && matches!(td.body, TypeBody::Alias(_))))
     }
 
     /// Does `v` have constructor `c` (`v is Circle`)?
@@ -946,7 +946,7 @@ impl<'a> Vc<'a> {
             Pattern::Tuple(ps) => Some(format!("Tuple/{}", ps.len())),
             Pattern::List(..) => Some("List*".into()),
             Pattern::Ctor(c, _) => {
-                let tn = self.env.ctors.get(c)?;
+                let tn = self.env.ctors.get(&c.sym())?;
                 let td = self.env.types.get(tn)?;
                 match &td.body {
                     TypeBody::Alias(_) if td.distinct => Some(format!("distinct:{tn}")),
@@ -976,7 +976,7 @@ impl<'a> Vc<'a> {
                 out.sort();
                 out
             }
-            Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(c) && self.env.is_type_name(c) => {
+            Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(&c.sym()) && self.env.is_type_name(c) => {
                 let t = TypeExpr::Named(c.clone(), vec![]);
                 (0..slots.len()).filter(live).filter(|&i| self.shape_test(&t, &slots[i].1) != "false").collect()
             }
@@ -1086,8 +1086,8 @@ impl<'a> Vc<'a> {
             Val::Str(_) => Val::Str(self.fresh("String")),
             Val::Unit => Val::Unit,
             Val::Tuple(xs) => Val::Tuple(xs.iter().map(|x| self.refresh(x)).collect()),
-            Val::Rec(n, _) | Val::Distinct(n, _) => self.havoc(&TypeExpr::Named(n.clone(), vec![])),
-            Val::Sum { ty, args, .. } => self.havoc(&TypeExpr::Named(ty.clone(), args.clone())),
+            Val::Rec(n, _) | Val::Distinct(n, _) => self.havoc(&TypeExpr::Named(Symbol::from(n.as_str()), vec![])),
+            Val::Sum { ty, args, .. } => self.havoc(&TypeExpr::Named(Symbol::from(ty.as_str()), args.clone())),
             Val::List { .. } => {
                 // any list: what a loop put in it is not known (a declared type is assumed separately)
                 let len = self.fresh("Int");
@@ -1116,12 +1116,12 @@ impl<'a> Vc<'a> {
             TypeExpr::Refined(..) => true,
             TypeExpr::Unit | TypeExpr::Fn(..) => false,
             TypeExpr::Union(ms) => ms.iter().any(|m| self.refined(m, depth + 1)),
-            TypeExpr::Named(n, args) if self.env.variant_parent(n).is_some() => self.refined(&TypeExpr::Named(self.env.variant_parent(n).unwrap(), args.clone()), depth + 1),
+            TypeExpr::Named(n, args) if self.env.variant_parent(n.sym()).is_some() => self.refined(&TypeExpr::Named(Symbol::from(self.env.variant_parent(n.sym()).unwrap()), args.clone()), depth + 1),
             TypeExpr::Named(n, args) => {
                 if args.iter().any(|a| self.refined(a, depth + 1)) {
                     return true;
                 }
-                let Some(td) = self.env.types.get(n) else { return false };
+                let Some(td) = self.env.types.get(&n.sym()) else { return false };
                 if td.refinement.is_some() {
                     return true;
                 }
@@ -1161,7 +1161,7 @@ impl<'a> Vc<'a> {
     /// argument it adds nothing to check (`Html[Msg]` is `Html[_]`).
     fn valid_by_construction(&self, t: &TypeExpr) -> bool {
         let TypeExpr::Named(n, args) = t else { return false };
-        let n = self.env.variant_parent(n).unwrap_or_else(|| n.clone());
+        let n = self.env.variant_parent(n.sym()).unwrap_or_else(|| n.clone());
         args.is_empty()
             && self.env.types.get(&n).is_some_and(|td| {
                 td.params.is_empty() && td.refinement.is_none() && !td.distinct && matches!(td.body, TypeBody::Record(_) | TypeBody::Sum(_))
@@ -1175,7 +1175,7 @@ impl<'a> Vc<'a> {
         // fixed depth, like `shape` models it: each level would check every
         // element of its lists again
         if let TypeExpr::Named(n, _) = t {
-            if self.env.types.contains_key(n) && !matches!(v, Val::Absent) && self.refined(t, 0) {
+            if self.env.types.contains_key(&n.sym()) && !matches!(v, Val::Absent) && self.refined(t, 0) {
                 if self.checking.iter().filter(|m| *m == n).count() >= MAX_TYPE_NESTING {
                     let key = format!("{:?} {v:?}", self.erased(t));
                     if let Some(b) = self.cutoffs.get(&key) {
@@ -1185,7 +1185,7 @@ impl<'a> Vc<'a> {
                     self.cutoffs.insert(key, b.clone());
                     return b;
                 }
-                self.checking.push(n.clone());
+                self.checking.push(n.to_string());
                 let c = self.check_type_at(t, v, extra);
                 self.checking.pop();
                 return c;
@@ -1213,8 +1213,8 @@ impl<'a> Vc<'a> {
                 let cs: Vec<T> = ms.iter().map(|m| self.in_type(m, v, extra)).collect();
                 or(&cs)
             }
-            TypeExpr::Named(n, args) if self.env.variant_parent(n).is_some() => {
-                let parent = TypeExpr::Named(self.env.variant_parent(n).unwrap(), args.clone());
+            TypeExpr::Named(n, args) if self.env.variant_parent(n.sym()).is_some() => {
+                let parent = TypeExpr::Named(Symbol::from(self.env.variant_parent(n.sym()).unwrap()), args.clone());
                 let c = self.check_type(&parent, v, extra);
                 match v {
                     Val::Sum { tag, ctors, .. } => match ctors.iter().position(|c| &c.0 == n) {
@@ -1259,7 +1259,7 @@ impl<'a> Vc<'a> {
                         args.clone()
                     };
                     let args = &args;
-                    let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+                    let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
                     let mut cs = vec![];
                     let it = match (&td.body, v) {
                         (TypeBody::Alias(a), Val::Distinct(_, inner)) if td.distinct => {
@@ -1451,12 +1451,12 @@ impl<'a> Vc<'a> {
     /// The condition for `v` to match `p`, and the bindings it makes.
     /// Does `v` belong to the type named `c` (a pattern `Positive =>`, `x is Circle`)?
     fn type_test(&mut self, c: &str, v: &Val) -> T {
-        self.in_type(&TypeExpr::Named(c.to_string(), vec![]), v, &[])
+        self.in_type(&TypeExpr::Named(Symbol::from(c), vec![]), v, &[])
     }
 
     fn pattern(&mut self, p: &Pattern, v: &Val, binds: &mut Vec<(String, Val)>) -> T {
         if let Val::Union { tag, slots } = v {
-            let type_name = matches!(p, Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(c) && self.env.is_type_name(c));
+            let type_name = matches!(p, Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(&c.sym()) && self.env.is_type_name(c));
             if let Some(k) = self.pattern_key(p).filter(|_| !type_name) {
                 // a literal, tuple, list or constructor pattern takes the member of its shape
                 let (tag, slots) = (tag.clone(), slots.clone());
@@ -1507,10 +1507,10 @@ impl<'a> Vc<'a> {
                 }
                 or(&conds)
             }
-            Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(c) && self.env.is_type_name(c) => self.type_test(c, v),
+            Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(&c.sym()) && self.env.is_type_name(c) => self.type_test(c, v),
             Pattern::Wild => "true".into(),
             Pattern::Bind(x) => {
-                binds.push((x.clone(), v.clone()));
+                binds.push((x.to_string(), v.clone()));
                 "true".into()
             }
             Pattern::Int(n) => format!("(= {} {})", self.as_int(v), num(*n)),
@@ -1542,7 +1542,7 @@ impl<'a> Vc<'a> {
                 }
                 if let Some(r) = rest {
                     let rest_list = self.new_list(format!("(- {len} {n})"), Gen::Sub(id));
-                    binds.push((r.clone(), rest_list));
+                    binds.push((r.to_string(), rest_list));
                 }
                 and(&cs)
             }
@@ -1555,7 +1555,7 @@ impl<'a> Vc<'a> {
                         let Some(k) = ctors.iter().position(|x| &x.0 == c) else { return self.unknown_bool("a pattern that is not a constructor of the value's type") };
                         cond = format!("(= {tag} {k})");
                         let vs = self.env.variants_of(ty, args).unwrap_or_default();
-                        names = vs.get(k).and_then(|x| x.1.clone());
+                        names = vs.get(k).and_then(|x| x.1.as_ref().map(|ns| ns.iter().map(|n| n.to_string()).collect()));
                         fields = ctors[k].1.iter().map(|x| if matches!(x, Val::Absent) { Val::Opaque("an impossible constructor".into()) } else { x.clone() }).collect();
                     }
                     Val::Rec(n, fs) if n == c => {
@@ -1803,13 +1803,13 @@ impl<'a> Vc<'a> {
                         let payload = ctors[k].1.first().cloned().unwrap_or(Val::Opaque("the payload of `Ok` / `Some`".into()));
                         let mut err_binds = vec![];
                         if let (Some(n), Some(e)) = (name, Self::ctor_index(&v, "Err")) {
-                            err_binds.push((n.clone(), ctors[e].1.first().cloned().unwrap_or(Val::Opaque("the error".into()))));
+                            err_binds.push((n.to_string(), ctors[e].1.first().cloned().unwrap_or(Val::Opaque("the error".into()))));
                         }
                         let ok_var = Expr::Var(" ok".into());
                         self.branches(vec![(ok.clone(), vec![(" ok".into(), payload)], &ok_var), (not(&ok), err_binds, fb)])
                     }
                     _ => {
-                        self.scopes.push(name.iter().map(|n| (n.clone(), Val::Opaque("the error".into()))).collect());
+                        self.scopes.push(name.iter().map(|n| (n.to_string(), Val::Opaque("the error".into()))).collect());
                         self.eval(fb);
                         self.scopes.pop();
                         Val::Opaque("the value under `except`".into())
@@ -1865,7 +1865,7 @@ impl<'a> Vc<'a> {
                     }
                 }
             }
-            Expr::Is(x, c) if !self.env.ctors.contains_key(c) && self.env.is_type_name(c) => {
+            Expr::Is(x, c) if !self.env.ctors.contains_key(&c.sym()) && self.env.is_type_name(c) => {
                 let v = self.eval(x);
                 Val::Bool(self.type_test(c, &v))
             }
@@ -1896,10 +1896,10 @@ impl<'a> Vc<'a> {
                         _ => None,
                     };
                     narrow.push(match (&**s, &member) {
-                        (Expr::Var(x), Some(m)) if self.lookup(x).is_some() => vec![(x.clone(), m.clone())],
+                        (Expr::Var(x), Some(m)) if self.lookup(x).is_some() => vec![(x.to_string(), m.clone())],
                         _ => vec![],
                     });
-                    let mut binds: Vec<(String, Val)> = name.iter().map(|n| (n.clone(), member.clone().unwrap_or(v.clone()))).collect();
+                    let mut binds: Vec<(String, Val)> = name.iter().map(|n| (n.to_string(), member.clone().unwrap_or(v.clone()))).collect();
                     let n = self.pc.len();
                     self.pc.extend(prev.iter().map(|p| not(p)));
                     let cond = self.pattern(&a.pat, &v, &mut binds);
@@ -1975,15 +1975,15 @@ impl<'a> Vc<'a> {
 
     fn ctor(&mut self, c: &str, args: &CtorArgs) -> Val {
         let env = self.env;
-        let tn = env.ctors.get(c).cloned().unwrap_or_default();
+        let tn = env.ctors.get(&c.sym()).cloned().unwrap_or_default();
         let Some(td) = env.types.get(&tn) else { return Val::Opaque(format!("unknown constructor `{c}`")) };
         let variants = env.variants_of(&tn, &[]).unwrap_or_default();
-        let ordered = |vc: &mut Self, names: &Option<Vec<String>>, fs: &[(String, Expr)]| -> Vec<Val> {
-            let vals: HashMap<String, Val> = fs.iter().map(|(n, e)| (n.clone(), vc.eval(e))).collect();
+        let ordered = |vc: &mut Self, names: &Option<Vec<Symbol>>, fs: &[(Symbol, Expr)]| -> Vec<Val> {
+            let vals: HashMap<Symbol, Val> = fs.iter().map(|(n, e)| (*n, vc.eval(e))).collect();
             names.clone().unwrap_or_default().iter().map(|n| vals.get(n).cloned().unwrap_or(Val::Opaque(format!("field `{n}`")))).collect()
         };
         let v = match (&td.body, args) {
-            (TypeBody::Alias(_), CtorArgs::Positional(xs)) if td.distinct && xs.len() == 1 => Val::Distinct(tn.clone(), Box::new(self.eval(&xs[0]))),
+            (TypeBody::Alias(_), CtorArgs::Positional(xs)) if td.distinct && xs.len() == 1 => Val::Distinct(tn.to_string(), Box::new(self.eval(&xs[0]))),
             (_, CtorArgs::Update(base, fs)) => {
                 let b = self.eval(base);
                 match b {
@@ -2007,7 +2007,7 @@ impl<'a> Vc<'a> {
             (TypeBody::Record(_), CtorArgs::Record(fs)) => {
                 let names = variants.first().and_then(|v| v.1.clone());
                 let vals = ordered(self, &names, fs);
-                Val::Rec(tn.clone(), names.unwrap_or_default().into_iter().zip(vals).collect())
+                Val::Rec(tn.to_string(), names.unwrap_or_default().into_iter().map(|n| n.to_string()).zip(vals).collect())
             }
             (TypeBody::Sum(_), _) => {
                 let Some(k) = variants.iter().position(|v| v.0 == c) else { return Val::Opaque(format!("unknown constructor `{c}`")) };
@@ -2020,13 +2020,13 @@ impl<'a> Vc<'a> {
                 let ctors = variants
                     .iter()
                     .enumerate()
-                    .map(|(i, (n, _, tys))| (n.clone(), if i == k { payload.clone() } else { vec![Val::Absent; tys.len()] }))
+                    .map(|(i, (n, _, tys))| (n.to_string(), if i == k { payload.clone() } else { vec![Val::Absent; tys.len()] }))
                     .collect();
-                Val::Sum { ty: tn.clone(), args: vec![], tag: k.to_string(), ctors }
+                Val::Sum { ty: tn.to_string(), args: vec![], tag: k.to_string(), ctors }
             }
             _ => Val::Opaque(format!("constructor `{c}`")),
         };
-        let t = TypeExpr::Named(tn.clone(), vec![]);
+        let t = TypeExpr::Named(Symbol::from(tn.as_str()), vec![]);
         if self.refined(&t, 0) {
             let v2 = v.clone();
             self.oblige(format!("constructing `{c}`"), |vc| vc.check_type(&t, &v2, &[]));
@@ -2040,7 +2040,7 @@ impl<'a> Vc<'a> {
     fn is_fn(&self, e: &Expr) -> bool {
         match e {
             Expr::Lambda(..) => true,
-            Expr::Var(x) => self.lookup(x).is_none() && (self.env.fns.contains_key(x) || self.env.is_method(x)),
+            Expr::Var(x) => self.lookup(x).is_none() && (self.env.fns.contains_key(&x.sym()) || self.env.is_method(x.sym())),
             _ => false,
         }
     }
@@ -2054,7 +2054,7 @@ impl<'a> Vc<'a> {
         match e {
             Expr::Lambda(ps, body) => {
                 // its checks hold on every call; a `return` leaves the lambda only
-                self.scopes.push(ps.iter().enumerate().map(|(i, p)| (p.name.clone(), arg(i))).collect());
+                self.scopes.push(ps.iter().enumerate().map(|(i, p)| (p.name.to_string(), arg(i))).collect());
                 let returns = std::mem::take(&mut self.returns);
                 let dead = self.dead;
                 let r = self.eval(body);
@@ -2065,7 +2065,7 @@ impl<'a> Vc<'a> {
             }
             Expr::Var(name) => {
                 let env = self.env;
-                let f = env.fns.get(name).or_else(|| env.method_contract(name).map(|(_, d)| d));
+                let f = env.fns.get(&name.sym()).or_else(|| env.method_contract(name).map(|(_, d)| d));
                 match f {
                     Some(f) => {
                         let n = f.params.len();
@@ -2089,7 +2089,7 @@ impl<'a> Vc<'a> {
             _ => exprs,
         };
         let mut vals: Vec<Option<Val>> = exprs.iter().map(|e| if self.is_fn(e) { None } else { Some(self.eval(e)) }).collect();
-        let builtin = !self.env.fns.contains_key(name) && !self.env.is_method(name);
+        let builtin = !self.env.fns.contains_key(&name.sym()) && !self.env.is_method(name.sym());
         let mut fn_result_ty = None;
         for (i, e) in exprs.iter().enumerate() {
             if vals[i].is_some() {
@@ -2111,7 +2111,7 @@ impl<'a> Vc<'a> {
                 (_, Some(x)) => vec![x],
                 // passed for a parameter of a function type: it is called with
                 // valid values of its parameter types, as any values of them are
-                _ => match self.env.fns.get(name).and_then(|f| f.params.get(i)).map(|p| p.ty.clone()) {
+                _ => match self.env.fns.get(&Symbol::new(name)).and_then(|f| f.params.get(i)).map(|p| p.ty.clone()) {
                     Some(TypeExpr::Fn(ps, _)) => ps
                         .iter()
                         .map(|t| {
@@ -2194,14 +2194,14 @@ impl<'a> Vc<'a> {
 
     fn call(&mut self, name: &str, arg_exprs: &[Expr], args: Vec<Val>) -> Val {
         let env = self.env;
-        if let Some(f) = env.fns.get(name) {
+        if let Some(f) = env.fns.get(&name.sym()) {
             if self.spec > 0 && self.depth < 4 {
                 if let Some(&assumed) = self.transparent.get(name) {
                     // see through: in a contract, the call is its body
                     if assumed {
                         self.relied_on.insert(name.to_string());
                     }
-                    let binds: HashMap<String, Val> = f.params.iter().map(|p| p.name.clone()).zip(args.iter().cloned()).collect();
+                    let binds: HashMap<String, Val> = f.params.iter().map(|p| p.name.to_string()).zip(args.iter().cloned()).collect();
                     self.depth += 1;
                     let saved = std::mem::replace(&mut self.scopes, vec![binds]);
                     let r = self.eval(&f.body);
@@ -2219,9 +2219,9 @@ impl<'a> Vc<'a> {
             self.write_back(&decl.params, arg_exprs, &args);
             return r;
         }
-        if env.is_method(name) {
+        if env.is_method(name.sym()) {
             // which implementation runs depends on the receiver's type; a shared name or a type's own method
-            if let Some(ps) = env.method_params(name) {
+            if let Some(ps) = env.method_params(name.sym()) {
                 self.write_back(&ps, arg_exprs, &args);
             }
             return Val::Opaque(format!("the result of method `{name}` (it depends on the receiver's type)"));
@@ -2249,7 +2249,7 @@ impl<'a> Vc<'a> {
         if self.depth > 4 {
             return Val::Opaque(format!("calls to `{label}` nest too deeply"));
         }
-        let binds: Vec<(String, Val)> = f.params.iter().map(|p| p.name.clone()).zip(args.iter().cloned()).collect();
+        let binds: Vec<(String, Val)> = f.params.iter().map(|p| p.name.to_string()).zip(args.iter().cloned()).collect();
         if label == self.self_name && self.spec == 0 && !self.dead {
             // a recursive call: remembered, to check measures against
             self.rec_sites.push((self.pc.clone(), args.to_vec()));
@@ -2289,7 +2289,7 @@ impl<'a> Vc<'a> {
         let (Some(ks), Some(kn)) = (vs.iter().position(|v| v.0 == "Some"), vs.iter().position(|v| v.0 == "None")) else {
             return Val::Opaque("`Option` is not the prelude's".into());
         };
-        let ctors = vs.iter().map(|(n, _, _)| (n.clone(), if n == "Some" { vec![payload.clone()] } else { vec![] })).collect();
+        let ctors = vs.iter().map(|(n, _, _)| (n.to_string(), if n == "Some" { vec![payload.clone()] } else { vec![] })).collect();
         Val::Sum { ty: "Option".into(), args: vec![t.clone()], tag: ite(some, &ks.to_string(), &kn.to_string()), ctors }
     }
 
@@ -2644,7 +2644,7 @@ impl<'a> Vc<'a> {
                     }
                 }
                 if let (Some(t), Stmt::Var(x, ..) | Stmt::Let(Pattern::Bind(x), ..)) = (ty, s) {
-                    self.declared.entry(x.clone()).or_default().push(t.clone());
+                    self.declared.entry(x.to_string()).or_default().push(t.clone());
                 }
                 match s {
                     Stmt::Var(x, ..) => self.bind(x, v),
@@ -2769,7 +2769,7 @@ impl<'a> Vc<'a> {
         let mut path = vec![];
         let mut root = place;
         while let Expr::Field(r, f) = root {
-            path.push(f.clone());
+            path.push(f.to_string());
             root = r;
         }
         path.reverse();
@@ -2777,7 +2777,7 @@ impl<'a> Vc<'a> {
         let Some(base) = self.lookup(x) else { return };
         let new = if path.is_empty() { v } else { set_path(base, &path, v) };
         // the variable's declared type holds after every assignment
-        for t in self.declared.get(x).cloned().unwrap_or_default() {
+        for t in self.declared.get(x.as_str()).cloned().unwrap_or_default() {
             if self.refined(&t, 0) {
                 let n2 = new.clone();
                 self.oblige(format!("{verb} `{}`: {}", crate::printer::expr(place, 0), crate::printer::ty(&t)), |vc| vc.check_type(&t, &n2, &[]));
@@ -2796,7 +2796,7 @@ impl<'a> Vc<'a> {
                 _ => None,
             };
             if let Some(tn) = tn {
-                let t = TypeExpr::Named(tn, vec![]);
+                let t = TypeExpr::Named(Symbol::from(tn), vec![]);
                 if self.refined(&t, 0) {
                     let n2 = new.clone();
                     self.oblige(format!("{verb} `{}`", crate::printer::expr(place, 0)), |vc| vc.check_type(&t, &n2, &[]));
@@ -2864,9 +2864,9 @@ impl<'a> Vc<'a> {
         for p in &f.params {
             let v = self.havoc(&p.ty);
             if p.mutable {
-                self.declared.entry(p.name.clone()).or_default().push(p.ty.clone());
+                self.declared.entry(p.name.to_string()).or_default().push(p.ty.clone());
             }
-            self.params.push((p.name.clone(), v.clone()));
+            self.params.push((p.name.to_string(), v.clone()));
             self.bind(&p.name, v);
         }
         let binds = self.params.clone();
@@ -3143,7 +3143,7 @@ fn to_value(env: &Env, v: &Val, m: &HashMap<String, String>) -> Option<Value> {
             let fields: Vec<Value> = payload.iter().map(|x| to_value(env, x, m)).collect::<Option<_>>()?;
             let f = match &vs.get(k)?.1 {
                 _ if fields.is_empty() => Fields::None,
-                Some(names) => Fields::Rec(names.iter().cloned().zip(fields).collect()),
+                Some(names) => Fields::Rec(names.iter().map(|n| n.to_string()).zip(fields).collect()),
                 None => Fields::Pos(fields),
             };
             Value::Variant(c.clone(), f)

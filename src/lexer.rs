@@ -8,9 +8,9 @@ pub enum Tok {
     /// `f"..."`: literal text and the source of each `{expr}`, with the
     /// line and column where it starts.
     FStr(Vec<FPart>),
-    Ident(String),
+    Ident(crate::symbol::Symbol),
     /// `?name`
-    Hole(String),
+    Hole(crate::symbol::Symbol),
     Doc(String),
     Sym(&'static str),
     Eof,
@@ -231,6 +231,7 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), String
             }
             let s: String = chars[start..i].iter().collect();
             col += i - start + hole as usize;
+            let s = crate::symbol::Symbol::new(&s);
             push(if hole { Tok::Hole(s) } else { Tok::Ident(s) }, &mut nl);
             continue;
         }

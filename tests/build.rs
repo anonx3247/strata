@@ -148,6 +148,51 @@ fn lists_and_lambdas_run_as_interpreted() {
 }
 
 #[test]
+fn traits_run_as_interpreted() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("traits");
+    // examples/traits.strata, its tests as `main` (without the regex of `Sku`)
+    let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/traits.strata")).unwrap();
+    let mut decls = String::new();
+    let mut main = String::from("fn main() -> () {\n");
+    let mut in_test = false;
+    for line in src.lines() {
+        if line.starts_with("test ") {
+            in_test = true;
+            main += "  {\n";
+        } else if in_test && line == "}" {
+            in_test = false;
+            main += "  }\n";
+        } else if in_test {
+            if !line.contains("Sku(") {
+                main += line;
+                main += "\n";
+            }
+        } else {
+            decls += line;
+            decls += "\n";
+        }
+    }
+    main += "  print(\"all asserts hold\")\n}\n";
+    let (out, code) = case(&d, "traits_example", &(decls + &main));
+    assert!(out.contains("all asserts hold") && code == 0, "{out}");
+    let cases = [
+        ("trait_ensures", "trait Describe {\n  fn describe(self) -> String\n    ensures len(it) > 0\n}\ntype Thing = { name: String }\nimpl Describe for Thing {\n  fn describe(self) -> String { self.name }\n}\nfn main() -> () { print(Thing { name: \"a\" }.describe()) print(Thing { name: \"\" }.describe()) }", 101),
+        ("variant_impls", "trait Area {\n  fn area(self) -> Int\n    requires true\n}\ntype Shape =\n  | Square { side: Int }\n  | Circle { r: Int }\nimpl Area for Shape {\n  fn area(self) -> Int { 0 }\n}\nimpl Area for Square {\n  fn area(self) -> Int { self.side * self.side }\n}\nfn main() -> () { let shapes: List[Shape] = [Square { side: 3 }, Circle { r: 2 }] print(shapes.map(s -> s.area())) }", 0),
+        ("generic_traits", "trait Convert[T] {\n  fn convert(self) -> T\n}\ntype Celsius = { deg: Int }\nimpl Convert[String] for Celsius {\n  fn convert(self) -> String { f\"{self.deg}C\" }\n}\nimpl Convert[Int] for Int {\n  fn convert(self) -> Int { self * 2 }\n}\nfn twice[A: Convert[String]](xs: List[A]) -> List[String] { xs.map(x -> x.convert()) }\nfn main() -> () { print(Celsius { deg: 20 }.convert()) print(twice([Celsius { deg: 1 }])) print(21.convert()) }", 0),
+        ("default_methods", "trait Shown {\n  fn shown(self) -> String\n  fn twice(self) -> String { self.shown() + self.shown() }\n}\nimpl Shown for Bool { fn shown(self) -> String { if self { \"yes\" } else { \"no\" } } }\nimpl Shown for String { fn shown(self) -> String { self } }\nfn all_shown[T: Shown](xs: List[T]) -> String { join(xs.map(x -> x.twice()), \" \") }\nfn main() -> () { print(all_shown([true, false])) print(all_shown([\"a\", \"b\"])) }", 0),
+        ("method_type_params", "trait Boxed {\n  fn wrap[U](self, other: U) -> (Self, U)\n}\ntype K = { k: Int }\nimpl Boxed for K { fn wrap[U](self, other: U) -> (Self, U) { (self, other) } }\nfn main() -> () { print(K { k: 1 }.wrap(\"x\")) print(K { k: 2 }.wrap(3.5)) }", 0),
+    ];
+    for (name, src, want) in cases {
+        let (out, code) = case(&d, name, src);
+        assert_eq!(code, want, "{name}: {out}");
+    }
+}
+
+#[test]
 fn what_is_not_compiled_yet_is_named() {
     let d = tmp("unsupported");
     let f = d.join("lists.strata");

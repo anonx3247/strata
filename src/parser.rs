@@ -22,7 +22,7 @@ pub fn parse_module_file(src: &str, module: &str) -> R<Program> {
     let mut decls = Vec::new();
     while p.peek() != &Tok::Eof {
         let mut d = p.decl()?;
-        d.module = module.to_string();
+        d.module = module.into();
         decls.push(d);
     }
     p.check_comments()?;
@@ -174,7 +174,7 @@ impl Parser {
     fn expect_kw(&mut self, s: &str) -> R<()> {
         if self.eat_kw(s) { Ok(()) } else { Err(self.err(&format!("expected `{s}`"))) }
     }
-    fn ident(&mut self) -> R<String> {
+    fn ident(&mut self) -> R<Symbol> {
         match self.peek().clone() {
             Tok::Ident(s) if !KEYWORDS.contains(&s.as_str()) => {
                 self.next();
@@ -202,7 +202,7 @@ impl Parser {
     /// If the tokens ahead are `lower(.lower)*.Upper`, consume them and return
     /// the qualified name (`shop.orders.Pending`). Field names are lowercase and
     /// constructors uppercase, so this can only be a module path.
-    fn qualified_upper(&mut self) -> Option<String> {
+    fn qualified_upper(&mut self) -> Option<Symbol> {
         let mut k = 0;
         let mut parts = Vec::new();
         loop {
@@ -210,7 +210,7 @@ impl Parser {
             if KEYWORDS.contains(&seg.as_str()) {
                 return None;
             }
-            parts.push(seg.clone());
+            parts.push(seg.as_str());
             if is_upper(&seg) {
                 break;
             }
@@ -225,7 +225,7 @@ impl Parser {
         for _ in 0..=k {
             self.next();
         }
-        Some(parts.join("."))
+        Some(parts.join(".").into())
     }
 
     fn qualified_upper_ahead(&self) -> bool {
@@ -240,14 +240,18 @@ impl Parser {
     }
 
     /// A dotted path: `shop.orders`, `orders.Line`.
-    fn path(&mut self) -> R<String> {
-        let mut s = self.ident()?;
+    fn path(&mut self) -> R<Symbol> {
+        let first = self.ident()?;
+        if !(self.is_sym(".") && matches!(self.peek_at(1), Tok::Ident(_))) {
+            return Ok(first);
+        }
+        let mut s = first.to_string();
         while self.is_sym(".") && matches!(self.peek_at(1), Tok::Ident(_)) {
             self.next();
             s.push('.');
             s.push_str(&self.ident()?);
         }
-        Ok(s)
+        Ok(s.into())
     }
 
     pub fn decl(&mut self) -> R<Decl> {
@@ -269,7 +273,7 @@ impl Parser {
         let comments = self.leading();
         let public = self.eat_kw("pub");
         if self.eat_kw("use") {
-            let mut path = self.ident()?;
+            let mut path = self.ident()?.to_string();
             let mut items = Some(vec![]);
             while self.eat_sym(".") {
                 if self.eat_sym("*") {
@@ -289,7 +293,7 @@ impl Parser {
                 path.push('.');
                 path.push_str(&seg);
             }
-            return Ok(Decl { comments, doc, kind: DeclKind::Use(UseDecl { path, items }), module: String::new(), public });
+            return Ok(Decl { comments, doc, kind: DeclKind::Use(UseDecl { path: path.into(), items }), module: Symbol::EMPTY, public });
         }
         // `distinct` is only a keyword at the start of a declaration
         let kind = if self.is_kw("distinct") && matches!(self.peek_at(1), Tok::Ident(t) if t == "type") {
@@ -320,15 +324,15 @@ impl Parser {
         } else {
             return Err(self.err("expected `type`, `effect`, `trait`, `impl`, `fn` or `test`"));
         };
-        Ok(Decl { comments, doc, kind, module: String::new(), public })
+        Ok(Decl { comments, doc, kind, module: Symbol::EMPTY, public })
     }
 
-    fn type_params(&mut self) -> R<Vec<String>> {
+    fn type_params(&mut self) -> R<Vec<Symbol>> {
         Ok(self.bounded_params()?.0)
     }
 
     /// `[T: Ord + Hash, U]`
-    fn bounded_params(&mut self) -> R<(Vec<String>, Vec<Bound>)> {
+    fn bounded_params(&mut self) -> R<(Vec<Symbol>, Vec<Bound>)> {
         if !self.eat_sym("[") {
             return Ok((vec![], vec![]));
         }
@@ -393,7 +397,7 @@ impl Parser {
         let (trait_name, trait_args, for_type) = if self.eat_kw("for") {
             (head, head_args, self.type_expr_plain()?)
         } else {
-            (String::new(), vec![], TypeExpr::Named(head, head_args))
+            (Symbol::EMPTY, vec![], TypeExpr::Named(head, head_args))
         };
         self.expect_sym("{")?;
         let mut methods = Vec::new();
@@ -512,7 +516,7 @@ impl Parser {
         self.expect_sym("(")?;
         self.list(")", |p| {
             let mutable = p.eat_kw("mut");
-            let name = if p.is_kw("self") { p.next(); "self".to_string() } else { p.ident()? };
+            let name = if p.is_kw("self") { p.next(); Symbol::new("self") } else { p.ident()? };
             // `self` alone means `self: Self`
             if name == "self" && !p.is_sym(":") {
                 return Ok(Param { name, ty: TypeExpr::Named("Self".into(), vec![]), mutable });
@@ -684,7 +688,7 @@ impl Parser {
             if let Tok::Int(n) = self.peek_at(1).clone() {
                 self.next();
                 self.next();
-                place = Expr::Field(Box::new(place), n.to_string());
+                place = Expr::Field(Box::new(place), Symbol::from(n.to_string()));
                 continue;
             }
             let Tok::Ident(name) = self.peek_at(1).clone() else { return Err(self.err("expected a field or method name")) };
@@ -725,7 +729,7 @@ impl Parser {
                 self.next();
                 if let Tok::Int(n) = self.peek().clone() {
                     self.next();
-                    e = Expr::Field(Box::new(e), n.to_string());
+                    e = Expr::Field(Box::new(e), n.to_string().into());
                     continue;
                 }
                 let name = self.ident()?;
@@ -1208,7 +1212,7 @@ impl Parser {
                 let mut rest = None;
                 while !self.is_sym("]") {
                     if self.eat_sym("..") {
-                        rest = Some(if self.is_sym("]") { "_".to_string() } else { self.ident()? });
+                        rest = Some(if self.is_sym("]") { Symbol::new("_") } else { self.ident()? });
                         break;
                     }
                     items.push(self.pattern()?);
