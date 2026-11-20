@@ -18,7 +18,7 @@ use serde_json::Value as Json;
 
 fn literal(e: &Expr) -> bool {
     match e {
-        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Unit => true,
+        Expr::Int(_) | Expr::BigInt(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Unit => true,
         Expr::List(xs) | Expr::Tuple(xs) => xs.iter().all(literal),
         Expr::Ctor(_, CtorArgs::None) => true,
         Expr::Ctor(_, CtorArgs::Positional(xs)) => xs.iter().all(literal),

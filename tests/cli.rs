@@ -87,6 +87,42 @@ fn has_solver() -> bool {
 }
 
 #[test]
+fn ints_grow_past_64_bits() {
+    let d = tmp("bigint");
+    let src = "fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }
+fn wrap(x: U8) -> U8 { x + 1 }
+fn neg(x: I8) -> I8 { 0 - x }
+fn widen(x: U64) -> U64 { x + 1 }
+test \"big integers\" {
+  assert fact(25) == 15511210043330985984000000
+  assert fact(25) / fact(24) == 25
+  assert (0 - 100000000000000000000) % 7 == 5
+  assert (0 - 100000000000000000000) / 7 == -14285714285714285715
+  assert 9223372036854775807 + 1 == 9223372036854775808
+  assert abs(0 - 9223372036854775807 - 1) == 9223372036854775808
+  assert parse_int(\"123456789012345678901234567890\") == Some(123456789012345678901234567890)
+  assert sort([100000000000000000000, 3, 0 - 100000000000000000000]) == [0 - 100000000000000000000, 3, 100000000000000000000]
+  assert f\"{fact(21)}\" == \"51090942171709440000\"
+}
+";
+    std::fs::write(d.join("b.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", "b.strata", "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    // larger than 64 bits in JSON: a number up to 2^64 - 1, or a string of digits
+    let (ok, out) = strata(&["--file", "b.strata", "run", "widen", "[18446744073709551614]"], &d, None);
+    assert!(ok && out.contains("\"18446744073709551615\""), "{out}");
+    let (ok, out) = strata(&["--file", "b.strata", "run", "widen", "[\"18446744073709551615\"]"], &d, None);
+    assert!(!ok && out.contains("18446744073709551616") && out.contains("does not satisfy `U64`"), "{out}");
+    if has_solver() {
+        let (ok, out) = strata(&["--file", "b.strata", "verify", "wrap,neg,widen", "--cases", "20"], &d, None);
+        assert!(!ok && out.contains("input:   [255]") && out.contains("input:   [-128]") && out.contains("input:   [\"18446744073709551615\"]"), "sized types catch overflow: {out}");
+    }
+    // render keeps big literals
+    let (_, r) = strata(&["--file", "b.strata", "render"], &d, None);
+    assert!(r.contains("15511210043330985984000000"), "{r}");
+}
+
+#[test]
 fn cross_check_catches_a_wrong_prover() {
     // a "solver" that proves everything: the cross-check must still catch the bug
     let d = tmp("cross-check");

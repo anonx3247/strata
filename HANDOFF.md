@@ -107,8 +107,8 @@ Not yet: `assumed` (no outside code exists yet); loop invariants (loops forget w
 - Policies: `--require terminates` accepts an explicit `terminates`; `--require no-recursion` rejects any recursion, even structural.
 
 ### Integers and floats (decided, user, session 3)
-- **`Int` is a big integer that is a machine integer while it fits** (like Python). The prover already treats `Int` as a mathematical integer. The interpreter still uses checked `i64` and reports overflow as a runtime fault: switch it to a big integer with a small-int fast path.
-- **Sized types live in the standard library as refinements of `Int`**: `U8 = Int where 0 <= it && it <= 255`, `I8`, `U16`, `I16`, `U32`, `I32`, `U64`, `I64`… They are verified like any refinement, and LLVM compiles each to its own width. `U64`'s bound doesn't fit an `i64` literal today, which is one more reason for big-integer literals.
+- **`Int` is a big integer that is a machine integer while it fits** (like Python). Built: `Value::Int(i64)`, and `Value::Big(BigInt)` only for a value that doesn't fit (so equal numbers are equal values); arithmetic switches over on overflow, and a literal too large for 64 bits is `Expr::BigInt(digits)`. Integers beyond 64 bits are written to JSON as strings of digits (serde_json can't write larger numbers without `arbitrary_precision`, which breaks deserialising the internally tagged verdicts); they are read from a number up to 2^64 - 1 or a string. An integer pattern must fit in 64 bits.
+- **Sized types live in the standard library as refinements of `Int`**: built in the prelude, `I8` … `I64`, `U8` … `U64`. They are verified like any refinement, and LLVM compiles each to its own width.
 - **`Float` is `F64`**; `F32`, `BF16` and similar exist alongside, with their own LLVM representations. (Floats are not modelled by the prover yet; SMT-LIB has a floating-point theory for when they are.)
 
 ### Compilation before transpilation
