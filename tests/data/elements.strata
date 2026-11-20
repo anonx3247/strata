@@ -1,0 +1,97 @@
+fn positives(xs: List[Int]) -> List[Positive] {
+  xs.filter(x -> x > 0)
+}
+
+fn bad_positives(xs: List[Int]) -> List[Positive] {
+  xs.filter(x -> x >= 0)
+}
+
+fn doubled(xs: List[Positive]) -> List[Positive] {
+  xs.map(x -> x * 2)
+}
+
+fn bad_doubled(xs: List[Int]) -> List[Positive] {
+  xs.map(x -> x * 2)
+}
+
+fn digits() -> List[Int where 0 <= it && it <= 9] {
+  range(0, 10)
+}
+
+fn bad_digits() -> List[Int where 0 <= it && it <= 9] {
+  range(0, 11)
+}
+
+fn lit() -> List[Positive] {
+  [1, 2, 3]
+}
+
+fn bad_lit() -> List[Positive] {
+  [1, 0, 3]
+}
+
+fn pushed(xs: List[Positive], x: Positive) -> List[Positive] {
+  push(xs, x)
+}
+
+fn bad_pushed(xs: List[Positive], x: Int) -> List[Positive] {
+  push(xs, x)
+}
+
+fn joined(a: List[Positive], b: List[Positive]) -> List[Positive] {
+  a + b
+}
+
+fn all_from(xs: List[Int]) -> Bool
+  requires all(xs, x -> x > 5)
+  ensures it {
+  all(xs, x -> x > 0)
+}
+
+fn bad_all(xs: List[Int]) -> Bool
+  requires all(xs, x -> x > 0)
+  ensures it {
+  all(xs, x -> x > 5)
+}
+
+fn first_big(xs: List[Int]) -> Int
+  requires all(xs, x -> x > 5)
+  ensures it > 5 {
+  match xs {
+    [x, ..] => x,
+    [] => 6,
+  }
+}
+
+fn found(xs: List[Int]) -> Int
+  ensures it >= 0 {
+  match find(xs, x -> x > 10) {
+    Some(x) => x,
+    None => 0,
+  }
+}
+
+fn rest_ok(xs: List[Int]) -> Bool
+  requires all(xs, x -> x > 0)
+  ensures it {
+  match xs {
+    [_, ..rest] => all(rest, x -> x > 0),
+    [] => true,
+  }
+}
+
+fn loop_push(xs: List[Positive]) -> List[Positive] {
+  let mut ys = xs
+  for x in xs {
+    ys = push(ys, 0 - x)
+  }
+  ys
+}
+
+fn empty_is_fine() -> Int
+  ensures it == 1 {
+  match [] {
+    [x, ..] => 2,
+    [] => 1,
+  }
+}
