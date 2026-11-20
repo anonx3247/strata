@@ -10,6 +10,7 @@
 //! gone and a new one that is the base's after `strata rename`) are carried
 //! into the other side, so its new references follow the rename.
 
+use crate::names::short;
 use crate::ast::{Decl, DeclKind, Program};
 use crate::{package, parser, printer, resolve};
 use std::collections::HashMap;
@@ -35,9 +36,6 @@ fn canon(d: &Decl) -> String {
     printer::decl(d)
 }
 
-fn short(q: &str) -> &str {
-    q.rsplit('.').next().unwrap_or(q)
-}
 
 fn renamable(d: &Decl) -> bool {
     matches!(d.kind, DeclKind::Fn(_) | DeclKind::Type(_) | DeclKind::Trait(_))
@@ -283,7 +281,7 @@ pub fn follow_rename(p: &Program, from: &str, to: &str) -> Option<Program> {
     resolve::set_member_name(&mut back, to, short(from));
     // `use` lists that name the new name (the renaming side's, kept by the
     // merge) name the old one again, so the other side's bare references resolve
-    let module = to.rsplit_once('.').map(|(m, _)| m).unwrap_or("");
+    let module = crate::names::module_of(&to);
     for d in &mut back.decls {
         if let DeclKind::Use(u) = &mut d.kind {
             if u.path == module {
@@ -306,15 +304,7 @@ pub fn follow_rename(p: &Program, from: &str, to: &str) -> Option<Program> {
 /// repository's top.
 pub fn logged_renames(top: &Path, log: &str, base: &str, theirs: &str) -> Vec<(String, String, &'static str)> {
     let show = |rev: &str| -> Vec<serde_json::Value> {
-        Command::new("git")
-            .arg("-C")
-            .arg(top)
-            .args(["show", &format!("{rev}:{log}")])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| crate::store::parse_log(&String::from_utf8_lossy(&o.stdout)))
-            .unwrap_or_default()
+        crate::git::run(Some(top), &["show", &format!("{rev}:{log}")]).map(|o| crate::store::parse_log(&o)).unwrap_or_default()
     };
     let known: std::collections::HashSet<String> = show(base).iter().filter_map(|e| e["id"].as_str().map(|s| s.to_string())).collect();
     let mut out = Vec::new();
@@ -360,10 +350,7 @@ pub fn follow_renames(top: &Path, base: &str, theirs: &str) -> Result<Vec<String
             cb.commit_with(next, &msg, serde_json::json!({"follows": {"from": from, "to": to, "references": updated}}))?;
             notes.push(format!("{msg} ({})", updated.join(", ")));
         }
-        let o = Command::new("git").arg("-C").arg(top).args(["add", "--"]).arg(&dir).output().map_err(|e| format!("git add: {e}"))?;
-        if !o.status.success() {
-            return Err(format!("git add {}: {}", dir.display(), String::from_utf8_lossy(&o.stderr).trim()));
-        }
+        crate::git::run(Some(top), &["add", "--", &dir.to_string_lossy()])?;
     }
     Ok(notes)
 }

@@ -7,6 +7,13 @@ use crate::parser::Parser;
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
 
+mod env;
+mod exhaustive;
+pub mod ints;
+pub mod reals;
+pub use env::Env;
+use exhaustive::*;
+
 thread_local! {
     /// While `field_owners` runs: for each tagged field access (`qty·tag`),
     /// the record types (or record variants) its receiver can be.
@@ -97,6 +104,12 @@ impl Builtin {
 pub fn total_builtin(name: &str) -> bool {
     let mut all = BUILTINS.iter().filter(|b| b.name == name).peekable();
     all.peek().is_some() && all.all(|b| b.total)
+}
+
+/// The prelude's definitions, parsed once.
+pub fn prelude() -> &'static Program {
+    static P: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
+    P.get_or_init(|| crate::parser::parse_program(PRELUDE).expect("prelude parses"))
 }
 
 /// Builtin functions and their type schemes.
@@ -233,22 +246,6 @@ impl CheckReport {
     }
 }
 
-/// Everything known about the declarations of a program, shared by the
-/// checker, interpreter and generators.
-pub struct Env {
-    pub types: HashMap<String, TypeDecl>,
-    /// ctor name -> (type name)
-    pub ctors: HashMap<String, String>,
-    pub fns: HashMap<String, FnDecl>,
-    pub traits: HashMap<String, TraitDecl>,
-    /// Trait implementations (`impl Trait for Type`).
-    pub impls: Vec<ImplDecl>,
-    /// trait method name -> the traits that declare it
-    pub method_traits: HashMap<String, Vec<String>>,
-    /// type name -> its own methods (`impl Item { ... }`)
-    pub inherent: HashMap<String, ImplDecl>,
-}
-
 /// The name used to find an implementation: `List[Int]` -> `List`, `Line` -> `Line`.
 pub fn texpr_head(t: &TypeExpr) -> String {
     match t {
@@ -334,7 +331,7 @@ pub fn elaborate(prog: &Program) -> crate::resolve::Resolution {
     let statics = env.traits.values().any(|t| t.methods.iter().any(|m| !crate::resolve::takes_self(&m.decl)));
     // a trait method named like a builtin (`Files.remove`) may mean the builtin
     // or two modules' traits share a method name (`Console.write`, `Files.write`)
-    let mut shorts: Vec<&str> = env.traits.values().flat_map(|t| t.methods.iter().map(|m| m.decl.name.rsplit('.').next().unwrap_or(&m.decl.name))).collect();
+    let mut shorts: Vec<&str> = env.traits.values().flat_map(|t| t.methods.iter().map(|m| crate::names::short(&m.decl.name))).collect();
     let like_builtin = shorts.iter().any(|s| BUILTINS.iter().any(|b| b.name == *s));
     shorts.sort();
     let across = shorts.windows(2).any(|w| w[0] == w[1]);
@@ -381,292 +378,6 @@ pub fn elaborate(prog: &Program) -> crate::resolve::Resolution {
         });
     }
     r
-}
-
-impl Env {
-    /// The environment of a program as it runs (elaborated).
-    pub fn new(prog: &Program) -> (Env, Vec<Diag>) {
-        Env::build(&elaborate(prog).program)
-    }
-
-    /// The environment of an already resolved program.
-    pub fn build(prog: &Program) -> (Env, Vec<Diag>) {
-        let prelude = crate::parser::parse_program(PRELUDE).expect("prelude parses");
-        let mut env = Env {
-            types: HashMap::new(),
-            ctors: HashMap::new(),
-            fns: HashMap::new(),
-            traits: HashMap::new(),
-            impls: Vec::new(),
-            method_traits: HashMap::new(),
-            inherent: HashMap::new(),
-        };
-        let mut errs = Vec::new();
-        let prelude_names: Vec<String> = prelude.decls.iter().map(|d| d.name()).collect();
-        for d in prelude.decls.iter().chain(prog.decls.iter()) {
-            let name = d.name();
-            let dup = match &d.kind {
-                DeclKind::Type(t) => {
-                    match &t.body {
-                        TypeBody::Sum(vs) => {
-                            for v in vs {
-                                // a clash with a record type is reported below, with the other name clashes
-                                let prev = env.ctors.get(&v.name).cloned();
-                                if prev.as_ref().is_some_and(|p| *p == v.name) {
-                                    continue;
-                                }
-                                if env.ctors.insert(v.name.clone(), t.name.clone()).is_some() {
-                                    errs.push(Diag { decl: name.clone(), msg: format!("constructor `{}` defined twice", v.name) });
-                                }
-                            }
-                        }
-                        TypeBody::Record(_) => {
-                            env.ctors.insert(t.name.clone(), t.name.clone());
-                        }
-                        TypeBody::Alias(_) if t.distinct => {
-                            env.ctors.insert(t.name.clone(), t.name.clone());
-                        }
-                        TypeBody::Alias(_) => {}
-                    }
-                    env.types.insert(t.name.clone(), t.clone()).is_some()
-                }
-                DeclKind::Fn(f) => env.fns.insert(f.name.clone(), f.clone()).is_some(),
-                DeclKind::Test(_) | DeclKind::Use(_) => false,
-                DeclKind::Trait(t) => {
-                    for m in &t.methods {
-                        env.method_traits.entry(m.decl.name.clone()).or_default().push(t.name.clone());
-                    }
-                    env.traits.insert(t.name.clone(), t.clone()).is_some()
-                }
-                DeclKind::Impl(i) if i.is_inherent() => {
-                    let head = texpr_head(&i.for_type);
-                    // `Item.new()` (no `self`) and, once elaborated, `item.describe()` on a known
-                    // `Item` are calls of the functions `Item.new` / `Item.describe`
-                    for m in &i.methods {
-                        let f = static_fn(i, m);
-                        env.fns.insert(f.name.clone(), f);
-                    }
-                    if env.inherent.insert(head.clone(), i.clone()).is_some() {
-                        errs.push(Diag { decl: name.clone(), msg: format!("`{head}` has two `impl {head}` blocks: put all of its own methods in one") });
-                    }
-                    false
-                }
-                DeclKind::Impl(i) => {
-                    let head = texpr_head(&i.for_type);
-                    if env.impls.iter().any(|o| o.trait_name == i.trait_name && texpr_head(&o.for_type) == head) {
-                        errs.push(Diag { decl: name.clone(), msg: format!("`{}` is already implemented for `{head}`", i.trait_name) });
-                    }
-                    env.impls.push(i.clone());
-                    false
-                }
-            };
-            if dup {
-                let msg = if prelude_names.contains(&name) {
-                    format!("`{name}` is already defined in the prelude (use it, or pick another name)")
-                } else {
-                    format!("`{name}` is defined twice")
-                };
-                errs.push(Diag { decl: name.clone(), msg });
-            }
-        }
-        // a variant is a type too, so its name must be unique in the whole
-        // project: no other variant, type or trait (in any module) may share it
-        let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
-        let mut owners: HashMap<String, Vec<String>> = HashMap::new();
-        for n in env.types.keys().chain(env.traits.keys()) {
-            owners.entry(short(n)).or_default().push(format!("the type `{n}`"));
-        }
-        let mut variants: Vec<(&String, &String)> = Vec::new();
-        for t in env.types.values() {
-            if let TypeBody::Sum(vs) = &t.body {
-                variants.extend(vs.iter().map(|v| (&v.name, &t.name)));
-            }
-        }
-        variants.sort();
-        for (c, t) in &variants {
-            owners.entry(short(c)).or_default().push(format!("the variant `{c}` of `{t}`"));
-        }
-        for (c, t) in &variants {
-            let others: Vec<&String> = owners[&short(c)].iter().filter(|o| **o != format!("the variant `{c}` of `{t}`")).collect();
-            if !others.is_empty() {
-                let list = others.iter().map(|o| o.as_str()).collect::<Vec<_>>().join(", ");
-                errs.push(Diag {
-                    decl: (*t).clone(),
-                    msg: format!("variant `{c}` of `{t}` has the same name as {list}: a variant is a type of its own, so its name must be unique across the project (rename one)"),
-                });
-            }
-        }
-        let mut sorted: Vec<_> = env.method_traits.iter().collect();
-        sorted.sort();
-        for (m, trs) in sorted {
-            if env.fns.contains_key(m) {
-                errs.push(Diag { decl: m.clone(), msg: format!("`{m}` is both a function and a method of trait `{}`", trs[0]) });
-            }
-        }
-        let mut heads: Vec<_> = env.inherent.iter().collect();
-        heads.sort_by_key(|(h, _)| *h);
-        for (head, i) in heads {
-            for m in i.methods.iter().filter(|m| crate::resolve::takes_self(m)) {
-                if env.fns.contains_key(&m.name) {
-                    errs.push(Diag { decl: i.name(), msg: format!("`{}` is both a function and a method of `{head}`", m.name) });
-                }
-            }
-        }
-        (env, errs)
-    }
-
-    /// The type parameters of `f` that must be known when it runs: those
-    /// bounded by a trait (or a supertrait) with a method without `self`.
-    pub fn type_args(&self, f: &FnDecl) -> Vec<String> {
-        let has_static = |tr: &str| {
-            let mut stack = vec![tr.to_string()];
-            let mut seen = std::collections::HashSet::new();
-            while let Some(t) = stack.pop() {
-                if !seen.insert(t.clone()) {
-                    continue;
-                }
-                let Some(td) = self.traits.get(&t) else { continue };
-                if td.methods.iter().any(|m| !crate::resolve::takes_self(&m.decl)) {
-                    return true;
-                }
-                stack.extend(td.supers.iter().map(texpr_head));
-            }
-            false
-        };
-        f.type_params.iter().filter(|p| f.bounds.iter().any(|b| &b.param == *p && b.traits.iter().any(|t| has_static(&texpr_head(t))))).cloned().collect()
-    }
-
-    /// The traits declaring `method` that values of type `head` implement.
-    pub fn traits_with(&self, method: &str, head: &str) -> Vec<String> {
-        let Some(trs) = self.method_traits.get(method) else { return vec![] };
-        trs.iter().filter(|tr| self.impls.iter().any(|i| &i.trait_name == *tr && texpr_head(&i.for_type) == head)).cloned().collect()
-    }
-
-    /// Whether `name` is a method (of a trait, or of a type itself), or a
-    /// call through a specific trait (`Trait::method`, see `elaborate`).
-    pub fn is_method(&self, name: &str) -> bool {
-        split_trait_call(name).is_some()
-            || self.method_traits.contains_key(name) || self.inherent.values().any(|i| i.methods.iter().any(|m| m.name == name && crate::resolve::takes_self(m)))
-    }
-
-    /// The declaration of method `name` when it means the same thing on every
-    /// type: declared by exactly one trait and by no type itself. Its
-    /// signature and contract then hold for every call.
-    pub fn method_contract(&self, name: &str) -> Option<(&TraitDecl, &FnDecl)> {
-        if let Some((tr, m)) = split_trait_call(name) {
-            let t = self.traits.get(tr)?;
-            return Some((t, &t.methods.iter().find(|x| x.decl.name == m)?.decl));
-        }
-        match self.method_traits.get(name).map(|v| v.as_slice()) {
-            Some([tr]) if !self.inherent.values().any(|i| i.methods.iter().any(|m| m.name == name)) => {
-                let t = self.traits.get(tr)?;
-                Some((t, &t.methods.iter().find(|m| m.decl.name == name)?.decl))
-            }
-            _ => None,
-        }
-    }
-
-    /// The parameters of method `name` (for `mut`-ness: every declaration of
-    /// a shared name must agree, which impls are checked for).
-    pub fn method_params(&self, name: &str) -> Option<Vec<Param>> {
-        if split_trait_call(name).is_some() {
-            return self.method_contract(name).map(|(_, d)| d.params.clone());
-        }
-        let from_trait = self.method_traits.get(name).and_then(|trs| trs.first()).and_then(|t| self.traits.get(t)).and_then(|t| t.methods.iter().find(|m| m.decl.name == name)).map(|m| m.decl.params.clone());
-        let mut owns: Vec<_> = self.inherent.iter().collect();
-        owns.sort_by_key(|(h, _)| *h);
-        from_trait.or_else(|| owns.into_iter().find_map(|(_, i)| i.methods.iter().find(|m| m.name == name && crate::resolve::takes_self(m)).map(|m| m.params.clone())))
-    }
-
-    /// Which parameters of the function or method `name` are `mut` (none for
-    /// a builtin).
-    pub fn mut_params(&self, name: &str) -> Vec<bool> {
-        let ps = self.fns.get(name).map(|f| f.params.clone()).or_else(|| self.method_params(name));
-        ps.unwrap_or_default().iter().map(|p| p.mutable).collect()
-    }
-
-    /// The implementation of `method` for values whose type head is `head`:
-    /// the impl's method or the trait's default, with the trait's contract.
-    /// `method` is `Trait::m` for a call through a specific trait (see
-    /// `elaborate`), else the trait is the one of `head`'s traits declaring it.
-    pub fn resolve_method(&self, method: &str, head: &str) -> Option<(FnDecl, Vec<Expr>, Vec<Expr>)> {
-        let (tr, method) = match split_trait_call(method) {
-            Some((tr, m)) => (tr.to_string(), m),
-            None => match self.traits_with(method, head).as_slice() {
-                [tr] => (tr.clone(), method),
-                _ => return None,
-            },
-        };
-        let tm = self.traits.get(&tr)?.methods.iter().find(|m| m.decl.name == method)?;
-        let imp = self.impls.iter().find(|i| i.trait_name == tr && texpr_head(&i.for_type) == head)?;
-        let decl = match imp.methods.iter().find(|m| m.name == method) {
-            Some(m) => m.clone(),
-            None if tm.default => tm.decl.clone(),
-            None => return None,
-        };
-        // the trait's contract binds every implementation
-        Some((decl, tm.decl.requires.clone(), tm.decl.ensures.clone()))
-    }
-
-    /// The sum type a variant belongs to (`Circle` -> `Shape`). A variant is a
-    /// type of its own, with its sum's type parameters.
-    pub fn variant_parent(&self, name: &str) -> Option<String> {
-        let p = self.ctors.get(name)?;
-        (p != name && matches!(self.types.get(p).map(|t| &t.body), Some(TypeBody::Sum(_)))).then(|| p.clone())
-    }
-
-    /// Whether `name` names a type (not only a constructor): a primitive, a
-    /// declared type, a variant or a trait. Such a name in a pattern matches
-    /// the values of that type.
-    pub fn is_type_name(&self, name: &str) -> bool {
-        matches!(name, "Int" | "Float" | "Bool" | "String" | "Unit" | "List" | "Set" | "Dict")
-            || self.types.contains_key(name)
-            || self.traits.contains_key(name)
-            || self.variant_parent(name).is_some()
-    }
-
-    /// Follow refinement aliases to the underlying (unrefined) type expression.
-    pub fn expand_alias(&self, t: &TypeExpr) -> TypeExpr {
-        if let TypeExpr::Refined(b, _) = t {
-            return self.expand_alias(b);
-        }
-        if let TypeExpr::Named(n, args) = t {
-            if let Some(TypeDecl { body: TypeBody::Alias(a), params, distinct: false, .. }) = self.types.get(n) {
-                let sub: HashMap<String, TypeExpr> = params.iter().cloned().zip(args.iter().cloned()).collect();
-                return self.expand_alias(&subst_texpr(a, &sub));
-            }
-        }
-        t.clone()
-    }
-
-    /// Constructors of a named type with type args substituted: (ctor, field names, field types)
-    pub fn variants_of(&self, name: &str, args: &[TypeExpr]) -> Option<Vec<(String, Option<Vec<String>>, Vec<TypeExpr>)>> {
-        let td = self.types.get(name)?;
-        let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
-        let s = |t: &TypeExpr| subst_texpr(t, &sub);
-        match &td.body {
-            TypeBody::Sum(vs) => Some(
-                vs.iter()
-                    .map(|v| match &v.payload {
-                        Payload::None => (v.name.clone(), None, vec![]),
-                        Payload::Positional(ts) => (v.name.clone(), None, ts.iter().map(s).collect()),
-                        Payload::Record(fs) => (
-                            v.name.clone(),
-                            Some(fs.iter().map(|f| f.name.clone()).collect()),
-                            fs.iter().map(|f| s(&f.ty)).collect(),
-                        ),
-                    })
-                    .collect(),
-            ),
-            TypeBody::Record(fs) => Some(vec![(
-                name.to_string(),
-                Some(fs.iter().map(|f| f.name.clone()).collect()),
-                fs.iter().map(|f| s(&f.ty)).collect(),
-            )]),
-            TypeBody::Alias(a) if td.distinct => Some(vec![(name.to_string(), None, vec![s(a)])]),
-            TypeBody::Alias(_) => None,
-        }
-    }
 }
 
 pub fn subst_texpr(t: &TypeExpr, sub: &HashMap<String, TypeExpr>) -> TypeExpr {
@@ -1269,7 +980,7 @@ impl<'a> Checker<'a> {
             }
             let callee = std::mem::take(&mut self.callee);
             if !callee && !self.env.type_args(&f).is_empty() {
-                let short = name.rsplit('.').next().unwrap_or(name);
+                let short = crate::names::short(&name);
                 self.err(format!("`{short}` needs to know its type arguments when it runs (it calls methods on the type), so it can't be passed as a value: pass a lambda (`x -> {short}(x)`)"));
             }
             self.last_inst = Some((name.to_string(), vars));
@@ -1280,7 +991,7 @@ impl<'a> Checker<'a> {
             return Some(self.trait_method(name, &tn));
         }
         if self.env.is_method(name) {
-            let short = name.rsplit('.').next().unwrap_or(name);
+            let short = crate::names::short(&name);
             self.err(format!("which `{short}` runs depends on the type of the value it is called on (several types or traits have one): call it on a value, or pass a lambda such as `x -> x.{short}()`"));
             return Some(self.fresh());
         }
@@ -1304,7 +1015,7 @@ impl<'a> Checker<'a> {
         if self.lookup(m).is_some() || self.env.fns.contains_key(m) || split_trait_call(m).is_some() || !self.env.is_method(m) {
             return None;
         }
-        let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+        let short = |q: &str| crate::names::short(q).to_string();
         let sm = short(m);
         let recv = all.first()?;
         let n = self.errors.len();
@@ -1407,7 +1118,7 @@ impl<'a> Checker<'a> {
         if self.lookup(m).is_some() || self.env.fns.contains_key(m) || !self.env.is_method(m) || self.env.method_contract(m).is_some() {
             return None;
         }
-        let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+        let short = |q: &str| crate::names::short(q).to_string();
         let sm = short(m);
         let Some(recv) = recv else {
             self.err(format!("`{sm}` is a method: call it on a value (`x.{sm}()`)"));
@@ -1540,7 +1251,7 @@ impl<'a> Checker<'a> {
                 refs.push(match &t {
                     Ty::Rigid(q) => TypeRef::Param(q.clone()),
                     Ty::Con(h, _) if self.env.traits.contains_key(h) => {
-                        self.err(format!("`{p}` must be a concrete type here (it has methods called on the type), not any `{}`", h.rsplit('.').next().unwrap_or(h)));
+                        self.err(format!("`{p}` must be a concrete type here (it has methods called on the type), not any `{}`", crate::names::short(&h)));
                         continue;
                     }
                     _ => match ty_head(&t) {
@@ -1566,7 +1277,7 @@ impl<'a> Checker<'a> {
         if statics.is_empty() {
             return None;
         }
-        let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+        let short = |q: &str| crate::names::short(q).to_string();
         let sm = short(m);
         // the type, how it is passed at runtime, and the traits it is known to have
         let rigid = |c: &mut Checker, p: &str| {
@@ -2056,7 +1767,7 @@ impl<'a> Checker<'a> {
                             match &**recv {
                                 // `Item.new()` that `impl Item` doesn't define
                                 Expr::Ctor(t, CtorArgs::None) if self.env.types.contains_key(t) => {
-                                    let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+                                    let short = |q: &str| crate::names::short(q).to_string();
                                     self.err(format!("`{}` has no method `{}` called on the type (one without `self`, in `impl {}`)", short(t), short(m), short(t)))
                                 }
                                 _ => self.err(format!("unknown function `{m}`")),
@@ -3012,560 +2723,6 @@ pub fn show_ty(t: &Ty) -> String {
 }
 
 // ------------------------------------------------------------------
-// Exhaustiveness and unreachable arms (Maranget's usefulness algorithm).
-//
-// A pattern stands for a set of values. A type is split into "atoms": its
-// constructors (variants, records, `true`/`false`, `[]`/`::`, tuples), the
-// members of a union, and, for `Int`, the intervals that the patterns' bounds
-// cut it into. Anything else is one opaque atom.
-
-/// The set of values a pattern matches.
-#[derive(Clone, Debug)]
-pub enum P {
-    Any,
-    /// A constructor, with patterns for its fields.
-    C(String, Vec<P>),
-    /// Some values we cannot describe (a string literal, an undecidable
-    /// condition): it covers no atom fully.
-    Lit,
-    /// Every value of a type (`String`, `Circle`, `Shape` the trait).
-    Ty(Ty),
-    /// These integers (a literal, `where 3 <= it && it <= 5`, `Positive`).
-    Ints(ints::Ints),
-    /// Strings or lists with these lengths (`where len(it) > 0`, `NonEmpty`).
-    Lens(ints::Ints),
-    /// These floats (`where 0.0 <= it && it < 1.0`).
-    Reals(reals::Reals),
-    /// Any of these.
-    Or(Vec<P>),
-}
-
-/// Rows with alternatives in their first column become one row per alternative.
-fn expand(rows: &[Vec<P>]) -> Vec<Vec<P>> {
-    let mut out = Vec::new();
-    for r in rows {
-        match &r[0] {
-            P::Or(ps) => out.extend(expand(&ps.iter().map(|p| [vec![p.clone()], r[1..].to_vec()].concat()).collect::<Vec<_>>())),
-            _ => out.push(r.clone()),
-        }
-    }
-    out
-}
-
-#[derive(Clone, PartialEq)]
-enum AtomKey {
-    Ctor(String),
-    Region(i128, i128),
-    /// Strings whose length is in this range.
-    Len(i128, i128),
-    /// Floats: a single point, or the open interval between two (±inf).
-    Real { lo: f64, hi: f64, point: bool },
-    Opaque(String),
-}
-
-impl AtomKey {
-    /// A float inside the region, to test a condition on.
-    fn sample(&self) -> f64 {
-        match self {
-            AtomKey::Real { lo, point: true, .. } => *lo,
-            AtomKey::Real { lo, hi, .. } => match (lo.is_infinite(), hi.is_infinite()) {
-                (true, true) => 0.0,
-                (true, false) => hi - 1.0,
-                (false, true) => lo + 1.0,
-                _ => (lo + hi) / 2.0,
-            },
-            _ => 0.0,
-        }
-    }
-}
-
-/// Elementary integer regions cut by the sets' bounds, within [from, MAX].
-fn regions(sets: &[&ints::Ints], from: i128) -> Vec<(i128, i128)> {
-    let mut cuts: Vec<i128> = vec![from];
-    for s in sets {
-        for (lo, hi) in s.iter() {
-            cuts.push(*lo);
-            cuts.push(hi + 1);
-        }
-    }
-    cuts.retain(|c| *c >= from && *c <= ints::MAX);
-    cuts.sort();
-    cuts.dedup();
-    cuts.iter().enumerate().map(|(i, lo)| (*lo, cuts.get(i + 1).map_or(ints::MAX, |n| n - 1))).collect()
-}
-
-struct Atom {
-    key: AtomKey,
-    args: Vec<Ty>,
-    ty: Ty,
-}
-
-impl Checker<'_> {
-    /// The atoms of type `t`, with `Int` cut by the integer sets in `col`.
-    fn atoms(&mut self, t: &Ty, col: &[&P]) -> Vec<Atom> {
-        let t = self.resolve(t);
-        let atom = |k: AtomKey, args: Vec<Ty>, ty: &Ty| Atom { key: k, args, ty: ty.clone() };
-        let ctor = |c: &str| AtomKey::Ctor(c.to_string());
-        match &t {
-            Ty::Bool => vec![atom(ctor("true"), vec![], &t), atom(ctor("false"), vec![], &t)],
-            Ty::Unit => vec![atom(ctor("()"), vec![], &t)],
-            Ty::Int => {
-                let sets: Vec<&ints::Ints> = col.iter().filter_map(|p| if let P::Ints(s) = p { Some(s) } else { None }).collect();
-                regions(&sets, ints::MIN).into_iter().map(|(lo, hi)| atom(AtomKey::Region(lo, hi), vec![], &t)).collect()
-            }
-            Ty::Str => {
-                let sets: Vec<&ints::Ints> = col.iter().filter_map(|p| if let P::Lens(s) = p { Some(s) } else { None }).collect();
-                regions(&sets, 0).into_iter().map(|(lo, hi)| atom(AtomKey::Len(lo, hi), vec![], &t)).collect()
-            }
-            Ty::Float => {
-                let mut cuts: Vec<f64> = col.iter().filter_map(|p| if let P::Reals(r) = p { Some(r.cuts.clone()) } else { None }).flatten().collect();
-                cuts.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                cuts.dedup();
-                let mut out = Vec::new();
-                let mut lo = f64::NEG_INFINITY;
-                for c in &cuts {
-                    out.push(atom(AtomKey::Real { lo, hi: *c, point: false }, vec![], &t));
-                    out.push(atom(AtomKey::Real { lo: *c, hi: *c, point: true }, vec![], &t));
-                    lo = *c;
-                }
-                out.push(atom(AtomKey::Real { lo, hi: f64::INFINITY, point: false }, vec![], &t));
-                out
-            }
-            Ty::Union(ms) => ms.iter().flat_map(|m| self.atoms(m, col)).collect(),
-            Ty::Con(n, args) if n == "Tuple" => vec![atom(ctor("(,)"), args.clone(), &t)],
-            Ty::Con(n, args) if n == "List" => vec![atom(ctor("[]"), vec![], &t), atom(ctor("::"), vec![args[0].clone(), t.clone()], &t)],
-            Ty::Con(n, args) if !self.env.traits.contains_key(n) && (self.env.types.contains_key(n) || self.env.variant_parent(n).is_some()) => {
-                let ctors: Vec<String> = match self.env.types.get(n).map(|td| &td.body) {
-                    Some(TypeBody::Sum(vs)) => vs.iter().map(|v| v.name.clone()).collect(),
-                    _ => vec![n.clone()],
-                };
-                let parent = self.env.variant_parent(n).unwrap_or(n.clone());
-                ctors
-                    .into_iter()
-                    .filter_map(|c| {
-                        let (ct, fields) = self.ctor_type(&c)?;
-                        let _ = self.unify(&ct, &Ty::Con(parent.clone(), args.clone()));
-                        let fs = fields.into_iter().map(|f| self.resolve(&f.1)).collect();
-                        let ty = self.variant_ty(&c, &ct);
-                        Some(atom(AtomKey::Ctor(c), fs, &self.resolve(&ty)))
-                    })
-                    .collect()
-            }
-            _ => vec![atom(AtomKey::Opaque(show_ty(&t)), vec![], &t)],
-        }
-    }
-
-    /// The patterns for an atom's fields if `p` covers the whole atom.
-    fn covers(&mut self, p: &P, a: &Atom) -> Option<Vec<P>> {
-        let any = || vec![P::Any; a.args.len()];
-        match p {
-            P::Any => Some(any()),
-            P::C(name, subs) => (a.key == AtomKey::Ctor(name.clone())).then(|| subs.clone()),
-            P::Lit | P::Or(_) => None,
-            P::Ints(s) => match a.key {
-                AtomKey::Region(lo, hi) if ints::contains(s, lo, hi) => Some(vec![]),
-                _ => None,
-            },
-            P::Lens(s) => match &a.key {
-                AtomKey::Len(lo, hi) if ints::contains(s, *lo, *hi) => Some(vec![]),
-                // a list is `[]` (length 0) or `x :: rest` (length 1 and more)
-                AtomKey::Ctor(c) if c == "[]" && ints::contains(s, 0, 0) => Some(vec![]),
-                AtomKey::Ctor(c) if c == "::" && ints::contains(s, 1, ints::MAX) => Some(any()),
-                _ => None,
-            },
-            P::Reals(r) => (matches!(a.key, AtomKey::Real { .. }) && r.holds(a.key.sample())).then(Vec::new),
-            P::Ty(pt) => {
-                let pt = self.resolve(pt);
-                if let Ty::Con(tr, targs) = &pt {
-                    if self.env.traits.contains_key(tr) {
-                        let snap = (self.subst.clone(), self.pending.len());
-                        let ok = self.satisfies(&a.ty, tr, targs, 0).is_ok();
-                        self.subst = snap.0;
-                        self.pending.truncate(snap.1);
-                        return ok.then(any);
-                    }
-                }
-                let inside = self.atoms(&pt, &[]).iter().any(|b| match (&a.key, &b.key) {
-                    (AtomKey::Region(..), AtomKey::Region(..)) | (AtomKey::Len(..), AtomKey::Len(..)) | (AtomKey::Real { .. }, AtomKey::Real { .. }) => true,
-                    (x, y) => x == y,
-                });
-                inside.then(any)
-            }
-        }
-    }
-
-    fn show_atom(&self, a: &Atom, args: &[String], in_union: bool) -> String {
-        match &a.key {
-            AtomKey::Opaque(k) => if in_union { k.clone() } else { "_".into() },
-            AtomKey::Len(lo, hi) => match (*lo, *hi) {
-                (0, ints::MAX) => if in_union { "String".into() } else { "_".into() },
-                (l, h) if l == h => format!("where len(it) == {l}"),
-                (l, ints::MAX) => format!("where len(it) >= {l}"),
-                (0, h) => format!("where len(it) <= {h}"),
-                (l, h) => format!("where {l} <= len(it) && len(it) <= {h}"),
-            },
-            AtomKey::Real { lo, hi, point } => match (*point, lo.is_infinite(), hi.is_infinite()) {
-                (true, ..) => format!("where it == {lo:?}"),
-                (false, true, true) => if in_union { "Float".into() } else { "_".into() },
-                (false, true, false) => format!("where it < {hi:?}"),
-                (false, false, true) => format!("where it > {lo:?}"),
-                _ => format!("where {lo:?} < it && it < {hi:?}"),
-            },
-            AtomKey::Region(lo, hi) => {
-                let full = *lo == ints::MIN && *hi == ints::MAX;
-                match (*lo == ints::MIN, *hi == ints::MAX) {
-                    _ if full => if in_union { "Int".into() } else { "_".into() },
-                    _ if lo == hi => lo.to_string(),
-                    (true, false) => format!("where it <= {hi}"),
-                    (false, true) => format!("where it >= {lo}"),
-                    _ => format!("where {lo} <= it && it <= {hi}"),
-                }
-            }
-            AtomKey::Ctor(c) => {
-                let n = args.len();
-                let named = self.env.ctors.get(c).and_then(|t| self.env.variants_of(t, &[])).and_then(|vs| vs.into_iter().find(|v| &v.0 == c)).and_then(|v| v.1);
-                match c.as_str() {
-                    "::" => format!("[{}, ..]", args[0]),
-                    "(,)" => format!("({})", args.join(", ")),
-                    _ if n == 0 => c.clone(),
-                    _ if args.iter().all(|a| a == "_") => c.clone(),
-                    _ if named.is_some() => {
-                        let ns = named.unwrap();
-                        let parts: Vec<String> = ns.iter().zip(args).filter(|(_, a)| *a != "_").map(|(n, a)| format!("{n}: {a}")).collect();
-                        format!("{c} {{ {}, .. }}", parts.join(", "))
-                    }
-                    _ => format!("{c}({})", args.join(", ")),
-                }
-            }
-        }
-    }
-
-    /// A value (as pattern text, one per column) that no row matches, if any.
-    fn missing(&mut self, rows: &[Vec<P>], tys: &[Ty], depth: usize) -> Option<Vec<String>> {
-        if tys.is_empty() {
-            return if rows.is_empty() { Some(vec![]) } else { None };
-        }
-        if depth > 12 {
-            return None;
-        }
-        let rows = &expand(rows);
-        // only wildcards here: every value of this column behaves the same
-        if rows.iter().all(|r| matches!(r[0], P::Any)) {
-            let def: Vec<Vec<P>> = rows.iter().map(|r| r[1..].to_vec()).collect();
-            return self.missing(&def, &tys[1..], depth + 1).map(|w| [vec!["_".to_string()], w].concat());
-        }
-        let t0 = self.resolve(&tys[0]);
-        let in_union = matches!(t0, Ty::Union(_));
-        let col: Vec<P> = rows.iter().map(|r| r[0].clone()).collect();
-        let atoms = self.atoms(&t0, &col.iter().collect::<Vec<_>>());
-        for a in atoms {
-            let n = a.args.len();
-            let spec: Vec<Vec<P>> = rows.iter().filter_map(|r| self.covers(&r[0], &a).map(|subs| [subs, r[1..].to_vec()].concat())).collect();
-            let tys2 = [a.args.clone(), tys[1..].to_vec()].concat();
-            if let Some(w) = self.missing(&spec, &tys2, depth + 1) {
-                let (args, rest) = w.split_at(n);
-                let shown = self.show_atom(&a, args, in_union);
-                return Some([vec![shown], rest.to_vec()].concat());
-            }
-        }
-        None
-    }
-
-    /// Whether the row `q` matches some value that none of `rows` matches.
-    fn useful(&mut self, rows: &[Vec<P>], q: &[P], tys: &[Ty], depth: usize) -> bool {
-        if tys.is_empty() {
-            return rows.is_empty();
-        }
-        if depth > 12 || matches!(q[0], P::Lit) {
-            return true;
-        }
-        if let P::Or(alts) = &q[0] {
-            return alts.iter().any(|a| self.useful(rows, &[vec![a.clone()], q[1..].to_vec()].concat(), tys, depth));
-        }
-        let rows = &expand(rows);
-        if matches!(q[0], P::Any) && rows.iter().all(|r| matches!(r[0], P::Any)) {
-            let def: Vec<Vec<P>> = rows.iter().map(|r| r[1..].to_vec()).collect();
-            return self.useful(&def, &q[1..], &tys[1..], depth + 1);
-        }
-        let mut col: Vec<P> = rows.iter().map(|r| r[0].clone()).collect();
-        col.push(q[0].clone());
-        let atoms = self.atoms(&tys[0], &col.iter().collect::<Vec<_>>());
-        for a in atoms {
-            let Some(qs) = self.covers(&q[0], &a) else {
-                // part of an opaque type (a `Log` among a trait's values), or some of
-                // a list's lengths: it may match something
-                if matches!(a.key, AtomKey::Opaque(_)) && !matches!(q[0], P::Any) {
-                    return true;
-                }
-                if matches!(q[0], P::Lens(_)) && matches!(&a.key, AtomKey::Ctor(c) if c == "::") {
-                    return true;
-                }
-                continue;
-            };
-            let spec: Vec<Vec<P>> = rows.iter().filter_map(|r| self.covers(&r[0], &a).map(|subs| [subs, r[1..].to_vec()].concat())).collect();
-            let tys2 = [a.args.clone(), tys[1..].to_vec()].concat();
-            if self.useful(&spec, &[qs, q[1..].to_vec()].concat(), &tys2, depth + 1) {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn check_matches(&mut self) {
-        let ms = std::mem::take(&mut self.matches);
-        for Coverage { ty: t, arms, excluded } in ms {
-            // the values the refinement rules out count as covered, by a hidden first row
-            let pre: Vec<Vec<P>> = excluded.iter().map(|(p, _)| vec![p.clone()]).collect();
-            let rows: Vec<Vec<P>> = pre.iter().cloned().chain(arms.iter().map(|(p, _)| vec![p.clone()])).collect();
-            let k = pre.len();
-            for (i, (_, text)) in arms.iter().enumerate() {
-                if !self.useful(&rows[..k + i], &rows[k + i], &[t.clone()], 0) {
-                    match &excluded {
-                        Some((_, w)) if !self.useful(&pre, &rows[k + i], &[t.clone()], 0) => {
-                            self.err(format!("unreachable match arm `{text}`: no `{w}` matches it"));
-                        }
-                        _ => self.err(format!("unreachable match arm `{text}`: the arms above already cover it")),
-                    }
-                }
-            }
-            if let Some(w) = self.missing(&rows, &[t.clone()], 0) {
-                let shown = excluded.as_ref().map_or(self.show(&t), |(_, w)| w.clone());
-                self.err(format!("non-exhaustive match on `{shown}`: `{}` is not covered", w[0]));
-            }
-        }
-    }
-}
-
-/// Sets of integers as sorted, disjoint, inclusive intervals (in i128 so that
-/// the bounds of i64 never overflow).
-pub mod ints {
-    use crate::ast::{BinOp, Expr, UnOp};
-    pub type Ints = Vec<(i128, i128)>;
-    pub const MIN: i128 = i64::MIN as i128;
-    pub const MAX: i128 = i64::MAX as i128;
-
-    pub fn point(n: i128) -> Ints {
-        vec![(n, n)]
-    }
-    fn norm(mut v: Ints) -> Ints {
-        v.retain(|(a, b)| a <= b);
-        v.sort();
-        let mut out: Ints = Vec::new();
-        for (a, b) in v {
-            match out.last_mut() {
-                Some((_, hi)) if a <= *hi + 1 => *hi = (*hi).max(b),
-                _ => out.push((a, b)),
-            }
-        }
-        out
-    }
-    pub fn or(a: &Ints, b: &Ints) -> Ints {
-        norm([a.clone(), b.clone()].concat())
-    }
-    pub fn not(a: &Ints) -> Ints {
-        let mut out = Vec::new();
-        let mut lo = MIN;
-        for (x, y) in a {
-            if *x > lo {
-                out.push((lo, x - 1));
-            }
-            lo = y + 1;
-        }
-        if lo <= MAX {
-            out.push((lo, MAX));
-        }
-        out
-    }
-    pub fn and(a: &Ints, b: &Ints) -> Ints {
-        not(&or(&not(a), &not(b)))
-    }
-    pub fn contains(s: &Ints, lo: i128, hi: i128) -> bool {
-        s.iter().any(|(a, b)| *a <= lo && hi <= *b)
-    }
-    /// The integers `it` for which a condition holds, when it only compares
-    /// `it` with constants (combined with `&&`, `||`, `!`, `==>`).
-    pub fn of_pred(e: &Expr) -> Option<Ints> {
-        of_pred_on(e, &|e| matches!(e, Expr::Var(x) if x == "it"))
-    }
-
-    /// The lengths for which a condition on `len(it)` holds (never negative).
-    pub fn of_len_pred(e: &Expr) -> Option<Ints> {
-        let is_len = |e: &Expr| match e {
-            Expr::Call(f, a) => matches!(&**f, Expr::Var(n) if n == "len") && matches!(a.as_slice(), [Expr::Var(x)] if x == "it"),
-            Expr::Method(r, m, a) => m == "len" && a.is_empty() && matches!(&**r, Expr::Var(x) if x == "it"),
-            _ => false,
-        };
-        Some(and(&of_pred_on(e, &is_len)?, &vec![(0, MAX)]))
-    }
-
-    /// A superset of the integers for which a condition on `it` holds: as
-    /// `of_pred`, with the parts it can't read (`is_prime(it)`) taken as
-    /// anything. Steers generators; the condition itself is still checked.
-    pub fn hull(e: &Expr) -> Ints {
-        hull_on(e, &of_pred)
-    }
-
-    /// The same for the lengths of `it`.
-    pub fn len_hull(e: &Expr) -> Ints {
-        and(&hull_on(e, &of_len_pred), &vec![(0, MAX)])
-    }
-
-    fn hull_on(e: &Expr, exact: &dyn Fn(&Expr) -> Option<Ints>) -> Ints {
-        if let Some(s) = exact(e) {
-            return s;
-        }
-        match e {
-            Expr::Bin(BinOp::And, l, r) => and(&hull_on(l, exact), &hull_on(r, exact)),
-            Expr::Bin(BinOp::Or, l, r) => or(&hull_on(l, exact), &hull_on(r, exact)),
-            _ => vec![(MIN, MAX)],
-        }
-    }
-
-    fn of_pred_on(e: &Expr, subject: &dyn Fn(&Expr) -> bool) -> Option<Ints> {
-        let of_pred = |e: &Expr| of_pred_on(e, subject);
-        let konst = |e: &Expr| match e {
-            Expr::Int(n) => Some(*n as i128),
-            Expr::BigInt(d) => d.parse::<i128>().ok(),
-            Expr::Un(UnOp::Neg, x) => match &**x {
-                Expr::Int(n) => Some(-(*n as i128)),
-                _ => None,
-            },
-            _ => None,
-        };
-        let is_it = subject;
-        Some(match e {
-            Expr::Bool(true) => vec![(MIN, MAX)],
-            Expr::Bool(false) => vec![],
-            Expr::Un(UnOp::Not, x) => not(&of_pred(x)?),
-            Expr::Bin(BinOp::And, l, r) => and(&of_pred(l)?, &of_pred(r)?),
-            Expr::Bin(BinOp::Or, l, r) => or(&of_pred(l)?, &of_pred(r)?),
-            Expr::Bin(BinOp::Implies, l, r) => or(&not(&of_pred(l)?), &of_pred(r)?),
-            Expr::Bin(op, l, r) => {
-                use BinOp::*;
-                let (op, c) = if is_it(l) {
-                    (*op, konst(r)?)
-                } else if is_it(r) {
-                    let flipped = match op {
-                        Lt => Gt,
-                        Le => Ge,
-                        Gt => Lt,
-                        Ge => Le,
-                        o => *o,
-                    };
-                    (flipped, konst(l)?)
-                } else {
-                    return None;
-                };
-                match op {
-                    Lt => vec![(MIN, c - 1)],
-                    Le => vec![(MIN, c)],
-                    Gt => vec![(c + 1, MAX)],
-                    Ge => vec![(c, MAX)],
-                    Eq => point(c),
-                    Ne => not(&point(c)),
-                    _ => return None,
-                }
-            }
-            _ => return None,
-        })
-    }
-}
-
-/// Sets of floats described by a condition that compares `it` with
-/// constants. Between two consecutive constants the condition cannot change,
-/// so testing one point per region decides it exactly.
-pub mod reals {
-    use crate::ast::{BinOp, Expr, UnOp};
-
-    #[derive(Clone, Debug)]
-    pub struct Reals {
-        /// The constants the conditions compare with.
-        pub cuts: Vec<f64>,
-        /// All must hold (`negated`: the set is the complement).
-        pub preds: Vec<Expr>,
-        pub negated: bool,
-    }
-
-    impl Reals {
-        pub fn holds(&self, x: f64) -> bool {
-            self.preds.iter().all(|p| eval(p, x).unwrap_or(false)) != self.negated
-        }
-        pub fn and(mut self, other: Reals) -> Option<Reals> {
-            if self.negated || other.negated {
-                return None;
-            }
-            self.cuts.extend(other.cuts);
-            self.preds.extend(other.preds);
-            Some(self)
-        }
-        pub fn not(mut self) -> Reals {
-            self.negated = !self.negated;
-            self
-        }
-    }
-
-    pub fn of_pred(e: &Expr) -> Option<Reals> {
-        eval(e, 0.0)?;
-        let mut cuts = Vec::new();
-        consts(e, &mut cuts);
-        Some(Reals { cuts, preds: vec![e.clone()], negated: false })
-    }
-
-    fn konst(e: &Expr) -> Option<f64> {
-        match e {
-            Expr::Float(f) => Some(*f),
-            Expr::Int(n) => Some(*n as f64),
-            Expr::Un(UnOp::Neg, x) => konst(x).map(|v| -v),
-            _ => None,
-        }
-    }
-
-    fn consts(e: &Expr, out: &mut Vec<f64>) {
-        match e {
-            Expr::Un(_, x) => consts(x, out),
-            Expr::Bin(_, l, r) => {
-                if let Some(c) = konst(l).or(konst(r)) {
-                    out.push(c);
-                }
-                consts(l, out);
-                consts(r, out);
-            }
-            _ => {}
-        }
-    }
-
-    /// The condition at `it = x`, or `None` if it is not of a form we decide.
-    fn eval(e: &Expr, x: f64) -> Option<bool> {
-        let is_it = |e: &Expr| matches!(e, Expr::Var(v) if v == "it");
-        Some(match e {
-            Expr::Bool(b) => *b,
-            Expr::Un(UnOp::Not, a) => !eval(a, x)?,
-            Expr::Bin(BinOp::And, l, r) => eval(l, x)? & eval(r, x)?,
-            Expr::Bin(BinOp::Or, l, r) => eval(l, x)? | eval(r, x)?,
-            Expr::Bin(BinOp::Implies, l, r) => !eval(l, x)? | eval(r, x)?,
-            Expr::Bin(op, l, r) => {
-                let (a, b) = match (is_it(l), is_it(r)) {
-                    (true, false) => (x, konst(r)?),
-                    (false, true) => (konst(l)?, x),
-                    _ => return None,
-                };
-                use BinOp::*;
-                match op {
-                    Lt => a < b,
-                    Le => a <= b,
-                    Gt => a > b,
-                    Ge => a >= b,
-                    Eq => a == b,
-                    Ne => a != b,
-                    _ => return None,
-                }
-            }
-            _ => return None,
-        })
-    }
-}
-
-// ------------------------------------------------------------------
 
 fn ty_to_texpr(t: &Ty) -> TypeExpr {
     let n = |s: &str| TypeExpr::Named(s.into(), vec![]);
@@ -3754,7 +2911,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                 for m in &t.methods {
                     // without `self`, the type it is called on must matter: else it is just a function
                     if !crate::resolve::takes_self(&m.decl) && !mentions_self(&m.decl) {
-                        let short = m.decl.name.rsplit('.').next().unwrap_or(&m.decl.name);
+                        let short = crate::names::short(&m.decl.name);
                         c.err(format!("trait method `{short}` has no `self` and doesn't mention `Self`, so no implementation could be chosen for a call: make it a function"));
                     }
                     let mut ob = Vec::new();
@@ -3811,7 +2968,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                 match env.traits.get(&i.trait_name).cloned() {
                     None if i.is_inherent() => {
                         // a type's own methods: only for a type this program defines, in its module
-                        let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+                        let short = |q: &str| crate::names::short(q).to_string();
                         if !env.types.contains_key(&head) || alias {
                             c.err(format!("`impl {}`: methods can only be added to a record, sum or `distinct` type defined in this program (use a function, or a trait)", short(&head)));
                         }
@@ -3833,7 +2990,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                         for (sn, sa) in c.supers_of(&tr.name, &targs, 0) {
                             c.pending.push((self_ty.clone(), sn.clone(), sa, format!("`{}` requires `{sn}`", tr.name)));
                         }
-                        let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+                        let short = |q: &str| crate::names::short(q).to_string();
                         for tm in &tr.methods {
                             let _ = short;
                             // each trait's implementation is its own, even when the type has a method of the same name
@@ -3934,7 +3091,6 @@ pub fn mentions_self(f: &FnDecl) -> bool {
     }
     f.params.iter().any(|p| t(&p.ty)) || t(&f.ret)
 }
-
 
 /// The name a type is known by at runtime (`Money`, `Int`), when it is concrete.
 pub fn ty_head(t: &Ty) -> Option<String> {

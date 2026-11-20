@@ -3,6 +3,7 @@
 //! The record is built as JSON and read with `Interp::from_json`, so every
 //! refinement is checked exactly as for any other input.
 
+use crate::names::short;
 use crate::ast::*;
 use crate::interp::{Interp, Value};
 use crate::types::Env;
@@ -54,9 +55,6 @@ fn dashed(name: &str) -> String {
     name.replace('_', "-")
 }
 
-fn short(n: &str) -> &str {
-    n.rsplit('.').next().unwrap_or(n)
-}
 
 /// `DryRun` -> `dry-run`
 fn kebab(n: &str) -> String {

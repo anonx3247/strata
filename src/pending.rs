@@ -9,6 +9,7 @@
 //! The state is `.strata/pending.json` (local, never committed): the files as
 //! they were, the holes, and the renames made along the way.
 
+use crate::names::short;
 use crate::ast::*;
 use crate::store::Codebase;
 use crate::types::Diag;
@@ -113,14 +114,11 @@ fn changed_names(old: &Program, new: &Program, edited: &[String]) -> HashSet<Str
     out
 }
 
-fn last(n: &str) -> &str {
-    n.rsplit('.').next().unwrap_or(n)
-}
 
 /// Whether an expression uses one of `names` (a call, a reference, a
 /// constructor, a method call, an `is` test).
 fn uses(e: &Expr, names: &HashSet<String>) -> bool {
-    let named = |n: &str| names.contains(last(n));
+    let named = |n: &str| names.contains(short(n));
     match e {
         Expr::Var(n) | Expr::Ctor(n, _) | Expr::Method(_, n, _) | Expr::Is(_, n) => named(n),
         Expr::Call(f, _) => matches!(&**f, Expr::Var(n) if named(n)),
@@ -155,7 +153,7 @@ fn pattern_ctors(p: &Pattern) -> Vec<String> {
     impl Visit for Ctors {
         fn pattern(&mut self, p: &Pattern) {
             if let Pattern::Ctor(c, _) = p {
-                self.0.push(last(c).to_string());
+                self.0.push(short(c).to_string());
             }
             walk_pattern(self, p)
         }
@@ -226,7 +224,7 @@ fn variant_changes(old: &Program, new: &Program, edited: &[String]) -> VariantCh
         }
         for (v, pat) in &after {
             if !before.iter().any(|(x, _)| x == v) {
-                out.added.push((v.clone(), last(q).to_string(), pat.clone()));
+                out.added.push((v.clone(), short(q).to_string(), pat.clone()));
             }
         }
     }
@@ -275,7 +273,7 @@ fn fix_matches(d: &mut DeclKind, ch: &VariantChanges, siblings: &HashMap<String,
                 p => vec![p],
             })
             .filter_map(|p| match p {
-                Pattern::Ctor(c, _) => Some(last(c).to_string()),
+                Pattern::Ctor(c, _) => Some(short(c).to_string()),
                 _ => None,
             })
             .collect();

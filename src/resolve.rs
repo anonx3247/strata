@@ -9,6 +9,7 @@
 //! as an inert declaration), so index `i` of the result is index `i` of the
 //! input.
 
+use crate::names::{module_of, qualify, short};
 use crate::ast::*;
 use crate::types::Diag;
 use std::collections::{HashMap, HashSet};
@@ -17,14 +18,6 @@ use std::collections::{HashMap, HashSet};
 struct Item {
     module: String,
     public: bool,
-}
-
-fn qualify(module: &str, name: &str) -> String {
-    if module.is_empty() { name.to_string() } else { format!("{module}.{name}") }
-}
-
-fn module_of(qname: &str) -> &str {
-    qname.rsplit_once('.').map(|(m, _)| m).unwrap_or("")
 }
 
 pub struct Resolution {
@@ -52,7 +45,7 @@ pub fn resolve(p: &Program) -> Resolution {
 /// The name a type's own method without `self` is known by once resolved:
 /// `Item.new(x)` calls the function `Item.new` (`core.Item.new` in a module).
 pub fn static_name(type_q: &str, method: &str) -> String {
-    format!("{type_q}.{}", method.rsplit('.').next().unwrap_or(method))
+    format!("{type_q}.{}", short(&method))
 }
 
 /// Whether a method takes `self` (else it is called on the type: `Item.new()`).
@@ -63,7 +56,7 @@ pub fn takes_self(f: &FnDecl) -> bool {
 /// Rewrite `Item.new(x)` (a type's own method without `self`) into a call to
 /// the function `Item.new`, so everything after resolution sees a plain call.
 fn static_calls(p: &mut Program) {
-    let short = |m: &str| m.rsplit('.').next().unwrap_or(m).to_string();
+    let short = |m: &str| short(&m).to_string();
     let mut statics: HashSet<(String, String)> = HashSet::new();
     for d in &p.decls {
         if let DeclKind::Impl(i) = &d.kind {
@@ -145,7 +138,7 @@ pub fn owner(p: &Program, q: &str) -> Option<String> {
 /// field `q` the short name `new`, without touching anything that refers to it.
 pub fn set_member_name(p: &mut Program, q: &str, new: &str) {
     let Some((kind, of)) = member(p, q) else { return };
-    let short = q.rsplit('.').next().unwrap_or(q).to_string();
+    let short = short(q).to_string();
     for d in &mut p.decls {
         let m = d.module.clone();
         if d.qname() == q {
@@ -236,7 +229,7 @@ pub fn rename_fields(p: &Program, renames: &[(String, String, String)]) -> Resul
     fields.dedup();
     // records with a field of that name besides those renamed (or `.value` of distinct
     // types): then accesses are told apart by the checker's types
-    let prelude = crate::parser::parse_program(crate::types::PRELUDE).unwrap_or_default();
+    let prelude = crate::types::prelude();
     let records: Vec<(String, Vec<String>)> = p
         .decls
         .iter()
@@ -324,7 +317,7 @@ pub fn rename_fields(p: &Program, renames: &[(String, String, String)]) -> Resul
         }
         // literals, updates and patterns, by constructor
         for (owner, f, new) in renames {
-            let short = owner.rsplit('.').next().unwrap_or(owner);
+            let short = short(&owner);
             field_uses(&mut d.kind, f, short, Some(new), &modules, &mut |_| None);
         }
         // the declarations (after their uses, which start from the original)
@@ -368,7 +361,7 @@ fn field_uses(d: &mut DeclKind, field: &str, ctor: &str, ctor_new: Option<&str>,
     impl Uses<'_> {
         /// The fields of a `ctor` literal, update or pattern, renamed.
         fn rename<T>(&self, c: &str, fs: &mut [(String, T)]) {
-            if let Some(new) = self.ctor_new.filter(|_| c.rsplit('.').next() == Some(self.ctor)) {
+            if let Some(new) = self.ctor_new.filter(|_| short(c) == self.ctor) {
                 fs.iter_mut().filter(|(n, _)| n == self.field).for_each(|(n, _)| *n = new.to_string());
             }
         }
@@ -408,7 +401,7 @@ pub fn rename_all(p: &Program, pairs: &[(String, String)]) -> Result<Program, St
     for (old, new) in pairs {
         match member(p, old) {
             Some(("field", owner)) => {
-                let short = old.rsplit('.').next().unwrap_or(old).to_string();
+                let short = short(&old).to_string();
                 let upper = |s: &str| s.chars().next().is_some_and(|c| c.is_uppercase());
                 if upper(&short) != upper(new) || !new.chars().all(|c| c.is_alphanumeric() || c == '_') || new.is_empty() {
                     return Err(format!("`{new}` is not a field name like `{short}`"));
@@ -455,7 +448,7 @@ pub fn rename(p: &Program, old: &str, new: &str) -> Result<Program, String> {
     if !valid {
         return Err(format!("`{new}` is not a name (give the new short name, without the module)"));
     }
-    let short = old.rsplit('.').next().unwrap_or(old);
+    let short = short(&old);
     let upper = |s: &str| s.chars().next().is_some_and(|c| c.is_uppercase());
     if upper(short) != upper(new) {
         return Err(format!("`{new}` must start with {} like `{short}`", if upper(new) { "a lowercase letter" } else { "an uppercase letter" }));
@@ -494,7 +487,7 @@ pub fn follow(merged: &Program, back: &Program, old: &str, new: &str) -> Result<
     for (r, d) in program.decls.iter_mut().zip(&back.decls) {
         r.module = d.module.clone();
     }
-    let module = old.rsplit_once('.').map(|(m, _)| m).unwrap_or("");
+    let module = crate::names::module_of(&old);
     let new_q = if module.is_empty() { new.to_string() } else { format!("{module}.{new}") };
     let each = |p: &Program| resolve(p).program.decls;
     let (rm, rb, ra) = (each(merged), each(back), each(&program));
@@ -1171,7 +1164,7 @@ impl Rw<'_> {
                 let for_type = self.ty(&i.for_type);
                 if i.is_inherent() {
                     let head = crate::types::texpr_head(&for_type);
-                    let short = head.rsplit('.').next().unwrap_or(&head).to_string();
+                    let short = short(&head).to_string();
                     if head.contains('.') && module_of(&head) != m {
                         self.errors.push(Diag { decl: self.decl.clone(), msg: format!("`impl {short}` must be in the module that defines `{short}` (`{}`)", module_of(&head)) });
                     }
@@ -1265,7 +1258,7 @@ fn move_apply(p: &Program, old: &str, target: &str) -> Result<(Program, String),
     let mut imports: Vec<(String, String, String)> = Vec::new();
     for dep in deps {
         let m = module_of(&dep).to_string();
-        let short = dep.rsplit('.').next().unwrap_or(&dep).to_string();
+        let short = short(&dep).to_string();
         if m != target && !m.is_empty() && !moves.contains_key(&dep) && written.contains(&short) {
             imports.push((target.to_string(), m, short));
         }
@@ -1278,7 +1271,7 @@ fn move_apply(p: &Program, old: &str, target: &str) -> Result<(Program, String),
         for nq in ns {
             let m = p.decls[k].module.clone();
             // a variant or method is imported by its own name
-            imports.push((m, target.to_string(), nq.rsplit('.').next().unwrap_or(nq).to_string()));
+            imports.push((m, target.to_string(), short(&nq).to_string()));
         }
     }
     // emptied `use` lists go

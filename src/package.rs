@@ -19,7 +19,6 @@
 
 use crate::ast::Program;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 pub const FILE: &str = "strata.toml";
 
@@ -146,15 +145,9 @@ pub fn parse(files: Vec<(PathBuf, String)>) -> Result<Program, String> {
 /// What is under `top`: package folders, and `.strata` files outside every
 /// package (scripts). In a git repository, ignored files are left out.
 pub fn discover(top: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
-    let listed = Command::new("git")
-        .arg("-C")
-        .arg(top)
-        .args(["ls-files", "--cached", "--others", "--exclude-standard", "--", "*.strata", "*strata.toml"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success());
+    let listed = crate::git::run(Some(top), &["ls-files", "--cached", "--others", "--exclude-standard", "--", "*.strata", "*strata.toml"]).ok();
     let all: Vec<PathBuf> = match listed {
-        Some(o) => String::from_utf8_lossy(&o.stdout).lines().map(|l| top.join(l)).filter(|p| p.is_file()).collect(),
+        Some(o) => o.lines().map(|l| top.join(l)).filter(|p| p.is_file()).collect(),
         None => {
             let mut out = Vec::new();
             let mut todo = vec![top.to_path_buf()];

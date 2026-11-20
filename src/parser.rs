@@ -834,7 +834,7 @@ impl Parser {
                         name
                     }
                 };
-                if !is_upper(name.rsplit('.').next().unwrap_or(&name)) {
+                if !is_upper(crate::names::short(&name)) {
                     return Ok(Expr::Var(name));
                 }
                 if self.is_sym("(") && !self.nl_before() {
