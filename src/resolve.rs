@@ -39,7 +39,7 @@ pub fn resolve(p: &Program) -> Resolution {
     // still index `i` of the input.
     let calls_host = || {
         let text = serde_json::to_string(p).unwrap();
-        crate::stdlib::HOST.iter().any(|h| text.contains(&format!("\"{}\"", h.0)))
+        crate::stdlib::HOST.iter().any(|h| text.contains(&format!("\"{}\"", h.name)))
     };
     let mut r = if let Some(full) = crate::stdlib::with_std(p) {
         run(&full, None)

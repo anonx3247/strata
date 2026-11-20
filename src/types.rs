@@ -74,92 +74,117 @@ type U32 = Int where 0 <= it && it <= 4294967295
 type U64 = Int where 0 <= it && it <= 18446744073709551615
 "#;
 
+/// A built-in function (one overload): its name, type parameters, type, and
+/// whether it always returns, never failing, on well-typed arguments (which
+/// lets contracts see through the functions calling it, see termination.rs).
+pub struct Builtin {
+    pub name: &'static str,
+    pub params: &'static str,
+    pub sig: &'static str,
+    pub total: bool,
+}
+
+impl Builtin {
+    pub const fn new(name: &'static str, params: &'static str, sig: &'static str) -> Builtin {
+        Builtin { name, params, sig, total: false }
+    }
+    pub const fn total(name: &'static str, params: &'static str, sig: &'static str) -> Builtin {
+        Builtin { name, params, sig, total: true }
+    }
+}
+
+/// Whether every overload of the builtin `name` always returns.
+pub fn total_builtin(name: &str) -> bool {
+    let mut all = BUILTINS.iter().filter(|b| b.name == name).peekable();
+    all.peek().is_some() && all.all(|b| b.total)
+}
+
 /// Builtin functions and their type schemes.
-pub const BUILTINS: &[(&str, &str, &str)] = &[
-    ("len", "A", "(List[A]) -> Int"),
-    ("len", "", "(String) -> Int"),
-    ("len", "K,V", "(Dict[K, V]) -> Int"),
-    ("len", "A", "(Set[A]) -> Int"),
-    ("contains", "A", "(Set[A], A) -> Bool"),
-    ("contains", "K,V", "(Dict[K, V], K) -> Bool"),
-    ("contains", "", "(String, String) -> Bool"),
-    ("get", "K,V", "(Dict[K, V], K) -> Option[V]"),
-    ("dict", "K,V", "(List[(K, V)]) -> Dict[K, V]"),
-    ("insert", "K,V", "(Dict[K, V], K, V) -> Dict[K, V]"),
-    ("insert", "A", "(Set[A], A) -> Set[A]"),
-    ("remove", "K,V", "(Dict[K, V], K) -> Dict[K, V]"),
-    ("remove", "A", "(Set[A], A) -> Set[A]"),
-    ("keys", "K,V", "(Dict[K, V]) -> List[K]"),
-    ("values", "K,V", "(Dict[K, V]) -> List[V]"),
-    ("items", "K,V", "(Dict[K, V]) -> List[(K, V)]"),
-    ("map_values", "K,V,W", "(Dict[K, V], (V) -> W) -> Dict[K, W]"),
-    ("set", "A", "(List[A]) -> Set[A]"),
-    ("to_list", "A", "(Set[A]) -> List[A]"),
-    ("union", "A", "(Set[A], Set[A]) -> Set[A]"),
-    ("intersection", "A", "(Set[A], Set[A]) -> Set[A]"),
-    ("difference", "A", "(Set[A], Set[A]) -> Set[A]"),
-    ("zip", "A,B", "(List[A], List[B]) -> List[(A, B)]"),
-    ("enumerate", "A", "(List[A]) -> List[(Int, A)]"),
-    ("sort", "A", "(List[A]) -> List[A]"),
-    ("sort_by", "A,B", "(List[A], (A) -> B) -> List[A]"),
-    ("reverse", "A", "(List[A]) -> List[A]"),
-    ("join", "", "(List[String], String) -> String"),
-    ("split", "", "(String, String) -> List[String]"),
-    ("trim", "", "(String) -> String"),
-    ("parse_int", "", "(String) -> Option[Int]"),
-    ("parse_float", "", "(String) -> Option[Float]"),
-    ("float", "", "(Int) -> Float"),
-    ("floor", "", "(Float) -> Int"),
-    ("ceil", "", "(Float) -> Int"),
-    ("round", "", "(Float) -> Int"),
-    ("sqrt", "", "(Float) -> Float"),
-    ("map", "A,B", "(List[A], (A) -> B) -> List[B]"),
-    ("filter", "A", "(List[A], (A) -> Bool) -> List[A]"),
-    ("fold", "A,B", "(List[A], B, (B, A) -> B) -> B"),
-    ("all", "A", "(List[A], (A) -> Bool) -> Bool"),
-    ("any", "A", "(List[A], (A) -> Bool) -> Bool"),
-    ("contains", "A", "(List[A], A) -> Bool"),
-    ("push", "A", "(List[A], A) -> List[A]"),
-    ("take", "A", "(List[A], Int) -> List[A]"),
-    ("drop", "A", "(List[A], Int) -> List[A]"),
-    ("find", "A", "(List[A], (A) -> Bool) -> Option[A]"),
-    ("count", "A", "(List[A], (A) -> Bool) -> Int"),
-    ("get", "A", "(List[A], Int) -> Option[A]"),
-    ("sum", "", "(List[Int]) -> Int"),
-    ("sum", "", "(List[Float]) -> Float"),
-    ("range", "", "(Int, Int) -> List[Int]"),
-    ("abs", "", "(Int) -> Int"),
-    ("abs", "", "(Float) -> Float"),
-    ("min", "", "(Int, Int) -> Int"),
-    ("min", "", "(Float, Float) -> Float"),
-    ("max", "", "(Int, Int) -> Int"),
-    ("max", "", "(Float, Float) -> Float"),
-    ("matches", "", "(String, String) -> Bool"),
-    ("starts_with", "", "(String, String) -> Bool"),
+pub const BUILTINS: &[Builtin] = &[
+    Builtin::total("len", "A", "(List[A]) -> Int"),
+    Builtin::total("len", "", "(String) -> Int"),
+    Builtin::total("len", "K,V", "(Dict[K, V]) -> Int"),
+    Builtin::total("len", "A", "(Set[A]) -> Int"),
+    Builtin::total("contains", "A", "(Set[A], A) -> Bool"),
+    Builtin::total("contains", "K,V", "(Dict[K, V], K) -> Bool"),
+    Builtin::total("contains", "", "(String, String) -> Bool"),
+    Builtin::total("get", "K,V", "(Dict[K, V], K) -> Option[V]"),
+    Builtin::total("dict", "K,V", "(List[(K, V)]) -> Dict[K, V]"),
+    Builtin::total("insert", "K,V", "(Dict[K, V], K, V) -> Dict[K, V]"),
+    Builtin::total("insert", "A", "(Set[A], A) -> Set[A]"),
+    Builtin::total("remove", "K,V", "(Dict[K, V], K) -> Dict[K, V]"),
+    Builtin::total("remove", "A", "(Set[A], A) -> Set[A]"),
+    Builtin::total("keys", "K,V", "(Dict[K, V]) -> List[K]"),
+    Builtin::total("values", "K,V", "(Dict[K, V]) -> List[V]"),
+    Builtin::total("items", "K,V", "(Dict[K, V]) -> List[(K, V)]"),
+    Builtin::total("map_values", "K,V,W", "(Dict[K, V], (V) -> W) -> Dict[K, W]"),
+    Builtin::total("set", "A", "(List[A]) -> Set[A]"),
+    Builtin::total("to_list", "A", "(Set[A]) -> List[A]"),
+    Builtin::total("union", "A", "(Set[A], Set[A]) -> Set[A]"),
+    Builtin::total("intersection", "A", "(Set[A], Set[A]) -> Set[A]"),
+    Builtin::total("difference", "A", "(Set[A], Set[A]) -> Set[A]"),
+    Builtin::total("zip", "A,B", "(List[A], List[B]) -> List[(A, B)]"),
+    Builtin::total("enumerate", "A", "(List[A]) -> List[(Int, A)]"),
+    Builtin::total("sort", "A", "(List[A]) -> List[A]"),
+    Builtin::total("sort_by", "A,B", "(List[A], (A) -> B) -> List[A]"),
+    Builtin::total("reverse", "A", "(List[A]) -> List[A]"),
+    Builtin::total("join", "", "(List[String], String) -> String"),
+    Builtin::new("split", "", "(String, String) -> List[String]"),
+    Builtin::total("trim", "", "(String) -> String"),
+    Builtin::total("parse_int", "", "(String) -> Option[Int]"),
+    Builtin::new("parse_float", "", "(String) -> Option[Float]"),
+    Builtin::new("float", "", "(Int) -> Float"),
+    Builtin::new("floor", "", "(Float) -> Int"),
+    Builtin::new("ceil", "", "(Float) -> Int"),
+    Builtin::new("round", "", "(Float) -> Int"),
+    Builtin::new("sqrt", "", "(Float) -> Float"),
+    Builtin::total("map", "A,B", "(List[A], (A) -> B) -> List[B]"),
+    Builtin::total("filter", "A", "(List[A], (A) -> Bool) -> List[A]"),
+    Builtin::total("fold", "A,B", "(List[A], B, (B, A) -> B) -> B"),
+    Builtin::total("all", "A", "(List[A], (A) -> Bool) -> Bool"),
+    Builtin::total("any", "A", "(List[A], (A) -> Bool) -> Bool"),
+    Builtin::total("contains", "A", "(List[A], A) -> Bool"),
+    Builtin::total("push", "A", "(List[A], A) -> List[A]"),
+    Builtin::total("take", "A", "(List[A], Int) -> List[A]"),
+    Builtin::total("drop", "A", "(List[A], Int) -> List[A]"),
+    Builtin::total("find", "A", "(List[A], (A) -> Bool) -> Option[A]"),
+    Builtin::total("count", "A", "(List[A], (A) -> Bool) -> Int"),
+    Builtin::total("get", "A", "(List[A], Int) -> Option[A]"),
+    Builtin::total("sum", "", "(List[Int]) -> Int"),
+    Builtin::total("sum", "", "(List[Float]) -> Float"),
+    Builtin::new("range", "", "(Int, Int) -> List[Int]"),
+    Builtin::total("abs", "", "(Int) -> Int"),
+    Builtin::total("abs", "", "(Float) -> Float"),
+    Builtin::total("min", "", "(Int, Int) -> Int"),
+    Builtin::total("min", "", "(Float, Float) -> Float"),
+    Builtin::total("max", "", "(Int, Int) -> Int"),
+    Builtin::total("max", "", "(Float, Float) -> Float"),
+    Builtin::new("matches", "", "(String, String) -> Bool"),
+    Builtin::total("starts_with", "", "(String, String) -> Bool"),
     // strings are UTF-8 and indexed by character
-    ("ends_with", "", "(String, String) -> Bool"),
-    ("chars", "", "(String) -> List[String]"),
-    ("get", "", "(String, Int) -> Option[String]"),
-    ("slice", "", "(String, Int, Int) -> String"),
-    ("slice", "A", "(List[A], Int, Int) -> List[A]"),
-    ("index_of", "", "(String, String) -> Option[Int]"),
-    ("replace", "", "(String, String, String) -> String"),
-    ("lines", "", "(String) -> List[String]"),
-    ("repeat", "", "(String, Int) -> String"),
-    ("reverse", "", "(String) -> String"),
-    ("to_upper", "", "(String) -> String"),
-    ("to_lower", "", "(String) -> String"),
-    ("is_digit", "", "(String) -> Bool"),
-    ("is_alpha", "", "(String) -> Bool"),
-    ("is_space", "", "(String) -> Bool"),
-    ("ord", "", "(String) -> Int"),
-    ("chr", "", "(Int) -> String"),
-    ("to_string", "A", "(A) -> String"),
+    Builtin::new("ends_with", "", "(String, String) -> Bool"),
+    Builtin::new("chars", "", "(String) -> List[String]"),
+    Builtin::total("get", "", "(String, Int) -> Option[String]"),
+    Builtin::new("slice", "", "(String, Int, Int) -> String"),
+    Builtin::new("slice", "A", "(List[A], Int, Int) -> List[A]"),
+    Builtin::new("index_of", "", "(String, String) -> Option[Int]"),
+    Builtin::new("replace", "", "(String, String, String) -> String"),
+    Builtin::new("lines", "", "(String) -> List[String]"),
+    Builtin::new("repeat", "", "(String, Int) -> String"),
+    Builtin::total("reverse", "", "(String) -> String"),
+    Builtin::new("to_upper", "", "(String) -> String"),
+    Builtin::new("to_lower", "", "(String) -> String"),
+    Builtin::new("is_digit", "", "(String) -> Bool"),
+    Builtin::new("is_alpha", "", "(String) -> Bool"),
+    Builtin::new("is_space", "", "(String) -> Bool"),
+    Builtin::new("ord", "", "(String) -> Int"),
+    Builtin::new("chr", "", "(Int) -> String"),
+    Builtin::total("to_string", "A", "(A) -> String"),
     // the value as compact JSON, as `strata run` writes it
-    ("to_json", "A", "(A) -> String"),
+    Builtin::total("to_json", "A", "(A) -> String"),
     // a line of output, shown as by `to_string`: on the terminal under `strata run`,
     // into the test's own buffer under `strata test`, nowhere under `verify`
-    ("print", "A", "(A) -> ()"),
+    Builtin::new("print", "A", "(A) -> ()"),
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -310,7 +335,7 @@ pub fn elaborate(prog: &Program) -> crate::resolve::Resolution {
     // a trait method named like a builtin (`Files.remove`) may mean the builtin
     // or two modules' traits share a method name (`Console.write`, `Files.write`)
     let mut shorts: Vec<&str> = env.traits.values().flat_map(|t| t.methods.iter().map(|m| m.decl.name.rsplit('.').next().unwrap_or(&m.decl.name))).collect();
-    let like_builtin = shorts.iter().any(|s| BUILTINS.iter().any(|b| b.0 == *s));
+    let like_builtin = shorts.iter().any(|s| BUILTINS.iter().any(|b| b.name == *s));
     shorts.sort();
     let across = shorts.windows(2).any(|w| w[0] == w[1]);
     if env.inherent.is_empty() && !shared && !statics && !like_builtin && !across {
@@ -1259,7 +1284,7 @@ impl<'a> Checker<'a> {
             self.err(format!("which `{short}` runs depends on the type of the value it is called on (several types or traits have one): call it on a value, or pass a lambda such as `x -> x.{short}()`"));
             return Some(self.fresh());
         }
-        if let Some((_, ps, sig)) = BUILTINS.iter().chain(crate::stdlib::HOST).find(|(n, ..)| *n == name) {
+        if let Some(Builtin { params: ps, sig, .. }) = BUILTINS.iter().chain(crate::stdlib::HOST).find(|b| b.name == name) {
             let ps: Vec<String> = ps.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
             return Some(self.instantiate(&ps, &parse_type_str(sig)));
         }
@@ -1343,7 +1368,7 @@ impl<'a> Checker<'a> {
                 let muts = self.mut_mask(&mq);
                 Some(self.call_with(ft, all, &format!("call to `{sm}`"), &muts))
             }
-            [] if head.as_deref().is_some_and(|h| ["Int", "Float", "Bool", "String", "List", "Dict", "Set"].contains(&h)) && BUILTINS.iter().any(|b| b.0 == sm) => {
+            [] if head.as_deref().is_some_and(|h| ["Int", "Float", "Bool", "String", "List", "Dict", "Set"].contains(&h)) && BUILTINS.iter().any(|b| b.name == sm) => {
                 self.targets.push((site, Target::Builtin(sm.clone())));
                 if let Some(t) = self.overloaded(&sm, all) {
                     return Some(t);
@@ -2484,12 +2509,12 @@ impl<'a> Checker<'a> {
         if self.lookup(name).is_some() || self.env.fns.contains_key(name) {
             return None;
         }
-        let cands: Vec<_> = BUILTINS.iter().filter(|(n, ..)| *n == name).collect();
+        let cands: Vec<_> = BUILTINS.iter().filter(|b| b.name == name).collect();
         if cands.len() < 2 {
             return None;
         }
         let arg_tys: Vec<Ty> = args.iter().map(|a| self.infer(a)).collect();
-        for (_, ps, sig) in &cands {
+        for Builtin { params: ps, sig, .. } in cands.iter().copied() {
             let snapshot = self.subst.clone();
             let ps: Vec<String> = ps.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
             if let Ty::Fn(params, ret) = self.instantiate(&ps, &parse_type_str(sig)) {
@@ -2500,7 +2525,7 @@ impl<'a> Checker<'a> {
             self.subst = snapshot;
         }
         let shown: Vec<String> = arg_tys.iter().map(|t| self.show(t)).collect();
-        let sigs: Vec<String> = cands.iter().map(|(_, _, s)| format!("  {name}{}", s)).collect();
+        let sigs: Vec<String> = cands.iter().map(|b| format!("  {name}{}", b.sig)).collect();
         self.err(format!("no version of `{name}` accepts ({}); available:\n{}", shown.join(", "), sigs.join("\n")));
         Some(self.fresh())
     }
