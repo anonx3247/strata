@@ -1531,7 +1531,9 @@ impl<'a> Checker<'a> {
         if let (Expr::Lambda(ps, body), Some(exp)) = (e, expected) {
             if let Ty::Fn(pts, _) = self.resolve(exp) {
                 if pts.len() == ps.len() {
-                    return self.lambda(ps, Some(pts), body);
+                    let t = self.lambda(ps, Some(pts), body);
+                    self.types.push((e as *const Expr as usize, t.clone()));
+                    return t;
                 }
             }
         }
