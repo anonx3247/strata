@@ -1947,3 +1947,66 @@ fn a_pending_change_can_be_aborted_or_kept_with_its_holes() {
     let (ok, out) = strata(&["ci"], &d, None);
     assert!(ok, "ordinary holes are fine: {out}");
 }
+
+/// A stand-in editor: on its n-th run it keeps what it was shown as
+/// `seen<n>.strata` and saves `v<n>.strata` (or leaves the file as it is).
+fn fake_editor(d: &std::path::Path, versions: &[&str]) -> String {
+    for (i, v) in versions.iter().enumerate() {
+        std::fs::write(d.join(format!("v{}.strata", i + 1)), v).unwrap();
+    }
+    let script = d.join("editor.sh");
+    let dir = d.display();
+    std::fs::write(&script, format!("#!/bin/sh\nn=$(cat '{dir}/count' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{dir}/count'\ncp \"$1\" '{dir}/seen'$n.strata\nif [ -f '{dir}/v'$n.strata ]; then cp '{dir}/v'$n.strata \"$1\"; fi\n")).unwrap();
+    format!("sh '{}'", script.display())
+}
+
+fn strata_with_editor(args: &[&str], dir: &std::path::Path, editor: &str) -> (bool, String) {
+    let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(args).current_dir(dir).env("EDITOR", editor).env_remove("VISUAL").stdin(Stdio::null()).output().unwrap();
+    (o.status.success(), String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr))
+}
+
+#[test]
+fn edit_opens_the_code_in_an_editor() {
+    let d = tmp("editor");
+    let pkg = d.join("pkg");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("main.strata"), TAXES).unwrap();
+    assert!(strata(&["init"], &pkg, None).0);
+
+    // one definition: the editor shows it alone, and what is saved is the edit
+    let ed = d.join("one");
+    std::fs::create_dir_all(&ed).unwrap();
+    let editor = fake_editor(&ed, &["fn tax(amount: Int) -> Int {\n  amount / 5\n}\n"]);
+    let (ok, out) = strata_with_editor(&["edit", "tax", "--editor", "-m", "more tax"], &pkg, &editor);
+    assert!(ok && out.contains("changed"), "{out}");
+    assert_eq!(std::fs::read_to_string(ed.join("seen1.strata")).unwrap(), "fn tax(amount: Int) -> Int {\n  amount / 10\n}\n");
+    assert!(std::fs::read_to_string(pkg.join("main.strata")).unwrap().contains("amount / 5"));
+    assert!(std::fs::read_to_string(pkg.join("strata.log")).unwrap().contains("more tax"));
+
+    // an edit that doesn't check: the editor opens again with the errors on top
+    let ed = d.join("retry");
+    std::fs::create_dir_all(&ed).unwrap();
+    let editor = fake_editor(&ed, &["fn total(amount: Int) -> Int {\n  amount + true\n}\n", "fn total(amount: Int) -> Int {\n  amount + tax(amount) + 1\n}\n"]);
+    let (ok, out) = strata_with_editor(&["edit", "total", "--editor"], &pkg, &editor);
+    assert!(ok, "{out}");
+    let second = std::fs::read_to_string(ed.join("seen2.strata")).unwrap();
+    assert!(second.starts_with("// ✗ error in total") && second.contains("// ✗ not applied") && second.contains("amount + true"), "{second}");
+    assert!(std::fs::read_to_string(pkg.join("main.strata")).unwrap().contains("amount + tax(amount) + 1"));
+
+    // the whole module; a definition deleted from the buffer is removed
+    let ed = d.join("module");
+    std::fs::create_dir_all(&ed).unwrap();
+    let without = std::fs::read_to_string(pkg.join("main.strata")).unwrap().replace("fn double_tax(a: Int) -> Int {\n  tax(a) * 2\n}\n\n", "");
+    let editor = fake_editor(&ed, &[&without]);
+    let (ok, out) = strata_with_editor(&["edit", "--editor"], &pkg, &editor);
+    assert!(ok && out.contains("removed"), "{out}");
+    assert!(!std::fs::read_to_string(pkg.join("main.strata")).unwrap().contains("double_tax"));
+
+    // saved unchanged: nothing happens
+    let ed = d.join("same");
+    std::fs::create_dir_all(&ed).unwrap();
+    let editor = fake_editor(&ed, &[]);
+    let (ok, out) = strata_with_editor(&["edit", "--editor"], &pkg, &editor);
+    assert!(ok && out.contains("no changes"), "{out}");
+    assert_eq!(std::fs::read_to_string(pkg.join("strata.log")).unwrap().lines().count(), 3);
+}
