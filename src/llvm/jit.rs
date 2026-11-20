@@ -14,6 +14,12 @@ use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, Targe
 // the IR's declarations of the same names.
 unsafe extern "C" {
     fn strata_concat();
+    fn strata_range();
+    fn strata_list_concat();
+    fn strata_list_slice();
+    fn strata_list_push();
+    fn strata_list_new();
+    fn strata_sqrt();
     fn strata_float_to_int();
     fn strata_main_error();
     fn strata_str_cmp();
@@ -36,6 +42,12 @@ unsafe extern "C" {
 fn runtime() -> Vec<(&'static str, usize)> {
     vec![
         ("strata_concat", strata_concat as *const () as usize),
+        ("strata_range", strata_range as *const () as usize),
+        ("strata_list_concat", strata_list_concat as *const () as usize),
+        ("strata_list_slice", strata_list_slice as *const () as usize),
+        ("strata_list_push", strata_list_push as *const () as usize),
+        ("strata_list_new", strata_list_new as *const () as usize),
+        ("strata_sqrt", strata_sqrt as *const () as usize),
         ("strata_float_to_int", strata_float_to_int as *const () as usize),
         ("strata_main_error", strata_main_error as *const () as usize),
         ("strata_str_cmp", strata_str_cmp as *const () as usize),

@@ -126,13 +126,35 @@ fn records_variants_and_generics_run_as_interpreted() {
 }
 
 #[test]
+fn lists_and_lambdas_run_as_interpreted() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("lists");
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/build/lists.strata");
+    let (out, code) = same_as_interpreter(&file, &d);
+    assert!(out.contains("[2,3,5,7,11,13,17,19,23,29]") && out.contains("[0]: -1 does not satisfy `Positive`"), "{out}");
+    assert_eq!(code, 101);
+    // examples/math.strata, with a `main` that prints what its test checks
+    let math = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/math.strata")).unwrap();
+    let math = math[..math.find("test \"values\"").unwrap()].to_string()
+        + "fn main() -> () {\n  print([factorial(5), gcd(12, 18), power(2, 10), digit_sum(1234), ackermann(2, 3), triangle(10), isqrt(17), collatz_steps(6)])\n  print(positive_squares([-2, 3, 0, 4]))\n  print(primes(20))\n  print(first_or_one([5, 1]))\n  print(average([]))\n}\n";
+    let (out, code) = case(&d, "math", &math);
+    assert!(out.contains("[120,6,1024,10,9,55,4,8]") && out.contains("division by zero"), "{out}");
+    assert_eq!(code, 101);
+    let (out, code) = case(&d, "range", "fn main() -> () { for i in range(0, 2000000) { print(i) } }");
+    assert!(out.contains("range too large") && code == 101, "{out}");
+}
+
+#[test]
 fn what_is_not_compiled_yet_is_named() {
     let d = tmp("unsupported");
     let f = d.join("lists.strata");
-    std::fs::write(&f, "fn total(xs: List[Int]) -> Int { sum(xs) }\nfn main() -> () { print(total([1, 2])) }\n").unwrap();
+    std::fs::write(&f, "fn main() -> () { print(dict([(1, 2)])) }\n").unwrap();
     let o = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(!o.status.success() && err.contains("can't compile `main`: a list is not compiled yet"), "{err}");
+    assert!(!o.status.success() && err.contains("can't compile `main`: the built-in `dict` on (List[(Int, Int)]) is not compiled yet"), "{err}");
 }
 
 #[test]
@@ -159,8 +181,8 @@ fn the_jit_runs_as_the_interpreter() {
     assert_eq!(jit.1, 101);
     // what doesn't compile yet is interpreted, and says why
     let f = d.join("lists.strata");
-    std::fs::write(&f, "fn main() -> () { print(len([1, 2])) }\n").unwrap();
+    std::fs::write(&f, "fn main() -> () { print(len(dict([(1, 2)]))) }\n").unwrap();
     let (out, code) = output(Command::new(strata).args(["run", "--jit"]).arg(&f));
     assert_eq!(code, 0);
-    assert!(out.contains("2\n") && out.contains("note: interpreted, not compiled: can't compile `main`: a list is not compiled yet"), "{out}");
+    assert!(out.contains("1\n") && out.contains("note: interpreted, not compiled: can't compile `main`: the built-in `dict` on (List[(Int, Int)]) is not compiled yet"), "{out}");
 }

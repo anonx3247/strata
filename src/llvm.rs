@@ -31,6 +31,31 @@ use std::fmt::Write;
 #[cfg(feature = "jit")]
 pub mod jit;
 
+/// The list built-ins written in Strata, compiled with every program.
+const PRELUDE: &str = include_str!("llvm/prelude.strata");
+const PRELUDE_MODULE: &str = "strata.compiled";
+
+/// A function of the compiled prelude.
+fn prelude(name: &str) -> String {
+    format!("{PRELUDE_MODULE}.{name}")
+}
+
+/// The variables an expression uses (what a lambda captures).
+fn vars_in(e: &Expr) -> Vec<String> {
+    struct Vars(Vec<String>);
+    impl Visit for Vars {
+        fn expr(&mut self, e: &Expr) {
+            if let Expr::Var(x) = e {
+                self.0.push(x.clone());
+            }
+            walk_expr(self, e)
+        }
+    }
+    let mut v = Vars(vec![]);
+    v.expr(e);
+    v.0
+}
+
 /// The runtime's C source, compiled with the program.
 pub const RUNTIME: &str = include_str!("llvm/runtime.c");
 
@@ -91,7 +116,10 @@ fn key(t: &Ty) -> String {
 /// The LLVM IR of a program whose entry point is `entry` (`main`): it takes
 /// no parameters and returns `()`, an exit code (`Int`), or a `Result` of either.
 pub fn compile(prog: &Program, entry: &str) -> Res<String> {
-    let (resolved, types) = crate::types::elaborate_typed(prog);
+    // the list built-ins in Strata, compiled with the program
+    let mut with = prog.clone();
+    with.decls.extend(crate::parser::parse_module_file(PRELUDE, PRELUDE_MODULE).map_err(|e| format!("llvm/prelude.strata: {e}"))?.decls);
+    let (resolved, types) = crate::types::elaborate_typed(&with);
     let (env, _) = Env::build(&resolved.program);
     let main = env.fns.get(entry).ok_or(format!("no `{entry}` function to compile"))?.clone();
     if !main.params.is_empty() {
@@ -120,7 +148,7 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.clone(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, refinements, tags, globals: String::new(), strings: HashMap::new(), body: String::new(), queue: VecDeque::new(), seen: HashSet::new(), helpers: HashSet::new() };
+    let mut m = Module { env: &env, types: &types, bodies, refinements, tags, globals: String::new(), strings: HashMap::new(), body: String::new(), queue: VecDeque::new(), seen: HashSet::new(), helpers: HashSet::new(), lambdas: 0 };
     let ret = m.lower(&main.ret, &HashMap::new())?;
     m.want(entry, vec![]);
     while let Some((name, targs)) = m.queue.pop_front() {
@@ -150,7 +178,15 @@ declare i64 @strata_div(i64, i64)
 declare i64 @strata_mod(i64, i64)
 declare double @strata_fmod(double, double)
 declare double @strata_finite(double, double, double, ptr)
-declare i64 @strata_float_to_int(double, ptr)
+declare i64 @strata_float_to_int(double, double)
+declare double @strata_sqrt(double)
+declare ptr @strata_list_new(i64)
+declare ptr @strata_list_push(ptr, i64)
+declare ptr @strata_list_slice(ptr, i64, i64)
+declare ptr @strata_list_concat(ptr, ptr)
+declare ptr @strata_range(i64, i64)
+declare i64 @llvm.smax.i64(i64, i64)
+declare i64 @llvm.smin.i64(i64, i64)
 declare ptr @strata_show_int(i64)
 declare ptr @strata_show_float(double)
 declare ptr @strata_show_bool(i1)
@@ -206,6 +242,8 @@ struct Module<'a> {
     seen: HashSet<String>,
     /// Generated helpers (equality, JSON) already emitted.
     helpers: HashSet<String>,
+    /// Lambdas compiled so far (each is a function of its own).
+    lambdas: usize,
 }
 
 impl<'a> Module<'a> {
@@ -506,6 +544,7 @@ impl<'a> Module<'a> {
 }
 
 /// A piece of a message built at run time.
+#[derive(Clone)]
 enum Part {
     Lit(String),
     /// An operand holding a string.
@@ -836,7 +875,7 @@ impl<'m, 'a> Func<'m, 'a> {
             Ty::Str => self.call(&Ty::Str, "@strata_json_str", &[v.clone()])?.1,
             Ty::Unit => self.m.string("null"),
             _ if is_never(&t) => self.m.string("null"),
-            t if self.m.nominal(t) => {
+            t if self.m.nominal(t) || matches!(t, Ty::Con(l, _) if l == "List") => {
                 let f = self.helper("json", t)?;
                 self.call(&Ty::Str, &f, &[(t.clone(), v.1.clone())])?.1
             }
@@ -860,7 +899,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 bool_v(&r)
             }
             Ty::Str => self.call(&Ty::Bool, "@strata_str_eq", &[a.clone(), b.clone()])?,
-            t if self.m.nominal(t) => {
+            t if self.m.nominal(t) || matches!(t, Ty::Con(l, _) if l == "List") => {
                 let f = self.helper("eq", t)?;
                 self.call(&Ty::Bool, &f, &[(t.clone(), a.1.clone()), (t.clone(), b.1.clone())])?
             }
@@ -880,7 +919,132 @@ impl<'m, 'a> Func<'m, 'a> {
         let b: V = (t.clone(), "%b".into());
         let tuple = matches!(t, Ty::Con(n, _) if n == "Tuple");
         let args = Module::args_of(t);
+        let list = matches!(t, Ty::Con(l, _) if l == "List");
         let sig = match what {
+            "cmp" => {
+                // the interpreter's order (`interp::compare`): -1, 0 or 1
+                let ll = h.m.ll(t)?;
+                let three = |h: &mut Func, lt: &str, gt: &str| {
+                    let (x, y, r) = (h.fresh("lt"), h.fresh("gt"), h.fresh("c"));
+                    h.emit(format!("{x} = zext i1 {lt} to i64"));
+                    h.emit(format!("{y} = zext i1 {gt} to i64"));
+                    h.emit(format!("{r} = sub i64 {y}, {x}"));
+                    h.emit(format!("ret i64 {r}"));
+                };
+                match h.m.repr(t)? {
+                    Ty::Int | Ty::Bool => {
+                        let (lt, gt) = (h.fresh("l"), h.fresh("g"));
+                        let (pl, pg) = if matches!(h.m.repr(t)?, Ty::Int) { ("slt", "sgt") } else { ("ult", "ugt") };
+                        h.emit(format!("{lt} = icmp {pl} {ll} %a, %b"));
+                        h.emit(format!("{gt} = icmp {pg} {ll} %a, %b"));
+                        three(&mut h, &lt, &gt);
+                    }
+                    Ty::Float => {
+                        let (lt, gt) = (h.fresh("l"), h.fresh("g"));
+                        h.emit(format!("{lt} = fcmp olt double %a, %b"));
+                        h.emit(format!("{gt} = fcmp ogt double %a, %b"));
+                        three(&mut h, &lt, &gt);
+                    }
+                    Ty::Str => {
+                        let c = h.call(&Ty::Int, "@strata_str_cmp", &[a.clone(), b.clone()])?;
+                        h.emit(format!("ret i64 {}", c.1));
+                    }
+                    Ty::Unit => h.emit("ret i64 0".into()),
+                    _ if tuple => {
+                        for (i, ft) in args.iter().enumerate() {
+                            let (x, y) = (h.field(&a, i, ft)?, h.field(&b, i, ft)?);
+                            let f = h.helper("cmp", ft)?;
+                            let c = h.call(&Ty::Int, &f, &[x, y])?;
+                            let (z, next, out) = (h.fresh("z"), h.fresh_label("next"), h.fresh_label("differ"));
+                            h.emit(format!("{z} = icmp eq i64 {}, 0", c.1));
+                            h.emit(format!("br i1 {z}, label %{next}, label %{out}"));
+                            h.block(&out);
+                            h.emit(format!("ret i64 {}", c.1));
+                            h.block(&next);
+                        }
+                        h.emit("ret i64 0".into());
+                    }
+                    _ if list => {
+                        let et = args[0].clone();
+                        let f = h.helper("cmp", &et)?;
+                        let (na, nb) = (h.list_len(&a), h.list_len(&b));
+                        h.each(&a, &et, |h, i, x| {
+                            let inb = h.fresh("inb");
+                            h.emit(format!("{inb} = icmp slt i64 {i}, {}", nb.1));
+                            let (go, past) = (h.fresh_label("both"), h.fresh_label("past"));
+                            h.cond_br(&bool_v(&inb), &go, &past);
+                            h.block(&past);
+                            h.emit("ret i64 1".into());
+                            h.block(&go);
+                            let y = h.list_at(&b, i, &et)?;
+                            let c = h.call(&Ty::Int, &f, &[x.clone(), y])?;
+                            let (z, next, out) = (h.fresh("z"), h.fresh_label("next"), h.fresh_label("differ"));
+                            h.emit(format!("{z} = icmp eq i64 {}, 0", c.1));
+                            h.emit(format!("br i1 {z}, label %{next}, label %{out}"));
+                            h.block(&out);
+                            h.emit(format!("ret i64 {}", c.1));
+                            h.block(&next);
+                            Ok(())
+                        })?;
+                        let (lt, gt) = (h.fresh("l"), h.fresh("g"));
+                        h.emit(format!("{lt} = icmp slt i64 {}, {}", na.1, nb.1));
+                        h.emit(format!("{gt} = icmp sgt i64 {}, {}", na.1, nb.1));
+                        three(&mut h, &lt, &gt);
+                    }
+                    _ => {
+                        // anything else: by its JSON
+                        let (x, y) = (h.json(&a)?, h.json(&b)?);
+                        let c = h.call(&Ty::Int, "@strata_str_cmp", &[(Ty::Str, x), (Ty::Str, y)])?;
+                        h.emit(format!("ret i64 {}", c.1));
+                    }
+                }
+                format!("define i64 {name}({ll} %a, {ll} %b)")
+            }
+            "eq" if list => {
+                let et = args[0].clone();
+                let (na, nb) = (h.list_len(&a), h.list_len(&b));
+                let same = h.fresh("samelen");
+                h.emit(format!("{same} = icmp eq i64 {}, {}", na.1, nb.1));
+                h.emit(format!("br i1 {same}, label %elements, label %no"));
+                h.block("elements");
+                h.each(&a, &et, |h, i, x| {
+                    let y = h.list_at(&b, i, &et)?;
+                    let e = h.equal(x, &y)?;
+                    let next = h.fresh_label("next");
+                    h.emit(format!("br i1 {}, label %{next}, label %no", e.1));
+                    h.block(&next);
+                    Ok(())
+                })?;
+                h.emit("ret i1 true".into());
+                h.block("no");
+                h.emit("ret i1 false".into());
+                format!("define i1 {name}(ptr %a, ptr %b)")
+            }
+            "json" if list => {
+                let et = args[0].clone();
+                let acc = h.fresh("acc");
+                writeln!(h.allocas, "  {acc} = alloca ptr").unwrap();
+                let open = h.m.string("[");
+                h.emit(format!("store ptr {open}, ptr {acc}"));
+                let (empty, comma) = (h.m.string(""), h.m.string(","));
+                h.each(&a, &et, |h, i, x| {
+                    let first = h.fresh("first");
+                    h.emit(format!("{first} = icmp eq i64 {i}, 0"));
+                    let sep = h.fresh("sep");
+                    h.emit(format!("{sep} = select i1 {first}, ptr {empty}, ptr {comma}"));
+                    let j = h.json(x)?;
+                    let cur = h.fresh("cur");
+                    h.emit(format!("{cur} = load ptr, ptr {acc}"));
+                    let s = h.concat(vec![Part::Val(cur), Part::Val(sep), Part::Val(j)])?;
+                    h.emit(format!("store ptr {}, ptr {acc}", s.1));
+                    Ok(())
+                })?;
+                let cur = h.fresh("cur");
+                h.emit(format!("{cur} = load ptr, ptr {acc}"));
+                let s = h.concat(vec![Part::Val(cur), Part::Lit("]".into())])?;
+                h.emit(format!("ret ptr {}", s.1));
+                format!("define ptr {name}(ptr %a)")
+            }
             "eq" => {
                 // the same block, or the same constructor and equal fields
                 let same = h.fresh("same");
@@ -1002,15 +1166,32 @@ impl<'m, 'a> Func<'m, 'a> {
     /// parameters, for its result type). A record or variant was checked
     /// when it was built, so only fields of a type argument's type are.
     fn check(&mut self, t: &TypeExpr, v: &V, ctx: &str, outer: bool) -> Res<()> {
+        self.check_in(t, v, &[Part::Lit(ctx.to_string())], outer)
+    }
+
+    /// `check`, with a context built at run time (a list element's index).
+    fn check_in(&mut self, t: &TypeExpr, v: &V, ctx: &[Part], outer: bool) -> Res<()> {
         if !has_value(&v.0) || !self.needs_check(t) {
             return Ok(());
         }
+        let within = |ctx: &[Part], more: Vec<Part>| -> Vec<Part> { ctx.iter().cloned().chain(more).collect() };
         match t {
             TypeExpr::Refined(b, pred) => {
-                self.check(b, v, ctx, false)?;
+                self.check_in(b, v, ctx, false)?;
                 let ok = self.with_it(v, outer, |c| c.expr(pred))?;
                 let msg = format!("does not satisfy `{}`", crate::printer::ty(t));
-                self.fail_unless(&ok, ctx, v, msg)?;
+                self.fail_unless_in(&ok, ctx.to_vec(), v, msg)?;
+            }
+            TypeExpr::Named(n, args) if n == "List" && args.len() == 1 => {
+                // every element: `[2]: -1 does not satisfy …`
+                let et = self.m.repr(&self.lower(&args[0])?)?;
+                let et_written = args[0].clone();
+                let ctx = ctx.to_vec();
+                self.each(v, &et, |c, i, x| {
+                    let shown = c.json(&(Ty::Int, i.to_string()))?;
+                    let inner = within(&ctx, vec![Part::Lit(": [".into()), Part::Val(shown), Part::Lit("]".into())]);
+                    c.check_in(&et_written, x, &inner, false)
+                })?;
             }
             TypeExpr::Named(n, args) => {
                 let n = match self.m.env.variant_parent(n) {
@@ -1020,7 +1201,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let Some(td) = self.m.env.types.get(&n).cloned() else { return Ok(()) };
                 let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
                 match &td.body {
-                    TypeBody::Alias(a) => self.check(&crate::types::subst_texpr(a, &sub), v, ctx, false)?,
+                    TypeBody::Alias(a) => self.check_in(&crate::types::subst_texpr(a, &sub), v, ctx, false)?,
                     _ => {
                         // fields whose type is a type argument (`Option[Positive]`)
                         let vt = v.0.clone();
@@ -1032,7 +1213,7 @@ impl<'m, 'a> Func<'m, 'a> {
                                 if f.texpr != ft && c.needs_check(&ft) {
                                     let x = c.field(v, i, &f.ty)?;
                                     let fname = f.name.clone().unwrap_or(i.to_string());
-                                    c.check(&ft, &x, &format!("{ctx}: {}.{fname}", crate::names::short(ctor)), false)?;
+                                    c.check_in(&ft, &x, &within(ctx, vec![Part::Lit(format!(": {}.{fname}", crate::names::short(ctor)))]), false)?;
                                 }
                             }
                             c.br(&end);
@@ -1045,7 +1226,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 if let (Some(r), false) = (self.m.refinement(&n), td.distinct) {
                     let ok = self.with_it(v, false, |c| c.expr(r))?;
                     let msg = format!("does not satisfy `{n}` (where {})", crate::printer::expr(r, 0));
-                    self.fail_unless(&ok, ctx, v, msg)?;
+                    self.fail_unless_in(&ok, ctx.to_vec(), v, msg)?;
                 }
             }
             _ => {}
@@ -1060,6 +1241,9 @@ impl<'m, 'a> Func<'m, 'a> {
             TypeExpr::Named(n, args) => {
                 if self.sub.contains_key(n) {
                     return false;
+                }
+                if n == "List" {
+                    return args.iter().any(|x| self.needs_check(x));
                 }
                 let n = self.m.env.variant_parent(n).unwrap_or(n.clone());
                 match self.m.env.types.get(&n) {
@@ -1096,11 +1280,16 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     fn fail_unless(&mut self, ok: &V, ctx: &str, v: &V, msg: String) -> Res<()> {
+        self.fail_unless_in(ok, vec![Part::Lit(ctx.to_string())], v, msg)
+    }
+
+    fn fail_unless_in(&mut self, ok: &V, mut ctx: Vec<Part>, v: &V, msg: String) -> Res<()> {
         let (pass, fail) = (self.fresh_label("check.ok"), self.fresh_label("check.fail"));
         self.cond_br(ok, &pass, &fail);
         self.block(&fail);
         let shown = self.json(v)?;
-        self.fault(Fault::Refinement, vec![Part::Lit(format!("{ctx}: ")), Part::Val(shown), Part::Lit(format!(" {msg}"))])?;
+        ctx.extend([Part::Lit(": ".into()), Part::Val(shown), Part::Lit(format!(" {msg}"))]);
+        self.fault(Fault::Refinement, ctx)?;
         self.block(&pass);
         Ok(())
     }
@@ -1186,6 +1375,7 @@ impl<'m, 'a> Func<'m, 'a> {
             Expr::Bool(b) => bool_v(&b.to_string()),
             Expr::Str(s) => self.string(s),
             Expr::Unit => (Ty::Unit, String::new()),
+            Expr::Var(x) if self.lookup(x).is_none() => self.function_value(e, x)?,
             Expr::Var(x) => self.load(x)?,
             Expr::Hole(h) => {
                 self.fault(Fault::Hole, vec![Part::Lit(format!("reached unfilled hole `?{h}`"))])?;
@@ -1193,7 +1383,14 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             Expr::Call(f, args) => match &**f {
                 Expr::Var(name) => self.call_named(e, name, args.iter().collect())?,
-                _ => return self.unsupported("calling a function value"),
+                other => {
+                    let fv = self.expr(other)?;
+                    let mut vs = vec![];
+                    for a in args {
+                        vs.push(self.expr(a)?);
+                    }
+                    self.call_closure(&fv, vs)?
+                }
             },
             // method-call sugar: `e.f(args)` is `f(e, args)`
             Expr::Method(recv, m, args) => {
@@ -1345,8 +1542,23 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.block(&end);
                 self.join(&want, vec![(gv, from_ok), (fv, from_f)])?
             }
-            Expr::List(_) => return self.unsupported("a list"),
-            Expr::Lambda(..) => return self.unsupported("a lambda"),
+            Expr::List(xs) => {
+                let t = self.ty_of(e)?;
+                let mut vs = vec![];
+                for x in xs {
+                    vs.push(self.expr(x)?);
+                }
+                if vs.iter().any(|v| is_never(&v.0)) {
+                    return Ok(never());
+                }
+                let mut l = self.call(&t, "@strata_list_new", &[(Ty::Int, vs.len().to_string())])?;
+                for v in &vs {
+                    let s = self.to_slot(v)?;
+                    l = self.call(&t, "@strata_list_push", &[l, (Ty::Int, s)])?;
+                }
+                l
+            }
+            Expr::Lambda(ps, body) => self.lambda(e, ps, body)?,
             Expr::Mut(_) => return self.unsupported("a `mut` argument"),
             Expr::Mock(_) => return self.unsupported("`mock`"),
         })
@@ -1449,6 +1661,7 @@ impl<'m, 'a> Func<'m, 'a> {
         };
         Ok(match (op, &t) {
             (Add, Ty::Str) => self.call(&Ty::Str, "@strata_concat", &[a.clone(), b.clone()])?,
+            (Add, Ty::Con(l, _)) if l == "List" => self.call(&a.0, "@strata_list_concat", &[a.clone(), b.clone()])?,
             (Lt | Le | Gt | Ge, Ty::Str) => {
                 let c = self.call(&Ty::Int, "@strata_str_cmp", &[a.clone(), b.clone()])?;
                 let r = self.fresh("cmp");
@@ -1498,38 +1711,17 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     fn call_named(&mut self, call: &Expr, name: &str, args: Vec<&Expr>) -> Res<V> {
-        let env = self.m.env;
         if self.lookup(name).is_some() {
-            return self.unsupported("calling a function value");
-        }
-        if let Some(f) = env.fns.get(name) {
-            if f.params.len() != args.len() {
-                return Err(format!("`{name}` takes {} arguments", f.params.len()));
-            }
+            // a local closure
+            let f = self.load(name)?;
             let mut vs = vec![];
             for a in &args {
                 vs.push(self.expr(a)?);
             }
-            if vs.iter().any(|v| is_never(&v.0)) {
-                return Ok(never());
-            }
-            // the type arguments: the declared types against the actual ones
-            let mut targs = HashMap::new();
-            for (p, v) in f.params.iter().zip(&vs) {
-                self.bind_targs(&p.ty, &v.0, &f.type_params, &mut targs);
-            }
-            if let Ok(rt) = self.ty_of(call) {
-                self.bind_targs(&f.ret, &rt, &f.type_params, &mut targs);
-            }
-            let targs: Vec<Ty> = f.type_params.iter().map(|p| targs.get(p).cloned().unwrap_or(Ty::Unit)).collect();
-            let sub: HashMap<String, Ty> = f.type_params.iter().cloned().zip(targs.iter().cloned()).collect();
-            let ret = self.m.lower(&f.ret, &sub)?;
-            // an argument's own type may differ from the parameter's (a variant for its sum): same representation
-            let vs: Vec<V> = f.params.iter().zip(vs).map(|(p, v)| Ok((self.m.lower(&p.ty, &sub)?, v.1))).collect::<Res<_>>()?;
-            self.m.want(name, targs.clone());
-            return self.call(&ret, &sym(name, &targs), &vs);
+            return self.call_closure(&f, vs);
         }
-        if crate::stdlib::is_host(name) || env.is_method(name) {
+        let env = self.m.env;
+        if crate::stdlib::is_host(name) || (env.is_method(name) && !env.fns.contains_key(name)) {
             return self.unsupported(&format!("`{name}`"));
         }
         let mut vs = vec![];
@@ -1539,8 +1731,114 @@ impl<'m, 'a> Func<'m, 'a> {
         if vs.iter().any(|v| is_never(&v.0)) {
             return Ok(never());
         }
+        let hint = self.ty_of(call).ok();
+        self.call_values(name, vs, hint)
+    }
+
+    /// Call the function or built-in `name` on values; `hint` is the call's
+    /// type, when known (a type argument only the result mentions).
+    fn call_values(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>) -> Res<V> {
+        if self.m.env.fns.contains_key(name) {
+            return self.call_fn(name, vs, hint);
+        }
+        // the list built-ins written in Strata (llvm/prelude.strata)
+        if let Some(Ty::Con(l, et)) = vs.first().map(|v| self.m.repr(&v.0)).transpose()? {
+            if l == "List" {
+                let own = match (name, et[0].clone()) {
+                    ("sum", Ty::Float) => Some("sum_float".to_string()),
+                    ("sum", _) => Some("sum_int".to_string()),
+                    ("sort", a) => {
+                        let less = self.less(&a)?;
+                        return self.call_fn(&prelude("sort_with"), vec![vs[0].clone(), less], hint);
+                    }
+                    ("sort_by", _) => {
+                        let Ty::Fn(_, b) = self.m.repr(&vs[1].0)? else { return Err("`sort_by` needs a function".into()) };
+                        let less = self.less(&b)?;
+                        return self.call_fn(&prelude("sort_by_with"), vec![vs[0].clone(), vs[1].clone(), less], hint);
+                    }
+                    (n, _) if self.m.env.fns.contains_key(&prelude(n)) => Some(n.to_string()),
+                    _ => None,
+                };
+                if let Some(own) = own {
+                    return self.call_fn(&prelude(&own), vs, hint);
+                }
+            }
+        }
+        self.builtin(name, vs)
+    }
+
+    /// Call a function of the program (one instance of it, if generic).
+    fn call_fn(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>) -> Res<V> {
+        let f = &self.m.env.fns[name];
+        if f.params.len() != vs.len() {
+            return Err(format!("`{name}` takes {} arguments", f.params.len()));
+        }
+        // the type arguments: the declared types against the actual ones
+        let mut targs = HashMap::new();
+        for (p, v) in f.params.iter().zip(&vs) {
+            self.bind_targs(&p.ty, &v.0, &f.type_params, &mut targs);
+        }
+        if let Some(rt) = hint {
+            self.bind_targs(&f.ret, &rt, &f.type_params, &mut targs);
+        }
+        let targs: Vec<Ty> = f.type_params.iter().map(|p| targs.get(p).cloned().unwrap_or(Ty::Unit)).collect();
+        let sub: HashMap<String, Ty> = f.type_params.iter().cloned().zip(targs.iter().cloned()).collect();
+        let ret = self.m.lower(&f.ret, &sub)?;
+        // an argument's own type may differ from the parameter's (a variant for its sum): same representation
+        let vs: Vec<V> = f.params.iter().zip(vs).map(|(p, v)| Ok((self.m.lower(&p.ty, &sub)?, v.1))).collect::<Res<_>>()?;
+        self.m.want(name, targs.clone());
+        self.call(&ret, &sym(name, &targs), &vs)
+    }
+
+    /// A native built-in.
+    fn builtin(&mut self, name: &str, vs: Vec<V>) -> Res<V> {
         let types: Vec<Ty> = vs.iter().map(|v| self.m.repr(&v.0)).collect::<Res<_>>()?;
+        let list_elem = |t: &Ty| match t {
+            Ty::Con(l, a) if l == "List" => Some(a[0].clone()),
+            _ => None,
+        };
         Ok(match (name, types.as_slice()) {
+            ("len", [t]) if list_elem(t).is_some() => self.list_len(&vs[0]),
+            ("push", [t, _]) if list_elem(t).is_some() => {
+                let s = self.to_slot(&vs[1])?;
+                let r = self.call(&types[0], "@strata_list_push", &[vs[0].clone(), (Ty::Int, s)])?;
+                (vs[0].0.clone(), r.1)
+            }
+            ("get", [t, Ty::Int]) if list_elem(t).is_some() => {
+                let et = list_elem(t).unwrap();
+                let opt = Ty::Con("Option".into(), vec![et.clone()]);
+                let n = self.list_len(&vs[0]);
+                let (lo, hi) = (self.fresh("lo"), self.fresh("hi"));
+                self.emit(format!("{lo} = icmp sge i64 {}, 0", vs[1].1));
+                self.emit(format!("{hi} = icmp slt i64 {}, {}", vs[1].1, n.1));
+                let inside = self.fresh("in");
+                self.emit(format!("{inside} = and i1 {lo}, {hi}"));
+                let (some, none, end) = (self.fresh_label("get.some"), self.fresh_label("get.none"), self.fresh_label("get.end"));
+                self.cond_br(&bool_v(&inside), &some, &none);
+                self.block(&some);
+                let x = self.list_at(&vs[0], &vs[1].1, &et)?;
+                let b = self.block_of(self.m.tags["Some"], &[x])?;
+                let from_some = self.cur.clone();
+                self.br(&end);
+                self.block(&none);
+                let nothing = self.m.nullary("None");
+                self.br(&end);
+                self.block(&end);
+                let r = self.fresh("opt");
+                self.emit(format!("{r} = phi ptr [ {b}, %{from_some} ], [ {nothing}, %{none} ]"));
+                (opt, r)
+            }
+            ("take" | "drop", [t, Ty::Int]) if list_elem(t).is_some() => {
+                // the count, within 0..len
+                let n = self.list_len(&vs[0]);
+                let (k0, k) = (self.fresh("k"), self.fresh("k"));
+                self.emit(format!("{k0} = call i64 @llvm.smax.i64(i64 {}, i64 0)", vs[1].1));
+                self.emit(format!("{k} = call i64 @llvm.smin.i64(i64 {k0}, i64 {})", n.1));
+                let (from, to) = if name == "take" { ("0".to_string(), k) } else { (k, n.1.clone()) };
+                let r = self.call(&types[0], "@strata_list_slice", &[vs[0].clone(), (Ty::Int, from), (Ty::Int, to)])?;
+                (vs[0].0.clone(), r.1)
+            }
+            ("range", [Ty::Int, Ty::Int]) => self.call(&Ty::Con("List".into(), vec![Ty::Int]), "@strata_range", &vs)?,
             ("print", [_]) => {
                 let s = self.show(&vs[0])?;
                 self.call(&Ty::Unit, "@strata_print", &[(Ty::Str, s)])?
@@ -1577,20 +1875,213 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             ("sqrt", [Ty::Float]) => {
                 // no NaN: the square root of a negative number is a fault
-                let r = self.call(&Ty::Float, "@llvm.sqrt.f64", &vs)?;
-                let s = self.string("sqrt");
-                self.call(&Ty::Float, "@strata_finite", &[r, vs[0].clone(), vs[0].clone(), s])?
+                self.call(&Ty::Float, "@strata_sqrt", &vs)?
             }
             ("floor" | "ceil" | "round", [Ty::Float]) => {
                 let r = self.call(&Ty::Float, &format!("@llvm.{name}.f64"), &vs)?;
-                let s = self.string(name);
-                self.call(&Ty::Int, "@strata_float_to_int", &[r, s])?
+                self.call(&Ty::Int, "@strata_float_to_int", &[r, vs[0].clone()])?
             }
             _ => {
                 let ts: Vec<String> = types.iter().map(key).collect();
                 return self.unsupported(&format!("the built-in `{name}` on ({})", ts.join(", ")));
             }
         })
+    }
+
+    // ---- lists ----
+    //
+    // A list points to a header { i64 len, ptr buf, i64 off }; the buffer is
+    // { i64 cap, i64 used, i64 slots[] } (runtime.c). Element i is
+    // slots[off + i].
+
+    fn list_len(&mut self, v: &V) -> V {
+        let r = self.fresh("len");
+        self.emit(format!("{r} = load i64, ptr {}", v.1));
+        (Ty::Int, r)
+    }
+
+    /// Element `i` (known to be within the list).
+    fn list_at(&mut self, v: &V, i: &str, et: &Ty) -> Res<V> {
+        let (bp, buf, op, off, k, at, s) = (self.fresh("bufp"), self.fresh("buf"), self.fresh("offp"), self.fresh("off"), self.fresh("k"), self.fresh("at"), self.fresh("el"));
+        self.emit(format!("{bp} = getelementptr i8, ptr {}, i64 8", v.1));
+        self.emit(format!("{buf} = load ptr, ptr {bp}"));
+        self.emit(format!("{op} = getelementptr i8, ptr {}, i64 16", v.1));
+        self.emit(format!("{off} = load i64, ptr {op}"));
+        self.emit(format!("{k} = add i64 {off}, {i}"));
+        self.emit(format!("{at} = getelementptr i64, ptr {buf}, i64 2"));
+        let el = self.fresh("elp");
+        self.emit(format!("{el} = getelementptr i64, ptr {at}, i64 {k}"));
+        self.emit(format!("{s} = load i64, ptr {el}"));
+        self.from_slot(&s, et)
+    }
+
+    fn elem_ty(&self, t: &Ty) -> Res<Ty> {
+        match self.m.repr(t)? {
+            Ty::Con(l, a) if l == "List" => Ok(a[0].clone()),
+            other => Err(format!("`{}` is not a list", key(&other))),
+        }
+    }
+
+    /// Run `f` on each element of a list (with its index), in a loop.
+    fn each(&mut self, v: &V, et: &Ty, mut f: impl FnMut(&mut Self, &str, &V) -> Res<()>) -> Res<()> {
+        let counter = self.fresh("idx");
+        writeln!(self.allocas, "  {counter} = alloca i64").unwrap();
+        self.emit(format!("store i64 0, ptr {counter}"));
+        let (head, body, end) = (self.fresh_label("each"), self.fresh_label("each.body"), self.fresh_label("each.end"));
+        self.br(&head);
+        self.block(&head);
+        let i = self.fresh("i");
+        self.emit(format!("{i} = load i64, ptr {counter}"));
+        let n = self.list_len(v);
+        let more = self.fresh("more");
+        self.emit(format!("{more} = icmp slt i64 {i}, {}", n.1));
+        self.cond_br(&bool_v(&more), &body, &end);
+        self.block(&body);
+        let x = self.list_at(v, &i, et)?;
+        f(self, &i, &x)?;
+        let next = self.fresh("i");
+        self.emit(format!("{next} = add i64 {i}, 1"));
+        self.emit(format!("store i64 {next}, ptr {counter}"));
+        self.br(&head);
+        self.block(&end);
+        Ok(())
+    }
+
+    // ---- closures ----
+    //
+    // A function value points to a block: the function's address, then the
+    // values it captured. The function takes that block first, then its
+    // parameters.
+
+    fn call_closure(&mut self, f: &V, args: Vec<V>) -> Res<V> {
+        if is_never(&f.0) || args.iter().any(|a| is_never(&a.0)) {
+            return Ok(never());
+        }
+        let Ty::Fn(pts, rt) = self.m.repr(&f.0)? else { return Err(format!("`{}` is not a function", key(&f.0))) };
+        let (raw, fp) = (self.fresh("fnp"), self.fresh("fn"));
+        self.emit(format!("{raw} = load i64, ptr {}", f.1));
+        self.emit(format!("{fp} = inttoptr i64 {raw} to ptr"));
+        let mut all = vec![(Ty::Str, f.1.clone())];
+        for (t, a) in pts.iter().zip(args) {
+            all.push((t.clone(), a.1));
+        }
+        self.call(&rt, &fp, &all)
+    }
+
+    /// A closure block: the function, then the captured values.
+    fn closure(&mut self, fsym: &str, captured: &[V]) -> Res<String> {
+        let p = self.fresh("clo");
+        self.emit(format!("{p} = call ptr @strata_alloc(i64 {})", 8 * (captured.len() + 1)));
+        let a = self.fresh("fa");
+        self.emit(format!("{a} = ptrtoint ptr {fsym} to i64"));
+        self.emit(format!("store i64 {a}, ptr {p}"));
+        for (i, c) in captured.iter().enumerate() {
+            self.set_field(&p, i, c)?;
+        }
+        Ok(p)
+    }
+
+    /// `x -> body`: a function of its own, closing over the variables it uses.
+    fn lambda(&mut self, e: &Expr, ps: &[LamParam], body: &Expr) -> Res<V> {
+        let t = self.ty_of(e)?;
+        let Ty::Fn(pts, rt) = t.clone() else { return Err("a lambda without a function type".into()) };
+        let names: Vec<String> = ps.iter().map(|p| p.name.clone()).collect();
+        let mut free: Vec<String> = vars_in(body).into_iter().filter(|x| !names.contains(x) && self.lookup(x).is_some()).collect();
+        free.sort();
+        free.dedup();
+        let mut captured = vec![];
+        for x in &free {
+            captured.push(self.load(x)?);
+        }
+        self.m.lambdas += 1;
+        let fsym = format!("@\"lambda.{}\"", self.m.lambdas);
+        let mut l = Func::new(self.m, self.sub.clone());
+        l.block("entry.body");
+        let env: V = (Ty::Str, "%env".into());
+        for (i, (x, v)) in free.iter().zip(&captured).enumerate() {
+            let val = l.field(&env, i, &v.0)?;
+            let slot = l.local(x, &v.0, None)?;
+            l.store(&val, &slot)?;
+        }
+        let mut sig = vec!["ptr %env".to_string()];
+        for (i, (p, pt)) in ps.iter().zip(&pts).enumerate() {
+            let slot = l.local(&p.name, pt, None)?;
+            if has_value(pt) {
+                sig.push(format!("{} %p.{i}", l.m.ll(pt)?));
+                l.store(&(pt.clone(), format!("%p.{i}")), &slot)?;
+            }
+            if let Some(w) = &p.ty {
+                let v = l.load(&p.name)?;
+                l.check(w, &v, &format!("argument `{}` of a lambda", p.name), false)?;
+            }
+        }
+        if has_value(&rt) {
+            let slot = l.fresh("ret");
+            writeln!(l.allocas, "  {slot} = alloca {}", l.m.ll(&rt)?).unwrap();
+            l.ret_slot = Some(((*rt).clone(), slot));
+        } else {
+            l.ret_slot = Some(((*rt).clone(), String::new()));
+        }
+        let v = l.expr(body)?;
+        l.return_value(&v)?;
+        l.block("exit");
+        if has_value(&rt) {
+            let slot = l.ret_slot.clone().unwrap().1;
+            let r = l.fresh("result");
+            let ll = l.m.ll(&rt)?;
+            l.emit(format!("{r} = load {ll}, ptr {slot}"));
+            l.emit(format!("ret {ll} {r}"));
+        } else {
+            l.emit("ret void".into());
+        }
+        let text = l.finish();
+        let ll = self.m.ll(&rt)?;
+        writeln!(self.m.body, "define {ll} {fsym}({}) {{\n{text}}}\n", sig.join(", ")).unwrap();
+        let p = self.closure(&fsym, &captured)?;
+        Ok((t, p))
+    }
+
+    /// A named function or built-in used as a value (`filter(xs, is_prime)`):
+    /// a closure that calls it.
+    fn function_value(&mut self, e: &Expr, name: &str) -> Res<V> {
+        let t = self.ty_of(e)?;
+        let Ty::Fn(pts, rt) = t.clone() else { return Err(format!("`{name}` is not a function")) };
+        self.m.lambdas += 1;
+        let fsym = format!("@\"fn.{}.{}\"", name, self.m.lambdas);
+        let mut l = Func::new(self.m, self.sub.clone());
+        l.block("entry.body");
+        let mut sig = vec!["ptr %env".to_string()];
+        let mut args = vec![];
+        for (i, pt) in pts.iter().enumerate() {
+            if has_value(pt) {
+                sig.push(format!("{} %p.{i}", l.m.ll(pt)?));
+            }
+            args.push((pt.clone(), format!("%p.{i}")));
+        }
+        let r = l.call_values(name, args, Some((*rt).clone()))?;
+        if has_value(&rt) {
+            let ll = l.m.ll(&rt)?;
+            l.emit(format!("ret {ll} {}", r.1));
+        } else {
+            l.emit("ret void".into());
+        }
+        let text = l.finish();
+        let ll = self.m.ll(&rt)?;
+        writeln!(self.m.body, "define {ll} {fsym}({}) {{\n{text}}}\n", sig.join(", ")).unwrap();
+        let p = self.closure(&fsym, &[])?;
+        Ok((t, p))
+    }
+
+    /// The order `sort` uses, as a closure `(a, b) -> a < b` on values of type `t`.
+    fn less(&mut self, t: &Ty) -> Res<V> {
+        let cmp = self.helper("cmp", t)?;
+        let fsym = format!("@\"less:{}\"", key(t));
+        if self.m.helpers.insert(fsym.clone()) {
+            let ll = self.m.ll(t)?;
+            writeln!(self.m.body, "define i1 {fsym}(ptr %env, {ll} %a, {ll} %b) {{\nentry:\n  %c = call i64 {cmp}({ll} %a, {ll} %b)\n  %r = icmp slt i64 %c, 0\n  ret i1 %r\n}}\n").unwrap();
+        }
+        let p = self.closure(&fsym, &[])?;
+        Ok((Ty::Fn(vec![t.clone(), t.clone()], Box::new(Ty::Bool)), p))
     }
 
     /// Bind type parameters by matching a written type against an actual one.
@@ -1833,7 +2324,22 @@ impl<'m, 'a> Func<'m, 'a> {
                     self.pattern(sp, &x, fail)?;
                 }
             }
-            Pattern::List(..) => return self.unsupported("a list pattern"),
+            Pattern::List(items, rest) => {
+                let et = self.elem_ty(&v.0)?;
+                let n = self.list_len(v);
+                let ok = self.fresh("lenok");
+                let cmp = if rest.is_some() { "sge" } else { "eq" };
+                self.emit(format!("{ok} = icmp {cmp} i64 {}, {}", n.1, items.len()));
+                test(self, bool_v(&ok));
+                for (i, ip) in items.iter().enumerate() {
+                    let x = self.list_at(v, &i.to_string(), &et)?;
+                    self.pattern(ip, &x, fail)?;
+                }
+                if let Some(r) = rest.as_ref().filter(|r| *r != "_") {
+                    let tail = self.call(&v.0, "@strata_list_slice", &[v.clone(), (Ty::Int, items.len().to_string()), n])?;
+                    self.bind(r, &tail)?;
+                }
+            }
         }
         Ok(())
     }
@@ -1924,11 +2430,56 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.block(&end);
             }
             Stmt::For(p, xs, body) => {
-                let Expr::Call(f, args) = xs else { return self.unsupported("`for` over anything but `range(a, b)`") };
-                if !matches!(&**f, Expr::Var(n) if n == "range") || args.len() != 2 || self.m.env.fns.contains_key("range") {
-                    return self.unsupported("`for` over anything but `range(a, b)`");
+                let is_range = matches!(xs, Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if n == "range") && args.len() == 2 && !self.m.env.fns.contains_key("range"));
+                if !is_range {
+                    let v = self.expr(xs)?;
+                    if is_never(&v.0) {
+                        return Ok(());
+                    }
+                    let et = self.elem_ty(&v.0)?;
+                    let counter = self.fresh("idx");
+                    writeln!(self.allocas, "  {counter} = alloca i64").unwrap();
+                    self.emit(format!("store i64 0, ptr {counter}"));
+                    let (head, inner, step, end) = (self.fresh_label("for"), self.fresh_label("for.body"), self.fresh_label("for.next"), self.fresh_label("endfor"));
+                    self.br(&head);
+                    self.block(&head);
+                    let i = self.fresh("i");
+                    self.emit(format!("{i} = load i64, ptr {counter}"));
+                    let n = self.list_len(&v);
+                    let more = self.apply(BinOp::Lt, &(Ty::Int, i.clone()), &n)?;
+                    self.cond_br(&more, &inner, &end);
+                    self.block(&inner);
+                    let x = self.list_at(&v, &i, &et)?;
+                    self.scopes.push(HashMap::new());
+                    let fail = self.fresh_label("for.nomatch");
+                    self.pattern(p, &x, &fail)?;
+                    self.loop_body(body, &step, &end)?;
+                    self.block(&fail);
+                    let shown = self.json(&x)?;
+                    self.fault(Fault::Runtime, vec![Part::Lit("for-loop pattern did not match ".into()), Part::Val(shown)])?;
+                    self.scopes.pop();
+                    self.block(&step);
+                    let next = self.fresh("i");
+                    self.emit(format!("{next} = add i64 {i}, 1"));
+                    self.emit(format!("store i64 {next}, ptr {counter}"));
+                    self.br(&head);
+                    self.block(&end);
+                    return Ok(());
                 }
+                let Expr::Call(_, args) = xs else { unreachable!() };
                 let (lo, hi) = (self.expr(&args[0])?, self.expr(&args[1])?);
+                // as the interpreter, which makes the list first
+                let (big, d) = (self.fresh("big"), self.fresh("span"));
+                self.emit(format!("{d} = sub i64 {}, {}", hi.1, lo.1));
+                let (up, far) = (self.fresh("up"), self.fresh("far"));
+                self.emit(format!("{up} = icmp sgt i64 {}, {}", hi.1, lo.1));
+                self.emit(format!("{far} = icmp ugt i64 {d}, 1000000"));
+                self.emit(format!("{big} = and i1 {up}, {far}"));
+                let (toobig, fine) = (self.fresh_label("range.big"), self.fresh_label("range.ok"));
+                self.cond_br(&bool_v(&big), &toobig, &fine);
+                self.block(&toobig);
+                self.fault(Fault::Runtime, vec![Part::Lit("range too large".into())])?;
+                self.block(&fine);
                 let counter = self.fresh("i");
                 writeln!(self.allocas, "  {counter} = alloca i64").unwrap();
                 self.store(&lo, &counter)?;
