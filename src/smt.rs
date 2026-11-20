@@ -2506,13 +2506,13 @@ impl<'a> Vc<'a> {
                 // (when every version of it returns the same type, free of type variables)
                 let rets: Vec<TypeExpr> = crate::types::BUILTINS
                     .iter()
-                    .filter(|b| b.0 == name)
-                    .filter_map(|(_, vars, sig)| match crate::types::parse_type_str(sig) {
-                        TypeExpr::Fn(_, ret) if !vars.split(',').any(|v| !v.is_empty() && crate::printer::ty(&ret).split(|c: char| !c.is_alphanumeric()).any(|w| w == v)) => Some(*ret),
+                    .filter(|b| b.name == name)
+                    .filter_map(|b| match crate::types::parse_type_str(b.sig) {
+                        TypeExpr::Fn(_, ret) if !b.params.split(',').any(|v| !v.is_empty() && crate::printer::ty(&ret).split(|c: char| !c.is_alphanumeric()).any(|w| w == v)) => Some(*ret),
                         _ => None,
                     })
                     .collect();
-                let n = crate::types::BUILTINS.iter().filter(|b| b.0 == name).count();
+                let n = crate::types::BUILTINS.iter().filter(|b| b.name == name).count();
                 match rets.first() {
                     Some(ret) if rets.len() == n && rets.iter().all(|r| r == ret) => {
                         let old = self.reason.replace(not_modelled);

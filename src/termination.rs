@@ -403,7 +403,7 @@ fn candidate_measures(env: &Env, f: &FnDecl) -> Vec<Expr> {
     let only_params = |e: &Expr| {
         let mut ok = true;
         crate::ast::walk(e, |x| match x {
-            Expr::Var(n) => ok &= params.contains(n.as_str()) || env.fns.contains_key(n) || crate::types::BUILTINS.iter().any(|b| b.0 == n),
+            Expr::Var(n) => ok &= params.contains(n.as_str()) || env.fns.contains_key(n) || crate::types::BUILTINS.iter().any(|b| b.name == n),
             Expr::Lambda(..) | Expr::Hole(_) | Expr::Float(_) | Expr::Str(_) => ok = false,
             _ => {}
         });
@@ -489,13 +489,6 @@ pub fn queries(env: &Env, f: &FnDecl, solver: Option<&crate::smt::Solver>) -> Ve
 
 // ---- transparency ----
 
-/// Builtins that always return (never fail) on well-typed arguments.
-const TOTAL_BUILTINS: &[&str] = &[
-    "len", "str_len", "contains", "get", "dict", "insert", "remove", "keys", "values", "items", "map_values", "set", "to_list", "union", "intersection", "difference", "zip", "enumerate",
-    "sort", "sort_by", "reverse", "join", "trim", "parse_int", "map", "filter", "fold", "all", "any", "push", "take", "drop", "find", "count", "abs", "min", "max", "starts_with",
-    "to_string", "to_json", "sum",
-];
-
 /// Can evaluating `f`'s body fail (a runtime check, a hole)? Calls to other
 /// functions are fine when those cannot fail either.
 fn cannot_fail(env: &Env, f: &FnDecl, total: &dyn Fn(&str) -> bool) -> bool {
@@ -511,10 +504,10 @@ fn cannot_fail(env: &Env, f: &FnDecl, total: &dyn Fn(&str) -> bool) -> bool {
         Expr::Ctor(c, _) => ok &= !refined(&env.ctors.get(c).cloned().unwrap_or_default()),
         Expr::Call(g, _) => {
             if let Expr::Var(n) = &**g {
-                ok &= if env.fns.contains_key(n) { total(n) } else { !env.is_method(n) && TOTAL_BUILTINS.contains(&n.as_str()) };
+                ok &= if env.fns.contains_key(n) { total(n) } else { !env.is_method(n) && crate::types::total_builtin(n) };
             }
         }
-        Expr::Method(_, n, _) => ok &= if env.fns.contains_key(n) { total(n) } else { !env.is_method(n) && TOTAL_BUILTINS.contains(&n.as_str()) },
+        Expr::Method(_, n, _) => ok &= if env.fns.contains_key(n) { total(n) } else { !env.is_method(n) && crate::types::total_builtin(n) },
         Expr::Block(stmts, _) => ok &= !stmts.iter().any(|s| matches!(s, Stmt::Assert(_))),
         _ => {}
     });

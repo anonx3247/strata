@@ -136,6 +136,16 @@ fn loops_forget_variables_changed_anywhere_in_their_body() {
 }
 
 #[test]
+fn generators_read_disjunctive_refinements() {
+    // without a solver everything is fuzzed: values of `Far` must be generated, not rejected 300 times
+    let d = tmp("gen-or");
+    std::fs::write(d.join("g.strata"), "type Far = Int where it > 1000000 || it < -1000000\n\nfn half(x: Far) -> Int\n  ensures it != 0\n{\n  x / 2\n}\n").unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["--file", "g.strata", "verify"]).env("STRATA_SOLVER", d.join("no-solver")).current_dir(&d).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(out.contains("fuzzed: 200 cases"), "{out}");
+}
+
+#[test]
 fn cross_check_catches_a_wrong_prover() {
     // a "solver" that proves everything: the cross-check must still catch the bug
     let d = tmp("cross-check");
@@ -2285,6 +2295,18 @@ fn fake_editor(d: &std::path::Path, versions: &[&str]) -> String {
 fn strata_with_editor(args: &[&str], dir: &std::path::Path, editor: &str) -> (bool, String) {
     let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(args).current_dir(dir).env("EDITOR", editor).env_remove("VISUAL").stdin(Stdio::null()).output().unwrap();
     (o.status.success(), String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr))
+}
+
+#[test]
+fn renames_leave_string_literals_alone() {
+    // a string equal to the old name is text, not a reference: the rename goes ahead and keeps it
+    let d = tmp("rename-literal");
+    std::fs::write(d.join("main.strata"), "fn greet() -> String {\n  \"hello\"\n}\n\nfn label() -> String {\n  \"greet\"\n}\n").unwrap();
+    assert!(strata(&["init"], &d, None).0);
+    let (ok, out) = strata(&["rename", "greet", "welcome", "--no-commit"], &d, None);
+    assert!(ok, "{out}");
+    let src = std::fs::read_to_string(d.join("main.strata")).unwrap();
+    assert!(src.contains("fn welcome()") && src.contains("\"greet\""), "{src}");
 }
 
 #[test]

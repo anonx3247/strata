@@ -9,6 +9,7 @@
 //! (`Console`, `Files`, `Environment`), and the only real implementations are
 //! private types of `std` that the runtime hands to `main`.
 
+use crate::types::Builtin;
 use crate::ast::Program;
 use std::sync::OnceLock;
 
@@ -23,19 +24,19 @@ const FILES: &[(&str, &str)] = &[
     ("web.strata", include_str!("../std/web.strata")),
 ];
 
-/// Native operations, callable only from `std`: (name, type params, signature).
+/// Native operations, callable only from `std`.
 /// Failures are `(kind, message)`; `std` turns them into its own error types.
-pub const HOST: &[(&str, &str, &str)] = &[
-    ("host_write", "", "(Int, String) -> ()"),
-    ("host_read_line", "", "() -> Option[String]"),
-    ("host_read_file", "", "(String) -> Result[String, (String, String)]"),
-    ("host_write_file", "", "(String, String, Bool) -> Result[(), (String, String)]"),
-    ("host_exists", "", "(String) -> Bool"),
-    ("host_list_dir", "", "(String) -> Result[List[String], (String, String)]"),
-    ("host_make_dir", "", "(String) -> Result[(), (String, String)]"),
-    ("host_remove", "", "(String) -> Result[(), (String, String)]"),
-    ("host_args", "", "() -> List[String]"),
-    ("host_env_var", "", "(String) -> Option[String]"),
+pub const HOST: &[Builtin] = &[
+    Builtin::new("host_write", "", "(Int, String) -> ()"),
+    Builtin::new("host_read_line", "", "() -> Option[String]"),
+    Builtin::new("host_read_file", "", "(String) -> Result[String, (String, String)]"),
+    Builtin::new("host_write_file", "", "(String, String, Bool) -> Result[(), (String, String)]"),
+    Builtin::new("host_exists", "", "(String) -> Bool"),
+    Builtin::new("host_list_dir", "", "(String) -> Result[List[String], (String, String)]"),
+    Builtin::new("host_make_dir", "", "(String) -> Result[(), (String, String)]"),
+    Builtin::new("host_remove", "", "(String) -> Result[(), (String, String)]"),
+    Builtin::new("host_args", "", "() -> List[String]"),
+    Builtin::new("host_env_var", "", "(String) -> Option[String]"),
 ];
 
 /// The private types that reach the real system. Only `strata run` makes
@@ -44,7 +45,7 @@ pub const HOST: &[(&str, &str, &str)] = &[
 pub const HOST_TYPES: &[&str] = &["std.io.Terminal", "std.fs.Disk", "std.process.Process"];
 
 pub fn is_host(name: &str) -> bool {
-    HOST.iter().any(|h| h.0 == name)
+    HOST.iter().any(|h| h.name == name)
 }
 
 /// Whether a module belongs to the standard library.

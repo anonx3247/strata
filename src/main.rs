@@ -629,7 +629,7 @@ fn run() -> Result<bool, String> {
         }
         "builtins" => {
             if json_out {
-                let out: Vec<_> = types::BUILTINS.iter().map(|(n, ps, s)| json!({"name": n, "type_params": ps, "signature": s})).collect();
+                let out: Vec<_> = types::BUILTINS.iter().map(|b| json!({"name": b.name, "type_params": b.params, "signature": b.sig, "total": b.total})).collect();
                 println!("{}", serde_json::to_string_pretty(&out).unwrap());
             } else {
                 println!("// prelude types\n");
@@ -637,9 +637,9 @@ fn run() -> Result<bool, String> {
                     println!("{}\n", printer::decl(&d));
                 }
                 println!("// builtin functions\n");
-                for (n, ps, s) in types::BUILTINS {
-                    let tp = if ps.is_empty() { String::new() } else { format!("[{ps}]") };
-                    println!("{n}{tp}{s}");
+                for b in types::BUILTINS {
+                    let tp = if b.params.is_empty() { String::new() } else { format!("[{}]", b.params) };
+                    println!("{}{tp}{}", b.name, b.sig);
                 }
             }
         }
