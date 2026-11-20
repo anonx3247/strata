@@ -125,6 +125,22 @@ LLVM_SYS_231_PREFIX=$(brew --prefix llvm) cargo build --release --features jit
 
 Both ways share one code generator (the IR as text, which LLVM parses for the JIT) and one runtime (`runtime.c`, built into `strata` for the JIT, compiled with the program by `strata build`).
 
+## Serving the web
+
+`strata serve [PATH] [--port N]` (default port 8000) runs a program as a web server: each request is turned into a `std.http.Request` and passed to the program's `fn handle(req: Request) -> Response`. Like `main`, `handle` may also ask for `Console`, `Files` and `Environment`. Requests are handled one at a time, each with a fresh interpreter. A runtime fault, or a response the server can't send (a header holding a line break), becomes a 500 that says why, and every request is logged:
+
+```text
+$ strata serve examples/page
+Serving on http://127.0.0.1:8000  (Ctrl-C to stop)
+GET / 200 (17 ms)
+GET /languages/haskell 200 (0 ms)
+POST / 405 (0 ms)
+```
+
+**Apps.** A program with no `handle` but with `init`, `update` and `view` is served as an app (the Elm architecture): `fn init() -> Model`, `fn update(model: Model, msg: Msg) -> Model`, `fn view(model: Model) -> Html[Msg]`. Each page load starts a session whose model the server keeps in memory; the page loads a small script (`/_strata/app.js`, built into `strata`) that sends the message of the element the user clicks (`on_click(msg)`; also `dblclick`, `submit`, `change`), one at a time, and puts the new view in place. Handlers that make a message from what the user entered (`on_input`, `on_change`, `on_submit_form`) can't be written into the page: `render` numbers them, the page sends the number with the value or the form's fields, and the server calls `std.web.dispatch` on the current view to make the message. The page is patched rather than replaced, so focus and scroll stay, and the field being typed in keeps what was typed (after a submit, the view's value wins, so a form can clear it). A message is read against `Msg`, refinements included, so a forged one is refused (400); a fault in `update` is a 500 shown at the bottom of the page, and the model stays as it was; a session the server no longer has (it restarted) reloads the page. See `examples/counter`, and `examples/todos` for a form.
+
+`handle` is a plain function, so tests call it directly (`handle(get_request("/"))`). See `examples/page` and, for routes, `std.http.Router` in [the language](language.md).
+
 ## The viewer
 
 ![The Strata viewer, showing collatz_steps from examples/math.strata: its code, six proven checks, and "may not terminate"](images/viewer.png)

@@ -1011,8 +1011,30 @@ impl<'a> Checker<'a> {
     /// receiver's traits has the name and a builtin does, the call is the
     /// builtin's (`d.remove(k)` on a dict, with `Files.remove` in scope).
     /// The choice is recorded for `elaborate`. `None`: the call is as resolved.
-    fn by_receiver(&mut self, m: &str, all: &[&Expr], site: usize) -> Option<Ty> {
-        if self.lookup(m).is_some() || self.env.fns.contains_key(m) || split_trait_call(m).is_some() || !self.env.is_method(m) {
+    /// Whether `recv`'s type is known and has a method of its own named `m`
+    /// (in `impl Type`, or its sum's for a variant).
+    fn has_own_method(&mut self, recv: &Expr, m: &str) -> bool {
+        let n = self.errors.len();
+        let rt = self.infer(recv);
+        self.errors.truncate(n);
+        let Ty::Con(head, _) = self.resolve(&rt) else { return false };
+        let sm = m.rsplit('.').next().unwrap_or(m);
+        std::iter::once(head.clone()).chain(self.env.variant_parent(&head)).any(|h| {
+            self.env.inherent.get(&h).is_some_and(|imp| imp.methods.iter().any(|x| x.name.rsplit('.').next() == Some(sm) && crate::resolve::takes_self(x)))
+        })
+    }
+
+    /// `dotted`: written `x.m(..)`, where a type's own method comes before a
+    /// function of the same name (`m(x, ..)` always means the function).
+    fn by_receiver(&mut self, m: &str, all: &[&Expr], site: usize, dotted: bool) -> Option<Ty> {
+        // a function of that name takes the call, unless the receiver's type
+        // has a method of its own by that name (`app.handle(req)` inside a
+        // `fn handle`)
+        if self.lookup(m).is_some() || self.env.fns.contains_key(m) {
+            if !dotted || !all.first().is_some_and(|r| self.has_own_method(r, m)) {
+                return None;
+            }
+        } else if split_trait_call(m).is_some() || !self.env.is_method(m) {
             return None;
         }
         let short = |q: &str| crate::names::short(q).to_string();
@@ -1114,8 +1136,12 @@ impl<'a> Checker<'a> {
     /// Two candidates and nothing to choose between them is an error: even if
     /// the actual type defines `m` itself, that doesn't say which trait's
     /// meaning the call wants. `None` when `m` is not such a method.
-    fn receiver_method(&mut self, m: &str, recv: Option<&Expr>, site: usize) -> Option<Ty> {
-        if self.lookup(m).is_some() || self.env.fns.contains_key(m) || !self.env.is_method(m) || self.env.method_contract(m).is_some() {
+    fn receiver_method(&mut self, m: &str, recv: Option<&Expr>, site: usize, dotted: bool) -> Option<Ty> {
+        if self.lookup(m).is_some() || self.env.fns.contains_key(m) {
+            if !dotted || !recv.is_some_and(|r| self.has_own_method(r, m)) {
+                return None;
+            }
+        } else if !self.env.is_method(m) || self.env.method_contract(m).is_some() {
             return None;
         }
         let short = |q: &str| crate::names::short(q).to_string();
@@ -1702,7 +1728,7 @@ impl<'a> Checker<'a> {
                 let args: Vec<&Expr> = args.iter().collect();
                 let args = &args[..];
                 if let Expr::Var(n) = &**f {
-                    if let Some(t) = self.by_receiver(n, args, e as *const Expr as usize) {
+                    if let Some(t) = self.by_receiver(n, args, e as *const Expr as usize, false) {
                         return t;
                     }
                     if self.lookup(n).is_none() {
@@ -1725,7 +1751,7 @@ impl<'a> Checker<'a> {
                     _ => vec![],
                 };
                 if let Expr::Var(n) = &**f {
-                    if let Some(ft) = self.receiver_method(n, args.first().copied(), e as *const Expr as usize) {
+                    if let Some(ft) = self.receiver_method(n, args.first().copied(), e as *const Expr as usize, false) {
                         return self.call_with(ft, args, &what, &muts);
                     }
                 }
@@ -1739,7 +1765,7 @@ impl<'a> Checker<'a> {
             Expr::Method(recv, m, args) => {
                 // the program's own nodes, not copies: decisions are recorded by node
                 let all: Vec<&Expr> = std::iter::once(&**recv).chain(args.iter()).collect();
-                if let Some(t) = self.by_receiver(m, &all, e as *const Expr as usize) {
+                if let Some(t) = self.by_receiver(m, &all, e as *const Expr as usize, true) {
                     return t;
                 }
                 if self.lookup(m).is_none() {
@@ -1754,7 +1780,7 @@ impl<'a> Checker<'a> {
                     return self.call_with(ft, &rest, &format!("call to `{m}`"), &muts);
                 }
                 self.last_inst = None;
-                let ft = match self.receiver_method(m, Some(recv), e as *const Expr as usize) {
+                let ft = match self.receiver_method(m, Some(recv), e as *const Expr as usize, true) {
                     Some(ft) => ft,
                     None => match self.lookup(m).or_else(|| {
                         self.callee = true;
