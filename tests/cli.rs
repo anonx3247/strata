@@ -1997,8 +1997,13 @@ fn main(mut console: Console, mut files: Files, env: Environment) -> Result[Exit
     let (ok, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "check"], &d, None);
     assert!(ok, "{out}");
     // std's real terminal, disk and process are assumed, never run by verify
-    let (ok, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "verify", "--cases", "10"], &d, None);
-    assert!(ok && !out.contains("needs the real system") && out.contains("std.io.Terminal.print") && out.contains("assumed"), "{out}");
+    // and `proven` accepts them, listing them
+    let (ok, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "verify", "--cases", "10", "--require", "proven"], &d, None);
+    assert!(ok && !out.contains("needs the real system"), "{out}");
+    assert!(out.lines().any(|l| l.starts_with("≈ std.io.Terminal.print") && l.contains("assumed: it talks to the real system")), "{out}");
+    assert!(out.contains("policy: `proven` accepts") && out.contains("`std.fs.Disk.remove`") && !out.contains("is not proven"), "{out}");
+    let (_, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "verify", "--json"], &d, None);
+    assert!(out.contains(r#""status": "assumed""#), "{out}");
 }
 
 #[test]

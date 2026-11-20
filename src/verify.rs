@@ -184,6 +184,10 @@ pub enum Verdict {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         terminates: Option<crate::termination::Termination>,
     },
+    /// Trusted, not checked: code outside what the verifier can see (today,
+    /// the standard library's real terminal, disk and process). Its contract
+    /// is taken as true, and callers are checked against it as usual.
+    Assumed { why: String },
     /// Could not be checked automatically.
     Skipped { reason: String },
 }
@@ -192,6 +196,7 @@ impl Verdict {
     pub fn tag(&self) -> String {
         match self {
             Verdict::Proven { .. } => "proven".into(),
+            Verdict::Assumed { .. } => "assumed".into(),
             Verdict::Fuzzed { cases, .. } => format!("fuzzed:{cases}"),
             Verdict::Counterexample { .. } => "COUNTEREXAMPLE".into(),
             Verdict::Incomplete { .. } => "incomplete".into(),
@@ -203,7 +208,7 @@ impl Verdict {
     pub fn with_termination(mut self, t: Option<crate::termination::Termination>) -> Self {
         match &mut self {
             Verdict::Proven { terminates, .. } | Verdict::Fuzzed { terminates, .. } | Verdict::Counterexample { terminates, .. } | Verdict::Incomplete { terminates, .. } => *terminates = t,
-            Verdict::Skipped { .. } => {}
+            Verdict::Assumed { .. } | Verdict::Skipped { .. } => {}
         }
         self
     }
@@ -211,7 +216,7 @@ impl Verdict {
     pub fn termination(&self) -> Option<&crate::termination::Termination> {
         match self {
             Verdict::Proven { terminates, .. } | Verdict::Fuzzed { terminates, .. } | Verdict::Counterexample { terminates, .. } | Verdict::Incomplete { terminates, .. } => terminates.as_ref(),
-            Verdict::Skipped { .. } => None,
+            Verdict::Assumed { .. } | Verdict::Skipped { .. } => None,
         }
     }
 
@@ -219,10 +224,11 @@ impl Verdict {
     pub fn rank(&self) -> u8 {
         match self {
             Verdict::Proven { .. } => 0,
-            Verdict::Fuzzed { .. } => 1,
-            Verdict::Skipped { .. } => 2,
-            Verdict::Incomplete { .. } => 3,
-            Verdict::Counterexample { .. } => 4,
+            Verdict::Assumed { .. } => 1,
+            Verdict::Fuzzed { .. } => 2,
+            Verdict::Skipped { .. } => 3,
+            Verdict::Incomplete { .. } => 4,
+            Verdict::Counterexample { .. } => 5,
         }
     }
 }
@@ -241,7 +247,7 @@ fn has_hole(e: &Expr) -> bool {
 pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&crate::smt::Solver>, transparent: &std::collections::HashMap<String, bool>, cases: usize, cross_check: usize, seed: u64) -> Verdict {
     // the real terminal, disk and process: trusted, never run here (only `strata run` reaches the system)
     if imp.is_some_and(|i| crate::stdlib::HOST_TYPES.contains(&crate::types::texpr_head(&i.for_type).as_str())) {
-        return Verdict::Skipped { reason: "assumed: it talks to the real system, which only `strata run` reaches".into() };
+        return Verdict::Assumed { why: "it talks to the real system (only `strata run` reaches it)".into() };
     }
     let (decl, method) = match imp {
         None => (f.clone(), false),

@@ -544,6 +544,7 @@ fn verdict_word(v: Option<&Verdict>) -> String {
     };
     let w: String = match v {
         Some(Verdict::Proven { .. }) => "proven".into(),
+        Some(Verdict::Assumed { .. }) => "assumed".into(),
         Some(Verdict::Fuzzed { cases, .. }) => format!("fuzzed {cases}"),
         Some(Verdict::Counterexample { .. }) => "counterexample".into(),
         Some(Verdict::Incomplete { .. }) => "incomplete".into(),
