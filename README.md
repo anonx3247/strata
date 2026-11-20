@@ -59,6 +59,10 @@ strata holes                       # what's left to implement
 strata ui                          # open http://127.0.0.1:7777: the live viewer
 ```
 
+`strata ui` is the live viewer. Here it shows `examples/math.strata` after `strata verify`: every definition with its status, the selected function's code, and what the verifier said about it, here proven, but not shown to terminate (it is the Collatz sequence).
+
+![The Strata viewer, showing collatz_steps from examples/math.strata: its code, six proven checks, and "may not terminate"](docs/images/viewer.png)
+
 ## Documentation
 
 - [The language](docs/language.md): types, refinements, unions, traits, modules, mutation, errors, the standard library.
