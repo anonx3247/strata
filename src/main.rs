@@ -38,6 +38,8 @@ every change made through strata, committed with them):
   rename <old> <new> [-m MSG]  rename a function, type, trait, variant, trait method or
                                field (`Owner.field`) and every reference to it
                                (`old` may be qualified, `new` is the short name)
+  move <name> <module>         move a function, type or trait to another module (its file),
+                               updating references and imports (`main` is the root module)
   log                          show the patch history
   diff [--from N] [--to N] [--step K] [--json]
                                what changed, structurally: renames, new variants, stronger
@@ -352,6 +354,54 @@ fn run() -> Result<bool, String> {
             }
             if !mentions.is_empty() {
                 println!("docs or comments still mention `{short}` in: {}", mentions.join(", "));
+            }
+        }
+        "move" => {
+            let Source::Db(mut cb) = load(&args)? else { return Err("`move` needs a package (it commits the change)".into()) };
+            let (Some(old), Some(target)) = (args.pos.get(1), args.pos.get(2)) else { return Err("usage: strata move <name> <module>  (`main` is the root module)".into()) };
+            let target = if target == "main" { String::new() } else { target.clone() };
+            // `old` is a qualified name, or a short name that only one module defines
+            let old_q = if cb.program.decls.iter().any(|d| &d.qname() == old) {
+                old.clone()
+            } else {
+                let found: Vec<String> = cb.program.decls.iter().filter(|d| &d.name() == old).map(|d| d.qname()).collect();
+                match found.as_slice() {
+                    [one] => one.clone(),
+                    [] => return Err(format!("no definition `{old}`")),
+                    many => return Err(format!("`{old}` is ambiguous: {}", many.join(", "))),
+                }
+            };
+            let moved = resolve::move_def(&cb.program, &old_q, &target)?;
+            let rep = full_check(&moved);
+            if !rep.ok() {
+                print_errors(&rep);
+                eprintln!("\nrejected: the codebase would not check; nothing was changed");
+                return Ok(false);
+            }
+            let short = old_q.rsplit('.').next().unwrap_or(&old_q).to_string();
+            let new_q = if target.is_empty() { short.clone() } else { format!("{target}.{short}") };
+            let before: HashMap<String, String> = cb.program.decls.iter().map(|d| (d.qname(), store::self_hash(d))).collect();
+            let is_use = |d: &Decl| matches!(d.kind, DeclKind::Use(_));
+            let updated: Vec<String> = moved.decls.iter().filter(|d| !is_use(d) && d.qname() != new_q && before.get(&d.qname()).is_some_and(|h| *h != store::self_hash(d))).map(|d| d.qname()).collect();
+            let shown = |m: &str| if m.is_empty() { "main".to_string() } else { m.to_string() };
+            // imports the move added or changed, by module
+            let old_uses: std::collections::HashSet<(String, String)> = cb.program.decls.iter().filter(|d| is_use(d)).map(|d| (d.module.clone(), printer::decl(d))).collect();
+            let imports: Vec<String> = moved.decls.iter().filter(|d| is_use(d) && !old_uses.contains(&(d.module.clone(), printer::decl(d)))).map(|d| format!("{}: {}", shown(&d.module), printer::decl(d))).collect();
+            let from_m = old_q.rsplit_once('.').map(|(m, _)| m.to_string()).unwrap_or_default();
+            let default_msg = format!("move {old_q} → {}", shown(&target));
+            let msg = args.val("-m").unwrap_or(&default_msg);
+            cb.commit_with(moved, msg, json!({"rename": {"from": old_q, "to": new_q, "kind": "move", "references": updated}}))?;
+            if json_out {
+                println!("{}", json!({"from": old_q, "to": new_q, "references": updated}));
+                return Ok(true);
+            }
+            println!("moved {old_q} from {} to {} ({})", shown(&from_m), shown(&target), store::module_path(&target).display());
+            match updated.len() {
+                0 => println!("no other definition refers to it"),
+                n => println!("updated {n} definition{} that refer{} to it: {}", if n > 1 { "s" } else { "" }, if n > 1 { "" } else { "s" }, updated.join(", ")),
+            }
+            if !imports.is_empty() {
+                println!("imports: {}", imports.join("; "));
             }
         }
         "diff" => {

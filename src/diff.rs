@@ -679,7 +679,15 @@ pub fn diff(old: &Program, new: &Program, renames: &[(String, String)], steps: &
                 let (oc, nc) = (code(o), code(n));
                 let (mut ls, rewritten) = line_diff(&oc, &nc);
                 annotate(&mut ls, &oc, kind, if is_rename { &[] } else { &renames });
-                let mut w = if is_rename { vec![format!("renamed from `{}`", short(&o.qname()))] } else { vec![] };
+                // a move keeps the short name and changes the module
+                let moved = is_rename && short(&o.qname()) == short(&n.qname());
+                let mut w = if moved {
+                    vec![format!("moved from `{}`", if o.module.is_empty() { "main" } else { o.module.as_str() })]
+                } else if is_rename {
+                    vec![format!("renamed from `{}`", short(&o.qname()))]
+                } else {
+                    vec![]
+                };
                 // a rename alone changes only the name
                 let mut rest = if is_rename { substitute(&oc, &renames) != nc || doc_text(o) != doc_text(n) } else { true };
                 // a renamed member: say so, then whatever else changed, against the old
@@ -732,7 +740,8 @@ pub fn diff(old: &Program, new: &Program, renames: &[(String, String)], steps: &
             detail.push(format!("only a name changed · {r} reference{} updated", if r == 1 { "" } else { "s" }));
         } else if only_renamed {
             let r = refs_of.get(&q).map_or(0, |r| r.len());
-            detail.push(format!("only the name changed · {r} reference{} updated", if r == 1 { "" } else { "s" }));
+            let what_changed = if what[0].starts_with("moved") { "its module" } else { "the name" };
+            detail.push(format!("only {what_changed} changed · {r} reference{} updated", if r == 1 { "" } else { "s" }));
         } else if what == ["doc changed"] || what == ["comments changed"] {
             detail.push(format!("only the {} changed · interface unchanged", if what[0].starts_with("doc") { "doc" } else { "comments" }));
         } else if mk == "chg" && kind == "impl" {

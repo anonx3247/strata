@@ -271,6 +271,10 @@ pub fn new_errors(path: &str, merged: &str, ours: &str, theirs: &str) -> Result<
 /// reference to it (including the other side's new ones) and renames them.
 /// `None` when there is nothing to follow.
 pub fn follow_rename(p: &Program, from: &str, to: &str) -> Option<Program> {
+    // a move (`strata move`): the same short name, in another module
+    if short(from) == short(to) && from != to {
+        return resolve::follow_move(p, from, to);
+    }
     if resolve::member(p, from).is_some() {
         return None; // the old name is defined again (the other side kept or re-added it)
     }

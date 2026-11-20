@@ -140,6 +140,11 @@ $ strata rename Line.qty quantity         # a field: accesses, literals, updates
 renamed Line.qty → Line.quantity
 updated 3 definitions that refer to it: line_total, test "shipping a pending order saves it as shipped", test "totals"
 
+$ strata move charge billing              # to another module (file): references and imports follow
+moved orders.charge from orders to billing (billing.strata)
+updated 1 definition that refers to it: test "charges"
+imports: orders: use billing.charge; main: use billing.charge
+
 $ strata run total '[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]]' --trace
 {"event":"call","fn":"total","args":[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]],"depth":1}
 {"event":"call","fn":"line_total","args":[{"sku":"tea","qty":2,"unit_price":450}],"depth":2}

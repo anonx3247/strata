@@ -162,40 +162,27 @@ fn fields_of(p: &Program, owner: &str) -> Vec<String> {
     vec![]
 }
 
-/// Rename field `field` of `owner` (a record type or record variant) to `new`.
-/// Field accesses (`x.qty`) aren't resolved by name but by type, so this
-/// renames a field only when no other record in the program (or the
-/// prelude) has a field of that name: then every `.qty`, record literal,
-/// update and pattern field called `qty` is this one. The caller type-checks
-/// the result.
+/// Rename field `field` of `owner` (a record type or record variant) to `new`:
+/// the declaration, accesses (`x.qty`), and literals, updates and patterns of
+/// the owner's constructor. Accesses are told apart by type, not by name: when
+/// another record also has a field of that name, the checker says which
+/// record each access reads from (see `types::field_owners`), and only the
+/// owner's are renamed. The caller type-checks the result.
 fn rename_field(p: &Program, owner: &str, field: &str, new: &str) -> Result<Program, String> {
     if fields_of(p, owner).iter().any(|f| f == new) {
         return Err(format!("`{owner}` already has a field `{new}`"));
     }
-    // every record that has a field of that name, besides the owner
+    // other records with a field of that name (or `.value` of distinct types): then
+    // `x.field` is told apart by the checker's types, access by access
     let prelude = crate::parser::parse_program(crate::types::PRELUDE).unwrap_or_default();
-    let mut others: Vec<String> = Vec::new();
-    for q in p.decls.iter().chain(&prelude.decls).flat_map(|d| match &d.kind {
+    let shared = p.decls.iter().chain(&prelude.decls).any(|d| match &d.kind {
         DeclKind::Type(t) => match &t.body {
-            TypeBody::Record(_) => vec![qualify(&d.module, &t.name)],
-            TypeBody::Sum(vs) => vs.iter().map(|v| qualify(&d.module, &v.name)).collect(),
-            _ => vec![],
+            TypeBody::Record(fs) => qualify(&d.module, &t.name) != owner && fs.iter().any(|f| f.name == field),
+            TypeBody::Sum(vs) => vs.iter().any(|v| qualify(&d.module, &v.name) != owner && matches!(&v.payload, Payload::Record(fs) if fs.iter().any(|f| f.name == field))),
+            _ => false,
         },
-        _ => vec![],
-    }) {
-        if q != owner && (fields_of(p, &q).iter().any(|f| f == field) || fields_of(&prelude, &q).iter().any(|f| f == field)) {
-            others.push(q);
-        }
-    }
-    if field == "value" && p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Type(t) if t.distinct)) {
-        others.push("every distinct type (`.value`)".into());
-    }
-    if !others.is_empty() {
-        return Err(format!(
-            "`{field}` is also a field of {}, and `x.{field}` is told apart by type, so it can't be renamed by name yet",
-            others.iter().map(|o| format!("`{o}`")).collect::<Vec<_>>().join(", ")
-        ));
-    }
+        _ => false,
+    }) || (field == "value" && p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Type(t) if t.distinct)));
     let mut modules: HashSet<String> = HashSet::new();
     for d in &p.decls {
         let mut m = d.module.as_str();
@@ -204,9 +191,54 @@ fn rename_field(p: &Program, owner: &str, field: &str, new: &str) -> Result<Prog
             m = module_of(m);
         }
     }
+    let owner_short = owner.rsplit('.').next().unwrap_or(owner);
+    let kinds: Vec<serde_json::Value> = p.decls.iter().map(|d| serde_json::to_value(&d.kind)).collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+
+    // which record each access belongs to, from the checker, when it matters
+    let owners = if shared {
+        let mut tagged = p.clone();
+        for (i, (d, j)) in tagged.decls.iter_mut().zip(&kinds).enumerate() {
+            let mut j = j.clone();
+            let mut k = 0;
+            let mut tag = |_: &str| -> Option<String> {
+                k += 1;
+                Some(format!("{field}·d{i}k{}", k - 1))
+            };
+            field_uses(&mut j, field, owner_short, None, &modules, &mut tag);
+            d.kind = serde_json::from_value(j).map_err(|e| e.to_string())?;
+        }
+        Some(crate::types::field_owners(&tagged))
+    } else {
+        None
+    };
+
     let mut out = p.clone();
-    for d in &mut out.decls {
-        // the declaration
+    let mut problems: Vec<String> = Vec::new();
+    for (i, (d, j)) in out.decls.iter_mut().zip(&kinds).enumerate() {
+        // its uses: accesses that are the owner's, and literals, updates and patterns of its constructor
+        let name = d.qname();
+        let mut j = j.clone();
+        let mut k = 0;
+        let mut decide = |_: &str| -> Option<String> {
+            let tag = format!("d{i}k{k}");
+            k += 1;
+            let Some(owners) = &owners else { return Some(new.to_string()) };
+            match owners.get(&tag) {
+                Some(s) if s.len() == 1 && s.contains(owner) => Some(new.to_string()),
+                Some(s) if s.contains(owner) => {
+                    problems.push(format!("in `{name}`, `.{field}` is read from a union of {} (rename them together, or match first)", s.iter().map(|o| format!("`{o}`")).collect::<Vec<_>>().join(", ")));
+                    None
+                }
+                Some(s) if !s.is_empty() => None,
+                _ => {
+                    problems.push(format!("in `{name}`, the checker can't tell which record `.{field}` is read from"));
+                    None
+                }
+            }
+        };
+        field_uses(&mut j, field, owner_short, Some(new), &modules, &mut decide);
+        d.kind = serde_json::from_value(j).map_err(|e| e.to_string())?;
+        // the declaration (after its uses, which start from the original)
         if let DeclKind::Type(t) = &mut d.kind {
             let tq = qualify(&d.module, &t.name);
             match &mut t.body {
@@ -221,10 +253,9 @@ fn rename_field(p: &Program, owner: &str, field: &str, new: &str) -> Result<Prog
                 _ => {}
             }
         }
-        // its uses
-        let mut j = serde_json::to_value(&d.kind).map_err(|e| e.to_string())?;
-        rename_field_uses(&mut j, field, new, &modules);
-        d.kind = serde_json::from_value(j).map_err(|e| e.to_string())?;
+    }
+    if !problems.is_empty() {
+        return Err(format!("can't rename the field `{owner}.{field}`: {}", problems.join("; ")));
     }
     Ok(out)
 }
@@ -238,9 +269,14 @@ fn json_path(e: &serde_json::Value) -> Option<String> {
     Some(format!("{}.{}", json_path(&a[0])?, a[1].as_str()?))
 }
 
-fn rename_field_uses(v: &mut serde_json::Value, field: &str, new: &str, modules: &HashSet<String>) {
+/// Walk a serialized definition in a fixed order. Every field access
+/// `x.field` (not a qualified name like `orders.field`) is passed to
+/// `access`, which gives its new name (or `None` to leave it). With `ctor_new`,
+/// the field is also renamed in literals, updates and patterns of the
+/// constructor `ctor` (the owner's short name).
+fn field_uses(v: &mut serde_json::Value, field: &str, ctor: &str, ctor_new: Option<&str>, modules: &HashSet<String>, access: &mut dyn FnMut(&str) -> Option<String>) {
     use serde_json::Value as J;
-    let rename_pairs = |pairs: &mut J| {
+    let rename_pairs = |pairs: &mut J, new: &str| {
         for pair in pairs.as_array_mut().into_iter().flatten() {
             if let Some(a) = pair.as_array_mut() {
                 if a.len() == 2 && a[0].as_str() == Some(field) {
@@ -254,28 +290,35 @@ fn rename_field_uses(v: &mut serde_json::Value, field: &str, new: &str, modules:
             if let Some(J::Array(a)) = o.get_mut("Field") {
                 // `x.qty`, but not `orders.qty` (a qualified name)
                 if a.len() == 2 && a[1].as_str() == Some(field) && !json_path(&a[0]).is_some_and(|m| modules.contains(&m)) {
-                    a[1] = J::String(new.to_string());
+                    if let Some(n) = access(field) {
+                        a[1] = J::String(n);
+                    }
                 }
             }
-            if let Some(J::Array(a)) = o.get_mut("Record") {
-                if a.len() == 2 && a[0].is_array() && a[1].is_boolean() {
-                    rename_pairs(&mut a[0]); // a pattern: `Line { qty, .. }`
-                } else if a.iter().all(|x| x.as_array().is_some_and(|p| p.len() == 2 && p[0].is_string())) {
-                    rename_pairs(&mut o["Record"]); // a literal: `Line { qty: 1 }`
-                }
-            }
-            if let Some(J::Array(a)) = o.get_mut("Update") {
-                if a.len() == 2 {
-                    rename_pairs(&mut a[1]); // `{ ..line, qty: 2 }`
+            if let (Some(J::Array(a)), Some(new)) = (o.get_mut("Ctor"), ctor_new) {
+                // `Line { qty: 1 }`, `Line { ..l, qty: 2 }`, `Line { qty, .. }`
+                if a.len() == 2 && a[0].as_str().is_some_and(|c| c.rsplit('.').next() == Some(ctor)) {
+                    let args = &mut a[1];
+                    if let Some(J::Array(r)) = args.get_mut("Record") {
+                        if r.len() == 2 && r[0].is_array() && r[1].is_boolean() {
+                            rename_pairs(&mut r[0], new); // a pattern
+                        } else {
+                            rename_pairs(&mut args["Record"], new); // a literal
+                        }
+                    } else if let Some(J::Array(u)) = args.get_mut("Update") {
+                        if u.len() == 2 {
+                            rename_pairs(&mut u[1], new);
+                        }
+                    }
                 }
             }
         }
         for (_, x) in o.iter_mut() {
-            rename_field_uses(x, field, new, modules);
+            field_uses(x, field, ctor, ctor_new, modules, access);
         }
     } else if let J::Array(a) = v {
         for x in a {
-            rename_field_uses(x, field, new, modules);
+            field_uses(x, field, ctor, ctor_new, modules, access);
         }
     }
 }
@@ -371,6 +414,14 @@ pub fn follow(merged: &Program, back: &Program, old: &str, new: &str) -> Result<
 }
 
 fn run(p: &Program, rename: Option<(String, String)>) -> Resolution {
+    run_with(p, rename, None).0
+}
+
+/// Resolve, or write back (with a rename, or with `moves`: old qualified
+/// name → new qualified name). Also gives, per definition, the moved names
+/// it refers to by their short name from another module than theirs, which
+/// that module must then import.
+fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMap<String, String>>) -> (Resolution, Vec<Vec<String>>) {
     let mut table: HashMap<String, Item> = HashMap::new();
     // children of a type (its constructors) or a trait (its methods), as (short, qualified)
     let mut children: HashMap<String, Vec<(String, String)>> = HashMap::new();
@@ -481,9 +532,15 @@ fn run(p: &Program, rename: Option<(String, String)>) -> Resolution {
         .map(|m| (m.clone(), p.decls.iter().filter(|d| &d.module == m).filter_map(|d| if let DeclKind::Use(u) = &d.kind { Some(u.path.clone()) } else { None }).collect()))
         .collect();
     let mut decls = Vec::new();
+    let mut needs = Vec::new();
     for d in &p.decls {
-        let mut r = Rw { scope: &scopes[&d.module], table: &table, modules: &modules, module: &d.module, imports: &imports[&d.module], decl: d.qname(), locals: vec![], tparams: vec![], errors: vec![], rename: rename.as_ref() };
+        let mut r = Rw { scope: &scopes[&d.module], table: &table, modules: &modules, module: &d.module, imports: &imports[&d.module], decl: d.qname(), locals: vec![], tparams: vec![], errors: vec![], rename: rename.as_ref(), moves, needs: Default::default() };
         let kind = match (&d.kind, rename.as_ref()) {
+            // `use orders.{ship}` no longer names a moved definition (the module imports it anew)
+            (DeclKind::Use(u), _) if moves.is_some() => DeclKind::Use(UseDecl {
+                path: u.path.clone(),
+                items: u.items.as_ref().map(|is| is.iter().filter(|i| !moves.unwrap().contains_key(&format!("{}.{i}", u.path))).cloned().collect()),
+            }),
             // `use core.{same_ids}` names what it imports
             (DeclKind::Use(u), Some((old, new))) => DeclKind::Use(UseDecl {
                 path: u.path.clone(),
@@ -492,9 +549,20 @@ fn run(p: &Program, rename: Option<(String, String)>) -> Resolution {
             _ => r.decl(&d.kind),
         };
         errors.extend(r.errors);
+        needs.push(r.needs.into_inner());
         decls.push(Decl { comments: d.comments.clone(), doc: d.doc.clone(), kind, module: String::new(), public: d.public });
     }
-    Resolution { program: Program { decls }, errors }
+    (Resolution { program: Program { decls }, errors }, needs)
+}
+
+/// `shop.orders` as an expression (a variable and field accesses).
+fn path_expr(m: &str) -> Expr {
+    let mut parts = m.split('.');
+    let mut e = Expr::Var(parts.next().unwrap_or("").to_string());
+    for p in parts {
+        e = Expr::Field(Box::new(e), p.to_string());
+    }
+    e
 }
 
 struct Rw<'a> {
@@ -511,6 +579,12 @@ struct Rw<'a> {
     /// Rename mode: (old qualified name, new short name). Names are then
     /// written back as they were, except those that resolve to `old`.
     rename: Option<&'a (String, String)>,
+    /// Move mode: old qualified name → new qualified name. Names are written
+    /// back as they were; a qualified one that refers to a moved definition
+    /// gets its new module, and a short one stays short (see `needs`).
+    moves: Option<&'a HashMap<String, String>>,
+    /// moved names this definition writes short, from a module that must import them
+    needs: std::cell::RefCell<Vec<String>>,
 }
 
 impl Rw<'_> {
@@ -535,9 +609,23 @@ impl Rw<'_> {
         let q = self.lookup(n);
         self.written(n, &q)
     }
+    /// Writing names back (rename or move), rather than resolving them.
+    fn writing(&self) -> bool {
+        self.rename.is_some() || self.moves.is_some()
+    }
     fn written(&self, n: &str, q: &str) -> String {
+        if let Some(nq) = self.moves.and_then(|m| m.get(q)) {
+            if n.contains('.') {
+                return nq.clone();
+            }
+            if module_of(nq) != self.module {
+                self.needs.borrow_mut().push(nq.clone());
+            }
+            return n.to_string();
+        }
         match self.rename {
-            None => q.to_string(),
+            None if self.moves.is_none() => q.to_string(),
+            None => n.to_string(),
             Some((old, new)) if q == old => match n.rsplit_once('.') {
                 Some((path, _)) => format!("{path}.{new}"),
                 None => new.clone(),
@@ -672,9 +760,11 @@ impl Rw<'_> {
                 if let Some(path) = self.module_path(recv) {
                     // `orders.ship(x)`: a qualified call, not a method
                     let f = self.name(&format!("{path}.{m}"));
-                    if self.rename.is_some() {
-                        let m = f.rsplit('.').next().unwrap_or(m).to_string();
-                        return Expr::Method(recv.clone(), m, self.exprs(args));
+                    if self.writing() {
+                        // `orders.ship(x)`: a move changes the module written before it
+                        let (fp, m) = f.rsplit_once('.').map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or((path.clone(), m.clone()));
+                        let recv = if fp == path { recv.clone() } else { Box::new(path_expr(&fp)) };
+                        return Expr::Method(recv, m, self.exprs(args));
                     }
                     return Expr::Call(Box::new(Expr::Var(f)), self.exprs(args));
                 }
@@ -690,8 +780,10 @@ impl Rw<'_> {
             Expr::Field(r, f) => {
                 if let Some(path) = self.module_path(r) {
                     let q = self.name(&format!("{path}.{f}"));
-                    if self.rename.is_some() {
-                        return Expr::Field(r.clone(), q.rsplit('.').next().unwrap_or(f).to_string());
+                    if self.writing() {
+                        let (qp, last) = q.rsplit_once('.').map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or((path.clone(), f.clone()));
+                        let r = if qp == path { r.clone() } else { Box::new(path_expr(&qp)) };
+                        return Expr::Field(r, last);
                     }
                     return Expr::Var(q);
                 }
@@ -836,7 +928,7 @@ impl Rw<'_> {
             }
             DeclKind::Fn(f) => DeclKind::Fn(self.func(f, self.declared(&m, &f.name))),
             DeclKind::Test(t) => {
-                let name = if m.is_empty() || self.rename.is_some() { t.name.clone() } else { format!("{m}: {}", t.name) };
+                let name = if m.is_empty() || self.writing() { t.name.clone() } else { format!("{m}: {}", t.name) };
                 DeclKind::Test(TestDecl { name, body: self.expr(&t.body) })
             }
             DeclKind::Trait(t) => {
@@ -879,4 +971,210 @@ impl Rw<'_> {
             DeclKind::Use(u) => DeclKind::Use(u.clone()),
         }
     }
+}
+
+/// The names a move changes: the definition, and its variants or methods
+/// (named in their module): old qualified name → new qualified name.
+fn moved_names(p: &Program, old: &str, target: &str) -> Result<HashMap<String, String>, String> {
+    let d = p.decls.iter().find(|d| d.qname() == old).ok_or(format!("no definition `{old}`"))?;
+    let mut out = HashMap::new();
+    out.insert(old.to_string(), qualify(target, &d.name()));
+    match &d.kind {
+        DeclKind::Fn(_) => {}
+        DeclKind::Type(t) => {
+            if let TypeBody::Sum(vs) = &t.body {
+                for v in vs {
+                    out.insert(qualify(&d.module, &v.name), qualify(target, &v.name));
+                }
+            }
+        }
+        DeclKind::Trait(t) => {
+            for m in &t.methods {
+                out.insert(qualify(&d.module, &m.decl.name), qualify(target, &m.decl.name));
+            }
+        }
+        _ => return Err(format!("only functions, types and traits can be moved (`{old}` is a {})", d.kind_str())),
+    }
+    Ok(out)
+}
+
+/// Make module `m` import `item` from `path` (unless it already can).
+fn add_import(p: &mut Program, m: &str, path: &str, item: &str) {
+    if m == path || path.is_empty() {
+        return;
+    }
+    for d in p.decls.iter_mut().filter(|d| d.module == m) {
+        if let DeclKind::Use(u) = &mut d.kind {
+            if u.path == path {
+                match &mut u.items {
+                    None => return,
+                    Some(items) => {
+                        if !items.iter().any(|i| i == item) {
+                            items.push(item.to_string());
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    // a new `use`, after the module's last one (or before its first definition)
+    let at = p
+        .decls
+        .iter()
+        .rposition(|d| d.module == m && matches!(d.kind, DeclKind::Use(_)))
+        .map(|i| i + 1)
+        .or_else(|| p.decls.iter().position(|d| d.module == m))
+        .unwrap_or(p.decls.len());
+    p.decls.insert(at, Decl { comments: vec![], doc: vec![], kind: DeclKind::Use(UseDecl { path: path.to_string(), items: Some(vec![item.to_string()]) }), module: m.to_string(), public: false });
+}
+
+/// Moving `old` into module `target` (no checks): the definition changes
+/// module, references written with its module follow it, short ones stay
+/// short and their module imports it, and `use` items that named it go.
+/// Returns the program and the definition's new qualified name.
+fn move_apply(p: &Program, old: &str, target: &str) -> Result<(Program, String), String> {
+    let moves = moved_names(p, old, target)?;
+    let new_q = moves[old].clone();
+    let i = p.decls.iter().position(|d| d.qname() == old).unwrap();
+    let (out, needs) = run_with(p, None, Some(&moves));
+    let mut program = out.program;
+    for (r, d) in program.decls.iter_mut().zip(&p.decls) {
+        r.module = d.module.clone();
+    }
+    program.decls[i].module = target.to_string();
+    // what the moved definition uses from its old module (or that module's imports)
+    // must be imported where it goes: names it writes short
+    let text = serde_json::to_string(&p.decls[i].kind).unwrap_or_default();
+    let deps = crate::store::graph(p).get(old).cloned().unwrap_or_default();
+    let mut imports: Vec<(String, String, String)> = Vec::new();
+    for dep in deps {
+        let m = module_of(&dep).to_string();
+        let short = dep.rsplit('.').next().unwrap_or(&dep).to_string();
+        if m != target && !m.is_empty() && !moves.contains_key(&dep) && text.contains(&format!("\"{short}\"")) {
+            imports.push((target.to_string(), m, short));
+        }
+    }
+    // modules that write a moved name short import it from its new module
+    for (k, ns) in needs.iter().enumerate() {
+        if k == i {
+            continue; // the moved definition's own references (recursion) are local where it goes
+        }
+        for nq in ns {
+            let m = p.decls[k].module.clone();
+            // a variant or method is imported by its own name
+            imports.push((m, target.to_string(), nq.rsplit('.').next().unwrap_or(nq).to_string()));
+        }
+    }
+    // emptied `use` lists go
+    let emptied: Vec<usize> = program
+        .decls
+        .iter()
+        .zip(&p.decls)
+        .enumerate()
+        .filter(|(_, (a, b))| matches!((&a.kind, &b.kind), (DeclKind::Use(x), DeclKind::Use(y)) if x.items.as_ref().is_some_and(|v| v.is_empty()) && y.items.as_ref().is_some_and(|v| !v.is_empty())))
+        .map(|(k, _)| k)
+        .collect();
+    for k in emptied.into_iter().rev() {
+        program.decls.remove(k);
+    }
+    imports.sort();
+    imports.dedup();
+    for (m, path, item) in imports {
+        add_import(&mut program, &m, &path, &item);
+    }
+    Ok((program, new_q))
+}
+
+/// Move the function, type or trait `old` (a qualified name) to module
+/// `target`, keeping its short name, and update everything that refers to
+/// it. Refused when something private would end up out of reach, or when
+/// any name would refer to something else afterwards.
+pub fn move_def(p: &Program, old: &str, target: &str) -> Result<Program, String> {
+    let d = p.decls.iter().find(|d| d.qname() == old).ok_or(format!("no definition `{old}`"))?;
+    let source = d.module.clone();
+    if source == target {
+        return Err(format!("`{old}` is already in module `{}`", if target.is_empty() { "main" } else { target }));
+    }
+    let moves = moved_names(p, old, target)?;
+    let taken = defined(p);
+    if let Some((_, n)) = moves.iter().find(|(_, n)| taken.contains(*n)) {
+        return Err(format!("`{n}` already exists"));
+    }
+    // private things must stay in reach
+    let graph = crate::store::graph(p);
+    let public: HashMap<String, bool> = p.decls.iter().map(|d| (d.qname(), d.public)).collect();
+    for dep in graph.get(old).into_iter().flatten() {
+        let m = module_of(dep);
+        if !m.is_empty() && m != target && !public.get(dep).copied().unwrap_or(true) {
+            return Err(format!("`{old}` uses `{dep}`, which is private to `{m}`: make it `pub`, or move it too"));
+        }
+    }
+    if !d.public {
+        let users: Vec<&String> = graph.iter().filter(|(n, ds)| ds.contains(old) && module_of(n) != target && *n != old).map(|(n, _)| n).collect();
+        if !users.is_empty() {
+            return Err(format!(
+                "`{old}` is private and {} use{} it from outside `{}`: make it `pub` first",
+                users.iter().map(|u| format!("`{u}`")).collect::<Vec<_>>().join(", "),
+                if users.len() == 1 { "s" } else { "" },
+                if target.is_empty() { "main" } else { target }
+            ));
+        }
+    }
+    let (program, _) = move_apply(p, old, target)?;
+    // every name must refer to what it did, with the moved names moved
+    let resolved = |p: &Program| {
+        let mut r = resolve(p).program;
+        r.decls.retain(|d| !matches!(d.kind, DeclKind::Use(_)));
+        serde_json::to_string(&r).unwrap()
+    };
+    let mut expect = resolved(p);
+    for (o, n) in &moves {
+        expect = expect.replace(&format!("\"{o}\""), &format!("\"{n}\""));
+    }
+    if resolved(&program) != expect {
+        return Err(format!("moving `{old}` to `{target}` would change what some names refer to (something visible there already has its name)"));
+    }
+    Ok(program)
+}
+
+/// After a merge: `merged` has the definition `old` moved (to `new`, in
+/// another module) but also references to it where it was. Put it back,
+/// replay the move, and check, definition by definition, that what the move
+/// touched resolves as before (with the moved names moved) and everything
+/// else exactly as merged. `None` when there is nothing to follow.
+pub fn follow_move(merged: &Program, old: &str, new: &str) -> Option<Program> {
+    if merged.decls.iter().any(|d| d.qname() == old) {
+        return None; // defined where it was again
+    }
+    let i = merged.decls.iter().position(|d| d.qname() == new)?;
+    let (source, target) = (module_of(old).to_string(), module_of(new).to_string());
+    let mut back = merged.clone();
+    back.decls[i].module = source;
+    let moves = moved_names(&back, old, &target).ok()?;
+    let (program, _) = move_apply(&back, old, &target).ok()?;
+    let by_name = |p: &Program| -> HashMap<String, String> {
+        resolve(p).program.decls.iter().zip(&p.decls).filter(|(_, d)| !matches!(d.kind, DeclKind::Use(_))).map(|(r, d)| (d.qname(), serde_json::to_string(r).unwrap())).collect()
+    };
+    let (rm, rb, ra) = (by_name(merged), by_name(&back), by_name(&program));
+    let tb: HashMap<String, Decl> = back.decls.iter().filter(|d| !matches!(d.kind, DeclKind::Use(_))).map(|d| (d.qname(), d.clone())).collect();
+    for d in program.decls.iter().filter(|d| !matches!(d.kind, DeclKind::Use(_))) {
+        let q = d.qname();
+        let touched = q != new && tb.get(&q).is_some_and(|b| b != d);
+        let expect = if touched {
+            let mut e = rb.get(&q)?.clone();
+            for (o, n) in &moves {
+                e = e.replace(&format!("\"{o}\""), &format!("\"{n}\""));
+            }
+            e
+        } else {
+            rm.get(&q)?.clone()
+        };
+        if ra.get(&q)? != &expect {
+            return None;
+        }
+    }
+    // the definitions, or only a use list (an import the other side's code needs)
+    let changed = program.decls.len() != merged.decls.len() || program.decls.iter().zip(&merged.decls).any(|(a, b)| a != b);
+    changed.then_some(program)
 }
