@@ -128,7 +128,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                 go(fb, out);
             }
             Expr::Interp(parts) => parts.iter().for_each(|p| {
-                if let StrPart::Expr(e) = p {
+                if let StrPart::Expr(e, _) = p {
                     go(e, out)
                 }
             }),
@@ -231,7 +231,9 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             out.remove("Self");
         }
         DeclKind::Impl(i) => {
-            out.insert(i.trait_name.clone());
+            if !i.is_inherent() {
+                out.insert(i.trait_name.clone());
+            }
             i.trait_args.iter().for_each(|a| ty(a, &mut out));
             ty(&i.for_type, &mut out);
             for m in &i.methods {
@@ -499,13 +501,12 @@ pub fn changes(old_p: &Program, new: &Program) -> Vec<Change> {
 /// Apply one log entry to a program: a rename keeps the definition's place,
 /// a changed definition is replaced by the entry's text, a removed one goes.
 pub fn apply(p: &mut Program, e: &serde_json::Value) -> Result<(), String> {
-    if let (Some(f), Some(t)) = (e["rename"]["from"].as_str(), e["rename"]["to"].as_str()) {
-        // the renamed definition's new text comes with the entry; keep its slot
+    for (f, t) in renames_of(e) {
+        // a renamed (or moved) definition's new text comes with the entry; keep its slot
         if let Some(i) = p.decls.iter().position(|d| d.qname() == f) {
-            let module = p.decls[i].module.clone();
-            let short = t.rsplit('.').next().unwrap_or(t);
+            let (module, short) = t.rsplit_once('.').unwrap_or(("", &t));
             set_name(&mut p.decls[i], short);
-            p.decls[i].module = module;
+            p.decls[i].module = module.to_string();
         }
     }
     for c in e["changes"].as_array().into_iter().flatten() {
@@ -536,25 +537,20 @@ pub fn undo(p: &mut Program, e: &serde_json::Value) -> Result<(), String> {
         let parsed = crate::parser::parse_module_file(text, module).map_err(|err| format!("log entry {}: {}: {err}", e["id"], c["name"]))?;
         Ok(parsed.decls.into_iter().next())
     };
-    let renamed = match (e["rename"]["from"].as_str(), e["rename"]["to"].as_str()) {
-        (Some(f), Some(t)) => Some((f.to_string(), t.to_string())),
-        _ => None,
-    };
+    let renamed = renames_of(e);
     for c in e["changes"].as_array().into_iter().flatten() {
         let Some(name) = c["name"].as_str() else { continue };
-        // the renamed definition comes back under its old name, in the new one's slot
-        if let Some((f, t)) = &renamed {
-            if name == t {
-                continue;
-            }
-            if name == f {
-                if let (Some(text), Some(i)) = (c["old_text"].as_str(), p.decls.iter().position(|d| d.qname() == *t)) {
-                    if let Some(d) = parse(c, text)? {
-                        p.decls[i] = d;
-                    }
+        // a renamed definition comes back under its old name, in the new one's slot
+        if renamed.iter().any(|(_, t)| t == name) {
+            continue;
+        }
+        if let Some((_, t)) = renamed.iter().find(|(f, _)| f == name) {
+            if let (Some(text), Some(i)) = (c["old_text"].as_str(), p.decls.iter().position(|d| d.qname() == *t)) {
+                if let Some(d) = parse(c, text)? {
+                    p.decls[i] = d;
                 }
-                continue;
             }
+            continue;
         }
         match (c["old"].as_str(), c["old_text"].as_str()) {
             (Some(_), Some(text)) => {
@@ -569,6 +565,16 @@ pub fn undo(p: &mut Program, e: &serde_json::Value) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The renames (and moves) a log entry records, as (from, to) qualified names.
+pub fn renames_of(e: &serde_json::Value) -> Vec<(String, String)> {
+    e["renames"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| Some((r["from"].as_str()?.to_string(), r["to"].as_str()?.to_string())))
+        .collect()
 }
 
 /// Give a function, type or trait a new short name.

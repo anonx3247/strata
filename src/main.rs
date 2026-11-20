@@ -36,8 +36,12 @@ every change made through strata, committed with them):
   add <file.strata> [-m MSG]   import definitions from a file (checked, atomic)
   edit [-m MSG] [--rm NAME]..  read definitions from stdin; replace/add them by name;
                                commit only if the whole codebase still checks
-  rename <old> <new> [-m MSG]  rename a function, type or trait and every reference to it
+  rename <old> <new> [<old> <new>]... [-m MSG]
+                               rename functions, types, traits, variants, trait methods or
+                               fields (`Owner.field`) and every reference, in one step
                                (`old` may be qualified, `new` is the short name)
+  move <name> <module>         move a function, type or trait to another module (its file),
+                               updating references and imports (`main` is the root module)
   log                          show the patch history
   diff [--from N] [--to N] [--step K] [--json]
                                what changed, structurally: renames, new variants, stronger
@@ -301,7 +305,87 @@ fn run() -> Result<bool, String> {
         }
         "rename" => {
             let Source::Db(mut cb) = load(&args)? else { return Err("`rename` needs a codebase (it commits the change)".into()) };
-            let (Some(old), Some(new)) = (args.pos.get(1), args.pos.get(2)) else { return Err("usage: strata rename <old> <new>".into()) };
+            let words = &args.pos[1..];
+            if words.is_empty() || words.len() % 2 != 0 {
+                return Err("usage: strata rename <old> <new> [<old> <new>]...  (several renames are one step)".into());
+            }
+            // each `old` is a qualified name, or one that only one module defines: a
+            // definition, a variant, a trait method, or a field as `Owner.field`
+            let mut mods: Vec<String> = cb.program.decls.iter().map(|d| d.module.clone()).collect();
+            mods.sort();
+            mods.dedup();
+            let mut pairs: Vec<(String, String, &str)> = Vec::new();
+            for w in words.chunks(2) {
+                let (old, new) = (&w[0], &w[1]);
+                let (old_q, kind) = match resolve::member(&cb.program, old) {
+                    Some((kind, _)) => (old.clone(), kind),
+                    None => {
+                        let found: Vec<(String, &str)> = mods
+                            .iter()
+                            .map(|m| if m.is_empty() { old.clone() } else { format!("{m}.{old}") })
+                            .filter_map(|q| resolve::member(&cb.program, &q).map(|(k, _)| (q, k)))
+                            .collect();
+                        match found.as_slice() {
+                            [one] => one.clone(),
+                            [] => return Err(format!("no definition, variant, trait method or field `{old}`")),
+                            many => return Err(format!("`{old}` is ambiguous: {}", many.iter().map(|(q, _)| q.as_str()).collect::<Vec<_>>().join(", "))),
+                        }
+                    }
+                };
+                pairs.push((old_q, new.clone(), kind));
+            }
+            let renamed = resolve::rename_all(&cb.program, &pairs.iter().map(|(o, n, _)| (o.clone(), n.clone())).collect::<Vec<_>>())?;
+            let rep = full_check(&renamed);
+            if !rep.ok() {
+                print_errors(&rep);
+                eprintln!("\nrejected: the codebase would not check; nothing was changed");
+                return Ok(false);
+            }
+            let new_q = |old_q: &str, new: &str| match old_q.rsplit_once('.') {
+                Some((m, _)) => format!("{m}.{new}"),
+                None => new.to_string(),
+            };
+            let news: Vec<String> = pairs.iter().map(|(o, n, _)| new_q(o, n)).collect();
+            // what declares them (themselves, or the types / traits members belong to) isn't a reference
+            let owners: Vec<String> = pairs.iter().filter_map(|(o, _, _)| resolve::owner(&cb.program, o)).collect();
+            let before: HashMap<String, String> = cb.program.decls.iter().map(|d| (d.qname(), store::self_hash(d))).collect();
+            let updated: Vec<String> = renamed
+                .decls
+                .iter()
+                .filter(|d| !news.contains(&d.qname()) && !owners.contains(&d.qname()) && before.get(&d.qname()).is_some_and(|h| *h != store::self_hash(d)))
+                .map(|d| d.qname())
+                .collect();
+            // prose is not rewritten: point at docs and comments that still say an old name
+            let shorts: Vec<String> = pairs.iter().map(|(o, _, _)| o.rsplit('.').next().unwrap_or(o).to_string()).collect();
+            let word = |t: &str| t.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| shorts.iter().any(|s| s == w));
+            let mentions: Vec<String> = renamed
+                .decls
+                .iter()
+                .filter(|d| d.doc.iter().chain(&d.comments).any(|l| word(l)))
+                .map(|d| d.qname())
+                .collect();
+            let arrows: Vec<String> = pairs.iter().zip(&news).map(|((o, _, _), n)| format!("{o} → {n}")).collect();
+            let default_msg = format!("rename {}", arrows.join(", "));
+            let msg = args.val("-m").unwrap_or(&default_msg);
+            let entries: Vec<serde_json::Value> = pairs.iter().zip(&news).map(|((o, _, k), n)| json!({"from": o, "to": n, "kind": k})).collect();
+            cb.commit_with(renamed, msg, json!({"renames": entries, "references": updated}))?;
+            if json_out {
+                println!("{}", json!({"renames": entries, "references": updated, "mentions": mentions}));
+                return Ok(true);
+            }
+            println!("renamed {}", arrows.join(", "));
+            match updated.len() {
+                0 => println!("no other definition refers to {}", if pairs.len() == 1 { "it" } else { "them" }),
+                n => println!("updated {n} definition{} that refer{} to {}: {}", if n > 1 { "s" } else { "" }, if n > 1 { "" } else { "s" }, if pairs.len() == 1 { "it" } else { "them" }, updated.join(", ")),
+            }
+            if !mentions.is_empty() {
+                println!("docs or comments still mention {} in: {}", shorts.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(" or "), mentions.join(", "));
+            }
+        }
+        "move" => {
+            let Source::Db(mut cb) = load(&args)? else { return Err("`move` needs a package (it commits the change)".into()) };
+            let (Some(old), Some(target)) = (args.pos.get(1), args.pos.get(2)) else { return Err("usage: strata move <name> <module>  (`main` is the root module)".into()) };
+            let target = if target == "main" { String::new() } else { target.clone() };
             // `old` is a qualified name, or a short name that only one module defines
             let old_q = if cb.program.decls.iter().any(|d| &d.qname() == old) {
                 old.clone()
@@ -313,47 +397,37 @@ fn run() -> Result<bool, String> {
                     many => return Err(format!("`{old}` is ambiguous: {}", many.join(", "))),
                 }
             };
-            let renamed = resolve::rename(&cb.program, &old_q, new)?;
-            let rep = full_check(&renamed);
+            let moved = resolve::move_def(&cb.program, &old_q, &target)?;
+            let rep = full_check(&moved);
             if !rep.ok() {
                 print_errors(&rep);
                 eprintln!("\nrejected: the codebase would not check; nothing was changed");
                 return Ok(false);
             }
-            let new_q = match old_q.rsplit_once('.') {
-                Some((m, _)) => format!("{m}.{new}"),
-                None => new.clone(),
-            };
-            let before: HashMap<String, String> = cb.program.decls.iter().map(|d| (d.qname(), store::self_hash(d))).collect();
-            let updated: Vec<String> = renamed
-                .decls
-                .iter()
-                .filter(|d| d.qname() != new_q && before.get(&d.qname()).is_some_and(|h| *h != store::self_hash(d)))
-                .map(|d| d.qname())
-                .collect();
-            // prose is not rewritten: point at docs and comments that still say the old name
             let short = old_q.rsplit('.').next().unwrap_or(&old_q).to_string();
-            let word = |t: &str| t.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| w == short);
-            let mentions: Vec<String> = renamed
-                .decls
-                .iter()
-                .filter(|d| d.doc.iter().chain(&d.comments).any(|l| word(l)))
-                .map(|d| d.qname())
-                .collect();
-            let default_msg = format!("rename {old_q} → {new_q}");
+            let new_q = if target.is_empty() { short.clone() } else { format!("{target}.{short}") };
+            let before: HashMap<String, String> = cb.program.decls.iter().map(|d| (d.qname(), store::self_hash(d))).collect();
+            let is_use = |d: &Decl| matches!(d.kind, DeclKind::Use(_));
+            let updated: Vec<String> = moved.decls.iter().filter(|d| !is_use(d) && d.qname() != new_q && before.get(&d.qname()).is_some_and(|h| *h != store::self_hash(d))).map(|d| d.qname()).collect();
+            let shown = |m: &str| if m.is_empty() { "main".to_string() } else { m.to_string() };
+            // imports the move added or changed, by module
+            let old_uses: std::collections::HashSet<(String, String)> = cb.program.decls.iter().filter(|d| is_use(d)).map(|d| (d.module.clone(), printer::decl(d))).collect();
+            let imports: Vec<String> = moved.decls.iter().filter(|d| is_use(d) && !old_uses.contains(&(d.module.clone(), printer::decl(d)))).map(|d| format!("{}: {}", shown(&d.module), printer::decl(d))).collect();
+            let from_m = old_q.rsplit_once('.').map(|(m, _)| m.to_string()).unwrap_or_default();
+            let default_msg = format!("move {old_q} → {}", shown(&target));
             let msg = args.val("-m").unwrap_or(&default_msg);
-            cb.commit_with(renamed, msg, json!({"rename": {"from": old_q, "to": new_q, "references": updated}}))?;
+            cb.commit_with(moved, msg, json!({"renames": [{"from": old_q, "to": new_q, "kind": "move"}], "references": updated}))?;
             if json_out {
-                println!("{}", json!({"from": old_q, "to": new_q, "references": updated, "mentions": mentions}));
+                println!("{}", json!({"from": old_q, "to": new_q, "references": updated}));
                 return Ok(true);
             }
-            println!("renamed {old_q} → {new_q}");
+            println!("moved {old_q} from {} to {} ({})", shown(&from_m), shown(&target), store::module_path(&target).display());
             match updated.len() {
                 0 => println!("no other definition refers to it"),
                 n => println!("updated {n} definition{} that refer{} to it: {}", if n > 1 { "s" } else { "" }, if n > 1 { "" } else { "s" }, updated.join(", ")),
             }
-            if !mentions.is_empty() {
-                println!("docs or comments still mention `{short}` in: {}", mentions.join(", "));
+            if !imports.is_empty() {
+                println!("imports: {}", imports.join("; "));
             }
         }
         "diff" => {
@@ -667,7 +741,7 @@ fn run() -> Result<bool, String> {
             };
             let mut all_ok = true;
             let mut results = Vec::new();
-            let resolved = resolve::resolve(p).program;
+            let resolved = types::elaborate(p).program;
             let solver = smt::solver();
             let solver_bin = solver.as_ref().map(|s| s.0.as_str());
             let analysis = termination::analyze(&env, solver_bin);
@@ -711,6 +785,16 @@ fn run() -> Result<bool, String> {
                         let n = cc(&f.name);
                         jobs.push((f.name.clone(), format!("{base}:{cases}:{n}:{skey}"), Box::new(move || verify::check_fn(env, f, None, solver_bin, transparent, cases, n, seed))))
                     }
+                    DeclKind::Impl(imp) if imp.is_inherent() => {
+                        // a type's own methods are functions (`Item.new`, `Item.describe`), checked as such
+                        for m in &imp.methods {
+                            let short = m.name.rsplit('.').next().unwrap_or(&m.name).to_string();
+                            let f = types::static_fn(imp, m);
+                            let n = cc(&f.name);
+                            let key = format!("{base}:{short}:{cases}:{n}:{skey}");
+                            jobs.push((f.name.clone(), key, Box::new(move || verify::check_fn(env, &f, None, solver_bin, transparent, cases, n, seed))));
+                        }
+                    }
                     DeclKind::Impl(imp) => {
                         let Some(tr) = env.traits.get(&imp.trait_name) else { continue };
                         let ty = printer::ty(&imp.for_type);
@@ -719,10 +803,11 @@ fn run() -> Result<bool, String> {
                             let decl = imp.methods.iter().find(|x| x.name == mname).or(if m.default { Some(&m.decl) } else { None });
                             match decl {
                                 Some(decl) => {
-                                    let n = cc(&format!("{ty}.{mname}"));
-                                    jobs.push((format!("{ty}.{mname}"), format!("{base}:{mname}:{cases}:{n}:{skey}"), Box::new(move || verify::check_fn(env, decl, Some(imp), solver_bin, transparent, cases, n, seed))))
+                                    let label = termination::impl_label(env, imp, &mname);
+                                    let n = cc(&label);
+                                    jobs.push((label, format!("{base}:{mname}:{cases}:{n}:{skey}"), Box::new(move || verify::check_fn(env, decl, Some(imp), solver_bin, transparent, cases, n, seed))))
                                 }
-                                None => jobs.push((format!("{ty}.{mname}"), format!("{base}:{mname}:{cases}"), Box::new(move || verify::fuzz_impl_method(env, imp, &mname, cases, seed)))),
+                                None => jobs.push((termination::impl_label(env, imp, &mname), format!("{base}:{mname}:{cases}"), Box::new(move || verify::fuzz_impl_method(env, imp, &mname, cases, seed)))),
                             }
                         }
                         for law in &tr.laws {
@@ -896,7 +981,7 @@ fn run() -> Result<bool, String> {
             let (env, _) = types::Env::new(p);
             let filter = args.pos.get(1).cloned().unwrap_or_default();
             let (mut pass, mut fail) = (0, 0);
-            let resolved = resolve::resolve(p).program;
+            let resolved = types::elaborate(p).program;
             for d in &resolved.decls {
                 let DeclKind::Test(t) = &d.kind else { continue };
                 if !t.name.contains(&filter) {

@@ -36,7 +36,8 @@ pub enum Value {
     Set(Vec<Value>),
     Record(String, Vec<(String, Value)>),
     Variant(String, Fields),
-    Closure(Vec<String>, Rc<Expr>, Scope),
+    /// A lambda: its parameters (with their written types, if any), body and captured scope.
+    Closure(Rc<Vec<LamParam>>, Rc<Expr>, Scope),
     FnRef(String),
     /// A value of a `distinct` type, e.g. `UserId("u_1")`.
     Distinct(String, Box<Value>),
@@ -170,6 +171,9 @@ pub struct Interp<'a> {
     /// Final values of the `mut` parameters of the call that just returned,
     /// to be written back to the caller's variables.
     writeback: Vec<(usize, Value)>,
+    /// What `Self` is in the trait methods being run (innermost last): a
+    /// default method calling `Self.empty()` uses it.
+    self_types: Vec<String>,
     /// The value of the `return` (or `!` / `?`) being carried out.
     returning: Option<Value>,
     /// At most this many evaluation steps, if set.
@@ -273,9 +277,40 @@ pub fn to_json(v: &Value) -> Json {
         Value::Variant(c, Fields::Rec(fs)) => {
             json!({ short(c): Json::Object(fs.iter().map(|(k, v)| (k.clone(), to_json(v))).collect()) })
         }
-        Value::Closure(ps, ..) => json!(format!("<closure ({}) -> …>", ps.join(", "))),
+        Value::Closure(ps, ..) => json!(format!("<closure ({}) -> …>", ps.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "))),
         Value::FnRef(n) => json!(format!("<fn {n}>")),
     }
+}
+
+/// An f-string part shown with a format spec (`{x:.2}`, `{n:>5}`, `{n:05}`).
+pub fn format_spec(v: &Value, f: &FmtSpec) -> Result<String, String> {
+    let numeric = matches!(v, Value::Int(_) | Value::Float(_));
+    if (f.plus || f.zero) && !numeric {
+        return Err(format!("format spec `{f}`: `+` and `0` apply to numbers, not {}", to_json(v)));
+    }
+    let body = match (v, f.precision) {
+        (Value::Float(x), Some(p)) => format!("{x:.p$}"),
+        (Value::Str(t), Some(p)) => t.chars().take(p).collect(),
+        (_, Some(_)) => return Err(format!("format spec `{f}`: `.N` applies to a Float or a String, not {}", to_json(v))),
+        _ => show(v),
+    };
+    let body = if f.plus && !body.starts_with('-') { format!("+{body}") } else { body };
+    let n = body.chars().count();
+    if n >= f.width {
+        return Ok(body);
+    }
+    let pad = f.width - n;
+    if f.zero && f.align.is_none() {
+        // zeros go after the sign: -0042
+        let (sign, digits) = if body.starts_with(['+', '-']) { body.split_at(1) } else { ("", body.as_str()) };
+        return Ok(format!("{sign}{}{digits}", "0".repeat(pad)));
+    }
+    let fill = |k: usize| f.fill.to_string().repeat(k);
+    Ok(match f.align.unwrap_or(if numeric { '>' } else { '<' }) {
+        '<' => format!("{body}{}", fill(pad)),
+        '>' => format!("{}{body}", fill(pad)),
+        _ => format!("{}{body}{}", fill(pad / 2), fill(pad - pad / 2)),
+    })
 }
 
 pub fn show(v: &Value) -> String {
@@ -323,6 +358,7 @@ impl<'a> Interp<'a> {
             depth: 0,
             regexes: HashMap::new(),
             writeback: vec![],
+            self_types: vec![],
             returning: None,
             budget: None,
             steps: 0,
@@ -436,6 +472,10 @@ impl<'a> Interp<'a> {
     /// Like `check_type`, with extra bindings visible to inline refinements
     /// (a function's parameters, for its result type).
     pub fn check_type_in(&mut self, t: &TypeExpr, v: &Value, scope: &Scope) -> R<Option<String>> {
+        // a hidden type argument: the name of a type
+        if matches!(t, TypeExpr::Named(n, _) if n == crate::types::TYPE_ARG) {
+            return Ok(if matches!(v, Value::Str(_)) { None } else { Some(format!("{} is not a type", to_json(v))) });
+        }
         if let TypeExpr::Refined(b, pred) = t {
             if let Some(e) = self.check_type(b, v)? {
                 return Ok(Some(e));
@@ -575,6 +615,7 @@ impl<'a> Interp<'a> {
             TypeExpr::Refined(b, _) => self.shape_fits(b, v),
             TypeExpr::Union(ms) => ms.iter().any(|m| self.shape_fits(m, v)),
             TypeExpr::Fn(..) => matches!(v, Value::Closure(..) | Value::FnRef(_)),
+            TypeExpr::Named(n, _) if n == crate::types::TYPE_ARG => matches!(v, Value::Str(_)),
             TypeExpr::Named(n, args) => match (n.as_str(), v) {
                 ("Int", Value::Int(_) | Value::Big(_)) | ("Float", Value::Float(_)) | ("Bool", Value::Bool(_)) | ("String", Value::Str(_)) | ("Unit", Value::Unit) => true,
                 ("Int" | "Float" | "Bool" | "String" | "Unit", _) => false,
@@ -638,31 +679,60 @@ impl<'a> Interp<'a> {
 
     /// Call a trait method: pick the implementation from the receiver's type.
     /// The trait's own `requires`/`ensures` apply on top of the impl's.
-    pub fn call_method(&mut self, name: &str, args: Vec<Value>) -> R<Value> {
-        if let Some(Value::Mock(mt)) = args.first() {
-            let mt = mt.clone();
-            return self.mock_call(&mt, name, args);
+    pub fn call_method(&mut self, name: &str, mut args: Vec<Value>) -> R<Value> {
+        // a method without `self` (`Trait::empty(type, ..)`): the type comes first
+        let is_static = self.env.method_contract(name).is_some_and(|(_, d)| !crate::resolve::takes_self(d));
+        let head = if is_static {
+            match args.first() {
+                Some(Value::Str(h)) => {
+                    let h = h.clone();
+                    args.remove(0);
+                    h
+                }
+                _ => return self.fail(FaultKind::Runtime, format!("`{name}` needs the type it is called on")),
+            }
+        } else {
+            if let Some(Value::Mock(mt)) = args.first() {
+                let mt = mt.clone();
+                return self.mock_call(&mt, name, args);
+            }
+            args.first().map(|v| self.head_of(v)).unwrap_or_default()
+        };
+        // called on a trait (a generic function fuzzed with a mock): a generated result
+        if is_static && self.env.traits.contains_key(&head) {
+            return self.mock_call(&TypeExpr::Named(head, vec![]), name, args);
         }
-        let head = args.first().map(|v| self.head_of(v)).unwrap_or_default();
         // a variant may have an impl of its own; else its sum's applies
         let own = match args.first() {
             Some(Value::Variant(c, _)) => self.env.resolve_method(name, c),
             _ => None,
         };
         let Some((mut decl, req, ens)) = own.or_else(|| self.env.resolve_method(name, &head)) else {
-            let tr = self.env.method_trait.get(name).cloned().unwrap_or_default();
-            return self.fail(FaultKind::Runtime, format!("`{head}` does not implement `{tr}` (calling `{name}`)"));
+            let trs = self.env.method_traits.get(name).cloned().unwrap_or_default().join("` or `");
+            return self.fail(FaultKind::Runtime, format!("`{head}` has no method `{name}` (it does not implement `{trs}`)"));
         };
         decl.requires.splice(0..0, req);
         decl.ensures.splice(0..0, ens);
-        let label = format!("{head}.{name}");
-        self.call_decl(&decl, &label, args)
+        let label = format!("{head}.{}", crate::types::split_trait_call(name).map_or(name, |(_, m)| m));
+        self.self_types.push(head);
+        let r = self.call_decl(&decl, &label, args);
+        self.self_types.pop();
+        r
+    }
+
+    /// Run `f` with `Self` known to be `head` (a trait law for one implementation).
+    pub fn with_self<T>(&mut self, head: &str, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.self_types.push(head.to_string());
+        let r = f(self);
+        self.self_types.pop();
+        r
     }
 
     /// A method call on `mock T`: check the trait's `requires`, then generate a
     /// result that satisfies its `ensures` (rejection sampling). `Self` in the
     /// result is the mock itself.
     fn mock_call(&mut self, mt: &TypeExpr, name: &str, args: Vec<Value>) -> R<Value> {
+        let name = crate::types::split_trait_call(name).map_or(name, |(_, m)| m);
         let tn = crate::types::texpr_head(mt);
         let Some(tr) = self.env.traits.get(&tn).cloned() else { return self.fail(FaultKind::Runtime, format!("unknown trait `{tn}`")) };
         let Some(tm) = tr.methods.iter().find(|m| m.decl.name == name) else {
@@ -761,7 +831,7 @@ impl<'a> Interp<'a> {
             Value::FnRef(n) => {
                 if self.env.fns.contains_key(&n) {
                     self.call_fn(&n, args)
-                } else if self.env.method_trait.contains_key(&n) {
+                } else if self.env.is_method(&n) {
                     self.call_method(&n, args)
                 } else {
                     self.builtin(&n, args)
@@ -773,7 +843,11 @@ impl<'a> Interp<'a> {
                 }
                 let mut s = scope;
                 for (p, a) in ps.iter().zip(args) {
-                    s = extend(&s, p, a);
+                    // a typed parameter's refinement holds on every call, as for a named function
+                    if let Some(t) = &p.ty {
+                        self.enforce(t, &a, &format!("argument `{}` of a lambda", p.name))?;
+                    }
+                    s = extend(&s, &p.name, a);
                 }
                 self.eval_body(&body, &s)
             }
@@ -1242,6 +1316,11 @@ impl<'a> Interp<'a> {
             Expr::Hole(h) => return self.fail(FaultKind::Hole, format!("reached unfilled hole `?{h}`")),
             Expr::Var(x) => match lookup(s, x) {
                 Some(v) => v,
+                // `Self.m()` in a trait's default method or law: the type it runs for
+                None if *x == crate::types::type_arg("Self") => match self.self_types.last() {
+                    Some(h) => Value::Str(h.clone()),
+                    None => return self.fail(FaultKind::Runtime, "`Self` is not known here"),
+                },
                 None => Value::FnRef(x.clone()),
             },
             Expr::List(es) => Value::List(es.iter().map(|x| self.eval(x, s)).collect::<R<_>>()?),
@@ -1317,7 +1396,7 @@ impl<'a> Interp<'a> {
                 },
                 other => return self.fail(FaultKind::Runtime, format!("no field `{f}` on {}", to_json(&other))),
             },
-            Expr::Lambda(ps, body) => Value::Closure(ps.iter().map(|p| p.name.clone()).collect(), Rc::new((**body).clone()), s.clone()),
+            Expr::Lambda(ps, body) => Value::Closure(Rc::new(ps.clone()), Rc::new((**body).clone()), s.clone()),
             Expr::Bin(op, l, r) => {
                 use BinOp::*;
                 // short-circuiting operators
@@ -1513,7 +1592,14 @@ impl<'a> Interp<'a> {
                 for p in parts {
                     match p {
                         StrPart::Lit(l) => out += l,
-                        StrPart::Expr(e) => out += &show(&self.eval(e, s)?),
+                        StrPart::Expr(e, None) => out += &show(&self.eval(e, s)?),
+                        StrPart::Expr(e, Some(spec)) => {
+                            let v = self.eval(e, s)?;
+                            match format_spec(&v, spec) {
+                                Ok(t) => out += &t,
+                                Err(m) => return self.fail(FaultKind::Runtime, m),
+                            }
+                        }
                     }
                 }
                 Value::Str(out)
