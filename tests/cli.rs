@@ -123,6 +123,19 @@ test \"big integers\" {
 }
 
 #[test]
+fn loops_forget_variables_changed_anywhere_in_their_body() {
+    // `bump(mut n)` inside a list literal changes `n`: the loop must not keep `n == 0`
+    if !has_solver() {
+        return;
+    }
+    let d = tmp("loop-changes");
+    let src = "fn bump(mut x: Int) -> Int {\n  x = x + 1\n  x\n}\n\nfn count() -> Int\n  ensures it == 0\n{\n  let mut n = 0\n  let mut i = 0\n  while i < 3 {\n    let ys = [bump(mut n)]\n    i = i + 1\n  }\n  n\n}\n";
+    std::fs::write(d.join("l.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", "l.strata", "verify"], &d, None);
+    assert!(!ok && out.contains("✗ count") && !out.contains("bug in the prover"), "{out}");
+}
+
+#[test]
 fn cross_check_catches_a_wrong_prover() {
     // a "solver" that proves everything: the cross-check must still catch the bug
     let d = tmp("cross-check");

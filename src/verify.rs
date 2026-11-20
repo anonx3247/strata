@@ -27,67 +27,6 @@ fn literal(e: &Expr) -> bool {
     }
 }
 
-pub fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
-    f(e);
-    let mut w = |x: &Expr| walk(x, f);
-    match e {
-        Expr::List(xs) | Expr::Tuple(xs) => xs.iter().for_each(&mut w),
-        Expr::Ctor(_, CtorArgs::Positional(xs)) => xs.iter().for_each(&mut w),
-        Expr::Ctor(_, CtorArgs::Record(fs)) => fs.iter().for_each(|(_, x)| w(x)),
-        Expr::Ctor(_, CtorArgs::Update(b, fs)) => {
-            w(b);
-            fs.iter().for_each(|(_, x)| w(x))
-        }
-        Expr::Call(g, xs) => {
-            w(g);
-            xs.iter().for_each(&mut w)
-        }
-        Expr::Method(r, _, xs) => {
-            w(r);
-            xs.iter().for_each(&mut w)
-        }
-        Expr::Field(r, _) | Expr::Is(r, _) | Expr::Un(_, r) | Expr::Lambda(_, r) | Expr::Return(r) | Expr::Mut(r) | Expr::Try(r, _) => w(r),
-        Expr::Except(r, _, fb) => {
-            w(r);
-            w(fb)
-        }
-        Expr::Interp(parts) => parts.iter().for_each(|p| {
-            if let StrPart::Expr(e, _) = p {
-                w(e)
-            }
-        }),
-        Expr::Bin(_, l, r) => {
-            w(l);
-            w(r)
-        }
-        Expr::If(c, t, x) => {
-            w(c);
-            w(t);
-            w(x)
-        }
-        Expr::Match(s, _, arms) => {
-            w(s);
-            arms.iter().for_each(|a| w(&a.body))
-        }
-        Expr::Block(stmts, last) => {
-            for s in stmts {
-                match s {
-                    Stmt::Comment(_) => {}
-                    Stmt::Let(_, _, x) | Stmt::Var(_, _, x) | Stmt::Expr(x) | Stmt::Assert(x) => w(x),
-                    Stmt::Assign(a, b) | Stmt::While(a, b) | Stmt::For(_, a, b) => {
-                        w(a);
-                        w(b)
-                    }
-                    Stmt::Loop(b) => w(b),
-                    Stmt::Break | Stmt::Continue => {}
-                }
-            }
-            w(last)
-        }
-        _ => {}
-    }
-}
-
 pub fn static_refinements(prog: &Program, env: &Env) -> Vec<Diag> {
     let resolved = crate::types::elaborate(prog);
     let prog = &resolved.program;
@@ -100,7 +39,7 @@ pub fn static_refinements(prog: &Program, env: &Env) -> Vec<Diag> {
             _ => vec![],
         };
         for b in bodies {
-            walk(b, &mut |e| {
+            walk(b, |e| {
                 let check = |it: &mut Interp, ty: &TypeExpr, arg: &Expr, ctx: String, out: &mut Vec<Diag>| {
                     if !literal(arg) {
                         return;
@@ -234,9 +173,7 @@ impl Verdict {
 }
 
 fn has_hole(e: &Expr) -> bool {
-    let mut found = false;
-    walk(e, &mut |x| found |= matches!(x, Expr::Hole(_)));
-    found
+    crate::ast::any_expr(e, |x| matches!(x, Expr::Hole(_)))
 }
 
 /// The layered check of a function (or of an implementation's method, when
