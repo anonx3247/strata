@@ -174,13 +174,62 @@ Steps:
    validity is compared on types whose unrefined type arguments are erased
    (`erased`), so a generic helper's result `Html[M]` matches its use as
    `Html[Msg]`. Not yet: `javascript:` URLs in `href` are not rejected.
-2. `strata serve`: a low-level handler `fn handle(req: Request) -> Response`
-   for JSON APIs and static files; bodies and query strings read into records
-   like `CommandLine`. The HTTP layer is native, next to the `host_*`
-   functions (`ui.rs` already has a std-only server).
-3. `App` and the JS client: sessions, messages, swapping the HTML in.
-4. Forms: `on_submit(constructor)` fills a record from the fields, with
-   refinement errors shown next to each field.
+2. `strata serve` (**built**, branch `worktree-web-serve`): `std.http`
+   (`Request`, `Response`, `Method` as a refined `String`, response helpers)
+   and `fn handle(req: Request) -> Response`, called once per request with a
+   fresh interpreter (`src/serve.rs`, std-only, one request at a time).
+   Routes as in Hono (asked for by the user): `Router` with `app.get(pattern,
+   handler)` etc., `:name` segments, `req.param(name)` an `Option`, HEAD via
+   GET, 404 / 405. As with `Html`, the refinements (`Method`, `Pattern`) are
+   on `Router.on`'s parameters and the stored `Route` is private and plain,
+   so `Router` has nothing to prove (CI's older z3 gave up on regex
+   refinements inside a list of routes). Building it fixed three things: a type's own method now
+   comes before a function of another module with the same name when called
+   as `x.m()` (`app.handle(req)` inside `fn handle`); termination no longer
+   takes a local named like a function for a call of it (`let mut app` in
+   `fn app`); the prover knows a function value's result is a valid value of
+   its result type (`Val::FnOf`), and a lambda passed for a function-typed
+   parameter gets valid arguments. Not yet: reading bodies and forms into
+   records (step 4), static files, typed route parameters (a pattern's names
+   checked against what the handler reads; `/users/:id` with `id: UserId`),
+   `*` wildcards, several requests at once, URL-encoding helpers for links.
+3. Apps (**built**, branch `worktree-web-app`): no `App` trait in the end,
+   but three functions found by name, like `main` and `handle`: `fn init()
+   -> Model`, `fn update(model: Model, msg: Msg) -> Model` (pure, returns the
+   new model, as in Elm), `fn view(model: Model) -> Html[Msg]`. `strata
+   serve` runs them when there is no `handle`: sessions in memory (a random
+   id per page load, at most 1000), `/_strata/app.js` sends
+   `data-on-{click,dblclick,submit,change}` messages one at a time and swaps
+   the view in; messages are read against `Msg` (refinements checked);
+   faults are 500s shown in a banner; an unknown session reloads the page.
+   `examples/counter` is proven, `update` included. For the view to be proven
+   when `Msg` has refined fields, the prover treats a type argument that is a
+   record or sum without a refinement of its own as adding nothing *to
+   prove* (its values are checked when made): `Attr[Msg]` from a generic
+   `on_click`. Facts to assume keep the checks (skipping them there lost
+   proofs in `examples/orders`). Not yet: the whole page re-rendered on
+   every message (no diffing; focus and scroll inside the app are lost);
+   input values in messages (step 4); an app and routes in one program;
+   sessions are lost on restart.
+4. Forms (**built**, branch `worktree-web-forms`; the user asked for the
+   logic to be in Strata): handlers that make a message from what was
+   entered, `on_input` / `on_change` (`(String) -> M`) and `on_submit_form`
+   (`(Dict[String, String]) -> M`). Functions can't go into the page, so
+   `std.web.render` numbers them in page order (a `mut` counter) and
+   `std.web.dispatch(page, n, value, fields)` (Strata) makes the message;
+   the server only re-runs `view` on the current model and calls it. The
+   client patches the page instead of replacing it (a small morph): focus
+   and scroll stay, and the field being typed in keeps its text (after a
+   submit, the view's value wins). Validation is ordinary Strata in
+   `update`; `examples/todos` shows errors next to the field and is proven
+   (titles within `Title`, at most 50 to-dos). Prover fixes on the way: an
+   empty list literal is valid at any element type, and an element of
+   `[] ⊕ xs` (merged branches, concatenation) is an element of `xs`. Not yet:
+   reading a form straight into a typed record (`decode[NewTodo](fields)`,
+   with each refinement's error by field: needs a builtin that knows its
+   type argument at runtime); a handler number can be stale if the page
+   changes between an event and its turn in the queue; keyed lists (the
+   morph patches children by position).
 5. Later: capabilities in `update` (database, LLM calls, HTTP client); the
    wasm build.
 
@@ -257,6 +306,12 @@ Not yet: `assumed` (no outside code exists yet); loop invariants (loops forget w
 
 ### Compilation before transpilation
 1. **Native compilation through LLVM** to machine code, with a garbage-collected runtime (no borrow checker in Strata). This comes before transpiling.
+   - **Step 1 (built, branch `llvm-backend`)**: `strata build` (`src/llvm.rs`) writes LLVM IR as text from the elaborated program and compiles it with `clang` and a C runtime (`src/llvm/runtime.c`); no LLVM library is linked into `strata`. Scalars (`Int` as `i64`, `Float`, `Bool`, `String`, `()`), functions, control flow, `match` on literals / conditions / refinement types, f-strings, a few built-ins; contracts checked at run time with the interpreter's messages. `tests/build.rs` runs each program both ways and compares. See docs/tools.md.
+   - **Next, roughly in order**: traits (static dispatch where the type is known, a table otherwise); dictionaries and sets; the string built-ins and regexes; big integers (an `i64` fast path that overflows into a runtime big integer, as the interpreter does); a GC (Boehm to start; in-place updates of values with a single owner later, as decided for mutation); `mut` parameters (by reference, in place); `main`'s capabilities (`Console`, `Files`, `Environment`) and options; compiled `test` blocks; skipping the runtime check of a contract `verify` proved; sized types (`I32`, `U8`, ...) in their own widths.
+   - **Both text IR and the LLVM libraries** (decided with the user 2026-11-20). The code generator writes IR as text, which a Strata compiler can do too (it won't have LLVM's libraries unless they are bound); the libraries are used to run that IR fast. **Step 2 (built, branch `llvm-jit`)**: `strata run --jit` (cargo feature `jit`, inkwell on LLVM 23) parses the IR, runs LLVM's O2 pipeline and runs it with MCJIT, calling the C runtime compiled into strata. The goal is a fast interpreter, as Python feels: the JIT should become the default for `run` (and `test`) once big integers compile, and later compile per function, interpreting what doesn't compile yet instead of the whole program.
+   - **Step 3 (built, branch `compile-data`)**: the compiler works from the checker's types (`types::elaborate_typed`: each expression's type, by node), not its own guesses. Records, variants, tuples and `distinct` types (blocks of 8-byte slots behind a tag unique per constructor; a `distinct` value is its underlying one), generics by monomorphization, own methods, every pattern but lists, `!` / `?` / `except`, generated equality and printing per type. Refinements of a record's fields are checked when it is built; afterwards only fields of a type argument's type are (`Option[Positive]`).
+   - **Step 4 (built, branch `compile-lists`)**: lists (a header of length, shared buffer and offset: `drop` and `[x, ..rest]` share the buffer, and `push` writes in place past the end when no other list has used that slot, so `out = push(out, x)` is amortized O(1) while values never change), list patterns, `for` over lists, closures (a block: the function's address, then the captured values, by value), named functions as values. The list built-ins are Strata (`src/llvm/prelude.strata`, compiled with the program as the module `strata.compiled`) over a few native ones (`len`, `get`, `push`, `take`, `drop`, `range`, `+`); `sort` is a stable merge sort given the interpreter's order, generated per type. `examples/math.strata` compiles whole; list-heavy code runs 15-20x faster than interpreted.
+   - **Open**: the runtime is C for now, compiled with the program (no Rust toolchain needed to build one); the decision says the native core is Rust, so revisit when it grows (GC, I/O).
 2. **A standard library** with batteries included. The user cited the V language (vlang) as inspiration (confirmed). Priorities:
    - basic I/O, files and the OS / processes, for CLIs;
    - networking (HTTP client and server);

@@ -10,7 +10,7 @@
 | `src/lexer.rs`, `src/parser.rs` | text → tree |
 | `src/binary.rs` | the binary format, by hand: module files (a header, then each definition's interface and bodies), bundles, and the definition hashes `store` uses; see [binary-format.md](binary-format.md) |
 | `src/printer.rs` | tree → text (canonical form, used for hashing) |
-| `src/types.rs`, `src/types/` | type inference, traits, holes; `env.rs` (what is declared), `exhaustive.rs` (exhaustiveness, unreachable arms), `ints.rs` / `reals.rs` (value sets of refinements) |
+| `src/types.rs`, `src/types/` | type inference, traits, holes (`elaborate_typed`: the program as it runs, with each expression's inferred type, for the compiler); `env.rs` (what is declared), `exhaustive.rs` (exhaustiveness, unreachable arms), `ints.rs` / `reals.rs` (value sets of refinements) |
 | `src/interp.rs` | interpreter: trait dispatch, mocks, runtime contracts, JSON in/out, traces |
 | `src/generate.rs` | value generators derived from types and refinements (used by mocks and fuzzing) |
 | `src/smt.rs`, `src/smt/regexes.rs` | SMT verification: symbolic execution of bodies into proof obligations, Z3 queries, models back to values; regexes translated to SMT-LIB |
@@ -20,6 +20,10 @@
 | `src/merge.rs` | `strata merge-file`: three-way merge per definition, renames |
 | `src/package.rs` | packages: `strata.toml`, their files, finding packages and scripts |
 | `src/git.rs` | running git |
+| `src/llvm.rs`, `src/llvm/runtime.c` | `strata build`: the elaborated program as LLVM IR (text), and the C runtime it links with (strings, printing, number formatting, faults) |
+| `src/llvm/prelude.strata` | the list built-ins in Strata, compiled with every program (module `strata.compiled`); the compiler calls them for `map`, `filter`, `sort`, ... |
+| `src/llvm/jit.rs`, `build.rs` | `strata run --jit` (feature `jit`): LLVM's libraries (inkwell) parse that IR, optimize it and run it in memory; build.rs compiles the runtime into strata |
 | `src/stdlib.rs`, `std/` | the standard library (Strata), built into the binary; the native `host_*` operations it alone can call |
 | `src/view.rs` | level-of-detail projections and selectors |
 | `src/ui.rs`, `src/ui/index.html` | `strata ui`: the live viewer (a std-only HTTP server and one page) |
+| `src/serve.rs`, `src/serve/app.js` | `strata serve`: a std-only HTTP server calling the program's `handle` for each request, or running it as an app (`init` / `update` / `view`, sessions in memory, and the page's script) |
