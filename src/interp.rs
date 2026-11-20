@@ -236,6 +236,16 @@ fn as_big(v: &Value) -> Option<BigInt> {
     }
 }
 
+/// An index or count: a big integer saturates to the `i64` range, which is
+/// exact wherever it is clamped to a length (`slice`, `take`, `get`).
+fn as_index(v: &Value) -> Option<i64> {
+    match v {
+        Value::Int(n) => Some(*n),
+        Value::Big(b) => Some(if b.is_negative() { i64::MIN } else { i64::MAX }),
+        _ => None,
+    }
+}
+
 /// Euclidean division (the remainder is never negative), as for `i64`.
 fn div_rem_euclid(a: &BigInt, b: &BigInt) -> (BigInt, BigInt) {
     let (mut q, mut r) = (a / b, a % b);
@@ -1045,7 +1055,7 @@ impl<'a> Interp<'a> {
                 _ => return self.fail(FaultKind::Runtime, "bad args"),
             },
             "take" | "drop" => {
-                let (List(xs), Int(n)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                let (List(xs), Some(n)) = (nx(), as_index(&nx())) else { return self.fail(FaultKind::Runtime, "bad args") };
                 let n = (n.max(0) as usize).min(xs.len());
                 List(if name == "take" { xs[..n].to_vec() } else { xs[n..].to_vec() })
             }
@@ -1069,8 +1079,8 @@ impl<'a> Interp<'a> {
             }
             "get" => {
                 let found = match (nx(), nx()) {
-                    (List(xs), Int(i)) => (i >= 0).then(|| xs.get(i as usize).cloned()).flatten(),
-                    (Str(s), Int(i)) => (i >= 0).then(|| s.chars().nth(i as usize).map(|c| Str(c.to_string()))).flatten(),
+                    (List(xs), i @ (Int(_) | Big(_))) => as_index(&i).filter(|i| *i >= 0).and_then(|i| xs.get(i as usize).cloned()),
+                    (Str(s), i @ (Int(_) | Big(_))) => as_index(&i).filter(|i| *i >= 0).and_then(|i| s.chars().nth(i as usize).map(|c| Str(c.to_string()))),
                     (Dict(kvs), k) => kvs.into_iter().find(|(k2, _)| *k2 == k).map(|(_, v)| v),
                     _ => return self.fail(FaultKind::Runtime, "bad args"),
                 };
@@ -1139,7 +1149,7 @@ impl<'a> Interp<'a> {
             },
             // `slice(x, start, end)`: elements start..end, clamped to the bounds (as in Python)
             "slice" => {
-                let (x, Int(a), Int(b)) = (nx(), nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                let (x, Some(a), Some(b)) = (nx(), as_index(&nx()), as_index(&nx())) else { return self.fail(FaultKind::Runtime, "bad args") };
                 let clamp = |n: usize| (a.clamp(0, n as i64) as usize, b.clamp(0, n as i64) as usize);
                 match x {
                     Str(s) => {

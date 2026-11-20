@@ -46,6 +46,13 @@ pub enum Val {
     /// A value of a sum type: which constructor (`tag`, an index), and the
     /// payload of every constructor (only the active one means anything).
     Sum { ty: String, args: Vec<TypeExpr>, tag: T, ctors: Vec<(String, Vec<Val>)> },
+    /// A value of a union type (`Square | Circle`): which member shape it has
+    /// (`tag`, an index into `slots`), and a value for each shape (only the
+    /// active one means anything; `Absent` for a shape it can't have). Shapes
+    /// are named by `val_key` / `Vc::type_key` and are pairwise disjoint, so
+    /// the tag is a function of the value, as in the interpreter, where a
+    /// union value is just the member's value.
+    Union { tag: T, slots: Vec<(String, Val)> },
     /// A list, known by its length. `elem` is set when every element is known
     /// to satisfy that type (the list crossed a checked boundary).
     List { len: T, elem: Option<TypeExpr> },
@@ -120,6 +127,9 @@ pub struct Vc<'a> {
     /// them. Kept by name; a shadowed name keeps all its declarations, which
     /// can only make checks stricter.
     declared: HashMap<String, Vec<TypeExpr>>,
+    /// Each `matches(s, re)` made: the string, the pattern, its value, and
+    /// whether the pattern was approximated (to relate patterns on one string).
+    matched: Vec<(T, String, T, bool)>,
 }
 
 fn and(ts: &[T]) -> T {
@@ -153,6 +163,41 @@ fn ite(c: &str, a: &str, b: &str) -> T {
 fn num(n: i64) -> T {
     if n < 0 { format!("(- {})", n.unsigned_abs()) } else { n.to_string() }
 }
+/// The runtime shape of a value, as far as it decides membership in a union
+/// (the interpreter's `shape_fits`): two values with different keys have
+/// different shapes. `List*` is any collection (lists, dicts and sets are all
+/// `Val::List`). `None` when the shape is not known.
+fn val_key(v: &Val) -> Option<String> {
+    Some(match v {
+        Val::Int(_) => "Int".into(),
+        Val::Bool(_) => "Bool".into(),
+        Val::Str(_) => "String".into(),
+        Val::Unit => "Unit".into(),
+        Val::Tuple(xs) => format!("Tuple/{}", xs.len()),
+        Val::Rec(n, _) => format!("rec:{n}"),
+        Val::Distinct(n, _) => format!("distinct:{n}"),
+        Val::Sum { ty, .. } => format!("sum:{ty}"),
+        Val::List { .. } => "List*".into(),
+        Val::Union { .. } | Val::Absent | Val::Opaque(_) => return None,
+    })
+}
+
+/// A value as a union: its tag and slots (a plain value is a one-slot union).
+fn slots_of(v: &Val) -> Option<(T, Vec<(String, Val)>)> {
+    match v {
+        Val::Union { tag, slots } => Some((tag.clone(), slots.clone())),
+        _ => Some(("0".into(), vec![(val_key(v)?, v.clone())])),
+    }
+}
+
+/// Can an SMT string hold `s` (every code point at most `MAX_CHAR`)?
+fn smt_string(s: &str) -> bool {
+    s.chars().all(|c| c as u32 <= MAX_CHAR)
+}
+const BEYOND: &str = "a string with characters past U+2FFFF, which SMT strings can't hold";
+
+/// An SMT-LIB string literal. Only for strings `smt_string` accepts: past
+/// U+2FFFF, `\u{...}` is not an escape (Z3 reads it as its 9 characters).
 pub fn str_lit(s: &str) -> T {
     let mut out = String::from("\"");
     for c in s.chars() {
@@ -189,6 +234,7 @@ impl<'a> Vc<'a> {
             relied_on: Default::default(),
             returns: vec![],
             declared: HashMap::new(),
+            matched: vec![],
         }
     }
 
@@ -237,7 +283,24 @@ impl<'a> Vc<'a> {
 
     // ---- coercions: an opaque value used as an Int is some Int ----
 
+    /// A union value used as an `Int` (`Bool`, `String`): its member of that
+    /// shape when that member is the active one, any value otherwise.
+    fn union_as(&mut self, v: &Val, key: &str, sort: &'static str) -> Option<T> {
+        let Val::Union { tag, slots } = v else { return None };
+        let i = slots.iter().position(|s| s.0 == key && !matches!(s.1, Val::Absent))?;
+        let inner = match (&slots[i].1, sort) {
+            (Val::Int(t), "Int") | (Val::Bool(t), "Bool") | (Val::Str(t), "String") => t.clone(),
+            (Val::List { len, .. }, "Len") => len.clone(),
+            _ => return None,
+        };
+        let other = self.fresh_why(if sort == "Len" { "Int" } else { sort }, "a union value used as one of its members");
+        Some(ite(&format!("(= {tag} {i})"), &inner, &other))
+    }
+
     fn as_int(&mut self, v: &Val) -> T {
+        if let Some(t) = self.union_as(v, "Int", "Int") {
+            return t;
+        }
         match v {
             Val::Int(t) => t.clone(),
             Val::Opaque(r) => self.fresh_why("Int", &r.clone()),
@@ -245,6 +308,9 @@ impl<'a> Vc<'a> {
         }
     }
     fn as_bool(&mut self, v: &Val) -> T {
+        if let Some(t) = self.union_as(v, "Bool", "Bool") {
+            return t;
+        }
         match v {
             Val::Bool(t) => t.clone(),
             Val::Opaque(r) => self.fresh_why("Bool", &r.clone()),
@@ -252,6 +318,9 @@ impl<'a> Vc<'a> {
         }
     }
     fn as_str(&mut self, v: &Val) -> T {
+        if let Some(t) = self.union_as(v, "String", "String") {
+            return t;
+        }
         match v {
             Val::Str(t) => t.clone(),
             Val::Opaque(r) => self.fresh_why("String", &r.clone()),
@@ -259,6 +328,13 @@ impl<'a> Vc<'a> {
         }
     }
     fn list_len(&mut self, v: &Val) -> T {
+        if let Some(t) = self.union_as(v, "List*", "Len") {
+            // `len` of a union with a string member is not this
+            if !matches!(v, Val::Union { slots, .. } if slots.iter().any(|s| s.0 == "String")) {
+                self.facts.push(format!("(>= {t} 0)"));
+                return t;
+            }
+        }
         match v {
             Val::List { len, .. } => len.clone(),
             Val::Opaque(r) => {
@@ -278,7 +354,7 @@ impl<'a> Vc<'a> {
     /// A value of type `t` with fresh constants, nothing assumed.
     fn shape(&mut self, t: &TypeExpr, depth: usize) -> Val {
         match t {
-            TypeExpr::Union(_) => Val::Opaque("values of a union type are not modelled yet".into()),
+            TypeExpr::Union(ms) => self.union_shape(ms, depth).unwrap_or_else(|| Val::Opaque("values of this union type are not modelled (members of overlapping or unknown shapes)".into())),
             TypeExpr::Named(n, args) if self.env.variant_parent(n).is_some() => {
                 // a variant as a type: a value of its sum with that tag
                 let parent = self.env.variant_parent(n).unwrap();
@@ -338,6 +414,367 @@ impl<'a> Vc<'a> {
         }
     }
 
+    // ---- unions ----
+
+    /// The shape key of a type (see `val_key`), ignoring refinements; `None`
+    /// for unions, functions, floats, type parameters and traits.
+    fn type_key(&self, t: &TypeExpr) -> Option<String> {
+        match self.env.expand_alias(t) {
+            TypeExpr::Unit => Some("Unit".into()),
+            TypeExpr::Named(n, args) => match n.as_str() {
+                "Int" | "Bool" | "String" | "Unit" => Some(n),
+                "List" | "Dict" | "Set" => Some("List*".into()),
+                "Tuple" => Some(format!("Tuple/{}", args.len())),
+                _ => {
+                    if let Some(p) = self.env.variant_parent(&n) {
+                        return Some(format!("sum:{p}"));
+                    }
+                    let td = self.env.types.get(&n)?;
+                    match &td.body {
+                        TypeBody::Alias(_) if td.distinct => Some(format!("distinct:{n}")),
+                        TypeBody::Record(_) => Some(format!("rec:{n}")),
+                        TypeBody::Sum(_) => Some(format!("sum:{n}")),
+                        TypeBody::Alias(_) => None,
+                    }
+                }
+            },
+            _ => None,
+        }
+    }
+
+    /// The members of a union, looking through unrefined aliases of unions
+    /// (`Shape | Int` with `type Shape = Square | Circle`).
+    fn flatten_union(&self, t: &TypeExpr, out: &mut Vec<TypeExpr>) {
+        match t {
+            TypeExpr::Union(ms) => ms.iter().for_each(|m| self.flatten_union(m, out)),
+            TypeExpr::Named(n, args) => match self.env.types.get(n) {
+                Some(td) if !td.distinct && td.refinement.is_none() && matches!(&td.body, TypeBody::Alias(TypeExpr::Union(_))) => {
+                    let TypeBody::Alias(a) = &td.body else { unreachable!() };
+                    let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+                    self.flatten_union(&subst_texpr(a, &sub), out)
+                }
+                _ => out.push(t.clone()),
+            },
+            _ => out.push(t.clone()),
+        }
+    }
+
+    /// A value of a union type: one slot per member shape. `None` when two
+    /// members could have the same shape in a way the slots can't tell apart
+    /// (`List[Int] | List[String]`), or a member's shape is not known.
+    fn union_shape(&mut self, ms: &[TypeExpr], depth: usize) -> Option<Val> {
+        let mut members = vec![];
+        for m in ms {
+            self.flatten_union(m, &mut members);
+        }
+        let mut groups: Vec<(String, Vec<TypeExpr>)> = vec![];
+        for m in members {
+            let k = self.type_key(&m)?;
+            match groups.iter_mut().find(|g| g.0 == k) {
+                Some(g) => g.1.push(m),
+                None => groups.push((k, vec![m])),
+            }
+        }
+        let tag = self.fresh("Int");
+        self.facts.push(format!("(and (<= 0 {tag}) (< {tag} {}))", groups.len()));
+        let mut slots = vec![];
+        for (i, (k, ms)) in groups.iter().enumerate() {
+            let heads: Vec<TypeExpr> = ms.iter().map(|m| self.env.expand_alias(m)).collect();
+            let v = if let Some(sum) = k.strip_prefix("sum:") {
+                // the sum itself or some of its variants: a value of the sum,
+                // whose constructor is one of those variants
+                let mut args: Option<Vec<TypeExpr>> = None;
+                let mut ctors: Option<Vec<String>> = Some(vec![]);
+                for h in &heads {
+                    let TypeExpr::Named(n, a) = h else { return None };
+                    if args.get_or_insert_with(|| a.clone()) != a {
+                        return None;
+                    }
+                    if n == sum {
+                        ctors = None;
+                    } else if let Some(cs) = &mut ctors {
+                        cs.push(n.clone());
+                    }
+                }
+                let v = self.shape(&TypeExpr::Named(sum.to_string(), args.unwrap_or_default()), depth);
+                if let (Some(cs), Val::Sum { tag: inner, ctors: all, .. }) = (&ctors, &v) {
+                    let ks: Vec<T> = cs.iter().filter_map(|c| all.iter().position(|x| &x.0 == c)).map(|j| format!("(= {inner} {j})")).collect();
+                    self.facts.push(implies(&format!("(= {tag} {i})"), &or(&ks)));
+                }
+                v
+            } else if ms.len() == 1 {
+                self.shape(&ms[0], depth)
+            } else {
+                match k.as_str() {
+                    // `Positive | Negative`: both are integers
+                    "Int" | "Bool" | "String" | "Unit" => self.shape(&TypeExpr::Named(k.clone(), vec![]), depth),
+                    _ => return None,
+                }
+            };
+            slots.push((k.clone(), v));
+        }
+        Some(Val::Union { tag, slots })
+    }
+
+    /// Does `v` have the shape of `t` (the interpreter's `shape_fits`,
+    /// refinements ignored)? Exact where the shapes are known, else unknown.
+    fn shape_test(&mut self, t: &TypeExpr, v: &Val) -> T {
+        match v {
+            Val::Opaque(r) => return self.unknown_bool(&r.clone()),
+            Val::Absent => return "false".into(),
+            Val::Union { tag, slots } => {
+                let (tag, slots) = (tag.clone(), slots.clone());
+                let cs: Vec<T> = slots
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| !matches!(s.1, Val::Absent))
+                    .map(|(i, (_, s))| and(&[format!("(= {tag} {i})"), self.shape_test(t, s)]))
+                    .collect();
+                return or(&cs);
+            }
+            _ => {}
+        }
+        let te = self.env.expand_alias(t);
+        match &te {
+            TypeExpr::Union(ms) => {
+                let cs: Vec<T> = ms.iter().map(|m| self.shape_test(m, v)).collect();
+                or(&cs)
+            }
+            TypeExpr::Named(n, args) => match (n.as_str(), v) {
+                ("List", Val::List { len, elem }) => {
+                    if args.is_empty() || elem.as_ref() == args.first() {
+                        "true".into()
+                    } else {
+                        let u = self.unknown_bool("the elements of a list are not tracked");
+                        format!("(or (= {len} 0) {u})")
+                    }
+                }
+                ("Dict" | "Set", Val::List { .. }) => self.unknown_bool("dicts and sets are not modelled yet"),
+                ("Tuple", Val::Tuple(xs)) if xs.len() == args.len() => {
+                    let cs: Vec<T> = args.iter().zip(xs).map(|(a, x)| self.shape_test(a, x)).collect();
+                    and(&cs)
+                }
+                _ => match (self.type_key(&te), val_key(v)) {
+                    (Some(a), Some(b)) if a != b => "false".into(),
+                    (Some(_), Some(_)) => match (self.env.variant_parent(n), v) {
+                        (Some(_), Val::Sum { tag, ctors, .. }) => match ctors.iter().position(|c| &c.0 == n) {
+                            Some(k) => format!("(= {tag} {k})"),
+                            None => "false".into(),
+                        },
+                        (Some(_), _) => self.unknown_bool("a value of an unexpected shape"),
+                        (None, _) => "true".into(),
+                    },
+                    _ => self.unknown_bool("a type test that is not modelled"),
+                },
+            },
+            TypeExpr::Unit => match val_key(v) {
+                Some(k) => (k == "Unit").to_string(),
+                None => self.unknown_bool("a value of an unknown shape"),
+            },
+            _ => self.unknown_bool("a type test that is not modelled"),
+        }
+    }
+
+    /// Is `v` a value of `t` (the interpreter's `value_in`: the shape fits
+    /// and every refinement holds)? This is what a type pattern and `is` test,
+    /// and what makes a value valid for a union.
+    fn in_type(&mut self, t: &TypeExpr, v: &Val, extra: &[(String, Val)]) -> T {
+        match v {
+            Val::Opaque(r) => self.unknown_bool(&r.clone()),
+            Val::Absent => "false".into(),
+            Val::Union { tag, slots } => {
+                let (tag, slots) = (tag.clone(), slots.clone());
+                let cs: Vec<T> = slots
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| !matches!(s.1, Val::Absent))
+                    .map(|(i, (_, s))| {
+                        let c = self.in_type(t, s, extra);
+                        and(&[format!("(= {tag} {i})"), c])
+                    })
+                    .collect();
+                or(&cs)
+            }
+            _ => {
+                let s = self.shape_test(t, v);
+                if s == "false" {
+                    return s;
+                }
+                let union = matches!(self.env.expand_alias(t), TypeExpr::Union(_));
+                if s != "true" && !union && (self.type_key(t).is_none() || val_key(v).is_none()) {
+                    // the shape is unknown: the refinements can't be evaluated on it
+                    return s;
+                }
+                let c = self.check_type(t, v, extra);
+                and(&[s, c])
+            }
+        }
+    }
+
+    /// Is `t` a name for another type (a non-distinct alias)?
+    fn is_alias(&self, t: &TypeExpr) -> bool {
+        matches!(t, TypeExpr::Named(n, _) if matches!(self.env.types.get(n), Some(td) if !td.distinct && matches!(td.body, TypeBody::Alias(_))))
+    }
+
+    /// Does `v` have constructor `c` (`v is Circle`)?
+    fn is_ctor(&mut self, v: &Val, c: &str) -> T {
+        match v {
+            Val::Sum { tag, ctors, .. } => match ctors.iter().position(|k| k.0 == c) {
+                Some(k) => format!("(= {tag} {k})"),
+                None => "false".into(),
+            },
+            Val::Rec(n, _) | Val::Distinct(n, _) => (n == c).to_string(),
+            Val::Opaque(r) => self.unknown_bool(&r.clone()),
+            Val::Union { tag, slots } => {
+                let (tag, slots) = (tag.clone(), slots.clone());
+                let cs: Vec<T> = slots
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| !matches!(s.1, Val::Absent))
+                    .map(|(i, (_, s))| {
+                        let x = self.is_ctor(s, c);
+                        and(&[format!("(= {tag} {i})"), x])
+                    })
+                    .collect();
+                or(&cs)
+            }
+            _ => "false".into(),
+        }
+    }
+
+    /// The shape a pattern needs, when it is a literal, tuple, list or
+    /// constructor pattern (others test the value as a whole).
+    fn pattern_key(&self, p: &Pattern) -> Option<String> {
+        match p {
+            Pattern::Int(_) => Some("Int".into()),
+            Pattern::Bool(_) => Some("Bool".into()),
+            Pattern::Str(_) => Some("String".into()),
+            Pattern::Tuple(ps) => Some(format!("Tuple/{}", ps.len())),
+            Pattern::List(..) => Some("List*".into()),
+            Pattern::Ctor(c, _) => {
+                let tn = self.env.ctors.get(c)?;
+                let td = self.env.types.get(tn)?;
+                match &td.body {
+                    TypeBody::Alias(_) if td.distinct => Some(format!("distinct:{tn}")),
+                    TypeBody::Record(_) => Some(format!("rec:{tn}")),
+                    TypeBody::Sum(_) => Some(format!("sum:{tn}")),
+                    TypeBody::Alias(_) => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The slots of a union value a pattern can match (the others make its
+    /// condition `false`, so the arm's guard rules them out).
+    fn arm_slots(&mut self, p: &Pattern, slots: &[(String, Val)]) -> Vec<usize> {
+        let live = |i: &usize| !matches!(slots[*i].1, Val::Absent);
+        match p {
+            Pattern::Or(alts) => {
+                let mut out: Vec<usize> = vec![];
+                for a in alts {
+                    for i in self.arm_slots(a, slots) {
+                        if !out.contains(&i) {
+                            out.push(i);
+                        }
+                    }
+                }
+                out.sort();
+                out
+            }
+            Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(c) && self.env.is_type_name(c) => {
+                let t = TypeExpr::Named(c.clone(), vec![]);
+                (0..slots.len()).filter(live).filter(|&i| self.shape_test(&t, &slots[i].1) != "false").collect()
+            }
+            _ => match self.pattern_key(p) {
+                Some(k) => (0..slots.len()).filter(live).filter(|&i| slots[i].0 == k).collect(),
+                None => (0..slots.len()).filter(live).collect(),
+            },
+        }
+    }
+
+    /// The field `f` of a value.
+    fn field(&mut self, v: &Val, f: &str) -> Val {
+        match v {
+            Val::Rec(_, fs) => fs.iter().find(|x| x.0 == f).map(|x| x.1.clone()).unwrap_or(Val::Opaque(format!("field `{f}`"))),
+            Val::Distinct(_, inner) if f == "value" => (**inner).clone(),
+            Val::Tuple(xs) => f.parse::<usize>().ok().and_then(|i| xs.get(i).cloned()).unwrap_or(Val::Opaque(format!("field `{f}`"))),
+            // a sum's field (a variant used as a type, or a field every variant has):
+            // the field of whichever constructor is active
+            Val::Sum { ty, args, tag, ctors } => {
+                let vs = self.env.variants_of(ty, args).unwrap_or_default();
+                let mut found: Vec<(usize, Val)> = vec![];
+                for (k, (_, names, _)) in vs.iter().enumerate() {
+                    if let Some(i) = names.as_ref().and_then(|ns| ns.iter().position(|n| n == f)) {
+                        if let Some(x) = ctors.get(k).and_then(|c| c.1.get(i)) {
+                            found.push((k, x.clone()));
+                        }
+                    }
+                }
+                let tag = tag.clone();
+                match found.pop() {
+                    None => Val::Opaque(format!("field `{f}`")),
+                    Some((_, last)) => {
+                        let mut v = last;
+                        while let Some((k, x)) = found.pop() {
+                            v = self.merge(&format!("(= {tag} {k})"), &x, &v);
+                        }
+                        v
+                    }
+                }
+            }
+            // a union's field (every member has it, or the value was narrowed
+            // to members that have it): the field of the active member; any
+            // value for a member that has no such field
+            Val::Union { tag, slots } => {
+                let (tag, slots) = (tag.clone(), slots.clone());
+                let mut v = Val::Opaque(format!("field `{f}` of a union member without it"));
+                for (i, (_, s)) in slots.iter().enumerate().rev() {
+                    if matches!(s, Val::Absent) {
+                        continue;
+                    }
+                    let x = self.field(s, f);
+                    v = self.merge(&format!("(= {tag} {i})"), &x, &v);
+                }
+                v
+            }
+            Val::Opaque(r) => Val::Opaque(r.clone()),
+            _ => Val::Opaque(format!("field `{f}` of a value of an unexpected shape")),
+        }
+    }
+
+    /// Merge two values of different shapes into a union.
+    fn merge_union(&mut self, c: &str, a: &Val, b: &Val) -> Option<Val> {
+        let (ta, sa) = slots_of(a)?;
+        let (tb, sb) = slots_of(b)?;
+        let mut keys: Vec<String> = sa.iter().map(|s| s.0.clone()).collect();
+        for (k, _) in &sb {
+            if !keys.contains(k) {
+                keys.push(k.clone());
+            }
+        }
+        let find = |ss: &[(String, Val)], k: &str| ss.iter().find(|s| s.0 == k).map(|s| s.1.clone()).unwrap_or(Val::Absent);
+        let slots: Vec<(String, Val)> = keys
+            .iter()
+            .map(|k| {
+                let (x, y) = (find(&sa, k), find(&sb, k));
+                (k.clone(), self.merge(c, &x, &y))
+            })
+            .collect();
+        // `b`'s tag, renumbered to the merged slots
+        let map: Vec<usize> = sb.iter().map(|s| keys.iter().position(|k| k == &s.0).unwrap()).collect();
+        let tb = if map.iter().enumerate().all(|(j, &i)| i == j) {
+            tb
+        } else {
+            let mut t = map.last().unwrap().to_string();
+            for j in (0..map.len() - 1).rev() {
+                t = ite(&format!("(= {tb} {j})"), &map[j].to_string(), &t);
+            }
+            t
+        };
+        Some(Val::Union { tag: ite(c, &ta, &tb), slots })
+    }
+
     /// A fresh value of type `t` that satisfies `t`.
     fn havoc(&mut self, t: &TypeExpr) -> Val {
         let v = self.shape(t, 0);
@@ -361,6 +798,13 @@ impl<'a> Vc<'a> {
                 let len = self.fresh("Int");
                 self.facts.push(format!("(>= {len} 0)"));
                 Val::List { len, elem: elem.clone() }
+            }
+            Val::Union { slots, .. } => {
+                let tag = self.fresh("Int");
+                let live: Vec<T> = slots.iter().enumerate().filter(|(_, s)| !matches!(s.1, Val::Absent)).map(|(i, _)| format!("(= {tag} {i})")).collect();
+                self.facts.push(or(&live));
+                let slots = slots.iter().map(|(k, s)| (k.clone(), self.refresh(s))).collect();
+                Val::Union { tag, slots }
             }
             Val::Absent => Val::Absent,
             Val::Opaque(r) => Val::Opaque(r.clone()),
@@ -408,8 +852,17 @@ impl<'a> Vc<'a> {
             let r = r.clone();
             return self.unknown_bool(&r);
         }
+        if matches!(v, Val::Union { .. }) && !matches!(t, TypeExpr::Union(_) | TypeExpr::Refined(..)) && !self.is_alias(t) {
+            // a union value against one type (a narrowed value passed on):
+            // its active member must be of that type
+            return self.in_type(t, v, extra);
+        }
         match t {
-            TypeExpr::Union(_) => self.unknown_bool("values of a union type are not modelled yet"),
+            // valid for a union: a valid value of one of its members
+            TypeExpr::Union(ms) => {
+                let cs: Vec<T> = ms.iter().map(|m| self.in_type(m, v, extra)).collect();
+                or(&cs)
+            }
             TypeExpr::Named(n, args) if self.env.variant_parent(n).is_some() => {
                 let parent = TypeExpr::Named(self.env.variant_parent(n).unwrap(), args.clone());
                 let c = self.check_type(&parent, v, extra);
@@ -568,18 +1021,29 @@ impl<'a> Vc<'a> {
             (Val::List { len: l1, elem: e1 }, Val::List { len: l2, elem: e2 }) => Val::List { len: ite(c, l1, l2), elem: if e1 == e2 { e1.clone() } else { None } },
             (Val::Distinct(n, x), Val::Distinct(m, y)) if n == m => Val::Distinct(n.clone(), Box::new(self.merge(c, x, y))),
             (Val::Opaque(r), _) | (_, Val::Opaque(r)) => Val::Opaque(r.clone()),
-            _ => Val::Opaque("values of different shapes were merged".into()),
+            // values of different shapes (`if big { Square {…} } else { Circle {…} }`): a union
+            _ => self.merge_union(c, a, b).unwrap_or_else(|| Val::Opaque("values of different shapes were merged".into())),
         }
     }
 
     /// Run alternative branches (guard, bindings, body) and merge them.
     fn branches(&mut self, arms: Vec<(T, Vec<(String, Val)>, &Expr)>) -> Val {
+        self.branches_narrowed(arms, vec![])
+    }
+
+    /// `branches`, where in arm `i` the variables `narrow[i]` hold the given
+    /// values (equal to theirs under the arm's guard: a union's member).
+    fn branches_narrowed(&mut self, arms: Vec<(T, Vec<(String, Val)>, &Expr)>, mut narrow: Vec<Vec<(String, Val)>>) -> Val {
         let base_pc = self.pc.len();
         let saved = self.scopes.clone();
         let mut outs: Vec<(T, Val, Vec<HashMap<String, Val>>)> = vec![];
         let n_arms = arms.len();
-        for (g, binds, body) in arms {
+        narrow.resize(n_arms, vec![]);
+        for ((g, binds, body), narrow) in arms.into_iter().zip(narrow) {
             self.scopes = saved.clone();
+            for (x, v) in narrow {
+                self.set(&x, v);
+            }
             self.dead = false;
             self.pc.push(g.clone());
             self.scopes.push(binds.into_iter().collect());
@@ -620,28 +1084,28 @@ impl<'a> Vc<'a> {
     /// The condition for `v` to match `p`, and the bindings it makes.
     /// Does `v` belong to the type named `c` (a pattern `Positive =>`, `x is Circle`)?
     fn type_test(&mut self, c: &str, v: &Val) -> T {
-        let t = TypeExpr::Named(c.to_string(), vec![]);
-        let head = match self.env.expand_alias(&t) {
-            TypeExpr::Named(h, _) => h,
-            _ => return self.unknown_bool("a type test on a type that is not modelled"),
-        };
-        let fits = match v {
-            Val::Int(_) => head == "Int",
-            Val::Bool(_) => head == "Bool",
-            Val::Str(_) => head == "String",
-            Val::List { .. } => matches!(head.as_str(), "List" | "Dict" | "Set"),
-            Val::Rec(n, _) | Val::Distinct(n, _) => &head == n,
-            Val::Sum { ty, .. } => &head == ty || self.env.variant_parent(&head).as_ref() == Some(ty),
-            _ => false,
-        };
-        if fits {
-            self.check_type(&t, v, &[])
-        } else {
-            self.unknown_bool("a type test that is not modelled")
-        }
+        self.in_type(&TypeExpr::Named(c.to_string(), vec![]), v, &[])
     }
 
     fn pattern(&mut self, p: &Pattern, v: &Val, binds: &mut Vec<(String, Val)>) -> T {
+        if let Val::Union { tag, slots } = v {
+            let type_name = matches!(p, Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(c) && self.env.is_type_name(c));
+            if let Some(k) = self.pattern_key(p).filter(|_| !type_name) {
+                // a literal, tuple, list or constructor pattern takes the member of its shape
+                let (tag, slots) = (tag.clone(), slots.clone());
+                return match slots.iter().position(|s| s.0 == k && !matches!(s.1, Val::Absent)) {
+                    Some(i) => {
+                        let c = self.pattern(p, &slots[i].1, binds);
+                        and(&[format!("(= {tag} {i})"), c])
+                    }
+                    None => {
+                        // no member has that shape: it never matches (bind its names anyway)
+                        self.pattern(p, &Val::Opaque("a pattern no member of the union matches".into()), binds);
+                        "false".into()
+                    }
+                };
+            }
+        }
         match p {
             Pattern::Cond(c) => {
                 // `where …`: evaluated with `it` and what is in scope; a fault just means no match
@@ -687,6 +1151,7 @@ impl<'a> Vc<'a> {
                 let t = self.as_bool(v);
                 if *b { t } else { not(&t) }
             }
+            Pattern::Str(s) if !smt_string(s) => self.unknown_bool(BEYOND),
             Pattern::Str(s) => format!("(= {} {})", self.as_str(v), str_lit(s)),
             Pattern::Tuple(ps) => match v {
                 Val::Tuple(xs) if xs.len() == ps.len() => {
@@ -821,6 +1286,22 @@ impl<'a> Vc<'a> {
                 let r = r.clone();
                 self.unknown_bool(&r)
             }
+            // union values are equal when they have the same shape and equal values of it
+            (Val::Union { .. }, _) | (_, Val::Union { .. }) => {
+                let (Some((t1, s1)), Some((t2, s2))) = (slots_of(a), slots_of(b)) else {
+                    return self.unknown_bool("comparing values of an unknown shape");
+                };
+                let mut cs = vec![];
+                for (i, (k, x)) in s1.iter().enumerate() {
+                    for (j, (k2, y)) in s2.iter().enumerate() {
+                        if k == k2 && !matches!(x, Val::Absent) && !matches!(y, Val::Absent) {
+                            let e = self.eq(x, y);
+                            cs.push(and(&[format!("(= {t1} {i})"), format!("(= {t2} {j})"), e]));
+                        }
+                    }
+                }
+                or(&cs)
+            }
             _ => self.unknown_bool("comparing values of different shapes"),
         }
     }
@@ -889,6 +1370,7 @@ impl<'a> Vc<'a> {
             Expr::Int(n) => Val::Int(num(*n)),
             Expr::BigInt(d) => Val::Int(d.clone()),
             Expr::Float(_) => Val::Opaque("floats are not modelled yet".into()),
+            Expr::Str(s) if !smt_string(s) => Val::Opaque(BEYOND.into()),
             Expr::Str(s) => Val::Str(str_lit(s)),
             Expr::Bool(b) => Val::Bool(b.to_string()),
             Expr::Unit => Val::Unit,
@@ -969,37 +1451,7 @@ impl<'a> Vc<'a> {
             }
             Expr::Field(r, f) => {
                 let v = self.eval(r);
-                match &v {
-                    Val::Rec(_, fs) => fs.iter().find(|x| &x.0 == f).map(|x| x.1.clone()).unwrap_or(Val::Opaque(format!("field `{f}`"))),
-                    Val::Distinct(_, inner) if f == "value" => (**inner).clone(),
-                    Val::Tuple(xs) => f.parse::<usize>().ok().and_then(|i| xs.get(i).cloned()).unwrap_or(Val::Opaque(format!("field `{f}`"))),
-                    // a sum's field (a variant used as a type, or a field every variant has):
-                    // the field of whichever constructor is active
-                    Val::Sum { ty, args, tag, ctors } => {
-                        let vs = self.env.variants_of(ty, args).unwrap_or_default();
-                        let mut found: Vec<(usize, Val)> = vec![];
-                        for (k, (_, names, _)) in vs.iter().enumerate() {
-                            if let Some(i) = names.as_ref().and_then(|ns| ns.iter().position(|n| n == f)) {
-                                if let Some(x) = ctors.get(k).and_then(|c| c.1.get(i)) {
-                                    found.push((k, x.clone()));
-                                }
-                            }
-                        }
-                        let (tag, mut found) = (tag.clone(), found);
-                        match found.pop() {
-                            None => Val::Opaque(format!("field `{f}`")),
-                            Some((_, last)) => {
-                                let mut v = last;
-                                while let Some((k, x)) = found.pop() {
-                                    v = self.merge(&format!("(= {tag} {k})"), &x, &v);
-                                }
-                                v
-                            }
-                        }
-                    }
-                    Val::Opaque(r) => Val::Opaque(r.clone()),
-                    _ => Val::Opaque(format!("field `{f}` of a value of an unexpected shape")),
-                }
+                self.field(&v, f)
             }
             Expr::Un(UnOp::Neg, x) => match self.eval(x) {
                 Val::Int(t) => Val::Int(format!("(- {t})")),
@@ -1052,15 +1504,7 @@ impl<'a> Vc<'a> {
             }
             Expr::Is(x, c) => {
                 let v = self.eval(x);
-                match &v {
-                    Val::Sum { tag, ctors, .. } => match ctors.iter().position(|k| &k.0 == c) {
-                        Some(k) => Val::Bool(format!("(= {tag} {k})")),
-                        None => Val::Bool("false".into()),
-                    },
-                    Val::Rec(n, _) | Val::Distinct(n, _) => Val::Bool((n == c).to_string()),
-                    Val::Opaque(r) => Val::Bool(self.unknown_bool(&r.clone())),
-                    _ => Val::Bool("false".into()),
-                }
+                Val::Bool(self.is_ctor(&v, c))
             }
             Expr::If(c, t, f) => {
                 let cv = self.eval(c);
@@ -1071,8 +1515,24 @@ impl<'a> Vc<'a> {
                 let v = self.eval(s);
                 let mut prev: Vec<T> = vec![];
                 let mut alts = vec![];
+                let mut narrow = vec![];
                 for a in arms {
-                    let mut binds: Vec<(String, Val)> = name.iter().map(|n| (n.clone(), v.clone())).collect();
+                    // a union narrowed to the one member the arm's pattern can match
+                    let member = match &v {
+                        Val::Union { slots, .. } => {
+                            let slots = slots.clone();
+                            match self.arm_slots(&a.pat, &slots)[..] {
+                                [i] => Some(slots[i].1.clone()),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    narrow.push(match (&**s, &member) {
+                        (Expr::Var(x), Some(m)) if self.lookup(x).is_some() => vec![(x.clone(), m.clone())],
+                        _ => vec![],
+                    });
+                    let mut binds: Vec<(String, Val)> = name.iter().map(|n| (n.clone(), member.clone().unwrap_or(v.clone()))).collect();
                     let n = self.pc.len();
                     self.pc.extend(prev.iter().map(|p| not(p)));
                     let cond = self.pattern(&a.pat, &v, &mut binds);
@@ -1082,7 +1542,7 @@ impl<'a> Vc<'a> {
                     alts.push((and(&g), binds, &a.body));
                     prev.push(cond);
                 }
-                self.branches(alts)
+                self.branches_narrowed(alts, narrow)
             }
             Expr::Block(stmts, last) => {
                 self.scopes.push(HashMap::new());
@@ -1418,6 +1878,16 @@ impl<'a> Vc<'a> {
         res
     }
 
+    /// `Some(payload)` when `some` holds, else `None` (an `Option[t]`).
+    fn option(&mut self, t: &TypeExpr, some: &str, payload: Val) -> Val {
+        let vs = self.env.variants_of("Option", &[t.clone()]).unwrap_or_default();
+        let (Some(ks), Some(kn)) = (vs.iter().position(|v| v.0 == "Some"), vs.iter().position(|v| v.0 == "None")) else {
+            return Val::Opaque("`Option` is not the prelude's".into());
+        };
+        let ctors = vs.iter().map(|(n, _, _)| (n.clone(), if n == "Some" { vec![payload.clone()] } else { vec![] })).collect();
+        Val::Sum { ty: "Option".into(), args: vec![t.clone()], tag: ite(some, &ks.to_string(), &kn.to_string()), ctors }
+    }
+
     fn builtin(&mut self, name: &str, arg_exprs: &[Expr], a: Vec<Val>) -> Val {
         let arg = |i: usize| a.get(i).cloned().unwrap_or(Val::Opaque("a missing argument".into()));
         let not_modelled = format!("`{name}` is not modelled");
@@ -1434,6 +1904,7 @@ impl<'a> Vc<'a> {
             },
             ("abs", 1) => match arg(0) {
                 Val::Int(x) => Val::Int(format!("(ite (< {x} 0) (- {x}) {x})")),
+                Val::Union { .. } => Val::Opaque(not_modelled),
                 v => v,
             },
             ("min" | "max", 2) => {
@@ -1447,8 +1918,36 @@ impl<'a> Vc<'a> {
             ("matches", 2) => {
                 let s = self.as_str(&arg(0));
                 match arg_exprs.get(1) {
-                    Some(Expr::Str(re)) => match regex_to_smt(re) {
-                        Some(r) => Val::Bool(format!("(str.in_re {s} {r})")),
+                    Some(Expr::Str(re)) => match regex_model(re) {
+                        Some(model) => {
+                            let approx = matches!(model, RegexModel::Between(..));
+                            let b = match model {
+                                RegexModel::Exact(r) => format!("(str.in_re {s} {r})"),
+                                RegexModel::Between(under, over) => {
+                                    let b = self.fresh_why("Bool", &format!("the regular expression \"{re}\" has a large Unicode class (approximated from both sides)"));
+                                    self.facts.push(format!("(=> (str.in_re {s} {under}) {b})"));
+                                    self.facts.push(format!("(=> {b} (str.in_re {s} {over}))"));
+                                    b
+                                }
+                            };
+                            // what the patterns' languages say about each other, for the same string
+                            for (s2, re2, b2, approx2) in self.matched.clone() {
+                                if s2 == s && re2 != *re && (approx || approx2) {
+                                    let (sub, sup, disjoint) = regex_relations(re, &re2);
+                                    if sub {
+                                        self.facts.push(implies(&b, &b2));
+                                    }
+                                    if sup {
+                                        self.facts.push(implies(&b2, &b));
+                                    }
+                                    if disjoint {
+                                        self.facts.push(not(&and(&[b.clone(), b2.clone()])));
+                                    }
+                                }
+                            }
+                            self.matched.push((s.clone(), re.clone(), b.clone(), approx));
+                            Val::Bool(b)
+                        }
                         None => Val::Bool(self.unknown_bool(&format!("the regular expression \"{re}\" uses features not modelled yet"))),
                     },
                     _ => Val::Bool(self.unknown_bool("`matches` with a pattern that is not a literal")),
@@ -1551,6 +2050,76 @@ impl<'a> Vc<'a> {
                     self.facts.push(format!("(=> (forall (({x} Int)) (=> {p} (>= {x} 0))) (>= {total} 0))"));
                 }
                 Val::Int(total)
+            }
+            // strings are sequences of code points, as `chars()` counts them
+            ("ends_with", 2) => {
+                let (s, p) = (self.as_str(&arg(0)), self.as_str(&arg(1)));
+                Val::Bool(format!("(str.suffixof {p} {s})"))
+            }
+            // characters start..end, both clamped to 0..len (`str.substr` takes a length)
+            ("slice", 3) if matches!(arg(0), Val::Str(_)) => {
+                let s = self.as_str(&arg(0));
+                let (a, b) = (self.as_int(&arg(1)), self.as_int(&arg(2)));
+                let n = format!("(str.len {s})");
+                let clamp = |x: &str| format!("(ite (< {x} 0) 0 (ite (> {x} {n}) {n} {x}))");
+                let (a, b) = (clamp(&a), clamp(&b));
+                Val::Str(format!("(str.substr {s} {a} (- {b} {a}))"))
+            }
+            ("get", 2) if matches!(arg(0), Val::Str(_)) => {
+                let s = self.as_str(&arg(0));
+                let i = self.as_int(&arg(1));
+                let string = TypeExpr::Named("String".into(), vec![]);
+                self.option(&string, &format!("(and (<= 0 {i}) (< {i} (str.len {s})))"), Val::Str(format!("(str.at {s} {i})")))
+            }
+            ("chars", 1) => {
+                let s = self.as_str(&arg(0));
+                Val::List { len: format!("(str.len {s})"), elem: Some(TypeExpr::Named("String".into(), vec![])) }
+            }
+            // the first match, counted in characters; "" is found at 0
+            ("index_of", 2) => {
+                let (s, p) = (self.as_str(&arg(0)), self.as_str(&arg(1)));
+                let i = format!("(str.indexof {s} {p} 0)");
+                let int = TypeExpr::Named("Int".into(), vec![]);
+                self.option(&int, &format!("(>= {i} 0)"), Val::Int(i))
+            }
+            // every non-overlapping match, left to right (Rust's `str::replace`);
+            // an empty pattern is a runtime fault, so that is checked
+            ("replace", 3) => {
+                let (s, from, to) = (self.as_str(&arg(0)), self.as_str(&arg(1)), self.as_str(&arg(2)));
+                self.oblige("`replace` with a pattern that is not empty".into(), |_| format!("(not (= {from} \"\"))"));
+                Val::Str(format!("(str.replace_all {s} {from} {to})"))
+            }
+            ("to_string", 1) => match arg(0) {
+                Val::Str(s) => Val::Str(s),
+                Val::Bool(b) => Val::Str(format!("(ite {b} \"true\" \"false\")")),
+                // `str.from_int` is "" for negative numbers
+                Val::Int(n) => Val::Str(format!("(ite (>= {n} 0) (str.from_int {n}) (str.++ \"-\" (str.from_int (- {n}))))")),
+                _ => Val::Str(self.fresh_why("String", &not_modelled)),
+            },
+            // only the forms whose result is certain: digits, `-` and digits, and
+            // strings without an ASCII digit (never a number). Whitespace, `+`
+            // and `_` (which the parser accepts) leave the result unknown.
+            ("parse_int", 1) => {
+                let s = self.as_str(&arg(0));
+                let digits = "(re.+ (re.range \"0\" \"9\"))";
+                let pos = format!("(str.in_re {s} {digits})");
+                let rest = format!("(str.substr {s} 1 (- (str.len {s}) 1))");
+                let neg = format!("(and (str.prefixof \"-\" {s}) (str.in_re {rest} {digits}))");
+                let none = format!("(not (str.in_re {s} (re.++ re.all (re.range \"0\" \"9\") re.all)))");
+                // true by the definition of `str.to_int` (-1 unless all digits), which Z3 does not find alone
+                for x in [&s, &rest] {
+                    self.facts.push(format!("(= (>= (str.to_int {x}) 0) (str.in_re {x} {digits}))"));
+                }
+                let n = self.fresh_why("Int", "`parse_int` of a string with whitespace, `+` or `_`");
+                let payload = format!("(ite {pos} (str.to_int {s}) (ite {neg} (- (str.to_int {rest})) {n}))");
+                let some = self.fresh_why("Bool", "`parse_int` of a string with whitespace, `+` or `_`");
+                let int = TypeExpr::Named("Int".into(), vec![]);
+                self.option(&int, &format!("(or {pos} {neg} (and (not {none}) {some}))"), Val::Int(payload))
+            }
+            // ASCII digits only, and not empty
+            ("is_digit", 1) => {
+                let s = self.as_str(&arg(0));
+                Val::Bool(format!("(str.in_re {s} (re.+ (re.range \"0\" \"9\")))"))
             }
             ("trim", 1) => {
                 let s = self.as_str(&arg(0));
@@ -1747,6 +2316,12 @@ impl<'a> Vc<'a> {
             let tn = match &new {
                 Val::Rec(n, _) | Val::Distinct(n, _) => Some(n.clone()),
                 Val::Sum { ty, .. } => Some(ty.clone()),
+                Val::Opaque(r) => {
+                    // whatever the interpreter checks here can't be proven
+                    let r = r.clone();
+                    self.oblige(format!("{verb} `{}`", crate::printer::expr(place, 0)), |vc| vc.unknown_bool(&r));
+                    None
+                }
                 _ => None,
             };
             if let Some(tn) = tn {
@@ -1893,7 +2468,9 @@ fn set_path(base: Val, path: &[String], v: Val) -> Val {
             }
             Val::Rec(n, fs)
         }
-        other => other,
+        // a field of a sum or union value: which member's field changed is
+        // not tracked, so the whole value is unknown
+        _ => Val::Opaque("a value whose field was assigned".into()),
     }
 }
 
@@ -1998,167 +2575,256 @@ pub fn place_root(e: &Expr) -> Option<String> {
 
 // ---- regular expressions ----
 
-/// Translate a regular expression (the subset whose meaning is certain:
-/// literals, classes with ranges, groups, alternation and quantifiers) to an
-/// SMT-LIB regular expression. `matches` is a full match.
-pub fn regex_to_smt(re: &str) -> Option<T> {
-    let cs: Vec<char> = re.chars().collect();
-    let mut i = 0;
-    if cs.first() == Some(&'^') {
-        i = 1;
-    }
-    let mut end = cs.len();
-    if end > i && cs[end - 1] == '$' && (end < 2 || cs[end - 2] != '\\') {
-        end -= 1;
-    }
-    let r = alt(&cs[..end], &mut i)?;
-    (i == end).then_some(r)
+/// The largest code point an SMT-LIB string can hold (the standard's
+/// alphabet is U+0000..U+2FFFF; Z3 and cvc5 both stop there). Rust strings go
+/// up to U+10FFFF, so a proof about strings covers the strings whose code
+/// points are all at most this. The cross-check fuzzing is the backstop.
+pub const MAX_CHAR: u32 = 0x2FFFF;
+
+/// Translate a regular expression to an SMT-LIB regular expression, with
+/// the interpreter's meaning: `matches` is `regex::Regex` on `^(?:re)$`,
+/// a Unicode regex (`\d` is any decimal digit, `\w` and `\s` are Unicode
+/// classes, `.` is any character but `\n`, `(?i)` is Unicode case folding).
+/// The pattern is parsed by `regex-syntax` with the same settings, and its
+/// HIR translated. `None` (an unknown) for anything whose meaning can't be
+/// expressed exactly: word boundaries, multi-line anchors, anchors that
+/// are not at the very start or end, byte classes, and literal characters
+/// past `MAX_CHAR`.
+#[cfg(test)]
+fn regex_to_smt(re: &str) -> Option<T> {
+    hir_to_smt(&parse_regex(re)?, true, true, Mode::Exact, &mut 0)
 }
 
-fn lit(c: char) -> T {
-    format!("(str.to_re {})", str_lit(&c.to_string()))
+/// How `matches(s, re)` is modelled: `Exact(r)` is `s in r`. With a class of
+/// more than `MAX_RANGES` ranges (`\w`, `\p{L}`), which Z3 can't decide in
+/// reasonable time, it is `Between(under, over)`: the class replaced by a
+/// subset of its ranges, and by a superset with fewer gaps. Regex
+/// operators are monotone, so `under <= re <= over`, and `matches` is any
+/// value that is true on `under` and false outside `over`.
+#[derive(Debug, PartialEq)]
+pub enum RegexModel {
+    Exact(T),
+    Between(T, T),
 }
 
-fn alt(cs: &[char], i: &mut usize) -> Option<T> {
-    let mut parts = vec![seq(cs, i)?];
-    while cs.get(*i) == Some(&'|') {
-        *i += 1;
-        parts.push(seq(cs, i)?);
+/// Classes with more ranges than this are approximated (see `RegexModel`).
+const MAX_RANGES: usize = 24;
+
+pub fn regex_model(re: &str) -> Option<RegexModel> {
+    let hir = parse_regex(re)?;
+    let mut widest = 0;
+    let exact = hir_to_smt(&hir, true, true, Mode::Exact, &mut widest)?;
+    if widest <= MAX_RANGES {
+        return Some(RegexModel::Exact(exact));
     }
-    Some(if parts.len() == 1 { parts.pop().unwrap() } else { format!("(re.union {})", parts.join(" ")) })
+    Some(RegexModel::Between(hir_to_smt(&hir, true, true, Mode::Under, &mut 0)?, hir_to_smt(&hir, true, true, Mode::Over, &mut 0)?))
 }
 
-fn seq(cs: &[char], i: &mut usize) -> Option<T> {
-    let mut items = vec![];
-    while let Some(&c) = cs.get(*i) {
-        if c == '|' || c == ')' {
-            break;
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Exact,
+    Under,
+    Over,
+}
+
+/// The pattern as the interpreter's `matches` reads it.
+fn parse_regex(re: &str) -> Option<regex_syntax::hir::Hir> {
+    regex_syntax::ParserBuilder::new()
+        // `regex::Regex::new`'s settings (regex-automata's `syntax::Config` defaults)
+        .case_insensitive(false)
+        .multi_line(false)
+        .dot_matches_new_line(false)
+        .crlf(false)
+        .line_terminator(b'\n')
+        .swap_greed(false)
+        .ignore_whitespace(false)
+        .unicode(true)
+        .utf8(true)
+        .nest_limit(250)
+        .octal(false)
+        .build()
+        .parse(&format!("^(?:{re})$"))
+        .ok()
+}
+
+/// A class's ranges, within what SMT strings can hold; in `Under` / `Over`
+/// mode at most `MAX_RANGES` of them: a subset (ranges touching Latin-1
+/// first, then the widest), or a superset (the smallest gaps filled).
+fn class_ranges(c: &regex_syntax::hir::ClassUnicode, mode: Mode) -> Vec<(u32, u32)> {
+    let mut rs: Vec<(u32, u32)> = c.ranges().iter().filter(|r| r.start() as u32 <= MAX_CHAR).map(|r| (r.start() as u32, (r.end() as u32).min(MAX_CHAR))).collect();
+    if rs.len() <= MAX_RANGES || mode == Mode::Exact {
+        return rs;
+    }
+    match mode {
+        Mode::Under => {
+            let mut order: Vec<usize> = (0..rs.len()).collect();
+            order.sort_by_key(|&i| (rs[i].0 > 0xFF, std::cmp::Reverse(rs[i].1 - rs[i].0), i));
+            let mut keep: Vec<usize> = order.into_iter().take(MAX_RANGES).collect();
+            keep.sort();
+            keep.into_iter().map(|i| rs[i]).collect()
         }
-        let base = atom(cs, i)?;
-        items.push(quant(cs, i, base)?);
+        _ => {
+            // fill the smallest gaps between neighbours until few enough ranges are left
+            let mut gaps: Vec<(u32, usize)> = (1..rs.len()).map(|i| (rs[i].0 - rs[i - 1].1, i)).collect();
+            gaps.sort();
+            let mut fill = vec![false; rs.len()];
+            for &(_, i) in gaps.iter().take(rs.len() - MAX_RANGES) {
+                fill[i] = true;
+            }
+            let mut out: Vec<(u32, u32)> = vec![];
+            for (i, r) in rs.drain(..).enumerate() {
+                match out.last_mut() {
+                    Some(last) if fill[i] => last.1 = r.1,
+                    _ => out.push(r),
+                }
+            }
+            out
+        }
     }
-    Some(match items.len() {
-        0 => "(str.to_re \"\")".into(),
-        1 => items.pop().unwrap(),
-        _ => format!("(re.++ {})", items.join(" ")),
-    })
 }
 
-fn escaped(c: char) -> Option<char> {
-    // only escapes of punctuation have a certain meaning (\d, \w, \s are Unicode-aware)
-    (c.is_ascii_punctuation()).then_some(c)
-}
-
-fn atom(cs: &[char], i: &mut usize) -> Option<T> {
-    let c = cs[*i];
-    *i += 1;
-    match c {
-        '(' => {
-            if cs.get(*i) == Some(&'?') {
-                if cs.get(*i + 1) == Some(&':') {
-                    *i += 2;
-                } else {
+/// How two patterns' languages relate, over every string the interpreter
+/// can match (so also over the SMT strings): `(a <= b, b <= a, disjoint)`,
+/// each `false` when it does not hold or could not be decided. Decided on
+/// the product of the two patterns' DFAs (as `regex` builds them, on UTF-8
+/// bytes; a string either accepts is valid UTF-8).
+pub fn regex_relations(a: &str, b: &str) -> (bool, bool, bool) {
+    use regex_automata::dfa::{dense, Automaton, StartKind};
+    use regex_automata::util::primitives::StateID;
+    use regex_automata::{Anchored, Input, MatchKind};
+    thread_local! {
+        static DFAS: std::cell::RefCell<HashMap<String, Option<std::rc::Rc<dense::DFA<Vec<u32>>>>>> = Default::default();
+    }
+    let dfa = |re: &str| {
+        DFAS.with(|c| {
+            c.borrow_mut()
+                .entry(re.to_string())
+                .or_insert_with(|| {
+                    let config = dense::Config::new().match_kind(MatchKind::All).start_kind(StartKind::Anchored).dfa_size_limit(Some(16 << 20)).determinize_size_limit(Some(16 << 20));
+                    let syntax = regex_automata::util::syntax::Config::new().unicode(true).utf8(true).nest_limit(250);
+                    dense::Builder::new().configure(config).syntax(syntax).build(&format!("^(?:{re})$")).ok().map(std::rc::Rc::new)
+                })
+                .clone()
+        })
+    };
+    let (Some(da), Some(db)) = (dfa(a), dfa(b)) else { return (false, false, false) };
+    let start = |d: &dense::DFA<Vec<u32>>| d.start_state_forward(&Input::new("").anchored(Anchored::Yes)).ok();
+    let (Some(sa), Some(sb)) = (start(&da), start(&db)) else { return (false, false, false) };
+    // is there a string with `want(in a, in b)`? `None` if the search is too large
+    let exists = |want: &dyn Fn(bool, bool) -> bool| -> Option<bool> {
+        let mut seen: HashSet<(StateID, StateID)> = HashSet::from([(sa, sb)]);
+        let mut todo = vec![(sa, sb)];
+        while let Some((x, y)) = todo.pop() {
+            let (ex, ey) = (da.next_eoi_state(x), db.next_eoi_state(y));
+            if da.is_quit_state(ex) || db.is_quit_state(ey) {
+                return None;
+            }
+            if want(da.is_match_state(ex), db.is_match_state(ey)) {
+                return Some(true);
+            }
+            for byte in 0..=255u8 {
+                let (nx, ny) = (da.next_state(x, byte), db.next_state(y, byte));
+                if da.is_quit_state(nx) || db.is_quit_state(ny) {
                     return None;
                 }
-            }
-            let r = alt(cs, i)?;
-            if cs.get(*i) != Some(&')') {
-                return None;
-            }
-            *i += 1;
-            Some(r)
-        }
-        '[' => class(cs, i),
-        '.' => Some(format!("(re.inter re.allchar (re.comp {}))", lit('\n'))),
-        '\\' => {
-            let e = escaped(*cs.get(*i)?)?;
-            *i += 1;
-            Some(lit(e))
-        }
-        '*' | '+' | '?' | '{' | '^' | '$' | ']' => None,
-        _ => Some(lit(c)),
-    }
-}
-
-fn class(cs: &[char], i: &mut usize) -> Option<T> {
-    let neg = cs.get(*i) == Some(&'^');
-    if neg {
-        *i += 1;
-    }
-    let mut items = vec![];
-    let mut first = true;
-    loop {
-        let c = *cs.get(*i)?;
-        *i += 1;
-        if c == ']' && !first {
-            break;
-        }
-        first = false;
-        let lo = match c {
-            '\\' => {
-                let e = escaped(*cs.get(*i)?)?;
-                *i += 1;
-                e
-            }
-            '[' => return None,
-            _ => c,
-        };
-        if cs.get(*i) == Some(&'-') && cs.get(*i + 1).is_some_and(|&n| n != ']') {
-            let hi = cs[*i + 1];
-            if hi == '\\' || hi == '[' {
-                return None;
-            }
-            *i += 2;
-            items.push(format!("(re.range {} {})", str_lit(&lo.to_string()), str_lit(&hi.to_string())));
-        } else {
-            items.push(lit(lo));
-        }
-    }
-    let u = if items.len() == 1 { items.pop().unwrap() } else { format!("(re.union {})", items.join(" ")) };
-    Some(if neg { format!("(re.inter re.allchar (re.comp {u}))") } else { u })
-}
-
-fn quant(cs: &[char], i: &mut usize, base: T) -> Option<T> {
-    let r = match cs.get(*i) {
-        Some('*') => {
-            *i += 1;
-            format!("(re.* {base})")
-        }
-        Some('+') => {
-            *i += 1;
-            format!("(re.+ {base})")
-        }
-        Some('?') => {
-            *i += 1;
-            format!("(re.opt {base})")
-        }
-        Some('{') => {
-            let close = cs[*i..].iter().position(|&c| c == '}')? + *i;
-            let inner: String = cs[*i + 1..close].iter().collect();
-            *i = close + 1;
-            let (lo, hi) = match inner.split_once(',') {
-                None => {
-                    let n: u32 = inner.trim().parse().ok()?;
-                    (n, Some(n))
+                // every witness is in at least one language: one side must stay alive
+                if (da.is_dead_state(nx) && db.is_dead_state(ny)) || !seen.insert((nx, ny)) {
+                    continue;
                 }
-                Some((a, b)) => (a.trim().parse().ok()?, if b.trim().is_empty() { None } else { Some(b.trim().parse().ok()?) }),
-            };
-            match hi {
-                Some(h) if h >= lo => format!("((_ re.loop {lo} {h}) {base})"),
-                Some(_) => return None,
-                None => format!("(re.++ ((_ re.loop {lo} {lo}) {base}) (re.* {base}))"),
+                if seen.len() > 50_000 {
+                    return None;
+                }
+                todo.push((nx, ny));
             }
         }
-        _ => return Some(base),
+        Some(false)
     };
-    // a lazy quantifier matches the same strings
-    if cs.get(*i) == Some(&'?') {
-        *i += 1;
-    }
-    if matches!(cs.get(*i), Some('*' | '+' | '{')) {
-        return None;
-    }
-    Some(r)
+    (
+        exists(&|x, y| x && !y) == Some(false),
+        exists(&|x, y| y && !x) == Some(false),
+        exists(&|x, y| x && y) == Some(false),
+    )
+}
+
+fn re_empty() -> T {
+    "(str.to_re \"\")".into()
+}
+
+/// `at_start` / `at_end`: this part is certain to begin at the start (end
+/// at the end) of the string, so `^` / `$` there match the empty string.
+/// `widest`: the most ranges a class has (in `Exact` mode).
+fn hir_to_smt(h: &regex_syntax::hir::Hir, at_start: bool, at_end: bool, mode: Mode, widest: &mut usize) -> Option<T> {
+    use regex_syntax::hir::{Class, HirKind, Look};
+    let zero_start = |h: &regex_syntax::hir::Hir| matches!(h.kind(), HirKind::Empty | HirKind::Look(Look::Start));
+    let zero_end = |h: &regex_syntax::hir::Hir| matches!(h.kind(), HirKind::Empty | HirKind::Look(Look::End));
+    Some(match h.kind() {
+        HirKind::Empty => re_empty(),
+        HirKind::Literal(lit) => {
+            let s = std::str::from_utf8(&lit.0).ok()?;
+            if s.chars().any(|c| c as u32 > MAX_CHAR) {
+                return None;
+            }
+            format!("(str.to_re {})", str_lit(s))
+        }
+        HirKind::Class(Class::Unicode(c)) => {
+            // characters past MAX_CHAR are in no SMT string: dropped
+            *widest = (*widest).max(c.ranges().len());
+            let items: Vec<T> = class_ranges(c, mode)
+                .into_iter()
+                .map(|(lo, hi)| {
+                    let (lo, hi) = (char::from_u32(lo).unwrap(), char::from_u32(hi).unwrap());
+                    if lo == hi {
+                        format!("(str.to_re {})", str_lit(&lo.to_string()))
+                    } else {
+                        format!("(re.range {} {})", str_lit(&lo.to_string()), str_lit(&hi.to_string()))
+                    }
+                })
+                .collect();
+            match items.len() {
+                0 => "re.none".into(),
+                1 => items[0].clone(),
+                _ => format!("(re.union {})", items.join(" ")),
+            }
+        }
+        // a class of bytes does not occur in Unicode mode
+        HirKind::Class(Class::Bytes(_)) => return None,
+        HirKind::Look(Look::Start) if at_start => re_empty(),
+        HirKind::Look(Look::End) if at_end => re_empty(),
+        HirKind::Look(_) => return None,
+        // greedy or lazy, a repetition matches the same strings
+        HirKind::Repetition(r) => {
+            let sub = hir_to_smt(&r.sub, false, false, mode, widest)?;
+            match (r.min, r.max) {
+                (0, None) => format!("(re.* {sub})"),
+                (1, None) => format!("(re.+ {sub})"),
+                (n, None) => format!("(re.++ ((_ re.loop {n} {n}) {sub}) (re.* {sub}))"),
+                (0, Some(1)) => format!("(re.opt {sub})"),
+                (lo, Some(hi)) if lo <= hi => format!("((_ re.loop {lo} {hi}) {sub})"),
+                _ => return None,
+            }
+        }
+        HirKind::Capture(c) => hir_to_smt(&c.sub, at_start, at_end, mode, widest)?,
+        HirKind::Concat(xs) => {
+            let mut items = vec![];
+            for (i, x) in xs.iter().enumerate() {
+                let s = at_start && xs[..i].iter().all(zero_start);
+                let e = at_end && xs[i + 1..].iter().all(zero_end);
+                let t = hir_to_smt(x, s, e, mode, widest)?;
+                if t != re_empty() {
+                    items.push(t);
+                }
+            }
+            match items.len() {
+                0 => re_empty(),
+                1 => items.pop().unwrap(),
+                _ => format!("(re.++ {})", items.join(" ")),
+            }
+        }
+        HirKind::Alternation(xs) => {
+            let items: Vec<T> = xs.iter().map(|x| hir_to_smt(x, at_start, at_end, mode, widest)).collect::<Option<_>>()?;
+            format!("(re.union {})", items.join(" "))
+        }
+    })
 }
 
 // ---- the solver ----
@@ -2172,15 +2838,48 @@ pub enum Outcome {
     Unknown(String),
 }
 
-/// The solver command, or `None` if no solver is installed.
-pub fn solver() -> Option<(String, String)> {
-    let bin = std::env::var("STRATA_SOLVER").unwrap_or_else(|_| "z3".into());
-    let out = Command::new(&bin).arg("--version").output().ok()?;
-    out.status.success().then(|| (bin, String::from_utf8_lossy(&out.stdout).trim().to_string()))
+/// Which SMT solver runs the queries: they are plain SMT-LIB, only the
+/// command line differs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SolverKind {
+    Z3,
+    Cvc5,
 }
 
-/// Resource limit per obligation: deterministic, unlike a timeout.
-const RLIMIT: u64 = 20_000_000;
+#[derive(Clone, Debug)]
+pub struct Solver {
+    pub bin: String,
+    /// What `--version` printed (part of the verification cache key).
+    pub version: String,
+    pub kind: SolverKind,
+}
+
+/// The solver: `STRATA_SOLVER` (a path or a command on the `PATH`), else
+/// `z3`; `None` if it can't be run. A `--version` that names cvc5 means
+/// cvc5's flags; anything else is run like Z3.
+pub fn solver() -> Option<Solver> {
+    let bin = std::env::var("STRATA_SOLVER").unwrap_or_else(|_| "z3".into());
+    let out = Command::new(&bin).arg("--version").output().ok()?;
+    let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let kind = if version.to_lowercase().contains("cvc5") { SolverKind::Cvc5 } else { SolverKind::Z3 };
+    out.status.success().then_some(Solver { bin, version, kind })
+}
+
+impl Solver {
+    /// The command line: a deterministic resource limit per query (so
+    /// results can be cached), and a time limit only as a backstop.
+    fn args(&self) -> Vec<String> {
+        match self.kind {
+            SolverKind::Z3 => vec!["-in".into(), "-T:20".into(), format!("rlimit={Z3_RLIMIT}")],
+            SolverKind::Cvc5 => vec!["--lang".into(), "smt2".into(), "--produce-models".into(), format!("--rlimit-per={CVC5_RLIMIT}"), "--tlimit-per=20000".into()],
+        }
+    }
+}
+
+/// Resource limits per obligation: deterministic, unlike a timeout. The
+/// units differ; both are a few seconds of hard nonlinear arithmetic.
+const Z3_RLIMIT: u64 = 20_000_000;
+const CVC5_RLIMIT: u64 = 5_000_000;
 
 impl Vc<'_> {
     /// The free constants an obligation depends on (its cone of influence).
@@ -2243,7 +2942,7 @@ impl Vc<'_> {
         self.script(&self.obligations[i], &[])
     }
 
-    pub fn solve(&self, bin: &str, i: usize) -> Outcome {
+    pub fn solve(&self, solver: &Solver, i: usize) -> Outcome {
         let ob = &self.obligations[i];
         let mut leaves = vec![];
         for (_, v) in &self.params {
@@ -2251,7 +2950,7 @@ impl Vc<'_> {
         }
         let script = self.script(ob, &leaves);
         let run = || -> Option<String> {
-            let mut child = Command::new(bin).args(["-in", "-T:20", &format!("rlimit={RLIMIT}")]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+            let mut child = Command::new(&solver.bin).args(solver.args()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
             child.stdin.take()?.write_all(script.as_bytes()).ok()?;
             let out = child.wait_with_output().ok()?;
             Some(String::from_utf8_lossy(&out.stdout).to_string())
@@ -2288,6 +2987,10 @@ fn leaves_of(v: &Val, out: &mut Vec<String>) {
             out.push(tag.clone());
             ctors.iter().flat_map(|c| &c.1).for_each(|x| leaves_of(x, out));
         }
+        Val::Union { tag, slots } => {
+            out.push(tag.clone());
+            slots.iter().for_each(|s| leaves_of(&s.1, out));
+        }
         Val::List { len, .. } => out.push(len.clone()),
         Val::Distinct(_, x) => leaves_of(x, out),
         Val::Unit | Val::Absent | Val::Opaque(_) => {}
@@ -2323,6 +3026,8 @@ fn to_value(env: &Env, v: &Val, m: &HashMap<String, String>) -> Option<Value> {
             };
             Value::Variant(c.clone(), f)
         }
+        // a union value is its active member's value
+        Val::Union { tag, slots } => to_value(env, &slots.get(parse_int(m.get(tag)?)? as usize)?.1, m)?,
         Val::Absent | Val::Opaque(_) => return None,
     })
 }
@@ -2417,12 +3122,80 @@ mod tests {
 
     #[test]
     fn regexes() {
-        assert_eq!(regex_to_smt("ab").unwrap(), "(re.++ (str.to_re \"a\") (str.to_re \"b\"))");
-        assert!(regex_to_smt("ord_[a-z0-9]{6}").is_some());
+        // a literal string is one literal; the anchors the interpreter adds are no-ops
+        assert_eq!(regex_to_smt("ab").unwrap(), "(str.to_re \"ab\")");
+        assert_eq!(regex_to_smt("^ab$").unwrap(), "(str.to_re \"ab\")");
+        assert_eq!(regex_to_smt("a|^b$").unwrap(), "(re.union (str.to_re \"a\") (str.to_re \"b\"))");
+        assert!(regex_to_smt("ord_[a-z0-9]{6}").unwrap().contains("((_ re.loop 6 6) (re.union (re.range \"0\" \"9\") (re.range \"a\" \"z\")))"));
         assert!(regex_to_smt("[A-Za-z0-9_-]{1,64}").is_some());
-        assert!(regex_to_smt("\\d+").is_none());
-        assert!(regex_to_smt("(?i)abc").is_none());
-        assert!(regex_to_smt("a(b|c)*d?").is_some());
+        assert_eq!(regex_to_smt("a(b|c)*d?").unwrap(), "(re.++ (str.to_re \"a\") (re.* (re.range \"b\" \"c\")) (re.opt (str.to_re \"d\")))");
+        assert_eq!(regex_to_smt("a{2,}").unwrap(), "(re.++ ((_ re.loop 2 2) (str.to_re \"a\")) (re.* (str.to_re \"a\")))");
+        // Unicode classes: \d is every decimal digit, not just 0-9
+        let has = |re: &str, c: char| in_class(&regex_to_smt(re).unwrap(), c);
+        assert!(has("\\d", '7') && has("\\d", '\u{663}') && has("\\d", '\u{ff19}') && !has("\\d", 'a') && !has("\\d", '\u{b2}'));
+        assert!(has("\\w", '_') && has("\\w", '\u{e9}') && has("\\w", '\u{4e2d}') && has("\\w", '9') && !has("\\w", '-') && !has("\\w", ' '));
+        for c in ['\t', '\n', '\r', ' ', '\u{85}', '\u{a0}', '\u{2028}', '\u{3000}'] {
+            assert!(has("\\s", c), "{c:?}");
+        }
+        assert!(!has("\\s", 'a') && !has("\\s", '\u{200b}'));
+        assert!(has("\\p{L}", 'A') && has("\\p{L}", '\u{3b1}') && has("\\p{L}", '\u{4e2d}') && !has("\\p{L}", '1') && !has("\\p{L}", '_'));
+        // (?i) is Unicode case folding: k also matches K and the Kelvin sign
+        for c in ['k', 'K', '\u{212a}'] {
+            assert!(has("(?i)k", c), "{c:?}");
+        }
+        assert!(!has("(?i)k", 'j'));
+        // each class agrees with the interpreter's regex on the characters SMT strings have
+        for re in ["\\d", "\\w", "\\s", "\\p{L}", "(?i)k", "(?i)[a-zß]", "[^a]", "."] {
+            let ranges = parsed_ranges(&regex_to_smt(re).unwrap());
+            let r = regex::Regex::new(&format!("^(?:{re})$")).unwrap();
+            for cp in (0..=MAX_CHAR).step_by(7).chain(0..0x3000) {
+                if let Some(c) = char::from_u32(cp) {
+                    let ours = ranges.iter().any(|(lo, hi)| *lo <= c && c <= *hi);
+                    assert_eq!(ours, r.is_match(&c.to_string()), "{re} on U+{cp:X}");
+                }
+            }
+        }
+        // large classes are approximated from both sides: under <= exact <= over, on every character
+        assert!(matches!(regex_model("\\d{3}"), Some(RegexModel::Between(..))) && matches!(regex_model("[a-z_]+"), Some(RegexModel::Exact(_))));
+        for re in ["\\w", "\\p{L}", "\\d", "(?i)\\w"] {
+            let Some(RegexModel::Between(u, o)) = regex_model(re) else { panic!("{re} should be approximated") };
+            let (e, u, o) = (parsed_ranges(&regex_to_smt(re).unwrap()), parsed_ranges(&u), parsed_ranges(&o));
+            assert!(u.len() <= MAX_RANGES && o.len() <= MAX_RANGES, "{re}");
+            let inside = |rs: &[(char, char)], c: char| rs.iter().any(|(lo, hi)| *lo <= c && c <= *hi);
+            for c in (0..=MAX_CHAR).filter_map(char::from_u32) {
+                assert!(!inside(&u, c) || inside(&e, c), "{re}: under has U+{:X}", c as u32);
+                assert!(!inside(&e, c) || inside(&o, c), "{re}: over misses U+{:X}", c as u32);
+            }
+        }
+        let Some(RegexModel::Between(u, _)) = regex_model("\\w") else { unreachable!() };
+        assert!(['a', 'z', 'A', 'Z', '0', '9', '_', '\u{e9}'].iter().all(|c| in_class(&u, *c)), "the ASCII part of \\w is kept exactly: {u}");
+        // `.` is any character but \n, up to the last one SMT strings have
+        let dot = regex_to_smt(".").unwrap();
+        assert_eq!(dot, "(re.union (re.range \"\\u{0}\" \"\\u{9}\") (re.range \"\\u{b}\" \"\\u{2ffff}\"))");
+        // what is not certain stays unknown
+        for re in ["\\bword\\b", "(?m)^a$", "a^b", "a$b", "(^a)*", "\u{10FFFF}", "(?-u:\\xFF)", "(", "a{3,2}"] {
+            assert!(regex_to_smt(re).is_none(), "{re}");
+        }
+    }
+
+    /// The ranges of a translated character class (a union of ranges and single characters).
+    fn parsed_ranges(t: &str) -> Vec<(char, char)> {
+        let lits: Vec<char> = t.split('"').skip(1).step_by(2).map(|x| parse_str(&format!("\"{x}\"")).unwrap().chars().next().unwrap()).collect();
+        let mut i = 0;
+        let mut out = vec![];
+        for part in t.split('(').skip(1) {
+            if part.starts_with("re.range ") {
+                out.push((lits[i], lits[i + 1]));
+                i += 2;
+            } else if part.starts_with("str.to_re ") {
+                out.push((lits[i], lits[i]));
+                i += 1;
+            }
+        }
+        out
+    }
+    fn in_class(t: &str, c: char) -> bool {
+        parsed_ranges(t).iter().any(|(lo, hi)| *lo <= c && c <= *hi)
     }
 
     #[test]
@@ -2432,5 +3205,11 @@ mod tests {
         assert_eq!(parse_str(&m["v2"]).as_deref(), Some("a\"b"));
         assert_eq!(parse_int(&m["v3"]), Some(-2));
         assert_eq!(parse_str("\"\\u{e9}\"").as_deref(), Some("é"));
+        // cvc5 prints the model on one line, and a backslash as \u{5c}
+        let m = parse_values("((v0 (- 6)) (v1 \"a\\u{e9}\\u{0}\\u{1f600}\\u{a}\"\"7\\u{5c}\\u{2ffff}\") (v2 false) (v3 \"ba\"))");
+        assert_eq!(parse_int(&m["v0"]), Some(-6));
+        assert_eq!(parse_str(&m["v1"]).as_deref(), Some("aé\u{0}😀\n\"7\\\u{2ffff}"));
+        assert_eq!(m["v2"], "false");
+        assert_eq!(parse_str(&m["v3"]).as_deref(), Some("ba"));
     }
 }
