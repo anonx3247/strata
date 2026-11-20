@@ -30,20 +30,20 @@ pub fn program(p: &mut Program, errors: &mut Vec<Diag>) {
 
 /// Fill in the fields a record constructor leaves out that have defaults.
 fn defaults(p: &mut Program) {
-    let mut of: HashMap<String, Vec<(String, Expr)>> = HashMap::new();
-    let mut add = |name: &str, fs: &[Field]| {
-        let ds: Vec<(String, Expr)> = fs.iter().filter_map(|f| Some((f.name.clone(), f.default.clone()?))).collect();
+    let mut of: HashMap<Symbol, Vec<(Symbol, Expr)>> = HashMap::new();
+    let mut add = |name: Symbol, fs: &[Field]| {
+        let ds: Vec<(Symbol, Expr)> = fs.iter().filter_map(|f| Some((f.name, f.default.clone()?))).collect();
         if !ds.is_empty() {
-            of.insert(name.to_string(), ds);
+            of.insert(name, ds);
         }
     };
     for d in &p.decls {
         if let DeclKind::Type(t) = &d.kind {
             match &t.body {
-                TypeBody::Record(fs) => add(&t.name, fs),
+                TypeBody::Record(fs) => add(t.name, fs),
                 TypeBody::Sum(vs) => vs.iter().for_each(|v| {
                     if let Payload::Record(fs) = &v.payload {
-                        add(&v.name, fs)
+                        add(v.name, fs)
                     }
                 }),
                 TypeBody::Alias(_) => {}
@@ -57,7 +57,7 @@ fn defaults(p: &mut Program) {
     for d in &mut p.decls {
         decl_exprs_mut(&mut d.kind, |e| {
             if let Expr::Ctor(c, CtorArgs::Record(fs)) = e {
-                for (name, default) in of.get(c.as_str()).into_iter().flatten() {
+                for (name, default) in of.get(&c.sym()).into_iter().flatten() {
                     if !fs.iter().any(|(f, _)| f == name) {
                         fs.push((name.clone(), default.clone()));
                     }
@@ -100,9 +100,9 @@ fn plus_one(e: Expr) -> Expr {
 }
 
 impl Sugar {
-    fn name(&mut self, what: &str) -> String {
+    fn name(&mut self, what: &str) -> Symbol {
         self.fresh += 1;
-        format!("${what}{}", self.fresh)
+        Symbol::from(format!("${what}{}", self.fresh))
     }
 
     fn rewrite(&mut self, e: Expr) -> Expr {

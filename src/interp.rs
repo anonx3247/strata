@@ -517,12 +517,12 @@ impl<'a> Interp<'a> {
             return Ok(Some(format!("{} is not a `{}`", to_json(v), crate::printer::ty(t))));
         }
         let TypeExpr::Named(n, args) = t else { return Ok(None) };
-        if let Some(p) = self.env.variant_parent(n) {
+        if let Some(p) = self.env.variant_parent(n.sym()) {
             let own = matches!(v, Value::Variant(c, _) if c == n);
             if !own {
                 return Ok(Some(format!("{} is not a `{n}`", to_json(v))));
             }
-            return self.check_type_in(&TypeExpr::Named(p, args.clone()), v, scope);
+            return self.check_type_in(&TypeExpr::Named(Symbol::from(p), args.clone()), v, scope);
         }
         if n == "Tuple" {
             if let Value::Tuple(xs) = v {
@@ -567,8 +567,8 @@ impl<'a> Interp<'a> {
             }
             return Ok(None);
         }
-        let Some(td) = self.env.types.get(n).cloned() else { return Ok(None) };
-        let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+        let Some(td) = self.env.types.get(&n.sym()).cloned() else { return Ok(None) };
+        let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
         if td.distinct {
             // check the wrapped value against the base type and the refinement
             let Value::Distinct(_, inner) = v else { return Ok(None) };
@@ -602,7 +602,7 @@ impl<'a> Interp<'a> {
                 if let Some((_, names, ftys)) = variants.iter().find(|x| x.0 == cname) {
                     for (i, (ft, fv)) in ftys.iter().zip(fvals).enumerate() {
                         if let Some(e) = self.check_type(ft, fv)? {
-                            let fname = names.as_ref().map(|ns| ns[i].clone()).unwrap_or(i.to_string());
+                            let fname = names.as_ref().map(|ns| ns[i].clone()).unwrap_or_else(|| Symbol::from(i.to_string()));
                             return Ok(Some(format!("{cname}.{fname}: {e}")));
                         }
                     }
@@ -645,16 +645,16 @@ impl<'a> Interp<'a> {
                 ("Tuple", Value::Tuple(xs)) => xs.len() == args.len() && args.iter().zip(xs).all(|(a, x)| self.shape_fits(a, x)),
                 ("Dict", Value::Dict(_)) => true,
                 ("List" | "Set" | "Tuple" | "Dict", _) => false,
-                _ if self.env.traits.contains_key(n) => match v {
+                _ if self.env.traits.contains_key(&n.sym()) => match v {
                     Value::Mock(m) => crate::types::texpr_head(m) == *n,
                     _ => {
                         let head = self.head_of(v);
                         let own = match v { Value::Variant(c, _) => c.clone(), _ => head.clone() };
-                        self.env.impls.iter().any(|i| i.trait_name == *n && [&head, &own].contains(&&crate::types::texpr_head(&i.for_type)))
+                        self.env.impls.iter().any(|i| i.trait_name == *n && [&head, &own].iter().any(|h| crate::types::texpr_head(&i.for_type) == h.as_str()))
                     }
                 },
-                _ if self.env.variant_parent(n).is_some() => matches!(v, Value::Variant(c, _) if c == n),
-                _ => match self.env.types.get(n) {
+                _ if self.env.variant_parent(n.sym()).is_some() => matches!(v, Value::Variant(c, _) if c == n),
+                _ => match self.env.types.get(&n.sym()) {
                     Some(td) if td.distinct => matches!(v, Value::Distinct(c, _) if c == n),
                     Some(TypeDecl { body: TypeBody::Record(_), .. }) => matches!(v, Value::Record(c, _) if c == n),
                     Some(TypeDecl { body: TypeBody::Sum(vs), .. }) => matches!(v, Value::Variant(c, _) if vs.iter().any(|x| &x.name == c)),
@@ -675,7 +675,7 @@ impl<'a> Interp<'a> {
     // ---------------- calls ----------------
 
     pub fn call_fn(&mut self, name: &str, args: Vec<Value>) -> R<Value> {
-        let f = self.env.fns.get(name).cloned().ok_or_else(|| fault(FaultKind::Runtime, format!("unknown function `{name}`")))?;
+        let f = self.env.fns.get(&name.sym()).cloned().ok_or_else(|| fault(FaultKind::Runtime, format!("unknown function `{name}`")))?;
         self.call_decl(&f, name, args)
     }
 
@@ -692,7 +692,7 @@ impl<'a> Interp<'a> {
             Value::Dict(_) => "Dict".into(),
             Value::Set(_) => "Set".into(),
             Value::Record(n, _) => n.clone(),
-            Value::Variant(c, _) => self.env.ctors.get(c).cloned().unwrap_or_else(|| c.clone()),
+            Value::Variant(c, _) => self.env.ctors.get(&c.sym()).map(|t| t.to_string()).unwrap_or_else(|| c.clone()),
             Value::Closure(..) | Value::FnRef(_) => "Fn".into(),
             Value::Distinct(n, _) => n.clone(),
             Value::Mock(_) => "Mock".into(),
@@ -721,8 +721,8 @@ impl<'a> Interp<'a> {
             args.first().map(|v| self.head_of(v)).unwrap_or_default()
         };
         // called on a trait (a generic function fuzzed with a mock): a generated result
-        if is_static && self.env.traits.contains_key(&head) {
-            return self.mock_call(&TypeExpr::Named(head, vec![]), name, args);
+        if is_static && self.env.traits.contains_key(&head.sym()) {
+            return self.mock_call(&TypeExpr::Named(Symbol::from(head), vec![]), name, args);
         }
         // a variant may have an impl of its own; else its sum's applies
         let own = match args.first() {
@@ -730,7 +730,7 @@ impl<'a> Interp<'a> {
             _ => None,
         };
         let Some((mut decl, req, ens)) = own.or_else(|| self.env.resolve_method(name, &head)) else {
-            let trs = self.env.method_traits.get(name).cloned().unwrap_or_default().join("` or `");
+            let trs = crate::symbol::join(&self.env.method_traits.get(&name.sym()).cloned().unwrap_or_default(), "` or `");
             return self.fail(FaultKind::Runtime, format!("`{head}` has no method `{name}` (it does not implement `{trs}`)"));
         };
         decl.requires.splice(0..0, req);
@@ -756,7 +756,7 @@ impl<'a> Interp<'a> {
     fn mock_call(&mut self, mt: &TypeExpr, name: &str, args: Vec<Value>) -> R<Value> {
         let name = crate::types::split_trait_call(name).map_or(name, |(_, m)| m);
         let tn = crate::types::texpr_head(mt);
-        let Some(tr) = self.env.traits.get(&tn).cloned() else { return self.fail(FaultKind::Runtime, format!("unknown trait `{tn}`")) };
+        let Some(tr) = self.env.traits.get(&tn.sym()).cloned() else { return self.fail(FaultKind::Runtime, format!("unknown trait `{tn}`")) };
         let Some(tm) = tr.methods.iter().find(|m| m.decl.name == name) else {
             return self.fail(FaultKind::Runtime, format!("`{tn}` has no method `{name}`"));
         };
@@ -764,7 +764,7 @@ impl<'a> Interp<'a> {
             TypeExpr::Named(_, a) if !a.is_empty() => a.clone(),
             _ => tr.params.iter().map(|_| TypeExpr::Named("Int".into(), vec![])).collect(),
         };
-        let mut sub: HashMap<String, TypeExpr> = tr.params.iter().cloned().zip(targs).collect();
+        let mut sub: HashMap<Symbol, TypeExpr> = tr.params.iter().cloned().zip(targs).collect();
         sub.insert("Self".into(), mt.clone());
         let mut scope: Scope = None;
         for (p, a) in tm.decl.params.iter().zip(&args) {
@@ -851,9 +851,9 @@ impl<'a> Interp<'a> {
     fn apply(&mut self, f: Value, args: Vec<Value>) -> R<Value> {
         match f {
             Value::FnRef(n) => {
-                if self.env.fns.contains_key(&n) {
+                if self.env.fns.contains_key(&n.sym()) {
                     self.call_fn(&n, args)
-                } else if self.env.is_method(&n) {
+                } else if self.env.is_method(n.sym()) {
                     self.call_method(&n, args)
                 } else {
                     self.builtin(&n, args)
@@ -1308,7 +1308,7 @@ impl<'a> Interp<'a> {
         let mut path = Vec::new();
         let mut root = place;
         while let Expr::Field(r, f) = root {
-            path.push(f.clone());
+            path.push(f.to_string());
             root = r;
         }
         path.reverse();
@@ -1323,11 +1323,11 @@ impl<'a> Interp<'a> {
         if !path.is_empty() {
             let tname = match &new {
                 Value::Record(n, _) => Some(n.clone()),
-                Value::Variant(c, _) => self.env.ctors.get(c).cloned(),
+                Value::Variant(c, _) => self.env.ctors.get(&c.sym()).map(|t| t.to_string()),
                 _ => None,
             };
             if let Some(t) = tname {
-                self.enforce(&TypeExpr::Named(t, vec![]), &new, &format!("assigning `{}`", crate::printer::expr(place, 0)))?;
+                self.enforce(&TypeExpr::Named(Symbol::from(t), vec![]), &new, &format!("assigning `{}`", crate::printer::expr(place, 0)))?;
             }
         }
         assign(s, x, new);
@@ -1376,15 +1376,15 @@ impl<'a> Interp<'a> {
                     Some(h) => Value::Str(h.clone()),
                     None => return self.fail(FaultKind::Runtime, "`Self` is not known here"),
                 },
-                None => Value::FnRef(x.clone()),
+                None => Value::FnRef(x.to_string()),
             },
             Expr::List(es) => Value::List(es.iter().map(|x| self.eval(x, s)).collect::<R<_>>()?),
             Expr::Ctor(c, args) => {
-                let tname = self.env.ctors.get(c).cloned().unwrap_or_default();
+                let tname = self.env.ctors.get(&c.sym()).cloned().unwrap_or_default();
                 let is_record = matches!(self.env.types.get(&tname).map(|t| &t.body), Some(TypeBody::Record(_)));
                 let is_distinct = self.env.types.get(&tname).is_some_and(|t| t.distinct);
                 let v = match args {
-                    CtorArgs::Positional(es) if is_distinct && es.len() == 1 => Value::Distinct(c.clone(), Box::new(self.eval(&es[0], s)?)),
+                    CtorArgs::Positional(es) if is_distinct && es.len() == 1 => Value::Distinct(c.to_string(), Box::new(self.eval(&es[0], s)?)),
                     CtorArgs::Update(base, fs) => match self.eval(base, s)? {
                         Value::Record(n, mut vals) => {
                             for (f, fe) in fs {
@@ -1397,9 +1397,9 @@ impl<'a> Interp<'a> {
                         }
                         other => return self.fail(FaultKind::Runtime, format!("cannot update {}", to_json(&other))),
                     },
-                    CtorArgs::None => Value::Variant(c.clone(), Fields::None),
+                    CtorArgs::None => Value::Variant(c.to_string(), Fields::None),
                     CtorArgs::Positional(es) => {
-                        Value::Variant(c.clone(), Fields::Pos(es.iter().map(|x| self.eval(x, s)).collect::<R<_>>()?))
+                        Value::Variant(c.to_string(), Fields::Pos(es.iter().map(|x| self.eval(x, s)).collect::<R<_>>()?))
                     }
                     CtorArgs::Record(fs) => {
                         // store fields in declaration order
@@ -1407,14 +1407,14 @@ impl<'a> Interp<'a> {
                         let mut vals = Vec::new();
                         for f in &order {
                             let (_, fe) = fs.iter().find(|(n, _)| n == f).unwrap();
-                            vals.push((f.clone(), self.eval(fe, s)?));
+                            vals.push((f.to_string(), self.eval(fe, s)?));
                         }
-                        if is_record { Value::Record(c.clone(), vals) } else { Value::Variant(c.clone(), Fields::Rec(vals)) }
+                        if is_record { Value::Record(c.to_string(), vals) } else { Value::Variant(c.to_string(), Fields::Rec(vals)) }
                     }
                 };
                 // Refinements on fields and on the type itself are checked at construction.
                 // Fields whose type is a generic parameter are not known here and are skipped.
-                self.enforce(&TypeExpr::Named(tname.clone(), vec![]), &v, &format!("constructing `{c}`"))?;
+                self.enforce(&TypeExpr::Named(Symbol::from(tname.as_str()), vec![]), &v, &format!("constructing `{c}`"))?;
                 v
             }
             Expr::Mut(x) => self.eval(x, s)?,
@@ -1432,7 +1432,7 @@ impl<'a> Interp<'a> {
                 for a in args {
                     avs.push(self.eval(a, s)?);
                 }
-                let f = lookup(s, m).unwrap_or(Value::FnRef(m.clone()));
+                let f = lookup(s, m).unwrap_or(Value::FnRef(m.to_string()));
                 self.writeback.clear();
                 let out = self.apply(f, avs)?;
                 let places: Vec<&Expr> = std::iter::once(&**r).chain(args.iter()).collect();
@@ -1526,7 +1526,7 @@ impl<'a> Interp<'a> {
                 _ => return self.fail(FaultKind::Runtime, "bad operand"),
             },
             Expr::Un(UnOp::Not, x) => Value::Bool(self.eval(x, s)? != Value::Bool(true)),
-            Expr::Is(x, c) if !self.env.ctors.contains_key(c) && self.env.is_type_name(c) => {
+            Expr::Is(x, c) if !self.env.ctors.contains_key(&c.sym()) && self.env.is_type_name(c) => {
                 let v = self.eval(x, s)?;
                 Value::Bool(self.value_in(&TypeExpr::Named(c.clone(), vec![]), &v)?)
             }
@@ -1691,7 +1691,7 @@ impl<'a> Interp<'a> {
             (Pattern::Or(ps), v) => ps.iter().find_map(|p| self.matches(p, v, s)),
             (Pattern::Cond(c), v) => (self.eval(c, &extend(s, "it", v.clone())).ok()? == Value::Bool(true)).then(|| s.clone()),
             // a type's name matches the values of that type
-            (Pattern::Ctor(c, CtorPat::None), v) if !self.env.ctors.contains_key(c) && self.env.is_type_name(c) => {
+            (Pattern::Ctor(c, CtorPat::None), v) if !self.env.ctors.contains_key(&c.sym()) && self.env.is_type_name(c) => {
                 self.value_in(&TypeExpr::Named(c.clone(), vec![]), v).ok()?.then(|| s.clone())
             }
             (Pattern::Bind(x), v) => Some(extend(s, x, v.clone())),
@@ -1779,9 +1779,9 @@ impl<'a> Interp<'a> {
                 }
                 bad(&format!("a `{}`", crate::printer::ty(&t)))
             }
-            TypeExpr::Named(n, args) if self.env.variant_parent(n).is_some() => {
-                let p = self.env.variant_parent(n).unwrap();
-                let v = self.from_json_raw(&TypeExpr::Named(p, args.clone()), j, path)?;
+            TypeExpr::Named(n, args) if self.env.variant_parent(n.sym()).is_some() => {
+                let p = self.env.variant_parent(n.sym()).unwrap();
+                let v = self.from_json_raw(&TypeExpr::Named(Symbol::from(p), args.clone()), j, path)?;
                 if matches!(&v, Value::Variant(c, _) if c == n) { Ok(v) } else { bad(&format!("a `{}`", short(n))) }
             }
             TypeExpr::Fn(..) => bad("a function (not representable in JSON)"),
@@ -1832,23 +1832,23 @@ impl<'a> Interp<'a> {
                     )),
                     None => bad("an array"),
                 },
-                _ if self.env.types.get(n).is_some_and(|t| t.distinct) => {
+                _ if self.env.types.get(&n.sym()).is_some_and(|t| t.distinct) => {
                     let Some(v) = self.env.variants_of(n, args) else { return bad(n) };
                     let base = v[0].2[0].clone();
-                    Ok(Value::Distinct(n.clone(), Box::new(self.from_json_raw(&base, j, path)?)))
+                    Ok(Value::Distinct(n.to_string(), Box::new(self.from_json_raw(&base, j, path)?)))
                 }
                 _ => {
                     let Some(variants) = self.env.variants_of(n, args) else { return bad(n) };
                     let is_record = matches!(self.env.types[n].body, TypeBody::Record(_));
                     let (cname, payload) = if is_record {
-                        (n.clone(), j)
+                        (n.to_string(), j)
                     } else if let Some(s) = j.as_str() {
                         (s.to_string(), &Json::Null)
                     } else if let Some(o) = j.as_object().filter(|o| o.len() == 1) {
                         let (k, v) = o.iter().next().unwrap();
                         (k.clone(), v)
                     } else {
-                        let names: Vec<_> = variants.iter().map(|v| v.0.clone()).collect();
+                        let names: Vec<_> = variants.iter().map(|v| v.0.to_string()).collect();
                         return bad(&format!("one of {}", names.join(" | ")));
                     };
                     let Some((cname, names, ftys)) = variants.iter().find(|v| v.0 == cname || short(&v.0) == cname).map(|v| (v.0.clone(), &v.1, &v.2)) else {
@@ -1860,7 +1860,7 @@ impl<'a> Interp<'a> {
                             let Some(obj) = payload.as_object() else { return Err(format!("{p}: expected an object")) };
                             let mut fs = Vec::new();
                             for (fname, ft) in names.iter().zip(ftys) {
-                                let v = match obj.get(fname) {
+                                let v = match obj.get(fname.as_str()) {
                                     Some(fj) => self.from_json_raw(ft, fj, &format!("{p}.{fname}"))?,
                                     None => match self.env.field_default(&cname, fname) {
                                         Some(x) => {
@@ -1873,21 +1873,21 @@ impl<'a> Interp<'a> {
                                         None => return Err(format!("{p}: missing field `{fname}`")),
                                     },
                                 };
-                                fs.push((fname.clone(), v));
+                                fs.push((fname.to_string(), v));
                             }
-                            if let Some(extra) = obj.keys().find(|k| !names.contains(k)) {
+                            if let Some(extra) = obj.keys().find(|k| !names.iter().any(|n| n == *k)) {
                                 return Err(format!("{p}: unknown field `{extra}`"));
                             }
-                            Ok(if is_record { Value::Record(cname, fs) } else { Value::Variant(cname, Fields::Rec(fs)) })
+                            Ok(if is_record { Value::Record(cname.to_string(), fs) } else { Value::Variant(cname.to_string(), Fields::Rec(fs)) })
                         }
-                        None if ftys.is_empty() => Ok(Value::Variant(cname, Fields::None)),
+                        None if ftys.is_empty() => Ok(Value::Variant(cname.to_string(), Fields::None)),
                         None => {
                             let items: Vec<Json> = if ftys.len() == 1 { vec![payload.clone()] } else { payload.as_array().cloned().unwrap_or_default() };
                             if items.len() != ftys.len() {
                                 return Err(format!("{p}: expected {} values", ftys.len()));
                             }
                             let vals = ftys.iter().zip(&items).enumerate().map(|(i, (ft, x))| self.from_json_raw(ft, x, &format!("{p}.{i}"))).collect::<Result<_, _>>()?;
-                            Ok(Value::Variant(cname, Fields::Pos(vals)))
+                            Ok(Value::Variant(cname.to_string(), Fields::Pos(vals)))
                         }
                     }
                 }

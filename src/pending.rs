@@ -102,10 +102,10 @@ fn changed_names(old: &Program, new: &Program, edited: &[String]) -> HashSet<Str
                 match &d.kind {
                     DeclKind::Type(t) => {
                         if let TypeBody::Sum(vs) = &t.body {
-                            out.extend(vs.iter().map(|v| v.name.clone()));
+                            out.extend(vs.iter().map(|v| v.name.to_string()));
                         }
                     }
-                    DeclKind::Trait(t) => out.extend(t.methods.iter().map(|m| m.decl.name.clone())),
+                    DeclKind::Trait(t) => out.extend(t.methods.iter().map(|m| m.decl.name.to_string())),
                     _ => {}
                 }
             }
@@ -137,7 +137,7 @@ fn holes_in(d: &mut DeclKind, names: &HashSet<String>, make: &mut dyn FnMut(&Exp
     impl VisitMut for Holes<'_> {
         fn expr(&mut self, e: &mut Expr) {
             if uses(e, self.names) {
-                *e = Expr::Hole((self.make)(e));
+                *e = Expr::Hole(Symbol::from((self.make)(e)));
             } else {
                 walk_expr_mut(self, e)
             }
@@ -201,7 +201,7 @@ fn variant_changes(old: &Program, new: &Program, edited: &[String]) -> VariantCh
                                     Payload::Record(_) => CtorPat::Record(vec![], true),
                                 };
                                 let pat = Pattern::Ctor(v.name.clone(), args);
-                                (v.name.clone(), pat)
+                                (v.name.to_string(), pat)
                             })
                             .collect(),
                     ),
@@ -283,14 +283,14 @@ fn fix_matches(d: &mut DeclKind, ch: &VariantChanges, siblings: &HashMap<String,
                 let on_type = siblings.get(ty).is_some_and(|vs| vs.iter().any(|x| tops.contains(x)));
                 if on_type && !tops.contains(var) {
                     let name = make(String::new(), format!("`{var}` is a new variant of `{ty}`"));
-                    kept.push(Arm { comments: vec![], pat: pat.clone(), body: Expr::Hole(name) });
+                    kept.push(Arm { comments: vec![], pat: pat.clone(), body: Expr::Hole(Symbol::from(name)) });
                 }
             }
         }
         *arms = kept;
         if arms.is_empty() {
             let was = crate::printer::expr(e, 0);
-            *e = Expr::Hole(make(was, "every arm was for a removed variant".into()));
+            *e = Expr::Hole(Symbol::from(make(was, "every arm was for a removed variant".into())));
         }
     }), d)
 }
@@ -324,7 +324,7 @@ pub fn holeify(old: &Program, new: &Program, edited: &[String], errors: &[Diag],
         .filter_map(|q| new.decls.iter().find(|d| d.qname() == *q))
         .filter_map(|d| match &d.kind {
             DeclKind::Type(t) => match &t.body {
-                TypeBody::Sum(vs) => Some((t.name.clone(), vs.iter().map(|v| v.name.clone()).collect())),
+                TypeBody::Sum(vs) => Some((t.name.to_string(), vs.iter().map(|v| v.name.to_string()).collect())),
                 _ => None,
             },
             _ => None,
@@ -365,7 +365,7 @@ pub fn keep_holes(p: &Program) -> Program {
         fn expr(&mut self, e: &mut Expr) {
             if let Expr::Hole(h) = e {
                 if let Some(rest) = h.strip_prefix(PREFIX) {
-                    *h = format!("todo_{rest}");
+                    *h = format!("todo_{rest}").into();
                 }
             }
             walk_expr_mut(self, e)
