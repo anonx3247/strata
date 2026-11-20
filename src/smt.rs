@@ -2034,7 +2034,7 @@ impl<'a> Vc<'a> {
                 Expr::Lambda(ps, body) => {
                     key.push_str(&crate::printer::expr(e, 0));
                     let mut used = std::collections::BTreeSet::new();
-                    crate::verify::walk(body, &mut |x| {
+                    crate::ast::walk(body, |x| {
                         if let Expr::Var(n) = x {
                             used.insert(n.clone());
                         }
@@ -2531,7 +2531,7 @@ impl<'a> Vc<'a> {
                 // candidate bounds, from the condition's comparisons, before the pass
                 let has_continue = {
                     let mut found = false;
-                    crate::verify::walk(body, &mut |x| {
+                    crate::ast::walk(body, |x| {
                         if let Expr::Block(ss, _) = x {
                             found |= ss.iter().any(|s| matches!(s, Stmt::Continue));
                         }
@@ -2660,11 +2660,9 @@ impl<'a> Vc<'a> {
 
     /// Before a loop: every variable the loop may change takes any value.
     fn havoc_loop(&mut self, body: &Expr, cond: Option<&Expr>) {
-        let mut names = HashSet::new();
-        modified(body, self.env, &mut names);
-        if let Some(c) = cond {
-            modified(c, self.env, &mut names);
-        }
+        let env = self.env;
+        let mut_params = |n: &str| env.mut_params(n);
+        let names: HashSet<String> = std::iter::once(body).chain(cond).flat_map(|e| changed_vars(e, &mut_params)).collect();
         for x in names {
             if let Some(v) = self.lookup(&x) {
                 let nv = self.refresh(&v);
@@ -2798,104 +2796,6 @@ fn set_path(base: Val, path: &[String], v: Val) -> Val {
 }
 
 /// Variables a loop may change: assigned ones, and those passed to `mut` parameters.
-fn modified(e: &Expr, env: &Env, out: &mut HashSet<String>) {
-    let visit_stmt = |s: &Stmt, out: &mut HashSet<String>| match s {
-        Stmt::Assign(place, x) => {
-            let mut root = place;
-            while let Expr::Field(r, _) = root {
-                root = r;
-            }
-            if let Expr::Var(n) = root {
-                out.insert(n.clone());
-            }
-            modified(x, env, out);
-        }
-        Stmt::Let(_, _, x) | Stmt::Var(_, _, x) | Stmt::Expr(x) | Stmt::Assert(x) => modified(x, env, out),
-        Stmt::While(a, b) | Stmt::For(_, a, b) => {
-            modified(a, env, out);
-            modified(b, env, out);
-        }
-        Stmt::Loop(b) => modified(b, env, out),
-        _ => {}
-    };
-    match e {
-        Expr::Block(stmts, last) => {
-            for s in stmts {
-                visit_stmt(s, out);
-            }
-            modified(last, env, out);
-        }
-        Expr::Call(f, args) => {
-            if let Expr::Var(name) = &**f {
-                mut_args(name, args, env, out);
-            }
-            for a in args {
-                modified(a, env, out);
-            }
-        }
-        Expr::Method(r, m, args) => {
-            let mut all = vec![(**r).clone()];
-            all.extend(args.iter().cloned());
-            mut_args(m, &all, env, out);
-            for a in &all {
-                modified(a, env, out);
-            }
-        }
-        Expr::If(c, t, f) => {
-            modified(c, env, out);
-            modified(t, env, out);
-            modified(f, env, out);
-        }
-        Expr::Match(s, _, arms) => {
-            modified(s, env, out);
-            for a in arms {
-                modified(&a.body, env, out);
-            }
-        }
-        Expr::Bin(_, l, r) => {
-            modified(l, env, out);
-            modified(r, env, out);
-        }
-        Expr::Un(_, x) | Expr::Field(x, _) | Expr::Is(x, _) | Expr::Return(x) | Expr::Try(x, _) | Expr::Mut(x) => modified(x, env, out),
-        Expr::Except(x, _, fb) => {
-            modified(x, env, out);
-            modified(fb, env, out);
-        }
-        Expr::Interp(parts) => {
-            for part in parts {
-                if let StrPart::Expr(x, _) = part {
-                    modified(x, env, out);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn mut_args(name: &str, args: &[Expr], env: &Env, out: &mut HashSet<String>) {
-    let params = env
-        .fns
-        .get(name)
-        .map(|f| f.params.clone())
-        .or_else(|| env.method_params(name));
-    for (p, a) in params.unwrap_or_default().iter().zip(args) {
-        if p.mutable {
-            if let Some(x) = place_root(a) {
-                out.insert(x);
-            }
-        }
-    }
-}
-
-/// The variable a place (`x`, `x.f`, `mut x.f`) belongs to.
-pub fn place_root(e: &Expr) -> Option<String> {
-    match e {
-        Expr::Var(x) => Some(x.clone()),
-        Expr::Field(r, _) | Expr::Mut(r) => place_root(r),
-        _ => None,
-    }
-}
-
 // ---- regular expressions ----
 
 /// The largest code point an SMT-LIB string can hold (the standard's
