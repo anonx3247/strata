@@ -53,22 +53,36 @@ fn render_round_trips() {
 fn pack_and_unpack_a_package() {
     let d = tmp("pack");
     let pkg = format!("{}/examples/tasks", env!("CARGO_MANIFEST_DIR"));
+    let modules = ["core", "memory", "print", "sim"];
+    // a folder of module files, and one bundle
+    let (ok, out) = strata(&["--file", &pkg, "pack", "bin"], &d, None);
+    assert!(ok && out.contains("67 definitions in 4 module files"), "{out}");
+    for m in modules {
+        assert!(std::fs::read(d.join(format!("bin/{m}.stb"))).unwrap().starts_with(b"STRATA"));
+    }
     let (ok, out) = strata(&["--file", &pkg, "pack", "tasks.stb"], &d, None);
     assert!(ok && out.contains("67 definitions"), "{out}");
-    assert!(std::fs::read(d.join("tasks.stb")).unwrap().starts_with(b"STRATA"));
-    // every command reads the binary file like source
-    let (ok, out) = strata(&["--file", "tasks.stb", "check"], &d, None);
-    assert!(ok, "{out}");
-    let (ok, out) = strata(&["--file", "tasks.stb", "test"], &d, None);
-    assert!(ok && out.contains("0 failed"), "{out}");
-    // unpacked, it is the same package, file for file
-    let (ok, out) = strata(&["unpack", "tasks.stb", "out"], &d, None);
-    assert!(ok, "{out}");
-    for f in ["strata.toml", "core.strata", "memory.strata", "print.strata", "sim.strata"] {
-        let a = std::fs::read_to_string(format!("{pkg}/{f}")).unwrap();
-        assert_eq!(a, std::fs::read_to_string(d.join("out").join(f)).unwrap(), "{f}");
+    // every command reads either like source
+    for input in ["bin", "tasks.stb"] {
+        let (ok, out) = strata(&["--file", input, "check"], &d, None);
+        assert!(ok && out.contains("67 definitions check"), "{out}");
+        let (ok, out) = strata(&["--file", input, "test"], &d, None);
+        assert!(ok && out.contains("0 failed"), "{out}");
     }
-    let (ok, out) = strata(&["unpack", "tasks.stb", "out"], &d, None);
+    // the header, read without decoding the definitions
+    let (ok, out) = strata(&["header", "bin/core.stb"], &d, None);
+    assert!(ok && out.starts_with("module core:") && out.contains("uses "), "{out}");
+    // unpacked, it is the same package, file for file
+    for (input, dir) in [("bin", "out1"), ("tasks.stb", "out2")] {
+        let (ok, out) = strata(&["unpack", input, dir], &d, None);
+        assert!(ok, "{out}");
+        let files = std::iter::once("strata.toml".to_string()).chain(modules.map(|m| format!("{m}.strata")));
+        for f in files {
+            let a = std::fs::read_to_string(format!("{pkg}/{f}")).unwrap();
+            assert_eq!(a, std::fs::read_to_string(d.join(dir).join(&f)).unwrap(), "{f}");
+        }
+    }
+    let (ok, out) = strata(&["unpack", "tasks.stb", "out1"], &d, None);
     assert!(!ok && out.contains("not empty"), "{out}");
 }
 
@@ -80,7 +94,7 @@ fn run_a_binary_file() {
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "hello.stb"], &d, None);
     assert!(ok && out.contains("hello, world!"), "{out}");
-    std::fs::write(d.join("bad.stb"), b"STRATA\x01\x05").unwrap();
+    std::fs::write(d.join("bad.stb"), b"STRATA\x02\x00\x05").unwrap();
     let (ok, out) = strata(&["--file", "bad.stb", "check"], &d, None);
     assert!(!ok && out.contains("corrupt binary Strata file"), "{out}");
 }

@@ -36,25 +36,26 @@ pub fn sha(s: &str) -> String {
     d.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
-/// Hash of a definition's canonical text (its identity in the store).
+/// A hash as shown and stored: its first 8 bytes, in hex.
+fn short_hex(h: &crate::binary::Hash) -> String {
+    h[..8].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Hash of a definition's binary encoding, comments and all (its identity in
+/// the store). The hashes are those a module file's header lists.
 pub fn self_hash(d: &Decl) -> String {
-    sha(&format!("module {}\n{}", d.module, printer::decl(d)))
+    short_hex(&crate::binary::hash(d))
 }
 
 /// Hash of what a definition does: without its doc and comments.
 pub fn code_hash(d: &Decl) -> String {
-    sha(&format!("module {}\n{}", d.module, printer::without_comments(|| printer::decl_body(d))))
+    short_hex(&crate::binary::code_hash(d))
 }
 
-/// Hash of what other definitions may depend on: the signature, contracts and type shapes.
+/// Hash of what other definitions may depend on: the signature, contracts,
+/// type shapes and visibility; not bodies, docs or comments.
 pub fn interface_hash(d: &Decl) -> String {
-    let text = match &d.kind {
-        DeclKind::Fn(f) => printer::fn_signature(f),
-        DeclKind::Test(t) => format!("test {:?}", t.name),
-        // docs and comments are not part of what other code relies on
-        _ => printer::without_comments(|| printer::decl_body(d)),
-    };
-    sha(&format!("module {} pub {}\n{text}", d.module, d.public))
+    short_hex(&crate::binary::interface_hash(d))
 }
 
 /// Names of other top-level definitions this one refers to.

@@ -41,21 +41,8 @@ pub fn ty(t: &TypeExpr) -> String {
     }
 }
 
-thread_local! {
-    static NO_COMMENTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Run `f` with `//` comments left out of everything printed, for hashes that
-/// a comment edit must not change (interfaces, verification results).
-pub fn without_comments<T>(f: impl FnOnce() -> T) -> T {
-    let old = NO_COMMENTS.with(|c| c.replace(true));
-    let out = f();
-    NO_COMMENTS.with(|c| c.set(old));
-    out
-}
-
 fn has_comments(cs: &[String]) -> bool {
-    !cs.is_empty() && !NO_COMMENTS.with(|c| c.get())
+    !cs.is_empty()
 }
 
 /// `//` lines at depth `d`, each ending in a newline ("" is a blank line).
