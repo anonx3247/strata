@@ -3306,3 +3306,81 @@ test \"methods\" {
     assert!(out.contains("✓ fresh") && !out.contains("may not terminate"), "a local doesn't call the function it is named like: {out}");
     assert!(out.contains("✓ twice"), "a function value's result is valid: {out}");
 }
+
+#[test]
+fn serve_runs_an_app() {
+    let d = tmp("serve-app");
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    std::fs::write(
+        d.join("app.strata"),
+        r#"use std.web.{Html, div, button, text, on_click}
+type Model = { n: Int where 0 <= it && it <= 3 }
+type Msg =
+  | Up
+  | Set { n: Int where 0 <= it && it <= 3 }
+  | Boom
+fn init() -> Model {
+  Model { n: 0 }
+}
+fn update(model: Model, msg: Msg) -> Model {
+  match msg {
+    Up => Model { n: min(model.n + 1, 3) },
+    Set { n } => Model { n },
+    Boom => Model { n: 10 / (model.n - model.n) },
+  }
+}
+fn view(model: Model) -> Html[Msg] {
+  div([], [text(f"n={model.n}"), button([on_click(Up)], [text("up")])])
+}
+"#,
+    )
+    .unwrap();
+    let mut server = Command::new(env!("CARGO_BIN_EXE_strata")).args(["serve", "app.strata", "--port", &port.to_string()]).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let up = (0..100).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    });
+    let post = |body: &str| http(port, &format!("POST /_strata/msg HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
+    let results = std::panic::catch_unwind(|| {
+        assert!(up, "the server didn't start");
+        let page = http(port, "GET / HTTP/1.1\r\n\r\n");
+        assert!(page.contains("<title>app</title>") && page.contains(r#"<script src="/_strata/app.js""#) && page.contains("n=0"), "{page}");
+        assert!(page.contains(r#"data-on-click="&quot;Up&quot;""#), "{page}");
+        let sid = page.split(r#"data-session=""#).nth(1).unwrap().split('"').next().unwrap().to_string();
+        // each page load is its own session
+        let other = http(port, "GET / HTTP/1.1\r\n\r\n");
+        assert!(!other.contains(&sid));
+        let r = post(&format!(r#"{{"session":"{sid}","msg":"Up"}}"#));
+        assert!(r.starts_with("HTTP/1.1 200") && r.ends_with(r#"<div>n=1<button data-on-click="&quot;Up&quot;">up</button></div>"#), "{r}");
+        let r = post(&format!(r#"{{"session":"{sid}","msg":{{"Set":{{"n":3}}}}}}"#));
+        assert!(r.contains("n=3"), "{r}");
+        // a message is read against the type: refinements included
+        let r = post(&format!(r#"{{"session":"{sid}","msg":{{"Set":{{"n":9}}}}}}"#));
+        assert!(r.starts_with("HTTP/1.1 400") && r.contains("does not satisfy"), "{r}");
+        // a fault in `update` is a 500, and the model stays as it was
+        let r = post(&format!(r#"{{"session":"{sid}","msg":"Boom"}}"#));
+        assert!(r.starts_with("HTTP/1.1 500") && r.contains("division by zero"), "{r}");
+        assert!(post(&format!(r#"{{"session":"{sid}","msg":"Up"}}"#)).contains("n=3"));
+        // an unknown session: the page reloads
+        assert!(post(r#"{"session":"gone","msg":"Up"}"#).starts_with("HTTP/1.1 410"));
+        assert!(http(port, "GET /_strata/app.js HTTP/1.1\r\n\r\n").contains("data-on-"));
+    });
+    let _ = server.kill();
+    let _ = server.wait();
+    if let Err(e) = results {
+        std::panic::resume_unwind(e);
+    }
+    // the three functions' signatures are checked before serving
+    std::fs::write(d.join("bad.strata"), "use std.web.{Html, text}\nfn init() -> Int {\n  0\n}\nfn update(m: Int, msg: String) -> String {\n  msg\n}\nfn view(m: Int) -> Html[String] {\n  text(\"x\")\n}\n").unwrap();
+    let (ok, out) = strata(&["serve", "bad.strata"], &d, None);
+    assert!(!ok && out.contains("`update` takes and returns the model `Int`"), "{out}");
+    // the example app is proven: `update` keeps the model's refinements, and
+    // the view needs nothing more (`Msg` is valid by construction)
+    let ex = format!("{}/examples/counter", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["--file", &ex, "test"], &d, None);
+    assert!(ok, "{out}");
+    if has_solver() {
+        let (ok, out) = strata(&["--file", &ex, "verify", "--force", "--require", "proven"], &d, None);
+        assert!(ok && out.contains("✓ update") && out.contains("✓ view"), "{out}");
+    }
+}

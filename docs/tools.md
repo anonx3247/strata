@@ -137,6 +137,8 @@ GET /languages/haskell 200 (0 ms)
 POST / 405 (0 ms)
 ```
 
+**Apps.** A program with no `handle` but with `init`, `update` and `view` is served as an app (the Elm architecture): `fn init() -> Model`, `fn update(model: Model, msg: Msg) -> Model`, `fn view(model: Model) -> Html[Msg]`. Each page load starts a session whose model the server keeps in memory; the page loads a small script (`/_strata/app.js`, built into `strata`) that sends the message of the element the user clicks (`on_click(msg)`; also `dblclick`, `submit`, `change`), one at a time, and puts the new view in place. A message is read against `Msg`, refinements included, so a forged one is refused (400); a fault in `update` is a 500 shown at the bottom of the page, and the model stays as it was; a session the server no longer has (it restarted) reloads the page. See `examples/counter`.
+
 `handle` is a plain function, so tests call it directly (`handle(get_request("/"))`). See `examples/page` and, for routes, `std.http.Router` in [the language](language.md).
 
 ## The viewer

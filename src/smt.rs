@@ -161,6 +161,8 @@ pub struct Vc<'a> {
     depth: usize,
     /// The named types whose values `check_type` is checking, outermost first.
     checking: Vec<String>,
+    /// Inside an obligation's goal (not a fact to assume): see `check_type`.
+    proving: usize,
     /// The validity of a value at a recursive type's cutoff, by type and
     /// value: one unknown for each, so a result assumed valid is the same
     /// atom when it is checked again.
@@ -293,6 +295,7 @@ impl<'a> Vc<'a> {
             dead: false,
             depth: 0,
             checking: vec![],
+            proving: 0,
             cutoffs: HashMap::new(),
             params: vec![],
             memo: HashMap::new(),
@@ -337,7 +340,9 @@ impl<'a> Vc<'a> {
             return;
         }
         self.spec += 1;
+        self.proving += 1;
         let g = goal(self);
+        self.proving -= 1;
         self.spec -= 1;
         if g == "true" {
             return;
@@ -1131,12 +1136,25 @@ impl<'a> Vc<'a> {
         match t {
             TypeExpr::Named(n, args) => TypeExpr::Named(
                 n.clone(),
-                args.iter().map(|a| if self.refined(a, 0) { self.erased(a) } else { TypeExpr::Named("_".into(), vec![]) }).collect(),
+                args.iter().map(|a| if self.refined(a, 0) && !self.valid_by_construction(a) { self.erased(a) } else { TypeExpr::Named("_".into(), vec![]) }).collect(),
             ),
             TypeExpr::Refined(b, p) => TypeExpr::Refined(Box::new(self.erased(b)), p.clone()),
             TypeExpr::Union(ms) => TypeExpr::Union(ms.iter().map(|m| self.erased(m)).collect()),
             _ => t.clone(),
         }
+    }
+
+    /// A record or sum type of the program with no refinement of its own and
+    /// no type parameters (`Msg`, even with `SetStep { step: Step }`): every
+    /// value of it is valid, since making one checks its fields. As a type
+    /// argument it adds nothing to check (`Html[Msg]` is `Html[_]`).
+    fn valid_by_construction(&self, t: &TypeExpr) -> bool {
+        let TypeExpr::Named(n, args) = t else { return false };
+        let n = self.env.variant_parent(n).unwrap_or_else(|| n.clone());
+        args.is_empty()
+            && self.env.types.get(&n).is_some_and(|td| {
+                td.params.is_empty() && td.refinement.is_none() && !td.distinct && matches!(td.body, TypeBody::Record(_) | TypeBody::Sum(_))
+            })
     }
 
     /// The condition for `v` to be a valid value of `t`. `extra` are bindings
@@ -1220,6 +1238,16 @@ impl<'a> Vc<'a> {
                 ("Dict" | "Set", _) => self.unknown_bool("dicts and sets are not modelled yet"),
                 _ => {
                     let Some(td) = self.env.types.get(n).cloned() else { return "true".into() };
+                    // to prove: a type argument whose values are all valid has
+                    // nothing to check where the type holds one (`msg: M` in
+                    // `Attr[Msg]`, from a generic `on_click`). Facts to assume
+                    // keep them: they say what is known of the value.
+                    let args: Vec<TypeExpr> = if self.proving > 0 {
+                        args.iter().map(|a| if self.valid_by_construction(a) { TypeExpr::Named("_".into(), vec![]) } else { a.clone() }).collect()
+                    } else {
+                        args.clone()
+                    };
+                    let args = &args;
                     let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
                     let mut cs = vec![];
                     let it = match (&td.body, v) {

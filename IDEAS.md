@@ -188,7 +188,24 @@ Steps:
    records (step 4), static files, typed route parameters (a pattern's names
    checked against what the handler reads; `/users/:id` with `id: UserId`),
    `*` wildcards, several requests at once, URL-encoding helpers for links.
-3. `App` and the JS client: sessions, messages, swapping the HTML in.
+3. Apps (**built**, branch `worktree-web-app`): no `App` trait in the end,
+   but three functions found by name, like `main` and `handle`: `fn init()
+   -> Model`, `fn update(model: Model, msg: Msg) -> Model` (pure, returns the
+   new model, as in Elm), `fn view(model: Model) -> Html[Msg]`. `strata
+   serve` runs them when there is no `handle`: sessions in memory (a random
+   id per page load, at most 1000), `/_strata/app.js` sends
+   `data-on-{click,dblclick,submit,change}` messages one at a time and swaps
+   the view in; messages are read against `Msg` (refinements checked);
+   faults are 500s shown in a banner; an unknown session reloads the page.
+   `examples/counter` is proven, `update` included. For the view to be proven
+   when `Msg` has refined fields, the prover treats a type argument that is a
+   record or sum without a refinement of its own as adding nothing *to
+   prove* (its values are checked when made): `Attr[Msg]` from a generic
+   `on_click`. Facts to assume keep the checks (skipping them there lost
+   proofs in `examples/orders`). Not yet: the whole page re-rendered on
+   every message (no diffing; focus and scroll inside the app are lost);
+   input values in messages (step 4); an app and routes in one program;
+   sessions are lost on restart.
 4. Forms: `on_submit(constructor)` fills a record from the fields, with
    refinement errors shown next to each field.
 5. Later: capabilities in `update` (database, LLM calls, HTTP client); the

@@ -123,7 +123,8 @@ Running:
                                Needs strata built with `--features jit`
   serve [PATH] [--port N]      serve the web: each request is passed to the program's
                                `fn handle(req: Request) -> Response` (std.http), which may
-                               also ask for Console, Files, Environment (default port 8000)
+                               also ask for Console, Files, Environment (default port 8000);
+                               or run it as an app: `init`, `update` and `view` (std.web)
   run <fn> [JSON-ARGS] [--trace]
                                call one function: args are a JSON array validated
                                against the types; --trace prints each call and return

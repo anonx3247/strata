@@ -140,12 +140,19 @@ pub fn capability(ty: &str) -> Option<interp::Value> {
     })
 }
 
-/// `strata serve [PATH] [--port N]`: serve the program's `handle`.
+/// `strata serve [PATH] [--port N]`: serve the program's `handle`, or run
+/// it as an app (`init`, `update`, `view`).
 pub fn serve_program(args: &Args) -> Result<bool, String> {
     // `strata serve app/`: the program's path in place of --file
-    let src = match args.pos.get(1) {
-        Some(f) => Source::File(read_sources(f, None)?),
-        None => load(args)?,
+    let (src, path) = match args.pos.get(1) {
+        Some(f) => (Source::File(read_sources(f, None)?), f.clone()),
+        None => (load(args)?, args.val("--file").unwrap_or(".").to_string()),
+    };
+    // the program's name, for an app's page title: its package's, or the file's
+    let path = std::path::Path::new(&path);
+    let name = match package::find(path) {
+        Ok(Some(pkg)) => pkg.name,
+        _ => path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "app".into()),
     };
     let port: u16 = args.val("--port").unwrap_or("8000").parse().map_err(|_| "bad --port")?;
     let p = src.program();
@@ -155,7 +162,7 @@ pub fn serve_program(args: &Args) -> Result<bool, String> {
         return Ok(false);
     }
     let (env, _) = types::Env::new(p);
-    crate::serve::serve(&env, port)?;
+    crate::serve::serve(&env, port, &name)?;
     Ok(true)
 }
 

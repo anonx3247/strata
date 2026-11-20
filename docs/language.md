@@ -331,6 +331,31 @@ fn handle(req: Request) -> Response {
 
 Routes are tried in order; `:name` segments are captured, and `req.param(name)` is an `Option` (a handler can be called without its route). A `HEAD` request uses the `GET` routes; no route for the path is a 404, and routes for it but not for its method a 405.
 
+**Apps** follow the Elm architecture: a model, messages, and three functions that `strata serve` runs (see `examples/counter`):
+
+```rust
+type Model = { count: Int where 0 <= it && it <= 100 }
+
+type Msg =
+  | Increment
+  | Reset
+
+fn init() -> Model { Model { count: 0 } }
+
+fn update(model: Model, msg: Msg) -> Model {
+  match msg {
+    Increment => Model { count: min(model.count + 1, 100) },
+    Reset => Model { count: 0 },
+  }
+}
+
+fn view(model: Model) -> Html[Msg] {
+  div([], [text(f"{model.count}"), button([on_click(Increment)], [text("+")])])
+}
+```
+
+`update` is a plain function: tests call it, and `strata verify` proves that every message keeps the model valid.
+
 **HTML** (`std.web`) is built as values and rendered to text; see `examples/page`. Text is always escaped. Tag and attribute names are checked where they are written: `element` and `attr` take a `TagName` and an `AttrName`, and an attribute can't be an inline script (`attr("onclick", …)` is rejected when checking). `Html` and `Attr` are records around private types, so only those functions make them; the types themselves have nothing left to check, and the verifier passes over views. Events are attributes too: `on_click(msg)` carries a value of the page's message type `M`, written as JSON in a `data-on-click` attribute for the runtime to send back (the server that does so isn't built yet). A page without events is an `Html[()]`. The text inside a `<style>` element (`style_sheet(css)`) isn't escaped, but can't close the element.
 
 Each capability is a trait, so code that prints takes a `Console`, and its signature says so. The only real implementations are private types of `std` that the runtime makes for `main`; nothing else can create them. Tests pass the in-memory stand-ins (see `examples/wc`), or `mock Console`. Only `std` can call the native `host_*` operations underneath, and only `strata run` lets them reach the system: `test`, `verify` and fuzzing never touch the terminal or the disk.
