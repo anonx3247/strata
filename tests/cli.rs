@@ -1521,6 +1521,12 @@ fn git(dir: &std::path::Path, args: &[&str]) -> String {
         .output()
         .unwrap();
     assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    // a new repository has its own identity, so commits strata makes don't
+    // depend on the machine's git configuration
+    if args.first() == Some(&"init") {
+        git(dir, &["config", "user.name", "t"]);
+        git(dir, &["config", "user.email", "t@example.com"]);
+    }
     String::from_utf8_lossy(&o.stdout).to_string()
 }
 
@@ -1622,8 +1628,8 @@ fn the_log_is_committed_and_splits_git_diffs_into_steps() {
     git(&d, &["commit", "-q", "-m", "base"]);
 
     // one commit: a rename and an edit through strata, then a change by hand
-    assert!(strata(&["rename", "area", "rect_area"], &d, None).0);
-    let (ok, out) = strata(&["edit", "--module", "a", "-m", "areas are never negative"], &d, Some("pub fn rect_area(w: Int, h: Int) -> Int requires w >= 0 && h >= 0 {\n  w * h\n}\n"));
+    assert!(strata(&["rename", "area", "rect_area", "--no-commit"], &d, None).0);
+    let (ok, out) = strata(&["edit", "--no-commit", "--module", "a", "-m", "areas are never negative"], &d, Some("pub fn rect_area(w: Int, h: Int) -> Int requires w >= 0 && h >= 0 {\n  w * h\n}\n"));
     assert!(ok, "{out}");
     let b = std::fs::read_to_string(d.join("b.strata")).unwrap();
     assert!(b.contains("rect_area(s, s)"), "the rename rewrote the other file: {b}");
@@ -1659,7 +1665,6 @@ fn sync_carries_logged_renames_into_the_other_sides_files() {
     // feature renames `area`; main adds a new file that calls it by its old name
     git(&d, &["checkout", "-q", "-b", "feature"]);
     assert!(strata(&["rename", "area", "rect_area"], &d, None).0);
-    git(&d, &["commit", "-q", "-am", "rename area"]);
     git(&d, &["checkout", "-q", "main"]);
     std::fs::write(d.join("c.strata"), "use a.area\n\nfn cube(s: Int) -> Int {\n  area(s, s) * s\n}\n").unwrap();
     git(&d, &["add", "."]);
@@ -1681,7 +1686,6 @@ fn sync_carries_logged_renames_into_the_other_sides_files() {
     git(&d, &["checkout", "-q", "main"]);
     git(&d, &["merge", "-q", "feature"]);
     assert!(strata(&["rename", "rect_area", "surface"], &d, None).0);
-    git(&d, &["commit", "-q", "-am", "rename rect_area"]);
     git(&d, &["checkout", "-q", "feature"]);
     std::fs::write(d.join("b.strata"), std::fs::read_to_string(d.join("b.strata")).unwrap() + "\nfn twice(s: Int) -> Int {\n  rect_area(s, s) * 2\n}\n").unwrap();
     git(&d, &["commit", "-q", "-am", "twice"]);
@@ -1694,7 +1698,6 @@ fn sync_carries_logged_renames_into_the_other_sides_files() {
     git(&d, &["checkout", "-q", "main"]);
     git(&d, &["merge", "-q", "feature"]);
     assert!(strata(&["rename", "surface", "extent"], &d, None).0);
-    git(&d, &["commit", "-q", "-am", "rename surface"]);
     git(&d, &["checkout", "-q", "feature"]);
     std::fs::write(d.join("b.strata"), b.clone() + "\nfn padded(s: Int) -> Int {\n  let extent = 2\n  surface(s, s) + extent\n}\n").unwrap();
     git(&d, &["commit", "-q", "-am", "padded"]);
@@ -1854,7 +1857,6 @@ fn sync_follows_member_renames() {
     git(&d, &["checkout", "-q", "-b", "feature"]);
     assert!(strata(&["rename", "Circle", "Round"], &d, None).0);
     assert!(strata(&["rename", "Line.qty", "quantity"], &d, None).0);
-    git(&d, &["commit", "-q", "-am", "renames"]);
     git(&d, &["checkout", "-q", "main"]);
     std::fs::write(d.join("extra.strata"), "use shapes.*\n\nfn unit() -> Shape {\n  Circle { radius: 1 }\n}\n\nfn doubled(l: Line) -> Int {\n  l.qty * 2\n}\n").unwrap();
     git(&d, &["add", "."]);
@@ -1945,7 +1947,6 @@ fn sync_follows_moves() {
     // feature moves `charge`; main adds code that calls it where it was
     git(&d, &["checkout", "-q", "-b", "feature"]);
     assert!(strata(&["move", "charge", "billing"], &d, None).0);
-    git(&d, &["commit", "-q", "-am", "move charge"]);
     git(&d, &["checkout", "-q", "main"]);
     std::fs::write(d.join("report.strata"), "use orders.{Order, charge}\n\nfn twice(o: Order) -> Int {\n  charge(o) + orders.charge(o)\n}\n").unwrap();
     git(&d, &["add", "."]);
@@ -2529,4 +2530,61 @@ fn a_pending_change_handles_removed_and_added_variants() {
     assert!(ok && out.contains("recorded \"lost parcels\" as one change"), "{out}");
     let (ok, out) = strata(&["test"], &d, None);
     assert!(ok && out.contains("1 passed"), "{out}");
+}
+
+#[test]
+fn changes_are_committed_to_git() {
+    let d = tmp("auto-commit");
+    git(&d, &["init", "-q", "-b", "main"]);
+    let pkg = d.join("pkg");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("main.strata"), TAXES).unwrap();
+    assert!(strata(&["init"], &pkg, None).0);
+    git(&d, &["add", "."]);
+    git(&d, &["commit", "-q", "-m", "base"]);
+    let count = || git(&d, &["rev-list", "--count", "HEAD"]).trim().parse::<usize>().unwrap();
+
+    // a change that checks is a commit, with its message; what else is staged stays out
+    std::fs::write(d.join("notes.txt"), "mine").unwrap();
+    git(&d, &["add", "notes.txt"]);
+    let (ok, out) = strata_git_stdin(&["edit", "-m", "cheaper tax"], &pkg, "fn tax(amount: Int) -> Int { amount / 20 }");
+    assert!(ok && out.contains("committed to git:") && out.contains("cheaper tax"), "{out}");
+    assert_eq!(count(), 2);
+    assert_eq!(git(&d, &["log", "-1", "--format=%s"]).trim(), "cheaper tax");
+    assert!(git(&d, &["status", "--porcelain"]).contains("A  notes.txt"), "still only staged");
+
+    // a pending change is committed once, when it's done
+    assert!(strata_git_stdin(&["edit", "-m", "tax takes a rate"], &pkg, "fn tax(amount: Int, rate: Int) -> Int { amount * rate / 100 }").0);
+    assert!(strata_git_stdin(&["edit"], &pkg, "fn total(amount: Int) -> Int { amount + tax(amount, 10) }").0);
+    assert!(strata_git_stdin(&["edit"], &pkg, "fn double_tax(a: Int) -> Int { tax(a, 10) * 2 }").0);
+    assert_eq!(count(), 2, "nothing committed while pending");
+    let (ok, out) = strata_git(&["done"], &pkg);
+    assert!(ok && out.contains("committed to git:"), "{out}");
+    assert_eq!(count(), 3);
+    assert_eq!(git(&d, &["log", "-1", "--format=%s"]).trim(), "tax takes a rate");
+
+    // off for one command, or for the package
+    assert!(strata_git_stdin(&["edit", "--no-commit"], &pkg, "fn total(amount: Int) -> Int { amount + tax(amount, 12) }").0);
+    assert_eq!(count(), 3);
+    std::fs::write(pkg.join("strata.toml"), "name = \"pkg\"\nauto_commit = false\n").unwrap();
+    assert!(strata_git_stdin(&["edit"], &pkg, "fn total(amount: Int) -> Int { amount + tax(amount, 15) }").0);
+    assert_eq!(count(), 3);
+}
+
+fn strata_git_stdin(args: &[&str], dir: &std::path::Path, stdin: &str) -> (bool, String) {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_strata"))
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    c.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+    let o = c.wait_with_output().unwrap();
+    (o.status.success(), String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr))
 }
