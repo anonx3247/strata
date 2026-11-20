@@ -132,6 +132,14 @@ $ strata rename total order_total
 renamed total → order_total
 updated 1 definition that refers to it: test "totals"
 
+$ strata rename Shipped Sent              # a variant; trait methods work the same way
+renamed Shipped → Sent
+updated 3 definitions that refer to it: order_id, ship, test "shipping a pending order saves it as shipped"
+
+$ strata rename Line.qty quantity         # a field: accesses, literals, updates, patterns
+renamed Line.qty → Line.quantity
+updated 3 definitions that refer to it: line_total, test "shipping a pending order saves it as shipped", test "totals"
+
 $ strata run total '[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]]' --trace
 {"event":"call","fn":"total","args":[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]],"depth":1}
 {"event":"call","fn":"line_total","args":[{"sku":"tea","qty":2,"unit_price":450}],"depth":2}

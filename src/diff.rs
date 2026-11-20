@@ -594,7 +594,19 @@ fn effective_renames(old: &Program, new: &Program, renames: &[(String, String)])
 
 /// The structural diff from `old` to `new`.
 pub fn diff(old: &Program, new: &Program, renames: &[(String, String)], steps: &StepNames, verdicts: &HashMap<String, Verdict>) -> Json {
+    // renames of a variant, trait method or field: (from, to, kind, owning definition)
+    let members: Vec<(String, String, &str, String)> = renames
+        .iter()
+        .filter_map(|(f, t)| {
+            let (kind, _) = crate::resolve::member(old, f).filter(|(k, _)| matches!(*k, "variant" | "method" | "field"))?;
+            crate::resolve::member(new, t)?;
+            Some((f.clone(), t.clone(), kind, crate::resolve::owner(old, f)?))
+        })
+        .collect();
+    let owners: HashSet<&str> = members.iter().map(|m| m.3.as_str()).collect();
     let renames = effective_renames(old, new, renames);
+    // what code that only follows a rename looks like: definitions' and members' short names
+    let substitutions: Vec<(String, String)> = renames.iter().cloned().chain(members.iter().map(|m| (m.0.clone(), m.1.clone()))).collect();
     let om: HashMap<String, &Decl> = old.decls.iter().map(|d| (d.qname(), d)).collect();
     let nm: HashMap<String, &Decl> = new.decls.iter().map(|d| (d.qname(), d)).collect();
     let renamed_to: HashMap<&str, &str> = renames.iter().map(|(f, t)| (t.as_str(), f.as_str())).collect();
@@ -622,20 +634,21 @@ pub fn diff(old: &Program, new: &Program, renames: &[(String, String)], steps: &
     let mut refs_of: HashMap<String, Vec<String>> = HashMap::new();
     let mut items: Vec<(String, Json)> = Vec::new();
     let mut ref_only: HashSet<String> = HashSet::new();
-    if !renames.is_empty() {
+    if !substitutions.is_empty() {
         for (o, n) in &pairs {
             let (Some(o), Some(n)) = (o, n) else { continue };
-            if o.qname() != n.qname() || doc_text(o) != doc_text(n) {
+            // the type or trait that declares a renamed member is shown, not folded
+            if o.qname() != n.qname() || doc_text(o) != doc_text(n) || owners.contains(o.qname().as_str()) {
                 continue;
             }
             let (oc, nc) = (code(o), code(n));
-            for (f, t) in &renames {
+            for (f, t) in &substitutions {
                 let (fs, ts) = (short(f), short(t));
                 if tokens(&oc).contains(&fs) && tokens(&nc).contains(&ts) {
                     refs_of.entry(t.clone()).or_default().push(n.qname());
                 }
             }
-            if substitute(&oc, &renames) == nc {
+            if substitute(&oc, &substitutions) == nc {
                 ref_only.insert(n.qname());
             }
         }
@@ -668,7 +681,19 @@ pub fn diff(old: &Program, new: &Program, renames: &[(String, String)], steps: &
                 annotate(&mut ls, &oc, kind, if is_rename { &[] } else { &renames });
                 let mut w = if is_rename { vec![format!("renamed from `{}`", short(&o.qname()))] } else { vec![] };
                 // a rename alone changes only the name
-                let rest = if is_rename { substitute(&oc, &renames) != nc || doc_text(o) != doc_text(n) } else { true };
+                let mut rest = if is_rename { substitute(&oc, &renames) != nc || doc_text(o) != doc_text(n) } else { true };
+                // a renamed member: say so, then whatever else changed, against the old
+                // definition with the rename applied
+                for (f, t, k, _) in members.iter().filter(|m| m.3 == q && !is_rename) {
+                    w.push(format!("{k} `{}` renamed to `{}`", short(f), short(t)));
+                    let o2 = crate::resolve::rename(old, f, short(t)).ok().and_then(|p| p.decls.into_iter().find(|d| d.qname() == q));
+                    match o2 {
+                        Some(o2) if code(&o2) == nc && doc_text(&o2) == doc_text(n) => {}
+                        Some(o2) => w.extend(words(&o2, n)),
+                        None => w.extend(words(o, n)),
+                    }
+                    rest = false;
+                }
                 if rest {
                     let ws = words(o, n);
                     if !(is_rename && ws == ["signature changed"] && substitute(&oc, &renames) == nc) {
@@ -701,7 +726,11 @@ pub fn diff(old: &Program, new: &Program, renames: &[(String, String)], steps: &
             detail.push("most of it changed, so it is shown as a line diff".to_string());
         }
         let only_renamed = mk == "ren" && what.len() == 1;
-        if only_renamed {
+        let member_only = owners.contains(q.as_str()) && what.iter().all(|w| w.contains("` renamed to `"));
+        if member_only {
+            let r: usize = members.iter().filter(|m| m.3 == q).map(|m| refs_of.get(&m.1).map_or(0, |r| r.len())).sum();
+            detail.push(format!("only a name changed · {r} reference{} updated", if r == 1 { "" } else { "s" }));
+        } else if only_renamed {
             let r = refs_of.get(&q).map_or(0, |r| r.len());
             detail.push(format!("only the name changed · {r} reference{} updated", if r == 1 { "" } else { "s" }));
         } else if what == ["doc changed"] || what == ["comments changed"] {

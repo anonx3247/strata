@@ -271,12 +271,12 @@ pub fn new_errors(path: &str, merged: &str, ours: &str, theirs: &str) -> Result<
 /// reference to it (including the other side's new ones) and renames them.
 /// `None` when there is nothing to follow.
 pub fn follow_rename(p: &Program, from: &str, to: &str) -> Option<Program> {
-    if p.decls.iter().any(|d| d.qname() == from) {
+    if resolve::member(p, from).is_some() {
         return None; // the old name is defined again (the other side kept or re-added it)
     }
-    let i = p.decls.iter().position(|d| d.qname() == to)?;
+    let (kind, _) = resolve::member(p, to)?;
     let mut back = p.clone();
-    crate::store::set_name(&mut back.decls[i], short(from));
+    resolve::set_member_name(&mut back, to, short(from));
     // `use` lists that name the new name (the renaming side's, kept by the
     // merge) name the old one again, so the other side's bare references resolve
     let module = to.rsplit_once('.').map(|(m, _)| m).unwrap_or("");
@@ -291,7 +291,8 @@ pub fn follow_rename(p: &Program, from: &str, to: &str) -> Option<Program> {
             }
         }
     }
-    let r = resolve::follow(p, &back, from, short(to)).ok()?;
+    // a field isn't resolved by name: rename it again (it refuses an ambiguous one)
+    let r = if kind == "field" { resolve::rename(&back, from, short(to)).ok()? } else { resolve::follow(p, &back, from, short(to)).ok()? };
     let changed = r.decls.iter().zip(&p.decls).any(|(a, b)| canon(a) != canon(b));
     changed.then_some(r)
 }

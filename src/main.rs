@@ -35,7 +35,8 @@ every change made through strata, committed with them):
   add <file.strata> [-m MSG]   import definitions from a file (checked, atomic)
   edit [-m MSG] [--rm NAME]..  read definitions from stdin; replace/add them by name;
                                commit only if the whole codebase still checks
-  rename <old> <new> [-m MSG]  rename a function, type or trait and every reference to it
+  rename <old> <new> [-m MSG]  rename a function, type, trait, variant, trait method or
+                               field (`Owner.field`) and every reference to it
                                (`old` may be qualified, `new` is the short name)
   log                          show the patch history
   diff [--from N] [--to N] [--step K] [--json]
@@ -288,15 +289,24 @@ fn run() -> Result<bool, String> {
         "rename" => {
             let Source::Db(mut cb) = load(&args)? else { return Err("`rename` needs a codebase (it commits the change)".into()) };
             let (Some(old), Some(new)) = (args.pos.get(1), args.pos.get(2)) else { return Err("usage: strata rename <old> <new>".into()) };
-            // `old` is a qualified name, or a short name that only one module defines
-            let old_q = if cb.program.decls.iter().any(|d| &d.qname() == old) {
-                old.clone()
-            } else {
-                let found: Vec<String> = cb.program.decls.iter().filter(|d| &d.name() == old).map(|d| d.qname()).collect();
-                match found.as_slice() {
-                    [one] => one.clone(),
-                    [] => return Err(format!("no definition `{old}`")),
-                    many => return Err(format!("`{old}` is ambiguous: {}", many.join(", "))),
+            // `old` is a qualified name, or one that only one module defines: a definition,
+            // a variant, a trait method, or a field as `Owner.field`
+            let (old_q, kind) = match resolve::member(&cb.program, old) {
+                Some((kind, _)) => (old.clone(), kind),
+                None => {
+                    let mut mods: Vec<String> = cb.program.decls.iter().map(|d| d.module.clone()).collect();
+                    mods.sort();
+                    mods.dedup();
+                    let found: Vec<(String, &str)> = mods
+                        .iter()
+                        .map(|m| if m.is_empty() { old.clone() } else { format!("{m}.{old}") })
+                        .filter_map(|q| resolve::member(&cb.program, &q).map(|(k, _)| (q, k)))
+                        .collect();
+                    match found.as_slice() {
+                        [one] => one.clone(),
+                        [] => return Err(format!("no definition, variant, trait method or field `{old}`")),
+                        many => return Err(format!("`{old}` is ambiguous: {}", many.iter().map(|(q, _)| q.as_str()).collect::<Vec<_>>().join(", "))),
+                    }
                 }
             };
             let renamed = resolve::rename(&cb.program, &old_q, new)?;
@@ -310,11 +320,13 @@ fn run() -> Result<bool, String> {
                 Some((m, _)) => format!("{m}.{new}"),
                 None => new.clone(),
             };
+            // the definition that declares it (itself, or the type / trait a member belongs to) isn't a reference
+            let owner = resolve::owner(&cb.program, &old_q).unwrap_or_default();
             let before: HashMap<String, String> = cb.program.decls.iter().map(|d| (d.qname(), store::self_hash(d))).collect();
             let updated: Vec<String> = renamed
                 .decls
                 .iter()
-                .filter(|d| d.qname() != new_q && before.get(&d.qname()).is_some_and(|h| *h != store::self_hash(d)))
+                .filter(|d| d.qname() != new_q && d.qname() != owner && before.get(&d.qname()).is_some_and(|h| *h != store::self_hash(d)))
                 .map(|d| d.qname())
                 .collect();
             // prose is not rewritten: point at docs and comments that still say the old name
@@ -328,7 +340,7 @@ fn run() -> Result<bool, String> {
                 .collect();
             let default_msg = format!("rename {old_q} → {new_q}");
             let msg = args.val("-m").unwrap_or(&default_msg);
-            cb.commit_with(renamed, msg, json!({"rename": {"from": old_q, "to": new_q, "references": updated}}))?;
+            cb.commit_with(renamed, msg, json!({"rename": {"from": old_q, "to": new_q, "kind": kind, "references": updated}}))?;
             if json_out {
                 println!("{}", json!({"from": old_q, "to": new_q, "references": updated, "mentions": mentions}));
                 return Ok(true);
