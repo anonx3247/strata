@@ -1021,7 +1021,7 @@ fn apply_edit(cb: &mut Codebase, cmd: &str, edits: Program, deletes: Vec<String>
         let open = pending::load(cb);
         let first = open.as_ref().map_or(1, |p| p.holes.len() + 1);
         match (cmd, pending::holeify(&cb.program, &new, &edited, &rep.errors, first)) {
-            ("edit", Ok((with_holes, holes))) => {
+            ("edit", Ok((with_holes, holes, notes))) => {
                 let mut p = match open {
                     Some(p) => p,
                     None => pending::start(cb, msg)?,
@@ -1031,7 +1031,14 @@ fn apply_edit(cb: &mut Codebase, cmd: &str, edits: Program, deletes: Vec<String>
                 pending::save(cb, &p)?;
                 println!("the edit breaks {} use{} elsewhere; {}, in a pending change:", holes.len(), if holes.len() == 1 { "" } else { "s" }, if holes.len() == 1 { "it is now a hole" } else { "they are now holes" });
                 for h in &holes {
-                    println!("  ?{}  in {}\n      was: {}\n      why: {}", h.name, h.decl, h.was, h.why.join("; "));
+                    if h.was.is_empty() {
+                        println!("  ?{}  in {}\n      why: {}", h.name, h.decl, h.why.join("; "));
+                    } else {
+                        println!("  ?{}  in {}\n      was: {}\n      why: {}", h.name, h.decl, h.was, h.why.join("; "));
+                    }
+                }
+                for n in &notes {
+                    println!("  {n}");
                 }
                 println!("fill them with `strata edit`, then `strata done` (or `strata abort` to undo the whole change)");
                 return Ok(Ok(()));

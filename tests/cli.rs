@@ -2418,3 +2418,34 @@ test "unknown type" {
         assert!(out.contains(want), "missing {want:?} in {out}");
     }
 }
+
+#[test]
+fn a_pending_change_handles_removed_and_added_variants() {
+    let d = tmp("pending-variants");
+    std::fs::write(
+        d.join("main.strata"),
+        "type Status =\n  | Pending\n  | Shipped { tracking: String }\n  | Cancelled\n\nfn label(s: Status) -> String {\n  match s {\n    Pending => \"pending\",\n    Shipped { tracking, .. } => \"shipped \" + tracking,\n    Cancelled => \"cancelled\",\n  }\n}\n\nfn done(s: Status) -> Bool {\n  match s {\n    Shipped { .. } | Cancelled => true,\n    Pending => false,\n  }\n}\n\nfn only_cancelled(s: Status) -> Int {\n  match s {\n    Cancelled => 1,\n  }\n}\n\nfn cancel() -> Status {\n  Cancelled\n}\n\ntest \"labels\" {\n  assert label(Pending) == \"pending\"\n}\n",
+    )
+    .unwrap();
+    assert!(strata(&["init"], &d, None).0);
+    let (ok, out) = strata(&["edit", "-m", "lost parcels"], &d, Some("type Status =\n  | Pending\n  | Shipped { tracking: String }\n  | Lost(Int)\n"));
+    assert!(ok, "{out}");
+    // a removed variant's arms go (or just its alternative); an added one gets an arm with a hole
+    assert!(out.contains("in label: dropped the arm for `Cancelled` (removed)") && out.contains("in done: dropped `Cancelled` (removed) from an arm"), "{out}");
+    assert!(out.contains("in label\n      why: `Lost` is a new variant of `Status`"), "{out}");
+    let m = std::fs::read_to_string(d.join("main.strata")).unwrap();
+    assert!(m.contains("    Shipped { tracking, .. } => \"shipped \" + tracking,\n    Lost(_) => ?pending_"), "{m}");
+    assert!(m.contains("    Shipped { .. } => true,\n    Pending => false,\n    Lost(_) => ?pending_"), "{m}");
+    // a match with no arm left is a hole; so is building the removed variant
+    assert!(m.contains("fn only_cancelled(s: Status) -> Int\n  = ?pending_") && m.contains("fn cancel() -> Status\n  = ?pending_"), "{m}");
+    let (_, out) = strata(&["holes"], &d, None);
+    assert!(out.contains("was:     Cancelled"), "{out}");
+    // filled, the change is one entry
+    assert!(strata(&["edit"], &d, Some("fn label(s: Status) -> String {\n  match s {\n    Pending => \"pending\",\n    Shipped { tracking, .. } => \"shipped \" + tracking,\n    Lost(n) => f\"lost {n}\",\n  }\n}\n")).0);
+    assert!(strata(&["edit"], &d, Some("fn done(s: Status) -> Bool {\n  match s {\n    Shipped { .. } | Lost(_) => true,\n    Pending => false,\n  }\n}\n")).0);
+    assert!(strata(&["edit", "--rm", "only_cancelled", "--rm", "cancel"], &d, Some("")).0);
+    let (ok, out) = strata(&["done"], &d, None);
+    assert!(ok && out.contains("recorded \"lost parcels\" as one change"), "{out}");
+    let (ok, out) = strata(&["test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+}
