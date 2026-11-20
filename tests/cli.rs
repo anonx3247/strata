@@ -481,12 +481,17 @@ fn far() -> Bool ensures it { len("TAG") == 9 }
     for name in ["f", "word", "letters", "spaces", "nbsp", "caseless", "kelvin", "arabic", "anchored"] {
         assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
     }
-    for name in ["bad_word", "bad_letters", "bad_caseless", "ascii_only"] {
-        let line = out.lines().find(|l| l.split_whitespace().nth(1) == Some(name)).unwrap_or("");
-        assert!(line.starts_with("✗") && line.contains("found by the solver"), "{name} should be refuted by the solver: {out}");
+    let line = |name: &str| out.lines().find(|l| l.split_whitespace().nth(1) == Some(name)).unwrap_or("").to_string();
+    // with an approximated class (\w, \p{L}, Unicode \d) the solver's model may lie in the
+    // approximation's slack: replaying it then fails the precondition, and the fuzzer finds a
+    // real counterexample. Which one reports it depends on the model the solver returns.
+    for name in ["bad_f", "bad_word", "bad_letters", "ascii_only"] {
+        assert!(line(name).starts_with("✗"), "{name} should be refuted: {out}");
     }
-    // the solver's counterexample lies outside the approximated class; the fuzzer finds a real one
-    assert!(out.contains("✗ bad_f"), "{out}");
+    // exact models: every model the solver gives is a real counterexample
+    for name in ["bad_caseless", "far"] {
+        assert!(line(name).starts_with("✗") && line(name).contains("found by the solver"), "{name} should be refuted by the solver: {out}");
+    }
     // a character past U+2FFFF is no SMT character: the literal is unknown, not 9 characters
     assert!(out.contains("✗ far") && !out.contains("bug in the prover"), "{out}");
 }
