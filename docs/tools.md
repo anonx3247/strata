@@ -89,6 +89,29 @@ $ strata run total '[[]]'                    # arguments are checked against the
 error: invalid input: lines: [] does not satisfy `NonEmpty` (where len(it) > 0)
 ```
 
+## Compiling to native code
+
+`strata build` compiles a program to an executable through LLVM: it writes LLVM IR as text, and `clang` compiles it with a small C runtime (`STRATA_CC` chooses another compiler). `--emit-llvm` prints the IR instead.
+
+```text
+$ strata build tests/data/build/numbers.strata -o numbers
+built numbers
+$ ./numbers
+2432902008176640000
+gcd = 6, 2^10 = 1024, A(2, 3) = 9
+...
+fault (Refinement): result of `next_digit`: 10 does not satisfy `Digit` (where 0 <= it && it <= 9)
+```
+
+A compiled program behaves as `strata run`: the same output, and contracts are checked at run time with the same fault messages (refinements of parameters, results, annotated `let`s and declared variables, `requires`, `ensures`, `assert`), exiting with 101. It is the first step, so only part of the language compiles:
+
+- `Int` (64 bits for now: an overflow is a fault, where the interpreter switches to a big integer), `Float`, `Bool`, `String`, `()`, and refinements of them;
+- functions and recursion, `let`, `let mut` and assignment, `if`, `match` on literals, `where` conditions and refinement types, `while`, `loop`, `for` over `range(a, b)`, `break`, `continue`, `return`, `assert`;
+- f-strings without format specs, and `print`, `to_string`, `len` (of a string), `abs`, `min`, `max`;
+- `main` takes no parameters, and returns `()` or an exit code.
+
+Anything else (records, variants, lists, lambdas, traits, `mut` parameters, capabilities) is refused, naming the function and what it uses: `can't compile `main`: a list is not compiled yet`. Memory is never freed yet.
+
 ## The viewer
 
 ![The Strata viewer, showing collatz_steps from examples/math.strata: its code, six proven checks, and "may not terminate"](images/viewer.png)

@@ -1,0 +1,118 @@
+// Compiled by `strata build` (tests/build.rs): what it prints must be what
+// `strata run` prints, the final fault included.
+
+/// A decimal digit.
+type Digit = Int
+  where 0 <= it && it <= 9
+
+fn factorial(n: Natural) -> Positive {
+  if n == 0 {
+    1
+  } else {
+    n * factorial(n - 1)
+  }
+}
+
+fn gcd(a: Natural, b: Natural) -> Natural
+  ensures a > 0 || b > 0 ==> it > 0 {
+  if b == 0 {
+    a
+  } else {
+    gcd(b, a % b)
+  }
+}
+
+fn power(b: Int, e: Natural) -> Int {
+  if e == 0 {
+    1
+  } else if e % 2 == 0 {
+    power(b * b, e / 2)
+  } else {
+    b * power(b, e - 1)
+  }
+}
+
+fn ackermann(m: Natural, n: Natural) -> Positive {
+  if m == 0 {
+    n + 1
+  } else if n == 0 {
+    ackermann(m - 1, 1)
+  } else {
+    ackermann(m - 1, ackermann(m, n - 1))
+  }
+}
+
+fn triangle(n: Natural) -> Natural {
+  let mut total: Natural = 0
+  for i in range(1, n + 1) {
+    total = total + i
+  }
+  total
+}
+
+fn collatz_steps(n: Positive) -> Natural {
+  let mut x: Positive = n
+  let mut steps: Natural = 0
+  while x != 1 {
+    if x % 2 == 0 {
+      x = x / 2
+    } else {
+      x = 3 * x + 1
+    }
+    steps = steps + 1
+  }
+  steps
+}
+
+fn classify(n: Int) -> String {
+  match n {
+    0 => "zero",
+    1 | 2 | 3 => "small",
+    Positive => "big",
+    where it > -10 => "slightly negative",
+    _ => "very negative",
+  }
+}
+
+fn first_square_above(limit: Int) -> Int {
+  let mut i = 0
+  loop {
+    if i * i > limit {
+      return i
+    }
+    i = i + 1
+  }
+  0
+}
+
+fn next_digit(d: Digit) -> Digit {
+  d + 1
+}
+
+fn main() -> () {
+  print(factorial(20))
+  print(
+    f"gcd = {gcd(12, 18)}, 2^10 = {power(2, 10)}, A(2, 3) = {ackermann(2, 3)}",
+  )
+  print(triangle(100))
+  print(collatz_steps(27))
+  print(classify(0)
+    + " "
+    + classify(2)
+    + " "
+    + classify(50)
+    + " "
+    + classify(-3)
+    + " "
+    + classify(-30))
+  print(first_square_above(50))
+  print(1.5 * 2.0)
+  print(0.1 + 0.2)
+  print(1.0 / 3.0)
+  print(-7 / 2)
+  print(-7 % 2)
+  print(abs(-4) + min(3, 9) + max(3, 9))
+  print(len("héllo") == 5 && !(1 > 2))
+  assert power(3, 3) == 27
+  print(next_digit(9))
+}

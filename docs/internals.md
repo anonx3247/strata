@@ -19,6 +19,7 @@
 | `src/merge.rs` | `strata merge-file`: three-way merge per definition, renames |
 | `src/package.rs` | packages: `strata.toml`, their files, finding packages and scripts |
 | `src/git.rs` | running git |
+| `src/llvm.rs`, `src/llvm/runtime.c` | `strata build`: the elaborated program as LLVM IR (text), and the C runtime it links with (strings, printing, number formatting, faults) |
 | `src/stdlib.rs`, `std/` | the standard library (Strata), built into the binary; the native `host_*` operations it alone can call |
 | `src/view.rs` | level-of-detail projections and selectors |
 | `src/ui.rs`, `src/ui/index.html` | `strata ui`: the live viewer (a std-only HTTP server and one page) |
