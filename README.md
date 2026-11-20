@@ -70,7 +70,7 @@ trait Db {
   fn save(mut self, o: Order) -> ()        // `mut self`: saving changes the store
 }
 
-fn ship[D: Db](mut db: D, id: OrderId, tracking: NonEmptyString) -> Result[Order, ShipError]
+fn ship(mut db: Db, id: OrderId, tracking: NonEmptyString) -> Result[Order, ShipError]
   ensures match it { Ok(o) => o is Shipped, Err(_) => true }
 {
   let order = db.load(id) except { return Err(NotFound) }
@@ -246,7 +246,7 @@ fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, (ac
 - **Laws** are checked by `strata verify` against every implementation, with generated inputs. In `examples/traits.strata`, `verify` finds that averaging (`Midpoint`) is not associative.
 - **Generic functions** are fuzzed with a type that actually implements their bounds.
 
-**Capabilities are traits too.** There are no separate effects: a backend (database, queue, console, clock) is a trait, and code that uses one takes an implementation as a parameter or holds it in a field: `fn ship[D: Db](db: D, ...)`, `type PrintWorker = { console: Console }`. A trait can be used as a type, meaning "any implementation". A method that changes its value says `mut self` (`fn save(mut self, o: Order)`). Tests pass a fake implementation or `mock Db`. Async and iterators will be designed as their own language features.
+**Capabilities are traits too.** There are no separate effects: a backend (database, queue, console, clock) is a trait, and code that uses one takes an implementation as a parameter or holds it in a field: `fn ship(mut db: Db, ...)`, `type PrintWorker = { console: Console }`. A trait used as a type means "any implementation": `db: Db` is shorthand for `fn ship[D: Db](db: D, ...)`. Name the type parameter only when it must tie things together, as in `combine_all[T: Combine](first: T, rest: List[T]) -> T`. A method that changes its value says `mut self` (`fn save(mut self, o: Order)`). Tests pass a fake implementation or `mock Db`. Async and iterators will be designed as their own language features.
 
 **Not yet:** methods without `self` (such as `fn empty() -> Self`), which need dispatch on the expected type; method names shared between traits.
 
@@ -257,7 +257,7 @@ A **file is a module**, named after its path in the package: `shop/orders.strata
 ```rust
 // orders.strata
 pub type Order = { id: OrderId, lines: NonEmpty[Line] }
-pub fn ship[D: Db](mut db: D, id: OrderId) -> Result[Order, ShipError]  ensures ...
+pub fn ship(mut db: Db, id: OrderId) -> Result[Order, ShipError]  ensures ...
 fn helper() -> Int { ... }            // private: invisible outside `orders`
 
 // billing.strata
