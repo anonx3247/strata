@@ -181,7 +181,7 @@ test "requests" {
   let mut sort = get_request("/")
   sort.query = dict([("sort", "year")])
   let by_year = handle(sort)
-  assert index_of(by_year.body, "Lisp") except { -1 } < index_of(by_year.body, "ML") except { -1 }
+  assert index_of(by_year.body, "Lisp") ?? -1 < index_of(by_year.body, "ML") ?? -1
   assert handle(get_request("/languages.json")).body == to_json(languages())
   assert handle(get_request("/languages/haskell")).body == "{\"name\":\"Haskell\",\"year\":1990,\"typed\":true}"
   assert handle(get_request("/languages/cobol")).status == 404

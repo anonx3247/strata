@@ -94,7 +94,7 @@ fn main() -> () {
   print(swap((1, "x")))
   print(quarter(8))
   print(quarter(6))
-  print(quarter(6) except { -1 })
+  print(quarter(6) ?? -1)
   print(quarter(6) except e { len(e) })
   print(plus_one(20))
   print(plus_one(3))

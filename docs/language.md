@@ -30,7 +30,7 @@ fn ship(mut db: Db, id: OrderId, tracking: NonEmptyString) -> Result[Order, Ship
   match order {
     Pending { id, lines } => {
       let o = Shipped { id, lines, tracking }
-      db.save(o)
+      mut db.save(o)
       Ok(o)
     }
     _ => Err(NotPending),
@@ -68,6 +68,22 @@ id.value                     // the underlying String
 ```
 
 A `distinct` type never mixes with its base or with other distinct types (`OrderId` ≠ `UserId`), it can have trait implementations, and it serialises to JSON as its underlying value.
+
+## Records and defaults
+
+A record's field can have a default, written after its type. Nothing gets a default implicitly.
+
+```rust
+type Retry = {
+  attempts: Int where 1 <= it && it <= 10 = 3,
+  backoff: List[Int] = [100, 200],
+  label: String = "retry",
+}
+let r = Retry { attempts: 5 }      // backoff: [100, 200], label: "retry"
+let d = Retry {}
+```
+
+A constructor that leaves out a field with a default gets the default; so does JSON input with the key missing, and a command line without the option. A variant's record fields can have defaults too (`Queued { name: String, priority: Int = 0 }`). A default is checked where the type is defined: it must have the field's type, and a literal must satisfy the field's refinement (`n: Positive = 0` is an error). It sees no variables, not even the other fields, and it is evaluated each time it is used. Generated values (mocks, fuzzing) still generate every field.
 
 ## Unions, variants and patterns
 
@@ -150,7 +166,7 @@ let tea = Item.new("tea").priced(42)
 - a known type: its own method if it has one (`impl Item { fn describe(self) … }`), else the one trait of the type that declares the name. This holds even when a function of another module has the same name: inside your own `fn handle`, `app.handle(req)` is `Router`'s method (`handle(app, req)` would be the function);
 - otherwise it is a compile error: a type implementing two traits that both have `describe`, with no `describe` of its own; a value known only as `Describe | Log` or `T: Describe + Log`. In the last two cases a type's own `describe` doesn't help: it says what `describe` means on an `Item`, not which trait's meaning the call wants.
 
-This holds whichever modules the traits come from: with `Console` (`std.io`) and `Files` (`std.fs`) both imported, `console.write(s)` and `files.write(path, s)` each mean their own trait's `write`. A method named like a builtin (`Files.remove`) doesn't hide the builtin: on a value whose type has no trait declaring the name (a dict, a list, a string…), `d.remove(k)` and `remove(d, k)` are the builtin's.
+This holds whichever modules the traits come from: with `Console` (`std.io`) and `Files` (`std.fs`) both imported, `mut console.write(s)` and `mut files.write(path, s)` each mean their own trait's `write`. A method named like a builtin (`Files.remove`) doesn't hide the builtin: on a value whose type has no trait declaring the name (a dict, a list, a string…), `d.remove(k)` and `remove(d, k)` are the builtin's.
 
 `strata` decides this when checking and writes the decision into the program it runs, so the same call always runs the same implementation. A name that depends on the receiver can't be passed as a bare function value (`map(describe)`): pass a lambda (`x -> x.describe()`).
 
@@ -211,9 +227,23 @@ let best = scores
 
  Variables are immutable unless declared `let mut`. `while` and `for` loops are available, and fields can be assigned (`line.qty = …`). Mutation is always *visible*:
 - a function that changes an argument declares it `mut`, and the caller passes a mutable variable marked `mut` at the call (`restock(mut line, 5)`), which is updated when the call returns. The marker is required there, and an error anywhere else;
-- a method that changes its receiver takes `mut self`.
+- a method that changes its receiver takes `mut self`, and the call is marked the same way: `mut queue.claim(2)` (as Hylo writes `&x.append(1)`). The mark is required for such a method, and an error on any other. It marks the first call on the place after it: `mut queue.claim(2).len()` changes `queue` through `claim`, and is written `(mut queue.claim(2)).len()`. As an argument, the marked call is put in parentheses, `f((mut queue.pop()), x)`, to tell it from `f(mut queue)`, which passes `queue` to a `mut` parameter.
+
+Only a variable declared `let mut`, a `mut` parameter, or a field of one can be changed: passed `mut`, or marked as a receiver. A call's result is a value, not a place, and the changes would have nowhere to go: `mut first(xs).tick()` is an error. Name it first (`let mut x = first(xs)`).
 
 There are no shared references, so nothing changes behind your back. A declared type holds for the variable's whole life: every assignment is checked against it (`line.qty = 120` fails if `qty` is a `Quantity`; `x = -1` fails if `x` was declared `let mut x: Positive`), at compile time for literals and at runtime otherwise, and so is the value a `mut` argument writes back. Passing a `Positive` variable to a `mut k: Int` parameter is a compile error, since the function could store any `Int` in it. Closures cannot change outer variables.
+
+**Ranges, slices and comprehensions.** `0..n` is the integers from `0` to `n - 1`, and `1..=n` includes `n`; a range is a `List[Int]` (`for i in 0..n { … }`, `(0..n).map(…)`). A list or string is sliced with a range: `xs[1..3]`, `s[..3]`, `xs[2..]`, `xs[..=i]`, clamped to its length as in Python. There are no negative indices: the end of `xs` is `len(xs)`, as in `xs[..len(xs) - 1]`. One element is `xs[i]` (`s[i]` is a one-character string): `i` must be in range, which is checked when the code runs and proven by `verify` (`xs[0]` on a `NonEmpty[Int]` is proven; `xs[len(xs) - 1]` on any list is not). `get(xs, i)` gives an `Option` instead. A comprehension builds a list from one or more others, with a `where` to keep only some elements, as in a refinement:
+
+```rust
+[x * x for x in xs where x > 0]
+[(a, b) for a in 1..=3 for b in ["x", "y"] where a != 2]
+[(name, n) for (n, name) in pairs]
+Dict { w: len(w) for w in words }
+Set { x % 3 for x in xs }
+```
+
+They are written in the tree as such, so they render back as written. When the program is resolved they become the builtins (`range`, `slice`, `map`, `filter`, `fold`), so the checker, the interpreter and the prover treat them exactly as those calls.
 
 Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7`, with optional parameter types (`(s: String) -> len(s)`; a refined one, such as `(n: Positive) -> …`, is checked on every call, like a named function's) and a block for a longer body (`x -> { ... }`). `return e` leaves the enclosing function or lambda early.
 
@@ -229,13 +259,14 @@ fn transfer(from: Account, to: Account, amount: Cents) -> Result[(Account, Accou
 fn status_of(q: MemQueue, id: TaskId) -> Option[Status] {
   Some(q.entries.find(e -> e.task.id == id)?.status)  // None is returned from `status_of`
 }
-let port = parse_int(text) except { 8080 }                  // handle it here: a fallback value
+let port = parse_int(text) ?? 8080                          // handle it here: a fallback value
 let n = parse(s) except e { return describe_error(e) }      // the error, by name; the block may return
 ```
 
 - `e!` takes the `Ok` value of a `Result`, or returns its `Err` from the function. The error must fit the function's error type: the same type, or a variant of it, or a member of a union (there is no conversion function).
 - `e?` does the same for an `Option`: the `Some` value, or return `None`.
-- `e except { fallback }` handles a failed `Result` or a missing `Option` value inline. `except err { ... }` names the error (an `Option` has none). The fallback must produce the same type, or leave with `return`.
+- `e ?? fallback` handles a failed `Result` or a missing `Option` value inline: `e`'s value, or else the fallback (`a ?? b ?? 0` tries each in turn). It binds tighter than comparisons and looser than arithmetic: `n ?? 0 + 1` is `n ?? (0 + 1)`, `n ?? 0 == 1` is `(n ?? 0) == 1`.
+- `e except { fallback }` is the same with a block, for a longer fallback or one that leaves with `return`; a plain value is always written with `??`. `except err { ... }` names the error (an `Option` has none). The fallback must produce the same type, or leave with `return`.
 - They chain: `load(path)!.lines()`, `find(xs, p)?.name`.
 
 ## Built-in types
@@ -249,10 +280,10 @@ let n = parse(s) except e { return describe_error(e) }      // the error, by nam
 | `Result[T, E]` | `Ok(x)` or `Err(e)`: an operation that may fail |
 | `List[T]` | an ordered sequence, `[1, 2, 3]` |
 | `(A, B, …)` | tuples, `(word, 3)`, destructured with `let (w, n) = …`, accessed with `t.0` |
-| `Dict[K, V]` | `dict([("a", 1)])`, `get`, `insert`, `remove`, `keys`, `values`, `items`; JSON object when keys are strings |
-| `Set[T]` | `set([1, 2])`, `insert`, `union`, `intersection`, `difference`, `to_list` |
+| `Dict[K, V]` | `Dict { "a": 1, "b": 2 }`, `Dict[String, Int] {}`, `dict(pairs)` from a list of pairs, `get`, `insert`, `remove`, `keys`, `values`, `items`; JSON object when keys are strings |
+| `Set[T]` | `Set { 1, 2 }`, `Set[Int] {}`, `set(xs)` from a list, `insert`, `union`, `intersection`, `difference`, `to_list` |
 
-`+` adds numbers and joins strings and lists (`"a" + "b"`, `[1] + [2]`). **Strings** are UTF-8 and indexed by character: `len`, `chars`, `get(s, i)`, `slice(s, start, end)` (clamped, as in Python; also on lists), `index_of`, `contains`, `starts_with`, `ends_with`, `split`, `join`, `lines`, `trim`, `replace`, `repeat`, `reverse`, `to_upper`, `to_lower`, `is_digit` / `is_alpha` / `is_space`, `ord` / `chr`, `parse_int`, `matches` (regex). `to_json(x)` gives any value as compact JSON, as `strata run` writes it. **f-strings** interpolate any expression, shown as by `to_string`: `f"{name} has {len(xs)} items"` (`{{` and `}}` are literal braces). A **format spec** follows a `:`, as in Python: `[[fill]align][+][0][width][.precision]`. `{price:.2}` gives two decimal places (or keeps at most 2 characters of a `String`), `{name:<12}` / `{n:>5}` / `{title:*^20}` pad to a width (numbers align right by default, everything else left), `{n:05}` pads with zeros after the sign, `{delta:+}` always shows the sign. A spec that doesn't suit the type is a check error.
+`+` adds numbers and joins strings and lists (`"a" + "b"`, `[1] + [2]`). **Strings** are UTF-8 and indexed by character: `len`, `chars`, `s[i]`, `get(s, i)`, slices `s[start..end]` (clamped, as in Python; also on lists), `index_of`, `contains`, `starts_with`, `ends_with`, `split`, `join`, `lines`, `trim`, `replace`, `repeat`, `reverse`, `to_upper`, `to_lower`, `is_digit` / `is_alpha` / `is_space`, `ord` / `chr`, `parse_int`, `matches` (regex). `to_json(x)` gives any value as compact JSON, as `strata run` writes it. **f-strings** interpolate any expression, shown as by `to_string`: `f"{name} has {len(xs)} items"` (`{{` and `}}` are literal braces). A **format spec** follows a `:`, as in Python: `[[fill]align][+][0][width][.precision]`. `{price:.2}` gives two decimal places (or keeps at most 2 characters of a `String`), `{name:<12}` / `{n:>5}` / `{title:*^20}` pad to a width (numbers align right by default, everything else left), `{n:05}` pads with zeros after the sign, `{delta:+}` always shows the sign. A spec that doesn't suit the type is a check error.
 
 All values are immutable (`insert` returns a new dict). Dicts and sets are kept in canonical order, so equal collections are equal values and serialise identically. `len`, `contains`, `get`, `insert`, `remove`, `sum`, `min`, `max` and `abs` work across the types they make sense for. `strata builtins` lists every builtin with its signature. See `examples/builtins.strata`.
 
@@ -268,18 +299,18 @@ use std.cli.CommandLine
 /// Greet people by name.
 type Options = {
   /// Shout the greeting.
-  loud: Bool,
+  loud: Bool = false,
   /// Say it this many times.
-  times: Option[Int where 1 <= it && it <= 10],
+  times: Int where 1 <= it && it <= 10 = 1,
   /// Who to greet (the world if nobody).
-  names: List[String],
+  names: List[String] = [],
 }
 
 impl CommandLine for Options {}
 
 fn main(opts: Options) -> () {
   let who = if len(opts.names) == 0 { "world" } else { join(opts.names, " and ") }
-  for _ in range(0, opts.times except { 1 }) {
+  for _ in 0..opts.times {
     print(if opts.loud { to_upper(f"hello, {who}!") } else { f"hello, {who}!" })
   }
 }
@@ -294,7 +325,7 @@ cat README.md | strata run examples/wc
 
 **`print(x)`** is always available, with no `use`. It writes `x` (as `to_string` shows it) and a newline wherever the code runs: to the terminal under `strata run`, into the test's own buffer under `strata test` (shown only if the test fails), and nowhere under `verify`. It is a convenience; code whose output a test should check, or that a caller should control, takes a `Console`.
 
-**Command-line options** are a record that implements `CommandLine` (`std.cli`); the trait has no methods. Each field is read from the arguments by its type: a `Bool` is a flag (`--loud`), an `Option[T]` an option with a value (`--times 3` or `--times=3`), a `List[T]` the remaining positional arguments, and any other field a required positional argument, in field order. `T` is an `Int`, `Float`, `String`, a refinement of one, or a choice (a type whose variants carry nothing: `type Count = | Lines | Words` is `lines` or `words`). Names take dashes (`dry_run` is `--dry-run`), `--` ends the options, every refinement is checked (`--times: 0 does not satisfy …`), and a mistake exits with code 2. `--help` is built from the record's and fields' `///` doc comments. `strata check` rejects a `CommandLine` record a command line can't fill.
+**Command-line options** are a record that implements `CommandLine` (`std.cli`); the trait has no methods. Each field is read from the arguments by its type: a `Bool` is a flag (`--loud`), an `Option[T]` an option with a value (`--times 3` or `--times=3`), a `List[T]` the remaining positional arguments, and any other field a required positional argument, in field order, or an option (`--times 3`) when it has a default. A field left out takes its default. `T` is an `Int`, `Float`, `String`, a refinement of one, or a choice (a type whose variants carry nothing: `type Count = | Lines | Words` is `lines` or `words`). Names take dashes (`dry_run` is `--dry-run`), `--` ends the options, every refinement is checked (`--times: 0 does not satisfy …`), and a mistake exits with code 2. `--help` is built from the record's and fields' `///` doc comments. `strata check` rejects a `CommandLine` record a command line can't fill.
 
 `main` can also ask for `Console` (`std.io`), `Files` (`std.fs`) and `Environment` (`std.process`), in any order. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [JSON-ARGS]` still calls a single function.
 

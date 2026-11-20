@@ -1561,6 +1561,8 @@ impl<'m, 'a> Func<'m, 'a> {
             Expr::Lambda(ps, body) => self.lambda(e, ps, body)?,
             Expr::Mut(_) => return self.unsupported("a `mut` argument"),
             Expr::Mock(_) => return self.unsupported("`mock`"),
+            // rewritten into builtin calls when the program is resolved
+            Expr::Range(..) | Expr::Index(..) | Expr::Comp(..) | Expr::Dict(..) | Expr::Set(..) => return self.unsupported("a range, slice, comprehension or collection literal not desugared"),
         })
     }
 

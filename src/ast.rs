@@ -28,6 +28,10 @@ pub struct Field {
     pub doc: Vec<String>,
     pub name: String,
     pub ty: TypeExpr,
+    /// `times: Int = 1`: the value a constructor, JSON input or the command
+    /// line gives the field when it is left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -394,6 +398,37 @@ pub enum Expr {
     Except(Box<Expr>, Option<String>, Box<Expr>),
     /// `f"{name} has {len(xs)} items"`: each part shown as by `to_string`.
     Interp(Vec<StrPart>),
+    /// `a..b` (`b` excluded), `a..=b` (`b` included): the integers between,
+    /// as a `List[Int]`. An end may be left out only in a slice (`xs[2..]`).
+    Range(Option<Box<Expr>>, Option<Box<Expr>>, bool),
+    /// `xs[i]`: one element of a list or string (`i` must be in range).
+    /// `xs[a..b]`, `s[..3]`, `xs[2..]`: part of it, clamped to its length
+    /// (the index is a `Range`, which may leave out its ends here).
+    Index(Box<Expr>, Box<Expr>),
+    /// `[x * x for x in xs where x > 0]`, `[(a, b) for a in xs for b in ys]`:
+    /// a list built from each element of one or more lists; `Set { … for … }`,
+    /// `Dict { k: v for … }` (the element is then the tuple `(k, v)`).
+    Comp(CompKind, Box<Expr>, Vec<CompFor>),
+    /// `Dict { "a": 1, "b": 2 }`, `Dict[String, Int] {}`: the type arguments
+    /// (none, or the key and value types) and the entries.
+    Dict(Vec<TypeExpr>, Vec<(Expr, Expr)>),
+    /// `Set { 1, 2 }`, `Set[Int] {}`.
+    Set(Vec<TypeExpr>, Vec<Expr>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum CompKind {
+    List,
+    Set,
+    Dict,
+}
+
+/// One `for p in xs where cond` of a comprehension.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompFor {
+    pub pat: Pattern,
+    pub iter: Expr,
+    pub cond: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -600,6 +635,39 @@ macro_rules! visitor {
                         }
                     }
                 }
+                Expr::Range(lo, hi, _) => {
+                    if let Some(lo) = lo {
+                        v.expr(lo)
+                    }
+                    if let Some(hi) = hi {
+                        v.expr(hi)
+                    }
+                }
+                Expr::Index(x, r) => {
+                    v.expr(x);
+                    v.expr(r)
+                }
+                Expr::Dict(tys, kvs) => {
+                    tys.into_iter().for_each(|t| v.ty(t));
+                    for (k, x) in kvs {
+                        v.expr(k);
+                        v.expr(x)
+                    }
+                }
+                Expr::Set(tys, xs) => {
+                    tys.into_iter().for_each(|t| v.ty(t));
+                    xs.into_iter().for_each(|x| v.expr(x))
+                }
+                Expr::Comp(_, elem, gens) => {
+                    for g in gens {
+                        v.expr(&$($m)? g.iter);
+                        v.pattern(&$($m)? g.pat);
+                        if let Some(c) = &$($m)? g.cond {
+                            v.expr(c)
+                        }
+                    }
+                    v.expr(elem)
+                }
             }
         }
 
@@ -678,7 +746,14 @@ macro_rules! visitor {
         #[allow(dead_code)] // the read-only twin may not be used yet
         /// Visit everything in a definition.
         pub fn $decl<V: $Visit + ?Sized>(v: &mut V, d: &$($m)? DeclKind) {
-            let fields = |v: &mut V, fs: &$($m)? Vec<Field>| fs.into_iter().for_each(|f| v.ty(&$($m)? f.ty));
+            let fields = |v: &mut V, fs: &$($m)? Vec<Field>| {
+                for f in fs {
+                    v.ty(&$($m)? f.ty);
+                    if let Some(x) = &$($m)? f.default {
+                        v.expr(x)
+                    }
+                }
+            };
             match d {
                 DeclKind::Type(t) => {
                     match &$($m)? t.body {

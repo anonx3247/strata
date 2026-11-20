@@ -108,21 +108,112 @@ pub fn render(args: &Args) -> Result<bool, String> {
             };
             print!("{}", printer::module_file(p, &m));
         }
-        Some(dir) => {
-            // one file per module; the root module goes to main.strata
-            let mut mods: Vec<String> = p.decls.iter().map(|d| d.module.clone()).collect();
-            mods.sort();
-            mods.dedup();
-            for m in mods {
-                let rel = if m.is_empty() { "main".to_string() } else { m.replace('.', "/") };
-                let path = std::path::Path::new(dir).join(format!("{rel}.strata"));
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                }
-                std::fs::write(&path, printer::module_file(p, &m)).map_err(|e| e.to_string())?;
-                println!("wrote {}", path.display());
-            }
+        Some(dir) => return write_modules(p, std::path::Path::new(dir)),
+    }
+    Ok(true)
+}
+
+/// `strata pack DIR | FILE.stb`: the program as binary, a folder of module
+/// files (with the package's `strata.toml`) or one bundle.
+pub fn pack(args: &Args) -> Result<bool, String> {
+    let out = args.pos.get(1).ok_or("usage: strata pack <DIR | FILE.stb>")?;
+    let src = load(&args)?;
+    let dir = match (&src, args.val("--file")) {
+        (Source::Db(cb), _) => Some(cb.root().to_path_buf()),
+        (_, Some(f)) if std::path::Path::new(f).is_dir() => Some(f.into()),
+        _ => None,
+    };
+    let manifest = dir.and_then(|d| std::fs::read_to_string(d.join(package::FILE)).ok());
+    let p = src.program();
+    let n = p.decls.len();
+    let defs = format!("{n} definition{}", if n == 1 { "" } else { "s" });
+    if out.ends_with(".stb") {
+        let bytes = binary::encode_bundle(&binary::Image { manifest, program: p.clone() });
+        std::fs::write(out, &bytes).map_err(|e| format!("{out}: {e}"))?;
+        println!("wrote {out}: {defs}, {} bytes", bytes.len());
+        return Ok(true);
+    }
+    let dir = std::path::Path::new(out);
+    empty_dir(dir)?;
+    if let Some(m) = &manifest {
+        std::fs::write(dir.join(package::FILE), m).map_err(|e| e.to_string())?;
+    }
+    let mut total = 0;
+    let modules = binary::encode_modules(p);
+    for (m, bytes) in &modules {
+        let path = dir.join(format!("{}.stb", module_rel(m)));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
+        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        total += bytes.len();
+    }
+    println!("wrote {out}: {defs} in {} module file{}, {total} bytes", modules.len(), if modules.len() == 1 { "" } else { "s" });
+    Ok(true)
+}
+
+/// `strata unpack IN DIR`: binary (a bundle, a module file, or a folder of
+/// module files) back to source, one file per module.
+pub fn unpack(args: &Args) -> Result<bool, String> {
+    let (Some(input), Some(dir)) = (args.pos.get(1), args.pos.get(2)) else { return Err("usage: strata unpack <IN> <DIR>".into()) };
+    let path = std::path::Path::new(input);
+    let img = if path.is_dir() {
+        binary::Image { manifest: std::fs::read_to_string(path.join(package::FILE)).ok(), program: package::program(path)? }
+    } else {
+        binary::read(&std::fs::read(path).map_err(|e| format!("{input}: {e}"))?).map_err(|e| format!("{input}: {e}"))?
+    };
+    let dir = std::path::Path::new(dir);
+    empty_dir(dir)?;
+    if let Some(m) = &img.manifest {
+        std::fs::write(dir.join(package::FILE), m).map_err(|e| e.to_string())?;
+        println!("wrote {}", dir.join(package::FILE).display());
+    }
+    write_modules(&img.program, dir)
+}
+
+/// `strata header FILE.stb`: a module file's table of contents.
+pub fn header(args: &Args) -> Result<bool, String> {
+    let file = args.pos.get(1).ok_or("usage: strata header <FILE.stb>")?;
+    let bytes = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
+    let h = binary::read_header(&bytes).map_err(|e| format!("{file}: {e}"))?;
+    let hex = |h: &binary::Hash| h[..8].iter().map(|b| format!("{b:02x}")).collect::<String>();
+    println!("module {}: {} definitions", if h.module.is_empty() { "main" } else { &h.module }, h.entries.len());
+    for e in &h.entries {
+        let vis = if e.public { "pub " } else { "" };
+        println!("{:<6} {vis}{}", e.kind, e.name);
+        println!("       #{}  interface #{}  {} bytes ({} interface)", hex(&e.hash), hex(&e.interface_hash), e.size, e.interface_size);
+        if !e.deps.is_empty() {
+            println!("       uses {}", e.deps.join(", "));
+        }
+    }
+    Ok(true)
+}
+
+/// A folder to write into: new, or empty.
+fn empty_dir(dir: &std::path::Path) -> Result<(), String> {
+    if dir.read_dir().is_ok_and(|mut d| d.next().is_some()) {
+        return Err(format!("{} is not empty", dir.display()));
+    }
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())
+}
+
+/// A module's file, without extension: `main` for the root, `a/b` for `a.b`.
+fn module_rel(m: &str) -> String {
+    if m.is_empty() { "main".to_string() } else { m.replace('.', "/") }
+}
+
+/// One file per module, in canonical form; the root module goes to main.strata.
+fn write_modules(p: &Program, dir: &std::path::Path) -> Result<bool, String> {
+    let mut mods: Vec<String> = p.decls.iter().map(|d| d.module.clone()).collect();
+    mods.sort();
+    mods.dedup();
+    for m in mods {
+        let path = dir.join(format!("{}.strata", module_rel(&m)));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&path, printer::module_file(p, &m)).map_err(|e| e.to_string())?;
+        println!("wrote {}", path.display());
     }
     Ok(true)
 }

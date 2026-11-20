@@ -1743,6 +1743,7 @@ impl<'a> Vc<'a> {
                 None => self.fn_value(e, vec![]).0,
             },
             Expr::Hole(h) => Val::Opaque(format!("the hole `?{h}`")),
+            Expr::Range(..) | Expr::Index(..) | Expr::Comp(..) | Expr::Dict(..) | Expr::Set(..) => Val::Opaque("a range, slice or comprehension not desugared".into()),
             Expr::List(xs) => {
                 let vals: Vec<Val> = xs.iter().map(|x| self.eval(x)).collect();
                 self.new_list(xs.len().to_string(), Gen::Values(vals))
@@ -2421,6 +2422,20 @@ impl<'a> Vc<'a> {
                 self.pc.truncate(n);
                 let t = self.elem_type(id).unwrap_or(TypeExpr::Named("_".into(), vec![]));
                 self.option(&t, &found, x)
+            }
+            ("at", 2) if matches!(arg(0), Val::List { .. }) => {
+                let l = self.list_len(&arg(0));
+                let id = self.list_id(&arg(0));
+                let i = self.as_int(&arg(1));
+                let inside = format!("(and (<= 0 {i}) (< {i} {l}))");
+                self.oblige("index in range".into(), |_| inside.clone());
+                self.element(id, &inside)
+            }
+            ("at", 2) if matches!(arg(0), Val::Str(_)) => {
+                let s = self.as_str(&arg(0));
+                let i = self.as_int(&arg(1));
+                self.oblige("index in range".into(), |_| format!("(and (<= 0 {i}) (< {i} (str.len {s})))"));
+                Val::Str(format!("(str.at {s} {i})"))
             }
             ("get", 2) if matches!(arg(0), Val::List { .. }) => {
                 let l = self.list_len(&arg(0));

@@ -38,6 +38,8 @@ enum Scalar {
 enum Kind {
     Flag,
     Optional(Scalar),
+    /// A field with a default (`times: Int = 1`): `--times 3`, or the default.
+    Defaulted(Scalar),
     Rest(Scalar),
     Positional(Scalar),
 }
@@ -105,7 +107,11 @@ fn options<'a>(env: &'a Env, name: &str) -> Result<(&'a TypeDecl, Vec<Opt<'a>>),
     };
     let mut out = Vec::new();
     for f in fs {
-        let (kind, elem) = kind(env, &f.ty).ok_or(format!(
+        let found = match kind(env, &f.ty) {
+            Some((Kind::Positional(s), elem)) if f.default.is_some() => Some((Kind::Defaulted(s), elem)),
+            k => k,
+        };
+        let (kind, elem) = found.ok_or(format!(
             "`{}.{}` is a `{}`: a command-line option is a Bool, an Int, Float or String (or a refinement of one), a choice (variants without data), or an Option or List of those",
             short(name),
             f.name,
@@ -143,9 +149,12 @@ fn help(prog: &str, opts: &[Opt], doc: &[String]) -> String {
         if let TypeExpr::Refined(_, pred) = &o.elem {
             text = format!("{text} (where {})", crate::printer::expr(pred, 0)).trim_start().to_string();
         }
+        if let (Some(x), Kind::Defaulted(_)) = (&o.field.default, &o.kind) {
+            text = format!("{text} (default: {})", crate::printer::expr(x, 0)).trim_start().to_string();
+        }
         match &o.kind {
             Kind::Flag => flags.push((format!("--{}", o.flag), text)),
-            Kind::Optional(s) => flags.push((format!("--{} <{}>", o.flag, placeholder(s, &o.elem)), text)),
+            Kind::Optional(s) | Kind::Defaulted(s) => flags.push((format!("--{} <{}>", o.flag, placeholder(s, &o.elem)), text)),
             Kind::Positional(s) => {
                 let p = match s {
                     Scalar::Choice(_) => format!("<{}>", placeholder(s, &o.elem)),
@@ -162,7 +171,7 @@ fn help(prog: &str, opts: &[Opt], doc: &[String]) -> String {
         }
     }
     flags.push(("-h, --help".into(), "Show this help.".into()));
-    if opts.iter().any(|o| matches!(o.kind, Kind::Flag | Kind::Optional(_))) {
+    if opts.iter().any(|o| matches!(o.kind, Kind::Flag | Kind::Optional(_) | Kind::Defaulted(_))) {
         usage = usage.replacen(prog, &format!("{prog} [OPTIONS]"), 1);
     }
     let width = args.iter().chain(&flags).map(|(a, _)| a.chars().count()).max().unwrap_or(0) + 2;
@@ -234,8 +243,8 @@ pub fn parse(it: &mut Interp, env: &Env, name: &str, doc: &[String], prog: &str,
             Some((k, v)) => (k.to_string(), Some(v.to_string())),
             None => (a[2..].to_string(), None),
         };
-        let Some(o) = opts.iter().find(|o| matches!(o.kind, Kind::Flag | Kind::Optional(_)) && (o.flag == key || o.field.name == key)) else {
-            let known: Vec<String> = opts.iter().filter(|o| matches!(o.kind, Kind::Flag | Kind::Optional(_))).map(|o| format!("--{}", o.flag)).collect();
+        let Some(o) = opts.iter().find(|o| matches!(o.kind, Kind::Flag | Kind::Optional(_) | Kind::Defaulted(_)) && (o.flag == key || o.field.name == key)) else {
+            let known: Vec<String> = opts.iter().filter(|o| matches!(o.kind, Kind::Flag | Kind::Optional(_) | Kind::Defaulted(_))).map(|o| format!("--{}", o.flag)).collect();
             return fail(if known.is_empty() { format!("unknown option `--{key}` (this program takes no options)") } else { format!("unknown option `--{key}` (the options are {})", known.join(", ")) });
         };
         if flags.iter().any(|f| f.flag == o.flag) {
@@ -249,7 +258,7 @@ pub fn parse(it: &mut Interp, env: &Env, name: &str, doc: &[String], prog: &str,
                 }
                 given.insert(o.field.name.clone(), json!(true));
             }
-            Kind::Optional(s) => {
+            Kind::Optional(s) | Kind::Defaulted(s) => {
                 let text = match inline {
                     Some(v) => v,
                     None if i < args.len() => {
@@ -259,6 +268,9 @@ pub fn parse(it: &mut Interp, env: &Env, name: &str, doc: &[String], prog: &str,
                     None => return fail(format!("`--{}` needs a value", o.flag)),
                 };
                 match read(it, s, &o.elem, &text) {
+                    Ok(j) if matches!(o.kind, Kind::Defaulted(_)) => {
+                        given.insert(o.field.name.clone(), j);
+                    }
                     Ok(j) => {
                         given.insert(o.field.name.clone(), json!({ "Some": j }));
                     }
@@ -294,12 +306,16 @@ pub fn parse(it: &mut Interp, env: &Env, name: &str, doc: &[String], prog: &str,
                     Err(e) => return fail(format!("[{}...]: {e}", o.flag)),
                 }
             }
-            given.insert(o.field.name.clone(), Json::Array(xs));
+            // no arguments left: the field's default, if it has one
+            if !xs.is_empty() || o.field.default.is_none() {
+                given.insert(o.field.name.clone(), Json::Array(xs));
+            }
         }
         None if !left.is_empty() => return fail(format!("unexpected argument `{}`", left[0])),
         None => {}
     }
-    for o in &opts {
+    // a field left out takes its default (when the record is read from the JSON)
+    for o in opts.iter().filter(|o| o.field.default.is_none()) {
         match o.kind {
             Kind::Flag if !given.contains_key(&o.field.name) => {
                 given.insert(o.field.name.clone(), json!(false));

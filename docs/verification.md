@@ -91,7 +91,7 @@ A `for` loop over a list always ends. Here every assignment must keep `total` a 
 ```rust
 fn triangle(n: Natural) -> Natural {
   let mut total: Natural = 0
-  for i in range(1, n + 1) {
+  for i in 1..=n {
     total = total + i
   }
   total
@@ -152,16 +152,16 @@ A list is known by its length and by how its elements are made, so "every elemen
 
 ```rust
 fn positive_squares(xs: List[Int]) -> List[Positive] {
-  xs.filter(x -> x > 0).map(x -> x * x)
+  [x * x for x in xs where x > 0]
 }
 
 fn is_prime(n: Int) -> Bool
   ensures it ==> n >= 2 {
-  n >= 2 && all(range(2, n), d -> n % d != 0)
+  n >= 2 && all(2..n, d -> n % d != 0)
 }
 
 fn primes(limit: Natural) -> List[Int where it >= 2] {
-  range(0, limit + 1).filter(is_prime)
+  (0..=limit).filter(is_prime)
 }
 ```
 
@@ -173,7 +173,7 @@ fn primes(limit: Natural) -> List[Int where it >= 2] {
 ✓ primes                   proven (1 check)
 ```
 
-`filter` keeps the positives and `map` keeps them positive. In `is_prime`, every `d` in `range(2, n)` is at least 2, so `n % d` never divides by zero. `primes` keeps only numbers that passed `is_prime`, whose contract says they are at least 2. What is known of every element also flows in from a contract:
+The comprehension keeps the positives (a `filter`) and squares them (a `map`), so they stay positive. In `is_prime`, every `d` in `2..n` is at least 2, so `n % d` never divides by zero. `primes` keeps only numbers that passed `is_prime`, whose contract says they are at least 2. What is known of every element also flows in from a contract:
 
 ```rust
 fn first_or_one(xs: List[Int]) -> Positive

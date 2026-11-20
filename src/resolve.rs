@@ -39,6 +39,7 @@ pub fn resolve(p: &Program) -> Resolution {
         run(p, None)
     };
     static_calls(&mut r.program);
+    crate::desugar::program(&mut r.program, &mut r.errors);
     r
 }
 
@@ -1001,6 +1002,27 @@ impl Rw<'_> {
                     .collect(),
             ),
             Expr::Return(x) => Expr::Return(Box::new(self.expr(x))),
+            Expr::Range(lo, hi, inclusive) => {
+                let lo = lo.as_ref().map(|x| Box::new(self.expr(x)));
+                Expr::Range(lo, hi.as_ref().map(|x| Box::new(self.expr(x))), *inclusive)
+            }
+            Expr::Index(x, r) => Expr::Index(Box::new(self.expr(x)), Box::new(self.expr(r))),
+            Expr::Dict(tys, kvs) => Expr::Dict(tys.iter().map(|t| self.ty(t)).collect(), kvs.iter().map(|(k, v)| (self.expr(k), self.expr(v))).collect()),
+            Expr::Set(tys, xs) => Expr::Set(tys.iter().map(|t| self.ty(t)).collect(), self.exprs(xs)),
+            Expr::Comp(kind, elem, gens) => {
+                // each `for` binds its pattern for the conditions and `for`s after it, and the element
+                let mut out = Vec::new();
+                for g in gens {
+                    let iter = self.expr(&g.iter);
+                    self.push(&[]);
+                    let pat = self.pat(&g.pat);
+                    let cond = g.cond.as_ref().map(|c| self.expr(c));
+                    out.push(CompFor { pat, iter, cond });
+                }
+                let elem = self.expr(elem);
+                gens.iter().for_each(|_| self.pop());
+                Expr::Comp(*kind, Box::new(elem), out)
+            }
             Expr::Mut(x) => Expr::Mut(Box::new(self.expr(x))),
             Expr::Try(x, k) => Expr::Try(Box::new(self.expr(x)), *k),
             Expr::Except(x, name, fb) => {
@@ -1106,7 +1128,7 @@ impl Rw<'_> {
                 self.tparams.push(t.params.iter().cloned().collect());
                 let body = match &t.body {
                     TypeBody::Alias(a) => TypeBody::Alias(self.ty(a)),
-                    TypeBody::Record(fs) => TypeBody::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), doc: f.doc.clone(), name: f.name.clone(), ty: self.ty(&f.ty) }).collect()),
+                    TypeBody::Record(fs) => TypeBody::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), doc: f.doc.clone(), name: f.name.clone(), ty: self.ty(&f.ty), default: f.default.as_ref().map(|x| self.expr(x)) }).collect()),
                     TypeBody::Sum(vs) => TypeBody::Sum(
                         vs.iter()
                             .map(|v| Variant {
@@ -1115,7 +1137,7 @@ impl Rw<'_> {
                                 payload: match &v.payload {
                                     Payload::None => Payload::None,
                                     Payload::Positional(ts) => Payload::Positional(ts.iter().map(|t| self.ty(t)).collect()),
-                                    Payload::Record(fs) => Payload::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), doc: f.doc.clone(), name: f.name.clone(), ty: self.ty(&f.ty) }).collect()),
+                                    Payload::Record(fs) => Payload::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), doc: f.doc.clone(), name: f.name.clone(), ty: self.ty(&f.ty), default: f.default.as_ref().map(|x| self.expr(x)) }).collect()),
                                 },
                             })
                             .collect(),

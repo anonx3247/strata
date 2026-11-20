@@ -68,7 +68,7 @@ fn row(c: Counts, only: Option[Count], label: String) -> String {
 fn read_all(mut console: Console) -> String {
   let mut text = ""
   loop {
-    match console.read_line() {
+    match mut console.read_line() {
       Some(line) => {
         text = text + line + "\n"
       },
@@ -86,17 +86,17 @@ fn main(
   files: Files,
 ) -> Result[ExitCode, FsError] {
   if len(opts.files) == 0 {
-    console.print(row(count(read_all(mut console)), opts.only, "-"))
+    mut console.print(row(count(read_all(mut console)), opts.only, "-"))
     return Ok(0)
   }
   let mut total = Counts { lines: 0, words: 0, chars: 0 }
   for path in opts.files {
     let c = count(files.read(path)!)
-    console.print(row(c, opts.only, path))
+    mut console.print(row(c, opts.only, path))
     total = add(total, c)
   }
   if len(opts.files) > 1 {
-    console.print(row(total, opts.only, "total"))
+    mut console.print(row(total, opts.only, "total"))
   }
   Ok(0)
 }
