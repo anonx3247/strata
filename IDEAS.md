@@ -4,8 +4,8 @@ Everything that keeps track of where Strata is going: open questions, ideas, wha
 
 ## Open questions (to discuss before building)
 
-- **Slicing with Python's syntax** (user, 2026-11-20; idea, not designed). Lists and strings are sliced the same way: `xs[1:3]`, `xs[2:]`, `xs[:-1]`, `xs[::2]`, `s[1:4]`. To decide: whether it replaces `slice` / `take` / `drop`, what `xs[i]` returns (an `Option`, or a runtime check against `len`), and negative indices.
-- **What iterating a string yields** (user, 2026-11-20; undecided). Bytes, code points (Go's runes; what `chars` gives today), or grapheme clusters (what a reader calls a character). To be decided together with slicing, since a slice's indices count the same units.
+- **Marking a `mut self` call** (built 2026-11-20, see docs/language.md "Mutation"). `mut queue.claim(2)`, as Hylo's `&x.append(1)`: required when the method takes `mut self`, an error otherwise. The tree is `Expr::Mut(Method(..))`; a `Mut` around anything else is an argument for a `mut` parameter. The parser's `marked` reads a place after `mut`, then marks the first method call on it, and later calls apply to its result (rendered `(mut q.claim(2)).len()`); as an argument the marked call is rendered in parentheses, `call((mut o.pop()), x, y)` (the user's form). Results are not places (user's point): `mut f(x).m()` is a parse error, and a result can't be passed to a `mut` parameter; name it first. Rejected: `(mut queue).claim(2)`, `claim(mut queue, 2)`, and a separate call operator.
+- **What iterating a string yields** (user, 2026-11-20; undecided). Bytes, code points (Go's runes; what `chars` gives today), or grapheme clusters (what a reader calls a character). A slice's indices (`s[1..3]`) count the same units; today both count code points.
 - **Regex verification scope** (decided with the user 2026-11-20; not built). By default, regex refinements are proven over ASCII strings only, and the result always says so ("proven for ASCII strings"). Such a proof counts as proven in an ordinary `verify` run. Under a `[verify] proven = [...]` rule it does not, unless the project opts in to accepting ASCII proofs; it is still reported as proven for ASCII either way. Full Unicode proofs are asked for explicitly where they matter (per module in `[verify]`, or per function). The interpreter stays fully Unicode either way. Pairs with "two solvers": ASCII classes are small enough for Z3 to decide exactly; full-Unicode proofs can go to cvc5, which decides the large classes.
 - **Two solvers, each for its strengths** (user, 2026-11-20; direction). Z3 and cvc5 are both wired in (`STRATA_SOLVER`). Use both: route a query by what it contains (cvc5 for strings and large Unicode regex classes, which it decides exactly where Z3 times out; Z3 elsewhere), or run both and take the first definite answer.
 - **Complexity / cost.** Separate from termination: a function can terminate and still take exponential time (naive `fib`, Ackermann). The user raised it as "another issue"; nothing is designed yet.
@@ -15,8 +15,15 @@ Everything that keeps track of where Strata is going: open questions, ideas, wha
 - **Removing or adding variants in a pending change** (built, `fix_matches` in pending.rs). Patterns can't be holes, so `match`es are fixed first: arms of removed variants are dropped (or only their alternative in an `a | b` pattern; nested ones like `Some(Pending)` too), a `match` on the changed type without a catch-all gets an arm `NewVariant => ?pending_N` (`Lost(_)`, `Lost { .. }`), and a `match` with no arm left becomes a hole. The edit prints what was dropped. Then expression holes as before (the expression walk skips patterns). Not yet: `let` / `for` patterns naming a removed variant still reject the edit.
 - **Pending changes** (built, `src/pending.rs`). An `edit` whose own definitions check but that breaks other code isn't rejected: each broken use in the erroring definitions (a call, reference, constructor, method call or `is` test naming a definition whose interface changed, outermost first) becomes `?pending_N`, recorded with what it was and why, and the package enters a pending change (`.strata/pending.json`: the files before, the holes, the renames). Edits, renames and moves during it only write files (`record` in main.rs); `strata status` lists the holes; `strata done` logs the whole change as one entry (from the files before to now, with its renames), refusing while its holes are open unless `--keep-holes` (they become `?todo_N`); `strata abort` restores the files. `strata ci` refuses `?pending_*` holes, so half-done work isn't merged. Not yet: one pending change per package; a use the edit broke compatibly in an erroring definition is also turned into a hole.
 - **Storage: hash references, and propagation** (discussed 2026-11-20; direction agreed, not built). The user prefers storing definitions by hash with references by hash and names in a separate table (Unison's model: renames become free, merges of new code can't conflict, several agents can add code at once), over a binary encoding of the same files (the encoding itself is now decided: see the next item). On an edit, dependents follow automatically when they still type-check ("option 1"), and otherwise get a to-do. The user's addition: while a to-do is open, the references to the old version are replaced with typed holes, so the agent sees exactly what to fill in. Before building: settle how a hole keeps what it replaced (the old call, for the agent), and that code with holes still checks but can't run.
-- **Storage: the tree, in binary** (decided with the user 2026-11-20; not built). Code is stored as the syntax tree, not as text: the AST is the language, and the current syntax is one front end among possible others (Nim-, Python-, C-, Haskell-like). The encoding is a compact binary format, not JSON (no serialization round-trips; big integers stored exactly). Ideally a module's `.strata` file *is* that binary, and text is rendered only when needed: `strata edit` already opens a module or definitions as text in the editor and parses what is saved, `render` / `view` print it. Rendered text files, if kept at all, are a read-only view that git ignores. Every change then goes through the tools (`edit`, `rename`, `move`), which check it and answer immediately; with a cache, several agents (the user guesses 3–4) could work in one codebase at once. Before building, settle:
-  - the format: our own, or an existing compact one (e.g. `postcard`); how it is versioned;
+- **Storage: the tree, in binary** (decided with the user 2026-11-20; the format is built, storing packages in it is not). Code is stored as the syntax tree, not as text: the AST is the language, and the current syntax is one front end among possible others (Nim-, Python-, C-, Haskell-like). The encoding is a compact binary format, not JSON (no serialization round-trips; big integers stored exactly). Ideally a module's `.strata` file *is* that binary, and text is rendered only when needed: `strata edit` already opens a module or definitions as text in the editor and parses what is saved, `render` / `view` print it. Rendered text files, if kept at all, are a read-only view that git ignores. Every change then goes through the tools (`edit`, `rename`, `move`), which check it and answer immediately; with a cache, several agents (the user guesses 3–4) could work in one codebase at once. Before building, settle:
+  - ~~the format~~ **built**: our own, not a crate such as `postcard`, because Strata should be able to read and write it itself once bootstrapped (user). `src/binary.rs`, specified in `docs/binary-format.md`. LEB128 integers (zigzag for signed), one tag byte per enum variant, fields in order, strings by index into a table; canonical; corrupt input is an error, never a crash; no compatibility across format versions.
+  - **Module files with a header** (built, branch `binary-header`, discussed with the user 2026-11-20: "header files from first principles, but inside the file"). One `.stb` per module (`strata pack DIR`), or a bundle of them (`strata pack app.stb`). The header lists each definition's name, kind, `pub`, hash, interface hash, code hash, dependencies and size; each definition is self-contained (its own strings) and stores its interface (bodies as `()`) before its bodies. `store`'s hashes are now those of the binary encoding (no more printing to hash). Measured on `examples/tasks`: all headers 14 µs, all interfaces 82 µs, everything 166 µs (with each definition's hash checked), against 735 µs to parse the text. Files are larger than the first single-file format (27 KB vs 14 KB; 20 KB of source): three 32-byte hashes per definition, and strings repeated per definition. Not done yet: the tools don't use the header (they decode everything, then recompute hashes and the graph); see the next steps.
+  - **Next steps, agreed with the user:** (5) read module files in parallel; (6) cache derived results (inferred types, check results) in `.strata/` by hash, and check a module against the interfaces of the modules it uses, re-checking dependents only when an interface hash changes; (7) a long-running process that loads once and reloads only files whose hash changed. Also: interned names in the AST (`Symbol(u32)` instead of `String`), only if profiling shows string handling is the cost.
+  - **Binary is the format, `.strata` its extension** (user, 2026-11-20; decided, not built yet). Packages store only binary module files, named `.strata`; text is no longer read as the stored source. Text comes in only through edits (`strata edit` from stdin or the editor, `add` of a text file), which parse it, check it and write binary; `render` / `view` print text. This settles the "text files or the tree" question above. Still to work out while building it: how a text file gets imported in the first place (`add`), what `ci` checks, the git `textconv` / merge drivers for binary module files, and the examples and `std/` (stored as binary in the repository, or generated from text at build time).
+  - **Interned names** (built, branch `interned-names`): every identifier in the AST is a `Symbol` (`src/symbol.rs`), a `u32` into one process-wide table of texts; equal names are equal numbers. Reading a symbol's text takes no lock (append-only chunks); interning takes a mutex. The lexer interns identifiers as it reads them, the decoder once per string of a definition's table, the encoder looks names up by number. The resolver's scopes and tables, the checker's types (`Ty::Con`, `Ty::Rigid`), substitutions and `Env` are keyed by symbols; `x.sym()` converts (free on a symbol). Symbols order by their text, so sorted output doesn't change. Measured on `examples/tasks` (`src/bench.rs`, quiet machine): check 1.6 ms → 0.95 ms, resolve 200 → 137 µs, clone 68 → 38 µs, parse 570 → 520 µs; decoding unchanged (about 170 µs: the per-definition string tables, and checking each definition's hash). Not done: runtime values (`interp::Value`, the prover's `Val`) still name records, variants and fields with `String`; `Decl::name()` / `qname()` still return `String` (they are map keys in many places).
+  - **Faster decoding, after a fast-lexer article** (user sent https://xnacly.me/posts/2025/fast-lexer-strategies/, 2026-11-20; ideas, not built). Decoding runs at about 160 MB/s today, against that lexer's 580–850 MB/s; the time goes into allocation (a `Box` per node, a `String` copy per name) and checking each definition's hash. What carries over: (a) **interned names** (built, see above): the AST holds `Symbol(u32)` instead of `String`, so decoding a name reads an integer, names compare and hash as integers, and the file's string table maps to symbols once per distinct string (the article's zero-copy string windows and per-atom hashing); (b) **a built-in string table** shared by every file (`Int`, `String`, `List`, `Option`, `self`, `it`, …) with fixed indices, like its prehashed keywords: shorter files, and those names are known without a lookup; (c) **an arena / flat AST** (nodes in arrays, children as `u32` indices): one allocation per module, free in one go (the article: parsing 2.1x faster, freeing 26x); the most invasive change; (d) **mmap** the module files, for large codebases only (ours are kilobytes). Not applicable: jump tables / computed goto (a one-byte tag in a `match` already compiles to one), character classification and SIMD scanning (there is no text to scan).
+  - **Resolved references (step 4), not built: a decision first.** Storing references by qualified name (or hash) means the stored tree is the *resolved* one, and the text's short names are derived when printing (from the module's `use`s). That changes what round-trips: `orders.Line` written in full where `Line` is imported would print back as `Line`. The resolver also rewrites structure (a module path `a.b.f` is field accesses before resolution), so it isn't a renaming of the same tree. Options: store resolved trees and print short names (text is canonicalised), or keep written names and add a per-definition table from written name to qualified name (cheap, but the checker still resolves). Ties in with the hash store above.
+  - still to do: make the binary the source of truth (`edit` / `rename` / `move` / `done` writing it, the log and verdicts alongside or inside), which needs the other points below settled;
   - how it relates to the hash store above: a binary file per module, or one object per definition under its hash plus a names table;
   - review on GitHub: binary files show no diff in a PR. Locally a git `textconv` driver (`strata render`) and the `merge-file` driver can work on trees, but GitHub's PR view can't; `strata diff` or the viewer would be where changes are reviewed;
   - what `ci`'s canonical-format check becomes (the binary is canonical by construction);
@@ -33,69 +40,30 @@ Everything that keeps track of where Strata is going: open questions, ideas, wha
 
 ### Language
 
-#### Ranges with Rust's `..` syntax (2026-11-20)
+#### Ranges, slices and comprehensions (built 2026-11-20)
 
-Write ranges as Rust does, instead of calling `range(lo, hi)`:
+Built on the binary-format branch (format version 3: `Expr::Range`, `Expr::Slice`, `Expr::Comp`); see docs/language.md. Decided along the way:
 
-- `0..n` is `0, 1, …, n - 1` (end excluded), and `1..=n` includes `n`;
-- `for i in 0..n { … }`, and `xs.map(…)` style chains on a range;
-- open ends where they make sense: `xs[2..]`, `xs[..3]` (this meets Python-style slicing, under open questions).
+- `a..b` excludes `b`, `a..=b` includes it; a range is an eager `List[Int]` (iterators remain their own feature). Both ends are required, except in a slice.
+- Slicing uses ranges, not Python's `:` (one syntax for both): `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..=b]`, on lists and strings, clamped as `slice` was. No negative indices: in a range `-3..0` already means the integers from -3, so `xs[..-1]` meaning "all but the last" would read two ways.
+- `xs[i]` is the element, not an `Option`: `at(xs, i)` requires `0 <= i < len(xs)`, a runtime fault otherwise, and an obligation for `verify` like division by zero ("index in range"). `get(xs, i)` stays for the `Option`. Not yet: `d[k]` on dicts (the same, with "key present").
+- Comprehensions: `[e for p in xs where c for q in ys where d]`, with `where` as in refinements; patterns allowed (`for (a, b) in ps`).
+- The tree keeps them as written (they render back as written); `resolve` rewrites them into `range`, `slice`, `map`, `filter` and `fold` (`src/desugar.rs`), so the checker, interpreter, prover and LLVM never see them. Error messages show the builtin calls.
 
-It pairs well with list comprehensions (below): `[x * x for x in 1..=10 where x % 2 == 0]`. For the verifier, a range is already exact (every element is an `Int` with `lo <= x < hi`), so `0..10` gives `List[Digit]` for free.
+Still open:
+- Whether the builtins `range` and `slice` stay callable by name (they are still listed by `strata builtins`), and whether `take` / `drop` go, now that `xs[..n]` / `xs[n..]` say the same.
+- Steps: `(0..n).step(2)` or `0..n by 2`.
+- `xs where it > 0` as a filter on a value (it reads like a refinement type).
 
-To decide: whether `range(lo, hi)` stays, whether a range is a `List[Int]` or a lazy value of its own (iterators are a separate language feature), and steps (`(0..n).step(2)` or `0..n by 2`).
+#### Other syntax nits (noticed 2026-11-20; not decided)
 
-#### Default values for record fields (2026-11-20)
+- **Dict and set literals** (built): `Dict { "a": 1 }`, `Set { 1, 2 }`, `Dict[String, Int] {}`, and comprehensions `Dict { w: len(w) for w in words }`, `Set { x % 3 for x in xs }` (`Expr::Dict`, `Expr::Set`, `Comp` with a `CompKind`; desugared to `dict` / `set`). In a `for` / `if` / `match` header they need parentheses, like record literals.
+- **`except` inside a `for` header** reads badly: `for _ in 0..opts.times except { 1 } {`. Proposed: the renderer parenthesizes any header expression (`for`, `while`, `if`, `match`) that ends in a `}`: `for _ in 0..(opts.times except { 1 }) {`. The parser accepts both. Done instead (user's choice): `a ?? b` (`Expr::Except` with no name; the renderer writes a plain-value fallback as `??` and keeps `except { … }` for blocks, `return` and named errors), so `for _ in 0..opts.times ?? 1 {`.
+- **`len(xs)` and `xs.len()`** are both accepted, as for every builtin; the renderer could pick one form (method form for chains, say) so code reads the same everywhere.
 
-A record's definition can give a field a default, written explicitly where the
-field is declared. Nothing gets a default implicitly.
+#### Default values for record fields (built 2026-11-20)
 
-```rust
-type Options = {
-  /// Say it this many times.
-  times: Int where 1 <= it && it <= 10 = 1,
-  /// Shout the greeting.
-  loud: Bool = false,
-  names: List[String] = [],
-}
-
-let o = Options { names: ["Ada"] }   // times: 1, loud: false
-```
-
-Questions to settle:
-- **Syntax**: `field: T = value` looks natural. Check that it doesn't clash with
-  a refinement that ends in a comparison.
-- **What a default can be**: only literals and constructors, or any expression
-  of the earlier fields? A default must satisfy the field's refinement, and
-  the checker can prove that at definition time.
-- **Where defaults apply**:
-  - constructors (a missing field takes its default);
-  - JSON input (a missing key takes its default; today it's an error);
-  - command-line options (`CommandLine` would read `times: Int = 1` as an
-    optional `--times` without needing `Option`).
-- **Generated values**: mocks and fuzzing still generate every field.
-
-#### List comprehensions in the style of refinements (2026-11-20)
-
-Reuse the refinement syntax (`where`, and maybe `it`) to filter and map lists,
-instead of chaining `.filter(...).map(...)`. Possible shapes:
-
-```rust
-xs where it > 0                      // filter: the elements that satisfy the condition
-[x * x for x in xs where x > 0]      // map + filter, with a named element
-```
-
-Questions to settle:
-- Whether `xs where …` on a value reads too much like a type, given that
-  `Int where …` already means a refinement type.
-- Several generators (`for x in xs, y in ys`), and dict and set forms.
-- **Laziness**: comprehensions would stay eager for now. Lazy evaluation (and
-  so infinite lists) is not wanted as a general mechanism. If it comes, it
-  comes with iterators, which are already planned as their own language
-  feature. A comprehension over an iterator could then be lazy.
-- The prover could model `xs where p` directly (every element satisfies `p`,
-  and the length is at most `len(xs)`), which `filter` with a lambda can't
-  easily give it.
+`field: T = value` in a record (or a variant's record payload); see docs/language.md, "Records and defaults". Decided: any expression with no variables in scope (not the other fields), checked against the field's type where the type is defined, and evaluated each time it is used. It applies in constructors (`desugar::defaults` fills them in after resolution), JSON input (`Interp::from_json`), and the command line (a scalar field with a default is an option, `--times 3`; a `List` field's default is used when no arguments are left). Mocks and fuzzing still generate every field. Not done: defaults for other types (`type Port = Int where … = 8080`), which the user set aside; a flag whose default is `true` can't be turned off from the command line yet (`--no-x`).
 
 ### Web UIs (direction agreed with the user 2026-11-20; not built)
 
@@ -356,7 +324,7 @@ Bootstrap plan: write the frontend (lexer, parser, printer) in Strata and test i
 The `smt-verification` worktree (uncommitted, on old main) already has: symbolic values for parameters with their refinements as facts (`havoc`), `Vc::pattern` turning a pattern into an SMT condition on the matched value, per-arm path conditions in `Expr::Match`, obligations solved with Z3. To decide coverage of undecidable conditions it still needs: (1) an obligation per `match` that some arm holds (the `or` of the arm conditions, under the facts), and one per arm that it can hold (unreachable when proven impossible); (2) the new pattern forms in `Vc::pattern`: type names, `where`, or-patterns, and `Match`'s `as` name (it predates the `unions` branch, so merge first); (3) a policy between `check` and `verify`: `check` would report such a `match` as "needs proof" instead of an error, and `verify` proves it, reports a counterexample, or leaves it runtime-checked (a `no match arm` fault). Floats are not modelled there; the checker's own `reals` covers them.
 
 ### Mutation at the call site, references, and unproven checks (decided 2026-11-19)
-- **`mut` at the call site (done)**: an argument to a `mut` parameter is written `f(mut x)`; missing it, or writing it for a parameter that is not `mut` (or a builtin, or a closure), is an error. A `mut self` method's receiver is not marked (`queue.claim(2)`), as in Swift; the receiver must still be a mutable variable. `Expr::Mut`, checked in `check_mut_args`.
+- **`mut` at the call site (done)**: an argument to a `mut` parameter is written `f(mut x)`; missing it, or writing it for a parameter that is not `mut` (or a builtin, or a closure), is an error. A `mut self` method's call is marked too, `mut queue.claim(2)` (since 2026-11-20; it was unmarked, as in Swift). `Expr::Mut`, checked in `check_mut_args`.
 - **References**: immutable values can always be shared (no copying in the compiled form); a mutable reference only exists as a `mut` parameter (copy-in/copy-out today, in place later). Recommended to the user: keep references second-class (never stored or returned), like Swift `inout` / Hylo, since first-class ones would need a borrow checker; a possible local form is `let mut l = mut order.lines[0]`. Not decided beyond the call-site marker.
 - **Unproven checks are reported by default** (with the runtime check kept); a project policy can require `proven` for chosen modules. For the SMT work: an assignment to a refined variable is one more obligation (e.g. `x = f(x) - 3` with `x: Positive` needs `f`'s contract to imply it).
 

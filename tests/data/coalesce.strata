@@ -1,0 +1,22 @@
+fn port(text: String) -> Int {
+  parse_int(text) ?? 8080
+}
+
+fn pick(a: Option[Int], b: Option[Int]) -> Int {
+  a ?? b ?? 0
+}
+
+fn twice(a: Option[Int]) -> Int {
+  (a ?? 1) * 2 + (a ?? 1 + 2)
+}
+
+fn left(a: Option[Option[Int]]) -> Int {
+  (a ?? None) ?? 3
+}
+
+test "coalesce" {
+  assert port("12") == 12 && port("x") == 8080
+  assert pick(None, Some(2)) == 2 && pick(None, None) == 0
+  assert twice(None) == 5
+  assert parse_int("x") ?? 0 == 0
+}

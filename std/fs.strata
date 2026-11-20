@@ -118,7 +118,7 @@ impl Files for MemFiles {
   }
 
   fn append(mut self, path: String, text: String) -> Result[(), FsError] {
-    let before = get(self.files, path) except { "" }
+    let before = get(self.files, path) ?? ""
     self.files = insert(self.files, path, before + text)
     Ok(())
   }
@@ -132,8 +132,7 @@ impl Files for MemFiles {
     let prefix = path + "/"
     let names = keys(self.files)
       .filter(p -> starts_with(p, prefix))
-      .map(p ->
-        split(slice(p, len(prefix), len(p)), "/").get(0) except { "" })
+      .map(p -> split(p[len(prefix)..], "/").get(0) ?? "")
     match names {
       [] => Err(NotFound { path }),
       _ => Ok(to_list(set(names))),

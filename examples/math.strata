@@ -68,7 +68,7 @@ fn ackermann(m: Natural, n: Natural) -> Positive {
 /// 1 + 2 + ... + n. Every assignment keeps `total` a `Natural`.
 fn triangle(n: Natural) -> Natural {
   let mut total: Natural = 0
-  for i in range(1, n + 1) {
+  for i in 1..=n {
     total = total + i
   }
   total
@@ -107,18 +107,18 @@ fn collatz_steps(n: Positive) -> Natural {
 /// Squares of the positive numbers: `filter` keeps the positives, `map`
 /// keeps them positive.
 fn positive_squares(xs: List[Int]) -> List[Positive] {
-  xs.filter(x -> x > 0).map(x -> x * x)
+  [x * x for x in xs where x > 0]
 }
 
-/// No division by zero: every `d` in `range(2, n)` is at least 2.
+/// No division by zero: every `d` in `2..n` is at least 2.
 fn is_prime(n: Int) -> Bool
   ensures it ==> n >= 2 {
-  n >= 2 && all(range(2, n), d -> n % d != 0)
+  n >= 2 && all(2..n, d -> n % d != 0)
 }
 
 /// Every number `filter` keeps passed `is_prime`, so it is at least 2.
 fn primes(limit: Natural) -> List[Int where it >= 2] {
-  range(0, limit + 1).filter(is_prime)
+  (0..=limit).filter(is_prime)
 }
 
 /// What a caller knows: every element is positive, so the first one is.

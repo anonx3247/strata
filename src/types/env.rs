@@ -5,17 +5,17 @@ use super::*;
 /// Everything known about the declarations of a program, shared by the
 /// checker, interpreter and generators.
 pub struct Env {
-    pub types: HashMap<String, TypeDecl>,
+    pub types: HashMap<Symbol, TypeDecl>,
     /// ctor name -> (type name)
-    pub ctors: HashMap<String, String>,
-    pub fns: HashMap<String, FnDecl>,
-    pub traits: HashMap<String, TraitDecl>,
+    pub ctors: HashMap<Symbol, Symbol>,
+    pub fns: HashMap<Symbol, FnDecl>,
+    pub traits: HashMap<Symbol, TraitDecl>,
     /// Trait implementations (`impl Trait for Type`).
     pub impls: Vec<ImplDecl>,
     /// trait method name -> the traits that declare it
-    pub method_traits: HashMap<String, Vec<String>>,
+    pub method_traits: HashMap<Symbol, Vec<Symbol>>,
     /// type name -> its own methods (`impl Item { ... }`)
-    pub inherent: HashMap<String, ImplDecl>,
+    pub inherent: HashMap<Symbol, ImplDecl>,
 }
 
 impl Env {
@@ -63,15 +63,15 @@ impl Env {
                         }
                         TypeBody::Alias(_) => {}
                     }
-                    env.types.insert(t.name.clone(), t.clone()).is_some()
+                    env.types.insert(t.name, t.clone()).is_some()
                 }
-                DeclKind::Fn(f) => env.fns.insert(f.name.clone(), f.clone()).is_some(),
+                DeclKind::Fn(f) => env.fns.insert(f.name, f.clone()).is_some(),
                 DeclKind::Test(_) | DeclKind::Use(_) => false,
                 DeclKind::Trait(t) => {
                     for m in &t.methods {
-                        env.method_traits.entry(m.decl.name.clone()).or_default().push(t.name.clone());
+                        env.method_traits.entry(m.decl.name).or_default().push(t.name);
                     }
-                    env.traits.insert(t.name.clone(), t.clone()).is_some()
+                    env.traits.insert(t.name, t.clone()).is_some()
                 }
                 DeclKind::Impl(i) if i.is_inherent() => {
                     let head = texpr_head(&i.for_type);
@@ -79,9 +79,9 @@ impl Env {
                     // `Item` are calls of the functions `Item.new` / `Item.describe`
                     for m in &i.methods {
                         let f = static_fn(i, m);
-                        env.fns.insert(f.name.clone(), f);
+                        env.fns.insert(f.name, f);
                     }
-                    if env.inherent.insert(head.clone(), i.clone()).is_some() {
+                    if env.inherent.insert(head.sym(), i.clone()).is_some() {
                         errs.push(Diag { decl: name.clone(), msg: format!("`{head}` has two `impl {head}` blocks: put all of its own methods in one") });
                     }
                     false
@@ -111,7 +111,7 @@ impl Env {
         for n in env.types.keys().chain(env.traits.keys()) {
             owners.entry(short(n)).or_default().push(format!("the type `{n}`"));
         }
-        let mut variants: Vec<(&String, &String)> = Vec::new();
+        let mut variants: Vec<(&Symbol, &Symbol)> = Vec::new();
         for t in env.types.values() {
             if let TypeBody::Sum(vs) = &t.body {
                 variants.extend(vs.iter().map(|v| (&v.name, &t.name)));
@@ -126,7 +126,7 @@ impl Env {
             if !others.is_empty() {
                 let list = others.iter().map(|o| o.as_str()).collect::<Vec<_>>().join(", ");
                 errs.push(Diag {
-                    decl: (*t).clone(),
+                    decl: ((*t).clone()).to_string(),
                     msg: format!("variant `{c}` of `{t}` has the same name as {list}: a variant is a type of its own, so its name must be unique across the project (rename one)"),
                 });
             }
@@ -135,7 +135,7 @@ impl Env {
         sorted.sort();
         for (m, trs) in sorted {
             if env.fns.contains_key(m) {
-                errs.push(Diag { decl: m.clone(), msg: format!("`{m}` is both a function and a method of trait `{}`", trs[0]) });
+                errs.push(Diag { decl: m.to_string(), msg: format!("`{m}` is both a function and a method of trait `{}`", trs[0]) });
             }
         }
         let mut heads: Vec<_> = env.inherent.iter().collect();
@@ -152,12 +152,12 @@ impl Env {
 
     /// The type parameters of `f` that must be known when it runs: those
     /// bounded by a trait (or a supertrait) with a method without `self`.
-    pub fn type_args(&self, f: &FnDecl) -> Vec<String> {
-        let has_static = |tr: &str| {
-            let mut stack = vec![tr.to_string()];
+    pub fn type_args(&self, f: &FnDecl) -> Vec<Symbol> {
+        let has_static = |tr: Symbol| {
+            let mut stack = vec![tr];
             let mut seen = std::collections::HashSet::new();
             while let Some(t) = stack.pop() {
-                if !seen.insert(t.clone()) {
+                if !seen.insert(t) {
                     continue;
                 }
                 let Some(td) = self.traits.get(&t) else { continue };
@@ -168,20 +168,20 @@ impl Env {
             }
             false
         };
-        f.type_params.iter().filter(|p| f.bounds.iter().any(|b| &b.param == *p && b.traits.iter().any(|t| has_static(&texpr_head(t))))).cloned().collect()
+        f.type_params.iter().filter(|p| f.bounds.iter().any(|b| &b.param == *p && b.traits.iter().any(|t| has_static(texpr_head(t))))).cloned().collect()
     }
 
     /// The traits declaring `method` that values of type `head` implement.
-    pub fn traits_with(&self, method: &str, head: &str) -> Vec<String> {
-        let Some(trs) = self.method_traits.get(method) else { return vec![] };
+    pub fn traits_with(&self, method: &str, head: &str) -> Vec<Symbol> {
+        let Some(trs) = self.method_traits.get(&method.sym()) else { return vec![] };
         trs.iter().filter(|tr| self.impls.iter().any(|i| &i.trait_name == *tr && texpr_head(&i.for_type) == head)).cloned().collect()
     }
 
     /// Whether `name` is a method (of a trait, or of a type itself), or a
     /// call through a specific trait (`Trait::method`, see `elaborate`).
-    pub fn is_method(&self, name: &str) -> bool {
-        split_trait_call(name).is_some()
-            || self.method_traits.contains_key(name) || self.inherent.values().any(|i| i.methods.iter().any(|m| m.name == name && crate::resolve::takes_self(m)))
+    pub fn is_method(&self, name: Symbol) -> bool {
+        split_trait_call(&name).is_some()
+            || self.method_traits.contains_key(&name.sym()) || self.inherent.values().any(|i| i.methods.iter().any(|m| m.name == name && crate::resolve::takes_self(m)))
     }
 
     /// The declaration of method `name` when it means the same thing on every
@@ -189,10 +189,10 @@ impl Env {
     /// signature and contract then hold for every call.
     pub fn method_contract(&self, name: &str) -> Option<(&TraitDecl, &FnDecl)> {
         if let Some((tr, m)) = split_trait_call(name) {
-            let t = self.traits.get(tr)?;
+            let t = self.traits.get(&tr.sym())?;
             return Some((t, &t.methods.iter().find(|x| x.decl.name == m)?.decl));
         }
-        match self.method_traits.get(name).map(|v| v.as_slice()) {
+        match self.method_traits.get(&name.sym()).map(|v| v.as_slice()) {
             Some([tr]) if !self.inherent.values().any(|i| i.methods.iter().any(|m| m.name == name)) => {
                 let t = self.traits.get(tr)?;
                 Some((t, &t.methods.iter().find(|m| m.decl.name == name)?.decl))
@@ -203,11 +203,11 @@ impl Env {
 
     /// The parameters of method `name` (for `mut`-ness: every declaration of
     /// a shared name must agree, which impls are checked for).
-    pub fn method_params(&self, name: &str) -> Option<Vec<Param>> {
-        if split_trait_call(name).is_some() {
-            return self.method_contract(name).map(|(_, d)| d.params.clone());
+    pub fn method_params(&self, name: Symbol) -> Option<Vec<Param>> {
+        if split_trait_call(&name).is_some() {
+            return self.method_contract(&name).map(|(_, d)| d.params.clone());
         }
-        let from_trait = self.method_traits.get(name).and_then(|trs| trs.first()).and_then(|t| self.traits.get(t)).and_then(|t| t.methods.iter().find(|m| m.decl.name == name)).map(|m| m.decl.params.clone());
+        let from_trait = self.method_traits.get(&name.sym()).and_then(|trs| trs.first()).and_then(|t| self.traits.get(t)).and_then(|t| t.methods.iter().find(|m| m.decl.name == name)).map(|m| m.decl.params.clone());
         let mut owns: Vec<_> = self.inherent.iter().collect();
         owns.sort_by_key(|(h, _)| *h);
         from_trait.or_else(|| owns.into_iter().find_map(|(_, i)| i.methods.iter().find(|m| m.name == name && crate::resolve::takes_self(m)).map(|m| m.params.clone())))
@@ -216,7 +216,7 @@ impl Env {
     /// Which parameters of the function or method `name` are `mut` (none for
     /// a builtin).
     pub fn mut_params(&self, name: &str) -> Vec<bool> {
-        let ps = self.fns.get(name).map(|f| f.params.clone()).or_else(|| self.method_params(name));
+        let ps = self.fns.get(&name.sym()).map(|f| f.params.clone()).or_else(|| self.method_params(name.sym()));
         ps.unwrap_or_default().iter().map(|p| p.mutable).collect()
     }
 
@@ -226,13 +226,13 @@ impl Env {
     /// `elaborate`), else the trait is the one of `head`'s traits declaring it.
     pub fn resolve_method(&self, method: &str, head: &str) -> Option<(FnDecl, Vec<Expr>, Vec<Expr>)> {
         let (tr, method) = match split_trait_call(method) {
-            Some((tr, m)) => (tr.to_string(), m),
+            Some((tr, m)) => (tr.sym(), m),
             None => match self.traits_with(method, head).as_slice() {
-                [tr] => (tr.clone(), method),
+                [tr] => (*tr, method),
                 _ => return None,
             },
         };
-        let tm = self.traits.get(&tr)?.methods.iter().find(|m| m.decl.name == method)?;
+        let tm = self.traits.get(&tr.sym())?.methods.iter().find(|m| m.decl.name == method)?;
         let imp = self.impls.iter().find(|i| i.trait_name == tr && texpr_head(&i.for_type) == head)?;
         let decl = match imp.methods.iter().find(|m| m.name == method) {
             Some(m) => m.clone(),
@@ -245,9 +245,9 @@ impl Env {
 
     /// The sum type a variant belongs to (`Circle` -> `Shape`). A variant is a
     /// type of its own, with its sum's type parameters.
-    pub fn variant_parent(&self, name: &str) -> Option<String> {
-        let p = self.ctors.get(name)?;
-        (p != name && matches!(self.types.get(p).map(|t| &t.body), Some(TypeBody::Sum(_)))).then(|| p.clone())
+    pub fn variant_parent(&self, name: Symbol) -> Option<Symbol> {
+        let p = self.ctors.get(&name.sym())?;
+        (p.as_str() != name && matches!(self.types.get(p).map(|t| &t.body), Some(TypeBody::Sum(_)))).then_some(*p)
     }
 
     /// Whether `name` names a type (not only a constructor): a primitive, a
@@ -255,9 +255,9 @@ impl Env {
     /// the values of that type.
     pub fn is_type_name(&self, name: &str) -> bool {
         matches!(name, "Int" | "Float" | "Bool" | "String" | "Unit" | "List" | "Set" | "Dict")
-            || self.types.contains_key(name)
-            || self.traits.contains_key(name)
-            || self.variant_parent(name).is_some()
+            || self.types.contains_key(&name.sym())
+            || self.traits.contains_key(&name.sym())
+            || self.variant_parent(name.sym()).is_some()
     }
 
     /// Follow refinement aliases to the underlying (unrefined) type expression.
@@ -266,18 +266,33 @@ impl Env {
             return self.expand_alias(b);
         }
         if let TypeExpr::Named(n, args) = t {
-            if let Some(TypeDecl { body: TypeBody::Alias(a), params, distinct: false, .. }) = self.types.get(n) {
-                let sub: HashMap<String, TypeExpr> = params.iter().cloned().zip(args.iter().cloned()).collect();
+            if let Some(TypeDecl { body: TypeBody::Alias(a), params, distinct: false, .. }) = self.types.get(&n.sym()) {
+                let sub: HashMap<Symbol, TypeExpr> = params.iter().cloned().zip(args.iter().cloned()).collect();
                 return self.expand_alias(&subst_texpr(a, &sub));
             }
         }
         t.clone()
     }
 
+    /// The default of field `field` of the record or record variant `ctor`.
+    pub fn field_default(&self, ctor: &str, field: &str) -> Option<Expr> {
+        let fs = match self.types.get(&Symbol::new(ctor)).map(|t| &t.body) {
+            Some(TypeBody::Record(fs)) => fs,
+            _ => self.types.values().find_map(|t| match &t.body {
+                TypeBody::Sum(vs) => vs.iter().find(|v| v.name == ctor).and_then(|v| match &v.payload {
+                    Payload::Record(fs) => Some(fs),
+                    _ => None,
+                }),
+                _ => None,
+            })?,
+        };
+        fs.iter().find(|f| f.name == field)?.default.clone()
+    }
+
     /// Constructors of a named type with type args substituted: (ctor, field names, field types)
-    pub fn variants_of(&self, name: &str, args: &[TypeExpr]) -> Option<Vec<(String, Option<Vec<String>>, Vec<TypeExpr>)>> {
-        let td = self.types.get(name)?;
-        let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+    pub fn variants_of(&self, name: &str, args: &[TypeExpr]) -> Option<Vec<(Symbol, Option<Vec<Symbol>>, Vec<TypeExpr>)>> {
+        let td = self.types.get(&name.sym())?;
+        let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
         let s = |t: &TypeExpr| subst_texpr(t, &sub);
         match &td.body {
             TypeBody::Sum(vs) => Some(
@@ -294,11 +309,11 @@ impl Env {
                     .collect(),
             ),
             TypeBody::Record(fs) => Some(vec![(
-                name.to_string(),
+                name.sym(),
                 Some(fs.iter().map(|f| f.name.clone()).collect()),
                 fs.iter().map(|f| s(&f.ty)).collect(),
             )]),
-            TypeBody::Alias(a) if td.distinct => Some(vec![(name.to_string(), None, vec![s(a)])]),
+            TypeBody::Alias(a) if td.distinct => Some(vec![(name.sym(), None, vec![s(a)])]),
             TypeBody::Alias(_) => None,
         }
     }

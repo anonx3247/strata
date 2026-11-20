@@ -110,7 +110,7 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
         match &d.kind {
             DeclKind::Fn(f) => {
                 let n = cc(&f.name);
-                jobs.push((f.name.clone(), format!("{base}:{cases}:{n}:{skey}"), Box::new(move || verify::check_fn(env, f, None, solver_bin, transparent, cases, n, seed))))
+                jobs.push((f.name.to_string(), format!("{base}:{cases}:{n}:{skey}"), Box::new(move || verify::check_fn(env, f, None, solver_bin, transparent, cases, n, seed))))
             }
             DeclKind::Impl(imp) if imp.is_inherent() => {
                 // a type's own methods are functions (`Item.new`, `Item.describe`), checked as such
@@ -119,7 +119,7 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
                     let f = types::static_fn(imp, m);
                     let n = cc(&f.name);
                     let key = format!("{base}:{short}:{cases}:{n}:{skey}");
-                    jobs.push((f.name.clone(), key, Box::new(move || verify::check_fn(env, &f, None, solver_bin, transparent, cases, n, seed))));
+                    jobs.push((f.name.to_string(), key, Box::new(move || verify::check_fn(env, &f, None, solver_bin, transparent, cases, n, seed))));
                 }
             }
             DeclKind::Impl(imp) => {
@@ -157,7 +157,7 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
             if worst.as_ref().map_or(true, |w| verdict.rank() > w.rank()) {
                 worst = Some(verdict.clone());
             }
-            module_of.insert(label.clone(), orig.module.clone());
+            module_of.insert(label.clone(), orig.module.to_string());
             results.push((label, verdict, cached));
         }
         // the viewer shows one status per definition

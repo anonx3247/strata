@@ -9,14 +9,14 @@
 //! as an inert declaration), so index `i` of the result is index `i` of the
 //! input.
 
-use crate::names::{module_of, qualify, short};
+use crate::names::{module_of, qualified, qualify, short};
 use crate::ast::*;
 use crate::types::Diag;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug)]
 struct Item {
-    module: String,
+    module: Symbol,
     public: bool,
 }
 
@@ -39,6 +39,7 @@ pub fn resolve(p: &Program) -> Resolution {
         run(p, None)
     };
     static_calls(&mut r.program);
+    crate::desugar::program(&mut r.program, &mut r.errors);
     r
 }
 
@@ -62,7 +63,7 @@ fn static_calls(p: &mut Program) {
         if let DeclKind::Impl(i) = &d.kind {
             if i.is_inherent() {
                 for m in i.methods.iter().filter(|m| !takes_self(m)) {
-                    statics.insert((crate::types::texpr_head(&i.for_type), short(&m.name)));
+                    statics.insert(((crate::types::texpr_head(&i.for_type)).to_string(), short(&m.name)));
                 }
             }
         }
@@ -75,8 +76,8 @@ fn static_calls(p: &mut Program) {
             if let Expr::Method(r, m, args) = e {
                 // a capitalised name parses as a constructor
                 if let Expr::Var(t) | Expr::Ctor(t, CtorArgs::None) = &**r {
-                    if statics.contains(&(t.clone(), short(m))) {
-                        *e = Expr::Call(Box::new(Expr::Var(static_name(t, m))), std::mem::take(args));
+                    if statics.contains(&(t.to_string(), short(m))) {
+                        *e = Expr::Call(Box::new(Expr::Var(static_name(t, m).into())), std::mem::take(args));
                     }
                 }
             }
@@ -92,9 +93,9 @@ pub fn member(p: &Program, q: &str) -> Option<(&'static str, String)> {
     for d in &p.decls {
         if d.qname() == q {
             return match d.kind {
-                DeclKind::Fn(_) => Some(("function", d.module.clone())),
-                DeclKind::Type(_) => Some(("type", d.module.clone())),
-                DeclKind::Trait(_) => Some(("trait", d.module.clone())),
+                DeclKind::Fn(_) => Some(("function", d.module.to_string())),
+                DeclKind::Type(_) => Some(("type", d.module.to_string())),
+                DeclKind::Trait(_) => Some(("trait", d.module.to_string())),
                 _ => None,
             };
         }
@@ -102,13 +103,13 @@ pub fn member(p: &Program, q: &str) -> Option<(&'static str, String)> {
             DeclKind::Type(t) => {
                 if let TypeBody::Sum(vs) = &t.body {
                     if vs.iter().any(|v| qualify(&d.module, &v.name) == q) {
-                        return Some(("variant", d.module.clone()));
+                        return Some(("variant", d.module.to_string()));
                     }
                 }
             }
             DeclKind::Trait(t) => {
                 if t.methods.iter().any(|m| qualify(&d.module, &m.decl.name) == q) {
-                    return Some(("method", d.module.clone()));
+                    return Some(("method", d.module.to_string()));
                 }
             }
             _ => {}
@@ -143,9 +144,9 @@ pub fn set_member_name(p: &mut Program, q: &str, new: &str) {
         let m = d.module.clone();
         if d.qname() == q {
             match &mut d.kind {
-                DeclKind::Fn(f) => f.name = new.to_string(),
-                DeclKind::Type(t) => t.name = new.to_string(),
-                DeclKind::Trait(t) => t.name = new.to_string(),
+                DeclKind::Fn(f) => f.name = Symbol::from(new),
+                DeclKind::Type(t) => t.name = Symbol::from(new),
+                DeclKind::Trait(t) => t.name = Symbol::from(new),
                 _ => {}
             }
             continue;
@@ -154,15 +155,15 @@ pub fn set_member_name(p: &mut Program, q: &str, new: &str) {
             DeclKind::Type(t) => {
                 let tq = qualify(&m, &t.name);
                 match &mut t.body {
-                    TypeBody::Record(fs) if kind == "field" && tq == of => fs.iter_mut().filter(|f| f.name == short).for_each(|f| f.name = new.to_string()),
+                    TypeBody::Record(fs) if kind == "field" && tq == of => fs.iter_mut().filter(|f| f.name == short).for_each(|f| f.name = Symbol::from(new)),
                     TypeBody::Sum(vs) => {
                         for v in vs.iter_mut() {
                             let vq = qualify(&m, &v.name);
                             if kind == "variant" && vq == q {
-                                v.name = new.to_string();
+                                v.name = Symbol::from(new);
                             }
                             if let (Payload::Record(fs), true) = (&mut v.payload, kind == "field" && vq == of) {
-                                fs.iter_mut().filter(|f| f.name == short).for_each(|f| f.name = new.to_string());
+                                fs.iter_mut().filter(|f| f.name == short).for_each(|f| f.name = Symbol::from(new));
                             }
                         }
                     }
@@ -171,13 +172,13 @@ pub fn set_member_name(p: &mut Program, q: &str, new: &str) {
             }
             DeclKind::Trait(t) if kind == "method" => {
                 for tm in t.methods.iter_mut().filter(|tm| qualify(&m, &tm.decl.name) == q) {
-                    tm.decl.name = new.to_string();
+                    tm.decl.name = Symbol::from(new);
                 }
             }
             // an impl of the method's trait (method names are unique across traits)
             DeclKind::Impl(i) if kind == "method" => {
                 for f in i.methods.iter_mut().filter(|f| f.name == short) {
-                    f.name = new.to_string();
+                    f.name = Symbol::from(new);
                 }
             }
             _ => {}
@@ -190,12 +191,12 @@ fn fields_of(p: &Program, owner: &str) -> Vec<String> {
     for d in &p.decls {
         let DeclKind::Type(t) = &d.kind else { continue };
         match &t.body {
-            TypeBody::Record(fs) if qualify(&d.module, &t.name) == owner => return fs.iter().map(|f| f.name.clone()).collect(),
+            TypeBody::Record(fs) if qualify(&d.module, &t.name) == owner => return fs.iter().map(|f| f.name.to_string()).collect(),
             TypeBody::Sum(vs) => {
                 for v in vs {
                     if let Payload::Record(fs) = &v.payload {
                         if qualify(&d.module, &v.name) == owner {
-                            return fs.iter().map(|f| f.name.clone()).collect();
+                            return fs.iter().map(|f| f.name.to_string()).collect();
                         }
                     }
                 }
@@ -236,11 +237,11 @@ pub fn rename_fields(p: &Program, renames: &[(String, String, String)]) -> Resul
         .chain(&prelude.decls)
         .flat_map(|d| match &d.kind {
             DeclKind::Type(t) => match &t.body {
-                TypeBody::Record(fs) => vec![(qualify(&d.module, &t.name), fs.iter().map(|f| f.name.clone()).collect())],
+                TypeBody::Record(fs) => vec![(qualify(&d.module, &t.name), fs.iter().map(|f| f.name.to_string()).collect())],
                 TypeBody::Sum(vs) => vs
                     .iter()
                     .filter_map(|v| match &v.payload {
-                        Payload::Record(fs) => Some((qualify(&d.module, &v.name), fs.iter().map(|f| f.name.clone()).collect())),
+                        Payload::Record(fs) => Some((qualify(&d.module, &v.name), fs.iter().map(|f| f.name.to_string()).collect())),
                         _ => None,
                     })
                     .collect(),
@@ -325,11 +326,11 @@ pub fn rename_fields(p: &Program, renames: &[(String, String, String)]) -> Resul
             let tq = qualify(&d.module, &t.name);
             for (owner, f, new) in renames {
                 match &mut t.body {
-                    TypeBody::Record(fs) if tq == *owner => fs.iter_mut().filter(|x| x.name == *f).for_each(|x| x.name = new.clone()),
+                    TypeBody::Record(fs) if tq == *owner => fs.iter_mut().filter(|x| x.name == *f).for_each(|x| x.name = Symbol::from(new.as_str())),
                     TypeBody::Sum(vs) => {
                         for v in vs.iter_mut().filter(|v| qualify(&d.module, &v.name) == *owner) {
                             if let Payload::Record(fs) = &mut v.payload {
-                                fs.iter_mut().filter(|x| x.name == *f).for_each(|x| x.name = new.clone());
+                                fs.iter_mut().filter(|x| x.name == *f).for_each(|x| x.name = Symbol::from(new.as_str()));
                             }
                         }
                     }
@@ -360,9 +361,9 @@ fn field_uses(d: &mut DeclKind, field: &str, ctor: &str, ctor_new: Option<&str>,
     }
     impl Uses<'_> {
         /// The fields of a `ctor` literal, update or pattern, renamed.
-        fn rename<T>(&self, c: &str, fs: &mut [(String, T)]) {
+        fn rename<T>(&self, c: &str, fs: &mut [(Symbol, T)]) {
             if let Some(new) = self.ctor_new.filter(|_| short(c) == self.ctor) {
-                fs.iter_mut().filter(|(n, _)| n == self.field).for_each(|(n, _)| *n = new.to_string());
+                fs.iter_mut().filter(|(n, _)| *n == self.field).for_each(|(n, _)| *n = new.into());
             }
         }
     }
@@ -372,7 +373,7 @@ fn field_uses(d: &mut DeclKind, field: &str, ctor: &str, ctor_new: Option<&str>,
                 // `x.qty`, but not `orders.qty` (a qualified name)
                 Expr::Field(r, f) if f == self.field && !place_path(r).is_some_and(|m| self.modules.contains(&m)) => {
                     if let Some(n) = (self.access)(self.field) {
-                        *f = n;
+                        *f = n.into();
                     }
                 }
                 // `Line { qty: 1 }`, `Line { ..l, qty: 2 }`
@@ -510,8 +511,8 @@ pub fn follow(merged: &Program, back: &Program, old: &str, new: &str) -> Result<
 /// definition (variables and calls, constructors, methods, `is` tests,
 /// types, traits, `use`s), and to the names definitions are declared under.
 /// Not string literals, fields, local bindings, docs or comments.
-fn names_mut(d: &mut DeclKind, f: &mut dyn FnMut(&mut String)) {
-    struct Names<'a>(&'a mut dyn FnMut(&mut String));
+fn names_mut(d: &mut DeclKind, f: &mut dyn FnMut(&mut Symbol)) {
+    struct Names<'a>(&'a mut dyn FnMut(&mut Symbol));
     impl VisitMut for Names<'_> {
         fn expr(&mut self, e: &mut Expr) {
             if let Expr::Var(n) | Expr::Ctor(n, _) | Expr::Method(_, n, _) | Expr::Is(_, n) = e {
@@ -560,10 +561,10 @@ fn names_mut(d: &mut DeclKind, f: &mut dyn FnMut(&mut String)) {
 }
 
 /// The names in a definition, as `names_mut` visits them.
-fn names_in(d: &DeclKind) -> HashSet<String> {
+fn names_in(d: &DeclKind) -> HashSet<Symbol> {
     let mut out = HashSet::new();
     names_mut(&mut d.clone(), &mut |n| {
-        out.insert(n.clone());
+        out.insert(*n);
     });
     out
 }
@@ -573,7 +574,7 @@ fn renamed(d: &Decl, renames: &HashMap<String, String>) -> Decl {
     let mut d = d.clone();
     names_mut(&mut d.kind, &mut |n| {
         if let Some(new) = renames.get(n.as_str()) {
-            *n = new.clone();
+            *n = new.into();
         }
     });
     d
@@ -594,51 +595,55 @@ fn run(p: &Program, rename: Option<(String, String)>) -> Resolution {
 /// it refers to by their short name from another module than theirs, which
 /// that module must then import.
 fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMap<String, String>>) -> (Resolution, Vec<Vec<String>>) {
-    let mut table: HashMap<String, Item> = HashMap::new();
+    let rename: Option<(Symbol, Symbol)> = rename.map(|(o, n)| (o.into(), n.into()));
+    let moves: Option<HashMap<Symbol, Symbol>> = moves.map(|m| m.iter().map(|(o, n)| (o.sym(), n.sym())).collect());
+    let mut table: HashMap<Symbol, Item> = HashMap::new();
     // children of a type (its constructors) or a trait (its methods), as (short, qualified)
-    let mut children: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    let mut modules: HashSet<String> = HashSet::new();
+    let mut children: HashMap<Symbol, Vec<(Symbol, Symbol)>> = HashMap::new();
+    let mut modules: HashSet<Symbol> = HashSet::new();
     // qualified names of trait methods
-    let mut methods: HashSet<String> = HashSet::new();
-    for d in &p.decls {
-        let mut m = d.module.as_str();
+    let mut methods: HashSet<Symbol> = HashSet::new();
+    let add_modules = |modules: &mut HashSet<Symbol>, mut m: &str| {
         while !m.is_empty() {
-            modules.insert(m.to_string());
+            modules.insert(m.sym());
             m = module_of(m);
         }
-        let item = Item { module: d.module.clone(), public: d.public };
+    };
+    for d in &p.decls {
+        add_modules(&mut modules, &d.module);
+        let item = Item { module: d.module, public: d.public };
         match &d.kind {
             DeclKind::Type(t) => {
-                let q = qualify(&d.module, &t.name);
-                table.insert(q.clone(), item.clone());
+                let q = qualified(d.module, t.name);
+                table.insert(q, item.clone());
                 if let TypeBody::Sum(vs) = &t.body {
                     for v in vs {
-                        let cq = qualify(&d.module, &v.name);
-                        table.insert(cq.clone(), item.clone());
-                        children.entry(q.clone()).or_default().push((v.name.clone(), cq));
+                        let cq = qualified(d.module, v.name);
+                        table.insert(cq, item.clone());
+                        children.entry(q).or_default().push((v.name, cq));
                     }
                 }
             }
             DeclKind::Trait(t) => {
-                let q = qualify(&d.module, &t.name);
-                table.insert(q.clone(), item.clone());
+                let q = qualified(d.module, t.name);
+                table.insert(q, item.clone());
                 for m in &t.methods {
-                    let mq = qualify(&d.module, &m.decl.name);
-                    table.insert(mq.clone(), item.clone());
-                    methods.insert(mq.clone());
-                    children.entry(q.clone()).or_default().push((m.decl.name.clone(), mq));
+                    let mq = qualified(d.module, m.decl.name);
+                    table.insert(mq, item.clone());
+                    methods.insert(mq);
+                    children.entry(q).or_default().push((m.decl.name, mq));
                 }
             }
-            DeclKind::Fn(_) => {
-                table.insert(qualify(&d.module, &d.name()), item);
+            DeclKind::Fn(f) => {
+                table.insert(qualified(d.module, f.name), item);
             }
             // a type's own methods come with the type, like a trait's
             DeclKind::Impl(i) if i.is_inherent() => {
-                let tq = qualify(&d.module, &crate::types::texpr_head(&i.for_type));
+                let tq = qualified(d.module, Symbol::new(&crate::types::texpr_head(&i.for_type)));
                 for m in &i.methods {
-                    let mq = qualify(&d.module, &m.name);
-                    table.insert(mq.clone(), Item { module: d.module.clone(), public: true });
-                    children.entry(tq.clone()).or_default().push((m.name.clone(), mq));
+                    let mq = qualified(d.module, m.name);
+                    table.insert(mq, Item { module: d.module, public: true });
+                    children.entry(tq).or_default().push((m.name, mq));
                 }
             }
             DeclKind::Test(_) | DeclKind::Impl(_) | DeclKind::Use(_) => {}
@@ -646,28 +651,24 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
     }
 
     // already-qualified names (a resolved program) imply their modules too
-    for q in table.keys().cloned().collect::<Vec<_>>() {
-        let mut m = module_of(&q);
-        while !m.is_empty() {
-            modules.insert(m.to_string());
-            m = module_of(m);
-        }
+    for q in table.keys().copied().collect::<Vec<_>>() {
+        add_modules(&mut modules, module_of(&q));
     }
     let mut errors = Vec::new();
     // what each module can refer to by short name
-    let mut scopes: HashMap<String, HashMap<String, String>> = HashMap::new();
-    let mut all_modules: Vec<String> = p.decls.iter().map(|d| d.module.clone()).collect();
+    let mut scopes: HashMap<Symbol, HashMap<Symbol, Symbol>> = HashMap::new();
+    let mut all_modules: Vec<Symbol> = p.decls.iter().map(|d| d.module).collect();
     all_modules.sort();
     all_modules.dedup();
-    for m in &all_modules {
-        let mut scope: HashMap<String, String> = HashMap::new();
+    for &m in &all_modules {
+        let mut scope: HashMap<Symbol, Symbol> = HashMap::new();
         // the root module is visible everywhere
-        for (q, it) in &table {
+        for (&q, it) in &table {
             if it.module.is_empty() {
-                scope.insert(q.clone(), q.clone());
+                scope.insert(q, q);
             }
         }
-        for d in p.decls.iter().filter(|d| &d.module == m) {
+        for d in p.decls.iter().filter(|d| d.module == m) {
             let DeclKind::Use(u) = &d.kind else { continue };
             if !modules.contains(&u.path) {
                 errors.push(Diag { decl: d.qname(), msg: format!("there is no module `{}`", u.path) });
@@ -675,15 +676,15 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
             }
             match &u.items {
                 None => {
-                    for (q, it) in &table {
+                    for (&q, it) in &table {
                         if it.module == u.path && it.public {
-                            scope.insert(q[u.path.len() + 1..].to_string(), q.clone());
+                            scope.insert(Symbol::new(&q[u.path.len() + 1..]), q);
                         }
                     }
                 }
                 Some(items) => {
-                    for i in items {
-                        let q = format!("{}.{i}", u.path);
+                    for &i in items {
+                        let q = qualified(u.path, i);
                         match table.get(&q) {
                             None => errors.push(Diag { decl: d.qname(), msg: format!("module `{}` has no `{i}`", u.path) }),
                             Some(it) if !it.public => errors.push(Diag {
@@ -691,10 +692,10 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
                                 msg: format!("`{i}` is private to module `{}` (only `pub` definitions are part of its contract)", u.path),
                             }),
                             Some(_) => {
-                                scope.insert(i.clone(), q.clone());
+                                scope.insert(i, q);
                                 // importing a type brings its constructors; a trait, its methods
-                                for (short, cq) in children.get(&q).into_iter().flatten() {
-                                    scope.insert(short.clone(), cq.clone());
+                                for &(short, cq) in children.get(&q).into_iter().flatten() {
+                                    scope.insert(short, cq);
                                 }
                             }
                         }
@@ -703,38 +704,49 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
             }
         }
         // the module's own definitions win
-        for (q, it) in &table {
-            if &it.module == m {
-                scope.insert(q[if m.is_empty() { 0 } else { m.len() + 1 }..].to_string(), q.clone());
+        for (&q, it) in &table {
+            if it.module == m {
+                scope.insert(Symbol::new(&q[if m.is_empty() { 0 } else { m.len() + 1 }..]), q);
             }
         }
-        scopes.insert(m.clone(), scope);
+        scopes.insert(m, scope);
     }
 
-    let imports: HashMap<String, Vec<String>> = all_modules
+    let imports: HashMap<Symbol, Vec<Symbol>> = all_modules
         .iter()
-        .map(|m| (m.clone(), p.decls.iter().filter(|d| &d.module == m).filter_map(|d| if let DeclKind::Use(u) = &d.kind { Some(u.path.clone()) } else { None }).collect()))
+        .map(|&m| (m, p.decls.iter().filter(|d| d.module == m).filter_map(|d| if let DeclKind::Use(u) = &d.kind { Some(u.path) } else { None }).collect()))
         .collect();
     let mut decls = Vec::new();
     let mut needs = Vec::new();
     for d in &p.decls {
-        let mut r = Rw { scope: &scopes[&d.module], table: &table, methods: &methods, modules: &modules, module: &d.module, imports: &imports[&d.module], decl: d.qname(), locals: vec![], tparams: vec![], errors: vec![], rename: rename.as_ref(), moves, needs: Default::default() };
+        let mut r = Rw {
+            scope: &scopes[&d.module],
+            table: &table,
+            methods: &methods,
+            modules: &modules,
+            module: d.module,
+            imports: &imports[&d.module],
+            decl: d.qname(),
+            locals: vec![],
+            tparams: vec![],
+            errors: vec![],
+            rename: rename.as_ref(),
+            moves: moves.as_ref(),
+            needs: Default::default(),
+        };
         let kind = match (&d.kind, rename.as_ref()) {
             // `use orders.{ship}` no longer names a moved definition (the module imports it anew)
             (DeclKind::Use(u), _) if moves.is_some() => DeclKind::Use(UseDecl {
-                path: u.path.clone(),
-                items: u.items.as_ref().map(|is| is.iter().filter(|i| !moves.unwrap().contains_key(&format!("{}.{i}", u.path))).cloned().collect()),
+                path: u.path,
+                items: u.items.as_ref().map(|is| is.iter().filter(|&&i| !moves.as_ref().unwrap().contains_key(&qualified(u.path, i))).copied().collect()),
             }),
             // `use core.{same_ids}` names what it imports
-            (DeclKind::Use(u), Some((old, new))) => DeclKind::Use(UseDecl {
-                path: u.path.clone(),
-                items: u.items.as_ref().map(|is| is.iter().map(|i| if &format!("{}.{i}", u.path) == old { new.clone() } else { i.clone() }).collect()),
-            }),
+            (DeclKind::Use(u), Some(&(old, new))) => DeclKind::Use(UseDecl { path: u.path, items: u.items.as_ref().map(|is| is.iter().map(|&i| if qualified(u.path, i) == old { new } else { i }).collect()) }),
             _ => r.decl(&d.kind),
         };
         errors.extend(r.errors);
-        needs.push(r.needs.into_inner());
-        decls.push(Decl { comments: d.comments.clone(), doc: d.doc.clone(), kind, module: String::new(), public: d.public });
+        needs.push(r.needs.into_inner().into_iter().map(String::from).collect());
+        decls.push(Decl { comments: d.comments.clone(), doc: d.doc.clone(), kind, module: Symbol::EMPTY, public: d.public });
     }
     (Resolution { program: Program { decls }, errors }, needs)
 }
@@ -742,9 +754,9 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
 /// `shop.orders` as an expression (a variable and field accesses).
 fn path_expr(m: &str) -> Expr {
     let mut parts = m.split('.');
-    let mut e = Expr::Var(parts.next().unwrap_or("").to_string());
+    let mut e = Expr::Var(parts.next().unwrap_or("").into());
     for p in parts {
-        e = Expr::Field(Box::new(e), p.to_string());
+        e = Expr::Field(Box::new(e), Symbol::from(p));
     }
     e
 }
@@ -754,40 +766,40 @@ fn path_expr(m: &str) -> Expr {
 const PRELUDE_FNS: &[&str] = &["print"];
 
 struct Rw<'a> {
-    scope: &'a HashMap<String, String>,
-    table: &'a HashMap<String, Item>,
+    scope: &'a HashMap<Symbol, Symbol>,
+    table: &'a HashMap<Symbol, Item>,
     /// qualified names of trait methods
-    methods: &'a HashSet<String>,
-    modules: &'a HashSet<String>,
-    module: &'a str,
+    methods: &'a HashSet<Symbol>,
+    modules: &'a HashSet<Symbol>,
+    module: Symbol,
     /// modules this one `use`s, for "that's private" hints
-    imports: &'a [String],
+    imports: &'a [Symbol],
     decl: String,
-    locals: Vec<HashSet<String>>,
-    tparams: Vec<HashSet<String>>,
+    locals: Vec<HashSet<Symbol>>,
+    tparams: Vec<HashSet<Symbol>>,
     errors: Vec<Diag>,
     /// Rename mode: (old qualified name, new short name). Names are then
     /// written back as they were, except those that resolve to `old`.
-    rename: Option<&'a (String, String)>,
+    rename: Option<&'a (Symbol, Symbol)>,
     /// Move mode: old qualified name → new qualified name. Names are written
     /// back as they were; a qualified one that refers to a moved definition
     /// gets its new module, and a short one stays short (see `needs`).
-    moves: Option<&'a HashMap<String, String>>,
+    moves: Option<&'a HashMap<Symbol, Symbol>>,
     /// moved names this definition writes short, from a module that must import them
-    needs: std::cell::RefCell<Vec<String>>,
+    needs: std::cell::RefCell<Vec<Symbol>>,
 }
 
 impl Rw<'_> {
-    fn is_local(&self, x: &str) -> bool {
-        self.locals.iter().any(|s| s.contains(x))
+    fn is_local(&self, x: Symbol) -> bool {
+        self.locals.iter().any(|s| s.contains(&x))
     }
-    fn bind(&mut self, x: &str) {
+    fn bind(&mut self, x: Symbol) {
         if let Some(s) = self.locals.last_mut() {
-            s.insert(x.to_string());
+            s.insert(x);
         }
     }
-    fn push(&mut self, names: &[String]) {
-        self.locals.push(names.iter().cloned().collect());
+    fn push(&mut self, names: &[Symbol]) {
+        self.locals.push(names.iter().copied().collect());
     }
     fn pop(&mut self) {
         self.locals.pop();
@@ -795,45 +807,45 @@ impl Rw<'_> {
 
     /// Resolve a (possibly qualified) global name; in rename mode, give it
     /// back as written, renamed if it refers to the renamed definition.
-    fn name(&mut self, n: &str) -> String {
+    fn name(&mut self, n: Symbol) -> Symbol {
         let q = self.lookup(n);
-        self.written(n, &q)
+        self.written(n, q)
     }
     /// Writing names back (rename or move), rather than resolving them.
     fn writing(&self) -> bool {
         self.rename.is_some() || self.moves.is_some()
     }
-    fn written(&self, n: &str, q: &str) -> String {
-        if let Some(nq) = self.moves.and_then(|m| m.get(q)) {
+    fn written(&self, n: Symbol, q: Symbol) -> Symbol {
+        if let Some(&nq) = self.moves.and_then(|m| m.get(&q)) {
             if n.contains('.') {
-                return nq.clone();
+                return nq;
             }
-            if module_of(nq) != self.module {
-                self.needs.borrow_mut().push(nq.clone());
+            if module_of(&nq) != self.module {
+                self.needs.borrow_mut().push(nq);
             }
-            return n.to_string();
+            return n;
         }
         match self.rename {
-            None if self.moves.is_none() => q.to_string(),
-            None => n.to_string(),
-            Some((old, new)) if q == old => match n.rsplit_once('.') {
-                Some((path, _)) => format!("{path}.{new}"),
-                None => new.clone(),
+            None if self.moves.is_none() => q,
+            None => n,
+            Some(&(old, new)) if q == old => match n.rsplit_once('.') {
+                Some((path, _)) => format!("{path}.{new}").into(),
+                None => new,
             },
-            Some(_) => n.to_string(),
+            Some(_) => n,
         }
     }
     /// The name of a definition being declared, `name` in module `m`.
-    fn declared(&self, m: &str, name: &str) -> String {
-        self.written(name, &qualify(m, name))
+    fn declared(&self, m: Symbol, name: Symbol) -> Symbol {
+        self.written(name, qualified(m, name))
     }
-    fn lookup(&mut self, n: &str) -> String {
-        if let Some(q) = self.scope.get(n) {
-            return q.clone();
+    fn lookup(&mut self, n: Symbol) -> Symbol {
+        if let Some(&q) = self.scope.get(&n) {
+            return q;
         }
         if !n.contains('.') {
-            for m in self.imports {
-                let q = format!("{m}.{n}");
+            for &m in self.imports {
+                let q = qualified(m, n);
                 if self.table.get(&q).is_some_and(|it| !it.public) {
                     self.errors.push(Diag {
                         decl: self.decl.clone(),
@@ -843,7 +855,7 @@ impl Rw<'_> {
                 }
             }
         }
-        if let Some(it) = self.table.get(n) {
+        if let Some(it) = self.table.get(&n) {
             let visible = it.public || it.module == self.module || self.module.starts_with(&format!("{}.", it.module));
             if !visible {
                 self.errors.push(Diag {
@@ -852,27 +864,27 @@ impl Rw<'_> {
                 });
             }
         }
-        if crate::stdlib::is_host(n) && !crate::stdlib::is_std(self.module) && self.rename.is_none() {
+        if crate::stdlib::is_host(&n) && !crate::stdlib::is_std(&self.module) && self.rename.is_none() {
             self.errors.push(Diag {
                 decl: self.decl.clone(),
                 msg: format!("`{n}` is internal to the standard library: take a capability instead (`Console` from `std.io`, `Files` from `std.fs`, `Environment` from `std.process`)"),
             });
         }
-        n.to_string()
+        n
     }
 
     /// `orders` or `shop.orders` written as variables and field accesses.
-    fn module_path(&self, e: &Expr) -> Option<String> {
-        let path = match e {
-            Expr::Var(x) if !self.is_local(x) => x.clone(),
-            Expr::Field(r, f) => format!("{}.{f}", self.module_path_any(r)?),
+    fn module_path(&self, e: &Expr) -> Option<Symbol> {
+        let path: Symbol = match e {
+            Expr::Var(x) if !self.is_local(*x) => *x,
+            Expr::Field(r, f) => format!("{}.{f}", self.module_path_any(r)?).into(),
             _ => return None,
         };
         self.modules.contains(&path).then_some(path)
     }
     fn module_path_any(&self, e: &Expr) -> Option<String> {
         match e {
-            Expr::Var(x) if !self.is_local(x) => Some(x.clone()),
+            Expr::Var(x) if !self.is_local(*x) => Some(x.to_string()),
             Expr::Field(r, f) => Some(format!("{}.{f}", self.module_path_any(r)?)),
             _ => None,
         }
@@ -881,7 +893,7 @@ impl Rw<'_> {
     fn ty(&mut self, t: &TypeExpr) -> TypeExpr {
         match t {
             TypeExpr::Named(n, args) => {
-                let n2 = if n == "Self" || self.tparams.iter().any(|s| s.contains(n)) { n.clone() } else { self.name(n) };
+                let n2 = if n == "Self" || self.tparams.iter().any(|s| s.contains(n)) { *n } else { self.name(*n) };
                 TypeExpr::Named(n2, args.iter().map(|a| self.ty(a)).collect())
             }
             TypeExpr::Fn(ps, r) => TypeExpr::Fn(ps.iter().map(|a| self.ty(a)).collect(), Box::new(self.ty(r))),
@@ -889,7 +901,7 @@ impl Rw<'_> {
             TypeExpr::Union(ms) => TypeExpr::Union(ms.iter().map(|m| self.ty(m)).collect()),
             TypeExpr::Refined(b, p) => {
                 let b = self.ty(b);
-                self.push(&["it".into()]);
+                self.push(&[Symbol::new("it")]);
                 let p = self.expr(p);
                 self.pop();
                 TypeExpr::Refined(Box::new(b), Box::new(p))
@@ -900,11 +912,11 @@ impl Rw<'_> {
     fn pat(&mut self, p: &Pattern) -> Pattern {
         match p {
             Pattern::Bind(x) => {
-                self.bind(x);
+                self.bind(*x);
                 p.clone()
             }
             Pattern::Ctor(c, cp) => {
-                let c = self.name(c);
+                let c = self.name(*c);
                 let cp = match cp {
                     CtorPat::None => CtorPat::None,
                     CtorPat::Positional(ps) => CtorPat::Positional(ps.iter().map(|x| self.pat(x)).collect()),
@@ -915,14 +927,14 @@ impl Rw<'_> {
             Pattern::List(items, rest) => {
                 let items = items.iter().map(|x| self.pat(x)).collect();
                 if let Some(r) = rest {
-                    self.bind(r);
+                    self.bind(*r);
                 }
                 Pattern::List(items, rest.clone())
             }
             Pattern::Tuple(ps) => Pattern::Tuple(ps.iter().map(|x| self.pat(x)).collect()),
             Pattern::Or(ps) => Pattern::Or(ps.iter().map(|x| self.pat(x)).collect()),
             Pattern::Cond(c) => {
-                self.push(&["it".into()]);
+                self.push(&[Symbol::new("it")]);
                 let c = self.expr(c);
                 self.pop();
                 Pattern::Cond(Box::new(c))
@@ -937,12 +949,12 @@ impl Rw<'_> {
 
     fn expr(&mut self, e: &Expr) -> Expr {
         match e {
-            Expr::Var(x) if self.is_local(x) => e.clone(),
-            Expr::Var(x) => Expr::Var(self.name(x)),
+            Expr::Var(x) if self.is_local(*x) => e.clone(),
+            Expr::Var(x) => Expr::Var(self.name(*x)),
             Expr::List(es) => Expr::List(self.exprs(es)),
             Expr::Tuple(es) => Expr::Tuple(self.exprs(es)),
             Expr::Ctor(c, args) => {
-                let c = self.name(c);
+                let c = self.name(*c);
                 let args = match args {
                     CtorArgs::None => CtorArgs::None,
                     CtorArgs::Positional(es) => CtorArgs::Positional(self.exprs(es)),
@@ -953,36 +965,36 @@ impl Rw<'_> {
             }
             // `print(x)` is the prelude's, even where a trait with a `print`
             // method is imported (`console.print(x)` is the method)
-            Expr::Call(f, args) if matches!(&**f, Expr::Var(x) if PRELUDE_FNS.contains(&x.as_str()) && !self.is_local(x) && self.scope.get(x).is_none_or(|q| self.methods.contains(q))) => {
+            Expr::Call(f, args) if matches!(&**f, Expr::Var(x) if PRELUDE_FNS.contains(&x.as_str()) && !self.is_local(*x) && self.scope.get(x).is_none_or(|q| self.methods.contains(q))) => {
                 Expr::Call(f.clone(), self.exprs(args))
             }
             Expr::Call(f, args) => Expr::Call(Box::new(self.expr(f)), self.exprs(args)),
             Expr::Method(recv, m, args) => {
                 if let Some(path) = self.module_path(recv) {
                     // `orders.ship(x)`: a qualified call, not a method
-                    let f = self.name(&format!("{path}.{m}"));
+                    let f = self.name(format!("{path}.{m}").into());
                     if self.writing() {
                         // `orders.ship(x)`: a move changes the module written before it
-                        let (fp, m) = f.rsplit_once('.').map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or((path.clone(), m.clone()));
+                        let (fp, m) = f.rsplit_once('.').map(|(a, b)| (a.to_string(), b.sym())).unwrap_or((path.to_string(), *m));
                         let recv = if fp == path { recv.clone() } else { Box::new(path_expr(&fp)) };
                         return Expr::Method(recv, m, self.exprs(args));
                     }
                     return Expr::Call(Box::new(Expr::Var(f)), self.exprs(args));
                 }
                 let recv = self.expr(recv);
-                let m = if self.is_local(m) {
-                    m.clone()
+                let m = if self.is_local(*m) {
+                    *m
                 } else {
-                    let q = self.scope.get(m).cloned().unwrap_or_else(|| m.clone());
-                    self.written(m, &q)
+                    let q = self.scope.get(m).copied().unwrap_or(*m);
+                    self.written(*m, q)
                 };
                 Expr::Method(Box::new(recv), m, self.exprs(args))
             }
             Expr::Field(r, f) => {
                 if let Some(path) = self.module_path(r) {
-                    let q = self.name(&format!("{path}.{f}"));
+                    let q = self.name(format!("{path}.{f}").into());
                     if self.writing() {
-                        let (qp, last) = q.rsplit_once('.').map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or((path.clone(), f.clone()));
+                        let (qp, last) = q.rsplit_once('.').map(|(a, b)| (a.to_string(), b.sym())).unwrap_or((path.to_string(), *f));
                         let r = if qp == path { r.clone() } else { Box::new(path_expr(&qp)) };
                         return Expr::Field(r, last);
                     }
@@ -1001,11 +1013,32 @@ impl Rw<'_> {
                     .collect(),
             ),
             Expr::Return(x) => Expr::Return(Box::new(self.expr(x))),
+            Expr::Range(lo, hi, inclusive) => {
+                let lo = lo.as_ref().map(|x| Box::new(self.expr(x)));
+                Expr::Range(lo, hi.as_ref().map(|x| Box::new(self.expr(x))), *inclusive)
+            }
+            Expr::Index(x, r) => Expr::Index(Box::new(self.expr(x)), Box::new(self.expr(r))),
+            Expr::Dict(tys, kvs) => Expr::Dict(tys.iter().map(|t| self.ty(t)).collect(), kvs.iter().map(|(k, v)| (self.expr(k), self.expr(v))).collect()),
+            Expr::Set(tys, xs) => Expr::Set(tys.iter().map(|t| self.ty(t)).collect(), self.exprs(xs)),
+            Expr::Comp(kind, elem, gens) => {
+                // each `for` binds its pattern for the conditions and `for`s after it, and the element
+                let mut out = Vec::new();
+                for g in gens {
+                    let iter = self.expr(&g.iter);
+                    self.push(&[]);
+                    let pat = self.pat(&g.pat);
+                    let cond = g.cond.as_ref().map(|c| self.expr(c));
+                    out.push(CompFor { pat, iter, cond });
+                }
+                let elem = self.expr(elem);
+                gens.iter().for_each(|_| self.pop());
+                Expr::Comp(*kind, Box::new(elem), out)
+            }
             Expr::Mut(x) => Expr::Mut(Box::new(self.expr(x))),
             Expr::Try(x, k) => Expr::Try(Box::new(self.expr(x)), *k),
             Expr::Except(x, name, fb) => {
                 let x = self.expr(x);
-                self.push(&name.iter().cloned().collect::<Vec<_>>());
+                self.push(&name.iter().copied().collect::<Vec<_>>());
                 let fb = self.expr(fb);
                 self.pop();
                 Expr::Except(Box::new(x), name.clone(), Box::new(fb))
@@ -1019,14 +1052,14 @@ impl Rw<'_> {
             }
             Expr::Bin(op, l, r) => Expr::Bin(*op, Box::new(self.expr(l)), Box::new(self.expr(r))),
             Expr::Un(op, x) => Expr::Un(op.clone(), Box::new(self.expr(x))),
-            Expr::Is(x, c) => Expr::Is(Box::new(self.expr(x)), self.name(c)),
+            Expr::Is(x, c) => Expr::Is(Box::new(self.expr(x)), self.name(*c)),
             Expr::If(c, t, f) => Expr::If(Box::new(self.expr(c)), Box::new(self.expr(t)), Box::new(self.expr(f))),
             Expr::Match(s, name, arms) => {
                 let s = self.expr(s);
                 let arms = arms
                     .iter()
                     .map(|a| {
-                        self.push(&name.iter().cloned().collect::<Vec<_>>());
+                        self.push(&name.iter().copied().collect::<Vec<_>>());
                         let pat = self.pat(&a.pat);
                         let body = self.expr(&a.body);
                         self.pop();
@@ -1048,8 +1081,8 @@ impl Rw<'_> {
                         Stmt::Var(n, t, x) => {
                             let x = self.expr(x);
                             let t = t.as_ref().map(|t| self.ty(t));
-                            self.bind(n);
-                            Stmt::Var(n.clone(), t, x)
+                            self.bind(*n);
+                            Stmt::Var(*n, t, x)
                         }
                         Stmt::Assign(p, x) => Stmt::Assign(self.expr(p), self.expr(x)),
                         Stmt::While(c, b) => Stmt::While(self.expr(c), self.expr(b)),
@@ -1082,16 +1115,16 @@ impl Rw<'_> {
     }
 
     /// A function, an impl method or a trait method; `name` is its resolved name.
-    fn func(&mut self, f: &FnDecl, name: String) -> FnDecl {
-        self.tparams.push(f.type_params.iter().cloned().collect());
+    fn func(&mut self, f: &FnDecl, name: Symbol) -> FnDecl {
+        self.tparams.push(f.type_params.iter().copied().collect());
         let bounds = self.bounds(&f.bounds);
         let params: Vec<Param> = f.params.iter().map(|p| Param { name: p.name.clone(), ty: self.ty(&p.ty), mutable: p.mutable }).collect();
-        let names: Vec<String> = f.params.iter().map(|p| p.name.clone()).collect();
+        let names: Vec<Symbol> = f.params.iter().map(|p| p.name).collect();
         self.push(&names);
         let ret = self.ty(&f.ret);
         let requires = self.exprs(&f.requires);
         let body = self.expr(&f.body);
-        self.push(&["it".into()]);
+        self.push(&[Symbol::new("it")]);
         let ensures = self.exprs(&f.ensures);
         self.pop();
         self.pop();
@@ -1100,52 +1133,52 @@ impl Rw<'_> {
     }
 
     fn decl(&mut self, k: &DeclKind) -> DeclKind {
-        let m = self.module.to_string();
+        let m = self.module;
         match k {
             DeclKind::Type(t) => {
-                self.tparams.push(t.params.iter().cloned().collect());
+                self.tparams.push(t.params.iter().copied().collect());
                 let body = match &t.body {
                     TypeBody::Alias(a) => TypeBody::Alias(self.ty(a)),
-                    TypeBody::Record(fs) => TypeBody::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), doc: f.doc.clone(), name: f.name.clone(), ty: self.ty(&f.ty) }).collect()),
+                    TypeBody::Record(fs) => TypeBody::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), doc: f.doc.clone(), name: f.name.clone(), ty: self.ty(&f.ty), default: f.default.as_ref().map(|x| self.expr(x)) }).collect()),
                     TypeBody::Sum(vs) => TypeBody::Sum(
                         vs.iter()
                             .map(|v| Variant {
                                 comments: v.comments.clone(),
-                                name: self.declared(&m, &v.name),
+                                name: self.declared(m, v.name),
                                 payload: match &v.payload {
                                     Payload::None => Payload::None,
                                     Payload::Positional(ts) => Payload::Positional(ts.iter().map(|t| self.ty(t)).collect()),
-                                    Payload::Record(fs) => Payload::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), doc: f.doc.clone(), name: f.name.clone(), ty: self.ty(&f.ty) }).collect()),
+                                    Payload::Record(fs) => Payload::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), doc: f.doc.clone(), name: f.name.clone(), ty: self.ty(&f.ty), default: f.default.as_ref().map(|x| self.expr(x)) }).collect()),
                                 },
                             })
                             .collect(),
                     ),
                 };
-                self.push(&["it".into()]);
+                self.push(&[Symbol::new("it")]);
                 let refinement = t.refinement.as_ref().map(|r| self.expr(r));
                 self.pop();
                 self.tparams.pop();
-                DeclKind::Type(TypeDecl { distinct: t.distinct, name: self.declared(&m, &t.name), params: t.params.clone(), body, refinement })
+                DeclKind::Type(TypeDecl { distinct: t.distinct, name: self.declared(m, t.name), params: t.params.clone(), body, refinement })
             }
-            DeclKind::Fn(f) => DeclKind::Fn(self.func(f, self.declared(&m, &f.name))),
+            DeclKind::Fn(f) => DeclKind::Fn(self.func(f, self.declared(m, f.name))),
             DeclKind::Test(t) => {
                 let name = if m.is_empty() || self.writing() { t.name.clone() } else { format!("{m}: {}", t.name) };
                 DeclKind::Test(TestDecl { name, body: self.expr(&t.body) })
             }
             DeclKind::Trait(t) => {
-                self.tparams.push(t.params.iter().cloned().collect());
+                self.tparams.push(t.params.iter().copied().collect());
                 let supers = t.supers.iter().map(|s| self.ty(s)).collect();
                 let methods = t
                     .methods
                     .iter()
-                    .map(|tm| TraitMethod { comments: tm.comments.clone(), doc: tm.doc.clone(), decl: self.func(&tm.decl, self.declared(&m, &tm.decl.name)), default: tm.default })
+                    .map(|tm| TraitMethod { comments: tm.comments.clone(), doc: tm.doc.clone(), decl: self.func(&tm.decl, self.declared(m, tm.decl.name)), default: tm.default })
                     .collect();
                 let laws = t
                     .laws
                     .iter()
                     .map(|l| {
                         let params: Vec<Param> = l.params.iter().map(|p| Param { name: p.name.clone(), ty: self.ty(&p.ty), mutable: p.mutable }).collect();
-                        let names: Vec<String> = l.params.iter().map(|p| p.name.clone()).collect();
+                        let names: Vec<Symbol> = l.params.iter().map(|p| p.name).collect();
                         self.push(&names);
                         let body = self.expr(&l.body);
                         self.pop();
@@ -1153,26 +1186,26 @@ impl Rw<'_> {
                     })
                     .collect();
                 self.tparams.pop();
-                DeclKind::Trait(TraitDecl { name: self.declared(&m, &t.name), params: t.params.clone(), supers, methods, laws })
+                DeclKind::Trait(TraitDecl { name: self.declared(m, t.name), params: t.params.clone(), supers, methods, laws })
             }
             DeclKind::Impl(i) => {
-                self.tparams.push(i.type_params.iter().cloned().collect());
+                self.tparams.push(i.type_params.iter().copied().collect());
                 let bounds = self.bounds(&i.bounds);
-                let trait_q = if i.is_inherent() { String::new() } else { self.lookup(&i.trait_name) };
-                let trait_name = if i.is_inherent() { String::new() } else { self.written(&i.trait_name, &trait_q) };
+                let trait_q = if i.is_inherent() { Symbol::EMPTY } else { self.lookup(i.trait_name) };
+                let trait_name = if i.is_inherent() { Symbol::EMPTY } else { self.written(i.trait_name, trait_q) };
                 let trait_args = i.trait_args.iter().map(|a| self.ty(a)).collect();
                 let for_type = self.ty(&i.for_type);
                 if i.is_inherent() {
                     let head = crate::types::texpr_head(&for_type);
                     let short = short(&head).to_string();
-                    if head.contains('.') && module_of(&head) != m {
+                    if head.contains('.') && module_of(&head) != m.as_str() {
                         self.errors.push(Diag { decl: self.decl.clone(), msg: format!("`impl {short}` must be in the module that defines `{short}` (`{}`)", module_of(&head)) });
                     }
                 }
                 // impl methods are named like the trait's methods (in the trait's module,
                 // whatever the trait is called here); a type's own, like the type
-                let tm = if i.is_inherent() { m.clone() } else { module_of(&trait_q).to_string() };
-                let methods = i.methods.iter().map(|f| self.func(f, self.declared(&tm, &f.name))).collect();
+                let tm = if i.is_inherent() { m } else { Symbol::new(module_of(&trait_q)) };
+                let methods = i.methods.iter().map(|f| self.func(f, self.declared(tm, f.name))).collect();
                 self.tparams.pop();
                 DeclKind::Impl(ImplDecl { type_params: i.type_params.clone(), bounds, trait_name, trait_args, for_type, methods })
             }
@@ -1218,7 +1251,7 @@ fn add_import(p: &mut Program, m: &str, path: &str, item: &str) {
                     None => return,
                     Some(items) => {
                         if !items.iter().any(|i| i == item) {
-                            items.push(item.to_string());
+                            items.push(Symbol::from(item));
                         }
                         return;
                     }
@@ -1234,7 +1267,7 @@ fn add_import(p: &mut Program, m: &str, path: &str, item: &str) {
         .map(|i| i + 1)
         .or_else(|| p.decls.iter().position(|d| d.module == m))
         .unwrap_or(p.decls.len());
-    p.decls.insert(at, Decl { comments: vec![], doc: vec![], kind: DeclKind::Use(UseDecl { path: path.to_string(), items: Some(vec![item.to_string()]) }), module: m.to_string(), public: false });
+    p.decls.insert(at, Decl { comments: vec![], doc: vec![], kind: DeclKind::Use(UseDecl { path: Symbol::from(path), items: Some(vec![Symbol::from(item)]) }), module: Symbol::from(m), public: false });
 }
 
 /// Moving `old` into module `target` (no checks): the definition changes
@@ -1250,7 +1283,7 @@ fn move_apply(p: &Program, old: &str, target: &str) -> Result<(Program, String),
     for (r, d) in program.decls.iter_mut().zip(&p.decls) {
         r.module = d.module.clone();
     }
-    program.decls[i].module = target.to_string();
+    program.decls[i].module = Symbol::from(target);
     // what the moved definition uses from its old module (or that module's imports)
     // must be imported where it goes: names it writes short
     let written = names_in(&p.decls[i].kind);
@@ -1259,7 +1292,7 @@ fn move_apply(p: &Program, old: &str, target: &str) -> Result<(Program, String),
     for dep in deps {
         let m = module_of(&dep).to_string();
         let short = short(&dep).to_string();
-        if m != target && !m.is_empty() && !moves.contains_key(&dep) && written.contains(&short) {
+        if m != target && !m.is_empty() && !moves.contains_key(&dep) && written.contains(&short.sym()) {
             imports.push((target.to_string(), m, short));
         }
     }
@@ -1269,7 +1302,7 @@ fn move_apply(p: &Program, old: &str, target: &str) -> Result<(Program, String),
             continue; // the moved definition's own references (recursion) are local where it goes
         }
         for nq in ns {
-            let m = p.decls[k].module.clone();
+            let m = p.decls[k].module.to_string();
             // a variant or method is imported by its own name
             imports.push((m, target.to_string(), short(&nq).to_string()));
         }
@@ -1350,7 +1383,7 @@ pub fn follow_move(merged: &Program, old: &str, new: &str) -> Option<Program> {
     let i = merged.decls.iter().position(|d| d.qname() == new)?;
     let (source, target) = (module_of(old).to_string(), module_of(new).to_string());
     let mut back = merged.clone();
-    back.decls[i].module = source;
+    back.decls[i].module = source.into();
     let moves = moved_names(&back, old, &target).ok()?;
     let (program, _) = move_apply(&back, old, &target).ok()?;
     let by_name = |p: &Program| -> HashMap<String, Decl> { resolve(p).program.decls.into_iter().zip(&p.decls).filter(|(_, d)| !matches!(d.kind, DeclKind::Use(_))).map(|(r, d)| (d.qname(), r)).collect() };
