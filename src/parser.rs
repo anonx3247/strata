@@ -826,17 +826,9 @@ impl Parser {
                 let first = self.expr()?;
                 // `[e for x in xs where c for y in ys]`
                 if self.is_kw("for") {
-                    let mut gens = Vec::new();
-                    while self.eat_kw("for") {
-                        let pat = self.pattern()?;
-                        self.expect_kw("in")?;
-                        let iter = self.expr()?;
-                        let cond = if self.eat_kw("where") { Some(self.expr()?) } else { None };
-                        gens.push(CompFor { pat, iter, cond });
-                    }
-                    self.expect_sym("]")?;
+                    let gens = self.comp_fors("]")?;
                     self.no_struct = old;
-                    return Ok(Expr::Comp(Box::new(first), gens));
+                    return Ok(Expr::Comp(CompKind::List, Box::new(first), gens));
                 }
                 let mut items = vec![first];
                 if self.eat_sym(",") {
@@ -908,6 +900,9 @@ impl Parser {
                 if !is_upper(crate::names::short(&name)) {
                     return Ok(Expr::Var(name));
                 }
+                if name == "Dict" || name == "Set" {
+                    return self.collection(name == "Dict");
+                }
                 if self.is_sym("(") && !self.nl_before() {
                     self.next();
                     return Ok(Expr::Ctor(name, CtorArgs::Positional(self.args()?)));
@@ -935,6 +930,82 @@ impl Parser {
             }
             _ => Err(self.err("expected expression")),
         }
+    }
+
+    /// The `for p in xs where c` parts of a comprehension, and its closing `close`.
+    fn comp_fors(&mut self, close: &str) -> R<Vec<CompFor>> {
+        let mut gens = Vec::new();
+        while self.eat_kw("for") {
+            let pat = self.pattern()?;
+            self.expect_kw("in")?;
+            let iter = self.expr()?;
+            let cond = if self.eat_kw("where") { Some(self.expr()?) } else { None };
+            gens.push(CompFor { pat, iter, cond });
+        }
+        self.expect_sym(close)?;
+        Ok(gens)
+    }
+
+    /// `Dict { k: v, … }`, `Set { x, … }`, with optional type arguments
+    /// (`Dict[String, Int] {}`), or a comprehension (`Set { x % 3 for x in xs }`).
+    /// At the `[` or `{` after the name.
+    fn collection(&mut self, dict: bool) -> R<Expr> {
+        let tys = if self.is_sym("[") && !self.nl_before() {
+            self.next();
+            self.list("]", |p| p.type_expr())?
+        } else {
+            vec![]
+        };
+        let what = if dict { "Dict" } else { "Set" };
+        if !self.is_sym("{") {
+            return Err(self.err(&format!("expected `{{`: `{what} {{ … }}`")));
+        }
+        if self.no_struct {
+            return Err(self.err(&format!("put the `{what} {{ … }}` in parentheses here")));
+        }
+        self.next();
+        let old = self.no_struct;
+        self.no_struct = false;
+        let r = self.collection_body(dict, tys);
+        self.no_struct = old;
+        r
+    }
+
+    fn collection_body(&mut self, dict: bool, tys: Vec<TypeExpr>) -> R<Expr> {
+        let entry = |p: &mut Self| -> R<(Expr, Option<Expr>)> {
+            let k = p.expr()?;
+            if dict {
+                p.expect_sym(":")?;
+                Ok((k, Some(p.expr()?)))
+            } else {
+                Ok((k, None))
+            }
+        };
+        if self.eat_sym("}") {
+            return Ok(if dict { Expr::Dict(tys, vec![]) } else { Expr::Set(tys, vec![]) });
+        }
+        let first = entry(self)?;
+        if self.is_kw("for") {
+            if !tys.is_empty() {
+                return Err(self.err("a comprehension takes no type arguments"));
+            }
+            let gens = self.comp_fors("}")?;
+            return Ok(match first {
+                (k, Some(v)) => Expr::Comp(CompKind::Dict, Box::new(Expr::Tuple(vec![k, v])), gens),
+                (x, None) => Expr::Comp(CompKind::Set, Box::new(x), gens),
+            });
+        }
+        let mut entries = vec![first];
+        if self.eat_sym(",") {
+            entries.extend(self.list("}", entry)?);
+        } else {
+            self.expect_sym("}")?;
+        }
+        Ok(if dict {
+            Expr::Dict(tys, entries.into_iter().map(|(k, v)| (k, v.unwrap())).collect())
+        } else {
+            Expr::Set(tys, entries.into_iter().map(|(x, _)| x).collect())
+        })
     }
 
     /// At a `(`: is this the parameter list of a lambda, `(a, b) -> ...`?

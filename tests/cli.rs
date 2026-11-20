@@ -94,7 +94,7 @@ fn run_a_binary_file() {
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "hello.stb"], &d, None);
     assert!(ok && out.contains("hello, world!"), "{out}");
-    std::fs::write(d.join("bad.stb"), b"STRATA\x03\x00\x05").unwrap();
+    std::fs::write(d.join("bad.stb"), b"STRATA\x04\x00\x05").unwrap();
     let (ok, out) = strata(&["--file", "bad.stb", "check"], &d, None);
     assert!(!ok && out.contains("corrupt binary Strata file"), "{out}");
 }
@@ -3269,4 +3269,18 @@ fn coalesce() {
     std::fs::write(d.join("e.strata"), "fn f(s: String) -> Int { parse_int(s) except { 0 } }\n").unwrap();
     let (ok, out) = strata(&["--file", "e.strata", "render"], &d, None);
     assert!(ok && out.contains("parse_int(s) ?? 0"), "{out}");
+}
+
+#[test]
+fn dict_and_set_literals() {
+    let d = tmp("collections");
+    let src = format!("{}/tests/data/collections.strata", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["--file", &src, "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    let (ok, out) = strata(&["--file", &src, "render"], &d, None);
+    assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
+    let (ok, out) = strata(&["--file", &src, "pack", "c.stb"], &d, None);
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "c.stb", "render"], &d, None);
+    assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
 }

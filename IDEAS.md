@@ -58,11 +58,10 @@ Still open:
 - Whether the builtins `range` and `slice` stay callable by name (they are still listed by `strata builtins`), and whether `take` / `drop` go, now that `xs[..n]` / `xs[n..]` say the same.
 - Steps: `(0..n).step(2)` or `0..n by 2`.
 - `xs where it > 0` as a filter on a value (it reads like a refinement type).
-- Dict and set comprehensions, once dicts and sets have literals (below).
 
 #### Other syntax nits (noticed 2026-11-20; not decided)
 
-- **Dict and set literals.** Today `dict([("a", 1)])` and `set([1, 2])`. The user doesn't like Swift's `["a": 1]`. Proposed: the constructor syntax records already use, with the type's name: `Dict { "a": 1, "b": 2 }`, `Set { 1, 2 }`, empty `Dict {}` (annotated where needed: `Dict[String, Int] {}`). A key is any expression, so it can't be mistaken for a record's field. Comprehensions follow: `Dict { w: len(w) for w in words }`, `Set { x % 3 for x in xs }`. Alternatives: Python's `{"a": 1}` (parseable, since a block never has `expr:` as a statement, but `{}` and `{x}` would each mean two things), or `dict(["a" => 1])`.
+- **Dict and set literals** (built): `Dict { "a": 1 }`, `Set { 1, 2 }`, `Dict[String, Int] {}`, and comprehensions `Dict { w: len(w) for w in words }`, `Set { x % 3 for x in xs }` (`Expr::Dict`, `Expr::Set`, `Comp` with a `CompKind`; desugared to `dict` / `set`). In a `for` / `if` / `match` header they need parentheses, like record literals.
 - **`except` inside a `for` header** reads badly: `for _ in 0..opts.times except { 1 } {`. Proposed: the renderer parenthesizes any header expression (`for`, `while`, `if`, `match`) that ends in a `}`: `for _ in 0..(opts.times except { 1 }) {`. The parser accepts both. Done instead (user's choice): `a ?? b` (`Expr::Except` with no name; the renderer writes a plain-value fallback as `??` and keeps `except { … }` for blocks, `return` and named errors), so `for _ in 0..opts.times ?? 1 {`.
 - **`len(xs)` and `xs.len()`** are both accepted, as for every builtin; the renderer could pick one form (method form for chains, say) so code reads the same everywhere.
 

@@ -343,16 +343,30 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             format!("{}{}{}", end(lo), if *inclusive { "..=" } else { ".." }, end(hi))
         }
         Expr::Index(x, r) => format!("{}[{}]", wrap(x, 8, d), expr(r, d)),
-        Expr::Comp(elem, gens) => {
-            let mut s = format!("[{}", expr(elem, d));
+        Expr::Comp(kind, elem, gens) => {
+            let (open, close) = match kind {
+                CompKind::List => ("[".to_string(), "]"),
+                CompKind::Set => ("Set { ".to_string(), " }"),
+                CompKind::Dict => ("Dict { ".to_string(), " }"),
+            };
+            let mut s = open
+                + &match (kind, &**elem) {
+                    (CompKind::Dict, Expr::Tuple(kv)) if kv.len() == 2 => format!("{}: {}", expr(&kv[0], d), expr(&kv[1], d)),
+                    _ => expr(elem, d),
+                };
             for g in gens {
                 s += &format!(" for {} in {}", pat(&g.pat), expr(&g.iter, d));
                 if let Some(c) = &g.cond {
                     s += &format!(" where {}", expr(c, d));
                 }
             }
-            s + "]"
+            s + close
         }
+        Expr::Dict(tys, kvs) => {
+            let entries: Vec<String> = kvs.iter().map(|(k, v)| format!("{}: {}", expr(k, d), expr(v, d))).collect();
+            collection("Dict", tys, &entries)
+        }
+        Expr::Set(tys, xs) => collection("Set", tys, &xs.iter().map(|x| expr(x, d)).collect::<Vec<_>>()),
         Expr::Return(x) if **x == Expr::Unit => "return".into(),
         Expr::Return(x) => format!("return {}", expr(x, d)),
         Expr::Try(x, k) => format!("{}{}", wrap(x, 8, d), if *k == TryKind::Result { "!" } else { "?" }),
@@ -372,6 +386,16 @@ fn expr_inline(e: &Expr, d: usize) -> String {
                 None => format!("{head} {}", block(fb, d)),
             }
         }
+    }
+}
+
+/// `Dict { "a": 1 }`, `Set[Int] {}`
+fn collection(name: &str, tys: &[TypeExpr], entries: &[String]) -> String {
+    let targs = if tys.is_empty() { String::new() } else { format!("[{}]", tys.iter().map(ty).collect::<Vec<_>>().join(", ")) };
+    if entries.is_empty() {
+        format!("{name}{targs} {{}}")
+    } else {
+        format!("{name}{targs} {{ {} }}", entries.join(", "))
     }
 }
 

@@ -1007,7 +1007,9 @@ impl Rw<'_> {
                 Expr::Range(lo, hi.as_ref().map(|x| Box::new(self.expr(x))), *inclusive)
             }
             Expr::Index(x, r) => Expr::Index(Box::new(self.expr(x)), Box::new(self.expr(r))),
-            Expr::Comp(elem, gens) => {
+            Expr::Dict(tys, kvs) => Expr::Dict(tys.iter().map(|t| self.ty(t)).collect(), kvs.iter().map(|(k, v)| (self.expr(k), self.expr(v))).collect()),
+            Expr::Set(tys, xs) => Expr::Set(tys.iter().map(|t| self.ty(t)).collect(), self.exprs(xs)),
+            Expr::Comp(kind, elem, gens) => {
                 // each `for` binds its pattern for the conditions and `for`s after it, and the element
                 let mut out = Vec::new();
                 for g in gens {
@@ -1019,7 +1021,7 @@ impl Rw<'_> {
                 }
                 let elem = self.expr(elem);
                 gens.iter().for_each(|_| self.pop());
-                Expr::Comp(Box::new(elem), out)
+                Expr::Comp(*kind, Box::new(elem), out)
             }
             Expr::Mut(x) => Expr::Mut(Box::new(self.expr(x))),
             Expr::Try(x, k) => Expr::Try(Box::new(self.expr(x)), *k),

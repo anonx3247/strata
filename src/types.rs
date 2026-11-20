@@ -1590,7 +1590,7 @@ impl<'a> Checker<'a> {
                 t
             }
             // rewritten into builtin calls when the program is resolved
-            Expr::Range(..) | Expr::Index(..) | Expr::Comp(..) => {
+            Expr::Range(..) | Expr::Index(..) | Expr::Comp(..) | Expr::Dict(..) | Expr::Set(..) => {
                 self.err("internal: a range, slice or comprehension was not desugared");
                 self.fresh()
             }

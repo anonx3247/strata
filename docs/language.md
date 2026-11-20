@@ -221,6 +221,8 @@ There are no shared references, so nothing changes behind your back. A declared 
 [x * x for x in xs where x > 0]
 [(a, b) for a in 1..=3 for b in ["x", "y"] where a != 2]
 [(name, n) for (n, name) in pairs]
+Dict { w: len(w) for w in words }
+Set { x % 3 for x in xs }
 ```
 
 They are written in the tree as such, so they render back as written. When the program is resolved they become the builtins (`range`, `slice`, `map`, `filter`, `fold`), so the checker, the interpreter and the prover treat them exactly as those calls.
@@ -260,8 +262,8 @@ let n = parse(s) except e { return describe_error(e) }      // the error, by nam
 | `Result[T, E]` | `Ok(x)` or `Err(e)`: an operation that may fail |
 | `List[T]` | an ordered sequence, `[1, 2, 3]` |
 | `(A, B, …)` | tuples, `(word, 3)`, destructured with `let (w, n) = …`, accessed with `t.0` |
-| `Dict[K, V]` | `dict([("a", 1)])`, `get`, `insert`, `remove`, `keys`, `values`, `items`; JSON object when keys are strings |
-| `Set[T]` | `set([1, 2])`, `insert`, `union`, `intersection`, `difference`, `to_list` |
+| `Dict[K, V]` | `Dict { "a": 1, "b": 2 }`, `Dict[String, Int] {}`, `dict(pairs)` from a list of pairs, `get`, `insert`, `remove`, `keys`, `values`, `items`; JSON object when keys are strings |
+| `Set[T]` | `Set { 1, 2 }`, `Set[Int] {}`, `set(xs)` from a list, `insert`, `union`, `intersection`, `difference`, `to_list` |
 
 `+` adds numbers and joins strings and lists (`"a" + "b"`, `[1] + [2]`). **Strings** are UTF-8 and indexed by character: `len`, `chars`, `s[i]`, `get(s, i)`, slices `s[start..end]` (clamped, as in Python; also on lists), `index_of`, `contains`, `starts_with`, `ends_with`, `split`, `join`, `lines`, `trim`, `replace`, `repeat`, `reverse`, `to_upper`, `to_lower`, `is_digit` / `is_alpha` / `is_space`, `ord` / `chr`, `parse_int`, `matches` (regex). `to_json(x)` gives any value as compact JSON, as `strata run` writes it. **f-strings** interpolate any expression, shown as by `to_string`: `f"{name} has {len(xs)} items"` (`{{` and `}}` are literal braces). A **format spec** follows a `:`, as in Python: `[[fill]align][+][0][width][.precision]`. `{price:.2}` gives two decimal places (or keeps at most 2 characters of a `String`), `{name:<12}` / `{n:>5}` / `{title:*^20}` pad to a width (numbers align right by default, everything else left), `{n:05}` pads with zeros after the sign, `{delta:+}` always shows the sign. A spec that doesn't suit the type is a check error.
 

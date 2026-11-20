@@ -402,8 +402,21 @@ pub enum Expr {
     /// (the index is a `Range`, which may leave out its ends here).
     Index(Box<Expr>, Box<Expr>),
     /// `[x * x for x in xs where x > 0]`, `[(a, b) for a in xs for b in ys]`:
-    /// a list built from each element of one or more lists.
-    Comp(Box<Expr>, Vec<CompFor>),
+    /// a list built from each element of one or more lists; `Set { … for … }`,
+    /// `Dict { k: v for … }` (the element is then the tuple `(k, v)`).
+    Comp(CompKind, Box<Expr>, Vec<CompFor>),
+    /// `Dict { "a": 1, "b": 2 }`, `Dict[String, Int] {}`: the type arguments
+    /// (none, or the key and value types) and the entries.
+    Dict(Vec<TypeExpr>, Vec<(Expr, Expr)>),
+    /// `Set { 1, 2 }`, `Set[Int] {}`.
+    Set(Vec<TypeExpr>, Vec<Expr>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum CompKind {
+    List,
+    Set,
+    Dict,
 }
 
 /// One `for p in xs where cond` of a comprehension.
@@ -630,7 +643,18 @@ macro_rules! visitor {
                     v.expr(x);
                     v.expr(r)
                 }
-                Expr::Comp(elem, gens) => {
+                Expr::Dict(tys, kvs) => {
+                    tys.into_iter().for_each(|t| v.ty(t));
+                    for (k, x) in kvs {
+                        v.expr(k);
+                        v.expr(x)
+                    }
+                }
+                Expr::Set(tys, xs) => {
+                    tys.into_iter().for_each(|t| v.ty(t));
+                    xs.into_iter().for_each(|x| v.expr(x))
+                }
+                Expr::Comp(_, elem, gens) => {
                     for g in gens {
                         v.expr(&$($m)? g.iter);
                         v.pattern(&$($m)? g.pat);

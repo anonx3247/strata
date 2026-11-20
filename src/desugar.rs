@@ -7,7 +7,10 @@
 //! - `xs[a..b]` is `slice(xs, a, b)`, with `0` for a missing start and
 //!   `len(xs)` for a missing end;
 //! - `[e for x in xs where c]` is `map(filter(xs, x -> c), x -> e)`, and each
-//!   further `for` nests in a `fold` that joins the lists.
+//!   further `for` nests in a `fold` that joins the lists;
+//! - `Dict { k: v }` is `dict([(k, v)])`, `Set { x }` is `set([x])`, and their
+//!   comprehensions are the same around a list comprehension. Type arguments
+//!   (`Dict[String, Int] {}`) become an annotated `let`.
 
 use crate::ast::*;
 use crate::types::Diag;
@@ -37,7 +40,7 @@ impl VisitMut for Sugar {
             }
             _ => walk_expr_mut(self, e),
         }
-        if matches!(e, Expr::Range(..) | Expr::Index(..) | Expr::Comp(..)) {
+        if matches!(e, Expr::Range(..) | Expr::Index(..) | Expr::Comp(..) | Expr::Dict(..) | Expr::Set(..)) {
             let sugar = std::mem::replace(e, Expr::Unit);
             *e = self.rewrite(sugar);
         }
@@ -81,9 +84,31 @@ impl Sugar {
                     }
                 }
             }
-            Expr::Comp(elem, gens) => self.comp(*elem, gens),
+            Expr::Comp(kind, elem, gens) => {
+                let list = self.comp(*elem, gens);
+                match kind {
+                    CompKind::List => list,
+                    CompKind::Set => call("set", vec![list]),
+                    CompKind::Dict => call("dict", vec![list]),
+                }
+            }
+            Expr::Dict(tys, kvs) => {
+                let pairs = kvs.into_iter().map(|(k, v)| Expr::Tuple(vec![k, v])).collect();
+                self.typed("Dict", tys, call("dict", vec![Expr::List(pairs)]))
+            }
+            Expr::Set(tys, xs) => self.typed("Set", tys, call("set", vec![Expr::List(xs)])),
             e => e,
         }
+    }
+
+    /// `e`, as a `name[tys]` when type arguments are written.
+    fn typed(&mut self, name: &str, tys: Vec<TypeExpr>, e: Expr) -> Expr {
+        if tys.is_empty() {
+            return e;
+        }
+        let v = self.name("lit");
+        let t = TypeExpr::Named(name.into(), tys);
+        Expr::Block(vec![Stmt::Let(Pattern::Bind(v.clone()), Some(t), e)], Box::new(Expr::Var(v)))
     }
 
     fn comp(&mut self, elem: Expr, mut gens: Vec<CompFor>) -> Expr {
