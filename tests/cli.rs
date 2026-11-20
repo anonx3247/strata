@@ -3131,3 +3131,26 @@ fn strata_git_stdin(args: &[&str], dir: &std::path::Path, stdin: &str) -> (bool,
     let o = c.wait_with_output().unwrap();
     (o.status.success(), String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr))
 }
+
+#[test]
+fn std_web_renders_and_proves_pages() {
+    let ex = format!("{}/examples/page", env!("CARGO_MANIFEST_DIR"));
+    let d = tmp("web");
+    let (ok, out) = strata(&["--file", &ex, "test"], &d, None);
+    assert!(ok && out.contains("5 passed"), "{out}");
+    let (ok, out) = strata(&["run", &ex], &d, None);
+    assert!(ok && out.starts_with("<!DOCTYPE html>") && out.contains("&lt;script&gt;alert(1)&lt;/script&gt;"), "text is escaped: {out}");
+    assert!(out.contains(r#"data-on-click="&quot;Clear&quot;""#), "events carry their message as JSON: {out}");
+    // an inline script can't be an attribute: caught when checking
+    std::fs::write(d.join("bad.strata"), "use std.web.{Html, render, attr, button}\nfn b() -> String { render(button([attr(\"onclick\", \"evil()\")], [])) }\n").unwrap();
+    let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
+    assert!(!ok && out.contains("does not satisfy `std.web.AttrName`"), "{out}");
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    // `Html` is recursive (its children are `Html`s); the generic helpers'
+    // results still match their uses, and it stays fast
+    let (ok, out) = strata(&["--file", &ex, "verify", "--force", "--require", "proven"], &d, None);
+    assert!(ok && out.contains("✓ page") && out.contains("✓ row"), "{out}");
+}

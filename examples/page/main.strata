@@ -1,0 +1,82 @@
+// page — write an HTML page from data, with `std.web`.
+//
+//   strata run examples/page > page.html
+//
+// The page is built as values (`Html`), and `document` renders it. Text is
+// escaped, so a name like `<script>` shows as written.
+
+use std.web.{Html, Attr, render, document, element, text, style_sheet, h1, p, ul, li, table, thead, tbody, tr, th, td, button, class, on_click, disabled}
+
+type Language = { name: String, year: Int where 1940 <= it && it <= 2100, typed: Bool }
+
+/// What the page's buttons send back (not used yet: there's no server).
+type Msg =
+  | Sort { by: String }
+  | Clear
+
+fn row(l: Language) -> Html[Msg] {
+  tr([], [
+    td([], [text(l.name)]),
+    td([class("num")], [text(to_string(l.year))]),
+    td([], [text(if l.typed { "yes" } else { "no" })]),
+  ])
+}
+
+fn languages_table(ls: List[Language]) -> Html[Msg] {
+  table([], [
+    thead([], [tr([], [th([], [text("Name")]), th([], [text("Year")]), th([], [text("Static types")])])]),
+    tbody([], ls.map(l -> row(l))),
+  ])
+}
+
+fn page(ls: List[Language]) -> String {
+  let css = "body { font-family: system-ui, sans-serif; margin: 2rem; }\ntd.num { text-align: right; }\nth > span { color: gray; }"
+  let note: Html[Msg] = if len(ls) == 0 {
+    p([class("empty")], [text("No languages yet.")])
+  } else {
+    p([], [text(f"{len(ls)} languages")])
+  }
+  let sort_attrs: List[Attr[Msg]] = if len(ls) < 2 { [on_click(Sort { by: "year" }), disabled()] } else { [on_click(Sort { by: "year" })] }
+  document("Languages", [style_sheet(css)], [
+    h1([], [text("Languages")]),
+    note,
+    languages_table(ls),
+    button(sort_attrs, [text("Sort by year")]),
+    button([on_click(Clear)], [text("Clear")]),
+  ])
+}
+
+fn main() -> () {
+  print(page([
+    Language { name: "ML", year: 1973, typed: true },
+    Language { name: "Lisp", year: 1958, typed: false },
+    Language { name: "<script>alert(1)</script>", year: 2026, typed: true },
+  ]))
+}
+
+test "text is escaped" {
+  let h: Html[Msg] = p([], [text("a < b & \"c\"")])
+  assert render(h) == "<p>a &lt; b &amp; \"c\"</p>"
+}
+
+test "attributes are escaped and events carry their message as JSON" {
+  let h: Html[Msg] = button([class("x\"y"), on_click(Sort { by: "year" }), disabled()], [text("go")])
+  assert render(h) == "<button class=\"x&quot;y\" data-on-click=\"{&quot;Sort&quot;:{&quot;by&quot;:&quot;year&quot;}}\" disabled>go</button>"
+}
+
+test "void elements have no closing tag" {
+  let h: Html[Msg] = element("br", [], [])
+  assert render(h) == "<br>"
+}
+
+test "style sheets are not escaped but can't close their element" {
+  let h: Html[Msg] = style_sheet("a > b {} </style><script>")
+  assert render(h) == "<style>a > b {} <\\/style><script></style>"
+}
+
+test "a page" {
+  let html = page([])
+  assert starts_with(html, "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">")
+  assert contains(html, "<title>Languages</title>")
+  assert contains(html, "<p class=\"empty\">No languages yet.</p>")
+}

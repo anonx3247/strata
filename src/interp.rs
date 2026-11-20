@@ -1170,6 +1170,7 @@ impl<'a> Interp<'a> {
                 Bool(s.starts_with(&p))
             }
             "to_string" => Str(show(&nx())),
+            "to_json" => Str(to_json(&nx()).to_string()),
             "ends_with" => {
                 let (Str(s), Str(p)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
                 Bool(s.ends_with(&p))

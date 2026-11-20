@@ -140,9 +140,23 @@ to run code), so it could later be compiled to wasm and run the same `App` in
 the browser, without changing user code.
 
 Steps:
-1. `std.web.Html`: a sum type (element, text), helper functions (`div`, `a`,
-   `input`, …), and a renderer that escapes text. CSS as strings, or a static
-   `style.css` the server also serves.
+1. `std.web.Html` (**built**, branch `worktree-web-html`): `Html[M]` (element,
+   text) and `Attr[M]` (attribute, flag, event), helpers (`div`, `a`,
+   `input`, …, `class`, `href`, `on_click`, …), `render` and `document`.
+   Text and attribute values are escaped; `TagName` / `AttrName` are
+   refinements, and `AttrName` excludes `on…` so inline scripts can't be
+   written; events are `data-on-EVENT` attributes holding the message as JSON
+   (new builtin `to_json`). Void elements can't have children (`element`'s
+   `requires`). CSS goes in `style_sheet(css)` (not escaped, can't close the
+   element) or `style_link(url)`. Everything in `std` is proven, and so is
+   `examples/page`. For that, the prover needed two changes in `smt.rs`:
+   `check_type` stops at the third nested level of the same named type (a
+   recursive type like `Html` made it re-check every element of every list,
+   level after level: minutes for a small page), with one unknown per (type,
+   value) so an assumed result and a later check are the same atom; and
+   validity is compared on types whose unrefined type arguments are erased
+   (`erased`), so a generic helper's result `Html[M]` matches its use as
+   `Html[Msg]`. Not yet: `javascript:` URLs in `href` are not rejected.
 2. `strata serve`: a low-level handler `fn handle(req: Request) -> Response`
    for JSON APIs and static files; bodies and query strings read into records
    like `CommandLine`. The HTTP layer is native, next to the `host_*`
