@@ -12,8 +12,8 @@
 //   print(document("Hello", [], [greeting("<Ada>")]))
 //
 // Text is always escaped, so `<Ada>` shows as written and can't inject markup.
-// Attribute and tag names are checked by their types, and an attribute can't
-// be an inline script (`onclick`): events are `on(event, msg)` attributes,
+// Tag and attribute names are checked where they are written (`element`,
+// `attr`), and an attribute can't be an inline script (`onclick`): events are `on(event, msg)` attributes,
 // whose message is a value of the page's message type `M`, written as JSON
 // for the runtime to send back. A page with no events uses `Html[()]`.
 
@@ -28,18 +28,25 @@ pub type AttrName = String
 /// The name of a DOM event, without `on`: `click`, `submit`, `input`.
 pub type EventName = String where matches(it, "[a-z]+")
 
-/// A piece of HTML whose events carry messages of type `M`.
-pub type Html[M] =
-  | Element { tag: TagName, attrs: List[Attr[M]], children: List[Html[M]] }
+/// A piece of HTML whose events carry messages of type `M`. Only this
+/// module's functions make one, so its names are checked once, where it is
+/// made (`element`, `attr`), and the type itself has nothing to check.
+pub type Html[M] = { node: Node[M] }
+
+/// What an `Html` holds. Private: other modules can't build one directly.
+type Node[M] =
+  | Element { tag: String, attrs: List[Attr[M]], children: List[Html[M]] }
   | Text { text: String }
 
-/// An attribute of an element: `name="value"`, a flag without a value (such
-/// as `disabled`), or an event whose message the runtime sends back to the
-/// program when it happens.
-pub type Attr[M] =
-  | Attribute { name: AttrName, value: String }
-  | Flag { name: AttrName }
-  | On { event: EventName, msg: M }
+/// An attribute of an element. Made by `attr`, `flag` and `on`.
+pub type Attr[M] = { kind: AttrKind[M] }
+
+/// `name="value"`, a flag without a value (such as `disabled`), or an event
+/// whose message the runtime sends back to the program when it happens.
+type AttrKind[M] =
+  | Attribute { name: String, value: String }
+  | Flag { name: String }
+  | On { event: String, msg: M }
 
 // ---- rendering ----
 
@@ -60,7 +67,7 @@ pub fn is_void(tag: String) -> Bool {
 
 /// One attribute as written in a start tag.
 fn render_attr[M](a: Attr[M]) -> String {
-  match a {
+  match a.kind {
     Attribute { name, value } => f"{name}=\"{escape_attr(value)}\"",
     Flag { name } => name,
     On { event, msg } => f"data-on-{event}=\"{escape_attr(to_json(msg))}\"",
@@ -69,7 +76,7 @@ fn render_attr[M](a: Attr[M]) -> String {
 
 /// `h` as HTML text.
 pub fn render[M](h: Html[M]) -> String {
-  match h {
+  match h.node {
     Text { text } => escape_text(text),
     Element { tag, attrs, children } => {
       let mut out = "<" + tag
@@ -81,7 +88,7 @@ pub fn render[M](h: Html[M]) -> String {
         return out
       }
       for c in children {
-        out = out + match c {
+        out = out + match c.node {
           // the text inside a `<style>` element isn't escaped (CSS uses `>`),
           // but it can't close the element early
           Text { text } => if tag == "style" { replace(text, "</", "<\\/") } else { escape_text(text) },
@@ -109,12 +116,12 @@ pub fn document[M](title_text: String, head_items: List[Html[M]], body_items: Li
 /// (the condition is `is_void`, written out so the prover sees it).
 pub fn element[M](tag: TagName, attrs: List[Attr[M]], children: List[Html[M]]) -> Html[M]
   requires len(children) == 0 || !matches(tag, "area|base|br|col|embed|hr|img|input|link|meta|source|track|wbr") {
-  Element { tag, attrs, children }
+  Html { node: Element { tag, attrs, children } }
 }
 
 /// Text, escaped when rendered.
 pub fn text[M](s: String) -> Html[M] {
-  Text { text: s }
+  Html { node: Text { text: s } }
 }
 
 /// A `<style>` element holding a style sheet.
@@ -172,9 +179,9 @@ pub fn hr[M]() -> Html[M] { element("hr", [], []) }
 // ---- attributes ----
 
 /// Any attribute: `name="value"`.
-pub fn attr[M](name: AttrName, value: String) -> Attr[M] { Attribute { name, value } }
+pub fn attr[M](name: AttrName, value: String) -> Attr[M] { Attr { kind: Attribute { name, value } } }
 /// An attribute without a value, such as `required`.
-pub fn flag[M](name: AttrName) -> Attr[M] { Flag { name } }
+pub fn flag[M](name: AttrName) -> Attr[M] { Attr { kind: Flag { name } } }
 
 pub fn class[M](names: String) -> Attr[M] { attr("class", names) }
 pub fn id[M](value: String) -> Attr[M] { attr("id", value) }
@@ -196,7 +203,7 @@ pub fn required[M]() -> Attr[M] { flag("required") }
 // ---- events ----
 
 /// When `event` happens on the element, send `msg` to the program.
-pub fn on[M](event: EventName, msg: M) -> Attr[M] { On { event, msg } }
+pub fn on[M](event: EventName, msg: M) -> Attr[M] { Attr { kind: On { event, msg } } }
 /// When the element is clicked, send `msg`.
 pub fn on_click[M](msg: M) -> Attr[M] { on("click", msg) }
 /// When the form is submitted, send `msg`.

@@ -3145,12 +3145,15 @@ fn std_web_renders_and_proves_pages() {
     std::fs::write(d.join("bad.strata"), "use std.web.{Html, render, attr, button}\nfn b() -> String { render(button([attr(\"onclick\", \"evil()\")], [])) }\n").unwrap();
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok && out.contains("does not satisfy `std.web.AttrName`"), "{out}");
+    // nor can `Html` be built around the functions that check names
+    std::fs::write(d.join("sneak.strata"), "use std.web.{Html, render}\nfn b() -> String { render(Html { node: Element { tag: \"x y\", attrs: [], children: [] } }) }\n").unwrap();
+    let (ok, out) = strata(&["--file", "sneak.strata", "check"], &d, None);
+    assert!(!ok && out.contains("`Element` is private to module `std.web`"), "{out}");
     if !has_solver() {
         eprintln!("z3 is not installed: skipping");
         return;
     }
-    // `Html` is recursive (its children are `Html`s); the generic helpers'
-    // results still match their uses, and it stays fast
+    // names are checked where elements are made; `Html` itself has nothing to check
     let (ok, out) = strata(&["--file", &ex, "verify", "--force", "--require", "proven"], &d, None);
     assert!(ok && out.contains("✓ page") && out.contains("✓ row"), "{out}");
 }

@@ -143,13 +143,18 @@ Steps:
 1. `std.web.Html` (**built**, branch `worktree-web-html`): `Html[M]` (element,
    text) and `Attr[M]` (attribute, flag, event), helpers (`div`, `a`,
    `input`, …, `class`, `href`, `on_click`, …), `render` and `document`.
-   Text and attribute values are escaped; `TagName` / `AttrName` are
-   refinements, and `AttrName` excludes `on…` so inline scripts can't be
-   written; events are `data-on-EVENT` attributes holding the message as JSON
+   Text and attribute values are escaped; names are checked where they are
+   written (`element(tag: TagName, …)`, `attr(name: AttrName, …)`; `AttrName`
+   excludes `on…` so inline scripts can't be written), not in the type:
+   `Html[M] = { node: Node[M] }` and `Attr[M]` wrap private sums, so only
+   `std.web` makes them and the verifier has nothing to check in views
+   (decided with the user: verifying markup is pointless; what matters is
+   the Strata values put into it, which JSX will make explicit); events are `data-on-EVENT` attributes holding the message as JSON
    (new builtin `to_json`). Void elements can't have children (`element`'s
    `requires`). CSS goes in `style_sheet(css)` (not escaped, can't close the
    element) or `style_link(url)`. Everything in `std` is proven, and so is
-   `examples/page`. For that, the prover needed two changes in `smt.rs`:
+   `examples/page`. While `Html`'s fields were refined, the prover needed two
+   changes in `smt.rs`, kept since they help any recursive or generic type:
    `check_type` stops at the third nested level of the same named type (a
    recursive type like `Html` made it re-check every element of every list,
    level after level: minutes for a small page), with one unknown per (type,
@@ -170,7 +175,12 @@ Steps:
 **JSX-like syntax** (user: wanted at some point, for simplicity). Markup
 written directly in Strata expressions, compiled to the `Html` helpers, e.g.
 `<button on_click={Increment}>-</button>`. Helper functions come first; the
-syntax is added on top of them later.
+syntax is added on top of them later. The parser checks the static markup (tag and
+attribute names, no `on…` attributes, no children in void elements) as
+syntax; only the `{…}` insertions are Strata code, and their types do the
+rest: a `String` becomes escaped text, an `Html[M]` a child, an `M` an event's
+message. The verifier has something to say only where an insertion's type is
+refined (e.g. `href={url}` with a `Url` that excludes `javascript:`).
 
 Questions to settle:
 - **Async first, or web first?** (user, 2026-11-20; undecided.) Async is still

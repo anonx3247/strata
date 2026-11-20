@@ -24,13 +24,25 @@ fn row(l: Language) -> Html[Msg] {
 
 fn languages_table(ls: List[Language]) -> Html[Msg] {
   table([], [
-    thead([], [tr([], [th([], [text("Name")]), th([], [text("Year")]), th([], [text("Static types")])])]),
+    thead([], [tr([], [th([], [text("Name")]), th([class("num")], [text("Year")]), th([], [text("Static types")])])]),
     tbody([], ls.map(l -> row(l))),
   ])
 }
 
 fn page(ls: List[Language]) -> String {
-  let css = "body { font-family: system-ui, sans-serif; margin: 2rem; }\ntd.num { text-align: right; }\nth > span { color: gray; }"
+  let css = join([
+    "body { font-family: system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; color: #1f2328; }",
+    "h1 { font-size: 1.6rem; margin-bottom: 0.25rem; }",
+    "p { color: #59636e; margin-top: 0; }",
+    "table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; }",
+    "th, td { padding: 0.55rem 0.75rem; border-bottom: 1px solid #d1d9e0; text-align: left; }",
+    "th { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: #59636e; }",
+    "tbody tr:hover { background: #f6f8fa; }",
+    "th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }",
+    "button { font: inherit; padding: 0.4rem 0.9rem; margin-right: 0.5rem; border: 1px solid #d1d9e0; border-radius: 6px; background: #f6f8fa; cursor: pointer; }",
+    "button:hover:not([disabled]) { background: #eaeef2; }",
+    "button[disabled] { opacity: 0.5; cursor: default; }",
+  ], "\n")
   let note: Html[Msg] = if len(ls) == 0 {
     p([class("empty")], [text("No languages yet.")])
   } else {
