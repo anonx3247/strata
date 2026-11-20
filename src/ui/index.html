@@ -370,6 +370,7 @@ function status(d) {
   const loops = v?.terminates?.status === 'unknown' ? ' · may not terminate' : '';
   if (v && v.status === 'proven') return [loops ? 'warn' : 'ok', 'proven' + loops];
   if (v && v.status === 'fuzzed') return [loops ? 'warn' : 'ok', 'fuzzed ' + v.cases + loops];
+  if (v && v.status === 'assumed') return ['none', 'assumed'];
   if (d.kind === 'fn') return ['none', 'unverified'];
   return ['', ''];
 }
@@ -946,6 +947,7 @@ function verdictOnly(v) {
       <div class="row"><b>input</b> <code>${esc(JSON.stringify(v.args))}</code></div>
       <div class="row mono">${esc(v.message)}</div></div>`;
   if (v.status === 'incomplete') return `<div class="box warn">○ ${esc(v.message)}</div>`;
+  if (v.status === 'assumed') return `<div class="box">≈ Assumed, not checked: ${esc(v.why)}. Its contract is trusted, and callers are checked against it.</div>`;
   return `<div class="box">– ${esc(v.reason)}</div>`;
 }
 
@@ -1029,7 +1031,7 @@ function chLine(l, resolve, key) {
 }
 // worth showing: the result is known and differs from before
 const verdictChanged = v => v && v.after && v.after !== 'unverified' && v.before !== v.after || v && v.before && v.before !== 'unverified' && v.before !== v.after;
-const vword = w => w == null ? 'new' : /^(fuzzed|proven)/.test(w) ? `<span class="v-ok">${esc(w)} ✓</span>` : w === 'counterexample' ? `<span class="v-bad">${esc(w)} ✗</span>` : esc(w);
+const vword = w => w == null ? 'new' : /^(fuzzed|proven|assumed)/.test(w) ? `<span class="v-ok">${esc(w)} ✓</span>` : w === 'counterexample' ? `<span class="v-bad">${esc(w)} ✗</span>` : esc(w);
 function chCard(it) {
   const resolve = resolver(it.module);
   const what = it.what.map(words).join(', ');

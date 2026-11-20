@@ -478,6 +478,7 @@ The files and `strata.log` are committed. The log is append-only and merges by u
 - **fuzzed** (`~`): some checks could not be proven, so the function was run on generated inputs and nothing failed. Each unproven check says why, for example *depends on `fold` is not modelled*.
 - **failed** (`✗`): a counterexample. When the solver finds one, it is run in the interpreter first, and reported only if it really fails. Otherwise the fuzzer looks for one.
 - **incomplete** (`○`): the function still has a hole.
+- **assumed** (`≈`): trusted, not checked. Today these are the standard library's real terminal, disk and process (the `impl`s behind `Console`, `Files` and `Environment` that only `strata run` creates): their bodies call the system, so `verify` never runs them. Their contracts are taken as true, and callers are still checked against those contracts as usual.
 
 The checks are exactly the interpreter's runtime checks: a callee's parameter refinements and `requires`, the refinements of constructed values and assigned fields, annotated `let`s, `assert`, division by zero, and the function's own result type and `ensures`. Calls are checked against the callee's contract, never its body, which is how modules meet. A function passed by name (`lines.map(line_total)`) is checked against one arbitrary element of the list.
 
@@ -513,7 +514,7 @@ terminates = ["*"]       # every function shown (or marked) to terminate
 no_recursion = ["core"]  # no recursion at all, even recursion that terminates
 ```
 
-Recursion is allowed unless `no_recursion` says otherwise. A run that breaks a rule fails, listing each violation. `verify --require proven,terminates,no-recursion` applies the same rules to everything checked, package or not. `strata ci` rejects a rule that names a module the package doesn't have.
+Recursion is allowed unless `no_recursion` says otherwise. A run that breaks a rule fails, listing each violation. `proven` accepts assumed code, and the run lists everything it accepted that way. `verify --require proven,terminates,no-recursion` applies the same rules to everything checked, package or not. `strata ci` rejects a rule that names a module the package doesn't have.
 
 **Cross-check.** A proven function that terminates is still run on a few generated inputs (`--cross-check N`, 20 by default, 0 turns it off). If one of them fails, the prover was wrong, and `verify` says so: the result is a failure *found by the cross-check*, flagged as a bug in the prover. Each run has a step budget. A run that goes past it, or past the recursion limit, proves nothing either way and is set aside: proven code can still be far too costly to run, like Ackermann's function.
 
@@ -575,7 +576,7 @@ The `.strata` files are what you commit.
 
 ## Roadmap
 
-1. **SMT verification, continued**: loop invariants (inferred where possible, written where it helps), list contents, trait laws, and an `assumed` result for trusted outside code.
+1. **SMT verification, continued**: loop invariants (inferred where possible, written where it helps), list contents, trait laws, and `assumed` for outside code beyond the standard library (FFI, dependencies).
 2. **Traits with laws**: e.g. `trait Monoid { … law assoc(a, b, c): … }`; laws are verified or fuzzed for every implementation.
 3. **Agent-friendly CLI everywhere**: `--json` on every command, trace queries, and scoped workspaces and leases so several agents can work on different slices at once. The CLI *is* the agent API; no server is needed.
 4. **Async and iterators** as language features; `mock record` / `mock replay` for integration tests; deterministic replay debugging.
