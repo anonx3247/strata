@@ -1521,6 +1521,12 @@ fn git(dir: &std::path::Path, args: &[&str]) -> String {
         .output()
         .unwrap();
     assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    // a new repository has its own identity, so commits strata makes don't
+    // depend on the machine's git configuration
+    if args.first() == Some(&"init") {
+        git(dir, &["config", "user.name", "t"]);
+        git(dir, &["config", "user.email", "t@example.com"]);
+    }
     String::from_utf8_lossy(&o.stdout).to_string()
 }
 
