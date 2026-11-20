@@ -28,6 +28,7 @@ fn glob(pat: &str, name: &str) -> bool {
 
 /// Resolve a selector to the set of definition names it covers.
 /// `a,b` (union), `prefix*`, `slice:Name` (Name, what it uses, and what uses it).
+/// `main.name` is `name` in the root module.
 pub fn select(p: &Program, selector: Option<&str>) -> BTreeSet<String> {
     let all: Vec<String> = p.decls.iter().map(|d| d.qname()).collect();
     let Some(sel) = selector else { return all.into_iter().collect() };
@@ -48,6 +49,10 @@ pub fn select(p: &Program, selector: Option<&str>) -> BTreeSet<String> {
             }
         } else {
             out.extend(all.iter().filter(|a| glob(term, a)).cloned());
+            // `main.total`: a definition of the root module, whose names have no prefix
+            if let Some(rest) = term.strip_prefix("main.") {
+                out.extend(p.decls.iter().filter(|d| d.module.is_empty() && glob(rest, &d.qname())).map(|d| d.qname()));
+            }
         }
     }
     out

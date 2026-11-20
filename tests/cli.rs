@@ -123,6 +123,19 @@ test \"big integers\" {
 }
 
 #[test]
+fn loops_forget_variables_changed_anywhere_in_their_body() {
+    // `bump(mut n)` inside a list literal changes `n`: the loop must not keep `n == 0`
+    if !has_solver() {
+        return;
+    }
+    let d = tmp("loop-changes");
+    let src = "fn bump(mut x: Int) -> Int {\n  x = x + 1\n  x\n}\n\nfn count() -> Int\n  ensures it == 0\n{\n  let mut n = 0\n  let mut i = 0\n  while i < 3 {\n    let ys = [bump(mut n)]\n    i = i + 1\n  }\n  n\n}\n";
+    std::fs::write(d.join("l.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", "l.strata", "verify"], &d, None);
+    assert!(!ok && out.contains("✗ count") && !out.contains("bug in the prover"), "{out}");
+}
+
+#[test]
 fn cross_check_catches_a_wrong_prover() {
     // a "solver" that proves everything: the cross-check must still catch the bug
     let d = tmp("cross-check");
@@ -781,7 +794,7 @@ fn modules_contracts_and_files() {
     for m in ["core", "memory", "print", "sim"] {
         assert!(pkg.join(format!("{m}.strata")).is_file(), "add writes one file per module: {m}");
     }
-    let (ok, out) = strata(&["edit", "--module", "core"], &pkg, Some("fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool { len(claimed) == len(reported) && all(claimed, c -> count(reported, r -> r == c) == 1) && all(reported, r -> contains(claimed, r)) }"));
+    let (ok, out) = strata(&["edit", "core"], &pkg, Some("fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool { len(claimed) == len(reported) && all(claimed, c -> count(reported, r -> r == c) == 1) && all(reported, r -> contains(claimed, r)) }"));
     assert!(ok && out.contains("core.same_ids") && out.contains("implementation only"), "{out}");
     assert!(std::fs::read_to_string(pkg.join("core.strata")).unwrap().contains("all(reported, r -> contains(claimed, r))"), "the edit is in the file");
     let (ok, out) = strata(&["test"], &pkg, None);
@@ -1848,7 +1861,7 @@ fn the_log_is_committed_and_splits_git_diffs_into_steps() {
 
     // one commit: a rename and an edit through strata, then a change by hand
     assert!(strata(&["rename", "area", "rect_area", "--no-commit"], &d, None).0);
-    let (ok, out) = strata(&["edit", "--no-commit", "--module", "a", "-m", "areas are never negative"], &d, Some("pub fn rect_area(w: Int, h: Int) -> Int requires w >= 0 && h >= 0 {\n  w * h\n}\n"));
+    let (ok, out) = strata(&["edit", "--no-commit", "a", "-m", "areas are never negative"], &d, Some("pub fn rect_area(w: Int, h: Int) -> Int requires w >= 0 && h >= 0 {\n  w * h\n}\n"));
     assert!(ok, "{out}");
     let b = std::fs::read_to_string(d.join("b.strata")).unwrap();
     assert!(b.contains("rect_area(s, s)"), "the rename rewrote the other file: {b}");
@@ -2238,7 +2251,7 @@ fn a_pending_change_can_be_aborted_or_kept_with_its_holes() {
     std::fs::write(d.join("main.strata"), TAXES).unwrap();
     assert!(strata(&["init"], &d, None).0);
     assert!(strata(&["edit"], &d, Some("fn tax(amount: Int, rate: Int) -> Int { amount * rate / 100 }")).0);
-    assert!(strata(&["edit", "--module", "extra"], &d, Some("fn more() -> Int { 1 }")).0);
+    assert!(strata(&["edit", "extra"], &d, Some("fn more() -> Int { 1 }")).0);
     assert!(d.join("extra.strata").exists());
     // abort: every file as it was, including the module the change added
     let (ok, out) = strata(&["abort"], &d, None);
@@ -2318,6 +2331,62 @@ fn edit_opens_the_code_in_an_editor() {
     let (ok, out) = strata_with_editor(&["edit", "--editor"], &pkg, &editor);
     assert!(ok && out.contains("no changes"), "{out}");
     assert_eq!(std::fs::read_to_string(pkg.join("strata.log")).unwrap().lines().count(), 3);
+}
+
+#[test]
+fn edit_opens_modules_and_the_whole_package() {
+    let d = tmp("editor-modules");
+    let pkg = d.join("pkg");
+    std::fs::create_dir_all(pkg.join("shop")).unwrap();
+    std::fs::write(pkg.join("main.strata"), "use shop.orders.{price}\n\nfn total() -> Int {\n  price() + 1\n}\n").unwrap();
+    std::fs::write(pkg.join("shop/orders.strata"), "pub fn price() -> Int {\n  10\n}\n").unwrap();
+    assert!(strata(&["init"], &pkg, None).0);
+
+    // the whole package: one file per module, given to the editor together
+    let ed = d.join("whole");
+    std::fs::create_dir_all(&ed).unwrap();
+    let script = ed.join("editor.sh");
+    let dir = ed.display();
+    std::fs::write(&script, format!("#!/bin/sh\nfor f in \"$@\"; do echo \"$f\" >> '{dir}/files'; done\nfor f in \"$@\"; do case \"$f\" in */shop/orders.strata) sed 's/10/12/' \"$f\" > \"$f.new\" && mv \"$f.new\" \"$f\";; esac; done\n")).unwrap();
+    let (ok, out) = strata_with_editor(&["edit", "--editor"], &pkg, &format!("sh '{}'", script.display()));
+    assert!(ok && out.contains("changed"), "{out}");
+    let opened = std::fs::read_to_string(ed.join("files")).unwrap();
+    assert!(opened.lines().count() == 2 && opened.contains("main.strata") && opened.contains("shop/orders.strata"), "{opened}");
+    assert!(std::fs::read_to_string(pkg.join("shop/orders.strata")).unwrap().contains("12"));
+
+    // a module by name: only its file
+    let ed = d.join("module");
+    std::fs::create_dir_all(&ed).unwrap();
+    let editor = fake_editor(&ed, &["pub fn price() -> Int {\n  15\n}\n"]);
+    let (ok, out) = strata_with_editor(&["edit", "shop.orders", "--editor"], &pkg, &editor);
+    assert!(ok, "{out}");
+    assert_eq!(std::fs::read_to_string(ed.join("seen1.strata")).unwrap(), "pub fn price() -> Int {\n  12\n}\n");
+    assert!(std::fs::read_to_string(pkg.join("shop/orders.strata")).unwrap().contains("15"));
+
+    // a new module, by its file
+    let ed = d.join("new");
+    std::fs::create_dir_all(&ed).unwrap();
+    let editor = fake_editor(&ed, &["pub fn tax() -> Int {\n  2\n}\n"]);
+    let (ok, out) = strata_with_editor(&["edit", "shop/tax.strata", "--editor"], &pkg, &editor);
+    assert!(ok && out.contains("added"), "{out}");
+    assert!(std::fs::read_to_string(pkg.join("shop/tax.strata")).unwrap().contains("pub fn tax"));
+
+    // `main` is the root module; `main.total` is its definition `total`
+    let ed = d.join("root-def");
+    std::fs::create_dir_all(&ed).unwrap();
+    let editor = fake_editor(&ed, &[]);
+    let (ok, out) = strata_with_editor(&["edit", "main.total", "--editor"], &pkg, &editor);
+    assert!(ok && out.contains("no changes"), "{out}");
+    assert_eq!(std::fs::read_to_string(ed.join("seen1.strata")).unwrap(), "fn total() -> Int {\n  price() + 1\n}\n");
+    let ed = d.join("root-module");
+    std::fs::create_dir_all(&ed).unwrap();
+    let editor = fake_editor(&ed, &[]);
+    assert!(strata_with_editor(&["edit", "main", "--editor"], &pkg, &editor).0);
+    assert!(std::fs::read_to_string(ed.join("seen1.strata")).unwrap().starts_with("use shop.orders"));
+
+    // neither a module nor a definition
+    let (ok, out) = strata_with_editor(&["edit", "nothing_here", "--editor"], &pkg, "true");
+    assert!(!ok && out.contains("is no module"), "{out}");
 }
 
 #[test]

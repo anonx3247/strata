@@ -74,7 +74,7 @@ pub fn impl_label(env: &Env, imp: &ImplDecl, m: &str) -> String {
 }
 
 fn calls_of(e: &Expr, env: &Env, out: &mut BTreeSet<String>) {
-    crate::verify::walk(e, &mut |x| match x {
+    crate::ast::walk(e, |x| match x {
         Expr::Call(f, _) => {
             if let Expr::Var(n) = &**f {
                 if env.fns.contains_key(n) {
@@ -104,7 +104,7 @@ fn calls_of(e: &Expr, env: &Env, out: &mut BTreeSet<String>) {
 
 fn has_stmt(e: &Expr, pred: &dyn Fn(&Stmt) -> bool) -> bool {
     let mut found = false;
-    crate::verify::walk(e, &mut |x| {
+    crate::ast::walk(e, |x| {
         if let Expr::Block(stmts, _) = x {
             found |= stmts.iter().any(pred);
         }
@@ -353,35 +353,14 @@ impl Structural<'_> {
     }
 }
 
-fn assigned(e: &Expr) -> HashSet<String> {
-    let mut out = HashSet::new();
-    crate::verify::walk(e, &mut |x| {
-        if let Expr::Mut(_) = x {
-            if let Some(n) = crate::smt::place_root(x) {
-                out.insert(n);
-            }
-        }
-        if let Expr::Block(stmts, _) = x {
-            for s in stmts {
-                if let Stmt::Assign(place, _) = s {
-                    let mut root = place;
-                    while let Expr::Field(r, _) = root {
-                        root = r;
-                    }
-                    if let Expr::Var(n) = root {
-                        out.insert(n.clone());
-                    }
-                }
-            }
-        }
-    });
-    out
+fn assigned(env: &Env, e: &Expr) -> HashSet<String> {
+    changed_vars(e, &|n| env.mut_params(n))
 }
 
 /// If every recursive call passes a smaller piece of the same parameter,
 /// the name of that parameter.
-fn structural(f: &FnDecl) -> Option<String> {
-    let assigned = assigned(&f.body);
+fn structural(env: &Env, f: &FnDecl) -> Option<String> {
+    let assigned = assigned(env, &f.body);
     let mut vars = HashMap::new();
     for (i, p) in f.params.iter().enumerate() {
         if !assigned.contains(&p.name) && !p.mutable {
@@ -406,7 +385,7 @@ fn structural(f: &FnDecl) -> Option<String> {
 /// comparison of parameters in the body (`n <= 100`, `lo < hi`), the distance
 /// between its two sides, both ways (`100 - n`, `hi - lo`).
 fn candidate_measures(env: &Env, f: &FnDecl) -> Vec<Expr> {
-    let assigned = assigned(&f.body);
+    let assigned = assigned(env, &f.body);
     let params: HashSet<&str> = f.params.iter().filter(|p| !p.mutable && !assigned.contains(&p.name)).map(|p| p.name.as_str()).collect();
     let var = |n: &str| Expr::Var(n.to_string());
     let mut out: Vec<Expr> = vec![];
@@ -423,14 +402,14 @@ fn candidate_measures(env: &Env, f: &FnDecl) -> Vec<Expr> {
     // only expressions of the parameters (and functions) can be measures
     let only_params = |e: &Expr| {
         let mut ok = true;
-        crate::verify::walk(e, &mut |x| match x {
+        crate::ast::walk(e, |x| match x {
             Expr::Var(n) => ok &= params.contains(n.as_str()) || env.fns.contains_key(n) || crate::types::BUILTINS.iter().any(|b| b.0 == n),
             Expr::Lambda(..) | Expr::Hole(_) | Expr::Float(_) | Expr::Str(_) => ok = false,
             _ => {}
         });
         ok
     };
-    crate::verify::walk(&f.body, &mut |x| {
+    crate::ast::walk(&f.body, |x| {
         if let Expr::Bin(BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Ne | BinOp::Eq, a, b) = x {
             if only_params(a) && only_params(b) {
                 let sub = |l: &Expr, r: &Expr| Expr::Bin(BinOp::Sub, Box::new(l.clone()), Box::new(r.clone()));
@@ -525,7 +504,7 @@ fn cannot_fail(env: &Env, f: &FnDecl, total: &dyn Fn(&str) -> bool) -> bool {
     }
     let mut ok = true;
     let refined = |t: &str| env.types.get(t).is_some_and(|_| crate::smt::type_is_refined(env, &TypeExpr::Named(t.into(), vec![])));
-    crate::verify::walk(&f.body, &mut |x| match x {
+    crate::ast::walk(&f.body, |x| match x {
         // an early return would need its own unfolding
         Expr::Hole(_) | Expr::Mock(_) | Expr::Return(_) | Expr::Try(..) => ok = false,
         Expr::Bin(BinOp::Div | BinOp::Mod, _, d) => ok &= matches!(&**d, Expr::Int(n) if *n != 0),
@@ -595,7 +574,7 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
                 if let Some(other) = mutual(name) {
                     Err(format!("it is recursive through `{}`", other.trim_start_matches("trait method ")))
                 } else if n.calls.contains(name) {
-                    match n.decl.as_ref().and_then(structural) {
+                    match n.decl.as_ref().and_then(|f| structural(env, f)) {
                         Some(p) => Ok(format!("each recursive call gets a smaller piece of `{p}`")),
                         None => match n.decl.as_ref().and_then(|f| measured_recursion(env, f, solver)) {
                             Some(m) => Ok(format!("{m} goes down on every recursive call and is never negative there")),

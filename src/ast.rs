@@ -1,6 +1,5 @@
-//! The Strata syntax tree. This is the canonical representation of code:
-//! the codebase stores these nodes (as JSON, content-addressed), and text is
-//! only ever a rendering of them.
+//! The Strata syntax tree: the canonical representation of code. Every
+//! analysis and rewrite works on these types, through the walkers at the end.
 
 use serde::{Deserialize, Serialize};
 
@@ -523,85 +522,331 @@ pub struct Program {
     pub decls: Vec<Decl>,
 }
 
-/// Visit `e` and every expression inside it, outermost first, allowing changes.
-pub fn walk_mut(e: &mut Expr, f: &mut impl FnMut(&mut Expr)) {
-    walk_mut_in(e, f, true)
-}
+// ---- walking the tree ----
+//
+// `Visit` (read) and `VisitMut` (change in place) reach every node: a
+// definition's expressions, statements, patterns and types, in the order they
+// are written. Each method's default visits the node's children; override
+// `expr`, `pattern` or `ty` to act on a node (and call `walk_*` to go on into
+// its children, or not, to skip them). The helpers below cover the usual
+// case of a closure over expressions.
 
-/// Visit every expression inside `e`, then `e` itself (innermost first).
-pub fn walk_mut_post(e: &mut Expr, f: &mut impl FnMut(&mut Expr)) {
-    walk_mut_in(e, f, false)
-}
-
-fn walk_mut_in(e: &mut Expr, f: &mut impl FnMut(&mut Expr), pre: bool) {
-    if pre {
-        f(e);
-    }
-    walk_children_mut(e, &mut |x| walk_mut_in(x, f, pre));
-    if !pre {
-        f(e);
-    }
-}
-
-fn walk_children_mut(e: &mut Expr, w: &mut impl FnMut(&mut Expr)) {
-    let mut w = |x: &mut Expr| w(x);
-    match e {
-        Expr::List(xs) | Expr::Tuple(xs) => xs.iter_mut().for_each(&mut w),
-        Expr::Ctor(_, CtorArgs::Positional(xs)) => xs.iter_mut().for_each(&mut w),
-        Expr::Ctor(_, CtorArgs::Record(fs)) => fs.iter_mut().for_each(|(_, x)| w(x)),
-        Expr::Ctor(_, CtorArgs::Update(b, fs)) => {
-            w(b);
-            fs.iter_mut().for_each(|(_, x)| w(x))
-        }
-        Expr::Call(g, xs) => {
-            w(g);
-            xs.iter_mut().for_each(&mut w)
-        }
-        Expr::Method(r, _, xs) => {
-            w(r);
-            xs.iter_mut().for_each(&mut w)
-        }
-        Expr::Field(r, _) | Expr::Is(r, _) | Expr::Un(_, r) | Expr::Lambda(_, r) | Expr::Return(r) | Expr::Mut(r) | Expr::Try(r, _) => w(r),
-        Expr::Except(r, _, fb) => {
-            w(r);
-            w(fb)
-        }
-        Expr::Interp(parts) => parts.iter_mut().for_each(|p| {
-            if let StrPart::Expr(e, _) = p {
-                w(e)
+macro_rules! visitor {
+    ($Visit:ident, $expr:ident, $stmt:ident, $pattern:ident, $ty:ident, $func:ident, $decl:ident $(, $m:ident)?) => {
+        pub trait $Visit {
+            fn expr(&mut self, e: &$($m)? Expr) {
+                $expr(self, e)
             }
-        }),
-        Expr::Bin(_, l, r) => {
-            w(l);
-            w(r)
+            fn pattern(&mut self, p: &$($m)? Pattern) {
+                $pattern(self, p)
+            }
+            fn ty(&mut self, t: &$($m)? TypeExpr) {
+                $ty(self, t)
+            }
         }
-        Expr::If(c, t, x) => {
-            w(c);
-            w(t);
-            w(x)
-        }
-        Expr::Match(s, _, arms) => {
-            w(s);
-            arms.iter_mut().for_each(|a| w(&mut a.body))
-        }
-        Expr::Block(stmts, last) => {
-            for s in stmts {
-                match s {
-                    Stmt::Comment(_) | Stmt::Break | Stmt::Continue => {}
-                    Stmt::Let(_, _, x) | Stmt::Var(_, _, x) | Stmt::Expr(x) | Stmt::Assert(x) | Stmt::Loop(x) => w(x),
-                    Stmt::Assign(a, b) | Stmt::While(a, b) | Stmt::For(_, a, b) => {
-                        w(a);
-                        w(b)
+
+        /// Visit the children of an expression.
+        pub fn $expr<V: $Visit + ?Sized>(v: &mut V, e: &$($m)? Expr) {
+            match e {
+                Expr::Int(_) | Expr::BigInt(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Unit | Expr::Var(_) | Expr::Hole(_) => {}
+                Expr::Tuple(xs) | Expr::List(xs) => xs.into_iter().for_each(|x| v.expr(x)),
+                Expr::Ctor(_, args) => match args {
+                    CtorArgs::None => {}
+                    CtorArgs::Positional(xs) => xs.into_iter().for_each(|x| v.expr(x)),
+                    CtorArgs::Record(fs) => fs.into_iter().for_each(|(_, x)| v.expr(x)),
+                    CtorArgs::Update(b, fs) => {
+                        v.expr(b);
+                        fs.into_iter().for_each(|(_, x)| v.expr(x))
+                    }
+                },
+                Expr::Call(f, xs) | Expr::Method(f, _, xs) => {
+                    v.expr(f);
+                    xs.into_iter().for_each(|x| v.expr(x))
+                }
+                Expr::Field(r, _) | Expr::Is(r, _) | Expr::Un(_, r) | Expr::Return(r) | Expr::Mut(r) | Expr::Try(r, _) => v.expr(r),
+                Expr::Lambda(ps, body) => {
+                    for p in ps {
+                        if let Some(t) = &$($m)? p.ty {
+                            v.ty(t)
+                        }
+                    }
+                    v.expr(body)
+                }
+                Expr::Bin(_, l, r) | Expr::Except(l, _, r) => {
+                    v.expr(l);
+                    v.expr(r)
+                }
+                Expr::If(c, t, f) => {
+                    v.expr(c);
+                    v.expr(t);
+                    v.expr(f)
+                }
+                Expr::Match(s, _, arms) => {
+                    v.expr(s);
+                    for a in arms {
+                        v.pattern(&$($m)? a.pat);
+                        v.expr(&$($m)? a.body)
+                    }
+                }
+                Expr::Block(stmts, last) => {
+                    stmts.into_iter().for_each(|s| $stmt(v, s));
+                    v.expr(last)
+                }
+                Expr::Mock(t) => v.ty(t),
+                Expr::Interp(parts) => {
+                    for p in parts {
+                        if let StrPart::Expr(x, _) = p {
+                            v.expr(x)
+                        }
                     }
                 }
             }
-            w(last)
         }
-        _ => {}
+
+        /// Visit the children of a statement.
+        pub fn $stmt<V: $Visit + ?Sized>(v: &mut V, s: &$($m)? Stmt) {
+            match s {
+                Stmt::Comment(_) | Stmt::Break | Stmt::Continue => {}
+                Stmt::Let(p, t, x) => {
+                    v.pattern(p);
+                    if let Some(t) = t {
+                        v.ty(t)
+                    }
+                    v.expr(x)
+                }
+                Stmt::Var(_, t, x) => {
+                    if let Some(t) = t {
+                        v.ty(t)
+                    }
+                    v.expr(x)
+                }
+                Stmt::For(p, a, b) => {
+                    v.pattern(p);
+                    v.expr(a);
+                    v.expr(b)
+                }
+                Stmt::Assign(a, b) | Stmt::While(a, b) => {
+                    v.expr(a);
+                    v.expr(b)
+                }
+                Stmt::Loop(x) | Stmt::Expr(x) | Stmt::Assert(x) => v.expr(x),
+            }
+        }
+
+        /// Visit the children of a pattern.
+        pub fn $pattern<V: $Visit + ?Sized>(v: &mut V, p: &$($m)? Pattern) {
+            match p {
+                Pattern::Wild | Pattern::Bind(_) | Pattern::Int(_) | Pattern::Str(_) | Pattern::Bool(_) => {}
+                Pattern::Ctor(_, CtorPat::None) => {}
+                Pattern::Ctor(_, CtorPat::Positional(ps)) | Pattern::List(ps, _) | Pattern::Tuple(ps) | Pattern::Or(ps) => ps.into_iter().for_each(|p| v.pattern(p)),
+                Pattern::Ctor(_, CtorPat::Record(fs, _)) => fs.into_iter().for_each(|(_, p)| v.pattern(p)),
+                Pattern::Cond(e) => v.expr(e),
+            }
+        }
+
+        /// Visit the children of a type.
+        pub fn $ty<V: $Visit + ?Sized>(v: &mut V, t: &$($m)? TypeExpr) {
+            match t {
+                TypeExpr::Unit => {}
+                TypeExpr::Named(_, ts) | TypeExpr::Union(ts) => ts.into_iter().for_each(|t| v.ty(t)),
+                TypeExpr::Fn(ps, r) => {
+                    ps.into_iter().for_each(|t| v.ty(t));
+                    v.ty(r)
+                }
+                TypeExpr::Refined(b, e) => {
+                    v.ty(b);
+                    v.expr(e)
+                }
+            }
+        }
+
+        #[allow(dead_code)] // the read-only twin may not be used yet
+        /// Visit a function: its bounds, parameter and return types, contract and body.
+        pub fn $func<V: $Visit + ?Sized>(v: &mut V, f: &$($m)? FnDecl) {
+            for b in &$($m)? f.bounds {
+                (&$($m)? b.traits).into_iter().for_each(|t| v.ty(t))
+            }
+            for p in &$($m)? f.params {
+                v.ty(&$($m)? p.ty)
+            }
+            v.ty(&$($m)? f.ret);
+            (&$($m)? f.requires).into_iter().for_each(|e| v.expr(e));
+            (&$($m)? f.ensures).into_iter().for_each(|e| v.expr(e));
+            v.expr(&$($m)? f.body)
+        }
+
+        #[allow(dead_code)] // the read-only twin may not be used yet
+        /// Visit everything in a definition.
+        pub fn $decl<V: $Visit + ?Sized>(v: &mut V, d: &$($m)? DeclKind) {
+            let fields = |v: &mut V, fs: &$($m)? Vec<Field>| fs.into_iter().for_each(|f| v.ty(&$($m)? f.ty));
+            match d {
+                DeclKind::Type(t) => {
+                    match &$($m)? t.body {
+                        TypeBody::Alias(x) => v.ty(x),
+                        TypeBody::Record(fs) => fields(v, fs),
+                        TypeBody::Sum(vs) => {
+                            for var in vs {
+                                match &$($m)? var.payload {
+                                    Payload::None => {}
+                                    Payload::Positional(ts) => ts.into_iter().for_each(|t| v.ty(t)),
+                                    Payload::Record(fs) => fields(v, fs),
+                                }
+                            }
+                        }
+                    }
+                    if let Some(r) = &$($m)? t.refinement {
+                        v.expr(r)
+                    }
+                }
+                DeclKind::Fn(f) => $func(v, f),
+                DeclKind::Test(t) => v.expr(&$($m)? t.body),
+                DeclKind::Trait(t) => {
+                    (&$($m)? t.supers).into_iter().for_each(|t| v.ty(t));
+                    for m in &$($m)? t.methods {
+                        $func(v, &$($m)? m.decl)
+                    }
+                    for l in &$($m)? t.laws {
+                        for p in &$($m)? l.params {
+                            v.ty(&$($m)? p.ty)
+                        }
+                        v.expr(&$($m)? l.body)
+                    }
+                }
+                DeclKind::Impl(i) => {
+                    for b in &$($m)? i.bounds {
+                        (&$($m)? b.traits).into_iter().for_each(|t| v.ty(t))
+                    }
+                    (&$($m)? i.trait_args).into_iter().for_each(|t| v.ty(t));
+                    v.ty(&$($m)? i.for_type);
+                    for m in &$($m)? i.methods {
+                        $func(v, m)
+                    }
+                }
+                DeclKind::Use(_) => {}
+            }
+        }
+    };
+}
+
+visitor!(Visit, walk_expr, walk_stmt, walk_pattern, walk_ty, walk_fn, walk_decl);
+visitor!(VisitMut, walk_expr_mut, walk_stmt_mut, walk_pattern_mut, walk_ty_mut, walk_fn_mut, walk_decl_mut, mut);
+
+/// A closure over expressions, outermost first, that doesn't go into
+/// patterns or types (the refinements written in them).
+struct Exprs<F>(F);
+
+impl<F: FnMut(&Expr)> Visit for Exprs<F> {
+    fn expr(&mut self, e: &Expr) {
+        (self.0)(e);
+        walk_expr(self, e)
+    }
+    fn pattern(&mut self, _: &Pattern) {}
+    fn ty(&mut self, _: &TypeExpr) {}
+}
+
+/// The same, allowing changes; `post`: innermost first.
+struct ExprsMut<F> {
+    f: F,
+    post: bool,
+}
+
+impl<F: FnMut(&mut Expr)> VisitMut for ExprsMut<F> {
+    fn expr(&mut self, e: &mut Expr) {
+        if !self.post {
+            (self.f)(e);
+        }
+        walk_expr_mut(self, e);
+        if self.post {
+            (self.f)(e);
+        }
+    }
+    fn pattern(&mut self, _: &mut Pattern) {}
+    fn ty(&mut self, _: &mut TypeExpr) {}
+}
+
+/// Visit `e` and every expression inside it, outermost first (not those in
+/// patterns or types).
+pub fn walk(e: &Expr, f: impl FnMut(&Expr)) {
+    Exprs(f).expr(e)
+}
+
+/// Every expression of a definition (bodies, contracts, a type's refinement;
+/// not those in patterns or written types), outermost first, allowing changes.
+pub fn decl_exprs_mut(d: &mut DeclKind, f: impl FnMut(&mut Expr)) {
+    walk_decl_mut(&mut ExprsMut { f, post: false }, d)
+}
+
+/// The same, innermost first: a node is changed after everything inside it.
+pub fn decl_exprs_mut_post(d: &mut DeclKind, f: impl FnMut(&mut Expr)) {
+    walk_decl_mut(&mut ExprsMut { f, post: true }, d)
+}
+
+/// Whether anything in `e` is `pred` (not looking into patterns or types).
+pub fn any_expr(e: &Expr, mut pred: impl FnMut(&Expr) -> bool) -> bool {
+    let mut found = false;
+    walk(e, |x| found = found || pred(x));
+    found
+}
+
+/// The written path of a place: `x`, `o.status` (`mut o.status` as an argument).
+pub fn place_path(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Mut(x) => place_path(x),
+        Expr::Var(x) => Some(x.clone()),
+        Expr::Field(r, f) => Some(format!("{}.{f}", place_path(r)?)),
+        _ => None,
     }
 }
 
-/// Every expression of a function: its body and its contract.
-pub fn fn_exprs_mut(f: &mut FnDecl) -> impl Iterator<Item = &mut Expr> {
-    std::iter::once(&mut f.body).chain(f.requires.iter_mut()).chain(f.ensures.iter_mut())
+/// The places (`x`, `o.status`) that `e` may change: those assigned, and
+/// those passed to a `mut` parameter (a method's receiver too: `q.claim(2)`
+/// changes `q` when `claim` takes `mut self`). `mut_params(callee)` says which
+/// of a callee's parameters are `mut`. A closure can't change the enclosing
+/// function's variables, so lambdas are not looked into.
+pub fn changed_places(e: &Expr, mut_params: &dyn Fn(&str) -> Vec<bool>) -> Vec<String> {
+    struct Changes<'a> {
+        mut_params: &'a dyn Fn(&str) -> Vec<bool>,
+        out: Vec<String>,
+    }
+    impl Changes<'_> {
+        fn passed<'e>(&mut self, callee: &str, args: impl Iterator<Item = &'e Expr>) {
+            for (m, a) in (self.mut_params)(callee).into_iter().zip(args) {
+                if m {
+                    self.out.extend(place_path(a));
+                }
+            }
+        }
+    }
+    impl Visit for Changes<'_> {
+        fn expr(&mut self, e: &Expr) {
+            match e {
+                Expr::Lambda(..) => return,
+                Expr::Call(f, args) => {
+                    if let Expr::Var(n) = &**f {
+                        self.passed(n, args.iter())
+                    }
+                }
+                Expr::Method(r, m, args) => self.passed(m, std::iter::once(&**r).chain(args)),
+                Expr::Block(stmts, _) => {
+                    for s in stmts {
+                        if let Stmt::Assign(p, _) = s {
+                            self.out.extend(place_path(p))
+                        }
+                    }
+                }
+                _ => {}
+            }
+            walk_expr(self, e)
+        }
+        fn pattern(&mut self, _: &Pattern) {}
+        fn ty(&mut self, _: &TypeExpr) {}
+    }
+    let mut c = Changes { mut_params, out: Vec::new() };
+    c.expr(e);
+    c.out
+}
+
+/// The variables `e` may change (the roots of `changed_places`).
+pub fn changed_vars(e: &Expr, mut_params: &dyn Fn(&str) -> Vec<bool>) -> std::collections::HashSet<String> {
+    changed_places(e, mut_params).into_iter().map(|p| p.split('.').next().unwrap_or_default().to_string()).collect()
 }
