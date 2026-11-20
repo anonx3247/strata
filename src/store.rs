@@ -128,7 +128,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                 go(fb, out);
             }
             Expr::Interp(parts) => parts.iter().for_each(|p| {
-                if let StrPart::Expr(e) = p {
+                if let StrPart::Expr(e, _) = p {
                     go(e, out)
                 }
             }),
@@ -231,7 +231,9 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             out.remove("Self");
         }
         DeclKind::Impl(i) => {
-            out.insert(i.trait_name.clone());
+            if !i.is_inherent() {
+                out.insert(i.trait_name.clone());
+            }
             i.trait_args.iter().for_each(|a| ty(a, &mut out));
             ty(&i.for_type, &mut out);
             for m in &i.methods {

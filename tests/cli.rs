@@ -2010,3 +2010,411 @@ fn edit_opens_the_code_in_an_editor() {
     assert!(ok && out.contains("no changes"), "{out}");
     assert_eq!(std::fs::read_to_string(pkg.join("strata.log")).unwrap().lines().count(), 3);
 }
+
+#[test]
+fn lambda_parameter_refinements_hold_at_runtime() {
+    let d = tmp("lambda-refine");
+    std::fs::write(
+        d.join("l.strata"),
+        "fn apply(f: (Int) -> Int, x: Int) -> Int {\n  f(x)\n}\n\nfn bad() -> Int {\n  apply((n: Positive) -> n * 2, -3)\n}\n\nfn good() -> Int {\n  apply((n: Positive) -> n * 2, 3)\n}\n",
+    )
+    .unwrap();
+    let (ok, out) = strata(&["--file", "l.strata", "run", "good"], &d, None);
+    assert!(ok && out.trim() == "6", "{out}");
+    let (ok, out) = strata(&["--file", "l.strata", "run", "bad"], &d, None);
+    assert!(!ok && out.contains("argument `n` of a lambda: -3 does not satisfy `Positive`"), "{out}");
+}
+
+#[test]
+fn f_string_format_specs() {
+    let d = tmp("fmt-spec");
+    std::fs::write(
+        d.join("f.strata"),
+        "type Cents = Int where it >= 0\n\nfn row(name: String, price: Float, qty: Cents, delta: Int) -> String {\n  f\"[{name:<8}|{price:>8.2}|{qty:03}|{delta:+}|{name:*^10}|{name:.3}|{len([1, 2].map((n: Int) -> n))}]\"\n}\n\ntest \"specs\" {\n  assert row(\"tea\", 3.14159, 7, 5) == \"[tea     |    3.14|007|+5|***tea****|tea|2]\"\n  assert row(\"biscuits\", -2.5, 42, -3) == \"[biscuits|   -2.50|042|-3|*biscuits*|bis|2]\"\n  assert f\"{-42:06}\" == \"-00042\"\n}\n",
+    )
+    .unwrap();
+    let (ok, out) = strata(&["--file", "f.strata", "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    // specs survive rendering
+    let (_, r) = strata(&["--file", "f.strata", "render"], &d, None);
+    assert!(r.contains("{price:>8.2}") && r.contains("{name:*^10}") && r.contains("{qty:03}"), "{r}");
+    std::fs::write(d.join("e.strata"), "fn a(n: Int) -> String { f\"{n:.2}\" }\nfn b(s: String) -> String { f\"{s:05}\" }\n").unwrap();
+    let (ok, out) = strata(&["--file", "e.strata", "check"], &d, None);
+    assert!(!ok && out.contains("`.N` applies to a Float") && out.contains("`+` and `0` apply to numbers"), "{out}");
+    std::fs::write(d.join("x.strata"), "fn c(n: Int) -> String { f\"{n:x}\" }\n").unwrap();
+    let (ok, out) = strata(&["--file", "x.strata", "check"], &d, None);
+    assert!(!ok && out.contains("bad format spec `x`"), "{out}");
+}
+
+#[test]
+fn a_types_own_methods_and_shared_names() {
+    let d = tmp("own-methods");
+    std::fs::write(d.join("o.strata"), r#"trait Describe {
+  fn describe(self) -> String
+    ensures len(it) > 0
+}
+
+trait Log {
+  fn describe(self) -> String
+}
+
+type Item = { name: NonEmptyString, cents: Natural }
+
+impl Item {
+  fn new(name: NonEmptyString, cents: Natural) -> Item {
+    Item { name, cents }
+  }
+
+  fn describe(self) -> String {
+    f"own {self.name}"
+  }
+}
+
+impl Describe for Item {
+  fn describe(self) -> String {
+    f"describe {self.name}"
+  }
+}
+
+impl Log for Item {
+  fn describe(self) -> String {
+    f"log {self.name}"
+  }
+}
+
+type Sku = { code: NonEmptyString }
+
+impl Describe for Sku {
+  fn describe(self) -> String {
+    "SKU " + self.code
+  }
+}
+
+fn show(d: Describe) -> String {
+  d.describe()
+}
+
+fn shout[T: Log](x: T) -> String {
+  to_upper(x.describe())
+}
+
+fn all_of(xs: List[Describe]) -> List[String] {
+  xs.map(x -> x.describe())
+}
+
+test "which describe runs" {
+  let i = Item.new("tea", 3)
+  assert i.describe() == "own tea"
+  assert show(i) == "describe tea"
+  assert shout(i) == "LOG TEA"
+  assert all_of([i]) == ["describe tea"]
+  assert show(Sku { code: "AB" }) == "SKU AB"
+  assert describe(Sku { code: "X" }) == "SKU X"
+}
+"#).unwrap();
+    // a call through a trait runs that trait's implementation; on a known type, the type's own method
+    let (ok, out) = strata(&["--file", "o.strata", "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    // each implementation is verified on its own, under its own label
+    let (_, out) = strata(&["--file", "o.strata", "verify"], &d, None);
+    for label in ["Item.new ", "Item.describe ", "Item.describe (Describe)", "Item.describe (Log)"] {
+        assert!(out.contains(label), "missing {label:?} in {out}");
+    }
+    assert!(!out.contains('✗'), "{out}");
+    let (_, r) = strata(&["--file", "o.strata", "render"], &d, None);
+    assert_eq!(r, std::fs::read_to_string(d.join("o.strata")).unwrap());
+
+    std::fs::write(d.join("bad.strata"), r#"trait A {
+  fn tag(self) -> String
+}
+
+trait B {
+  fn tag(self) -> String
+}
+
+type P = { x: Int }
+
+impl A for P {
+  fn tag(self) -> String {
+    "a"
+  }
+}
+
+impl B for P {
+  fn tag(self) -> String {
+    "b"
+  }
+}
+
+type Q = { y: Int }
+
+impl Q {
+  fn tag(self) -> String {
+    "q"
+  }
+}
+
+impl A for Q {
+  fn tag(self) -> String {
+    "qa"
+  }
+}
+
+impl B for Q {
+  fn tag(self) -> String {
+    "qb"
+  }
+}
+
+fn concrete_without_own(p: P) -> String {
+  p.tag()
+}
+
+fn concrete_with_own(q: Q) -> String {
+  q.tag()
+}
+
+fn through_a(x: A) -> String {
+  x.tag()
+}
+
+fn either(x: A | B) -> String {
+  x.tag()
+}
+
+fn both[T: A + B](x: T) -> String {
+  x.tag()
+}
+
+fn as_value(q: Q) -> List[String] {
+  [q].map(tag)
+}
+"#).unwrap();
+    let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
+    assert!(!ok, "{out}");
+    for want in [
+        "error in concrete_without_own: `P` implements `A` and `B`, which both have `tag`: define `tag` in `impl P`",
+        "error in either: `tag` is ambiguous here: the value is a `A | B`",
+        "error in both: `tag` is ambiguous here: `T` is known only as `A` and `B`",
+        "error in as_value: which `tag` runs depends on the type of the value",
+    ] {
+        assert!(out.contains(want), "missing {want:?} in {out}");
+    }
+    // a type's own method on a known type, and a call through one trait, are fine
+    assert!(!out.contains("concrete_with_own") && !out.contains("through_a"), "{out}");
+    assert_eq!(out.matches("error in").count(), 4, "{out}");
+
+    std::fs::write(d.join("misc.strata"), "type Q = { y: Int }\n\nimpl Int {\n  fn twice(self) -> Int {\n    self * 2\n  }\n}\n\nfn g() -> Int {\n  Q.nope()\n}\n").unwrap();
+    let (ok, out) = strata(&["--file", "misc.strata", "check"], &d, None);
+    assert!(!ok && out.contains("`impl Int`: methods can only be added to a record, sum or `distinct` type") && out.contains("`Q` has no method `nope` called on the type"), "{out}");
+}
+
+#[test]
+fn trait_methods_without_self() {
+    let d = tmp("static-methods");
+    // `Money.empty()`, `T.empty()` (the type passed when the generic function runs), `Self.empty()` in a default method and a law
+    std::fs::write(d.join("m.strata"), r#"trait Monoid {
+  fn empty() -> Self
+  fn combine(self, other: Self) -> Self
+  fn twice(self) -> Self {
+    self.combine(self).combine(Self.empty())
+  }
+  law left_identity(a: Self):
+    Self.empty().combine(a) == a
+}
+
+type Money = { cents: Int }
+
+impl Monoid for Money {
+  fn empty() -> Money {
+    Money { cents: 0 }
+  }
+
+  fn combine(self, other: Money) -> Money {
+    Money { cents: self.cents + other.cents }
+  }
+}
+
+impl Monoid for String {
+  fn empty() -> String {
+    ""
+  }
+
+  fn combine(self, other: String) -> String {
+    self + other
+  }
+}
+
+fn concat[T: Monoid](xs: List[T]) -> T {
+  fold(xs, T.empty(), (acc, x) -> acc.combine(x))
+}
+
+fn concat_twice[T: Monoid](xs: List[T]) -> T {
+  concat(xs).twice()
+}
+
+fn total(ms: List[Money]) -> Money {
+  concat(ms)
+}
+
+test "static trait methods" {
+  assert Money.empty() == Money { cents: 0 }
+  assert total([Money { cents: 2 }, Money { cents: 3 }]) == Money { cents: 5 }
+  assert concat(["a", "b"]) == "ab"
+  let none: List[Money] = []
+  assert concat(none) == Money { cents: 0 }
+  assert concat_twice(["x"]) == "xx"
+  assert String.empty() == ""
+}
+"#).unwrap();
+    let (ok, out) = strata(&["--file", "m.strata", "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    let (ok, out) = strata(&["--file", "m.strata", "verify"], &d, None);
+    assert!(ok && out.contains("law left_identity for Money") && out.contains("law left_identity for String") && !out.contains('✗'), "{out}");
+    let (_, r) = strata(&["--file", "m.strata", "render"], &d, None);
+    assert!(r.contains("fn empty() -> Self") && r.contains("T.empty()") && r.contains("Self.empty().combine(a) == a"), "{r}");
+
+    // contracts of static methods are used by the solver; a law catches a wrong `empty`
+    std::fs::write(d.join("s.strata"), r#"trait Bounded {
+  fn lowest() -> Self
+  fn rank(self) -> Int
+    ensures it >= 0
+}
+
+trait Zero {
+  fn zero() -> Self
+    ensures it == it
+}
+
+type Level = { n: Natural }
+
+impl Bounded for Level {
+  fn lowest() -> Level {
+    Level { n: 0 }
+  }
+
+  fn rank(self) -> Int {
+    self.n
+  }
+}
+
+fn lowest_rank[T: Bounded]() -> Natural {
+  T.lowest().rank()
+}
+
+fn level_floor() -> Natural {
+  Level.lowest().rank()
+}
+
+trait Monoid {
+  fn empty() -> Self
+  fn combine(self, other: Self) -> Self
+  law left_identity(a: Self):
+    Self.empty().combine(a) == a
+}
+
+type Max = { v: Int }
+
+impl Monoid for Max {
+  fn empty() -> Max {
+    Max { v: 5 }
+  }
+
+  fn combine(self, other: Max) -> Max {
+    if self.v > other.v { self } else { other }
+  }
+}
+
+test "generic with no arguments" {
+  assert level_floor() == 0
+}
+"#).unwrap();
+    let (_, out) = strata(&["--file", "s.strata", "verify"], &d, None);
+    assert!(out.contains("✓ lowest_rank") && out.contains("✓ level_floor") && out.contains("✗ law left_identity for Max"), "{out}");
+    std::fs::write(d.join("p.strata"), r#"trait Parse {
+  fn parse(s: String) -> Self
+    requires len(s) > 0
+  fn size(self) -> Int
+    ensures it >= 0
+}
+
+type Word = { text: String }
+
+impl Parse for Word {
+  fn parse(s: String) -> Word {
+    Word { text: s }
+  }
+
+  fn size(self) -> Int {
+    len(self.text)
+  }
+}
+
+fn read[T: Parse](s: NonEmptyString) -> Natural {
+  T.parse(s).size()
+}
+
+fn word_size(s: NonEmptyString) -> Natural {
+  Word.parse(s).size()
+}
+
+test "parse" {
+  assert word_size("hello") == 5
+}
+"#).unwrap();
+    let (ok, out) = strata(&["--file", "p.strata", "verify"], &d, None);
+    assert!(ok && out.contains("✓ read ") && out.contains("✓ word_size"), "{out}");
+
+    std::fs::write(d.join("bad.strata"), r#"trait Monoid {
+  fn empty() -> Self
+  fn combine(self, other: Self) -> Self
+}
+
+trait Version {
+  fn version() -> Int
+}
+
+type Money = { cents: Int }
+
+impl Monoid for Money {
+  fn empty() -> Money {
+    Money { cents: 0 }
+  }
+
+  fn combine(self, other: Money) -> Money {
+    Money { cents: self.cents + other.cents }
+  }
+}
+
+fn concat[T: Monoid](xs: List[T]) -> T {
+  fold(xs, T.empty(), (acc, x) -> acc.combine(x))
+}
+
+fn unbounded[T](x: T) -> T {
+  T.empty()
+}
+
+fn as_value(xss: List[List[Money]]) -> List[Money] {
+  xss.map(concat)
+}
+
+fn not_impl() -> Int {
+  Int.empty()
+}
+
+test "unknown type" {
+  assert concat([]) == concat([])
+}
+"#).unwrap();
+    let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
+    assert!(!ok, "{out}");
+    for want in [
+        "trait method `version` has no `self` and doesn't mention `Self`",
+        "error in unbounded: `T` has no method `empty` called on the type",
+        "error in as_value: `concat` needs to know its type arguments when it runs",
+        "error in not_impl: calling `empty`: `Int` does not implement `Monoid`",
+        "could not work out which type must implement `Monoid`; add a type annotation",
+    ] {
+        assert!(out.contains(want), "missing {want:?} in {out}");
+    }
+}

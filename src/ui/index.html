@@ -442,7 +442,7 @@ function highlight(src, resolve) {
 // ---------- selection & scope ----------
 // Everything a definition is related to: what it depends on, what refers to it,
 // and how it takes part in implementations (its impl blocks, or an impl's trait and type).
-const related = d => d ? [...d.deps, ...d.refs, ...d.impls, ...(d.impl_of ? [d.impl_of.trait, d.impl_of.type] : [])] : [];
+const related = d => d ? [...d.deps, ...d.refs, ...d.impls, ...(d.impl_of ? [d.impl_of.trait, d.impl_of.type].filter(Boolean) : [])] : [];
 function visible() {
   const all = S.data.decls;
   const q = S.q.toLowerCase();
@@ -913,11 +913,13 @@ function implSec(d) {
   const by = byName(), go = (n, t) => `<a class="ref" data-go="${esc(n)}">${esc(t)}</a>`;
   const short = n => by[n]?.label || n;
   let title, items;
-  if (d.impl_of) { title = 'Implements'; items = [go(d.impl_of.trait, short(d.impl_of.trait)) + ' for ' + go(d.impl_of.type, short(d.impl_of.type))]; }
+  if (d.impl_of && !d.impl_of.trait) { title = 'Methods of'; items = [go(d.impl_of.type, short(d.impl_of.type))]; }
+  else if (d.impl_of) { title = 'Implements'; items = [go(d.impl_of.trait, short(d.impl_of.trait)) + ' for ' + go(d.impl_of.type, short(d.impl_of.type))]; }
   else if (!d.impls.length) return '';
   else {
     title = d.kind === 'trait' ? 'Implemented by' : 'Implements';
-    const other = i => { const o = by[i]?.impl_of; return o ? short(d.kind === 'trait' ? o.type : o.trait) : i; };
+    // a type's own methods (`impl Item`) have no trait
+    const other = i => { const o = by[i]?.impl_of; return o ? (d.kind === 'trait' ? short(o.type) : o.trait ? short(o.trait) : 'its own methods') : i; };
     items = d.impls.map(i => go(i, other(i)));
   }
   return `<div class="sec"><h3>${title}</h3><div class="impls">${items.join(', ')}</div></div>`;
