@@ -493,7 +493,7 @@ pub fn queries(env: &Env, f: &FnDecl, solver: Option<&crate::smt::Solver>) -> Ve
 const TOTAL_BUILTINS: &[&str] = &[
     "len", "str_len", "contains", "get", "dict", "insert", "remove", "keys", "values", "items", "map_values", "set", "to_list", "union", "intersection", "difference", "zip", "enumerate",
     "sort", "sort_by", "reverse", "join", "trim", "parse_int", "map", "filter", "fold", "all", "any", "push", "take", "drop", "find", "count", "abs", "min", "max", "starts_with",
-    "to_string", "sum",
+    "to_string", "to_json", "sum",
 ];
 
 /// Can evaluating `f`'s body fail (a runtime check, a hole)? Calls to other
