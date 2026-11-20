@@ -53,12 +53,24 @@ struct Node {
 }
 
 fn trait_node(m: &str) -> String {
+    // `Trait::m` (a call through one trait) reaches the implementations of `m`
+    let m = crate::types::split_trait_call(m).map_or(m, |(_, m)| m);
     format!("trait method {m}")
 }
 
 /// The label of an implementation's method, as `verify` shows it.
-pub fn impl_label(imp: &ImplDecl, m: &str) -> String {
-    format!("{}.{}", crate::printer::ty(&imp.for_type), m.rsplit('.').next().unwrap_or(m))
+/// When the type has a method of that name of its own, or from another
+/// trait, the trait is named too: `Item.describe (Log)`.
+pub fn impl_label(env: &Env, imp: &ImplDecl, m: &str) -> String {
+    let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+    let head = texpr_head(&imp.for_type);
+    let base = format!("{}.{}", crate::printer::ty(&imp.for_type), short(m));
+    let own = env.inherent.get(&head).is_some_and(|i| i.methods.iter().any(|x| x.name == m));
+    if !imp.is_inherent() && (own || env.traits_with(m, &head).len() > 1) {
+        format!("{base} ({})", short(&imp.trait_name))
+    } else {
+        base
+    }
 }
 
 fn calls_of(e: &Expr, env: &Env, out: &mut BTreeSet<String>) {
@@ -543,7 +555,7 @@ pub fn analyze(env: &Env, solver: Option<&str>) -> Analysis {
         for tm in &tr.methods {
             let decl = imp.methods.iter().find(|m| m.name == tm.decl.name).or(tm.default.then_some(&tm.decl));
             let Some(decl) = decl else { continue };
-            let label = impl_label(imp, &tm.decl.name);
+            let label = impl_label(env, imp, &tm.decl.name);
             let mut calls = BTreeSet::new();
             calls_of(&decl.body, env, &mut calls);
             let d = crate::verify::for_impl(imp, decl);
@@ -552,18 +564,7 @@ pub fn analyze(env: &Env, solver: Option<&str>) -> Analysis {
         }
         let _ = texpr_head(&imp.for_type);
     }
-    // a type's own methods (those without `self` are functions, above)
-    for imp in env.inherent.values() {
-        for m in imp.methods.iter().filter(|m| crate::resolve::takes_self(m)) {
-            let label = impl_label(imp, &m.name);
-            let mut calls = BTreeSet::new();
-            calls_of(&m.body, env, &mut calls);
-            m.requires.iter().chain(&m.ensures).for_each(|c| calls_of(c, env, &mut calls));
-            let d = crate::verify::for_impl(imp, m);
-            nodes.insert(label.clone(), Node { decl: None, calls, loops: loops(env, &d, solver) });
-            nodes.entry(trait_node(&m.name)).or_insert(Node { decl: None, calls: BTreeSet::new(), loops: Ok(vec![]) }).calls.insert(label);
-        }
-    }
+    // (a type's own methods are functions, above)
     // trait methods no implementation defines
     let missing: Vec<String> = nodes.values().flat_map(|n| n.calls.iter().cloned()).filter(|c| !nodes.contains_key(c)).collect();
     for m in missing {
@@ -611,7 +612,7 @@ pub fn analyze(env: &Env, solver: Option<&str>) -> Analysis {
         own.insert(name.clone(), r);
     }
 
-    let marked = |n: &str| env.fns.get(n).is_some_and(|f| f.terminates) || env.impls.iter().chain(env.inherent.values()).any(|i| i.methods.iter().any(|m| m.terminates && impl_label(i, &m.name) == n));
+    let marked = |n: &str| env.fns.get(n).is_some_and(|f| f.terminates) || env.impls.iter().chain(env.inherent.values()).any(|i| i.methods.iter().any(|m| m.terminates && impl_label(env, i, &m.name) == n));
     // combine with the callees, deepest first (cycles are already unknown)
     fn resolve(n: &str, nodes: &HashMap<String, Node>, own: &HashMap<String, Result<String, String>>, marked: &dyn Fn(&str) -> bool, memo: &mut HashMap<String, Termination>, visiting: &mut HashSet<String>) -> Termination {
         if let Some(t) = memo.get(n) {

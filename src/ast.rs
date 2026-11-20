@@ -522,8 +522,26 @@ pub struct Program {
 
 /// Visit `e` and every expression inside it, outermost first, allowing changes.
 pub fn walk_mut(e: &mut Expr, f: &mut impl FnMut(&mut Expr)) {
-    f(e);
-    let mut w = |x: &mut Expr| walk_mut(x, f);
+    walk_mut_in(e, f, true)
+}
+
+/// Visit every expression inside `e`, then `e` itself (innermost first).
+pub fn walk_mut_post(e: &mut Expr, f: &mut impl FnMut(&mut Expr)) {
+    walk_mut_in(e, f, false)
+}
+
+fn walk_mut_in(e: &mut Expr, f: &mut impl FnMut(&mut Expr), pre: bool) {
+    if pre {
+        f(e);
+    }
+    walk_children_mut(e, &mut |x| walk_mut_in(x, f, pre));
+    if !pre {
+        f(e);
+    }
+}
+
+fn walk_children_mut(e: &mut Expr, w: &mut impl FnMut(&mut Expr)) {
+    let mut w = |x: &mut Expr| w(x);
     match e {
         Expr::List(xs) | Expr::Tuple(xs) => xs.iter_mut().for_each(&mut w),
         Expr::Ctor(_, CtorArgs::Positional(xs)) => xs.iter_mut().for_each(&mut w),

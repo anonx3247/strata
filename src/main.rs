@@ -730,7 +730,7 @@ fn run() -> Result<bool, String> {
             };
             let mut all_ok = true;
             let mut results = Vec::new();
-            let resolved = resolve::resolve(p).program;
+            let resolved = types::elaborate(p).program;
             let solver = smt::solver();
             let solver_bin = solver.as_ref().map(|s| s.0.as_str());
             let analysis = termination::analyze(&env, solver_bin);
@@ -775,20 +775,13 @@ fn run() -> Result<bool, String> {
                         jobs.push((f.name.clone(), format!("{base}:{cases}:{n}:{skey}"), Box::new(move || verify::check_fn(env, f, None, solver_bin, transparent, cases, n, seed))))
                     }
                     DeclKind::Impl(imp) if imp.is_inherent() => {
+                        // a type's own methods are functions (`Item.new`, `Item.describe`), checked as such
                         for m in &imp.methods {
                             let short = m.name.rsplit('.').next().unwrap_or(&m.name).to_string();
-                            if resolve::takes_self(m) {
-                                let label = termination::impl_label(imp, &m.name);
-                                let n = cc(&label);
-                                let key = format!("{base}:{short}:{cases}:{n}:{skey}");
-                                jobs.push((label, key, Box::new(move || verify::check_fn(env, m, Some(imp), solver_bin, transparent, cases, n, seed))));
-                            } else {
-                                // called on the type: checked as the function `Item.new`
-                                let f = types::static_fn(imp, m);
-                                let n = cc(&f.name);
-                                let key = format!("{base}:{short}:{cases}:{n}:{skey}");
-                                jobs.push((f.name.clone(), key, Box::new(move || verify::check_fn(env, &f, None, solver_bin, transparent, cases, n, seed))));
-                            }
+                            let f = types::static_fn(imp, m);
+                            let n = cc(&f.name);
+                            let key = format!("{base}:{short}:{cases}:{n}:{skey}");
+                            jobs.push((f.name.clone(), key, Box::new(move || verify::check_fn(env, &f, None, solver_bin, transparent, cases, n, seed))));
                         }
                     }
                     DeclKind::Impl(imp) => {
@@ -796,18 +789,14 @@ fn run() -> Result<bool, String> {
                         let ty = printer::ty(&imp.for_type);
                         for m in &tr.methods {
                             let mname = m.decl.name.clone();
-                            // served by the type's own method, verified with `impl Type`
-                            if env.own_method(&types::texpr_head(&imp.for_type), &mname).is_some() {
-                                continue;
-                            }
                             let decl = imp.methods.iter().find(|x| x.name == mname).or(if m.default { Some(&m.decl) } else { None });
                             match decl {
                                 Some(decl) => {
-                                    let label = termination::impl_label(imp, &mname);
+                                    let label = termination::impl_label(env, imp, &mname);
                                     let n = cc(&label);
                                     jobs.push((label, format!("{base}:{mname}:{cases}:{n}:{skey}"), Box::new(move || verify::check_fn(env, decl, Some(imp), solver_bin, transparent, cases, n, seed))))
                                 }
-                                None => jobs.push((termination::impl_label(imp, &mname), format!("{base}:{mname}:{cases}"), Box::new(move || verify::fuzz_impl_method(env, imp, &mname, cases, seed)))),
+                                None => jobs.push((termination::impl_label(env, imp, &mname), format!("{base}:{mname}:{cases}"), Box::new(move || verify::fuzz_impl_method(env, imp, &mname, cases, seed)))),
                             }
                         }
                         for law in &tr.laws {
@@ -974,7 +963,7 @@ fn run() -> Result<bool, String> {
             let (env, _) = types::Env::new(p);
             let filter = args.pos.get(1).cloned().unwrap_or_default();
             let (mut pass, mut fail) = (0, 0);
-            let resolved = resolve::resolve(p).program;
+            let resolved = types::elaborate(p).program;
             for d in &resolved.decls {
                 let DeclKind::Test(t) = &d.kind else { continue };
                 if !t.name.contains(&filter) {

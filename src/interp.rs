@@ -605,6 +605,7 @@ impl<'a> Interp<'a> {
     /// result that satisfies its `ensures` (rejection sampling). `Self` in the
     /// result is the mock itself.
     fn mock_call(&mut self, mt: &TypeExpr, name: &str, args: Vec<Value>) -> R<Value> {
+        let name = crate::types::split_trait_call(name).map_or(name, |(_, m)| m);
         let tn = crate::types::texpr_head(mt);
         let Some(tr) = self.env.traits.get(&tn).cloned() else { return self.fail(FaultKind::Runtime, format!("unknown trait `{tn}`")) };
         let Some(tm) = tr.methods.iter().find(|m| m.decl.name == name) else {

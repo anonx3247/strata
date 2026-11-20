@@ -1910,9 +1910,7 @@ fn f_string_format_specs() {
 #[test]
 fn a_types_own_methods_and_shared_names() {
     let d = tmp("own-methods");
-    std::fs::write(
-        d.join("o.strata"),
-        r#"trait Describe {
+    std::fs::write(d.join("o.strata"), r#"trait Describe {
   fn describe(self) -> String
     ensures len(it) > 0
 }
@@ -1929,18 +1927,20 @@ impl Item {
   }
 
   fn describe(self) -> String {
-    f"{self.name} ({self.cents}c)"
-  }
-
-  fn double(self) -> Item {
-    Item { ..self, cents: self.cents * 2 }
+    f"own {self.name}"
   }
 }
 
 impl Describe for Item {
+  fn describe(self) -> String {
+    f"describe {self.name}"
+  }
 }
 
 impl Log for Item {
+  fn describe(self) -> String {
+    f"log {self.name}"
+  }
 }
 
 type Sku = { code: NonEmptyString }
@@ -1959,29 +1959,33 @@ fn shout[T: Log](x: T) -> String {
   to_upper(x.describe())
 }
 
-test "own methods" {
+fn all_of(xs: List[Describe]) -> List[String] {
+  xs.map(x -> x.describe())
+}
+
+test "which describe runs" {
   let i = Item.new("tea", 3)
-  assert i.describe() == "tea (3c)"
-  assert i.double().cents == 6
-  assert show(i) == "tea (3c)"
+  assert i.describe() == "own tea"
+  assert show(i) == "describe tea"
+  assert shout(i) == "LOG TEA"
+  assert all_of([i]) == ["describe tea"]
   assert show(Sku { code: "AB" }) == "SKU AB"
-  assert shout(i) == "TEA (3C)"
   assert describe(Sku { code: "X" }) == "SKU X"
 }
-"#,
-    )
-    .unwrap();
+"#).unwrap();
+    // a call through a trait runs that trait's implementation; on a known type, the type's own method
     let (ok, out) = strata(&["--file", "o.strata", "test"], &d, None);
     assert!(ok && out.contains("1 passed"), "{out}");
-    // the type's own method is verified once, against `Describe`'s contract
+    // each implementation is verified on its own, under its own label
     let (_, out) = strata(&["--file", "o.strata", "verify"], &d, None);
-    assert!(out.contains("Item.new ") && out.matches("Item.describe ").count() == 1, "{out}");
+    for label in ["Item.new ", "Item.describe ", "Item.describe (Describe)", "Item.describe (Log)"] {
+        assert!(out.contains(label), "missing {label:?} in {out}");
+    }
+    assert!(!out.contains('✗'), "{out}");
     let (_, r) = strata(&["--file", "o.strata", "render"], &d, None);
     assert_eq!(r, std::fs::read_to_string(d.join("o.strata")).unwrap());
 
-    std::fs::write(
-        d.join("bad.strata"),
-        r#"trait A {
+    std::fs::write(d.join("bad.strata"), r#"trait A {
   fn tag(self) -> String
 }
 
@@ -2006,39 +2010,62 @@ impl B for P {
 type Q = { y: Int }
 
 impl Q {
-  fn tag(self) -> Int {
-    self.y
+  fn tag(self) -> String {
+    "q"
   }
 }
 
 impl A for Q {
-}
-
-impl Int {
-  fn twice(self) -> Int {
-    self * 2
+  fn tag(self) -> String {
+    "qa"
   }
 }
 
-fn f(q: Q) -> List[String] {
-  [q].map(tag)
+impl B for Q {
+  fn tag(self) -> String {
+    "qb"
+  }
 }
 
-fn g() -> Int {
-  Q.nope()
+fn concrete_without_own(p: P) -> String {
+  p.tag()
 }
-"#,
-    )
-    .unwrap();
+
+fn concrete_with_own(q: Q) -> String {
+  q.tag()
+}
+
+fn through_a(x: A) -> String {
+  x.tag()
+}
+
+fn either(x: A | B) -> String {
+  x.tag()
+}
+
+fn both[T: A + B](x: T) -> String {
+  x.tag()
+}
+
+fn as_value(q: Q) -> List[String] {
+  [q].map(tag)
+}
+"#).unwrap();
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok, "{out}");
     for want in [
-        "`P` implements `A` and `B`, which both have `tag`: define `tag` in `impl P`",
-        "`tag` does not match the signature in trait `A`: expected `String`, found `Int`",
-        "`impl Int`: methods can only be added to a record, sum or `distinct` type defined in this program",
-        "pass a lambda such as `x -> x.tag()`",
-        "`Q` has no method `nope` called on the type",
+        "error in concrete_without_own: `P` implements `A` and `B`, which both have `tag`: define `tag` in `impl P`",
+        "error in either: `tag` is ambiguous here: the value is a `A | B`",
+        "error in both: `tag` is ambiguous here: `T` is known only as `A` and `B`",
+        "error in as_value: which `tag` runs depends on the type of the value",
     ] {
         assert!(out.contains(want), "missing {want:?} in {out}");
     }
+    // a type's own method on a known type, and a call through one trait, are fine
+    assert!(!out.contains("concrete_with_own") && !out.contains("through_a"), "{out}");
+    assert_eq!(out.matches("error in").count(), 4, "{out}");
+
+    std::fs::write(d.join("misc.strata"), "type Q = { y: Int }\n\nimpl Int {\n  fn twice(self) -> Int {\n    self * 2\n  }\n}\n\nfn g() -> Int {\n  Q.nope()\n}\n").unwrap();
+    let (ok, out) = strata(&["--file", "misc.strata", "check"], &d, None);
+    assert!(!ok && out.contains("`impl Int`: methods can only be added to a record, sum or `distinct` type") && out.contains("`Q` has no method `nope` called on the type"), "{out}");
 }

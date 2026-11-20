@@ -258,7 +258,13 @@ impl Item {
 let tea = Item.new("tea").priced(42)
 ```
 
-**Shared method names, and precedence.** Two traits may declare methods with the same name. A call picks the method by the type of the value it is called on, and **a type's own method always takes precedence**: it also serves every trait of the type that declares that name. So a type that implements two traits that both have `describe` must define `describe` in `impl Item`. That one method then serves both traits, the trait impls leave it out, and it is checked against both signatures and verified against both contracts. A name that depends on the receiver can't be passed as a bare function value (`map(describe)`): pass a lambda (`x -> x.describe()`).
+**Shared method names.** Two traits may declare methods with the same name, and each implementation keeps its own body. A call picks by what is known about the value it is called on:
+
+- known only through a trait (`d: Describe`, `T: Describe`): that trait's implementation;
+- a known type: its own method if it has one (`impl Item { fn describe(self) … }`), else the one trait of the type that declares the name;
+- otherwise it is a compile error: a type implementing two traits that both have `describe`, with no `describe` of its own; a value known only as `Describe | Log` or `T: Describe + Log`. In the last two cases a type's own `describe` doesn't help: it says what `describe` means on an `Item`, not which trait's meaning the call wants.
+
+`strata` decides this when checking and writes the decision into the program it runs, so the same call always runs the same implementation. A name that depends on the receiver can't be passed as a bare function value (`map(describe)`): pass a lambda (`x -> x.describe()`).
 
 **Not yet:** trait methods without `self` (such as `fn empty() -> Self` in a trait, called as `T.empty()` in generic code).
 

@@ -89,7 +89,7 @@ pub fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
 }
 
 pub fn static_refinements(prog: &Program, env: &Env) -> Vec<Diag> {
-    let resolved = crate::resolve::resolve(prog);
+    let resolved = crate::types::elaborate(prog);
     let prog = &resolved.program;
     let mut out = Vec::new();
     let mut it = Interp::new(env, 0);
@@ -243,15 +243,13 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&s
         None => (f.clone(), false),
         Some(imp) => {
             let mut d = for_impl(imp, f);
-            // the trait's contract binds every implementation; a type's own
-            // method is bound by every trait of the type it serves
-            let trs = if imp.is_inherent() { env.traits_with(&f.name, &crate::types::texpr_head(&imp.for_type)) } else { vec![imp.trait_name.clone()] };
-            for tr in trs {
-                if let Some(tm) = env.traits.get(&tr).and_then(|t| t.methods.iter().find(|m| m.decl.name == f.name)) {
-                    let tm = for_impl(imp, &tm.decl);
-                    d.requires.splice(0..0, tm.requires);
-                    d.ensures.splice(0..0, tm.ensures);
-                }
+            // run through its trait: the name may be shared with another trait or the type's own method
+            d.name = crate::types::trait_call(&imp.trait_name, &f.name);
+            // the trait's contract binds every implementation
+            if let Some(tm) = env.traits.get(&imp.trait_name).and_then(|t| t.methods.iter().find(|m| m.decl.name == f.name)) {
+                let tm = for_impl(imp, &tm.decl);
+                d.requires.splice(0..0, tm.requires);
+                d.ensures.splice(0..0, tm.ensures);
             }
             (d, true)
         }
@@ -382,7 +380,9 @@ pub fn fuzz_impl_method(env: &Env, imp: &ImplDecl, method: &str, cases: usize, s
     let Some(decl) = imp.methods.iter().find(|m| m.name == method).or_else(|| tr.methods.iter().find(|m| m.decl.name == method).map(|m| &m.decl)) else {
         return Verdict::Skipped { reason: format!("no method `{method}`") };
     };
-    fuzz_call(env, &for_impl(imp, decl), cases, seed, true)
+    let mut d = for_impl(imp, decl);
+    d.name = crate::types::trait_call(&imp.trait_name, method);
+    fuzz_call(env, &d, cases, seed, true)
 }
 
 /// Check a trait law for one implementation with generated inputs.
