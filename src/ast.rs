@@ -155,6 +155,7 @@ pub struct TraitDecl {
 pub struct ImplDecl {
     pub type_params: Vec<String>,
     pub bounds: Vec<Bound>,
+    /// Empty for methods defined on the type itself (`impl Item { ... }`).
     pub trait_name: String,
     pub trait_args: Vec<TypeExpr>,
     pub for_type: TypeExpr,
@@ -162,7 +163,15 @@ pub struct ImplDecl {
 }
 
 impl ImplDecl {
+    /// `impl Item { ... }`: methods of the type itself, not of a trait.
+    pub fn is_inherent(&self) -> bool {
+        self.trait_name.is_empty()
+    }
+
     pub fn name(&self) -> String {
+        if self.is_inherent() {
+            return format!("impl {}", crate::printer::ty(&self.for_type));
+        }
         let tr = crate::printer::ty(&TypeExpr::Named(self.trait_name.clone(), self.trait_args.clone()));
         format!("impl {tr} for {}", crate::printer::ty(&self.for_type))
     }
@@ -509,4 +518,69 @@ pub enum CtorArgs {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Program {
     pub decls: Vec<Decl>,
+}
+
+/// Visit `e` and every expression inside it, outermost first, allowing changes.
+pub fn walk_mut(e: &mut Expr, f: &mut impl FnMut(&mut Expr)) {
+    f(e);
+    let mut w = |x: &mut Expr| walk_mut(x, f);
+    match e {
+        Expr::List(xs) | Expr::Tuple(xs) => xs.iter_mut().for_each(&mut w),
+        Expr::Ctor(_, CtorArgs::Positional(xs)) => xs.iter_mut().for_each(&mut w),
+        Expr::Ctor(_, CtorArgs::Record(fs)) => fs.iter_mut().for_each(|(_, x)| w(x)),
+        Expr::Ctor(_, CtorArgs::Update(b, fs)) => {
+            w(b);
+            fs.iter_mut().for_each(|(_, x)| w(x))
+        }
+        Expr::Call(g, xs) => {
+            w(g);
+            xs.iter_mut().for_each(&mut w)
+        }
+        Expr::Method(r, _, xs) => {
+            w(r);
+            xs.iter_mut().for_each(&mut w)
+        }
+        Expr::Field(r, _) | Expr::Is(r, _) | Expr::Un(_, r) | Expr::Lambda(_, r) | Expr::Return(r) | Expr::Mut(r) | Expr::Try(r, _) => w(r),
+        Expr::Except(r, _, fb) => {
+            w(r);
+            w(fb)
+        }
+        Expr::Interp(parts) => parts.iter_mut().for_each(|p| {
+            if let StrPart::Expr(e, _) = p {
+                w(e)
+            }
+        }),
+        Expr::Bin(_, l, r) => {
+            w(l);
+            w(r)
+        }
+        Expr::If(c, t, x) => {
+            w(c);
+            w(t);
+            w(x)
+        }
+        Expr::Match(s, _, arms) => {
+            w(s);
+            arms.iter_mut().for_each(|a| w(&mut a.body))
+        }
+        Expr::Block(stmts, last) => {
+            for s in stmts {
+                match s {
+                    Stmt::Comment(_) | Stmt::Break | Stmt::Continue => {}
+                    Stmt::Let(_, _, x) | Stmt::Var(_, _, x) | Stmt::Expr(x) | Stmt::Assert(x) | Stmt::Loop(x) => w(x),
+                    Stmt::Assign(a, b) | Stmt::While(a, b) | Stmt::For(_, a, b) => {
+                        w(a);
+                        w(b)
+                    }
+                }
+            }
+            w(last)
+        }
+        _ => {}
+    }
+}
+
+/// Every expression of a function: its body and its contract.
+pub fn fn_exprs_mut(f: &mut FnDecl) -> impl Iterator<Item = &mut Expr> {
+    std::iter::once(&mut f.body).chain(f.requires.iter_mut()).chain(f.ensures.iter_mut())
 }

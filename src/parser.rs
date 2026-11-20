@@ -389,10 +389,14 @@ impl Parser {
 
     fn impl_decl(&mut self) -> R<ImplDecl> {
         let (type_params, bounds) = self.bounded_params()?;
-        let trait_name = self.path()?;
-        let trait_args = if self.eat_sym("[") { self.list("]", |p| p.type_expr())? } else { vec![] };
-        self.expect_kw("for")?;
-        let for_type = self.type_expr_plain()?;
+        let head = self.path()?;
+        let head_args = if self.eat_sym("[") { self.list("]", |p| p.type_expr())? } else { vec![] };
+        // `impl Trait for Type { ... }`, or `impl Type { ... }` for the type's own methods
+        let (trait_name, trait_args, for_type) = if self.eat_kw("for") {
+            (head, head_args, self.type_expr_plain()?)
+        } else {
+            (String::new(), vec![], TypeExpr::Named(head, head_args))
+        };
         self.expect_sym("{")?;
         let mut methods = Vec::new();
         while !self.eat_sym("}") {

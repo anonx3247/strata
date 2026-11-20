@@ -592,8 +592,8 @@ impl<'a> Interp<'a> {
             _ => None,
         };
         let Some((mut decl, req, ens)) = own.or_else(|| self.env.resolve_method(name, &head)) else {
-            let tr = self.env.method_trait.get(name).cloned().unwrap_or_default();
-            return self.fail(FaultKind::Runtime, format!("`{head}` does not implement `{tr}` (calling `{name}`)"));
+            let trs = self.env.method_traits.get(name).cloned().unwrap_or_default().join("` or `");
+            return self.fail(FaultKind::Runtime, format!("`{head}` has no method `{name}` (it does not implement `{trs}`)"));
         };
         decl.requires.splice(0..0, req);
         decl.ensures.splice(0..0, ens);
@@ -703,7 +703,7 @@ impl<'a> Interp<'a> {
             Value::FnRef(n) => {
                 if self.env.fns.contains_key(&n) {
                     self.call_fn(&n, args)
-                } else if self.env.method_trait.contains_key(&n) {
+                } else if self.env.is_method(&n) {
                     self.call_method(&n, args)
                 } else {
                     self.builtin(&n, args)

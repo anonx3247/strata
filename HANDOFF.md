@@ -74,7 +74,8 @@ Diff: a renamed variant, method or field shows on its type or trait as "variant 
 
 ## Known gaps
 
-- Trait methods must take `self`; there is no `fn empty() -> Self` dispatch yet, and method names must be unique across traits.
+- Trait methods must take `self`: there is no `fn empty() -> Self` in a trait yet (it would be called as `T.empty()` in generic code, which needs type arguments passed at runtime). A type's own methods (`impl Item`) can already go without `self`: `Item.new()`.
+- Calls to a type's own method, or to a method name shared by several traits, are opaque to the SMT backend (which implementation runs depends on the receiver's type); their callers fall back on fuzzing for what depends on the result.
 - No host bindings (FFI), so a real SQLite backend isn't possible yet.
 - `strata verify --force` on the tasks example takes a few seconds (proven functions are not fuzzed); the slowest part is still generating `MemQueue` values that satisfy its invariants.
 - `!` converts errors only by fitting (a variant into its sum, a member into a union), not with a conversion function.
@@ -179,3 +180,9 @@ The `smt-verification` worktree (uncommitted, on old main) already has: symbolic
 - **Use `len` everywhere, not `str_len`.** `len` is already overloaded for `String`, so remove `str_len` from the builtins and the prelude refinements, and update the examples.
 - **Bring every example up to date with the current language**: `examples/*.strata` and `examples/tasks/`, plus the README snippets. Use the prelude types (`Natural`, `Positive`, `NonEmptyString`), inline refinements where a constraint is used once, `let mut` / loops where procedural code reads better, and (once implemented) arrow lambdas.
 - **GitHub syntax highlighting**: label Strata code blocks in the README and docs as ```` ```rust ````. Rust is the closest match (`fn`, `trait`, `impl`, `let mut`, `match … =>`, `///`, `->`), and GitHub's highlighter for it is solid. Also add a `.gitattributes` with `*.strata linguist-language=Rust`, so `.strata` files are highlighted on GitHub and counted as code.
+
+### A type's own methods, and shared method names (decided 2026-11-20, built)
+- **`impl Item { ... }`** gives a type methods of its own, with no trait. A method with `self` is called on a value; one without `self` is called on the type (`Item.new(...)`), and is resolved into the function `Item.new` right after module resolution.
+- **Traits as parameter types** are shorthand for a type parameter with that bound (`mut queue: Queue[P, E]` = `[Q: Queue[P, E]](mut queue: Q)`). Name the parameter only to tie types together.
+- **Method names may be shared between traits.** A call picks by the receiver's type. **A type's own method always takes precedence** and serves every trait of the type that declares that name; a type implementing two traits that share a name must define it in `impl Type`, and the trait impls leave it out (one implementation per name and type, so dispatch on the runtime value is unambiguous). It is checked against every such trait's signature and verified against all their contracts.
+- Still open: trait methods without `self` (`fn empty() -> Self`). Proposed: call them as `T.empty()` / `Money.empty()` (the type is always named), ban self-less trait methods that don't mention `Self`, and pass type arguments to generic functions at runtime.

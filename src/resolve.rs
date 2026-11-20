@@ -34,10 +34,68 @@ pub struct Resolution {
 
 pub fn resolve(p: &Program) -> Resolution {
     // Programs without modules or imports are already resolved.
-    if p.decls.iter().all(|d| d.module.is_empty() && !matches!(d.kind, DeclKind::Use(_))) {
-        return Resolution { program: p.clone(), errors: vec![] };
+    let mut r = if p.decls.iter().all(|d| d.module.is_empty() && !matches!(d.kind, DeclKind::Use(_))) {
+        Resolution { program: p.clone(), errors: vec![] }
+    } else {
+        run(p, None)
+    };
+    static_calls(&mut r.program);
+    r
+}
+
+/// The name a type's own method without `self` is known by once resolved:
+/// `Item.new(x)` calls the function `Item.new` (`core.Item.new` in a module).
+pub fn static_name(type_q: &str, method: &str) -> String {
+    format!("{type_q}.{}", method.rsplit('.').next().unwrap_or(method))
+}
+
+/// Whether a method takes `self` (else it is called on the type: `Item.new()`).
+pub fn takes_self(f: &FnDecl) -> bool {
+    f.params.first().is_some_and(|p| p.name == "self")
+}
+
+/// Rewrite `Item.new(x)` (a type's own method without `self`) into a call to
+/// the function `Item.new`, so everything after resolution sees a plain call.
+fn static_calls(p: &mut Program) {
+    let short = |m: &str| m.rsplit('.').next().unwrap_or(m).to_string();
+    let mut statics: HashSet<(String, String)> = HashSet::new();
+    for d in &p.decls {
+        if let DeclKind::Impl(i) = &d.kind {
+            if i.is_inherent() {
+                for m in i.methods.iter().filter(|m| !takes_self(m)) {
+                    statics.insert((crate::types::texpr_head(&i.for_type), short(&m.name)));
+                }
+            }
+        }
     }
-    run(p, None)
+    if statics.is_empty() {
+        return;
+    }
+    let mut fix = |e: &mut Expr| {
+        walk_mut(e, &mut |e| {
+            if let Expr::Method(r, m, args) = e {
+                // a capitalised name parses as a constructor
+                if let Expr::Var(t) | Expr::Ctor(t, CtorArgs::None) = &**r {
+                    if statics.contains(&(t.clone(), short(m))) {
+                        *e = Expr::Call(Box::new(Expr::Var(static_name(t, m))), std::mem::take(args));
+                    }
+                }
+            }
+        })
+    };
+    for d in &mut p.decls {
+        match &mut d.kind {
+            DeclKind::Fn(f) => fn_exprs_mut(f).for_each(&mut fix),
+            DeclKind::Impl(i) => i.methods.iter_mut().for_each(|f| fn_exprs_mut(f).for_each(&mut fix)),
+            DeclKind::Trait(t) => {
+                t.methods.iter_mut().for_each(|m| fn_exprs_mut(&mut m.decl).for_each(&mut fix));
+                t.laws.iter_mut().for_each(|l| fix(&mut l.body));
+            }
+            DeclKind::Test(t) => fix(&mut t.body),
+            DeclKind::Type(t) => t.refinement.iter_mut().for_each(&mut fix),
+            DeclKind::Use(_) => {}
+        }
+    }
 }
 
 /// What a qualified name is: `("function" | "type" | "trait", module)` for a
@@ -530,6 +588,15 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
             }
             DeclKind::Fn(_) => {
                 table.insert(qualify(&d.module, &d.name()), item);
+            }
+            // a type's own methods come with the type, like a trait's
+            DeclKind::Impl(i) if i.is_inherent() => {
+                let tq = qualify(&d.module, &crate::types::texpr_head(&i.for_type));
+                for m in &i.methods {
+                    let mq = qualify(&d.module, &m.name);
+                    table.insert(mq.clone(), Item { module: d.module.clone(), public: true });
+                    children.entry(tq.clone()).or_default().push((m.name.clone(), mq));
+                }
             }
             DeclKind::Test(_) | DeclKind::Impl(_) | DeclKind::Use(_) => {}
         }
@@ -1031,13 +1098,20 @@ impl Rw<'_> {
             DeclKind::Impl(i) => {
                 self.tparams.push(i.type_params.iter().cloned().collect());
                 let bounds = self.bounds(&i.bounds);
-                let trait_q = self.lookup(&i.trait_name);
-                let trait_name = self.written(&i.trait_name, &trait_q);
+                let trait_q = if i.is_inherent() { String::new() } else { self.lookup(&i.trait_name) };
+                let trait_name = if i.is_inherent() { String::new() } else { self.written(&i.trait_name, &trait_q) };
                 let trait_args = i.trait_args.iter().map(|a| self.ty(a)).collect();
                 let for_type = self.ty(&i.for_type);
+                if i.is_inherent() {
+                    let head = crate::types::texpr_head(&for_type);
+                    let short = head.rsplit('.').next().unwrap_or(&head).to_string();
+                    if head.contains('.') && module_of(&head) != m {
+                        self.errors.push(Diag { decl: self.decl.clone(), msg: format!("`impl {short}` must be in the module that defines `{short}` (`{}`)", module_of(&head)) });
+                    }
+                }
                 // impl methods are named like the trait's methods (in the trait's module,
-                // whatever the trait is called here)
-                let tm = module_of(&trait_q).to_string();
+                // whatever the trait is called here); a type's own, like the type
+                let tm = if i.is_inherent() { m.clone() } else { module_of(&trait_q).to_string() };
                 let methods = i.methods.iter().map(|f| self.func(f, self.declared(&tm, &f.name))).collect();
                 self.tparams.pop();
                 DeclKind::Impl(ImplDecl { type_params: i.type_params.clone(), bounds, trait_name, trait_args, for_type, methods })

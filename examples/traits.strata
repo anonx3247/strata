@@ -30,6 +30,18 @@ trait Combine {
 
 type Item = { name: NonEmptyString, cents: Natural }
 
+/// A type can also have methods of its own, with no trait. One without
+/// `self` is called on the type: `Item.free("napkin")`.
+impl Item {
+  fn free(name: NonEmptyString) -> Item {
+    Item { name, cents: 0 }
+  }
+
+  fn discounted(self, percent: Int where 0 <= it && it <= 100) -> Item {
+    Item { ..self, cents: self.cents * (100 - percent) / 100 }
+  }
+}
+
 type Bundle = { items: NonEmpty[Item], discount: Int where 0 <= it && it <= 50 }
 
 impl Priced for Item {
@@ -126,6 +138,8 @@ test "default methods, supertraits and generic bounds" {
   assert b.summary() == "bundle of tea, cake: 675c"
   assert total([tea, cake]) == 750
   assert 42.describe() == "the number 42"
+  assert Item.free("napkin").price() == 0
+  assert tea.discounted(20).summary() == "tea: 360c"
   assert Sku("TEA-7").describe() == "SKU TEA-7"
 }
 

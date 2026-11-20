@@ -492,6 +492,9 @@ fn trait_text(t: &TraitDecl, bodies: bool) -> String {
 }
 
 fn impl_head(i: &ImplDecl) -> String {
+    if i.is_inherent() {
+        return format!("impl{} {}", bounded(&i.type_params, &i.bounds), ty(&i.for_type));
+    }
     let tr = ty(&TypeExpr::Named(i.trait_name.clone(), i.trait_args.clone()));
     format!("impl{} {tr} for {}", bounded(&i.type_params, &i.bounds), ty(&i.for_type))
 }

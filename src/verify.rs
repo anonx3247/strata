@@ -243,11 +243,15 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&s
         None => (f.clone(), false),
         Some(imp) => {
             let mut d = for_impl(imp, f);
-            // the trait's contract binds every implementation
-            if let Some(tm) = env.traits.get(&imp.trait_name).and_then(|t| t.methods.iter().find(|m| m.decl.name == f.name)) {
-                let tm = for_impl(imp, &tm.decl);
-                d.requires.splice(0..0, tm.requires);
-                d.ensures.splice(0..0, tm.ensures);
+            // the trait's contract binds every implementation; a type's own
+            // method is bound by every trait of the type it serves
+            let trs = if imp.is_inherent() { env.traits_with(&f.name, &crate::types::texpr_head(&imp.for_type)) } else { vec![imp.trait_name.clone()] };
+            for tr in trs {
+                if let Some(tm) = env.traits.get(&tr).and_then(|t| t.methods.iter().find(|m| m.decl.name == f.name)) {
+                    let tm = for_impl(imp, &tm.decl);
+                    d.requires.splice(0..0, tm.requires);
+                    d.ensures.splice(0..0, tm.ensures);
+                }
             }
             (d, true)
         }

@@ -248,7 +248,19 @@ fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, (ac
 
 **Capabilities are traits too.** There are no separate effects: a backend (database, queue, console, clock) is a trait, and code that uses one takes an implementation as a parameter or holds it in a field: `fn ship(mut db: Db, ...)`, `type PrintWorker = { console: Console }`. A trait used as a type means "any implementation": `db: Db` is shorthand for `fn ship[D: Db](db: D, ...)`. Name the type parameter only when it must tie things together, as in `combine_all[T: Combine](first: T, rest: List[T]) -> T`. A method that changes its value says `mut self` (`fn save(mut self, o: Order)`). Tests pass a fake implementation or `mock Db`. Async and iterators will be designed as their own language features.
 
-**Not yet:** methods without `self` (such as `fn empty() -> Self`), which need dispatch on the expected type; method names shared between traits.
+**A type's own methods.** `impl Item { ... }` gives a type methods of its own, with no trait. A method with `self` is called on a value (`item.priced(42)`). One without `self` is called on the type, which makes it a constructor: `Item.new("tea")`. Only a record, sum or `distinct` type defined in the program can have them, in the module that defines it, and in a single `impl Item` block.
+
+```rust
+impl Item {
+  fn new(name: NonEmptyString) -> Item { Item { name, cents: 0 } }
+  fn priced(self, cents: Natural) -> Item { Item { ..self, cents } }
+}
+let tea = Item.new("tea").priced(42)
+```
+
+**Shared method names, and precedence.** Two traits may declare methods with the same name. A call picks the method by the type of the value it is called on, and **a type's own method always takes precedence**: it also serves every trait of the type that declares that name. So a type that implements two traits that both have `describe` must define `describe` in `impl Item`. That one method then serves both traits, the trait impls leave it out, and it is checked against both signatures and verified against both contracts. A name that depends on the receiver can't be passed as a bare function value (`map(describe)`): pass a lambda (`x -> x.describe()`).
+
+**Not yet:** trait methods without `self` (such as `fn empty() -> Self` in a trait, called as `T.empty()` in generic code).
 
 ## Modules: units that meet only through contracts
 

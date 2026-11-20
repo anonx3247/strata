@@ -211,9 +211,12 @@ pub struct Env {
     pub ctors: HashMap<String, String>,
     pub fns: HashMap<String, FnDecl>,
     pub traits: HashMap<String, TraitDecl>,
+    /// Trait implementations (`impl Trait for Type`).
     pub impls: Vec<ImplDecl>,
-    /// trait method name -> trait name (method names are unique across traits)
-    pub method_trait: HashMap<String, String>,
+    /// trait method name -> the traits that declare it
+    pub method_traits: HashMap<String, Vec<String>>,
+    /// type name -> its own methods (`impl Item { ... }`)
+    pub inherent: HashMap<String, ImplDecl>,
 }
 
 /// The name used to find an implementation: `List[Int]` -> `List`, `Line` -> `Line`.
@@ -238,7 +241,8 @@ impl Env {
             fns: HashMap::new(),
             traits: HashMap::new(),
             impls: Vec::new(),
-            method_trait: HashMap::new(),
+            method_traits: HashMap::new(),
+            inherent: HashMap::new(),
         };
         let mut errs = Vec::new();
         let prelude_names: Vec<String> = prelude.decls.iter().map(|d| d.name()).collect();
@@ -273,11 +277,21 @@ impl Env {
                 DeclKind::Test(_) | DeclKind::Use(_) => false,
                 DeclKind::Trait(t) => {
                     for m in &t.methods {
-                        if let Some(other) = env.method_trait.insert(m.decl.name.clone(), t.name.clone()) {
-                            errs.push(Diag { decl: name.clone(), msg: format!("method `{}` is also defined by trait `{other}`; method names must be unique across traits for now", m.decl.name) });
-                        }
+                        env.method_traits.entry(m.decl.name.clone()).or_default().push(t.name.clone());
                     }
                     env.traits.insert(t.name.clone(), t.clone()).is_some()
+                }
+                DeclKind::Impl(i) if i.is_inherent() => {
+                    let head = texpr_head(&i.for_type);
+                    // a method without `self` is called on the type (`Item.new()`): a function `Item.new`
+                    for m in i.methods.iter().filter(|m| !crate::resolve::takes_self(m)) {
+                        let f = static_fn(i, m);
+                        env.fns.insert(f.name.clone(), f);
+                    }
+                    if env.inherent.insert(head.clone(), i.clone()).is_some() {
+                        errs.push(Diag { decl: name.clone(), msg: format!("`{head}` has two `impl {head}` blocks: put all of its own methods in one") });
+                    }
+                    false
                 }
                 DeclKind::Impl(i) => {
                     let head = texpr_head(&i.for_type);
@@ -324,27 +338,88 @@ impl Env {
                 });
             }
         }
-        for (m, tr) in &env.method_trait {
+        let mut sorted: Vec<_> = env.method_traits.iter().collect();
+        sorted.sort();
+        for (m, trs) in sorted {
             if env.fns.contains_key(m) {
-                errs.push(Diag { decl: m.clone(), msg: format!("`{m}` is both a function and a method of trait `{tr}`") });
+                errs.push(Diag { decl: m.clone(), msg: format!("`{m}` is both a function and a method of trait `{}`", trs[0]) });
+            }
+        }
+        let mut heads: Vec<_> = env.inherent.iter().collect();
+        heads.sort_by_key(|(h, _)| *h);
+        for (head, i) in heads {
+            for m in i.methods.iter().filter(|m| crate::resolve::takes_self(m)) {
+                if env.fns.contains_key(&m.name) {
+                    errs.push(Diag { decl: i.name(), msg: format!("`{}` is both a function and a method of `{head}`", m.name) });
+                }
             }
         }
         (env, errs)
     }
 
+    /// The traits declaring `method` that values of type `head` implement.
+    pub fn traits_with(&self, method: &str, head: &str) -> Vec<String> {
+        let Some(trs) = self.method_traits.get(method) else { return vec![] };
+        trs.iter().filter(|tr| self.impls.iter().any(|i| &i.trait_name == *tr && texpr_head(&i.for_type) == head)).cloned().collect()
+    }
+
+    /// A type's own method `method` (with `self`), if it has one.
+    pub fn own_method(&self, head: &str, method: &str) -> Option<&FnDecl> {
+        self.inherent.get(head)?.methods.iter().find(|m| m.name == method && crate::resolve::takes_self(m))
+    }
+
+    /// Whether `name` is a method (of a trait, or of a type itself).
+    pub fn is_method(&self, name: &str) -> bool {
+        self.method_traits.contains_key(name) || self.inherent.values().any(|i| i.methods.iter().any(|m| m.name == name && crate::resolve::takes_self(m)))
+    }
+
+    /// The declaration of method `name` when it means the same thing on every
+    /// type: declared by exactly one trait and by no type itself. Its
+    /// signature and contract then hold for every call.
+    pub fn method_contract(&self, name: &str) -> Option<(&TraitDecl, &FnDecl)> {
+        match self.method_traits.get(name).map(|v| v.as_slice()) {
+            Some([tr]) if !self.inherent.values().any(|i| i.methods.iter().any(|m| m.name == name)) => {
+                let t = self.traits.get(tr)?;
+                Some((t, &t.methods.iter().find(|m| m.decl.name == name)?.decl))
+            }
+            _ => None,
+        }
+    }
+
+    /// The parameters of method `name` (for `mut`-ness: every declaration of
+    /// a shared name must agree, which impls are checked for).
+    pub fn method_params(&self, name: &str) -> Option<Vec<Param>> {
+        let from_trait = self.method_traits.get(name).and_then(|trs| trs.first()).and_then(|t| self.traits.get(t)).and_then(|t| t.methods.iter().find(|m| m.decl.name == name)).map(|m| m.decl.params.clone());
+        let mut owns: Vec<_> = self.inherent.iter().collect();
+        owns.sort_by_key(|(h, _)| *h);
+        from_trait.or_else(|| owns.into_iter().find_map(|(_, i)| i.methods.iter().find(|m| m.name == name && crate::resolve::takes_self(m)).map(|m| m.params.clone())))
+    }
+
     /// The implementation of `method` for values whose type head is `head`:
-    /// the impl's own method, or the trait's default.
+    /// the type's own method first (it always takes precedence), else the
+    /// impl's method or the trait's default. The contracts of every trait
+    /// that declares the method for this type bind it.
     pub fn resolve_method(&self, method: &str, head: &str) -> Option<(FnDecl, Vec<Expr>, Vec<Expr>)> {
-        let tr = self.traits.get(self.method_trait.get(method)?)?;
-        let tm = tr.methods.iter().find(|m| m.decl.name == method)?;
-        let imp = self.impls.iter().find(|i| i.trait_name == tr.name && texpr_head(&i.for_type) == head)?;
+        let trs = self.traits_with(method, head);
+        let (mut req, mut ens) = (vec![], vec![]);
+        for tr in &trs {
+            if let Some(tm) = self.traits.get(tr).and_then(|t| t.methods.iter().find(|m| m.decl.name == method)) {
+                req.extend(tm.decl.requires.clone());
+                ens.extend(tm.decl.ensures.clone());
+            }
+        }
+        if let Some(own) = self.own_method(head, method) {
+            return Some((own.clone(), req, ens));
+        }
+        let [tr] = trs.as_slice() else { return None };
+        let tm = self.traits.get(tr)?.methods.iter().find(|m| m.decl.name == method)?;
+        let imp = self.impls.iter().find(|i| &i.trait_name == tr && texpr_head(&i.for_type) == head)?;
         let decl = match imp.methods.iter().find(|m| m.name == method) {
             Some(m) => m.clone(),
             None if tm.default => tm.decl.clone(),
             None => return None,
         };
-        // the trait's contract binds every implementation
-        Some((decl, tm.decl.requires.clone(), tm.decl.ensures.clone()))
+        Some((decl, req, ens))
     }
 
     /// The sum type a variant belongs to (`Circle` -> `Shape`). A variant is a
@@ -991,14 +1066,145 @@ impl<'a> Checker<'a> {
             }
             return Some(fty);
         }
-        if let Some(tn) = self.env.method_trait.get(name).cloned() {
+        if let Some((tr, _)) = self.env.method_contract(name) {
+            let tn = tr.name.clone();
             return Some(self.trait_method(name, &tn));
+        }
+        if self.env.is_method(name) {
+            let short = name.rsplit('.').next().unwrap_or(name);
+            self.err(format!("which `{short}` runs depends on the type of the value it is called on (several types or traits have one): call it on a value, or pass a lambda such as `x -> x.{short}()`"));
+            return Some(self.fresh());
         }
         if let Some((_, ps, sig)) = BUILTINS.iter().find(|(n, ..)| *n == name) {
             let ps: Vec<String> = ps.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
             return Some(self.instantiate(&ps, &parse_type_str(sig)));
         }
         None
+    }
+
+    /// The type of method `m` called on `recv`, when that depends on the
+    /// receiver: the name is shared by several traits, or some type defines
+    /// it itself. A type's own method takes precedence; otherwise the one
+    /// trait the receiver's type implements that declares it. `None` when
+    /// `m` is not such a method (a function, a local, or a method of one
+    /// trait only, typed as before).
+    fn receiver_method(&mut self, m: &str, recv: Option<&Expr>) -> Option<Ty> {
+        if self.lookup(m).is_some() || self.env.fns.contains_key(m) || !self.env.is_method(m) || self.env.method_contract(m).is_some() {
+            return None;
+        }
+        let short = m.rsplit('.').next().unwrap_or(m).to_string();
+        let Some(recv) = recv else {
+            self.err(format!("`{short}` is a method: call it on a value (`x.{short}()`)"));
+            return Some(self.fresh());
+        };
+        // look at the receiver's type without reporting its errors twice (the call checks it again)
+        let n = self.errors.len();
+        let rt = self.infer(recv);
+        self.errors.truncate(n);
+        let rt = self.resolve(&rt);
+        let declares = |c: &Checker, tr: &str| c.env.traits.get(tr).is_some_and(|t| t.methods.iter().any(|x| x.decl.name == m));
+        // traits the receiver is known to have, by its type parameter's bounds or as a trait-typed value
+        let known: Option<(String, Vec<String>)> = match &rt {
+            Ty::Rigid(p) => {
+                let bs = self.bounds.get(p).cloned().unwrap_or_default();
+                let mut all = vec![];
+                for (tr, args) in bs {
+                    all.push(tr.clone());
+                    all.extend(self.supers_of(&tr, &args, 0).into_iter().map(|(s, _)| s));
+                }
+                Some((p.clone(), all))
+            }
+            Ty::Con(t, args) if self.env.traits.contains_key(t) => {
+                let mut all = vec![t.clone()];
+                all.extend(self.supers_of(t, args, 0).into_iter().map(|(s, _)| s));
+                Some((t.clone(), all))
+            }
+            _ => None,
+        };
+        if let Some((what, trs)) = known {
+            let mut cands: Vec<String> = trs.into_iter().filter(|t| declares(self, t)).collect();
+            cands.sort();
+            cands.dedup();
+            return Some(match cands.as_slice() {
+                [tr] => {
+                    let tr = tr.clone();
+                    self.trait_method(m, &tr)
+                }
+                [] => {
+                    self.err(format!("`{what}` has no method `{short}`"));
+                    self.fresh()
+                }
+                _ => {
+                    self.err(format!("`{what}` has `{short}` from several traits (`{}`): which one runs depends on the actual type, so this call is ambiguous", cands.join("`, `")));
+                    self.fresh()
+                }
+            });
+        }
+        let head = match &rt {
+            Ty::Int => "Int".to_string(),
+            Ty::Float => "Float".into(),
+            Ty::Bool => "Bool".into(),
+            Ty::Str => "String".into(),
+            Ty::Unit => "Unit".into(),
+            Ty::Con(h, _) => h.clone(),
+            _ => {
+                self.err(format!("several types or traits have a method `{short}`, and the type of the value it is called on is not known here: give it a type (e.g. on the `let` or the parameter)"));
+                return Some(self.fresh());
+            }
+        };
+        // a variant's own methods, else its sum's
+        let heads: Vec<String> = std::iter::once(head.clone()).chain(self.env.variant_parent(&head)).collect();
+        for h in &heads {
+            if let Some(imp) = self.env.inherent.get(h).cloned() {
+                if let Some(f) = imp.methods.iter().find(|x| x.name == m && crate::resolve::takes_self(x)).cloned() {
+                    return Some(self.own_method_ty(&imp, &f));
+                }
+            }
+            let trs = self.env.traits_with(m, h);
+            match trs.as_slice() {
+                [tr] => {
+                    let tr = tr.clone();
+                    return Some(self.trait_method(m, &tr));
+                }
+                [] => {}
+                _ => {
+                    // reported on the impls; see `check_shared_methods`
+                    return Some(self.fresh());
+                }
+            }
+        }
+        match self.env.method_traits.get(m).map(|v| v.as_slice()) {
+            // the obligation reports that the type doesn't implement it
+            Some([tr]) => {
+                let tr = tr.clone();
+                Some(self.trait_method(m, &tr))
+            }
+            _ => {
+                self.err(format!("`{}` has no method `{short}`", show_ty(&rt)));
+                Some(self.fresh())
+            }
+        }
+    }
+
+    /// The type of a type's own method, freshly instantiated: `Self` is the
+    /// type, and the impl's and method's type parameters are fresh.
+    fn own_method_ty(&mut self, imp: &ImplDecl, f: &FnDecl) -> Ty {
+        let vars: HashMap<String, Ty> = imp.type_params.iter().chain(&f.type_params).map(|p| (p.clone(), self.fresh())).collect();
+        let self_t = self.lower(&imp.for_type, &vars);
+        let saved = self.self_ty.replace(self_t);
+        let fty = self.lower(&Self::fn_scheme(f), &vars);
+        self.self_ty = saved;
+        for b in imp.bounds.iter().chain(&f.bounds) {
+            for tr in &b.traits {
+                if let TypeExpr::Named(tn, targs) = tr {
+                    let args: Vec<Ty> = targs.iter().map(|a| self.lower(a, &vars)).collect();
+                    if let Some(v) = vars.get(&b.param) {
+                        self.pending.push((v.clone(), tn.clone(), args, format!("calling `{}`", f.name)));
+                    }
+                }
+            }
+        }
+        fty
     }
 
     /// The written type of each `mut` parameter of a named function or trait method.
@@ -1008,10 +1214,7 @@ impl<'a> Checker<'a> {
         }
         let ps = match self.env.fns.get(name) {
             Some(f) => f.params.clone(),
-            None => {
-                let tm = self.env.method_trait.get(name).and_then(|t| self.env.traits.get(t)).and_then(|tr| tr.methods.iter().find(|m| m.decl.name == name));
-                tm.map(|m| m.decl.params.clone()).unwrap_or_default()
-            }
+            None => self.env.method_params(name).unwrap_or_default(),
         };
         ps.iter().map(|p| p.mutable.then(|| p.ty.clone())).collect()
     }
@@ -1393,11 +1596,16 @@ impl<'a> Checker<'a> {
                     Expr::Var(n) => format!("call to `{n}`"),
                     _ => "call".into(),
                 };
-                let ft = self.infer(f);
                 let muts = match &**f {
                     Expr::Var(n) => self.mut_mask(n),
                     _ => vec![],
                 };
+                if let Expr::Var(n) = &**f {
+                    if let Some(ft) = self.receiver_method(n, args.first()) {
+                        return self.call_with(ft, args, &what, &muts);
+                    }
+                }
+                let ft = self.infer(f);
                 self.call_with(ft, args, &what, &muts)
             }
             Expr::Method(recv, m, args) => {
@@ -1409,9 +1617,22 @@ impl<'a> Checker<'a> {
                 if let Some(t) = self.overloaded(m, &all) {
                     return t;
                 }
-                let Some(ft) = self.lookup(m).or_else(|| self.global_fn(m)) else {
-                    self.err(format!("unknown function `{m}`"));
-                    return self.fresh();
+                let ft = match self.receiver_method(m, Some(recv)) {
+                    Some(ft) => ft,
+                    None => match self.lookup(m).or_else(|| self.global_fn(m)) {
+                        Some(ft) => ft,
+                        None => {
+                            match &**recv {
+                                // `Item.new()` that `impl Item` doesn't define
+                                Expr::Ctor(t, CtorArgs::None) if self.env.types.contains_key(t) => {
+                                    let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+                                    self.err(format!("`{}` has no method `{}` called on the type (one without `self`, in `impl {}`)", short(t), short(m), short(t)))
+                                }
+                                _ => self.err(format!("unknown function `{m}`")),
+                            }
+                            return self.fresh();
+                        }
+                    },
                 };
                 let muts = self.mut_mask(m);
                 self.call_with(ft, &all, &format!("call to `{m}`"), &muts)
@@ -1810,10 +2031,7 @@ impl<'a> Checker<'a> {
             .fns
             .get(callee)
             .map(|f| f.params.clone())
-            .or_else(|| {
-                let tr = self.env.method_trait.get(callee)?;
-                self.env.traits[tr].methods.iter().find(|m| m.decl.name == callee).map(|m| m.decl.params.clone())
-            });
+            .or_else(|| self.env.method_params(callee));
         let Some(params) = params else {
             // a builtin or a closure: no parameter is `mut`
             for a in args.iter().filter(|a| matches!(a, Expr::Mut(_))) {
@@ -3115,12 +3333,26 @@ pub fn check(prog: &Program) -> CheckReport {
                 c.rigid = i.type_params.iter().cloned().collect();
                 c.add_bounds(&i.bounds);
                 let head = texpr_head(&i.for_type);
-                if env.types.get(&head).is_some_and(|t| matches!(t.body, TypeBody::Alias(_)) && !t.distinct) {
+                let alias = env.types.get(&head).is_some_and(|t| matches!(t.body, TypeBody::Alias(_)) && !t.distinct);
+                if alias && !i.is_inherent() {
                     c.err(format!("`{head}` is a refined alias of another type; implement the trait for the underlying type"));
                 }
                 let self_ty = c.lower(&i.for_type, &HashMap::new());
                 c.self_ty = Some(self_ty.clone());
                 match env.traits.get(&i.trait_name).cloned() {
+                    None if i.is_inherent() => {
+                        // a type's own methods: only for a type this program defines, in its module
+                        let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+                        if !env.types.contains_key(&head) || alias {
+                            c.err(format!("`impl {}`: methods can only be added to a record, sum or `distinct` type defined in this program (use a function, or a trait)", short(&head)));
+                        }
+                        let mut seen = std::collections::HashSet::new();
+                        for im in &i.methods {
+                            if !seen.insert(&im.name) {
+                                c.err(format!("`{}` is defined twice in `impl {}`", short(&im.name), short(&head)));
+                            }
+                        }
+                    }
                     None => c.err(format!("unknown trait `{}`", i.trait_name)),
                     Some(tr) => {
                         if tr.params.len() != i.trait_args.len() {
@@ -3132,8 +3364,23 @@ pub fn check(prog: &Program) -> CheckReport {
                         for (sn, sa) in c.supers_of(&tr.name, &targs, 0) {
                             c.pending.push((self_ty.clone(), sn.clone(), sa, format!("`{}` requires `{sn}`", tr.name)));
                         }
+                        let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
                         for tm in &tr.methods {
-                            match i.methods.iter().find(|m| m.name == tm.decl.name) {
+                            let mname = short(&tm.decl.name);
+                            let own = env.own_method(&head, &tm.decl.name).cloned();
+                            // two traits with this method name: the type must say which it means
+                            let others: Vec<String> = env.traits_with(&tm.decl.name, &head).into_iter().filter(|t| *t != tr.name).collect();
+                            if !others.is_empty() && own.is_none() {
+                                c.err(format!(
+                                    "`{}` implements `{}` and `{}`, which both have `{mname}`: define `{mname}` in `impl {}` (it then serves both)",
+                                    short(&head), short(&tr.name), others.iter().map(|t| short(t)).collect::<Vec<_>>().join("`, `"), short(&head)
+                                ));
+                            }
+                            let mine = i.methods.iter().find(|m| m.name == tm.decl.name);
+                            if mine.is_some() && own.is_some() {
+                                c.err(format!("`{mname}` is already defined in `impl {}`, which serves `{}` too: remove it here", short(&head), short(&tr.name)));
+                            }
+                            match mine.or(own.as_ref()) {
                                 None if !tm.default => c.err(format!("missing method `{}` required by `{}`", tm.decl.name, tr.name)),
                                 None => {}
                                 Some(im) => {
@@ -3197,4 +3444,20 @@ pub fn check(prog: &Program) -> CheckReport {
         errors.extend(c.errors);
     }
     CheckReport { errors, holes }
+}
+
+/// A type's own method without `self` as the function it is called as
+/// (`Item.new`): `Self` is the type, and the impl's type parameters are the
+/// function's.
+pub fn static_fn(i: &ImplDecl, m: &FnDecl) -> FnDecl {
+    let sub: HashMap<String, TypeExpr> = [("Self".to_string(), i.for_type.clone())].into();
+    let mut f = m.clone();
+    f.name = crate::resolve::static_name(&texpr_head(&i.for_type), &m.name);
+    f.type_params = i.type_params.iter().chain(&m.type_params).cloned().collect();
+    f.bounds = i.bounds.iter().chain(&m.bounds).cloned().collect();
+    for p in &mut f.params {
+        p.ty = subst_texpr(&p.ty, &sub);
+    }
+    f.ret = subst_texpr(&f.ret, &sub);
+    f
 }
