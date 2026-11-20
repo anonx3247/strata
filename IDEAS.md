@@ -86,6 +86,90 @@ Questions to settle:
   and the length is at most `len(xs)`), which `filter` with a lambda can't
   easily give it.
 
+### Web UIs (direction agreed with the user 2026-11-20; not built)
+
+The second place Strata should be useful, after the command line: UIs in the
+browser, written without JavaScript. The direction is the Elm architecture,
+run on the server, in the way Phoenix LiveView and htmx work:
+
+```rust
+use std.web.{App, Html, div, button, text, on_click}
+
+type Model = { count: Int where 0 <= it }
+
+type Msg = | Increment | Decrement | Reset
+
+impl App[Msg] for Model {
+  fn update(mut self, msg: Msg) -> () {
+    match msg {
+      Increment => self.count = self.count + 1
+      Decrement => if self.count > 0 { self.count = self.count - 1 }
+      Reset     => self.count = 0
+    }
+  }
+
+  fn view(self) -> Html[Msg] {
+    div([], [
+      button([on_click(Decrement)], [text("-")]),
+      text(f"{self.count}"),
+      button([on_click(Increment)], [text("+")]),
+    ])
+  }
+}
+```
+
+(The syntax is a sketch; traits with a type parameter like `App[Msg]` may
+need work.)
+
+`strata serve` keeps each session's `Model` in memory and renders `view` to
+HTML. A small, fixed JS file that ships with the runtime catches clicks and
+form submits. `on_click(Increment)` puts the message's JSON in an attribute;
+the JS posts it back, and the server reads it against `Msg` (refinements
+checked, as for command-line options), runs `update` and `view`, and the JS
+swaps the new HTML into the page.
+
+Why it fits: users write no JS; no async is needed in user code; `update` and
+`view` are pure, so they can be tested without a browser and the verifier can
+prove invariants across every message (`count >= 0`); an unhandled `Msg` is a
+non-exhaustive `match`. The interpreter is plain Rust (the solver isn't needed
+to run code), so it could later be compiled to wasm and run the same `App` in
+the browser, without changing user code.
+
+Steps:
+1. `std.web.Html`: a sum type (element, text), helper functions (`div`, `a`,
+   `input`, …), and a renderer that escapes text. CSS as strings, or a static
+   `style.css` the server also serves.
+2. `strata serve`: a low-level handler `fn handle(req: Request) -> Response`
+   for JSON APIs and static files; bodies and query strings read into records
+   like `CommandLine`. The HTTP layer is native, next to the `host_*`
+   functions (`ui.rs` already has a std-only server).
+3. `App` and the JS client: sessions, messages, swapping the HTML in.
+4. Forms: `on_submit(constructor)` fills a record from the fields, with
+   refinement errors shown next to each field.
+5. Later: capabilities in `update` (database, LLM calls, HTTP client); the
+   wasm build.
+
+**JSX-like syntax** (user: wanted at some point, for simplicity). Markup
+written directly in Strata expressions, compiled to the `Html` helpers, e.g.
+`<button on_click={Increment}>-</button>`. Helper functions come first; the
+syntax is added on top of them later.
+
+Questions to settle:
+- **Async first, or web first?** (user, 2026-11-20; undecided.) Async is still
+  planned (roadmap item 4). The web design above doesn't need it in user code:
+  the runtime handles concurrency, and each request is a plain call. Where it
+  matters is `update` calling something slow (an LLM, an HTTP request): it
+  would block the session, and with a sequential server, everything. Elm
+  answers this without async: `update` returns *commands* (data describing
+  what to do), the runtime performs them and feeds the results back as
+  messages. Commands are values, so they're easy to test, mock and verify.
+  Claude's view: build the web first, with commands, and design async after;
+  the risk is that async later changes how commands are written. If async
+  comes first, a command could simply be an async call.
+- Can `view` use capabilities? Pure is simpler and checkable.
+- Send the whole page on every message, or a diff? The whole page to start.
+- Sessions: kept in memory to start; later stored through the ORM.
+
 ## Design principles (decided)
 
 - **No effects.** Capabilities (database, queue, console, clock) are traits; code takes an implementation as a parameter or holds it in a field. `mock T` generates an implementation that respects the trait's contracts. Async and iterators will be designed later as their own language features, **not** as effects.
@@ -286,7 +370,7 @@ Relations (decided): a definition has **dependencies** (what it mentions) and **
 1. **SMT verification, continued**: loop invariants (inferred where possible, written where it helps), list contents, trait laws, and `assumed` for outside code beyond the standard library (FFI, dependencies).
 2. **Traits with laws**: e.g. `trait Monoid { … law assoc(a, b, c): … }`; laws are verified or fuzzed for every implementation.
 3. **Agent-friendly CLI everywhere**: `--json` on every command, trace queries, and scoped workspaces and leases so several agents can work on different slices at once. The CLI *is* the agent API; no server is needed.
-4. **Async and iterators** as language features; `mock record` / `mock replay` for integration tests; deterministic replay debugging.
+4. **Async and iterators** as language features (whether before or after web UIs is open, see "Web UIs" under Ideas); `mock record` / `mock replay` for integration tests; deterministic replay debugging.
 5. **Viewer**: show which agent is working on which slice, and add a diff view for each patch.
 6. **Structural records with row polymorphism**: "anything with `.id: OrderId`".
 7. **A compilation backend** (WasmGC or Cranelift).
