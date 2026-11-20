@@ -171,9 +171,10 @@ pub struct Interp<'a> {
     /// Final values of the `mut` parameters of the call that just returned,
     /// to be written back to the caller's variables.
     writeback: Vec<(usize, Value)>,
-    /// What `Self` is in the trait methods being run (innermost last): a
-    /// default method calling `Self.empty()` uses it.
-    self_types: Vec<String>,
+    /// The types known in the trait methods being run (innermost last):
+    /// `Self`, and an impl's type parameters when a method without `self`
+    /// was called on a full type (`Pair[Int].empty()` knows `T = Int`).
+    type_frames: Vec<HashMap<String, String>>,
     /// The value of the `return` (or `!` / `?`) being carried out.
     returning: Option<Value>,
     /// At most this many evaluation steps, if set.
@@ -349,7 +350,7 @@ impl<'a> Interp<'a> {
             depth: 0,
             regexes: HashMap::new(),
             writeback: vec![],
-            self_types: vec![],
+            type_frames: vec![],
             returning: None,
             budget: None,
             steps: 0,
@@ -592,11 +593,20 @@ impl<'a> Interp<'a> {
     pub fn call_method(&mut self, name: &str, mut args: Vec<Value>) -> R<Value> {
         // a method without `self` (`Trait::empty(type, ..)`): the type comes first
         let is_static = self.env.method_contract(name).is_some_and(|(_, d)| !crate::resolve::takes_self(d));
+        // the full type a method without `self` is called on (`Pair[Int]`)
+        let mut full: Option<TypeExpr> = None;
         let head = if is_static {
             match args.first() {
-                Some(Value::Str(h)) => {
-                    let h = h.clone();
+                Some(Value::Str(t)) => {
+                    let Some(t) = crate::types::try_parse_type(t) else {
+                        return self.fail(FaultKind::Runtime, format!("`{name}`: `{t}` is not a type"));
+                    };
                     args.remove(0);
+                    let h = crate::types::texpr_head(&t);
+                    if h == crate::types::UNKNOWN_TYPE {
+                        return self.fail(FaultKind::Runtime, format!("`{name}`: the type it is called on isn't known here"));
+                    }
+                    full = Some(t);
                     h
                 }
                 _ => return self.fail(FaultKind::Runtime, format!("`{name}` needs the type it is called on")),
@@ -624,17 +634,39 @@ impl<'a> Interp<'a> {
         decl.requires.splice(0..0, req);
         decl.ensures.splice(0..0, ens);
         let label = format!("{head}.{}", crate::types::split_trait_call(name).map_or(name, |(_, m)| m));
-        self.self_types.push(head);
+        // what `Self` and the impl's type parameters are, as far as the call tells
+        let mut frame: HashMap<String, String> = HashMap::new();
+        match &full {
+            Some(t) => {
+                frame.insert("Self".into(), crate::printer::ty(t));
+                if let Some(imp) = self.env.impl_for(name, &head) {
+                    let mut binds = HashMap::new();
+                    crate::types::match_type(&imp.for_type, t, &imp.type_params, &mut binds);
+                    for p in &imp.type_params {
+                        match binds.get(p) {
+                            Some(b) if !crate::types::mentions(b, crate::types::UNKNOWN_TYPE) => {
+                                frame.insert(p.clone(), crate::printer::ty(b));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            None => {
+                frame.insert("Self".into(), head);
+            }
+        }
+        self.type_frames.push(frame);
         let r = self.call_decl(&decl, &label, args);
-        self.self_types.pop();
+        self.type_frames.pop();
         r
     }
 
-    /// Run `f` with `Self` known to be `head` (a trait law for one implementation).
-    pub fn with_self<T>(&mut self, head: &str, f: impl FnOnce(&mut Self) -> T) -> T {
-        self.self_types.push(head.to_string());
+    /// Run `f` with `Self` known to be `ty` (a trait law for one implementation).
+    pub fn with_self<T>(&mut self, ty: &str, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.type_frames.push([("Self".to_string(), ty.to_string())].into());
         let r = f(self);
-        self.self_types.pop();
+        self.type_frames.pop();
         r
     }
 
@@ -1223,11 +1255,14 @@ impl<'a> Interp<'a> {
             Expr::Hole(h) => return self.fail(FaultKind::Hole, format!("reached unfilled hole `?{h}`")),
             Expr::Var(x) => match lookup(s, x) {
                 Some(v) => v,
-                // `Self.m()` in a trait's default method or law: the type it runs for
-                None if *x == crate::types::type_arg("Self") => match self.self_types.last() {
-                    Some(h) => Value::Str(h.clone()),
-                    None => return self.fail(FaultKind::Runtime, "`Self` is not known here"),
-                },
+                // `Self` or an impl's type parameter, in the trait method being run
+                None if x.starts_with("type:") => {
+                    let p = &x["type:".len()..];
+                    match self.type_frames.last().and_then(|f| f.get(p)) {
+                        Some(t) => Value::Str(t.clone()),
+                        None => return self.fail(FaultKind::Runtime, format!("the type `{p}` isn't known here")),
+                    }
+                }
                 None => Value::FnRef(x.clone()),
             },
             Expr::List(es) => Value::List(es.iter().map(|x| self.eval(x, s)).collect::<R<_>>()?),

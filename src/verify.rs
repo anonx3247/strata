@@ -416,9 +416,9 @@ pub fn check_law(env: &Env, imp: &ImplDecl, law: &Law, cases: usize, seed: u64) 
         for (p, a) in f.params.iter().zip(&args) {
             scope = Some(std::rc::Rc::new(crate::interp::Frame::new(&p.name, a.clone(), scope)));
         }
-        // `Self.empty()` in a law means this implementation's
-        let head = crate::types::texpr_head(&imp.for_type);
-        match it.with_self(&head, |it| it.eval(&f.body, &scope)) {
+        // `Self.empty()` in a law means this implementation's (at the instance its inputs are generated for)
+        let self_ty = crate::printer::ty(&impl_instance(imp));
+        match it.with_self(&self_ty, |it| it.eval(&f.body, &scope)) {
             Ok(crate::interp::Value::Bool(true)) => {}
             Ok(_) => {
                 let shown: Vec<String> = f.params.iter().zip(&args).map(|(p, a)| format!("{} = {}", p.name, to_json(a))).collect();
@@ -509,7 +509,14 @@ fn short_stack(stack: &[String]) -> String {
 /// give its checked form that argument, so the generator supplies the type.
 fn static_type_arg(imp: &ImplDecl, f: &FnDecl, d: &mut FnDecl) {
     if !crate::resolve::takes_self(f) {
-        let ty = TypeExpr::Named(crate::types::TYPE_ARG.into(), vec![imp.for_type.clone()]);
+        let ty = TypeExpr::Named(crate::types::TYPE_ARG.into(), vec![impl_instance(imp)]);
         d.params.insert(0, Param { name: crate::types::type_arg("Self"), ty, mutable: false });
     }
+}
+
+/// The type an implementation is checked at: its type parameters at `Int`,
+/// as `for_impl` generates inputs (`Pair[T]` -> `Pair[Int]`).
+fn impl_instance(imp: &ImplDecl) -> TypeExpr {
+    let sub: std::collections::HashMap<String, TypeExpr> = imp.type_params.iter().map(|p| (p.clone(), TypeExpr::Named("Int".into(), vec![]))).collect();
+    crate::types::subst_texpr(&imp.for_type, &sub)
 }

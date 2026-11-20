@@ -2159,8 +2159,8 @@ impl Bounded for Level {
   }
 }
 
-fn lowest_rank[T: Bounded]() -> Natural {
-  T.lowest().rank()
+fn above_lowest[T: Bounded](x: T) -> Natural {
+  x.rank() + T.lowest().rank()
 }
 
 fn level_floor() -> Natural {
@@ -2191,7 +2191,7 @@ test "generic with no arguments" {
 }
 "#).unwrap();
     let (_, out) = strata(&["--file", "s.strata", "verify"], &d, None);
-    assert!(out.contains("✓ lowest_rank") && out.contains("✓ level_floor") && out.contains("✗ law left_identity for Max"), "{out}");
+    assert!(out.contains("✓ above_lowest") && out.contains("✓ level_floor") && out.contains("✗ law left_identity for Max"), "{out}");
     std::fs::write(d.join("p.strata"), r#"trait Parse {
   fn parse(s: String) -> Self
     requires len(s) > 0
@@ -2211,8 +2211,8 @@ impl Parse for Word {
   }
 }
 
-fn read[T: Parse](s: NonEmptyString) -> Natural {
-  T.parse(s).size()
+fn read[T: Parse](s: NonEmptyString) -> T {
+  T.parse(s)
 }
 
 fn word_size(s: NonEmptyString) -> Natural {
@@ -2251,6 +2251,10 @@ fn concat[T: Monoid](xs: List[T]) -> T {
   fold(xs, T.empty(), (acc, x) -> acc.combine(x))
 }
 
+fn nothing_says_t[T: Monoid]() -> Int {
+  0
+}
+
 fn unbounded[T](x: T) -> T {
   T.empty()
 }
@@ -2272,10 +2276,99 @@ test "unknown type" {
     for want in [
         "trait method `version` has no `self` and doesn't mention `Self`",
         "error in unbounded: `T` has no method `empty` called on the type",
+        "`nothing_says_t`: type parameter `T` appears in neither the parameters nor the result",
         "error in as_value: `concat` needs to know its type arguments when it runs",
         "error in not_impl: calling `empty`: `Int` does not implement `Monoid`",
         "could not work out which type must implement `Monoid`; add a type annotation",
     ] {
         assert!(out.contains(want), "missing {want:?} in {out}");
     }
+}
+
+#[test]
+fn generic_impls_get_their_type_parameters() {
+    let d = tmp("full-type-args");
+    // full types are passed at runtime: `Pair.empty()` at `Pair[Int]` knows `T = Int`, through generic functions too
+    std::fs::write(d.join("f.strata"), r#"trait Empty {
+  fn empty() -> Self
+}
+
+impl Empty for Int {
+  fn empty() -> Int {
+    0
+  }
+}
+
+impl Empty for String {
+  fn empty() -> String {
+    ""
+  }
+}
+
+type Pair[T] = { a: T, b: T }
+
+impl[T: Empty] Empty for Pair[T] {
+  fn empty() -> Pair[T] {
+    Pair { a: T.empty(), b: T.empty() }
+  }
+}
+
+type Box[T] = { inner: T }
+
+impl[T: Empty] Empty for Box[T] {
+  fn empty() -> Box[T] {
+    Box { inner: T.empty() }
+  }
+}
+
+fn blank[T: Empty](xs: List[T]) -> T {
+  match xs {
+    [] => T.empty(),
+    [x, ..] => x,
+  }
+}
+
+fn blank_pair[T: Empty](x: T) -> Pair[T] {
+  Pair.empty()
+}
+
+fn nested[T: Empty](xs: List[Box[Pair[T]]]) -> Box[Pair[T]] {
+  blank(xs)
+}
+
+test "full types at runtime" {
+  let p: Pair[Int] = Pair.empty()
+  assert p == Pair { a: 0, b: 0 }
+  let q: Pair[String] = Pair.empty()
+  assert q == Pair { a: "", b: "" }
+  assert blank_pair(7) == Pair { a: 0, b: 0 }
+  let none: List[Box[Pair[String]]] = []
+  assert nested(none) == Box { inner: Pair { a: "", b: "" } }
+  let bb: Box[Box[Int]] = Box.empty()
+  assert bb == Box { inner: Box { inner: 0 } }
+}
+"#).unwrap();
+    let (ok, out) = strata(&["--file", "f.strata", "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    let (_, out) = strata(&["--file", "f.strata", "verify"], &d, None);
+    assert!(out.contains("Pair[T].empty") && out.contains("✓ nested") && !out.contains('✗'), "{out}");
+    // in a method with `self`, the impl's type parameters aren't passed (yet)
+    std::fs::write(d.join("s.strata"), r#"trait Empty {
+  fn empty() -> Self
+}
+
+trait Reset {
+  fn reset(self) -> Self
+}
+
+type Pair[T] = { a: T, b: T }
+
+impl[T: Empty] Reset for Pair[T] {
+  fn reset(self) -> Pair[T] {
+    Pair { a: T.empty(), b: self.b }
+  }
+}
+"#).unwrap();
+    let (ok, out) = strata(&["--file", "s.strata", "check"], &d, None);
+    assert!(!ok && out.contains("`T.empty()`: `T` isn't known when this runs (in a method with `self`"), "{out}");
 }
