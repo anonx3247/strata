@@ -1,0 +1,61 @@
+// Compiled by `strata build` (tests/build.rs): lists, lambdas and the list
+// built-ins (most written in Strata, src/llvm/prelude.strata). What it prints
+// must be what `strata run` prints, the final fault included.
+
+fn is_prime(n: Int) -> Bool {
+  n >= 2 && all(range(2, n), d -> n % d != 0)
+}
+
+fn sum_list(xs: List[Int]) -> Int {
+  match xs {
+    [] => 0,
+    [x, ..rest] => x + sum_list(rest),
+  }
+}
+
+fn make_adder(n: Int) -> (Int) -> Int {
+  x -> x + n
+}
+
+fn apply_twice[A](f: (A) -> A, x: A) -> A {
+  f(f(x))
+}
+
+fn count_positive(xs: List[Positive]) -> Int {
+  len(xs)
+}
+
+fn main() -> () {
+  let xs = [5, -2, 8, 3]
+  print(xs.map(x -> x * 2))
+  print(xs.filter(x -> x > 0))
+  print(xs.fold(0, (a, x) -> a + x))
+  print(sum(xs))
+  print(sum([1.5, 2.0]))
+  print(range(0, 30).filter(is_prime))
+  print(
+    f"{any(xs, x -> x < 0)} {all(xs, x -> x < 0)} {find(xs, x -> x > 6)} {count(xs, x -> x > 0)} {contains(xs, 8)}",
+  )
+  print(reverse(xs))
+  print(sort(xs))
+  print(sort_by(["ccc", "a", "bb"], s -> len(s)))
+  print(zip(xs, ["a", "b"]))
+  print(enumerate(["x", "y"]))
+  print(join(["a", "b", "c"], ", "))
+  print(xs.map(to_string))
+  print(
+    f"{len(xs)} {push(xs, 4)} {xs + [9]} {get(xs, 1)} {get(xs, 5)} {take(xs, 2)} {drop(xs, 1)}",
+  )
+  print(sum_list(range(0, 101)))
+  let mut out = ""
+  for (n, s) in [(1, "a"), (2, "b")] {
+    out = out + f"{s}{n}"
+  }
+  print(out)
+  print([[1, 2], [3]] == [[1, 2], [3]])
+  let add3 = make_adder(3)
+  print(apply_twice(add3, 1))
+  print(apply_twice(s -> s + "!", "hi"))
+  print(count_positive([1, 2]))
+  print(count_positive(range(-1, 2)))
+}

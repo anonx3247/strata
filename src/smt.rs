@@ -61,6 +61,9 @@ pub enum Val {
     Absent,
     /// Any value: something not modelled, with the reason.
     Opaque(String),
+    /// A function value of a known type: what it does is unknown, but what
+    /// it returns is a valid value of `ret`, as any value of that type is.
+    FnOf { ret: TypeExpr },
 }
 
 /// A function applied to list elements (`map`, `filter`, `all`, `find`),
@@ -158,6 +161,8 @@ pub struct Vc<'a> {
     depth: usize,
     /// The named types whose values `check_type` is checking, outermost first.
     checking: Vec<String>,
+    /// Inside an obligation's goal (not a fact to assume): see `check_type`.
+    proving: usize,
     /// The validity of a value at a recursive type's cutoff, by type and
     /// value: one unknown for each, so a result assumed valid is the same
     /// atom when it is checked again.
@@ -242,7 +247,7 @@ fn val_key(v: &Val) -> Option<String> {
         Val::Distinct(n, _) => format!("distinct:{n}"),
         Val::Sum { ty, .. } => format!("sum:{ty}"),
         Val::List { .. } => "List*".into(),
-        Val::Union { .. } | Val::Absent | Val::Opaque(_) => return None,
+        Val::Union { .. } | Val::Absent | Val::Opaque(_) | Val::FnOf { .. } => return None,
     })
 }
 
@@ -290,6 +295,7 @@ impl<'a> Vc<'a> {
             dead: false,
             depth: 0,
             checking: vec![],
+            proving: 0,
             cutoffs: HashMap::new(),
             params: vec![],
             memo: HashMap::new(),
@@ -334,7 +340,9 @@ impl<'a> Vc<'a> {
             return;
         }
         self.spec += 1;
+        self.proving += 1;
         let g = goal(self);
+        self.proving -= 1;
         self.spec -= 1;
         if g == "true" {
             return;
@@ -388,6 +396,8 @@ impl<'a> Vc<'a> {
             Gen::Type(t2) => same(t2),
             Gen::Sub(p) | Gen::Filter(p, _) => self.valid_known(*p, t),
             Gen::Either(_, a, b) => self.valid_known(*a, t) && self.valid_known(*b, t),
+            // `[]`: no element to be invalid
+            Gen::Values(vs) if vs.is_empty() => true,
             _ => false,
         }
     }
@@ -468,6 +478,15 @@ impl<'a> Vc<'a> {
             Gen::Map(p, f) => {
                 let y = self.element_inner(p);
                 self.apply(&f, y)
+            }
+            // one side is `[]`: the element is from the other one
+            Gen::Either(c, a, b) if matches!(&self.lists[a].source, Gen::Values(vs) if vs.is_empty()) => {
+                self.assume(not(&c));
+                self.element_inner(b)
+            }
+            Gen::Either(c, a, b) if matches!(&self.lists[b].source, Gen::Values(vs) if vs.is_empty()) => {
+                self.assume(c.clone());
+                self.element_inner(a)
             }
             Gen::Either(c, a, b) => {
                 let n = self.pc.len();
@@ -642,7 +661,7 @@ impl<'a> Vc<'a> {
             }
             TypeExpr::Refined(b, _) => self.shape(b, depth),
             TypeExpr::Unit => Val::Unit,
-            TypeExpr::Fn(..) => Val::Opaque("function values are not modelled".into()),
+            TypeExpr::Fn(_, ret) => Val::FnOf { ret: (**ret).clone() },
             TypeExpr::Named(n, args) => match n.as_str() {
                 "Int" => Val::Int(self.fresh("Int")),
                 "Bool" => Val::Bool(self.fresh("Bool")),
@@ -1083,6 +1102,7 @@ impl<'a> Vc<'a> {
                 Val::Union { tag, slots }
             }
             Val::Absent => Val::Absent,
+            Val::FnOf { .. } => v.clone(),
             Val::Opaque(r) => Val::Opaque(r.clone()),
         }
     }
@@ -1127,12 +1147,25 @@ impl<'a> Vc<'a> {
         match t {
             TypeExpr::Named(n, args) => TypeExpr::Named(
                 n.clone(),
-                args.iter().map(|a| if self.refined(a, 0) { self.erased(a) } else { TypeExpr::Named("_".into(), vec![]) }).collect(),
+                args.iter().map(|a| if self.refined(a, 0) && !self.valid_by_construction(a) { self.erased(a) } else { TypeExpr::Named("_".into(), vec![]) }).collect(),
             ),
             TypeExpr::Refined(b, p) => TypeExpr::Refined(Box::new(self.erased(b)), p.clone()),
             TypeExpr::Union(ms) => TypeExpr::Union(ms.iter().map(|m| self.erased(m)).collect()),
             _ => t.clone(),
         }
+    }
+
+    /// A record or sum type of the program with no refinement of its own and
+    /// no type parameters (`Msg`, even with `SetStep { step: Step }`): every
+    /// value of it is valid, since making one checks its fields. As a type
+    /// argument it adds nothing to check (`Html[Msg]` is `Html[_]`).
+    fn valid_by_construction(&self, t: &TypeExpr) -> bool {
+        let TypeExpr::Named(n, args) = t else { return false };
+        let n = self.env.variant_parent(n).unwrap_or_else(|| n.clone());
+        args.is_empty()
+            && self.env.types.get(&n).is_some_and(|td| {
+                td.params.is_empty() && td.refinement.is_none() && !td.distinct && matches!(td.body, TypeBody::Record(_) | TypeBody::Sum(_))
+            })
     }
 
     /// The condition for `v` to be a valid value of `t`. `extra` are bindings
@@ -1216,6 +1249,16 @@ impl<'a> Vc<'a> {
                 ("Dict" | "Set", _) => self.unknown_bool("dicts and sets are not modelled yet"),
                 _ => {
                     let Some(td) = self.env.types.get(n).cloned() else { return "true".into() };
+                    // to prove: a type argument whose values are all valid has
+                    // nothing to check where the type holds one (`msg: M` in
+                    // `Attr[Msg]`, from a generic `on_click`). Facts to assume
+                    // keep them: they say what is known of the value.
+                    let args: Vec<TypeExpr> = if self.proving > 0 {
+                        args.iter().map(|a| if self.valid_by_construction(a) { TypeExpr::Named("_".into(), vec![]) } else { a.clone() }).collect()
+                    } else {
+                        args.clone()
+                    };
+                    let args = &args;
                     let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
                     let mut cs = vec![];
                     let it = match (&td.body, v) {
@@ -1884,10 +1927,24 @@ impl<'a> Vc<'a> {
             Expr::Call(f, args) => match &**f {
                 Expr::Var(name) if self.lookup(name).is_none() => self.call_exprs(name, args),
                 _ => {
+                    let callee = self.eval(f);
                     for a in args {
                         self.eval(a);
                     }
-                    Val::Opaque("calling a function value".into())
+                    match callee {
+                        // a function value of a known type: some valid value of its result type
+                        Val::FnOf { ret } => {
+                            let old = self.reason.replace("the result of calling a function value (only its type is known)".into());
+                            let res = self.shape(&ret, 0);
+                            self.reason = old;
+                            self.spec += 1;
+                            let c = self.check_type(&ret, &res, &[]);
+                            self.spec -= 1;
+                            self.assume(c);
+                            res
+                        }
+                        _ => Val::Opaque("calling a function value".into()),
+                    }
                 }
             },
             Expr::Method(r, m, args) => {
@@ -2052,7 +2109,24 @@ impl<'a> Vc<'a> {
             let args = match (name, elem) {
                 ("fold", Some(x)) => vec![Val::Opaque("the accumulator of `fold`".into()), x],
                 (_, Some(x)) => vec![x],
-                _ => vec![],
+                // passed for a parameter of a function type: it is called with
+                // valid values of its parameter types, as any values of them are
+                _ => match self.env.fns.get(name).and_then(|f| f.params.get(i)).map(|p| p.ty.clone()) {
+                    Some(TypeExpr::Fn(ps, _)) => ps
+                        .iter()
+                        .map(|t| {
+                            let old = self.reason.replace("an argument a function value is called with (only its type is known)".into());
+                            let v = self.shape(t, 0);
+                            self.reason = old;
+                            self.spec += 1;
+                            let c = self.check_type(t, &v, &[]);
+                            self.spec -= 1;
+                            self.assume(c);
+                            v
+                        })
+                        .collect(),
+                    _ => vec![],
+                },
             };
             let n = self.pc.len();
             if let Some(e) = &exists {
@@ -3041,7 +3115,7 @@ fn leaves_of(v: &Val, out: &mut Vec<String>) {
         }
         Val::List { len, .. } => out.push(len.clone()),
         Val::Distinct(_, x) => leaves_of(x, out),
-        Val::Unit | Val::Absent | Val::Opaque(_) => {}
+        Val::Unit | Val::Absent | Val::Opaque(_) | Val::FnOf { .. } => {}
     }
 }
 
@@ -3076,7 +3150,8 @@ fn to_value(env: &Env, v: &Val, m: &HashMap<String, String>) -> Option<Value> {
         }
         // a union value is its active member's value
         Val::Union { tag, slots } => to_value(env, &slots.get(parse_int(m.get(tag)?)? as usize)?.1, m)?,
-        Val::Absent | Val::Opaque(_) => return None,
+        // a function can't be shown as a counterexample
+        Val::Absent | Val::Opaque(_) | Val::FnOf { .. } => return None,
     })
 }
 
