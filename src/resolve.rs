@@ -80,8 +80,8 @@ fn static_calls(p: &mut Program) {
     if statics.is_empty() {
         return;
     }
-    let mut fix = |e: &mut Expr| {
-        walk_mut(e, &mut |e| {
+    for d in &mut p.decls {
+        decl_exprs_mut(&mut d.kind, |e| {
             if let Expr::Method(r, m, args) = e {
                 // a capitalised name parses as a constructor
                 if let Expr::Var(t) | Expr::Ctor(t, CtorArgs::None) = &**r {
@@ -90,20 +90,7 @@ fn static_calls(p: &mut Program) {
                     }
                 }
             }
-        })
-    };
-    for d in &mut p.decls {
-        match &mut d.kind {
-            DeclKind::Fn(f) => fn_exprs_mut(f).for_each(&mut fix),
-            DeclKind::Impl(i) => i.methods.iter_mut().for_each(|f| fn_exprs_mut(f).for_each(&mut fix)),
-            DeclKind::Trait(t) => {
-                t.methods.iter_mut().for_each(|m| fn_exprs_mut(&mut m.decl).for_each(&mut fix));
-                t.laws.iter_mut().for_each(|l| fix(&mut l.body));
-            }
-            DeclKind::Test(t) => fix(&mut t.body),
-            DeclKind::Type(t) => t.refinement.iter_mut().for_each(&mut fix),
-            DeclKind::Use(_) => {}
-        }
+        });
     }
 }
 
@@ -287,22 +274,18 @@ pub fn rename_fields(p: &Program, renames: &[(String, String, String)]) -> Resul
             m = module_of(m);
         }
     }
-    let kinds: Vec<serde_json::Value> = p.decls.iter().map(|d| serde_json::to_value(&d.kind)).collect::<Result<_, _>>().map_err(|e| e.to_string())?;
-
     // which records each access reads from, from the checker, when it matters
     let owners = if typed {
         let mut tagged = p.clone();
-        for (i, (d, j)) in tagged.decls.iter_mut().zip(&kinds).enumerate() {
-            let mut j = j.clone();
+        for (i, d) in tagged.decls.iter_mut().enumerate() {
             for f in &fields {
                 let mut k = 0;
                 let mut tag = |_: &str| -> Option<String> {
                     k += 1;
                     Some(format!("{f}·{f}/d{i}k{}", k - 1))
                 };
-                field_uses(&mut j, f, "", None, &modules, &mut tag);
+                field_uses(&mut d.kind, f, "", None, &modules, &mut tag);
             }
-            d.kind = serde_json::from_value(j).map_err(|e| e.to_string())?;
         }
         Some(crate::types::field_owners(&tagged))
     } else {
@@ -311,9 +294,8 @@ pub fn rename_fields(p: &Program, renames: &[(String, String, String)]) -> Resul
 
     let mut out = p.clone();
     let mut problems: Vec<String> = Vec::new();
-    for (i, (d, j)) in out.decls.iter_mut().zip(&kinds).enumerate() {
+    for (i, d) in out.decls.iter_mut().enumerate() {
         let name = d.qname();
-        let mut j = j.clone();
         // accesses, field by field, in the same order as the tags
         for f in &fields {
             let mut k = 0;
@@ -341,14 +323,13 @@ pub fn rename_fields(p: &Program, renames: &[(String, String, String)]) -> Resul
                     Some(news[0].to_string())
                 }
             };
-            field_uses(&mut j, f, "", None, &modules, &mut decide);
+            field_uses(&mut d.kind, f, "", None, &modules, &mut decide);
         }
         // literals, updates and patterns, by constructor
         for (owner, f, new) in renames {
             let short = owner.rsplit('.').next().unwrap_or(owner);
-            field_uses(&mut j, f, short, Some(new), &modules, &mut |_| None);
+            field_uses(&mut d.kind, f, short, Some(new), &modules, &mut |_| None);
         }
-        d.kind = serde_json::from_value(j).map_err(|e| e.to_string())?;
         // the declarations (after their uses, which start from the original)
         if let DeclKind::Type(t) = &mut d.kind {
             let tq = qualify(&d.module, &t.name);
@@ -374,67 +355,51 @@ pub fn rename_fields(p: &Program, renames: &[(String, String, String)]) -> Resul
     Ok(out)
 }
 
-/// The dotted path an expression spells, if it is only names: `shop.orders`.
-fn json_path(e: &serde_json::Value) -> Option<String> {
-    if let Some(x) = e.get("Var").and_then(|v| v.as_str()) {
-        return Some(x.to_string());
-    }
-    let a = e.get("Field")?.as_array()?;
-    Some(format!("{}.{}", json_path(&a[0])?, a[1].as_str()?))
-}
-
-/// Walk a serialized definition in a fixed order. Every field access
-/// `x.field` (not a qualified name like `orders.field`) is passed to
-/// `access`, which gives its new name (or `None` to leave it). With `ctor_new`,
-/// the field is also renamed in literals, updates and patterns of the
+/// Walk a definition in a fixed order (as written). Every field access
+/// `x.field` (not a qualified name like `orders.field`) is passed to `access`,
+/// which gives its new name (or `None` to leave it). With `ctor_new`, the
+/// field is also renamed in literals, updates and patterns of the
 /// constructor `ctor` (the owner's short name).
-fn field_uses(v: &mut serde_json::Value, field: &str, ctor: &str, ctor_new: Option<&str>, modules: &HashSet<String>, access: &mut dyn FnMut(&str) -> Option<String>) {
-    use serde_json::Value as J;
-    let rename_pairs = |pairs: &mut J, new: &str| {
-        for pair in pairs.as_array_mut().into_iter().flatten() {
-            if let Some(a) = pair.as_array_mut() {
-                if a.len() == 2 && a[0].as_str() == Some(field) {
-                    a[0] = J::String(new.to_string());
-                }
+fn field_uses(d: &mut DeclKind, field: &str, ctor: &str, ctor_new: Option<&str>, modules: &HashSet<String>, access: &mut dyn FnMut(&str) -> Option<String>) {
+    struct Uses<'a> {
+        field: &'a str,
+        ctor: &'a str,
+        ctor_new: Option<&'a str>,
+        modules: &'a HashSet<String>,
+        access: &'a mut dyn FnMut(&str) -> Option<String>,
+    }
+    impl Uses<'_> {
+        /// The fields of a `ctor` literal, update or pattern, renamed.
+        fn rename<T>(&self, c: &str, fs: &mut [(String, T)]) {
+            if let Some(new) = self.ctor_new.filter(|_| c.rsplit('.').next() == Some(self.ctor)) {
+                fs.iter_mut().filter(|(n, _)| n == self.field).for_each(|(n, _)| *n = new.to_string());
             }
-        }
-    };
-    if let J::Object(o) = v {
-        if o.len() == 1 {
-            if let Some(J::Array(a)) = o.get_mut("Field") {
-                // `x.qty`, but not `orders.qty` (a qualified name)
-                if a.len() == 2 && a[1].as_str() == Some(field) && !json_path(&a[0]).is_some_and(|m| modules.contains(&m)) {
-                    if let Some(n) = access(field) {
-                        a[1] = J::String(n);
-                    }
-                }
-            }
-            if let (Some(J::Array(a)), Some(new)) = (o.get_mut("Ctor"), ctor_new) {
-                // `Line { qty: 1 }`, `Line { ..l, qty: 2 }`, `Line { qty, .. }`
-                if a.len() == 2 && a[0].as_str().is_some_and(|c| c.rsplit('.').next() == Some(ctor)) {
-                    let args = &mut a[1];
-                    if let Some(J::Array(r)) = args.get_mut("Record") {
-                        if r.len() == 2 && r[0].is_array() && r[1].is_boolean() {
-                            rename_pairs(&mut r[0], new); // a pattern
-                        } else {
-                            rename_pairs(&mut args["Record"], new); // a literal
-                        }
-                    } else if let Some(J::Array(u)) = args.get_mut("Update") {
-                        if u.len() == 2 {
-                            rename_pairs(&mut u[1], new);
-                        }
-                    }
-                }
-            }
-        }
-        for (_, x) in o.iter_mut() {
-            field_uses(x, field, ctor, ctor_new, modules, access);
-        }
-    } else if let J::Array(a) = v {
-        for x in a {
-            field_uses(x, field, ctor, ctor_new, modules, access);
         }
     }
+    impl VisitMut for Uses<'_> {
+        fn expr(&mut self, e: &mut Expr) {
+            match e {
+                // `x.qty`, but not `orders.qty` (a qualified name)
+                Expr::Field(r, f) if f == self.field && !place_path(r).is_some_and(|m| self.modules.contains(&m)) => {
+                    if let Some(n) = (self.access)(self.field) {
+                        *f = n;
+                    }
+                }
+                // `Line { qty: 1 }`, `Line { ..l, qty: 2 }`
+                Expr::Ctor(c, CtorArgs::Record(fs) | CtorArgs::Update(_, fs)) => self.rename(c, fs),
+                _ => {}
+            }
+            walk_expr_mut(self, e)
+        }
+        fn pattern(&mut self, p: &mut Pattern) {
+            // `Line { qty, .. }`
+            if let Pattern::Ctor(c, CtorPat::Record(fs, _)) = p {
+                self.rename(c, fs);
+            }
+            walk_pattern_mut(self, p)
+        }
+    }
+    walk_decl_mut(&mut Uses { field, ctor, ctor_new, modules, access }, d)
 }
 
 /// Several renames in one step: `(old, new)` pairs, as for `rename`. Fields

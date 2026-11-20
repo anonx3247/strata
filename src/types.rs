@@ -316,55 +316,42 @@ pub fn elaborate(prog: &Program) -> crate::resolve::Resolution {
     }
     let (_, _, targets) = check_decls(&r.program, &env);
     let targets: HashMap<usize, Target> = targets.into_iter().collect();
-    // children first, so a node's address is the one the checker saw when it is rewritten
-    let mut fix = |e: &mut Expr| {
-        walk_mut_post(e, &mut |e| {
-            let Some(t) = targets.get(&(e as *const Expr as usize)) else { return };
-            match (t, &mut *e) {
-                (Target::Trait(tr), Expr::Method(_, m, _)) => *m = trait_call(tr, m),
-                (Target::Trait(tr), Expr::Call(f, _)) => {
-                    if let Expr::Var(m) = &mut **f {
-                        *m = trait_call(tr, m);
-                    }
-                }
-                (Target::Own(f), Expr::Method(recv, _, args)) => {
-                    let mut all = vec![std::mem::replace(&mut **recv, Expr::Unit)];
-                    all.append(args);
-                    *e = Expr::Call(Box::new(Expr::Var(f.clone())), all);
-                }
-                (Target::Own(f), Expr::Call(g, _)) => **g = Expr::Var(f.clone()),
-                (Target::Static(tr, ty), Expr::Method(_, m, args)) => {
-                    let mut all = vec![ty.expr()];
-                    all.append(args);
-                    *e = Expr::Call(Box::new(Expr::Var(trait_call(tr, m))), all);
-                }
-                (Target::TypeArgs(tys), Expr::Call(_, args) | Expr::Method(_, _, args)) => args.extend(tys.iter().map(|t| t.expr())),
-                (Target::Other(tr, mq), Expr::Method(_, m, _)) => *m = trait_call(tr, mq),
-                (Target::Other(tr, mq), Expr::Call(f, _)) => **f = Expr::Var(trait_call(tr, mq)),
-                (Target::Builtin(b), Expr::Method(_, m, _)) => *m = b.clone(),
-                (Target::Builtin(b), Expr::Call(f, _)) => **f = Expr::Var(b.clone()),
-                _ => {}
-            }
-        })
-    };
     for d in &mut r.program.decls {
-        match &mut d.kind {
-            DeclKind::Fn(f) => {
-                // a type parameter with a static method to call is passed when the function runs
-                for p in env.type_args(f) {
-                    f.params.push(Param { name: type_arg(&p), ty: TypeExpr::Named(TYPE_ARG.into(), vec![TypeExpr::Named(p.clone(), vec![])]), mutable: false });
-                }
-                fn_exprs_mut(f).for_each(&mut fix)
+        // a type parameter with a static method to call is passed when the function runs
+        if let DeclKind::Fn(f) = &mut d.kind {
+            for p in env.type_args(f) {
+                f.params.push(Param { name: type_arg(&p), ty: TypeExpr::Named(TYPE_ARG.into(), vec![TypeExpr::Named(p.clone(), vec![])]), mutable: false });
             }
-            DeclKind::Impl(i) => i.methods.iter_mut().for_each(|f| fn_exprs_mut(f).for_each(&mut fix)),
-            DeclKind::Trait(t) => {
-                t.methods.iter_mut().for_each(|m| fn_exprs_mut(&mut m.decl).for_each(&mut fix));
-                t.laws.iter_mut().for_each(|l| fix(&mut l.body));
-            }
-            DeclKind::Test(t) => fix(&mut t.body),
-            DeclKind::Type(t) => t.refinement.iter_mut().for_each(&mut fix),
-            DeclKind::Use(_) => {}
         }
+        // children first, so a node's address is the one the checker saw when it is rewritten
+        decl_exprs_mut_post(&mut d.kind, |e| {
+            let Some(t) = targets.get(&(e as *const Expr as usize)) else { return };
+        match (t, &mut *e) {
+            (Target::Trait(tr), Expr::Method(_, m, _)) => *m = trait_call(tr, m),
+            (Target::Trait(tr), Expr::Call(f, _)) => {
+                if let Expr::Var(m) = &mut **f {
+                    *m = trait_call(tr, m);
+                }
+            }
+            (Target::Own(f), Expr::Method(recv, _, args)) => {
+                let mut all = vec![std::mem::replace(&mut **recv, Expr::Unit)];
+                all.append(args);
+                *e = Expr::Call(Box::new(Expr::Var(f.clone())), all);
+            }
+            (Target::Own(f), Expr::Call(g, _)) => **g = Expr::Var(f.clone()),
+            (Target::Static(tr, ty), Expr::Method(_, m, args)) => {
+                let mut all = vec![ty.expr()];
+                all.append(args);
+                *e = Expr::Call(Box::new(Expr::Var(trait_call(tr, m))), all);
+            }
+            (Target::TypeArgs(tys), Expr::Call(_, args) | Expr::Method(_, _, args)) => args.extend(tys.iter().map(|t| t.expr())),
+            (Target::Other(tr, mq), Expr::Method(_, m, _)) => *m = trait_call(tr, mq),
+            (Target::Other(tr, mq), Expr::Call(f, _)) => **f = Expr::Var(trait_call(tr, mq)),
+            (Target::Builtin(b), Expr::Method(_, m, _)) => *m = b.clone(),
+            (Target::Builtin(b), Expr::Call(f, _)) => **f = Expr::Var(b.clone()),
+            _ => {}
+        }
+        });
     }
     r
 }

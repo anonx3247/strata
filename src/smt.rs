@@ -2034,7 +2034,7 @@ impl<'a> Vc<'a> {
                 Expr::Lambda(ps, body) => {
                     key.push_str(&crate::printer::expr(e, 0));
                     let mut used = std::collections::BTreeSet::new();
-                    crate::verify::walk(body, &mut |x| {
+                    crate::ast::walk(body, |x| {
                         if let Expr::Var(n) = x {
                             used.insert(n.clone());
                         }
@@ -2531,7 +2531,7 @@ impl<'a> Vc<'a> {
                 // candidate bounds, from the condition's comparisons, before the pass
                 let has_continue = {
                     let mut found = false;
-                    crate::verify::walk(body, &mut |x| {
+                    crate::ast::walk(body, |x| {
                         if let Expr::Block(ss, _) = x {
                             found |= ss.iter().any(|s| matches!(s, Stmt::Continue));
                         }
