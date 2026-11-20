@@ -531,7 +531,7 @@ fn math_example_verifies_as_documented() {
     let (ok, out) = strata(&["--file", &ex, "verify", "--checks"], &d, None);
     assert!(!ok, "the two bugs fail the run: {out}");
     for name in ["factorial", "gcd", "power", "digit_sum", "ackermann", "triangle", "collatz_steps", "positive_squares", "is_prime", "primes", "first_or_one"] {
-        assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven (as the README says): {out}");
+        assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven (as docs/verification.md says): {out}");
     }
     assert!(out.contains("~ isqrt") && out.contains("not proven: ensures it * it <= n"), "{out}");
     assert!(out.contains("the pair (`m`, `n`), compared in order") && out.contains("may not terminate: the loop `while x != 1`"), "{out}");
