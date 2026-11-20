@@ -1,6 +1,8 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
     Int(i64),
+    /// An integer literal too large for 64 bits, as written (digits only).
+    BigInt(String),
     Float(f64),
     Str(String),
     /// `f"..."`: literal text and the source of each `{expr}`, with the
@@ -121,9 +123,11 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), String
                 continue;
             }
             let s: String = chars[start..i].iter().filter(|c| **c != '_').collect();
-            let n = s.parse::<i64>().map_err(|e| format!("{line}:{col}: bad int: {e}"))?;
             col += i - start;
-            push(Tok::Int(n), &mut nl);
+            match s.parse::<i64>() {
+                Ok(n) => push(Tok::Int(n), &mut nl),
+                Err(_) => push(Tok::BigInt(s), &mut nl),
+            }
             continue;
         }
         if c == 'f' && chars.get(i + 1) == Some(&'"') {

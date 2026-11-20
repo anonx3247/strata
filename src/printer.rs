@@ -243,6 +243,7 @@ fn lambda_params(ps: &[LamParam]) -> String {
 fn expr_inline(e: &Expr, d: usize) -> String {
     match e {
         Expr::Int(n) => n.to_string(),
+        Expr::BigInt(digits) => digits.clone(),
         Expr::Float(f) => float(*f),
         Expr::Tuple(es) => format!("({})", args(es, d)),
         Expr::Str(s) => format!("\"{}\"", s.replace('"', "\\\"").replace('\n', "\\n")),

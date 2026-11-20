@@ -87,6 +87,96 @@ fn has_solver() -> bool {
 }
 
 #[test]
+fn ints_grow_past_64_bits() {
+    let d = tmp("bigint");
+    let src = "fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }
+fn wrap(x: U8) -> U8 { x + 1 }
+fn neg(x: I8) -> I8 { 0 - x }
+fn widen(x: U64) -> U64 { x + 1 }
+test \"big integers\" {
+  assert fact(25) == 15511210043330985984000000
+  assert fact(25) / fact(24) == 25
+  assert (0 - 100000000000000000000) % 7 == 5
+  assert (0 - 100000000000000000000) / 7 == -14285714285714285715
+  assert 9223372036854775807 + 1 == 9223372036854775808
+  assert abs(0 - 9223372036854775807 - 1) == 9223372036854775808
+  assert parse_int(\"123456789012345678901234567890\") == Some(123456789012345678901234567890)
+  assert sort([100000000000000000000, 3, 0 - 100000000000000000000]) == [0 - 100000000000000000000, 3, 100000000000000000000]
+  assert f\"{fact(21)}\" == \"51090942171709440000\"
+}
+";
+    std::fs::write(d.join("b.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", "b.strata", "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    // larger than 64 bits in JSON: a number up to 2^64 - 1, or a string of digits
+    let (ok, out) = strata(&["--file", "b.strata", "run", "widen", "[18446744073709551614]"], &d, None);
+    assert!(ok && out.contains("\"18446744073709551615\""), "{out}");
+    let (ok, out) = strata(&["--file", "b.strata", "run", "widen", "[\"18446744073709551615\"]"], &d, None);
+    assert!(!ok && out.contains("18446744073709551616") && out.contains("does not satisfy `U64`"), "{out}");
+    if has_solver() {
+        let (ok, out) = strata(&["--file", "b.strata", "verify", "wrap,neg,widen", "--cases", "20"], &d, None);
+        assert!(!ok && out.contains("input:   [255]") && out.contains("input:   [-128]") && out.contains("input:   [\"18446744073709551615\"]"), "sized types catch overflow: {out}");
+    }
+    // render keeps big literals
+    let (_, r) = strata(&["--file", "b.strata", "render"], &d, None);
+    assert!(r.contains("15511210043330985984000000"), "{r}");
+}
+
+#[test]
+fn cross_check_catches_a_wrong_prover() {
+    // a "solver" that proves everything: the cross-check must still catch the bug
+    let d = tmp("cross-check");
+    let fake = d.join("fake-solver");
+    std::fs::write(&fake, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo fake 1.0; exit 0; fi\ncat > /dev/null\necho unsat\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(d.join("b.strata"), "type Quantity = Int where 1 <= it && it <= 99\nfn bump(q: Quantity) -> Quantity { q + 1 }\n").unwrap();
+    let run = |extra: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_strata"))
+            .args(["--file", "b.strata", "verify"])
+            .args(extra)
+            .env("STRATA_SOLVER", &fake)
+            .current_dir(&d)
+            .output()
+            .unwrap();
+        (o.status.success(), String::from_utf8_lossy(&o.stdout).to_string())
+    };
+    let (ok, out) = run(&[]);
+    assert!(!ok && out.contains("✗ bump") && out.contains("found by the cross-check") && out.contains("a bug in the prover"), "{out}");
+    let (ok, out) = run(&["--cross-check", "0"]);
+    assert!(ok && out.contains("✓ bump"), "without the cross-check the wrong proof stands: {out}");
+}
+
+#[test]
+fn package_verify_policies() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("policy");
+    std::fs::write(d.join("strata.toml"), "name = \"pol\"\n\n[verify]\nterminates = [\"*\"]\nno_recursion = [\"core\"]\nproven = [\"core\"]\n").unwrap();
+    std::fs::write(
+        d.join("core.strata"),
+        "pub fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }\npub fn spin(n: Int) -> Int {\n  let mut k = n\n  loop {\n    if k == 1 { break }\n    k = k - 1\n  }\n  k\n}\n",
+    )
+    .unwrap();
+    std::fs::write(d.join("main.strata"), "use core.*\nfn fib(n: Natural) -> Natural { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\n").unwrap();
+    let (ok, out) = strata(&["--file", ".", "verify", "--cases", "20"], &d, None);
+    assert!(!ok && out.contains("policy: `core.fact` is recursive (strata.toml [verify])") && out.contains("policy: `core.spin` may not terminate"), "{out}");
+    assert!(!out.contains("`fib` is recursive"), "no_recursion covers only `core`: {out}");
+    // --smt shows the termination queries too
+    let (_, out) = strata(&["--file", ".", "verify", "fib", "--smt"], &d, None);
+    assert!(out.contains("termination: measure (n) goes down at recursive call 1") && out.contains("termination: measure (n) goes down at recursive call 2"), "{out}");
+    // a rule must name a module of the package
+    std::fs::write(d.join("strata.toml"), "name = \"pol\"\n\n[verify]\nproven = [\"nope\"]\n").unwrap();
+    let (ok, out) = strata(&["ci"], &d, None);
+    assert!(!ok && out.contains("[verify] proven names `nope`, which is not a module of this package"), "{out}");
+}
+
+#[test]
 fn termination_is_shown_or_flagged() {
     if !has_solver() {
         eprintln!("z3 is not installed: skipping");

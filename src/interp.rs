@@ -5,6 +5,8 @@ use crate::ast::*;
 use crate::generate::Gen;
 use crate::types::{subst_texpr, Env};
 use serde_json::{json, Value as Json};
+use num_bigint::BigInt;
+use num_traits::{FromPrimitive, Signed, ToPrimitive, Zero};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -18,6 +20,9 @@ pub enum Fields {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Int(i64),
+    /// An `Int` that doesn't fit in 64 bits. Only ever that: an integer that
+    /// fits is always `Int`, so equal numbers are equal values.
+    Big(BigInt),
     Float(f64),
     Bool(bool),
     Str(String),
@@ -138,6 +143,9 @@ pub enum FaultKind {
     /// `return`, `!` or `?`, caught by the enclosing function or lambda; the
     /// value is in `Interp::returning`.
     Return,
+    /// The run went past a limit (recursion depth, or the step budget): it
+    /// may be correct and just too costly to run.
+    Limit,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -164,6 +172,9 @@ pub struct Interp<'a> {
     writeback: Vec<(usize, Value)>,
     /// The value of the `return` (or `!` / `?`) being carried out.
     returning: Option<Value>,
+    /// At most this many evaluation steps, if set.
+    pub budget: Option<u64>,
+    steps: u64,
 }
 
 fn short(c: &str) -> &str {
@@ -195,12 +206,46 @@ pub fn make_set(items: Vec<Value>) -> Value {
     Value::Set(out)
 }
 
+/// An integer value: a machine integer while it fits, a big one when it doesn't.
+pub fn int_value(n: BigInt) -> Value {
+    match n.to_i64() {
+        Some(s) => Value::Int(s),
+        None => Value::Big(n),
+    }
+}
+
+/// An integer value as a big integer.
+fn as_big(v: &Value) -> Option<BigInt> {
+    match v {
+        Value::Int(n) => Some(BigInt::from(*n)),
+        Value::Big(b) => Some(b.clone()),
+        _ => None,
+    }
+}
+
+/// Euclidean division (the remainder is never negative), as for `i64`.
+fn div_rem_euclid(a: &BigInt, b: &BigInt) -> (BigInt, BigInt) {
+    let (mut q, mut r) = (a / b, a % b);
+    if r.is_negative() {
+        if b.is_positive() {
+            q -= 1;
+            r += b;
+        } else {
+            q += 1;
+            r -= b;
+        }
+    }
+    (q, r)
+}
+
 pub fn to_json(v: &Value) -> Json {
     match v {
         // distinct types serialise as their underlying value
         Value::Distinct(_, x) => to_json(x),
         Value::Mock(t) => json!(format!("<mock {}>", crate::printer::ty(t))),
         Value::Int(n) => json!(n),
+        // JSON numbers this large don't survive most parsers: written as a string of digits
+        Value::Big(b) => json!(b.to_string()),
         Value::Float(f) => json!(f),
         Value::Tuple(xs) | Value::Set(xs) => Json::Array(xs.iter().map(to_json).collect()),
         Value::Dict(kvs) if kvs.iter().all(|(k, _)| matches!(k, Value::Str(_))) => Json::Object(
@@ -227,6 +272,7 @@ pub fn to_json(v: &Value) -> Json {
 pub fn show(v: &Value) -> String {
     match v {
         Value::Str(s) => s.clone(),
+        Value::Big(b) => b.to_string(),
         Value::Variant(c, Fields::None) => short(c).to_string(),
         other => to_json(other).to_string(),
     }
@@ -237,6 +283,7 @@ pub fn show(v: &Value) -> String {
 pub fn compare(a: &Value, b: &Value) -> std::cmp::Ordering {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x.cmp(y),
+        (Value::Int(_) | Value::Big(_), Value::Int(_) | Value::Big(_)) => as_big(a).cmp(&as_big(b)),
         (Value::Float(x), Value::Float(y)) => x.total_cmp(y),
         (Value::Str(x), Value::Str(y)) => x.cmp(y),
         (Value::Tuple(xs), Value::Tuple(ys)) | (Value::List(xs), Value::List(ys)) => {
@@ -268,7 +315,15 @@ impl<'a> Interp<'a> {
             regexes: HashMap::new(),
             writeback: vec![],
             returning: None,
+            budget: None,
+            steps: 0,
         }
+    }
+
+    /// Did this run go past its step budget? Then whatever it reported (a
+    /// check that "failed" because evaluating it ran out) proves nothing.
+    pub fn exhausted(&self) -> bool {
+        self.budget.is_some_and(|b| self.steps > b)
     }
 
     fn fail<T>(&self, kind: FaultKind, msg: impl Into<String>) -> R<T> {
@@ -431,7 +486,7 @@ impl<'a> Interp<'a> {
             TypeExpr::Union(ms) => ms.iter().any(|m| self.shape_fits(m, v)),
             TypeExpr::Fn(..) => matches!(v, Value::Closure(..) | Value::FnRef(_)),
             TypeExpr::Named(n, args) => match (n.as_str(), v) {
-                ("Int", Value::Int(_)) | ("Float", Value::Float(_)) | ("Bool", Value::Bool(_)) | ("String", Value::Str(_)) | ("Unit", Value::Unit) => true,
+                ("Int", Value::Int(_) | Value::Big(_)) | ("Float", Value::Float(_)) | ("Bool", Value::Bool(_)) | ("String", Value::Str(_)) | ("Unit", Value::Unit) => true,
                 ("Int" | "Float" | "Bool" | "String" | "Unit", _) => false,
                 ("List", Value::List(xs)) | ("Set", Value::Set(xs)) => args.first().is_none_or(|a| xs.iter().all(|x| self.shape_fits(a, x))),
                 ("Tuple", Value::Tuple(xs)) => xs.len() == args.len() && args.iter().zip(xs).all(|(a, x)| self.shape_fits(a, x)),
@@ -474,7 +529,7 @@ impl<'a> Interp<'a> {
     /// The runtime type name used to pick a trait implementation.
     pub fn head_of(&self, v: &Value) -> String {
         match v {
-            Value::Int(_) => "Int".into(),
+            Value::Int(_) | Value::Big(_) => "Int".into(),
             Value::Float(_) => "Float".into(),
             Value::Bool(_) => "Bool".into(),
             Value::Str(_) => "String".into(),
@@ -566,7 +621,7 @@ impl<'a> Interp<'a> {
         }
         self.depth += 1;
         if self.depth > 2000 {
-            return self.fail(FaultKind::Runtime, "stack overflow (recursion depth > 2000)");
+            return self.fail(FaultKind::Limit, "stack overflow (recursion depth > 2000)");
         }
         self.stack.push(name.to_string());
         if self.tracing {
@@ -754,7 +809,7 @@ impl<'a> Interp<'a> {
             "parse_int" | "parse_float" => {
                 let Str(s) = nx() else { return self.fail(FaultKind::Runtime, "bad args") };
                 let parsed = if name == "parse_int" {
-                    s.trim().parse::<i64>().ok().map(Int)
+                    s.trim().parse::<BigInt>().ok().map(int_value)
                 } else {
                     s.trim().parse::<f64>().ok().filter(|f| f.is_finite()).map(Float)
                 };
@@ -765,6 +820,10 @@ impl<'a> Interp<'a> {
             }
             "float" => match nx() {
                 Int(n) => Float(n as f64),
+                Big(b) => match b.to_f64().filter(|f| f.is_finite()) {
+                    Some(f) => Float(f),
+                    None => return self.fail(FaultKind::Runtime, format!("{b} is too large for a Float")),
+                },
                 _ => return self.fail(FaultKind::Runtime, "bad args"),
             },
             "floor" | "ceil" | "round" => match nx() {
@@ -774,10 +833,10 @@ impl<'a> Interp<'a> {
                         "ceil" => f.ceil(),
                         _ => f.round(),
                     };
-                    if !(i64::MIN as f64..=i64::MAX as f64).contains(&r) {
-                        return self.fail(FaultKind::Runtime, format!("{f} does not fit in an Int"));
+                    match BigInt::from_f64(r) {
+                        Some(n) => int_value(n),
+                        None => return self.fail(FaultKind::Runtime, format!("{f} is not a whole number")),
                     }
-                    Int(r as i64)
                 }
                 _ => return self.fail(FaultKind::Runtime, "bad args"),
             },
@@ -858,13 +917,13 @@ impl<'a> Interp<'a> {
                     if let Some(Float(_)) = xs.first() {
                         return Ok(Float(xs.iter().map(|x| if let Float(f) = x { *f } else { 0.0 }).sum()));
                     }
-                    let mut t: i64 = 0;
-                    for x in xs {
-                        if let Int(n) = x {
-                            t = t.checked_add(n).ok_or_else(|| fault(FaultKind::Runtime, "integer overflow in sum"))?;
+                    let mut t = BigInt::zero();
+                    for x in &xs {
+                        if let Some(n) = as_big(x) {
+                            t += n;
                         }
                     }
-                    Int(t)
+                    int_value(t)
                 }
                 _ => Int(0),
             },
@@ -876,12 +935,17 @@ impl<'a> Interp<'a> {
                 List((lo..hi).map(Int).collect())
             }
             "abs" => match nx() {
-                Int(n) => Int(n.abs()),
+                Int(n) => n.checked_abs().map(Int).unwrap_or_else(|| int_value(BigInt::from(n).abs())),
+                Big(b) => int_value(b.abs()),
                 Float(f) => Float(f.abs()),
                 _ => Unit,
             },
             "min" | "max" => match (nx(), nx()) {
                 (Int(x), Int(y)) => Int(if name == "min" { x.min(y) } else { x.max(y) }),
+                (x @ (Int(_) | Big(_)), y @ (Int(_) | Big(_))) => {
+                    let (a, b) = (as_big(&x).unwrap(), as_big(&y).unwrap());
+                    int_value(if name == "min" { a.min(b) } else { a.max(b) })
+                }
                 (Float(x), Float(y)) => Float(if name == "min" { x.min(y) } else { x.max(y) }),
                 _ => return self.fail(FaultKind::Runtime, "bad args"),
             },
@@ -1049,9 +1113,34 @@ impl<'a> Interp<'a> {
         Ok(())
     }
 
+    /// Integer arithmetic on big integers (when a machine integer won't do).
+    fn big_op(&self, op: BinOp, a: BigInt, b: BigInt) -> R<Value> {
+        use BinOp::*;
+        Ok(match op {
+            Add => int_value(a + b),
+            Sub => int_value(a - b),
+            Mul => int_value(a * b),
+            Div | Mod if b.is_zero() => return self.fail(FaultKind::Runtime, "division by zero"),
+            Div => int_value(div_rem_euclid(&a, &b).0),
+            Mod => int_value(div_rem_euclid(&a, &b).1),
+            Lt => Value::Bool(a < b),
+            Le => Value::Bool(a <= b),
+            Gt => Value::Bool(a > b),
+            Ge => Value::Bool(a >= b),
+            _ => return self.fail(FaultKind::Runtime, "bad operands"),
+        })
+    }
+
     pub fn eval(&mut self, e: &Expr, s: &Scope) -> R<Value> {
+        if let Some(b) = self.budget {
+            self.steps += 1;
+            if self.steps > b {
+                return self.fail(FaultKind::Limit, format!("ran for more than {b} steps"));
+            }
+        }
         Ok(match e {
             Expr::Int(n) => Value::Int(*n),
+            Expr::BigInt(digits) => int_value(digits.parse().map_err(|_| fault(FaultKind::Runtime, format!("bad integer literal {digits}")))?),
             Expr::Float(f) => Value::Float(*f),
             Expr::Tuple(es) => Value::Tuple(es.iter().map(|x| self.eval(x, s)).collect::<R<_>>()?),
             Expr::Str(x) => Value::Str(x.clone()),
@@ -1180,26 +1269,32 @@ impl<'a> Interp<'a> {
                         Value::Float(r)
                     }
                     (op, Value::Int(a), Value::Int(b)) => {
-                        let ov = || fault(FaultKind::Runtime, format!("integer overflow in {a} {} {b}", op.symbol()));
-                        match op {
-                            Add => Value::Int(a.checked_add(b).ok_or_else(ov)?),
-                            Sub => Value::Int(a.checked_sub(b).ok_or_else(ov)?),
-                            Mul => Value::Int(a.checked_mul(b).ok_or_else(ov)?),
+                        // machine integers while the result fits; a big integer when it doesn't
+                        let fast = match op {
+                            Add => a.checked_add(b).map(Value::Int),
+                            Sub => a.checked_sub(b).map(Value::Int),
+                            Mul => a.checked_mul(b).map(Value::Int),
                             Div | Mod if b == 0 => return self.fail(FaultKind::Runtime, "division by zero"),
-                            Div => Value::Int(a.div_euclid(b)),
-                            Mod => Value::Int(a.rem_euclid(b)),
-                            Lt => Value::Bool(a < b),
-                            Le => Value::Bool(a <= b),
-                            Gt => Value::Bool(a > b),
-                            Ge => Value::Bool(a >= b),
+                            Div => a.checked_div_euclid(b).map(Value::Int),
+                            Mod => a.checked_rem_euclid(b).map(Value::Int),
+                            Lt => Some(Value::Bool(a < b)),
+                            Le => Some(Value::Bool(a <= b)),
+                            Gt => Some(Value::Bool(a > b)),
+                            Ge => Some(Value::Bool(a >= b)),
                             _ => return self.fail(FaultKind::Runtime, "bad operands"),
+                        };
+                        match fast {
+                            Some(v) => v,
+                            None => self.big_op(*op, BigInt::from(a), BigInt::from(b))?,
                         }
                     }
+                    (op, x @ (Value::Int(_) | Value::Big(_)), y @ (Value::Int(_) | Value::Big(_))) => self.big_op(*op, as_big(&x).unwrap(), as_big(&y).unwrap())?,
                     _ => return self.fail(FaultKind::Runtime, format!("bad operands for `{}`", op.symbol())),
                 }
             }
             Expr::Un(UnOp::Neg, x) => match self.eval(x, s)? {
-                Value::Int(n) => Value::Int(-n),
+                Value::Int(n) => n.checked_neg().map(Value::Int).unwrap_or_else(|| int_value(-BigInt::from(n))),
+                Value::Big(b) => int_value(-b),
                 Value::Float(f) => Value::Float(-f),
                 _ => return self.fail(FaultKind::Runtime, "bad operand"),
             },
@@ -1455,7 +1550,12 @@ impl<'a> Interp<'a> {
             }
             TypeExpr::Fn(..) => bad("a function (not representable in JSON)"),
             TypeExpr::Named(n, args) => match n.as_str() {
-                "Int" => j.as_i64().map(Value::Int).map_or_else(|| bad("an integer"), Ok),
+                // a larger integer may come as a number (up to 2^64) or a string of digits
+                "Int" => match j {
+                    Json::Number(n) if n.is_i64() || n.is_u64() => Ok(int_value(n.to_string().parse().unwrap())),
+                    Json::String(s) if s.parse::<BigInt>().is_ok() => Ok(int_value(s.parse().unwrap())),
+                    _ => bad("an integer"),
+                },
                 "Float" => j.as_f64().map(Value::Float).map_or_else(|| bad("a number"), Ok),
                 "Tuple" => match j.as_array().filter(|a| a.len() == args.len()) {
                     Some(xs) => Ok(Value::Tuple(

@@ -11,8 +11,10 @@
 //! [deps]                                 # not fetched yet
 //! json = "https://example.com/strata-json"
 //!
-//! [verify]                               # not enforced yet
-//! proven = ["core"]
+//! [verify]                               # checked by `strata verify`
+//! proven = ["core"]                      # modules whose every check must be proven
+//! terminates = ["*"]                     # ... whose functions must terminate (or be marked)
+//! no_recursion = ["core"]                # ... where no function may be recursive
 //! ```
 
 use crate::ast::Program;
@@ -26,6 +28,32 @@ pub struct Package {
     pub name: String,
     /// `None`: every `pub` definition is visible to other packages
     pub exports: Option<Vec<String>>,
+    pub verify: Policy,
+}
+
+/// `[verify]`: what `strata verify` requires, each as a list of modules
+/// (`"*"` for all of them, `"main"` for the root module, a module covers
+/// the modules below it). Recursion is allowed unless `no_recursion` says.
+#[derive(serde::Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct Policy {
+    #[serde(default)]
+    pub proven: Vec<String>,
+    #[serde(default)]
+    pub terminates: Vec<String>,
+    #[serde(default)]
+    pub no_recursion: Vec<String>,
+}
+
+impl Policy {
+    /// Does a rule listing `modules` apply to a definition in `module`?
+    pub fn covers(modules: &[String], module: &str) -> bool {
+        modules.iter().any(|m| m == "*" || (m == "main" && module.is_empty()) || module == m || module.starts_with(&format!("{m}.")))
+    }
+
+    fn rules(&self) -> [(&'static str, &Vec<String>); 3] {
+        [("proven", &self.proven), ("terminates", &self.terminates), ("no_recursion", &self.no_recursion)]
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -38,15 +66,14 @@ struct Raw {
     #[allow(dead_code)] // read when dependencies are fetched
     deps: toml::Table,
     #[serde(default)]
-    #[allow(dead_code)] // read when the verifier has policies
-    verify: toml::Table,
+    verify: Policy,
 }
 
 pub fn load(dir: &Path) -> Result<Package, String> {
     let path = dir.join(FILE);
     let src = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let raw: Raw = toml::from_str(&src).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(Package { dir: dir.to_path_buf(), name: raw.name, exports: raw.exports })
+    Ok(Package { dir: dir.to_path_buf(), name: raw.name, exports: raw.exports, verify: raw.verify })
 }
 
 /// The package a file or folder belongs to: the nearest folder at or above it
@@ -138,6 +165,20 @@ pub fn discover(top: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
         .collect();
     scripts.sort();
     Ok((packages, scripts))
+}
+
+/// `[verify]` rules that name a module the package doesn't have.
+pub fn bad_policy(pkg: &Package, p: &Program) -> Vec<String> {
+    let mut out = Vec::new();
+    for (rule, modules) in pkg.verify.rules() {
+        for m in modules {
+            let exists = m == "*" || m == "main" || p.decls.iter().any(|d| d.module == *m || d.module.starts_with(&format!("{m}.")));
+            if !exists {
+                out.push(format!("[verify] {rule} names `{m}`, which is not a module of this package"));
+            }
+        }
+    }
+    out
 }
 
 /// Exports that name nothing: each must be a module of the package, or one
