@@ -3384,3 +3384,44 @@ fn view(model: Model) -> Html[Msg] {
         assert!(ok && out.contains("✓ update") && out.contains("✓ view"), "{out}");
     }
 }
+
+#[test]
+fn serve_apps_take_values_and_forms() {
+    let d = tmp("serve-forms");
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    let ex = format!("{}/examples/todos", env!("CARGO_MANIFEST_DIR"));
+    let mut server = Command::new(env!("CARGO_BIN_EXE_strata")).args(["serve", &ex, "--port", &port.to_string()]).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let up = (0..100).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    });
+    let post = |body: &str| http(port, &format!("POST /_strata/msg HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
+    let results = std::panic::catch_unwind(|| {
+        assert!(up, "the server didn't start");
+        let page = http(port, "GET / HTTP/1.1\r\n\r\n");
+        // handlers are numbered in page order: the form, then the title field
+        assert!(page.contains(r#"<form class="new" data-handle-submit="0">"#) && page.contains(r#"data-handle-input="1""#), "{page}");
+        let sid = page.split(r#"data-session=""#).nth(1).unwrap().split('"').next().unwrap().to_string();
+        // what is typed comes back in the view
+        let r = post(&format!(r#"{{"session":"{sid}","handler":1,"value":"Call Ada"}}"#));
+        assert!(r.contains(r#"value="Call Ada""#) && r.contains("52 characters left"), "{r}");
+        // a form whose title is empty: refused, said next to the field
+        let r = post(&format!(r#"{{"session":"{sid}","handler":0,"fields":{{"title":"  ","priority":"high"}}}}"#));
+        assert!(r.contains("Write something first.") && !r.contains("<span class=\"title\">  </span>"), "{r}");
+        let r = post(&format!(r#"{{"session":"{sid}","handler":0,"fields":{{"title":"Call Ada","priority":"high"}}}}"#));
+        assert!(r.contains(r#"<span class="title">Call Ada</span>"#) && r.contains(r#"value="""#), "{r}");
+        // a handler the page doesn't have
+        assert!(post(&format!(r#"{{"session":"{sid}","handler":99,"value":""}}"#)).starts_with("HTTP/1.1 400"));
+        assert!(post(&format!(r#"{{"session":"{sid}","handler":0,"fields":{{"title":3}}}}"#)).starts_with("HTTP/1.1 400"));
+    });
+    let _ = server.kill();
+    let _ = server.wait();
+    if let Err(e) = results {
+        std::panic::resume_unwind(e);
+    }
+    if has_solver() {
+        // `update` keeps every title within bounds and the list within 50
+        let (ok, out) = strata(&["--file", &ex, "verify", "--force", "--require", "proven"], &d, None);
+        assert!(ok && out.contains("✓ update") && out.contains("✓ new_todo_form"), "{out}");
+    }
+}
