@@ -1,0 +1,74 @@
+// std.io — the console: text in and out.
+//
+// The console is a capability. A program gets the real terminal only by
+// asking for it in `main` (`fn main(mut console: Console)`) and passes it on
+// to the code that needs it. Tests pass a `Recorder` instead.
+
+/// Text output and input: the terminal, or a stand-in for it.
+pub trait Console {
+  /// Write `text` and a newline to standard output.
+  fn print(mut self, text: String) -> ()
+  /// Write `text` to standard output, without a newline.
+  fn write(mut self, text: String) -> ()
+  /// Write `text` and a newline to standard error.
+  fn eprint(mut self, text: String) -> ()
+  /// The next line of standard input, without its line ending; `None` at the
+  /// end of the input.
+  fn read_line(mut self) -> Option[String]
+}
+
+/// The process's own terminal. Only the runtime makes one, for `main`.
+type Terminal = { stdout: Int, stderr: Int }
+
+impl Console for Terminal {
+  fn print(mut self, text: String) -> () {
+    host_write(self.stdout, text + "\n")
+  }
+
+  fn write(mut self, text: String) -> () {
+    host_write(self.stdout, text)
+  }
+
+  fn eprint(mut self, text: String) -> () {
+    host_write(self.stderr, text + "\n")
+  }
+
+  fn read_line(mut self) -> Option[String] {
+    host_read_line()
+  }
+}
+
+/// A console for tests. It reads its input from `input`, line by line, and
+/// keeps what is written: `out` is standard output as written, `err` the
+/// lines written to standard error.
+pub type Recorder = { input: List[String], out: String, err: List[String] }
+
+/// A recorder that will read `input`, line by line.
+pub fn recorder(input: List[String]) -> Recorder {
+  Recorder { input, out: "", err: [] }
+}
+
+/// The lines a recorder's standard output holds.
+pub fn printed(r: Recorder) -> List[String] {
+  lines(r.out)
+}
+
+impl Console for Recorder {
+  fn print(mut self, text: String) -> () {
+    self.out = self.out + text + "\n"
+  }
+
+  fn write(mut self, text: String) -> () {
+    self.out = self.out + text
+  }
+
+  fn eprint(mut self, text: String) -> () {
+    self.err = push(self.err, text)
+  }
+
+  fn read_line(mut self) -> Option[String] {
+    let next = get(self.input, 0)
+    self.input = drop(self.input, 1)
+    next
+  }
+}

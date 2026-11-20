@@ -1,0 +1,155 @@
+// std.fs — files and folders.
+//
+// The file system is a capability: a program gets the real disk only by
+// asking for it in `main` (`fn main(mut files: Files)`). Tests pass a
+// `MemFiles` instead.
+
+/// Why a file operation failed.
+pub type FsError =
+  | NotFound { path: String }
+  | PermissionDenied { path: String }
+  | AlreadyExists { path: String }
+  | NotADirectory { path: String }
+  | IsADirectory { path: String }
+  | OtherFsError { path: String, message: String }
+
+/// Reading and writing files: the disk, or a stand-in for it.
+pub trait Files {
+  /// The whole file as text (UTF-8).
+  fn read(self, path: String) -> Result[String, FsError]
+  /// Replace the file's contents with `text`, creating the file if needed.
+  fn write(mut self, path: String, text: String) -> Result[(), FsError]
+  /// Add `text` at the end of the file, creating the file if needed.
+  fn append(mut self, path: String, text: String) -> Result[(), FsError]
+  /// Whether a file or folder exists at `path`.
+  fn exists(self, path: String) -> Bool
+  /// The names of the entries of a folder, sorted.
+  fn list(self, path: String) -> Result[List[String], FsError]
+  /// Create a folder and any missing parents.
+  fn make_dir(mut self, path: String) -> Result[(), FsError]
+  /// Remove a file, or an empty folder.
+  fn remove(mut self, path: String) -> Result[(), FsError]
+}
+
+/// The error for a host failure: its kind and message, as the runtime gives
+/// them.
+fn fs_error(path: String, failure: (String, String)) -> FsError {
+  match failure.0 {
+    "not_found" => NotFound { path },
+    "permission_denied" => PermissionDenied { path },
+    "already_exists" => AlreadyExists { path },
+    "not_a_directory" => NotADirectory { path },
+    "is_a_directory" => IsADirectory { path },
+    _ => OtherFsError { path, message: failure.1 },
+  }
+}
+
+/// The real file system. Only the runtime makes one, for `main`.
+type Disk = { root: String }
+
+impl Files for Disk {
+  fn read(self, path: String) -> Result[String, FsError] {
+    match host_read_file(path) {
+      Ok(text) => Ok(text),
+      Err(e) => Err(fs_error(path, e)),
+    }
+  }
+
+  fn write(mut self, path: String, text: String) -> Result[(), FsError] {
+    match host_write_file(path, text, false) {
+      Ok(_) => Ok(()),
+      Err(e) => Err(fs_error(path, e)),
+    }
+  }
+
+  fn append(mut self, path: String, text: String) -> Result[(), FsError] {
+    match host_write_file(path, text, true) {
+      Ok(_) => Ok(()),
+      Err(e) => Err(fs_error(path, e)),
+    }
+  }
+
+  fn exists(self, path: String) -> Bool {
+    host_exists(path)
+  }
+
+  fn list(self, path: String) -> Result[List[String], FsError] {
+    match host_list_dir(path) {
+      Ok(names) => Ok(names),
+      Err(e) => Err(fs_error(path, e)),
+    }
+  }
+
+  fn make_dir(mut self, path: String) -> Result[(), FsError] {
+    match host_make_dir(path) {
+      Ok(_) => Ok(()),
+      Err(e) => Err(fs_error(path, e)),
+    }
+  }
+
+  fn remove(mut self, path: String) -> Result[(), FsError] {
+    match host_remove(path) {
+      Ok(_) => Ok(()),
+      Err(e) => Err(fs_error(path, e)),
+    }
+  }
+}
+
+/// Files kept in memory, for tests: each path maps to its contents. Folders
+/// are implied by the paths of the files in them.
+pub type MemFiles = { files: Dict[String, String] }
+
+/// An in-memory file system holding `files` (path, contents).
+pub fn mem_files(files: List[(String, String)]) -> MemFiles {
+  MemFiles { files: dict(files) }
+}
+
+impl Files for MemFiles {
+  fn read(self, path: String) -> Result[String, FsError] {
+    match get(self.files, path) {
+      Some(text) => Ok(text),
+      None => Err(NotFound { path }),
+    }
+  }
+
+  fn write(mut self, path: String, text: String) -> Result[(), FsError] {
+    self.files = insert(self.files, path, text)
+    Ok(())
+  }
+
+  fn append(mut self, path: String, text: String) -> Result[(), FsError] {
+    let before = get(self.files, path) except { "" }
+    self.files = insert(self.files, path, before + text)
+    Ok(())
+  }
+
+  fn exists(self, path: String) -> Bool {
+    contains(self.files, path)
+      || keys(self.files).any(p -> starts_with(p, path + "/"))
+  }
+
+  fn list(self, path: String) -> Result[List[String], FsError] {
+    let prefix = path + "/"
+    let names = keys(self.files)
+      .filter(p -> starts_with(p, prefix))
+      .map(p ->
+        split(slice(p, len(prefix), len(p)), "/").get(0) except { "" })
+    match names {
+      [] => Err(NotFound { path }),
+      _ => Ok(to_list(set(names))),
+    }
+  }
+
+  fn make_dir(mut self, path: String) -> Result[(), FsError] {
+    Ok(())
+  }
+
+  fn remove(mut self, path: String) -> Result[(), FsError] {
+    if contains(self.files, path) {
+      self.files = remove(self.files, path)
+      Ok(())
+    } else {
+      Err(NotFound { path })
+    }
+  }
+}

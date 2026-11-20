@@ -3,6 +3,24 @@
 
 use crate::ast::*;
 
+/// A string literal's contents, written so the lexer reads them back the
+/// same: `\n`, `\t` and `"` are escaped, and so is a backslash that would
+/// otherwise start one of those escapes (others, like regex `\d`, stay as is).
+fn escape(s: &str) -> String {
+    let mut out = String::new();
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '"' => out.push_str("\\\""),
+            '\\' if it.peek().is_none_or(|n| matches!(n, 'n' | 't' | '"' | '\\')) => out.push_str("\\\\"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 pub fn ty(t: &TypeExpr) -> String {
     match t {
         TypeExpr::Unit => "()".into(),
@@ -53,11 +71,19 @@ pub fn comments(cs: &[String], d: usize) -> String {
         .collect()
 }
 
-/// Fields one per line, each under its comments.
+/// Whether a field has comments or docs (so its record is written one field per line).
+fn annotated(f: &Field) -> bool {
+    has_comments(&f.comments) || has_comments(&f.doc)
+}
+
+/// Fields one per line, each under its comments and docs.
 fn fields_broken(fs: &[Field], d: usize) -> String {
     let mut s = "{\n".to_string();
     for f in fs {
         s += &comments(&f.comments, d + 1);
+        if has_comments(&f.doc) {
+            s += &f.doc.iter().map(|l| format!("{}/// {l}\n", ind(d + 1))).collect::<String>();
+        }
         s += &format!("{}{}: {},\n", ind(d + 1), f.name, ty(&f.ty));
     }
     s + &ind(d) + "}"
@@ -246,7 +272,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::BigInt(digits) => digits.clone(),
         Expr::Float(f) => float(*f),
         Expr::Tuple(es) => format!("({})", args(es, d)),
-        Expr::Str(s) => format!("\"{}\"", s.replace('"', "\\\"").replace('\n', "\\n")),
+        Expr::Str(s) => format!("\"{}\"", escape(s)),
         Expr::Bool(b) => b.to_string(),
         Expr::Unit => "()".into(),
         Expr::Var(v) => v.clone(),
@@ -312,7 +338,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             let mut s = "f\"".to_string();
             for p in parts {
                 match p {
-                    StrPart::Lit(l) => s += &l.replace('"', "\\\"").replace('\n', "\\n").replace('{', "{{").replace('}', "}}"),
+                    StrPart::Lit(l) => s += &escape(l).replace('{', "{{").replace('}', "}}"),
                     StrPart::Expr(e, spec) => s += &format!("{{{}{}}}", expr_inline(e, 0), spec.as_ref().map(|f| format!(":{f}")).unwrap_or_default()),
                 }
             }
@@ -394,7 +420,7 @@ pub fn type_decl(t: &TypeDecl) -> String {
         TypeBody::Alias(a) => s += &ty(a),
         TypeBody::Record(fs) => {
             let one = format!("{{ {} }}", fields(fs));
-            if s.chars().count() + one.chars().count() > WIDTH || fs.iter().any(|f| has_comments(&f.comments)) {
+            if s.chars().count() + one.chars().count() > WIDTH || fs.iter().any(annotated) {
                 s += &fields_broken(fs, 0);
             } else {
                 s += &one;
@@ -414,7 +440,7 @@ pub fn type_decl(t: &TypeDecl) -> String {
                     Payload::Positional(ts) => {
                         s += &format!("({})", ts.iter().map(ty).collect::<Vec<_>>().join(", "))
                     }
-                    Payload::Record(fs) if fs.iter().any(|f| has_comments(&f.comments)) => s += &format!(" {}", fields_broken(fs, 1)),
+                    Payload::Record(fs) if fs.iter().any(annotated) =>s += &format!(" {}", fields_broken(fs, 1)),
                     Payload::Record(fs) => s += &format!(" {{ {} }}", fields(fs)),
                 }
             }
@@ -488,7 +514,15 @@ fn trait_text(t: &TraitDecl, bodies: bool) -> String {
             s += &format!("{head} {body}\n");
         }
     }
-    s + "}"
+    close(s)
+}
+
+/// Close a trait or impl body: `{}` when it is empty (`impl CommandLine for Options {}`).
+fn close(s: String) -> String {
+    match s.strip_suffix(" {\n") {
+        Some(head) => format!("{head} {{}}"),
+        None => s + "}",
+    }
 }
 
 fn impl_head(i: &ImplDecl) -> String {
@@ -509,7 +543,7 @@ pub fn impl_decl(i: &ImplDecl) -> String {
         let body = fn_decl(m).lines().map(|l| format!("  {l}\n")).collect::<String>();
         s += &body;
     }
-    s + "}"
+    close(s)
 }
 
 /// An implementation with method bodies left out (the interface level).
@@ -523,7 +557,7 @@ pub fn impl_interface(i: &ImplDecl) -> String {
         s += &method_notes(m);
         s += &fn_signature(m).lines().map(|l| format!("  {l}\n")).collect::<String>();
     }
-    s + "}"
+    close(s)
 }
 
 pub fn fn_signature(f: &FnDecl) -> String {
