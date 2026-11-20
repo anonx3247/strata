@@ -9,7 +9,6 @@ use crate::verify::Verdict;
 use serde_json::{json, Value as Json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 pub struct Step {
     /// stable id: the log index, or the position in the commit list
@@ -82,7 +81,7 @@ pub fn log_options(cb: &Codebase, from: Option<usize>, to: Option<usize>) -> Jso
 /// What a git range can be set to: the current base, branches, recent commits.
 pub fn git_options(path: &Path, base: Option<&str>) -> Json {
     let dir = if path.is_dir() { path.to_path_buf() } else { path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")).to_path_buf() };
-    let recent: Vec<Json> = git(&dir, &["log", "-15", "--format=%h%x09%s", "--", "."])
+    let recent: Vec<Json> = crate::git::run(Some(&dir), &["log", "-15", "--format=%h%x09%s", "--", "."])
         .unwrap_or_default()
         .lines()
         .map(|l| {
@@ -90,7 +89,7 @@ pub fn git_options(path: &Path, base: Option<&str>) -> Json {
             json!({"rev": h, "message": s})
         })
         .collect();
-    let branches: Vec<String> = git(&dir, &["branch", "--format=%(refname:short)"]).unwrap_or_default().lines().map(|s| s.to_string()).collect();
+    let branches: Vec<String> = crate::git::run(Some(&dir), &["branch", "--format=%(refname:short)"]).unwrap_or_default().lines().map(|s| s.to_string()).collect();
     json!({"kind": "git", "base": base.unwrap_or("HEAD"), "commits": recent, "branches": branches})
 }
 
@@ -122,26 +121,18 @@ pub fn log_range(cb: &Codebase, from: Option<usize>, to: Option<usize>) -> Resul
     })
 }
 
-fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let o = Command::new("git").arg("-C").arg(dir).args(args).output().map_err(|e| format!("git: {e}"))?;
-    if !o.status.success() {
-        return Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()));
-    }
-    Ok(String::from_utf8_lossy(&o.stdout).to_string())
-}
-
 /// The sources at a git revision: a file, or a folder of `.strata` files.
 fn sources_at(path: &Path, rev: &str) -> Result<Program, String> {
     if path.is_dir() {
         let mut files = Vec::new();
-        for rel in git(path, &["ls-tree", "-r", "--name-only", rev, "--", "."])?.lines().filter(|l| l.ends_with(".strata")) {
-            files.push((PathBuf::from(rel), git(path, &["show", &format!("{rev}:./{rel}")])?));
+        for rel in crate::git::run(Some(path), &["ls-tree", "-r", "--name-only", rev, "--", "."])?.lines().filter(|l| l.ends_with(".strata")) {
+            files.push((PathBuf::from(rel), crate::git::run(Some(path), &["show", &format!("{rev}:./{rel}")])?));
         }
         crate::parse_files(files)
     } else {
         let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
         let name = path.file_name().ok_or("not a file")?.to_string_lossy().to_string();
-        match git(dir, &["show", &format!("{rev}:./{name}")]) {
+        match crate::git::run(Some(dir), &["show", &format!("{rev}:./{name}")]) {
             Ok(src) => crate::parser::parse_module_file(&src, "").map_err(|e| format!("{name} at {rev}: {e}")),
             Err(_) => Ok(Program::default()),
         }
@@ -150,7 +141,7 @@ fn sources_at(path: &Path, rev: &str) -> Result<Program, String> {
 
 /// The log entries of a package (a folder with a `strata.log`) at a revision.
 fn log_at(dir: &Path, rev: &str) -> Vec<Json> {
-    git(dir, &["show", &format!("{rev}:./{}", store::LOG)]).map(|t| store::parse_log(&t)).unwrap_or_default()
+    crate::git::run(Some(dir), &["show", &format!("{rev}:./{}", store::LOG)]).map(|t| store::parse_log(&t)).unwrap_or_default()
 }
 
 fn ids(log: &[Json]) -> std::collections::HashSet<String> {
@@ -194,9 +185,9 @@ fn log_steps(steps: &mut Vec<Step>, before: &Program, after: &Program, log: &[Js
 /// their renames), plus a step for edits made outside strata.
 pub fn git_range(path: &Path, base: Option<&str>) -> Result<Range, String> {
     let dir = if path.is_dir() { path.to_path_buf() } else { path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")).to_path_buf() };
-    git(&dir, &["rev-parse", "--show-toplevel"]).map_err(|_| format!("{} is not in a git repository, so there is nothing to compare it with", path.display()))?;
+    crate::git::run(Some(&dir), &["rev-parse", "--show-toplevel"]).map_err(|_| format!("{} is not in a git repository, so there is nothing to compare it with", path.display()))?;
     let base = base.unwrap_or("HEAD");
-    let base_sha = git(&dir, &["rev-parse", "--short", "--verify", &format!("{base}^{{commit}}")])
+    let base_sha = crate::git::run(Some(&dir), &["rev-parse", "--short", "--verify", &format!("{base}^{{commit}}")])
         .map_err(|_| format!("`{base}` is not a branch or commit in this repository"))?
         .trim()
         .to_string();
@@ -205,7 +196,7 @@ pub fn git_range(path: &Path, base: Option<&str>) -> Result<Range, String> {
     let mut known = if package { ids(&log_at(&dir, base)) } else { Default::default() };
     let mut steps = Vec::new();
     let mut prev = base_prog.clone();
-    let commits = git(&dir, &["log", "--reverse", "--format=%h%x09%ct%x09%s", &format!("{base}..HEAD"), "--", "."])?;
+    let commits = crate::git::run(Some(&dir), &["log", "--reverse", "--format=%h%x09%ct%x09%s", &format!("{base}..HEAD"), "--", "."])?;
     // a commit whose sources don't parse is folded into the next one that does
     let mut skipped: Vec<String> = Vec::new();
     for l in commits.lines() {

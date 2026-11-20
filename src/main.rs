@@ -3,6 +3,7 @@ mod cli;
 mod diff;
 mod history;
 mod generate;
+mod git;
 mod interp;
 mod lexer;
 mod merge;
@@ -529,10 +530,10 @@ fn run() -> Result<bool, String> {
         "setup-git" => {
             let exe = std::env::current_exe().map_err(|e| e.to_string())?;
             let driver = format!("'{}' merge-file %O %A %B %P", exe.display());
-            git_out(&["config", "merge.strata.name", "Strata: merge each definition separately, then type-check"])?;
-            git_out(&["config", "merge.strata.driver", &driver])?;
+            crate::git::run(None, &["config", "merge.strata.name", "Strata: merge each definition separately, then type-check"])?;
+            crate::git::run(None, &["config", "merge.strata.driver", &driver])?;
             println!("git will merge .strata files with: {driver}");
-            let top = git_out(&["rev-parse", "--show-toplevel"])?;
+            let top = crate::git::run(None, &["rev-parse", "--show-toplevel"])?;
             let attrs = std::fs::read_to_string(std::path::Path::new(top.trim()).join(".gitattributes")).unwrap_or_default();
             if !attrs.lines().any(|l| l.starts_with("*.strata") && l.split_whitespace().any(|w| w == "merge=strata")) {
                 println!("add `*.strata merge=strata` to .gitattributes (and commit it) so git uses it");
@@ -540,30 +541,30 @@ fn run() -> Result<bool, String> {
         }
         "sync" => {
             let branch = args.pos.get(1).map(|s| s.as_str()).unwrap_or("main");
-            if !git_out(&["status", "--porcelain", "--untracked-files=no"])?.trim().is_empty() {
+            if !crate::git::run(None, &["status", "--porcelain", "--untracked-files=no"])?.trim().is_empty() {
                 return Err("there are uncommitted changes; commit them first".into());
             }
-            let target = if git_out(&["remote", "get-url", "origin"]).is_ok() {
-                git_out(&["fetch", "origin", branch])?;
+            let target = if crate::git::run(None, &["remote", "get-url", "origin"]).is_ok() {
+                crate::git::run(None, &["fetch", "origin", branch])?;
                 format!("origin/{branch}")
             } else {
                 branch.to_string()
             };
-            git_out(&["rev-parse", "--verify", &format!("{target}^{{commit}}")]).map_err(|_| format!("no branch `{target}`"))?;
-            let is_ancestor = |a: &str, b: &str| Command::new("git").args(["merge-base", "--is-ancestor", a, b]).status().is_ok_and(|s| s.success());
+            crate::git::run(None, &["rev-parse", "--verify", &format!("{target}^{{commit}}")]).map_err(|_| format!("no branch `{target}`"))?;
+            let is_ancestor = |a: &str, b: &str| crate::git::ok(None, &["merge-base", "--is-ancestor", a, b]);
             if is_ancestor(&target, "HEAD") {
                 println!("already up to date with {target}");
                 return Ok(true);
             }
             if is_ancestor("HEAD", &target) {
-                git_out(&["merge", "--ff-only", &target])?;
+                crate::git::run(None, &["merge", "--ff-only", &target])?;
                 println!("fast-forwarded to {target}");
                 return ci(false);
             }
             let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-            let attrs = git_out(&["rev-parse", "--git-path", "strata-sync-attributes"])?.trim().to_string();
+            let attrs = crate::git::run(None, &["rev-parse", "--git-path", "strata-sync-attributes"])?.trim().to_string();
             std::fs::write(&attrs, "*.strata merge=strata\nstrata.log merge=union\n").map_err(|e| format!("{attrs}: {e}"))?;
-            let base = git_out(&["merge-base", "HEAD", &target])?.trim().to_string();
+            let base = crate::git::run(None, &["merge-base", "HEAD", &target])?.trim().to_string();
             let status = Command::new("git")
                 .args(["-c", "merge.strata.name=strata", "-c"])
                 .arg(format!("merge.strata.driver='{}' merge-file %O %A %B %P", exe.display()))
@@ -575,7 +576,7 @@ fn run() -> Result<bool, String> {
                 .map_err(|e| format!("git: {e}"));
             let _ = std::fs::remove_file(&attrs);
             status?;
-            let conflicted = git_out(&["diff", "--name-only", "--diff-filter=U"])?;
+            let conflicted = crate::git::run(None, &["diff", "--name-only", "--diff-filter=U"])?;
             if !conflicted.trim().is_empty() {
                 eprintln!("\nconflicts with {target} in:");
                 for f in conflicted.lines() {
@@ -585,7 +586,7 @@ fn run() -> Result<bool, String> {
                 return Ok(false);
             }
             // a rename on one side reaches the other side's new calls, in any file
-            let top = std::path::PathBuf::from(git_out(&["rev-parse", "--show-toplevel"])?.trim());
+            let top = std::path::PathBuf::from(crate::git::run(None, &["rev-parse", "--show-toplevel"])?.trim());
             for note in merge::follow_renames(&top, &base, &target)? {
                 println!("{note}");
             }
@@ -594,7 +595,7 @@ fn run() -> Result<bool, String> {
                 eprintln!("fix it, run `strata ci`, then `git commit` (or `git merge --abort`)");
                 return Ok(false);
             }
-            git_out(&["commit", "--no-edit"])?;
+            crate::git::run(None, &["commit", "--no-edit"])?;
             println!("merged {target}");
         }
         "ci" => return ci(args.flag("--fix")),
@@ -1204,7 +1205,7 @@ fn editor_command() -> String {
             }
         }
     }
-    git_out(&["var", "GIT_EDITOR"]).map(|e| e.trim().to_string()).ok().filter(|e| !e.is_empty()).unwrap_or_else(|| "vi".into())
+    crate::git::run(None, &["var", "GIT_EDITOR"]).map(|e| e.trim().to_string()).ok().filter(|e| !e.is_empty()).unwrap_or_else(|| "vi".into())
 }
 
 /// What `strata edit X` names: a module (`shop`, `main` for the root, or its
@@ -1365,38 +1366,26 @@ fn git_commit(cb: &Codebase, msg: &str) {
     if package::load(cb.root()).map(|p| !p.auto_commit).unwrap_or(false) {
         return;
     }
-    let dir = cb.root().to_path_buf();
-    let git = |args: &[&str]| Command::new("git").arg("-C").arg(&dir).args(args).output();
-    let Ok(top) = git(&["rev-parse", "--show-toplevel"]) else { return };
-    if !top.status.success() {
+    let dir = Some(cb.root());
+    if !crate::git::ok(dir, &["rev-parse", "--show-toplevel"]) {
         return; // not in a git repository
     }
-    let merging = git(&["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_ok_and(|o| o.status.success());
-    if merging {
+    if crate::git::ok(dir, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]) {
         println!("not committed to git: a merge is in progress (commit it, then strata commits again)");
         return;
     }
-    let _ = git(&["add", "-A", "--", "."]);
-    let staged = git(&["diff", "--cached", "--quiet", "--", "."]).is_ok_and(|o| !o.status.success());
+    let _ = crate::git::run(dir, &["add", "-A", "--", "."]);
+    let staged = !crate::git::ok(dir, &["diff", "--cached", "--quiet", "--", "."]);
     if !staged {
         return;
     }
-    match git(&["commit", "-q", "-m", msg, "--", "."]) {
-        Ok(o) if o.status.success() => {
-            let sha = git(&["rev-parse", "--short", "HEAD"]).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    match crate::git::run(dir, &["commit", "-q", "-m", msg, "--", "."]) {
+        Ok(_) => {
+            let sha = crate::git::run(dir, &["rev-parse", "--short", "HEAD"]).map(|o| o.trim().to_string()).unwrap_or_default();
             println!("committed to git: {sha} {}", msg.lines().next().unwrap_or(""));
         }
-        Ok(o) => eprintln!("the change is made, but `git commit` failed: {}", String::from_utf8_lossy(&o.stderr).trim()),
-        Err(e) => eprintln!("the change is made, but git didn't run: {e}"),
+        Err(e) => eprintln!("the change is made, but {e}"),
     }
-}
-
-fn git_out(args: &[&str]) -> Result<String, String> {
-    let o = Command::new("git").args(args).output().map_err(|e| format!("git: {e}"))?;
-    if !o.status.success() {
-        return Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&o.stderr).trim()));
-    }
-    Ok(String::from_utf8_lossy(&o.stdout).to_string())
 }
 
 /// What CI requires, over the whole repository (or the current folder outside
@@ -1405,7 +1394,7 @@ fn git_out(args: &[&str]) -> Result<String, String> {
 /// prints). `fix` rewrites the files that aren't.
 fn ci(fix: bool) -> Result<bool, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let top = git_out(&["rev-parse", "--show-toplevel"]).map(|t| std::path::PathBuf::from(t.trim())).unwrap_or(cwd);
+    let top = crate::git::run(None, &["rev-parse", "--show-toplevel"]).map(|t| std::path::PathBuf::from(t.trim())).unwrap_or(cwd);
     let top = std::fs::canonicalize(&top).unwrap_or(top);
     let (packages, scripts) = package::discover(&top)?;
     if packages.is_empty() && scripts.is_empty() {
