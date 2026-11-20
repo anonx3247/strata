@@ -3,6 +3,7 @@
 
 use crate::ast::*;
 use crate::interp::{Fields, Interp, Value};
+use crate::types::ints::{self, Ints};
 use crate::types::{subst_texpr, Env};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -12,79 +13,43 @@ pub struct Gen {
     rng: StdRng,
 }
 
-#[derive(Default, Clone, Debug)]
+/// What a type's refinements say about the values to generate: the
+/// integers they allow, the lengths, and a regex the value must match.
+/// Anything not understood is still enforced by rejection sampling.
+#[derive(Clone, Debug)]
 struct Hints {
-    lo: Option<i64>,
-    hi: Option<i64>,
-    len_lo: Option<i64>,
-    len_hi: Option<i64>,
+    ints: Ints,
+    lens: Ints,
     regex: Option<String>,
 }
 
-fn is_it(e: &Expr) -> bool {
-    matches!(e, Expr::Var(v) if v == "it")
+impl Default for Hints {
+    fn default() -> Self {
+        Hints { ints: vec![(ints::MIN, ints::MAX)], lens: vec![(0, ints::MAX)], regex: None }
+    }
 }
 
-/// Extract simple bounds from a refinement predicate to steer generation.
-/// Anything not understood is still enforced by rejection sampling.
-fn hints(e: &Expr, h: &mut Hints) {
-    use BinOp::*;
+impl Hints {
+    /// These hints, narrowed by a refinement predicate.
+    fn and(&self, pred: &Expr) -> Hints {
+        Hints { ints: ints::and(&self.ints, &ints::hull(pred)), lens: ints::and(&self.lens, &ints::len_hull(pred)), regex: regex_of(pred).or_else(|| self.regex.clone()) }
+    }
+}
+
+/// The regex of a `matches(it, "...")` among a predicate's `&&`s.
+fn regex_of(e: &Expr) -> Option<String> {
+    let is_it = |e: &Expr| matches!(e, Expr::Var(v) if v == "it");
     match e {
-        Expr::Bin(And, l, r) => {
-            hints(l, h);
-            hints(r, h);
-        }
-        Expr::Bin(op, l, r) => {
-            let (subject, n, op) = match (&**l, &**r) {
-                (s, Expr::Int(n)) => (s, *n, *op),
-                (Expr::Int(n), s) => (
-                    s,
-                    *n,
-                    match op {
-                        Lt => Gt,
-                        Le => Ge,
-                        Gt => Lt,
-                        Ge => Le,
-                        o => *o,
-                    },
-                ),
-                _ => return,
-            };
-            let is_len = |s: &Expr| match s {
-                Expr::Call(f, a) => matches!(&**f, Expr::Var(n) if n == "len") && a.len() == 1 && is_it(&a[0]),
-                Expr::Method(r, m, a) => m == "len" && a.is_empty() && is_it(r),
-                _ => false,
-            };
-            let (lo, hi) = if is_it(subject) {
-                (&mut h.lo, &mut h.hi)
-            } else if is_len(subject) {
-                (&mut h.len_lo, &mut h.len_hi)
-            } else {
-                return;
-            };
-            match op {
-                Ge => *lo = Some(lo.map_or(n, |x: i64| x.max(n))),
-                Gt => *lo = Some(lo.map_or(n + 1, |x: i64| x.max(n + 1))),
-                Le => *hi = Some(hi.map_or(n, |x: i64| x.min(n))),
-                Lt => *hi = Some(hi.map_or(n - 1, |x: i64| x.min(n - 1))),
-                Eq => {
-                    *lo = Some(n);
-                    *hi = Some(n)
-                }
-                _ => {}
-            }
-        }
-        Expr::Call(f, a) if matches!(&**f, Expr::Var(n) if n == "matches") && a.len() == 2 && is_it(&a[0]) => {
-            if let Expr::Str(re) = &a[1] {
-                h.regex = Some(re.clone());
-            }
-        }
-        Expr::Method(r, m, a) if m == "matches" && is_it(r) && a.len() == 1 => {
-            if let Expr::Str(re) = &a[0] {
-                h.regex = Some(re.clone());
-            }
-        }
-        _ => {}
+        Expr::Bin(BinOp::And, l, r) => regex_of(l).or_else(|| regex_of(r)),
+        Expr::Call(f, a) if matches!(&**f, Expr::Var(n) if n == "matches") && a.len() == 2 && is_it(&a[0]) => match &a[1] {
+            Expr::Str(re) => Some(re.clone()),
+            _ => None,
+        },
+        Expr::Method(r, m, a) if m == "matches" && is_it(r) && a.len() == 1 => match &a[0] {
+            Expr::Str(re) => Some(re.clone()),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -97,10 +62,24 @@ impl Gen {
         self.produce(env, t, it, 0, &Hints::default())
     }
 
+    /// One of the intervals of `set`, open ends brought within `below` /
+    /// `above` of the finite one (or around 0): `(lo, hi)`.
+    fn interval(&mut self, set: &Ints, below: i128, above: i128) -> (i64, i64) {
+        let Some(&(a, b)) = (!set.is_empty()).then(|| &set[self.rng.random_range(0..set.len())]) else {
+            return (0, 0); // nothing allowed: the check rejects whatever comes
+        };
+        let (lo, hi) = match (a == ints::MIN, b == ints::MAX) {
+            (true, true) => (-below, below),
+            (true, false) => (b - below, b),
+            (false, true) => (a, a + above),
+            (false, false) => (a, b),
+        };
+        (lo.max(ints::MIN) as i64, hi.min(ints::MAX).max(lo) as i64)
+    }
+
     fn int(&mut self, h: &Hints) -> i64 {
-        let lo = h.lo.unwrap_or_else(|| h.hi.map_or(-1000, |x| x - 1000));
         // with only a lower bound (`Natural`), stay near it: edge cases live there
-        let hi = h.hi.unwrap_or(if h.lo.is_some() { lo + 100 } else { lo.max(-1000) + 2000 }).max(lo);
+        let (lo, hi) = self.interval(&h.ints, 1000, 100);
         // Boundary values find most bugs: pick them often.
         match self.rng.random_range(0..10) {
             0 => lo,
@@ -110,6 +89,12 @@ impl Gen {
         }
     }
 
+    /// A length the hints allow, at most `spread` past an open lower bound.
+    fn len(&mut self, h: &Hints, spread: i128) -> usize {
+        let (lo, hi) = self.interval(&h.lens, 0, spread);
+        self.rng.random_range(lo.max(0)..=hi.max(0)) as usize
+    }
+
     fn string(&mut self, h: &Hints) -> Result<String, String> {
         if let Some(re) = &h.regex {
             let mut parser = regex_syntax::ParserBuilder::new().unicode(false).build();
@@ -117,9 +102,7 @@ impl Gen {
             let g = rand_regex::Regex::with_hir(hir, 8).map_err(|e| e.to_string())?;
             return Ok(self.rng.sample::<String, _>(&g));
         }
-        let lo = h.len_lo.unwrap_or(0).max(0) as usize;
-        let hi = h.len_hi.map_or(lo + 8, |x| x.max(lo as i64) as usize);
-        let n = self.rng.random_range(lo..=hi);
+        let n = self.len(h, 8);
         const CH: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789 _-";
         Ok((0..n).map(|_| CH[self.rng.random_range(0..CH.len())] as char).collect())
     }
@@ -132,8 +115,7 @@ impl Gen {
             }
         }
         if let TypeExpr::Refined(b, pred) = t {
-            let mut h2 = h.clone();
-            hints(pred, &mut h2);
+            let h2 = h.and(pred);
             for _ in 0..300 {
                 let v = self.produce(env, b, it, depth, &h2)?;
                 if let Ok(None) = it.check_type(t, &v) {
@@ -155,10 +137,10 @@ impl Gen {
         match n.as_str() {
             "Int" => return Ok(Value::Int(self.int(h))),
             "Float" => {
-                let whole = self.int(h) as f64;
+                let whole = self.int(h);
                 let frac: f64 = self.rng.random_range(0.0..1.0);
                 // stay inside integer bounds when there are any
-                let f = if h.hi.is_some_and(|hi| whole + frac > hi as f64) { whole } else { whole + frac };
+                let f = if ints::contains(&h.ints, whole as i128 + 1, whole as i128 + 1) { whole as f64 + frac } else { whole as f64 };
                 return Ok(Value::Float(f));
             }
             "Tuple" => {
@@ -185,10 +167,8 @@ impl Gen {
             "String" => return Ok(Value::Str(self.string(h)?)),
             "Unit" => return Ok(Value::Unit),
             "List" => {
-                let lo = h.len_lo.unwrap_or(0).max(0) as usize;
-                let hi = h.len_hi.map_or(lo + 4, |x| x.max(lo as i64) as usize);
-                let max = if depth > 3 { lo } else { hi };
-                let len = self.rng.random_range(lo..=max.max(lo));
+                // deep down, the shortest list allowed, so recursion ends
+                let len = if depth > 3 { h.lens.first().map_or(0, |&(lo, _)| lo.max(0) as usize) } else { self.len(h, 4) };
                 let el = args.first().cloned().unwrap_or(TypeExpr::Unit);
                 return Ok(Value::List((0..len).map(|_| self.produce(env, &el, it, depth + 1, &Hints::default())).collect::<Result<_, _>>()?));
             }
@@ -206,10 +186,7 @@ impl Gen {
         let Some(td) = env.types.get(n).cloned() else {
             return Err(format!("cannot generate a value of unknown type `{n}` (generic parameters are not supported)"));
         };
-        let mut h2 = Hints::default();
-        if let Some(r) = &td.refinement {
-            hints(r, &mut h2);
-        }
+        let h2 = td.refinement.as_ref().map_or_else(Hints::default, |r| Hints::default().and(r));
         for _attempt in 0..300 {
             let v = match &td.body {
                 TypeBody::Alias(a) if td.distinct => {

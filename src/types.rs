@@ -3373,6 +3373,29 @@ pub mod ints {
         Some(and(&of_pred_on(e, &is_len)?, &vec![(0, MAX)]))
     }
 
+    /// A superset of the integers for which a condition on `it` holds: as
+    /// `of_pred`, with the parts it can't read (`is_prime(it)`) taken as
+    /// anything. Steers generators; the condition itself is still checked.
+    pub fn hull(e: &Expr) -> Ints {
+        hull_on(e, &of_pred)
+    }
+
+    /// The same for the lengths of `it`.
+    pub fn len_hull(e: &Expr) -> Ints {
+        and(&hull_on(e, &of_len_pred), &vec![(0, MAX)])
+    }
+
+    fn hull_on(e: &Expr, exact: &dyn Fn(&Expr) -> Option<Ints>) -> Ints {
+        if let Some(s) = exact(e) {
+            return s;
+        }
+        match e {
+            Expr::Bin(BinOp::And, l, r) => and(&hull_on(l, exact), &hull_on(r, exact)),
+            Expr::Bin(BinOp::Or, l, r) => or(&hull_on(l, exact), &hull_on(r, exact)),
+            _ => vec![(MIN, MAX)],
+        }
+    }
+
     fn of_pred_on(e: &Expr, subject: &dyn Fn(&Expr) -> bool) -> Option<Ints> {
         let of_pred = |e: &Expr| of_pred_on(e, subject);
         let konst = |e: &Expr| match e {
