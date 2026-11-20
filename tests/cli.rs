@@ -1955,6 +1955,9 @@ fn main(mut console: Console, mut files: Files, env: Environment) -> Result[Exit
     assert!(!out.contains("MARKER") && !err.contains("MARKER"), "{out}{err}");
     let (ok, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "check"], &d, None);
     assert!(ok, "{out}");
+    // std's real terminal, disk and process are assumed, never run by verify
+    let (ok, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "verify", "--cases", "10"], &d, None);
+    assert!(ok && !out.contains("needs the real system") && out.contains("std.io.Terminal.print") && out.contains("assumed"), "{out}");
 }
 
 #[test]
