@@ -251,7 +251,9 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
 pub fn graph(p: &Program) -> BTreeMap<String, BTreeSet<String>> {
     // compute on resolved (qualified) names, report by each definition's qname
     let original = p;
-    let resolved = crate::resolve::resolve(p);
+    let mut resolved = crate::resolve::resolve(p);
+    // only the program's own definitions: not the standard library resolution adds
+    resolved.program.decls.truncate(original.decls.len());
     let p = &resolved.program;
     let to_q: HashMap<String, String> = p.decls.iter().zip(&original.decls).map(|(r, d)| (r.name(), d.qname())).collect();
     let names: BTreeSet<String> = p.decls.iter().map(|d| d.name()).collect();
@@ -344,7 +346,7 @@ impl Codebase {
 
     /// The package's modules, read from its files.
     pub fn open(root: &Path) -> Result<Codebase, String> {
-        let program = crate::package::parse(crate::package::files(root)?)?;
+        let program = crate::package::program(root)?;
         Ok(Codebase { root: root.to_path_buf(), program })
     }
 
@@ -453,6 +455,8 @@ pub const LOG: &str = "strata.log";
 /// Where a module's file is, relative to its package: `shop.orders` is
 /// `shop/orders.strata`, the root module `main.strata`.
 pub fn module_path(m: &str) -> PathBuf {
+    // inside `std/` itself, `std.io` is `io.strata`
+    let m = m.strip_prefix("std.").unwrap_or(if m == crate::stdlib::NAME { "" } else { m });
     if m.is_empty() { PathBuf::from("main.strata") } else { PathBuf::from(format!("{}.strata", m.replace('.', "/"))) }
 }
 

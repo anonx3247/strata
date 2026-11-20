@@ -325,6 +325,39 @@ All values are immutable (`insert` returns a new dict). Dicts and sets are kept 
 
 **Not yet:** lazy iterators, generators and async, which will be designed as language features of their own.
 
+## Programs and the standard library
+
+A program's entry point is `main`. It asks for the capabilities it needs by type, and `strata run` passes the real ones in:
+
+```rust
+use std.io.Console
+use std.process.Environment
+
+fn main(mut console: Console, env: Environment) -> () {
+  let names = env.args()
+  let who = if len(names) == 0 { "world" } else { join(names, " and ") }
+  console.print(f"hello, {who}!")
+}
+```
+
+```sh
+strata run examples/hello -- Ada        # hello, Ada!
+strata run examples/wc -- README.md     # lines, words and characters, like wc
+cat README.md | strata run examples/wc
+```
+
+`main` can ask for any of `Console` (`std.io`), `Files` (`std.fs`) and `Environment` (`std.process`), in any order. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [JSON-ARGS]` still calls a single function.
+
+The **standard library** is the `std/` package, written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency:
+
+| Module | What it has |
+|---|---|
+| `std.io` | `Console` (`print`, `write`, `eprint`, `read_line`); `Recorder` / `recorder(input)` / `printed(r)` for tests |
+| `std.fs` | `Files` (`read_text`, `write_text`, `append_text`, `exists`, `list_dir`, `make_dir`, `remove_file`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
+| `std.process` | `Environment` (`args`, `var`), `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
+
+Each capability is a trait, so code that prints takes a `Console`, and its signature says so. The only real implementations are private types of `std` that the runtime makes for `main`; nothing else can create them. Tests pass the in-memory stand-ins (see `examples/wc`), or `mock Console`. Only `std` can call the native `host_*` operations underneath, and only `strata run` lets them reach the system: `test`, `verify` and fuzzing never touch the terminal or the disk.
+
 ## Views (levels of detail)
 
 | Level | Shows |
@@ -444,6 +477,7 @@ The `.strata` files are what you commit.
 | `src/store.rs` | content-addressed codebase, dependency graph, patch log |
 | `src/merge.rs` | `strata merge-file`: three-way merge per definition, renames |
 | `src/package.rs` | packages: `strata.toml`, their files, finding packages and scripts |
+| `src/stdlib.rs`, `std/` | the standard library (Strata), built into the binary; the native `host_*` operations it alone can call |
 | `src/view.rs` | level-of-detail projections and selectors |
 | `src/ui.rs`, `src/ui/index.html` | `strata ui`: the live viewer (a std-only HTTP server and one page) |
 
