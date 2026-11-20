@@ -7,7 +7,11 @@
 
 use std.web.{Html, Attr, render, document, element, text, style_sheet, h1, p, ul, li, table, thead, tbody, tr, th, td, button, class, on_click, disabled}
 
-type Language = { name: String, year: Int where 1940 <= it && it <= 2100, typed: Bool }
+type Language = {
+  name: String,
+  year: Int where 1940 <= it && it <= 2100,
+  typed: Bool,
+}
 
 /// What the page's buttons send back (not used yet: there's no server).
 type Msg =
@@ -18,37 +22,49 @@ fn row(l: Language) -> Html[Msg] {
   tr([], [
     td([], [text(l.name)]),
     td([class("num")], [text(to_string(l.year))]),
-    td([], [text(if l.typed { "yes" } else { "no" })]),
+    td([], [text(if l.typed {
+      "yes"
+    } else {
+      "no"
+    })]),
   ])
 }
 
 fn languages_table(ls: List[Language]) -> Html[Msg] {
-  table([], [
-    thead([], [tr([], [th([], [text("Name")]), th([class("num")], [text("Year")]), th([], [text("Static types")])])]),
-    tbody([], ls.map(l -> row(l))),
-  ])
+  table([], [thead([], [tr([], [
+    th([], [text("Name")]),
+    th([class("num")], [text("Year")]),
+    th([], [text("Static types")]),
+  ])]), tbody([], ls.map(l -> row(l)))])
 }
 
 fn page(ls: List[Language]) -> String {
-  let css = join([
-    "body { font-family: system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; color: #1f2328; }",
-    "h1 { font-size: 1.6rem; margin-bottom: 0.25rem; }",
-    "p { color: #59636e; margin-top: 0; }",
-    "table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; }",
-    "th, td { padding: 0.55rem 0.75rem; border-bottom: 1px solid #d1d9e0; text-align: left; }",
-    "th { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: #59636e; }",
-    "tbody tr:hover { background: #f6f8fa; }",
-    "th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }",
-    "button { font: inherit; padding: 0.4rem 0.9rem; margin-right: 0.5rem; border: 1px solid #d1d9e0; border-radius: 6px; background: #f6f8fa; cursor: pointer; }",
-    "button:hover:not([disabled]) { background: #eaeef2; }",
-    "button[disabled] { opacity: 0.5; cursor: default; }",
-  ], "\n")
+  let css = join(
+    [
+      "body { font-family: system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; color: #1f2328; }",
+      "h1 { font-size: 1.6rem; margin-bottom: 0.25rem; }",
+      "p { color: #59636e; margin-top: 0; }",
+      "table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; }",
+      "th, td { padding: 0.55rem 0.75rem; border-bottom: 1px solid #d1d9e0; text-align: left; }",
+      "th { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: #59636e; }",
+      "tbody tr:hover { background: #f6f8fa; }",
+      "th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }",
+      "button { font: inherit; padding: 0.4rem 0.9rem; margin-right: 0.5rem; border: 1px solid #d1d9e0; border-radius: 6px; background: #f6f8fa; cursor: pointer; }",
+      "button:hover:not([disabled]) { background: #eaeef2; }",
+      "button[disabled] { opacity: 0.5; cursor: default; }",
+    ],
+    "\n",
+  )
   let note: Html[Msg] = if len(ls) == 0 {
     p([class("empty")], [text("No languages yet.")])
   } else {
     p([], [text(f"{len(ls)} languages")])
   }
-  let sort_attrs: List[Attr[Msg]] = if len(ls) < 2 { [on_click(Sort { by: "year" }), disabled()] } else { [on_click(Sort { by: "year" })] }
+  let sort_attrs: List[Attr[Msg]] = if len(ls) < 2 {
+    [on_click(Sort { by: "year" }), disabled()]
+  } else {
+    [on_click(Sort { by: "year" })]
+  }
   document("Languages", [style_sheet(css)], [
     h1([], [text("Languages")]),
     note,
@@ -62,7 +78,11 @@ fn main() -> () {
   print(page([
     Language { name: "ML", year: 1973, typed: true },
     Language { name: "Lisp", year: 1958, typed: false },
-    Language { name: "<script>alert(1)</script>", year: 2026, typed: true },
+    Language {
+      name: "<script>alert(1)</script>",
+      year: 2026,
+      typed: true,
+    },
   ]))
 }
 
@@ -72,7 +92,10 @@ test "text is escaped" {
 }
 
 test "attributes are escaped and events carry their message as JSON" {
-  let h: Html[Msg] = button([class("x\"y"), on_click(Sort { by: "year" }), disabled()], [text("go")])
+  let h: Html[Msg] = button(
+    [class("x\"y"), on_click(Sort { by: "year" }), disabled()],
+    [text("go")],
+  )
   assert render(h) == "<button class=\"x&quot;y\" data-on-click=\"{&quot;Sort&quot;:{&quot;by&quot;:&quot;year&quot;}}\" disabled>go</button>"
 }
 
@@ -83,12 +106,15 @@ test "void elements have no closing tag" {
 
 test "style sheets are not escaped but can't close their element" {
   let h: Html[Msg] = style_sheet("a > b {} </style><script>")
-  assert render(h) == "<style>a > b {} <\\/style><script></style>"
+  assert render(h) == "<style>a > b {} <\/style><script></style>"
 }
 
 test "a page" {
   let html = page([])
-  assert starts_with(html, "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">")
+  assert starts_with(
+    html,
+    "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">",
+  )
   assert contains(html, "<title>Languages</title>")
   assert contains(html, "<p class=\"empty\">No languages yet.</p>")
 }
