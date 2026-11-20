@@ -236,7 +236,9 @@ fn has_hole(e: &Expr) -> bool {
 /// The layered check of a function (or of an implementation's method, when
 /// `imp` is given): prove what the solver can, confirm its counterexamples by
 /// running them, and fuzz the rest.
-pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&str>, transparent: &std::collections::HashMap<String, bool>, cases: usize, seed: u64) -> Verdict {
+/// `cross_check`: how many generated cases a proven function is still run on.
+/// A failure there means the prover itself is wrong, and is reported as such.
+pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&str>, transparent: &std::collections::HashMap<String, bool>, cases: usize, cross_check: usize, seed: u64) -> Verdict {
     let (decl, method) = match imp {
         None => (f.clone(), false),
         Some(imp) => {
@@ -287,6 +289,18 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&s
         proven.push(format!("(seeing through `{g}`, assuming it terminates as marked)"));
     }
     if unproven.is_empty() {
+        // a safety net for the prover: proven code is still run a little
+        if cross_check > 0 {
+            if let Verdict::Counterexample { args, kind, message, .. } = fuzz_limited(env, &decl, cross_check, seed, method, Some(CROSS_CHECK_STEPS)) {
+                return Verdict::Counterexample {
+                    args,
+                    kind,
+                    message: format!("{message}. The solver had proven every check, so this is a bug in the prover: please report it"),
+                    found_by: "cross-check".into(),
+                    terminates: None,
+                };
+            }
+        }
         return Verdict::Proven { checks: proven, terminates: None };
     }
     fuzz(proven.len(), unproven)
@@ -303,6 +317,8 @@ pub fn smt_queries(env: &Env, f: &FnDecl, transparent: &std::collections::HashMa
 enum Case {
     /// The inputs are not valid for the function (type or `requires`).
     Discarded,
+    /// The run went past its step budget: no conclusion either way.
+    TooCostly,
     Ok,
     Hole(String),
     Fault(Verdict),
@@ -324,6 +340,9 @@ fn run_case(mut it: Interp, f: &FnDecl, args: Vec<crate::interp::Value>, method:
         return Case::Discarded;
     }
     let res = if method { it.call_method(&f.name, args.clone()) } else { it.call_fn(&f.name, args.clone()) };
+    if it.exhausted() {
+        return Case::TooCostly;
+    }
     match res {
         Ok(_) => Case::Ok,
         Err(fault) if fault.kind == FaultKind::Hole => Case::Hole(format!("{} (via {})", fault.msg, short_stack(&fault.stack))),
@@ -417,7 +436,17 @@ pub fn check_law(env: &Env, imp: &ImplDecl, law: &Law, cases: usize, seed: u64) 
     Verdict::Fuzzed { cases, discarded: 0, proven: 0, unproven: vec![], terminates: None }
 }
 
+/// The step budget of one cross-check run: proven code can still be too
+/// costly to run (Ackermann's function), which proves nothing either way.
+const CROSS_CHECK_STEPS: u64 = 200_000;
+
 fn fuzz_call(env: &Env, f: &FnDecl, cases: usize, seed: u64, method: bool) -> Verdict {
+    fuzz_limited(env, f, cases, seed, method, None)
+}
+
+/// Fuzz with an optional step budget per case. With a budget, a case that
+/// goes past a limit (steps or recursion depth) is set aside, not a failure.
+fn fuzz_limited(env: &Env, f: &FnDecl, cases: usize, seed: u64, method: bool, budget: Option<u64>) -> Verdict {
     // Generic functions are fuzzed at one instance: every type parameter becomes `Int`.
     // Generic functions are fuzzed at one consistent instance (see `test_instance`).
     let inst = if f.type_params.is_empty() {
@@ -440,11 +469,14 @@ fn fuzz_call(env: &Env, f: &FnDecl, cases: usize, seed: u64, method: bool) -> Ve
         let mut generator = std::mem::replace(&mut it.generator, crate::generate::Gen::new(0));
         let args: Result<Vec<crate::interp::Value>, String> = f.params.iter().map(|p| generator.value(env, &crate::types::subst_texpr(&p.ty, &inst), &mut it)).collect();
         it.generator = generator;
+        it.budget = budget;
         let args = match args {
             Ok(a) => a,
             Err(e) => return Verdict::Skipped { reason: e },
         };
         match run_case(it, f, args, method, false) {
+            Case::Fault(Verdict::Counterexample { kind, .. }) if budget.is_some() && kind == "Limit" => discarded += 1,
+            Case::TooCostly => discarded += 1,
             Case::Discarded => discarded += 1,
             Case::Ok => ok += 1,
             Case::Hole(message) => return Verdict::Incomplete { message, terminates: None },

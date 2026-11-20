@@ -87,6 +87,34 @@ fn has_solver() -> bool {
 }
 
 #[test]
+fn cross_check_catches_a_wrong_prover() {
+    // a "solver" that proves everything: the cross-check must still catch the bug
+    let d = tmp("cross-check");
+    let fake = d.join("fake-solver");
+    std::fs::write(&fake, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo fake 1.0; exit 0; fi\ncat > /dev/null\necho unsat\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(d.join("b.strata"), "type Quantity = Int where 1 <= it && it <= 99\nfn bump(q: Quantity) -> Quantity { q + 1 }\n").unwrap();
+    let run = |extra: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_strata"))
+            .args(["--file", "b.strata", "verify"])
+            .args(extra)
+            .env("STRATA_SOLVER", &fake)
+            .current_dir(&d)
+            .output()
+            .unwrap();
+        (o.status.success(), String::from_utf8_lossy(&o.stdout).to_string())
+    };
+    let (ok, out) = run(&[]);
+    assert!(!ok && out.contains("✗ bump") && out.contains("found by the cross-check") && out.contains("a bug in the prover"), "{out}");
+    let (ok, out) = run(&["--cross-check", "0"]);
+    assert!(ok && out.contains("✓ bump"), "without the cross-check the wrong proof stands: {out}");
+}
+
+#[test]
 fn package_verify_policies() {
     if !has_solver() {
         eprintln!("z3 is not installed: skipping");

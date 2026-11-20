@@ -397,6 +397,8 @@ no_recursion = ["core"]  # no recursion at all, even recursion that terminates
 
 Recursion is allowed unless `no_recursion` says otherwise. A run that breaks a rule fails, listing each violation. `verify --require proven,terminates,no-recursion` applies the same rules to everything checked, package or not. `strata ci` rejects a rule that names a module the package doesn't have.
 
+**Cross-check.** A proven function that terminates is still run on a few generated inputs (`--cross-check N`, 20 by default, 0 turns it off). If one of them fails, the prover was wrong, and `verify` says so: the result is a failure *found by the cross-check*, flagged as a bug in the prover. Each run has a step budget. A run that goes past it, or past the recursion limit, proves nothing either way and is set aside: proven code can still be far too costly to run, like Ackermann's function.
+
 Z3 is found on the `PATH` (or `STRATA_SOLVER`). Without it, everything is fuzzed. Each query has a resource limit rather than a timeout, so results are deterministic and can be cached by content hash (with the solver version in the key).
 
 ## Packages

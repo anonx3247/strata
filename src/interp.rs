@@ -138,6 +138,9 @@ pub enum FaultKind {
     /// `return`, `!` or `?`, caught by the enclosing function or lambda; the
     /// value is in `Interp::returning`.
     Return,
+    /// The run went past a limit (recursion depth, or the step budget): it
+    /// may be correct and just too costly to run.
+    Limit,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -164,6 +167,9 @@ pub struct Interp<'a> {
     writeback: Vec<(usize, Value)>,
     /// The value of the `return` (or `!` / `?`) being carried out.
     returning: Option<Value>,
+    /// At most this many evaluation steps, if set.
+    pub budget: Option<u64>,
+    steps: u64,
 }
 
 fn short(c: &str) -> &str {
@@ -268,7 +274,15 @@ impl<'a> Interp<'a> {
             regexes: HashMap::new(),
             writeback: vec![],
             returning: None,
+            budget: None,
+            steps: 0,
         }
+    }
+
+    /// Did this run go past its step budget? Then whatever it reported (a
+    /// check that "failed" because evaluating it ran out) proves nothing.
+    pub fn exhausted(&self) -> bool {
+        self.budget.is_some_and(|b| self.steps > b)
     }
 
     fn fail<T>(&self, kind: FaultKind, msg: impl Into<String>) -> R<T> {
@@ -566,7 +580,7 @@ impl<'a> Interp<'a> {
         }
         self.depth += 1;
         if self.depth > 2000 {
-            return self.fail(FaultKind::Runtime, "stack overflow (recursion depth > 2000)");
+            return self.fail(FaultKind::Limit, "stack overflow (recursion depth > 2000)");
         }
         self.stack.push(name.to_string());
         if self.tracing {
@@ -1050,6 +1064,12 @@ impl<'a> Interp<'a> {
     }
 
     pub fn eval(&mut self, e: &Expr, s: &Scope) -> R<Value> {
+        if let Some(b) = self.budget {
+            self.steps += 1;
+            if self.steps > b {
+                return self.fail(FaultKind::Limit, format!("ran for more than {b} steps"));
+            }
+        }
         Ok(match e {
             Expr::Int(n) => Value::Int(*n),
             Expr::Float(f) => Value::Float(*f),
