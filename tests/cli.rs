@@ -3195,10 +3195,10 @@ fn std_web_renders_and_proves_pages() {
     let ex = format!("{}/examples/page", env!("CARGO_MANIFEST_DIR"));
     let d = tmp("web");
     let (ok, out) = strata(&["--file", &ex, "test"], &d, None);
-    assert!(ok && out.contains("5 passed"), "{out}");
+    assert!(ok && out.contains("6 passed"), "{out}");
     let (ok, out) = strata(&["run", &ex], &d, None);
     assert!(ok && out.starts_with("<!DOCTYPE html>") && out.contains("&lt;script&gt;alert(1)&lt;/script&gt;"), "text is escaped: {out}");
-    assert!(out.contains(r#"data-on-click="&quot;Clear&quot;""#), "events carry their message as JSON: {out}");
+    assert!(out.contains(r#"<a href="/?sort=year">By year</a>"#), "{out}");
     // an inline script can't be an attribute: caught when checking
     std::fs::write(d.join("bad.strata"), "use std.web.{Html, render, attr, button}\nfn b() -> String { render(button([attr(\"onclick\", \"evil()\")], [])) }\n").unwrap();
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
@@ -3214,4 +3214,250 @@ fn std_web_renders_and_proves_pages() {
     // names are checked where elements are made; `Html` itself has nothing to check
     let (ok, out) = strata(&["--file", &ex, "verify", "--force", "--require", "proven"], &d, None);
     assert!(ok && out.contains("✓ page") && out.contains("✓ row"), "{out}");
+    // the router's handlers too: a lambda's request is valid, and `app` isn't recursive
+    assert!(out.contains("✓ app") && out.contains("✓ language") && out.contains("✓ handle"), "{out}");
+}
+
+/// One HTTP request to a local server: the whole response as text.
+fn http(port: u16, request: &str) -> String {
+    use std::io::Read;
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.write_all(request.as_bytes()).unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).unwrap();
+    out
+}
+
+#[test]
+fn serve_calls_handle_for_each_request() {
+    let d = tmp("serve");
+    // a free port: bound, then released for the server
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    std::fs::write(
+        d.join("app.strata"),
+        r#"use std.http.{Request, Response, ok_text, ok_json, not_found}
+fn handle(req: Request) -> Response {
+  let q = get(req.query, "q") except { "-" }
+  match req.path {
+    "/" => ok_text(f"{req.method} q={q} body={req.body} agent={get(req.headers, "x-agent") except { "-" }}"),
+    "/json" => ok_json([1, 2]),
+    "/crash" => ok_text(to_string(10 / len(req.body))),
+    "/inject" => Response { status: 200, headers: dict([("x-a", "b\r\nset-cookie: evil=1")]), body: "" },
+    _ => not_found(),
+  }
+}
+"#,
+    )
+    .unwrap();
+    let mut server = Command::new(env!("CARGO_BIN_EXE_strata")).args(["serve", "app.strata", "--port", &port.to_string()]).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let up = (0..100).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    });
+    let results = std::panic::catch_unwind(|| {
+        assert!(up, "the server didn't start");
+        let r = http(port, "POST /?q=a+b%21 HTTP/1.1\r\nHost: x\r\nX-Agent: t\r\nContent-Length: 5\r\n\r\nhello");
+        assert!(r.starts_with("HTTP/1.1 200 OK") && r.ends_with("POST q=a b! body=hello agent=t"), "{r}");
+        let r = http(port, "GET /json HTTP/1.1\r\n\r\n");
+        assert!(r.contains("content-type: application/json") && r.ends_with("[1,2]"), "{r}");
+        assert!(http(port, "GET /nope HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 404"));
+        let r = http(port, "GET /crash HTTP/1.1\r\n\r\n");
+        assert!(r.starts_with("HTTP/1.1 500") && r.contains("division by zero"), "a fault is a 500: {r}");
+        let r = http(port, "GET /inject HTTP/1.1\r\n\r\n");
+        assert!(r.starts_with("HTTP/1.1 500") && !r.contains("set-cookie"), "headers can't be injected: {r}");
+        let r = http(port, "HEAD /json HTTP/1.1\r\n\r\n");
+        assert!(r.contains("content-length: 5") && r.ends_with("\r\n\r\n"), "HEAD has no body: {r}");
+        assert!(http(port, "TRACE / HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 501"));
+    });
+    let _ = server.kill();
+    let _ = server.wait();
+    if let Err(e) = results {
+        std::panic::resume_unwind(e);
+    }
+    // `handle`'s signature is checked before serving
+    std::fs::write(d.join("wrong.strata"), "fn handle(n: Int) -> Int {\n  n\n}\n").unwrap();
+    let (ok, out) = strata(&["serve", "wrong.strata"], &d, None);
+    assert!(!ok && out.contains("Its parameter `n` has type `Int`"), "{out}");
+}
+
+#[test]
+fn own_methods_locals_and_function_values() {
+    let d = tmp("own-locals-fns");
+    std::fs::write(d.join("strata.toml"), "name = \"m\"\n").unwrap();
+    std::fs::write(
+        d.join("counter.strata"),
+        "pub type Counter = { n: Natural }
+
+impl Counter {
+  fn bump(mut self) -> () {
+    self.n = self.n + 1
+  }
+}
+",
+    )
+    .unwrap();
+    let src = "use counter.Counter
+
+type Twice = { f: (Natural) -> Natural }
+
+/// A function named like `Counter`'s method (in another module): `k.bump()`
+/// is still the method.
+fn bump(c: Counter) -> Natural {
+  let mut k = c
+  k.bump()
+  k.n
+}
+
+/// A local named like the function hides it: this is not recursion.
+fn fresh() -> Counter {
+  let mut fresh = Counter { n: 0 }
+  fresh.bump()
+  fresh
+}
+
+/// What a function value returns is a valid value of its result type.
+fn twice(t: Twice, x: Natural) -> Natural {
+  let f = t.f
+  f(f(x))
+}
+
+/// A lambda passed for a function parameter gets valid arguments.
+fn use_twice() -> Natural {
+  twice(Twice { f: n -> n + 1 }, 3)
+}
+
+test \"methods\" {
+  assert bump(Counter { n: 1 }) == 2
+  assert fresh().n == 1
+}
+";
+    std::fs::write(d.join("main.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", ".", "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let (_, out) = strata(&["--file", ".", "verify", "--checks"], &d, None);
+    assert!(out.contains("✓ fresh") && !out.contains("may not terminate"), "a local doesn't call the function it is named like: {out}");
+    assert!(out.contains("✓ twice"), "a function value's result is valid: {out}");
+}
+
+#[test]
+fn serve_runs_an_app() {
+    let d = tmp("serve-app");
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    std::fs::write(
+        d.join("app.strata"),
+        r#"use std.web.{Html, div, button, text, on_click}
+type Model = { n: Int where 0 <= it && it <= 3 }
+type Msg =
+  | Up
+  | Set { n: Int where 0 <= it && it <= 3 }
+  | Boom
+fn init() -> Model {
+  Model { n: 0 }
+}
+fn update(model: Model, msg: Msg) -> Model {
+  match msg {
+    Up => Model { n: min(model.n + 1, 3) },
+    Set { n } => Model { n },
+    Boom => Model { n: 10 / (model.n - model.n) },
+  }
+}
+fn view(model: Model) -> Html[Msg] {
+  div([], [text(f"n={model.n}"), button([on_click(Up)], [text("up")])])
+}
+"#,
+    )
+    .unwrap();
+    let mut server = Command::new(env!("CARGO_BIN_EXE_strata")).args(["serve", "app.strata", "--port", &port.to_string()]).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let up = (0..100).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    });
+    let post = |body: &str| http(port, &format!("POST /_strata/msg HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
+    let results = std::panic::catch_unwind(|| {
+        assert!(up, "the server didn't start");
+        let page = http(port, "GET / HTTP/1.1\r\n\r\n");
+        assert!(page.contains("<title>app</title>") && page.contains(r#"<script src="/_strata/app.js""#) && page.contains("n=0"), "{page}");
+        assert!(page.contains(r#"data-on-click="&quot;Up&quot;""#), "{page}");
+        let sid = page.split(r#"data-session=""#).nth(1).unwrap().split('"').next().unwrap().to_string();
+        // each page load is its own session
+        let other = http(port, "GET / HTTP/1.1\r\n\r\n");
+        assert!(!other.contains(&sid));
+        let r = post(&format!(r#"{{"session":"{sid}","msg":"Up"}}"#));
+        assert!(r.starts_with("HTTP/1.1 200") && r.ends_with(r#"<div>n=1<button data-on-click="&quot;Up&quot;">up</button></div>"#), "{r}");
+        let r = post(&format!(r#"{{"session":"{sid}","msg":{{"Set":{{"n":3}}}}}}"#));
+        assert!(r.contains("n=3"), "{r}");
+        // a message is read against the type: refinements included
+        let r = post(&format!(r#"{{"session":"{sid}","msg":{{"Set":{{"n":9}}}}}}"#));
+        assert!(r.starts_with("HTTP/1.1 400") && r.contains("does not satisfy"), "{r}");
+        // a fault in `update` is a 500, and the model stays as it was
+        let r = post(&format!(r#"{{"session":"{sid}","msg":"Boom"}}"#));
+        assert!(r.starts_with("HTTP/1.1 500") && r.contains("division by zero"), "{r}");
+        assert!(post(&format!(r#"{{"session":"{sid}","msg":"Up"}}"#)).contains("n=3"));
+        // an unknown session: the page reloads
+        assert!(post(r#"{"session":"gone","msg":"Up"}"#).starts_with("HTTP/1.1 410"));
+        assert!(http(port, "GET /_strata/app.js HTTP/1.1\r\n\r\n").contains("data-on-"));
+    });
+    let _ = server.kill();
+    let _ = server.wait();
+    if let Err(e) = results {
+        std::panic::resume_unwind(e);
+    }
+    // the three functions' signatures are checked before serving
+    std::fs::write(d.join("bad.strata"), "use std.web.{Html, text}\nfn init() -> Int {\n  0\n}\nfn update(m: Int, msg: String) -> String {\n  msg\n}\nfn view(m: Int) -> Html[String] {\n  text(\"x\")\n}\n").unwrap();
+    let (ok, out) = strata(&["serve", "bad.strata"], &d, None);
+    assert!(!ok && out.contains("`update` takes and returns the model `Int`"), "{out}");
+    // the example app is proven: `update` keeps the model's refinements, and
+    // the view needs nothing more (`Msg` is valid by construction)
+    let ex = format!("{}/examples/counter", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["--file", &ex, "test"], &d, None);
+    assert!(ok, "{out}");
+    if has_solver() {
+        let (ok, out) = strata(&["--file", &ex, "verify", "--force", "--require", "proven"], &d, None);
+        assert!(ok && out.contains("✓ update") && out.contains("✓ view"), "{out}");
+    }
+}
+
+#[test]
+fn serve_apps_take_values_and_forms() {
+    let d = tmp("serve-forms");
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    let ex = format!("{}/examples/todos", env!("CARGO_MANIFEST_DIR"));
+    let mut server = Command::new(env!("CARGO_BIN_EXE_strata")).args(["serve", &ex, "--port", &port.to_string()]).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let up = (0..100).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    });
+    let post = |body: &str| http(port, &format!("POST /_strata/msg HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
+    let results = std::panic::catch_unwind(|| {
+        assert!(up, "the server didn't start");
+        let page = http(port, "GET / HTTP/1.1\r\n\r\n");
+        // handlers are numbered in page order: the form, then the title field
+        assert!(page.contains(r#"<form class="new" data-handle-submit="0">"#) && page.contains(r#"data-handle-input="1""#), "{page}");
+        let sid = page.split(r#"data-session=""#).nth(1).unwrap().split('"').next().unwrap().to_string();
+        // what is typed comes back in the view
+        let r = post(&format!(r#"{{"session":"{sid}","handler":1,"value":"Call Ada"}}"#));
+        assert!(r.contains(r#"value="Call Ada""#) && r.contains("52 characters left"), "{r}");
+        // a form whose title is empty: refused, said next to the field
+        let r = post(&format!(r#"{{"session":"{sid}","handler":0,"fields":{{"title":"  ","priority":"high"}}}}"#));
+        assert!(r.contains("Write something first.") && !r.contains("<span class=\"title\">  </span>"), "{r}");
+        let r = post(&format!(r#"{{"session":"{sid}","handler":0,"fields":{{"title":"Call Ada","priority":"high"}}}}"#));
+        assert!(r.contains(r#"<span class="title">Call Ada</span>"#) && r.contains(r#"value="""#), "{r}");
+        // a handler the page doesn't have
+        assert!(post(&format!(r#"{{"session":"{sid}","handler":99,"value":""}}"#)).starts_with("HTTP/1.1 400"));
+        assert!(post(&format!(r#"{{"session":"{sid}","handler":0,"fields":{{"title":3}}}}"#)).starts_with("HTTP/1.1 400"));
+    });
+    let _ = server.kill();
+    let _ = server.wait();
+    if let Err(e) = results {
+        std::panic::resume_unwind(e);
+    }
+    if has_solver() {
+        // `update` keeps every title within bounds and the list within 50
+        let (ok, out) = strata(&["--file", &ex, "verify", "--force", "--require", "proven"], &d, None);
+        assert!(ok && out.contains("✓ update") && out.contains("✓ new_todo_form"), "{out}");
+    }
 }

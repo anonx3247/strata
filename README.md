@@ -36,7 +36,7 @@ $ strata --file examples/math.strata verify
 - **Capabilities are values.** A database or a clock is a trait passed as a parameter, so a signature shows what code can touch, and a test passes a fake or `mock`.
 - **Everything is JSON.** Every value serializes to JSON, and JSON inputs are parsed against the types, refinements included.
 
-> Status: **an experimental draft**, a tree-walking interpreter in Rust.
+> Status: **an experimental draft**, a tree-walking interpreter in Rust, and the first steps of a native compiler through LLVM (`strata build`).
 
 ## Try it
 

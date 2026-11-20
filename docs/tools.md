@@ -89,6 +89,62 @@ $ strata run total '[[]]'                    # arguments are checked against the
 error: invalid input: lines: [] does not satisfy `NonEmpty` (where len(it) > 0)
 ```
 
+## Compiling to native code
+
+`strata build` compiles a program to an executable through LLVM: it writes LLVM IR as text, and `clang` compiles it with a small C runtime (`STRATA_CC` chooses another compiler). `--emit-llvm` prints the IR instead.
+
+```text
+$ strata build tests/data/build/numbers.strata -o numbers
+built numbers
+$ ./numbers
+2432902008176640000
+gcd = 6, 2^10 = 1024, A(2, 3) = 9
+...
+fault (Refinement): result of `next_digit`: 10 does not satisfy `Digit` (where 0 <= it && it <= 9)
+```
+
+A compiled program behaves as `strata run`: the same output, and contracts are checked at run time with the same fault messages (refinements of parameters, results, annotated `let`s, declared variables and new values, `requires`, `ensures`, `assert`), exiting with 101. Only part of the language compiles so far:
+
+- `Int` (64 bits for now: an overflow is a fault, where the interpreter switches to a big integer), `Float`, `Bool`, `String`, `()`, and refinements of them;
+- records, variants (`Option`, `Result` and your own), tuples, `distinct` types, unions of variants; field access, `{ ..e, f: x }`, assigning a field (`x.a.b = e`), `is`, `==` on any of them, and printing them as the interpreter does;
+- generic functions and types (each compiled once per set of type arguments), and a type's own methods (`impl Item { ... }`);
+- lists: literals, `+`, list patterns (`[x, ..rest]`), `for` over a list, and the list built-ins (`len`, `get`, `push`, `take`, `drop`, `range`, `map`, `filter`, `fold`, `all`, `any`, `find`, `count`, `contains`, `reverse`, `sort`, `sort_by`, `zip`, `enumerate`, `sum`, `join`), most of them written in Strata (`src/llvm/prelude.strata`);
+- lambdas and closures, named functions as values (`filter(is_prime)`), functions returning functions;
+- functions and recursion, `let` (with patterns), `let mut` and assignment, `if`, `match` with every pattern, `while`, `loop`, `for`, `break`, `continue`, `return`, `assert`, `!`, `?`, `except`;
+- f-strings without format specs, and `print`, `to_string`, `len` (of a string), `abs`, `min`, `max`, `float`, `floor`, `ceil`, `round`, `sqrt`;
+- `main` takes no parameters, and returns `()`, an exit code, or a `Result` of either.
+
+Anything else (dictionaries and sets, most string built-ins, regexes, traits, `mut` parameters, capabilities) is refused, naming the function and what it uses: `can't compile `main`: a list is not compiled yet`. Memory is never freed yet.
+
+### The JIT
+
+`strata run --jit` compiles the same IR in memory with LLVM's libraries and runs it, so a program runs at native speed without a build step (`fib(32)`: 26 ms, compilation included). A program that uses what doesn't compile yet is interpreted instead, with a note saying why. It is opt-in until big integers compile: an `Int` overflow is a fault there, where the interpreter goes on with a big integer.
+
+The JIT needs LLVM 23's libraries, so it is a cargo feature:
+
+```sh
+brew install llvm                      # or apt.llvm.org's llvm-23-dev
+LLVM_SYS_231_PREFIX=$(brew --prefix llvm) cargo build --release --features jit
+```
+
+Both ways share one code generator (the IR as text, which LLVM parses for the JIT) and one runtime (`runtime.c`, built into `strata` for the JIT, compiled with the program by `strata build`).
+
+## Serving the web
+
+`strata serve [PATH] [--port N]` (default port 8000) runs a program as a web server: each request is turned into a `std.http.Request` and passed to the program's `fn handle(req: Request) -> Response`. Like `main`, `handle` may also ask for `Console`, `Files` and `Environment`. Requests are handled one at a time, each with a fresh interpreter. A runtime fault, or a response the server can't send (a header holding a line break), becomes a 500 that says why, and every request is logged:
+
+```text
+$ strata serve examples/page
+Serving on http://127.0.0.1:8000  (Ctrl-C to stop)
+GET / 200 (17 ms)
+GET /languages/haskell 200 (0 ms)
+POST / 405 (0 ms)
+```
+
+**Apps.** A program with no `handle` but with `init`, `update` and `view` is served as an app (the Elm architecture): `fn init() -> Model`, `fn update(model: Model, msg: Msg) -> Model`, `fn view(model: Model) -> Html[Msg]`. Each page load starts a session whose model the server keeps in memory; the page loads a small script (`/_strata/app.js`, built into `strata`) that sends the message of the element the user clicks (`on_click(msg)`; also `dblclick`, `submit`, `change`), one at a time, and puts the new view in place. Handlers that make a message from what the user entered (`on_input`, `on_change`, `on_submit_form`) can't be written into the page: `render` numbers them, the page sends the number with the value or the form's fields, and the server calls `std.web.dispatch` on the current view to make the message. The page is patched rather than replaced, so focus and scroll stay, and the field being typed in keeps what was typed (after a submit, the view's value wins, so a form can clear it). A message is read against `Msg`, refinements included, so a forged one is refused (400); a fault in `update` is a 500 shown at the bottom of the page, and the model stays as it was; a session the server no longer has (it restarted) reloads the page. See `examples/counter`, and `examples/todos` for a form.
+
+`handle` is a plain function, so tests call it directly (`handle(get_request("/"))`). See `examples/page` and, for routes, `std.http.Router` in [the language](language.md).
+
 ## The viewer
 
 ![The Strata viewer, showing collatz_steps from examples/math.strata: its code, six proven checks, and "may not terminate"](images/viewer.png)
