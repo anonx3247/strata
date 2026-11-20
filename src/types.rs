@@ -369,22 +369,30 @@ fn elaborate_with(prog: &Program, typed: bool) -> (crate::resolve::Resolution, H
                 }
             }
             (Target::Own(f), Expr::Method(recv, _, args)) => {
-                let moved = &**recv as *const Expr as usize;
+                let old: Vec<usize> = std::iter::once(&**recv).chain(args.iter()).map(addr).collect();
                 let mut all = vec![std::mem::replace(&mut **recv, Expr::Unit)];
                 all.append(args);
                 *e = Expr::Call(Box::new(Expr::Var(f.clone())), all);
-                // the receiver now lives in the argument list
-                if let (Some(t), Expr::Call(_, all)) = (types.remove(&moved), &*e) {
-                    types.insert(&all[0] as *const Expr as usize, t);
+                // the receiver and arguments now live in a new argument list
+                if let Expr::Call(_, all) = &*e {
+                    rekey(&mut types, &old, all.iter().map(addr).collect());
                 }
             }
             (Target::Own(f), Expr::Call(g, _)) => **g = Expr::Var(f.clone()),
             (Target::Static(tr, ty), Expr::Method(_, m, args)) => {
+                let old: Vec<usize> = args.iter().map(addr).collect();
                 let mut all = vec![ty.expr()];
                 all.append(args);
                 *e = Expr::Call(Box::new(Expr::Var(trait_call(tr, m))), all);
+                if let Expr::Call(_, all) = &*e {
+                    rekey(&mut types, &old, all[1..].iter().map(addr).collect());
+                }
             }
-            (Target::TypeArgs(tys), Expr::Call(_, args) | Expr::Method(_, _, args)) => args.extend(tys.iter().map(|t| t.expr())),
+            (Target::TypeArgs(tys), Expr::Call(_, args) | Expr::Method(_, _, args)) => {
+                let old: Vec<usize> = args.iter().map(addr).collect();
+                args.extend(tys.iter().map(|t| t.expr()));
+                rekey(&mut types, &old, args.iter().map(addr).collect());
+            }
             (Target::Other(tr, mq), Expr::Method(_, m, _)) => *m = trait_call(tr, mq),
             (Target::Other(tr, mq), Expr::Call(f, _)) => **f = Expr::Var(trait_call(tr, mq)),
             (Target::Builtin(b), Expr::Method(_, m, _)) => *m = b.clone(),
@@ -394,6 +402,20 @@ fn elaborate_with(prog: &Program, typed: bool) -> (crate::resolve::Resolution, H
         });
     }
     (r, types)
+}
+
+fn addr(e: &Expr) -> usize {
+    e as *const Expr as usize
+}
+
+/// Nodes moved by a rewrite (into a new argument list) keep their types.
+fn rekey(types: &mut HashMap<usize, Ty>, old: &[usize], new: Vec<usize>) {
+    let moved: Vec<Option<Ty>> = old.iter().map(|a| types.remove(a)).collect();
+    for (t, a) in moved.into_iter().zip(new) {
+        if let Some(t) = t {
+            types.insert(a, t);
+        }
+    }
 }
 
 pub fn subst_texpr(t: &TypeExpr, sub: &HashMap<String, TypeExpr>) -> TypeExpr {

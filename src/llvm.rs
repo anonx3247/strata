@@ -144,17 +144,33 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
             _ => {}
         }
     }
+    let traits = resolved.program.decls.iter().filter_map(|d| match &d.kind {
+        DeclKind::Trait(t) => Some((t.name.clone(), t)),
+        _ => None,
+    }).collect();
+    let impls = resolved.program.decls.iter().filter_map(|d| match &d.kind {
+        DeclKind::Impl(i) if !i.is_inherent() => Some(i),
+        _ => None,
+    }).collect();
     let refinements = resolved.program.decls.iter().filter_map(|d| match &d.kind {
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.clone(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, refinements, tags, globals: String::new(), strings: HashMap::new(), body: String::new(), queue: VecDeque::new(), seen: HashSet::new(), helpers: HashSet::new(), lambdas: 0 };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::new(), body: String::new(), queue: VecDeque::new(), seen: HashSet::new(), helpers: HashSet::new(), lambdas: 0 };
     let ret = m.lower(&main.ret, &HashMap::new())?;
     m.want(entry, vec![]);
-    while let Some((name, targs)) = m.queue.pop_front() {
-        let f = env.fns[&name].clone();
-        let shown = if targs.is_empty() { name.clone() } else { format!("{name}[{}]", targs.iter().map(key).collect::<Vec<_>>().join(", ")) };
-        m.function(&name, &targs, &f).map_err(|e| format!("can't compile `{shown}`: {e}"))?;
+    while let Some(job) = m.queue.pop_front() {
+        match job {
+            Job::Fn(name, targs) => {
+                let f = env.fns[&name].clone();
+                let shown = if targs.is_empty() { name.clone() } else { format!("{name}[{}]", targs.iter().map(key).collect::<Vec<_>>().join(", ")) };
+                m.function(&name, &targs, &f).map_err(|e| format!("can't compile `{shown}`: {e}"))?;
+            }
+            Job::Method(mi) => {
+                let shown = format!("{}.{} for {}", mi.tr, mi.method, key(&mi.recv));
+                m.method(&mi).map_err(|e| format!("can't compile `{shown}`: {e}"))?;
+            }
+        }
     }
     m.entry(entry, &ret)?;
     let mut out = String::from("; Strata, compiled by `strata build`\n\n");
@@ -214,6 +230,49 @@ fn sym(name: &str, targs: &[Ty]) -> String {
     }
 }
 
+/// What to compile: a function, or a trait method, for some types.
+enum Job {
+    Fn(String, Vec<Ty>),
+    Method(MethodInst),
+}
+
+/// A trait method for one receiver type (and type arguments of its own).
+#[derive(Clone)]
+struct MethodInst {
+    tr: String,
+    method: String,
+    /// The type it is called on, and the name of its implementation's type
+    /// (a variant with an impl of its own, or the type).
+    recv: Ty,
+    head: String,
+    targs: Vec<Ty>,
+}
+
+impl MethodInst {
+    fn symbol(&self) -> String {
+        let own = if self.targs.is_empty() { String::new() } else { format!("[{}]", self.targs.iter().map(key).collect::<Vec<_>>().join(", ")) };
+        format!("@\"strata:{}::{}@{}{own}\"", self.tr, self.method, key(&self.recv))
+    }
+}
+
+/// One instance of a function to compile.
+struct Instance<'a> {
+    /// Its name in messages (`total`, `Item.price`).
+    label: String,
+    symbol: String,
+    /// The signature (written types, lowered with `sub`).
+    params: Vec<Param>,
+    ret: TypeExpr,
+    /// The declaration's own nodes, which the checker typed.
+    own_params: &'a [Param],
+    own_ret: &'a TypeExpr,
+    requires: Vec<&'a Expr>,
+    ensures: Vec<&'a Expr>,
+    body: &'a Expr,
+    /// Type parameters (and `Self`) -> types.
+    sub: HashMap<String, Ty>,
+}
+
 /// A constructor's fields: name (positional ones have none), written type,
 /// and type, with the type's parameters filled in.
 struct FieldInfo {
@@ -228,6 +287,9 @@ struct Module<'a> {
     types: &'a HashMap<usize, Ty>,
     /// Each function's own declaration in the program (its body, `requires`, `ensures`).
     bodies: HashMap<String, &'a FnDecl>,
+    /// Traits and their implementations, as written (their bodies are what the checker typed).
+    traits: HashMap<String, &'a TraitDecl>,
+    impls: Vec<&'a ImplDecl>,
     /// Each type's refinement as written in the program (the prelude's from `env`).
     refinements: HashMap<String, &'a Expr>,
     /// Constructor -> tag.
@@ -238,7 +300,7 @@ struct Module<'a> {
     /// Compiled functions.
     body: String,
     /// Functions still to compile (with their type arguments): those the compiled ones call.
-    queue: VecDeque<(String, Vec<Ty>)>,
+    queue: VecDeque<Job>,
     seen: HashSet<String>,
     /// Generated helpers (equality, JSON) already emitted.
     helpers: HashSet<String>,
@@ -249,8 +311,85 @@ struct Module<'a> {
 impl<'a> Module<'a> {
     fn want(&mut self, name: &str, targs: Vec<Ty>) {
         if self.seen.insert(sym(name, &targs)) {
-            self.queue.push_back((name.to_string(), targs));
+            self.queue.push_back(Job::Fn(name.to_string(), targs));
         }
+    }
+
+    fn want_method(&mut self, mi: MethodInst) -> String {
+        let s = mi.symbol();
+        if self.seen.insert(s.clone()) {
+            self.queue.push_back(Job::Method(mi));
+        }
+        s
+    }
+
+    /// The type named `head` as it runs (a value's head, for method dispatch).
+    fn head(t: &Ty) -> Option<String> {
+        Some(match t {
+            Ty::Int => "Int".into(),
+            Ty::Float => "Float".into(),
+            Ty::Bool => "Bool".into(),
+            Ty::Str => "String".into(),
+            Ty::Unit => "Unit".into(),
+            Ty::Con(n, _) => n.clone(),
+            _ => return None,
+        })
+    }
+
+    /// The trait and method a call of `name` on a value whose type is `head` means.
+    fn resolve_method(&self, name: &str, head: &str) -> Option<(String, String)> {
+        match crate::types::split_trait_call(name) {
+            Some((tr, m)) => Some((tr.to_string(), m.to_string())),
+            None => match self.env.traits_with(name, head).as_slice() {
+                [tr] => Some((tr.clone(), name.to_string())),
+                _ => None,
+            },
+        }
+    }
+
+    /// The implementation of trait `tr` for type `head`, as written.
+    fn impl_of(&self, tr: &str, head: &str) -> Option<&'a ImplDecl> {
+        self.impls.iter().copied().find(|i| i.trait_name == tr && crate::types::texpr_head(&i.for_type) == head)
+    }
+
+    /// The trait method `m` of `tr`, as written.
+    fn trait_method(&self, tr: &str, m: &str) -> Option<&'a TraitMethod> {
+        self.traits.get(tr)?.methods.iter().find(|x| x.decl.name == m)
+    }
+
+    /// Compile one instance of a trait method: the impl's own, or the trait's default.
+    /// A method instance's types (`Self`, the impl's and trait's
+    /// parameters, its own), and its declaration (the impl's, or the default).
+    fn method_sub(&self, mi: &MethodInst) -> Res<(HashMap<String, Ty>, &'a FnDecl, &'a TraitMethod)> {
+        let tm = self.trait_method(&mi.tr, &mi.method).ok_or(format!("trait `{}` has no method `{}`", mi.tr, mi.method))?;
+        let imp = self.impl_of(&mi.tr, &mi.head).ok_or(format!("`{}` does not implement `{}`", mi.head, mi.tr))?;
+        let own = imp.methods.iter().find(|m| m.name == mi.method).unwrap_or(&tm.decl);
+        let mut sub = HashMap::new();
+        sub.insert("Self".to_string(), mi.recv.clone());
+        self.bind_targs(&imp.for_type, &mi.recv, &imp.type_params, &mut sub);
+        let tr = self.traits[&mi.tr];
+        for (p, a) in tr.params.iter().zip(&imp.trait_args) {
+            let t = self.lower(a, &sub)?;
+            sub.insert(p.clone(), t);
+        }
+        for (p, t) in own.type_params.iter().zip(&mi.targs) {
+            sub.insert(p.clone(), t.clone());
+        }
+        Ok((sub, own, tm))
+    }
+
+    fn method(&mut self, mi: &MethodInst) -> Res<()> {
+        let (sub, own, tm) = self.method_sub(mi)?;
+        // the trait's contract binds every implementation
+        let mut requires: Vec<&Expr> = tm.decl.requires.iter().collect();
+        let mut ensures: Vec<&Expr> = tm.decl.ensures.iter().collect();
+        if !std::ptr::eq(own, &tm.decl) {
+            requires.extend(&own.requires);
+            ensures.extend(&own.ensures);
+        }
+        let label = format!("{}.{}", crate::names::short(&mi.head), mi.method);
+        let inst = Instance { label, symbol: mi.symbol(), params: own.params.clone(), ret: own.ret.clone(), own_params: &own.params, own_ret: &own.ret, requires, ensures, body: &own.body, sub };
+        self.instance(&inst)
     }
 
     /// A string constant, laid out as the runtime's `Str`: its length, then its bytes.
@@ -341,6 +480,7 @@ impl<'a> Module<'a> {
                 }
                 let args: Vec<Ty> = args.iter().map(|a| self.lower(a, sub)).collect::<Res<_>>()?;
                 match n.as_str() {
+                    crate::types::TYPE_ARG => Ty::Unit,
                     "Int" => Ty::Int,
                     "Float" => Ty::Float,
                     "Bool" => Ty::Bool,
@@ -403,11 +543,28 @@ impl<'a> Module<'a> {
     }
 
     fn function(&mut self, name: &str, targs: &[Ty], f: &FnDecl) -> Res<()> {
-        let own = *self.bodies.get(name).ok_or("trait methods are not compiled yet")?;
+        let own = *self.bodies.get(name).ok_or(format!("no declaration of `{name}`"))?;
         let sub: HashMap<String, Ty> = f.type_params.iter().cloned().zip(targs.iter().cloned()).collect();
-        if f.params.iter().any(|p| matches!(&p.ty, TypeExpr::Named(n, _) if n == crate::types::TYPE_ARG)) {
-            return Err("trait methods without `self` are not compiled yet".into());
-        }
+        let inst = Instance {
+            label: name.to_string(),
+            symbol: sym(name, targs),
+            params: f.params.clone(),
+            ret: f.ret.clone(),
+            own_params: &own.params,
+            own_ret: &own.ret,
+            requires: own.requires.iter().collect(),
+            ensures: own.ensures.iter().collect(),
+            body: &own.body,
+            sub,
+        };
+        self.instance(&inst)
+    }
+
+    /// Compile a function's instance: its parameters' and result's
+    /// refinements, its contract, its body.
+    fn instance(&mut self, inst: &Instance<'a>) -> Res<()> {
+        let (name, sub, own) = (&inst.label, inst.sub.clone(), inst);
+        let f = inst;
         let mut params = Vec::new();
         for p in &f.params {
             if p.mutable {
@@ -430,11 +587,11 @@ impl<'a> Module<'a> {
             c.store(&(t.clone(), format!("%p.{}", p.name)), &slot)?;
         }
         // the written types of the program's own declaration (inline refinements are its nodes)
-        for p in &own.params {
+        for p in own.own_params {
             let v = c.load(&p.name)?;
             c.check(&p.ty, &v, &format!("argument `{}` of `{name}`", p.name), false)?;
         }
-        for r in &own.requires {
+        for r in own.requires.clone() {
             let ok = c.expr(r)?;
             let (pass, fail) = (c.fresh_label("requires.ok"), c.fresh_label("requires.fail"));
             c.cond_br(&ok, &pass, &fail);
@@ -457,7 +614,7 @@ impl<'a> Module<'a> {
         } else {
             c.ret_slot = Some((ret.clone(), String::new()));
         }
-        let v = c.expr(&own.body)?;
+        let v = c.expr(own.body)?;
         c.return_value(&v)?;
         // every way out: the result's refinement, then the postconditions
         c.block("exit");
@@ -469,12 +626,12 @@ impl<'a> Module<'a> {
         } else {
             (ret.clone(), String::new())
         };
-        c.check(&own.ret, &result, &format!("result of `{name}`"), true)?;
+        c.check(own.own_ret, &result, &format!("result of `{name}`"), true)?;
         if !own.ensures.is_empty() {
             c.scopes.push(HashMap::new());
             let slot = c.local("it", &ret, None)?;
             c.store(&result, &slot)?;
-            for en in &own.ensures {
+            for en in own.ensures.clone() {
                 let ok = c.expr(en)?;
                 let (pass, fail) = (c.fresh_label("ensures.ok"), c.fresh_label("ensures.fail"));
                 c.cond_br(&ok, &pass, &fail);
@@ -494,7 +651,7 @@ impl<'a> Module<'a> {
             c.emit("ret void".into());
         }
         let text = c.finish();
-        writeln!(self.body, "define {} {}({}) {{\n{text}}}\n", self.ll(&ret)?, sym(name, targs), sig.join(", ")).unwrap();
+        writeln!(self.body, "define {} {}({}) {{\n{text}}}\n", self.ll(&ret)?, inst.symbol, sig.join(", ")).unwrap();
         Ok(())
     }
 
@@ -1393,12 +1550,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
             },
             // method-call sugar: `e.f(args)` is `f(e, args)`
-            Expr::Method(recv, m, args) => {
-                if m.contains("::") {
-                    return self.unsupported(&format!("the trait method `{m}`"));
-                }
-                self.call_named(e, m, std::iter::once(&**recv).chain(args.iter()).collect())?
-            }
+            Expr::Method(recv, m, args) => self.call_named(e, m, std::iter::once(&**recv).chain(args.iter()).collect())?,
             Expr::Bin(op, l, r) => self.binary(*op, l, r)?,
             Expr::Un(UnOp::Not, x) => {
                 let v = self.expr(x)?;
@@ -1720,9 +1872,32 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             return self.call_closure(&f, vs);
         }
-        let env = self.m.env;
-        if crate::stdlib::is_host(name) || (env.is_method(name) && !env.fns.contains_key(name)) {
+        if crate::stdlib::is_host(name) {
             return self.unsupported(&format!("`{name}`"));
+        }
+        // `Trait::m(type, ..)`: a trait method without `self`, for a type known here
+        if let Some((tr, m)) = crate::types::split_trait_call(name) {
+            let takes_self = self.m.trait_method(tr, m).map(|tm| crate::resolve::takes_self(&tm.decl)).unwrap_or(true);
+            if !takes_self {
+                let hint = self.ty_of(call).ok();
+                let recv = match args.first() {
+                    Some(Expr::Str(h)) => match (h.as_str(), &hint) {
+                        ("Int", _) => Ty::Int,
+                        ("Float", _) => Ty::Float,
+                        ("Bool", _) => Ty::Bool,
+                        ("String", _) => Ty::Str,
+                        (_, Some(t @ Ty::Con(n, _))) if n == h => t.clone(),
+                        _ => Ty::Con(h.clone(), vec![]),
+                    },
+                    Some(Expr::Var(x)) if x.starts_with("type:") => self.sub.get(&x["type:".len()..]).cloned().ok_or(format!("the type `{x}` is not known here"))?,
+                    _ => return Err(format!("`{name}` needs the type it is called on")),
+                };
+                let mut vs = vec![];
+                for a in &args[1..] {
+                    vs.push(self.expr(a)?);
+                }
+                return self.call_method(name, recv, vs, hint);
+            }
         }
         let mut vs = vec![];
         for a in &args {
@@ -1740,6 +1915,13 @@ impl<'m, 'a> Func<'m, 'a> {
     fn call_values(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>) -> Res<V> {
         if self.m.env.fns.contains_key(name) {
             return self.call_fn(name, vs, hint);
+        }
+        if self.m.env.is_method(name) {
+            if let Some(recv) = vs.first().map(|v| v.0.clone()) {
+                if Module::head(&recv).is_some_and(|h| self.m.resolve_method(name, &h).is_some() || self.m.ctors_of(&recv).iter().any(|c| self.m.resolve_method(name, c).is_some())) {
+                    return self.call_method(name, recv, vs, hint);
+                }
+            }
         }
         // the list built-ins written in Strata (llvm/prelude.strata)
         if let Some(Ty::Con(l, et)) = vs.first().map(|v| self.m.repr(&v.0)).transpose()? {
@@ -1767,6 +1949,74 @@ impl<'m, 'a> Func<'m, 'a> {
         self.builtin(name, vs)
     }
 
+    /// Call trait method `name` on a value of type `recv` (`vs` includes it,
+    /// unless the method has no `self`). The implementation is chosen here,
+    /// from the type; a variant with an implementation of its own is chosen
+    /// by its tag.
+    fn call_method(&mut self, name: &str, recv: Ty, vs: Vec<V>, hint: Option<Ty>) -> Res<V> {
+        if vs.iter().any(|v| is_never(&v.0)) {
+            return Ok(never());
+        }
+        let head = Module::head(&recv).ok_or(format!("`{name}` on a `{}`", key(&recv)))?;
+        if self.m.traits.contains_key(&head) {
+            return self.unsupported(&format!("calling `{name}` on a value of the trait type `{head}`"));
+        }
+        let args = Module::args_of(&recv);
+        let own: Vec<String> = self.m.ctors_of(&recv).into_iter().filter(|c| *c != head && self.m.resolve_method(name, c).is_some_and(|(tr, _)| self.m.impl_of(&tr, c).is_some())).collect();
+        if own.is_empty() {
+            return self.method_target(name, recv, head, vs, hint);
+        }
+        // by constructor: its own implementation, or the type's
+        let ret = hint.clone().ok_or(format!("the result type of `{name}`"))?;
+        let slot = self.fresh("mres");
+        if has_value(&ret) {
+            writeln!(self.allocas, "  {slot} = alloca {}", self.m.ll(&ret)?).unwrap();
+        }
+        let end = self.fresh_label("dispatched");
+        let v0 = vs[0].clone();
+        self.on_ctor(&v0, &end, |c, ctor| {
+            let (r, h) = if own.iter().any(|o| o == ctor) { (Ty::Con(ctor.to_string(), args.clone()), ctor.to_string()) } else { (recv.clone(), head.clone()) };
+            let out = c.method_target(name, r, h, vs.clone(), hint.clone())?;
+            if has_value(&ret) && !is_never(&out.0) {
+                let ll = c.m.ll(&ret)?;
+                c.emit(format!("store {ll} {}, ptr {slot}", out.1));
+            }
+            c.br(&end);
+            Ok(())
+        })?;
+        self.block(&end);
+        if !has_value(&ret) {
+            return Ok((ret, String::new()));
+        }
+        let r = self.fresh("mr");
+        let ll = self.m.ll(&ret)?;
+        self.emit(format!("{r} = load {ll}, ptr {slot}"));
+        Ok((ret, r))
+    }
+
+    /// Call the implementation of `name` for type `head` (on a `recv`).
+    fn method_target(&mut self, name: &str, recv: Ty, head: String, vs: Vec<V>, hint: Option<Ty>) -> Res<V> {
+        let (tr, m) = self.m.resolve_method(name, &head).ok_or(format!("`{head}` has no method `{name}`"))?;
+        let tm = self.m.trait_method(&tr, &m).ok_or(format!("trait `{tr}` has no method `{m}`"))?;
+        let imp = self.m.impl_of(&tr, &head).ok_or(format!("`{head}` does not implement `{tr}`"))?;
+        let own = imp.methods.iter().find(|x| x.name == m).unwrap_or(&tm.decl);
+        // the method's own type parameters, from the arguments and the result
+        let mut targs = HashMap::new();
+        for (p, v) in own.params.iter().zip(&vs) {
+            self.m.bind_targs(&p.ty, &v.0, &own.type_params, &mut targs);
+        }
+        if let Some(rt) = &hint {
+            self.m.bind_targs(&own.ret, rt, &own.type_params, &mut targs);
+        }
+        let targs: Vec<Ty> = own.type_params.iter().map(|p| targs.get(p).cloned().unwrap_or(Ty::Unit)).collect();
+        let mi = MethodInst { tr, method: m, recv, head, targs };
+        let sub = self.m.method_sub(&mi)?.0;
+        let symbol = self.m.want_method(mi);
+        let ret = self.m.lower(&own.ret, &sub)?;
+        let vs: Vec<V> = own.params.iter().zip(vs).map(|(p, v)| Ok((self.m.lower(&p.ty, &sub)?, v.1))).collect::<Res<_>>()?;
+        self.call(&ret, &symbol, &vs)
+    }
+
     /// Call a function of the program (one instance of it, if generic).
     fn call_fn(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>) -> Res<V> {
         let f = &self.m.env.fns[name];
@@ -1776,10 +2026,10 @@ impl<'m, 'a> Func<'m, 'a> {
         // the type arguments: the declared types against the actual ones
         let mut targs = HashMap::new();
         for (p, v) in f.params.iter().zip(&vs) {
-            self.bind_targs(&p.ty, &v.0, &f.type_params, &mut targs);
+            self.m.bind_targs(&p.ty, &v.0, &f.type_params, &mut targs);
         }
         if let Some(rt) = hint {
-            self.bind_targs(&f.ret, &rt, &f.type_params, &mut targs);
+            self.m.bind_targs(&f.ret, &rt, &f.type_params, &mut targs);
         }
         let targs: Vec<Ty> = f.type_params.iter().map(|p| targs.get(p).cloned().unwrap_or(Ty::Unit)).collect();
         let sub: HashMap<String, Ty> = f.type_params.iter().cloned().zip(targs.iter().cloned()).collect();
@@ -2082,36 +2332,6 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let p = self.closure(&fsym, &[])?;
         Ok((Ty::Fn(vec![t.clone(), t.clone()], Box::new(Ty::Bool)), p))
-    }
-
-    /// Bind type parameters by matching a written type against an actual one.
-    fn bind_targs(&self, te: &TypeExpr, t: &Ty, params: &[String], out: &mut HashMap<String, Ty>) {
-        match (te, t) {
-            (TypeExpr::Refined(b, _), t) => self.bind_targs(b, t, params, out),
-            (TypeExpr::Named(n, args), t) if args.is_empty() && params.contains(n) => {
-                out.entry(n.clone()).or_insert_with(|| t.clone());
-            }
-            (TypeExpr::Named(n, args), t) => {
-                if let Some(td) = self.m.env.types.get(n) {
-                    if let (TypeBody::Alias(a), false) = (&td.body, td.distinct) {
-                        let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
-                        return self.bind_targs(&crate::types::subst_texpr(a, &sub), t, params, out);
-                    }
-                }
-                if let Ty::Con(_, targs) = t {
-                    for (a, x) in args.iter().zip(targs) {
-                        self.bind_targs(a, x, params, out);
-                    }
-                }
-            }
-            (TypeExpr::Fn(ps, r), Ty::Fn(qs, s)) => {
-                for (p, q) in ps.iter().zip(qs) {
-                    self.bind_targs(p, q, params, out);
-                }
-                self.bind_targs(r, s, params, out);
-            }
-            _ => {}
-        }
     }
 
     /// `Some(x)`, `None`, `Line { sku: s, qty: 1 }`, `Entry { ..e, done: true }`, `UserId(s)`.
@@ -2581,6 +2801,36 @@ impl<'m, 'a> Func<'m, 'a> {
 }
 
 impl Module<'_> {
+    /// Bind type parameters by matching a written type against an actual one.
+    fn bind_targs(&self, te: &TypeExpr, t: &Ty, params: &[String], out: &mut HashMap<String, Ty>) {
+        match (te, t) {
+            (TypeExpr::Refined(b, _), t) => self.bind_targs(b, t, params, out),
+            (TypeExpr::Named(n, args), t) if args.is_empty() && params.contains(n) => {
+                out.entry(n.clone()).or_insert_with(|| t.clone());
+            }
+            (TypeExpr::Named(n, args), t) => {
+                if let Some(td) = self.env.types.get(n) {
+                    if let (TypeBody::Alias(a), false) = (&td.body, td.distinct) {
+                        let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+                        return self.bind_targs(&crate::types::subst_texpr(a, &sub), t, params, out);
+                    }
+                }
+                if let Ty::Con(_, targs) = t {
+                    for (a, x) in args.iter().zip(targs) {
+                        self.bind_targs(a, x, params, out);
+                    }
+                }
+            }
+            (TypeExpr::Fn(ps, r), Ty::Fn(qs, s)) => {
+                for (p, q) in ps.iter().zip(qs) {
+                    self.bind_targs(p, q, params, out);
+                }
+                self.bind_targs(r, s, params, out);
+            }
+            _ => {}
+        }
+    }
+
     /// The type arguments of constructor `c`'s type, from a value's type `t`
     /// (the sum, the variant, or a union containing it).
     fn ctor_args(&self, c: &str, t: &Ty) -> Vec<Ty> {
