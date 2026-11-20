@@ -127,6 +127,38 @@ pub fn run_tests(args: &Args) -> Result<bool, String> {
     Ok(fail == 0)
 }
 
+/// The real implementation of a capability `main` (or `handle`) asks for:
+/// `Console`, `Files` or `Environment`, by the parameter's type.
+pub fn capability(ty: &str) -> Option<interp::Value> {
+    use interp::Value;
+    let rec = |name: &str, fields: Vec<(&str, Value)>| Value::Record(name.into(), fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
+    Some(match ty {
+        "std.io.Console" => rec("std.io.Terminal", vec![("stdout", Value::Int(1)), ("stderr", Value::Int(2))]),
+        "std.fs.Files" => rec("std.fs.Disk", vec![("root", Value::Str(".".into()))]),
+        "std.process.Environment" => rec("std.process.Process", vec![("pid", Value::Int(std::process::id() as i64))]),
+        _ => return None,
+    })
+}
+
+/// `strata serve [PATH] [--port N]`: serve the program's `handle`.
+pub fn serve_program(args: &Args) -> Result<bool, String> {
+    // `strata serve app/`: the program's path in place of --file
+    let src = match args.pos.get(1) {
+        Some(f) => Source::File(read_sources(f, None)?),
+        None => load(args)?,
+    };
+    let port: u16 = args.val("--port").unwrap_or("8000").parse().map_err(|_| "bad --port")?;
+    let p = src.program();
+    let rep = full_check(p);
+    if !rep.ok() {
+        print_errors(&rep);
+        return Ok(false);
+    }
+    let (env, _) = types::Env::new(p);
+    crate::serve::serve(&env, port)?;
+    Ok(true)
+}
+
 /// Run the program's `main` with the real system, and give its exit code.
 /// `main` asks for the capabilities it needs by type (`Console`, `Files`,
 /// `Environment`, in any order) and may return `()` (0), an exit code, or a
@@ -141,11 +173,8 @@ pub fn run_main(p: &Program, env: &types::Env, prog: &str, program_args: Vec<Str
     let mut vals = Vec::new();
     for pm in &f.params {
         let ty = printer::ty(&pm.ty);
-        let rec = |name: &str, fields: Vec<(&str, Value)>| Value::Record(name.into(), fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
         vals.push(match ty.as_str() {
-            "std.io.Console" => rec("std.io.Terminal", vec![("stdout", Value::Int(1)), ("stderr", Value::Int(2))]),
-            "std.fs.Files" => rec("std.fs.Disk", vec![("root", Value::Str(".".into()))]),
-            "std.process.Environment" => rec("std.process.Process", vec![("pid", Value::Int(std::process::id() as i64))]),
+            _ if capability(&ty).is_some() => capability(&ty).unwrap(),
             // options read from the command line
             _ if cli::is_options(env, &pm.ty) => {
                 let doc = p.decls.iter().find(|d| matches!(d.kind, DeclKind::Type(_)) && d.qname() == ty).map(|d| d.doc.clone()).unwrap_or_default();

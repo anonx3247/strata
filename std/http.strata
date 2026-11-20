@@ -1,0 +1,225 @@
+// std.http — requests, responses and routes, for `strata serve`.
+//
+// A program serves the web by defining `handle`. A `Router` dispatches on
+// the method and the path, as Hono and Express do:
+//
+//   use std.http.{Request, Response, Router, ok_text, redirect, not_found}
+//
+//   fn app() -> Router {
+//     let mut app = Router.new()
+//     app.get("/", req -> redirect("/users"))
+//     app.get("/users/:id", show_user)
+//     app
+//   }
+//
+//   fn show_user(req: Request) -> Response {
+//     let id = req.param("id") except { return not_found() }
+//     ok_text(f"user {id}")
+//   }
+//
+//   fn handle(req: Request) -> Response {
+//     app().handle(req)
+//   }
+//
+// `strata serve` calls `handle` once per request. Like `main`, it can also
+// ask for `Console`, `Files` and `Environment`. It is a plain function, so
+// tests call it with a `Request` and look at the `Response`.
+
+/// An HTTP method, in capitals: `GET`, `POST`, ….
+pub type Method = String
+  where matches(it, "GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS")
+
+/// A request, as the server read it.
+pub type Request = {
+  method: Method,
+  /// The path, decoded, without the query: `/orders/12`.
+  path: String,
+  /// The query's parameters, decoded: `?sort=year` is `{"sort": "year"}`.
+  query: Dict[String, String],
+  /// The headers, with lowercase names.
+  headers: Dict[String, String],
+  /// The body, as text (UTF-8).
+  body: String,
+  /// The parts of the path its route named (`:id` in `/users/:id`), set by
+  /// `Router.handle`.
+  params: Dict[String, String],
+}
+
+impl Request {
+  /// The part of the path the route named `name`: `req.param("id")` for
+  /// `/users/:id`. `None` if the route has no such part (or the request
+  /// didn't come through a `Router`).
+  fn param(self, name: String) -> Option[String] {
+    get(self.params, name)
+  }
+}
+
+/// An HTTP status code.
+pub type Status = Int
+  where 100 <= it && it <= 599
+
+/// A response. Header values can't hold line breaks (the server refuses
+/// them).
+pub type Response = { status: Status, headers: Dict[String, String], body: String }
+
+/// A `GET` request for `path`, with no query, headers or body: for tests.
+pub fn get_request(path: String) -> Request {
+  Request {
+    method: "GET",
+    path,
+    query: dict([]),
+    headers: dict([]),
+    body: "",
+    params: dict([]),
+  }
+}
+
+/// A response with the given status, content type and body.
+pub fn respond(status: Status, content_type: String, body: String) -> Response {
+  Response {
+    status,
+    headers: dict([("content-type", content_type)]),
+    body,
+  }
+}
+
+/// 200, an HTML page (such as `std.web.document` makes).
+pub fn ok_html(body: String) -> Response {
+  respond(200, "text/html; charset=utf-8", body)
+}
+
+/// 200, plain text.
+pub fn ok_text(body: String) -> Response {
+  respond(200, "text/plain; charset=utf-8", body)
+}
+
+/// 200, `value` as JSON.
+pub fn ok_json[T](value: T) -> Response {
+  respond(200, "application/json", to_json(value))
+}
+
+/// 404.
+pub fn not_found() -> Response {
+  respond(404, "text/plain; charset=utf-8", "not found")
+}
+
+/// 303: the browser goes to `location` with a `GET` (after a form is posted,
+/// so reloading doesn't post it again).
+pub fn redirect(location: String) -> Response {
+  Response {
+    status: 303,
+    headers: dict([("location", location)]),
+    body: "",
+  }
+}
+
+/// 405: the path exists, but not for this method.
+pub fn method_not_allowed() -> Response {
+  respond(405, "text/plain; charset=utf-8", "method not allowed")
+}
+
+// ---- routes ----
+
+/// A route's pattern: a path whose segments may be names (`/users/:id`).
+pub type Pattern = String
+  where matches(it, "/[-a-zA-Z0-9_.~:/]*")
+
+/// One route: requests with this method whose path fits the pattern go to
+/// the handler.
+pub type Route = {
+  method: Method,
+  pattern: Pattern,
+  handler: (Request) -> Response,
+}
+
+/// Routes, tried in the order they were added.
+pub type Router = { routes: List[Route] }
+
+/// The segments of a path, without empty ones: `/a//b/` is `["a", "b"]`.
+fn segments(path: String) -> List[String] {
+  split(path, "/").filter(s -> s != "")
+}
+
+/// The names `pattern` gives to the parts of `path`, if it fits.
+pub fn match_path(pattern: Pattern, path: String) -> Option[Dict[String, String]] {
+  let ps = segments(pattern)
+  let xs = segments(path)
+  if len(ps) != len(xs) {
+    return None
+  }
+  let mut params: Dict[String, String] = dict([])
+  for (p, x) in zip(ps, xs) {
+    if starts_with(p, ":") {
+      params = insert(params, slice(p, 1, len(p)), x)
+    } else if p != x {
+      return None
+    }
+  }
+  Some(params)
+}
+
+impl Router {
+  /// A router with no routes.
+  fn new() -> Router {
+    Router { routes: [] }
+  }
+
+  /// Send `method` requests whose path fits `pattern` to `handler`.
+  fn on(
+    mut self,
+    method: Method,
+    pattern: Pattern,
+    handler: (Request) -> Response,
+  ) -> () {
+    self.routes = push(self.routes, Route { method, pattern, handler })
+  }
+
+  fn get(mut self, pattern: Pattern, handler: (Request) -> Response) -> () {
+    self.on("GET", pattern, handler)
+  }
+
+  fn post(mut self, pattern: Pattern, handler: (Request) -> Response) -> () {
+    self.on("POST", pattern, handler)
+  }
+
+  fn put(mut self, pattern: Pattern, handler: (Request) -> Response) -> () {
+    self.on("PUT", pattern, handler)
+  }
+
+  fn patch(mut self, pattern: Pattern, handler: (Request) -> Response) -> () {
+    self.on("PATCH", pattern, handler)
+  }
+
+  fn delete(mut self, pattern: Pattern, handler: (Request) -> Response) -> () {
+    self.on("DELETE", pattern, handler)
+  }
+
+  /// The response of the first route that fits the request, with the path's
+  /// named parts in `req.params`. A `HEAD` request uses the `GET` routes.
+  /// No route for the path: 404; routes for it, but not this method: 405.
+  fn handle(self, req: Request) -> Response {
+    let method = if req.method == "HEAD" {
+      "GET"
+    } else {
+      req.method
+    }
+    let mut path_known = false
+    for r in self.routes {
+      match match_path(r.pattern, req.path) {
+        Some(params) => {
+          if r.method == method {
+            let h = r.handler
+            return h(Request { ..req, params })
+          }
+          path_known = true
+        },
+        None => (),
+      }
+    }
+    if path_known {
+      method_not_allowed()
+    } else {
+      not_found()
+    }
+  }
+}

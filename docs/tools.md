@@ -125,6 +125,20 @@ LLVM_SYS_231_PREFIX=$(brew --prefix llvm) cargo build --release --features jit
 
 Both ways share one code generator (the IR as text, which LLVM parses for the JIT) and one runtime (`runtime.c`, built into `strata` for the JIT, compiled with the program by `strata build`).
 
+## Serving the web
+
+`strata serve [PATH] [--port N]` (default port 8000) runs a program as a web server: each request is turned into a `std.http.Request` and passed to the program's `fn handle(req: Request) -> Response`. Like `main`, `handle` may also ask for `Console`, `Files` and `Environment`. Requests are handled one at a time, each with a fresh interpreter. A runtime fault, or a response the server can't send (a header holding a line break), becomes a 500 that says why, and every request is logged:
+
+```text
+$ strata serve examples/page
+Serving on http://127.0.0.1:8000  (Ctrl-C to stop)
+GET / 200 (17 ms)
+GET /languages/haskell 200 (0 ms)
+POST / 405 (0 ms)
+```
+
+`handle` is a plain function, so tests call it directly (`handle(get_request("/"))`). See `examples/page` and, for routes, `std.http.Router` in [the language](language.md).
+
 ## The viewer
 
 ![The Strata viewer, showing collatz_steps from examples/math.strata: its code, six proven checks, and "may not terminate"](images/viewer.png)

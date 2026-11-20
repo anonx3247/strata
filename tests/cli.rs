@@ -3159,10 +3159,10 @@ fn std_web_renders_and_proves_pages() {
     let ex = format!("{}/examples/page", env!("CARGO_MANIFEST_DIR"));
     let d = tmp("web");
     let (ok, out) = strata(&["--file", &ex, "test"], &d, None);
-    assert!(ok && out.contains("5 passed"), "{out}");
+    assert!(ok && out.contains("6 passed"), "{out}");
     let (ok, out) = strata(&["run", &ex], &d, None);
     assert!(ok && out.starts_with("<!DOCTYPE html>") && out.contains("&lt;script&gt;alert(1)&lt;/script&gt;"), "text is escaped: {out}");
-    assert!(out.contains(r#"data-on-click="&quot;Clear&quot;""#), "events carry their message as JSON: {out}");
+    assert!(out.contains(r#"<a href="/?sort=year">By year</a>"#), "{out}");
     // an inline script can't be an attribute: caught when checking
     std::fs::write(d.join("bad.strata"), "use std.web.{Html, render, attr, button}\nfn b() -> String { render(button([attr(\"onclick\", \"evil()\")], [])) }\n").unwrap();
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
@@ -3178,4 +3178,131 @@ fn std_web_renders_and_proves_pages() {
     // names are checked where elements are made; `Html` itself has nothing to check
     let (ok, out) = strata(&["--file", &ex, "verify", "--force", "--require", "proven"], &d, None);
     assert!(ok && out.contains("✓ page") && out.contains("✓ row"), "{out}");
+    // the router's handlers too: a lambda's request is valid, and `app` isn't recursive
+    assert!(out.contains("✓ app") && out.contains("✓ language") && out.contains("✓ handle"), "{out}");
+}
+
+/// One HTTP request to a local server: the whole response as text.
+fn http(port: u16, request: &str) -> String {
+    use std::io::Read;
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.write_all(request.as_bytes()).unwrap();
+    let mut out = String::new();
+    s.read_to_string(&mut out).unwrap();
+    out
+}
+
+#[test]
+fn serve_calls_handle_for_each_request() {
+    let d = tmp("serve");
+    // a free port: bound, then released for the server
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    std::fs::write(
+        d.join("app.strata"),
+        r#"use std.http.{Request, Response, ok_text, ok_json, not_found}
+fn handle(req: Request) -> Response {
+  let q = get(req.query, "q") except { "-" }
+  match req.path {
+    "/" => ok_text(f"{req.method} q={q} body={req.body} agent={get(req.headers, "x-agent") except { "-" }}"),
+    "/json" => ok_json([1, 2]),
+    "/crash" => ok_text(to_string(10 / len(req.body))),
+    "/inject" => Response { status: 200, headers: dict([("x-a", "b\r\nset-cookie: evil=1")]), body: "" },
+    _ => not_found(),
+  }
+}
+"#,
+    )
+    .unwrap();
+    let mut server = Command::new(env!("CARGO_BIN_EXE_strata")).args(["serve", "app.strata", "--port", &port.to_string()]).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let up = (0..100).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    });
+    let results = std::panic::catch_unwind(|| {
+        assert!(up, "the server didn't start");
+        let r = http(port, "POST /?q=a+b%21 HTTP/1.1\r\nHost: x\r\nX-Agent: t\r\nContent-Length: 5\r\n\r\nhello");
+        assert!(r.starts_with("HTTP/1.1 200 OK") && r.ends_with("POST q=a b! body=hello agent=t"), "{r}");
+        let r = http(port, "GET /json HTTP/1.1\r\n\r\n");
+        assert!(r.contains("content-type: application/json") && r.ends_with("[1,2]"), "{r}");
+        assert!(http(port, "GET /nope HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 404"));
+        let r = http(port, "GET /crash HTTP/1.1\r\n\r\n");
+        assert!(r.starts_with("HTTP/1.1 500") && r.contains("division by zero"), "a fault is a 500: {r}");
+        let r = http(port, "GET /inject HTTP/1.1\r\n\r\n");
+        assert!(r.starts_with("HTTP/1.1 500") && !r.contains("set-cookie"), "headers can't be injected: {r}");
+        let r = http(port, "HEAD /json HTTP/1.1\r\n\r\n");
+        assert!(r.contains("content-length: 5") && r.ends_with("\r\n\r\n"), "HEAD has no body: {r}");
+        assert!(http(port, "TRACE / HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 501"));
+    });
+    let _ = server.kill();
+    let _ = server.wait();
+    if let Err(e) = results {
+        std::panic::resume_unwind(e);
+    }
+    // `handle`'s signature is checked before serving
+    std::fs::write(d.join("wrong.strata"), "fn handle(n: Int) -> Int {\n  n\n}\n").unwrap();
+    let (ok, out) = strata(&["serve", "wrong.strata"], &d, None);
+    assert!(!ok && out.contains("Its parameter `n` has type `Int`"), "{out}");
+}
+
+#[test]
+fn own_methods_locals_and_function_values() {
+    let d = tmp("own-locals-fns");
+    std::fs::write(d.join("strata.toml"), "name = \"m\"\n").unwrap();
+    std::fs::write(
+        d.join("counter.strata"),
+        "pub type Counter = { n: Natural }
+
+impl Counter {
+  fn bump(mut self) -> () {
+    self.n = self.n + 1
+  }
+}
+",
+    )
+    .unwrap();
+    let src = "use counter.Counter
+
+type Twice = { f: (Natural) -> Natural }
+
+/// A function named like `Counter`'s method (in another module): `k.bump()`
+/// is still the method.
+fn bump(c: Counter) -> Natural {
+  let mut k = c
+  k.bump()
+  k.n
+}
+
+/// A local named like the function hides it: this is not recursion.
+fn fresh() -> Counter {
+  let mut fresh = Counter { n: 0 }
+  fresh.bump()
+  fresh
+}
+
+/// What a function value returns is a valid value of its result type.
+fn twice(t: Twice, x: Natural) -> Natural {
+  let f = t.f
+  f(f(x))
+}
+
+/// A lambda passed for a function parameter gets valid arguments.
+fn use_twice() -> Natural {
+  twice(Twice { f: n -> n + 1 }, 3)
+}
+
+test \"methods\" {
+  assert bump(Counter { n: 1 }) == 2
+  assert fresh().n == 1
+}
+";
+    std::fs::write(d.join("main.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", ".", "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let (_, out) = strata(&["--file", ".", "verify", "--checks"], &d, None);
+    assert!(out.contains("✓ fresh") && !out.contains("may not terminate"), "a local doesn't call the function it is named like: {out}");
+    assert!(out.contains("✓ twice"), "a function value's result is valid: {out}");
 }

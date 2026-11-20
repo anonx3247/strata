@@ -24,3 +24,4 @@
 | `src/stdlib.rs`, `std/` | the standard library (Strata), built into the binary; the native `host_*` operations it alone can call |
 | `src/view.rs` | level-of-detail projections and selectors |
 | `src/ui.rs`, `src/ui/index.html` | `strata ui`: the live viewer (a std-only HTTP server and one page) |
+| `src/serve.rs` | `strata serve`: a std-only HTTP server calling the program's `handle` for each request |

@@ -169,10 +169,22 @@ Steps:
    validity is compared on types whose unrefined type arguments are erased
    (`erased`), so a generic helper's result `Html[M]` matches its use as
    `Html[Msg]`. Not yet: `javascript:` URLs in `href` are not rejected.
-2. `strata serve`: a low-level handler `fn handle(req: Request) -> Response`
-   for JSON APIs and static files; bodies and query strings read into records
-   like `CommandLine`. The HTTP layer is native, next to the `host_*`
-   functions (`ui.rs` already has a std-only server).
+2. `strata serve` (**built**, branch `worktree-web-serve`): `std.http`
+   (`Request`, `Response`, `Method` as a refined `String`, response helpers)
+   and `fn handle(req: Request) -> Response`, called once per request with a
+   fresh interpreter (`src/serve.rs`, std-only, one request at a time).
+   Routes as in Hono (asked for by the user): `Router` with `app.get(pattern,
+   handler)` etc., `:name` segments, `req.param(name)` an `Option`, HEAD via
+   GET, 404 / 405. Building it fixed three things: a type's own method now
+   comes before a function of another module with the same name when called
+   as `x.m()` (`app.handle(req)` inside `fn handle`); termination no longer
+   takes a local named like a function for a call of it (`let mut app` in
+   `fn app`); the prover knows a function value's result is a valid value of
+   its result type (`Val::FnOf`), and a lambda passed for a function-typed
+   parameter gets valid arguments. Not yet: reading bodies and forms into
+   records (step 4), static files, typed route parameters (a pattern's names
+   checked against what the handler reads; `/users/:id` with `id: UserId`),
+   `*` wildcards, several requests at once, URL-encoding helpers for links.
 3. `App` and the JS client: sessions, messages, swapping the HTML in.
 4. Forms: `on_submit(constructor)` fills a record from the fields, with
    refinement errors shown next to each field.

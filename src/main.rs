@@ -15,6 +15,7 @@ mod pending;
 mod parser;
 mod printer;
 mod resolve;
+mod serve;
 mod smt;
 mod stdlib;
 mod termination;
@@ -120,6 +121,9 @@ Running:
                                much faster, when the program only uses what compiles
                                (see build); otherwise interpreted, with a note saying why.
                                Needs strata built with `--features jit`
+  serve [PATH] [--port N]      serve the web: each request is passed to the program's
+                               `fn handle(req: Request) -> Response` (std.http), which may
+                               also ask for Console, Files, Environment (default port 8000)
   run <fn> [JSON-ARGS] [--trace]
                                call one function: args are a JSON array validated
                                against the types; --trace prints each call and return
@@ -295,6 +299,7 @@ fn run() -> Result<bool, String> {
         "holes" => cmd::holes(&args, json_out),
         "verify" => cmd::verify(&args, json_out),
         "run" => cmd::run_program(&args),
+        "serve" => cmd::serve_program(&args),
         "test" => cmd::run_tests(&args),
         "build" => cmd::build(&args),
         other => Err(format!("unknown command `{other}` (try `strata help`)")),
