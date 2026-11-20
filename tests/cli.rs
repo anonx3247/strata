@@ -136,6 +136,16 @@ fn loops_forget_variables_changed_anywhere_in_their_body() {
 }
 
 #[test]
+fn generators_read_disjunctive_refinements() {
+    // without a solver everything is fuzzed: values of `Far` must be generated, not rejected 300 times
+    let d = tmp("gen-or");
+    std::fs::write(d.join("g.strata"), "type Far = Int where it > 1000000 || it < -1000000\n\nfn half(x: Far) -> Int\n  ensures it != 0\n{\n  x / 2\n}\n").unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["--file", "g.strata", "verify"]).env("STRATA_SOLVER", d.join("no-solver")).current_dir(&d).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(out.contains("fuzzed: 200 cases"), "{out}");
+}
+
+#[test]
 fn cross_check_catches_a_wrong_prover() {
     // a "solver" that proves everything: the cross-check must still catch the bug
     let d = tmp("cross-check");
