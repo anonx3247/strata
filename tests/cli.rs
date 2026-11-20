@@ -94,7 +94,7 @@ fn run_a_binary_file() {
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "hello.stb"], &d, None);
     assert!(ok && out.contains("hello, world!"), "{out}");
-    std::fs::write(d.join("bad.stb"), b"STRATA\x02\x00\x05").unwrap();
+    std::fs::write(d.join("bad.stb"), b"STRATA\x03\x00\x05").unwrap();
     let (ok, out) = strata(&["--file", "bad.stb", "check"], &d, None);
     assert!(!ok && out.contains("corrupt binary Strata file"), "{out}");
 }
@@ -3228,4 +3228,27 @@ fn std_web_renders_and_proves_pages() {
     // names are checked where elements are made; `Html` itself has nothing to check
     let (ok, out) = strata(&["--file", &ex, "verify", "--force", "--require", "proven"], &d, None);
     assert!(ok && out.contains("✓ page") && out.contains("✓ row"), "{out}");
+}
+
+#[test]
+fn ranges_slices_and_comprehensions() {
+    let d = tmp("sugar");
+    let src = format!("{}/tests/data/sugar.strata", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["--file", &src, "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    // written as they were, in text and through the binary format
+    let (ok, out) = strata(&["--file", &src, "render"], &d, None);
+    assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
+    let (ok, out) = strata(&["--file", &src, "pack", "sugar.stb"], &d, None);
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "sugar.stb", "render"], &d, None);
+    assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
+    for (code, err) in [
+        ("fn f(xs: List[Int]) -> Option[Int] { xs[0] }", "one element is `get(xs, i)`"),
+        ("fn f(xs: List[Int]) -> List[Int] { xs[1..=] }", "`..=` needs an end"),
+    ] {
+        std::fs::write(d.join("e.strata"), code).unwrap();
+        let (ok, out) = strata(&["--file", "e.strata", "check"], &d, None);
+        assert!(!ok && out.contains(err), "{code}: {out}");
+    }
 }

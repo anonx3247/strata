@@ -574,7 +574,14 @@ impl Parser {
     }
 
     pub fn expr(&mut self) -> R<Expr> {
-        let lhs = self.binary(0)?;
+        let mut lhs = self.binary(0)?;
+        // `a..b`, `a..=b`
+        if !self.nl_before() && (self.is_sym("..") || self.is_sym("..=")) {
+            let inclusive = self.is_sym("..=");
+            self.next();
+            let hi = self.binary(0)?;
+            lhs = Expr::Range(Some(Box::new(lhs)), Some(Box::new(hi)), inclusive);
+        }
         if self.eat_sym("==>") {
             let rhs = self.expr()?;
             return Ok(Expr::Bin(BinOp::Implies, Box::new(lhs), Box::new(rhs)));
@@ -669,6 +676,9 @@ impl Parser {
                 } else {
                     e = Expr::Field(Box::new(e), name);
                 }
+            } else if self.is_sym("[") && !self.nl_before() {
+                self.next();
+                e = Expr::Slice(Box::new(e), Box::new(self.slice_range()?));
             } else if self.is_sym("!") && !self.nl_before() {
                 self.next();
                 e = Expr::Try(Box::new(e), TryKind::Result);
@@ -689,6 +699,27 @@ impl Parser {
             }
         }
         Ok(e)
+    }
+
+    /// What is inside `xs[...]`, past the `[`: `a..b`, `a..=b`, `a..`, `..b`, `..`.
+    fn slice_range(&mut self) -> R<Expr> {
+        let old = self.no_struct;
+        self.no_struct = false;
+        let lo = if self.is_sym("..") || self.is_sym("..=") { None } else { Some(Box::new(self.binary(0)?)) };
+        let inclusive = if self.eat_sym("..=") {
+            true
+        } else if self.eat_sym("..") {
+            false
+        } else {
+            return Err(self.err("expected `..`: `xs[a..b]` is a slice; one element is `get(xs, i)`"));
+        };
+        let hi = if self.is_sym("]") { None } else { Some(Box::new(self.binary(0)?)) };
+        if inclusive && hi.is_none() {
+            return Err(self.err("`..=` needs an end: `xs[a..=b]`"));
+        }
+        self.expect_sym("]")?;
+        self.no_struct = old;
+        Ok(Expr::Range(lo, hi, inclusive))
     }
 
     fn primary(&mut self) -> R<Expr> {
@@ -774,7 +805,34 @@ impl Parser {
             }
             Tok::Sym("[") => {
                 self.next();
-                Ok(Expr::List(self.list("]", |p| p.expr())?))
+                if self.eat_sym("]") {
+                    return Ok(Expr::List(vec![]));
+                }
+                let old = self.no_struct;
+                self.no_struct = false;
+                let first = self.expr()?;
+                // `[e for x in xs where c for y in ys]`
+                if self.is_kw("for") {
+                    let mut gens = Vec::new();
+                    while self.eat_kw("for") {
+                        let pat = self.pattern()?;
+                        self.expect_kw("in")?;
+                        let iter = self.expr()?;
+                        let cond = if self.eat_kw("where") { Some(self.expr()?) } else { None };
+                        gens.push(CompFor { pat, iter, cond });
+                    }
+                    self.expect_sym("]")?;
+                    self.no_struct = old;
+                    return Ok(Expr::Comp(Box::new(first), gens));
+                }
+                let mut items = vec![first];
+                if self.eat_sym(",") {
+                    items.extend(self.list("]", |p| p.expr())?);
+                } else {
+                    self.expect_sym("]")?;
+                }
+                self.no_struct = old;
+                Ok(Expr::List(items))
             }
             Tok::Sym("{") => self.block(),
             Tok::Sym("|" | "||") => Err(self.err("lambdas are written `x -> body`, `(a, b) -> body` or `() -> body`")),

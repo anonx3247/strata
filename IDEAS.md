@@ -4,8 +4,13 @@ Everything that keeps track of where Strata is going: open questions, ideas, wha
 
 ## Open questions (to discuss before building)
 
-- **Slicing with Python's syntax** (user, 2026-11-20; idea, not designed). Lists and strings are sliced the same way: `xs[1:3]`, `xs[2:]`, `xs[:-1]`, `xs[::2]`, `s[1:4]`. To decide: whether it replaces `slice` / `take` / `drop`, what `xs[i]` returns (an `Option`, or a runtime check against `len`), and negative indices.
-- **What iterating a string yields** (user, 2026-11-20; undecided). Bytes, code points (Go's runes; what `chars` gives today), or grapheme clusters (what a reader calls a character). To be decided together with slicing, since a slice's indices count the same units.
+- **Marking a `mut self` call** (user, 2026-11-20; open). A `mut` argument is marked at the call (`restock(mut line, 5)`), but a method that changes its receiver isn't (`queue.claim(2)`), so the call site doesn't show that `queue` changes. Options:
+  - **`mut queue.claim(2)`** (recommended; Hylo writes `&x.append(1)` the same way). `mut` before a method call marks the call's receiver: the longest place (`x`, `o.lines`) right after `mut`, and the first call on it. `mut o.queue.claim(2).len()` changes `o.queue` through `claim`. It reads like `mut x` as an argument (the same place, passed as the `mut self` parameter). It is ambiguous only to a reader, never to the tree: the AST would hold the mark on the call itself (a flag on `Method`), and the renderer decides how it looks, so it could even be shown another way (a colour in the viewer).
+  - `(mut queue).claim(2)`: no ambiguity, but noisy, and it looks like a value being made mutable.
+  - `claim(mut queue, 2)` / `Queue.claim(mut queue, 2)`: the receiver as an ordinary `mut` argument. Exact, but it loses method syntax for exactly the calls that are most common in procedural code.
+  - a different call operator (`queue.claim!(2)`, `queue->claim(2)`, `queue:claim(2)`): short, but `!` is error propagation, `->` is lambdas and `:` types, and an operator is easier to miss than a word.
+  Either way the rule is the one for arguments: required when the method takes `mut self`, an error otherwise, and the receiver must be a `let mut` variable or a `mut` parameter (or a field of one).
+- **What iterating a string yields** (user, 2026-11-20; undecided). Bytes, code points (Go's runes; what `chars` gives today), or grapheme clusters (what a reader calls a character). A slice's indices (`s[1..3]`) count the same units; today both count code points.
 - **Regex verification scope** (decided with the user 2026-11-20; not built). By default, regex refinements are proven over ASCII strings only, and the result always says so ("proven for ASCII strings"). Such a proof counts as proven in an ordinary `verify` run. Under a `[verify] proven = [...]` rule it does not, unless the project opts in to accepting ASCII proofs; it is still reported as proven for ASCII either way. Full Unicode proofs are asked for explicitly where they matter (per module in `[verify]`, or per function). The interpreter stays fully Unicode either way. Pairs with "two solvers": ASCII classes are small enough for Z3 to decide exactly; full-Unicode proofs can go to cvc5, which decides the large classes.
 - **Two solvers, each for its strengths** (user, 2026-11-20; direction). Z3 and cvc5 are both wired in (`STRATA_SOLVER`). Use both: route a query by what it contains (cvc5 for strings and large Unicode regex classes, which it decides exactly where Z3 times out; Z3 elsewhere), or run both and take the first definite answer.
 - **Complexity / cost.** Separate from termination: a function can terminate and still take exponential time (naive `fib`, Ackermann). The user raised it as "another issue"; nothing is designed yet.
@@ -37,17 +42,26 @@ Everything that keeps track of where Strata is going: open questions, ideas, wha
 
 ### Language
 
-#### Ranges with Rust's `..` syntax (2026-11-20)
+#### Ranges, slices and comprehensions (built 2026-11-20)
 
-Write ranges as Rust does, instead of calling `range(lo, hi)`:
+Built on the binary-format branch (format version 3: `Expr::Range`, `Expr::Slice`, `Expr::Comp`); see docs/language.md. Decided along the way:
 
-- `0..n` is `0, 1, …, n - 1` (end excluded), and `1..=n` includes `n`;
-- `for i in 0..n { … }`, and `xs.map(…)` style chains on a range;
-- open ends where they make sense: `xs[2..]`, `xs[..3]` (this meets Python-style slicing, under open questions).
+- `a..b` excludes `b`, `a..=b` includes it; a range is an eager `List[Int]` (iterators remain their own feature). Both ends are required, except in a slice.
+- Slicing uses ranges, not Python's `:` (one syntax for both): `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..=b]`, on lists and strings, clamped as `slice` was. No negative indices: in a range `-3..0` already means the integers from -3, so `xs[..-1]` meaning "all but the last" would read two ways. `xs[i]` alone is an error that points to `get(xs, i)`.
+- Comprehensions: `[e for p in xs where c for q in ys where d]`, with `where` as in refinements; patterns allowed (`for (a, b) in ps`).
+- The tree keeps them as written (they render back as written); `resolve` rewrites them into `range`, `slice`, `map`, `filter` and `fold` (`src/desugar.rs`), so the checker, interpreter, prover and LLVM never see them. Error messages show the builtin calls.
 
-It pairs well with list comprehensions (below): `[x * x for x in 1..=10 where x % 2 == 0]`. For the verifier, a range is already exact (every element is an `Int` with `lo <= x < hi`), so `0..10` gives `List[Digit]` for free.
+Still open:
+- Whether the builtins `range` and `slice` stay callable by name (they are still listed by `strata builtins`), and whether `take` / `drop` go, now that `xs[..n]` / `xs[n..]` say the same.
+- Steps: `(0..n).step(2)` or `0..n by 2`.
+- `xs where it > 0` as a filter on a value (it reads like a refinement type).
+- Dict and set comprehensions, once dicts and sets have literals (below).
 
-To decide: whether `range(lo, hi)` stays, whether a range is a `List[Int]` or a lazy value of its own (iterators are a separate language feature), and steps (`(0..n).step(2)` or `0..n by 2`).
+#### Other syntax nits (noticed 2026-11-20; not decided)
+
+- **Dict and set literals.** Today `dict([("a", 1)])` and `set([1, 2])`. `{"a": 1}` would clash with blocks; Swift's `["a": 1]` doesn't, and `[:]` is the empty dict. A set could stay `set([...])`.
+- **`except` inside a `for` header** reads badly: `for _ in 0..opts.times except { 1 } {`. The renderer could put such a range in parentheses, or name it first.
+- **`len(xs)` and `xs.len()`** are both accepted, as for every builtin; the renderer could pick one form (method form for chains, say) so code reads the same everywhere.
 
 #### Default values for record fields (2026-11-20)
 
@@ -78,28 +92,6 @@ Questions to settle:
   - command-line options (`CommandLine` would read `times: Int = 1` as an
     optional `--times` without needing `Option`).
 - **Generated values**: mocks and fuzzing still generate every field.
-
-#### List comprehensions in the style of refinements (2026-11-20)
-
-Reuse the refinement syntax (`where`, and maybe `it`) to filter and map lists,
-instead of chaining `.filter(...).map(...)`. Possible shapes:
-
-```rust
-xs where it > 0                      // filter: the elements that satisfy the condition
-[x * x for x in xs where x > 0]      // map + filter, with a named element
-```
-
-Questions to settle:
-- Whether `xs where …` on a value reads too much like a type, given that
-  `Int where …` already means a refinement type.
-- Several generators (`for x in xs, y in ys`), and dict and set forms.
-- **Laziness**: comprehensions would stay eager for now. Lazy evaluation (and
-  so infinite lists) is not wanted as a general mechanism. If it comes, it
-  comes with iterators, which are already planned as their own language
-  feature. A comprehension over an iterator could then be lazy.
-- The prover could model `xs where p` directly (every element satisfies `p`,
-  and the length is at most `len(xs)`), which `filter` with a lambda can't
-  easily give it.
 
 ### Web UIs (direction agreed with the user 2026-11-20; not built)
 
@@ -304,7 +296,7 @@ Bootstrap plan: write the frontend (lexer, parser, printer) in Strata and test i
 The `smt-verification` worktree (uncommitted, on old main) already has: symbolic values for parameters with their refinements as facts (`havoc`), `Vc::pattern` turning a pattern into an SMT condition on the matched value, per-arm path conditions in `Expr::Match`, obligations solved with Z3. To decide coverage of undecidable conditions it still needs: (1) an obligation per `match` that some arm holds (the `or` of the arm conditions, under the facts), and one per arm that it can hold (unreachable when proven impossible); (2) the new pattern forms in `Vc::pattern`: type names, `where`, or-patterns, and `Match`'s `as` name (it predates the `unions` branch, so merge first); (3) a policy between `check` and `verify`: `check` would report such a `match` as "needs proof" instead of an error, and `verify` proves it, reports a counterexample, or leaves it runtime-checked (a `no match arm` fault). Floats are not modelled there; the checker's own `reals` covers them.
 
 ### Mutation at the call site, references, and unproven checks (decided 2026-11-19)
-- **`mut` at the call site (done)**: an argument to a `mut` parameter is written `f(mut x)`; missing it, or writing it for a parameter that is not `mut` (or a builtin, or a closure), is an error. A `mut self` method's receiver is not marked (`queue.claim(2)`), as in Swift; the receiver must still be a mutable variable. `Expr::Mut`, checked in `check_mut_args`.
+- **`mut` at the call site (done)**: an argument to a `mut` parameter is written `f(mut x)`; missing it, or writing it for a parameter that is not `mut` (or a builtin, or a closure), is an error. A `mut self` method's receiver is not marked (`queue.claim(2)`), as in Swift; the receiver must still be a mutable variable. (Reopened: see "Marking a `mut self` call" under open questions.) `Expr::Mut`, checked in `check_mut_args`.
 - **References**: immutable values can always be shared (no copying in the compiled form); a mutable reference only exists as a `mut` parameter (copy-in/copy-out today, in place later). Recommended to the user: keep references second-class (never stored or returned), like Swift `inout` / Hylo, since first-class ones would need a borrow checker; a possible local form is `let mut l = mut order.lines[0]`. Not decided beyond the call-site marker.
 - **Unproven checks are reported by default** (with the runtime check kept); a project policy can require `proven` for chosen modules. For the SMT work: an assignment to a refined variable is one more obligation (e.g. `x = f(x) - 3` with `x: Positive` needs `f`'s contract to imply it).
 

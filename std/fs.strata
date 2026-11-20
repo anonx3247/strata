@@ -132,8 +132,7 @@ impl Files for MemFiles {
     let prefix = path + "/"
     let names = keys(self.files)
       .filter(p -> starts_with(p, prefix))
-      .map(p ->
-        split(slice(p, len(prefix), len(p)), "/").get(0) except { "" })
+      .map(p -> split(p[len(prefix)..], "/").get(0) except { "" })
     match names {
       [] => Err(NotFound { path }),
       _ => Ok(to_list(set(names))),

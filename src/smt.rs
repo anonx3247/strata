@@ -1700,6 +1700,7 @@ impl<'a> Vc<'a> {
                 None => self.fn_value(e, vec![]).0,
             },
             Expr::Hole(h) => Val::Opaque(format!("the hole `?{h}`")),
+            Expr::Range(..) | Expr::Slice(..) | Expr::Comp(..) => Val::Opaque("a range, slice or comprehension not desugared".into()),
             Expr::List(xs) => {
                 let vals: Vec<Val> = xs.iter().map(|x| self.eval(x)).collect();
                 self.new_list(xs.len().to_string(), Gen::Values(vals))

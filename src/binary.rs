@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 pub const MAGIC: &[u8; 6] = b"STRATA";
 /// Bumped on every change to the layout; older files are rejected (re-pack
 /// them from source: there is no backwards compatibility).
-pub const VERSION: u64 = 2;
+pub const VERSION: u64 = 3;
 const MODULE: u8 = 0;
 const BUNDLE: u8 = 1;
 /// Deepest nesting of expressions, patterns and types a file may have.
@@ -750,6 +750,7 @@ record!(ImplDecl { type_params, bounds, trait_name, trait_args, for_type, method
 record!(UseDecl { path, items });
 record!(Arm { comments, pat, body });
 record!(LamParam { name, ty });
+record!(CompFor { pat, iter, cond });
 record!(FmtSpec { fill, align, plus, zero, width, precision });
 
 tags!(BinOp { Add = 0, Sub = 1, Mul = 2, Div = 3, Mod = 4, Eq = 5, Ne = 6, Lt = 7, Le = 8, Gt = 9, Ge = 10, And = 11, Or = 12, Implies = 13 });
@@ -949,11 +950,14 @@ impl Bin for Expr {
             Expr::Try(x, k) => put!(w, 24, x, k),
             Expr::Except(x, err, fb) => put!(w, 25, x, err, fb),
             Expr::Interp(parts) => put!(w, 26, parts),
+            Expr::Range(lo, hi, inclusive) => put!(w, 27, lo, hi, inclusive),
+            Expr::Slice(x, r) => put!(w, 28, x, r),
+            Expr::Comp(elem, gens) => put!(w, 29, elem, gens),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
         r.nest(|r| {
-            Ok(match r.tag("expression", 26)? {
+            Ok(match r.tag("expression", 29)? {
                 0 => Expr::Int(Bin::dec(r)?),
                 1 => Expr::BigInt(Bin::dec(r)?),
                 2 => Expr::Float(Bin::dec(r)?),
@@ -980,7 +984,10 @@ impl Bin for Expr {
                 23 => Expr::Return(Bin::dec(r)?),
                 24 => Expr::Try(Bin::dec(r)?, Bin::dec(r)?),
                 25 => Expr::Except(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
-                _ => Expr::Interp(Bin::dec(r)?),
+                26 => Expr::Interp(Bin::dec(r)?),
+                27 => Expr::Range(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
+                28 => Expr::Slice(Bin::dec(r)?, Bin::dec(r)?),
+                _ => Expr::Comp(Bin::dec(r)?, Bin::dec(r)?),
             })
         })
     }

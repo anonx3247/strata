@@ -132,7 +132,7 @@ fn prec(e: &Expr) -> u8 {
             BinOp::Mul | BinOp::Div | BinOp::Mod => 6,
         },
         Expr::Is(..) => 3,
-        Expr::Lambda(..) | Expr::Return(..) => 0,
+        Expr::Lambda(..) | Expr::Return(..) | Expr::Range(..) => 0,
         Expr::Except(..) => 7,
         Expr::Un(..) => 7,
         _ => 8,
@@ -330,6 +330,21 @@ fn expr_inline(e: &Expr, d: usize) -> String {
                 }
             }
             s + "\""
+        }
+        Expr::Range(lo, hi, inclusive) => {
+            let end = |x: &Option<Box<Expr>>| x.as_ref().map(|x| wrap(x, 1, d)).unwrap_or_default();
+            format!("{}{}{}", end(lo), if *inclusive { "..=" } else { ".." }, end(hi))
+        }
+        Expr::Slice(x, r) => format!("{}[{}]", wrap(x, 8, d), expr(r, d)),
+        Expr::Comp(elem, gens) => {
+            let mut s = format!("[{}", expr(elem, d));
+            for g in gens {
+                s += &format!(" for {} in {}", pat(&g.pat), expr(&g.iter, d));
+                if let Some(c) = &g.cond {
+                    s += &format!(" where {}", expr(c, d));
+                }
+            }
+            s + "]"
         }
         Expr::Return(x) if **x == Expr::Unit => "return".into(),
         Expr::Return(x) => format!("return {}", expr(x, d)),

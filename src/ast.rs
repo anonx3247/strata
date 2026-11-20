@@ -394,6 +394,23 @@ pub enum Expr {
     Except(Box<Expr>, Option<String>, Box<Expr>),
     /// `f"{name} has {len(xs)} items"`: each part shown as by `to_string`.
     Interp(Vec<StrPart>),
+    /// `a..b` (`b` excluded), `a..=b` (`b` included): the integers between,
+    /// as a `List[Int]`. An end may be left out only in a slice (`xs[2..]`).
+    Range(Option<Box<Expr>>, Option<Box<Expr>>, bool),
+    /// `xs[a..b]`, `s[..3]`, `xs[2..]`: part of a list or string, clamped to
+    /// its length. The second expression is always a `Range`.
+    Slice(Box<Expr>, Box<Expr>),
+    /// `[x * x for x in xs where x > 0]`, `[(a, b) for a in xs for b in ys]`:
+    /// a list built from each element of one or more lists.
+    Comp(Box<Expr>, Vec<CompFor>),
+}
+
+/// One `for p in xs where cond` of a comprehension.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompFor {
+    pub pat: Pattern,
+    pub iter: Expr,
+    pub cond: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -599,6 +616,28 @@ macro_rules! visitor {
                             v.expr(x)
                         }
                     }
+                }
+                Expr::Range(lo, hi, _) => {
+                    if let Some(lo) = lo {
+                        v.expr(lo)
+                    }
+                    if let Some(hi) = hi {
+                        v.expr(hi)
+                    }
+                }
+                Expr::Slice(x, r) => {
+                    v.expr(x);
+                    v.expr(r)
+                }
+                Expr::Comp(elem, gens) => {
+                    for g in gens {
+                        v.expr(&$($m)? g.iter);
+                        v.pattern(&$($m)? g.pat);
+                        if let Some(c) = &$($m)? g.cond {
+                            v.expr(c)
+                        }
+                    }
+                    v.expr(elem)
                 }
             }
         }

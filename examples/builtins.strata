@@ -81,9 +81,7 @@ test "dicts, sets, tuples and floats" {
 
 /// "ada lovelace" -> "Ada Lovelace"
 fn title_case(s: String) -> String {
-  join(split(s, " ").map(
-    w -> to_upper(slice(w, 0, 1)) + slice(w, 1, len(w)),
-  ), " ")
+  join(split(s, " ").map(w -> to_upper(w[..1]) + w[1..]), " ")
 }
 
 /// The digits of a string, as a number, if it has any.

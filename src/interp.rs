@@ -1354,6 +1354,7 @@ impl<'a> Interp<'a> {
             Expr::Bool(b) => Value::Bool(*b),
             Expr::Unit => Value::Unit,
             Expr::Hole(h) => return self.fail(FaultKind::Hole, format!("reached unfilled hole `?{h}`")),
+            Expr::Range(..) | Expr::Slice(..) | Expr::Comp(..) => return self.fail(FaultKind::Runtime, "internal: a range, slice or comprehension was not desugared"),
             Expr::Var(x) => match lookup(s, x) {
                 Some(v) => v,
                 // `Self.m()` in a trait's default method or law: the type it runs for

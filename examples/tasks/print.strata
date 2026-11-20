@@ -27,7 +27,7 @@ pub type PrintProducer = { count: Natural }
 
 impl Producer[PrintJob] for PrintProducer {
   fn discover(self) -> List[Task[PrintJob]] {
-    range(0, self.count).map(
+    (0..self.count).map(
       i -> Task {
         id: f"task-{i}",
         kind: "print",

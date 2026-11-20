@@ -1586,6 +1586,11 @@ impl<'a> Checker<'a> {
                 self.record_hole(h, t.clone());
                 t
             }
+            // rewritten into builtin calls when the program is resolved
+            Expr::Range(..) | Expr::Slice(..) | Expr::Comp(..) => {
+                self.err("internal: a range, slice or comprehension was not desugared");
+                self.fresh()
+            }
             Expr::Var(x) => {
                 if let Some(t) = self.lookup(x) {
                     return t;

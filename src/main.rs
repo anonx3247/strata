@@ -2,6 +2,7 @@ mod ast;
 mod binary;
 mod cli;
 mod cmd;
+mod desugar;
 mod diff;
 mod history;
 mod generate;

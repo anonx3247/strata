@@ -39,6 +39,7 @@ pub fn resolve(p: &Program) -> Resolution {
         run(p, None)
     };
     static_calls(&mut r.program);
+    crate::desugar::program(&mut r.program, &mut r.errors);
     r
 }
 
@@ -1001,6 +1002,25 @@ impl Rw<'_> {
                     .collect(),
             ),
             Expr::Return(x) => Expr::Return(Box::new(self.expr(x))),
+            Expr::Range(lo, hi, inclusive) => {
+                let lo = lo.as_ref().map(|x| Box::new(self.expr(x)));
+                Expr::Range(lo, hi.as_ref().map(|x| Box::new(self.expr(x))), *inclusive)
+            }
+            Expr::Slice(x, r) => Expr::Slice(Box::new(self.expr(x)), Box::new(self.expr(r))),
+            Expr::Comp(elem, gens) => {
+                // each `for` binds its pattern for the conditions and `for`s after it, and the element
+                let mut out = Vec::new();
+                for g in gens {
+                    let iter = self.expr(&g.iter);
+                    self.push(&[]);
+                    let pat = self.pat(&g.pat);
+                    let cond = g.cond.as_ref().map(|c| self.expr(c));
+                    out.push(CompFor { pat, iter, cond });
+                }
+                let elem = self.expr(elem);
+                gens.iter().for_each(|_| self.pop());
+                Expr::Comp(Box::new(elem), out)
+            }
             Expr::Mut(x) => Expr::Mut(Box::new(self.expr(x))),
             Expr::Try(x, k) => Expr::Try(Box::new(self.expr(x)), *k),
             Expr::Except(x, name, fb) => {
