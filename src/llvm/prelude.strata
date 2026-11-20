@@ -1,0 +1,187 @@
+// The list built-ins, as `strata build` compiles them: a module the compiler
+// adds to every program it compiles (`strata.compiled`), and calls in place
+// of the interpreter's built-ins of the same name (src/llvm.rs). Only `len`,
+// `get`, `push`, `take`, `drop`, `range`, `+` and `for` are native.
+// They must behave as the interpreter's (src/interp.rs, `builtin`).
+
+fn map[A, B](xs: List[A], f: (A) -> B) -> List[B] {
+  let mut out = []
+  for x in xs {
+    out = push(out, f(x))
+  }
+  out
+}
+
+fn filter[A](xs: List[A], keep: (A) -> Bool) -> List[A] {
+  let mut out = []
+  for x in xs {
+    if keep(x) {
+      out = push(out, x)
+    }
+  }
+  out
+}
+
+fn fold[A, B](xs: List[A], init: B, f: (B, A) -> B) -> B {
+  let mut acc = init
+  for x in xs {
+    acc = f(acc, x)
+  }
+  acc
+}
+
+fn all[A](xs: List[A], ok: (A) -> Bool) -> Bool {
+  for x in xs {
+    if !ok(x) {
+      return false
+    }
+  }
+  true
+}
+
+fn any[A](xs: List[A], ok: (A) -> Bool) -> Bool {
+  for x in xs {
+    if ok(x) {
+      return true
+    }
+  }
+  false
+}
+
+fn find[A](xs: List[A], ok: (A) -> Bool) -> Option[A] {
+  for x in xs {
+    if ok(x) {
+      return Some(x)
+    }
+  }
+  None
+}
+
+fn count[A](xs: List[A], ok: (A) -> Bool) -> Int {
+  let mut n = 0
+  for x in xs {
+    if ok(x) {
+      n = n + 1
+    }
+  }
+  n
+}
+
+fn contains[A](xs: List[A], y: A) -> Bool {
+  for x in xs {
+    if x == y {
+      return true
+    }
+  }
+  false
+}
+
+fn reverse[A](xs: List[A]) -> List[A] {
+  let mut out = []
+  let mut i = len(xs) - 1
+  while i >= 0 {
+    match get(xs, i) {
+      Some(x) => {
+        out = push(out, x)
+      },
+      None => (),
+    }
+    i = i - 1
+  }
+  out
+}
+
+fn join(xs: List[String], sep: String) -> String {
+  let mut out = ""
+  let mut first = true
+  for x in xs {
+    if !first {
+      out = out + sep
+    }
+    out = out + x
+    first = false
+  }
+  out
+}
+
+fn zip[A, B](xs: List[A], ys: List[B]) -> List[(A, B)] {
+  let mut out = []
+  let mut rest = ys
+  for x in xs {
+    match rest {
+      [y, ..more] => {
+        out = push(out, (x, y))
+        rest = more
+      },
+      [] => return out,
+    }
+  }
+  out
+}
+
+fn enumerate[A](xs: List[A]) -> List[(Int, A)] {
+  let mut out = []
+  let mut i = 0
+  for x in xs {
+    out = push(out, (i, x))
+    i = i + 1
+  }
+  out
+}
+
+fn sum_int(xs: List[Int]) -> Int {
+  let mut total = 0
+  for x in xs {
+    total = total + x
+  }
+  total
+}
+
+/// Stable merge sort, with the order given as `less`.
+fn sort_with[A](xs: List[A], less: (A, A) -> Bool) -> List[A] {
+  let n = len(xs)
+  if n < 2 {
+    return xs
+  }
+  let left = sort_with(take(xs, n / 2), less)
+  let right = sort_with(drop(xs, n / 2), less)
+  let mut out = []
+  let mut l = left
+  let mut r = right
+  loop {
+    match (l, r) {
+      ([a, ..ls], [b, ..rs]) => {
+        // the right one first only when strictly smaller: stable
+        if less(b, a) {
+          out = push(out, b)
+          r = rs
+        } else {
+          out = push(out, a)
+          l = ls
+        }
+      },
+      ([], _) => return out + r,
+      (_, []) => return out + l,
+    }
+  }
+  out
+}
+
+/// Sorted by a key, stable: the keys are computed once.
+fn sort_by_with[A, B](
+  xs: List[A],
+  key: (A) -> B,
+  less: (B, B) -> Bool,
+) -> List[A] {
+  let keyed = map(xs, x -> (key(x), x))
+  let sorted = sort_with(keyed, (a, b) -> less(a.0, b.0))
+  map(sorted, p -> p.1)
+}
+
+fn sum_float(xs: List[Float]) -> Float {
+  let mut total = 0.0
+  for x in xs {
+    total = total + x
+  }
+  total
+}

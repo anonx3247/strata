@@ -1,0 +1,117 @@
+// counter — an app in the Elm architecture, served by `strata serve`.
+//
+//   strata serve examples/counter      # http://127.0.0.1:8000
+//
+// `init` makes the model, `update` gives the model after a message, and
+// `view` shows a model; its buttons carry the messages (`on_click(msg)`).
+// The server keeps each page's model, and the page sends the messages back.
+// `update` is a plain function: `strata verify` proves that the count stays
+// within its bounds whatever the messages, and the tests call it directly.
+
+use std.web.{Html, Attr, div, h1, p, span, button, text, class, on_click, disabled, style_sheet}
+
+/// How far the count can go.
+type Count = Int
+  where 0 <= it && it <= 100
+
+/// How much a click adds or takes away.
+type Step = Int
+  where it == 1 || it == 5 || it == 10
+
+type Model = { count: Count, step: Step, clicks: Natural }
+
+type Msg =
+  | Increment
+  | Decrement
+  | Reset
+  | SetStep { step: Step }
+
+fn init() -> Model {
+  Model { count: 0, step: 1, clicks: 0 }
+}
+
+fn update(model: Model, msg: Msg) -> Model {
+  let clicks = model.clicks + 1
+  match msg {
+    Increment => Model { ..model, count: min(model.count + model.step, 100), clicks },
+    Decrement => Model { ..model, count: max(model.count - model.step, 0), clicks },
+    Reset => Model { ..model, count: 0, clicks },
+    SetStep { step } => Model { ..model, step, clicks },
+  }
+}
+
+fn step_button(model: Model, step: Step) -> Html[Msg] {
+  let attrs: List[Attr[Msg]] = if model.step == step {
+    [class("step current"), on_click(SetStep { step })]
+  } else {
+    [class("step"), on_click(SetStep { step })]
+  }
+  button(attrs, [text(f"±{step}")])
+}
+
+fn view(model: Model) -> Html[Msg] {
+  let minus: List[Attr[Msg]] = if model.count == 0 {
+    [on_click(Decrement), disabled()]
+  } else {
+    [on_click(Decrement)]
+  }
+  let plus: List[Attr[Msg]] = if model.count == 100 {
+    [on_click(Increment), disabled()]
+  } else {
+    [on_click(Increment)]
+  }
+  div([class("app")], [
+    style_sheet(css()),
+    h1([], [text("Counter")]),
+    div([class("count")], [
+      button(minus, [text("−")]),
+      span([class("value")], [text(to_string(model.count))]),
+      button(plus, [text("+")]),
+    ]),
+    div([class("steps")], [
+      step_button(model, 1),
+      step_button(model, 5),
+      step_button(model, 10),
+    ]),
+    p([class("note")], [
+      text(f"{model.clicks} clicks · between 0 and 100 · "),
+      button([class("link"), on_click(Reset)], [text("reset")]),
+    ]),
+  ])
+}
+
+fn css() -> String {
+  join(
+    [
+      "body { font-family: system-ui, sans-serif; color: #1f2328; display: grid; place-items: center; min-height: 90vh; margin: 0; }",
+      ".app { text-align: center; }",
+      "h1 { font-size: 1.1rem; font-weight: 600; color: #59636e; letter-spacing: 0.06em; text-transform: uppercase; }",
+      ".count { display: flex; align-items: center; gap: 1.5rem; margin: 1.5rem 0; }",
+      ".value { font-size: 4rem; font-weight: 700; min-width: 3ch; font-variant-numeric: tabular-nums; }",
+      "button { font: inherit; border: 1px solid #d1d9e0; background: #f6f8fa; border-radius: 8px; cursor: pointer; }",
+      "button:hover:not([disabled]) { background: #eaeef2; }",
+      "button[disabled] { opacity: 0.4; cursor: default; }",
+      ".count button { font-size: 1.6rem; width: 3rem; height: 3rem; }",
+      ".steps { display: flex; gap: 0.5rem; justify-content: center; }",
+      ".step { padding: 0.3rem 0.8rem; }",
+      ".step.current { background: #1f2328; color: white; border-color: #1f2328; }",
+      ".note { color: #59636e; font-size: 0.9rem; margin-top: 1.5rem; }",
+      "button.link { border: none; background: none; color: #0969da; padding: 0; }",
+      "button.link:hover { background: none; text-decoration: underline; }",
+    ],
+    "\n",
+  )
+}
+
+test "the count stays between 0 and 100" {
+  let mut m = init()
+  m = update(m, Decrement)
+  assert m.count == 0
+  m = update(m, SetStep { step: 10 })
+  for _ in range(0, 15) {
+    m = update(m, Increment)
+  }
+  assert m.count == 100 && m.clicks == 17
+  m = update(m, Reset)
+  assert m.count == 0 && m.step == 10
+}

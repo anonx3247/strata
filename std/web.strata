@@ -45,12 +45,21 @@ type Node[M] =
 /// An attribute of an element. Made by `attr`, `flag` and `on`.
 pub type Attr[M] = { kind: AttrKind[M] }
 
-/// `name="value"`, a flag without a value (such as `disabled`), or an event
-/// whose message the runtime sends back to the program when it happens.
+/// `name="value"`, a flag without a value (such as `disabled`), an event
+/// whose message the runtime sends back to the program when it happens, or
+/// an event whose message is made from what the user entered: the field's
+/// value (`OnValue`) or a form's fields by name (`OnForm`).
 type AttrKind[M] =
   | Attribute { name: String, value: String }
   | Flag { name: String }
   | On { event: String, msg: M }
+  | OnValue { event: String, make: (String) -> M }
+  | OnForm { event: String, make: (Dict[String, String]) -> M }
+
+/// A function that makes a message from what the user entered.
+type Handler[M] =
+  | ValueHandler { make: (String) -> M }
+  | FormHandler { make: (Dict[String, String]) -> M }
 
 // ---- rendering ----
 
@@ -76,23 +85,39 @@ pub fn is_void(tag: String) -> Bool {
   )
 }
 
-/// One attribute as written in a start tag.
-fn render_attr[M](a: Attr[M]) -> String {
+/// One attribute as written in a start tag. Handlers can't be written into
+/// the page: they are numbered in the order they appear (`next`), and the
+/// page sends back the number (`data-handle-input="3"`); see `dispatch`.
+fn render_attr[M](a: Attr[M], mut next: Int) -> String {
   match a.kind {
     Attribute { name, value } => f"{name}=\"{escape_attr(value)}\"",
     Flag { name } => name,
     On { event, msg } => f"data-on-{event}=\"{escape_attr(to_json(msg))}\"",
+    OnValue { event, .. } => {
+      next = next + 1
+      f"data-handle-{event}=\"{next - 1}\""
+    },
+    OnForm { event, .. } => {
+      next = next + 1
+      f"data-handle-{event}=\"{next - 1}\""
+    },
   }
 }
 
 /// `h` as HTML text.
 pub fn render[M](h: Html[M]) -> String {
+  let mut next = 0
+  render_from(h, mut next)
+}
+
+/// `h` as HTML text, its handlers numbered from `next`.
+fn render_from[M](h: Html[M], mut next: Int) -> String {
   match h.node {
     Text { text } => escape_text(text),
     Element { tag, attrs, children } => {
       let mut out = "<" + tag
       for a in attrs {
-        out = out + " " + render_attr(a)
+        out = out + " " + render_attr(a, mut next)
       }
       out = out + ">"
       if is_void(tag) {
@@ -108,11 +133,53 @@ pub fn render[M](h: Html[M]) -> String {
             } else {
               escape_text(text)
             },
-            Element { .. } => render(c),
+            Element { .. } => render_from(c, mut next),
           }
       }
       out + "</" + tag + ">"
     },
+  }
+}
+
+/// The handlers of `h`, in the order `render` numbers them.
+fn handlers[M](h: Html[M]) -> List[Handler[M]] {
+  match h.node {
+    Text { .. } => [],
+    Element { attrs, children, .. } => {
+      let mut found: List[Handler[M]] = []
+      for a in attrs {
+        match a.kind {
+          OnValue { make, .. } => {
+            found = push(found, ValueHandler { make })
+          },
+          OnForm { make, .. } => {
+            found = push(found, FormHandler { make })
+          },
+          _ => (),
+        }
+      }
+      for c in children {
+        found = found + handlers(c)
+      }
+      found
+    },
+  }
+}
+
+/// The message handler number `id` of the page `h` makes from what the user
+/// entered: a field's `value`, or a form's `fields` by name. `None` if the
+/// page has no such handler. The runtime calls it with the page the user
+/// sees (the view of the current model) when a `data-handle-…` event comes.
+pub fn dispatch[M](
+  h: Html[M],
+  id: Int,
+  value: String,
+  fields: Dict[String, String],
+) -> Option[M] {
+  match get(handlers(h), id) {
+    Some(ValueHandler { make }) => Some(make(value)),
+    Some(FormHandler { make }) => Some(make(fields)),
+    None => None,
   }
 }
 
@@ -409,4 +476,24 @@ pub fn on_click[M](msg: M) -> Attr[M] {
 /// When the form is submitted, send `msg`.
 pub fn on_submit[M](msg: M) -> Attr[M] {
   on("submit", msg)
+}
+
+/// As the user types in the field (an `input`, a `textarea`), send the
+/// message `make` makes from its value: `on_input(s -> SetTitle { title: s
+/// })`.
+pub fn on_input[M](make: (String) -> M) -> Attr[M] {
+  Attr { kind: OnValue { event: "input", make } }
+}
+
+/// When the field's value is changed (a `select`, a checkbox: its value is
+/// `"true"` or `"false"`), send the message `make` makes from it.
+pub fn on_change[M](make: (String) -> M) -> Attr[M] {
+  Attr { kind: OnValue { event: "change", make } }
+}
+
+/// When the form is submitted, send the message `make` makes from its
+/// fields, by name: `on_submit_form(fields -> Add { fields })`. A checkbox
+/// that isn't checked is not among them.
+pub fn on_submit_form[M](make: (Dict[String, String]) -> M) -> Attr[M] {
+  Attr { kind: OnForm { event: "submit", make } }
 }

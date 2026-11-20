@@ -73,33 +73,111 @@ pub fn impl_label(env: &Env, imp: &ImplDecl, m: &str) -> String {
     }
 }
 
-fn calls_of(e: &Expr, env: &Env, out: &mut BTreeSet<String>) {
-    crate::ast::walk(e, |x| match x {
-        Expr::Call(f, _) => {
-            if let Expr::Var(n) = &**f {
-                if env.fns.contains_key(&n.sym()) {
-                    out.insert(n.to_string());
-                } else if env.is_method(n.sym()) {
-                    out.insert(trait_node(n));
+/// The functions and trait methods `e` calls or passes as values. `locals`
+/// are names bound outside `e` (the parameters): a local of the same name as
+/// a function hides it (`let mut app = Router.new()` inside `fn app`).
+fn calls_of(e: &Expr, env: &Env, locals: &[String], out: &mut BTreeSet<String>) {
+    use crate::ast::{walk_expr, walk_pattern, Visit};
+    /// The names a pattern binds.
+    struct Binds(Vec<String>);
+    impl Visit for Binds {
+        fn pattern(&mut self, p: &Pattern) {
+            if let Pattern::Bind(n) = p {
+                self.0.push(n.to_string().to_string());
+            }
+            walk_pattern(self, p)
+        }
+        fn expr(&mut self, _: &Expr) {}
+    }
+    fn binds(p: &Pattern) -> Vec<String> {
+        let mut b = Binds(vec![]);
+        b.pattern(p);
+        b.0
+    }
+    struct Calls<'a> {
+        env: &'a Env,
+        out: &'a mut BTreeSet<String>,
+        scopes: Vec<Vec<String>>,
+    }
+    impl Calls<'_> {
+        fn local(&self, n: &str) -> bool {
+            self.scopes.iter().any(|s| s.iter().any(|x| x == n))
+        }
+        fn name(&mut self, n: &str) {
+            if self.local(n) {
+                return;
+            }
+            if self.env.fns.contains_key(&Symbol::new(n)) {
+                self.out.insert(n.to_string());
+            } else if self.env.is_method(n.sym()) {
+                self.out.insert(trait_node(n));
+            }
+        }
+        fn scoped(&mut self, names: Vec<String>, e: &Expr) {
+            self.scopes.push(names);
+            self.expr(e);
+            self.scopes.pop();
+        }
+    }
+    impl Visit for Calls<'_> {
+        fn expr(&mut self, e: &Expr) {
+            match e {
+                // a function called, or passed as a value (it may be called)
+                Expr::Var(n) => self.name(n),
+                Expr::Method(r, m, args) => {
+                    self.name(m);
+                    self.expr(r);
+                    args.iter().for_each(|a| self.expr(a));
                 }
+                Expr::Lambda(ps, body) => self.scoped(ps.iter().map(|p| p.name.to_string()).collect(), body),
+                Expr::Match(scrut, _, arms) => {
+                    self.expr(scrut);
+                    for a in arms {
+                        self.pattern(&a.pat);
+                        self.scoped(binds(&a.pat), &a.body);
+                    }
+                }
+                Expr::Block(stmts, last) => {
+                    // each binding is visible from the next statement on
+                    self.scopes.push(vec![]);
+                    for st in stmts {
+                        match st {
+                            Stmt::Let(p, _, x) => {
+                                self.expr(x);
+                                self.pattern(p);
+                                let b = binds(p);
+                                self.scopes.last_mut().unwrap().extend(b);
+                            }
+                            Stmt::Var(n, _, x) => {
+                                self.expr(x);
+                                self.scopes.last_mut().unwrap().push(n.to_string().to_string());
+                            }
+                            Stmt::For(p, xs, body) => {
+                                self.expr(xs);
+                                self.pattern(p);
+                                self.scoped(binds(p), body);
+                            }
+                            Stmt::Assign(a, b) | Stmt::While(a, b) => {
+                                self.expr(a);
+                                self.expr(b);
+                            }
+                            Stmt::Loop(x) | Stmt::Expr(x) | Stmt::Assert(x) => self.expr(x),
+                            Stmt::Comment(_) | Stmt::Break | Stmt::Continue => {}
+                        }
+                    }
+                    self.expr(last);
+                    self.scopes.pop();
+                }
+                _ => walk_expr(self, e),
             }
         }
-        Expr::Method(_, m, _) => {
-            if env.fns.contains_key(&m.sym()) {
-                out.insert(m.to_string());
-            } else if env.is_method(m.sym()) {
-                out.insert(trait_node(m));
-            }
+        // conditions in patterns (`where …`) may call functions too
+        fn pattern(&mut self, p: &Pattern) {
+            walk_pattern(self, p)
         }
-        // a function passed as a value may be called
-        Expr::Var(n) if env.fns.contains_key(&n.sym()) => {
-            out.insert(n.to_string());
-        }
-        Expr::Var(n) if env.is_method(n.sym()) => {
-            out.insert(trait_node(n));
-        }
-        _ => {}
-    });
+        fn ty(&mut self, _: &TypeExpr) {}
+    }
+    Calls { env, out, scopes: vec![locals.to_vec()] }.expr(e)
 }
 
 fn has_stmt(e: &Expr, pred: &dyn Fn(&Stmt) -> bool) -> bool {
@@ -518,9 +596,10 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
     let mut nodes: HashMap<String, Node> = HashMap::new();
     for (name, f) in &env.fns {
         let mut calls = BTreeSet::new();
-        calls_of(&f.body, env, &mut calls);
-        f.requires.iter().chain(&f.ensures).for_each(|c| calls_of(c, env, &mut calls));
-        nodes.insert(name.to_string(), Node { decl: Some(f.clone()), calls, loops: loops(env, f, solver) });
+        let params: Vec<String> = f.params.iter().map(|p| p.name.to_string()).collect();
+        calls_of(&f.body, env, &params, &mut calls);
+        f.requires.iter().chain(&f.ensures).for_each(|c| calls_of(c, env, &params, &mut calls));
+        nodes.insert(name.to_string().to_string(), Node { decl: Some(f.clone()), calls, loops: loops(env, f, solver) });
     }
     for imp in &env.impls {
         let Some(tr) = env.traits.get(&imp.trait_name) else { continue };
@@ -529,7 +608,8 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
             let Some(decl) = decl else { continue };
             let label = impl_label(env, imp, &tm.decl.name);
             let mut calls = BTreeSet::new();
-            calls_of(&decl.body, env, &mut calls);
+            let params: Vec<String> = decl.params.iter().map(|p| p.name.to_string()).collect();
+            calls_of(&decl.body, env, &params, &mut calls);
             let d = crate::verify::for_impl(imp, decl);
             nodes.insert(label.clone(), Node { decl: None, calls, loops: loops(env, &d, solver) });
             nodes.entry(trait_node(&tm.decl.name)).or_insert(Node { decl: None, calls: BTreeSet::new(), loops: Ok(vec![]) }).calls.insert(label);
