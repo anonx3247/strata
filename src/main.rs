@@ -751,7 +751,7 @@ fn run() -> Result<bool, String> {
             let mut results = Vec::new();
             let resolved = types::elaborate(p).program;
             let solver = smt::solver();
-            let solver_bin = solver.as_ref().map(|s| s.0.as_str());
+            let solver_bin = solver.as_ref();
             let analysis = termination::analyze(&env, solver_bin);
             let transparent = &analysis.transparent;
             let cross_check: usize = args.val("--cross-check").unwrap_or("20").parse().map_err(|_| "bad --cross-check")?;
@@ -776,7 +776,7 @@ fn run() -> Result<bool, String> {
                 return Ok(true);
             }
             // results depend on the solver: it is part of the cache key
-            let skey = solver.as_ref().map(|s| s.1.clone()).unwrap_or("no-solver".into());
+            let skey = solver.as_ref().map(|s| s.version.clone()).unwrap_or("no-solver".into());
             for (orig, d) in p.decls.iter().zip(&resolved.decls) {
                 if !names.contains(&orig.qname()) {
                     continue;

@@ -151,6 +151,28 @@ fn cross_check_catches_a_wrong_prover() {
 }
 
 #[test]
+fn solver_flags_follow_the_solver() {
+    // fake solvers that record how they are called: cvc5 gets its own flags
+    let d = tmp("solver-flags");
+    std::fs::write(d.join("b.strata"), "type Quantity = Int where 1 <= it && it <= 99\nfn clamp(q: Quantity) -> Quantity { if q < 99 { q + 1 } else { q } }\n").unwrap();
+    for (name, version, expected) in [("cvc5", "This is cvc5 version 1.4.2", "--lang smt2 --produce-models --rlimit-per="), ("z3", "Z3 version 4.15.0 - 64 bit", "-in -T:20 rlimit=")] {
+        let fake = d.join(format!("fake-{name}"));
+        let log = d.join(format!("{name}.log"));
+        std::fs::write(&fake, format!("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '{version}'; exit 0; fi\necho \"$@\" >> {}\ncat > /dev/null\necho unsat\n", log.display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["--file", "b.strata", "verify", "--cross-check", "0"]).env("STRATA_SOLVER", &fake).current_dir(&d).output().unwrap();
+        let out = String::from_utf8_lossy(&o.stdout);
+        assert!(o.status.success() && out.contains("✓ clamp"), "{out}");
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(calls.lines().count() > 0 && calls.lines().all(|l| l.starts_with(expected)), "{name} was called as: {calls}");
+    }
+}
+
+#[test]
 fn package_verify_policies() {
     if !has_solver() {
         eprintln!("z3 is not installed: skipping");
@@ -338,6 +360,162 @@ fn fine(a: Natural) -> Natural {
     std::fs::write(d.join("m.strata"), src).unwrap();
     let (ok, out) = strata(&["--file", "m.strata", "verify", "--cases", "20"], &d, None);
     assert!(!ok && out.contains("✗ stale ") && out.contains("✗ stale_field") && out.contains("✓ fine"), "{out}");
+}
+
+#[test]
+fn smt_models_union_values() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("smt-unions");
+    let src = "type Square = { side: Positive }
+type Circle = { radius: Positive }
+type Shape = Square | Circle
+type E =
+  | A { x: Int }
+  | B
+  | C
+type One = { n: Positive, a: Int }
+type Two = { n: Positive }
+type Holder = { s: Shape }
+fn area(s: Shape) -> Positive { match s { Square => s.side * s.side, Circle => 3 * s.radius * s.radius } }
+fn bad_area(s: Shape) -> Positive { match s { Square => s.side - 1, Circle => s.radius } }
+fn pick(big: Bool) -> Shape { if big { Square { side: 5 } } else { Circle { radius: 1 } } }
+fn pick_area(big: Bool) -> Positive { area(pick(big)) }
+fn make(big: Bool) -> Int where it > 2 {
+  let s = if big { Square { side: 5 } } else { Circle { radius: 1 } }
+  match s { Square => s.side, Circle => s.radius + 2 }
+}
+fn bad_make(big: Bool) -> Int where it > 2 {
+  let s = if big { Square { side: 5 } } else { Circle { radius: 1 } }
+  match s { Square => s.side, Circle => s.radius }
+}
+fn describe(v: Int | String) -> Natural { match v { Int => abs(v), String => len(v) } }
+fn bad_describe(v: Int | String) -> Positive { match v { Int => abs(v) + 1, String => len(v) } }
+fn is_sq(s: Shape) -> Bool ensures it == (s is Square) { match s { Square => true, Circle => false } }
+fn always_sq(s: Shape) -> Bool ensures it { s is Square }
+fn lit(v: Int | String) -> Positive { match v { 0 => 1, \"a\" => 2, _ => 3 } }
+fn nonzero(x: Positive | Negative) -> Int where it != 0 { x }
+fn bad_nonzero(x: Int) -> Positive | Negative { x }
+fn variants(v: A | B) -> Natural { match v { A => abs(v.x), B => 0 } }
+fn bad_variants(v: A | C) -> Bool ensures it { v is A }
+fn opt(v: Option[Natural] | String) -> Natural { match v { Some(x) => x, None => 0, String => len(v) } }
+fn bad_opt(v: Option[Int] | String) -> Natural { match v { Some(x) => x, None => 0, String => len(v) } }
+fn self_eq(a: Int | String) -> Bool ensures it { a == a }
+fn bad_eq(a: Int | String, b: Int | String) -> Bool ensures it { a == b }
+fn bad_field(h: Holder) -> Bool ensures it { h.s is Circle }
+fn common(v: One | Two) -> Positive { v.n }
+fn bad_common(v: One | Two) -> Positive { v.n - 1 }
+";
+    std::fs::write(d.join("u.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", "u.strata", "verify", "--cases", "20"], &d, None);
+    assert!(!ok, "{out}");
+    for name in ["area", "pick", "pick_area", "make", "describe", "is_sq", "lit", "nonzero", "variants", "opt", "self_eq", "common"] {
+        assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
+    }
+    for name in ["bad_area", "bad_make", "bad_describe", "always_sq", "bad_nonzero", "bad_variants", "bad_opt", "bad_eq", "bad_field", "bad_common"] {
+        let line = out.lines().find(|l| l.split_whitespace().nth(1) == Some(name)).unwrap_or("");
+        assert!(line.starts_with("✗") && line.contains("found by the solver"), "{name} should be refuted by the solver: {out}");
+    }
+    assert!(out.contains("input:   [{\"radius\":1}]") && out.contains("input:   [\"C\"]"), "counterexamples are union members: {out}");
+}
+
+#[test]
+fn smt_models_string_builtins() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("smt-strings");
+    let src = r#"fn head(s: String, n: Natural) -> String ensures len(it) <= n && len(it) <= len(s) { slice(s, 0, n) }
+fn bad_head(s: String, n: Int) -> String ensures len(it) == n { slice(s, 0, n) }
+fn tail(s: String) -> String ensures len(s) > 0 ==> len(it) == len(s) - 1 { slice(s, 1, len(s)) }
+fn back(s: String) -> String ensures it == "" { slice(s, 5, 2) }
+fn first(s: String where len(it) > 0) -> String ensures len(it) == 1 { match get(s, 0) { Some(c) => c, None => "x" } }
+fn bad_first(s: String) -> String ensures len(it) == 1 { match get(s, 0) { Some(c) => c, None => "" } }
+fn neg_get(s: String) -> Bool ensures it { get(s, -1) is None }
+fn n_chars(s: String) -> Bool ensures it { len(chars(s)) == len(s) }
+fn find(s: String, p: String) -> Int ensures it <= len(s) { match index_of(s, p) { Some(i) => i + len(p), None => 0 } }
+fn bad_find(s: String, p: String) -> Natural ensures it < len(s) { match index_of(s, p) { Some(i) => i, None => 0 } }
+fn empty_found(s: String) -> Bool ensures it { index_of(s, "") == Some(0) }
+fn shown(n: Int) -> String ensures n < 0 ==> starts_with(it, "-") { to_string(n) }
+fn shown_len(n: Int where 10 <= it && it <= 99) -> String ensures len(it) == 2 { to_string(n) }
+fn bad_shown(n: Int) -> String ensures len(it) <= 2 { to_string(n) }
+fn parsed() -> Bool ensures it { parse_int("-17") == Some(0 - 17) && parse_int("abc") is None && parse_int("") is None }
+fn round_trip(n: Int) -> Bool ensures it { parse_int(to_string(n)) == Some(n) }
+fn bad_parsed(s: String) -> Bool ensures it { parse_int(s) is None }
+fn spaced() -> Bool ensures it { parse_int(" 7") == Some(7) }
+fn digits(s: String where is_digit(it)) -> Int ensures it >= 0 { parse_int(s) except { 0 } }
+fn ends(s: String) -> Bool ensures it { ends_with(s + ".txt", ".txt") }
+fn bad_ends(s: String) -> Bool ensures it { ends_with(s, ".txt") }
+fn rep() -> Bool ensures it { replace("aaa", "aa", "b") == "ba" }
+fn bad_rep() -> Bool ensures it { replace("aaa", "aa", "b") == "bb" }
+fn empty_rep(s: String, p: String) -> String { replace(s, p, "b") }
+"#;
+    std::fs::write(d.join("s.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", "s.strata", "verify", "--cases", "20"], &d, None);
+    assert!(!ok, "{out}");
+    for name in ["head", "tail", "back", "first", "neg_get", "n_chars", "find", "empty_found", "shown", "shown_len", "parsed", "digits", "ends", "rep"] {
+        assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
+    }
+    // Z3 proves the round trip through `str.from_int` / `str.to_int`; cvc5 answers unknown
+    assert!(passed(&out, "round_trip"), "round_trip must not be refuted: {out}");
+    for name in ["bad_head", "bad_first", "bad_find", "bad_shown", "bad_parsed", "bad_ends", "bad_rep", "empty_rep"] {
+        let line = out.lines().find(|l| l.split_whitespace().nth(1) == Some(name)).unwrap_or("");
+        assert!(line.starts_with("✗") && line.contains("found by the solver"), "{name} should be refuted by the solver: {out}");
+    }
+    // leading whitespace is trimmed by the interpreter: not modelled, so not refuted either
+    assert!(out.contains("~ spaced") && out.contains("replace: empty pattern"), "{out}");
+    // a big index is clamped like any other
+    std::fs::write(d.join("b.strata"), "fn s(t: String) -> String { slice(t, 0, 99999999999999999999) }\n").unwrap();
+    let (ok, out) = strata(&["--file", "b.strata", "run", "s", "[\"abc\"]"], &d, None);
+    assert!(ok && out.contains("\"abc\""), "{out}");
+}
+
+#[test]
+fn smt_translates_unicode_regexes() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("smt-regex");
+    let src = r#"fn f(s: String where matches(it, "\d{3}")) -> String where matches(it, "\d+") { s }
+fn bad_f(s: String where matches(it, "\d+")) -> String where matches(it, "\d{3}") { s }
+fn word(s: String where matches(it, "[a-z]+")) -> String where matches(it, "\w+") { s }
+fn bad_word(s: String where matches(it, "\w+")) -> String where matches(it, "[a-z]+") { s }
+fn letters(s: String where matches(it, "\p{L}+")) -> String where matches(it, "\w+") { s }
+fn bad_letters(s: String where matches(it, "\w+")) -> String where matches(it, "\p{L}+") { s }
+fn spaces(s: String where matches(it, "\s*")) -> Bool ensures it { !matches(s, ".*\w.*") }
+fn nbsp() -> Bool ensures it { matches(" ", "\s") }
+fn caseless(s: String where matches(it, "(?i)abc")) -> Bool ensures it { len(s) == 3 }
+fn kelvin() -> Bool ensures it { matches("K", "(?i)k") }
+fn bad_caseless(s: String where matches(it, "(?i)abc")) -> Bool ensures it { s == "abc" }
+fn arabic() -> Bool ensures it { matches("٣", "\d") }
+fn ascii_only(s: String where matches(it, "\d")) -> Bool ensures it { matches(s, "[0-9]") }
+fn anchored(s: String where matches(it, "^ab$")) -> Bool ensures it { s == "ab" }
+fn far() -> Bool ensures it { len("TAG") == 9 }
+"#
+    .replace("TAG", "\u{E0041}");
+    std::fs::write(d.join("r.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", "r.strata", "verify", "--cases", "20"], &d, None);
+    assert!(!ok, "{out}");
+    for name in ["f", "word", "letters", "spaces", "nbsp", "caseless", "kelvin", "arabic", "anchored"] {
+        assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
+    }
+    let line = |name: &str| out.lines().find(|l| l.split_whitespace().nth(1) == Some(name)).unwrap_or("").to_string();
+    // with an approximated class (\w, \p{L}, Unicode \d) the solver's model may lie in the
+    // approximation's slack: replaying it then fails the precondition, and the fuzzer finds a
+    // real counterexample. Which one reports it depends on the model the solver returns.
+    for name in ["bad_f", "bad_word", "bad_letters", "ascii_only"] {
+        assert!(line(name).starts_with("✗"), "{name} should be refuted: {out}");
+    }
+    // exact models: every model the solver gives is a real counterexample
+    for name in ["bad_caseless", "far"] {
+        assert!(line(name).starts_with("✗") && line(name).contains("found by the solver"), "{name} should be refuted by the solver: {out}");
+    }
+    // a character past U+2FFFF is no SMT character: the literal is unknown, not 9 characters
+    assert!(out.contains("✗ far") && !out.contains("bug in the prover"), "{out}");
 }
 
 #[test]
@@ -2331,7 +2509,7 @@ test "generic with no arguments" {
 }
 "#).unwrap();
     let (_, out) = strata(&["--file", "s.strata", "verify"], &d, None);
-    assert!(out.contains("✓ lowest_rank") && out.contains("✓ level_floor") && out.contains("✗ law left_identity for Max"), "{out}");
+    assert!(passed(&out, "lowest_rank") && passed(&out, "level_floor") && out.contains("✗ law left_identity for Max"), "{out}");
     std::fs::write(d.join("p.strata"), r#"trait Parse {
   fn parse(s: String) -> Self
     requires len(s) > 0
@@ -2364,7 +2542,7 @@ test "parse" {
 }
 "#).unwrap();
     let (ok, out) = strata(&["--file", "p.strata", "verify"], &d, None);
-    assert!(ok && out.contains("✓ read ") && out.contains("✓ word_size"), "{out}");
+    assert!(ok && passed(&out, "read") && passed(&out, "word_size"), "{out}");
 
     std::fs::write(d.join("bad.strata"), r#"trait Monoid {
   fn empty() -> Self

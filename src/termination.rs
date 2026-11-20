@@ -113,7 +113,7 @@ fn has_stmt(e: &Expr, pred: &dyn Fn(&Stmt) -> bool) -> bool {
 }
 
 /// The loops of a body: `Ok(how they end)` or `Err(why one may not)`.
-fn loops(env: &Env, f: &FnDecl, solver: Option<&str>) -> Result<Vec<String>, String> {
+fn loops(env: &Env, f: &FnDecl, solver: Option<&crate::smt::Solver>) -> Result<Vec<String>, String> {
     if has_stmt(&f.body, &|s| matches!(s, Stmt::Loop(_))) {
         return Err("it has a `loop` (only `for` loops, and `while` loops whose bound goes down, are shown to end)".into());
     }
@@ -448,7 +448,7 @@ fn candidate_measures(env: &Env, f: &FnDecl) -> Vec<Expr> {
 /// Find a measure that goes down on every recursive call and is never
 /// negative there: one candidate, or else a pair compared in order (as for
 /// Ackermann's function). Checked by the solver; returns the measure, shown.
-fn measured_recursion(env: &Env, f: &FnDecl, solver: Option<&str>) -> Option<String> {
+fn measured_recursion(env: &Env, f: &FnDecl, solver: Option<&crate::smt::Solver>) -> Option<String> {
     let bin = solver?;
     let mut vc = crate::smt::Vc::new(env);
     vc.function(f, &f.name);
@@ -458,7 +458,7 @@ fn measured_recursion(env: &Env, f: &FnDecl, solver: Option<&str>) -> Option<Str
 }
 
 /// The first candidate measure (or pair) that goes down at every recursive call.
-fn find_measure(env: &Env, f: &FnDecl, vc: &mut crate::smt::Vc, bin: &str) -> Option<Vec<Expr>> {
+fn find_measure(env: &Env, f: &FnDecl, vc: &mut crate::smt::Vc, bin: &crate::smt::Solver) -> Option<Vec<Expr>> {
     if vc.rec_sites.is_empty() {
         return None;
     }
@@ -482,7 +482,7 @@ fn find_measure(env: &Env, f: &FnDecl, vc: &mut crate::smt::Vc, bin: &str) -> Op
 /// The solver queries behind a function's termination (for `verify --smt`):
 /// each `while` loop's candidate bounds, and for recursion, the measure that
 /// was found at each recursive call (or, if none was, each single candidate).
-pub fn queries(env: &Env, f: &FnDecl, solver: Option<&str>) -> Vec<(String, String)> {
+pub fn queries(env: &Env, f: &FnDecl, solver: Option<&crate::smt::Solver>) -> Vec<(String, String)> {
     let mut vc = crate::smt::Vc::new(env);
     vc.function(f, &f.name);
     let mut out: Vec<(String, String)> = vec![];
@@ -542,7 +542,7 @@ fn cannot_fail(env: &Env, f: &FnDecl, total: &dyn Fn(&str) -> bool) -> bool {
     ok
 }
 
-pub fn analyze(env: &Env, solver: Option<&str>) -> Analysis {
+pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
     let mut nodes: HashMap<String, Node> = HashMap::new();
     for (name, f) in &env.fns {
         let mut calls = BTreeSet::new();
