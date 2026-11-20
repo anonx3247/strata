@@ -377,10 +377,8 @@ impl Parser {
                 continue;
             }
             self.expect_kw("fn")?;
+            // a method without `self` is called on a type: `Money.empty()`, `T.empty()`
             let (decl, default) = self.fn_rest(true)?;
-            if decl.params.first().map(|p| p.name.as_str()) != Some("self") {
-                return Err(self.err(&format!("trait method `{}` must take `self` as its first parameter", decl.name)));
-            }
             comments.extend(self.trailing());
             methods.push(TraitMethod { comments, doc, decl, default });
         }
@@ -389,10 +387,14 @@ impl Parser {
 
     fn impl_decl(&mut self) -> R<ImplDecl> {
         let (type_params, bounds) = self.bounded_params()?;
-        let trait_name = self.path()?;
-        let trait_args = if self.eat_sym("[") { self.list("]", |p| p.type_expr())? } else { vec![] };
-        self.expect_kw("for")?;
-        let for_type = self.type_expr_plain()?;
+        let head = self.path()?;
+        let head_args = if self.eat_sym("[") { self.list("]", |p| p.type_expr())? } else { vec![] };
+        // `impl Trait for Type { ... }`, or `impl Type { ... }` for the type's own methods
+        let (trait_name, trait_args, for_type) = if self.eat_kw("for") {
+            (head, head_args, self.type_expr_plain()?)
+        } else {
+            (String::new(), vec![], TypeExpr::Named(head, head_args))
+        };
         self.expect_sym("{")?;
         let mut methods = Vec::new();
         while !self.eat_sym("}") {
@@ -714,6 +716,10 @@ impl Parser {
                         FPart::Lit(s) => StrPart::Lit(s),
                         FPart::Code(code, line, col) => {
                             let at = |e: String| format!("{line}:{col}: in f-string: {e}");
+                            let (code, spec) = match spec_colon(&code) {
+                                Some(k) => (code[..k].to_string(), Some(FmtSpec::parse(&code[k + 1..]).map_err(at)?)),
+                                None => (code, None),
+                            };
                             let mut p = Parser::new(&code).map_err(at)?;
                             let e = p.expr().map_err(at)?;
                             if p.peek() != &Tok::Eof {
@@ -722,7 +728,7 @@ impl Parser {
                             if !p.comments.is_empty() {
                                 return Err(at("comments are not allowed inside `{}`".into()));
                             }
-                            StrPart::Expr(e)
+                            StrPart::Expr(e, spec)
                         }
                     });
                 }
@@ -1059,4 +1065,31 @@ impl Parser {
             _ => Err(self.err("expected pattern")),
         }
     }
+}
+
+/// Where the format spec starts in an f-string part: the first `:` outside
+/// brackets and string literals (`{price:.2}`; not the `:` of `{ {a: 1} }`).
+fn spec_colon(code: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut esc = false;
+    for (i, c) in code.char_indices() {
+        if in_str {
+            match c {
+                _ if esc => esc = false,
+                '\\' => esc = true,
+                '"' => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ':' if depth == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
 }

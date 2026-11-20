@@ -313,7 +313,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             for p in parts {
                 match p {
                     StrPart::Lit(l) => s += &l.replace('"', "\\\"").replace('\n', "\\n").replace('{', "{{").replace('}', "}}"),
-                    StrPart::Expr(e) => s += &format!("{{{}}}", expr_inline(e, 0)),
+                    StrPart::Expr(e, spec) => s += &format!("{{{}{}}}", expr_inline(e, 0), spec.as_ref().map(|f| format!(":{f}")).unwrap_or_default()),
                 }
             }
             s + "\""
@@ -492,6 +492,9 @@ fn trait_text(t: &TraitDecl, bodies: bool) -> String {
 }
 
 fn impl_head(i: &ImplDecl) -> String {
+    if i.is_inherent() {
+        return format!("impl{} {}", bounded(&i.type_params, &i.bounds), ty(&i.for_type));
+    }
     let tr = ty(&TypeExpr::Named(i.trait_name.clone(), i.trait_args.clone()));
     format!("impl{} {tr} for {}", bounded(&i.type_params, &i.bounds), ty(&i.for_type))
 }

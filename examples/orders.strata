@@ -75,8 +75,8 @@ fn discount(amount: Cents) -> Cents
 }
 
 /// Works with any `Db`: pass the real one in production, a fake in tests.
-fn ship[D: Db](
-  mut db: D,
+fn ship(
+  mut db: Db,
   id: OrderId,
   tracking: NonEmptyString,
 ) -> Result[Order, ShipError]

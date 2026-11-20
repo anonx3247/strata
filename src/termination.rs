@@ -53,12 +53,24 @@ struct Node {
 }
 
 fn trait_node(m: &str) -> String {
+    // `Trait::m` (a call through one trait) reaches the implementations of `m`
+    let m = crate::types::split_trait_call(m).map_or(m, |(_, m)| m);
     format!("trait method {m}")
 }
 
 /// The label of an implementation's method, as `verify` shows it.
-pub fn impl_label(imp: &ImplDecl, m: &str) -> String {
-    format!("{}.{m}", crate::printer::ty(&imp.for_type))
+/// When the type has a method of that name of its own, or from another
+/// trait, the trait is named too: `Item.describe (Log)`.
+pub fn impl_label(env: &Env, imp: &ImplDecl, m: &str) -> String {
+    let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+    let head = texpr_head(&imp.for_type);
+    let base = format!("{}.{}", crate::printer::ty(&imp.for_type), short(m));
+    let own = env.inherent.get(&head).is_some_and(|i| i.methods.iter().any(|x| x.name == m));
+    if !imp.is_inherent() && (own || env.traits_with(m, &head).len() > 1) {
+        format!("{base} ({})", short(&imp.trait_name))
+    } else {
+        base
+    }
 }
 
 fn calls_of(e: &Expr, env: &Env, out: &mut BTreeSet<String>) {
@@ -67,7 +79,7 @@ fn calls_of(e: &Expr, env: &Env, out: &mut BTreeSet<String>) {
             if let Expr::Var(n) = &**f {
                 if env.fns.contains_key(n) {
                     out.insert(n.clone());
-                } else if env.method_trait.contains_key(n) {
+                } else if env.is_method(n) {
                     out.insert(trait_node(n));
                 }
             }
@@ -75,7 +87,7 @@ fn calls_of(e: &Expr, env: &Env, out: &mut BTreeSet<String>) {
         Expr::Method(_, m, _) => {
             if env.fns.contains_key(m) {
                 out.insert(m.clone());
-            } else if env.method_trait.contains_key(m) {
+            } else if env.is_method(m) {
                 out.insert(trait_node(m));
             }
         }
@@ -83,7 +95,7 @@ fn calls_of(e: &Expr, env: &Env, out: &mut BTreeSet<String>) {
         Expr::Var(n) if env.fns.contains_key(n) => {
             out.insert(n.clone());
         }
-        Expr::Var(n) if env.method_trait.contains_key(n) => {
+        Expr::Var(n) if env.is_method(n) => {
             out.insert(trait_node(n));
         }
         _ => {}
@@ -322,7 +334,7 @@ impl Structural<'_> {
                         kids.extend(fs.iter().map(|f| f.1.clone()));
                     }
                     Expr::Field(r, _) | Expr::Is(r, _) | Expr::Un(_, r) | Expr::Return(r) | Expr::Try(r, _) | Expr::Mut(r) => kids.push((**r).clone()),
-                    Expr::Interp(parts) => kids.extend(parts.iter().filter_map(|p| if let StrPart::Expr(x) = p { Some(x.clone()) } else { None })),
+                    Expr::Interp(parts) => kids.extend(parts.iter().filter_map(|p| if let StrPart::Expr(x, _) = p { Some(x.clone()) } else { None })),
                     Expr::Except(x, name, fb) => {
                         self.expr(x, vars);
                         let mut v = vars.clone();
@@ -520,10 +532,10 @@ fn cannot_fail(env: &Env, f: &FnDecl, total: &dyn Fn(&str) -> bool) -> bool {
         Expr::Ctor(c, _) => ok &= !refined(&env.ctors.get(c).cloned().unwrap_or_default()),
         Expr::Call(g, _) => {
             if let Expr::Var(n) = &**g {
-                ok &= if env.fns.contains_key(n) { total(n) } else { !env.method_trait.contains_key(n) && TOTAL_BUILTINS.contains(&n.as_str()) };
+                ok &= if env.fns.contains_key(n) { total(n) } else { !env.is_method(n) && TOTAL_BUILTINS.contains(&n.as_str()) };
             }
         }
-        Expr::Method(_, n, _) => ok &= if env.fns.contains_key(n) { total(n) } else { !env.method_trait.contains_key(n) && TOTAL_BUILTINS.contains(&n.as_str()) },
+        Expr::Method(_, n, _) => ok &= if env.fns.contains_key(n) { total(n) } else { !env.is_method(n) && TOTAL_BUILTINS.contains(&n.as_str()) },
         Expr::Block(stmts, _) => ok &= !stmts.iter().any(|s| matches!(s, Stmt::Assert(_))),
         _ => {}
     });
@@ -543,7 +555,7 @@ pub fn analyze(env: &Env, solver: Option<&str>) -> Analysis {
         for tm in &tr.methods {
             let decl = imp.methods.iter().find(|m| m.name == tm.decl.name).or(tm.default.then_some(&tm.decl));
             let Some(decl) = decl else { continue };
-            let label = impl_label(imp, &tm.decl.name);
+            let label = impl_label(env, imp, &tm.decl.name);
             let mut calls = BTreeSet::new();
             calls_of(&decl.body, env, &mut calls);
             let d = crate::verify::for_impl(imp, decl);
@@ -552,6 +564,7 @@ pub fn analyze(env: &Env, solver: Option<&str>) -> Analysis {
         }
         let _ = texpr_head(&imp.for_type);
     }
+    // (a type's own methods are functions, above)
     // trait methods no implementation defines
     let missing: Vec<String> = nodes.values().flat_map(|n| n.calls.iter().cloned()).filter(|c| !nodes.contains_key(c)).collect();
     for m in missing {
@@ -599,7 +612,7 @@ pub fn analyze(env: &Env, solver: Option<&str>) -> Analysis {
         own.insert(name.clone(), r);
     }
 
-    let marked = |n: &str| env.fns.get(n).is_some_and(|f| f.terminates) || env.impls.iter().any(|i| i.methods.iter().any(|m| m.terminates && impl_label(i, &m.name) == n));
+    let marked = |n: &str| env.fns.get(n).is_some_and(|f| f.terminates) || env.impls.iter().chain(env.inherent.values()).any(|i| i.methods.iter().any(|m| m.terminates && impl_label(env, i, &m.name) == n));
     // combine with the callees, deepest first (cycles are already unknown)
     fn resolve(n: &str, nodes: &HashMap<String, Node>, own: &HashMap<String, Result<String, String>>, marked: &dyn Fn(&str) -> bool, memo: &mut HashMap<String, Termination>, visiting: &mut HashSet<String>) -> Termination {
         if let Some(t) = memo.get(n) {

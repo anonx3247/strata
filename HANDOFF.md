@@ -74,11 +74,10 @@ Diff: a renamed variant, method or field shows on its type or trait as "variant 
 
 ## Known gaps
 
-- Trait methods must take `self`; there is no `fn empty() -> Self` dispatch yet, and method names must be unique across traits.
+- No explicit type arguments at a call (`f[Money]()`): a type parameter that only a method called on the type needs (not in the parameters or result) can't be given. Generic impls' own type parameters can't have methods called on them yet (`impl[T: Empty] Empty for Pair[T]` calling `T.empty()`); only functions get hidden type arguments.
 - No host bindings (FFI), so a real SQLite backend isn't possible yet.
 - `strata verify --force` on the tasks example takes a few seconds (proven functions are not fuzzed); the slowest part is still generating `MemQueue` values that satisfy its invariants.
-- Typed lambda parameters (`(n: Positive) -> …`) are checked statically but their refinements are not enforced at runtime yet.
-- `!` converts errors only by fitting (a variant into its sum, a member into a union), not with a conversion function. f-strings have no format specs (`{x:.2}`).
+- `!` converts errors only by fitting (a variant into its sum, a member into a union), not with a conversion function.
 
 ## Decided direction (user, end of session 1)
 
@@ -180,3 +179,10 @@ The `smt-verification` worktree (uncommitted, on old main) already has: symbolic
 - **Use `len` everywhere, not `str_len`.** `len` is already overloaded for `String`, so remove `str_len` from the builtins and the prelude refinements, and update the examples.
 - **Bring every example up to date with the current language**: `examples/*.strata` and `examples/tasks/`, plus the README snippets. Use the prelude types (`Natural`, `Positive`, `NonEmptyString`), inline refinements where a constraint is used once, `let mut` / loops where procedural code reads better, and (once implemented) arrow lambdas.
 - **GitHub syntax highlighting**: label Strata code blocks in the README and docs as ```` ```rust ````. Rust is the closest match (`fn`, `trait`, `impl`, `let mut`, `match … =>`, `///`, `->`), and GitHub's highlighter for it is solid. Also add a `.gitattributes` with `*.strata linguist-language=Rust`, so `.strata` files are highlighted on GitHub and counted as code.
+
+### A type's own methods, and shared method names (decided 2026-11-20, built)
+- **`impl Item { ... }`** gives a type methods of its own, with no trait. A method with `self` is called on a value; one without `self` is called on the type (`Item.new(...)`), and is resolved into the function `Item.new` right after module resolution.
+- **Traits as parameter types** are shorthand for a type parameter with that bound (`mut queue: Queue[P, E]` = `[Q: Queue[P, E]](mut queue: Q)`). Name the parameter only to tie types together.
+- **Method names may be shared between traits**, each implementation with its own body (revised 2026-11-20 by the user). A call through a trait (`d: Describe`, `T: Describe`) runs that trait's implementation. On a known type, the type's own method wins, else the one trait of the type that declares the name. Anything else is a compile error: a type with two such traits and no own method; a receiver known only as `A | B` or `T: A + B` (even if the actual type has its own method: that doesn't say which trait's meaning the call wants).
+- **Elaboration** (`types::elaborate`): the checker records each such decision by call node, and the program that runs (interpreter, verify, SMT, termination) has it written in: `x.Describe::describe()` for a call through a trait, a direct call of the function `Item.describe` for a type's own method. A type's own methods are registered as functions (`Item.new`, `Item.describe`).
+- **Trait methods without `self`** (built 2026-11-20): called on a named type (`Money.empty()`, `T.empty()`, `Self.empty()` in default methods and laws), elaborated to `Trait::empty(type, ..)`. The signature must mention `Self`. Generic functions whose type parameters are bounded by such a trait get hidden parameters `type:T` (of type `$Type[T]`, the type's name at runtime); each call passes the inferred type or forwards the caller's. The fuzzer generates them from its chosen instance; laws and trait methods know `Self` from the interpreter's `self_types` stack.
