@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 pub const MAGIC: &[u8; 6] = b"STRATA";
 /// Bumped on every change to the layout; older files are rejected (re-pack
 /// them from source: there is no backwards compatibility).
-pub const VERSION: u64 = 4;
+pub const VERSION: u64 = 5;
 const MODULE: u8 = 0;
 const BUNDLE: u8 = 1;
 /// Deepest nesting of expressions, patterns and types a file may have.
@@ -737,7 +737,7 @@ macro_rules! put {
 
 record!(Decl { comments, doc, module, public, kind });
 record!(TypeDecl { distinct, name, params, body, refinement });
-record!(Field { comments, doc, name, ty });
+record!(Field { comments, doc, name, ty, default });
 record!(Variant { comments, name, payload });
 record!(Param { name, ty, mutable });
 record!(Bound { param, traits });

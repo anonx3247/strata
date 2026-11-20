@@ -929,6 +929,21 @@ impl<'a> Checker<'a> {
         self.scopes.pop();
     }
 
+    /// A field's default has the field's type, and a literal one satisfies its
+    /// refinement. It is checked where the type is defined, with no variables
+    /// in scope (not even the other fields).
+    fn check_defaults(&mut self, fs: &[Field]) {
+        for f in fs {
+            let Some(x) = &f.default else { continue };
+            let want = self.lower(&f.ty, &HashMap::new());
+            let got = self.infer_with(x, Some(&want));
+            self.expect(&want, &got, &format!("default of field `{}`", f.name));
+            if self.literal_outside(&f.ty, x) {
+                self.err(format!("the default of `{}`, {}, does not satisfy `{}`", f.name, crate::printer::expr(x, 0), crate::printer::ty(&f.ty)));
+            }
+        }
+    }
+
     /// Type-check the predicates of inline refinements inside a written type.
     fn check_refined(&mut self, t: &TypeExpr) {
         match t {
@@ -2878,6 +2893,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                             c.lower(&f.ty, &HashMap::new());
                             c.check_refined(&f.ty);
                         }
+                        c.check_defaults(fs);
                         Ty::Con(t.name.clone(), t.params.iter().map(|p| Ty::Rigid(p.clone())).collect())
                     }
                     TypeBody::Sum(vs) => {
@@ -2887,9 +2903,12 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                                 Payload::Positional(ts) => ts.iter().for_each(|t| {
                                     c.lower(t, &HashMap::new());
                                 }),
-                                Payload::Record(fs) => fs.iter().for_each(|f| {
-                                    c.lower(&f.ty, &HashMap::new());
-                                }),
+                                Payload::Record(fs) => {
+                                    fs.iter().for_each(|f| {
+                                        c.lower(&f.ty, &HashMap::new());
+                                    });
+                                    c.check_defaults(fs);
+                                }
                             }
                         }
                         Ty::Con(t.name.clone(), t.params.iter().map(|p| Ty::Rigid(p.clone())).collect())

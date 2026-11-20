@@ -274,6 +274,21 @@ impl Env {
         t.clone()
     }
 
+    /// The default of field `field` of the record or record variant `ctor`.
+    pub fn field_default(&self, ctor: &str, field: &str) -> Option<Expr> {
+        let fs = match self.types.get(ctor).map(|t| &t.body) {
+            Some(TypeBody::Record(fs)) => fs,
+            _ => self.types.values().find_map(|t| match &t.body {
+                TypeBody::Sum(vs) => vs.iter().find(|v| v.name == ctor).and_then(|v| match &v.payload {
+                    Payload::Record(fs) => Some(fs),
+                    _ => None,
+                }),
+                _ => None,
+            })?,
+        };
+        fs.iter().find(|f| f.name == field)?.default.clone()
+    }
+
     /// Constructors of a named type with type args substituted: (ctor, field names, field types)
     pub fn variants_of(&self, name: &str, args: &[TypeExpr]) -> Option<Vec<(String, Option<Vec<String>>, Vec<TypeExpr>)>> {
         let td = self.types.get(name)?;

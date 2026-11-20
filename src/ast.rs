@@ -28,6 +28,10 @@ pub struct Field {
     pub doc: Vec<String>,
     pub name: String,
     pub ty: TypeExpr,
+    /// `times: Int = 1`: the value a constructor, JSON input or the command
+    /// line gives the field when it is left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -742,7 +746,14 @@ macro_rules! visitor {
         #[allow(dead_code)] // the read-only twin may not be used yet
         /// Visit everything in a definition.
         pub fn $decl<V: $Visit + ?Sized>(v: &mut V, d: &$($m)? DeclKind) {
-            let fields = |v: &mut V, fs: &$($m)? Vec<Field>| fs.into_iter().for_each(|f| v.ty(&$($m)? f.ty));
+            let fields = |v: &mut V, fs: &$($m)? Vec<Field>| {
+                for f in fs {
+                    v.ty(&$($m)? f.ty);
+                    if let Some(x) = &$($m)? f.default {
+                        v.expr(x)
+                    }
+                }
+            };
             match d {
                 DeclKind::Type(t) => {
                     match &$($m)? t.body {

@@ -10,16 +10,60 @@
 //!   further `for` nests in a `fold` that joins the lists;
 //! - `Dict { k: v }` is `dict([(k, v)])`, `Set { x }` is `set([x])`, and their
 //!   comprehensions are the same around a list comprehension. Type arguments
-//!   (`Dict[String, Int] {}`) become an annotated `let`.
+//!   (`Dict[String, Int] {}`) become an annotated `let`;
+//! - a record constructor that leaves out a field with a default
+//!   (`times: Int = 1`) gets the default: `Options { names }` is
+//!   `Options { names, times: 1 }`.
 
 use crate::ast::*;
 use crate::types::Diag;
+use std::collections::HashMap;
 
 pub fn program(p: &mut Program, errors: &mut Vec<Diag>) {
     for d in &mut p.decls {
         let mut s = Sugar { decl: d.name(), errors: Vec::new(), fresh: 0 };
         walk_decl_mut(&mut s, &mut d.kind);
         errors.extend(s.errors);
+    }
+    defaults(p);
+}
+
+/// Fill in the fields a record constructor leaves out that have defaults.
+fn defaults(p: &mut Program) {
+    let mut of: HashMap<String, Vec<(String, Expr)>> = HashMap::new();
+    let mut add = |name: &str, fs: &[Field]| {
+        let ds: Vec<(String, Expr)> = fs.iter().filter_map(|f| Some((f.name.clone(), f.default.clone()?))).collect();
+        if !ds.is_empty() {
+            of.insert(name.to_string(), ds);
+        }
+    };
+    for d in &p.decls {
+        if let DeclKind::Type(t) = &d.kind {
+            match &t.body {
+                TypeBody::Record(fs) => add(&t.name, fs),
+                TypeBody::Sum(vs) => vs.iter().for_each(|v| {
+                    if let Payload::Record(fs) = &v.payload {
+                        add(&v.name, fs)
+                    }
+                }),
+                TypeBody::Alias(_) => {}
+            }
+        }
+    }
+    if of.is_empty() {
+        return;
+    }
+    // outermost first, so a default that is itself a constructor is filled in too
+    for d in &mut p.decls {
+        decl_exprs_mut(&mut d.kind, |e| {
+            if let Expr::Ctor(c, CtorArgs::Record(fs)) = e {
+                for (name, default) in of.get(c.as_str()).into_iter().flatten() {
+                    if !fs.iter().any(|(f, _)| f == name) {
+                        fs.push((name.clone(), default.clone()));
+                    }
+                }
+            }
+        });
     }
 }
 

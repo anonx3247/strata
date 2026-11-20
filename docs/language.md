@@ -69,6 +69,22 @@ id.value                     // the underlying String
 
 A `distinct` type never mixes with its base or with other distinct types (`OrderId` ≠ `UserId`), it can have trait implementations, and it serialises to JSON as its underlying value.
 
+## Records and defaults
+
+A record's field can have a default, written after its type. Nothing gets a default implicitly.
+
+```rust
+type Retry = {
+  attempts: Int where 1 <= it && it <= 10 = 3,
+  backoff: List[Int] = [100, 200],
+  label: String = "retry",
+}
+let r = Retry { attempts: 5 }      // backoff: [100, 200], label: "retry"
+let d = Retry {}
+```
+
+A constructor that leaves out a field with a default gets the default; so does JSON input with the key missing, and a command line without the option. A variant's record fields can have defaults too (`Queued { name: String, priority: Int = 0 }`). A default is checked where the type is defined: it must have the field's type, and a literal must satisfy the field's refinement (`n: Positive = 0` is an error). It sees no variables, not even the other fields, and it is evaluated each time it is used. Generated values (mocks, fuzzing) still generate every field.
+
 ## Unions, variants and patterns
 
 A union holds a value of any of its members. It is a union of sets, so it normalizes: `Int | Positive` is just `Int`, and different types stay apart.
@@ -281,18 +297,18 @@ use std.cli.CommandLine
 /// Greet people by name.
 type Options = {
   /// Shout the greeting.
-  loud: Bool,
+  loud: Bool = false,
   /// Say it this many times.
-  times: Option[Int where 1 <= it && it <= 10],
+  times: Int where 1 <= it && it <= 10 = 1,
   /// Who to greet (the world if nobody).
-  names: List[String],
+  names: List[String] = [],
 }
 
 impl CommandLine for Options {}
 
 fn main(opts: Options) -> () {
   let who = if len(opts.names) == 0 { "world" } else { join(opts.names, " and ") }
-  for _ in 0..opts.times ?? 1 {
+  for _ in 0..opts.times {
     print(if opts.loud { to_upper(f"hello, {who}!") } else { f"hello, {who}!" })
   }
 }
@@ -307,7 +323,7 @@ cat README.md | strata run examples/wc
 
 **`print(x)`** is always available, with no `use`. It writes `x` (as `to_string` shows it) and a newline wherever the code runs: to the terminal under `strata run`, into the test's own buffer under `strata test` (shown only if the test fails), and nowhere under `verify`. It is a convenience; code whose output a test should check, or that a caller should control, takes a `Console`.
 
-**Command-line options** are a record that implements `CommandLine` (`std.cli`); the trait has no methods. Each field is read from the arguments by its type: a `Bool` is a flag (`--loud`), an `Option[T]` an option with a value (`--times 3` or `--times=3`), a `List[T]` the remaining positional arguments, and any other field a required positional argument, in field order. `T` is an `Int`, `Float`, `String`, a refinement of one, or a choice (a type whose variants carry nothing: `type Count = | Lines | Words` is `lines` or `words`). Names take dashes (`dry_run` is `--dry-run`), `--` ends the options, every refinement is checked (`--times: 0 does not satisfy …`), and a mistake exits with code 2. `--help` is built from the record's and fields' `///` doc comments. `strata check` rejects a `CommandLine` record a command line can't fill.
+**Command-line options** are a record that implements `CommandLine` (`std.cli`); the trait has no methods. Each field is read from the arguments by its type: a `Bool` is a flag (`--loud`), an `Option[T]` an option with a value (`--times 3` or `--times=3`), a `List[T]` the remaining positional arguments, and any other field a required positional argument, in field order, or an option (`--times 3`) when it has a default. A field left out takes its default. `T` is an `Int`, `Float`, `String`, a refinement of one, or a choice (a type whose variants carry nothing: `type Count = | Lines | Words` is `lines` or `words`). Names take dashes (`dry_run` is `--dry-run`), `--` ends the options, every refinement is checked (`--times: 0 does not satisfy …`), and a mistake exits with code 2. `--help` is built from the record's and fields' `///` doc comments. `strata check` rejects a `CommandLine` record a command line can't fill.
 
 `main` can also ask for `Console` (`std.io`), `Files` (`std.fs`) and `Environment` (`std.process`), in any order. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [JSON-ARGS]` still calls a single function.
 

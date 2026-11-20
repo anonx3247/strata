@@ -94,7 +94,7 @@ fn run_a_binary_file() {
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "hello.stb"], &d, None);
     assert!(ok && out.contains("hello, world!"), "{out}");
-    std::fs::write(d.join("bad.stb"), b"STRATA\x04\x00\x05").unwrap();
+    std::fs::write(d.join("bad.stb"), b"STRATA\x05\x00\x05").unwrap();
     let (ok, out) = strata(&["--file", "bad.stb", "check"], &d, None);
     assert!(!ok && out.contains("corrupt binary Strata file"), "{out}");
 }
@@ -3283,4 +3283,28 @@ fn dict_and_set_literals() {
     assert!(ok, "{out}");
     let (ok, out) = strata(&["--file", "c.stb", "render"], &d, None);
     assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
+}
+
+#[test]
+fn record_defaults() {
+    let d = tmp("defaults");
+    let src = format!("{}/tests/data/defaults.strata", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["--file", &src, "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    let (ok, out) = strata(&["--file", &src, "render"], &d, None);
+    assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
+    // JSON input: a missing key takes the default
+    std::fs::write(d.join("r.strata"), "type R = { n: Int = 1, s: String }\nfn f(r: R) -> Int { r.n }\n").unwrap();
+    let (ok, out) = strata(&["--file", "r.strata", "run", "f", r#"[{"s": "x"}]"#], &d, None);
+    assert!(ok && out.trim() == "1", "{out}");
+    // checked where the type is defined
+    std::fs::write(d.join("bad.strata"), "type R = { n: Int where it > 0 = 0 }\ntype S = { s: String = 1 }\n").unwrap();
+    let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
+    assert!(!ok && out.contains("the default of `n`, 0, does not satisfy") && out.contains("default of field `s`: expected `String`"), "{out}");
+    // the command line: a field with a default is an option
+    let hello = format!("{}/examples/hello", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["run", &hello, "--", "Ada", "--times", "2"], &d, None);
+    assert!(ok && out.matches("hello, Ada!").count() == 2, "{out}");
+    let (ok, out) = strata(&["run", &hello, "--", "--help"], &d, None);
+    assert!(ok && out.contains("--times <Int>") && out.contains("(default: 1)"), "{out}");
 }

@@ -5,11 +5,11 @@ use std.cli.CommandLine
 /// Greet people by name.
 type Options = {
   /// Shout the greeting.
-  loud: Bool,
+  loud: Bool = false,
   /// Say it this many times.
-  times: Option[Int where 1 <= it && it <= 10],
+  times: Int where 1 <= it && it <= 10 = 1,
   /// Who to greet (the world if nobody).
-  names: List[String],
+  names: List[String] = [],
 }
 
 impl CommandLine for Options {}
@@ -29,11 +29,11 @@ fn greeting(opts: Options) -> String {
 }
 
 fn main(opts: Options) -> () {
-  for _ in 0..opts.times ?? 1 {
+  for _ in 0..opts.times {
     print(greeting(opts))
   }
 }
 
 test "greets the world by default" {
-  assert greeting(Options { loud: false, times: None, names: [] }) == "hello, world!"
+  assert greeting(Options {}) == "hello, world!"
 }

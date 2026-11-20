@@ -71,13 +71,21 @@ fn fields_broken(fs: &[Field], d: usize) -> String {
         if has_comments(&f.doc) {
             s += &f.doc.iter().map(|l| format!("{}/// {l}\n", ind(d + 1))).collect::<String>();
         }
-        s += &format!("{}{}: {},\n", ind(d + 1), f.name, ty(&f.ty));
+        s += &format!("{}{},\n", ind(d + 1), field(f));
     }
     s + &ind(d) + "}"
 }
 
 fn fields(fs: &[Field]) -> String {
-    fs.iter().map(|f| format!("{}: {}", f.name, ty(&f.ty))).collect::<Vec<_>>().join(", ")
+    fs.iter().map(field).collect::<Vec<_>>().join(", ")
+}
+
+/// `name: T`, `times: Int = 1`
+fn field(f: &Field) -> String {
+    match &f.default {
+        Some(x) => format!("{}: {} = {}", f.name, ty(&f.ty), expr(x, 1)),
+        None => format!("{}: {}", f.name, ty(&f.ty)),
+    }
 }
 
 fn ind(n: usize) -> String {
@@ -274,6 +282,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::List(es) => format!("[{}]", args(es, d)),
         Expr::Ctor(c, CtorArgs::None) => c.clone(),
         Expr::Ctor(c, CtorArgs::Positional(es)) => format!("{c}({})", args(es, d)),
+        Expr::Ctor(c, CtorArgs::Record(fs)) if fs.is_empty() => format!("{c} {{}}"),
         Expr::Ctor(c, CtorArgs::Record(fs)) => {
             let parts: Vec<String> = fs
                 .iter()

@@ -1128,7 +1128,7 @@ impl Rw<'_> {
                 self.tparams.push(t.params.iter().cloned().collect());
                 let body = match &t.body {
                     TypeBody::Alias(a) => TypeBody::Alias(self.ty(a)),
-                    TypeBody::Record(fs) => TypeBody::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), doc: f.doc.clone(), name: f.name.clone(), ty: self.ty(&f.ty) }).collect()),
+                    TypeBody::Record(fs) => TypeBody::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), doc: f.doc.clone(), name: f.name.clone(), ty: self.ty(&f.ty), default: f.default.as_ref().map(|x| self.expr(x)) }).collect()),
                     TypeBody::Sum(vs) => TypeBody::Sum(
                         vs.iter()
                             .map(|v| Variant {
@@ -1137,7 +1137,7 @@ impl Rw<'_> {
                                 payload: match &v.payload {
                                     Payload::None => Payload::None,
                                     Payload::Positional(ts) => Payload::Positional(ts.iter().map(|t| self.ty(t)).collect()),
-                                    Payload::Record(fs) => Payload::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), doc: f.doc.clone(), name: f.name.clone(), ty: self.ty(&f.ty) }).collect()),
+                                    Payload::Record(fs) => Payload::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), doc: f.doc.clone(), name: f.name.clone(), ty: self.ty(&f.ty), default: f.default.as_ref().map(|x| self.expr(x)) }).collect()),
                                 },
                             })
                             .collect(),

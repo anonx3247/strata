@@ -1860,8 +1860,20 @@ impl<'a> Interp<'a> {
                             let Some(obj) = payload.as_object() else { return Err(format!("{p}: expected an object")) };
                             let mut fs = Vec::new();
                             for (fname, ft) in names.iter().zip(ftys) {
-                                let fj = obj.get(fname).ok_or_else(|| format!("{p}: missing field `{fname}`"))?;
-                                fs.push((fname.clone(), self.from_json_raw(ft, fj, &format!("{p}.{fname}"))?));
+                                let v = match obj.get(fname) {
+                                    Some(fj) => self.from_json_raw(ft, fj, &format!("{p}.{fname}"))?,
+                                    None => match self.env.field_default(&cname, fname) {
+                                        Some(x) => {
+                                            let v = self.eval(&x, &None).map_err(|f| format!("{p}.{fname}: the default failed: {}", f.msg))?;
+                                            if let Some(why) = self.check_type(ft, &v).map_err(|f| f.msg)? {
+                                                return Err(format!("{p}.{fname}: the default {why}"));
+                                            }
+                                            v
+                                        }
+                                        None => return Err(format!("{p}: missing field `{fname}`")),
+                                    },
+                                };
+                                fs.push((fname.clone(), v));
                             }
                             if let Some(extra) = obj.keys().find(|k| !names.contains(k)) {
                                 return Err(format!("{p}: unknown field `{extra}`"));

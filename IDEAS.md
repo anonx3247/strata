@@ -65,35 +65,9 @@ Still open:
 - **`except` inside a `for` header** reads badly: `for _ in 0..opts.times except { 1 } {`. Proposed: the renderer parenthesizes any header expression (`for`, `while`, `if`, `match`) that ends in a `}`: `for _ in 0..(opts.times except { 1 }) {`. The parser accepts both. Done instead (user's choice): `a ?? b` (`Expr::Except` with no name; the renderer writes a plain-value fallback as `??` and keeps `except { … }` for blocks, `return` and named errors), so `for _ in 0..opts.times ?? 1 {`.
 - **`len(xs)` and `xs.len()`** are both accepted, as for every builtin; the renderer could pick one form (method form for chains, say) so code reads the same everywhere.
 
-#### Default values for record fields (2026-11-20)
+#### Default values for record fields (built 2026-11-20)
 
-A record's definition can give a field a default, written explicitly where the
-field is declared. Nothing gets a default implicitly.
-
-```rust
-type Options = {
-  /// Say it this many times.
-  times: Int where 1 <= it && it <= 10 = 1,
-  /// Shout the greeting.
-  loud: Bool = false,
-  names: List[String] = [],
-}
-
-let o = Options { names: ["Ada"] }   // times: 1, loud: false
-```
-
-Questions to settle:
-- **Syntax**: `field: T = value` looks natural. Check that it doesn't clash with
-  a refinement that ends in a comparison.
-- **What a default can be**: only literals and constructors, or any expression
-  of the earlier fields? A default must satisfy the field's refinement, and
-  the checker can prove that at definition time.
-- **Where defaults apply**:
-  - constructors (a missing field takes its default);
-  - JSON input (a missing key takes its default; today it's an error);
-  - command-line options (`CommandLine` would read `times: Int = 1` as an
-    optional `--times` without needing `Option`).
-- **Generated values**: mocks and fuzzing still generate every field.
+`field: T = value` in a record (or a variant's record payload); see docs/language.md, "Records and defaults". Decided: any expression with no variables in scope (not the other fields), checked against the field's type where the type is defined, and evaluated each time it is used. It applies in constructors (`desugar::defaults` fills them in after resolution), JSON input (`Interp::from_json`), and the command line (a scalar field with a default is an option, `--times 3`; a `List` field's default is used when no arguments are left). Mocks and fuzzing still generate every field. Not done: defaults for other types (`type Port = Int where … = 8080`), which the user set aside; a flag whose default is `true` can't be turned off from the command line yet (`--no-x`).
 
 ### Web UIs (direction agreed with the user 2026-11-20; not built)
 

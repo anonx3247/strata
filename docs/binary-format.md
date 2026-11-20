@@ -27,7 +27,7 @@ module-file = "STRATA" version:uint 0  header  definitions
 bundle      = "STRATA" version:uint 1  manifest:option(raw-string)  modules:list(raw-bytes)
 ```
 
-- the six ASCII bytes `STRATA` (`53 54 52 41 54 41`), the format `version` (currently `4`), then `0` for a module file or `1` for a bundle;
+- the six ASCII bytes `STRATA` (`53 54 52 41 54 41`), the format `version` (currently `5`), then `0` for a module file or `1` for a bundle;
 - a bundle holds the package's `strata.toml`, as written (none for a script), then each module file, as its length and its bytes, in the order the modules first appear in the program.
 
 ### The header
@@ -104,7 +104,7 @@ DeclKind    = 0 TypeDecl | 1 FnDecl | 2 TestDecl | 3 TraitDecl | 4 ImplDecl | 5 
 
 TypeDecl    = distinct:bool  name:str  params:list(str)  body:TypeBody  refinement:option(Expr)
 TypeBody    = 0 Alias(TypeExpr) | 1 Record(list(Field)) | 2 Sum(list(Variant))
-Field       = comments:list(str)  doc:list(str)  name:str  ty:TypeExpr
+Field       = comments:list(str)  doc:list(str)  name:str  ty:TypeExpr  default:option(Expr)
 Variant     = comments:list(str)  name:str  payload:Payload
 Payload     = 0 None | 1 Positional(list(TypeExpr)) | 2 Record(list(Field))
 
@@ -194,7 +194,7 @@ CtorPat = 0 None | 1 Positional(list(Pattern)) | 2 Record(list((str, Pattern)), 
 
 ```text
 53 54 52 41 54 41   "STRATA"
-04 00               version 4, a module file
+05 00               version 5, a module file
 header:
    02 00 03 6f 6e 65    2 strings: "", "one"
    00                   module "" (the root)

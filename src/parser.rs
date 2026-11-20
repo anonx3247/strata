@@ -452,8 +452,9 @@ impl Parser {
             let name = p.ident()?;
             p.expect_sym(":")?;
             let ty = p.type_expr()?;
+            let default = if p.eat_sym("=") { Some(p.expr()?) } else { None };
             comments.extend(p.trailing());
-            Ok(Field { comments, doc, name, ty })
+            Ok(Field { comments, doc, name, ty, default })
         })
     }
 
