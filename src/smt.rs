@@ -2838,15 +2838,48 @@ pub enum Outcome {
     Unknown(String),
 }
 
-/// The solver command, or `None` if no solver is installed.
-pub fn solver() -> Option<(String, String)> {
-    let bin = std::env::var("STRATA_SOLVER").unwrap_or_else(|_| "z3".into());
-    let out = Command::new(&bin).arg("--version").output().ok()?;
-    out.status.success().then(|| (bin, String::from_utf8_lossy(&out.stdout).trim().to_string()))
+/// Which SMT solver runs the queries: they are plain SMT-LIB, only the
+/// command line differs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SolverKind {
+    Z3,
+    Cvc5,
 }
 
-/// Resource limit per obligation: deterministic, unlike a timeout.
-const RLIMIT: u64 = 20_000_000;
+#[derive(Clone, Debug)]
+pub struct Solver {
+    pub bin: String,
+    /// What `--version` printed (part of the verification cache key).
+    pub version: String,
+    pub kind: SolverKind,
+}
+
+/// The solver: `STRATA_SOLVER` (a path or a command on the `PATH`), else
+/// `z3`; `None` if it can't be run. A `--version` that names cvc5 means
+/// cvc5's flags; anything else is run like Z3.
+pub fn solver() -> Option<Solver> {
+    let bin = std::env::var("STRATA_SOLVER").unwrap_or_else(|_| "z3".into());
+    let out = Command::new(&bin).arg("--version").output().ok()?;
+    let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let kind = if version.to_lowercase().contains("cvc5") { SolverKind::Cvc5 } else { SolverKind::Z3 };
+    out.status.success().then_some(Solver { bin, version, kind })
+}
+
+impl Solver {
+    /// The command line: a deterministic resource limit per query (so
+    /// results can be cached), and a time limit only as a backstop.
+    fn args(&self) -> Vec<String> {
+        match self.kind {
+            SolverKind::Z3 => vec!["-in".into(), "-T:20".into(), format!("rlimit={Z3_RLIMIT}")],
+            SolverKind::Cvc5 => vec!["--lang".into(), "smt2".into(), "--produce-models".into(), format!("--rlimit-per={CVC5_RLIMIT}"), "--tlimit-per=20000".into()],
+        }
+    }
+}
+
+/// Resource limits per obligation: deterministic, unlike a timeout. The
+/// units differ; both are a few seconds of hard nonlinear arithmetic.
+const Z3_RLIMIT: u64 = 20_000_000;
+const CVC5_RLIMIT: u64 = 5_000_000;
 
 impl Vc<'_> {
     /// The free constants an obligation depends on (its cone of influence).
@@ -2909,7 +2942,7 @@ impl Vc<'_> {
         self.script(&self.obligations[i], &[])
     }
 
-    pub fn solve(&self, bin: &str, i: usize) -> Outcome {
+    pub fn solve(&self, solver: &Solver, i: usize) -> Outcome {
         let ob = &self.obligations[i];
         let mut leaves = vec![];
         for (_, v) in &self.params {
@@ -2917,7 +2950,7 @@ impl Vc<'_> {
         }
         let script = self.script(ob, &leaves);
         let run = || -> Option<String> {
-            let mut child = Command::new(bin).args(["-in", "-T:20", &format!("rlimit={RLIMIT}")]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+            let mut child = Command::new(&solver.bin).args(solver.args()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
             child.stdin.take()?.write_all(script.as_bytes()).ok()?;
             let out = child.wait_with_output().ok()?;
             Some(String::from_utf8_lossy(&out.stdout).to_string())
@@ -3172,5 +3205,11 @@ mod tests {
         assert_eq!(parse_str(&m["v2"]).as_deref(), Some("a\"b"));
         assert_eq!(parse_int(&m["v3"]), Some(-2));
         assert_eq!(parse_str("\"\\u{e9}\"").as_deref(), Some("é"));
+        // cvc5 prints the model on one line, and a backslash as \u{5c}
+        let m = parse_values("((v0 (- 6)) (v1 \"a\\u{e9}\\u{0}\\u{1f600}\\u{a}\"\"7\\u{5c}\\u{2ffff}\") (v2 false) (v3 \"ba\"))");
+        assert_eq!(parse_int(&m["v0"]), Some(-6));
+        assert_eq!(parse_str(&m["v1"]).as_deref(), Some("aé\u{0}😀\n\"7\\\u{2ffff}"));
+        assert_eq!(m["v2"], "false");
+        assert_eq!(parse_str(&m["v3"]).as_deref(), Some("ba"));
     }
 }

@@ -238,7 +238,7 @@ fn has_hole(e: &Expr) -> bool {
 /// running them, and fuzz the rest.
 /// `cross_check`: how many generated cases a proven function is still run on.
 /// A failure there means the prover itself is wrong, and is reported as such.
-pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&str>, transparent: &std::collections::HashMap<String, bool>, cases: usize, cross_check: usize, seed: u64) -> Verdict {
+pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&crate::smt::Solver>, transparent: &std::collections::HashMap<String, bool>, cases: usize, cross_check: usize, seed: u64) -> Verdict {
     let (decl, method) = match imp {
         None => (f.clone(), false),
         Some(imp) => {

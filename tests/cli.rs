@@ -151,6 +151,28 @@ fn cross_check_catches_a_wrong_prover() {
 }
 
 #[test]
+fn solver_flags_follow_the_solver() {
+    // fake solvers that record how they are called: cvc5 gets its own flags
+    let d = tmp("solver-flags");
+    std::fs::write(d.join("b.strata"), "type Quantity = Int where 1 <= it && it <= 99\nfn clamp(q: Quantity) -> Quantity { if q < 99 { q + 1 } else { q } }\n").unwrap();
+    for (name, version, expected) in [("cvc5", "This is cvc5 version 1.4.2", "--lang smt2 --produce-models --rlimit-per="), ("z3", "Z3 version 4.15.0 - 64 bit", "-in -T:20 rlimit=")] {
+        let fake = d.join(format!("fake-{name}"));
+        let log = d.join(format!("{name}.log"));
+        std::fs::write(&fake, format!("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '{version}'; exit 0; fi\necho \"$@\" >> {}\ncat > /dev/null\necho unsat\n", log.display())).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["--file", "b.strata", "verify", "--cross-check", "0"]).env("STRATA_SOLVER", &fake).current_dir(&d).output().unwrap();
+        let out = String::from_utf8_lossy(&o.stdout);
+        assert!(o.status.success() && out.contains("✓ clamp"), "{out}");
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(calls.lines().count() > 0 && calls.lines().all(|l| l.starts_with(expected)), "{name} was called as: {calls}");
+    }
+}
+
+#[test]
 fn package_verify_policies() {
     if !has_solver() {
         eprintln!("z3 is not installed: skipping");
