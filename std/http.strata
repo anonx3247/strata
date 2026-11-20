@@ -125,12 +125,9 @@ pub type Pattern = String
   where matches(it, "/[-a-zA-Z0-9_.~:/]*")
 
 /// One route: requests with this method whose path fits the pattern go to
-/// the handler.
-pub type Route = {
-  method: Method,
-  pattern: Pattern,
-  handler: (Request) -> Response,
-}
+/// the handler. Private: only `Router.on` makes one, after checking the
+/// method and the pattern, so the type itself has nothing to check.
+type Route = { method: String, pattern: String, handler: (Request) -> Response }
 
 /// Routes, tried in the order they were added.
 pub type Router = { routes: List[Route] }
@@ -141,7 +138,7 @@ fn segments(path: String) -> List[String] {
 }
 
 /// The names `pattern` gives to the parts of `path`, if it fits.
-pub fn match_path(pattern: Pattern, path: String) -> Option[Dict[String, String]] {
+pub fn match_path(pattern: String, path: String) -> Option[Dict[String, String]] {
   let ps = segments(pattern)
   let xs = segments(path)
   if len(ps) != len(xs) {

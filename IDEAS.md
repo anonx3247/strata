@@ -175,7 +175,10 @@ Steps:
    fresh interpreter (`src/serve.rs`, std-only, one request at a time).
    Routes as in Hono (asked for by the user): `Router` with `app.get(pattern,
    handler)` etc., `:name` segments, `req.param(name)` an `Option`, HEAD via
-   GET, 404 / 405. Building it fixed three things: a type's own method now
+   GET, 404 / 405. As with `Html`, the refinements (`Method`, `Pattern`) are
+   on `Router.on`'s parameters and the stored `Route` is private and plain,
+   so `Router` has nothing to prove (CI's older z3 gave up on regex
+   refinements inside a list of routes). Building it fixed three things: a type's own method now
    comes before a function of another module with the same name when called
    as `x.m()` (`app.handle(req)` inside `fn handle`); termination no longer
    takes a local named like a function for a call of it (`let mut app` in
