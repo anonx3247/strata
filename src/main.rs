@@ -869,6 +869,8 @@ fn run() -> Result<bool, String> {
             }
             // the project's policy
             let mut violations = vec![];
+            // what `proven` accepted on trust, listed after the results
+            let mut trusted = vec![];
             for (n, v, _) in &results {
                 if n.starts_with("law ") {
                     continue;
@@ -885,8 +887,11 @@ fn run() -> Result<bool, String> {
                     }
                 };
                 if let Some(src) = rule("proven", &policy.proven) {
-                    if !matches!(v, verify::Verdict::Proven { .. }) {
-                        violations.push(format!("`{n}` is not proven{src}"));
+                    match v {
+                        verify::Verdict::Proven { .. } => {}
+                        // trusted code meets `proven`, and is listed as such
+                        verify::Verdict::Assumed { .. } => trusted.push(format!("`{n}`")),
+                        _ => violations.push(format!("`{n}` is not proven{src}")),
                     }
                 }
                 if let Some(src) = rule("terminates", &policy.terminates) {
@@ -936,6 +941,7 @@ fn run() -> Result<bool, String> {
                         println!("    {message}");
                     }
                     verify::Verdict::Incomplete { message, .. } => println!("○ {n:<24} incomplete: {message}{c}"),
+                    verify::Verdict::Assumed { why } => println!("≈ {n:<24} assumed: {why}"),
                     verify::Verdict::Skipped { reason } => println!("- {n:<24} skipped: {reason}"),
                 }
                 match v.termination() {
@@ -946,6 +952,9 @@ fn run() -> Result<bool, String> {
                     Some(termination::Termination::Proven { how }) if args.flag("--checks") => println!("    terminates: {how}"),
                     _ => {}
                 }
+            }
+            if !trusted.is_empty() {
+                println!("policy: `proven` accepts {} as assumed (trusted, not checked)", trusted.join(", "));
             }
             for v in &violations {
                 println!("policy: {v}");
