@@ -746,7 +746,11 @@ pub fn diff(old: &Program, new: &Program, renames: &[(String, String)], steps: &
             detail.push(format!("only the {} changed · interface unchanged", if what[0].starts_with("doc") { "doc" } else { "comments" }));
         } else if mk == "chg" && kind == "impl" {
             if let DeclKind::Impl(i) = &d.kind {
-                detail.push(format!("implementation of `{}` · checked against its contracts", short(&i.trait_name)));
+                detail.push(if i.is_inherent() {
+                    format!("methods of `{}` · checked against the contracts of the traits they serve", short(&crate::types::texpr_head(&i.for_type)))
+                } else {
+                    format!("implementation of `{}` · checked against its contracts", short(&i.trait_name))
+                });
             }
         } else if mk == "chg" || mk == "ren" {
             if kind == "trait" && what.iter().any(|w| w.contains("added") || w.contains("stronger")) {

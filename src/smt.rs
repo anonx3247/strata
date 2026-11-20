@@ -909,7 +909,7 @@ impl<'a> Vc<'a> {
             Expr::Mut(x) => self.eval(x),
             Expr::Interp(parts) => {
                 for part in parts {
-                    if let StrPart::Expr(x) = part {
+                    if let StrPart::Expr(x, _) = part {
                         self.eval(x);
                     }
                 }
@@ -1200,7 +1200,7 @@ impl<'a> Vc<'a> {
     fn is_fn(&self, e: &Expr) -> bool {
         match e {
             Expr::Lambda(..) => true,
-            Expr::Var(x) => self.lookup(x).is_none() && (self.env.fns.contains_key(x) || self.env.method_trait.contains_key(x)),
+            Expr::Var(x) => self.lookup(x).is_none() && (self.env.fns.contains_key(x) || self.env.is_method(x)),
             _ => false,
         }
     }
@@ -1225,7 +1225,7 @@ impl<'a> Vc<'a> {
             }
             Expr::Var(name) => {
                 let env = self.env;
-                let f = env.fns.get(name).or_else(|| env.method_trait.get(name).and_then(|t| env.traits.get(t)).and_then(|t| t.methods.iter().find(|m| m.decl.name == *name)).map(|m| &m.decl));
+                let f = env.fns.get(name).or_else(|| env.method_contract(name).map(|(_, d)| d));
                 match f {
                     Some(f) => {
                         let n = f.params.len();
@@ -1243,8 +1243,13 @@ impl<'a> Vc<'a> {
     /// Evaluate a call's arguments and make the call. A function passed to a
     /// list builtin is checked on one arbitrary element of the list.
     fn call_exprs(&mut self, name: &str, exprs: &[Expr]) -> Val {
+        // `Trait::empty(type, ..)`: the type argument only picks the implementation
+        let exprs = match self.env.method_contract(name) {
+            Some((_, d)) if !crate::resolve::takes_self(d) && exprs.len() == d.params.len() + 1 => &exprs[1..],
+            _ => exprs,
+        };
         let mut vals: Vec<Option<Val>> = exprs.iter().map(|e| if self.is_fn(e) { None } else { Some(self.eval(e)) }).collect();
-        let builtin = !self.env.fns.contains_key(name) && !self.env.method_trait.contains_key(name);
+        let builtin = !self.env.fns.contains_key(name) && !self.env.is_method(name);
         let mut fn_result_ty = None;
         for (i, e) in exprs.iter().enumerate() {
             if vals[i].is_some() {
@@ -1344,11 +1349,17 @@ impl<'a> Vc<'a> {
             self.write_back(&f.params, arg_exprs, &args);
             return r;
         }
-        if let Some(tr) = env.method_trait.get(name).and_then(|t| env.traits.get(t)) {
-            let Some(tm) = tr.methods.iter().find(|m| m.decl.name == name) else { return Val::Opaque(format!("`{name}`")) };
-            let r = self.call_contract(name, &tm.decl, &[], &[], &args);
-            self.write_back(&tm.decl.params, arg_exprs, &args);
+        if let Some((_, decl)) = env.method_contract(name) {
+            let r = self.call_contract(name, decl, &[], &[], &args);
+            self.write_back(&decl.params, arg_exprs, &args);
             return r;
+        }
+        if env.is_method(name) {
+            // which implementation runs depends on the receiver's type; a shared name or a type's own method
+            if let Some(ps) = env.method_params(name) {
+                self.write_back(&ps, arg_exprs, &args);
+            }
+            return Val::Opaque(format!("the result of method `{name}` (it depends on the receiver's type)"));
         }
         self.builtin(name, arg_exprs, args)
     }
@@ -1952,7 +1963,7 @@ fn modified(e: &Expr, env: &Env, out: &mut HashSet<String>) {
         }
         Expr::Interp(parts) => {
             for part in parts {
-                if let StrPart::Expr(x) = part {
+                if let StrPart::Expr(x, _) = part {
                     modified(x, env, out);
                 }
             }
@@ -1966,7 +1977,7 @@ fn mut_args(name: &str, args: &[Expr], env: &Env, out: &mut HashSet<String>) {
         .fns
         .get(name)
         .map(|f| f.params.clone())
-        .or_else(|| env.method_trait.get(name).and_then(|t| env.traits.get(t)).and_then(|t| t.methods.iter().find(|m| m.decl.name == name)).map(|m| m.decl.params.clone()));
+        .or_else(|| env.method_params(name));
     for (p, a) in params.unwrap_or_default().iter().zip(args) {
         if p.mutable {
             if let Some(x) = place_root(a) {

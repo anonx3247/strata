@@ -87,10 +87,7 @@ pub trait Queue[P, E] {
 // ───────────────────────────── entrypoints ─────────────────────────────────
 
 /// Run the producer once and enqueue every task it discovers.
-pub fn run_producer[P, E, Q: Queue[P, E], R: Producer[P]](
-  mut queue: Q,
-  producer: R,
-) -> Int
+pub fn run_producer[P, E](mut queue: Queue[P, E], producer: Producer[P]) -> Int
   ensures it >= 0 {
   queue.enqueue(producer.discover())
 }
@@ -102,9 +99,9 @@ pub type WorkerError =
 /// Claim one batch, run it, record the results. If the worker does not report
 /// exactly one result per claimed attempt, the claim is released and the
 /// mismatch is returned as a value instead of an exception.
-pub fn run_worker[P, E, Q: Queue[P, E], W: Worker[P, E]](
-  mut queue: Q,
-  mut worker: W,
+pub fn run_worker[P, E](
+  mut queue: Queue[P, E],
+  mut worker: Worker[P, E],
   policy: TaskPolicy,
 ) -> Result[List[TaskResult[P, E]], WorkerError]
   ensures match it {
@@ -135,9 +132,9 @@ fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool {
 /// The worker entrypoint's loop: run batches until the queue has nothing
 /// claimable (or `max_batches` is reached). Returns the number of batches
 /// run.
-pub fn drain[P, E, Q: Queue[P, E], W: Worker[P, E]](
-  mut queue: Q,
-  mut worker: W,
+pub fn drain[P, E](
+  mut queue: Queue[P, E],
+  mut worker: Worker[P, E],
   policy: TaskPolicy,
   max_batches: Natural,
 ) -> Int

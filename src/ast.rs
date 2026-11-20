@@ -155,6 +155,7 @@ pub struct TraitDecl {
 pub struct ImplDecl {
     pub type_params: Vec<String>,
     pub bounds: Vec<Bound>,
+    /// Empty for methods defined on the type itself (`impl Item { ... }`).
     pub trait_name: String,
     pub trait_args: Vec<TypeExpr>,
     pub for_type: TypeExpr,
@@ -162,7 +163,15 @@ pub struct ImplDecl {
 }
 
 impl ImplDecl {
+    /// `impl Item { ... }`: methods of the type itself, not of a trait.
+    pub fn is_inherent(&self) -> bool {
+        self.trait_name.is_empty()
+    }
+
     pub fn name(&self) -> String {
+        if self.is_inherent() {
+            return format!("impl {}", crate::printer::ty(&self.for_type));
+        }
         let tr = crate::printer::ty(&TypeExpr::Named(self.trait_name.clone(), self.trait_args.clone()));
         format!("impl {tr} for {}", crate::printer::ty(&self.for_type))
     }
@@ -388,7 +397,98 @@ pub enum Expr {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StrPart {
     Lit(String),
-    Expr(Expr),
+    /// `{e}` or `{e:spec}`.
+    Expr(Expr, Option<FmtSpec>),
+}
+
+/// How an f-string part is shown: `[[fill]align][+][0][width][.precision]`,
+/// a subset of Python's format specs. `{price:.2}`, `{name:<12}`, `{n:05}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FmtSpec {
+    pub fill: char,
+    /// `<` left, `>` right, `^` centre; `None` is the default for the type
+    /// (numbers right, everything else left).
+    pub align: Option<char>,
+    /// `+`: always show the sign of a number.
+    pub plus: bool,
+    /// `0`: pad a number with zeros after its sign.
+    pub zero: bool,
+    pub width: usize,
+    /// `.N`: decimal places of a `Float`, or the most characters of a `String`.
+    pub precision: Option<usize>,
+}
+
+impl FmtSpec {
+    pub fn parse(s: &str) -> Result<FmtSpec, String> {
+        let cs: Vec<char> = s.chars().collect();
+        let mut f = FmtSpec { fill: ' ', align: None, plus: false, zero: false, width: 0, precision: None };
+        let mut i = 0;
+        let is_align = |c: char| matches!(c, '<' | '>' | '^');
+        if cs.len() >= 2 && is_align(cs[1]) {
+            if matches!(cs[0], '{' | '}') {
+                return Err(format!("`{}` can't be a fill character", cs[0]));
+            }
+            (f.fill, f.align, i) = (cs[0], Some(cs[1]), 2);
+        } else if cs.first().is_some_and(|&c| is_align(c)) {
+            (f.align, i) = (Some(cs[0]), 1);
+        }
+        if cs.get(i) == Some(&'+') {
+            (f.plus, i) = (true, i + 1);
+        }
+        if cs.get(i) == Some(&'0') {
+            (f.zero, i) = (true, i + 1);
+        }
+        let digits = |i: &mut usize| {
+            let st = *i;
+            while cs.get(*i).is_some_and(|c| c.is_ascii_digit()) {
+                *i += 1;
+            }
+            cs[st..*i].iter().collect::<String>()
+        };
+        let w = digits(&mut i);
+        if !w.is_empty() {
+            f.width = w.parse().map_err(|_| format!("width `{w}` is too large"))?;
+        }
+        if cs.get(i) == Some(&'.') {
+            i += 1;
+            let p = digits(&mut i);
+            if p.is_empty() {
+                return Err("expected digits after `.` in a format spec".into());
+            }
+            f.precision = Some(p.parse().map_err(|_| format!("precision `{p}` is too large"))?);
+        }
+        if i != cs.len() {
+            return Err(format!("bad format spec `{s}`: expected `[[fill]align][+][0][width][.precision]`, e.g. `.2`, `>8`, `05`"));
+        }
+        if s.is_empty() {
+            return Err("empty format spec after `:`".into());
+        }
+        Ok(f)
+    }
+}
+
+impl std::fmt::Display for FmtSpec {
+    fn fmt(&self, o: &mut std::fmt::Formatter) -> std::fmt::Result {
+        if let Some(a) = self.align {
+            if self.fill != ' ' {
+                write!(o, "{}", self.fill)?;
+            }
+            write!(o, "{a}")?;
+        }
+        if self.plus {
+            write!(o, "+")?;
+        }
+        if self.zero {
+            write!(o, "0")?;
+        }
+        if self.width > 0 {
+            write!(o, "{}", self.width)?;
+        }
+        if let Some(p) = self.precision {
+            write!(o, ".{p}")?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -418,4 +518,87 @@ pub enum CtorArgs {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Program {
     pub decls: Vec<Decl>,
+}
+
+/// Visit `e` and every expression inside it, outermost first, allowing changes.
+pub fn walk_mut(e: &mut Expr, f: &mut impl FnMut(&mut Expr)) {
+    walk_mut_in(e, f, true)
+}
+
+/// Visit every expression inside `e`, then `e` itself (innermost first).
+pub fn walk_mut_post(e: &mut Expr, f: &mut impl FnMut(&mut Expr)) {
+    walk_mut_in(e, f, false)
+}
+
+fn walk_mut_in(e: &mut Expr, f: &mut impl FnMut(&mut Expr), pre: bool) {
+    if pre {
+        f(e);
+    }
+    walk_children_mut(e, &mut |x| walk_mut_in(x, f, pre));
+    if !pre {
+        f(e);
+    }
+}
+
+fn walk_children_mut(e: &mut Expr, w: &mut impl FnMut(&mut Expr)) {
+    let mut w = |x: &mut Expr| w(x);
+    match e {
+        Expr::List(xs) | Expr::Tuple(xs) => xs.iter_mut().for_each(&mut w),
+        Expr::Ctor(_, CtorArgs::Positional(xs)) => xs.iter_mut().for_each(&mut w),
+        Expr::Ctor(_, CtorArgs::Record(fs)) => fs.iter_mut().for_each(|(_, x)| w(x)),
+        Expr::Ctor(_, CtorArgs::Update(b, fs)) => {
+            w(b);
+            fs.iter_mut().for_each(|(_, x)| w(x))
+        }
+        Expr::Call(g, xs) => {
+            w(g);
+            xs.iter_mut().for_each(&mut w)
+        }
+        Expr::Method(r, _, xs) => {
+            w(r);
+            xs.iter_mut().for_each(&mut w)
+        }
+        Expr::Field(r, _) | Expr::Is(r, _) | Expr::Un(_, r) | Expr::Lambda(_, r) | Expr::Return(r) | Expr::Mut(r) | Expr::Try(r, _) => w(r),
+        Expr::Except(r, _, fb) => {
+            w(r);
+            w(fb)
+        }
+        Expr::Interp(parts) => parts.iter_mut().for_each(|p| {
+            if let StrPart::Expr(e, _) = p {
+                w(e)
+            }
+        }),
+        Expr::Bin(_, l, r) => {
+            w(l);
+            w(r)
+        }
+        Expr::If(c, t, x) => {
+            w(c);
+            w(t);
+            w(x)
+        }
+        Expr::Match(s, _, arms) => {
+            w(s);
+            arms.iter_mut().for_each(|a| w(&mut a.body))
+        }
+        Expr::Block(stmts, last) => {
+            for s in stmts {
+                match s {
+                    Stmt::Comment(_) | Stmt::Break | Stmt::Continue => {}
+                    Stmt::Let(_, _, x) | Stmt::Var(_, _, x) | Stmt::Expr(x) | Stmt::Assert(x) | Stmt::Loop(x) => w(x),
+                    Stmt::Assign(a, b) | Stmt::While(a, b) | Stmt::For(_, a, b) => {
+                        w(a);
+                        w(b)
+                    }
+                }
+            }
+            w(last)
+        }
+        _ => {}
+    }
+}
+
+/// Every expression of a function: its body and its contract.
+pub fn fn_exprs_mut(f: &mut FnDecl) -> impl Iterator<Item = &mut Expr> {
+    std::iter::once(&mut f.body).chain(f.requires.iter_mut()).chain(f.ensures.iter_mut())
 }
