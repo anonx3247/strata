@@ -87,6 +87,10 @@ error: invalid input: lines: [] does not satisfy `NonEmpty` (where len(it) > 0)
 
 ## The viewer
 
+![The Strata viewer, showing collatz_steps from examples/math.strata: its code, six proven checks, and "may not terminate"](images/viewer.png)
+
+*`strata ui` on [`examples/math.strata`](../examples/math.strata) after `strata verify`. Left: every definition, with a dot for its status. Middle: the selected function and what surrounds it. Right: its description, neighbours, and what the verifier said: six checks proven, termination not shown.*
+
 `strata ui` serves a local, read-only viewer. It re-reads the codebase every 1.5 seconds, so edits made through the CLI (by you or by agents) appear as they are committed.
 
 - **Code**: with a definition selected (the default once you click something), it shows that definition, then how it takes part in implementations (the impl blocks of a type or a trait; an impl block's trait and type), its dependencies, its references and its tests, as plain code with a small kind/status marker in the margin. Each definition shows its interface; where there is more (a function body, an implementation's methods, a trait's default methods), an inline *show body ▸* / *hide body ▾* control reveals it. The selected definition starts open, and *expand all* opens everything. *Everything* shows the whole codebase.
