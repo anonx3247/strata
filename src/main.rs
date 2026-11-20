@@ -36,10 +36,15 @@ every change made through strata, committed with them):
   init                         make the current folder a package (a strata.toml named
                                after the folder)
   add <file.strata> [-m MSG]   import definitions from a file (checked, atomic)
-  edit [-m MSG] [--rm NAME]..  read definitions from stdin; replace/add them by name;
-                               commit only if the whole codebase still checks
-  edit [SELECTOR] [--module m] with nothing piped in (or --editor): open the definitions
-                               (or the module) in $VISUAL / $EDITOR, and apply what you save
+  edit [MODULE] [-m MSG] [--rm NAME]..
+                               read definitions from stdin; replace/add them by name (into
+                               MODULE, default the root); commit only if the whole codebase
+                               still checks
+  edit [MODULE | SELECTOR]     with nothing piped in (or --editor): open the code in $VISUAL /
+                               $EDITOR and apply what you save: the whole package (one file
+                               per module), a module (`shop`, `main`, or its file
+                               `shop/orders.strata`, new or not), or the definitions a
+                               selector picks
   rename <old> <new> [<old> <new>]... [-m MSG]
                                rename functions, types, traits, variants, trait methods or
                                fields (`Owner.field`) and every reference, in one step
@@ -65,7 +70,7 @@ every change made through strata, committed with them):
                                print a module as source (L3): the file that holds it (the
                                root module is `main`); --split writes one file per module
   (`--file` and `add` accept a folder: each .strata file is a module named after its path;
-   `edit --module m` puts unqualified definitions into module m)
+   `--module m` reads a single file as module m)
 
 Packages: a folder with a strata.toml (`name = \"...\"`, optional `exports = [...]`);
 its .strata files are modules named after their path, main.strata is the entry point.
@@ -267,7 +272,12 @@ fn run() -> Result<bool, String> {
             } else {
                 let mut s = String::new();
                 std::io::stdin().read_to_string(&mut s).map_err(|e| e.to_string())?;
-                parser::parse_module_file(&s, args.val("--module").unwrap_or("")).map_err(|e| format!("parse error at {e}"))?
+                // `strata edit shop < defs`: unqualified definitions go into the module `shop`
+                let module = match args.pos.get(1) {
+                    None => String::new(),
+                    Some(arg) => edit_module(&cb.program, arg).unwrap_or_else(|| arg.clone()),
+                };
+                parser::parse_module_file(&s, &module).map_err(|e| format!("parse error at {e}"))?
             };
             let deletes: Vec<String> = args.flags.get("--rm").cloned().unwrap_or_default();
             let msg = args.val("-m").unwrap_or(if cmd == "add" { "import" } else { "edit" });
@@ -1196,87 +1206,149 @@ fn editor_command() -> String {
     git_out(&["var", "GIT_EDITOR"]).map(|e| e.trim().to_string()).ok().filter(|e| !e.is_empty()).unwrap_or_else(|| "vi".into())
 }
 
-/// `strata edit [SELECTOR]` with nothing piped in: open the code in the
-/// user's editor (the definitions a selector picks, or a whole module), and
-/// apply what is saved as an edit. Definitions deleted from the buffer are
-/// removed. If the edit doesn't parse or check, the editor opens again with
-/// the errors at the top; saving it unchanged gives up.
+/// What `strata edit X` names: a module (`shop`, `main` for the root, or its
+/// file `shop/orders.strata`, which may not exist yet), else the definitions
+/// a selector picks. `None` when `X` is a selector.
+fn edit_module(p: &Program, arg: &str) -> Option<String> {
+    if let Some(path) = arg.strip_suffix(".strata") {
+        let m = path.trim_start_matches("./").replace(['/', '\\'], ".");
+        return Some(if m == "main" { String::new() } else { m });
+    }
+    if arg == "main" {
+        return Some(String::new());
+    }
+    p.decls.iter().any(|d| d.module == arg).then(|| arg.to_string())
+}
+
+/// One file of an editing session: a module, the definitions shown from it
+/// (those missing when it is saved are removed), and its text.
+struct EditFile {
+    module: String,
+    shown: Vec<String>,
+    text: String,
+    path: std::path::PathBuf,
+}
+
+/// `strata edit [MODULE | SELECTOR]` with nothing piped in: open the code in
+/// the user's editor, and apply what is saved as one edit. With nothing
+/// named, every module of the package, one file each; a module (`shop`, or
+/// its file `shop.strata`) as its file; otherwise the definitions a selector
+/// picks. Definitions deleted from a file are removed. If the edit doesn't
+/// parse or check, the editor opens again with the errors at the top; saving
+/// it unchanged gives up.
 fn edit_in_editor(cb: &mut Codebase, args: &Args, json_out: bool) -> Result<bool, String> {
     let p = cb.program.clone();
     let mut mods: Vec<String> = p.decls.iter().map(|d| d.module.clone()).collect();
     mods.sort();
     mods.dedup();
-    let shown_name = |m: &str| if m.is_empty() { "main".to_string() } else { m.to_string() };
-    let (module, shown, text): (String, Vec<String>, String) = match args.pos.get(1) {
-        Some(sel) => {
-            let names = view::select(&p, Some(sel));
-            let picked: Vec<&Decl> = p.decls.iter().filter(|d| names.contains(&d.qname())).collect();
-            if picked.is_empty() {
-                return Err(format!("`{sel}` picks no definition"));
-            }
-            let mut ms: Vec<&str> = picked.iter().map(|d| d.module.as_str()).collect();
-            ms.sort();
-            ms.dedup();
-            if ms.len() > 1 {
-                return Err(format!("`{sel}` picks definitions in several modules ({}): edit one module at a time", ms.iter().map(|m| shown_name(m)).collect::<Vec<_>>().join(", ")));
-            }
-            let text = picked.iter().map(|d| printer::decl(d)).collect::<Vec<_>>().join("\n\n") + "\n";
-            (ms[0].to_string(), picked.iter().map(|d| d.qname()).collect(), text)
-        }
-        None => {
-            let m = match args.val("--module") {
-                Some("main") => String::new(),
-                Some(m) => m.to_string(),
-                None if mods.len() <= 1 => mods.first().cloned().unwrap_or_default(),
-                None => {
-                    return Err(format!(
-                        "this package has several modules ({}): pick one with `strata edit --module m`, or definitions with `strata edit NAME`",
-                        mods.iter().map(|m| shown_name(m)).collect::<Vec<_>>().join(", ")
-                    ))
-                }
-            };
-            let shown = p.decls.iter().filter(|d| d.module == m).map(|d| d.qname()).collect();
-            let text = if p.decls.iter().any(|d| d.module == m) { printer::module_file(&p, &m) } else { String::new() };
-            (m, shown, text)
-        }
+    let whole = |m: &str| -> (Vec<String>, String) {
+        let shown = p.decls.iter().filter(|d| d.module == m).map(|d| d.qname()).collect();
+        let text = if p.decls.iter().any(|d| d.module == m) { printer::module_file(&p, m) } else { String::new() };
+        (shown, text)
     };
-    let path = cb.cache_dir().join(format!("edit-{}.strata", shown_name(&module).replace('.', "-")));
+    let dir = cb.cache_dir().join("edit");
+    let _ = std::fs::remove_dir_all(&dir);
+    let file = |module: String, shown: Vec<String>, text: String| EditFile { path: dir.join(store::module_path(&module)), module, shown, text };
+    let mut files: Vec<EditFile> = match args.pos.get(1) {
+        None if mods.is_empty() => vec![file(String::new(), vec![], String::new())],
+        None => mods.iter().map(|m| {
+            let (shown, text) = whole(m);
+            file(m.clone(), shown, text)
+        }).collect(),
+        Some(arg) => match edit_module(&p, arg) {
+            Some(m) => {
+                let (shown, text) = whole(&m);
+                vec![file(m, shown, text)]
+            }
+            None => {
+                let names = view::select(&p, Some(arg));
+                let picked: Vec<&Decl> = p.decls.iter().filter(|d| names.contains(&d.qname())).collect();
+                if picked.is_empty() {
+                    return Err(format!("`{arg}` is no module and picks no definition (a new module is opened by its file: `strata edit {arg}.strata`)"));
+                }
+                let mut ms: Vec<&str> = picked.iter().map(|d| d.module.as_str()).collect();
+                ms.sort();
+                ms.dedup();
+                ms.into_iter()
+                    .map(|m| {
+                        let here: Vec<&&Decl> = picked.iter().filter(|d| d.module == m).collect();
+                        let text = here.iter().map(|d| printer::decl(d)).collect::<Vec<_>>().join("\n\n") + "\n";
+                        file(m.to_string(), here.iter().map(|d| d.qname()).collect(), text)
+                    })
+                    .collect()
+            }
+        },
+    };
     let editor = editor_command();
     let msg = args.val("-m").unwrap_or("edit").to_string();
-    let mut buffer = text.clone();
-    let mut last = text.clone();
+    let first = files.iter().map(|f| f.text.clone()).collect::<Vec<_>>();
+    let mut last = first.clone();
+    let mut errors_at: Vec<Vec<String>> = vec![vec![]; files.len()];
+    let cleanup = || {
+        let _ = std::fs::remove_dir_all(&dir);
+    };
     loop {
-        std::fs::write(&path, &buffer).map_err(|e| format!("{}: {e}", path.display()))?;
-        let status = Command::new("sh").arg("-c").arg(format!("{editor} \"$1\"")).arg("strata-edit").arg(&path).status().map_err(|e| format!("could not start the editor `{editor}`: {e}"))?;
+        for (f, errors) in files.iter().zip(&errors_at) {
+            let mut buffer = f.text.clone();
+            if !errors.is_empty() {
+                let mut head: Vec<String> = errors.iter().flat_map(|e| e.lines().map(|l| format!("{EDIT_MARK}{l}")).collect::<Vec<_>>()).collect();
+                head.push(format!("{EDIT_MARK}not applied: fix it and save, or save it unchanged to give up"));
+                buffer = head.join("\n") + "\n\n" + &f.text;
+            }
+            if let Some(parent) = f.path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            std::fs::write(&f.path, &buffer).map_err(|e| format!("{}: {e}", f.path.display()))?;
+        }
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(format!("{editor} \"$@\""))
+            .arg("strata-edit")
+            .args(files.iter().map(|f| &f.path))
+            .status()
+            .map_err(|e| format!("could not start the editor `{editor}`: {e}"))?;
         if !status.success() {
+            cleanup();
             return Err(format!("the editor `{editor}` failed; nothing was changed"));
         }
-        let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        let written: String = raw.lines().filter(|l| !l.starts_with(EDIT_MARK)).collect::<Vec<_>>().join("\n").trim_start_matches('\n').to_string() + "\n";
-        if written.trim() == last.trim() {
-            let _ = std::fs::remove_file(&path);
-            println!("{}", if buffer == text { "no changes" } else { "gave up: nothing was changed" });
-            return Ok(buffer == text);
+        for f in &mut files {
+            let raw = std::fs::read_to_string(&f.path).map_err(|e| e.to_string())?;
+            f.text = raw.lines().filter(|l| !l.starts_with(EDIT_MARK)).collect::<Vec<_>>().join("\n").trim_start_matches('\n').to_string() + "\n";
         }
-        last = written.clone();
-        let errors = match parser::parse_module_file(&written, &module) {
-            Err(e) => vec![format!("parse error at {e}")],
-            Ok(edits) => {
-                let kept: std::collections::HashSet<String> = edits.decls.iter().map(|d| d.qname()).collect();
-                let deletes: Vec<String> = shown.iter().filter(|q| !kept.contains(*q)).cloned().collect();
-                match apply_edit(cb, "edit", edits, deletes, &msg, json_out)? {
-                    Ok(()) => {
-                        let _ = std::fs::remove_file(&path);
-                        return Ok(true);
+        let now: Vec<String> = files.iter().map(|f| f.text.clone()).collect();
+        if now.iter().zip(&last).all(|(a, b)| a.trim() == b.trim()) {
+            cleanup();
+            let untouched = last.iter().zip(&first).all(|(a, b)| a.trim() == b.trim());
+            println!("{}", if untouched { "no changes" } else { "gave up: nothing was changed" });
+            return Ok(untouched);
+        }
+        last = now;
+        errors_at = vec![vec![]; files.len()];
+        let mut edits = Program::default();
+        for (i, f) in files.iter().enumerate() {
+            match parser::parse_module_file(&f.text, &f.module) {
+                Ok(p) => edits.decls.extend(p.decls),
+                Err(e) => errors_at[i].push(format!("parse error at {e}")),
+            }
+        }
+        if errors_at.iter().all(Vec::is_empty) {
+            let kept: std::collections::HashSet<String> = edits.decls.iter().map(|d| d.qname()).collect();
+            let deletes: Vec<String> = files.iter().flat_map(|f| f.shown.iter()).filter(|q| !kept.contains(*q)).cloned().collect();
+            match apply_edit(cb, "edit", edits, deletes, &msg, json_out)? {
+                Ok(()) => {
+                    cleanup();
+                    return Ok(true);
+                }
+                Err(errors) => {
+                    // each error goes on top of the file of its definition (`error in shop.total: ...`)
+                    for e in errors {
+                        let decl = e.strip_prefix("error in ").and_then(|r| r.split_once(": ")).map_or("", |(d, _)| d);
+                        let i = files.iter().enumerate().filter(|(_, f)| f.module.is_empty() || decl.starts_with(&format!("{}.", f.module))).max_by_key(|(_, f)| f.module.len()).map_or(0, |(i, _)| i);
+                        errors_at[i].push(e);
                     }
-                    Err(errors) => errors,
                 }
             }
-        };
-        // again, with the errors on top
-        let mut head: Vec<String> = errors.iter().flat_map(|e| e.lines().map(|l| format!("{EDIT_MARK}{l}")).collect::<Vec<_>>()).collect();
-        head.push(format!("{EDIT_MARK}not applied: fix it and save, or save it unchanged to give up"));
-        buffer = head.join("\n") + "\n\n" + &written;
+        }
     }
 }
 
