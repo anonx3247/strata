@@ -229,7 +229,7 @@ pub fn rename_fields(p: &Program, renames: &[(String, String, String)]) -> Resul
     fields.dedup();
     // records with a field of that name besides those renamed (or `.value` of distinct
     // types): then accesses are told apart by the checker's types
-    let prelude = crate::parser::parse_program(crate::types::PRELUDE).unwrap_or_default();
+    let prelude = crate::types::prelude();
     let records: Vec<(String, Vec<String>)> = p
         .decls
         .iter()

@@ -99,6 +99,12 @@ pub fn total_builtin(name: &str) -> bool {
     all.peek().is_some() && all.all(|b| b.total)
 }
 
+/// The prelude's definitions, parsed once.
+pub fn prelude() -> &'static Program {
+    static P: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
+    P.get_or_init(|| crate::parser::parse_program(PRELUDE).expect("prelude parses"))
+}
+
 /// Builtin functions and their type schemes.
 pub const BUILTINS: &[Builtin] = &[
     Builtin::total("len", "A", "(List[A]) -> Int"),
@@ -391,7 +397,7 @@ impl Env {
 
     /// The environment of an already resolved program.
     pub fn build(prog: &Program) -> (Env, Vec<Diag>) {
-        let prelude = crate::parser::parse_program(PRELUDE).expect("prelude parses");
+        let prelude = prelude();
         let mut env = Env {
             types: HashMap::new(),
             ctors: HashMap::new(),

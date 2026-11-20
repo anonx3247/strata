@@ -635,7 +635,7 @@ fn run() -> Result<bool, String> {
                 println!("{}", serde_json::to_string_pretty(&out).unwrap());
             } else {
                 println!("// prelude types\n");
-                for d in parser::parse_program(types::PRELUDE).expect("prelude parses").decls {
+                for d in &types::prelude().decls {
                     println!("{}\n", printer::decl(&d));
                 }
                 println!("// builtin functions\n");
