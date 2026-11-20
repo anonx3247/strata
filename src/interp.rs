@@ -1,6 +1,7 @@
 //! Tree-walking interpreter with runtime contract checks
 //! (refinements, requires, ensures) and an execution trace.
 
+use crate::names::short;
 use crate::ast::*;
 use crate::generate::Gen;
 use crate::types::{subst_texpr, Env};
@@ -203,9 +204,6 @@ pub enum Output {
     Discard,
 }
 
-fn short(c: &str) -> &str {
-    c.rsplit('.').next().unwrap_or(c)
-}
 
 fn canon(v: &Value) -> String {
     to_json(v).to_string()

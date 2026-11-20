@@ -62,7 +62,7 @@ fn trait_node(m: &str) -> String {
 /// When the type has a method of that name of its own, or from another
 /// trait, the trait is named too: `Item.describe (Log)`.
 pub fn impl_label(env: &Env, imp: &ImplDecl, m: &str) -> String {
-    let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+    let short = |q: &str| crate::names::short(q).to_string();
     let head = texpr_head(&imp.for_type);
     let base = format!("{}.{}", crate::printer::ty(&imp.for_type), short(m));
     let own = env.inherent.get(&head).is_some_and(|i| i.methods.iter().any(|x| x.name == m));

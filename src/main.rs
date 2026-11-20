@@ -6,6 +6,7 @@ mod generate;
 mod interp;
 mod lexer;
 mod merge;
+mod names;
 mod package;
 mod pending;
 mod parser;
@@ -336,7 +337,7 @@ fn run() -> Result<bool, String> {
                 .map(|d| d.qname())
                 .collect();
             // prose is not rewritten: point at docs and comments that still say an old name
-            let shorts: Vec<String> = pairs.iter().map(|(o, _, _)| o.rsplit('.').next().unwrap_or(o).to_string()).collect();
+            let shorts: Vec<String> = pairs.iter().map(|(o, _, _)| crate::names::short(&o).to_string()).collect();
             let word = |t: &str| t.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| shorts.iter().any(|s| s == w));
             let mentions: Vec<String> = renamed
                 .decls
@@ -384,7 +385,7 @@ fn run() -> Result<bool, String> {
                 eprintln!("\nrejected: the codebase would not check; nothing was changed");
                 return Ok(false);
             }
-            let short = old_q.rsplit('.').next().unwrap_or(&old_q).to_string();
+            let short = crate::names::short(&old_q).to_string();
             let new_q = if target.is_empty() { short.clone() } else { format!("{target}.{short}") };
             let before: HashMap<String, String> = cb.program.decls.iter().map(|d| (d.qname(), store::self_hash(d))).collect();
             let is_use = |d: &Decl| matches!(d.kind, DeclKind::Use(_));
@@ -824,7 +825,7 @@ fn run() -> Result<bool, String> {
                     DeclKind::Impl(imp) if imp.is_inherent() => {
                         // a type's own methods are functions (`Item.new`, `Item.describe`), checked as such
                         for m in &imp.methods {
-                            let short = m.name.rsplit('.').next().unwrap_or(&m.name).to_string();
+                            let short = crate::names::short(&m.name).to_string();
                             let f = types::static_fn(imp, m);
                             let n = cc(&f.name);
                             let key = format!("{base}:{short}:{cases}:{n}:{skey}");

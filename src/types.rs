@@ -334,7 +334,7 @@ pub fn elaborate(prog: &Program) -> crate::resolve::Resolution {
     let statics = env.traits.values().any(|t| t.methods.iter().any(|m| !crate::resolve::takes_self(&m.decl)));
     // a trait method named like a builtin (`Files.remove`) may mean the builtin
     // or two modules' traits share a method name (`Console.write`, `Files.write`)
-    let mut shorts: Vec<&str> = env.traits.values().flat_map(|t| t.methods.iter().map(|m| m.decl.name.rsplit('.').next().unwrap_or(&m.decl.name))).collect();
+    let mut shorts: Vec<&str> = env.traits.values().flat_map(|t| t.methods.iter().map(|m| crate::names::short(&m.decl.name))).collect();
     let like_builtin = shorts.iter().any(|s| BUILTINS.iter().any(|b| b.name == *s));
     shorts.sort();
     let across = shorts.windows(2).any(|w| w[0] == w[1]);
@@ -471,7 +471,7 @@ impl Env {
         }
         // a variant is a type too, so its name must be unique in the whole
         // project: no other variant, type or trait (in any module) may share it
-        let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+        let short = |q: &str| crate::names::short(q).to_string();
         let mut owners: HashMap<String, Vec<String>> = HashMap::new();
         for n in env.types.keys().chain(env.traits.keys()) {
             owners.entry(short(n)).or_default().push(format!("the type `{n}`"));
@@ -1269,7 +1269,7 @@ impl<'a> Checker<'a> {
             }
             let callee = std::mem::take(&mut self.callee);
             if !callee && !self.env.type_args(&f).is_empty() {
-                let short = name.rsplit('.').next().unwrap_or(name);
+                let short = crate::names::short(&name);
                 self.err(format!("`{short}` needs to know its type arguments when it runs (it calls methods on the type), so it can't be passed as a value: pass a lambda (`x -> {short}(x)`)"));
             }
             self.last_inst = Some((name.to_string(), vars));
@@ -1280,7 +1280,7 @@ impl<'a> Checker<'a> {
             return Some(self.trait_method(name, &tn));
         }
         if self.env.is_method(name) {
-            let short = name.rsplit('.').next().unwrap_or(name);
+            let short = crate::names::short(&name);
             self.err(format!("which `{short}` runs depends on the type of the value it is called on (several types or traits have one): call it on a value, or pass a lambda such as `x -> x.{short}()`"));
             return Some(self.fresh());
         }
@@ -1304,7 +1304,7 @@ impl<'a> Checker<'a> {
         if self.lookup(m).is_some() || self.env.fns.contains_key(m) || split_trait_call(m).is_some() || !self.env.is_method(m) {
             return None;
         }
-        let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+        let short = |q: &str| crate::names::short(q).to_string();
         let sm = short(m);
         let recv = all.first()?;
         let n = self.errors.len();
@@ -1407,7 +1407,7 @@ impl<'a> Checker<'a> {
         if self.lookup(m).is_some() || self.env.fns.contains_key(m) || !self.env.is_method(m) || self.env.method_contract(m).is_some() {
             return None;
         }
-        let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+        let short = |q: &str| crate::names::short(q).to_string();
         let sm = short(m);
         let Some(recv) = recv else {
             self.err(format!("`{sm}` is a method: call it on a value (`x.{sm}()`)"));
@@ -1540,7 +1540,7 @@ impl<'a> Checker<'a> {
                 refs.push(match &t {
                     Ty::Rigid(q) => TypeRef::Param(q.clone()),
                     Ty::Con(h, _) if self.env.traits.contains_key(h) => {
-                        self.err(format!("`{p}` must be a concrete type here (it has methods called on the type), not any `{}`", h.rsplit('.').next().unwrap_or(h)));
+                        self.err(format!("`{p}` must be a concrete type here (it has methods called on the type), not any `{}`", crate::names::short(&h)));
                         continue;
                     }
                     _ => match ty_head(&t) {
@@ -1566,7 +1566,7 @@ impl<'a> Checker<'a> {
         if statics.is_empty() {
             return None;
         }
-        let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+        let short = |q: &str| crate::names::short(q).to_string();
         let sm = short(m);
         // the type, how it is passed at runtime, and the traits it is known to have
         let rigid = |c: &mut Checker, p: &str| {
@@ -2056,7 +2056,7 @@ impl<'a> Checker<'a> {
                             match &**recv {
                                 // `Item.new()` that `impl Item` doesn't define
                                 Expr::Ctor(t, CtorArgs::None) if self.env.types.contains_key(t) => {
-                                    let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+                                    let short = |q: &str| crate::names::short(q).to_string();
                                     self.err(format!("`{}` has no method `{}` called on the type (one without `self`, in `impl {}`)", short(t), short(m), short(t)))
                                 }
                                 _ => self.err(format!("unknown function `{m}`")),
@@ -3754,7 +3754,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                 for m in &t.methods {
                     // without `self`, the type it is called on must matter: else it is just a function
                     if !crate::resolve::takes_self(&m.decl) && !mentions_self(&m.decl) {
-                        let short = m.decl.name.rsplit('.').next().unwrap_or(&m.decl.name);
+                        let short = crate::names::short(&m.decl.name);
                         c.err(format!("trait method `{short}` has no `self` and doesn't mention `Self`, so no implementation could be chosen for a call: make it a function"));
                     }
                     let mut ob = Vec::new();
@@ -3811,7 +3811,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                 match env.traits.get(&i.trait_name).cloned() {
                     None if i.is_inherent() => {
                         // a type's own methods: only for a type this program defines, in its module
-                        let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+                        let short = |q: &str| crate::names::short(q).to_string();
                         if !env.types.contains_key(&head) || alias {
                             c.err(format!("`impl {}`: methods can only be added to a record, sum or `distinct` type defined in this program (use a function, or a trait)", short(&head)));
                         }
@@ -3833,7 +3833,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                         for (sn, sa) in c.supers_of(&tr.name, &targs, 0) {
                             c.pending.push((self_ty.clone(), sn.clone(), sa, format!("`{}` requires `{sn}`", tr.name)));
                         }
-                        let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+                        let short = |q: &str| crate::names::short(q).to_string();
                         for tm in &tr.methods {
                             let _ = short;
                             // each trait's implementation is its own, even when the type has a method of the same name

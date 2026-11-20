@@ -10,6 +10,7 @@
 //! gone and a new one that is the base's after `strata rename`) are carried
 //! into the other side, so its new references follow the rename.
 
+use crate::names::short;
 use crate::ast::{Decl, DeclKind, Program};
 use crate::{package, parser, printer, resolve};
 use std::collections::HashMap;
@@ -35,9 +36,6 @@ fn canon(d: &Decl) -> String {
     printer::decl(d)
 }
 
-fn short(q: &str) -> &str {
-    q.rsplit('.').next().unwrap_or(q)
-}
 
 fn renamable(d: &Decl) -> bool {
     matches!(d.kind, DeclKind::Fn(_) | DeclKind::Type(_) | DeclKind::Trait(_))
@@ -283,7 +281,7 @@ pub fn follow_rename(p: &Program, from: &str, to: &str) -> Option<Program> {
     resolve::set_member_name(&mut back, to, short(from));
     // `use` lists that name the new name (the renaming side's, kept by the
     // merge) name the old one again, so the other side's bare references resolve
-    let module = to.rsplit_once('.').map(|(m, _)| m).unwrap_or("");
+    let module = crate::names::module_of(&to);
     for d in &mut back.decls {
         if let DeclKind::Use(u) = &mut d.kind {
             if u.path == module {

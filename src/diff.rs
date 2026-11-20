@@ -7,6 +7,7 @@
 //! mostly rewritten falls back to a plain line diff. Definitions whose only
 //! change is following a rename are folded into that rename.
 
+use crate::names::short;
 use crate::ast::*;
 use crate::printer;
 use crate::store;
@@ -29,9 +30,6 @@ fn doc_text(d: &Decl) -> String {
     d.doc.iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
-fn short(q: &str) -> &str {
-    q.rsplit('.').next().unwrap_or(q)
-}
 
 // ---------- sequence diff ----------
 
