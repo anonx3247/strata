@@ -1,0 +1,170 @@
+//! Commands that show the code: diff, log, the viewer, render, interface, ast, view, builtins.
+
+use crate::*;
+
+/// `strata diff`.
+pub fn diff(args: &Args, json_out: bool) -> Result<bool, String> {
+    let num = |k: &str| args.val(k).map(|v| v.parse::<usize>().map_err(|_| format!("{k} needs a number"))).transpose();
+    let range = match args.val("--file") {
+        Some(f) => history::git_range(std::path::Path::new(f), args.pos.get(1).map(|s| s.as_str()).or(args.val("--base")))?,
+        None => {
+            let Source::Db(cb) = load(&args)? else { unreachable!() };
+            history::log_range(&cb, num("--from")?, num("--to")?)?
+        }
+    };
+    let j = range.diff(num("--step")?)?;
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&j).unwrap());
+        return Ok(true);
+    }
+    println!("{}", j["range"]["label"].as_str().unwrap_or(""));
+    for st in j["steps"].as_array().into_iter().flatten() {
+        let g = st["group"].as_str().filter(|g| !g.is_empty()).map(|g| format!("{g}  ")).unwrap_or_default();
+        let n = st["names"].as_array().map_or(0, |a| a.len());
+        println!("  step {:<3} {g}{}  ({n} definition{})", st["id"], st["title"].as_str().unwrap_or(""), if n == 1 { "" } else { "s" });
+    }
+    println!();
+    print!("{}", diff::render_text(&j));
+    Ok(true)
+}
+
+/// `strata log`.
+pub fn log(args: &Args, json_out: bool) -> Result<bool, String> {
+    let Source::Db(cb) = load(&args)? else { return Err("`log` needs a codebase".into()) };
+    for e in cb.log() {
+        if json_out {
+            println!("{e}");
+            continue;
+        }
+        println!("● {}", e["message"].as_str().unwrap_or(""));
+        for c in e["changes"].as_array().into_iter().flatten() {
+            let tag = match (c["old"].is_null(), c["new"].is_null()) {
+                (true, _) => "+",
+                (_, true) => "-",
+                _ if c["interface_changed"] == true => "~ interface",
+                _ => "~ impl",
+            };
+            println!("    {:<12} {}", tag, c["name"].as_str().unwrap_or(""));
+        }
+    }
+    Ok(true)
+}
+
+/// `strata ui`.
+pub fn ui(args: &Args) -> Result<bool, String> {
+    let port: u16 = args.val("--port").unwrap_or("7777").parse().map_err(|_| "bad --port")?;
+    let target = match args.val("--file") {
+        Some(f) => ui::Target::File(f.into()),
+        None => {
+            let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+            ui::Target::Db(Codebase::find(&cwd).ok_or("no package here (no strata.toml in this folder or above: run `strata init`, or pass --file)")?)
+        }
+    };
+    ui::serve(target, port)?;
+    Ok(true)
+}
+
+/// `strata builtins`.
+pub fn builtins(json_out: bool) -> Result<bool, String> {
+    if json_out {
+        let out: Vec<_> = types::BUILTINS.iter().map(|b| json!({"name": b.name, "type_params": b.params, "signature": b.sig, "total": b.total})).collect();
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    } else {
+        println!("// prelude types\n");
+        for d in &types::prelude().decls {
+            println!("{}\n", printer::decl(&d));
+        }
+        println!("// builtin functions\n");
+        for b in types::BUILTINS {
+            let tp = if b.params.is_empty() { String::new() } else { format!("[{}]", b.params) };
+            println!("{}{tp}{}", b.name, b.sig);
+        }
+    }
+    Ok(true)
+}
+
+/// `strata render`.
+pub fn render(args: &Args) -> Result<bool, String> {
+    let src = load(&args)?;
+    let p = src.program();
+    match args.val("--split") {
+        None => {
+            // a module is a file: print one
+            let mut mods: Vec<String> = p.decls.iter().map(|d| d.module.clone()).collect();
+            mods.sort();
+            mods.dedup();
+            let m = match (args.pos.get(1), mods.as_slice()) {
+                (Some(m), _) if m == "main" => String::new(),
+                (Some(m), _) if mods.contains(m) => m.clone(),
+                (Some(m), _) => return Err(format!("no module `{m}` (modules: {})", mods.iter().map(|m| if m.is_empty() { "main" } else { m }).collect::<Vec<_>>().join(", "))),
+                (None, [] | [_]) => mods.first().cloned().unwrap_or_default(),
+                (None, _) => {
+                    return Err(format!(
+                        "{} modules, one file each: `render MODULE` prints one ({}), `render --split DIR` writes them all",
+                        mods.len(),
+                        mods.iter().map(|m| if m.is_empty() { "main" } else { m }).collect::<Vec<_>>().join(", ")
+                    ))
+                }
+            };
+            print!("{}", printer::module_file(p, &m));
+        }
+        Some(dir) => {
+            // one file per module; the root module goes to main.strata
+            let mut mods: Vec<String> = p.decls.iter().map(|d| d.module.clone()).collect();
+            mods.sort();
+            mods.dedup();
+            for m in mods {
+                let rel = if m.is_empty() { "main".to_string() } else { m.replace('.', "/") };
+                let path = std::path::Path::new(dir).join(format!("{rel}.strata"));
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                std::fs::write(&path, printer::module_file(p, &m)).map_err(|e| e.to_string())?;
+                println!("wrote {}", path.display());
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// `strata interface`.
+pub fn interface(args: &Args) -> Result<bool, String> {
+    // what other modules can see: public definitions at interface level
+    let src = load(&args)?;
+    let p = src.program();
+    let m = args.pos.get(1).ok_or("usage: strata interface <module>")?;
+    let names: std::collections::BTreeSet<String> = p.decls.iter().filter(|d| &d.module == m && d.public).map(|d| d.qname()).collect();
+    if names.is_empty() {
+        return Err(format!("module `{m}` has no public definitions (or does not exist)"));
+    }
+    let hashes: Vec<String> = p.decls.iter().filter(|d| names.contains(&d.qname())).map(store::interface_hash).collect();
+    println!("// contract of module {m}  #{}\n", store::sha(&hashes.join(",")));
+    let st = view::Status { holes: HashMap::new(), verdicts: verdicts_for(&src) };
+    print!("{}", view::render(p, &names, 1, &st));
+    Ok(true)
+}
+
+/// `strata ast`.
+pub fn ast(args: &Args) -> Result<bool, String> {
+    let src = load(&args)?;
+    let name = args.pos.get(1).ok_or("usage: strata ast <name>")?;
+    let d = src.program().decls.iter().find(|d| &d.qname() == name).ok_or(format!("no definition `{name}`"))?;
+    println!("{}", serde_json::to_string_pretty(&json!({"name": name, "hash": store::self_hash(d), "interface_hash": store::interface_hash(d), "node": d})).unwrap());
+    Ok(true)
+}
+
+/// `strata view`.
+pub fn view(args: &Args) -> Result<bool, String> {
+    let src = load(&args)?;
+    let p = src.program();
+    let level: u8 = args.val("--level").unwrap_or("1").parse().map_err(|_| "--level must be 0-3")?;
+    let names = view::select(p, args.pos.get(1).map(|s| s.as_str()));
+    let rep = types::check(p);
+    let mut holes: HashMap<String, Vec<String>> = HashMap::new();
+    for h in rep.holes {
+        holes.entry(h.decl).or_default().push(h.name);
+    }
+    let st = view::Status { holes, verdicts: verdicts_for(&src) };
+    print!("{}", view::render(p, &names, level, &st));
+    Ok(true)
+}
