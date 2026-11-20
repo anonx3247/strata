@@ -2,11 +2,12 @@
 //! analysis and rewrite works on these types, through the walkers at the end.
 
 use serde::{Deserialize, Serialize};
+pub use crate::symbol::{Sym, Symbol};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TypeExpr {
     /// `Int`, `Order`, `List[T]`, `T`
-    Named(String, Vec<TypeExpr>),
+    Named(Symbol, Vec<TypeExpr>),
     /// `(A, B) -> C`
     Fn(Vec<TypeExpr>, Box<TypeExpr>),
     Unit,
@@ -26,7 +27,7 @@ pub struct Field {
     /// `///` doc comment lines (e.g. a command-line option's help).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub doc: Vec<String>,
-    pub name: String,
+    pub name: Symbol,
     pub ty: TypeExpr,
 }
 
@@ -42,7 +43,7 @@ pub struct Variant {
     /// `//` comment lines just above it, as written ("" is a blank line between groups).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comments: Vec<String>,
-    pub name: String,
+    pub name: Symbol,
     pub payload: Payload,
 }
 
@@ -62,8 +63,8 @@ pub struct TypeDecl {
     /// `UserId(s)` and unwrapped with `.value`; never mixed up with its base.
     #[serde(default)]
     pub distinct: bool,
-    pub name: String,
-    pub params: Vec<String>,
+    pub name: Symbol,
+    pub params: Vec<Symbol>,
     pub body: TypeBody,
     /// Refinement predicate over `it`.
     pub refinement: Option<Expr>,
@@ -71,7 +72,7 @@ pub struct TypeDecl {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Param {
-    pub name: String,
+    pub name: Symbol,
     pub ty: TypeExpr,
     /// `mut x: T` / `mut self`: the function may change it, and the caller's
     /// variable is updated when the call returns.
@@ -82,7 +83,7 @@ pub struct Param {
 /// `T: Ord + Hash` on a type parameter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Bound {
-    pub param: String,
+    pub param: Symbol,
     /// Trait references, e.g. `Worker[P, E]`.
     pub traits: Vec<TypeExpr>,
 }
@@ -96,8 +97,8 @@ pub struct FnDecl {
     /// `//` comment lines just above it, as written ("" is a blank line between groups).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comments: Vec<String>,
-    pub name: String,
-    pub type_params: Vec<String>,
+    pub name: Symbol,
+    pub type_params: Vec<Symbol>,
     #[serde(default)]
     pub bounds: Vec<Bound>,
     pub params: Vec<Param>,
@@ -138,15 +139,15 @@ pub struct Law {
     pub comments: Vec<String>,
     /// `///` doc comment lines.
     pub doc: Vec<String>,
-    pub name: String,
+    pub name: Symbol,
     pub params: Vec<Param>,
     pub body: Expr,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraitDecl {
-    pub name: String,
-    pub params: Vec<String>,
+    pub name: Symbol,
+    pub params: Vec<Symbol>,
     /// Supertraits: implementing this trait requires implementing these.
     pub supers: Vec<TypeExpr>,
     pub methods: Vec<TraitMethod>,
@@ -155,10 +156,10 @@ pub struct TraitDecl {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImplDecl {
-    pub type_params: Vec<String>,
+    pub type_params: Vec<Symbol>,
     pub bounds: Vec<Bound>,
     /// Empty for methods defined on the type itself (`impl Item { ... }`).
-    pub trait_name: String,
+    pub trait_name: Symbol,
     pub trait_args: Vec<TypeExpr>,
     pub for_type: TypeExpr,
     pub methods: Vec<FnDecl>,
@@ -199,7 +200,7 @@ pub struct Decl {
     pub kind: DeclKind,
     /// Dotted module path (`shop.orders`); empty for the root module.
     #[serde(default)]
-    pub module: String,
+    pub module: Symbol,
     /// `pub`: part of the module's contract, visible to other modules.
     #[serde(default)]
     pub public: bool,
@@ -208,9 +209,9 @@ pub struct Decl {
 /// `use orders.{Order, ship}` / `use orders.*`
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UseDecl {
-    pub path: String,
+    pub path: Symbol,
     /// `None` means everything public (`.*`).
-    pub items: Option<Vec<String>>,
+    pub items: Option<Vec<Symbol>>,
 }
 
 impl Decl {
@@ -221,10 +222,10 @@ impl Decl {
 
     pub fn name(&self) -> String {
         match &self.kind {
-            DeclKind::Type(t) => t.name.clone(),
-            DeclKind::Fn(f) => f.name.clone(),
+            DeclKind::Type(t) => t.name.to_string(),
+            DeclKind::Fn(f) => f.name.to_string(),
             DeclKind::Test(t) => format!("test \"{}\"", t.name),
-            DeclKind::Trait(t) => t.name.clone(),
+            DeclKind::Trait(t) => t.name.to_string(),
             DeclKind::Impl(i) => i.name(),
             DeclKind::Use(u) => format!("use {}", u.path),
         }
@@ -291,14 +292,14 @@ pub enum UnOp {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Pattern {
     Wild,
-    Bind(String),
+    Bind(Symbol),
     Int(i64),
     Str(String),
     Bool(bool),
     /// `None`, `Some(p)`, `Pending { id, lines: l, .. }`
-    Ctor(String, CtorPat),
+    Ctor(Symbol, CtorPat),
     /// `[]`, `[a, b]`, `[x, ..rest]`
-    List(Vec<Pattern>, Option<String>),
+    List(Vec<Pattern>, Option<Symbol>),
     /// `(a, _)`
     Tuple(Vec<Pattern>),
     /// `where 3 <= it && it <= 5`: the values for which the condition holds.
@@ -312,7 +313,7 @@ pub enum CtorPat {
     None,
     Positional(Vec<Pattern>),
     /// field patterns, and whether `..` was present
-    Record(Vec<(String, Pattern)>, bool),
+    Record(Vec<(Symbol, Pattern)>, bool),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -328,7 +329,7 @@ pub struct Arm {
 pub enum Stmt {
     Let(Pattern, Option<TypeExpr>, Expr),
     /// `let mut x = e`
-    Var(String, Option<TypeExpr>, Expr),
+    Var(Symbol, Option<TypeExpr>, Expr),
     /// `x = e`, `x.field = e`
     Assign(Expr, Expr),
     /// `while cond { ... }`
@@ -357,26 +358,26 @@ pub enum Expr {
     Str(String),
     Bool(bool),
     Unit,
-    Var(String),
+    Var(Symbol),
     /// Typed hole: `?name`. Checks against anything, fails at runtime.
-    Hole(String),
+    Hole(Symbol),
     List(Vec<Expr>),
     /// `Some(x)`, `None`, `Line { sku: s, qty: 1 }`
-    Ctor(String, CtorArgs),
+    Ctor(Symbol, CtorArgs),
     Call(Box<Expr>, Vec<Expr>),
     /// `e.f(args)` — method-call sugar for `f(e, args)`
-    Method(Box<Expr>, String, Vec<Expr>),
-    Field(Box<Expr>, String),
+    Method(Box<Expr>, Symbol, Vec<Expr>),
+    Field(Box<Expr>, Symbol),
     /// `x -> body`, `(a, b) -> body`, `(s: String) -> body`
     Lambda(Vec<LamParam>, Box<Expr>),
     Bin(BinOp, Box<Expr>, Box<Expr>),
     Un(UnOp, Box<Expr>),
     /// `e is Shipped`
-    Is(Box<Expr>, String),
+    Is(Box<Expr>, Symbol),
     If(Box<Expr>, Box<Expr>, Box<Expr>),
     /// `match e { … }`, or `match e as x { … }` to name the value; a matched
     /// variable (or the `as` name) is narrowed to each arm's pattern.
-    Match(Box<Expr>, Option<String>, Vec<Arm>),
+    Match(Box<Expr>, Option<Symbol>, Vec<Arm>),
     /// `mut x` as an argument: passed to a `mut` parameter, which changes it.
     Mut(Box<Expr>),
     Block(Vec<Stmt>, Box<Expr>),
@@ -391,7 +392,7 @@ pub enum Expr {
     Try(Box<Expr>, TryKind),
     /// `e except { fallback }`, `e except err { fallback }`: the `Ok` / `Some`
     /// value, or else the fallback, which can use the error under `err`.
-    Except(Box<Expr>, Option<String>, Box<Expr>),
+    Except(Box<Expr>, Option<Symbol>, Box<Expr>),
     /// `f"{name} has {len(xs)} items"`: each part shown as by `to_string`.
     Interp(Vec<StrPart>),
 }
@@ -504,7 +505,7 @@ pub enum TryKind {
 /// A lambda parameter, with an optional type: `x` or `x: Int`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LamParam {
-    pub name: String,
+    pub name: Symbol,
     pub ty: Option<TypeExpr>,
 }
 
@@ -512,9 +513,9 @@ pub struct LamParam {
 pub enum CtorArgs {
     None,
     Positional(Vec<Expr>),
-    Record(Vec<(String, Expr)>),
+    Record(Vec<(Symbol, Expr)>),
     /// `Entry { ..e, status: Done }`: copy of `e` with some fields replaced
-    Update(Box<Expr>, Vec<(String, Expr)>),
+    Update(Box<Expr>, Vec<(Symbol, Expr)>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -792,7 +793,7 @@ pub fn any_expr(e: &Expr, mut pred: impl FnMut(&Expr) -> bool) -> bool {
 pub fn place_path(e: &Expr) -> Option<String> {
     match e {
         Expr::Mut(x) => place_path(x),
-        Expr::Var(x) => Some(x.clone()),
+        Expr::Var(x) => Some(x.to_string()),
         Expr::Field(r, f) => Some(format!("{}.{f}", place_path(r)?)),
         _ => None,
     }

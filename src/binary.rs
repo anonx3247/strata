@@ -262,13 +262,13 @@ pub fn encode_module(p: &Program, module: &str, deps: &BTreeMap<String, BTreeSet
 /// One module file per module of `p`, in the order the modules first appear.
 pub fn encode_modules(p: &Program) -> Vec<(String, Vec<u8>)> {
     let deps = crate::store::graph(p);
-    let mut modules: Vec<&String> = Vec::new();
+    let mut modules: Vec<&Symbol> = Vec::new();
     for d in &p.decls {
         if !modules.contains(&&d.module) {
             modules.push(&d.module);
         }
     }
-    modules.into_iter().map(|m| (m.clone(), encode_module(p, m, &deps))).collect()
+    modules.into_iter().map(|m| (m.to_string(), encode_module(p, m, &deps))).collect()
 }
 
 /// A module file's header, without decoding any definition.
@@ -427,6 +427,8 @@ struct Writer {
     body: Vec<u8>,
     strings: Vec<String>,
     index: HashMap<String, u64>,
+    /// The same, for names: found by number rather than by hashing their text.
+    symbols: HashMap<Symbol, u64>,
 }
 
 impl Writer {
@@ -448,7 +450,11 @@ impl Writer {
         self.body.push(b)
     }
     fn str(&mut self, s: &str) {
-        let i = match self.index.get(s) {
+        let i = self.index_of(s);
+        self.uint(i)
+    }
+    fn index_of(&mut self, s: &str) -> u64 {
+        match self.index.get(s) {
             Some(&i) => i,
             None => {
                 let i = self.strings.len() as u64;
@@ -456,8 +462,7 @@ impl Writer {
                 self.index.insert(s.to_string(), i);
                 i
             }
-        };
-        self.uint(i)
+        }
     }
 }
 
@@ -465,12 +470,14 @@ struct Reader<'a> {
     bytes: &'a [u8],
     pos: usize,
     strings: Vec<String>,
+    /// Each string of the table as a symbol, once it has been read as one.
+    symbols: Vec<Option<Symbol>>,
     depth: usize,
 }
 
 impl<'a> Reader<'a> {
     fn new(bytes: &'a [u8]) -> Reader<'a> {
-        Reader { bytes, pos: 0, strings: Vec::new(), depth: 0 }
+        Reader { bytes, pos: 0, strings: Vec::new(), symbols: Vec::new(), depth: 0 }
     }
     /// `STRATA`, the version, and the kind of file.
     fn preamble(&mut self) -> Result<u8, String> {
@@ -491,6 +498,7 @@ impl<'a> Reader<'a> {
             let s = std::str::from_utf8(self.take(len)?).map(str::to_string);
             let s = s.map_err(|_| self.err("a string that isn't UTF-8"))?;
             self.strings.push(s);
+            self.symbols.push(None);
         }
         Ok(())
     }
@@ -640,6 +648,33 @@ impl Bin for String {
     fn dec(r: &mut Reader) -> Result<Self, String> {
         let i = r.uint()?;
         r.strings.get(i as usize).cloned().ok_or_else(|| r.err(&format!("string {i}, not in the table")))
+    }
+}
+
+/// A name: a string of the table, interned once per file however often it is used.
+impl Bin for Symbol {
+    fn enc(&self, w: &mut Writer) {
+        let i = match w.symbols.get(self) {
+            Some(&i) => i,
+            None => {
+                let i = w.index_of(self.as_str());
+                w.symbols.insert(*self, i);
+                i
+            }
+        };
+        w.uint(i)
+    }
+    fn dec(r: &mut Reader) -> Result<Self, String> {
+        let i = r.uint()? as usize;
+        match r.symbols.get(i) {
+            Some(Some(s)) => Ok(*s),
+            Some(None) => {
+                let s = Symbol::new(&r.strings[i]);
+                r.symbols[i] = Some(s);
+                Ok(s)
+            }
+            None => Err(r.err(&format!("string {i}, not in the table"))),
+        }
     }
 }
 
@@ -1185,7 +1220,7 @@ use e.*
                 for _ in 0..2 * MAX_DEPTH {
                     e = Expr::Mut(Box::new(e));
                 }
-                let d = Decl { comments: vec![], doc: vec![], module: String::new(), public: false, kind: DeclKind::Test(TestDecl { name: "t".into(), body: e }) };
+                let d = Decl { comments: vec![], doc: vec![], module: Symbol::EMPTY, public: false, kind: DeclKind::Test(TestDecl { name: "t".into(), body: e }) };
                 assert!(decode_definition(&encode_definition(&d)).unwrap_err().contains("nesting too deep"));
             })
             .unwrap()

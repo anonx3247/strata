@@ -25,7 +25,7 @@ pub fn ty(t: &TypeExpr) -> String {
     match t {
         TypeExpr::Unit => "()".into(),
         TypeExpr::Named(n, args) if n == "Tuple" => format!("({})", args.iter().map(ty).collect::<Vec<_>>().join(", ")),
-        TypeExpr::Named(n, args) if args.is_empty() => n.clone(),
+        TypeExpr::Named(n, args) if args.is_empty() => n.to_string(),
         TypeExpr::Named(n, args) => format!("{n}[{}]", args.iter().map(ty).collect::<Vec<_>>().join(", ")),
         TypeExpr::Fn(ps, r) => format!("({}) -> {}", ps.iter().map(ty).collect::<Vec<_>>().join(", "), ty(r)),
         TypeExpr::Refined(b, p) => format!("{} where {}", ty(b), expr(p, 0)),
@@ -87,14 +87,14 @@ fn ind(n: usize) -> String {
 pub fn pat(p: &Pattern) -> String {
     match p {
         Pattern::Wild => "_".into(),
-        Pattern::Bind(n) => n.clone(),
+        Pattern::Bind(n) => n.to_string(),
         Pattern::Int(n) => n.to_string(),
         Pattern::Tuple(ps) => format!("({})", ps.iter().map(pat).collect::<Vec<_>>().join(", ")),
         Pattern::Str(s) => format!("{s:?}"),
         Pattern::Bool(b) => b.to_string(),
         Pattern::Cond(c) => format!("where {}", expr(c, 0)),
         Pattern::Or(ps) => ps.iter().map(pat).collect::<Vec<_>>().join(" | "),
-        Pattern::Ctor(c, CtorPat::None) => c.clone(),
+        Pattern::Ctor(c, CtorPat::None) => c.to_string(),
         Pattern::Ctor(c, CtorPat::Positional(ps)) => {
             format!("{c}({})", ps.iter().map(pat).collect::<Vec<_>>().join(", "))
         }
@@ -102,7 +102,7 @@ pub fn pat(p: &Pattern) -> String {
             let mut parts: Vec<String> = fs
                 .iter()
                 .map(|(f, p)| match p {
-                    Pattern::Bind(b) if b == f => f.clone(),
+                    Pattern::Bind(b) if b == f => f.to_string(),
                     _ => format!("{f}: {}", pat(p)),
                 })
                 .collect();
@@ -205,7 +205,7 @@ pub fn expr(e: &Expr, d: usize) -> String {
             &format!("{c} {{"),
             fs.iter()
                 .map(|(f, x)| match x {
-                    Expr::Var(v) if v == f => f.clone(),
+                    Expr::Var(v) if v == f => f.to_string(),
                     _ => format!("{f}: {}", expr(x, d + 1)),
                 })
                 .collect(),
@@ -239,13 +239,13 @@ pub fn expr(e: &Expr, d: usize) -> String {
 /// `x`, `(a, b)`, `(s: String)`, `()`
 fn lambda_params(ps: &[LamParam]) -> String {
     match ps {
-        [p] if p.ty.is_none() => p.name.clone(),
+        [p] if p.ty.is_none() => p.name.to_string(),
         _ => {
             let parts: Vec<String> = ps
                 .iter()
                 .map(|p| match &p.ty {
                     Some(t) => format!("{}: {}", p.name, ty(t)),
-                    None => p.name.clone(),
+                    None => p.name.to_string(),
                 })
                 .collect();
             format!("({})", parts.join(", "))
@@ -262,16 +262,16 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Str(s) => format!("\"{}\"", escape(s)),
         Expr::Bool(b) => b.to_string(),
         Expr::Unit => "()".into(),
-        Expr::Var(v) => v.clone(),
+        Expr::Var(v) => v.to_string(),
         Expr::Hole(h) => format!("?{h}"),
         Expr::List(es) => format!("[{}]", args(es, d)),
-        Expr::Ctor(c, CtorArgs::None) => c.clone(),
+        Expr::Ctor(c, CtorArgs::None) => c.to_string(),
         Expr::Ctor(c, CtorArgs::Positional(es)) => format!("{c}({})", args(es, d)),
         Expr::Ctor(c, CtorArgs::Record(fs)) => {
             let parts: Vec<String> = fs
                 .iter()
                 .map(|(f, e)| match e {
-                    Expr::Var(v) if v == f => f.clone(),
+                    Expr::Var(v) if v == f => f.to_string(),
                     _ => format!("{f}: {}", expr(e, d)),
                 })
                 .collect();
@@ -280,7 +280,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Ctor(c, CtorArgs::Update(base, fs)) => {
             let mut parts = vec![format!("..{}", expr(base, d))];
             parts.extend(fs.iter().map(|(f, e)| match e {
-                Expr::Var(v) if v == f => f.clone(),
+                Expr::Var(v) if v == f => f.to_string(),
                 _ => format!("{f}: {}", expr(e, d)),
             }));
             format!("{c} {{ {} }}", parts.join(", "))
@@ -398,7 +398,7 @@ pub fn block(e: &Expr, d: usize) -> String {
 }
 
 pub fn type_decl(t: &TypeDecl) -> String {
-    let tp = if t.params.is_empty() { String::new() } else { format!("[{}]", t.params.join(", ")) };
+    let tp = if t.params.is_empty() { String::new() } else { format!("[{}]", crate::symbol::join(&t.params, ", ")) };
     let mut s = format!("{}type {}{} =", if t.distinct { "distinct " } else { "" }, t.name, tp);
     if !matches!(t.body, TypeBody::Sum(_)) {
         s.push(' ');
@@ -439,7 +439,7 @@ pub fn type_decl(t: &TypeDecl) -> String {
     s
 }
 
-fn bounded(names: &[String], bounds: &[Bound]) -> String {
+fn bounded(names: &[Symbol], bounds: &[Bound]) -> String {
     if names.is_empty() {
         return String::new();
     }
@@ -447,7 +447,7 @@ fn bounded(names: &[String], bounds: &[Bound]) -> String {
         .iter()
         .map(|n| match bounds.iter().find(|b| &b.param == n) {
             Some(b) => format!("{n}: {}", b.traits.iter().map(ty).collect::<Vec<_>>().join(" + ")),
-            None => n.clone(),
+            None => n.to_string(),
         })
         .collect();
     format!("[{}]", parts.join(", "))
@@ -473,7 +473,7 @@ pub fn trait_interface(t: &TraitDecl) -> String {
 }
 
 fn trait_text(t: &TraitDecl, bodies: bool) -> String {
-    let tp = if t.params.is_empty() { String::new() } else { format!("[{}]", t.params.join(", ")) };
+    let tp = if t.params.is_empty() { String::new() } else { format!("[{}]", crate::symbol::join(&t.params, ", ")) };
     let sup = if t.supers.is_empty() { String::new() } else { format!(": {}", t.supers.iter().map(ty).collect::<Vec<_>>().join(" + ")) };
     let mut s = format!("trait {}{tp}{sup} {{\n", t.name);
     for m in &t.methods {
@@ -613,7 +613,7 @@ pub fn decl_body(d: &Decl) -> String {
         DeclKind::Use(u) => match &u.items {
             None => format!("use {}.*", u.path),
             Some(items) if items.len() == 1 => format!("use {}.{}", u.path, items[0]),
-            Some(items) => format!("use {}.{{{}}}", u.path, items.join(", ")),
+            Some(items) => format!("use {}.{{{}}}", u.path, crate::symbol::join(items, ", ")),
         },
     };
     (if d.public { "pub " } else { "" }).to_string() + &body

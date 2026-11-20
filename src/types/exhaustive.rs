@@ -122,20 +122,20 @@ impl Checker<'_> {
             Ty::Union(ms) => ms.iter().flat_map(|m| self.atoms(m, col)).collect(),
             Ty::Con(n, args) if n == "Tuple" => vec![atom(ctor("(,)"), args.clone(), &t)],
             Ty::Con(n, args) if n == "List" => vec![atom(ctor("[]"), vec![], &t), atom(ctor("::"), vec![args[0].clone(), t.clone()], &t)],
-            Ty::Con(n, args) if !self.env.traits.contains_key(n) && (self.env.types.contains_key(n) || self.env.variant_parent(n).is_some()) => {
-                let ctors: Vec<String> = match self.env.types.get(n).map(|td| &td.body) {
-                    Some(TypeBody::Sum(vs)) => vs.iter().map(|v| v.name.clone()).collect(),
-                    _ => vec![n.clone()],
+            Ty::Con(n, args) if !self.env.traits.contains_key(n) && (self.env.types.contains_key(n) || self.env.variant_parent(n.sym()).is_some()) => {
+                let ctors: Vec<Symbol> = match self.env.types.get(n).map(|td| &td.body) {
+                    Some(TypeBody::Sum(vs)) => vs.iter().map(|v| v.name).collect(),
+                    _ => vec![*n],
                 };
-                let parent = self.env.variant_parent(n).unwrap_or(n.clone());
+                let parent = self.env.variant_parent(n.sym()).unwrap_or(*n);
                 ctors
                     .into_iter()
                     .filter_map(|c| {
-                        let (ct, fields) = self.ctor_type(&c)?;
-                        let _ = self.unify(&ct, &Ty::Con(parent.clone(), args.clone()));
+                        let (ct, fields) = self.ctor_type(c.sym())?;
+                        let _ = self.unify(&ct, &Ty::Con(parent.sym(), args.clone()));
                         let fs = fields.into_iter().map(|f| self.resolve(&f.1)).collect();
-                        let ty = self.variant_ty(&c, &ct);
-                        Some(atom(AtomKey::Ctor(c), fs, &self.resolve(&ty)))
+                        let ty = self.variant_ty(c.sym(), &ct);
+                        Some(atom(AtomKey::Ctor(c.to_string()), fs, &self.resolve(&ty)))
                     })
                     .collect()
             }
@@ -211,7 +211,7 @@ impl Checker<'_> {
             }
             AtomKey::Ctor(c) => {
                 let n = args.len();
-                let named = self.env.ctors.get(c).and_then(|t| self.env.variants_of(t, &[])).and_then(|vs| vs.into_iter().find(|v| &v.0 == c)).and_then(|v| v.1);
+                let named = self.env.ctors.get(&c.sym()).and_then(|t| self.env.variants_of(t, &[])).and_then(|vs| vs.into_iter().find(|v| &v.0 == c)).and_then(|v| v.1);
                 match c.as_str() {
                     "::" => format!("[{}, ..]", args[0]),
                     "(,)" => format!("({})", args.join(", ")),
