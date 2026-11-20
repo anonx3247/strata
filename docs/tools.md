@@ -72,6 +72,7 @@ recorded "tax takes a rate" as one change: 3 definitions
 $ strata edit total                       # nothing piped in: opens `total` in $VISUAL / $EDITOR;
                                           # what you save is the edit
 $ strata edit shop                        # the module `shop` (or `shop.strata`, also a new module)
+$ strata edit main.main                   # the definition `main` of the root module `main`
 $ strata edit                             # the whole package, one file per module
 $ strata edit shop < defs.strata          # piped: the definitions go into the module `shop`
 

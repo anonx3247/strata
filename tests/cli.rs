@@ -2358,6 +2358,19 @@ fn edit_opens_modules_and_the_whole_package() {
     assert!(ok && out.contains("added"), "{out}");
     assert!(std::fs::read_to_string(pkg.join("shop/tax.strata")).unwrap().contains("pub fn tax"));
 
+    // `main` is the root module; `main.total` is its definition `total`
+    let ed = d.join("root-def");
+    std::fs::create_dir_all(&ed).unwrap();
+    let editor = fake_editor(&ed, &[]);
+    let (ok, out) = strata_with_editor(&["edit", "main.total", "--editor"], &pkg, &editor);
+    assert!(ok && out.contains("no changes"), "{out}");
+    assert_eq!(std::fs::read_to_string(ed.join("seen1.strata")).unwrap(), "fn total() -> Int {\n  price() + 1\n}\n");
+    let ed = d.join("root-module");
+    std::fs::create_dir_all(&ed).unwrap();
+    let editor = fake_editor(&ed, &[]);
+    assert!(strata_with_editor(&["edit", "main", "--editor"], &pkg, &editor).0);
+    assert!(std::fs::read_to_string(ed.join("seen1.strata")).unwrap().starts_with("use shop.orders"));
+
     // neither a module nor a definition
     let (ok, out) = strata_with_editor(&["edit", "nothing_here", "--editor"], &pkg, "true");
     assert!(!ok && out.contains("is no module"), "{out}");
