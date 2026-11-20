@@ -2509,7 +2509,7 @@ test "generic with no arguments" {
 }
 "#).unwrap();
     let (_, out) = strata(&["--file", "s.strata", "verify"], &d, None);
-    assert!(out.contains("✓ lowest_rank") && out.contains("✓ level_floor") && out.contains("✗ law left_identity for Max"), "{out}");
+    assert!(passed(&out, "lowest_rank") && passed(&out, "level_floor") && out.contains("✗ law left_identity for Max"), "{out}");
     std::fs::write(d.join("p.strata"), r#"trait Parse {
   fn parse(s: String) -> Self
     requires len(s) > 0
@@ -2542,7 +2542,7 @@ test "parse" {
 }
 "#).unwrap();
     let (ok, out) = strata(&["--file", "p.strata", "verify"], &d, None);
-    assert!(ok && out.contains("✓ read ") && out.contains("✓ word_size"), "{out}");
+    assert!(ok && passed(&out, "read") && passed(&out, "word_size"), "{out}");
 
     std::fs::write(d.join("bad.strata"), r#"trait Monoid {
   fn empty() -> Self
