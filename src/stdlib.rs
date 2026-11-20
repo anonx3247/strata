@@ -20,6 +20,7 @@ const FILES: &[(&str, &str)] = &[
     ("fs.strata", include_str!("../std/fs.strata")),
     ("process.strata", include_str!("../std/process.strata")),
     ("cli.strata", include_str!("../std/cli.strata")),
+    ("web.strata", include_str!("../std/web.strata")),
 ];
 
 /// Native operations, callable only from `std`: (name, type params, signature).

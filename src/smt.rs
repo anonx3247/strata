@@ -135,6 +135,10 @@ pub struct Obligation {
     pub termination: bool,
 }
 
+/// How many times `check_type` enters the same named type, one inside the
+/// other, before it stops (a recursive type's inner levels are unknown).
+const MAX_TYPE_NESTING: usize = 2;
+
 pub struct Vc<'a> {
     env: &'a Env,
     decls: Vec<(String, &'static str)>,
@@ -152,6 +156,12 @@ pub struct Vc<'a> {
     /// The current path ended (`break` / `continue`).
     dead: bool,
     depth: usize,
+    /// The named types whose values `check_type` is checking, outermost first.
+    checking: Vec<String>,
+    /// The validity of a value at a recursive type's cutoff, by type and
+    /// value: one unknown for each, so a result assumed valid is the same
+    /// atom when it is checked again.
+    cutoffs: HashMap<String, T>,
     /// The parameters' values, to rebuild a counterexample from a model.
     pub params: Vec<(String, Val)>,
     /// Results of earlier calls, by callee and arguments: calls are
@@ -279,6 +289,8 @@ impl<'a> Vc<'a> {
             spec: 0,
             dead: false,
             depth: 0,
+            checking: vec![],
+            cutoffs: HashMap::new(),
             params: vec![],
             memo: HashMap::new(),
             loops: vec![],
@@ -368,11 +380,12 @@ impl<'a> Vc<'a> {
     /// Is every element of a list known (unconditionally) to be a valid `t`?
     fn valid_known(&self, id: usize, t: &TypeExpr) -> bool {
         let info = &self.lists[id];
-        if info.preds.iter().any(|(g, f)| g == "true" && matches!(f, Func::Valid(t2) if t2 == t)) {
+        let same = |t2: &TypeExpr| t2 == t || self.erased(t2) == self.erased(t);
+        if info.preds.iter().any(|(g, f)| g == "true" && matches!(f, Func::Valid(t2) if same(t2))) {
             return true;
         }
         match &info.source {
-            Gen::Type(t2) => t2 == t,
+            Gen::Type(t2) => same(t2),
             Gen::Sub(p) | Gen::Filter(p, _) => self.valid_known(*p, t),
             Gen::Either(_, a, b) => self.valid_known(*a, t) && self.valid_known(*b, t),
             _ => false,
@@ -1105,9 +1118,50 @@ impl<'a> Vc<'a> {
         }
     }
 
+    /// `t` with the type arguments that add no refinement replaced by `_`.
+    /// Validity is about refinements only (the checker has the rest), so a
+    /// value valid at `Html[M]` for an unknown `M` is valid at `Html[_]`, and
+    /// so is one at `Html[Msg]` when `Msg` has no refinement: comparing the
+    /// erased types lets a generic callee's result type match its use.
+    fn erased(&self, t: &TypeExpr) -> TypeExpr {
+        match t {
+            TypeExpr::Named(n, args) => TypeExpr::Named(
+                n.clone(),
+                args.iter().map(|a| if self.refined(a, 0) { self.erased(a) } else { TypeExpr::Named("_".into(), vec![]) }).collect(),
+            ),
+            TypeExpr::Refined(b, p) => TypeExpr::Refined(Box::new(self.erased(b)), p.clone()),
+            TypeExpr::Union(ms) => TypeExpr::Union(ms.iter().map(|m| self.erased(m)).collect()),
+            _ => t.clone(),
+        }
+    }
+
     /// The condition for `v` to be a valid value of `t`. `extra` are bindings
     /// visible to inline refinements (a function's parameters, for its result).
     fn check_type(&mut self, t: &TypeExpr, v: &Val, extra: &[(String, Val)]) -> T {
+        // a recursive type (a tree whose children are trees) is checked to a
+        // fixed depth, like `shape` models it: each level would check every
+        // element of its lists again
+        if let TypeExpr::Named(n, _) = t {
+            if self.env.types.contains_key(n) && !matches!(v, Val::Absent) && self.refined(t, 0) {
+                if self.checking.iter().filter(|m| *m == n).count() >= MAX_TYPE_NESTING {
+                    let key = format!("{:?} {v:?}", self.erased(t));
+                    if let Some(b) = self.cutoffs.get(&key) {
+                        return b.clone();
+                    }
+                    let b = self.unknown_bool(&format!("`{n}` is recursive; only its outer levels are checked"));
+                    self.cutoffs.insert(key, b.clone());
+                    return b;
+                }
+                self.checking.push(n.clone());
+                let c = self.check_type_at(t, v, extra);
+                self.checking.pop();
+                return c;
+            }
+        }
+        self.check_type_at(t, v, extra)
+    }
+
+    fn check_type_at(&mut self, t: &TypeExpr, v: &Val, extra: &[(String, Val)]) -> T {
         if matches!(v, Val::Absent) || !self.refined(t, 0) {
             return "true".into();
         }
