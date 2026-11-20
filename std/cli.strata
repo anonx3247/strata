@@ -22,7 +22,10 @@
 //   - `Bool`: a flag, `--lines`, false unless given;
 //   - `Option[T]`: an option, `--limit 3` (or `--limit=3`), `None` unless given;
 //   - `List[T]`: the remaining positional arguments, in order (one such field);
-//   - anything else: a required positional argument, in field order.
+//   - anything else: a required positional argument, in field order, or an
+//     option (`--times 3`) when the field has a default (`times: Int = 1`).
+// A field with a default takes it when it is left out (a flag's default can
+// be `true`; a list's default is used when no arguments are left).
 // `T` is an `Int`, a `Float`, a `String`, a refinement of one, or a choice: a
 // type whose variants carry nothing (`type Level = | Quiet | Loud` is
 // `quiet` or `loud`). Names are written with dashes: `dry_run` is `--dry-run`.

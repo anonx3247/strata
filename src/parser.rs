@@ -456,8 +456,9 @@ impl Parser {
             let name = p.ident()?;
             p.expect_sym(":")?;
             let ty = p.type_expr()?;
+            let default = if p.eat_sym("=") { Some(p.expr()?) } else { None };
             comments.extend(p.trailing());
-            Ok(Field { comments, doc, name, ty })
+            Ok(Field { comments, doc, name, ty, default })
         })
     }
 
@@ -578,7 +579,14 @@ impl Parser {
     }
 
     pub fn expr(&mut self) -> R<Expr> {
-        let lhs = self.binary(0)?;
+        let mut lhs = self.binary(0)?;
+        // `a..b`, `a..=b`
+        if !self.nl_before() && (self.is_sym("..") || self.is_sym("..=")) {
+            let inclusive = self.is_sym("..=");
+            self.next();
+            let hi = self.binary(0)?;
+            lhs = Expr::Range(Some(Box::new(lhs)), Some(Box::new(hi)), inclusive);
+        }
         if self.eat_sym("==>") {
             let rhs = self.expr()?;
             return Ok(Expr::Bin(BinOp::Implies, Box::new(lhs), Box::new(rhs)));
@@ -593,18 +601,26 @@ impl Parser {
             0 => &[("||", Or)],
             1 => &[("&&", And)],
             2 => &[("==", Eq), ("!=", Ne), ("<=", Le), (">=", Ge), ("<", Lt), (">", Gt)],
-            3 => &[("+", Add), ("-", Sub)],
-            4 => &[("*", Mul), ("/", Div), ("%", Mod)],
+            4 => &[("+", Add), ("-", Sub)],
+            5 => &[("*", Mul), ("/", Div), ("%", Mod)],
             _ => &[],
         };
         table.iter().find(|(t, _)| t == s).map(|(_, op)| *op)
     }
 
     fn binary(&mut self, level: usize) -> R<Expr> {
-        if level > 4 {
+        if level > 5 {
             return self.unary();
         }
         let mut lhs = self.binary(level + 1)?;
+        // `a ?? b`: `a`'s `Ok` / `Some` value, or else `b` (`a except { b }`); `a ?? b ?? c` is `a ?? (b ?? c)`
+        if level == 3 {
+            if self.eat_sym("??") {
+                let rhs = self.binary(3)?;
+                return Ok(Expr::Except(Box::new(lhs), None, Box::new(rhs)));
+            }
+            return Ok(lhs);
+        }
         loop {
             if level == 2 && self.eat_kw("is") {
                 let ctor = self.path()?;
@@ -641,20 +657,61 @@ impl Parser {
         if self.eat_sym("!") {
             return Ok(Expr::Un(UnOp::Not, Box::new(self.unary()?)));
         }
+        if self.eat_kw("mut") {
+            return self.marked();
+        }
         self.postfix()
+    }
+
+    /// After `mut`: a place (`x`, `o.lines`), passed to a `mut` parameter
+    /// (`f(mut x)`), or a call on a place that changes it: `mut q.claim(2)`
+    /// marks the first call, and any calls after it are on its result
+    /// (`mut q.claim(2).len()` is `(mut q.claim(2)).len()`).
+    fn marked(&mut self) -> R<Expr> {
+        let mut place = Expr::Var(self.ident()?);
+        loop {
+            if (self.is_sym("(") || self.is_sym("[")) && !self.nl_before() {
+                return Err(self.err("only a variable or a field can be `mut`: name the value first (`let mut x = …`)"));
+            }
+            if !self.is_sym(".") {
+                return Ok(Expr::Mut(Box::new(place)));
+            }
+            if let Tok::Int(n) = self.peek_at(1).clone() {
+                self.next();
+                self.next();
+                place = Expr::Field(Box::new(place), Symbol::from(n.to_string()));
+                continue;
+            }
+            let Tok::Ident(name) = self.peek_at(1).clone() else { return Err(self.err("expected a field or method name")) };
+            if matches!(self.peek_at(2), Tok::Sym("(")) && !self.toks[self.pos + 2].nl_before {
+                self.next();
+                self.next();
+                self.next();
+                let call = Expr::Method(Box::new(place), name, self.args()?);
+                return self.postfix_from(Expr::Mut(Box::new(call)));
+            }
+            self.next();
+            self.next();
+            place = Expr::Field(Box::new(place), name);
+        }
     }
 
     fn args(&mut self) -> R<Vec<Expr>> {
         let old = self.no_struct;
         self.no_struct = false;
-        // `f(mut x)`: the call may change `x` (its parameter is `mut`)
-        let r = self.list(")", |p| if p.eat_kw("mut") { Ok(Expr::Mut(Box::new(p.expr()?))) } else { p.expr() });
+        // `f(mut x)`: the call may change `x` (its parameter is `mut`); see `marked`
+        let r = self.list(")", |p| p.expr());
         self.no_struct = old;
         r
     }
 
     fn postfix(&mut self) -> R<Expr> {
-        let mut e = self.primary()?;
+        let e = self.primary()?;
+        self.postfix_from(e)
+    }
+
+    /// Calls, fields, indexes, `!`, `?` and `except` after `e`.
+    fn postfix_from(&mut self, mut e: Expr) -> R<Expr> {
         loop {
             if self.is_sym("(") && !self.nl_before() {
                 self.next();
@@ -673,6 +730,9 @@ impl Parser {
                 } else {
                     e = Expr::Field(Box::new(e), name);
                 }
+            } else if self.is_sym("[") && !self.nl_before() {
+                self.next();
+                e = Expr::Index(Box::new(e), Box::new(self.index()?));
             } else if self.is_sym("!") && !self.nl_before() {
                 self.next();
                 e = Expr::Try(Box::new(e), TryKind::Result);
@@ -693,6 +753,32 @@ impl Parser {
             }
         }
         Ok(e)
+    }
+
+    /// What is inside `xs[...]`, past the `[`: an index `i`, or a range
+    /// `a..b`, `a..=b`, `a..`, `..b`, `..`.
+    fn index(&mut self) -> R<Expr> {
+        let old = self.no_struct;
+        self.no_struct = false;
+        let lo = if self.is_sym("..") || self.is_sym("..=") { None } else { Some(Box::new(self.binary(0)?)) };
+        let inclusive = if self.eat_sym("..=") {
+            true
+        } else if self.eat_sym("..") {
+            false
+        } else if let Some(i) = lo {
+            self.expect_sym("]")?;
+            self.no_struct = old;
+            return Ok(*i);
+        } else {
+            unreachable!()
+        };
+        let hi = if self.is_sym("]") { None } else { Some(Box::new(self.binary(0)?)) };
+        if inclusive && hi.is_none() {
+            return Err(self.err("`..=` needs an end: `xs[a..=b]`"));
+        }
+        self.expect_sym("]")?;
+        self.no_struct = old;
+        Ok(Expr::Range(lo, hi, inclusive))
     }
 
     fn primary(&mut self) -> R<Expr> {
@@ -778,7 +864,26 @@ impl Parser {
             }
             Tok::Sym("[") => {
                 self.next();
-                Ok(Expr::List(self.list("]", |p| p.expr())?))
+                if self.eat_sym("]") {
+                    return Ok(Expr::List(vec![]));
+                }
+                let old = self.no_struct;
+                self.no_struct = false;
+                let first = self.expr()?;
+                // `[e for x in xs where c for y in ys]`
+                if self.is_kw("for") {
+                    let gens = self.comp_fors("]")?;
+                    self.no_struct = old;
+                    return Ok(Expr::Comp(CompKind::List, Box::new(first), gens));
+                }
+                let mut items = vec![first];
+                if self.eat_sym(",") {
+                    items.extend(self.list("]", |p| p.expr())?);
+                } else {
+                    self.expect_sym("]")?;
+                }
+                self.no_struct = old;
+                Ok(Expr::List(items))
             }
             Tok::Sym("{") => self.block(),
             Tok::Sym("|" | "||") => Err(self.err("lambdas are written `x -> body`, `(a, b) -> body` or `() -> body`")),
@@ -841,6 +946,9 @@ impl Parser {
                 if !is_upper(crate::names::short(&name)) {
                     return Ok(Expr::Var(name));
                 }
+                if name == "Dict" || name == "Set" {
+                    return self.collection(name == "Dict");
+                }
                 if self.is_sym("(") && !self.nl_before() {
                     self.next();
                     return Ok(Expr::Ctor(name, CtorArgs::Positional(self.args()?)));
@@ -868,6 +976,82 @@ impl Parser {
             }
             _ => Err(self.err("expected expression")),
         }
+    }
+
+    /// The `for p in xs where c` parts of a comprehension, and its closing `close`.
+    fn comp_fors(&mut self, close: &str) -> R<Vec<CompFor>> {
+        let mut gens = Vec::new();
+        while self.eat_kw("for") {
+            let pat = self.pattern()?;
+            self.expect_kw("in")?;
+            let iter = self.expr()?;
+            let cond = if self.eat_kw("where") { Some(self.expr()?) } else { None };
+            gens.push(CompFor { pat, iter, cond });
+        }
+        self.expect_sym(close)?;
+        Ok(gens)
+    }
+
+    /// `Dict { k: v, … }`, `Set { x, … }`, with optional type arguments
+    /// (`Dict[String, Int] {}`), or a comprehension (`Set { x % 3 for x in xs }`).
+    /// At the `[` or `{` after the name.
+    fn collection(&mut self, dict: bool) -> R<Expr> {
+        let tys = if self.is_sym("[") && !self.nl_before() {
+            self.next();
+            self.list("]", |p| p.type_expr())?
+        } else {
+            vec![]
+        };
+        let what = if dict { "Dict" } else { "Set" };
+        if !self.is_sym("{") {
+            return Err(self.err(&format!("expected `{{`: `{what} {{ … }}`")));
+        }
+        if self.no_struct {
+            return Err(self.err(&format!("put the `{what} {{ … }}` in parentheses here")));
+        }
+        self.next();
+        let old = self.no_struct;
+        self.no_struct = false;
+        let r = self.collection_body(dict, tys);
+        self.no_struct = old;
+        r
+    }
+
+    fn collection_body(&mut self, dict: bool, tys: Vec<TypeExpr>) -> R<Expr> {
+        let entry = |p: &mut Self| -> R<(Expr, Option<Expr>)> {
+            let k = p.expr()?;
+            if dict {
+                p.expect_sym(":")?;
+                Ok((k, Some(p.expr()?)))
+            } else {
+                Ok((k, None))
+            }
+        };
+        if self.eat_sym("}") {
+            return Ok(if dict { Expr::Dict(tys, vec![]) } else { Expr::Set(tys, vec![]) });
+        }
+        let first = entry(self)?;
+        if self.is_kw("for") {
+            if !tys.is_empty() {
+                return Err(self.err("a comprehension takes no type arguments"));
+            }
+            let gens = self.comp_fors("}")?;
+            return Ok(match first {
+                (k, Some(v)) => Expr::Comp(CompKind::Dict, Box::new(Expr::Tuple(vec![k, v])), gens),
+                (x, None) => Expr::Comp(CompKind::Set, Box::new(x), gens),
+            });
+        }
+        let mut entries = vec![first];
+        if self.eat_sym(",") {
+            entries.extend(self.list("}", entry)?);
+        } else {
+            self.expect_sym("}")?;
+        }
+        Ok(if dict {
+            Expr::Dict(tys, entries.into_iter().map(|(k, v)| (k, v.unwrap())).collect())
+        } else {
+            Expr::Set(tys, entries.into_iter().map(|(x, _)| x).collect())
+        })
     }
 
     /// At a `(`: is this the parameter list of a lambda, `(a, b) -> ...`?

@@ -27,7 +27,7 @@ module-file = "STRATA" version:uint 0  header  definitions
 bundle      = "STRATA" version:uint 1  manifest:option(raw-string)  modules:list(raw-bytes)
 ```
 
-- the six ASCII bytes `STRATA` (`53 54 52 41 54 41`), the format `version` (currently `2`), then `0` for a module file or `1` for a bundle;
+- the six ASCII bytes `STRATA` (`53 54 52 41 54 41`), the format `version` (currently `5`), then `0` for a module file or `1` for a bundle;
 - a bundle holds the package's `strata.toml`, as written (none for a script), then each module file, as its length and its bytes, in the order the modules first appear in the program.
 
 ### The header
@@ -104,7 +104,7 @@ DeclKind    = 0 TypeDecl | 1 FnDecl | 2 TestDecl | 3 TraitDecl | 4 ImplDecl | 5 
 
 TypeDecl    = distinct:bool  name:str  params:list(str)  body:TypeBody  refinement:option(Expr)
 TypeBody    = 0 Alias(TypeExpr) | 1 Record(list(Field)) | 2 Sum(list(Variant))
-Field       = comments:list(str)  doc:list(str)  name:str  ty:TypeExpr
+Field       = comments:list(str)  doc:list(str)  name:str  ty:TypeExpr  default:option(Expr)
 Variant     = comments:list(str)  name:str  payload:Payload
 Payload     = 0 None | 1 Positional(list(TypeExpr)) | 2 Record(list(Field))
 
@@ -151,10 +151,17 @@ Expr = 0  Int(int)                       1  BigInt(digits:str)       2  Float(fl
      | 22 Mock(TypeExpr)                 23 Return(Expr)             24 Try(Expr, TryKind)
      | 25 Except(Expr, err:option(str), fallback:Expr)
      | 26 Interp(list(StrPart))
+     | 27 Range(lo:option(Expr), hi:option(Expr), inclusive:bool)    a..b, a..=b
+     | 28 Index(Expr, index:Expr)                                   xs[i], xs[a..b]
+     | 29 Comp(CompKind, elem:Expr, list(CompFor))                  [e for x in xs where c]
+     | 30 Dict(types:list(TypeExpr), list((Expr, Expr)))            Dict { "a": 1 }
+     | 31 Set(types:list(TypeExpr), list(Expr))                     Set { 1, 2 }
 
 CtorArgs = 0 None | 1 Positional(list(Expr)) | 2 Record(list((str, Expr)))
          | 3 Update(base:Expr, list((str, Expr)))
 LamParam = name:str  ty:option(TypeExpr)
+CompFor  = pat:Pattern  iter:Expr  cond:option(Expr)
+CompKind = 0 List | 1 Set | 2 Dict        (a Dict comprehension's element is a Tuple of the key and value)
 Arm      = comments:list(str)  pat:Pattern  body:Expr
 StrPart  = 0 Lit(str) | 1 Expr(Expr, spec:option(FmtSpec))
 FmtSpec  = fill:char  align:option(char)  plus:bool  zero:bool  width:uint  precision:option(uint)
@@ -187,7 +194,7 @@ CtorPat = 0 None | 1 Positional(list(Pattern)) | 2 Record(list((str, Pattern)), 
 
 ```text
 53 54 52 41 54 41   "STRATA"
-02 00               version 2, a module file
+05 00               version 5, a module file
 header:
    02 00 03 6f 6e 65    2 strings: "", "one"
    00                   module "" (the root)

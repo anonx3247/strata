@@ -1106,6 +1106,20 @@ impl<'a> Interp<'a> {
                 xs.push(x);
                 List(xs)
             }
+            "at" => {
+                let (xs, i) = (nx(), nx());
+                let n = match &xs {
+                    List(xs) => xs.len(),
+                    Str(s) => s.chars().count(),
+                    _ => return self.fail(FaultKind::Runtime, "bad args"),
+                };
+                let k = as_index(&i).filter(|k| *k >= 0 && (*k as usize) < n);
+                match (xs, k) {
+                    (List(xs), Some(k)) => xs[k as usize].clone(),
+                    (Str(s), Some(k)) => Str(s.chars().nth(k as usize).unwrap().to_string()),
+                    _ => return self.fail(FaultKind::Runtime, format!("index {} out of range (length {n})", show(&i))),
+                }
+            }
             "get" => {
                 let found = match (nx(), nx()) {
                     (List(xs), i @ (Int(_) | Big(_))) => as_index(&i).filter(|i| *i >= 0).and_then(|i| xs.get(i as usize).cloned()),
@@ -1354,6 +1368,7 @@ impl<'a> Interp<'a> {
             Expr::Bool(b) => Value::Bool(*b),
             Expr::Unit => Value::Unit,
             Expr::Hole(h) => return self.fail(FaultKind::Hole, format!("reached unfilled hole `?{h}`")),
+            Expr::Range(..) | Expr::Index(..) | Expr::Comp(..) | Expr::Dict(..) | Expr::Set(..) => return self.fail(FaultKind::Runtime, "internal: a range, slice or comprehension was not desugared"),
             Expr::Var(x) => match lookup(s, x) {
                 Some(v) => v,
                 // `Self.m()` in a trait's default method or law: the type it runs for
@@ -1845,8 +1860,20 @@ impl<'a> Interp<'a> {
                             let Some(obj) = payload.as_object() else { return Err(format!("{p}: expected an object")) };
                             let mut fs = Vec::new();
                             for (fname, ft) in names.iter().zip(ftys) {
-                                let fj = obj.get(fname.as_str()).ok_or_else(|| format!("{p}: missing field `{fname}`"))?;
-                                fs.push((fname.to_string(), self.from_json_raw(ft, fj, &format!("{p}.{fname}"))?));
+                                let v = match obj.get(fname.as_str()) {
+                                    Some(fj) => self.from_json_raw(ft, fj, &format!("{p}.{fname}"))?,
+                                    None => match self.env.field_default(&cname, fname) {
+                                        Some(x) => {
+                                            let v = self.eval(&x, &None).map_err(|f| format!("{p}.{fname}: the default failed: {}", f.msg))?;
+                                            if let Some(why) = self.check_type(ft, &v).map_err(|f| f.msg)? {
+                                                return Err(format!("{p}.{fname}: the default {why}"));
+                                            }
+                                            v
+                                        }
+                                        None => return Err(format!("{p}: missing field `{fname}`")),
+                                    },
+                                };
+                                fs.push((fname.to_string(), v));
                             }
                             if let Some(extra) = obj.keys().find(|k| !names.iter().any(|n| n == *k)) {
                                 return Err(format!("{p}: unknown field `{extra}`"));

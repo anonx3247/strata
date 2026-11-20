@@ -71,13 +71,21 @@ fn fields_broken(fs: &[Field], d: usize) -> String {
         if has_comments(&f.doc) {
             s += &f.doc.iter().map(|l| format!("{}/// {l}\n", ind(d + 1))).collect::<String>();
         }
-        s += &format!("{}{}: {},\n", ind(d + 1), f.name, ty(&f.ty));
+        s += &format!("{}{},\n", ind(d + 1), field(f));
     }
     s + &ind(d) + "}"
 }
 
 fn fields(fs: &[Field]) -> String {
-    fs.iter().map(|f| format!("{}: {}", f.name, ty(&f.ty))).collect::<Vec<_>>().join(", ")
+    fs.iter().map(field).collect::<Vec<_>>().join(", ")
+}
+
+/// `name: T`, `times: Int = 1`
+fn field(f: &Field) -> String {
+    match &f.default {
+        Some(x) => format!("{}: {} = {}", f.name, ty(&f.ty), expr(x, 1)),
+        None => format!("{}: {}", f.name, ty(&f.ty)),
+    }
 }
 
 fn ind(n: usize) -> String {
@@ -132,11 +140,18 @@ fn prec(e: &Expr) -> u8 {
             BinOp::Mul | BinOp::Div | BinOp::Mod => 6,
         },
         Expr::Is(..) => 3,
-        Expr::Lambda(..) | Expr::Return(..) => 0,
+        Expr::Lambda(..) | Expr::Return(..) | Expr::Range(..) => 0,
+        Expr::Except(..) if coalesce(e) => 4,
         Expr::Except(..) => 7,
-        Expr::Un(..) => 7,
+        Expr::Un(..) | Expr::Mut(..) => 7,
         _ => 8,
     }
+}
+
+/// `x except { fallback }` is written `x ?? fallback` when the fallback is a
+/// plain value: no error name, no block, no `return`.
+fn coalesce(e: &Expr) -> bool {
+    matches!(e, Expr::Except(_, None, fb) if !matches!(**fb, Expr::Block(..) | Expr::If(..) | Expr::Match(..) | Expr::Return(..) | Expr::Lambda(..)))
 }
 
 fn wrap(e: &Expr, min: u8, d: usize) -> String {
@@ -145,7 +160,14 @@ fn wrap(e: &Expr, min: u8, d: usize) -> String {
 }
 
 fn args(es: &[Expr], d: usize) -> String {
-    es.iter().map(|e| expr(e, d)).collect::<Vec<_>>().join(", ")
+    es.iter()
+        .map(|e| match e {
+            // `f((mut q.pop()), x)`: the call changes `q`; `f(mut q)` would pass `q` to a `mut` parameter
+            Expr::Mut(x) if matches!(**x, Expr::Method(..)) => format!("({})", expr(e, d)),
+            _ => expr(e, d),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub fn float(f: f64) -> String {
@@ -267,6 +289,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::List(es) => format!("[{}]", args(es, d)),
         Expr::Ctor(c, CtorArgs::None) => c.to_string(),
         Expr::Ctor(c, CtorArgs::Positional(es)) => format!("{c}({})", args(es, d)),
+        Expr::Ctor(c, CtorArgs::Record(fs)) if fs.is_empty() => format!("{c} {{}}"),
         Expr::Ctor(c, CtorArgs::Record(fs)) => {
             let parts: Vec<String> = fs
                 .iter()
@@ -331,9 +354,39 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             }
             s + "\""
         }
+        Expr::Range(lo, hi, inclusive) => {
+            let end = |x: &Option<Box<Expr>>| x.as_ref().map(|x| wrap(x, 1, d)).unwrap_or_default();
+            format!("{}{}{}", end(lo), if *inclusive { "..=" } else { ".." }, end(hi))
+        }
+        Expr::Index(x, r) => format!("{}[{}]", wrap(x, 8, d), expr(r, d)),
+        Expr::Comp(kind, elem, gens) => {
+            let (open, close) = match kind {
+                CompKind::List => ("[".to_string(), "]"),
+                CompKind::Set => ("Set { ".to_string(), " }"),
+                CompKind::Dict => ("Dict { ".to_string(), " }"),
+            };
+            let mut s = open
+                + &match (kind, &**elem) {
+                    (CompKind::Dict, Expr::Tuple(kv)) if kv.len() == 2 => format!("{}: {}", expr(&kv[0], d), expr(&kv[1], d)),
+                    _ => expr(elem, d),
+                };
+            for g in gens {
+                s += &format!(" for {} in {}", pat(&g.pat), expr(&g.iter, d));
+                if let Some(c) = &g.cond {
+                    s += &format!(" where {}", expr(c, d));
+                }
+            }
+            s + close
+        }
+        Expr::Dict(tys, kvs) => {
+            let entries: Vec<String> = kvs.iter().map(|(k, v)| format!("{}: {}", expr(k, d), expr(v, d))).collect();
+            collection("Dict", tys, &entries)
+        }
+        Expr::Set(tys, xs) => collection("Set", tys, &xs.iter().map(|x| expr(x, d)).collect::<Vec<_>>()),
         Expr::Return(x) if **x == Expr::Unit => "return".into(),
         Expr::Return(x) => format!("return {}", expr(x, d)),
         Expr::Try(x, k) => format!("{}{}", wrap(x, 8, d), if *k == TryKind::Result { "!" } else { "?" }),
+        Expr::Except(x, _, fb) if coalesce(e) => format!("{} ?? {}", wrap(x, 5, d), wrap(fb, 4, d)),
         Expr::Except(x, name, fb) => {
             let head = match name {
                 Some(n) => format!("{} except {n}", wrap(x, 8, d)),
@@ -349,6 +402,16 @@ fn expr_inline(e: &Expr, d: usize) -> String {
                 None => format!("{head} {}", block(fb, d)),
             }
         }
+    }
+}
+
+/// `Dict { "a": 1 }`, `Set[Int] {}`
+fn collection(name: &str, tys: &[TypeExpr], entries: &[String]) -> String {
+    let targs = if tys.is_empty() { String::new() } else { format!("[{}]", tys.iter().map(ty).collect::<Vec<_>>().join(", ")) };
+    if entries.is_empty() {
+        format!("{name}{targs} {{}}")
+    } else {
+        format!("{name}{targs} {{ {} }}", entries.join(", "))
     }
 }
 

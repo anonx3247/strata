@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 pub const MAGIC: &[u8; 6] = b"STRATA";
 /// Bumped on every change to the layout; older files are rejected (re-pack
 /// them from source: there is no backwards compatibility).
-pub const VERSION: u64 = 2;
+pub const VERSION: u64 = 5;
 const MODULE: u8 = 0;
 const BUNDLE: u8 = 1;
 /// Deepest nesting of expressions, patterns and types a file may have.
@@ -772,7 +772,7 @@ macro_rules! put {
 
 record!(Decl { comments, doc, module, public, kind });
 record!(TypeDecl { distinct, name, params, body, refinement });
-record!(Field { comments, doc, name, ty });
+record!(Field { comments, doc, name, ty, default });
 record!(Variant { comments, name, payload });
 record!(Param { name, ty, mutable });
 record!(Bound { param, traits });
@@ -785,11 +785,13 @@ record!(ImplDecl { type_params, bounds, trait_name, trait_args, for_type, method
 record!(UseDecl { path, items });
 record!(Arm { comments, pat, body });
 record!(LamParam { name, ty });
+record!(CompFor { pat, iter, cond });
 record!(FmtSpec { fill, align, plus, zero, width, precision });
 
 tags!(BinOp { Add = 0, Sub = 1, Mul = 2, Div = 3, Mod = 4, Eq = 5, Ne = 6, Lt = 7, Le = 8, Gt = 9, Ge = 10, And = 11, Or = 12, Implies = 13 });
 tags!(UnOp { Neg = 0, Not = 1 });
 tags!(TryKind { Result = 0, Option = 1 });
+tags!(CompKind { List = 0, Set = 1, Dict = 2 });
 
 impl Bin for DeclKind {
     fn enc(&self, w: &mut Writer) {
@@ -984,11 +986,16 @@ impl Bin for Expr {
             Expr::Try(x, k) => put!(w, 24, x, k),
             Expr::Except(x, err, fb) => put!(w, 25, x, err, fb),
             Expr::Interp(parts) => put!(w, 26, parts),
+            Expr::Range(lo, hi, inclusive) => put!(w, 27, lo, hi, inclusive),
+            Expr::Index(x, r) => put!(w, 28, x, r),
+            Expr::Comp(kind, elem, gens) => put!(w, 29, kind, elem, gens),
+            Expr::Dict(tys, kvs) => put!(w, 30, tys, kvs),
+            Expr::Set(tys, xs) => put!(w, 31, tys, xs),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
         r.nest(|r| {
-            Ok(match r.tag("expression", 26)? {
+            Ok(match r.tag("expression", 31)? {
                 0 => Expr::Int(Bin::dec(r)?),
                 1 => Expr::BigInt(Bin::dec(r)?),
                 2 => Expr::Float(Bin::dec(r)?),
@@ -1015,7 +1022,12 @@ impl Bin for Expr {
                 23 => Expr::Return(Bin::dec(r)?),
                 24 => Expr::Try(Bin::dec(r)?, Bin::dec(r)?),
                 25 => Expr::Except(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
-                _ => Expr::Interp(Bin::dec(r)?),
+                26 => Expr::Interp(Bin::dec(r)?),
+                27 => Expr::Range(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
+                28 => Expr::Index(Bin::dec(r)?, Bin::dec(r)?),
+                29 => Expr::Comp(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
+                30 => Expr::Dict(Bin::dec(r)?, Bin::dec(r)?),
+                _ => Expr::Set(Bin::dec(r)?, Bin::dec(r)?),
             })
         })
     }

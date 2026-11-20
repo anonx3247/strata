@@ -1,0 +1,26 @@
+type Retry = {
+  attempts: Int where 1 <= it && it <= 10 = 3,
+  backoff: List[Int] = [100, 200],
+  label: String = "retry",
+}
+
+type Job =
+  | Queued { name: String, priority: Int = 0 }
+  | Done
+
+type Wrapper = { retry: Retry = Retry {}, tag: String }
+
+fn plain() -> Retry {
+  Retry {}
+}
+
+fn some() -> Retry {
+  Retry { attempts: 5 }
+}
+
+test "defaults" {
+  assert plain() == Retry { attempts: 3, backoff: [100, 200], label: "retry" }
+  assert some().attempts == 5 && some().label == "retry"
+  assert Queued { name: "a" } == Queued { name: "a", priority: 0 }
+  assert Wrapper { tag: "x" }.retry.attempts == 3
+}

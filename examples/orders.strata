@@ -88,7 +88,7 @@ fn ship(
   match order {
     Pending { id, lines } => {
       let o = Shipped { id, lines, tracking }
-      db.save(o)
+      mut db.save(o)
       Ok(o)
     },
     _ => Err(NotPending),

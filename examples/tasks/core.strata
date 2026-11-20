@@ -89,7 +89,7 @@ pub trait Queue[P, E] {
 /// Run the producer once and enqueue every task it discovers.
 pub fn run_producer[P, E](mut queue: Queue[P, E], producer: Producer[P]) -> Int
   ensures it >= 0 {
-  queue.enqueue(producer.discover())
+  mut queue.enqueue(producer.discover())
 }
 
 /// A worker broke the contract of reporting exactly one result per attempt.
@@ -108,18 +108,18 @@ pub fn run_worker[P, E](
     Ok(rs) => len(rs) <= policy.tasks_per_worker,
     Err(_) => true,
   } {
-  let attempts = queue.claim(policy.tasks_per_worker)
+  let attempts = mut queue.claim(policy.tasks_per_worker)
   if len(attempts) == 0 {
     return Ok([])
   }
-  let results = worker.run(attempts)
+  let results = mut worker.run(attempts)
   let claimed = attempts.map(a -> a.task.id)
   let reported = results.map(r -> task_of(r).id)
   if !same_ids(claimed, reported) {
-    queue.release(attempts)
+    mut queue.release(attempts)
     return Err(ResultsMismatch { claimed, reported })
   }
-  queue.record(results)
+  mut queue.record(results)
   Ok(results)
 }
 

@@ -94,7 +94,7 @@ fn run_a_binary_file() {
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "hello.stb"], &d, None);
     assert!(ok && out.contains("hello, world!"), "{out}");
-    std::fs::write(d.join("bad.stb"), b"STRATA\x02\x00\x05").unwrap();
+    std::fs::write(d.join("bad.stb"), b"STRATA\x05\x00\x05").unwrap();
     let (ok, out) = strata(&["--file", "bad.stb", "check"], &d, None);
     assert!(!ok && out.contains("corrupt binary Strata file"), "{out}");
 }
@@ -883,14 +883,18 @@ fn procedural_mutation_is_explicit() {
     std::fs::write(
         d.join("c.strata"),
         "type Line = { qty: Int }\n\
-         trait Counter { fn tick(mut self) -> () }\n\
-         impl Counter for Line { fn tick(mut self) -> () { self.qty = self.qty + 1 } }\n\
+         trait Counter { fn tick(mut self) -> ()  fn peek(self) -> Int }\n\
+         impl Counter for Line { fn tick(mut self) -> () { self.qty = self.qty + 1 }  fn peek(self) -> Int { self.qty } }\n\
          fn restock(mut line: Line, extra: Int) -> () { line.qty = line.qty + extra }\n\
          fn qty(line: Line) -> Int { line.qty }\n\
          fn unmarked() -> Int {\n  let mut l = Line { qty: 1 }\n  restock(l, 2)\n  l.qty\n}\n\
          fn needless() -> Int {\n  let mut l = Line { qty: 1 }\n  qty(mut l)\n}\n\
          fn builtin() -> Int {\n  let mut xs = [1]\n  len(mut xs)\n}\n\
-         fn receiver() -> Int {\n  let mut l = Line { qty: 1 }\n  l.tick()\n  restock(mut l, 1)\n  l.qty\n}\n",
+         fn receiver() -> Int {\n  let mut l = Line { qty: 1 }\n  mut l.tick()\n  restock(mut l, 1)\n  l.qty\n}\n\
+         fn unmarked_receiver() -> () {\n  let mut l = Line { qty: 1 }\n  l.tick()\n}\n\
+         fn needless_receiver() -> Int {\n  let mut l = Line { qty: 1 }\n  mut l.peek()\n}\n\
+         fn stray() -> Int {\n  let mut n = 1\n  let m = mut n\n  m\n}\n\
+         fn first(ls: List[Line]) -> Line { Line { qty: 1 } }\n",
     )
     .unwrap();
     let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
@@ -899,6 +903,14 @@ fn procedural_mutation_is_explicit() {
     assert!(out.contains("in needless: `mut` on an argument of `qty`, but its parameter `line` is not `mut`"), "{out}");
     assert!(out.contains("in builtin:"), "{out}");
     assert!(!out.contains("in receiver"), "{out}");
+    // a method that changes its receiver is marked too: `mut l.tick()`
+    assert!(out.contains("in unmarked_receiver: `tick` changes its receiver (`mut self`): write `mut l.tick(…)`"), "{out}");
+    assert!(out.contains("in needless_receiver: `mut l.peek(…)`: `peek` doesn't change its receiver"), "{out}");
+    assert!(out.contains("in stray: `mut n` marks an argument"), "{out}");
+    // results are not places: name them first
+    std::fs::write(d.join("r.strata"), "fn f(xs: List[Int]) -> () {\n  mut first(xs).tick()\n}\n").unwrap();
+    let (ok, out) = strata(&["--file", "r.strata", "check"], &d, None);
+    assert!(!ok && out.contains("only a variable or a field can be `mut`"), "{out}");
     let (ok, out) = strata(&["--file", "c.strata", "render"], &d, None);
     assert!(ok && out.contains("restock(mut l, 1)"), "{out}");
 }
@@ -2038,10 +2050,10 @@ use std.fs.{Files, FsError}
 use std.process.{Environment, ExitCode}
 
 fn main(mut console: Console, mut files: Files, env: Environment) -> Result[ExitCode, FsError] {
-  files.write("out/x.txt", "a")!
-  files.append("out/x.txt", "b")!
-  console.eprint(files.read("out/x.txt")!)
-  console.write(env.var("STRATA_TEST_VAR") except { "unset" })
+  mut files.write("out/x.txt", "a")!
+  mut files.append("out/x.txt", "b")!
+  mut console.eprint(files.read("out/x.txt")!)
+  mut console.write(env.var("STRATA_TEST_VAR") except { "unset" })
   Ok(len(files.list("out")!) + 6)
 }
 "#,
@@ -2064,7 +2076,7 @@ fn main(mut console: Console, mut files: Files, env: Environment) -> Result[Exit
     assert!(code != 0 && err.contains("can ask for `Console`"), "{err}");
 
     // verify never reaches the real system: capabilities are mocks there
-    std::fs::write(d.join("greet.strata"), "use std.io.Console\n\nfn greet(mut c: Console, n: Int) -> () {\n  c.print(f\"MARKER {n}\")\n}\n").unwrap();
+    std::fs::write(d.join("greet.strata"), "use std.io.Console\n\nfn greet(mut c: Console, n: Int) -> () {\n  mut c.print(f\"MARKER {n}\")\n}\n").unwrap();
     let (_, out, err) = strata_code(&["--file", "greet.strata", "verify", "--cases", "20"], &d, "");
     assert!(!out.contains("MARKER") && !err.contains("MARKER"), "{out}{err}");
     let (ok, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "check"], &d, None);
@@ -2884,7 +2896,7 @@ fn double(n: Int) -> Int {
 fn main(mut console: Console) -> () {
   print("plain")
   print([1, 2])
-  console.print("console")
+  mut console.print("console")
   print(double(21))
 }
 
@@ -2999,22 +3011,22 @@ fn method_names_follow_the_receiver_across_modules_and_builtins() {
 use std.fs.{Files, NotFound, mem_files}
 
 fn save(mut console: Console, mut files: Files) -> () {
-  files.write("a.txt", "hi") except { () }
-  console.write("saved ")
-  console.print(files.read("a.txt") except { "?" })
-  files.remove("a.txt") except { () }
-  console.print(f"{files.exists("a.txt")}")
+  mut files.write("a.txt", "hi") except { () }
+  mut console.write("saved ")
+  mut console.print(files.read("a.txt") except { "?" })
+  mut files.remove("a.txt") except { () }
+  mut console.print(f"{files.exists("a.txt")}")
 }
 
 fn shout[C: Console](mut c: C, s: String) -> () {
-  c.write(to_upper(s))
-  c.print("!")
+  mut c.write(to_upper(s))
+  mut c.print("!")
 }
 
 fn main(mut console: Console, mut files: Files) -> () {
-  files.write("x.txt", "disk") except { () }
+  mut files.write("x.txt", "disk") except { () }
   shout(mut console, files.read("x.txt") except { "?" })
-  files.remove("x.txt") except { () }
+  mut files.remove("x.txt") except { () }
 }
 
 test "each call means its receiver's method" {
@@ -3474,4 +3486,83 @@ fn serve_apps_take_values_and_forms() {
         let (ok, out) = strata(&["--file", &ex, "verify", "--force", "--require", "proven"], &d, None);
         assert!(ok && out.contains("✓ update") && out.contains("✓ new_todo_form"), "{out}");
     }
+}
+
+#[test]
+fn ranges_slices_and_comprehensions() {
+    let d = tmp("sugar");
+    let src = format!("{}/tests/data/sugar.strata", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["--file", &src, "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    // written as they were, in text and through the binary format
+    let (ok, out) = strata(&["--file", &src, "render"], &d, None);
+    assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
+    let (ok, out) = strata(&["--file", &src, "pack", "sugar.stb"], &d, None);
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "sugar.stb", "render"], &d, None);
+    assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
+    let (ok, out) = strata(&["--file", &src, "run", "first", "[[]]"], &d, None);
+    assert!(!ok && out.contains("does not satisfy"), "{out}");
+    std::fs::write(d.join("last.strata"), "fn last(xs: List[Int]) -> Int { xs[len(xs) - 1] }").unwrap();
+    let (ok, out) = strata(&["--file", "last.strata", "run", "last", "[[]]"], &d, None);
+    assert!(!ok && out.contains("index -1 out of range (length 0)"), "{out}");
+    for (code, err) in [
+        ("fn f(xs: List[Int]) -> List[Int] { xs[1..=] }", "`..=` needs an end"),
+    ] {
+        std::fs::write(d.join("e.strata"), code).unwrap();
+        let (ok, out) = strata(&["--file", "e.strata", "check"], &d, None);
+        assert!(!ok && out.contains(err), "{code}: {out}");
+    }
+}
+
+#[test]
+fn coalesce() {
+    let d = tmp("coalesce");
+    let src = format!("{}/tests/data/coalesce.strata", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["--file", &src, "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    let (ok, out) = strata(&["--file", &src, "render"], &d, None);
+    assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
+    // a short `except { value }` is written `??`
+    std::fs::write(d.join("e.strata"), "fn f(s: String) -> Int { parse_int(s) except { 0 } }\n").unwrap();
+    let (ok, out) = strata(&["--file", "e.strata", "render"], &d, None);
+    assert!(ok && out.contains("parse_int(s) ?? 0"), "{out}");
+}
+
+#[test]
+fn dict_and_set_literals() {
+    let d = tmp("collections");
+    let src = format!("{}/tests/data/collections.strata", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["--file", &src, "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    let (ok, out) = strata(&["--file", &src, "render"], &d, None);
+    assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
+    let (ok, out) = strata(&["--file", &src, "pack", "c.stb"], &d, None);
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "c.stb", "render"], &d, None);
+    assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
+}
+
+#[test]
+fn record_defaults() {
+    let d = tmp("defaults");
+    let src = format!("{}/tests/data/defaults.strata", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["--file", &src, "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    let (ok, out) = strata(&["--file", &src, "render"], &d, None);
+    assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
+    // JSON input: a missing key takes the default
+    std::fs::write(d.join("r.strata"), "type R = { n: Int = 1, s: String }\nfn f(r: R) -> Int { r.n }\n").unwrap();
+    let (ok, out) = strata(&["--file", "r.strata", "run", "f", r#"[{"s": "x"}]"#], &d, None);
+    assert!(ok && out.trim() == "1", "{out}");
+    // checked where the type is defined
+    std::fs::write(d.join("bad.strata"), "type R = { n: Int where it > 0 = 0 }\ntype S = { s: String = 1 }\n").unwrap();
+    let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
+    assert!(!ok && out.contains("the default of `n`, 0, does not satisfy") && out.contains("default of field `s`: expected `String`"), "{out}");
+    // the command line: a field with a default is an option
+    let hello = format!("{}/examples/hello", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["run", &hello, "--", "Ada", "--times", "2"], &d, None);
+    assert!(ok && out.matches("hello, Ada!").count() == 2, "{out}");
+    let (ok, out) = strata(&["run", &hello, "--", "--help"], &d, None);
+    assert!(ok && out.contains("--times <Int>") && out.contains("(default: 1)"), "{out}");
 }
