@@ -1280,7 +1280,7 @@ impl<'a> Checker<'a> {
     /// builtin's (`d.remove(k)` on a dict, with `Files.remove` in scope).
     /// The choice is recorded for `elaborate`. `None`: the call is as resolved.
     fn by_receiver(&mut self, m: &str, all: &[&Expr], site: usize) -> Option<Ty> {
-        if self.lookup(m).is_some() || self.env.fns.contains_key(m) || split_trait_call(m).is_some() || !self.env.method_traits.contains_key(m) {
+        if self.lookup(m).is_some() || self.env.fns.contains_key(m) || split_trait_call(m).is_some() || !self.env.is_method(m) {
             return None;
         }
         let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
@@ -1290,20 +1290,20 @@ impl<'a> Checker<'a> {
         let rt = self.infer(recv);
         self.errors.truncate(n);
         let rt = self.resolve(&rt);
-        // the traits the receiver is known to have
-        let (head, traits): (Option<String>, Vec<String>) = match &rt {
+        // the traits the receiver is known to have; `what` names it in errors
+        let (head, what, traits): (Option<String>, String, Vec<String>) = match &rt {
             Ty::Rigid(p) => {
                 let mut all = vec![];
                 for (tr, args) in self.bounds.get(p).cloned().unwrap_or_default() {
                     all.push(tr.clone());
                     all.extend(self.supers_of(&tr, &args, 0).into_iter().map(|(s, _)| s));
                 }
-                (None, all)
+                (None, p.clone(), all)
             }
             Ty::Con(t, args) if self.env.traits.contains_key(t) => {
                 let mut all = vec![t.clone()];
                 all.extend(self.supers_of(t, args, 0).into_iter().map(|(s, _)| s));
-                (None, all)
+                (None, short(t), all)
             }
             Ty::Int | Ty::Float | Ty::Bool | Ty::Str | Ty::Con(..) => {
                 let head = match &rt {
@@ -1314,12 +1314,20 @@ impl<'a> Checker<'a> {
                     Ty::Con(h, _) => h.clone(),
                     _ => unreachable!(),
                 };
-                // a type's own method of that name: as resolved (`receiver_method` handles it)
-                if self.env.inherent.get(&head).is_some_and(|i| i.methods.iter().any(|x| short(&x.name) == sm)) {
-                    return None;
+                // the type's own method of that name comes first (a variant's before its sum's)
+                let heads: Vec<String> = std::iter::once(head.clone()).chain(self.env.variant_parent(&head)).collect();
+                for h in &heads {
+                    if let Some(imp) = self.env.inherent.get(h).cloned() {
+                        if let Some(f) = imp.methods.iter().find(|x| short(&x.name) == sm && crate::resolve::takes_self(x)).cloned() {
+                            self.targets.push((site, Target::Own(crate::resolve::static_name(h, &f.name))));
+                            let ft = self.own_method_ty(&imp, &f);
+                            let muts: Vec<Option<TypeExpr>> = f.params.iter().map(|p| p.mutable.then(|| p.ty.clone())).collect();
+                            return Some(self.call_with(ft, all, &format!("call to `{sm}`"), &muts));
+                        }
+                    }
                 }
-                let trs = self.env.impls.iter().filter(|i| texpr_head(&i.for_type) == head).map(|i| i.trait_name.clone()).collect();
-                (Some(head), trs)
+                let trs = self.env.impls.iter().filter(|i| heads.contains(&texpr_head(&i.for_type))).map(|i| i.trait_name.clone()).collect();
+                (Some(head.clone()), short(&head), trs)
             }
             _ => return None,
         };
@@ -1347,7 +1355,20 @@ impl<'a> Checker<'a> {
                 let ft = self.global_fn(&sm)?;
                 Some(self.call_with(ft, all, &format!("call to `{sm}`"), &[]))
             }
-            _ => None,
+            [] => None,
+            // two traits of the receiver have the name, from any modules: the same errors as within one
+            _ => {
+                let names = cands.iter().map(|t| short(t)).collect::<Vec<_>>().join("` and `");
+                match head {
+                    Some(_) => self.err(format!(
+                        "`{what}` implements `{names}`, which both have `{sm}`: define `{sm}` in `impl {what}` to say what it means on a `{what}`, or call it where the value is typed as one of the traits"
+                    )),
+                    None => self.err(format!(
+                        "`{sm}` is ambiguous here: `{what}` is known only as `{names}`, which both have `{sm}`, and nothing says which one this call means (even a type that defines `{sm}` itself doesn't say that)"
+                    )),
+                }
+                Some(self.fresh())
+            }
         }
     }
 

@@ -2534,3 +2534,76 @@ test "each call means its receiver's method" {
     let (_, out, err) = strata_code(&["--file", "main.strata", "verify", "--cases", "20"], &d, "");
     assert!(!out.contains("needs the real system") && !out.contains("YO") && !err.contains("needs the real system"), "{out}{err}");
 }
+
+#[test]
+fn shared_method_names_across_modules() {
+    let d = tmp("xmod");
+    std::fs::write(d.join("strata.toml"), "name = \"xmod\"\n").unwrap();
+    std::fs::write(d.join("a.strata"), "pub trait Sized {\n  fn size(self) -> Int\n}\n").unwrap();
+    std::fs::write(d.join("b.strata"), "pub trait Weighed {\n  fn size(self) -> Int\n}\n").unwrap();
+    std::fs::write(
+        d.join("main.strata"),
+        r#"use a.Sized
+use b.Weighed
+
+type Box = { n: Int }
+type Bag = { n: Int }
+type Both = { n: Int }
+
+impl Sized for Box {
+  fn size(self) -> Int { self.n }
+}
+impl Weighed for Bag {
+  fn size(self) -> Int { self.n * 100 }
+}
+impl Both {
+  fn size(self) -> Int { 7 }
+}
+impl Sized for Both {
+  fn size(self) -> Int { 1 }
+}
+impl Weighed for Both {
+  fn size(self) -> Int { 2 }
+}
+
+fn via_sized(x: Sized) -> Int { x.size() }
+fn via_weighed[T: Weighed](x: T) -> Int { x.size() }
+
+test "each call means its receiver's size" {
+  assert Box { n: 3 }.size() == 3
+  assert Bag { n: 3 }.size() == 300
+  assert via_sized(Box { n: 4 }) == 4
+  assert via_weighed(Bag { n: 4 }) == 400
+  let b = Both { n: 0 }
+  assert b.size() == 7
+  assert via_sized(b) == 1
+  assert via_weighed(b) == 2
+}
+"#,
+    )
+    .unwrap();
+    let (ok, out) = strata(&["--file", ".", "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    // two traits of the receiver have the name, from different modules: an error, as within one
+    std::fs::write(
+        d.join("amb.strata"),
+        r#"use a.Sized
+use b.Weighed
+
+type Two = { n: Int }
+impl Sized for Two {
+  fn size(self) -> Int { 1 }
+}
+impl Weighed for Two {
+  fn size(self) -> Int { 2 }
+}
+
+fn concrete(x: Two) -> Int { x.size() }
+fn bounded[T: Sized + Weighed](x: T) -> Int { x.size() }
+"#,
+    )
+    .unwrap();
+    let (ok, out) = strata(&["--file", ".", "check"], &d, None);
+    assert!(!ok && out.contains("`Two` implements `Sized` and `Weighed`, which both have `size`"), "{out}");
+    assert!(out.contains("`T` is known only as `Sized` and `Weighed`"), "{out}");
+}
