@@ -106,10 +106,7 @@ pub fn log_range(cb: &Codebase, from: Option<usize>, to: Option<usize>) -> Resul
     let steps = (from..to)
         .map(|k| {
             let e = &log[k];
-            let renames = match (e["rename"]["from"].as_str(), e["rename"]["to"].as_str()) {
-                (Some(f), Some(t)) => vec![(f.to_string(), t.to_string())],
-                _ => vec![],
-            };
+            let renames = store::renames_of(e);
             Step { id: k, title: e["message"].as_str().unwrap_or("").to_string(), group: String::new(), when: e["time"].as_u64(), before: states[k].clone(), after: states[k + 1].clone(), renames }
         })
         .collect();
@@ -167,10 +164,7 @@ fn same(a: &Program, b: &Program) -> bool {
 }
 
 fn renames_of(e: &Json) -> Vec<(String, String)> {
-    match (e["rename"]["from"].as_str(), e["rename"]["to"].as_str()) {
-        (Some(f), Some(t)) => vec![(f.to_string(), t.to_string())],
-        _ => vec![],
-    }
+    store::renames_of(e)
 }
 
 /// The steps from `before` to `after`, one per log entry that is in `log`

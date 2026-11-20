@@ -1699,3 +1699,175 @@ fn sync_carries_logged_renames_into_the_other_sides_files() {
     assert!(std::fs::read_to_string(d.join("b.strata")).unwrap().contains("surface(s, s) + extent"), "not captured");
     assert_eq!(git(&d, &["rev-parse", "HEAD"]), head, "nothing committed");
 }
+
+const SHAPES: &str = "pub type Shape =\n  | Circle { radius: Int }\n  | Square(Int)\n\npub type Line = { sku: String, qty: Int }\n\npub trait Sized {\n  fn size(self) -> Int\n}\n\nimpl Sized for Line {\n  fn size(self) -> Int {\n    self.qty\n  }\n}\n";
+const SHAPES_MAIN: &str = "use shapes.*\n\nfn area(s: Shape) -> Int {\n  match s {\n    Circle { radius } => 3 * radius * radius,\n    Square(n) => n * n,\n  }\n}\n\nfn bigger(l: Line) -> Line {\n  Line { ..l, qty: l.qty + 1 }\n}\n\ntest \"shapes\" {\n  assert area(Circle { radius: 1 }) == 3\n  assert Square(2) is Square\n  let l = Line { sku: \"a\", qty: 2 }\n  assert bigger(l).size() == 3\n  assert l.size() == 2\n}\n";
+
+#[test]
+fn rename_variants_methods_and_fields() {
+    let d = tmp("members");
+    std::fs::write(d.join("shapes.strata"), SHAPES).unwrap();
+    std::fs::write(d.join("main.strata"), SHAPES_MAIN).unwrap();
+    assert!(strata(&["init"], &d, None).0);
+
+    // a variant: constructors, patterns and `is`
+    let (ok, out) = strata(&["rename", "Circle", "Round"], &d, None);
+    assert!(ok && out.contains("renamed shapes.Circle → shapes.Round") && out.contains("updated 2 definitions that refer to it: area, test \"shapes\""), "{out}");
+    // a trait method: the trait, its impls and the calls
+    let (ok, out) = strata(&["rename", "size", "measure"], &d, None);
+    assert!(ok && out.contains("shapes.impl Sized for Line"), "{out}");
+    // a field: the declaration, accesses, literals, updates
+    let (ok, out) = strata(&["rename", "Line.qty", "quantity"], &d, None);
+    assert!(ok && out.contains("renamed shapes.Line.qty → shapes.Line.quantity"), "{out}");
+    let (s, m) = (std::fs::read_to_string(d.join("shapes.strata")).unwrap(), std::fs::read_to_string(d.join("main.strata")).unwrap());
+    for x in ["| Round { radius: Int }", "fn measure(self) -> Int {\n    self.quantity", "quantity: Int }"] {
+        assert!(s.contains(x), "missing {x:?} in\n{s}");
+    }
+    for x in ["Round { radius } =>", "Line { ..l, quantity: l.quantity + 1 }", "area(Round { radius: 1 })", "bigger(l).measure() == 3", "Line { sku: \"a\", quantity: 2 }"] {
+        assert!(m.contains(x), "missing {x:?} in\n{m}");
+    }
+    let (ok, out) = strata(&["test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+
+    // the diff says what was renamed, and folds the code that only follows it
+    let (ok, out) = strata(&["diff", "--step", "0"], &d, None);
+    assert!(ok && out.contains("~ shapes.Shape  (variant `Circle` renamed to `Round`)") && out.contains("only a name changed · 2 references updated") && !out.contains("~ area"), "{out}");
+    let (_, out) = strata(&["diff", "--step", "1"], &d, None);
+    assert!(out.contains("~ shapes.Sized  (method `size` renamed to `measure`)"), "{out}");
+    let (_, out) = strata(&["diff", "--step", "2"], &d, None);
+    assert!(out.contains("~ shapes.Line  (field `qty` renamed to `quantity`)"), "{out}");
+
+    // refused: a taken name, a field another record also has, `.value` with distinct types around
+    let (ok, out) = strata(&["rename", "Round", "Square"], &d, None);
+    assert!(!ok && out.contains("`shapes.Square` already exists"), "{out}");
+    std::fs::write(d.join("more.strata"), "pub type Order = { sku: String, total: Int }\n\ndistinct type Id = String\n").unwrap();
+    // a field another record also has: the checker tells their accesses apart
+    let (ok, out) = strata(&["rename", "Line.sku", "code"], &d, None);
+    assert!(ok, "{out}");
+    assert!(std::fs::read_to_string(d.join("more.strata")).unwrap().contains("pub type Order = { sku: String"), "Order keeps its field");
+    // `value`, which distinct types also have
+    std::fs::write(d.join("more.strata"), "pub type Order = { value: Int }\n\ndistinct type Id = String\n\nfn both(o: Order, i: Id) -> String {\n  f\"{o.value} {i.value}\"\n}\n").unwrap();
+    let (ok, out) = strata(&["rename", "Order.value", "amount"], &d, None);
+    assert!(ok, "{out}");
+    assert!(std::fs::read_to_string(d.join("more.strata")).unwrap().contains("f\"{o.amount} {i.value}\""), "the distinct type's `.value` stays");
+    let (_, log) = strata(&["log", "--json"], &d, None);
+    assert!(log.contains(r#""kind":"variant""#) && log.contains(r#""kind":"method""#) && log.contains(r#""kind":"field""#), "{log}");
+}
+
+#[test]
+fn sync_follows_member_renames() {
+    let d = tmp("follow-members");
+    git(&d, &["init", "-q", "-b", "main"]);
+    std::fs::write(d.join("shapes.strata"), SHAPES).unwrap();
+    std::fs::write(d.join("main.strata"), SHAPES_MAIN).unwrap();
+    assert!(strata(&["init"], &d, None).0);
+    git(&d, &["add", "."]);
+    git(&d, &["commit", "-q", "-m", "base"]);
+
+    // feature renames a variant and a field; main adds code that uses the old names
+    git(&d, &["checkout", "-q", "-b", "feature"]);
+    assert!(strata(&["rename", "Circle", "Round"], &d, None).0);
+    assert!(strata(&["rename", "Line.qty", "quantity"], &d, None).0);
+    git(&d, &["commit", "-q", "-am", "renames"]);
+    git(&d, &["checkout", "-q", "main"]);
+    std::fs::write(d.join("extra.strata"), "use shapes.*\n\nfn unit() -> Shape {\n  Circle { radius: 1 }\n}\n\nfn doubled(l: Line) -> Int {\n  l.qty * 2\n}\n").unwrap();
+    git(&d, &["add", "."]);
+    git(&d, &["commit", "-q", "-m", "extra"]);
+    git(&d, &["checkout", "-q", "feature"]);
+
+    let (ok, out) = strata_git(&["sync", "main"], &d);
+    assert!(ok && out.contains("merged main"), "{out}");
+    let e = std::fs::read_to_string(d.join("extra.strata")).unwrap();
+    assert!(e.contains("Round { radius: 1 }") && e.contains("l.quantity * 2"), "{e}");
+}
+
+#[test]
+fn rename_a_field_that_another_record_also_has() {
+    let d = tmp("shared-field");
+    let src = "type Line = { sku: String, qty: Int }\n\ntype Order = { sku: String, lines: List[Line] }\n\nfn label(l: Line, o: Order) -> String {\n  l.sku + \"/\" + o.sku\n}\n\nfn first_skus(o: Order) -> List[String] {\n  o.lines.map(l -> l.sku)\n}\n\nfn fix(l: Line) -> Line {\n  match l {\n    Line { sku, .. } => Line { ..l, sku: sku + \"!\" },\n  }\n}\n\ntest \"skus\" {\n  let l = Line { sku: \"a\", qty: 1 }\n  let o = Order { sku: \"o\", lines: [l] }\n  assert label(l, o) == \"a/o\"\n  assert first_skus(o) == [\"a\"]\n  assert fix(l).sku == \"a!\"\n}\n";
+    std::fs::write(d.join("main.strata"), src).unwrap();
+    assert!(strata(&["init"], &d, None).0);
+    // the checker says which record each `.sku` reads: Line's are renamed, Order's stay
+    let (ok, out) = strata(&["rename", "Line.sku", "code"], &d, None);
+    assert!(ok, "{out}");
+    let m = std::fs::read_to_string(d.join("main.strata")).unwrap();
+    for x in ["type Line = { code: String, qty: Int }", "type Order = { sku: String", "l.code + \"/\" + o.sku", "o.lines.map(l -> l.code)", "Line { code: sku, .. } => Line { ..l, code: sku + \"!\" }", "Line { code: \"a\", qty: 1 }", "Order { sku: \"o\"", "fix(l).code == \"a!\""] {
+        assert!(m.contains(x), "missing {x:?} in\n{m}");
+    }
+    let (ok, out) = strata(&["test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+
+    // read from a union of both records: renaming one would break it
+    let e = tmp("shared-field-union");
+    std::fs::write(e.join("main.strata"), "type A = { tag: String, n: Int }\n\ntype B = { tag: String }\n\nfn tag_of(x: A | B) -> String {\n  x.tag\n}\n").unwrap();
+    assert!(strata(&["init"], &e, None).0);
+    let (ok, out) = strata(&["rename", "A.tag", "label"], &e, None);
+    assert!(!ok && out.contains("in `tag_of`, `.tag` is read from a union that also has `B.tag` (rename it too, in the same command)"), "{out}");
+    // both records' fields to different names: the union access can't follow
+    let (ok, out) = strata(&["rename", "A.tag", "label", "B.tag", "name"], &e, None);
+    assert!(!ok && out.contains("`.tag` is read from a union whose records would get different names"), "{out}");
+    // both, to the same name, in one step
+    let (ok, out) = strata(&["rename", "A.tag", "label", "B.tag", "label"], &e, None);
+    assert!(ok && out.contains("renamed A.tag → A.label, B.tag → B.label") && out.contains("updated 1 definition that refers to them: tag_of"), "{out}");
+    let m = std::fs::read_to_string(e.join("main.strata")).unwrap();
+    assert!(m.contains("type A = { label: String, n: Int }") && m.contains("type B = { label: String }") && m.contains("x.label"), "{m}");
+    let log = std::fs::read_to_string(e.join("strata.log")).unwrap();
+    assert_eq!(log.lines().count(), 1, "one step");
+}
+
+#[test]
+fn move_a_definition_to_another_module() {
+    let d = tmp("move");
+    std::fs::write(d.join("orders.strata"), "pub type Order = { id: String, total: Int }\n\nfn doubled(o: Order) -> Int {\n  o.total * 2\n}\n\npub fn charge(o: Order) -> Int {\n  o.total + 1\n}\n\npub fn ship(o: Order) -> Int {\n  charge(o) + doubled(o)\n}\n").unwrap();
+    std::fs::write(d.join("billing.strata"), "use orders.{Order, charge}\n\npub fn invoice(o: Order) -> Int {\n  charge(o) + orders.ship(o)\n}\n").unwrap();
+    std::fs::write(d.join("main.strata"), "use orders.*\n\ntest \"charges\" {\n  let o = Order { id: \"a\", total: 1 }\n  assert charge(o) == 2\n  assert orders.charge(o) == 2\n  assert ship(o) == 4\n}\n").unwrap();
+    assert!(strata(&["init"], &d, None).0);
+
+    let (ok, out) = strata(&["move", "charge", "billing"], &d, None);
+    assert!(ok && out.contains("moved orders.charge from orders to billing (billing.strata)"), "{out}");
+    assert!(out.contains("updated 1 definition that refers to it: test \"charges\"") && out.contains("orders: use billing.charge") && out.contains("main: use billing.charge"), "{out}");
+    let (o, b, m) = (std::fs::read_to_string(d.join("orders.strata")).unwrap(), std::fs::read_to_string(d.join("billing.strata")).unwrap(), std::fs::read_to_string(d.join("main.strata")).unwrap());
+    assert!(o.starts_with("use billing.charge\n") && !o.contains("fn charge"), "{o}");
+    assert!(b.starts_with("use orders.Order\n") && b.contains("pub fn charge(o: Order) -> Int"), "{b}");
+    assert!(m.contains("use billing.charge") && m.contains("billing.charge(o) == 2") && !m.contains("orders.charge"), "{m}");
+    let (ok, out) = strata(&["test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+
+    // private things stay in reach
+    let (ok, out) = strata(&["move", "ship", "billing"], &d, None);
+    assert!(!ok && out.contains("`orders.ship` uses `orders.doubled`, which is private to `orders`"), "{out}");
+    let (ok, out) = strata(&["move", "doubled", "billing"], &d, None);
+    assert!(!ok && out.contains("`orders.doubled` is private and `orders.ship` uses it"), "{out}");
+
+    // a move is one change in the diff
+    let (ok, out) = strata(&["diff", "--step", "0"], &d, None);
+    assert!(ok && out.contains("billing.charge  (moved from `orders`)") && out.contains("only its module changed"), "{out}");
+    let (_, log) = strata(&["log", "--json"], &d, None);
+    assert!(log.contains(r#""kind":"move""#), "{log}");
+}
+
+#[test]
+fn sync_follows_moves() {
+    let d = tmp("follow-move");
+    git(&d, &["init", "-q", "-b", "main"]);
+    std::fs::write(d.join("orders.strata"), "pub type Order = { id: String, total: Int }\n\npub fn charge(o: Order) -> Int {\n  o.total + 1\n}\n").unwrap();
+    std::fs::write(d.join("billing.strata"), "use orders.Order\n\npub fn invoice(o: Order) -> Int {\n  o.total\n}\n").unwrap();
+    assert!(strata(&["init"], &d, None).0);
+    git(&d, &["add", "."]);
+    git(&d, &["commit", "-q", "-m", "base"]);
+
+    // feature moves `charge`; main adds code that calls it where it was
+    git(&d, &["checkout", "-q", "-b", "feature"]);
+    assert!(strata(&["move", "charge", "billing"], &d, None).0);
+    git(&d, &["commit", "-q", "-am", "move charge"]);
+    git(&d, &["checkout", "-q", "main"]);
+    std::fs::write(d.join("report.strata"), "use orders.{Order, charge}\n\nfn twice(o: Order) -> Int {\n  charge(o) + orders.charge(o)\n}\n").unwrap();
+    git(&d, &["add", "."]);
+    git(&d, &["commit", "-q", "-m", "report"]);
+    git(&d, &["checkout", "-q", "feature"]);
+
+    let (ok, out) = strata_git(&["sync", "main"], &d);
+    assert!(ok && out.contains("merged main") && out.contains("follows the rename orders.charge → billing.charge"), "{out}");
+    let r = std::fs::read_to_string(d.join("report.strata")).unwrap();
+    assert!(r.contains("use orders.Order") && r.contains("use billing.charge") && r.contains("charge(o) + billing.charge(o)"), "{r}");
+}

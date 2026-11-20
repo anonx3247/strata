@@ -7,6 +7,22 @@ use crate::parser::Parser;
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
 
+thread_local! {
+    /// While `field_owners` runs: for each tagged field access (`qty·tag`),
+    /// the record types (or record variants) its receiver can be.
+    static FIELD_PROBE: std::cell::RefCell<Option<HashMap<String, BTreeSet<String>>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Which record each field access belongs to, by type. `tagged` is a
+/// program whose accesses of interest are written `field·tag`; the result
+/// maps each tag to the record types (or record variants) of its receiver:
+/// one, or several for a union. Names are qualified (`shapes.Line`).
+pub fn field_owners(tagged: &Program) -> HashMap<String, BTreeSet<String>> {
+    FIELD_PROBE.with(|p| *p.borrow_mut() = Some(HashMap::new()));
+    let _ = check(tagged);
+    FIELD_PROBE.with(|p| p.borrow_mut().take()).unwrap_or_default()
+}
+
 pub const PRELUDE: &str = r#"
 /// An optional value.
 type Option[T] =
@@ -1399,6 +1415,23 @@ impl<'a> Checker<'a> {
                 };
                 let muts = self.mut_mask(m);
                 self.call_with(ft, &all, &format!("call to `{m}`"), &muts)
+            }
+            Expr::Field(r, f) if f.contains('·') => {
+                // a tagged access (see `field_owners`): type it, and record its receiver's records
+                let (base, tag) = f.split_once('·').unwrap();
+                let rt = self.infer(r);
+                let t = self.field_type(&rt, base);
+                let owners: BTreeSet<String> = match self.resolve(&rt) {
+                    Ty::Con(n, _) => [n].into(),
+                    Ty::Union(ms) => ms.iter().filter_map(|m| if let Ty::Con(n, _) = self.resolve(m) { Some(n) } else { None }).collect(),
+                    _ => BTreeSet::new(),
+                };
+                FIELD_PROBE.with(|p| {
+                    if let Some(m) = p.borrow_mut().as_mut() {
+                        m.entry(tag.to_string()).or_default().extend(owners);
+                    }
+                });
+                t
             }
             Expr::Field(r, f) => {
                 // `o.status` narrowed by an enclosing `match o.status { … }`
