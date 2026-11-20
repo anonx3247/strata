@@ -46,7 +46,7 @@ fn status_of[P, E](q: MemQueue[P, E], id: TaskId) -> Option[Status] {
 }
 
 fn attempts_of[P, E](q: MemQueue[P, E], id: TaskId) -> Natural {
-  let entry = q.entries.find(e -> e.task.id == id) except { return 0 }
+  let entry = q.entries.find(e -> e.task.id == id) or { return 0 }
   entry.attempts
 }
 
