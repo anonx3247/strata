@@ -206,8 +206,25 @@ Steps:
    every message (no diffing; focus and scroll inside the app are lost);
    input values in messages (step 4); an app and routes in one program;
    sessions are lost on restart.
-4. Forms: `on_submit(constructor)` fills a record from the fields, with
-   refinement errors shown next to each field.
+4. Forms (**built**, branch `worktree-web-forms`; the user asked for the
+   logic to be in Strata): handlers that make a message from what was
+   entered, `on_input` / `on_change` (`(String) -> M`) and `on_submit_form`
+   (`(Dict[String, String]) -> M`). Functions can't go into the page, so
+   `std.web.render` numbers them in page order (a `mut` counter) and
+   `std.web.dispatch(page, n, value, fields)` (Strata) makes the message;
+   the server only re-runs `view` on the current model and calls it. The
+   client patches the page instead of replacing it (a small morph): focus
+   and scroll stay, and the field being typed in keeps its text (after a
+   submit, the view's value wins). Validation is ordinary Strata in
+   `update`; `examples/todos` shows errors next to the field and is proven
+   (titles within `Title`, at most 50 to-dos). Prover fixes on the way: an
+   empty list literal is valid at any element type, and an element of
+   `[] ⊕ xs` (merged branches, concatenation) is an element of `xs`. Not yet:
+   reading a form straight into a typed record (`decode[NewTodo](fields)`,
+   with each refinement's error by field: needs a builtin that knows its
+   type argument at runtime); a handler number can be stale if the page
+   changes between an event and its turn in the queue; keyed lists (the
+   morph patches children by position).
 5. Later: capabilities in `update` (database, LLM calls, HTTP client); the
    wasm build.
 

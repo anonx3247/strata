@@ -190,9 +190,32 @@ impl App {
                 // the server restarted, or the session was dropped: the page reloads
                 let Some(model) = self.sessions.get(&id).cloned() else { return text(410, "this session has ended: reload the page".into()) };
                 let mut it = App::interp(env);
-                let msg = match it.from_json(&self.msg, &sent["msg"], "msg") {
-                    Ok(m) => m,
-                    Err(e) => return error(400, format!("not a message of this app: {e}")),
+                let msg = match sent.get("handler") {
+                    // a message the page holds, as JSON
+                    None => match it.from_json(&self.msg, &sent["msg"], "msg") {
+                        Ok(m) => m,
+                        Err(e) => return error(400, format!("not a message of this app: {e}")),
+                    },
+                    // a handler of the page the user sees, and what they entered:
+                    // `std.web.dispatch` makes the message
+                    Some(h) => {
+                        let Some(id) = h.as_i64() else { return error(400, "the handler is not a number".into()) };
+                        let value = Value::Str(sent["value"].as_str().unwrap_or("").to_string());
+                        let fields_ty = TypeExpr::Named("Dict".into(), vec![TypeExpr::Named("String".into(), vec![]), TypeExpr::Named("String".into(), vec![])]);
+                        let fields = match it.from_json(&fields_ty, sent.get("fields").unwrap_or(&json!({})), "fields") {
+                            Ok(f) => f,
+                            Err(e) => return error(400, format!("the form's fields: {e}")),
+                        };
+                        let page = match it.call_fn("view", vec![model.clone()]) {
+                            Ok(p) => p,
+                            Err(f) => return error(500, fault_text(&f)),
+                        };
+                        match it.call_fn("std.web.dispatch", vec![page, Value::Int(id), value, fields]) {
+                            Ok(Value::Variant(c, interp::Fields::Pos(mut xs))) if c == "Some" && xs.len() == 1 => xs.pop().unwrap(),
+                            Ok(_) => return error(400, format!("the page has no handler {id}")),
+                            Err(f) => return error(500, fault_text(&f)),
+                        }
+                    }
                 };
                 let model = match it.call_fn("update", vec![model, msg]) {
                     Ok(m) => m,

@@ -396,6 +396,8 @@ impl<'a> Vc<'a> {
             Gen::Type(t2) => same(t2),
             Gen::Sub(p) | Gen::Filter(p, _) => self.valid_known(*p, t),
             Gen::Either(_, a, b) => self.valid_known(*a, t) && self.valid_known(*b, t),
+            // `[]`: no element to be invalid
+            Gen::Values(vs) if vs.is_empty() => true,
             _ => false,
         }
     }
@@ -476,6 +478,15 @@ impl<'a> Vc<'a> {
             Gen::Map(p, f) => {
                 let y = self.element_inner(p);
                 self.apply(&f, y)
+            }
+            // one side is `[]`: the element is from the other one
+            Gen::Either(c, a, b) if matches!(&self.lists[a].source, Gen::Values(vs) if vs.is_empty()) => {
+                self.assume(not(&c));
+                self.element_inner(b)
+            }
+            Gen::Either(c, a, b) if matches!(&self.lists[b].source, Gen::Values(vs) if vs.is_empty()) => {
+                self.assume(c.clone());
+                self.element_inner(a)
             }
             Gen::Either(c, a, b) => {
                 let n = self.pc.len();
