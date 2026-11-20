@@ -400,6 +400,56 @@ fn bad_common(v: One | Two) -> Positive { v.n - 1 }
 }
 
 #[test]
+fn smt_models_string_builtins() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("smt-strings");
+    let src = r#"fn head(s: String, n: Natural) -> String ensures len(it) <= n && len(it) <= len(s) { slice(s, 0, n) }
+fn bad_head(s: String, n: Int) -> String ensures len(it) == n { slice(s, 0, n) }
+fn tail(s: String) -> String ensures len(s) > 0 ==> len(it) == len(s) - 1 { slice(s, 1, len(s)) }
+fn back(s: String) -> String ensures it == "" { slice(s, 5, 2) }
+fn first(s: String where len(it) > 0) -> String ensures len(it) == 1 { match get(s, 0) { Some(c) => c, None => "x" } }
+fn bad_first(s: String) -> String ensures len(it) == 1 { match get(s, 0) { Some(c) => c, None => "" } }
+fn neg_get(s: String) -> Bool ensures it { get(s, -1) is None }
+fn n_chars(s: String) -> Bool ensures it { len(chars(s)) == len(s) }
+fn find(s: String, p: String) -> Int ensures it <= len(s) { match index_of(s, p) { Some(i) => i + len(p), None => 0 } }
+fn bad_find(s: String, p: String) -> Natural ensures it < len(s) { match index_of(s, p) { Some(i) => i, None => 0 } }
+fn empty_found(s: String) -> Bool ensures it { index_of(s, "") == Some(0) }
+fn shown(n: Int) -> String ensures n < 0 ==> starts_with(it, "-") { to_string(n) }
+fn shown_len(n: Int where 10 <= it && it <= 99) -> String ensures len(it) == 2 { to_string(n) }
+fn bad_shown(n: Int) -> String ensures len(it) <= 2 { to_string(n) }
+fn parsed() -> Bool ensures it { parse_int("-17") == Some(0 - 17) && parse_int("abc") is None && parse_int("") is None }
+fn round_trip(n: Int) -> Bool ensures it { parse_int(to_string(n)) == Some(n) }
+fn bad_parsed(s: String) -> Bool ensures it { parse_int(s) is None }
+fn spaced() -> Bool ensures it { parse_int(" 7") == Some(7) }
+fn digits(s: String where is_digit(it)) -> Int ensures it >= 0 { parse_int(s) except { 0 } }
+fn ends(s: String) -> Bool ensures it { ends_with(s + ".txt", ".txt") }
+fn bad_ends(s: String) -> Bool ensures it { ends_with(s, ".txt") }
+fn rep() -> Bool ensures it { replace("aaa", "aa", "b") == "ba" }
+fn bad_rep() -> Bool ensures it { replace("aaa", "aa", "b") == "bb" }
+fn empty_rep(s: String, p: String) -> String { replace(s, p, "b") }
+"#;
+    std::fs::write(d.join("s.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", "s.strata", "verify", "--cases", "20"], &d, None);
+    assert!(!ok, "{out}");
+    for name in ["head", "tail", "back", "first", "neg_get", "n_chars", "find", "empty_found", "shown", "shown_len", "parsed", "round_trip", "digits", "ends", "rep"] {
+        assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
+    }
+    for name in ["bad_head", "bad_first", "bad_find", "bad_shown", "bad_parsed", "bad_ends", "bad_rep", "empty_rep"] {
+        let line = out.lines().find(|l| l.split_whitespace().nth(1) == Some(name)).unwrap_or("");
+        assert!(line.starts_with("✗") && line.contains("found by the solver"), "{name} should be refuted by the solver: {out}");
+    }
+    // leading whitespace is trimmed by the interpreter: not modelled, so not refuted either
+    assert!(out.contains("~ spaced") && out.contains("replace: empty pattern"), "{out}");
+    // a big index is clamped like any other
+    std::fs::write(d.join("b.strata"), "fn s(t: String) -> String { slice(t, 0, 99999999999999999999) }\n").unwrap();
+    let (ok, out) = strata(&["--file", "b.strata", "run", "s", "[\"abc\"]"], &d, None);
+    assert!(ok && out.contains("\"abc\""), "{out}");
+}
+
+#[test]
 fn smt_proves_contracts_and_refutes_bugs() {
     if !has_solver() {
         eprintln!("z3 is not installed: skipping");

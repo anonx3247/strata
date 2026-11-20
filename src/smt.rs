@@ -1864,6 +1864,16 @@ impl<'a> Vc<'a> {
         res
     }
 
+    /// `Some(payload)` when `some` holds, else `None` (an `Option[t]`).
+    fn option(&mut self, t: &TypeExpr, some: &str, payload: Val) -> Val {
+        let vs = self.env.variants_of("Option", &[t.clone()]).unwrap_or_default();
+        let (Some(ks), Some(kn)) = (vs.iter().position(|v| v.0 == "Some"), vs.iter().position(|v| v.0 == "None")) else {
+            return Val::Opaque("`Option` is not the prelude's".into());
+        };
+        let ctors = vs.iter().map(|(n, _, _)| (n.clone(), if n == "Some" { vec![payload.clone()] } else { vec![] })).collect();
+        Val::Sum { ty: "Option".into(), args: vec![t.clone()], tag: ite(some, &ks.to_string(), &kn.to_string()), ctors }
+    }
+
     fn builtin(&mut self, name: &str, arg_exprs: &[Expr], a: Vec<Val>) -> Val {
         let arg = |i: usize| a.get(i).cloned().unwrap_or(Val::Opaque("a missing argument".into()));
         let not_modelled = format!("`{name}` is not modelled");
@@ -1998,6 +2008,76 @@ impl<'a> Vc<'a> {
                     self.facts.push(format!("(=> (forall (({x} Int)) (=> {p} (>= {x} 0))) (>= {total} 0))"));
                 }
                 Val::Int(total)
+            }
+            // strings are sequences of code points, as `chars()` counts them
+            ("ends_with", 2) => {
+                let (s, p) = (self.as_str(&arg(0)), self.as_str(&arg(1)));
+                Val::Bool(format!("(str.suffixof {p} {s})"))
+            }
+            // characters start..end, both clamped to 0..len (`str.substr` takes a length)
+            ("slice", 3) if matches!(arg(0), Val::Str(_)) => {
+                let s = self.as_str(&arg(0));
+                let (a, b) = (self.as_int(&arg(1)), self.as_int(&arg(2)));
+                let n = format!("(str.len {s})");
+                let clamp = |x: &str| format!("(ite (< {x} 0) 0 (ite (> {x} {n}) {n} {x}))");
+                let (a, b) = (clamp(&a), clamp(&b));
+                Val::Str(format!("(str.substr {s} {a} (- {b} {a}))"))
+            }
+            ("get", 2) if matches!(arg(0), Val::Str(_)) => {
+                let s = self.as_str(&arg(0));
+                let i = self.as_int(&arg(1));
+                let string = TypeExpr::Named("String".into(), vec![]);
+                self.option(&string, &format!("(and (<= 0 {i}) (< {i} (str.len {s})))"), Val::Str(format!("(str.at {s} {i})")))
+            }
+            ("chars", 1) => {
+                let s = self.as_str(&arg(0));
+                Val::List { len: format!("(str.len {s})"), elem: Some(TypeExpr::Named("String".into(), vec![])) }
+            }
+            // the first match, counted in characters; "" is found at 0
+            ("index_of", 2) => {
+                let (s, p) = (self.as_str(&arg(0)), self.as_str(&arg(1)));
+                let i = format!("(str.indexof {s} {p} 0)");
+                let int = TypeExpr::Named("Int".into(), vec![]);
+                self.option(&int, &format!("(>= {i} 0)"), Val::Int(i))
+            }
+            // every non-overlapping match, left to right (Rust's `str::replace`);
+            // an empty pattern is a runtime fault, so that is checked
+            ("replace", 3) => {
+                let (s, from, to) = (self.as_str(&arg(0)), self.as_str(&arg(1)), self.as_str(&arg(2)));
+                self.oblige("`replace` with a pattern that is not empty".into(), |_| format!("(not (= {from} \"\"))"));
+                Val::Str(format!("(str.replace_all {s} {from} {to})"))
+            }
+            ("to_string", 1) => match arg(0) {
+                Val::Str(s) => Val::Str(s),
+                Val::Bool(b) => Val::Str(format!("(ite {b} \"true\" \"false\")")),
+                // `str.from_int` is "" for negative numbers
+                Val::Int(n) => Val::Str(format!("(ite (>= {n} 0) (str.from_int {n}) (str.++ \"-\" (str.from_int (- {n}))))")),
+                _ => Val::Str(self.fresh_why("String", &not_modelled)),
+            },
+            // only the forms whose result is certain: digits, `-` and digits, and
+            // strings without an ASCII digit (never a number). Whitespace, `+`
+            // and `_` (which the parser accepts) leave the result unknown.
+            ("parse_int", 1) => {
+                let s = self.as_str(&arg(0));
+                let digits = "(re.+ (re.range \"0\" \"9\"))";
+                let pos = format!("(str.in_re {s} {digits})");
+                let rest = format!("(str.substr {s} 1 (- (str.len {s}) 1))");
+                let neg = format!("(and (str.prefixof \"-\" {s}) (str.in_re {rest} {digits}))");
+                let none = format!("(not (str.in_re {s} (re.++ re.all (re.range \"0\" \"9\") re.all)))");
+                // true by the definition of `str.to_int` (-1 unless all digits), which Z3 does not find alone
+                for x in [&s, &rest] {
+                    self.facts.push(format!("(= (>= (str.to_int {x}) 0) (str.in_re {x} {digits}))"));
+                }
+                let n = self.fresh_why("Int", "`parse_int` of a string with whitespace, `+` or `_`");
+                let payload = format!("(ite {pos} (str.to_int {s}) (ite {neg} (- (str.to_int {rest})) {n}))");
+                let some = self.fresh_why("Bool", "`parse_int` of a string with whitespace, `+` or `_`");
+                let int = TypeExpr::Named("Int".into(), vec![]);
+                self.option(&int, &format!("(or {pos} {neg} (and (not {none}) {some}))"), Val::Int(payload))
+            }
+            // ASCII digits only, and not empty
+            ("is_digit", 1) => {
+                let s = self.as_str(&arg(0));
+                Val::Bool(format!("(str.in_re {s} (re.+ (re.range \"0\" \"9\")))"))
             }
             ("trim", 1) => {
                 let s = self.as_str(&arg(0));
