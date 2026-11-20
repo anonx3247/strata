@@ -124,7 +124,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                 ps.iter().filter_map(|p| p.ty.as_ref()).for_each(|t| ty(t, out));
                 go(r, out)
             }
-            Expr::Except(r, _, fb) => {
+            Expr::Except(r, _, fb) | Expr::Or(r, fb) => {
                 go(r, out);
                 go(fb, out);
             }

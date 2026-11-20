@@ -2145,19 +2145,35 @@ impl<'a> Checker<'a> {
                 }
                 inner
             }
+            Expr::Or(x, fb) => {
+                let t = self.infer(x);
+                let inner = match self.resolve(&t) {
+                    Ty::Con(n, args) if n == "Option" && args.len() == 1 => args[0].clone(),
+                    Ty::Con(n, args) if n == "Result" && args.len() == 2 => {
+                        self.err("`or` / `??` handle an Option; a Result is handled with `except { … }` / `!!`");
+                        args[0].clone()
+                    }
+                    other => {
+                        let shown = show_ty(&other);
+                        self.err(format!("`or` / `??` handle an Option, found `{shown}`"));
+                        self.fresh()
+                    }
+                };
+                let ft = self.infer_with(fb, Some(&inner));
+                self.expect(&inner, &ft, "`or` fallback");
+                inner
+            }
             Expr::Except(x, name, fb) => {
                 let t = self.infer(x);
                 let (inner, err_ty) = match self.resolve(&t) {
                     Ty::Con(n, args) if n == "Result" && args.len() == 2 => (args[0].clone(), Some(args[1].clone())),
                     Ty::Con(n, args) if n == "Option" && args.len() == 1 => {
-                        if let Some(n) = name {
-                            self.err(format!("`except {n}`: an Option has no error to name (`None` carries no value), write `except {{ ... }}`"));
-                        }
+                        self.err("`except` / `!!` handle a Result; an Option is handled with `or { … }` / `??`");
                         (args[0].clone(), None)
                     }
                     other => {
                         let shown = show_ty(&other);
-                        self.err(format!("`except` handles a Result or an Option, found `{shown}`"));
+                        self.err(format!("`except` / `!!` handle a Result, found `{shown}`"));
                         (self.fresh(), None)
                     }
                 };

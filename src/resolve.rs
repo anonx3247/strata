@@ -1025,6 +1025,7 @@ impl Rw<'_> {
             }
             Expr::Mut(x) => Expr::Mut(Box::new(self.expr(x))),
             Expr::Try(x, k) => Expr::Try(Box::new(self.expr(x)), *k),
+            Expr::Or(x, fb) => Expr::Or(Box::new(self.expr(x)), Box::new(self.expr(fb))),
             Expr::Except(x, name, fb) => {
                 let x = self.expr(x);
                 self.push(&name.iter().cloned().collect::<Vec<_>>());

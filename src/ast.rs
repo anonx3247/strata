@@ -393,9 +393,13 @@ pub enum Expr {
     /// `e!`: the `Ok` value of a `Result`, or return its `Err` from the function.
     /// `e?`: the `Some` value of an `Option`, or return `None` from the function.
     Try(Box<Expr>, TryKind),
-    /// `e except { fallback }`, `e except err { fallback }`: the `Ok` / `Some`
-    /// value, or else the fallback, which can use the error under `err`.
+    /// `e except { fallback }`, `e except err { fallback }`, `e !! fallback`:
+    /// a `Result`'s `Ok` value, or else the fallback, which can use the error
+    /// under `err`.
     Except(Box<Expr>, Option<String>, Box<Expr>),
+    /// `e or { fallback }`, `e ?? fallback`: an `Option`'s `Some` value, or
+    /// else the fallback.
+    Or(Box<Expr>, Box<Expr>),
     /// `f"{name} has {len(xs)} items"`: each part shown as by `to_string`.
     Interp(Vec<StrPart>),
     /// `a..b` (`b` excluded), `a..=b` (`b` included): the integers between,
@@ -607,7 +611,7 @@ macro_rules! visitor {
                     }
                     v.expr(body)
                 }
-                Expr::Bin(_, l, r) | Expr::Except(l, _, r) => {
+                Expr::Bin(_, l, r) | Expr::Except(l, _, r) | Expr::Or(l, r) => {
                     v.expr(l);
                     v.expr(r)
                 }

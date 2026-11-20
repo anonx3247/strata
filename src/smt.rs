@@ -1746,7 +1746,12 @@ impl<'a> Vc<'a> {
                     }
                 }
             }
-            Expr::Except(x, name, fb) => {
+            Expr::Except(..) | Expr::Or(..) => {
+                let (x, name, fb) = match e {
+                    Expr::Except(x, name, fb) => (x, name, fb),
+                    Expr::Or(x, fb) => (x, &None, fb),
+                    _ => unreachable!(),
+                };
                 let v = self.eval(x);
                 let k_ok = Self::ctor_index(&v, "Ok").or(Self::ctor_index(&v, "Some"));
                 match (&v, k_ok) {
