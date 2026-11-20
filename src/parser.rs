@@ -444,11 +444,16 @@ impl Parser {
     fn fields(&mut self) -> R<Vec<Field>> {
         self.list("}", |p| {
             let mut comments = p.leading();
+            let mut doc = Vec::new();
+            while let Tok::Doc(d) = p.peek().clone() {
+                doc.push(d);
+                p.next();
+            }
             let name = p.ident()?;
             p.expect_sym(":")?;
             let ty = p.type_expr()?;
             comments.extend(p.trailing());
-            Ok(Field { comments, name, ty })
+            Ok(Field { comments, doc, name, ty })
         })
     }
 

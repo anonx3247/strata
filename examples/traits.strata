@@ -56,8 +56,7 @@ impl Describe for Item {
   }
 }
 
-impl Summary for Item {
-}
+impl Summary for Item {}
 
 impl Priced for Bundle {
   fn price(self) -> Natural {
@@ -71,8 +70,7 @@ impl Describe for Bundle {
   }
 }
 
-impl Summary for Bundle {
-}
+impl Summary for Bundle {}
 
 /// Traits can be implemented for built-in types too.
 impl Describe for Int {

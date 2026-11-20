@@ -155,6 +155,9 @@ pub const BUILTINS: &[(&str, &str, &str)] = &[
     ("ord", "", "(String) -> Int"),
     ("chr", "", "(Int) -> String"),
     ("to_string", "A", "(A) -> String"),
+    // a line of output, shown as by `to_string`: on the terminal under `strata run`,
+    // into the test's own buffer under `strata test`, nowhere under `verify`
+    ("print", "A", "(A) -> ()"),
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -246,6 +249,14 @@ pub enum Target {
     /// runs (they have a static method to call): the types, in order, are
     /// passed as extra arguments.
     TypeArgs(Vec<TypeRef>),
+    /// A trait method's name called on a value whose type doesn't implement
+    /// any trait that declares it, where a builtin has that name: the builtin
+    /// `.0` (`d.remove(k)` on a dict, with `Files.remove` in scope).
+    Builtin(String),
+    /// The method `.1` of trait `.0`, where the call was resolved to another
+    /// module's method of the same name (`console.write(s)` with `Files`
+    /// imported after `Console`). Written as `Trait::method`.
+    Other(String, String),
 }
 
 /// A type as passed at runtime: a concrete type's name, or the caller's own
@@ -294,7 +305,13 @@ pub fn elaborate(prog: &Program) -> crate::resolve::Resolution {
     let (env, _) = Env::build(&r.program);
     let shared = env.method_traits.values().any(|v| v.len() > 1);
     let statics = env.traits.values().any(|t| t.methods.iter().any(|m| !crate::resolve::takes_self(&m.decl)));
-    if env.inherent.is_empty() && !shared && !statics {
+    // a trait method named like a builtin (`Files.remove`) may mean the builtin
+    // or two modules' traits share a method name (`Console.write`, `Files.write`)
+    let mut shorts: Vec<&str> = env.traits.values().flat_map(|t| t.methods.iter().map(|m| m.decl.name.rsplit('.').next().unwrap_or(&m.decl.name))).collect();
+    let like_builtin = shorts.iter().any(|s| BUILTINS.iter().any(|b| b.0 == *s));
+    shorts.sort();
+    let across = shorts.windows(2).any(|w| w[0] == w[1]);
+    if env.inherent.is_empty() && !shared && !statics && !like_builtin && !across {
         return r;
     }
     let (_, _, targets) = check_decls(&r.program, &env);
@@ -322,6 +339,10 @@ pub fn elaborate(prog: &Program) -> crate::resolve::Resolution {
                     *e = Expr::Call(Box::new(Expr::Var(trait_call(tr, m))), all);
                 }
                 (Target::TypeArgs(tys), Expr::Call(_, args) | Expr::Method(_, _, args)) => args.extend(tys.iter().map(|t| t.expr())),
+                (Target::Other(tr, mq), Expr::Method(_, m, _)) => *m = trait_call(tr, mq),
+                (Target::Other(tr, mq), Expr::Call(f, _)) => **f = Expr::Var(trait_call(tr, mq)),
+                (Target::Builtin(b), Expr::Method(_, m, _)) => *m = b.clone(),
+                (Target::Builtin(b), Expr::Call(f, _)) => **f = Expr::Var(b.clone()),
                 _ => {}
             }
         })
@@ -1242,11 +1263,113 @@ impl<'a> Checker<'a> {
             self.err(format!("which `{short}` runs depends on the type of the value it is called on (several types or traits have one): call it on a value, or pass a lambda such as `x -> x.{short}()`"));
             return Some(self.fresh());
         }
-        if let Some((_, ps, sig)) = BUILTINS.iter().find(|(n, ..)| *n == name) {
+        if let Some((_, ps, sig)) = BUILTINS.iter().chain(crate::stdlib::HOST).find(|(n, ..)| *n == name) {
             let ps: Vec<String> = ps.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
             return Some(self.instantiate(&ps, &parse_type_str(sig)));
         }
         None
+    }
+
+    /// A method name means the method of that name among the traits of the
+    /// value it is called on, whichever module they come from. Names are
+    /// qualified by module when resolved (`std.fs.write`), and a module's
+    /// scope can only map `write` to one of them, so this re-reads the call by
+    /// the receiver: `console.write(s)` is `Console`'s `write` even where
+    /// `Files` (with its own `write`) was imported last. When none of the
+    /// receiver's traits has the name and a builtin does, the call is the
+    /// builtin's (`d.remove(k)` on a dict, with `Files.remove` in scope).
+    /// The choice is recorded for `elaborate`. `None`: the call is as resolved.
+    fn by_receiver(&mut self, m: &str, all: &[&Expr], site: usize) -> Option<Ty> {
+        if self.lookup(m).is_some() || self.env.fns.contains_key(m) || split_trait_call(m).is_some() || !self.env.is_method(m) {
+            return None;
+        }
+        let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+        let sm = short(m);
+        let recv = all.first()?;
+        let n = self.errors.len();
+        let rt = self.infer(recv);
+        self.errors.truncate(n);
+        let rt = self.resolve(&rt);
+        // the traits the receiver is known to have; `what` names it in errors
+        let (head, what, traits): (Option<String>, String, Vec<String>) = match &rt {
+            Ty::Rigid(p) => {
+                let mut all = vec![];
+                for (tr, args) in self.bounds.get(p).cloned().unwrap_or_default() {
+                    all.push(tr.clone());
+                    all.extend(self.supers_of(&tr, &args, 0).into_iter().map(|(s, _)| s));
+                }
+                (None, p.clone(), all)
+            }
+            Ty::Con(t, args) if self.env.traits.contains_key(t) => {
+                let mut all = vec![t.clone()];
+                all.extend(self.supers_of(t, args, 0).into_iter().map(|(s, _)| s));
+                (None, short(t), all)
+            }
+            Ty::Int | Ty::Float | Ty::Bool | Ty::Str | Ty::Con(..) => {
+                let head = match &rt {
+                    Ty::Int => "Int".to_string(),
+                    Ty::Float => "Float".into(),
+                    Ty::Bool => "Bool".into(),
+                    Ty::Str => "String".into(),
+                    Ty::Con(h, _) => h.clone(),
+                    _ => unreachable!(),
+                };
+                // the type's own method of that name comes first (a variant's before its sum's)
+                let heads: Vec<String> = std::iter::once(head.clone()).chain(self.env.variant_parent(&head)).collect();
+                for h in &heads {
+                    if let Some(imp) = self.env.inherent.get(h).cloned() {
+                        if let Some(f) = imp.methods.iter().find(|x| short(&x.name) == sm && crate::resolve::takes_self(x)).cloned() {
+                            self.targets.push((site, Target::Own(crate::resolve::static_name(h, &f.name))));
+                            let ft = self.own_method_ty(&imp, &f);
+                            let muts: Vec<Option<TypeExpr>> = f.params.iter().map(|p| p.mutable.then(|| p.ty.clone())).collect();
+                            return Some(self.call_with(ft, all, &format!("call to `{sm}`"), &muts));
+                        }
+                    }
+                }
+                let trs = self.env.impls.iter().filter(|i| heads.contains(&texpr_head(&i.for_type))).map(|i| i.trait_name.clone()).collect();
+                (Some(head.clone()), short(&head), trs)
+            }
+            _ => return None,
+        };
+        let mut cands: Vec<String> = traits.into_iter().filter(|t| self.env.traits.get(t).is_some_and(|td| td.methods.iter().any(|x| short(&x.decl.name) == sm))).collect();
+        cands.sort();
+        cands.dedup();
+        let declares_m = |c: &Checker, t: &str| c.env.traits.get(t).is_some_and(|td| td.methods.iter().any(|x| x.decl.name == m));
+        match cands.as_slice() {
+            // the resolved name is right (or the usual errors apply)
+            [t] if declares_m(self, t) => None,
+            [t] => {
+                let t = t.clone();
+                let mq = self.env.traits[&t].methods.iter().find(|x| short(&x.decl.name) == sm).unwrap().decl.name.clone();
+                self.targets.push((site, Target::Other(t.clone(), mq.clone())));
+                self.check_mut_args(&mq, all, true);
+                let ft = self.trait_method(&mq, &t);
+                let muts = self.mut_mask(&mq);
+                Some(self.call_with(ft, all, &format!("call to `{sm}`"), &muts))
+            }
+            [] if head.as_deref().is_some_and(|h| ["Int", "Float", "Bool", "String", "List", "Dict", "Set"].contains(&h)) && BUILTINS.iter().any(|b| b.0 == sm) => {
+                self.targets.push((site, Target::Builtin(sm.clone())));
+                if let Some(t) = self.overloaded(&sm, all) {
+                    return Some(t);
+                }
+                let ft = self.global_fn(&sm)?;
+                Some(self.call_with(ft, all, &format!("call to `{sm}`"), &[]))
+            }
+            [] => None,
+            // two traits of the receiver have the name, from any modules: the same errors as within one
+            _ => {
+                let names = cands.iter().map(|t| short(t)).collect::<Vec<_>>().join("` and `");
+                match head {
+                    Some(_) => self.err(format!(
+                        "`{what}` implements `{names}`, which both have `{sm}`: define `{sm}` in `impl {what}` to say what it means on a `{what}`, or call it where the value is typed as one of the traits"
+                    )),
+                    None => self.err(format!(
+                        "`{sm}` is ambiguous here: `{what}` is known only as `{names}`, which both have `{sm}`, and nothing says which one this call means (even a type that defines `{sm}` itself doesn't say that)"
+                    )),
+                }
+                Some(self.fresh())
+            }
+        }
     }
 
     /// The type of method `m` called on `recv`, when that depends on the
@@ -1889,6 +2012,9 @@ impl<'a> Checker<'a> {
                 let args: Vec<&Expr> = args.iter().collect();
                 let args = &args[..];
                 if let Expr::Var(n) = &**f {
+                    if let Some(t) = self.by_receiver(n, args, e as *const Expr as usize) {
+                        return t;
+                    }
                     if self.lookup(n).is_none() {
                         self.check_mut_args(n, args, false);
                     } else {
@@ -1923,6 +2049,9 @@ impl<'a> Checker<'a> {
             Expr::Method(recv, m, args) => {
                 // the program's own nodes, not copies: decisions are recorded by node
                 let all: Vec<&Expr> = std::iter::once(&**recv).chain(args.iter()).collect();
+                if let Some(t) = self.by_receiver(m, &all, e as *const Expr as usize) {
+                    return t;
+                }
                 if self.lookup(m).is_none() {
                     self.check_mut_args(m, &all, true);
                 }
@@ -3492,7 +3621,8 @@ pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<String, TypeExpr>>
     let mut cands: Vec<Vec<TypeExpr>> = Vec::new();
     for b in &bounded {
         let first = b.traits.first().map(texpr_head).unwrap_or_default();
-        let mut cs: Vec<TypeExpr> = env.impls.iter().filter(|i| i.trait_name == first).map(|i| i.for_type.clone()).collect();
+        // never the real terminal, disk or process: fuzzing must not reach the system
+        let mut cs: Vec<TypeExpr> = env.impls.iter().filter(|i| i.trait_name == first && !crate::stdlib::HOST_TYPES.contains(&texpr_head(&i.for_type).as_str())).map(|i| i.for_type.clone()).collect();
         cs.push(b.traits[0].clone());
         cands.push(cs);
     }

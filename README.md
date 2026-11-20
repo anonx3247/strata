@@ -280,6 +280,8 @@ let tea = Item.new("tea").priced(42)
 - a known type: its own method if it has one (`impl Item { fn describe(self) … }`), else the one trait of the type that declares the name;
 - otherwise it is a compile error: a type implementing two traits that both have `describe`, with no `describe` of its own; a value known only as `Describe | Log` or `T: Describe + Log`. In the last two cases a type's own `describe` doesn't help: it says what `describe` means on an `Item`, not which trait's meaning the call wants.
 
+This holds whichever modules the traits come from: with `Console` (`std.io`) and `Files` (`std.fs`) both imported, `console.write(s)` and `files.write(path, s)` each mean their own trait's `write`. A method named like a builtin (`Files.remove`) doesn't hide the builtin: on a value whose type has no trait declaring the name (a dict, a list, a string…), `d.remove(k)` and `remove(d, k)` are the builtin's.
+
 `strata` decides this when checking and writes the decision into the program it runs, so the same call always runs the same implementation. A name that depends on the receiver can't be passed as a bare function value (`map(describe)`): pass a lambda (`x -> x.describe()`).
 
 **Trait methods without `self`** are called on a type, never on a value: `Money.empty()`, `T.empty()` in a generic function, `Self.empty()` in a trait's default methods and laws. They are constructors and the like (`fn empty() -> Self`, `fn parse(s: String) -> Result[Self, ParseError]`), so the signature must mention `Self`: one that doesn't couldn't pick an implementation, and should be a plain function.
@@ -386,6 +388,57 @@ All values are immutable (`insert` returns a new dict). Dicts and sets are kept 
 
 **Not yet:** lazy iterators, generators and async, which will be designed as language features of their own.
 
+## Programs and the standard library
+
+A program's entry point is `main`. It asks for what it needs by type, and `strata run` passes it in: its command-line options, and the capabilities it uses.
+
+```rust
+use std.cli.CommandLine
+
+/// Greet people by name.
+type Options = {
+  /// Shout the greeting.
+  loud: Bool,
+  /// Say it this many times.
+  times: Option[Int where 1 <= it && it <= 10],
+  /// Who to greet (the world if nobody).
+  names: List[String],
+}
+
+impl CommandLine for Options {}
+
+fn main(opts: Options) -> () {
+  let who = if len(opts.names) == 0 { "world" } else { join(opts.names, " and ") }
+  for _ in range(0, opts.times except { 1 }) {
+    print(if opts.loud { to_upper(f"hello, {who}!") } else { f"hello, {who}!" })
+  }
+}
+```
+
+```sh
+strata run examples/hello -- Ada --loud      # HELLO, ADA!
+strata run examples/hello -- --help          # usage, from the doc comments
+strata run examples/wc -- --only words README.md
+cat README.md | strata run examples/wc
+```
+
+**`print(x)`** is always available, with no `use`. It writes `x` (as `to_string` shows it) and a newline wherever the code runs: to the terminal under `strata run`, into the test's own buffer under `strata test` (shown only if the test fails), and nowhere under `verify`. It is a convenience; code whose output a test should check, or that a caller should control, takes a `Console`.
+
+**Command-line options** are a record that implements `CommandLine` (`std.cli`); the trait has no methods. Each field is read from the arguments by its type: a `Bool` is a flag (`--loud`), an `Option[T]` an option with a value (`--times 3` or `--times=3`), a `List[T]` the remaining positional arguments, and any other field a required positional argument, in field order. `T` is an `Int`, `Float`, `String`, a refinement of one, or a choice (a type whose variants carry nothing: `type Count = | Lines | Words` is `lines` or `words`). Names take dashes (`dry_run` is `--dry-run`), `--` ends the options, every refinement is checked (`--times: 0 does not satisfy …`), and a mistake exits with code 2. `--help` is built from the record's and fields' `///` doc comments. `strata check` rejects a `CommandLine` record a command line can't fill.
+
+`main` can also ask for `Console` (`std.io`), `Files` (`std.fs`) and `Environment` (`std.process`), in any order. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [JSON-ARGS]` still calls a single function.
+
+The **standard library** is the `std/` package, written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency:
+
+| Module | What it has |
+|---|---|
+| `std.io` | `Console` (`print`, `write`, `eprint`, `read_line`); `Recorder` / `recorder(input)` / `printed(r)` for tests |
+| `std.fs` | `Files` (`read`, `write`, `append`, `exists`, `list`, `make_dir`, `remove`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
+| `std.process` | `Environment` (`args`, `var`), `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
+| `std.cli` | `CommandLine`: a record of options read from the arguments |
+
+Each capability is a trait, so code that prints takes a `Console`, and its signature says so. The only real implementations are private types of `std` that the runtime makes for `main`; nothing else can create them. Tests pass the in-memory stand-ins (see `examples/wc`), or `mock Console`. Only `std` can call the native `host_*` operations underneath, and only `strata run` lets them reach the system: `test`, `verify` and fuzzing never touch the terminal or the disk.
+
 ## Views (levels of detail)
 
 | Level | Shows |
@@ -428,7 +481,10 @@ The files and `strata.log` are committed. The log is append-only and merges by u
 
 The checks are exactly the interpreter's runtime checks: a callee's parameter refinements and `requires`, the refinements of constructed values and assigned fields, annotated `let`s, `assert`, division by zero, and the function's own result type and `ensures`. Calls are checked against the callee's contract, never its body, which is how modules meet. A function passed by name (`lines.map(line_total)`) is checked against one arbitrary element of the list.
 
-How it works (`src/smt.rs`): the body is run symbolically, with values as SMT terms. Records and sums become structures of terms, lists are tracked by their length, branches are merged with `ite`, and a loop forgets the variables it changes. Each check becomes the question "can the negation be true under what is known here?", which is sent to Z3 as SMT-LIB text (`verify --smt` prints the queries, termination ones included). `unsat` means proven; `sat` comes with a model, which becomes the counterexample. Anything not modelled (floats, dicts, sets, list contents, most higher-order builtins) becomes an unknown value. That can only make a proof fail, never make a false proof succeed, and the reason is kept for the report. `Int` is a mathematical integer, as it is when the code runs. `matches(s, "regex")` becomes a regular-expression constraint when the pattern uses only literals, classes, groups, alternation and quantifiers.
+How it works (`src/smt.rs`): the body is run symbolically, with values as SMT terms. Records and sums become structures of terms, lists are tracked by their length, a value of a union (`Square | Circle`) is a tag saying which member's shape it has plus a value for each member (a member value passed where the union is expected, or branches returning different members, become one; a `match` arm narrows it to its member), branches are merged with `ite`, and a loop forgets the variables it changes. Each check becomes the question "can the negation be true under what is known here?", which is sent to the solver (Z3, or cvc5) as SMT-LIB text (`verify --smt` prints the queries, termination ones included). `unsat` means proven; `sat` comes with a model, which becomes the counterexample. Anything not modelled (floats, dicts, sets, list contents, most higher-order builtins, unions whose members can share a shape such as `List[Int] | List[String]` or include a type parameter) becomes an unknown value. That can only make a proof fail, never make a false proof succeed, and the reason is kept for the report. `Int` is a mathematical integer, as it is when the code runs.
+Strings are sequences of characters (code points), as `chars()` counts them. These string builtins are modelled exactly: `len`, `+`, `contains`, `starts_with`, `ends_with`, `slice`, `get`, `chars` (its length), `index_of`, `replace` (every match, and a check that the pattern is not empty, which is a runtime fault), `to_string` of an `Int`, `Bool` or `String`, and `is_digit`. `parse_int` is exact for digits with an optional `-`, and for strings without a digit (`None`). Other forms (whitespace, `+`, `_`) are unknown. `trim` keeps only a length bound. `to_upper`, `to_lower`, `is_alpha`, `ord`, `chr`, `split`, `lines`, `repeat` and `reverse` are unknown. `matches(s, "regex")` becomes a regular-expression constraint with the interpreter's meaning. Strata regexes are Unicode regexes: `\d` is any decimal digit, `\w` and `\s` are Unicode classes, `\p{..}` works, `.` is any character but `\n`, and `(?i)` is Unicode case folding. The pattern is parsed the way the interpreter parses it, and translated exactly: literals, classes, groups, alternation, repetition, and `^` / `$` at the very start or end. Word boundaries, multi-line anchors and anchors elsewhere stay unknown. Z3 can't decide classes with hundreds of ranges (`\w`, `\p{L}`, Unicode `\d`), so such a class is bounded from both sides: `matches` is true on a subset of its ranges and false outside a superset of them. When one string is matched against two patterns, how their languages relate (one inside the other, or disjoint) is worked out exactly from the patterns' automata and added as a fact. So `\d{3}` implies `\d+`, and `[a-z]+` implies `\w+`.
+
+**Strings past U+2FFFF.** SMT-LIB strings hold the code points U+0000 to U+2FFFF (Z3 and cvc5 both stop there). Rust strings go up to U+10FFFF. So a proof about strings covers the strings whose characters are all at most U+2FFFF. A string literal with a later character (planes 3 to 16: rare CJK, tags, private use) is an unknown. The cross-check, which runs proven functions on generated inputs, is the backstop.
 
 **Helpers in contracts.** A contract can use an ordinary function, such as `type Digit = Int where small(it)` with `fn small(n: Int) -> Bool { 0 <= n && n < 10 }`. Inside a contract, a helper that terminates and cannot fail is *seen through*: its body is used, not just its contract. So `fn zero() -> Digit { 0 }` is proven and `fn ten() -> Digit { 10 }` is refuted. A helper that may not terminate is never seen through. Unfolding one would let the solver prove false things. A helper marked `terminates` is seen through, and the proof says it relied on that.
 
@@ -461,7 +517,7 @@ Recursion is allowed unless `no_recursion` says otherwise. A run that breaks a r
 
 **Cross-check.** A proven function that terminates is still run on a few generated inputs (`--cross-check N`, 20 by default, 0 turns it off). If one of them fails, the prover was wrong, and `verify` says so: the result is a failure *found by the cross-check*, flagged as a bug in the prover. Each run has a step budget. A run that goes past it, or past the recursion limit, proves nothing either way and is set aside: proven code can still be far too costly to run, like Ackermann's function.
 
-Z3 is found on the `PATH` (or `STRATA_SOLVER`). Without it, everything is fuzzed. Each query has a resource limit rather than a timeout, so results are deterministic and can be cached by content hash (with the solver version in the key).
+**Solvers.** `z3` is found on the `PATH`. `STRATA_SOLVER` names another solver binary, for example `STRATA_SOLVER=cvc5`. A solver whose `--version` names cvc5 is run with cvc5's flags; any other is run like Z3. Both get the same SMT-LIB queries. Without a solver, everything is fuzzed. Each query has a deterministic resource limit rather than a timeout (`rlimit` for Z3, `--rlimit-per` for cvc5, with a 20-second time limit only as a backstop), so results can be cached by content hash. The solver's version is in the cache key. The test suite passes with either solver. cvc5 has no Homebrew formula; install it with `brew tap cvc5/cvc5 && brew install cvc5`, or from its releases.
 
 ## Packages
 
@@ -486,6 +542,7 @@ The `.strata` files are what you commit.
 
 - **`strata merge-file %O %A %B %P`** is a git merge driver. It pairs each side's definitions with the base's. A definition that only one side changed comes from that side, so edits to two functions never conflict, even when they sit on neighbouring lines. When both sides changed the same definition, its canonical text is merged line by line, and the result is kept only if it parses back into that one definition; otherwise conflict markers go around that definition alone. A rename on one side (a definition gone, and a new one that is the base's after `strata rename`) is applied to the other side, so new calls to the old name follow it. Then the file is type-checked inside its package: an error that neither side had on its own (ours changed a signature, theirs added a call to the old one) fails the merge. Sides that don't parse are merged as text.
 - **`strata setup-git`** points this clone's git config at the driver, and `.gitattributes` has `*.strata merge=strata`, so `git merge` and `git pull` use it.
+- **Every change is a commit.** In a git repository, each change made through strata (an `edit`, `rename`, `move` or `add` that goes through, or a pending change at `strata done`) is committed with its message: `git log` is the history of changes, you can go back to any of them, and branches work as usual. Only the package's files are committed; whatever else is staged is left alone. Edits during a pending change aren't committed until it's done. Turn it off with `auto_commit = false` in `strata.toml`, or `--no-commit` on one command.
 - **`strata sync [main]`** merges `origin/main` (or the local branch, without a remote) into the current branch with the driver, whether or not `setup-git` was run. Renames that either side made with `strata rename` (read from both sides' `strata.log`) are then applied to the other side's code, in every file: a call that main added to `area` becomes a call to `rect_area` if your branch renamed it, unless a local named `rect_area` would capture it. Then it runs `strata ci` and commits the merge only if that passes; otherwise the merge is left staged, so you can fix it or `git merge --abort`.
 - **`strata ci [--fix]`** is what CI runs: every package and script in the repository checks, every package's exports exist, and every `.strata` file is in canonical format (exactly what `render` prints; `--fix` rewrites it). GitHub doesn't run merge drivers, so `.github/workflows/strata.yml` runs `strata ci` on the pull request's merge ref. Make it a required check, and require branches to be up to date before merging. Then a branch lands only once it was merged with `main` by `strata sync` and the result checks.
 
@@ -505,12 +562,13 @@ The `.strata` files are what you commit.
 | `src/store.rs` | content-addressed codebase, dependency graph, patch log |
 | `src/merge.rs` | `strata merge-file`: three-way merge per definition, renames |
 | `src/package.rs` | packages: `strata.toml`, their files, finding packages and scripts |
+| `src/stdlib.rs`, `std/` | the standard library (Strata), built into the binary; the native `host_*` operations it alone can call |
 | `src/view.rs` | level-of-detail projections and selectors |
 | `src/ui.rs`, `src/ui/index.html` | `strata ui`: the live viewer (a std-only HTTP server and one page) |
 
 ## Known limitations of this draft
 
-- **Proofs cover integers, strings, records, sums and list lengths.** Loops forget what they change (no invariants yet), list elements are tracked only when the whole list is known to be valid, floats, dicts and sets are not modelled, and trait laws are fuzzed only.
+- **Proofs cover integers, strings, records, sums, unions and list lengths.** Loops forget what they change (no invariants yet), list elements are tracked only when the whole list is known to be valid, floats, dicts and sets are not modelled, and trait laws are fuzzed only.
 - Refinements on generic type arguments, such as `Option[Quantity]`, are not checked when values are constructed.
 - Length conditions on a list are only decided as "empty" or "not empty" (`where len(it) == 1` with `where len(it) >= 2` needs a `[]` or `_` arm).
 - **No compilation backend.** It is a tree-walking interpreter.

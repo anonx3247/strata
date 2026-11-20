@@ -24,6 +24,9 @@ pub struct Field {
     /// `//` comment lines just above it, as written ("" is a blank line between groups).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comments: Vec<String>,
+    /// `///` doc comment lines (e.g. a command-line option's help).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub doc: Vec<String>,
     pub name: String,
     pub ty: TypeExpr,
 }

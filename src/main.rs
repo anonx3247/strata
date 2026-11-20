@@ -1,4 +1,5 @@
 mod ast;
+mod cli;
 mod diff;
 mod history;
 mod generate;
@@ -11,6 +12,7 @@ mod parser;
 mod printer;
 mod resolve;
 mod smt;
+mod stdlib;
 mod termination;
 mod store;
 mod types;
@@ -46,6 +48,8 @@ every change made through strata, committed with them):
                                updating references and imports (`main` is the root module)
   status                       the pending change, if any: its holes, filled or not
   done [--keep-holes] [-m MSG] record the pending change as one log entry
+  (in a git repository each recorded change is also a git commit, unless the package says
+   `auto_commit = false` or the command `--no-commit`)
   abort                        undo the pending change: every file as it was before it
   (an `edit` that breaks code elsewhere turns each broken use into a hole, ?pending_N, and
    opens a pending change; further edits, renames and moves join it)
@@ -99,9 +103,14 @@ Checking:
                                (default 20, 0: off), to catch a wrong proof
 
 Running:
+  run [PATH] [-- ARGS..]       run the program: `main` gets the capabilities it asks for
+                               (Console, Files, Environment from std) and ARGS; it
+                               returns (), an ExitCode, or a Result (Err: exit code 1).
+                               PATH is a .strata file or a package folder (or --file)
   run <fn> [JSON-ARGS] [--trace]
-                               args are a JSON array validated against the types;
-                               --trace prints each call and return to stderr
+                               call one function: args are a JSON array validated
+                               against the types; --trace prints each call and return
+                               to stderr
   test [FILTER]                run test blocks
   builtins [--json]            list built-in functions and their signatures
 
@@ -120,6 +129,11 @@ impl Args {
         let mut i = 0;
         while i < raw.len() {
             let a = &raw[i];
+            if a == "--" {
+                // the rest goes to the program (`strata run -- a b`)
+                flags.insert("--".into(), raw[i + 1..].to_vec());
+                break;
+            }
             if valued.contains(&a.as_str()) && i + 1 < raw.len() {
                 flags.entry(a.clone()).or_default().push(raw[i + 1].clone());
                 i += 2;
@@ -165,7 +179,7 @@ fn read_sources(path: &str, module: Option<&str>) -> Result<Program, String> {
         return parser::parse_module_file(&src, module.unwrap_or("")).map_err(|e| format!("{path}:{e}"));
     }
     // packages nested in this folder are separate programs
-    parse_files(package::files(root)?)
+    package::program(root)
 }
 
 /// Parse a folder's `.strata` files, given as (path relative to the folder,
@@ -200,6 +214,12 @@ fn full_check(p: &Program) -> types::CheckReport {
     for d in verify::static_refinements(p, &env) {
         if !rep.errors.iter().any(|e| e.decl == d.decl && e.msg == d.msg) {
             rep.errors.push(d);
+        }
+    }
+    // a `CommandLine` record must be readable from arguments
+    for i in env.impls.iter().filter(|i| i.trait_name == cli::TRAIT) {
+        if let Err(msg) = cli::validate(&env, &types::texpr_head(&i.for_type)) {
+            rep.errors.push(types::Diag { decl: i.name(), msg });
         }
     }
     rep
@@ -416,6 +436,7 @@ fn run() -> Result<bool, String> {
             let extra = if p.renames.is_empty() { json!({}) } else { json!({"renames": p.renames}) };
             let changes = cb.log_entry(&before, &msg, extra)?;
             pending::clear(&cb);
+            git_commit(&cb, &msg);
             println!("recorded \"{msg}\" as one change: {} definition{}", changes.len(), if changes.len() == 1 { "" } else { "s" });
             if !left.is_empty() {
                 println!("{} hole{} kept as ?todo_…, see `strata holes`", left.len(), if left.len() == 1 { "" } else { "s" });
@@ -748,7 +769,7 @@ fn run() -> Result<bool, String> {
             let mut results = Vec::new();
             let resolved = types::elaborate(p).program;
             let solver = smt::solver();
-            let solver_bin = solver.as_ref().map(|s| s.0.as_str());
+            let solver_bin = solver.as_ref();
             let analysis = termination::analyze(&env, solver_bin);
             let transparent = &analysis.transparent;
             let cross_check: usize = args.val("--cross-check").unwrap_or("20").parse().map_err(|_| "bad --cross-check")?;
@@ -773,7 +794,7 @@ fn run() -> Result<bool, String> {
                 return Ok(true);
             }
             // results depend on the solver: it is part of the cache key
-            let skey = solver.as_ref().map(|s| s.1.clone()).unwrap_or("no-solver".into());
+            let skey = solver.as_ref().map(|s| s.version.clone()).unwrap_or("no-solver".into());
             for (orig, d) in p.decls.iter().zip(&resolved.decls) {
                 if !names.contains(&orig.qname()) {
                     continue;
@@ -932,7 +953,17 @@ fn run() -> Result<bool, String> {
             return Ok(all_ok);
         }
         "run" => {
-            let src = load(&args)?;
+            // `strata run hello.strata`: the program's path in place of --file
+            let (src, rest, path) = match args.pos.get(1) {
+                Some(f) if f.ends_with(".strata") || std::path::Path::new(f).join(package::FILE).is_file() => (Source::File(read_sources(f, None)?), &args.pos[2..], f.clone()),
+                _ => (load(&args)?, &args.pos[1..], args.val("--file").unwrap_or(".").to_string()),
+            };
+            // the program's name, for `--help`: its package's, or the file's
+            let path = std::path::Path::new(&path);
+            let prog = match package::find(path) {
+                Ok(Some(pkg)) => pkg.name,
+                _ => path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "main".into()),
+            };
             let p = src.program();
             let rep = full_check(p);
             if !rep.ok() {
@@ -940,9 +971,12 @@ fn run() -> Result<bool, String> {
                 return Ok(false);
             }
             let (env, _) = types::Env::new(p);
-            let name = args.pos.get(1).ok_or("usage: strata run <fn> [JSON-ARGS]")?;
+            let Some(name) = rest.first() else {
+                let program_args = args.flags.get("--").cloned().unwrap_or_default();
+                std::process::exit(run_main(p, &env, &prog, program_args, args.flag("--trace"))?);
+            };
             let f = env.fns.get(name).ok_or(format!("no function `{name}`"))?.clone();
-            let raw: serde_json::Value = serde_json::from_str(args.pos.get(2).map(|s| s.as_str()).unwrap_or("[]")).map_err(|e| format!("args: {e}"))?;
+            let raw: serde_json::Value = serde_json::from_str(rest.get(1).map(|s| s.as_str()).unwrap_or("[]")).map_err(|e| format!("args: {e}"))?;
             let raw = raw.as_array().cloned().ok_or("args must be a JSON array")?;
             if raw.len() != f.params.len() {
                 return Err(format!("`{name}` takes {} arguments", f.params.len()));
@@ -950,6 +984,8 @@ fn run() -> Result<bool, String> {
             let seed: u64 = args.val("--seed").unwrap_or("1").parse().map_err(|_| "bad --seed")?;
             let mut it = interp::Interp::new(&env, seed);
             it.tracing = args.flag("--trace");
+            // what it prints comes before its result
+            it.output = interp::Output::Terminal;
             let mut vals = Vec::new();
             for (pm, j) in f.params.iter().zip(&raw) {
                 vals.push(it.from_json(&pm.ty, j, &pm.name).map_err(|e| format!("invalid input: {e}"))?);
@@ -986,6 +1022,8 @@ fn run() -> Result<bool, String> {
                     continue;
                 }
                 let mut it = interp::Interp::new(&env, 7);
+                // each test prints into its own buffer, shown only if it fails
+                it.output = interp::Output::Buffer(String::new());
                 match it.eval(&t.body, &None) {
                     Ok(_) => {
                         pass += 1;
@@ -996,6 +1034,14 @@ fn run() -> Result<bool, String> {
                         println!("✗ {}\n    {:?}: {}", t.name, f.kind, f.msg);
                         if !f.stack.is_empty() {
                             println!("    stack: {}", f.stack.join(" -> "));
+                        }
+                        if let interp::Output::Buffer(out) = &it.output {
+                            if !out.is_empty() {
+                                println!("    printed:");
+                                for l in out.lines() {
+                                    println!("      {l}");
+                                }
+                            }
                         }
                     }
                 }
@@ -1102,7 +1148,13 @@ fn apply_edit(cb: &mut Codebase, cmd: &str, edits: Program, deletes: Vec<String>
 /// is logged as one entry when it is done.
 fn record(cb: &mut Codebase, new: Program, msg: &str, extra: serde_json::Value) -> Result<Vec<store::Change>, String> {
     match pending::load(cb) {
-        None => cb.commit_with(new, msg, extra),
+        None => {
+            let changes = cb.commit_with(new, msg, extra)?;
+            if !changes.is_empty() {
+                git_commit(cb, msg);
+            }
+            Ok(changes)
+        }
         Some(mut p) => {
             let changes = store::changes(&cb.program, &new);
             cb.write(new)?;
@@ -1219,6 +1271,44 @@ fn edit_in_editor(cb: &mut Codebase, args: &Args, json_out: bool) -> Result<bool
     }
 }
 
+/// After a change is logged: commit the package's files to git, with the
+/// change's message, unless the package says `auto_commit = false`, the
+/// command says `--no-commit`, or this isn't a git repository. Only the
+/// package's files are committed; anything else staged is left alone. A
+/// failed commit doesn't undo the change: it says why.
+fn git_commit(cb: &Codebase, msg: &str) {
+    if std::env::args().any(|a| a == "--no-commit") {
+        return;
+    }
+    if package::load(cb.root()).map(|p| !p.auto_commit).unwrap_or(false) {
+        return;
+    }
+    let dir = cb.root().to_path_buf();
+    let git = |args: &[&str]| Command::new("git").arg("-C").arg(&dir).args(args).output();
+    let Ok(top) = git(&["rev-parse", "--show-toplevel"]) else { return };
+    if !top.status.success() {
+        return; // not in a git repository
+    }
+    let merging = git(&["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_ok_and(|o| o.status.success());
+    if merging {
+        println!("not committed to git: a merge is in progress (commit it, then strata commits again)");
+        return;
+    }
+    let _ = git(&["add", "-A", "--", "."]);
+    let staged = git(&["diff", "--cached", "--quiet", "--", "."]).is_ok_and(|o| !o.status.success());
+    if !staged {
+        return;
+    }
+    match git(&["commit", "-q", "-m", msg, "--", "."]) {
+        Ok(o) if o.status.success() => {
+            let sha = git(&["rev-parse", "--short", "HEAD"]).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+            println!("committed to git: {sha} {}", msg.lines().next().unwrap_or(""));
+        }
+        Ok(o) => eprintln!("the change is made, but `git commit` failed: {}", String::from_utf8_lossy(&o.stderr).trim()),
+        Err(e) => eprintln!("the change is made, but git didn't run: {e}"),
+    }
+}
+
 fn git_out(args: &[&str]) -> Result<String, String> {
     let o = Command::new("git").args(args).output().map_err(|e| format!("git: {e}"))?;
     if !o.status.success() {
@@ -1268,7 +1358,7 @@ fn ci(fix: bool) -> Result<bool, String> {
         if !parsed {
             continue;
         }
-        let p = package::parse(package::files(path)?)?;
+        let p = package::program(path)?;
         let rep = full_check(&p);
         let mut errors: Vec<String> = rep.errors.iter().map(|e| format!("error in {}: {}", e.decl, e.msg)).collect();
         // holes of an unfinished change are not to be merged
@@ -1293,6 +1383,80 @@ fn ci(fix: bool) -> Result<bool, String> {
         }
     }
     Ok(ok)
+}
+
+/// Run the program's `main` with the real system, and give its exit code.
+/// `main` asks for the capabilities it needs by type (`Console`, `Files`,
+/// `Environment`, in any order) and may return `()` (0), an exit code, or a
+/// `Result` of either, whose `Err` is printed to standard error (exit code 1).
+fn run_main(p: &Program, env: &types::Env, prog: &str, program_args: Vec<String>, trace: bool) -> Result<i32, String> {
+    use interp::Value;
+    let f = env.fns.get("main").ok_or("no `main` function to run (the entry point is `fn main` in main.strata, or in the file you run)")?.clone();
+    let mut it = interp::Interp::new(env, 1);
+    it.tracing = trace;
+    it.host = Some(interp::Host { args: program_args.clone() });
+    it.output = interp::Output::Terminal;
+    let mut vals = Vec::new();
+    for pm in &f.params {
+        let ty = printer::ty(&pm.ty);
+        let rec = |name: &str, fields: Vec<(&str, Value)>| Value::Record(name.into(), fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
+        vals.push(match ty.as_str() {
+            "std.io.Console" => rec("std.io.Terminal", vec![("stdout", Value::Int(1)), ("stderr", Value::Int(2))]),
+            "std.fs.Files" => rec("std.fs.Disk", vec![("root", Value::Str(".".into()))]),
+            "std.process.Environment" => rec("std.process.Process", vec![("pid", Value::Int(std::process::id() as i64))]),
+            // options read from the command line
+            _ if cli::is_options(env, &pm.ty) => {
+                let doc = p.decls.iter().find(|d| matches!(d.kind, DeclKind::Type(_)) && d.qname() == ty).map(|d| d.doc.clone()).unwrap_or_default();
+                match cli::parse(&mut it, env, &ty, &doc, prog, &program_args) {
+                    cli::Parsed::Options(v) => v,
+                    cli::Parsed::Help(text) => {
+                        print!("{text}");
+                        return Ok(0);
+                    }
+                    cli::Parsed::Error(e) => {
+                        eprintln!("error: {e}");
+                        return Ok(2);
+                    }
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "`main` can ask for `Console` (std.io), `Files` (std.fs), `Environment` (std.process), and options: a record that implements `CommandLine` (std.cli). Its parameter `{}` is a `{ty}`",
+                    pm.name
+                ))
+            }
+        });
+    }
+    let res = it.call_fn("main", vals);
+    if it.tracing {
+        for t in &it.trace {
+            eprintln!("{t}");
+        }
+    }
+    let code = |v: &Value| match v {
+        Value::Unit => Ok(0),
+        Value::Int(n) => i32::try_from(*n).map_err(|_| format!("`main` returned {n}, which is not an exit code")),
+        other => Err(format!("`main` must return `()`, an `ExitCode` or a `Result` of either, not {}", interp::show(other))),
+    };
+    match res {
+        Ok(Value::Variant(c, interp::Fields::Pos(mut xs))) if c == "Ok" && xs.len() == 1 => code(&xs.pop().unwrap()),
+        Ok(Value::Variant(c, interp::Fields::Pos(xs))) if c == "Err" && xs.len() == 1 => {
+            let shown = match &xs[0] {
+                Value::Str(s) => s.clone(),
+                e => interp::show(e),
+            };
+            eprintln!("error: {shown}");
+            Ok(1)
+        }
+        Ok(v) => code(&v),
+        Err(fault) => {
+            eprintln!("fault ({:?}): {}", fault.kind, fault.msg);
+            if !fault.stack.is_empty() {
+                eprintln!("    stack: {}", fault.stack.join(" -> "));
+            }
+            Ok(101)
+        }
+    }
 }
 
 fn main() -> ExitCode {

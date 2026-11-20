@@ -1,0 +1,32 @@
+// std.cli — command-line options, read into a record.
+//
+// Describe the options as a record, say that it is a `CommandLine`, and ask
+// for it in `main`:
+//
+//   /// Count lines, words and characters.
+//   type Options = {
+//     /// Count lines only.
+//     lines: Bool,
+//     /// Stop after this many files.
+//     limit: Option[Positive],
+//     /// The files to count.
+//     files: List[String],
+//   }
+//
+//   impl CommandLine for Options {}
+//
+//   fn main(opts: Options) -> () { ... }
+//
+// `strata run` builds the options from the arguments, checks every
+// refinement, and answers `--help` from the doc comments. Each field becomes:
+//   - `Bool`: a flag, `--lines`, false unless given;
+//   - `Option[T]`: an option, `--limit 3` (or `--limit=3`), `None` unless given;
+//   - `List[T]`: the remaining positional arguments, in order (one such field);
+//   - anything else: a required positional argument, in field order.
+// `T` is an `Int`, a `Float`, a `String`, a refinement of one, or a choice: a
+// type whose variants carry nothing (`type Level = | Quiet | Loud` is
+// `quiet` or `loud`). Names are written with dashes: `dry_run` is `--dry-run`.
+
+/// A record whose fields are a program's command-line options. It has no
+/// methods: the runtime reads the arguments into it.
+pub trait CommandLine {}
