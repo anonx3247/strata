@@ -14,8 +14,13 @@ Everything that keeps track of where Strata is going: open questions, ideas, wha
 - **Editing in an editor** (built, `edit_in_editor` in main.rs). `strata edit [SELECTOR]` at a terminal with nothing piped in (or with `--editor`) opens the selected definitions, or a whole module (`--module m`, needed when there are several), in `$VISUAL` / `$EDITOR` / git's editor / `vi`, through `sh -c`. What is saved goes through `apply_edit` like a piped edit; definitions deleted from the buffer are removed. If it doesn't parse or check, the editor reopens with the errors on top (`// ✗ ` lines, dropped when read back); saving unchanged gives up. One module per buffer.
 - **Removing or adding variants in a pending change** (built, `fix_matches` in pending.rs). Patterns can't be holes, so `match`es are fixed first: arms of removed variants are dropped (or only their alternative in an `a | b` pattern; nested ones like `Some(Pending)` too), a `match` on the changed type without a catch-all gets an arm `NewVariant => ?pending_N` (`Lost(_)`, `Lost { .. }`), and a `match` with no arm left becomes a hole. The edit prints what was dropped. Then expression holes as before (the expression walk skips patterns). Not yet: `let` / `for` patterns naming a removed variant still reject the edit.
 - **Pending changes** (built, `src/pending.rs`). An `edit` whose own definitions check but that breaks other code isn't rejected: each broken use in the erroring definitions (a call, reference, constructor, method call or `is` test naming a definition whose interface changed, outermost first) becomes `?pending_N`, recorded with what it was and why, and the package enters a pending change (`.strata/pending.json`: the files before, the holes, the renames). Edits, renames and moves during it only write files (`record` in main.rs); `strata status` lists the holes; `strata done` logs the whole change as one entry (from the files before to now, with its renames), refusing while its holes are open unless `--keep-holes` (they become `?todo_N`); `strata abort` restores the files. `strata ci` refuses `?pending_*` holes, so half-done work isn't merged. Not yet: one pending change per package; a use the edit broke compatibly in an erroring definition is also turned into a hole.
-- **Storage: hash references, and propagation** (discussed 2026-11-20; direction agreed, not built). The user prefers storing definitions by hash with references by hash and names in a separate table (Unison's model: renames become free, merges of new code can't conflict, several agents can add code at once), over a binary encoding of the same files. On an edit, dependents follow automatically when they still type-check ("option 1"), and otherwise get a to-do. The user's addition: while a to-do is open, the references to the old version are replaced with typed holes, so the agent sees exactly what to fill in. Before building: settle how a hole keeps what it replaced (the old call, for the agent), and that code with holes still checks but can't run.
-- **Storage: text files or the tree** (user, 2026-11-20). The AST is the language; the current syntax is one front end, and others (Nim-, Python-, C-, Haskell-like) should be possible, so storing canonical text is not essential (a compact tree encoding is an option, maybe not worth it). The worry is agents editing the files directly instead of using `edit` / `rename`, which check every change and answer immediately. If every edit goes through the tools (type-safe, atomic), several agents (the user guesses 3–4) could work in the same codebase at once without conflicts; that would need a cache and no rendered files as the source. "We'll see then."
+- **Storage: hash references, and propagation** (discussed 2026-11-20; direction agreed, not built). The user prefers storing definitions by hash with references by hash and names in a separate table (Unison's model: renames become free, merges of new code can't conflict, several agents can add code at once), over a binary encoding of the same files (the encoding itself is now decided: see the next item). On an edit, dependents follow automatically when they still type-check ("option 1"), and otherwise get a to-do. The user's addition: while a to-do is open, the references to the old version are replaced with typed holes, so the agent sees exactly what to fill in. Before building: settle how a hole keeps what it replaced (the old call, for the agent), and that code with holes still checks but can't run.
+- **Storage: the tree, in binary** (decided with the user 2026-11-20; not built). Code is stored as the syntax tree, not as text: the AST is the language, and the current syntax is one front end among possible others (Nim-, Python-, C-, Haskell-like). The encoding is a compact binary format, not JSON (no serialization round-trips; big integers stored exactly). Ideally a module's `.strata` file *is* that binary, and text is rendered only when needed: `strata edit` already opens a module or definitions as text in the editor and parses what is saved, `render` / `view` print it. Rendered text files, if kept at all, are a read-only view that git ignores. Every change then goes through the tools (`edit`, `rename`, `move`), which check it and answer immediately; with a cache, several agents (the user guesses 3–4) could work in one codebase at once. Before building, settle:
+  - the format: our own, or an existing compact one (e.g. `postcard`); how it is versioned;
+  - how it relates to the hash store above: a binary file per module, or one object per definition under its hash plus a names table;
+  - review on GitHub: binary files show no diff in a PR. Locally a git `textconv` driver (`strata render`) and the `merge-file` driver can work on trees, but GitHub's PR view can't; `strata diff` or the viewer would be where changes are reviewed;
+  - what `ci`'s canonical-format check becomes (the binary is canonical by construction);
+  - `strata edit path/to/module.strata` (today it takes a selector or `--module m`, not a path).
 - **Strata IDE**: the viewer as a standalone desktop app (Tauri; the backend is already Rust), speaking ACP (Agent Client Protocol) so agents such as Claude Code or Codex run inside it, with a Strata MCP server giving them structural tools (slices, check, edit, rename). The viewer would show live where each agent is working (log entries tagged with the agent's session). Idea stage.
 
 ## Ideas
@@ -85,6 +90,90 @@ Questions to settle:
 - The prover could model `xs where p` directly (every element satisfies `p`,
   and the length is at most `len(xs)`), which `filter` with a lambda can't
   easily give it.
+
+### Web UIs (direction agreed with the user 2026-11-20; not built)
+
+The second place Strata should be useful, after the command line: UIs in the
+browser, written without JavaScript. The direction is the Elm architecture,
+run on the server, in the way Phoenix LiveView and htmx work:
+
+```rust
+use std.web.{App, Html, div, button, text, on_click}
+
+type Model = { count: Int where 0 <= it }
+
+type Msg = | Increment | Decrement | Reset
+
+impl App[Msg] for Model {
+  fn update(mut self, msg: Msg) -> () {
+    match msg {
+      Increment => self.count = self.count + 1
+      Decrement => if self.count > 0 { self.count = self.count - 1 }
+      Reset     => self.count = 0
+    }
+  }
+
+  fn view(self) -> Html[Msg] {
+    div([], [
+      button([on_click(Decrement)], [text("-")]),
+      text(f"{self.count}"),
+      button([on_click(Increment)], [text("+")]),
+    ])
+  }
+}
+```
+
+(The syntax is a sketch; traits with a type parameter like `App[Msg]` may
+need work.)
+
+`strata serve` keeps each session's `Model` in memory and renders `view` to
+HTML. A small, fixed JS file that ships with the runtime catches clicks and
+form submits. `on_click(Increment)` puts the message's JSON in an attribute;
+the JS posts it back, and the server reads it against `Msg` (refinements
+checked, as for command-line options), runs `update` and `view`, and the JS
+swaps the new HTML into the page.
+
+Why it fits: users write no JS; no async is needed in user code; `update` and
+`view` are pure, so they can be tested without a browser and the verifier can
+prove invariants across every message (`count >= 0`); an unhandled `Msg` is a
+non-exhaustive `match`. The interpreter is plain Rust (the solver isn't needed
+to run code), so it could later be compiled to wasm and run the same `App` in
+the browser, without changing user code.
+
+Steps:
+1. `std.web.Html`: a sum type (element, text), helper functions (`div`, `a`,
+   `input`, …), and a renderer that escapes text. CSS as strings, or a static
+   `style.css` the server also serves.
+2. `strata serve`: a low-level handler `fn handle(req: Request) -> Response`
+   for JSON APIs and static files; bodies and query strings read into records
+   like `CommandLine`. The HTTP layer is native, next to the `host_*`
+   functions (`ui.rs` already has a std-only server).
+3. `App` and the JS client: sessions, messages, swapping the HTML in.
+4. Forms: `on_submit(constructor)` fills a record from the fields, with
+   refinement errors shown next to each field.
+5. Later: capabilities in `update` (database, LLM calls, HTTP client); the
+   wasm build.
+
+**JSX-like syntax** (user: wanted at some point, for simplicity). Markup
+written directly in Strata expressions, compiled to the `Html` helpers, e.g.
+`<button on_click={Increment}>-</button>`. Helper functions come first; the
+syntax is added on top of them later.
+
+Questions to settle:
+- **Async first, or web first?** (user, 2026-11-20; undecided.) Async is still
+  planned (roadmap item 4). The web design above doesn't need it in user code:
+  the runtime handles concurrency, and each request is a plain call. Where it
+  matters is `update` calling something slow (an LLM, an HTTP request): it
+  would block the session, and with a sequential server, everything. Elm
+  answers this without async: `update` returns *commands* (data describing
+  what to do), the runtime performs them and feeds the results back as
+  messages. Commands are values, so they're easy to test, mock and verify.
+  Claude's view: build the web first, with commands, and design async after;
+  the risk is that async later changes how commands are written. If async
+  comes first, a command could simply be an async call.
+- Can `view` use capabilities? Pure is simpler and checkable.
+- Send the whole page on every message, or a diff? The whole page to start.
+- Sessions: kept in memory to start; later stored through the ORM.
 
 ## Design principles (decided)
 
@@ -286,7 +375,7 @@ Relations (decided): a definition has **dependencies** (what it mentions) and **
 1. **SMT verification, continued**: loop invariants (inferred where possible, written where it helps), list contents, trait laws, and `assumed` for outside code beyond the standard library (FFI, dependencies).
 2. **Traits with laws**: e.g. `trait Monoid { … law assoc(a, b, c): … }`; laws are verified or fuzzed for every implementation.
 3. **Agent-friendly CLI everywhere**: `--json` on every command, trace queries, and scoped workspaces and leases so several agents can work on different slices at once. The CLI *is* the agent API; no server is needed.
-4. **Async and iterators** as language features; `mock record` / `mock replay` for integration tests; deterministic replay debugging.
+4. **Async and iterators** as language features (whether before or after web UIs is open, see "Web UIs" under Ideas); `mock record` / `mock replay` for integration tests; deterministic replay debugging.
 5. **Viewer**: show which agent is working on which slice, and add a diff view for each patch.
 6. **Structural records with row polymorphism**: "anything with `.id: OrderId`".
 7. **A compilation backend** (WasmGC or Cranelift).
