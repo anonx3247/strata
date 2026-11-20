@@ -313,7 +313,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             for p in parts {
                 match p {
                     StrPart::Lit(l) => s += &l.replace('"', "\\\"").replace('\n', "\\n").replace('{', "{{").replace('}', "}}"),
-                    StrPart::Expr(e) => s += &format!("{{{}}}", expr_inline(e, 0)),
+                    StrPart::Expr(e, spec) => s += &format!("{{{}{}}}", expr_inline(e, 0), spec.as_ref().map(|f| format!(":{f}")).unwrap_or_default()),
                 }
             }
             s + "\""

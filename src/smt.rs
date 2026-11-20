@@ -909,7 +909,7 @@ impl<'a> Vc<'a> {
             Expr::Mut(x) => self.eval(x),
             Expr::Interp(parts) => {
                 for part in parts {
-                    if let StrPart::Expr(x) = part {
+                    if let StrPart::Expr(x, _) = part {
                         self.eval(x);
                     }
                 }
@@ -1952,7 +1952,7 @@ fn modified(e: &Expr, env: &Env, out: &mut HashSet<String>) {
         }
         Expr::Interp(parts) => {
             for part in parts {
-                if let StrPart::Expr(x) = part {
+                if let StrPart::Expr(x, _) = part {
                     modified(x, env, out);
                 }
             }

@@ -322,7 +322,7 @@ impl Structural<'_> {
                         kids.extend(fs.iter().map(|f| f.1.clone()));
                     }
                     Expr::Field(r, _) | Expr::Is(r, _) | Expr::Un(_, r) | Expr::Return(r) | Expr::Try(r, _) | Expr::Mut(r) => kids.push((**r).clone()),
-                    Expr::Interp(parts) => kids.extend(parts.iter().filter_map(|p| if let StrPart::Expr(x) = p { Some(x.clone()) } else { None })),
+                    Expr::Interp(parts) => kids.extend(parts.iter().filter_map(|p| if let StrPart::Expr(x, _) = p { Some(x.clone()) } else { None })),
                     Expr::Except(x, name, fb) => {
                         self.expr(x, vars);
                         let mut v = vars.clone();

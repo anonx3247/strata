@@ -869,7 +869,7 @@ impl Rw<'_> {
                     .iter()
                     .map(|p| match p {
                         StrPart::Lit(l) => StrPart::Lit(l.clone()),
-                        StrPart::Expr(e) => StrPart::Expr(self.expr(e)),
+                        StrPart::Expr(e, spec) => StrPart::Expr(self.expr(e), spec.clone()),
                     })
                     .collect(),
             ),

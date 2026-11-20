@@ -52,7 +52,7 @@ pub fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
             w(fb)
         }
         Expr::Interp(parts) => parts.iter().for_each(|p| {
-            if let StrPart::Expr(e) = p {
+            if let StrPart::Expr(e, _) = p {
                 w(e)
             }
         }),

@@ -36,7 +36,8 @@ pub enum Value {
     Set(Vec<Value>),
     Record(String, Vec<(String, Value)>),
     Variant(String, Fields),
-    Closure(Vec<String>, Rc<Expr>, Scope),
+    /// A lambda: its parameters (with their written types, if any), body and captured scope.
+    Closure(Rc<Vec<LamParam>>, Rc<Expr>, Scope),
     FnRef(String),
     /// A value of a `distinct` type, e.g. `UserId("u_1")`.
     Distinct(String, Box<Value>),
@@ -264,9 +265,40 @@ pub fn to_json(v: &Value) -> Json {
         Value::Variant(c, Fields::Rec(fs)) => {
             json!({ short(c): Json::Object(fs.iter().map(|(k, v)| (k.clone(), to_json(v))).collect()) })
         }
-        Value::Closure(ps, ..) => json!(format!("<closure ({}) -> …>", ps.join(", "))),
+        Value::Closure(ps, ..) => json!(format!("<closure ({}) -> …>", ps.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "))),
         Value::FnRef(n) => json!(format!("<fn {n}>")),
     }
+}
+
+/// An f-string part shown with a format spec (`{x:.2}`, `{n:>5}`, `{n:05}`).
+pub fn format_spec(v: &Value, f: &FmtSpec) -> Result<String, String> {
+    let numeric = matches!(v, Value::Int(_) | Value::Float(_));
+    if (f.plus || f.zero) && !numeric {
+        return Err(format!("format spec `{f}`: `+` and `0` apply to numbers, not {}", to_json(v)));
+    }
+    let body = match (v, f.precision) {
+        (Value::Float(x), Some(p)) => format!("{x:.p$}"),
+        (Value::Str(t), Some(p)) => t.chars().take(p).collect(),
+        (_, Some(_)) => return Err(format!("format spec `{f}`: `.N` applies to a Float or a String, not {}", to_json(v))),
+        _ => show(v),
+    };
+    let body = if f.plus && !body.starts_with('-') { format!("+{body}") } else { body };
+    let n = body.chars().count();
+    if n >= f.width {
+        return Ok(body);
+    }
+    let pad = f.width - n;
+    if f.zero && f.align.is_none() {
+        // zeros go after the sign: -0042
+        let (sign, digits) = if body.starts_with(['+', '-']) { body.split_at(1) } else { ("", body.as_str()) };
+        return Ok(format!("{sign}{}{digits}", "0".repeat(pad)));
+    }
+    let fill = |k: usize| f.fill.to_string().repeat(k);
+    Ok(match f.align.unwrap_or(if numeric { '>' } else { '<' }) {
+        '<' => format!("{body}{}", fill(pad)),
+        '>' => format!("{}{body}", fill(pad)),
+        _ => format!("{}{body}{}", fill(pad / 2), fill(pad - pad / 2)),
+    })
 }
 
 pub fn show(v: &Value) -> String {
@@ -683,7 +715,11 @@ impl<'a> Interp<'a> {
                 }
                 let mut s = scope;
                 for (p, a) in ps.iter().zip(args) {
-                    s = extend(&s, p, a);
+                    // a typed parameter's refinement holds on every call, as for a named function
+                    if let Some(t) = &p.ty {
+                        self.enforce(t, &a, &format!("argument `{}` of a lambda", p.name))?;
+                    }
+                    s = extend(&s, &p.name, a);
                 }
                 self.eval_body(&body, &s)
             }
@@ -1224,7 +1260,7 @@ impl<'a> Interp<'a> {
                 },
                 other => return self.fail(FaultKind::Runtime, format!("no field `{f}` on {}", to_json(&other))),
             },
-            Expr::Lambda(ps, body) => Value::Closure(ps.iter().map(|p| p.name.clone()).collect(), Rc::new((**body).clone()), s.clone()),
+            Expr::Lambda(ps, body) => Value::Closure(Rc::new(ps.clone()), Rc::new((**body).clone()), s.clone()),
             Expr::Bin(op, l, r) => {
                 use BinOp::*;
                 // short-circuiting operators
@@ -1420,7 +1456,14 @@ impl<'a> Interp<'a> {
                 for p in parts {
                     match p {
                         StrPart::Lit(l) => out += l,
-                        StrPart::Expr(e) => out += &show(&self.eval(e, s)?),
+                        StrPart::Expr(e, None) => out += &show(&self.eval(e, s)?),
+                        StrPart::Expr(e, Some(spec)) => {
+                            let v = self.eval(e, s)?;
+                            match format_spec(&v, spec) {
+                                Ok(t) => out += &t,
+                                Err(m) => return self.fail(FaultKind::Runtime, m),
+                            }
+                        }
                     }
                 }
                 Value::Str(out)

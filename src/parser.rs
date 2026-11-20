@@ -714,6 +714,10 @@ impl Parser {
                         FPart::Lit(s) => StrPart::Lit(s),
                         FPart::Code(code, line, col) => {
                             let at = |e: String| format!("{line}:{col}: in f-string: {e}");
+                            let (code, spec) = match spec_colon(&code) {
+                                Some(k) => (code[..k].to_string(), Some(FmtSpec::parse(&code[k + 1..]).map_err(at)?)),
+                                None => (code, None),
+                            };
                             let mut p = Parser::new(&code).map_err(at)?;
                             let e = p.expr().map_err(at)?;
                             if p.peek() != &Tok::Eof {
@@ -722,7 +726,7 @@ impl Parser {
                             if !p.comments.is_empty() {
                                 return Err(at("comments are not allowed inside `{}`".into()));
                             }
-                            StrPart::Expr(e)
+                            StrPart::Expr(e, spec)
                         }
                     });
                 }
@@ -1059,4 +1063,31 @@ impl Parser {
             _ => Err(self.err("expected pattern")),
         }
     }
+}
+
+/// Where the format spec starts in an f-string part: the first `:` outside
+/// brackets and string literals (`{price:.2}`; not the `:` of `{ {a: 1} }`).
+fn spec_colon(code: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut esc = false;
+    for (i, c) in code.char_indices() {
+        if in_str {
+            match c {
+                _ if esc => esc = false,
+                '\\' => esc = true,
+                '"' => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ':' if depth == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
 }

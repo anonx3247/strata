@@ -1871,3 +1871,38 @@ fn sync_follows_moves() {
     let r = std::fs::read_to_string(d.join("report.strata")).unwrap();
     assert!(r.contains("use orders.Order") && r.contains("use billing.charge") && r.contains("charge(o) + billing.charge(o)"), "{r}");
 }
+
+#[test]
+fn lambda_parameter_refinements_hold_at_runtime() {
+    let d = tmp("lambda-refine");
+    std::fs::write(
+        d.join("l.strata"),
+        "fn apply(f: (Int) -> Int, x: Int) -> Int {\n  f(x)\n}\n\nfn bad() -> Int {\n  apply((n: Positive) -> n * 2, -3)\n}\n\nfn good() -> Int {\n  apply((n: Positive) -> n * 2, 3)\n}\n",
+    )
+    .unwrap();
+    let (ok, out) = strata(&["--file", "l.strata", "run", "good"], &d, None);
+    assert!(ok && out.trim() == "6", "{out}");
+    let (ok, out) = strata(&["--file", "l.strata", "run", "bad"], &d, None);
+    assert!(!ok && out.contains("argument `n` of a lambda: -3 does not satisfy `Positive`"), "{out}");
+}
+
+#[test]
+fn f_string_format_specs() {
+    let d = tmp("fmt-spec");
+    std::fs::write(
+        d.join("f.strata"),
+        "type Cents = Int where it >= 0\n\nfn row(name: String, price: Float, qty: Cents, delta: Int) -> String {\n  f\"[{name:<8}|{price:>8.2}|{qty:03}|{delta:+}|{name:*^10}|{name:.3}|{len([1, 2].map((n: Int) -> n))}]\"\n}\n\ntest \"specs\" {\n  assert row(\"tea\", 3.14159, 7, 5) == \"[tea     |    3.14|007|+5|***tea****|tea|2]\"\n  assert row(\"biscuits\", -2.5, 42, -3) == \"[biscuits|   -2.50|042|-3|*biscuits*|bis|2]\"\n  assert f\"{-42:06}\" == \"-00042\"\n}\n",
+    )
+    .unwrap();
+    let (ok, out) = strata(&["--file", "f.strata", "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    // specs survive rendering
+    let (_, r) = strata(&["--file", "f.strata", "render"], &d, None);
+    assert!(r.contains("{price:>8.2}") && r.contains("{name:*^10}") && r.contains("{qty:03}"), "{r}");
+    std::fs::write(d.join("e.strata"), "fn a(n: Int) -> String { f\"{n:.2}\" }\nfn b(s: String) -> String { f\"{s:05}\" }\n").unwrap();
+    let (ok, out) = strata(&["--file", "e.strata", "check"], &d, None);
+    assert!(!ok && out.contains("`.N` applies to a Float") && out.contains("`+` and `0` apply to numbers"), "{out}");
+    std::fs::write(d.join("x.strata"), "fn c(n: Int) -> String { f\"{n:x}\" }\n").unwrap();
+    let (ok, out) = strata(&["--file", "x.strata", "check"], &d, None);
+    assert!(!ok && out.contains("bad format spec `x`"), "{out}");
+}

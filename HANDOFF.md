@@ -77,8 +77,7 @@ Diff: a renamed variant, method or field shows on its type or trait as "variant 
 - Trait methods must take `self`; there is no `fn empty() -> Self` dispatch yet, and method names must be unique across traits.
 - No host bindings (FFI), so a real SQLite backend isn't possible yet.
 - `strata verify --force` on the tasks example takes a few seconds (proven functions are not fuzzed); the slowest part is still generating `MemQueue` values that satisfy its invariants.
-- Typed lambda parameters (`(n: Positive) -> …`) are checked statically but their refinements are not enforced at runtime yet.
-- `!` converts errors only by fitting (a variant into its sum, a member into a union), not with a conversion function. f-strings have no format specs (`{x:.2}`).
+- `!` converts errors only by fitting (a variant into its sum, a member into a union), not with a conversion function.
 
 ## Decided direction (user, end of session 1)
 

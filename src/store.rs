@@ -128,7 +128,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                 go(fb, out);
             }
             Expr::Interp(parts) => parts.iter().for_each(|p| {
-                if let StrPart::Expr(e) = p {
+                if let StrPart::Expr(e, _) = p {
                     go(e, out)
                 }
             }),

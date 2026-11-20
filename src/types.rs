@@ -1057,7 +1057,7 @@ impl<'a> Checker<'a> {
             Expr::If(c, t, f) => any(&[c, t, f]),
             Expr::Match(s, _, arms) => self.assigns_to(s, root) || arms.iter().any(|a| self.assigns_to(&a.body, root)),
             Expr::Except(x, _, fb) => any(&[x, fb]),
-            Expr::Interp(parts) => parts.iter().any(|p| matches!(p, StrPart::Expr(x) if self.assigns_to(x, root))),
+            Expr::Interp(parts) => parts.iter().any(|p| matches!(p, StrPart::Expr(x, _) if self.assigns_to(x, root))),
             // a closure cannot change the enclosing function's variables
             Expr::Lambda(..) => false,
             _ => false,
@@ -1679,8 +1679,11 @@ impl<'a> Checker<'a> {
             }
             Expr::Interp(parts) => {
                 for p in parts {
-                    if let StrPart::Expr(e) = p {
-                        self.infer(e);
+                    if let StrPart::Expr(e, spec) = p {
+                        let t = self.infer(e);
+                        if let Some(f) = spec {
+                            self.check_spec(f, &t);
+                        }
                     }
                 }
                 Ty::Str
@@ -2134,6 +2137,31 @@ impl<'a> Checker<'a> {
         };
         let args = params.iter().map(|p| TypeExpr::Named(p.clone(), vec![])).collect();
         self.instantiate(&params, &TypeExpr::Named(n.to_string(), args))
+    }
+
+    /// A format spec must suit the part's type: `.N` a Float or a String,
+    /// `+` and `0` a number. (A part whose type is still unknown is checked
+    /// when it runs.)
+    fn check_spec(&mut self, f: &FmtSpec, t: &Ty) {
+        let t = self.resolve(t);
+        let base = match &t {
+            Ty::Con(n, _) => self.env.types.get(n).and_then(|td| match &td.body {
+                TypeBody::Alias(a) if !td.distinct => Some(texpr_head(a)),
+                _ => None,
+            }),
+            _ => None,
+        };
+        let is = |want: &Ty, name: &str| t == *want || base.as_deref() == Some(name);
+        let (int, float, string) = (is(&Ty::Int, "Int"), is(&Ty::Float, "Float"), is(&Ty::Str, "String"));
+        if matches!(t, Ty::Var(_)) {
+            return;
+        }
+        if f.precision.is_some() && !float && !string {
+            self.err(format!("format spec `{f}`: `.N` applies to a Float (decimal places) or a String (most characters), not `{}`", show_ty(&t)));
+        }
+        if (f.plus || f.zero) && !int && !float {
+            self.err(format!("format spec `{f}`: `+` and `0` apply to numbers, not `{}`", show_ty(&t)));
+        }
     }
 
     fn is_trait_ty(&self, t: &Ty) -> bool {

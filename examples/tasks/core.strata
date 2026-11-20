@@ -87,10 +87,7 @@ pub trait Queue[P, E] {
 // ───────────────────────────── entrypoints ─────────────────────────────────
 
 /// Run the producer once and enqueue every task it discovers.
-pub fn run_producer[P, E](
-  mut queue: Queue[P, E],
-  producer: Producer[P],
-) -> Int
+pub fn run_producer[P, E](mut queue: Queue[P, E], producer: Producer[P]) -> Int
   ensures it >= 0 {
   queue.enqueue(producer.discover())
 }
