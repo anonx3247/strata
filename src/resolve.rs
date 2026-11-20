@@ -569,6 +569,8 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
     // children of a type (its constructors) or a trait (its methods), as (short, qualified)
     let mut children: HashMap<String, Vec<(String, String)>> = HashMap::new();
     let mut modules: HashSet<String> = HashSet::new();
+    // qualified names of trait methods
+    let mut methods: HashSet<String> = HashSet::new();
     for d in &p.decls {
         let mut m = d.module.as_str();
         while !m.is_empty() {
@@ -594,6 +596,7 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
                 for m in &t.methods {
                     let mq = qualify(&d.module, &m.decl.name);
                     table.insert(mq.clone(), item.clone());
+                    methods.insert(mq.clone());
                     children.entry(q.clone()).or_default().push((m.decl.name.clone(), mq));
                 }
             }
@@ -686,7 +689,7 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
     let mut decls = Vec::new();
     let mut needs = Vec::new();
     for d in &p.decls {
-        let mut r = Rw { scope: &scopes[&d.module], table: &table, modules: &modules, module: &d.module, imports: &imports[&d.module], decl: d.qname(), locals: vec![], tparams: vec![], errors: vec![], rename: rename.as_ref(), moves, needs: Default::default() };
+        let mut r = Rw { scope: &scopes[&d.module], table: &table, methods: &methods, modules: &modules, module: &d.module, imports: &imports[&d.module], decl: d.qname(), locals: vec![], tparams: vec![], errors: vec![], rename: rename.as_ref(), moves, needs: Default::default() };
         let kind = match (&d.kind, rename.as_ref()) {
             // `use orders.{ship}` no longer names a moved definition (the module imports it anew)
             (DeclKind::Use(u), _) if moves.is_some() => DeclKind::Use(UseDecl {
@@ -717,9 +720,15 @@ fn path_expr(m: &str) -> Expr {
     e
 }
 
+/// Builtins that a plain call reaches even when an imported trait has a
+/// method of the same name.
+const PRELUDE_FNS: &[&str] = &["print"];
+
 struct Rw<'a> {
     scope: &'a HashMap<String, String>,
     table: &'a HashMap<String, Item>,
+    /// qualified names of trait methods
+    methods: &'a HashSet<String>,
     modules: &'a HashSet<String>,
     module: &'a str,
     /// modules this one `use`s, for "that's private" hints
@@ -913,6 +922,11 @@ impl Rw<'_> {
                 };
                 Expr::Ctor(c, args)
             }
+            // `print(x)` is the prelude's, even where a trait with a `print`
+            // method is imported (`console.print(x)` is the method)
+            Expr::Call(f, args) if matches!(&**f, Expr::Var(x) if PRELUDE_FNS.contains(&x.as_str()) && !self.is_local(x) && self.scope.get(x).is_none_or(|q| self.methods.contains(q))) => {
+                Expr::Call(f.clone(), self.exprs(args))
+            }
             Expr::Call(f, args) => Expr::Call(Box::new(self.expr(f)), self.exprs(args)),
             Expr::Method(recv, m, args) => {
                 if let Some(path) = self.module_path(recv) {
@@ -1063,7 +1077,7 @@ impl Rw<'_> {
                 self.tparams.push(t.params.iter().cloned().collect());
                 let body = match &t.body {
                     TypeBody::Alias(a) => TypeBody::Alias(self.ty(a)),
-                    TypeBody::Record(fs) => TypeBody::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), name: f.name.clone(), ty: self.ty(&f.ty) }).collect()),
+                    TypeBody::Record(fs) => TypeBody::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), doc: f.doc.clone(), name: f.name.clone(), ty: self.ty(&f.ty) }).collect()),
                     TypeBody::Sum(vs) => TypeBody::Sum(
                         vs.iter()
                             .map(|v| Variant {
@@ -1072,7 +1086,7 @@ impl Rw<'_> {
                                 payload: match &v.payload {
                                     Payload::None => Payload::None,
                                     Payload::Positional(ts) => Payload::Positional(ts.iter().map(|t| self.ty(t)).collect()),
-                                    Payload::Record(fs) => Payload::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), name: f.name.clone(), ty: self.ty(&f.ty) }).collect()),
+                                    Payload::Record(fs) => Payload::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), doc: f.doc.clone(), name: f.name.clone(), ty: self.ty(&f.ty) }).collect()),
                                 },
                             })
                             .collect(),
