@@ -149,6 +149,22 @@ moved orders.charge from orders to billing (billing.strata)
 updated 1 definition that refers to it: test "charges"
 imports: orders: use billing.charge; main: use billing.charge
 
+$ echo 'fn tax(amount: Int, rate: Int) -> Int { amount * rate / 100 }' | strata edit -m "tax takes a rate"
+the edit breaks 2 uses elsewhere; they are now holes, in a pending change:
+  ?pending_1  in total
+      was: tax(amount)
+      why: call to `tax`: expects 2 arguments, got 1
+  ?pending_2  in double_tax
+      was: tax(a)
+      why: call to `tax`: expects 2 arguments, got 1
+fill them with `strata edit`, then `strata done` (or `strata abort` to undo the whole change)
+
+$ strata done                             # once the holes are filled: one log entry for it all
+recorded "tax takes a rate" as one change: 3 definitions
+
+$ strata edit total                       # nothing piped in: opens `total` in $VISUAL / $EDITOR
+                                          # (no name: the whole module); what you save is the edit
+
 $ strata run total '[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]]' --trace
 {"event":"call","fn":"total","args":[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]],"depth":1}
 {"event":"call","fn":"line_total","args":[{"sku":"tea","qty":2,"unit_price":450}],"depth":2}
