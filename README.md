@@ -280,6 +280,8 @@ let tea = Item.new("tea").priced(42)
 - a known type: its own method if it has one (`impl Item { fn describe(self) … }`), else the one trait of the type that declares the name;
 - otherwise it is a compile error: a type implementing two traits that both have `describe`, with no `describe` of its own; a value known only as `Describe | Log` or `T: Describe + Log`. In the last two cases a type's own `describe` doesn't help: it says what `describe` means on an `Item`, not which trait's meaning the call wants.
 
+This holds whichever modules the traits come from: with `Console` (`std.io`) and `Files` (`std.fs`) both imported, `console.write(s)` and `files.write(path, s)` each mean their own trait's `write`. A method named like a builtin (`Files.remove`) doesn't hide the builtin: on a value whose type has no trait declaring the name (a dict, a list, a string…), `d.remove(k)` and `remove(d, k)` are the builtin's.
+
 `strata` decides this when checking and writes the decision into the program it runs, so the same call always runs the same implementation. A name that depends on the receiver can't be passed as a bare function value (`map(describe)`): pass a lambda (`x -> x.describe()`).
 
 **Trait methods without `self`** are called on a type, never on a value: `Money.empty()`, `T.empty()` in a generic function, `Self.empty()` in a trait's default methods and laws. They are constructors and the like (`fn empty() -> Self`, `fn parse(s: String) -> Result[Self, ParseError]`), so the signature must mention `Self`: one that doesn't couldn't pick an implementation, and should be a plain function.
@@ -385,6 +387,57 @@ let n = parse(s) except e { return describe_error(e) }      // the error, by nam
 All values are immutable (`insert` returns a new dict). Dicts and sets are kept in canonical order, so equal collections are equal values and serialise identically. `len`, `contains`, `get`, `insert`, `remove`, `sum`, `min`, `max` and `abs` work across the types they make sense for. `strata builtins` lists every builtin with its signature. See `examples/builtins.strata`.
 
 **Not yet:** lazy iterators, generators and async, which will be designed as language features of their own.
+
+## Programs and the standard library
+
+A program's entry point is `main`. It asks for what it needs by type, and `strata run` passes it in: its command-line options, and the capabilities it uses.
+
+```rust
+use std.cli.CommandLine
+
+/// Greet people by name.
+type Options = {
+  /// Shout the greeting.
+  loud: Bool,
+  /// Say it this many times.
+  times: Option[Int where 1 <= it && it <= 10],
+  /// Who to greet (the world if nobody).
+  names: List[String],
+}
+
+impl CommandLine for Options {}
+
+fn main(opts: Options) -> () {
+  let who = if len(opts.names) == 0 { "world" } else { join(opts.names, " and ") }
+  for _ in range(0, opts.times except { 1 }) {
+    print(if opts.loud { to_upper(f"hello, {who}!") } else { f"hello, {who}!" })
+  }
+}
+```
+
+```sh
+strata run examples/hello -- Ada --loud      # HELLO, ADA!
+strata run examples/hello -- --help          # usage, from the doc comments
+strata run examples/wc -- --only words README.md
+cat README.md | strata run examples/wc
+```
+
+**`print(x)`** is always available, with no `use`. It writes `x` (as `to_string` shows it) and a newline wherever the code runs: to the terminal under `strata run`, into the test's own buffer under `strata test` (shown only if the test fails), and nowhere under `verify`. It is a convenience; code whose output a test should check, or that a caller should control, takes a `Console`.
+
+**Command-line options** are a record that implements `CommandLine` (`std.cli`); the trait has no methods. Each field is read from the arguments by its type: a `Bool` is a flag (`--loud`), an `Option[T]` an option with a value (`--times 3` or `--times=3`), a `List[T]` the remaining positional arguments, and any other field a required positional argument, in field order. `T` is an `Int`, `Float`, `String`, a refinement of one, or a choice (a type whose variants carry nothing: `type Count = | Lines | Words` is `lines` or `words`). Names take dashes (`dry_run` is `--dry-run`), `--` ends the options, every refinement is checked (`--times: 0 does not satisfy …`), and a mistake exits with code 2. `--help` is built from the record's and fields' `///` doc comments. `strata check` rejects a `CommandLine` record a command line can't fill.
+
+`main` can also ask for `Console` (`std.io`), `Files` (`std.fs`) and `Environment` (`std.process`), in any order. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [JSON-ARGS]` still calls a single function.
+
+The **standard library** is the `std/` package, written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency:
+
+| Module | What it has |
+|---|---|
+| `std.io` | `Console` (`print`, `write`, `eprint`, `read_line`); `Recorder` / `recorder(input)` / `printed(r)` for tests |
+| `std.fs` | `Files` (`read`, `write`, `append`, `exists`, `list`, `make_dir`, `remove`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
+| `std.process` | `Environment` (`args`, `var`), `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
+| `std.cli` | `CommandLine`: a record of options read from the arguments |
+
+Each capability is a trait, so code that prints takes a `Console`, and its signature says so. The only real implementations are private types of `std` that the runtime makes for `main`; nothing else can create them. Tests pass the in-memory stand-ins (see `examples/wc`), or `mock Console`. Only `std` can call the native `host_*` operations underneath, and only `strata run` lets them reach the system: `test`, `verify` and fuzzing never touch the terminal or the disk.
 
 ## Views (levels of detail)
 
@@ -509,6 +562,7 @@ The `.strata` files are what you commit.
 | `src/store.rs` | content-addressed codebase, dependency graph, patch log |
 | `src/merge.rs` | `strata merge-file`: three-way merge per definition, renames |
 | `src/package.rs` | packages: `strata.toml`, their files, finding packages and scripts |
+| `src/stdlib.rs`, `std/` | the standard library (Strata), built into the binary; the native `host_*` operations it alone can call |
 | `src/view.rs` | level-of-detail projections and selectors |
 | `src/ui.rs`, `src/ui/index.html` | `strata ui`: the live viewer (a std-only HTTP server and one page) |
 

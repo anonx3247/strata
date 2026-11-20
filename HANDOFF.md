@@ -76,10 +76,34 @@ Diff: a renamed variant, method or field shows on its type or trait as "variant 
 - **Strata IDE**: the viewer as a standalone desktop app (Tauri; the backend is already Rust), speaking ACP (Agent Client Protocol) so agents such as Claude Code or Codex run inside it, with a Strata MCP server giving them structural tools (slices, check, edit, rename). The viewer would show live where each agent is working (log entries tagged with the agent's session). Idea stage.
 
 
+## Standard library: I/O first (built, branch `worktree-stdlib-io`)
+
+The user asked for a standard library usable from any program, starting with I/O (print, exit codes), then strings, regex, a NumPy-like math library (later, bigger), and web UI. Built so far:
+- **`std/` is a Strata package** (`name = "std"`), embedded in the binary (`src/stdlib.rs`, `include_str!`). A program that has a `use std.…` gets std's definitions appended after its own at resolution (`stdlib::with_std` in `resolve::resolve`), so index `i` of a resolved program is still the program's `i`; code that zips resolved with original decls is unaffected, and `store::graph` truncates to the program's own. Its modules are `std.io`, `std.fs`, `std.process`, also when `std/` itself is loaded (`package::program` prefixes a package named `std`; `store::module_path` maps back to files).
+- **Capabilities, as decided**: `Console`, `Files`, `Environment` are traits. The real implementations (`Terminal`, `Disk`, `Process`) are private std types, built only by `run_main` in `main.rs`. Test stand-ins are public: `Recorder`, `MemFiles`, `FakeEnvironment`.
+- **The native layer** is the `host_*` builtins (`stdlib::HOST`, implemented in `Interp::host_call`). The resolver rejects them outside `std` modules. They work only when `Interp.host` is set, which only `strata run` does, so test/verify/fuzzing can never print, read or delete anything.
+- **`strata run [PATH] [-- ARGS]`** runs `main`: parameters are filled by type (Console/Files/Environment only), the return is `()` → 0, `ExitCode`/`Int` → that code, `Result` → `Ok` as before or `Err` printed to stderr → 1; a fault → 101.
+- Examples: `examples/hello`, `examples/wc` (with tests that use the stand-ins).
+- Also fixed: the printer now escapes tabs and backslashes in string literals (it used to write a literal tab, and `"\\n"` came back as a newline).
+
+### `print` and command-line options (decided with the user 2026-11-20; built, branch `worktree-stdlib-print-cli`, stacked on `worktree-stdlib-io`)
+- **Capabilities stay** (user, asked explicitly): I/O is reached through `Console` / `Files` / `Environment` values; the value is the prefix (`files.read…`, `console.write…`). Plain ambient `fs.read(path)` functions were considered and rejected.
+- **Except `print`**, which is a prelude builtin, available with no `use`: shorthand for "the console of wherever the code runs". `Interp.output`: `Terminal` under `strata run` (both `main` and `run <fn>`), `Buffer` per test under `strata test` (printed under the failure only), `Discard` everywhere else (verify, fuzzing, static checks). A plain call `print(x)` always means the builtin, even where an imported trait has a `print` method (`resolve::PRELUDE_FNS`); `console.print(x)` is the method. A failing `assert` no longer prints a second time when it re-evaluates its sides for the message.
+- **`CommandLine`** (`std.cli`) is a marker trait with no methods (user's choice over "any record in main"). A `main` parameter whose type implements it is read from the arguments by `src/cli.rs`: `Bool` → flag, `Option[T]` → `--name value` / `--name=value`, `List[T]` → remaining positionals (one at most), anything else → required positional in field order. `T` = Int / Float / String / a refinement of one / a choice (variants without data, written in kebab case). Values are built as JSON and checked with `Interp::from_json`, so refinements are enforced; errors name the option and exit 2; `--help` comes from `///` docs on the record and its fields. `strata check` rejects a `CommandLine` record with fields a command line can't fill.
+- **Fields can have `///` doc comments** now (`Field.doc`; parsed, printed, ignored by hashes like other docs).
+- Empty trait and impl bodies print as `{}`.
+- **Done (branch `worktree-stdlib-files-names`, stacked on #16):** `Files` methods are `read`, `write`, `append`, `exists`, `list`, `make_dir`, `remove`. Two general rules made that possible (`Checker::by_receiver`, recorded as `Target::Other` / `Target::Builtin` and written by `elaborate`):
+  - a method name is matched by its short name against the traits of the value it is called on, whatever module they come from: method names are qualified by module at resolution, and a scope maps `write` to only one of `std.io.write` / `std.fs.write` (the last import), so `console.write(s)` used to resolve to `Files.write`. Same rules as #13 otherwise (one candidate: it; several: the existing errors);
+  - a trait method named like a builtin doesn't hide the builtin: on an Int/Float/Bool/String/List/Dict/Set whose type has no trait declaring the name, `d.remove(k)` / `remove(d, k)` is the builtin.
+  - Also: `types::test_instance` never picks `stdlib::HOST_TYPES` (Terminal, Disk, Process) for a type parameter. The cross-check from #10 had fuzzed `fn f[C: Console]` with the real `Terminal` (the host gate stopped it, but it was reported as a prover bug).
+- Still to do: module aliases `use std.fs as fs` (user: yes, but lower priority since the capability value already prefixes calls). Not designed yet: defaults for options other than `None`/`false`/`[]`, short flags (`-v`), subcommands (probably a sum type of records).
+
+Not yet / next: `Disk`/`Terminal` contracts should be reported `assumed` (they show as "proven, nothing to check"); `main` can't ask for a clock, random numbers, network or a process spawner; an `Err` from `main` is printed as JSON; verification cache keys don't include std's hash (a std change only comes with a new binary). Next modules the user listed: strings (beyond the builtins), regex, math/linear algebra (NumPy-like), web UI (HTML/CSS generation and serving, per the batteries-included plan below).
+
 ## Known gaps
 
 - No explicit type arguments at a call (`f[Money]()`): a type parameter that only a method called on the type needs (not in the parameters or result) can't be given. Generic impls' own type parameters can't have methods called on them yet (`impl[T: Empty] Empty for Pair[T]` calling `T.empty()`); only functions get hidden type arguments.
-- No host bindings (FFI), so a real SQLite backend isn't possible yet.
+- No general FFI: the only native code is the standard library's `host_*` layer, so a real SQLite backend isn't possible yet.
 - `strata verify --force` on the tasks example takes a few seconds (proven functions are not fuzzed); the slowest part is still generating `MemQueue` values that satisfy its invariants.
 - `!` converts errors only by fitting (a variant into its sum, a member into a union), not with a conversion function.
 

@@ -1886,6 +1886,90 @@ fn sync_carries_logged_renames_into_the_other_sides_files() {
     assert_eq!(git(&d, &["rev-parse", "HEAD"]), head, "nothing committed");
 }
 
+/// Run strata and give (exit code, stdout, stderr).
+fn strata_code(args: &[&str], dir: &std::path::Path, stdin: &str) -> (i32, String, String) {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_strata")).args(args).current_dir(dir).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    c.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+    let o = c.wait_with_output().unwrap();
+    (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string())
+}
+
+#[test]
+fn std_io_programs_run_with_capabilities_and_exit_codes() {
+    let d = tmp("stdio");
+    let ex = |p: &str| format!("{}/examples/{p}", env!("CARGO_MANIFEST_DIR"));
+
+    // main gets the console and the command line; `()` exits 0
+    let (code, out, _) = strata_code(&["run", &ex("hello"), "--", "Ada", "Alan"], &d, "");
+    assert_eq!((code, out.as_str()), (0, "hello, Ada and Alan!\n"));
+
+    // files, standard input, and an Err from main: written to stderr, exit code 1
+    std::fs::write(d.join("a.txt"), "one two\nthree\n").unwrap();
+    let (code, out, _) = strata_code(&["run", &ex("wc"), "--", "a.txt"], &d, "");
+    assert_eq!((code, out.as_str()), (0, "2\t3\t14\ta.txt\n"));
+    let (code, out, _) = strata_code(&["run", &ex("wc")], &d, "a b\nc\n");
+    assert_eq!((code, out.as_str()), (0, "2\t3\t6\t-\n"));
+    let (code, _, err) = strata_code(&["run", &ex("wc"), "--", "missing.txt"], &d, "");
+    assert!(code == 1 && err.contains("NotFound") && err.contains("missing.txt"), "{code} {err}");
+
+    // the same program's tests use stand-ins
+    let (ok, out) = strata(&["--file", &ex("wc"), "test"], &d, None);
+    assert!(ok && out.contains("4 passed"), "{out}");
+
+    // an exit code, writing files and environment variables
+    std::fs::write(
+        d.join("prog.strata"),
+        r#"use std.io.Console
+use std.fs.{Files, FsError}
+use std.process.{Environment, ExitCode}
+
+fn main(mut console: Console, mut files: Files, env: Environment) -> Result[ExitCode, FsError] {
+  files.write("out/x.txt", "a")!
+  files.append("out/x.txt", "b")!
+  console.eprint(files.read("out/x.txt")!)
+  console.write(env.var("STRATA_TEST_VAR") except { "unset" })
+  Ok(len(files.list("out")!) + 6)
+}
+"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(d.join("out")).unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "prog.strata"]).current_dir(&d).env("STRATA_TEST_VAR", "set!").output().unwrap();
+    assert_eq!(o.status.code(), Some(7), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "set!");
+    assert_eq!(String::from_utf8_lossy(&o.stderr), "ab\n");
+
+    // the host is the standard library's alone
+    std::fs::write(d.join("sneaky.strata"), "fn main() -> () {\n  host_write(1, \"hi\")\n}\n").unwrap();
+    let (code, out, err) = strata_code(&["run", "sneaky.strata"], &d, "");
+    assert!(code != 0 && out.is_empty() && err.contains("internal to the standard library"), "{out}{err}");
+
+    // `main` may only ask for capabilities the runtime has
+    std::fs::write(d.join("odd.strata"), "fn main(n: Int) -> () {\n  ()\n}\n").unwrap();
+    let (code, _, err) = strata_code(&["run", "odd.strata"], &d, "");
+    assert!(code != 0 && err.contains("can ask for `Console`"), "{err}");
+
+    // verify never reaches the real system: capabilities are mocks there
+    std::fs::write(d.join("greet.strata"), "use std.io.Console\n\nfn greet(mut c: Console, n: Int) -> () {\n  c.print(f\"MARKER {n}\")\n}\n").unwrap();
+    let (_, out, err) = strata_code(&["--file", "greet.strata", "verify", "--cases", "20"], &d, "");
+    assert!(!out.contains("MARKER") && !err.contains("MARKER"), "{out}{err}");
+    let (ok, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "check"], &d, None);
+    assert!(ok, "{out}");
+    // std's real terminal, disk and process are assumed, never run by verify
+    let (ok, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "verify", "--cases", "10"], &d, None);
+    assert!(ok && !out.contains("needs the real system") && out.contains("std.io.Terminal.print") && out.contains("assumed"), "{out}");
+}
+
+#[test]
+fn string_escapes_round_trip() {
+    let d = tmp("escapes");
+    std::fs::write(d.join("e.strata"), "fn s() -> String {\n  \"a\tb\\\\n\"\n}\n").unwrap();
+    let (_, r1) = strata(&["--file", "e.strata", "render"], &d, None);
+    assert!(r1.contains(r#""a\tb\\n""#), "{r1}");
+    let (_, out) = strata(&["--file", "e.strata", "run", "s"], &d, None);
+    assert!(out.contains(r#""a\tb\\n""#), "{out}");
+}
+
 const SHAPES: &str = "pub type Shape =\n  | Circle { radius: Int }\n  | Square(Int)\n\npub type Line = { sku: String, qty: Int }\n\npub trait Sized {\n  fn size(self) -> Int\n}\n\nimpl Sized for Line {\n  fn size(self) -> Int {\n    self.qty\n  }\n}\n";
 const SHAPES_MAIN: &str = "use shapes.*\n\nfn area(s: Shape) -> Int {\n  match s {\n    Circle { radius } => 3 * radius * radius,\n    Square(n) => n * n,\n  }\n}\n\nfn bigger(l: Line) -> Line {\n  Line { ..l, qty: l.qty + 1 }\n}\n\ntest \"shapes\" {\n  assert area(Circle { radius: 1 }) == 3\n  assert Square(2) is Square\n  let l = Line { sku: \"a\", qty: 2 }\n  assert bigger(l).size() == 3\n  assert l.size() == 2\n}\n";
 
@@ -2596,6 +2680,253 @@ test "unknown type" {
     ] {
         assert!(out.contains(want), "missing {want:?} in {out}");
     }
+}
+
+#[test]
+fn print_goes_to_the_terminal_a_test_buffer_or_nowhere() {
+    let d = tmp("print");
+    std::fs::write(
+        d.join("p.strata"),
+        r#"use std.io.Console
+
+fn double(n: Int) -> Int {
+  print(f"doubling {n}")
+  n * 2
+}
+
+fn main(mut console: Console) -> () {
+  print("plain")
+  print([1, 2])
+  console.print("console")
+  print(double(21))
+}
+
+test "passes" {
+  assert double(1) == 2
+}
+
+test "fails" {
+  assert double(2) == 5
+}
+"#,
+    )
+    .unwrap();
+    // `print` is the prelude's even where `Console` (with its `print` method) is imported
+    let (code, out, _) = strata_code(&["run", "p.strata"], &d, "");
+    assert_eq!((code, out.as_str()), (0, "plain\n[1,2]\nconsole\ndoubling 21\n42\n"));
+    // a test's output is shown only when it fails, once
+    let (_, out) = strata(&["--file", "p.strata", "test"], &d, None);
+    assert!(out.contains("✓ passes") && !out.contains("doubling 1"), "{out}");
+    assert_eq!(out.matches("doubling 2").count(), 1, "{out}");
+    // verify discards it
+    let (_, out, err) = strata_code(&["--file", "p.strata", "verify", "--cases", "20"], &d, "");
+    assert!(!out.contains("doubling") && !err.contains("doubling"), "{out}{err}");
+}
+
+#[test]
+fn command_line_options_are_read_into_a_record() {
+    let d = tmp("cli");
+    std::fs::create_dir_all(d.join("tool/kinds")).unwrap();
+    std::fs::write(d.join("tool/strata.toml"), "name = \"tool\"\n").unwrap();
+    std::fs::write(d.join("tool/kinds.strata"), "pub type Mode =\n  | Fast\n  | DryRun\n").unwrap();
+    std::fs::write(
+        d.join("tool/main.strata"),
+        r#"use std.cli.CommandLine
+use kinds.*
+
+/// Copy things.
+type Options = {
+  /// Where from.
+  source: String,
+  /// How many copies.
+  copies: Positive,
+  /// Say more.
+  verbose: Bool,
+  /// How to go about it.
+  mode: Option[Mode],
+  /// A ratio.
+  ratio: Option[Float where 0.0 <= it && it <= 1.0],
+  extra: List[Int],
+}
+
+impl CommandLine for Options {}
+
+fn main(opts: Options) -> () {
+  print(opts)
+}
+"#,
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let mut a = vec!["run", "tool", "--"];
+        a.extend_from_slice(args);
+        strata_code(&a, &d, "")
+    };
+    let (code, out, err) = run(&["src", "3", "--verbose", "--mode", "dry-run", "--ratio=0.5", "7", "8"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains(r#""source":"src""#) && out.contains(r#""copies":3"#) && out.contains(r#""verbose":true"#), "{out}");
+    assert!(out.contains(r#""mode":{"Some":"DryRun"}"#) && out.contains(r#""ratio":{"Some":0.5}"#) && out.contains(r#""extra":[7,8]"#), "{out}");
+    // defaults: a flag is false, an option None, the list empty
+    let (code, out, _) = run(&["src", "1"]);
+    assert!(code == 0 && out.contains(r#""verbose":false"#) && out.contains(r#""mode":"None""#) && out.contains(r#""extra":[]"#), "{out}");
+    // mistakes exit 2 and name the argument
+    for (args, want) in [
+        (vec!["src"], "missing <copies>: How many copies."),
+        (vec!["src", "0"], "<copies>: 0 does not satisfy"),
+        (vec!["src", "x"], "<copies>: `x` is not a whole number"),
+        (vec!["src", "1", "--mode", "slow"], "`slow` is not one of fast, dry-run"),
+        (vec!["src", "1", "--ratio", "2.0"], "--ratio: 2.0 does not satisfy"),
+        (vec!["src", "1", "--colour"], "unknown option `--colour`"),
+        (vec!["src", "1", "--verbose", "--verbose"], "given twice"),
+        (vec!["src", "1", "--verbose=yes"], "takes no value"),
+        (vec!["src", "1", "x"], "[extra...]: `x` is not a whole number"),
+    ] {
+        let (code, out, err) = run(&args);
+        assert!(code == 2 && out.is_empty() && err.contains(want) && err.contains("tool --help"), "{args:?}: {err}");
+    }
+    // `--` ends the options
+    let (code, out, _) = run(&["--", "--verbose", "2"]);
+    assert!(code == 0 && out.contains(r#""source":"--verbose""#), "{out}");
+    // help comes from the doc comments
+    let (code, out, _) = run(&["--help"]);
+    assert_eq!(code, 0);
+    for want in ["Copy things.", "Usage: tool [OPTIONS] <source> <copies> [extra...]", "<copies>", "How many copies.", "--mode <fast|dry-run>", "--ratio <Float>", "(where 0.0 <= it && it <= 1.0)", "--verbose", "-h, --help"] {
+        assert!(out.contains(want), "missing {want:?} in\n{out}");
+    }
+    // a record that can't be read from arguments is a check error
+    std::fs::write(d.join("bad.strata"), "use std.cli.CommandLine\n\ntype Opts = { pairs: List[(Int, Int)] }\n\nimpl CommandLine for Opts {}\n").unwrap();
+    let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
+    assert!(!ok && out.contains("`Opts.pairs` is a `List[(Int, Int)]`"), "{out}");
+    // field docs round-trip
+    let (_, r1) = strata(&["--file", "tool", "render", "main"], &d, None);
+    assert!(r1.contains("  /// How many copies.\n  copies: Positive,"), "{r1}");
+}
+
+#[test]
+fn method_names_follow_the_receiver_across_modules_and_builtins() {
+    let d = tmp("names");
+    // `Console.write` / `Files.write` from two modules, `Files.remove` / the builtin `remove`
+    std::fs::write(
+        d.join("main.strata"),
+        r#"use std.io.{Console, recorder, printed}
+use std.fs.{Files, NotFound, mem_files}
+
+fn save(mut console: Console, mut files: Files) -> () {
+  files.write("a.txt", "hi") except { () }
+  console.write("saved ")
+  console.print(files.read("a.txt") except { "?" })
+  files.remove("a.txt") except { () }
+  console.print(f"{files.exists("a.txt")}")
+}
+
+fn shout[C: Console](mut c: C, s: String) -> () {
+  c.write(to_upper(s))
+  c.print("!")
+}
+
+fn main(mut console: Console, mut files: Files) -> () {
+  files.write("x.txt", "disk") except { () }
+  shout(mut console, files.read("x.txt") except { "?" })
+  files.remove("x.txt") except { () }
+}
+
+test "each call means its receiver's method" {
+  let mut c = recorder([])
+  let mut f = mem_files([("b.txt", "x")])
+  save(mut c, mut f)
+  assert printed(c) == ["saved hi", "false"]
+  shout(mut c, "yo")
+  assert printed(c) == ["saved hi", "false", "YO!"]
+  let dict_ = dict([("k", 1), ("j", 2)])
+  assert keys(dict_.remove("k")) == ["j"]
+  assert keys(remove(dict_, "j")) == ["k"]
+  assert to_list(set([1, 2]).remove(1)) == [2]
+  assert f.list("nope") == Err(NotFound { path: "nope" })
+}
+"#,
+    )
+    .unwrap();
+    let (ok, out) = strata(&["--file", "main.strata", "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    let (code, out, err) = strata_code(&["run", "main.strata"], &d, "");
+    assert_eq!((code, out.as_str()), (0, "DISK!\n"), "{err}");
+    assert!(!d.join("x.txt").exists());
+    // verify picks a stand-in for `C: Console`, never the real terminal
+    let (_, out, err) = strata_code(&["--file", "main.strata", "verify", "--cases", "20"], &d, "");
+    assert!(!out.contains("needs the real system") && !out.contains("YO") && !err.contains("needs the real system"), "{out}{err}");
+}
+
+#[test]
+fn shared_method_names_across_modules() {
+    let d = tmp("xmod");
+    std::fs::write(d.join("strata.toml"), "name = \"xmod\"\n").unwrap();
+    std::fs::write(d.join("a.strata"), "pub trait Sized {\n  fn size(self) -> Int\n}\n").unwrap();
+    std::fs::write(d.join("b.strata"), "pub trait Weighed {\n  fn size(self) -> Int\n}\n").unwrap();
+    std::fs::write(
+        d.join("main.strata"),
+        r#"use a.Sized
+use b.Weighed
+
+type Box = { n: Int }
+type Bag = { n: Int }
+type Both = { n: Int }
+
+impl Sized for Box {
+  fn size(self) -> Int { self.n }
+}
+impl Weighed for Bag {
+  fn size(self) -> Int { self.n * 100 }
+}
+impl Both {
+  fn size(self) -> Int { 7 }
+}
+impl Sized for Both {
+  fn size(self) -> Int { 1 }
+}
+impl Weighed for Both {
+  fn size(self) -> Int { 2 }
+}
+
+fn via_sized(x: Sized) -> Int { x.size() }
+fn via_weighed[T: Weighed](x: T) -> Int { x.size() }
+
+test "each call means its receiver's size" {
+  assert Box { n: 3 }.size() == 3
+  assert Bag { n: 3 }.size() == 300
+  assert via_sized(Box { n: 4 }) == 4
+  assert via_weighed(Bag { n: 4 }) == 400
+  let b = Both { n: 0 }
+  assert b.size() == 7
+  assert via_sized(b) == 1
+  assert via_weighed(b) == 2
+}
+"#,
+    )
+    .unwrap();
+    let (ok, out) = strata(&["--file", ".", "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    // two traits of the receiver have the name, from different modules: an error, as within one
+    std::fs::write(
+        d.join("amb.strata"),
+        r#"use a.Sized
+use b.Weighed
+
+type Two = { n: Int }
+impl Sized for Two {
+  fn size(self) -> Int { 1 }
+}
+impl Weighed for Two {
+  fn size(self) -> Int { 2 }
+}
+
+fn concrete(x: Two) -> Int { x.size() }
+fn bounded[T: Sized + Weighed](x: T) -> Int { x.size() }
+"#,
+    )
+    .unwrap();
+    let (ok, out) = strata(&["--file", ".", "check"], &d, None);
+    assert!(!ok && out.contains("`Two` implements `Sized` and `Weighed`, which both have `size`"), "{out}");
+    assert!(out.contains("`T` is known only as `Sized` and `Weighed`"), "{out}");
 }
 
 #[test]

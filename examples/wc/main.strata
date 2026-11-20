@@ -1,0 +1,147 @@
+// wc — count lines, words and characters, like the Unix tool.
+//
+//   strata run examples/wc -- README.md src/main.rs
+//   strata run examples/wc -- --only words README.md
+//   cat README.md | strata run examples/wc
+//
+// `main` asks for exactly what it touches: its options, the console and the
+// files. The tests below hand it stand-ins instead.
+
+use std.cli.CommandLine
+
+use std.io.{Console, recorder, printed}
+
+use std.fs.{Files, FsError, NotFound, mem_files}
+
+use std.process.ExitCode
+
+/// What to count.
+type Count =
+  | Lines
+  | Words
+  | Chars
+
+/// Count lines, words and characters in files, or in standard input.
+type Options = {
+  /// Show only this count.
+  only: Option[Count],
+  /// The files to count (standard input if none).
+  files: List[String],
+}
+
+impl CommandLine for Options {}
+
+type Counts = { lines: Natural, words: Natural, chars: Natural }
+
+fn words(line: String) -> Natural {
+  len(split(line, " ").filter(w -> trim(w) != ""))
+}
+
+fn count(text: String) -> Counts {
+  let ls = lines(text)
+  Counts {
+    lines: len(ls),
+    words: sum(ls.map(words)),
+    chars: len(text),
+  }
+}
+
+fn add(a: Counts, b: Counts) -> Counts {
+  Counts {
+    lines: a.lines + b.lines,
+    words: a.words + b.words,
+    chars: a.chars + b.chars,
+  }
+}
+
+fn row(c: Counts, only: Option[Count], label: String) -> String {
+  let shown = match only {
+    Some(Lines) => f"{c.lines}",
+    Some(Words) => f"{c.words}",
+    Some(Chars) => f"{c.chars}",
+    None => f"{c.lines}\t{c.words}\t{c.chars}",
+  }
+  f"{shown}\t{label}"
+}
+
+/// All of standard input, line by line.
+fn read_all(mut console: Console) -> String {
+  let mut text = ""
+  loop {
+    match console.read_line() {
+      Some(line) => {
+        text = text + line + "\n"
+      },
+      None => {
+        break
+      },
+    }
+  }
+  text
+}
+
+fn main(
+  opts: Options,
+  mut console: Console,
+  files: Files,
+) -> Result[ExitCode, FsError] {
+  if len(opts.files) == 0 {
+    console.print(row(count(read_all(mut console)), opts.only, "-"))
+    return Ok(0)
+  }
+  let mut total = Counts { lines: 0, words: 0, chars: 0 }
+  for path in opts.files {
+    let c = count(files.read(path)!)
+    console.print(row(c, opts.only, path))
+    total = add(total, c)
+  }
+  if len(opts.files) > 1 {
+    console.print(row(total, opts.only, "total"))
+  }
+  Ok(0)
+}
+
+test "counts each file and the total" {
+  let mut console = recorder([])
+  let files = mem_files([("a.txt", "one two\nthree\n"), ("b.txt", "four\n")])
+  let r = main(
+    Options { only: None, files: ["a.txt", "b.txt"] },
+    mut console,
+    files,
+  )
+  assert r == Ok(0)
+  assert printed(console) == ["2\t3\t14\ta.txt", "1\t1\t5\tb.txt", "3\t4\t19\ttotal"]
+}
+
+test "shows only what was asked" {
+  let mut console = recorder([])
+  let files = mem_files([("a.txt", "one two\nthree\n")])
+  let r = main(
+    Options { only: Some(Words), files: ["a.txt"] },
+    mut console,
+    files,
+  )
+  assert r == Ok(0)
+  assert printed(console) == ["3\ta.txt"]
+}
+
+test "reads standard input when no file is named" {
+  let mut console = recorder(["hello world", "bye"])
+  let r = main(
+    Options { only: None, files: [] },
+    mut console,
+    mem_files([]),
+  )
+  assert r == Ok(0)
+  assert printed(console) == ["2\t3\t16\t-"]
+}
+
+test "a missing file is an error" {
+  let mut console = recorder([])
+  let r = main(
+    Options { only: None, files: ["nope.txt"] },
+    mut console,
+    mem_files([]),
+  )
+  assert r == Err(NotFound { path: "nope.txt" })
+}

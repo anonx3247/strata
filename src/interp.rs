@@ -179,6 +179,28 @@ pub struct Interp<'a> {
     /// At most this many evaluation steps, if set.
     pub budget: Option<u64>,
     steps: u64,
+    /// Access to the real system, for the `host_*` builtins under `std`.
+    /// Only `strata run` gives it, with the program's arguments: checks,
+    /// tests, fuzzing and proofs never touch the terminal or the disk.
+    pub host: Option<Host>,
+    /// Where `print` writes.
+    pub output: Output,
+}
+
+/// What `strata run` passes to the program.
+pub struct Host {
+    pub args: Vec<String>,
+}
+
+/// Where `print` goes: `print(x)` is shorthand for the console of wherever
+/// the code runs.
+pub enum Output {
+    /// Standard output (`strata run`).
+    Terminal,
+    /// Kept, to be shown if the test fails (`strata test`).
+    Buffer(String),
+    /// Nowhere (`verify`, fuzzing, checks).
+    Discard,
 }
 
 fn short(c: &str) -> &str {
@@ -363,6 +385,8 @@ impl<'a> Interp<'a> {
             returning: None,
             budget: None,
             steps: 0,
+            host: None,
+            output: Output::Discard,
         }
     }
 
@@ -370,6 +394,86 @@ impl<'a> Interp<'a> {
     /// check that "failed" because evaluating it ran out) proves nothing.
     pub fn exhausted(&self) -> bool {
         self.budget.is_some_and(|b| self.steps > b)
+    }
+
+    /// A native operation of the standard library (`host_*`).
+    fn host_call(&mut self, name: &str, args: Vec<Value>) -> R<Value> {
+        use std::io::{BufRead, Write};
+        use Value::*;
+        let Some(host) = &self.host else {
+            return self.fail(FaultKind::Runtime, format!("`{name}` needs the real system, which only `strata run` gives (tests and `verify` pass a stand-in such as `Recorder` or `mock Console`)"));
+        };
+        let some = |v: Value| Variant("Some".into(), Fields::Pos(vec![v]));
+        let none = || Variant("None".into(), Fields::None);
+        let io = |r: std::io::Result<Value>| match r {
+            Ok(v) => Variant("Ok".into(), Fields::Pos(vec![v])),
+            Err(e) => {
+                use std::io::ErrorKind as K;
+                let kind = match e.kind() {
+                    K::NotFound => "not_found",
+                    K::PermissionDenied => "permission_denied",
+                    K::AlreadyExists => "already_exists",
+                    K::NotADirectory => "not_a_directory",
+                    K::IsADirectory => "is_a_directory",
+                    _ => "other",
+                };
+                Variant("Err".into(), Fields::Pos(vec![Tuple(vec![Str(kind.into()), Str(e.to_string())])]))
+            }
+        };
+        let s = |i: usize| match args.get(i) {
+            Some(Str(s)) => s.clone(),
+            _ => String::new(),
+        };
+        Ok(match name {
+            "host_write" => {
+                let text = s(1);
+                let r = if args.first() == Some(&Int(2)) {
+                    let mut e = std::io::stderr().lock();
+                    e.write_all(text.as_bytes()).and_then(|_| e.flush())
+                } else {
+                    let mut o = std::io::stdout().lock();
+                    o.write_all(text.as_bytes()).and_then(|_| o.flush())
+                };
+                match r {
+                    // a closed pipe (`strata run | head`) ends the program quietly
+                    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(0),
+                    _ => Unit,
+                }
+            }
+            "host_read_line" => {
+                let mut line = String::new();
+                match std::io::stdin().lock().read_line(&mut line) {
+                    Ok(0) | Err(_) => none(),
+                    Ok(_) => {
+                        let trimmed = line.strip_suffix('\n').unwrap_or(&line);
+                        some(Str(trimmed.strip_suffix('\r').unwrap_or(trimmed).to_string()))
+                    }
+                }
+            }
+            "host_read_file" => io(std::fs::read_to_string(s(0)).map(Str)),
+            "host_write_file" => {
+                let (path, text) = (s(0), s(1));
+                let append = args.get(2) == Some(&Bool(true));
+                io(std::fs::OpenOptions::new().create(true).write(true).append(append).truncate(!append).open(path).and_then(|mut f| f.write_all(text.as_bytes())).map(|_| Unit))
+            }
+            "host_exists" => Bool(std::path::Path::new(&s(0)).exists()),
+            "host_list_dir" => io(std::fs::read_dir(s(0)).and_then(|rd| {
+                let mut names = rd.map(|e| e.map(|e| e.file_name().to_string_lossy().to_string())).collect::<std::io::Result<Vec<_>>>()?;
+                names.sort();
+                Ok(List(names.into_iter().map(Str).collect()))
+            })),
+            "host_make_dir" => io(std::fs::create_dir_all(s(0)).map(|_| Unit)),
+            "host_remove" => {
+                let p = s(0);
+                io(if std::path::Path::new(&p).is_dir() { std::fs::remove_dir(&p) } else { std::fs::remove_file(&p) }.map(|_| Unit))
+            }
+            "host_args" => List(host.args.iter().cloned().map(Str).collect()),
+            "host_env_var" => match std::env::var(s(0)) {
+                Ok(v) => some(Str(v)),
+                Err(_) => none(),
+            },
+            _ => return self.fail(FaultKind::Runtime, format!("unknown host operation `{name}`")),
+        })
     }
 
     fn fail<T>(&self, kind: FaultKind, msg: impl Into<String>) -> R<T> {
@@ -777,6 +881,26 @@ impl<'a> Interp<'a> {
 
     fn builtin(&mut self, name: &str, args: Vec<Value>) -> R<Value> {
         use Value::*;
+        if crate::stdlib::is_host(name) {
+            return self.host_call(name, args);
+        }
+        if name == "print" {
+            let line = show(args.first().unwrap_or(&Unit)) + "\n";
+            match &mut self.output {
+                Output::Terminal => {
+                    use std::io::Write;
+                    let mut o = std::io::stdout().lock();
+                    if let Err(e) = o.write_all(line.as_bytes()).and_then(|_| o.flush()) {
+                        if e.kind() == std::io::ErrorKind::BrokenPipe {
+                            std::process::exit(0);
+                        }
+                    }
+                }
+                Output::Buffer(b) => b.push_str(&line),
+                Output::Discard => {}
+            }
+            return Ok(Unit);
+        }
         let mut a = args.into_iter();
         let mut nx = || a.next().unwrap_or(Unit);
         Ok(match name {
@@ -1487,14 +1611,16 @@ impl<'a> Interp<'a> {
                         Stmt::Comment(_) => {}
                         Stmt::Assert(x) => {
                             if self.eval(x, &sc)? != Value::Bool(true) {
-                                let detail = match x {
-                                    Expr::Bin(op, l, r) => format!(
-                                        " (left = {}, right = {})",
-                                        to_json(&self.eval(l, &sc)?),
-                                        to_json(&self.eval(r, &sc)?)
-                                    )
-                                    .replace("left", &format!("left of {}", op.symbol())),
-                                    _ => String::new(),
+                                // the sides are evaluated again for the message: don't print twice
+                                let output = std::mem::replace(&mut self.output, Output::Discard);
+                                let sides = match x {
+                                    Expr::Bin(op, l, r) => self.eval(l, &sc).and_then(|lv| Ok((op, lv, self.eval(r, &sc)?))).ok(),
+                                    _ => None,
+                                };
+                                self.output = output;
+                                let detail = match sides {
+                                    Some((op, lv, rv)) => format!(" (left of {} = {}, right = {})", op.symbol(), to_json(&lv), to_json(&rv)),
+                                    None => String::new(),
                                 };
                                 return self.fail(FaultKind::Assert, format!("assertion failed: {}{detail}", crate::printer::expr(x, 0)));
                             }

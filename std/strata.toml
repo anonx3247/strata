@@ -1,0 +1,4 @@
+# The standard library. It is built into `strata`, so any program can
+# `use std.io.*` without declaring a dependency. Its modules are named
+# `std.io`, `std.fs`, ... wherever they are used.
+name = "std"

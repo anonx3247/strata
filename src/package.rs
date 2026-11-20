@@ -122,6 +122,19 @@ pub fn files(path: &Path) -> Result<Vec<(PathBuf, String)>, String> {
     Ok(files)
 }
 
+/// The program in a folder (or a single file): its files, parsed. The
+/// standard library's modules are named `std.io`, ..., also when `std/`
+/// itself is the package being worked on.
+pub fn program(path: &Path) -> Result<Program, String> {
+    let mut p = parse(files(path)?)?;
+    if path.join(FILE).is_file() && load(path).is_ok_and(|p| p.name == crate::stdlib::NAME) {
+        for d in &mut p.decls {
+            d.module = if d.module.is_empty() { crate::stdlib::NAME.to_string() } else { format!("{}.{}", crate::stdlib::NAME, d.module) };
+        }
+    }
+    Ok(p)
+}
+
 /// Parse a program's files, as `files` gives them.
 pub fn parse(files: Vec<(PathBuf, String)>) -> Result<Program, String> {
     match files.as_slice() {
