@@ -653,20 +653,61 @@ impl Parser {
         if self.eat_sym("!") {
             return Ok(Expr::Un(UnOp::Not, Box::new(self.unary()?)));
         }
+        if self.eat_kw("mut") {
+            return self.marked();
+        }
         self.postfix()
+    }
+
+    /// After `mut`: a place (`x`, `o.lines`), passed to a `mut` parameter
+    /// (`f(mut x)`), or a call on a place that changes it: `mut q.claim(2)`
+    /// marks the first call, and any calls after it are on its result
+    /// (`mut q.claim(2).len()` is `(mut q.claim(2)).len()`).
+    fn marked(&mut self) -> R<Expr> {
+        let mut place = Expr::Var(self.ident()?);
+        loop {
+            if (self.is_sym("(") || self.is_sym("[")) && !self.nl_before() {
+                return Err(self.err("only a variable or a field can be `mut`: name the value first (`let mut x = …`)"));
+            }
+            if !self.is_sym(".") {
+                return Ok(Expr::Mut(Box::new(place)));
+            }
+            if let Tok::Int(n) = self.peek_at(1).clone() {
+                self.next();
+                self.next();
+                place = Expr::Field(Box::new(place), n.to_string());
+                continue;
+            }
+            let Tok::Ident(name) = self.peek_at(1).clone() else { return Err(self.err("expected a field or method name")) };
+            if matches!(self.peek_at(2), Tok::Sym("(")) && !self.toks[self.pos + 2].nl_before {
+                self.next();
+                self.next();
+                self.next();
+                let call = Expr::Method(Box::new(place), name, self.args()?);
+                return self.postfix_from(Expr::Mut(Box::new(call)));
+            }
+            self.next();
+            self.next();
+            place = Expr::Field(Box::new(place), name);
+        }
     }
 
     fn args(&mut self) -> R<Vec<Expr>> {
         let old = self.no_struct;
         self.no_struct = false;
-        // `f(mut x)`: the call may change `x` (its parameter is `mut`)
-        let r = self.list(")", |p| if p.eat_kw("mut") { Ok(Expr::Mut(Box::new(p.expr()?))) } else { p.expr() });
+        // `f(mut x)`: the call may change `x` (its parameter is `mut`); see `marked`
+        let r = self.list(")", |p| p.expr());
         self.no_struct = old;
         r
     }
 
     fn postfix(&mut self) -> R<Expr> {
-        let mut e = self.primary()?;
+        let e = self.primary()?;
+        self.postfix_from(e)
+    }
+
+    /// Calls, fields, indexes, `!`, `?` and `except` after `e`.
+    fn postfix_from(&mut self, mut e: Expr) -> R<Expr> {
         loop {
             if self.is_sym("(") && !self.nl_before() {
                 self.next();

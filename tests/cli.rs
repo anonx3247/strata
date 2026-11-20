@@ -883,14 +883,18 @@ fn procedural_mutation_is_explicit() {
     std::fs::write(
         d.join("c.strata"),
         "type Line = { qty: Int }\n\
-         trait Counter { fn tick(mut self) -> () }\n\
-         impl Counter for Line { fn tick(mut self) -> () { self.qty = self.qty + 1 } }\n\
+         trait Counter { fn tick(mut self) -> ()  fn peek(self) -> Int }\n\
+         impl Counter for Line { fn tick(mut self) -> () { self.qty = self.qty + 1 }  fn peek(self) -> Int { self.qty } }\n\
          fn restock(mut line: Line, extra: Int) -> () { line.qty = line.qty + extra }\n\
          fn qty(line: Line) -> Int { line.qty }\n\
          fn unmarked() -> Int {\n  let mut l = Line { qty: 1 }\n  restock(l, 2)\n  l.qty\n}\n\
          fn needless() -> Int {\n  let mut l = Line { qty: 1 }\n  qty(mut l)\n}\n\
          fn builtin() -> Int {\n  let mut xs = [1]\n  len(mut xs)\n}\n\
-         fn receiver() -> Int {\n  let mut l = Line { qty: 1 }\n  l.tick()\n  restock(mut l, 1)\n  l.qty\n}\n",
+         fn receiver() -> Int {\n  let mut l = Line { qty: 1 }\n  mut l.tick()\n  restock(mut l, 1)\n  l.qty\n}\n\
+         fn unmarked_receiver() -> () {\n  let mut l = Line { qty: 1 }\n  l.tick()\n}\n\
+         fn needless_receiver() -> Int {\n  let mut l = Line { qty: 1 }\n  mut l.peek()\n}\n\
+         fn stray() -> Int {\n  let mut n = 1\n  let m = mut n\n  m\n}\n\
+         fn first(ls: List[Line]) -> Line { Line { qty: 1 } }\n",
     )
     .unwrap();
     let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
@@ -899,6 +903,14 @@ fn procedural_mutation_is_explicit() {
     assert!(out.contains("in needless: `mut` on an argument of `qty`, but its parameter `line` is not `mut`"), "{out}");
     assert!(out.contains("in builtin:"), "{out}");
     assert!(!out.contains("in receiver"), "{out}");
+    // a method that changes its receiver is marked too: `mut l.tick()`
+    assert!(out.contains("in unmarked_receiver: `tick` changes its receiver (`mut self`): write `mut l.tick(…)`"), "{out}");
+    assert!(out.contains("in needless_receiver: `mut l.peek(…)`: `peek` doesn't change its receiver"), "{out}");
+    assert!(out.contains("in stray: `mut n` marks an argument"), "{out}");
+    // results are not places: name them first
+    std::fs::write(d.join("r.strata"), "fn f(xs: List[Int]) -> () {\n  mut first(xs).tick()\n}\n").unwrap();
+    let (ok, out) = strata(&["--file", "r.strata", "check"], &d, None);
+    assert!(!ok && out.contains("only a variable or a field can be `mut`"), "{out}");
     let (ok, out) = strata(&["--file", "c.strata", "render"], &d, None);
     assert!(ok && out.contains("restock(mut l, 1)"), "{out}");
 }
@@ -2038,10 +2050,10 @@ use std.fs.{Files, FsError}
 use std.process.{Environment, ExitCode}
 
 fn main(mut console: Console, mut files: Files, env: Environment) -> Result[ExitCode, FsError] {
-  files.write("out/x.txt", "a")!
-  files.append("out/x.txt", "b")!
-  console.eprint(files.read("out/x.txt")!)
-  console.write(env.var("STRATA_TEST_VAR") except { "unset" })
+  mut files.write("out/x.txt", "a")!
+  mut files.append("out/x.txt", "b")!
+  mut console.eprint(files.read("out/x.txt")!)
+  mut console.write(env.var("STRATA_TEST_VAR") except { "unset" })
   Ok(len(files.list("out")!) + 6)
 }
 "#,
@@ -2064,7 +2076,7 @@ fn main(mut console: Console, mut files: Files, env: Environment) -> Result[Exit
     assert!(code != 0 && err.contains("can ask for `Console`"), "{err}");
 
     // verify never reaches the real system: capabilities are mocks there
-    std::fs::write(d.join("greet.strata"), "use std.io.Console\n\nfn greet(mut c: Console, n: Int) -> () {\n  c.print(f\"MARKER {n}\")\n}\n").unwrap();
+    std::fs::write(d.join("greet.strata"), "use std.io.Console\n\nfn greet(mut c: Console, n: Int) -> () {\n  mut c.print(f\"MARKER {n}\")\n}\n").unwrap();
     let (_, out, err) = strata_code(&["--file", "greet.strata", "verify", "--cases", "20"], &d, "");
     assert!(!out.contains("MARKER") && !err.contains("MARKER"), "{out}{err}");
     let (ok, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "check"], &d, None);
@@ -2884,7 +2896,7 @@ fn double(n: Int) -> Int {
 fn main(mut console: Console) -> () {
   print("plain")
   print([1, 2])
-  console.print("console")
+  mut console.print("console")
   print(double(21))
 }
 
@@ -2999,22 +3011,22 @@ fn method_names_follow_the_receiver_across_modules_and_builtins() {
 use std.fs.{Files, NotFound, mem_files}
 
 fn save(mut console: Console, mut files: Files) -> () {
-  files.write("a.txt", "hi") except { () }
-  console.write("saved ")
-  console.print(files.read("a.txt") except { "?" })
-  files.remove("a.txt") except { () }
-  console.print(f"{files.exists("a.txt")}")
+  mut files.write("a.txt", "hi") except { () }
+  mut console.write("saved ")
+  mut console.print(files.read("a.txt") except { "?" })
+  mut files.remove("a.txt") except { () }
+  mut console.print(f"{files.exists("a.txt")}")
 }
 
 fn shout[C: Console](mut c: C, s: String) -> () {
-  c.write(to_upper(s))
-  c.print("!")
+  mut c.write(to_upper(s))
+  mut c.print("!")
 }
 
 fn main(mut console: Console, mut files: Files) -> () {
-  files.write("x.txt", "disk") except { () }
+  mut files.write("x.txt", "disk") except { () }
   shout(mut console, files.read("x.txt") except { "?" })
-  files.remove("x.txt") except { () }
+  mut files.remove("x.txt") except { () }
 }
 
 test "each call means its receiver's method" {

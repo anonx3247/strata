@@ -143,7 +143,7 @@ fn prec(e: &Expr) -> u8 {
         Expr::Lambda(..) | Expr::Return(..) | Expr::Range(..) => 0,
         Expr::Except(..) if coalesce(e) => 4,
         Expr::Except(..) => 7,
-        Expr::Un(..) => 7,
+        Expr::Un(..) | Expr::Mut(..) => 7,
         _ => 8,
     }
 }
@@ -160,7 +160,14 @@ fn wrap(e: &Expr, min: u8, d: usize) -> String {
 }
 
 fn args(es: &[Expr], d: usize) -> String {
-    es.iter().map(|e| expr(e, d)).collect::<Vec<_>>().join(", ")
+    es.iter()
+        .map(|e| match e {
+            // `f((mut q.pop()), x)`: the call changes `q`; `f(mut q)` would pass `q` to a `mut` parameter
+            Expr::Mut(x) if matches!(**x, Expr::Method(..)) => format!("({})", expr(e, d)),
+            _ => expr(e, d),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub fn float(f: f64) -> String {

@@ -30,7 +30,7 @@ fn ship(mut db: Db, id: OrderId, tracking: NonEmptyString) -> Result[Order, Ship
   match order {
     Pending { id, lines } => {
       let o = Shipped { id, lines, tracking }
-      db.save(o)
+      mut db.save(o)
       Ok(o)
     }
     _ => Err(NotPending),
@@ -166,7 +166,7 @@ let tea = Item.new("tea").priced(42)
 - a known type: its own method if it has one (`impl Item { fn describe(self) … }`), else the one trait of the type that declares the name;
 - otherwise it is a compile error: a type implementing two traits that both have `describe`, with no `describe` of its own; a value known only as `Describe | Log` or `T: Describe + Log`. In the last two cases a type's own `describe` doesn't help: it says what `describe` means on an `Item`, not which trait's meaning the call wants.
 
-This holds whichever modules the traits come from: with `Console` (`std.io`) and `Files` (`std.fs`) both imported, `console.write(s)` and `files.write(path, s)` each mean their own trait's `write`. A method named like a builtin (`Files.remove`) doesn't hide the builtin: on a value whose type has no trait declaring the name (a dict, a list, a string…), `d.remove(k)` and `remove(d, k)` are the builtin's.
+This holds whichever modules the traits come from: with `Console` (`std.io`) and `Files` (`std.fs`) both imported, `mut console.write(s)` and `mut files.write(path, s)` each mean their own trait's `write`. A method named like a builtin (`Files.remove`) doesn't hide the builtin: on a value whose type has no trait declaring the name (a dict, a list, a string…), `d.remove(k)` and `remove(d, k)` are the builtin's.
 
 `strata` decides this when checking and writes the decision into the program it runs, so the same call always runs the same implementation. A name that depends on the receiver can't be passed as a bare function value (`map(describe)`): pass a lambda (`x -> x.describe()`).
 
@@ -227,7 +227,9 @@ let best = scores
 
  Variables are immutable unless declared `let mut`. `while` and `for` loops are available, and fields can be assigned (`line.qty = …`). Mutation is always *visible*:
 - a function that changes an argument declares it `mut`, and the caller passes a mutable variable marked `mut` at the call (`restock(mut line, 5)`), which is updated when the call returns. The marker is required there, and an error anywhere else;
-- a method that changes its receiver takes `mut self`.
+- a method that changes its receiver takes `mut self`, and the call is marked the same way: `mut queue.claim(2)` (as Hylo writes `&x.append(1)`). The mark is required for such a method, and an error on any other. It marks the first call on the place after it: `mut queue.claim(2).len()` changes `queue` through `claim`, and is written `(mut queue.claim(2)).len()`. As an argument, the marked call is put in parentheses, `f((mut queue.pop()), x)`, to tell it from `f(mut queue)`, which passes `queue` to a `mut` parameter.
+
+Only a variable declared `let mut`, a `mut` parameter, or a field of one can be changed: passed `mut`, or marked as a receiver. A call's result is a value, not a place, and the changes would have nowhere to go: `mut first(xs).tick()` is an error. Name it first (`let mut x = first(xs)`).
 
 There are no shared references, so nothing changes behind your back. A declared type holds for the variable's whole life: every assignment is checked against it (`line.qty = 120` fails if `qty` is a `Quantity`; `x = -1` fails if `x` was declared `let mut x: Positive`), at compile time for literals and at runtime otherwise, and so is the value a `mut` argument writes back. Passing a `Positive` variable to a `mut k: Int` parameter is a compile error, since the function could store any `Int` in it. Closures cannot change outer variables.
 

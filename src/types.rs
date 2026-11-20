@@ -5,7 +5,7 @@
 use crate::ast::*;
 use crate::parser::Parser;
 use serde::Serialize;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 mod env;
 mod exhaustive;
@@ -383,6 +383,12 @@ pub fn elaborate(prog: &Program) -> crate::resolve::Resolution {
     r
 }
 
+/// `f(mut x)`: an argument marked for a `mut` parameter (not `mut q.claim()`,
+/// a call marked as changing its receiver, which is passed as a value).
+fn marks_arg(a: &Expr) -> bool {
+    matches!(a, Expr::Mut(x) if !matches!(**x, Expr::Method(..)))
+}
+
 pub fn subst_texpr(t: &TypeExpr, sub: &HashMap<String, TypeExpr>) -> TypeExpr {
     match t {
         TypeExpr::Named(n, args) if args.is_empty() && sub.contains_key(n) => sub[n].clone(),
@@ -439,6 +445,8 @@ struct Checker<'a> {
     /// Set just before typing a call's callee, so a function needing type
     /// arguments can tell a call from its use as a value.
     callee: bool,
+    /// Method calls marked `mut` (`mut q.claim(2)`), by node: they change their receiver.
+    marked: HashSet<usize>,
 }
 
 impl<'a> Checker<'a> {
@@ -1029,7 +1037,7 @@ impl<'a> Checker<'a> {
     /// receiver's traits has the name and a builtin does, the call is the
     /// builtin's (`d.remove(k)` on a dict, with `Files.remove` in scope).
     /// The choice is recorded for `elaborate`. `None`: the call is as resolved.
-    fn by_receiver(&mut self, m: &str, all: &[&Expr], site: usize) -> Option<Ty> {
+    fn by_receiver(&mut self, m: &str, all: &[&Expr], site: usize, recv_marked: Option<bool>) -> Option<Ty> {
         if self.lookup(m).is_some() || self.env.fns.contains_key(m) || split_trait_call(m).is_some() || !self.env.is_method(m) {
             return None;
         }
@@ -1092,7 +1100,7 @@ impl<'a> Checker<'a> {
                 let t = t.clone();
                 let mq = self.env.traits[&t].methods.iter().find(|x| short(&x.decl.name) == sm).unwrap().decl.name.clone();
                 self.targets.push((site, Target::Other(t.clone(), mq.clone())));
-                self.check_mut_args(&mq, all, true);
+                self.check_mut_args(&mq, all, recv_marked);
                 let ft = self.trait_method(&mq, &t);
                 let muts = self.mut_mask(&mq);
                 Some(self.call_with(ft, all, &format!("call to `{sm}`"), &muts))
@@ -1470,7 +1478,7 @@ impl<'a> Checker<'a> {
             return r;
         }
         for (i, (p, a)) in ps.iter().zip(args).enumerate() {
-            let at = self.infer_with(a, Some(p));
+            let at = self.infer_arg(a, Some(p));
             if let Some(Some(pw)) = muts.get(i) {
                 // the callee may put any value of its parameter type into the caller's variable
                 if self.unify(p, &at).is_err() {
@@ -1500,6 +1508,15 @@ impl<'a> Checker<'a> {
         r
     }
 
+    /// A call's argument: `f(mut x)` is `x`, marked for a `mut` parameter
+    /// (`check_mut_args` says whether it may be).
+    fn infer_arg(&mut self, a: &Expr, expected: Option<&Ty>) -> Ty {
+        match a {
+            Expr::Mut(x) if marks_arg(a) => self.infer_with(x, expected),
+            _ => self.infer_with(a, expected),
+        }
+    }
+
     fn infer_with(&mut self, e: &Expr, expected: Option<&Ty>) -> Ty {
         // Bidirectional lite: lambdas take their parameter types from context.
         if let (Expr::Lambda(ps, body), Some(exp)) = (e, expected) {
@@ -1508,9 +1525,6 @@ impl<'a> Checker<'a> {
                     return self.lambda(ps, Some(pts), body);
                 }
             }
-        }
-        if let Expr::Mut(x) = e {
-            return self.infer_with(x, expected);
         }
         if let (Expr::Hole(h), Some(exp)) = (e, expected) {
             self.record_hole(h, exp.clone());
@@ -1725,13 +1739,13 @@ impl<'a> Checker<'a> {
                 let args: Vec<&Expr> = args.iter().collect();
                 let args = &args[..];
                 if let Expr::Var(n) = &**f {
-                    if let Some(t) = self.by_receiver(n, args, e as *const Expr as usize) {
+                    if let Some(t) = self.by_receiver(n, args, e as *const Expr as usize, None) {
                         return t;
                     }
                     if self.lookup(n).is_none() {
-                        self.check_mut_args(n, args, false);
+                        self.check_mut_args(n, args, None);
                     } else {
-                        for a in args.iter().filter(|a| matches!(a, Expr::Mut(_))) {
+                        for a in args.iter().filter(|a| marks_arg(a)) {
                             self.err(format!("`{}`: the closure `{n}` has no `mut` parameters", crate::printer::expr(a, 0)));
                         }
                     }
@@ -1762,11 +1776,14 @@ impl<'a> Checker<'a> {
             Expr::Method(recv, m, args) => {
                 // the program's own nodes, not copies: decisions are recorded by node
                 let all: Vec<&Expr> = std::iter::once(&**recv).chain(args.iter()).collect();
-                if let Some(t) = self.by_receiver(m, &all, e as *const Expr as usize) {
+                let marked = Some(self.marked.contains(&(e as *const Expr as usize)));
+                if let Some(t) = self.by_receiver(m, &all, e as *const Expr as usize, marked) {
                     return t;
                 }
                 if self.lookup(m).is_none() {
-                    self.check_mut_args(m, &all, true);
+                    self.check_mut_args(m, &all, marked);
+                } else if marked == Some(true) {
+                    self.err(format!("`mut` marks a call that changes its receiver, but `{m}` is a closure"));
                 }
                 if let Some(t) = self.overloaded(m, &all) {
                     return t;
@@ -2153,8 +2170,17 @@ impl<'a> Checker<'a> {
                 self.scopes.pop();
                 inner
             }
-            // only parsed as an argument; `check_mut_args` says whether it belongs there
-            Expr::Mut(x) => self.infer(x),
+            // `mut q.claim(2)`: the call changes `q` (`check_mut_args` says whether it may)
+            Expr::Mut(x) if matches!(**x, Expr::Method(..)) => {
+                self.marked.insert(&**x as *const Expr as usize);
+                self.infer_at(x, expected)
+            }
+            // `mut x` belongs only in an argument (`infer_arg` takes it off there)
+            Expr::Mut(x) => {
+                let shown = crate::printer::expr(x, 0);
+                self.err(format!("`mut {shown}` marks an argument passed to a `mut` parameter (`f(mut {shown})`) or a call that changes its receiver (`mut {shown}.m()`)"));
+                self.infer(x)
+            }
             Expr::Mock(t) => {
                 let ty = self.lower(t, &HashMap::new());
                 match self.resolve(&ty) {
@@ -2192,8 +2218,11 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Arguments passed to `mut` parameters are changed by the call.
-    fn check_mut_args(&mut self, callee: &str, args: &[&Expr], receiver: bool) {
+    /// Arguments passed to `mut` parameters are changed by the call, and say
+    /// so: `f(mut x)`. `recv` is set for a method call: whether it is marked
+    /// `mut` (`mut q.claim(2)`), which it must be when it changes its
+    /// receiver, and only then.
+    fn check_mut_args(&mut self, callee: &str, args: &[&Expr], recv: Option<bool>) {
         let params: Option<Vec<Param>> = self
             .env
             .fns
@@ -2202,24 +2231,33 @@ impl<'a> Checker<'a> {
             .or_else(|| self.env.method_params(callee));
         let Some(params) = params else {
             // a builtin or a closure: no parameter is `mut`
-            for a in args.iter().filter(|a| matches!(a, Expr::Mut(_))) {
+            for a in args.iter().filter(|a| marks_arg(a)) {
                 self.err(format!("`{}`: `{callee}` has no `mut` parameters", crate::printer::expr(a, 0)));
+            }
+            if recv == Some(true) {
+                self.err(format!("`mut` marks a call that changes its receiver, but `{callee}` doesn't change it"));
             }
             return;
         };
         for (i, (p, a)) in params.iter().zip(args).enumerate() {
-            // a method's receiver is the value it works on: `queue.claim(2)` needs no marker
-            let marked = matches!(a, Expr::Mut(_));
+            let receiver = i == 0 && recv.is_some();
+            let marked = if receiver { recv == Some(true) } else { marks_arg(a) };
             let place = match a {
-                Expr::Mut(x) => &**x,
+                Expr::Mut(x) if marks_arg(a) => &**x,
                 x => x,
             };
+            let shown = crate::printer::expr(place, 0);
             if p.mutable {
                 self.check_place(place, &format!("let `{callee}` change (its `mut {}` parameter)", p.name));
-                if !marked && !(receiver && i == 0) {
-                    let shown = crate::printer::expr(place, 0);
+                if !marked && receiver {
+                    let m = crate::names::short(callee);
+                    self.err(format!("`{m}` changes its receiver (`mut self`): write `mut {shown}.{m}(…)` to show that `{shown}` may change"));
+                } else if !marked {
                     self.err(format!("`{callee}` can change its `mut {}` parameter: write `mut {shown}` to show that `{shown}` may change", p.name));
                 }
+            } else if marked && receiver {
+                let m = crate::names::short(callee);
+                self.err(format!("`mut {shown}.{m}(…)`: `{m}` doesn't change its receiver (it doesn't take `mut self`)"));
             } else if marked {
                 self.err(format!("`mut` on an argument of `{callee}`, but its parameter `{}` is not `mut`", p.name));
             }
@@ -2247,7 +2285,7 @@ impl<'a> Checker<'a> {
         if cands.len() < 2 {
             return None;
         }
-        let arg_tys: Vec<Ty> = args.iter().map(|a| self.infer(a)).collect();
+        let arg_tys: Vec<Ty> = args.iter().map(|a| self.infer_arg(a, None)).collect();
         for Builtin { params: ps, sig, .. } in cands.iter().copied() {
             let snapshot = self.subst.clone();
             let ps: Vec<String> = ps.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
@@ -2786,6 +2824,7 @@ pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<String, TypeExpr>>
         last_inst: None,
         insts: Vec::new(),
         callee: false,
+        marked: HashSet::new(),
     };
     let vars: HashMap<String, Ty> = f.type_params.iter().map(|p| (p.clone(), c.fresh())).collect();
     let bounded: Vec<&Bound> = f.bounds.iter().collect();
@@ -2874,6 +2913,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
         last_inst: None,
         insts: Vec::new(),
         callee: false,
+        marked: HashSet::new(),
         };
         let mut obligations = Vec::new();
         match &d.kind {

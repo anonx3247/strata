@@ -52,7 +52,7 @@ impl Worker[PrintJob, Boom] for PrintWorker {
   ) -> List[TaskResult[PrintJob, Boom]] {
     let mut results = []
     for a in attempts {
-      self.console.print(
+      mut self.console.print(
         f"[attempt {a.attempt}] {a.task.payload.message}",
       )
       if a.attempt <= a.task.payload.fail_times {
