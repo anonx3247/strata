@@ -91,7 +91,7 @@ fn main(
   }
   let mut total = Counts { lines: 0, words: 0, chars: 0 }
   for path in opts.files {
-    let c = count(files.read_text(path)!)
+    let c = count(files.read(path)!)
     console.print(row(c, opts.only, path))
     total = add(total, c)
   }

@@ -1738,11 +1738,11 @@ use std.fs.{Files, FsError}
 use std.process.{Environment, ExitCode}
 
 fn main(mut console: Console, mut files: Files, env: Environment) -> Result[ExitCode, FsError] {
-  files.write_text("out/x.txt", "a")!
-  files.append_text("out/x.txt", "b")!
-  console.eprint(files.read_text("out/x.txt")!)
+  files.write("out/x.txt", "a")!
+  files.append("out/x.txt", "b")!
+  console.eprint(files.read("out/x.txt")!)
   console.write(env.var("STRATA_TEST_VAR") except { "unset" })
-  Ok(len(files.list_dir("out")!) + 6)
+  Ok(len(files.list("out")!) + 6)
 }
 "#,
     )
@@ -2479,4 +2479,58 @@ fn main(opts: Options) -> () {
     // field docs round-trip
     let (_, r1) = strata(&["--file", "tool", "render", "main"], &d, None);
     assert!(r1.contains("  /// How many copies.\n  copies: Positive,"), "{r1}");
+}
+
+#[test]
+fn method_names_follow_the_receiver_across_modules_and_builtins() {
+    let d = tmp("names");
+    // `Console.write` / `Files.write` from two modules, `Files.remove` / the builtin `remove`
+    std::fs::write(
+        d.join("main.strata"),
+        r#"use std.io.{Console, recorder, printed}
+use std.fs.{Files, NotFound, mem_files}
+
+fn save(mut console: Console, mut files: Files) -> () {
+  files.write("a.txt", "hi") except { () }
+  console.write("saved ")
+  console.print(files.read("a.txt") except { "?" })
+  files.remove("a.txt") except { () }
+  console.print(f"{files.exists("a.txt")}")
+}
+
+fn shout[C: Console](mut c: C, s: String) -> () {
+  c.write(to_upper(s))
+  c.print("!")
+}
+
+fn main(mut console: Console, mut files: Files) -> () {
+  files.write("x.txt", "disk") except { () }
+  shout(mut console, files.read("x.txt") except { "?" })
+  files.remove("x.txt") except { () }
+}
+
+test "each call means its receiver's method" {
+  let mut c = recorder([])
+  let mut f = mem_files([("b.txt", "x")])
+  save(mut c, mut f)
+  assert printed(c) == ["saved hi", "false"]
+  shout(mut c, "yo")
+  assert printed(c) == ["saved hi", "false", "YO!"]
+  let dict_ = dict([("k", 1), ("j", 2)])
+  assert keys(dict_.remove("k")) == ["j"]
+  assert keys(remove(dict_, "j")) == ["k"]
+  assert to_list(set([1, 2]).remove(1)) == [2]
+  assert f.list("nope") == Err(NotFound { path: "nope" })
+}
+"#,
+    )
+    .unwrap();
+    let (ok, out) = strata(&["--file", "main.strata", "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    let (code, out, err) = strata_code(&["run", "main.strata"], &d, "");
+    assert_eq!((code, out.as_str()), (0, "DISK!\n"), "{err}");
+    assert!(!d.join("x.txt").exists());
+    // verify picks a stand-in for `C: Console`, never the real terminal
+    let (_, out, err) = strata_code(&["--file", "main.strata", "verify", "--cases", "20"], &d, "");
+    assert!(!out.contains("needs the real system") && !out.contains("YO") && !err.contains("needs the real system"), "{out}{err}");
 }

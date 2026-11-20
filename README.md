@@ -264,6 +264,8 @@ let tea = Item.new("tea").priced(42)
 - a known type: its own method if it has one (`impl Item { fn describe(self) … }`), else the one trait of the type that declares the name;
 - otherwise it is a compile error: a type implementing two traits that both have `describe`, with no `describe` of its own; a value known only as `Describe | Log` or `T: Describe + Log`. In the last two cases a type's own `describe` doesn't help: it says what `describe` means on an `Item`, not which trait's meaning the call wants.
 
+This holds whichever modules the traits come from: with `Console` (`std.io`) and `Files` (`std.fs`) both imported, `console.write(s)` and `files.write(path, s)` each mean their own trait's `write`. A method named like a builtin (`Files.remove`) doesn't hide the builtin: on a value whose type has no trait declaring the name (a dict, a list, a string…), `d.remove(k)` and `remove(d, k)` are the builtin's.
+
 `strata` decides this when checking and writes the decision into the program it runs, so the same call always runs the same implementation. A name that depends on the receiver can't be passed as a bare function value (`map(describe)`): pass a lambda (`x -> x.describe()`).
 
 **Trait methods without `self`** are called on a type, never on a value: `Money.empty()`, `T.empty()` in a generic function, `Self.empty()` in a trait's default methods and laws. They are constructors and the like (`fn empty() -> Self`, `fn parse(s: String) -> Result[Self, ParseError]`), so the signature must mention `Self`: one that doesn't couldn't pick an implementation, and should be a plain function.
@@ -415,7 +417,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 | Module | What it has |
 |---|---|
 | `std.io` | `Console` (`print`, `write`, `eprint`, `read_line`); `Recorder` / `recorder(input)` / `printed(r)` for tests |
-| `std.fs` | `Files` (`read_text`, `write_text`, `append_text`, `exists`, `list_dir`, `make_dir`, `remove_file`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
+| `std.fs` | `Files` (`read`, `write`, `append`, `exists`, `list`, `make_dir`, `remove`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
 | `std.process` | `Environment` (`args`, `var`), `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
 | `std.cli` | `CommandLine`: a record of options read from the arguments |
 

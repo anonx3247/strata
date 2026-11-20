@@ -16,19 +16,19 @@ pub type FsError =
 /// Reading and writing files: the disk, or a stand-in for it.
 pub trait Files {
   /// The whole file as text (UTF-8).
-  fn read_text(self, path: String) -> Result[String, FsError]
+  fn read(self, path: String) -> Result[String, FsError]
   /// Replace the file's contents with `text`, creating the file if needed.
-  fn write_text(mut self, path: String, text: String) -> Result[(), FsError]
+  fn write(mut self, path: String, text: String) -> Result[(), FsError]
   /// Add `text` at the end of the file, creating the file if needed.
-  fn append_text(mut self, path: String, text: String) -> Result[(), FsError]
+  fn append(mut self, path: String, text: String) -> Result[(), FsError]
   /// Whether a file or folder exists at `path`.
   fn exists(self, path: String) -> Bool
   /// The names of the entries of a folder, sorted.
-  fn list_dir(self, path: String) -> Result[List[String], FsError]
+  fn list(self, path: String) -> Result[List[String], FsError]
   /// Create a folder and any missing parents.
   fn make_dir(mut self, path: String) -> Result[(), FsError]
   /// Remove a file, or an empty folder.
-  fn remove_file(mut self, path: String) -> Result[(), FsError]
+  fn remove(mut self, path: String) -> Result[(), FsError]
 }
 
 /// The error for a host failure: its kind and message, as the runtime gives
@@ -48,21 +48,21 @@ fn fs_error(path: String, failure: (String, String)) -> FsError {
 type Disk = { root: String }
 
 impl Files for Disk {
-  fn read_text(self, path: String) -> Result[String, FsError] {
+  fn read(self, path: String) -> Result[String, FsError] {
     match host_read_file(path) {
       Ok(text) => Ok(text),
       Err(e) => Err(fs_error(path, e)),
     }
   }
 
-  fn write_text(mut self, path: String, text: String) -> Result[(), FsError] {
+  fn write(mut self, path: String, text: String) -> Result[(), FsError] {
     match host_write_file(path, text, false) {
       Ok(_) => Ok(()),
       Err(e) => Err(fs_error(path, e)),
     }
   }
 
-  fn append_text(mut self, path: String, text: String) -> Result[(), FsError] {
+  fn append(mut self, path: String, text: String) -> Result[(), FsError] {
     match host_write_file(path, text, true) {
       Ok(_) => Ok(()),
       Err(e) => Err(fs_error(path, e)),
@@ -73,7 +73,7 @@ impl Files for Disk {
     host_exists(path)
   }
 
-  fn list_dir(self, path: String) -> Result[List[String], FsError] {
+  fn list(self, path: String) -> Result[List[String], FsError] {
     match host_list_dir(path) {
       Ok(names) => Ok(names),
       Err(e) => Err(fs_error(path, e)),
@@ -87,7 +87,7 @@ impl Files for Disk {
     }
   }
 
-  fn remove_file(mut self, path: String) -> Result[(), FsError] {
+  fn remove(mut self, path: String) -> Result[(), FsError] {
     match host_remove(path) {
       Ok(_) => Ok(()),
       Err(e) => Err(fs_error(path, e)),
@@ -105,19 +105,19 @@ pub fn mem_files(files: List[(String, String)]) -> MemFiles {
 }
 
 impl Files for MemFiles {
-  fn read_text(self, path: String) -> Result[String, FsError] {
+  fn read(self, path: String) -> Result[String, FsError] {
     match get(self.files, path) {
       Some(text) => Ok(text),
       None => Err(NotFound { path }),
     }
   }
 
-  fn write_text(mut self, path: String, text: String) -> Result[(), FsError] {
+  fn write(mut self, path: String, text: String) -> Result[(), FsError] {
     self.files = insert(self.files, path, text)
     Ok(())
   }
 
-  fn append_text(mut self, path: String, text: String) -> Result[(), FsError] {
+  fn append(mut self, path: String, text: String) -> Result[(), FsError] {
     let before = get(self.files, path) except { "" }
     self.files = insert(self.files, path, before + text)
     Ok(())
@@ -128,7 +128,7 @@ impl Files for MemFiles {
       || keys(self.files).any(p -> starts_with(p, path + "/"))
   }
 
-  fn list_dir(self, path: String) -> Result[List[String], FsError] {
+  fn list(self, path: String) -> Result[List[String], FsError] {
     let prefix = path + "/"
     let names = keys(self.files)
       .filter(p -> starts_with(p, prefix))
@@ -144,7 +144,7 @@ impl Files for MemFiles {
     Ok(())
   }
 
-  fn remove_file(mut self, path: String) -> Result[(), FsError] {
+  fn remove(mut self, path: String) -> Result[(), FsError] {
     if contains(self.files, path) {
       self.files = remove(self.files, path)
       Ok(())
