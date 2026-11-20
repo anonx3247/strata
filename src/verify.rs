@@ -238,7 +238,11 @@ fn has_hole(e: &Expr) -> bool {
 /// running them, and fuzz the rest.
 /// `cross_check`: how many generated cases a proven function is still run on.
 /// A failure there means the prover itself is wrong, and is reported as such.
-pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&str>, transparent: &std::collections::HashMap<String, bool>, cases: usize, cross_check: usize, seed: u64) -> Verdict {
+pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&crate::smt::Solver>, transparent: &std::collections::HashMap<String, bool>, cases: usize, cross_check: usize, seed: u64) -> Verdict {
+    // the real terminal, disk and process: trusted, never run here (only `strata run` reaches the system)
+    if imp.is_some_and(|i| crate::stdlib::HOST_TYPES.contains(&crate::types::texpr_head(&i.for_type).as_str())) {
+        return Verdict::Skipped { reason: "assumed: it talks to the real system, which only `strata run` reaches".into() };
+    }
     let (decl, method) = match imp {
         None => (f.clone(), false),
         Some(imp) => {
