@@ -5,7 +5,9 @@ Everything that keeps track of where Strata is going: open questions, ideas, wha
 ## Open questions (to discuss before building)
 
 - **Marking a `mut self` call** (user, 2026-11-20; open). A `mut` argument is marked at the call (`restock(mut line, 5)`), but a method that changes its receiver isn't (`queue.claim(2)`), so the call site doesn't show that `queue` changes. Options:
-  - **`mut queue.claim(2)`** (recommended; Hylo writes `&x.append(1)` the same way). `mut` before a method call marks the call's receiver: the longest place (`x`, `o.lines`) right after `mut`, and the first call on it. `mut o.queue.claim(2).len()` changes `o.queue` through `claim`. It reads like `mut x` as an argument (the same place, passed as the `mut self` parameter). It is ambiguous only to a reader, never to the tree: the AST would hold the mark on the call itself (a flag on `Method`), and the renderer decides how it looks, so it could even be shown another way (a colour in the viewer).
+  - **`mut queue.claim(2)`** (recommended; Hylo writes `&x.append(1)` the same way). `mut` before a method call marks the call's receiver: the longest place (`x`, `o.lines`) right after `mut`, and the first call on it. `mut o.queue.claim(2).len()` changes `o.queue` through `claim`. The mark is stored on the call (a flag on `Method`). Text still has to parse unambiguously, since edits arrive as text and are parsed into the tree.
+  - The ambiguous spot (user, 2026-11-20): `call(mut o.call(), x, y)` could mean "`o.call()` changes `o`, and its result is passed" or "the result of `o.call()` is passed to a `mut` parameter of `call`". The user's resolution: write the first as `call((mut o.call()), x, y)`, and have the renderer add those parentheses in argument position.
+  - Results are not places (user's point, agreed): only a `let mut` variable or a `mut` parameter (or a field of one) can be passed to a `mut` parameter or changed by a `mut self` method. A call's result isn't declared mutable and has nowhere to write back, so the changes would be lost silently. Name it first: `let mut t = o.call()` then `call(mut t, x, y)`. With that rule the second reading above is always an error, so `call(mut o.call(), x, y)` parses as the receiver mark; the parentheses are still the canonical rendering, for the reader.
   - `(mut queue).claim(2)`: no ambiguity, but noisy, and it looks like a value being made mutable.
   - `claim(mut queue, 2)` / `Queue.claim(mut queue, 2)`: the receiver as an ordinary `mut` argument. Exact, but it loses method syntax for exactly the calls that are most common in procedural code.
   - a different call operator (`queue.claim!(2)`, `queue->claim(2)`, `queue:claim(2)`): short, but `!` is error propagation, `->` is lambdas and `:` types, and an operator is easier to miss than a word.
@@ -47,7 +49,8 @@ Everything that keeps track of where Strata is going: open questions, ideas, wha
 Built on the binary-format branch (format version 3: `Expr::Range`, `Expr::Slice`, `Expr::Comp`); see docs/language.md. Decided along the way:
 
 - `a..b` excludes `b`, `a..=b` includes it; a range is an eager `List[Int]` (iterators remain their own feature). Both ends are required, except in a slice.
-- Slicing uses ranges, not Python's `:` (one syntax for both): `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..=b]`, on lists and strings, clamped as `slice` was. No negative indices: in a range `-3..0` already means the integers from -3, so `xs[..-1]` meaning "all but the last" would read two ways. `xs[i]` alone is an error that points to `get(xs, i)`.
+- Slicing uses ranges, not Python's `:` (one syntax for both): `xs[a..b]`, `xs[..b]`, `xs[a..]`, `xs[..=b]`, on lists and strings, clamped as `slice` was. No negative indices: in a range `-3..0` already means the integers from -3, so `xs[..-1]` meaning "all but the last" would read two ways.
+- `xs[i]` is the element, not an `Option`: `at(xs, i)` requires `0 <= i < len(xs)`, a runtime fault otherwise, and an obligation for `verify` like division by zero ("index in range"). `get(xs, i)` stays for the `Option`. Not yet: `d[k]` on dicts (the same, with "key present").
 - Comprehensions: `[e for p in xs where c for q in ys where d]`, with `where` as in refinements; patterns allowed (`for (a, b) in ps`).
 - The tree keeps them as written (they render back as written); `resolve` rewrites them into `range`, `slice`, `map`, `filter` and `fold` (`src/desugar.rs`), so the checker, interpreter, prover and LLVM never see them. Error messages show the builtin calls.
 
@@ -59,8 +62,8 @@ Still open:
 
 #### Other syntax nits (noticed 2026-11-20; not decided)
 
-- **Dict and set literals.** Today `dict([("a", 1)])` and `set([1, 2])`. `{"a": 1}` would clash with blocks; Swift's `["a": 1]` doesn't, and `[:]` is the empty dict. A set could stay `set([...])`.
-- **`except` inside a `for` header** reads badly: `for _ in 0..opts.times except { 1 } {`. The renderer could put such a range in parentheses, or name it first.
+- **Dict and set literals.** Today `dict([("a", 1)])` and `set([1, 2])`. The user doesn't like Swift's `["a": 1]`. Proposed: the constructor syntax records already use, with the type's name: `Dict { "a": 1, "b": 2 }`, `Set { 1, 2 }`, empty `Dict {}` (annotated where needed: `Dict[String, Int] {}`). A key is any expression, so it can't be mistaken for a record's field. Comprehensions follow: `Dict { w: len(w) for w in words }`, `Set { x % 3 for x in xs }`. Alternatives: Python's `{"a": 1}` (parseable, since a block never has `expr:` as a statement, but `{}` and `{x}` would each mean two things), or `dict(["a" => 1])`.
+- **`except` inside a `for` header** reads badly: `for _ in 0..opts.times except { 1 } {`. Proposed: the renderer parenthesizes any header expression (`for`, `while`, `if`, `match`) that ends in a `}`: `for _ in 0..(opts.times except { 1 }) {`. The parser accepts both. A shorter fallback form would also help: `opts.times or 1` / `opts.times ?? 1` for the common "value or default" case, keeping `except { … }` for blocks and named errors.
 - **`len(xs)` and `xs.len()`** are both accepted, as for every builtin; the renderer could pick one form (method form for chains, say) so code reads the same everywhere.
 
 #### Default values for record fields (2026-11-20)

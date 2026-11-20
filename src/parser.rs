@@ -678,7 +678,7 @@ impl Parser {
                 }
             } else if self.is_sym("[") && !self.nl_before() {
                 self.next();
-                e = Expr::Slice(Box::new(e), Box::new(self.slice_range()?));
+                e = Expr::Index(Box::new(e), Box::new(self.index()?));
             } else if self.is_sym("!") && !self.nl_before() {
                 self.next();
                 e = Expr::Try(Box::new(e), TryKind::Result);
@@ -701,8 +701,9 @@ impl Parser {
         Ok(e)
     }
 
-    /// What is inside `xs[...]`, past the `[`: `a..b`, `a..=b`, `a..`, `..b`, `..`.
-    fn slice_range(&mut self) -> R<Expr> {
+    /// What is inside `xs[...]`, past the `[`: an index `i`, or a range
+    /// `a..b`, `a..=b`, `a..`, `..b`, `..`.
+    fn index(&mut self) -> R<Expr> {
         let old = self.no_struct;
         self.no_struct = false;
         let lo = if self.is_sym("..") || self.is_sym("..=") { None } else { Some(Box::new(self.binary(0)?)) };
@@ -710,8 +711,12 @@ impl Parser {
             true
         } else if self.eat_sym("..") {
             false
+        } else if let Some(i) = lo {
+            self.expect_sym("]")?;
+            self.no_struct = old;
+            return Ok(*i);
         } else {
-            return Err(self.err("expected `..`: `xs[a..b]` is a slice; one element is `get(xs, i)`"));
+            unreachable!()
         };
         let hi = if self.is_sym("]") { None } else { Some(Box::new(self.binary(0)?)) };
         if inclusive && hi.is_none() {

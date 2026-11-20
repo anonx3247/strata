@@ -1006,7 +1006,7 @@ impl Rw<'_> {
                 let lo = lo.as_ref().map(|x| Box::new(self.expr(x)));
                 Expr::Range(lo, hi.as_ref().map(|x| Box::new(self.expr(x))), *inclusive)
             }
-            Expr::Slice(x, r) => Expr::Slice(Box::new(self.expr(x)), Box::new(self.expr(r))),
+            Expr::Index(x, r) => Expr::Index(Box::new(self.expr(x)), Box::new(self.expr(r))),
             Expr::Comp(elem, gens) => {
                 // each `for` binds its pattern for the conditions and `for`s after it, and the element
                 let mut out = Vec::new();

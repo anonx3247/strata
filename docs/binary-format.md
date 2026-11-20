@@ -152,7 +152,7 @@ Expr = 0  Int(int)                       1  BigInt(digits:str)       2  Float(fl
      | 25 Except(Expr, err:option(str), fallback:Expr)
      | 26 Interp(list(StrPart))
      | 27 Range(lo:option(Expr), hi:option(Expr), inclusive:bool)    a..b, a..=b
-     | 28 Slice(Expr, range:Expr)                                   xs[a..b]
+     | 28 Index(Expr, index:Expr)                                   xs[i], xs[a..b]
      | 29 Comp(elem:Expr, list(CompFor))                            [e for x in xs where c]
 
 CtorArgs = 0 None | 1 Positional(list(Expr)) | 2 Record(list((str, Expr)))

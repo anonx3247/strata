@@ -3243,8 +3243,12 @@ fn ranges_slices_and_comprehensions() {
     assert!(ok, "{out}");
     let (ok, out) = strata(&["--file", "sugar.stb", "render"], &d, None);
     assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
+    let (ok, out) = strata(&["--file", &src, "run", "first", "[[]]"], &d, None);
+    assert!(!ok && out.contains("does not satisfy"), "{out}");
+    std::fs::write(d.join("last.strata"), "fn last(xs: List[Int]) -> Int { xs[len(xs) - 1] }").unwrap();
+    let (ok, out) = strata(&["--file", "last.strata", "run", "last", "[[]]"], &d, None);
+    assert!(!ok && out.contains("index -1 out of range (length 0)"), "{out}");
     for (code, err) in [
-        ("fn f(xs: List[Int]) -> Option[Int] { xs[0] }", "one element is `get(xs, i)`"),
         ("fn f(xs: List[Int]) -> List[Int] { xs[1..=] }", "`..=` needs an end"),
     ] {
         std::fs::write(d.join("e.strata"), code).unwrap();

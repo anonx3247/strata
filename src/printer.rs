@@ -335,7 +335,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             let end = |x: &Option<Box<Expr>>| x.as_ref().map(|x| wrap(x, 1, d)).unwrap_or_default();
             format!("{}{}{}", end(lo), if *inclusive { "..=" } else { ".." }, end(hi))
         }
-        Expr::Slice(x, r) => format!("{}[{}]", wrap(x, 8, d), expr(r, d)),
+        Expr::Index(x, r) => format!("{}[{}]", wrap(x, 8, d), expr(r, d)),
         Expr::Comp(elem, gens) => {
             let mut s = format!("[{}", expr(elem, d));
             for g in gens {

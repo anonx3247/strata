@@ -3,6 +3,7 @@
 //! builtins, and nothing that checks, runs or verifies code sees them:
 //!
 //! - `a..b` is `range(a, b)`, `a..=b` is `range(a, b + 1)`;
+//! - `xs[i]` is `at(xs, i)`, which fails when `i` is out of range;
 //! - `xs[a..b]` is `slice(xs, a, b)`, with `0` for a missing start and
 //!   `len(xs)` for a missing end;
 //! - `[e for x in xs where c]` is `map(filter(xs, x -> c), x -> e)`, and each
@@ -30,13 +31,13 @@ impl VisitMut for Sugar {
     fn expr(&mut self, e: &mut Expr) {
         match e {
             // a slice's range stays a range until the slice is rewritten
-            Expr::Slice(xs, r) => {
+            Expr::Index(xs, r) if matches!(**r, Expr::Range(..)) => {
                 self.expr(xs);
                 walk_expr_mut(self, r)
             }
             _ => walk_expr_mut(self, e),
         }
-        if matches!(e, Expr::Range(..) | Expr::Slice(..) | Expr::Comp(..)) {
+        if matches!(e, Expr::Range(..) | Expr::Index(..) | Expr::Comp(..)) {
             let sugar = std::mem::replace(e, Expr::Unit);
             *e = self.rewrite(sugar);
         }
@@ -65,8 +66,9 @@ impl Sugar {
                 self.errors.push(Diag { decl: self.decl.clone(), msg });
                 Expr::Unit
             }
-            Expr::Slice(xs, r) => {
-                let Expr::Range(lo, hi, inclusive) = *r else { unreachable!("the parser makes a slice's index a range") };
+            Expr::Index(xs, i) if !matches!(*i, Expr::Range(..)) => call("at", vec![*xs, *i]),
+            Expr::Index(xs, r) => {
+                let Expr::Range(lo, hi, inclusive) = *r else { unreachable!() };
                 let lo = lo.map_or(Expr::Int(0), |x| *x);
                 match hi {
                     Some(hi) => call("slice", vec![*xs, lo, if inclusive { plus_one(*hi) } else { *hi }]),

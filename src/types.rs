@@ -163,6 +163,8 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin::total("find", "A", "(List[A], (A) -> Bool) -> Option[A]"),
     Builtin::total("count", "A", "(List[A], (A) -> Bool) -> Int"),
     Builtin::total("get", "A", "(List[A], Int) -> Option[A]"),
+    // `xs[i]`: fails unless `0 <= i < len(xs)`
+    Builtin::new("at", "A", "(List[A], Int) -> A"),
     Builtin::total("sum", "", "(List[Int]) -> Int"),
     Builtin::total("sum", "", "(List[Float]) -> Float"),
     Builtin::new("range", "", "(Int, Int) -> List[Int]"),
@@ -178,6 +180,7 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin::new("ends_with", "", "(String, String) -> Bool"),
     Builtin::new("chars", "", "(String) -> List[String]"),
     Builtin::total("get", "", "(String, Int) -> Option[String]"),
+    Builtin::new("at", "", "(String, Int) -> String"),
     Builtin::new("slice", "", "(String, Int, Int) -> String"),
     Builtin::new("slice", "A", "(List[A], Int, Int) -> List[A]"),
     Builtin::new("index_of", "", "(String, String) -> Option[Int]"),
@@ -1587,7 +1590,7 @@ impl<'a> Checker<'a> {
                 t
             }
             // rewritten into builtin calls when the program is resolved
-            Expr::Range(..) | Expr::Slice(..) | Expr::Comp(..) => {
+            Expr::Range(..) | Expr::Index(..) | Expr::Comp(..) => {
                 self.err("internal: a range, slice or comprehension was not desugared");
                 self.fresh()
             }

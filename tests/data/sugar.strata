@@ -22,10 +22,15 @@ fn total(n: Int) -> Int {
   (0..n).map(i -> i * 2).len() + t
 }
 
+fn first(xs: NonEmpty[Int]) -> Int {
+  xs[0]
+}
+
 test "sugar" {
   assert squares(5) == [1, 9, 25]
   assert pairs([1, -1, 2], ["a", "b"]) == [(1, "a"), (1, "b"), (2, "a"), (2, "b")]
   assert swapped([(1, "a")]) == [("a", 1)]
   assert ends(" hello", [1, 2, 3, 4]) == ("he", [3, 4], "he", [1, 2])
   assert total(4) == 10
+  assert first([7, 8]) == 7 && "abc"[2] == "c"
 }

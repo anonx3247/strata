@@ -397,9 +397,10 @@ pub enum Expr {
     /// `a..b` (`b` excluded), `a..=b` (`b` included): the integers between,
     /// as a `List[Int]`. An end may be left out only in a slice (`xs[2..]`).
     Range(Option<Box<Expr>>, Option<Box<Expr>>, bool),
-    /// `xs[a..b]`, `s[..3]`, `xs[2..]`: part of a list or string, clamped to
-    /// its length. The second expression is always a `Range`.
-    Slice(Box<Expr>, Box<Expr>),
+    /// `xs[i]`: one element of a list or string (`i` must be in range).
+    /// `xs[a..b]`, `s[..3]`, `xs[2..]`: part of it, clamped to its length
+    /// (the index is a `Range`, which may leave out its ends here).
+    Index(Box<Expr>, Box<Expr>),
     /// `[x * x for x in xs where x > 0]`, `[(a, b) for a in xs for b in ys]`:
     /// a list built from each element of one or more lists.
     Comp(Box<Expr>, Vec<CompFor>),
@@ -625,7 +626,7 @@ macro_rules! visitor {
                         v.expr(hi)
                     }
                 }
-                Expr::Slice(x, r) => {
+                Expr::Index(x, r) => {
                     v.expr(x);
                     v.expr(r)
                 }

@@ -1106,6 +1106,20 @@ impl<'a> Interp<'a> {
                 xs.push(x);
                 List(xs)
             }
+            "at" => {
+                let (xs, i) = (nx(), nx());
+                let n = match &xs {
+                    List(xs) => xs.len(),
+                    Str(s) => s.chars().count(),
+                    _ => return self.fail(FaultKind::Runtime, "bad args"),
+                };
+                let k = as_index(&i).filter(|k| *k >= 0 && (*k as usize) < n);
+                match (xs, k) {
+                    (List(xs), Some(k)) => xs[k as usize].clone(),
+                    (Str(s), Some(k)) => Str(s.chars().nth(k as usize).unwrap().to_string()),
+                    _ => return self.fail(FaultKind::Runtime, format!("index {} out of range (length {n})", show(&i))),
+                }
+            }
             "get" => {
                 let found = match (nx(), nx()) {
                     (List(xs), i @ (Int(_) | Big(_))) => as_index(&i).filter(|i| *i >= 0).and_then(|i| xs.get(i as usize).cloned()),
@@ -1354,7 +1368,7 @@ impl<'a> Interp<'a> {
             Expr::Bool(b) => Value::Bool(*b),
             Expr::Unit => Value::Unit,
             Expr::Hole(h) => return self.fail(FaultKind::Hole, format!("reached unfilled hole `?{h}`")),
-            Expr::Range(..) | Expr::Slice(..) | Expr::Comp(..) => return self.fail(FaultKind::Runtime, "internal: a range, slice or comprehension was not desugared"),
+            Expr::Range(..) | Expr::Index(..) | Expr::Comp(..) => return self.fail(FaultKind::Runtime, "internal: a range, slice or comprehension was not desugared"),
             Expr::Var(x) => match lookup(s, x) {
                 Some(v) => v,
                 // `Self.m()` in a trait's default method or law: the type it runs for

@@ -951,7 +951,7 @@ impl Bin for Expr {
             Expr::Except(x, err, fb) => put!(w, 25, x, err, fb),
             Expr::Interp(parts) => put!(w, 26, parts),
             Expr::Range(lo, hi, inclusive) => put!(w, 27, lo, hi, inclusive),
-            Expr::Slice(x, r) => put!(w, 28, x, r),
+            Expr::Index(x, r) => put!(w, 28, x, r),
             Expr::Comp(elem, gens) => put!(w, 29, elem, gens),
         }
     }
@@ -986,7 +986,7 @@ impl Bin for Expr {
                 25 => Expr::Except(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
                 26 => Expr::Interp(Bin::dec(r)?),
                 27 => Expr::Range(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
-                28 => Expr::Slice(Bin::dec(r)?, Bin::dec(r)?),
+                28 => Expr::Index(Bin::dec(r)?, Bin::dec(r)?),
                 _ => Expr::Comp(Bin::dec(r)?, Bin::dec(r)?),
             })
         })
