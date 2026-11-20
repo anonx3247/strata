@@ -52,21 +52,21 @@ pub fn static_refinements(prog: &Program, env: &Env) -> Vec<Diag> {
                 match e {
                     Expr::Call(f, args) => {
                         if let Expr::Var(n) = &**f {
-                            if let Some(fd) = env.fns.get(n) {
+                            if let Some(fd) = env.fns.get(&n.sym()) {
                                 for (p, a) in fd.params.iter().zip(args) {
                                     check(&mut it, &p.ty, a, format!("argument `{}` of `{n}`", p.name), &mut out);
                                 }
                             }
                         }
                     }
-                    Expr::Ctor(c, CtorArgs::Positional(xs)) if env.types.get(c).is_some_and(|t| t.distinct) && xs.len() == 1 && literal(&xs[0]) => {
+                    Expr::Ctor(c, CtorArgs::Positional(xs)) if env.types.get(&c.sym()).is_some_and(|t| t.distinct) && xs.len() == 1 && literal(&xs[0]) => {
                         // constructing the value runs its checks
                         if let Err(fault) = it.eval(e, &None) {
                             out.push(Diag { decl: d.name(), msg: format!("refinement violated at compile time: {}", fault.msg) });
                         }
                     }
                     Expr::Ctor(c, CtorArgs::Record(fs)) => {
-                        let tname = env.ctors.get(c).cloned().unwrap_or_default();
+                        let tname = env.ctors.get(&c.sym()).cloned().unwrap_or_default();
                         if let Some(vs) = env.variants_of(&tname, &[]) {
                             if let Some((_, Some(names), tys)) = vs.iter().find(|v| &v.0 == c) {
                                 for (fname, fe) in fs {
@@ -191,7 +191,7 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&c
         Some(imp) => {
             let mut d = for_impl(imp, f);
             // run through its trait: the name may be shared with another trait or the type's own method
-            d.name = crate::types::trait_call(&imp.trait_name, &f.name);
+            d.name = Symbol::from(crate::types::trait_call(&imp.trait_name, &f.name));
             static_type_arg(imp, f, &mut d);
             // the trait's contract binds every implementation
             if let Some(tm) = env.traits.get(&imp.trait_name).and_then(|t| t.methods.iter().find(|m| m.decl.name == f.name)) {
@@ -310,7 +310,7 @@ fn run_case(mut it: Interp, f: &FnDecl, args: Vec<crate::interp::Value>, method:
 /// Replace `Self` (and the impl's type parameters, at `Int`) in a method
 /// signature so its inputs can be generated.
 pub fn for_impl(imp: &ImplDecl, f: &FnDecl) -> FnDecl {
-    let mut sub: std::collections::HashMap<String, TypeExpr> =
+    let mut sub: std::collections::HashMap<Symbol, TypeExpr> =
         imp.type_params.iter().map(|p| (p.clone(), TypeExpr::Named("Int".into(), vec![]))).collect();
     let self_ty = crate::types::subst_texpr(&imp.for_type, &sub);
     sub.insert("Self".into(), self_ty);
@@ -329,7 +329,7 @@ pub fn fuzz_impl_method(env: &Env, imp: &ImplDecl, method: &str, cases: usize, s
         return Verdict::Skipped { reason: format!("no method `{method}`") };
     };
     let mut d = for_impl(imp, decl);
-    d.name = crate::types::trait_call(&imp.trait_name, method);
+    d.name = Symbol::from(crate::types::trait_call(&imp.trait_name, method));
     static_type_arg(imp, decl, &mut d);
     fuzz_call(env, &d, cases, seed, true)
 }
@@ -457,6 +457,6 @@ fn short_stack(stack: &[String]) -> String {
 fn static_type_arg(imp: &ImplDecl, f: &FnDecl, d: &mut FnDecl) {
     if !crate::resolve::takes_self(f) {
         let ty = TypeExpr::Named(crate::types::TYPE_ARG.into(), vec![imp.for_type.clone()]);
-        d.params.insert(0, Param { name: crate::types::type_arg("Self"), ty, mutable: false });
+        d.params.insert(0, Param { name: Symbol::from(crate::types::type_arg("Self")), ty, mutable: false });
     }
 }

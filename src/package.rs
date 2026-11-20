@@ -17,7 +17,7 @@
 //! no_recursion = ["core"]                # ... where no function may be recursive
 //! ```
 
-use crate::ast::Program;
+use crate::ast::{Program, Symbol};
 use std::path::{Path, PathBuf};
 
 pub const FILE: &str = "strata.toml";
@@ -151,7 +151,7 @@ pub fn program(path: &Path) -> Result<Program, String> {
     let mut p = parse(files(path)?)?;
     if path.join(FILE).is_file() && load(path).is_ok_and(|p| p.name == crate::stdlib::NAME) {
         for d in &mut p.decls {
-            d.module = if d.module.is_empty() { crate::stdlib::NAME.to_string() } else { format!("{}.{}", crate::stdlib::NAME, d.module) };
+            d.module = if d.module.is_empty() { Symbol::from(crate::stdlib::NAME.to_string()) } else { format!("{}.{}", crate::stdlib::NAME, d.module).into() };
         }
     }
     Ok(p)

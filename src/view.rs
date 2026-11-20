@@ -115,7 +115,7 @@ pub fn render(p: &Program, names: &BTreeSet<String>, level: u8, st: &Status) -> 
                 format!("{doc}{pubk}{body}")
             }
         };
-        out.push((d.module.clone(), text));
+        out.push((d.module.to_string(), text));
     }
     if level == 0 {
         return out.into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n") + "\n";

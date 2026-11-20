@@ -65,7 +65,7 @@ pub fn impl_label(env: &Env, imp: &ImplDecl, m: &str) -> String {
     let short = |q: &str| crate::names::short(q).to_string();
     let head = texpr_head(&imp.for_type);
     let base = format!("{}.{}", crate::printer::ty(&imp.for_type), short(m));
-    let own = env.inherent.get(&head).is_some_and(|i| i.methods.iter().any(|x| x.name == m));
+    let own = env.inherent.get(&head.sym()).is_some_and(|i| i.methods.iter().any(|x| x.name == m));
     if !imp.is_inherent() && (own || env.traits_with(m, &head).len() > 1) {
         format!("{base} ({})", short(&imp.trait_name))
     } else {
@@ -77,25 +77,25 @@ fn calls_of(e: &Expr, env: &Env, out: &mut BTreeSet<String>) {
     crate::ast::walk(e, |x| match x {
         Expr::Call(f, _) => {
             if let Expr::Var(n) = &**f {
-                if env.fns.contains_key(n) {
-                    out.insert(n.clone());
-                } else if env.is_method(n) {
+                if env.fns.contains_key(&n.sym()) {
+                    out.insert(n.to_string());
+                } else if env.is_method(n.sym()) {
                     out.insert(trait_node(n));
                 }
             }
         }
         Expr::Method(_, m, _) => {
-            if env.fns.contains_key(m) {
-                out.insert(m.clone());
-            } else if env.is_method(m) {
+            if env.fns.contains_key(&m.sym()) {
+                out.insert(m.to_string());
+            } else if env.is_method(m.sym()) {
                 out.insert(trait_node(m));
             }
         }
         // a function passed as a value may be called
-        Expr::Var(n) if env.fns.contains_key(n) => {
-            out.insert(n.clone());
+        Expr::Var(n) if env.fns.contains_key(&n.sym()) => {
+            out.insert(n.to_string());
         }
-        Expr::Var(n) if env.is_method(n) => {
+        Expr::Var(n) if env.is_method(n.sym()) => {
             out.insert(trait_node(n));
         }
         _ => {}
@@ -162,7 +162,7 @@ struct Structural<'a> {
 impl Structural<'_> {
     fn piece(&self, e: &Expr, vars: &HashMap<String, Piece>) -> Piece {
         match e {
-            Expr::Var(x) => vars.get(x).cloned().unwrap_or_default(),
+            Expr::Var(x) => vars.get(x.as_str()).cloned().unwrap_or_default(),
             Expr::Field(r, _) => {
                 let p = self.piece(r, vars);
                 Piece { smaller: p.within.clone(), within: p.within }
@@ -176,14 +176,14 @@ impl Structural<'_> {
     fn bind(&self, p: &Pattern, scrut: Option<&Expr>, whole: &Piece, depth: usize, vars: &mut HashMap<String, Piece>) {
         match p {
             Pattern::Bind(x) => {
-                let piece = if self.assigned.contains(x) {
+                let piece = if self.assigned.contains(x.as_str()) {
                     Piece::default()
                 } else if depth > 0 {
                     Piece { within: whole.within.clone(), smaller: whole.within.clone() }
                 } else {
                     whole.clone()
                 };
-                vars.insert(x.clone(), piece);
+                vars.insert(x.to_string(), piece);
             }
             Pattern::Tuple(ps) => match scrut {
                 Some(Expr::Tuple(es)) if es.len() == ps.len() && depth == 0 => {
@@ -278,7 +278,7 @@ impl Structural<'_> {
                     // a recursive call in a `where` pattern counts too
                     self.pattern_conds(&a.pat, vars);
                     if let Some(n) = name {
-                        v.insert(n.clone(), whole.clone());
+                        v.insert(n.to_string(), whole.clone());
                     }
                     self.bind(&a.pat, Some(s), &whole, 0, &mut v);
                     self.expr(&a.body, &v);
@@ -287,7 +287,7 @@ impl Structural<'_> {
             Expr::Lambda(ps, body) => {
                 let mut v = vars.clone();
                 for p in ps {
-                    v.remove(&p.name);
+                    v.remove(p.name.as_str());
                 }
                 self.expr(body, &v);
             }
@@ -302,7 +302,7 @@ impl Structural<'_> {
                         }
                         Stmt::Var(x, _, init) => {
                             self.expr(init, &v);
-                            v.remove(x);
+                            v.remove(x.as_str());
                         }
                         Stmt::For(p, xs, body) => {
                             self.expr(xs, &v);
@@ -339,7 +339,7 @@ impl Structural<'_> {
                         self.expr(x, vars);
                         let mut v = vars.clone();
                         if let Some(n) = name {
-                            v.remove(n);
+                            v.remove(n.as_str());
                         }
                         self.expr(fb, &v);
                     }
@@ -363,8 +363,8 @@ fn structural(env: &Env, f: &FnDecl) -> Option<String> {
     let assigned = assigned(env, &f.body);
     let mut vars = HashMap::new();
     for (i, p) in f.params.iter().enumerate() {
-        if !assigned.contains(&p.name) && !p.mutable {
-            vars.insert(p.name.clone(), Piece { within: [i].into(), smaller: BTreeSet::new() });
+        if !assigned.contains(p.name.as_str()) && !p.mutable {
+            vars.insert(p.name.to_string(), Piece { within: [i].into(), smaller: BTreeSet::new() });
         }
     }
     let mut s = Structural { name: &f.name, assigned, calls: vec![] };
@@ -376,7 +376,7 @@ fn structural(env: &Env, f: &FnDecl) -> Option<String> {
             Some(prev) => prev.intersection(&c).cloned().collect(),
         });
     }
-    common.and_then(|c| c.into_iter().next()).map(|i| f.params[i].name.clone())
+    common.and_then(|c| c.into_iter().next()).map(|i| f.params[i].name.to_string())
 }
 
 /// Candidate measures of a recursive function: integer expressions of its
@@ -386,8 +386,8 @@ fn structural(env: &Env, f: &FnDecl) -> Option<String> {
 /// between its two sides, both ways (`100 - n`, `hi - lo`).
 fn candidate_measures(env: &Env, f: &FnDecl) -> Vec<Expr> {
     let assigned = assigned(env, &f.body);
-    let params: HashSet<&str> = f.params.iter().filter(|p| !p.mutable && !assigned.contains(&p.name)).map(|p| p.name.as_str()).collect();
-    let var = |n: &str| Expr::Var(n.to_string());
+    let params: HashSet<&str> = f.params.iter().filter(|p| !p.mutable && !assigned.contains(p.name.as_str())).map(|p| p.name.as_str()).collect();
+    let var = |n: &str| Expr::Var(Symbol::from(n));
     let mut out: Vec<Expr> = vec![];
     for p in &f.params {
         if !params.contains(p.name.as_str()) {
@@ -403,7 +403,7 @@ fn candidate_measures(env: &Env, f: &FnDecl) -> Vec<Expr> {
     let only_params = |e: &Expr| {
         let mut ok = true;
         crate::ast::walk(e, |x| match x {
-            Expr::Var(n) => ok &= params.contains(n.as_str()) || env.fns.contains_key(n) || crate::types::BUILTINS.iter().any(|b| b.name == n),
+            Expr::Var(n) => ok &= params.contains(n.as_str()) || env.fns.contains_key(&n.sym()) || crate::types::BUILTINS.iter().any(|b| b.name == n),
             Expr::Lambda(..) | Expr::Hole(_) | Expr::Float(_) | Expr::Str(_) => ok = false,
             _ => {}
         });
@@ -496,18 +496,18 @@ fn cannot_fail(env: &Env, f: &FnDecl, total: &dyn Fn(&str) -> bool) -> bool {
         return false;
     }
     let mut ok = true;
-    let refined = |t: &str| env.types.get(t).is_some_and(|_| crate::smt::type_is_refined(env, &TypeExpr::Named(t.into(), vec![])));
+    let refined = |t: &str| env.types.get(&t.sym()).is_some_and(|_| crate::smt::type_is_refined(env, &TypeExpr::Named(t.into(), vec![])));
     crate::ast::walk(&f.body, |x| match x {
         // an early return would need its own unfolding
         Expr::Hole(_) | Expr::Mock(_) | Expr::Return(_) | Expr::Try(..) => ok = false,
         Expr::Bin(BinOp::Div | BinOp::Mod, _, d) => ok &= matches!(&**d, Expr::Int(n) if *n != 0),
-        Expr::Ctor(c, _) => ok &= !refined(&env.ctors.get(c).cloned().unwrap_or_default()),
+        Expr::Ctor(c, _) => ok &= !refined(&env.ctors.get(&c.sym()).cloned().unwrap_or_default()),
         Expr::Call(g, _) => {
             if let Expr::Var(n) = &**g {
-                ok &= if env.fns.contains_key(n) { total(n) } else { !env.is_method(n) && crate::types::total_builtin(n) };
+                ok &= if env.fns.contains_key(&n.sym()) { total(n) } else { !env.is_method(n.sym()) && crate::types::total_builtin(n) };
             }
         }
-        Expr::Method(_, n, _) => ok &= if env.fns.contains_key(n) { total(n) } else { !env.is_method(n) && crate::types::total_builtin(n) },
+        Expr::Method(_, n, _) => ok &= if env.fns.contains_key(&n.sym()) { total(n) } else { !env.is_method(n.sym()) && crate::types::total_builtin(n) },
         Expr::Block(stmts, _) => ok &= !stmts.iter().any(|s| matches!(s, Stmt::Assert(_))),
         _ => {}
     });
@@ -520,7 +520,7 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
         let mut calls = BTreeSet::new();
         calls_of(&f.body, env, &mut calls);
         f.requires.iter().chain(&f.ensures).for_each(|c| calls_of(c, env, &mut calls));
-        nodes.insert(name.clone(), Node { decl: Some(f.clone()), calls, loops: loops(env, f, solver) });
+        nodes.insert(name.to_string(), Node { decl: Some(f.clone()), calls, loops: loops(env, f, solver) });
     }
     for imp in &env.impls {
         let Some(tr) = env.traits.get(&imp.trait_name) else { continue };
@@ -584,7 +584,7 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
         own.insert(name.clone(), r);
     }
 
-    let marked = |n: &str| env.fns.get(n).is_some_and(|f| f.terminates) || env.impls.iter().chain(env.inherent.values()).any(|i| i.methods.iter().any(|m| m.terminates && impl_label(env, i, &m.name) == n));
+    let marked = |n: &str| env.fns.get(&n.sym()).is_some_and(|f| f.terminates) || env.impls.iter().chain(env.inherent.values()).any(|i| i.methods.iter().any(|m| m.terminates && impl_label(env, i, &m.name) == n));
     // combine with the callees, deepest first (cycles are already unknown)
     fn resolve(n: &str, nodes: &HashMap<String, Node>, own: &HashMap<String, Result<String, String>>, marked: &dyn Fn(&str) -> bool, memo: &mut HashMap<String, Termination>, visiting: &mut HashSet<String>) -> Termination {
         if let Some(t) = memo.get(n) {
@@ -633,6 +633,7 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
     while changed {
         changed = false;
         for (name, f) in &env.fns {
+            let name = name.as_str();
             if transparent.contains_key(name) {
                 continue;
             }
@@ -645,7 +646,7 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
                 continue;
             }
             if cannot_fail(env, f, &|g| transparent.contains_key(g)) {
-                transparent.insert(name.clone(), assumed);
+                transparent.insert(name.to_string(), assumed);
                 changed = true;
             }
         }

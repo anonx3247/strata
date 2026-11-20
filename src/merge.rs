@@ -11,7 +11,7 @@
 //! into the other side, so its new references follow the rename.
 
 use crate::names::short;
-use crate::ast::{Decl, DeclKind, Program};
+use crate::ast::{Decl, DeclKind, Program, Symbol};
 use crate::{package, parser, printer, resolve};
 use std::collections::HashMap;
 use std::path::Path;
@@ -177,14 +177,14 @@ pub fn merge(base: &str, ours: &str, theirs: &str) -> Result<Merged, String> {
                             d.module = a.module.clone();
                             d.public = d.public || a.public && b.public;
                             *by_line += 1;
-                            pieces.push((a.module.clone(), Piece::Decl(d)));
+                            pieces.push((a.module.to_string(), Piece::Decl(d)));
                             return Ok(());
                         }
                     }
                 }
             }
             conflicts.push(a.qname());
-            pieces.push((a.module.clone(), Piece::Text(text.trim_end().to_string())));
+            pieces.push((a.module.to_string(), Piece::Text(text.trim_end().to_string())));
             Ok(())
         };
         let gone = |kept: &Decl, kept_side: &str, o: &Decl| {
@@ -194,26 +194,26 @@ pub fn merge(base: &str, ours: &str, theirs: &str) -> Result<Merged, String> {
             format!("<<<<<<< ours{lo}\n{}||||||| base\n{}=======\n{}>>>>>>> theirs{lt}", part(ours), part(canon(o)), part(theirs))
         };
         match (od, ad, bd) {
-            (_, Some(a), Some(b)) if same(a, b) => pieces.push((module, Piece::Decl(a.clone()))),
+            (_, Some(a), Some(b)) if same(a, b) => pieces.push((module.to_string(), Piece::Decl(a.clone()))),
             (Some(o), Some(a), Some(b)) if same(o, a) => {
                 from_theirs += 1;
-                pieces.push((module, Piece::Decl(b.clone())))
+                pieces.push((module.to_string(), Piece::Decl(b.clone())))
             }
-            (Some(o), Some(a), Some(b)) if same(o, b) => pieces.push((module, Piece::Decl(a.clone()))),
+            (Some(o), Some(a), Some(b)) if same(o, b) => pieces.push((module.to_string(), Piece::Decl(a.clone()))),
             (o, Some(a), Some(b)) => both(o, a, b, &mut pieces, &mut conflicts, &mut by_line)?,
             (Some(o), Some(a), None) if !same(o, a) => {
                 conflicts.push(format!("{q} (changed in ours, deleted in theirs)"));
-                pieces.push((module, Piece::Text(gone(a, "ours", o))));
+                pieces.push((module.to_string(), Piece::Text(gone(a, "ours", o))));
             }
             (Some(o), None, Some(b)) if !same(o, b) => {
                 conflicts.push(format!("{q} (deleted in ours, changed in theirs)"));
-                pieces.push((module, Piece::Text(gone(b, "theirs", o))));
+                pieces.push((module.to_string(), Piece::Text(gone(b, "theirs", o))));
             }
             (Some(_), _, _) => {} // deleted on one side and untouched on the other, or on both
-            (None, Some(a), None) => pieces.push((module, Piece::Decl(a.clone()))),
+            (None, Some(a), None) => pieces.push((module.to_string(), Piece::Decl(a.clone()))),
             (None, None, Some(b)) => {
                 from_theirs += 1;
-                pieces.push((module, Piece::Decl(b.clone())))
+                pieces.push((module.to_string(), Piece::Decl(b.clone())))
             }
             (None, None, None) => {}
         }
@@ -287,7 +287,7 @@ pub fn follow_rename(p: &Program, from: &str, to: &str) -> Option<Program> {
             if u.path == module {
                 for item in u.items.iter_mut().flatten() {
                     if item == short(to) {
-                        *item = short(from).to_string();
+                        *item = Symbol::from(short(from).to_string());
                     }
                 }
             }

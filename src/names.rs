@@ -16,3 +16,8 @@ pub fn module_of(q: &str) -> &str {
 pub fn qualify(module: &str, name: &str) -> String {
     if module.is_empty() { name.to_string() } else { format!("{module}.{name}") }
 }
+
+/// `name` in module `module`, as a symbol: `orders.Line`, or `Line` in the root module.
+pub fn qualified(module: crate::symbol::Symbol, name: crate::symbol::Symbol) -> crate::symbol::Symbol {
+    if module.is_empty() { name } else { format!("{module}.{name}").into() }
+}

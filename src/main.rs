@@ -1,4 +1,7 @@
 mod ast;
+mod symbol;
+#[cfg(test)]
+mod bench;
 mod binary;
 mod cli;
 mod cmd;

@@ -26,7 +26,7 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
         let program_args = args.flags.get("--").cloned().unwrap_or_default();
         std::process::exit(run_main(p, &env, &prog, program_args, args.flag("--trace"))?);
     };
-    let f = env.fns.get(name).ok_or(format!("no function `{name}`"))?.clone();
+    let f = env.fns.get(&name.sym()).ok_or(format!("no function `{name}`"))?.clone();
     let raw: serde_json::Value = serde_json::from_str(rest.get(1).map(|s| s.as_str()).unwrap_or("[]")).map_err(|e| format!("args: {e}"))?;
     let raw = raw.as_array().cloned().ok_or("args must be a JSON array")?;
     if raw.len() != f.params.len() {
@@ -110,7 +110,7 @@ pub fn run_tests(args: &Args) -> Result<bool, String> {
 /// `Result` of either, whose `Err` is printed to standard error (exit code 1).
 pub fn run_main(p: &Program, env: &types::Env, prog: &str, program_args: Vec<String>, trace: bool) -> Result<i32, String> {
     use interp::Value;
-    let f = env.fns.get("main").ok_or("no `main` function to run (the entry point is `fn main` in main.strata, or in the file you run)")?.clone();
+    let f = env.fns.get(&Symbol::new("main")).ok_or("no `main` function to run (the entry point is `fn main` in main.strata, or in the file you run)")?.clone();
     let mut it = interp::Interp::new(env, 1);
     it.tracing = trace;
     it.host = Some(interp::Host { args: program_args.clone() });
