@@ -29,6 +29,8 @@ pub struct Package {
     /// `None`: every `pub` definition is visible to other packages
     pub exports: Option<Vec<String>>,
     pub verify: Policy,
+    /// each change made through strata is also a git commit (default: yes)
+    pub auto_commit: bool,
 }
 
 /// `[verify]`: what `strata verify` requires, each as a list of modules
@@ -67,13 +69,15 @@ struct Raw {
     deps: toml::Table,
     #[serde(default)]
     verify: Policy,
+    #[serde(default)]
+    auto_commit: Option<bool>,
 }
 
 pub fn load(dir: &Path) -> Result<Package, String> {
     let path = dir.join(FILE);
     let src = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let raw: Raw = toml::from_str(&src).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(Package { dir: dir.to_path_buf(), name: raw.name, exports: raw.exports, verify: raw.verify })
+    Ok(Package { dir: dir.to_path_buf(), name: raw.name, exports: raw.exports, verify: raw.verify, auto_commit: raw.auto_commit.unwrap_or(true) })
 }
 
 /// The package a file or folder belongs to: the nearest folder at or above it

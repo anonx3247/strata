@@ -48,6 +48,8 @@ every change made through strata, committed with them):
                                updating references and imports (`main` is the root module)
   status                       the pending change, if any: its holes, filled or not
   done [--keep-holes] [-m MSG] record the pending change as one log entry
+  (in a git repository each recorded change is also a git commit, unless the package says
+   `auto_commit = false` or the command `--no-commit`)
   abort                        undo the pending change: every file as it was before it
   (an `edit` that breaks code elsewhere turns each broken use into a hole, ?pending_N, and
    opens a pending change; further edits, renames and moves join it)
@@ -434,6 +436,7 @@ fn run() -> Result<bool, String> {
             let extra = if p.renames.is_empty() { json!({}) } else { json!({"renames": p.renames}) };
             let changes = cb.log_entry(&before, &msg, extra)?;
             pending::clear(&cb);
+            git_commit(&cb, &msg);
             println!("recorded \"{msg}\" as one change: {} definition{}", changes.len(), if changes.len() == 1 { "" } else { "s" });
             if !left.is_empty() {
                 println!("{} hole{} kept as ?todo_…, see `strata holes`", left.len(), if left.len() == 1 { "" } else { "s" });
@@ -1145,7 +1148,13 @@ fn apply_edit(cb: &mut Codebase, cmd: &str, edits: Program, deletes: Vec<String>
 /// is logged as one entry when it is done.
 fn record(cb: &mut Codebase, new: Program, msg: &str, extra: serde_json::Value) -> Result<Vec<store::Change>, String> {
     match pending::load(cb) {
-        None => cb.commit_with(new, msg, extra),
+        None => {
+            let changes = cb.commit_with(new, msg, extra)?;
+            if !changes.is_empty() {
+                git_commit(cb, msg);
+            }
+            Ok(changes)
+        }
         Some(mut p) => {
             let changes = store::changes(&cb.program, &new);
             cb.write(new)?;
@@ -1259,6 +1268,44 @@ fn edit_in_editor(cb: &mut Codebase, args: &Args, json_out: bool) -> Result<bool
         let mut head: Vec<String> = errors.iter().flat_map(|e| e.lines().map(|l| format!("{EDIT_MARK}{l}")).collect::<Vec<_>>()).collect();
         head.push(format!("{EDIT_MARK}not applied: fix it and save, or save it unchanged to give up"));
         buffer = head.join("\n") + "\n\n" + &written;
+    }
+}
+
+/// After a change is logged: commit the package's files to git, with the
+/// change's message, unless the package says `auto_commit = false`, the
+/// command says `--no-commit`, or this isn't a git repository. Only the
+/// package's files are committed; anything else staged is left alone. A
+/// failed commit doesn't undo the change: it says why.
+fn git_commit(cb: &Codebase, msg: &str) {
+    if std::env::args().any(|a| a == "--no-commit") {
+        return;
+    }
+    if package::load(cb.root()).map(|p| !p.auto_commit).unwrap_or(false) {
+        return;
+    }
+    let dir = cb.root().to_path_buf();
+    let git = |args: &[&str]| Command::new("git").arg("-C").arg(&dir).args(args).output();
+    let Ok(top) = git(&["rev-parse", "--show-toplevel"]) else { return };
+    if !top.status.success() {
+        return; // not in a git repository
+    }
+    let merging = git(&["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_ok_and(|o| o.status.success());
+    if merging {
+        println!("not committed to git: a merge is in progress (commit it, then strata commits again)");
+        return;
+    }
+    let _ = git(&["add", "-A", "--", "."]);
+    let staged = git(&["diff", "--cached", "--quiet", "--", "."]).is_ok_and(|o| !o.status.success());
+    if !staged {
+        return;
+    }
+    match git(&["commit", "-q", "-m", msg, "--", "."]) {
+        Ok(o) if o.status.success() => {
+            let sha = git(&["rev-parse", "--short", "HEAD"]).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+            println!("committed to git: {sha} {}", msg.lines().next().unwrap_or(""));
+        }
+        Ok(o) => eprintln!("the change is made, but `git commit` failed: {}", String::from_utf8_lossy(&o.stderr).trim()),
+        Err(e) => eprintln!("the change is made, but git didn't run: {e}"),
     }
 }
 
