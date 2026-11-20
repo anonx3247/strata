@@ -52,6 +52,26 @@ type Percentage = Float where 0.0 <= it && it <= 100.0
 type NonEmpty[T] = List[T] where len(it) > 0
 /// A string with at least one character.
 type NonEmptyString = String where len(it) > 0
+
+// Sized integers: `Int` with the range of a machine integer. They are checked
+// like any refinement; a compiler can store each in its own width.
+
+/// -128 ..= 127
+type I8 = Int where -128 <= it && it <= 127
+/// -32768 ..= 32767
+type I16 = Int where -32768 <= it && it <= 32767
+/// -2^31 ..= 2^31 - 1
+type I32 = Int where -2147483648 <= it && it <= 2147483647
+/// -2^63 ..= 2^63 - 1
+type I64 = Int where -9223372036854775808 <= it && it <= 9223372036854775807
+/// 0 ..= 255
+type U8 = Int where 0 <= it && it <= 255
+/// 0 ..= 65535
+type U16 = Int where 0 <= it && it <= 65535
+/// 0 ..= 2^32 - 1
+type U32 = Int where 0 <= it && it <= 4294967295
+/// 0 ..= 2^64 - 1
+type U64 = Int where 0 <= it && it <= 18446744073709551615
 "#;
 
 /// Builtin functions and their type schemes.
@@ -1049,6 +1069,7 @@ impl<'a> Checker<'a> {
     fn literal_outside(&self, w: &TypeExpr, e: &Expr) -> bool {
         let int = match e {
             Expr::Int(n) => Some(*n as i128),
+            Expr::BigInt(d) => d.parse::<i128>().ok(),
             Expr::Un(UnOp::Neg, x) => match &**x {
                 Expr::Int(n) => Some(-(*n as i128)),
                 _ => None,
@@ -1232,7 +1253,7 @@ impl<'a> Checker<'a> {
     /// to pick a variant's own type and to check branches against it.
     fn infer_at(&mut self, e: &Expr, expected: Option<&Ty>) -> Ty {
         match e {
-            Expr::Int(_) => Ty::Int,
+            Expr::Int(_) | Expr::BigInt(_) => Ty::Int,
             Expr::Float(_) => Ty::Float,
             Expr::Tuple(es) => Ty::Con("Tuple".into(), es.iter().map(|e| self.infer(e)).collect()),
             Expr::Str(_) => Ty::Str,
@@ -2711,6 +2732,7 @@ pub mod ints {
         let of_pred = |e: &Expr| of_pred_on(e, subject);
         let konst = |e: &Expr| match e {
             Expr::Int(n) => Some(*n as i128),
+            Expr::BigInt(d) => d.parse::<i128>().ok(),
             Expr::Un(UnOp::Neg, x) => match &**x {
                 Expr::Int(n) => Some(-(*n as i128)),
                 _ => None,

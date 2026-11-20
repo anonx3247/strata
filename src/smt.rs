@@ -887,6 +887,7 @@ impl<'a> Vc<'a> {
         }
         match e {
             Expr::Int(n) => Val::Int(num(*n)),
+            Expr::BigInt(d) => Val::Int(d.clone()),
             Expr::Float(_) => Val::Opaque("floats are not modelled yet".into()),
             Expr::Str(s) => Val::Str(str_lit(s)),
             Expr::Bool(b) => Val::Bool(b.to_string()),
@@ -2286,7 +2287,7 @@ fn leaves_of(v: &Val, out: &mut Vec<String>) {
 /// rebuilt: lists only when empty, nothing opaque).
 fn to_value(env: &Env, v: &Val, m: &HashMap<String, String>) -> Option<Value> {
     Some(match v {
-        Val::Int(t) => Value::Int(parse_int(m.get(t)?)?),
+        Val::Int(t) => crate::interp::int_value(parse_big(m.get(t)?)?),
         Val::Bool(t) => Value::Bool(m.get(t)? == "true"),
         Val::Str(t) => Value::Str(parse_str(m.get(t)?)?),
         Val::Unit => Value::Unit,
@@ -2313,6 +2314,15 @@ fn to_value(env: &Env, v: &Val, m: &HashMap<String, String>) -> Option<Value> {
         }
         Val::Absent | Val::Opaque(_) => return None,
     })
+}
+
+/// A model's integer, of any size: `42` or `(- 42)`.
+fn parse_big(s: &str) -> Option<num_bigint::BigInt> {
+    let s = s.trim();
+    if let Some(inner) = s.strip_prefix("(-").and_then(|x| x.strip_suffix(')')) {
+        return inner.trim().parse::<num_bigint::BigInt>().ok().map(|n| -n);
+    }
+    s.parse().ok()
 }
 
 fn parse_int(s: &str) -> Option<i64> {

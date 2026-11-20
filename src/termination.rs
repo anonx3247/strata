@@ -440,6 +440,13 @@ fn measured_recursion(env: &Env, f: &FnDecl, solver: Option<&str>) -> Option<Str
     let bin = solver?;
     let mut vc = crate::smt::Vc::new(env);
     vc.function(f, &f.name);
+    let ms = find_measure(env, f, &mut vc, bin)?;
+    let shown: Vec<String> = ms.iter().map(|m| crate::printer::expr(m, 0)).collect();
+    Some(if shown.len() == 1 { format!("`{}`", shown[0]) } else { format!("the pair ({}), compared in order,", shown.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(", ")) })
+}
+
+/// The first candidate measure (or pair) that goes down at every recursive call.
+fn find_measure(env: &Env, f: &FnDecl, vc: &mut crate::smt::Vc, bin: &str) -> Option<Vec<Expr>> {
     if vc.rec_sites.is_empty() {
         return None;
     }
@@ -452,17 +459,41 @@ fn measured_recursion(env: &Env, f: &FnDecl, solver: Option<&str>) -> Option<Str
             }
         }
     }
-    for ms in tries {
-        let all = (0..vc.rec_sites.len()).all(|s| {
-            let k = vc.measure_check(s, &ms);
+    tries.into_iter().find(|ms| {
+        (0..vc.rec_sites.len()).all(|s| {
+            let k = vc.measure_check(s, ms);
             matches!(vc.solve(bin, k), crate::smt::Outcome::Proven)
-        });
-        if all {
-            let shown: Vec<String> = ms.iter().map(|m| crate::printer::expr(m, 0)).collect();
-            return Some(if shown.len() == 1 { format!("`{}`", shown[0]) } else { format!("the pair ({}), compared in order,", shown.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(", ")) });
+        })
+    })
+}
+
+/// The solver queries behind a function's termination (for `verify --smt`):
+/// each `while` loop's candidate bounds, and for recursion, the measure that
+/// was found at each recursive call (or, if none was, each single candidate).
+pub fn queries(env: &Env, f: &FnDecl, solver: Option<&str>) -> Vec<(String, String)> {
+    let mut vc = crate::smt::Vc::new(env);
+    vc.function(f, &f.name);
+    let mut out: Vec<(String, String)> = vec![];
+    for i in 0..vc.obligations.len() {
+        if vc.obligations[i].termination {
+            out.push((format!("termination: {}", vc.obligations[i].what), vc.smtlib(i)));
         }
     }
-    None
+    if vc.rec_sites.is_empty() {
+        return out;
+    }
+    let (found, tried) = match solver.and_then(|bin| find_measure(env, f, &mut vc, bin)) {
+        Some(ms) => (true, vec![ms]),
+        None => (false, candidate_measures(env, f).into_iter().map(|m| vec![m]).collect()),
+    };
+    for ms in tried {
+        for s in 0..vc.rec_sites.len() {
+            let k = vc.measure_check(s, &ms);
+            let note = if found { "" } else { " (tried; no measure was found)" };
+            out.push((format!("termination: {} at recursive call {}{note}", vc.obligations[k].what, s + 1), vc.smtlib(k)));
+        }
+    }
+    out
 }
 
 // ---- transparency ----

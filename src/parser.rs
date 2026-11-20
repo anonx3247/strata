@@ -690,6 +690,10 @@ impl Parser {
                 self.next();
                 Ok(Expr::Int(n))
             }
+            Tok::BigInt(s) => {
+                self.next();
+                Ok(Expr::BigInt(s))
+            }
             Tok::Float(f) => {
                 self.next();
                 Ok(Expr::Float(f))
@@ -970,6 +974,7 @@ impl Parser {
 
     fn pattern_one(&mut self) -> R<Pattern> {
         match self.peek().clone() {
+            Tok::BigInt(_) => Err(self.err("an integer pattern must fit in 64 bits (use `where it == …` for a larger one)")),
             Tok::Int(n) => {
                 self.next();
                 Ok(Pattern::Int(n))

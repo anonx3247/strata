@@ -322,7 +322,8 @@ let n = parse(s) except e { return describe_error(e) }      // the error, by nam
 
 | Type | Notes |
 |---|---|
-| `Int`, `Float`, `Bool`, `String` | `Float` is never NaN or infinite; there is no implicit Int/Float mixing (`float(n)`, `round(x)`) |
+| `Int`, `Float`, `Bool`, `String` | `Int` never overflows: it is a machine integer while it fits and a big integer when it doesn't (like Python), literals included. `Float` is never NaN or infinite. There is no implicit Int/Float mixing (`float(n)`, `round(x)`) |
+| `I8` … `I64`, `U8` … `U64` | sized integers: `Int` refinements with a machine integer's range (`U8 = Int where 0 <= it && it <= 255`), checked and verified like any refinement, so `verify` finds where a `U8` would overflow |
 | `()` | the unit type: "no meaningful value", Python's `None` as a *type* |
 | `Option[T]` | `None` or `Some(x)`: a value that may be absent |
 | `Result[T, E]` | `Ok(x)` or `Err(e)`: an operation that may fail |
@@ -379,7 +380,7 @@ The files and `strata.log` are committed. The log is append-only and merges by u
 
 The checks are exactly the interpreter's runtime checks: a callee's parameter refinements and `requires`, the refinements of constructed values and assigned fields, annotated `let`s, `assert`, division by zero, and the function's own result type and `ensures`. Calls are checked against the callee's contract, never its body, which is how modules meet. A function passed by name (`lines.map(line_total)`) is checked against one arbitrary element of the list.
 
-How it works (`src/smt.rs`): the body is run symbolically, with values as SMT terms. Records and sums become structures of terms, lists are tracked by their length, branches are merged with `ite`, and a loop forgets the variables it changes. Each check becomes the question "can the negation be true under what is known here?", which is sent to Z3 as SMT-LIB text (`verify --smt` prints the queries). `unsat` means proven; `sat` comes with a model, which becomes the counterexample. Anything not modelled (floats, dicts, sets, list contents, most higher-order builtins) becomes an unknown value. That can only make a proof fail, never make a false proof succeed, and the reason is kept for the report. `Int` is a mathematical integer. `matches(s, "regex")` becomes a regular-expression constraint when the pattern uses only literals, classes, groups, alternation and quantifiers.
+How it works (`src/smt.rs`): the body is run symbolically, with values as SMT terms. Records and sums become structures of terms, lists are tracked by their length, branches are merged with `ite`, and a loop forgets the variables it changes. Each check becomes the question "can the negation be true under what is known here?", which is sent to Z3 as SMT-LIB text (`verify --smt` prints the queries, termination ones included). `unsat` means proven; `sat` comes with a model, which becomes the counterexample. Anything not modelled (floats, dicts, sets, list contents, most higher-order builtins) becomes an unknown value. That can only make a proof fail, never make a false proof succeed, and the reason is kept for the report. `Int` is a mathematical integer, as it is when the code runs. `matches(s, "regex")` becomes a regular-expression constraint when the pattern uses only literals, classes, groups, alternation and quantifiers.
 
 **Helpers in contracts.** A contract can use an ordinary function, such as `type Digit = Int where small(it)` with `fn small(n: Int) -> Bool { 0 <= n && n < 10 }`. Inside a contract, a helper that terminates and cannot fail is *seen through*: its body is used, not just its contract. So `fn zero() -> Digit { 0 }` is proven and `fn ten() -> Digit { 10 }` is refuted. A helper that may not terminate is never seen through. Unfolding one would let the solver prove false things. A helper marked `terminates` is seen through, and the proof says it relied on that.
 
@@ -399,7 +400,18 @@ How it works (`src/smt.rs`): the body is run symbolically, with values as SMT te
 - **may not terminate**, with the reason: a `loop`, other recursion, mutual recursion, or a call to such a function. The viewer marks these.
 - **assumed**: the function is marked `terminates` (after its contract, `fn f(x: Int) -> Int terminates { … }`). Its callers say they terminate *if* it does.
 
-**Policies.** Recursion is allowed by default. `verify --require proven,terminates,no-recursion` fails the run when a checked function is not proven, may not terminate (an explicit `terminates` is accepted), or is recursive at all (even when it is shown to terminate).
+**Policies.** A package's `strata.toml` says what `verify` requires, each rule as a list of modules (`"*"` for all of them, `"main"` for the root module; a module covers the modules below it):
+
+```toml
+[verify]
+proven = ["core"]        # every check proven, not just fuzzed
+terminates = ["*"]       # every function shown (or marked) to terminate
+no_recursion = ["core"]  # no recursion at all, even recursion that terminates
+```
+
+Recursion is allowed unless `no_recursion` says otherwise. A run that breaks a rule fails, listing each violation. `verify --require proven,terminates,no-recursion` applies the same rules to everything checked, package or not. `strata ci` rejects a rule that names a module the package doesn't have.
+
+**Cross-check.** A proven function that terminates is still run on a few generated inputs (`--cross-check N`, 20 by default, 0 turns it off). If one of them fails, the prover was wrong, and `verify` says so: the result is a failure *found by the cross-check*, flagged as a bug in the prover. Each run has a step budget. A run that goes past it, or past the recursion limit, proves nothing either way and is set aside: proven code can still be far too costly to run, like Ackermann's function.
 
 Z3 is found on the `PATH` (or `STRATA_SOLVER`). Without it, everything is fuzzed. Each query has a resource limit rather than a timeout, so results are deterministic and can be cached by content hash (with the solver version in the key).
 
@@ -414,7 +426,7 @@ exports = ["core", "memory.MemQueue"]  # optional: modules or definitions other 
 [deps]                                 # accepted, not fetched yet
 json = "https://example.com/strata-json"
 
-[verify]                               # accepted, not enforced yet
+[verify]                               # what `strata verify` requires (see Verification)
 proven = ["core"]
 ```
 

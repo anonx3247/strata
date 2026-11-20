@@ -337,6 +337,9 @@ pub enum Stmt {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Expr {
     Int(i64),
+    /// An integer literal too large for 64 bits (decimal digits): `Int` is a
+    /// big integer when it needs to be.
+    BigInt(String),
     Float(f64),
     /// `(a, b)`
     Tuple(Vec<Expr>),

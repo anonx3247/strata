@@ -84,7 +84,10 @@ Checking:
                                proven checks, --smt prints the solver queries.
                                Each function also says whether it terminates.
                                --require (proven, terminates, no-recursion) fails
-                               the run when a checked function falls short
+                               the run when a checked function falls short (as do
+                               strata.toml's [verify] rules). Proven functions that
+                               terminate are still run on --cross-check N cases
+                               (default 20, 0: off), to catch a wrong proof
 
 Running:
   run <fn> [JSON-ARGS] [--trace]
@@ -103,7 +106,7 @@ struct Args {
 impl Args {
     fn parse() -> Args {
         let raw: Vec<String> = std::env::args().skip(1).collect();
-        let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed", "--port", "--module", "--split", "--from", "--to", "--step", "--base", "--require"];
+        let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed", "--port", "--module", "--split", "--from", "--to", "--step", "--base", "--require", "--cross-check"];
         let (mut pos, mut flags) = (Vec::new(), HashMap::<String, Vec<String>>::new());
         let mut i = 0;
         while i < raw.len() {
@@ -720,7 +723,11 @@ fn run() -> Result<bool, String> {
             let solver_bin = solver.as_ref().map(|s| s.0.as_str());
             let analysis = termination::analyze(&env, solver_bin);
             let transparent = &analysis.transparent;
+            let cross_check: usize = args.val("--cross-check").unwrap_or("20").parse().map_err(|_| "bad --cross-check")?;
             let require: Vec<String> = args.val("--require").map(|r| r.split(',').map(|s| s.trim().to_string()).collect()).unwrap_or_default();
+            // the package's `[verify]` rules apply too
+            let policy = package::find(std::path::Path::new(args.val("--file").unwrap_or("."))).ok().flatten().map(|p| p.verify).unwrap_or_default();
+            let mut module_of: HashMap<String, String> = HashMap::new();
             for r in &require {
                 if !["proven", "terminates", "no-recursion"].contains(&r.as_str()) {
                     return Err(format!("unknown requirement `{r}` (use proven, terminates, no-recursion)"));
@@ -730,7 +737,7 @@ fn run() -> Result<bool, String> {
                 // show the queries instead of running them
                 for d in &resolved.decls {
                     if let (true, DeclKind::Fn(f)) = (names.contains(&d.qname()), &d.kind) {
-                        for (what, q) in verify::smt_queries(&env, f, transparent) {
+                        for (what, q) in verify::smt_queries(&env, f, transparent).into_iter().chain(termination::queries(&env, f, solver_bin)) {
                             println!("; {} — {what}\n{q}", f.name);
                         }
                     }
@@ -744,11 +751,17 @@ fn run() -> Result<bool, String> {
                     continue;
                 }
                 let env = &env;
+                // only code shown to terminate is cross-checked: running anything else may never end
+                let analysis = &analysis;
+                let cc = move |label: &str| if matches!(analysis.status.get(label), Some(termination::Termination::Proven { .. })) { cross_check } else { 0 };
                 // (label, cache key, how to check)
                 let mut jobs: Vec<(String, String, Box<dyn Fn() -> verify::Verdict + '_>)> = Vec::new();
                 let base = store::closure_hash(p, &orig.qname());
                 match &d.kind {
-                    DeclKind::Fn(f) => jobs.push((f.name.clone(), format!("{base}:{cases}:{skey}"), Box::new(move || verify::check_fn(env, f, None, solver_bin, transparent, cases, seed)))),
+                    DeclKind::Fn(f) => {
+                        let n = cc(&f.name);
+                        jobs.push((f.name.clone(), format!("{base}:{cases}:{n}:{skey}"), Box::new(move || verify::check_fn(env, f, None, solver_bin, transparent, cases, n, seed))))
+                    }
                     DeclKind::Impl(imp) => {
                         let Some(tr) = env.traits.get(&imp.trait_name) else { continue };
                         let ty = printer::ty(&imp.for_type);
@@ -756,7 +769,10 @@ fn run() -> Result<bool, String> {
                             let mname = m.decl.name.clone();
                             let decl = imp.methods.iter().find(|x| x.name == mname).or(if m.default { Some(&m.decl) } else { None });
                             match decl {
-                                Some(decl) => jobs.push((format!("{ty}.{mname}"), format!("{base}:{mname}:{cases}:{skey}"), Box::new(move || verify::check_fn(env, decl, Some(imp), solver_bin, transparent, cases, seed)))),
+                                Some(decl) => {
+                                    let n = cc(&format!("{ty}.{mname}"));
+                                    jobs.push((format!("{ty}.{mname}"), format!("{base}:{mname}:{cases}:{n}:{skey}"), Box::new(move || verify::check_fn(env, decl, Some(imp), solver_bin, transparent, cases, n, seed))))
+                                }
                                 None => jobs.push((format!("{ty}.{mname}"), format!("{base}:{mname}:{cases}"), Box::new(move || verify::fuzz_impl_method(env, imp, &mname, cases, seed)))),
                             }
                         }
@@ -780,6 +796,7 @@ fn run() -> Result<bool, String> {
                     if worst.as_ref().map_or(true, |w| verdict.rank() > w.rank()) {
                         worst = Some(verdict.clone());
                     }
+                    module_of.insert(label.clone(), orig.module.clone());
                     results.push((label, verdict, cached));
                 }
                 // the viewer shows one status per definition
@@ -796,16 +813,31 @@ fn run() -> Result<bool, String> {
                 if n.starts_with("law ") {
                     continue;
                 }
-                if require.iter().any(|r| r == "proven") && !matches!(v, verify::Verdict::Proven { .. }) {
-                    violations.push(format!("`{n}` is not proven"));
-                }
-                if require.iter().any(|r| r == "terminates") {
-                    if let Some(termination::Termination::Unknown { .. }) = v.termination() {
-                        violations.push(format!("`{n}` may not terminate"));
+                let module = module_of.get(n).map(|m| m.as_str()).unwrap_or("");
+                // a rule applies from the command line (everywhere) or from strata.toml (its modules)
+                let rule = |flag: &str, listed: &[String]| -> Option<String> {
+                    if require.iter().any(|r| r == flag) {
+                        Some(String::new())
+                    } else if package::Policy::covers(listed, module) {
+                        Some(format!(" ({} [verify])", package::FILE))
+                    } else {
+                        None
+                    }
+                };
+                if let Some(src) = rule("proven", &policy.proven) {
+                    if !matches!(v, verify::Verdict::Proven { .. }) {
+                        violations.push(format!("`{n}` is not proven{src}"));
                     }
                 }
-                if require.iter().any(|r| r == "no-recursion") && analysis.recursive.contains(n) {
-                    violations.push(format!("`{n}` is recursive"));
+                if let Some(src) = rule("terminates", &policy.terminates) {
+                    if let Some(termination::Termination::Unknown { .. }) = v.termination() {
+                        violations.push(format!("`{n}` may not terminate{src}"));
+                    }
+                }
+                if let Some(src) = rule("no-recursion", &policy.no_recursion) {
+                    if analysis.recursive.contains(n) {
+                        violations.push(format!("`{n}` is recursive{src}"));
+                    }
                 }
             }
             if !violations.is_empty() {
@@ -990,7 +1022,7 @@ fn ci(fix: bool) -> Result<bool, String> {
         let rep = full_check(&p);
         let mut errors: Vec<String> = rep.errors.iter().map(|e| format!("error in {}: {}", e.decl, e.msg)).collect();
         if let Some(pkg) = &pkg {
-            errors.extend(package::bad_exports(pkg, &p).into_iter().map(|e| format!("{}: {e}", package::FILE)));
+            errors.extend(package::bad_exports(pkg, &p).into_iter().chain(package::bad_policy(pkg, &p)).map(|e| format!("{}: {e}", package::FILE)));
         }
         let label = match &pkg {
             Some(pkg) => format!("package {} ({shown})", pkg.name),
@@ -1010,7 +1042,10 @@ fn ci(fix: bool) -> Result<bool, String> {
 }
 
 fn main() -> ExitCode {
-    match run() {
+    // a deep (but legal) recursion in the interpreter needs more than the
+    // default stack; its own depth limit should be what stops it
+    let result = std::thread::Builder::new().stack_size(1 << 30).spawn(run).expect("start the main thread").join().unwrap_or_else(|_| Err("internal error".into()));
+    match result {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(e) => {
