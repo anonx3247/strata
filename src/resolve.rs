@@ -162,27 +162,56 @@ fn fields_of(p: &Program, owner: &str) -> Vec<String> {
     vec![]
 }
 
-/// Rename field `field` of `owner` (a record type or record variant) to `new`:
-/// the declaration, accesses (`x.qty`), and literals, updates and patterns of
-/// the owner's constructor. Accesses are told apart by type, not by name: when
-/// another record also has a field of that name, the checker says which
-/// record each access reads from (see `types::field_owners`), and only the
-/// owner's are renamed. The caller type-checks the result.
-fn rename_field(p: &Program, owner: &str, field: &str, new: &str) -> Result<Program, String> {
-    if fields_of(p, owner).iter().any(|f| f == new) {
-        return Err(format!("`{owner}` already has a field `{new}`"));
+/// Rename fields, all at once: each `(owner, field, new)` renames field
+/// `field` of `owner` (a record type or record variant) to `new`: the
+/// declaration, accesses (`x.qty`), and literals, updates and patterns of the
+/// owner's constructor. Accesses are told apart by type, not by name: when
+/// several records have a field of that name, the checker says which records
+/// each access reads from (see `types::field_owners`). An access is renamed
+/// when every record it reads from is renamed, to the same name; one that
+/// mixes renamed and other records is refused. The caller type-checks the
+/// result.
+pub fn rename_fields(p: &Program, renames: &[(String, String, String)]) -> Result<Program, String> {
+    for (owner, field, new) in renames {
+        if fields_of(p, owner).iter().any(|f| f == new) {
+            return Err(format!("`{owner}` already has a field `{new}`"));
+        }
+        if !fields_of(p, owner).iter().any(|f| f == field) {
+            return Err(format!("`{owner}` has no field `{field}`"));
+        }
     }
-    // other records with a field of that name (or `.value` of distinct types): then
-    // `x.field` is told apart by the checker's types, access by access
+    let mut fields: Vec<&str> = renames.iter().map(|r| r.1.as_str()).collect();
+    fields.sort();
+    fields.dedup();
+    // records with a field of that name besides those renamed (or `.value` of distinct
+    // types): then accesses are told apart by the checker's types
     let prelude = crate::parser::parse_program(crate::types::PRELUDE).unwrap_or_default();
-    let shared = p.decls.iter().chain(&prelude.decls).any(|d| match &d.kind {
-        DeclKind::Type(t) => match &t.body {
-            TypeBody::Record(fs) => qualify(&d.module, &t.name) != owner && fs.iter().any(|f| f.name == field),
-            TypeBody::Sum(vs) => vs.iter().any(|v| qualify(&d.module, &v.name) != owner && matches!(&v.payload, Payload::Record(fs) if fs.iter().any(|f| f.name == field))),
-            _ => false,
-        },
-        _ => false,
-    }) || (field == "value" && p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Type(t) if t.distinct)));
+    let records: Vec<(String, Vec<String>)> = p
+        .decls
+        .iter()
+        .chain(&prelude.decls)
+        .flat_map(|d| match &d.kind {
+            DeclKind::Type(t) => match &t.body {
+                TypeBody::Record(fs) => vec![(qualify(&d.module, &t.name), fs.iter().map(|f| f.name.clone()).collect())],
+                TypeBody::Sum(vs) => vs
+                    .iter()
+                    .filter_map(|v| match &v.payload {
+                        Payload::Record(fs) => Some((qualify(&d.module, &v.name), fs.iter().map(|f| f.name.clone()).collect())),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => vec![],
+            },
+            _ => vec![],
+        })
+        .collect();
+    let distinct = p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Type(t) if t.distinct));
+    let typed = fields.iter().any(|f| {
+        let renamed: Vec<&str> = renames.iter().filter(|r| r.1 == *f).map(|r| r.2.as_str()).collect();
+        let same_new = renamed.windows(2).all(|w| w[0] == w[1]);
+        let others = records.iter().any(|(q, fs)| fs.iter().any(|x| x == f) && !renames.iter().any(|r| r.0 == *q && r.1 == *f));
+        others || !same_new || (*f == "value" && distinct)
+    });
     let mut modules: HashSet<String> = HashSet::new();
     for d in &p.decls {
         let mut m = d.module.as_str();
@@ -191,20 +220,21 @@ fn rename_field(p: &Program, owner: &str, field: &str, new: &str) -> Result<Prog
             m = module_of(m);
         }
     }
-    let owner_short = owner.rsplit('.').next().unwrap_or(owner);
     let kinds: Vec<serde_json::Value> = p.decls.iter().map(|d| serde_json::to_value(&d.kind)).collect::<Result<_, _>>().map_err(|e| e.to_string())?;
 
-    // which record each access belongs to, from the checker, when it matters
-    let owners = if shared {
+    // which records each access reads from, from the checker, when it matters
+    let owners = if typed {
         let mut tagged = p.clone();
         for (i, (d, j)) in tagged.decls.iter_mut().zip(&kinds).enumerate() {
             let mut j = j.clone();
-            let mut k = 0;
-            let mut tag = |_: &str| -> Option<String> {
-                k += 1;
-                Some(format!("{field}·d{i}k{}", k - 1))
-            };
-            field_uses(&mut j, field, owner_short, None, &modules, &mut tag);
+            for f in &fields {
+                let mut k = 0;
+                let mut tag = |_: &str| -> Option<String> {
+                    k += 1;
+                    Some(format!("{f}·{f}/d{i}k{}", k - 1))
+                };
+                field_uses(&mut j, f, "", None, &modules, &mut tag);
+            }
             d.kind = serde_json::from_value(j).map_err(|e| e.to_string())?;
         }
         Some(crate::types::field_owners(&tagged))
@@ -215,47 +245,64 @@ fn rename_field(p: &Program, owner: &str, field: &str, new: &str) -> Result<Prog
     let mut out = p.clone();
     let mut problems: Vec<String> = Vec::new();
     for (i, (d, j)) in out.decls.iter_mut().zip(&kinds).enumerate() {
-        // its uses: accesses that are the owner's, and literals, updates and patterns of its constructor
         let name = d.qname();
         let mut j = j.clone();
-        let mut k = 0;
-        let mut decide = |_: &str| -> Option<String> {
-            let tag = format!("d{i}k{k}");
-            k += 1;
-            let Some(owners) = &owners else { return Some(new.to_string()) };
-            match owners.get(&tag) {
-                Some(s) if s.len() == 1 && s.contains(owner) => Some(new.to_string()),
-                Some(s) if s.contains(owner) => {
-                    problems.push(format!("in `{name}`, `.{field}` is read from a union of {} (rename them together, or match first)", s.iter().map(|o| format!("`{o}`")).collect::<Vec<_>>().join(", ")));
+        // accesses, field by field, in the same order as the tags
+        for f in &fields {
+            let mut k = 0;
+            let mut decide = |_: &str| -> Option<String> {
+                let tag = format!("{f}/d{i}k{k}");
+                k += 1;
+                let Some(owners) = &owners else {
+                    return renames.iter().find(|r| r.1 == *f).map(|r| r.2.clone());
+                };
+                let s = owners.get(&tag).cloned().unwrap_or_default();
+                let news: Vec<&str> = s.iter().filter_map(|o| renames.iter().find(|r| r.0 == *o && r.1 == *f).map(|r| r.2.as_str())).collect();
+                if s.is_empty() {
+                    problems.push(format!("in `{name}`, the checker can't tell which record `.{f}` is read from"));
                     None
-                }
-                Some(s) if !s.is_empty() => None,
-                _ => {
-                    problems.push(format!("in `{name}`, the checker can't tell which record `.{field}` is read from"));
+                } else if news.is_empty() {
                     None
+                } else if news.len() < s.len() {
+                    let rest: Vec<String> = s.iter().filter(|o| !renames.iter().any(|r| r.0 == **o && r.1 == *f)).map(|o| format!("`{o}.{f}`")).collect();
+                    problems.push(format!("in `{name}`, `.{f}` is read from a union that also has {} (rename {} too, in the same command)", rest.join(", "), if rest.len() == 1 { "it" } else { "them" }));
+                    None
+                } else if news.windows(2).any(|w| w[0] != w[1]) {
+                    problems.push(format!("in `{name}`, `.{f}` is read from a union whose records would get different names"));
+                    None
+                } else {
+                    Some(news[0].to_string())
                 }
-            }
-        };
-        field_uses(&mut j, field, owner_short, Some(new), &modules, &mut decide);
+            };
+            field_uses(&mut j, f, "", None, &modules, &mut decide);
+        }
+        // literals, updates and patterns, by constructor
+        for (owner, f, new) in renames {
+            let short = owner.rsplit('.').next().unwrap_or(owner);
+            field_uses(&mut j, f, short, Some(new), &modules, &mut |_| None);
+        }
         d.kind = serde_json::from_value(j).map_err(|e| e.to_string())?;
-        // the declaration (after its uses, which start from the original)
+        // the declarations (after their uses, which start from the original)
         if let DeclKind::Type(t) = &mut d.kind {
             let tq = qualify(&d.module, &t.name);
-            match &mut t.body {
-                TypeBody::Record(fs) if tq == owner => fs.iter_mut().filter(|f| f.name == field).for_each(|f| f.name = new.to_string()),
-                TypeBody::Sum(vs) => {
-                    for v in vs.iter_mut().filter(|v| qualify(&d.module, &v.name) == owner) {
-                        if let Payload::Record(fs) = &mut v.payload {
-                            fs.iter_mut().filter(|f| f.name == field).for_each(|f| f.name = new.to_string());
+            for (owner, f, new) in renames {
+                match &mut t.body {
+                    TypeBody::Record(fs) if tq == *owner => fs.iter_mut().filter(|x| x.name == *f).for_each(|x| x.name = new.clone()),
+                    TypeBody::Sum(vs) => {
+                        for v in vs.iter_mut().filter(|v| qualify(&d.module, &v.name) == *owner) {
+                            if let Payload::Record(fs) = &mut v.payload {
+                                fs.iter_mut().filter(|x| x.name == *f).for_each(|x| x.name = new.clone());
+                            }
                         }
                     }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }
     if !problems.is_empty() {
-        return Err(format!("can't rename the field `{owner}.{field}`: {}", problems.join("; ")));
+        problems.dedup();
+        return Err(format!("can't rename {}: {}", renames.iter().map(|r| format!("`{}.{}`", r.0, r.1)).collect::<Vec<_>>().join(", "), problems.join("; ")));
     }
     Ok(out)
 }
@@ -323,6 +370,33 @@ fn field_uses(v: &mut serde_json::Value, field: &str, ctor: &str, ctor_new: Opti
     }
 }
 
+/// Several renames in one step: `(old, new)` pairs, as for `rename`. Fields
+/// are renamed together (so an access on a union of renamed records can
+/// follow), then the rest one after the other.
+pub fn rename_all(p: &Program, pairs: &[(String, String)]) -> Result<Program, String> {
+    let mut fields = Vec::new();
+    let mut rest = Vec::new();
+    for (old, new) in pairs {
+        match member(p, old) {
+            Some(("field", owner)) => {
+                let short = old.rsplit('.').next().unwrap_or(old).to_string();
+                let upper = |s: &str| s.chars().next().is_some_and(|c| c.is_uppercase());
+                if upper(&short) != upper(new) || !new.chars().all(|c| c.is_alphanumeric() || c == '_') || new.is_empty() {
+                    return Err(format!("`{new}` is not a field name like `{short}`"));
+                }
+                fields.push((owner, short, new.clone()));
+            }
+            Some(_) => rest.push((old.clone(), new.clone())),
+            None => return Err(format!("no definition, variant, trait method or field `{old}`")),
+        }
+    }
+    let mut out = if fields.is_empty() { p.clone() } else { rename_fields(p, &fields)? };
+    for (old, new) in rest {
+        out = rename(&out, &old, &new)?;
+    }
+    Ok(out)
+}
+
 /// Every qualified name the program defines: definitions, variants, trait methods.
 fn defined(p: &Program) -> HashSet<String> {
     let mut out = HashSet::new();
@@ -358,7 +432,7 @@ pub fn rename(p: &Program, old: &str, new: &str) -> Result<Program, String> {
         return Err(format!("`{new}` must start with {} like `{short}`", if upper(new) { "a lowercase letter" } else { "an uppercase letter" }));
     }
     if kind == "field" {
-        return rename_field(p, &module, short, new);
+        return rename_fields(p, &[(module, short.to_string(), new.to_string())]);
     }
     let new_q = qualify(&module, new);
     if defined(p).contains(&new_q) {

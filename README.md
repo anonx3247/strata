@@ -140,6 +140,10 @@ $ strata rename Line.qty quantity         # a field: accesses, literals, updates
 renamed Line.qty → Line.quantity
 updated 3 definitions that refer to it: line_total, test "shipping a pending order saves it as shipped", test "totals"
 
+$ strata rename A.tag label B.tag label   # several renames in one step (here, a field read from `A | B`)
+renamed A.tag → A.label, B.tag → B.label
+updated 1 definition that refers to them: tag_of
+
 $ strata move charge billing              # to another module (file): references and imports follow
 moved orders.charge from orders to billing (billing.strata)
 updated 1 definition that refers to it: test "charges"

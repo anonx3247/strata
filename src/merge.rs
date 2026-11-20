@@ -323,8 +323,8 @@ pub fn logged_renames(top: &Path, log: &str, base: &str, theirs: &str) -> Vec<(S
             if e["id"].as_str().is_some_and(|id| known.contains(id)) {
                 continue;
             }
-            if let (Some(f), Some(t)) = (e["rename"]["from"].as_str(), e["rename"]["to"].as_str()) {
-                out.push((f.to_string(), t.to_string(), side));
+            for (f, t) in crate::store::renames_of(&e) {
+                out.push((f, t, side));
             }
         }
     }

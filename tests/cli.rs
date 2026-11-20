@@ -1802,7 +1802,17 @@ fn rename_a_field_that_another_record_also_has() {
     std::fs::write(e.join("main.strata"), "type A = { tag: String, n: Int }\n\ntype B = { tag: String }\n\nfn tag_of(x: A | B) -> String {\n  x.tag\n}\n").unwrap();
     assert!(strata(&["init"], &e, None).0);
     let (ok, out) = strata(&["rename", "A.tag", "label"], &e, None);
-    assert!(!ok && out.contains("in `tag_of`, `.tag` is read from a union of `A`, `B`"), "{out}");
+    assert!(!ok && out.contains("in `tag_of`, `.tag` is read from a union that also has `B.tag` (rename it too, in the same command)"), "{out}");
+    // both records' fields to different names: the union access can't follow
+    let (ok, out) = strata(&["rename", "A.tag", "label", "B.tag", "name"], &e, None);
+    assert!(!ok && out.contains("`.tag` is read from a union whose records would get different names"), "{out}");
+    // both, to the same name, in one step
+    let (ok, out) = strata(&["rename", "A.tag", "label", "B.tag", "label"], &e, None);
+    assert!(ok && out.contains("renamed A.tag → A.label, B.tag → B.label") && out.contains("updated 1 definition that refers to them: tag_of"), "{out}");
+    let m = std::fs::read_to_string(e.join("main.strata")).unwrap();
+    assert!(m.contains("type A = { label: String, n: Int }") && m.contains("type B = { label: String }") && m.contains("x.label"), "{m}");
+    let log = std::fs::read_to_string(e.join("strata.log")).unwrap();
+    assert_eq!(log.lines().count(), 1, "one step");
 }
 
 #[test]
