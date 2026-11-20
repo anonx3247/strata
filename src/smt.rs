@@ -46,6 +46,13 @@ pub enum Val {
     /// A value of a sum type: which constructor (`tag`, an index), and the
     /// payload of every constructor (only the active one means anything).
     Sum { ty: String, args: Vec<TypeExpr>, tag: T, ctors: Vec<(String, Vec<Val>)> },
+    /// A value of a union type (`Square | Circle`): which member shape it has
+    /// (`tag`, an index into `slots`), and a value for each shape (only the
+    /// active one means anything; `Absent` for a shape it can't have). Shapes
+    /// are named by `val_key` / `Vc::type_key` and are pairwise disjoint, so
+    /// the tag is a function of the value, as in the interpreter, where a
+    /// union value is just the member's value.
+    Union { tag: T, slots: Vec<(String, Val)> },
     /// A list, known by its length. `elem` is set when every element is known
     /// to satisfy that type (the list crossed a checked boundary).
     List { len: T, elem: Option<TypeExpr> },
@@ -153,6 +160,33 @@ fn ite(c: &str, a: &str, b: &str) -> T {
 fn num(n: i64) -> T {
     if n < 0 { format!("(- {})", n.unsigned_abs()) } else { n.to_string() }
 }
+/// The runtime shape of a value, as far as it decides membership in a union
+/// (the interpreter's `shape_fits`): two values with different keys have
+/// different shapes. `List*` is any collection (lists, dicts and sets are all
+/// `Val::List`). `None` when the shape is not known.
+fn val_key(v: &Val) -> Option<String> {
+    Some(match v {
+        Val::Int(_) => "Int".into(),
+        Val::Bool(_) => "Bool".into(),
+        Val::Str(_) => "String".into(),
+        Val::Unit => "Unit".into(),
+        Val::Tuple(xs) => format!("Tuple/{}", xs.len()),
+        Val::Rec(n, _) => format!("rec:{n}"),
+        Val::Distinct(n, _) => format!("distinct:{n}"),
+        Val::Sum { ty, .. } => format!("sum:{ty}"),
+        Val::List { .. } => "List*".into(),
+        Val::Union { .. } | Val::Absent | Val::Opaque(_) => return None,
+    })
+}
+
+/// A value as a union: its tag and slots (a plain value is a one-slot union).
+fn slots_of(v: &Val) -> Option<(T, Vec<(String, Val)>)> {
+    match v {
+        Val::Union { tag, slots } => Some((tag.clone(), slots.clone())),
+        _ => Some(("0".into(), vec![(val_key(v)?, v.clone())])),
+    }
+}
+
 pub fn str_lit(s: &str) -> T {
     let mut out = String::from("\"");
     for c in s.chars() {
@@ -237,7 +271,24 @@ impl<'a> Vc<'a> {
 
     // ---- coercions: an opaque value used as an Int is some Int ----
 
+    /// A union value used as an `Int` (`Bool`, `String`): its member of that
+    /// shape when that member is the active one, any value otherwise.
+    fn union_as(&mut self, v: &Val, key: &str, sort: &'static str) -> Option<T> {
+        let Val::Union { tag, slots } = v else { return None };
+        let i = slots.iter().position(|s| s.0 == key && !matches!(s.1, Val::Absent))?;
+        let inner = match (&slots[i].1, sort) {
+            (Val::Int(t), "Int") | (Val::Bool(t), "Bool") | (Val::Str(t), "String") => t.clone(),
+            (Val::List { len, .. }, "Len") => len.clone(),
+            _ => return None,
+        };
+        let other = self.fresh_why(if sort == "Len" { "Int" } else { sort }, "a union value used as one of its members");
+        Some(ite(&format!("(= {tag} {i})"), &inner, &other))
+    }
+
     fn as_int(&mut self, v: &Val) -> T {
+        if let Some(t) = self.union_as(v, "Int", "Int") {
+            return t;
+        }
         match v {
             Val::Int(t) => t.clone(),
             Val::Opaque(r) => self.fresh_why("Int", &r.clone()),
@@ -245,6 +296,9 @@ impl<'a> Vc<'a> {
         }
     }
     fn as_bool(&mut self, v: &Val) -> T {
+        if let Some(t) = self.union_as(v, "Bool", "Bool") {
+            return t;
+        }
         match v {
             Val::Bool(t) => t.clone(),
             Val::Opaque(r) => self.fresh_why("Bool", &r.clone()),
@@ -252,6 +306,9 @@ impl<'a> Vc<'a> {
         }
     }
     fn as_str(&mut self, v: &Val) -> T {
+        if let Some(t) = self.union_as(v, "String", "String") {
+            return t;
+        }
         match v {
             Val::Str(t) => t.clone(),
             Val::Opaque(r) => self.fresh_why("String", &r.clone()),
@@ -259,6 +316,13 @@ impl<'a> Vc<'a> {
         }
     }
     fn list_len(&mut self, v: &Val) -> T {
+        if let Some(t) = self.union_as(v, "List*", "Len") {
+            // `len` of a union with a string member is not this
+            if !matches!(v, Val::Union { slots, .. } if slots.iter().any(|s| s.0 == "String")) {
+                self.facts.push(format!("(>= {t} 0)"));
+                return t;
+            }
+        }
         match v {
             Val::List { len, .. } => len.clone(),
             Val::Opaque(r) => {
@@ -278,7 +342,7 @@ impl<'a> Vc<'a> {
     /// A value of type `t` with fresh constants, nothing assumed.
     fn shape(&mut self, t: &TypeExpr, depth: usize) -> Val {
         match t {
-            TypeExpr::Union(_) => Val::Opaque("values of a union type are not modelled yet".into()),
+            TypeExpr::Union(ms) => self.union_shape(ms, depth).unwrap_or_else(|| Val::Opaque("values of this union type are not modelled (members of overlapping or unknown shapes)".into())),
             TypeExpr::Named(n, args) if self.env.variant_parent(n).is_some() => {
                 // a variant as a type: a value of its sum with that tag
                 let parent = self.env.variant_parent(n).unwrap();
@@ -338,6 +402,367 @@ impl<'a> Vc<'a> {
         }
     }
 
+    // ---- unions ----
+
+    /// The shape key of a type (see `val_key`), ignoring refinements; `None`
+    /// for unions, functions, floats, type parameters and traits.
+    fn type_key(&self, t: &TypeExpr) -> Option<String> {
+        match self.env.expand_alias(t) {
+            TypeExpr::Unit => Some("Unit".into()),
+            TypeExpr::Named(n, args) => match n.as_str() {
+                "Int" | "Bool" | "String" | "Unit" => Some(n),
+                "List" | "Dict" | "Set" => Some("List*".into()),
+                "Tuple" => Some(format!("Tuple/{}", args.len())),
+                _ => {
+                    if let Some(p) = self.env.variant_parent(&n) {
+                        return Some(format!("sum:{p}"));
+                    }
+                    let td = self.env.types.get(&n)?;
+                    match &td.body {
+                        TypeBody::Alias(_) if td.distinct => Some(format!("distinct:{n}")),
+                        TypeBody::Record(_) => Some(format!("rec:{n}")),
+                        TypeBody::Sum(_) => Some(format!("sum:{n}")),
+                        TypeBody::Alias(_) => None,
+                    }
+                }
+            },
+            _ => None,
+        }
+    }
+
+    /// The members of a union, looking through unrefined aliases of unions
+    /// (`Shape | Int` with `type Shape = Square | Circle`).
+    fn flatten_union(&self, t: &TypeExpr, out: &mut Vec<TypeExpr>) {
+        match t {
+            TypeExpr::Union(ms) => ms.iter().for_each(|m| self.flatten_union(m, out)),
+            TypeExpr::Named(n, args) => match self.env.types.get(n) {
+                Some(td) if !td.distinct && td.refinement.is_none() && matches!(&td.body, TypeBody::Alias(TypeExpr::Union(_))) => {
+                    let TypeBody::Alias(a) = &td.body else { unreachable!() };
+                    let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+                    self.flatten_union(&subst_texpr(a, &sub), out)
+                }
+                _ => out.push(t.clone()),
+            },
+            _ => out.push(t.clone()),
+        }
+    }
+
+    /// A value of a union type: one slot per member shape. `None` when two
+    /// members could have the same shape in a way the slots can't tell apart
+    /// (`List[Int] | List[String]`), or a member's shape is not known.
+    fn union_shape(&mut self, ms: &[TypeExpr], depth: usize) -> Option<Val> {
+        let mut members = vec![];
+        for m in ms {
+            self.flatten_union(m, &mut members);
+        }
+        let mut groups: Vec<(String, Vec<TypeExpr>)> = vec![];
+        for m in members {
+            let k = self.type_key(&m)?;
+            match groups.iter_mut().find(|g| g.0 == k) {
+                Some(g) => g.1.push(m),
+                None => groups.push((k, vec![m])),
+            }
+        }
+        let tag = self.fresh("Int");
+        self.facts.push(format!("(and (<= 0 {tag}) (< {tag} {}))", groups.len()));
+        let mut slots = vec![];
+        for (i, (k, ms)) in groups.iter().enumerate() {
+            let heads: Vec<TypeExpr> = ms.iter().map(|m| self.env.expand_alias(m)).collect();
+            let v = if let Some(sum) = k.strip_prefix("sum:") {
+                // the sum itself or some of its variants: a value of the sum,
+                // whose constructor is one of those variants
+                let mut args: Option<Vec<TypeExpr>> = None;
+                let mut ctors: Option<Vec<String>> = Some(vec![]);
+                for h in &heads {
+                    let TypeExpr::Named(n, a) = h else { return None };
+                    if args.get_or_insert_with(|| a.clone()) != a {
+                        return None;
+                    }
+                    if n == sum {
+                        ctors = None;
+                    } else if let Some(cs) = &mut ctors {
+                        cs.push(n.clone());
+                    }
+                }
+                let v = self.shape(&TypeExpr::Named(sum.to_string(), args.unwrap_or_default()), depth);
+                if let (Some(cs), Val::Sum { tag: inner, ctors: all, .. }) = (&ctors, &v) {
+                    let ks: Vec<T> = cs.iter().filter_map(|c| all.iter().position(|x| &x.0 == c)).map(|j| format!("(= {inner} {j})")).collect();
+                    self.facts.push(implies(&format!("(= {tag} {i})"), &or(&ks)));
+                }
+                v
+            } else if ms.len() == 1 {
+                self.shape(&ms[0], depth)
+            } else {
+                match k.as_str() {
+                    // `Positive | Negative`: both are integers
+                    "Int" | "Bool" | "String" | "Unit" => self.shape(&TypeExpr::Named(k.clone(), vec![]), depth),
+                    _ => return None,
+                }
+            };
+            slots.push((k.clone(), v));
+        }
+        Some(Val::Union { tag, slots })
+    }
+
+    /// Does `v` have the shape of `t` (the interpreter's `shape_fits`,
+    /// refinements ignored)? Exact where the shapes are known, else unknown.
+    fn shape_test(&mut self, t: &TypeExpr, v: &Val) -> T {
+        match v {
+            Val::Opaque(r) => return self.unknown_bool(&r.clone()),
+            Val::Absent => return "false".into(),
+            Val::Union { tag, slots } => {
+                let (tag, slots) = (tag.clone(), slots.clone());
+                let cs: Vec<T> = slots
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| !matches!(s.1, Val::Absent))
+                    .map(|(i, (_, s))| and(&[format!("(= {tag} {i})"), self.shape_test(t, s)]))
+                    .collect();
+                return or(&cs);
+            }
+            _ => {}
+        }
+        let te = self.env.expand_alias(t);
+        match &te {
+            TypeExpr::Union(ms) => {
+                let cs: Vec<T> = ms.iter().map(|m| self.shape_test(m, v)).collect();
+                or(&cs)
+            }
+            TypeExpr::Named(n, args) => match (n.as_str(), v) {
+                ("List", Val::List { len, elem }) => {
+                    if args.is_empty() || elem.as_ref() == args.first() {
+                        "true".into()
+                    } else {
+                        let u = self.unknown_bool("the elements of a list are not tracked");
+                        format!("(or (= {len} 0) {u})")
+                    }
+                }
+                ("Dict" | "Set", Val::List { .. }) => self.unknown_bool("dicts and sets are not modelled yet"),
+                ("Tuple", Val::Tuple(xs)) if xs.len() == args.len() => {
+                    let cs: Vec<T> = args.iter().zip(xs).map(|(a, x)| self.shape_test(a, x)).collect();
+                    and(&cs)
+                }
+                _ => match (self.type_key(&te), val_key(v)) {
+                    (Some(a), Some(b)) if a != b => "false".into(),
+                    (Some(_), Some(_)) => match (self.env.variant_parent(n), v) {
+                        (Some(_), Val::Sum { tag, ctors, .. }) => match ctors.iter().position(|c| &c.0 == n) {
+                            Some(k) => format!("(= {tag} {k})"),
+                            None => "false".into(),
+                        },
+                        (Some(_), _) => self.unknown_bool("a value of an unexpected shape"),
+                        (None, _) => "true".into(),
+                    },
+                    _ => self.unknown_bool("a type test that is not modelled"),
+                },
+            },
+            TypeExpr::Unit => match val_key(v) {
+                Some(k) => (k == "Unit").to_string(),
+                None => self.unknown_bool("a value of an unknown shape"),
+            },
+            _ => self.unknown_bool("a type test that is not modelled"),
+        }
+    }
+
+    /// Is `v` a value of `t` (the interpreter's `value_in`: the shape fits
+    /// and every refinement holds)? This is what a type pattern and `is` test,
+    /// and what makes a value valid for a union.
+    fn in_type(&mut self, t: &TypeExpr, v: &Val, extra: &[(String, Val)]) -> T {
+        match v {
+            Val::Opaque(r) => self.unknown_bool(&r.clone()),
+            Val::Absent => "false".into(),
+            Val::Union { tag, slots } => {
+                let (tag, slots) = (tag.clone(), slots.clone());
+                let cs: Vec<T> = slots
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| !matches!(s.1, Val::Absent))
+                    .map(|(i, (_, s))| {
+                        let c = self.in_type(t, s, extra);
+                        and(&[format!("(= {tag} {i})"), c])
+                    })
+                    .collect();
+                or(&cs)
+            }
+            _ => {
+                let s = self.shape_test(t, v);
+                if s == "false" {
+                    return s;
+                }
+                let union = matches!(self.env.expand_alias(t), TypeExpr::Union(_));
+                if s != "true" && !union && (self.type_key(t).is_none() || val_key(v).is_none()) {
+                    // the shape is unknown: the refinements can't be evaluated on it
+                    return s;
+                }
+                let c = self.check_type(t, v, extra);
+                and(&[s, c])
+            }
+        }
+    }
+
+    /// Is `t` a name for another type (a non-distinct alias)?
+    fn is_alias(&self, t: &TypeExpr) -> bool {
+        matches!(t, TypeExpr::Named(n, _) if matches!(self.env.types.get(n), Some(td) if !td.distinct && matches!(td.body, TypeBody::Alias(_))))
+    }
+
+    /// Does `v` have constructor `c` (`v is Circle`)?
+    fn is_ctor(&mut self, v: &Val, c: &str) -> T {
+        match v {
+            Val::Sum { tag, ctors, .. } => match ctors.iter().position(|k| k.0 == c) {
+                Some(k) => format!("(= {tag} {k})"),
+                None => "false".into(),
+            },
+            Val::Rec(n, _) | Val::Distinct(n, _) => (n == c).to_string(),
+            Val::Opaque(r) => self.unknown_bool(&r.clone()),
+            Val::Union { tag, slots } => {
+                let (tag, slots) = (tag.clone(), slots.clone());
+                let cs: Vec<T> = slots
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| !matches!(s.1, Val::Absent))
+                    .map(|(i, (_, s))| {
+                        let x = self.is_ctor(s, c);
+                        and(&[format!("(= {tag} {i})"), x])
+                    })
+                    .collect();
+                or(&cs)
+            }
+            _ => "false".into(),
+        }
+    }
+
+    /// The shape a pattern needs, when it is a literal, tuple, list or
+    /// constructor pattern (others test the value as a whole).
+    fn pattern_key(&self, p: &Pattern) -> Option<String> {
+        match p {
+            Pattern::Int(_) => Some("Int".into()),
+            Pattern::Bool(_) => Some("Bool".into()),
+            Pattern::Str(_) => Some("String".into()),
+            Pattern::Tuple(ps) => Some(format!("Tuple/{}", ps.len())),
+            Pattern::List(..) => Some("List*".into()),
+            Pattern::Ctor(c, _) => {
+                let tn = self.env.ctors.get(c)?;
+                let td = self.env.types.get(tn)?;
+                match &td.body {
+                    TypeBody::Alias(_) if td.distinct => Some(format!("distinct:{tn}")),
+                    TypeBody::Record(_) => Some(format!("rec:{tn}")),
+                    TypeBody::Sum(_) => Some(format!("sum:{tn}")),
+                    TypeBody::Alias(_) => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The slots of a union value a pattern can match (the others make its
+    /// condition `false`, so the arm's guard rules them out).
+    fn arm_slots(&mut self, p: &Pattern, slots: &[(String, Val)]) -> Vec<usize> {
+        let live = |i: &usize| !matches!(slots[*i].1, Val::Absent);
+        match p {
+            Pattern::Or(alts) => {
+                let mut out: Vec<usize> = vec![];
+                for a in alts {
+                    for i in self.arm_slots(a, slots) {
+                        if !out.contains(&i) {
+                            out.push(i);
+                        }
+                    }
+                }
+                out.sort();
+                out
+            }
+            Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(c) && self.env.is_type_name(c) => {
+                let t = TypeExpr::Named(c.clone(), vec![]);
+                (0..slots.len()).filter(live).filter(|&i| self.shape_test(&t, &slots[i].1) != "false").collect()
+            }
+            _ => match self.pattern_key(p) {
+                Some(k) => (0..slots.len()).filter(live).filter(|&i| slots[i].0 == k).collect(),
+                None => (0..slots.len()).filter(live).collect(),
+            },
+        }
+    }
+
+    /// The field `f` of a value.
+    fn field(&mut self, v: &Val, f: &str) -> Val {
+        match v {
+            Val::Rec(_, fs) => fs.iter().find(|x| x.0 == f).map(|x| x.1.clone()).unwrap_or(Val::Opaque(format!("field `{f}`"))),
+            Val::Distinct(_, inner) if f == "value" => (**inner).clone(),
+            Val::Tuple(xs) => f.parse::<usize>().ok().and_then(|i| xs.get(i).cloned()).unwrap_or(Val::Opaque(format!("field `{f}`"))),
+            // a sum's field (a variant used as a type, or a field every variant has):
+            // the field of whichever constructor is active
+            Val::Sum { ty, args, tag, ctors } => {
+                let vs = self.env.variants_of(ty, args).unwrap_or_default();
+                let mut found: Vec<(usize, Val)> = vec![];
+                for (k, (_, names, _)) in vs.iter().enumerate() {
+                    if let Some(i) = names.as_ref().and_then(|ns| ns.iter().position(|n| n == f)) {
+                        if let Some(x) = ctors.get(k).and_then(|c| c.1.get(i)) {
+                            found.push((k, x.clone()));
+                        }
+                    }
+                }
+                let tag = tag.clone();
+                match found.pop() {
+                    None => Val::Opaque(format!("field `{f}`")),
+                    Some((_, last)) => {
+                        let mut v = last;
+                        while let Some((k, x)) = found.pop() {
+                            v = self.merge(&format!("(= {tag} {k})"), &x, &v);
+                        }
+                        v
+                    }
+                }
+            }
+            // a union's field (every member has it, or the value was narrowed
+            // to members that have it): the field of the active member; any
+            // value for a member that has no such field
+            Val::Union { tag, slots } => {
+                let (tag, slots) = (tag.clone(), slots.clone());
+                let mut v = Val::Opaque(format!("field `{f}` of a union member without it"));
+                for (i, (_, s)) in slots.iter().enumerate().rev() {
+                    if matches!(s, Val::Absent) {
+                        continue;
+                    }
+                    let x = self.field(s, f);
+                    v = self.merge(&format!("(= {tag} {i})"), &x, &v);
+                }
+                v
+            }
+            Val::Opaque(r) => Val::Opaque(r.clone()),
+            _ => Val::Opaque(format!("field `{f}` of a value of an unexpected shape")),
+        }
+    }
+
+    /// Merge two values of different shapes into a union.
+    fn merge_union(&mut self, c: &str, a: &Val, b: &Val) -> Option<Val> {
+        let (ta, sa) = slots_of(a)?;
+        let (tb, sb) = slots_of(b)?;
+        let mut keys: Vec<String> = sa.iter().map(|s| s.0.clone()).collect();
+        for (k, _) in &sb {
+            if !keys.contains(k) {
+                keys.push(k.clone());
+            }
+        }
+        let find = |ss: &[(String, Val)], k: &str| ss.iter().find(|s| s.0 == k).map(|s| s.1.clone()).unwrap_or(Val::Absent);
+        let slots: Vec<(String, Val)> = keys
+            .iter()
+            .map(|k| {
+                let (x, y) = (find(&sa, k), find(&sb, k));
+                (k.clone(), self.merge(c, &x, &y))
+            })
+            .collect();
+        // `b`'s tag, renumbered to the merged slots
+        let map: Vec<usize> = sb.iter().map(|s| keys.iter().position(|k| k == &s.0).unwrap()).collect();
+        let tb = if map.iter().enumerate().all(|(j, &i)| i == j) {
+            tb
+        } else {
+            let mut t = map.last().unwrap().to_string();
+            for j in (0..map.len() - 1).rev() {
+                t = ite(&format!("(= {tb} {j})"), &map[j].to_string(), &t);
+            }
+            t
+        };
+        Some(Val::Union { tag: ite(c, &ta, &tb), slots })
+    }
+
     /// A fresh value of type `t` that satisfies `t`.
     fn havoc(&mut self, t: &TypeExpr) -> Val {
         let v = self.shape(t, 0);
@@ -361,6 +786,13 @@ impl<'a> Vc<'a> {
                 let len = self.fresh("Int");
                 self.facts.push(format!("(>= {len} 0)"));
                 Val::List { len, elem: elem.clone() }
+            }
+            Val::Union { slots, .. } => {
+                let tag = self.fresh("Int");
+                let live: Vec<T> = slots.iter().enumerate().filter(|(_, s)| !matches!(s.1, Val::Absent)).map(|(i, _)| format!("(= {tag} {i})")).collect();
+                self.facts.push(or(&live));
+                let slots = slots.iter().map(|(k, s)| (k.clone(), self.refresh(s))).collect();
+                Val::Union { tag, slots }
             }
             Val::Absent => Val::Absent,
             Val::Opaque(r) => Val::Opaque(r.clone()),
@@ -408,8 +840,17 @@ impl<'a> Vc<'a> {
             let r = r.clone();
             return self.unknown_bool(&r);
         }
+        if matches!(v, Val::Union { .. }) && !matches!(t, TypeExpr::Union(_) | TypeExpr::Refined(..)) && !self.is_alias(t) {
+            // a union value against one type (a narrowed value passed on):
+            // its active member must be of that type
+            return self.in_type(t, v, extra);
+        }
         match t {
-            TypeExpr::Union(_) => self.unknown_bool("values of a union type are not modelled yet"),
+            // valid for a union: a valid value of one of its members
+            TypeExpr::Union(ms) => {
+                let cs: Vec<T> = ms.iter().map(|m| self.in_type(m, v, extra)).collect();
+                or(&cs)
+            }
             TypeExpr::Named(n, args) if self.env.variant_parent(n).is_some() => {
                 let parent = TypeExpr::Named(self.env.variant_parent(n).unwrap(), args.clone());
                 let c = self.check_type(&parent, v, extra);
@@ -568,18 +1009,29 @@ impl<'a> Vc<'a> {
             (Val::List { len: l1, elem: e1 }, Val::List { len: l2, elem: e2 }) => Val::List { len: ite(c, l1, l2), elem: if e1 == e2 { e1.clone() } else { None } },
             (Val::Distinct(n, x), Val::Distinct(m, y)) if n == m => Val::Distinct(n.clone(), Box::new(self.merge(c, x, y))),
             (Val::Opaque(r), _) | (_, Val::Opaque(r)) => Val::Opaque(r.clone()),
-            _ => Val::Opaque("values of different shapes were merged".into()),
+            // values of different shapes (`if big { Square {…} } else { Circle {…} }`): a union
+            _ => self.merge_union(c, a, b).unwrap_or_else(|| Val::Opaque("values of different shapes were merged".into())),
         }
     }
 
     /// Run alternative branches (guard, bindings, body) and merge them.
     fn branches(&mut self, arms: Vec<(T, Vec<(String, Val)>, &Expr)>) -> Val {
+        self.branches_narrowed(arms, vec![])
+    }
+
+    /// `branches`, where in arm `i` the variables `narrow[i]` hold the given
+    /// values (equal to theirs under the arm's guard: a union's member).
+    fn branches_narrowed(&mut self, arms: Vec<(T, Vec<(String, Val)>, &Expr)>, mut narrow: Vec<Vec<(String, Val)>>) -> Val {
         let base_pc = self.pc.len();
         let saved = self.scopes.clone();
         let mut outs: Vec<(T, Val, Vec<HashMap<String, Val>>)> = vec![];
         let n_arms = arms.len();
-        for (g, binds, body) in arms {
+        narrow.resize(n_arms, vec![]);
+        for ((g, binds, body), narrow) in arms.into_iter().zip(narrow) {
             self.scopes = saved.clone();
+            for (x, v) in narrow {
+                self.set(&x, v);
+            }
             self.dead = false;
             self.pc.push(g.clone());
             self.scopes.push(binds.into_iter().collect());
@@ -620,28 +1072,28 @@ impl<'a> Vc<'a> {
     /// The condition for `v` to match `p`, and the bindings it makes.
     /// Does `v` belong to the type named `c` (a pattern `Positive =>`, `x is Circle`)?
     fn type_test(&mut self, c: &str, v: &Val) -> T {
-        let t = TypeExpr::Named(c.to_string(), vec![]);
-        let head = match self.env.expand_alias(&t) {
-            TypeExpr::Named(h, _) => h,
-            _ => return self.unknown_bool("a type test on a type that is not modelled"),
-        };
-        let fits = match v {
-            Val::Int(_) => head == "Int",
-            Val::Bool(_) => head == "Bool",
-            Val::Str(_) => head == "String",
-            Val::List { .. } => matches!(head.as_str(), "List" | "Dict" | "Set"),
-            Val::Rec(n, _) | Val::Distinct(n, _) => &head == n,
-            Val::Sum { ty, .. } => &head == ty || self.env.variant_parent(&head).as_ref() == Some(ty),
-            _ => false,
-        };
-        if fits {
-            self.check_type(&t, v, &[])
-        } else {
-            self.unknown_bool("a type test that is not modelled")
-        }
+        self.in_type(&TypeExpr::Named(c.to_string(), vec![]), v, &[])
     }
 
     fn pattern(&mut self, p: &Pattern, v: &Val, binds: &mut Vec<(String, Val)>) -> T {
+        if let Val::Union { tag, slots } = v {
+            let type_name = matches!(p, Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(c) && self.env.is_type_name(c));
+            if let Some(k) = self.pattern_key(p).filter(|_| !type_name) {
+                // a literal, tuple, list or constructor pattern takes the member of its shape
+                let (tag, slots) = (tag.clone(), slots.clone());
+                return match slots.iter().position(|s| s.0 == k && !matches!(s.1, Val::Absent)) {
+                    Some(i) => {
+                        let c = self.pattern(p, &slots[i].1, binds);
+                        and(&[format!("(= {tag} {i})"), c])
+                    }
+                    None => {
+                        // no member has that shape: it never matches (bind its names anyway)
+                        self.pattern(p, &Val::Opaque("a pattern no member of the union matches".into()), binds);
+                        "false".into()
+                    }
+                };
+            }
+        }
         match p {
             Pattern::Cond(c) => {
                 // `where …`: evaluated with `it` and what is in scope; a fault just means no match
@@ -821,6 +1273,22 @@ impl<'a> Vc<'a> {
                 let r = r.clone();
                 self.unknown_bool(&r)
             }
+            // union values are equal when they have the same shape and equal values of it
+            (Val::Union { .. }, _) | (_, Val::Union { .. }) => {
+                let (Some((t1, s1)), Some((t2, s2))) = (slots_of(a), slots_of(b)) else {
+                    return self.unknown_bool("comparing values of an unknown shape");
+                };
+                let mut cs = vec![];
+                for (i, (k, x)) in s1.iter().enumerate() {
+                    for (j, (k2, y)) in s2.iter().enumerate() {
+                        if k == k2 && !matches!(x, Val::Absent) && !matches!(y, Val::Absent) {
+                            let e = self.eq(x, y);
+                            cs.push(and(&[format!("(= {t1} {i})"), format!("(= {t2} {j})"), e]));
+                        }
+                    }
+                }
+                or(&cs)
+            }
             _ => self.unknown_bool("comparing values of different shapes"),
         }
     }
@@ -969,37 +1437,7 @@ impl<'a> Vc<'a> {
             }
             Expr::Field(r, f) => {
                 let v = self.eval(r);
-                match &v {
-                    Val::Rec(_, fs) => fs.iter().find(|x| &x.0 == f).map(|x| x.1.clone()).unwrap_or(Val::Opaque(format!("field `{f}`"))),
-                    Val::Distinct(_, inner) if f == "value" => (**inner).clone(),
-                    Val::Tuple(xs) => f.parse::<usize>().ok().and_then(|i| xs.get(i).cloned()).unwrap_or(Val::Opaque(format!("field `{f}`"))),
-                    // a sum's field (a variant used as a type, or a field every variant has):
-                    // the field of whichever constructor is active
-                    Val::Sum { ty, args, tag, ctors } => {
-                        let vs = self.env.variants_of(ty, args).unwrap_or_default();
-                        let mut found: Vec<(usize, Val)> = vec![];
-                        for (k, (_, names, _)) in vs.iter().enumerate() {
-                            if let Some(i) = names.as_ref().and_then(|ns| ns.iter().position(|n| n == f)) {
-                                if let Some(x) = ctors.get(k).and_then(|c| c.1.get(i)) {
-                                    found.push((k, x.clone()));
-                                }
-                            }
-                        }
-                        let (tag, mut found) = (tag.clone(), found);
-                        match found.pop() {
-                            None => Val::Opaque(format!("field `{f}`")),
-                            Some((_, last)) => {
-                                let mut v = last;
-                                while let Some((k, x)) = found.pop() {
-                                    v = self.merge(&format!("(= {tag} {k})"), &x, &v);
-                                }
-                                v
-                            }
-                        }
-                    }
-                    Val::Opaque(r) => Val::Opaque(r.clone()),
-                    _ => Val::Opaque(format!("field `{f}` of a value of an unexpected shape")),
-                }
+                self.field(&v, f)
             }
             Expr::Un(UnOp::Neg, x) => match self.eval(x) {
                 Val::Int(t) => Val::Int(format!("(- {t})")),
@@ -1052,15 +1490,7 @@ impl<'a> Vc<'a> {
             }
             Expr::Is(x, c) => {
                 let v = self.eval(x);
-                match &v {
-                    Val::Sum { tag, ctors, .. } => match ctors.iter().position(|k| &k.0 == c) {
-                        Some(k) => Val::Bool(format!("(= {tag} {k})")),
-                        None => Val::Bool("false".into()),
-                    },
-                    Val::Rec(n, _) | Val::Distinct(n, _) => Val::Bool((n == c).to_string()),
-                    Val::Opaque(r) => Val::Bool(self.unknown_bool(&r.clone())),
-                    _ => Val::Bool("false".into()),
-                }
+                Val::Bool(self.is_ctor(&v, c))
             }
             Expr::If(c, t, f) => {
                 let cv = self.eval(c);
@@ -1071,8 +1501,24 @@ impl<'a> Vc<'a> {
                 let v = self.eval(s);
                 let mut prev: Vec<T> = vec![];
                 let mut alts = vec![];
+                let mut narrow = vec![];
                 for a in arms {
-                    let mut binds: Vec<(String, Val)> = name.iter().map(|n| (n.clone(), v.clone())).collect();
+                    // a union narrowed to the one member the arm's pattern can match
+                    let member = match &v {
+                        Val::Union { slots, .. } => {
+                            let slots = slots.clone();
+                            match self.arm_slots(&a.pat, &slots)[..] {
+                                [i] => Some(slots[i].1.clone()),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    narrow.push(match (&**s, &member) {
+                        (Expr::Var(x), Some(m)) if self.lookup(x).is_some() => vec![(x.clone(), m.clone())],
+                        _ => vec![],
+                    });
+                    let mut binds: Vec<(String, Val)> = name.iter().map(|n| (n.clone(), member.clone().unwrap_or(v.clone()))).collect();
                     let n = self.pc.len();
                     self.pc.extend(prev.iter().map(|p| not(p)));
                     let cond = self.pattern(&a.pat, &v, &mut binds);
@@ -1082,7 +1528,7 @@ impl<'a> Vc<'a> {
                     alts.push((and(&g), binds, &a.body));
                     prev.push(cond);
                 }
-                self.branches(alts)
+                self.branches_narrowed(alts, narrow)
             }
             Expr::Block(stmts, last) => {
                 self.scopes.push(HashMap::new());
@@ -1434,6 +1880,7 @@ impl<'a> Vc<'a> {
             },
             ("abs", 1) => match arg(0) {
                 Val::Int(x) => Val::Int(format!("(ite (< {x} 0) (- {x}) {x})")),
+                Val::Union { .. } => Val::Opaque(not_modelled),
                 v => v,
             },
             ("min" | "max", 2) => {
@@ -1747,6 +2194,12 @@ impl<'a> Vc<'a> {
             let tn = match &new {
                 Val::Rec(n, _) | Val::Distinct(n, _) => Some(n.clone()),
                 Val::Sum { ty, .. } => Some(ty.clone()),
+                Val::Opaque(r) => {
+                    // whatever the interpreter checks here can't be proven
+                    let r = r.clone();
+                    self.oblige(format!("{verb} `{}`", crate::printer::expr(place, 0)), |vc| vc.unknown_bool(&r));
+                    None
+                }
                 _ => None,
             };
             if let Some(tn) = tn {
@@ -1893,7 +2346,9 @@ fn set_path(base: Val, path: &[String], v: Val) -> Val {
             }
             Val::Rec(n, fs)
         }
-        other => other,
+        // a field of a sum or union value: which member's field changed is
+        // not tracked, so the whole value is unknown
+        _ => Val::Opaque("a value whose field was assigned".into()),
     }
 }
 
@@ -2288,6 +2743,10 @@ fn leaves_of(v: &Val, out: &mut Vec<String>) {
             out.push(tag.clone());
             ctors.iter().flat_map(|c| &c.1).for_each(|x| leaves_of(x, out));
         }
+        Val::Union { tag, slots } => {
+            out.push(tag.clone());
+            slots.iter().for_each(|s| leaves_of(&s.1, out));
+        }
         Val::List { len, .. } => out.push(len.clone()),
         Val::Distinct(_, x) => leaves_of(x, out),
         Val::Unit | Val::Absent | Val::Opaque(_) => {}
@@ -2323,6 +2782,8 @@ fn to_value(env: &Env, v: &Val, m: &HashMap<String, String>) -> Option<Value> {
             };
             Value::Variant(c.clone(), f)
         }
+        // a union value is its active member's value
+        Val::Union { tag, slots } => to_value(env, &slots.get(parse_int(m.get(tag)?)? as usize)?.1, m)?,
         Val::Absent | Val::Opaque(_) => return None,
     })
 }

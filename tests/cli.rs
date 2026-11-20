@@ -341,6 +341,65 @@ fn fine(a: Natural) -> Natural {
 }
 
 #[test]
+fn smt_models_union_values() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("smt-unions");
+    let src = "type Square = { side: Positive }
+type Circle = { radius: Positive }
+type Shape = Square | Circle
+type E =
+  | A { x: Int }
+  | B
+  | C
+type One = { n: Positive, a: Int }
+type Two = { n: Positive }
+type Holder = { s: Shape }
+fn area(s: Shape) -> Positive { match s { Square => s.side * s.side, Circle => 3 * s.radius * s.radius } }
+fn bad_area(s: Shape) -> Positive { match s { Square => s.side - 1, Circle => s.radius } }
+fn pick(big: Bool) -> Shape { if big { Square { side: 5 } } else { Circle { radius: 1 } } }
+fn pick_area(big: Bool) -> Positive { area(pick(big)) }
+fn make(big: Bool) -> Int where it > 2 {
+  let s = if big { Square { side: 5 } } else { Circle { radius: 1 } }
+  match s { Square => s.side, Circle => s.radius + 2 }
+}
+fn bad_make(big: Bool) -> Int where it > 2 {
+  let s = if big { Square { side: 5 } } else { Circle { radius: 1 } }
+  match s { Square => s.side, Circle => s.radius }
+}
+fn describe(v: Int | String) -> Natural { match v { Int => abs(v), String => len(v) } }
+fn bad_describe(v: Int | String) -> Positive { match v { Int => abs(v) + 1, String => len(v) } }
+fn is_sq(s: Shape) -> Bool ensures it == (s is Square) { match s { Square => true, Circle => false } }
+fn always_sq(s: Shape) -> Bool ensures it { s is Square }
+fn lit(v: Int | String) -> Positive { match v { 0 => 1, \"a\" => 2, _ => 3 } }
+fn nonzero(x: Positive | Negative) -> Int where it != 0 { x }
+fn bad_nonzero(x: Int) -> Positive | Negative { x }
+fn variants(v: A | B) -> Natural { match v { A => abs(v.x), B => 0 } }
+fn bad_variants(v: A | C) -> Bool ensures it { v is A }
+fn opt(v: Option[Natural] | String) -> Natural { match v { Some(x) => x, None => 0, String => len(v) } }
+fn bad_opt(v: Option[Int] | String) -> Natural { match v { Some(x) => x, None => 0, String => len(v) } }
+fn self_eq(a: Int | String) -> Bool ensures it { a == a }
+fn bad_eq(a: Int | String, b: Int | String) -> Bool ensures it { a == b }
+fn bad_field(h: Holder) -> Bool ensures it { h.s is Circle }
+fn common(v: One | Two) -> Positive { v.n }
+fn bad_common(v: One | Two) -> Positive { v.n - 1 }
+";
+    std::fs::write(d.join("u.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", "u.strata", "verify", "--cases", "20"], &d, None);
+    assert!(!ok, "{out}");
+    for name in ["area", "pick", "pick_area", "make", "describe", "is_sq", "lit", "nonzero", "variants", "opt", "self_eq", "common"] {
+        assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
+    }
+    for name in ["bad_area", "bad_make", "bad_describe", "always_sq", "bad_nonzero", "bad_variants", "bad_opt", "bad_eq", "bad_field", "bad_common"] {
+        let line = out.lines().find(|l| l.split_whitespace().nth(1) == Some(name)).unwrap_or("");
+        assert!(line.starts_with("✗") && line.contains("found by the solver"), "{name} should be refuted by the solver: {out}");
+    }
+    assert!(out.contains("input:   [{\"radius\":1}]") && out.contains("input:   [\"C\"]"), "counterexamples are union members: {out}");
+}
+
+#[test]
 fn smt_proves_contracts_and_refutes_bugs() {
     if !has_solver() {
         eprintln!("z3 is not installed: skipping");
