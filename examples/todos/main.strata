@@ -1,0 +1,310 @@
+// todos — a to-do list: an app with a form, served by `strata serve`.
+//
+//   strata serve examples/todos      # http://127.0.0.1:8000
+//
+// The title field sends what is typed (`on_input`), so the page shows how
+// many characters are left; the form sends its fields when submitted
+// (`on_submit_form`), and `update` checks them: an error is shown next to
+// the field, and nothing is added. `strata verify` proves that `update`
+// keeps every title within its bounds and the list within 50 items.
+
+use std.web.{Html, Attr, dispatch, div, h1, p, span, ul, li, form, label, input, select, option, button, text, class, id, name, value, placeholder, input_type, label_for, checked, disabled, attr, on_click, on_input, on_change, on_submit_form, style_sheet}
+
+/// A to-do's title: not empty, at most 60 characters.
+type Title = String
+  where 1 <= len(it) && len(it) <= 60
+
+type Priority =
+  | Low
+  | Normal
+  | High
+
+type Todo = { id: Natural, title: Title, priority: Priority, done: Bool }
+
+/// Which to-dos are shown.
+type Filter =
+  | All
+  | Active
+  | Completed
+
+type Model = {
+  todos: List[Todo] where len(it) <= 50,
+  /// What the title field holds, as typed.
+  draft: String,
+  /// Why the last submission was refused.
+  error: Option[String],
+  next_id: Natural,
+  filter: Filter,
+}
+
+type Msg =
+  | Typed { text: String }
+  | Submitted { fields: Dict[String, String] }
+  | Toggle { id: Natural }
+  | Remove { id: Natural }
+  | ClearCompleted
+  | Show { filter: Filter }
+
+fn init() -> Model {
+  Model { todos: [Todo {
+    id: 0,
+    title: "Read the counter example",
+    priority: Normal,
+    done: true,
+  }, Todo {
+    id: 1,
+    title: "Try a title that is far too long for this list",
+    priority: High,
+    done: false,
+  }], draft: "", error: None, next_id: 2, filter: All }
+}
+
+/// The title a form's fields give, or why there is none.
+fn title_of(fields: Dict[String, String]) -> Result[Title, String] {
+  let t = trim(get(fields, "title") ?? "")
+  if len(t) == 0 {
+    Err("Write something first.")
+  } else if len(t) > 60 {
+    Err(f"At most 60 characters ({len(t)} now).")
+  } else {
+    Ok(t)
+  }
+}
+
+fn priority_of(fields: Dict[String, String]) -> Priority {
+  match get(fields, "priority") {
+    Some("low") => Low,
+    Some("high") => High,
+    _ => Normal,
+  }
+}
+
+fn update(model: Model, msg: Msg) -> Model {
+  match msg {
+    Typed { text } => Model { ..model, draft: text },
+    Submitted { fields } => match title_of(fields) {
+      Err(why) => Model { ..model, error: Some(why) },
+      Ok(title) => if len(model.todos) >= 50 {
+        Model { ..model, error: Some("The list is full (50 to-dos).") }
+      } else {
+        let todo = Todo {
+          id: model.next_id,
+          title,
+          priority: priority_of(fields),
+          done: false,
+        }
+        Model { ..model, todos: push(model.todos, todo), draft: "", error: None, next_id: model.next_id + 1 }
+      },
+    },
+    Toggle { id } => Model { ..model, todos: model.todos.map(
+      t -> if t.id == id {
+        Todo { ..t, done: !t.done }
+      } else {
+        t
+      },
+    ) },
+    Remove { id } => Model { ..model, todos: model.todos.filter(t -> t.id != id) },
+    ClearCompleted => Model { ..model, todos: model.todos.filter(t -> !t.done) },
+    Show { filter } => Model { ..model, filter },
+  }
+}
+
+// ---- the view ----
+
+fn shown(model: Model) -> List[Todo] {
+  match model.filter {
+    All => model.todos,
+    Active => model.todos.filter(t -> !t.done),
+    Completed => model.todos.filter(t -> t.done),
+  }
+}
+
+fn priority_name(p: Priority) -> String {
+  match p {
+    Low => "low",
+    Normal => "normal",
+    High => "high",
+  }
+}
+
+fn item(t: Todo) -> Html[Msg] {
+  let box_attrs: List[Attr[Msg]] = if t.done {
+    [
+      input_type("checkbox"),
+      on_change(v -> Toggle { id: t.id }),
+      checked(),
+    ]
+  } else {
+    [input_type("checkbox"), on_change(v -> Toggle { id: t.id })]
+  }
+  let item_class = if t.done {
+    "item done"
+  } else {
+    "item"
+  }
+  li([class(item_class)], [label(
+    [],
+    [input(box_attrs), span([class("title")], [text(t.title)])],
+  ), span(
+    [class(f"tag {priority_name(t.priority)}")],
+    [text(priority_name(t.priority))],
+  ), button([
+    class("remove"),
+    on_click(Remove { id: t.id }),
+    attr("title", "Remove"),
+  ], [text("×")])])
+}
+
+fn filter_button(model: Model, f: Filter, label_text: String) -> Html[Msg] {
+  let attrs: List[Attr[Msg]] = if model.filter == f {
+    [class("filter current"), on_click(Show { filter: f })]
+  } else {
+    [class("filter"), on_click(Show { filter: f })]
+  }
+  button(attrs, [text(label_text)])
+}
+
+fn new_todo_form(model: Model) -> Html[Msg] {
+  let left = 60 - len(model.draft)
+  let counter_class = if left < 0 {
+    "counter over"
+  } else {
+    "counter"
+  }
+  let error: List[Html[Msg]] = match model.error {
+    Some(why) => [p([class("error"), id("title-error")], [text(why)])],
+    None => [],
+  }
+  form(
+    [class("new"), on_submit_form(fields -> Submitted { fields })],
+    [
+      div([class("row")], [input([
+        id("title"),
+        name("title"),
+        placeholder("What needs doing?"),
+        value(model.draft),
+        attr("autocomplete", "off"),
+        on_input(s -> Typed { text: s }),
+      ]), select(
+        [name("priority"), attr("aria-label", "Priority")],
+        [option([value("low")], [text("low")]), option(
+          [value("normal"), attr("selected", "")],
+          [text("normal")],
+        ), option([value("high")], [text("high")])],
+      ), button([input_type("submit")], [text("Add")])]),
+      div([class("under")], error
+        + [span(
+          [class(counter_class)],
+          [text(f"{left} characters left")],
+        )]),
+    ],
+  )
+}
+
+fn view(model: Model) -> Html[Msg] {
+  let active = len(model.todos.filter(t -> !t.done))
+  let completed = len(model.todos) - active
+  let clear: List[Attr[Msg]] = if completed == 0 {
+    [class("clear"), on_click(ClearCompleted), disabled()]
+  } else {
+    [class("clear"), on_click(ClearCompleted)]
+  }
+  let items = shown(model)
+  let list: Html[Msg] = if len(items) == 0 {
+    p([class("empty")], [text("Nothing here.")])
+  } else {
+    ul([class("items")], items.map(t -> item(t)))
+  }
+  div([class("app")], [
+    style_sheet(css()),
+    h1([], [text("To do")]),
+    new_todo_form(model),
+    list,
+    div(
+      [class("footer")],
+      [span([], [text(f"{active} left")]), div([class("filters")], [
+        filter_button(model, All, "All"),
+        filter_button(model, Active, "Active"),
+        filter_button(model, Completed, "Completed"),
+      ]), button(clear, [text("Clear completed")])],
+    ),
+  ])
+}
+
+fn css() -> String {
+  join(
+    [
+      "body { font-family: system-ui, sans-serif; color: #1f2328; background: #f6f8fa; margin: 0; }",
+      ".app { max-width: 36rem; margin: 3rem auto; background: white; border: 1px solid #d1d9e0; border-radius: 12px; padding: 1.5rem 1.75rem; box-shadow: 0 1px 3px rgba(31,35,40,.06); }",
+      "h1 { font-size: 1.4rem; margin: 0 0 1rem; }",
+      ".row { display: flex; gap: 0.5rem; }",
+      "input, select, button { font: inherit; }",
+      "#title { flex: 1; padding: 0.5rem 0.7rem; border: 1px solid #d1d9e0; border-radius: 6px; }",
+      "#title:focus { outline: 2px solid #0969da; outline-offset: -1px; }",
+      "select { padding: 0.45rem; border: 1px solid #d1d9e0; border-radius: 6px; background: white; }",
+      "button { border: 1px solid #d1d9e0; background: #f6f8fa; border-radius: 6px; padding: 0.45rem 0.9rem; cursor: pointer; }",
+      "button:hover:not([disabled]) { background: #eaeef2; }",
+      "button[disabled] { opacity: 0.45; cursor: default; }",
+      "button[type=submit] { background: #1f883d; border-color: #1a7f37; color: white; font-weight: 600; }",
+      "button[type=submit]:hover { background: #1a7f37; }",
+      ".under { display: flex; justify-content: space-between; align-items: baseline; min-height: 1.6rem; font-size: 0.85rem; }",
+      ".error { color: #cf222e; margin: 0.35rem 0 0; }",
+      ".counter { color: #59636e; margin: 0.35rem 0 0 auto; }",
+      ".counter.over { color: #cf222e; font-weight: 600; }",
+      ".items { list-style: none; padding: 0; margin: 0.5rem 0; }",
+      ".item { display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem 0.25rem; border-bottom: 1px solid #eaeef2; }",
+      ".item label { flex: 1; display: flex; align-items: center; gap: 0.6rem; cursor: pointer; }",
+      ".item.done .title { color: #8c959f; text-decoration: line-through; }",
+      ".tag { font-size: 0.75rem; padding: 0.1rem 0.5rem; border-radius: 999px; background: #eaeef2; color: #59636e; }",
+      ".tag.high { background: #ffebe9; color: #cf222e; }",
+      ".tag.low { background: #ddf4ff; color: #0969da; }",
+      ".remove { border: none; background: none; color: #8c959f; font-size: 1.2rem; padding: 0 0.4rem; }",
+      ".remove:hover { color: #cf222e; background: none !important; }",
+      ".empty { color: #8c959f; text-align: center; padding: 1.5rem 0; }",
+      ".footer { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.85rem; color: #59636e; margin-top: 0.75rem; }",
+      ".filters { display: flex; gap: 0.25rem; }",
+      ".filter { border-color: transparent; background: none; padding: 0.25rem 0.6rem; }",
+      ".filter.current { border-color: #d1d9e0; background: #f6f8fa; color: #1f2328; }",
+      ".clear { font-size: 0.85rem; padding: 0.25rem 0.6rem; }",
+    ],
+    "\n",
+  )
+}
+
+test "a submitted form adds a to-do, or says what is wrong" {
+  let m = update(init(), Typed { text: "Water the plants" })
+  assert m.draft == "Water the plants"
+  let m = update(m, Submitted {
+    fields: dict([("title", "  Water the plants "), ("priority", "high")]),
+  })
+  assert len(m.todos) == 3 && m.draft == "" && m.error == None
+  assert m.todos.map(t -> t.title) == [
+    "Read the counter example",
+    "Try a title that is far too long for this list",
+    "Water the plants",
+  ]
+  let m = update(m, Submitted { fields: dict([("title", "   ")]) })
+  assert len(m.todos) == 3 && m.error == Some("Write something first.")
+  let m = update(
+    m,
+    Submitted { fields: dict([("title", repeat("x", 61))]) },
+  )
+  assert m.error == Some("At most 60 characters (61 now).")
+}
+
+test "to-dos are toggled, filtered and cleared" {
+  let m = update(init(), Toggle { id: 1 })
+  assert len(shown(update(m, Show { filter: Active }))) == 0
+  let m = update(m, ClearCompleted)
+  assert len(m.todos) == 0
+}
+
+test "the page's handlers make messages from what is entered" {
+  // in page order: the form (0), the title field (1), the checkboxes (2, 3)
+  let page = view(init())
+  assert dispatch(page, 1, "Call Ada", dict([])) == Some(Typed { text: "Call Ada" })
+  let fields = dict([("title", "Call Ada")])
+  assert dispatch(page, 0, "", fields) == Some(Submitted { fields })
+  assert dispatch(page, 3, "true", dict([])) == Some(Toggle { id: 1 })
+  assert dispatch(page, 4, "", dict([])) == None
+}

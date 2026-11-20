@@ -9,6 +9,7 @@ mod generate;
 mod git;
 mod interp;
 mod lexer;
+mod llvm;
 mod merge;
 mod names;
 mod package;
@@ -16,6 +17,7 @@ mod pending;
 mod parser;
 mod printer;
 mod resolve;
+mod serve;
 mod smt;
 mod stdlib;
 mod termination;
@@ -125,11 +127,25 @@ Running:
                                (Console, Files, Environment from std) and ARGS; it
                                returns (), an ExitCode, or a Result (Err: exit code 1).
                                PATH is a .strata file or a package folder (or --file)
+  run --jit [PATH] [-- ARGS..] the same, compiled to machine code in memory (LLVM) and run:
+                               much faster, when the program only uses what compiles
+                               (see build); otherwise interpreted, with a note saying why.
+                               Needs strata built with `--features jit`
+  serve [PATH] [--port N]      serve the web: each request is passed to the program's
+                               `fn handle(req: Request) -> Response` (std.http), which may
+                               also ask for Console, Files, Environment (default port 8000);
+                               or run it as an app: `init`, `update` and `view` (std.web)
   run <fn> [JSON-ARGS] [--trace]
                                call one function: args are a JSON array validated
                                against the types; --trace prints each call and return
                                to stderr
   test [FILTER]                run test blocks
+  build [PATH] [-o OUT] [--emit-llvm]
+                               compile the program to a native executable, through LLVM
+                               (needs clang; STRATA_CC chooses another): `main` takes no
+                               parameters yet, and only part of the language compiles
+                               (Int, Float, Bool, String, functions, control flow,
+                               contracts). --emit-llvm writes the LLVM IR instead
   builtins [--json]            list built-in functions and their signatures
 
 With --file, commands operate on a source file instead of a codebase.";
@@ -142,7 +158,7 @@ struct Args {
 impl Args {
     fn parse() -> Args {
         let raw: Vec<String> = std::env::args().skip(1).collect();
-        let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed", "--port", "--module", "--split", "--from", "--to", "--step", "--base", "--require", "--cross-check"];
+        let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed", "--port", "--module", "--split", "--from", "--to", "--step", "--base", "--require", "--cross-check", "-o"];
         let (mut pos, mut flags) = (Vec::new(), HashMap::<String, Vec<String>>::new());
         let mut i = 0;
         while i < raw.len() {
@@ -302,7 +318,9 @@ fn run() -> Result<bool, String> {
         "holes" => cmd::holes(&args, json_out),
         "verify" => cmd::verify(&args, json_out),
         "run" => cmd::run_program(&args),
+        "serve" => cmd::serve_program(&args),
         "test" => cmd::run_tests(&args),
+        "build" => cmd::build(&args),
         other => Err(format!("unknown command `{other}` (try `strata help`)")),
     }
 }
