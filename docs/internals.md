@@ -9,7 +9,7 @@
 | `src/names.rs` | qualified names: `short`, `module_of`, `qualify` |
 | `src/lexer.rs`, `src/parser.rs` | text → tree |
 | `src/printer.rs` | tree → text (canonical form, used for hashing) |
-| `src/types.rs`, `src/types/` | type inference, traits, holes; `env.rs` (what is declared), `exhaustive.rs` (exhaustiveness, unreachable arms), `ints.rs` / `reals.rs` (value sets of refinements) |
+| `src/types.rs`, `src/types/` | type inference, traits, holes (`elaborate_typed`: the program as it runs, with each expression's inferred type, for the compiler); `env.rs` (what is declared), `exhaustive.rs` (exhaustiveness, unreachable arms), `ints.rs` / `reals.rs` (value sets of refinements) |
 | `src/interp.rs` | interpreter: trait dispatch, mocks, runtime contracts, JSON in/out, traces |
 | `src/generate.rs` | value generators derived from types and refinements (used by mocks and fuzzing) |
 | `src/smt.rs`, `src/smt/regexes.rs` | SMT verification: symbolic execution of bodies into proof obligations, Z3 queries, models back to values; regexes translated to SMT-LIB |

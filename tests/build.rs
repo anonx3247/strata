@@ -87,6 +87,45 @@ fn faults_and_control_flow_match_the_interpreter() {
 }
 
 #[test]
+fn records_variants_and_generics_run_as_interpreted() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("data");
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/build/data.strata");
+    let (out, code) = same_as_interpreter(&file, &d);
+    assert!(out.contains("{\"Err\":\"3 is odd\"}") && out.contains("big circle, circle, rect or dot, nothing"), "{out}");
+    assert_eq!(code, 101);
+    let cases = [
+        ("field_refinement", "type Quantity = Int where 1 <= it && it <= 99\ntype Line = { sku: String, qty: Quantity }\nfn main() -> () { let mut l = Line { sku: \"a\", qty: 5 } l.qty = 0 }", 101),
+        (
+            "tree",
+            "type Tree[T] =\n  | Leaf\n  | Node(Tree[T], T, Tree[T])\n\
+             fn insert(t: Tree[Int], x: Int) -> Tree[Int] { match t { Leaf => Node(Leaf, x, Leaf), Node(l, v, r) => if x < v { Node(insert(l, x), v, r) } else { Node(l, v, insert(r, x)) } } }\n\
+             fn size[T](t: Tree[T]) -> Int { match t { Leaf => 0, Node(l, _, r) => size(l) + 1 + size(r) } }\n\
+             fn main() -> () { let mut t: Tree[Int] = Leaf for i in range(0, 10) { t = insert(t, (i * 7) % 10) } print(size(t)) print(insert(insert(Leaf, 2), 1)) }",
+            0,
+        ),
+        ("own_methods", "type Item = { name: String, price: Int }\nimpl Item {\n  fn new(name: String) -> Item { Item { name: name, price: 0 } }\n  fn label(self) -> String { f\"{self.name}: {self.price}\" }\n}\nfn main() -> () { print(Item.new(\"cup\").label()) }", 0),
+        ("refined_argument", "fn f(o: Option[Positive]) -> Int { o except { 0 } }\nfn main() -> () { print(f(Some(3))) let x: Option[Int] = Some(-2) print(f(x)) }", 101),
+        ("main_err", "fn main() -> Result[(), String] { print(\"working\") Err(\"it broke\") }", 1),
+        (
+            "errors",
+            "type E =\n  | NotFound\n  | Bad { why: String }\n\
+             fn g(n: Int) -> Result[Int, E] { if n == 0 { Err(NotFound) } else if n < 0 { Err(Bad { why: \"neg\" }) } else { Ok(n) } }\n\
+             fn h(n: Int) -> Result[Int, E] { let v = g(n)! Ok(v * 2) }\n\
+             fn main() -> () { print(h(3)) print(h(0)) print(h(-1)) print(h(0) == Err(NotFound)) let (x, y) = (5, \"s\") print(f\"{x}{y}\") }",
+            0,
+        ),
+    ];
+    for (name, src, want) in cases {
+        let (out, code) = case(&d, name, src);
+        assert_eq!(code, want, "{name}: {out}");
+    }
+}
+
+#[test]
 fn what_is_not_compiled_yet_is_named() {
     let d = tmp("unsupported");
     let f = d.join("lists.strata");
