@@ -21,6 +21,9 @@ use crate::types::Env;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Write;
 
+#[cfg(feature = "jit")]
+pub mod jit;
+
 /// The runtime's C source, compiled with the program.
 pub const RUNTIME: &str = include_str!("llvm/runtime.c");
 

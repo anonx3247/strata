@@ -24,6 +24,11 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
     let (env, _) = types::Env::new(p);
     let Some(name) = rest.first() else {
         let program_args = args.flags.get("--").cloned().unwrap_or_default();
+        if args.flag("--jit") && env.fns.contains_key("main") {
+            if let Some(code) = run_jit(p)? {
+                std::process::exit(code);
+            }
+        }
         std::process::exit(run_main(p, &env, &prog, program_args, args.flag("--trace"))?);
     };
     let f = env.fns.get(name).ok_or(format!("no function `{name}`"))?.clone();
@@ -55,6 +60,24 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
         }
     }
     Ok(true)
+}
+
+/// `strata run --jit`: compile `main` and run it in this process; `None`
+/// when the program uses what doesn't compile yet (it is then interpreted).
+#[cfg(feature = "jit")]
+fn run_jit(p: &Program) -> Result<Option<i32>, String> {
+    match llvm::compile(p, "main") {
+        Ok(ir) => llvm::jit::run(&ir).map(Some),
+        Err(e) => {
+            eprintln!("note: interpreted, not compiled: {e}");
+            Ok(None)
+        }
+    }
+}
+
+#[cfg(not(feature = "jit"))]
+fn run_jit(_: &Program) -> Result<Option<i32>, String> {
+    Err("this strata was built without the JIT: build it with `cargo build --release --features jit` (needs LLVM 23)".into())
 }
 
 /// `strata test`.
