@@ -472,6 +472,38 @@ The files and `strata.log` are committed. The log is append-only and merges by u
 
 ## Verification
 
+`examples/math.strata` is a short tour: recursion, loops, lists and refined types, with two bugs at the end. Its verification:
+
+```text
+$ strata --file examples/math.strata verify
+✓ factorial                proven (2 checks)
+✓ gcd                      proven (5 checks)
+✓ power                    proven (3 checks)
+✓ digit_sum                proven (3 checks)
+✓ ackermann                proven (7 checks)
+✓ triangle                 proven (3 checks)
+~ isqrt                    fuzzed: 200 cases, 0 discarded by `requires`; 3 of 4 checks proven
+    not proven: ensures it * it <= n: the solver found a possible counterexample: n = 0, but running it did not fail
+✓ collatz_steps            proven (6 checks)
+    may not terminate: the loop `while x != 1`: no bound was shown to go down (tried `x - 1`, `1 - x`)
+✓ positive_squares         proven (1 check)
+✓ is_prime                 proven (2 checks)
+✓ primes                   proven (1 check)
+✓ first_or_one             proven (1 check)
+✗ average                  Runtime violation (found by the solver)
+    input:   [[]]
+    division by zero (stack: average)
+✗ next_digit               Refinement violation (found by the solver)
+    input:   [9]
+    result of `next_digit`: 10 does not satisfy `Digit` (where 0 <= it && it <= 9) (stack: next_digit)
+```
+
+- **Recursion terminates, with a measure found automatically:** `n` for `factorial`, `b` for `gcd` (`gcd(b, a % b)`), `e` for `power`, and the pair `(m, n)` for Ackermann's function. `--checks` says which.
+- **Loops:** `triangle` keeps `total` a `Natural` through its `for` loop. `isqrt`'s loop is shown to end, but its `ensures` needs a loop invariant, which the verifier doesn't infer yet: it is fuzzed instead, and says why.
+- **Termination is not assumed:** whether the Collatz sequence always reaches 1 is an open problem, so `collatz_steps` "may not terminate". Its other checks (every assignment keeps `x` a `Positive`) are proven.
+- **Lists:** `filter(x -> x > 0).map(x -> x * x)` gives a `List[Positive]`; `primes` only keeps numbers that passed `is_prime`, whose contract says they are at least 2; `first_or_one` uses its `requires all(...)`.
+- **The bugs** are refuted by the solver with concrete inputs: the average of `[]`, and the digit 9 plus one.
+
 `strata verify` turns every contract into proof obligations and gives each function one of these results:
 
 - **proven** (`✓`): the SMT solver proved every check. `--checks` lists them.
