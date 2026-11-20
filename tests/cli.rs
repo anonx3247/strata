@@ -404,10 +404,15 @@ fn codebase_edits_are_checked_and_atomic() {
     assert!(strata(&["add", &example()], &d, None).0);
     let (ok, out) = strata(&["edit"], &d, Some("fn discount(amount: Cents) -> Cents ensures it <= amount { amount }"));
     assert!(ok && out.contains("implementation only"), "{out}");
-    let (ok, out) = strata(&["edit"], &d, Some("fn total(lines: List[Cents]) -> Cents { sum(lines) }"));
+    // an edit that doesn't check in itself is rejected
+    let (ok, out) = strata(&["edit"], &d, Some("fn total(lines: List[Cents]) -> Cents { sum(lines) + true }"));
     assert!(!ok && out.contains("rejected"), "{out}");
+    // one that breaks a caller isn't committed: it opens a pending change, with a hole for the caller
+    let (ok, out) = strata(&["edit"], &d, Some("fn total(lines: List[Cents]) -> Cents { sum(lines) }"));
+    assert!(ok && out.contains("it is now a hole, in a pending change") && out.contains("was: total(lines)"), "{out}");
+    assert!(strata(&["abort"], &d, None).0);
     let (_, render) = strata(&["render"], &d, None);
-    assert!(render.contains("fn total(lines: NonEmpty[Line])"), "breaking edit must not be committed");
+    assert!(render.contains("fn total(lines: NonEmpty[Line])"), "aborted: nothing changed");
 }
 
 #[test]
@@ -1870,4 +1875,75 @@ fn sync_follows_moves() {
     assert!(ok && out.contains("merged main") && out.contains("follows the rename orders.charge → billing.charge"), "{out}");
     let r = std::fs::read_to_string(d.join("report.strata")).unwrap();
     assert!(r.contains("use orders.Order") && r.contains("use billing.charge") && r.contains("charge(o) + billing.charge(o)"), "{r}");
+}
+
+const TAXES: &str = "fn tax(amount: Int) -> Int {\n  amount / 10\n}\n\nfn total(amount: Int) -> Int {\n  amount + tax(amount)\n}\n\nfn double_tax(a: Int) -> Int {\n  tax(a) * 2\n}\n\ntest \"totals\" {\n  assert total(100) == 110\n}\n";
+
+#[test]
+fn a_breaking_edit_opens_a_pending_change_with_holes() {
+    let d = tmp("pending");
+    std::fs::write(d.join("main.strata"), TAXES).unwrap();
+    assert!(strata(&["init"], &d, None).0);
+
+    // the edit itself checks; the uses it breaks become holes that remember what they were
+    let (ok, out) = strata(&["edit", "-m", "tax takes a rate"], &d, Some("fn tax(amount: Int, rate: Int) -> Int { amount * rate / 100 }"));
+    assert!(ok && out.contains("the edit breaks 2 uses elsewhere"), "{out}");
+    assert!(out.contains("?pending_1  in total\n      was: tax(amount)\n      why: call to `tax`: expects 2 arguments, got 1"), "{out}");
+    let m = std::fs::read_to_string(d.join("main.strata")).unwrap();
+    assert!(m.contains("amount + ?pending_1") && m.contains("?pending_2 * 2"), "{m}");
+    assert_eq!(std::fs::read_to_string(d.join("strata.log")).unwrap(), "", "nothing logged yet");
+    let (_, out) = strata(&["holes"], &d, None);
+    assert!(out.contains("?pending_1  in total\n  goal:    Int\n  was:     tax(amount)"), "{out}");
+    // a pending change's holes don't get merged
+    let (ok, out) = strata(&["ci"], &d, None);
+    assert!(!ok && out.contains("?pending_1 in total belongs to an unfinished change"), "{out}");
+
+    // an edit that doesn't check in itself is still rejected
+    let (ok, out) = strata(&["edit"], &d, Some("fn total(amount: Int) -> Int { amount + true }"));
+    assert!(!ok && out.contains("rejected"), "{out}");
+
+    // fill one, rename along the way (it joins the change), and `done` waits for the other
+    assert!(strata(&["edit"], &d, Some("fn total(amount: Int) -> Int { amount + tax(amount, 10) }")).0);
+    assert!(strata(&["rename", "double_tax", "twice_tax"], &d, None).0);
+    let (ok, out) = strata(&["status"], &d, None);
+    assert!(ok && out.contains("pending change: tax takes a rate  (1 hole left, 1 filled)") && out.contains("?pending_2  in twice_tax"), "{out}");
+    let (ok, out) = strata(&["done"], &d, None);
+    assert!(!ok && out.contains("1 hole of this change is still open"), "{out}");
+    assert!(strata(&["edit"], &d, Some("fn twice_tax(a: Int) -> Int { tax(a, 10) * 2 }")).0);
+    let (ok, out) = strata(&["done"], &d, None);
+    assert!(ok && out.contains("recorded \"tax takes a rate\" as one change"), "{out}");
+
+    // one log entry for the whole change, with its rename
+    let log = std::fs::read_to_string(d.join("strata.log")).unwrap();
+    assert_eq!(log.lines().count(), 1, "{log}");
+    assert!(log.contains(r#""from":"double_tax""#), "{log}");
+    let (ok, out) = strata(&["test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    let (_, out) = strata(&["status"], &d, None);
+    assert!(out.contains("no pending change"), "{out}");
+}
+
+#[test]
+fn a_pending_change_can_be_aborted_or_kept_with_its_holes() {
+    let d = tmp("pending-abort");
+    std::fs::write(d.join("main.strata"), TAXES).unwrap();
+    assert!(strata(&["init"], &d, None).0);
+    assert!(strata(&["edit"], &d, Some("fn tax(amount: Int, rate: Int) -> Int { amount * rate / 100 }")).0);
+    assert!(strata(&["edit", "--module", "extra"], &d, Some("fn more() -> Int { 1 }")).0);
+    assert!(d.join("extra.strata").exists());
+    // abort: every file as it was, including the module the change added
+    let (ok, out) = strata(&["abort"], &d, None);
+    assert!(ok && out.contains("undid the pending change"), "{out}");
+    assert_eq!(std::fs::read_to_string(d.join("main.strata")).unwrap(), TAXES);
+    assert!(!d.join("extra.strata").exists());
+    assert_eq!(std::fs::read_to_string(d.join("strata.log")).unwrap(), "");
+
+    // keep: recorded as is, the holes become ordinary ones
+    assert!(strata(&["edit"], &d, Some("fn tax(amount: Int, rate: Int) -> Int { amount * rate / 100 }")).0);
+    let (ok, out) = strata(&["done", "--keep-holes", "-m", "rates, callers to do"], &d, None);
+    assert!(ok && out.contains("2 holes kept as ?todo_"), "{out}");
+    let m = std::fs::read_to_string(d.join("main.strata")).unwrap();
+    assert!(m.contains("amount + ?todo_1") && m.contains("?todo_2 * 2"), "{m}");
+    let (ok, out) = strata(&["ci"], &d, None);
+    assert!(ok, "ordinary holes are fine: {out}");
 }

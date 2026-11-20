@@ -6,6 +6,7 @@ mod interp;
 mod lexer;
 mod merge;
 mod package;
+mod pending;
 mod parser;
 mod printer;
 mod resolve;
@@ -41,6 +42,11 @@ every change made through strata, committed with them):
                                (`old` may be qualified, `new` is the short name)
   move <name> <module>         move a function, type or trait to another module (its file),
                                updating references and imports (`main` is the root module)
+  status                       the pending change, if any: its holes, filled or not
+  done [--keep-holes] [-m MSG] record the pending change as one log entry
+  abort                        undo the pending change: every file as it was before it
+  (an `edit` that breaks code elsewhere turns each broken use into a hole, ?pending_N, and
+   opens a pending change; further edits, renames and moves join it)
   log                          show the patch history
   diff [--from N] [--to N] [--step K] [--json]
                                what changed, structurally: renames, new variants, stronger
@@ -238,15 +244,41 @@ fn run() -> Result<bool, String> {
                 parser::parse_module_file(&s, args.val("--module").unwrap_or("")).map_err(|e| format!("parse error at {e}"))?
             };
             let deletes: Vec<String> = args.flags.get("--rm").cloned().unwrap_or_default();
+            let mut edited: Vec<String> = edits.decls.iter().map(|d| d.qname()).collect();
+            edited.extend(deletes.iter().cloned());
             let new = store::merge(&cb.program, edits, &deletes);
             let rep = full_check(&new);
-            if !rep.ok() {
-                print_errors(&rep);
-                eprintln!("\nrejected: the codebase would not check; nothing was changed");
-                return Ok(false);
-            }
             let msg = args.val("-m").unwrap_or(if cmd == "add" { "import" } else { "edit" });
-            let changes = cb.commit(new, msg)?;
+            if !rep.ok() {
+                // an edit that breaks code elsewhere: the broken uses become holes, in a pending change
+                let open = pending::load(&cb);
+                let first = open.as_ref().map_or(1, |p| p.holes.len() + 1);
+                match (cmd, pending::holeify(&cb.program, &new, &edited, &rep.errors, first)) {
+                    ("edit", Ok((with_holes, holes))) => {
+                        let mut p = match open {
+                            Some(p) => p,
+                            None => pending::start(&cb, msg)?,
+                        };
+                        cb.write(with_holes)?;
+                        p.holes.extend(holes.iter().cloned());
+                        pending::save(&cb, &p)?;
+                        println!("the edit breaks {} use{} elsewhere; {}, in a pending change:", holes.len(), if holes.len() == 1 { "" } else { "s" }, if holes.len() == 1 { "it is now a hole" } else { "they are now holes" });
+                        for h in &holes {
+                            println!("  ?{}  in {}
+      was: {}
+      why: {}", h.name, h.decl, h.was, h.why.join("; "));
+                        }
+                        println!("fill them with `strata edit`, then `strata done` (or `strata abort` to undo the whole change)");
+                        return Ok(true);
+                    }
+                    _ => {
+                        print_errors(&rep);
+                        eprintln!("\nrejected: the codebase would not check; nothing was changed");
+                        return Ok(false);
+                    }
+                }
+            }
+            let changes = record(&mut cb, new, msg, json!({}))?;
             if json_out {
                 println!("{}", serde_json::to_string_pretty(&changes).unwrap());
                 return Ok(true);
@@ -357,7 +389,7 @@ fn run() -> Result<bool, String> {
             let default_msg = format!("rename {}", arrows.join(", "));
             let msg = args.val("-m").unwrap_or(&default_msg);
             let entries: Vec<serde_json::Value> = pairs.iter().zip(&news).map(|((o, _, k), n)| json!({"from": o, "to": n, "kind": k})).collect();
-            cb.commit_with(renamed, msg, json!({"renames": entries, "references": updated}))?;
+            record(&mut cb, renamed, msg, json!({"renames": entries, "references": updated}))?;
             if json_out {
                 println!("{}", json!({"renames": entries, "references": updated, "mentions": mentions}));
                 return Ok(true);
@@ -405,7 +437,7 @@ fn run() -> Result<bool, String> {
             let from_m = old_q.rsplit_once('.').map(|(m, _)| m.to_string()).unwrap_or_default();
             let default_msg = format!("move {old_q} → {}", shown(&target));
             let msg = args.val("-m").unwrap_or(&default_msg);
-            cb.commit_with(moved, msg, json!({"renames": [{"from": old_q, "to": new_q, "kind": "move"}], "references": updated}))?;
+            record(&mut cb, moved, msg, json!({"renames": [{"from": old_q, "to": new_q, "kind": "move"}], "references": updated}))?;
             if json_out {
                 println!("{}", json!({"from": old_q, "to": new_q, "references": updated}));
                 return Ok(true);
@@ -418,6 +450,54 @@ fn run() -> Result<bool, String> {
             if !imports.is_empty() {
                 println!("imports: {}", imports.join("; "));
             }
+        }
+        "status" => {
+            let Source::Db(cb) = load(&args)? else { return Err("`status` needs a package".into()) };
+            let Some(p) = pending::load(&cb) else {
+                println!("no pending change");
+                return Ok(true);
+            };
+            let open: std::collections::HashSet<String> = types::check(&cb.program).holes.into_iter().map(|h| h.name).collect();
+            let (left, filled): (Vec<&pending::Hole>, Vec<&pending::Hole>) = p.holes.iter().partition(|h| open.contains(&h.name));
+            println!("pending change: {}  ({} hole{} left, {} filled)", p.message, left.len(), if left.len() == 1 { "" } else { "s" }, filled.len());
+            for h in &left {
+                println!("  ?{}  in {}\n      was: {}", h.name, h.decl, h.was);
+            }
+            println!("{}", if left.is_empty() { "`strata done` records it as one change; `strata abort` undoes it" } else { "fill the holes with `strata edit`; `strata done --keep-holes` records it as is; `strata abort` undoes it" });
+        }
+        "done" => {
+            let Source::Db(mut cb) = load(&args)? else { return Err("`done` needs a package".into()) };
+            let p = pending::load(&cb).ok_or("no pending change")?;
+            let open: std::collections::HashSet<String> = types::check(&cb.program).holes.into_iter().map(|h| h.name).collect();
+            let left: Vec<&pending::Hole> = p.holes.iter().filter(|h| open.contains(&h.name)).collect();
+            if !left.is_empty() && !args.flag("--keep-holes") {
+                eprintln!("{} hole{} of this change {} still open:", left.len(), if left.len() == 1 { "" } else { "s" }, if left.len() == 1 { "is" } else { "are" });
+                for h in &left {
+                    eprintln!("  ?{}  in {}  (was: {})", h.name, h.decl, h.was);
+                }
+                eprintln!("fill them with `strata edit`, keep them with `strata done --keep-holes`, or undo the change with `strata abort`");
+                return Ok(false);
+            }
+            if !left.is_empty() {
+                let kept = pending::keep_holes(&cb.program);
+                cb.write(kept)?;
+            }
+            let before = pending::before_program(&p)?;
+            let msg = args.val("-m").unwrap_or(&p.message).to_string();
+            let extra = if p.renames.is_empty() { json!({}) } else { json!({"renames": p.renames}) };
+            let changes = cb.log_entry(&before, &msg, extra)?;
+            pending::clear(&cb);
+            println!("recorded \"{msg}\" as one change: {} definition{}", changes.len(), if changes.len() == 1 { "" } else { "s" });
+            if !left.is_empty() {
+                println!("{} hole{} kept as ?todo_…, see `strata holes`", left.len(), if left.len() == 1 { "" } else { "s" });
+            }
+        }
+        "abort" => {
+            let Source::Db(cb) = load(&args)? else { return Err("`abort` needs a package".into()) };
+            let p = pending::load(&cb).ok_or("no pending change")?;
+            pending::restore(&cb, &p)?;
+            pending::clear(&cb);
+            println!("undid the pending change \"{}\": every file is as it was before it", p.message);
         }
         "diff" => {
             let num = |k: &str| args.val(k).map(|v| v.parse::<usize>().map_err(|_| format!("{k} needs a number"))).transpose();
@@ -701,8 +781,15 @@ fn run() -> Result<bool, String> {
             if rep.holes.is_empty() {
                 println!("no holes");
             }
+            let open = match &src {
+                Source::Db(cb) => pending::load(cb),
+                _ => None,
+            };
             for h in &rep.holes {
                 println!("?{}  in {}\n  goal:    {}", h.name, h.decl, h.goal);
+                if let Some(ph) = open.as_ref().and_then(|p| p.holes.iter().find(|x| x.name == h.name)) {
+                    println!("  was:     {}\n  why:     {}", ph.was, ph.why.join("; "));
+                }
                 if !h.context.is_empty() {
                     println!("  context: {}", h.context.iter().map(|(n, t)| format!("{n}: {t}")).collect::<Vec<_>>().join(", "));
                 }
@@ -981,6 +1068,27 @@ fn run() -> Result<bool, String> {
     Ok(true)
 }
 
+/// Commit a change, or, during a pending change, only write it: the change
+/// is logged as one entry when it is done.
+fn record(cb: &mut Codebase, new: Program, msg: &str, extra: serde_json::Value) -> Result<Vec<store::Change>, String> {
+    match pending::load(cb) {
+        None => cb.commit_with(new, msg, extra),
+        Some(mut p) => {
+            let changes = store::changes(&cb.program, &new);
+            cb.write(new)?;
+            p.renames.extend(extra["renames"].as_array().cloned().unwrap_or_default());
+            // the holes' definitions keep their names
+            for (from, to) in store::renames_of(&extra) {
+                for h in p.holes.iter_mut().filter(|h| h.decl == from) {
+                    h.decl = to.clone();
+                }
+            }
+            pending::save(cb, &p)?;
+            Ok(changes)
+        }
+    }
+}
+
 fn git_out(args: &[&str]) -> Result<String, String> {
     let o = Command::new("git").args(args).output().map_err(|e| format!("git: {e}"))?;
     if !o.status.success() {
@@ -1033,6 +1141,10 @@ fn ci(fix: bool) -> Result<bool, String> {
         let p = package::parse(package::files(path)?)?;
         let rep = full_check(&p);
         let mut errors: Vec<String> = rep.errors.iter().map(|e| format!("error in {}: {}", e.decl, e.msg)).collect();
+        // holes of an unfinished change are not to be merged
+        errors.extend(rep.holes.iter().filter(|h| h.name.starts_with(pending::PREFIX)).map(|h| {
+            format!("?{} in {} belongs to an unfinished change: fill it and run `strata done`, or `strata abort`", h.name, h.decl)
+        }));
         if let Some(pkg) = &pkg {
             errors.extend(package::bad_exports(pkg, &p).into_iter().chain(package::bad_policy(pkg, &p)).map(|e| format!("{}: {e}", package::FILE)));
         }

@@ -353,18 +353,20 @@ impl Codebase {
         self.root.join(DIR)
     }
 
-    /// Replace the program with `new`, rewriting its files and appending a log entry.
-    pub fn commit(&mut self, new: Program, message: &str) -> Result<Vec<Change>, String> {
-        self.commit_with(new, message, serde_json::json!({}))
-    }
-
     /// Commit, adding `extra`'s fields to the log entry (e.g. `"rename"`).
     pub fn commit_with(&mut self, new: Program, message: &str, extra: serde_json::Value) -> Result<Vec<Change>, String> {
-        let changes = changes(&self.program, &new);
+        let old = self.program.clone();
+        let changes = changes(&old, &new);
         if changes.is_empty() {
             return Ok(changes);
         }
-        // one file per module; a module left with no definitions loses its file
+        self.write(new)?;
+        self.log_entry(&old, message, extra)
+    }
+
+    /// Rewrite the files to `new` (one file per module; a module left with no
+    /// definitions loses its file), without logging.
+    pub fn write(&mut self, new: Program) -> Result<(), String> {
         let mut mods: BTreeSet<String> = self.program.decls.iter().map(|d| d.module.clone()).collect();
         mods.extend(new.decls.iter().map(|d| d.module.clone()));
         for m in mods {
@@ -381,9 +383,20 @@ impl Codebase {
                 fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             }
         }
+        self.program = new;
+        Ok(())
+    }
+
+    /// Append one log entry: what changed from `old` to the current program.
+    pub fn log_entry(&self, old: &Program, message: &str, extra: serde_json::Value) -> Result<Vec<Change>, String> {
+        let new = &self.program;
+        let changes = changes(old, new);
+        if changes.is_empty() {
+            return Ok(changes);
+        }
         let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let texts: HashMap<String, (String, String)> = new.decls.iter().map(|d| (d.qname(), (d.module.clone(), printer::decl(d)))).collect();
-        let old_texts: HashMap<String, (String, String)> = self.program.decls.iter().map(|d| (d.qname(), (d.module.clone(), printer::decl(d)))).collect();
+        let old_texts: HashMap<String, (String, String)> = old.decls.iter().map(|d| (d.qname(), (d.module.clone(), printer::decl(d)))).collect();
         let changes_json: Vec<serde_json::Value> = changes
             .iter()
             .map(|c| {
@@ -413,8 +426,19 @@ impl Codebase {
         use std::io::Write;
         let mut f = fs::OpenOptions::new().create(true).append(true).open(self.root.join(LOG)).map_err(|e| e.to_string())?;
         writeln!(f, "{entry}").map_err(|e| e.to_string())?;
-        self.program = new;
         Ok(changes)
+    }
+
+    /// The package's folder.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The local cache folder, created if needed.
+    pub fn cache_dir(&self) -> PathBuf {
+        let d = self.cache();
+        let _ = fs::create_dir_all(&d);
+        d
     }
 
     pub fn log(&self) -> Vec<serde_json::Value> {
