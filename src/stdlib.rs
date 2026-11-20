@@ -38,7 +38,8 @@ pub const HOST: &[(&str, &str, &str)] = &[
 ];
 
 /// The private types that reach the real system. Only `strata run` makes
-/// them (for `main`), and fuzzing never picks them for a type parameter.
+/// them (for `main`), `verify` never runs them, and fuzzing never picks them
+/// for a type parameter.
 pub const HOST_TYPES: &[&str] = &["std.io.Terminal", "std.fs.Disk", "std.process.Process"];
 
 pub fn is_host(name: &str) -> bool {
