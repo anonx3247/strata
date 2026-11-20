@@ -37,7 +37,8 @@ pub struct Pending {
     /// what started it (the first edit's message)
     pub message: String,
     pub started: u64,
-    /// the package's files before the change: (path in the package, text)
+    /// the package's module files before the change: (path in the package,
+    /// bytes in hex)
     pub before: Vec<(String, String)>,
     pub holes: Vec<Hole>,
     /// renames and moves made during the change, for its log entry
@@ -59,14 +60,18 @@ pub fn clear(cb: &Codebase) {
 
 /// Start a pending change: remember the files as they are.
 pub fn start(cb: &Codebase, message: &str) -> Result<Pending, String> {
-    let before = crate::package::files(cb.root())?.into_iter().map(|(r, t)| (r.to_string_lossy().to_string(), t)).collect();
+    let before = crate::package::files(cb.root())?.into_iter().map(|(r, b)| (r.to_string_lossy().to_string(), hex(&b))).collect();
     let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     Ok(Pending { message: message.to_string(), started, before, holes: vec![], renames: vec![] })
 }
 
 /// The program before the change.
 pub fn before_program(p: &Pending) -> Result<Program, String> {
-    crate::package::parse(p.before.iter().map(|(r, t)| (std::path::PathBuf::from(r), t.clone())).collect())
+    let mut files = Vec::new();
+    for (r, h) in &p.before {
+        files.push((std::path::PathBuf::from(r), unhex(h).ok_or_else(|| format!("{FILE}: corrupt bytes for {r}"))?));
+    }
+    crate::package::decode(files)
 }
 
 /// Put the files back as they were before the change.
@@ -77,14 +82,23 @@ pub fn restore(cb: &Codebase, p: &Pending) -> Result<(), String> {
             std::fs::remove_file(cb.root().join(&rel)).map_err(|e| format!("{}: {e}", rel.display()))?;
         }
     }
-    for (rel, text) in &p.before {
+    for (rel, h) in &p.before {
         let path = cb.root().join(rel);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        std::fs::write(&path, text).map_err(|e| format!("{rel}: {e}"))?;
+        let bytes = unhex(h).ok_or_else(|| format!("{FILE}: corrupt bytes for {rel}"))?;
+        crate::store::write_file(&path, &bytes)?;
     }
     Ok(())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    (0..s.len()).step_by(2).map(|i| s.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok())).collect()
 }
 
 /// The names a change to these definitions can break, as written: each

@@ -121,19 +121,19 @@ pub fn log_range(cb: &Codebase, from: Option<usize>, to: Option<usize>) -> Resul
     })
 }
 
-/// The sources at a git revision: a file, or a folder of `.strata` files.
+/// The program at a git revision: a file, or a folder of `.strata` module files.
 fn sources_at(path: &Path, rev: &str) -> Result<Program, String> {
     if path.is_dir() {
         let mut files = Vec::new();
         for rel in crate::git::run(Some(path), &["ls-tree", "-r", "--name-only", rev, "--", "."])?.lines().filter(|l| l.ends_with(".strata")) {
-            files.push((PathBuf::from(rel), crate::git::run(Some(path), &["show", &format!("{rev}:./{rel}")])?));
+            files.push((PathBuf::from(rel), crate::git::bytes(Some(path), &["show", &format!("{rev}:./{rel}")])?));
         }
-        crate::parse_files(files)
+        crate::package::decode(files)
     } else {
         let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
         let name = path.file_name().ok_or("not a file")?.to_string_lossy().to_string();
-        match crate::git::run(Some(dir), &["show", &format!("{rev}:./{name}")]) {
-            Ok(src) => crate::parser::parse_module_file(&src, "").map_err(|e| format!("{name} at {rev}: {e}")),
+        match crate::git::bytes(Some(dir), &["show", &format!("{rev}:./{name}")]) {
+            Ok(bytes) => crate::package::decode_file(Path::new(&name), &bytes).map_err(|e| format!("at {rev}: {e}")),
             Err(_) => Ok(Program::default()),
         }
     }
@@ -191,13 +191,13 @@ pub fn git_range(path: &Path, base: Option<&str>) -> Result<Range, String> {
         .map_err(|_| format!("`{base}` is not a branch or commit in this repository"))?
         .trim()
         .to_string();
-    let base_prog = sources_at(path, base).map_err(|e| format!("the sources at `{base}` don't parse with this version of strata ({e}), so there is nothing to compare with; pick another base"))?;
+    let base_prog = sources_at(path, base).map_err(|e| format!("the code at `{base}` can't be read by this version of strata ({e}), so there is nothing to compare with; pick another base"))?;
     let package = path.is_dir();
     let mut known = if package { ids(&log_at(&dir, base)) } else { Default::default() };
     let mut steps = Vec::new();
     let mut prev = base_prog.clone();
     let commits = crate::git::run(Some(&dir), &["log", "--reverse", "--format=%h%x09%ct%x09%s", &format!("{base}..HEAD"), "--", "."])?;
-    // a commit whose sources don't parse is folded into the next one that does
+    // a commit whose code can't be read is folded into the next one that can
     let mut skipped: Vec<String> = Vec::new();
     for l in commits.lines() {
         let mut parts = l.splitn(3, '\t');
@@ -206,14 +206,14 @@ pub fn git_range(path: &Path, base: Option<&str>) -> Result<Range, String> {
             skipped.push(sha.to_string());
             continue;
         };
-        let title = if skipped.is_empty() { subject.to_string() } else { format!("{subject} (with {}, which doesn't parse)", skipped.join(", ")) };
+        let title = if skipped.is_empty() { subject.to_string() } else { format!("{subject} (with {}, which can't be read)", skipped.join(", ")) };
         skipped.clear();
         let log = if package { log_at(&dir, sha) } else { vec![] };
         log_steps(&mut steps, &prev, &after, &log, &known, sha, when, &title);
         known.extend(ids(&log));
         prev = after;
     }
-    let head = crate::read_sources(&path.to_string_lossy(), None)?;
+    let head = crate::read_sources(&path.to_string_lossy())?;
     let log = if package { store::parse_log(&std::fs::read_to_string(dir.join(store::LOG)).unwrap_or_default()) } else { vec![] };
     log_steps(&mut steps, &prev, &head, &log, &known, "working tree", None, "uncommitted changes");
     Ok(Range {

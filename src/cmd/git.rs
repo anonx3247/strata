@@ -2,49 +2,89 @@
 
 use crate::*;
 
-/// `strata merge-file`.
+/// `strata merge-file`. The three sides are module files: each is decoded,
+/// the definitions are merged (on their text), and the result is written to
+/// OURS as a module file. A conflict leaves OURS as text with conflict
+/// markers, for a person: `strata resolve` stores it again once fixed.
 pub fn merge_file(args: &Args) -> Result<bool, String> {
     let (Some(o), Some(a), Some(b)) = (args.pos.get(1), args.pos.get(2), args.pos.get(3)) else {
         return Err("usage: strata merge-file BASE OURS THEIRS [PATH]  (git: `strata merge-file %O %A %B %P`)".into());
     };
     let path = args.pos.get(4).unwrap_or(a);
-    let read = |f: &str| std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"));
-    let (base, ours, theirs) = (read(o)?, read(a)?, read(b)?);
-    match merge::merge(&base, &ours, &theirs) {
-        Ok(m) => {
-            std::fs::write(a, &m.text).map_err(|e| format!("{a}: {e}"))?;
-            let mut ok = m.conflicts.is_empty();
-            for n in &m.notes {
-                eprintln!("strata: {path}: {n}");
-            }
-            for c in &m.conflicts {
-                eprintln!("strata: {path}: conflict in {c}");
-            }
-            // under `strata sync`, the check waits until every file is merged and the
-            // logged renames are followed: while git merges, the other files are still ours
-            let in_sync = std::env::var_os("STRATA_MERGE_BASE").is_some();
-            if ok && !in_sync {
-                match merge::new_errors(path, &m.text, &ours, &theirs) {
-                    Ok(errs) if !errs.is_empty() => {
-                        ok = false;
-                        eprintln!("strata: {path}: merged definition by definition, but the result doesn't check:");
-                        for e in errs {
-                            eprintln!("    {e}");
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(e) => eprintln!("strata: {path}: not type-checked: {e}"),
-                }
-            }
-            Ok(ok)
+    // a side that doesn't exist (a file added on both sides has no base) is empty
+    let read = |f: &str, side: &str| -> Result<Program, String> {
+        let bytes = std::fs::read(f).map_err(|e| format!("{f}: {e}"))?;
+        if bytes.is_empty() {
+            return Ok(Program::default());
         }
+        package::decode_file(std::path::Path::new(side), &bytes)
+    };
+    let sides = (read(o, "base"), read(a, "ours"), read(b, "theirs"));
+    let (Ok(base), Ok(ours), Ok(theirs)) = sides else {
+        let e = [sides.0.err(), sides.1.err(), sides.2.err()].into_iter().flatten().collect::<Vec<_>>().join("; ");
+        eprintln!("strata: {path}: can't merge: {e}");
+        return Ok(false);
+    };
+    let module = ours.decls.iter().chain(&theirs.decls).chain(&base.decls).map(|d| d.module.to_string()).next().unwrap_or_default();
+    let text = |p: &Program| printer::module_file(p, &module);
+    let m = merge::merge(&text(&base), &text(&ours), &text(&theirs))?;
+    for n in &m.notes {
+        eprintln!("strata: {path}: {n}");
+    }
+    if !m.conflicts.is_empty() {
+        std::fs::write(a, &m.text).map_err(|e| format!("{a}: {e}"))?;
+        for c in &m.conflicts {
+            eprintln!("strata: {path}: conflict in {c}");
+        }
+        eprintln!("strata: {path} is left as text with conflict markers: fix it, then `strata resolve {path}` stores it");
+        return Ok(false);
+    }
+    let merged = parser::parse_module_file(&m.text, &module).map_err(|e| format!("{path}: the merge doesn't parse ({e})"))?;
+    std::fs::write(a, store::encode_at(std::path::Path::new(path), merged.decls.clone())?).map_err(|e| format!("{a}: {e}"))?;
+    // under `strata sync`, the check waits until every file is merged and the
+    // logged renames are followed: while git merges, the other files are still ours
+    if std::env::var_os("STRATA_MERGE_BASE").is_some() {
+        return Ok(true);
+    }
+    match merge::new_errors(path, &merged, &ours, &theirs) {
+        Ok(errs) if !errs.is_empty() => {
+            eprintln!("strata: {path}: merged definition by definition, but the result doesn't check:");
+            for e in errs {
+                eprintln!("    {e}");
+            }
+            Ok(false)
+        }
+        Ok(_) => Ok(true),
         Err(e) => {
-            eprintln!("strata: {path}: {e}; merging it as text");
-            let (text, clean) = merge::text_merge(&base, &ours, &theirs)?;
-            std::fs::write(a, text).map_err(|e| format!("{a}: {e}"))?;
-            Ok(clean)
+            eprintln!("strata: {path}: not type-checked: {e}");
+            Ok(true)
         }
     }
+}
+
+/// `strata resolve FILE`: a module file left as text by a merge conflict,
+/// fixed by hand, stored again as a module file.
+pub fn resolve(args: &Args) -> Result<bool, String> {
+    let f = args.pos.get(1).ok_or("usage: strata resolve <FILE.strata>  (a file a merge left as text)")?;
+    let path = std::path::Path::new(f);
+    let bytes = std::fs::read(path).map_err(|e| format!("{f}: {e}"))?;
+    if binary::is_binary(&bytes) {
+        println!("{f} is already a module file");
+        return Ok(true);
+    }
+    let text = String::from_utf8(bytes).map_err(|_| format!("{f}: neither a module file nor text"))?;
+    if text.lines().any(|l| l.starts_with("<<<<<<<") || l.starts_with(">>>>>>>")) {
+        return Err(format!("{f} still has conflict markers"));
+    }
+    let module = match store::module_at(path)? {
+        Some((_, m)) => m,
+        None => String::new(),
+    };
+    let p = parser::parse_module_file(&text, &module).map_err(|e| format!("{f}:{e}"))?;
+    let n = p.decls.len();
+    std::fs::write(path, store::encode_at(path, p.decls)?).map_err(|e| format!("{f}: {e}"))?;
+    println!("{f}: {n} definitions stored");
+    Ok(true)
 }
 
 /// `strata setup-git`.
@@ -54,10 +94,15 @@ pub fn setup_git() -> Result<bool, String> {
     crate::git::run(None, &["config", "merge.strata.name", "Strata: merge each definition separately, then type-check"])?;
     crate::git::run(None, &["config", "merge.strata.driver", &driver])?;
     println!("git will merge .strata files with: {driver}");
+    // `git diff` and `git log -p` show module files as their text
+    let textconv = format!("'{}' render --file", exe.display());
+    crate::git::run(None, &["config", "diff.strata.textconv", &textconv])?;
+    println!("git will show .strata files as text with: {textconv}");
     let top = crate::git::run(None, &["rev-parse", "--show-toplevel"])?;
     let attrs = std::fs::read_to_string(std::path::Path::new(top.trim()).join(".gitattributes")).unwrap_or_default();
-    if !attrs.lines().any(|l| l.starts_with("*.strata") && l.split_whitespace().any(|w| w == "merge=strata")) {
-        println!("add `*.strata merge=strata` to .gitattributes (and commit it) so git uses it");
+    let has = |w: &str| attrs.lines().any(|l| l.starts_with("*.strata") && l.split_whitespace().any(|x| x == w));
+    if !has("merge=strata") || !has("diff=strata") {
+        println!("add `*.strata binary merge=strata diff=strata` to .gitattributes (and commit it) so git uses them");
     }
     Ok(true)
 }
@@ -126,8 +171,8 @@ pub fn sync(args: &Args) -> Result<bool, String> {
 
 /// What CI requires, over the whole repository (or the current folder outside
 /// git): every package and every script checks, every package's exports name
-/// something, and every `.strata` file is in canonical format (what `render`
-/// prints). `fix` rewrites the files that aren't.
+/// something, and every `.strata` file is in canonical form (the bytes strata
+/// writes for it). `fix` rewrites the files that aren't.
 pub fn ci(fix: bool) -> Result<bool, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let top = crate::git::run(None, &["rev-parse", "--show-toplevel"]).map(|t| std::path::PathBuf::from(t.trim())).unwrap_or(cwd);
@@ -140,32 +185,33 @@ pub fn ci(fix: bool) -> Result<bool, String> {
     for path in packages.iter().chain(&scripts) {
         let shown = path.strip_prefix(&top).unwrap_or(path).display().to_string();
         let pkg = if path.is_dir() { Some(package::load(path)?) } else { None };
-        let files = package::files(path)?;
-        let mut parsed = true;
-        for (rel, src) in &files {
+        let p = match package::program(path) {
+            Ok(p) => p,
+            Err(e) => {
+                ok = false;
+                println!("✗ {e}");
+                continue;
+            }
+        };
+        // canonical: each file is exactly what strata would write for it
+        let canonical: Vec<(std::path::PathBuf, Vec<u8>)> = if pkg.is_some() { store::encode_files(&p) } else { vec![(std::path::PathBuf::new(), store::encode_script(&p))] };
+        for (rel, bytes) in package::files(path)? {
             let file = if rel.as_os_str().is_empty() { shown.clone() } else { format!("{shown}/{}", rel.display()) };
-            match parser::parse_module_file(src, "") {
-                Err(e) => {
-                    ok = false;
-                    parsed = false;
-                    println!("✗ {file}: doesn't parse: {e}");
-                }
-                Ok(p) if printer::program(&p) != *src => {
-                    if fix {
-                        std::fs::write(top.join(&file), printer::program(&p)).map_err(|e| format!("{file}: {e}"))?;
-                        println!("  {file}: rewritten in canonical format");
-                    } else {
-                        ok = false;
-                        println!("✗ {file}: not in canonical format (`strata ci --fix` rewrites it)");
-                    }
-                }
-                Ok(_) => {}
+            let want = canonical.iter().find(|(r, _)| *r == rel).map(|(_, b)| b);
+            if want == Some(&bytes) {
+                continue;
+            }
+            if !fix {
+                ok = false;
+                println!("✗ {file}: not in canonical form (`strata ci --fix` rewrites it)");
+            } else if let Some(want) = want {
+                store::write_file(&top.join(&file), want)?;
+                println!("  {file}: rewritten in canonical form");
+            } else {
+                ok = false;
+                println!("✗ {file}: holds no module of its own (named after its path)");
             }
         }
-        if !parsed {
-            continue;
-        }
-        let p = package::program(path)?;
         let rep = full_check(&p);
         let mut errors: Vec<String> = rep.errors.iter().map(|e| format!("error in {}: {}", e.decl, e.msg)).collect();
         // holes of an unfinished change are not to be merged

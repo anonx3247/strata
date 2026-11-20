@@ -32,7 +32,7 @@ use std::fmt::Write;
 pub mod jit;
 
 /// The list built-ins written in Strata, compiled with every program.
-const PRELUDE: &str = include_str!("llvm/prelude.strata");
+const PRELUDE: &[u8] = include_bytes!("llvm/prelude.strata");
 const PRELUDE_MODULE: &str = "strata.compiled";
 
 /// A function of the compiled prelude.
@@ -118,7 +118,7 @@ fn key(t: &Ty) -> String {
 pub fn compile(prog: &Program, entry: &str) -> Res<String> {
     // the list built-ins in Strata, compiled with the program
     let mut with = prog.clone();
-    with.decls.extend(crate::parser::parse_module_file(PRELUDE, PRELUDE_MODULE).map_err(|e| format!("llvm/prelude.strata: {e}"))?.decls);
+    with.decls.extend(crate::binary::decode_module(PRELUDE).map_err(|e| format!("llvm/prelude.strata: {e}"))?);
     let (resolved, types) = crate::types::elaborate_typed(&with);
     let (env, _) = Env::build(&resolved.program);
     let main = env.fns.get(&Symbol::new(entry)).ok_or(format!("no `{entry}` function to compile"))?.clone();

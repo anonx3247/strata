@@ -23,6 +23,16 @@ pub fn run(dir: Option<&Path>, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&o.stdout).to_string())
 }
 
+/// `git ARGS`'s output as bytes (`git show REV:FILE` of a binary file).
+pub fn bytes(dir: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, String> {
+    let o = command(dir, args).output().map_err(|e| format!("git: {e}"))?;
+    if !o.status.success() {
+        let sub = args.iter().find(|a| !a.starts_with('-')).unwrap_or(&"");
+        return Err(format!("`git {sub}` failed: {}", String::from_utf8_lossy(&o.stderr).trim()));
+    }
+    Ok(o.stdout)
+}
+
 /// Whether `git ARGS` succeeds (`merge-base --is-ancestor`, `diff --quiet`, ...).
 pub fn ok(dir: Option<&Path>, args: &[&str]) -> bool {
     command(dir, args).output().is_ok_and(|o| o.status.success())

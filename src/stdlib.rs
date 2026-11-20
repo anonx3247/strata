@@ -16,13 +16,14 @@ use std::sync::OnceLock;
 /// The package name whose modules are prefixed with `std.`.
 pub const NAME: &str = "std";
 
-const FILES: &[(&str, &str)] = &[
-    ("io.strata", include_str!("../std/io.strata")),
-    ("fs.strata", include_str!("../std/fs.strata")),
-    ("process.strata", include_str!("../std/process.strata")),
-    ("cli.strata", include_str!("../std/cli.strata")),
-    ("web.strata", include_str!("../std/web.strata")),
-    ("http.strata", include_str!("../std/http.strata")),
+/// Its module files (binary, docs/binary-format.md); their modules are named `std.<path>`.
+const FILES: &[(&str, &[u8])] = &[
+    ("io.strata", include_bytes!("../std/io.strata")),
+    ("fs.strata", include_bytes!("../std/fs.strata")),
+    ("process.strata", include_bytes!("../std/process.strata")),
+    ("cli.strata", include_bytes!("../std/cli.strata")),
+    ("web.strata", include_bytes!("../std/web.strata")),
+    ("http.strata", include_bytes!("../std/http.strata")),
 ];
 
 /// Native operations, callable only from `std`.
@@ -54,15 +55,13 @@ pub fn is_std(module: &str) -> bool {
     module == NAME || module.starts_with("std.")
 }
 
-/// The standard library's modules, parsed, named `std.<path>`.
+/// The standard library's modules, decoded, named `std.<path>`.
 pub fn program() -> &'static Program {
     static P: OnceLock<Program> = OnceLock::new();
     P.get_or_init(|| {
         let mut decls = Vec::new();
-        for (file, src) in FILES {
-            let module = format!("{NAME}.{}", file.trim_end_matches(".strata").replace('/', "."));
-            let p = crate::parser::parse_module_file(src, &module).unwrap_or_else(|e| panic!("std/{file}: {e}"));
-            decls.extend(p.decls);
+        for (file, bytes) in FILES {
+            decls.extend(crate::binary::decode_module(bytes).unwrap_or_else(|e| panic!("std/{file}: {e}")));
         }
         Program { decls }
     })

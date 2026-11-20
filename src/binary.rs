@@ -23,8 +23,9 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub const MAGIC: &[u8; 6] = b"STRATA";
-/// Bumped on every change to the layout; older files are rejected (re-pack
-/// them from source: there is no backwards compatibility).
+/// Bumped on every change to the layout; older files are rejected. Code is
+/// stored in this format, so a change to it means converting the repository's
+/// files: see "Changing the format" in docs/binary-format.md.
 pub const VERSION: u64 = 5;
 const MODULE: u8 = 0;
 const BUNDLE: u8 = 1;
@@ -487,7 +488,7 @@ impl<'a> Reader<'a> {
         self.pos = MAGIC.len();
         let v = self.uint()?;
         if v != VERSION {
-            return Err(format!("binary format version {v}, but this strata reads version {VERSION}: re-pack it from source"));
+            return Err(format!("binary format version {v}, but this strata reads version {VERSION}: render it with the strata that wrote it, and read the text back in with `strata edit`"));
         }
         self.tag("file kind", BUNDLE)
     }

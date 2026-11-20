@@ -1,11 +1,12 @@
 # The binary format
 
-Strata code can be stored as its syntax tree rather than its text, in a binary format of our own: one **module file** per module (`main.stb`, `shop/orders.stb`), or a whole program in one **bundle** file.
+Strata code is stored as its syntax tree, not its text, in a binary format of our own: a `.strata` file is a **module file** (`main.strata`, `shop/orders.strata`), or a whole program in one **bundle** file. Text is a view of it.
 
-- `strata pack DIR` writes a folder: the package's `strata.toml` and one module file per module. `strata pack app.stb` writes a bundle.
-- `--file DIR`, `--file app.stb`, `strata run …`, `strata ui --file …` and every view read either as they read source.
-- `strata unpack IN DIR` writes source back out, one canonical file per module.
-- `strata header core.stb` prints a module file's table of contents.
+- **Text goes in through an edit.** `strata edit` (from stdin or an editor) and `strata add FILE` parse text and store the result. Nothing else reads text: a `.strata` file that holds text is refused.
+- **Text comes out through the views.** `strata render` prints a module, `render --split DIR` writes one text file per module (`shop/orders.st`), `view` and `strata ui` show it.
+- `strata pack app.strata` writes a bundle; `--file`, `run`, `ui` and every view read it like a package.
+- `strata header core.strata` prints a module file's table of contents.
+- In git, `strata setup-git` makes `git diff` and `git log -p` show `.strata` files as text, and merges them definition by definition (a conflict is left as text; `strata resolve FILE` stores it again once fixed).
 
 The format is written by hand in `src/binary.rs`, with no serialization library, so that Strata can read and write it itself once it is bootstrapped. This page is its specification; the two are kept in step.
 
@@ -15,10 +16,10 @@ Design:
 - **Interface first, bodies after.** Each definition's bytes start with its interface: types, signatures, contracts, laws, with each body written as `()`. Its bodies follow. Checking code against a module only needs the interfaces, and a reader can stop there.
 - **Self-contained definitions.** Each definition carries its own strings, so its bytes mean the same in any file. Its hash is the hash of those bytes. The same bytes could also be stored as one object under that hash (the hash-store idea in IDEAS.md).
 - **Exact.** Decoding gives back the very tree that was encoded: comments, docs, blank lines between groups, big integers (as their digits) and floats (as their bits).
-- **Canonical.** A tree has one encoding. Strings are numbered in the order they are first written, integers use the shortest form, and the decoder refuses anything else. Packing what you unpacked gives the same bytes.
+- **Canonical.** A tree has one encoding. Strings are numbered in the order they are first written, integers use the shortest form, and the decoder refuses anything else. A module file's bytes are what strata writes for it, so `strata ci` checks every file is exactly that (a header's dependency lists can go stale when another module changes outside strata; `ci --fix` rewrites them).
 - **Safe to read.** A truncated or corrupt file is an error, never a crash. Lengths can't exceed what is left of the file, nesting deeper than 10,000 levels is refused, and a definition whose bytes don't match the hash in the header is rejected.
 
-There is no backwards compatibility: a file of another format version is rejected. Re-pack it from source.
+A file of another format version is rejected. See [Changing the format](#changing-the-format).
 
 ## Files
 
@@ -190,7 +191,7 @@ CtorPat = 0 None | 1 Positional(list(Pattern)) | 2 Record(list((str, Pattern)), 
 
 ## An example
 
-`fn one() -> Int { 1 }`, a script, packs to a 150-byte `main.stb`:
+`fn one() -> Int { 1 }`, a script, is stored as a 150-byte file:
 
 ```text
 53 54 52 41 54 41   "STRATA"
@@ -215,3 +216,14 @@ the definition:
    00                              the bodies add no strings
    01 00 02                        1 body: Int(1)  (1 zigzag-encodes to 2)
 ```
+
+## Changing the format
+
+The code is stored in this format, so a change to the tree (a new node, a new field) changes the files of every package and script in the repository. Bump `VERSION`, and convert them in the same change:
+
+1. with the strata of before the change, write each file's text: `strata render --file F > F.st` (`render --split DIR` for a package);
+2. make the change and build;
+3. read the text back in: `strata --file F edit < F.st` for a script, `strata --file PKG/ edit MODULE < M.st` for each module of a package (the standard library first: its modules are `std.io`, …; the compiled prelude, `src/llvm/prelude.strata`, is module `strata.compiled`);
+4. `strata ci --fix` brings the headers' dependency lists up to date, and `strata ci` must pass.
+
+Adding a node or a field at the end of a list of tags keeps old files readable in principle; whether the reader should accept older versions (and `ci --fix` upgrade them) instead of every change converting the files is an open question (IDEAS.md).
