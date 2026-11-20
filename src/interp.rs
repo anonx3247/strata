@@ -171,6 +171,9 @@ pub struct Interp<'a> {
     /// Final values of the `mut` parameters of the call that just returned,
     /// to be written back to the caller's variables.
     writeback: Vec<(usize, Value)>,
+    /// What `Self` is in the trait methods being run (innermost last): a
+    /// default method calling `Self.empty()` uses it.
+    self_types: Vec<String>,
     /// The value of the `return` (or `!` / `?`) being carried out.
     returning: Option<Value>,
     /// At most this many evaluation steps, if set.
@@ -346,6 +349,7 @@ impl<'a> Interp<'a> {
             depth: 0,
             regexes: HashMap::new(),
             writeback: vec![],
+            self_types: vec![],
             returning: None,
             budget: None,
             steps: 0,
@@ -378,6 +382,10 @@ impl<'a> Interp<'a> {
     /// Like `check_type`, with extra bindings visible to inline refinements
     /// (a function's parameters, for its result type).
     pub fn check_type_in(&mut self, t: &TypeExpr, v: &Value, scope: &Scope) -> R<Option<String>> {
+        // a hidden type argument: the name of a type
+        if matches!(t, TypeExpr::Named(n, _) if n == crate::types::TYPE_ARG) {
+            return Ok(if matches!(v, Value::Str(_)) { None } else { Some(format!("{} is not a type", to_json(v))) });
+        }
         if let TypeExpr::Refined(b, pred) = t {
             if let Some(e) = self.check_type(b, v)? {
                 return Ok(Some(e));
@@ -517,6 +525,7 @@ impl<'a> Interp<'a> {
             TypeExpr::Refined(b, _) => self.shape_fits(b, v),
             TypeExpr::Union(ms) => ms.iter().any(|m| self.shape_fits(m, v)),
             TypeExpr::Fn(..) => matches!(v, Value::Closure(..) | Value::FnRef(_)),
+            TypeExpr::Named(n, _) if n == crate::types::TYPE_ARG => matches!(v, Value::Str(_)),
             TypeExpr::Named(n, args) => match (n.as_str(), v) {
                 ("Int", Value::Int(_) | Value::Big(_)) | ("Float", Value::Float(_)) | ("Bool", Value::Bool(_)) | ("String", Value::Str(_)) | ("Unit", Value::Unit) => true,
                 ("Int" | "Float" | "Bool" | "String" | "Unit", _) => false,
@@ -580,12 +589,29 @@ impl<'a> Interp<'a> {
 
     /// Call a trait method: pick the implementation from the receiver's type.
     /// The trait's own `requires`/`ensures` apply on top of the impl's.
-    pub fn call_method(&mut self, name: &str, args: Vec<Value>) -> R<Value> {
-        if let Some(Value::Mock(mt)) = args.first() {
-            let mt = mt.clone();
-            return self.mock_call(&mt, name, args);
+    pub fn call_method(&mut self, name: &str, mut args: Vec<Value>) -> R<Value> {
+        // a method without `self` (`Trait::empty(type, ..)`): the type comes first
+        let is_static = self.env.method_contract(name).is_some_and(|(_, d)| !crate::resolve::takes_self(d));
+        let head = if is_static {
+            match args.first() {
+                Some(Value::Str(h)) => {
+                    let h = h.clone();
+                    args.remove(0);
+                    h
+                }
+                _ => return self.fail(FaultKind::Runtime, format!("`{name}` needs the type it is called on")),
+            }
+        } else {
+            if let Some(Value::Mock(mt)) = args.first() {
+                let mt = mt.clone();
+                return self.mock_call(&mt, name, args);
+            }
+            args.first().map(|v| self.head_of(v)).unwrap_or_default()
+        };
+        // called on a trait (a generic function fuzzed with a mock): a generated result
+        if is_static && self.env.traits.contains_key(&head) {
+            return self.mock_call(&TypeExpr::Named(head, vec![]), name, args);
         }
-        let head = args.first().map(|v| self.head_of(v)).unwrap_or_default();
         // a variant may have an impl of its own; else its sum's applies
         let own = match args.first() {
             Some(Value::Variant(c, _)) => self.env.resolve_method(name, c),
@@ -597,8 +623,19 @@ impl<'a> Interp<'a> {
         };
         decl.requires.splice(0..0, req);
         decl.ensures.splice(0..0, ens);
-        let label = format!("{head}.{name}");
-        self.call_decl(&decl, &label, args)
+        let label = format!("{head}.{}", crate::types::split_trait_call(name).map_or(name, |(_, m)| m));
+        self.self_types.push(head);
+        let r = self.call_decl(&decl, &label, args);
+        self.self_types.pop();
+        r
+    }
+
+    /// Run `f` with `Self` known to be `head` (a trait law for one implementation).
+    pub fn with_self<T>(&mut self, head: &str, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.self_types.push(head.to_string());
+        let r = f(self);
+        self.self_types.pop();
+        r
     }
 
     /// A method call on `mock T`: check the trait's `requires`, then generate a
@@ -1186,6 +1223,11 @@ impl<'a> Interp<'a> {
             Expr::Hole(h) => return self.fail(FaultKind::Hole, format!("reached unfilled hole `?{h}`")),
             Expr::Var(x) => match lookup(s, x) {
                 Some(v) => v,
+                // `Self.m()` in a trait's default method or law: the type it runs for
+                None if *x == crate::types::type_arg("Self") => match self.self_types.last() {
+                    Some(h) => Value::Str(h.clone()),
+                    None => return self.fail(FaultKind::Runtime, "`Self` is not known here"),
+                },
                 None => Value::FnRef(x.clone()),
             },
             Expr::List(es) => Value::List(es.iter().map(|x| self.eval(x, s)).collect::<R<_>>()?),

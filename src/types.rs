@@ -239,7 +239,40 @@ pub enum Target {
     /// A type's own method, known statically: a direct call of the function
     /// `.0` (`Item.describe`).
     Own(String),
+    /// `X.m(..)`: trait `.0`'s method without `self`, for the type `.1`.
+    /// Written as `Trait::m(type, ..)`.
+    Static(String, TypeRef),
+    /// A call of a generic function whose type parameters are needed when it
+    /// runs (they have a static method to call): the types, in order, are
+    /// passed as extra arguments.
+    TypeArgs(Vec<TypeRef>),
 }
+
+/// A type as passed at runtime: a concrete type's name, or the caller's own
+/// type parameter (forwarded from its hidden argument `type:T`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeRef {
+    Head(String),
+    Param(String),
+}
+
+impl TypeRef {
+    /// The expression that evaluates to this type at runtime.
+    pub fn expr(&self) -> Expr {
+        match self {
+            TypeRef::Head(h) => Expr::Str(h.clone()),
+            TypeRef::Param(p) => Expr::Var(type_arg(p)),
+        }
+    }
+}
+
+/// The hidden parameter carrying type parameter `p` at runtime.
+pub fn type_arg(p: &str) -> String {
+    format!("type:{p}")
+}
+
+/// The type of a hidden type argument: `$Type[T]` is the name of `T`.
+pub const TYPE_ARG: &str = "$Type";
 
 /// The method name a call through a specific trait is elaborated to.
 pub fn trait_call(tr: &str, method: &str) -> String {
@@ -260,7 +293,8 @@ pub fn elaborate(prog: &Program) -> crate::resolve::Resolution {
     let mut r = crate::resolve::resolve(prog);
     let (env, _) = Env::build(&r.program);
     let shared = env.method_traits.values().any(|v| v.len() > 1);
-    if env.inherent.is_empty() && !shared {
+    let statics = env.traits.values().any(|t| t.methods.iter().any(|m| !crate::resolve::takes_self(&m.decl)));
+    if env.inherent.is_empty() && !shared && !statics {
         return r;
     }
     let (_, _, targets) = check_decls(&r.program, &env);
@@ -282,13 +316,25 @@ pub fn elaborate(prog: &Program) -> crate::resolve::Resolution {
                     *e = Expr::Call(Box::new(Expr::Var(f.clone())), all);
                 }
                 (Target::Own(f), Expr::Call(g, _)) => **g = Expr::Var(f.clone()),
+                (Target::Static(tr, ty), Expr::Method(_, m, args)) => {
+                    let mut all = vec![ty.expr()];
+                    all.append(args);
+                    *e = Expr::Call(Box::new(Expr::Var(trait_call(tr, m))), all);
+                }
+                (Target::TypeArgs(tys), Expr::Call(_, args) | Expr::Method(_, _, args)) => args.extend(tys.iter().map(|t| t.expr())),
                 _ => {}
             }
         })
     };
     for d in &mut r.program.decls {
         match &mut d.kind {
-            DeclKind::Fn(f) => fn_exprs_mut(f).for_each(&mut fix),
+            DeclKind::Fn(f) => {
+                // a type parameter with a static method to call is passed when the function runs
+                for p in env.type_args(f) {
+                    f.params.push(Param { name: type_arg(&p), ty: TypeExpr::Named(TYPE_ARG.into(), vec![TypeExpr::Named(p.clone(), vec![])]), mutable: false });
+                }
+                fn_exprs_mut(f).for_each(&mut fix)
+            }
             DeclKind::Impl(i) => i.methods.iter_mut().for_each(|f| fn_exprs_mut(f).for_each(&mut fix)),
             DeclKind::Trait(t) => {
                 t.methods.iter_mut().for_each(|m| fn_exprs_mut(&mut m.decl).for_each(&mut fix));
@@ -432,6 +478,27 @@ impl Env {
             }
         }
         (env, errs)
+    }
+
+    /// The type parameters of `f` that must be known when it runs: those
+    /// bounded by a trait (or a supertrait) with a method without `self`.
+    pub fn type_args(&self, f: &FnDecl) -> Vec<String> {
+        let has_static = |tr: &str| {
+            let mut stack = vec![tr.to_string()];
+            let mut seen = std::collections::HashSet::new();
+            while let Some(t) = stack.pop() {
+                if !seen.insert(t.clone()) {
+                    continue;
+                }
+                let Some(td) = self.traits.get(&t) else { continue };
+                if td.methods.iter().any(|m| !crate::resolve::takes_self(&m.decl)) {
+                    return true;
+                }
+                stack.extend(td.supers.iter().map(texpr_head));
+            }
+            false
+        };
+        f.type_params.iter().filter(|p| f.bounds.iter().any(|b| &b.param == *p && b.traits.iter().any(|t| has_static(&texpr_head(t))))).cloned().collect()
     }
 
     /// The traits declaring `method` that values of type `head` implement.
@@ -608,6 +675,14 @@ struct Checker<'a> {
     /// Which implementation each method call whose meaning depends on the
     /// receiver's type resolved to, by call node (see `elaborate`).
     targets: Vec<(usize, Target)>,
+    /// The instantiation of the last named function `global_fn` gave a type for.
+    last_inst: Option<(String, HashMap<String, Ty>)>,
+    /// Calls of generic functions that need their type arguments at runtime:
+    /// call node, and the type of each such parameter (resolved at the end).
+    insts: Vec<(usize, Vec<(String, Ty)>)>,
+    /// Set just before typing a call's callee, so a function needing type
+    /// arguments can tell a call from its use as a value.
+    callee: bool,
 }
 
 impl<'a> Checker<'a> {
@@ -901,13 +976,19 @@ impl<'a> Checker<'a> {
     /// The type of a trait method used anywhere: `Self` is a fresh type that
     /// must implement the trait (checked when the declaration is finished).
     fn trait_method(&mut self, name: &str, trait_name: &str) -> Ty {
+        self.trait_method_for(name, trait_name, None)
+    }
+
+    /// `trait_method`, with `Self` the given type when it is known (a static
+    /// call names it: `Money.empty()`, `T.empty()`).
+    fn trait_method_for(&mut self, name: &str, trait_name: &str, self_ty: Option<Ty>) -> Ty {
         let tr = self.env.traits[trait_name].clone();
         let m = tr.methods.iter().find(|m| m.decl.name == name).unwrap().decl.clone();
         let mut vars: HashMap<String, Ty> = tr.params.iter().map(|p| (p.clone(), self.fresh())).collect();
         for p in &m.type_params {
             vars.insert(p.clone(), self.fresh());
         }
-        let self_t = self.fresh();
+        let self_t = self_ty.unwrap_or_else(|| self.fresh());
         let saved = self.self_ty.replace(self_t.clone());
         let fty = self.lower(&Self::fn_scheme(&m), &vars);
         self.self_ty = saved;
@@ -1144,6 +1225,12 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            let callee = std::mem::take(&mut self.callee);
+            if !callee && !self.env.type_args(&f).is_empty() {
+                let short = name.rsplit('.').next().unwrap_or(name);
+                self.err(format!("`{short}` needs to know its type arguments when it runs (it calls methods on the type), so it can't be passed as a value: pass a lambda (`x -> {short}(x)`)"));
+            }
+            self.last_inst = Some((name.to_string(), vars));
             return Some(fty);
         }
         if let Some((tr, _)) = self.env.method_contract(name) {
@@ -1282,6 +1369,127 @@ impl<'a> Checker<'a> {
                 Some(self.fresh())
             }
         }
+    }
+
+    /// After the callee of a call was typed: if it is a generic function whose
+    /// type parameters are needed at runtime, remember their instantiation.
+    fn record_inst(&mut self, callee: &Expr, site: usize) {
+        let Expr::Var(n) = callee else { return };
+        let Some((name, vars)) = self.last_inst.take() else { return };
+        if &name != n || self.lookup(n).is_some() {
+            return;
+        }
+        let Some(f) = self.env.fns.get(n) else { return };
+        let need = self.env.type_args(f);
+        if !need.is_empty() {
+            self.insts.push((site, need.into_iter().map(|p| { let t = vars[&p].clone(); (p, t) }).collect()));
+        }
+    }
+
+    /// The runtime type of each recorded instantiation, once the declaration
+    /// is fully inferred: a concrete type, or the caller's own type parameter.
+    fn finish_insts(&mut self) {
+        for (site, pairs) in std::mem::take(&mut self.insts) {
+            let mut refs = Vec::new();
+            for (p, t) in pairs {
+                let t = self.resolve(&t);
+                refs.push(match &t {
+                    Ty::Rigid(q) => TypeRef::Param(q.clone()),
+                    Ty::Con(h, _) if self.env.traits.contains_key(h) => {
+                        self.err(format!("`{p}` must be a concrete type here (it has methods called on the type), not any `{}`", h.rsplit('.').next().unwrap_or(h)));
+                        continue;
+                    }
+                    _ => match ty_head(&t) {
+                        Some(h) => TypeRef::Head(h),
+                        // unknown: the bound's obligation already asks for an annotation
+                        None => continue,
+                    },
+                });
+            }
+            self.targets.push((site, Target::TypeArgs(refs)));
+        }
+    }
+
+    /// `X.m(..)` where `X` is a type, a type parameter or `Self`, and `m` a
+    /// trait method without `self`: the trait is the one of `X`'s that
+    /// declares it. `None` when this is not such a call.
+    fn static_call(&mut self, recv: &Expr, m: &str, site: usize) -> Option<Ty> {
+        let x = match recv {
+            Expr::Ctor(x, CtorArgs::None) | Expr::Var(x) if self.lookup(x).is_none() => x.clone(),
+            _ => return None,
+        };
+        let statics: Vec<String> = self.env.method_traits.get(m)?.iter().filter(|t| self.env.traits.get(*t).is_some_and(|td| td.methods.iter().any(|tm| tm.decl.name == m && !crate::resolve::takes_self(&tm.decl)))).cloned().collect();
+        if statics.is_empty() {
+            return None;
+        }
+        let short = |q: &str| q.rsplit('.').next().unwrap_or(q).to_string();
+        let sm = short(m);
+        // the type, how it is passed at runtime, and the traits it is known to have
+        let rigid = |c: &mut Checker, p: &str| {
+            let mut all = vec![];
+            for (tr, args) in c.bounds.get(p).cloned().unwrap_or_default() {
+                all.push(tr.clone());
+                all.extend(c.supers_of(&tr, &args, 0).into_iter().map(|(s, _)| s));
+            }
+            all
+        };
+        let (ty, tref, known): (Ty, TypeRef, Vec<String>) = if x == "Self" {
+            match self.self_ty.clone() {
+                Some(Ty::Rigid(p)) => {
+                    let k = rigid(self, &p);
+                    (Ty::Rigid(p.clone()), TypeRef::Param(p), k)
+                }
+                Some(t) => {
+                    let h = ty_head(&self.resolve(&t))?;
+                    let k = self.env.impls.iter().filter(|i| texpr_head(&i.for_type) == h).map(|i| i.trait_name.clone()).collect();
+                    (t, TypeRef::Head(h), k)
+                }
+                None => return None,
+            }
+        } else if self.rigid.contains(&x) {
+            // only functions are given their type arguments when they run
+            if self.self_ty.is_some() {
+                self.err(format!("`{}.{sm}()`: methods can't be called on an impl's or trait's own type parameters yet (only a function's)", short(&x)));
+                return Some(self.fresh());
+            }
+            let k = rigid(self, &x);
+            (Ty::Rigid(x.clone()), TypeRef::Param(x.clone()), k)
+        } else {
+            let t = match x.as_str() {
+                "Int" => Ty::Int,
+                "Float" => Ty::Float,
+                "Bool" => Ty::Bool,
+                "String" => Ty::Str,
+                _ => match self.env.types.get(&x) {
+                    Some(td) => {
+                        let args = td.params.iter().map(|_| self.fresh()).collect();
+                        Ty::Con(x.clone(), args)
+                    }
+                    None => return None,
+                },
+            };
+            let k = self.env.impls.iter().filter(|i| texpr_head(&i.for_type) == x).map(|i| i.trait_name.clone()).collect();
+            (t, TypeRef::Head(x.clone()), k)
+        };
+        let mut cands: Vec<String> = known.into_iter().filter(|t| statics.contains(t)).collect();
+        cands.sort();
+        cands.dedup();
+        let tr = match cands.as_slice() {
+            [tr] => tr.clone(),
+            // not known to have it: with a single candidate, the obligation says what is missing
+            [] if statics.len() == 1 && matches!(tref, TypeRef::Head(_)) => statics[0].clone(),
+            [] => {
+                self.err(format!("`{}` has no method `{sm}` called on the type (none of its traits declares one)", short(&x)));
+                return Some(self.fresh());
+            }
+            _ => {
+                let names = cands.iter().map(|t| short(t)).collect::<Vec<_>>().join("` and `");
+                self.err(format!("`{}.{sm}()` is ambiguous: `{names}` both have `{sm}`", short(&x)));
+                return Some(self.fresh());
+            }
+        };
+        self.targets.push((site, Target::Static(tr.clone(), tref)));
+        Some(self.trait_method_for(m, &tr, Some(ty)))
     }
 
     /// The type of a type's own method, freshly instantiated: `Self` is the
@@ -1705,7 +1913,11 @@ impl<'a> Checker<'a> {
                         return self.call_with(ft, args, &what, &muts);
                     }
                 }
+                self.last_inst = None;
+                self.callee = matches!(&**f, Expr::Var(_));
                 let ft = self.infer(f);
+                self.callee = false;
+                self.record_inst(f, e as *const Expr as usize);
                 self.call_with(ft, args, &what, &muts)
             }
             Expr::Method(recv, m, args) => {
@@ -1717,9 +1929,20 @@ impl<'a> Checker<'a> {
                 if let Some(t) = self.overloaded(m, &all) {
                     return t;
                 }
+                if let Some(ft) = self.static_call(recv, m, e as *const Expr as usize) {
+                    let rest: Vec<&Expr> = args.iter().collect();
+                    let muts = self.mut_mask(m);
+                    return self.call_with(ft, &rest, &format!("call to `{m}`"), &muts);
+                }
+                self.last_inst = None;
                 let ft = match self.receiver_method(m, Some(recv), e as *const Expr as usize) {
                     Some(ft) => ft,
-                    None => match self.lookup(m).or_else(|| self.global_fn(m)) {
+                    None => match self.lookup(m).or_else(|| {
+                        self.callee = true;
+                        let t = self.global_fn(m);
+                        self.callee = false;
+                        t
+                    }) {
                         Some(ft) => ft,
                         None => {
                             match &**recv {
@@ -1735,6 +1958,9 @@ impl<'a> Checker<'a> {
                     },
                 };
                 let muts = self.mut_mask(m);
+                if self.lookup(m).is_none() {
+                    self.record_inst(&Expr::Var(m.clone()), e as *const Expr as usize);
+                }
                 self.call_with(ft, &all, &format!("call to `{m}`"), &muts)
             }
             Expr::Field(r, f) if f.contains('·') => {
@@ -3256,6 +3482,9 @@ pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<String, TypeExpr>>
         ret: None,
         written: Vec::new(),
         targets: Vec::new(),
+        last_inst: None,
+        insts: Vec::new(),
+        callee: false,
     };
     let vars: HashMap<String, Ty> = f.type_params.iter().map(|p| (p.clone(), c.fresh())).collect();
     let bounded: Vec<&Bound> = f.bounds.iter().collect();
@@ -3340,6 +3569,9 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
             ret: None,
             written: Vec::new(),
             targets: Vec::new(),
+        last_inst: None,
+        insts: Vec::new(),
+        callee: false,
         };
         let mut obligations = Vec::new();
         match &d.kind {
@@ -3398,6 +3630,11 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                     }
                 }
                 for m in &t.methods {
+                    // without `self`, the type it is called on must matter: else it is just a function
+                    if !crate::resolve::takes_self(&m.decl) && !mentions_self(&m.decl) {
+                        let short = m.decl.name.rsplit('.').next().unwrap_or(&m.decl.name);
+                        c.err(format!("trait method `{short}` has no `self` and doesn't mention `Self`, so no implementation could be chosen for a call: make it a function"));
+                    }
                     let mut ob = Vec::new();
                     let saved = c.rigid.clone();
                     if m.default {
@@ -3539,6 +3776,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                 obligations: obligations.clone(),
             });
         }
+        c.finish_insts();
         errors.extend(c.errors);
         targets.extend(c.targets);
     }
@@ -3559,4 +3797,32 @@ pub fn static_fn(i: &ImplDecl, m: &FnDecl) -> FnDecl {
     }
     f.ret = subst_texpr(&f.ret, &sub);
     f
+}
+
+/// Whether `Self` appears in a method's signature.
+pub fn mentions_self(f: &FnDecl) -> bool {
+    fn t(x: &TypeExpr) -> bool {
+        match x {
+            TypeExpr::Named(n, args) => n == "Self" || args.iter().any(t),
+            TypeExpr::Fn(ps, r) => ps.iter().any(t) || t(r),
+            TypeExpr::Refined(b, _) => t(b),
+            TypeExpr::Union(ms) => ms.iter().any(t),
+            TypeExpr::Unit => false,
+        }
+    }
+    f.params.iter().any(|p| t(&p.ty)) || t(&f.ret)
+}
+
+
+/// The name a type is known by at runtime (`Money`, `Int`), when it is concrete.
+pub fn ty_head(t: &Ty) -> Option<String> {
+    Some(match t {
+        Ty::Int => "Int".into(),
+        Ty::Float => "Float".into(),
+        Ty::Bool => "Bool".into(),
+        Ty::Str => "String".into(),
+        Ty::Unit => "Unit".into(),
+        Ty::Con(h, _) => h.clone(),
+        _ => return None,
+    })
 }

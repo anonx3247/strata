@@ -377,10 +377,8 @@ impl Parser {
                 continue;
             }
             self.expect_kw("fn")?;
+            // a method without `self` is called on a type: `Money.empty()`, `T.empty()`
             let (decl, default) = self.fn_rest(true)?;
-            if decl.params.first().map(|p| p.name.as_str()) != Some("self") {
-                return Err(self.err(&format!("trait method `{}` must take `self` as its first parameter", decl.name)));
-            }
             comments.extend(self.trailing());
             methods.push(TraitMethod { comments, doc, decl, default });
         }

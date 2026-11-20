@@ -245,6 +245,7 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&s
             let mut d = for_impl(imp, f);
             // run through its trait: the name may be shared with another trait or the type's own method
             d.name = crate::types::trait_call(&imp.trait_name, &f.name);
+            static_type_arg(imp, f, &mut d);
             // the trait's contract binds every implementation
             if let Some(tm) = env.traits.get(&imp.trait_name).and_then(|t| t.methods.iter().find(|m| m.decl.name == f.name)) {
                 let tm = for_impl(imp, &tm.decl);
@@ -382,6 +383,7 @@ pub fn fuzz_impl_method(env: &Env, imp: &ImplDecl, method: &str, cases: usize, s
     };
     let mut d = for_impl(imp, decl);
     d.name = crate::types::trait_call(&imp.trait_name, method);
+    static_type_arg(imp, decl, &mut d);
     fuzz_call(env, &d, cases, seed, true)
 }
 
@@ -414,7 +416,9 @@ pub fn check_law(env: &Env, imp: &ImplDecl, law: &Law, cases: usize, seed: u64) 
         for (p, a) in f.params.iter().zip(&args) {
             scope = Some(std::rc::Rc::new(crate::interp::Frame::new(&p.name, a.clone(), scope)));
         }
-        match it.eval(&f.body, &scope) {
+        // `Self.empty()` in a law means this implementation's
+        let head = crate::types::texpr_head(&imp.for_type);
+        match it.with_self(&head, |it| it.eval(&f.body, &scope)) {
             Ok(crate::interp::Value::Bool(true)) => {}
             Ok(_) => {
                 let shown: Vec<String> = f.params.iter().zip(&args).map(|(p, a)| format!("{} = {}", p.name, to_json(a))).collect();
@@ -499,4 +503,13 @@ fn short_stack(stack: &[String]) -> String {
         return stack.join(" -> ");
     }
     format!("{} -> … {} more … -> {}", stack[..4].join(" -> "), stack.len() - 6, stack[stack.len() - 2..].join(" -> "))
+}
+
+/// A trait method without `self` is called with the type first (`Trait::empty(type)`):
+/// give its checked form that argument, so the generator supplies the type.
+fn static_type_arg(imp: &ImplDecl, f: &FnDecl, d: &mut FnDecl) {
+    if !crate::resolve::takes_self(f) {
+        let ty = TypeExpr::Named(crate::types::TYPE_ARG.into(), vec![imp.for_type.clone()]);
+        d.params.insert(0, Param { name: crate::types::type_arg("Self"), ty, mutable: false });
+    }
 }

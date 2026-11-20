@@ -1243,6 +1243,11 @@ impl<'a> Vc<'a> {
     /// Evaluate a call's arguments and make the call. A function passed to a
     /// list builtin is checked on one arbitrary element of the list.
     fn call_exprs(&mut self, name: &str, exprs: &[Expr]) -> Val {
+        // `Trait::empty(type, ..)`: the type argument only picks the implementation
+        let exprs = match self.env.method_contract(name) {
+            Some((_, d)) if !crate::resolve::takes_self(d) && exprs.len() == d.params.len() + 1 => &exprs[1..],
+            _ => exprs,
+        };
         let mut vals: Vec<Option<Val>> = exprs.iter().map(|e| if self.is_fn(e) { None } else { Some(self.eval(e)) }).collect();
         let builtin = !self.env.fns.contains_key(name) && !self.env.is_method(name);
         let mut fn_result_ty = None;

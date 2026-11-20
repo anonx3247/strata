@@ -2069,3 +2069,213 @@ fn as_value(q: Q) -> List[String] {
     let (ok, out) = strata(&["--file", "misc.strata", "check"], &d, None);
     assert!(!ok && out.contains("`impl Int`: methods can only be added to a record, sum or `distinct` type") && out.contains("`Q` has no method `nope` called on the type"), "{out}");
 }
+
+#[test]
+fn trait_methods_without_self() {
+    let d = tmp("static-methods");
+    // `Money.empty()`, `T.empty()` (the type passed when the generic function runs), `Self.empty()` in a default method and a law
+    std::fs::write(d.join("m.strata"), r#"trait Monoid {
+  fn empty() -> Self
+  fn combine(self, other: Self) -> Self
+  fn twice(self) -> Self {
+    self.combine(self).combine(Self.empty())
+  }
+  law left_identity(a: Self):
+    Self.empty().combine(a) == a
+}
+
+type Money = { cents: Int }
+
+impl Monoid for Money {
+  fn empty() -> Money {
+    Money { cents: 0 }
+  }
+
+  fn combine(self, other: Money) -> Money {
+    Money { cents: self.cents + other.cents }
+  }
+}
+
+impl Monoid for String {
+  fn empty() -> String {
+    ""
+  }
+
+  fn combine(self, other: String) -> String {
+    self + other
+  }
+}
+
+fn concat[T: Monoid](xs: List[T]) -> T {
+  fold(xs, T.empty(), (acc, x) -> acc.combine(x))
+}
+
+fn concat_twice[T: Monoid](xs: List[T]) -> T {
+  concat(xs).twice()
+}
+
+fn total(ms: List[Money]) -> Money {
+  concat(ms)
+}
+
+test "static trait methods" {
+  assert Money.empty() == Money { cents: 0 }
+  assert total([Money { cents: 2 }, Money { cents: 3 }]) == Money { cents: 5 }
+  assert concat(["a", "b"]) == "ab"
+  let none: List[Money] = []
+  assert concat(none) == Money { cents: 0 }
+  assert concat_twice(["x"]) == "xx"
+  assert String.empty() == ""
+}
+"#).unwrap();
+    let (ok, out) = strata(&["--file", "m.strata", "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
+    let (ok, out) = strata(&["--file", "m.strata", "verify"], &d, None);
+    assert!(ok && out.contains("law left_identity for Money") && out.contains("law left_identity for String") && !out.contains('✗'), "{out}");
+    let (_, r) = strata(&["--file", "m.strata", "render"], &d, None);
+    assert!(r.contains("fn empty() -> Self") && r.contains("T.empty()") && r.contains("Self.empty().combine(a) == a"), "{r}");
+
+    // contracts of static methods are used by the solver; a law catches a wrong `empty`
+    std::fs::write(d.join("s.strata"), r#"trait Bounded {
+  fn lowest() -> Self
+  fn rank(self) -> Int
+    ensures it >= 0
+}
+
+trait Zero {
+  fn zero() -> Self
+    ensures it == it
+}
+
+type Level = { n: Natural }
+
+impl Bounded for Level {
+  fn lowest() -> Level {
+    Level { n: 0 }
+  }
+
+  fn rank(self) -> Int {
+    self.n
+  }
+}
+
+fn lowest_rank[T: Bounded]() -> Natural {
+  T.lowest().rank()
+}
+
+fn level_floor() -> Natural {
+  Level.lowest().rank()
+}
+
+trait Monoid {
+  fn empty() -> Self
+  fn combine(self, other: Self) -> Self
+  law left_identity(a: Self):
+    Self.empty().combine(a) == a
+}
+
+type Max = { v: Int }
+
+impl Monoid for Max {
+  fn empty() -> Max {
+    Max { v: 5 }
+  }
+
+  fn combine(self, other: Max) -> Max {
+    if self.v > other.v { self } else { other }
+  }
+}
+
+test "generic with no arguments" {
+  assert level_floor() == 0
+}
+"#).unwrap();
+    let (_, out) = strata(&["--file", "s.strata", "verify"], &d, None);
+    assert!(out.contains("✓ lowest_rank") && out.contains("✓ level_floor") && out.contains("✗ law left_identity for Max"), "{out}");
+    std::fs::write(d.join("p.strata"), r#"trait Parse {
+  fn parse(s: String) -> Self
+    requires len(s) > 0
+  fn size(self) -> Int
+    ensures it >= 0
+}
+
+type Word = { text: String }
+
+impl Parse for Word {
+  fn parse(s: String) -> Word {
+    Word { text: s }
+  }
+
+  fn size(self) -> Int {
+    len(self.text)
+  }
+}
+
+fn read[T: Parse](s: NonEmptyString) -> Natural {
+  T.parse(s).size()
+}
+
+fn word_size(s: NonEmptyString) -> Natural {
+  Word.parse(s).size()
+}
+
+test "parse" {
+  assert word_size("hello") == 5
+}
+"#).unwrap();
+    let (ok, out) = strata(&["--file", "p.strata", "verify"], &d, None);
+    assert!(ok && out.contains("✓ read ") && out.contains("✓ word_size"), "{out}");
+
+    std::fs::write(d.join("bad.strata"), r#"trait Monoid {
+  fn empty() -> Self
+  fn combine(self, other: Self) -> Self
+}
+
+trait Version {
+  fn version() -> Int
+}
+
+type Money = { cents: Int }
+
+impl Monoid for Money {
+  fn empty() -> Money {
+    Money { cents: 0 }
+  }
+
+  fn combine(self, other: Money) -> Money {
+    Money { cents: self.cents + other.cents }
+  }
+}
+
+fn concat[T: Monoid](xs: List[T]) -> T {
+  fold(xs, T.empty(), (acc, x) -> acc.combine(x))
+}
+
+fn unbounded[T](x: T) -> T {
+  T.empty()
+}
+
+fn as_value(xss: List[List[Money]]) -> List[Money] {
+  xss.map(concat)
+}
+
+fn not_impl() -> Int {
+  Int.empty()
+}
+
+test "unknown type" {
+  assert concat([]) == concat([])
+}
+"#).unwrap();
+    let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
+    assert!(!ok, "{out}");
+    for want in [
+        "trait method `version` has no `self` and doesn't mention `Self`",
+        "error in unbounded: `T` has no method `empty` called on the type",
+        "error in as_value: `concat` needs to know its type arguments when it runs",
+        "error in not_impl: calling `empty`: `Int` does not implement `Monoid`",
+        "could not work out which type must implement `Monoid`; add a type annotation",
+    ] {
+        assert!(out.contains(want), "missing {want:?} in {out}");
+    }
+}

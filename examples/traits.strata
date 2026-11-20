@@ -107,6 +107,30 @@ impl[T] Combine for List[T] {
   }
 }
 
+/// A starting value. A method without `self` is called on a type:
+/// `Money.empty()`, or `T.empty()` in generic code.
+trait Empty: Combine {
+  fn empty() -> Self
+  law identity(a: Self): Self.empty().combine(a) == a
+}
+
+impl Empty for Money {
+  fn empty() -> Money {
+    Money { cents: 0 }
+  }
+}
+
+impl[T] Empty for List[T] {
+  fn empty() -> List[T] {
+    []
+  }
+}
+
+/// Like `combine_all`, but an empty list is fine: it gives `T.empty()`.
+fn combine_any[T: Empty](xs: List[T]) -> T {
+  fold(xs, T.empty(), (acc, x) -> acc.combine(x))
+}
+
 /// Wrong on purpose: averaging is not associative, and `verify` says so.
 type Midpoint = { at: Int }
 
@@ -149,4 +173,7 @@ test "one generic function, several implementations" {
     [Money { cents: 2 }, Money { cents: 3 }],
   ) == Money { cents: 6 }
   assert combine_all([1], [[2, 3], [4]]) == [1, 2, 3, 4]
+  let no_money: List[Money] = []
+  assert combine_any(no_money) == Money.empty()
+  assert combine_any([[1], [2, 3]]) == [1, 2, 3]
 }
