@@ -519,6 +519,27 @@ fn far() -> Bool ensures it { len("TAG") == 9 }
 }
 
 #[test]
+fn smt_knows_what_holds_for_every_element() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("smt-elements");
+    let src = std::fs::read_to_string(format!("{}/tests/data/elements.strata", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    std::fs::write(d.join("e.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", "e.strata", "verify", "--cases", "30"], &d, None);
+    assert!(!ok, "{out}");
+    for name in ["positives", "doubled", "digits", "lit", "pushed", "joined", "all_from", "first_big", "found", "rest_ok", "empty_is_fine"] {
+        assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
+    }
+    // refuted, by the solver or the fuzzer; `loop_push` was wrongly proven before (a loop kept its list's facts)
+    for name in ["bad_positives", "bad_doubled", "bad_digits", "bad_lit", "bad_pushed", "loop_push"] {
+        assert!(out.contains(&format!("✗ {name} ")), "{name} should be refuted: {out}");
+    }
+    assert!(!out.contains("✓ bad_all"), "{out}");
+}
+
+#[test]
 fn smt_proves_contracts_and_refutes_bugs() {
     if !has_solver() {
         eprintln!("z3 is not installed: skipping");

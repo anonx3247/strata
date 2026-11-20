@@ -53,14 +53,61 @@ pub enum Val {
     /// the tag is a function of the value, as in the interpreter, where a
     /// union value is just the member's value.
     Union { tag: T, slots: Vec<(String, Val)> },
-    /// A list, known by its length. `elem` is set when every element is known
-    /// to satisfy that type (the list crossed a checked boundary).
-    List { len: T, elem: Option<TypeExpr> },
+    /// A list: its length, and `id`, which says how its elements are made and
+    /// what is known of every one of them (`Vc::lists`).
+    List { len: T, id: usize },
     Distinct(String, Box<Val>),
     /// The payload of a constructor that is not the active one.
     Absent,
     /// Any value: something not modelled, with the reason.
     Opaque(String),
+}
+
+/// A function applied to list elements (`map`, `filter`, `all`, `find`),
+/// kept so that it can be applied to any element later.
+#[derive(Clone, Debug)]
+pub enum Func {
+    /// `x -> body`, with the variables in scope where it was written.
+    Lambda { param: String, body: Expr, scopes: Vec<HashMap<String, Val>> },
+    /// A named function or trait method.
+    Named(String),
+    /// "is a valid value of this type".
+    Valid(TypeExpr),
+}
+
+/// How an arbitrary element of a list is made: each list's elements are
+/// described by where the list came from.
+#[derive(Clone, Debug)]
+pub enum Gen {
+    /// Nothing is known of the elements.
+    Unknown,
+    /// Valid values of a type (a list that crossed a checked boundary).
+    Type(TypeExpr),
+    /// One of these values (a list literal).
+    Values(Vec<Val>),
+    /// An integer in `lo..hi` (`range`).
+    Range(T, T),
+    /// An element of another list (`rest`, `take`, `drop`, `sort`, ...).
+    Sub(usize),
+    /// An element of another list that satisfies a function (`filter`).
+    Filter(usize, Func),
+    /// A function of an element of another list (`map`).
+    Map(usize, Func),
+    /// An element of the first list when the term holds, else of the second
+    /// (`a + b` with a free choice, or two branches merged).
+    Either(T, usize, usize),
+}
+
+/// What the prover knows about the elements of one list.
+#[derive(Clone, Debug)]
+struct ListInfo {
+    source: Gen,
+    /// Facts about every element, each holding when its guard does
+    /// (`all(xs, p)` known true, or the list checked against a type).
+    preds: Vec<(T, Func)>,
+    /// Elements made so far, with the condition under which each exists, so
+    /// that facts learnt later reach them too.
+    seen: Vec<(T, Val)>,
 }
 
 /// One `while` loop, for the termination check.
@@ -130,6 +177,13 @@ pub struct Vc<'a> {
     /// Each `matches(s, re)` made: the string, the pattern, its value, and
     /// whether the pattern was approximated (to relate patterns on one string).
     matched: Vec<(T, String, T, bool)>,
+    /// Every list value's elements, by `Val::List::id`.
+    lists: Vec<ListInfo>,
+    /// Making an element under a quantifier (`every`): it is not a real
+    /// element, so facts are not attached to it later.
+    binding: usize,
+    /// The functions passed to the builtin being called, by argument.
+    fn_args: Vec<Option<Func>>,
 }
 
 fn and(ts: &[T]) -> T {
@@ -235,6 +289,9 @@ impl<'a> Vc<'a> {
             returns: vec![],
             declared: HashMap::new(),
             matched: vec![],
+            lists: vec![],
+            binding: 0,
+            fn_args: vec![],
         }
     }
 
@@ -279,6 +336,210 @@ impl<'a> Vc<'a> {
     fn oblige_termination(&mut self, what: String, goal: T) -> usize {
         self.obligations.push(Obligation { what, goal, pc: self.pc.clone(), facts: self.facts.len(), termination: true });
         self.obligations.len() - 1
+    }
+
+    // ---- lists: how their elements are made, and what holds for all of them ----
+
+    fn new_list(&mut self, len: T, gen_: Gen) -> Val {
+        self.lists.push(ListInfo { source: gen_, preds: vec![], seen: vec![] });
+        Val::List { len, id: self.lists.len() - 1 }
+    }
+
+    /// The list a value is (an unknown list for a value that isn't one).
+    fn list_id(&mut self, v: &Val) -> usize {
+        match v {
+            Val::List { id, .. } => *id,
+            _ => {
+                self.lists.push(ListInfo { source: Gen::Unknown, preds: vec![], seen: vec![] });
+                self.lists.len() - 1
+            }
+        }
+    }
+
+    /// The type every element of a list is known to have, if one is.
+    fn elem_type(&self, id: usize) -> Option<TypeExpr> {
+        match &self.lists[id].source {
+            Gen::Type(t) => Some(t.clone()),
+            Gen::Sub(p) | Gen::Filter(p, _) => self.elem_type(*p),
+            _ => None,
+        }
+    }
+
+    /// Is every element of a list known (unconditionally) to be a valid `t`?
+    fn valid_known(&self, id: usize, t: &TypeExpr) -> bool {
+        let info = &self.lists[id];
+        if info.preds.iter().any(|(g, f)| g == "true" && matches!(f, Func::Valid(t2) if t2 == t)) {
+            return true;
+        }
+        match &info.source {
+            Gen::Type(t2) => t2 == t,
+            Gen::Sub(p) | Gen::Filter(p, _) => self.valid_known(*p, t),
+            Gen::Either(_, a, b) => self.valid_known(*a, t) && self.valid_known(*b, t),
+            _ => false,
+        }
+    }
+
+    /// The value of a function applied to `x`, as known in a contract.
+    fn apply(&mut self, f: &Func, x: Val) -> Val {
+        match f {
+            Func::Lambda { param, body, scopes } => {
+                let saved = std::mem::replace(&mut self.scopes, scopes.clone());
+                self.scopes.push([(param.clone(), x)].into_iter().collect());
+                let returns = std::mem::take(&mut self.returns);
+                let dead = std::mem::replace(&mut self.dead, false);
+                self.spec += 1;
+                let v = self.eval(body);
+                self.spec -= 1;
+                self.dead = dead;
+                self.returns = returns;
+                self.scopes = saved;
+                v
+            }
+            Func::Named(n) => {
+                self.spec += 1;
+                let v = self.call(n, &[Expr::Unit], vec![x]);
+                self.spec -= 1;
+                v
+            }
+            Func::Valid(t) => {
+                self.spec += 1;
+                let c = self.check_type(t, &x, &[]);
+                self.spec -= 1;
+                Val::Bool(c)
+            }
+        }
+    }
+
+    /// An element of list `id`, which exists when `exists` holds: what is
+    /// known of it is assumed under that condition (an element of an empty
+    /// list must not make the path contradictory).
+    fn element(&mut self, id: usize, exists: &str) -> Val {
+        let n = self.pc.len();
+        self.pc.push(exists.to_string());
+        let x = self.element_inner(id);
+        self.pc.truncate(n);
+        x
+    }
+
+    fn element_inner(&mut self, id: usize) -> Val {
+        let x = match self.lists[id].source.clone() {
+            Gen::Unknown => Val::Opaque("the elements of a list are not tracked".into()),
+            Gen::Type(t) => self.havoc(&t),
+            Gen::Values(vs) if vs.is_empty() => {
+                // a list literal `[]` has no element: this one doesn't exist
+                self.assume("false".into());
+                Val::Opaque("an element of an empty list".into())
+            }
+            Gen::Values(vs) => {
+                let k = self.fresh("Int");
+                self.assume(format!("(and (<= 0 {k}) (< {k} {}))", vs.len()));
+                let mut v = vs.last().unwrap().clone();
+                for i in (0..vs.len() - 1).rev() {
+                    v = self.merge(&format!("(= {k} {i})"), &vs[i], &v);
+                }
+                v
+            }
+            Gen::Range(lo, hi) => {
+                let x = self.fresh("Int");
+                self.assume(format!("(and (<= {lo} {x}) (< {x} {hi}))"));
+                Val::Int(x)
+            }
+            Gen::Sub(p) => self.element_inner(p),
+            Gen::Filter(p, f) => {
+                let x = self.element_inner(p);
+                let c = self.apply(&f, x.clone());
+                let c = self.as_bool(&c);
+                self.assume(c);
+                x
+            }
+            Gen::Map(p, f) => {
+                let y = self.element_inner(p);
+                self.apply(&f, y)
+            }
+            Gen::Either(c, a, b) => {
+                let n = self.pc.len();
+                self.pc.push(c.clone());
+                let ea = self.element_inner(a);
+                self.pc.truncate(n);
+                self.pc.push(not(&c));
+                let eb = self.element_inner(b);
+                self.pc.truncate(n);
+                self.merge(&c, &ea, &eb)
+            }
+        };
+        // what is known of every element of this list
+        for (g, f) in self.lists[id].preds.clone() {
+            let p = self.apply(&f, x.clone());
+            let p = self.as_bool(&p);
+            self.assume(implies(&g, &p));
+        }
+        if self.binding == 0 {
+            let exists = and(&self.pc);
+            self.lists[id].seen.push((exists, x.clone()));
+        }
+        x
+    }
+
+    /// From now on, `f` holds for every element of list `id` when `guard`
+    /// does: for the elements made so far, and for every one made later.
+    fn know_all(&mut self, id: usize, guard: T, f: Func) {
+        for (exists, x) in self.lists[id].seen.clone() {
+            let p = self.apply(&f, x);
+            let p = self.as_bool(&p);
+            self.facts.push(implies(&and(&[exists, guard.clone()]), &p));
+        }
+        self.lists[id].preds.push((guard, f));
+    }
+
+    /// "Every element of the list satisfies what `prop` says of `x`", as a
+    /// formula: for any value made the way the list's elements are (any
+    /// value of the generator, an over-approximation of the elements),
+    /// `prop` holds. The quantifier sits where the solver only has to find
+    /// one counterexample element (a skolem), so it stays decidable. `None`
+    /// when `prop` gives up on the element.
+    fn every(&mut self, id: usize, prop: impl FnOnce(&mut Self, Val) -> Option<T>) -> Option<T> {
+        let (nd, nf, nm) = (self.decls.len(), self.facts.len(), self.matched.len());
+        self.binding += 1;
+        self.spec += 1;
+        let x = self.element(id, "true");
+        let p = prop(self, x);
+        self.spec -= 1;
+        self.binding -= 1;
+        let ant = and(&self.facts[nf..].to_vec());
+        self.facts.truncate(nf);
+        self.matched.truncate(nm);
+        let p = p?;
+        let bound: Vec<String> = self.decls[nd..].iter().map(|(n, s)| format!("({n} {s})")).collect();
+        let body = implies(&ant, &p);
+        Some(if bound.is_empty() { body } else { format!("(forall ({}) {body})", bound.join(" ")) })
+    }
+
+    /// `all(list, f)`: a Bool that is true when every element satisfies `f`
+    /// (proven through `every`), and that, once known, gives `f` to every
+    /// element the code looks at.
+    fn all_of(&mut self, list: &Val, f: Func) -> T {
+        let id = self.list_id(list);
+        let len = self.list_len(list);
+        let b = self.fresh("Bool");
+        self.facts.push(format!("(=> (= {len} 0) {b})"));
+        let f2 = f.clone();
+        if let Some(q) = self.every(id, |vc, x| {
+            let p = vc.apply(&f2, x);
+            Some(vc.as_bool(&p))
+        }) {
+            self.facts.push(implies(&q, &b));
+        }
+        self.know_all(id, b.clone(), f);
+        b
+    }
+
+    /// The function an argument expression denotes, if it can be kept.
+    fn func_of(&self, e: &Expr) -> Option<Func> {
+        match e {
+            Expr::Lambda(ps, body) if ps.len() == 1 => Some(Func::Lambda { param: ps[0].name.clone(), body: (**body).clone(), scopes: self.scopes.clone() }),
+            Expr::Var(n) if self.is_fn(e) => Some(Func::Named(n.clone())),
+            _ => None,
+        }
     }
 
     // ---- coercions: an opaque value used as an Int is some Int ----
@@ -377,14 +638,15 @@ impl<'a> Vc<'a> {
                 "List" => {
                     let len = self.fresh("Int");
                     self.facts.push(format!("(>= {len} 0)"));
-                    Val::List { len, elem: args.first().cloned() }
+                    let gen_ = args.first().cloned().map(Gen::Type).unwrap_or(Gen::Unknown);
+                    self.new_list(len, gen_)
                 }
                 "Tuple" => Val::Tuple(args.iter().map(|a| self.shape(a, depth)).collect()),
                 // dicts and sets are tracked by their size
                 "Dict" | "Set" => {
                     let len = self.fresh("Int");
                     self.facts.push(format!("(>= {len} 0)"));
-                    Val::List { len, elem: None }
+                    self.new_list(len, Gen::Unknown)
                 }
                 _ => {
                     let Some(td) = self.env.types.get(n).cloned() else {
@@ -541,8 +803,8 @@ impl<'a> Vc<'a> {
                 or(&cs)
             }
             TypeExpr::Named(n, args) => match (n.as_str(), v) {
-                ("List", Val::List { len, elem }) => {
-                    if args.is_empty() || elem.as_ref() == args.first() {
+                ("List", Val::List { len, id }) => {
+                    if args.is_empty() || self.elem_type(*id).as_ref() == args.first() {
                         "true".into()
                     } else {
                         let u = self.unknown_bool("the elements of a list are not tracked");
@@ -794,10 +1056,11 @@ impl<'a> Vc<'a> {
             Val::Tuple(xs) => Val::Tuple(xs.iter().map(|x| self.refresh(x)).collect()),
             Val::Rec(n, _) | Val::Distinct(n, _) => self.havoc(&TypeExpr::Named(n.clone(), vec![])),
             Val::Sum { ty, args, .. } => self.havoc(&TypeExpr::Named(ty.clone(), args.clone())),
-            Val::List { elem, .. } => {
+            Val::List { .. } => {
+                // any list: what a loop put in it is not known (a declared type is assumed separately)
                 let len = self.fresh("Int");
                 self.facts.push(format!("(>= {len} 0)"));
-                Val::List { len, elem: elem.clone() }
+                self.new_list(len, Gen::Unknown)
             }
             Val::Union { slots, .. } => {
                 let tag = self.fresh("Int");
@@ -883,15 +1146,15 @@ impl<'a> Vc<'a> {
             }
             TypeExpr::Unit | TypeExpr::Fn(..) => "true".into(),
             TypeExpr::Named(n, args) => match (n.as_str(), v) {
-                ("List", Val::List { elem, len }) => {
-                    if elem.as_ref() == args.first() || len == "0" {
-                        "true".into()
-                    } else {
-                        // an empty list is valid whatever its elements' type
-                        let u = self.unknown_bool("the elements of a list are not tracked");
-                        format!("(or (= {len} 0) {u})")
+                ("List", Val::List { len, id }) => match args.first() {
+                    None => "true".into(),
+                    Some(t) if len == "0" || self.valid_known(*id, t) => "true".into(),
+                    // every element valid: proven on an arbitrary element, and known from then on
+                    Some(t) => {
+                        let t = t.clone();
+                        self.all_of(v, Func::Valid(t))
                     }
-                }
+                },
                 ("Tuple", Val::Tuple(xs)) => {
                     let cs: Vec<T> = args.iter().zip(xs).map(|(a, x)| self.check_type(a, x, &[])).collect();
                     and(&cs)
@@ -1018,7 +1281,14 @@ impl<'a> Vc<'a> {
                     .collect();
                 Val::Sum { ty: ty.clone(), args: if args.is_empty() { args2.clone() } else { args.clone() }, tag: ite(c, t1, t2), ctors }
             }
-            (Val::List { len: l1, elem: e1 }, Val::List { len: l2, elem: e2 }) => Val::List { len: ite(c, l1, l2), elem: if e1 == e2 { e1.clone() } else { None } },
+            (Val::List { len: l1, id: i1 }, Val::List { len: l2, id: i2 }) => {
+                if i1 == i2 {
+                    Val::List { len: ite(c, l1, l2), id: *i1 }
+                } else {
+                    let (i1, i2) = (*i1, *i2);
+                    self.new_list(ite(c, l1, l2), Gen::Either(c.to_string(), i1, i2))
+                }
+            }
             (Val::Distinct(n, x), Val::Distinct(m, y)) if n == m => Val::Distinct(n.clone(), Box::new(self.merge(c, x, y))),
             (Val::Opaque(r), _) | (_, Val::Opaque(r)) => Val::Opaque(r.clone()),
             // values of different shapes (`if big { Square {…} } else { Circle {…} }`): a union
@@ -1165,21 +1435,17 @@ impl<'a> Vc<'a> {
             },
             Pattern::List(ps, rest) => {
                 let len = self.list_len(v);
-                let elem = match v {
-                    Val::List { elem, .. } => elem.clone(),
-                    _ => None,
-                };
+                let id = self.list_id(v);
                 let n = ps.len() as i64;
                 let mut cs = vec![if rest.is_some() { format!("(>= {len} {n})") } else { format!("(= {len} {n})") }];
-                for p in ps {
-                    let x = match &elem {
-                        Some(t) => self.havoc(t),
-                        None => Val::Opaque("the elements of a list are not tracked".into()),
-                    };
+                for (i, p) in ps.iter().enumerate() {
+                    // the i-th element exists when the list is long enough
+                    let x = self.element(id, &format!("(> {len} {i})"));
                     cs.push(self.pattern(p, &x, binds));
                 }
                 if let Some(r) = rest {
-                    binds.push((r.clone(), Val::List { len: format!("(- {len} {n})"), elem }));
+                    let rest_list = self.new_list(format!("(- {len} {n})"), Gen::Sub(id));
+                    binds.push((r.clone(), rest_list));
                 }
                 and(&cs)
             }
@@ -1381,10 +1647,8 @@ impl<'a> Vc<'a> {
             },
             Expr::Hole(h) => Val::Opaque(format!("the hole `?{h}`")),
             Expr::List(xs) => {
-                for x in xs {
-                    self.eval(x);
-                }
-                Val::List { len: xs.len().to_string(), elem: None }
+                let vals: Vec<Val> = xs.iter().map(|x| self.eval(x)).collect();
+                self.new_list(xs.len().to_string(), Gen::Values(vals))
             }
             Expr::Lambda(..) => self.fn_value(e, vec![]).0,
             Expr::Mock(t) => Val::Opaque(format!("`mock {}`", crate::printer::ty(t))),
@@ -1578,11 +1842,10 @@ impl<'a> Vc<'a> {
         match (&a, &b) {
             (Val::List { .. }, _) | (_, Val::List { .. }) => {
                 let (x, y) = (self.list_len(&a), self.list_len(&b));
-                let elem = match (&a, &b) {
-                    (Val::List { elem: e1, .. }, Val::List { elem: e2, .. }) if e1 == e2 => e1.clone(),
-                    _ => None,
-                };
-                Val::List { len: format!("(+ {x} {y})"), elem }
+                let (ia, ib) = (self.list_id(&a), self.list_id(&b));
+                // an element of `a + b` is an element of one of them
+                let choice = self.fresh("Bool");
+                self.new_list(format!("(+ {x} {y})"), Gen::Either(choice, ia, ib))
             }
             (Val::Str(_), _) | (_, Val::Str(_)) => {
                 let (x, y) = (self.as_str(&a), self.as_str(&b));
@@ -1715,10 +1978,14 @@ impl<'a> Vc<'a> {
             if vals[i].is_some() {
                 continue;
             }
+            // the function runs on the elements, if there are any: its checks hold under that
+            let mut exists = None;
             let elem = match vals.first() {
-                Some(Some(Val::List { elem: Some(t), .. })) if builtin && i > 0 => {
-                    let t = t.clone();
-                    Some(self.havoc(&t))
+                Some(Some(Val::List { len, id })) if builtin && i > 0 => {
+                    let (len, id) = (len.clone(), *id);
+                    let e = format!("(> {len} 0)");
+                    exists = Some(e.clone());
+                    Some(self.element(id, &e))
                 }
                 _ => None,
             };
@@ -1727,18 +1994,22 @@ impl<'a> Vc<'a> {
                 (_, Some(x)) => vec![x],
                 _ => vec![],
             };
+            let n = self.pc.len();
+            if let Some(e) = &exists {
+                self.pc.push(e.clone());
+            }
             let (fv, _, ty) = self.fn_value(e, args);
+            self.pc.truncate(n);
             fn_result_ty = ty;
             vals[i] = Some(fv);
         }
         let vals: Vec<Val> = vals.into_iter().map(|v| v.unwrap()).collect();
         let key = self.call_key(name, exprs, &vals);
+        let _ = fn_result_ty;
+        let funcs: Vec<Option<Func>> = exprs.iter().map(|e| if self.is_fn(e) { self.func_of(e) } else { None }).collect();
+        let saved = std::mem::replace(&mut self.fn_args, funcs);
         let r = self.call(name, exprs, vals);
-        let r = match (name, r) {
-            // the results of a named function are valid values of its result type
-            ("map", Val::List { len, .. }) if builtin => Val::List { len, elem: fn_result_ty },
-            (_, r) => r,
-        };
+        self.fn_args = saved;
         if let Some(k) = key {
             match self.memo.get(&k).cloned() {
                 Some(old) => {
@@ -1963,38 +2234,74 @@ impl<'a> Vc<'a> {
             }
             ("push", 2) => {
                 let l = self.list_len(&arg(0));
-                Val::List { len: format!("(+ {l} 1)"), elem: None }
+                let id = self.list_id(&arg(0));
+                // an element is one of the list's, or the new one
+                let one = self.new_list("1".into(), Gen::Values(vec![arg(1)]));
+                let one = self.list_id(&one);
+                let choice = self.fresh("Bool");
+                self.new_list(format!("(+ {l} 1)"), Gen::Either(choice, id, one))
             }
             ("take" | "drop", 2) => {
                 let l = self.list_len(&arg(0));
                 let n = self.as_int(&arg(1));
                 let k = format!("(ite (< {n} 0) 0 (ite (< {n} {l}) {n} {l}))");
-                let elem = match arg(0) {
-                    Val::List { elem, .. } => elem,
-                    _ => None,
-                };
-                Val::List { len: if name == "take" { k } else { format!("(- {l} {k})") }, elem }
+                let id = self.list_id(&arg(0));
+                self.new_list(if name == "take" { k } else { format!("(- {l} {k})") }, Gen::Sub(id))
             }
-            ("reverse" | "sort" | "sort_by", _) => match arg(0) {
-                v @ Val::List { .. } => v,
-                v => {
-                    let l = self.list_len(&v);
-                    Val::List { len: l, elem: None }
-                }
-            },
-            ("map" | "enumerate", _) => {
+            ("reverse" | "sort" | "sort_by", _) if !matches!(arg(0), Val::Str(_)) => {
                 let l = self.list_len(&arg(0));
-                Val::List { len: l, elem: None }
+                let id = self.list_id(&arg(0));
+                self.new_list(l, Gen::Sub(id))
+            }
+            ("map", 2) => {
+                let l = self.list_len(&arg(0));
+                let id = self.list_id(&arg(0));
+                let gen_ = match self.fn_args.get(1).cloned().flatten() {
+                    Some(f) => Gen::Map(id, f),
+                    None => Gen::Unknown,
+                };
+                self.new_list(l, gen_)
+            }
+            ("enumerate", _) => {
+                let l = self.list_len(&arg(0));
+                self.new_list(l, Gen::Unknown)
             }
             ("filter", 2) => {
                 let l = self.list_len(&arg(0));
-                let elem = match arg(0) {
-                    Val::List { elem, .. } => elem,
-                    _ => None,
-                };
+                let id = self.list_id(&arg(0));
                 let k = self.fresh_why("Int", "`filter` (only the length bound is modelled)");
                 self.facts.push(format!("(and (<= 0 {k}) (<= {k} {l}))"));
-                Val::List { len: k, elem }
+                let gen_ = match self.fn_args.get(1).cloned().flatten() {
+                    Some(f) => Gen::Filter(id, f),
+                    None => Gen::Sub(id),
+                };
+                self.new_list(k, gen_)
+            }
+            ("find", 2) if matches!(arg(0), Val::List { .. }) && self.fn_args.get(1).cloned().flatten().is_some() => {
+                // `Some(x)`: an element of the list that satisfies the function
+                let f = self.fn_args[1].clone().unwrap();
+                let l = self.list_len(&arg(0));
+                let id = self.list_id(&arg(0));
+                let found = self.fresh_why("Bool", "`find` (whether an element is found is not modelled)");
+                self.facts.push(format!("(=> (= {l} 0) (not {found}))"));
+                let x = self.element(id, &found);
+                let n = self.pc.len();
+                self.pc.push(found.clone());
+                let p = self.apply(&f, x.clone());
+                let p = self.as_bool(&p);
+                self.assume(p);
+                self.pc.truncate(n);
+                let t = self.elem_type(id).unwrap_or(TypeExpr::Named("_".into(), vec![]));
+                self.option(&t, &found, x)
+            }
+            ("get", 2) if matches!(arg(0), Val::List { .. }) => {
+                let l = self.list_len(&arg(0));
+                let id = self.list_id(&arg(0));
+                let i = self.as_int(&arg(1));
+                let inside = format!("(and (<= 0 {i}) (< {i} {l}))");
+                let x = self.element(id, &inside);
+                let t = self.elem_type(id).unwrap_or(TypeExpr::Named("_".into(), vec![]));
+                self.option(&t, &inside, x)
             }
             ("count", 2) => {
                 let l = self.list_len(&arg(0));
@@ -2004,50 +2311,63 @@ impl<'a> Vc<'a> {
             }
             ("zip", 2) => {
                 let (x, y) = (self.list_len(&arg(0)), self.list_len(&arg(1)));
-                Val::List { len: format!("(ite (<= {x} {y}) {x} {y})"), elem: None }
+                self.new_list(format!("(ite (<= {x} {y}) {x} {y})"), Gen::Unknown)
             }
             ("range", 2) => {
                 let (lo, hi) = (self.as_int(&arg(0)), self.as_int(&arg(1)));
-                Val::List { len: format!("(ite (> {hi} {lo}) (- {hi} {lo}) 0)"), elem: None }
+                self.new_list(format!("(ite (> {hi} {lo}) (- {hi} {lo}) 0)"), Gen::Range(lo, hi))
             }
             ("set", 1) => {
                 let l = self.list_len(&arg(0));
+                let id = self.list_id(&arg(0));
                 let k = self.fresh_why("Int", "`set` (only its size bounds are modelled)");
                 self.facts.push(format!("(and (<= 0 {k}) (<= {k} {l}) (= (= {k} 0) (= {l} 0)))"));
-                Val::List { len: k, elem: None }
+                // a set of a list's elements has only elements of the list
+                self.new_list(k, Gen::Sub(id))
+            }
+            ("to_list", 1) if matches!(arg(0), Val::List { .. }) => {
+                let l = self.list_len(&arg(0));
+                let id = self.list_id(&arg(0));
+                self.new_list(l, Gen::Sub(id))
             }
             ("keys" | "values" | "items" | "to_list", 1) => {
                 let l = self.list_len(&arg(0));
-                Val::List { len: l, elem: None }
+                self.new_list(l, Gen::Unknown)
+            }
+            ("all", 2) if self.fn_args.get(1).cloned().flatten().is_some() => {
+                let f = self.fn_args[1].clone().unwrap();
+                Val::Bool(self.all_of(&arg(0), f))
             }
             ("all" | "any", 2) => {
-                // only the empty case is modelled
+                // otherwise only the empty case is modelled
                 let l = self.list_len(&arg(0));
                 let b = self.fresh_why("Bool", &not_modelled);
                 self.facts.push(format!("(=> (= {l} 0) {})", if name == "all" { b.clone() } else { not(&b) }));
                 Val::Bool(b)
             }
             ("sum", 1) => {
+                // an Int list (a Float list's elements are unknown values)
                 let v = arg(0);
-                let elem = match &v {
-                    Val::List { elem: Some(t), .. } => t.clone(),
-                    _ => return Val::Opaque(not_modelled),
-                };
-                if self.env.expand_alias(&elem) != TypeExpr::Named("Int".into(), vec![]) {
+                let Val::List { id, .. } = v else { return Val::Opaque(not_modelled) };
+                let mut ints = true;
+                let q = self.every(id, |vc, x| match x {
+                    Val::Int(x) => Some(format!("(>= {x} 0)")),
+                    other => {
+                        ints = false;
+                        let _ = vc;
+                        let _ = other;
+                        None
+                    }
+                });
+                if !ints {
                     return Val::Opaque(not_modelled);
                 }
                 let l = self.list_len(&v);
                 let total = self.fresh_why("Int", "`sum` (only its sign is modelled)");
                 self.facts.push(format!("(=> (= {l} 0) (= {total} 0))"));
                 // non-negative elements have a non-negative sum
-                let n = self.facts.len();
-                let x = self.shape(&elem, 0);
-                self.spec += 1;
-                let p = self.check_type(&elem, &x, &[]);
-                self.spec -= 1;
-                self.facts.truncate(n);
-                if let Val::Int(x) = x {
-                    self.facts.push(format!("(=> (forall (({x} Int)) (=> {p} (>= {x} 0))) (>= {total} 0))"));
+                if let Some(q) = q {
+                    self.facts.push(format!("(=> {q} (>= {total} 0))"));
                 }
                 Val::Int(total)
             }
@@ -2073,7 +2393,7 @@ impl<'a> Vc<'a> {
             }
             ("chars", 1) => {
                 let s = self.as_str(&arg(0));
-                Val::List { len: format!("(str.len {s})"), elem: Some(TypeExpr::Named("String".into(), vec![])) }
+                self.new_list(format!("(str.len {s})"), Gen::Type(TypeExpr::Named("String".into(), vec![])))
             }
             // the first match, counted in characters; "" is found at 0
             ("index_of", 2) => {
@@ -2161,15 +2481,17 @@ impl<'a> Vc<'a> {
                 self.eval(e);
             }
             Stmt::Let(_, ty, e) | Stmt::Var(_, ty, e) => {
-                let mut v = self.eval(e);
+                let v = self.eval(e);
                 if let Some(t) = ty {
                     if self.refined(t, 0) {
                         let (t2, v2) = (t.clone(), v.clone());
                         self.oblige(format!("`let` annotated `{}`", crate::printer::ty(t)), |vc| vc.check_type(&t2, &v2, &[]));
                     }
-                    if let (Val::List { elem, .. }, TypeExpr::Named(n, args)) = (&mut v, self.env.expand_alias(t)) {
-                        if n == "List" {
-                            *elem = args.first().cloned();
+                    // past the check, the elements are valid (on this path)
+                    if let (Val::List { id, .. }, TypeExpr::Named(n, args)) = (&v, self.env.expand_alias(t)) {
+                        if let (true, Some(et)) = (n == "List", args.first()) {
+                            let guard = and(&self.pc);
+                            self.know_all(*id, guard, Func::Valid(et.clone()));
                         }
                     }
                 }
@@ -2257,9 +2579,10 @@ impl<'a> Vc<'a> {
                 let saved = self.scopes.clone();
                 let n = self.pc.len();
                 let x = match &xv {
-                    Val::List { elem: Some(t), len } => {
+                    Val::List { len, id } => {
+                        let (len, id) = (len.clone(), *id);
                         self.pc.push(format!("(> {len} 0)"));
-                        self.havoc(&t.clone())
+                        self.element(id, "true")
                     }
                     _ => Val::Opaque("the elements of a list are not tracked".into()),
                 };
