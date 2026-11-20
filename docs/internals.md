@@ -20,6 +20,7 @@
 | `src/package.rs` | packages: `strata.toml`, their files, finding packages and scripts |
 | `src/git.rs` | running git |
 | `src/llvm.rs`, `src/llvm/runtime.c` | `strata build`: the elaborated program as LLVM IR (text), and the C runtime it links with (strings, printing, number formatting, faults) |
+| `src/llvm/jit.rs`, `build.rs` | `strata run --jit` (feature `jit`): LLVM's libraries (inkwell) parse that IR, optimize it and run it in memory; build.rs compiles the runtime into strata |
 | `src/stdlib.rs`, `std/` | the standard library (Strata), built into the binary; the native `host_*` operations it alone can call |
 | `src/view.rs` | level-of-detail projections and selectors |
 | `src/ui.rs`, `src/ui/index.html` | `strata ui`: the live viewer (a std-only HTTP server and one page) |

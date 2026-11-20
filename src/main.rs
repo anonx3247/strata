@@ -116,6 +116,10 @@ Running:
                                (Console, Files, Environment from std) and ARGS; it
                                returns (), an ExitCode, or a Result (Err: exit code 1).
                                PATH is a .strata file or a package folder (or --file)
+  run --jit [PATH] [-- ARGS..] the same, compiled to machine code in memory (LLVM) and run:
+                               much faster, when the program only uses what compiles
+                               (see build); otherwise interpreted, with a note saying why.
+                               Needs strata built with `--features jit`
   run <fn> [JSON-ARGS] [--trace]
                                call one function: args are a JSON array validated
                                against the types; --trace prints each call and return

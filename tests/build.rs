@@ -106,3 +106,22 @@ fn emits_llvm_ir() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(ir.contains("define i64 @\"strata:twice\"(i64 %p.n)") && ir.contains("define i32 @main()"), "{ir}");
 }
+
+/// `strata run --jit`: compiled in memory, same output as interpreted.
+#[cfg(feature = "jit")]
+#[test]
+fn the_jit_runs_as_the_interpreter() {
+    let d = tmp("jit");
+    let strata = env!("CARGO_BIN_EXE_strata");
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/build/numbers.strata");
+    let jit = output(Command::new(strata).args(["run", "--jit"]).arg(&file));
+    let interp = output(Command::new(strata).arg("run").arg(&file));
+    assert_eq!(jit, interp);
+    assert_eq!(jit.1, 101);
+    // what doesn't compile yet is interpreted, and says why
+    let f = d.join("lists.strata");
+    std::fs::write(&f, "fn main() -> () { print(len([1, 2])) }\n").unwrap();
+    let (out, code) = output(Command::new(strata).args(["run", "--jit"]).arg(&f));
+    assert_eq!(code, 0);
+    assert!(out.contains("2\n") && out.contains("note: interpreted, not compiled: can't compile `main`: a list is not compiled yet"), "{out}");
+}

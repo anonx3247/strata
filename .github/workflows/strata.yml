@@ -33,3 +33,19 @@ jobs:
       # the SMT tests need z3; without it they are skipped
       - run: sudo apt-get update && sudo apt-get install -y z3
       - run: cargo test --release
+
+  jit:
+    name: cargo test (jit)
+    runs-on: ubuntu-latest
+    env:
+      LLVM_SYS_231_PREFIX: /usr/lib/llvm-23
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # LLVM 23's libraries, for inkwell
+      - run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh 23
+          sudo apt-get install -y llvm-23-dev libpolly-23-dev libzstd-dev zlib1g-dev
+      - run: cargo test --release --features jit --test build

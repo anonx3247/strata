@@ -112,6 +112,19 @@ A compiled program behaves as `strata run`: the same output, and contracts are c
 
 Anything else (records, variants, lists, lambdas, traits, `mut` parameters, capabilities) is refused, naming the function and what it uses: `can't compile `main`: a list is not compiled yet`. Memory is never freed yet.
 
+### The JIT
+
+`strata run --jit` compiles the same IR in memory with LLVM's libraries and runs it, so a program runs at native speed without a build step (`fib(32)`: 26 ms, compilation included). A program that uses what doesn't compile yet is interpreted instead, with a note saying why. It is opt-in until big integers compile: an `Int` overflow is a fault there, where the interpreter goes on with a big integer.
+
+The JIT needs LLVM 23's libraries, so it is a cargo feature:
+
+```sh
+brew install llvm                      # or apt.llvm.org's llvm-23-dev
+LLVM_SYS_231_PREFIX=$(brew --prefix llvm) cargo build --release --features jit
+```
+
+Both ways share one code generator (the IR as text, which LLVM parses for the JIT) and one runtime (`runtime.c`, built into `strata` for the JIT, compiled with the program by `strata build`).
+
 ## The viewer
 
 ![The Strata viewer, showing collatz_steps from examples/math.strata: its code, six proven checks, and "may not terminate"](images/viewer.png)
