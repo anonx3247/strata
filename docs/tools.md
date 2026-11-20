@@ -140,6 +140,8 @@ strata.log            one JSON entry per change made through strata: its id, mes
 
 The files and `strata.log` are committed. The log is append-only and merges by union (`.gitattributes`), and each entry carries the definitions' text, so it replays without anything else: `strata diff` splits a git commit into the changes made through strata (with their renames), plus a step for edits made by hand. Because verification results are keyed by content, `verify` reruns only what is affected by a change.
 
+A program can also be stored as **one binary file** holding its syntax tree and its `strata.toml`: `strata pack app.stb` writes it, and `--file app.stb`, `strata run app.stb`, `strata ui --file app.stb` and every view read it like source; `strata unpack app.stb DIR` writes the source back out, one canonical file per module. The format is Strata's own, specified in [binary-format.md](binary-format.md). For now the files stay the source of truth: `edit`, `rename` and `move` work on them, not on a binary file.
+
 ## Packages
 
 A folder with a `strata.toml` is a **package**. Its `.strata` files are its modules, named after their path inside it (`shop/orders.strata` is `shop.orders`). `main.strata` is the root module and the default entry point; a library has none. A folder inside a package that has its own `strata.toml` is a separate package. A `.strata` file outside every package is a standalone script (like `examples/bank.strata`).

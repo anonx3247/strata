@@ -8,6 +8,7 @@
 | `src/ast.rs` | the syntax tree (the canonical representation), and the walkers every pass uses (`Visit`, `VisitMut`) |
 | `src/names.rs` | qualified names: `short`, `module_of`, `qualify` |
 | `src/lexer.rs`, `src/parser.rs` | text → tree |
+| `src/binary.rs` | the binary format (`pack` / `unpack`, `--file x.stb`), by hand: see [binary-format.md](binary-format.md) |
 | `src/printer.rs` | tree → text (canonical form, used for hashing) |
 | `src/types.rs`, `src/types/` | type inference, traits, holes; `env.rs` (what is declared), `exhaustive.rs` (exhaustiveness, unreachable arms), `ints.rs` / `reals.rs` (value sets of refinements) |
 | `src/interp.rs` | interpreter: trait dispatch, mocks, runtime contracts, JSON in/out, traces |

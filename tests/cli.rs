@@ -50,6 +50,42 @@ fn render_round_trips() {
 }
 
 #[test]
+fn pack_and_unpack_a_package() {
+    let d = tmp("pack");
+    let pkg = format!("{}/examples/tasks", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["--file", &pkg, "pack", "tasks.stb"], &d, None);
+    assert!(ok && out.contains("67 definitions"), "{out}");
+    assert!(std::fs::read(d.join("tasks.stb")).unwrap().starts_with(b"STRATA"));
+    // every command reads the binary file like source
+    let (ok, out) = strata(&["--file", "tasks.stb", "check"], &d, None);
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "tasks.stb", "test"], &d, None);
+    assert!(ok && out.contains("0 failed"), "{out}");
+    // unpacked, it is the same package, file for file
+    let (ok, out) = strata(&["unpack", "tasks.stb", "out"], &d, None);
+    assert!(ok, "{out}");
+    for f in ["strata.toml", "core.strata", "memory.strata", "print.strata", "sim.strata"] {
+        let a = std::fs::read_to_string(format!("{pkg}/{f}")).unwrap();
+        assert_eq!(a, std::fs::read_to_string(d.join("out").join(f)).unwrap(), "{f}");
+    }
+    let (ok, out) = strata(&["unpack", "tasks.stb", "out"], &d, None);
+    assert!(!ok && out.contains("not empty"), "{out}");
+}
+
+#[test]
+fn run_a_binary_file() {
+    let d = tmp("pack-run");
+    let hello = format!("{}/examples/hello", env!("CARGO_MANIFEST_DIR"));
+    let (ok, out) = strata(&["--file", &hello, "pack", "hello.stb"], &d, None);
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "hello.stb"], &d, None);
+    assert!(ok && out.contains("hello, world!"), "{out}");
+    std::fs::write(d.join("bad.stb"), b"STRATA\x01\x05").unwrap();
+    let (ok, out) = strata(&["--file", "bad.stb", "check"], &d, None);
+    assert!(!ok && out.contains("corrupt binary Strata file"), "{out}");
+}
+
+#[test]
 fn static_errors_are_reported() {
     let d = tmp("errors");
     let src = std::fs::read_to_string(example()).unwrap()
