@@ -179,11 +179,24 @@ pub struct Interp<'a> {
     /// Only `strata run` gives it, with the program's arguments: checks,
     /// tests, fuzzing and proofs never touch the terminal or the disk.
     pub host: Option<Host>,
+    /// Where `print` writes.
+    pub output: Output,
 }
 
 /// What `strata run` passes to the program.
 pub struct Host {
     pub args: Vec<String>,
+}
+
+/// Where `print` goes: `print(x)` is shorthand for the console of wherever
+/// the code runs.
+pub enum Output {
+    /// Standard output (`strata run`).
+    Terminal,
+    /// Kept, to be shown if the test fails (`strata test`).
+    Buffer(String),
+    /// Nowhere (`verify`, fuzzing, checks).
+    Discard,
 }
 
 fn short(c: &str) -> &str {
@@ -327,6 +340,7 @@ impl<'a> Interp<'a> {
             budget: None,
             steps: 0,
             host: None,
+            output: Output::Discard,
         }
     }
 
@@ -785,6 +799,23 @@ impl<'a> Interp<'a> {
         use Value::*;
         if crate::stdlib::is_host(name) {
             return self.host_call(name, args);
+        }
+        if name == "print" {
+            let line = show(args.first().unwrap_or(&Unit)) + "\n";
+            match &mut self.output {
+                Output::Terminal => {
+                    use std::io::Write;
+                    let mut o = std::io::stdout().lock();
+                    if let Err(e) = o.write_all(line.as_bytes()).and_then(|_| o.flush()) {
+                        if e.kind() == std::io::ErrorKind::BrokenPipe {
+                            std::process::exit(0);
+                        }
+                    }
+                }
+                Output::Buffer(b) => b.push_str(&line),
+                Output::Discard => {}
+            }
+            return Ok(Unit);
         }
         let mut a = args.into_iter();
         let mut nx = || a.next().unwrap_or(Unit);
@@ -1491,14 +1522,16 @@ impl<'a> Interp<'a> {
                         Stmt::Comment(_) => {}
                         Stmt::Assert(x) => {
                             if self.eval(x, &sc)? != Value::Bool(true) {
-                                let detail = match x {
-                                    Expr::Bin(op, l, r) => format!(
-                                        " (left = {}, right = {})",
-                                        to_json(&self.eval(l, &sc)?),
-                                        to_json(&self.eval(r, &sc)?)
-                                    )
-                                    .replace("left", &format!("left of {}", op.symbol())),
-                                    _ => String::new(),
+                                // the sides are evaluated again for the message: don't print twice
+                                let output = std::mem::replace(&mut self.output, Output::Discard);
+                                let sides = match x {
+                                    Expr::Bin(op, l, r) => self.eval(l, &sc).and_then(|lv| Ok((op, lv, self.eval(r, &sc)?))).ok(),
+                                    _ => None,
+                                };
+                                self.output = output;
+                                let detail = match sides {
+                                    Some((op, lv, rv)) => format!(" (left of {} = {}, right = {})", op.symbol(), to_json(&lv), to_json(&rv)),
+                                    None => String::new(),
                                 };
                                 return self.fail(FaultKind::Assert, format!("assertion failed: {}{detail}", crate::printer::expr(x, 0)));
                             }

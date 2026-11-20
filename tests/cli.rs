@@ -1728,7 +1728,7 @@ fn std_io_programs_run_with_capabilities_and_exit_codes() {
 
     // the same program's tests use stand-ins
     let (ok, out) = strata(&["--file", &ex("wc"), "test"], &d, None);
-    assert!(ok && out.contains("3 passed"), "{out}");
+    assert!(ok && out.contains("4 passed"), "{out}");
 
     // an exit code, writing files and environment variables
     std::fs::write(
@@ -1779,4 +1779,124 @@ fn string_escapes_round_trip() {
     assert!(r1.contains(r#""a\tb\\n""#), "{r1}");
     let (_, out) = strata(&["--file", "e.strata", "run", "s"], &d, None);
     assert!(out.contains(r#""a\tb\\n""#), "{out}");
+}
+
+#[test]
+fn print_goes_to_the_terminal_a_test_buffer_or_nowhere() {
+    let d = tmp("print");
+    std::fs::write(
+        d.join("p.strata"),
+        r#"use std.io.Console
+
+fn double(n: Int) -> Int {
+  print(f"doubling {n}")
+  n * 2
+}
+
+fn main(mut console: Console) -> () {
+  print("plain")
+  print([1, 2])
+  console.print("console")
+  print(double(21))
+}
+
+test "passes" {
+  assert double(1) == 2
+}
+
+test "fails" {
+  assert double(2) == 5
+}
+"#,
+    )
+    .unwrap();
+    // `print` is the prelude's even where `Console` (with its `print` method) is imported
+    let (code, out, _) = strata_code(&["run", "p.strata"], &d, "");
+    assert_eq!((code, out.as_str()), (0, "plain\n[1,2]\nconsole\ndoubling 21\n42\n"));
+    // a test's output is shown only when it fails, once
+    let (_, out) = strata(&["--file", "p.strata", "test"], &d, None);
+    assert!(out.contains("✓ passes") && !out.contains("doubling 1"), "{out}");
+    assert_eq!(out.matches("doubling 2").count(), 1, "{out}");
+    // verify discards it
+    let (_, out, err) = strata_code(&["--file", "p.strata", "verify", "--cases", "20"], &d, "");
+    assert!(!out.contains("doubling") && !err.contains("doubling"), "{out}{err}");
+}
+
+#[test]
+fn command_line_options_are_read_into_a_record() {
+    let d = tmp("cli");
+    std::fs::create_dir_all(d.join("tool/kinds")).unwrap();
+    std::fs::write(d.join("tool/strata.toml"), "name = \"tool\"\n").unwrap();
+    std::fs::write(d.join("tool/kinds.strata"), "pub type Mode =\n  | Fast\n  | DryRun\n").unwrap();
+    std::fs::write(
+        d.join("tool/main.strata"),
+        r#"use std.cli.CommandLine
+use kinds.*
+
+/// Copy things.
+type Options = {
+  /// Where from.
+  source: String,
+  /// How many copies.
+  copies: Positive,
+  /// Say more.
+  verbose: Bool,
+  /// How to go about it.
+  mode: Option[Mode],
+  /// A ratio.
+  ratio: Option[Float where 0.0 <= it && it <= 1.0],
+  extra: List[Int],
+}
+
+impl CommandLine for Options {}
+
+fn main(opts: Options) -> () {
+  print(opts)
+}
+"#,
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let mut a = vec!["run", "tool", "--"];
+        a.extend_from_slice(args);
+        strata_code(&a, &d, "")
+    };
+    let (code, out, err) = run(&["src", "3", "--verbose", "--mode", "dry-run", "--ratio=0.5", "7", "8"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains(r#""source":"src""#) && out.contains(r#""copies":3"#) && out.contains(r#""verbose":true"#), "{out}");
+    assert!(out.contains(r#""mode":{"Some":"DryRun"}"#) && out.contains(r#""ratio":{"Some":0.5}"#) && out.contains(r#""extra":[7,8]"#), "{out}");
+    // defaults: a flag is false, an option None, the list empty
+    let (code, out, _) = run(&["src", "1"]);
+    assert!(code == 0 && out.contains(r#""verbose":false"#) && out.contains(r#""mode":"None""#) && out.contains(r#""extra":[]"#), "{out}");
+    // mistakes exit 2 and name the argument
+    for (args, want) in [
+        (vec!["src"], "missing <copies>: How many copies."),
+        (vec!["src", "0"], "<copies>: 0 does not satisfy"),
+        (vec!["src", "x"], "<copies>: `x` is not a whole number"),
+        (vec!["src", "1", "--mode", "slow"], "`slow` is not one of fast, dry-run"),
+        (vec!["src", "1", "--ratio", "2.0"], "--ratio: 2.0 does not satisfy"),
+        (vec!["src", "1", "--colour"], "unknown option `--colour`"),
+        (vec!["src", "1", "--verbose", "--verbose"], "given twice"),
+        (vec!["src", "1", "--verbose=yes"], "takes no value"),
+        (vec!["src", "1", "x"], "[extra...]: `x` is not a whole number"),
+    ] {
+        let (code, out, err) = run(&args);
+        assert!(code == 2 && out.is_empty() && err.contains(want) && err.contains("tool --help"), "{args:?}: {err}");
+    }
+    // `--` ends the options
+    let (code, out, _) = run(&["--", "--verbose", "2"]);
+    assert!(code == 0 && out.contains(r#""source":"--verbose""#), "{out}");
+    // help comes from the doc comments
+    let (code, out, _) = run(&["--help"]);
+    assert_eq!(code, 0);
+    for want in ["Copy things.", "Usage: tool [OPTIONS] <source> <copies> [extra...]", "<copies>", "How many copies.", "--mode <fast|dry-run>", "--ratio <Float>", "(where 0.0 <= it && it <= 1.0)", "--verbose", "-h, --help"] {
+        assert!(out.contains(want), "missing {want:?} in\n{out}");
+    }
+    // a record that can't be read from arguments is a check error
+    std::fs::write(d.join("bad.strata"), "use std.cli.CommandLine\n\ntype Opts = { pairs: List[(Int, Int)] }\n\nimpl CommandLine for Opts {}\n").unwrap();
+    let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
+    assert!(!ok && out.contains("`Opts.pairs` is a `List[(Int, Int)]`"), "{out}");
+    // field docs round-trip
+    let (_, r1) = strata(&["--file", "tool", "render", "main"], &d, None);
+    assert!(r1.contains("  /// How many copies.\n  copies: Positive,"), "{r1}");
 }

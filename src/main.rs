@@ -1,4 +1,5 @@
 mod ast;
+mod cli;
 mod diff;
 mod history;
 mod generate;
@@ -199,6 +200,12 @@ fn full_check(p: &Program) -> types::CheckReport {
     for d in verify::static_refinements(p, &env) {
         if !rep.errors.iter().any(|e| e.decl == d.decl && e.msg == d.msg) {
             rep.errors.push(d);
+        }
+    }
+    // a `CommandLine` record must be readable from arguments
+    for i in env.impls.iter().filter(|i| i.trait_name == cli::TRAIT) {
+        if let Err(msg) = cli::validate(&env, &types::texpr_head(&i.for_type)) {
+            rep.errors.push(types::Diag { decl: i.name(), msg });
         }
     }
     rep
@@ -843,9 +850,15 @@ fn run() -> Result<bool, String> {
         }
         "run" => {
             // `strata run hello.strata`: the program's path in place of --file
-            let (src, rest) = match args.pos.get(1) {
-                Some(f) if f.ends_with(".strata") || std::path::Path::new(f).join(package::FILE).is_file() => (Source::File(read_sources(f, None)?), &args.pos[2..]),
-                _ => (load(&args)?, &args.pos[1..]),
+            let (src, rest, path) = match args.pos.get(1) {
+                Some(f) if f.ends_with(".strata") || std::path::Path::new(f).join(package::FILE).is_file() => (Source::File(read_sources(f, None)?), &args.pos[2..], f.clone()),
+                _ => (load(&args)?, &args.pos[1..], args.val("--file").unwrap_or(".").to_string()),
+            };
+            // the program's name, for `--help`: its package's, or the file's
+            let path = std::path::Path::new(&path);
+            let prog = match package::find(path) {
+                Ok(Some(pkg)) => pkg.name,
+                _ => path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "main".into()),
             };
             let p = src.program();
             let rep = full_check(p);
@@ -856,7 +869,7 @@ fn run() -> Result<bool, String> {
             let (env, _) = types::Env::new(p);
             let Some(name) = rest.first() else {
                 let program_args = args.flags.get("--").cloned().unwrap_or_default();
-                std::process::exit(run_main(&env, program_args, args.flag("--trace"))?);
+                std::process::exit(run_main(p, &env, &prog, program_args, args.flag("--trace"))?);
             };
             let f = env.fns.get(name).ok_or(format!("no function `{name}`"))?.clone();
             let raw: serde_json::Value = serde_json::from_str(rest.get(1).map(|s| s.as_str()).unwrap_or("[]")).map_err(|e| format!("args: {e}"))?;
@@ -867,6 +880,8 @@ fn run() -> Result<bool, String> {
             let seed: u64 = args.val("--seed").unwrap_or("1").parse().map_err(|_| "bad --seed")?;
             let mut it = interp::Interp::new(&env, seed);
             it.tracing = args.flag("--trace");
+            // what it prints comes before its result
+            it.output = interp::Output::Terminal;
             let mut vals = Vec::new();
             for (pm, j) in f.params.iter().zip(&raw) {
                 vals.push(it.from_json(&pm.ty, j, &pm.name).map_err(|e| format!("invalid input: {e}"))?);
@@ -903,6 +918,8 @@ fn run() -> Result<bool, String> {
                     continue;
                 }
                 let mut it = interp::Interp::new(&env, 7);
+                // each test prints into its own buffer, shown only if it fails
+                it.output = interp::Output::Buffer(String::new());
                 match it.eval(&t.body, &None) {
                     Ok(_) => {
                         pass += 1;
@@ -913,6 +930,14 @@ fn run() -> Result<bool, String> {
                         println!("✗ {}\n    {:?}: {}", t.name, f.kind, f.msg);
                         if !f.stack.is_empty() {
                             println!("    stack: {}", f.stack.join(" -> "));
+                        }
+                        if let interp::Output::Buffer(out) = &it.output {
+                            if !out.is_empty() {
+                                println!("    printed:");
+                                for l in out.lines() {
+                                    println!("      {l}");
+                                }
+                            }
                         }
                     }
                 }
@@ -1001,9 +1026,13 @@ fn ci(fix: bool) -> Result<bool, String> {
 /// `main` asks for the capabilities it needs by type (`Console`, `Files`,
 /// `Environment`, in any order) and may return `()` (0), an exit code, or a
 /// `Result` of either, whose `Err` is printed to standard error (exit code 1).
-fn run_main(env: &types::Env, program_args: Vec<String>, trace: bool) -> Result<i32, String> {
+fn run_main(p: &Program, env: &types::Env, prog: &str, program_args: Vec<String>, trace: bool) -> Result<i32, String> {
     use interp::Value;
     let f = env.fns.get("main").ok_or("no `main` function to run (the entry point is `fn main` in main.strata, or in the file you run)")?.clone();
+    let mut it = interp::Interp::new(env, 1);
+    it.tracing = trace;
+    it.host = Some(interp::Host { args: program_args.clone() });
+    it.output = interp::Output::Terminal;
     let mut vals = Vec::new();
     for pm in &f.params {
         let ty = printer::ty(&pm.ty);
@@ -1012,12 +1041,29 @@ fn run_main(env: &types::Env, program_args: Vec<String>, trace: bool) -> Result<
             "std.io.Console" => rec("std.io.Terminal", vec![("stdout", Value::Int(1)), ("stderr", Value::Int(2))]),
             "std.fs.Files" => rec("std.fs.Disk", vec![("root", Value::Str(".".into()))]),
             "std.process.Environment" => rec("std.process.Process", vec![("pid", Value::Int(std::process::id() as i64))]),
-            _ => return Err(format!("`main` can ask for `Console` (std.io), `Files` (std.fs) and `Environment` (std.process); its parameter `{}` is a `{ty}`", pm.name)),
+            // options read from the command line
+            _ if cli::is_options(env, &pm.ty) => {
+                let doc = p.decls.iter().find(|d| matches!(d.kind, DeclKind::Type(_)) && d.qname() == ty).map(|d| d.doc.clone()).unwrap_or_default();
+                match cli::parse(&mut it, env, &ty, &doc, prog, &program_args) {
+                    cli::Parsed::Options(v) => v,
+                    cli::Parsed::Help(text) => {
+                        print!("{text}");
+                        return Ok(0);
+                    }
+                    cli::Parsed::Error(e) => {
+                        eprintln!("error: {e}");
+                        return Ok(2);
+                    }
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "`main` can ask for `Console` (std.io), `Files` (std.fs), `Environment` (std.process), and options: a record that implements `CommandLine` (std.cli). Its parameter `{}` is a `{ty}`",
+                    pm.name
+                ))
+            }
         });
     }
-    let mut it = interp::Interp::new(env, 1);
-    it.tracing = trace;
-    it.host = Some(interp::Host { args: program_args });
     let res = it.call_fn("main", vals);
     if it.tracing {
         for t in &it.trace {

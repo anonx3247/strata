@@ -327,26 +327,43 @@ All values are immutable (`insert` returns a new dict). Dicts and sets are kept 
 
 ## Programs and the standard library
 
-A program's entry point is `main`. It asks for the capabilities it needs by type, and `strata run` passes the real ones in:
+A program's entry point is `main`. It asks for what it needs by type, and `strata run` passes it in: its command-line options, and the capabilities it uses.
 
 ```rust
-use std.io.Console
-use std.process.Environment
+use std.cli.CommandLine
 
-fn main(mut console: Console, env: Environment) -> () {
-  let names = env.args()
-  let who = if len(names) == 0 { "world" } else { join(names, " and ") }
-  console.print(f"hello, {who}!")
+/// Greet people by name.
+type Options = {
+  /// Shout the greeting.
+  loud: Bool,
+  /// Say it this many times.
+  times: Option[Int where 1 <= it && it <= 10],
+  /// Who to greet (the world if nobody).
+  names: List[String],
+}
+
+impl CommandLine for Options {}
+
+fn main(opts: Options) -> () {
+  let who = if len(opts.names) == 0 { "world" } else { join(opts.names, " and ") }
+  for _ in range(0, opts.times except { 1 }) {
+    print(if opts.loud { to_upper(f"hello, {who}!") } else { f"hello, {who}!" })
+  }
 }
 ```
 
 ```sh
-strata run examples/hello -- Ada        # hello, Ada!
-strata run examples/wc -- README.md     # lines, words and characters, like wc
+strata run examples/hello -- Ada --loud      # HELLO, ADA!
+strata run examples/hello -- --help          # usage, from the doc comments
+strata run examples/wc -- --only words README.md
 cat README.md | strata run examples/wc
 ```
 
-`main` can ask for any of `Console` (`std.io`), `Files` (`std.fs`) and `Environment` (`std.process`), in any order. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [JSON-ARGS]` still calls a single function.
+**`print(x)`** is always available, with no `use`. It writes `x` (as `to_string` shows it) and a newline wherever the code runs: to the terminal under `strata run`, into the test's own buffer under `strata test` (shown only if the test fails), and nowhere under `verify`. It is a convenience; code whose output a test should check, or that a caller should control, takes a `Console`.
+
+**Command-line options** are a record that implements `CommandLine` (`std.cli`); the trait has no methods. Each field is read from the arguments by its type: a `Bool` is a flag (`--loud`), an `Option[T]` an option with a value (`--times 3` or `--times=3`), a `List[T]` the remaining positional arguments, and any other field a required positional argument, in field order. `T` is an `Int`, `Float`, `String`, a refinement of one, or a choice (a type whose variants carry nothing: `type Count = | Lines | Words` is `lines` or `words`). Names take dashes (`dry_run` is `--dry-run`), `--` ends the options, every refinement is checked (`--times: 0 does not satisfy …`), and a mistake exits with code 2. `--help` is built from the record's and fields' `///` doc comments. `strata check` rejects a `CommandLine` record a command line can't fill.
+
+`main` can also ask for `Console` (`std.io`), `Files` (`std.fs`) and `Environment` (`std.process`), in any order. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [JSON-ARGS]` still calls a single function.
 
 The **standard library** is the `std/` package, written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency:
 
@@ -355,6 +372,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 | `std.io` | `Console` (`print`, `write`, `eprint`, `read_line`); `Recorder` / `recorder(input)` / `printed(r)` for tests |
 | `std.fs` | `Files` (`read_text`, `write_text`, `append_text`, `exists`, `list_dir`, `make_dir`, `remove_file`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
 | `std.process` | `Environment` (`args`, `var`), `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
+| `std.cli` | `CommandLine`: a record of options read from the arguments |
 
 Each capability is a trait, so code that prints takes a `Console`, and its signature says so. The only real implementations are private types of `std` that the runtime makes for `main`; nothing else can create them. Tests pass the in-memory stand-ins (see `examples/wc`), or `mock Console`. Only `std` can call the native `host_*` operations underneath, and only `strata run` lets them reach the system: `test`, `verify` and fuzzing never touch the terminal or the disk.
 
