@@ -164,6 +164,15 @@ pub struct Interp<'a> {
     writeback: Vec<(usize, Value)>,
     /// The value of the `return` (or `!` / `?`) being carried out.
     returning: Option<Value>,
+    /// Access to the real system, for the `host_*` builtins under `std`.
+    /// Only `strata run` gives it, with the program's arguments: checks,
+    /// tests, fuzzing and proofs never touch the terminal or the disk.
+    pub host: Option<Host>,
+}
+
+/// What `strata run` passes to the program.
+pub struct Host {
+    pub args: Vec<String>,
 }
 
 fn short(c: &str) -> &str {
@@ -268,7 +277,88 @@ impl<'a> Interp<'a> {
             regexes: HashMap::new(),
             writeback: vec![],
             returning: None,
+            host: None,
         }
+    }
+
+    /// A native operation of the standard library (`host_*`).
+    fn host_call(&mut self, name: &str, args: Vec<Value>) -> R<Value> {
+        use std::io::{BufRead, Write};
+        use Value::*;
+        let Some(host) = &self.host else {
+            return self.fail(FaultKind::Runtime, format!("`{name}` needs the real system, which only `strata run` gives (tests and `verify` pass a stand-in such as `Recorder` or `mock Console`)"));
+        };
+        let some = |v: Value| Variant("Some".into(), Fields::Pos(vec![v]));
+        let none = || Variant("None".into(), Fields::None);
+        let io = |r: std::io::Result<Value>| match r {
+            Ok(v) => Variant("Ok".into(), Fields::Pos(vec![v])),
+            Err(e) => {
+                use std::io::ErrorKind as K;
+                let kind = match e.kind() {
+                    K::NotFound => "not_found",
+                    K::PermissionDenied => "permission_denied",
+                    K::AlreadyExists => "already_exists",
+                    K::NotADirectory => "not_a_directory",
+                    K::IsADirectory => "is_a_directory",
+                    _ => "other",
+                };
+                Variant("Err".into(), Fields::Pos(vec![Tuple(vec![Str(kind.into()), Str(e.to_string())])]))
+            }
+        };
+        let s = |i: usize| match args.get(i) {
+            Some(Str(s)) => s.clone(),
+            _ => String::new(),
+        };
+        Ok(match name {
+            "host_write" => {
+                let text = s(1);
+                let r = if args.first() == Some(&Int(2)) {
+                    let mut e = std::io::stderr().lock();
+                    e.write_all(text.as_bytes()).and_then(|_| e.flush())
+                } else {
+                    let mut o = std::io::stdout().lock();
+                    o.write_all(text.as_bytes()).and_then(|_| o.flush())
+                };
+                match r {
+                    // a closed pipe (`strata run | head`) ends the program quietly
+                    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(0),
+                    _ => Unit,
+                }
+            }
+            "host_read_line" => {
+                let mut line = String::new();
+                match std::io::stdin().lock().read_line(&mut line) {
+                    Ok(0) | Err(_) => none(),
+                    Ok(_) => {
+                        let trimmed = line.strip_suffix('\n').unwrap_or(&line);
+                        some(Str(trimmed.strip_suffix('\r').unwrap_or(trimmed).to_string()))
+                    }
+                }
+            }
+            "host_read_file" => io(std::fs::read_to_string(s(0)).map(Str)),
+            "host_write_file" => {
+                let (path, text) = (s(0), s(1));
+                let append = args.get(2) == Some(&Bool(true));
+                io(std::fs::OpenOptions::new().create(true).write(true).append(append).truncate(!append).open(path).and_then(|mut f| f.write_all(text.as_bytes())).map(|_| Unit))
+            }
+            "host_exists" => Bool(std::path::Path::new(&s(0)).exists()),
+            "host_list_dir" => io(std::fs::read_dir(s(0)).and_then(|rd| {
+                let mut names = rd.map(|e| e.map(|e| e.file_name().to_string_lossy().to_string())).collect::<std::io::Result<Vec<_>>>()?;
+                names.sort();
+                Ok(List(names.into_iter().map(Str).collect()))
+            })),
+            "host_make_dir" => io(std::fs::create_dir_all(s(0)).map(|_| Unit)),
+            "host_remove" => {
+                let p = s(0);
+                io(if std::path::Path::new(&p).is_dir() { std::fs::remove_dir(&p) } else { std::fs::remove_file(&p) }.map(|_| Unit))
+            }
+            "host_args" => List(host.args.iter().cloned().map(Str).collect()),
+            "host_env_var" => match std::env::var(s(0)) {
+                Ok(v) => some(Str(v)),
+                Err(_) => none(),
+            },
+            _ => return self.fail(FaultKind::Runtime, format!("unknown host operation `{name}`")),
+        })
     }
 
     fn fail<T>(&self, kind: FaultKind, msg: impl Into<String>) -> R<T> {
@@ -638,6 +728,9 @@ impl<'a> Interp<'a> {
 
     fn builtin(&mut self, name: &str, args: Vec<Value>) -> R<Value> {
         use Value::*;
+        if crate::stdlib::is_host(name) {
+            return self.host_call(name, args);
+        }
         let mut a = args.into_iter();
         let mut nx = || a.next().unwrap_or(Unit);
         Ok(match name {

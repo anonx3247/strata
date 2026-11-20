@@ -1609,3 +1609,84 @@ fn sync_carries_logged_renames_into_the_other_sides_files() {
     assert!(std::fs::read_to_string(d.join("b.strata")).unwrap().contains("surface(s, s) + extent"), "not captured");
     assert_eq!(git(&d, &["rev-parse", "HEAD"]), head, "nothing committed");
 }
+
+/// Run strata and give (exit code, stdout, stderr).
+fn strata_code(args: &[&str], dir: &std::path::Path, stdin: &str) -> (i32, String, String) {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_strata")).args(args).current_dir(dir).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    c.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+    let o = c.wait_with_output().unwrap();
+    (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string())
+}
+
+#[test]
+fn std_io_programs_run_with_capabilities_and_exit_codes() {
+    let d = tmp("stdio");
+    let ex = |p: &str| format!("{}/examples/{p}", env!("CARGO_MANIFEST_DIR"));
+
+    // main gets the console and the command line; `()` exits 0
+    let (code, out, _) = strata_code(&["run", &ex("hello"), "--", "Ada", "Alan"], &d, "");
+    assert_eq!((code, out.as_str()), (0, "hello, Ada and Alan!\n"));
+
+    // files, standard input, and an Err from main: written to stderr, exit code 1
+    std::fs::write(d.join("a.txt"), "one two\nthree\n").unwrap();
+    let (code, out, _) = strata_code(&["run", &ex("wc"), "--", "a.txt"], &d, "");
+    assert_eq!((code, out.as_str()), (0, "2\t3\t14\ta.txt\n"));
+    let (code, out, _) = strata_code(&["run", &ex("wc")], &d, "a b\nc\n");
+    assert_eq!((code, out.as_str()), (0, "2\t3\t6\t-\n"));
+    let (code, _, err) = strata_code(&["run", &ex("wc"), "--", "missing.txt"], &d, "");
+    assert!(code == 1 && err.contains("NotFound") && err.contains("missing.txt"), "{code} {err}");
+
+    // the same program's tests use stand-ins
+    let (ok, out) = strata(&["--file", &ex("wc"), "test"], &d, None);
+    assert!(ok && out.contains("3 passed"), "{out}");
+
+    // an exit code, writing files and environment variables
+    std::fs::write(
+        d.join("prog.strata"),
+        r#"use std.io.Console
+use std.fs.{Files, FsError}
+use std.process.{Environment, ExitCode}
+
+fn main(mut console: Console, mut files: Files, env: Environment) -> Result[ExitCode, FsError] {
+  files.write_text("out/x.txt", "a")!
+  files.append_text("out/x.txt", "b")!
+  console.eprint(files.read_text("out/x.txt")!)
+  console.write(env.var("STRATA_TEST_VAR") except { "unset" })
+  Ok(len(files.list_dir("out")!) + 6)
+}
+"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(d.join("out")).unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "prog.strata"]).current_dir(&d).env("STRATA_TEST_VAR", "set!").output().unwrap();
+    assert_eq!(o.status.code(), Some(7), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "set!");
+    assert_eq!(String::from_utf8_lossy(&o.stderr), "ab\n");
+
+    // the host is the standard library's alone
+    std::fs::write(d.join("sneaky.strata"), "fn main() -> () {\n  host_write(1, \"hi\")\n}\n").unwrap();
+    let (code, out, err) = strata_code(&["run", "sneaky.strata"], &d, "");
+    assert!(code != 0 && out.is_empty() && err.contains("internal to the standard library"), "{out}{err}");
+
+    // `main` may only ask for capabilities the runtime has
+    std::fs::write(d.join("odd.strata"), "fn main(n: Int) -> () {\n  ()\n}\n").unwrap();
+    let (code, _, err) = strata_code(&["run", "odd.strata"], &d, "");
+    assert!(code != 0 && err.contains("can ask for `Console`"), "{err}");
+
+    // verify never reaches the real system: capabilities are mocks there
+    std::fs::write(d.join("greet.strata"), "use std.io.Console\n\nfn greet(mut c: Console, n: Int) -> () {\n  c.print(f\"MARKER {n}\")\n}\n").unwrap();
+    let (_, out, err) = strata_code(&["--file", "greet.strata", "verify", "--cases", "20"], &d, "");
+    assert!(!out.contains("MARKER") && !err.contains("MARKER"), "{out}{err}");
+    let (ok, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "check"], &d, None);
+    assert!(ok, "{out}");
+}
+
+#[test]
+fn string_escapes_round_trip() {
+    let d = tmp("escapes");
+    std::fs::write(d.join("e.strata"), "fn s() -> String {\n  \"a\tb\\\\n\"\n}\n").unwrap();
+    let (_, r1) = strata(&["--file", "e.strata", "render"], &d, None);
+    assert!(r1.contains(r#""a\tb\\n""#), "{r1}");
+    let (_, out) = strata(&["--file", "e.strata", "run", "s"], &d, None);
+    assert!(out.contains(r#""a\tb\\n""#), "{out}");
+}

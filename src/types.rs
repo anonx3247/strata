@@ -958,7 +958,7 @@ impl<'a> Checker<'a> {
         if let Some(tn) = self.env.method_trait.get(name).cloned() {
             return Some(self.trait_method(name, &tn));
         }
-        if let Some((_, ps, sig)) = BUILTINS.iter().find(|(n, ..)| *n == name) {
+        if let Some((_, ps, sig)) = BUILTINS.iter().chain(crate::stdlib::HOST).find(|(n, ..)| *n == name) {
             let ps: Vec<String> = ps.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
             return Some(self.instantiate(&ps, &parse_type_str(sig)));
         }

@@ -1,0 +1,58 @@
+// std.process — the running program: its arguments, its environment
+// variables and its exit code.
+//
+// `main` says what it needs, and the runtime passes it in:
+//
+//   fn main(mut console: Console, env: Environment) -> ExitCode { ... }
+//
+// `main` may return `()` (exit code 0), an `ExitCode`, or a `Result` of
+// either: an `Err` is written to standard error and the exit code is 1.
+
+/// A process exit code: 0 for success, anything else for failure.
+pub type ExitCode = Int
+  where 0 <= it && it <= 255
+
+/// What the program was started with: the real process, or a stand-in for it.
+pub trait Environment {
+  /// The command-line arguments, without the program's own name.
+  fn args(self) -> List[String]
+  /// The value of an environment variable, if it is set.
+  fn var(self, name: String) -> Option[String]
+}
+
+/// The running process. Only the runtime makes one, for `main`.
+type Process = { pid: Int }
+
+impl Environment for Process {
+  fn args(self) -> List[String] {
+    host_args()
+  }
+
+  fn var(self, name: String) -> Option[String] {
+    host_env_var(name)
+  }
+}
+
+/// An environment for tests.
+pub type FakeEnvironment = {
+  arguments: List[String],
+  variables: Dict[String, String],
+}
+
+/// A test environment with these arguments and variables.
+pub fn fake_environment(
+  arguments: List[String],
+  variables: List[(String, String)],
+) -> FakeEnvironment {
+  FakeEnvironment { arguments, variables: dict(variables) }
+}
+
+impl Environment for FakeEnvironment {
+  fn args(self) -> List[String] {
+    self.arguments
+  }
+
+  fn var(self, name: String) -> Option[String] {
+    get(self.variables, name)
+  }
+}

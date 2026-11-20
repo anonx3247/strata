@@ -33,8 +33,18 @@ pub struct Resolution {
 }
 
 pub fn resolve(p: &Program) -> Resolution {
-    // Programs without modules or imports are already resolved.
-    if p.decls.iter().all(|d| d.module.is_empty() && !matches!(d.kind, DeclKind::Use(_))) {
+    // the standard library goes after the program's own definitions, so
+    // index `i` of the result is still index `i` of the input
+    if let Some(full) = crate::stdlib::with_std(p) {
+        return run(&full, None);
+    }
+    // Programs without modules or imports are already resolved (unless they
+    // call into the host, which `run` reports).
+    let calls_host = || {
+        let text = serde_json::to_string(p).unwrap();
+        crate::stdlib::HOST.iter().any(|h| text.contains(&format!("\"{}\"", h.0)))
+    };
+    if p.decls.iter().all(|d| d.module.is_empty() && !matches!(d.kind, DeclKind::Use(_))) && !calls_host() {
         return Resolution { program: p.clone(), errors: vec![] };
     }
     run(p, None)
@@ -61,8 +71,10 @@ pub fn rename(p: &Program, old: &str, new: &str) -> Result<Program, String> {
     if p.decls.iter().any(|x| x.qname() == new_q) {
         return Err(format!("`{new_q}` already exists"));
     }
-    let out = run(p, Some((old.to_string(), new.to_string())));
+    let full = crate::stdlib::with_std(p);
+    let out = run(full.as_ref().unwrap_or(p), Some((old.to_string(), new.to_string())));
     let mut program = out.program;
+    program.decls.truncate(p.decls.len());
     for (r, d) in program.decls.iter_mut().zip(&p.decls) {
         r.module = d.module.clone();
     }
@@ -313,6 +325,12 @@ impl Rw<'_> {
                     msg: format!("`{n}` is private to module `{}` (only `pub` definitions are part of its contract)", it.module),
                 });
             }
+        }
+        if crate::stdlib::is_host(n) && !crate::stdlib::is_std(self.module) && self.rename.is_none() {
+            self.errors.push(Diag {
+                decl: self.decl.clone(),
+                msg: format!("`{n}` is internal to the standard library: take a capability instead (`Console` from `std.io`, `Files` from `std.fs`, `Environment` from `std.process`)"),
+            });
         }
         n.to_string()
     }

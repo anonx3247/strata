@@ -10,6 +10,7 @@ mod parser;
 mod printer;
 mod resolve;
 mod smt;
+mod stdlib;
 mod termination;
 mod store;
 mod types;
@@ -84,9 +85,14 @@ Checking:
                                the run when a checked function falls short
 
 Running:
+  run [PATH] [-- ARGS..]       run the program: `main` gets the capabilities it asks for
+                               (Console, Files, Environment from std) and ARGS; it
+                               returns (), an ExitCode, or a Result (Err: exit code 1).
+                               PATH is a .strata file or a package folder (or --file)
   run <fn> [JSON-ARGS] [--trace]
-                               args are a JSON array validated against the types;
-                               --trace prints each call and return to stderr
+                               call one function: args are a JSON array validated
+                               against the types; --trace prints each call and return
+                               to stderr
   test [FILTER]                run test blocks
   builtins [--json]            list built-in functions and their signatures
 
@@ -105,6 +111,11 @@ impl Args {
         let mut i = 0;
         while i < raw.len() {
             let a = &raw[i];
+            if a == "--" {
+                // the rest goes to the program (`strata run -- a b`)
+                flags.insert("--".into(), raw[i + 1..].to_vec());
+                break;
+            }
             if valued.contains(&a.as_str()) && i + 1 < raw.len() {
                 flags.entry(a.clone()).or_default().push(raw[i + 1].clone());
                 i += 2;
@@ -150,7 +161,7 @@ fn read_sources(path: &str, module: Option<&str>) -> Result<Program, String> {
         return parser::parse_module_file(&src, module.unwrap_or("")).map_err(|e| format!("{path}:{e}"));
     }
     // packages nested in this folder are separate programs
-    parse_files(package::files(root)?)
+    package::program(root)
 }
 
 /// Parse a folder's `.strata` files, given as (path relative to the folder,
@@ -799,7 +810,11 @@ fn run() -> Result<bool, String> {
             return Ok(all_ok);
         }
         "run" => {
-            let src = load(&args)?;
+            // `strata run hello.strata`: the program's path in place of --file
+            let (src, rest) = match args.pos.get(1) {
+                Some(f) if f.ends_with(".strata") || std::path::Path::new(f).join(package::FILE).is_file() => (Source::File(read_sources(f, None)?), &args.pos[2..]),
+                _ => (load(&args)?, &args.pos[1..]),
+            };
             let p = src.program();
             let rep = full_check(p);
             if !rep.ok() {
@@ -807,9 +822,12 @@ fn run() -> Result<bool, String> {
                 return Ok(false);
             }
             let (env, _) = types::Env::new(p);
-            let name = args.pos.get(1).ok_or("usage: strata run <fn> [JSON-ARGS]")?;
+            let Some(name) = rest.first() else {
+                let program_args = args.flags.get("--").cloned().unwrap_or_default();
+                std::process::exit(run_main(&env, program_args, args.flag("--trace"))?);
+            };
             let f = env.fns.get(name).ok_or(format!("no function `{name}`"))?.clone();
-            let raw: serde_json::Value = serde_json::from_str(args.pos.get(2).map(|s| s.as_str()).unwrap_or("[]")).map_err(|e| format!("args: {e}"))?;
+            let raw: serde_json::Value = serde_json::from_str(rest.get(1).map(|s| s.as_str()).unwrap_or("[]")).map_err(|e| format!("args: {e}"))?;
             let raw = raw.as_array().cloned().ok_or("args must be a JSON array")?;
             if raw.len() != f.params.len() {
                 return Err(format!("`{name}` takes {} arguments", f.params.len()));
@@ -924,7 +942,7 @@ fn ci(fix: bool) -> Result<bool, String> {
         if !parsed {
             continue;
         }
-        let p = package::parse(package::files(path)?)?;
+        let p = package::program(path)?;
         let rep = full_check(&p);
         let mut errors: Vec<String> = rep.errors.iter().map(|e| format!("error in {}: {}", e.decl, e.msg)).collect();
         if let Some(pkg) = &pkg {
@@ -945,6 +963,59 @@ fn ci(fix: bool) -> Result<bool, String> {
         }
     }
     Ok(ok)
+}
+
+/// Run the program's `main` with the real system, and give its exit code.
+/// `main` asks for the capabilities it needs by type (`Console`, `Files`,
+/// `Environment`, in any order) and may return `()` (0), an exit code, or a
+/// `Result` of either, whose `Err` is printed to standard error (exit code 1).
+fn run_main(env: &types::Env, program_args: Vec<String>, trace: bool) -> Result<i32, String> {
+    use interp::Value;
+    let f = env.fns.get("main").ok_or("no `main` function to run (the entry point is `fn main` in main.strata, or in the file you run)")?.clone();
+    let mut vals = Vec::new();
+    for pm in &f.params {
+        let ty = printer::ty(&pm.ty);
+        let rec = |name: &str, fields: Vec<(&str, Value)>| Value::Record(name.into(), fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
+        vals.push(match ty.as_str() {
+            "std.io.Console" => rec("std.io.Terminal", vec![("stdout", Value::Int(1)), ("stderr", Value::Int(2))]),
+            "std.fs.Files" => rec("std.fs.Disk", vec![("root", Value::Str(".".into()))]),
+            "std.process.Environment" => rec("std.process.Process", vec![("pid", Value::Int(std::process::id() as i64))]),
+            _ => return Err(format!("`main` can ask for `Console` (std.io), `Files` (std.fs) and `Environment` (std.process); its parameter `{}` is a `{ty}`", pm.name)),
+        });
+    }
+    let mut it = interp::Interp::new(env, 1);
+    it.tracing = trace;
+    it.host = Some(interp::Host { args: program_args });
+    let res = it.call_fn("main", vals);
+    if it.tracing {
+        for t in &it.trace {
+            eprintln!("{t}");
+        }
+    }
+    let code = |v: &Value| match v {
+        Value::Unit => Ok(0),
+        Value::Int(n) => i32::try_from(*n).map_err(|_| format!("`main` returned {n}, which is not an exit code")),
+        other => Err(format!("`main` must return `()`, an `ExitCode` or a `Result` of either, not {}", interp::show(other))),
+    };
+    match res {
+        Ok(Value::Variant(c, interp::Fields::Pos(mut xs))) if c == "Ok" && xs.len() == 1 => code(&xs.pop().unwrap()),
+        Ok(Value::Variant(c, interp::Fields::Pos(xs))) if c == "Err" && xs.len() == 1 => {
+            let shown = match &xs[0] {
+                Value::Str(s) => s.clone(),
+                e => interp::show(e),
+            };
+            eprintln!("error: {shown}");
+            Ok(1)
+        }
+        Ok(v) => code(&v),
+        Err(fault) => {
+            eprintln!("fault ({:?}): {}", fault.kind, fault.msg);
+            if !fault.stack.is_empty() {
+                eprintln!("    stack: {}", fault.stack.join(" -> "));
+            }
+            Ok(101)
+        }
+    }
 }
 
 fn main() -> ExitCode {

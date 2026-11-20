@@ -3,6 +3,24 @@
 
 use crate::ast::*;
 
+/// A string literal's contents, written so the lexer reads them back the
+/// same: `\n`, `\t` and `"` are escaped, and so is a backslash that would
+/// otherwise start one of those escapes (others, like regex `\d`, stay as is).
+fn escape(s: &str) -> String {
+    let mut out = String::new();
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '"' => out.push_str("\\\""),
+            '\\' if it.peek().is_none_or(|n| matches!(n, 'n' | 't' | '"' | '\\')) => out.push_str("\\\\"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 pub fn ty(t: &TypeExpr) -> String {
     match t {
         TypeExpr::Unit => "()".into(),
@@ -245,7 +263,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Int(n) => n.to_string(),
         Expr::Float(f) => float(*f),
         Expr::Tuple(es) => format!("({})", args(es, d)),
-        Expr::Str(s) => format!("\"{}\"", s.replace('"', "\\\"").replace('\n', "\\n")),
+        Expr::Str(s) => format!("\"{}\"", escape(s)),
         Expr::Bool(b) => b.to_string(),
         Expr::Unit => "()".into(),
         Expr::Var(v) => v.clone(),
@@ -311,7 +329,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             let mut s = "f\"".to_string();
             for p in parts {
                 match p {
-                    StrPart::Lit(l) => s += &l.replace('"', "\\\"").replace('\n', "\\n").replace('{', "{{").replace('}', "}}"),
+                    StrPart::Lit(l) => s += &escape(l).replace('{', "{{").replace('}', "}}"),
                     StrPart::Expr(e) => s += &format!("{{{}}}", expr_inline(e, 0)),
                 }
             }

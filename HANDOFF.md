@@ -70,10 +70,22 @@ Diff, not yet: trait-method/variant renames; "N matches must handle the new vari
 - **Strata IDE**: the viewer as a standalone desktop app (Tauri; the backend is already Rust), speaking ACP (Agent Client Protocol) so agents such as Claude Code or Codex run inside it, with a Strata MCP server giving them structural tools (slices, check, edit, rename). The viewer would show live where each agent is working (log entries tagged with the agent's session). Idea stage.
 
 
+## Standard library: I/O first (built, branch `worktree-stdlib-io`)
+
+The user asked for a standard library usable from any program, starting with I/O (print, exit codes), then strings, regex, a NumPy-like math library (later, bigger), and web UI. Built so far:
+- **`std/` is a Strata package** (`name = "std"`), embedded in the binary (`src/stdlib.rs`, `include_str!`). A program that has a `use std.…` gets std's definitions appended after its own at resolution (`stdlib::with_std` in `resolve::resolve`), so index `i` of a resolved program is still the program's `i`; code that zips resolved with original decls is unaffected, and `store::graph` truncates to the program's own. Its modules are `std.io`, `std.fs`, `std.process`, also when `std/` itself is loaded (`package::program` prefixes a package named `std`; `store::module_path` maps back to files).
+- **Capabilities, as decided**: `Console`, `Files`, `Environment` are traits. The real implementations (`Terminal`, `Disk`, `Process`) are private std types, built only by `run_main` in `main.rs`. Test stand-ins are public: `Recorder`, `MemFiles`, `FakeEnvironment`.
+- **The native layer** is the `host_*` builtins (`stdlib::HOST`, implemented in `Interp::host_call`). The resolver rejects them outside `std` modules. They work only when `Interp.host` is set, which only `strata run` does, so test/verify/fuzzing can never print, read or delete anything.
+- **`strata run [PATH] [-- ARGS]`** runs `main`: parameters are filled by type (Console/Files/Environment only), the return is `()` → 0, `ExitCode`/`Int` → that code, `Result` → `Ok` as before or `Err` printed to stderr → 1; a fault → 101.
+- Examples: `examples/hello`, `examples/wc` (with tests that use the stand-ins).
+- Also fixed: the printer now escapes tabs and backslashes in string literals (it used to write a literal tab, and `"\\n"` came back as a newline).
+
+Not yet / next: `Disk`/`Terminal` contracts should be reported `assumed` (they show as "proven, nothing to check"); `main` can't ask for a clock, random numbers, network or a process spawner; an `Err` from `main` is printed as JSON; verification cache keys don't include std's hash (a std change only comes with a new binary). Next modules the user listed: strings (beyond the builtins), regex, math/linear algebra (NumPy-like), web UI (HTML/CSS generation and serving, per the batteries-included plan below).
+
 ## Known gaps
 
 - Trait methods must take `self`; there is no `fn empty() -> Self` dispatch yet, and method names must be unique across traits.
-- No host bindings (FFI), so a real SQLite backend isn't possible yet.
+- No general FFI: the only native code is the standard library's `host_*` layer, so a real SQLite backend isn't possible yet.
 - `strata verify --force` on the tasks example takes a few seconds (proven functions are not fuzzed); the slowest part is still generating `MemQueue` values that satisfy its invariants.
 - Typed lambda parameters (`(n: Positive) -> …`) are checked statically but their refinements are not enforced at runtime yet.
 - `!` converts errors only by fitting (a variant into its sum, a member into a union), not with a conversion function. f-strings have no format specs (`{x:.2}`).

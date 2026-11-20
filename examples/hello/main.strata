@@ -1,0 +1,16 @@
+// hello — the smallest program: `strata run examples/hello -- Ada`.
+
+use std.io.Console
+
+use std.process.Environment
+
+/// Greets everyone named on the command line, or the world.
+fn main(mut console: Console, env: Environment) -> () {
+  let names = env.args()
+  let who = if len(names) == 0 {
+    "world"
+  } else {
+    join(names, " and ")
+  }
+  console.print(f"hello, {who}!")
+}
