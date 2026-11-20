@@ -551,6 +551,13 @@ impl Env {
         from_trait.or_else(|| owns.into_iter().find_map(|(_, i)| i.methods.iter().find(|m| m.name == name && crate::resolve::takes_self(m)).map(|m| m.params.clone())))
     }
 
+    /// Which parameters of the function or method `name` are `mut` (none for
+    /// a builtin).
+    pub fn mut_params(&self, name: &str) -> Vec<bool> {
+        let ps = self.fns.get(name).map(|f| f.params.clone()).or_else(|| self.method_params(name));
+        ps.unwrap_or_default().iter().map(|p| p.mutable).collect()
+    }
+
     /// The implementation of `method` for values whose type head is `head`:
     /// the impl's method or the trait's default, with the trait's contract.
     /// `method` is `Trait::m` for a call through a specific trait (see
@@ -1635,52 +1642,10 @@ impl<'a> Checker<'a> {
         ps.iter().map(|p| p.mutable.then(|| p.ty.clone())).collect()
     }
 
-    /// Whether `e` may change the variable `root`: an assignment to it or one of
-    /// its fields, or passing it to a `mut` parameter (or a `mut self` method).
+    /// Whether `e` may change the variable `root` (or one of its fields).
     fn assigns_to(&self, e: &Expr, root: &str) -> bool {
-        let rooted = |p: &Expr| place_path(p).is_some_and(|q| q == root || q.starts_with(&format!("{root}.")));
-        let any = |es: &[&Expr]| es.iter().any(|x| self.assigns_to(x, root));
-        match e {
-            Expr::Call(f, args) => {
-                let muts = match &**f {
-                    Expr::Var(n) => self.mut_mask(n),
-                    _ => vec![],
-                };
-                args.iter().enumerate().any(|(i, a)| muts.get(i).is_some_and(|m| m.is_some()) && rooted(a)) || self.assigns_to(f, root) || args.iter().any(|a| self.assigns_to(a, root))
-            }
-            Expr::Method(r, m, args) => {
-                let muts = self.mut_mask(m);
-                let all: Vec<&Expr> = std::iter::once(&**r).chain(args.iter()).collect();
-                all.iter().enumerate().any(|(i, a)| muts.get(i).is_some_and(|m| m.is_some()) && rooted(a)) || any(&all)
-            }
-            Expr::Block(stmts, last) => {
-                stmts.iter().any(|s| match s {
-                    Stmt::Assign(p, x) => rooted(p) || self.assigns_to(x, root),
-                    // a new variable of that name: what follows is about the new one
-                    Stmt::Let(Pattern::Bind(n), _, x) | Stmt::Var(n, _, x) if n == root => self.assigns_to(x, root),
-                    Stmt::Let(_, _, x) | Stmt::Var(_, _, x) | Stmt::Expr(x) | Stmt::Assert(x) => self.assigns_to(x, root),
-                    Stmt::While(c, b) | Stmt::For(_, c, b) => self.assigns_to(c, root) || self.assigns_to(b, root),
-                    Stmt::Loop(b) => self.assigns_to(b, root),
-                    Stmt::Break | Stmt::Continue | Stmt::Comment(_) => false,
-                }) || self.assigns_to(last, root)
-            }
-            Expr::Tuple(xs) | Expr::List(xs) => xs.iter().any(|x| self.assigns_to(x, root)),
-            Expr::Ctor(_, args) => match args {
-                CtorArgs::None => false,
-                CtorArgs::Positional(xs) => xs.iter().any(|x| self.assigns_to(x, root)),
-                CtorArgs::Record(fs) => fs.iter().any(|(_, x)| self.assigns_to(x, root)),
-                CtorArgs::Update(b, fs) => self.assigns_to(b, root) || fs.iter().any(|(_, x)| self.assigns_to(x, root)),
-            },
-            Expr::Field(r, _) | Expr::Un(_, r) | Expr::Is(r, _) | Expr::Return(r) | Expr::Try(r, _) => self.assigns_to(r, root),
-            Expr::Bin(_, l, r) => any(&[l, r]),
-            Expr::If(c, t, f) => any(&[c, t, f]),
-            Expr::Match(s, _, arms) => self.assigns_to(s, root) || arms.iter().any(|a| self.assigns_to(&a.body, root)),
-            Expr::Except(x, _, fb) => any(&[x, fb]),
-            Expr::Interp(parts) => parts.iter().any(|p| matches!(p, StrPart::Expr(x, _) if self.assigns_to(x, root))),
-            // a closure cannot change the enclosing function's variables
-            Expr::Lambda(..) => false,
-            _ => false,
-        }
+        let mut_params = |n: &str| self.mut_mask(n).iter().map(Option::is_some).collect();
+        changed_places(e, &mut_params).iter().any(|q| q == root || q.starts_with(&format!("{root}.")))
     }
 
     /// Whether a literal is outside a written type's refinement (decided for
@@ -2958,16 +2923,6 @@ impl<'a> Checker<'a> {
             Expr::Method(_, m, _) if self.lookup(m).is_none() => self.env.fns.get(m).map(|f| f.ret.clone()),
             _ => None,
         }
-    }
-}
-
-/// `x`, `o.status`: the written path of a variable or field access.
-fn place_path(e: &Expr) -> Option<String> {
-    match e {
-        Expr::Mut(x) => place_path(x),
-        Expr::Var(x) => Some(x.clone()),
-        Expr::Field(r, f) => Some(format!("{}.{f}", place_path(r)?)),
-        _ => None,
     }
 }
 

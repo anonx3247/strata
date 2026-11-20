@@ -660,6 +660,7 @@ macro_rules! visitor {
             }
         }
 
+        #[allow(dead_code)] // the read-only twin may not be used yet
         /// Visit a function: its bounds, parameter and return types, contract and body.
         pub fn $func<V: $Visit + ?Sized>(v: &mut V, f: &$($m)? FnDecl) {
             for b in &$($m)? f.bounds {
@@ -674,6 +675,7 @@ macro_rules! visitor {
             v.expr(&$($m)? f.body)
         }
 
+        #[allow(dead_code)] // the read-only twin may not be used yet
         /// Visit everything in a definition.
         pub fn $decl<V: $Visit + ?Sized>(v: &mut V, d: &$($m)? DeclKind) {
             let fields = |v: &mut V, fs: &$($m)? Vec<Field>| fs.into_iter().for_each(|f| v.ty(&$($m)? f.ty));
@@ -768,12 +770,6 @@ pub fn walk(e: &Expr, f: impl FnMut(&Expr)) {
     Exprs(f).expr(e)
 }
 
-/// Visit `e` and every expression inside it, outermost first, allowing
-/// changes: a node `f` replaces is walked as replaced.
-pub fn walk_mut(e: &mut Expr, f: impl FnMut(&mut Expr)) {
-    ExprsMut { f, post: false }.expr(e)
-}
-
 /// Every expression of a definition (bodies, contracts, a type's refinement;
 /// not those in patterns or written types), outermost first, allowing changes.
 pub fn decl_exprs_mut(d: &mut DeclKind, f: impl FnMut(&mut Expr)) {
@@ -800,11 +796,6 @@ pub fn place_path(e: &Expr) -> Option<String> {
         Expr::Field(r, f) => Some(format!("{}.{f}", place_path(r)?)),
         _ => None,
     }
-}
-
-/// The variable a place belongs to: `o` for `o.status`.
-pub fn place_root(e: &Expr) -> Option<String> {
-    place_path(e).map(|p| p.split('.').next().unwrap_or_default().to_string())
 }
 
 /// The places (`x`, `o.status`) that `e` may change: those assigned, and
@@ -853,4 +844,9 @@ pub fn changed_places(e: &Expr, mut_params: &dyn Fn(&str) -> Vec<bool>) -> Vec<S
     let mut c = Changes { mut_params, out: Vec::new() };
     c.expr(e);
     c.out
+}
+
+/// The variables `e` may change (the roots of `changed_places`).
+pub fn changed_vars(e: &Expr, mut_params: &dyn Fn(&str) -> Vec<bool>) -> std::collections::HashSet<String> {
+    changed_places(e, mut_params).into_iter().map(|p| p.split('.').next().unwrap_or_default().to_string()).collect()
 }

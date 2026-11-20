@@ -353,35 +353,14 @@ impl Structural<'_> {
     }
 }
 
-fn assigned(e: &Expr) -> HashSet<String> {
-    let mut out = HashSet::new();
-    crate::ast::walk(e, |x| {
-        if let Expr::Mut(_) = x {
-            if let Some(n) = crate::smt::place_root(x) {
-                out.insert(n);
-            }
-        }
-        if let Expr::Block(stmts, _) = x {
-            for s in stmts {
-                if let Stmt::Assign(place, _) = s {
-                    let mut root = place;
-                    while let Expr::Field(r, _) = root {
-                        root = r;
-                    }
-                    if let Expr::Var(n) = root {
-                        out.insert(n.clone());
-                    }
-                }
-            }
-        }
-    });
-    out
+fn assigned(env: &Env, e: &Expr) -> HashSet<String> {
+    changed_vars(e, &|n| env.mut_params(n))
 }
 
 /// If every recursive call passes a smaller piece of the same parameter,
 /// the name of that parameter.
-fn structural(f: &FnDecl) -> Option<String> {
-    let assigned = assigned(&f.body);
+fn structural(env: &Env, f: &FnDecl) -> Option<String> {
+    let assigned = assigned(env, &f.body);
     let mut vars = HashMap::new();
     for (i, p) in f.params.iter().enumerate() {
         if !assigned.contains(&p.name) && !p.mutable {
@@ -406,7 +385,7 @@ fn structural(f: &FnDecl) -> Option<String> {
 /// comparison of parameters in the body (`n <= 100`, `lo < hi`), the distance
 /// between its two sides, both ways (`100 - n`, `hi - lo`).
 fn candidate_measures(env: &Env, f: &FnDecl) -> Vec<Expr> {
-    let assigned = assigned(&f.body);
+    let assigned = assigned(env, &f.body);
     let params: HashSet<&str> = f.params.iter().filter(|p| !p.mutable && !assigned.contains(&p.name)).map(|p| p.name.as_str()).collect();
     let var = |n: &str| Expr::Var(n.to_string());
     let mut out: Vec<Expr> = vec![];
@@ -595,7 +574,7 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
                 if let Some(other) = mutual(name) {
                     Err(format!("it is recursive through `{}`", other.trim_start_matches("trait method ")))
                 } else if n.calls.contains(name) {
-                    match n.decl.as_ref().and_then(structural) {
+                    match n.decl.as_ref().and_then(|f| structural(env, f)) {
                         Some(p) => Ok(format!("each recursive call gets a smaller piece of `{p}`")),
                         None => match n.decl.as_ref().and_then(|f| measured_recursion(env, f, solver)) {
                             Some(m) => Ok(format!("{m} goes down on every recursive call and is never negative there")),
