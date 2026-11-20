@@ -127,6 +127,9 @@ pub struct Vc<'a> {
     /// them. Kept by name; a shadowed name keeps all its declarations, which
     /// can only make checks stricter.
     declared: HashMap<String, Vec<TypeExpr>>,
+    /// Each `matches(s, re)` made: the string, the pattern, its value, and
+    /// whether the pattern was approximated (to relate patterns on one string).
+    matched: Vec<(T, String, T, bool)>,
 }
 
 fn and(ts: &[T]) -> T {
@@ -187,6 +190,14 @@ fn slots_of(v: &Val) -> Option<(T, Vec<(String, Val)>)> {
     }
 }
 
+/// Can an SMT string hold `s` (every code point at most `MAX_CHAR`)?
+fn smt_string(s: &str) -> bool {
+    s.chars().all(|c| c as u32 <= MAX_CHAR)
+}
+const BEYOND: &str = "a string with characters past U+2FFFF, which SMT strings can't hold";
+
+/// An SMT-LIB string literal. Only for strings `smt_string` accepts: past
+/// U+2FFFF, `\u{...}` is not an escape (Z3 reads it as its 9 characters).
 pub fn str_lit(s: &str) -> T {
     let mut out = String::from("\"");
     for c in s.chars() {
@@ -223,6 +234,7 @@ impl<'a> Vc<'a> {
             relied_on: Default::default(),
             returns: vec![],
             declared: HashMap::new(),
+            matched: vec![],
         }
     }
 
@@ -1139,6 +1151,7 @@ impl<'a> Vc<'a> {
                 let t = self.as_bool(v);
                 if *b { t } else { not(&t) }
             }
+            Pattern::Str(s) if !smt_string(s) => self.unknown_bool(BEYOND),
             Pattern::Str(s) => format!("(= {} {})", self.as_str(v), str_lit(s)),
             Pattern::Tuple(ps) => match v {
                 Val::Tuple(xs) if xs.len() == ps.len() => {
@@ -1357,6 +1370,7 @@ impl<'a> Vc<'a> {
             Expr::Int(n) => Val::Int(num(*n)),
             Expr::BigInt(d) => Val::Int(d.clone()),
             Expr::Float(_) => Val::Opaque("floats are not modelled yet".into()),
+            Expr::Str(s) if !smt_string(s) => Val::Opaque(BEYOND.into()),
             Expr::Str(s) => Val::Str(str_lit(s)),
             Expr::Bool(b) => Val::Bool(b.to_string()),
             Expr::Unit => Val::Unit,
@@ -1904,8 +1918,36 @@ impl<'a> Vc<'a> {
             ("matches", 2) => {
                 let s = self.as_str(&arg(0));
                 match arg_exprs.get(1) {
-                    Some(Expr::Str(re)) => match regex_to_smt(re) {
-                        Some(r) => Val::Bool(format!("(str.in_re {s} {r})")),
+                    Some(Expr::Str(re)) => match regex_model(re) {
+                        Some(model) => {
+                            let approx = matches!(model, RegexModel::Between(..));
+                            let b = match model {
+                                RegexModel::Exact(r) => format!("(str.in_re {s} {r})"),
+                                RegexModel::Between(under, over) => {
+                                    let b = self.fresh_why("Bool", &format!("the regular expression \"{re}\" has a large Unicode class (approximated from both sides)"));
+                                    self.facts.push(format!("(=> (str.in_re {s} {under}) {b})"));
+                                    self.facts.push(format!("(=> {b} (str.in_re {s} {over}))"));
+                                    b
+                                }
+                            };
+                            // what the patterns' languages say about each other, for the same string
+                            for (s2, re2, b2, approx2) in self.matched.clone() {
+                                if s2 == s && re2 != *re && (approx || approx2) {
+                                    let (sub, sup, disjoint) = regex_relations(re, &re2);
+                                    if sub {
+                                        self.facts.push(implies(&b, &b2));
+                                    }
+                                    if sup {
+                                        self.facts.push(implies(&b2, &b));
+                                    }
+                                    if disjoint {
+                                        self.facts.push(not(&and(&[b.clone(), b2.clone()])));
+                                    }
+                                }
+                            }
+                            self.matched.push((s.clone(), re.clone(), b.clone(), approx));
+                            Val::Bool(b)
+                        }
                         None => Val::Bool(self.unknown_bool(&format!("the regular expression \"{re}\" uses features not modelled yet"))),
                     },
                     _ => Val::Bool(self.unknown_bool("`matches` with a pattern that is not a literal")),
@@ -2533,167 +2575,256 @@ pub fn place_root(e: &Expr) -> Option<String> {
 
 // ---- regular expressions ----
 
-/// Translate a regular expression (the subset whose meaning is certain:
-/// literals, classes with ranges, groups, alternation and quantifiers) to an
-/// SMT-LIB regular expression. `matches` is a full match.
-pub fn regex_to_smt(re: &str) -> Option<T> {
-    let cs: Vec<char> = re.chars().collect();
-    let mut i = 0;
-    if cs.first() == Some(&'^') {
-        i = 1;
-    }
-    let mut end = cs.len();
-    if end > i && cs[end - 1] == '$' && (end < 2 || cs[end - 2] != '\\') {
-        end -= 1;
-    }
-    let r = alt(&cs[..end], &mut i)?;
-    (i == end).then_some(r)
+/// The largest code point an SMT-LIB string can hold (the standard's
+/// alphabet is U+0000..U+2FFFF; Z3 and cvc5 both stop there). Rust strings go
+/// up to U+10FFFF, so a proof about strings covers the strings whose code
+/// points are all at most this. The cross-check fuzzing is the backstop.
+pub const MAX_CHAR: u32 = 0x2FFFF;
+
+/// Translate a regular expression to an SMT-LIB regular expression, with
+/// the interpreter's meaning: `matches` is `regex::Regex` on `^(?:re)$`,
+/// a Unicode regex (`\d` is any decimal digit, `\w` and `\s` are Unicode
+/// classes, `.` is any character but `\n`, `(?i)` is Unicode case folding).
+/// The pattern is parsed by `regex-syntax` with the same settings, and its
+/// HIR translated. `None` (an unknown) for anything whose meaning can't be
+/// expressed exactly: word boundaries, multi-line anchors, anchors that
+/// are not at the very start or end, byte classes, and literal characters
+/// past `MAX_CHAR`.
+#[cfg(test)]
+fn regex_to_smt(re: &str) -> Option<T> {
+    hir_to_smt(&parse_regex(re)?, true, true, Mode::Exact, &mut 0)
 }
 
-fn lit(c: char) -> T {
-    format!("(str.to_re {})", str_lit(&c.to_string()))
+/// How `matches(s, re)` is modelled: `Exact(r)` is `s in r`. With a class of
+/// more than `MAX_RANGES` ranges (`\w`, `\p{L}`), which Z3 can't decide in
+/// reasonable time, it is `Between(under, over)`: the class replaced by a
+/// subset of its ranges, and by a superset with fewer gaps. Regex
+/// operators are monotone, so `under <= re <= over`, and `matches` is any
+/// value that is true on `under` and false outside `over`.
+#[derive(Debug, PartialEq)]
+pub enum RegexModel {
+    Exact(T),
+    Between(T, T),
 }
 
-fn alt(cs: &[char], i: &mut usize) -> Option<T> {
-    let mut parts = vec![seq(cs, i)?];
-    while cs.get(*i) == Some(&'|') {
-        *i += 1;
-        parts.push(seq(cs, i)?);
+/// Classes with more ranges than this are approximated (see `RegexModel`).
+const MAX_RANGES: usize = 24;
+
+pub fn regex_model(re: &str) -> Option<RegexModel> {
+    let hir = parse_regex(re)?;
+    let mut widest = 0;
+    let exact = hir_to_smt(&hir, true, true, Mode::Exact, &mut widest)?;
+    if widest <= MAX_RANGES {
+        return Some(RegexModel::Exact(exact));
     }
-    Some(if parts.len() == 1 { parts.pop().unwrap() } else { format!("(re.union {})", parts.join(" ")) })
+    Some(RegexModel::Between(hir_to_smt(&hir, true, true, Mode::Under, &mut 0)?, hir_to_smt(&hir, true, true, Mode::Over, &mut 0)?))
 }
 
-fn seq(cs: &[char], i: &mut usize) -> Option<T> {
-    let mut items = vec![];
-    while let Some(&c) = cs.get(*i) {
-        if c == '|' || c == ')' {
-            break;
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Exact,
+    Under,
+    Over,
+}
+
+/// The pattern as the interpreter's `matches` reads it.
+fn parse_regex(re: &str) -> Option<regex_syntax::hir::Hir> {
+    regex_syntax::ParserBuilder::new()
+        // `regex::Regex::new`'s settings (regex-automata's `syntax::Config` defaults)
+        .case_insensitive(false)
+        .multi_line(false)
+        .dot_matches_new_line(false)
+        .crlf(false)
+        .line_terminator(b'\n')
+        .swap_greed(false)
+        .ignore_whitespace(false)
+        .unicode(true)
+        .utf8(true)
+        .nest_limit(250)
+        .octal(false)
+        .build()
+        .parse(&format!("^(?:{re})$"))
+        .ok()
+}
+
+/// A class's ranges, within what SMT strings can hold; in `Under` / `Over`
+/// mode at most `MAX_RANGES` of them: a subset (ranges touching Latin-1
+/// first, then the widest), or a superset (the smallest gaps filled).
+fn class_ranges(c: &regex_syntax::hir::ClassUnicode, mode: Mode) -> Vec<(u32, u32)> {
+    let mut rs: Vec<(u32, u32)> = c.ranges().iter().filter(|r| r.start() as u32 <= MAX_CHAR).map(|r| (r.start() as u32, (r.end() as u32).min(MAX_CHAR))).collect();
+    if rs.len() <= MAX_RANGES || mode == Mode::Exact {
+        return rs;
+    }
+    match mode {
+        Mode::Under => {
+            let mut order: Vec<usize> = (0..rs.len()).collect();
+            order.sort_by_key(|&i| (rs[i].0 > 0xFF, std::cmp::Reverse(rs[i].1 - rs[i].0), i));
+            let mut keep: Vec<usize> = order.into_iter().take(MAX_RANGES).collect();
+            keep.sort();
+            keep.into_iter().map(|i| rs[i]).collect()
         }
-        let base = atom(cs, i)?;
-        items.push(quant(cs, i, base)?);
+        _ => {
+            // fill the smallest gaps between neighbours until few enough ranges are left
+            let mut gaps: Vec<(u32, usize)> = (1..rs.len()).map(|i| (rs[i].0 - rs[i - 1].1, i)).collect();
+            gaps.sort();
+            let mut fill = vec![false; rs.len()];
+            for &(_, i) in gaps.iter().take(rs.len() - MAX_RANGES) {
+                fill[i] = true;
+            }
+            let mut out: Vec<(u32, u32)> = vec![];
+            for (i, r) in rs.drain(..).enumerate() {
+                match out.last_mut() {
+                    Some(last) if fill[i] => last.1 = r.1,
+                    _ => out.push(r),
+                }
+            }
+            out
+        }
     }
-    Some(match items.len() {
-        0 => "(str.to_re \"\")".into(),
-        1 => items.pop().unwrap(),
-        _ => format!("(re.++ {})", items.join(" ")),
-    })
 }
 
-fn escaped(c: char) -> Option<char> {
-    // only escapes of punctuation have a certain meaning (\d, \w, \s are Unicode-aware)
-    (c.is_ascii_punctuation()).then_some(c)
-}
-
-fn atom(cs: &[char], i: &mut usize) -> Option<T> {
-    let c = cs[*i];
-    *i += 1;
-    match c {
-        '(' => {
-            if cs.get(*i) == Some(&'?') {
-                if cs.get(*i + 1) == Some(&':') {
-                    *i += 2;
-                } else {
+/// How two patterns' languages relate, over every string the interpreter
+/// can match (so also over the SMT strings): `(a <= b, b <= a, disjoint)`,
+/// each `false` when it does not hold or could not be decided. Decided on
+/// the product of the two patterns' DFAs (as `regex` builds them, on UTF-8
+/// bytes; a string either accepts is valid UTF-8).
+pub fn regex_relations(a: &str, b: &str) -> (bool, bool, bool) {
+    use regex_automata::dfa::{dense, Automaton, StartKind};
+    use regex_automata::util::primitives::StateID;
+    use regex_automata::{Anchored, Input, MatchKind};
+    thread_local! {
+        static DFAS: std::cell::RefCell<HashMap<String, Option<std::rc::Rc<dense::DFA<Vec<u32>>>>>> = Default::default();
+    }
+    let dfa = |re: &str| {
+        DFAS.with(|c| {
+            c.borrow_mut()
+                .entry(re.to_string())
+                .or_insert_with(|| {
+                    let config = dense::Config::new().match_kind(MatchKind::All).start_kind(StartKind::Anchored).dfa_size_limit(Some(16 << 20)).determinize_size_limit(Some(16 << 20));
+                    let syntax = regex_automata::util::syntax::Config::new().unicode(true).utf8(true).nest_limit(250);
+                    dense::Builder::new().configure(config).syntax(syntax).build(&format!("^(?:{re})$")).ok().map(std::rc::Rc::new)
+                })
+                .clone()
+        })
+    };
+    let (Some(da), Some(db)) = (dfa(a), dfa(b)) else { return (false, false, false) };
+    let start = |d: &dense::DFA<Vec<u32>>| d.start_state_forward(&Input::new("").anchored(Anchored::Yes)).ok();
+    let (Some(sa), Some(sb)) = (start(&da), start(&db)) else { return (false, false, false) };
+    // is there a string with `want(in a, in b)`? `None` if the search is too large
+    let exists = |want: &dyn Fn(bool, bool) -> bool| -> Option<bool> {
+        let mut seen: HashSet<(StateID, StateID)> = HashSet::from([(sa, sb)]);
+        let mut todo = vec![(sa, sb)];
+        while let Some((x, y)) = todo.pop() {
+            let (ex, ey) = (da.next_eoi_state(x), db.next_eoi_state(y));
+            if da.is_quit_state(ex) || db.is_quit_state(ey) {
+                return None;
+            }
+            if want(da.is_match_state(ex), db.is_match_state(ey)) {
+                return Some(true);
+            }
+            for byte in 0..=255u8 {
+                let (nx, ny) = (da.next_state(x, byte), db.next_state(y, byte));
+                if da.is_quit_state(nx) || db.is_quit_state(ny) {
                     return None;
                 }
-            }
-            let r = alt(cs, i)?;
-            if cs.get(*i) != Some(&')') {
-                return None;
-            }
-            *i += 1;
-            Some(r)
-        }
-        '[' => class(cs, i),
-        '.' => Some(format!("(re.inter re.allchar (re.comp {}))", lit('\n'))),
-        '\\' => {
-            let e = escaped(*cs.get(*i)?)?;
-            *i += 1;
-            Some(lit(e))
-        }
-        '*' | '+' | '?' | '{' | '^' | '$' | ']' => None,
-        _ => Some(lit(c)),
-    }
-}
-
-fn class(cs: &[char], i: &mut usize) -> Option<T> {
-    let neg = cs.get(*i) == Some(&'^');
-    if neg {
-        *i += 1;
-    }
-    let mut items = vec![];
-    let mut first = true;
-    loop {
-        let c = *cs.get(*i)?;
-        *i += 1;
-        if c == ']' && !first {
-            break;
-        }
-        first = false;
-        let lo = match c {
-            '\\' => {
-                let e = escaped(*cs.get(*i)?)?;
-                *i += 1;
-                e
-            }
-            '[' => return None,
-            _ => c,
-        };
-        if cs.get(*i) == Some(&'-') && cs.get(*i + 1).is_some_and(|&n| n != ']') {
-            let hi = cs[*i + 1];
-            if hi == '\\' || hi == '[' {
-                return None;
-            }
-            *i += 2;
-            items.push(format!("(re.range {} {})", str_lit(&lo.to_string()), str_lit(&hi.to_string())));
-        } else {
-            items.push(lit(lo));
-        }
-    }
-    let u = if items.len() == 1 { items.pop().unwrap() } else { format!("(re.union {})", items.join(" ")) };
-    Some(if neg { format!("(re.inter re.allchar (re.comp {u}))") } else { u })
-}
-
-fn quant(cs: &[char], i: &mut usize, base: T) -> Option<T> {
-    let r = match cs.get(*i) {
-        Some('*') => {
-            *i += 1;
-            format!("(re.* {base})")
-        }
-        Some('+') => {
-            *i += 1;
-            format!("(re.+ {base})")
-        }
-        Some('?') => {
-            *i += 1;
-            format!("(re.opt {base})")
-        }
-        Some('{') => {
-            let close = cs[*i..].iter().position(|&c| c == '}')? + *i;
-            let inner: String = cs[*i + 1..close].iter().collect();
-            *i = close + 1;
-            let (lo, hi) = match inner.split_once(',') {
-                None => {
-                    let n: u32 = inner.trim().parse().ok()?;
-                    (n, Some(n))
+                // every witness is in at least one language: one side must stay alive
+                if (da.is_dead_state(nx) && db.is_dead_state(ny)) || !seen.insert((nx, ny)) {
+                    continue;
                 }
-                Some((a, b)) => (a.trim().parse().ok()?, if b.trim().is_empty() { None } else { Some(b.trim().parse().ok()?) }),
-            };
-            match hi {
-                Some(h) if h >= lo => format!("((_ re.loop {lo} {h}) {base})"),
-                Some(_) => return None,
-                None => format!("(re.++ ((_ re.loop {lo} {lo}) {base}) (re.* {base}))"),
+                if seen.len() > 50_000 {
+                    return None;
+                }
+                todo.push((nx, ny));
             }
         }
-        _ => return Some(base),
+        Some(false)
     };
-    // a lazy quantifier matches the same strings
-    if cs.get(*i) == Some(&'?') {
-        *i += 1;
-    }
-    if matches!(cs.get(*i), Some('*' | '+' | '{')) {
-        return None;
-    }
-    Some(r)
+    (
+        exists(&|x, y| x && !y) == Some(false),
+        exists(&|x, y| y && !x) == Some(false),
+        exists(&|x, y| x && y) == Some(false),
+    )
+}
+
+fn re_empty() -> T {
+    "(str.to_re \"\")".into()
+}
+
+/// `at_start` / `at_end`: this part is certain to begin at the start (end
+/// at the end) of the string, so `^` / `$` there match the empty string.
+/// `widest`: the most ranges a class has (in `Exact` mode).
+fn hir_to_smt(h: &regex_syntax::hir::Hir, at_start: bool, at_end: bool, mode: Mode, widest: &mut usize) -> Option<T> {
+    use regex_syntax::hir::{Class, HirKind, Look};
+    let zero_start = |h: &regex_syntax::hir::Hir| matches!(h.kind(), HirKind::Empty | HirKind::Look(Look::Start));
+    let zero_end = |h: &regex_syntax::hir::Hir| matches!(h.kind(), HirKind::Empty | HirKind::Look(Look::End));
+    Some(match h.kind() {
+        HirKind::Empty => re_empty(),
+        HirKind::Literal(lit) => {
+            let s = std::str::from_utf8(&lit.0).ok()?;
+            if s.chars().any(|c| c as u32 > MAX_CHAR) {
+                return None;
+            }
+            format!("(str.to_re {})", str_lit(s))
+        }
+        HirKind::Class(Class::Unicode(c)) => {
+            // characters past MAX_CHAR are in no SMT string: dropped
+            *widest = (*widest).max(c.ranges().len());
+            let items: Vec<T> = class_ranges(c, mode)
+                .into_iter()
+                .map(|(lo, hi)| {
+                    let (lo, hi) = (char::from_u32(lo).unwrap(), char::from_u32(hi).unwrap());
+                    if lo == hi {
+                        format!("(str.to_re {})", str_lit(&lo.to_string()))
+                    } else {
+                        format!("(re.range {} {})", str_lit(&lo.to_string()), str_lit(&hi.to_string()))
+                    }
+                })
+                .collect();
+            match items.len() {
+                0 => "re.none".into(),
+                1 => items[0].clone(),
+                _ => format!("(re.union {})", items.join(" ")),
+            }
+        }
+        // a class of bytes does not occur in Unicode mode
+        HirKind::Class(Class::Bytes(_)) => return None,
+        HirKind::Look(Look::Start) if at_start => re_empty(),
+        HirKind::Look(Look::End) if at_end => re_empty(),
+        HirKind::Look(_) => return None,
+        // greedy or lazy, a repetition matches the same strings
+        HirKind::Repetition(r) => {
+            let sub = hir_to_smt(&r.sub, false, false, mode, widest)?;
+            match (r.min, r.max) {
+                (0, None) => format!("(re.* {sub})"),
+                (1, None) => format!("(re.+ {sub})"),
+                (n, None) => format!("(re.++ ((_ re.loop {n} {n}) {sub}) (re.* {sub}))"),
+                (0, Some(1)) => format!("(re.opt {sub})"),
+                (lo, Some(hi)) if lo <= hi => format!("((_ re.loop {lo} {hi}) {sub})"),
+                _ => return None,
+            }
+        }
+        HirKind::Capture(c) => hir_to_smt(&c.sub, at_start, at_end, mode, widest)?,
+        HirKind::Concat(xs) => {
+            let mut items = vec![];
+            for (i, x) in xs.iter().enumerate() {
+                let s = at_start && xs[..i].iter().all(zero_start);
+                let e = at_end && xs[i + 1..].iter().all(zero_end);
+                let t = hir_to_smt(x, s, e, mode, widest)?;
+                if t != re_empty() {
+                    items.push(t);
+                }
+            }
+            match items.len() {
+                0 => re_empty(),
+                1 => items.pop().unwrap(),
+                _ => format!("(re.++ {})", items.join(" ")),
+            }
+        }
+        HirKind::Alternation(xs) => {
+            let items: Vec<T> = xs.iter().map(|x| hir_to_smt(x, at_start, at_end, mode, widest)).collect::<Option<_>>()?;
+            format!("(re.union {})", items.join(" "))
+        }
+    })
 }
 
 // ---- the solver ----
@@ -2958,12 +3089,80 @@ mod tests {
 
     #[test]
     fn regexes() {
-        assert_eq!(regex_to_smt("ab").unwrap(), "(re.++ (str.to_re \"a\") (str.to_re \"b\"))");
-        assert!(regex_to_smt("ord_[a-z0-9]{6}").is_some());
+        // a literal string is one literal; the anchors the interpreter adds are no-ops
+        assert_eq!(regex_to_smt("ab").unwrap(), "(str.to_re \"ab\")");
+        assert_eq!(regex_to_smt("^ab$").unwrap(), "(str.to_re \"ab\")");
+        assert_eq!(regex_to_smt("a|^b$").unwrap(), "(re.union (str.to_re \"a\") (str.to_re \"b\"))");
+        assert!(regex_to_smt("ord_[a-z0-9]{6}").unwrap().contains("((_ re.loop 6 6) (re.union (re.range \"0\" \"9\") (re.range \"a\" \"z\")))"));
         assert!(regex_to_smt("[A-Za-z0-9_-]{1,64}").is_some());
-        assert!(regex_to_smt("\\d+").is_none());
-        assert!(regex_to_smt("(?i)abc").is_none());
-        assert!(regex_to_smt("a(b|c)*d?").is_some());
+        assert_eq!(regex_to_smt("a(b|c)*d?").unwrap(), "(re.++ (str.to_re \"a\") (re.* (re.range \"b\" \"c\")) (re.opt (str.to_re \"d\")))");
+        assert_eq!(regex_to_smt("a{2,}").unwrap(), "(re.++ ((_ re.loop 2 2) (str.to_re \"a\")) (re.* (str.to_re \"a\")))");
+        // Unicode classes: \d is every decimal digit, not just 0-9
+        let has = |re: &str, c: char| in_class(&regex_to_smt(re).unwrap(), c);
+        assert!(has("\\d", '7') && has("\\d", '\u{663}') && has("\\d", '\u{ff19}') && !has("\\d", 'a') && !has("\\d", '\u{b2}'));
+        assert!(has("\\w", '_') && has("\\w", '\u{e9}') && has("\\w", '\u{4e2d}') && has("\\w", '9') && !has("\\w", '-') && !has("\\w", ' '));
+        for c in ['\t', '\n', '\r', ' ', '\u{85}', '\u{a0}', '\u{2028}', '\u{3000}'] {
+            assert!(has("\\s", c), "{c:?}");
+        }
+        assert!(!has("\\s", 'a') && !has("\\s", '\u{200b}'));
+        assert!(has("\\p{L}", 'A') && has("\\p{L}", '\u{3b1}') && has("\\p{L}", '\u{4e2d}') && !has("\\p{L}", '1') && !has("\\p{L}", '_'));
+        // (?i) is Unicode case folding: k also matches K and the Kelvin sign
+        for c in ['k', 'K', '\u{212a}'] {
+            assert!(has("(?i)k", c), "{c:?}");
+        }
+        assert!(!has("(?i)k", 'j'));
+        // each class agrees with the interpreter's regex on the characters SMT strings have
+        for re in ["\\d", "\\w", "\\s", "\\p{L}", "(?i)k", "(?i)[a-zß]", "[^a]", "."] {
+            let ranges = parsed_ranges(&regex_to_smt(re).unwrap());
+            let r = regex::Regex::new(&format!("^(?:{re})$")).unwrap();
+            for cp in (0..=MAX_CHAR).step_by(7).chain(0..0x3000) {
+                if let Some(c) = char::from_u32(cp) {
+                    let ours = ranges.iter().any(|(lo, hi)| *lo <= c && c <= *hi);
+                    assert_eq!(ours, r.is_match(&c.to_string()), "{re} on U+{cp:X}");
+                }
+            }
+        }
+        // large classes are approximated from both sides: under <= exact <= over, on every character
+        assert!(matches!(regex_model("\\d{3}"), Some(RegexModel::Between(..))) && matches!(regex_model("[a-z_]+"), Some(RegexModel::Exact(_))));
+        for re in ["\\w", "\\p{L}", "\\d", "(?i)\\w"] {
+            let Some(RegexModel::Between(u, o)) = regex_model(re) else { panic!("{re} should be approximated") };
+            let (e, u, o) = (parsed_ranges(&regex_to_smt(re).unwrap()), parsed_ranges(&u), parsed_ranges(&o));
+            assert!(u.len() <= MAX_RANGES && o.len() <= MAX_RANGES, "{re}");
+            let inside = |rs: &[(char, char)], c: char| rs.iter().any(|(lo, hi)| *lo <= c && c <= *hi);
+            for c in (0..=MAX_CHAR).filter_map(char::from_u32) {
+                assert!(!inside(&u, c) || inside(&e, c), "{re}: under has U+{:X}", c as u32);
+                assert!(!inside(&e, c) || inside(&o, c), "{re}: over misses U+{:X}", c as u32);
+            }
+        }
+        let Some(RegexModel::Between(u, _)) = regex_model("\\w") else { unreachable!() };
+        assert!(['a', 'z', 'A', 'Z', '0', '9', '_', '\u{e9}'].iter().all(|c| in_class(&u, *c)), "the ASCII part of \\w is kept exactly: {u}");
+        // `.` is any character but \n, up to the last one SMT strings have
+        let dot = regex_to_smt(".").unwrap();
+        assert_eq!(dot, "(re.union (re.range \"\\u{0}\" \"\\u{9}\") (re.range \"\\u{b}\" \"\\u{2ffff}\"))");
+        // what is not certain stays unknown
+        for re in ["\\bword\\b", "(?m)^a$", "a^b", "a$b", "(^a)*", "\u{10FFFF}", "(?-u:\\xFF)", "(", "a{3,2}"] {
+            assert!(regex_to_smt(re).is_none(), "{re}");
+        }
+    }
+
+    /// The ranges of a translated character class (a union of ranges and single characters).
+    fn parsed_ranges(t: &str) -> Vec<(char, char)> {
+        let lits: Vec<char> = t.split('"').skip(1).step_by(2).map(|x| parse_str(&format!("\"{x}\"")).unwrap().chars().next().unwrap()).collect();
+        let mut i = 0;
+        let mut out = vec![];
+        for part in t.split('(').skip(1) {
+            if part.starts_with("re.range ") {
+                out.push((lits[i], lits[i + 1]));
+                i += 2;
+            } else if part.starts_with("str.to_re ") {
+                out.push((lits[i], lits[i]));
+                i += 1;
+            }
+        }
+        out
+    }
+    fn in_class(t: &str, c: char) -> bool {
+        parsed_ranges(t).iter().any(|(lo, hi)| *lo <= c && c <= *hi)
     }
 
     #[test]

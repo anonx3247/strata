@@ -452,6 +452,46 @@ fn empty_rep(s: String, p: String) -> String { replace(s, p, "b") }
 }
 
 #[test]
+fn smt_translates_unicode_regexes() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("smt-regex");
+    let src = r#"fn f(s: String where matches(it, "\d{3}")) -> String where matches(it, "\d+") { s }
+fn bad_f(s: String where matches(it, "\d+")) -> String where matches(it, "\d{3}") { s }
+fn word(s: String where matches(it, "[a-z]+")) -> String where matches(it, "\w+") { s }
+fn bad_word(s: String where matches(it, "\w+")) -> String where matches(it, "[a-z]+") { s }
+fn letters(s: String where matches(it, "\p{L}+")) -> String where matches(it, "\w+") { s }
+fn bad_letters(s: String where matches(it, "\w+")) -> String where matches(it, "\p{L}+") { s }
+fn spaces(s: String where matches(it, "\s*")) -> Bool ensures it { !matches(s, ".*\w.*") }
+fn nbsp() -> Bool ensures it { matches(" ", "\s") }
+fn caseless(s: String where matches(it, "(?i)abc")) -> Bool ensures it { len(s) == 3 }
+fn kelvin() -> Bool ensures it { matches("K", "(?i)k") }
+fn bad_caseless(s: String where matches(it, "(?i)abc")) -> Bool ensures it { s == "abc" }
+fn arabic() -> Bool ensures it { matches("٣", "\d") }
+fn ascii_only(s: String where matches(it, "\d")) -> Bool ensures it { matches(s, "[0-9]") }
+fn anchored(s: String where matches(it, "^ab$")) -> Bool ensures it { s == "ab" }
+fn far() -> Bool ensures it { len("TAG") == 9 }
+"#
+    .replace("TAG", "\u{E0041}");
+    std::fs::write(d.join("r.strata"), src).unwrap();
+    let (ok, out) = strata(&["--file", "r.strata", "verify", "--cases", "20"], &d, None);
+    assert!(!ok, "{out}");
+    for name in ["f", "word", "letters", "spaces", "nbsp", "caseless", "kelvin", "arabic", "anchored"] {
+        assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
+    }
+    for name in ["bad_word", "bad_letters", "bad_caseless", "ascii_only"] {
+        let line = out.lines().find(|l| l.split_whitespace().nth(1) == Some(name)).unwrap_or("");
+        assert!(line.starts_with("✗") && line.contains("found by the solver"), "{name} should be refuted by the solver: {out}");
+    }
+    // the solver's counterexample lies outside the approximated class; the fuzzer finds a real one
+    assert!(out.contains("✗ bad_f"), "{out}");
+    // a character past U+2FFFF is no SMT character: the literal is unknown, not 9 characters
+    assert!(out.contains("✗ far") && !out.contains("bug in the prover"), "{out}");
+}
+
+#[test]
 fn smt_proves_contracts_and_refutes_bugs() {
     if !has_solver() {
         eprintln!("z3 is not installed: skipping");
