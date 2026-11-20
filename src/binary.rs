@@ -1,27 +1,39 @@
-//! Strata's binary format: a whole program (and optionally its package's
-//! `strata.toml`) as one file. Written by hand, with no serialization crate,
-//! so that Strata itself can read and write it once it is bootstrapped. The
-//! layout is specified in `docs/binary-format.md`; keep the two in step.
+//! Strata's binary format: the syntax tree, not text, written by hand with no
+//! serialization crate so that Strata itself can read and write it once it is
+//! bootstrapped. The layout is specified in `docs/binary-format.md`; keep the
+//! two in step.
 //!
-//! In short: a header (`STRATA` + format version), a string table (every name,
-//! comment and literal string, each stored once), then the tree. Integers are
-//! LEB128 (signed ones zigzag-encoded first), a string is its index in the
-//! table, a list is its length then its items, an option is `0` or `1` then
-//! the value, an enum is a one-byte tag then its fields, a struct is its fields
-//! in order. The encoding of a tree is unique, so a file is canonical by
-//! construction.
+//! A **module file** is a header, then its definitions. The header (a table of
+//! contents) gives each definition's name, kind, visibility, hashes, the
+//! definitions it depends on, and the size of its bytes, so a tool can list a
+//! module, build the dependency graph or see what changed without decoding a
+//! single body. Each definition's bytes are self-contained (their own strings)
+//! and split in two: its **interface** (types, signatures, contracts) and then
+//! its **bodies**, so checking code against a module can stop at interfaces.
+//! A **bundle** is a whole program, its `strata.toml` and its module files, in
+//! one file.
+//!
+//! Inside, integers are LEB128 (signed ones zigzag-encoded first), a string is
+//! its index in a string table, a list is its length then its items, an option
+//! is `0` or `1` then the value, an enum is a one-byte tag then its fields, a
+//! struct is its fields in order. A tree has exactly one encoding.
 
 use crate::ast::*;
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub const MAGIC: &[u8; 6] = b"STRATA";
 /// Bumped on every change to the layout; older files are rejected (re-pack
 /// them from source: there is no backwards compatibility).
-pub const VERSION: u64 = 1;
+pub const VERSION: u64 = 2;
+const MODULE: u8 = 0;
+const BUNDLE: u8 = 1;
 /// Deepest nesting of expressions, patterns and types a file may have.
 const MAX_DEPTH: usize = 10_000;
 
-/// What a binary file holds.
+pub type Hash = [u8; 32];
+
+/// A whole program, as a bundle holds it.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Image {
     /// The package's `strata.toml`, as written; `None` for a script.
@@ -29,48 +41,364 @@ pub struct Image {
     pub program: Program,
 }
 
+/// A module file's header: what is in it, without decoding it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Header {
+    /// Dotted module path; `""` for the root module.
+    pub module: String,
+    pub entries: Vec<Entry>,
+}
+
+/// One definition, as the header lists it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Entry {
+    /// `Decl::name`: `total`, `Order`, `test "totals"`, `impl Show for Order`, `use orders`.
+    pub name: String,
+    pub kind: &'static str,
+    pub public: bool,
+    /// Of its bytes: comments, docs and all.
+    pub hash: Hash,
+    /// Of what other code relies on: its interface, without comments or docs.
+    pub interface_hash: Hash,
+    /// Of what it does: interface and bodies, without comments or docs.
+    pub code_hash: Hash,
+    /// Qualified names of the definitions it refers to.
+    pub deps: Vec<String>,
+    /// Where its bytes start in the file, how many there are, and how many of
+    /// them are its interface.
+    pub offset: usize,
+    pub size: usize,
+    pub interface_size: usize,
+}
+
 /// Does `bytes` look like a binary Strata file (rather than source text)?
 pub fn is_binary(bytes: &[u8]) -> bool {
     bytes.starts_with(MAGIC)
 }
 
-pub fn encode(img: &Image) -> Vec<u8> {
+// ── definitions ─────────────────────────────────────────────────────────────
+
+/// A definition's bytes: its interface (strings, then the definition with
+/// every body left out, written as `()`), then its bodies (the strings they
+/// add, then the bodies). Self-contained: they mean the same in any file.
+pub fn encode_definition(d: &Decl) -> Vec<u8> {
+    encode_parts(d.clone()).0
+}
+
+/// The bytes, and how many of them are the interface.
+fn encode_parts(mut d: Decl) -> (Vec<u8>, usize) {
+    let bodies = take_bodies(&mut d.kind);
     let mut w = Writer::default();
-    img.manifest.enc(&mut w);
-    img.program.decls.enc(&mut w);
+    d.enc(&mut w);
+    let mut out = w.flush(0);
+    let interface = out.len();
+    let n = w.strings.len();
+    bodies.enc(&mut w);
+    out.extend(w.flush(n));
+    (out, interface)
+}
+
+pub fn decode_definition(bytes: &[u8]) -> Result<Decl, String> {
+    let mut r = Reader::new(bytes);
+    let mut d = r.part(Decl::dec)?;
+    let bodies = r.part(Vec::<Expr>::dec)?;
+    r.end()?;
+    put_bodies(&mut d.kind, bodies).map_err(|e| r.err(&e))?;
+    Ok(d)
+}
+
+/// Only the interface part of a definition's bytes: its bodies are `()`.
+#[allow(dead_code)] // for checking against a module's interfaces alone (not yet)
+pub fn decode_interface(bytes: &[u8]) -> Result<Decl, String> {
+    Reader::new(bytes).part(Decl::dec)
+}
+
+/// The hash of a definition's bytes.
+pub fn hash(d: &Decl) -> Hash {
+    Sha256::digest(encode_definition(d)).into()
+}
+
+/// The hash of what a definition does: no comments or docs.
+pub fn code_hash(d: &Decl) -> Hash {
+    Sha256::digest(encode_parts(without_notes(d.clone())).0).into()
+}
+
+/// The hash of what other code relies on: the interface part, without
+/// comments or docs (and with its visibility and module, which it holds).
+pub fn interface_hash(d: &Decl) -> Hash {
+    let mut d = d.clone();
+    take_bodies(&mut d.kind);
+    let mut w = Writer::default();
+    without_notes(d).enc(&mut w);
+    Sha256::digest(w.flush(0)).into()
+}
+
+/// The bodies of a definition, in order, each replaced by `()`: a function's
+/// body, a test's, the bodies of a trait's methods and of an impl's methods.
+/// Everything else (signatures, contracts, laws, types) is its interface.
+fn take_bodies(k: &mut DeclKind) -> Vec<Expr> {
+    let take = |e: &mut Expr| std::mem::replace(e, Expr::Unit);
+    match k {
+        DeclKind::Fn(f) => vec![take(&mut f.body)],
+        DeclKind::Test(t) => vec![take(&mut t.body)],
+        DeclKind::Trait(t) => t.methods.iter_mut().map(|m| take(&mut m.decl.body)).collect(),
+        DeclKind::Impl(i) => i.methods.iter_mut().map(|m| take(&mut m.body)).collect(),
+        DeclKind::Type(_) | DeclKind::Use(_) => vec![],
+    }
+}
+
+fn put_bodies(k: &mut DeclKind, bodies: Vec<Expr>) -> Result<(), String> {
+    let mut slots: Vec<&mut Expr> = match k {
+        DeclKind::Fn(f) => vec![&mut f.body],
+        DeclKind::Test(t) => vec![&mut t.body],
+        DeclKind::Trait(t) => t.methods.iter_mut().map(|m| &mut m.decl.body).collect(),
+        DeclKind::Impl(i) => i.methods.iter_mut().map(|m| &mut m.body).collect(),
+        DeclKind::Type(_) | DeclKind::Use(_) => vec![],
+    };
+    if slots.len() != bodies.len() {
+        return Err(format!("{} bodies for a definition that has {}", bodies.len(), slots.len()));
+    }
+    for (slot, b) in slots.iter_mut().zip(bodies) {
+        **slot = b;
+    }
+    Ok(())
+}
+
+/// The definition without its `//` comments and `///` docs, anywhere in it.
+pub fn without_notes(mut d: Decl) -> Decl {
+    struct Strip;
+    impl VisitMut for Strip {
+        fn expr(&mut self, e: &mut Expr) {
+            match e {
+                Expr::Block(stmts, last) => {
+                    stmts.retain(|s| !matches!(s, Stmt::Comment(_)));
+                    // `{ // note\n x }` is `x`, as `{ x }` is
+                    if stmts.is_empty() {
+                        *e = std::mem::replace(&mut **last, Expr::Unit);
+                        return self.expr(e);
+                    }
+                }
+                Expr::Match(_, _, arms) => arms.iter_mut().for_each(|a| a.comments.clear()),
+                _ => {}
+            }
+            walk_expr_mut(self, e)
+        }
+    }
+    fn fields(fs: &mut [Field]) {
+        for f in fs {
+            f.comments.clear();
+            f.doc.clear();
+        }
+    }
+    fn func(f: &mut FnDecl) {
+        f.comments.clear();
+        f.doc.clear();
+    }
+    d.comments.clear();
+    d.doc.clear();
+    match &mut d.kind {
+        DeclKind::Type(t) => match &mut t.body {
+            TypeBody::Record(fs) => fields(fs),
+            TypeBody::Sum(vs) => {
+                for v in vs {
+                    v.comments.clear();
+                    if let Payload::Record(fs) = &mut v.payload {
+                        fields(fs)
+                    }
+                }
+            }
+            TypeBody::Alias(_) => {}
+        },
+        DeclKind::Fn(f) => func(f),
+        DeclKind::Trait(t) => {
+            for m in &mut t.methods {
+                m.comments.clear();
+                m.doc.clear();
+                func(&mut m.decl);
+            }
+            for l in &mut t.laws {
+                l.comments.clear();
+                l.doc.clear();
+            }
+        }
+        DeclKind::Impl(i) => i.methods.iter_mut().for_each(func),
+        DeclKind::Test(_) | DeclKind::Use(_) => {}
+    }
+    walk_decl_mut(&mut Strip, &mut d.kind);
+    d
+}
+
+// ── module files ────────────────────────────────────────────────────────────
+
+/// One module of `p` as a module file. `deps`: what each definition (by
+/// qualified name) refers to, as `store::graph` gives it.
+pub fn encode_module(p: &Program, module: &str, deps: &BTreeMap<String, BTreeSet<String>>) -> Vec<u8> {
+    let mut w = Writer::default();
+    let mut defs = Vec::new();
+    module.to_string().enc(&mut w);
+    let decls: Vec<&Decl> = p.decls.iter().filter(|d| d.module == module).collect();
+    w.uint(decls.len() as u64);
+    for d in decls {
+        let (bytes, interface) = encode_parts(d.clone());
+        d.name().enc(&mut w);
+        w.byte(kind_tag(&d.kind));
+        d.public.enc(&mut w);
+        w.body.extend_from_slice(&Sha256::digest(&bytes));
+        w.body.extend_from_slice(&interface_hash(d));
+        w.body.extend_from_slice(&code_hash(d));
+        deps.get(&d.qname()).cloned().unwrap_or_default().into_iter().collect::<Vec<_>>().enc(&mut w);
+        w.uint(bytes.len() as u64);
+        w.uint(interface as u64);
+        defs.extend(bytes);
+    }
     let mut out = MAGIC.to_vec();
     uint(&mut out, VERSION);
-    uint(&mut out, w.strings.len() as u64);
-    for s in &w.strings {
-        uint(&mut out, s.len() as u64);
-        out.extend_from_slice(s.as_bytes());
-    }
-    out.extend_from_slice(&w.body);
+    out.push(MODULE);
+    out.extend(w.flush(0));
+    out.extend(defs);
     out
 }
 
-pub fn decode(bytes: &[u8]) -> Result<Image, String> {
-    let mut r = Reader { bytes, pos: 0, strings: Vec::new(), depth: 0 };
-    if !is_binary(bytes) {
-        return Err("not a binary Strata file (it doesn't start with `STRATA`)".into());
+/// One module file per module of `p`, in the order the modules first appear.
+pub fn encode_modules(p: &Program) -> Vec<(String, Vec<u8>)> {
+    let deps = crate::store::graph(p);
+    let mut modules: Vec<&Symbol> = Vec::new();
+    for d in &p.decls {
+        if !modules.contains(&&d.module) {
+            modules.push(&d.module);
+        }
     }
-    r.pos = MAGIC.len();
-    let v = r.uint()?;
-    if v != VERSION {
-        return Err(format!("binary format version {v}, but this strata reads version {VERSION}: re-pack it from source"));
+    modules.into_iter().map(|m| (m.to_string(), encode_module(p, m, &deps))).collect()
+}
+
+/// A module file's header, without decoding any definition.
+pub fn read_header(bytes: &[u8]) -> Result<Header, String> {
+    let mut r = Reader::new(bytes);
+    if r.preamble()? != MODULE {
+        return Err("a bundle, not a module file".into());
     }
+    r.strings()?;
+    let module = String::dec(&mut r)?;
     let n = r.len()?;
+    let mut entries = Vec::with_capacity(n);
+    let mut offset = 0;
     for _ in 0..n {
-        let len = r.len()?;
-        let s = std::str::from_utf8(r.take(len)?).map(str::to_string);
-        let s = s.map_err(|_| r.err("a string that isn't UTF-8"))?;
-        r.strings.push(s);
+        let name = String::dec(&mut r)?;
+        let kind = KINDS[r.tag("declaration", KINDS.len() as u8 - 1)? as usize];
+        let public = bool::dec(&mut r)?;
+        let mut hashes = [[0u8; 32]; 3];
+        for h in &mut hashes {
+            h.copy_from_slice(r.take(32)?);
+        }
+        let deps = Vec::<String>::dec(&mut r)?;
+        let size = usize::dec(&mut r)?;
+        let interface_size = usize::dec(&mut r)?;
+        if interface_size > size {
+            return Err(r.err("an interface larger than its definition"));
+        }
+        let [hash, interface_hash, code_hash] = hashes;
+        entries.push(Entry { name, kind, public, hash, interface_hash, code_hash, deps, offset, size, interface_size });
+        offset += size;
     }
-    let manifest = Option::<String>::dec(&mut r)?;
-    let decls = Vec::<Decl>::dec(&mut r)?;
-    if r.pos != bytes.len() {
-        return Err(r.err(&format!("{} bytes left over after the program", bytes.len() - r.pos)));
+    let start = r.pos;
+    if bytes.len() - start != offset {
+        return Err(format!("corrupt binary Strata file: the header lists {offset} bytes of definitions, the file has {}", bytes.len() - start));
     }
+    for e in &mut entries {
+        e.offset += start;
+    }
+    Ok(Header { module, entries })
+}
+
+impl Header {
+    /// One definition, decoded; its module must be the file's.
+    pub fn definition(&self, bytes: &[u8], e: &Entry) -> Result<Decl, String> {
+        let d = decode_definition(&bytes[e.offset..e.offset + e.size]).map_err(|err| format!("{err} (in `{}`)", e.name))?;
+        if d.module != self.module {
+            return Err(format!("corrupt binary Strata file: `{}` is in module `{}`, the file is module `{}`", e.name, d.module, self.module));
+        }
+        Ok(d)
+    }
+
+    /// Only a definition's interface (bodies are `()`).
+    #[allow(dead_code)] // for checking against a module's interfaces alone (not yet)
+    pub fn interface(&self, bytes: &[u8], e: &Entry) -> Result<Decl, String> {
+        decode_interface(&bytes[e.offset..e.offset + e.interface_size]).map_err(|err| format!("{err} (in `{}`)", e.name))
+    }
+}
+
+/// Every definition of a module file. Fails if a definition doesn't match
+/// what the header says of it (its name, kind, visibility or hash).
+pub fn decode_module(bytes: &[u8]) -> Result<Vec<Decl>, String> {
+    let h = read_header(bytes)?;
+    h.entries
+        .iter()
+        .map(|e| {
+            let d = h.definition(bytes, e)?;
+            let actual: Hash = Sha256::digest(&bytes[e.offset..e.offset + e.size]).into();
+            if d.name() != e.name || d.kind_str() != e.kind || d.public != e.public || actual != e.hash {
+                return Err(format!("corrupt binary Strata file: `{}` doesn't match its header entry", e.name));
+            }
+            Ok(d)
+        })
+        .collect()
+}
+
+const KINDS: [&str; 6] = ["type", "fn", "test", "trait", "impl", "use"];
+
+fn kind_tag(k: &DeclKind) -> u8 {
+    match k {
+        DeclKind::Type(_) => 0,
+        DeclKind::Fn(_) => 1,
+        DeclKind::Test(_) => 2,
+        DeclKind::Trait(_) => 3,
+        DeclKind::Impl(_) => 4,
+        DeclKind::Use(_) => 5,
+    }
+}
+
+// ── bundles ─────────────────────────────────────────────────────────────────
+
+/// A whole program in one file: its `strata.toml` and its module files.
+pub fn encode_bundle(img: &Image) -> Vec<u8> {
+    let mut out = MAGIC.to_vec();
+    uint(&mut out, VERSION);
+    out.push(BUNDLE);
+    match &img.manifest {
+        None => out.push(0),
+        Some(m) => {
+            out.push(1);
+            raw(&mut out, m.as_bytes());
+        }
+    }
+    let modules = encode_modules(&img.program);
+    uint(&mut out, modules.len() as u64);
+    for (_, bytes) in &modules {
+        raw(&mut out, bytes);
+    }
+    out
+}
+
+/// A bundle or a module file (`manifest` is `None` for a module file).
+pub fn read(bytes: &[u8]) -> Result<Image, String> {
+    let mut r = Reader::new(bytes);
+    if r.preamble()? == MODULE {
+        return Ok(Image { manifest: None, program: Program { decls: decode_module(bytes)? } });
+    }
+    let manifest = match r.tag("option", 1)? {
+        0 => None,
+        _ => {
+            let n = r.len()?;
+            Some(std::str::from_utf8(r.take(n)?).map(str::to_string).map_err(|_| "corrupt binary Strata file: a manifest that isn't UTF-8".to_string())?)
+        }
+    };
+    let mut decls = Vec::new();
+    for _ in 0..r.len()? {
+        let n = r.len()?;
+        let at = r.pos;
+        decls.extend(decode_module(r.take(n)?).map_err(|e| format!("{e} (in the module file at byte {at})"))?);
+    }
+    r.end()?;
     Ok(Image { manifest, program: Program { decls } })
 }
 
@@ -88,14 +416,33 @@ fn uint(out: &mut Vec<u8>, mut v: u64) {
     }
 }
 
+/// Bytes with their length in front.
+fn raw(out: &mut Vec<u8>, bytes: &[u8]) {
+    uint(out, bytes.len() as u64);
+    out.extend_from_slice(bytes);
+}
+
 #[derive(Default)]
 struct Writer {
     body: Vec<u8>,
     strings: Vec<String>,
     index: HashMap<String, u64>,
+    /// The same, for names: found by number rather than by hashing their text.
+    symbols: HashMap<Symbol, u64>,
 }
 
 impl Writer {
+    /// The strings first used since string `from` (a table, or the part of
+    /// one a later part adds), then what was written since the last flush.
+    fn flush(&mut self, from: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        uint(&mut out, (self.strings.len() - from) as u64);
+        for s in &self.strings[from..] {
+            raw(&mut out, s.as_bytes());
+        }
+        out.append(&mut self.body);
+        out
+    }
     fn uint(&mut self, v: u64) {
         uint(&mut self.body, v)
     }
@@ -103,7 +450,11 @@ impl Writer {
         self.body.push(b)
     }
     fn str(&mut self, s: &str) {
-        let i = match self.index.get(s) {
+        let i = self.index_of(s);
+        self.uint(i)
+    }
+    fn index_of(&mut self, s: &str) -> u64 {
+        match self.index.get(s) {
             Some(&i) => i,
             None => {
                 let i = self.strings.len() as u64;
@@ -111,8 +462,7 @@ impl Writer {
                 self.index.insert(s.to_string(), i);
                 i
             }
-        };
-        self.uint(i)
+        }
     }
 }
 
@@ -120,10 +470,49 @@ struct Reader<'a> {
     bytes: &'a [u8],
     pos: usize,
     strings: Vec<String>,
+    /// Each string of the table as a symbol, once it has been read as one.
+    symbols: Vec<Option<Symbol>>,
     depth: usize,
 }
 
-impl Reader<'_> {
+impl<'a> Reader<'a> {
+    fn new(bytes: &'a [u8]) -> Reader<'a> {
+        Reader { bytes, pos: 0, strings: Vec::new(), symbols: Vec::new(), depth: 0 }
+    }
+    /// `STRATA`, the version, and the kind of file.
+    fn preamble(&mut self) -> Result<u8, String> {
+        if !is_binary(self.bytes) {
+            return Err("not a binary Strata file (it doesn't start with `STRATA`)".into());
+        }
+        self.pos = MAGIC.len();
+        let v = self.uint()?;
+        if v != VERSION {
+            return Err(format!("binary format version {v}, but this strata reads version {VERSION}: re-pack it from source"));
+        }
+        self.tag("file kind", BUNDLE)
+    }
+    /// A string table (or the strings a later part adds to it).
+    fn strings(&mut self) -> Result<(), String> {
+        for _ in 0..self.len()? {
+            let len = self.len()?;
+            let s = std::str::from_utf8(self.take(len)?).map(str::to_string);
+            let s = s.map_err(|_| self.err("a string that isn't UTF-8"))?;
+            self.strings.push(s);
+            self.symbols.push(None);
+        }
+        Ok(())
+    }
+    /// A part: the strings it adds, then a value.
+    fn part<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, String>) -> Result<T, String> {
+        self.strings()?;
+        f(self)
+    }
+    fn end(&self) -> Result<(), String> {
+        if self.pos != self.bytes.len() {
+            return Err(self.err(&format!("{} bytes left over", self.bytes.len() - self.pos)));
+        }
+        Ok(())
+    }
     fn err(&self, what: &str) -> String {
         format!("corrupt binary Strata file at byte {}: {what}", self.pos)
     }
@@ -259,6 +648,33 @@ impl Bin for String {
     fn dec(r: &mut Reader) -> Result<Self, String> {
         let i = r.uint()?;
         r.strings.get(i as usize).cloned().ok_or_else(|| r.err(&format!("string {i}, not in the table")))
+    }
+}
+
+/// A name: a string of the table, interned once per file however often it is used.
+impl Bin for Symbol {
+    fn enc(&self, w: &mut Writer) {
+        let i = match w.symbols.get(self) {
+            Some(&i) => i,
+            None => {
+                let i = w.index_of(self.as_str());
+                w.symbols.insert(*self, i);
+                i
+            }
+        };
+        w.uint(i)
+    }
+    fn dec(r: &mut Reader) -> Result<Self, String> {
+        let i = r.uint()? as usize;
+        match r.symbols.get(i) {
+            Some(Some(s)) => Ok(*s),
+            Some(None) => {
+                let s = Symbol::new(&r.strings[i]);
+                r.symbols[i] = Some(s);
+                Ok(s)
+            }
+            None => Err(r.err(&format!("string {i}, not in the table"))),
+        }
     }
 }
 
@@ -643,11 +1059,19 @@ impl Bin for CtorArgs {
 mod tests {
     use super::*;
 
-    fn roundtrip(img: &Image) {
-        let bytes = encode(img);
-        assert_eq!(&decode(&bytes).unwrap(), img);
-        // canonical: encoding the decoded tree gives the same bytes
-        assert_eq!(encode(&decode(&bytes).unwrap()), bytes);
+    fn examples() -> Vec<(std::path::PathBuf, Image)> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut paths: Vec<_> = std::fs::read_dir(root.join("examples")).unwrap().map(|e| e.unwrap().path()).collect();
+        paths.push(root.join("std"));
+        paths.sort();
+        paths
+            .into_iter()
+            .map(|path| {
+                let program = crate::package::program(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+                let manifest = std::fs::read_to_string(path.join(crate::package::FILE)).ok();
+                (path, Image { manifest, program })
+            })
+            .collect()
     }
 
     #[test]
@@ -655,7 +1079,7 @@ mod tests {
         for v in [0, 1, -1, 63, -64, 64, 1 << 40, i64::MAX, i64::MIN] {
             let mut w = Writer::default();
             v.enc(&mut w);
-            let mut r = Reader { bytes: &w.body, pos: 0, strings: vec![], depth: 0 };
+            let mut r = Reader::new(&w.body);
             assert_eq!(i64::dec(&mut r).unwrap(), v);
             assert_eq!(r.pos, w.body.len());
         }
@@ -666,14 +1090,59 @@ mod tests {
 
     #[test]
     fn every_example_round_trips() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut paths: Vec<_> = std::fs::read_dir(root.join("examples")).unwrap().map(|e| e.unwrap().path()).collect();
-        paths.push(root.join("std"));
-        for path in paths {
-            let program = crate::package::program(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-            let manifest = std::fs::read_to_string(path.join(crate::package::FILE)).ok();
-            roundtrip(&Image { manifest, program });
+        for (path, img) in examples() {
+            let bytes = encode_bundle(&img);
+            let back = read(&bytes).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            assert_eq!(back, img, "{}", path.display());
+            // canonical: encoding the decoded program gives the same bytes
+            assert_eq!(encode_bundle(&back), bytes);
+            for (m, file) in encode_modules(&img.program) {
+                let own: Vec<Decl> = img.program.decls.iter().filter(|d| d.module == m).cloned().collect();
+                assert_eq!(decode_module(&file).unwrap(), own);
+            }
         }
+    }
+
+    #[test]
+    fn the_header_describes_each_definition() {
+        let (_, img) = examples().into_iter().find(|(p, _)| p.ends_with("tasks")).unwrap();
+        let graph = crate::store::graph(&img.program);
+        for (m, file) in encode_modules(&img.program) {
+            let h = read_header(&file).unwrap();
+            assert_eq!(h.module, m);
+            let own: Vec<&Decl> = img.program.decls.iter().filter(|d| d.module == m).collect();
+            assert_eq!(h.entries.len(), own.len());
+            for (e, d) in h.entries.iter().zip(own) {
+                assert_eq!((e.name.as_str(), e.kind, e.public), (d.name().as_str(), d.kind_str(), d.public));
+                assert_eq!((e.hash, e.interface_hash, e.code_hash), (hash(d), interface_hash(d), code_hash(d)));
+                assert_eq!(e.deps, graph.get(&d.qname()).cloned().unwrap_or_default().into_iter().collect::<Vec<_>>());
+                // a definition is its bytes, wherever they are
+                let bytes = &file[e.offset..e.offset + e.size];
+                assert_eq!(bytes, encode_definition(d));
+                assert_eq!(&h.definition(&file, e).unwrap(), d);
+                // the interface alone: bodies left out
+                let mut iface = d.clone();
+                take_bodies(&mut iface.kind);
+                assert_eq!(h.interface(&file, e).unwrap(), iface);
+            }
+        }
+    }
+
+    #[test]
+    fn what_each_hash_covers() {
+        let parse = |s: &str| crate::parser::parse_module_file(s, "m").unwrap().decls.remove(0);
+        let base = parse("fn f(x: Int) -> Int requires x > 0 { x + 1 }");
+        let commented = parse("/// doc\nfn f(x: Int) -> Int requires x > 0 {\n  // note\n  x + 1\n}");
+        let body = parse("fn f(x: Int) -> Int requires x > 0 { x + 2 }");
+        let contract = parse("fn f(x: Int) -> Int requires x > 1 { x + 1 }");
+        let public = parse("pub fn f(x: Int) -> Int requires x > 0 { x + 1 }");
+        assert_ne!(hash(&base), hash(&commented));
+        assert_eq!(code_hash(&base), code_hash(&commented));
+        assert_eq!(interface_hash(&base), interface_hash(&commented));
+        assert_ne!(code_hash(&base), code_hash(&body));
+        assert_eq!(interface_hash(&base), interface_hash(&body));
+        assert_ne!(interface_hash(&base), interface_hash(&contract));
+        assert_ne!(interface_hash(&base), interface_hash(&public));
     }
 
     #[test]
@@ -710,42 +1179,52 @@ use a.b.{c, d}
 use e.*
 "#;
         // not every line has to check: only parse, then round-trip the tree
-        let program = match crate::parser::parse_module_file(src, "m") {
-            Ok(p) => p,
-            Err(e) => panic!("{e}"),
-        };
-        roundtrip(&Image { manifest: None, program });
+        let program = crate::parser::parse_module_file(src, "m").unwrap_or_else(|e| panic!("{e}"));
+        for d in &program.decls {
+            assert_eq!(&decode_definition(&encode_definition(d)).unwrap(), d);
+        }
+        let img = Image { manifest: None, program };
+        assert_eq!(read(&encode_bundle(&img)).unwrap(), img);
     }
 
     #[test]
     fn bad_input_is_an_error_not_a_crash() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let program = crate::package::program(&root.join("examples/orders.strata")).unwrap();
-        let bytes = encode(&Image { manifest: None, program });
+        let (_, img) = examples().into_iter().find(|(p, _)| p.ends_with("orders.strata")).unwrap();
+        let bytes = encode_bundle(&img);
         for n in 0..bytes.len() {
-            assert!(decode(&bytes[..n]).is_err(), "a file cut at {n} bytes decoded");
+            assert!(read(&bytes[..n]).is_err(), "a file cut at {n} bytes decoded");
         }
         let mut extra = bytes.clone();
         extra.push(0);
-        assert!(decode(&extra).is_err());
+        assert!(read(&extra).is_err());
         let mut newer = bytes.clone();
         newer[MAGIC.len()] = VERSION as u8 + 1;
-        assert!(decode(&newer).unwrap_err().contains("version"));
-        // flipping any byte gives an error or another tree, never a panic
-        for i in 0..bytes.len() {
+        assert!(read(&newer).unwrap_err().contains("version"));
+        // flipping any byte gives an error, never a panic: the header's hash
+        // catches a change inside a definition that still decodes
+        for i in MAGIC.len()..bytes.len() {
             let mut b = bytes.clone();
             b[i] ^= 0xff;
-            let _ = decode(&b);
+            if let Ok(other) = read(&b) {
+                assert_eq!(other.program, img.program, "byte {i}");
+            }
         }
-        // deep nesting is refused, before it runs out of stack: a test whose
-        // body is `mut mut … ()`
-        let mut deep = MAGIC.to_vec();
-        deep.extend([VERSION as u8, 1, 0]); // one string, ""
-        deep.extend([0, 1]); // no manifest; one declaration:
-        deep.extend([0, 0, 0, 0, 2, 0]); // no comments or doc, module "", private, test ""
-        deep.extend(std::iter::repeat_n(20, 2 * MAX_DEPTH));
-        deep.push(6);
-        let deep = std::thread::Builder::new().stack_size(1 << 30).spawn(move || decode(&deep)).unwrap().join().unwrap();
-        assert!(deep.unwrap_err().contains("nesting too deep"));
+    }
+
+    #[test]
+    fn deep_nesting_is_refused() {
+        std::thread::Builder::new()
+            .stack_size(1 << 30)
+            .spawn(|| {
+                let mut e = Expr::Unit;
+                for _ in 0..2 * MAX_DEPTH {
+                    e = Expr::Mut(Box::new(e));
+                }
+                let d = Decl { comments: vec![], doc: vec![], module: Symbol::EMPTY, public: false, kind: DeclKind::Test(TestDecl { name: "t".into(), body: e }) };
+                assert!(decode_definition(&encode_definition(&d)).unwrap_err().contains("nesting too deep"));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

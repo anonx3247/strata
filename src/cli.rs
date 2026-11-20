@@ -78,8 +78,8 @@ fn scalar(env: &Env, t: &TypeExpr) -> Option<Scalar> {
             "Int" => Some(Scalar::Int),
             "Float" => Some(Scalar::Float),
             "String" => Some(Scalar::Text),
-            _ => match &env.types.get(&n)?.body {
-                TypeBody::Sum(vs) if vs.iter().all(|v| v.payload == Payload::None) => Some(Scalar::Choice(vs.iter().map(|v| (kebab(&v.name), v.name.clone())).collect())),
+            _ => match &env.types.get(&n.sym())?.body {
+                TypeBody::Sum(vs) if vs.iter().all(|v| v.payload == Payload::None) => Some(Scalar::Choice(vs.iter().map(|v| (kebab(&v.name), v.name.to_string())).collect())),
                 _ => None,
             },
         },
@@ -99,7 +99,7 @@ fn kind(env: &Env, t: &TypeExpr) -> Option<(Kind, TypeExpr)> {
 
 /// The options' fields, or why the record can't be read from a command line.
 fn options<'a>(env: &'a Env, name: &str) -> Result<(&'a TypeDecl, Vec<Opt<'a>>), String> {
-    let td = env.types.get(name).ok_or(format!("no type `{name}`"))?;
+    let td = env.types.get(&name.sym()).ok_or(format!("no type `{name}`"))?;
     let TypeBody::Record(fs) = &td.body else {
         return Err(format!("`{}` implements `CommandLine`, so it must be a record (each field is an option)", short(name)));
     };
@@ -247,7 +247,7 @@ pub fn parse(it: &mut Interp, env: &Env, name: &str, doc: &[String], prog: &str,
                 if let Some(v) = inline {
                     return fail(format!("`--{}` is a flag: it takes no value (got `{v}`)", o.flag));
                 }
-                given.insert(o.field.name.clone(), json!(true));
+                given.insert(o.field.name.to_string(), json!(true));
             }
             Kind::Optional(s) => {
                 let text = match inline {
@@ -260,7 +260,7 @@ pub fn parse(it: &mut Interp, env: &Env, name: &str, doc: &[String], prog: &str,
                 };
                 match read(it, s, &o.elem, &text) {
                     Ok(j) => {
-                        given.insert(o.field.name.clone(), json!({ "Some": j }));
+                        given.insert(o.field.name.to_string(), json!({ "Some": j }));
                     }
                     Err(e) => return fail(format!("--{}: {e}", o.flag)),
                 }
@@ -277,7 +277,7 @@ pub fn parse(it: &mut Interp, env: &Env, name: &str, doc: &[String], prog: &str,
             };
             match read(it, s, &o.elem, text) {
                 Ok(j) => {
-                    given.insert(o.field.name.clone(), j);
+                    given.insert(o.field.name.to_string(), j);
                 }
                 Err(e) => return fail(format!("<{}>: {e}", o.flag)),
             }
@@ -294,23 +294,23 @@ pub fn parse(it: &mut Interp, env: &Env, name: &str, doc: &[String], prog: &str,
                     Err(e) => return fail(format!("[{}...]: {e}", o.flag)),
                 }
             }
-            given.insert(o.field.name.clone(), Json::Array(xs));
+            given.insert(o.field.name.to_string(), Json::Array(xs));
         }
         None if !left.is_empty() => return fail(format!("unexpected argument `{}`", left[0])),
         None => {}
     }
     for o in &opts {
         match o.kind {
-            Kind::Flag if !given.contains_key(&o.field.name) => {
-                given.insert(o.field.name.clone(), json!(false));
+            Kind::Flag if !given.contains_key(o.field.name.as_str()) => {
+                given.insert(o.field.name.to_string(), json!(false));
             }
-            Kind::Optional(_) if !given.contains_key(&o.field.name) => {
-                given.insert(o.field.name.clone(), json!("None"));
+            Kind::Optional(_) if !given.contains_key(o.field.name.as_str()) => {
+                given.insert(o.field.name.to_string(), json!("None"));
             }
             _ => {}
         }
     }
-    match it.from_json(&TypeExpr::Named(name.to_string(), vec![]), &Json::Object(given), "") {
+    match it.from_json(&TypeExpr::Named(Symbol::from(name), vec![]), &Json::Object(given), "") {
         Ok(v) => Parsed::Options(v),
         Err(e) => fail(e.trim_start_matches(": ").to_string()),
     }

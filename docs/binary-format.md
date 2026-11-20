@@ -1,31 +1,76 @@
 # The binary format
 
-A whole Strata program, and its package's `strata.toml`, can be stored as one binary file: the syntax tree itself, not its text. `strata pack app.stb` writes one; `--file app.stb`, `strata run app.stb`, `strata ui --file app.stb` and every view read it as they read source; `strata unpack app.stb DIR` writes it back out as source, one canonical file per module.
+Strata code can be stored as its syntax tree rather than its text, in a binary format of our own: one **module file** per module (`main.stb`, `shop/orders.stb`), or a whole program in one **bundle** file.
 
-The format is our own, written by hand in `src/binary.rs` with no serialization library, so that Strata can read and write it itself once it is bootstrapped. This page is its specification; the two are kept in step.
+- `strata pack DIR` writes a folder: the package's `strata.toml` and one module file per module. `strata pack app.stb` writes a bundle.
+- `--file DIR`, `--file app.stb`, `strata run …`, `strata ui --file …` and every view read either as they read source.
+- `strata unpack IN DIR` writes source back out, one canonical file per module.
+- `strata header core.stb` prints a module file's table of contents.
 
-Properties:
+The format is written by hand in `src/binary.rs`, with no serialization library, so that Strata can read and write it itself once it is bootstrapped. This page is its specification; the two are kept in step.
 
+Design:
+
+- **A header, like a C header file, but inside the module file.** It comes first and lists every definition: its name, kind, visibility, three hashes, the definitions it depends on and the size of its bytes. Listing a module, building the dependency graph or finding what changed reads only the header. That takes 14 µs for all of `examples/tasks`; decoding everything takes about 170 µs.
+- **Interface first, bodies after.** Each definition's bytes start with its interface: types, signatures, contracts, laws, with each body written as `()`. Its bodies follow. Checking code against a module only needs the interfaces, and a reader can stop there.
+- **Self-contained definitions.** Each definition carries its own strings, so its bytes mean the same in any file. Its hash is the hash of those bytes. The same bytes could also be stored as one object under that hash (the hash-store idea in IDEAS.md).
 - **Exact.** Decoding gives back the very tree that was encoded: comments, docs, blank lines between groups, big integers (as their digits) and floats (as their bits).
-- **Canonical.** A tree has one encoding: strings are numbered in the order they are first written, integers use the shortest form, and the decoder refuses anything else. Packing what you unpacked gives the same bytes.
-- **Compact.** Every name, comment and string literal is stored once, in a table, and referred to by number. `examples/tasks` is 20 KB of source and 14 KB packed.
-- **Safe to read.** A truncated or corrupt file is an error naming the byte where it went wrong, never a crash: lengths can't exceed what is left of the file, and nesting deeper than 10,000 levels is refused.
+- **Canonical.** A tree has one encoding. Strings are numbered in the order they are first written, integers use the shortest form, and the decoder refuses anything else. Packing what you unpacked gives the same bytes.
+- **Safe to read.** A truncated or corrupt file is an error, never a crash. Lengths can't exceed what is left of the file, nesting deeper than 10,000 levels is refused, and a definition whose bytes don't match the hash in the header is rejected.
 
 There is no backwards compatibility: a file of another format version is rejected. Re-pack it from source.
 
-## Layout
+## Files
 
 ```text
-file      = "STRATA"  version:uint  strings:list(raw-string)  manifest:option(str)  decls:list(Decl)
+module-file = "STRATA" version:uint 0  header  definitions
+bundle      = "STRATA" version:uint 1  manifest:option(raw-string)  modules:list(raw-bytes)
 ```
 
-- the six ASCII bytes `STRATA` (`53 54 52 41 54 41`);
-- the format `version`, currently `1`;
-- the string table: its length, then each string as its length in bytes and its UTF-8 bytes;
-- the package's `strata.toml`, as written (`None` for a script);
-- the program's definitions, in order.
+- the six ASCII bytes `STRATA` (`53 54 52 41 54 41`), the format `version` (currently `2`), then `0` for a module file or `1` for a bundle;
+- a bundle holds the package's `strata.toml`, as written (none for a script), then each module file, as its length and its bytes, in the order the modules first appear in the program.
 
-Nothing may follow the last definition.
+### The header
+
+```text
+header = strings:list(raw-string)  module:str  entries:list(Entry)
+Entry  = name:str  kind:byte  public:bool  hash:32 bytes  interface_hash:32 bytes  code_hash:32 bytes
+         deps:list(str)  size:uint  interface_size:uint
+```
+
+- The header's strings are its own table (names, the module path, dependencies).
+- `module` is the dotted module path (`""` for the root module).
+- `name` is what `strata` calls the definition: `total`, `Order`, `test "totals"`, `impl Show for Order`, `use orders`.
+- `kind` is the `DeclKind` tag below.
+- `deps` are the qualified names of the definitions it refers to.
+- The definitions follow the header back to back, in the order of the entries. A definition's offset is the end of the header plus the sizes of those before it, and the file ends exactly after the last one.
+
+The three hashes are SHA-256:
+
+| Hash | Of | Changes when |
+|---|---|---|
+| `hash` | the definition's bytes | anything changes, a comment included: its identity |
+| `interface_hash` | the interface part of the definition with every comment and doc removed | what other code relies on changes: types, signatures, contracts, laws, visibility, its module |
+| `code_hash` | the bytes of the definition with every comment and doc removed | what it does changes (verification results are keyed by it) |
+
+"Comments and docs removed" means: every `comments` and `doc` list emptied, and every `Comment` statement dropped. A block left with no statements becomes its result: `{ // note ⏎ x }` is `x`. `strata` shows a hash as its first 8 bytes in hex.
+
+### A definition
+
+```text
+definition = interface-strings:list(raw-string)  Decl     (each body written as Unit)
+             body-strings:list(raw-string)       bodies:list(Expr)
+```
+
+The interface part comes first: its strings, then the `Decl` with each body replaced by `()` (`Unit`, one byte). The body part follows: the strings the bodies add (their indices continue after the interface's), then the bodies. `interface_size` in the header is the size of the interface part.
+
+The bodies, in order, are:
+- a function's body;
+- a test's body;
+- the body of each method of a trait, in order (a method without a default has `()`);
+- the body of each method of an impl, in order.
+
+Types and `use` have none. Everything else is interface: signatures, `requires` / `ensures`, laws, fields, variants, refinements.
 
 ## Primitives
 
@@ -36,15 +81,16 @@ Nothing may follow the last definition.
 | `float` | the 8 bytes of the IEEE 754 double, little-endian. |
 | `bool` | one byte, `0` or `1`. |
 | `char` | a Unicode scalar value, as a `uint`. |
-| `raw-string` | length in bytes (`uint`), then the UTF-8 bytes. Only in the string table. |
-| `str` | a `uint`: the string's index in the table (from 0). |
+| `raw-string` | length in bytes (`uint`), then the UTF-8 bytes. Only in string tables (and a bundle's manifest). |
+| `raw-bytes` | length (`uint`), then the bytes. |
+| `str` | a `uint`: the string's index in the current table (from 0). |
 | `list(T)` | the number of items (`uint`), then each item. |
 | `option(T)` | one byte: `0` for none, `1` followed by the value. |
 | `(A, B)` | `A` then `B`. |
 | a struct | its fields, in the order listed below. |
 | an enum | one tag byte, then the fields of that variant, in order. |
 
-When writing, a string gets the next index the first time it is written; the table holds the strings in that order. Whatever the order, a reader just looks strings up by index.
+When writing, a string gets the next index the first time it is written, and each table holds its strings in that order. A reader just looks strings up by index.
 
 ## The tree
 
@@ -137,24 +183,28 @@ CtorPat = 0 None | 1 Positional(list(Pattern)) | 2 Record(list((str, Pattern)), 
 
 ## An example
 
-`fn one() -> Int { 1 }`, a script, encodes to 38 bytes:
+`fn one() -> Int { 1 }`, a script, packs to a 150-byte `main.stb`:
 
 ```text
 53 54 52 41 54 41   "STRATA"
-01                  version 1
-03                  3 strings:
-   00                 0: ""
-   03 6f 6e 65        1: "one"
-   03 49 6e 74        2: "Int"
-00                  no manifest
-01                  1 definition:
-   00 00 00 00          no comments, no doc, module "" (string 0), not public
-   01                   a function:
-   00 00 01             no doc, no comments, name "one" (string 1)
-   00 00 00             no type parameters, bounds or parameters
-   00 02 00             returns Named("Int", [])
-   00 00 00             no requires, no ensures, not `terminates`
-   00 02                body: Int(1)  (1 zigzag-encodes to 2)
+02 00               version 2, a module file
+header:
+   02 00 03 6f 6e 65    2 strings: "", "one"
+   00                   module "" (the root)
+   01                   1 entry:
+      01 01 00             name "one", a function, private
+      7a 3f c5 … (32)      hash
+      ce 72 21 … (32)      interface_hash
+      7a 3f c5 … (32)      code_hash (the same as hash: no comments)
+      00                   no dependencies
+      20 1c                32 bytes, 28 of them interface
+the definition:
+   03 00 03 6f 6e 65 03 49 6e 74   3 strings: "", "one", "Int"
+   00 00 00 00 01                  no comments or doc, module "", private; a function:
+   00 00 01 00 00 00               no doc, no comments, name "one", no type parameters, bounds, parameters
+   00 02 00                        returns Named("Int", [])
+   00 00 00                        no requires, no ensures, not `terminates`
+   06                              its body, left out: ()
+   00                              the bodies add no strings
+   01 00 02                        1 body: Int(1)  (1 zigzag-encodes to 2)
 ```
-
-(The string table is in order of first use: the module `""` comes before the name, as `Decl.module` is written before `FnDecl.name`.)

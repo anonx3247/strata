@@ -69,5 +69,5 @@ strata ui                          # open http://127.0.0.1:7777: the live viewer
 - [Verification](docs/verification.md): what `strata verify` proves, with examples and the verifier's output.
 - [Tools](docs/tools.md): the command line, the viewer, storage, packages and git.
 - [Internals](docs/internals.md): how the source is laid out.
-- [The binary format](docs/binary-format.md): a whole program as one file, the syntax tree rather than text.
+- [The binary format](docs/binary-format.md): code stored as its syntax tree, a module file per module, each with a header.
 - [Ideas, decisions and open questions](IDEAS.md): where Strata is going.
