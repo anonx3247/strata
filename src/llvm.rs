@@ -207,6 +207,21 @@ enum Entry<'e> {
     Comptime(&'e [String]),
 }
 
+/// Tags from here on are union boxes' (`box_tag`); below, constructors' (0 is a tuple's).
+const BOX_TAGS: i64 = 1 << 40;
+
+/// 40 bits of a name's hash (SHA-256: the same in every strata).
+fn hash40(name: &str) -> i64 {
+    use sha2::{Digest, Sha256};
+    let d = Sha256::digest(name.as_bytes());
+    (u64::from_le_bytes(d[..8].try_into().unwrap()) & ((1 << 40) - 1)) as i64
+}
+
+/// A constructor's tag, from its qualified name: in [1, 2^40).
+fn stable_tag(ctor: &str) -> i64 {
+    1 + hash40(ctor) % (BOX_TAGS - 1)
+}
+
 /// The label of compile-time code (a probe): it has no frame on the call stack.
 const COMPTIME: &str = "compile-time code";
 
@@ -304,7 +319,18 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     // every constructor gets a tag of its own, so a value's tag says what it is
     let mut ctors: Vec<&Symbol> = env.ctors.keys().collect();
     ctors.sort();
-    let tags = ctors.iter().enumerate().map(|(i, c)| (c.to_string(), i as i64 + 1)).collect();
+    // from the constructor's qualified name, not the program's numbering: the
+    // same in every program, so code compiled once (std, precompiled; the FFI)
+    // reads values alike
+    let mut tags: HashMap<String, i64> = HashMap::default();
+    let mut taken: HashMap<i64, String> = HashMap::default();
+    for c in ctors {
+        let t = stable_tag(c.as_str());
+        if let Some(other) = taken.insert(t, c.to_string()) {
+            return Err(format!("the constructors `{other}` and `{c}` have the same tag (rename one)"));
+        }
+        tags.insert(c.to_string(), t);
+    }
     // bodies as the checker saw them (its types are by node); signatures from `env`
     let mut bodies: HashMap<String, &FnDecl> = HashMap::default();
     for d in &resolved.program.decls {
@@ -989,8 +1015,9 @@ impl<'a> Module<'a> {
 
     fn box_tag(&mut self, m: &Ty) -> i64 {
         let k = key(&self.repr(m).unwrap_or(Ty::Unit));
-        let n = self.box_tags.len() as i64;
-        *self.box_tags.entry(k).or_insert(1 << 40 | n)
+        // (the member type's, beyond every constructor's)
+        let t = BOX_TAGS | (hash40(&k) & (BOX_TAGS - 1));
+        *self.box_tags.entry(k).or_insert(t)
     }
 
     /// The tags a value of member type `m` can have in a union.
