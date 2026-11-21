@@ -125,7 +125,7 @@ fn run_probes(prog: &Program, probes: Vec<Decl>, budget: i64) -> Result<Vec<Opti
 /// Literal arguments and fields that break their types' refinements, found
 /// while compiling: a probe for each, `let x: T = <literal>`, all compiled
 /// as one module and run. (Nothing is reported when they can't be compiled.)
-pub fn refinements_in(prog: &Program, env: &Env) -> Vec<Diag> {
+pub fn refinements_in(prog: &Program, compiled: &Program, env: &Env) -> Vec<Diag> {
     // (where, the probe's statement, how to report its fault)
     let mut sites: Vec<(String, Stmt, Option<String>)> = vec![];
     for d in &prog.decls {
@@ -179,7 +179,7 @@ pub fn refinements_in(prog: &Program, env: &Env) -> Vec<Diag> {
         return vec![];
     }
     let probes = sites.iter().enumerate().map(|(i, (_, s, _))| probe(&format!("strata_verify_literal_{i}"), vec![s.clone()])).collect();
-    let Ok(faults) = run_probes(prog, probes, JIT_STEPS) else { return vec![] };
+    let Ok(faults) = run_probes(compiled, probes, JIT_STEPS) else { return vec![] };
     let mut out = vec![];
     for ((decl, _, ctx), fault) in sites.into_iter().zip(faults) {
         let Some(f) = fault else { continue };
@@ -473,7 +473,7 @@ fn replay(key: &str, shown: &str, decl: &FnDecl, method: bool, vals: &[Value]) -
 }
 
 /// A value as code (what `derive` writes compile-time values as).
-fn literal_of(v: &Value) -> Option<Expr> {
+pub fn literal_of(v: &Value) -> Option<Expr> {
     use crate::interp::Fields;
     Some(match v {
         Value::Int(n) => Expr::Int(*n),
@@ -532,13 +532,16 @@ pub fn wrapper_name(index: usize, what: &str) -> String {
 }
 
 /// What `verify` fuzzes besides the program's functions, as functions too:
-/// for each trait implementation (declaration `i` of `prog`), a wrapper per
+/// for each trait implementation chosen (declaration `i` of `prog`), a wrapper per
 /// method, with its contract, calling it through the trait; and per law, one
 /// whose result is the law, ensured to hold. Keyed by `wrapper_name`.
-pub fn wrappers(env: &Env, prog: &Program) -> Vec<FnDecl> {
+pub fn wrappers(env: &Env, prog: &Program, chosen: &[bool]) -> Vec<FnDecl> {
     let mut out = vec![];
     for (i, d) in prog.decls.iter().enumerate() {
         let DeclKind::Impl(imp) = &d.kind else { continue };
+        if !chosen.get(i).copied().unwrap_or(false) {
+            continue;
+        }
         if imp.is_inherent() || crate::stdlib::HOST_TYPES.contains(&crate::types::texpr_head(&imp.for_type).as_str()) {
             continue;
         }

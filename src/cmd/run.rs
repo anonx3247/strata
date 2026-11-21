@@ -16,23 +16,38 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
         _ => path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "main".into()),
     };
     let p = src.program();
-    let types::Checked { report: rep, env, .. } = full_checked(p);
+    let types::Checked { report: rep, env, compiled, .. } = full_checked(p);
     if !rep.ok() {
         print_errors(&rep);
         return Ok(false);
     }
     let Some(name) = rest.first() else {
         let program_args = args.flags.get("--").cloned().unwrap_or_default();
-        // compiled in memory when this strata has the JIT (unless asked not
-        // to, or tracing); `--jit` insists, and says why when it can't
-        let jit = args.flag("--jit") || (!args.flag("--interpret") && !args.flag("--trace"));
-        if jit && env.fns.contains_key(&Symbol::new("main")) {
-            if let Some(code) = run_jit(p, &prog, &program_args, args.flag("--jit"))? {
-                std::process::exit(code);
+        // compiled in memory; `--interpret` runs the old interpreter (kept
+        // until it is removed, to compare with)
+        if args.flag("--interpret") {
+            std::process::exit(run_main(p, &env, &prog, program_args, args.flag("--trace"))?);
+        }
+        let Some(main) = env.fns.get(&Symbol::new("main")) else {
+            return Err("no `main` function to run (the entry point is `fn main` in main.strata, or in the file you run)".into());
+        };
+        // what `main` may ask for: a mistake of the program's, not something not compiled yet
+        for pm in &main.params {
+            let ty = printer::ty(&pm.ty);
+            if capability(&ty).is_none() && !cli::is_options(&env, &pm.ty) {
+                return Err(format!(
+                    "`main` can ask for `Console` (std.io), `Files` (std.fs), `Environment` (std.process), and options: a record that implements `CommandLine` (std.cli). Its parameter `{}` is a `{ty}`",
+                    pm.name
+                ));
             }
         }
-        std::process::exit(run_main(p, &env, &prog, program_args, args.flag("--trace"))?);
+        let ir = if args.flag("--trace") { llvm::compile_traced(p, "main") } else { llvm::compile(p, "main") };
+        let ir = ir.map_err(|e| format!("the program can't be compiled yet: {e}"))?;
+        std::process::exit(llvm::jit::run(&ir, &prog, &program_args)?);
     };
+    if !args.flag("--interpret") {
+        return call_compiled(args, &compiled, &env, name, rest.get(1).map(|s| s.as_str()).unwrap_or("[]"));
+    }
     let f = env.fns.get(&name.sym()).ok_or(format!("no function `{name}`"))?.clone();
     let raw: serde_json::Value = serde_json::from_str(rest.get(1).map(|s| s.as_str()).unwrap_or("[]")).map_err(|e| format!("args: {e}"))?;
     let raw = raw.as_array().cloned().ok_or("args must be a JSON array")?;
@@ -64,17 +79,81 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
     Ok(true)
 }
 
-/// `strata run` with the JIT: compile `main` and run it in this process;
-/// `None` when the program uses what doesn't compile yet (it is then
-/// interpreted, with a note saying why if `--jit` was asked for).
-fn run_jit(p: &Program, prog: &str, args: &[String], asked: bool) -> Result<Option<i32>, String> {
-    match llvm::compile(p, "main") {
-        Ok(ir) => llvm::jit::run(&ir, prog, args).map(Some),
-        Err(e) => {
-            if asked {
-                eprintln!("note: interpreted, not compiled: {e}");
+/// `strata run f [JSON-ARGS]`, compiled: the arguments (read against the
+/// parameters' types) written into a function that calls `f`, whose result
+/// is read back and printed as JSON; a fault as `{"fault": ..}`.
+fn call_compiled(args: &Args, resolved: &Program, env: &types::Env, name: &str, raw: &str) -> Result<bool, String> {
+    let f = env.fns.get(&name.sym()).ok_or(format!("no function `{name}`"))?.clone();
+    if !f.type_params.is_empty() {
+        return Err(format!("`{name}` is generic: call it from a function that says which types it is used at"));
+    }
+    let raw: serde_json::Value = serde_json::from_str(raw).map_err(|e| format!("args: {e}"))?;
+    let raw = raw.as_array().cloned().ok_or("args must be a JSON array")?;
+    if raw.len() != f.params.len() {
+        return Err(format!("`{name}` takes {} arguments", f.params.len()));
+    }
+    // JSON read against the types (their shapes; refinements are checked compiled)
+    let mut reader = interp::Interp::new(env, 1);
+    let mut stmts = vec![];
+    let mut call_args = vec![];
+    for (i, (pm, j)) in f.params.iter().zip(&raw).enumerate() {
+        let v = reader.from_json_raw(&pm.ty, j, &pm.name).map_err(|e| format!("invalid input: {e}"))?;
+        let x = verify::literal_of(&v).ok_or(format!("invalid input: `{}` can't be given as JSON", pm.name))?;
+        let n = Symbol::new(&format!("strata_arg_{i}"));
+        if pm.mutable {
+            stmts.push(Stmt::Var(n, Some(pm.ty.clone()), x));
+            call_args.push(Expr::Mut(Box::new(Expr::Var(n))));
+        } else {
+            // (its refinements are checked by `f`, which names the argument)
+            stmts.push(Stmt::Let(Pattern::Bind(n), None, x));
+            call_args.push(Expr::Var(n));
+        }
+    }
+    let probe = "strata_run_call";
+    let call = FnDecl {
+        doc: vec![],
+        comments: vec![],
+        name: Symbol::new(probe),
+        type_params: vec![],
+        bounds: vec![],
+        params: vec![],
+        ret: f.ret.clone(),
+        requires: vec![],
+        ensures: vec![],
+        terminates: false,
+        body: Expr::Block(stmts, Box::new(Expr::Call(Box::new(Expr::Var(Symbol::new(name))), call_args))),
+        comptime: false,
+        derived: false,
+    };
+    let mut prog = resolved.clone();
+    prog.decls.push(Decl { comments: vec![], doc: vec![], kind: DeclKind::Fn(call), module: Default::default(), public: false });
+    let ir = if args.flag("--trace") {
+        llvm::compile_traced_comptime(&prog, &[probe.to_string()])
+    } else {
+        llvm::compile_comptime(&prog, &[probe.to_string()])
+    };
+    let (ir, roots, shapes) = ir.map_err(|e| format!("`{name}` can't be compiled yet: {e}"))?;
+    let (result, printed) = llvm::jit::run_kept(&ir, &roots, &shapes, i64::MAX, true)?.pop().ok_or("nothing ran")?;
+    print!("{printed}");
+    match result {
+        Ok(v) => {
+            println!("{}", serde_json::to_string_pretty(&interp::to_json(&v)).unwrap());
+            Ok(true)
+        }
+        Err(fault) => {
+            let stack: Vec<&str> = fault.stack.split(" -> ").filter(|s| !s.is_empty() && *s != probe).collect();
+            // an argument that breaks its type's refinement (checked by `f` on entry)
+            let arg = fault.message.strip_prefix("argument `").and_then(|m| m.split_once(&format!("` of `{name}`: ")));
+            if fault.kind == "Refinement" && stack.len() <= 1 {
+                if let Some((param, rest)) = arg {
+                    return Err(format!("invalid input: {param}: {rest}"));
+                }
+                if stack.is_empty() {
+                    return Err(format!("invalid input: {}", fault.message.strip_prefix("let binding: ").unwrap_or(&fault.message)));
+                }
             }
-            Ok(None)
+            println!("{}", serde_json::to_string_pretty(&json!({"fault": {"kind": fault.kind, "msg": fault.message, "stack": stack}})).unwrap());
+            Ok(false)
         }
     }
 }
@@ -85,7 +164,7 @@ fn run_jit(p: &Program, prog: &str, args: &[String], asked: bool) -> Result<Opti
 pub fn run_tests(args: &Args) -> Result<bool, String> {
     let src = load(&args)?;
     let p = src.program();
-    let types::Checked { report: rep, program: resolved, env } = full_checked(p);
+    let types::Checked { report: rep, program: resolved, env, .. } = full_checked(p);
     if !rep.ok() {
         print_errors(&rep);
         return Ok(false);
@@ -96,11 +175,7 @@ pub fn run_tests(args: &Args) -> Result<bool, String> {
         print!("{}", llvm::compile_tests(p)?.0);
         return Ok(true);
     }
-    let jit = args.flag("--jit") || (!args.flag("--interpret"));
-    let outcomes = match jit.then(|| test_jit(p, &filter, args.flag("--jit"))).transpose()?.flatten() {
-        Some(o) => o,
-        None => test_interpreted(&resolved, &env, &filter),
-    };
+    let outcomes = if args.flag("--interpret") { test_interpreted(&resolved, &env, &filter) } else { test_jit(p, &filter)? };
     let (mut pass, mut fail) = (0, 0);
     for (name, fault, printed) in outcomes {
         match fault {
@@ -150,21 +225,39 @@ fn test_interpreted(resolved: &Program, env: &types::Env, filter: &str) -> Vec<T
     out
 }
 
-/// The tests compiled and run in this process; `None` when they use what
-/// doesn't compile yet (they are then interpreted, with a note if `--jit`).
-fn test_jit(p: &Program, filter: &str, asked: bool) -> Result<Option<Vec<TestRun>>, String> {
+/// The tests compiled and run in this process. A test that can't be
+/// compiled yet fails, saying why (the others still run).
+fn test_jit(p: &Program, filter: &str) -> Result<Vec<TestRun>, String> {
+    let all: Vec<String> = p.decls.iter().filter_map(|d| match &d.kind {
+        DeclKind::Test(t) => Some(t.name.to_string()),
+        _ => None,
+    }).collect();
+    let mut skipped: Vec<(String, String)> = vec![];
     let (ir, names) = match llvm::compile_tests(p) {
         Ok(x) => x,
-        Err(e) => {
-            if asked {
-                eprintln!("note: interpreted, not compiled: {e}");
+        Err(_) => {
+            // each alone, to leave out only those that don't compile
+            for t in &all {
+                let others: Vec<String> = all.iter().filter(|o| *o != t).cloned().collect();
+                if let Err(e) = llvm::compile_tests_except(p, &others) {
+                    skipped.push((t.clone(), e));
+                }
             }
-            return Ok(None);
+            let skip: Vec<String> = skipped.iter().map(|(t, _)| t.clone()).collect();
+            llvm::compile_tests_except(p, &skip)?
         }
     };
     let which: Vec<usize> = (0..names.len()).filter(|&i| names[i].contains(filter)).collect();
     let runs = llvm::jit::run_tests(&ir, &which)?;
-    Ok(Some(which.iter().zip(runs).map(|(&i, r)| (names[i].clone(), r.fault, r.printed)).collect()))
+    let mut out: Vec<TestRun> = which.iter().zip(runs).map(|(&i, r)| (names[i].clone(), r.fault, r.printed)).collect();
+    for (t, e) in skipped {
+        if t.contains(filter) {
+            out.push((t, Some(("Unsupported".into(), format!("can't be compiled yet: {e}"), String::new())), String::new()));
+        }
+    }
+    // in the program's order
+    out.sort_by_key(|(n, _, _)| all.iter().position(|a| a == n));
+    Ok(out)
 }
 
 /// The real implementation of a capability `main` (or `handle`) asks for:

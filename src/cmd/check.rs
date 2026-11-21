@@ -53,7 +53,7 @@ pub fn holes(args: &Args, json_out: bool) -> Result<bool, String> {
 pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     let src = load(&args)?;
     let p = src.program();
-    let types::Checked { report: rep, program: resolved, env } = full_checked(p);
+    let types::Checked { report: rep, program: resolved, env, compiled } = full_checked(p);
     if !rep.ok() {
         print_errors(&rep);
         return Ok(false);
@@ -68,7 +68,8 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     let mut all_ok = true;
     let mut results = Vec::new();
     // what is fuzzed, compiled, all in one module (`--jit` says why when something can't be)
-    jit_fuzzers(&resolved, &env, args.flag("--jit"));
+    let chosen: Vec<bool> = p.decls.iter().map(|d| names.contains(&d.qname())).collect();
+    jit_fuzzers(&compiled, &env, &chosen, args.flag("--jit"));
     let solver = smt::solver();
     let solver_bin = solver.as_ref();
     let analysis = termination::analyze(&env, solver_bin);
@@ -286,9 +287,10 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
 /// (`verify::wrappers`), all in one module; what can't be compiled is left
 /// out, and says why when it is checked. The program with the wrappers is
 /// kept for replaying the solver's counterexamples.
-fn jit_fuzzers(resolved: &Program, env: &types::Env, say_why: bool) {
+fn jit_fuzzers(resolved: &Program, env: &types::Env, chosen: &[bool], say_why: bool) {
     let mut prog = resolved.clone();
-    let wrappers = verify::wrappers(env, resolved);
+    // only what is checked: the chosen declarations (`chosen[i]`) and their wrappers
+    let wrappers = verify::wrappers(env, resolved, chosen);
     let mut targets = vec![];
     let push = |f: &FnDecl, targets: &mut Vec<llvm::FuzzTarget>| {
         if f.params.iter().any(|p| p.comptime || matches!(p.ty, TypeExpr::Fn(..))) || crate::stdlib::is_host(&f.name) {
@@ -303,9 +305,19 @@ fn jit_fuzzers(resolved: &Program, env: &types::Env, say_why: bool) {
         let params = f.params.iter().map(|p| (p.name.to_string(), types::subst_texpr(&p.ty, &inst), p.mutable)).collect();
         targets.push(llvm::FuzzTarget { name: f.name.to_string(), params });
     };
-    for d in &resolved.decls {
-        if let DeclKind::Fn(f) = &d.kind {
-            push(f, &mut targets);
+    for (i, d) in resolved.decls.iter().enumerate() {
+        if !chosen.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        match &d.kind {
+            DeclKind::Fn(f) => push(f, &mut targets),
+            // a type's own methods are functions (`Item.new`)
+            DeclKind::Impl(imp) if imp.is_inherent() => {
+                for m in &imp.methods {
+                    push(&types::static_fn(imp, m), &mut targets);
+                }
+            }
+            _ => {}
         }
     }
     for w in &wrappers {

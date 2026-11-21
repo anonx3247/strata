@@ -55,6 +55,10 @@ unsafe extern "C" {
     fn strata_str_cmp();
     fn strata_alloc();
     fn strata_dup();
+    fn strata_regex_match();
+    fn strata_set_regex_engine(e: extern "C" fn(*const u8, i64, *const u8, i64, *mut *const std::ffi::c_char) -> i32);
+    fn strata_trace_call();
+    fn strata_trace_return();
     fn strata_ct_keep();
     fn strata_ct_kept() -> i64;
     fn strata_int_dup();
@@ -160,6 +164,9 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_str_cmp", strata_str_cmp as *const () as usize),
         ("strata_alloc", strata_alloc as *const () as usize),
         ("strata_dup", strata_dup as *const () as usize),
+        ("strata_regex_match", strata_regex_match as *const () as usize),
+        ("strata_trace_call", strata_trace_call as *const () as usize),
+        ("strata_trace_return", strata_trace_return as *const () as usize),
         ("strata_ct_keep", strata_ct_keep as *const () as usize),
         ("strata_int_dup", strata_int_dup as *const () as usize),
         ("strata_int_drop", strata_int_drop as *const () as usize),
@@ -273,7 +280,8 @@ pub fn run_tests(ir: &str, which: &[usize]) -> Result<Vec<TestOutcome>, String> 
 pub fn fuzzers(ir: &str, n: usize) -> Result<Vec<usize>, String> {
     use std::ffi::c_char;
     let ctx: &'static Context = Box::leak(Box::new(Context::create()));
-    let engine = engine(ctx, ir)?;
+    // unoptimized: compiling the drivers costs more than optimizing saves on a few hundred cases
+    let engine = engine_at(ctx, ir, false)?;
     let addrs = (0..n).map(|i| engine.get_function_address(&format!("strata.fuzz.{i}")).map_err(|e| e.to_string())).collect::<Result<Vec<_>, _>>()?;
     std::mem::forget(engine);
     type Init = unsafe extern "C" fn(i32, *const *const c_char);
@@ -325,20 +333,27 @@ pub struct Fault {
 /// within `budget` steps, its value read (`native::read`) before the code
 /// is gone; a fault or the budget's end is its message.
 pub fn comptime(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget: i64) -> Result<Vec<Result<crate::interp::Value, Fault>>, String> {
+    Ok(run_kept(ir, roots, shapes, budget, false)?.into_iter().map(|(r, _)| r).collect())
+}
+
+/// `comptime`, optionally optimized (`strata run f [args]`: what it runs may
+/// be long), with what each one printed.
+pub fn run_kept(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget: i64, optimize: bool) -> Result<Vec<(Result<crate::interp::Value, Fault>, String)>, String> {
     use std::ffi::{c_char, CStr};
     let ctx = Context::create();
-    let engine = engine_at(&ctx, ir, false)?;
+    let engine = engine_at(&ctx, ir, optimize)?;
     type Init = unsafe extern "C" fn(i32, *const *const c_char);
     type Fuzz = unsafe extern "C" fn(unsafe extern "C" fn(), i64, i64) -> i32;
     type Message = unsafe extern "C" fn() -> *const i64;
     type Text = unsafe extern "C" fn() -> *const c_char;
-    let (init, fuzz, message, kind, stack): (Init, Fuzz, Message, Text, Text) = unsafe {
+    let (init, fuzz, message, kind, stack, printed): (Init, Fuzz, Message, Text, Text, Text) = unsafe {
         (
             std::mem::transmute(strata_init as *const ()),
             std::mem::transmute(strata_fuzz as *const ()),
             std::mem::transmute(strata_test_message as *const ()),
             std::mem::transmute(strata_test_kind as *const ()),
             std::mem::transmute(strata_test_stack as *const ()),
+            std::mem::transmute(strata_test_printed as *const ()),
         )
     };
     let text = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().to_string();
@@ -352,10 +367,11 @@ pub fn comptime(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget
         if unsafe { fuzz(f, 1, budget) } != 0 {
             let m = unsafe { message() };
             let msg = unsafe { std::slice::from_raw_parts(m.add(1) as *const u8, *m as usize) };
-            out.push(Err(Fault { kind: text(unsafe { kind() }), message: String::from_utf8_lossy(msg).to_string(), stack: text(unsafe { stack() }) }));
+            out.push((Err(Fault { kind: text(unsafe { kind() }), message: String::from_utf8_lossy(msg).to_string(), stack: text(unsafe { stack() }) }), text(unsafe { printed() })));
             continue;
         }
-        out.push(unsafe { super::native::read(root, shapes, strata_ct_kept()) }.map_err(|m| Fault { kind: "Runtime".into(), message: format!("reading the value: {m}"), stack: String::new() }));
+        let v = unsafe { super::native::read(root, shapes, strata_ct_kept()) }.map_err(|m| Fault { kind: "Runtime".into(), message: format!("reading the value: {m}"), stack: String::new() });
+        out.push((v, text(unsafe { printed() })));
     }
     Ok(out)
 }
@@ -370,7 +386,30 @@ fn engine<'ctx>(ctx: &'ctx Context, ir: &str) -> Result<inkwell::execution_engin
 
 /// `engine`, optimized or not: code run once (compile-time code, a probe)
 /// costs less to compile unoptimized than it would save.
+/// The runtime's engine for patterns built at run time: Rust's `regex`, as
+/// the interpreter's `matches` (the whole string, `^(?:re)$`), each pattern
+/// compiled once.
+extern "C" fn regex_engine(s: *const u8, n: i64, re: *const u8, m: i64, err: *mut *const std::ffi::c_char) -> i32 {
+    thread_local! {
+        static CACHE: std::cell::RefCell<std::collections::HashMap<String, Result<regex::Regex, std::ffi::CString>>> = Default::default();
+    }
+    let (s, re) = unsafe { (std::slice::from_raw_parts(s, n as usize), std::slice::from_raw_parts(re, m as usize)) };
+    let (s, re) = (String::from_utf8_lossy(s), String::from_utf8_lossy(re).to_string());
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        let r = c.entry(re.clone()).or_insert_with(|| regex::Regex::new(&format!("^(?:{re})$")).map_err(|e| std::ffi::CString::new(format!("bad regex: {e}")).unwrap_or_default()));
+        match r {
+            Ok(r) => r.is_match(&s) as i32,
+            Err(m) => {
+                unsafe { *err = m.as_ptr() };
+                -1
+            }
+        }
+    })
+}
+
 fn engine_at<'ctx>(ctx: &'ctx Context, ir: &str, optimize: bool) -> Result<inkwell::execution_engine::ExecutionEngine<'ctx>, String> {
+    unsafe { strata_set_regex_engine(regex_engine) };
     Target::initialize_native(&InitializationConfig::default())?;
     let buf = MemoryBuffer::create_from_memory_range_copy(ir.as_bytes(), "strata");
     let module = ctx.create_module_from_ir(buf).map_err(|e| format!("LLVM rejected the generated IR: {e}"))?;

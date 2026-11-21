@@ -367,7 +367,7 @@ impl<'a> Expander<'a> {
             derived: false,
         };
         let mut p = Program { decls: vec![] };
-        for d in &self.prog.decls {
+        for d in &crate::types::rooted(self.prog).decls {
             match &d.kind {
                 DeclKind::Impl(i) if i.derived => {}
                 DeclKind::Test(_) => {}

@@ -354,6 +354,19 @@ pub struct Checked {
     /// resolved, with the checker's method-call decisions written in
     pub program: Program,
     pub env: Env,
+    /// resolved only, what code is compiled from: every declaration in the
+    /// root module (its names are already qualified, so resolving it again
+    /// changes nothing; elaborating it again would)
+    pub compiled: Program,
+}
+
+/// A resolved program as code is compiled from it (`Checked::compiled`).
+pub fn rooted(p: &Program) -> Program {
+    let mut p = p.clone();
+    for d in &mut p.decls {
+        d.module = Symbol::new("");
+    }
+    p
 }
 
 /// Check a program, and elaborate it from the same pass: one resolution and
@@ -371,14 +384,15 @@ pub fn check_resolved(mut r: crate::resolve::Resolution) -> Checked {
     let (errs, holes, targets, mut types) = check_decls(&r.program, &env, false);
     errors.extend(errs);
     let report = CheckReport { errors, holes };
+    let compiled = rooted(&r.program);
     if !needs_rewrite(&env) {
         let (env, _) = Env::build(&r.program);
-        return Checked { report, program: r.program, env };
+        return Checked { report, program: r.program, env, compiled };
     }
     rewrite(&mut r.program, &env, targets, &mut types);
     // a rewrite can add parameters (type arguments): the environment is the rewritten program's
     let (env, _) = Env::build(&r.program);
-    Checked { report, program: r.program, env }
+    Checked { report, program: r.program, env, compiled }
 }
 
 /// Whether elaborating changes the program: method calls to resolve by type,

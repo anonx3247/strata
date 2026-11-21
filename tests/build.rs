@@ -626,11 +626,16 @@ fn options_from_the_command_line_compile() {
 #[test]
 fn what_is_not_compiled_yet_is_named() {
     let d = tmp("unsupported");
-    let f = d.join("lists.strata");
-    save(&f, "fn main() { p := \"[a-z]\" + \"[0-9]\" print(matches(\"a1\", p)) }\n");
+    let f = d.join("many.strata");
+    save(&f, "trait Many {\n  fn copies(self) -> List[Self]\n}\n\ntype A = { n: Int }\n\nimpl Many for A {\n  fn copies(self) -> List[A] { [self, self] }\n}\n\nfn main() {\n  let m: Many = A { n: 1 }\n  print(len(m.copies()))\n}\n");
     let o = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(!o.status.success() && err.contains("can't compile `main`: `matches` with a pattern that isn't a literal is not compiled yet"), "{err}");
+    let why = "can't compile `main`: calling `copies` (it mentions `Self` inside another type) on a value of the trait type `Many` is not compiled yet";
+    assert!(!o.status.success() && err.contains(why), "{err}");
+    // `strata run` says so too (nothing is interpreted instead)
+    let o = Command::new(env!("CARGO_BIN_EXE_strata")).arg("run").arg(&f).output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success() && err.contains(&format!("the program can't be compiled yet: {why}")), "{err}");
 }
 
 #[test]
@@ -654,12 +659,17 @@ fn the_jit_runs_as_the_interpreter() {
     let interp = output(Command::new(strata).args(["run", "--interpret"]).arg(&file));
     assert_eq!(jit, interp);
     assert_eq!(jit.1, 101);
-    // what doesn't compile yet is interpreted, and says why
+    // a pattern built at run time: Rust's engine, given to the runtime (as the interpreter's)
     let f = d.join("lists.strata");
-    save(&f, "fn main() { p := \"[a-z]\" + \"[0-9]\" print(matches(\"a1\", p)) }\n");
-    let (out, code) = output(Command::new(strata).args(["run", "--jit"]).arg(&f));
-    assert_eq!(code, 0);
-    assert!(out.contains("true\n") && out.contains("note: interpreted, not compiled: can't compile `main`: `matches` with a pattern that isn't a literal is not compiled yet"), "{out}");
+    save(&f, "fn main() { p := \"[a-z]\" + \"[0-9]\" print(matches(\"a1\", p)) print(matches(\"a\", p + \"(\")) }\n");
+    let jit = output(Command::new(strata).args(["run", "--jit"]).arg(&f));
+    assert_eq!(jit, output(Command::new(strata).args(["run", "--interpret"]).arg(&f)));
+    assert!(jit.0.starts_with("true\nfault (Runtime): bad regex: regex parse error:") && jit.1 == 101, "{jit:?}");
+    // a built program has no engine for them, and says so
+    let exe = d.join("lists");
+    assert!(Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap().status.success());
+    let (out, code) = output(&mut Command::new(&exe));
+    assert!(code == 101 && out.contains("a pattern built at run time needs `strata run`"), "{out}");
 }
 
 /// `strata run --jit` with options: the derived `from_args`, compiled.

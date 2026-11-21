@@ -1844,7 +1844,7 @@ impl<'a> Interp<'a> {
         }
     }
 
-    fn from_json_raw(&mut self, t: &TypeExpr, j: &Json, path: &str) -> Result<Value, String> {
+    pub fn from_json_raw(&mut self, t: &TypeExpr, j: &Json, path: &str) -> Result<Value, String> {
         let t = self.env.expand_alias(t);
         let bad = |what: &str| Err(format!("{path}: expected {what}, got {j}"));
         match &t {

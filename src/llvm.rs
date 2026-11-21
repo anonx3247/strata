@@ -175,10 +175,32 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
     Ok(compile_for(prog, Entry::Main(entry))?.0)
 }
 
+thread_local! {
+    static TRACING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `compile_comptime`, traced (`strata run f [args] --trace`).
+pub fn compile_traced_comptime(prog: &Program, fns: &[String]) -> Res<(String, Vec<Shape>, Shapes)> {
+    TRACING.with(|t| t.set(true));
+    let r = compile_comptime(prog, fns);
+    TRACING.with(|t| t.set(false));
+    r
+}
+
+/// `compile`, each function of the program reporting its calls and returns
+/// on stderr as the interpreter's `--trace` did (`strata_trace_call`).
+pub fn compile_traced(prog: &Program, entry: &str) -> Res<String> {
+    TRACING.with(|t| t.set(true));
+    let r = compile(prog, entry);
+    TRACING.with(|t| t.set(false));
+    r
+}
+
 /// What a compilation starts from.
 enum Entry<'e> {
     Main(&'e str),
-    Tests,
+    /// The tests, but those named here.
+    Tests(&'e [String]),
     Fuzz(&'e [FuzzTarget]),
     /// Compile-time code: functions without parameters, whose results are kept.
     Comptime(&'e [String]),
@@ -244,13 +266,18 @@ pub struct FuzzTarget {
 /// generates the target's arguments, records them (`strata_fuzz_arg`), and
 /// calls it. Loops and calls count steps (`strata_step`).
 pub fn compile_fuzz(prog: &Program, targets: &[FuzzTarget]) -> Res<String> {
-    Ok(compile_for(prog, Entry::Fuzz(targets))?.0)
+    Ok(compile_with(prog, Entry::Fuzz(targets), true)?.0)
 }
 
 /// The LLVM IR of a program's `test` blocks: a function per test
 /// (`@"strata.test.N"`, taking and returning nothing), and their names.
 pub fn compile_tests(prog: &Program) -> Res<(String, Vec<String>)> {
-    compile_for(prog, Entry::Tests)
+    compile_for(prog, Entry::Tests(&[]))
+}
+
+/// `compile_tests`, leaving out the tests named in `skip`.
+pub fn compile_tests_except(prog: &Program, skip: &[String]) -> Res<(String, Vec<String>)> {
+    compile_for(prog, Entry::Tests(skip))
 }
 
 fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
@@ -259,8 +286,8 @@ fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
 }
 
 #[allow(clippy::type_complexity)]
-/// `resolved`: `prog` is resolved already (with what was added to it): only
-/// the prelude is.
+/// `resolved`: `prog` is resolved already (`Checked::compiled`, with what was
+/// added to it): only the prelude is.
 fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Vec<String>, Option<(Vec<Shape>, Shapes)>)> {
     // the list built-ins in Strata, compiled with the program
     let mut with = prog.clone();
@@ -304,7 +331,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default() };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default() };
     let mut tests = vec![];
     // compile-time code counts steps too (its budget)
     m.fuzzing = matches!(entry, Entry::Fuzz(_) | Entry::Comptime(_));
@@ -330,10 +357,13 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
                 comptime.push((sym_impls(name, &[], &[]), t));
             }
         }
-        Entry::Tests => {
+        Entry::Tests(skip) => {
             // each test, a function of its own (no frame of its own on the call stack)
             for d in &resolved.program.decls {
                 let DeclKind::Test(t) = &d.kind else { continue };
+                if skip.iter().any(|s| s == t.name.as_str()) {
+                    continue;
+                }
                 let inst = Instance { label: format!("test {:?}", t.name.to_string()), symbol: format!("@\"strata.test.{}\"", tests.len()), impls: vec![], params: vec![], ret: TypeExpr::Unit, own_params: &[], own_ret: &TypeExpr::Unit, requires: vec![], ensures: vec![], body: &t.body, sub: HashMap::default() };
                 m.instance(&inst).map_err(|e| format!("can't compile test {:?}: {e}", t.name.to_string()))?;
                 tests.push(t.name.to_string());
@@ -447,6 +477,9 @@ declare void @strata_step()
 declare void @strata_fuzz_arg(ptr)
 declare void @strata_ct_keep(i64)
 declare void @strata_leave()
+declare i1 @strata_regex_match(ptr, ptr)
+declare void @strata_trace_call(ptr, ptr)
+declare void @strata_trace_return(ptr, ptr)
 declare void @strata_overflow() noreturn cold
 declare void @strata_main_error(ptr)
 declare i64 @strata_div(i64, i64)
@@ -678,6 +711,8 @@ struct Module<'a> {
     box_tags: HashMap<String, i64>,
     /// Compiled for `strata verify --jit`: loops and calls count steps.
     fuzzing: bool,
+    /// `strata run --trace`: each function of the program reports its calls and returns.
+    tracing: bool,
     /// The tables of each regex `matches` uses (its globals' name, and its classes).
     regexes: HashMap<String, (String, usize)>,
     /// Generators made (by the type and hints they generate), and mock methods.
@@ -1128,6 +1163,26 @@ impl<'a> Module<'a> {
             let slot = c.local(&p.name, t, None)?;
             c.store(&(t.clone(), format!("%p.{}", p.name)), &slot)?;
         }
+        if c.m.tracing && framed && !name.starts_with("strata_") {
+            // `{"event":"call","fn":…,"args":[…],"depth":n}` (the runtime adds the depth)
+            let mut parts = vec![Part::Lit("[".into())];
+            for (i, p) in f.params.iter().enumerate() {
+                let v = c.load(&p.name)?;
+                if i > 0 {
+                    parts.push(Part::Lit(",".into()));
+                }
+                if has_value(&v.0) {
+                    let shown = c.json(&v)?;
+                    parts.push(Part::Val(shown));
+                } else {
+                    parts.push(Part::Lit("null".into()));
+                }
+            }
+            parts.push(Part::Lit("]".into()));
+            let args = c.concat(parts)?;
+            let n = c.m.string(&serde_json::to_string(name).unwrap());
+            c.emit(format!("call void @strata_trace_call(ptr {n}, ptr {})", args.1));
+        }
         // the written types of the program's own declaration (inline refinements are its nodes)
         for p in own.own_params {
             let v = c.load(&p.name)?;
@@ -1192,6 +1247,11 @@ impl<'a> Module<'a> {
                 c.block(&pass);
             }
             c.pop_scope()?;
+        }
+        if c.m.tracing && framed && !name.starts_with("strata_") {
+            let shown = if has_value(&ret) { c.json(&result)? } else { c.m.string("null") };
+            let n = c.m.string(&serde_json::to_string(name).unwrap());
+            c.emit(format!("call void @strata_trace_return(ptr {n}, ptr {shown})"));
         }
         if framed {
             c.emit("call void @strata_leave()".into());
@@ -3552,8 +3612,12 @@ impl<'m, 'a> Func<'m, 'a> {
 
     fn call_named(&mut self, call: &Expr, name: &str, args: Vec<&Expr>) -> Res<V> {
         if name == "matches" && args.len() == 2 && self.lookup(name).is_none() && !self.m.env.fns.contains_key(&Symbol::new(name)) {
+            // a pattern built at run time: the runtime's engine (Rust's `regex`, under the JIT)
+            let Expr::Str(re) = args[1] else {
+                let vs = self.operands(&args)?;
+                return self.call(&Ty::Bool, "@strata_regex_match", &vs);
+            };
             // a literal pattern, compiled to a DFA now
-            let Expr::Str(re) = args[1] else { return self.unsupported("`matches` with a pattern that isn't a literal") };
             let v = self.expr(args[0])?;
             if is_never(&v.0) {
                 return Ok(v);

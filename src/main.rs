@@ -141,13 +141,12 @@ Running:
                                (Console, Files, Environment from std) and ARGS; it
                                returns (), an ExitCode, or a Result (Err: exit code 1).
                                PATH is a .strata file or a package folder (or --file).
-                               `main` is compiled to machine code in memory (LLVM)
-                               when it only uses what compiles (see build), else
-                               interpreted
-  run --jit [PATH] [-- ARGS..] the same, saying why when it can't compile `main`
+                               It is compiled to machine code in memory (LLVM); what
+                               can't be compiled yet is an error saying why.
+                               --trace prints each call and return to stderr
   run --interpret [PATH] [-- ARGS..]
-                               always interpret (big integers, call stacks in faults);
-                               `--trace` interprets too
+                               the old interpreter, kept to compare with until it is
+                               removed
   serve [PATH] [--port N]      serve the web: each request is passed to the program's
                                `fn handle(req: Request) -> Response` (std.http), which may
                                also ask for Console, Files, Environment (default port 8000);
@@ -156,7 +155,8 @@ Running:
                                call one function: args are a JSON array validated
                                against the types; --trace prints each call and return
                                to stderr
-  test [FILTER]                run test blocks
+  test [FILTER]                run test blocks, compiled (a test that can't be compiled
+                               yet fails, saying why; --interpret: the old interpreter)
   build [PATH] [-o OUT] [--emit-llvm]
                                compile the program to a native executable, through LLVM
                                (needs clang; STRATA_CC chooses another): `main` takes no
@@ -247,7 +247,7 @@ fn full_check(p: &Program) -> types::CheckReport {
 /// type-checked once.
 fn full_checked(p: &Program) -> types::Checked {
     let mut c = types::check_and_elaborate(p);
-    for d in verify::refinements_in(&c.program, &c.env) {
+    for d in verify::refinements_in(&c.program, &c.compiled, &c.env) {
         if !c.report.errors.iter().any(|e| e.decl == d.decl && e.msg == d.msg) {
             c.report.errors.push(d);
         }
