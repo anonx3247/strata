@@ -1267,6 +1267,7 @@ impl<'a> Module<'a> {
             TypeBody::Sum(vs) => {
                 let v = vs.iter().find(|v| v.name == c).unwrap();
                 match &v.payload {
+                    Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
                     Payload::None => Ok(vec![]),
                     Payload::Positional(ts) => ts.iter().map(|t| mk(None, t)).collect(),
                     Payload::Record(fs) => fs.iter().map(|f| mk(Some(f.name.to_string()), &f.ty)).collect(),

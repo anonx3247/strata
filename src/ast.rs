@@ -40,6 +40,10 @@ pub enum Payload {
     None,
     Positional(Vec<TypeExpr>),
     Record(Vec<Field>),
+    /// A member of a union that is a type defined elsewhere (`Circle` in
+    /// `type Shape = Circle | Square { side: Float }`): the variant's name
+    /// is that type's.
+    Type(TypeExpr),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -939,6 +943,7 @@ macro_rules! visitor {
                                     Payload::None => {}
                                     Payload::Positional(ts) => ts.into_iter().for_each(|t| v.ty(t)),
                                     Payload::Record(fs) => fields(v, fs),
+                                    Payload::Type(t) => v.ty(t),
                                 }
                             }
                         }

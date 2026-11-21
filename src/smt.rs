@@ -1140,6 +1140,7 @@ impl<'a> Vc<'a> {
                     TypeBody::Alias(a) => self.refined_in(a, depth + 1, seen),
                     TypeBody::Record(fs) => fs.iter().any(|f| self.refined_in(&f.ty, depth + 1, seen)),
                     TypeBody::Sum(vs) => vs.iter().any(|v| match &v.payload {
+                        Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
                         Payload::None => false,
                         Payload::Positional(ts) => ts.iter().any(|t| self.refined_in(t, depth + 1, seen)),
                         Payload::Record(fs) => fs.iter().any(|f| self.refined_in(&f.ty, depth + 1, seen)),

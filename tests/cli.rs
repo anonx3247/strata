@@ -3829,6 +3829,60 @@ mod json_case;
 /// `derive Json`: JSON as a web front end sends it, read into records and
 /// sums with every refinement checked, and what has no JSON form refused
 /// at the `derive`.
+/// A union's members declared in it or defined elsewhere: a bare name is
+/// the type of that name when there is one (`Circle`), else an atom it
+/// declares (`Dot`); a union of unions flattens.
+#[test]
+fn unions_declare_members_or_name_them() {
+    let d = tmp("unions-mixed");
+    let (ok, out) = strata(&["--file", "u.strata", "edit"], &d, Some(UNIONS_PROGRAM));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "u.strata"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out, "3\n4\n0\ndown 3\nshape\n[Quiet, Loud]\n");
+    // written back as stored: `Circle` refers to the record
+    let (ok, text) = strata(&["--file", "u.strata", "render"], &d, None);
+    assert!(ok && text.contains("type Shape =\n  | Circle\n  | Square { side: Int }\n  | Dot\n"), "{text}");
+}
+
+const UNIONS_PROGRAM: &str = r##"type Circle = { r: Int }
+
+type Shape = Circle | Square { side: Int } | Dot
+
+type Level = Quiet | Loud
+
+type Old =
+  | Up
+  | Down(Int)
+
+type Both = Shape | Old
+
+fn area(s: Shape) -> Int {
+  match s {
+    Circle => 3 * s.r * s.r,
+    Square => s.side * s.side,
+    Dot => 0,
+  }
+}
+
+fn name(b: Both) -> String {
+  match b {
+    Circle | Square | Dot => "shape",
+    Up => "up",
+    Down(n) => f"down {n}",
+  }
+}
+
+fn main() {
+  print(area(Circle { r: 1 }))
+  print(area(Square { side: 2 }))
+  print(area(Dot))
+  print(name(Down(3)))
+  print(name(Dot))
+  print([Quiet, Loud])
+}
+"##;
+
 /// The shapes `std.typing` describes, through `Json`: a recursive type, a
 /// generic one, a union of records, a tuple-shaped variant, `Option` of a
 /// refined alias, a `distinct` type; and a union's members keep their docs.

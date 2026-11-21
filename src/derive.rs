@@ -558,6 +558,7 @@ impl<'a> Expander<'a> {
     fn variant_value(&self, v: &Variant, targs: &[TypeExpr], sub: &crate::fx::HashMap<Symbol, TypeExpr>, stack: &mut Vec<TypeExpr>) -> Value {
         let s = |x: &TypeExpr| crate::types::subst_texpr(x, sub);
         let (kind, fields, elements) = match &v.payload {
+            Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
             Payload::None => ("Atom", vec![], vec![]),
             Payload::Positional(ts) => ("Tuple", vec![], ts.iter().map(|t| self.type_value_in(&s(t), stack)).collect()),
             Payload::Record(fs) => ("Record", fs.iter().map(|f| self.field(&f.name, &f.doc, &s(&f.ty), f.default.as_ref(), stack)).collect(), vec![]),
@@ -648,6 +649,7 @@ impl<'a> Expander<'a> {
                 Some(TypeBody::Sum(vs)) => ("Sum", vs.iter().all(|v| v.payload == Payload::None)),
                 Some(TypeBody::Alias(a)) => self.kind_of(a),
                 None => match self.variant_decl(n).map(|v| v.payload) {
+                    Some(Payload::Type(_)) => unreachable!("a union member defined elsewhere is desugared away"),
                     Some(Payload::None) => ("Atom", false),
                     Some(Payload::Positional(_)) => ("Tuple", false),
                     Some(Payload::Record(_)) => ("Record", false),

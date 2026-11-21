@@ -213,6 +213,7 @@ fn variant_changes(old: &Program, new: &Program, edited: &[String]) -> VariantCh
                                     Payload::None => CtorPat::None,
                                     Payload::Positional(ts) => CtorPat::Positional(vec![Pattern::Wild; ts.len()]),
                                     Payload::Record(_) => CtorPat::Record(vec![], true),
+                                    Payload::Type(_) => CtorPat::None,
                                 };
                                 let pat = Pattern::Ctor(v.name.clone(), args);
                                 (v.name.to_string(), pat)

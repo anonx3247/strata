@@ -367,6 +367,7 @@ impl Env {
             TypeBody::Sum(vs) => Some(
                 vs.iter()
                     .map(|v| match &v.payload {
+                        Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
                         Payload::None => (v.name.clone(), None, vec![]),
                         Payload::Positional(ts) => (v.name.clone(), None, ts.iter().map(s).collect()),
                         Payload::Record(fs) => (

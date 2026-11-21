@@ -563,19 +563,67 @@ impl Parser {
             while self.is_sym("|") {
                 let mut comments = self.leading();
                 self.next();
-                let vname = self.ident()?;
-                let payload = self.payload()?;
-                comments.extend(self.trailing());
-                vs.push(Variant { comments, name: vname, payload });
+                vs.push(self.member(&mut comments)?);
             }
-            TypeBody::Sum(vs)
+            Self::union_of(vs)
         } else if self.eat_sym("{") {
             TypeBody::Record(self.fields()?)
         } else {
-            TypeBody::Alias(self.type_union()?)
+            let mut vs = Vec::new();
+            loop {
+                let mut comments = self.leading();
+                vs.push(self.member(&mut comments)?);
+                if !self.eat_sym("|") {
+                    break;
+                }
+            }
+            // one bare name is an alias (`type Port = Int where ..`): a union
+            // of one atom is written `type X = | Dot`
+            if let [v] = vs.as_mut_slice() {
+                if v.payload == Payload::None {
+                    v.payload = Payload::Type(TypeExpr::Named(v.name, vec![]));
+                }
+            }
+            Self::union_of(vs)
         };
         let refinement = if self.eat_kw("where") { Some(self.expr()?) } else { None };
         Ok(TypeDecl { distinct: false, name, params, body, refinement, mock: false })
+    }
+
+    /// A member of a union: a type declared here (`Square { side: Float }`,
+    /// `Moved(Int)`, or a bare name, `Dot`, which is a type defined
+    /// elsewhere if one has that name: decided when the code is stored), or
+    /// another type (`List[Int]`, `geo.Circle`, `(Int, Int)`).
+    fn member(&mut self, comments: &mut Vec<String>) -> R<Variant> {
+        let declared = matches!(self.peek(), Tok::Ident(_)) && !matches!(self.peek_at(1), Tok::Sym("[") | Tok::Sym("."));
+        let v = if declared {
+            let name = self.ident()?;
+            let payload = match self.payload()? {
+                // a built-in type is never declared again
+                Payload::None if crate::types::BUILTIN_TYPES.contains(&name.as_str()) => Payload::Type(TypeExpr::Named(name, vec![])),
+                p => p,
+            };
+            Variant { comments: vec![], name, payload }
+        } else {
+            let t = self.type_expr_plain()?;
+            Variant { comments: vec![], name: Symbol::new(&crate::types::texpr_head(&t)), payload: Payload::Type(t) }
+        };
+        comments.extend(self.trailing());
+        Ok(Variant { comments: std::mem::take(comments), ..v })
+    }
+
+    /// A union's members as a body: an alias when every one is a type
+    /// defined elsewhere (`type Shape = geo.Circle | List[Int]`), else a sum
+    /// (some declared here).
+    fn union_of(vs: Vec<Variant>) -> TypeBody {
+        if !vs.iter().all(|v| matches!(v.payload, Payload::Type(_))) {
+            return TypeBody::Sum(vs);
+        }
+        let mut ts: Vec<TypeExpr> = vs.into_iter().map(|v| match v.payload {
+            Payload::Type(t) => t,
+            _ => unreachable!(),
+        }).collect();
+        TypeBody::Alias(if ts.len() == 1 { ts.remove(0) } else { TypeExpr::Union(ts) })
     }
 
     fn fields(&mut self) -> R<Vec<Field>> {

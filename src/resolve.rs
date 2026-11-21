@@ -58,6 +58,7 @@ fn capabilities(p: &Program) -> std::borrow::Cow<'_, Program> {
 
 pub fn resolve(p: &Program) -> Resolution {
     let p = &*capabilities(p);
+    let p = &*union_members(p);
     // Programs without modules or imports are already resolved (unless they
     // call into the host, which `run` reports). The standard library goes
     // after the program's own definitions, so index `i` of the result is
@@ -749,7 +750,117 @@ enum Store {
 /// name → new qualified name). Also gives, per definition, the moved names
 /// it refers to by their short name from another module than theirs, which
 /// that module must then import.
+/// A union's bare member (`Dot` in `type Shape = Circle | Dot`) is the type
+/// of that name when one is in scope, and is declared by the union (an
+/// atom) only when none is: in scope are the module's types, its other
+/// unions' declared members (a bare name two unions share is declared by
+/// the first), the root module's, the prelude's, the built-ins and what it
+/// imports. A union whose members are then all defined elsewhere is an
+/// alias of their union.
+pub fn union_members(p: &Program) -> std::borrow::Cow<'_, Program> {
+    let bare = |t: &TypeDecl| matches!(&t.body, TypeBody::Sum(vs) if vs.iter().any(|v| v.payload == Payload::None));
+    if !p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Type(t) if bare(t))) {
+        return std::borrow::Cow::Borrowed(p);
+    }
+    // the types each module defines (variants of earlier definitions, and
+    // those with fields, included), by short name
+    let mut defined: HashMap<Symbol, Vec<(usize, Symbol, bool, Symbol)>> = HashMap::default();
+    let mut publics: HashMap<Symbol, HashSet<Symbol>> = HashMap::default();
+    for (k, d) in p.decls.iter().enumerate() {
+        let owner = match &d.kind {
+            DeclKind::Type(t) => Symbol::new(short(&t.name)),
+            _ => Symbol::EMPTY,
+        };
+        let mut add = |n: Symbol, always: bool| {
+            defined.entry(d.module).or_default().push((k, Symbol::new(short(&n)), always, owner));
+            if d.public {
+                publics.entry(d.module).or_default().insert(Symbol::new(short(&n)));
+            }
+        };
+        match &d.kind {
+            DeclKind::Type(t) => {
+                add(t.name, true);
+                if let TypeBody::Sum(vs) = &t.body {
+                    for v in vs {
+                        match v.payload {
+                            Payload::Type(_) => {}
+                            Payload::None => add(v.name, false),
+                            _ => add(v.name, true),
+                        }
+                    }
+                }
+            }
+            DeclKind::Extern(ExternDecl { item: ExternItem::Type(t), .. }) => add(*t, true),
+            _ => {}
+        }
+    }
+    let mut known: HashSet<Symbol> = crate::types::prelude().decls.iter().flat_map(|d| match &d.kind {
+        DeclKind::Type(t) => {
+            let mut ns = vec![t.name];
+            if let TypeBody::Sum(vs) = &t.body {
+                ns.extend(vs.iter().map(|v| v.name));
+            }
+            ns
+        }
+        _ => vec![],
+    }).collect();
+    for b in crate::types::BUILTIN_TYPES {
+        known.insert(Symbol::new(b));
+    }
+    let root: Vec<(usize, Symbol, bool, Symbol)> = defined.get(&Symbol::EMPTY).cloned().unwrap_or_default();
+    let mut out = p.clone();
+    for k in 0..out.decls.len() {
+        let m = out.decls[k].module;
+        let DeclKind::Type(t) = &out.decls[k].kind else { continue };
+        if !bare(t) {
+            continue;
+        }
+        let own_name = t.name;
+        // what this definition sees by short name
+        let in_scope = |n: Symbol| -> bool {
+            if known.contains(&n) {
+                return true;
+            }
+            // (another version of this definition, as an edit has, isn't another)
+            let seen = |ds: &[(usize, Symbol, bool, Symbol)]| ds.iter().any(|&(j, x, always, o)| x == n && j != k && o != Symbol::new(short(&own_name)) && (always || j < k));
+            if seen(defined.get(&m).map(|v| &v[..]).unwrap_or(&[])) || (!m.is_empty() && seen(&root)) {
+                return true;
+            }
+            p.decls.iter().filter(|d| d.module == m).any(|d| match &d.kind {
+                DeclKind::Use(u) => match &u.items {
+                    Some(items) => items.contains(&n),
+                    None => publics.get(&u.path).is_some_and(|ns| ns.contains(&n)),
+                },
+                _ => false,
+            })
+        };
+        let refs: Vec<bool> = match &t.body {
+            TypeBody::Sum(vs) => vs.iter().map(|v| v.payload == Payload::None && v.name != own_name && in_scope(v.name)).collect(),
+            _ => unreachable!(),
+        };
+        if !refs.iter().any(|r| *r) {
+            continue;
+        }
+        let DeclKind::Type(t) = &mut out.decls[k].kind else { unreachable!() };
+        let TypeBody::Sum(vs) = &mut t.body else { unreachable!() };
+        for (v, r) in vs.iter_mut().zip(refs) {
+            if r {
+                v.payload = Payload::Type(TypeExpr::Named(v.name, vec![]));
+            }
+        }
+        if vs.iter().all(|v| matches!(v.payload, Payload::Type(_))) {
+            let mut ts: Vec<TypeExpr> = vs.iter().map(|v| match &v.payload {
+                Payload::Type(t) => t.clone(),
+                _ => unreachable!(),
+            }).collect();
+            t.body = TypeBody::Alias(if ts.len() == 1 { ts.remove(0) } else { TypeExpr::Union(ts) });
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMap<String, String>>, store: Option<Store>) -> (Resolution, Vec<Vec<String>>) {
+    let p = &*union_members(p);
     let rename: Option<(Symbol, Symbol)> = rename.map(|(o, n)| (o.into(), n.into()));
     let moves: Option<HashMap<Symbol, Symbol>> = moves.map(|m| m.iter().map(|(o, n)| (o.sym(), n.sym())).collect());
     let resolving = store.is_none() && rename.is_none() && moves.is_none();
@@ -1428,14 +1539,22 @@ impl Rw<'_> {
                     TypeBody::Record(fs) => TypeBody::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), doc: f.doc.clone(), name: f.name.clone(), ty: self.ty(&f.ty), default: f.default.as_ref().map(|x| self.expr(x)) }).collect()),
                     TypeBody::Sum(vs) => TypeBody::Sum(
                         vs.iter()
-                            .map(|v| Variant {
+                            .map(|v| match &v.payload {
+                                // a member defined elsewhere: a reference to it
+                                Payload::Type(t) => {
+                                    let t = self.ty(t);
+                                    Variant { comments: v.comments.clone(), name: Symbol::new(&crate::types::texpr_head(&t)), payload: Payload::Type(t) }
+                                }
+                                _ => Variant {
                                 comments: v.comments.clone(),
                                 name: self.declared(m, v.name),
                                 payload: match &v.payload {
+                                    Payload::Type(_) => unreachable!(),
                                     Payload::None => Payload::None,
                                     Payload::Positional(ts) => Payload::Positional(ts.iter().map(|t| self.ty(t)).collect()),
                                     Payload::Record(fs) => Payload::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), doc: f.doc.clone(), name: f.name.clone(), ty: self.ty(&f.ty), default: f.default.as_ref().map(|x| self.expr(x)) }).collect()),
                                 },
+                            },
                             })
                             .collect(),
                     ),

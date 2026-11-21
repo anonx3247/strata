@@ -433,6 +433,11 @@ pub fn total_builtin(name: &str) -> bool {
 }
 
 /// The prelude's definitions, parsed once.
+/// The types every program has without defining them, by the names code
+/// writes (a tuple is written `(A, B)` and `()` is written so: `Tuple` and
+/// `Unit` are free to name other things).
+pub const BUILTIN_TYPES: [&str; 7] = ["Int", "Float", "Bool", "String", "List", "Set", "Dict"];
+
 pub fn prelude() -> &'static Program {
     static P: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
     P.get_or_init(|| crate::parser::parse_program(PRELUDE).expect("prelude parses"))
@@ -2555,6 +2560,7 @@ impl<'a> Checker<'a> {
             TypeBody::Sum(vs) => {
                 let v = vs.iter().find(|v| v.name == c).unwrap();
                 match &v.payload {
+                    Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
                     Payload::None => vec![],
                     Payload::Positional(ts) => ts.iter().map(|t| (None, self.lower(t, &vars))).collect(),
                     Payload::Record(fs) => fs.iter().map(|f| (Some(f.name.clone()), self.lower(&f.ty, &vars))).collect(),
@@ -4164,6 +4170,7 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
                     TypeBody::Sum(vs) => {
                         for v in vs {
                             match &v.payload {
+                                Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
                                 Payload::None => {}
                                 Payload::Positional(ts) => ts.iter().for_each(|t| {
                                     c.lower(t, &HashMap::default());

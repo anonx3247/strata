@@ -536,9 +536,12 @@ pub fn type_decl(t: &TypeDecl) -> String {
                     s += "\n";
                 }
                 s += "  | ";
-                s += &v.name;
+                if !matches!(v.payload, Payload::Type(_)) {
+                    s += &v.name;
+                }
                 match &v.payload {
                     Payload::None => {}
+                    Payload::Type(t) => s += &ty(t),
                     Payload::Positional(ts) => {
                         s += &format!("({})", ts.iter().map(ty).collect::<Vec<_>>().join(", "))
                     }

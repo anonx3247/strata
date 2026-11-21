@@ -191,6 +191,7 @@ fn snapshot(target: &Target) -> Json {
                                     Payload::None => vec![],
                                     Payload::Positional(ts) => ts.iter().map(|t| field_json(None, t)).collect(),
                                     Payload::Record(fs) => fs.iter().map(|f| field_json(Some(&f.name), &f.ty)).collect(),
+                                    Payload::Type(_) => vec![],
                                 };
                                 json!({"name": v.name, "fields": fs})
                             })
