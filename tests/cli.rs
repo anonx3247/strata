@@ -656,6 +656,23 @@ fn far() -> Bool ensures it { len("TAG") == 9 }
 }
 
 #[test]
+fn fuzzes_strings_a_refinement_pattern_matches() {
+    // inputs made by `std.regex.samples`: Unicode classes and word
+    // boundaries too, in a parameter's own refinement (the harness checks it)
+    let d = tmp("regex-samples");
+    let src = r#"fn shout(s: String where matches(it, "\p{L}{2,4}")) -> String ensures len(it) >= 1 { to_upper(s) }
+fn edge(s: String where matches(it, "a\b b?|\bx\w+")) -> String ensures len(it) >= 0 { to_lower(s) }
+fn sku(s: String where matches(it, "[A-Z]{3}-[0-9]{4}")) -> Int ensures it == 99 { len(to_lower(s)) }
+"#;
+    save(&d.join("g.strata"), src);
+    let (ok, out) = strata(&["--file", "g.strata", "verify", "--cases", "30"], &d, None);
+    assert!(!ok && !out.contains("skipped") && !out.contains("internal error"), "{out}");
+    assert!(out.lines().any(|l| l.starts_with("~ shout") && l.contains("fuzzed: 30 cases")), "{out}");
+    let sku = out.lines().skip_while(|l| !l.starts_with("✗ sku")).nth(1).unwrap_or("");
+    assert!(sku.contains("input:   [\"") && sku.contains("-"), "refuted, with an input: {out}");
+}
+
+#[test]
 fn math_example_verifies_as_documented() {
     let d = tmp("math");
     let ex = format!("{}/examples/math.strata", env!("CARGO_MANIFEST_DIR"));

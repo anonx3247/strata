@@ -1042,6 +1042,23 @@ pub fn decl_exprs_mut(d: &mut DeclKind, f: impl FnMut(&mut Expr)) {
     walk_decl_mut(&mut ExprsMut { f, post: false }, d)
 }
 
+/// `decl_exprs_mut`, and also the refinements in written types
+/// (`s: String where matches(it, "…")`), outermost first.
+pub fn decl_all_exprs_mut(d: &mut DeclKind, f: impl FnMut(&mut Expr)) {
+    struct All<F>(F);
+    impl<F: FnMut(&mut Expr)> VisitMut for All<F> {
+        fn expr(&mut self, e: &mut Expr) {
+            (self.0)(e);
+            walk_expr_mut(self, e);
+        }
+        fn pattern(&mut self, _: &mut Pattern) {}
+        fn ty(&mut self, t: &mut TypeExpr) {
+            walk_ty_mut(self, t);
+        }
+    }
+    walk_decl_mut(&mut All(f), d)
+}
+
 /// The same, innermost first: a node is changed after everything inside it.
 pub fn decl_exprs_mut_post(d: &mut DeclKind, f: impl FnMut(&mut Expr)) {
     walk_decl_mut(&mut ExprsMut { f, post: true }, d)

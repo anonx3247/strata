@@ -77,7 +77,7 @@ fn run_time_pattern(d: &crate::ast::DeclKind) -> bool {
     use crate::ast::Expr;
     let mut found = false;
     let mut k = d.clone();
-    crate::ast::decl_exprs_mut(&mut k, |e| {
+    crate::ast::decl_all_exprs_mut(&mut k, |e| {
         found = found
             || match e {
                 Expr::Call(f, args) => matches!(&**f, Expr::Var(n) if n.as_str() == "matches") && args.len() == 2,
@@ -111,4 +111,29 @@ pub fn with_std(p: &Program) -> Option<Program> {
     let mut out = p.clone();
     out.decls.extend(program().decls.iter().cloned());
     Some(out)
+}
+
+/// The value of `std.regex.<name>(args)` (literals), computed as
+/// compile-time code is (on the JIT, cached between runs, and here per call):
+/// the compiler's own uses of `std.regex` (the prover's relations between
+/// patterns, the generator's samples), written as a literal.
+pub fn regex_value(name: &str, args: Vec<crate::ast::Expr>) -> Result<crate::ast::Expr, String> {
+    use crate::ast::{Expr, Symbol};
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    thread_local! {
+        static STD: Option<Program> = crate::parser::parse_program("use std.regex.*\n").ok().map(|p| crate::resolve::resolve(&p).program);
+        static DONE: RefCell<HashMap<String, Result<Expr, String>>> = Default::default();
+    }
+    let call = Expr::Call(Box::new(Expr::Var(Symbol::new(&format!("std.regex.{name}")))), args);
+    let key = crate::printer::expr(&call, 0);
+    if let Some(v) = DONE.with(|d| d.borrow().get(&key).cloned()) {
+        return v;
+    }
+    let v = STD.with(|p| match p {
+        Some(p) => crate::derive::comptime_literals(p, std::slice::from_ref(&call)).pop().unwrap_or_else(|| Err("no value".into())),
+        None => Err("std.regex could not be read".into()),
+    });
+    DONE.with(|d| d.borrow_mut().insert(key, v.clone()));
+    v
 }
