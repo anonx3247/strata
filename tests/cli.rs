@@ -3962,9 +3962,8 @@ fn unions_that_add_nothing_are_refused() {
     ];
     for (k, (src, want)) in cases.iter().enumerate() {
         let f = format!("n{k}.strata");
+        // (written, then checked: the edit says what doesn't)
         let (ok, out) = strata(&["--file", &f, "edit"], &d, Some(&format!("{src}\n\nfn main() {{ }}\n")));
-        assert!(ok, "{out}");
-        let (ok, out) = strata(&["--file", &f, "check"], &d, None);
         match want {
             Some(w) => assert!(!ok && out.contains(w), "{src}: {out}"),
             None => assert!(ok, "{src}: {out}"),
