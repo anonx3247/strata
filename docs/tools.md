@@ -112,9 +112,11 @@ A compiled program behaves as `strata run`: the same output, and contracts are c
 - lambdas and closures, named functions as values (`filter(is_prime)`), functions returning functions;
 - functions and recursion, `let` (with patterns), `let mut` and assignment, `if`, `match` with every pattern, `while`, `loop`, `for`, `break`, `continue`, `return`, `assert`, `!`, `?`, `except`;
 - f-strings without format specs, and `print`, `to_string`, `len` (of a string), `abs`, `min`, `max`, `float`, `floor`, `ceil`, `round`, `sqrt`;
-- `main` takes no parameters, and returns `()`, an exit code, or a `Result` of either.
+- `mut` parameters and receivers (`restock(mut line.qty, 5)`, `mut console.print(s)`): the function changes the caller's variable in place, and the variable's declared type is checked after the call;
+- capabilities: `main` can ask for `Console`, `Files` and `Environment` (std.io, std.fs, std.process), and gets the terminal, the disk and the process, as with `strata run` (the program's arguments too). A parameter whose type is a trait (`console: Console`) is compiled once per implementation passed to it, as the language defines it (`console: C` for some `C: Console`): the real console and a `Recorder` in a test each get their own;
+- `main` returns `()`, an exit code, or a `Result` of either.
 
-Anything else (dictionaries and sets, most string built-ins, regexes, values whose type is a trait, `mut` parameters, capabilities) is refused, naming the function and what it uses: `can't compile `main`: a list is not compiled yet`. Memory is never freed yet.
+Anything else (dictionaries and sets, most string built-ins, regexes, options from the command line, a trait as the type of a field or a list element) is refused, naming the function and what it uses: `can't compile `main`: a list is not compiled yet`. Memory is never freed yet.
 
 ### The JIT
 

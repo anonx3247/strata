@@ -14,6 +14,18 @@ use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, Targe
 // the IR's declarations of the same names.
 unsafe extern "C" {
     fn strata_concat();
+    fn strata_host_env_var();
+    fn strata_host_args();
+    fn strata_host_remove();
+    fn strata_host_make_dir();
+    fn strata_host_list_dir();
+    fn strata_host_exists();
+    fn strata_host_write_file();
+    fn strata_host_read_file();
+    fn strata_host_read_line();
+    fn strata_host_write();
+    fn strata_pid();
+    fn strata_init();
     fn strata_range();
     fn strata_list_concat();
     fn strata_list_slice();
@@ -42,6 +54,18 @@ unsafe extern "C" {
 fn runtime() -> Vec<(&'static str, usize)> {
     vec![
         ("strata_concat", strata_concat as *const () as usize),
+        ("strata_host_env_var", strata_host_env_var as *const () as usize),
+        ("strata_host_args", strata_host_args as *const () as usize),
+        ("strata_host_remove", strata_host_remove as *const () as usize),
+        ("strata_host_make_dir", strata_host_make_dir as *const () as usize),
+        ("strata_host_list_dir", strata_host_list_dir as *const () as usize),
+        ("strata_host_exists", strata_host_exists as *const () as usize),
+        ("strata_host_write_file", strata_host_write_file as *const () as usize),
+        ("strata_host_read_file", strata_host_read_file as *const () as usize),
+        ("strata_host_read_line", strata_host_read_line as *const () as usize),
+        ("strata_host_write", strata_host_write as *const () as usize),
+        ("strata_pid", strata_pid as *const () as usize),
+        ("strata_init", strata_init as *const () as usize),
         ("strata_range", strata_range as *const () as usize),
         ("strata_list_concat", strata_list_concat as *const () as usize),
         ("strata_list_slice", strata_list_slice as *const () as usize),
@@ -68,9 +92,9 @@ fn runtime() -> Vec<(&'static str, usize)> {
     ]
 }
 
-/// Run the IR's `main`; its exit code. A fault exits the process from the
-/// runtime, as a compiled program does.
-pub fn run(ir: &str) -> Result<i32, String> {
+/// Run the IR's `main` with the program's arguments; its exit code. A fault
+/// exits the process from the runtime, as a compiled program does.
+pub fn run(ir: &str, program: &str, args: &[String]) -> Result<i32, String> {
     Target::initialize_native(&InitializationConfig::default())?;
     let ctx = Context::create();
     let buf = MemoryBuffer::create_from_memory_range_copy(ir.as_bytes(), "strata");
@@ -91,6 +115,9 @@ pub fn run(ir: &str) -> Result<i32, String> {
             engine.add_global_mapping(&f, addr);
         }
     }
-    let main = unsafe { engine.get_function::<unsafe extern "C" fn() -> i32>("main") }.map_err(|e| e.to_string())?;
-    Ok(unsafe { main.call() })
+    let main = unsafe { engine.get_function::<unsafe extern "C" fn(i32, *const *const std::ffi::c_char) -> i32>("main") }.map_err(|e| e.to_string())?;
+    // argv as C has it: the program's name, then its arguments
+    let owned: Vec<std::ffi::CString> = std::iter::once(program).chain(args.iter().map(|a| a.as_str())).map(|a| std::ffi::CString::new(a).unwrap_or_default()).collect();
+    let argv: Vec<*const std::ffi::c_char> = owned.iter().map(|a| a.as_ptr()).collect();
+    Ok(unsafe { main.call(argv.len() as i32, argv.as_ptr()) })
 }
