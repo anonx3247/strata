@@ -172,13 +172,22 @@ fn key(t: &Ty) -> String {
 /// The LLVM IR of a program whose entry point is `entry` (`main`): it takes
 /// no parameters and returns `()`, an exit code (`Int`), or a `Result` of either.
 pub fn compile(prog: &Program, entry: &str) -> Res<String> {
+    Ok(compile_for(prog, Some(entry))?.0)
+}
+
+/// The LLVM IR of a program's `test` blocks: a function per test
+/// (`@"strata.test.N"`, taking and returning nothing), and their names.
+pub fn compile_tests(prog: &Program) -> Res<(String, Vec<String>)> {
+    compile_for(prog, None)
+}
+
+fn compile_for(prog: &Program, entry: Option<&str>) -> Res<(String, Vec<String>)> {
     // the list built-ins in Strata, compiled with the program
     let mut with = prog.clone();
     let prelude = crate::binary::decode_module(PRELUDE).map_err(|e| format!("llvm/prelude.strata: {e}"))?;
     with.decls.extend(prelude);
     let (resolved, types) = crate::types::elaborate_typed(&with);
     let (env, _) = Env::build(&resolved.program);
-    let main = env.fns.get(&Symbol::new(entry)).ok_or(format!("no `{entry}` function to compile"))?.clone();
     // every constructor gets a tag of its own, so a value's tag says what it is
     let mut ctors: Vec<&Symbol> = env.ctors.keys().collect();
     ctors.sort();
@@ -211,9 +220,24 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
         _ => None,
     }).collect();
     let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![] };
-    let ret = m.lower(&main.ret, &HashMap::default())?;
-    // C's `main` first: it asks for the program's `main`, with its capabilities
-    m.entry(entry, &main, &ret)?;
+    let mut tests = vec![];
+    match entry {
+        Some(entry) => {
+            let main = env.fns.get(&Symbol::new(entry)).ok_or(format!("no `{entry}` function to compile"))?.clone();
+            let ret = m.lower(&main.ret, &HashMap::default())?;
+            // C's `main` first: it asks for the program's `main`, with its capabilities
+            m.entry(entry, &main, &ret)?;
+        }
+        None => {
+            // each test, a function of its own (no frame of its own on the call stack)
+            for d in &resolved.program.decls {
+                let DeclKind::Test(t) = &d.kind else { continue };
+                let inst = Instance { label: format!("test {:?}", t.name.to_string()), symbol: format!("@\"strata.test.{}\"", tests.len()), impls: vec![], params: vec![], ret: TypeExpr::Unit, own_params: &[], own_ret: &TypeExpr::Unit, requires: vec![], ensures: vec![], body: &t.body, sub: HashMap::default() };
+                m.instance(&inst).map_err(|e| format!("can't compile test {:?}: {e}", t.name.to_string()))?;
+                tests.push(t.name.to_string());
+            }
+        }
+    }
     loop {
         while let Some(job) = m.queue.pop_front() {
             match job {
@@ -243,7 +267,7 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
     out += "\n";
     out += &m.body;
     out += DECLARATIONS;
-    Ok(out)
+    Ok((out, tests))
 }
 
 const DECLARATIONS: &str = "\
@@ -481,7 +505,7 @@ impl<'a> Module<'a> {
 
     /// Whether a written type is a trait (a parameter that takes any implementation).
     fn is_trait(&self, t: &TypeExpr) -> bool {
-        matches!(t, TypeExpr::Named(n, a) if a.is_empty() && self.traits.contains_key(n))
+        matches!(t, TypeExpr::Named(n, _) if self.traits.contains_key(n))
     }
 
     fn want_method(&mut self, mi: MethodInst) -> String {
@@ -810,7 +834,7 @@ impl<'a> Module<'a> {
         }
         c.block("entry.body");
         // on the call stack a fault shows (the program's functions, as the interpreter's)
-        let framed = !name.starts_with(PRELUDE_MODULE);
+        let framed = !name.starts_with(PRELUDE_MODULE) && !name.starts_with("test \"");
         if framed {
             let n = c.m.string(name);
             c.emit(format!("call void @strata_enter(ptr {n})"));
@@ -4428,6 +4452,36 @@ impl<'m, 'a> Func<'m, 'a> {
             s.block(&next);
             Ok(())
         };
+        // on a trait value: a constructor's (or a type's) pattern tests the
+        // implementation first (the pair's table), then matches its value
+        if self.is_dyn(&v.0) {
+            if let Pattern::Ctor(c, _) = p {
+                let tn = self.m.env.ctors.get(c).cloned().or_else(|| self.m.env.types.contains_key(c).then(|| c.clone()));
+                if let Some(tn) = tn {
+                    let imp = Ty::Con(tn.clone(), vec![]);
+                    let candidates: Vec<(String, Ty)> = if self.m.env.types.get(&tn).is_some_and(|td| td.params.is_empty()) {
+                        vec![(self.vtable(&v.0, &imp)?, imp)]
+                    } else {
+                        self.m.vtables.get(&key(&v.0)).cloned().unwrap_or_default().into_iter().filter(|(_, t)| Module::head(t).as_deref() == Some(tn.as_str())).collect()
+                    };
+                    let raw = self.fresh("vt");
+                    self.emit(format!("{raw} = load i64, ptr {}", v.1));
+                    let mut acc = bool_v("false");
+                    for (vt, _) in &candidates {
+                        let (mine, e, o) = (self.fresh("mine"), self.fresh("is"), self.fresh("or"));
+                        self.emit(format!("{mine} = ptrtoint ptr {vt} to i64"));
+                        self.emit(format!("{e} = icmp eq i64 {raw}, {mine}"));
+                        self.emit(format!("{o} = or i1 {}, {e}", acc.1));
+                        acc = bool_v(&o);
+                    }
+                    test(self, acc)?;
+                    let Some((_, imp)) = candidates.into_iter().next() else { return Ok(()) };
+                    let s = self.field(v, 0, &Ty::Int)?;
+                    let x = self.from_slot(&s.1, &imp)?;
+                    return self.pattern(p, &x, fail);
+                }
+            }
+        }
         // on a union: a pattern of one member's values tests the member first
         if self.m.boxed(&v.0) {
             let ms = self.m.members(&v.0);

@@ -1372,3 +1372,26 @@ fn main() {
   print(s.find(0))
 }
 "#;
+
+/// `strata test` compiles the tests with the JIT: the same report as
+/// interpreted, for every example and for failing tests (fault, call stack,
+/// what they printed).
+#[cfg(feature = "jit")]
+#[test]
+fn the_jit_runs_tests_as_the_interpreter() {
+    let strata = env!("CARGO_BIN_EXE_strata");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let report = |file: &Path, how: &str| output(Command::new(strata).arg("test").arg(how).arg("--file").arg(file));
+    for ex in ["bank.strata", "builtins.strata", "math.strata", "orders.strata", "traits.strata", "tasks", "todos", "wc", "page"] {
+        let f = root.join("examples").join(ex);
+        let jit = report(&f, "--jit");
+        assert!(!jit.0.contains("note: interpreted"), "{ex}: {}", jit.0);
+        assert_eq!(jit, report(&f, "--interpret"), "the JIT (left) and the interpreter (right) differ for {ex}");
+    }
+    let d = tmp("jit-tests");
+    let f = d.join("t.strata");
+    save(&f, "fn half(n: Int) -> Int requires n % 2 == 0 { n / 2 }\nfn twice(n: Int) -> Int { half(n) * 4 }\ntest \"passes\" { assert twice(4) == 8 }\ntest \"fails\" { print(\"before\") print(twice(3)) }\ntest \"asserts\" { x := [1, 2] assert len(x) == 3 }\n");
+    let jit = report(&f, "--jit");
+    assert_eq!(jit, report(&f, "--interpret"));
+    assert!(jit.0.contains("✗ fails\n    Requires: precondition of `half` violated") && jit.0.contains("    stack: twice -> half\n    printed:\n      before\n") && jit.0.ends_with("1 passed, 2 failed\n"), "{}", jit.0);
+}

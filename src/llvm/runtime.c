@@ -14,6 +14,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <math.h>
+#include <setjmp.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -210,8 +211,74 @@ static void print_stack(void) {
   fputc('\n', stderr);
 }
 
+// ---- tests ----
+//
+// `strata test` with the JIT calls each test's function through
+// `strata_test`: a fault ends the test (back here, not out of the process),
+// and what it prints is kept, as the interpreter does.
+
+static uint64_t rng;  // the generators' state (below)
+static jmp_buf *trap;
+static int32_t fault_kind;
+static Str *fault_msg;
+static char *fault_stack, *printed;
+static size_t printed_len, printed_cap;
+static _Bool capturing;
+
+static void keep_printed(const char *b, size_t n) {
+  if (printed_len + n + 1 > printed_cap) printed = realloc(printed, printed_cap = (printed_len + n + 1) * 2);
+  memcpy(printed + printed_len, b, n);
+  printed_len += n;
+  printed[printed_len] = 0;
+}
+
+// The call stack as `strata run` shows it ("" when empty).
+static char *stack_text(void) {
+  size_t n = 1;
+  for (int64_t i = 0; i < depth && i < FRAMES; i++) n += (size_t)frames[i]->len + 4;
+  char *t = malloc(n + 8), *p = t;
+  *p = 0;
+  for (int64_t i = 0; i < depth && i < FRAMES; i++) p += sprintf(p, "%s%.*s", i ? " -> " : "", (int)frames[i]->len, frames[i]->bytes);
+  if (depth > FRAMES) strcpy(p, " -> ...");
+  return t;
+}
+
+// Run test `f`: 0 when it got to its end, 1 after a fault (then
+// `strata_test_fault` says which). Each starts as the interpreter's: no
+// call stack, the generators' numbers from the start, nothing printed.
+int32_t strata_test(void (*f)(void)) {
+  jmp_buf here;
+  depth = 0;
+  rng = 7;
+  printed_len = 0;
+  if (printed) printed[0] = 0;
+  capturing = 1;
+  trap = &here;
+  int32_t r = 1;
+  if (setjmp(here) == 0) {
+    f();
+    r = 0;
+  }
+  trap = NULL;
+  capturing = 0;
+  return r;
+}
+
+// The last test's fault: its kind, message and call stack, and what it printed.
+const char *strata_test_kind(void) { return KINDS[fault_kind & 255]; }
+Str *strata_test_message(void) { return fault_msg; }
+const char *strata_test_stack(void) { return fault_stack ? fault_stack : ""; }
+const char *strata_test_printed(void) { return printed ? printed : ""; }
+
 // A fault: its kind, then 256 if the interpreter shows no call stack for it.
 _Noreturn void strata_fault(int32_t kind, Str *msg) {
+  if (trap) {
+    fault_kind = kind;
+    fault_msg = msg;
+    free(fault_stack);
+    fault_stack = kind & 256 ? NULL : stack_text();
+    longjmp(*trap, 1);
+  }
   fflush(stdout);
   fprintf(stderr, "fault (%s): %.*s\n", KINDS[kind & 255], (int)msg->len, msg->bytes);
   if (!(kind & 256)) print_stack();
@@ -898,6 +965,11 @@ void strata_main_error(Str *shown) {
 // ---- output ----
 
 void strata_print(Str *s) {
+  if (capturing) {
+    keep_printed(s->bytes, (size_t)s->len);
+    keep_printed("\n", 1);
+    return;
+  }
   fwrite(s->bytes, 1, (size_t)s->len, stdout);
   fputc('\n', stdout);
 }
@@ -929,6 +1001,10 @@ static void on_segv(int sig, siginfo_t *info, void *ctx) {
     if (write(2, m, sizeof m - 1) < 0) {}
     _exit(101);
   }
+  // a crash: what was running, then the signal as it would have been
+  fflush(stdout);
+  fprintf(stderr, "crash (signal %d) in:\n", sig);
+  print_stack();
   signal(sig, SIG_DFL);
   raise(sig);
 }

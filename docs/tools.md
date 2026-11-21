@@ -125,6 +125,8 @@ A fault prints the call stack as `strata run` does (`    stack: main -> inner ->
 
 ### The JIT
 
+`strata test` compiles the tests the same way when strata has the JIT (`--interpret` runs them in the interpreter, `--jit` says why when it can't compile them): each `test` block is a function, a fault ends the test instead of the process, and what a test prints is kept for the report, which is the interpreter's (`strata test --emit-llvm` prints the tests' IR).
+
 With the JIT, `strata run` compiles the same IR in memory with LLVM's libraries and runs it, so a program runs at native speed without a build step (`fib(32)`: 26 ms, compilation included). This is the default when strata is built with the JIT. A program that uses what doesn't compile yet is interpreted instead; `strata run --jit` says why (and is an error in a strata without the JIT). `strata run --interpret` always interprets (as does `--trace`): use it for big integers, since compiled `Int`s are 64 bits and an overflow is a fault, and for the call stack of a fault.
 
 The JIT needs LLVM 23's libraries, so it is a cargo feature:
