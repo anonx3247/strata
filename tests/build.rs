@@ -1527,6 +1527,8 @@ test "runaway" {
         assert!(out.contains("✗ runaway\n    Limit: stack overflow (recursion too deep)\n    stack: down (") && out.contains("0 passed, 1 failed"), "{how}: {out}");
     }
 
+}
+
 #[path = "common/json.rs"]
 mod json_case;
 

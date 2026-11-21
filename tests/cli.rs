@@ -3798,6 +3798,8 @@ fn self_arguments_on_trait_values() {
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok && out.contains("`bigger` takes `other: Self`, a value of the receiver's own type, but `xs[0]` is a `Shape`") && out.contains("help: to accept any `Shape`, declare the parameter so: `other: Shape`"), "{out}");
 
+}
+
 #[path = "common/json.rs"]
 mod json_case;
 
