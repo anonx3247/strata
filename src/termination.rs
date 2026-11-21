@@ -20,7 +20,8 @@
 use crate::ast::*;
 use crate::types::{texpr_head, Env};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
+use crate::fx::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -443,7 +444,7 @@ fn assigned(env: &Env, e: &Expr) -> HashSet<String> {
 /// the name of that parameter.
 fn structural(env: &Env, f: &FnDecl) -> Option<String> {
     let assigned = assigned(env, &f.body);
-    let mut vars = HashMap::new();
+    let mut vars = HashMap::default();
     for (i, p) in f.params.iter().enumerate() {
         if !assigned.contains(p.name.as_str()) && !p.mutable {
             vars.insert(p.name.to_string(), Piece { within: [i].into(), smaller: BTreeSet::new() });
@@ -500,7 +501,7 @@ fn candidate_measures(env: &Env, f: &FnDecl) -> Vec<Expr> {
             }
         }
     });
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     out.retain(|m| seen.insert(crate::printer::expr(m, 0)));
     out.truncate(8);
     out
@@ -597,7 +598,7 @@ fn cannot_fail(env: &Env, f: &FnDecl, total: &dyn Fn(&str) -> bool) -> bool {
 }
 
 pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
-    let mut nodes: HashMap<String, Node> = HashMap::new();
+    let mut nodes: HashMap<String, Node> = HashMap::default();
     for (name, f) in &env.fns {
         let mut calls = BTreeSet::new();
         let params: Vec<String> = f.params.iter().map(|p| p.name.to_string()).collect();
@@ -629,7 +630,7 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
 
     // what each node reaches
     let reach = |start: &str| -> HashSet<String> {
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let mut stack: Vec<String> = nodes[start].calls.iter().cloned().collect();
         while let Some(n) = stack.pop() {
             if seen.insert(n.clone()) {
@@ -643,7 +644,7 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
     let recursive: HashSet<String> = nodes.keys().filter(|n| reaches[n.as_str()].contains(n.as_str())).cloned().collect();
 
     // each node's own verdict, ignoring what it calls
-    let mut own: HashMap<String, Result<String, String>> = HashMap::new();
+    let mut own: HashMap<String, Result<String, String>> = HashMap::default();
     for (name, n) in &nodes {
         let r = match &n.loops {
             Err(e) => Err(e.clone()),
@@ -705,14 +706,14 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
         memo.insert(n.to_string(), t.clone());
         t
     }
-    let mut memo = HashMap::new();
+    let mut memo = HashMap::default();
     let names: Vec<String> = nodes.keys().cloned().collect();
     for n in &names {
-        resolve(n, &nodes, &own, &marked, &mut memo, &mut HashSet::new());
+        resolve(n, &nodes, &own, &marked, &mut memo, &mut HashSet::default());
     }
 
     // transparent: finishes, and cannot fail
-    let mut transparent = HashMap::new();
+    let mut transparent = HashMap::default();
     let mut changed = true;
     while changed {
         changed = false;

@@ -169,6 +169,53 @@ pub struct ImplDecl {
     pub methods: Vec<FnDecl>,
 }
 
+impl FnDecl {
+    /// The function without its body (`()`) or notes: what checking calls to
+    /// it needs.
+    pub fn signature(&self) -> FnDecl {
+        FnDecl {
+            doc: vec![],
+            comments: vec![],
+            name: self.name,
+            type_params: self.type_params.clone(),
+            bounds: self.bounds.clone(),
+            params: self.params.clone(),
+            ret: self.ret.clone(),
+            requires: self.requires.clone(),
+            ensures: self.ensures.clone(),
+            terminates: self.terminates,
+            body: Expr::Unit,
+        }
+    }
+}
+
+impl ImplDecl {
+    /// The block with its methods' signatures only.
+    pub fn signatures(&self) -> ImplDecl {
+        ImplDecl {
+            type_params: self.type_params.clone(),
+            bounds: self.bounds.clone(),
+            trait_name: self.trait_name,
+            trait_args: self.trait_args.clone(),
+            for_type: self.for_type.clone(),
+            methods: self.methods.iter().map(FnDecl::signature).collect(),
+        }
+    }
+}
+
+impl TraitDecl {
+    /// The trait with its methods' signatures only (laws kept).
+    pub fn signatures(&self) -> TraitDecl {
+        TraitDecl {
+            name: self.name,
+            params: self.params.clone(),
+            supers: self.supers.clone(),
+            methods: self.methods.iter().map(|m| TraitMethod { comments: vec![], doc: vec![], decl: m.decl.signature(), default: m.default }).collect(),
+            laws: self.laws.clone(),
+        }
+    }
+}
+
 impl ImplDecl {
     /// `impl Item { ... }`: methods of the type itself, not of a trait.
     pub fn is_inherent(&self) -> bool {
@@ -927,6 +974,6 @@ pub fn changed_places(e: &Expr, mut_params: &dyn Fn(&str) -> Vec<bool>) -> Vec<S
 }
 
 /// The variables `e` may change (the roots of `changed_places`).
-pub fn changed_vars(e: &Expr, mut_params: &dyn Fn(&str) -> Vec<bool>) -> std::collections::HashSet<String> {
+pub fn changed_vars(e: &Expr, mut_params: &dyn Fn(&str) -> Vec<bool>) -> crate::fx::HashSet<String> {
     changed_places(e, mut_params).into_iter().map(|p| p.split('.').next().unwrap_or_default().to_string()).collect()
 }

@@ -14,7 +14,7 @@ use crate::ast::*;
 use crate::store::Codebase;
 use crate::types::Diag;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use crate::fx::{HashMap, HashSet};
 
 const FILE: &str = "pending.json";
 
@@ -104,7 +104,7 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
 /// The names a change to these definitions can break, as written: each
 /// changed or removed definition's short name, and its variants and methods.
 fn changed_names(old: &Program, new: &Program, edited: &[String]) -> HashSet<String> {
-    let mut out = HashSet::new();
+    let mut out = HashSet::default();
     for q in edited {
         let interface = |p: &Program| p.decls.iter().find(|d| d.qname() == *q).map(crate::store::interface_hash);
         if interface(old) == interface(new) {
@@ -225,7 +225,7 @@ fn variant_changes(old: &Program, new: &Program, edited: &[String]) -> VariantCh
             })
             .unwrap_or_default()
     };
-    let mut out = VariantChanges { removed: HashSet::new(), added: Vec::new() };
+    let mut out = VariantChanges { removed: HashSet::default(), added: Vec::new() };
     for q in edited {
         let (before, after) = (variants(old, q), variants(new, q));
         if before.is_empty() {
@@ -318,7 +318,7 @@ pub fn holeify(old: &Program, new: &Program, edited: &[String], errors: &[Diag],
     let resolved = crate::resolve::resolve(new).program;
     let index: HashMap<String, usize> = resolved.decls.iter().enumerate().map(|(i, d)| (d.name(), i)).collect();
     let mut broken: Vec<usize> = Vec::new();
-    let mut why: HashMap<usize, Vec<String>> = HashMap::new();
+    let mut why: HashMap<usize, Vec<String>> = HashMap::default();
     for e in errors {
         match index.get(&e.decl) {
             Some(&i) if !edited.contains(&new.decls[i].qname()) => {

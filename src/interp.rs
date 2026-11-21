@@ -8,7 +8,7 @@ use crate::types::{subst_texpr, Env};
 use serde_json::{json, Value as Json};
 use num_bigint::BigInt;
 use num_traits::{FromPrimitive, Signed, ToPrimitive, Zero};
-use std::collections::HashMap;
+use crate::fx::HashMap;
 use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -377,7 +377,7 @@ impl<'a> Interp<'a> {
             tracing: false,
             generator: Gen::new(seed),
             depth: 0,
-            regexes: HashMap::new(),
+            regexes: HashMap::default(),
             writeback: vec![],
             self_types: vec![],
             returning: None,

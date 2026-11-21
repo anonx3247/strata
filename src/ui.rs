@@ -8,7 +8,8 @@ use crate::ast::*;
 use crate::store::{self, Codebase};
 use crate::{types, verify, view};
 use serde_json::{json, Value as Json};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
+use crate::fx::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -46,7 +47,7 @@ fn snapshot(target: &Target) -> Json {
             Err(e) => return json!({"fatal": e}),
         },
         Target::File(f) => match crate::read_sources(&f.to_string_lossy()) {
-            Ok(p) => (p, vec![], HashMap::new(), f.display().to_string()),
+            Ok(p) => (p, vec![], HashMap::default(), f.display().to_string()),
             Err(e) => return json!({"fatal": e}),
         },
     };
@@ -59,11 +60,11 @@ fn snapshot(target: &Target) -> Json {
     rep.errors.extend(verify::refinements_in(&elaborated, &env));
 
     let graph = store::graph(p);
-    let mut holes: HashMap<String, Vec<&types::HoleInfo>> = HashMap::new();
+    let mut holes: HashMap<String, Vec<&types::HoleInfo>> = HashMap::default();
     for h in &rep.holes {
         holes.entry(qname_of.get(&h.decl).cloned().unwrap_or(h.decl.clone())).or_default().push(h);
     }
-    let mut verdicts: HashMap<String, verify::Verdict> = HashMap::new();
+    let mut verdicts: HashMap<String, verify::Verdict> = HashMap::default();
     for d in &p.decls {
         if let Some(v) = cache.get(&store::closure_hash(p, &d.qname())) {
             verdicts.insert(d.qname(), v.clone());
@@ -71,10 +72,10 @@ fn snapshot(target: &Target) -> Json {
     }
     let status = view::Status {
         holes: holes.iter().map(|(k, v)| (k.clone(), v.iter().map(|h| h.name.clone()).collect())).collect(),
-        verdicts: HashMap::new(),
+        verdicts: HashMap::default(),
     };
     // For each definition: index of the last log entry that touched it.
-    let mut last_change: HashMap<String, usize> = HashMap::new();
+    let mut last_change: HashMap<String, usize> = HashMap::default();
     for (i, e) in log.iter().enumerate() {
         for c in e["changes"].as_array().into_iter().flatten() {
             if let Some(n) = c["name"].as_str() {
@@ -145,7 +146,7 @@ fn snapshot(target: &Target) -> Json {
         })
         .collect();
     // ---- structure for the type map ----
-    let declared: std::collections::HashSet<String> = rp
+    let declared: crate::fx::HashSet<String> = rp
         .decls
         .iter()
         .filter(|d| matches!(d.kind, DeclKind::Type(_) | DeclKind::Trait(_)))

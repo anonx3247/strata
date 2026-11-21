@@ -179,7 +179,7 @@ fn has_hole(e: &Expr) -> bool {
 /// running them, and fuzz the rest.
 /// `cross_check`: how many generated cases a proven function is still run on.
 /// A failure there means the prover itself is wrong, and is reported as such.
-pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&crate::smt::Solver>, transparent: &std::collections::HashMap<String, bool>, cases: usize, cross_check: usize, seed: u64) -> Verdict {
+pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&crate::smt::Solver>, transparent: &crate::fx::HashMap<String, bool>, cases: usize, cross_check: usize, seed: u64) -> Verdict {
     // the real terminal, disk and process: trusted, never run here (only `strata run` reaches the system)
     if imp.is_some_and(|i| crate::stdlib::HOST_TYPES.contains(&crate::types::texpr_head(&i.for_type).as_str())) {
         return Verdict::Assumed { why: "it talks to the real system (only `strata run` reaches it)".into() };
@@ -257,7 +257,7 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&c
 }
 
 /// The SMT-LIB query of each obligation of a function (for `verify --smt`).
-pub fn smt_queries(env: &Env, f: &FnDecl, transparent: &std::collections::HashMap<String, bool>) -> Vec<(String, String)> {
+pub fn smt_queries(env: &Env, f: &FnDecl, transparent: &crate::fx::HashMap<String, bool>) -> Vec<(String, String)> {
     let mut vc = crate::smt::Vc::new(env);
     vc.transparent = transparent.clone();
     vc.function(f, &f.name);
@@ -310,7 +310,7 @@ fn run_case(mut it: Interp, f: &FnDecl, args: Vec<crate::interp::Value>, method:
 /// Replace `Self` (and the impl's type parameters, at `Int`) in a method
 /// signature so its inputs can be generated.
 pub fn for_impl(imp: &ImplDecl, f: &FnDecl) -> FnDecl {
-    let mut sub: std::collections::HashMap<Symbol, TypeExpr> =
+    let mut sub: crate::fx::HashMap<Symbol, TypeExpr> =
         imp.type_params.iter().map(|p| (p.clone(), TypeExpr::Named("Int".into(), vec![]))).collect();
     let self_ty = crate::types::subst_texpr(&imp.for_type, &sub);
     sub.insert("Self".into(), self_ty);
@@ -405,7 +405,7 @@ fn fuzz_limited(env: &Env, f: &FnDecl, cases: usize, seed: u64, method: bool, bu
     // Generic functions are fuzzed at one instance: every type parameter becomes `Int`.
     // Generic functions are fuzzed at one consistent instance (see `test_instance`).
     let inst = if f.type_params.is_empty() {
-        std::collections::HashMap::new()
+        crate::fx::HashMap::default()
     } else {
         match crate::types::test_instance(env, f) {
             Some(i) => i,

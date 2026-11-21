@@ -11,7 +11,7 @@
 //! The table only grows: a name, once seen, stays for the life of the
 //! process (a program's names are few).
 
-use std::collections::HashMap;
+use crate::fx::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -39,7 +39,7 @@ fn slot(i: usize) -> (usize, usize) {
 
 fn ids() -> &'static Mutex<HashMap<&'static str, u32>> {
     IDS.get_or_init(|| {
-        let mut ids = HashMap::new();
+        let mut ids = HashMap::default();
         for (i, k) in KNOWN.iter().enumerate() {
             store(i, k);
             ids.insert(*k, i as u32);

@@ -214,7 +214,7 @@ pub fn move_def(args: &Args, json_out: bool) -> Result<bool, String> {
     let updated: Vec<String> = moved.decls.iter().filter(|d| !is_use(d) && d.qname() != new_q && before.get(&d.qname()).is_some_and(|h| Some(h) != after.get(&d.qname()))).map(|d| shown_q[&d.qname()].clone()).collect();
     let shown = |m: &str| if m.is_empty() { "main".to_string() } else { m.to_string() };
     // imports the move added or changed, by module
-    let old_uses: std::collections::HashSet<(String, String)> = cb.program.decls.iter().filter(|d| is_use(d)).map(|d| (d.module.to_string(), printer::decl(d))).collect();
+    let old_uses: crate::fx::HashSet<(String, String)> = cb.program.decls.iter().filter(|d| is_use(d)).map(|d| (d.module.to_string(), printer::decl(d))).collect();
     let imports: Vec<String> = moved.decls.iter().filter(|d| is_use(d) && !old_uses.contains(&(d.module.to_string(), printer::decl(d)))).map(|d| format!("{}: {}", shown(&d.module), printer::decl(d))).collect();
     let from_m = old_q.rsplit_once('.').map(|(m, _)| m.to_string()).unwrap_or_default();
     let default_msg = format!("move {old_q} → {}", shown(&target));
@@ -242,7 +242,7 @@ pub fn status(args: &Args) -> Result<bool, String> {
         println!("no pending change");
         return Ok(true);
     };
-    let open: std::collections::HashSet<String> = types::check(&cb.program).holes.into_iter().map(|h| h.name).collect();
+    let open: crate::fx::HashSet<String> = types::check(&cb.program).holes.into_iter().map(|h| h.name).collect();
     let (left, filled): (Vec<&pending::Hole>, Vec<&pending::Hole>) = p.holes.iter().partition(|h| open.contains(&h.name));
     println!("pending change: {}  ({} hole{} left, {} filled)", p.message, left.len(), if left.len() == 1 { "" } else { "s" }, filled.len());
     for h in &left {
@@ -256,7 +256,7 @@ pub fn status(args: &Args) -> Result<bool, String> {
 pub fn done(args: &Args) -> Result<bool, String> {
     let Source::Db(mut cb) = load(&args)? else { return Err("`done` needs a package".into()) };
     let p = pending::load(&cb).ok_or("no pending change")?;
-    let open: std::collections::HashSet<String> = types::check(&cb.program).holes.into_iter().map(|h| h.name).collect();
+    let open: crate::fx::HashSet<String> = types::check(&cb.program).holes.into_iter().map(|h| h.name).collect();
     let left: Vec<&pending::Hole> = p.holes.iter().filter(|h| open.contains(&h.name)).collect();
     if !left.is_empty() && !args.flag("--keep-holes") {
         eprintln!("{} hole{} of this change {} still open:", left.len(), if left.len() == 1 { "" } else { "s" }, if left.len() == 1 { "is" } else { "are" });
@@ -554,7 +554,7 @@ pub fn edit_in_editor(cb: &mut Codebase, args: &Args, json_out: bool) -> Result<
             }
         }
         if errors_at.iter().all(Vec::is_empty) {
-            let kept: std::collections::HashSet<String> = edits.decls.iter().map(|d| d.qname()).collect();
+            let kept: crate::fx::HashSet<String> = edits.decls.iter().map(|d| d.qname()).collect();
             let deletes: Vec<String> = files.iter().flat_map(|f| f.shown.iter()).filter(|q| !kept.contains(*q)).map(|q| stored_name.get(q).cloned().unwrap_or_else(|| q.clone())).collect();
             match apply_edit(cb, "edit", edits, deletes, &msg, json_out)? {
                 Ok(()) => {

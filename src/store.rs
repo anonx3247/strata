@@ -8,7 +8,8 @@ use crate::ast::*;
 use crate::printer;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
+use crate::fx::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -260,7 +261,7 @@ pub fn graph(p: &Program) -> BTreeMap<String, BTreeSet<String>> {
     let p = &resolved.program;
     let to_q: HashMap<String, String> = p.decls.iter().zip(&original.decls).map(|(r, d)| (r.name(), d.qname())).collect();
     let names: BTreeSet<String> = p.decls.iter().map(|d| d.name()).collect();
-    let mut ct = HashMap::new();
+    let mut ct = HashMap::default();
     for d in &p.decls {
         if let DeclKind::Type(t) = &d.kind {
             if let TypeBody::Sum(vs) = &t.body {
@@ -271,7 +272,7 @@ pub fn graph(p: &Program) -> BTreeMap<String, BTreeSet<String>> {
         }
     }
     // a call to a trait method depends on the trait
-    let mut method_trait: HashMap<Symbol, Symbol> = HashMap::new();
+    let mut method_trait: HashMap<Symbol, Symbol> = HashMap::default();
     for d in &p.decls {
         if let DeclKind::Trait(t) = &d.kind {
             for m in &t.methods {

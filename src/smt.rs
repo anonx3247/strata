@@ -27,7 +27,7 @@
 use crate::ast::*;
 use crate::interp::{Fields, Value};
 use crate::types::{subst_texpr, Env};
-use std::collections::{HashMap, HashSet};
+use crate::fx::{HashMap, HashSet};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -286,26 +286,26 @@ impl<'a> Vc<'a> {
             env,
             decls: vec![],
             facts: vec![],
-            reasons: HashMap::new(),
+            reasons: HashMap::default(),
             reason: None,
             pc: vec![],
-            scopes: vec![HashMap::new()],
+            scopes: vec![HashMap::default()],
             obligations: vec![],
             spec: 0,
             dead: false,
             depth: 0,
             checking: vec![],
             proving: 0,
-            cutoffs: HashMap::new(),
+            cutoffs: HashMap::default(),
             params: vec![],
-            memo: HashMap::new(),
+            memo: HashMap::default(),
             loops: vec![],
             rec_sites: vec![],
             self_name: String::new(),
-            transparent: HashMap::new(),
+            transparent: HashMap::default(),
             relied_on: Default::default(),
             returns: vec![],
-            declared: HashMap::new(),
+            declared: HashMap::default(),
             matched: vec![],
             lists: vec![],
             binding: 0,
@@ -1912,7 +1912,7 @@ impl<'a> Vc<'a> {
                 self.branches_narrowed(alts, narrow)
             }
             Expr::Block(stmts, last) => {
-                self.scopes.push(HashMap::new());
+                self.scopes.push(HashMap::default());
                 for s in stmts {
                     self.stmt(s);
                     if self.dead {
@@ -2734,7 +2734,7 @@ impl<'a> Vc<'a> {
                     }
                     _ => Val::Opaque("the elements of a list are not tracked".into()),
                 };
-                self.scopes.push(HashMap::new());
+                self.scopes.push(HashMap::default());
                 let mut binds = vec![];
                 let c = self.pattern(p, &x, &mut binds);
                 self.pc.push(c);
@@ -3188,7 +3188,7 @@ fn parse_str(s: &str) -> Option<String> {
 
 /// Parse `((v1 5) (v2 "a") (v3 (- 2)))` into name -> value text.
 fn parse_values(s: &str) -> HashMap<String, String> {
-    let mut out = HashMap::new();
+    let mut out = HashMap::default();
     let cs: Vec<char> = s.chars().collect();
     let mut i = cs.iter().position(|&c| c == '(').map(|p| p + 1).unwrap_or(cs.len());
     while i < cs.len() {

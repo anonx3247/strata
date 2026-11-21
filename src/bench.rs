@@ -45,3 +45,59 @@ fn bench() {
         println!("{name:<15} parse {parse:>9.1?}  decode {decode:>9.1?}  clone {clone:>9.1?}  resolve {resolve:>9.1?}  graph {graph:>9.1?}  check {check:>9.1?}  hashes {hashes:>9.1?}");
     }
 }
+
+/// The type checker in a loop, for a profiler to sample:
+/// `STRATA_PROFILE=examples/tasks cargo test --release profile_check -- --ignored`.
+#[test]
+#[ignore]
+fn profile_check() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let name = std::env::var("STRATA_PROFILE").unwrap_or("examples/tasks".into());
+    let p = crate::package::program(&root.join(name)).unwrap();
+    let t = std::time::Instant::now();
+    let mut n = 0;
+    while t.elapsed().as_secs() < 8 {
+        std::hint::black_box(crate::types::check_and_elaborate(&p));
+        n += 1;
+    }
+    println!("{n} checks, {:?} each", t.elapsed() / n);
+}
+
+/// Counts allocations in test builds: a measure of work that machine load
+/// doesn't blur.
+struct Counting;
+static ALLOCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+unsafe impl std::alloc::GlobalAlloc for Counting {
+    unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
+        ALLOCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        unsafe { std::alloc::System.alloc(l) }
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
+        unsafe { std::alloc::System.dealloc(p, l) }
+    }
+    unsafe fn realloc(&self, p: *mut u8, l: std::alloc::Layout, n: usize) -> *mut u8 {
+        ALLOCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        unsafe { std::alloc::System.realloc(p, l, n) }
+    }
+}
+#[global_allocator]
+static COUNTING: Counting = Counting;
+
+/// Allocations of one check of each example: `cargo test --release allocations -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn allocations() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for name in ["examples/tasks", "std"] {
+        let p = crate::package::program(&root.join(name)).unwrap();
+        let count = |f: &dyn Fn()| {
+            let before = ALLOCS.load(std::sync::atomic::Ordering::Relaxed);
+            f();
+            ALLOCS.load(std::sync::atomic::Ordering::Relaxed) - before
+        };
+        let resolve = count(&|| drop(crate::resolve::resolve(&p)));
+        let check = count(&|| drop(crate::types::check_and_elaborate(&p)));
+        let full = count(&|| drop(crate::full_check(&p)));
+        println!("{name:<15} allocations: resolve {resolve}  check_and_elaborate {check}  full_check {full}");
+    }
+}

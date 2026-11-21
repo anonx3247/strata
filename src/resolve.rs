@@ -12,7 +12,7 @@
 use crate::names::{module_of, qualified, qualify, short};
 use crate::ast::*;
 use crate::types::Diag;
-use std::collections::{HashMap, HashSet};
+use crate::fx::{HashMap, HashSet};
 
 #[derive(Clone, Debug)]
 struct Item {
@@ -58,7 +58,7 @@ pub fn takes_self(f: &FnDecl) -> bool {
 /// the function `Item.new`, so everything after resolution sees a plain call.
 fn static_calls(p: &mut Program) {
     let short = |m: &str| short(&m).to_string();
-    let mut statics: HashSet<(String, String)> = HashSet::new();
+    let mut statics: HashSet<(String, String)> = HashSet::default();
     for d in &p.decls {
         if let DeclKind::Impl(i) = &d.kind {
             if i.is_inherent() {
@@ -257,7 +257,7 @@ pub fn rename_fields(p: &Program, renames: &[(String, String, String)]) -> Resul
         let others = records.iter().any(|(q, fs)| fs.iter().any(|x| x == f) && !renames.iter().any(|r| r.0 == *q && r.1 == *f));
         others || !same_new || (*f == "value" && distinct)
     });
-    let mut modules: HashSet<String> = HashSet::new();
+    let mut modules: HashSet<String> = HashSet::default();
     for d in &p.decls {
         let mut m = d.module.as_str();
         while !m.is_empty() {
@@ -422,7 +422,7 @@ pub fn rename_all(p: &Program, pairs: &[(String, String)]) -> Result<Program, St
 
 /// Every qualified name the program defines: definitions, variants, trait methods.
 fn defined(p: &Program) -> HashSet<String> {
-    let mut out = HashSet::new();
+    let mut out = HashSet::default();
     for d in &p.decls {
         out.insert(d.qname());
         match &d.kind {
@@ -469,7 +469,7 @@ pub fn rename(p: &Program, old: &str, new: &str) -> Result<Program, String> {
         r.module = d.module.clone();
     }
     // the rename must not change what any other name refers to
-    let map = HashMap::from([(old.to_string(), new_q.clone())]);
+    let map = HashMap::from_iter([(old.to_string(), new_q.clone())]);
     let expect: Vec<Decl> = resolved_defs(p).iter().map(|d| renamed(d, &map)).collect();
     if resolved_defs(&program) != expect {
         return Err(format!("renaming `{old}` to `{new}` would change what other names refer to (something visible there is already called `{new}`)"));
@@ -492,7 +492,7 @@ pub fn follow(merged: &Program, back: &Program, old: &str, new: &str) -> Result<
     let new_q = if module.is_empty() { new.to_string() } else { format!("{module}.{new}") };
     let each = |p: &Program| resolve(p).program.decls;
     let (rm, rb, ra) = (each(merged), each(back), each(&program));
-    let map = HashMap::from([(old.to_string(), new_q.clone())]);
+    let map = HashMap::from_iter([(old.to_string(), new_q.clone())]);
     for (i, d) in program.decls.iter().enumerate() {
         if matches!(d.kind, DeclKind::Use(_)) {
             continue;
@@ -562,7 +562,7 @@ fn names_mut(d: &mut DeclKind, f: &mut dyn FnMut(&mut Symbol)) {
 
 /// The names in a definition, as `names_mut` visits them.
 fn names_in(d: &DeclKind) -> HashSet<Symbol> {
-    let mut out = HashSet::new();
+    let mut out = HashSet::default();
     names_mut(&mut d.clone(), &mut |n| {
         out.insert(*n);
     });
@@ -631,12 +631,12 @@ enum Store {
 fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMap<String, String>>, store: Option<Store>) -> (Resolution, Vec<Vec<String>>) {
     let rename: Option<(Symbol, Symbol)> = rename.map(|(o, n)| (o.into(), n.into()));
     let moves: Option<HashMap<Symbol, Symbol>> = moves.map(|m| m.iter().map(|(o, n)| (o.sym(), n.sym())).collect());
-    let mut table: HashMap<Symbol, Item> = HashMap::new();
+    let mut table: HashMap<Symbol, Item> = HashMap::default();
     // children of a type (its constructors) or a trait (its methods), as (short, qualified)
-    let mut children: HashMap<Symbol, Vec<(Symbol, Symbol)>> = HashMap::new();
-    let mut modules: HashSet<Symbol> = HashSet::new();
+    let mut children: HashMap<Symbol, Vec<(Symbol, Symbol)>> = HashMap::default();
+    let mut modules: HashSet<Symbol> = HashSet::default();
     // qualified names of trait methods
-    let mut methods: HashSet<Symbol> = HashSet::new();
+    let mut methods: HashSet<Symbol> = HashSet::default();
     let add_modules = |modules: &mut HashSet<Symbol>, mut m: &str| {
         while !m.is_empty() {
             modules.insert(m.sym());
@@ -692,12 +692,12 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
     }
     let mut errors = Vec::new();
     // what each module can refer to by short name
-    let mut scopes: HashMap<Symbol, HashMap<Symbol, Symbol>> = HashMap::new();
+    let mut scopes: HashMap<Symbol, HashMap<Symbol, Symbol>> = HashMap::default();
     let mut all_modules: Vec<Symbol> = p.decls.iter().map(|d| d.module).collect();
     all_modules.sort();
     all_modules.dedup();
     for &m in &all_modules {
-        let mut scope: HashMap<Symbol, Symbol> = HashMap::new();
+        let mut scope: HashMap<Symbol, Symbol> = HashMap::default();
         // the root module is visible everywhere
         for (&q, it) in &table {
             if it.module.is_empty() {
@@ -1318,7 +1318,7 @@ impl Rw<'_> {
 /// (named in their module): old qualified name → new qualified name.
 fn moved_names(p: &Program, old: &str, target: &str) -> Result<HashMap<String, String>, String> {
     let d = p.decls.iter().find(|d| d.qname() == old).ok_or(format!("no definition `{old}`"))?;
-    let mut out = HashMap::new();
+    let mut out = HashMap::default();
     out.insert(old.to_string(), qualify(target, &d.name()));
     match &d.kind {
         DeclKind::Fn(_) => {}

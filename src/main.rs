@@ -1,4 +1,5 @@
 mod ast;
+mod fx;
 mod symbol;
 #[cfg(test)]
 mod bench;
@@ -32,7 +33,7 @@ mod view;
 
 use ast::*;
 use serde_json::json;
-use std::collections::HashMap;
+use crate::fx::HashMap;
 use std::io::Read;
 use std::process::{Command, ExitCode};
 use store::Codebase;
@@ -169,7 +170,7 @@ impl Args {
     fn parse() -> Args {
         let raw: Vec<String> = std::env::args().skip(1).collect();
         let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed", "--port", "--split", "--from", "--to", "--step", "--base", "--require", "--cross-check", "-o"];
-        let (mut pos, mut flags) = (Vec::new(), HashMap::<String, Vec<String>>::new());
+        let (mut pos, mut flags) = (Vec::new(), HashMap::<String, Vec<String>>::default());
         let mut i = 0;
         while i < raw.len() {
             let a = &raw[i];
@@ -261,7 +262,7 @@ fn print_errors(rep: &types::CheckReport) {
 }
 
 fn verdicts_for(src: &Source) -> HashMap<String, String> {
-    let Source::Db(cb) = src else { return HashMap::new() };
+    let Source::Db(cb) = src else { return HashMap::default() };
     let cache = cb.load_verdicts();
     cb.program
         .decls

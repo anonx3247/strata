@@ -20,7 +20,8 @@
 
 use crate::ast::*;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
+use crate::fx::HashMap;
 
 pub const MAGIC: &[u8; 6] = b"STRATA";
 /// The format isn't settled yet, so it stays 1 (user, 2026-11-21): a change

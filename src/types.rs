@@ -5,7 +5,8 @@
 use crate::ast::*;
 use crate::parser::Parser;
 use serde::Serialize;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
+use crate::fx::{HashMap, HashSet};
 
 mod env;
 mod exhaustive;
@@ -25,7 +26,7 @@ thread_local! {
 /// maps each tag to the record types (or record variants) of its receiver:
 /// one, or several for a union. Names are qualified (`shapes.Line`).
 pub fn field_owners(tagged: &Program) -> HashMap<String, BTreeSet<String>> {
-    FIELD_PROBE.with(|p| *p.borrow_mut() = Some(HashMap::new()));
+    FIELD_PROBE.with(|p| *p.borrow_mut() = Some(HashMap::default()));
     let _ = check(tagged);
     FIELD_PROBE.with(|p| p.borrow_mut().take()).unwrap_or_default()
 }
@@ -328,7 +329,7 @@ pub fn split_trait_call(name: &str) -> Option<(&str, &str)> {
 pub fn elaborate_typed(prog: &Program) -> (crate::resolve::Resolution, HashMap<usize, Ty>) {
     let mut r = crate::resolve::resolve(prog);
     let (env, _) = Env::build(&r.program);
-    let (_, _, targets, mut types) = check_decls(&r.program, &env);
+    let (_, _, targets, mut types) = check_decls(&r.program, &env, true);
     rewrite(&mut r.program, &env, targets, &mut types);
     (r, types)
 }
@@ -351,12 +352,14 @@ pub struct Checked {
 /// their own.
 pub fn check_and_elaborate(prog: &Program) -> Checked {
     let mut r = crate::resolve::resolve(prog);
-    let (env, mut errors) = Env::build(&r.program);
+    // checking needs signatures only; what runs needs the (rewritten) bodies
+    let (env, mut errors) = Env::build_with(&r.program, false);
     errors.splice(0..0, std::mem::take(&mut r.errors));
-    let (errs, holes, targets, mut types) = check_decls(&r.program, &env);
+    let (errs, holes, targets, mut types) = check_decls(&r.program, &env, false);
     errors.extend(errs);
     let report = CheckReport { errors, holes };
     if !needs_rewrite(&env) {
+        let (env, _) = Env::build(&r.program);
         return Checked { report, program: r.program, env };
     }
     rewrite(&mut r.program, &env, targets, &mut types);
@@ -479,6 +482,38 @@ pub fn parse_type_str(s: &str) -> TypeExpr {
 
 // ------------------------------------------------------------------
 
+/// What a check is about, for its error message: written only if there is
+/// an error. A plain `&str`, or `Lazy(|| format!(…))`.
+trait Label {
+    fn text(&self) -> String;
+}
+impl Label for &str {
+    fn text(&self) -> String {
+        self.to_string()
+    }
+}
+impl Label for String {
+    fn text(&self) -> String {
+        self.clone()
+    }
+}
+impl std::fmt::Display for dyn Label + '_ {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text())
+    }
+}
+impl Label for &dyn Label {
+    fn text(&self) -> String {
+        (**self).text()
+    }
+}
+struct Lazy<F: Fn() -> String>(F);
+impl<F: Fn() -> String> Label for Lazy<F> {
+    fn text(&self) -> String {
+        (self.0)()
+    }
+}
+
 struct Checker<'a> {
     env: &'a Env,
     subst: Vec<Option<Ty>>,
@@ -519,8 +554,9 @@ struct Checker<'a> {
     callee: bool,
     /// Method calls marked `mut` (`mut q.claim(2)`), by node: they change their receiver.
     marked: HashSet<usize>,
-    /// The type of each expression, by node address (resolved at the end).
-    types: Vec<(usize, Ty)>,
+    /// The type of each expression, by node address (resolved at the end),
+    /// when asked for (the compiler): `None` otherwise.
+    types: Option<Vec<(usize, Ty)>>,
 }
 
 impl<'a> Checker<'a> {
@@ -683,9 +719,9 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn expect(&mut self, expected: &Ty, actual: &Ty, what: &str) {
+    fn expect(&mut self, expected: &Ty, actual: &Ty, what: impl Label) {
         if let Err(e) = self.fits(expected, actual) {
-            self.err(format!("{what}: {e}"));
+            self.err(format!("{}: {e}", what.text()));
         }
     }
 
@@ -820,8 +856,9 @@ impl<'a> Checker<'a> {
     /// `trait_method`, with `Self` the given type when it is known (a static
     /// call names it: `Money.empty()`, `T.empty()`).
     fn trait_method_for(&mut self, name: &str, trait_name: &str, self_ty: Option<Ty>) -> Ty {
-        let tr = self.env.traits[&trait_name.sym()].clone();
-        let m = tr.methods.iter().find(|m| m.decl.name == name).unwrap().decl.clone();
+        let env = self.env;
+        let tr = &env.traits[&trait_name.sym()];
+        let m = &tr.methods.iter().find(|m| m.decl.name == name).unwrap().decl;
         let mut vars: HashMap<Symbol, Ty> = tr.params.iter().map(|p| (p.clone(), self.fresh())).collect();
         for p in &m.type_params {
             vars.insert(p.sym(), self.fresh());
@@ -837,7 +874,8 @@ impl<'a> Checker<'a> {
 
     /// Supertraits of `tr[args]`, transitively, with arguments substituted.
     fn supers_of(&mut self, tr: &str, args: &[Ty], depth: usize) -> Vec<(Symbol, Vec<Ty>)> {
-        let Some(td) = self.env.traits.get(&tr.sym()).cloned() else { return vec![] };
+        let env = self.env;
+        let Some(td) = env.traits.get(&tr.sym()) else { return vec![] };
         if depth > 8 {
             return vec![];
         }
@@ -962,7 +1000,7 @@ impl<'a> Checker<'a> {
             for tr in &b.traits {
                 match tr {
                     TypeExpr::Named(tn, targs) if self.env.traits.contains_key(&tn.sym()) => {
-                        let args: Vec<Ty> = targs.iter().map(|a| self.lower(a, &HashMap::new())).collect();
+                        let args: Vec<Ty> = targs.iter().map(|a| self.lower(a, &HashMap::default())).collect();
                         self.bounds.entry(b.param).or_default().push((tn.sym(), args));
                     }
                     other => self.err(format!("`{}` is not a trait", crate::printer::ty(other))),
@@ -973,15 +1011,15 @@ impl<'a> Checker<'a> {
 
     /// Check a function body against its signature (top-level functions,
     /// impl methods and default trait methods).
-    fn check_fn(&mut self, f: &FnDecl, obligations: &mut Vec<String>) {
+    fn check_fn(&mut self, f: &FnDecl) {
         self.rigid.extend(f.type_params.iter().cloned());
         self.add_bounds(&f.bounds);
-        self.scopes.push(HashMap::new());
+        self.scopes.push(HashMap::default());
         for p in &f.params {
             self.check_refined(&p.ty);
         }
         for p in &f.params {
-            let t = self.lower(&p.ty, &HashMap::new());
+            let t = self.lower(&p.ty, &HashMap::default());
             self.bind(p.name, t);
             if p.mutable {
                 self.bind((&format!("mut:{}", p.name)).sym(), Ty::Unit);
@@ -990,22 +1028,20 @@ impl<'a> Checker<'a> {
         }
         // the result's refinement may mention the parameters
         self.check_refined(&f.ret);
-        let ret = self.lower(&f.ret, &HashMap::new());
+        let ret = self.lower(&f.ret, &HashMap::default());
         for r in &f.requires {
             let t = self.infer(r);
             self.expect(&Ty::Bool, &t, "requires clause");
-            obligations.push(format!("requires {}", crate::printer::expr(r, 0)));
         }
         let outer = self.ret.replace(ret.clone());
         let bt = self.infer_with(&f.body, Some(&ret));
         self.ret = outer;
         self.expect(&ret, &bt, "function body");
-        self.scopes.push(HashMap::new());
+        self.scopes.push(HashMap::default());
         self.bind(("it").sym(), ret.clone());
         for en in &f.ensures {
             let t = self.infer(en);
             self.expect(&Ty::Bool, &t, "ensures clause");
-            obligations.push(format!("ensures {}", crate::printer::expr(en, 0)));
         }
         self.scopes.pop();
         self.scopes.pop();
@@ -1017,9 +1053,9 @@ impl<'a> Checker<'a> {
     fn check_defaults(&mut self, fs: &[Field]) {
         for f in fs {
             let Some(x) = &f.default else { continue };
-            let want = self.lower(&f.ty, &HashMap::new());
+            let want = self.lower(&f.ty, &HashMap::default());
             let got = self.infer_with(x, Some(&want));
-            self.expect(&want, &got, &format!("default of field `{}`", f.name));
+            self.expect(&want, &got, Lazy(|| format!("default of field `{}`", f.name)));
             if self.literal_outside(&f.ty, x) {
                 self.err(format!("the default of `{}`, {}, does not satisfy `{}`", f.name, crate::printer::expr(x, 0), crate::printer::ty(&f.ty)));
             }
@@ -1031,11 +1067,11 @@ impl<'a> Checker<'a> {
         match t {
             TypeExpr::Refined(b, pred) => {
                 self.check_refined(b);
-                let bt = self.lower(b, &HashMap::new());
-                self.scopes.push(HashMap::new());
+                let bt = self.lower(b, &HashMap::default());
+                self.scopes.push(HashMap::default());
                 self.bind(("it").sym(), bt);
                 let pt = self.infer(pred);
-                self.expect(&Ty::Bool, &pt, &format!("refinement `where {}`", crate::printer::expr(pred, 0)));
+                self.expect(&Ty::Bool, &pt, Lazy(|| format!("refinement `where {}`", crate::printer::expr(pred, 0))));
                 self.scopes.pop();
             }
             TypeExpr::Named(_, args) | TypeExpr::Union(args) => args.iter().for_each(|a| self.check_refined(a)),
@@ -1066,8 +1102,9 @@ impl<'a> Checker<'a> {
 
     /// Type of a named function value (top-level or builtin), freshly instantiated.
     fn global_fn(&mut self, name: &str) -> Option<Ty> {
-        if let Some(f) = self.env.fns.get(&name.sym()) {
-            let f = f.clone();
+        // the environment outlives the checker: borrow from it, don't copy
+        let env = self.env;
+        if let Some(f) = env.fns.get(&name.sym()) {
             let vars: HashMap<Symbol, Ty> = f.type_params.iter().map(|p| (p.clone(), self.fresh())).collect();
             let fty = self.lower(&Self::fn_scheme(&f), &vars);
             for b in &f.bounds {
@@ -1171,12 +1208,13 @@ impl<'a> Checker<'a> {
                 // the type's own method of that name comes first (a variant's before its sum's)
                 let heads: Vec<Symbol> = std::iter::once(head.sym()).chain(self.env.variant_parent(head.sym())).collect();
                 for h in &heads {
-                    if let Some(imp) = self.env.inherent.get(h).cloned() {
-                        if let Some(f) = imp.methods.iter().find(|x| short(&x.name) == sm && crate::resolve::takes_self(x)).cloned() {
+                    let env = self.env;
+                    if let Some(imp) = env.inherent.get(h) {
+                        if let Some(f) = imp.methods.iter().find(|x| short(&x.name) == sm && crate::resolve::takes_self(x)) {
                             self.targets.push((site, Target::Own(crate::resolve::static_name(h, &f.name))));
                             let ft = self.own_method_ty(&imp, &f);
                             let muts: Vec<Option<TypeExpr>> = f.params.iter().map(|p| p.mutable.then(|| p.ty.clone())).collect();
-                            return Some(self.call_with(ft, all, &format!("call to `{sm}`"), &muts));
+                            return Some(self.call_with(ft, all, &Lazy(|| format!("call to `{sm}`")), &muts));
                         }
                     }
                 }
@@ -1199,7 +1237,7 @@ impl<'a> Checker<'a> {
                 self.check_mut_args(&mq, all, recv_marked);
                 let ft = self.trait_method(&mq, &t);
                 let muts = self.mut_mask(&mq);
-                Some(self.call_with(ft, all, &format!("call to `{sm}`"), &muts))
+                Some(self.call_with(ft, all, &Lazy(|| format!("call to `{sm}`")), &muts))
             }
             [] if head.as_deref().is_some_and(|h| ["Int", "Float", "Bool", "String", "List", "Dict", "Set"].contains(&h)) && BUILTINS.iter().any(|b| b.name == sm) => {
                 self.targets.push((site, Target::Builtin(sm.clone())));
@@ -1207,7 +1245,7 @@ impl<'a> Checker<'a> {
                     return Some(t);
                 }
                 let ft = self.global_fn(&sm)?;
-                Some(self.call_with(ft, all, &format!("call to `{sm}`"), &[]))
+                Some(self.call_with(ft, all, &Lazy(|| format!("call to `{sm}`")), &[]))
             }
             [] => None,
             // two traits of the receiver have the name, from any modules: the same errors as within one
@@ -1316,8 +1354,9 @@ impl<'a> Checker<'a> {
         // the concrete type is known: its own method first, a variant's own before its sum's
         let heads: Vec<Symbol> = std::iter::once(head.sym()).chain(self.env.variant_parent(head.sym())).collect();
         for h in &heads {
-            if let Some(imp) = self.env.inherent.get(h).cloned() {
-                if let Some(f) = imp.methods.iter().find(|x| x.name == m && crate::resolve::takes_self(x)).cloned() {
+            let env = self.env;
+            if let Some(imp) = env.inherent.get(h) {
+                if let Some(f) = imp.methods.iter().find(|x| x.name == m && crate::resolve::takes_self(x)) {
                     self.targets.push((site, Target::Own(crate::resolve::static_name(h, &m))));
                     return Some(self.own_method_ty(&imp, &f));
                 }
@@ -1558,7 +1597,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn call_with(&mut self, fty: Ty, args: &[&Expr], what: &str, muts: &[Option<TypeExpr>]) -> Ty {
+    fn call_with(&mut self, fty: Ty, args: &[&Expr], what: &dyn Label, muts: &[Option<TypeExpr>]) -> Ty {
         let fty = self.resolve(&fty);
         let (ps, r) = match fty {
             Ty::Fn(ps, r) => (ps, *r),
@@ -1602,7 +1641,7 @@ impl<'a> Checker<'a> {
                     }
                 }
             } else {
-                self.expect(p, &at, &format!("{what}, argument {}", i + 1));
+                self.expect(p, &at, Lazy(|| format!("{what}, argument {}", i + 1)));
             }
         }
         r
@@ -1623,7 +1662,9 @@ impl<'a> Checker<'a> {
             if let Ty::Fn(pts, _) = self.resolve(exp) {
                 if pts.len() == ps.len() {
                     let t = self.lambda(ps, Some(pts), body);
-                    self.types.push((e as *const Expr as usize, t.clone()));
+                    if let Some(ts) = &mut self.types {
+                        ts.push((e as *const Expr as usize, t.clone()));
+                    }
                     return t;
                 }
             }
@@ -1649,11 +1690,11 @@ impl<'a> Checker<'a> {
         for (p, t) in ps.iter().zip(&pts) {
             if let Some(w) = &p.ty {
                 self.check_refined(w);
-                let wt = self.lower(w, &HashMap::new());
-                self.expect(&wt, t, &format!("lambda parameter `{}`", p.name));
+                let wt = self.lower(w, &HashMap::default());
+                self.expect(&wt, t, Lazy(|| format!("lambda parameter `{}`", p.name)));
             }
         }
-        self.scopes.push(HashMap::new());
+        self.scopes.push(HashMap::default());
         for (p, t) in ps.iter().zip(&pts) {
             self.bind(p.name, t.clone());
             if let Some(w) = &p.ty {
@@ -1686,8 +1727,9 @@ impl<'a> Checker<'a> {
     }
 
     fn ctor_type(&mut self, c: Symbol) -> Option<(Ty, Vec<(Option<Symbol>, Ty)>)> {
-        let tname = self.env.ctors.get(&c.sym())?.clone();
-        let td = self.env.types[&tname].clone();
+        let env = self.env;
+        let tname = *env.ctors.get(&c.sym())?;
+        let td = &env.types[&tname];
         let vars: HashMap<Symbol, Ty> = td.params.iter().map(|p| (p.clone(), self.fresh())).collect();
         let result = Ty::Con(tname.clone(), td.params.iter().map(|p| vars[p].clone()).collect());
         let fields = match &td.body {
@@ -1709,7 +1751,9 @@ impl<'a> Checker<'a> {
     /// to pick a variant's own type and to check branches against it.
     fn infer_at(&mut self, e: &Expr, expected: Option<&Ty>) -> Ty {
         let t = self.infer_node(e, expected);
-        self.types.push((e as *const Expr as usize, t.clone()));
+        if let Some(ts) = &mut self.types {
+            ts.push((e as *const Expr as usize, t.clone()));
+        }
         t
     }
 
@@ -1800,7 +1844,7 @@ impl<'a> Checker<'a> {
                         }
                         for ((_, ft), a) in fields.iter().zip(es) {
                             let at = self.infer_with(a, Some(ft));
-                            self.expect(ft, &at, &format!("argument of `{c}`"));
+                            self.expect(ft, &at, Lazy(|| format!("argument of `{c}`")));
                         }
                     }
                     CtorArgs::Update(base, fs) => {
@@ -1809,13 +1853,13 @@ impl<'a> Checker<'a> {
                             self.err(format!("`{c} {{ ..base }}` update syntax works on record types only"));
                         }
                         let bt = self.infer_with(base, Some(&rt));
-                        self.expect(&rt, &bt, &format!("base of `{c} {{ .. }}`"));
+                        self.expect(&rt, &bt, Lazy(|| format!("base of `{c} {{ .. }}`")));
                         for (fname, fe) in fs {
                             match fields.iter().find(|(n, _)| n.as_deref() == Some(fname)) {
                                 Some((_, ft)) => {
                                     let ft = ft.clone();
                                     let at = self.infer_with(fe, Some(&ft));
-                                    self.expect(&ft, &at, &format!("field `{c}.{fname}`"));
+                                    self.expect(&ft, &at, Lazy(|| format!("field `{c}.{fname}`")));
                                 }
                                 None => self.err(format!("`{c}` has no field `{fname}`")),
                             }
@@ -1827,7 +1871,7 @@ impl<'a> Checker<'a> {
                                 Some((_, ft)) => {
                                     let ft = ft.clone();
                                     let at = self.infer_with(fe, Some(&ft));
-                                    self.expect(&ft, &at, &format!("field `{c}.{fname}`"));
+                                    self.expect(&ft, &at, Lazy(|| format!("field `{c}.{fname}`")));
                                 }
                                 None => self.err(format!("`{c}` has no field `{fname}`")),
                             }
@@ -1899,7 +1943,7 @@ impl<'a> Checker<'a> {
                 if let Some(ft) = self.static_call(recv, m, e as *const Expr as usize) {
                     let rest: Vec<&Expr> = args.iter().collect();
                     let muts = self.mut_mask(m);
-                    return self.call_with(ft, &rest, &format!("call to `{m}`"), &muts);
+                    return self.call_with(ft, &rest, &Lazy(|| format!("call to `{m}`")), &muts);
                 }
                 self.last_inst = None;
                 let ft = match self.receiver_method(m, Some(recv), e as *const Expr as usize, true) {
@@ -1928,7 +1972,7 @@ impl<'a> Checker<'a> {
                 if self.lookup(m.sym()).is_none() {
                     self.record_inst(&Expr::Var(m.clone()), e as *const Expr as usize);
                 }
-                self.call_with(ft, &all, &format!("call to `{m}`"), &muts)
+                self.call_with(ft, &all, &Lazy(|| format!("call to `{m}`")), &muts)
             }
             Expr::Field(r, f) if f.contains('·') => {
                 // a tagged access (see `field_owners`): type it, and record its receiver's records
@@ -1980,8 +2024,8 @@ impl<'a> Checker<'a> {
                         Ty::Bool
                     }
                     And | Or | Implies => {
-                        self.expect(&Ty::Bool, &lt, &format!("left of `{}`", op.symbol()));
-                        self.expect(&Ty::Bool, &rt, &format!("right of `{}`", op.symbol()));
+                        self.expect(&Ty::Bool, &lt, Lazy(|| format!("left of `{}`", op.symbol())));
+                        self.expect(&Ty::Bool, &rt, Lazy(|| format!("right of `{}`", op.symbol())));
                         Ty::Bool
                     }
                 }
@@ -2006,12 +2050,12 @@ impl<'a> Checker<'a> {
                 match self.ctor_type(c.sym()) {
                     Some((ct, _)) => {
                         let own = self.variant_ty(c.sym(), &ct);
-                        self.expect(&t, &own, &format!("`is {c}`"))
+                        self.expect(&t, &own, Lazy(|| format!("`is {c}`")))
                     }
                     None if self.env.is_type_name(c) => {
                         let pt = self.type_named(c);
                         if !self.is_trait_ty(&pt) {
-                            self.expect(&t, &pt, &format!("`is {c}`"));
+                            self.expect(&t, &pt, Lazy(|| format!("`is {c}`")));
                         }
                     }
                     None => self.err(format!("unknown constructor `{c}`")),
@@ -2051,7 +2095,7 @@ impl<'a> Checker<'a> {
                 let mut rt: Option<Ty> = expected.cloned();
                 let mut rows = Vec::new();
                 for a in arms {
-                    self.scopes.push(HashMap::new());
+                    self.scopes.push(HashMap::default());
                     let (nt, p) = self.pattern(&a.pat, &st);
                     // narrowing follows the code: an arm that changes the matched variable
                     // (even later, or on a later pass of a loop) keeps its declared type
@@ -2093,12 +2137,12 @@ impl<'a> Checker<'a> {
                 rt.unwrap_or_else(|| self.fresh())
             }
             Expr::Block(stmts, last) => {
-                self.scopes.push(HashMap::new());
+                self.scopes.push(HashMap::default());
                 for s in stmts {
                     match s {
                         Stmt::Let(p, ann, e) => {
                             let ann_written = ann.as_ref();
-                            let ann = ann.as_ref().map(|a| self.lower(a, &HashMap::new()));
+                            let ann = ann.as_ref().map(|a| self.lower(a, &HashMap::default()));
                             let t = self.infer_with(e, ann.as_ref());
                             if let Some(a) = &ann {
                                 self.expect(a, &t, "let annotation");
@@ -2113,7 +2157,7 @@ impl<'a> Checker<'a> {
                         }
                         Stmt::Var(n, ann, e) => {
                             let written = ann.clone();
-                            let ann = ann.as_ref().map(|a| self.lower(a, &HashMap::new()));
+                            let ann = ann.as_ref().map(|a| self.lower(a, &HashMap::default()));
                             let t = self.infer_with(e, ann.as_ref());
                             if let Some(a) = &ann {
                                 self.expect(a, &t, "let annotation");
@@ -2170,7 +2214,7 @@ impl<'a> Checker<'a> {
                                     self.fresh()
                                 }
                             };
-                            self.scopes.push(HashMap::new());
+                            self.scopes.push(HashMap::default());
                             self.pattern(p, &el);
                             self.loops += 1;
                             self.infer(b);
@@ -2285,7 +2329,7 @@ impl<'a> Checker<'a> {
                         (self.fresh(), None)
                     }
                 };
-                self.scopes.push(HashMap::new());
+                self.scopes.push(HashMap::default());
                 if let (Some(n), Some(et)) = (name, err_ty) {
                     self.bind(n.sym(), et);
                 }
@@ -2306,7 +2350,7 @@ impl<'a> Checker<'a> {
                 self.infer(x)
             }
             Expr::Mock(t) => {
-                let ty = self.lower(t, &HashMap::new());
+                let ty = self.lower(t, &HashMap::default());
                 match self.resolve(&ty) {
                     Ty::Con(n, _) if self.env.traits.contains_key(&n) => ty,
                     other => {
@@ -2347,12 +2391,12 @@ impl<'a> Checker<'a> {
     /// `mut` (`mut q.claim(2)`), which it must be when it changes its
     /// receiver, and only then.
     fn check_mut_args(&mut self, callee: &str, args: &[&Expr], recv: Option<bool>) {
-        let params: Option<Vec<Param>> = self
-            .env
-            .fns
-            .get(&callee.sym())
-            .map(|f| f.params.clone())
-            .or_else(|| self.env.method_params(callee.sym()));
+        let env = self.env;
+        let callee_s = callee.sym();
+        let params: Option<std::borrow::Cow<[Param]>> = match env.fns.get(&callee_s) {
+            Some(f) => Some(std::borrow::Cow::Borrowed(&f.params[..])),
+            None => env.method_params(callee_s).map(std::borrow::Cow::Owned),
+        };
         let Some(params) = params else {
             // a builtin or a closure: no parameter is `mut`
             for a in args.iter().filter(|a| marks_arg(a)) {
@@ -2370,18 +2414,21 @@ impl<'a> Checker<'a> {
                 Expr::Mut(x) if marks_arg(a) => &**x,
                 x => x,
             };
-            let shown = crate::printer::expr(place, 0);
+            // the argument's text, for the messages only
+            let shown = || crate::printer::expr(place, 0);
             if p.mutable {
                 self.check_place(place, &format!("let `{callee}` change (its `mut {}` parameter)", p.name));
                 if !marked && receiver {
                     let m = crate::names::short(callee);
+                    let shown = shown();
                     self.err(format!("`{m}` changes its receiver (`mut self`): write `mut {shown}.{m}(…)` to show that `{shown}` may change"));
                 } else if !marked {
+                    let shown = shown();
                     self.err(format!("`{callee}` can change its `mut {}` parameter: write `mut {shown}` to show that `{shown}` may change", p.name));
                 }
             } else if marked && receiver {
                 let m = crate::names::short(callee);
-                self.err(format!("`mut {shown}.{m}(…)`: `{m}` doesn't change its receiver (it doesn't take `mut self`)"));
+                self.err(format!("`mut {}.{m}(…)`: `{m}` doesn't change its receiver (it doesn't take `mut self`)", shown()));
             } else if marked {
                 self.err(format!("`mut` on an argument of `{callee}`, but its parameter `{}` is not `mut`", p.name));
             }
@@ -2391,10 +2438,10 @@ impl<'a> Checker<'a> {
     /// Arithmetic and comparison: both sides the same numeric type, no implicit
     /// Int/Float mixing. Unknown operands default to Int.
     fn numeric(&mut self, lt: &Ty, rt: &Ty, op: &BinOp) {
-        self.expect(lt, rt, &format!("`{}` operands", op.symbol()));
+        self.expect(lt, rt, Lazy(|| format!("`{}` operands", op.symbol())));
         match self.resolve(lt) {
             Ty::Int | Ty::Float => {}
-            Ty::Var(_) => self.expect(&Ty::Int, lt, &format!("`{}` operands", op.symbol())),
+            Ty::Var(_) => self.expect(&Ty::Int, lt, Lazy(|| format!("`{}` operands", op.symbol()))),
             other => self.err(format!("`{}` needs Int or Float operands, found `{}` (convert with `float(n)` / `round(x)`)", op.symbol(), show_ty(&other))),
         }
     }
@@ -2539,7 +2586,7 @@ impl<'a> Checker<'a> {
                 let mut results = Vec::new();
                 let mut binds: Vec<HashMap<Symbol, Ty>> = Vec::new();
                 for alt in ps {
-                    self.scopes.push(HashMap::new());
+                    self.scopes.push(HashMap::default());
                     results.push(self.pattern(alt, t));
                     binds.push(self.scopes.pop().unwrap());
                 }
@@ -2565,10 +2612,10 @@ impl<'a> Checker<'a> {
                 (narrowed, P::Or(results.into_iter().map(|r| r.1).collect()))
             }
             Pattern::Cond(c) => {
-                self.scopes.push(HashMap::new());
+                self.scopes.push(HashMap::default());
                 self.bind(("it").sym(), t.clone());
                 let ct = self.infer(c);
-                self.expect(&Ty::Bool, &ct, &format!("pattern `where {}`", crate::printer::expr(c, 0)));
+                self.expect(&Ty::Bool, &ct, Lazy(|| format!("pattern `where {}`", crate::printer::expr(c, 0))));
                 self.scopes.pop();
                 (t.clone(), self.cond_set(t, c))
             }
@@ -2602,7 +2649,7 @@ impl<'a> Checker<'a> {
                     return (pt.clone(), P::Ty(pt));
                 }
                 let n_err = self.errors.len();
-                self.expect(t, &pt, &format!("pattern `{c}`"));
+                self.expect(t, &pt, Lazy(|| format!("pattern `{c}`")));
                 if self.errors.len() > n_err {
                     // already reported; don't also call it unreachable
                     return (pt, P::Lit);
@@ -2623,7 +2670,7 @@ impl<'a> Checker<'a> {
                 };
                 let own = self.variant_ty(c.sym(), &ct);
                 let n_err = self.errors.len();
-                self.expect(t, &own, &format!("pattern `{c}`"));
+                self.expect(t, &own, Lazy(|| format!("pattern `{c}`")));
                 let bad = self.errors.len() > n_err;
                 let field_names: Vec<Option<Symbol>> = fields.iter().map(|f| f.0).collect();
                 let subs: Vec<P> = match cp {
@@ -2929,14 +2976,14 @@ impl<'a> Checker<'a> {
         Checker {
             env,
             subst: Vec::new(),
-            scopes: vec![HashMap::new()],
+            scopes: vec![HashMap::default()],
             rigid: BTreeSet::new(),
             decl,
             errors: Vec::new(),
             holes: Vec::new(),
             matches: Vec::new(),
             self_ty: None,
-            bounds: HashMap::new(),
+            bounds: HashMap::default(),
             pending: Vec::new(),
             lambda_floor: 0,
             loops: 0,
@@ -2946,8 +2993,8 @@ impl<'a> Checker<'a> {
             last_inst: None,
             insts: Vec::new(),
             callee: false,
-            marked: HashSet::new(),
-            types: Vec::new(),
+            marked: HashSet::default(),
+            types: None,
         }
     }
 }
@@ -3020,29 +3067,29 @@ pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<Symbol, TypeExpr>>
 pub fn check(prog: &Program) -> CheckReport {
     let resolved = crate::resolve::resolve(prog);
     let prog = &resolved.program;
-    let (env, mut errors) = Env::build(prog);
+    let (env, mut errors) = Env::build_with(prog, false);
     errors.splice(0..0, resolved.errors);
-    let (errs, holes, _, _) = check_decls(prog, &env);
+    let (errs, holes, _, _) = check_decls(prog, &env, false);
     errors.extend(errs);
     CheckReport { errors, holes }
 }
 
 /// Check every declaration of a resolved program: errors, holes, and the
 /// method-call decisions `elaborate` writes into the program.
-fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usize, Target)>, HashMap<usize, Ty>) {
-    let (mut errors, mut holes, mut targets, mut types) = (Vec::new(), Vec::new(), Vec::new(), HashMap::new());
+fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usize, Target)>, HashMap<usize, Ty>) {
+    let (mut errors, mut holes, mut targets, mut types) = (Vec::new(), Vec::new(), Vec::new(), HashMap::default());
     for d in &prog.decls {
         let mut c = Checker {
             env: &env,
             subst: Vec::new(),
-            scopes: vec![HashMap::new()],
+            scopes: vec![HashMap::default()],
                 rigid: BTreeSet::new(),
             decl: d.name(),
             errors: Vec::new(),
             holes: Vec::new(),
             matches: Vec::new(),
             self_ty: None,
-            bounds: HashMap::new(),
+            bounds: HashMap::default(),
             pending: Vec::new(),
             lambda_floor: 0,
             loops: 0,
@@ -3052,10 +3099,9 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
         last_inst: None,
         insts: Vec::new(),
         callee: false,
-        marked: HashSet::new(),
-        types: Vec::new(),
+        marked: HashSet::default(),
+        types: record_types.then(Vec::new),
         };
-        let mut obligations = Vec::new();
         match &d.kind {
             DeclKind::Type(t) => {
                 if matches!(t.body, TypeBody::Alias(ref a) if !matches!(a, TypeExpr::Union(_))) && t.refinement.is_none() && !t.distinct {
@@ -3067,10 +3113,10 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                 }
                 c.rigid = t.params.iter().cloned().collect();
                 let self_ty = match &t.body {
-                    TypeBody::Alias(a) => c.lower(a, &HashMap::new()),
+                    TypeBody::Alias(a) => c.lower(a, &HashMap::default()),
                     TypeBody::Record(fs) => {
                         for f in fs {
-                            c.lower(&f.ty, &HashMap::new());
+                            c.lower(&f.ty, &HashMap::default());
                             c.check_refined(&f.ty);
                         }
                         c.check_defaults(fs);
@@ -3081,11 +3127,11 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                             match &v.payload {
                                 Payload::None => {}
                                 Payload::Positional(ts) => ts.iter().for_each(|t| {
-                                    c.lower(t, &HashMap::new());
+                                    c.lower(t, &HashMap::default());
                                 }),
                                 Payload::Record(fs) => {
                                     fs.iter().for_each(|f| {
-                                        c.lower(&f.ty, &HashMap::new());
+                                        c.lower(&f.ty, &HashMap::default());
                                     });
                                     c.check_defaults(fs);
                                 }
@@ -3101,7 +3147,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                 }
             }
             DeclKind::Fn(f) => {
-                c.check_fn(f, &mut obligations);
+                c.check_fn(f);
             }
             DeclKind::Trait(t) => {
                 c.rigid = t.params.iter().cloned().collect();
@@ -3121,27 +3167,26 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                         let short = crate::names::short(&m.decl.name);
                         c.err(format!("trait method `{short}` has no `self` and doesn't mention `Self`, so no implementation could be chosen for a call: make it a function"));
                     }
-                    let mut ob = Vec::new();
                     let saved = c.rigid.clone();
                     if m.default {
-                        c.check_fn(&m.decl, &mut ob);
+                        c.check_fn(&m.decl);
                     } else {
                         c.rigid.extend(m.decl.type_params.iter().cloned());
                         for p in &m.decl.params {
                             c.check_refined(&p.ty);
-                            c.lower(&p.ty, &HashMap::new());
+                            c.lower(&p.ty, &HashMap::default());
                         }
-                        c.lower(&m.decl.ret, &HashMap::new());
-                        c.scopes.push(HashMap::new());
+                        c.lower(&m.decl.ret, &HashMap::default());
+                        c.scopes.push(HashMap::default());
                         for p in &m.decl.params {
-                            let t = c.lower(&p.ty, &HashMap::new());
+                            let t = c.lower(&p.ty, &HashMap::default());
                             c.bind(p.name, t);
                         }
                         for r in &m.decl.requires {
                             let t = c.infer(r);
                             c.expect(&Ty::Bool, &t, "requires clause");
                         }
-                        let rt = c.lower(&m.decl.ret, &HashMap::new());
+                        let rt = c.lower(&m.decl.ret, &HashMap::default());
                         c.bind(("it").sym(), rt);
                         for en in &m.decl.ensures {
                             let t = c.infer(en);
@@ -3152,13 +3197,13 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                     c.rigid = saved;
                 }
                 for l in &t.laws {
-                    c.scopes.push(HashMap::new());
+                    c.scopes.push(HashMap::default());
                     for p in &l.params {
-                        let t = c.lower(&p.ty, &HashMap::new());
+                        let t = c.lower(&p.ty, &HashMap::default());
                         c.bind(p.name, t);
                     }
                     let lt = c.infer(&l.body);
-                    c.expect(&Ty::Bool, &lt, &format!("law `{}`", l.name));
+                    c.expect(&Ty::Bool, &lt, Lazy(|| format!("law `{}`", l.name)));
                     c.scopes.pop();
                 }
             }
@@ -3170,7 +3215,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                 if alias && !i.is_inherent() {
                     c.err(format!("`{head}` is a refined alias of another type; implement the trait for the underlying type"));
                 }
-                let self_ty = c.lower(&i.for_type, &HashMap::new());
+                let self_ty = c.lower(&i.for_type, &HashMap::default());
                 c.self_ty = Some(self_ty.clone());
                 match env.traits.get(&i.trait_name).cloned() {
                     None if i.is_inherent() => {
@@ -3179,7 +3224,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                         if !env.types.contains_key(&head.sym()) || alias {
                             c.err(format!("`impl {}`: methods can only be added to a record, sum or `distinct` type defined in this program (use a function, or a trait)", short(&head)));
                         }
-                        let mut seen = std::collections::HashSet::new();
+                        let mut seen = crate::fx::HashSet::default();
                         for im in &i.methods {
                             if !seen.insert(&im.name) {
                                 c.err(format!("`{}` is defined twice in `impl {}`", short(&im.name), short(&head)));
@@ -3191,7 +3236,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                         if tr.params.len() != i.trait_args.len() {
                             c.err(format!("trait `{}` takes {} type arguments", tr.name, tr.params.len()));
                         }
-                        let targs: Vec<Ty> = i.trait_args.iter().map(|a| c.lower(a, &HashMap::new())).collect();
+                        let targs: Vec<Ty> = i.trait_args.iter().map(|a| c.lower(a, &HashMap::default())).collect();
                         let vars: HashMap<Symbol, Ty> = tr.params.iter().cloned().zip(targs.iter().cloned()).collect();
                         // supertraits must be implemented too
                         for (sn, sa) in c.supers_of(&tr.name, &targs, 0) {
@@ -3212,7 +3257,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                                     }
                                     c.rigid.extend(im.type_params.iter().cloned());
                                     let want = c.lower(&Checker::fn_scheme(&tm.decl), &mvars);
-                                    let got = c.lower(&Checker::fn_scheme(im), &HashMap::new());
+                                    let got = c.lower(&Checker::fn_scheme(im), &HashMap::default());
                                     if let Err(e) = c.unify(&want, &got) {
                                         c.err(format!("`{}` does not match the signature in trait `{}`: {e}", im.name, tr.name));
                                     }
@@ -3233,8 +3278,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                 }
                 for im in &i.methods {
                     let saved = c.rigid.clone();
-                    let mut ob = Vec::new();
-                    c.check_fn(im, &mut ob);
+                    c.check_fn(im);
                     c.rigid = saved;
                 }
             }
@@ -3248,6 +3292,16 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
         let declared_goal = match &d.kind {
             DeclKind::Fn(f) if matches!(f.body, Expr::Hole(_)) => Some(crate::printer::ty(&f.ret)),
             _ => None,
+        };
+        // what a hole's function must satisfy, shown with its holes
+        let obligations: Vec<String> = match &d.kind {
+            DeclKind::Fn(f) if !c.holes.is_empty() => f
+                .requires
+                .iter()
+                .map(|r| format!("requires {}", crate::printer::expr(r, 0)))
+                .chain(f.ensures.iter().map(|e| format!("ensures {}", crate::printer::expr(e, 0))))
+                .collect(),
+            _ => vec![],
         };
         for (name, t, ctx) in std::mem::take(&mut c.holes) {
             let inferred = c.show(&t);
@@ -3263,7 +3317,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
             });
         }
         c.finish_insts();
-        for (at, t) in std::mem::take(&mut c.types) {
+        for (at, t) in c.types.take().into_iter().flatten() {
             types.insert(at, c.resolve(&t));
         }
         errors.extend(c.errors);
@@ -3276,7 +3330,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
 /// `Item.describe` once elaborated): `Self` is the type, and the impl's type
 /// parameters are the function's.
 pub fn static_fn(i: &ImplDecl, m: &FnDecl) -> FnDecl {
-    let sub: HashMap<Symbol, TypeExpr> = [(Symbol::new("Self"), i.for_type.clone())].into();
+    let sub: HashMap<Symbol, TypeExpr> = HashMap::from_iter([(Symbol::new("Self"), i.for_type.clone())]);
     let mut f = m.clone();
     f.name = Symbol::from(crate::resolve::static_name(&texpr_head(&i.for_type), &m.name));
     f.type_params = i.type_params.iter().chain(&m.type_params).cloned().collect();

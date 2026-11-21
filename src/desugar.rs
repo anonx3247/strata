@@ -17,7 +17,7 @@
 
 use crate::ast::*;
 use crate::types::Diag;
-use std::collections::HashMap;
+use crate::fx::HashMap;
 
 pub fn program(p: &mut Program, errors: &mut Vec<Diag>) {
     for d in &mut p.decls {
@@ -30,7 +30,7 @@ pub fn program(p: &mut Program, errors: &mut Vec<Diag>) {
 
 /// Fill in the fields a record constructor leaves out that have defaults.
 fn defaults(p: &mut Program) {
-    let mut of: HashMap<Symbol, Vec<(Symbol, Expr)>> = HashMap::new();
+    let mut of: HashMap<Symbol, Vec<(Symbol, Expr)>> = HashMap::default();
     let mut add = |name: Symbol, fs: &[Field]| {
         let ds: Vec<(Symbol, Expr)> = fs.iter().filter_map(|f| Some((f.name, f.default.clone()?))).collect();
         if !ds.is_empty() {

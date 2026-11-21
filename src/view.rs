@@ -10,7 +10,8 @@
 use crate::ast::*;
 use crate::printer;
 use crate::store;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
+use crate::fx::HashMap;
 
 pub struct Status {
     /// decl name -> hole names

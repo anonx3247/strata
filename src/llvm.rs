@@ -28,7 +28,8 @@
 
 use crate::ast::*;
 use crate::types::{Env, Ty};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
+use crate::fx::{HashMap, HashSet};
 use std::fmt::Write;
 
 #[cfg(feature = "jit")]
@@ -145,7 +146,7 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
     ctors.sort();
     let tags = ctors.iter().enumerate().map(|(i, c)| (c.to_string(), i as i64 + 1)).collect();
     // bodies as the checker saw them (its types are by node); signatures from `env`
-    let mut bodies: HashMap<String, &FnDecl> = HashMap::new();
+    let mut bodies: HashMap<String, &FnDecl> = HashMap::default();
     for d in &resolved.program.decls {
         match &d.kind {
             DeclKind::Fn(f) => {
@@ -171,8 +172,8 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::new(), body: String::new(), queue: VecDeque::new(), seen: HashSet::new(), helpers: HashSet::new(), lambdas: 0 };
-    let ret = m.lower(&main.ret, &HashMap::new())?;
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0 };
+    let ret = m.lower(&main.ret, &HashMap::default())?;
     // C's `main` first: it asks for the program's `main`, with its capabilities
     m.entry(entry, &main, &ret)?;
     while let Some(job) = m.queue.pop_front() {
@@ -434,7 +435,7 @@ impl<'a> Module<'a> {
         let tm = self.trait_method(&mi.tr, &mi.method).ok_or(format!("trait `{}` has no method `{}`", mi.tr, mi.method))?;
         let imp = self.impl_of(&mi.tr, &mi.head).ok_or(format!("`{}` does not implement `{}`", mi.head, mi.tr))?;
         let own = imp.methods.iter().find(|m| m.name == mi.method).unwrap_or(&tm.decl);
-        let mut sub = HashMap::new();
+        let mut sub = HashMap::default();
         sub.insert(Symbol::new("Self"), mi.recv.clone());
         self.bind_targs(&imp.for_type, &mi.recv, &imp.type_params, &mut sub);
         let tr = self.traits[&Symbol::new(&mi.tr)];
@@ -711,7 +712,7 @@ impl<'a> Module<'a> {
         };
         c.check(own.own_ret, &result, &format!("result of `{name}`"), true)?;
         if !own.ensures.is_empty() {
-            c.scopes.push(HashMap::new());
+            c.scopes.push(HashMap::default());
             let slot = c.local("it", &ret, None)?;
             c.store(&result, &slot)?;
             for en in own.ensures.clone() {
@@ -742,7 +743,7 @@ impl<'a> Module<'a> {
     /// `strata run` does: the console, the disk from `.`, the process), call
     /// it, and turn its result into an exit code.
     fn entry(&mut self, entry: &str, main: &FnDecl, ret: &Ty) -> Res<()> {
-        let mut c = Func::new(self, HashMap::new());
+        let mut c = Func::new(self, HashMap::default());
         c.block("start");
         c.emit("call void @strata_init(i32 %argc, ptr %argv)".into());
         let (mut args, mut impls) = (vec![], vec![]);
@@ -851,7 +852,7 @@ struct Func<'m, 'a> {
 
 impl<'m, 'a> Func<'m, 'a> {
     fn new(m: &'m mut Module<'a>, sub: HashMap<Symbol, Ty>) -> Self {
-        Func { m, sub, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![HashMap::new()], loops: vec![], ret_slot: None, cur: String::new(), terminated: true, places: vec![] }
+        Func { m, sub, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![HashMap::default()], loops: vec![], ret_slot: None, cur: String::new(), terminated: true, places: vec![] }
     }
 
     /// The function's text: the slots, then the code.
@@ -1198,7 +1199,7 @@ impl<'m, 'a> Func<'m, 'a> {
         if !self.m.helpers.insert(name.clone()) {
             return Ok(name);
         }
-        let mut h = Func::new(self.m, HashMap::new());
+        let mut h = Func::new(self.m, HashMap::default());
         h.block("start");
         let a: V = (t.clone(), "%a".into());
         let b: V = (t.clone(), "%b".into());
@@ -1694,8 +1695,8 @@ impl<'m, 'a> Func<'m, 'a> {
 
     /// Evaluate `f` with `it` bound to `v` (and only that, unless `outer`).
     fn with_it(&mut self, v: &V, outer: bool, f: impl FnOnce(&mut Self) -> Res<V>) -> Res<V> {
-        let saved = if outer { None } else { Some(std::mem::replace(&mut self.scopes, vec![HashMap::new()])) };
-        self.scopes.push(HashMap::new());
+        let saved = if outer { None } else { Some(std::mem::replace(&mut self.scopes, vec![HashMap::default()])) };
+        self.scopes.push(HashMap::default());
         let slot = self.local("it", &v.0, None);
         let r = slot.and_then(|slot| self.store(v, &slot)).and_then(|_| f(self));
         self.scopes.pop();
@@ -1798,7 +1799,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.join(&want, vec![(tv, from_t), (fv, from_f)])?
             }
             Expr::Block(stmts, last) => {
-                self.scopes.push(HashMap::new());
+                self.scopes.push(HashMap::default());
                 for s in stmts {
                     self.stmt(s)?;
                 }
@@ -1894,7 +1895,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let from_ok = self.cur.clone();
                 self.br(&end);
                 self.block(&fail);
-                self.scopes.push(HashMap::new());
+                self.scopes.push(HashMap::default());
                 if let Some(n) = name {
                     let et = match &vt {
                         Ty::Con(n, a) if n == "Result" => a[1].clone(),
@@ -2307,7 +2308,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let imp = self.m.impl_of(&tr, &head).ok_or(format!("`{head}` does not implement `{tr}`"))?;
         let own = imp.methods.iter().find(|x| x.name == m).unwrap_or(&tm.decl);
         // the method's own type parameters, from the arguments and the result
-        let mut targs = HashMap::new();
+        let mut targs = HashMap::default();
         for (p, v) in own.params.iter().zip(&vs) {
             self.m.bind_targs(&p.ty, &v.0, &own.type_params, &mut targs);
         }
@@ -2338,7 +2339,7 @@ impl<'m, 'a> Func<'m, 'a> {
             return Err(format!("`{name}` takes {} arguments", f.params.len()));
         }
         // the type arguments: the declared types against the actual ones
-        let mut targs = HashMap::new();
+        let mut targs = HashMap::default();
         for (p, v) in f.params.iter().zip(&vs) {
             self.m.bind_targs(&p.ty, &v.0, &f.type_params, &mut targs);
         }
@@ -2744,7 +2745,7 @@ impl<'m, 'a> Func<'m, 'a> {
             return self.unsupported(&format!("calling `{m}` (it mentions `Self`, has a `mut` parameter or type parameters of its own) on a value of the trait type `{tr}`"));
         }
         let td = self.m.traits[tr];
-        let sub: HashMap<Symbol, Ty> = if tr.as_str() == trm { td.params.iter().cloned().zip(args.iter().cloned()).collect() } else { HashMap::new() };
+        let sub: HashMap<Symbol, Ty> = if tr.as_str() == trm { td.params.iter().cloned().zip(args.iter().cloned()).collect() } else { HashMap::default() };
         Ok((tm, sub))
     }
 
@@ -2804,7 +2805,7 @@ impl<'m, 'a> Func<'m, 'a> {
             if !self.m.helpers.insert(f.clone()) {
                 continue;
             }
-            let mut h = Func::new(self.m, HashMap::new());
+            let mut h = Func::new(self.m, HashMap::default());
             h.block("start");
             let v = h.from_slot("%v", imp)?;
             let s = if i == 0 { h.json(&v)? } else { h.show(&v)? };
@@ -2824,7 +2825,7 @@ impl<'m, 'a> Func<'m, 'a> {
             let mi = MethodInst { tr: trm.clone(), method: imp_m, recv: imp.clone(), head: head.clone(), targs: vec![] };
             let symbol = self.m.want_method(mi);
             let ret = self.m.lower(&tm.decl.ret, &sub)?;
-            let mut h = Func::new(self.m, HashMap::new());
+            let mut h = Func::new(self.m, HashMap::default());
             h.block("start");
             let mutable = tm.decl.params[0].mutable;
             let mut sig = vec![if mutable { "ptr %self".to_string() } else { "i64 %self".to_string() }];
@@ -3108,7 +3109,7 @@ impl<'m, 'a> Func<'m, 'a> {
         if is_never(&v.0) {
             return Ok(v);
         }
-        self.scopes.push(HashMap::new());
+        self.scopes.push(HashMap::default());
         if let Some(n) = as_name {
             let slot = self.local(n, &v.0, None)?;
             self.store(&v, &slot)?;
@@ -3117,7 +3118,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let mut incoming = vec![];
         for arm in arms {
             let next = self.fresh_label("next_arm");
-            self.scopes.push(HashMap::new());
+            self.scopes.push(HashMap::default());
             self.pattern(&arm.pat, &v, &next)?;
             let r = self.expr(&arm.body)?;
             let r = self.coerce(r, &want)?;
@@ -3159,7 +3160,7 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             Pattern::Cond(c) => {
                 // the condition sees the variables in scope, and `it`
-                self.scopes.push(HashMap::new());
+                self.scopes.push(HashMap::default());
                 let slot = self.local("it", &v.0, None)?;
                 self.store(v, &slot)?;
                 let ok = self.expr(c)?;
@@ -3346,7 +3347,7 @@ impl<'m, 'a> Func<'m, 'a> {
                     self.cond_br(&more, &inner, &end);
                     self.block(&inner);
                     let x = self.list_at(&v, &i, &et)?;
-                    self.scopes.push(HashMap::new());
+                    self.scopes.push(HashMap::default());
                     let fail = self.fresh_label("for.nomatch");
                     self.pattern(p, &x, &fail)?;
                     self.loop_body(body, &step, &end)?;
@@ -3387,7 +3388,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let more = self.apply(BinOp::Lt, &(Ty::Int, i.clone()), &hi)?;
                 self.cond_br(&more, &inner, &end);
                 self.block(&inner);
-                self.scopes.push(HashMap::new());
+                self.scopes.push(HashMap::default());
                 match p {
                     Pattern::Bind(x) => self.bind(x, &(Ty::Int, i.clone()))?,
                     Pattern::Wild => {}

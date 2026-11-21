@@ -21,15 +21,22 @@ pub struct Env {
 impl Env {
     /// The environment of an already resolved program.
     pub fn build(prog: &Program) -> (Env, Vec<Diag>) {
+        Env::build_with(prog, true)
+    }
+
+    /// `build`; without `bodies`, functions and methods are kept as their
+    /// signatures (bodies `()`), which is all checking needs: what runs or is
+    /// verified needs the bodies.
+    pub fn build_with(prog: &Program, bodies: bool) -> (Env, Vec<Diag>) {
         let prelude = prelude();
         let mut env = Env {
-            types: HashMap::new(),
-            ctors: HashMap::new(),
-            fns: HashMap::new(),
-            traits: HashMap::new(),
+            types: HashMap::default(),
+            ctors: HashMap::default(),
+            fns: HashMap::default(),
+            traits: HashMap::default(),
             impls: Vec::new(),
-            method_traits: HashMap::new(),
-            inherent: HashMap::new(),
+            method_traits: HashMap::default(),
+            inherent: HashMap::default(),
         };
         let mut errs = Vec::new();
         let prelude_names: Vec<String> = prelude.decls.iter().map(|d| d.name()).collect();
@@ -60,18 +67,19 @@ impl Env {
                     }
                     env.types.insert(t.name, t.clone()).is_some()
                 }
-                DeclKind::Fn(f) => env.fns.insert(f.name, f.clone()).is_some(),
+                DeclKind::Fn(f) => env.fns.insert(f.name, if bodies { f.clone() } else { f.signature() }).is_some(),
                 DeclKind::Test(_) | DeclKind::Use(_) => false,
                 DeclKind::Trait(t) => {
                     for m in &t.methods {
                         env.method_traits.entry(m.decl.name).or_default().push(t.name);
                     }
-                    env.traits.insert(t.name, t.clone()).is_some()
+                    env.traits.insert(t.name, if bodies { t.clone() } else { t.signatures() }).is_some()
                 }
                 DeclKind::Impl(i) if i.is_inherent() => {
                     let head = texpr_head(&i.for_type);
                     // `Item.new()` (no `self`) and, once elaborated, `item.describe()` on a known
                     // `Item` are calls of the functions `Item.new` / `Item.describe`
+                    let i = &if bodies { i.clone() } else { i.signatures() };
                     for m in &i.methods {
                         let f = static_fn(i, m);
                         env.fns.insert(f.name, f);
@@ -86,7 +94,7 @@ impl Env {
                     if env.impls.iter().any(|o| o.trait_name == i.trait_name && texpr_head(&o.for_type) == head) {
                         errs.push(Diag { decl: name.clone(), msg: format!("`{}` is already implemented for `{head}`", i.trait_name) });
                     }
-                    env.impls.push(i.clone());
+                    env.impls.push(if bodies { i.clone() } else { i.signatures() });
                     false
                 }
             };
@@ -102,7 +110,7 @@ impl Env {
         // a variant is a type too, so its name must be unique in the whole
         // project: no other variant, type or trait (in any module) may share it
         let short = |q: &str| crate::names::short(q).to_string();
-        let mut owners: HashMap<String, Vec<String>> = HashMap::new();
+        let mut owners: HashMap<String, Vec<String>> = HashMap::default();
         for n in env.types.keys().chain(env.traits.keys()) {
             owners.entry(short(n)).or_default().push(format!("the type `{n}`"));
         }
@@ -150,7 +158,7 @@ impl Env {
     pub fn type_args(&self, f: &FnDecl) -> Vec<Symbol> {
         let has_static = |tr: Symbol| {
             let mut stack = vec![tr];
-            let mut seen = std::collections::HashSet::new();
+            let mut seen = crate::fx::HashSet::default();
             while let Some(t) = stack.pop() {
                 if !seen.insert(t) {
                     continue;
