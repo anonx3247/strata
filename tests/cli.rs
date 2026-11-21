@@ -3962,8 +3962,10 @@ fn unions_that_add_nothing_are_refused() {
         ("type Circle = { r: Int }\ntype Square = { s: Int }\ntype Shape = Circle | Square\ndistinct type Figure = Circle | Square\nfn f() -> Figure = Figure(Circle { r: 1 })", None),
         ("distinct type Lv = Up | Down", Some("`Lv` declares its members, so it is a type of its own already")),
         // a type parameter is wrapped in a member the union declares, as `Option`'s `Some(T)`
-        ("type Problem = { why: String }\ntype OrError[T] = T | Problem", Some("`T` can't be a member of `OrError` as it is: wrap `T` in a member `OrError` declares")),
-        ("type Many[T] = List[T] | Int", Some("`List[T]` can't be a member of `Many` as it is")),
+        ("type Problem = { why: String }\ntype OrError[T] = T | Problem", Some("`T` can't be a member of `OrError` on its own: wrap it")),
+        ("type Two[A, B] = List[A] | List[B]", Some("`List[A]` can't be a member of `Two` next to another `List`")),
+        ("type Many[T] = List[T] | Int", None),
+        ("type Many[T] = List[T] | Int\ntype Ints = List[Int] | Int", Some("`type Ints = List[Int] | Int` adds nothing: it is `Many`")),
         ("type Problem = { why: String }\ntype OrError[T] = Value(T) | Problem", None),
     ];
     for (k, (src, want)) in cases.iter().enumerate() {
@@ -4168,6 +4170,67 @@ fn main() {
     Value(n) => print(n),
     Problem => print("no"),
   }
+}
+"##;
+
+/// A generic union with a wrapped parameter (`List[T]`): its `impl`s, a
+/// bare `List =>` arm, and `List[Int] | Problem` rendered as `Many[Int]`.
+#[test]
+fn generic_unions_of_wrapped_parameters() {
+    let d = tmp("unions-wrapped");
+    let (ok, out) = strata(&["--file", "g.strata", "edit"], &d, Some(WRAPPED_UNION));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "g.strata"], &d, None);
+    assert!(ok && out == "3 items\nproblem: none\n", "{out}");
+    let (ok, out) = strata(&["--file", "r.strata", "edit"], &d, Some("type Problem = { why: String }\n\ntype Many[T] = List[T] | Problem\n\nfn f(x: List[Int] | Problem) -> Int {\n  match x {\n    List => len(x),\n    Problem => 0,\n  }\n}\n\nfn main() {\n  print(f([1, 2]))\n}\n"));
+    assert!(ok, "{out}");
+    let (ok, text) = strata(&["--file", "r.strata", "render"], &d, None);
+    assert!(ok && text.contains("fn f(x: Many[Int]) -> Int"), "{text}");
+    let (ok, out) = strata(&["run", "r.strata"], &d, None);
+    assert!(ok && out == "2\n", "{out}");
+}
+
+/// Two modules may name the same set, but not both implement a trait for it.
+#[test]
+fn unions_naming_the_same_set_in_two_modules() {
+    let d = tmp("unions-two-modules");
+    let edit = |m: &str, text: &str| strata(&["--file", "./", "edit", m], &d, Some(text));
+    assert!(edit("shapes", "pub trait Show {\n  fn show(self) -> String\n}\n\npub type Circle = { r: Int }\n\npub type Square = { s: Int }\n").0);
+    assert!(edit("geo", "use shapes.{Show, Circle, Square}\n\npub type Shape = Circle | Square\n\nimpl Show for Shape {\n  fn show(self) -> String = \"geo\"\n}\n").0);
+    let (ok, out) = edit("ui", "use shapes.{Circle, Square}\n\npub type Figure = Circle | Square\n");
+    assert!(ok, "{out}");
+    let (ok, out) = edit("ui", "use shapes.{Show, Circle, Square}\n\npub type Figure = Circle | Square\n\nimpl Show for Figure {\n  fn show(self) -> String = \"ui\"\n}\n");
+    assert!(!ok && out.contains("`ui.Figure` and `geo.Shape` name the same set and both implement `Show`"), "{out}");
+}
+
+const WRAPPED_UNION: &str = r##"trait Show {
+  fn show(self) -> String
+}
+
+type Problem = { why: String }
+
+type Many[T] = List[T] | Problem
+
+impl[T] Show for Many[T] {
+  fn show(self) -> String {
+    match self {
+      List => f"{len(self)} items",
+      Problem => f"problem: {self.why}",
+    }
+  }
+}
+
+fn get(n: Int) -> Many[Int] {
+  if n > 0 {
+    [1, 2, n]
+  } else {
+    Problem { why: "none" }
+  }
+}
+
+fn main() {
+  print(get(3).show())
+  print(get(0).show())
 }
 "##;
 

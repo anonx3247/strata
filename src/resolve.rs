@@ -848,8 +848,23 @@ fn named_unions(p: &Program) -> Program {
     let qual = |d: &Decl, n: Symbol| if d.module.is_empty() { n.to_string() } else { format!("{}.{}", d.module, short(&n)) };
     let mut aliases: HashMap<String, TypeExpr> = HashMap::default();
     let mut sums: HashMap<String, Vec<String>> = HashMap::default();
+    // generic unions: their parameters and members (a declared one by its name)
+    let mut generic: Vec<(String, Vec<Symbol>, Vec<TypeExpr>)> = vec![];
     for d in &p.decls {
         let DeclKind::Type(t) = &d.kind else { continue };
+        if !t.distinct && !t.params.is_empty() && t.refinement.is_none() {
+            let ms: Vec<TypeExpr> = match &t.body {
+                TypeBody::Alias(TypeExpr::Union(ms)) => ms.clone(),
+                TypeBody::Sum(vs) if vs.iter().any(|v| matches!(v.payload, Payload::Type(_))) => vs.iter().map(|v| match &v.payload {
+                    Payload::Type(x) => x.clone(),
+                    _ => TypeExpr::Named(Symbol::new(&qual(d, v.name)), vec![]),
+                }).collect(),
+                _ => vec![],
+            };
+            if ms.len() >= 2 {
+                generic.push((qual(d, t.name), t.params.clone(), ms));
+            }
+        }
         if t.distinct || !t.params.is_empty() {
             continue;
         }
@@ -866,8 +881,39 @@ fn named_unions(p: &Program) -> Program {
             _ => {}
         }
     }
-    if aliases.is_empty() && sums.values().all(|vs| vs.len() < 2) {
+    if aliases.is_empty() && generic.is_empty() && sums.values().all(|vs| vs.len() < 2) {
         return p.clone();
+    }
+    // a union written out as a generic one with its arguments (`List[Int] |
+    // Problem` is `Many[Int]`): its members paired by what they are, each
+    // parameter read off them
+    fn instance(written: &[TypeExpr], params: &[Symbol], members: &[TypeExpr]) -> Option<Vec<TypeExpr>> {
+        fn bind(pat: &TypeExpr, t: &TypeExpr, params: &[Symbol], out: &mut HashMap<Symbol, TypeExpr>) -> bool {
+            match (pat, t) {
+                (TypeExpr::Named(p, a), _) if a.is_empty() && params.contains(p) => match out.get(p) {
+                    Some(x) => x == t,
+                    None => {
+                        out.insert(*p, t.clone());
+                        true
+                    }
+                },
+                (TypeExpr::Named(n, a), TypeExpr::Named(m, b)) => n == m && a.len() == b.len() && a.iter().zip(b).all(|(x, y)| bind(x, y, params, out)),
+                _ => pat == t,
+            }
+        }
+        if written.len() != members.len() {
+            return None;
+        }
+        let mut out = HashMap::default();
+        for m in members {
+            let head = crate::types::texpr_head(m);
+            let mut alike = written.iter().filter(|w| crate::types::texpr_head(w) == head);
+            let (Some(w), None) = (alike.next(), alike.next()) else { return None };
+            if !bind(m, w, params, &mut out) {
+                return None;
+            }
+        }
+        params.iter().map(|p| out.get(p).cloned()).collect()
     }
     // a type's members, as a set of names
     fn flat(t: &TypeExpr, aliases: &HashMap<String, TypeExpr>, sums: &HashMap<String, Vec<String>>, depth: usize, out: &mut BTreeSet<String>) {
@@ -898,6 +944,7 @@ fn named_unions(p: &Program) -> Program {
     }).filter(|(_, s)| s.len() >= 2).collect();
     named.sort();
     struct Name<'x> {
+        generic: &'x [(String, Vec<Symbol>, Vec<TypeExpr>)],
         named: &'x [(String, BTreeSet<String>)],
         aliases: &'x HashMap<String, TypeExpr>,
         sums: &'x HashMap<String, Vec<String>>,
@@ -908,6 +955,16 @@ fn named_unions(p: &Program) -> Program {
         fn ty(&mut self, t: &mut TypeExpr) {
             walk_ty_mut(self, t);
             let TypeExpr::Union(ms) = t else { return };
+            for (n, ps, gm) in self.generic {
+                let m = crate::names::module_of(n);
+                if *n == self.own || !(m == self.module || m.is_empty()) {
+                    continue;
+                }
+                if let Some(args) = instance(ms, ps, gm) {
+                    *t = TypeExpr::Named(Symbol::new(n), args);
+                    return;
+                }
+            }
             let mut set = BTreeSet::new();
             flat(&TypeExpr::Union(ms.clone()), self.aliases, self.sums, 0, &mut set);
             let visible: Vec<&(String, BTreeSet<String>)> = self.named.iter().filter(|(n, _)| {
@@ -949,7 +1006,7 @@ fn named_unions(p: &Program) -> Program {
             DeclKind::Type(t) => qual(d, t.name),
             _ => String::new(),
         };
-        let mut v = Name { named: &named, aliases: &aliases, sums: &sums, module, own };
+        let mut v = Name { generic: &generic, named: &named, aliases: &aliases, sums: &sums, module, own };
         walk_decl_mut(&mut v, &mut d.kind);
     }
     let _ = module_of_name;

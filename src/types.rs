@@ -1453,20 +1453,54 @@ impl<'a> Checker<'a> {
     /// are compared as a set; a generic or refined alias doesn't count.
     fn union_name(&mut self, t: &Ty) -> Option<Symbol> {
         let Ty::Union(ms) = self.resolve(t) else { return None };
-        let key = |c: &mut Self, ms: &[Ty]| c.set_key(ms);
-        let want = key(self, &ms);
         let env = self.env;
-        let mut names: Vec<Symbol> = env.types.iter().filter(|(_, td)| union_alias(td)).map(|(n, _)| *n).collect();
+        // one without type parameters first (`Ints` before `Many[Int]`)
+        let mut names: Vec<(bool, Symbol)> = env.types.iter().filter(|(_, td)| union_alias(td)).map(|(n, td)| (!td.params.is_empty(), *n)).collect();
         names.sort();
-        for n in names {
+        for (_, n) in names {
             let lowered = self.lower_fresh(n);
             if let Ty::Union(ns) = self.resolve(&lowered) {
-                if key(self, &ns) == want {
+                if self.same_set(&ns, &ms) {
                     return Some(n);
                 }
             }
         }
         None
+    }
+
+    /// Whether two unions have the same members: paired by what they are
+    /// (`List` with `List`, a sum counting as its variants), their type
+    /// arguments then the same (`List[T]` is `List[Int]`, for `T` fresh).
+    /// Nothing is left unified.
+    fn same_set(&mut self, a: &[Ty], b: &[Ty]) -> bool {
+        let atoms = |c: &mut Self, ms: &[Ty]| -> Vec<Ty> {
+            ms.iter().flat_map(|m| match c.resolve(m) {
+                Ty::Con(n, args) if matches!(c.env.types.get(&n).map(|t| &t.body), Some(TypeBody::Sum(_))) => match &c.env.types[&n].body {
+                    TypeBody::Sum(vs) => vs.iter().map(|v| Ty::Con(v.name, args.clone())).collect::<Vec<_>>(),
+                    _ => unreachable!(),
+                },
+                r => vec![r],
+            }).collect()
+        };
+        let (a, b) = (atoms(self, a), atoms(self, b));
+        if a.len() != b.len() {
+            return false;
+        }
+        let snapshot = self.subst.clone();
+        let mut ok = true;
+        for x in &a {
+            let hx = ty_head(x);
+            let found: Vec<&Ty> = b.iter().filter(|y| ty_head(y) == hx && (hx.is_some() || show_ty(y) == show_ty(x))).collect();
+            ok = match found.as_slice() {
+                [y] => self.unify(x, y).is_ok(),
+                _ => false,
+            };
+            if !ok {
+                break;
+            }
+        }
+        self.subst = snapshot;
+        ok
     }
 
     /// The named type `n`, its type parameters fresh (`OrError[?]`).
@@ -1507,7 +1541,6 @@ impl<'a> Checker<'a> {
             }
             return Some(format!("`type {} = {written}` adds nothing: it is `{}` (use that, or make it a separate type: `distinct type {} = {written}`)", crate::names::short(&t.name), show_ty(&self.resolve(&lowered)), crate::names::short(&t.name)));
         };
-        let want = self.set_key(&ms);
         let module = crate::names::module_of(&t.name).to_string();
         let env = self.env;
         // (the first name of a set keeps it: the later one adds nothing)
@@ -1518,26 +1551,62 @@ impl<'a> Checker<'a> {
         }).collect();
         others.sort_by_key(|(n, _)| *n);
         for (n, d) in others {
-            let key = match &d.body {
-                TypeBody::Sum(vs) => {
-                    let mut k: Vec<String> = vs.iter().map(|v| v.name.to_string()).collect();
-                    k.sort();
-                    k
-                }
-                _ => {
-                    let l = self.lower_fresh(n);
-                    match self.resolve(&l) {
-                        Ty::Union(ns) => self.set_key(&ns),
-                        _ => continue,
-                    }
-                }
+            // (a generic union isn't an instance of one without parameters)
+            if !t.params.is_empty() && d.params.is_empty() {
+                continue;
+            }
+            let l = self.lower_fresh(n);
+            let theirs = match self.resolve(&l) {
+                Ty::Union(ns) => ns,
+                one @ Ty::Con(..) => vec![one],
+                _ => continue,
             };
-            if key == want {
+            if self.same_set(&theirs, &ms) {
                 let s = crate::names::short(&t.name);
                 return Some(format!("`type {s} = {written}` adds nothing: it is `{}` (use that, or make it a separate type: `distinct type {s} = {written}`)", crate::names::short(&n)));
             }
         }
         None
+    }
+
+    /// Two modules may name the same set (`geo.Shape`, `ui.Figure`), but not
+    /// both implement a trait (or both have a method) for it: a value of the
+    /// set wouldn't know which applies.
+    fn union_conflicts(&mut self, t: &TypeDecl) -> Vec<String> {
+        let env = self.env;
+        let at = |n: &Symbol| env.type_order.get(n).copied().unwrap_or(usize::MAX);
+        let traits_of = |n: Symbol| -> Vec<String> {
+            let mut out: Vec<String> = env.impls.iter().filter(|i| texpr_head(&i.for_type) == n).map(|i| i.trait_name.to_string()).collect();
+            if let Some(imp) = env.inherent.get(&n) {
+                out.extend(imp.methods.iter().map(|m| format!("method {}", crate::names::short(&m.name))));
+            }
+            out
+        };
+        let mine = traits_of(t.name);
+        if mine.is_empty() {
+            return vec![];
+        }
+        let module = crate::names::module_of(&t.name).to_string();
+        let mut others: Vec<Symbol> = env.types.iter().filter(|(n, d)| **n != t.name && union_alias(d) && at(n) < at(&t.name) && crate::names::module_of(n) != module).map(|(n, _)| *n).collect();
+        others.sort();
+        let own = self.lower_fresh(t.name);
+        let Ty::Union(ms) = self.resolve(&own) else { return vec![] };
+        let mut out = vec![];
+        for o in others {
+            let theirs = self.lower_fresh(o);
+            let Ty::Union(os) = self.resolve(&theirs) else { continue };
+            if !self.same_set(&ms, &os) {
+                continue;
+            }
+            for both in mine.iter().filter(|x| traits_of(o).contains(x)) {
+                let what = match both.strip_prefix("method ") {
+                    Some(m) => format!("have a method `{m}`"),
+                    None => format!("implement `{}`", crate::names::short(both)),
+                };
+                out.push(format!("`{}` and `{o}` name the same set and both {what}: which one a value of it uses wouldn't be known (make one `distinct`)", t.name));
+            }
+        }
+        out
     }
 
     fn satisfies(&mut self, t: &Ty, tr: &str, args: &[Ty], depth: usize) -> Result<(), String> {
@@ -4277,6 +4346,9 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
                     if let Some(m) = c.union_adds_nothing(t) {
                         c.err(m);
                     }
+                    for m in c.union_conflicts(t) {
+                        c.err(m);
+                    }
                 }
                 // a union's type parameter is wrapped in a member it declares
                 // (`Some(T)`, as `Option` does), not a member on its own (`T`,
@@ -4291,10 +4363,20 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
                             TypeExpr::Unit => None,
                         }
                     }
-                    for m in ms.iter().filter(|m| !matches!(m, TypeExpr::Named(n, _) if n.contains(crate::desugar::OWN))) {
-                        if let Some(p) = mentions(m, &t.params) {
-                            let s = crate::names::short(&t.name);
-                            c.err(format!("`{}` can't be a member of `{s}` as it is: wrap `{p}` in a member `{s}` declares (`Value({p})`), as `Option` has `Some(T)`", crate::printer::ty(m)));
+                    let s = crate::names::short(&t.name);
+                    let others: Vec<&TypeExpr> = ms.iter().filter(|m| !matches!(m, TypeExpr::Named(n, _) if n.contains(crate::desugar::OWN))).collect();
+                    for m in &others {
+                        match m {
+                            TypeExpr::Named(p, a) if a.is_empty() && t.params.contains(p) => {
+                                c.err(format!("`{p}` can't be a member of `{s}` on its own: wrap it, in a member `{s}` declares (`Value({p})`, as `Option` has `Some(T)`) or a type (`List[{p}]`)"));
+                            }
+                            _ => {
+                                // two members alike (`List[A] | List[B]`) couldn't be told apart
+                                let head = texpr_head(m);
+                                if mentions(m, &t.params).is_some() && others.iter().filter(|o| texpr_head(o) == head).count() > 1 {
+                                    c.err(format!("`{}` can't be a member of `{s}` next to another `{}`: which is which wouldn't be known", crate::printer::ty(m), crate::names::short(&head)));
+                                }
+                            }
                         }
                     }
                 }

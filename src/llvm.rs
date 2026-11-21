@@ -1155,7 +1155,7 @@ impl<'a> Module<'a> {
     /// the checker finds it (`Checker::union_name`): its methods are its own.
     fn union_name(&self, t: &Ty) -> Option<String> {
         // a sum counts as its variants (`Circle | Shape$own` is `Circle | Square | Dot`)
-        let key = |ms: Vec<Ty>| {
+        let exact = |ms: Vec<Ty>| {
             let mut k: Vec<String> = ms.iter().flat_map(|m| match self.ctors_of(m) {
                 cs if cs.is_empty() => vec![key(m)],
                 cs => cs,
@@ -1164,17 +1164,31 @@ impl<'a> Module<'a> {
             k.dedup();
             k
         };
-        let want = key(self.members(t));
+        let want = exact(self.members(t));
         if want.len() < 2 {
             return None;
         }
         let mut names: Vec<&Symbol> = self.env.types.iter().filter(|(_, td)| crate::types::union_alias(td)).map(|(n, _)| n).collect();
         names.sort();
-        // (a generic one's parameters don't matter: it is named by its members' names)
-        names.into_iter().find(|n| {
+        // one without type parameters, exactly; else a generic one, its
+        // members paired by what they are (`List[T]` with `List[Int]`): the
+        // checker made sure no two of its members are alike
+        if let Some(n) = names.iter().find(|n| self.env.types[**n].params.is_empty() && self.lower(&TypeExpr::Named(***n, vec![]), &HashMap::default()).is_ok_and(|u| exact(self.members(&u)) == want)) {
+            return Some(n.to_string());
+        }
+        let heads = |ms: Vec<Ty>| {
+            let mut k: Vec<String> = ms.iter().flat_map(|m| match self.ctors_of(m) {
+                cs if cs.is_empty() => vec![Module::head(m).unwrap_or_else(|| key(m))],
+                cs => cs,
+            }).collect();
+            k.sort();
+            k
+        };
+        let want = heads(self.members(t));
+        names.into_iter().filter(|n| !self.env.types[*n].params.is_empty()).find(|n| {
             let ps = &self.env.types[*n].params;
             let sub: HashMap<Symbol, Ty> = ps.iter().map(|p| (*p, Ty::Unit)).collect();
-            self.lower(&TypeExpr::Named(**n, ps.iter().map(|p| TypeExpr::Named(*p, vec![])).collect()), &sub).is_ok_and(|u| key(self.members(&u)) == want)
+            self.lower(&TypeExpr::Named(**n, ps.iter().map(|p| TypeExpr::Named(*p, vec![])).collect()), &sub).is_ok_and(|u| heads(self.members(&u)) == want)
         }).map(|n| n.to_string())
     }
 
@@ -3467,8 +3481,17 @@ impl<'m, 'a> Func<'m, 'a> {
     fn holds(&mut self, written: &TypeExpr, v: &V) -> Res<V> {
         let TypeExpr::Named(name, _) = written else { return self.unsupported("this type pattern") };
         if self.m.boxed(&v.0) {
-            // the member first, then its refinements on the value as it
-            let target = self.lower(written)?;
+            // the member first, then its refinements on the value as it; a
+            // generic one named without its arguments (`List =>`) is the
+            // union's member of that name (`List[Int]`)
+            let bare = match written {
+                TypeExpr::Named(n, a) if a.is_empty() => self.m.members(&v.0).into_iter().find(|m| Module::head(m).as_deref() == Some(n.as_str()) && !Module::args_of(m).is_empty()),
+                _ => None,
+            };
+            let target = match bare {
+                Some(m) => m,
+                None => self.lower(written)?,
+            };
             let is = self.holds_member(v, &target)?;
             if self.m.boxed(&target) || self.m.members(&target).len() > 1 {
                 return Ok(is);
@@ -6235,6 +6258,15 @@ impl Module<'_> {
                     self.bind_targs(p, q, params, out);
                 }
                 self.bind_targs(r, s, params, out);
+            }
+            // a union's members, paired by what they are (`List[T]` with `List[Int]`)
+            (TypeExpr::Union(ws), Ty::Union(ts)) => {
+                for w in ws {
+                    let head = crate::types::texpr_head(w);
+                    if let Some(x) = ts.iter().find(|x| Module::head(x).as_deref() == Some(head.as_str())) {
+                        self.bind_targs(w, x, params, out);
+                    }
+                }
             }
             _ => {}
         }
