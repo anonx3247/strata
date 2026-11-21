@@ -1019,6 +1019,18 @@ Str *strata_str_chr(int64_t c) {
   return str_from(b, utf8_put((int32_t)c, b));
 }
 
+// `matches(s, re)`: the DFA the compiler made of `^(?:re)$` (llvm.rs,
+// `regex`): each byte's class, the next state of (state, class), the dead
+// states, and those that match at the end. It starts in state 0.
+_Bool strata_dfa_match(Str *s, const int16_t *cls, int64_t nc, const int32_t *next, const uint8_t *dead, const uint8_t *end) {
+  int64_t st = 0;
+  for (int64_t i = 0; i < s->len; i++) {
+    st = next[st * nc + cls[(unsigned char)s->bytes[i]]];
+    if (dead[st]) return 0;
+  }
+  return end[st];
+}
+
 // `parse_int`, as Rust's `BigInt` reads the trimmed string: a sign, then a
 // digit, then digits and `_`. False when it isn't a number; a fault when it
 // doesn't fit in 64 bits (big integers are not compiled yet).

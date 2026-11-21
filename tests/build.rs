@@ -190,7 +190,7 @@ fn traits_run_as_interpreted() {
     }
     let d = tmp("traits");
     // examples/traits.strata, its tests as `main` (without the regex of `Sku`)
-    let src = tests_as_main("examples/traits.strata", "Sku(");
+    let src = tests_as_main("examples/traits.strata", "");
     let (out, code) = case(&d, "traits_example", &src);
     assert!(out.contains("all asserts hold") && code == 0, "{out}");
     let cases = [
@@ -626,10 +626,10 @@ fn options_from_the_command_line_compile() {
 fn what_is_not_compiled_yet_is_named() {
     let d = tmp("unsupported");
     let f = d.join("lists.strata");
-    save(&f, "fn main() { print(matches(\"a1\", \"[a-z][0-9]\")) }\n");
+    save(&f, "fn main() { p := \"[a-z]\" + \"[0-9]\" print(matches(\"a1\", p)) }\n");
     let o = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(!o.status.success() && err.contains("can't compile `main`: the built-in `matches` on (String, String) is not compiled yet"), "{err}");
+    assert!(!o.status.success() && err.contains("can't compile `main`: `matches` with a pattern that isn't a literal is not compiled yet"), "{err}");
 }
 
 #[test]
@@ -656,10 +656,10 @@ fn the_jit_runs_as_the_interpreter() {
     assert_eq!(jit.1, 101);
     // what doesn't compile yet is interpreted, and says why
     let f = d.join("lists.strata");
-    save(&f, "fn main() { print(matches(\"a1\", \"[a-z][0-9]\")) }\n");
+    save(&f, "fn main() { p := \"[a-z]\" + \"[0-9]\" print(matches(\"a1\", p)) }\n");
     let (out, code) = output(Command::new(strata).args(["run", "--jit"]).arg(&f));
     assert_eq!(code, 0);
-    assert!(out.contains("true\n") && out.contains("note: interpreted, not compiled: can't compile `main`: the built-in `matches` on (String, String) is not compiled yet"), "{out}");
+    assert!(out.contains("true\n") && out.contains("note: interpreted, not compiled: can't compile `main`: `matches` with a pattern that isn't a literal is not compiled yet"), "{out}");
 }
 
 /// `strata run --jit` with options: the derived `from_args`, compiled.
@@ -1192,5 +1192,56 @@ fn main() {
   print(p.convert())
   print(make(true).area())
   print(make(false).name())
+}
+"#;
+
+/// `matches` with a literal pattern, compiled to a DFA (the interpreter's
+/// engine): ASCII and Unicode classes, in a refinement too; a bad pattern
+/// faults with the interpreter's message. And functions shown as values.
+#[test]
+fn regexes_and_shown_functions_compile() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("regex");
+    let (out, code) = case(&d, "regex", REGEX);
+    assert!(code == 101 && out.starts_with("abc: true\nabc_d1: true\nAbc: false\n") && out.contains("does not satisfy `Sku`"), "{out}");
+    let (out, code) = case(&d, "bad_regex", "fn main() { print(matches(\"a\", \"(\")) }\n");
+    assert!(code == 101 && out.contains("bad regex: regex parse error"), "{out}");
+    let (out, code) = case(&d, "shown_functions", SHOWN_FUNCTIONS);
+    assert!(code == 0 && out.starts_with("\"<closure (x) -> …>\"\n{\"name\":\"h\",\"on\":\"<fn twice>\"}\n"), "{out}");
+}
+
+const REGEX: &str = r#"type Sku = String where matches(it, "[A-Z]{3}-[0-9]{4}")
+
+fn check(s: String) -> Bool { matches(s, "[a-z]+(_[a-z0-9]+)*") }
+
+fn main() {
+  for s in ["abc", "abc_d1", "Abc", "", "a__b", "héllo"] {
+    print(f"{s}: {check(s)}")
+  }
+  print(matches("héllo", "\\w+"))
+  print(matches("日本語", "\\p{Han}+"))
+  print(matches("x", "(a|b|x)"))
+  print(matches("2024-01-31", "\\d{4}-\\d{2}-\\d{2}"))
+  print("ab".matches("a.?b"))
+  let k: Sku = "ABC-1234"
+  print(k)
+  let s: String = "abc-1234"
+  let bad: Sku = s
+  print(bad)
+}
+"#;
+
+const SHOWN_FUNCTIONS: &str = r#"fn twice(n: Int) -> Int { n * 2 }
+type H = { name: String, on: (Int) -> Int }
+fn main() {
+  k := 3
+  f := (x: Int) -> x + k
+  print(f)
+  print(H { name: "h", on: twice })
+  print([f, (a: Int) -> a])
+  print(f(1))
 }
 "#;

@@ -210,7 +210,7 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, box_tags: HashMap::default(), vtables: HashMap::default(), dispatch: vec![] };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, box_tags: HashMap::default(), regexes: HashMap::default(), vtables: HashMap::default(), dispatch: vec![] };
     let ret = m.lower(&main.ret, &HashMap::default())?;
     // C's `main` first: it asks for the program's `main`, with its capabilities
     m.entry(entry, &main, &ret)?;
@@ -309,6 +309,7 @@ declare ptr @strata_str_replace(ptr, ptr, ptr)
 declare ptr @strata_str_repeat(ptr, i64)
 declare ptr @strata_str_case(ptr, ptr, i64, ptr, i64, i1)
 declare i1 @strata_str_is(ptr, i64, ptr, i64)
+declare i1 @strata_dfa_match(ptr, ptr, i64, ptr, ptr, ptr)
 declare i64 @strata_str_ord(ptr)
 declare ptr @strata_str_chr(i64)
 declare i1 @strata_parse_int(ptr, ptr)
@@ -443,6 +444,8 @@ struct Module<'a> {
     /// The tag of each type a union boxes (by its key): unique in the
     /// program, so a smaller union's values are a larger one's as they are.
     box_tags: HashMap<String, i64>,
+    /// The tables of each regex `matches` uses (its globals' name, and its classes).
+    regexes: HashMap<String, (String, usize)>,
     /// The tables made for each trait type (by its key), with the implementation.
     vtables: HashMap<String, Vec<(String, Ty)>>,
     /// Dispatchers for methods with type parameters of their own, called
@@ -1601,6 +1604,11 @@ impl<'m, 'a> Func<'m, 'a> {
             Ty::Str => self.call(&Ty::Str, "@strata_json_str", &[v.clone()])?.1,
             Ty::Unit => self.m.string("null"),
             _ if is_never(&t) => self.m.string("null"),
+            Ty::Fn(..) => {
+                // how the closure shows, as a JSON string
+                let shown = self.field(v, 1, &Ty::Str)?;
+                self.call(&Ty::Str, "@strata_json_str", &[shown])?.1
+            }
             Ty::Con(n, _) if n == "Set" => {
                 let l = self.as_list(v)?;
                 self.json(&l)?
@@ -2927,6 +2935,24 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     fn call_named(&mut self, call: &Expr, name: &str, args: Vec<&Expr>) -> Res<V> {
+        if name == "matches" && args.len() == 2 && self.lookup(name).is_none() && !self.m.env.fns.contains_key(&Symbol::new(name)) {
+            // a literal pattern, compiled to a DFA now
+            let Expr::Str(re) = args[1] else { return self.unsupported("`matches` with a pattern that isn't a literal") };
+            let v = self.expr(args[0])?;
+            if is_never(&v.0) {
+                return Ok(v);
+            }
+            return match self.m.regex(re)? {
+                Ok((g, nc)) => {
+                    let t = |part: &str| (Ty::Str, format!("@\"{g}.{part}\""));
+                    self.call(&Ty::Bool, "@strata_dfa_match", &[(Ty::Str, v.1), t("cls"), (Ty::Int, nc.to_string()), t("next"), t("dead"), t("end")])
+                }
+                Err(msg) => {
+                    self.fault(Fault::Runtime, vec![Part::Lit(msg)])?;
+                    Ok(never())
+                }
+            };
+        }
         if self.lookup(name).is_some() {
             // a local closure
             let f = self.load(name)?;
@@ -3937,13 +3963,15 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok(self.temp(r))
     }
 
-    /// A closure block: the function, its drop, then the captured values
-    /// (held by the block). A temporary of the current scope.
-    fn closure(&mut self, fsym: &str, captured: &[V]) -> Res<String> {
+    /// A closure block: the function, its drop, how it shows (`shown`, as
+    /// the interpreter's: `<closure (x) -> …>`, `<fn name>`), then the
+    /// captured values (held by the block). A temporary of the current scope.
+    fn closure(&mut self, fsym: &str, captured: &[V], shown: &str) -> Res<String> {
+        let shown = self.m.string(shown);
         if captured.is_empty() {
             let g = format!("@\"closure:{}\"", fsym.trim_start_matches('@').trim_matches('"'));
             if self.m.helpers.insert(g.clone()) {
-                writeln!(self.m.globals, "{g} = private constant {{ i64, ptr, ptr }} {{ i64 0, ptr {fsym}, ptr @strata_free }}, align 8").unwrap();
+                writeln!(self.m.globals, "{g} = private constant {{ i64, ptr, ptr, ptr }} {{ i64 0, ptr {fsym}, ptr @strata_free, ptr {shown} }}, align 8").unwrap();
             }
             return Ok(format!("getelementptr inbounds (i8, ptr {g}, i64 8)"));
         }
@@ -3955,7 +3983,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let mut held = vec![];
         for (i, c) in captured.iter().enumerate() {
             if h.counted(&c.0) {
-                held.push(h.field(&env, i + 1, &c.0)?);
+                held.push(h.field(&env, i + 2, &c.0)?);
             }
         }
         h.emit("call void @strata_free(ptr %a)".into());
@@ -3966,15 +3994,16 @@ impl<'m, 'a> Func<'m, 'a> {
         let text = h.finish();
         writeln!(self.m.body, "define void {dsym}(ptr %a) {{\n{text}}}\n").unwrap();
         let p = self.fresh("clo");
-        self.emit(format!("{p} = call ptr @strata_alloc(i64 {})", 8 * (captured.len() + 2)));
+        self.emit(format!("{p} = call ptr @strata_alloc(i64 {})", 8 * (captured.len() + 3)));
         let (a, d) = (self.fresh("fa"), self.fresh("fd"));
         self.emit(format!("{a} = ptrtoint ptr {fsym} to i64"));
         self.emit(format!("store i64 {a}, ptr {p}"));
         self.emit(format!("{d} = ptrtoint ptr {dsym} to i64"));
         self.set_field(&p, 0, &(Ty::Int, d))?;
+        self.set_field(&p, 1, &(Ty::Str, shown))?;
         for (i, c) in captured.iter().enumerate() {
             let c = self.take(c.clone());
-            self.set_field(&p, i + 1, &c)?;
+            self.set_field(&p, i + 2, &c)?;
         }
         self.temp((Ty::Fn(vec![], Box::new(Ty::Unit)), p.clone()));
         Ok(p)
@@ -3998,7 +4027,7 @@ impl<'m, 'a> Func<'m, 'a> {
         l.block("entry.body");
         let env: V = (Ty::Str, "%env".into());
         for (i, (x, v)) in free.iter().zip(&captured).enumerate() {
-            let val = l.field(&env, i + 1, &v.0)?;
+            let val = l.field(&env, i + 2, &v.0)?;
             let slot = l.local(x, &v.0, None)?;
             l.store(&val, &slot)?;
         }
@@ -4036,7 +4065,8 @@ impl<'m, 'a> Func<'m, 'a> {
         let text = l.finish();
         let ll = self.m.ll(&rt)?;
         writeln!(self.m.body, "define {ll} {fsym}({}) {{\n{text}}}\n", sig.join(", ")).unwrap();
-        let p = self.closure(&fsym, &captured)?;
+        let shown = format!("<closure ({}) -> …>", ps.iter().map(|p| p.name.to_string()).collect::<Vec<_>>().join(", "));
+        let p = self.closure(&fsym, &captured, &shown)?;
         Ok((t, p))
     }
 
@@ -4069,7 +4099,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let text = l.finish();
         let ll = self.m.ll(&rt)?;
         writeln!(self.m.body, "define {ll} {fsym}({}) {{\n{text}}}\n", sig.join(", ")).unwrap();
-        let p = self.closure(&fsym, &[])?;
+        let p = self.closure(&fsym, &[], &format!("<fn {name}>"))?;
         Ok((t, p))
     }
 
@@ -4081,7 +4111,7 @@ impl<'m, 'a> Func<'m, 'a> {
             let ll = self.m.ll(t)?;
             writeln!(self.m.body, "define i1 {fsym}(ptr %env, {ll} %a, {ll} %b) {{\nentry:\n  %c = call i64 {cmp}({ll} %a, {ll} %b)\n  %r = icmp slt i64 %c, 0\n  ret i1 %r\n}}\n").unwrap();
         }
-        let p = self.closure(&fsym, &[])?;
+        let p = self.closure(&fsym, &[], "<fn order>")?;
         Ok((Ty::Fn(vec![t.clone(), t.clone()], Box::new(Ty::Bool)), p))
     }
 
@@ -4887,6 +4917,75 @@ fn char_ranges(which: &str) -> &'static [[u32; 2]] {
 
 impl Module<'_> {
     /// A Unicode table as a global of `i32`s, and its number of rows.
+    /// The DFA of `matches(s, re)` (the interpreter's `^(?:re)$`, from the
+    /// same engine), as tables: each byte's class, the next state of each
+    /// (state, class), whether a state is dead, and whether it matches at
+    /// the end. The start state is 0. `Ok(Err(m))`: `re` is not a regex (the
+    /// interpreter's message).
+    fn regex(&mut self, re: &str) -> Res<Result<(String, usize), String>> {
+        use regex_automata::dfa::{dense, Automaton, StartKind};
+        use regex_automata::util::primitives::StateID;
+        use regex_automata::{Anchored, Input};
+        let full = format!("^(?:{re})$");
+        if let Err(e) = regex::Regex::new(&full) {
+            return Ok(Err(format!("bad regex: {e}")));
+        }
+        let g = format!("re:{}", self.strings.len() + self.helpers.len());
+        let key = format!("regex:{re}");
+        if let Some(known) = self.regexes.get(&key) {
+            return Ok(Ok(known.clone()));
+        }
+        let config = dense::Config::new().start_kind(StartKind::Anchored).dfa_size_limit(Some(64 << 20)).determinize_size_limit(Some(64 << 20));
+        let syntax = regex_automata::util::syntax::Config::new().unicode(true).utf8(true).nest_limit(250);
+        let dfa = dense::Builder::new().configure(config).syntax(syntax).build(&full).map_err(|e| format!("the regex `{re}` ({e})"))?;
+        let start = dfa.start_state_forward(&Input::new("").anchored(Anchored::Yes)).map_err(|e| format!("the regex `{re}` ({e})"))?;
+        // the classes, and a byte standing for each
+        let classes = dfa.byte_classes();
+        let nc = classes.alphabet_len() - 1;
+        let mut rep: Vec<Option<u8>> = vec![None; nc];
+        let cls: Vec<usize> = (0..=255u8).map(|b| classes.get(b) as usize).collect();
+        for b in 0..=255u8 {
+            let c = classes.get(b) as usize;
+            if c < nc && rep[c].is_none() {
+                rep[c] = Some(b);
+            }
+        }
+        // the states reachable from the start, numbered as they are found
+        let mut ids: HashMap<StateID, usize> = HashMap::default();
+        let mut order = vec![start];
+        ids.insert(start, 0);
+        let mut i = 0;
+        let mut next: Vec<usize> = vec![];
+        while i < order.len() {
+            let sid = order[i];
+            for c in 0..nc {
+                let n = rep[c].map_or(sid, |b| dfa.next_state(sid, b));
+                if dfa.is_quit_state(n) {
+                    return Err(format!("the regex `{re}` (its DFA gives up on some input)"));
+                }
+                let k = *ids.entry(n).or_insert_with(|| {
+                    order.push(n);
+                    order.len() - 1
+                });
+                next.push(k);
+            }
+            i += 1;
+            if order.len() * nc > 4 << 20 {
+                return Err(format!("the regex `{re}` (its DFA is too large)"));
+            }
+        }
+        let dead: Vec<u8> = order.iter().map(|&sid| dfa.is_dead_state(sid) as u8).collect();
+        let end: Vec<u8> = order.iter().map(|&sid| dfa.is_match_state(dfa.next_eoi_state(sid)) as u8).collect();
+        let list = |xs: &[String]| xs.join(", ");
+        writeln!(self.globals, "@\"{g}.cls\" = private unnamed_addr constant [256 x i16] [{}], align 2", list(&cls.iter().map(|c| format!("i16 {c}")).collect::<Vec<_>>())).unwrap();
+        writeln!(self.globals, "@\"{g}.next\" = private unnamed_addr constant [{} x i32] [{}], align 4", next.len(), list(&next.iter().map(|c| format!("i32 {c}")).collect::<Vec<_>>())).unwrap();
+        writeln!(self.globals, "@\"{g}.dead\" = private unnamed_addr constant [{} x i8] [{}], align 1", dead.len(), list(&dead.iter().map(|c| format!("i8 {c}")).collect::<Vec<_>>())).unwrap();
+        writeln!(self.globals, "@\"{g}.end\" = private unnamed_addr constant [{} x i8] [{}], align 1", end.len(), list(&end.iter().map(|c| format!("i8 {c}")).collect::<Vec<_>>())).unwrap();
+        self.helpers.insert(g.clone());
+        self.regexes.insert(key, (g.clone(), nc));
+        Ok(Ok((g, nc)))
+    }
+
     fn unicode_table(&mut self, which: &str) -> (String, usize) {
         let (cells, rows): (Vec<u32>, usize) = match which {
             "upper" | "lower" => {
@@ -5071,7 +5170,7 @@ impl Func<'_, '_> {
             let ll = self.m.ll(t)?;
             writeln!(self.m.body, "define i64 {fsym}(ptr %env, {ll} %a, {ll} %b) {{\nentry:\n  %c = call i64 {cmp}({ll} %a, {ll} %b)\n  ret i64 %c\n}}\n").unwrap();
         }
-        let p = self.closure(&fsym, &[])?;
+        let p = self.closure(&fsym, &[], "<fn order>")?;
         Ok((Ty::Fn(vec![t.clone(), t.clone()], Box::new(Ty::Int)), p))
     }
 
