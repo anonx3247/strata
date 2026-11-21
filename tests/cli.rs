@@ -4074,6 +4074,23 @@ fn collections_have_iterators() {
     assert!(out.contains("`ListIter` is already defined in the prelude"), "{out}");
 }
 
+/// A string's units: bytes, code points and graphemes; the graphemes agree
+/// with every case of Unicode's GraphemeBreakTest.txt.
+#[test]
+fn strings_have_bytes_code_points_and_graphemes() {
+    let d = tmp("string-units");
+    let (ok, out) = strata(&["--file", "u.strata", "edit"], &d, Some(json_case::STRING_UNITS));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "u.strata"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out, json_case::STRING_UNITS_OUTPUT);
+    let cases = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/grapheme_break_test.st")).unwrap();
+    let (ok, out) = strata(&["--file", "g.strata", "edit"], &d, Some(&cases));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "g.strata"], &d, None);
+    assert!(ok && out.ends_with("1093 cases, 0 wrong\n"), "{out}");
+}
+
 /// Types passed whole at runtime: `T.m()` on an impl's type parameters, and
 /// `std.json` for the built-in types through `T: Json`.
 #[test]

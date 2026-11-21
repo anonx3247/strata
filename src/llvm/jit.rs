@@ -111,6 +111,8 @@ unsafe extern "C" {
     fn strata_str_case();
     fn strata_str_is();
     fn strata_str_ord();
+    fn strata_str_byte_len();
+    fn strata_str_byte_at();
     fn strata_str_chr();
     fn strata_parse_int();
     fn strata_parse_float();
@@ -217,6 +219,8 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_str_case", strata_str_case as *const () as usize),
         ("strata_str_is", strata_str_is as *const () as usize),
         ("strata_str_ord", strata_str_ord as *const () as usize),
+        ("strata_str_byte_len", strata_str_byte_len as *const () as usize),
+        ("strata_str_byte_at", strata_str_byte_at as *const () as usize),
         ("strata_str_chr", strata_str_chr as *const () as usize),
         ("strata_parse_int", strata_parse_int as *const () as usize),
         ("strata_parse_float", strata_parse_float as *const () as usize),
@@ -427,7 +431,7 @@ fn make_std_library() -> Result<StdLibrary, String> {
     if !names_file.exists() {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         // what can be precompiled; what doesn't compile yet is left to each program
-        let resolved = crate::resolve::resolve(std).program;
+        let resolved = super::building_std(|| crate::resolve::resolve(std).program);
         let (env, _) = crate::types::Env::build(&resolved);
         // a function reading a package's setting (`setting("json.unknown_keys")`,
         // written in per program), or calling one that does, stays per program

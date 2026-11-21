@@ -840,3 +840,46 @@ b=2
 3
 [1, 2]
 "#;
+
+/// A string's units: `bytes()` (UTF-8), `code_points()` (decoded from
+/// them) and `graphemes()` (std.unicode's UAX #29 clusters: combining marks,
+/// emoji ZWJ sequences, flags, Hangul, CR LF, an Indic conjunct).
+#[allow(dead_code)]
+pub const STRING_UNITS: &str = r#"fn main() {
+  s := "héllo, wörld 👋🏽"
+  print(s.bytes().len())
+  print(s.code_points().len())
+  print(len(s))
+  print(s.code_points().to_list())
+  print([chr(c) for c in s.code_points() where c > 127].to_list())
+  print(s.bytes().fold(0, (a, b) -> a + b))
+  for b in "é".bytes() {
+    print(b)
+  }
+  crlf := chr(13) + "\nab"
+  print(crlf.graphemes().len())
+  for w in ["éa", "👨‍👩‍👧x", "🇫🇷🇩🇪🇺", "한국어", "👋🏽!", "क्षि", ""] {
+    g := w.graphemes()
+    print(f"{g.len()} {[len(x.code_points().to_list()) for x in g].to_list()}")
+  }
+}
+"#;
+
+#[allow(dead_code)]
+pub const STRING_UNITS_OUTPUT: &str = r#"23
+15
+15
+[104, 233, 108, 108, 111, 44, 32, 119, 246, 114, 108, 100, 32, 128075, 127997]
+["é", "ö", "👋", "🏽"]
+3135
+195
+169
+3
+2 [2, 1]
+2 [5, 1]
+3 [2, 2, 1]
+3 [1, 1, 1]
+2 [2, 1]
+1 [4]
+0 []
+"#;

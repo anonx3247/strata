@@ -443,7 +443,20 @@ total((0..5).iter())                     // 10
 for (k, v) in d.iter() { … }             // a dict's entries, by key
 ```
 
-**Not yet:** iterators over a string's units, a nested comprehension whose inner source is an iterator, generators and async.
+A string isn't an iterator either: its unit is always named, and each is a finite iterator.
+
+```rust
+s := "héllo 👋🏽"
+s.bytes()          // its UTF-8 bytes, 0 to 255: 104, 195, 169, …
+s.code_points()    // its code points (Unicode scalar values): 104, 233, …, 128075, 127997
+s.graphemes()      // its grapheme clusters (UAX #29), as strings: "h", "é", …, "👋🏽"
+s.graphemes().len()                                   // 7
+[chr(c) for c in s.code_points() where c > 127]       // lazily: "é", "👋", "🏽"
+```
+
+Each walks the string once: `bytes()` and `code_points()` are the prelude's, read from the UTF-8 bytes (the only native part, `byte_len` and `byte_at`); `graphemes()` is `std.unicode`'s (loaded for a program that calls it), Unicode 16.0's extended grapheme clusters, combining marks, emoji sequences, flags, Hangul syllables and Indic conjuncts included (it agrees with every case of Unicode's GraphemeBreakTest.txt).
+
+**Not yet:** a nested comprehension whose inner source is an iterator, generators and async.
 
 ## Foreign functions: `extern c`
 

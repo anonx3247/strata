@@ -72,7 +72,8 @@ pub fn program() -> &'static Program {
 }
 
 /// Whether a definition calls `matches` (compiled code matches with
-/// `std.regex`: a literal pattern's matcher is made while compiling).
+/// `std.regex`: a literal pattern's matcher is made while compiling) or
+/// `s.graphemes()` (`std.unicode`'s): std is loaded for them.
 fn run_time_pattern(d: &crate::ast::DeclKind) -> bool {
     use crate::ast::Expr;
     let mut found = false;
@@ -81,7 +82,7 @@ fn run_time_pattern(d: &crate::ast::DeclKind) -> bool {
         found = found
             || match e {
                 Expr::Call(f, args) => matches!(&**f, Expr::Var(n) if n.as_str() == "matches") && args.len() == 2,
-                Expr::Method(_, m, args) => m.as_str() == "matches" && args.len() == 1,
+                Expr::Method(_, m, args) => (m.as_str() == "matches" && args.len() == 1) || (m.as_str() == "graphemes" && args.is_empty()),
                 _ => false,
             }
     });
@@ -92,7 +93,7 @@ fn run_time_pattern(d: &crate::ast::DeclKind) -> bool {
 /// it and does not already contain it (when `std/` itself is being checked).
 pub fn with_std(p: &Program) -> Option<Program> {
     use crate::ast::DeclKind;
-    // (`matches` is std.regex's, compiled)
+    // (`matches` is std.regex's, compiled; `s.graphemes()` std.unicode's)
     let uses = p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Use(u) if is_std(&u.path))) || p.decls.iter().any(|d| run_time_pattern(&d.kind));
     // a resolved program has it already, under qualified names in the root module
     let has_std = p.decls.iter().any(|d| {
