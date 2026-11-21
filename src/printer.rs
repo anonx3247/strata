@@ -183,7 +183,7 @@ pub fn float(f: f64) -> String {
 pub const WIDTH: usize = 80;
 
 /// Would this single-line text overflow the width at indent depth `d`?
-/// (12 columns are kept for whatever precedes it on the line, e.g. `let x = `.)
+/// (12 columns are kept for whatever precedes it on the line, e.g. `x := `.)
 fn too_long(s: &str, d: usize) -> bool {
     let mut lines = s.lines();
     lines.next().map_or(0, |l| l.chars().count()) + 2 * d + 12 > WIDTH || lines.any(|l| l.chars().count() > WIDTH)
@@ -444,13 +444,19 @@ pub fn block(e: &Expr, d: usize) -> String {
         out += &match s {
             Stmt::Let(p, t, e) => match t {
                 Some(t) => format!("let {}: {} = {}", pat(p), ty(t), expr(e, d + 1)),
-                None => format!("let {} = {}", pat(p), expr(e, d + 1)),
+                None => format!("{} := {}", pat(p), expr(e, d + 1)),
             },
             Stmt::Var(n, t, e) => match t {
-                Some(t) => format!("let mut {n}: {} = {}", ty(t), expr(e, d + 1)),
-                None => format!("let mut {n} = {}", expr(e, d + 1)),
+                Some(t) => format!("mut {n}: {} = {}", ty(t), expr(e, d + 1)),
+                None => format!("mut {n} := {}", expr(e, d + 1)),
             },
-            Stmt::Assign(p, e) => format!("{} = {}", expr(p, d + 1), expr(e, d + 1)),
+            Stmt::Assign(p, e) => match e {
+                // `x = x + e` is written `x += e`
+                Expr::Bin(op @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod), l, r) if **l == *p => {
+                    format!("{} {}= {}", expr(p, d + 1), op.symbol(), expr(r, d + 1))
+                }
+                _ => format!("{} = {}", expr(p, d + 1), expr(e, d + 1)),
+            },
             Stmt::While(c, b) => format!("while {} {}", expr(c, d + 1), block(b, d + 1)),
             Stmt::Loop(b) => format!("loop {}", block(b, d + 1)),
             Stmt::Break => "break".into(),
@@ -650,13 +656,15 @@ pub fn fn_signature(f: &FnDecl) -> String {
         (false, true) => "derived fn",
         _ => "fn",
     };
-    let mut s = format!("{kw} {}{}({}) -> {}", f.name, tp, param_list(&f.params), ty(&f.ret));
+    // a function returning `()` leaves out `-> ()`
+    let ret = if f.ret == TypeExpr::Unit { String::new() } else { format!(" -> {}", ty(&f.ret)) };
+    let mut s = format!("{kw} {}{}({}){ret}", f.name, tp, param_list(&f.params));
     // keep 2 columns for an enclosing `module { }` block
     if s.chars().count() > WIDTH - 2 && !f.params.is_empty() {
         let ps: Vec<String> = param_list(&f.params).split(", ").map(|p| p.to_string()).collect();
         // split(", ") is safe only when no parameter type itself contains ", "
         let ps = if ps.len() == f.params.len() { ps } else { f.params.iter().map(|p| param_list(std::slice::from_ref(p))).collect() };
-        s = format!("{kw} {}{}{} -> {}", f.name, tp, broken("(", ps, ")", 0), ty(&f.ret));
+        s = format!("{kw} {}{}{}{ret}", f.name, tp, broken("(", ps, ")", 0));
     }
     for r in &f.requires {
         s += &format!("\n  requires {}", expr(r, 1));

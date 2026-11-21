@@ -12,34 +12,35 @@ For more depth: [the language](language.md), [verification](verification.md), [t
 
 // ─── 1. Values and expressions ─────────────────────────────────────────────
 fn basics() -> Int {
-  // `let` is immutable. Types are inferred, or written after a colon.
-  let n = 42
+  // `x := e` names a value, its type inferred; `let x: T = e` gives the type.
+  // Both are immutable (`mut x := e` and `mut x: T = e` are not).
+  n := 42
   let x: Float = 3.5
-  let ok = true && !false || n == 42
-  let s = "hello"
+  ok := true && !false || n == 42
+  s := "hello"
 
   // Int never overflows (it grows into a big integer). Float is never NaN.
   // No implicit Int/Float mixing: convert with float(n), round(x), floor, ceil.
-  let mixed = float(n) * x
-  let back = round(mixed)
+  mixed := float(n) * x
+  back := round(mixed)
 
   // f-strings interpolate any expression; specs after `:` as in Python.
-  let msg = f"{s}, {n} items, {x:.2}, {n:>5}, {{literal braces}}"
+  msg := f"{s}, {n} items, {x:.2}, {n:>5}, {{literal braces}}"
 
   // `+` adds numbers and joins strings and lists.
-  let greeting = s + " world"
-  let both = [1, 2] + [3]
+  greeting := s + " world"
+  both := [1, 2] + [3]
 
   // Everything is an expression: `if` and blocks have values.
-  let sign = if n > 0 {
+  sign := if n > 0 {
     "+"
   } else if n < 0 {
     "-"
   } else {
     "0"
   }
-  let y = {
-    let a = 1
+  y := {
+    a := 1
     a + 1
   }
   back + y + len(greeting) + len(both) + len(msg) + len(sign)
@@ -52,7 +53,7 @@ fn add(a: Int, b: Int) -> Int {
 }
 
 // `()` is the unit type: "no meaningful value".
-fn shout(s: String) -> () {
+fn shout(s: String) {
   print(to_upper(s))
 }
 
@@ -142,16 +143,16 @@ type Retry = {
 }
 
 fn records() -> Line {
-  let line = Line { sku: "TEA-7", qty: 2, unit_price: 450 }
-  let qty = line.qty
+  line := Line { sku: "TEA-7", qty: 2, unit_price: 450 }
+  qty := line.qty
   // Functional update: copy with some fields changed.
-  let more = Line { ..line, qty: qty + 1 }
+  more := Line { ..line, qty: qty + 1 }
   // Shorthand: `Line { sku, qty, unit_price }` when variables have those names.
-  let p = Pair { first: 1, second: "one" }
-  let t = (more.sku, p.first)
-  // Tuples: destructure with let, or read t.0, t.1.
-  let (code, count) = t
-  let r = Retry { label: "fetch" }
+  p := Pair { first: 1, second: "one" }
+  t := (more.sku, p.first)
+  // Tuples: destructure with :=, or read t.0, t.1.
+  (code, count) := t
+  r := Retry { label: "fetch" }
   Line { ..more, sku: code, qty: min(count + r.attempts, 99) }
 }
 
@@ -238,7 +239,7 @@ fn parse_qty(s: String) -> Result[Quantity, ParseError] {
 // e!  : the Ok value, or return the Err from this function.
 // e?  : the Some value, or return None from this function.
 fn double_qty(s: String) -> Result[Int, ParseError] {
-  let q = parse_qty(s)!
+  q := parse_qty(s)!
   Ok(q * 2)
 }
 
@@ -258,12 +259,12 @@ fn port(text: String) -> Int {
 }
 
 fn first_long(words: List[String]) -> String {
-  let w = words.find(w -> len(w) > 3) or { return "none" }
+  w := words.find(w -> len(w) > 3) or { return "none" }
   to_upper(w)
 }
 
 fn explain(s: String) -> String {
-  let q = parse_qty(s) except e {
+  q := parse_qty(s) except e {
     return match e {
       Blank => "blank",
       NotANumber { text } => f"not a number: {text}",
@@ -274,27 +275,27 @@ fn explain(s: String) -> String {
 
 // ─── 8. Mutation: immutable by default, always visible ─────────────────────
 fn total(lines: List[Line]) -> Natural {
-  let mut sum: Natural = 0
+  mut sum: Natural = 0
   for line in lines {
-    sum = sum + line_total(line)
+    sum += line_total(line)
   }
   sum
 }
 
 // A `mut` parameter changes the caller's variable; the call says `mut` too.
-fn restock(mut line: Line, extra: Natural) -> () {
+fn restock(mut line: Line, extra: Natural) {
   line.qty = min(line.qty + extra, 99)
 }
 
 fn loops() -> Int {
-  let mut line = Line { sku: "CUP-1", qty: 1, unit_price: 1200 }
+  mut line := Line { sku: "CUP-1", qty: 1, unit_price: 1200 }
   restock(mut line, 5)
-  let mut i = 0
+  mut i := 0
   while i < 10 {
-    i = i + 1
+    i += 1
   }
   loop {
-    i = i - 1
+    i -= 1
     if i % 2 == 1 {
       continue
     }
@@ -304,7 +305,7 @@ fn loops() -> Int {
   }
   // `0..3` is 0, 1, 2 and `1..=3` is 1, 2, 3: ranges are lists of Int.
   for k in 0..3 {
-    i = i + k
+    i += k
   }
   i + line.qty
 }
@@ -317,22 +318,22 @@ fn loops() -> Int {
 fn collections(xs: NonEmpty[Int], text: String) -> Int {
   // xs[i] must be in range: checked at run time, proven by `verify` (here xs
   // is NonEmpty). get(xs, i) gives an Option instead. No negative indices.
-  let head = xs[0]
-  let maybe = get(xs, 5) ?? 0
+  head := xs[0]
+  maybe := get(xs, 5) ?? 0
   // Slices take a range and are clamped, as in Python; strings too.
-  let rest = xs[1..]
-  let prefix = text[..3]
+  rest := xs[1..]
+  prefix := text[..3]
   // Comprehensions, with `where` to filter.
-  let squares = [x * x for x in xs where x > 0]
-  let grid = [(a, b) for a in 1..=2 for b in ["x", "y"]]
-  let d = Dict { "tea": 450, "cup": 1200 }
-  let d2 = insert(d, "pot", 3000)
-  let price = get(d2, "tea") ?? 0
-  let lengths = Dict { w: len(w) for w in split(text, " ") }
-  let s = Set { 1, 2, 2, 3 }
-  let empty = Dict[String, Int] {}
-  let total = fold(xs, 0, (acc, x) -> acc + x)
-  let pairs = enumerate(zip(sort(xs), ["a", "b", "c"]))
+  squares := [x * x for x in xs where x > 0]
+  grid := [(a, b) for a in 1..=2 for b in ["x", "y"]]
+  d := Dict { "tea": 450, "cup": 1200 }
+  d2 := insert(d, "pot", 3000)
+  price := get(d2, "tea") ?? 0
+  lengths := Dict { w: len(w) for w in split(text, " ") }
+  s := Set { 1, 2, 2, 3 }
+  empty := Dict[String, Int] {}
+  total := fold(xs, 0, (acc, x) -> acc + x)
+  pairs := enumerate(zip(sort(xs), ["a", "b", "c"]))
   head
     + maybe
     + len(rest)
@@ -443,7 +444,7 @@ fn receipt(x: Summary) -> String {
 // its calls are marked: `mut db.save(o)`.
 trait Db {
   fn load(self, id: NonEmptyString) -> Option[Order]
-  fn save(mut self, o: Order) -> ()
+  fn save(mut self, o: Order)
 }
 
 type ShipError =
@@ -459,10 +460,10 @@ fn ship(
     Ok(o) => o is Shipped,
     Err(_) => true,
   } {
-  let order = db.load(id) or { return Err(NotFound) }
+  order := db.load(id) or { return Err(NotFound) }
   match order {
     Pending { id, lines } => {
-      let o = Shipped { id, lines, tracking }
+      o := Shipped { id, lines, tracking }
       mut db.save(o)
       Ok(o)
     },
@@ -493,7 +494,7 @@ fn collatz(n: Positive) -> Natural
 
 // ─── 14. Tests ─────────────────────────────────────────────────────────────
 test "orders" {
-  let l = Line { sku: "TEA-7", qty: 2, unit_price: 450 }
+  l := Line { sku: "TEA-7", qty: 2, unit_price: 450 }
   assert line_total(l) == 900
   assert classify(-5) == "negative"
   assert explain("x") == "not a number: x"
@@ -504,8 +505,8 @@ test "orders" {
 
 test "a mocked capability" {
   // `mock Db` is an implementation whose methods return arbitrary valid values.
-  let mut db = mock Db
-  let r = ship(mut db, "ord_1", "TRK9")
+  mut db := mock Db
+  r := ship(mut db, "ord_1", "TRK9")
   assert r is Ok || r is Err
 }
 ```
@@ -518,8 +519,8 @@ test "a mocked capability" {
 - **Overloaded builtins can't be passed by name** (`len`, `get`, `contains`, `sum`…): write `xs.map(x -> len(x))`. Ordinary functions can: `lines.map(line_total)`. Methods whose meaning depends on the receiver also need a lambda: `xs.map(x -> x.describe())`.
 - **`type Name = String` is an error**: a bare alias adds nothing. Add a `where`, or say `distinct type`.
 - **Any function can be called as a method** on its first argument: `xs.filter(p)` is `filter(xs, p)`, `line.line_total()` is `line_total(line)`.
-- **`mut` is visible on both sides**: `fn f(mut x: T)` and the call `f(mut x)`; `fn save(mut self, …)` and the call `mut db.save(o)` (required there, an error anywhere else). Only a `let mut` variable, a `mut` parameter or a field of one can be changed, and a `mut` argument needs exactly the parameter's type. As an argument, a marked call takes parentheses: `f((mut q.pop()), x)`.
-- **A declared type holds forever**: `let mut x: Positive = 1` then `x = 0` is an error (at compile time for literals, at run time otherwise).
+- **`mut` is visible on both sides**: `fn f(mut x: T)` and the call `f(mut x)`; `fn save(mut self, …)` and the call `mut db.save(o)` (required there, an error anywhere else). Only a `mut` variable, a `mut` parameter or a field of one can be changed, and a `mut` argument needs exactly the parameter's type. As an argument, a marked call takes parentheses: `f((mut q.pop()), x)`.
+- **A declared type holds forever**: `mut x: Positive = 1` then `x = 0` is an error (at compile time for literals, at run time otherwise).
 - **Matches are exhaustive and every arm must be reachable.** Conditions comparing `it` with constants are decided exactly; anything else (`matches(it, …)`, a call) needs a `_` arm.
 - **`Result` and `Option` each have their own operators**: `!`, `except`, `!!` for a `Result`; `?`, `or`, `??` for an `Option`. Using one on the other type is an error. A single-value fallback is always written short (`x ?? 0`, not `x or { 0 }`); `??` and `!!` bind looser than arithmetic and tighter than comparisons.
 - **No implicit conversions**: `Int` and `Float` don't mix, and there is no conversion between error types (`!` passes an error up only when it already fits the function's error type: the same type, one of its variants, or a member of its union).
@@ -565,7 +566,7 @@ type Options = {
 
 impl CommandLine for Options {}                    // --help comes from the /// comments
 
-fn main(opts: Options, mut console: Console) -> () {
+fn main(opts: Options, mut console: Console) {
   for name in opts.names {
     for _ in 0..opts.times {
       mut console.print(if opts.loud { to_upper(f"hello, {name}!") } else { f"hello, {name}!" })

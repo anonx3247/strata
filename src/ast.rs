@@ -413,10 +413,11 @@ pub struct Arm {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Stmt {
+    /// `p := e`, `let p: T = e`
     Let(Pattern, Option<TypeExpr>, Expr),
-    /// `let mut x = e`
+    /// `mut x := e`, `mut x: T = e`
     Var(Symbol, Option<TypeExpr>, Expr),
-    /// `x = e`, `x.field = e`
+    /// `x = e`, `x.field = e`; `x += e` is `x = x + e`
     Assign(Expr, Expr),
     /// `while cond { ... }`
     While(Expr, Expr),
