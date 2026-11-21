@@ -210,21 +210,32 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, box_tags: HashMap::default() };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, box_tags: HashMap::default(), vtables: HashMap::default(), dispatch: vec![] };
     let ret = m.lower(&main.ret, &HashMap::default())?;
     // C's `main` first: it asks for the program's `main`, with its capabilities
     m.entry(entry, &main, &ret)?;
-    while let Some(job) = m.queue.pop_front() {
-        match job {
-            Job::Fn(name, targs, impls) => {
-                let f = env.fns[&Symbol::new(&name)].clone();
-                let shown = if targs.is_empty() { name.clone() } else { format!("{name}[{}]", targs.iter().map(key).collect::<Vec<_>>().join(", ")) };
-                m.function(&name, &targs, &impls, &f).map_err(|e| format!("can't compile `{shown}`: {e}"))?;
+    loop {
+        while let Some(job) = m.queue.pop_front() {
+            match job {
+                Job::Fn(name, targs, impls) => {
+                    let f = env.fns[&Symbol::new(&name)].clone();
+                    let shown = if targs.is_empty() { name.clone() } else { format!("{name}[{}]", targs.iter().map(key).collect::<Vec<_>>().join(", ")) };
+                    m.function(&name, &targs, &impls, &f).map_err(|e| format!("can't compile `{shown}`: {e}"))?;
+                }
+                Job::Method(mi) => {
+                    let shown = format!("{}.{} for {}", mi.tr, mi.method, key(&mi.recv));
+                    m.method(&mi).map_err(|e| format!("can't compile `{shown}`: {e}"))?;
+                }
             }
-            Job::Method(mi) => {
-                let shown = format!("{}.{} for {}", mi.tr, mi.method, key(&mi.recv));
-                m.method(&mi).map_err(|e| format!("can't compile `{shown}`: {e}"))?;
-            }
+        }
+        // dispatchers cover every table; making one may compile more (and make tables)
+        if !m.dispatchers()? && m.queue.is_empty() {
+            break;
+        }
+    }
+    for d in &m.dispatch {
+        if let Some((_, text)) = &d.made {
+            m.body += text;
         }
     }
     let mut out = String::from("; Strata, compiled by `strata build`\n\n");
@@ -345,6 +356,18 @@ enum Job {
     Method(MethodInst),
 }
 
+/// A dispatcher: method `m` of trait `trm` with type arguments `targs`,
+/// on a value of trait type `tr_ty`, by its table. `made`: how many tables
+/// it covered when last made, and its text.
+struct Dispatch {
+    name: String,
+    tr_ty: Ty,
+    trm: String,
+    m: String,
+    targs: Vec<Ty>,
+    made: Option<(usize, String)>,
+}
+
 /// A trait method for one receiver type (and type arguments of its own).
 #[derive(Clone)]
 struct MethodInst {
@@ -420,6 +443,11 @@ struct Module<'a> {
     /// The tag of each type a union boxes (by its key): unique in the
     /// program, so a smaller union's values are a larger one's as they are.
     box_tags: HashMap<String, i64>,
+    /// The tables made for each trait type (by its key), with the implementation.
+    vtables: HashMap<String, Vec<(String, Ty)>>,
+    /// Dispatchers for methods with type parameters of their own, called
+    /// on trait values (made once every table is known).
+    dispatch: Vec<Dispatch>,
 }
 
 impl<'a> Module<'a> {
@@ -750,9 +778,6 @@ impl<'a> Module<'a> {
             }
         }
         let ret = self.lower(&f.ret, &sub)?;
-        if self.is_trait(&f.ret) {
-            return Err(format!("returning a value of the trait type `{}` is not compiled yet", crate::printer::ty(&f.ret)));
-        }
         let mut c = Func::new(self, sub);
         let mut sig = vec![];
         for (p, t) in f.params.iter().zip(&params) {
@@ -3119,7 +3144,7 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let head = Module::head(&recv).ok_or(format!("`{name}` on a `{}`", key(&recv)))?;
         if self.m.traits.contains_key(&Symbol::new(&head)) {
-            return self.dyn_call(name, recv, vs, places);
+            return self.dyn_call(name, recv, vs, hint, places);
         }
         let args = Module::args_of(&recv);
         let own: Vec<String> = self.m.ctors_of(&recv).into_iter().filter(|c| *c != head && self.m.resolve_method(name, c).is_some_and(|(tr, _)| self.m.impl_of(&tr, c).is_some())).collect();
@@ -3619,31 +3644,76 @@ impl<'m, 'a> Func<'m, 'a> {
 
     /// A method's signature for a call through a trait value: (method's
     /// trait, declaration, its types with the trait's parameters filled in).
+    ///
+    /// The types are the trait's parameters (a supertrait's, through the
+    /// subtrait's `supers`); `Self` is left to the caller (the trait type at
+    /// a call, the implementation in its table). `Self` may be a
+    /// parameter's or the result's whole type, not part of one.
     fn dyn_signature(&self, recv: &Ty, trm: &str, m: &str) -> Res<(&'a TraitMethod, HashMap<Symbol, Ty>)> {
         let tm = self.m.trait_method(trm, m).ok_or(format!("trait `{trm}` has no method `{m}`"))?;
         let Ty::Con(tr, args) = recv else { unreachable!() };
-        if tr.as_str() != trm && !self.m.traits[&Symbol::new(trm)].params.is_empty() {
-            return self.unsupported(&format!("calling `{m}` of the generic supertrait `{trm}` through a `{tr}`"));
-        }
+        let sub = self.super_sub(tr.as_str(), args, trm, 0).ok_or(format!("`{tr}` has no supertrait `{trm}`"))?;
+        let whole = |t: &TypeExpr| matches!(t, TypeExpr::Named(n, a) if n == "Self" && a.is_empty());
         let mentions = |t: &TypeExpr| crate::types::mentions_self(&FnDecl { params: vec![], ret: t.clone(), ..tm.decl.clone() });
-        if mentions(&tm.decl.ret) || tm.decl.params.iter().skip(1).any(|p| mentions(&p.ty) || p.mutable) || !tm.decl.type_params.is_empty() {
-            return self.unsupported(&format!("calling `{m}` (it mentions `Self`, has a `mut` parameter or type parameters of its own) on a value of the trait type `{tr}`"));
+        if (mentions(&tm.decl.ret) && !whole(&tm.decl.ret)) || tm.decl.params.iter().skip(1).any(|p| mentions(&p.ty) && !(whole(&p.ty) && !p.mutable)) {
+            return self.unsupported(&format!("calling `{m}` (it mentions `Self` inside another type) on a value of the trait type `{tr}`"));
         }
-        let td = self.m.traits[tr];
-        let sub: HashMap<Symbol, Ty> = if tr.as_str() == trm { td.params.iter().cloned().zip(args.iter().cloned()).collect() } else { HashMap::default() };
+        if !tm.decl.type_params.is_empty() && (mentions(&tm.decl.ret) || tm.decl.params[0].mutable || tm.decl.params.iter().skip(1).any(|p| p.mutable || mentions(&p.ty))) {
+            return self.unsupported(&format!("calling `{m}` (type parameters of its own, and `Self` or `mut`) on a value of the trait type `{tr}`"));
+        }
         Ok((tm, sub))
     }
 
+    /// The parameters of trait `trm` as seen from trait `tr` with arguments
+    /// `args`: `tr`'s own, or a supertrait's through `tr`'s `supers`.
+    fn super_sub(&self, tr: &str, args: &[Ty], trm: &str, depth: usize) -> Option<HashMap<Symbol, Ty>> {
+        let td = self.m.traits.get(&Symbol::new(tr))?;
+        let sub: HashMap<Symbol, Ty> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+        if tr == trm {
+            return Some(sub);
+        }
+        if depth > 32 {
+            return None;
+        }
+        td.supers.iter().find_map(|sup| {
+            let TypeExpr::Named(n, sargs) = sup else { return None };
+            let lowered: Vec<Ty> = sargs.iter().map(|a| self.m.lower(a, &sub)).collect::<Res<_>>().ok()?;
+            self.super_sub(n.as_str(), &lowered, trm, depth + 1)
+        })
+    }
+
     /// Call `name` on a value of a trait type, through its table.
-    fn dyn_call(&mut self, name: &str, recv: Ty, vs: Vec<V>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
+    fn dyn_call(&mut self, name: &str, recv: Ty, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
         let Ty::Con(tr, _) = &recv else { unreachable!() };
         let m = crate::types::split_trait_call(name).map_or(name, |(_, m)| m);
         let methods = self.dyn_methods(tr);
         let i = methods.iter().position(|(_, x)| x == m).ok_or(format!("`{tr}` has no method `{m}`"))?;
         let trm = methods[i].0.clone();
-        let (tm, sub) = self.dyn_signature(&recv, &trm, m)?;
+        let (tm, mut sub) = self.dyn_signature(&recv, &trm, m)?;
+        sub.insert(Symbol::new("Self"), recv.clone());
+        let fp = if tm.decl.type_params.is_empty() {
+            self.dyn_entry(&vs[0], i + DYN_METHODS)
+        } else {
+            // type parameters of its own: a dispatcher for these, by the table
+            let mut targs = HashMap::default();
+            for (p, v) in tm.decl.params.iter().zip(&vs).skip(1) {
+                self.m.bind_targs(&p.ty, &v.0, &tm.decl.type_params, &mut targs);
+            }
+            if let Some(rt) = &hint {
+                self.m.bind_targs(&tm.decl.ret, rt, &tm.decl.type_params, &mut targs);
+            }
+            let targs: Vec<Ty> = tm.decl.type_params.iter().map(|p| targs.get(p).cloned().unwrap_or(Ty::Unit)).collect();
+            for (p, t) in tm.decl.type_params.iter().zip(&targs) {
+                sub.insert(p.clone(), t.clone());
+            }
+            let d = format!("@\"dispatch:{trm}::{m}@{}[{}]\"", key(&recv), targs.iter().map(key).collect::<Vec<_>>().join(", "));
+            if !self.m.dispatch.iter().any(|x| x.name == d) {
+                self.m.dispatch.push(Dispatch { name: d.clone(), tr_ty: recv.clone(), trm: trm.clone(), m: m.to_string(), targs, made: None });
+            }
+            d
+        };
         let ret = self.m.lower(&tm.decl.ret, &sub)?;
-        let fp = self.dyn_entry(&vs[0], i + DYN_METHODS);
+        let dispatched = !tm.decl.type_params.is_empty();
         let mut args = vec![];
         let mut back = None;
         if tm.decl.params[0].mutable {
@@ -3664,12 +3734,23 @@ impl<'m, 'a> Func<'m, 'a> {
             self.emit(format!("{at} = getelementptr i64, ptr {copy}, i64 1"));
             args.push((Ty::Str, at));
             back = Some((place, slot));
+        } else if dispatched {
+            // the dispatcher reads the table from the pair
+            args.push((recv.clone(), vs[0].1.clone()));
         } else {
             let s = self.field(&vs[0], 0, &Ty::Int)?;
             args.push(s);
         }
-        for (p, v) in tm.decl.params.iter().skip(1).zip(vs.into_iter().skip(1)) {
+        let mut backs = vec![];
+        for (k, (p, v)) in tm.decl.params.iter().skip(1).zip(vs.into_iter().skip(1)).enumerate() {
             let t = self.m.lower(&p.ty, &sub)?;
+            if p.mutable {
+                let place = places.get(k + 1).cloned().flatten();
+                let slot = self.mut_slot(&place, &(t.clone(), v.1), &p.name)?;
+                args.push((Ty::Str, slot.clone()));
+                backs.push((place, slot, t, p.ty.clone()));
+                continue;
+            }
             args.push(self.coerce(v, &t)?);
         }
         let r = self.call(&ret, &fp, &args)?;
@@ -3677,7 +3758,27 @@ impl<'m, 'a> Func<'m, 'a> {
         if let Some((place, slot)) = back {
             self.write_back(&place, &slot, &recv, &tm.decl.params[0].ty)?;
         }
+        for (place, slot, t, pty) in backs {
+            self.write_back(&place, &slot, &t, &pty)?;
+        }
         Ok(r)
+    }
+
+    /// A trait value `a` passed as `Self` to a method of `imp`'s table
+    /// `vt`: its value, which must be of that same implementation.
+    fn unwrap_self(&mut self, a: &V, vt: &str, imp: &Ty, m: &str) -> Res<V> {
+        let (raw, mine, same) = (self.fresh("vt"), self.fresh("mine"), self.fresh("same"));
+        self.emit(format!("{raw} = load i64, ptr {}", a.1));
+        self.emit(format!("{mine} = ptrtoint ptr {vt} to i64"));
+        self.emit(format!("{same} = icmp eq i64 {raw}, {mine}"));
+        let (ok, bad) = (self.fresh_label("self.ok"), self.fresh_label("self.other"));
+        self.cond_br(&bool_v(&same), &ok, &bad);
+        self.block(&bad);
+        let shown = self.json(a)?;
+        self.fault(Fault::Runtime, vec![Part::Lit(format!("`{m}` of `{}` takes a `{}` as `Self`, not ", key(imp), key(imp))), Part::Val(shown)])?;
+        self.block(&ok);
+        let s = self.field(a, 0, &Ty::Int)?;
+        self.from_slot(&s.1, imp)
     }
 
     /// The table of `imp`'s implementation of trait type `tr_ty` (made once).
@@ -3687,6 +3788,7 @@ impl<'m, 'a> Func<'m, 'a> {
         if !self.m.helpers.insert(name.clone()) {
             return Ok(name);
         }
+        self.m.vtables.entry(key(tr_ty)).or_default().push((name.clone(), imp.clone()));
         let head = Module::head(imp).ok_or(format!("a `{}` can't be a `{tr}`", key(imp)))?;
         let ll = self.m.ll(imp)?;
         let mut entries = vec![];
@@ -3735,11 +3837,15 @@ impl<'m, 'a> Func<'m, 'a> {
         for (trm, m) in self.dyn_methods(tr) {
             let f = format!("@\"dyn:{trm}::{m}@{}\"", key(imp));
             entries.push(f.clone());
-            let Ok((tm, sub)) = self.dyn_signature(tr_ty, &trm, &m) else {
-                // not callable through the table: an entry that is never called
+            let sig_ok = self.dyn_signature(tr_ty, &trm, &m).ok().filter(|(tm, _)| tm.decl.type_params.is_empty());
+            let Some((tm, mut sub)) = sig_ok else {
+                // not called through the table (a dispatcher calls one with
+                // type parameters of its own): an entry that is never called
                 writeln!(self.m.body, "define void {f}() {{\nentry:\n  unreachable\n}}\n").unwrap();
                 continue;
             };
+            // in the table, `Self` is the trait type: the wrapper unwraps and wraps
+            sub.insert(Symbol::new("Self"), tr_ty.clone());
             let (_, imp_m) = self.m.resolve_method(&crate::types::trait_call(&trm, &m), &head).ok_or(format!("`{head}` has no method `{m}`"))?;
             let mi = MethodInst { tr: trm.clone(), method: imp_m, recv: imp.clone(), head: head.clone(), targs: vec![] };
             let symbol = self.m.want_method(mi);
@@ -3762,12 +3868,31 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             for (k, p) in tm.decl.params.iter().skip(1).enumerate() {
                 let t = h.m.lower(&p.ty, &sub)?;
+                if p.mutable {
+                    // the caller's slot
+                    sig.push(format!("ptr %a{k}"));
+                    args.push((Ty::Str, format!("%a{k}")));
+                    continue;
+                }
                 if has_value(&t) {
                     sig.push(format!("{} %a{k}", h.m.ll(&t)?));
                 }
-                args.push((t, format!("%a{k}")));
+                let a: V = (t.clone(), format!("%a{k}"));
+                if matches!(&p.ty, TypeExpr::Named(n, x) if n == "Self" && x.is_empty()) {
+                    // a `Self`: a value of this same implementation, as it
+                    args.push(h.unwrap_self(&a, &name, imp, &m)?);
+                } else {
+                    args.push(a);
+                }
             }
-            let r = h.call(&ret, &symbol, &args)?;
+            let self_ret = matches!(&tm.decl.ret, TypeExpr::Named(n, x) if n == "Self" && x.is_empty());
+            let r = if self_ret {
+                let r = h.call(imp, &symbol, &args)?;
+                let r = h.temp(r);
+                h.coerce(r, tr_ty)?
+            } else {
+                h.call(&ret, &symbol, &args)?
+            };
             if mutable {
                 let v = h.fresh("v");
                 h.emit(format!("{v} = load {ll}, ptr {tmp}"));
@@ -4597,6 +4722,73 @@ impl<'m, 'a> Func<'m, 'a> {
 }
 
 impl Module<'_> {
+    /// Make (again) the dispatchers whose trait has tables they don't cover
+    /// yet: whether any changed.
+    fn dispatchers(&mut self) -> Res<bool> {
+        let mut changed = false;
+        for i in 0..self.dispatch.len() {
+            let tables = self.vtables.get(&key(&self.dispatch[i].tr_ty)).cloned().unwrap_or_default();
+            if self.dispatch[i].made.as_ref().is_some_and(|(n, _)| *n == tables.len()) {
+                continue;
+            }
+            let (name, tr_ty, trm, m, targs) = {
+                let d = &self.dispatch[i];
+                (d.name.clone(), d.tr_ty.clone(), d.trm.clone(), d.m.clone(), d.targs.clone())
+            };
+            let text = self.dispatcher(&name, &tr_ty, &trm, &m, &targs, &tables).map_err(|e| format!("can't compile `{trm}.{m}` on a `{}`: {e}", key(&tr_ty)))?;
+            self.dispatch[i].made = Some((tables.len(), text));
+            changed = true;
+        }
+        Ok(changed)
+    }
+
+    /// A dispatcher's text: by the pair's table, the implementation's method.
+    fn dispatcher(&mut self, name: &str, tr_ty: &Ty, trm: &str, m: &str, targs: &[Ty], tables: &[(String, Ty)]) -> Res<String> {
+        let mut h = Func::new(self, HashMap::default());
+        let (tm, mut sub) = h.dyn_signature(tr_ty, trm, m)?;
+        for (p, t) in tm.decl.type_params.iter().zip(targs) {
+            sub.insert(p.clone(), t.clone());
+        }
+        let ret = h.m.lower(&tm.decl.ret, &sub)?;
+        h.block("start");
+        let mut sig = vec!["ptr %pair".to_string()];
+        let mut rest = vec![];
+        for (k, p) in tm.decl.params.iter().skip(1).enumerate() {
+            let t = h.m.lower(&p.ty, &sub)?;
+            if has_value(&t) {
+                sig.push(format!("{} %a{k}", h.m.ll(&t)?));
+            }
+            rest.push((t, format!("%a{k}")));
+        }
+        let pair: V = (tr_ty.clone(), "%pair".into());
+        h.emit("%vt = load i64, ptr %pair".into());
+        let s = h.field(&pair, 0, &Ty::Int)?;
+        for (vt, imp) in tables {
+            let head = Module::head(imp).ok_or(format!("a `{}` can't be a `{trm}`", key(imp)))?;
+            let (_, imp_m) = h.m.resolve_method(&crate::types::trait_call(trm, m), &head).ok_or(format!("`{head}` has no method `{m}`"))?;
+            let symbol = h.m.want_method(MethodInst { tr: trm.to_string(), method: imp_m, recv: imp.clone(), head, targs: targs.to_vec() });
+            let (is, yes, no) = (h.fresh("is"), h.fresh_label("impl"), h.fresh_label("next"));
+            let mine = h.fresh("mine");
+            h.emit(format!("{mine} = ptrtoint ptr {vt} to i64"));
+            h.emit(format!("{is} = icmp eq i64 %vt, {mine}"));
+            h.emit(format!("br i1 {is}, label %{yes}, label %{no}"));
+            h.block(&yes);
+            let me = h.from_slot(&s.1, imp)?;
+            let mut args = vec![me];
+            args.extend(rest.iter().cloned());
+            let r = h.call(&ret, &symbol, &args)?;
+            if has_value(&ret) {
+                h.emit(format!("ret {} {}", h.m.ll(&ret)?, r.1));
+            } else {
+                h.emit("ret void".into());
+            }
+            h.block(&no);
+        }
+        h.emit("unreachable".into());
+        let text = h.finish();
+        Ok(format!("define {} {name}({}) {{\n{text}}}\n\n", h.m.ll(&ret)?, sig.join(", ")))
+    }
+
     /// Bind type parameters by matching a written type against an actual one.
     fn bind_targs(&self, te: &TypeExpr, t: &Ty, params: &[Symbol], out: &mut HashMap<Symbol, Ty>) {
         match (te, t) {
