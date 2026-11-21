@@ -3829,6 +3829,108 @@ mod json_case;
 /// `derive Json`: JSON as a web front end sends it, read into records and
 /// sums with every refinement checked, and what has no JSON form refused
 /// at the `derive`.
+/// The shapes `std.typing` describes, through `Json`: a recursive type, a
+/// generic one, a union of records, a tuple-shaped variant, `Option` of a
+/// refined alias, a `distinct` type; and a union's members keep their docs.
+#[test]
+fn derives_see_every_kind_of_type() {
+    let d = tmp("derive-kinds");
+    let (ok, out) = strata(&["--file", "k.strata", "edit"], &d, Some(KINDS_PROGRAM));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "k.strata"], &d, None);
+    assert!(ok, "{out}");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], r#"{"type":"All","tree":{"type":"Node","left":{"type":"Leaf"},"value":1,"right":{"type":"Node","left":{"type":"Leaf"},"value":2,"right":{"type":"Leaf"}}},"pair":{"type":"Pair","a":1,"b":2},"events":[{"type":"Moved","value":3},{"type":"Drawn","shape":{"type":"Square","side":2.0},"at":80},{"type":"Drawn","shape":{"type":"Circle","r":1.0},"at":null}],"who":"u1"}"#);
+    assert_eq!(lines[1], "true");
+    assert_eq!(lines[2], r#"Err("events[0].at: 70000 does not satisfy `Port` (where 0 < it && it < 65536)")"#);
+    assert_eq!(lines[3], r#"["Circle: A circle, by its radius.; Square: A square, by its side.", ""]"#);
+}
+
+const KINDS_PROGRAM: &str = r##"use std.json.Json
+
+use std.typing.{Record, Sum}
+
+/// A circle, by its radius.
+type Circle = { r: Float }
+
+/// A square, by its side.
+type Square = { side: Float }
+
+/// One of the two.
+type Shape = Circle | Square
+
+type Port = Int
+  where 0 < it && it < 65536
+
+distinct type UserId = String
+
+type Tree =
+  | Leaf
+  | Node { left: Tree, value: Int, right: Tree }
+
+type Pair[T] = { a: T, b: T }
+
+type Event =
+  | Moved(Int)
+  | Drawn { shape: Shape, at: Option[Port] }
+
+type All = { tree: Tree, pair: Pair[Int], events: List[Event], who: UserId }
+
+derive Json for Circle
+
+derive Json for Square
+
+derive Json for Tree
+
+derive Json for Pair
+
+derive Json for Event
+
+derive Json for All
+
+/// The docs of a union field's members.
+derivable(Record) trait Docs {
+  derived fn docs(self) -> List[String] {
+    comptime Self.fields.map(
+      f -> join(f.type.members.map(
+        m -> (m.name ?? "") + ": " + join(m.doc, " "),
+      ), "; "),
+    )
+  }
+}
+
+type Holder = { s: Shape, n: Int }
+
+derive Docs for Holder
+
+fn main() {
+  x := All { tree: Node {
+    left: Leaf,
+    value: 1,
+    right: Node { left: Leaf, value: 2, right: Leaf },
+  }, pair: Pair { a: 1, b: 2 }, events: [
+    Moved(3),
+    Drawn { shape: Square { side: 2.0 }, at: Some(80) },
+    Drawn { shape: Circle { r: 1.0 }, at: None },
+  ], who: UserId("u1") }
+  match x.encode() {
+    Ok(j) => {
+      print(std.json.stringify(j))
+      print(All.decode(j) == Ok(x))
+    },
+    Err(e) => print(e),
+  }
+  bad := std.json.parse(
+    "{\"tree\": \"Leaf\", \"pair\": {\"a\": 1, \"b\": 2}, \"events\": [{\"type\": \"Drawn\", \"shape\": {\"type\": \"Circle\", \"r\": 1.0}, \"at\": 70000}], \"who\": \"u\"}",
+  )
+  match bad {
+    Ok(j) => print(All.decode(j)),
+    Err(e) => print(e),
+  }
+  print(Holder { s: Circle { r: 1.0 }, n: 1 }.docs())
+}
+"##;
+
 #[test]
 fn json_is_derived() {
     let d = tmp("derive-json");
