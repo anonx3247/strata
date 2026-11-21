@@ -32,6 +32,7 @@ const BUDGET: u64 = 5_000_000;
 
 /// Replace each `derive` by its `impl` (or report why it can't be made).
 pub fn expand(p: &mut Program, errors: &mut Vec<Diag>) {
+    settings(p);
     if !p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Impl(i) if i.derived)) {
         return;
     }
@@ -63,6 +64,25 @@ pub fn expand(p: &mut Program, errors: &mut Vec<Diag>) {
         keep[k - 1]
     });
     p.decls.extend(extra);
+}
+
+/// `setting("json.unknown_keys")` anywhere: the package's setting, written
+/// in as a constant (`Some("error")` or `None`), so it is known when the
+/// code runs, compiled or not.
+fn settings(p: &mut Program) {
+    for d in &mut p.decls {
+        decl_exprs_mut_post(&mut d.kind, |e| {
+            let Expr::Call(f, args) = &*e else { return };
+            if !matches!(&**f, Expr::Var(n) if n.as_str() == "std.typing.setting") {
+                return;
+            }
+            let [Expr::Str(key)] = args.as_slice() else { return };
+            *e = match crate::package::setting(key) {
+                Some(v) => Expr::Ctor(Symbol::new("Some"), CtorArgs::Positional(vec![Expr::Str(v)])),
+                None => Expr::Ctor(Symbol::new("None"), CtorArgs::None),
+            };
+        });
+    }
 }
 
 type Res<X> = Result<X, String>;

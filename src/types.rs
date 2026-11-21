@@ -3359,20 +3359,6 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec
         if matches!(&d.kind, DeclKind::Fn(f) if f.params.iter().any(|p| p.comptime)) {
             continue;
         }
-        let spec;
-        let d = match &d.kind {
-            DeclKind::Trait(t) if t.methods.iter().any(|m| m.decl.derived) => {
-                let mut t = t.clone();
-                for m in &mut t.methods {
-                    if m.decl.derived {
-                        m.default = false;
-                    }
-                }
-                spec = Decl { kind: DeclKind::Trait(t), ..d.clone() };
-                &spec
-            }
-            _ => d,
-        };
         let mut c = Checker {
             env: &env,
             subst: Vec::new(),
@@ -3464,7 +3450,9 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec
                         c.err(format!("trait method `{short}` has no `self` and doesn't mention `Self`, so no implementation could be chosen for a call: make it a function"));
                     }
                     let saved = c.rigid.clone();
-                    if m.default {
+                    // a `derived fn`'s body is checked where it is specialized
+                    // (checked here, the code its calls write in would be lost)
+                    if m.default && !m.decl.derived {
                         c.check_fn(&m.decl);
                     } else {
                         c.rigid.extend(m.decl.type_params.iter().cloned());

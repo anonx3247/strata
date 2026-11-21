@@ -1677,3 +1677,17 @@ pub fn nul_string() -> String {
     let (out, code) = output(Command::new(strata).args(["run", "--interpret", "."]).current_dir(&d));
     assert!(code != 0 && out.contains("`neg8` is an `extern c` function: only compiled code calls it"), "{out}");
 }
+
+/// Types passed whole: compiled as interpreted.
+#[test]
+fn impl_type_parameters_compile() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("impl-statics");
+    for (name, prog, want) in [("statics", json_case::STATICS, json_case::STATICS_OUTPUT), ("builtins", json_case::BUILTINS, json_case::BUILTINS_OUTPUT)] {
+        let (out, code) = case(&d, name, prog);
+        assert_eq!((out.as_str(), code), (want, 0));
+    }
+}

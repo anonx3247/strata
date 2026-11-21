@@ -3938,3 +3938,23 @@ fn comptime_code_runs_while_compiling() {
     let (ok, out) = run("spin(1)");
     assert!(!ok && out.contains("`comptime spin(1)` ran for more than 5000000 steps: compile-time code must finish"), "{out}");
 }
+
+/// Types passed whole at runtime: `T.m()` on an impl's type parameters, and
+/// `std.json` for the built-in types through `T: Json`.
+#[test]
+fn impl_type_parameters_at_runtime() {
+    let d = tmp("impl-statics");
+    for (name, prog, want) in [("statics", json_case::STATICS, json_case::STATICS_OUTPUT), ("builtins", json_case::BUILTINS, json_case::BUILTINS_OUTPUT)] {
+        let f = format!("{name}.strata");
+        let (ok, out) = strata(&["--file", &f, "edit"], &d, Some(prog));
+        assert!(ok, "{out}");
+        let (ok, out) = strata(&["run", &f], &d, None);
+        assert!(ok, "{out}");
+        assert_eq!(out, want);
+    }
+    // a method with `self` can't: the type its value has isn't passed
+    let (ok, out) = strata(&["--file", "bad.strata", "edit"], &d, Some("trait Z {\n  fn z() -> Self\n  fn again(self) -> Self\n}\n\nimpl[T: Z] Z for List[T] {\n  fn z() -> Self {\n    [T.z()]\n  }\n\n  fn again(self) -> Self {\n    [T.z()]\n  }\n}\n"));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
+    assert!(!ok && out.contains("only in a method without `self`"), "{out}");
+}

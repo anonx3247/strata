@@ -122,3 +122,98 @@ true
 {"Err":"at: expected an array of 2 values, got [1]"}
 {"Err":"payload: expected Positive or String or Address, got []"}
 "#;
+
+/// The built-in types are `Json` too: generic code over `T: Json`.
+#[allow(dead_code)]
+pub const BUILTINS: &str = r#"use std.json.{Json, parse, stringify}
+
+type P = { name: String, tags: List[String] }
+
+derive Json for P
+
+fn send[T: Json](x: T) -> String {
+  stringify(x.encode() !! std.json.Null)
+}
+
+fn read[T: Json](text: String) -> Result[T, String] {
+  T.decode(parse(text)!)
+}
+
+fn ints(text: String) -> Result[List[Int], String] {
+  read(text)
+}
+
+fn people(text: String) -> Result[Dict[String, List[P]], String] {
+  read(text)
+}
+
+fn main() {
+  print(send([1, 2, 3]))
+  print(send(dict([("a", [P { name: "x", tags: [] }])])))
+  print(send(Some(2.5)))
+  print(ints("[1, 2]"))
+  print(ints("[1, \"x\"]"))
+  print(people("{\"team\": [{\"name\": \"y\", \"tags\": [\"t\"]}]}"))
+  print(people("{\"team\": [{\"name\": 3, \"tags\": []}]}"))
+}
+"#;
+
+#[allow(dead_code)]
+pub const BUILTINS_OUTPUT: &str = r#"[1,2,3]
+{"a":[{"type":"P","name":"x","tags":[]}]}
+2.5
+{"Ok":[1,2]}
+{"Err":"[1]: expected an integer, got \"x\""}
+{"Ok":{"team":[{"name":"y","tags":["t"]}]}}
+{"Err":"team[0].name: expected a string, got 3"}
+"#;
+
+/// Methods called on an impl's type parameters (`T.zero()` in
+/// `impl[T: Zero] Zero for List[T]`): types are passed whole at runtime.
+#[allow(dead_code)]
+pub const STATICS: &str = r#"trait Zero {
+  fn zero() -> Self
+}
+
+impl Zero for Int {
+  fn zero() -> Self { 0 }
+}
+
+impl Zero for String {
+  fn zero() -> Self { "z" }
+}
+
+impl[T: Zero] Zero for List[T] {
+  fn zero() -> Self { [T.zero(), T.zero()] }
+}
+
+impl[A: Zero, B: Zero] Zero for Dict[A, B] {
+  fn zero() -> Self { dict([(A.zero(), B.zero())]) }
+}
+
+fn zero_of[T: Zero]() -> T { T.zero() }
+
+fn nested[T: Zero]() -> List[List[T]] { zero_of() }
+
+fn a() -> List[Int] { zero_of() }
+
+fn b() -> List[List[String]] { zero_of() }
+
+fn c() -> Dict[String, List[Int]] { zero_of() }
+
+fn d() -> List[List[Int]] { nested() }
+
+fn main() {
+  print(a())
+  print(b())
+  print(c())
+  print(d())
+}
+"#;
+
+#[allow(dead_code)]
+pub const STATICS_OUTPUT: &str = r#"[0,0]
+[["z","z"],["z","z"]]
+{"z":[0,0]}
+[[0,0],[0,0]]
+"#;
