@@ -15,6 +15,10 @@
 //! proven = ["core"]                      # modules whose every check must be proven
 //! terminates = ["*"]                     # ... whose functions must terminate (or be marked)
 //! no_recursion = ["core"]                # ... where no function may be recursive
+//!
+//! [native]                               # C for `extern c` (compiled code only)
+//! sources = ["c/distance.c"]             # the package's C files, compiled with it
+//! libs = ["sqlite3"]                     # libraries to link (`-lsqlite3`)
 //! ```
 
 use crate::ast::Program;
@@ -32,6 +36,44 @@ pub struct Package {
     pub auto_commit: bool,
     /// `[json]`: how `std.json` reads JSON in this package
     pub json: JsonRules,
+    /// `[native]`: the C that `extern c` declarations are linked to
+    pub native: Native,
+}
+
+/// `[native]`: C files of the package (paths relative to its folder), and
+/// libraries to link, for the `extern c` declarations of its modules.
+#[derive(serde::Deserialize, Default, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct Native {
+    #[serde(default)]
+    pub sources: Vec<String>,
+    #[serde(default)]
+    pub libs: Vec<String>,
+}
+
+impl Native {
+    pub fn is_empty(&self) -> bool {
+        self.sources.is_empty() && self.libs.is_empty()
+    }
+}
+
+/// The package being worked on's folder and `[native]` section, for compiled
+/// code (the JIT links them in as `strata build` does).
+static NATIVE: std::sync::OnceLock<(PathBuf, Native)> = std::sync::OnceLock::new();
+
+impl Native {
+    /// What clang is given to link it in: the package's C files and `-l` libraries.
+    pub fn clang_args(&self, dir: &Path) -> Vec<String> {
+        let mut out: Vec<String> = self.sources.iter().map(|s| dir.join(s).to_string_lossy().to_string()).collect();
+        out.extend(self.libs.iter().map(|l| format!("-l{l}")));
+        out
+    }
+}
+
+/// The C to link the program being worked on with: its package's folder and
+/// `[native]` section (none outside a package).
+pub fn native() -> Option<&'static (PathBuf, Native)> {
+    NATIVE.get().filter(|(_, n)| !n.is_empty())
 }
 
 /// `[json]`: `unknown_keys = "error"` makes `decode` refuse keys a record
@@ -96,6 +138,8 @@ struct Raw {
     auto_commit: Option<bool>,
     #[serde(default)]
     json: JsonRules,
+    #[serde(default)]
+    native: Native,
 }
 
 pub fn load(dir: &Path) -> Result<Package, String> {
@@ -120,7 +164,13 @@ pub fn load(dir: &Path) -> Result<Package, String> {
         settings.push(("json.integers".to_string(), k.clone()));
     }
     let _ = SETTINGS.set(settings);
-    Ok(Package { dir: dir.to_path_buf(), name: raw.name, exports: raw.exports, verify: raw.verify, auto_commit: raw.auto_commit.unwrap_or(true), json: raw.json })
+    for src in &raw.native.sources {
+        if !dir.join(src).is_file() {
+            return Err(format!("{}: [native] sources: no file {src:?} in the package", path.display()));
+        }
+    }
+    let _ = NATIVE.set((dir.to_path_buf(), raw.native.clone()));
+    Ok(Package { dir: dir.to_path_buf(), name: raw.name, exports: raw.exports, verify: raw.verify, auto_commit: raw.auto_commit.unwrap_or(true), json: raw.json, native: raw.native })
 }
 
 /// The package a file or folder belongs to: the nearest folder at or above it

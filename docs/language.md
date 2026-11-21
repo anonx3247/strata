@@ -297,6 +297,40 @@ All values are immutable (`insert` returns a new dict). Dicts and sets are kept 
 
 **Not yet:** lazy iterators, generators and async, which will be designed as language features of their own.
 
+## Foreign functions: `extern c`
+
+A function written in C is declared with `extern c fn`, a signature with contracts and no body, and a pointer C gives out with `extern c type`. `examples/fuzzy` uses its own C file and libm this way:
+
+```rust
+extern c fn edit_distance(a: String, b: String) -> I32
+  ensures it >= 0
+
+/// libm's cube root.
+extern c fn cbrt(x: Float) -> Float
+
+/// The fewest single-character edits that turn `a` into `b`.
+pub fn distance(a: String, b: String) -> Natural {
+  edit_distance(a, b)
+}
+```
+
+```toml
+# strata.toml: the C the declarations are linked to
+[native]
+sources = ["c/text.c"]   # the package's own C files
+libs = ["m"]             # libraries (-lm)
+```
+
+- **What crosses.** The sized integers (`I8` … `I64`, `U8` … `U64`, C's `int8_t` … `uint64_t`), `Float` (`double`), `Bool`, `String` (copied each way, as a NUL-terminated string), `()` (`void`, as a result), `extern c type` handles, and `Option` of a handle (a pointer that may be NULL: `None`). `Int` doesn't: its size isn't fixed. A `mut` parameter is an out-pointer (`mut db: Option[Sqlite3]` is a `sqlite3 **`): copied in, and back out after the call, as `mut` always is. A `String` can't be `mut`.
+- **A handle** (`extern c type Sqlite3`) is a type with no constructor and nothing inside: only C makes one, Strata code passes it back. It isn't counted or freed by Strata (C frees it, through a function you call); two handles are equal when they are the same pointer. A C function that gives NULL where a handle is declared is a fault: declare that result `Option[Sqlite3]`.
+- **Faults at the boundary.** Arguments are checked against their types (`I8` is in range) and `requires` before the call; the result against its type and `ensures` after it. A string holding a NUL character can't be passed (C would read it as its end).
+- **The name is the C symbol**, so an extern function can't be renamed (wrap it instead).
+- **Only its own module calls it.** Extern definitions are never `pub`, and code in other modules (submodules included) can't call them. The module that declares them gives the rest of the program its own functions, or a capability for what touches the outside world, so a signature still shows what code can touch.
+- **Contracts are assumed.** `verify` never proves or runs foreign code: a function in a module that declares externs, one that takes one of its types, and one that calls into it are all reported as assumed.
+- **Only compiled code calls C** (`strata build`, and `strata run` / `strata test` with the JIT, which compiles the `[native]` sources into a library with clang and loads it). The interpreter refuses: calling an extern function there is a fault that says so. C's own library (`strlen`, …) needs no `[native]`.
+
+Not yet: `main` asking for a native module's capability, structs passed by value, callbacks, buffers, and other languages (`extern python`, `extern ts`, `extern rust`, with values crossing as `Json`; see IDEAS.md).
+
 ## Programs and the standard library
 
 A program's entry point is `main`. It asks for what it needs by type, and `strata run` passes it in: its command-line options, and the capabilities it uses.

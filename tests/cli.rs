@@ -3861,3 +3861,60 @@ fn json_is_derived() {
     let (ok, out) = strata(&["run", "."], &p, None);
     assert!(!ok && out.contains("unknown_keys is \"error\" or \"ignore\""), "{out}");
 }
+
+// `extern c`: foreign declarations, checked, kept in their module, never run
+// by the interpreter or by `verify`.
+#[test]
+fn extern_c_declarations() {
+    let d = tmp("extern_c");
+    let p = d.join("p");
+    std::fs::create_dir_all(&p).unwrap();
+    let db = "/// An open database.\nextern c type Sqlite3\n\nextern c fn strlen(s: String) -> U64\n  ensures it >= 0\n\nextern c fn sqlite3_open(path: String, mut db: Sqlite3) -> I32\n\npub fn length(s: String) -> U64 {\n  strlen(s)\n}\n";
+    save_module(&p, "db", db);
+    save_module(&p, "main", "use db\n\nfn main() {\n  print(db.length(\"abc\"))\n}\n");
+    // the text round-trips
+    let (ok, out) = strata(&["--file", "p", "render", "db"], &d, None);
+    assert!(ok && out == db, "{out}");
+    let (ok, out) = strata(&["--file", "p", "check"], &d, None);
+    assert!(ok, "{out}");
+    // the interpreter refuses to call C
+    let (ok, out) = strata(&["--file", "p", "run", "--interpret"], &d, None);
+    assert!(!ok && out.contains("`strlen` is an `extern c` function: only compiled code calls it"), "{out}");
+    // verify runs nothing that reaches C
+    let (_, out) = strata(&["--file", "p", "verify"], &d, None);
+    assert!(out.contains("db.length") && out.contains("assumed: module `db` calls foreign code"), "{out}");
+    assert!(out.contains("assumed: it calls `db.length`, in module `db`, which calls foreign code"), "{out}");
+    // only its own module calls it, submodules included
+    save_module(&p, "db.inner", "fn sub() -> U64 { db.strlen(\"x\") }\n");
+    let (ok, out) = strata(&["--file", "p", "check"], &d, None);
+    assert!(!ok && out.contains("`db.strlen` is a foreign function: only module `db` can call it"), "{out}");
+    std::fs::remove_dir_all(p.join("db")).unwrap();
+    // what crosses to C, and never `pub`
+    save_module(&p, "bad", "pub extern c fn abs(x: Int) -> List[Int]\n\nextern c fn f(mut s: String)\n\nextern c type H\n\nfn forge() -> H { H(1) }\n");
+    let (ok, out) = strata(&["--file", "p", "check"], &d, None);
+    assert!(!ok, "{out}");
+    for m in [
+        "`extern c` definitions are never `pub`",
+        "`extern c fn abs`, parameter `x`: `Int` has no fixed size",
+        "`extern c fn abs`, result: `List[Int]` doesn't cross to C",
+        "`extern c fn f`, parameter `s`: a `String` can't be `mut`",
+        "unknown constructor `bad.H`",
+    ] {
+        assert!(out.contains(m), "{m}: {out}");
+    }
+    std::fs::remove_file(p.join("bad.strata")).unwrap();
+    // a body, or another language, doesn't parse
+    let (ok, out) = strata(&["--file", "x.strata", "edit"], &d, Some("extern c fn f() -> I32 { 1 }\n"));
+    assert!(!ok && out.contains("has no body: it is defined in C"), "{out}");
+    let (ok, out) = strata(&["--file", "x.strata", "edit"], &d, Some("extern cobol fn f() -> I32\n"));
+    assert!(!ok && out.contains("unknown foreign language `cobol`"), "{out}");
+    // its name is the C symbol: no rename
+    let pkg = d.join("pkg");
+    std::fs::create_dir_all(&pkg).unwrap();
+    let (ok, out) = strata(&["init"], &pkg, None);
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["edit", "db", "--no-commit"], &pkg, Some("extern c fn strlen(s: String) -> U64\n\npub fn length(s: String) -> U64 { strlen(s) }\n"));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["rename", "db.strlen", "c_strlen", "--no-commit"], &pkg, None);
+    assert!(!ok && out.contains("`db.strlen` is a foreign function: its name is the symbol it is linked to"), "{out}");
+}

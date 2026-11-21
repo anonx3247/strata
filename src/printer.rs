@@ -732,8 +732,14 @@ pub fn decl_body(d: &Decl) -> String {
         DeclKind::Impl(i) => impl_decl(i),
         DeclKind::Use(u) => match &u.items {
             None => format!("use {}.*", u.path),
+            // the module only, its names used qualified (`db.open()`)
+            Some(items) if items.is_empty() => format!("use {}", u.path),
             Some(items) if items.len() == 1 => format!("use {}.{}", u.path, items[0]),
             Some(items) => format!("use {}.{{{}}}", u.path, crate::symbol::join(items, ", ")),
+        },
+        DeclKind::Extern(e) => match &e.item {
+            ExternItem::Fn(f) => format!("extern {} {}", e.lang.name(), fn_signature(f)),
+            ExternItem::Type(t) => format!("extern {} type {t}", e.lang.name()),
         },
     };
     (if d.public { "pub " } else { "" }).to_string() + &body

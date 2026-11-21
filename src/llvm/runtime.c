@@ -730,6 +730,56 @@ int64_t strata_int_from_i64(int64_t raw) {
   return int_of(x);
 }
 
+// ---- foreign calls (`extern c`) ----
+//
+// What the generated code converts a value with, on its way to C and back.
+
+// An `Int` as its low 64 bits: an `I64` or a `U64` (two's complement), which
+// its refinement already keeps in range.
+int64_t strata_int_bits(int64_t v) {
+  if (!is_big(v)) return v;
+  Big *b = big_at(v);
+  uint64_t m = b->n ? b->d[0] | (b->n > 1 ? (uint64_t)b->d[1] << 32 : 0) : 0;
+  return b->sign < 0 ? (int64_t)((uint64_t)0 - m) : (int64_t)m;
+}
+
+// A `uint64_t` from C as an `Int`.
+int64_t strata_int_from_u64(uint64_t raw) {
+  if (raw <= (uint64_t)SMALL_MAX) return (int64_t)raw;
+  Num x = {1, 0, digits(2)};
+  x.d[x.n++] = (uint32_t)raw;
+  x.d[x.n++] = (uint32_t)(raw >> 32);
+  return int_of(x);
+}
+
+// A `String` for C: a NUL-terminated copy (freed with `strata_cstr_free`
+// after the call). C can't see past a NUL, so a string holding one is a fault.
+char *strata_cstr(Str *s, Str *callee) {
+  if (memchr(s->bytes, 0, (size_t)s->len)) {
+    Str *m = strata_concat_owned(strata_concat_owned(str_c("a string passed to `"), (strata_dup(callee), callee)), str_c("` holds a NUL character, which C would read as its end"));
+    strata_fault(4, m);
+  }
+  char *c = malloc((size_t)s->len + 1);
+  if (!c) {
+    fputs("fault (Limit): out of memory\n", stderr);
+    exit(101);
+  }
+  memcpy(c, s->bytes, (size_t)s->len);
+  c[s->len] = 0;
+  return c;
+}
+
+void strata_cstr_free(char *c) { free(c); }
+
+// A string C returned, copied (C keeps its own); NULL is a fault.
+Str *strata_str_from_c(const char *c, Str *callee) {
+  if (!c) {
+    Str *m = strata_concat_owned(strata_concat_owned(str_c("`"), (strata_dup(callee), callee)), str_c("` returned NULL for a `String`"));
+    strata_fault(4, m);
+  }
+  return str_c(c);
+}
+
 // ---- generated values (`mock`) ----
 //
 // As the interpreter's generators (src/generate.rs): the generated code

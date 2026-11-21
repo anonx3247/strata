@@ -892,6 +892,9 @@ impl<'a> Interp<'a> {
         if args.len() != f.params.len() {
             return self.fail(FaultKind::Runtime, format!("`{name}` expects {} arguments", f.params.len()));
         }
+        if let Some(lang) = self.env.externs.get(&f.name) {
+            return self.fail(FaultKind::Runtime, format!("`{}` is an `extern {}` function: only compiled code calls it (`strata run` with the JIT, or `strata build`), not the interpreter", crate::names::short(&f.name), lang.name()));
+        }
         self.depth += 1;
         // no limit on the depth itself: a recursion faults when the stack is
         // nearly out (as compiled code does), rather than crashing

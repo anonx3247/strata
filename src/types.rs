@@ -1047,6 +1047,76 @@ impl<'a> Checker<'a> {
         self.scopes.pop();
     }
 
+    /// An `extern` function's signature: types that cross the C ABI, and its
+    /// contracts (checked at each call, never proven: the body is foreign).
+    fn check_extern_fn(&mut self, f: &FnDecl, kw: &str) {
+        if !f.type_params.is_empty() {
+            self.err(format!("`{kw} fn {}` can't have type parameters: C has no generics", crate::names::short(&f.name)));
+        }
+        if crate::names::short(&f.name).starts_with("strata_") {
+            self.err(format!("`{kw} fn {}`: names starting with `strata_` are the runtime's", crate::names::short(&f.name)));
+        }
+        for p in &f.params {
+            if p.comptime {
+                self.err(format!("`{kw} fn` parameter `{}` can't be `comptime`", p.name));
+            }
+            if p.ty == TypeExpr::Unit {
+                self.err(format!("`{kw} fn {}`, parameter `{}`: `()` is no value to pass (leave the parameter out)", crate::names::short(&f.name), p.name));
+            } else if let Err(why) = self.ffi_type(&p.ty, p.mutable) {
+                self.err(format!("`{kw} fn {}`, parameter `{}`: {why}", crate::names::short(&f.name), p.name));
+            }
+        }
+        if let Err(why) = self.ffi_type(&f.ret, false) {
+            self.err(format!("`{kw} fn {}`, result: {why}", crate::names::short(&f.name)));
+        }
+        self.scopes.push(HashMap::default());
+        for p in &f.params {
+            let t = self.lower(&p.ty, &HashMap::default());
+            self.bind(p.name, t);
+        }
+        let ret = self.lower(&f.ret, &HashMap::default());
+        for r in &f.requires {
+            let t = self.infer(r);
+            self.expect(&Ty::Bool, &t, "requires clause");
+        }
+        self.scopes.push(HashMap::default());
+        self.bind(("it").sym(), ret);
+        for en in &f.ensures {
+            let t = self.infer(en);
+            self.expect(&Ty::Bool, &t, "ensures clause");
+        }
+        self.scopes.pop();
+        self.scopes.pop();
+    }
+
+    /// Whether a type crosses the C ABI: a sized integer, `Float`, `Bool`,
+    /// `String` (copied each way), `()`, or an `extern c type` handle. A `mut`
+    /// parameter is an out-pointer, so it can't be a `String` or `()`.
+    fn ffi_type(&self, t: &TypeExpr, mutable: bool) -> Result<(), String> {
+        const SIZED: [&str; 8] = ["I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64"];
+        let shown = crate::printer::ty(t);
+        match t {
+            TypeExpr::Unit if !mutable => Ok(()),
+            TypeExpr::Named(n, args) if args.is_empty() => {
+                let n = n.as_str();
+                if SIZED.contains(&n) || n == "Float" || n == "Bool" || self.env.externs.contains_key(&n.sym()) {
+                    Ok(())
+                } else if n == "String" && !mutable {
+                    Ok(())
+                } else if n == "String" {
+                    Err("a `String` can't be `mut` (an out-pointer): return it instead".into())
+                } else if n == "Int" {
+                    Err("`Int` has no fixed size: use a sized integer (`I32`, `I64`, `U8`, ...)".into())
+                } else {
+                    Err(format!("`{shown}` doesn't cross to C: use a sized integer, `Float`, `Bool`, `String`, `()` or an `extern c type`"))
+                }
+            }
+            TypeExpr::Named(n, args) if n.as_str() == "Option" && matches!(args.as_slice(), [TypeExpr::Named(h, x)] if x.is_empty() && self.env.externs.contains_key(h) && self.env.types.contains_key(h)) => Ok(()),
+            TypeExpr::Unit => Err("`()` can't be `mut`".into()),
+            _ => Err(format!("`{shown}` doesn't cross to C: use a sized integer, `Float`, `Bool`, `String`, `()`, an `extern c type` or an `Option` of one")),
+        }
+    }
+
     /// A field's default has the field's type, and a literal one satisfies its
     /// refinement. It is checked where the type is defined, with no variables
     /// in scope (not even the other fields).
@@ -3402,6 +3472,15 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec
                 c.infer(&t.body);
             }
             DeclKind::Use(_) => {}
+            DeclKind::Extern(e) => {
+                let kw = format!("extern {}", e.lang.name());
+                if d.public {
+                    c.err(format!("`{kw}` definitions are never `pub`: wrap them in this module's own functions or a capability, which can be"));
+                }
+                if let ExternItem::Fn(f) = &e.item {
+                    c.check_extern_fn(f, &kw);
+                }
+            }
         }
         c.solve_pending();
         c.check_matches();
