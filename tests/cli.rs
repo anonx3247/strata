@@ -4076,3 +4076,33 @@ fn generic_impls_are_verified_at_a_whole_type() {
     let (ok, out) = strata(&["--file", "z.strata", "verify", "--cases", "10"], &d, None);
     assert!(ok && out.contains("✓ List[T].zero") && !out.contains("✗"), "{out}");
 }
+
+// What the environment chooses: `Console` (the terminal; a test's own output
+// in a test), and how the program is run (`RunMode`), hidden unless
+// strata.toml says `mode = true` under `[run]`. `--trace` records the console's
+// calls with the rest.
+#[test]
+fn run_mode_console_in_tests_and_trace() {
+    let d = tmp("run_mode");
+    let p = d.join("p");
+    std::fs::create_dir_all(&p).unwrap();
+    std::fs::write(p.join("strata.toml"), "name = \"p\"\n").unwrap();
+    let src = "use std.io.{Console}\nuse std.process.{RunMode, Running, Testing, Tracing}\n\nfn describe(mode: RunMode) -> String {\n  match mode {\n    Running => \"running\",\n    Testing => \"testing\",\n    Tracing => \"tracing\",\n  }\n}\n\nfn main(mut console: Console, mode: RunMode) {\n  mut console.print(describe(mode))\n}\n\ntest \"sees it\" (mode: RunMode, mut console: Console) {\n  mut console.print(\"hidden: the test passes\")\n  assert mode == Testing\n}\n\ntest \"fails\" (mut console: Console) {\n  mut console.print(\"shown: the test fails\")\n  assert false\n}\n";
+    save_module(&p, "main", src);
+    // hidden by default
+    let (ok, out) = strata(&["--file", "p", "check"], &d, None);
+    assert!(!ok && out.contains("test parameter `mode: RunMode`: how the program is run is hidden by default; say `mode = true` under `[run]`"), "{out}");
+    std::fs::write(p.join("strata.toml"), "name = \"p\"\n\n[run]\nmode = true\n").unwrap();
+    for (args, want) in [(&["--file", "p", "run"][..], "running\n"), (&["--file", "p", "run", "--interpret"][..], "running\n")] {
+        let (ok, out) = strata(args, &d, None);
+        assert!(ok && out == want, "{args:?}: {out}");
+    }
+    // under --trace: `Tracing`, and the console's calls are in the trace
+    let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["--file", "p", "run", "--trace"]).current_dir(&d).output().unwrap();
+    let (stdout, stderr) = (String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    assert_eq!(stdout, "tracing\n");
+    assert!(stderr.lines().any(|l| l.contains(r#""event":"call""#) && l.contains("std.io.Terminal") && l.contains(r#""tracing""#)), "{stderr}");
+    // in a test: `Testing`, and the console's output is the test's, shown only if it fails
+    let (ok, out) = strata(&["--file", "p", "test"], &d, None);
+    assert!(!ok && out.contains("✓ sees it") && out.contains("✗ fails") && out.contains("shown: the test fails") && !out.contains("hidden: the test passes"), "{out}");
+}

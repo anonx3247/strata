@@ -194,7 +194,8 @@ Every view is Strata text, so an agent can edit what it sees and send it back wi
 ## How it is stored
 
 ```text
-strata.toml           the package: name, exports, dependencies, verifier policy, C to link ([native])
+strata.toml           the package: name, exports, dependencies, verifier policy, C to link ([native]),
+                      whether `main` may ask how it is run ([run] mode)
 main.strata, a/b.strata, …
                       one file per module, in canonical form (rewritten by `edit`, `add`, `rename`)
 strata.log            one JSON entry per change made through strata: its id, message, which

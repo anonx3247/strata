@@ -215,7 +215,9 @@ fn test_interpreted(resolved: &Program, env: &types::Env, filter: &str) -> Vec<T
         // the capabilities it asks for, made as for `main`
         let mut scope = None;
         for p in &t.params {
-            if let Some(v) = capability(env, &printer::ty(&p.ty)) {
+            let ty = printer::ty(&p.ty);
+            let v = if ty == RUN_MODE { Some(run_mode("Testing")) } else { capability(env, &ty) };
+            if let Some(v) = v {
                 scope = interp::extend(&scope, &p.name, v);
             }
         }
@@ -270,6 +272,9 @@ fn test_jit(p: &Program, filter: &str) -> Result<Vec<TestRun>, String> {
 /// the environment chooses: the terminal (a test's output is its own).
 pub fn capability(env: &types::Env, ty: &str) -> Option<interp::Value> {
     use interp::Value;
+    if ty == RUN_MODE {
+        return run_mode_allowed().then(|| run_mode("Running"));
+    }
     let made = if ty == CONSOLE { "std.io.Terminal" } else { ty };
     env.capabilities.contains(&Symbol::new(made)).then(|| Value::Record(made.into(), Default::default()))
 }
@@ -277,9 +282,24 @@ pub fn capability(env: &types::Env, ty: &str) -> Option<interp::Value> {
 /// The capability trait the environment fills in.
 pub const CONSOLE: &str = "std.io.Console";
 
+/// How the program is run (std.process): hidden unless strata.toml says
+/// `mode = true` under `[run]`.
+pub const RUN_MODE: &str = "std.process.RunMode";
+
+/// Whether the package lets `main` and tests ask for its `RunMode`.
+pub fn run_mode_allowed() -> bool {
+    crate::package::setting("run.mode").as_deref() == Some("true")
+}
+
+/// A `RunMode` (`Running`, `Testing`, `Tracing`), for the interpreter.
+pub fn run_mode(which: &str) -> interp::Value {
+    interp::Value::Variant(format!("std.process.{which}"), interp::Fields::None)
+}
+
 /// Why `main` can't ask for `ty`, with what to ask for instead.
 pub fn not_given(ty: &str, what: &str) -> String {
     let instead = match ty {
+        RUN_MODE => " How the program is run is hidden by default, so it behaves the same everywhere: to let it ask, say `mode = true` under `[run]` in strata.toml.",
         "std.fs.Files" => " Name the capability instead, `disk: Disk` (std.fs), and pass it where `Files` is wanted.",
         "std.process.Environment" => " Name the capability instead, `process: Process` (std.process), and pass it where `Environment` is wanted.",
         _ => "",
@@ -327,6 +347,7 @@ pub fn run_main(_p: &Program, env: &types::Env, prog: &str, program_args: Vec<St
     for pm in &f.params {
         let ty = printer::ty(&pm.ty);
         vals.push(match ty.as_str() {
+            _ if ty == RUN_MODE && trace && run_mode_allowed() => run_mode("Tracing"),
             _ if capability(env, &ty).is_some() => capability(env, &ty).unwrap(),
             // options read from the command line
             // `Options.from_args(program, args)`, derived in Strata (std.cli)

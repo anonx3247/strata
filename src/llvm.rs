@@ -1274,11 +1274,22 @@ impl<'a> Module<'a> {
             let slot = c.local(&p.name, t, None)?;
             c.store(&(t.clone(), format!("%p.{}", p.name)), &slot)?;
         }
-        // a capability holds nothing: the runtime's is a null pointer
+        // what a test asks for: a capability holds nothing (the runtime's is a null
+        // pointer), `Console` is the terminal (a test's output is its own), the run
+        // mode is `Testing`
         for p in inst.given {
             let t = c.m.lower(&p.ty, &HashMap::default())?;
+            let wanted = crate::printer::ty(&p.ty);
+            let v = if wanted == crate::cmd::CONSOLE {
+                c.coerce((Ty::Con(Symbol::new("std.io.Terminal"), vec![]), "null".into()), &t)?
+            } else if wanted == crate::cmd::RUN_MODE {
+                (t.clone(), c.m.nullary("std.process.Testing"))
+            } else {
+                (t.clone(), "null".into())
+            };
+            let v = c.take(v);
             let slot = c.local(&p.name, &t, None)?;
-            c.store(&(t, "null".into()), &slot)?;
+            c.store(&v, &slot)?;
         }
         if c.m.tracing && framed && !name.starts_with("strata_") {
             // `{"event":"call","fn":…,"args":[…],"depth":n}` (the runtime adds the depth)
@@ -1424,6 +1435,21 @@ impl<'a> Module<'a> {
                     impls.push(None);
                     continue;
                 }
+            }
+            // how it runs, when the package lets it ask: `Running`, or `Tracing` under --trace
+            if wanted == crate::cmd::RUN_MODE && crate::cmd::run_mode_allowed() {
+                let which = if c.m.tracing { "std.process.Tracing" } else { "std.process.Running" };
+                let v = (Ty::Con(Symbol::new(crate::cmd::RUN_MODE), vec![]), c.m.nullary(which));
+                if p.mutable {
+                    let slot = c.fresh("mode");
+                    writeln!(c.allocas, "  {slot} = alloca ptr").unwrap();
+                    c.emit(format!("store ptr {}, ptr {slot}", v.1));
+                    args.push((Ty::Str, slot));
+                } else {
+                    args.push(v);
+                }
+                impls.push(None);
+                continue;
             }
             // `Console`: the one capability the environment chooses, the terminal here
             if wanted != crate::cmd::CONSOLE || !c.m.env.capabilities.contains(&Symbol::new("std.io.Terminal")) {

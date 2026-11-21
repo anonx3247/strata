@@ -1297,6 +1297,11 @@ static void os_error(Str **kind, Str **msg) {
 }
 
 void strata_host_write(int64_t fd, Str *text) {
+  // in a test, the terminal's output is the test's own, as `print`'s is
+  if (capturing) {
+    keep_printed(text->bytes, (size_t)text->len);
+    return;
+  }
   FILE *f = fd == 2 ? stderr : stdout;
   if (fd == 2) fflush(stdout);
   if (fwrite(text->bytes, 1, (size_t)text->len, f) < (size_t)text->len || fflush(f) != 0) {

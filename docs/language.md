@@ -185,7 +185,16 @@ test "the real clock" (sys: SystemClock) {
 - `verify` never runs a capability's code, nor code that takes one: it reports them as assumed.
 - The viewer colours capabilities and capability traits apart from other types.
 
-std's are capabilities too: `Disk` (`std.fs`, for `Files`) and `Process` (`std.process`, for `Environment`), which `main` names. `Console` is the one capability the environment chooses, so `main` asks for the trait: it gets the terminal under `strata run`, and a test's own output in a test.
+std's are capabilities too: `Disk` (`std.fs`, for `Files`) and `Process` (`std.process`, for `Environment`), which `main` names. `Console` is the one capability the environment chooses, so `main` asks for the trait: it gets the terminal under `strata run`. A test may ask for it too (`test "..." (mut console: Console) { ... }`): what it writes is the test's own output, shown only if the test fails. Under `strata run --trace`, the console's calls are in the trace with the rest, what was written and what was read.
+
+**How the program is run** is hidden by default, so a program behaves the same everywhere. A package that needs to know says so in `strata.toml`:
+
+```toml
+[run]
+mode = true
+```
+
+Then `main` and tests may ask for a `RunMode` (`std.process`): `Running` under `strata run` or in a built executable, `Testing` in a test, `Tracing` under `--trace`. Without it, asking is an error that says how to allow it.
 
 **A type's own methods.** `impl Item { ... }` gives a type methods of its own, with no trait. A method with `self` is called on a value (`item.priced(42)`). One without `self` is called on the type, which makes it a constructor: `Item.new("tea")`. Only a record, sum or `distinct` type defined in the program can have them, in the module that defines it, and in a single `impl Item` block.
 

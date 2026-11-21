@@ -16,6 +16,9 @@
 //! terminates = ["*"]                     # ... whose functions must terminate (or be marked)
 //! no_recursion = ["core"]                # ... where no function may be recursive
 //!
+//! [run]
+//! mode = true                            # `main` and tests may ask for `RunMode` (std.process)
+//!
 //! [native]                               # C for `extern c` (compiled code only)
 //! sources = ["c/distance.c"]             # the package's C files, compiled with it
 //! libs = ["sqlite3"]                     # libraries to link (`-lsqlite3`)
@@ -38,6 +41,15 @@ pub struct Package {
     pub json: JsonRules,
     /// `[native]`: the C that `extern c` declarations are linked to
     pub native: Native,
+}
+
+/// `[run]`: `mode = true` lets `main` and tests ask how the program is run
+/// (`RunMode`, std.process). By default they can't tell.
+#[derive(serde::Deserialize, Default, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct RunRules {
+    #[serde(default)]
+    pub mode: bool,
 }
 
 /// `[native]`: C files of the package (paths relative to its folder), and
@@ -140,6 +152,8 @@ struct Raw {
     json: JsonRules,
     #[serde(default)]
     native: Native,
+    #[serde(default)]
+    run: RunRules,
 }
 
 pub fn load(dir: &Path) -> Result<Package, String> {
@@ -162,6 +176,9 @@ pub fn load(dir: &Path) -> Result<Package, String> {
     }
     if let Some(k) = &raw.json.integers {
         settings.push(("json.integers".to_string(), k.clone()));
+    }
+    if raw.run.mode {
+        settings.push(("run.mode".to_string(), "true".to_string()));
     }
     let _ = SETTINGS.set(settings);
     for src in &raw.native.sources {
