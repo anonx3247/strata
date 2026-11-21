@@ -516,7 +516,6 @@ declare void @strata_step()
 declare void @strata_fuzz_arg(ptr)
 declare void @strata_ct_keep(i64)
 declare void @strata_leave()
-declare i1 @strata_regex_match(ptr, ptr)
 declare void @strata_trace_call(ptr, ptr)
 declare void @strata_trace_return(ptr, ptr)
 declare void @strata_overflow() noreturn cold
@@ -4115,10 +4114,27 @@ impl<'m, 'a> Func<'m, 'a> {
             return self.expr(args[1]);
         }
         if name == "matches" && args.len() == 2 && self.lookup(name).is_none() && !self.m.env.fns.contains_key(&Symbol::new(name)) {
-            // a pattern built at run time: the runtime's engine (Rust's `regex`, under the JIT)
+            // a pattern built at run time: std.regex's engine (written in Strata)
             let Expr::Str(re) = args[1] else {
                 let vs = self.operands(&args)?;
-                return self.call(&Ty::Bool, "@strata_regex_match", &vs);
+                if vs.iter().any(|v| is_never(&v.0)) {
+                    return Ok(never());
+                }
+                let code = self.call_fn("std.regex.match_code", vs.clone(), Some(Ty::Int))?;
+                // -1: not a regex, a fault saying why
+                let bad = self.apply(BinOp::Eq, &code, &(Ty::Int, "-1".into()))?;
+                let (fail, ok) = (self.fresh_label("bad_regex"), self.fresh_label("regex_ok"));
+                self.cond_br(&bad, &fail, &ok);
+                self.block(&fail);
+                // (its temporaries are its own: the block ends in the fault)
+                self.push_scope(true);
+                let why = self.call_fn("std.regex.pattern_error", vec![vs[1].clone()], Some(Ty::Str))?;
+                let msg = self.concat(vec![Part::Lit("bad regex: ".into()), Part::Val(why.1.clone())])?;
+                self.emit(format!("call void @strata_fault(i32 {}, ptr {})", Fault::Runtime as i32 | 256, msg.1));
+                self.emit("unreachable".into());
+                self.pop_scope()?;
+                self.block(&ok);
+                return self.apply(BinOp::Eq, &code, &(Ty::Int, "1".into()));
             };
             // a literal pattern, compiled to a DFA now
             let v = self.expr(args[0])?;

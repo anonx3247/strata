@@ -71,11 +71,29 @@ pub fn program() -> &'static Program {
     })
 }
 
+/// Whether a definition calls `matches` with a pattern that isn't a literal
+/// (compiled code matches it with `std.regex`).
+fn run_time_pattern(d: &crate::ast::DeclKind) -> bool {
+    use crate::ast::Expr;
+    let mut found = false;
+    let mut k = d.clone();
+    crate::ast::decl_exprs_mut(&mut k, |e| {
+        found = found
+            || match e {
+                Expr::Call(f, args) => matches!(&**f, Expr::Var(n) if n.as_str() == "matches") && args.len() == 2 && !matches!(args[1], Expr::Str(_)),
+                Expr::Method(_, m, args) => m.as_str() == "matches" && args.len() == 1 && !matches!(args[0], Expr::Str(_)),
+                _ => false,
+            }
+    });
+    found
+}
+
 /// `p` with the standard library added after its own definitions, if it uses
 /// it and does not already contain it (when `std/` itself is being checked).
 pub fn with_std(p: &Program) -> Option<Program> {
     use crate::ast::DeclKind;
-    let uses = p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Use(u) if is_std(&u.path)));
+    // (a pattern built at run time is matched by std.regex)
+    let uses = p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Use(u) if is_std(&u.path))) || p.decls.iter().any(|d| run_time_pattern(&d.kind));
     // a resolved program has it already, under qualified names in the root module
     let has_std = p.decls.iter().any(|d| {
         // (the prelude's code is added to every program: it says nothing about std)

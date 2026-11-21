@@ -685,17 +685,16 @@ fn the_jit_runs_as_the_interpreter() {
     let jit = output(Command::new(strata).args(["run", "--jit"]).arg(&file));
     expected("jit-numbers", &jit);
     assert_eq!(jit.1, 101);
-    // a pattern built at run time: Rust's engine, given to the runtime (as the interpreter's)
+    // a pattern built at run time: std.regex's engine, in a built program too
+    // (its messages are its own, not the interpreter's Rust `regex`'s)
     let f = d.join("lists.strata");
     save(&f, "fn main() { p := \"[a-z]\" + \"[0-9]\" print(matches(\"a1\", p)) print(matches(\"a\", p + \"(\")) }\n");
     let jit = output(Command::new(strata).args(["run", "--jit"]).arg(&f));
     expected("jit-regex", &jit);
-    assert!(jit.0.starts_with("true\nfault (Runtime): bad regex: regex parse error:") && jit.1 == 101, "{jit:?}");
-    // a built program has no engine for them, and says so
+    assert!(jit.0.starts_with("true\nfault (Runtime): bad regex: unclosed group") && jit.1 == 101, "{jit:?}");
     let exe = d.join("lists");
     assert!(Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap().status.success());
-    let (out, code) = output(&mut Command::new(&exe));
-    assert!(code == 101 && out.contains("a pattern built at run time needs `strata run`"), "{out}");
+    assert_eq!(output(&mut Command::new(&exe)), jit);
 }
 
 /// `strata run --jit` with options: the derived `from_args`, compiled.

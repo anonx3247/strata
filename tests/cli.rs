@@ -4057,7 +4057,10 @@ fn std_is_edited_as_a_checked_package() {
     std::fs::create_dir_all(&std).unwrap();
     for e in std::fs::read_dir(&src).unwrap() {
         let e = e.unwrap();
-        std::fs::copy(e.path(), std.join(e.file_name())).unwrap();
+        // (its files: an edit of std leaves a `.strata` folder there)
+        if e.path().is_file() {
+            std::fs::copy(e.path(), std.join(e.file_name())).unwrap();
+        }
     }
     let (ok, out) = strata(&["edit", "io"], &std, Some("pub fn shout(s: String) -> String {\n  s + \"!\"\n}\n"));
     assert!(ok && out.contains("std.io.shout"), "{out}");
