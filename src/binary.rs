@@ -1038,7 +1038,6 @@ impl Bin for Expr {
             Expr::Set(tys, xs) => put!(w, 31, tys, xs),
             Expr::Or(x, fb) => put!(w, 32, x, fb),
             Expr::Comptime(x) => put!(w, 33, x),
-            Expr::Describe(t) => put!(w, 34, t),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
@@ -1077,8 +1076,7 @@ impl Bin for Expr {
                 30 => Expr::Dict(Bin::dec(r)?, Bin::dec(r)?),
                 31 => Expr::Set(Bin::dec(r)?, Bin::dec(r)?),
                 32 => Expr::Or(Bin::dec(r)?, Bin::dec(r)?),
-                33 => Expr::Comptime(Bin::dec(r)?),
-                _ => Expr::Describe(Bin::dec(r)?),
+                _ => Expr::Comptime(Bin::dec(r)?),
             })
         })
     }

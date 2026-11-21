@@ -2583,10 +2583,6 @@ impl<'a> Checker<'a> {
             Expr::Int(_) | Expr::BigInt(_) => Ty::Int,
             Expr::Float(_) => Ty::Float,
             Expr::Tuple(es) => Ty::Con("Tuple".into(), es.iter().map(|e| self.infer(e)).collect()),
-            Expr::Describe(t) => {
-                self.err(format!("`${}` is only known in a derived method", crate::printer::ty(t)));
-                self.fresh()
-            }
             Expr::Comptime(x) => self.infer_at(x, expected),
             Expr::Str(_) => Ty::Str,
             Expr::Bool(_) => Ty::Bool,

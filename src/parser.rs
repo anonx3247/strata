@@ -1018,23 +1018,6 @@ impl Parser {
                 self.expect_sym(")")?;
                 Ok(e)
             }
-            // `$Self`, `$f.type`, `$Option[Int]`: a type's description
-            Tok::Sym("$") => {
-                self.next();
-                let mut name = self.ident()?.to_string();
-                if self.is_sym(".") && matches!(self.peek_at(1), Tok::Ident(t) if t == "type") {
-                    self.next();
-                    self.next();
-                    name += ".type";
-                }
-                let args = if self.is_sym("[") && !self.nl_before() {
-                    self.next();
-                    self.list("]", |p| p.type_expr())?
-                } else {
-                    vec![]
-                };
-                Ok(Expr::Describe(TypeExpr::Named(Symbol::new(&name), args)))
-            }
             Tok::Sym("[") => {
                 self.next();
                 if self.eat_sym("]") {
