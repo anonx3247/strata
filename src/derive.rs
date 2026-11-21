@@ -206,7 +206,7 @@ impl<'a> Expander<'a> {
             Some(e) => Value::Variant("Some".into(), Fields::Pos(vec![Value::Str(crate::printer::expr(e, 0))])),
             None => Value::Variant("None".into(), Fields::None),
         };
-        record("Field", vec![("name", Value::Str(name.to_string())), ("doc", strs(doc)), ("type", t), ("default", default)])
+        record("Field", vec![("name", Value::Str(name.to_string())), ("doc", strs(doc)), ("type", t), ("written", Value::Str(crate::printer::ty(ty))), ("default", default)])
     }
 
     /// A written type as a `std.typing.Type` (remembering which it was).
@@ -347,6 +347,14 @@ impl<'a> Expander<'a> {
             Expr::Match(s, None, arms) if matches!(&**s, Expr::Comptime(_)) => {
                 let Expr::Comptime(x) = &**s else { unreachable!() };
                 return self.match_type(x, arms);
+            }
+            // `compile_error(msg)`: reached in specialized code, the `derive` fails with it
+            Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if crate::names::short(n) == "compile_error") && args.len() == 1 => {
+                let m = self.expr(&args[0])?;
+                return Err(match self.eval(&m)? {
+                    Value::Str(s) => s,
+                    other => json(&other),
+                });
             }
             Expr::Call(f, args) => {
                 if let Expr::Var(name) = &**f {
@@ -674,6 +682,15 @@ impl<'a> Expander<'a> {
             Pattern::Bind(x) => {
                 binds.push((x.to_string(), t.clone()));
                 true
+            }
+            // a kind: `Choice` (a sum whose variants carry nothing), `Sum`, `Record`
+            Pattern::Ctor(c, CtorPat::None) if matches!(crate::names::short(c), "Choice" | "Sum" | "Record") => {
+                let TypeExpr::Named(n, _) = &base else { return false };
+                match self.env.types.get(n).map(|t| &t.body) {
+                    Some(TypeBody::Sum(vs)) => crate::names::short(c) != "Record" && (crate::names::short(c) == "Sum" || vs.iter().all(|v| v.payload == Payload::None)),
+                    Some(TypeBody::Record(_)) => crate::names::short(c) == "Record",
+                    _ => false,
+                }
             }
             Pattern::Ctor(c, CtorPat::None) => matches!(&base, TypeExpr::Named(n, _) if crate::names::short(n) == crate::names::short(c)),
             Pattern::Ctor(c, CtorPat::Positional(ps)) => match &base {
