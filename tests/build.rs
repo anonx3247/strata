@@ -41,14 +41,18 @@ fn output(c: &mut Command) -> (String, i32) {
     (String::from_utf8_lossy(&o.stdout).to_string() + &err, o.status.code().unwrap_or(-1))
 }
 
+/// The arguments every program is run with.
+const ARGS: &[&str] = &["one", "two words"];
+
 /// Build `file` natively, run it, and run it in the interpreter: same output.
 fn same_as_interpreter(file: &Path, dir: &Path) -> (String, i32) {
     let strata = env!("CARGO_BIN_EXE_strata");
     let exe = dir.join("prog");
     let b = Command::new(strata).arg("build").arg(file).arg("-o").arg(&exe).output().unwrap();
     assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
-    let native = output(&mut Command::new(&exe));
-    let interp = output(Command::new(strata).arg("run").arg(file));
+    // both run in `dir`, with the same arguments (what they read and write stays there)
+    let native = output(Command::new(&exe).args(ARGS).current_dir(dir));
+    let interp = output(Command::new(strata).arg("run").arg(file).arg("--").args(ARGS).current_dir(dir));
     assert_eq!(native, interp, "native (left) and interpreted (right) runs differ for {}", file.display());
     native
 }
@@ -212,6 +216,29 @@ fn traits_run_as_interpreted() {
 }
 
 #[test]
+fn capabilities_and_mut_run_as_interpreted() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("capabilities");
+    let cases = [
+        ("console", "use std.io.Console\nfn greet(mut console: Console, name: String) -> () { mut console.print(f\"hello, {name}\") }\nfn main(mut console: Console) -> () { greet(mut console, \"world\") mut console.eprint(\"to stderr\") mut console.write(\"no newline\") mut console.print(\"\") }"),
+        ("mut_params", "fn restock(mut n: Int, extra: Int) -> () { n = n + extra }\ntype Line = { sku: String, qty: Int }\nfn bump(mut l: Line) -> () { l.qty = l.qty + 1 }\nfn main() -> () { let mut k = 1 restock(mut k, 5) print(k) let mut line = Line { sku: \"a\", qty: 1 } bump(mut line) bump(mut line) print(line) restock(mut line.qty, 10) print(line) }"),
+        ("files_and_environment", "use std.io.Console\nuse std.fs.{Files, FsError}\nuse std.process.Environment\nfn main(mut console: Console, mut files: Files, env: Environment) -> Result[(), String] {\n  let _ = mut files.remove(\"fsplay/b.txt\")\n  let _ = mut files.remove(\"fsplay/a.txt\")\n  let _ = mut files.remove(\"fsplay/sub/deep\")\n  let _ = mut files.remove(\"fsplay/sub\")\n  let _ = mut files.remove(\"fsplay\")\n  print(files.exists(\"fsplay\"))\n  print(mut files.make_dir(\"fsplay/sub/deep\"))\n  print(mut files.write(\"fsplay/a.txt\", \"one\\n\"))\n  print(mut files.append(\"fsplay/a.txt\", \"two\\n\"))\n  print(files.read(\"fsplay/a.txt\"))\n  print(files.read(\"fsplay/missing.txt\"))\n  print(files.read(\"fsplay/sub\"))\n  print(mut files.write(\"fsplay/b.txt\", \"x\"))\n  print(files.list(\"fsplay\"))\n  print(files.list(\"fsplay/a.txt\"))\n  print(mut files.remove(\"fsplay/nope\"))\n  print(env.args())\n  print(env.var(\"HOME\") is Some)\n  print(env.var(\"STRATA_SURELY_UNSET_VAR\"))\n  mut console.print(\"done\")\n  Ok(())\n}"),
+        ("one_function_two_consoles", "use std.io.{Console, recorder}\nfn report(mut console: Console, n: Int) -> () {\n  for i in range(0, n) { mut console.print(f\"line {i}\") }\n}\nfn main(mut console: Console) -> () {\n  let mut r = recorder([])\n  report(mut r, 3)\n  report(mut console, 2)\n  print(r.out)\n  print(r)\n}"),
+    ];
+    for (name, src) in cases {
+        let (out, code) = case(&d, name, src);
+        assert_eq!(code, 0, "{name}: {out}");
+    }
+    // the files test made and read a folder of its own, there
+    assert!(d.join("fsplay/a.txt").exists());
+    let (out, _) = case(&d, "args", "use std.process.Environment\nfn main(env: Environment) -> () { print(env.args()) }");
+    assert!(out.contains(r#"["one","two words"]"#), "{out}");
+}
+
+#[test]
 fn what_is_not_compiled_yet_is_named() {
     let d = tmp("unsupported");
     let f = d.join("lists.strata");
@@ -229,7 +256,7 @@ fn emits_llvm_ir() {
     let o = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
     let ir = String::from_utf8_lossy(&o.stdout);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    assert!(ir.contains("define i64 @\"strata:twice\"(i64 %p.n)") && ir.contains("define i32 @main()"), "{ir}");
+    assert!(ir.contains("define i64 @\"strata:twice\"(i64 %p.n)") && ir.contains("define i32 @main(i32 %argc, ptr %argv)"), "{ir}");
 }
 
 /// `strata run --jit`: compiled in memory, same output as interpreted.
