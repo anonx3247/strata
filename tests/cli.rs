@@ -115,7 +115,7 @@ fn run_a_binary_file() {
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "hello.strata"], &d, None);
     assert!(ok && out.contains("hello, world!"), "{out}");
-    std::fs::write(d.join("bad.strata"), b"STRATA\x06\x00\x05").unwrap();
+    std::fs::write(d.join("bad.strata"), b"STRATA\x01\x00\x05").unwrap();
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok && out.contains("corrupt binary Strata file"), "{out}");
     // text is not read: it goes in through an edit

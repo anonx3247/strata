@@ -29,7 +29,7 @@ module-file = "STRATA" version:uint 0  header  definitions
 bundle      = "STRATA" version:uint 1  manifest:option(raw-string)  modules:list(raw-bytes)
 ```
 
-- the six ASCII bytes `STRATA` (`53 54 52 41 54 41`), the format `version` (currently `6`), then `0` for a module file or `1` for a bundle;
+- the six ASCII bytes `STRATA` (`53 54 52 41 54 41`), the format `version` (`1`: the format is not settled, so changes to it convert the files rather than bump it), then `0` for a module file or `1` for a bundle;
 - a bundle holds the package's `strata.toml`, as written (none for a script), then each module file, as its length and its bytes, in the order the modules first appear in the program.
 
 ### The header
@@ -197,7 +197,7 @@ CtorPat = 0 None | 1 Positional(list(Pattern)) | 2 Record(list((str, Pattern)), 
 
 ```text
 53 54 52 41 54 41   "STRATA"
-06 00               version 6, a module file
+01 00               version 1, a module file
 header:
    02 00 03 6f 6e 65    2 strings: "", "one"
    00                   module "" (the root)
@@ -221,11 +221,11 @@ the definition:
 
 ## Changing the format
 
-The code is stored in this format, so a change to the tree (a new node, a new field) changes the files of every package and script in the repository. Bump `VERSION`, and convert them in the same change:
+The code is stored in this format, so a change to the tree (a new node, a new field) changes the files of every package and script in the repository. Until the format is settled, `VERSION` stays `1`: there is nothing to stay compatible with. Convert the files in the same change:
 
 1. with the strata of before the change, write each file's text: `strata render --file F > F.st` (`render --split DIR` for a package);
 2. make the change and build;
 3. read the text back in: `strata --file F edit < F.st` for a script, `strata --file PKG/ edit MODULE < M.st` for each module of a package (the standard library first: its modules are `std.io`, …; the compiled prelude, `src/llvm/prelude.strata`, is module `strata.compiled`);
 4. `strata ci --fix` brings the headers' dependency lists up to date, and `strata ci` must pass.
 
-Adding a node or a field at the end of a list of tags keeps old files readable in principle; whether the reader should accept older versions (and `ci --fix` upgrade them) instead of every change converting the files is an open question (IDEAS.md).
+Adding a node at the end of a list of tags keeps old files readable, so it needs no conversion; adding a field to a node, or changing a node, does. Once the format is settled, the version will count changes, and the reader may accept older versions.

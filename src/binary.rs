@@ -23,10 +23,11 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub const MAGIC: &[u8; 6] = b"STRATA";
-/// Bumped on every change to the layout; older files are rejected. Code is
-/// stored in this format, so a change to it means converting the repository's
-/// files: see "Changing the format" in docs/binary-format.md.
-pub const VERSION: u64 = 6;
+/// The format isn't settled yet, so it stays 1 (user, 2026-11-21): a change
+/// to the layout doesn't bump it, it converts the repository's files instead
+/// (see "Changing the format" in docs/binary-format.md). Numbering starts
+/// once files must stay readable across versions.
+pub const VERSION: u64 = 1;
 const MODULE: u8 = 0;
 const BUNDLE: u8 = 1;
 /// Deepest nesting of expressions, patterns and types a file may have.
