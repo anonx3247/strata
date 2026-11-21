@@ -1,0 +1,5 @@
+6
+Line { sku: "a", qty: 3 }
+Line { sku: "a", qty: 13 }
+
+--- exit 0

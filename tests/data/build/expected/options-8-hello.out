@@ -1,0 +1,5 @@
+error: unknown option `--bogus` (the options are --loud, --times)
+
+Run `hello --help` for the options.
+
+--- exit 2

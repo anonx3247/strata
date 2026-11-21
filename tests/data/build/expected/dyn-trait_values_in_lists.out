@@ -1,0 +1,7 @@
+14
+["square", "shape"]
+[Square { side: 2 }, Rect { w: 2, h: 5 }]
+9
+Square { side: 3 }
+
+--- exit 0

@@ -1,0 +1,5 @@
+error: --times: `x` is not a whole number
+
+Run `hello --help` for the options.
+
+--- exit 2

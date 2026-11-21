@@ -3978,7 +3978,10 @@ fn for_over_iterators() {
     assert!(ok, "{out}");
     assert_eq!(out, json_case::ITERATORS_OUTPUT);
     let (_, out) = strata(&["--file", "it.strata", "verify"], &d, None);
-    assert!(out.contains("it has a `for` over an `Iterator`, which may never end"), "{out}");
+    assert!(out.contains("it has a `for` over an `Iterator` that isn't a `FiniteIterator`, which may never end"), "{out}");
+    // the defaults of the prelude's traits are library code, not the program's
+    assert!(!out.contains("Count.map") && !out.contains("Count.fold"), "{out}");
+    assert!(out.contains("index -1 out of range (length 0) (stack: ListIter.next)") && out.contains("it is recursive through `next`"), "{out}");
     let bad = "type P = { x: Int }\n\nfn a(p: P) {\n  for x in p {\n    print(x)\n  }\n}\n\nfn b(s: String) {\n  for c in s {\n    print(c)\n  }\n}\n\nfn c[I](it: I) {\n  for x in it {\n    print(x)\n  }\n}\n";
     // written, and reported as not checking
     let (_, out) = strata(&["--file", "bad.strata", "edit"], &d, Some(bad));
@@ -3988,6 +3991,25 @@ fn for_over_iterators() {
     assert!(out.contains("error in a: `for` needs a List, Set, Dict or an `Iterator`: `P` does not implement `Iterator`"), "{out}");
     assert!(out.contains("error in b: `for` needs a List, Set, Dict or an `Iterator`, found `String`"), "{out}");
     assert!(out.contains("error in c: `for` needs a List, Set, Dict or an `Iterator`: `I` is not known to implement `Iterator`"), "{out}");
+}
+
+/// `FiniteIterator` and lazy `map` / `filter` / `fold`: run, and a `for`
+/// over a finite iterator shown to end, over an unbounded one not.
+#[test]
+fn finite_and_lazy_iterators() {
+    let d = tmp("lazy-iterators");
+    let (ok, out) = strata(&["--file", "lazy.strata", "edit"], &d, Some(json_case::LAZY_ITERATORS));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "lazy.strata"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out, json_case::LAZY_ITERATORS_OUTPUT);
+    let (_, out) = strata(&["--file", "lazy.strata", "verify"], &d, None);
+    let after = |f: &str| out.split(&format!("✓ {f} ")).nth(1).and_then(|r| r.lines().nth(1)).unwrap_or("").to_string();
+    for f in ["total", "size"] {
+        assert!(!after(f).contains("may not terminate"), "{f} ends: {out}");
+    }
+    assert!(after("first_square_over").contains("it has a `for` over an `Iterator` that isn't a `FiniteIterator`"), "{out}");
+    assert!(!out.contains("Count.map") && !out.contains("Mapped"), "{out}");
 }
 
 /// Types passed whole at runtime: `T.m()` on an impl's type parameters, and

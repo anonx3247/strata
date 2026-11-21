@@ -1,0 +1,4 @@
+3
+fault (Refinement): argument `o` of `f`: Some.0: -2 does not satisfy `Positive` (where it > 0)
+
+--- exit 101

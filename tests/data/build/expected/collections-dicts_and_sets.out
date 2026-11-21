@@ -1,0 +1,49 @@
+Dict { "a": 1, "b": 2, "c": 3 }
+[3, 0]
+Dict {}
+Dict { 1: "a", 2: "b", 3: "z" }
+Dict { "a": 10, "b": 2, "c": 3 }
+Dict { "a": 1, "aa": 5, "b": 2, "c": 3 }
+Dict { "a": 1, "c": 3 }
+Dict { "a": 1, "b": 2, "c": 3 }
+[Some(3), None]
+[true, false]
+["a", "b", "c"]
+[1, 2, 3]
+[("a", 1), ("b", 2), ("c", 3)]
+Dict { "a": 1.5, "b": 3.0, "c": 4.5 }
+Dict { "a": "<1>", "b": "<2>", "c": "<3>" }
+a=1
+b=2
+c=3
+Dict { "cat": 2, "end": 1, "hat": 1, "the": 3 }
+Set { 1, 2, 3 }
+[3, 0]
+[true, false]
+[Set { 0, 1, 2, 3 }, Set { 1, 2, 3 }, Set { 2, 3 }, Set { 1, 2, 3 }]
+[1, 2, 3]
+[Set { 0, 1, 2, 3, 5 }, Set { 2, 3 }, Set { 1, 3 }]
+1
+2
+3
+true
+true
+true
+Set { "apple", "fig", "pear" }
+Set { -1.0, -0.5, 0.0, 2.5 }
+Set { Blue, Green, Red }
+Set { UserId(10), UserId(100), UserId(9) }
+Set { Point { x: 1, y: 5 }, Point { x: 2, y: 1 } }
+Set { (1, "z"), (2, "a"), (2, "b") }
+Set { [1], [1, 0], [2, 1] }
+Set { None, Some(1), Some(3) }
+Dict { Blue: 2, Red: 1 }
+Dict { (0, 9): "q", (1, 2): "p" }
+Set { Set { 0 }, Set { 1, 2 } }
+Dict { "x": Set { 1 }, "y": Set {} }
+Dict { "k": Dict { 1: "one", 2: "two" } }
+Dict { "a": 1, "b": 2, "c": 3 } Set { 1, 2, 3 }
+Set { 1, 2, 3 }{"a":1,"b":2,"c":3}
+Dict { "a": 1, "b": 2, "c": 3 }
+
+--- exit 0

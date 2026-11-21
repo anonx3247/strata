@@ -1,0 +1,6 @@
+fault (Runtime): bad regex: regex parse error:
+    ^(?:()$
+     ^
+error: unclosed group
+
+--- exit 101

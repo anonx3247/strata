@@ -45,12 +45,6 @@ trait Display {
   fn to_string(self) -> String
 }
 
-/// What a `for` loop runs over, besides lists, sets and dicts: `next`
-/// gives the elements one at a time, then `None`.
-trait Iterator[T] {
-  fn next(mut self) -> Option[T]
-}
-
 /// An optional value.
 type Option[T] =
   | None
@@ -100,6 +94,132 @@ type U32 = Int where 0 <= it && it <= 4294967295
 /// 0 ..= 2^64 - 1
 type U64 = Int where 0 <= it && it <= 18446744073709551615
 "#;
+
+/// The prelude's definitions that carry code (default methods, impls):
+/// added to every program when it is resolved (`with_prelude_code`), in the
+/// module `std.prelude`, so they are checked, compiled and run as the
+/// program's own, and skipped as the standard library is (by `verify`, the
+/// views). Their names are the prelude's, unqualified.
+pub const PRELUDE_CODE: &str = r#"
+/// What a `for` loop runs over, besides lists, sets and dicts: `next`
+/// gives the elements one at a time, then `None`.
+trait Iterator[T] {
+  fn next(mut self) -> Option[T]
+
+  fn map[B](self, f: (T) -> B) -> Mapped[Self, T, B] {
+    Mapped { inner: self, f: f }
+  }
+
+  fn filter(self, keep: (T) -> Bool) -> Filtered[Self, T] {
+    Filtered { inner: self, keep: keep }
+  }
+
+  fn fold[B](self, init: B, f: (B, T) -> B) -> B {
+    mut acc := init
+    mut it := self
+    loop {
+      match mut it.next() {
+        Some(x) => { acc = f(acc, x) },
+        None => { break },
+      }
+    }
+    acc
+  }
+}
+
+type Mapped[I, A, B] = { inner: I, f: (A) -> B }
+
+impl[I: Iterator[A], A, B] Iterator[B] for Mapped[I, A, B] {
+  fn next(mut self) -> Option[B] {
+    match mut self.inner.next() {
+      Some(x) => Some((self.f)(x)),
+      None => None,
+    }
+  }
+}
+
+type Filtered[I, T] = { inner: I, keep: (T) -> Bool }
+
+impl[I: Iterator[T], T] Iterator[T] for Filtered[I, T] {
+  fn next(mut self) -> Option[T] {
+    loop {
+      match mut self.inner.next() {
+        Some(x) => if (self.keep)(x) { return Some(x) },
+        None => { return None },
+      }
+    }
+    None
+  }
+}
+
+/// An iterator that ends: `len` is how many elements `next` still gives.
+/// A `for` loop over one is shown to end.
+trait FiniteIterator[T]: Iterator[T] {
+  fn len(self) -> Natural
+}
+"#;
+
+/// The module the prelude's code is in, once added to a program.
+pub const PRELUDE_MODULE: &str = "std.prelude";
+
+/// The prelude's code, parsed once (`PRELUDE_CODE`).
+pub fn prelude_code() -> &'static Program {
+    static P: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
+    P.get_or_init(|| {
+        let mut p = crate::parser::parse_program(PRELUDE_CODE).expect("prelude code parses");
+        for d in &mut p.decls {
+            d.module = Symbol::new(PRELUDE_MODULE);
+            if let DeclKind::Trait(t) = &mut d.kind {
+                for m in &mut t.methods {
+                    m.decl.name = prelude_method(m.decl.name);
+                }
+            }
+        }
+        qualify_prelude_impls(&mut p);
+        p
+    })
+}
+
+/// A method of a prelude trait as named once resolved (`std.prelude.len`),
+/// as std's are named in their modules: apart from the builtins of the same
+/// name (`len(xs)` on a list).
+fn prelude_method(m: Symbol) -> Symbol {
+    Symbol::from(format!("{PRELUDE_MODULE}.{m}").as_str())
+}
+
+/// The traits of the prelude's code.
+fn prelude_traits() -> &'static [Symbol] {
+    static T: std::sync::OnceLock<Vec<Symbol>> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        crate::parser::parse_program(PRELUDE_CODE).expect("prelude code parses").decls.iter().filter_map(|d| if let DeclKind::Trait(t) = &d.kind { Some(t.name) } else { None }).collect()
+    })
+}
+
+/// The methods of each impl of a prelude trait named as the trait's are
+/// (`fn len` in `impl FiniteIterator[Int] for Count` is `std.prelude.len`).
+fn qualify_prelude_impls(p: &mut Program) {
+    for d in &mut p.decls {
+        if let DeclKind::Impl(i) = &mut d.kind {
+            if prelude_traits().contains(&i.trait_name) {
+                for m in &mut i.methods {
+                    if !m.name.contains('.') {
+                        m.name = prelude_method(m.name);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `p` with the prelude's code after its own definitions, unless it has it
+/// already (resolved before), and its impls of the prelude's traits naming
+/// their methods as the traits do.
+pub fn with_prelude_code(p: &mut Program) {
+    if !p.decls.iter().any(|d| d.module == PRELUDE_MODULE) {
+        qualify_prelude_impls(p);
+        p.decls.extend(prelude_code().decls.iter().cloned());
+    }
+}
 
 /// A built-in function (one overload): its name, type parameters, type, and
 /// whether it always returns, never failing, on well-typed arguments (which
@@ -738,8 +858,9 @@ struct Checker<'a> {
     /// The type of each expression, by node address (resolved at the end),
     /// when asked for (the compiler): `None` otherwise.
     types: Option<Vec<(usize, Ty)>>,
-    /// `for` loops over an `Iterator`, by their subject's node.
-    iter_fors: Vec<usize>,
+    /// `for` loops over an `Iterator`, by their subject's node, and whether
+    /// it is a `FiniteIterator`.
+    iter_fors: Vec<(usize, bool)>,
 }
 
 impl<'a> Checker<'a> {
@@ -1481,19 +1602,34 @@ impl<'a> Checker<'a> {
         let n = self.errors.len();
         let rt = self.infer(recv);
         self.errors.truncate(n);
-        let Ty::Con(head, _) = self.resolve(&rt) else { return None };
-        if !self.env.types.contains_key(&head) || self.has_own_method(recv, m) {
-            return None;
-        }
-        let mut found: Vec<(Symbol, Symbol)> = vec![];
-        for imp in &self.env.impls {
-            if imp.is_inherent() || texpr_head(&imp.for_type) != head.as_str() {
-                continue;
+        // the traits the receiver has: its type's impls, a trait-typed value's
+        // trait, or a type parameter's bounds (with their supertraits)
+        let traits: Vec<Symbol> = match self.resolve(&rt) {
+            Ty::Con(head, args) if self.env.traits.contains_key(&head) => {
+                std::iter::once(head).chain(self.supers_of(&head, &args, 0).into_iter().map(|(s, _)| s)).collect()
             }
-            let Some(td) = self.env.traits.get(&imp.trait_name) else { continue };
+            Ty::Con(head, _) => {
+                if !self.env.types.contains_key(&head) || self.has_own_method(recv, m) {
+                    return None;
+                }
+                self.env.impls.iter().filter(|i| !i.is_inherent() && texpr_head(&i.for_type) == head.as_str()).map(|i| i.trait_name).collect()
+            }
+            Ty::Rigid(p) => {
+                let mut all = vec![];
+                for (tr, args) in self.bounds.get(&p).cloned().unwrap_or_default() {
+                    all.push(tr);
+                    all.extend(self.supers_of(&tr, &args, 0).into_iter().map(|(s, _)| s));
+                }
+                all
+            }
+            _ => return None,
+        };
+        let mut found: Vec<(Symbol, Symbol)> = vec![];
+        for t in traits {
+            let Some(td) = self.env.traits.get(&t) else { continue };
             for tm in &td.methods {
-                if crate::names::short(&tm.decl.name) == m && crate::resolve::takes_self(&tm.decl) && !found.contains(&(imp.trait_name, tm.decl.name)) {
-                    found.push((imp.trait_name, tm.decl.name));
+                if crate::names::short(&tm.decl.name) == m && crate::resolve::takes_self(&tm.decl) && !found.contains(&(t, tm.decl.name)) {
+                    found.push((t, tm.decl.name));
                 }
             }
         }
@@ -2625,7 +2761,10 @@ impl<'a> Checker<'a> {
                                     // any other value that implements `Iterator`: a loop calling `next` (`lower_iterator_fors`)
                                     let el = self.fresh();
                                     match self.satisfies(&other, ITERATOR, std::slice::from_ref(&el), 0) {
-                                        Ok(()) => self.iter_fors.push(addr(it)),
+                                        Ok(()) => {
+                                            let finite = self.satisfies(&other, FINITE_ITERATOR, std::slice::from_ref(&el), 0).is_ok();
+                                            self.iter_fors.push((addr(it), finite))
+                                        }
                                         Err(e) => self.err(format!("`for` needs a List, Set, Dict or an `Iterator`: {e}")),
                                     }
                                     el
@@ -3600,13 +3739,20 @@ fn check_from(mut resolved: crate::resolve::Resolution) -> CheckReport {
 /// What checking decides: errors, holes, the method-call decisions
 /// `elaborate` writes into the program, each expression's type (when asked
 /// for), and the `for` loops over an `Iterator` (by their subject's node).
-type Decided = (Vec<Diag>, Vec<HoleInfo>, Vec<(usize, Target)>, HashMap<usize, Ty>, HashSet<usize>);
+type Decided = (Vec<Diag>, Vec<HoleInfo>, Vec<(usize, Target)>, HashMap<usize, Ty>, HashMap<usize, bool>);
 
 /// The trait a `for` loop runs over, besides lists, sets and dicts.
 pub const ITERATOR: &str = "Iterator";
 
 /// The start of the variable holding the iterator a `for` loop runs over.
 pub const ITER_VAR: &str = "$iter_";
+
+/// The trait of iterators that end, with their length.
+pub const FINITE_ITERATOR: &str = "FiniteIterator";
+
+/// The start of the variable holding a `FiniteIterator` a `for` loop runs
+/// over: termination knows that loop ends.
+pub const FINITE_ITER_VAR: &str = "$finite_iter_";
 
 /// `check_decls`, after writing each `for` over an `Iterator` as the loop it
 /// means (`lower_iterator_fors`), which needs the subject's type: so when
@@ -3625,19 +3771,17 @@ fn check_lowering(prog: &mut Program, env: &Env, record_types: bool) -> (Vec<Dia
 /// Each `for p in xs { body }` whose subject (by node) is in `fors`, as
 /// `{ mut $iter_N := xs; loop { match mut $iter_N.next() { Some(p) => body, None => break } } }`.
 /// The rest of the language (compiler, prover, termination) sees an ordinary loop.
-fn lower_iterator_fors(prog: &mut Program, fors: &HashSet<usize>) {
+fn lower_iterator_fors(prog: &mut Program, fors: &HashMap<usize, bool>) {
     let mut n = 0;
     for d in &mut prog.decls {
         decl_exprs_mut_post(&mut d.kind, |e| {
             let Expr::Block(stmts, _) = e else { return };
             for s in stmts.iter_mut() {
                 let Stmt::For(_, xs, _) = &*s else { continue };
-                if !fors.contains(&addr(xs)) {
-                    continue;
-                }
+                let Some(&finite) = fors.get(&addr(xs)) else { continue };
                 let Stmt::For(p, xs, body) = std::mem::replace(s, Stmt::Break) else { unreachable!() };
                 n += 1;
-                let it = Symbol::from(format!("{ITER_VAR}{n}").as_str());
+                let it = Symbol::from(format!("{}{n}", if finite { FINITE_ITER_VAR } else { ITER_VAR }).as_str());
                 let next = Expr::Mut(Box::new(Expr::Method(Box::new(Expr::Var(it)), Symbol::from("next"), vec![])));
                 let arms = vec![
                     Arm { comments: vec![], pat: Pattern::Ctor(Symbol::from("Some"), CtorPat::Positional(vec![p])), body },
@@ -3652,7 +3796,7 @@ fn lower_iterator_fors(prog: &mut Program, fors: &HashSet<usize>) {
 
 /// Check every declaration of a resolved program (see `Decided`).
 fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
-    let (mut errors, mut holes, mut targets, mut types, mut iter_fors) = (Vec::new(), Vec::new(), Vec::new(), HashMap::default(), HashSet::default());
+    let (mut errors, mut holes, mut targets, mut types, mut iter_fors) = (Vec::new(), Vec::new(), Vec::new(), HashMap::default(), HashMap::default());
     let typed_heads = heads_needing_types(prog, env);
     for d in &prog.decls {
         // a `derived fn` and a function with `comptime` parameters are checked

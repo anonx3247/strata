@@ -2908,6 +2908,8 @@ impl<'a> Vc<'a> {
         for (pc, v) in std::mem::take(&mut self.returns) {
             exits.push((pc, v, " (early return)"));
         }
+        // a prelude trait's method by its short name (`FiniteIterator::len`)
+        let label = label.replace(&format!("{}.", crate::types::PRELUDE_MODULE), "");
         for (pc, res, how) in exits {
             self.pc = pc;
             self.dead = false;

@@ -1,0 +1,9 @@
+[1,2,3]
+{"a":[{"type":"P","name":"x","tags":[]}]}
+2.5
+Ok([1, 2])
+Err("[1]: expected an integer, got \"x\"")
+Ok(Dict { "team": [P { name: "y", tags: ["t"] }] })
+Err("team[0].name: expected a string, got 3")
+
+--- exit 0

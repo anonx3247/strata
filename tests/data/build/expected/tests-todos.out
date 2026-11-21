@@ -1,0 +1,7 @@
+✓ a submitted form adds a to-do, or says what is wrong
+✓ to-dos are toggled, filtered and cleared
+✓ the page's handlers make messages from what is entered
+
+3 passed, 0 failed
+
+--- exit 0

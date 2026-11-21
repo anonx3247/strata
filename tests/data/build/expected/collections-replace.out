@@ -1,0 +1,3 @@
+fault (Runtime): replace: empty pattern
+
+--- exit 101

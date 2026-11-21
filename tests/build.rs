@@ -44,16 +44,37 @@ fn output(c: &mut Command) -> (String, i32) {
 /// The arguments every program is run with.
 const ARGS: &[&str] = &["one", "two words"];
 
-/// Build `file` natively, run it, and run it in the interpreter: same output.
-fn same_as_interpreter(file: &Path, dir: &Path) -> (String, i32) {
+/// A run's output and exit code against the one recorded as `key` in
+/// tests/data/build/expected (recorded from the interpreter's runs, which
+/// compiled code was compared with until the interpreter's retirement:
+/// IDEAS.md). `STRATA_BLESS=1` records it instead.
+fn expected(key: &str, got: &(String, i32)) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/build/expected").join(format!("{key}.out"));
+    let text = format!("{}\n--- exit {}\n", got.0, got.1);
+    if std::env::var_os("STRATA_BLESS").is_some() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &text).unwrap();
+        return;
+    }
+    let want = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("no expected output {} (STRATA_BLESS=1 records it)", path.display()));
+    assert_eq!(text, want, "{key}: the output (left) differs from the expected one (right), {}", path.display());
+}
+
+/// Build `file` natively and run it: the expected output (`expected`, keyed
+/// by the test's folder and the file's name), everything freed.
+fn built_as_expected(file: &Path, dir: &Path) -> (String, i32) {
     let strata = env!("CARGO_BIN_EXE_strata");
     let exe = dir.join("prog");
     let b = Command::new(strata).arg("build").arg(file).arg("-o").arg(&exe).output().unwrap();
     assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
-    // both run in `dir`, with the same arguments (what they read and write stays there)
+    // run in `dir`, with the arguments (what it reads and writes stays there)
     let native = freed_everything(output(Command::new(&exe).args(ARGS).current_dir(dir).env("STRATA_MEMORY", "check")), file);
-    let interp = output(Command::new(strata).args(["run", "--interpret"]).arg(file).arg("--").args(ARGS).current_dir(dir));
-    assert_eq!(native, interp, "native (left) and interpreted (right) runs differ for {}", file.display());
+    // the folder is `strata-build-test-{name}-{pid}` (`tmp`)
+    let folder = dir.file_name().unwrap().to_string_lossy().to_string();
+    let name = folder.trim_start_matches("strata-build-test-").rsplit_once('-').map_or(folder.as_str(), |(n, _)| n).to_string();
+    let stem = file.file_stem().unwrap().to_string_lossy();
+    let key = if file.starts_with(dir) { format!("{name}-{stem}") } else { stem.to_string() };
+    expected(&key, &native);
     native
 }
 
@@ -73,7 +94,7 @@ fn freed_everything((out, code): (String, i32), file: &Path) -> (String, i32) {
 fn case(dir: &Path, name: &str, src: &str) -> (String, i32) {
     let f = dir.join(format!("{name}.strata"));
     save(&f, src);
-    same_as_interpreter(&f, dir)
+    built_as_expected(&f, dir)
 }
 
 #[test]
@@ -84,7 +105,7 @@ fn numbers_compile_and_run_as_interpreted() {
     }
     let d = tmp("numbers");
     let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/build/numbers.strata");
-    let (out, code) = same_as_interpreter(&file, &d);
+    let (out, code) = built_as_expected(&file, &d);
     assert!(out.starts_with("2432902008176640000\n"), "{out}");
     assert!(out.contains("fault (Refinement): result of `next_digit`"), "{out}");
     assert_eq!(code, 101);
@@ -128,7 +149,7 @@ fn records_variants_and_generics_run_as_interpreted() {
     }
     let d = tmp("data");
     let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/build/data.strata");
-    let (out, code) = same_as_interpreter(&file, &d);
+    let (out, code) = built_as_expected(&file, &d);
     assert!(out.contains("Err(\"3 is odd\")") && out.contains("big circle, circle, rect or dot, nothing"), "{out}");
     assert_eq!(code, 101);
     let cases = [
@@ -167,7 +188,7 @@ fn lists_and_lambdas_run_as_interpreted() {
     }
     let d = tmp("lists");
     let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/build/lists.strata");
-    let (out, code) = same_as_interpreter(&file, &d);
+    let (out, code) = built_as_expected(&file, &d);
     assert!(out.contains("[2, 3, 5, 7, 11, 13, 17, 19, 23, 29]") && out.contains("[0]: -1 does not satisfy `Positive`"), "{out}");
     assert_eq!(code, 101);
     // examples/math.strata, with a `main` that prints what its test checks
@@ -611,10 +632,9 @@ fn options_from_the_command_line_compile() {
         assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
     }
     let mut codes = vec![];
-    for (ex, args) in OPTION_RUNS {
+    for (i, (ex, args)) in OPTION_RUNS.iter().enumerate() {
         let native = output(Command::new(d.join(ex)).args(*args).current_dir(root).stdin(Stdio::null()));
-        let interp = output(Command::new(strata).args(["run", "--interpret"]).arg(root.join("examples").join(ex)).arg("--").args(*args).current_dir(root).stdin(Stdio::null()));
-        assert_eq!(native, interp, "native (left) and interpreted (right) differ for {ex} {args:?}");
+        expected(&format!("options-{i}-{ex}"), &native);
         codes.push(native.1);
     }
     assert_eq!(codes, [0, 0, 0, 0, 2, 2, 0, 0, 2, 0, 0, 2, 0]);
@@ -624,10 +644,9 @@ fn options_from_the_command_line_compile() {
     let exe = d.join("opts");
     let b = Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
     assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
-    for args in [&["--count", "4", "a", "b"][..], &[], &["--count"], &["--help"]] {
-        let native = output(Command::new(&exe).args(args));
-        let interp = output(Command::new(strata).args(["run", "--interpret"]).arg(&f).arg("--").args(args));
-        assert_eq!(native, interp, "native (left) and interpreted (right) differ for {args:?}");
+    for (i, args) in [&["--count", "4", "a", "b"][..], &[], &["--count"], &["--help"]].iter().enumerate() {
+        let native = output(Command::new(&exe).args(*args));
+        expected(&format!("options-script-{i}"), &native);
     }
 }
 
@@ -657,21 +676,20 @@ fn emits_llvm_ir() {
     assert!(ir.contains("define i64 @\"strata:twice\"(i64 %p.n)") && ir.contains("define i32 @main(i32 %argc, ptr %argv)"), "{ir}");
 }
 
-/// `strata run --jit`: compiled in memory, same output as interpreted.
+/// `strata run --jit`: compiled in memory, the expected output.
 #[test]
 fn the_jit_runs_as_the_interpreter() {
     let d = tmp("jit");
     let strata = env!("CARGO_BIN_EXE_strata");
     let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/build/numbers.strata");
     let jit = output(Command::new(strata).args(["run", "--jit"]).arg(&file));
-    let interp = output(Command::new(strata).args(["run", "--interpret"]).arg(&file));
-    assert_eq!(jit, interp);
+    expected("jit-numbers", &jit);
     assert_eq!(jit.1, 101);
     // a pattern built at run time: Rust's engine, given to the runtime (as the interpreter's)
     let f = d.join("lists.strata");
     save(&f, "fn main() { p := \"[a-z]\" + \"[0-9]\" print(matches(\"a1\", p)) print(matches(\"a\", p + \"(\")) }\n");
     let jit = output(Command::new(strata).args(["run", "--jit"]).arg(&f));
-    assert_eq!(jit, output(Command::new(strata).args(["run", "--interpret"]).arg(&f)));
+    expected("jit-regex", &jit);
     assert!(jit.0.starts_with("true\nfault (Runtime): bad regex: regex parse error:") && jit.1 == 101, "{jit:?}");
     // a built program has no engine for them, and says so
     let exe = d.join("lists");
@@ -685,15 +703,15 @@ fn the_jit_runs_as_the_interpreter() {
 fn the_jit_reads_options() {
     let strata = env!("CARGO_BIN_EXE_strata");
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for (ex, args) in OPTION_RUNS {
-        let run = |jit: bool| output(Command::new(strata).arg("run").arg(if jit { "--jit" } else { "--interpret" }).arg(root.join("examples").join(ex)).arg("--").args(*args).current_dir(root).stdin(Stdio::null()));
-        let (jit, interp) = (run(true), run(false));
+    // what the built programs give (`options_from_the_command_line_compile`)
+    for (i, (ex, args)) in OPTION_RUNS.iter().enumerate() {
+        let jit = output(Command::new(strata).args(["run", "--jit"]).arg(root.join("examples").join(ex)).arg("--").args(*args).current_dir(root).stdin(Stdio::null()));
         assert!(!jit.0.contains("note: interpreted"), "{}", jit.0);
-        assert_eq!(jit, interp, "the JIT (left) and the interpreter (right) differ for {ex} {args:?}");
+        expected(&format!("options-{i}-{ex}"), &jit);
     }
 }
 
-/// Every compiled program frees what it made (`same_as_interpreter` checks
+/// Every compiled program frees what it made (`built_as_expected` checks
 /// it): one that goes through closures, trait values, `mut`, patterns,
 /// early exits, collections and strings, and a chain too long to drop
 /// recursively.
@@ -1436,9 +1454,8 @@ fn main() {
 }
 "#;
 
-/// `strata test` compiles the tests with the JIT: the same report as
-/// interpreted, for every example and for failing tests (fault, call stack,
-/// what they printed).
+/// `strata test` compiles the tests with the JIT: the expected report, for
+/// every example and for failing tests (fault, call stack, what they printed).
 #[test]
 fn the_jit_runs_tests_as_the_interpreter() {
     let strata = env!("CARGO_BIN_EXE_strata");
@@ -1448,13 +1465,13 @@ fn the_jit_runs_tests_as_the_interpreter() {
         let f = root.join("examples").join(ex);
         let jit = report(&f, "--jit");
         assert!(!jit.0.contains("note: interpreted"), "{ex}: {}", jit.0);
-        assert_eq!(jit, report(&f, "--interpret"), "the JIT (left) and the interpreter (right) differ for {ex}");
+        expected(&format!("tests-{}", ex.trim_end_matches(".strata")), &jit);
     }
     let d = tmp("jit-tests");
     let f = d.join("t.strata");
     save(&f, "fn half(n: Int) -> Int requires n % 2 == 0 { n / 2 }\nfn twice(n: Int) -> Int { half(n) * 4 }\ntest \"passes\" { assert twice(4) == 8 }\ntest \"fails\" { print(\"before\") print(twice(3)) }\ntest \"asserts\" { x := [1, 2] assert len(x) == 3 }\n");
     let jit = report(&f, "--jit");
-    assert_eq!(jit, report(&f, "--interpret"));
+    expected("tests-failing", &jit);
     assert!(jit.0.contains("✗ fails\n    Requires: precondition of `half` violated") && jit.0.contains("    stack: twice -> half\n    printed:\n      before\n") && jit.0.ends_with("1 passed, 2 failed\n"), "{}", jit.0);
 }
 
@@ -1704,6 +1721,13 @@ fn for_over_iterators_compiles() {
     assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
     let (out, code) = freed_everything(output(Command::new(&exe).current_dir(&d).env("STRATA_MEMORY", "check")), &f);
     assert_eq!((out.as_str(), code), (json_case::ITERATORS_OUTPUT, 0));
+    // lazy adapters (closures in records, the prelude's impls), finite iterators
+    let f = d.join("lazy.strata");
+    save(&f, json_case::LAZY_ITERATORS);
+    let b = Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
+    assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
+    let (out, code) = freed_everything(output(Command::new(&exe).current_dir(&d).env("STRATA_MEMORY", "check")), &f);
+    assert_eq!((out.as_str(), code), (json_case::LAZY_ITERATORS_OUTPUT, 0));
 }
 
 /// Types passed whole: compiled as interpreted.

@@ -1,0 +1,5 @@
+<mock Store>
+all good
+fault (Requires): precondition of `Store.find` violated: requires id > 0
+
+--- exit 101
