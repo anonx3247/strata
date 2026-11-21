@@ -397,3 +397,71 @@ fn random_relations_as_regex_decides_them() {
     }
     same_relations_as_regex("relations-random", pairs);
 }
+
+// ---------------- samples ----------------
+
+/// Whether the pattern asserts anything but the text's start or end (a
+/// word boundary, a line's start): texts made from its tree may not match.
+fn asserts_more(pattern: &str) -> bool {
+    use regex_syntax::hir::Look;
+    fn walk(h: &Hir) -> bool {
+        match h.kind() {
+            HirKind::Look(l) => !matches!(l, Look::Start | Look::End),
+            HirKind::Repetition(r) => walk(&r.sub),
+            HirKind::Capture(c) => walk(&c.sub),
+            HirKind::Concat(xs) | HirKind::Alternation(xs) => xs.iter().any(walk),
+            _ => false,
+        }
+    }
+    regex_syntax::ParserBuilder::new().build().parse(pattern).map(|h| walk(&h)).unwrap_or(true)
+}
+
+/// `std.regex.samples` of each pattern: every text matches it, as
+/// `regex` reads it, and there are some unless it matches nothing or
+/// asserts more than the text's start and end.
+fn samples_match(name: &str, patterns: Vec<String>) {
+    let patterns: Vec<String> = patterns.into_iter().filter(|p| reference_match(p, "").is_some()).collect();
+    let list = patterns.iter().map(|p| literal(p)).collect::<Vec<_>>().join(",\n    ");
+    let got = run(
+        name,
+        &format!("use std.regex.samples\n\nfn main() {{\n  for p in [\n    {list},\n  ] {{\n    match samples(p, 8, 7) {{\n      Ok(xs) => {{\n        print(f\"{{len(xs)}}\")\n        for x in xs {{\n          print(join(chars(x).map(c -> f\"{{ord(c)}}\"), \" \"))\n        }}\n      }},\n      Err(_) => print(\"0\"),\n    }}\n  }}\n}}\n"),
+    );
+    let mut lines = got.iter();
+    let (mut wrong, mut made) = (vec![], 0);
+    for p in &patterns {
+        let n: usize = lines.next().expect("a count per pattern").parse().unwrap();
+        // (a pattern disjoint from itself matches nothing: `a$b`)
+        if n == 0 && !asserts_more(p) && reference_relations(p, p)[2] != Some(true) {
+            wrong.push(format!("{p:?}: no samples"));
+        }
+        for _ in 0..n {
+            let shown = lines.next().expect("a sample");
+            // (its code points)
+            let text: String = shown.split_whitespace().map(|c| char::from_u32(c.parse().unwrap()).unwrap()).collect();
+            made += 1;
+            if reference_match(p, &text) != Some(true) {
+                wrong.push(format!("{p:?}: sample {text:?} doesn't match"));
+            }
+        }
+    }
+    assert!(lines.next().is_none(), "one count per pattern, then its samples");
+    assert!(wrong.is_empty(), "{} wrong:\n{}", wrong.len(), wrong.join("\n"));
+    assert!(made > patterns.len(), "samples were made");
+}
+
+#[test]
+fn curated_samples_match() {
+    let patterns = [
+        "[A-Z]{3}-\\d{4}", "\\p{L}{2,4}", "\\p{Greek}+", "a\\b b?|\\bx\\w+", "(?i)straße", "[a-z]+@[a-z]+\\.com", ".", "(?s).", "(?m)^a$\\n^b$",
+        "x{2,}", "(a|ab)(c|bcd)", "", "[^a]*", "\\s+\\S", "[[:alpha:]]+", "[a-z&&[^aeiou]]+", "(?-u)\\w+", "\\Aab\\z", "^^a$$", "a\\bb",
+    ];
+    samples_match("samples-curated", patterns.iter().map(|p| p.to_string()).collect());
+}
+
+#[test]
+fn random_samples_match() {
+    let seed = std::env::var("REGEX_SEED").ok().and_then(|n| n.parse().ok()).unwrap_or(13);
+    let n = std::env::var("REGEX_CASES").ok().and_then(|n| n.parse().ok()).unwrap_or(1500);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    samples_match("samples-random", (0..n).map(|_| random_pattern(&mut rng)).collect());
+}

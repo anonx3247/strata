@@ -114,29 +114,17 @@ pub(super) fn class_ranges(c: &regex_syntax::hir::ClassUnicode, mode: Mode) -> V
 /// How two patterns' languages relate (whole-text matches): `(a <= b,
 /// b <= a, disjoint)`, each `false` when it does not hold or could not be
 /// decided. Decided by `std.regex.relations`, on the product of the two
-/// patterns' DFAs (over code points), run as compile-time code is (on the
-/// JIT, cached between runs). Code points past `MAX_CHAR` are in no SMT
+/// patterns' DFAs (over code points), run as compile-time code
+/// (`stdlib::regex_value`). Code points past `MAX_CHAR` are in no SMT
 /// string, so what holds of every string holds of the SMT strings too.
 pub fn regex_relations(a: &str, b: &str) -> (bool, bool, bool) {
-    thread_local! {
-        static STD: Option<Program> = crate::parser::parse_program("use std.regex.*\n").ok().map(|p| crate::resolve::resolve(&p).program);
-        static DONE: std::cell::RefCell<HashMap<(String, String), (bool, bool, bool)>> = Default::default();
-    }
-    let key = (a.to_string(), b.to_string());
-    if let Some(r) = DONE.with(|d| d.borrow().get(&key).copied()) {
-        return r;
-    }
-    let call = Expr::Call(Box::new(Expr::Var(Symbol::new("std.regex.relations"))), vec![Expr::Str(a.to_string()), Expr::Str(b.to_string())]);
-    let made = STD.with(|p| p.as_ref().and_then(|p| crate::derive::comptime_literals(p, &[call]).pop()));
-    let r = match made {
-        Some(Ok(Expr::Tuple(xs))) => match xs.as_slice() {
+    match crate::stdlib::regex_value("relations", vec![Expr::Str(a.to_string()), Expr::Str(b.to_string())]) {
+        Ok(Expr::Tuple(xs)) => match xs.as_slice() {
             [Expr::Bool(sub), Expr::Bool(sup), Expr::Bool(disjoint)] => (*sub, *sup, *disjoint),
             _ => (false, false, false),
         },
         _ => (false, false, false),
-    };
-    DONE.with(|d| d.borrow_mut().insert(key, r));
-    r
+    }
 }
 
 pub(super) fn re_empty() -> T {
