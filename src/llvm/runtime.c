@@ -1,7 +1,15 @@
 // The native runtime of compiled Strata programs: strings, printing, number
 // formatting and faults. Linked with the LLVM IR that `strata build` emits.
 // It mirrors the interpreter (src/interp.rs): the same output, the same fault
-// messages. Memory is never freed yet (no garbage collector).
+// messages.
+//
+// Memory is reference-counted (Perceus, as in Koka and Lean): every object
+// has a count word just before it, so the layouts below start at the
+// object's pointer as if the count weren't there. Constants in the IR have a
+// count of 0, which never changes: they are never freed. The generated code
+// does the counting (`strata_dup`, `strata_release`, then its own drop of
+// the object's contents and `strata_free`); objects never form cycles,
+// since values never change once built.
 
 #include <dirent.h>
 #include <errno.h>
@@ -24,12 +32,54 @@ typedef struct {
 // Fault kinds, in the order of the IR's constants (`FaultKind` in interp.rs).
 static const char *KINDS[] = {"Refinement", "Requires", "Ensures", "Assert", "Runtime", "Hole"};
 
-static Str *str_alloc(int64_t len) {
-  Str *s = malloc(sizeof(Str) + (size_t)len);
-  if (!s) {
+// ---- memory ----
+
+static int64_t allocated, freed;
+
+// The count word of an object.
+static int64_t *count_of(void *p) { return (int64_t *)p - 1; }
+
+// A new object of `n` bytes, held once.
+void *strata_alloc(int64_t n) {
+  int64_t *c = malloc((size_t)n + 8);
+  if (!c) {
     fputs("fault (Limit): out of memory\n", stderr);
     exit(101);
   }
+  *c = 1;
+  allocated++;
+  return c + 1;
+}
+
+// One more holder of `p`.
+void strata_dup(void *p) {
+  int64_t *c = count_of(p);
+  if (*c > 0) ++*c;
+}
+
+// One holder fewer: whether that was the last one, in which case the caller
+// drops what the object holds and frees it.
+_Bool strata_release(void *p) {
+  int64_t *c = count_of(p);
+  return *c > 0 && --*c == 0;
+}
+
+// Give an object's memory back (its contents already dropped).
+void strata_free(void *p) {
+  freed++;
+  free(count_of(p));
+}
+
+// Whether `p` has a single holder, so it may be changed in place.
+_Bool strata_unique(void *p) { return *count_of(p) == 1; }
+
+// With STRATA_MEMORY set, how many objects the program made and freed.
+static void memory_stats(void) {
+  fprintf(stderr, "memory: %lld allocated, %lld freed, %lld live\n", (long long)allocated, (long long)freed, (long long)(allocated - freed));
+}
+
+static Str *str_alloc(int64_t len) {
+  Str *s = strata_alloc((int64_t)sizeof(Str) + len);
   s->len = len;
   return s;
 }
@@ -213,16 +263,6 @@ double strata_finite(double r, double a, double b, Str *op) {
   strata_fault(4, strata_concat(strata_concat(m, show_float_plain(b)), str_c(" is not a finite number")));
 }
 
-// A block for a record, a variant or a tuple (never freed yet).
-void *strata_alloc(int64_t n) {
-  void *p = malloc((size_t)n);
-  if (!p) {
-    fputs("fault (Limit): out of memory\n", stderr);
-    exit(101);
-  }
-  return p;
-}
-
 // `floor`, `ceil`, `round` of `x` gave `r`, which must fit in an Int.
 int64_t strata_float_to_int(double r, double x) {
   if (r >= -9223372036854775808.0 && r < 9223372036854775808.0) return (int64_t)r;
@@ -348,6 +388,9 @@ void strata_init(int32_t argc, char **argv) {
   prog_argv = argv + 1;
   if (argc > 0 && argv[0]) prog_name = argv[0];
   signal(SIGPIPE, SIG_IGN);
+  allocated = freed = 0;
+  static _Bool registered;
+  if (getenv("STRATA_MEMORY") && !registered) registered = 1, atexit(memory_stats);
 }
 
 Str *strata_prog_name(void) {
@@ -367,8 +410,9 @@ void strata_options_error(_Bool help, Str *text) {
   }
 }
 
+// A C copy of `s`, for the OS (the process keeps it).
 static char *cstr(Str *s) {
-  char *c = strata_alloc(s->len + 1);
+  char *c = malloc((size_t)s->len + 1);
   memcpy(c, s->bytes, (size_t)s->len);
   c[s->len] = 0;
   return c;

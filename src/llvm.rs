@@ -11,7 +11,9 @@
 //! tuple points to a heap block of 8-byte slots: a tag (the constructor, a
 //! number unique in the program), then its fields in declaration order, each
 //! converted to 64 bits. A `distinct` type is its underlying value. Values
-//! never change once built, so they are shared freely.
+//! never change once built, so they are shared freely. Every heap object has
+//! a reference count just before it (runtime.c, "memory"); constants have a
+//! count of 0 and are never freed.
 //!
 //! Contracts are checked at run time as the interpreter does, with its fault
 //! messages: refinements of parameters, results, annotated `let`s, declared
@@ -22,9 +24,10 @@
 //! `(key, value)` pairs sorted by key.
 //!
 //! Not yet: big integers (`Int` overflow is a fault), regexes, options from
-//! the command line, unions of anything but records and variants, and a
-//! garbage collector (memory is never freed). A program that uses them is refused, with the function and
-//! the construct named.
+//! the command line, and unions of anything but records and variants. A
+//! program that uses them is refused, with the function and the construct
+//! named. Memory is not freed yet either: objects are counted, but nothing
+//! drops them.
 
 use crate::ast::*;
 use crate::types::{Env, Ty};
@@ -199,6 +202,10 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
 
 const DECLARATIONS: &str = "\
 declare ptr @strata_alloc(i64)
+declare void @strata_dup(ptr)
+declare i1 @strata_release(ptr)
+declare void @strata_free(ptr)
+declare i1 @strata_unique(ptr)
 declare void @strata_init(i32, ptr)
 declare i64 @strata_pid()
 declare void @strata_host_write(i64, ptr)
@@ -465,12 +472,15 @@ impl<'a> Module<'a> {
         self.instance(&inst)
     }
 
-    /// A string constant, laid out as the runtime's `Str`: its length, then its bytes.
+    /// A string constant, laid out as the runtime's `Str`: its length, then
+    /// its bytes, after a count of 0 (never freed). The operand points past
+    /// the count, as the runtime's objects do.
     fn string(&mut self, s: &str) -> String {
         if let Some(g) = self.strings.get(s) {
             return g.clone();
         }
         let g = format!("@.str.{}", self.strings.len());
+        let at = format!("getelementptr inbounds (i8, ptr {g}, i64 8)");
         let n = s.len();
         let mut bytes = String::new();
         for b in s.bytes() {
@@ -480,18 +490,19 @@ impl<'a> Module<'a> {
                 write!(bytes, "\\{b:02X}").unwrap();
             }
         }
-        writeln!(self.globals, "{g} = private unnamed_addr constant {{ i64, [{n} x i8] }} {{ i64 {n}, [{n} x i8] c\"{bytes}\" }}, align 8").unwrap();
-        self.strings.insert(s.to_string(), g.clone());
-        g
+        writeln!(self.globals, "{g} = private unnamed_addr constant {{ i64, i64, [{n} x i8] }} {{ i64 0, i64 {n}, [{n} x i8] c\"{bytes}\" }}, align 8").unwrap();
+        self.strings.insert(s.to_string(), at.clone());
+        at
     }
 
-    /// A value of a constructor without fields: one shared block holding its tag.
+    /// A value of a constructor without fields: one shared block holding its
+    /// tag, after a count of 0 (never freed).
     fn nullary(&mut self, c: &str) -> String {
         let g = format!("@\"ctor:{c}\"");
         if self.helpers.insert(g.clone()) {
-            writeln!(self.globals, "{g} = private unnamed_addr constant i64 {}, align 8", self.tags[c]).unwrap();
+            writeln!(self.globals, "{g} = private unnamed_addr constant [2 x i64] [i64 0, i64 {}], align 8", self.tags[c]).unwrap();
         }
-        g
+        format!("getelementptr inbounds (i8, ptr {g}, i64 8)")
     }
 
     /// The refinement of the type named `n`, as the checker saw it.
