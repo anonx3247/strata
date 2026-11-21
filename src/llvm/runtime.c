@@ -210,10 +210,11 @@ static void print_stack(void) {
   fputc('\n', stderr);
 }
 
+// A fault: its kind, then 256 if the interpreter shows no call stack for it.
 _Noreturn void strata_fault(int32_t kind, Str *msg) {
   fflush(stdout);
-  fprintf(stderr, "fault (%s): %.*s\n", KINDS[kind], (int)msg->len, msg->bytes);
-  print_stack();
+  fprintf(stderr, "fault (%s): %.*s\n", KINDS[kind & 255], (int)msg->len, msg->bytes);
+  if (!(kind & 256)) print_stack();
   exit(101);
 }
 

@@ -2948,7 +2948,11 @@ impl<'m, 'a> Func<'m, 'a> {
                     self.call(&Ty::Bool, "@strata_dfa_match", &[(Ty::Str, v.1), t("cls"), (Ty::Int, nc.to_string()), t("next"), t("dead"), t("end")])
                 }
                 Err(msg) => {
-                    self.fault(Fault::Runtime, vec![Part::Lit(msg)])?;
+                    // (the interpreter shows no call stack for this one)
+                    let m = self.string(&msg);
+                    self.emit(format!("call void @strata_fault(i32 {}, ptr {})", Fault::Runtime as i32 | 256, m.1));
+                    self.emit("unreachable".into());
+                    self.dead();
                     Ok(never())
                 }
             };
