@@ -481,15 +481,15 @@ fn derived_traits_compile() {
 derivable(Record) trait FromText {
   /// The fields' names.
   derived fn names(self) -> List[String] {
-    comptime $Self.fields.map(f -> f.name)
+    comptime Self.fields.map(f -> f.name)
   }
   /// A value with every field at its zero.
   derived fn zero() -> Self {
-    $Self.make(f -> zero_of(f))
+    Self.make(f -> zero_of(f))
   }
   /// A value read from one text per field.
   derived fn parse(texts: List[String]) -> Result[Self, String] {
-    $Self.try_make(f -> read(f, texts))
+    Self.try_make(f -> read(f, texts))
   }
 }
 
@@ -545,13 +545,13 @@ fn derived_for_sums_compile() {
     }
     let d = tmp("derived-sums");
     // `comptime for`, a match comprehension, `v.make()`
-    let (out, code) = case(&d, "sums", r#"use std.typing.{Choice, Sum, Field}
+    let (out, code) = case(&d, "sums", r#"use std.typing.{Choice, Union}
 
 /// A choice and its name.
 derivable(Choice) trait Named {
   derived fn from_name(name: String) -> Option[Self] {
-    comptime for v in $Self.variants {
-      if to_lower(v.name) == name {
+    comptime for v in Self.members {
+      if to_lower(v.name ?? "") == name {
         return Some(v.make())
       }
     }
@@ -559,17 +559,17 @@ derivable(Choice) trait Named {
   }
   derived fn name(self) -> String {
     match self {
-      v => to_lower(v.name) for v in $Self.variants
+      v => to_lower(v.name ?? "") for v in Self.members
     }
   }
 }
 
 /// How many fields each variant has.
-derivable(Sum) trait Width
-  requires len($Self.variants) > 0 {
+derivable(Union) trait Width
+  requires len(Self.members) > 0 {
   derived fn width(self) -> Int {
     match self {
-      v => len(v.fields) for v in $Self.variants
+      v => len(v.fields) + len(v.elements) for v in Self.members
     }
   }
 }
@@ -685,17 +685,16 @@ fn the_jit_runs_as_the_interpreter() {
     let jit = output(Command::new(strata).args(["run", "--jit"]).arg(&file));
     expected("jit-numbers", &jit);
     assert_eq!(jit.1, 101);
-    // a pattern built at run time: Rust's engine, given to the runtime (as the interpreter's)
+    // a pattern built at run time: std.regex's engine, in a built program too
+    // (its messages are its own, not the interpreter's Rust `regex`'s)
     let f = d.join("lists.strata");
     save(&f, "fn main() { p := \"[a-z]\" + \"[0-9]\" print(matches(\"a1\", p)) print(matches(\"a\", p + \"(\")) }\n");
     let jit = output(Command::new(strata).args(["run", "--jit"]).arg(&f));
     expected("jit-regex", &jit);
-    assert!(jit.0.starts_with("true\nfault (Runtime): bad regex: regex parse error:") && jit.1 == 101, "{jit:?}");
-    // a built program has no engine for them, and says so
+    assert!(jit.0.starts_with("true\nfault (Runtime): bad regex: unclosed group") && jit.1 == 101, "{jit:?}");
     let exe = d.join("lists");
     assert!(Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap().status.success());
-    let (out, code) = output(&mut Command::new(&exe));
-    assert!(code == 101 && out.contains("a pattern built at run time needs `strata run`"), "{out}");
+    assert_eq!(output(&mut Command::new(&exe)), jit);
 }
 
 /// `strata run --jit` with options: the derived `from_args`, compiled.
@@ -1278,7 +1277,7 @@ fn regexes_and_shown_functions_compile() {
     let (out, code) = case(&d, "regex", REGEX);
     assert!(code == 101 && out.starts_with("abc: true\nabc_d1: true\nAbc: false\n") && out.contains("does not satisfy `Sku`"), "{out}");
     let (out, code) = case(&d, "bad_regex", "fn main() { print(matches(\"a\", \"(\")) }\n");
-    assert!(code == 101 && out.contains("bad regex: regex parse error"), "{out}");
+    assert!(code == 101 && out.contains("bad regex: unclosed group"), "{out}");
     let (out, code) = case(&d, "shown_functions", SHOWN_FUNCTIONS);
     assert!(code == 0 && out.starts_with("<closure (x) -> …>\nH { name: \"h\", on: <fn twice> }\n"), "{out}");
 }
@@ -1728,6 +1727,27 @@ fn for_over_iterators_compiles() {
     assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
     let (out, code) = freed_everything(output(Command::new(&exe).current_dir(&d).env("STRATA_MEMORY", "check")), &f);
     assert_eq!((out.as_str(), code), (json_case::LAZY_ITERATORS_OUTPUT, 0));
+    // comprehensions over iterators, collecting into sets and dicts
+    let f = d.join("comps.strata");
+    save(&f, json_case::ITERATOR_COMPREHENSIONS);
+    let b = Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
+    assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
+    let (out, code) = freed_everything(output(Command::new(&exe).current_dir(&d).env("STRATA_MEMORY", "check")), &f);
+    assert_eq!((out.as_str(), code), (json_case::ITERATOR_COMPREHENSIONS_OUTPUT, 0));
+    // `iter()` on the built-in collections
+    let f = d.join("collections.strata");
+    save(&f, json_case::COLLECTION_ITERATORS);
+    let b = Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
+    assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
+    let (out, code) = freed_everything(output(Command::new(&exe).current_dir(&d).env("STRATA_MEMORY", "check")), &f);
+    assert_eq!((out.as_str(), code), (json_case::COLLECTION_ITERATORS_OUTPUT, 0));
+    // a string's bytes, code points and graphemes (std.unicode, loaded for it)
+    let f = d.join("units.strata");
+    save(&f, json_case::STRING_UNITS);
+    let b = Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
+    assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
+    let (out, code) = freed_everything(output(Command::new(&exe).current_dir(&d).env("STRATA_MEMORY", "check")), &f);
+    assert_eq!((out.as_str(), code), (json_case::STRING_UNITS_OUTPUT, 0));
 }
 
 /// Types passed whole: compiled as interpreted.

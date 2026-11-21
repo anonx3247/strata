@@ -1140,6 +1140,7 @@ impl<'a> Vc<'a> {
                     TypeBody::Alias(a) => self.refined_in(a, depth + 1, seen),
                     TypeBody::Record(fs) => fs.iter().any(|f| self.refined_in(&f.ty, depth + 1, seen)),
                     TypeBody::Sum(vs) => vs.iter().any(|v| match &v.payload {
+                        Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
                         Payload::None => false,
                         Payload::Positional(ts) => ts.iter().any(|t| self.refined_in(t, depth + 1, seen)),
                         Payload::Record(fs) => fs.iter().any(|f| self.refined_in(&f.ty, depth + 1, seen)),
@@ -1768,7 +1769,6 @@ impl<'a> Vc<'a> {
             Expr::Lambda(..) => self.fn_value(e, vec![]).0,
             Expr::Mock(t) => Val::Opaque(format!("`mock {}`", crate::printer::ty(t))),
             Expr::Mut(x) | Expr::Comptime(x) => self.eval(x),
-            Expr::Describe(_) => Val::Opaque("a type's description".into()),
             Expr::Interp(parts) => {
                 for part in parts {
                     if let StrPart::Expr(x, _) = part {
@@ -2909,7 +2909,7 @@ impl<'a> Vc<'a> {
             exits.push((pc, v, " (early return)"));
         }
         // a prelude trait's method by its short name (`FiniteIterator::len`)
-        let label = label.replace(&format!("{}.", crate::types::PRELUDE_MODULE), "");
+        let label = crate::types::shown_name(label);
         for (pc, res, how) in exits {
             self.pc = pc;
             self.dead = false;
@@ -3325,6 +3325,31 @@ mod tests {
         // what is not certain stays unknown
         for re in ["\\bword\\b", "(?m)^a$", "a^b", "a$b", "(^a)*", "\u{10FFFF}", "(?-u:\\xFF)", "(", "a{3,2}"] {
             assert!(regex_to_smt(re).is_none(), "{re}");
+        }
+    }
+
+    /// `std.regex.relations`, as the prover calls it: `(a <= b, b <= a, disjoint)`.
+    #[test]
+    fn regex_relations_from_std() {
+        // compile-time code runs as the CLI runs it, on a large stack (a test
+        // thread's 2 MB overflows when the result isn't cached yet)
+        std::thread::Builder::new().stack_size(1 << 30).spawn(relations_from_std).unwrap().join().unwrap();
+    }
+
+    fn relations_from_std() {
+        for (a, b, want) in [
+            ("[a-c]+", "[a-z]+", (true, false, false)),
+            ("[0-9]+", "[a-z]+", (false, false, true)),
+            ("a|b", "b|a", (true, true, false)),
+            ("\\d{3}", "\\d+", (true, false, false)),
+            ("\\d{3}", "\\d{2}", (false, false, true)),
+            ("\\w+", "[a-z]+", (false, true, false)),
+            ("\\p{L}+", "[0-9]*", (false, false, true)),
+            // undecided: a pattern a DFA can't match, or no regex at all
+            ("a\\bb", "ab", (false, false, false)),
+            ("(", "a", (false, false, false)),
+        ] {
+            assert_eq!(regex_relations(a, b), want, "{a} vs {b}");
         }
     }
 

@@ -303,6 +303,60 @@ fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
     Ok((ir, tests))
 }
 
+/// The matcher of each literal pattern of `matches` (`std.regex.matcher`),
+/// made while compiling (cached), as a function returning it as data
+/// (`strata.matcher.N`), added to `p`: by pattern, the function's name. A
+/// pattern that isn't a regex has none: matched when the program runs, it
+/// faults saying why. The program's code is left as written (its messages
+/// show `matches(it, "…")`).
+fn literal_patterns(p: &mut Program) -> HashMap<String, String> {
+    let mut patterns: Vec<String> = vec![];
+    for d in &p.decls {
+        let mut k = d.kind.clone();
+        crate::ast::decl_all_exprs_mut(&mut k, |e| {
+            if let Expr::Call(f, args) = e {
+                if let (Expr::Var(n), [_, Expr::Str(s)]) = (&**f, args.as_slice()) {
+                    if n.as_str() == "matches" && !patterns.contains(s) {
+                        patterns.push(s.clone());
+                    }
+                }
+            }
+        });
+    }
+    // (std is there, under qualified names, when the program calls `matches`)
+    let mut out = HashMap::default();
+    if patterns.is_empty() || !p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Fn(f) if f.name.as_str() == "std.regex.matcher")) {
+        return out;
+    }
+    let calls: Vec<Expr> = patterns.iter().map(|s| Expr::Call(Box::new(Expr::Var(Symbol::new("std.regex.matcher"))), vec![Expr::Str(s.clone())])).collect();
+    let made = crate::derive::comptime_literals(p, &calls);
+    for (i, (s, m)) in patterns.iter().zip(made).enumerate() {
+        let Ok(m) = m else { continue };
+        if matches!(&m, Expr::Ctor(c, _) if c.as_str().ends_with("NotARegex")) {
+            continue;
+        }
+        let name = format!("strata.matcher.{i}");
+        let f = FnDecl {
+            doc: vec![],
+            comments: vec![],
+            name: Symbol::new(&name),
+            type_params: vec![],
+            bounds: vec![],
+            params: vec![],
+            ret: TypeExpr::Named(Symbol::new("std.regex.Matcher"), vec![]),
+            requires: vec![],
+            ensures: vec![],
+            terminates: false,
+            body: m,
+            comptime: false,
+            derived: false,
+        };
+        p.decls.push(Decl { comments: vec![], doc: vec![], kind: DeclKind::Fn(f), module: Symbol::new(""), public: false });
+        out.insert(s.clone(), name);
+    }
+    out
+}
+
 #[allow(clippy::type_complexity)]
 /// `resolved`: `prog` is resolved already (`Checked::compiled`, with what was
 /// added to it): only the prelude is.
@@ -310,13 +364,17 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     // the list built-ins in Strata, compiled with the program
     let mut with = prog.clone();
     let prelude = crate::binary::decode_module(PRELUDE).map_err(|e| format!("llvm/prelude.strata: {e}"))?;
-    let (resolved, types) = if resolved {
+    let mut with = if resolved {
         with.decls.extend(crate::resolve::resolve(&Program { decls: prelude }).program.decls);
-        crate::types::elaborate_resolved(&with)
+        with
     } else {
         with.decls.extend(prelude);
-        crate::types::elaborate_typed(&with)
+        crate::resolve::resolve(&with).program
     };
+    // a literal pattern's matcher (a DFA, usually) is made now: data in the
+    // program (not for compile-time code or std's library, which have none)
+    let matchers = if matches!(entry, Entry::Main(_) | Entry::Tests(_) | Entry::Fuzz(_)) { literal_patterns(&mut with) } else { HashMap::default() };
+    let (resolved, types) = crate::types::elaborate_resolved(&with);
     let (env, _) = Env::build(&resolved.program);
     // every constructor gets a tag of its own, so a value's tag says what it is
     let mut ctors: Vec<&Symbol> = env.ctors.keys().collect();
@@ -361,7 +419,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers };
     // std's precompiled functions, but while making them, tracing, or in a library
     if !BUILDING_STD.with(|b| b.get()) && !m.tracing && !matches!(entry, Entry::Library(_)) {
         m.precompiled = jit::std_library().map(|l| &l.names);
@@ -516,7 +574,6 @@ declare void @strata_step()
 declare void @strata_fuzz_arg(ptr)
 declare void @strata_ct_keep(i64)
 declare void @strata_leave()
-declare i1 @strata_regex_match(ptr, ptr)
 declare void @strata_trace_call(ptr, ptr)
 declare void @strata_trace_return(ptr, ptr)
 declare void @strata_overflow() noreturn cold
@@ -576,8 +633,9 @@ declare ptr @strata_str_replace(ptr, ptr, ptr)
 declare ptr @strata_str_repeat(ptr, i64)
 declare ptr @strata_str_case(ptr, ptr, i64, ptr, i64, i1)
 declare i1 @strata_str_is(ptr, i64, ptr, i64)
-declare i1 @strata_dfa_match(ptr, ptr, i64, ptr, ptr, ptr)
 declare i64 @strata_str_ord(ptr)
+declare i64 @strata_str_byte_len(ptr)
+declare i64 @strata_str_byte_at(ptr, i64)
 declare ptr @strata_str_chr(i64)
 declare i1 @strata_parse_int(ptr, ptr)
 declare i1 @strata_parse_float(ptr, ptr)
@@ -741,6 +799,8 @@ struct Module<'a> {
     strings: HashMap<String, String>,
     /// How many constant lists and blocks there are (they are named by number).
     constants: usize,
+    /// The function returning each literal pattern's matcher (`literal_patterns`).
+    matchers: HashMap<String, String>,
     /// Each constant list or block by its contents, so equal ones are one.
     constant_of: HashMap<String, String>,
     /// Compiled functions.
@@ -759,8 +819,6 @@ struct Module<'a> {
     fuzzing: bool,
     /// `strata run --trace`: each function of the program reports its calls and returns.
     tracing: bool,
-    /// The tables of each regex `matches` uses (its globals' name, and its classes).
-    regexes: HashMap<String, (String, usize)>,
     /// Generators made (by the type and hints they generate), and mock methods.
     gens: HashMap<String, String>,
     /// The tables made for each trait type (by its key), with the implementation.
@@ -779,12 +837,20 @@ thread_local! {
     static BUILDING_STD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// `f` run as part of making std's library: code compiled meanwhile (std's
+/// own `comptime` expressions, evaluated when std is resolved) doesn't wait
+/// for the library being made, which would wait for itself.
+pub fn building_std<T>(f: impl FnOnce() -> T) -> T {
+    let was = BUILDING_STD.with(|b| b.replace(true));
+    let r = f();
+    BUILDING_STD.with(|b| b.set(was));
+    r
+}
+
 /// Make std's library: `names` compiled, everything else they use kept
 /// internal to it (helpers, lambdas, generic instances: each program has its own).
 pub fn compile_library(prog: &Program, names: &[String]) -> Res<String> {
-    BUILDING_STD.with(|b| b.set(true));
-    let r = compile_with(prog, Entry::Library(names), false);
-    BUILDING_STD.with(|b| b.set(false));
+    let r = building_std(|| compile_with(prog, Entry::Library(names), false));
     let ir = r?.0;
     let exported: Vec<String> = names.iter().map(|n| format!("{}(", sym_impls(n, &[], &[]))).collect();
     Ok(ir
@@ -1085,6 +1151,47 @@ impl<'a> Module<'a> {
         !self.nominal(&self.repr(m).unwrap_or(Ty::Unit))
     }
 
+    /// The named union a union type is (`Shape` for `Circle | Square`), as
+    /// the checker finds it (`Checker::union_name`): its methods are its own.
+    fn union_name(&self, t: &Ty) -> Option<String> {
+        // a sum counts as its variants (`Circle | Shape$own` is `Circle | Square | Dot`)
+        let exact = |ms: Vec<Ty>| {
+            let mut k: Vec<String> = ms.iter().flat_map(|m| match self.ctors_of(m) {
+                cs if cs.is_empty() => vec![key(m)],
+                cs => cs,
+            }).collect();
+            k.sort();
+            k.dedup();
+            k
+        };
+        let want = exact(self.members(t));
+        if want.len() < 2 {
+            return None;
+        }
+        let mut names: Vec<&Symbol> = self.env.types.iter().filter(|(_, td)| crate::types::union_alias(td)).map(|(n, _)| n).collect();
+        names.sort();
+        // one without type parameters, exactly; else a generic one, its
+        // members paired by what they are (`List[T]` with `List[Int]`): the
+        // checker made sure no two of its members are alike
+        if let Some(n) = names.iter().find(|n| self.env.types[**n].params.is_empty() && self.lower(&TypeExpr::Named(***n, vec![]), &HashMap::default()).is_ok_and(|u| exact(self.members(&u)) == want)) {
+            return Some(n.to_string());
+        }
+        let heads = |ms: Vec<Ty>| {
+            let mut k: Vec<String> = ms.iter().flat_map(|m| match self.ctors_of(m) {
+                cs if cs.is_empty() => vec![Module::head(m).unwrap_or_else(|| key(m))],
+                cs => cs,
+            }).collect();
+            k.sort();
+            k
+        };
+        let want = heads(self.members(t));
+        names.into_iter().filter(|n| !self.env.types[*n].params.is_empty()).find(|n| {
+            let ps = &self.env.types[*n].params;
+            let sub: HashMap<Symbol, Ty> = ps.iter().map(|p| (*p, Ty::Unit)).collect();
+            self.lower(&TypeExpr::Named(**n, ps.iter().map(|p| TypeExpr::Named(*p, vec![])).collect()), &sub).is_ok_and(|u| heads(self.members(&u)) == want)
+        }).map(|n| n.to_string())
+    }
+
     /// The members of a union type (itself, for any other type).
     fn members(&self, t: &Ty) -> Vec<Ty> {
         match self.repr(t) {
@@ -1201,6 +1308,7 @@ impl<'a> Module<'a> {
             TypeBody::Sum(vs) => {
                 let v = vs.iter().find(|v| v.name == c).unwrap();
                 match &v.payload {
+                    Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
                     Payload::None => Ok(vec![]),
                     Payload::Positional(ts) => ts.iter().map(|t| mk(None, t)).collect(),
                     Payload::Record(fs) => fs.iter().map(|f| mk(Some(f.name.to_string()), &f.ty)).collect(),
@@ -1259,7 +1367,7 @@ impl<'a> Module<'a> {
         let framed = !name.starts_with(PRELUDE_MODULE) && !name.starts_with("test \"") && name != COMPTIME;
         if framed {
             // a prelude trait's method by its short name (`ListIter.next`)
-            let n = c.m.string(&name.replace(&format!("{}.", crate::types::PRELUDE_MODULE), ""));
+            let n = c.m.string(&crate::types::shown_name(name));
             c.emit(format!("call void @strata_enter(ptr {n})"));
         }
         if c.m.fuzzing {
@@ -3373,8 +3481,17 @@ impl<'m, 'a> Func<'m, 'a> {
     fn holds(&mut self, written: &TypeExpr, v: &V) -> Res<V> {
         let TypeExpr::Named(name, _) = written else { return self.unsupported("this type pattern") };
         if self.m.boxed(&v.0) {
-            // the member first, then its refinements on the value as it
-            let target = self.lower(written)?;
+            // the member first, then its refinements on the value as it; a
+            // generic one named without its arguments (`List =>`) is the
+            // union's member of that name (`List[Int]`)
+            let bare = match written {
+                TypeExpr::Named(n, a) if a.is_empty() => self.m.members(&v.0).into_iter().find(|m| Module::head(m).as_deref() == Some(n.as_str()) && !Module::args_of(m).is_empty()),
+                _ => None,
+            };
+            let target = match bare {
+                Some(m) => m,
+                None => self.lower(written)?,
+            };
             let is = self.holds_member(v, &target)?;
             if self.m.boxed(&target) || self.m.members(&target).len() > 1 {
                 return Ok(is);
@@ -3820,7 +3937,6 @@ impl<'m, 'a> Func<'m, 'a> {
             Expr::Mut(x) => self.expr(x)?,
             // evaluated at build time once deriving lands; until then, as written
             Expr::Comptime(x) => self.expr(x)?,
-            Expr::Describe(_) => return self.unsupported("a type's description outside a derived method"),
             Expr::Mock(t) => {
                 let tr_ty = self.lower(t)?;
                 if !self.is_dyn(&tr_ty) {
@@ -4115,30 +4231,40 @@ impl<'m, 'a> Func<'m, 'a> {
             return self.expr(args[1]);
         }
         if name == "matches" && args.len() == 2 && self.lookup(name).is_none() && !self.m.env.fns.contains_key(&Symbol::new(name)) {
-            // a pattern built at run time: the runtime's engine (Rust's `regex`, under the JIT)
-            let Expr::Str(re) = args[1] else {
-                let vs = self.operands(&args)?;
-                return self.call(&Ty::Bool, "@strata_regex_match", &vs);
-            };
-            // a literal pattern, compiled to a DFA now
-            let v = self.expr(args[0])?;
-            if is_never(&v.0) {
-                return Ok(v);
+            // a literal pattern: its matcher, made while compiling (a DFA, usually)
+            if let Expr::Str(re) = args[1] {
+                if let Some(f) = self.m.matchers.get(re.as_str()).cloned() {
+                    let x = self.expr(args[0])?;
+                    if is_never(&x.0) {
+                        return Ok(x);
+                    }
+                    let m = self.call_fn(&f, vec![], None)?;
+                    return self.call_fn("std.regex.run_matcher", vec![m, x], Some(Ty::Bool));
+                }
             }
-            return match self.m.regex(re)? {
-                Ok((g, nc)) => {
-                    let t = |part: &str| (Ty::Str, format!("@\"{g}.{part}\""));
-                    self.call(&Ty::Bool, "@strata_dfa_match", &[(Ty::Str, v.1), t("cls"), (Ty::Int, nc.to_string()), t("next"), t("dead"), t("end")])
+            // std.regex's engine: a pattern built at run time, or a literal one
+            // that isn't a regex
+            {
+                let vs = self.operands(&args)?;
+                if vs.iter().any(|v| is_never(&v.0)) {
+                    return Ok(never());
                 }
-                Err(msg) => {
-                    // (the interpreter shows no call stack for this one)
-                    let m = self.string(&msg);
-                    self.emit(format!("call void @strata_fault(i32 {}, ptr {})", Fault::Runtime as i32 | 256, m.1));
-                    self.emit("unreachable".into());
-                    self.dead();
-                    Ok(never())
-                }
-            };
+                let code = self.call_fn("std.regex.match_code", vs.clone(), Some(Ty::Int))?;
+                // -1: not a regex, a fault saying why
+                let bad = self.apply(BinOp::Eq, &code, &(Ty::Int, "-1".into()))?;
+                let (fail, ok) = (self.fresh_label("bad_regex"), self.fresh_label("regex_ok"));
+                self.cond_br(&bad, &fail, &ok);
+                self.block(&fail);
+                // (its temporaries are its own: the block ends in the fault)
+                self.push_scope(true);
+                let why = self.call_fn("std.regex.pattern_error", vec![vs[1].clone()], Some(Ty::Str))?;
+                let msg = self.concat(vec![Part::Lit("bad regex: ".into()), Part::Val(why.1.clone())])?;
+                self.emit(format!("call void @strata_fault(i32 {}, ptr {})", Fault::Runtime as i32 | 256, msg.1));
+                self.emit("unreachable".into());
+                self.pop_scope()?;
+                self.block(&ok);
+                return self.apply(BinOp::Eq, &code, &(Ty::Int, "1".into()));
+            }
         }
         if self.lookup(name).is_some() {
             // a local closure
@@ -4274,6 +4400,10 @@ impl<'m, 'a> Func<'m, 'a> {
         if self.m.env.is_method(Symbol::new(name)) {
             if let Some(recv) = vs.first().map(|v| v.0.clone()) {
                 if matches!(self.m.repr(&recv)?, Ty::Union(_)) {
+                    // a named union's own implementation, else each member's
+                    if let Some(h) = self.m.union_name(&recv).filter(|h| self.m.resolve_method(name, h).is_some_and(|(tr, _)| self.m.impl_of(&tr, h).is_some())) {
+                        return self.method_target(name, recv, h, vs, hint, &places);
+                    }
                     return self.call_on_union(name, vs, hint, &places);
                 }
                 if self.is_dyn(&recv) || Module::head(&recv).is_some_and(|h| self.m.resolve_method(name, &h).is_some() || self.m.ctors_of(&recv).iter().any(|c| self.m.resolve_method(name, c).is_some())) {
@@ -4364,7 +4494,7 @@ impl<'m, 'a> Func<'m, 'a> {
         if vs.iter().any(|v| is_never(&v.0)) {
             return Ok(never());
         }
-        let head = Module::head(&recv).ok_or(format!("`{name}` on a `{}`", key(&recv)))?;
+        let head = Module::head(&recv).or_else(|| self.m.union_name(&recv)).ok_or(format!("`{name}` on a `{}`", key(&recv)))?;
         // a refined alias (`Positive`) has its base type's methods
         let head = match &recv {
             Ty::Con(n, _) if crate::types::refined_alias(self.m.env, *n) => Module::head(&self.m.repr(&recv)?).unwrap_or(head),
@@ -4449,7 +4579,7 @@ impl<'m, 'a> Func<'m, 'a> {
 
     /// `call_fn`, with the places of the arguments (for `mut` parameters).
     fn call_fn_at(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
-        let f = &self.m.env.fns[&Symbol::new(name)];
+        let f = self.m.env.fns.get(&Symbol::new(name)).ok_or_else(|| format!("`{name}` is not in the program"))?;
         if f.params.len() != vs.len() {
             return Err(format!("`{name}` takes {} arguments", f.params.len()));
         }
@@ -6129,6 +6259,15 @@ impl Module<'_> {
                 }
                 self.bind_targs(r, s, params, out);
             }
+            // a union's members, paired by what they are (`List[T]` with `List[Int]`)
+            (TypeExpr::Union(ws), Ty::Union(ts)) => {
+                for w in ws {
+                    let head = crate::types::texpr_head(w);
+                    if let Some(x) = ts.iter().find(|x| Module::head(x).as_deref() == Some(head.as_str())) {
+                        self.bind_targs(w, x, params, out);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -6201,75 +6340,6 @@ fn char_ranges(which: &str) -> &'static [[u32; 2]] {
 
 impl Module<'_> {
     /// A Unicode table as a global of `i32`s, and its number of rows.
-    /// The DFA of `matches(s, re)` (the interpreter's `^(?:re)$`, from the
-    /// same engine), as tables: each byte's class, the next state of each
-    /// (state, class), whether a state is dead, and whether it matches at
-    /// the end. The start state is 0. `Ok(Err(m))`: `re` is not a regex (the
-    /// interpreter's message).
-    fn regex(&mut self, re: &str) -> Res<Result<(String, usize), String>> {
-        use regex_automata::dfa::{dense, Automaton, StartKind};
-        use regex_automata::util::primitives::StateID;
-        use regex_automata::{Anchored, Input};
-        let full = format!("^(?:{re})$");
-        if let Err(e) = regex::Regex::new(&full) {
-            return Ok(Err(format!("bad regex: {e}")));
-        }
-        let g = format!("re:{}", self.strings.len() + self.helpers.len());
-        let key = format!("regex:{re}");
-        if let Some(known) = self.regexes.get(&key) {
-            return Ok(Ok(known.clone()));
-        }
-        let config = dense::Config::new().start_kind(StartKind::Anchored).dfa_size_limit(Some(64 << 20)).determinize_size_limit(Some(64 << 20));
-        let syntax = regex_automata::util::syntax::Config::new().unicode(true).utf8(true).nest_limit(250);
-        let dfa = dense::Builder::new().configure(config).syntax(syntax).build(&full).map_err(|e| format!("the regex `{re}` ({e})"))?;
-        let start = dfa.start_state_forward(&Input::new("").anchored(Anchored::Yes)).map_err(|e| format!("the regex `{re}` ({e})"))?;
-        // the classes, and a byte standing for each
-        let classes = dfa.byte_classes();
-        let nc = classes.alphabet_len() - 1;
-        let mut rep: Vec<Option<u8>> = vec![None; nc];
-        let cls: Vec<usize> = (0..=255u8).map(|b| classes.get(b) as usize).collect();
-        for b in 0..=255u8 {
-            let c = classes.get(b) as usize;
-            if c < nc && rep[c].is_none() {
-                rep[c] = Some(b);
-            }
-        }
-        // the states reachable from the start, numbered as they are found
-        let mut ids: HashMap<StateID, usize> = HashMap::default();
-        let mut order = vec![start];
-        ids.insert(start, 0);
-        let mut i = 0;
-        let mut next: Vec<usize> = vec![];
-        while i < order.len() {
-            let sid = order[i];
-            for c in 0..nc {
-                let n = rep[c].map_or(sid, |b| dfa.next_state(sid, b));
-                if dfa.is_quit_state(n) {
-                    return Err(format!("the regex `{re}` (its DFA gives up on some input)"));
-                }
-                let k = *ids.entry(n).or_insert_with(|| {
-                    order.push(n);
-                    order.len() - 1
-                });
-                next.push(k);
-            }
-            i += 1;
-            if order.len() * nc > 4 << 20 {
-                return Err(format!("the regex `{re}` (its DFA is too large)"));
-            }
-        }
-        let dead: Vec<u8> = order.iter().map(|&sid| dfa.is_dead_state(sid) as u8).collect();
-        let end: Vec<u8> = order.iter().map(|&sid| dfa.is_match_state(dfa.next_eoi_state(sid)) as u8).collect();
-        let list = |xs: &[String]| xs.join(", ");
-        writeln!(self.globals, "@\"{g}.cls\" = private unnamed_addr constant [256 x i16] [{}], align 2", list(&cls.iter().map(|c| format!("i16 {c}")).collect::<Vec<_>>())).unwrap();
-        writeln!(self.globals, "@\"{g}.next\" = private unnamed_addr constant [{} x i32] [{}], align 4", next.len(), list(&next.iter().map(|c| format!("i32 {c}")).collect::<Vec<_>>())).unwrap();
-        writeln!(self.globals, "@\"{g}.dead\" = private unnamed_addr constant [{} x i8] [{}], align 1", dead.len(), list(&dead.iter().map(|c| format!("i8 {c}")).collect::<Vec<_>>())).unwrap();
-        writeln!(self.globals, "@\"{g}.end\" = private unnamed_addr constant [{} x i8] [{}], align 1", end.len(), list(&end.iter().map(|c| format!("i8 {c}")).collect::<Vec<_>>())).unwrap();
-        self.helpers.insert(g.clone());
-        self.regexes.insert(key, (g.clone(), nc));
-        Ok(Ok((g, nc)))
-    }
-
     fn unicode_table(&mut self, which: &str) -> (String, usize) {
         let (cells, rows): (Vec<u32>, usize) = match which {
             "upper" | "lower" => {
@@ -6372,6 +6442,8 @@ impl Func<'_, '_> {
                 self.call(&Ty::Bool, "@strata_str_is", &[args[0].clone(), (Ty::Int, class.into()), (Ty::Str, ranges), (Ty::Int, n.to_string())])?
             }
             ("ord", [_]) => self.call(&Ty::Int, "@strata_str_ord", &args)?,
+            ("byte_len", [_]) => self.call(&Ty::Int, "@strata_str_byte_len", &args)?,
+            ("byte_at", [_, Ty::Int]) => self.call(&Ty::Int, "@strata_str_byte_at", &args)?,
             ("chr", [Ty::Int]) => self.call(&s, "@strata_str_chr", &args)?,
             ("parse_int" | "parse_float", [_]) => {
                 let t = if name == "parse_int" { Ty::Int } else { Ty::Float };
@@ -7121,13 +7193,20 @@ fn ty_texpr(t: &Ty) -> TypeExpr {
     }
 }
 
-/// Strings matching `re`, made now (as the interpreter's generator makes them).
+/// Strings matching `re`, made now (`std.regex.samples`: the same ones
+/// every time), or why there are none.
 fn regex_samples(re: &str) -> Res<Vec<String>> {
-    use rand::SeedableRng;
-    use rand::RngExt;
-    let mut parser = regex_syntax::ParserBuilder::new().unicode(false).build();
-    let hir = parser.parse(re).map_err(|e| format!("bad regex {re:?}: {e}"))?;
-    let g = rand_regex::Regex::with_hir(hir, 8).map_err(|e| e.to_string())?;
-    let mut rng = rand::rngs::StdRng::seed_from_u64(7);
-    Ok((0..32).map(|_| rng.sample::<String, _>(&g)).collect())
+    let v = crate::stdlib::regex_value("samples", vec![Expr::Str(re.to_string()), Expr::Int(32), Expr::Int(7)])?;
+    let texts = |xs: &[Expr]| xs.iter().map(|x| if let Expr::Str(s) = x { Ok(s.clone()) } else { Err(format!("a sample of {re:?} is not a string")) }).collect::<Res<Vec<String>>>();
+    match v {
+        Expr::Ctor(c, CtorArgs::Positional(xs)) if c.as_str().ends_with("Ok") => match xs.as_slice() {
+            [Expr::List(xs)] => texts(xs),
+            _ => Err(format!("the samples of {re:?} are not a list")),
+        },
+        Expr::Ctor(c, CtorArgs::Positional(xs)) if c.as_str().ends_with("Err") => match xs.as_slice() {
+            [Expr::Str(m)] => Err(format!("can't generate strings matching {re:?}: {m}")),
+            _ => Err(format!("can't generate strings matching {re:?}")),
+        },
+        _ => Err(format!("no samples of {re:?}")),
+    }
 }

@@ -72,6 +72,7 @@ fn refined(env: &Env, t: &TypeExpr, seen: &mut Vec<Symbol>) -> Option<bool> {
                 TypeBody::Sum(vs) => {
                     for v in vs {
                         match &v.payload {
+                            Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
                             Payload::None => {}
                             Payload::Positional(ts) => {
                                 for t in ts {
@@ -427,10 +428,17 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, key: &str, solver
         // a safety net for the prover: proven code is still run a little
         if cross_check > 0 {
             if let Verdict::Counterexample { args, kind, message, .. } = fuzz_limited(key, &shown, cross_check, seed, Some(CROSS_CHECK_STEPS)) {
+                // a fault in a function it calls is that function's (the prover relies on
+                // its contract, which doesn't rule the fault out); one in its own code is the prover's
+                let frames: Vec<&str> = message.rsplit_once("(stack: ").and_then(|(_, s)| s.strip_suffix(')')).map(|s| s.split(" -> ").collect()).unwrap_or_default();
+                let why = match frames.as_slice() {
+                    [first, .., last] if first != last => format!("{message}. It fails in `{last}`, which it calls: see `{last}`'s own verdict"),
+                    _ => format!("{message}. The solver had proven every check, so this is a bug in the prover: please report it"),
+                };
                 return Verdict::Counterexample {
                     args,
                     kind,
-                    message: format!("{message}. The solver had proven every check, so this is a bug in the prover: please report it"),
+                    message: why,
                     found_by: "cross-check".into(),
                     terminates: None,
                 };

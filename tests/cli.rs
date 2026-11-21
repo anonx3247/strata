@@ -656,6 +656,23 @@ fn far() -> Bool ensures it { len("TAG") == 9 }
 }
 
 #[test]
+fn fuzzes_strings_a_refinement_pattern_matches() {
+    // inputs made by `std.regex.samples`: Unicode classes and word
+    // boundaries too, in a parameter's own refinement (the harness checks it)
+    let d = tmp("regex-samples");
+    let src = r#"fn shout(s: String where matches(it, "\p{L}{2,4}")) -> String ensures len(it) >= 1 { to_upper(s) }
+fn edge(s: String where matches(it, "a\b b?|\bx\w+")) -> String ensures len(it) >= 0 { to_lower(s) }
+fn sku(s: String where matches(it, "[A-Z]{3}-[0-9]{4}")) -> Int ensures it == 99 { len(to_lower(s)) }
+"#;
+    save(&d.join("g.strata"), src);
+    let (ok, out) = strata(&["--file", "g.strata", "verify", "--cases", "30"], &d, None);
+    assert!(!ok && !out.contains("skipped") && !out.contains("internal error"), "{out}");
+    assert!(out.lines().any(|l| l.starts_with("~ shout") && l.contains("fuzzed: 30 cases")), "{out}");
+    let sku = out.lines().skip_while(|l| !l.starts_with("✗ sku")).nth(1).unwrap_or("");
+    assert!(sku.contains("input:   [\"") && sku.contains("-"), "refuted, with an input: {out}");
+}
+
+#[test]
 fn math_example_verifies_as_documented() {
     let d = tmp("math");
     let ex = format!("{}/examples/math.strata", env!("CARGO_MANIFEST_DIR"));
@@ -3662,10 +3679,10 @@ fn derive_syntax_round_trips() {
     let d = tmp("derive-syntax");
     let text = r#"/// Show a record as its field names.
 pub derivable(Record) trait Named
-  requires len($Self.fields) > 0 {
+  requires len(Self.fields) > 0 {
   /// The names of the fields.
   derived fn names() -> List[String] {
-    comptime $Self.fields.map(f -> f.name)
+    comptime Self.fields.map(f -> f.name)
   }
   fn shout(self) -> String
 }
@@ -3713,15 +3730,15 @@ fn derived_traits_are_specialized() {
 derivable(Record) trait FromText {
   /// The fields' names.
   derived fn names(self) -> List[String] {
-    comptime $Self.fields.map(f -> f.name)
+    comptime Self.fields.map(f -> f.name)
   }
   /// A value with every field at its zero.
   derived fn zero() -> Self {
-    $Self.make(f -> zero_of(f))
+    Self.make(f -> zero_of(f))
   }
   /// A value read from one text per field.
   derived fn parse(texts: List[String]) -> Result[Self, String] {
-    $Self.try_make(f -> read(f, texts))
+    Self.try_make(f -> read(f, texts))
   }
 }
 
@@ -3774,8 +3791,8 @@ fn main() {
     // what can't be derived says why, at the `derive`
     let bad = [
         ("trait Plain { fn p(self) -> Int }\ntype A = { x: Int }\nderive Plain for A\n", "`Plain` can't be derived: only a `derivable` trait can"),
-        ("use std.typing.Record\nderivable(Record) trait Sized { derived fn n(self) -> Int { comptime len($Self.fields) } }\ntype S =\n  | One\n  | Two\nderive Sized for S\n", "`Sized` can only be derived for a `Record`, and `S` isn't one"),
-        ("use std.typing.Record\nderivable(Record) trait Sized\n  requires len($Self.fields) > 1 { derived fn n(self) -> Int { comptime len($Self.fields) } }\ntype A = { x: Int }\nderive Sized for A\n", "`A` doesn't meet what `Sized` requires: len($Self.fields) > 1"),
+        ("use std.typing.Record\nderivable(Record) trait Sized { derived fn n(self) -> Int { comptime len(Self.fields) } }\ntype S =\n  | One\n  | Two\nderive Sized for S\n", "`Sized` can only be derived for a `Record`, and `S` isn't one"),
+        ("use std.typing.Record\nderivable(Record) trait Sized\n  requires len(Self.fields) > 1 { derived fn n(self) -> Int { comptime len(Self.fields) } }\ntype A = { x: Int }\nderive Sized for A\n", "`A` doesn't meet what `Sized` requires: len(Self.fields) > 1"),
     ];
     for (k, (src, want)) in bad.iter().enumerate() {
         let f = format!("bad{k}.strata");
@@ -3829,6 +3846,515 @@ mod json_case;
 /// `derive Json`: JSON as a web front end sends it, read into records and
 /// sums with every refinement checked, and what has no JSON form refused
 /// at the `derive`.
+/// A union's members declared in it or defined elsewhere: a bare name is
+/// the type of that name when there is one (`Circle`), else an atom it
+/// declares (`Dot`); a union of unions flattens.
+#[test]
+fn unions_declare_members_or_name_them() {
+    let d = tmp("unions-mixed");
+    let (ok, out) = strata(&["--file", "u.strata", "edit"], &d, Some(UNIONS_PROGRAM));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "u.strata"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out, "3\n4\n0\ndown 3\nshape\n[Quiet, Loud]\n");
+    // `Circle` (no doc, one union) is shown inside it; on its own with `--members separate`
+    let (ok, text) = strata(&["--file", "u.strata", "render"], &d, None);
+    assert!(ok && text.contains("type Shape =\n  | Circle { r: Int }\n  | Square { side: Int }\n  | Dot\n"), "{text}");
+    let (ok, text) = strata(&["--file", "u.strata", "render", "--members", "separate"], &d, None);
+    assert!(ok && text.contains("type Circle = { r: Int }\n") && text.contains("type Shape = Circle | Square | Dot\n"), "{text}");
+}
+
+const UNIONS_PROGRAM: &str = r##"type Circle = { r: Int }
+
+type Shape = Circle | Square { side: Int } | Dot
+
+type Level = Quiet | Loud
+
+type Old =
+  | Up
+  | Down(Int)
+
+type Both = Shape | Old
+
+fn area(s: Shape) -> Int {
+  match s {
+    Circle => 3 * s.r * s.r,
+    Square => s.side * s.side,
+    Dot => 0,
+  }
+}
+
+fn name(b: Both) -> String {
+  match b {
+    Circle | Square | Dot => "shape",
+    Up => "up",
+    Down(n) => f"down {n}",
+  }
+}
+
+fn main() {
+  print(area(Circle { r: 1 }))
+  print(area(Square { side: 2 }))
+  print(area(Dot))
+  print(name(Down(3)))
+  print(name(Dot))
+  print([Quiet, Loud])
+}
+"##;
+
+/// A named union's `impl`s and methods: for a value typed by the union (or
+/// by the same set written out), the union's; a member's own for a member.
+#[test]
+fn named_unions_have_impls() {
+    let d = tmp("unions-impls");
+    let (ok, out) = strata(&["--file", "u.strata", "edit"], &d, Some(UNION_IMPLS));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "u.strata"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out, "circle 1\n3\ncircle 1\nsquare 2\n4\nsquare 2\ndot\n0\ndot\na circle on its own\ncircle 2\n");
+}
+
+const UNION_IMPLS: &str = r##"trait Show {
+  fn show(self) -> String
+}
+
+type Circle = { r: Int }
+
+type Shape = Circle | Square { side: Int } | Dot
+
+impl Show for Shape {
+  fn show(self) -> String {
+    match self {
+      Circle => f"circle {self.r}",
+      Square => f"square {self.side}",
+      Dot => "dot",
+    }
+  }
+}
+
+impl Show for Circle {
+  fn show(self) -> String = "a circle on its own"
+}
+
+impl Shape {
+  fn area(self) -> Int {
+    match self {
+      Circle => 3 * self.r * self.r,
+      Square => self.side * self.side,
+      Dot => 0,
+    }
+  }
+}
+
+fn describe[T: Show](x: T) -> String = x.show()
+
+fn shapes() -> List[Shape] = [Circle { r: 1 }, Square { side: 2 }, Dot]
+
+fn written(x: Circle | Square | Dot) -> String = x.show()
+
+fn main() {
+  for s in shapes() {
+    print(s.show())
+    print(s.area())
+    print(describe(s))
+  }
+  print(Circle { r: 5 }.show())
+  print(written(Circle { r: 2 }))
+}
+"##;
+
+/// A named union that adds nothing is refused as a bare alias is: one type
+/// once normalized, or a set its module (or the prelude) names already; a
+/// `distinct` one is a type of its own. A new member named like an existing
+/// type is a warning.
+#[test]
+fn unions_that_add_nothing_are_refused() {
+    let d = tmp("unions-nothing");
+    let cases = [
+        ("type U = Int | Positive", Some("`type U = Int | Positive` adds nothing: it is `Int`")),
+        ("type Circle = { r: Int }\ntype Square = { s: Int }\ntype Shape = Circle | Square\ntype Figure = Square | Circle", Some("`type Figure = Square | Circle` adds nothing: it is `Shape`")),
+        ("type Answer = Some(Int) | None", Some("adds nothing: it is `Option`")),
+        ("type Level = Quiet | Loud\ntype Mood = Loud | Quiet", Some("`type Mood = Loud | Quiet` adds nothing: it is `Level`")),
+        ("type Shape = Circle | Square { s: Int } | Dot\ntype Circle = { r: Int }\ntype Part = Square | Dot", None),
+        ("type Circle = { r: Int }\ntype Square = { s: Int }\ntype Shape = Circle | Square\ndistinct type Figure = Circle | Square\nfn f() -> Figure = Figure(Circle { r: 1 })", None),
+        ("distinct type Lv = Up | Down", Some("`Lv` declares its members, so it is a type of its own already")),
+        // a type parameter is wrapped in a member the union declares, as `Option`'s `Some(T)`
+        ("type Problem = { why: String }\ntype OrError[T] = T | Problem", Some("`T` can't be a member of `OrError` on its own: wrap it")),
+        ("type Two[A, B] = List[A] | List[B]", Some("`List[A]` can't be a member of `Two` next to another `List`")),
+        ("type Many[T] = List[T] | Int", None),
+        ("type Many[T] = List[T] | Int\ntype Ints = List[Int] | Int", Some("`type Ints = List[Int] | Int` adds nothing: it is `Many`")),
+        ("type Problem = { why: String }\ntype OrError[T] = Value(T) | Problem", None),
+    ];
+    for (k, (src, want)) in cases.iter().enumerate() {
+        let f = format!("n{k}.strata");
+        // (written, then checked: the edit says what doesn't)
+        let (ok, out) = strata(&["--file", &f, "edit"], &d, Some(&format!("{src}\n\nfn main() {{ }}\n")));
+        match want {
+            Some(w) => assert!(!ok && out.contains(w), "{src}: {out}"),
+            None => assert!(ok, "{src}: {out}"),
+        }
+    }
+    let (ok, out) = strata(&["--file", "w.strata", "edit"], &d, Some("type Circle = { r: Int }\ntype Shape = Circel | Dot\n"));
+    assert!(ok && out.contains("warning: `Circel` in `Shape` is a new type (nothing has that name): did you mean `Circle`?") && !out.contains("`Dot`"), "{out}");
+}
+
+/// A union written out renders as its name when its module names that
+/// set (and named subsets as their names); never as a `distinct` type.
+#[test]
+fn unions_render_by_their_names() {
+    let d = tmp("unions-render");
+    let (ok, out) = strata(&["--file", "r.strata", "edit"], &d, Some(RENDER_NAMES));
+    assert!(ok, "{out}");
+    let (ok, text) = strata(&["--file", "r.strata", "render"], &d, None);
+    assert!(ok, "{text}");
+    for want in ["type S2 = A | D\n", "fn f(x: A) -> Int", "fn g(x: S2) -> Int", "fn h(e: Problem) -> Int", "fn k(w: B | D) -> Int"] {
+        assert!(text.contains(want), "{want}: {text}");
+    }
+    // and it reads back as the same program
+    let (ok, out) = strata(&["--file", "r2.strata", "edit"], &d, Some(&text));
+    assert!(ok, "{out}");
+    let (ok, again) = strata(&["--file", "r2.strata", "render"], &d, None);
+    assert!(ok && again == text, "{again}");
+}
+
+const RENDER_NAMES: &str = r##"type B = { x: Int }
+
+type C = { y: Int }
+
+type D = { z: Int }
+
+type A = B | C
+
+type Problem =
+  | Empty
+  | TooBig { max: Int }
+
+distinct type Wrapped = B | D
+
+type S2 = B | C | D
+
+fn f(x: B | C) -> Int = 1
+
+fn g(x: B | C | D) -> Int = 2
+
+fn h(e: Empty | TooBig) -> Int = 3
+
+fn k(w: B | D) -> Int = 4
+
+fn main() { }
+"##;
+
+/// JSON for named unions: members declared in them or defined elsewhere,
+/// tagged by `"type"` (a tuple-shaped one's element as `"value"`), and
+/// members told apart by their JSON (`Int | String`).
+#[test]
+fn json_for_named_unions() {
+    let d = tmp("json-unions");
+    let (ok, out) = strata(&["--file", "j.strata", "edit"], &d, Some(JSON_UNIONS));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "j.strata"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out, "{\"type\":\"Doc\",\"shapes\":[{\"type\":\"Circle\",\"r\":1.0},{\"type\":\"Square\",\"side\":2.0},{\"type\":\"Moved\",\"value\":3},{\"type\":\"Dot\"}],\"ids\":[1,\"a\"]}\ntrue\nErr(\"shapes[1]: `Nope` is not one of Circle, Square, Moved, Dot\")\n");
+}
+
+const JSON_UNIONS: &str = r##"use std.json.{Json, parse, stringify}
+
+type Circle = { r: Float }
+
+derive Json for Circle
+
+type Shape = Circle | Square { side: Float } | Moved(Int) | Dot
+
+derive Json for Shape
+
+type Id = Int | String
+
+derive Json for Id
+
+type Doc = { shapes: List[Shape], ids: List[Id] }
+
+derive Json for Doc
+
+fn main() {
+  d := Doc { shapes: [Circle { r: 1.0 }, Square { side: 2.0 }, Moved(3), Dot], ids: [1, "a"] }
+  match d.encode() {
+    Ok(j) => {
+      print(stringify(j))
+      print(Doc.decode(j) == Ok(d))
+    },
+    Err(e) => print(e),
+  }
+  match parse("{\"shapes\": [\"Dot\", {\"type\": \"Nope\"}], \"ids\": []}") {
+    Ok(j) => print(Doc.decode(j)),
+    Err(e) => print(e),
+  }
+}
+"##;
+
+/// An atom or a tuple-shaped type on its own (`type Dot`, `type
+/// Moved(Int)`), in several unions; and the two views of a union's members
+/// (`render --members separate | inline`), which read back as the same
+/// program.
+#[test]
+fn union_members_on_their_own_or_inline() {
+    let d = tmp("unions-views");
+    let (ok, out) = strata(&["--file", "s.strata", "edit"], &d, Some(STANDALONE));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "s.strata"], &d, None);
+    assert!(ok && out == "dot\nmoved 2\nsquare 3\n5\n", "{out}");
+    let (ok, inline) = strata(&["--file", "s.strata", "render", "--members", "inline"], &d, None);
+    assert!(ok && inline.contains("type Shape =\n  | Square { side: Int }\n  | Mark\n") && inline.contains("type Mark =\n  | Dot\n  | Moved(Int)\n"), "{inline}");
+    let (ok, out) = strata(&["--file", "i.strata", "edit"], &d, Some(&inline));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "i.strata"], &d, None);
+    assert!(ok && out == "dot\nmoved 2\nsquare 3\n5\n", "{out}");
+    let (ok, sep) = strata(&["--file", "i.strata", "render", "--members", "separate"], &d, None);
+    assert!(ok && sep.contains("type Square = { side: Int }\n") && sep.contains("type Dot\n") && sep.contains("type Moved(Int)\n") && sep.contains("type Shape = Square | Mark\n"), "{sep}");
+    let (ok, out) = strata(&["--file", "p.strata", "edit"], &d, Some(&sep));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "p.strata"], &d, None);
+    assert!(ok && out == "dot\nmoved 2\nsquare 3\n5\n", "{out}");
+}
+
+const STANDALONE: &str = r##"type Dot
+
+type Moved(Int)
+
+type Square = { side: Int }
+
+type Shape = Square | Dot | Moved
+
+type Mark = Dot | Moved
+
+fn f(s: Shape) -> String {
+  match s {
+    Square => f"square {s.side}",
+    Dot => "dot",
+    Moved(n) => f"moved {n}",
+  }
+}
+
+fn g(m: Mark) -> Int = match m { Dot => 0, Moved(n) => n }
+
+fn main() {
+  print(f(Dot))
+  print(f(Moved(2)))
+  print(f(Square { side: 3 }))
+  print(g(Moved(5)))
+}
+"##;
+
+/// A generic union (its type parameters only in members it declares) has
+/// `impl`s of its own too.
+#[test]
+fn generic_unions_have_impls() {
+    let d = tmp("unions-generic");
+    let (ok, out) = strata(&["--file", "g.strata", "edit"], &d, Some(GENERIC_UNION));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "g.strata"], &d, None);
+    assert!(ok && out == "a value\nproblem: not positive\n5\n", "{out}");
+}
+
+const GENERIC_UNION: &str = r##"trait Show {
+  fn show(self) -> String
+}
+
+type Problem = { why: String }
+
+type OrError[T] = Value(T) | Problem
+
+impl[T] Show for OrError[T] {
+  fn show(self) -> String {
+    match self {
+      Value(_) => "a value",
+      Problem => f"problem: {self.why}",
+    }
+  }
+}
+
+fn get(n: Int) -> OrError[Int] {
+  if n > 0 {
+    Value(n)
+  } else {
+    Problem { why: "not positive" }
+  }
+}
+
+fn main() {
+  print(get(3).show())
+  print(get(0).show())
+  match get(5) {
+    Value(n) => print(n),
+    Problem => print("no"),
+  }
+}
+"##;
+
+/// A generic union with a wrapped parameter (`List[T]`): its `impl`s, a
+/// bare `List =>` arm, and `List[Int] | Problem` rendered as `Many[Int]`.
+#[test]
+fn generic_unions_of_wrapped_parameters() {
+    let d = tmp("unions-wrapped");
+    let (ok, out) = strata(&["--file", "g.strata", "edit"], &d, Some(WRAPPED_UNION));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "g.strata"], &d, None);
+    assert!(ok && out == "3 items\nproblem: none\n", "{out}");
+    let (ok, out) = strata(&["--file", "r.strata", "edit"], &d, Some("type Problem = { why: String }\n\ntype Many[T] = List[T] | Problem\n\nfn f(x: List[Int] | Problem) -> Int {\n  match x {\n    List => len(x),\n    Problem => 0,\n  }\n}\n\nfn main() {\n  print(f([1, 2]))\n}\n"));
+    assert!(ok, "{out}");
+    let (ok, text) = strata(&["--file", "r.strata", "render"], &d, None);
+    assert!(ok && text.contains("fn f(x: Many[Int]) -> Int"), "{text}");
+    let (ok, out) = strata(&["run", "r.strata"], &d, None);
+    assert!(ok && out == "2\n", "{out}");
+}
+
+/// Two modules may name the same set, but not both implement a trait for it.
+#[test]
+fn unions_naming_the_same_set_in_two_modules() {
+    let d = tmp("unions-two-modules");
+    let edit = |m: &str, text: &str| strata(&["--file", "./", "edit", m], &d, Some(text));
+    assert!(edit("shapes", "pub trait Show {\n  fn show(self) -> String\n}\n\npub type Circle = { r: Int }\n\npub type Square = { s: Int }\n").0);
+    assert!(edit("geo", "use shapes.{Show, Circle, Square}\n\npub type Shape = Circle | Square\n\nimpl Show for Shape {\n  fn show(self) -> String = \"geo\"\n}\n").0);
+    let (ok, out) = edit("ui", "use shapes.{Circle, Square}\n\npub type Figure = Circle | Square\n");
+    assert!(ok, "{out}");
+    let (ok, out) = edit("ui", "use shapes.{Show, Circle, Square}\n\npub type Figure = Circle | Square\n\nimpl Show for Figure {\n  fn show(self) -> String = \"ui\"\n}\n");
+    assert!(!ok && out.contains("`ui.Figure` and `geo.Shape` name the same set and both implement `Show`"), "{out}");
+}
+
+const WRAPPED_UNION: &str = r##"trait Show {
+  fn show(self) -> String
+}
+
+type Problem = { why: String }
+
+type Many[T] = List[T] | Problem
+
+impl[T] Show for Many[T] {
+  fn show(self) -> String {
+    match self {
+      List => f"{len(self)} items",
+      Problem => f"problem: {self.why}",
+    }
+  }
+}
+
+fn get(n: Int) -> Many[Int] {
+  if n > 0 {
+    [1, 2, n]
+  } else {
+    Problem { why: "none" }
+  }
+}
+
+fn main() {
+  print(get(3).show())
+  print(get(0).show())
+}
+"##;
+
+/// The shapes `std.typing` describes, through `Json`: a recursive type, a
+/// generic one, a union of records, a tuple-shaped variant, `Option` of a
+/// refined alias, a `distinct` type; and a union's members keep their docs.
+#[test]
+fn derives_see_every_kind_of_type() {
+    let d = tmp("derive-kinds");
+    let (ok, out) = strata(&["--file", "k.strata", "edit"], &d, Some(KINDS_PROGRAM));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "k.strata"], &d, None);
+    assert!(ok, "{out}");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], r#"{"type":"All","tree":{"type":"Node","left":{"type":"Leaf"},"value":1,"right":{"type":"Node","left":{"type":"Leaf"},"value":2,"right":{"type":"Leaf"}}},"pair":{"type":"Pair","a":1,"b":2},"events":[{"type":"Moved","value":3},{"type":"Drawn","shape":{"type":"Square","side":2.0},"at":80},{"type":"Drawn","shape":{"type":"Circle","r":1.0},"at":null}],"who":"u1"}"#);
+    assert_eq!(lines[1], "true");
+    assert_eq!(lines[2], r#"Err("events[0].at: 70000 does not satisfy `Port` (where 0 < it && it < 65536)")"#);
+    assert_eq!(lines[3], r#"["Circle: A circle, by its radius.; Square: A square, by its side.", ""]"#);
+}
+
+const KINDS_PROGRAM: &str = r##"use std.json.Json
+
+use std.typing.{Record, Union}
+
+/// A circle, by its radius.
+type Circle = { r: Float }
+
+/// A square, by its side.
+type Square = { side: Float }
+
+/// One of the two.
+type Shape = Circle | Square
+
+type Port = Int
+  where 0 < it && it < 65536
+
+distinct type UserId = String
+
+type Tree =
+  | Leaf
+  | Node { left: Tree, value: Int, right: Tree }
+
+type Pair[T] = { a: T, b: T }
+
+type Event =
+  | Moved(Int)
+  | Drawn { shape: Shape, at: Option[Port] }
+
+type All = { tree: Tree, pair: Pair[Int], events: List[Event], who: UserId }
+
+derive Json for Circle
+
+derive Json for Square
+
+derive Json for Shape
+
+derive Json for Tree
+
+derive Json for Pair
+
+derive Json for Event
+
+derive Json for All
+
+/// The docs of a union field's members.
+derivable(Record) trait Docs {
+  derived fn docs(self) -> List[String] {
+    comptime Self.fields.map(
+      f -> join(f.type.members.map(
+        m -> (m.name ?? "") + ": " + join(m.doc, " "),
+      ), "; "),
+    )
+  }
+}
+
+type Holder = { s: Shape, n: Int }
+
+derive Docs for Holder
+
+fn main() {
+  x := All { tree: Node {
+    left: Leaf,
+    value: 1,
+    right: Node { left: Leaf, value: 2, right: Leaf },
+  }, pair: Pair { a: 1, b: 2 }, events: [
+    Moved(3),
+    Drawn { shape: Square { side: 2.0 }, at: Some(80) },
+    Drawn { shape: Circle { r: 1.0 }, at: None },
+  ], who: UserId("u1") }
+  match x.encode() {
+    Ok(j) => {
+      print(std.json.stringify(j))
+      print(All.decode(j) == Ok(x))
+    },
+    Err(e) => print(e),
+  }
+  bad := std.json.parse(
+    "{\"tree\": \"Leaf\", \"pair\": {\"a\": 1, \"b\": 2}, \"events\": [{\"type\": \"Drawn\", \"shape\": {\"type\": \"Circle\", \"r\": 1.0}, \"at\": 70000}], \"who\": \"u\"}",
+  )
+  match bad {
+    Ok(j) => print(All.decode(j)),
+    Err(e) => print(e),
+  }
+  print(Holder { s: Circle { r: 1.0 }, n: 1 }.docs())
+}
+"##;
+
 #[test]
 fn json_is_derived() {
     let d = tmp("derive-json");
@@ -3948,17 +4474,17 @@ fn extern_c_declarations() {
 #[test]
 fn comptime_code_runs_while_compiling() {
     let d = tmp("comptime-runs");
-    let src = "use std.typing.Record\n\nfn shout(s: String) -> String {\n  s + \"!\"\n}\n\nfn spin(n: Int) -> Int {\n  mut i := n\n  while i > 0 { i = i + 1 }\n  i\n}\n\nderivable(Record) trait Names\n  requires len($Self.fields) > 1 {\n  derived fn names(self) -> List[String] {\n    comptime $Self.fields.map(f -> shout(f.name))\n  }\n  derived fn count(self) -> Int {\n    comptime COUNT\n  }\n}\n\ntype P = { x: Int, label: String }\n\nderive Names for P\n\nfn main() {\n  p := P { x: 1, label: \"a\" }\n  print(p.names())\n  print(p.count())\n}\n";
+    let src = "use std.typing.Record\n\nfn shout(s: String) -> String {\n  s + \"!\"\n}\n\nfn spin(n: Int) -> Int {\n  mut i := n\n  while i > 0 { i = i + 1 }\n  i\n}\n\nderivable(Record) trait Names\n  requires len(Self.fields) > 1 {\n  derived fn names(self) -> List[String] {\n    comptime Self.fields.map(f -> shout(f.name))\n  }\n  derived fn count(self) -> Int {\n    comptime COUNT\n  }\n}\n\ntype P = { x: Int, label: String }\n\nderive Names for P\n\nfn main() {\n  p := P { x: 1, label: \"a\" }\n  print(p.names())\n  print(p.count())\n}\n";
     let run = |count: &str| {
         // stored either way; the edit already says when it doesn't check
         let (ok, out) = strata(&["--file", "c.strata", "edit"], &d, Some(&src.replace("COUNT", count)));
         assert!(ok || out.contains("written, but"), "{out}");
         strata(&["--file", "c.strata", "run"], &d, None)
     };
-    let (ok, out) = run("(99999999999999999999999 * len($Self.fields))");
+    let (ok, out) = run("(99999999999999999999999 * len(Self.fields))");
     assert!(ok && out == "[\"x!\", \"label!\"]\n199999999999999999999998\n", "{out}");
-    let (ok, out) = run("(len($Self.fields) / 0)");
-    assert!(!ok && out.contains("deriving `count`: `comptime len($Self.fields) / 0` failed: division by zero"), "{out}");
+    let (ok, out) = run("(len(Self.fields) / 0)");
+    assert!(!ok && out.contains("deriving `count`: `comptime len(Self.fields) / 0` failed: division by zero"), "{out}");
     let (ok, out) = run("spin(1)");
     assert!(!ok && out.contains("`comptime spin(1)` ran for more than 5000000 steps: compile-time code must finish"), "{out}");
 }
@@ -4000,7 +4526,11 @@ fn for_over_iterators() {
     assert!(out.contains("it has a `for` over an `Iterator` that isn't a `FiniteIterator`, which may never end"), "{out}");
     // the defaults of the prelude's traits are library code, not the program's
     assert!(!out.contains("Count.map") && !out.contains("Count.fold"), "{out}");
-    assert!(out.contains("index -1 out of range (length 0) (stack: ListIter.next)") && out.contains("it is recursive through `next`"), "{out}");
+    assert!(out.contains("index -1 out of range (length 0) (stack: Items.next)"), "{out}");
+    // `self.inner.next()` in `Padded.next` is recursion on a smaller value; the
+    // fault it then reaches is `Items.next`'s, not the prover's
+    assert!(!out.contains("recursive through") && !out.contains("bug in the prover"), "{out}");
+    assert!(out.contains("It fails in `Items.next`, which it calls"), "{out}");
     let bad = "type P = { x: Int }\n\nfn a(p: P) {\n  for x in p {\n    print(x)\n  }\n}\n\nfn b(s: String) {\n  for c in s {\n    print(c)\n  }\n}\n\nfn c[I](it: I) {\n  for x in it {\n    print(x)\n  }\n}\n";
     // written, and reported as not checking
     let (_, out) = strata(&["--file", "bad.strata", "edit"], &d, Some(bad));
@@ -4031,6 +4561,62 @@ fn finite_and_lazy_iterators() {
     assert!(!out.contains("Count.map") && !out.contains("Mapped"), "{out}");
 }
 
+/// `fold` on finite iterators only, shown to end with its lambdas; and
+/// comprehensions over iterators.
+#[test]
+fn fold_ends_and_comprehensions_over_iterators() {
+    let d = tmp("iterator-comps");
+    let (ok, out) = strata(&["--file", "c.strata", "edit"], &d, Some(json_case::ITERATOR_COMPREHENSIONS));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "c.strata"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out, json_case::ITERATOR_COMPREHENSIONS_OUTPUT);
+    let (_, out) = strata(&["--file", "c.strata", "verify"], &d, None);
+    let after = |f: &str| out.split(&format!("✓ {f} ")).nth(1).and_then(|r| r.lines().nth(1)).unwrap_or("").to_string();
+    for f in ["ok_sum", "filtered_len"] {
+        assert!(!after(f).contains("may not terminate"), "{f} ends: {out}");
+    }
+    assert!(after("bad_lambda").contains("it calls `spin`, which may not terminate"), "{out}");
+    // `fold` on an unbounded iterator: never returns, so refused
+    let inf = "type N = { at: Int }\n\nimpl Iterator[Int] for N {\n  fn next(mut self) -> Option[Int] {\n    self.at += 1\n    Some(self.at)\n  }\n}\n\nfn f() -> Int {\n  N { at: 0 }.fold(0, (a, b) -> a + b)\n}\n\nfn g() -> Int {\n  N { at: 0 }.map(x -> x * 2).fold(0, (a, b) -> a + b)\n}\n";
+    let (_, out) = strata(&["--file", "inf.strata", "edit"], &d, Some(inf));
+    assert!(out.contains("error in f: `fold` needs a `FiniteIterator`: `N` is an `Iterator` but not a `FiniteIterator`"), "{out}");
+    assert!(out.contains("error in g: calling `fold`: `Mapped[N, Int, Int]` implements `FiniteIterator` only when"), "{out}");
+}
+
+/// `iter()` on lists, sets and dicts: finite iterators (loops over them end);
+/// the prelude's `ListIter` can't be defined again.
+#[test]
+fn collections_have_iterators() {
+    let d = tmp("collection-iterators");
+    let (ok, out) = strata(&["--file", "c.strata", "edit"], &d, Some(json_case::COLLECTION_ITERATORS));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "c.strata"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out, json_case::COLLECTION_ITERATORS_OUTPUT);
+    let (_, out) = strata(&["--file", "c.strata", "verify"], &d, None);
+    assert!(!out.contains("may not terminate"), "{out}");
+    let (_, out) = strata(&["--file", "d.strata", "edit"], &d, Some("type ListIter = { n: Int }\n"));
+    assert!(out.contains("`ListIter` is already defined in the prelude"), "{out}");
+}
+
+/// A string's units: bytes, code points and graphemes; the graphemes agree
+/// with every case of Unicode's GraphemeBreakTest.txt.
+#[test]
+fn strings_have_bytes_code_points_and_graphemes() {
+    let d = tmp("string-units");
+    let (ok, out) = strata(&["--file", "u.strata", "edit"], &d, Some(json_case::STRING_UNITS));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "u.strata"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out, json_case::STRING_UNITS_OUTPUT);
+    let cases = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/grapheme_break_test.st")).unwrap();
+    let (ok, out) = strata(&["--file", "g.strata", "edit"], &d, Some(&cases));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "g.strata"], &d, None);
+    assert!(ok && out.ends_with("1093 cases, 0 wrong\n"), "{out}");
+}
+
 /// Types passed whole at runtime: `T.m()` on an impl's type parameters, and
 /// `std.json` for the built-in types through `T: Json`.
 #[test]
@@ -4057,7 +4643,10 @@ fn std_is_edited_as_a_checked_package() {
     std::fs::create_dir_all(&std).unwrap();
     for e in std::fs::read_dir(&src).unwrap() {
         let e = e.unwrap();
-        std::fs::copy(e.path(), std.join(e.file_name())).unwrap();
+        // (its files: an edit of std leaves a `.strata` folder there)
+        if e.path().is_file() {
+            std::fs::copy(e.path(), std.join(e.file_name())).unwrap();
+        }
     }
     let (ok, out) = strata(&["edit", "io"], &std, Some("pub fn shout(s: String) -> String {\n  s + \"!\"\n}\n"));
     assert!(ok && out.contains("std.io.shout"), "{out}");
@@ -4204,4 +4793,17 @@ fn mocks_for_tests() {
     // a mock holds data: a record
     let (ok, out) = strata(&["--file", "x.strata", "edit"], &d, Some("mock M = Int\n"));
     assert!(!ok && out.contains("a mock holds the data of a fake"), "{out}");
+}
+
+/// A trait method named like a builtin (`find`) is the trait's only on a
+/// type that implements the trait: on a list, `xs.find(…)` is still the
+/// builtin (it used to be the trait's, for every receiver).
+#[test]
+fn a_trait_method_named_like_a_builtin_leaves_the_builtin() {
+    let d = tmp("trait-builtin");
+    let src = "trait Store {\n  fn find(self, k: Int) -> Option[String]\n}\n\ntype Mem = { xs: List[(Int, String)] }\n\nimpl Store for Mem {\n  fn find(self, k: Int) -> Option[String] {\n    match self.xs.find(p -> p.0 == k) {\n      Some(p) => Some(p.1),\n      None => None,\n    }\n  }\n}\n\nfn main() {\n  xs := [(1, \"a\"), (2, \"b\")]\n  print(xs.find(p -> p.0 == 2))\n  m := Mem { xs }\n  print(m.find(1))\n}\n";
+    let (ok, out) = strata(&["--file", "t.strata", "edit"], &d, Some(src));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "t.strata", "run"], &d, None);
+    assert!(ok && out == "Some((2, \"b\"))\nSome(\"a\")\n", "{out}");
 }

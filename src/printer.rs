@@ -382,8 +382,8 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Block(..) => block(e, d),
         Expr::Mock(t) => format!("mock {}", ty(t)),
         Expr::Mut(x) => format!("mut {}", expr(x, d)),
-        Expr::Comptime(x) => format!("comptime {}", expr(x, d)),
-        Expr::Describe(t) => format!("${}", ty(t)),
+        // `comptime` takes a unary expression: `comptime (a ?? b)`
+        Expr::Comptime(x) => format!("comptime {}", wrap(x, 7, d)),
         Expr::Interp(parts) => {
             let mut s = "f\"".to_string();
             for p in parts {
@@ -513,6 +513,18 @@ pub fn block(e: &Expr, d: usize) -> String {
 
 pub fn type_decl(t: &TypeDecl) -> String {
     let tp = if t.params.is_empty() { String::new() } else { format!("[{}]", crate::symbol::join(&t.params, ", ")) };
+    // an atom or a tuple-shaped type on its own: `type Dot`, `type Moved(Int)`
+    if let TypeBody::Sum(vs) = &t.body {
+        if let [v] = vs.as_slice() {
+            if crate::names::short(&v.name) == crate::names::short(&t.name) && !t.distinct && !t.mock && t.refinement.is_none() && !has_comments(&v.comments) {
+                match &v.payload {
+                    Payload::None => return format!("type {}{tp}", t.name),
+                    Payload::Positional(ts) => return format!("type {}{tp}({})", t.name, ts.iter().map(ty).collect::<Vec<_>>().join(", ")),
+                    _ => {}
+                }
+            }
+        }
+    }
     let kw = if t.mock { "mock" } else if t.distinct { "distinct type" } else { "type" };
     let mut s = format!("{kw} {}{} =", t.name, tp);
     if !matches!(t.body, TypeBody::Sum(_)) {
@@ -536,9 +548,12 @@ pub fn type_decl(t: &TypeDecl) -> String {
                     s += "\n";
                 }
                 s += "  | ";
-                s += &v.name;
+                if !matches!(v.payload, Payload::Type(_)) {
+                    s += &v.name;
+                }
                 match &v.payload {
                     Payload::None => {}
+                    Payload::Type(t) => s += &ty(t),
                     Payload::Positional(ts) => {
                         s += &format!("({})", ts.iter().map(ty).collect::<Vec<_>>().join(", "))
                     }

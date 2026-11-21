@@ -78,6 +78,15 @@ pub fn impl_label(env: &Env, imp: &ImplDecl, m: &str) -> String {
 /// are names bound outside `e` (the parameters): a local of the same name as
 /// a function hides it (`mut app := Router.new()` inside `fn app`).
 fn calls_of(e: &Expr, env: &Env, locals: &[String], out: &mut BTreeSet<String>) {
+    calls_within(e, env, locals, None, out)
+}
+
+/// `calls_of` in an implementation of trait method `own` (its trait node):
+/// a call of `own` on a field of `self` (`self.inner.len()` in `len`) is
+/// left out. It is recursion on a strictly smaller value (values are finite
+/// trees), whichever implementation it reaches; an implementation that
+/// calls `own` on anything else is a cycle through the trait method still.
+fn calls_within(e: &Expr, env: &Env, locals: &[String], own: Option<&str>, out: &mut BTreeSet<String>) {
     use crate::ast::{walk_expr, walk_pattern, Visit};
     /// The names a pattern binds.
     struct Binds(Vec<String>);
@@ -99,6 +108,14 @@ fn calls_of(e: &Expr, env: &Env, locals: &[String], out: &mut BTreeSet<String>) 
         env: &'a Env,
         out: &'a mut BTreeSet<String>,
         scopes: Vec<Vec<String>>,
+        own: Option<&'a str>,
+    }
+    /// `self.a.b`: a field (of a field) of `self`.
+    fn self_field(e: &Expr) -> bool {
+        match e {
+            Expr::Field(x, _) => matches!(&**x, Expr::Var(v) if v.as_str() == "self") || self_field(x),
+            _ => false,
+        }
     }
     impl Calls<'_> {
         fn local(&self, n: &str) -> bool {
@@ -129,7 +146,8 @@ fn calls_of(e: &Expr, env: &Env, locals: &[String], out: &mut BTreeSet<String>) 
                     // `next` on the `FiniteIterator` a `for` runs over (types::lower_iterator_fors):
                     // the iterator's `len` says it returns, as many times as the loop runs
                     let finite = matches!(&**r, Expr::Var(v) if v.as_str().starts_with(crate::types::FINITE_ITER_VAR));
-                    if !finite {
+                    let smaller = self.own.is_some_and(|o| trait_node(m) == o) && self_field(r);
+                    if !finite && !smaller {
                         self.name(m);
                     }
                     self.expr(r);
@@ -184,7 +202,7 @@ fn calls_of(e: &Expr, env: &Env, locals: &[String], out: &mut BTreeSet<String>) 
         }
         fn ty(&mut self, _: &TypeExpr) {}
     }
-    Calls { env, out, scopes: vec![locals.to_vec()] }.expr(e)
+    Calls { env, out, scopes: vec![locals.to_vec()], own }.expr(e)
 }
 
 fn has_stmt(e: &Expr, pred: &dyn Fn(&Stmt) -> bool) -> bool {
@@ -643,7 +661,7 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
             let label = impl_label(env, imp, &tm.decl.name);
             let mut calls = BTreeSet::new();
             let params: Vec<String> = decl.params.iter().map(|p| p.name.to_string()).collect();
-            calls_of(&decl.body, env, &params, &mut calls);
+            calls_within(&decl.body, env, &params, Some(&trait_node(&tm.decl.name)), &mut calls);
             let d = crate::verify::for_impl(env, imp, decl);
             nodes.insert(label.clone(), Node { decl: None, calls, loops: loops(env, &d, solver) });
             nodes.entry(trait_node(&tm.decl.name)).or_insert(Node { decl: None, calls: BTreeSet::new(), loops: Ok(vec![]) }).calls.insert(label);

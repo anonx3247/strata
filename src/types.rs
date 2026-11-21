@@ -113,18 +113,6 @@ trait Iterator[T] {
   fn filter(self, keep: (T) -> Bool) -> Filtered[Self, T] {
     Filtered { inner: self, keep: keep }
   }
-
-  fn fold[B](self, init: B, f: (B, T) -> B) -> B {
-    mut acc := init
-    mut it := self
-    loop {
-      match mut it.next() {
-        Some(x) => { acc = f(acc, x) },
-        None => { break },
-      }
-    }
-    acc
-  }
 }
 
 type Mapped[I, A, B] = { inner: I, f: (A) -> B }
@@ -154,13 +142,206 @@ impl[I: Iterator[T], T] Iterator[T] for Filtered[I, T] {
 
 /// An iterator that ends: `len` is how many elements `next` still gives.
 /// A `for` loop over one is shown to end.
+/// `fold` is here, not in `Iterator`: on an unbounded iterator it would never
+/// return. It ends as its loop does, given that `f` ends (checked where the
+/// function passed is written).
 trait FiniteIterator[T]: Iterator[T] {
   fn len(self) -> Natural
+
+  fn fold[B](self, init: B, f: (B, T) -> B) -> B {
+    mut acc := init
+    for x in self {
+      acc = f(acc, x)
+    }
+    acc
+  }
+
+  /// The elements, in a list.
+  fn to_list(self) -> List[T] {
+    mut out := []
+    for x in self {
+      out = push(out, x)
+    }
+    out
+  }
+}
+
+/// The elements of a list one at a time, from `at`: what `iter()` gives
+/// on a list, a set (in order) or a dict (its entries, by key).
+type ListIter[T] = { items: List[T], at: Natural }
+
+impl[T] Iterator[T] for ListIter[T] {
+  fn next(mut self) -> Option[T] {
+    if self.at < len(self.items) {
+      x := self.items[self.at]
+      self.at += 1
+      Some(x)
+    } else {
+      None
+    }
+  }
+}
+
+impl[T] FiniteIterator[T] for ListIter[T] {
+  fn len(self) -> Natural {
+    if self.at < len(self.items) { len(self.items) - self.at } else { 0 }
+  }
+}
+
+/// A collection whose elements can be walked as an iterator: `xs.iter()`.
+/// (A list isn't an iterator itself: its `map` and `filter` are the
+/// builtins, which give lists.)
+trait Iterable[T] {
+  fn iter(self) -> ListIter[T]
+}
+
+impl[T] Iterable[T] for List[T] {
+  fn iter(self) -> ListIter[T] {
+    ListIter { items: self, at: 0 }
+  }
+}
+
+impl[T] Iterable[T] for Set[T] {
+  fn iter(self) -> ListIter[T] {
+    ListIter { items: to_list(self), at: 0 }
+  }
+}
+
+impl[K, V] Iterable[(K, V)] for Dict[K, V] {
+  fn iter(self) -> ListIter[(K, V)] {
+    ListIter { items: items(self), at: 0 }
+  }
+}
+
+/// A string's UTF-8 bytes (0 to 255), from byte `at`: `s.bytes()`.
+type Bytes = { text: String, at: Natural }
+
+impl Iterator[Int] for Bytes {
+  fn next(mut self) -> Option[Int] {
+    if self.at < byte_len(self.text) {
+      b := byte_at(self.text, self.at)
+      self.at += 1
+      Some(b)
+    } else {
+      None
+    }
+  }
+}
+
+impl FiniteIterator[Int] for Bytes {
+  fn len(self) -> Natural {
+    if self.at < byte_len(self.text) { byte_len(self.text) - self.at } else { 0 }
+  }
+}
+
+/// A string's code points (Unicode scalar values), from byte `at`:
+/// `s.code_points()`. Each is read once from its UTF-8 bytes.
+type CodePoints = { text: String, at: Natural }
+
+impl Iterator[Int] for CodePoints {
+  fn next(mut self) -> Option[Int] {
+    // from inside a code point's bytes (10xxxxxx), the next one's start
+    while self.at < byte_len(self.text) && byte_at(self.text, self.at) >= 128 && byte_at(self.text, self.at) < 192 {
+      self.at += 1
+    }
+    if self.at >= byte_len(self.text) {
+      return None
+    }
+    lead := byte_at(self.text, self.at)
+    if lead < 128 {
+      self.at += 1
+      return Some(lead)
+    }
+    // 110xxxxx, 1110xxxx or 11110xxx, then 10xxxxxx bytes
+    (n, first) := if lead >= 240 { (4, lead - 240) } else if lead >= 224 { (3, lead - 224) } else { (2, lead - 192) }
+    mut c := first
+    for k in 1..n {
+      c = c * 64 + (byte_at(self.text, self.at + k) - 128)
+    }
+    self.at += n
+    Some(c)
+  }
+}
+
+impl FiniteIterator[Int] for CodePoints {
+  fn len(self) -> Natural {
+    // the bytes that start a code point (not 10xxxxxx)
+    mut n := 0
+    for b in (Bytes { text: self.text, at: self.at }) {
+      if b < 128 || b >= 192 {
+        n += 1
+      }
+    }
+    n
+  }
+}
+
+/// A string's units, each an iterator: its UTF-8 bytes and its code points
+/// (a string is neither itself: the unit is always named). Its graphemes
+/// are `std.unicode`'s.
+trait TextUnits {
+  fn bytes(self) -> Bytes
+  fn code_points(self) -> CodePoints
+}
+
+impl TextUnits for String {
+  fn bytes(self) -> Bytes {
+    Bytes { text: self, at: 0 }
+  }
+
+  fn code_points(self) -> CodePoints {
+    CodePoints { text: self, at: 0 }
+  }
+}
+
+/// `Set { e for x in it }` on a finite iterator (`set(it)` on one).
+fn set_of[T, I: FiniteIterator[T]](it: I) -> Set[T] {
+  set(it.to_list())
+}
+
+/// `Dict { k: v for x in it }` on a finite iterator (`dict(it)` on one).
+fn dict_of[K, V, I: FiniteIterator[(K, V)]](it: I) -> Dict[K, V] {
+  dict(it.to_list())
+}
+
+/// A finite iterator mapped is as long.
+impl[I: FiniteIterator[A], A, B] FiniteIterator[B] for Mapped[I, A, B] {
+  fn len(self) -> Natural {
+    self.inner.len()
+  }
+}
+
+/// A finite iterator filtered: its length is counted, on a copy (the
+/// elements `keep` keeps).
+impl[I: FiniteIterator[T], T] FiniteIterator[T] for Filtered[I, T] {
+  fn len(self) -> Natural {
+    mut n := 0
+    for x in self.inner {
+      if (self.keep)(x) {
+        n += 1
+      }
+    }
+    n
+  }
 }
 "#;
 
+/// The builtins on lists that every iterator has as methods (lazy `map`
+/// and `filter`; `fold` on a `FiniteIterator`): called on an iterator, the
+/// call is its method's. Comprehensions are made of them.
+const ITERATOR_BUILTINS: &[&str] = &["map", "filter", "fold"];
+
+/// The built-in types with type arguments, which impls can be written for.
+const BUILTIN_HEADS: &[&str] = &["List", "Set", "Dict", "String"];
+
 /// The module the prelude's code is in, once added to a program.
 pub const PRELUDE_MODULE: &str = "std.prelude";
+
+/// A name as messages show it: a prelude trait's method short
+/// (`fold`, not `std.prelude.fold`; `FiniteIterator::len`).
+pub fn shown_name(name: &str) -> String {
+    name.replace(&format!("{PRELUDE_MODULE}."), "")
+}
 
 /// The prelude's code, parsed once (`PRELUDE_CODE`).
 pub fn prelude_code() -> &'static Program {
@@ -169,10 +350,15 @@ pub fn prelude_code() -> &'static Program {
         let mut p = crate::parser::parse_program(PRELUDE_CODE).expect("prelude code parses");
         for d in &mut p.decls {
             d.module = Symbol::new(PRELUDE_MODULE);
-            if let DeclKind::Trait(t) = &mut d.kind {
-                for m in &mut t.methods {
-                    m.decl.name = prelude_method(m.decl.name);
+            match &mut d.kind {
+                DeclKind::Trait(t) => {
+                    for m in &mut t.methods {
+                        m.decl.name = prelude_method(m.decl.name);
+                    }
                 }
+                // (named apart from the program's: `std.prelude.set_of`)
+                DeclKind::Fn(f) => f.name = prelude_method(f.name),
+                _ => {}
             }
         }
         qualify_prelude_impls(&mut p);
@@ -247,6 +433,18 @@ pub fn total_builtin(name: &str) -> bool {
 }
 
 /// The prelude's definitions, parsed once.
+/// A named union (`type Shape = Circle | Square`), which can have `impl`s:
+/// not refined (a generic one has its parameters only in members it
+/// declares, so its set of members still names it).
+pub fn union_alias(t: &TypeDecl) -> bool {
+    matches!(t.body, TypeBody::Alias(TypeExpr::Union(_))) && !t.distinct && t.refinement.is_none()
+}
+
+/// The types every program has without defining them, by the names code
+/// writes (a tuple is written `(A, B)` and `()` is written so: `Tuple` and
+/// `Unit` are free to name other things).
+pub const BUILTIN_TYPES: [&str; 7] = ["Int", "Float", "Bool", "String", "List", "Set", "Dict"];
+
 pub fn prelude() -> &'static Program {
     static P: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
     P.get_or_init(|| crate::parser::parse_program(PRELUDE).expect("prelude parses"))
@@ -334,6 +532,9 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin::new("is_alpha", "", "(String) -> Bool"),
     Builtin::new("is_space", "", "(String) -> Bool"),
     Builtin::new("ord", "", "(String) -> Int"),
+    // a string's UTF-8 bytes, what `s.bytes()` / `s.code_points()` read (the prelude's)
+    Builtin::total("byte_len", "", "(String) -> Int"),
+    Builtin::new("byte_at", "", "(String, Int) -> Int"),
     Builtin::new("chr", "", "(Int) -> String"),
     Builtin::total("to_string", "A", "(A) -> String"),
     Builtin::total("debug", "A", "(A) -> String"),
@@ -538,9 +739,6 @@ pub fn split_trait_call(name: &str) -> Option<(&str, &str)> {
 /// The elaborated program, and the type the checker inferred for each of its
 /// expressions, by node address (in a generic function, with its type
 /// parameters as `Ty::Rigid`). The compiler works from these.
-pub fn elaborate_typed(prog: &Program) -> (crate::resolve::Resolution, HashMap<usize, Ty>) {
-    elaborate_from(crate::resolve::resolve(prog))
-}
 
 /// `elaborate_typed` of a program already resolved (`Checked::compiled`):
 /// resolving it again would qualify its names twice.
@@ -1226,7 +1424,7 @@ impl<'a> Checker<'a> {
         let fty = self.lower(&Self::fn_scheme(&m), &vars);
         self.self_ty = saved;
         let args: Vec<Ty> = tr.params.iter().map(|p| vars[p].clone()).collect();
-        self.pending.push((self_t, trait_name.to_string(), args, format!("calling `{name}`")));
+        self.pending.push((self_t, trait_name.to_string(), args, format!("calling `{}`", shown_name(name))));
         fty
     }
 
@@ -1250,6 +1448,167 @@ impl<'a> Checker<'a> {
     }
 
     /// Does `t` implement `tr[args]`?
+    /// The named union a union type is (`Shape` for `Circle | Square`, when
+    /// `type Shape = Circle | Square`): its `impl`s are the union's. Members
+    /// are compared as a set; a generic or refined alias doesn't count.
+    fn union_name(&mut self, t: &Ty) -> Option<Symbol> {
+        let Ty::Union(ms) = self.resolve(t) else { return None };
+        let env = self.env;
+        // one without type parameters first (`Ints` before `Many[Int]`)
+        let mut names: Vec<(bool, Symbol)> = env.types.iter().filter(|(_, td)| union_alias(td)).map(|(n, td)| (!td.params.is_empty(), *n)).collect();
+        names.sort();
+        for (_, n) in names {
+            let lowered = self.lower_fresh(n);
+            if let Ty::Union(ns) = self.resolve(&lowered) {
+                if self.same_set(&ns, &ms) {
+                    return Some(n);
+                }
+            }
+        }
+        None
+    }
+
+    /// Whether two unions have the same members: paired by what they are
+    /// (`List` with `List`, a sum counting as its variants), their type
+    /// arguments then the same (`List[T]` is `List[Int]`, for `T` fresh).
+    /// Nothing is left unified.
+    fn same_set(&mut self, a: &[Ty], b: &[Ty]) -> bool {
+        let atoms = |c: &mut Self, ms: &[Ty]| -> Vec<Ty> {
+            ms.iter().flat_map(|m| match c.resolve(m) {
+                Ty::Con(n, args) if matches!(c.env.types.get(&n).map(|t| &t.body), Some(TypeBody::Sum(_))) => match &c.env.types[&n].body {
+                    TypeBody::Sum(vs) => vs.iter().map(|v| Ty::Con(v.name, args.clone())).collect::<Vec<_>>(),
+                    _ => unreachable!(),
+                },
+                r => vec![r],
+            }).collect()
+        };
+        let (a, b) = (atoms(self, a), atoms(self, b));
+        if a.len() != b.len() {
+            return false;
+        }
+        let snapshot = self.subst.clone();
+        let mut ok = true;
+        for x in &a {
+            let hx = ty_head(x);
+            let found: Vec<&Ty> = b.iter().filter(|y| ty_head(y) == hx && (hx.is_some() || show_ty(y) == show_ty(x))).collect();
+            ok = match found.as_slice() {
+                [y] => self.unify(x, y).is_ok(),
+                _ => false,
+            };
+            if !ok {
+                break;
+            }
+        }
+        self.subst = snapshot;
+        ok
+    }
+
+    /// The named type `n`, its type parameters fresh (`OrError[?]`).
+    fn lower_fresh(&mut self, n: Symbol) -> Ty {
+        let ps = self.env.types.get(&n).map(|t| t.params.clone()).unwrap_or_default();
+        let vars: HashMap<Symbol, Ty> = ps.iter().map(|p| (*p, self.fresh())).collect();
+        self.lower(&TypeExpr::Named(n, ps.iter().map(|p| TypeExpr::Named(*p, vec![])).collect()), &vars)
+    }
+
+    /// A union's members as a set, to compare unions: a sum counts as its
+    /// variants (`Circle | Shape$own` is `Circle | Square | Dot`).
+    fn set_key(&mut self, ms: &[Ty]) -> Vec<String> {
+        let mut k: Vec<String> = ms.iter().flat_map(|m| match self.resolve(m) {
+            Ty::Con(n, _) if matches!(self.env.types.get(&n).map(|t| &t.body), Some(TypeBody::Sum(_))) => match &self.env.types[&n].body {
+                TypeBody::Sum(vs) => vs.iter().map(|v| v.name.to_string()).collect::<Vec<_>>(),
+                _ => unreachable!(),
+            },
+            // a variant by its name (`Some`, whatever `Option`'s argument)
+            Ty::Con(n, args) if args.is_empty() || self.env.variant_parent(n.sym()).is_some() => vec![n.to_string()],
+            r => vec![show_ty(&r)],
+        }).collect();
+        k.sort();
+        k.dedup();
+        k
+    }
+
+    /// A named union that adds nothing: one type once normalized, or a set
+    /// another name in its module (or the root module, or the prelude, in
+    /// scope everywhere) names already.
+    fn union_adds_nothing(&mut self, t: &TypeDecl) -> Option<String> {
+        let TypeBody::Alias(written) = &t.body else { return None };
+        let written = crate::printer::ty(written);
+        let lowered = self.lower_fresh(t.name);
+        let Ty::Union(ms) = self.resolve(&lowered) else {
+            // (the members another union declares, `Square | Dot` of `Shape`, are named only here)
+            if matches!(self.resolve(&lowered), Ty::Con(n, _) if n.contains(crate::desugar::OWN)) {
+                return None;
+            }
+            return Some(format!("`type {} = {written}` adds nothing: it is `{}` (use that, or make it a separate type: `distinct type {} = {written}`)", crate::names::short(&t.name), show_ty(&self.resolve(&lowered)), crate::names::short(&t.name)));
+        };
+        let module = crate::names::module_of(&t.name).to_string();
+        let env = self.env;
+        // (the first name of a set keeps it: the later one adds nothing)
+        let at = |n: &Symbol| env.type_order.get(n).copied().unwrap_or(usize::MAX);
+        let mut others: Vec<(Symbol, &TypeDecl)> = env.types.iter().filter(|(n, d)| **n != t.name && at(n) < at(&t.name) && !n.as_str().contains(crate::desugar::OWN) && (union_alias(d) || matches!(d.body, TypeBody::Sum(_)))).map(|(n, d)| (*n, d)).filter(|(n, _)| {
+            let m = crate::names::module_of(n);
+            m == module || m.is_empty()
+        }).collect();
+        others.sort_by_key(|(n, _)| *n);
+        for (n, d) in others {
+            // (a generic union isn't an instance of one without parameters)
+            if !t.params.is_empty() && d.params.is_empty() {
+                continue;
+            }
+            let l = self.lower_fresh(n);
+            let theirs = match self.resolve(&l) {
+                Ty::Union(ns) => ns,
+                one @ Ty::Con(..) => vec![one],
+                _ => continue,
+            };
+            if self.same_set(&theirs, &ms) {
+                let s = crate::names::short(&t.name);
+                return Some(format!("`type {s} = {written}` adds nothing: it is `{}` (use that, or make it a separate type: `distinct type {s} = {written}`)", crate::names::short(&n)));
+            }
+        }
+        None
+    }
+
+    /// Two modules may name the same set (`geo.Shape`, `ui.Figure`), but not
+    /// both implement a trait (or both have a method) for it: a value of the
+    /// set wouldn't know which applies.
+    fn union_conflicts(&mut self, t: &TypeDecl) -> Vec<String> {
+        let env = self.env;
+        let at = |n: &Symbol| env.type_order.get(n).copied().unwrap_or(usize::MAX);
+        let traits_of = |n: Symbol| -> Vec<String> {
+            let mut out: Vec<String> = env.impls.iter().filter(|i| texpr_head(&i.for_type) == n).map(|i| i.trait_name.to_string()).collect();
+            if let Some(imp) = env.inherent.get(&n) {
+                out.extend(imp.methods.iter().map(|m| format!("method {}", crate::names::short(&m.name))));
+            }
+            out
+        };
+        let mine = traits_of(t.name);
+        if mine.is_empty() {
+            return vec![];
+        }
+        let module = crate::names::module_of(&t.name).to_string();
+        let mut others: Vec<Symbol> = env.types.iter().filter(|(n, d)| **n != t.name && union_alias(d) && at(n) < at(&t.name) && crate::names::module_of(n) != module).map(|(n, _)| *n).collect();
+        others.sort();
+        let own = self.lower_fresh(t.name);
+        let Ty::Union(ms) = self.resolve(&own) else { return vec![] };
+        let mut out = vec![];
+        for o in others {
+            let theirs = self.lower_fresh(o);
+            let Ty::Union(os) = self.resolve(&theirs) else { continue };
+            if !self.same_set(&ms, &os) {
+                continue;
+            }
+            for both in mine.iter().filter(|x| traits_of(o).contains(x)) {
+                let what = match both.strip_prefix("method ") {
+                    Some(m) => format!("have a method `{m}`"),
+                    None => format!("implement `{}`", crate::names::short(both)),
+                };
+                out.push(format!("`{}` and `{o}` name the same set and both {what}: which one a value of it uses wouldn't be known (make one `distinct`)", t.name));
+            }
+        }
+        out
+    }
+
     fn satisfies(&mut self, t: &Ty, tr: &str, args: &[Ty], depth: usize) -> Result<(), String> {
         if depth > 8 {
             return Err(format!("trait resolution for `{tr}` is too deep"));
@@ -1259,8 +1618,9 @@ impl<'a> Checker<'a> {
         if matches!(tr, "Debug" | "Display") {
             return Ok(());
         }
-        // a union implements a trait when every member does
-        if let Ty::Union(ms) = &t {
+        // a named union's own impl; else a union implements a trait when every member does
+        let named = self.union_name(&t).filter(|n| self.env.impls.iter().any(|i| i.trait_name == tr && texpr_head(&i.for_type) == *n));
+        if let (Ty::Union(ms), None) = (&t, named) {
             for m in ms.clone() {
                 self.satisfies(&m, tr, args, depth + 1)?;
             }
@@ -1275,7 +1635,7 @@ impl<'a> Checker<'a> {
             }
         }
         let head = match &t {
-            Ty::Union(_) => unreachable!(),
+            Ty::Union(_) => named.unwrap().to_string(),
             Ty::Rigid(n) => {
                 let known = self.bounds.get(n).cloned().unwrap_or_default();
                 let mut all = known.clone();
@@ -1325,7 +1685,19 @@ impl<'a> Checker<'a> {
             let ft = self.lower(&imp.for_type, &vars);
             let targs: Vec<Ty> = imp.trait_args.iter().map(|a| self.lower(a, &vars)).collect();
             self.rigid = saved_rigid;
-            let ok = self.unify(&ft, &t).is_ok() && targs.len() == args.len() && targs.iter().zip(args).all(|(a, b)| self.unify(a, b).is_ok());
+            // (a named union's members, matched by name, whatever their order)
+            let same = match (self.resolve(&ft), &t) {
+                (Ty::Union(fs), Ty::Union(ts)) if fs.len() == ts.len() => fs.iter().all(|f| {
+                    let f = self.resolve(f);
+                    let head = ty_head(&f);
+                    match ts.iter().find(|x| ty_head(&self.resolve(x)) == head).cloned() {
+                        Some(x) => self.unify(&f, &x).is_ok(),
+                        None => false,
+                    }
+                }),
+                _ => self.unify(&ft, &t).is_ok(),
+            };
+            let ok = same && targs.len() == args.len() && targs.iter().zip(args).all(|(a, b)| self.unify(a, b).is_ok());
             if ok {
                 for b in &imp.bounds {
                     for btr in &b.traits {
@@ -1345,6 +1717,25 @@ impl<'a> Checker<'a> {
             self.subst = snapshot;
         }
         Err(format!("`{}` does not implement `{tr}`", show_ty(&t)))
+    }
+
+    /// The pending obligations whose type is known by now, solved: what they
+    /// say about the trait's arguments is then known too. One that doesn't hold
+    /// stays, to be reported at the end (`solve_pending`).
+    fn settle_pending(&mut self) {
+        let pending = std::mem::take(&mut self.pending);
+        for ob in pending {
+            let t = self.resolve(&ob.0);
+            if matches!(t, Ty::Var(_) | Ty::Union(_)) {
+                self.pending.push(ob);
+                continue;
+            }
+            let snap = self.subst.clone();
+            if self.satisfies(&t, &ob.1, &ob.2, 0).is_err() {
+                self.subst = snap;
+                self.pending.push(ob);
+            }
+        }
     }
 
     fn solve_pending(&mut self) {
@@ -1543,7 +1934,7 @@ impl<'a> Checker<'a> {
                 for tr in &b.traits {
                     if let TypeExpr::Named(tn, targs) = tr {
                         let args: Vec<Ty> = targs.iter().map(|a| self.lower(a, &vars)).collect();
-                        self.pending.push((vars[&b.param].clone(), tn.to_string(), args, format!("calling `{name}`")));
+                        self.pending.push((vars[&b.param].clone(), tn.to_string(), args, format!("calling `{}`", shown_name(name))));
                     }
                 }
             }
@@ -1564,11 +1955,15 @@ impl<'a> Checker<'a> {
             self.err(format!("which `{short}` runs depends on the type of the value it is called on (several types or traits have one): call it on a value, or pass a lambda such as `x -> x.{short}()`"));
             return Some(self.fresh());
         }
-        if let Some(Builtin { params: ps, sig, .. }) = BUILTINS.iter().chain(crate::stdlib::HOST).find(|b| b.name == name) {
-            let ps: Vec<Symbol> = ps.split(',').filter(|s| !s.is_empty()).map(Symbol::from).collect();
-            return Some(self.instantiate(&ps, &parse_type_str(sig)));
-        }
-        None
+        self.builtin_fn(name)
+    }
+
+    /// The type of the builtin `name` (or std's host operation), whatever else
+    /// the name means.
+    fn builtin_fn(&mut self, name: &str) -> Option<Ty> {
+        let Builtin { params: ps, sig, .. } = BUILTINS.iter().chain(crate::stdlib::HOST).find(|b| b.name == name)?;
+        let ps: Vec<Symbol> = ps.split(',').filter(|s| !s.is_empty()).map(Symbol::from).collect();
+        Some(self.instantiate(&ps, &parse_type_str(sig)))
     }
 
     /// A method name means the method of that name among the traits of the
@@ -1604,12 +1999,18 @@ impl<'a> Checker<'a> {
         self.errors.truncate(n);
         // the traits the receiver has: its type's impls, a trait-typed value's
         // trait, or a type parameter's bounds (with their supertraits)
-        let traits: Vec<Symbol> = match self.resolve(&rt) {
+        // (a `String` is `Ty::Str`: its impls are under its name)
+        let rt = match self.resolve(&rt) {
+            Ty::Str => Ty::Con(Symbol::from("String"), vec![]),
+            other => other,
+        };
+        let traits: Vec<Symbol> = match rt {
             Ty::Con(head, args) if self.env.traits.contains_key(&head) => {
                 std::iter::once(head).chain(self.supers_of(&head, &args, 0).into_iter().map(|(s, _)| s)).collect()
             }
             Ty::Con(head, _) => {
-                if !self.env.types.contains_key(&head) || self.has_own_method(recv, m) {
+                // (a built-in type's impls too: `xs.iter()` on a `List`)
+                if !(self.env.types.contains_key(&head) || BUILTIN_HEADS.contains(&head.as_str())) || self.has_own_method(recv, m) {
                     return None;
                 }
                 self.env.impls.iter().filter(|i| !i.is_inherent() && texpr_head(&i.for_type) == head.as_str()).map(|i| i.trait_name).collect()
@@ -1636,6 +2037,70 @@ impl<'a> Checker<'a> {
         (found.len() == 1).then(|| found.remove(0))
     }
 
+    /// `set(it)` / `dict(it)` (a set or dict comprehension) on a finite
+    /// iterator: the prelude's `set_of` / `dict_of`, which collect it.
+    fn collect_call(&mut self, n: &Symbol, args: &[&Expr], site: usize) -> Option<Ty> {
+        let target = match n.as_str() {
+            "set" => "set_of",
+            "dict" => "dict_of",
+            _ => return None,
+        };
+        if args.len() != 1 || self.lookup(n.sym()).is_some() || self.env.fns.contains_key(n) {
+            return None;
+        }
+        let errs = self.errors.len();
+        let at = self.infer(args[0]);
+        self.errors.truncate(errs);
+        let at = self.resolve(&at);
+        let iterable = match &at {
+            Ty::Con(h, _) => self.env.types.contains_key(h) || self.env.traits.contains_key(h),
+            Ty::Rigid(_) => true,
+            _ => false,
+        };
+        if !iterable {
+            return None;
+        }
+        let snap = (self.subst.clone(), self.pending.len());
+        let el = self.fresh();
+        if self.satisfies(&at, FINITE_ITERATOR, std::slice::from_ref(&el), 0).is_err() {
+            self.subst = snap.0;
+            self.pending.truncate(snap.1);
+            return None;
+        }
+        let f = prelude_method(Symbol::from(target));
+        self.targets.push((site, Target::Own(f.to_string())));
+        let ft = self.global_fn(&f)?;
+        Some(self.call_with(ft, args, &Lazy(|| format!("call to `{n}`")), &[]))
+    }
+
+    /// `m` called on a value of a type that has none, where a trait declares
+    /// `m` whose supertrait the type implements (`fold` on an `Iterator` that
+    /// isn't a `FiniteIterator`): what to say instead of trying the builtin.
+    fn missing_subtrait(&mut self, recv: &Expr, m: &str) -> Option<String> {
+        let n = self.errors.len();
+        let rt = self.infer(recv);
+        self.errors.truncate(n);
+        let Ty::Con(head, args) = self.resolve(&rt) else { return None };
+        if !self.env.types.contains_key(&head) || self.has_own_method(recv, m) {
+            return None;
+        }
+        let has: Vec<Symbol> = self.env.impls.iter().filter(|i| !i.is_inherent() && texpr_head(&i.for_type) == head.as_str()).map(|i| i.trait_name).collect();
+        let short = |q: &str| crate::names::short(q).to_string();
+        let shown = show_ty(&Ty::Con(head, args));
+        for (tn, td) in &self.env.traits {
+            let declares = td.methods.iter().any(|x| short(&x.decl.name) == m && crate::resolve::takes_self(&x.decl));
+            let sup = td.supers.iter().map(texpr_head).find(|s| has.iter().any(|h| h.as_str() == s.as_str()));
+            if let (true, Some(sup)) = (declares, sup) {
+                if !has.contains(tn) {
+                    let a = |w: &str| if w.starts_with(['A', 'E', 'I', 'O', 'U']) { "an" } else { "a" };
+                    let (t, s) = (short(tn), short(&sup));
+                    return Some(format!("`{m}` needs {} `{t}`: `{shown}` is {} `{s}` but not {} `{t}`", a(&t), a(&s), a(&t)));
+                }
+            }
+        }
+        None
+    }
+
     fn by_receiver(&mut self, m: &str, all: &[&Expr], site: usize, dotted: bool, recv_marked: Option<bool>) -> Option<Ty> {
         // a method of a trait the receiver's own type implements, written without the
         // trait in scope (`disk.read(path)` with only `Disk` imported)
@@ -1647,15 +2112,23 @@ impl<'a> Checker<'a> {
                 let muts = self.mut_mask(&mq);
                 return Some(self.call_with(ft, all, &Lazy(|| format!("call to `{m}`")), &muts));
             }
+            if let Some(msg) = all.first().and_then(|r| self.missing_subtrait(r, m)) {
+                self.err(msg);
+                return Some(self.fresh());
+            }
         }
         // a function of that name takes the call, unless the receiver's type
         // has a method of its own by that name (`app.handle(req)` inside a
         // `fn handle`)
-        if self.lookup(m.sym()).is_some() || self.env.fns.contains_key(&Symbol::new(m)) {
+        // A trait method named like a built-in one (`find`) is the trait's only
+        // on a receiver whose type implements it: on a list, the built-in
+        // (decided below, by the receiver's traits).
+        let builtin_too = dotted && self.lookup(m.sym()).is_none() && self.env.is_method(m.sym()) && BUILTINS.iter().any(|b| b.name == m);
+        if !builtin_too && (self.lookup(m.sym()).is_some() || self.env.fns.contains_key(&Symbol::new(m))) {
             if !dotted || !all.first().is_some_and(|r| self.has_own_method(r, m)) {
                 return None;
             }
-        } else if split_trait_call(m).is_some() || !self.env.is_method(m.sym()) {
+        } else if !builtin_too && (split_trait_call(m).is_some() || !self.env.is_method(m.sym())) {
             return None;
         }
         let short = |q: &str| crate::names::short(q).to_string();
@@ -1665,6 +2138,11 @@ impl<'a> Checker<'a> {
         let rt = self.infer(recv);
         self.errors.truncate(n);
         let rt = self.resolve(&rt);
+        // a named union: its own methods and impls, under its name
+        let rt = match self.union_name(&rt) {
+            Some(n) if self.env.inherent.contains_key(&n) || self.env.impls.iter().any(|i| texpr_head(&i.for_type) == n) => Ty::Con(n, vec![]),
+            _ => rt,
+        };
         // the traits the receiver is known to have; `what` names it in errors
         let (head, what, traits): (Option<String>, String, Vec<Symbol>) = match &rt {
             Ty::Rigid(p) => {
@@ -1728,7 +2206,7 @@ impl<'a> Checker<'a> {
                 if let Some(t) = self.overloaded(sm.sym(), all) {
                     return Some(t);
                 }
-                let ft = self.global_fn(&sm)?;
+                let ft = self.builtin_fn(&sm)?;
                 Some(self.call_with(ft, all, &Lazy(|| format!("call to `{sm}`")), &[]))
             }
             [] => None,
@@ -1909,7 +2387,12 @@ impl<'a> Checker<'a> {
         }
         for (site, tr, ty) in std::mem::take(&mut self.static_types) {
             let t = self.resolve_named(&ty);
-            if let Some(r) = TypeRef::of(&t) {
+            // a named union is passed by its name
+            let r = match self.union_name(&t) {
+                Some(n) => Some(TypeRef::Con(n.to_string(), vec![])),
+                None => TypeRef::of(&t),
+            };
+            if let Some(r) = r {
                 self.targets.push((site, Target::Static(tr, r)));
             }
         }
@@ -1990,6 +2473,8 @@ impl<'a> Checker<'a> {
                 "Bool" => Ty::Bool,
                 "String" => Ty::Str,
                 _ => match self.env.types.get(&x) {
+                    // a named union: the union it names (its impls are found by its set)
+                    Some(td) if union_alias(td) => self.lower(&TypeExpr::Named(x, vec![]), &HashMap::default()),
                     Some(td) => {
                         let args = td.params.iter().map(|_| self.fresh()).collect();
                         Ty::Con(x, args)
@@ -2051,7 +2536,7 @@ impl<'a> Checker<'a> {
                 if let TypeExpr::Named(tn, targs) = tr {
                     let args: Vec<Ty> = targs.iter().map(|a| self.lower(a, &vars)).collect();
                     if let Some(v) = vars.get(&b.param) {
-                        self.pending.push((v.clone(), tn.to_string(), args, format!("calling `{}`", f.name)));
+                        self.pending.push((v.clone(), tn.to_string(), args, format!("calling `{}`", shown_name(&f.name))));
                     }
                 }
             }
@@ -2143,6 +2628,11 @@ impl<'a> Checker<'a> {
             return r;
         }
         for (i, (p, a)) in ps.iter().zip(args).enumerate() {
+            // a lambda's parameters may get their types from an obligation on an
+            // argument before it (`it.map(x -> x.m())`: `it: Iterator[T]` says what `x` is)
+            if i > 0 && matches!(a, Expr::Lambda(..)) {
+                self.settle_pending();
+            }
             let at = self.infer_arg(a, Some(p));
             if let Some(Some(pw)) = muts.get(i) {
                 // the callee may put any value of its parameter type into the caller's variable
@@ -2263,6 +2753,7 @@ impl<'a> Checker<'a> {
             TypeBody::Sum(vs) => {
                 let v = vs.iter().find(|v| v.name == c).unwrap();
                 match &v.payload {
+                    Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
                     Payload::None => vec![],
                     Payload::Positional(ts) => ts.iter().map(|t| (None, self.lower(t, &vars))).collect(),
                     Payload::Record(fs) => fs.iter().map(|f| (Some(f.name.clone()), self.lower(&f.ty, &vars))).collect(),
@@ -2291,10 +2782,6 @@ impl<'a> Checker<'a> {
             Expr::Int(_) | Expr::BigInt(_) => Ty::Int,
             Expr::Float(_) => Ty::Float,
             Expr::Tuple(es) => Ty::Con("Tuple".into(), es.iter().map(|e| self.infer(e)).collect()),
-            Expr::Describe(t) => {
-                self.err(format!("`${}` is only known in a derived method", crate::printer::ty(t)));
-                self.fresh()
-            }
             Expr::Comptime(x) => self.infer_at(x, expected),
             Expr::Str(_) => Ty::Str,
             Expr::Bool(_) => Ty::Bool,
@@ -2431,6 +2918,24 @@ impl<'a> Checker<'a> {
                 let args: Vec<&Expr> = args.iter().collect();
                 let args = &args[..];
                 if let Expr::Var(n) = &**f {
+                    // `map(xs, f)`, `filter`, `fold` (what comprehensions are made of) on an
+                    // iterator: its method, lazy (a list's are the builtins)
+                    if let Some(t) = self.collect_call(n, args, e as *const Expr as usize) {
+                        return t;
+                    }
+                    if ITERATOR_BUILTINS.contains(&n.as_str()) && self.lookup(n.sym()).is_none() && !self.env.fns.contains_key(n) {
+                        if let Some(&recv) = args.first() {
+                            if let Some((t, mq)) = self.implemented_method(recv, n) {
+                                self.targets.push((e as *const Expr as usize, Target::Other(t.to_string(), mq.to_string())));
+                                let ft = self.trait_method(&mq, &t);
+                                return self.call_with(ft, args, &Lazy(|| format!("call to `{n}`")), &[]);
+                            }
+                            if let Some(msg) = self.missing_subtrait(recv, n) {
+                                self.err(msg);
+                                return self.fresh();
+                            }
+                        }
+                    }
                     if let Some(t) = self.by_receiver(n, args, e as *const Expr as usize, false, None) {
                         return t;
                     }
@@ -3837,6 +4342,47 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
         };
         match &d.kind {
             DeclKind::Type(t) => {
+                if union_alias(t) {
+                    if let Some(m) = c.union_adds_nothing(t) {
+                        c.err(m);
+                    }
+                    for m in c.union_conflicts(t) {
+                        c.err(m);
+                    }
+                }
+                // a union's type parameter is wrapped in a member it declares
+                // (`Some(T)`, as `Option` does), not a member on its own (`T`,
+                // `List[T]`): a set of members then names one union
+                if let (false, TypeBody::Alias(TypeExpr::Union(ms))) = (t.params.is_empty(), &t.body) {
+                    fn mentions(t: &TypeExpr, ps: &[Symbol]) -> Option<Symbol> {
+                        match t {
+                            TypeExpr::Named(n, args) => ps.iter().find(|p| *p == n).copied().or_else(|| args.iter().find_map(|a| mentions(a, ps))),
+                            TypeExpr::Refined(b, _) => mentions(b, ps),
+                            TypeExpr::Fn(xs, r) => xs.iter().find_map(|a| mentions(a, ps)).or_else(|| mentions(r, ps)),
+                            TypeExpr::Union(xs) => xs.iter().find_map(|a| mentions(a, ps)),
+                            TypeExpr::Unit => None,
+                        }
+                    }
+                    let s = crate::names::short(&t.name);
+                    let others: Vec<&TypeExpr> = ms.iter().filter(|m| !matches!(m, TypeExpr::Named(n, _) if n.contains(crate::desugar::OWN))).collect();
+                    for m in &others {
+                        match m {
+                            TypeExpr::Named(p, a) if a.is_empty() && t.params.contains(p) => {
+                                c.err(format!("`{p}` can't be a member of `{s}` on its own: wrap it, in a member `{s}` declares (`Value({p})`, as `Option` has `Some(T)`) or a type (`List[{p}]`)"));
+                            }
+                            _ => {
+                                // two members alike (`List[A] | List[B]`) couldn't be told apart
+                                let head = texpr_head(m);
+                                if mentions(m, &t.params).is_some() && others.iter().filter(|o| texpr_head(o) == head).count() > 1 {
+                                    c.err(format!("`{}` can't be a member of `{s}` next to another `{}`: which is which wouldn't be known", crate::printer::ty(m), crate::names::short(&head)));
+                                }
+                            }
+                        }
+                    }
+                }
+                if t.distinct && matches!(t.body, TypeBody::Sum(_)) {
+                    c.err(format!("`{}` declares its members, so it is a type of its own already: `distinct` adds nothing", crate::names::short(&t.name)));
+                }
                 if matches!(t.body, TypeBody::Alias(ref a) if !matches!(a, TypeExpr::Union(_))) && t.refinement.is_none() && !t.distinct {
                     c.err(format!(
                         "`type {0} = {1}` adds nothing: constrain it (`type {0} = {1} where …`) or make it a separate type (`distinct type {0} = {1}`)",
@@ -3858,6 +4404,7 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
                     TypeBody::Sum(vs) => {
                         for v in vs {
                             match &v.payload {
+                                Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
                                 Payload::None => {}
                                 Payload::Positional(ts) => ts.iter().for_each(|t| {
                                     c.lower(t, &HashMap::default());
@@ -3946,7 +4493,8 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
                 c.rigid = i.type_params.iter().cloned().collect();
                 c.add_bounds(&i.bounds);
                 let head = texpr_head(&i.for_type);
-                let alias = env.types.get(&head.sym()).is_some_and(|t| matches!(t.body, TypeBody::Alias(_)) && !t.distinct);
+                // (a named union can have impls: they are its members' set's)
+                let alias = env.types.get(&head.sym()).is_some_and(|t| matches!(t.body, TypeBody::Alias(_)) && !t.distinct && !union_alias(t));
                 if alias && !i.is_inherent() {
                     c.err(format!("`{head}` is a refined alias of another type; implement the trait for the underlying type"));
                 }

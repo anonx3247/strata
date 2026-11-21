@@ -361,23 +361,6 @@ const char *strata_fuzz_args(void) {
 
 void strata_seed(int64_t seed) { rng = (uint64_t)seed; }
 
-// A pattern built at run time (`matches(s, p)`, `p` not a literal): matched
-// by the engine strata gives the runtime when it runs a program (Rust's
-// `regex`, the interpreter's): 1 or 0, or -1 with the error in `*err`. A
-// built program has none (its literal patterns are compiled to DFAs).
-typedef int32_t (*RegexEngine)(const char *s, int64_t n, const char *re, int64_t m, const char **err);
-static RegexEngine regex_engine;
-void strata_set_regex_engine(RegexEngine e) { regex_engine = e; }
-
-_Bool strata_regex_match(Str *s, Str *re) {
-  if (!regex_engine) strata_fault(4, str_c("a pattern built at run time needs `strata run` (a built program has only literal patterns)"));
-  const char *err = NULL;
-  int32_t r = regex_engine(s->bytes, s->len, re->bytes, re->len, &err);
-  // (the interpreter shows no call stack for a bad pattern)
-  if (r < 0) strata_fault(4 | 256, str_c(err));
-  return r == 1;
-}
-
 // Compile-time code's value (`strata.ct.N` hands it over), for the compiler
 // to read (src/llvm/native.rs).
 static int64_t ct_kept;
@@ -1247,7 +1230,9 @@ void strata_init(int32_t argc, char **argv) {
   prog_argv = argv + 1;
   if (argc > 0 && argv[0]) prog_name = argv[0];
   signal(SIGPIPE, SIG_IGN);
+  // (what compile-time code made before, in this process, isn't the program's)
   allocated = freed = 0;
+  nmade = 0;
   static _Bool registered;
   const char *m = getenv("STRATA_MEMORY");
   checking = m && !strcmp(m, "check");
@@ -1712,6 +1697,19 @@ int64_t strata_str_ord(Str *s) {
   strata_fault(4, strata_concat(str_c("ord needs a single character, got "), debug_str(s)));
 }
 
+// A string's length in UTF-8 bytes, and its byte `i` (0 to 255): what the
+// prelude's `bytes()` and `code_points()` read, in Strata.
+int64_t strata_str_byte_len(Str *s) { return s->len; }
+
+int64_t strata_str_byte_at(Str *s, int64_t i) {
+  if (i < 0 || i >= s->len) {
+    char buf[96];
+    snprintf(buf, sizeof buf, "byte %lld out of range (%lld bytes)", (long long)i, (long long)s->len);
+    strata_fault(4, str_c(buf));
+  }
+  return (unsigned char)s->bytes[i];
+}
+
 Str *strata_str_chr(int64_t c) {
   if (c < 0 || c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF)) {
     char buf[64];
@@ -1720,18 +1718,6 @@ Str *strata_str_chr(int64_t c) {
   }
   char b[4];
   return str_from(b, utf8_put((int32_t)c, b));
-}
-
-// `matches(s, re)`: the DFA the compiler made of `^(?:re)$` (llvm.rs,
-// `regex`): each byte's class, the next state of (state, class), the dead
-// states, and those that match at the end. It starts in state 0.
-_Bool strata_dfa_match(Str *s, const int16_t *cls, int64_t nc, const int32_t *next, const uint8_t *dead, const uint8_t *end) {
-  int64_t st = 0;
-  for (int64_t i = 0; i < s->len; i++) {
-    st = next[st * nc + cls[(unsigned char)s->bytes[i]]];
-    if (dead[st]) return 0;
-  }
-  return end[st];
 }
 
 // `parse_int`, as Rust's `BigInt` reads the trimmed string: a sign, then a
