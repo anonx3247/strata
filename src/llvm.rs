@@ -4466,7 +4466,7 @@ impl<'m, 'a> Func<'m, 'a> {
         if vs.iter().any(|v| is_never(&v.0)) {
             return Ok(never());
         }
-        let head = Module::head(&recv).ok_or(format!("`{name}` on a `{}`", key(&recv)))?;
+        let head = Module::head(&recv).or_else(|| self.m.union_name(&recv)).ok_or(format!("`{name}` on a `{}`", key(&recv)))?;
         // a refined alias (`Positive`) has its base type's methods
         let head = match &recv {
             Ty::Con(n, _) if crate::types::refined_alias(self.m.env, *n) => Module::head(&self.m.repr(&recv)?).unwrap_or(head),

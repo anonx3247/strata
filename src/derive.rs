@@ -251,7 +251,7 @@ fn none() -> Value {
 }
 
 /// The shapes of `std.typing.Kind`.
-const KINDS: [&str; 9] = ["Record", "Tuple", "Sum", "Union", "Function", "Atom", "Unit", "Builtin", "Param"];
+const KINDS: [&str; 8] = ["Record", "Tuple", "Union", "Function", "Atom", "Unit", "Builtin", "Param"];
 
 /// A field of a record value (`Type`, `Field`).
 fn get<'v>(v: &'v Value, key: &str) -> Option<&'v Value> {
@@ -363,6 +363,7 @@ impl<'a> Expander<'a> {
         let head = crate::types::texpr_head(&i.for_type);
         match self.env.types.get(&Symbol::new(&head)).map(|td| &td.body) {
             Some(TypeBody::Record(_) | TypeBody::Sum(_)) => {}
+            Some(_) if self.env.types.get(&Symbol::new(&head)).is_some_and(crate::types::union_alias) => {}
             Some(TypeBody::Alias(_)) => return Err(format!("`{}` is an alias: a derived trait needs a record or a sum type", short(&head))),
             None => return Err(format!("`{head}` is not a type defined in this program")),
         }
@@ -441,7 +442,7 @@ impl<'a> Expander<'a> {
         let mut name = none();
         let mut doc: Vec<String> = vec![];
         let mut args = vec![];
-        let (mut fields, mut elements, mut variants, mut members, mut params, mut result) = (vec![], vec![], vec![], vec![], vec![], none());
+        let (mut fields, mut elements, mut members, mut params, mut result) = (vec![], vec![], vec![], vec![], none());
         let kind = match t {
             // a refinement: its base, with the condition
             TypeExpr::Refined(b, pred) => {
@@ -462,8 +463,21 @@ impl<'a> Expander<'a> {
                 result = some(self.type_value_in(r, stack));
                 "Function"
             }
+            // a union's members as written (a named union among them is one
+            // member, with its own `impl`s), the members a union declares
+            // itself (`Square` and `Dot` of `Circle | Square { .. } | Dot`) each
             TypeExpr::Union(ms) => {
-                members = ms.iter().map(|a| self.type_value_in(a, stack)).collect();
+                for a in ms {
+                    let m = self.type_value_in(a, stack);
+                    let own = matches!(a, TypeExpr::Named(n, _) if n.contains(crate::desugar::OWN));
+                    match kind_name(&m).as_deref() {
+                        Some("Union") if own => match self.full(&m, "members") {
+                            Some(Value::List(xs)) => members.extend(xs),
+                            _ => members.push(m),
+                        },
+                        _ => members.push(m),
+                    }
+                }
                 "Union"
             }
             TypeExpr::Named(n, targs) => {
@@ -486,11 +500,12 @@ impl<'a> Expander<'a> {
                             }
                             "Record"
                         }
+                        // a sum: a union of the members it declares
                         TypeBody::Sum(vs) => {
                             if !shallow {
-                                variants = vs.iter().map(|v| self.variant_value(v, targs, &sub, stack)).collect();
+                                members = vs.iter().map(|v| self.variant_value(v, targs, &sub, stack)).collect();
                             }
-                            "Sum"
+                            "Union"
                         }
                         // an alias or a `distinct` type: the shape of what it
                         // stands for, under its own name
@@ -535,7 +550,6 @@ impl<'a> Expander<'a> {
                 ("condition", none()),
                 ("fields", Value::List(fields)),
                 ("elements", Value::List(elements)),
-                ("variants", Value::List(variants)),
                 ("members", Value::List(members)),
                 ("params", Value::List(params)),
                 ("result", result),
@@ -575,7 +589,6 @@ impl<'a> Expander<'a> {
                 ("condition", none()),
                 ("fields", Value::List(fields)),
                 ("elements", Value::List(elements)),
-                ("variants", Value::List(vec![])),
                 ("members", Value::List(vec![])),
                 ("params", Value::List(vec![])),
                 ("result", none()),
@@ -642,11 +655,19 @@ impl<'a> Expander<'a> {
             TypeExpr::Refined(b, _) => self.kind_of(b),
             TypeExpr::Unit => ("Unit", false),
             TypeExpr::Fn(..) => ("Function", false),
-            TypeExpr::Union(_) => ("Union", false),
+            // a choice: its members (as `members` lists them) all atoms
+            TypeExpr::Union(ms) => ("Union", ms.iter().all(|m| match m {
+                TypeExpr::Named(n, _) if n.contains(crate::desugar::OWN) => self.kind_of(m).1,
+                _ => self.kind_of(m).0 == "Atom",
+            })),
             TypeExpr::Named(n, _) if n.as_str() == "Tuple" => ("Tuple", false),
             TypeExpr::Named(n, _) => match self.env.types.get(n).map(|td| &td.body) {
                 Some(TypeBody::Record(_)) => ("Record", false),
-                Some(TypeBody::Sum(vs)) => ("Sum", vs.iter().all(|v| v.payload == Payload::None)),
+                Some(TypeBody::Sum(vs)) => ("Union", vs.iter().all(|v| match &v.payload {
+                    Payload::None => true,
+                    Payload::Type(t) => self.kind_of(t).0 == "Atom",
+                    _ => false,
+                })),
                 Some(TypeBody::Alias(a)) => self.kind_of(a),
                 None => match self.variant_decl(n).map(|v| v.payload) {
                     Some(Payload::Type(_)) => unreachable!("a union member defined elsewhere is desugared away"),
@@ -886,7 +907,7 @@ impl<'a> Expander<'a> {
             Expr::Tuple(xs) => Value::Tuple(xs.iter().map(|x| self.data_in(x, locals)).collect::<Option<_>>()?),
             Expr::Field(r, f) => match self.data_in(r, locals)? {
                 // a type's lists, written out in full (`f.type.fields`)
-                v @ Value::Record(..) if matches!(&v, Value::Record(k, _) if *k == q("Type")) && matches!(f.as_str(), "fields" | "elements" | "variants" | "members") => self.full(&v, f.as_str())?,
+                v @ Value::Record(..) if matches!(&v, Value::Record(k, _) if *k == q("Type")) && matches!(f.as_str(), "fields" | "elements" | "members") => self.full(&v, f.as_str())?,
                 Value::Record(_, fs) => fs.into_iter().find(|(k, _)| k == f.as_str())?.1,
                 Value::Variant(_, Fields::Rec(fs)) => fs.iter().find(|(k, _)| k == f.as_str())?.1.clone(),
                 _ => return None,
@@ -1028,7 +1049,12 @@ impl<'a> Expander<'a> {
             // compiling, called on that type (`Address.decode(j)`)
             Expr::Method(recv, m, args) if !matches!(m.as_str(), "make" | "try_make" | "check" | "of") && self.type_named(recv).is_some() => {
                 let t = self.type_named(recv).unwrap();
-                let TypeExpr::Named(n, targs) = self.base(&t) else {
+                // (a named union is called by its name: its `impl`s are its own)
+                let named = match &t {
+                    TypeExpr::Named(n, a) if self.env.types.get(n).is_some_and(crate::types::union_alias) => Some(TypeExpr::Named(*n, a.clone())),
+                    _ => None,
+                };
+                let TypeExpr::Named(n, targs) = named.unwrap_or_else(|| self.base(&t)) else {
                     return Err(format!("`{}.{m}(..)`: `{}` has no methods of its own to call", crate::printer::expr(recv, 0), crate::printer::ty(&t)));
                 };
                 // (a generic type, `Pair[Int]`: called on `Pair`, its arguments are

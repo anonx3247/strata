@@ -2298,7 +2298,12 @@ impl<'a> Checker<'a> {
         }
         for (site, tr, ty) in std::mem::take(&mut self.static_types) {
             let t = self.resolve_named(&ty);
-            if let Some(r) = TypeRef::of(&t) {
+            // a named union is passed by its name
+            let r = match self.union_name(&t) {
+                Some(n) => Some(TypeRef::Con(n.to_string(), vec![])),
+                None => TypeRef::of(&t),
+            };
+            if let Some(r) = r {
                 self.targets.push((site, Target::Static(tr, r)));
             }
         }
@@ -2379,6 +2384,8 @@ impl<'a> Checker<'a> {
                 "Bool" => Ty::Bool,
                 "String" => Ty::Str,
                 _ => match self.env.types.get(&x) {
+                    // a named union: the union it names (its impls are found by its set)
+                    Some(td) if union_alias(td) => self.lower(&TypeExpr::Named(x, vec![]), &HashMap::default()),
                     Some(td) => {
                         let args = td.params.iter().map(|_| self.fresh()).collect();
                         Ty::Con(x, args)

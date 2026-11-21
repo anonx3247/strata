@@ -545,12 +545,12 @@ fn derived_for_sums_compile() {
     }
     let d = tmp("derived-sums");
     // `comptime for`, a match comprehension, `v.make()`
-    let (out, code) = case(&d, "sums", r#"use std.typing.{Choice, Sum}
+    let (out, code) = case(&d, "sums", r#"use std.typing.{Choice, Union}
 
 /// A choice and its name.
 derivable(Choice) trait Named {
   derived fn from_name(name: String) -> Option[Self] {
-    comptime for v in Self.variants {
+    comptime for v in Self.members {
       if to_lower(v.name ?? "") == name {
         return Some(v.make())
       }
@@ -559,17 +559,17 @@ derivable(Choice) trait Named {
   }
   derived fn name(self) -> String {
     match self {
-      v => to_lower(v.name ?? "") for v in Self.variants
+      v => to_lower(v.name ?? "") for v in Self.members
     }
   }
 }
 
 /// How many fields each variant has.
-derivable(Sum) trait Width
-  requires len(Self.variants) > 0 {
+derivable(Union) trait Width
+  requires len(Self.members) > 0 {
   derived fn width(self) -> Int {
     match self {
-      v => len(v.fields) + len(v.elements) for v in Self.variants
+      v => len(v.fields) + len(v.elements) for v in Self.members
     }
   }
 }

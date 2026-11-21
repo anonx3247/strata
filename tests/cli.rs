@@ -4020,6 +4020,53 @@ fn k(w: B | D) -> Int = 4
 fn main() { }
 "##;
 
+/// JSON for named unions: members declared in them or defined elsewhere,
+/// tagged by `"type"` (a tuple-shaped one's element as `"value"`), and
+/// members told apart by their JSON (`Int | String`).
+#[test]
+fn json_for_named_unions() {
+    let d = tmp("json-unions");
+    let (ok, out) = strata(&["--file", "j.strata", "edit"], &d, Some(JSON_UNIONS));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "j.strata"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out, "{\"type\":\"Doc\",\"shapes\":[{\"type\":\"Circle\",\"r\":1.0},{\"type\":\"Square\",\"side\":2.0},{\"type\":\"Moved\",\"value\":3},{\"type\":\"Dot\"}],\"ids\":[1,\"a\"]}\ntrue\nErr(\"shapes[1]: `Nope` is not one of Circle, Square, Moved, Dot\")\n");
+}
+
+const JSON_UNIONS: &str = r##"use std.json.{Json, parse, stringify}
+
+type Circle = { r: Float }
+
+derive Json for Circle
+
+type Shape = Circle | Square { side: Float } | Moved(Int) | Dot
+
+derive Json for Shape
+
+type Id = Int | String
+
+derive Json for Id
+
+type Doc = { shapes: List[Shape], ids: List[Id] }
+
+derive Json for Doc
+
+fn main() {
+  d := Doc { shapes: [Circle { r: 1.0 }, Square { side: 2.0 }, Moved(3), Dot], ids: [1, "a"] }
+  match d.encode() {
+    Ok(j) => {
+      print(stringify(j))
+      print(Doc.decode(j) == Ok(d))
+    },
+    Err(e) => print(e),
+  }
+  match parse("{\"shapes\": [\"Dot\", {\"type\": \"Nope\"}], \"ids\": []}") {
+    Ok(j) => print(Doc.decode(j)),
+    Err(e) => print(e),
+  }
+}
+"##;
+
 /// The shapes `std.typing` describes, through `Json`: a recursive type, a
 /// generic one, a union of records, a tuple-shaped variant, `Option` of a
 /// refined alias, a `distinct` type; and a union's members keep their docs.
@@ -4039,7 +4086,7 @@ fn derives_see_every_kind_of_type() {
 
 const KINDS_PROGRAM: &str = r##"use std.json.Json
 
-use std.typing.{Record, Sum}
+use std.typing.{Record, Union}
 
 /// A circle, by its radius.
 type Circle = { r: Float }
@@ -4070,6 +4117,8 @@ type All = { tree: Tree, pair: Pair[Int], events: List[Event], who: UserId }
 derive Json for Circle
 
 derive Json for Square
+
+derive Json for Shape
 
 derive Json for Tree
 
