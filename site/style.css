@@ -298,3 +298,8 @@ footer { text-align: center; color: var(--faint); font-size: 13px; padding: 60px
 .vs .side { display: flex; flex-direction: column; }
 .vs .side .pane { height: auto; flex: 1; }
 #diff-note { margin-top: 22px; }
+.hl-body { margin: 12px 0 0; font: 13px/1.6 var(--mono); white-space: pre; overflow: auto; color: #cfcec8; }
+.hl-body .fold { color: var(--faint); font-style: italic; }
+.hl-body .mark { background: #8ea2ff1c; }
+.hl-body .ins { background: #5fd07a2e; color: #c9f7d4; border-radius: 4px; padding: 0 2px; }
+.hl-body .del { background: #ff6b6b24; color: #ffc2c2; text-decoration: line-through; border-radius: 4px; }

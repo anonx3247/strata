@@ -80,22 +80,6 @@ function emit(name, value) {
   v.stop();
 }
 
-// ───────────────────── small examples to explore in the viewer ─────────────────────
-{
-  const explore = {};
-  for (const [name, src] of [['bank', join(EX, 'bank.strata')], ['traits', join(EX, 'traits.strata')], ['wc', join(EX, 'wc')]]) {
-    let dir;
-    if (src.endsWith('.strata')) dir = pkg(name, [src]);
-    else { dir = join(WORK, name); cpSync(src, dir, { recursive: true }); }
-    run(dir, ['verify']);
-    const v = await viewer(dir, `examples/${name}`);
-    const { state } = await v.snap();
-    explore[name] = { state, changes: { all: { error: 'no history recorded for this example' } } };
-    v.stop();
-  }
-  emit('explore', explore);
-}
-
 // ─────────────── orders: levels of detail, holes, a trace, the agent session ───────────────
 /** What `git diff` would show for the module, were it a text file. */
 function lineDiff(a, b) {
@@ -112,7 +96,7 @@ const texts = []; // [before, after] of each step, as text
   const dir = pkg('shop', [join(EX, 'orders.strata')]);
   const v = await viewer(dir);
   const levels = {};
-  for (const l of [0, 1, 2, 3]) levels[l] = run(dir, ['view', 'slice:Order', '--level', String(l)]).out;
+  for (const l of [0, 1, 3]) levels[l] = run(dir, ['view', 'slice:Order', '--level', String(l)]).out;
   const trace = run(dir, ['run', 'total', '[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]]', '--trace']);
   const badInput = run(dir, ['run', 'total', '[[]]']);
 
@@ -227,6 +211,16 @@ fn discount(amount: Cents) -> Cents {
   const couponsDiff = lineDiff(texts[at('A breaking change becomes holes')][0], texts[at('It fills them, and closes the change')][1]);
   emit('orders', { couponsDiff, levels, trace: clean(trace.out), badInput: clean(badInput.out), holes, merge, source: levels[3] });
   emit('session', session);
+  // the docs' tour of the viewer: a few moments of the same session
+  const pickSnap = (t, keep = []) => { const x = session.find(y => y.title === t); return { state: x.state, changes: Object.fromEntries(Object.entries(x.changes).filter(([k]) => k === 'all' || keep.includes(k))) }; };
+  const last = session.at(-1), stepId = t => String(last.changes.all.steps.find(s => s.title === t).id);
+  emit('tour', {
+    verified: pickSnap('A codebase, checked and verified'),
+    refuted: pickSnap('Verification finds the bug'),
+    holes: pickSnap('A breaking change becomes holes'),
+    final: pickSnap(last.title, [stepId('rename Shipped → Sent'), stepId('coupons')]),
+    steps: { rename: +stepId('rename Shipped → Sent'), coupons: +stepId('coupons') },
+  });
 }
 
 // ─────────────── contracts: tighten one, then change a signature ───────────────
@@ -405,6 +399,12 @@ window.addEventListener('message', e => {
   if (m.sel !== undefined) { S.sel = m.sel; S.scope = m.sel ? 'slice' : 'all'; if (m.sel) S.open[m.sel] = true; }
   poll().then(() => { render(); $('#main').scrollTop = 0; if (S.level === 'changes') loadChanges(true); });
 });
+// the page around the viewer steps with ← →: pass them up instead of using them here
+addEventListener('keydown', e => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' || e.metaKey || e.ctrlKey || e.altKey || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  parent.postMessage({ type: 'strata-key', key: e.key }, '*');
+}, true);
 parent.postMessage({ type: 'strata-ready' }, '*');
 </script>
 `;

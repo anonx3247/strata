@@ -160,7 +160,7 @@
 <section id="levels" data-nav="Levels of detail">
   <div class="kicker">Definitions, not files</div>
   <h2 class="words">Text is just a view. Ask for the detail you need.</h2>
-  <p class="lede reveal">Each definition is a syntax tree with a content hash. An agent asks for the slice it is working on, <code>slice:Order</code> here: <code>Order</code>, what it uses and what uses it, at the level of detail the task needs. What it sends back with <code>strata edit</code> is checked against everything else.</p>
+  <p class="lede reveal">Each definition is a syntax tree with a content hash. An agent asks for the slice it is working on, <code>slice:Order</code> here: <code>Order</code>, what it uses and what uses it, at the detail the task needs: a map to find its way, the interfaces to use code without reading it, the source to change it. What it sends back with <code>strata edit</code> is checked against everything else.</p>
   <div class="levels reveal">
     <div class="pick" id="lv-pick"></div>
     <div class="pane"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title" id="lv-title"></span><span class="count ok" id="lv-count"></span></div><div class="body" id="lv-body"></div></div>
@@ -168,16 +168,6 @@
 </section>
 
 <hr class="strata">
-
-<!-- ═════════════════════════ explore ═════════════════════════ -->
-<section id="explore" data-nav="Explore">
-  <div class="kicker">Explore</div>
-  <h2 class="words">Small programs, in the real viewer.</h2>
-  <p class="lede reveal">Pick an example. Click a name to follow it, hover one for an arrow to where it is, switch to the type map, or press <code>⌘P</code> inside the viewer.</p>
-  <div class="tabs" id="ex-tabs"></div>
-  <p class="caption" id="ex-say" style="max-width:80ch"></p>
-  <div class="frame" id="explore-viewer" data-w="1500" data-h="860" style="margin-top:18px"></div>
-</section>
 
 <!-- ═════════════════════════ start ═════════════════════════ -->
 <section id="start" data-nav="Try it">
@@ -196,7 +186,6 @@
 <script src="data/orders.js"></script>
 <script src="data/contract.js"></script>
 <script src="data/math.js"></script>
-<script src="data/explore.js"></script>
 <script src="data/session.js"></script>
 <script src="common.js"></script>
 <script src="app.js"></script>

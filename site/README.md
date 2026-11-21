@@ -12,4 +12,4 @@ Opening `site/index.html` directly from disk works too.
 
 - `build.mjs` runs `strata` on scratch packages (from `examples/`), records each command's output and the viewer's `/api/state` and `/api/changes` after each step, and writes `data/*.js`. Nothing shown on the page is written by hand.
 - `viewer.html` is generated from `src/ui/index.html`: the same viewer, forced to its dark theme, answering its API calls from the snapshots the page posts to it. Re-run the build after changing the viewer.
-- `index.html`, `style.css` and `app.js` are the page; `docs.html` renders `docs/learn-strata.md`, `verification.md` and `tools.md` (recorded into `data/docs.js` by the build), with `common.js`'s Strata highlighting.
+- `index.html`, `style.css` and `app.js` are the page; `docs.html` renders `docs/learn-strata.md`, `verification.md` and `tools.md` (recorded into `data/docs.js` by the build), with `common.js`'s Strata highlighting; in Tools, the viewer's screenshot is replaced by a tour of the real viewer (`data/tour.js`). ← → step through whichever stepper is on screen, also from inside an embedded viewer, which passes them up.
