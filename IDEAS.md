@@ -614,11 +614,12 @@ Relations (decided): a definition has **dependencies** (what it mentions) and **
      - text → tokens → tree → graph → execution (animated);
      - Strata stores the graph;
      - structural diffs (a long diff scrolling fast, then one rename);
-     - merges;
      - changes following the graph (a stricter precondition, then holes);
+     - several agents at once: every change is checked, and merges pair definitions, so they don't conflict;
      - views of just what an agent needs;
      - editing through text (parsed into a tree, checked, rendered back).
   5. The rest briefly: derive, `comptime`, comprehensions.
+  - Each section opens with its title, which then moves out of the way.
   - No history of the page, nothing about unmerged branches, and wording without the usual AI idioms (claudisms.ai).
 - **Everything shown is recorded** by `site/build.mjs` from the real CLI, the new-feature slides included (small packages stored with `strata edit`, so a snippet that stops checking breaks the build).
 

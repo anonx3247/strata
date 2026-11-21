@@ -12,6 +12,7 @@
 </head>
 <body class="deck-page">
 <div class="bands"><svg id="bands" preserveAspectRatio="none" viewBox="0 0 1600 1000"></svg></div>
+<div id="sect"><span></span></div>
 <div id="wipe"><i></i><i></i><i></i><i></i></div>
 <div id="progress"></div>
 <a id="docs-link" href="https://github.com/anonx3247/strata">GitHub →</a>
@@ -29,7 +30,7 @@
 </section>
 
 <!-- ═════════════════════════ how an agent works today ═════════════════════════ -->
-<section class="slide" id="today" data-nav="How agents work today" data-steps="5">
+<section class="slide" id="today" data-section="The problem" data-nav="How agents work today" data-steps="5">
   <div class="split today">
     <div class="col">
       <div class="kicker fx">The problem</div>
@@ -42,7 +43,7 @@
 </section>
 
 <!-- ═════════════════════════ three ideas ═════════════════════════ -->
-<section class="slide" id="ideas" data-nav="Three ideas" data-steps="4">
+<section class="slide" id="ideas" data-section="What Strata does about it" data-nav="Three ideas" data-steps="4">
   <div class="kicker fx">What Strata does about it</div>
   <h2 class="fx small">Three ideas.</h2>
   <div class="ideas" id="ideas-cards"></div>
@@ -50,8 +51,8 @@
 </section>
 
 <!-- ═════════════════════════ types as contracts, proving over testing ═════════════════════════ -->
-<section class="slide feature" id="contracts" data-nav="Types as contracts" data-steps="3"></section>
-<section class="slide feature" id="shares" data-nav="Tests miss things" data-steps="3"></section>
+<section class="slide feature" id="contracts" data-section="Types as contracts" data-nav="Types as contracts" data-steps="3"></section>
+<section class="slide feature" id="shares" data-section="Proving over testing" data-nav="Tests miss things" data-steps="3"></section>
 <section class="slide feature" id="points" data-nav="One line, not four tests" data-steps="2"></section>
 
 <section class="slide" id="verdicts" data-nav="Verdicts" data-steps="2">
@@ -67,12 +68,12 @@
 </section>
 
 <section class="slide feature" id="mocks" data-nav="Fakes for tests" data-steps="3"></section>
-<section class="slide feature" id="capabilities" data-nav="Side effects" data-steps="3"></section>
+<section class="slide feature" id="capabilities" data-section="Side effects" data-nav="Side effects" data-steps="3"></section>
 
-<section class="slide" id="build" data-nav="One piece at a time" data-steps="4">
+<section class="slide" id="build" data-section="A piece at a time" data-nav="One piece at a time" data-steps="4">
   <div class="split wide-right">
     <div class="col">
-      <div class="kicker fx">Types as contracts</div>
+      <div class="kicker fx">A piece at a time</div>
       <h2 class="fx small" id="build-h"></h2>
       <div class="say" id="build-say"></div>
       <div class="pane term fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title" id="build-term-title"></span></div><div class="body wrap" id="build-term"></div></div>
@@ -85,7 +86,7 @@
 </section>
 
 <!-- ═════════════════════════ the code is the AST ═════════════════════════ -->
-<section class="slide" id="ast" data-nav="From text to a graph" data-steps="5">
+<section class="slide" id="ast" data-section="The code is the AST" data-nav="From text to a graph" data-steps="5">
   <div class="split wide-right">
     <div class="col">
       <div class="kicker fx">The code is the AST</div>
@@ -123,17 +124,7 @@
   </div>
 </section>
 
-<section class="slide" id="merge" data-nav="Two agents" data-steps="3">
-  <div class="kicker fx">Structural changes</div>
-  <h2 class="fx small">Two agents change the same function. Nothing conflicts.</h2>
-  <p class="lede" id="merge-say"></p>
-  <div class="lanes fx" id="lanes"></div>
-  <div class="three">
-    <div class="pane" data-k="0"><div class="bar"><span class="title">agent A, on main</span></div><div class="body wrap" id="m-a"></div></div>
-    <div class="pane" data-k="1"><div class="bar"><span class="title">agent B, on agent-b</span></div><div class="body wrap" id="m-b"></div></div>
-    <div class="pane" data-k="2"><div class="bar"><span class="title">agent B: strata sync main</span></div><div class="body wrap" id="m-sync"></div></div>
-  </div>
-</section>
+
 
 <section class="slide" id="travel" data-nav="Changes follow the graph" data-steps="9">
   <div class="split wide-right">
@@ -147,6 +138,18 @@
       <div class="pane code-card" id="travel-code"><div class="bar"><span class="title">piped into strata edit</span></div><div class="body"></div></div>
       <div class="stamp" id="travel-stamp"></div>
     </div>
+  </div>
+</section>
+
+<section class="slide" id="merge" data-nav="Agents in parallel" data-steps="3">
+  <div class="kicker fx">The code is the AST</div>
+  <h2 class="fx small">Several agents, at the same time.</h2>
+  <p class="lede" id="merge-say"></p>
+  <div class="lanes fx" id="lanes"></div>
+  <div class="three">
+    <div class="pane" data-k="0"><div class="bar"><span class="title">agent A, on main</span></div><div class="body wrap" id="m-a"></div></div>
+    <div class="pane" data-k="1"><div class="bar"><span class="title">agent B, on agent-b</span></div><div class="body wrap" id="m-b"></div></div>
+    <div class="pane" data-k="2"><div class="bar"><span class="title">agent B: strata sync main</span></div><div class="body wrap" id="m-sync"></div></div>
   </div>
 </section>
 
@@ -175,7 +178,7 @@
 </section>
 
 <!-- ═════════════════════════ the rest ═════════════════════════ -->
-<section class="slide feature" id="more" data-nav="More of the language" data-steps="4"></section>
+<section class="slide feature" id="more" data-section="More of the language" data-nav="More of the language" data-steps="4"></section>
 
 <section class="slide" id="engine" data-nav="Under the hood" data-steps="2">
   <div class="kicker fx">Under the hood</div>

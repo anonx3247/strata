@@ -352,3 +352,15 @@ kbd { font: 600 12px var(--mono); border: 1px solid var(--line2); border-bottom-
 .rendered { padding: 50px 56px; font: 18px/1.8 var(--mono); white-space: pre; }
 .astage.shake { animation: shake .5s; }
 .split .col > h2 + .say { margin-top: 12px; }
+
+/* a new section: its title, then out of the way */
+#sect { position: fixed; inset: 0; z-index: 40; pointer-events: none; display: flex; align-items: center; justify-content: center; }
+#sect span { font: 600 clamp(48px, 7vw, 110px)/1 var(--display); letter-spacing: -.03em; color: var(--text); opacity: 0; text-shadow: 0 0 80px #8ea2ff55; }
+#sect.on span { animation: sect 1.7s cubic-bezier(.7,0,.2,1) forwards; }
+@keyframes sect {
+  0% { opacity: 0; transform: translateY(30px) scale(.9); filter: blur(12px); }
+  25% { opacity: 1; transform: none; filter: none; }
+  60% { opacity: 1; transform: none; filter: none; }
+  100% { opacity: 0; transform: translate(-30vw, -44vh) scale(.18); filter: blur(2px); }
+}
+.slide.intro .fx { --d: 1.35s; }

@@ -242,7 +242,16 @@ function go(i, k = 0, dir = 1) {
   slides.forEach((s, j) => { s.classList.toggle('now', j === i); s.classList.toggle('past', j < i); });
   cur = i; sub = k;
   const my = ++token, alive = () => my === token;
-  try { B[slides[i].id]?.(k, { dir, fresh, fast: dir < 0, alive }); } catch (e) { console.error(e); }
+  // the first slide of a section: its title first, then out of the way
+  const section = fresh && dir > 0 && k === 0 ? slides[i].dataset.section : null;
+  slides[i].classList.toggle('intro', !!section);
+  const run = () => { try { B[slides[i].id]?.(k, { dir, fresh, fast: dir < 0, alive }); } catch (e) { console.error(e); } };
+  const sect = $('#sect');
+  sect.className = '';
+  if (section) {
+    $('span', sect).textContent = section; void sect.offsetWidth; sect.className = 'on';
+    setTimeout(() => { if (alive()) run(); }, 1500);
+  } else run();
   hud();
   history.replaceState(null, '', `#${slides[i].id}${k ? '/' + (k + 1) : ''}`);
   bandsTo(i);
@@ -585,10 +594,10 @@ feature('mocks', {
   ],
 });
 feature('capabilities', {
-  kicker: 'Side effects', title: 'What is a capability?',
+  kicker: 'Side effects', title: 'Capabilities.',
   steps: [
     { file: 'examples/wc', code: F.capabilities.main + '\n\n' + F.capabilities.wc, hot: /Console|Disk|Files/,
-      say: 'A capability is what lets code reach the outside world: the terminal, the disk, the network. Only the runtime creates them, and only for <code>main</code>, which passes them on as traits like <code>Console</code> and <code>Files</code>. So the signatures show which code can have side effects.' },
+      say: 'Code reaches the outside world, the terminal, the disk or the network, only through capabilities. Only the runtime creates one, and only for <code>main</code>, which passes them on as traits like <code>Console</code> and <code>Files</code>. So the signatures show which code can have side effects.' },
     { title: 'Side effects stay at the edges.', file: 'examples/wc', code: F.capabilities.main + '\n\n' + F.capabilities.wc, hot: /^fn main|^fn wc/, where: '~/wc', outs: [F.capabilities.verify_out],
       say: 'This is what keeps the rest provable. The verifier can\'t reason about a disk, so it assumes the code that holds one, <code>main</code> here, and proves the rest: <code>wc</code> is checked against what <code>Console</code> and <code>Files</code> promise.' },
     { title: 'C code, the same way.', file: 'examples/fuzzy · module text', code: F.native.externs, hot: /^extern c/, where: '~/fuzzy', outs: [F.native.fuzzy_verify],
@@ -792,7 +801,7 @@ function drawTree(el, roots, fast) {
     $('#diffs').classList.toggle('big', k === 0);
     if (k === 0) {
       $('#diff-h').textContent = 'Here is a diff. What happened?'; flip($('#diff-h'));
-      say($('#diff-say'), `A change to <code>examples/tasks</code>, as <code>git diff</code> shows it: ${bigLines} lines over four modules. To review it, you have to read all of them.`, fast);
+      say($('#diff-say'), `A change to <code>examples/tasks</code>, as <code>git diff</code> shows it: ${bigLines} lines of diff over four modules, ${big} of them changed. To review it, you have to read all of them.`, fast);
       const body = $('#big-body');
       body.scrollTop = 0;
       count($('#big-count'), big, 'line', alive, 1600).then(() => alive() && ($('#big-count').textContent = `${big} lines changed`));
@@ -833,9 +842,9 @@ function drawTree(el, roots, fast) {
     <g class="commit anim" data-k="2"><circle cx="980" cy="50" r="12" stroke="#5fd07a" style="fill:#5fd07a33"/><text x="935" y="28" style="fill:#5fd07a">✓ merged, checked</text></g>
   </svg>`;
   const SAY = [
-    'On <code>main</code>, agent A renames <code>line_total</code> to <code>line_cost</code>.',
-    'On a branch, agent B rewrites the body of <code>line_total</code>. As text, the two changes overlap.',
-    'Strata\'s merge driver pairs definitions, applies A\'s rename to B\'s code, and checks the result before committing it.',
+    'Every change is checked before it is stored, so no agent can leave the codebase broken for the others. Several agents can work at the same time, each on its own branch and its own task. Here, agent A renames <code>line_total</code> on <code>main</code>.',
+    'Meanwhile agent B rewrites the body of <code>line_total</code> on its branch. As text, the two changes touch the same lines, which would be a merge conflict.',
+    'Strata merges definitions, not lines. It applies A\'s rename to B\'s code and checks the result before committing it. Agents working on different definitions never conflict, even in the same file; here they didn\'t even conflict on the same function.',
   ];
   B.merge = async (k, { fast, alive }) => {
     say($('#merge-say'), SAY[k], fast);
@@ -959,7 +968,7 @@ feature('more', {
     { file: 'examples/hello', code: F.derive.options, hot: /^derive/, where: '~/hello', outs: [F.derive.help],
       say: '<code>derive CommandLine for Options</code> generates a command-line parser from the type: its fields, doc comments, defaults and refinements. Derives are written in Strata, run by the compiler, and produce ordinary <code>impl</code>s.' },
     { file: 'signup', code: F.derive.json, hot: /^derive|where/, where: '~/signup', outs: [F.derive.json_run],
-      say: '<code>derive Json</code> works the same way. Reading JSON checks every refinement, and an error says which field broke which condition.' },
+      say: '<code>derive Json</code> works the same way: a signup is written to JSON and read back. Reading checks every refinement, so a 9-year-old or an email without an <code>@</code> is refused, and the error names the field and the condition it broke.' },
     { title: 'Code that runs while compiling.', file: 'comptime', code: F.native.comptime, hot: /comptime/, where: '~/comptime', outs: [F.native.comptime_run],
       say: 'Any code can run while compiling. <code>comptime e</code> is evaluated by the compiler, and the program keeps only the result.' },
     { title: 'And the small things.', file: 'lines', code: V.sugar.src, hot: /for l in|f"/, where: '~/lines', outs: [V.sugar.run],

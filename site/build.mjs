@@ -415,7 +415,7 @@ test "saving then loading" {
   {
     const dir = ex('hello');
     const src = run(dir, ['render']).out;
-    const json = file('json', `use std.json.{Json, parse}
+    const json = file('json', `use std.json.{Json, parse, stringify}
 
 type Signup = {
   email: String where contains(it, "@"),
@@ -425,25 +425,37 @@ type Signup = {
 
 derive Json for Signup
 
-fn check(body: String) -> String {
-  json := parse(body) except e {
+/// Read a signup from JSON text: parsed, then checked against the type.
+fn read(text: String) -> String {
+  json := parse(text) except e {
     return f"not JSON: {e}"
   }
   match Signup.decode(json) {
-    Ok(s) => f"welcome, {s.email} ({s.age})",
+    Ok(s) => f"read: {s}",
     Err(e) => f"refused: {e}",
   }
 }
 
+/// Write a signup as JSON text.
+fn write(s: Signup) -> String {
+  match s.encode() {
+    Ok(json) => stringify(json),
+    Err(e) => f"can't write: {e}",
+  }
+}
+
 fn main() {
-  print(check("{\\"email\\": \\"ada@example.com\\", \\"age\\": 36}"))
-  print(check("{\\"email\\": \\"ada@example.com\\", \\"age\\": 9}"))
+  text := write(Signup { email: "ada@example.com", age: 36, nickname: Some("ada") })
+  print(f"written: {text}")
+  print(read(text))
+  print(read("{\\"email\\": \\"bob@example.com\\", \\"age\\": 9}"))
+  print(read("{\\"email\\": \\"bob\\", \\"age\\": 40}"))
 }
 `);
     F.derive = {
       options: defs(src, ['type Options', 'derive CommandLine']), main: defs(src, ['fn main(']),
       help: out(dir, ['run', '--', '--help']), run_out: out(dir, ['run', '--', 'Ada', '--loud', '--times', '2']), bad: out(dir, ['run', '--', '--times', '11']),
-      json: defs(json.src, ['type Signup', 'derive Json']), json_run: unfile(json.at('run')),
+      json: json.src.replace(/^use [^\n]*\n\n/, ''), json_run: unfile(json.at('run')),
     };
   }
   // comptime, and C called from Strata
