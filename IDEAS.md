@@ -321,7 +321,7 @@ pub derivable(t: Record) trait CommandLine
   requires all(t.fields, f -> is_option_type(f.type)) {
 
   derived fn from_args(args: List[String]) -> Result[Self, CliError] {
-    let given = parse(comptime t.fields.map(spec), args)!
+    given := parse(comptime t.fields.map(spec), args)!
     t.try_make(f -> read(f, given))
   }
 
