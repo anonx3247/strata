@@ -87,6 +87,29 @@ fn settings(p: &mut Program) {
 
 type Res<X> = Result<X, String>;
 
+/// Where compile-time values are kept between runs: they are pure and
+/// deterministic, so a value is the same wherever it was computed (shared by
+/// every program, as Go's build cache; `STRATA_CACHE` puts it elsewhere).
+fn cache_dir() -> std::path::PathBuf {
+    match std::env::var_os("STRATA_CACHE") {
+        Some(d) => std::path::PathBuf::from(d).join("comptime"),
+        None => std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache/strata/comptime"),
+    }
+}
+
+/// The key of compile-time function `name` of `p`: its code and everything
+/// it reaches (`closure_hash`), and this strata (a new one may compile it
+/// differently).
+fn cache_key(p: &Program, name: &str) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let exe = std::env::current_exe().ok()?;
+    let meta = std::fs::metadata(&exe).ok()?;
+    let stamp = format!("{:?}{}", meta.modified().ok()?, meta.len());
+    let closure = crate::store::closure_hash(p, name);
+    let digest = Sha256::digest(format!("{stamp}\n{closure}").as_bytes());
+    Some(digest.iter().map(|b| format!("{b:02x}")).collect())
+}
+
 struct Expander<'a> {
     env: &'a Env,
     prog: &'a Program,
@@ -427,6 +450,11 @@ impl<'a> Expander<'a> {
         }
         p.decls.extend(self.copies.iter().map(|c| Decl { comments: vec![], doc: vec![], kind: DeclKind::Fn(c.clone()), module: Symbol::new(""), public: false }));
         p.decls.push(Decl { comments: vec![], doc: vec![], kind: DeclKind::Fn(f), module: Symbol::new(""), public: false });
+        // pure and deterministic: its value depends only on this function and what it reaches
+        let key = cache_key(&p, name.as_str());
+        if let Some(v) = key.as_ref().and_then(|k| self.cached(k)) {
+            return Ok(v);
+        }
         let rep = crate::types::check_report_resolved(&p);
         if let Some(err) = rep.errors.iter().find(|d| d.decl == name.as_str()) {
             return Err(format!("`comptime {}`: {}", shown(), err.msg));
@@ -453,11 +481,23 @@ impl<'a> Expander<'a> {
         let (ir, roots, shapes) = crate::llvm::compile_comptime(&p, &[name.to_string()]).map_err(|m| format!("`comptime {}` can't be compiled: {m}", shown()))?;
         let mut vs = crate::llvm::jit::comptime(&ir, &roots, &shapes, BUDGET as i64)?;
         match vs.pop() {
-            Some(Ok(v)) => Ok(v),
+            Some(Ok(v)) => {
+                if let (Some(k), Ok(code)) = (&key, self.literal(&v)) {
+                    let _ = std::fs::create_dir_all(cache_dir()).and_then(|_| std::fs::write(cache_dir().join(k), crate::printer::expr(&code, 0)));
+                }
+                Ok(v)
+            }
             Some(Err(f)) if f.message == "too many steps" => Err(format!("`comptime {}` ran for more than {BUDGET} steps: compile-time code must finish", shown())),
             Some(Err(f)) => Err(format!("`comptime {}` failed: {}", shown(), f.message)),
             None => Err(format!("`comptime {}` gave nothing", shown())),
         }
+    }
+
+    /// A compile-time value computed before (`cache_key`): its code, read as data.
+    fn cached(&self, key: &str) -> Option<Value> {
+        let text = std::fs::read_to_string(cache_dir().join(key)).ok()?;
+        let e = crate::parser::parse_expr(&text).ok()?;
+        self.data(&e)
     }
 
     /// The value of `e` if it is data: literals, constructors of them, known
