@@ -289,3 +289,111 @@ fn random_patterns_match_as_regex_matches() {
     same_matches_as_regex("match-random", cases.clone(), false);
     same_matches_as_regex("dfa-random", cases, true);
 }
+
+// ---------------- relations ----------------
+
+/// How two patterns' languages relate, decided on regex-automata's DFAs
+/// (over UTF-8 bytes): for each of `a <= b`, `b <= a`, disjoint, `Some`
+/// when decided. The reference for `std.regex.relations`.
+fn reference_relations(a: &str, b: &str) -> [Option<bool>; 3] {
+    use regex_automata::dfa::{dense, Automaton, StartKind};
+    use regex_automata::util::primitives::StateID;
+    use regex_automata::{Anchored, Input, MatchKind};
+    let dfa = |re: &str| {
+        regex::Regex::new(re).ok()?;
+        let config = dense::Config::new().match_kind(MatchKind::All).start_kind(StartKind::Anchored).dfa_size_limit(Some(16 << 20)).determinize_size_limit(Some(16 << 20));
+        dense::Builder::new().configure(config).build(&format!("^(?:{re})$")).ok()
+    };
+    let (Some(da), Some(db)) = (dfa(a), dfa(b)) else { return [None; 3] };
+    let start = |d: &dense::DFA<Vec<u32>>| d.start_state_forward(&Input::new("").anchored(Anchored::Yes)).ok();
+    let (Some(sa), Some(sb)) = (start(&da), start(&db)) else { return [None; 3] };
+    // is there a string with `want(in a, in b)`? `None` if the search is too large
+    let exists = |want: &dyn Fn(bool, bool) -> bool| -> Option<bool> {
+        let mut seen: std::collections::HashSet<(StateID, StateID)> = [(sa, sb)].into_iter().collect();
+        let mut todo = vec![(sa, sb)];
+        while let Some((x, y)) = todo.pop() {
+            let (ex, ey) = (da.next_eoi_state(x), db.next_eoi_state(y));
+            if da.is_quit_state(ex) || db.is_quit_state(ey) {
+                return None;
+            }
+            if want(da.is_match_state(ex), db.is_match_state(ey)) {
+                return Some(true);
+            }
+            for byte in 0..=255u8 {
+                let (nx, ny) = (da.next_state(x, byte), db.next_state(y, byte));
+                if da.is_quit_state(nx) || db.is_quit_state(ny) {
+                    return None;
+                }
+                if (da.is_dead_state(nx) && db.is_dead_state(ny)) || !seen.insert((nx, ny)) {
+                    continue;
+                }
+                if seen.len() > 50_000 {
+                    return None;
+                }
+                todo.push((nx, ny));
+            }
+        }
+        Some(false)
+    };
+    [exists(&|x, y| x && !y), exists(&|x, y| y && !x), exists(&|x, y| x && y)].map(|w| w.map(|w| !w))
+}
+
+/// `std.regex.relations` against regex-automata on each pair: never a
+/// relation the reference disproves, and the reference's answer whenever
+/// both patterns have a DFA in std.regex (`dfa` says whether they do).
+fn same_relations_as_regex(name: &str, pairs: Vec<(String, String)>) {
+    let pats: Vec<String> = pairs.iter().flat_map(|(a, b)| [a.clone(), b.clone()]).collect();
+    let list = pairs.iter().map(|(a, b)| format!("({}, {})", literal(a), literal(b))).collect::<Vec<_>>().join(",\n    ");
+    let kinds = pats.iter().map(|p| literal(p)).collect::<Vec<_>>().join(",\n    ");
+    let got = run(
+        name,
+        &format!(
+            "use std.regex.{{relations, matcher, Deterministic}}\n\nfn main() {{\n  for (a, b) in [\n    {list},\n  ] {{\n    print(f\"{{relations(a, b)}}\")\n  }}\n  for p in [\n    {kinds},\n  ] {{\n    print(match matcher(p) {{\n      Deterministic(_) => \"dfa\",\n      _ => \"none\",\n    }})\n  }}\n}}\n"
+        ),
+    );
+    assert_eq!(got.len(), pairs.len() + pats.len(), "one line per pair, then per pattern");
+    let dfa = |i: usize| got[pairs.len() + i] == "dfa";
+    let (mut wrong, mut decided) = (vec![], 0);
+    for (k, (a, b)) in pairs.iter().enumerate() {
+        let ours: Vec<bool> = got[k].trim_matches(|c| c == '(' || c == ')').split(", ").map(|x| x == "true").collect();
+        let theirs = reference_relations(a, b);
+        let both_dfa = dfa(2 * k) && dfa(2 * k + 1);
+        for (i, what) in ["a <= b", "b <= a", "disjoint"].iter().enumerate() {
+            match theirs[i] {
+                Some(false) if ours[i] => wrong.push(format!("{a:?} vs {b:?}: std.regex says {what}, regex disproves it")),
+                Some(true) if !ours[i] && both_dfa => wrong.push(format!("{a:?} vs {b:?}: std.regex leaves {what} undecided, regex proves it")),
+                Some(true) if ours[i] => decided += 1,
+                _ => {}
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{} of {} pairs differ:\n{}", wrong.len(), pairs.len(), wrong.join("\n"));
+    assert!(decided > 0, "some relation holds");
+}
+
+#[test]
+fn curated_relations_as_regex_decides_them() {
+    let pairs = [
+        ("[a-c]+", "[a-z]+"), ("[0-9]+", "[a-z]+"), ("a|b", "b|a"), ("\\d{3}", "\\d+"), ("\\d{3}", "\\d{2}"), ("\\w+", "[a-z]+"),
+        ("\\p{L}+", "[0-9]*"), ("(?i)k", "k|K|\u{212a}"), ("[^a]", "."), ("(?s).", "."), ("a*", ""), ("(a|b)*", "(a*b*)*"),
+        ("[a-z]+@[a-z]+\\.com", "\\S+@\\S+"), ("λ+", "\\p{Greek}+"), ("^a$", "a"), ("\\Aa\\z", "a"), ("(?m)^a$", "a"), ("\\bfoo\\b", "foo"),
+        ("x{2,3}", "x{3,4}"), ("(", "a"), ("\\pN", "\\d"), ("[[:alpha:]]+", "[a-zA-Z]+"), ("(?-u)\\w+", "\\w+"),
+    ];
+    same_relations_as_regex("relations-curated", pairs.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect());
+}
+
+#[test]
+fn random_relations_as_regex_decides_them() {
+    let seed = std::env::var("REGEX_SEED").ok().and_then(|n| n.parse().ok()).unwrap_or(11);
+    let n = std::env::var("REGEX_CASES").ok().and_then(|n| n.parse().ok()).unwrap_or(1500) / 3;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let mut pairs = vec![];
+    for _ in 0..n {
+        let (a, b) = (random_pattern(&mut rng), random_pattern(&mut rng));
+        // unrelated, and related on purpose: one within the other
+        pairs.push((a.clone(), b.clone()));
+        pairs.push((a.clone(), format!("{a}|{b}")));
+        pairs.push((format!("(?:{a})+"), format!("(?:{a})*")));
+    }
+    same_relations_as_regex("relations-random", pairs);
+}

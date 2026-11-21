@@ -3328,6 +3328,25 @@ mod tests {
         }
     }
 
+    /// `std.regex.relations`, as the prover calls it: `(a <= b, b <= a, disjoint)`.
+    #[test]
+    fn regex_relations_from_std() {
+        for (a, b, want) in [
+            ("[a-c]+", "[a-z]+", (true, false, false)),
+            ("[0-9]+", "[a-z]+", (false, false, true)),
+            ("a|b", "b|a", (true, true, false)),
+            ("\\d{3}", "\\d+", (true, false, false)),
+            ("\\d{3}", "\\d{2}", (false, false, true)),
+            ("\\w+", "[a-z]+", (false, true, false)),
+            ("\\p{L}+", "[0-9]*", (false, false, true)),
+            // undecided: a pattern a DFA can't match, or no regex at all
+            ("a\\bb", "ab", (false, false, false)),
+            ("(", "a", (false, false, false)),
+        ] {
+            assert_eq!(regex_relations(a, b), want, "{a} vs {b}");
+        }
+    }
+
     /// The ranges of a translated character class (a union of ranges and single characters).
     fn parsed_ranges(t: &str) -> Vec<(char, char)> {
         let lits: Vec<char> = t.split('"').skip(1).step_by(2).map(|x| parse_str(&format!("\"{x}\"")).unwrap().chars().next().unwrap()).collect();
