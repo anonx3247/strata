@@ -87,13 +87,119 @@ fn faults_and_control_flow_match_the_interpreter() {
 }
 
 #[test]
+fn records_variants_and_generics_run_as_interpreted() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("data");
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/build/data.strata");
+    let (out, code) = same_as_interpreter(&file, &d);
+    assert!(out.contains("{\"Err\":\"3 is odd\"}") && out.contains("big circle, circle, rect or dot, nothing"), "{out}");
+    assert_eq!(code, 101);
+    let cases = [
+        ("field_refinement", "type Quantity = Int where 1 <= it && it <= 99\ntype Line = { sku: String, qty: Quantity }\nfn main() -> () { let mut l = Line { sku: \"a\", qty: 5 } l.qty = 0 }", 101),
+        (
+            "tree",
+            "type Tree[T] =\n  | Leaf\n  | Node(Tree[T], T, Tree[T])\n\
+             fn insert(t: Tree[Int], x: Int) -> Tree[Int] { match t { Leaf => Node(Leaf, x, Leaf), Node(l, v, r) => if x < v { Node(insert(l, x), v, r) } else { Node(l, v, insert(r, x)) } } }\n\
+             fn size[T](t: Tree[T]) -> Int { match t { Leaf => 0, Node(l, _, r) => size(l) + 1 + size(r) } }\n\
+             fn main() -> () { let mut t: Tree[Int] = Leaf for i in range(0, 10) { t = insert(t, (i * 7) % 10) } print(size(t)) print(insert(insert(Leaf, 2), 1)) }",
+            0,
+        ),
+        ("own_methods", "type Item = { name: String, price: Int }\nimpl Item {\n  fn new(name: String) -> Item { Item { name: name, price: 0 } }\n  fn label(self) -> String { f\"{self.name}: {self.price}\" }\n}\nfn main() -> () { print(Item.new(\"cup\").label()) }", 0),
+        ("refined_argument", "fn f(o: Option[Positive]) -> Int { o ?? 0 }\nfn main() -> () { print(f(Some(3))) let x: Option[Int] = Some(-2) print(f(x)) }", 101),
+        ("main_err", "fn main() -> Result[(), String] { print(\"working\") Err(\"it broke\") }", 1),
+        (
+            "errors",
+            "type E =\n  | NotFound\n  | Bad { why: String }\n\
+             fn g(n: Int) -> Result[Int, E] { if n == 0 { Err(NotFound) } else if n < 0 { Err(Bad { why: \"neg\" }) } else { Ok(n) } }\n\
+             fn h(n: Int) -> Result[Int, E] { let v = g(n)! Ok(v * 2) }\n\
+             fn main() -> () { print(h(3)) print(h(0)) print(h(-1)) print(h(0) == Err(NotFound)) let (x, y) = (5, \"s\") print(f\"{x}{y}\") }",
+            0,
+        ),
+    ];
+    for (name, src, want) in cases {
+        let (out, code) = case(&d, name, src);
+        assert_eq!(code, want, "{name}: {out}");
+    }
+}
+
+#[test]
+fn lists_and_lambdas_run_as_interpreted() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("lists");
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/build/lists.strata");
+    let (out, code) = same_as_interpreter(&file, &d);
+    assert!(out.contains("[2,3,5,7,11,13,17,19,23,29]") && out.contains("[0]: -1 does not satisfy `Positive`"), "{out}");
+    assert_eq!(code, 101);
+    // examples/math.strata, with a `main` that prints what its test checks
+    let math = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/math.strata")).unwrap();
+    let math = math[..math.find("test \"values\"").unwrap()].to_string()
+        + "fn main() -> () {\n  print([factorial(5), gcd(12, 18), power(2, 10), digit_sum(1234), ackermann(2, 3), triangle(10), isqrt(17), collatz_steps(6)])\n  print(positive_squares([-2, 3, 0, 4]))\n  print(primes(20))\n  print(first_or_one([5, 1]))\n  print(average([]))\n}\n";
+    let (out, code) = case(&d, "math", &math);
+    assert!(out.contains("[120,6,1024,10,9,55,4,8]") && out.contains("division by zero"), "{out}");
+    assert_eq!(code, 101);
+    let (out, code) = case(&d, "range", "fn main() -> () { for i in range(0, 2000000) { print(i) } }");
+    assert!(out.contains("range too large") && code == 101, "{out}");
+}
+
+#[test]
+fn traits_run_as_interpreted() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("traits");
+    // examples/traits.strata, its tests as `main` (without the regex of `Sku`)
+    let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/traits.strata")).unwrap();
+    let mut decls = String::new();
+    let mut main = String::from("fn main() -> () {\n");
+    let mut in_test = false;
+    for line in src.lines() {
+        if line.starts_with("test ") {
+            in_test = true;
+            main += "  {\n";
+        } else if in_test && line == "}" {
+            in_test = false;
+            main += "  }\n";
+        } else if in_test {
+            if !line.contains("Sku(") {
+                main += line;
+                main += "\n";
+            }
+        } else {
+            decls += line;
+            decls += "\n";
+        }
+    }
+    main += "  print(\"all asserts hold\")\n}\n";
+    let (out, code) = case(&d, "traits_example", &(decls + &main));
+    assert!(out.contains("all asserts hold") && code == 0, "{out}");
+    let cases = [
+        ("trait_ensures", "trait Describe {\n  fn describe(self) -> String\n    ensures len(it) > 0\n}\ntype Thing = { name: String }\nimpl Describe for Thing {\n  fn describe(self) -> String { self.name }\n}\nfn main() -> () { print(Thing { name: \"a\" }.describe()) print(Thing { name: \"\" }.describe()) }", 101),
+        ("variant_impls", "trait Area {\n  fn area(self) -> Int\n    requires true\n}\ntype Shape =\n  | Square { side: Int }\n  | Circle { r: Int }\nimpl Area for Shape {\n  fn area(self) -> Int { 0 }\n}\nimpl Area for Square {\n  fn area(self) -> Int { self.side * self.side }\n}\nfn main() -> () { let shapes: List[Shape] = [Square { side: 3 }, Circle { r: 2 }] print(shapes.map(s -> s.area())) }", 0),
+        ("generic_traits", "trait Convert[T] {\n  fn convert(self) -> T\n}\ntype Celsius = { deg: Int }\nimpl Convert[String] for Celsius {\n  fn convert(self) -> String { f\"{self.deg}C\" }\n}\nimpl Convert[Int] for Int {\n  fn convert(self) -> Int { self * 2 }\n}\nfn twice[A: Convert[String]](xs: List[A]) -> List[String] { xs.map(x -> x.convert()) }\nfn main() -> () { print(Celsius { deg: 20 }.convert()) print(twice([Celsius { deg: 1 }])) print(21.convert()) }", 0),
+        ("default_methods", "trait Shown {\n  fn shown(self) -> String\n  fn twice(self) -> String { self.shown() + self.shown() }\n}\nimpl Shown for Bool { fn shown(self) -> String { if self { \"yes\" } else { \"no\" } } }\nimpl Shown for String { fn shown(self) -> String { self } }\nfn all_shown[T: Shown](xs: List[T]) -> String { join(xs.map(x -> x.twice()), \" \") }\nfn main() -> () { print(all_shown([true, false])) print(all_shown([\"a\", \"b\"])) }", 0),
+        ("method_type_params", "trait Boxed {\n  fn wrap[U](self, other: U) -> (Self, U)\n}\ntype K = { k: Int }\nimpl Boxed for K { fn wrap[U](self, other: U) -> (Self, U) { (self, other) } }\nfn main() -> () { print(K { k: 1 }.wrap(\"x\")) print(K { k: 2 }.wrap(3.5)) }", 0),
+    ];
+    for (name, src, want) in cases {
+        let (out, code) = case(&d, name, src);
+        assert_eq!(code, want, "{name}: {out}");
+    }
+}
+
+#[test]
 fn what_is_not_compiled_yet_is_named() {
     let d = tmp("unsupported");
     let f = d.join("lists.strata");
-    std::fs::write(&f, "fn total(xs: List[Int]) -> Int { sum(xs) }\nfn main() -> () { print(total([1, 2])) }\n").unwrap();
+    std::fs::write(&f, "fn main() -> () { print(dict([(1, 2)])) }\n").unwrap();
     let o = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(!o.status.success() && err.contains("can't compile `main`: a list is not compiled yet"), "{err}");
+    assert!(!o.status.success() && err.contains("can't compile `main`: the built-in `dict` on (List[(Int, Int)]) is not compiled yet"), "{err}");
 }
 
 #[test]
@@ -120,8 +226,8 @@ fn the_jit_runs_as_the_interpreter() {
     assert_eq!(jit.1, 101);
     // what doesn't compile yet is interpreted, and says why
     let f = d.join("lists.strata");
-    std::fs::write(&f, "fn main() -> () { print(len([1, 2])) }\n").unwrap();
+    std::fs::write(&f, "fn main() -> () { print(len(dict([(1, 2)]))) }\n").unwrap();
     let (out, code) = output(Command::new(strata).args(["run", "--jit"]).arg(&f));
     assert_eq!(code, 0);
-    assert!(out.contains("2\n") && out.contains("note: interpreted, not compiled: can't compile `main`: a list is not compiled yet"), "{out}");
+    assert!(out.contains("1\n") && out.contains("note: interpreted, not compiled: can't compile `main`: the built-in `dict` on (List[(Int, Int)]) is not compiled yet"), "{out}");
 }

@@ -360,13 +360,13 @@ fn list(kind: &str, names: &[String]) -> String {
 fn type_words(o: &TypeDecl, n: &TypeDecl, out: &mut Vec<String>) {
     let fields = |b: &TypeBody| -> Vec<(String, String)> {
         match b {
-            TypeBody::Record(fs) => fs.iter().map(|f| (f.name.clone(), printer::ty(&f.ty))).collect(),
+            TypeBody::Record(fs) => fs.iter().map(|f| (f.name.to_string(), printer::ty(&f.ty))).collect(),
             _ => vec![],
         }
     };
     let variants = |b: &TypeBody| -> Vec<(String, String)> {
         match b {
-            TypeBody::Sum(vs) => vs.iter().map(|v| (v.name.clone(), format!("{:?}", v.payload))).collect(),
+            TypeBody::Sum(vs) => vs.iter().map(|v| (v.name.to_string(), format!("{:?}", v.payload))).collect(),
             _ => vec![],
         }
     };
@@ -446,18 +446,18 @@ fn words(o: &Decl, n: &Decl) -> Vec<String> {
         }
         (DeclKind::Type(a), DeclKind::Type(b)) => type_words(a, b, &mut out),
         (DeclKind::Trait(a), DeclKind::Trait(b)) => {
-            let ma: Vec<(String, Option<&FnDecl>)> = a.methods.iter().map(|m| (m.decl.name.clone(), Some(&m.decl))).collect();
-            let mb: Vec<(String, Option<&FnDecl>)> = b.methods.iter().map(|m| (m.decl.name.clone(), Some(&m.decl))).collect();
+            let ma: Vec<(String, Option<&FnDecl>)> = a.methods.iter().map(|m| (m.decl.name.to_string(), Some(&m.decl))).collect();
+            let mb: Vec<(String, Option<&FnDecl>)> = b.methods.iter().map(|m| (m.decl.name.to_string(), Some(&m.decl))).collect();
             methods_words(&ma, &mb, &mut out, true);
-            let la: Vec<&String> = a.laws.iter().map(|l| &l.name).collect();
-            let lb: Vec<&String> = b.laws.iter().map(|l| &l.name).collect();
+            let la: Vec<&Symbol> = a.laws.iter().map(|l| &l.name).collect();
+            let lb: Vec<&Symbol> = b.laws.iter().map(|l| &l.name).collect();
             if la != lb {
                 out.push("laws changed".into());
             }
         }
         (DeclKind::Impl(a), DeclKind::Impl(b)) => {
-            let ma: Vec<(String, Option<&FnDecl>)> = a.methods.iter().map(|m| (m.name.clone(), Some(m))).collect();
-            let mb: Vec<(String, Option<&FnDecl>)> = b.methods.iter().map(|m| (m.name.clone(), Some(m))).collect();
+            let ma: Vec<(String, Option<&FnDecl>)> = a.methods.iter().map(|m| (m.name.to_string(), Some(m))).collect();
+            let mb: Vec<(String, Option<&FnDecl>)> = b.methods.iter().map(|m| (m.name.to_string(), Some(m))).collect();
             methods_words(&ma, &mb, &mut out, false);
         }
         (DeclKind::Test(_), DeclKind::Test(_)) => out.push("body changed".into()),

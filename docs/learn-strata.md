@@ -100,7 +100,7 @@ distinct type UserId = String
 
 fn user_number(id: UserId) -> String {
   // build one with UserId("u_42"); `.value` is the underlying String
-  slice(id.value, 2, len(id.value))
+  id.value[2..]
 }
 
 // ─── 4. Contracts: requires / ensures (`it` is the result) ─────────────────
@@ -135,6 +135,12 @@ type Shape = Square | Circle
 // Generic types take parameters in brackets.
 type Pair[A, B] = { first: A, second: B }
 
+// A field can have a default, after its type; a constructor may leave it out.
+type Retry = {
+  attempts: Int where 1 <= it && it <= 10 = 3,
+  label: String = "retry",
+}
+
 fn records() -> Line {
   let line = Line { sku: "TEA-7", qty: 2, unit_price: 450 }
   let qty = line.qty
@@ -145,7 +151,8 @@ fn records() -> Line {
   let t = (more.sku, p.first)
   // Tuples: destructure with let, or read t.0, t.1.
   let (code, count) = t
-  Line { ..more, sku: code, qty: count }
+  let r = Retry { label: "fetch" }
+  Line { ..more, sku: code, qty: min(count + r.attempts, 99) }
 }
 
 // ─── 6. Pattern matching: exhaustive, and arms narrow ──────────────────────
@@ -209,7 +216,7 @@ fn is_open(o: Order) -> Bool {
   o is Pending
 }
 
-// ─── 7. Errors: Option, Result, `!`, `?`, `except` ─────────────────────────
+// ─── 7. Errors: Option, Result, `!` `?`, `except` `or`, `!!` `??` ───────────
 type ParseError =
   | Blank
   | NotANumber { text: String }
@@ -239,9 +246,20 @@ fn first_upper(words: List[String]) -> Option[String] {
   Some(to_upper(words.find(w -> len(w) > 0)?))
 }
 
-// `except` handles a failure inline: a fallback, or a block that returns.
+// Handle it here instead. A Result: `e !! fallback`, or `e except err { … }`.
+// An Option: `e ?? fallback`, or `e or { … }`. A block may `return`.
+// Each pair works on its own type only.
 fn qty_or_one(s: String) -> Int {
-  parse_qty(s) except { 1 }
+  parse_qty(s) !! 1
+}
+
+fn port(text: String) -> Int {
+  parse_int(text) ?? 8080
+}
+
+fn first_long(words: List[String]) -> String {
+  let w = words.find(w -> len(w) > 3) or { return "none" }
+  to_upper(w)
 }
 
 fn explain(s: String) -> String {
@@ -284,7 +302,8 @@ fn loops() -> Int {
       break
     }
   }
-  for k in range(0, 3) {
+  // `0..3` is 0, 1, 2 and `1..=3` is 1, 2, 3: ranges are lists of Int.
+  for k in 0..3 {
     i = i + k
   }
   i + line.qty
@@ -295,19 +314,37 @@ fn loops() -> Int {
 // is checked). Closures cannot change outer variables.
 
 // ─── 9. Collections (all immutable: operations return new values) ──────────
-fn collections() -> Int {
-  let xs = [3, 1, 2]
-  let sorted = sort(xs)
-  let firsts = take(sorted, 2) + drop(xs, 2)
-  let maybe = get(xs, 0)
-  let d = dict([("tea", 450), ("cup", 1200)])
+fn collections(xs: NonEmpty[Int], text: String) -> Int {
+  // xs[i] must be in range: checked at run time, proven by `verify` (here xs
+  // is NonEmpty). get(xs, i) gives an Option instead. No negative indices.
+  let head = xs[0]
+  let maybe = get(xs, 5) ?? 0
+  // Slices take a range and are clamped, as in Python; strings too.
+  let rest = xs[1..]
+  let prefix = text[..3]
+  // Comprehensions, with `where` to filter.
+  let squares = [x * x for x in xs where x > 0]
+  let grid = [(a, b) for a in 1..=2 for b in ["x", "y"]]
+  let d = Dict { "tea": 450, "cup": 1200 }
   let d2 = insert(d, "pot", 3000)
-  let price = get(d2, "tea") except { 0 }
-  let s = set([1, 2, 2, 3])
+  let price = get(d2, "tea") ?? 0
+  let lengths = Dict { w: len(w) for w in split(text, " ") }
+  let s = Set { 1, 2, 2, 3 }
+  let empty = Dict[String, Int] {}
   let total = fold(xs, 0, (acc, x) -> acc + x)
-  let pairs = enumerate(zip(xs, ["a", "b", "c"]))
-  let first = maybe except { 0 }
-  price + len(s) + total + len(pairs) + len(firsts) + first
+  let pairs = enumerate(zip(sort(xs), ["a", "b", "c"]))
+  head
+    + maybe
+    + len(rest)
+    + len(prefix)
+    + len(squares)
+    + len(grid)
+    + price
+    + len(lengths)
+    + len(s)
+    + len(empty)
+    + total
+    + len(pairs)
 }
 
 // ─── 10. Traits: what a type can do ────────────────────────────────────────
@@ -402,7 +439,8 @@ fn receipt(x: Summary) -> String {
 
 // ─── 11. Capabilities are traits passed as parameters ──────────────────────
 // No hidden effects: a database or clock is a trait, so the signature shows
-// what code can touch. A method that changes its value takes `mut self`.
+// what code can touch. A method that changes its value takes `mut self`, and
+// its calls are marked: `mut db.save(o)`.
 trait Db {
   fn load(self, id: NonEmptyString) -> Option[Order]
   fn save(mut self, o: Order) -> ()
@@ -421,11 +459,11 @@ fn ship(
     Ok(o) => o is Shipped,
     Err(_) => true,
   } {
-  let order = db.load(id) except { return Err(NotFound) }
+  let order = db.load(id) or { return Err(NotFound) }
   match order {
     Pending { id, lines } => {
       let o = Shipped { id, lines, tracking }
-      db.save(o)
+      mut db.save(o)
       Ok(o)
     },
     _ => Err(NotPending),
@@ -480,12 +518,14 @@ test "a mocked capability" {
 - **Overloaded builtins can't be passed by name** (`len`, `get`, `contains`, `sum`…): write `xs.map(x -> len(x))`. Ordinary functions can: `lines.map(line_total)`. Methods whose meaning depends on the receiver also need a lambda: `xs.map(x -> x.describe())`.
 - **`type Name = String` is an error**: a bare alias adds nothing. Add a `where`, or say `distinct type`.
 - **Any function can be called as a method** on its first argument: `xs.filter(p)` is `filter(xs, p)`, `line.line_total()` is `line_total(line)`.
-- **`mut` is visible on both sides**: `fn f(mut x: T)` and the call `f(mut x)`; `mut self` for a method that changes its receiver. A `mut` argument must be a `let mut` variable of exactly the parameter's type.
+- **`mut` is visible on both sides**: `fn f(mut x: T)` and the call `f(mut x)`; `fn save(mut self, …)` and the call `mut db.save(o)` (required there, an error anywhere else). Only a `let mut` variable, a `mut` parameter or a field of one can be changed, and a `mut` argument needs exactly the parameter's type. As an argument, a marked call takes parentheses: `f((mut q.pop()), x)`.
 - **A declared type holds forever**: `let mut x: Positive = 1` then `x = 0` is an error (at compile time for literals, at run time otherwise).
 - **Matches are exhaustive and every arm must be reachable.** Conditions comparing `it` with constants are decided exactly; anything else (`matches(it, …)`, a call) needs a `_` arm.
+- **`Result` and `Option` each have their own operators**: `!`, `except`, `!!` for a `Result`; `?`, `or`, `??` for an `Option`. Using one on the other type is an error. A single-value fallback is always written short (`x ?? 0`, not `x or { 0 }`); `??` and `!!` bind looser than arithmetic and tighter than comparisons.
 - **No implicit conversions**: `Int` and `Float` don't mix, and there is no conversion between error types (`!` passes an error up only when it already fits the function's error type: the same type, one of its variants, or a member of its union).
 - **Comments attach to what follows them.** A comment where nothing follows (after a block's last statement, inside an argument list) is an error, not silently dropped.
-- **Empty literals need a type when nothing says it**: `let xs: List[Money] = []`.
+- **Empty literals need a type when nothing says it**: `let xs: List[Money] = []`, `Dict[String, Int] {}`.
+- **Indexing is checked**: `xs[i]` faults when `i` is out of range, and `verify` tries to prove it isn't. There are no negative indices (`xs[len(xs) - 1]`); use `get(xs, i)` for an `Option`.
 - **`print(x)` is for convenience.** Code whose output matters takes a `Console` (`std.io`), so tests can record it.
 - Not in the language (yet): shared references, exceptions, null, implicit effects, iterators/generators, async, macros, inheritance.
 
@@ -516,18 +556,20 @@ use std.io.Console
 /// Greet people by name.
 type Options = {
   /// Shout the greeting.
-  loud: Bool,                                      // a flag: --loud
+  loud: Bool = false,                              // a flag: --loud
   /// Say it this many times.
-  times: Option[Int where 1 <= it && it <= 10],    // an option: --times 3
+  times: Int where 1 <= it && it <= 10 = 1,        // an option, as it has a default: --times 3
   /// Who to greet.
-  names: List[String],                             // the positional arguments
+  names: List[String] = [],                        // the positional arguments
 }
 
 impl CommandLine for Options {}                    // --help comes from the /// comments
 
 fn main(opts: Options, mut console: Console) -> () {
   for name in opts.names {
-    console.print(if opts.loud { to_upper(f"hello, {name}!") } else { f"hello, {name}!" })
+    for _ in 0..opts.times {
+      mut console.print(if opts.loud { to_upper(f"hello, {name}!") } else { f"hello, {name}!" })
+    }
   }
 }
 ```

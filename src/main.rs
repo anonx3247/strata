@@ -1,6 +1,11 @@
 mod ast;
+mod symbol;
+#[cfg(test)]
+mod bench;
+mod binary;
 mod cli;
 mod cmd;
+mod desugar;
 mod diff;
 mod history;
 mod generate;
@@ -74,6 +79,14 @@ every change made through strata, committed with them):
   render [MODULE] [--split DIR]
                                print a module as source (L3): the file that holds it (the
                                root module is `main`); --split writes one file per module
+  pack <DIR | FILE.stb>        write the program as binary (docs/binary-format.md): a
+                               folder with strata.toml and one module file per module
+                               (`main.stb`, `shop/orders.stb`), or one bundle file;
+                               --file, run, ui and every view read either like source
+  unpack <IN> <DIR>            write binary (a bundle, a module file or a folder of them)
+                               back out as source, one canonical file per module
+  header <FILE.stb>            a module file's table of contents: each definition's kind,
+                               name, hashes, size and dependencies, read without decoding it
   (`--file` and `add` accept a folder: each .strata file is a module named after its path;
    `--module m` reads a single file as module m)
 
@@ -195,11 +208,16 @@ impl Source {
 
 /// Read source: a single file, or a folder where each `.strata` file is a
 /// module named after its path (`shop/orders.strata` -> `shop.orders`,
-/// `main.strata` -> the root module).
+/// `main.strata` -> the root module). A binary file (`strata pack`) holds a
+/// whole program, already parsed.
 fn read_sources(path: &str, module: Option<&str>) -> Result<Program, String> {
     let root = std::path::Path::new(path);
     if !root.is_dir() {
-        let src = std::fs::read_to_string(root).map_err(|e| format!("{path}: {e}"))?;
+        let bytes = std::fs::read(root).map_err(|e| format!("{path}: {e}"))?;
+        if binary::is_binary(&bytes) {
+            return binary::read(&bytes).map(|img| img.program).map_err(|e| format!("{path}: {e}"));
+        }
+        let src = String::from_utf8(bytes).map_err(|_| format!("{path}: not UTF-8 text (nor a binary Strata file)"))?;
         return parser::parse_module_file(&src, module.unwrap_or("")).map_err(|e| format!("{path}:{e}"));
     }
     // packages nested in this folder are separate programs
@@ -293,6 +311,9 @@ fn run() -> Result<bool, String> {
         "ui" => cmd::ui(&args),
         "builtins" => cmd::builtins(json_out),
         "render" => cmd::render(&args),
+        "pack" => cmd::pack(&args),
+        "unpack" => cmd::unpack(&args),
+        "header" => cmd::header(&args),
         "interface" => cmd::interface(&args),
         "ast" => cmd::ast(&args),
         "view" => cmd::view(&args),

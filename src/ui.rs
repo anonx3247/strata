@@ -91,7 +91,7 @@ fn snapshot(target: &Target) -> Json {
         .iter()
         .zip(&p.decls)
         .filter_map(|(r, d)| match &r.kind {
-            DeclKind::Impl(i) => Some((d.qname(), (i.trait_name.clone(), crate::types::texpr_head(&i.for_type)))),
+            DeclKind::Impl(i) => Some((d.qname(), (i.trait_name.to_string(), crate::types::texpr_head(&i.for_type).to_string()))),
             _ => None,
         })
         .collect();
@@ -217,7 +217,7 @@ fn snapshot(target: &Target) -> Json {
     // which traits each type implements
     for s in structure.iter_mut() {
         let name = s["name"].as_str().unwrap_or("").to_string();
-        let mut traits: Vec<String> = env.impls.iter().filter(|i| crate::types::texpr_head(&i.for_type) == name).map(|i| i.trait_name.clone()).collect();
+        let mut traits: Vec<String> = env.impls.iter().filter(|i| crate::types::texpr_head(&i.for_type) == name).map(|i| i.trait_name.to_string()).collect();
         traits.sort();
         s["impls"] = json!(traits);
     }
@@ -313,8 +313,8 @@ pub fn serve(target: Target, port: u16) -> Result<(), String> {
 fn mentions(t: &TypeExpr, out: &mut Vec<String>) {
     match t {
         TypeExpr::Named(n, args) => {
-            if !out.contains(n) {
-                out.push(n.clone());
+            if !out.contains(&n.to_string()) {
+                out.push(n.to_string());
             }
             args.iter().for_each(|a| mentions(a, out));
         }

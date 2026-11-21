@@ -36,25 +36,26 @@ pub fn sha(s: &str) -> String {
     d.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
-/// Hash of a definition's canonical text (its identity in the store).
+/// A hash as shown and stored: its first 8 bytes, in hex.
+fn short_hex(h: &crate::binary::Hash) -> String {
+    h[..8].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Hash of a definition's binary encoding, comments and all (its identity in
+/// the store). The hashes are those a module file's header lists.
 pub fn self_hash(d: &Decl) -> String {
-    sha(&format!("module {}\n{}", d.module, printer::decl(d)))
+    short_hex(&crate::binary::hash(d))
 }
 
 /// Hash of what a definition does: without its doc and comments.
 pub fn code_hash(d: &Decl) -> String {
-    sha(&format!("module {}\n{}", d.module, printer::without_comments(|| printer::decl_body(d))))
+    short_hex(&crate::binary::code_hash(d))
 }
 
-/// Hash of what other definitions may depend on: the signature, contracts and type shapes.
+/// Hash of what other definitions may depend on: the signature, contracts,
+/// type shapes and visibility; not bodies, docs or comments.
 pub fn interface_hash(d: &Decl) -> String {
-    let text = match &d.kind {
-        DeclKind::Fn(f) => printer::fn_signature(f),
-        DeclKind::Test(t) => format!("test {:?}", t.name),
-        // docs and comments are not part of what other code relies on
-        _ => printer::without_comments(|| printer::decl_body(d)),
-    };
-    sha(&format!("module {} pub {}\n{text}", d.module, d.public))
+    short_hex(&crate::binary::interface_hash(d))
 }
 
 /// Names of other top-level definitions this one refers to.
@@ -63,7 +64,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
     fn ty(t: &TypeExpr, out: &mut BTreeSet<String>) {
         match t {
             TypeExpr::Named(n, args) => {
-                out.insert(n.clone());
+                out.insert(n.to_string());
                 args.iter().for_each(|a| ty(a, out));
             }
             TypeExpr::Fn(ps, r) => {
@@ -78,7 +79,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
     fn pat(p: &Pattern, out: &mut BTreeSet<String>, ct: &HashMap<String, String>) {
         match p {
             Pattern::Ctor(c, cp) => {
-                out.insert(ct.get(c).cloned().unwrap_or(c.clone()));
+                out.insert(ct.get(c.as_str()).cloned().unwrap_or(c.to_string()));
                 match cp {
                     CtorPat::Positional(ps) => ps.iter().for_each(|p| pat(p, out, ct)),
                     CtorPat::Record(fs, _) => fs.iter().for_each(|(_, p)| pat(p, out, ct)),
@@ -94,11 +95,11 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
         let go = |x: &Expr, out: &mut BTreeSet<String>| ex(x, out, ct);
         match e {
             Expr::Var(v) => {
-                out.insert(v.clone());
+                out.insert(v.to_string());
             }
             Expr::List(xs) | Expr::Tuple(xs) => xs.iter().for_each(|x| go(x, out)),
             Expr::Ctor(c, args) => {
-                out.insert(ct.get(c).cloned().unwrap_or(c.clone()));
+                out.insert(ct.get(c.as_str()).cloned().unwrap_or(c.to_string()));
                 match args {
                     CtorArgs::Positional(xs) => xs.iter().for_each(|x| go(x, out)),
                     CtorArgs::Record(fs) => fs.iter().for_each(|(_, x)| go(x, out)),
@@ -114,7 +115,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                 xs.iter().for_each(|x| go(x, out));
             }
             Expr::Method(r, m, xs) => {
-                out.insert(m.clone());
+                out.insert(m.to_string());
                 go(r, out);
                 xs.iter().for_each(|x| go(x, out));
             }
@@ -123,7 +124,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                 ps.iter().filter_map(|p| p.ty.as_ref()).for_each(|t| ty(t, out));
                 go(r, out)
             }
-            Expr::Except(r, _, fb) => {
+            Expr::Except(r, _, fb) | Expr::Or(r, fb) => {
                 go(r, out);
                 go(fb, out);
             }
@@ -134,7 +135,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             }),
             Expr::Mock(t) => ty(t, out),
             Expr::Is(r, c) => {
-                out.insert(ct.get(c).cloned().unwrap_or(c.clone()));
+                out.insert(ct.get(c.as_str()).cloned().unwrap_or(c.to_string()));
                 go(r, out);
             }
             Expr::Bin(_, l, r) => {
@@ -203,7 +204,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             if let Some(r) = &t.refinement {
                 ex(r, &mut out, ctor_types);
             }
-            out.remove(&t.name);
+            out.remove(t.name.as_str());
         }
         DeclKind::Fn(f) => {
             f.bounds.iter().flat_map(|b| &b.traits).for_each(|t| ty(t, &mut out));
@@ -211,7 +212,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             ty(&f.ret, &mut out);
             f.requires.iter().chain(&f.ensures).for_each(|e| ex(e, &mut out, ctor_types));
             ex(&f.body, &mut out, ctor_types);
-            out.remove(&f.name);
+            out.remove(f.name.as_str());
         }
         DeclKind::Trait(t) => {
             t.supers.iter().for_each(|s| ty(s, &mut out));
@@ -227,12 +228,12 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                 l.params.iter().for_each(|p| ty(&p.ty, &mut out));
                 ex(&l.body, &mut out, ctor_types);
             }
-            out.remove(&t.name);
+            out.remove(t.name.as_str());
             out.remove("Self");
         }
         DeclKind::Impl(i) => {
             if !i.is_inherent() {
-                out.insert(i.trait_name.clone());
+                out.insert(i.trait_name.to_string());
             }
             i.trait_args.iter().for_each(|a| ty(a, &mut out));
             ty(&i.for_type, &mut out);
@@ -264,17 +265,17 @@ pub fn graph(p: &Program) -> BTreeMap<String, BTreeSet<String>> {
         if let DeclKind::Type(t) = &d.kind {
             if let TypeBody::Sum(vs) = &t.body {
                 for v in vs {
-                    ct.insert(v.name.clone(), t.name.clone());
+                    ct.insert(v.name.to_string(), t.name.to_string());
                 }
             }
         }
     }
     // a call to a trait method depends on the trait
-    let mut method_trait: HashMap<String, String> = HashMap::new();
+    let mut method_trait: HashMap<Symbol, Symbol> = HashMap::new();
     for d in &p.decls {
         if let DeclKind::Trait(t) = &d.kind {
             for m in &t.methods {
-                method_trait.insert(m.decl.name.clone(), t.name.clone());
+                method_trait.insert(m.decl.name, t.name);
             }
         }
     }
@@ -283,7 +284,7 @@ pub fn graph(p: &Program) -> BTreeMap<String, BTreeSet<String>> {
         .map(|d| {
             let deps = refs(d, &ct)
                 .into_iter()
-                .map(|r| method_trait.get(&r).cloned().unwrap_or(r))
+                .map(|r| method_trait.get(&r.sym()).map(|t| t.to_string()).unwrap_or(r))
                 .filter(|r| names.contains(r) && r != &d.name())
                 .map(|r| to_q[&r].clone())
                 .collect();
@@ -371,8 +372,8 @@ impl Codebase {
     /// Rewrite the files to `new` (one file per module; a module left with no
     /// definitions loses its file), without logging.
     pub fn write(&mut self, new: Program) -> Result<(), String> {
-        let mut mods: BTreeSet<String> = self.program.decls.iter().map(|d| d.module.clone()).collect();
-        mods.extend(new.decls.iter().map(|d| d.module.clone()));
+        let mut mods: BTreeSet<String> = self.program.decls.iter().map(|d| d.module.to_string()).collect();
+        mods.extend(new.decls.iter().map(|d| d.module.to_string()));
         for m in mods {
             let path = self.root.join(module_path(&m));
             if new.decls.iter().any(|d| d.module == m) {
@@ -399,8 +400,8 @@ impl Codebase {
             return Ok(changes);
         }
         let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-        let texts: HashMap<String, (String, String)> = new.decls.iter().map(|d| (d.qname(), (d.module.clone(), printer::decl(d)))).collect();
-        let old_texts: HashMap<String, (String, String)> = old.decls.iter().map(|d| (d.qname(), (d.module.clone(), printer::decl(d)))).collect();
+        let texts: HashMap<String, (String, String)> = new.decls.iter().map(|d| (d.qname(), (d.module.to_string(), printer::decl(d)))).collect();
+        let old_texts: HashMap<String, (String, String)> = old.decls.iter().map(|d| (d.qname(), (d.module.to_string(), printer::decl(d)))).collect();
         let changes_json: Vec<serde_json::Value> = changes
             .iter()
             .map(|c| {
@@ -530,7 +531,7 @@ pub fn apply(p: &mut Program, e: &serde_json::Value) -> Result<(), String> {
         if let Some(i) = p.decls.iter().position(|d| d.qname() == f) {
             let (module, short) = t.rsplit_once('.').unwrap_or(("", &t));
             set_name(&mut p.decls[i], short);
-            p.decls[i].module = module.to_string();
+            p.decls[i].module = Symbol::from(module);
         }
     }
     for c in e["changes"].as_array().into_iter().flatten() {
@@ -604,9 +605,9 @@ pub fn renames_of(e: &serde_json::Value) -> Vec<(String, String)> {
 /// Give a function, type or trait a new short name.
 pub fn set_name(d: &mut Decl, name: &str) {
     match &mut d.kind {
-        DeclKind::Fn(f) => f.name = name.to_string(),
-        DeclKind::Type(t) => t.name = name.to_string(),
-        DeclKind::Trait(t) => t.name = name.to_string(),
+        DeclKind::Fn(f) => f.name = Symbol::from(name),
+        DeclKind::Type(t) => t.name = Symbol::from(name),
+        DeclKind::Trait(t) => t.name = Symbol::from(name),
         _ => {}
     }
 }

@@ -1,0 +1,24 @@
+fn ages() -> Dict[String, Int] {
+  Dict { "ada": 36, "alan": 41 }
+}
+
+fn lengths(words: List[String]) -> Dict[String, Int] {
+  Dict { w: len(w) for w in words where w != "" }
+}
+
+fn residues(xs: List[Int]) -> Set[Int] {
+  Set { x % 3 for x in xs }
+}
+
+fn empty() -> Int {
+  let d = Dict[String, Int] {}
+  let s = Set[Int] {}
+  len(d) + len(s) + len(Set { 1, 2, 2 })
+}
+
+test "collections" {
+  assert get(ages(), "ada") == Some(36)
+  assert lengths(["a", "", "abc"]) == Dict { "a": 1, "abc": 3 }
+  assert residues([1, 4, 2]) == Set { 1, 2 }
+  assert empty() == 2
+}

@@ -84,11 +84,11 @@ fn ship(
     Ok(o) => o is Shipped,
     Err(_) => true,
   } {
-  let order = db.load(id) except { return Err(NotFound) }
+  let order = db.load(id) or { return Err(NotFound) }
   match order {
     Pending { id, lines } => {
       let o = Shipped { id, lines, tracking }
-      db.save(o)
+      mut db.save(o)
       Ok(o)
     },
     _ => Err(NotPending),

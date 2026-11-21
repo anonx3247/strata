@@ -5,7 +5,7 @@
 use crate::ast::*;
 use crate::parser::Parser;
 use serde::Serialize;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 mod env;
 mod exhaustive;
@@ -163,6 +163,8 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin::total("find", "A", "(List[A], (A) -> Bool) -> Option[A]"),
     Builtin::total("count", "A", "(List[A], (A) -> Bool) -> Int"),
     Builtin::total("get", "A", "(List[A], Int) -> Option[A]"),
+    // `xs[i]`: fails unless `0 <= i < len(xs)`
+    Builtin::new("at", "A", "(List[A], Int) -> A"),
     Builtin::total("sum", "", "(List[Int]) -> Int"),
     Builtin::total("sum", "", "(List[Float]) -> Float"),
     Builtin::new("range", "", "(Int, Int) -> List[Int]"),
@@ -178,6 +180,7 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin::new("ends_with", "", "(String, String) -> Bool"),
     Builtin::new("chars", "", "(String) -> List[String]"),
     Builtin::total("get", "", "(String, Int) -> Option[String]"),
+    Builtin::new("at", "", "(String, Int) -> String"),
     Builtin::new("slice", "", "(String, Int, Int) -> String"),
     Builtin::new("slice", "A", "(List[A], Int, Int) -> List[A]"),
     Builtin::new("index_of", "", "(String, String) -> Option[Int]"),
@@ -207,11 +210,11 @@ pub enum Ty {
     Bool,
     Str,
     Unit,
-    Con(String, Vec<Ty>),
+    Con(Symbol, Vec<Ty>),
     Fn(Vec<Ty>, Box<Ty>),
     Var(usize),
     /// A type parameter of the declaration being checked.
-    Rigid(String),
+    Rigid(Symbol),
     /// Values of any member: kept normalized (see `Checker::union_of`).
     Union(Vec<Ty>),
 }
@@ -247,9 +250,9 @@ impl CheckReport {
 }
 
 /// The name used to find an implementation: `List[Int]` -> `List`, `Line` -> `Line`.
-pub fn texpr_head(t: &TypeExpr) -> String {
+pub fn texpr_head(t: &TypeExpr) -> Symbol {
     match t {
-        TypeExpr::Named(n, _) => n.clone(),
+        TypeExpr::Named(n, _) => *n,
         TypeExpr::Unit => "Unit".into(),
         TypeExpr::Fn(..) => "Fn".into(),
         TypeExpr::Refined(b, _) => texpr_head(b),
@@ -296,7 +299,7 @@ impl TypeRef {
     pub fn expr(&self) -> Expr {
         match self {
             TypeRef::Head(h) => Expr::Str(h.clone()),
-            TypeRef::Param(p) => Expr::Var(type_arg(p)),
+            TypeRef::Param(p) => Expr::Var(Symbol::from(type_arg(p))),
         }
     }
 }
@@ -325,6 +328,17 @@ pub fn split_trait_call(name: &str) -> Option<(&str, &str)> {
 /// type's own method a direct call `Item.m(x, ..)`. Everything that runs or
 /// verifies code works on this.
 pub fn elaborate(prog: &Program) -> crate::resolve::Resolution {
+    elaborate_with(prog, false).0
+}
+
+/// The elaborated program, and the type the checker inferred for each of its
+/// expressions, by node address (in a generic function, with its type
+/// parameters as `Ty::Rigid`). The compiler works from these.
+pub fn elaborate_typed(prog: &Program) -> (crate::resolve::Resolution, HashMap<usize, Ty>) {
+    elaborate_with(prog, true)
+}
+
+fn elaborate_with(prog: &Program, typed: bool) -> (crate::resolve::Resolution, HashMap<usize, Ty>) {
     let mut r = crate::resolve::resolve(prog);
     let (env, _) = Env::build(&r.program);
     let shared = env.method_traits.values().any(|v| v.len() > 1);
@@ -335,54 +349,87 @@ pub fn elaborate(prog: &Program) -> crate::resolve::Resolution {
     let like_builtin = shorts.iter().any(|s| BUILTINS.iter().any(|b| b.name == *s));
     shorts.sort();
     let across = shorts.windows(2).any(|w| w[0] == w[1]);
-    if env.inherent.is_empty() && !shared && !statics && !like_builtin && !across {
-        return r;
+    if env.inherent.is_empty() && !shared && !statics && !like_builtin && !across && !typed {
+        return (r, HashMap::new());
     }
-    let (_, _, targets) = check_decls(&r.program, &env);
+    let (_, _, targets, mut types) = check_decls(&r.program, &env);
     let targets: HashMap<usize, Target> = targets.into_iter().collect();
     for d in &mut r.program.decls {
         // a type parameter with a static method to call is passed when the function runs
         if let DeclKind::Fn(f) = &mut d.kind {
             for p in env.type_args(f) {
-                f.params.push(Param { name: type_arg(&p), ty: TypeExpr::Named(TYPE_ARG.into(), vec![TypeExpr::Named(p.clone(), vec![])]), mutable: false });
+                f.params.push(Param { name: Symbol::from(type_arg(&p)), ty: TypeExpr::Named(TYPE_ARG.into(), vec![TypeExpr::Named(Symbol::from(p.as_str()), vec![])]), mutable: false });
             }
         }
         // children first, so a node's address is the one the checker saw when it is rewritten
         decl_exprs_mut_post(&mut d.kind, |e| {
             let Some(t) = targets.get(&(e as *const Expr as usize)) else { return };
         match (t, &mut *e) {
-            (Target::Trait(tr), Expr::Method(_, m, _)) => *m = trait_call(tr, m),
+            (Target::Trait(tr), Expr::Method(_, m, _)) => *m = Symbol::from(trait_call(tr, m)),
             (Target::Trait(tr), Expr::Call(f, _)) => {
                 if let Expr::Var(m) = &mut **f {
-                    *m = trait_call(tr, m);
+                    *m = Symbol::from(trait_call(tr, m));
                 }
             }
             (Target::Own(f), Expr::Method(recv, _, args)) => {
+                let old: Vec<usize> = std::iter::once(&**recv).chain(args.iter()).map(addr).collect();
                 let mut all = vec![std::mem::replace(&mut **recv, Expr::Unit)];
                 all.append(args);
-                *e = Expr::Call(Box::new(Expr::Var(f.clone())), all);
+                *e = Expr::Call(Box::new(Expr::Var(Symbol::from(f.as_str()))), all);
+                // the receiver and arguments now live in a new argument list
+                if let Expr::Call(_, all) = &*e {
+                    rekey(&mut types, &old, all.iter().map(addr).collect());
+                }
             }
-            (Target::Own(f), Expr::Call(g, _)) => **g = Expr::Var(f.clone()),
+            (Target::Own(f), Expr::Call(g, _)) => **g = Expr::Var(Symbol::from(f.as_str())),
             (Target::Static(tr, ty), Expr::Method(_, m, args)) => {
+                let old: Vec<usize> = args.iter().map(addr).collect();
                 let mut all = vec![ty.expr()];
                 all.append(args);
-                *e = Expr::Call(Box::new(Expr::Var(trait_call(tr, m))), all);
+                *e = Expr::Call(Box::new(Expr::Var(Symbol::from(trait_call(tr, m)))), all);
+                if let Expr::Call(_, all) = &*e {
+                    rekey(&mut types, &old, all[1..].iter().map(addr).collect());
+                }
             }
-            (Target::TypeArgs(tys), Expr::Call(_, args) | Expr::Method(_, _, args)) => args.extend(tys.iter().map(|t| t.expr())),
-            (Target::Other(tr, mq), Expr::Method(_, m, _)) => *m = trait_call(tr, mq),
-            (Target::Other(tr, mq), Expr::Call(f, _)) => **f = Expr::Var(trait_call(tr, mq)),
-            (Target::Builtin(b), Expr::Method(_, m, _)) => *m = b.clone(),
-            (Target::Builtin(b), Expr::Call(f, _)) => **f = Expr::Var(b.clone()),
+            (Target::TypeArgs(tys), Expr::Call(_, args) | Expr::Method(_, _, args)) => {
+                let old: Vec<usize> = args.iter().map(addr).collect();
+                args.extend(tys.iter().map(|t| t.expr()));
+                rekey(&mut types, &old, args.iter().map(addr).collect());
+            }
+            (Target::Other(tr, mq), Expr::Method(_, m, _)) => *m = Symbol::from(trait_call(tr, mq)),
+            (Target::Other(tr, mq), Expr::Call(f, _)) => **f = Expr::Var(Symbol::from(trait_call(tr, mq))),
+            (Target::Builtin(b), Expr::Method(_, m, _)) => *m = Symbol::from(b.as_str()),
+            (Target::Builtin(b), Expr::Call(f, _)) => **f = Expr::Var(Symbol::from(b.as_str())),
             _ => {}
         }
         });
     }
-    r
+    (r, types)
 }
 
-pub fn subst_texpr(t: &TypeExpr, sub: &HashMap<String, TypeExpr>) -> TypeExpr {
+fn addr(e: &Expr) -> usize {
+    e as *const Expr as usize
+}
+
+/// Nodes moved by a rewrite (into a new argument list) keep their types.
+fn rekey(types: &mut HashMap<usize, Ty>, old: &[usize], new: Vec<usize>) {
+    let moved: Vec<Option<Ty>> = old.iter().map(|a| types.remove(a)).collect();
+    for (t, a) in moved.into_iter().zip(new) {
+        if let Some(t) = t {
+            types.insert(a, t);
+        }
+    }
+}
+
+/// `f(mut x)`: an argument marked for a `mut` parameter (not `mut q.claim()`,
+/// a call marked as changing its receiver, which is passed as a value).
+fn marks_arg(a: &Expr) -> bool {
+    matches!(a, Expr::Mut(x) if !matches!(**x, Expr::Method(..)))
+}
+
+pub fn subst_texpr(t: &TypeExpr, sub: &HashMap<Symbol, TypeExpr>) -> TypeExpr {
     match t {
-        TypeExpr::Named(n, args) if args.is_empty() && sub.contains_key(n) => sub[n].clone(),
+        TypeExpr::Named(n, args) if args.is_empty() && sub.contains_key(&n.sym()) => sub[n].clone(),
         TypeExpr::Named(n, args) => TypeExpr::Named(n.clone(), args.iter().map(|a| subst_texpr(a, sub)).collect()),
         TypeExpr::Fn(ps, r) => TypeExpr::Fn(ps.iter().map(|a| subst_texpr(a, sub)).collect(), Box::new(subst_texpr(r, sub))),
         TypeExpr::Unit => TypeExpr::Unit,
@@ -391,9 +438,15 @@ pub fn subst_texpr(t: &TypeExpr, sub: &HashMap<String, TypeExpr>) -> TypeExpr {
     }
 }
 
+/// A builtin's type, from its signature text (parsed once per text).
 pub fn parse_type_str(s: &str) -> TypeExpr {
-    let mut p = Parser::from_str(s);
-    p.type_expr().expect("builtin type parses")
+    static PARSED: std::sync::LazyLock<std::sync::Mutex<HashMap<String, TypeExpr>>> = std::sync::LazyLock::new(Default::default);
+    if let Some(t) = PARSED.lock().unwrap().get(s) {
+        return t.clone();
+    }
+    let t = Parser::from_str(s).type_expr().expect("builtin type parses");
+    PARSED.lock().unwrap().insert(s.to_string(), t.clone());
+    t
 }
 
 // ------------------------------------------------------------------
@@ -401,8 +454,8 @@ pub fn parse_type_str(s: &str) -> TypeExpr {
 struct Checker<'a> {
     env: &'a Env,
     subst: Vec<Option<Ty>>,
-    scopes: Vec<HashMap<String, Ty>>,
-    rigid: BTreeSet<String>,
+    scopes: Vec<HashMap<Symbol, Ty>>,
+    rigid: BTreeSet<Symbol>,
     decl: String,
     errors: Vec<Diag>,
     holes: Vec<(String, Ty, Vec<(String, Ty)>)>,
@@ -412,7 +465,7 @@ struct Checker<'a> {
     /// What `Self` means here (inside a trait or impl).
     self_ty: Option<Ty>,
     /// Trait bounds on the rigid type parameters in scope (`T: Ord`).
-    bounds: HashMap<String, Vec<(String, Vec<Ty>)>>,
+    bounds: HashMap<Symbol, Vec<(Symbol, Vec<Ty>)>>,
     /// Obligations `type implements trait[args]`, solved at the end of the declaration.
     pending: Vec<(Ty, String, Vec<Ty>, String)>,
     /// Scopes below this index belong outside the closure being checked.
@@ -429,13 +482,17 @@ struct Checker<'a> {
     /// receiver's type resolved to, by call node (see `elaborate`).
     targets: Vec<(usize, Target)>,
     /// The instantiation of the last named function `global_fn` gave a type for.
-    last_inst: Option<(String, HashMap<String, Ty>)>,
+    last_inst: Option<(Symbol, HashMap<Symbol, Ty>)>,
     /// Calls of generic functions that need their type arguments at runtime:
     /// call node, and the type of each such parameter (resolved at the end).
     insts: Vec<(usize, Vec<(String, Ty)>)>,
     /// Set just before typing a call's callee, so a function needing type
     /// arguments can tell a call from its use as a value.
     callee: bool,
+    /// Method calls marked `mut` (`mut q.claim(2)`), by node: they change their receiver.
+    marked: HashSet<usize>,
+    /// The type of each expression, by node address (resolved at the end).
+    types: Vec<(usize, Ty)>,
 }
 
 impl<'a> Checker<'a> {
@@ -477,19 +534,19 @@ impl<'a> Checker<'a> {
             }
         }
         let parent_of = |t: &Ty| match t {
-            Ty::Con(v, a) => self.env.variant_parent(v).map(|p| (p, a.clone())),
+            Ty::Con(v, a) => self.env.variant_parent(v.sym()).map(|p| (p, a.clone())),
             _ => None,
         };
         let present = out.clone();
-        out.retain(|t| !parent_of(t).is_some_and(|(p, a)| present.contains(&Ty::Con(p, a))));
+        out.retain(|t| !parent_of(t).is_some_and(|(p, a)| present.contains(&Ty::Con(Symbol::from(p), a))));
         loop {
             let full = out.iter().filter_map(parent_of).find(|(p, a)| {
-                let Some(TypeDecl { body: TypeBody::Sum(vs), .. }) = self.env.types.get(p) else { return false };
-                vs.iter().all(|v| out.contains(&Ty::Con(v.name.clone(), a.clone())))
+                let Some(TypeDecl { body: TypeBody::Sum(vs), .. }) = self.env.types.get(&p.sym()) else { return false };
+                vs.iter().all(|v| out.contains(&Ty::Con(v.name, a.clone())))
             });
             let Some((p, a)) = full else { break };
             out.retain(|t| parent_of(t).is_none_or(|(q, b)| q != p || b != a));
-            out.push(Ty::Con(p, a));
+            out.push(Ty::Con(Symbol::from(p), a));
         }
         out.sort_by_key(show_ty);
         if out.len() == 1 { out.pop().unwrap() } else { Ty::Union(out) }
@@ -535,7 +592,7 @@ impl<'a> Checker<'a> {
             // A trait used as a type (`Console`) accepts any value whose type
             // implements it; that obligation is checked with the others.
             (Ty::Con(t, targs), other) | (other, Ty::Con(t, targs)) if self.env.traits.contains_key(t) => {
-                self.pending.push((other.clone(), t.clone(), targs.clone(), format!("using it as a `{t}`")));
+                self.pending.push((other.clone(), t.to_string(), targs.clone(), format!("using it as a `{t}`")));
                 Ok(())
             }
             _ => Err(format!("expected `{}`, found `{}`", show_ty(&a), show_ty(&b))),
@@ -570,7 +627,7 @@ impl<'a> Checker<'a> {
                 }
                 Err(mismatch())
             }
-            (Ty::Con(s, ea), Ty::Con(v, aa)) if self.env.variant_parent(v).as_deref() == Some(s.as_str()) && ea.len() == aa.len() => {
+            (Ty::Con(s, ea), Ty::Con(v, aa)) if self.env.variant_parent(v.sym()).as_deref() == Some(s.as_str()) && ea.len() == aa.len() => {
                 for (x, y) in ea.iter().zip(aa) {
                     self.fits(x, y).map_err(|_| mismatch())?;
                 }
@@ -648,7 +705,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Convert a written type to a checker type. `vars` maps scheme params to fresh vars.
-    fn lower(&mut self, t: &TypeExpr, vars: &HashMap<String, Ty>) -> Ty {
+    fn lower(&mut self, t: &TypeExpr, vars: &HashMap<Symbol, Ty>) -> Ty {
         match t {
             TypeExpr::Unit => Ty::Unit,
             TypeExpr::Refined(b, _) => self.lower(b, vars),
@@ -658,7 +715,7 @@ impl<'a> Checker<'a> {
             }
             TypeExpr::Fn(ps, r) => Ty::Fn(ps.iter().map(|p| self.lower(p, vars)).collect(), Box::new(self.lower(r, vars))),
             TypeExpr::Named(n, args) => {
-                if let Some(v) = vars.get(n) {
+                if let Some(v) = vars.get(&n.sym()) {
                     return v.clone();
                 }
                 if n == "Self" && args.is_empty() {
@@ -670,17 +727,17 @@ impl<'a> Checker<'a> {
                         }
                     };
                 }
-                if self.rigid.contains(n) {
-                    return Ty::Rigid(n.clone());
+                if self.rigid.contains(&n.sym()) {
+                    return Ty::Rigid(n.sym());
                 }
-                if let Some(tr) = self.env.traits.get(n) {
+                if let Some(tr) = self.env.traits.get(&n.sym()) {
                     // a trait as a type: any implementation of it
                     let tr = tr.clone();
                     let largs: Vec<Ty> = if args.is_empty() { tr.params.iter().map(|_| self.fresh()).collect() } else { args.iter().map(|a| self.lower(a, vars)).collect() };
                     if tr.params.len() != largs.len() {
                         self.err(format!("trait `{n}` takes {} type arguments", tr.params.len()));
                     }
-                    return Ty::Con(n.clone(), largs);
+                    return Ty::Con(n.sym(), largs);
                 }
                 let largs: Vec<Ty> = args.iter().map(|a| self.lower(a, vars)).collect();
                 match n.as_str() {
@@ -693,27 +750,27 @@ impl<'a> Checker<'a> {
                     "String" => Ty::Str,
                     "Unit" => Ty::Unit,
                     "List" if largs.len() == 1 => Ty::Con("List".into(), largs),
-                    _ => match self.env.types.get(n) {
+                    _ => match self.env.types.get(&n.sym()) {
                         Some(td) => {
                             if td.params.len() != largs.len() {
                                 self.err(format!("type `{n}` expects {} type arguments, got {}", td.params.len(), largs.len()));
                             }
                             if let (TypeBody::Alias(a), false) = (&td.body, td.distinct) {
-                                let sub: HashMap<String, Ty> = td.params.iter().cloned().zip(largs).collect();
+                                let sub: HashMap<Symbol, Ty> = td.params.iter().cloned().zip(largs).collect();
                                 let a = a.clone();
                                 return self.lower(&a, &sub);
                             }
-                            Ty::Con(n.clone(), largs)
+                            Ty::Con(n.sym(), largs)
                         }
-                        None => match self.env.variant_parent(n) {
+                        None => match self.env.variant_parent(n.sym()) {
                             // a variant is a type, with its sum's parameters
                             Some(p) => {
-                                let want = self.env.types[&p].params.len();
+                                let want = self.env.types[&p.sym()].params.len();
                                 let largs = if largs.is_empty() && want > 0 { (0..want).map(|_| self.fresh()).collect() } else { largs };
                                 if largs.len() != want {
                                     self.err(format!("`{n}` is a variant of `{p}`, which takes {want} type arguments"));
                                 }
-                                Ty::Con(n.clone(), largs)
+                                Ty::Con(n.sym(), largs)
                             }
                             None => {
                                 self.err(format!("unknown type `{n}`"));
@@ -735,11 +792,11 @@ impl<'a> Checker<'a> {
     /// `trait_method`, with `Self` the given type when it is known (a static
     /// call names it: `Money.empty()`, `T.empty()`).
     fn trait_method_for(&mut self, name: &str, trait_name: &str, self_ty: Option<Ty>) -> Ty {
-        let tr = self.env.traits[trait_name].clone();
+        let tr = self.env.traits[&trait_name.sym()].clone();
         let m = tr.methods.iter().find(|m| m.decl.name == name).unwrap().decl.clone();
-        let mut vars: HashMap<String, Ty> = tr.params.iter().map(|p| (p.clone(), self.fresh())).collect();
+        let mut vars: HashMap<Symbol, Ty> = tr.params.iter().map(|p| (p.clone(), self.fresh())).collect();
         for p in &m.type_params {
-            vars.insert(p.clone(), self.fresh());
+            vars.insert(p.sym(), self.fresh());
         }
         let self_t = self_ty.unwrap_or_else(|| self.fresh());
         let saved = self.self_ty.replace(self_t.clone());
@@ -751,18 +808,18 @@ impl<'a> Checker<'a> {
     }
 
     /// Supertraits of `tr[args]`, transitively, with arguments substituted.
-    fn supers_of(&mut self, tr: &str, args: &[Ty], depth: usize) -> Vec<(String, Vec<Ty>)> {
-        let Some(td) = self.env.traits.get(tr).cloned() else { return vec![] };
+    fn supers_of(&mut self, tr: &str, args: &[Ty], depth: usize) -> Vec<(Symbol, Vec<Ty>)> {
+        let Some(td) = self.env.traits.get(&tr.sym()).cloned() else { return vec![] };
         if depth > 8 {
             return vec![];
         }
-        let vars: HashMap<String, Ty> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+        let vars: HashMap<Symbol, Ty> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
         let mut out = Vec::new();
         for s in &td.supers {
             if let TypeExpr::Named(sn, sargs) = s {
                 let sa: Vec<Ty> = sargs.iter().map(|a| self.lower(a, &vars)).collect();
                 out.extend(self.supers_of(sn, &sa, depth + 1));
-                out.push((sn.clone(), sa));
+                out.push((*sn, sa));
             }
         }
         out
@@ -783,9 +840,9 @@ impl<'a> Checker<'a> {
         }
         // a variant implements what its sum implements, unless it has an impl of its own
         if let Ty::Con(v, va) = &t {
-            if let Some(p) = self.env.variant_parent(v) {
+            if let Some(p) = self.env.variant_parent(v.sym()) {
                 if !self.env.impls.iter().any(|i| i.trait_name == tr && texpr_head(&i.for_type) == *v) {
-                    return self.satisfies(&Ty::Con(p, va.clone()), tr, args, depth + 1);
+                    return self.satisfies(&Ty::Con(Symbol::from(p), va.clone()), tr, args, depth + 1);
                 }
             }
         }
@@ -814,7 +871,7 @@ impl<'a> Checker<'a> {
             Ty::Str => "String".into(),
             Ty::Unit => "Unit".into(),
             Ty::Fn(..) => "Fn".into(),
-            Ty::Con(n, _) => n.clone(),
+            Ty::Con(n, _) => n.to_string(),
         };
         // a value typed by a trait implements that trait (and its supertraits)
         if let Ty::Con(n, nargs) = &t {
@@ -835,7 +892,7 @@ impl<'a> Checker<'a> {
         let cands: Vec<ImplDecl> = self.env.impls.iter().filter(|i| i.trait_name == tr && texpr_head(&i.for_type) == head).cloned().collect();
         for imp in cands {
             let snapshot = self.subst.clone();
-            let vars: HashMap<String, Ty> = imp.type_params.iter().map(|p| (p.clone(), self.fresh())).collect();
+            let vars: HashMap<Symbol, Ty> = imp.type_params.iter().map(|p| (p.clone(), self.fresh())).collect();
             let saved_rigid = std::mem::take(&mut self.rigid);
             let ft = self.lower(&imp.for_type, &vars);
             let targs: Vec<Ty> = imp.trait_args.iter().map(|a| self.lower(a, &vars)).collect();
@@ -876,9 +933,9 @@ impl<'a> Checker<'a> {
         for b in bounds {
             for tr in &b.traits {
                 match tr {
-                    TypeExpr::Named(tn, targs) if self.env.traits.contains_key(tn) => {
+                    TypeExpr::Named(tn, targs) if self.env.traits.contains_key(&tn.sym()) => {
                         let args: Vec<Ty> = targs.iter().map(|a| self.lower(a, &HashMap::new())).collect();
-                        self.bounds.entry(b.param.clone()).or_default().push((tn.clone(), args));
+                        self.bounds.entry(b.param).or_default().push((tn.sym(), args));
                     }
                     other => self.err(format!("`{}` is not a trait", crate::printer::ty(other))),
                 }
@@ -897,9 +954,9 @@ impl<'a> Checker<'a> {
         }
         for p in &f.params {
             let t = self.lower(&p.ty, &HashMap::new());
-            self.bind(&p.name, t);
+            self.bind(p.name, t);
             if p.mutable {
-                self.bind(&format!("mut:{}", p.name), Ty::Unit);
+                self.bind((&format!("mut:{}", p.name)).sym(), Ty::Unit);
             }
             self.bind_written(&p.name, &p.ty);
         }
@@ -916,7 +973,7 @@ impl<'a> Checker<'a> {
         self.ret = outer;
         self.expect(&ret, &bt, "function body");
         self.scopes.push(HashMap::new());
-        self.bind("it", ret.clone());
+        self.bind(("it").sym(), ret.clone());
         for en in &f.ensures {
             let t = self.infer(en);
             self.expect(&Ty::Bool, &t, "ensures clause");
@@ -926,6 +983,21 @@ impl<'a> Checker<'a> {
         self.scopes.pop();
     }
 
+    /// A field's default has the field's type, and a literal one satisfies its
+    /// refinement. It is checked where the type is defined, with no variables
+    /// in scope (not even the other fields).
+    fn check_defaults(&mut self, fs: &[Field]) {
+        for f in fs {
+            let Some(x) = &f.default else { continue };
+            let want = self.lower(&f.ty, &HashMap::new());
+            let got = self.infer_with(x, Some(&want));
+            self.expect(&want, &got, &format!("default of field `{}`", f.name));
+            if self.literal_outside(&f.ty, x) {
+                self.err(format!("the default of `{}`, {}, does not satisfy `{}`", f.name, crate::printer::expr(x, 0), crate::printer::ty(&f.ty)));
+            }
+        }
+    }
+
     /// Type-check the predicates of inline refinements inside a written type.
     fn check_refined(&mut self, t: &TypeExpr) {
         match t {
@@ -933,7 +1005,7 @@ impl<'a> Checker<'a> {
                 self.check_refined(b);
                 let bt = self.lower(b, &HashMap::new());
                 self.scopes.push(HashMap::new());
-                self.bind("it", bt);
+                self.bind(("it").sym(), bt);
                 let pt = self.infer(pred);
                 self.expect(&Ty::Bool, &pt, &format!("refinement `where {}`", crate::printer::expr(pred, 0)));
                 self.scopes.pop();
@@ -947,17 +1019,17 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn instantiate(&mut self, params: &[String], t: &TypeExpr) -> Ty {
-        let vars: HashMap<String, Ty> = params.iter().map(|p| (p.clone(), self.fresh())).collect();
+    fn instantiate(&mut self, params: &[Symbol], t: &TypeExpr) -> Ty {
+        let vars: HashMap<Symbol, Ty> = params.iter().map(|p| (p.clone(), self.fresh())).collect();
         self.lower(t, &vars)
     }
 
-    fn lookup(&self, x: &str) -> Option<Ty> {
-        self.scopes.iter().rev().find_map(|s| s.get(x).cloned())
+    fn lookup(&self, x: Symbol) -> Option<Ty> {
+        self.scopes.iter().rev().find_map(|s| s.get(&x).cloned())
     }
 
-    fn bind(&mut self, x: &str, t: Ty) {
-        self.scopes.last_mut().unwrap().insert(x.to_string(), t);
+    fn bind(&mut self, x: Symbol, t: Ty) {
+        self.scopes.last_mut().unwrap().insert(x, t);
     }
 
     fn fn_scheme(f: &FnDecl) -> TypeExpr {
@@ -966,15 +1038,15 @@ impl<'a> Checker<'a> {
 
     /// Type of a named function value (top-level or builtin), freshly instantiated.
     fn global_fn(&mut self, name: &str) -> Option<Ty> {
-        if let Some(f) = self.env.fns.get(name) {
+        if let Some(f) = self.env.fns.get(&name.sym()) {
             let f = f.clone();
-            let vars: HashMap<String, Ty> = f.type_params.iter().map(|p| (p.clone(), self.fresh())).collect();
+            let vars: HashMap<Symbol, Ty> = f.type_params.iter().map(|p| (p.clone(), self.fresh())).collect();
             let fty = self.lower(&Self::fn_scheme(&f), &vars);
             for b in &f.bounds {
                 for tr in &b.traits {
                     if let TypeExpr::Named(tn, targs) = tr {
                         let args: Vec<Ty> = targs.iter().map(|a| self.lower(a, &vars)).collect();
-                        self.pending.push((vars[&b.param].clone(), tn.clone(), args, format!("calling `{name}`")));
+                        self.pending.push((vars[&b.param].clone(), tn.to_string(), args, format!("calling `{name}`")));
                     }
                 }
             }
@@ -983,20 +1055,20 @@ impl<'a> Checker<'a> {
                 let short = crate::names::short(&name);
                 self.err(format!("`{short}` needs to know its type arguments when it runs (it calls methods on the type), so it can't be passed as a value: pass a lambda (`x -> {short}(x)`)"));
             }
-            self.last_inst = Some((name.to_string(), vars));
+            self.last_inst = Some((name.sym(), vars));
             return Some(fty);
         }
         if let Some((tr, _)) = self.env.method_contract(name) {
             let tn = tr.name.clone();
             return Some(self.trait_method(name, &tn));
         }
-        if self.env.is_method(name) {
+        if self.env.is_method(name.sym()) {
             let short = crate::names::short(&name);
             self.err(format!("which `{short}` runs depends on the type of the value it is called on (several types or traits have one): call it on a value, or pass a lambda such as `x -> x.{short}()`"));
             return Some(self.fresh());
         }
         if let Some(Builtin { params: ps, sig, .. }) = BUILTINS.iter().chain(crate::stdlib::HOST).find(|b| b.name == name) {
-            let ps: Vec<String> = ps.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
+            let ps: Vec<Symbol> = ps.split(',').filter(|s| !s.is_empty()).map(Symbol::from).collect();
             return Some(self.instantiate(&ps, &parse_type_str(sig)));
         }
         None
@@ -1019,45 +1091,45 @@ impl<'a> Checker<'a> {
         self.errors.truncate(n);
         let Ty::Con(head, _) = self.resolve(&rt) else { return false };
         let sm = m.rsplit('.').next().unwrap_or(m);
-        std::iter::once(head.clone()).chain(self.env.variant_parent(&head)).any(|h| {
+        std::iter::once(head.clone()).chain(self.env.variant_parent((&head.sym().sym()).sym())).any(|h| {
             self.env.inherent.get(&h).is_some_and(|imp| imp.methods.iter().any(|x| x.name.rsplit('.').next() == Some(sm) && crate::resolve::takes_self(x)))
         })
     }
 
     /// `dotted`: written `x.m(..)`, where a type's own method comes before a
     /// function of the same name (`m(x, ..)` always means the function).
-    fn by_receiver(&mut self, m: &str, all: &[&Expr], site: usize, dotted: bool) -> Option<Ty> {
+    fn by_receiver(&mut self, m: &str, all: &[&Expr], site: usize, dotted: bool, recv_marked: Option<bool>) -> Option<Ty> {
         // a function of that name takes the call, unless the receiver's type
         // has a method of its own by that name (`app.handle(req)` inside a
         // `fn handle`)
-        if self.lookup(m).is_some() || self.env.fns.contains_key(m) {
+        if self.lookup(m.sym()).is_some() || self.env.fns.contains_key(&Symbol::new(m)) {
             if !dotted || !all.first().is_some_and(|r| self.has_own_method(r, m)) {
                 return None;
             }
-        } else if split_trait_call(m).is_some() || !self.env.is_method(m) {
+        } else if split_trait_call(m).is_some() || !self.env.is_method(m.sym()) {
             return None;
         }
         let short = |q: &str| crate::names::short(q).to_string();
-        let sm = short(m);
+        let sm = short(&m);
         let recv = all.first()?;
         let n = self.errors.len();
         let rt = self.infer(recv);
         self.errors.truncate(n);
         let rt = self.resolve(&rt);
         // the traits the receiver is known to have; `what` names it in errors
-        let (head, what, traits): (Option<String>, String, Vec<String>) = match &rt {
+        let (head, what, traits): (Option<String>, String, Vec<Symbol>) = match &rt {
             Ty::Rigid(p) => {
                 let mut all = vec![];
                 for (tr, args) in self.bounds.get(p).cloned().unwrap_or_default() {
                     all.push(tr.clone());
                     all.extend(self.supers_of(&tr, &args, 0).into_iter().map(|(s, _)| s));
                 }
-                (None, p.clone(), all)
+                (None, p.to_string(), all)
             }
             Ty::Con(t, args) if self.env.traits.contains_key(t) => {
                 let mut all = vec![t.clone()];
                 all.extend(self.supers_of(t, args, 0).into_iter().map(|(s, _)| s));
-                (None, short(t), all)
+                (None, short(t).to_string(), all)
             }
             Ty::Int | Ty::Float | Ty::Bool | Ty::Str | Ty::Con(..) => {
                 let head = match &rt {
@@ -1065,11 +1137,11 @@ impl<'a> Checker<'a> {
                     Ty::Float => "Float".into(),
                     Ty::Bool => "Bool".into(),
                     Ty::Str => "String".into(),
-                    Ty::Con(h, _) => h.clone(),
+                    Ty::Con(h, _) => h.to_string(),
                     _ => unreachable!(),
                 };
                 // the type's own method of that name comes first (a variant's before its sum's)
-                let heads: Vec<String> = std::iter::once(head.clone()).chain(self.env.variant_parent(&head)).collect();
+                let heads: Vec<Symbol> = std::iter::once(head.sym()).chain(self.env.variant_parent(head.sym())).collect();
                 for h in &heads {
                     if let Some(imp) = self.env.inherent.get(h).cloned() {
                         if let Some(f) = imp.methods.iter().find(|x| short(&x.name) == sm && crate::resolve::takes_self(x)).cloned() {
@@ -1081,29 +1153,29 @@ impl<'a> Checker<'a> {
                     }
                 }
                 let trs = self.env.impls.iter().filter(|i| heads.contains(&texpr_head(&i.for_type))).map(|i| i.trait_name.clone()).collect();
-                (Some(head.clone()), short(&head), trs)
+                (Some(head.clone()), short(&head).to_string(), trs)
             }
             _ => return None,
         };
-        let mut cands: Vec<String> = traits.into_iter().filter(|t| self.env.traits.get(t).is_some_and(|td| td.methods.iter().any(|x| short(&x.decl.name) == sm))).collect();
+        let mut cands: Vec<Symbol> = traits.into_iter().filter(|t| self.env.traits.get(&t.sym()).is_some_and(|td| td.methods.iter().any(|x| short(&x.decl.name) == sm))).collect();
         cands.sort();
         cands.dedup();
-        let declares_m = |c: &Checker, t: &str| c.env.traits.get(t).is_some_and(|td| td.methods.iter().any(|x| x.decl.name == m));
+        let declares_m = |c: &Checker, t: &str| c.env.traits.get(&t.sym()).is_some_and(|td| td.methods.iter().any(|x| x.decl.name == m));
         match cands.as_slice() {
             // the resolved name is right (or the usual errors apply)
             [t] if declares_m(self, t) => None,
             [t] => {
                 let t = t.clone();
                 let mq = self.env.traits[&t].methods.iter().find(|x| short(&x.decl.name) == sm).unwrap().decl.name.clone();
-                self.targets.push((site, Target::Other(t.clone(), mq.clone())));
-                self.check_mut_args(&mq, all, true);
+                self.targets.push((site, Target::Other(t.to_string(), mq.to_string())));
+                self.check_mut_args(&mq, all, recv_marked);
                 let ft = self.trait_method(&mq, &t);
                 let muts = self.mut_mask(&mq);
                 Some(self.call_with(ft, all, &format!("call to `{sm}`"), &muts))
             }
             [] if head.as_deref().is_some_and(|h| ["Int", "Float", "Bool", "String", "List", "Dict", "Set"].contains(&h)) && BUILTINS.iter().any(|b| b.name == sm) => {
                 self.targets.push((site, Target::Builtin(sm.clone())));
-                if let Some(t) = self.overloaded(&sm, all) {
+                if let Some(t) = self.overloaded(sm.sym(), all) {
                     return Some(t);
                 }
                 let ft = self.global_fn(&sm)?;
@@ -1137,15 +1209,15 @@ impl<'a> Checker<'a> {
     /// the actual type defines `m` itself, that doesn't say which trait's
     /// meaning the call wants. `None` when `m` is not such a method.
     fn receiver_method(&mut self, m: &str, recv: Option<&Expr>, site: usize, dotted: bool) -> Option<Ty> {
-        if self.lookup(m).is_some() || self.env.fns.contains_key(m) {
+        if self.lookup(m.sym()).is_some() || self.env.fns.contains_key(&Symbol::new(m)) {
             if !dotted || !recv.is_some_and(|r| self.has_own_method(r, m)) {
                 return None;
             }
-        } else if !self.env.is_method(m) || self.env.method_contract(m).is_some() {
+        } else if !self.env.is_method(m.sym()) || self.env.method_contract(m).is_some() {
             return None;
         }
         let short = |q: &str| crate::names::short(q).to_string();
-        let sm = short(m);
+        let sm = short(&m);
         let Some(recv) = recv else {
             self.err(format!("`{sm}` is a method: call it on a value (`x.{sm}()`)"));
             return Some(self.fresh());
@@ -1155,30 +1227,30 @@ impl<'a> Checker<'a> {
         let rt = self.infer(recv);
         self.errors.truncate(n);
         let rt = self.resolve(&rt);
-        let declares = |c: &Checker, tr: &str| c.env.traits.get(tr).is_some_and(|t| t.methods.iter().any(|x| x.decl.name == m));
+        let declares = |c: &Checker, tr: &str| c.env.traits.get(&tr.sym()).is_some_and(|t| t.methods.iter().any(|x| x.decl.name == m));
         let via_trait = |c: &mut Checker, tr: &str| {
             c.targets.push((site, Target::Trait(tr.to_string())));
-            c.trait_method(m, tr)
+            c.trait_method(&m, tr)
         };
         // only traits are known: a type parameter's bounds, or a trait-typed value
-        let known: Option<(String, Vec<String>)> = match &rt {
+        let known: Option<(String, Vec<Symbol>)> = match &rt {
             Ty::Rigid(p) => {
                 let mut all = vec![];
                 for (tr, args) in self.bounds.get(p).cloned().unwrap_or_default() {
                     all.push(tr.clone());
                     all.extend(self.supers_of(&tr, &args, 0).into_iter().map(|(s, _)| s));
                 }
-                Some((p.clone(), all))
+                Some((p.to_string(), all))
             }
             Ty::Con(t, args) if self.env.traits.contains_key(t) => {
                 let mut all = vec![t.clone()];
                 all.extend(self.supers_of(t, args, 0).into_iter().map(|(s, _)| s));
-                Some((short(t), all))
+                Some((short(t).to_string(), all))
             }
             _ => None,
         };
         if let Some((what, trs)) = known {
-            let mut cands: Vec<String> = trs.into_iter().filter(|t| declares(self, t)).collect();
+            let mut cands: Vec<Symbol> = trs.into_iter().filter(|t| declares(self, t)).collect();
             cands.sort();
             cands.dedup();
             return Some(match cands.as_slice() {
@@ -1203,7 +1275,7 @@ impl<'a> Checker<'a> {
             Ty::Bool => "Bool".into(),
             Ty::Str => "String".into(),
             Ty::Unit => "Unit".into(),
-            Ty::Con(h, _) => h.clone(),
+            Ty::Con(h, _) => h.to_string(),
             Ty::Union(_) => {
                 self.err(format!("`{sm}` is ambiguous here: the value is a `{}`, and nothing says which member's `{sm}` this call means (narrow it with `match` first)", show_ty(&rt)));
                 return Some(self.fresh());
@@ -1214,15 +1286,15 @@ impl<'a> Checker<'a> {
             }
         };
         // the concrete type is known: its own method first, a variant's own before its sum's
-        let heads: Vec<String> = std::iter::once(head.clone()).chain(self.env.variant_parent(&head)).collect();
+        let heads: Vec<Symbol> = std::iter::once(head.sym()).chain(self.env.variant_parent(head.sym())).collect();
         for h in &heads {
             if let Some(imp) = self.env.inherent.get(h).cloned() {
                 if let Some(f) = imp.methods.iter().find(|x| x.name == m && crate::resolve::takes_self(x)).cloned() {
-                    self.targets.push((site, Target::Own(crate::resolve::static_name(h, m))));
+                    self.targets.push((site, Target::Own(crate::resolve::static_name(h, &m))));
                     return Some(self.own_method_ty(&imp, &f));
                 }
             }
-            let trs = self.env.traits_with(m, h);
+            let trs = self.env.traits_with(&m, h);
             match trs.as_slice() {
                 [tr] => {
                     let tr = tr.clone();
@@ -1239,7 +1311,7 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        match self.env.method_traits.get(m).map(|v| v.as_slice()) {
+        match self.env.method_traits.get(&m.sym()).map(|v| v.as_slice()) {
             // the obligation reports that the type doesn't implement it
             Some([tr]) => {
                 let tr = tr.clone();
@@ -1257,13 +1329,13 @@ impl<'a> Checker<'a> {
     fn record_inst(&mut self, callee: &Expr, site: usize) {
         let Expr::Var(n) = callee else { return };
         let Some((name, vars)) = self.last_inst.take() else { return };
-        if &name != n || self.lookup(n).is_some() {
+        if &name != n || self.lookup(n.sym()).is_some() {
             return;
         }
         let Some(f) = self.env.fns.get(n) else { return };
         let need = self.env.type_args(f);
         if !need.is_empty() {
-            self.insts.push((site, need.into_iter().map(|p| { let t = vars[&p].clone(); (p, t) }).collect()));
+            self.insts.push((site, need.into_iter().map(|p| (p.to_string(), vars[&p].clone())).collect()));
         }
     }
 
@@ -1275,13 +1347,13 @@ impl<'a> Checker<'a> {
             for (p, t) in pairs {
                 let t = self.resolve(&t);
                 refs.push(match &t {
-                    Ty::Rigid(q) => TypeRef::Param(q.clone()),
+                    Ty::Rigid(q) => TypeRef::Param(q.to_string()),
                     Ty::Con(h, _) if self.env.traits.contains_key(h) => {
                         self.err(format!("`{p}` must be a concrete type here (it has methods called on the type), not any `{}`", crate::names::short(&h)));
                         continue;
                     }
                     _ => match ty_head(&t) {
-                        Some(h) => TypeRef::Head(h),
+                        Some(h) => TypeRef::Head(h.to_string()),
                         // unknown: the bound's obligation already asks for an annotation
                         None => continue,
                     },
@@ -1296,10 +1368,10 @@ impl<'a> Checker<'a> {
     /// declares it. `None` when this is not such a call.
     fn static_call(&mut self, recv: &Expr, m: &str, site: usize) -> Option<Ty> {
         let x = match recv {
-            Expr::Ctor(x, CtorArgs::None) | Expr::Var(x) if self.lookup(x).is_none() => x.clone(),
+            Expr::Ctor(x, CtorArgs::None) | Expr::Var(x) if self.lookup(x.sym()).is_none() => x.clone(),
             _ => return None,
         };
-        let statics: Vec<String> = self.env.method_traits.get(m)?.iter().filter(|t| self.env.traits.get(*t).is_some_and(|td| td.methods.iter().any(|tm| tm.decl.name == m && !crate::resolve::takes_self(&tm.decl)))).cloned().collect();
+        let statics: Vec<Symbol> = self.env.method_traits.get(&m.sym())?.iter().filter(|t| self.env.traits.get(*t).is_some_and(|td| td.methods.iter().any(|tm| tm.decl.name == m && !crate::resolve::takes_self(&tm.decl)))).cloned().collect();
         if statics.is_empty() {
             return None;
         }
@@ -1308,22 +1380,22 @@ impl<'a> Checker<'a> {
         // the type, how it is passed at runtime, and the traits it is known to have
         let rigid = |c: &mut Checker, p: &str| {
             let mut all = vec![];
-            for (tr, args) in c.bounds.get(p).cloned().unwrap_or_default() {
+            for (tr, args) in c.bounds.get(&p.sym()).cloned().unwrap_or_default() {
                 all.push(tr.clone());
                 all.extend(c.supers_of(&tr, &args, 0).into_iter().map(|(s, _)| s));
             }
             all
         };
-        let (ty, tref, known): (Ty, TypeRef, Vec<String>) = if x == "Self" {
+        let (ty, tref, known): (Ty, TypeRef, Vec<Symbol>) = if x == "Self" {
             match self.self_ty.clone() {
                 Some(Ty::Rigid(p)) => {
                     let k = rigid(self, &p);
-                    (Ty::Rigid(p.clone()), TypeRef::Param(p), k)
+                    (Ty::Rigid(p.clone()), TypeRef::Param(p.to_string()), k)
                 }
                 Some(t) => {
                     let h = ty_head(&self.resolve(&t))?;
                     let k = self.env.impls.iter().filter(|i| texpr_head(&i.for_type) == h).map(|i| i.trait_name.clone()).collect();
-                    (t, TypeRef::Head(h), k)
+                    (t, TypeRef::Head(h.to_string()), k)
                 }
                 None => return None,
             }
@@ -1334,7 +1406,7 @@ impl<'a> Checker<'a> {
                 return Some(self.fresh());
             }
             let k = rigid(self, &x);
-            (Ty::Rigid(x.clone()), TypeRef::Param(x.clone()), k)
+            (Ty::Rigid(x), TypeRef::Param(x.to_string()), k)
         } else {
             let t = match x.as_str() {
                 "Int" => Ty::Int,
@@ -1344,15 +1416,15 @@ impl<'a> Checker<'a> {
                 _ => match self.env.types.get(&x) {
                     Some(td) => {
                         let args = td.params.iter().map(|_| self.fresh()).collect();
-                        Ty::Con(x.clone(), args)
+                        Ty::Con(x, args)
                     }
                     None => return None,
                 },
             };
             let k = self.env.impls.iter().filter(|i| texpr_head(&i.for_type) == x).map(|i| i.trait_name.clone()).collect();
-            (t, TypeRef::Head(x.clone()), k)
+            (t, TypeRef::Head(x.to_string()), k)
         };
-        let mut cands: Vec<String> = known.into_iter().filter(|t| statics.contains(t)).collect();
+        let mut cands: Vec<Symbol> = known.into_iter().filter(|t| statics.contains(t)).collect();
         cands.sort();
         cands.dedup();
         let tr = match cands.as_slice() {
@@ -1369,14 +1441,14 @@ impl<'a> Checker<'a> {
                 return Some(self.fresh());
             }
         };
-        self.targets.push((site, Target::Static(tr.clone(), tref)));
+        self.targets.push((site, Target::Static(tr.to_string(), tref)));
         Some(self.trait_method_for(m, &tr, Some(ty)))
     }
 
     /// The type of a type's own method, freshly instantiated: `Self` is the
     /// type, and the impl's and method's type parameters are fresh.
     fn own_method_ty(&mut self, imp: &ImplDecl, f: &FnDecl) -> Ty {
-        let vars: HashMap<String, Ty> = imp.type_params.iter().chain(&f.type_params).map(|p| (p.clone(), self.fresh())).collect();
+        let vars: HashMap<Symbol, Ty> = imp.type_params.iter().chain(&f.type_params).map(|p| (p.clone(), self.fresh())).collect();
         let self_t = self.lower(&imp.for_type, &vars);
         let saved = self.self_ty.replace(self_t);
         let fty = self.lower(&Self::fn_scheme(f), &vars);
@@ -1386,7 +1458,7 @@ impl<'a> Checker<'a> {
                 if let TypeExpr::Named(tn, targs) = tr {
                     let args: Vec<Ty> = targs.iter().map(|a| self.lower(a, &vars)).collect();
                     if let Some(v) = vars.get(&b.param) {
-                        self.pending.push((v.clone(), tn.clone(), args, format!("calling `{}`", f.name)));
+                        self.pending.push((v.clone(), tn.to_string(), args, format!("calling `{}`", f.name)));
                     }
                 }
             }
@@ -1396,12 +1468,12 @@ impl<'a> Checker<'a> {
 
     /// The written type of each `mut` parameter of a named function or trait method.
     fn mut_mask(&self, name: &str) -> Vec<Option<TypeExpr>> {
-        if self.lookup(name).is_some() {
+        if self.lookup(name.sym()).is_some() {
             return vec![];
         }
-        let ps = match self.env.fns.get(name) {
+        let ps = match self.env.fns.get(&name.sym()) {
             Some(f) => f.params.clone(),
-            None => self.env.method_params(name).unwrap_or_default(),
+            None => self.env.method_params(name.sym()).unwrap_or_default(),
         };
         ps.iter().map(|p| p.mutable.then(|| p.ty.clone())).collect()
     }
@@ -1478,7 +1550,7 @@ impl<'a> Checker<'a> {
             return r;
         }
         for (i, (p, a)) in ps.iter().zip(args).enumerate() {
-            let at = self.infer_with(a, Some(p));
+            let at = self.infer_arg(a, Some(p));
             if let Some(Some(pw)) = muts.get(i) {
                 // the callee may put any value of its parameter type into the caller's variable
                 if self.unify(p, &at).is_err() {
@@ -1508,17 +1580,25 @@ impl<'a> Checker<'a> {
         r
     }
 
+    /// A call's argument: `f(mut x)` is `x`, marked for a `mut` parameter
+    /// (`check_mut_args` says whether it may be).
+    fn infer_arg(&mut self, a: &Expr, expected: Option<&Ty>) -> Ty {
+        match a {
+            Expr::Mut(x) if marks_arg(a) => self.infer_with(x, expected),
+            _ => self.infer_with(a, expected),
+        }
+    }
+
     fn infer_with(&mut self, e: &Expr, expected: Option<&Ty>) -> Ty {
         // Bidirectional lite: lambdas take their parameter types from context.
         if let (Expr::Lambda(ps, body), Some(exp)) = (e, expected) {
             if let Ty::Fn(pts, _) = self.resolve(exp) {
                 if pts.len() == ps.len() {
-                    return self.lambda(ps, Some(pts), body);
+                    let t = self.lambda(ps, Some(pts), body);
+                    self.types.push((e as *const Expr as usize, t.clone()));
+                    return t;
                 }
             }
-        }
-        if let Expr::Mut(x) = e {
-            return self.infer_with(x, expected);
         }
         if let (Expr::Hole(h), Some(exp)) = (e, expected) {
             self.record_hole(h, exp.clone());
@@ -1547,7 +1627,7 @@ impl<'a> Checker<'a> {
         }
         self.scopes.push(HashMap::new());
         for (p, t) in ps.iter().zip(&pts) {
-            self.bind(&p.name, t.clone());
+            self.bind(p.name, t.clone());
             if let Some(w) = &p.ty {
                 self.bind_written(&p.name, w);
             }
@@ -1570,17 +1650,17 @@ impl<'a> Checker<'a> {
         for s in &self.scopes {
             for (k, v) in s.iter().filter(|(k, _)| !k.contains(':')) {
                 ctx.retain(|(n, _)| n != k);
-                ctx.push((k.clone(), v.clone()));
+                ctx.push((k.to_string(), v.clone()));
             }
         }
         ctx.sort_by(|a, b| a.0.cmp(&b.0));
         self.holes.push((name.to_string(), t, ctx));
     }
 
-    fn ctor_type(&mut self, c: &str) -> Option<(Ty, Vec<(Option<String>, Ty)>)> {
-        let tname = self.env.ctors.get(c)?.clone();
+    fn ctor_type(&mut self, c: Symbol) -> Option<(Ty, Vec<(Option<Symbol>, Ty)>)> {
+        let tname = self.env.ctors.get(&c.sym())?.clone();
         let td = self.env.types[&tname].clone();
-        let vars: HashMap<String, Ty> = td.params.iter().map(|p| (p.clone(), self.fresh())).collect();
+        let vars: HashMap<Symbol, Ty> = td.params.iter().map(|p| (p.clone(), self.fresh())).collect();
         let result = Ty::Con(tname.clone(), td.params.iter().map(|p| vars[p].clone()).collect());
         let fields = match &td.body {
             TypeBody::Record(fs) => fs.iter().map(|f| (Some(f.name.clone()), self.lower(&f.ty, &vars))).collect(),
@@ -1600,6 +1680,12 @@ impl<'a> Checker<'a> {
     /// The type of `e`; `expected` (when known) is what the context wants, used
     /// to pick a variant's own type and to check branches against it.
     fn infer_at(&mut self, e: &Expr, expected: Option<&Ty>) -> Ty {
+        let t = self.infer_node(e, expected);
+        self.types.push((e as *const Expr as usize, t.clone()));
+        t
+    }
+
+    fn infer_node(&mut self, e: &Expr, expected: Option<&Ty>) -> Ty {
         match e {
             Expr::Int(_) | Expr::BigInt(_) => Ty::Int,
             Expr::Float(_) => Ty::Float,
@@ -1612,8 +1698,13 @@ impl<'a> Checker<'a> {
                 self.record_hole(h, t.clone());
                 t
             }
+            // rewritten into builtin calls when the program is resolved
+            Expr::Range(..) | Expr::Index(..) | Expr::Comp(..) | Expr::Dict(..) | Expr::Set(..) => {
+                self.err("internal: a range, slice or comprehension was not desugared");
+                self.fresh()
+            }
             Expr::Var(x) => {
-                if let Some(t) = self.lookup(x) {
+                if let Some(t) = self.lookup(x.sym()) {
                     return t;
                 }
                 if let Some(t) = self.global_fn(x) {
@@ -1638,8 +1729,8 @@ impl<'a> Checker<'a> {
                 Ty::Con("List".into(), vec![t])
             }
             Expr::Ctor(c, args) => {
-                let Some((rt, fields)) = self.ctor_type(c) else {
-                    if self.env.traits.contains_key(c) {
+                let Some((rt, fields)) = self.ctor_type(c.sym()) else {
+                    if self.env.traits.contains_key(&c.sym()) {
                         self.err(format!("`{c}` is a trait, not a value: call its methods on a value that implements it (e.g. a `{}` parameter)", c.to_lowercase()));
                         return self.fresh();
                     }
@@ -1648,7 +1739,7 @@ impl<'a> Checker<'a> {
                 };
                 // the expected type gives the type arguments (so `Err(NonEmpty)` checks its
                 // argument against the error type), and asks for the variant's own type
-                let own = self.variant_ty(c, &rt);
+                let own = self.variant_ty(c.sym(), &rt);
                 let mut result = rt.clone();
                 if let Some(exp) = expected.map(|t| self.resolve(t)) {
                     let members = match &exp {
@@ -1685,7 +1776,7 @@ impl<'a> Checker<'a> {
                         }
                     }
                     CtorArgs::Update(base, fs) => {
-                        let tname = self.env.ctors.get(c).cloned().unwrap_or_default();
+                        let tname = self.env.ctors.get(&c.sym()).cloned().unwrap_or_default();
                         if !matches!(self.env.types.get(&tname).map(|t| &t.body), Some(TypeBody::Record(_))) {
                             self.err(format!("`{c} {{ ..base }}` update syntax works on record types only"));
                         }
@@ -1728,17 +1819,17 @@ impl<'a> Checker<'a> {
                 let args: Vec<&Expr> = args.iter().collect();
                 let args = &args[..];
                 if let Expr::Var(n) = &**f {
-                    if let Some(t) = self.by_receiver(n, args, e as *const Expr as usize, false) {
+                    if let Some(t) = self.by_receiver(n, args, e as *const Expr as usize, false, None) {
                         return t;
                     }
-                    if self.lookup(n).is_none() {
-                        self.check_mut_args(n, args, false);
+                    if self.lookup(n.sym()).is_none() {
+                        self.check_mut_args(n, args, None);
                     } else {
-                        for a in args.iter().filter(|a| matches!(a, Expr::Mut(_))) {
+                        for a in args.iter().filter(|a| marks_arg(a)) {
                             self.err(format!("`{}`: the closure `{n}` has no `mut` parameters", crate::printer::expr(a, 0)));
                         }
                     }
-                    if let Some(t) = self.overloaded(n, args) {
+                    if let Some(t) = self.overloaded(n.sym(), args) {
                         return t;
                     }
                 }
@@ -1765,13 +1856,16 @@ impl<'a> Checker<'a> {
             Expr::Method(recv, m, args) => {
                 // the program's own nodes, not copies: decisions are recorded by node
                 let all: Vec<&Expr> = std::iter::once(&**recv).chain(args.iter()).collect();
-                if let Some(t) = self.by_receiver(m, &all, e as *const Expr as usize, true) {
+                let marked = Some(self.marked.contains(&(e as *const Expr as usize)));
+                if let Some(t) = self.by_receiver(m, &all, e as *const Expr as usize, true, marked) {
                     return t;
                 }
-                if self.lookup(m).is_none() {
-                    self.check_mut_args(m, &all, true);
+                if self.lookup(m.sym()).is_none() {
+                    self.check_mut_args(m, &all, marked);
+                } else if marked == Some(true) {
+                    self.err(format!("`mut` marks a call that changes its receiver, but `{m}` is a closure"));
                 }
-                if let Some(t) = self.overloaded(m, &all) {
+                if let Some(t) = self.overloaded(m.sym(), &all) {
                     return t;
                 }
                 if let Some(ft) = self.static_call(recv, m, e as *const Expr as usize) {
@@ -1782,7 +1876,7 @@ impl<'a> Checker<'a> {
                 self.last_inst = None;
                 let ft = match self.receiver_method(m, Some(recv), e as *const Expr as usize, true) {
                     Some(ft) => ft,
-                    None => match self.lookup(m).or_else(|| {
+                    None => match self.lookup(m.sym()).or_else(|| {
                         self.callee = true;
                         let t = self.global_fn(m);
                         self.callee = false;
@@ -1792,7 +1886,7 @@ impl<'a> Checker<'a> {
                         None => {
                             match &**recv {
                                 // `Item.new()` that `impl Item` doesn't define
-                                Expr::Ctor(t, CtorArgs::None) if self.env.types.contains_key(t) => {
+                                Expr::Ctor(t, CtorArgs::None) if self.env.types.contains_key(&t.sym()) => {
                                     let short = |q: &str| crate::names::short(q).to_string();
                                     self.err(format!("`{}` has no method `{}` called on the type (one without `self`, in `impl {}`)", short(t), short(m), short(t)))
                                 }
@@ -1803,7 +1897,7 @@ impl<'a> Checker<'a> {
                     },
                 };
                 let muts = self.mut_mask(m);
-                if self.lookup(m).is_none() {
+                if self.lookup(m.sym()).is_none() {
                     self.record_inst(&Expr::Var(m.clone()), e as *const Expr as usize);
                 }
                 self.call_with(ft, &all, &format!("call to `{m}`"), &muts)
@@ -1814,8 +1908,8 @@ impl<'a> Checker<'a> {
                 let rt = self.infer(r);
                 let t = self.field_type(&rt, base);
                 let owners: BTreeSet<String> = match self.resolve(&rt) {
-                    Ty::Con(n, _) => [n].into(),
-                    Ty::Union(ms) => ms.iter().filter_map(|m| if let Ty::Con(n, _) = self.resolve(m) { Some(n) } else { None }).collect(),
+                    Ty::Con(n, _) => [n.to_string()].into(),
+                    Ty::Union(ms) => ms.iter().filter_map(|m| if let Ty::Con(n, _) = self.resolve(m) { Some(n.to_string()) } else { None }).collect(),
                     _ => BTreeSet::new(),
                 };
                 FIELD_PROBE.with(|p| {
@@ -1828,7 +1922,7 @@ impl<'a> Checker<'a> {
             Expr::Field(r, f) => {
                 // `o.status` narrowed by an enclosing `match o.status { … }`
                 if let Some(p) = place_path(e) {
-                    if let Some(t) = self.lookup(&format!("path:{p}")) {
+                    if let Some(t) = self.lookup((&format!("path:{p}")).sym()) {
                         return t;
                     }
                 }
@@ -1881,9 +1975,9 @@ impl<'a> Checker<'a> {
             Expr::Is(x, c) => {
                 let t = self.infer(x);
                 // the value must be able to be one: `shape is Circle`, `n is Positive`
-                match self.ctor_type(c) {
+                match self.ctor_type(c.sym()) {
                     Some((ct, _)) => {
-                        let own = self.variant_ty(c, &ct);
+                        let own = self.variant_ty(c.sym(), &ct);
                         self.expect(&t, &own, &format!("`is {c}`"))
                     }
                     None if self.env.is_type_name(c) => {
@@ -1919,7 +2013,7 @@ impl<'a> Checker<'a> {
                 let st = self.infer(s);
                 // the matched variable (or the `as` name, or a field path) is narrowed in each arm
                 let target = name.clone().or(match &**s {
-                    Expr::Var(x) if self.lookup(x).is_some() => Some(x.clone()),
+                    Expr::Var(x) if self.lookup(x.sym()).is_some() => Some(x.clone()),
                     _ => None,
                 });
                 let path = if name.is_none() { place_path(s).filter(|p| p.contains('.')) } else { None };
@@ -1933,17 +2027,17 @@ impl<'a> Checker<'a> {
                     let (nt, p) = self.pattern(&a.pat, &st);
                     // narrowing follows the code: an arm that changes the matched variable
                     // (even later, or on a later pass of a loop) keeps its declared type
-                    let changed = |c: &Self, root: &str| c.lookup(&format!("mut:{root}")).is_some() && c.assigns_to(&a.body, root);
+                    let changed = |c: &Self, root: &str| c.lookup((&format!("mut:{root}")).sym()).is_some() && c.assigns_to(&a.body, root);
                     let target = target.clone().filter(|x| name.is_some() || !changed(self, x));
                     let path = path.clone().filter(|p| !changed(self, p.split('.').next().unwrap_or("")));
                     if let Some(x) = &target {
-                        self.bind(x, nt.clone());
+                        self.bind(x.sym(), nt.clone());
                         if name.is_none() {
-                            self.bind(&format!("narrowed:{x}"), st.clone());
+                            self.bind((&format!("narrowed:{x}")).sym(), st.clone());
                         }
                         // the arm's own refinement, for matches inside it
                         let arm_written = match &a.pat {
-                            Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(c) && self.env.is_type_name(c) => Some(TypeExpr::Named(c.clone(), vec![])),
+                            Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(&c.sym()) && self.env.is_type_name(c) => Some(TypeExpr::Named(c.clone(), vec![])),
                             Pattern::Cond(pred) => Some(TypeExpr::Refined(Box::new(written.clone().unwrap_or_else(|| ty_to_texpr(&self.resolve(&st)))), pred.clone())),
                             Pattern::Wild | Pattern::Bind(_) => written.clone(),
                             _ => None,
@@ -1953,7 +2047,7 @@ impl<'a> Checker<'a> {
                         }
                     }
                     if let Some(pth) = &path {
-                        self.bind(&format!("path:{pth}"), nt);
+                        self.bind((&format!("path:{pth}")).sym(), nt);
                     }
                     let bt = self.infer_with(&a.body, rt.as_ref());
                     rt = Some(match rt {
@@ -1996,8 +2090,8 @@ impl<'a> Checker<'a> {
                             if let Some(a) = &ann {
                                 self.expect(a, &t, "let annotation");
                             }
-                            self.bind(n, t);
-                            self.bind(&format!("mut:{n}"), Ty::Unit);
+                            self.bind(n.sym(), t);
+                            self.bind((&format!("mut:{n}")).sym(), Ty::Unit);
                             if let Some(w) = &written {
                                 self.bind_written(n, w);
                             }
@@ -2131,33 +2225,58 @@ impl<'a> Checker<'a> {
                 }
                 inner
             }
+            Expr::Or(x, fb) => {
+                let t = self.infer(x);
+                let inner = match self.resolve(&t) {
+                    Ty::Con(n, args) if n == "Option" && args.len() == 1 => args[0].clone(),
+                    Ty::Con(n, args) if n == "Result" && args.len() == 2 => {
+                        self.err("`or` / `??` handle an Option; a Result is handled with `except { … }` / `!!`");
+                        args[0].clone()
+                    }
+                    other => {
+                        let shown = show_ty(&other);
+                        self.err(format!("`or` / `??` handle an Option, found `{shown}`"));
+                        self.fresh()
+                    }
+                };
+                let ft = self.infer_with(fb, Some(&inner));
+                self.expect(&inner, &ft, "`or` fallback");
+                inner
+            }
             Expr::Except(x, name, fb) => {
                 let t = self.infer(x);
                 let (inner, err_ty) = match self.resolve(&t) {
                     Ty::Con(n, args) if n == "Result" && args.len() == 2 => (args[0].clone(), Some(args[1].clone())),
                     Ty::Con(n, args) if n == "Option" && args.len() == 1 => {
-                        if let Some(n) = name {
-                            self.err(format!("`except {n}`: an Option has no error to name (`None` carries no value), write `except {{ ... }}`"));
-                        }
+                        self.err("`except` / `!!` handle a Result; an Option is handled with `or { … }` / `??`");
                         (args[0].clone(), None)
                     }
                     other => {
                         let shown = show_ty(&other);
-                        self.err(format!("`except` handles a Result or an Option, found `{shown}`"));
+                        self.err(format!("`except` / `!!` handle a Result, found `{shown}`"));
                         (self.fresh(), None)
                     }
                 };
                 self.scopes.push(HashMap::new());
                 if let (Some(n), Some(et)) = (name, err_ty) {
-                    self.bind(n, et);
+                    self.bind(n.sym(), et);
                 }
                 let ft = self.infer_with(fb, Some(&inner));
                 self.expect(&inner, &ft, "`except` fallback");
                 self.scopes.pop();
                 inner
             }
-            // only parsed as an argument; `check_mut_args` says whether it belongs there
-            Expr::Mut(x) => self.infer(x),
+            // `mut q.claim(2)`: the call changes `q` (`check_mut_args` says whether it may)
+            Expr::Mut(x) if matches!(**x, Expr::Method(..)) => {
+                self.marked.insert(&**x as *const Expr as usize);
+                self.infer_at(x, expected)
+            }
+            // `mut x` belongs only in an argument (`infer_arg` takes it off there)
+            Expr::Mut(x) => {
+                let shown = crate::printer::expr(x, 0);
+                self.err(format!("`mut {shown}` marks an argument passed to a `mut` parameter (`f(mut {shown})`) or a call that changes its receiver (`mut {shown}.m()`)"));
+                self.infer(x)
+            }
             Expr::Mock(t) => {
                 let ty = self.lower(t, &HashMap::new());
                 match self.resolve(&ty) {
@@ -2184,45 +2303,57 @@ impl<'a> Checker<'a> {
         };
         // a narrowed binding (inside a match arm) is not where the variable lives
         let narrowed = format!("narrowed:{x}");
-        let Some(idx) = self.scopes.iter().rposition(|s| s.contains_key(x) && !s.contains_key(&narrowed)) else {
+        let Some(idx) = self.scopes.iter().rposition(|s| s.contains_key(&x.sym()) && !s.contains_key(&narrowed.sym())) else {
             self.err(format!("can only {what} a local variable, not `{x}`"));
             return;
         };
-        if !self.scopes[idx].contains_key(&format!("mut:{x}")) {
+        if !self.scopes[idx].contains_key(&Symbol::from(format!("mut:{x}"))) {
             self.err(format!("cannot {what} `{x}`: it is not mutable (declare it with `let mut {x}`, or make it a `mut` parameter)"));
         } else if idx < self.lambda_floor {
             self.err(format!("a closure cannot change `{x}`, which belongs to the enclosing function"));
         }
     }
 
-    /// Arguments passed to `mut` parameters are changed by the call.
-    fn check_mut_args(&mut self, callee: &str, args: &[&Expr], receiver: bool) {
+    /// Arguments passed to `mut` parameters are changed by the call, and say
+    /// so: `f(mut x)`. `recv` is set for a method call: whether it is marked
+    /// `mut` (`mut q.claim(2)`), which it must be when it changes its
+    /// receiver, and only then.
+    fn check_mut_args(&mut self, callee: &str, args: &[&Expr], recv: Option<bool>) {
         let params: Option<Vec<Param>> = self
             .env
             .fns
-            .get(callee)
+            .get(&callee.sym())
             .map(|f| f.params.clone())
-            .or_else(|| self.env.method_params(callee));
+            .or_else(|| self.env.method_params(callee.sym()));
         let Some(params) = params else {
             // a builtin or a closure: no parameter is `mut`
-            for a in args.iter().filter(|a| matches!(a, Expr::Mut(_))) {
+            for a in args.iter().filter(|a| marks_arg(a)) {
                 self.err(format!("`{}`: `{callee}` has no `mut` parameters", crate::printer::expr(a, 0)));
+            }
+            if recv == Some(true) {
+                self.err(format!("`mut` marks a call that changes its receiver, but `{callee}` doesn't change it"));
             }
             return;
         };
         for (i, (p, a)) in params.iter().zip(args).enumerate() {
-            // a method's receiver is the value it works on: `queue.claim(2)` needs no marker
-            let marked = matches!(a, Expr::Mut(_));
+            let receiver = i == 0 && recv.is_some();
+            let marked = if receiver { recv == Some(true) } else { marks_arg(a) };
             let place = match a {
-                Expr::Mut(x) => &**x,
+                Expr::Mut(x) if marks_arg(a) => &**x,
                 x => x,
             };
+            let shown = crate::printer::expr(place, 0);
             if p.mutable {
                 self.check_place(place, &format!("let `{callee}` change (its `mut {}` parameter)", p.name));
-                if !marked && !(receiver && i == 0) {
-                    let shown = crate::printer::expr(place, 0);
+                if !marked && receiver {
+                    let m = crate::names::short(callee);
+                    self.err(format!("`{m}` changes its receiver (`mut self`): write `mut {shown}.{m}(…)` to show that `{shown}` may change"));
+                } else if !marked {
                     self.err(format!("`{callee}` can change its `mut {}` parameter: write `mut {shown}` to show that `{shown}` may change", p.name));
                 }
+            } else if marked && receiver {
+                let m = crate::names::short(callee);
+                self.err(format!("`mut {shown}.{m}(…)`: `{m}` doesn't change its receiver (it doesn't take `mut self`)"));
             } else if marked {
                 self.err(format!("`mut` on an argument of `{callee}`, but its parameter `{}` is not `mut`", p.name));
             }
@@ -2242,18 +2373,18 @@ impl<'a> Checker<'a> {
 
     /// Builtins with several signatures (`len`, `contains`, `get`, ...): pick the
     /// first whose parameters unify with the argument types.
-    fn overloaded(&mut self, name: &str, args: &[&Expr]) -> Option<Ty> {
-        if self.lookup(name).is_some() || self.env.fns.contains_key(name) {
+    fn overloaded(&mut self, name: Symbol, args: &[&Expr]) -> Option<Ty> {
+        if self.lookup(name).is_some() || self.env.fns.contains_key(&name.sym()) {
             return None;
         }
         let cands: Vec<_> = BUILTINS.iter().filter(|b| b.name == name).collect();
         if cands.len() < 2 {
             return None;
         }
-        let arg_tys: Vec<Ty> = args.iter().map(|a| self.infer(a)).collect();
+        let arg_tys: Vec<Ty> = args.iter().map(|a| self.infer_arg(a, None)).collect();
         for Builtin { params: ps, sig, .. } in cands.iter().copied() {
             let snapshot = self.subst.clone();
-            let ps: Vec<String> = ps.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
+            let ps: Vec<Symbol> = ps.split(',').filter(|s| !s.is_empty()).map(Symbol::from).collect();
             if let Ty::Fn(params, ret) = self.instantiate(&ps, &parse_type_str(sig)) {
                 if params.len() == arg_tys.len() && params.iter().zip(&arg_tys).all(|(p, a)| self.unify(p, a).is_ok()) {
                     return Some(*ret);
@@ -2276,10 +2407,10 @@ impl<'a> Checker<'a> {
                 .types
                 .values()
                 .filter(|t| matches!(&t.body, TypeBody::Record(fs) if fs.iter().any(|x| x.name == f)))
-                .map(|t| t.name.clone())
+                .map(|t| t.name.to_string())
                 .collect();
             if cands.len() == 1 {
-                let (ct, _) = self.ctor_type(&cands[0]).unwrap();
+                let (ct, _) = self.ctor_type((&cands[0]).sym()).unwrap();
                 self.expect(&ct, &rt, "field access");
                 rt = self.resolve(&ct);
             }
@@ -2297,7 +2428,7 @@ impl<'a> Checker<'a> {
         }
         if let Ty::Con(n, _) = &rt {
             if f == "value" && self.env.types.get(n).is_some_and(|t| t.distinct) {
-                let (ct, fields) = self.ctor_type(&n.clone()).unwrap();
+                let (ct, fields) = self.ctor_type(n.sym()).unwrap();
                 self.expect(&ct, &rt, "field access");
                 return fields[0].1.clone();
             }
@@ -2307,7 +2438,7 @@ impl<'a> Checker<'a> {
             let mut out: Option<Ty> = None;
             for m in ms.clone() {
                 let has = match &m {
-                    Ty::Con(n, _) => self.ctor_type(n).is_some_and(|(_, fs)| fs.iter().any(|(x, _)| x.as_deref() == Some(f))),
+                    Ty::Con(n, _) => self.ctor_type(n.sym()).is_some_and(|(_, fs)| fs.iter().any(|(x, _)| x.as_deref() == Some(f))),
                     _ => false,
                 };
                 if !has {
@@ -2324,9 +2455,9 @@ impl<'a> Checker<'a> {
         }
         // a variant with named fields, as its own type (`e: TooBig` has `e.max`)
         if let Ty::Con(v, args) = &rt {
-            if let Some(p) = self.env.variant_parent(v) {
-                let (ct, fields) = self.ctor_type(v).unwrap();
-                let _ = self.unify(&ct, &Ty::Con(p, args.clone()));
+            if let Some(p) = self.env.variant_parent(v.sym()) {
+                let (ct, fields) = self.ctor_type(v.sym()).unwrap();
+                let _ = self.unify(&ct, &Ty::Con(Symbol::from(p), args.clone()));
                 if let Some((_, t)) = fields.iter().find(|(x, _)| x.as_deref() == Some(f)) {
                     return t.clone();
                 }
@@ -2338,7 +2469,7 @@ impl<'a> Checker<'a> {
             Ty::Con(n, _) => {
                 let n = n.clone();
                 if let Some(TypeDecl { body: TypeBody::Record(_), .. }) = self.env.types.get(&n) {
-                    let (ct, fields) = self.ctor_type(&n).unwrap();
+                    let (ct, fields) = self.ctor_type(n.sym()).unwrap();
                     self.expect(&ct, &rt, "field access");
                     if let Some((_, t)) = fields.iter().find(|(x, _)| x.as_deref() == Some(f)) {
                         return t.clone();
@@ -2360,7 +2491,7 @@ impl<'a> Checker<'a> {
         match p {
             Pattern::Wild => (t.clone(), P::Any),
             Pattern::Bind(x) => {
-                self.bind(x, t.clone());
+                self.bind(x.sym(), t.clone());
                 (t.clone(), P::Any)
             }
             Pattern::Int(n) => {
@@ -2378,36 +2509,36 @@ impl<'a> Checker<'a> {
             Pattern::Or(ps) => {
                 // each alternative in its own scope; they must bind the same names
                 let mut results = Vec::new();
-                let mut binds: Vec<HashMap<String, Ty>> = Vec::new();
+                let mut binds: Vec<HashMap<Symbol, Ty>> = Vec::new();
                 for alt in ps {
                     self.scopes.push(HashMap::new());
                     results.push(self.pattern(alt, t));
                     binds.push(self.scopes.pop().unwrap());
                 }
-                let mut names: Vec<&String> = binds[0].keys().collect();
+                let mut names: Vec<&Symbol> = binds[0].keys().collect();
                 names.sort();
                 for (alt, b) in ps.iter().zip(&binds).skip(1) {
-                    let mut other: Vec<&String> = b.keys().collect();
+                    let mut other: Vec<&Symbol> = b.keys().collect();
                     other.sort();
                     if other != names {
                         self.err(format!("the alternatives of `{}` must bind the same names (`{}` binds {:?})", crate::printer::pat(p), crate::printer::pat(alt), other));
                     }
                 }
                 for n in names {
-                    let mut t0 = binds[0][n].clone();
+                    let mut t0 = binds[0][&n.sym()].clone();
                     for b in &binds[1..] {
-                        if let Some(t1) = b.get(n) {
+                        if let Some(t1) = b.get(&n.sym()) {
                             t0 = self.join_union(&t0, t1, &format!("`{n}` in `{}`", crate::printer::pat(p)));
                         }
                     }
-                    self.bind(n, t0);
+                    self.bind(n.sym(), t0);
                 }
                 let narrowed = self.union_of(results.iter().map(|r| self.resolve(&r.0)).collect());
                 (narrowed, P::Or(results.into_iter().map(|r| r.1).collect()))
             }
             Pattern::Cond(c) => {
                 self.scopes.push(HashMap::new());
-                self.bind("it", t.clone());
+                self.bind(("it").sym(), t.clone());
                 let ct = self.infer(c);
                 self.expect(&Ty::Bool, &ct, &format!("pattern `where {}`", crate::printer::expr(c, 0)));
                 self.scopes.pop();
@@ -2427,7 +2558,7 @@ impl<'a> Checker<'a> {
                 let subs: Vec<P> = items.iter().map(|i| self.pattern(i, &el).1).collect();
                 if let Some(r) = rest {
                     if r != "_" {
-                        self.bind(r, lt.clone());
+                        self.bind(r.sym(), lt.clone());
                     }
                 }
                 let mut acc = if rest.is_some() { P::Any } else { P::C("[]".into(), vec![]) };
@@ -2437,7 +2568,7 @@ impl<'a> Checker<'a> {
                 (lt, acc)
             }
             // a type's name matches the values of that type: `Positive`, `String`, `Shape`
-            Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(c) && self.env.is_type_name(c) => {
+            Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(&c.sym()) && self.env.is_type_name(c) => {
                 let pt = self.type_named(c);
                 if self.is_trait_ty(&pt) {
                     return (pt.clone(), P::Ty(pt));
@@ -2458,15 +2589,15 @@ impl<'a> Checker<'a> {
                 (pt, set)
             }
             Pattern::Ctor(c, cp) => {
-                let Some((ct, fields)) = self.ctor_type(c) else {
+                let Some((ct, fields)) = self.ctor_type(c.sym()) else {
                     self.err(format!("unknown constructor `{c}` in pattern"));
                     return (t.clone(), P::Any);
                 };
-                let own = self.variant_ty(c, &ct);
+                let own = self.variant_ty(c.sym(), &ct);
                 let n_err = self.errors.len();
                 self.expect(t, &own, &format!("pattern `{c}`"));
                 let bad = self.errors.len() > n_err;
-                let field_names: Vec<Option<String>> = fields.iter().map(|f| f.0.clone()).collect();
+                let field_names: Vec<Option<Symbol>> = fields.iter().map(|f| f.0).collect();
                 let subs: Vec<P> = match cp {
                     // `Circle` alone: every value of that variant, whatever its fields
                     CtorPat::None => vec![P::Any; fields.len()],
@@ -2493,16 +2624,16 @@ impl<'a> Checker<'a> {
                         subs
                     }
                 };
-                (own, if bad { P::Lit } else { P::C(c.clone(), subs) })
+                (own, if bad { P::Lit } else { P::C(c.to_string(), subs) })
             }
         }
     }
 
     /// The type of the constructor `c`'s values: its variant type for a variant
     /// of a sum, else `rt` (a record or distinct type is its own constructor).
-    fn variant_ty(&self, c: &str, rt: &Ty) -> Ty {
+    fn variant_ty(&self, c: Symbol, rt: &Ty) -> Ty {
         match (self.env.variant_parent(c), rt) {
-            (Some(_), Ty::Con(_, args)) => Ty::Con(c.to_string(), args.clone()),
+            (Some(_), Ty::Con(_, args)) => Ty::Con(c.sym(), args.clone()),
             _ => rt.clone(),
         }
     }
@@ -2510,11 +2641,11 @@ impl<'a> Checker<'a> {
     /// The type a name denotes, with fresh type arguments if it takes any
     /// (`NonEmpty` in a pattern means `NonEmpty[_]`).
     fn type_named(&mut self, n: &str) -> Ty {
-        let params: Vec<String> = match self.env.types.get(n) {
+        let params: Vec<Symbol> = match self.env.types.get(&n.sym()) {
             Some(td) => td.params.clone(),
-            None => match self.env.traits.get(n) {
+            None => match self.env.traits.get(&n.sym()) {
                 Some(_) => vec![],
-                None => match self.env.variant_parent(n) {
+                None => match self.env.variant_parent(n.sym()) {
                     Some(p) => self.env.types[&p].params.clone(),
                     None => match n {
                         "List" | "Set" => vec!["A".into()],
@@ -2525,7 +2656,7 @@ impl<'a> Checker<'a> {
             },
         };
         let args = params.iter().map(|p| TypeExpr::Named(p.clone(), vec![])).collect();
-        self.instantiate(&params, &TypeExpr::Named(n.to_string(), args))
+        self.instantiate(&params, &TypeExpr::Named(Symbol::from(n), args))
     }
 
     /// A format spec must suit the part's type: `.N` a Float or a String,
@@ -2570,10 +2701,10 @@ impl<'a> Checker<'a> {
             return None;
         }
         let key = format!("narrowed:{path}");
-        let orig = self.lookup(&key)?;
+        let orig = self.lookup(key.sym())?;
         for s in self.scopes.iter_mut() {
-            if s.remove(&key).is_some() {
-                s.insert(path.clone(), orig.clone());
+            if s.remove(&key.sym()).is_some() {
+                s.insert(path.sym(), orig.clone());
             }
         }
         Some(orig)
@@ -2591,11 +2722,11 @@ impl<'a> Checker<'a> {
                 (Refn::Reals(a), _) => reals::of_pred(pred).and_then(|s| a.and(s)).map_or(Refn::Opaque, Refn::Reals),
                 _ => Refn::Opaque,
             },
-            TypeExpr::Named(n, args) => match self.env.types.get(n) {
+            TypeExpr::Named(n, args) => match self.env.types.get(&n.sym()) {
                 Some(td) if !td.distinct => {
                     let base = match &td.body {
                         TypeBody::Alias(a) => {
-                            let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+                            let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
                             Some(subst_texpr(a, &sub))
                         }
                         _ => None,
@@ -2657,11 +2788,11 @@ impl<'a> Checker<'a> {
     fn bind_written(&mut self, x: &str, t: &TypeExpr) {
         self.written.push(t.clone());
         let i = self.written.len() - 1;
-        self.bind(&format!("written:{x}"), Ty::Rigid(format!("#{i}")));
+        self.bind((&format!("written:{x}")).sym(), Ty::Rigid(Symbol::from(format!("#{i}"))));
     }
 
     fn written_of(&self, x: &str) -> Option<TypeExpr> {
-        match self.lookup(&format!("written:{x}"))? {
+        match self.lookup((&format!("written:{x}")).sym())? {
             Ty::Rigid(i) => self.written.get(i[1..].parse::<usize>().ok()?).cloned(),
             _ => None,
         }
@@ -2674,17 +2805,17 @@ impl<'a> Checker<'a> {
             Expr::Var(x) => self.written_of(x),
             Expr::Field(r, f) => {
                 let Expr::Var(x) = &**r else { return None };
-                let Ty::Con(n, args) = self.resolve(&self.lookup(x)?) else { return None };
+                let Ty::Con(n, args) = self.resolve(&self.lookup(x.sym())?) else { return None };
                 let td = self.env.types.get(&n)?;
                 let TypeBody::Record(fs) = &td.body else { return None };
-                let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().map(ty_to_texpr)).collect();
+                let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().map(ty_to_texpr)).collect();
                 fs.iter().find(|x| x.name == *f).map(|x| subst_texpr(&x.ty, &sub))
             }
             Expr::Call(f, _) => match &**f {
-                Expr::Var(n) if self.lookup(n).is_none() => self.env.fns.get(n).map(|f| f.ret.clone()),
+                Expr::Var(n) if self.lookup(n.sym()).is_none() => self.env.fns.get(&n.sym()).map(|f| f.ret.clone()),
                 _ => None,
             },
-            Expr::Method(_, m, _) if self.lookup(m).is_none() => self.env.fns.get(m).map(|f| f.ret.clone()),
+            Expr::Method(_, m, _) if self.lookup(m.sym()).is_none() => self.env.fns.get(&m.sym()).map(|f| f.ret.clone()),
             _ => None,
         }
     }
@@ -2740,8 +2871,8 @@ pub fn show_ty(t: &Ty) -> String {
         Ty::Str => "String".into(),
         Ty::Unit => "()".into(),
         Ty::Var(v) => format!("?T{v}"),
-        Ty::Rigid(n) => n.clone(),
-        Ty::Con(n, a) if a.is_empty() => n.clone(),
+        Ty::Rigid(n) => n.to_string(),
+        Ty::Con(n, a) if a.is_empty() => n.to_string(),
         Ty::Con(n, a) => format!("{n}[{}]", a.iter().map(show_ty).collect::<Vec<_>>().join(", ")),
         Ty::Fn(ps, r) => format!("({}) -> {}", ps.iter().map(show_ty).collect::<Vec<_>>().join(", "), show_ty(r)),
         Ty::Union(ms) => ms.iter().map(|m| if matches!(m, Ty::Fn(..)) { format!("({})", show_ty(m)) } else { show_ty(m) }).collect::<Vec<_>>().join(" | "),
@@ -2758,7 +2889,7 @@ fn ty_to_texpr(t: &Ty) -> TypeExpr {
         Ty::Bool => n("Bool"),
         Ty::Str => n("String"),
         Ty::Unit => TypeExpr::Unit,
-        Ty::Con(c, args) => TypeExpr::Named(c.clone(), args.iter().map(ty_to_texpr).collect()),
+        Ty::Con(c, args) => TypeExpr::Named(Symbol::from(c.as_str()), args.iter().map(ty_to_texpr).collect()),
         Ty::Fn(ps, r) => TypeExpr::Fn(ps.iter().map(ty_to_texpr).collect(), Box::new(ty_to_texpr(r))),
         Ty::Union(ms) => TypeExpr::Union(ms.iter().map(ty_to_texpr).collect()),
     }
@@ -2768,13 +2899,13 @@ fn ty_to_texpr(t: &Ty) -> TypeExpr {
 /// parameter gets an implementation of its bounds (or a mock of the trait),
 /// chosen so that all the bounds agree (`Q: Queue[P, E]` and `W: Worker[P, E]`
 /// must share `P` and `E`). Unbounded parameters become `Int`.
-pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<String, TypeExpr>> {
+pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<Symbol, TypeExpr>> {
     let mut c = Checker {
         env,
         subst: Vec::new(),
         scopes: vec![HashMap::new()],
         rigid: BTreeSet::new(),
-        decl: f.name.clone(),
+        decl: f.name.to_string(),
         errors: Vec::new(),
         holes: Vec::new(),
         matches: Vec::new(),
@@ -2789,8 +2920,10 @@ pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<String, TypeExpr>>
         last_inst: None,
         insts: Vec::new(),
         callee: false,
+        marked: HashSet::new(),
+        types: Vec::new(),
     };
-    let vars: HashMap<String, Ty> = f.type_params.iter().map(|p| (p.clone(), c.fresh())).collect();
+    let vars: HashMap<Symbol, Ty> = f.type_params.iter().map(|p| (p.clone(), c.fresh())).collect();
     let bounded: Vec<&Bound> = f.bounds.iter().collect();
     // candidate types per bounded parameter: implementations first, then a mock
     let mut cands: Vec<Vec<TypeExpr>> = Vec::new();
@@ -2810,10 +2943,10 @@ pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<String, TypeExpr>>
             let choice = &cands[bi][idx % cands[bi].len()];
             idx /= cands[bi].len();
             // an impl's own type parameters are left open, to be fixed by the other bounds
-            let mut open: HashMap<String, Ty> = vars.clone();
+            let mut open: HashMap<Symbol, Ty> = vars.clone();
             if let Some(imp) = env.impls.iter().find(|i| &i.for_type == choice) {
                 for p in &imp.type_params {
-                    open.insert(p.clone(), c.fresh());
+                    open.insert(p.sym(), c.fresh());
                 }
             }
             let t = c.lower(choice, &open);
@@ -2847,15 +2980,15 @@ pub fn check(prog: &Program) -> CheckReport {
     let prog = &resolved.program;
     let (env, mut errors) = Env::build(prog);
     errors.splice(0..0, resolved.errors);
-    let (errs, holes, _) = check_decls(prog, &env);
+    let (errs, holes, _, _) = check_decls(prog, &env);
     errors.extend(errs);
     CheckReport { errors, holes }
 }
 
 /// Check every declaration of a resolved program: errors, holes, and the
 /// method-call decisions `elaborate` writes into the program.
-fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usize, Target)>) {
-    let (mut errors, mut holes, mut targets) = (Vec::new(), Vec::new(), Vec::new());
+fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usize, Target)>, HashMap<usize, Ty>) {
+    let (mut errors, mut holes, mut targets, mut types) = (Vec::new(), Vec::new(), Vec::new(), HashMap::new());
     for d in &prog.decls {
         let mut c = Checker {
             env: &env,
@@ -2877,6 +3010,8 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
         last_inst: None,
         insts: Vec::new(),
         callee: false,
+        marked: HashSet::new(),
+        types: Vec::new(),
         };
         let mut obligations = Vec::new();
         match &d.kind {
@@ -2896,6 +3031,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                             c.lower(&f.ty, &HashMap::new());
                             c.check_refined(&f.ty);
                         }
+                        c.check_defaults(fs);
                         Ty::Con(t.name.clone(), t.params.iter().map(|p| Ty::Rigid(p.clone())).collect())
                     }
                     TypeBody::Sum(vs) => {
@@ -2905,16 +3041,19 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                                 Payload::Positional(ts) => ts.iter().for_each(|t| {
                                     c.lower(t, &HashMap::new());
                                 }),
-                                Payload::Record(fs) => fs.iter().for_each(|f| {
-                                    c.lower(&f.ty, &HashMap::new());
-                                }),
+                                Payload::Record(fs) => {
+                                    fs.iter().for_each(|f| {
+                                        c.lower(&f.ty, &HashMap::new());
+                                    });
+                                    c.check_defaults(fs);
+                                }
                             }
                         }
-                        Ty::Con(t.name.clone(), t.params.iter().map(|p| Ty::Rigid(p.clone())).collect())
+                        Ty::Con(t.name, t.params.iter().map(|p| Ty::Rigid(p.sym())).collect())
                     }
                 };
                 if let Some(r) = &t.refinement {
-                    c.bind("it", self_ty);
+                    c.bind(("it").sym(), self_ty);
                     let rt = c.infer(r);
                     c.expect(&Ty::Bool, &rt, "refinement");
                 }
@@ -2926,11 +3065,11 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                 c.rigid = t.params.iter().cloned().collect();
                 c.rigid.insert("Self".into());
                 c.self_ty = Some(Ty::Rigid("Self".into()));
-                let own: Vec<Ty> = t.params.iter().map(|p| Ty::Rigid(p.clone())).collect();
-                c.bounds.insert("Self".into(), vec![(t.name.clone(), own)]);
+                let own: Vec<Ty> = t.params.iter().map(|p| Ty::Rigid(p.sym())).collect();
+                c.bounds.insert("Self".into(), vec![(t.name, own)]);
                 for s in &t.supers {
                     match s {
-                        TypeExpr::Named(sn, _) if env.traits.contains_key(sn) => {}
+                        TypeExpr::Named(sn, _) if env.traits.contains_key(&sn.sym()) => {}
                         other => c.err(format!("supertrait `{}` is not a trait", crate::printer::ty(other))),
                     }
                 }
@@ -2954,14 +3093,14 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                         c.scopes.push(HashMap::new());
                         for p in &m.decl.params {
                             let t = c.lower(&p.ty, &HashMap::new());
-                            c.bind(&p.name, t);
+                            c.bind(p.name, t);
                         }
                         for r in &m.decl.requires {
                             let t = c.infer(r);
                             c.expect(&Ty::Bool, &t, "requires clause");
                         }
                         let rt = c.lower(&m.decl.ret, &HashMap::new());
-                        c.bind("it", rt);
+                        c.bind(("it").sym(), rt);
                         for en in &m.decl.ensures {
                             let t = c.infer(en);
                             c.expect(&Ty::Bool, &t, "ensures clause");
@@ -2974,7 +3113,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                     c.scopes.push(HashMap::new());
                     for p in &l.params {
                         let t = c.lower(&p.ty, &HashMap::new());
-                        c.bind(&p.name, t);
+                        c.bind(p.name, t);
                     }
                     let lt = c.infer(&l.body);
                     c.expect(&Ty::Bool, &lt, &format!("law `{}`", l.name));
@@ -2985,7 +3124,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                 c.rigid = i.type_params.iter().cloned().collect();
                 c.add_bounds(&i.bounds);
                 let head = texpr_head(&i.for_type);
-                let alias = env.types.get(&head).is_some_and(|t| matches!(t.body, TypeBody::Alias(_)) && !t.distinct);
+                let alias = env.types.get(&head.sym()).is_some_and(|t| matches!(t.body, TypeBody::Alias(_)) && !t.distinct);
                 if alias && !i.is_inherent() {
                     c.err(format!("`{head}` is a refined alias of another type; implement the trait for the underlying type"));
                 }
@@ -2995,7 +3134,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                     None if i.is_inherent() => {
                         // a type's own methods: only for a type this program defines, in its module
                         let short = |q: &str| crate::names::short(q).to_string();
-                        if !env.types.contains_key(&head) || alias {
+                        if !env.types.contains_key(&head.sym()) || alias {
                             c.err(format!("`impl {}`: methods can only be added to a record, sum or `distinct` type defined in this program (use a function, or a trait)", short(&head)));
                         }
                         let mut seen = std::collections::HashSet::new();
@@ -3011,10 +3150,10 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                             c.err(format!("trait `{}` takes {} type arguments", tr.name, tr.params.len()));
                         }
                         let targs: Vec<Ty> = i.trait_args.iter().map(|a| c.lower(a, &HashMap::new())).collect();
-                        let vars: HashMap<String, Ty> = tr.params.iter().cloned().zip(targs.iter().cloned()).collect();
+                        let vars: HashMap<Symbol, Ty> = tr.params.iter().cloned().zip(targs.iter().cloned()).collect();
                         // supertraits must be implemented too
                         for (sn, sa) in c.supers_of(&tr.name, &targs, 0) {
-                            c.pending.push((self_ty.clone(), sn.clone(), sa, format!("`{}` requires `{sn}`", tr.name)));
+                            c.pending.push((self_ty.clone(), sn.to_string(), sa, format!("`{}` requires `{sn}`", tr.name)));
                         }
                         let short = |q: &str| crate::names::short(q).to_string();
                         for tm in &tr.methods {
@@ -3027,7 +3166,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
                                     // same shape as the trait's signature, with Self and the trait's parameters filled in
                                     let mut mvars = vars.clone();
                                     for p in &tm.decl.type_params {
-                                        mvars.insert(p.clone(), Ty::Rigid(p.clone()));
+                                        mvars.insert(p.sym(), Ty::Rigid(p.sym()));
                                     }
                                     c.rigid.extend(im.type_params.iter().cloned());
                                     let want = c.lower(&Checker::fn_scheme(&tm.decl), &mvars);
@@ -3082,19 +3221,22 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
             });
         }
         c.finish_insts();
+        for (at, t) in std::mem::take(&mut c.types) {
+            types.insert(at, c.resolve(&t));
+        }
         errors.extend(c.errors);
         targets.extend(c.targets);
     }
-    (errors, holes, targets)
+    (errors, holes, targets, types)
 }
 
 /// A type's own method as the function it is called as (`Item.new`, or
 /// `Item.describe` once elaborated): `Self` is the type, and the impl's type
 /// parameters are the function's.
 pub fn static_fn(i: &ImplDecl, m: &FnDecl) -> FnDecl {
-    let sub: HashMap<String, TypeExpr> = [("Self".to_string(), i.for_type.clone())].into();
+    let sub: HashMap<Symbol, TypeExpr> = [(Symbol::new("Self"), i.for_type.clone())].into();
     let mut f = m.clone();
-    f.name = crate::resolve::static_name(&texpr_head(&i.for_type), &m.name);
+    f.name = Symbol::from(crate::resolve::static_name(&texpr_head(&i.for_type), &m.name));
     f.type_params = i.type_params.iter().chain(&m.type_params).cloned().collect();
     f.bounds = i.bounds.iter().chain(&m.bounds).cloned().collect();
     for p in &mut f.params {
@@ -3119,7 +3261,7 @@ pub fn mentions_self(f: &FnDecl) -> bool {
 }
 
 /// The name a type is known by at runtime (`Money`, `Int`), when it is concrete.
-pub fn ty_head(t: &Ty) -> Option<String> {
+pub fn ty_head(t: &Ty) -> Option<Symbol> {
     Some(match t {
         Ty::Int => "Int".into(),
         Ty::Float => "Float".into(),

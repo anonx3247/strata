@@ -61,7 +61,7 @@ fn init() -> Model {
 
 /// The title a form's fields give, or why there is none.
 fn title_of(fields: Dict[String, String]) -> Result[Title, String] {
-  let t = trim(get(fields, "title") except { "" })
+  let t = trim(get(fields, "title") ?? "")
   if len(t) == 0 {
     Err("Write something first.")
   } else if len(t) > 60 {

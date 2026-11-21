@@ -17,7 +17,7 @@
 //! no_recursion = ["core"]                # ... where no function may be recursive
 //! ```
 
-use crate::ast::Program;
+use crate::ast::{Program, Symbol};
 use std::path::{Path, PathBuf};
 
 pub const FILE: &str = "strata.toml";
@@ -103,6 +103,17 @@ pub fn files(path: &Path) -> Result<Vec<(PathBuf, String)>, String> {
         return Ok(vec![(PathBuf::new(), src)]);
     }
     let mut files = Vec::new();
+    for p in walk(path, "strata")? {
+        let src = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+        files.push((p.strip_prefix(path).unwrap().to_path_buf(), src));
+    }
+    Ok(files)
+}
+
+/// The files with extension `ext` in a package folder, sorted (not those of
+/// packages nested in it, nor hidden folders).
+fn walk(path: &Path, ext: &str) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
     let mut todo = vec![path.to_path_buf()];
     while let Some(dir) = todo.pop() {
         for entry in std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
@@ -111,9 +122,8 @@ pub fn files(path: &Path) -> Result<Vec<(PathBuf, String)>, String> {
                 if !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')) && !p.join(FILE).is_file() {
                     todo.push(p);
                 }
-            } else if p.extension().is_some_and(|e| e == "strata") {
-                let src = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-                files.push((p.strip_prefix(path).unwrap().to_path_buf(), src));
+            } else if p.extension().is_some_and(|e| e == ext) {
+                files.push(p);
             }
         }
     }
@@ -125,10 +135,23 @@ pub fn files(path: &Path) -> Result<Vec<(PathBuf, String)>, String> {
 /// standard library's modules are named `std.io`, ..., also when `std/`
 /// itself is the package being worked on.
 pub fn program(path: &Path) -> Result<Program, String> {
+    // a folder of module files (`strata pack DIR`)
+    let binaries = if path.is_dir() { walk(path, "stb")? } else { vec![] };
+    if !binaries.is_empty() {
+        if !walk(path, "strata")?.is_empty() {
+            return Err(format!("{} has both .strata and .stb modules: keep one or the other", path.display()));
+        }
+        let mut decls = Vec::new();
+        for f in binaries {
+            let bytes = std::fs::read(&f).map_err(|e| format!("{}: {e}", f.display()))?;
+            decls.extend(crate::binary::decode_module(&bytes).map_err(|e| format!("{}: {e}", f.display()))?);
+        }
+        return Ok(Program { decls });
+    }
     let mut p = parse(files(path)?)?;
     if path.join(FILE).is_file() && load(path).is_ok_and(|p| p.name == crate::stdlib::NAME) {
         for d in &mut p.decls {
-            d.module = if d.module.is_empty() { crate::stdlib::NAME.to_string() } else { format!("{}.{}", crate::stdlib::NAME, d.module) };
+            d.module = if d.module.is_empty() { Symbol::from(crate::stdlib::NAME.to_string()) } else { format!("{}.{}", crate::stdlib::NAME, d.module).into() };
         }
     }
     Ok(p)

@@ -189,6 +189,8 @@ Str *strata_json_str(Str *s) {
     case '\n': p += sprintf(p, "\\n"); break;
     case '\r': p += sprintf(p, "\\r"); break;
     case '\t': p += sprintf(p, "\\t"); break;
+    case '\b': p += sprintf(p, "\\b"); break;
+    case '\f': p += sprintf(p, "\\f"); break;
     default:
       if (c < 0x20) p += sprintf(p, "\\u%04x", c);
       else *p++ = (char)c;
@@ -204,6 +206,116 @@ double strata_finite(double r, double a, double b, Str *op) {
   if (isfinite(r)) return r;
   Str *m = strata_concat(strata_concat(strata_concat(show_float_plain(a), str_c(" ")), op), str_c(" "));
   strata_fault(4, strata_concat(strata_concat(m, show_float_plain(b)), str_c(" is not a finite number")));
+}
+
+// A block for a record, a variant or a tuple (never freed yet).
+void *strata_alloc(int64_t n) {
+  void *p = malloc((size_t)n);
+  if (!p) {
+    fputs("fault (Limit): out of memory\n", stderr);
+    exit(101);
+  }
+  return p;
+}
+
+// `floor`, `ceil`, `round` of `x` gave `r`, which must fit in an Int.
+int64_t strata_float_to_int(double r, double x) {
+  if (r >= -9223372036854775808.0 && r < 9223372036854775808.0) return (int64_t)r;
+  strata_fault(4, strata_concat(show_float_plain(x), str_c(" is not a whole number")));
+}
+
+double strata_sqrt(double x) {
+  if (x >= 0) return sqrt(x);
+  strata_fault(4, strata_concat(str_c("sqrt of negative number "), show_float_plain(x)));
+}
+
+// ---- lists ----
+//
+// A list is a header (its length, a buffer, and where in the buffer it starts),
+// the buffer the elements as 64-bit slots. Lists never change: `push` writes
+// in place only past the end of what every list sharing the buffer has used,
+// so `out = push(out, x)` in a loop is amortized O(1). The generated code
+// reads `len` and the elements directly (the layout is in src/llvm.rs).
+
+typedef struct {
+  int64_t cap, used;
+  int64_t data[];
+} Buf;
+
+typedef struct {
+  int64_t len;
+  Buf *buf;
+  int64_t off;
+} List;
+
+static Buf *buf_new(int64_t cap) {
+  if (cap < 4) cap = 4;
+  Buf *b = strata_alloc((int64_t)sizeof(Buf) + 8 * cap);
+  b->cap = cap;
+  b->used = 0;
+  return b;
+}
+
+List *strata_list_new(int64_t cap) {
+  List *l = strata_alloc(sizeof(List));
+  l->len = 0;
+  l->buf = buf_new(cap);
+  l->off = 0;
+  return l;
+}
+
+List *strata_list_push(List *xs, int64_t x) {
+  Buf *b = xs->buf;
+  int64_t end = xs->off + xs->len;
+  List *l = strata_alloc(sizeof(List));
+  if (end == b->used && end < b->cap) {
+    // nothing else has used the slot after this list's end
+    b->data[end] = x;
+    b->used++;
+    *l = (List){xs->len + 1, b, xs->off};
+    return l;
+  }
+  Buf *n = buf_new(xs->len * 2 + 1);
+  memcpy(n->data, b->data + xs->off, (size_t)xs->len * 8);
+  n->data[xs->len] = x;
+  n->used = xs->len + 1;
+  *l = (List){xs->len + 1, n, 0};
+  return l;
+}
+
+// The elements from `from` to `to` (already within 0..len): shares the buffer.
+List *strata_list_slice(List *xs, int64_t from, int64_t to) {
+  List *l = strata_alloc(sizeof(List));
+  *l = (List){to - from, xs->buf, xs->off + from};
+  return l;
+}
+
+List *strata_list_concat(List *a, List *b) {
+  if (b->len == 0) return a;
+  if (a->len == 0) return b;
+  Buf *n = buf_new(a->len + b->len);
+  memcpy(n->data, a->buf->data + a->off, (size_t)a->len * 8);
+  memcpy(n->data + a->len, b->buf->data + b->off, (size_t)b->len * 8);
+  n->used = a->len + b->len;
+  List *l = strata_alloc(sizeof(List));
+  *l = (List){a->len + b->len, n, 0};
+  return l;
+}
+
+List *strata_range(int64_t lo, int64_t hi) {
+  if (hi > lo && (uint64_t)hi - (uint64_t)lo > 1000000) strata_fault(4, str_c("range too large"));
+  int64_t n = hi > lo ? hi - lo : 0;
+  List *l = strata_list_new(n);
+  for (int64_t i = 0; i < n; i++) l->buf->data[i] = lo + i;
+  l->buf->used = n;
+  l->len = n;
+  return l;
+}
+
+// `main` returned `Err(e)`.
+void strata_main_error(Str *shown) {
+  fflush(stdout);
+  fprintf(stderr, "error: %.*s\n", (int)shown->len, shown->bytes);
 }
 
 // ---- output ----

@@ -1,0 +1,113 @@
+// Compiled by `strata build` (tests/build.rs): records, variants, generics,
+// Option and Result. What it prints must be what `strata run` prints, the
+// final fault included.
+
+type Quantity = Int
+  where 1 <= it && it <= 99
+
+type Line = { sku: String, qty: Quantity, price: Natural }
+
+type Shape =
+  | Circle { r: Float }
+  | Rect(Float, Float)
+  | Dot
+
+type Range = { lo: Int, hi: Int }
+  where it.lo <= it.hi
+
+distinct type UserId = Int
+  where it > 0
+
+fn total(l: Line) -> Int {
+  l.qty * l.price
+}
+
+fn area(s: Shape) -> Float {
+  match s {
+    Circle { r } => 3.0 * r * r,
+    Rect(w, h) => w * h,
+    Dot => 0.0,
+  }
+}
+
+fn first[T](a: T, b: T) -> T {
+  a
+}
+
+fn swap[A, B](p: (A, B)) -> (B, A) {
+  match p {
+    (a, b) => (b, a),
+  }
+}
+
+fn half(n: Int) -> Result[Int, String] {
+  if n % 2 == 0 {
+    Ok(n / 2)
+  } else {
+    Err(f"{n} is odd")
+  }
+}
+
+fn quarter(n: Int) -> Result[Int, String] {
+  let h = half(n)!
+  half(h)
+}
+
+fn find_big(xs: Int) -> Option[Int] {
+  if xs > 10 {
+    Some(xs)
+  } else {
+    None
+  }
+}
+
+fn plus_one(x: Int) -> Option[Int] {
+  let v = find_big(x)?
+  Some(v + 1)
+}
+
+fn describe(o: Option[Shape]) -> String {
+  match o {
+    Some(Circle { r: where it > 1.0 }) => "big circle",
+    Some(Circle { .. }) => "circle",
+    Some(Rect(_, _) | Dot) => "rect or dot",
+    None => "nothing",
+  }
+}
+
+fn main() -> () {
+  let l = Line { sku: "tea", qty: 3, price: 450 }
+  print(l)
+  print(total(l))
+  print(Line { ..l, qty: 5 })
+  let mut m = l
+  m.price = 10
+  print(m)
+  print(l == m)
+  print(l == Line { sku: "tea", qty: 3, price: 450 })
+  print(area(Circle { r: 2.0 }) + area(Rect(2.0, 3.0)) + area(Dot))
+  print(Dot)
+  print(Some(Dot))
+  print(Rect(1.0, 2.5))
+  print(first(1, 2))
+  print(first("a", "b"))
+  print(swap((1, "x")))
+  print(quarter(8))
+  print(quarter(6))
+  print(quarter(6) !! -1)
+  print(quarter(6) except e { len(e) })
+  print(plus_one(20))
+  print(plus_one(3))
+  print(describe(Some(Circle { r: 2.0 }))
+    + ", "
+    + describe(Some(Circle { r: 0.5 }))
+    + ", "
+    + describe(Some(Dot))
+    + ", "
+    + describe(None))
+  print(Some(Dot) is Some)
+  print(UserId(5).value + 1)
+  let r = Range { lo: 1, hi: 5 }
+  print(r.hi - r.lo)
+  print(Range { lo: 9, hi: 5 })
+}

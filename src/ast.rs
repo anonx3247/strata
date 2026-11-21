@@ -2,11 +2,12 @@
 //! analysis and rewrite works on these types, through the walkers at the end.
 
 use serde::{Deserialize, Serialize};
+pub use crate::symbol::{Sym, Symbol};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TypeExpr {
     /// `Int`, `Order`, `List[T]`, `T`
-    Named(String, Vec<TypeExpr>),
+    Named(Symbol, Vec<TypeExpr>),
     /// `(A, B) -> C`
     Fn(Vec<TypeExpr>, Box<TypeExpr>),
     Unit,
@@ -26,8 +27,12 @@ pub struct Field {
     /// `///` doc comment lines (e.g. a command-line option's help).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub doc: Vec<String>,
-    pub name: String,
+    pub name: Symbol,
     pub ty: TypeExpr,
+    /// `times: Int = 1`: the value a constructor, JSON input or the command
+    /// line gives the field when it is left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -42,7 +47,7 @@ pub struct Variant {
     /// `//` comment lines just above it, as written ("" is a blank line between groups).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comments: Vec<String>,
-    pub name: String,
+    pub name: Symbol,
     pub payload: Payload,
 }
 
@@ -62,8 +67,8 @@ pub struct TypeDecl {
     /// `UserId(s)` and unwrapped with `.value`; never mixed up with its base.
     #[serde(default)]
     pub distinct: bool,
-    pub name: String,
-    pub params: Vec<String>,
+    pub name: Symbol,
+    pub params: Vec<Symbol>,
     pub body: TypeBody,
     /// Refinement predicate over `it`.
     pub refinement: Option<Expr>,
@@ -71,7 +76,7 @@ pub struct TypeDecl {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Param {
-    pub name: String,
+    pub name: Symbol,
     pub ty: TypeExpr,
     /// `mut x: T` / `mut self`: the function may change it, and the caller's
     /// variable is updated when the call returns.
@@ -82,7 +87,7 @@ pub struct Param {
 /// `T: Ord + Hash` on a type parameter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Bound {
-    pub param: String,
+    pub param: Symbol,
     /// Trait references, e.g. `Worker[P, E]`.
     pub traits: Vec<TypeExpr>,
 }
@@ -96,8 +101,8 @@ pub struct FnDecl {
     /// `//` comment lines just above it, as written ("" is a blank line between groups).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comments: Vec<String>,
-    pub name: String,
-    pub type_params: Vec<String>,
+    pub name: Symbol,
+    pub type_params: Vec<Symbol>,
     #[serde(default)]
     pub bounds: Vec<Bound>,
     pub params: Vec<Param>,
@@ -138,15 +143,15 @@ pub struct Law {
     pub comments: Vec<String>,
     /// `///` doc comment lines.
     pub doc: Vec<String>,
-    pub name: String,
+    pub name: Symbol,
     pub params: Vec<Param>,
     pub body: Expr,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraitDecl {
-    pub name: String,
-    pub params: Vec<String>,
+    pub name: Symbol,
+    pub params: Vec<Symbol>,
     /// Supertraits: implementing this trait requires implementing these.
     pub supers: Vec<TypeExpr>,
     pub methods: Vec<TraitMethod>,
@@ -155,10 +160,10 @@ pub struct TraitDecl {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImplDecl {
-    pub type_params: Vec<String>,
+    pub type_params: Vec<Symbol>,
     pub bounds: Vec<Bound>,
     /// Empty for methods defined on the type itself (`impl Item { ... }`).
-    pub trait_name: String,
+    pub trait_name: Symbol,
     pub trait_args: Vec<TypeExpr>,
     pub for_type: TypeExpr,
     pub methods: Vec<FnDecl>,
@@ -199,7 +204,7 @@ pub struct Decl {
     pub kind: DeclKind,
     /// Dotted module path (`shop.orders`); empty for the root module.
     #[serde(default)]
-    pub module: String,
+    pub module: Symbol,
     /// `pub`: part of the module's contract, visible to other modules.
     #[serde(default)]
     pub public: bool,
@@ -208,9 +213,9 @@ pub struct Decl {
 /// `use orders.{Order, ship}` / `use orders.*`
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UseDecl {
-    pub path: String,
+    pub path: Symbol,
     /// `None` means everything public (`.*`).
-    pub items: Option<Vec<String>>,
+    pub items: Option<Vec<Symbol>>,
 }
 
 impl Decl {
@@ -221,10 +226,10 @@ impl Decl {
 
     pub fn name(&self) -> String {
         match &self.kind {
-            DeclKind::Type(t) => t.name.clone(),
-            DeclKind::Fn(f) => f.name.clone(),
+            DeclKind::Type(t) => t.name.to_string(),
+            DeclKind::Fn(f) => f.name.to_string(),
             DeclKind::Test(t) => format!("test \"{}\"", t.name),
-            DeclKind::Trait(t) => t.name.clone(),
+            DeclKind::Trait(t) => t.name.to_string(),
             DeclKind::Impl(i) => i.name(),
             DeclKind::Use(u) => format!("use {}", u.path),
         }
@@ -291,14 +296,14 @@ pub enum UnOp {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Pattern {
     Wild,
-    Bind(String),
+    Bind(Symbol),
     Int(i64),
     Str(String),
     Bool(bool),
     /// `None`, `Some(p)`, `Pending { id, lines: l, .. }`
-    Ctor(String, CtorPat),
+    Ctor(Symbol, CtorPat),
     /// `[]`, `[a, b]`, `[x, ..rest]`
-    List(Vec<Pattern>, Option<String>),
+    List(Vec<Pattern>, Option<Symbol>),
     /// `(a, _)`
     Tuple(Vec<Pattern>),
     /// `where 3 <= it && it <= 5`: the values for which the condition holds.
@@ -312,7 +317,7 @@ pub enum CtorPat {
     None,
     Positional(Vec<Pattern>),
     /// field patterns, and whether `..` was present
-    Record(Vec<(String, Pattern)>, bool),
+    Record(Vec<(Symbol, Pattern)>, bool),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -328,7 +333,7 @@ pub struct Arm {
 pub enum Stmt {
     Let(Pattern, Option<TypeExpr>, Expr),
     /// `let mut x = e`
-    Var(String, Option<TypeExpr>, Expr),
+    Var(Symbol, Option<TypeExpr>, Expr),
     /// `x = e`, `x.field = e`
     Assign(Expr, Expr),
     /// `while cond { ... }`
@@ -357,26 +362,26 @@ pub enum Expr {
     Str(String),
     Bool(bool),
     Unit,
-    Var(String),
+    Var(Symbol),
     /// Typed hole: `?name`. Checks against anything, fails at runtime.
-    Hole(String),
+    Hole(Symbol),
     List(Vec<Expr>),
     /// `Some(x)`, `None`, `Line { sku: s, qty: 1 }`
-    Ctor(String, CtorArgs),
+    Ctor(Symbol, CtorArgs),
     Call(Box<Expr>, Vec<Expr>),
     /// `e.f(args)` — method-call sugar for `f(e, args)`
-    Method(Box<Expr>, String, Vec<Expr>),
-    Field(Box<Expr>, String),
+    Method(Box<Expr>, Symbol, Vec<Expr>),
+    Field(Box<Expr>, Symbol),
     /// `x -> body`, `(a, b) -> body`, `(s: String) -> body`
     Lambda(Vec<LamParam>, Box<Expr>),
     Bin(BinOp, Box<Expr>, Box<Expr>),
     Un(UnOp, Box<Expr>),
     /// `e is Shipped`
-    Is(Box<Expr>, String),
+    Is(Box<Expr>, Symbol),
     If(Box<Expr>, Box<Expr>, Box<Expr>),
     /// `match e { … }`, or `match e as x { … }` to name the value; a matched
     /// variable (or the `as` name) is narrowed to each arm's pattern.
-    Match(Box<Expr>, Option<String>, Vec<Arm>),
+    Match(Box<Expr>, Option<Symbol>, Vec<Arm>),
     /// `mut x` as an argument: passed to a `mut` parameter, which changes it.
     Mut(Box<Expr>),
     Block(Vec<Stmt>, Box<Expr>),
@@ -389,11 +394,46 @@ pub enum Expr {
     /// `e!`: the `Ok` value of a `Result`, or return its `Err` from the function.
     /// `e?`: the `Some` value of an `Option`, or return `None` from the function.
     Try(Box<Expr>, TryKind),
-    /// `e except { fallback }`, `e except err { fallback }`: the `Ok` / `Some`
-    /// value, or else the fallback, which can use the error under `err`.
-    Except(Box<Expr>, Option<String>, Box<Expr>),
+    /// `e except { fallback }`, `e except err { fallback }`, `e !! fallback`:
+    /// a `Result`'s `Ok` value, or else the fallback, which can use the error
+    /// under `err`.
+    Except(Box<Expr>, Option<Symbol>, Box<Expr>),
+    /// `e or { fallback }`, `e ?? fallback`: an `Option`'s `Some` value, or
+    /// else the fallback.
+    Or(Box<Expr>, Box<Expr>),
     /// `f"{name} has {len(xs)} items"`: each part shown as by `to_string`.
     Interp(Vec<StrPart>),
+    /// `a..b` (`b` excluded), `a..=b` (`b` included): the integers between,
+    /// as a `List[Int]`. An end may be left out only in a slice (`xs[2..]`).
+    Range(Option<Box<Expr>>, Option<Box<Expr>>, bool),
+    /// `xs[i]`: one element of a list or string (`i` must be in range).
+    /// `xs[a..b]`, `s[..3]`, `xs[2..]`: part of it, clamped to its length
+    /// (the index is a `Range`, which may leave out its ends here).
+    Index(Box<Expr>, Box<Expr>),
+    /// `[x * x for x in xs where x > 0]`, `[(a, b) for a in xs for b in ys]`:
+    /// a list built from each element of one or more lists; `Set { … for … }`,
+    /// `Dict { k: v for … }` (the element is then the tuple `(k, v)`).
+    Comp(CompKind, Box<Expr>, Vec<CompFor>),
+    /// `Dict { "a": 1, "b": 2 }`, `Dict[String, Int] {}`: the type arguments
+    /// (none, or the key and value types) and the entries.
+    Dict(Vec<TypeExpr>, Vec<(Expr, Expr)>),
+    /// `Set { 1, 2 }`, `Set[Int] {}`.
+    Set(Vec<TypeExpr>, Vec<Expr>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum CompKind {
+    List,
+    Set,
+    Dict,
+}
+
+/// One `for p in xs where cond` of a comprehension.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompFor {
+    pub pat: Pattern,
+    pub iter: Expr,
+    pub cond: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -504,7 +544,7 @@ pub enum TryKind {
 /// A lambda parameter, with an optional type: `x` or `x: Int`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LamParam {
-    pub name: String,
+    pub name: Symbol,
     pub ty: Option<TypeExpr>,
 }
 
@@ -512,9 +552,9 @@ pub struct LamParam {
 pub enum CtorArgs {
     None,
     Positional(Vec<Expr>),
-    Record(Vec<(String, Expr)>),
+    Record(Vec<(Symbol, Expr)>),
     /// `Entry { ..e, status: Done }`: copy of `e` with some fields replaced
-    Update(Box<Expr>, Vec<(String, Expr)>),
+    Update(Box<Expr>, Vec<(Symbol, Expr)>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -572,7 +612,7 @@ macro_rules! visitor {
                     }
                     v.expr(body)
                 }
-                Expr::Bin(_, l, r) | Expr::Except(l, _, r) => {
+                Expr::Bin(_, l, r) | Expr::Except(l, _, r) | Expr::Or(l, r) => {
                     v.expr(l);
                     v.expr(r)
                 }
@@ -599,6 +639,39 @@ macro_rules! visitor {
                             v.expr(x)
                         }
                     }
+                }
+                Expr::Range(lo, hi, _) => {
+                    if let Some(lo) = lo {
+                        v.expr(lo)
+                    }
+                    if let Some(hi) = hi {
+                        v.expr(hi)
+                    }
+                }
+                Expr::Index(x, r) => {
+                    v.expr(x);
+                    v.expr(r)
+                }
+                Expr::Dict(tys, kvs) => {
+                    tys.into_iter().for_each(|t| v.ty(t));
+                    for (k, x) in kvs {
+                        v.expr(k);
+                        v.expr(x)
+                    }
+                }
+                Expr::Set(tys, xs) => {
+                    tys.into_iter().for_each(|t| v.ty(t));
+                    xs.into_iter().for_each(|x| v.expr(x))
+                }
+                Expr::Comp(_, elem, gens) => {
+                    for g in gens {
+                        v.expr(&$($m)? g.iter);
+                        v.pattern(&$($m)? g.pat);
+                        if let Some(c) = &$($m)? g.cond {
+                            v.expr(c)
+                        }
+                    }
+                    v.expr(elem)
                 }
             }
         }
@@ -678,7 +751,14 @@ macro_rules! visitor {
         #[allow(dead_code)] // the read-only twin may not be used yet
         /// Visit everything in a definition.
         pub fn $decl<V: $Visit + ?Sized>(v: &mut V, d: &$($m)? DeclKind) {
-            let fields = |v: &mut V, fs: &$($m)? Vec<Field>| fs.into_iter().for_each(|f| v.ty(&$($m)? f.ty));
+            let fields = |v: &mut V, fs: &$($m)? Vec<Field>| {
+                for f in fs {
+                    v.ty(&$($m)? f.ty);
+                    if let Some(x) = &$($m)? f.default {
+                        v.expr(x)
+                    }
+                }
+            };
             match d {
                 DeclKind::Type(t) => {
                     match &$($m)? t.body {
@@ -792,7 +872,7 @@ pub fn any_expr(e: &Expr, mut pred: impl FnMut(&Expr) -> bool) -> bool {
 pub fn place_path(e: &Expr) -> Option<String> {
     match e {
         Expr::Mut(x) => place_path(x),
-        Expr::Var(x) => Some(x.clone()),
+        Expr::Var(x) => Some(x.to_string()),
         Expr::Field(r, f) => Some(format!("{}.{f}", place_path(r)?)),
         _ => None,
     }

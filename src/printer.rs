@@ -25,7 +25,7 @@ pub fn ty(t: &TypeExpr) -> String {
     match t {
         TypeExpr::Unit => "()".into(),
         TypeExpr::Named(n, args) if n == "Tuple" => format!("({})", args.iter().map(ty).collect::<Vec<_>>().join(", ")),
-        TypeExpr::Named(n, args) if args.is_empty() => n.clone(),
+        TypeExpr::Named(n, args) if args.is_empty() => n.to_string(),
         TypeExpr::Named(n, args) => format!("{n}[{}]", args.iter().map(ty).collect::<Vec<_>>().join(", ")),
         TypeExpr::Fn(ps, r) => format!("({}) -> {}", ps.iter().map(ty).collect::<Vec<_>>().join(", "), ty(r)),
         TypeExpr::Refined(b, p) => format!("{} where {}", ty(b), expr(p, 0)),
@@ -41,21 +41,8 @@ pub fn ty(t: &TypeExpr) -> String {
     }
 }
 
-thread_local! {
-    static NO_COMMENTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Run `f` with `//` comments left out of everything printed, for hashes that
-/// a comment edit must not change (interfaces, verification results).
-pub fn without_comments<T>(f: impl FnOnce() -> T) -> T {
-    let old = NO_COMMENTS.with(|c| c.replace(true));
-    let out = f();
-    NO_COMMENTS.with(|c| c.set(old));
-    out
-}
-
 fn has_comments(cs: &[String]) -> bool {
-    !cs.is_empty() && !NO_COMMENTS.with(|c| c.get())
+    !cs.is_empty()
 }
 
 /// `//` lines at depth `d`, each ending in a newline ("" is a blank line).
@@ -84,13 +71,21 @@ fn fields_broken(fs: &[Field], d: usize) -> String {
         if has_comments(&f.doc) {
             s += &f.doc.iter().map(|l| format!("{}/// {l}\n", ind(d + 1))).collect::<String>();
         }
-        s += &format!("{}{}: {},\n", ind(d + 1), f.name, ty(&f.ty));
+        s += &format!("{}{},\n", ind(d + 1), field(f));
     }
     s + &ind(d) + "}"
 }
 
 fn fields(fs: &[Field]) -> String {
-    fs.iter().map(|f| format!("{}: {}", f.name, ty(&f.ty))).collect::<Vec<_>>().join(", ")
+    fs.iter().map(field).collect::<Vec<_>>().join(", ")
+}
+
+/// `name: T`, `times: Int = 1`
+fn field(f: &Field) -> String {
+    match &f.default {
+        Some(x) => format!("{}: {} = {}", f.name, ty(&f.ty), expr(x, 1)),
+        None => format!("{}: {}", f.name, ty(&f.ty)),
+    }
 }
 
 fn ind(n: usize) -> String {
@@ -100,14 +95,14 @@ fn ind(n: usize) -> String {
 pub fn pat(p: &Pattern) -> String {
     match p {
         Pattern::Wild => "_".into(),
-        Pattern::Bind(n) => n.clone(),
+        Pattern::Bind(n) => n.to_string(),
         Pattern::Int(n) => n.to_string(),
         Pattern::Tuple(ps) => format!("({})", ps.iter().map(pat).collect::<Vec<_>>().join(", ")),
         Pattern::Str(s) => format!("{s:?}"),
         Pattern::Bool(b) => b.to_string(),
         Pattern::Cond(c) => format!("where {}", expr(c, 0)),
         Pattern::Or(ps) => ps.iter().map(pat).collect::<Vec<_>>().join(" | "),
-        Pattern::Ctor(c, CtorPat::None) => c.clone(),
+        Pattern::Ctor(c, CtorPat::None) => c.to_string(),
         Pattern::Ctor(c, CtorPat::Positional(ps)) => {
             format!("{c}({})", ps.iter().map(pat).collect::<Vec<_>>().join(", "))
         }
@@ -115,7 +110,7 @@ pub fn pat(p: &Pattern) -> String {
             let mut parts: Vec<String> = fs
                 .iter()
                 .map(|(f, p)| match p {
-                    Pattern::Bind(b) if b == f => f.clone(),
+                    Pattern::Bind(b) if b == f => f.to_string(),
                     _ => format!("{f}: {}", pat(p)),
                 })
                 .collect();
@@ -145,11 +140,23 @@ fn prec(e: &Expr) -> u8 {
             BinOp::Mul | BinOp::Div | BinOp::Mod => 6,
         },
         Expr::Is(..) => 3,
-        Expr::Lambda(..) | Expr::Return(..) => 0,
-        Expr::Except(..) => 7,
-        Expr::Un(..) => 7,
+        Expr::Lambda(..) | Expr::Return(..) | Expr::Range(..) => 0,
+        Expr::Except(..) | Expr::Or(..) if shorthand(e) => 4,
+        Expr::Except(..) | Expr::Or(..) => 7,
+        Expr::Un(..) | Expr::Mut(..) => 7,
         _ => 8,
     }
+}
+
+/// `x or { v }` is written `x ?? v`, and `x except { v }` is `x !! v`, when
+/// the fallback is a plain value on one line: no error name, no block, no
+/// `return`.
+fn shorthand(e: &Expr) -> bool {
+    let fb = match e {
+        Expr::Except(_, None, fb) | Expr::Or(_, fb) => fb,
+        _ => return false,
+    };
+    !matches!(**fb, Expr::Block(..) | Expr::If(..) | Expr::Match(..) | Expr::Return(..) | Expr::Lambda(..)) && !expr(fb, 0).contains('\n')
 }
 
 fn wrap(e: &Expr, min: u8, d: usize) -> String {
@@ -158,7 +165,14 @@ fn wrap(e: &Expr, min: u8, d: usize) -> String {
 }
 
 fn args(es: &[Expr], d: usize) -> String {
-    es.iter().map(|e| expr(e, d)).collect::<Vec<_>>().join(", ")
+    es.iter()
+        .map(|e| match e {
+            // `f((mut q.pop()), x)`: the call changes `q`; `f(mut q)` would pass `q` to a `mut` parameter
+            Expr::Mut(x) if matches!(**x, Expr::Method(..)) => format!("({})", expr(e, d)),
+            _ => expr(e, d),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub fn float(f: f64) -> String {
@@ -218,7 +232,7 @@ pub fn expr(e: &Expr, d: usize) -> String {
             &format!("{c} {{"),
             fs.iter()
                 .map(|(f, x)| match x {
-                    Expr::Var(v) if v == f => f.clone(),
+                    Expr::Var(v) if v == f => f.to_string(),
                     _ => format!("{f}: {}", expr(x, d + 1)),
                 })
                 .collect(),
@@ -252,13 +266,13 @@ pub fn expr(e: &Expr, d: usize) -> String {
 /// `x`, `(a, b)`, `(s: String)`, `()`
 fn lambda_params(ps: &[LamParam]) -> String {
     match ps {
-        [p] if p.ty.is_none() => p.name.clone(),
+        [p] if p.ty.is_none() => p.name.to_string(),
         _ => {
             let parts: Vec<String> = ps
                 .iter()
                 .map(|p| match &p.ty {
                     Some(t) => format!("{}: {}", p.name, ty(t)),
-                    None => p.name.clone(),
+                    None => p.name.to_string(),
                 })
                 .collect();
             format!("({})", parts.join(", "))
@@ -275,16 +289,17 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Str(s) => format!("\"{}\"", escape(s)),
         Expr::Bool(b) => b.to_string(),
         Expr::Unit => "()".into(),
-        Expr::Var(v) => v.clone(),
+        Expr::Var(v) => v.to_string(),
         Expr::Hole(h) => format!("?{h}"),
         Expr::List(es) => format!("[{}]", args(es, d)),
-        Expr::Ctor(c, CtorArgs::None) => c.clone(),
+        Expr::Ctor(c, CtorArgs::None) => c.to_string(),
         Expr::Ctor(c, CtorArgs::Positional(es)) => format!("{c}({})", args(es, d)),
+        Expr::Ctor(c, CtorArgs::Record(fs)) if fs.is_empty() => format!("{c} {{}}"),
         Expr::Ctor(c, CtorArgs::Record(fs)) => {
             let parts: Vec<String> = fs
                 .iter()
                 .map(|(f, e)| match e {
-                    Expr::Var(v) if v == f => f.clone(),
+                    Expr::Var(v) if v == f => f.to_string(),
                     _ => format!("{f}: {}", expr(e, d)),
                 })
                 .collect();
@@ -293,7 +308,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Ctor(c, CtorArgs::Update(base, fs)) => {
             let mut parts = vec![format!("..{}", expr(base, d))];
             parts.extend(fs.iter().map(|(f, e)| match e {
-                Expr::Var(v) if v == f => f.clone(),
+                Expr::Var(v) if v == f => f.to_string(),
                 _ => format!("{f}: {}", expr(e, d)),
             }));
             format!("{c} {{ {} }}", parts.join(", "))
@@ -344,14 +359,48 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             }
             s + "\""
         }
+        Expr::Range(lo, hi, inclusive) => {
+            let end = |x: &Option<Box<Expr>>| x.as_ref().map(|x| wrap(x, 1, d)).unwrap_or_default();
+            format!("{}{}{}", end(lo), if *inclusive { "..=" } else { ".." }, end(hi))
+        }
+        Expr::Index(x, r) => format!("{}[{}]", wrap(x, 8, d), expr(r, d)),
+        Expr::Comp(kind, elem, gens) => {
+            let (open, close) = match kind {
+                CompKind::List => ("[".to_string(), "]"),
+                CompKind::Set => ("Set { ".to_string(), " }"),
+                CompKind::Dict => ("Dict { ".to_string(), " }"),
+            };
+            let mut s = open
+                + &match (kind, &**elem) {
+                    (CompKind::Dict, Expr::Tuple(kv)) if kv.len() == 2 => format!("{}: {}", expr(&kv[0], d), expr(&kv[1], d)),
+                    _ => expr(elem, d),
+                };
+            for g in gens {
+                s += &format!(" for {} in {}", pat(&g.pat), expr(&g.iter, d));
+                if let Some(c) = &g.cond {
+                    s += &format!(" where {}", expr(c, d));
+                }
+            }
+            s + close
+        }
+        Expr::Dict(tys, kvs) => {
+            let entries: Vec<String> = kvs.iter().map(|(k, v)| format!("{}: {}", expr(k, d), expr(v, d))).collect();
+            collection("Dict", tys, &entries)
+        }
+        Expr::Set(tys, xs) => collection("Set", tys, &xs.iter().map(|x| expr(x, d)).collect::<Vec<_>>()),
         Expr::Return(x) if **x == Expr::Unit => "return".into(),
         Expr::Return(x) => format!("return {}", expr(x, d)),
         Expr::Try(x, k) => format!("{}{}", wrap(x, 8, d), if *k == TryKind::Result { "!" } else { "?" }),
-        Expr::Except(x, name, fb) => {
-            let head = match name {
-                Some(n) => format!("{} except {n}", wrap(x, 8, d)),
-                None => format!("{} except", wrap(x, 8, d)),
+        Expr::Except(x, _, fb) if shorthand(e) => format!("{} !! {}", wrap(x, 5, d), wrap(fb, 4, d)),
+        Expr::Or(x, fb) if shorthand(e) => format!("{} ?? {}", wrap(x, 5, d), wrap(fb, 4, d)),
+        Expr::Except(_, _, fb) | Expr::Or(_, fb) => {
+            let (x, keyword) = match e {
+                Expr::Except(x, Some(n), _) => (x, format!("except {n}")),
+                Expr::Except(x, None, _) => (x, "except".to_string()),
+                Expr::Or(x, _) => (x, "or".to_string()),
+                _ => unreachable!(),
             };
+            let head = format!("{} {keyword}", wrap(x, 8, d));
             // a short fallback stays on the line: `load(p) except { default() }`
             let short = match &**fb {
                 Expr::Block(..) => None,
@@ -362,6 +411,16 @@ fn expr_inline(e: &Expr, d: usize) -> String {
                 None => format!("{head} {}", block(fb, d)),
             }
         }
+    }
+}
+
+/// `Dict { "a": 1 }`, `Set[Int] {}`
+fn collection(name: &str, tys: &[TypeExpr], entries: &[String]) -> String {
+    let targs = if tys.is_empty() { String::new() } else { format!("[{}]", tys.iter().map(ty).collect::<Vec<_>>().join(", ")) };
+    if entries.is_empty() {
+        format!("{name}{targs} {{}}")
+    } else {
+        format!("{name}{targs} {{ {} }}", entries.join(", "))
     }
 }
 
@@ -411,7 +470,7 @@ pub fn block(e: &Expr, d: usize) -> String {
 }
 
 pub fn type_decl(t: &TypeDecl) -> String {
-    let tp = if t.params.is_empty() { String::new() } else { format!("[{}]", t.params.join(", ")) };
+    let tp = if t.params.is_empty() { String::new() } else { format!("[{}]", crate::symbol::join(&t.params, ", ")) };
     let mut s = format!("{}type {}{} =", if t.distinct { "distinct " } else { "" }, t.name, tp);
     if !matches!(t.body, TypeBody::Sum(_)) {
         s.push(' ');
@@ -452,7 +511,7 @@ pub fn type_decl(t: &TypeDecl) -> String {
     s
 }
 
-fn bounded(names: &[String], bounds: &[Bound]) -> String {
+fn bounded(names: &[Symbol], bounds: &[Bound]) -> String {
     if names.is_empty() {
         return String::new();
     }
@@ -460,7 +519,7 @@ fn bounded(names: &[String], bounds: &[Bound]) -> String {
         .iter()
         .map(|n| match bounds.iter().find(|b| &b.param == n) {
             Some(b) => format!("{n}: {}", b.traits.iter().map(ty).collect::<Vec<_>>().join(" + ")),
-            None => n.clone(),
+            None => n.to_string(),
         })
         .collect();
     format!("[{}]", parts.join(", "))
@@ -486,7 +545,7 @@ pub fn trait_interface(t: &TraitDecl) -> String {
 }
 
 fn trait_text(t: &TraitDecl, bodies: bool) -> String {
-    let tp = if t.params.is_empty() { String::new() } else { format!("[{}]", t.params.join(", ")) };
+    let tp = if t.params.is_empty() { String::new() } else { format!("[{}]", crate::symbol::join(&t.params, ", ")) };
     let sup = if t.supers.is_empty() { String::new() } else { format!(": {}", t.supers.iter().map(ty).collect::<Vec<_>>().join(" + ")) };
     let mut s = format!("trait {}{tp}{sup} {{\n", t.name);
     for m in &t.methods {
@@ -626,7 +685,7 @@ pub fn decl_body(d: &Decl) -> String {
         DeclKind::Use(u) => match &u.items {
             None => format!("use {}.*", u.path),
             Some(items) if items.len() == 1 => format!("use {}.{}", u.path, items[0]),
-            Some(items) => format!("use {}.{{{}}}", u.path, items.join(", ")),
+            Some(items) => format!("use {}.{{{}}}", u.path, crate::symbol::join(items, ", ")),
         },
     };
     (if d.public { "pub " } else { "" }).to_string() + &body

@@ -103,14 +103,18 @@ gcd = 6, 2^10 = 1024, A(2, 3) = 9
 fault (Refinement): result of `next_digit`: 10 does not satisfy `Digit` (where 0 <= it && it <= 9)
 ```
 
-A compiled program behaves as `strata run`: the same output, and contracts are checked at run time with the same fault messages (refinements of parameters, results, annotated `let`s and declared variables, `requires`, `ensures`, `assert`), exiting with 101. It is the first step, so only part of the language compiles:
+A compiled program behaves as `strata run`: the same output, and contracts are checked at run time with the same fault messages (refinements of parameters, results, annotated `let`s, declared variables and new values, `requires`, `ensures`, `assert`), exiting with 101. Only part of the language compiles so far:
 
 - `Int` (64 bits for now: an overflow is a fault, where the interpreter switches to a big integer), `Float`, `Bool`, `String`, `()`, and refinements of them;
-- functions and recursion, `let`, `let mut` and assignment, `if`, `match` on literals, `where` conditions and refinement types, `while`, `loop`, `for` over `range(a, b)`, `break`, `continue`, `return`, `assert`;
-- f-strings without format specs, and `print`, `to_string`, `len` (of a string), `abs`, `min`, `max`;
-- `main` takes no parameters, and returns `()` or an exit code.
+- records, variants (`Option`, `Result` and your own), tuples, `distinct` types, unions of variants; field access, `{ ..e, f: x }`, assigning a field (`x.a.b = e`), `is`, `==` on any of them, and printing them as the interpreter does;
+- generic functions and types (each compiled once per set of type arguments), a type's own methods (`impl Item { ... }`), and traits: implementations chosen from the type where the call is compiled (default methods, supertraits, generic traits and implementations, static methods like `T.empty()`, a variant's own implementation chosen by its tag), with the trait's `requires` and `ensures` on every implementation;
+- lists: literals, `+`, list patterns (`[x, ..rest]`), `for` over a list, and the list built-ins (`len`, `get`, `push`, `take`, `drop`, `range`, `map`, `filter`, `fold`, `all`, `any`, `find`, `count`, `contains`, `reverse`, `sort`, `sort_by`, `zip`, `enumerate`, `sum`, `join`), most of them written in Strata (`src/llvm/prelude.strata`);
+- lambdas and closures, named functions as values (`filter(is_prime)`), functions returning functions;
+- functions and recursion, `let` (with patterns), `let mut` and assignment, `if`, `match` with every pattern, `while`, `loop`, `for`, `break`, `continue`, `return`, `assert`, `!`, `?`, `except`;
+- f-strings without format specs, and `print`, `to_string`, `len` (of a string), `abs`, `min`, `max`, `float`, `floor`, `ceil`, `round`, `sqrt`;
+- `main` takes no parameters, and returns `()`, an exit code, or a `Result` of either.
 
-Anything else (records, variants, lists, lambdas, traits, `mut` parameters, capabilities) is refused, naming the function and what it uses: `can't compile `main`: a list is not compiled yet`. Memory is never freed yet.
+Anything else (dictionaries and sets, most string built-ins, regexes, values whose type is a trait, `mut` parameters, capabilities) is refused, naming the function and what it uses: `can't compile `main`: a list is not compiled yet`. Memory is never freed yet.
 
 ### The JIT
 
@@ -191,6 +195,8 @@ strata.log            one JSON entry per change made through strata: its id, mes
 ```
 
 The files and `strata.log` are committed. The log is append-only and merges by union (`.gitattributes`), and each entry carries the definitions' text, so it replays without anything else: `strata diff` splits a git commit into the changes made through strata (with their renames), plus a step for edits made by hand. Because verification results are keyed by content, `verify` reruns only what is affected by a change.
+
+A program can also be stored as its syntax tree, in binary: `strata pack DIR` writes one module file per module (`main.stb`, `shop/orders.stb`) beside the `strata.toml`, and `strata pack app.stb` writes the whole program as one bundle. `--file`, `strata run`, `strata ui --file` and every view read either like source; `strata unpack IN DIR` writes the source back out, one canonical file per module. Each module file starts with a header listing its definitions, their hashes and dependencies (`strata header core.stb` prints it), and each definition stores its interface before its bodies. The format is Strata's own, specified in [binary-format.md](binary-format.md). For now the text files stay the source of truth: `edit`, `rename` and `move` work on them, not on binary files. The hashes `strata` shows are those of the binary encoding (see the spec).
 
 ## Packages
 

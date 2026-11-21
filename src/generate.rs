@@ -111,7 +111,7 @@ impl Gen {
         // a hidden type argument (`$Type[Money]`): the type's name
         if let TypeExpr::Named(n, args) = t {
             if n == crate::types::TYPE_ARG {
-                return Ok(Value::Str(args.first().map(crate::types::texpr_head).unwrap_or_default()));
+                return Ok(Value::Str((args.first().map(crate::types::texpr_head).unwrap_or_default()).to_string()));
             }
         }
         if let TypeExpr::Refined(b, pred) = t {
@@ -175,11 +175,11 @@ impl Gen {
             _ => {}
         }
         // a trait as a type: generate a mock implementation
-        if env.traits.contains_key(n) {
+        if env.traits.contains_key(&n.sym()) {
             return Ok(Value::Mock(t.clone()));
         }
         // a variant's type: generate its sum, keeping only that variant
-        let (n, only) = match env.variant_parent(n) {
+        let (n, only) = match env.variant_parent(n.sym()) {
             Some(p) => (&p.clone(), Some(n.clone())),
             None => (n, None),
         };
@@ -190,11 +190,11 @@ impl Gen {
         for _attempt in 0..300 {
             let v = match &td.body {
                 TypeBody::Alias(a) if td.distinct => {
-                    let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
-                    Value::Distinct(n.clone(), Box::new(self.produce(env, &subst_texpr(a, &sub), it, depth, &h2)?))
+                    let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+                    Value::Distinct(n.to_string(), Box::new(self.produce(env, &subst_texpr(a, &sub), it, depth, &h2)?))
                 }
                 TypeBody::Alias(a) => {
-                    let sub: HashMap<String, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+                    let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
                     self.produce(env, &subst_texpr(a, &sub), it, depth, &h2)?
                 }
                 TypeBody::Record(_) | TypeBody::Sum(_) => {
@@ -211,10 +211,10 @@ impl Gen {
                     let (c, names, ftys) = &variants[idx];
                     let vals = ftys.iter().map(|ft| self.produce(env, ft, it, depth + 1, &Hints::default())).collect::<Result<Vec<_>, _>>()?;
                     match (names, matches!(td.body, TypeBody::Record(_))) {
-                        (Some(ns), true) => Value::Record(c.clone(), ns.iter().cloned().zip(vals).collect()),
-                        (Some(ns), false) => Value::Variant(c.clone(), Fields::Rec(ns.iter().cloned().zip(vals).collect())),
-                        (None, _) if vals.is_empty() => Value::Variant(c.clone(), Fields::None),
-                        (None, _) => Value::Variant(c.clone(), Fields::Pos(vals)),
+                        (Some(ns), true) => Value::Record(c.to_string(), ns.iter().map(|n| n.to_string()).zip(vals).collect()),
+                        (Some(ns), false) => Value::Variant(c.to_string(), Fields::Rec(ns.iter().map(|n| n.to_string()).zip(vals).collect())),
+                        (None, _) if vals.is_empty() => Value::Variant(c.to_string(), Fields::None),
+                        (None, _) => Value::Variant(c.to_string(), Fields::Pos(vals)),
                     }
                 }
             };
