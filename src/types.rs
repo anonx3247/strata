@@ -3810,8 +3810,11 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec
                 // what it asks for: capabilities only, made by the runtime as for `main`
                 c.scopes.push(HashMap::default());
                 for p in &t.params {
-                    if !matches!(&p.ty, TypeExpr::Named(n, a) if a.is_empty() && env.capabilities.contains(n)) {
-                        c.err(format!("test parameter `{}: {}`: a test asks only for capabilities (`capability ...`), which the runtime makes", p.name, crate::printer::ty(&p.ty)));
+                    let shown = crate::printer::ty(&p.ty);
+                    if shown == crate::cmd::RUN_MODE && !crate::cmd::run_mode_allowed() {
+                        c.err(format!("test parameter `{}: RunMode`: how the program is run is hidden by default; say `mode = true` under `[run]` in strata.toml to let tests and `main` ask", p.name));
+                    } else if shown != crate::cmd::CONSOLE && shown != crate::cmd::RUN_MODE && !matches!(&p.ty, TypeExpr::Named(n, a) if a.is_empty() && env.capabilities.contains(n)) {
+                        c.err(format!("test parameter `{}: {shown}`: a test asks only for capabilities (`capability ...`), `Console`, or (when strata.toml allows it) `RunMode`", p.name));
                     }
                     let ty = c.lower(&p.ty, &HashMap::default());
                     c.bind(p.name, ty);
