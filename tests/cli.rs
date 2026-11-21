@@ -3640,10 +3640,10 @@ fn derive_syntax_round_trips() {
     let d = tmp("derive-syntax");
     let text = r#"/// Show a record as its field names.
 pub derivable(Record) trait Named
-  requires len($Self.fields) > 0 {
+  requires len(Self.fields) > 0 {
   /// The names of the fields.
   derived fn names() -> List[String] {
-    comptime $Self.fields.map(f -> f.name)
+    comptime Self.fields.map(f -> f.name)
   }
   fn shout(self) -> String
 }
@@ -3690,15 +3690,15 @@ fn derived_traits_are_specialized() {
 derivable(Record) trait FromText {
   /// The fields' names.
   derived fn names(self) -> List[String] {
-    comptime $Self.fields.map(f -> f.name)
+    comptime Self.fields.map(f -> f.name)
   }
   /// A value with every field at its zero.
   derived fn zero() -> Self {
-    $Self.make(f -> zero_of(f))
+    Self.make(f -> zero_of(f))
   }
   /// A value read from one text per field.
   derived fn parse(texts: List[String]) -> Result[Self, String] {
-    $Self.try_make(f -> read(f, texts))
+    Self.try_make(f -> read(f, texts))
   }
 }
 
@@ -3751,8 +3751,8 @@ fn main() {
     // what can't be derived says why, at the `derive`
     let bad = [
         ("trait Plain { fn p(self) -> Int }\ntype A = { x: Int }\nderive Plain for A\n", "`Plain` can't be derived: only a `derivable` trait can"),
-        ("use std.typing.Record\nderivable(Record) trait Sized { derived fn n(self) -> Int { comptime len($Self.fields) } }\ntype S =\n  | One\n  | Two\nderive Sized for S\n", "`Sized` can only be derived for a `Record`, and `S` isn't one"),
-        ("use std.typing.Record\nderivable(Record) trait Sized\n  requires len($Self.fields) > 1 { derived fn n(self) -> Int { comptime len($Self.fields) } }\ntype A = { x: Int }\nderive Sized for A\n", "`A` doesn't meet what `Sized` requires: len($Self.fields) > 1"),
+        ("use std.typing.Record\nderivable(Record) trait Sized { derived fn n(self) -> Int { comptime len(Self.fields) } }\ntype S =\n  | One\n  | Two\nderive Sized for S\n", "`Sized` can only be derived for a `Record`, and `S` isn't one"),
+        ("use std.typing.Record\nderivable(Record) trait Sized\n  requires len(Self.fields) > 1 { derived fn n(self) -> Int { comptime len(Self.fields) } }\ntype A = { x: Int }\nderive Sized for A\n", "`A` doesn't meet what `Sized` requires: len(Self.fields) > 1"),
     ];
     for (k, (src, want)) in bad.iter().enumerate() {
         let f = format!("bad{k}.strata");
@@ -3925,16 +3925,16 @@ fn extern_c_declarations() {
 #[test]
 fn comptime_code_runs_while_compiling() {
     let d = tmp("comptime-runs");
-    let src = "use std.typing.Record\n\nfn shout(s: String) -> String {\n  s + \"!\"\n}\n\nfn spin(n: Int) -> Int {\n  mut i := n\n  while i > 0 { i = i + 1 }\n  i\n}\n\nderivable(Record) trait Names\n  requires len($Self.fields) > 1 {\n  derived fn names(self) -> List[String] {\n    comptime $Self.fields.map(f -> shout(f.name))\n  }\n  derived fn count(self) -> Int {\n    comptime COUNT\n  }\n}\n\ntype P = { x: Int, label: String }\n\nderive Names for P\n\nfn main() {\n  p := P { x: 1, label: \"a\" }\n  print(p.names())\n  print(p.count())\n}\n";
+    let src = "use std.typing.Record\n\nfn shout(s: String) -> String {\n  s + \"!\"\n}\n\nfn spin(n: Int) -> Int {\n  mut i := n\n  while i > 0 { i = i + 1 }\n  i\n}\n\nderivable(Record) trait Names\n  requires len(Self.fields) > 1 {\n  derived fn names(self) -> List[String] {\n    comptime Self.fields.map(f -> shout(f.name))\n  }\n  derived fn count(self) -> Int {\n    comptime COUNT\n  }\n}\n\ntype P = { x: Int, label: String }\n\nderive Names for P\n\nfn main() {\n  p := P { x: 1, label: \"a\" }\n  print(p.names())\n  print(p.count())\n}\n";
     let run = |count: &str| {
         let (ok, out) = strata(&["--file", "c.strata", "edit"], &d, Some(&src.replace("COUNT", count)));
         assert!(ok, "{out}");
         strata(&["--file", "c.strata", "run"], &d, None)
     };
-    let (ok, out) = run("(99999999999999999999999 * len($Self.fields))");
+    let (ok, out) = run("(99999999999999999999999 * len(Self.fields))");
     assert!(ok && out == "[\"x!\", \"label!\"]\n199999999999999999999998\n", "{out}");
-    let (ok, out) = run("(len($Self.fields) / 0)");
-    assert!(!ok && out.contains("deriving `count`: `comptime len($Self.fields) / 0` failed: division by zero"), "{out}");
+    let (ok, out) = run("(len(Self.fields) / 0)");
+    assert!(!ok && out.contains("deriving `count`: `comptime len(Self.fields) / 0` failed: division by zero"), "{out}");
     let (ok, out) = run("spin(1)");
     assert!(!ok && out.contains("`comptime spin(1)` ran for more than 5000000 steps: compile-time code must finish"), "{out}");
 }

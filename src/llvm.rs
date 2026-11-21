@@ -3819,7 +3819,6 @@ impl<'m, 'a> Func<'m, 'a> {
             Expr::Mut(x) => self.expr(x)?,
             // evaluated at build time once deriving lands; until then, as written
             Expr::Comptime(x) => self.expr(x)?,
-            Expr::Describe(_) => return self.unsupported("a type's description outside a derived method"),
             Expr::Mock(t) => {
                 let tr_ty = self.lower(t)?;
                 if !self.is_dyn(&tr_ty) {
