@@ -370,6 +370,33 @@ The direction is in "JSON as a boundary format" (open questions). Built: `std/js
   - the package setting is the first package a command loads (a process-wide value), which is the command's own package;
   - replacing the older tagged form (`to_json`, `print`, `strata run`'s output, verdicts) with this one, and `Debug` / `Display` (see the open question).
 
+### Mocks: fakes for tests (decided with the user 2026-11-21; not built)
+Today `mock T` (an expression) is an implementation of trait `T` with no code: each call checks the method's `requires` and returns a fresh random value within its result type and `ensures`. `verify` passes one for every trait-typed parameter it fuzzes, which is where it pays off. But a mock has no memory (a read after a write returns anything; nothing records what was printed), so tests of one scenario still need hand-written fakes: std's `MemFiles`, `recorder` / `printed`, `fake_environment`; `Log` in examples/tasks, `OneOrder` in examples/orders. Writing a whole fake first is the annoyance this removes.
+
+```rust
+/// An in-memory disk, for tests.
+pub mock MemFiles = { files: Dict[String, String] = Dict {} }
+
+impl Files for MemFiles {
+  fn read(self, path: String) -> Result[String, FsError] { ... }
+  fn write(mut self, path: String, text: String) -> Result[(), FsError] { ... }
+  // exists, list, make_dir, remove: left out, generated
+}
+
+test "a refund for a missing order" {
+  db := mock Db { find(id) => None }   // one-off: no declaration, the rest generated
+  ...
+}
+```
+
+- **`mock` declares a type** exactly as `type` does (form A, the user's choice): data separate from implementation, as in Rust; its trait implementations are ordinary `impl` blocks. Because it is a mock: it is for tests only (used in `test` blocks and other mocks; anywhere else is an error, so a fake never reaches a real run), its `impl`s may leave methods out (generated as `mock T` does), every call to it is recorded so a test can assert on them (`calls(m)`; a printed-lines helper for `Console`), and the viewer and `strata view` hide it unless asked (`--mocks`; selecting a test shows the mocks it uses). `render` and the editor show it, as stored. `pub mock` lets other packages' tests use it. A mock with no data: `pub mock FixedClock = {}`.
+- **Inline**: `mock Db { find(id) => None }` as an expression, the listed methods answering as written, the rest generated; `mock Db` alone stays as it is.
+- **`verify`** keeps fuzzing with generated mocks, never named ones (they cover every valid behaviour; a named one covers one).
+- **Capabilities**: a `capability` (`Sqlite`) can't be mocked, only made by the runtime; its capability traits (`Database`) can (`mock MemDb`).
+- **Replaces** std's `MemFiles`, `recorder` / `printed`, `fake_environment` (as `pub mock`s), and the examples' fakes.
+- **Rejected** (user): fields and methods in one block, for mocks or for types (a type's own methods inside the type, sum types' variants in the block); `mock MemFiles for Files = {...}` (the trait written twice); `mock impl` on an ordinary type (nothing to hide or restrict).
+- **In the tree**: a type declaration with a `mock` flag, or a new definition kind added last (no re-encoding); to settle when building.
+
 ### Derived traits, `comptime` and special methods (decided with the user 2026-11-21; steps 1-2 built)
 Command-line options need code made from a record's fields; so will JSON codecs for compiled programs and the ORM. Instead of a hidden Rust generator (`src/cli.rs` today) or general metaprogramming over syntax trees, a trait can say how each of its methods is derived, as ordinary Strata code specialized per type at compile time (as Zig's `comptime` does). A derive returns a real function, never a syntax tree.
 
