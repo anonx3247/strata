@@ -497,6 +497,8 @@ declare i64 @strata_pid()
 declare void @strata_host_write(i64, ptr)
 declare ptr @strata_host_read_line()
 declare ptr @strata_host_read_file(ptr, ptr, ptr)
+declare ptr @strata_host_code_version(ptr)
+declare ptr @strata_host_code_snapshot(ptr, ptr)
 declare i1 @strata_host_write_file(ptr, ptr, i1, ptr, ptr)
 declare i1 @strata_host_exists(ptr)
 declare ptr @strata_host_list_dir(ptr, ptr, ptr)
@@ -1400,7 +1402,8 @@ impl<'a> Module<'a> {
                 "std.io.Console" => ("std.io.Terminal", vec![("stdout", (Ty::Int, "1".into())), ("stderr", (Ty::Int, "2".into()))]),
                 "std.fs.Files" => ("std.fs.Disk", vec![("root", c.string("."))]),
                 "std.process.Environment" => ("std.process.Process", vec![("pid", c.call(&Ty::Int, "@strata_pid", &[])?)]),
-                _ => return Err(format!("`{entry}` asks for `{}: {wanted}`: compiled programs get `Console`, `Files` and `Environment` and options (a record that implements `CommandLine`, std.cli)", p.name)),
+                "std.code.Code" => ("std.code.Workspace", vec![("root", c.string(&crate::ui::code_root()))]),
+                _ => return Err(format!("`{entry}` asks for `{}: {wanted}`: compiled programs get `Console`, `Files`, `Environment`, `Code` and options (a record that implements `CommandLine`, std.cli)", p.name)),
             };
             let fs = c.m.fields(imp, &[])?;
             let vals: Vec<V> = fs.iter().map(|f| fields.iter().find(|(n, _)| Some(*n) == f.name.as_deref()).map(|x| x.1.clone()).ok_or(format!("`{imp}` has a field `{}`", f.name.clone().unwrap_or_default()))).collect::<Res<_>>()?;
@@ -4363,6 +4366,39 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.emit(format!("{ok} = icmp ne ptr {}, null", r.1));
                 let okv = (if name == "host_list_dir" { lst } else { Ty::Str }, r.1);
                 self.outcome(&ok, Some(okv), &k, &m, &t)?
+            }
+            "host_code_version" => {
+                let r = self.call(&s_ty, "@strata_host_code_version", &vs)?;
+                self.temp(r)
+            }
+            "host_code_snapshot" => {
+                // the snapshot, or NULL and the failure (a string)
+                let e = self.fresh("err");
+                writeln!(self.allocas, "  {e} = alloca ptr").unwrap();
+                let mut args = vs.clone();
+                args.push((Ty::Str, e.clone()));
+                let snap = Ty::Con(Symbol::new("std.code.Snapshot"), vec![]);
+                let r = self.call(&snap, "@strata_host_code_snapshot", &args)?;
+                let r = self.temp(r);
+                let ok = self.fresh("ok");
+                self.emit(format!("{ok} = icmp ne ptr {}, null", r.1));
+                let (good, bad, end) = (self.fresh_label("ok"), self.fresh_label("err"), self.fresh_label("res"));
+                self.cond_br(&bool_v(&ok), &good, &bad);
+                self.block(&good);
+                let okb = self.block_of(self.m.tags["Ok"], &[r])?;
+                let from_ok = self.cur.clone();
+                self.br(&end);
+                self.block(&bad);
+                let m = self.fresh("msg");
+                self.emit(format!("{m} = load ptr, ptr {e}"));
+                let m = self.temp((Ty::Str, m));
+                let errb = self.block_of(self.m.tags["Err"], &[m])?;
+                let from_err = self.cur.clone();
+                self.br(&end);
+                self.block(&end);
+                let x = self.fresh("r");
+                self.emit(format!("{x} = phi ptr [ {okb}, %{from_ok} ], [ {errb}, %{from_err} ]"));
+                self.temp((t.clone(), x))
             }
             "host_write_file" | "host_make_dir" | "host_remove" => {
                 let (k, m) = (self.fresh("kind"), self.fresh("msg"));

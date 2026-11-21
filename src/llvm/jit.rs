@@ -57,6 +57,9 @@ unsafe extern "C" {
     fn strata_dup();
     fn strata_regex_match();
     fn strata_set_regex_engine(e: extern "C" fn(*const u8, i64, *const u8, i64, *mut *const std::ffi::c_char) -> i32);
+    fn strata_set_code_host(v: extern "C" fn(*const i64) -> i64, s: extern "C" fn(*const i64, *mut i64) -> i64);
+    fn strata_host_code_version();
+    fn strata_host_code_snapshot();
     fn strata_trace_call();
     fn strata_trace_return();
     fn strata_ct_keep();
@@ -140,6 +143,8 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_host_exists", strata_host_exists as *const () as usize),
         ("strata_host_write_file", strata_host_write_file as *const () as usize),
         ("strata_host_read_file", strata_host_read_file as *const () as usize),
+        ("strata_host_code_version", strata_host_code_version as *const () as usize),
+        ("strata_host_code_snapshot", strata_host_code_snapshot as *const () as usize),
         ("strata_host_read_line", strata_host_read_line as *const () as usize),
         ("strata_host_write", strata_host_write as *const () as usize),
         ("strata_pid", strata_pid as *const () as usize),
@@ -526,8 +531,47 @@ fn std_symbol(name: &str) -> Option<usize> {
     (!a.is_null()).then_some(a as usize)
 }
 
+/// A string compiled code passed (borrowed).
+unsafe fn borrowed_str(p: *const i64) -> String {
+    unsafe {
+        let len = *p as usize;
+        String::from_utf8_lossy(std::slice::from_raw_parts(p.add(1) as *const u8, len)).into_owned()
+    }
+}
+
+/// `Code.version()` for compiled code (std.code): the codebase's fingerprint.
+extern "C" fn code_version(root: *const i64) -> i64 {
+    let root = unsafe { borrowed_str(root) };
+    super::native::new_string(&crate::ui::code_version(std::path::Path::new(&root)))
+}
+
+/// `Code.snapshot()` for compiled code: the snapshot (src/ui.rs) read against
+/// `std.code.Snapshot` and written into compiled memory, or 0 and the
+/// failure in `*err`.
+extern "C" fn code_snapshot(root: *const i64, err: *mut i64) -> i64 {
+    let root = unsafe { borrowed_str(root) };
+    let fail = |m: String| {
+        unsafe { *err = super::native::new_string(&m) };
+        0
+    };
+    let j = match crate::ui::code_snapshot(std::path::Path::new(&root)) {
+        Ok(j) => j,
+        Err(e) => return fail(e),
+    };
+    // std's types, to read the snapshot against
+    static STD: std::sync::OnceLock<crate::types::Env> = std::sync::OnceLock::new();
+    let env = STD.get_or_init(|| crate::types::check_and_elaborate(crate::stdlib::program()).env);
+    let mut it = crate::interp::Interp::new(env, 1);
+    let t = crate::ast::TypeExpr::Named("std.code.Snapshot".into(), vec![]);
+    match it.from_json(&t, &j, "snapshot").map_err(|e| format!("the codebase's snapshot doesn't fit `std.code.Snapshot`: {e}")).and_then(|v| super::native::write(&v)) {
+        Ok(p) => p,
+        Err(e) => fail(e),
+    }
+}
+
 fn engine_at<'ctx>(ctx: &'ctx Context, ir: &str, optimize: bool) -> Result<inkwell::execution_engine::ExecutionEngine<'ctx>, String> {
     unsafe { strata_set_regex_engine(regex_engine) };
+    unsafe { strata_set_code_host(code_version, code_snapshot) };
     Target::initialize_native(&InitializationConfig::default())?;
     let buf = MemoryBuffer::create_from_memory_range_copy(ir.as_bytes(), "strata");
     let module = ctx.create_module_from_ir(buf).map_err(|e| format!("LLVM rejected the generated IR: {e}"))?;

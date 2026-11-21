@@ -378,6 +378,31 @@ _Bool strata_regex_match(Str *s, Str *re) {
   return r == 1;
 }
 
+// The `Code` capability (std.code): the codebase as typed values, which
+// strata builds (src/ui.rs) and writes into this program's memory
+// (src/llvm/native.rs) when it runs one. A built program has none.
+typedef Str *(*CodeVersion)(Str *root);
+typedef void *(*CodeSnapshot)(Str *root, Str **err);
+static CodeVersion code_version;
+static CodeSnapshot code_snapshot;
+void strata_set_code_host(CodeVersion v, CodeSnapshot s) {
+  code_version = v;
+  code_snapshot = s;
+}
+
+static void no_code(void) { strata_fault(4, str_c("`Code` is given only under `strata run` and `strata serve` (a built program has none)")); }
+
+Str *strata_host_code_version(Str *root) {
+  if (!code_version) no_code();
+  return code_version(root);
+}
+
+// The snapshot, or NULL and the failure in `*err`.
+void *strata_host_code_snapshot(Str *root, Str **err) {
+  if (!code_snapshot) no_code();
+  return code_snapshot(root, err);
+}
+
 // Compile-time code's value (`strata.ct.N` hands it over), for the compiler
 // to read (src/llvm/native.rs).
 static int64_t ct_kept;

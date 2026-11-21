@@ -113,3 +113,75 @@ pub unsafe fn read(s: &Shape, shapes: &Shapes, raw: i64) -> Res<Value> {
         })
     }
 }
+
+unsafe extern "C" {
+    fn strata_alloc(n: i64) -> *mut i64;
+}
+
+/// A new string in compiled code's memory, held once.
+pub fn new_string(s: &str) -> i64 {
+    unsafe {
+        let p = strata_alloc(8 + s.len() as i64);
+        *p = s.len() as i64;
+        std::ptr::copy_nonoverlapping(s.as_ptr(), p.add(1) as *mut u8, s.len());
+        p as i64
+    }
+}
+
+/// A block of slots after a tag (a record, variant or tuple), held once.
+fn new_block(tag: i64, slots: &[i64]) -> i64 {
+    unsafe {
+        let p = strata_alloc(8 * (slots.len() as i64 + 1));
+        *p = tag;
+        for (i, s) in slots.iter().enumerate() {
+            *p.add(i + 1) = *s;
+        }
+        p as i64
+    }
+}
+
+/// A list of the slots, held once (each element is handed over).
+fn new_list(slots: &[i64]) -> i64 {
+    unsafe {
+        let cap = slots.len().max(4);
+        let buf = strata_alloc(8 * (cap as i64 + 2));
+        *buf = cap as i64;
+        *buf.add(1) = slots.len() as i64;
+        for (i, s) in slots.iter().enumerate() {
+            *buf.add(i + 2) = *s;
+        }
+        let l = strata_alloc(24);
+        *l = slots.len() as i64;
+        *l.add(1) = buf as i64;
+        *l.add(2) = 0;
+        l as i64
+    }
+}
+
+/// Write `v` into compiled code's memory, laid out as `read` reads it: the
+/// slot that holds it, its objects held once. For a host's values (`Code`'s
+/// snapshot): records, variants, tuples, lists, strings and scalars. Not
+/// unions (a value doesn't say which member's box it is in), sets,
+/// dictionaries or big integers.
+pub fn write(v: &Value) -> Res<i64> {
+    Ok(match v {
+        Value::Int(n) if (-SMALL..SMALL).contains(n) => *n,
+        Value::Float(f) => f.to_bits() as i64,
+        Value::Bool(b) => *b as i64,
+        Value::Unit => 0,
+        Value::Str(s) => new_string(s),
+        Value::List(xs) => new_list(&xs.iter().map(write).collect::<Res<Vec<_>>>()?),
+        Value::Tuple(xs) => new_block(0, &xs.iter().map(write).collect::<Res<Vec<_>>>()?),
+        Value::Distinct(_, x) => write(x)?,
+        Value::Record(name, fs) => new_block(super::stable_tag(name), &fs.iter().map(|(_, x)| write(x)).collect::<Res<Vec<_>>>()?),
+        Value::Variant(name, fs) => {
+            let slots = match fs {
+                Fields::None => vec![],
+                Fields::Pos(xs) => xs.iter().map(write).collect::<Res<_>>()?,
+                Fields::Rec(xs) => xs.iter().map(|(_, x)| write(x)).collect::<Res<_>>()?,
+            };
+            new_block(super::stable_tag(name), &slots)
+        }
+        other => return Err(format!("can't hand compiled code a value like {}", crate::interp::show(other))),
+    })
+}
