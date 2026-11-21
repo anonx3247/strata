@@ -27,9 +27,7 @@ fn literal(e: &Expr) -> bool {
     }
 }
 
-pub fn static_refinements(prog: &Program, env: &Env) -> Vec<Diag> {
-    let resolved = crate::types::elaborate(prog);
-    let prog = &resolved.program;
+pub fn refinements_in(prog: &Program, env: &Env) -> Vec<Diag> {
     let mut out = Vec::new();
     let mut it = Interp::new(env, 0);
     for d in &prog.decls {

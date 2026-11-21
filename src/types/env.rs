@@ -19,11 +19,6 @@ pub struct Env {
 }
 
 impl Env {
-    /// The environment of a program as it runs (elaborated).
-    pub fn new(prog: &Program) -> (Env, Vec<Diag>) {
-        Env::build(&elaborate(prog).program)
-    }
-
     /// The environment of an already resolved program.
     pub fn build(prog: &Program) -> (Env, Vec<Diag>) {
         let prelude = prelude();

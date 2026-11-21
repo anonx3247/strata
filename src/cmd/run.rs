@@ -16,12 +16,11 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
         _ => path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "main".into()),
     };
     let p = src.program();
-    let rep = full_check(p);
+    let types::Checked { report: rep, env, .. } = full_checked(p);
     if !rep.ok() {
         print_errors(&rep);
         return Ok(false);
     }
-    let (env, _) = types::Env::new(p);
     let Some(name) = rest.first() else {
         let program_args = args.flags.get("--").cloned().unwrap_or_default();
         if args.flag("--jit") && env.fns.contains_key(&Symbol::new("main")) {
@@ -84,15 +83,13 @@ fn run_jit(_: &Program, _: &str, _: &[String]) -> Result<Option<i32>, String> {
 pub fn run_tests(args: &Args) -> Result<bool, String> {
     let src = load(&args)?;
     let p = src.program();
-    let rep = full_check(p);
+    let types::Checked { report: rep, program: resolved, env } = full_checked(p);
     if !rep.ok() {
         print_errors(&rep);
         return Ok(false);
     }
-    let (env, _) = types::Env::new(p);
     let filter = args.pos.get(1).cloned().unwrap_or_default();
     let (mut pass, mut fail) = (0, 0);
-    let resolved = types::elaborate(p).program;
     for d in &resolved.decls {
         let DeclKind::Test(t) = &d.kind else { continue };
         if !t.name.contains(&filter) {
@@ -156,12 +153,11 @@ pub fn serve_program(args: &Args) -> Result<bool, String> {
     };
     let port: u16 = args.val("--port").unwrap_or("8000").parse().map_err(|_| "bad --port")?;
     let p = src.program();
-    let rep = full_check(p);
+    let types::Checked { report: rep, env, .. } = full_checked(p);
     if !rep.ok() {
         print_errors(&rep);
         return Ok(false);
     }
-    let (env, _) = types::Env::new(p);
     crate::serve::serve(&env, port, &name)?;
     Ok(true)
 }
