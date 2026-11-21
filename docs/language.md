@@ -377,7 +377,28 @@ print(Some(Secret { key: "k" }))   // Some(Secret { key: *** })
 
 All values are immutable (`insert` returns a new dict). Dicts and sets are kept in canonical order, so equal collections are equal values and serialise identically. `len`, `contains`, `get`, `insert`, `remove`, `sum`, `min`, `max` and `abs` work across the types they make sense for. `strata builtins` lists every builtin with its signature. See `examples/builtins.strata`.
 
-**Not yet:** lazy iterators, generators and async, which will be designed as language features of their own.
+**Iterators.** Besides lists, sets and dicts, a `for` loop runs over any value whose type implements the prelude's `Iterator`: `next` gives the elements one at a time, then `None`.
+
+```rust
+trait Iterator[T] {
+  fn next(mut self) -> Option[T]
+}
+
+type Countdown = { n: Int }
+
+impl Iterator[Int] for Countdown {
+  fn next(mut self) -> Option[Int] {
+    if self.n == 0 { None } else { self.n -= 1; Some(self.n + 1) }
+  }
+}
+
+c := Countdown { n: 3 }
+for i in c { print(i) }            // 3, 2, 1
+```
+
+Such a loop works on its own copy of the iterator (`c` is unchanged afterwards), and takes `break`, `continue` and patterns as any `for`. Generic code asks for the trait: `fn collect[T, I: Iterator[T]](it: I) -> List[T]`. `verify` doesn't show that such a loop ends, as it does for a list's: the iterator may never return `None`.
+
+**Not yet:** `FiniteIterator` (an iterator that ends, with its length), lazy `map` / `filter` / `fold` on any iterator, iterators over a string's units, generators and async.
 
 ## Foreign functions: `extern c`
 

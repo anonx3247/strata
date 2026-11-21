@@ -1686,6 +1686,26 @@ pub fn nul_string() -> String {
     assert!(code != 0 && out.contains("`neg8` is an `extern c` function: only compiled code calls it"), "{out}");
 }
 
+/// `for` over an `Iterator`, compiled (not compared with the interpreter,
+/// which isn't changed for what compiled code handles: IDEAS.md), freeing
+/// everything it makes.
+#[test]
+fn for_over_iterators_compiles() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("iterators");
+    let f = d.join("iterators.strata");
+    save(&f, json_case::ITERATORS);
+    let strata = env!("CARGO_BIN_EXE_strata");
+    let exe = d.join("prog");
+    let b = Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
+    assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
+    let (out, code) = freed_everything(output(Command::new(&exe).current_dir(&d).env("STRATA_MEMORY", "check")), &f);
+    assert_eq!((out.as_str(), code), (json_case::ITERATORS_OUTPUT, 0));
+}
+
 /// Types passed whole: compiled as interpreted.
 #[test]
 fn impl_type_parameters_compile() {

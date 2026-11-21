@@ -194,6 +194,11 @@ fn has_stmt(e: &Expr, pred: &dyn Fn(&Stmt) -> bool) -> bool {
 
 /// The loops of a body: `Ok(how they end)` or `Err(why one may not)`.
 fn loops(env: &Env, f: &FnDecl, solver: Option<&crate::smt::Solver>) -> Result<Vec<String>, String> {
+    // a `for` over an `Iterator` is a `loop` calling `next` (types::lower_iterator_fors)
+    let over_iterator = |s: &Stmt| matches!(s, Stmt::Var(v, _, _) if v.as_str().starts_with(crate::types::ITER_VAR));
+    if has_stmt(&f.body, &over_iterator) {
+        return Err("it has a `for` over an `Iterator`, which may never end (only `for` loops over lists, sets and dicts, and `while` loops whose bound goes down, are shown to end)".into());
+    }
     if has_stmt(&f.body, &|s| matches!(s, Stmt::Loop(_))) {
         return Err("it has a `loop` (only `for` loops, and `while` loops whose bound goes down, are shown to end)".into());
     }

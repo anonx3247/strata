@@ -3967,6 +3967,29 @@ fn comptime_in_ordinary_code_runs_while_compiling() {
     assert!(!ok && out2.contains("unknown variable `n`: compile-time code can use definitions, not the variables around it"), "{out}{out2}");
 }
 
+/// `for` over a value implementing `Iterator`: run, refused when the value
+/// isn't one, and not shown to end by `verify`.
+#[test]
+fn for_over_iterators() {
+    let d = tmp("iterators");
+    let (ok, out) = strata(&["--file", "it.strata", "edit"], &d, Some(json_case::ITERATORS));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "it.strata"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out, json_case::ITERATORS_OUTPUT);
+    let (_, out) = strata(&["--file", "it.strata", "verify"], &d, None);
+    assert!(out.contains("it has a `for` over an `Iterator`, which may never end"), "{out}");
+    let bad = "type P = { x: Int }\n\nfn a(p: P) {\n  for x in p {\n    print(x)\n  }\n}\n\nfn b(s: String) {\n  for c in s {\n    print(c)\n  }\n}\n\nfn c[I](it: I) {\n  for x in it {\n    print(x)\n  }\n}\n";
+    // written, and reported as not checking
+    let (_, out) = strata(&["--file", "bad.strata", "edit"], &d, Some(bad));
+    assert!(out.contains("written, but bad.strata doesn't check"), "{out}");
+    let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
+    assert!(!ok, "{out}");
+    assert!(out.contains("error in a: `for` needs a List, Set, Dict or an `Iterator`: `P` does not implement `Iterator`"), "{out}");
+    assert!(out.contains("error in b: `for` needs a List, Set, Dict or an `Iterator`, found `String`"), "{out}");
+    assert!(out.contains("error in c: `for` needs a List, Set, Dict or an `Iterator`: `I` is not known to implement `Iterator`"), "{out}");
+}
+
 /// Types passed whole at runtime: `T.m()` on an impl's type parameters, and
 /// `std.json` for the built-in types through `T: Json`.
 #[test]

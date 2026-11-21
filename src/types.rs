@@ -45,6 +45,12 @@ trait Display {
   fn to_string(self) -> String
 }
 
+/// What a `for` loop runs over, besides lists, sets and dicts: `next`
+/// gives the elements one at a time, then `None`.
+trait Iterator[T] {
+  fn next(mut self) -> Option[T]
+}
+
 /// An optional value.
 type Option[T] =
   | None
@@ -424,7 +430,7 @@ pub fn elaborate_resolved(prog: &Program) -> (crate::resolve::Resolution, HashMa
 
 fn elaborate_from(mut r: crate::resolve::Resolution) -> (crate::resolve::Resolution, HashMap<usize, Ty>) {
     let (env, _) = Env::build(&r.program);
-    let (_, _, targets, mut types) = check_decls(&r.program, &env, true);
+    let (_, _, targets, mut types) = check_lowering(&mut r.program, &env, true);
     rewrite(&mut r.program, &env, targets, &mut types);
     (r, types)
 }
@@ -467,7 +473,7 @@ pub fn check_resolved(mut r: crate::resolve::Resolution) -> Checked {
     // checking needs signatures only; what runs needs the (rewritten) bodies
     let (env, mut errors) = Env::build_with(&r.program, false);
     errors.splice(0..0, std::mem::take(&mut r.errors));
-    let (errs, holes, targets, mut types) = check_decls(&r.program, &env, false);
+    let (errs, holes, targets, mut types) = check_lowering(&mut r.program, &env, false);
     errors.extend(errs);
     let report = CheckReport { errors, holes };
     let compiled = rooted(&r.program);
@@ -732,6 +738,8 @@ struct Checker<'a> {
     /// The type of each expression, by node address (resolved at the end),
     /// when asked for (the compiler): `None` otherwise.
     types: Option<Vec<(usize, Ty)>>,
+    /// `for` loops over an `Iterator`, by their subject's node.
+    iter_fors: Vec<usize>,
 }
 
 impl<'a> Checker<'a> {
@@ -2613,8 +2621,17 @@ impl<'a> Checker<'a> {
                                     self.expect(&Ty::Con("List".into(), vec![el.clone()]), &itt, "for loop");
                                     el
                                 }
+                                other @ (Ty::Con(..) | Ty::Rigid(_)) => {
+                                    // any other value that implements `Iterator`: a loop calling `next` (`lower_iterator_fors`)
+                                    let el = self.fresh();
+                                    match self.satisfies(&other, ITERATOR, std::slice::from_ref(&el), 0) {
+                                        Ok(()) => self.iter_fors.push(addr(it)),
+                                        Err(e) => self.err(format!("`for` needs a List, Set, Dict or an `Iterator`: {e}")),
+                                    }
+                                    el
+                                }
                                 other => {
-                                    self.err(format!("`for` needs a List, Set or Dict, found `{}`", show_ty(&other)));
+                                    self.err(format!("`for` needs a List, Set, Dict or an `Iterator`, found `{}`", show_ty(&other)));
                                     self.fresh()
                                 }
                             };
@@ -3493,6 +3510,7 @@ impl<'a> Checker<'a> {
             callee: false,
             marked: HashSet::default(),
             types: None,
+            iter_fors: Vec::new(),
         }
     }
 }
@@ -3571,19 +3589,70 @@ pub fn check_report_resolved(prog: &Program) -> CheckReport {
     check_from(crate::resolve::Resolution { program: prog.clone(), errors: vec![] })
 }
 
-fn check_from(resolved: crate::resolve::Resolution) -> CheckReport {
-    let prog = &resolved.program;
-    let (env, mut errors) = Env::build_with(prog, false);
-    errors.splice(0..0, resolved.errors);
-    let (errs, holes, _, _) = check_decls(prog, &env, false);
+fn check_from(mut resolved: crate::resolve::Resolution) -> CheckReport {
+    let (env, mut errors) = Env::build_with(&resolved.program, false);
+    errors.splice(0..0, std::mem::take(&mut resolved.errors));
+    let (errs, holes, _, _) = check_lowering(&mut resolved.program, &env, false);
     errors.extend(errs);
     CheckReport { errors, holes }
 }
 
-/// Check every declaration of a resolved program: errors, holes, and the
-/// method-call decisions `elaborate` writes into the program.
-fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usize, Target)>, HashMap<usize, Ty>) {
-    let (mut errors, mut holes, mut targets, mut types) = (Vec::new(), Vec::new(), Vec::new(), HashMap::default());
+/// What checking decides: errors, holes, the method-call decisions
+/// `elaborate` writes into the program, each expression's type (when asked
+/// for), and the `for` loops over an `Iterator` (by their subject's node).
+type Decided = (Vec<Diag>, Vec<HoleInfo>, Vec<(usize, Target)>, HashMap<usize, Ty>, HashSet<usize>);
+
+/// The trait a `for` loop runs over, besides lists, sets and dicts.
+pub const ITERATOR: &str = "Iterator";
+
+/// The start of the variable holding the iterator a `for` loop runs over.
+pub const ITER_VAR: &str = "$iter_";
+
+/// `check_decls`, after writing each `for` over an `Iterator` as the loop it
+/// means (`lower_iterator_fors`), which needs the subject's type: so when
+/// there is one, the program is checked again, rewritten. `env` holds
+/// signatures only, which the rewrite leaves alone.
+fn check_lowering(prog: &mut Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usize, Target)>, HashMap<usize, Ty>) {
+    let (errors, holes, targets, types, fors) = check_decls(prog, env, record_types);
+    if fors.is_empty() {
+        return (errors, holes, targets, types);
+    }
+    lower_iterator_fors(prog, &fors);
+    let (errors, holes, targets, types, _) = check_decls(prog, env, record_types);
+    (errors, holes, targets, types)
+}
+
+/// Each `for p in xs { body }` whose subject (by node) is in `fors`, as
+/// `{ mut $iter_N := xs; loop { match mut $iter_N.next() { Some(p) => body, None => break } } }`.
+/// The rest of the language (compiler, prover, termination) sees an ordinary loop.
+fn lower_iterator_fors(prog: &mut Program, fors: &HashSet<usize>) {
+    let mut n = 0;
+    for d in &mut prog.decls {
+        decl_exprs_mut_post(&mut d.kind, |e| {
+            let Expr::Block(stmts, _) = e else { return };
+            for s in stmts.iter_mut() {
+                let Stmt::For(_, xs, _) = &*s else { continue };
+                if !fors.contains(&addr(xs)) {
+                    continue;
+                }
+                let Stmt::For(p, xs, body) = std::mem::replace(s, Stmt::Break) else { unreachable!() };
+                n += 1;
+                let it = Symbol::from(format!("{ITER_VAR}{n}").as_str());
+                let next = Expr::Mut(Box::new(Expr::Method(Box::new(Expr::Var(it)), Symbol::from("next"), vec![])));
+                let arms = vec![
+                    Arm { comments: vec![], pat: Pattern::Ctor(Symbol::from("Some"), CtorPat::Positional(vec![p])), body },
+                    Arm { comments: vec![], pat: Pattern::Ctor(Symbol::from("None"), CtorPat::None), body: Expr::Block(vec![Stmt::Break], Box::new(Expr::Unit)) },
+                ];
+                let looped = Stmt::Loop(Expr::Match(Box::new(next), None, arms));
+                *s = Stmt::Expr(Expr::Block(vec![Stmt::Var(it, None, xs), looped], Box::new(Expr::Unit)));
+            }
+        });
+    }
+}
+
+/// Check every declaration of a resolved program (see `Decided`).
+fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
+    let (mut errors, mut holes, mut targets, mut types, mut iter_fors) = (Vec::new(), Vec::new(), Vec::new(), HashMap::default(), HashSet::default());
     let typed_heads = heads_needing_types(prog, env);
     for d in &prog.decls {
         // a `derived fn` and a function with `comptime` parameters are checked
@@ -3620,6 +3689,7 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec
         callee: false,
         marked: HashSet::default(),
         types: record_types.then(Vec::new),
+        iter_fors: Vec::new(),
         };
         match &d.kind {
             DeclKind::Type(t) => {
@@ -3873,8 +3943,9 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec
         }
         errors.extend(c.errors);
         targets.extend(c.targets);
+        iter_fors.extend(c.iter_fors);
     }
-    (errors, holes, targets, types)
+    (errors, holes, targets, types, iter_fors)
 }
 
 /// No types: for checks that don't elaborate the program.
