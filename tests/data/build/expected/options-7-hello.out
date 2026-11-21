@@ -1,0 +1,13 @@
+Greet people by name.
+
+Usage: hello [OPTIONS] [names...]
+
+Arguments:
+  [names...]     Who to greet (the world if nobody).
+
+Options:
+  --loud         Shout the greeting.
+  --times <Int>  Say it this many times. (where 1 <= it && it <= 10) (default: 1)
+  -h, --help     Show this help.
+
+--- exit 0

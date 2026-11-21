@@ -1,0 +1,13 @@
+Ok(0)
+["2\t3\t14\ta.txt", "1\t2\t12\tb.txt", "3\t5\t26\ttotal"]
+Ok(0)
+["3\ta.txt"]
+Ok(0)
+["12\tb.txt", "14\ta.txt", "26\ttotal"]
+Err(NotFound { path: "nope.txt" })
+[]
+Ok(0)
+["2\t3\t16\t-"]
+Counts { lines: 3, words: 4, chars: 9 }
+
+--- exit 0

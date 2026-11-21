@@ -1,0 +1,12 @@
+Count lines, words and characters in files, or in standard input.
+
+Usage: wc [OPTIONS] [files...]
+
+Arguments:
+  [files...]                  The files to count (standard input if none).
+
+Options:
+  --only <lines|words|chars>  Show only this count.
+  -h, --help                  Show this help.
+
+--- exit 0

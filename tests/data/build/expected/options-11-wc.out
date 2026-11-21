@@ -1,0 +1,5 @@
+error: --only: `bytes` is not one of lines, words, chars
+
+Run `wc --help` for the options.
+
+--- exit 2

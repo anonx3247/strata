@@ -1,0 +1,7 @@
+true
+fault (Runtime): bad regex: regex parse error:
+    ^(?:[a-z][0-9]()$
+     ^
+error: unclosed group
+
+--- exit 101

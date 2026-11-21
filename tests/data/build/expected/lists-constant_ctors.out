@@ -1,0 +1,3 @@
+P { name: "a", n: 1, x: 1.5, on: true } P { name: "a", n: 2, x: 1.5, on: true } Some(1) [Some(2), None] Circle(2.5) Named { label: "sq", sides: 4 } true
+
+--- exit 0

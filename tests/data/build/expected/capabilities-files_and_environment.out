@@ -1,0 +1,17 @@
+false
+Ok(())
+Ok(())
+Ok(())
+Ok("one\ntwo\n")
+Err(NotFound { path: "fsplay/missing.txt" })
+Err(IsADirectory { path: "fsplay/sub" })
+Ok(())
+Ok(["a.txt", "b.txt", "sub"])
+Err(NotADirectory { path: "fsplay/a.txt" })
+Err(NotFound { path: "fsplay/nope" })
+["one", "two words"]
+true
+None
+done
+
+--- exit 0

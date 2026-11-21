@@ -1,0 +1,9 @@
+line 0
+line 1
+line 0
+line 1
+line 2
+
+Recorder { input: [], out: "line 0\nline 1\nline 2\n", err: [] }
+
+--- exit 0
