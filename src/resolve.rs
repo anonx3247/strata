@@ -27,7 +27,35 @@ pub struct Resolution {
     pub errors: Vec<Diag>,
 }
 
+/// Each `capability Sqlite { fn open(...) }` as the checker, the compiler
+/// and `verify` see it: the capability itself, its functions taken out, and
+/// an implementation of the type's own methods (`impl Sqlite { fn open(self,
+/// ...) }`), each called on the capability (which holds nothing). The
+/// implementations go after every other definition, so indices are kept.
+fn capabilities(p: &Program) -> std::borrow::Cow<'_, Program> {
+    if !p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Capability(c) if !c.methods.is_empty())) {
+        return std::borrow::Cow::Borrowed(p);
+    }
+    let mut out = p.clone();
+    let mut impls = vec![];
+    for d in &mut out.decls {
+        let DeclKind::Capability(c) = &mut d.kind else { continue };
+        let methods: Vec<FnDecl> = std::mem::take(&mut c.methods)
+            .into_iter()
+            .map(|mut m| {
+                m.params.insert(0, Param { name: Symbol::new("self"), ty: TypeExpr::Named(Symbol::new("Self"), vec![]), mutable: false, comptime: false });
+                m
+            })
+            .collect();
+        let imp = ImplDecl { type_params: vec![], bounds: vec![], trait_name: Symbol::EMPTY, trait_args: vec![], for_type: TypeExpr::Named(c.name, vec![]), methods, derived: false };
+        impls.push(Decl { comments: vec![], doc: vec![], kind: DeclKind::Impl(imp), module: d.module, public: d.public });
+    }
+    out.decls.extend(impls);
+    std::borrow::Cow::Owned(out)
+}
+
 pub fn resolve(p: &Program) -> Resolution {
+    let p = &*capabilities(p);
     // Programs without modules or imports are already resolved (unless they
     // call into the host, which `run` reports). The standard library goes
     // after the program's own definitions, so index `i` of the result is
@@ -100,7 +128,7 @@ pub fn member(p: &Program, q: &str) -> Option<(&'static str, String)> {
                 DeclKind::Type(_) => Some(("type", d.module.to_string())),
                 DeclKind::Trait(_) => Some(("trait", d.module.to_string())),
                 DeclKind::Extern(ExternDecl { item: ExternItem::Fn(_), .. }) => Some(("function", d.module.to_string())),
-                DeclKind::Extern(ExternDecl { item: ExternItem::Type(_), .. }) => Some(("type", d.module.to_string())),
+                DeclKind::Extern(ExternDecl { item: ExternItem::Type(_), .. }) | DeclKind::Capability(_) => Some(("type", d.module.to_string())),
                 _ => None,
             };
         }
@@ -156,6 +184,7 @@ pub fn set_member_name(p: &mut Program, q: &str, new: &str) {
                     ExternItem::Fn(f) => f.name = Symbol::from(new),
                     ExternItem::Type(t) => *t = Symbol::from(new),
                 },
+                DeclKind::Capability(c) => c.name = Symbol::from(new),
                 _ => {}
             }
             continue;
@@ -554,6 +583,10 @@ fn names_mut(d: &mut DeclKind, f: &mut dyn FnMut(&mut Symbol)) {
             }
         }
         DeclKind::Fn(fd) => f(&mut fd.name),
+        DeclKind::Capability(c) => {
+            f(&mut c.name);
+            c.methods.iter_mut().for_each(|m| f(&mut m.name));
+        }
         DeclKind::Trait(t) => {
             f(&mut t.name);
             t.methods.iter_mut().for_each(|m| f(&mut m.decl.name));
@@ -679,6 +712,9 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
         add_modules(&mut modules, &d.module);
         let item = Item { module: d.module, public: d.public, foreign: matches!(&d.kind, DeclKind::Extern(ExternDecl { item: ExternItem::Fn(_), .. })) };
         match &d.kind {
+            DeclKind::Capability(c) => {
+                table.insert(qualified(d.module, c.name), item.clone());
+            }
             DeclKind::Type(t) => {
                 let q = qualified(d.module, t.name);
                 table.insert(q, item.clone());
@@ -1337,7 +1373,16 @@ impl Rw<'_> {
             }),
             DeclKind::Test(t) => {
                 let name = if m.is_empty() || self.writing() || self.store.is_some() { t.name.clone() } else { format!("{m}: {}", t.name) };
-                DeclKind::Test(TestDecl { name, body: self.expr(&t.body) })
+                let params: Vec<Param> = t.params.iter().map(|p| Param { name: p.name, ty: self.ty(&p.ty), mutable: p.mutable, comptime: p.comptime }).collect();
+                let names: Vec<Symbol> = t.params.iter().map(|p| p.name).collect();
+                self.push(&names);
+                let body = self.expr(&t.body);
+                self.pop();
+                DeclKind::Test(TestDecl { name, params, body })
+            }
+            DeclKind::Capability(c) => {
+                let methods = c.methods.iter().map(|f| self.func(f, self.declared(m, f.name))).collect();
+                DeclKind::Capability(CapabilityDecl { name: self.declared(m, c.name), methods })
             }
             DeclKind::Trait(t) => {
                 self.tparams.push(t.params.iter().copied().collect());
@@ -1361,7 +1406,7 @@ impl Rw<'_> {
                     .collect();
                 let derivable = t.derivable.as_ref().map(|d| Derivable { kind: self.ty(&d.kind), requires: d.requires.iter().map(|r| self.expr(r)).collect() });
                 self.tparams.pop();
-                DeclKind::Trait(TraitDecl { name: self.declared(m, t.name), params: t.params.clone(), supers, methods, laws, derivable })
+                DeclKind::Trait(TraitDecl { name: self.declared(m, t.name), params: t.params.clone(), supers, methods, laws, derivable, capability: t.capability })
             }
             DeclKind::Impl(i) => {
                 self.tparams.push(i.type_params.iter().copied().collect());

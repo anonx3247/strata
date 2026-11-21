@@ -403,7 +403,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
                 if skip.iter().any(|s| s == t.name.as_str()) {
                     continue;
                 }
-                let inst = Instance { label: format!("test {:?}", t.name.to_string()), symbol: format!("@\"strata.test.{}\"", tests.len()), impls: vec![], params: vec![], ret: TypeExpr::Unit, own_params: &[], own_ret: &TypeExpr::Unit, requires: vec![], ensures: vec![], body: &t.body, sub: HashMap::default() };
+                let inst = Instance { label: format!("test {:?}", t.name.to_string()), symbol: format!("@\"strata.test.{}\"", tests.len()), impls: vec![], params: vec![], ret: TypeExpr::Unit, own_params: &[], own_ret: &TypeExpr::Unit, requires: vec![], ensures: vec![], body: &t.body, sub: HashMap::default(), given: &t.params };
                 m.instance(&inst).map_err(|e| format!("can't compile test {:?}: {e}", t.name.to_string()))?;
                 tests.push(t.name.to_string());
             }
@@ -673,6 +673,8 @@ struct Instance<'a> {
     body: &'a Expr,
     /// Type parameters (and `Self`) -> types.
     sub: HashMap<Symbol, Ty>,
+    /// Capabilities the runtime makes for it (a test's), bound before the body.
+    given: &'a [Param],
 }
 
 /// A constructor's fields: name (positional ones have none), written type,
@@ -915,7 +917,7 @@ impl<'a> Module<'a> {
             ensures.extend(&own.ensures);
         }
         let label = format!("{}.{}", mi.head, mi.method);
-        let inst = Instance { label, symbol: mi.symbol(), impls: vec![], params: own.params.clone(), ret: own.ret.clone(), own_params: &own.params, own_ret: &own.ret, requires, ensures, body: &own.body, sub };
+        let inst = Instance { label, symbol: mi.symbol(), impls: vec![], params: own.params.clone(), ret: own.ret.clone(), own_params: &own.params, own_ret: &own.ret, requires, ensures, body: &own.body, sub, given: &[] };
         self.instance(&inst)
     }
 
@@ -1020,7 +1022,7 @@ impl<'a> Module<'a> {
 
     /// An `extern c type`: a pointer C made, never counted, read or freed here.
     fn handle(&self, t: &Ty) -> bool {
-        matches!(t, Ty::Con(n, args) if args.is_empty() && self.env.externs.contains_key(n))
+        matches!(t, Ty::Con(n, args) if args.is_empty() && (self.env.externs.contains_key(n) || self.env.capabilities.contains(n)))
     }
 
     /// A record, a sum, one of its variants, or a tuple: a block with a tag.
@@ -1223,6 +1225,7 @@ impl<'a> Module<'a> {
             ensures: own.ensures.iter().collect(),
             body: &own.body,
             sub,
+            given: &[],
         };
         self.instance(&inst)
     }
@@ -1270,6 +1273,12 @@ impl<'a> Module<'a> {
             }
             let slot = c.local(&p.name, t, None)?;
             c.store(&(t.clone(), format!("%p.{}", p.name)), &slot)?;
+        }
+        // a capability holds nothing: the runtime's is a null pointer
+        for p in inst.given {
+            let t = c.m.lower(&p.ty, &HashMap::default())?;
+            let slot = c.local(&p.name, &t, None)?;
+            c.store(&(t, "null".into()), &slot)?;
         }
         if c.m.tracing && framed && !name.starts_with("strata_") {
             // `{"event":"call","fn":…,"args":[…],"depth":n}` (the runtime adds the depth)
@@ -1399,6 +1408,22 @@ impl<'a> Module<'a> {
                 }
                 impls.push(None);
                 continue;
+            }
+            // a capability of the program (`capability Sqlite { ... }`): it holds nothing
+            if let TypeExpr::Named(n, a) = &p.ty {
+                if a.is_empty() && c.m.env.capabilities.contains(n) {
+                    let t = Ty::Con(*n, vec![]);
+                    if p.mutable {
+                        let slot = c.fresh("cap");
+                        writeln!(c.allocas, "  {slot} = alloca ptr").unwrap();
+                        c.emit(format!("store ptr null, ptr {slot}"));
+                        args.push((Ty::Str, slot));
+                    } else {
+                        args.push((t, "null".into()));
+                    }
+                    impls.push(None);
+                    continue;
+                }
             }
             let (imp, fields): (&str, Vec<(&str, V)>) = match wanted.as_str() {
                 "std.io.Console" => ("std.io.Terminal", vec![("stdout", (Ty::Int, "1".into())), ("stderr", (Ty::Int, "2".into()))]),
@@ -6957,6 +6982,10 @@ impl Func<'_, '_> {
                     let mut variants = s.m.env.variants_of(tn.as_str(), args).unwrap_or_default();
                     if let Some(o) = &only {
                         variants.retain(|v| &v.0 == o);
+                    }
+                    if variants.is_empty() {
+                        // a capability or a C handle: only the runtime, or C, makes one
+                        return Err(format!("a `{}` can't be made here (only the runtime, or C, makes one)", crate::names::short(&tn)));
                     }
                     let smallest = (0..variants.len()).min_by_key(|i| variants[*i].2.len()).unwrap_or(0);
                     let (deep, any, i) = (s.deep(), s.fresh("any"), s.fresh("which"));

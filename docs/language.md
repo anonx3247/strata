@@ -150,6 +150,43 @@ fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, (ac
 
 **Capabilities are traits too.** There are no separate effects: a backend (database, queue, console, clock) is a trait, and code that uses one takes an implementation as a parameter or holds it in a field: `fn ship(mut db: Db, ...)`, `type PrintWorker = { console: Console }`. A trait used as a type means "any implementation": `db: Db` is shorthand for `fn ship[D: Db](db: D, ...)`. Name the type parameter only when it must tie things together, as in `combine_all[T: Combine](first: T, rest: List[T]) -> T`. A method that changes its value says `mut self` (`fn save(mut self, o: Order)`). Tests pass a fake implementation or `mock Db`. Async and iterators will be designed as their own language features.
 
+**Capabilities given by the runtime.** A trait that reaches the outside world is marked `capability trait`; anything may implement it, fakes for tests included. The real thing is a `capability`: functions that reach the outside world, holding no data. Only the runtime makes one, for `main` or a test that asks for it by name, and its functions are called on that value, so holding it is the permission:
+
+```rust
+/// Reading the time.
+pub capability trait Clock {
+  fn now(self) -> Int
+}
+
+/// The machine's clock.
+pub capability SystemClock {
+  fn seconds() -> Int { ... }
+}
+
+impl Clock for SystemClock {
+  fn now(self) -> Int { self.seconds() }
+}
+
+/// Any clock: the system's, or a fake in a test.
+fn late(c: Clock) -> Bool { c.now() > 40 }
+
+fn main(sys: SystemClock) {
+  print(f"{sys.seconds()} {late(sys)}")
+}
+
+test "the real clock" (sys: SystemClock) {
+  assert late(sys)
+}
+```
+
+- A capability has no constructor: `SystemClock {}`, `mock SystemClock`, JSON input and `SystemClock.seconds()` are all errors. A program's signature (`main`'s parameters) lists every capability it can use.
+- `main` names the capabilities it may use and picks among them in ordinary code (an option choosing SQLite or Postgres), handing the rest of the program a capability trait value (`late(sys)`).
+- A test may ask for capabilities the same way (`test "..." (sys: SystemClock) { ... }`); one that doesn't uses fakes.
+- `verify` never runs a capability's code, nor code that takes one: it reports them as assumed.
+- The viewer colours capabilities and capability traits apart from other types.
+
+`Console`, `Files` and `Environment` are still given to `main` by trait (see "Programs and the standard library"); they become capabilities next.
+
 **A type's own methods.** `impl Item { ... }` gives a type methods of its own, with no trait. A method with `self` is called on a value (`item.priced(42)`). One without `self` is called on the type, which makes it a constructor: `Item.new("tea")`. Only a record, sum or `distinct` type defined in the program can have them, in the module that defines it, and in a single `impl Item` block.
 
 ```rust

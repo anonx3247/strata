@@ -246,7 +246,19 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             }
             out.remove("Self");
         }
-        DeclKind::Test(t) => ex(&t.body, &mut out, ctor_types),
+        DeclKind::Test(t) => {
+            t.params.iter().for_each(|p| ty(&p.ty, &mut out));
+            ex(&t.body, &mut out, ctor_types)
+        }
+        DeclKind::Capability(c) => {
+            for m in &c.methods {
+                m.params.iter().for_each(|p| ty(&p.ty, &mut out));
+                ty(&m.ret, &mut out);
+                m.requires.iter().chain(&m.ensures).for_each(|e| ex(e, &mut out, ctor_types));
+                ex(&m.body, &mut out, ctor_types);
+            }
+            out.remove(c.name.as_str());
+        }
         DeclKind::Use(_) | DeclKind::Extern(ExternDecl { item: ExternItem::Type(_), .. }) => {}
         DeclKind::Extern(ExternDecl { item: ExternItem::Fn(f), .. }) => {
             f.params.iter().for_each(|p| ty(&p.ty, &mut out));
