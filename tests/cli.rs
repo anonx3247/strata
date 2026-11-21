@@ -4640,14 +4640,22 @@ fn std_is_edited_as_a_checked_package() {
     let d = tmp("std-edit");
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("std");
     let std = d.join("std");
-    std::fs::create_dir_all(&std).unwrap();
-    for e in std::fs::read_dir(&src).unwrap() {
-        let e = e.unwrap();
-        // (its files: an edit of std leaves a `.strata` folder there)
-        if e.path().is_file() {
-            std::fs::copy(e.path(), std.join(e.file_name())).unwrap();
+    // std's files and submodules (`std/ast/binary.strata`), not the
+    // `.strata` folder an edit of std leaves there
+    fn copy(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap() {
+            let e = e.unwrap();
+            if e.path().is_dir() {
+                if e.file_name() != ".strata" {
+                    copy(&e.path(), &to.join(e.file_name()));
+                }
+            } else {
+                std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+            }
         }
     }
+    copy(&src, &std);
     let (ok, out) = strata(&["edit", "io"], &std, Some("pub fn shout(s: String) -> String {\n  s + \"!\"\n}\n"));
     assert!(ok && out.contains("std.io.shout"), "{out}");
     assert!(!std.join("strata.log").exists() && !std.join("io").exists());
