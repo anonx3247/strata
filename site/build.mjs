@@ -96,7 +96,7 @@ const texts = []; // [before, after] of each step, as text
   const dir = pkg('shop', [join(EX, 'orders.strata')]);
   const v = await viewer(dir);
   const levels = {};
-  for (const l of [0, 1, 3]) levels[l] = run(dir, ['view', 'slice:Order', '--level', String(l)]).out;
+  for (const l of [0, 1, 2]) levels[l] = run(dir, ['view', 'slice:Order', '--level', String(l)]).out;
   const trace = run(dir, ['run', 'total', '[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]]', '--trace']);
   const badInput = run(dir, ['run', 'total', '[[]]']);
 
@@ -201,7 +201,7 @@ fn discount(amount: Cents) -> Cents {
     b: { cmd: 'strata edit -m "b: tidy line_total"', input: 'fn line_total(l: Line) -> Cents\n  ensures it == l.qty * l.unit_price {\n  l.unit_price * l.qty\n}', out: clean(b.out) },
     sync: session.at(-1).out,
     graph: git(dir, 'log', '--oneline', '--graph').trim(),
-    result: run(dir, ['view', 'line_cost,total', '--level', '3']).out.trim(),
+    result: run(dir, ['view', 'line_cost,total', '--level', '2']).out.trim(),
   };
   // Only the merge's snapshot, without its large Changes history, is needed beyond this.
   v.stop();

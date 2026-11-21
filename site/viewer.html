@@ -490,7 +490,7 @@ function visible() {
     const keep = new Set([S.sel, ...related(d)]);
     set = all.filter(x => keep.has(x.name));
   }
-  if (q) set = set.filter(x => x.label.toLowerCase().includes(q) || x.text['3'].toLowerCase().includes(q));
+  if (q) set = set.filter(x => x.label.toLowerCase().includes(q) || x.text['2'].toLowerCase().includes(q));
   return set;
 }
 
@@ -900,7 +900,7 @@ function card(d) {
   const n = esc(d.name), open = isOpen(d);
   const meta = `<span class="meta">${d.module ? `<span>${esc(d.module)}</span>` : ''}${txt ? `<span class="${cls === 'none' ? '' : cls}">${esc(txt)}</span>` : ''}${open ? `<a class="tog" data-toggle="${n}" title="Show the interface only">hide body ▾</a>` : ''}</span>`;
   let code;
-  if (open) code = highlight(d.text['3'], names);
+  if (open) code = highlight(d.text['2'], names);
   else if (!d.has_body) code = highlight(d.text['1'], names);
   else {
     const iface = d.text['1'].replace(/\s*\{ … \}$/, '');

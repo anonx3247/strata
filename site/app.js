@@ -287,7 +287,7 @@ $('#title').innerHTML = [...'Strata'].map((c, i) => `<span class="l" style="anim
 // ───────────────────────── levels ─────────────────────────
 (() => {
   const L = D.orders.levels;
-  const info = [[0, 'The map', 'one line per definition: what it depends on, and its status'], [1, 'The interfaces', 'types, signatures and contracts: what other code can rely on'], [3, 'The source', 'everything, exactly as stored']];
+  const info = [[0, 'The map', 'one line per definition: what it depends on, and its status'], [1, 'The interfaces', 'types, signatures and contracts: what other code can rely on'], [2, 'The source', 'everything, exactly as stored']];
   $('#lv-pick').innerHTML = info.map(([l, t, d], i) => `<button data-i="${i}"><b>${t} <span class="muted">· level ${l}</span></b><span>${d}</span></button>`).join('');
   let cur = 1;
   function pick(i) {
