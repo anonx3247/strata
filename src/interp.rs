@@ -217,6 +217,14 @@ pub struct Interp<'a> {
     /// What `Self` is in the trait methods being run (innermost last): a
     /// default method calling `Self.empty()` uses it.
     self_types: Vec<String>,
+    /// An impl's type parameters, for the method without `self` being run
+    /// (innermost last): `T` is `Int` in `impl[T] Json for List[T]` called on
+    /// `List[Int]`.
+    impl_types: Vec<Vec<(String, String)>>,
+    /// Calls given their receiver's whole type (`$self_type`), by node.
+    typed_calls: Vec<(usize, String)>,
+    /// The receiver's whole type for the method about to be called.
+    next_self_type: Option<String>,
     /// The value of the `return` (or `!` / `?`) being carried out.
     returning: Option<Value>,
     /// At most this many evaluation steps, if set.
@@ -318,6 +326,29 @@ fn div_rem_euclid(a: &BigInt, b: &BigInt) -> (BigInt, BigInt) {
     (q, r)
 }
 
+/// The type text of a type, as passed at runtime (`List[Int]`).
+pub fn type_text(t: &TypeExpr) -> String {
+    match t {
+        TypeExpr::Named(n, args) if args.is_empty() => n.to_string(),
+        TypeExpr::Named(n, args) => format!("{n}[{}]", args.iter().map(type_text).collect::<Vec<_>>().join(", ")),
+        TypeExpr::Unit => "Unit".into(),
+        other => crate::printer::ty(other),
+    }
+}
+
+/// `impl[T] .. for List[T]` called on `List[Int]`: `T` is `Int`.
+fn bind_type_params(pattern: &TypeExpr, t: &TypeExpr, params: &[Symbol], out: &mut Vec<(String, String)>) {
+    match (pattern, t) {
+        (TypeExpr::Named(p, pa), _) if pa.is_empty() && params.contains(p) => out.push((p.to_string(), type_text(t))),
+        (TypeExpr::Named(_, pa), TypeExpr::Named(_, ta)) => {
+            for (a, b) in pa.iter().zip(ta) {
+                bind_type_params(a, b, params, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn to_json(v: &Value) -> Json {
     match v {
         // distinct types serialise as their underlying value
@@ -380,13 +411,50 @@ pub fn format_spec(v: &Value, f: &FmtSpec) -> Result<String, String> {
     })
 }
 
+/// A value shown to people (`Display`, without the program's own impls): a
+/// string is its text, anything else as `debug_text` writes it.
 pub fn show(v: &Value) -> String {
     match v {
         Value::Str(s) => s.clone(),
-        Value::Big(b) => b.to_string(),
-        Value::Variant(c, Fields::None) => short(c).to_string(),
-        other => to_json(other).to_string(),
+        other => debug_text(other),
     }
+}
+
+/// A value as it is written in code (`Debug`, without the program's own
+/// impls): `Some("hi")`, `Point { x: 1, y: 2 }`, `[1, 2]`.
+pub fn debug_text(v: &Value) -> String {
+    debug_with(v, &mut |x| Ok::<_, ()>(debug_text(x))).unwrap_or_default()
+}
+
+/// `Debug`'s form of a value, its parts written by `part`.
+fn debug_with<E>(v: &Value, part: &mut dyn FnMut(&Value) -> Result<String, E>) -> Result<String, E> {
+    let parts = |xs: &[Value], part: &mut dyn FnMut(&Value) -> Result<String, E>| -> Result<String, E> {
+        Ok(xs.iter().map(|x| part(x)).collect::<Result<Vec<_>, E>>()?.join(", "))
+    };
+    let fields = |fs: &[(String, Value)], part: &mut dyn FnMut(&Value) -> Result<String, E>| -> Result<String, E> {
+        Ok(fs.iter().map(|(k, x)| Ok(format!("{k}: {}", part(x)?))).collect::<Result<Vec<_>, E>>()?.join(", "))
+    };
+    let braced = |name: &str, inner: String| if inner.is_empty() { format!("{name} {{}}") } else { format!("{name} {{ {inner} }}") };
+    Ok(match v {
+        Value::Int(n) => n.to_string(),
+        Value::Big(b) => b.to_string(),
+        Value::Float(_) => to_json(v).to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Str(s) => format!("\"{}\"", crate::printer::escape(s)),
+        Value::Unit => "()".into(),
+        Value::List(xs) => format!("[{}]", parts(xs, part)?),
+        Value::Tuple(xs) => format!("({})", parts(xs, part)?),
+        Value::Set(xs) => braced("Set", parts(xs, part)?),
+        Value::Dict(kvs) => braced("Dict", kvs.iter().map(|(k, x)| Ok(format!("{}: {}", part(k)?, part(x)?))).collect::<Result<Vec<_>, E>>()?.join(", ")),
+        Value::Record(n, fs) => braced(short(n), fields(fs, part)?),
+        Value::Variant(c, Fields::None) => short(c).to_string(),
+        Value::Variant(c, Fields::Pos(xs)) => format!("{}({})", short(c), parts(xs, part)?),
+        Value::Variant(c, Fields::Rec(fs)) => braced(short(c), fields(fs, part)?),
+        Value::Distinct(n, x) => format!("{}({})", short(n), part(x)?),
+        Value::Mock(t) => format!("<mock {}>", crate::printer::ty(t)),
+        Value::Closure(ps, ..) => format!("<closure ({}) -> …>", ps.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")),
+        Value::FnRef(n) => format!("<fn {n}>"),
+    })
 }
 
 /// A total order on values, used by `sort`: numbers numerically, strings
@@ -426,6 +494,9 @@ impl<'a> Interp<'a> {
             regexes: HashMap::default(),
             writeback: vec![],
             self_types: vec![],
+            impl_types: vec![],
+            typed_calls: vec![],
+            next_self_type: None,
             returning: None,
             budget: None,
             steps: 0,
@@ -761,7 +832,25 @@ impl<'a> Interp<'a> {
 
     pub fn call_fn(&mut self, name: &str, args: Vec<Value>) -> R<Value> {
         let f = self.env.fns.get(&name.sym()).cloned().ok_or_else(|| fault(FaultKind::Runtime, format!("unknown function `{name}`")))?;
+        // a type's own method (`Pair.swap`) called on a value whose whole type is known
+        if let Some(w) = self.next_self_type.take() {
+            let head = crate::types::type_text_head(&w).to_string();
+            if let Some(imp) = self.env.inherent.get(&head.sym()).cloned() {
+                let mut b = vec![];
+                bind_type_params(&imp.for_type, &crate::types::parse_type_text(&w), &imp.type_params, &mut b);
+                self.impl_types.push(b);
+                let r = self.call_decl(&f, name, args);
+                self.impl_types.pop();
+                return r;
+            }
+        }
         self.call_decl(&f, name, args)
+    }
+
+    /// The receiver type given to this call node, if any.
+    fn typed_call(&mut self, e: &Expr) -> Option<String> {
+        let at = e as *const Expr as usize;
+        self.typed_calls.iter().rev().find(|(a, _)| *a == at).map(|(_, t)| t.clone())
     }
 
     /// The runtime type name used to pick a trait implementation.
@@ -789,16 +878,20 @@ impl<'a> Interp<'a> {
     pub fn call_method(&mut self, name: &str, mut args: Vec<Value>) -> R<Value> {
         // a method without `self` (`Trait::empty(type, ..)`): the type comes first
         let is_static = self.env.method_contract(name).is_some_and(|(_, d)| !crate::resolve::takes_self(d));
+        // the type a method without `self` is called on, whole (`List[Int]`)
+        let whole: Option<String>;
         let head = if is_static {
             match args.first() {
                 Some(Value::Str(h)) => {
                     let h = h.clone();
                     args.remove(0);
-                    h
+                    whole = Some(h.clone());
+                    crate::types::type_text_head(&h).to_string()
                 }
                 _ => return self.fail(FaultKind::Runtime, format!("`{name}` needs the type it is called on")),
             }
         } else {
+            whole = self.next_self_type.take();
             if let Some(Value::Mock(mt)) = args.first() {
                 let mt = mt.clone();
                 return self.mock_call(&mt, name, args);
@@ -814,17 +907,88 @@ impl<'a> Interp<'a> {
             Some(Value::Variant(c, _)) => self.env.resolve_method(name, c),
             _ => None,
         };
-        let Some((mut decl, req, ens)) = own.or_else(|| self.env.resolve_method(name, &head)) else {
+        let found = own.or_else(|| self.env.resolve_method(name, &head));
+        // `Debug` and `Display` without an impl of the type's own: the built-in forms
+        if found.is_none() && !is_static {
+            match crate::types::split_trait_call(name).map_or(name, |(_, m)| m) {
+                "debug" => return Ok(Value::Str(debug_with(&args[0].clone(), &mut |x| self.debug_value(x))?)),
+                "to_string" => {
+                    let v = args[0].clone();
+                    return Ok(Value::Str(match v {
+                        Value::Str(s) => s,
+                        other => self.debug_value(&other)?,
+                    }));
+                }
+                _ => {}
+            }
+        }
+        let Some((mut decl, req, ens)) = found else {
             let trs = crate::symbol::join(&self.env.method_traits.get(&name.sym()).cloned().unwrap_or_default(), "` or `");
             return self.fail(FaultKind::Runtime, format!("`{head}` has no method `{name}` (it does not implement `{trs}`)"));
         };
         decl.requires.splice(0..0, req);
         decl.ensures.splice(0..0, ens);
         let label = format!("{head}.{}", crate::types::split_trait_call(name).map_or(name, |(_, m)| m));
-        self.self_types.push(head);
+        // the impl's type parameters, from the type it is called on
+        let tr = match crate::types::split_trait_call(name) {
+            Some((tr, _)) => Some(tr.to_string()),
+            None => self.env.method_traits.get(&name.sym()).and_then(|ts| ts.iter().find(|t| self.env.impls.iter().any(|i| i.trait_name == **t && crate::types::texpr_head(&i.for_type) == head)).map(|t| t.to_string())),
+        };
+        let bound = match (&whole, tr) {
+            (Some(w), Some(tr)) => self.env.impls.iter().find(|i| i.trait_name == tr && crate::types::texpr_head(&i.for_type) == crate::types::type_text_head(w)).map(|i| {
+                let mut b = vec![];
+                bind_type_params(&i.for_type, &crate::types::parse_type_text(w), &i.type_params, &mut b);
+                b
+            }).unwrap_or_default(),
+            _ => vec![],
+        };
+        self.self_types.push(whole.unwrap_or(head));
+        self.impl_types.push(bound);
         let r = self.call_decl(&decl, &label, args);
+        self.impl_types.pop();
         self.self_types.pop();
         r
+    }
+
+    /// The program's own impl of `tr` (`Debug`, `Display`) for a value's type,
+    /// if it has one: a variant's own, else its sum's.
+    fn text_impl(&self, tr: &str, v: &Value) -> Option<String> {
+        let heads: Vec<String> = match v {
+            Value::Record(n, _) | Value::Distinct(n, _) => vec![n.clone()],
+            Value::Variant(c, _) => {
+                let mut h = vec![c.clone()];
+                h.extend(self.env.variant_parent(c.sym()).map(|p| p.to_string()));
+                h
+            }
+            _ => return None,
+        };
+        heads.into_iter().find(|h| self.env.impls.iter().any(|i| i.trait_name == tr && crate::types::texpr_head(&i.for_type) == h.as_str()))
+    }
+
+    /// `Display`: the type's own `to_string`, else a string's text, else `debug`.
+    pub fn display_value(&mut self, v: &Value) -> R<String> {
+        if self.text_impl("Display", v).is_some() {
+            return match self.call_method(&crate::types::trait_call("Display", "to_string"), vec![v.clone()])? {
+                Value::Str(s) => Ok(s),
+                other => Ok(show(&other)),
+            };
+        }
+        match v {
+            Value::Str(s) => Ok(s.clone()),
+            other => self.debug_value(other),
+        }
+    }
+
+    /// `Debug`: the type's own `debug`, else the value as written in code
+    /// (its parts by their `debug` too).
+    pub fn debug_value(&mut self, v: &Value) -> R<String> {
+        if self.text_impl("Debug", v).is_some() {
+            return match self.call_method(&crate::types::trait_call("Debug", "debug"), vec![v.clone()])? {
+                Value::Str(s) => Ok(s),
+                other => Ok(show(&other)),
+            };
+        }
+        debug_with(v, &mut |x| self.debug_value(x))
     }
 
     /// A method call on `mock T`: check the trait's `requires`, then generate a
@@ -965,8 +1129,13 @@ impl<'a> Interp<'a> {
         if crate::stdlib::is_host(name) {
             return self.host_call(name, args);
         }
+        // a type's runtime text from its head and arguments' texts: `List[Int]`
+        if name == crate::types::TYPE_TEXT {
+            let parts: Vec<String> = args.iter().map(|a| if let Str(t) = a { t.clone() } else { String::new() }).collect();
+            return Ok(Str(format!("{}[{}]", parts[0], parts[1..].join(", "))));
+        }
         if name == "print" {
-            let line = show(args.first().unwrap_or(&Unit)) + "\n";
+            let line = self.display_value(args.first().unwrap_or(&Unit))? + "\n";
             match &mut self.output {
                 Output::Terminal => {
                     use std::io::Write;
@@ -1261,7 +1430,8 @@ impl<'a> Interp<'a> {
                 let (Str(s), Str(p)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
                 Bool(s.starts_with(&p))
             }
-            "to_string" => Str(show(&nx())),
+            "to_string" => Str(self.display_value(&nx())?),
+            "debug" => Str(self.debug_value(&nx())?),
             "to_json" => Str(to_json(&nx()).to_string()),
             "ends_with" => {
                 let (Str(s), Str(p)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
@@ -1456,6 +1626,14 @@ impl<'a> Interp<'a> {
                     Some(h) => Value::Str(h.clone()),
                     None => return self.fail(FaultKind::Runtime, "`Self` is not known here"),
                 },
+                // `T.m()` in an impl's method without `self`: from the type it was called on
+                None if x.as_str().starts_with("type:") => {
+                    let p = &x.as_str()["type:".len()..];
+                    match self.impl_types.last().and_then(|b| b.iter().find(|(n, _)| n == p)) {
+                        Some((_, t)) => Value::Str(t.clone()),
+                        None => return self.fail(FaultKind::Runtime, format!("the type `{p}` is not known here")),
+                    }
+                }
                 None => Value::FnRef(x.to_string()),
             },
             Expr::List(es) => Value::List(es.iter().map(|x| self.eval(x, s)).collect::<R<_>>()?),
@@ -1499,11 +1677,30 @@ impl<'a> Interp<'a> {
             }
             Expr::Mut(x) | Expr::Comptime(x) => self.eval(x, s)?,
             Expr::Describe(t) => return self.fail(FaultKind::Runtime, format!("`${}` is only known in a derived method", crate::printer::ty(t))),
+            // `$self_type(type, call)`: the call's receiver type, whole, for the method it reaches
+            Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if n == crate::types::SELF_TYPE) && args.len() == 2 => {
+                // (a type parameter the caller wasn't given leaves it unknown)
+                // (the call itself: inside `mut` when it changes its receiver)
+                let call = match &args[1] {
+                    Expr::Mut(c) => &**c,
+                    c => c,
+                };
+                let at = call as *const Expr as usize;
+                if let Ok(Value::Str(t)) = self.eval(&args[0], s) {
+                    self.typed_calls.push((at, t));
+                }
+                let r = self.eval(&args[1], s);
+                self.typed_calls.retain(|(a, _)| *a != at);
+                r?
+            }
             Expr::Call(f, args) => {
                 let fv = self.eval(f, s)?;
                 let avs = args.iter().map(|a| self.eval(a, s)).collect::<R<Vec<_>>>()?;
                 self.writeback.clear();
-                let r = self.apply(fv, avs)?;
+                self.next_self_type = self.typed_call(e);
+                let r = self.apply(fv, avs);
+                self.next_self_type = None;
+                let r = r?;
                 let places: Vec<&Expr> = args.iter().collect();
                 self.write_back(&places, s)?;
                 r
@@ -1515,7 +1712,10 @@ impl<'a> Interp<'a> {
                 }
                 let f = lookup(s, m).unwrap_or(Value::FnRef(m.to_string()));
                 self.writeback.clear();
-                let out = self.apply(f, avs)?;
+                self.next_self_type = self.typed_call(e);
+                let out = self.apply(f, avs);
+                self.next_self_type = None;
+                let out = out?;
                 let places: Vec<&Expr> = std::iter::once(&**r).chain(args.iter()).collect();
                 self.write_back(&places, s)?;
                 out
@@ -1725,9 +1925,14 @@ impl<'a> Interp<'a> {
                 for p in parts {
                     match p {
                         StrPart::Lit(l) => out += l,
-                        StrPart::Expr(e, None) => out += &show(&self.eval(e, s)?),
+                        StrPart::Expr(e, None) => {
+                            let v = self.eval(e, s)?;
+                            out += &self.display_value(&v)?
+                        }
                         StrPart::Expr(e, Some(spec)) => {
                             let v = self.eval(e, s)?;
+                            // a value with a `Display` of its own is padded as its text
+                            let v = if self.text_impl("Display", &v).is_some() && spec.precision.is_none() && !spec.plus && !spec.zero { Value::Str(self.display_value(&v)?) } else { v };
                             match format_spec(&v, spec) {
                                 Ok(t) => out += &t,
                                 Err(m) => return self.fail(FaultKind::Runtime, m),

@@ -229,11 +229,13 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
         all_ok = false;
     }
     if json_out {
-        let out: Vec<_> = results.iter().map(|(n, v, c)| json!({"fn": n, "cached": c, "verdict": v})).collect();
+        let out: Vec<_> = results.iter().map(|(n, v, c)| json!({"fn": n.strip_prefix(crate::resolve::ROOT_FN).unwrap_or(n), "cached": c, "verdict": v})).collect();
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
         return Ok(all_ok);
     }
     for (n, v, cached) in &results {
+        // (a root function named like a builtin is `main$get` once resolved)
+        let n = &n.strip_prefix(crate::resolve::ROOT_FN).unwrap_or(n).to_string();
         let c = if *cached { " (cached)" } else { "" };
         match v {
             verify::Verdict::Proven { checks, .. } => {
