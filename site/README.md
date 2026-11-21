@@ -1,6 +1,6 @@
 # site: Strata, presented
 
-A presentation of Strata as slides, built around what it fixes: structural changes instead of line diffs, verification instead of tests that miss cases, contracts that re-check their users, edits that can't break the codebase. It opens with the ideas behind it, shows each problem before the answer, then the rest of the language briefly (capabilities, mocks, derived code, iterators, `comptime`, `extern c`, the compiler).
+A presentation of Strata as slides. It starts from how an agent works in a codebase of text files today (an illustration), then shows Strata's three ideas: types as contracts, proving over testing, and the code is the AST. Each comes with recorded examples. It ends with the rest of the language, briefly.
 
 ```sh
 cargo build --release

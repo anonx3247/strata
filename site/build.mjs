@@ -51,6 +51,8 @@ async function viewer(cwd, label = '~/' + cwd.split('/').pop()) {
       for (const s of all.steps || []) changes[s.id] = await get(`/api/changes?step=${s.id}`);
       return { state, changes };
     },
+    /** Only the codebase, without the Changes view. */
+    async state() { return get('/api/state'); },
     stop() { child.kill(); },
   };
 }
@@ -267,35 +269,34 @@ fn checkout(lines: NonEmpty[Line]) -> Cents {
 `;
   const steps = [];
   const texts = [];
-  /** One step: a command, what was piped into it, and the commands run right after it. */
-  function step(s) {
+  const cv = await viewer(dir);
+  /** One step: a command, what was piped into it, and the commands run right after it; the codebase after it. */
+  async function step(s) {
     const before = run(dir, ['render']).out;
     const r = run(dir, s.args, s.input);
     let out = clean(r.out);
     for (const t of s.then || []) out += '\n\n$ strata ' + t.join(' ') + '\n' + clean(run(dir, t).out);
     const after = run(dir, ['render']).out;
     texts.push([before, after]);
-    steps.push({ ...s, args: undefined, then: undefined, cmd: s.cmd ?? `strata ${s.args.join(' ')}`, input: s.input?.trim(), out, linediff: lineDiff(before, after) });
+    steps.push({ ...s, args: undefined, then: undefined, cmd: s.cmd ?? `strata ${s.args.join(' ')}`, input: s.input?.trim(), out, linediff: lineDiff(before, after), graph: graph(await cv.state()) });
     console.log(`  contract ${steps.length}: ${s.title}`);
   }
-  step({ title: 'Today, checkout is proven', g: { checkout: 'pass' }, args: ['edit', '-m', 'checkout'], cmd: 'strata edit -m "checkout"', then: [['verify', 'checkout']],
+  await step({ title: 'Today, checkout is proven', g: { checkout: 'pass' }, args: ['edit', '-m', 'checkout'], cmd: 'strata edit -m "checkout"', then: [['verify', 'checkout']],
     input: '/// What the customer pays: the total, with the discount applied.\nfn checkout(lines: NonEmpty[Line]) -> Cents {\n  discount(total(lines))\n}\n',
     say: '`checkout` applies `discount` to the total. Verified: proven.' });
-  step({ title: 'Tighten discount’s contract', g: { discount: 'changed', checkout: 'recheck', totals: 'recheck', lit: true }, args: ['edit', '-m', 'discount only from 1.00'], cmd: 'strata edit -m "discount only from 1.00"',
+  await step({ title: 'Tighten discount’s contract', g: { discount: 'changed', checkout: 'recheck', totals: 'recheck', lit: true }, args: ['edit', '-m', 'discount only from 1.00'], cmd: 'strata edit -m "discount only from 1.00"',
     input: discount('amount: Cents', true),
     say: 'One new line: `requires amount >= 100`. The interface changed, so the edit names what depends on it and must be re-checked.' });
-  step({ title: 'The tests still pass', g: { discount: 'changed', checkout: 'recheck', totals: 'pass' }, args: ['test'],
-    say: 'The only test calls `discount(20000)`. No test tried a basket under 1.00.' });
-  step({ title: 'Verification finds the caller that breaks', g: { discount: 'changed', checkout: 'fail', totals: 'pass', bad: true }, args: ['verify', 'checkout'],
-    say: '`checkout` is checked against the new contract, and the input that breaks it comes with the verdict: a basket worth 0.00.' });
-  step({ title: 'Fix the caller', g: { discount: 'changed', checkout: 'pass', totals: 'pass' }, args: ['edit', '-m', 'checkout: no discount under 1.00'], cmd: 'strata edit -m "checkout: no discount under 1.00"', then: [['verify', 'checkout']],
+  await step({ title: 'Verification finds the caller that breaks', g: { discount: 'changed', checkout: 'fail', totals: 'pass', bad: true }, args: ['verify', 'checkout'],
+    say: '`checkout` is checked against the new contract, and the verdict comes with an input that breaks it: a basket under 1.00.' });
+  await step({ title: 'Fix the caller', g: { discount: 'changed', checkout: 'pass', totals: 'pass' }, args: ['edit', '-m', 'checkout: no discount under 1.00'], cmd: 'strata edit -m "checkout: no discount under 1.00"', then: [['verify', 'checkout']],
     input: checkout('discount(t)'), say: '`checkout` now applies the discount only from 1.00. Proven again.' });
-  step({ title: 'Add a parameter: the callers become holes', g: { discount: 'changed', checkout: 'hole', totals: 'hole', lit: true }, args: ['edit', '-m', 'discount: members'], cmd: 'strata edit -m "discount: members"',
+  await step({ title: 'Add a parameter: the callers become holes', g: { discount: 'changed', checkout: 'hole', totals: 'hole', lit: true }, args: ['edit', '-m', 'discount: members'], cmd: 'strata edit -m "discount: members"',
     input: discount('amount: Cents, member: Bool', true),
     say: '`discount` takes a `member` flag. Its two calls no longer check: rather than refusing the edit, Strata turns them into holes in a pending change.' });
-  step({ title: 'See where the holes are', g: { discount: 'changed', checkout: 'hole', totals: 'hole' }, args: ['holes'],
+  await step({ title: 'See where the holes are', g: { discount: 'changed', checkout: 'hole', totals: 'hole' }, args: ['holes'],
     say: 'Each hole says what it was, why it broke, and what is in scope to fill it, for you or an agent.' });
-  step({ title: 'Fill them, and close the change', g: { discount: 'changed', checkout: 'recheck', totals: 'recheck' }, args: ['edit'], cmd: 'strata edit', then: [['done']],
+  await step({ title: 'Fill them, and close the change', g: { discount: 'changed', checkout: 'recheck', totals: 'recheck' }, args: ['edit'], cmd: 'strata edit', then: [['done']],
     input: checkout('discount(t, false)') + `
 test "totals" {
   lines := [
@@ -306,13 +307,12 @@ test "totals" {
   assert discount(20000, false) == 18000
 }
 `, say: '`strata done` records it all as one change, one commit: the new parameter, and the two calls that follow it.' });
-  step({ title: 'Verify everything', g: { discount: 'pass', checkout: 'pass', totals: 'pass' }, args: ['verify'],
+  await step({ title: 'Verify everything', g: { discount: 'pass', checkout: 'pass', totals: 'pass' }, args: ['verify'],
     say: 'Every contract holds again, for every input.' });
   const at = t => steps.findIndex(x => x.title === t);
   const paramDiff = lineDiff(texts[at('Add a parameter: the callers become holes')][0], texts[at('Fill them, and close the change')][1]);
-  const v = await viewer(dir);
-  emit('contract', { steps, paramDiff, changes: (await v.snap()).changes });
-  v.stop();
+  emit('contract', { steps, paramDiff, changes: (await cv.snap()).changes });
+  cv.stop();
 }
 
 // ─────────────── a rename in a larger codebase: what a line diff makes of it ───────────────
@@ -487,6 +487,164 @@ fn main() {
   }
   for (const [k, v] of Object.entries(F)) console.log(`  feature ${k}`);
   emit('features', F);
+}
+
+// ─────────────── verification, on small programs ───────────────
+{
+  /** A small package from text: stored with `strata edit`, which checks it. */
+  const prog = (name, text) => {
+    const dir = pkg('v-' + name, []);
+    const r = run(dir, ['edit', '-m', name], text);
+    if (r.code) throw new Error(`${name} doesn't check:\n${r.out}`);
+    return dir;
+  };
+  const out = (dir, args, input) => { const r = run(dir, args, input); return { cmd: `strata ${args.join(' ')}`, out: clean(r.out), code: r.code }; };
+  const V = {};
+  // what a contract says, and what the solver does with it
+  {
+    const dir = prog('contracts', `type Cents = Int
+  where it >= 0
+
+type Percent = Int
+  where 0 <= it && it <= 100
+
+/// A price after taking a percentage off.
+fn discount(price: Cents, pct: Percent) -> Cents
+  requires price >= 100
+  ensures it <= price {
+  price - price * pct / 100
+}
+
+/// What the customer pays.
+fn checkout(price: Cents) -> Cents {
+  if price >= 100 {
+    discount(price, 10)
+  } else {
+    price
+  }
+}
+
+/// Half price, on everything.
+fn sale(price: Cents) -> Cents {
+  discount(price, 50)
+}
+`);
+    const src = run(dir, ['render']).out;
+    V.contracts = { types: defs(src, ['type Cents', 'type Percent']), discount: defs(src, ['fn discount']), callers: defs(src, ['fn checkout', 'fn sale']), verify: out(dir, ['verify']) };
+  }
+  // tests that pass, and the detail they missed
+  {
+    const dir = prog('shares', `type Cents = Int
+  where it >= 0
+
+/// Split a bill between people.
+fn shares(total: Cents, people: Positive) -> List[Cents] {
+  [total / people for _ in 0..people]
+}
+
+test "splits a bill evenly" {
+  assert shares(900, 3) == [300, 300, 300]
+}
+
+test "one person pays it all" {
+  assert shares(1234, 1) == [1234]
+}
+
+test "everyone pays, and it adds up" {
+  s := shares(1000, 4)
+  assert len(s) == 4
+  assert sum(s) == 1000
+}
+`);
+    const src = run(dir, ['render']).out;
+    const tests = defs(src, ['test ']);
+    const t = out(dir, ['test']);
+    const withContract = `/// Split a bill between people. The shares add up to the total.
+fn shares(total: Cents, people: Positive) -> List[Cents]
+  ensures sum(it) == total {
+  [total / people for _ in 0..people]
+}
+`;
+    const e1 = out(dir, ['edit', '-m', 'shares: say what must hold'], withContract);
+    const v1 = out(dir, ['verify', 'shares']);
+    const fixed = `/// Split a bill between people. The shares add up to the total.
+fn shares(total: Cents, people: Positive) -> List[Cents]
+  ensures sum(it) == total {
+  extra := total % people
+  [total / people + (if i < extra { 1 } else { 0 }) for i in 0..people]
+}
+`;
+    out(dir, ['edit', '-m', 'shares: spread the remainder'], fixed);
+    const v2 = out(dir, ['verify', 'shares']);
+    V.shares = { code: defs(src, ['fn shares']), tests, test: t, contract: run(dir, ['view', 'shares', '--level', '2']).out.trim() && withContract.trim(), verify: v1, fixed: fixed.trim(), verify_fixed: v2 };
+    if (e1.code) throw new Error('shares contract: ' + e1.out);
+  }
+  // four tests, or one line
+  {
+    const dir = prog('points', `/// Loyalty points earned on an order: 1 per euro, at most 500.
+fn points(cents: Int where it >= 0) -> Int {
+  min(cents / 100, 500)
+}
+
+test "no points under a euro" {
+  assert points(99) == 0
+}
+
+test "one point per euro" {
+  assert points(1234) == 12
+}
+
+test "capped at 500" {
+  assert points(1000000) == 500
+}
+
+test "never negative" {
+  assert points(0) >= 0
+}
+`);
+    const src = run(dir, ['render']).out;
+    const t = out(dir, ['test']);
+    const one = `/// Loyalty points earned on an order: 1 per euro, at most 500.
+fn points(cents: Int where it >= 0) -> Int
+  ensures 0 <= it && it <= 500 && it <= cents / 100 {
+  min(cents / 100, 500)
+}
+`;
+    out(dir, ['edit', '-m', 'points: say it once'], one);
+    V.points = { tests: src.trim(), test: t, one: one.trim(), verify: out(dir, ['verify', 'points']) };
+  }
+  // text in, a tree stored, text out
+  {
+    const dir = pkg('edits', [join(EX, 'orders.strata')]);
+    const sloppy = 'fn line_total(l:Line)->Cents ensures it==l.qty*l.unit_price {l.unit_price*l.qty}';
+    const bad = 'fn line_total(l: Line) -> Cents {\n  l.unit_price * l.sku\n}';
+    V.edit = {
+      sloppy, stored: { ...out(dir, ['edit', '-m', 'line_total: say what it is'], sloppy + '\n'), cmd: 'strata edit -m "line_total: say what it is"' },
+      rendered: run(dir, ['view', 'line_total', '--level', '2']).out.trim(),
+      bad, refused: { ...out(dir, ['edit'], bad + '\n'), cmd: 'strata edit' },
+    };
+  }
+  // comprehensions and friends
+  {
+    const dir = prog('lines', `type Line = { sku: String, qty: Int, price: Int }
+
+fn main() {
+  lines := [
+    Line { sku: "tea", qty: 2, price: 450 },
+    Line { sku: "cup", qty: 1, price: 1200 },
+    Line { sku: "pot", qty: 0, price: 3000 },
+  ]
+  ordered := [l.sku for l in lines where l.qty > 0]
+  totals := Dict { l.sku: l.qty * l.price for l in lines }
+  best := sort_by(lines, l -> -l.qty * l.price)[0]
+  print(f"ordered: {ordered}")
+  print(f"totals: {totals}")
+  print(f"biggest line: {best.sku}, {float(best.qty * best.price) / 100.0:.2}")
+}
+`);
+    V.sugar = { src: run(dir, ['render']).out.trim(), run: out(dir, ['run']) };
+  }
+  emit('verify', V);
 }
 
 // ─────────────── the docs, as pages ───────────────

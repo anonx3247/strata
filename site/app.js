@@ -344,25 +344,125 @@ const sayBlock = (el, title, html, fast, who = '') => {
   say($('p', el), html, fast);
 };
 
+const V = D.verify, F = D.features;
+
+// ───────────────────────── how an agent works today (an illustration) ─────────────────────────
+{
+  const FILES = ['orders/models.py', 'orders/service.py', 'billing/discount.py', 'billing/refund.py', 'billing/legacy.py', 'api/routes.py',
+    'api/schemas.py', 'db/repository.py', 'utils/money.py', 'tests/test_orders.py', 'tests/test_discount.py', 'tests/test_refund.py'];
+  const rnd = (i, j) => { const x = Math.sin(i * 91.7 + j * 13.3) * 43758.5; return x - Math.floor(x); };
+  const box = $('#files');
+  box.innerHTML = FILES.map((f, i) => `<div class="file" data-i="${i}"><div class="fname">${f}</div><div class="lines">${Array.from({ length: 15 }, (_, j) => `<i style="width:${18 + rnd(i, j) * 72}%;margin-left:${(rnd(j, i) < .4 ? 1 : 0) * 8}%"></i>`).join('')}</div></div>`).join('') + '<div class="agent" id="agent"><i></i><span>agent</span></div>';
+  const file = i => $$('.file', box)[i], bar = (i, j) => $$('.lines i', file(i))[j % 15];
+  const agent = $('#agent');
+  const moveTo = i => { const f = file(i); agent.style.left = f.offsetLeft + f.offsetWidth / 2 + 'px'; agent.style.top = f.offsetTop + f.offsetHeight * .45 + 'px'; $$('.file', box).forEach(x => x.classList.toggle('here', x === f)); };
+  const mark = (i, j, cls) => { const b = bar(i, j); if (b) { b.className = cls; } };
+  const reset = () => { $$('.lines i', box).forEach(b => (b.className = '')); $$('.file', box).forEach(f => f.classList.remove('here', 'grow')); $$('.lines i.extra', box).forEach(b => b.remove()); };
+  const T = $('#today-term');
+  const line = async (cmd, outs, alive, fast, ms = 220) => {
+    if (!alive()) return false;
+    T.insertAdjacentHTML('beforeend', cmd ? cmdLine(cmd) : '');
+    for (const o of outs) { T.insertAdjacentHTML('beforeend', `<span class="term-line ln">${termLine(o)}</span>`); }
+    T.scrollTop = T.scrollHeight;
+    if (!fast) await sleep(ms);
+    return alive();
+  };
+  const STEPS = [
+    { h: 'First, it has to find its way around.', say: 'Given a task, an agent first builds a map of the codebase in its head: where each declaration lives, which files it is in, what uses it. It gets there by reading files and searching them, again and again.',
+      async run(a, fast) {
+        const steps = [
+          ['grep -rn "class Order" .', ['orders/models.py:12: class Order(BaseModel):', 'api/schemas.py:40: class OrderOut(BaseModel):'], [[0, 3], [6, 8]]],
+          ['grep -rn "def discount" .', ['billing/discount.py:8: def discount(amount):', 'billing/legacy.py:41: def discount(amount, rate=0.1):'], [[2, 2], [4, 9]]],
+          ['cat billing/discount.py', ['(54 lines)'], [[2, 0], [2, 4], [2, 7]]],
+          ['grep -rn "discount(" .', ['orders/service.py:88', 'api/routes.py:23', 'billing/refund.py:30', 'tests/test_discount.py:5', 'tests/test_orders.py:61', '5 more…'], [[1, 11], [5, 4], [3, 6], [10, 2], [9, 13]]],
+          ['cat orders/service.py', ['(212 lines)'], [[1, 1], [1, 6], [1, 11]]],
+        ];
+        for (const [cmd, outs, hits] of steps) {
+          for (const [f, l] of hits) { moveTo(f); mark(f, l, 'hit'); if (!fast) await sleep(260); if (!a()) return; }
+          if (!await line(cmd, outs, a, fast)) return;
+        }
+      } },
+    { h: 'Then it edits lines of text, in several files.', say: 'It changes lines in four files at once, and deals with syntax and formatting on the way. The checks run when it thinks of running them.',
+      async run(a, fast) {
+        const edits = [[2, [3, 4, 5], 'billing/discount.py  +4 −1'], [1, [11, 12], 'orders/service.py  +2 −2'], [5, [4], 'api/routes.py  +1 −1'], [6, [8, 9], 'api/schemas.py  +3 −0']];
+        for (const [f, ls, msg] of edits) { moveTo(f); ls.forEach(l => mark(f, l, 'edit')); if (!await line(null, [`edited ${msg}`], a, fast, 380)) return; }
+        if (!await line('python -m pytest -q', ['error: IndentationError: unexpected indent (service.py, line 90)'], a, fast, 500)) return;
+        moveTo(1); mark(1, 13, 'bad'); if (!fast) await sleep(300);
+        mark(1, 13, 'edit'); await line(null, ['edited orders/service.py  +1 −1'], a, fast);
+      } },
+    { h: 'Then it finds out what broke.', say: 'The change to one function broke code in files the agent never opened. It runs the checks, reads the errors, searches for the callers again, and fixes them one by one. It can\'t finish one thing before moving to the next.',
+      async run(a, fast) {
+        if (!await line('mypy . && pytest -q', [], a, fast, 300)) return;
+        const errs = [[5, 4], [6, 9], [3, 6], [9, 13], [10, 2], [10, 7], [11, 3], [7, 5], [0, 10], [8, 2], [3, 12], [11, 9]];
+        let n = 0;
+        for (const [f, l] of errs) { mark(f, l, 'bad'); n += 3; $('#today-count').textContent = `${n} errors`; if (!fast) await sleep(90); if (!a()) return; }
+        await line(null, ['error: Missing positional argument "member" in call to "discount"', 'error: Argument 1 has incompatible type "Decimal"', '…', 'Found 37 errors in 9 files'], a, fast, 500);
+        $('#today-count').textContent = '37 errors';
+        for (const [f, l] of errs.slice(0, 6)) { moveTo(f); if (!fast) await sleep(320); if (!a()) return; mark(f, l, 'edit'); }
+        await line('grep -rn "discount(" .', ['11 matches in 8 files'], a, fast);
+      } },
+    { h: 'And it writes tests. Many of them.', say: 'To be sure nothing broke, it writes tests: hundreds, many of them obvious, all kept apart from the code they check. An assumption nobody wrote a test for isn\'t checked at all, and the next change can break it without anyone noticing.',
+      async run(a, fast) {
+        $('#today-count').textContent = '';
+        const names = ['test_discount_zero', 'test_discount_one_euro', 'test_discount_rounding', 'test_discount_negative', 'test_member_discount', 'test_refund_fee', 'test_refund_cancelled', 'test_refund_shipped', 'test_order_total_empty', 'test_order_total_two_lines'];
+        let n = 186;
+        for (const [k, nm] of names.entries()) {
+          const f = 9 + (k % 3); moveTo(f);
+          const lines = $('.lines', file(f)); lines.insertAdjacentHTML('beforeend', `<i class="extra edit" style="width:${30 + rnd(k, 3) * 60}%"></i>`);
+          n += 3; $('#today-count').textContent = `${n} tests`;
+          if (!await line(null, [`+ ${nm}`], a, fast, 160)) return;
+        }
+        $('#today-count').textContent = '214 tests';
+        mark(3, 9, 'bad'); await line(null, ['', '# refund() assumes total >= fee: no test says so'], a, fast);
+      } },
+    { h: 'And then someone has to review it.', say: 'The contracts the code relies on are spread over files, comments and tests. The diff a person is asked to review runs to thousands of lines across dozens of files, and it rarely gets read closely.',
+      async run(a, fast) {
+        $('#today-count').textContent = '';
+        agent.classList.add('away');
+        await line('git diff --stat', [], a, fast, 300);
+        for (let i = 0; i < FILES.length; i++) {
+          for (let j = 0; j < 15; j++) if (rnd(i + 3, j) < .35) mark(i, j, rnd(j, i + 5) < .55 ? 'add' : 'bad');
+          if (!fast) await sleep(70); if (!a()) return;
+        }
+        await line(null, [' 23 files changed, 1842 insertions(+), 967 deletions(-)'], a, fast);
+        $('#today-count').textContent = '+1842 −967';
+      } },
+  ];
+  B.today = async (k, { fast, alive }) => {
+    const s = STEPS[k];
+    $('#today-h').textContent = s.h;
+    $('#today-say').innerHTML = '<p></p>'; say($('#today-say p'), s.say, fast);
+    agent.classList.remove('away');
+    // each step starts from what the earlier ones left, replayed at once
+    reset(); T.innerHTML = ''; $('#today-count').textContent = '';
+    for (let j = 0; j < k; j++) await STEPS[j].run(() => alive(), true);
+    if (!alive()) return;
+    T.innerHTML = '';
+    await sleep(fast ? 0 : 400);
+    await s.run(alive, fast);
+  };
+}
+
 // ───────────────────────── three ideas ─────────────────────────
 {
-  const g0 = D.session[0].graph, txt = n => g0.find(d => d.name === n).text;
+  const g0 = D.session[0].graph;
   const verify = D.math.verify.split('\n');
   const pick = (re, extra = 0) => { const i = verify.findIndex(l => re.test(l)); return verify.slice(i, i + 1 + extra); };
+  const sig = V.contracts.discount.split('\n').filter(l => !l.startsWith('///')).join('\n').replace(/\s*\{[\s\S]*$/, '');
   const ideas = [
-    { t: 'Code is stored as a tree', say: 'Each definition is stored on its own, as a syntax tree with a content hash. Text is rendered from it when someone wants to read it. So the tools work with renames, parameters and uses instead of lines.',
-      code: hl(D.orders.levels[0].trimEnd().split('\n').slice(0, 7).join('\n')) },
-    { t: 'Types say what they mean', say: 'A type can include a condition: <code>Cents</code> is an <code>Int</code> that is never negative. Functions state what they need and what they guarantee, with <code>requires</code> and <code>ensures</code>. Unfinished code is a typed hole.',
-      code: hl([txt('Cents'), txt('Quantity'), txt('refund').split('\n').filter(l => !l.startsWith('///')).join('\n')].join('\n\n')) },
-    { t: 'Every claim is checked', say: 'An SMT solver proves each contract for every input, or finds an input that breaks it; a fuzzer covers what it can\'t prove. Every edit is checked against the code it touches before it is stored.',
+    { t: 'Types as contracts', say: 'A type can include a condition, and a function states what it needs and what it guarantees. Both are part of the signature, and both are checked wherever the code is used.',
+      code: hl(V.contracts.types.split('\n').slice(0, 2).join('\n') + '\n\n' + sig) },
+    { t: 'Proving over testing', say: 'An SMT solver proves each contract for every input, or finds an input that breaks it, and a fuzzer covers what it can\'t prove. Most tests become a line in a signature.',
       code: term([...pick(/^✓ factorial/), ...pick(/^~ isqrt/), ...pick(/^✗ next_digit/, 2)].join('\n')) },
+    { t: 'The code is the AST', say: 'Code is stored as its syntax tree instead of text files. Text is rendered when someone wants to read it, and edits are parsed back into the tree, so changes, views and checks work on definitions instead of lines.',
+      code: hl(D.orders.levels[0].trimEnd().split('\n').slice(0, 7).join('\n')) },
   ];
   $('#ideas-cards').innerHTML = ideas.map((x, i) => `<div class="idea"><div class="n">0${i + 1}</div><h3>${x.t}</h3><p></p><pre>${x.code}</pre></div>`).join('');
   const fixes = [
-    ['diffs', 'Diffs are walls of red and green', 'changes you can read'],
-    ['proof', 'Tests check the cases someone thought of', 'proof for every input'],
-    ['contracts', 'A tighter contract breaks a caller far away', 'every caller re-checked'],
-    ['session', 'A broken edit lands, someone finds out later', 'refused, or turned into holes'],
+    ['views', 'It searches files to find its way', 'a view of just what it needs'],
+    ['contracts', 'Hundreds of tests, apart from the code', 'contracts, proven or fuzzed'],
+    ['travel', 'A change breaks code far away', 'changes follow the graph'],
+    ['diffs', 'Diffs too long to read', 'changes you can read'],
   ];
   $('#ideas-fixes').innerHTML = fixes.map(([to, p, f], i) => `<button data-to="${to}" style="--i:${i}"><span class="p">${p}</span><span class="f">→ ${f}</span></button>`).join('');
   $('#ideas-fixes').addEventListener('click', e => { const b = e.target.closest('button'); if (b) goTo(b.dataset.to); });
@@ -376,182 +476,68 @@ const sayBlock = (el, title, html, fast, who = '') => {
   };
 }
 
-// ───────────────────────── code is a graph of definitions ─────────────────────────
-{
-  const g0 = D.session[0].graph, graph = new Graph($('#tree-graph'));
-  const at = graph.layout(g0);
-  const order = [...g0].sort((a, b) => at.get(a.name).x - at.get(b.name).x || at.get(a.name).y - at.get(b.name).y);
-  B.tree = async (k, { fast, alive }) => {
-    const code = $('#tree-code'), sy = (h, p) => sayBlock($('#tree-say'), h, p, fast);
-    if (k === 0) {
-      sy('Each definition is stored on its own', 'As a syntax tree with a content hash. When one is written, it appears next to what it uses and what uses it.');
-      $('#tree-title').textContent = 'orders.strata · strata render';
-      if (fast) { graph.set(g0, { statuses: false, fast }); code.innerHTML = order.map(d => hl(d.text)).join('\n\n'); return; }
-      graph.set([], { layout: g0 }); code.innerHTML = '';
-      const shown = [];
-      for (const d of order) {
-        if (!alive()) return;
-        const el = document.createElement('div'); code.appendChild(el);
-        if (shown.length) el.style.marginTop = '1.6em';
-        for (const l of d.text.split('\n')) {
-          if (!alive()) return;
-          el.insertAdjacentHTML('beforeend', `<span class="ln">${hl(l) || ' '}</span>`);
-          code.scrollTop = code.scrollHeight; await sleep(16);
-        }
-        shown.push(d);
-        graph.set(shown, { layout: g0, statuses: false, changed: new Set([d.name]) });
-        await sleep(60);
-      }
-    } else if (k === 1) {
-      sy('Names are links', 'Selecting <code>Order</code> lights up what it uses and what uses it. The tools know these links exactly, and use them for renames, re-checks and slices.');
-      $('#tree-title').textContent = '$ strata view slice:Order --level 1';
-      graph.set(g0, { statuses: false, focus: 'Order', fast });
-      await typeCode(code, D.orders.levels[1].trimEnd(), alive, { fast, ms: 14 });
-    } else {
-      sy('Each definition has a status', 'Proven by the solver, fuzzed, or refuted. Or a hole: unfinished code that still type-checks. <code>refund</code> is one, and <code>strata holes</code> describes exactly what is missing.');
-      $('#tree-title').textContent = '$ strata holes';
-      graph.set(g0, { fast });
-      code.innerHTML = ''; await typeTerm(code, { cmd: 'strata holes', out: D.orders.holes }, alive, { fast });
+// ───────────────────────── slides with the explanation beside the code ─────────────────────────
+/** The explanation on the side, arriving as it is read; the code and what the tools said beside it. */
+function feature(id, { kicker, title, steps }) {
+  const el = $('#' + id);
+  el.innerHTML = `<div class="split"><div class="col side-text"><div class="kicker fx">${kicker}</div><h2 class="fx small"></h2><div class="say"></div></div>
+    <div class="col"><div class="pane code-pane fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title"></span></div><div class="body"></div></div><div class="outs"></div></div></div>`;
+  let shown = null;
+  B[id] = async (k, { fast, alive }) => {
+    const s = steps[k];
+    $('h2', el).textContent = s.title || title;
+    const sy = $('.say', el);
+    sy.innerHTML = '<p class="lede"></p>';
+    say($('p', sy), s.say, fast);
+    $('.code-pane .title', el).textContent = s.file;
+    let typed = Promise.resolve();
+    if (shown !== s.code || fast) { shown = s.code; typed = typeCode($('.code-pane .body', el), s.code, alive, { fast, ms: 20, hot: s.hot }); }
+    else $$('.code-pane .body .ln', el).forEach(l => l.classList.toggle('hot', !!s.hot && s.hot.test(l.textContent)));
+    const outs = $('.outs', el); outs.innerHTML = '';
+    await typed;
+    for (const o of s.outs || []) {
+      if (!alive()) return;
+      outs.insertAdjacentHTML('beforeend', `<div class="pane term ${o.code ? 'bad' : ''}"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">${esc(s.where || '~')}</span>${o.code ? `<span class="count bad">exit ${o.code}</span>` : ''}</div><div class="body wrap"></div></div>`);
+      const body = $$('.outs .body', el).at(-1);
+      if (fast) { typeTerm(body, o, alive, { fast: true }); continue; }
+      await sleep(200);
+      await typeTerm(body, o, alive);
+      if (o.code && alive()) body.closest('.pane').classList.add('shake');
     }
   };
 }
 
-// ───────────────────────── text is a view, both ways ─────────────────────────
-{
-  const L = D.orders.levels, fill = S('It fills the hole'), refused = S('A broken edit is refused');
-  const info = [[0, 'The map', 'one line per definition: what it uses, and its status'], [1, 'The interfaces', 'types, signatures and contracts: what other code can rely on'], [2, 'The source', 'everything, as stored'],
-    [null, 'Write it back', '<code>strata edit</code> takes text and stores it as definitions'], [null, 'Checked first', 'an edit that doesn\'t check is refused']];
-  const SAY = [
-    'An agent asks for what it is working on, <code>slice:Order</code> here: <code>Order</code>, what it uses and what uses it. The first level is a map of it.',
-    'The second level shows interfaces: enough to call code without reading how it works.',
-    'The third is the source. All three are rendered from the same trees, in one canonical format.',
-    'Edits go the other way through the same text. The agent sends definitions to <code>strata edit</code>; they are parsed, checked against everything they touch, and stored in place of the old ones.',
-    'An edit that doesn\'t check is refused, and nothing changes. So the codebase is never in a broken state, whoever wrote the last edit.',
-  ];
-  $('#lv-pick').innerHTML = info.map(([l, t, d], i) => `<button data-i="${i}"><b>${t} <span class="muted">· ${l == null ? 'strata edit' : 'level ' + l}</span></b><span>${d}</span></button>`).join('');
-  $('#lv-pick').addEventListener('click', e => { const b = e.target.closest('button'); if (b) go(cur, +b.dataset.i, +b.dataset.i < sub ? -1 : 1); });
-  B.levels = (k, { fast, alive }) => {
-    $('#levels-h').textContent = k < 3 ? 'An agent reads the detail it needs.' : 'And writes text back, checked before it is stored.';
-    say($('#levels-say'), SAY[k], fast);
-    $$('#lv-pick button').forEach((b, j) => b.classList.toggle('on', j === k));
-    const l = info[k][0];
-    if (l == null) {
-      const s = k === 3 ? fill : refused;
-      $('#lv-title').textContent = `$ ${s.cmd}`;
-      $('#lv-count').textContent = s.code ? 'refused' : 'stored';
-      $('#lv-count').className = 'count ' + (s.code ? 'bad' : 'ok');
-      return typeTerm($('#lv-body'), s, alive, { fast });
-    }
-    $('#lv-count').className = 'count ok';
-    $('#lv-title').textContent = `$ strata view slice:Order --level ${l}`;
-    $('#lv-count').textContent = `${L[l].trimEnd().split('\n').length} lines`;
-    return typeCode($('#lv-body'), L[l].trimEnd(), alive, { fast, ms: 10 });
-  };
-}
-
-// ───────────────────────── structural changes ─────────────────────────
-{
-  const R = D.rename, renameV = S('A rename is one change'), fill = S('It fills them, and closes the change'), fix = S('It fixes it, and proves it');
-  const C = D.contract;
-  const big = diffCount(R.diff), bigLines = R.diff.split('\n').length;
-  const cases = [
-    { tab: 'Rename a type', linediff: R.diff, snap: R, step: R.step, h: 'A rename should read as a rename.',
-      say: `It was <code>strata rename Task Job</code>: one type renamed, and the twelve definitions that use it updated to match. Strata shows it as one line.` },
-    { tab: 'Rename a variant', linediff: renameV.linediff, snap: renameV, step: lastStep(renameV), h: 'The same for a variant.',
-      say: `<code>strata rename Shipped Sent</code>. As text, five definitions change, and a line in a test re-wraps because <code>Sent</code> is shorter. What happened is one rename.` },
-    { tab: 'Add a parameter', linediff: C.paramDiff, snap: C, step: stepTitled(C, 'discount: members'), h: 'A new parameter, and the calls that follow it.',
-      say: `<code>discount</code> takes a new <code>member</code> flag, not used yet. The change is the new parameter; its two call sites only follow it.` },
-    { tab: 'Change a signature and its body', linediff: D.orders.couponsDiff, snap: fill, step: stepTitled(fill, 'coupons'), h: 'A new signature, and the body that uses it.',
-      say: `<code>total</code> takes a coupon and uses it. The signature and the body both changed, so both are shown; the callers that had to follow are listed by name.` },
-  ];
-  $('#diff-tabs').innerHTML = cases.map((c, i) => `<button data-i="${i}">${esc(c.tab)}</button>`).join('');
-  $('#diff-tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) go(cur, +b.dataset.i + 1, +b.dataset.i + 1 < sub ? -1 : 1); });
-  const count = async (el, n, unit, alive, ms = 260) => { for (let i = 0; i <= n; i++) { if (!alive()) return; el.textContent = `${i} ${unit}${i === 1 ? '' : 's'}`; await sleep(Math.max(12, ms / n)); } };
-  const flip = el => { el.classList.remove('flip'); void el.offsetWidth; el.classList.add('flip'); };
-  $('#big-body').innerHTML = diffHtml(R.diff);
-  B.diffs = async (k, { fast, alive }) => {
-    $('#diffs').classList.toggle('big', k === 0);
-    if (k === 0) {
-      $('#diff-h').textContent = 'Here is a diff. What happened?'; flip($('#diff-h'));
-      say($('#diff-say'), `A change to <code>examples/tasks</code>, as <code>git diff</code> shows it: ${bigLines} lines over four modules. To review it, you have to read all of them.`, fast);
-      const body = $('#big-body');
-      body.scrollTop = 0;
-      count($('#big-count'), big, 'line', alive, 4000).then(() => alive() && ($('#big-count').textContent = `${big} lines changed`));
-      await sleep(fast ? 300 : 1400);
-      while (alive()) {
-        body.scrollTop += 1.4;
-        if (body.scrollTop + body.clientHeight >= body.scrollHeight - 1) { await sleep(1500); if (!alive()) return; body.scrollTop = 0; await sleep(800); }
-        await new Promise(requestAnimationFrame);
-      }
-      return;
-    }
-    const c = cases[k - 1];
-    $('#diff-h').textContent = c.h; flip($('#diff-h'));
-    say($('#diff-say'), c.say, fast);
-    $$('#diff-tabs button').forEach((b, j) => b.classList.toggle('on', j === k - 1));
-    const n = diffCount(c.linediff), st = structural(c.snap.changes[c.step]);
-    for (const [id, html] of [['#ld-body', diffHtml(c.linediff)], ['#sd-body', st.html]]) { const el = $(id); el.innerHTML = html; flip(el); }
-    $('#ld-count').textContent = `${n} line${n === 1 ? '' : 's'} changed`;
-    $('#sd-count').textContent = `${st.count} change${st.count > 1 ? 's' : ''}`;
-    $('#sd-title').textContent = `strata diff · ${c.snap.changes.all.steps.find(s => s.id === c.step).title}`;
-    if (fast) { $('#ld-n').textContent = `${n} lines`; $('#sd-n').textContent = `${st.count} change${st.count > 1 ? 's' : ''}`; }
-    else { count($('#ld-n'), n, 'line', alive); count($('#sd-n'), st.count, 'change', alive); }
-  };
-}
-
-// ───────────────────────── the refund explorer ─────────────────────────
-{
-  const fillStep = S('It fills the hole'), testStep = S('The tests pass'), verStep = S('Verification finds the bug'), fixStep = S('It fixes it, and proves it');
-  let fixed = false;
-  const money = c => (c < 0 ? '−' : '') + (Math.abs(c) / 100).toFixed(2);
-  const refund = v => fixed ? Math.max(v - 500, 0) : v - 500;
-  const axis = $('#axis'), range = $('#ex-range');
-  const pos = v => (v / 2000) * 100 + '%';
-  $('#pin-test').style.left = pos(900); $('#pin-cex').style.left = pos(63);
-  axis.style.setProperty('--w', pos(500));
-  function upd() {
-    const v = +range.value, r = refund(v);
-    $('#knob').style.left = pos(v);
-    $('#knob').style.background = r < 0 ? 'var(--bad)' : 'var(--text)';
-    $('#ex-v').textContent = money(v);
-    $('#ex-r').textContent = money(r); $('#ex-r').style.color = r < 0 ? 'var(--bad)' : 'var(--ok)';
-  }
-  range.addEventListener('input', upd);
-  const SAY = [
-    'Even with fakes, tests only check the inputs someone thought of. Here an agent fills in a refund policy: what was paid, minus a 5.00 handling fee. The signature already says what must hold for every order: <code>ensures it &gt;= 0</code>. Drag the order value.',
-    'It writes a test, as a careful agent would: a 9.00 order, refunded 4.00. <b>The test passes.</b>',
-    '<code>strata verify</code> checks the contract for every order. An order worth less than the fee gets a <b>negative refund</b>, and the verdict comes with that input.',
-    'Fixed, then verified: <b>proven for every order</b>. Drag the value: nothing goes below zero.',
-  ];
-  $('#ex-test').onclick = () => go(cur, 1, 1);
-  $('#ex-verify').onclick = () => go(cur, 2, 1);
-  $('#ex-fix').onclick = () => go(cur, 3, 1);
-  B.proof = async (k, { fast, alive }) => {
-    say($('#proof-say'), SAY[k], fast);
-    fixed = k >= 3;
-    $('#ex-code').innerHTML = hl((fixed ? fixStep : fillStep).input);
-    $('#ex-fix').disabled = k < 2;
-    axis.classList.toggle('scanned', k === 2); axis.classList.remove('scanning');
-    $('#pin-cex').style.opacity = k === 2 ? '' : 0;
-    $('.danger', axis).style.width = k === 2 ? '' : '0';
-    range.value = k === 2 ? 63 : k === 3 ? 300 : 900; upd();
-    const el = $('#ex-term');
-    if (k === 0) { el.innerHTML = '<span class="o-dim">Run the tests (→), then verify.</span>'; return; }
-    if (k === 1) return typeTerm(el, testStep, alive, { fast });
-    if (k === 2) {
-      if (fast) return typeTerm(el, verStep, alive, { fast });
-      axis.classList.remove('scanned'); $('.danger', axis).style.width = '0'; range.value = 900; upd();
-      void axis.offsetWidth; axis.classList.add('scanning');
-      el.innerHTML = cmdLine(verStep.cmd);
-      await sleep(1300); if (!alive()) return;
-      $('.danger', axis).style.width = ''; axis.classList.add('scanned', 'flash'); setTimeout(() => axis.classList.remove('flash'), 900);
-      range.value = 63; upd();
-      for (const l of verStep.out.split('\n')) { if (!alive()) return; el.insertAdjacentHTML('beforeend', `<span class="term-line ln">${termLine(l)}</span>`); await sleep(70); }
-      return;
-    }
-    return typeTerm(el, { ...fixStep, input: null }, alive, { fast });
-  };
-}
+feature('contracts', {
+  kicker: 'Types as contracts', title: 'Types that say what they mean.',
+  steps: [
+    { file: 'contracts', code: V.contracts.types, hot: /where/,
+      say: 'A type can include a condition. <code>Cents</code> is an <code>Int</code> that is never negative, and a <code>Percent</code> stays between 0 and 100. The condition is checked wherever a value of that type is made.' },
+    { title: 'Functions say what they need, and what they promise.', file: 'contracts', code: V.contracts.discount, hot: /requires|ensures/,
+      say: '<code>requires</code> is a precondition: what every caller must guarantee, here a price of at least 1.00. <code>ensures</code> is a postcondition: what the function promises about its result, called <code>it</code>. The discounted price is never more than the original.' },
+    { title: 'Then the solver checks both sides.', file: 'contracts', code: V.contracts.callers, hot: /discount\(/, where: '~/contracts', outs: [V.contracts.verify],
+      say: '<code>strata verify</code> passes the contracts to an SMT solver. It proves that <code>discount</code> keeps its promise for every price and percentage, and checks every call against the precondition. <code>checkout</code> only calls it from 1.00 up, so it is proven. <code>sale</code> calls it with any price, and the solver gives the price that breaks it: 0.' },
+  ],
+});
+feature('shares', {
+  kicker: 'Proving over testing', title: 'Tests check the cases you thought of.',
+  steps: [
+    { file: 'shares', code: V.shares.code + '\n\n' + V.shares.tests, hot: /^test/, where: '~/shares', outs: [V.shares.test],
+      say: 'A function that splits a bill between people, with three careful tests: an even split, one person, and a check that the shares add up. All three pass.' },
+    { title: 'One line says what the tests meant.', file: 'shares', code: V.shares.contract, hot: /ensures/, where: '~/shares', outs: [V.shares.verify],
+      say: 'The tests were all trying to say one thing: the shares add up to the total. Written as a contract, it covers every bill. <code>verify</code> finds one the tests never tried: 58 cents between 13 people, where 6 cents disappear. The tests only used totals that divide evenly.' },
+    { title: 'Fuzzing: many tests at once.', file: 'shares', code: V.shares.fixed, hot: /extra/, where: '~/shares', outs: [V.shares.verify_fixed],
+      say: 'Fixed: the remainder goes to the first shares. The solver can\'t prove a sum over a list yet, and says so. Where it can\'t, the fuzzer runs the function on 200 random inputs against the contract, different ones every run.' },
+  ],
+});
+feature('points', {
+  kicker: 'Proving over testing', title: 'Four tests, or one line.',
+  steps: [
+    { file: 'points', code: V.points.tests, hot: /^test/, where: '~/points', outs: [V.points.test],
+      say: 'To pin down a range with tests, you test each edge: under a euro, one point per euro, the cap, never negative. Each test checks one value.' },
+    { file: 'points', code: V.points.one, hot: /ensures/, where: '~/points', outs: [V.points.verify],
+      say: 'One <code>ensures</code> says the same for every order, and the solver proves it. The four tests can go.' },
+  ],
+});
 
 // ───────────────────────── the verifier's verdicts, on math.strata ─────────────────────────
 {
@@ -587,113 +573,251 @@ const sayBlock = (el, title, html, fast, who = '') => {
   };
 }
 
-// ───────────────────────── contracts: the problem, then a walk through an edit ─────────────────────────
-{
-  const C = D.contract, g = $('#cgraph');
-  const nodes = {
-    discount: { x: 22, y: 50, t: 'discount', s: 'the contract changes here' },
-    checkout: { x: 74, y: 24, t: 'checkout', s: 'calls discount(…)' },
-    totals: { x: 74, y: 76, t: 'test "totals"', s: 'calls discount(20000)' },
-  };
-  const LABEL = { pass: '✓ proven', fail: '✗ counterexample', changed: 'changed', recheck: 're-check', hole: '?hole', unknown: '?' };
-  g.innerHTML = `<svg><path id="e1"/><path id="e2"/></svg>` + Object.entries(nodes).map(([k, n]) => `<div class="node" id="n-${k}" style="left:${n.x}%;top:${n.y}%"><span class="badge"></span>${esc(n.t)}<small>${esc(n.s)}</small></div>`).join('');
-  function edges() {
-    const W = g.clientWidth, H = g.clientHeight, p = n => [nodes[n].x / 100 * W, nodes[n].y / 100 * H];
-    const e = (a, b) => { const [x1, y1] = p(a), [x2, y2] = p(b); return `M${x1 + 90} ${y1} C${(x1 + x2) / 2} ${y1}, ${(x1 + x2) / 2} ${y2}, ${x2 - 100} ${y2}`; };
-    $('#e1').setAttribute('d', e('discount', 'checkout')); $('#e2').setAttribute('d', e('discount', 'totals'));
-  }
-  new ResizeObserver(edges).observe(g);
-  const tighten = C.steps.find(s => s.title === 'Tighten discount’s contract');
-  const PROBLEM = { title: 'Tighten a function, break a caller far away', g: { discount: 'changed', checkout: 'unknown', totals: 'unknown' },
-    say: 'A stricter precondition is one added line in a diff. Nothing in it says which callers relied on the old contract, or which of them now break. Follow this edit step by step, as an agent sees it.' };
-  B.contracts = async (k, { fast, alive }) => {
-    const s = k ? C.steps[k - 1] : PROBLEM;
-    for (const n of Object.keys(nodes)) {
-      const v = s.g[n] || '', el = $('#n-' + n), was = el.className;
-      el.className = 'node ' + v;
-      if (!fast && was !== el.className) { el.style.animation = 'none'; void el.offsetWidth; el.style.animation = 'nodeping .7s'; }
-      $('#n-' + n + ' .badge').textContent = LABEL[v] || '';
-    }
-    $$('#cgraph path').forEach(p => { p.classList.toggle('lit', !!s.g.lit); p.style.stroke = ''; });
-    if (s.g.bad) $('#e1').style.stroke = 'var(--bad)';
-    sayBlock($('#c-say'), esc(s.title), k ? md(s.say) : s.say, fast, k ? `<div class="who"><i></i>step ${k} of ${C.steps.length}</div>` : '<div class="who you"><i></i>the problem</div>');
-    const card = $('#c-code');
-    if (!k) {
-      card.classList.remove('on');
-      $('#c-term-title').textContent = 'git diff';
-      $('#c-term').innerHTML = diffHtml(tighten.linediff);
-      return;
-    }
-    $('#c-term-title').textContent = '~/shop';
-    card.classList.toggle('on', !!s.input);
-    const typing = s.input ? typeCode($('.body', card), s.input, alive, { fast, ms: 18 }) : null;
-    await typeTerm($('#c-term'), { ...s, input: null }, alive, { fast });
-    await typing;
-  };
-}
+feature('mocks', {
+  kicker: 'Proving over testing', title: 'Some tests still need fakes.',
+  steps: [
+    { file: 'mocks', code: F.mocks.src, hot: /^mock|^impl Files for MemDisk/, where: '~/mocks', outs: [F.mocks.test_out],
+      say: 'Code that reads files or talks to a database still needs tests, and those need stand-ins. In Strata a fake is declared like a type, with <code>mock</code>, and implemented like any other type. It can leave methods out: <code>Files</code> has seven, and this one writes two.' },
+    { file: 'mocks', code: F.mocks.src, hot: /^mock|^impl Files for MemDisk/, where: '~/mocks', outs: [F.mocks.verify_out],
+      say: 'The methods it leaves out are generated, and answer within each method\'s types and contract. <code>verify</code> doesn\'t try to prove a mock: the tests that use it are what check it.' },
+    { file: 'mocks', code: F.mocks.src, where: '~/mocks', outs: [F.mocks.refused],
+      say: 'A fake can\'t end up in a real run: using one outside a test is refused, and the codebase stays as it was.' },
+  ],
+});
+feature('capabilities', {
+  kicker: 'Side effects', title: 'What is a capability?',
+  steps: [
+    { file: 'examples/wc', code: F.capabilities.main + '\n\n' + F.capabilities.wc, hot: /Console|Disk|Files/,
+      say: 'A capability is what lets code reach the outside world: the terminal, the disk, the network. Only the runtime creates them, and only for <code>main</code>, which passes them on as traits like <code>Console</code> and <code>Files</code>. So the signatures show which code can have side effects.' },
+    { title: 'Side effects stay at the edges.', file: 'examples/wc', code: F.capabilities.main + '\n\n' + F.capabilities.wc, hot: /^fn main|^fn wc/, where: '~/wc', outs: [F.capabilities.verify_out],
+      say: 'This is what keeps the rest provable. The verifier can\'t reason about a disk, so it assumes the code that holds one, <code>main</code> here, and proves the rest: <code>wc</code> is checked against what <code>Console</code> and <code>Files</code> promise.' },
+    { title: 'C code, the same way.', file: 'examples/fuzzy · module text', code: F.native.externs, hot: /^extern c/, where: '~/fuzzy', outs: [F.native.fuzzy_verify],
+      say: '<code>extern c</code> declares a C function with a signature and contracts, checked at run time in both directions. The verifier assumes it, and only the module that declares it may call it, so the assumption stays in one place.' },
+  ],
+});
 
-// ───────────────────────── read the signature ─────────────────────────
+// ───────────────────────── one piece at a time ─────────────────────────
 {
-  const ss = D.session, g0 = ss[0].graph, graph = new Graph($('#sig-graph'));
+  const ss = D.session, g0 = ss[0].graph, graph = new Graph($('#build-graph'));
   const every = [...new Map(ss.flatMap(s => s.graph).map(d => [d.name, d])).values()];
-  const fix = S('It fixes it, and proves it'), coupons = S('A breaking change becomes holes');
+  const fill = S('It fills the hole'), fix = S('It fixes it, and proves it');
   const iface = n => { const t = g0.find(d => d.name === n).text.split('\n').filter(l => !l.startsWith('///')); const i = t.findIndex(l => /\{\s*$/.test(l)); return t.slice(0, i + 1).join('\n').replace(/\s*\{\s*$/, ''); };
   const proof = fix.out.split('$ strata verify refund\n')[1];
   const STEPS = [
     { h: 'You only need the signature.', say: 'To prove <code>refund</code>, the solver uses what <code>total</code> promises, its signature and contract, and not how it computes the result. An agent changing <code>refund</code> can work the same way, and so can a person reviewing it: if the contracts around it are right, their bodies can stay unread.',
-      term: ['strata verify refund', { cmd: 'strata verify refund', out: proof }], card: ['what the proof relies on', [iface('total'), g0.find(d => d.name === 'Cents').text.split('\n').filter(l => !l.startsWith('///')).join('\n')].join('\n\n')], graph: fast => graph.set(fix.graph, { layout: every, focus: 'refund', fast }) },
-    { h: 'A change inside a body stops there.', say: 'The fix to <code>refund</code> changed its body, not its signature or contract. Nothing that uses it has to be checked again, and the edit says so.',
+      term: ['strata verify refund', { cmd: 'strata verify refund', out: proof }], card: ['what the proof relies on', [iface('total'), g0.find(d => d.name === 'Cents').text.split('\n').filter(l => !l.startsWith('///')).join('\n')].join('\n\n')],
+      graph: fast => graph.set(fix.graph, { layout: every, focus: 'refund', fast }) },
+    { h: 'A change inside a body stays there.', say: 'The fix to <code>refund</code> changed its body, not its signature or contract. Nothing that uses it has to be checked again, and the edit says so. An agent can work on one definition, and leave everything else as it was.',
       term: ['~/shop', { cmd: fix.cmd, out: fix.out.split('\n\n$ strata verify')[0] }], graph: fast => graph.set(fix.graph, { layout: every, changed: new Set(['refund']), fast }) },
-    { h: 'A change to a contract reaches its users.', say: 'A new signature or contract is different: what relies on it is checked again. <code>total</code> took a coupon, so its two callers were checked against it, and since they no longer fit, they became holes.',
-      term: ['~/shop', coupons], graph: fast => graph.set(coupons.graph, { layout: every, changed: new Set(['total']), lit: new Set(['total']), fast }) },
+    { h: 'Unfinished code still checks.', say: 'A definition can be left as a hole, <code>?refund_policy</code> here, and everything around it still type-checks and verifies. <code>strata holes</code> says what is missing: the type to produce, what is in scope, and the contract to meet.',
+      term: ['~/shop', { cmd: 'strata holes', out: D.orders.holes }], card: ['refund, for now', g0.find(d => d.name === 'refund').text], graph: fast => graph.set(g0, { layout: every, focus: 'refund', fast }) },
+    { h: 'Fill one hole, and move on.', say: 'The agent fills that one hole. The edit is checked against everything it touches, and stored. Code gets built a piece at a time, and it checks at every step.',
+      term: ['~/shop', { ...fill, input: null }], card: ['piped into strata edit', fill.input], graph: fast => graph.set(fill.graph, { layout: every, changed: new Set(['refund', 'test "refund keeps the handling fee"']), focus: 'refund', fast }) },
   ];
-  B.signature = async (k, { fast, alive }) => {
+  B.build = async (k, { fast, alive }) => {
     const s = STEPS[k];
-    $('#sig-h').textContent = s.h;
-    $('#sig-say').innerHTML = '<p></p>'; say($('#sig-say p'), s.say, fast);
+    $('#build-h').textContent = s.h;
+    $('#build-say').innerHTML = '<p></p>'; say($('#build-say p'), s.say, fast);
     s.graph(fast);
-    const card = $('#sig-code');
+    const card = $('#build-code');
     card.classList.toggle('on', !!s.card);
-    if (s.card) { $('#sig-code-title').textContent = s.card[0]; typeCode($('.body', card), s.card[1], alive, { fast, ms: 30 }); }
-    $('#sig-term-title').textContent = s.term[0];
-    await typeTerm($('#sig-term'), { ...s.term[1], input: null }, alive, { fast });
+    if (s.card) { $('#build-code-title').textContent = s.card[0]; typeCode($('.body', card), s.card[1], alive, { fast, ms: 24 }); }
+    $('#build-term-title').textContent = s.term[0];
+    await typeTerm($('#build-term'), s.term[1], alive, { fast });
   };
 }
 
-// ───────────────────────── an agent's session: holes and refusals ─────────────────────────
+// ───────────────────────── text → tokens → tree → graph ─────────────────────────
+/** Strata's tokens, for the animations (comments and spaces are kept as such, to be dropped). */
+function tokenize(src) {
+  const re = /(\n)|([ \t]+)|(\/\/[^\n]*)|("(?:[^"\\]|\\.)*")|(\d+)|([A-Za-z_][A-Za-z0-9_]*)|(->|==|!=|>=|<=|&&|\|\||=>|:=)|([^\s])/g;
+  const out = []; let m;
+  while ((m = re.exec(src))) {
+    const t = m[0];
+    out.push({ t, kind: m[1] ? 'nl' : m[2] ? 'ws' : m[3] ? 'c' : m[4] ? 's' : m[5] ? 'nm' : m[6] ? (KW.has(t) ? 'k' : /^[A-Z]/.test(t) ? 't' : 'f') : 'p' });
+  }
+  return out;
+}
+/** A small parser for the definitions the slides animate: types, and functions with contracts and one expression. */
+function parseDefs(src) {
+  const toks = tokenize(src).filter(x => !['nl', 'ws', 'c'].includes(x.kind)).map(x => x.t);
+  let i = 0;
+  const peek = () => toks[i], next = () => toks[i++], eat = t => { if (toks[i] !== t) throw new Error(`expected ${t} at ${toks[i]}`); i++; };
+  const N = (t, k, c = []) => ({ t, k, c });
+  const type = () => { const n = next(); if (peek() === '[') { next(); const a = [type()]; while (peek() === ',') { next(); a.push(type()); } eat(']'); return N(n, 'type', a); } return N(n, 'type'); };
+  const PREC = [['||'], ['&&'], ['==', '!=', '<', '<=', '>', '>='], ['+', '-'], ['*', '/', '%']];
+  const args = () => { const a = []; while (peek() !== ')') { a.push(expr()); if (peek() === ',') next(); } eat(')'); return a; };
+  const primary = () => { const t = next(); if (t === '(') { const e = expr(); eat(')'); return e; } return N(t, /^\d/.test(t) ? 'num' : t === 'it' ? 'kw' : 'id'); };
+  const postfix = () => {
+    let e = primary();
+    for (;;) {
+      if (peek() === '.') { next(); const f = next(); if (peek() === '(') { next(); e = N(`.${f}()`, 'call', [e, ...args()]); } else e = N(`.${f}`, 'field', [e]); }
+      else if (peek() === '(') { next(); e = N(`${e.t}()`, 'call', args()); }
+      else return e;
+    }
+  };
+  const expr = (lv = 0) => { if (lv === PREC.length) return postfix(); let l = expr(lv + 1); while (PREC[lv].includes(peek())) { const op = next(); l = N(op, 'op', [l, expr(lv + 1)]); } return l; };
+  const fn = () => {
+    eat('fn'); const name = next(); eat('(');
+    const kids = [];
+    while (peek() !== ')') { const p = next(); eat(':'); kids.push(N(p, 'param', [type()])); if (peek() === ',') next(); }
+    eat(')'); eat('->'); kids.push(N('→', 'result', [type()]));
+    while (peek() === 'requires' || peek() === 'ensures') { const k = next(); kids.push(N(k, 'contract', [expr()])); }
+    eat('{'); kids.push(N('body', 'body', [expr()])); eat('}');
+    return N(`fn ${name}`, 'def', kids);
+  };
+  const typeDecl = () => {
+    eat('type'); const name = next(); eat('=');
+    if (peek() === '{') { next(); const fs = []; while (peek() !== '}') { const f = next(); eat(':'); fs.push(N(f, 'param', [type()])); if (peek() === ',') next(); } eat('}'); return N(`type ${name}`, 'def', fs); }
+    const kids = [type()]; if (peek() === 'where') { next(); kids.push(N('where', 'contract', [expr()])); }
+    return N(`type ${name}`, 'def', kids);
+  };
+  const defs = [];
+  while (i < toks.length) defs.push(peek() === 'fn' ? fn() : typeDecl());
+  return defs;
+}
+/** Source as tokens, laid out as the text was: `chips` turns them into separate tokens, without the spaces. */
+function showTokens(el, src) {
+  el.innerHTML = tokenize(src).map((x, i) => x.kind === 'nl' ? '<br>' : `<span class="tok ${x.kind}" style="--i:${i}">${esc(x.t)}</span>`).join('');
+}
+/** A syntax tree drawn top-down, growing from the root. */
+function drawTree(el, roots, fast) {
+  el.innerHTML = '<svg></svg>';
+  const all = []; let leaf = 0;
+  const lay = (n, d) => { const kids = n.c.map(c => lay(c, d + 1)); const x = kids.length ? (kids[0].x + kids.at(-1).x) / 2 : leaf++; const me = { n, d, x, kids }; all.push(me); return me; };
+  for (const r of roots) { lay(r, 0); leaf += .5; }
+  const depth = Math.max(...all.map(m => m.d)) + 1, W = el.clientWidth, H = el.clientHeight;
+  const X = x => 50 + (x + .5) / (leaf + .5) * (W - 100), Y = d => 50 + d * Math.min(90, (H - 100) / Math.max(1, depth - 1));
+  const delay = m => fast ? 0 : m.d * 160 + m.x * 25;
+  el.firstChild.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  el.firstChild.innerHTML = all.flatMap(m => m.kids.map(c => `<path d="M${X(m.x)} ${Y(m.d) + 12} C${X(m.x)} ${(Y(m.d) + Y(c.d)) / 2}, ${X(c.x)} ${(Y(m.d) + Y(c.d)) / 2}, ${X(c.x)} ${Y(c.d) - 12}" style="animation-delay:${delay(c)}ms"/>`)).join('');
+  el.insertAdjacentHTML('beforeend', all.map(m => `<div class="tnode k-${m.n.k}" style="left:${X(m.x)}px;top:${Y(m.d)}px;animation-delay:${delay(m)}ms">${esc(m.n.t)}</div>`).join(''));
+}
 {
-  const ss = D.session, graph = new Graph($('#sess-graph'));
-  // one layout for the whole session, so nothing moves but what changed
-  const every = [...new Map(ss.flatMap(s => s.graph).map(d => [d.name, d])).values()];
-  B.session = async (k, { fast, alive }) => {
-    const stamp = $('#sess-stamp'), card = $('#sess-code');
-    stamp.className = 'stamp'; stamp.textContent = '';
-    if (k === 0) {
-      sayBlock($('#sess-say'), 'A broken edit lands, and someone finds out later',
-        'A text file accepts anything, so breakage shows up later, in CI, in review, or in production. In Strata, an edit that doesn\'t check is refused, and one that breaks its callers turns those calls into holes for the agent to fill. Here is an agent\'s session, step by step.', fast, '<div class="who you"><i></i>the problem</div>');
-      graph.set(ss[0].graph, { layout: every, fast });
-      card.classList.remove('on');
-      $('#sess-term').innerHTML = '<span class="term-line"><span class="prompt">$</span> <span class="cmd caret"></span></span>';
+  const g0 = D.session[0].graph, txt = n => g0.find(d => d.name === n).text;
+  const names = ['Cents', 'Quantity', 'Line', 'line_total', 'total'];
+  const src = names.slice(2).map(txt).join('\n\n');
+  const decls = g0.filter(d => names.includes(d.name)).map(d => ({ ...d, verdict: null, holes: 0 }));
+  const stage = $('#astage'), graph = new Graph($('#ast-graph'), { legend: false });
+  const show = layer => stage.dataset.show = layer;
+  const STEPS = [
+    { h: 'Code is written as text.', say: 'Here is a small part of an order system, as anyone would write it: a type for one line of an order, and two functions over it.' },
+    { h: 'A compiler first reads it as tokens.', say: 'Names, keywords and symbols, one after the other. The spaces, the line breaks and the layout are dropped: they were only there for whoever reads the text.' },
+    { h: 'Then it builds a tree.', say: 'Each definition becomes a syntax tree. <code>line_total</code> is a function with a parameter, a result type, a contract, and a body that multiplies two fields. The tree is what the code means; the text was one way of writing it down.' },
+    { h: 'The trees link up into a graph.', say: 'Names point to other definitions: <code>line_total</code> uses <code>Line</code> and <code>Cents</code>, and <code>total</code> uses <code>line_total</code>. Across a codebase, these links form a graph of types and functions.' },
+    { h: 'Running the program walks that graph.', say: 'A call follows the edges. <code>total</code> calls <code>line_total</code> once per line, which reads the line\'s fields, and the results come back up.' },
+  ];
+  B.ast = async (k, { fast, alive }) => {
+    const s = STEPS[k];
+    $('#ast-h').textContent = s.h;
+    $('#ast-say').innerHTML = '<p></p>'; say($('#ast-say p'), s.say, fast);
+    if (k === 4) { $('#ast-title').textContent = '$ strata run total … --trace'; $('#ast-code').innerHTML = ''; typeTerm($('#ast-code'), { cmd: 'strata run total \'[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]]\' --trace', out: D.orders.trace }, alive, { fast }); }
+    else { $('#ast-title').textContent = 'orders.strata'; $('#ast-code').innerHTML = hl(src); }
+    if (k <= 1) {
+      show('tokens');
+      const el = $('#ast-tokens');
+      if (k === 0 || !el.children.length) showTokens(el, src);
+      el.classList.toggle('chips', k === 1);
       return;
     }
-    const s = ss[k - 1], before = ss[k - 2]?.graph;
-    const who = s.who === 'you' ? 'you' : s.who === 'agent B' ? 'agentb' : '';
-    sayBlock($('#sess-say'), esc(s.title), md(s.say), fast, `<div class="who ${who}"><i></i>${esc(s.who)}</div>`);
-    const refused = s.code && /refused/.test(s.title);
-    const cex = {};
-    for (const d of s.graph) if (d.verdict === 'counterexample') cex[d.name] = `${esc(d.name)}(${(d.args || []).map(a => esc(JSON.stringify(a))).join(', ')}): ${esc((d.message || '').replace(/\s*\(stack:.*$/, ''))}`;
-    graph.set(s.graph, { layout: every, focus: s.sel, changed: before ? changedBetween(before, s.graph) : new Set(), lit: before ? ifaceChanged(before, s.graph) : new Set(), cex, fast });
-    card.classList.toggle('on', !!s.input);
-    const typing = s.input ? typeCode($('.body', card), s.input, alive, { fast, ms: 20 }) : Promise.resolve(true);
-    const done = await typeTerm($('#sess-term'), { ...s, input: null }, alive, { fast });
-    await typing;
-    if (!done || !alive()) return;
-    if (s.code) $('#sess-term').insertAdjacentHTML('beforeend', `<span class="term-line o-dim">exit ${s.code}</span>`);
-    if (refused) { graph.shake(); stamp.textContent = 'rejected'; stamp.classList.add('bad'); void stamp.offsetWidth; stamp.classList.add('on'); }
-    else if (/merge/.test(s.title)) { stamp.textContent = 'merged · checked'; stamp.classList.add('ok'); void stamp.offsetWidth; stamp.classList.add('on'); }
-    else if (s.input) { await sleep(fast ? 0 : 1400); if (alive()) card.classList.remove('on'); }
+    if (k === 2) { show('tree'); await sleep(fast ? 0 : 50); drawTree($('#ast-tree'), parseDefs(txt('line_total')), fast); return; }
+    show('graph');
+    if (k === 3) {
+      if (fast) { graph.set(decls, { statuses: false, fast }); return; }
+      graph.set([], { layout: decls });
+      for (const n of ['Cents', 'Quantity', 'Line', 'line_total', 'total']) { await sleep(450); if (!alive()) return; graph.set(decls.filter(d => names.slice(0, names.indexOf(n) + 1).includes(d.name)), { layout: decls, statuses: false, changed: new Set([n]) }); }
+      return;
+    }
+    graph.set(decls, { statuses: false, fast: true });
+    const walk = ['total', 'line_total', 'Line', 'line_total', 'total', 'line_total', 'Line', 'line_total', 'total'];
+    while (alive()) {
+      for (let j = 0; j < walk.length && alive(); j++) {
+        graph.set(decls, { statuses: false, focus: walk[j], lit: new Set(j && walk[j - 1] !== walk[j] ? [walk[j]] : []), fast: true });
+        await sleep(650);
+      }
+      await sleep(900);
+    }
   };
 }
+
+// ───────────────────────── Strata stores the graph ─────────────────────────
+{
+  const g0 = D.session[0].graph, graph = new Graph($('#tree-graph'));
+  const at = graph.layout(g0);
+  const order = [...g0].sort((a, b) => at.get(a.name).x - at.get(b.name).x || at.get(a.name).y - at.get(b.name).y);
+  B.tree = async (k, { fast, alive }) => {
+    const code = $('#tree-code');
+    $('#tree-say').innerHTML = '<p></p>';
+    say($('#tree-say p'), 'Strata keeps each definition as its tree, with a content hash, together with the links between them. This is the order system: as each definition is written, it takes its place in the graph next to what it uses. Text is produced from the trees when someone wants to read it.', fast);
+    if (fast) { graph.set(g0, { statuses: false, fast }); code.innerHTML = order.map(d => hl(d.text)).join('\n\n'); return; }
+    graph.set([], { layout: g0 }); code.innerHTML = '';
+    const shown = [];
+    for (const d of order) {
+      if (!alive()) return;
+      const el = document.createElement('div'); code.appendChild(el);
+      if (shown.length) el.style.marginTop = '1.6em';
+      for (const l of d.text.split('\n')) {
+        if (!alive()) return;
+        el.insertAdjacentHTML('beforeend', `<span class="ln">${hl(l) || ' '}</span>`);
+        code.scrollTop = code.scrollHeight; await sleep(16);
+      }
+      shown.push(d);
+      graph.set(shown, { layout: g0, statuses: false, changed: new Set([d.name]) });
+      await sleep(60);
+    }
+  };
+}
+
+// ───────────────────────── structural changes ─────────────────────────
+{
+  const R = D.rename, renameV = S('A rename is one change'), fill = S('It fills them, and closes the change'), fix = S('It fixes it, and proves it');
+  const C = D.contract;
+  const big = diffCount(R.diff), bigLines = R.diff.split('\n').length;
+  const cases = [
+    { tab: 'Rename a type', linediff: R.diff, snap: R, step: R.step, h: 'A rename should read as a rename.',
+      say: `It was <code>strata rename Task Job</code>: one type renamed, and the twelve definitions that use it updated to match. Strata shows it as one line.` },
+    { tab: 'Rename a variant', linediff: renameV.linediff, snap: renameV, step: lastStep(renameV), h: 'The same for a variant.',
+      say: `<code>strata rename Shipped Sent</code>. As text, five definitions change, and a line in a test re-wraps because <code>Sent</code> is shorter. What happened is one rename.` },
+    { tab: 'Add a parameter', linediff: C.paramDiff, snap: C, step: stepTitled(C, 'discount: members'), h: 'A new parameter, and the calls that follow it.',
+      say: `<code>discount</code> takes a new <code>member</code> flag, not used yet. The change is the new parameter; its two call sites only follow it.` },
+    { tab: 'Change a signature and its body', linediff: D.orders.couponsDiff, snap: fill, step: stepTitled(fill, 'coupons'), h: 'A new signature, and the body that uses it.',
+      say: `<code>total</code> takes a coupon and uses it. The signature and the body both changed, so both are shown; the callers that had to follow are listed by name.` },
+  ];
+  $('#diff-tabs').innerHTML = cases.map((c, i) => `<button data-i="${i}">${esc(c.tab)}</button>`).join('');
+  $('#diff-tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) go(cur, +b.dataset.i + 1, +b.dataset.i + 1 < sub ? -1 : 1); });
+  const count = async (el, n, unit, alive, ms = 260) => { for (let i = 0; i <= n; i++) { if (!alive()) return; el.textContent = `${i} ${unit}${i === 1 ? '' : 's'}`; await sleep(Math.max(12, ms / n)); } };
+  const flip = el => { el.classList.remove('flip'); void el.offsetWidth; el.classList.add('flip'); };
+  $('#big-body').innerHTML = diffHtml(R.diff);
+  B.diffs = async (k, { fast, alive }) => {
+    $('#diffs').classList.toggle('big', k === 0);
+    if (k === 0) {
+      $('#diff-h').textContent = 'Here is a diff. What happened?'; flip($('#diff-h'));
+      say($('#diff-say'), `A change to <code>examples/tasks</code>, as <code>git diff</code> shows it: ${bigLines} lines over four modules. To review it, you have to read all of them.`, fast);
+      const body = $('#big-body');
+      body.scrollTop = 0;
+      count($('#big-count'), big, 'line', alive, 1600).then(() => alive() && ($('#big-count').textContent = `${big} lines changed`));
+      await sleep(fast ? 200 : 700);
+      while (alive()) {
+        body.scrollTop += 9;
+        if (body.scrollTop + body.clientHeight >= body.scrollHeight - 1) { await sleep(900); if (!alive()) return; body.scrollTop = 0; await sleep(400); }
+        await new Promise(requestAnimationFrame);
+      }
+      return;
+    }
+    const c = cases[k - 1];
+    $('#diff-h').textContent = c.h; flip($('#diff-h'));
+    say($('#diff-say'), c.say, fast);
+    $$('#diff-tabs button').forEach((b, j) => b.classList.toggle('on', j === k - 1));
+    const n = diffCount(c.linediff), st = structural(c.snap.changes[c.step]);
+    for (const [id, html] of [['#ld-body', diffHtml(c.linediff)], ['#sd-body', st.html]]) { const el = $(id); el.innerHTML = html; flip(el); }
+    $('#ld-count').textContent = `${n} line${n === 1 ? '' : 's'} changed`;
+    $('#sd-count').textContent = `${st.count} change${st.count > 1 ? 's' : ''}`;
+    $('#sd-title').textContent = `strata diff · ${c.snap.changes.all.steps.find(s => s.id === c.step).title}`;
+    if (fast) { $('#ld-n').textContent = `${n} lines`; $('#sd-n').textContent = `${st.count} change${st.count > 1 ? 's' : ''}`; }
+    else { count($('#ld-n'), n, 'line', alive); count($('#sd-n'), st.count, 'change', alive); }
+  };
+}
+
 
 // ───────────────────────── merge ─────────────────────────
 {
@@ -727,69 +851,119 @@ const sayBlock = (el, title, html, fast, who = '') => {
   };
 }
 
-// ───────────────────────── features: the explanation beside the code ─────────────────────────
-const F = D.features;
-/** A slide with the explanation on the side, arriving as it is read, and the code and what the tools said beside it. */
-function feature(id, { kicker, title, steps }) {
-  const el = $('#' + id);
-  el.innerHTML = `<div class="split"><div class="col side-text"><div class="kicker fx">${kicker}</div><h2 class="fx small">${title}</h2><div class="say"></div></div>
-    <div class="col"><div class="pane code-pane fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title"></span></div><div class="body"></div></div><div class="outs"></div></div></div>`;
-  let shown = null;
-  B[id] = async (k, { fast, alive }) => {
-    const s = steps[k];
-    const sy = $('.say', el);
-    sy.innerHTML = '<p class="lede"></p>';
-    say($('p', sy), s.say, fast);
-    $('.code-pane .title', el).textContent = s.file;
-    let typed = Promise.resolve();
-    if (shown !== s.code || fast) { shown = s.code; typed = typeCode($('.code-pane .body', el), s.code, alive, { fast, ms: 22, hot: s.hot }); }
-    else $$('.code-pane .body .ln', el).forEach(l => l.classList.toggle('hot', !!s.hot && s.hot.test(l.textContent)));
-    const outs = $('.outs', el); outs.innerHTML = '';
-    await typed;
-    for (const o of s.outs || []) {
-      if (!alive()) return;
-      outs.insertAdjacentHTML('beforeend', `<div class="pane term ${o.code ? 'bad' : ''}"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">${esc(s.where || '~')}</span>${o.code ? `<span class="count bad">exit ${o.code}</span>` : ''}</div><div class="body wrap"></div></div>`);
-      const body = $$('.outs .body', el).at(-1);
-      if (fast) { typeTerm(body, o, alive, { fast: true }); continue; }
-      await sleep(200);
-      await typeTerm(body, o, alive);
-      if (o.code && alive()) body.closest('.pane').classList.add('shake');
+
+// ───────────────────────── changes follow the graph ─────────────────────────
+{
+  const C = D.contract, graph = new Graph($('#travel-graph'));
+  const every = [...new Map(C.steps.flatMap(s => s.graph).map(d => [d.name, d])).values()];
+  const tighten = C.steps.find(s => s.title === 'Tighten discount’s contract');
+  B.travel = async (k, { fast, alive }) => {
+    const card = $('#travel-code'), stamp = $('#travel-stamp');
+    stamp.className = 'stamp';
+    if (k === 0) {
+      sayBlock($('#travel-say'), 'A stricter precondition. Who relied on the old one?',
+        '<code>discount</code> is about to require a price of at least 1.00. Every caller that passes less now breaks, wherever it is. In a codebase of text files, finding them means searching and hoping. In Strata, the edit follows the edges of the graph.', fast, '<div class="who you"><i></i>the problem</div>');
+      graph.set(C.steps[0].graph, { layout: every, focus: 'discount', fast });
+      card.classList.remove('on');
+      $('#travel-term-title').textContent = 'git diff';
+      $('#travel-term').innerHTML = diffHtml(tighten.linediff);
+      return;
     }
+    const s = C.steps[k - 1], before = C.steps[k - 2]?.graph;
+    sayBlock($('#travel-say'), esc(s.title), md(s.say), fast, `<div class="who"><i></i>step ${k} of ${C.steps.length}</div>`);
+    const cex = {};
+    for (const d of s.graph) if (d.verdict === 'counterexample') cex[d.name] = `${esc(d.name)}(${(d.args || []).map(a => esc(JSON.stringify(a))).join(', ')}): ${esc((d.message || '').replace(/\s*\(stack:.*$/, ''))}`;
+    const changed = before ? changedBetween(before, s.graph) : new Set(['checkout']);
+    graph.set(s.graph, { layout: every, changed, lit: before ? ifaceChanged(before, s.graph) : new Set(), cex, fast });
+    $('#travel-term-title').textContent = '~/shop';
+    card.classList.toggle('on', !!s.input);
+    const typing = s.input ? typeCode($('.body', card), s.input, alive, { fast, ms: 18 }) : null;
+    await typeTerm($('#travel-term'), { ...s, input: null }, alive, { fast });
+    await typing;
+    if (s.input && alive()) { await sleep(fast ? 0 : 1600); if (alive()) card.classList.remove('on'); }
   };
 }
-feature('f-mocks', {
-  kicker: 'Testing', title: 'Tests need fakes.',
-  steps: [
-    { file: 'mocks', code: F.mocks.src, hot: /^mock|^impl Files for MemDisk/, where: '~/mocks', outs: [F.mocks.test_out],
-      say: 'Code that reads files or talks to a database is hard to test as it is, so tests need stand-ins. In Strata a fake is declared like a type, with <code>mock</code>, and implemented like any other type. It can leave methods out: <code>Files</code> has seven, and this one writes two.' },
-    { file: 'mocks', code: F.mocks.src, hot: /^mock|^impl Files for MemDisk/, where: '~/mocks', outs: [F.mocks.verify_out],
-      say: 'The methods it leaves out are generated, and answer within each method\'s types and contract. <code>verify</code> doesn\'t try to prove a mock: the tests that use it are what check it.' },
-    { file: 'mocks', code: F.mocks.src, where: '~/mocks', outs: [F.mocks.refused],
-      say: 'A fake can\'t end up in a real run: using one outside a test is refused, and the codebase stays as it was.' },
-  ],
-});
-feature('f-capabilities', {
-  kicker: 'Side effects', title: 'What is a capability?',
-  steps: [
-    { file: 'examples/wc', code: F.capabilities.main + '\n\n' + F.capabilities.wc, hot: /Console|Disk|Files/,
-      say: 'A capability is what lets code reach the outside world: the terminal, the disk, the network. Only the runtime creates them, and only for <code>main</code>, which passes them on as traits like <code>Console</code> and <code>Files</code>. So the signatures show which code can have side effects.' },
-    { file: 'examples/wc', code: F.capabilities.main + '\n\n' + F.capabilities.wc, hot: /^fn main|^fn wc/, where: '~/wc', outs: [F.capabilities.verify_out],
-      say: 'This is what keeps the rest provable. The verifier can\'t reason about a disk, so it assumes the code that holds one, <code>main</code> here, and proves the rest: <code>wc</code> is checked against what <code>Console</code> and <code>Files</code> promise. Side effects stay at the edges, and everything between them can be verified.' },
-    { file: 'examples/fuzzy · module text', code: F.native.externs, hot: /^extern c/, where: '~/fuzzy', outs: [F.native.fuzzy_verify],
-      say: 'C code is handled the same way. <code>extern c</code> declares a C function with a signature and contracts, checked at run time in both directions. The verifier assumes it, and only the module that declares it may call it, so the assumption stays in one place.' },
-  ],
-});
-feature('f-derive', {
-  kicker: 'Code at compile time', title: 'Code that writes code.',
+
+// ───────────────────────── only what it needs ─────────────────────────
+{
+  const g0 = D.session[0].graph, L = D.orders.levels, graph = new Graph($('#views-graph'));
+  const all = g0.map(d => d.text).join('\n\n');
+  const STEPS = [
+    { h: 'Code is large.', say: 'Even this small codebase has twenty definitions; a real one has thousands, across hundreds of files. An agent working on orders doesn\'t need all of it. It needs <code>Order</code>, what it uses, and what uses it, and to change things around it.',
+      title: 'orders.strata', text: all },
+    { h: 'So it asks for a slice.', say: '<code>strata view slice:Order</code> renders exactly that part of the graph, from the trees. The first level is a map: one line per definition, with what it uses and its status.', title: '$ strata view slice:Order --level 0', text: L[0], focus: 'Order' },
+    { h: 'At the detail it needs.', say: 'The second level shows interfaces: enough to use code without reading how it works. With contracts, that is usually all an agent needs to read.', title: '$ strata view slice:Order --level 1', text: L[1], focus: 'Order' },
+    { h: 'At the detail it needs.', say: 'The third level is the source. All three are rendered from the same trees, in one canonical format, so no file layout or formatting gets in the way.', title: '$ strata view slice:Order --level 2', text: L[2], focus: 'Order' },
+  ];
+  B.views = (k, { fast, alive }) => {
+    const s = STEPS[k];
+    $('#views-h').textContent = s.h;
+    $('#views-say').innerHTML = '<p></p>'; say($('#views-say p'), s.say, fast);
+    $('#views-title').textContent = s.title;
+    $('#views-count').textContent = `${s.text.trimEnd().split('\n').length} lines`;
+    graph.set(g0, { statuses: k > 0, focus: s.focus || null, fast });
+    return typeCode($('#views-code'), s.text.trimEnd(), alive, { fast, ms: k ? 10 : 3 });
+  };
+}
+
+// ───────────────────────── editing with text ─────────────────────────
+{
+  const E = V.edit, g0 = D.session[0].graph, graph = new Graph($('#edit-graph'));
+  const stage = $('#estage'), show = layer => stage.dataset.show = layer;
+  const STEPS = [
+    { h: 'Agents still write text.', say: 'An agent doesn\'t need to know about trees. It writes the definition it wants to change as text, in whatever layout, and sends it to <code>strata edit</code>. Only that definition, not the file around it.' },
+    { h: 'The text is parsed into a tree.', say: 'Strata reads it the way a compiler does and keeps only the tree. The spacing it was typed with is gone.' },
+    { h: 'The tree replaces the old one, if it checks.', say: 'The new tree takes the place of <code>line_total</code> in the graph, and the code around it is checked with it before anything is stored. Its contract didn\'t change, so nothing else has to be checked again.' },
+    { h: 'And it is rendered back as text.', say: 'Whoever reads it next gets the canonical format, the same for every agent and every person. There is no formatter to run, and no style to argue about.' },
+    { h: 'An edit that doesn\'t check never gets in.', say: 'This one multiplies a price by a name. It is refused, and the codebase stays as it was.' },
+  ];
+  B.edit = async (k, { fast, alive }) => {
+    const s = STEPS[k], T = $('#edit-term');
+    $('#edit-h').textContent = s.h;
+    $('#edit-say').innerHTML = '<p></p>'; say($('#edit-say p'), s.say, fast);
+    $('#edit-term-title').textContent = '~/shop';
+    stage.classList.remove('shake');
+    if (k === 4) {
+      show('graph');
+      graph.set(g0, { focus: 'line_total', fast: true });
+      await typeTerm(T, { ...E.refused, input: E.bad }, alive, { fast });
+      if (alive()) { $('#edit-graph').classList.remove('shake'); void stage.offsetWidth; graph.shake(); }
+      return;
+    }
+    if (k <= 1) {
+      T.innerHTML = cmdLine(E.stored.cmd) + piped(E.sloppy);
+      const el = $('#edit-tokens');
+      if (k === 0) { show('tokens'); showTokens(el, E.sloppy); el.classList.remove('chips'); return; }
+      show('tokens'); showTokens(el, E.sloppy); void el.offsetWidth; el.classList.add('chips');
+      await sleep(fast ? 0 : 1400); if (!alive()) return;
+      show('tree'); await sleep(50);
+      drawTree($('#edit-tree'), parseDefs(E.sloppy), fast);
+      return;
+    }
+    if (k === 2) {
+      show('graph');
+      graph.set(g0, { focus: 'line_total', changed: new Set(['line_total']), fast });
+      return typeTerm(T, { ...E.stored, input: E.sloppy }, alive, { fast });
+    }
+    show('rendered');
+    T.innerHTML = cmdLine(E.stored.cmd) + piped(E.sloppy) + term(E.stored.out);
+    T.insertAdjacentHTML('beforeend', cmdLine('strata view line_total --level 2'));
+    await typeCode($('#edit-rendered'), E.rendered, alive, { fast, ms: 70 });
+  };
+}
+
+// ───────────────────────── more of the language ─────────────────────────
+feature('more', {
+  kicker: 'More of the language', title: 'Code that writes code.',
   steps: [
     { file: 'examples/hello', code: F.derive.options, hot: /^derive/, where: '~/hello', outs: [F.derive.help],
       say: '<code>derive CommandLine for Options</code> generates a command-line parser from the type: its fields, doc comments, defaults and refinements. Derives are written in Strata, run by the compiler, and produce ordinary <code>impl</code>s.' },
-    { file: 'examples/hello', code: F.derive.options, hot: /times/, where: '~/hello', outs: [F.derive.run_out, F.derive.bad],
-      say: 'The options reach <code>main</code> already checked. A value outside a refinement is refused at the boundary, with the condition it broke.' },
     { file: 'signup', code: F.derive.json, hot: /^derive|where/, where: '~/signup', outs: [F.derive.json_run],
       say: '<code>derive Json</code> works the same way. Reading JSON checks every refinement, and an error says which field broke which condition.' },
-    { file: 'comptime', code: F.native.comptime, hot: /comptime/, where: '~/comptime', outs: [F.native.comptime_run],
+    { title: 'Code that runs while compiling.', file: 'comptime', code: F.native.comptime, hot: /comptime/, where: '~/comptime', outs: [F.native.comptime_run],
       say: 'Any code can run while compiling. <code>comptime e</code> is evaluated by the compiler, and the program keeps only the result.' },
+    { title: 'And the small things.', file: 'lines', code: V.sugar.src, hot: /for l in|f"/, where: '~/lines', outs: [V.sugar.run],
+      say: 'List and dictionary comprehensions, f-strings with format specs, lambdas, method syntax on any function, <code>!</code> and <code>?</code> to pass errors up. The everyday syntax is close to Rust\'s and Python\'s.' },
   ],
 });
 
