@@ -412,3 +412,58 @@ fn main() {
 pub const ROOT_BUILTIN_NAME_OUTPUT: &str = r#"40
 ["hi"]
 "#;
+
+/// Refined aliases kept by name in type arguments: `List[Port]` decoded
+/// through the generic impls checks `Port`; `T.check(x)` on any type.
+#[allow(dead_code)]
+pub const REFINED: &str = r#"use std.json.{Json, parse}
+
+type Port = Int
+  where 1 <= it && it <= 65535
+
+fn read[T: Json](text: String) -> Result[T, String] {
+  T.decode(parse(text)!)
+}
+
+fn ports(text: String) -> Result[List[Port], String] {
+  read(text)
+}
+
+fn maybe(text: String) -> Result[Option[Positive], String] {
+  read(text)
+}
+
+fn table(text: String) -> Result[Dict[String, Natural], String] {
+  read(text)
+}
+
+fn valid[T](x: T) -> String {
+  match T.check(x) {
+    Ok(_) => "ok",
+    Err(e) => e,
+  }
+}
+
+fn main() {
+  print(ports("[80, 443]"))
+  print(ports("[80, 70000]"))
+  print(maybe("null"))
+  print(maybe("0"))
+  print(table("{\"a\": 1, \"b\": -2}"))
+  let p: Port = 8080
+  print(valid(p))
+  print(Port.check(0))
+  print(Positive.check(3))
+}
+"#;
+
+#[allow(dead_code)]
+pub const REFINED_OUTPUT: &str = r#"Ok([80, 443])
+Err("[1]: 70000 does not satisfy `Port` (where 1 <= it && it <= 65535)")
+Ok(None)
+Err("0 does not satisfy `Positive` (where it > 0)")
+Err("b: -2 does not satisfy `Natural` (where it >= 0)")
+ok
+Err("0 does not satisfy `Port` (where 1 <= it && it <= 65535)")
+Ok(())
+"#;

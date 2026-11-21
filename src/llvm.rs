@@ -960,6 +960,11 @@ impl<'a> Module<'a> {
     /// The type a value is represented as: a `distinct` type is its underlying one.
     fn repr(&self, t: &Ty) -> Res<Ty> {
         Ok(match t {
+            // a refined alias (`Positive`, kept by name in a type argument): its base
+            Ty::Con(n, args) if args.is_empty() && crate::types::refined_alias(self.env, *n) => {
+                let base = crate::types::alias_base(self.env, *n);
+                self.repr(&base)?
+            }
             Ty::Con(n, args) if self.is_distinct(n) => {
                 let td = &self.env.types[n];
                 let TypeBody::Alias(a) = &td.body else { unreachable!("distinct types are aliases") };
@@ -1557,6 +1562,8 @@ struct Func<'m, 'a> {
     m: &'m mut Module<'a>,
     /// The type arguments of the instance being compiled.
     sub: HashMap<Symbol, Ty>,
+    /// The type arguments of the generic call being compiled, as written.
+    named_targs: Option<Vec<(Symbol, Ty)>>,
     /// Slots of the variables, in the entry block (so LLVM keeps them in registers).
     allocas: String,
     code: String,
@@ -1580,7 +1587,7 @@ struct Func<'m, 'a> {
 
 impl<'m, 'a> Func<'m, 'a> {
     fn new(m: &'m mut Module<'a>, sub: HashMap<Symbol, Ty>) -> Self {
-        Func { m, sub, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, cur: String::new(), terminated: true, places: vec![] }
+        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, cur: String::new(), terminated: true, places: vec![] }
     }
 
     /// The function's text: the slots, then the code.
@@ -1657,6 +1664,31 @@ impl<'m, 'a> Func<'m, 'a> {
         self.m.lower(t, &self.sub)
     }
 
+    /// `lower`, keeping refined aliases by name (`List[Positive]`): a type
+    /// argument, which says which refinements its values have.
+    fn lower_named(&self, t: &TypeExpr) -> Res<Ty> {
+        match t {
+            TypeExpr::Named(n, a) if a.is_empty() && crate::types::refined_alias(self.m.env, *n) => Ok(Ty::Con(*n, vec![])),
+            TypeExpr::Named(_, a) if !a.is_empty() => match self.lower(t)? {
+                Ty::Con(h, la) if la.len() == a.len() => Ok(Ty::Con(h, a.iter().map(|x| self.lower_named(x)).collect::<Res<_>>()?)),
+                other => Ok(other),
+            },
+            _ => self.lower(t),
+        }
+    }
+
+    /// A type as written (for checking a value against it): `Positive`, `List[Int]`.
+    fn written_of(t: &Ty) -> TypeExpr {
+        match t {
+            Ty::Int => TypeExpr::Named("Int".into(), vec![]),
+            Ty::Float => TypeExpr::Named("Float".into(), vec![]),
+            Ty::Bool => TypeExpr::Named("Bool".into(), vec![]),
+            Ty::Str => TypeExpr::Named("String".into(), vec![]),
+            Ty::Con(n, a) => TypeExpr::Named(*n, a.iter().map(Self::written_of).collect()),
+            _ => TypeExpr::Unit,
+        }
+    }
+
     /// The type a type argument stands for, known here: its text
     /// (`"List[Int]"`), a type parameter of this instance (`type:T`), or
     /// `$type(head, args..)`.
@@ -1667,7 +1699,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 match (&t, hint) {
                     // a generic type named by its head only: the call's own type says the rest
                     (TypeExpr::Named(n, args), Some(ht @ Ty::Con(m, _))) if args.is_empty() && n == m => Ok(ht.clone()),
-                    _ => self.lower(&t),
+                    _ => self.lower_named(&t),
                 }
             }
             Expr::Var(x) if x.starts_with("type:") => self.sub.get(&Symbol::new(&x["type:".len()..])).cloned().ok_or(format!("the type `{x}` is not known here")),
@@ -3907,6 +3939,32 @@ impl<'m, 'a> Func<'m, 'a> {
         if name == crate::types::TYPE_TEXT {
             return Ok((Ty::Unit, String::new()));
         }
+        // `T.check(x)`: `Ok(())` when `x` meets the refinements of the type
+        if name == crate::types::CHECK && args.len() == 2 {
+            let t = self.type_arg_ty(args[0], None)?;
+            let written = Self::written_of(&t);
+            let v = self.expr(args[1])?;
+            let ok = match &written {
+                TypeExpr::Named(..) => self.holds(&written, &v)?,
+                _ => bool_v("true"),
+            };
+            let why = match &t {
+                Ty::Con(n, a) if a.is_empty() && crate::types::refined_alias(self.m.env, *n) => {
+                    let td = &self.m.env.types[n];
+                    let pred = td.refinement.clone().or_else(|| if let TypeBody::Alias(TypeExpr::Refined(_, p)) = &td.body { Some((**p).clone()) } else { None });
+                    match pred {
+                        Some(p) => format!("does not satisfy `{}` (where {})", crate::names::short(n), crate::printer::expr(&p, 0)),
+                        None => format!("does not satisfy `{}`", crate::names::short(n)),
+                    }
+                }
+                t => format!("does not satisfy `{}`", key(t)),
+            };
+            let rt = Ty::Con("Result".into(), vec![Ty::Unit, Ty::Str]);
+            let shown = self.json(&v)?;
+            let shown = self.temp((Ty::Str, shown));
+            let why = self.m.string(&why);
+            return self.call_fn(&prelude("check_result"), vec![ok, shown, (Ty::Str, why)], Some(rt));
+        }
         // `$self_type(t, call)`: compiled code is made per type already
         if name == crate::types::SELF_TYPE && args.len() == 2 {
             return self.expr(args[1]);
@@ -3960,6 +4018,23 @@ impl<'m, 'a> Func<'m, 'a> {
             let vs = self.operands(&args)?;
             let hint = self.ty_of(call).ok();
             return self.host(name, vs, hint);
+        }
+        // a generic function given its type arguments: as written (`Positive`),
+        // so its instance knows their refinements
+        if let Some(f) = self.m.env.fns.get(&Symbol::new(name)) {
+            let mut named = vec![];
+            for (p, a) in f.params.iter().zip(&args) {
+                if let TypeExpr::Named(n, targs) = &p.ty {
+                    if n == crate::types::TYPE_ARG {
+                        if let (Some(TypeExpr::Named(tp, _)), Ok(t)) = (targs.first(), self.type_arg_ty(a, None)) {
+                            named.push((*tp, t));
+                        }
+                    }
+                }
+            }
+            if !named.is_empty() {
+                self.named_targs = Some(named);
+            }
         }
         let vs = self.operands(&args)?;
         if vs.iter().any(|v| is_never(&v.0)) {
@@ -4145,6 +4220,11 @@ impl<'m, 'a> Func<'m, 'a> {
             return Ok(never());
         }
         let head = Module::head(&recv).ok_or(format!("`{name}` on a `{}`", key(&recv)))?;
+        // a refined alias (`Positive`) has its base type's methods
+        let head = match &recv {
+            Ty::Con(n, a) if a.is_empty() && crate::types::refined_alias(self.m.env, *n) => Module::head(&self.m.repr(&recv)?).unwrap_or(head),
+            _ => head,
+        };
         if self.m.traits.contains_key(&Symbol::new(&head)) {
             return self.dyn_call(name, recv, vs, hint, places);
         }
@@ -4235,6 +4315,10 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         if let Some(rt) = hint {
             self.m.bind_targs(&f.ret, &rt, &f.type_params, &mut targs);
+        }
+        // (type arguments passed as written: refined aliases by name)
+        for (p, t) in self.named_targs.take().unwrap_or_default() {
+            targs.insert(p, t);
         }
         let targs: Vec<Ty> = f.type_params.iter().map(|p| targs.get(p).cloned().unwrap_or(Ty::Unit)).collect();
         let sub: HashMap<Symbol, Ty> = f.type_params.iter().cloned().zip(targs.iter().cloned()).collect();
