@@ -210,7 +210,7 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0 };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, box_tags: HashMap::default() };
     let ret = m.lower(&main.ret, &HashMap::default())?;
     // C's `main` first: it asks for the program's `main`, with its capabilities
     m.entry(entry, &main, &ret)?;
@@ -417,6 +417,9 @@ struct Module<'a> {
     helpers: HashSet<String>,
     /// Lambdas compiled so far (each is a function of its own).
     lambdas: usize,
+    /// The tag of each type a union boxes (by its key): unique in the
+    /// program, so a smaller union's values are a larger one's as they are.
+    box_tags: HashMap<String, i64>,
 }
 
 impl<'a> Module<'a> {
@@ -574,7 +577,7 @@ impl<'a> Module<'a> {
             Ty::Unit => "void",
             _ if is_never(t) => "void",
             Ty::Str | Ty::Con(..) | Ty::Fn(..) => "ptr",
-            Ty::Union(ms) if ms.iter().all(|m| self.nominal(m)) => "ptr",
+            Ty::Union(_) => "ptr",
             other => return Err(format!("the type `{}` is not compiled yet", key(&other))),
         })
     }
@@ -619,6 +622,56 @@ impl<'a> Module<'a> {
                 }
             }
         })
+    }
+
+    // ---- unions ----
+    //
+    // A union of records and variants is one of their blocks: its tag says
+    // which. A union with other members (`Int | String`) is a pointer too:
+    // a record's or a variant's block as it is, any other member in a box
+    // `{ tag, value }` whose tag is the member type's (`box_tag`, beyond the
+    // constructors' tags).
+
+    /// Whether values of `t` are a union with boxed members.
+    fn boxed(&self, t: &Ty) -> bool {
+        matches!(self.repr(t), Ok(Ty::Union(ms)) if ms.iter().any(|m| self.boxes(m)))
+    }
+
+    /// Whether a union holds values of member type `m` in a box.
+    fn boxes(&self, m: &Ty) -> bool {
+        !self.nominal(&self.repr(m).unwrap_or(Ty::Unit))
+    }
+
+    /// The members of a union type (itself, for any other type).
+    fn members(&self, t: &Ty) -> Vec<Ty> {
+        match self.repr(t) {
+            Ok(Ty::Union(ms)) => ms.iter().flat_map(|m| self.members(m)).collect(),
+            _ => vec![t.clone()],
+        }
+    }
+
+    fn box_tag(&mut self, m: &Ty) -> i64 {
+        let k = key(&self.repr(m).unwrap_or(Ty::Unit));
+        let n = self.box_tags.len() as i64;
+        *self.box_tags.entry(k).or_insert(1 << 40 | n)
+    }
+
+    /// The tags a value of member type `m` can have in a union.
+    fn member_tags(&mut self, m: &Ty) -> Vec<i64> {
+        if self.boxes(m) {
+            return vec![self.box_tag(m)];
+        }
+        let r = self.repr(m).unwrap_or(Ty::Unit);
+        if matches!(&r, Ty::Con(n, _) if n == "Tuple") {
+            return vec![0];
+        }
+        self.ctors_of(&r).iter().map(|c| self.tags[c]).collect()
+    }
+
+    /// Whether `m` is (or is part of) one of `u`'s members.
+    fn member_of(&self, m: &Ty, u: &Ty) -> bool {
+        let keys: Vec<String> = self.members(u).iter().map(|x| key(&self.repr(x).unwrap_or(Ty::Unit))).collect();
+        self.members(m).iter().all(|x| keys.contains(&key(&self.repr(x).unwrap_or(Ty::Unit))))
     }
 
     /// The constructors a value of type `t` can have.
@@ -1443,7 +1496,7 @@ impl<'m, 'a> Func<'m, 'a> {
     /// Whether `v`'s tag is one of `cs` (always, when it can't be anything else).
     fn tag_in(&mut self, v: &V, cs: &[String]) -> Res<V> {
         let all = self.m.ctors_of(&self.m.repr(&v.0)?);
-        if !all.is_empty() && all.iter().all(|c| cs.contains(c)) {
+        if !all.is_empty() && !self.m.boxed(&v.0) && all.iter().all(|c| cs.contains(c)) {
             return Ok(bool_v("true"));
         }
         let tag = self.tag(v);
@@ -1490,6 +1543,10 @@ impl<'m, 'a> Func<'m, 'a> {
         if self.is_dyn(&t) {
             return self.dyn_entry_call(v, DYN_SHOW);
         }
+        if self.m.boxed(&t) {
+            let f = self.helper("show", &t)?;
+            return Ok(self.call(&Ty::Str, &f, &[(t.clone(), v.1.clone())])?.1);
+        }
         match t {
             Ty::Str => {
                 // (owned, as every shown value: held once more)
@@ -1523,6 +1580,10 @@ impl<'m, 'a> Func<'m, 'a> {
                 let l = self.as_list(v)?;
                 self.json(&l)?
             }
+            t if self.m.boxed(t) => {
+                let f = self.helper("json", t)?;
+                self.call(&Ty::Str, &f, &[(t.clone(), v.1.clone())])?.1
+            }
             t if self.m.nominal(t) || matches!(t, Ty::Con(l, _) if l == "List" || l == "Dict") => {
                 let f = self.helper("json", t)?;
                 self.call(&Ty::Str, &f, &[(t.clone(), v.1.clone())])?.1
@@ -1547,6 +1608,10 @@ impl<'m, 'a> Func<'m, 'a> {
                 bool_v(&r)
             }
             Ty::Str => self.call(&Ty::Bool, "@strata_str_eq", &[a.clone(), b.clone()])?,
+            t if self.m.boxed(t) => {
+                let f = self.helper("eq", t)?;
+                self.call(&Ty::Bool, &f, &[(t.clone(), a.1.clone()), (t.clone(), b.1.clone())])?
+            }
             t if collection(t).is_some() => {
                 let (x, y) = (self.as_list(a)?, self.as_list(b)?);
                 self.equal(&x, &y)?
@@ -1695,6 +1760,31 @@ impl<'m, 'a> Func<'m, 'a> {
                     }
                 }
                 format!("define i64 {name}({ll} %a, {ll} %b)")
+            }
+            "eq" if h.m.boxed(t) => {
+                // the same member, then equal as it
+                let (ta, tb) = (h.tag(&a), h.tag(&b));
+                let st = h.fresh("sametag");
+                h.emit(format!("{st} = icmp eq i64 {ta}, {tb}"));
+                h.emit(format!("br i1 {st}, label %members, label %no"));
+                h.block("members");
+                h.on_member(&a, |h, m, x| {
+                    let y = h.narrow(&b, m)?;
+                    let e = h.equal(&x, &y)?;
+                    h.emit(format!("ret i1 {}", e.1));
+                    Ok(())
+                })?;
+                h.block("no");
+                h.emit("ret i1 false".into());
+                format!("define i1 {name}(ptr %a, ptr %b)")
+            }
+            "json" | "show" if h.m.boxed(t) => {
+                h.on_member(&a, |h, _, x| {
+                    let s = if what == "json" { h.json(&x)? } else { h.show(&x)? };
+                    h.emit(format!("ret ptr {s}"));
+                    Ok(())
+                })?;
+                format!("define ptr {name}(ptr %a)")
             }
             "eq" if list => {
                 let et = args[0].clone();
@@ -1908,6 +1998,32 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let mut h = Func::new(self.m, HashMap::default());
         h.block("start");
+        if h.m.boxed(&t) {
+            // a record's or variant's block drops as itself; a box holds its value
+            let a: V = (t.clone(), "%a".into());
+            h.on_member(&a, |h, m, x| {
+                if h.m.boxes(m) {
+                    let (gone, unbox, kept) = (h.fresh("gone"), h.fresh_label("unbox"), h.fresh_label("kept"));
+                    h.emit(format!("{gone} = call i1 @strata_release(ptr %a)"));
+                    h.emit(format!("br i1 {gone}, label %{unbox}, label %{kept}"));
+                    h.block(&unbox);
+                    let x = h.field(&a, 0, m)?;
+                    h.emit("call void @strata_free(ptr %a)".into());
+                    h.drop_value(&x)?;
+                    h.emit("ret void".into());
+                    h.block(&kept);
+                    h.emit("ret void".into());
+                } else {
+                    let f = h.drop_fn(m)?;
+                    h.emit(format!("tail call void {f}(ptr {})", x.1));
+                    h.emit("ret void".into());
+                }
+                Ok(())
+            })?;
+            let text = h.finish();
+            writeln!(self.m.body, "define void {name}(ptr %a) {{\n{text}}}\n").unwrap();
+            return Ok(name);
+        }
         h.emit("%null = icmp eq ptr %a, null".into());
         h.emit("br i1 %null, label %kept, label %held".into());
         h.block("held");
@@ -2022,6 +2138,32 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let within = |ctx: &[Part], more: Vec<Part>| -> Vec<Part> { ctx.iter().cloned().chain(more).collect() };
         match t {
+            TypeExpr::Union(written) if matches!(self.m.repr(&v.0)?, Ty::Union(_)) => {
+                // the value is one of the members whose refinements it satisfies
+                let written: Vec<(Ty, TypeExpr)> = written.iter().map(|w| Ok((self.lower(w)?, w.clone()))).collect::<Res<_>>()?;
+                let slot = self.fresh("inunion");
+                writeln!(self.allocas, "  {slot} = alloca i1").unwrap();
+                let end = self.fresh_label("union.checked");
+                self.on_member(v, |s, m, x| {
+                    let mk = key(&s.m.repr(m)?);
+                    let mut ok = bool_v("false");
+                    for (wt, w) in &written {
+                        if s.m.members(wt).iter().any(|y| s.m.repr(y).map(|r| key(&r)).ok().as_deref() == Some(mk.as_str())) {
+                            let one = s.satisfies(w, &x)?;
+                            let r = s.fresh("or");
+                            s.emit(format!("{r} = or i1 {}, {}", ok.1, one.1));
+                            ok = bool_v(&r);
+                        }
+                    }
+                    s.emit(format!("store i1 {}, ptr {slot}", ok.1));
+                    s.br(&end);
+                    Ok(())
+                })?;
+                self.block(&end);
+                let ok = self.fresh("ok");
+                self.emit(format!("{ok} = load i1, ptr {slot}"));
+                self.fail_unless_in(&bool_v(&ok), ctx.to_vec(), v, format!("is not a `{}`", crate::printer::ty(t)))?;
+            }
             TypeExpr::Refined(b, pred) => {
                 self.check_in(b, v, ctx, false)?;
                 let ok = self.with_it(v, outer, |c| c.expr(pred))?;
@@ -2122,6 +2264,7 @@ impl<'m, 'a> Func<'m, 'a> {
                     None => false,
                 }
             }
+            TypeExpr::Union(ms) => ms.iter().any(|m| self.needs_check(m)),
             _ => false,
         }
     }
@@ -2164,6 +2307,26 @@ impl<'m, 'a> Func<'m, 'a> {
     /// Whether `v` is a value of the type named `name` (a type's name as a
     /// pattern, or `is`): its constructor, and every refinement.
     fn holds(&mut self, name: &str, v: &V) -> Res<V> {
+        if self.m.boxed(&v.0) {
+            // the member first, then its refinements on the value as it
+            let target = self.lower(&TypeExpr::Named(Symbol::from(name), vec![]))?;
+            let is = self.holds_member(v, &target)?;
+            if self.m.boxed(&target) || self.m.members(&target).len() > 1 {
+                return Ok(is);
+            }
+            let (yes, end) = (self.fresh_label("holds.member"), self.fresh_label("holds.end"));
+            let from = self.cur.clone();
+            self.cond_br(&is, &yes, &end);
+            self.block(&yes);
+            let x = self.narrow(v, &target)?;
+            let ok = self.holds(name, &x)?;
+            let from_yes = self.cur.clone();
+            self.br(&end);
+            self.block(&end);
+            let r = self.fresh("holds");
+            self.emit(format!("{r} = phi i1 [ false, %{from} ], [ {}, %{from_yes} ]", ok.1));
+            return Ok(bool_v(&r));
+        }
         let mut conds = vec![];
         if self.m.nominal(&self.m.repr(&v.0)?) {
             let target = Ty::Con(Symbol::from(Symbol::from(name)), Module::args_of(&v.0));
@@ -2189,6 +2352,37 @@ impl<'m, 'a> Func<'m, 'a> {
             }
         }
         // all of them, though each is evaluated (refinements are pure)
+        let mut acc = bool_v("true");
+        for c in conds {
+            let r = self.fresh("and");
+            self.emit(format!("{r} = and i1 {}, {}", acc.1, c.1));
+            acc = bool_v(&r);
+        }
+        Ok(acc)
+    }
+
+    /// Whether `v` satisfies the refinements of the written type `t` (its
+    /// conditions and those of the types it names, as `holds`).
+    fn satisfies(&mut self, t: &TypeExpr, v: &V) -> Res<V> {
+        let mut conds = vec![];
+        let mut t = t.clone();
+        loop {
+            match t {
+                TypeExpr::Refined(b, pred) => {
+                    conds.push(self.with_it(v, false, |c| c.expr(&pred))?);
+                    t = *b;
+                }
+                TypeExpr::Named(n, _) => {
+                    let Some(td) = self.m.env.types.get(&n).cloned() else { break };
+                    if let Some(r) = self.m.refinement(&n) {
+                        conds.push(self.with_it(v, false, |c| c.expr(r))?);
+                    }
+                    let TypeBody::Alias(a) = td.body else { break };
+                    t = a;
+                }
+                _ => break,
+            }
+        }
         let mut acc = bool_v("true");
         for c in conds {
             let r = self.fresh("and");
@@ -2249,7 +2443,83 @@ impl<'m, 'a> Func<'m, 'a> {
 
     // ---- expressions ----
 
+    /// The value of `e`, as the checker typed it: a union's value where the
+    /// checker narrowed it to a member (a matched variable in its arm) is
+    /// that member's.
     fn expr(&mut self, e: &Expr) -> Res<V> {
+        let v = self.expr_in(e)?;
+        if !self.m.boxed(&v.0) {
+            return Ok(v);
+        }
+        match self.ty_of(e) {
+            Ok(t) if !self.m.boxed(&t) && self.m.member_of(&t, &v.0) => self.narrow(&v, &t),
+            _ => Ok(v),
+        }
+    }
+
+    /// A union's value `v`, known to be of member type `t`: unboxed (borrowed from the box).
+    fn narrow(&mut self, v: &V, t: &Ty) -> Res<V> {
+        if self.m.boxes(t) {
+            let x = self.field(v, 0, t)?;
+            return Ok((t.clone(), x.1));
+        }
+        Ok((t.clone(), v.1.clone()))
+    }
+
+    /// `v` (of a member type, or a smaller union) as a value of union `u`:
+    /// boxed when `u` boxes its type (a temporary holding it).
+    fn boxed_into(&mut self, v: V, u: &Ty) -> Res<V> {
+        if self.m.boxed(&v.0) || matches!(self.m.repr(&v.0)?, Ty::Union(_)) || !self.m.boxes(&v.0) {
+            return Ok((u.clone(), v.1));
+        }
+        let tag = self.m.box_tag(&v.0);
+        let b = self.block_of(tag, &[v])?;
+        Ok(self.temp((u.clone(), b)))
+    }
+
+    /// A `switch` on the member a union's value `v` holds: `each` gets the
+    /// member type and the value as it (it must end its block).
+    fn on_member(&mut self, v: &V, mut each: impl FnMut(&mut Self, &Ty, V) -> Res<()>) -> Res<()> {
+        let ms = self.m.members(&v.0);
+        let tag = self.tag(v);
+        let labels: Vec<String> = ms.iter().map(|_| self.fresh_label("member")).collect();
+        let mut cases = vec![];
+        let mut seen = HashSet::default();
+        for (m, l) in ms.iter().zip(&labels) {
+            for t in self.m.member_tags(m) {
+                if seen.insert(t) {
+                    cases.push(format!("i64 {t}, label %{l}"));
+                }
+            }
+        }
+        let other = self.fresh_label("member.none");
+        self.emit(format!("switch i64 {tag}, label %{other} [ {} ]", cases.join(" ")));
+        for (m, l) in ms.iter().zip(&labels) {
+            self.block(l);
+            let x = self.narrow(v, m)?;
+            each(self, m, x)?;
+        }
+        self.block(&other);
+        self.emit("unreachable".into());
+        self.dead();
+        Ok(())
+    }
+
+    /// Whether union value `v` holds a member of type `t` (or of one of its members).
+    fn holds_member(&mut self, v: &V, t: &Ty) -> Res<V> {
+        let tags: Vec<i64> = self.m.members(t).iter().flat_map(|m| self.m.member_tags(m)).collect();
+        let tag = self.tag(v);
+        let mut acc = bool_v("false");
+        for n in tags {
+            let (e, o) = (self.fresh("is"), self.fresh("or"));
+            self.emit(format!("{e} = icmp eq i64 {tag}, {n}"));
+            self.emit(format!("{o} = or i1 {}, {e}", acc.1));
+            acc = bool_v(&o);
+        }
+        Ok(acc)
+    }
+
+    fn expr_in(&mut self, e: &Expr) -> Res<V> {
         Ok(match e {
             Expr::Int(n) => (Ty::Int, n.to_string()),
             Expr::BigInt(n) => return self.unsupported(&format!("the big integer {n}")),
@@ -2756,6 +3026,9 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         if self.m.env.is_method(Symbol::new(name)) {
             if let Some(recv) = vs.first().map(|v| v.0.clone()) {
+                if matches!(self.m.repr(&recv)?, Ty::Union(_)) {
+                    return self.call_on_union(name, vs, hint, &places);
+                }
                 if self.is_dyn(&recv) || Module::head(&recv).is_some_and(|h| self.m.resolve_method(name, &h).is_some() || self.m.ctors_of(&recv).iter().any(|c| self.m.resolve_method(name, c).is_some())) {
                     return self.call_method(name, recv, vs, hint, &places);
                 }
@@ -2791,6 +3064,49 @@ impl<'m, 'a> Func<'m, 'a> {
             }
         }
         self.builtin(name, vs)
+    }
+
+    /// A trait method on a union's value: each member's implementation, by the member.
+    fn call_on_union(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
+        if vs.iter().any(|v| is_never(&v.0)) {
+            return Ok(never());
+        }
+        let _ = places;
+        let mutates = self.m.members(&vs[0].0).iter().filter_map(|m| Module::head(m)).find_map(|h| self.m.resolve_method(name, &h)).and_then(|(tr, m)| self.m.trait_method(&tr, &m)).is_some_and(|tm| tm.decl.params.first().is_some_and(|p| p.mutable));
+        if mutates {
+            // (it would write a member's value back where the union's goes)
+            return self.unsupported(&format!("a `mut self` method (`{name}`) on a union"));
+        }
+        let ret = hint.clone().ok_or(format!("the result type of `{name}`"))?;
+        let slot = self.fresh("ures");
+        if has_value(&ret) {
+            writeln!(self.allocas, "  {slot} = alloca {}", self.m.ll(&ret)?).unwrap();
+        }
+        let end = self.fresh_label("dispatched");
+        let v0 = vs[0].clone();
+        self.on_member(&v0, |c, m, x| {
+            c.push_scope(true);
+            let mut args = vec![x];
+            args.extend(vs[1..].iter().cloned());
+            let out = c.call_method(name, m.clone(), args, hint.clone(), &[])?;
+            let out = c.coerce(out, &ret)?;
+            let out = c.take(out);
+            c.pop_scope()?;
+            if has_value(&ret) && !is_never(&out.0) {
+                let ll = c.m.ll(&ret)?;
+                c.emit(format!("store {ll} {}, ptr {slot}", out.1));
+            }
+            c.br(&end);
+            Ok(())
+        })?;
+        self.block(&end);
+        if !has_value(&ret) {
+            return Ok((ret, String::new()));
+        }
+        let r = self.fresh("ur");
+        let ll = self.m.ll(&ret)?;
+        self.emit(format!("{r} = load {ll}, ptr {slot}"));
+        Ok(self.temp((ret, r)))
     }
 
     /// Call trait method `name` on a value of type `recv` (`vs` includes it,
@@ -3215,6 +3531,9 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let want_r = self.m.repr(want)?;
         let have = self.m.repr(&v.0)?;
+        if self.m.boxed(&want_r) && !self.m.boxed(&have) {
+            return self.boxed_into(v, want);
+        }
         if self.is_dyn(&want_r) && !self.is_dyn(&have) {
             let vt = self.vtable(&want_r, &v.0)?;
             // the pair holds the value
@@ -3834,6 +4153,24 @@ impl<'m, 'a> Func<'m, 'a> {
             s.block(&next);
             Ok(())
         };
+        // on a union: a pattern of one member's values tests the member first
+        if self.m.boxed(&v.0) {
+            let ms = self.m.members(&v.0);
+            let member = match p {
+                Pattern::Int(_) => ms.iter().find(|m| matches!(m, Ty::Int)).cloned(),
+                Pattern::Bool(_) => ms.iter().find(|m| matches!(m, Ty::Bool)).cloned(),
+                Pattern::Str(_) => ms.iter().find(|m| matches!(m, Ty::Str)).cloned(),
+                Pattern::List(..) => ms.iter().find(|m| matches!(self.m.repr(m), Ok(Ty::Con(l, _)) if l == "List")).cloned(),
+                Pattern::Tuple(..) => ms.iter().find(|m| matches!(self.m.repr(m), Ok(Ty::Con(t, _)) if t == "Tuple")).cloned(),
+                _ => None,
+            };
+            if let Some(m) = member {
+                let is = self.holds_member(v, &m)?;
+                test(self, is)?;
+                let x = self.narrow(v, &m)?;
+                return self.pattern(p, &x, fail);
+            }
+        }
         match p {
             Pattern::Wild => {}
             Pattern::Bind(x) => self.bind(x, v)?,

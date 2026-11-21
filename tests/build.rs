@@ -1018,3 +1018,91 @@ fn main() {
   print(Thing { n: 1 }.describe())
 }
 "#;
+
+/// Unions with members that aren't records or variants (`Int | String`):
+/// boxed members, narrowing in arms, type and literal patterns, `==`,
+/// printing, trait methods on a union, refinement checks of a union.
+#[test]
+fn unions_compile() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("unions");
+    let (out, code) = case(&d, "unions", UNIONS);
+    assert!(code == 0 && out.starts_with("number 4\ntext 4\nzero\npositive 5\nnegative\n") && out.contains("[1,\"a\",2]"), "{out}");
+    let (out, code) = case(&d, "union_methods", UNION_METHODS);
+    assert!(code == 101 && out.contains("-1 is not a `Positive | String`"), "{out}");
+}
+
+const UNIONS: &str = r#"type Sq = { side: Int }
+
+fn describe(v: Int | String) -> String {
+  match v {
+    Int => f"number {v}",
+    String => f"text {len(v)}",
+  }
+}
+
+fn kind(v: Int | String | Sq | List[Int]) -> String {
+  match v {
+    0 => "zero",
+    Positive => f"positive {v}",
+    Int => "negative",
+    "" => "empty text",
+    String => f"text {v}",
+    Sq => f"square {v.side}",
+    [] => "empty list",
+    [x, ..rest] => f"list from {x}, {len(rest)} more",
+  }
+}
+
+fn pick(b: Bool) -> Int | String {
+  if b { 1 } else { "one" }
+}
+
+fn main() {
+  print(describe(4))
+  print(describe("four"))
+  for x in [0, 5, -2] { print(kind(x)) }
+  print(kind(""))
+  print(kind("hey"))
+  print(kind(Sq { side: 3 }))
+  print(kind([]))
+  print(kind([1, 2]))
+  let xs: List[Int | String] = [1, "a", 2]
+  print(xs)
+  print(pick(true) == pick(true))
+  print(pick(true) == pick(false))
+  print(to_string(pick(false)))
+  print(xs.map(x -> describe(x)))
+  let u: Int | String = pick(false)
+  print(u)
+  print(u is String)
+  print(u is Int)
+}
+"#;
+
+const UNION_METHODS: &str = r#"trait Area {
+  fn area(self) -> Int
+}
+type Sq = { side: Int }
+type Ci = { r: Int }
+impl Area for Sq { fn area(self) -> Int { self.side * self.side } }
+impl Area for Ci { fn area(self) -> Int { 3 * self.r * self.r } }
+impl Area for Int { fn area(self) -> Int { self } }
+
+fn total(xs: List[Sq | Ci | Int]) -> Int { xs.map(x -> x.area()).fold(0, (a, b) -> a + b) }
+
+fn f(x: Positive | String) -> String { f"{x}" }
+
+fn main() {
+  print(total([Sq { side: 2 }, Ci { r: 1 }, 5]))
+  let s: Sq | Ci = Ci { r: 2 }
+  print(s.area())
+  print(f(3))
+  print(f("a"))
+  let n: Int = 0 - 1
+  print(f(n))
+}
+"#;
