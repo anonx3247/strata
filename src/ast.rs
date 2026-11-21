@@ -272,6 +272,45 @@ pub enum DeclKind {
     Trait(TraitDecl),
     Impl(ImplDecl),
     Use(UseDecl),
+    /// `extern c fn ...` / `extern c type ...`: a definition made in another
+    /// language, called through its ABI (docs/language.md, "Foreign functions").
+    Extern(ExternDecl),
+}
+
+/// A foreign definition: its language and what it is.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExternDecl {
+    pub lang: Lang,
+    pub item: ExternItem,
+}
+
+/// The language of an `extern` (only C so far).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Lang {
+    C,
+}
+
+impl Lang {
+    pub fn name(self) -> &'static str {
+        match self {
+            Lang::C => "c",
+        }
+    }
+    pub fn from_name(s: &str) -> Option<Lang> {
+        match s {
+            "c" => Some(Lang::C),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ExternItem {
+    /// `extern c fn strlen(s: String) -> U64`: a signature with contracts and
+    /// no body (`body` is `()`); the symbol is the function's name.
+    Fn(FnDecl),
+    /// `extern c type Sqlite3`: an opaque handle (a pointer), only passed back.
+    Type(Symbol),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -312,6 +351,10 @@ impl Decl {
             DeclKind::Trait(t) => t.name.to_string(),
             DeclKind::Impl(i) => i.name(),
             DeclKind::Use(u) => format!("use {}", u.path),
+            DeclKind::Extern(e) => match &e.item {
+                ExternItem::Fn(f) => f.name.to_string(),
+                ExternItem::Type(t) => t.to_string(),
+            },
         }
     }
     pub fn kind_str(&self) -> &'static str {
@@ -322,6 +365,7 @@ impl Decl {
             DeclKind::Trait(_) => "trait",
             DeclKind::Impl(_) => "impl",
             DeclKind::Use(_) => "use",
+            DeclKind::Extern(_) => "extern",
         }
     }
 }
@@ -905,6 +949,10 @@ macro_rules! visitor {
                     }
                 }
                 DeclKind::Use(_) => {}
+                DeclKind::Extern(e) => match &$($m)? e.item {
+                    ExternItem::Fn(f) => $func(v, f),
+                    ExternItem::Type(_) => {}
+                },
             }
         }
     };

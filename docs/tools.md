@@ -194,7 +194,7 @@ Every view is Strata text, so an agent can edit what it sees and send it back wi
 ## How it is stored
 
 ```text
-strata.toml           the package: name, exports, dependencies, verifier policy
+strata.toml           the package: name, exports, dependencies, verifier policy, C to link ([native])
 main.strata, a/b.strata, …
                       one file per module, in canonical form (rewritten by `edit`, `add`, `rename`)
 strata.log            one JSON entry per change made through strata: its id, message, which
@@ -224,6 +224,7 @@ proven = ["core"]
 
 [json]                                 # how `std.json` reads JSON here
 unknown_keys = "error"                 # `decode` refuses keys a record doesn't have (default: "ignore")
+integers = "proven"                    # integer fields must be proven to fit a JSON number (default: "checked", an error from `encode`)
 ```
 
 `strata ci` rejects an export that names nothing, or a definition that isn't `pub`.

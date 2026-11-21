@@ -463,6 +463,13 @@ fn words(o: &Decl, n: &Decl) -> Vec<String> {
         (DeclKind::Test(_), DeclKind::Test(_)) => out.push("body changed".into()),
         (DeclKind::Use(a), DeclKind::Use(b)) if a != b => out.push("imports changed".into()),
         (DeclKind::Use(_), DeclKind::Use(_)) => {}
+        (DeclKind::Extern(ExternDecl { item: ExternItem::Fn(a), .. }), DeclKind::Extern(ExternDecl { item: ExternItem::Fn(b), .. })) => {
+            if fn_sig(a) != fn_sig(b) {
+                out.push("signature changed".into());
+            }
+            contract_words(a, b, &mut out);
+        }
+        (DeclKind::Extern(ExternDecl { item: ExternItem::Type(_), .. }), DeclKind::Extern(ExternDecl { item: ExternItem::Type(_), .. })) => {}
         _ => out.push("kind changed".into()),
     }
     if o.public != n.public {
@@ -555,7 +562,7 @@ fn verdict_word(v: Option<&Verdict>) -> String {
 fn section(kind: &str, mk: &str, interface_changed: bool) -> &'static str {
     match kind {
         "type" => "Types",
-        "trait" | "use" => "Interfaces",
+        "trait" | "use" | "extern" => "Interfaces",
         "fn" if mk == "ren" || (mk == "chg" && interface_changed) => "Interfaces",
         "test" => "Tests",
         _ => "Implementations",

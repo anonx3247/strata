@@ -3822,6 +3822,7 @@ fn json_is_derived() {
         ("type B = { x: Int }\n\ntype A = { b: B }", "`B` doesn't implement `Json`: write `derive Json for B`"),
         ("type A = { x: Int | Float }", "`Int | Float` can't be JSON: two members are written as a JSON number"),
         ("type A = { x: List[Int] | List[String] }", "two members are written as a JSON array"),
+        ("type L =\n  | Quiet\n  | Loud\n\nderive Json for L\n\ntype A = { x: String | L }", "`Quiet`, `Loud` would be read as a String"),
     ];
     for (k, (src, want)) in bad.iter().enumerate() {
         let f = format!("bad{k}.strata");
@@ -3830,11 +3831,23 @@ fn json_is_derived() {
         let (ok, out) = strata(&["--file", &f, "check"], &d, None);
         assert!(!ok && out.contains(want), "{src}: {out}");
     }
-    // an integer beyond 64 bits isn't written: most JSON readers would get it wrong
-    let (ok, out) = strata(&["--file", "big.strata", "edit"], &d, Some("use std.json.Json\n\ntype A = { x: Int }\n\nderive Json for A\n\nfn main() {\n  print(A { x: 99999999999999999999 }.encode())\n}\n"));
+    // an integer beyond what a JSON number holds exactly isn't written:
+    // `encode` returns an error, and verify has nothing to report
+    let big = "use std.json.Json\n\ntype A = { x: Int }\n\nderive Json for A\n\nfn main() {\n  print(A { x: 9007199254740992 }.encode())\n  print(A { x: 3 }.encode() is Ok)\n}\n";
+    let (ok, out) = strata(&["--file", "big.strata", "edit"], &d, Some(big));
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "big.strata"], &d, None);
-    assert!(!ok && out.contains("does not satisfy `std.json.Int64`"), "{out}");
+    assert!(ok && out == "{\"Err\":\"x: 9007199254740992 is beyond ±(2^53 - 1), the integers a JSON number holds exactly\"}\ntrue\n", "{out}");
+    let (ok, out) = strata(&["--file", "big.strata", "verify", "--cases", "20", "--require", "proven"], &d, None);
+    assert!(ok && out.contains("✓ std.json.encode_as.for.A."), "{out}");
+    // `integers = "proven"`: each integer field must be shown to be a `SafeInt`
+    let q = d.join("proven");
+    std::fs::create_dir_all(&q).unwrap();
+    std::fs::write(q.join("strata.toml"), "name = \"proven\"\n\n[json]\nintegers = \"proven\"\n").unwrap();
+    let (ok, out) = strata(&["--file", "./", "edit", "main"], &q, Some("use std.json.{Json, SafeInt}\n\ntype A = { x: Int }\n\nderive Json for A\n\ntype B = { id: SafeInt, n: Int where 0 <= it && it < 100 }\n\nderive Json for B\n"));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["verify", "--cases", "20"], &q, None);
+    assert!(!ok && out.contains("✗ std.json.encode_as.for.A.") && out.contains("does not satisfy `std.json.SafeInt`") && !out.contains("✗ std.json.encode_as.for.B."), "{out}");
     // a package can make `decode` refuse keys a record doesn't have
     let p = d.join("strict");
     std::fs::create_dir_all(&p).unwrap();
@@ -3847,4 +3860,61 @@ fn json_is_derived() {
     std::fs::write(p.join("strata.toml"), "name = \"strict\"\n\n[json]\nunknown_keys = \"sometimes\"\n").unwrap();
     let (ok, out) = strata(&["run", "."], &p, None);
     assert!(!ok && out.contains("unknown_keys is \"error\" or \"ignore\""), "{out}");
+}
+
+// `extern c`: foreign declarations, checked, kept in their module, never run
+// by the interpreter or by `verify`.
+#[test]
+fn extern_c_declarations() {
+    let d = tmp("extern_c");
+    let p = d.join("p");
+    std::fs::create_dir_all(&p).unwrap();
+    let db = "/// An open database.\nextern c type Sqlite3\n\nextern c fn strlen(s: String) -> U64\n  ensures it >= 0\n\nextern c fn sqlite3_open(path: String, mut db: Sqlite3) -> I32\n\npub fn length(s: String) -> U64 {\n  strlen(s)\n}\n";
+    save_module(&p, "db", db);
+    save_module(&p, "main", "use db\n\nfn main() {\n  print(db.length(\"abc\"))\n}\n");
+    // the text round-trips
+    let (ok, out) = strata(&["--file", "p", "render", "db"], &d, None);
+    assert!(ok && out == db, "{out}");
+    let (ok, out) = strata(&["--file", "p", "check"], &d, None);
+    assert!(ok, "{out}");
+    // the interpreter refuses to call C
+    let (ok, out) = strata(&["--file", "p", "run", "--interpret"], &d, None);
+    assert!(!ok && out.contains("`strlen` is an `extern c` function: only compiled code calls it"), "{out}");
+    // verify runs nothing that reaches C
+    let (_, out) = strata(&["--file", "p", "verify"], &d, None);
+    assert!(out.contains("db.length") && out.contains("assumed: module `db` calls foreign code"), "{out}");
+    assert!(out.contains("assumed: it calls `db.length`, in module `db`, which calls foreign code"), "{out}");
+    // only its own module calls it, submodules included
+    save_module(&p, "db.inner", "fn sub() -> U64 { db.strlen(\"x\") }\n");
+    let (ok, out) = strata(&["--file", "p", "check"], &d, None);
+    assert!(!ok && out.contains("`db.strlen` is a foreign function: only module `db` can call it"), "{out}");
+    std::fs::remove_dir_all(p.join("db")).unwrap();
+    // what crosses to C, and never `pub`
+    save_module(&p, "bad", "pub extern c fn abs(x: Int) -> List[Int]\n\nextern c fn f(mut s: String)\n\nextern c type H\n\nfn forge() -> H { H(1) }\n");
+    let (ok, out) = strata(&["--file", "p", "check"], &d, None);
+    assert!(!ok, "{out}");
+    for m in [
+        "`extern c` definitions are never `pub`",
+        "`extern c fn abs`, parameter `x`: `Int` has no fixed size",
+        "`extern c fn abs`, result: `List[Int]` doesn't cross to C",
+        "`extern c fn f`, parameter `s`: a `String` can't be `mut`",
+        "unknown constructor `bad.H`",
+    ] {
+        assert!(out.contains(m), "{m}: {out}");
+    }
+    std::fs::remove_file(p.join("bad.strata")).unwrap();
+    // a body, or another language, doesn't parse
+    let (ok, out) = strata(&["--file", "x.strata", "edit"], &d, Some("extern c fn f() -> I32 { 1 }\n"));
+    assert!(!ok && out.contains("has no body: it is defined in C"), "{out}");
+    let (ok, out) = strata(&["--file", "x.strata", "edit"], &d, Some("extern cobol fn f() -> I32\n"));
+    assert!(!ok && out.contains("unknown foreign language `cobol`"), "{out}");
+    // its name is the C symbol: no rename
+    let pkg = d.join("pkg");
+    std::fs::create_dir_all(&pkg).unwrap();
+    let (ok, out) = strata(&["init"], &pkg, None);
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["edit", "db", "--no-commit"], &pkg, Some("extern c fn strlen(s: String) -> U64\n\npub fn length(s: String) -> U64 { strlen(s) }\n"));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["rename", "db.strlen", "c_strlen", "--no-commit"], &pkg, None);
+    assert!(!ok && out.contains("`db.strlen` is a foreign function: its name is the symbol it is linked to"), "{out}");
 }

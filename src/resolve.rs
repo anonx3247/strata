@@ -18,6 +18,8 @@ use crate::fx::{HashMap, HashSet};
 struct Item {
     module: Symbol,
     public: bool,
+    /// An `extern` function: callable only from its own module.
+    foreign: bool,
 }
 
 pub struct Resolution {
@@ -97,6 +99,8 @@ pub fn member(p: &Program, q: &str) -> Option<(&'static str, String)> {
                 DeclKind::Fn(_) => Some(("function", d.module.to_string())),
                 DeclKind::Type(_) => Some(("type", d.module.to_string())),
                 DeclKind::Trait(_) => Some(("trait", d.module.to_string())),
+                DeclKind::Extern(ExternDecl { item: ExternItem::Fn(_), .. }) => Some(("function", d.module.to_string())),
+                DeclKind::Extern(ExternDecl { item: ExternItem::Type(_), .. }) => Some(("type", d.module.to_string())),
                 _ => None,
             };
         }
@@ -148,6 +152,10 @@ pub fn set_member_name(p: &mut Program, q: &str, new: &str) {
                 DeclKind::Fn(f) => f.name = Symbol::from(new),
                 DeclKind::Type(t) => t.name = Symbol::from(new),
                 DeclKind::Trait(t) => t.name = Symbol::from(new),
+                DeclKind::Extern(e) => match &mut e.item {
+                    ExternItem::Fn(f) => f.name = Symbol::from(new),
+                    ExternItem::Type(t) => *t = Symbol::from(new),
+                },
                 _ => {}
             }
             continue;
@@ -446,6 +454,9 @@ fn defined(p: &Program) -> HashSet<String> {
 /// back as it was.
 pub fn rename(p: &Program, old: &str, new: &str) -> Result<Program, String> {
     let (kind, module) = member(p, old).ok_or(format!("no definition, variant, trait method or field `{old}`"))?;
+    if p.decls.iter().any(|d| d.qname() == old && matches!(&d.kind, DeclKind::Extern(ExternDecl { item: ExternItem::Fn(_), .. }))) {
+        return Err(format!("`{old}` is a foreign function: its name is the symbol it is linked to, so it can't be renamed (wrap it in a function with the name you want)"));
+    }
     let valid = new.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_') && new.chars().all(|c| c.is_alphanumeric() || c == '_');
     if !valid {
         return Err(format!("`{new}` is not a name (give the new short name, without the module)"));
@@ -558,6 +569,10 @@ fn names_mut(d: &mut DeclKind, f: &mut dyn FnMut(&mut Symbol)) {
             u.items.iter_mut().flatten().for_each(|n| f(n));
         }
         DeclKind::Test(_) => {}
+        DeclKind::Extern(e) => match &mut e.item {
+            ExternItem::Fn(fd) => f(&mut fd.name),
+            ExternItem::Type(t) => f(t),
+        },
     }
 }
 
@@ -646,7 +661,7 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
     };
     for d in &p.decls {
         add_modules(&mut modules, &d.module);
-        let item = Item { module: d.module, public: d.public };
+        let item = Item { module: d.module, public: d.public, foreign: matches!(&d.kind, DeclKind::Extern(ExternDecl { item: ExternItem::Fn(_), .. })) };
         match &d.kind {
             DeclKind::Type(t) => {
                 let q = qualified(d.module, t.name);
@@ -669,8 +684,11 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
                     children.entry(q).or_default().push((m.decl.name, mq));
                 }
             }
-            DeclKind::Fn(f) => {
+            DeclKind::Fn(f) | DeclKind::Extern(ExternDecl { item: ExternItem::Fn(f), .. }) => {
                 table.insert(qualified(d.module, f.name), item);
+            }
+            DeclKind::Extern(ExternDecl { item: ExternItem::Type(t), .. }) => {
+                table.insert(qualified(d.module, *t), item);
             }
             // a type's own methods come with the type, like a trait's
             DeclKind::Impl(i) if i.is_inherent() => {
@@ -679,7 +697,7 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
                 let tq = if head.contains('.') { Symbol::new(&head) } else { qualified(d.module, Symbol::new(&head)) };
                 for m in &i.methods {
                     let mq = qualified(d.module, m.name);
-                    table.insert(mq, Item { module: d.module, public: true });
+                    table.insert(mq, Item { module: d.module, public: true, foreign: false });
                     children.entry(tq).or_default().push((m.name, mq));
                 }
             }
@@ -950,6 +968,14 @@ impl Rw<'_> {
                 self.errors.push(Diag {
                     decl: self.decl.clone(),
                     msg: format!("`{n}` is private to module `{}` (only `pub` definitions are part of its contract)", it.module),
+                });
+            } else if it.foreign && it.module != self.module && self.rename.is_none() {
+                // a foreign function is called only from its own module, which turns
+                // it into a capability for the rest of the program
+                let m = if it.module.is_empty() { "main" } else { it.module.as_str() };
+                self.errors.push(Diag {
+                    decl: self.decl.clone(),
+                    msg: format!("`{n}` is a foreign function: only module `{m}` can call it (give the rest of the program a capability from `{m}` instead)"),
                 });
             }
         }
@@ -1284,6 +1310,13 @@ impl Rw<'_> {
                 DeclKind::Type(TypeDecl { distinct: t.distinct, name: self.declared(m, t.name), params: t.params.clone(), body, refinement })
             }
             DeclKind::Fn(f) => DeclKind::Fn(self.func(f, self.declared(m, f.name))),
+            DeclKind::Extern(e) => DeclKind::Extern(ExternDecl {
+                lang: e.lang,
+                item: match &e.item {
+                    ExternItem::Fn(f) => ExternItem::Fn(self.func(f, self.declared(m, f.name))),
+                    ExternItem::Type(t) => ExternItem::Type(self.declared(m, *t)),
+                },
+            }),
             DeclKind::Test(t) => {
                 let name = if m.is_empty() || self.writing() || self.store.is_some() { t.name.clone() } else { format!("{m}: {}", t.name) };
                 DeclKind::Test(TestDecl { name, body: self.expr(&t.body) })

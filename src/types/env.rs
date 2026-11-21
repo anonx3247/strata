@@ -16,6 +16,8 @@ pub struct Env {
     pub method_traits: HashMap<Symbol, Vec<Symbol>>,
     /// type name -> its own methods (`impl Item { ... }`)
     pub inherent: HashMap<Symbol, ImplDecl>,
+    /// Foreign definitions: `extern` functions and handle types, by name.
+    pub externs: HashMap<Symbol, Lang>,
 }
 
 impl Env {
@@ -37,6 +39,7 @@ impl Env {
             impls: Vec::new(),
             method_traits: HashMap::default(),
             inherent: HashMap::default(),
+            externs: HashMap::default(),
         };
         let mut errs = Vec::new();
         let prelude_names: Vec<String> = prelude.decls.iter().map(|d| d.name()).collect();
@@ -69,6 +72,20 @@ impl Env {
                 }
                 DeclKind::Fn(f) => env.fns.insert(f.name, if bodies { f.clone() } else { f.signature() }).is_some(),
                 DeclKind::Test(_) | DeclKind::Use(_) => false,
+                DeclKind::Extern(e) => match &e.item {
+                    // a signature only: the body is foreign
+                    ExternItem::Fn(f) => {
+                        env.externs.insert(f.name, e.lang);
+                        env.fns.insert(f.name, f.clone()).is_some()
+                    }
+                    // a nominal type with no constructor and nothing inside (a sum with no
+                    // variants): a handle only foreign code makes
+                    ExternItem::Type(t) => {
+                        env.externs.insert(*t, e.lang);
+                        let td = TypeDecl { distinct: false, name: *t, params: vec![], body: TypeBody::Sum(vec![]), refinement: None };
+                        env.types.insert(*t, td).is_some()
+                    }
+                },
                 DeclKind::Trait(t) => {
                     for m in &t.methods {
                         env.method_traits.entry(m.decl.name).or_default().push(t.name);

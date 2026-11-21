@@ -170,6 +170,65 @@ impl Verdict {
     }
 }
 
+/// Why a function can't be run here because it reaches foreign code
+/// (`extern c`), which only compiled code calls: it is in a module that
+/// declares externs (a native module), takes one of its types, or calls one of
+/// its functions, directly or through other functions.
+fn foreign(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>) -> Option<String> {
+    use crate::names::module_of;
+    if env.externs.is_empty() {
+        return None;
+    }
+    let native: crate::fx::HashSet<&str> = env.externs.keys().map(|q| module_of(q)).collect();
+    let shown = |m: &str| if m.is_empty() { "main".to_string() } else { m.to_string() };
+    let home = match imp {
+        Some(i) => module_of(&crate::types::texpr_head(&i.for_type)).to_string(),
+        None => module_of(&f.name).to_string(),
+    };
+    if native.contains(home.as_str()) {
+        return Some(format!("module `{}` calls foreign code (`extern`): only compiled code runs it", shown(&home)));
+    }
+    for p in &f.params {
+        let mut named = Vec::new();
+        crate::ast::Visit::ty(&mut Names(&mut named), &p.ty);
+        if let Some(n) = named.iter().find(|n| native.contains(module_of(n))) {
+            return Some(format!("it takes `{n}`, from module `{}`, which calls foreign code", shown(module_of(n))));
+        }
+    }
+    // the functions it calls, and theirs
+    let mut seen = crate::fx::HashSet::default();
+    let mut todo = vec![f.body.clone()];
+    while let Some(body) = todo.pop() {
+        let mut called = None;
+        crate::ast::walk(&body, |e| {
+            if let Expr::Var(n) = e {
+                if called.is_none() && env.fns.contains_key(n) && seen.insert(*n) {
+                    if native.contains(module_of(n)) {
+                        called = Some(*n);
+                    } else if let Some(g) = env.fns.get(n) {
+                        todo.push(g.body.clone());
+                    }
+                }
+            }
+        });
+        if let Some(n) = called {
+            return Some(format!("it calls `{n}`, in module `{}`, which calls foreign code: only compiled code runs it", shown(module_of(&n))));
+        }
+    }
+    None
+}
+
+/// The type names in a type.
+struct Names<'a>(&'a mut Vec<Symbol>);
+impl crate::ast::Visit for Names<'_> {
+    fn ty(&mut self, t: &TypeExpr) {
+        if let TypeExpr::Named(n, _) = t {
+            self.0.push(*n);
+        }
+        crate::ast::walk_ty(self, t)
+    }
+}
+
 fn has_hole(e: &Expr) -> bool {
     crate::ast::any_expr(e, |x| matches!(x, Expr::Hole(_)))
 }
@@ -183,6 +242,9 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&c
     // the real terminal, disk and process: trusted, never run here (only `strata run` reaches the system)
     if imp.is_some_and(|i| crate::stdlib::HOST_TYPES.contains(&crate::types::texpr_head(&i.for_type).as_str())) {
         return Verdict::Assumed { why: "it talks to the real system (only `strata run` reaches it)".into() };
+    }
+    if let Some(why) = foreign(env, f, imp) {
+        return Verdict::Assumed { why };
     }
     let (decl, method) = match imp {
         None => (f.clone(), false),
