@@ -140,7 +140,7 @@ pub fn regex_relations(a: &str, b: &str) -> (bool, bool, bool) {
     let (Some(sa), Some(sb)) = (start(&da), start(&db)) else { return (false, false, false) };
     // is there a string with `want(in a, in b)`? `None` if the search is too large
     let exists = |want: &dyn Fn(bool, bool) -> bool| -> Option<bool> {
-        let mut seen: HashSet<(StateID, StateID)> = HashSet::from([(sa, sb)]);
+        let mut seen: HashSet<(StateID, StateID)> = HashSet::from_iter([(sa, sb)]);
         let mut todo = vec![(sa, sb)];
         while let Some((x, y)) = todo.pop() {
             let (ex, ey) = (da.next_eoi_state(x), db.next_eoi_state(y));

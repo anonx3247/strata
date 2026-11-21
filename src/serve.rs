@@ -16,7 +16,7 @@ use crate::types::Env;
 use serde_json::{json, Map, Value as Json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::collections::HashMap;
+use crate::fx::HashMap;
 use std::time::Instant;
 
 const REQUEST: &str = "std.http.Request";
@@ -140,7 +140,7 @@ impl App {
         if ty(&vm.ty) != model || ty(&view.ret) != html {
             return Err(format!("`view` takes the model `{model}` and returns `{html}`: {usage}"));
         }
-        Ok(App { title: name.to_string(), msg: msg.ty.clone(), sessions: HashMap::new(), order: vec![] })
+        Ok(App { title: name.to_string(), msg: msg.ty.clone(), sessions: HashMap::default(), order: vec![] })
     }
 
     fn interp<'a>(env: &'a Env) -> Interp<'a> {

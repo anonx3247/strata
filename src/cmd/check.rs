@@ -63,7 +63,7 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     let names = view::select(p, args.pos.get(1).map(|s| s.as_str()));
     let mut cache = match &src {
         Source::Db(cb) => cb.load_verdicts(),
-        _ => HashMap::new(),
+        _ => HashMap::default(),
     };
     let mut all_ok = true;
     let mut results = Vec::new();
@@ -75,7 +75,7 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     let require: Vec<String> = args.val("--require").map(|r| r.split(',').map(|s| s.trim().to_string()).collect()).unwrap_or_default();
     // the package's `[verify]` rules apply too
     let policy = package::find(std::path::Path::new(args.val("--file").unwrap_or("."))).ok().flatten().map(|p| p.verify).unwrap_or_default();
-    let mut module_of: HashMap<String, String> = HashMap::new();
+    let mut module_of: HashMap<String, String> = HashMap::default();
     for r in &require {
         if !["proven", "terminates", "no-recursion"].contains(&r.as_str()) {
             return Err(format!("unknown requirement `{r}` (use proven, terminates, no-recursion)"));

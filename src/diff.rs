@@ -13,7 +13,7 @@ use crate::printer;
 use crate::store;
 use crate::verify::Verdict;
 use serde_json::{json, Value as Json};
-use std::collections::{HashMap, HashSet};
+use crate::fx::{HashMap, HashSet};
 
 /// The steps (patches or commits) a range is made of: step number and the
 /// definitions it touched, so each change can say which steps made it.
@@ -630,9 +630,9 @@ pub fn diff(old: &Program, new: &Program, renames: &[(String, String)], steps: &
     }
 
     // definitions that only follow a rename are folded into it
-    let mut refs_of: HashMap<String, Vec<String>> = HashMap::new();
+    let mut refs_of: HashMap<String, Vec<String>> = HashMap::default();
     let mut items: Vec<(String, Json)> = Vec::new();
-    let mut ref_only: HashSet<String> = HashSet::new();
+    let mut ref_only: HashSet<String> = HashSet::default();
     if !substitutions.is_empty() {
         for (o, n) in &pairs {
             let (Some(o), Some(n)) = (o, n) else { continue };

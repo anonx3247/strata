@@ -7,7 +7,7 @@ use crate::diff;
 use crate::store::{self, Codebase};
 use crate::verify::Verdict;
 use serde_json::{json, Value as Json};
-use std::collections::HashMap;
+use crate::fx::HashMap;
 use std::path::{Path, PathBuf};
 
 pub struct Step {
@@ -160,7 +160,7 @@ fn log_at(dir: &Path, rev: &str) -> Vec<Json> {
     crate::git::run(Some(dir), &["show", &format!("{rev}:./{}", store::LOG)]).map(|t| store::parse_log(&t)).unwrap_or_default()
 }
 
-fn ids(log: &[Json]) -> std::collections::HashSet<String> {
+fn ids(log: &[Json]) -> crate::fx::HashSet<String> {
     log.iter().filter_map(|e| e["id"].as_str().map(|s| s.to_string())).collect()
 }
 
@@ -177,7 +177,7 @@ fn renames_of(e: &Json) -> Vec<(String, String)> {
 /// The steps from `before` to `after`, one per log entry that is in `log`
 /// but not in `known`, replayed in order; what the entries don't explain
 /// (edits made outside strata) is a last step titled `rest`.
-fn log_steps(steps: &mut Vec<Step>, before: &Program, after: &Program, log: &[Json], known: &std::collections::HashSet<String>, group: &str, when: Option<u64>, rest: &str) {
+fn log_steps(steps: &mut Vec<Step>, before: &Program, after: &Program, log: &[Json], known: &crate::fx::HashSet<String>, group: &str, when: Option<u64>, rest: &str) {
     let mut cur = before.clone();
     let mut any = false;
     for e in log.iter().filter(|e| e["id"].as_str().is_some_and(|id| !known.contains(id))) {
@@ -238,7 +238,7 @@ pub fn git_range(path: &Path, base: Option<&str>) -> Result<Range, String> {
         base: base_prog,
         head,
         steps,
-        verdicts: HashMap::new(),
+        verdicts: HashMap::default(),
         options: git_options(path, Some(base)),
     }
     .shown())

@@ -7,7 +7,7 @@ use crate::types::ints::{self, Ints};
 use crate::types::{subst_texpr, Env};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
-use std::collections::HashMap;
+use crate::fx::HashMap;
 
 pub struct Gen {
     rng: StdRng,

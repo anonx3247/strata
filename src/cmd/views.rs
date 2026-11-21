@@ -180,7 +180,7 @@ pub fn interface(args: &Args) -> Result<bool, String> {
     }
     let hashes: Vec<String> = p.decls.iter().filter(|d| names.contains(&d.qname())).map(store::interface_hash).collect();
     println!("// contract of module {m}  #{}\n", store::sha(&hashes.join(",")));
-    let st = view::Status { holes: HashMap::new(), verdicts: verdicts_for(&src) };
+    let st = view::Status { holes: HashMap::default(), verdicts: verdicts_for(&src) };
     print!("{}", view::render(p, &names, 1, &st));
     Ok(true)
 }
@@ -201,7 +201,7 @@ pub fn view(args: &Args) -> Result<bool, String> {
     let level: u8 = args.val("--level").unwrap_or("1").parse().map_err(|_| "--level must be 0-3")?;
     let names = view::select(p, args.pos.get(1).map(|s| s.as_str()));
     let rep = types::check(p);
-    let mut holes: HashMap<String, Vec<String>> = HashMap::new();
+    let mut holes: HashMap<String, Vec<String>> = HashMap::default();
     for h in rep.holes {
         holes.entry(h.decl).or_default().push(h.name);
     }

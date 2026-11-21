@@ -23,13 +23,13 @@ impl Env {
     pub fn build(prog: &Program) -> (Env, Vec<Diag>) {
         let prelude = prelude();
         let mut env = Env {
-            types: HashMap::new(),
-            ctors: HashMap::new(),
-            fns: HashMap::new(),
-            traits: HashMap::new(),
+            types: HashMap::default(),
+            ctors: HashMap::default(),
+            fns: HashMap::default(),
+            traits: HashMap::default(),
             impls: Vec::new(),
-            method_traits: HashMap::new(),
-            inherent: HashMap::new(),
+            method_traits: HashMap::default(),
+            inherent: HashMap::default(),
         };
         let mut errs = Vec::new();
         let prelude_names: Vec<String> = prelude.decls.iter().map(|d| d.name()).collect();
@@ -102,7 +102,7 @@ impl Env {
         // a variant is a type too, so its name must be unique in the whole
         // project: no other variant, type or trait (in any module) may share it
         let short = |q: &str| crate::names::short(q).to_string();
-        let mut owners: HashMap<String, Vec<String>> = HashMap::new();
+        let mut owners: HashMap<String, Vec<String>> = HashMap::default();
         for n in env.types.keys().chain(env.traits.keys()) {
             owners.entry(short(n)).or_default().push(format!("the type `{n}`"));
         }
@@ -150,7 +150,7 @@ impl Env {
     pub fn type_args(&self, f: &FnDecl) -> Vec<Symbol> {
         let has_static = |tr: Symbol| {
             let mut stack = vec![tr];
-            let mut seen = std::collections::HashSet::new();
+            let mut seen = crate::fx::HashSet::default();
             while let Some(t) = stack.pop() {
                 if !seen.insert(t) {
                     continue;

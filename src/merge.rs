@@ -14,7 +14,7 @@
 use crate::names::short;
 use crate::ast::{Decl, DeclKind, Program, Symbol};
 use crate::{package, parser, printer, resolve};
-use std::collections::HashMap;
+use crate::fx::HashMap;
 use std::path::Path;
 use std::process::Command;
 
@@ -45,7 +45,7 @@ fn renamable(d: &Decl) -> bool {
 /// Renames from `o` to `s`: a definition `s` no longer has, and one it added
 /// that looks like the base's after the rename (body edits allowed).
 fn renames(o: &Program, s: &Program) -> Vec<(String, String)> {
-    let names = |p: &Program| p.decls.iter().map(|d| d.qname()).collect::<std::collections::HashSet<_>>();
+    let names = |p: &Program| p.decls.iter().map(|d| d.qname()).collect::<crate::fx::HashSet<_>>();
     let (on, sn) = (names(o), names(s));
     let gone: Vec<&Decl> = o.decls.iter().filter(|d| renamable(d) && !sn.contains(&d.qname())).collect();
     let mut added: Vec<&Decl> = s.decls.iter().filter(|d| renamable(d) && !on.contains(&d.qname())).collect();
@@ -297,7 +297,7 @@ pub fn logged_renames(top: &Path, log: &str, base: &str, theirs: &str) -> Vec<(S
     let show = |rev: &str| -> Vec<serde_json::Value> {
         crate::git::run(Some(top), &["show", &format!("{rev}:{log}")]).map(|o| crate::store::parse_log(&o)).unwrap_or_default()
     };
-    let known: std::collections::HashSet<String> = show(base).iter().filter_map(|e| e["id"].as_str().map(|s| s.to_string())).collect();
+    let known: crate::fx::HashSet<String> = show(base).iter().filter_map(|e| e["id"].as_str().map(|s| s.to_string())).collect();
     let mut out = Vec::new();
     for (rev, side) in [("HEAD", "ours"), (theirs, "theirs")] {
         for e in show(rev) {

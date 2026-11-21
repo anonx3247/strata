@@ -927,6 +927,6 @@ pub fn changed_places(e: &Expr, mut_params: &dyn Fn(&str) -> Vec<bool>) -> Vec<S
 }
 
 /// The variables `e` may change (the roots of `changed_places`).
-pub fn changed_vars(e: &Expr, mut_params: &dyn Fn(&str) -> Vec<bool>) -> std::collections::HashSet<String> {
+pub fn changed_vars(e: &Expr, mut_params: &dyn Fn(&str) -> Vec<bool>) -> crate::fx::HashSet<String> {
     changed_places(e, mut_params).into_iter().map(|p| p.split('.').next().unwrap_or_default().to_string()).collect()
 }
