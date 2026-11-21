@@ -55,8 +55,6 @@ unsafe extern "C" {
     fn strata_str_cmp();
     fn strata_alloc();
     fn strata_dup();
-    fn strata_regex_match();
-    fn strata_set_regex_engine(e: extern "C" fn(*const u8, i64, *const u8, i64, *mut *const std::ffi::c_char) -> i32);
     fn strata_trace_call();
     fn strata_trace_return();
     fn strata_ct_keep();
@@ -165,7 +163,6 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_str_cmp", strata_str_cmp as *const () as usize),
         ("strata_alloc", strata_alloc as *const () as usize),
         ("strata_dup", strata_dup as *const () as usize),
-        ("strata_regex_match", strata_regex_match as *const () as usize),
         ("strata_trace_call", strata_trace_call as *const () as usize),
         ("strata_trace_return", strata_trace_return as *const () as usize),
         ("strata_ct_keep", strata_ct_keep as *const () as usize),
@@ -388,27 +385,6 @@ fn engine<'ctx>(ctx: &'ctx Context, ir: &str) -> Result<inkwell::execution_engin
 
 /// `engine`, optimized or not: code run once (compile-time code, a probe)
 /// costs less to compile unoptimized than it would save.
-/// The runtime's engine for patterns built at run time: Rust's `regex`, as
-/// the interpreter's `matches` (the whole string, `^(?:re)$`), each pattern
-/// compiled once.
-extern "C" fn regex_engine(s: *const u8, n: i64, re: *const u8, m: i64, err: *mut *const std::ffi::c_char) -> i32 {
-    thread_local! {
-        static CACHE: std::cell::RefCell<std::collections::HashMap<String, Result<regex::Regex, std::ffi::CString>>> = Default::default();
-    }
-    let (s, re) = unsafe { (std::slice::from_raw_parts(s, n as usize), std::slice::from_raw_parts(re, m as usize)) };
-    let (s, re) = (String::from_utf8_lossy(s), String::from_utf8_lossy(re).to_string());
-    CACHE.with(|c| {
-        let mut c = c.borrow_mut();
-        let r = c.entry(re.clone()).or_insert_with(|| regex::Regex::new(&format!("^(?:{re})$")).map_err(|e| std::ffi::CString::new(format!("bad regex: {e}")).unwrap_or_default()));
-        match r {
-            Ok(r) => r.is_match(&s) as i32,
-            Err(m) => {
-                unsafe { *err = m.as_ptr() };
-                -1
-            }
-        }
-    })
-}
 
 /// std's non-generic functions, compiled once at O2 (`llvm::compile_library`)
 /// and kept in a cache by std's code and this strata: a shared library the
@@ -527,7 +503,6 @@ fn std_symbol(name: &str) -> Option<usize> {
 }
 
 fn engine_at<'ctx>(ctx: &'ctx Context, ir: &str, optimize: bool) -> Result<inkwell::execution_engine::ExecutionEngine<'ctx>, String> {
-    unsafe { strata_set_regex_engine(regex_engine) };
     Target::initialize_native(&InitializationConfig::default())?;
     let buf = MemoryBuffer::create_from_memory_range_copy(ir.as_bytes(), "strata");
     let module = ctx.create_module_from_ir(buf).map_err(|e| format!("LLVM rejected the generated IR: {e}"))?;

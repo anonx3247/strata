@@ -361,23 +361,6 @@ const char *strata_fuzz_args(void) {
 
 void strata_seed(int64_t seed) { rng = (uint64_t)seed; }
 
-// A pattern built at run time (`matches(s, p)`, `p` not a literal): matched
-// by the engine strata gives the runtime when it runs a program (Rust's
-// `regex`, the interpreter's): 1 or 0, or -1 with the error in `*err`. A
-// built program has none (its literal patterns are compiled to DFAs).
-typedef int32_t (*RegexEngine)(const char *s, int64_t n, const char *re, int64_t m, const char **err);
-static RegexEngine regex_engine;
-void strata_set_regex_engine(RegexEngine e) { regex_engine = e; }
-
-_Bool strata_regex_match(Str *s, Str *re) {
-  if (!regex_engine) strata_fault(4, str_c("a pattern built at run time needs `strata run` (a built program has only literal patterns)"));
-  const char *err = NULL;
-  int32_t r = regex_engine(s->bytes, s->len, re->bytes, re->len, &err);
-  // (the interpreter shows no call stack for a bad pattern)
-  if (r < 0) strata_fault(4 | 256, str_c(err));
-  return r == 1;
-}
-
 // Compile-time code's value (`strata.ct.N` hands it over), for the compiler
 // to read (src/llvm/native.rs).
 static int64_t ct_kept;

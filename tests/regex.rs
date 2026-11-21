@@ -79,14 +79,19 @@ fn literal(s: &str) -> String {
 
 /// What `std.regex` makes of each pattern, one line each.
 fn strata(name: &str, patterns: &[String]) -> Vec<String> {
+    let list = patterns.iter().map(|p| literal(p)).collect::<Vec<_>>().join(",\n    ");
+    run(
+        name,
+        &format!("use std.regex.{{parse, show}}\n\nfn main() {{\n  for p in [\n    {list},\n  ] {{\n    print(match parse(p) {{\n      Ok(r) => \"ok \" + show(r),\n      Err(_) => \"err\",\n    }})\n  }}\n}}\n"),
+    )
+}
+
+/// A Strata program's output lines (stored, then run).
+fn run(name: &str, src: &str) -> Vec<String> {
     let dir = std::env::temp_dir().join(format!("strata-regex-test-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let file = dir.join("parse.strata");
-    let list = patterns.iter().map(|p| literal(p)).collect::<Vec<_>>().join(",\n    ");
-    let src = format!(
-        "use std.regex.{{parse, show}}\n\nfn main() {{\n  for p in [\n    {list},\n  ] {{\n    print(match parse(p) {{\n      Ok(r) => \"ok \" + show(r),\n      Err(_) => \"err\",\n    }})\n  }}\n}}\n"
-    );
+    let file = dir.join("main.strata");
     let strata = env!("CARGO_BIN_EXE_strata");
     let mut c = Command::new(strata)
         .args(["--file", &file.to_string_lossy(), "edit"])
@@ -186,4 +191,93 @@ fn random_patterns_read_as_regex_syntax_reads_them() {
     let mut rng = rand::rngs::StdRng::seed_from_u64(std::env::var("REGEX_SEED").ok().and_then(|n| n.parse().ok()).unwrap_or(7));
     let patterns: Vec<String> = (0..std::env::var("REGEX_CASES").ok().and_then(|n| n.parse().ok()).unwrap_or(5000)).map(|_| random_pattern(&mut rng)).collect();
     same_as_regex_syntax("random", patterns);
+}
+
+// ---------------- matching ----------------
+
+/// Whether `pattern` matches the whole of `text`, as `matches` does with
+/// Rust's `regex`; `None` when it isn't a regex on its own (wrapped in
+/// `^(?:…)$`, `a)|(b` would be one: std.regex refuses it).
+fn reference_match(pattern: &str, text: &str) -> Option<bool> {
+    regex::Regex::new(pattern).ok()?;
+    regex::Regex::new(&format!("^(?:{pattern})$")).ok().map(|r| r.is_match(text))
+}
+
+/// Texts to try `pattern` on: some it matches (made from it), changed a
+/// little, and a few unrelated ones.
+fn texts_for(pattern: &str, rng: &mut impl RngExt) -> Vec<String> {
+    let mut out = vec![String::new(), "a".into(), "ab".into(), "a b\n".into(), "λ_1".into()];
+    let hir = regex_syntax::ParserBuilder::new().build().parse(pattern);
+    if let Ok(g) = hir.map_err(|_| ()).and_then(|h| rand_regex::Regex::with_hir(h, 4).map_err(|_| ())) {
+        for _ in 0..4 {
+            let t: String = rng.sample(&g);
+            let cs: Vec<char> = t.chars().collect();
+            out.push(t.clone());
+            if !cs.is_empty() {
+                // one character dropped, one doubled, one changed
+                let i = rng.random_range(0..cs.len());
+                out.push(cs.iter().enumerate().filter(|(k, _)| *k != i).map(|(_, c)| *c).collect());
+                out.push(cs.iter().enumerate().flat_map(|(k, c)| if k == i { vec![*c, *c] } else { vec![*c] }).collect());
+                out.push(cs.iter().enumerate().map(|(k, c)| if k == i { 'b' } else { *c }).collect());
+            }
+        }
+    }
+    // control characters other than \n and \t can't be written in a Strata string as is
+    out.retain(|t| t.chars().all(|c| c == '\n' || c == '\t' || !c.is_control()));
+    out.truncate(12);
+    out
+}
+
+/// `std.regex.full_match` against `regex`, on each (pattern, text).
+fn same_matches_as_regex(name: &str, cases: Vec<(String, String)>) {
+    let cases: Vec<(String, String, bool)> = cases.into_iter().filter_map(|(p, t)| reference_match(&p, &t).map(|m| (p, t, m))).collect();
+    let list = cases.iter().map(|(p, t, _)| format!("({}, {})", literal(p), literal(t))).collect::<Vec<_>>().join(",\n    ");
+    let got = run(
+        name,
+        &format!("use std.regex.{{full_match}}\n\nfn main() {{\n  for (p, t) in [\n    {list},\n  ] {{\n    print(match full_match(t, p) {{\n      Ok(m) => f\"{{m}}\",\n      Err(e) => \"error \" + e,\n    }})\n  }}\n}}\n"),
+    );
+    assert_eq!(got.len(), cases.len(), "one line per case");
+    let wrong: Vec<String> = cases
+        .iter()
+        .zip(&got)
+        .filter(|((_, _, m), g)| **g != m.to_string())
+        .map(|((p, t, m), g)| format!("pattern {p:?} on {t:?}: std.regex {g}, regex {m}"))
+        .collect();
+    assert!(wrong.is_empty(), "{} of {} cases differ:\n{}", wrong.len(), cases.len(), wrong.join("\n"));
+}
+
+#[test]
+fn curated_patterns_match_as_regex_matches() {
+    let mut rng = rand::rngs::StdRng::seed_from_u64(5);
+    let patterns = [
+        "a+b", "(a|ab)(c|bcd)", "[a-z]+@[a-z]+\\.com", "\\bfoo\\b", "\\Bo\\B", "(?m)^a$\\n^b$", "(?mR)^a$\\r\\n^b$", "x{2,3}", "x{2,}", "x{0,2}?",
+        "(a*)*b", "(a|)*", "(?:a?){3}a{3}", "", "λ+", "(?i)straße", "(?i)k+", "\\w+", "\\d{2}-\\d{2}", "\\s*", ".*", "(?s).*", "[^a]*",
+        "\\b{start}x\\b{end}", "\\<a", "a\\>", "\\b{start-half}a\\b{end-half}", "(?-u:\\b)é", "(?-u)\\w+", "\\pL+\\p{Nd}*", "\\p{Greek}+",
+        "a$b", "^^a$$", "(?m)$", "\\Aab\\z", "(a+|b+)*c", "((a|b)+)\\1?", "[[:alpha:]]+", "[a-z&&[^aeiou]]+", "(?U)a+", "a{3}{2}",
+    ];
+    let mut cases = vec![];
+    for p in patterns {
+        for t in texts_for(p, &mut rng) {
+            cases.push((p.to_string(), t));
+        }
+        for t in ["", "a", "aa", "aaab", "foo", "a\nb", "a\r\nb", "xxx", "λλ", "STRASSE", "Straße", "kK\u{212a}", "12-34", "joe@x.com"] {
+            cases.push((p.to_string(), t.to_string()));
+        }
+    }
+    same_matches_as_regex("match-curated", cases);
+}
+
+#[test]
+fn random_patterns_match_as_regex_matches() {
+    let seed = std::env::var("REGEX_SEED").ok().and_then(|n| n.parse().ok()).unwrap_or(9);
+    let n = std::env::var("REGEX_CASES").ok().and_then(|n| n.parse().ok()).unwrap_or(1500);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    let mut cases = vec![];
+    for _ in 0..n {
+        let p = random_pattern(&mut rng);
+        for t in texts_for(&p, &mut rng) {
+            cases.push((p.clone(), t));
+        }
+    }
+    same_matches_as_regex("match-random", cases);
 }
