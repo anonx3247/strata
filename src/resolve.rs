@@ -634,6 +634,21 @@ fn store(p: &Program, mode: Store) -> Program {
     Program { decls }
 }
 
+/// A root-module function's name while the program is resolved to be
+/// checked or run: one named like a builtin (`get`) is `main$get`, so the
+/// other modules' calls of the builtin (the standard library's too) still
+/// reach the builtin. The root module's own uses of `get` mean its function.
+fn root_fn(module: Symbol, name: Symbol, resolving: bool) -> Symbol {
+    if resolving && module.is_empty() && crate::types::BUILTINS.iter().any(|b| b.name == name.as_str()) {
+        Symbol::new(&format!("{ROOT_FN}{name}"))
+    } else {
+        qualified(module, name)
+    }
+}
+
+/// The prefix of a root-module function named like a builtin (`main$get`).
+pub const ROOT_FN: &str = "main$";
+
 #[derive(Clone, Copy, PartialEq)]
 enum Store {
     Qualify,
@@ -647,6 +662,7 @@ enum Store {
 fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMap<String, String>>, store: Option<Store>) -> (Resolution, Vec<Vec<String>>) {
     let rename: Option<(Symbol, Symbol)> = rename.map(|(o, n)| (o.into(), n.into()));
     let moves: Option<HashMap<Symbol, Symbol>> = moves.map(|m| m.iter().map(|(o, n)| (o.sym(), n.sym())).collect());
+    let resolving = store.is_none() && rename.is_none() && moves.is_none();
     let mut table: HashMap<Symbol, Item> = HashMap::default();
     // children of a type (its constructors) or a trait (its methods), as (short, qualified)
     let mut children: HashMap<Symbol, Vec<(Symbol, Symbol)>> = HashMap::default();
@@ -685,7 +701,7 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
                 }
             }
             DeclKind::Fn(f) | DeclKind::Extern(ExternDecl { item: ExternItem::Fn(f), .. }) => {
-                table.insert(qualified(d.module, f.name), item);
+                table.insert(root_fn(d.module, f.name, resolving), item);
             }
             DeclKind::Extern(ExternDecl { item: ExternItem::Type(t), .. }) => {
                 table.insert(qualified(d.module, *t), item);
@@ -717,9 +733,10 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
     all_modules.dedup();
     for &m in &all_modules {
         let mut scope: HashMap<Symbol, Symbol> = HashMap::default();
-        // the root module is visible everywhere
+        // the root module is visible everywhere (but a function of its named like
+        // a builtin, `main$get`, only in it: elsewhere `get` is the builtin)
         for (&q, it) in &table {
-            if it.module.is_empty() {
+            if it.module.is_empty() && !q.as_str().starts_with(ROOT_FN) {
                 scope.insert(q, q);
             }
         }
@@ -761,7 +778,8 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
         // the module's own definitions win
         for (&q, it) in &table {
             if it.module == m {
-                scope.insert(Symbol::new(&q[if m.is_empty() { 0 } else { m.len() + 1 }..]), q);
+                let short = q.as_str().strip_prefix(ROOT_FN).unwrap_or(&q[if m.is_empty() { 0 } else { m.len() + 1 }..]);
+                scope.insert(Symbol::new(short), q);
             }
         }
         scopes.insert(m, scope);
@@ -1309,7 +1327,7 @@ impl Rw<'_> {
                 self.tparams.pop();
                 DeclKind::Type(TypeDecl { distinct: t.distinct, name: self.declared(m, t.name), params: t.params.clone(), body, refinement })
             }
-            DeclKind::Fn(f) => DeclKind::Fn(self.func(f, self.declared(m, f.name))),
+            DeclKind::Fn(f) => DeclKind::Fn(self.func(f, if self.store.is_none() && !self.writing() { root_fn(m, f.name, true) } else { self.declared(m, f.name) })),
             DeclKind::Extern(e) => DeclKind::Extern(ExternDecl {
                 lang: e.lang,
                 item: match &e.item {

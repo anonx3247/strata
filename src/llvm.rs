@@ -132,10 +132,11 @@ fn bool_v(b: &str) -> V {
 /// then the trait's methods.
 const DYN_JSON: usize = 0;
 const DYN_SHOW: usize = 1;
-const DYN_DROP: usize = 2;
-const DYN_DUP: usize = 3;
-const DYN_EQ: usize = 4;
-const DYN_METHODS: usize = 5;
+const DYN_DEBUG: usize = 2;
+const DYN_DROP: usize = 3;
+const DYN_DUP: usize = 4;
+const DYN_EQ: usize = 5;
+const DYN_METHODS: usize = 6;
 
 /// Fault kinds, as numbered in the runtime (`KINDS` in runtime.c).
 #[derive(Clone, Copy)]
@@ -319,7 +320,8 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
             _ => {}
         }
     }
-    let traits = resolved.program.decls.iter().filter_map(|d| match &d.kind {
+    // (the prelude's traits too: `Debug`, `Display`)
+    let traits = crate::types::prelude().decls.iter().chain(resolved.program.decls.iter()).filter_map(|d| match &d.kind {
         DeclKind::Trait(t) => Some((t.name.clone(), t)),
         _ => None,
     }).collect();
@@ -520,6 +522,7 @@ declare ptr @strata_json_int(i64)
 declare ptr @strata_show_float(double)
 declare ptr @strata_show_bool(i1)
 declare ptr @strata_json_str(ptr)
+declare ptr @strata_debug_str(ptr)
 declare void @strata_print(ptr)
 declare ptr @strata_str_split(ptr, ptr)
 declare ptr @strata_str_trim(ptr)
@@ -1558,6 +1561,33 @@ impl<'m, 'a> Func<'m, 'a> {
         self.m.lower(t, &self.sub)
     }
 
+    /// The type a type argument stands for, known here: its text
+    /// (`"List[Int]"`), a type parameter of this instance (`type:T`), or
+    /// `$type(head, args..)`.
+    fn type_arg_ty(&self, e: &Expr, hint: Option<&Ty>) -> Res<Ty> {
+        match e {
+            Expr::Str(h) => {
+                let t = crate::types::parse_type_text(h);
+                match (&t, hint) {
+                    // a generic type named by its head only: the call's own type says the rest
+                    (TypeExpr::Named(n, args), Some(ht @ Ty::Con(m, _))) if args.is_empty() && n == m => Ok(ht.clone()),
+                    _ => self.lower(&t),
+                }
+            }
+            Expr::Var(x) if x.starts_with("type:") => self.sub.get(&Symbol::new(&x["type:".len()..])).cloned().ok_or(format!("the type `{x}` is not known here")),
+            Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if n == crate::types::TYPE_TEXT) => {
+                let Some(Expr::Str(h)) = args.first() else { return Err("a type's text without its head".into()) };
+                let targs = args[1..].iter().map(|a| self.type_arg_ty(a, None)).collect::<Res<Vec<_>>>()?;
+                let head = self.lower(&TypeExpr::Named(Symbol::new(h), vec![]))?;
+                Ok(match head {
+                    Ty::Con(n, _) => Ty::Con(n, targs),
+                    other => other,
+                })
+            }
+            _ => Err("a type argument that isn't known here".into()),
+        }
+    }
+
     /// A variable that borrows its value (a parameter, `it`, a captured value).
     fn local(&mut self, name: &str, t: &Ty, declared: Option<TypeExpr>) -> Res<String> {
         let slot = self.fresh(&format!("v.{}", name.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_', "_")));
@@ -2099,10 +2129,31 @@ impl<'m, 'a> Func<'m, 'a> {
 
     // ---- what values look like ----
 
-    /// A value as `to_string` shows it: a string as itself, a variant without
-    /// fields as its name, everything else as JSON. The caller owns the
-    /// string (as `json`'s): `concat` consumes it, or it is dropped.
+    /// The program's own `Debug` / `Display` for a value's type, called: the
+    /// string it returns (owned), if the type has one.
+    fn text_impl(&mut self, tr: &str, m: &str, v: &V) -> Res<Option<String>> {
+        let Ty::Con(n, _) = &v.0 else { return Ok(None) };
+        let parent = self.m.env.variant_parent(n.sym()).map(|p| p.to_string());
+        let has = |c: &Self, h: &str| c.m.env.impls.iter().any(|i| i.trait_name == tr && crate::types::texpr_head(&i.for_type) == h);
+        if !has(self, n.as_str()) && !parent.as_deref().is_some_and(|p| has(self, p)) {
+            return Ok(None);
+        }
+        let r = self.call_method(&crate::types::trait_call(tr, m), v.0.clone(), vec![v.clone()], Some(Ty::Str), &[])?;
+        let r = self.take(r);
+        Ok(Some(r.1))
+    }
+
+    /// A value as `print`, f-strings and `to_string` show it (`Display`): the
+    /// type's own `to_string`, a string as itself, else its `debug`. The
+    /// caller owns the string (as `json`'s): `concat` consumes it, or it is
+    /// dropped.
     fn show(&mut self, v: &V) -> Res<String> {
+        if let Some(s) = self.text_impl("Display", "to_string", v)? {
+            return Ok(s);
+        }
+        if matches!(&v.0, Ty::Con(n, _) if self.m.is_distinct(n)) {
+            return self.debug(v);
+        }
         let t = self.m.repr(&v.0)?;
         if self.m.handle(&t) {
             return self.json(v);
@@ -2115,7 +2166,6 @@ impl<'m, 'a> Func<'m, 'a> {
             return Ok(self.call(&Ty::Str, &f, &[(t.clone(), v.1.clone())])?.1);
         }
         match t {
-            Ty::Int => Ok(self.call(&Ty::Str, "@strata_show_int", &[v.clone()])?.1),
             Ty::Str => {
                 // (owned, as every shown value: held once more)
                 if !constant(&v.1) {
@@ -2123,12 +2173,54 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
                 Ok(v.1.clone())
             }
-            t if self.m.nominal(&t) && self.m.ctors_of(&t).iter().any(|c| self.m.fields(c, &[]).map(|f| f.is_empty()).unwrap_or(false)) => {
-                let f = self.helper("show", &t)?;
-                Ok(self.call(&Ty::Str, &f, &[(t.clone(), v.1.clone())])?.1)
-            }
-            _ => self.json(v),
+            _ => self.debug(v),
         }
+    }
+
+    /// A value as it is written in code (`Debug`): `Some("hi")`,
+    /// `Point { x: 1 }`, `[1, 2]`; the type's own `debug` if it has one.
+    /// Owned by the caller, as `show`'s.
+    fn debug(&mut self, v: &V) -> Res<String> {
+        if let Some(s) = self.text_impl("Debug", "debug", v)? {
+            return Ok(s);
+        }
+        // a `distinct` value: `UserId(7)` (it is represented as what it is made of)
+        if let Ty::Con(n, _) = &v.0 {
+            if self.m.is_distinct(n) {
+                let inner = (self.m.repr(&v.0)?, v.1.clone());
+                let d = self.debug(&inner)?;
+                return Ok(self.concat(vec![Part::Lit(format!("{}(", crate::names::short(n))), Part::Val(d), Part::Lit(")".into())])?.1);
+            }
+        }
+        let t = self.m.repr(&v.0)?;
+        if self.is_dyn(&t) {
+            return self.dyn_entry_call(v, DYN_DEBUG);
+        }
+        Ok(match &t {
+            Ty::Int => self.call(&Ty::Str, "@strata_show_int", &[v.clone()])?.1,
+            Ty::Float => self.call(&Ty::Str, "@strata_show_float", &[v.clone()])?.1,
+            Ty::Bool => self.call(&Ty::Str, "@strata_show_bool", &[v.clone()])?.1,
+            Ty::Str => self.call(&Ty::Str, "@strata_debug_str", &[v.clone()])?.1,
+            Ty::Unit => self.m.string("()"),
+            _ if is_never(&t) => self.m.string("()"),
+            Ty::Fn(..) => {
+                // how the closure shows
+                let shown = self.field(v, 1, &Ty::Str)?;
+                self.emit(format!("call void @strata_dup(ptr {})", shown.1));
+                shown.1
+            }
+            Ty::Con(n, args) if n == "Set" => {
+                let l = self.as_list(v)?;
+                let lt = Ty::Con("List".into(), args.clone());
+                let f = self.helper("debugset", &lt)?;
+                self.call(&Ty::Str, &f, &[(lt, l.1)])?.1
+            }
+            t if self.m.boxed(t) || self.m.nominal(t) || matches!(t, Ty::Con(l, _) if l == "List" || l == "Dict") => {
+                let f = self.helper("debug", t)?;
+                self.call(&Ty::Str, &f, &[(t.clone(), v.1.clone())])?.1
+            }
+            t => return Err(format!("showing a `{}` is not compiled yet", key(t))),
+        })
     }
 
     /// A value as JSON, for messages and nested in other values.
@@ -2381,9 +2473,13 @@ impl<'m, 'a> Func<'m, 'a> {
                 h.emit("ret i1 false".into());
                 format!("define i1 {name}(ptr %a, ptr %b)")
             }
-            "json" | "show" if h.m.boxed(t) => {
+            "json" | "show" | "debug" if h.m.boxed(t) => {
                 h.on_member(&a, |h, _, x| {
-                    let s = if what == "json" { h.json(&x)? } else { h.show(&x)? };
+                    let s = match what {
+                        "json" => h.json(&x)?,
+                        "show" => h.show(&x)?,
+                        _ => h.debug(&x)?,
+                    };
                     h.emit(format!("ret ptr {s}"));
                     Ok(())
                 })?;
@@ -2408,6 +2504,101 @@ impl<'m, 'a> Func<'m, 'a> {
                 h.block("no");
                 h.emit("ret i1 false".into());
                 format!("define i1 {name}(ptr %a, ptr %b)")
+            }
+            "debug" | "debugset" if list || matches!(t, Ty::Con(d, _) if d == "Dict") => {
+                // `[a, b]`, `Set { a, b }`, `Dict { k: v }` (empty: `Set {}`, `Dict {}`)
+                let dict = matches!(t, Ty::Con(d, _) if d == "Dict");
+                let (open, close, empty) = match (what, dict) {
+                    (_, true) => ("Dict { ", " }", "Dict {}"),
+                    ("debugset", _) => ("Set { ", " }", "Set {}"),
+                    _ => ("[", "]", "[]"),
+                };
+                let et = if dict { Ty::Con("Tuple".into(), args.clone()) } else { args[0].clone() };
+                let n = h.list_len(&a);
+                let none = h.fresh("none");
+                h.emit(format!("{none} = icmp eq i64 {}, 0", n.1));
+                h.emit(format!("br i1 {none}, label %none, label %some"));
+                h.block("none");
+                let e = h.m.string(empty);
+                h.emit(format!("ret ptr {e}"));
+                h.block("some");
+                let acc = h.fresh("acc");
+                writeln!(h.allocas, "  {acc} = alloca ptr").unwrap();
+                let o = h.m.string(open);
+                h.emit(format!("store ptr {o}, ptr {acc}"));
+                let (nothing, comma) = (h.m.string(""), h.m.string(", "));
+                h.each(&a, &et, |h, i, x| {
+                    let first = h.fresh("first");
+                    h.emit(format!("{first} = icmp eq i64 {i}, 0"));
+                    let sep = h.fresh("sep");
+                    h.emit(format!("{sep} = select i1 {first}, ptr {nothing}, ptr {comma}"));
+                    let cur = h.fresh("cur");
+                    h.emit(format!("{cur} = load ptr, ptr {acc}"));
+                    let parts = if dict {
+                        let (k, v) = (h.field(x, 0, &args[0])?, h.field(x, 1, &args[1])?);
+                        let (kd, vd) = (h.debug(&k)?, h.debug(&v)?);
+                        vec![Part::Val(cur), Part::Val(sep), Part::Val(kd), Part::Lit(": ".into()), Part::Val(vd)]
+                    } else {
+                        let d = h.debug(x)?;
+                        vec![Part::Val(cur), Part::Val(sep), Part::Val(d)]
+                    };
+                    let s = h.concat(parts)?;
+                    h.emit(format!("store ptr {}, ptr {acc}", s.1));
+                    Ok(())
+                })?;
+                let cur = h.fresh("cur");
+                h.emit(format!("{cur} = load ptr, ptr {acc}"));
+                let s = h.concat(vec![Part::Val(cur), Part::Lit(close.into())])?;
+                h.emit(format!("ret ptr {}", s.1));
+                format!("define ptr {name}(ptr %a)")
+            }
+            "debug" => {
+                // as written in code: `(a, b)`, `Name { f: v }`, `Name(a, b)`, `Name`
+                let fields_debug = |h: &mut Func, fs: &[FieldInfo], parts: &mut Vec<Part>| -> Res<()> {
+                    for (i, f) in fs.iter().enumerate() {
+                        if i > 0 {
+                            parts.push(Part::Lit(", ".into()));
+                        }
+                        if let Some(n) = &f.name {
+                            parts.push(Part::Lit(format!("{n}: ")));
+                        }
+                        let x = h.field(&a, i, &f.ty)?;
+                        let s = h.debug(&x)?;
+                        parts.push(Part::Val(s));
+                    }
+                    Ok(())
+                };
+                if tuple {
+                    let fs: Vec<FieldInfo> = args.iter().map(|t| FieldInfo { name: None, texpr: TypeExpr::Unit, ty: t.clone() }).collect();
+                    let mut parts = vec![Part::Lit("(".into())];
+                    fields_debug(&mut h, &fs, &mut parts)?;
+                    parts.push(Part::Lit(")".into()));
+                    let s = h.concat(parts)?;
+                    h.emit(format!("ret ptr {}", s.1));
+                } else {
+                    let tc = t.clone();
+                    h.on_ctor(&a, "", |h, c| {
+                        let fs = h.m.fields(c, &h.m.ctor_args(c, &tc))?;
+                        let short = crate::names::short(c).to_string();
+                        let mut parts = vec![];
+                        if fs.is_empty() {
+                            let is_record = matches!(h.m.env.types.get(&Symbol::new(c)).map(|td| &td.body), Some(TypeBody::Record(_)));
+                            parts.push(Part::Lit(if is_record { format!("{short} {{}}") } else { short }));
+                        } else if fs[0].name.is_none() {
+                            parts.push(Part::Lit(format!("{short}(")));
+                            fields_debug(h, &fs, &mut parts)?;
+                            parts.push(Part::Lit(")".into()));
+                        } else {
+                            parts.push(Part::Lit(format!("{short} {{ ")));
+                            fields_debug(h, &fs, &mut parts)?;
+                            parts.push(Part::Lit(" }".into()));
+                        }
+                        let s = h.concat(parts)?;
+                        h.emit(format!("ret ptr {}", s.1));
+                        Ok(())
+                    })?;
+                }
+                format!("define ptr {name}(ptr %a)")
             }
             "json" if matches!(t, Ty::Con(d, _) if d == "Dict") => {
                 // an object when the keys are strings (or there are none), else an array of pairs
@@ -3064,6 +3255,10 @@ impl<'m, 'a> Func<'m, 'a> {
     /// checker narrowed it to a member (a matched variable in its arm) is
     /// that member's.
     fn expr(&mut self, e: &Expr) -> Res<V> {
+        // a type passed at runtime (`type:T`): compiled code is made per type
+        if matches!(e, Expr::Var(x) if x.starts_with("type:")) {
+            return Ok((Ty::Unit, String::new()));
+        }
         let v = self.expr_in(e)?;
         if !self.m.boxed(&v.0) {
             return Ok(v);
@@ -3611,6 +3806,15 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     fn call_named(&mut self, call: &Expr, name: &str, args: Vec<&Expr>) -> Res<V> {
+        // a type passed at runtime (`$type("List", type:T)`): compiled code is
+        // made per type, so the value is never used
+        if name == crate::types::TYPE_TEXT {
+            return Ok((Ty::Unit, String::new()));
+        }
+        // `$self_type(t, call)`: compiled code is made per type already
+        if name == crate::types::SELF_TYPE && args.len() == 2 {
+            return self.expr(args[1]);
+        }
         if name == "matches" && args.len() == 2 && self.lookup(name).is_none() && !self.m.env.fns.contains_key(&Symbol::new(name)) {
             // a pattern built at run time: the runtime's engine (Rust's `regex`, under the JIT)
             let Expr::Str(re) = args[1] else {
@@ -3649,16 +3853,8 @@ impl<'m, 'a> Func<'m, 'a> {
             if !takes_self {
                 let hint = self.ty_of(call).ok();
                 let recv = match args.first() {
-                    Some(Expr::Str(h)) => match (h.as_str(), &hint) {
-                        ("Int", _) => Ty::Int,
-                        ("Float", _) => Ty::Float,
-                        ("Bool", _) => Ty::Bool,
-                        ("String", _) => Ty::Str,
-                        (_, Some(t @ Ty::Con(n, _))) if n == h => t.clone(),
-                        _ => Ty::Con(Symbol::new(h), vec![]),
-                    },
-                    Some(Expr::Var(x)) if x.starts_with("type:") => self.sub.get(&Symbol::new(&x["type:".len()..])).cloned().ok_or(format!("the type `{x}` is not known here"))?,
-                    _ => return Err(format!("`{name}` needs the type it is called on")),
+                    Some(e) => self.type_arg_ty(e, hint.as_ref())?,
+                    None => return Err(format!("`{name}` needs the type it is called on")),
                 };
                 let vs = self.operands(&args[1..])?;
                 return self.call_method(name, recv, vs, hint, &[]);
@@ -3894,8 +4090,14 @@ impl<'m, 'a> Func<'m, 'a> {
 
     /// Call the implementation of `name` for type `head` (on a `recv`).
     fn method_target(&mut self, name: &str, recv: Ty, head: String, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
+        // `Debug` and `Display` without an impl of the type's own: the built-in forms
+        let m = crate::types::split_trait_call(name).map_or(name, |(_, m)| m);
+        if matches!(m, "debug" | "to_string") && vs.len() == 1 && self.m.resolve_method(name, &head).is_none_or(|(tr, _)| self.m.impl_of(&tr, &head).is_none()) {
+            let s = if m == "debug" { self.debug(&vs[0])? } else { self.show(&vs[0])? };
+            return Ok(self.temp((Ty::Str, s)));
+        }
         let (tr, m) = self.m.resolve_method(name, &head).ok_or(format!("`{head}` has no method `{name}`"))?;
-        let tm = self.m.trait_method(&tr, &m).ok_or(format!("trait `{tr}` has no method `{m}`"))?;
+        let tm = self.m.trait_method(&tr, &m).ok_or(format!("trait `{tr}` has no method `{m}` (it has {:?})", self.m.traits.get(&Symbol::new(&tr)).map(|t| t.methods.iter().map(|x| x.decl.name.to_string()).collect::<Vec<_>>())))?;
         let imp = self.m.impl_of(&tr, &head).ok_or(format!("`{head}` does not implement `{tr}`"))?;
         let own = imp.methods.iter().find(|x| x.name == m).unwrap_or(&tm.decl);
         // the method's own type parameters, from the arguments and the result
@@ -4139,6 +4341,10 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             ("to_string", [_]) => {
                 let s = self.show(&vs[0])?;
+                self.temp((Ty::Str, s))
+            }
+            ("debug", [_]) => {
+                let s = self.debug(&vs[0])?;
                 self.temp((Ty::Str, s))
             }
             ("len", [Ty::Str]) => self.call(&Ty::Int, "@strata_str_len", &vs)?,
@@ -4496,8 +4702,8 @@ impl<'m, 'a> Func<'m, 'a> {
         let head = Module::head(imp).ok_or(format!("a `{}` can't be a `{tr}`", key(imp)))?;
         let ll = self.m.ll(imp)?;
         let mut entries = vec![];
-        // showing it: as JSON, and as `to_string`
-        for (i, what) in ["json", "show"].iter().enumerate() {
+        // showing it: as JSON, as `to_string` (`Display`), and as `debug`
+        for (i, what) in ["json", "show", "debug"].iter().enumerate() {
             let f = format!("@\"dyn{what}:{}\"", key(imp));
             entries.push(f.clone());
             if !self.m.helpers.insert(f.clone()) {
@@ -4506,7 +4712,11 @@ impl<'m, 'a> Func<'m, 'a> {
             let mut h = Func::new(self.m, HashMap::default());
             h.block("start");
             let v = h.from_slot("%v", imp)?;
-            let s = if i == 0 { h.json(&v)? } else { h.show(&v)? };
+            let s = match i {
+                0 => h.json(&v)?,
+                1 => h.show(&v)?,
+                _ => h.debug(&v)?,
+            };
             h.emit(format!("ret ptr {s}"));
             let text = h.finish();
             writeln!(self.m.body, "define ptr {f}(i64 %v) {{\n{text}}}\n").unwrap();
@@ -6086,9 +6296,10 @@ impl Func<'_, '_> {
         self.m.vtables.entry(key(tr_ty)).or_default().push((name.clone(), mock_marker(tr_ty)));
         let tag = key(tr_ty).replace('"', "");
         let shown = self.m.string(&format!("\"<mock {tag}>\""));
-        let plain = self.m.string(&format!("\"<mock {tag}>\""));
+        let plain = self.m.string(&format!("<mock {tag}>"));
         let mut entries = vec![];
-        for (what, text) in [("json", format!("  call void @strata_dup(ptr {shown})\n  ret ptr {shown}")), ("show", format!("  call void @strata_dup(ptr {plain})\n  ret ptr {plain}"))] {
+        // as JSON (a string), as `to_string` and as `debug`
+        for (what, text) in [("json", format!("  call void @strata_dup(ptr {shown})\n  ret ptr {shown}")), ("show", format!("  call void @strata_dup(ptr {plain})\n  ret ptr {plain}")), ("debug", format!("  call void @strata_dup(ptr {plain})\n  ret ptr {plain}"))] {
             let f = format!("@\"mock{what}:{}\"", key(tr_ty));
             writeln!(self.m.body, "define ptr {f}(i64 %v) {{\nentry:\n{text}\n}}\n").unwrap();
             entries.push(f);

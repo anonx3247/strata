@@ -1943,6 +1943,8 @@ impl<'a> Vc<'a> {
             }
             Expr::Ctor(c, args) => self.ctor(c, args),
             Expr::Call(f, args) => match &**f {
+                // a call given its receiver's whole type: the call
+                Expr::Var(name) if name == crate::types::SELF_TYPE && args.len() == 2 => self.eval(&args[1]),
                 Expr::Var(name) if self.lookup(name).is_none() => self.call_exprs(name, args),
                 _ => {
                     let callee = self.eval(f);
@@ -2211,6 +2213,11 @@ impl<'a> Vc<'a> {
     }
 
     fn call(&mut self, name: &str, arg_exprs: &[Expr], args: Vec<Val>) -> Val {
+        // `to_string` through `Display` (every type has it): the built-in's
+        // model, unless the program implements `Display` for a built-in type
+        if (name == "Display::to_string" || name == "to_string") && !self.env.impls.iter().any(|i| i.trait_name == "Display" && matches!(crate::types::texpr_head(&i.for_type).as_str(), "Int" | "Bool" | "String")) {
+            return self.builtin("to_string", arg_exprs, args);
+        }
         let env = self.env;
         if let Some(f) = env.fns.get(&name.sym()) {
             if self.spec > 0 && self.depth < 4 {
