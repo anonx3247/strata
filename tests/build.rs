@@ -51,10 +51,23 @@ fn same_as_interpreter(file: &Path, dir: &Path) -> (String, i32) {
     let b = Command::new(strata).arg("build").arg(file).arg("-o").arg(&exe).output().unwrap();
     assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
     // both run in `dir`, with the same arguments (what they read and write stays there)
-    let native = output(Command::new(&exe).args(ARGS).current_dir(dir));
+    let native = freed_everything(output(Command::new(&exe).args(ARGS).current_dir(dir).env("STRATA_MEMORY", "check")), file);
     let interp = output(Command::new(strata).arg("run").arg(file).arg("--").args(ARGS).current_dir(dir));
     assert_eq!(native, interp, "native (left) and interpreted (right) runs differ for {}", file.display());
     native
+}
+
+/// A compiled program's output without its memory report (`STRATA_MEMORY`),
+/// which must say it freed everything it made, unless a fault stopped it.
+fn freed_everything((out, code): (String, i32), file: &Path) -> (String, i32) {
+    // the report, then the objects still alive (in check mode)
+    let report = out.lines().find(|l| l.starts_with("memory: ")).unwrap_or("").to_string();
+    let rest: String = out.lines().filter(|l| !l.starts_with("memory: ") && !l.starts_with("  live: ")).map(|l| format!("{l}\n")).collect();
+    assert!(!report.contains("of a freed object"), "{}: {report}\n{out}", file.display());
+    if code != 101 {
+        assert!(report.ends_with(" 0 live"), "{}: {report}\n{out}", file.display());
+    }
+    (rest, code)
 }
 
 fn case(dir: &Path, name: &str, src: &str) -> (String, i32) {
@@ -662,3 +675,194 @@ fn the_jit_reads_options() {
         assert_eq!(jit, interp, "the JIT (left) and the interpreter (right) differ for {ex} {args:?}");
     }
 }
+
+/// Every compiled program frees what it made (`same_as_interpreter` checks
+/// it): one that goes through closures, trait values, `mut`, patterns,
+/// early exits, collections and strings, and a chain too long to drop
+/// recursively.
+#[test]
+fn memory_is_freed() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("memory");
+    let (out, code) = case(&d, "features", MEMORY);
+    assert!(code == 0 && out.contains("{\"name\":\"new\",\"tags\":[\"t\",\"renamed\"]}"), "{out}");
+    let chain = "type Chain = | End | Link(Int, Chain)\nfn main() { mut c: Chain = End mut i := 0 while i < 1000000 { c = Link(i, c) i += 1 } match c { Link(x, _) => print(x), End => print(0) } }\n";
+    // natively only: the interpreter takes minutes on this loop
+    let f = d.join("chain.strata");
+    save(&f, chain);
+    let exe = d.join("chain");
+    let b = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
+    assert!(b.status.success(), "{}", String::from_utf8_lossy(&b.stderr));
+    let (out, code) = freed_everything(output(Command::new(&exe).env("STRATA_MEMORY", "check")), &f);
+    assert!(code == 0 && out == "999999\n", "{out}");
+}
+
+const MEMORY: &str = r#"type Shape =
+  | Square { side: Int }
+  | Circle { r: Int }
+
+trait Area {
+  fn area(self) -> Int
+  fn grow(mut self)
+}
+
+impl Area for Shape {
+  fn area(self) -> Int {
+    match self {
+      Square { side } => side * side,
+      Circle { r } => 3 * r * r,
+    }
+  }
+  fn grow(mut self) {
+    self = match self {
+      Square { side } => Square { side: side + 1 },
+      Circle { r } => Circle { r: r + 1 },
+    }
+  }
+}
+
+type Named = { name: String, tags: List[String] }
+
+type Box = { shape: Area, label: String }
+
+fn first_long(xs: List[String]) -> Option[String] {
+  for x in xs {
+    if len(x) > 3 {
+      return Some(x)
+    }
+  }
+  None
+}
+
+fn parse_all(xs: List[String]) -> Result[List[Int], String] {
+  mut out := []
+  for x in xs {
+    n := parse_int(x) or { return Err(f"bad {x}") }
+    out = push(out, n)
+  }
+  Ok(out)
+}
+
+fn total(xs: List[String]) -> Result[Int, String] {
+  ns := parse_all(xs)!
+  Ok(ns.fold(0, (a, b) -> a + b))
+}
+
+fn rename(mut n: Named, to: String) {
+  n.name = to
+  n.tags = push(n.tags, "renamed")
+}
+
+fn describe(xs: List[Int]) -> String {
+  match xs {
+    [] => "empty",
+    [x] => f"one {x}",
+    [1, b, ..rest] => f"one then {b} then {rest}",
+    [a, ..rest] => f"starts {a}, {len(rest)} more",
+  }
+}
+
+fn pick(s: Shape) -> String {
+  match s {
+    Square { side: 1 } | Circle { r: 1 } => "unit",
+    Square { side } | Circle { r: side } => f"size {side}",
+  }
+}
+
+fn main() {
+  // closures capturing strings and lists
+  prefix := "item-"
+  names := ["a", "bb", "cccc", "ddddd"]
+  labelled := names.map(n -> prefix + n)
+  print(labelled)
+  print(labelled.filter(n -> len(n) > 6))
+  adder := (x: Int) -> x + len(prefix)
+  print(adder(1))
+  // early return inside a loop, Option
+  print(first_long(names))
+  print(first_long(["a"]))
+  // ? / ! and `or { return }`
+  print(total(["1", "2", "3"]))
+  print(total(["1", "x"]))
+  // mut parameters, fields
+  mut n := Named { name: "old", tags: ["t"] }
+  rename(mut n, "new")
+  print(n)
+  mut holder := Named { name: "h", tags: [] }
+  holder.tags = n.tags
+  holder.name = "inner"
+  print(holder)
+  print(n)
+  // trait values in a list and a field, with a mut self call
+  let shapes: List[Area] = [Square { side: 2 }, Circle { r: 1 }]
+  print(shapes.map(s -> s.area()))
+  mut b := Box { shape: Square { side: 3 }, label: "b" }
+  mut b.shape.grow()
+  print(b.shape.area())
+  mut sh: Area = Circle { r: 2 }
+  mut sh.grow()
+  print(sh.area())
+  // list patterns, or-patterns
+  print(describe([]))
+  print(describe([7]))
+  print(describe([1, 2, 3, 4]))
+  print(describe([5, 1, 0]))
+  print(pick(Square { side: 1 }))
+  print(pick(Circle { r: 4 }))
+  // loops with break / continue and locals
+  mut acc := []
+  mut i := 0
+  while true {
+    i += 1
+    s := f"n{i}"
+    if i % 2 == 0 {
+      continue
+    }
+    if i > 7 {
+      break
+    }
+    acc = push(acc, s)
+  }
+  print(acc)
+  for w in names {
+    t := w + "!"
+    if len(w) == 2 {
+      continue
+    }
+    if len(w) == 5 {
+      break
+    }
+    print(t)
+  }
+  // dicts and sets
+  mut d := Dict { "a": 1 }
+  d = insert(d, "b", 2)
+  d = insert(d, "a", 3)
+  print(d)
+  print(get(d, "a"))
+  print(keys(d))
+  s := Set { "x", "y" }
+  print(insert(s, "z"))
+  print(contains(s, "x"))
+  // strings
+  text := "  Hello, World  "
+  print(trim(text).to_upper())
+  print(split("a,b,c", ","))
+  print(replace("aXbXc", "X", "--"))
+  print(f"{3.14159:.2} [{42:>6}] [{"ab":<4}]")
+  print(chars("héllo").reverse())
+  print(parse_float(" 2.5 "))
+  print(lines("one\ntwo"))
+  // reassigning in a loop
+  mut words := []
+  for k in 0..5 {
+    words = words + [f"w{k}"]
+  }
+  print(words)
+  print(words[1..3])
+  print(words.sort_by(w -> w).reverse())
+}
+"#;

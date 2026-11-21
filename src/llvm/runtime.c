@@ -34,10 +34,35 @@ static const char *KINDS[] = {"Refinement", "Requires", "Ensures", "Assert", "Ru
 
 // ---- memory ----
 
+#ifdef __APPLE__
+#include <malloc/malloc.h>
+#define usable_size malloc_size
+#else
+#include <malloc.h>
+#define usable_size malloc_usable_size
+#endif
+
+
 static int64_t allocated, freed;
+
+// With STRATA_MEMORY=check, freed objects are kept, filled with garbage and
+// marked, so that touching one again stops the program instead of reading
+// whatever reuses the memory.
+static _Bool checking;
+#define FREED INT64_MIN
+
+// In check mode, every object made (to list those still alive at the end).
+static int64_t **made;
+static int64_t nmade, capmade;
 
 // The count word of an object.
 static int64_t *count_of(void *p) { return (int64_t *)p - 1; }
+
+static _Noreturn void freed_again(const char *what) {
+  fflush(stdout);
+  fprintf(stderr, "memory: %s of a freed object\n", what);
+  abort();
+}
 
 // A new object of `n` bytes, held once.
 void *strata_alloc(int64_t n) {
@@ -48,6 +73,10 @@ void *strata_alloc(int64_t n) {
   }
   *c = 1;
   allocated++;
+  if (checking) {
+    if (nmade == capmade) made = realloc(made, (size_t)(capmade = capmade ? capmade * 2 : 1024) * sizeof *made);
+    made[nmade++] = c;
+  }
   return c + 1;
 }
 
@@ -55,27 +84,54 @@ void *strata_alloc(int64_t n) {
 void strata_dup(void *p) {
   int64_t *c = count_of(p);
   if (*c > 0) ++*c;
+  else if (*c == FREED) freed_again("dup");
 }
 
 // One holder fewer: whether that was the last one, in which case the caller
 // drops what the object holds and frees it.
 _Bool strata_release(void *p) {
   int64_t *c = count_of(p);
+  if (*c == FREED) freed_again("drop");
   return *c > 0 && --*c == 0;
 }
 
 // Give an object's memory back (its contents already dropped).
 void strata_free(void *p) {
   freed++;
-  free(count_of(p));
+  int64_t *c = count_of(p);
+  if (checking) {
+    memset(p, 0xDB, usable_size(c) - 8);
+    *c = FREED;
+    return;
+  }
+  free(c);
+}
+
+// A string has nothing in it to drop.
+static void str_drop(void *s) {
+  if (strata_release(s)) strata_free(s);
 }
 
 // Whether `p` has a single holder, so it may be changed in place.
 _Bool strata_unique(void *p) { return *count_of(p) == 1; }
 
 // With STRATA_MEMORY set, how many objects the program made and freed.
+// In check mode, the first few still alive: their count, size and first
+// word (a block's tag, a string's or a list's length), as text if it reads
+// as a string.
 static void memory_stats(void) {
   fprintf(stderr, "memory: %lld allocated, %lld freed, %lld live\n", (long long)allocated, (long long)freed, (long long)(allocated - freed));
+  int shown = 0;
+  for (int64_t i = 0; i < nmade && shown < 20; i++) {
+    int64_t *c = made[i];
+    if (*c == FREED) continue;
+    shown++;
+    size_t size = usable_size(c) - 8;
+    int64_t first = c[1];
+    fprintf(stderr, "  live: count %lld, %zu bytes, first word %lld", (long long)*c, size, (long long)first);
+    if (first >= 0 && (size_t)first + 8 <= size) fprintf(stderr, " \"%.*s\"", (int)(first < 40 ? first : 40), (char *)(c + 2));
+    fputc('\n', stderr);
+  }
 }
 
 static Str *str_alloc(int64_t len) {
@@ -96,6 +152,14 @@ Str *strata_concat(Str *a, Str *b) {
   Str *s = str_alloc(a->len + b->len);
   memcpy(s->bytes, a->bytes, (size_t)a->len);
   memcpy(s->bytes + a->len, b->bytes, (size_t)b->len);
+  return s;
+}
+
+// `a` then `b`, which the caller hands over (both are dropped).
+Str *strata_concat_owned(Str *a, Str *b) {
+  Str *s = strata_concat(a, b);
+  str_drop(a);
+  str_drop(b);
   return s;
 }
 
@@ -281,6 +345,12 @@ double strata_sqrt(double x) {
 // in place only past the end of what every list sharing the buffer has used,
 // so `out = push(out, x)` in a loop is amortized O(1). The generated code
 // reads `len` and the elements directly (the layout is in src/llvm.rs).
+//
+// Headers and buffers are counted objects: a header holds its buffer, and a
+// buffer holds its elements up to `used`. These functions borrow the lists
+// they are given; when the elements are counted objects (`counted`), each
+// one copied into a new buffer is held once more. The generated code drops
+// lists (it knows the elements' types).
 
 typedef struct {
   int64_t cap, used;
@@ -309,7 +379,13 @@ List *strata_list_new(int64_t cap) {
   return l;
 }
 
-List *strata_list_push(List *xs, int64_t x) {
+static void dup_slots(int64_t *xs, int64_t n, _Bool counted) {
+  if (counted)
+    for (int64_t i = 0; i < n; i++) strata_dup((void *)(intptr_t)xs[i]);
+}
+
+// `xs` with `x` after it (`x` is handed over).
+List *strata_list_push(List *xs, int64_t x, _Bool counted) {
   Buf *b = xs->buf;
   int64_t end = xs->off + xs->len;
   List *l = strata_alloc(sizeof(List));
@@ -317,30 +393,49 @@ List *strata_list_push(List *xs, int64_t x) {
     // nothing else has used the slot after this list's end
     b->data[end] = x;
     b->used++;
+    strata_dup(b);
     *l = (List){xs->len + 1, b, xs->off};
     return l;
   }
   Buf *n = buf_new(xs->len * 2 + 1);
   memcpy(n->data, b->data + xs->off, (size_t)xs->len * 8);
+  dup_slots(n->data, xs->len, counted);
   n->data[xs->len] = x;
   n->used = xs->len + 1;
   *l = (List){xs->len + 1, n, 0};
   return l;
 }
 
+// Add `x` to a list nothing else holds yet (one the runtime is making).
+static List *append(List *l, int64_t x) {
+  Buf *b = l->buf;
+  if (b->used == b->cap) {
+    Buf *n = buf_new(b->cap * 2);
+    memcpy(n->data, b->data, (size_t)b->used * 8);
+    n->used = b->used;
+    strata_free(b);
+    l->buf = b = n;
+  }
+  b->data[b->used++] = x;
+  l->len++;
+  return l;
+}
+
 // The elements from `from` to `to` (already within 0..len): shares the buffer.
 List *strata_list_slice(List *xs, int64_t from, int64_t to) {
   List *l = strata_alloc(sizeof(List));
+  strata_dup(xs->buf);
   *l = (List){to - from, xs->buf, xs->off + from};
   return l;
 }
 
-List *strata_list_concat(List *a, List *b) {
-  if (b->len == 0) return a;
-  if (a->len == 0) return b;
+List *strata_list_concat(List *a, List *b, _Bool counted) {
+  if (b->len == 0) return strata_dup(a), a;
+  if (a->len == 0) return strata_dup(b), b;
   Buf *n = buf_new(a->len + b->len);
   memcpy(n->data, a->buf->data + a->off, (size_t)a->len * 8);
   memcpy(n->data + a->len, b->buf->data + b->off, (size_t)b->len * 8);
+  dup_slots(n->data, a->len + b->len, counted);
   n->used = a->len + b->len;
   List *l = strata_alloc(sizeof(List));
   *l = (List){a->len + b->len, n, 0};
@@ -390,7 +485,9 @@ void strata_init(int32_t argc, char **argv) {
   signal(SIGPIPE, SIG_IGN);
   allocated = freed = 0;
   static _Bool registered;
-  if (getenv("STRATA_MEMORY") && !registered) registered = 1, atexit(memory_stats);
+  const char *m = getenv("STRATA_MEMORY");
+  checking = m && !strcmp(m, "check");
+  if (m && !registered) registered = 1, atexit(memory_stats);
 }
 
 Str *strata_prog_name(void) {
@@ -410,9 +507,11 @@ void strata_options_error(_Bool help, Str *text) {
   }
 }
 
-// A C copy of `s`, for the OS (the process keeps it).
+// A C copy of `s`, for the OS: valid until the next call (one buffer, reused).
 static char *cstr(Str *s) {
-  char *c = malloc((size_t)s->len + 1);
+  static char *c;
+  static size_t cap;
+  if ((size_t)s->len + 1 > cap) c = realloc(c, cap = (size_t)s->len + 1);
   memcpy(c, s->bytes, (size_t)s->len);
   c[s->len] = 0;
   return c;
@@ -514,7 +613,7 @@ List *strata_host_list_dir(Str *path, Str **kind, Str **msg) {
   struct dirent *e;
   while ((e = readdir(d))) {
     if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
-    l = strata_list_push(l, (int64_t)(intptr_t)str_c(e->d_name));
+    l = append(l, (int64_t)(intptr_t)str_c(e->d_name));
   }
   closedir(d);
   qsort(l->buf->data + l->off, (size_t)l->len, 8, by_name);
@@ -554,7 +653,7 @@ _Bool strata_host_remove(Str *path, Str **kind, Str **msg) {
 
 List *strata_host_args(void) {
   List *l = strata_list_new(prog_argc);
-  for (int i = 0; i < prog_argc; i++) l = strata_list_push(l, (int64_t)(intptr_t)str_c(prog_argv[i]));
+  for (int i = 0; i < prog_argc; i++) l = append(l, (int64_t)(intptr_t)str_c(prog_argv[i]));
   return l;
 }
 
@@ -608,7 +707,7 @@ static int64_t find_from(Str *s, Str *sub, int64_t from) {
   return -1;
 }
 
-static List *push_str(List *l, Str *s) { return strata_list_push(l, (int64_t)(intptr_t)s); }
+static List *push_str(List *l, Str *s) { return append(l, (int64_t)(intptr_t)s); }
 
 List *strata_str_split(Str *s, Str *sep) {
   if (sep->len == 0) strata_fault(4, str_c("split: empty separator"));
@@ -720,10 +819,13 @@ Str *strata_str_replace(Str *s, Str *from, Str *to) {
   Str *out = str_from("", 0);
   int64_t start = 0, at;
   while ((at = find_from(s, from, start)) >= 0) {
-    out = strata_concat(strata_concat(out, str_from(s->bytes + start, at - start)), to);
+    out = strata_concat_owned(out, str_from(s->bytes + start, at - start));
+    Str *next = strata_concat(out, to);
+    str_drop(out);
+    out = next;
     start = at + from->len;
   }
-  return strata_concat(out, str_from(s->bytes + start, s->len - start));
+  return strata_concat_owned(out, str_from(s->bytes + start, s->len - start));
 }
 
 Str *strata_str_repeat(Str *s, int64_t n) {
@@ -854,8 +956,24 @@ Str *strata_str_chr(int64_t c) {
 // `parse_int`, as Rust's `BigInt` reads the trimmed string: a sign, then a
 // digit, then digits and `_`. False when it isn't a number; a fault when it
 // doesn't fit in 64 bits (big integers are not compiled yet).
+static _Bool parse_int_trimmed(Str *t, int64_t *out);
+static _Bool parse_float_trimmed(Str *t, double *out);
+
 _Bool strata_parse_int(Str *s, int64_t *out) {
   Str *t = strata_str_trim(s);
+  _Bool ok = parse_int_trimmed(t, out);
+  str_drop(t);
+  return ok;
+}
+
+_Bool strata_parse_float(Str *s, double *out) {
+  Str *t = strata_str_trim(s);
+  _Bool ok = parse_float_trimmed(t, out);
+  str_drop(t);
+  return ok;
+}
+
+static _Bool parse_int_trimmed(Str *t, int64_t *out) {
   int64_t i = 0, n = t->len;
   int neg = 0;
   if (i < n && (t->bytes[i] == '+' || t->bytes[i] == '-')) neg = t->bytes[i++] == '-';
@@ -876,8 +994,7 @@ _Bool strata_parse_int(Str *s, int64_t *out) {
 
 // `parse_float`, as Rust's `f64::from_str` reads the trimmed string (no hex,
 // no `_`; `inf` and `NaN` are not finite, so not numbers either).
-_Bool strata_parse_float(Str *s, double *out) {
-  Str *t = strata_str_trim(s);
+static _Bool parse_float_trimmed(Str *t, double *out) {
   int64_t i = 0, n = t->len, digits = 0;
   const char *b = t->bytes;
   if (i < n && (b[i] == '+' || b[i] == '-')) i++;
@@ -917,8 +1034,9 @@ Str *strata_show_float_fixed(double x, int64_t p) {
 // `body` padded to `width` characters: `fill` and `align` (`<`, `>`, `^`, or
 // 0 for the default: numbers right, the rest left), `+` for a number's sign,
 // `0` to pad a number with zeros after its sign.
+// `body` is handed over.
 Str *strata_format(Str *body, _Bool numeric, int32_t fill, int32_t align, _Bool plus, _Bool zero, int64_t width) {
-  if (plus && !(body->len > 0 && body->bytes[0] == '-')) body = strata_concat(str_c("+"), body);
+  if (plus && !(body->len > 0 && body->bytes[0] == '-')) body = strata_concat_owned(str_c("+"), body);
   int64_t n = strata_str_len(body);
   if (n >= width) return body;
   int64_t pad = width - n;
@@ -928,6 +1046,7 @@ Str *strata_format(Str *body, _Bool numeric, int32_t fill, int32_t align, _Bool 
     memcpy(o->bytes, body->bytes, (size_t)sign);
     memset(o->bytes + sign, '0', (size_t)pad);
     memcpy(o->bytes + sign + pad, body->bytes + sign, (size_t)(body->len - sign));
+    str_drop(body);
     return o;
   }
   char f[4];
@@ -939,5 +1058,6 @@ Str *strata_format(Str *body, _Bool numeric, int32_t fill, int32_t align, _Bool 
   for (int64_t i = 0; i < left; i++) memcpy(p, f, (size_t)fl), p += fl;
   memcpy(p, body->bytes, (size_t)body->len), p += body->len;
   for (int64_t i = 0; i < right; i++) memcpy(p, f, (size_t)fl), p += fl;
+  str_drop(body);
   return o;
 }
