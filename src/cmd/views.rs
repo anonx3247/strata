@@ -199,7 +199,12 @@ pub fn view(args: &Args) -> Result<bool, String> {
     let src = load(&args)?;
     let p = src.program();
     let level: u8 = args.val("--level").unwrap_or("1").parse().ok().filter(|l| *l <= 2).ok_or("--level must be 0 (map), 1 (interfaces) or 2 (source)")?;
-    let names = view::select(p, args.pos.get(1).map(|s| s.as_str()));
+    let mut names = view::select(p, args.pos.get(1).map(|s| s.as_str()));
+    // mocks are for tests: shown when asked for, or picked by name
+    if !args.flag("--mocks") && args.pos.get(1).is_none() {
+        let hidden = view::mock_decls(p);
+        names.retain(|n| !hidden.contains(n));
+    }
     let rep = types::check(p);
     let mut holes: HashMap<String, Vec<String>> = HashMap::default();
     for h in rep.holes {

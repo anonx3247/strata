@@ -4113,3 +4113,31 @@ fn run_mode_console_in_tests_and_trace() {
     let (ok, out) = strata(&["--file", "p", "test"], &d, None);
     assert!(!ok && out.contains("✓ sees it") && out.contains("✗ fails") && out.contains("shown: the test fails") && !out.contains("hidden: the test passes"), "{out}");
 }
+
+// Mocks: fakes for tests, declared as types; their implementations may leave
+// methods out (generated); for tests only; hidden from views unless asked.
+#[test]
+fn mocks_for_tests() {
+    let d = tmp("mocks");
+    let src = "use std.fs.{Files, FsError}\n\n/// An in-memory disk, for tests.\nmock MemDisk = { files: Dict[String, String] = Dict[String, String] {} }\n\nimpl Files for MemDisk {\n  fn read(self, path: String) -> Result[String, FsError] {\n    Ok(get(self.files, path) ?? \"nothing\")\n  }\n\n  fn write(mut self, path: String, text: String) -> Result[(), FsError] {\n    self.files = insert(self.files, path, text)\n    Ok(())\n  }\n}\n\nfn save_then_load(mut fs: Files, text: String) -> Result[String, FsError] {\n  (mut fs.write(\"a.txt\", text))!\n  fs.read(\"a.txt\")\n}\n\ntest \"saving then loading\" {\n  mut fs := MemDisk {}\n  assert save_then_load(mut fs, \"hi\") == Ok(\"hi\")\n  x := fs.exists(\"a.txt\")\n  assert x || !x\n}\n";
+    save(&d.join("m.strata"), src);
+    let (ok, out) = strata(&["--file", "m.strata", "render"], &d, None);
+    assert!(ok && out == src, "{out}");
+    for args in [&["--file", "m.strata", "test"][..], &["--file", "m.strata", "test", "--interpret"][..]] {
+        let (ok, out) = strata(args, &d, None);
+        assert!(ok && out.contains("1 passed"), "{args:?}: {out}");
+    }
+    let (_, out) = strata(&["--file", "m.strata", "verify"], &d, None);
+    assert!(out.contains("assumed: `MemDisk` is a mock") && !out.contains("may not terminate"), "{out}");
+    let (ok, out) = strata(&["--file", "m.strata", "view", "--level", "0"], &d, None);
+    assert!(ok && !out.contains("type   MemDisk") && out.contains("save_then_load"), "{out}");
+    let (ok, out) = strata(&["--file", "m.strata", "view", "--level", "0", "--mocks"], &d, None);
+    assert!(ok && out.contains("type   MemDisk") && out.contains("impl std.fs.Files for MemDisk"), "{out}");
+    // for tests only
+    save(&d.join("leak.strata"), &format!("{src}\nfn leak() -> Int {{\n  len(MemDisk {{}}.files)\n}}\n"));
+    let (ok, out) = strata(&["--file", "leak.strata", "check"], &d, None);
+    assert!(!ok && out.contains("error in leak: `MemDisk` is a mock: it is for tests only"), "{out}");
+    // a mock holds data: a record
+    let (ok, out) = strata(&["--file", "x.strata", "edit"], &d, Some("mock M = Int\n"));
+    assert!(!ok && out.contains("a mock holds the data of a fake"), "{out}");
+}

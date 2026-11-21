@@ -72,7 +72,7 @@ fn inline_refinements(p: &mut Program) {
         p.decls.push(Decl {
             comments: vec![],
             doc: vec![],
-            kind: DeclKind::Type(TypeDecl { distinct: false, name: n, params: vec![], body: TypeBody::Alias(b), refinement: Some(pred) }),
+            kind: DeclKind::Type(TypeDecl { distinct: false, name: n, params: vec![], body: TypeBody::Alias(b), refinement: Some(pred) , mock: false }),
             module: Symbol::new(""),
             public: true,
         });

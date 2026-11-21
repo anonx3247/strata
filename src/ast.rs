@@ -72,6 +72,10 @@ pub struct TypeDecl {
     pub body: TypeBody,
     /// Refinement predicate over `it`.
     pub refinement: Option<Expr>,
+    /// `mock MemFiles = { ... }`: a fake for tests. Used only in tests and
+    /// other mocks; its implementations may leave methods out (generated).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mock: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

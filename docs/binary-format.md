@@ -106,7 +106,7 @@ Decl        = comments:list(str)  doc:list(str)  module:str  public:bool  kind:D
 DeclKind    = 0 TypeDecl | 1 FnDecl | 2 TestDecl | 3 TraitDecl | 4 ImplDecl | 5 UseDecl | 6 ExternDecl
             | 7 CapabilityDecl
 
-TypeDecl    = distinct:bool  name:str  params:list(str)  body:TypeBody  refinement:option(Expr)
+TypeDecl    = distinct:bool  name:str  params:list(str)  body:TypeBody  refinement:option(Expr)  mock:bool
 TypeBody    = 0 Alias(TypeExpr) | 1 Record(list(Field)) | 2 Sum(list(Variant))
 Field       = comments:list(str)  doc:list(str)  name:str  ty:TypeExpr  default:option(Expr)
 Variant     = comments:list(str)  name:str  payload:Payload

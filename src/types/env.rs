@@ -102,7 +102,7 @@ impl Env {
                 // runtime makes one (its functions are its `impl`, made by `resolve`)
                 DeclKind::Capability(c) => {
                     env.capabilities.insert(c.name);
-                    let td = TypeDecl { distinct: false, name: c.name, params: vec![], body: TypeBody::Sum(vec![]), refinement: None };
+                    let td = TypeDecl { distinct: false, name: c.name, params: vec![], body: TypeBody::Sum(vec![]), refinement: None, mock: false };
                     env.types.insert(c.name, td).is_some()
                 }
                 DeclKind::Extern(e) => match &e.item {
@@ -115,7 +115,7 @@ impl Env {
                     // variants): a handle only foreign code makes
                     ExternItem::Type(t) => {
                         env.externs.insert(*t, e.lang);
-                        let td = TypeDecl { distinct: false, name: *t, params: vec![], body: TypeBody::Sum(vec![]), refinement: None };
+                        let td = TypeDecl { distinct: false, name: *t, params: vec![], body: TypeBody::Sum(vec![]), refinement: None, mock: false };
                         env.types.insert(*t, td).is_some()
                     }
                 },

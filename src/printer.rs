@@ -489,7 +489,8 @@ pub fn block(e: &Expr, d: usize) -> String {
 
 pub fn type_decl(t: &TypeDecl) -> String {
     let tp = if t.params.is_empty() { String::new() } else { format!("[{}]", crate::symbol::join(&t.params, ", ")) };
-    let mut s = format!("{}type {}{} =", if t.distinct { "distinct " } else { "" }, t.name, tp);
+    let kw = if t.mock { "mock" } else if t.distinct { "distinct type" } else { "type" };
+    let mut s = format!("{kw} {}{} =", t.name, tp);
     if !matches!(t.body, TypeBody::Sum(_)) {
         s.push(' ');
     }

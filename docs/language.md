@@ -150,6 +150,32 @@ fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, (ac
 
 **Capabilities are traits too.** There are no separate effects: a backend (database, queue, console, clock) is a trait, and code that uses one takes an implementation as a parameter or holds it in a field: `fn ship(mut db: Db, ...)`, `type PrintWorker = { console: Console }`. A trait used as a type means "any implementation": `db: Db` is shorthand for `fn ship[D: Db](db: D, ...)`. Name the type parameter only when it must tie things together, as in `combine_all[T: Combine](first: T, rest: List[T]) -> T`. A method that changes its value says `mut self` (`fn save(mut self, o: Order)`). Tests pass a fake implementation or `mock Db`. Async and iterators will be designed as their own language features.
 
+**Mocks: fakes for tests.** A fake is declared like a type, with `mock` in place of `type`, and implemented like any type; its implementations may leave methods out:
+
+```rust
+/// An in-memory disk, for tests.
+mock MemDisk = { files: Dict[String, String] = Dict[String, String] {} }
+
+impl Files for MemDisk {
+  fn read(self, path: String) -> Result[String, FsError] { Ok(get(self.files, path) ?? "") }
+  fn write(mut self, path: String, text: String) -> Result[(), FsError] {
+    self.files = insert(self.files, path, text)
+    Ok(())
+  }
+  // exists, list, ...: left out, generated
+}
+
+test "saving then loading" {
+  mut fs := MemDisk {}
+  assert save_then_load(mut fs, "hi") == Ok("hi")
+}
+```
+
+- A method left out answers as `mock Files` does: it checks the method's `requires` and gives a result within its type and `ensures`.
+- A mock is for tests only: a `test`, another mock, or an `impl` for one may name it; anything else is an error, so a fake never reaches a real run.
+- `verify` reports a mock's methods as assumed (the tests that use it check them). `strata view` and the viewer hide mocks and their implementations unless asked (`view --mocks`, "show mocks").
+- A mock holds data: a record (`mock FixedClock = {}` for none).
+
 **Capabilities given by the runtime.** A trait that reaches the outside world is marked `capability trait`; anything may implement it, fakes for tests included. The real thing is a `capability`: functions that reach the outside world, holding no data. Only the runtime makes one, for `main` or a test that asks for it by name, and its functions are called on that value, so holding it is the permission:
 
 ```rust

@@ -787,7 +787,7 @@ macro_rules! put {
 // ── the tree ────────────────────────────────────────────────────────────────
 
 record!(Decl { comments, doc, module, public, kind });
-record!(TypeDecl { distinct, name, params, body, refinement });
+record!(TypeDecl { distinct, name, params, body, refinement, mock });
 record!(Field { comments, doc, name, ty, default });
 record!(Variant { comments, name, payload });
 record!(Param { name, ty, mutable, comptime });
