@@ -1,7 +1,8 @@
-//! Three-way merge of a `.strata` file, one definition at a time: the git
+//! Three-way merge of a module file, one definition at a time: the git
 //! merge driver (`strata merge-file %O %A %B %P`).
 //!
-//! Each side is parsed and its definitions are paired with the base by
+//! Each side is decoded, printed and parsed back (the merge works on the
+//! definitions' canonical text), and its definitions are paired with the base by
 //! qualified name. A definition only one side changed is taken from that side,
 //! whatever the other side did elsewhere in the file. Two edits of the same
 //! definition are merged line by line on its canonical text, and the result is
@@ -95,11 +96,6 @@ fn line_merge(base: &str, ours: &str, theirs: &str) -> Result<(String, bool), St
         Some(c) if (0..128).contains(&c) => Ok((String::from_utf8_lossy(&o.stdout).to_string(), c == 0)),
         _ => Err(format!("git merge-file: {}", String::from_utf8_lossy(&o.stderr).trim())),
     }
-}
-
-/// Merge the whole file as text, for sides that don't parse.
-pub fn text_merge(base: &str, ours: &str, theirs: &str) -> Result<(String, bool), String> {
-    line_merge(base, ours, theirs)
 }
 
 pub fn merge(base: &str, ours: &str, theirs: &str) -> Result<Merged, String> {
@@ -225,7 +221,7 @@ pub fn merge(base: &str, ours: &str, theirs: &str) -> Result<Merged, String> {
         notes.push(format!("{by_line} definition{} changed on both sides, merged line by line", if by_line == 1 { "" } else { "s" }));
     }
 
-    // a file is one module: its definitions in order, as `printer::program` writes them
+    // a file is one module: its definitions in order, as `printer::module_file` writes them
     let out: Vec<String> = pieces
         .iter()
         .map(|(_, p)| match p {
@@ -237,31 +233,26 @@ pub fn merge(base: &str, ours: &str, theirs: &str) -> Result<Merged, String> {
     Ok(Merged { text, conflicts, notes })
 }
 
-/// The type errors of the merged file that neither side had on its own:
-/// what the merge broke. The file is checked inside its package, with the
+/// The type errors of the merged module that neither side had on its own:
+/// what the merge broke. The module is checked inside its package, with the
 /// package's other files as they are on disk; a script is checked alone.
-pub fn new_errors(path: &str, merged: &str, ours: &str, theirs: &str) -> Result<Vec<String>, String> {
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let full = cwd.join(path);
-    let parent = full.parent().unwrap_or(&cwd);
-    let (files, slot) = match package::find(parent)? {
-        Some(pkg) => {
-            let full = std::fs::canonicalize(parent).unwrap_or(parent.to_path_buf()).join(full.file_name().unwrap_or_default());
-            let inner = full.strip_prefix(&pkg.dir).map(|r| r.to_path_buf()).unwrap_or_default();
-            let mut files: Vec<_> = package::files(&pkg.dir)?.into_iter().filter(|(r, _)| *r != inner).collect();
-            files.push((inner.clone(), String::new()));
-            (files, inner)
+pub fn new_errors(path: &str, merged: &Program, ours: &Program, theirs: &Program) -> Result<Vec<String>, String> {
+    let full = std::path::Path::new(path);
+    let mut others = Vec::new();
+    if let Some((pkg, _)) = crate::store::module_at(full)? {
+        let me = std::fs::canonicalize(full).unwrap_or(full.to_path_buf());
+        for (rel, bytes) in package::files(&pkg.dir)? {
+            if std::fs::canonicalize(pkg.dir.join(&rel)).ok().as_deref() != Some(me.as_path()) {
+                others.extend(package::decode_file(&rel, &bytes)?.decls);
+            }
         }
-        None => (vec![(std::path::PathBuf::new(), String::new())], std::path::PathBuf::new()),
+    }
+    let errors = |side: &Program| -> Vec<String> {
+        let p = Program { decls: others.iter().chain(&side.decls).cloned().collect() };
+        crate::full_check(&p).errors.iter().map(|e| format!("{}: {}", e.decl, e.msg)).collect()
     };
-    let errors = |text: &str| -> Option<Vec<String>> {
-        let fs = files.iter().map(|(r, s)| (r.clone(), if *r == slot { text.to_string() } else { s.clone() })).collect();
-        let p = package::parse(fs).ok()?;
-        Some(crate::full_check(&p).errors.iter().map(|e| format!("{}: {}", e.decl, e.msg)).collect())
-    };
-    let Some(mine) = errors(merged) else { return Err("the merged file doesn't parse".into()) };
-    let known: Vec<String> = errors(ours).unwrap_or_default().into_iter().chain(errors(theirs).unwrap_or_default()).collect();
-    Ok(mine.into_iter().filter(|e| !known.contains(e)).collect())
+    let known: Vec<String> = errors(ours).into_iter().chain(errors(theirs)).collect();
+    Ok(errors(merged).into_iter().filter(|e| !known.contains(e)).collect())
 }
 
 /// The references a merge left to a name that one side renamed: with the

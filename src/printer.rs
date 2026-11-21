@@ -691,12 +691,6 @@ pub fn decl_body(d: &Decl) -> String {
     (if d.public { "pub " } else { "" }).to_string() + &body
 }
 
-/// The text of a file: its declarations in order, in canonical form. A file
-/// is one module, so `p` holds one module's declarations (see `module_file`).
-pub fn program(p: &Program) -> String {
-    p.decls.iter().map(decl).collect::<Vec<_>>().join("\n\n") + "\n"
-}
-
 /// One module's declarations, as the file that holds it.
 pub fn module_file(p: &Program, m: &str) -> String {
     p.decls.iter().filter(|d| d.module == m).map(decl).collect::<Vec<_>>().join("\n\n") + "\n"

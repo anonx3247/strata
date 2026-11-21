@@ -41,11 +41,16 @@ const USAGE: &str = "strata — an experimental language for working with agents
 
 USAGE: strata [--file F.strata] <command> [args]
 
+Code is stored as its syntax tree: a .strata file is a binary module file
+(docs/binary-format.md). Text goes in only through an edit (`edit`, `add`), and
+comes out through the views (`render`, `view`).
+
 Codebase (the package around the current folder: its files, and strata.log, the log of
 every change made through strata, committed with them):
   init                         make the current folder a package (a strata.toml named
                                after the folder)
-  add <file.strata> [-m MSG]   import definitions from a file (checked, atomic)
+  add <FILE> [MODULE] [-m MSG] import definitions from a file (checked, atomic): text, or
+                               a .strata file or folder
   edit [MODULE] [-m MSG] [--rm NAME]..
                                read definitions from stdin; replace/add them by name (into
                                MODULE, default the root); commit only if the whole codebase
@@ -77,18 +82,16 @@ every change made through strata, committed with them):
                                with the working tree, one step per commit
   interface <module>           a module's public contract: what other modules can use
   render [MODULE] [--split DIR]
-                               print a module as source (L3): the file that holds it (the
+                               print a module as text (L3): the file that holds it (the
                                root module is `main`); --split writes one file per module
-  pack <DIR | FILE.stb>        write the program as binary (docs/binary-format.md): a
-                               folder with strata.toml and one module file per module
-                               (`main.stb`, `shop/orders.stb`), or one bundle file;
-                               --file, run, ui and every view read either like source
-  unpack <IN> <DIR>            write binary (a bundle, a module file or a folder of them)
-                               back out as source, one canonical file per module
-  header <FILE.stb>            a module file's table of contents: each definition's kind,
+                               (as text files: `shop/orders.st`, never read back)
+  pack <FILE.strata>           the whole program in one file (a bundle, with strata.toml);
+                               --file, run, ui and every view read it like a package
+  header <FILE.strata>         a module file's table of contents: each definition's kind,
                                name, hashes, size and dependencies, read without decoding it
-  (`--file` and `add` accept a folder: each .strata file is a module named after its path;
-   `--module m` reads a single file as module m)
+  (`--file` accepts a folder: each .strata file is a module named after its path.
+   `--file F edit [MODULE]` and `--file F add TEXT` change F outside any log: a script,
+   or a folder's module, created if new; only what doesn't parse is refused)
 
 Packages: a folder with a strata.toml (`name = \"...\"`, optional `exports = [...]`);
 its .strata files are modules named after their path, main.strata is the entry point.
@@ -96,14 +99,18 @@ A .strata file outside every package is a script.
 
 Git:
   merge-file O A B [P]         git merge driver: merge each definition separately, then
-                               type-check; writes the result to A, fails on a conflict
-  setup-git                    use merge-file for `git merge` / `git pull` in this clone
+                               type-check; writes the result to A; a conflict leaves A as
+                               text with conflict markers
+  resolve <FILE.strata>        a file a merge conflict left as text, fixed by hand: store
+                               it as a module file again
+  setup-git                    use merge-file for `git merge` / `git pull` in this clone,
+                               and show .strata files as text in `git diff` and `git log -p`
   sync [BRANCH]                merge BRANCH (default main; origin's if there is a remote)
                                into this branch with the driver, then check; commits the
                                merge only if `ci` passes
   ci [--fix]                   what CI requires: every package and script in the repository
                                checks, exports exist, and every .strata file is in canonical
-                               format (--fix rewrites them)
+                               form, the bytes strata writes for it (--fix rewrites them)
 
 Views:
   ui [--port 7777]                live viewer in the browser (map, levels, holes, activity)
@@ -151,7 +158,7 @@ Running:
                                contracts). --emit-llvm writes the LLVM IR instead
   builtins [--json]            list built-in functions and their signatures
 
-With --file, commands operate on a source file instead of a codebase.";
+With --file, commands operate on a file or folder instead of a codebase.";
 
 struct Args {
     pos: Vec<String>,
@@ -161,7 +168,7 @@ struct Args {
 impl Args {
     fn parse() -> Args {
         let raw: Vec<String> = std::env::args().skip(1).collect();
-        let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed", "--port", "--module", "--split", "--from", "--to", "--step", "--base", "--require", "--cross-check", "-o"];
+        let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed", "--port", "--split", "--from", "--to", "--step", "--base", "--require", "--cross-check", "-o"];
         let (mut pos, mut flags) = (Vec::new(), HashMap::<String, Vec<String>>::new());
         let mut i = 0;
         while i < raw.len() {
@@ -206,43 +213,17 @@ impl Source {
     }
 }
 
-/// Read source: a single file, or a folder where each `.strata` file is a
-/// module named after its path (`shop/orders.strata` -> `shop.orders`,
-/// `main.strata` -> the root module). A binary file (`strata pack`) holds a
-/// whole program, already parsed.
-fn read_sources(path: &str, module: Option<&str>) -> Result<Program, String> {
-    let root = std::path::Path::new(path);
-    if !root.is_dir() {
-        let bytes = std::fs::read(root).map_err(|e| format!("{path}: {e}"))?;
-        if binary::is_binary(&bytes) {
-            return binary::read(&bytes).map(|img| img.program).map_err(|e| format!("{path}: {e}"));
-        }
-        let src = String::from_utf8(bytes).map_err(|_| format!("{path}: not UTF-8 text (nor a binary Strata file)"))?;
-        return parser::parse_module_file(&src, module.unwrap_or("")).map_err(|e| format!("{path}:{e}"));
-    }
-    // packages nested in this folder are separate programs
-    package::program(root)
-}
-
-/// Parse a folder's `.strata` files, given as (path relative to the folder,
-/// source): each file is a module named after its path (`main` is the root).
-fn parse_files(mut files: Vec<(std::path::PathBuf, String)>) -> Result<Program, String> {
-    files.sort();
-    let mut decls = Vec::new();
-    for (rel, src) in files {
-        let mut m = rel.with_extension("").to_string_lossy().replace(std::path::MAIN_SEPARATOR, ".");
-        if m == "main" {
-            m.clear();
-        }
-        let p = parser::parse_module_file(&src, &m).map_err(|e| format!("{}:{e}", rel.display()))?;
-        decls.extend(p.decls);
-    }
-    Ok(Program { decls })
+/// Read a program: a binary file (a module file, or a bundle), or a folder
+/// where each `.strata` file is a module named after its path
+/// (`shop/orders.strata` -> `shop.orders`, `main.strata` -> the root module).
+/// Text is never read here: it goes in through an edit.
+fn read_sources(path: &str) -> Result<Program, String> {
+    package::program(std::path::Path::new(path))
 }
 
 fn load(args: &Args) -> Result<Source, String> {
     if let Some(f) = args.val("--file") {
-        return Ok(Source::File(read_sources(f, args.val("--module"))?));
+        return Ok(Source::File(read_sources(f)?));
     }
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let root = Codebase::find(&cwd).ok_or("no package here (no strata.toml in this folder or above: run `strata init`, or pass --file)")?;
@@ -304,6 +285,7 @@ fn run() -> Result<bool, String> {
         "abort" => cmd::abort(&args),
         "diff" => cmd::diff(&args, json_out),
         "merge-file" => cmd::merge_file(&args),
+        "resolve" => cmd::resolve(&args),
         "setup-git" => cmd::setup_git(),
         "sync" => cmd::sync(&args),
         "ci" => cmd::ci(args.flag("--fix")),
@@ -312,7 +294,6 @@ fn run() -> Result<bool, String> {
         "builtins" => cmd::builtins(json_out),
         "render" => cmd::render(&args),
         "pack" => cmd::pack(&args),
-        "unpack" => cmd::unpack(&args),
         "header" => cmd::header(&args),
         "interface" => cmd::interface(&args),
         "ast" => cmd::ast(&args),

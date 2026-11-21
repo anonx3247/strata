@@ -1,3 +1,5 @@
-*.strata linguist-language=Rust merge=strata
+# module files are binary (docs/binary-format.md); `strata setup-git` makes
+# git merge them definition by definition and show them as text in diffs
+*.strata binary merge=strata diff=strata
 # append-only, one JSON entry per line: keep both sides' entries
 strata.log merge=union

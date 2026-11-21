@@ -6,7 +6,10 @@ Keep track of decisions, open questions and ideas in [IDEAS.md](IDEAS.md); the R
 
 - Commit each step (the user wants every change tracked) and push to `origin main` (github.com/anonx3247/strata, private).
 - Keep `cargo test --release` green before every commit; check that the examples still round-trip:
-  `strata --file F render > a; strata --file a render | diff - a`.
+  `strata --file F render > a.st; strata --file b.strata edit < a.st; strata --file b.strata render | diff - a.st`.
+- `.strata` files are binary module files (docs/binary-format.md): write code with `strata edit` (or
+  `strata --file F edit < text` outside a package), read it with `strata render`. A change to the tree
+  bumps the format version and re-encodes the repository's files ("Changing the format" in that doc).
 - Verify UI changes with headless Chrome screenshots:
   `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu --hide-scrollbars --window-size=1700,1000 --virtual-time-budget=4000 --screenshot=out.png "http://127.0.0.1:PORT/#level=1&sel=core.run_worker"`.
   Start `strata ui --file examples/tasks --port PORT` in the background, and kill **only that port** afterwards (`kill $(lsof -ti tcp:PORT)`); the user may have their own viewers running.

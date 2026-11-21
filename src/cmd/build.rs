@@ -6,7 +6,7 @@ use crate::*;
 /// to LLVM IR, then (unless --emit-llvm) to an executable with clang.
 pub fn build(args: &Args) -> Result<bool, String> {
     let (src, path) = match args.pos.get(1) {
-        Some(f) => (Source::File(read_sources(f, None)?), f.clone()),
+        Some(f) => (Source::File(read_sources(f)?), f.clone()),
         None => (load(args)?, args.val("--file").unwrap_or(".").to_string()),
     };
     let p = src.program();

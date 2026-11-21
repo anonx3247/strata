@@ -45,7 +45,7 @@ fn snapshot(target: &Target) -> Json {
             }
             Err(e) => return json!({"fatal": e}),
         },
-        Target::File(f) => match crate::read_sources(&f.to_string_lossy(), None) {
+        Target::File(f) => match crate::read_sources(&f.to_string_lossy()) {
             Ok(p) => (p, vec![], HashMap::new(), f.display().to_string()),
             Err(e) => return json!({"fatal": e}),
         },
