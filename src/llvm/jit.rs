@@ -49,6 +49,27 @@ unsafe extern "C" {
     fn strata_show_bool();
     fn strata_json_str();
     fn strata_print();
+    fn strata_str_split();
+    fn strata_str_trim();
+    fn strata_str_contains();
+    fn strata_str_starts_with();
+    fn strata_str_ends_with();
+    fn strata_str_index_of();
+    fn strata_str_reverse();
+    fn strata_str_chars();
+    fn strata_str_at();
+    fn strata_str_at_or_fault();
+    fn strata_str_slice();
+    fn strata_str_replace();
+    fn strata_str_repeat();
+    fn strata_str_case();
+    fn strata_str_is();
+    fn strata_str_ord();
+    fn strata_str_chr();
+    fn strata_parse_int();
+    fn strata_parse_float();
+    fn strata_show_float_fixed();
+    fn strata_format();
 }
 
 fn runtime() -> Vec<(&'static str, usize)> {
@@ -89,6 +110,27 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_show_bool", strata_show_bool as *const () as usize),
         ("strata_json_str", strata_json_str as *const () as usize),
         ("strata_print", strata_print as *const () as usize),
+        ("strata_str_split", strata_str_split as *const () as usize),
+        ("strata_str_trim", strata_str_trim as *const () as usize),
+        ("strata_str_contains", strata_str_contains as *const () as usize),
+        ("strata_str_starts_with", strata_str_starts_with as *const () as usize),
+        ("strata_str_ends_with", strata_str_ends_with as *const () as usize),
+        ("strata_str_index_of", strata_str_index_of as *const () as usize),
+        ("strata_str_reverse", strata_str_reverse as *const () as usize),
+        ("strata_str_chars", strata_str_chars as *const () as usize),
+        ("strata_str_at", strata_str_at as *const () as usize),
+        ("strata_str_at_or_fault", strata_str_at_or_fault as *const () as usize),
+        ("strata_str_slice", strata_str_slice as *const () as usize),
+        ("strata_str_replace", strata_str_replace as *const () as usize),
+        ("strata_str_repeat", strata_str_repeat as *const () as usize),
+        ("strata_str_case", strata_str_case as *const () as usize),
+        ("strata_str_is", strata_str_is as *const () as usize),
+        ("strata_str_ord", strata_str_ord as *const () as usize),
+        ("strata_str_chr", strata_str_chr as *const () as usize),
+        ("strata_parse_int", strata_parse_int as *const () as usize),
+        ("strata_parse_float", strata_parse_float as *const () as usize),
+        ("strata_show_float_fixed", strata_show_float_fixed as *const () as usize),
+        ("strata_format", strata_format as *const () as usize),
     ]
 }
 

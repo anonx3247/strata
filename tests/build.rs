@@ -177,30 +177,8 @@ fn traits_run_as_interpreted() {
     }
     let d = tmp("traits");
     // examples/traits.strata, its tests as `main` (without the regex of `Sku`)
-    let src = Command::new(env!("CARGO_BIN_EXE_strata")).args(["render", "--file"]).arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/traits.strata")).output().unwrap();
-    let src = String::from_utf8(src.stdout).unwrap();
-    let mut decls = String::new();
-    let mut main = String::from("fn main() -> () {\n");
-    let mut in_test = false;
-    for line in src.lines() {
-        if line.starts_with("test ") {
-            in_test = true;
-            main += "  {\n";
-        } else if in_test && line == "}" {
-            in_test = false;
-            main += "  }\n";
-        } else if in_test {
-            if !line.contains("Sku(") {
-                main += line;
-                main += "\n";
-            }
-        } else {
-            decls += line;
-            decls += "\n";
-        }
-    }
-    main += "  print(\"all asserts hold\")\n}\n";
-    let (out, code) = case(&d, "traits_example", &(decls + &main));
+    let src = tests_as_main("examples/traits.strata", "Sku(");
+    let (out, code) = case(&d, "traits_example", &src);
     assert!(out.contains("all asserts hold") && code == 0, "{out}");
     let cases = [
         ("trait_ensures", "trait Describe {\n  fn describe(self) -> String\n    ensures len(it) > 0\n}\ntype Thing = { name: String }\nimpl Describe for Thing {\n  fn describe(self) -> String { self.name }\n}\nfn main() -> () { print(Thing { name: \"a\" }.describe()) print(Thing { name: \"\" }.describe()) }", 101),
@@ -238,14 +216,223 @@ fn capabilities_and_mut_run_as_interpreted() {
     assert!(out.contains(r#"["one","two words"]"#), "{out}");
 }
 
+/// A program's text (rendered), its tests turned into blocks of a `main`.
+fn tests_as_main(file: &str, skip: &str) -> String {
+    let src = Command::new(env!("CARGO_BIN_EXE_strata")).args(["render", "--file"]).arg(Path::new(env!("CARGO_MANIFEST_DIR")).join(file)).output().unwrap();
+    let src = String::from_utf8(src.stdout).unwrap();
+    let mut decls = String::new();
+    let mut main = String::from("fn main() -> () {\n");
+    let mut in_test = false;
+    for line in src.lines() {
+        if line.starts_with("test ") {
+            in_test = true;
+            main += "  {\n";
+        } else if in_test && line == "}" {
+            in_test = false;
+            main += "  }\n";
+        } else if in_test {
+            if skip.is_empty() || !line.contains(skip) {
+                main += line;
+                main += "\n";
+            }
+        } else {
+            decls += line;
+            decls += "\n";
+        }
+    }
+    main += "  print(\"all asserts hold\")\n}\n";
+    decls + &main
+}
+
+#[test]
+fn strings_dicts_and_sets_run_as_interpreted() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("collections");
+    // examples/builtins.strata, its tests as `main`
+    let (out, code) = case(&d, "builtins_example", &tests_as_main("examples/builtins.strata", ""));
+    assert!(out.contains("all asserts hold") && code == 0, "{out}");
+    // examples/wc: its functions, with stand-ins for the console and the files (not its options)
+    let wc = Command::new(env!("CARGO_BIN_EXE_strata")).args(["render", "--file"]).arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/wc/main.strata")).output().unwrap();
+    let wc = String::from_utf8(wc.stdout).unwrap();
+    let wc = wc[..wc.find("test \"").unwrap()].replace("fn main(", "fn wc(") + WC_MAIN;
+    let (out, code) = case(&d, "wc", &wc);
+    assert!(out.contains(r#"["2\t3\t14\ta.txt","1\t2\t12\tb.txt","3\t5\t26\ttotal"]"#) && out.contains("NotFound") && code == 0, "{out}");
+    let (out, code) = case(&d, "strings", STRINGS);
+    assert!(out.contains(r#"["STRASSE Ǆ ʼN","οδος σ ας. i̇","SS","ǆ"]"#) && out.contains("[-00042]") && code == 0, "{out}");
+    let (out, code) = case(&d, "dicts_and_sets", COLLECTIONS);
+    assert!(out.contains(r#"{"cat":2,"end":1,"hat":1,"the":3}"#) && out.contains("[[1,\"a\"],[2,\"b\"],[3,\"z\"]]") && code == 0, "{out}");
+    let faults = [
+        ("dict_value", "fn f() -> Dict[String, Positive] { Dict { \"a\": 1, \"b\": 0 } }\nfn main() -> () { print(f()) }"),
+        ("set_element", "fn g(s: Set[Positive]) -> Int { len(s) }\nfn main() -> () { print(g(Set { 1 })) print(g(Set { 3, -2 })) }"),
+        ("dict_key", "fn main() -> () { let d: Dict[NonEmptyString, Int] = Dict { \"x\": 1, \"\": 2 } print(d) }"),
+        ("set_assigned", "fn main() -> () { let mut s: Set[Natural] = Set { 1 } s = insert(s, -1) }"),
+        ("split", "fn main() -> () { print(split(\"abc\", \"\")) }"),
+        ("replace", "fn main() -> () { print(replace(\"abc\", \"\", \"x\")) }"),
+        ("repeat", "fn main() -> () { print(repeat(\"ab\", 3)) print(repeat(\"ab\", 60000000)) }"),
+        ("ord", "fn main() -> () { print(ord(\"a\")) print(ord(\"a\\\"\\n\")) }"),
+        ("chr", "fn main() -> () { print(chr(55296)) }"),
+        ("string_index", "fn main() -> () { print(\"abc\"[2]) print(\"abc\"[5]) }"),
+        ("list_index", "fn main() -> () { print([1, 2][-1]) }"),
+    ];
+    for (name, src) in faults {
+        let (out, code) = case(&d, name, src);
+        assert!(code == 101 && out.contains("fault ("), "{name}: {out}");
+    }
+}
+
+const WC_MAIN: &str = r#"fn main() -> () {
+  let files = mem_files([("a.txt", "one two\nthree\n"), ("b.txt", "four  five" + chr(13) + "\n")])
+  for (only, names) in [(None, ["a.txt", "b.txt"]), (Some(Words), ["a.txt"]), (Some(Chars), ["b.txt", "a.txt"]), (None, ["nope.txt"])] {
+    let mut console = recorder([])
+    let r = wc(Options { only: only, files: names }, mut console, files)
+    print(r)
+    print(printed(console))
+  }
+  let mut console = recorder(["hello world", "bye"])
+  print(wc(Options { only: None, files: [] }, mut console, mem_files([])))
+  print(printed(console))
+  print(count("a b  c\n\nd"))
+}
+"#;
+
+const STRINGS: &str = r#"fn main() -> () {
+  let cr = chr(13)
+  let text = "one two" + cr + "\nthree\n\nfour" + cr
+  print(lines(text))
+  print([lines(""), lines("\n"), lines("a\n"), lines("a\n\nb")])
+  print(split("a,,b,", ","))
+  print(split("", ","))
+  print(split("héllo wörld", "ö"))
+  print(trim(chr(160) + " \t x y " + chr(12288) + "\n"))
+  print([contains("héllo", "ll"), contains("a", ""), starts_with("Zoë", "Zo"), ends_with("Zoë", "ë"), ends_with("a", "ab")])
+  print(reverse("Zoë!"))
+  print(chars("añb€😀"))
+  print([get("Zoë", 2), get("Zoë", 3), get("Zoë", -1)])
+  print([slice("héllo", 1, 3), slice("héllo", -5, 2), slice("héllo", 3, 1), slice("héllo", 2, 100)])
+  print([index_of("añb€", "€"), index_of("abc", "z"), index_of("abc", "")])
+  print(replace("a-b-c--", "-", "+=") + "|" + replace("aaa", "aa", "b"))
+  print(repeat("ab", 3) + "|" + repeat("x", 0) + "|")
+  print([to_upper("straße ǆ ŉ"), to_lower("ΟΔΟΣ Σ ΑΣ. İ"), to_upper("ß"), to_lower("ǅ")])
+  print([is_digit("0123"), is_digit(""), is_digit("1a"), is_digit("٣"), is_alpha("añ日本"), is_alpha("a1"), is_space(" \t\n"), is_space(chr(8239)), is_space("")])
+  print([ord("A"), ord("€"), ord("😀")])
+  print([chr(65), chr(8364), chr(128512)])
+  print([parse_int("42"), parse_int(" -7 "), parse_int("+3"), parse_int("1_000_"), parse_int("x"), parse_int("9223372036854775807"), parse_int("-9223372036854775808")])
+  print([parse_float("2.5"), parse_float("-1e-3"), parse_float("5."), parse_float(".5"), parse_float("1e"), parse_float("inf"), parse_float("12")])
+  let x = 3.14159
+  let n = -42
+  let s = "héllo"
+  print(f"[{x:.2}] [{x:8.3}] [{n:>6}] [{n:<6}] [{n:^7}] [{n:06}] [{n:+}] [{7:+05}] [{s:.2}] [{s:>8}] [{s:*^9}] [{s:3}] [{0.125:.2}] [{true:>6}] [{-0.0:.1}]")
+  let w = "abc"
+  print([w[0], w[2], w[1..], w[..2], w[..]])
+  let xs = [10, 20, 30, 40]
+  print([xs[1], xs[3]])
+  print([xs[1..3], xs[2..], xs[..1], xs[3..1], xs[-2..10]])
+  print([to_json("a\"b"), to_json([1, 2]), to_json(Some("x"))])
+}
+"#;
+
+const COLLECTIONS: &str = r#"type Color =
+  | Red
+  | Green
+  | Blue
+
+distinct type UserId = Int
+
+type Point = { x: Int, y: Int }
+
+fn tally(words: List[String]) -> Dict[String, Int] {
+  let mut d: Dict[String, Int] = Dict {}
+  for w in words {
+    d = insert(d, w, (get(d, w) ?? 0) + 1)
+  }
+  d
+}
+
+fn main() -> () {
+  let d = Dict { "b": 2, "a": 1, "c": 3 }
+  print(d)
+  print([len(d), len(Dict[Int, Int] {})])
+  print(Dict[Int, String] {})
+  print(dict([(3, "c"), (1, "a"), (3, "z"), (2, "b")]))
+  print(insert(d, "a", 10))
+  print(insert(d, "aa", 5))
+  print(remove(d, "b"))
+  print(remove(d, "zz"))
+  print([get(d, "c"), get(d, "q")])
+  print([contains(d, "a"), contains(d, "x")])
+  print(keys(d))
+  print(values(d))
+  print(items(d))
+  print(map_values(d, v -> float(v) * 1.5))
+  print(map_values(d, v -> f"<{v}>"))
+  for (k, v) in d {
+    print(f"{k}={v}")
+  }
+  print(tally(split("the cat the hat the end cat", " ")))
+  let s = Set { 3, 1, 3, 2 }
+  print(s)
+  print([len(s), len(Set[String] {})])
+  print([contains(s, 2), contains(s, 7)])
+  print([insert(s, 0), insert(s, 2), remove(s, 1), remove(s, 9)])
+  print(to_list(s))
+  print([union(s, Set { 5, 0, 2 }), intersection(s, Set { 2, 3, 9 }), difference(s, Set { 2 })])
+  for x in s {
+    print(x)
+  }
+  print(s == Set { 1, 2, 3 })
+  print(Dict { 1: "a" } == dict([(1, "a")]))
+  print(d != remove(d, "a"))
+  print(set(["pear", "apple", "fig", "apple"]))
+  print(set([2.5, -1.0, 0.0, -0.5]))
+  print(set([Blue, Red, Blue, Green]))
+  print(set([UserId(10), UserId(9), UserId(100)]))
+  print(set([Point { x: 2, y: 1 }, Point { x: 1, y: 5 }, Point { x: 2, y: 1 }]))
+  print(set([(2, "b"), (1, "z"), (2, "a")]))
+  print(set([[2, 1], [1], [1, 0]]))
+  print(set([Some(3), None, Some(1)]))
+  print(Dict { Red: 1, Blue: 2 })
+  print(Dict { (1, 2): "p", (0, 9): "q" })
+  print(Set { Set { 2, 1 }, Set { 0 } })
+  print(Dict { "x": Set { 1 }, "y": Set { } })
+  let nested = Dict { "k": Dict { 2: "two", 1: "one" } }
+  print(nested)
+  print(f"{d} {s}")
+  print(to_string(s) + to_json(d))
+  print([d][0])
+}
+"#;
+
+#[test]
+fn trait_values_run_as_interpreted() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("dyn");
+    let cases = [
+        ("trait_values_in_lists", "trait Shape {\n  fn area(self) -> Int\n  fn name(self) -> String {\n    \"shape\"\n  }\n}\n\ntype Square = { side: Int }\n\ntype Rect = { w: Int, h: Int }\n\nimpl Shape for Square {\n  fn area(self) -> Int {\n    self.side * self.side\n  }\n\n  fn name(self) -> String {\n    \"square\"\n  }\n}\n\nimpl Shape for Rect {\n  fn area(self) -> Int {\n    self.w * self.h\n  }\n}\n\nfn total(shapes: List[Shape]) -> Int {\n  sum(shapes.map(s -> s.area()))\n}\n\nfn main() -> () {\n  let shapes: List[Shape] = [Square { side: 2 }, Rect { w: 2, h: 5 }]\n  print(total(shapes))\n  print(shapes.map(s -> s.name()))\n  print(shapes)\n  let one: Shape = Square { side: 3 }\n  print(one.area())\n  print(one)\n}", 0),
+        ("trait_values_in_fields", "use std.io.{Console, recorder}\n\ntype Worker = { console: Console, count: Int }\n\nfn work(mut w: Worker) -> () {\n  mut w.console.print(f\"job {w.count}\")\n  w.count = w.count + 1\n}\n\nfn main(console: Console) -> () {\n  let mut real = Worker { console, count: 1 }\n  work(mut real)\n  work(mut real)\n  let mut fake = Worker { console: recorder([]), count: 7 }\n  work(mut fake)\n  print(fake.count)\n}", 0),
+        ("trait_values_are_values", "use std.io.{Console, recorder}\n\ntype Worker = { console: Console, count: Int }\n\nfn work(mut w: Worker) -> () {\n  mut w.console.print(f\"job {w.count}\")\n}\n\nfn main() -> () {\n  let mut a = Worker { console: recorder([]), count: 1 }\n  let mut b = a\n  work(mut a)\n  work(mut a)\n  work(mut b)\n  print(a.console)\n  print(b.console)\n  print(a)\n}", 0),
+        ("mut_proven_fits", "fn grow(mut n: Positive) -> () {\n  n = n + 1\n}\n\nfn main() -> () {\n  let mut p: Natural = 5\n  grow(mut p)\n  print(p)\n}", 0),
+        ("mut_field_breaks_invariant", "fn grow(mut n: Int) -> () {\n  n = n + 1\n}\n\ntype R = { lo: Int, hi: Int }\n  where it.lo <= it.hi\n\nfn main() -> () {\n  let mut r = R { lo: 1, hi: 2 }\n  grow(mut r.lo)\n  grow(mut r.lo)\n  print(r)\n}", 101),
+    ];
+    for (name, src, want) in cases {
+        let (out, code) = case(&d, name, src);
+        assert_eq!(code, want, "{name}: {out}");
+    }
+}
+
 #[test]
 fn what_is_not_compiled_yet_is_named() {
     let d = tmp("unsupported");
     let f = d.join("lists.strata");
-    save(&f, "fn main() -> () { print(dict([(1, 2)])) }\n");
+    save(&f, "fn main() -> () { print(matches(\"a1\", \"[a-z][0-9]\")) }\n");
     let o = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(!o.status.success() && err.contains("can't compile `main`: the built-in `dict` on (List[(Int, Int)]) is not compiled yet"), "{err}");
+    assert!(!o.status.success() && err.contains("can't compile `main`: the built-in `matches` on (String, String) is not compiled yet"), "{err}");
 }
 
 #[test]
@@ -272,8 +459,8 @@ fn the_jit_runs_as_the_interpreter() {
     assert_eq!(jit.1, 101);
     // what doesn't compile yet is interpreted, and says why
     let f = d.join("lists.strata");
-    save(&f, "fn main() -> () { print(len(dict([(1, 2)]))) }\n");
+    save(&f, "fn main() -> () { print(matches(\"a1\", \"[a-z][0-9]\")) }\n");
     let (out, code) = output(Command::new(strata).args(["run", "--jit"]).arg(&f));
     assert_eq!(code, 0);
-    assert!(out.contains("1\n") && out.contains("note: interpreted, not compiled: can't compile `main`: the built-in `dict` on (List[(Int, Int)]) is not compiled yet"), "{out}");
+    assert!(out.contains("true\n") && out.contains("note: interpreted, not compiled: can't compile `main`: the built-in `matches` on (String, String) is not compiled yet"), "{out}");
 }

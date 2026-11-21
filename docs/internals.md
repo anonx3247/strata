@@ -22,8 +22,8 @@
 | `src/merge.rs` | `strata merge-file`: three-way merge per definition, renames |
 | `src/package.rs` | packages: `strata.toml`, their module files (decoded, never parsed: text goes in through `edit`), finding packages and scripts |
 | `src/git.rs` | running git |
-| `src/llvm.rs`, `src/llvm/runtime.c` | `strata build`: the elaborated program as LLVM IR (text), and the C runtime it links with (strings, printing, number formatting, faults) |
-| `src/llvm/prelude.strata` | the list built-ins in Strata, compiled with every program (module `strata.compiled`); the compiler calls them for `map`, `filter`, `sort`, ... |
+| `src/llvm.rs`, `src/llvm/runtime.c` | `strata build`: the elaborated program as LLVM IR (text), and the C runtime it links with (strings and the string built-ins, printing, number formatting, faults, the system) |
+| `src/llvm/prelude.strata` | the built-ins of lists, dictionaries and sets (each kept as a sorted list) and `lines`, in Strata, compiled with every program (module `strata.compiled`); the compiler calls them for `map`, `filter`, `sort`, `insert`, `union`, ... |
 | `src/llvm/jit.rs`, `build.rs` | `strata run --jit` (feature `jit`): LLVM's libraries (inkwell) parse that IR, optimize it and run it in memory; build.rs compiles the runtime into strata |
 | `src/stdlib.rs`, `std/` | the standard library (Strata), built into the binary; the native `host_*` operations it alone can call |
 | `src/view.rs` | level-of-detail projections and selectors |

@@ -500,3 +500,380 @@ Str *strata_host_env_var(Str *name) {
 }
 
 int64_t strata_pid(void) { return (int64_t)getpid(); }
+
+// ---- strings ----
+//
+// The string built-ins (`interp::Interp::builtin`). Strings are UTF-8 and
+// indexed by character (code point). What depends on Unicode's tables (case
+// mappings, `is_alpha`) takes a table the compiler made from Rust's own
+// (`llvm.rs`, `unicode_table`), so both agree.
+
+// The character at byte `i` (valid UTF-8), and its length in bytes.
+static int32_t utf8_at(Str *s, int64_t i, int *n) {
+  unsigned char c = (unsigned char)s->bytes[i];
+  if (c < 0x80) return *n = 1, c;
+  if (c < 0xE0) return *n = 2, ((c & 0x1F) << 6) | (s->bytes[i + 1] & 0x3F);
+  if (c < 0xF0) return *n = 3, ((c & 0x0F) << 12) | ((s->bytes[i + 1] & 0x3F) << 6) | (s->bytes[i + 2] & 0x3F);
+  return *n = 4, ((c & 0x07) << 18) | ((s->bytes[i + 1] & 0x3F) << 12) | ((s->bytes[i + 2] & 0x3F) << 6) | (s->bytes[i + 3] & 0x3F);
+}
+
+static int utf8_put(int32_t c, char *o) {
+  if (c < 0x80) return o[0] = (char)c, 1;
+  if (c < 0x800) return o[0] = (char)(0xC0 | (c >> 6)), o[1] = (char)(0x80 | (c & 0x3F)), 2;
+  if (c < 0x10000) return o[0] = (char)(0xE0 | (c >> 12)), o[1] = (char)(0x80 | ((c >> 6) & 0x3F)), o[2] = (char)(0x80 | (c & 0x3F)), 3;
+  o[0] = (char)(0xF0 | (c >> 18)), o[1] = (char)(0x80 | ((c >> 12) & 0x3F)), o[2] = (char)(0x80 | ((c >> 6) & 0x3F)), o[3] = (char)(0x80 | (c & 0x3F));
+  return 4;
+}
+
+// The byte where character `k` starts (the end, past the last one).
+static int64_t char_offset(Str *s, int64_t k) {
+  int64_t i = 0;
+  while (k > 0 && i < s->len) {
+    int n;
+    utf8_at(s, i, &n);
+    i += n;
+    k--;
+  }
+  return i;
+}
+
+// The first place `sub` occurs in `s` at or after byte `from`, or -1.
+static int64_t find_from(Str *s, Str *sub, int64_t from) {
+  for (int64_t i = from; i + sub->len <= s->len; i++)
+    if (memcmp(s->bytes + i, sub->bytes, (size_t)sub->len) == 0) return i;
+  return -1;
+}
+
+static List *push_str(List *l, Str *s) { return strata_list_push(l, (int64_t)(intptr_t)s); }
+
+List *strata_str_split(Str *s, Str *sep) {
+  if (sep->len == 0) strata_fault(4, str_c("split: empty separator"));
+  List *l = strata_list_new(4);
+  int64_t start = 0, at;
+  while ((at = find_from(s, sep, start)) >= 0) {
+    l = push_str(l, str_from(s->bytes + start, at - start));
+    start = at + sep->len;
+  }
+  return push_str(l, str_from(s->bytes + start, s->len - start));
+}
+
+// Unicode's White_Space, as Rust's `char::is_whitespace`.
+static int is_space(int32_t c) {
+  return (c >= 9 && c <= 13) || c == 32 || c == 0x85 || c == 0xA0 || c == 0x1680 || (c >= 0x2000 && c <= 0x200A) || c == 0x2028 || c == 0x2029 || c == 0x202F || c == 0x205F || c == 0x3000;
+}
+
+Str *strata_str_trim(Str *s) {
+  int64_t a = 0, b = s->len;
+  while (a < b) {
+    int n;
+    if (!is_space(utf8_at(s, a, &n))) break;
+    a += n;
+  }
+  while (b > a) {
+    int64_t p = b - 1;
+    while ((s->bytes[p] & 0xC0) == 0x80) p--;
+    int n;
+    if (!is_space(utf8_at(s, p, &n))) break;
+    b = p;
+  }
+  return str_from(s->bytes + a, b - a);
+}
+
+_Bool strata_str_contains(Str *s, Str *sub) { return find_from(s, sub, 0) >= 0; }
+
+_Bool strata_str_starts_with(Str *s, Str *p) { return p->len <= s->len && memcmp(s->bytes, p->bytes, (size_t)p->len) == 0; }
+
+_Bool strata_str_ends_with(Str *s, Str *p) { return p->len <= s->len && memcmp(s->bytes + s->len - p->len, p->bytes, (size_t)p->len) == 0; }
+
+// The character index of the first `sub`, or -1.
+int64_t strata_str_index_of(Str *s, Str *sub) {
+  int64_t at = find_from(s, sub, 0);
+  if (at < 0) return -1;
+  int64_t k = 0;
+  for (int64_t i = 0; i < at; i++)
+    if ((s->bytes[i] & 0xC0) != 0x80) k++;
+  return k;
+}
+
+Str *strata_str_reverse(Str *s) {
+  Str *o = str_alloc(s->len);
+  int64_t i = 0;
+  while (i < s->len) {
+    int n;
+    utf8_at(s, i, &n);
+    memcpy(o->bytes + s->len - i - n, s->bytes + i, (size_t)n);
+    i += n;
+  }
+  return o;
+}
+
+List *strata_str_chars(Str *s) {
+  List *l = strata_list_new(s->len);
+  int64_t i = 0;
+  while (i < s->len) {
+    int n;
+    utf8_at(s, i, &n);
+    l = push_str(l, str_from(s->bytes + i, n));
+    i += n;
+  }
+  return l;
+}
+
+// Character `k`, or NULL when there is none.
+Str *strata_str_at(Str *s, int64_t k) {
+  if (k < 0) return NULL;
+  int64_t i = char_offset(s, k);
+  if (i >= s->len) return NULL;
+  int n;
+  utf8_at(s, i, &n);
+  return str_from(s->bytes + i, n);
+}
+
+// `xs[i]` on a string: character `k`, or a fault.
+Str *strata_str_at_or_fault(Str *s, int64_t k) {
+  Str *c = strata_str_at(s, k);
+  if (c) return c;
+  char buf[96];
+  snprintf(buf, sizeof buf, "index %lld out of range (length %lld)", (long long)k, (long long)strata_str_len(s));
+  strata_fault(4, str_c(buf));
+}
+
+// Characters `a` to `b`, clamped to the string (as in Python).
+Str *strata_str_slice(Str *s, int64_t a, int64_t b) {
+  if (a < 0) a = 0;
+  if (b <= a) return str_from("", 0);
+  int64_t i = char_offset(s, a), j = i;
+  for (int64_t k = a; k < b && j < s->len; k++) {
+    int n;
+    utf8_at(s, j, &n);
+    j += n;
+  }
+  return str_from(s->bytes + i, j - i);
+}
+
+Str *strata_str_replace(Str *s, Str *from, Str *to) {
+  if (from->len == 0) strata_fault(4, str_c("replace: empty pattern"));
+  Str *out = str_from("", 0);
+  int64_t start = 0, at;
+  while ((at = find_from(s, from, start)) >= 0) {
+    out = strata_concat(strata_concat(out, str_from(s->bytes + start, at - start)), to);
+    start = at + from->len;
+  }
+  return strata_concat(out, str_from(s->bytes + start, s->len - start));
+}
+
+Str *strata_str_repeat(Str *s, int64_t n) {
+  if (n < 0 || (s->len > 0 && n > 100000000 / s->len)) {
+    char buf[64];
+    snprintf(buf, sizeof buf, "repeat: bad count %lld", (long long)n);
+    strata_fault(4, str_c(buf));
+  }
+  Str *o = str_alloc(s->len * n);
+  for (int64_t i = 0; i < n; i++) memcpy(o->bytes + i * s->len, s->bytes, (size_t)s->len);
+  return o;
+}
+
+// Whether `c` is in a table of ranges (pairs of first and last).
+static int in_ranges(int32_t c, const int32_t *r, int64_t n) {
+  int64_t lo = 0, hi = n;
+  while (lo < hi) {
+    int64_t mid = (lo + hi) / 2;
+    if (c < r[2 * mid]) hi = mid;
+    else if (c > r[2 * mid + 1]) lo = mid + 1;
+    else return 1;
+  }
+  return 0;
+}
+
+// The mapping of `c` in a case table (rows of a character and the up to
+// three it becomes), or NULL when it maps to itself.
+static const int32_t *case_row(int32_t c, const int32_t *t, int64_t n) {
+  int64_t lo = 0, hi = n;
+  while (lo < hi) {
+    int64_t mid = (lo + hi) / 2;
+    if (c < t[4 * mid]) hi = mid;
+    else if (c > t[4 * mid]) lo = mid + 1;
+    else return t + 4 * mid + 1;
+  }
+  return NULL;
+}
+
+// `to_upper` / `to_lower`, with Rust's mappings (`table`). Lowercase `Σ` is
+// `ς` at the end of a word: after a cased character (`cased`), and not
+// before one.
+Str *strata_str_case(Str *s, const int32_t *table, int64_t n, const int32_t *cased, int64_t m, _Bool lower) {
+  Str *o = str_alloc(s->len * 3);
+  char *p = o->bytes;
+  int32_t prev = -1;
+  int64_t i = 0;
+  while (i < s->len) {
+    int k;
+    int32_t c = utf8_at(s, i, &k);
+    if (lower && c == 0x3A3) {
+      int final = prev >= 0 && in_ranges(prev, cased, m);
+      if (final && i + k < s->len) {
+        int k2;
+        final = !in_ranges(utf8_at(s, i + k, &k2), cased, m);
+      }
+      p += utf8_put(final ? 0x3C2 : 0x3C3, p);
+    } else {
+      const int32_t *row = case_row(c, table, n);
+      if (!row) p += utf8_put(c, p);
+      else
+        for (int j = 0; j < 3 && row[j]; j++) p += utf8_put(row[j], p);
+    }
+    prev = c;
+    i += k;
+  }
+  o->len = p - o->bytes;
+  return o;
+}
+
+// `is_digit` (0), `is_alpha` (1, `ranges` from Unicode's Alphabetic),
+// `is_space` (2): not empty, and every character of the class.
+_Bool strata_str_is(Str *s, int64_t class, const int32_t *ranges, int64_t n) {
+  if (s->len == 0) return 0;
+  int64_t i = 0;
+  while (i < s->len) {
+    int k;
+    int32_t c = utf8_at(s, i, &k);
+    int ok = class == 0 ? (c >= '0' && c <= '9') : class == 1 ? in_ranges(c, ranges, n) : is_space(c);
+    if (!ok) return 0;
+    i += k;
+  }
+  return 1;
+}
+
+// A string as Rust's `{:?}` writes it, in messages.
+static Str *debug_str(Str *s) {
+  Str *o = str_alloc(s->len * 10 + 2);
+  char *p = o->bytes;
+  *p++ = '"';
+  for (int64_t i = 0; i < s->len; i++) {
+    unsigned char c = (unsigned char)s->bytes[i];
+    switch (c) {
+    case '"': p += sprintf(p, "\\\""); break;
+    case '\\': p += sprintf(p, "\\\\"); break;
+    case '\n': p += sprintf(p, "\\n"); break;
+    case '\r': p += sprintf(p, "\\r"); break;
+    case '\t': p += sprintf(p, "\\t"); break;
+    case 0: p += sprintf(p, "\\0"); break;
+    default:
+      if (c < 0x20 || c == 0x7F) p += sprintf(p, "\\u{%x}", c);
+      else *p++ = (char)c;
+    }
+  }
+  *p++ = '"';
+  o->len = p - o->bytes;
+  return o;
+}
+
+int64_t strata_str_ord(Str *s) {
+  int n;
+  if (s->len > 0) {
+    int32_t c = utf8_at(s, 0, &n);
+    if (n == s->len) return c;
+  }
+  strata_fault(4, strata_concat(str_c("ord needs a single character, got "), debug_str(s)));
+}
+
+Str *strata_str_chr(int64_t c) {
+  if (c < 0 || c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF)) {
+    char buf[64];
+    snprintf(buf, sizeof buf, "chr: %lld is not a character", (long long)c);
+    strata_fault(4, str_c(buf));
+  }
+  char b[4];
+  return str_from(b, utf8_put((int32_t)c, b));
+}
+
+// `parse_int`, as Rust's `BigInt` reads the trimmed string: a sign, then a
+// digit, then digits and `_`. False when it isn't a number; a fault when it
+// doesn't fit in 64 bits (big integers are not compiled yet).
+_Bool strata_parse_int(Str *s, int64_t *out) {
+  Str *t = strata_str_trim(s);
+  int64_t i = 0, n = t->len;
+  int neg = 0;
+  if (i < n && (t->bytes[i] == '+' || t->bytes[i] == '-')) neg = t->bytes[i++] == '-';
+  if (i >= n || t->bytes[i] < '0' || t->bytes[i] > '9') return 0;
+  uint64_t v = 0;
+  int big = 0;
+  for (; i < n; i++) {
+    char c = t->bytes[i];
+    if (c == '_') continue;
+    if (c < '0' || c > '9') return 0;
+    if (v > (UINT64_MAX - (uint64_t)(c - '0')) / 10) big = 1;
+    else v = v * 10 + (uint64_t)(c - '0');
+  }
+  if (big || v > (uint64_t)INT64_MAX + (uint64_t)neg) strata_overflow();
+  *out = neg ? (int64_t)(0 - v) : (int64_t)v;
+  return 1;
+}
+
+// `parse_float`, as Rust's `f64::from_str` reads the trimmed string (no hex,
+// no `_`; `inf` and `NaN` are not finite, so not numbers either).
+_Bool strata_parse_float(Str *s, double *out) {
+  Str *t = strata_str_trim(s);
+  int64_t i = 0, n = t->len, digits = 0;
+  const char *b = t->bytes;
+  if (i < n && (b[i] == '+' || b[i] == '-')) i++;
+  while (i < n && b[i] >= '0' && b[i] <= '9') i++, digits++;
+  if (i < n && b[i] == '.') {
+    i++;
+    while (i < n && b[i] >= '0' && b[i] <= '9') i++, digits++;
+  }
+  if (digits == 0) return 0;
+  if (i < n && (b[i] == 'e' || b[i] == 'E')) {
+    i++;
+    if (i < n && (b[i] == '+' || b[i] == '-')) i++;
+    int64_t e = 0;
+    while (i < n && b[i] >= '0' && b[i] <= '9') i++, e++;
+    if (e == 0) return 0;
+  }
+  if (i != n) return 0;
+  double x = strtod(cstr(t), NULL);
+  if (!isfinite(x)) return 0;
+  *out = x;
+  return 1;
+}
+
+// ---- f-string format specs (`interp::format_spec`) ----
+
+// A float with `p` decimals, as Rust's `{:.p}`.
+Str *strata_show_float_fixed(double x, int64_t p) {
+  int n = snprintf(NULL, 0, "%.*f", (int)p, x);
+  Str *s = str_alloc(n);
+  char *tmp = malloc((size_t)n + 1);
+  snprintf(tmp, (size_t)n + 1, "%.*f", (int)p, x);
+  memcpy(s->bytes, tmp, (size_t)n);
+  free(tmp);
+  return s;
+}
+
+// `body` padded to `width` characters: `fill` and `align` (`<`, `>`, `^`, or
+// 0 for the default: numbers right, the rest left), `+` for a number's sign,
+// `0` to pad a number with zeros after its sign.
+Str *strata_format(Str *body, _Bool numeric, int32_t fill, int32_t align, _Bool plus, _Bool zero, int64_t width) {
+  if (plus && !(body->len > 0 && body->bytes[0] == '-')) body = strata_concat(str_c("+"), body);
+  int64_t n = strata_str_len(body);
+  if (n >= width) return body;
+  int64_t pad = width - n;
+  if (zero && align == 0) {
+    int sign = body->len > 0 && (body->bytes[0] == '+' || body->bytes[0] == '-');
+    Str *o = str_alloc(body->len + pad);
+    memcpy(o->bytes, body->bytes, (size_t)sign);
+    memset(o->bytes + sign, '0', (size_t)pad);
+    memcpy(o->bytes + sign + pad, body->bytes + sign, (size_t)(body->len - sign));
+    return o;
+  }
+  char f[4];
+  int fl = utf8_put(fill, f);
+  if (align == 0) align = numeric ? '>' : '<';
+  int64_t left = align == '<' ? 0 : align == '>' ? pad : pad / 2, right = pad - left;
+  Str *o = str_alloc(body->len + pad * fl);
+  char *p = o->bytes;
+  for (int64_t i = 0; i < left; i++) memcpy(p, f, (size_t)fl), p += fl;
+  memcpy(p, body->bytes, (size_t)body->len), p += body->len;
+  for (int64_t i = 0; i < right; i++) memcpy(p, f, (size_t)fl), p += fl;
+  return o;
+}
