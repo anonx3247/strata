@@ -71,6 +71,19 @@ fn derive_all(p: &mut Program, errors: &mut Vec<Diag>) {
     p.decls.extend(extra);
 }
 
+/// The values of `es` (expressions of `prog`'s definitions, a resolved
+/// program), computed as compile-time code is (on the JIT, cached), each
+/// written as a literal; or why one can't be.
+pub fn comptime_literals(prog: &Program, es: &[Expr]) -> Vec<Res<Expr>> {
+    let (env, _) = Env::build(prog);
+    es.iter()
+        .map(|e| {
+            let mut ex = Expander::new(&env, prog);
+            ex.eval_as(e, e).and_then(|v| ex.literal(&v))
+        })
+        .collect()
+}
+
 /// A function made once per compile-time value (`comptime fn`, `comptime`
 /// parameters), specialized where it is called: its `comptime` code is
 /// evaluated there, not here.

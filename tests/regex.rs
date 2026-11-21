@@ -228,13 +228,19 @@ fn texts_for(pattern: &str, rng: &mut impl RngExt) -> Vec<String> {
     out
 }
 
-/// `std.regex.full_match` against `regex`, on each (pattern, text).
-fn same_matches_as_regex(name: &str, cases: Vec<(String, String)>) {
+/// `std.regex.full_match` (or, `via_matcher`, the matcher compiled code
+/// uses for a literal pattern: a DFA, usually) against `regex`, on each
+/// (pattern, text).
+fn same_matches_as_regex(name: &str, cases: Vec<(String, String)>, via_matcher: bool) {
     let cases: Vec<(String, String, bool)> = cases.into_iter().filter_map(|(p, t)| reference_match(&p, &t).map(|m| (p, t, m))).collect();
     let list = cases.iter().map(|(p, t, _)| format!("({}, {})", literal(p), literal(t))).collect::<Vec<_>>().join(",\n    ");
     let got = run(
         name,
-        &format!("use std.regex.{{full_match}}\n\nfn main() {{\n  for (p, t) in [\n    {list},\n  ] {{\n    print(match full_match(t, p) {{\n      Ok(m) => f\"{{m}}\",\n      Err(e) => \"error \" + e,\n    }})\n  }}\n}}\n"),
+        &if via_matcher {
+            format!("use std.regex.{{matcher, run_matcher}}\n\nfn main() {{\n  for (p, t) in [\n    {list},\n  ] {{\n    print(f\"{{run_matcher(matcher(p), t)}}\")\n  }}\n}}\n")
+        } else {
+            format!("use std.regex.{{full_match}}\n\nfn main() {{\n  for (p, t) in [\n    {list},\n  ] {{\n    print(match full_match(t, p) {{\n      Ok(m) => f\"{{m}}\",\n      Err(e) => \"error \" + e,\n    }})\n  }}\n}}\n")
+        },
     );
     assert_eq!(got.len(), cases.len(), "one line per case");
     let wrong: Vec<String> = cases
@@ -264,7 +270,8 @@ fn curated_patterns_match_as_regex_matches() {
             cases.push((p.to_string(), t.to_string()));
         }
     }
-    same_matches_as_regex("match-curated", cases);
+    same_matches_as_regex("match-curated", cases.clone(), false);
+    same_matches_as_regex("dfa-curated", cases, true);
 }
 
 #[test]
@@ -279,5 +286,6 @@ fn random_patterns_match_as_regex_matches() {
             cases.push((p.clone(), t));
         }
     }
-    same_matches_as_regex("match-random", cases);
+    same_matches_as_regex("match-random", cases.clone(), false);
+    same_matches_as_regex("dfa-random", cases, true);
 }
