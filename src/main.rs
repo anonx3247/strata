@@ -116,7 +116,9 @@ Git:
 
 Views:
   ui [--port 7777]                live viewer in the browser (map, levels, holes, activity)
-  view [SELECTOR] [--level 0-2]   SELECTOR: name | prefix* | slice:Name | a,b
+  view [SELECTOR] [--level 0-2] [--mocks]
+                                  SELECTOR: name | prefix* | slice:Name | a,b (mocks
+                                  only with --mocks or by name)
   ast <name>                      the stored syntax tree as JSON
 
 Checking:

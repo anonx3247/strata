@@ -105,6 +105,8 @@ fn snapshot(target: &Target) -> Json {
         }
     }
     let shown = crate::resolve::written_form(p);
+    // mocks and their implementations: hidden in the viewer unless shown
+    let mocks = crate::view::mock_decls(p);
     let decls: Vec<Json> = p
         .decls
         .iter()
@@ -140,6 +142,7 @@ fn snapshot(target: &Target) -> Json {
                 "label": label,
                 "kind": d.kind_str(),
                 "capability": matches!(&d.kind, DeclKind::Trait(t) if t.capability),
+                "mock": mocks.contains(&d.qname()),
                 "doc": d.doc.join("\n"),
                 "hash": store::self_hash(d),
                 "interface_hash": store::interface_hash(d),

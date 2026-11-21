@@ -291,6 +291,9 @@ fn foreign(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>) -> Option<String> {
     // a capability's own code reaches the outside world; one passed in can't be made here
     if let Some(i) = imp {
         let head = crate::types::texpr_head(&i.for_type);
+        if env.types.get(&Symbol::new(&head)).is_some_and(|t| t.mock) {
+            return Some(format!("`{}` is a mock, for tests only: its methods are checked by the tests that use it", crate::names::short(&head)));
+        }
         if env.capabilities.contains(&Symbol::new(&head)) {
             return Some(format!("`{}` is a capability: it reaches the outside world (only `strata run` gives one)", crate::names::short(&head)));
         }

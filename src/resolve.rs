@@ -20,6 +20,8 @@ struct Item {
     public: bool,
     /// An `extern` function: callable only from its own module.
     foreign: bool,
+    /// A mock (`mock MemFiles = { ... }`): for tests only.
+    mock: bool,
 }
 
 pub struct Resolution {
@@ -68,10 +70,64 @@ pub fn resolve(p: &Program) -> Resolution {
     } else {
         run(p, None)
     };
+    mock_methods(&mut r.program);
     static_calls(&mut r.program);
     crate::desugar::program(&mut r.program, &mut r.errors);
     crate::derive::expand(&mut r.program, &mut r.errors);
     r
+}
+
+/// The methods an implementation for a mock leaves out (`impl Files for
+/// MemFiles` with only `read` and `write`), filled in: each with the trait's
+/// signature, answered by a generated mock of the trait (`{ mut m := mock
+/// Files; mut m.exists(path) }`), which checks the method's `requires` and
+/// gives a result within its type and `ensures`. Methods without `self` and
+/// default methods are left as they are.
+fn mock_methods(p: &mut Program) {
+    let mocks: HashSet<String> = p.decls.iter().filter_map(|d| match &d.kind {
+        DeclKind::Type(t) if t.mock => Some(qualify(&d.module, &t.name)),
+        _ => None,
+    }).collect();
+    if mocks.is_empty() {
+        return;
+    }
+    let traits: HashMap<String, TraitDecl> = p.decls.iter().filter_map(|d| match &d.kind {
+        DeclKind::Trait(t) => Some((qualify(&d.module, &t.name), t.clone())),
+        _ => None,
+    }).collect();
+    for d in &mut p.decls {
+        let DeclKind::Impl(i) = &mut d.kind else { continue };
+        if i.is_inherent() || !mocks.contains(&qualify(&d.module, &crate::types::texpr_head(&i.for_type))) && !mocks.contains(crate::types::texpr_head(&i.for_type).as_str()) {
+            continue;
+        }
+        let Some(tr) = traits.get(i.trait_name.as_str()).or_else(|| traits.get(&qualify(&d.module, &i.trait_name))) else { continue };
+        let sub: HashMap<Symbol, TypeExpr> = tr.params.iter().copied().zip(i.trait_args.iter().cloned()).collect();
+        for tm in &tr.methods {
+            if tm.default || !takes_self(&tm.decl) || i.methods.iter().any(|m| short(&m.name) == short(&tm.decl.name)) {
+                continue;
+            }
+            let mut f = tm.decl.clone();
+            f.doc = vec![];
+            f.comments = vec![];
+            f.requires = vec![];
+            f.ensures = vec![];
+            for p in &mut f.params {
+                p.ty = crate::types::subst_texpr(&p.ty, &sub);
+            }
+            f.ret = crate::types::subst_texpr(&f.ret, &sub);
+            let m = Symbol::new("generated");
+            let mutating = f.params[0].mutable;
+            let args: Vec<Expr> = f.params[1..].iter().map(|p| if p.mutable { Expr::Mut(Box::new(Expr::Var(p.name))) } else { Expr::Var(p.name) }).collect();
+            // added after resolution: the method by its resolved (qualified) name
+            let call = Expr::Method(Box::new(Expr::Var(m)), tm.decl.name, args);
+            let made = Expr::Mock(TypeExpr::Named(i.trait_name, i.trait_args.clone()));
+            f.body = Expr::Block(
+                vec![if mutating { Stmt::Var(m, None, made) } else { Stmt::Let(Pattern::Bind(m), None, made) }],
+                Box::new(if mutating { Expr::Mut(Box::new(call)) } else { call }),
+            );
+            i.methods.push(f);
+        }
+    }
 }
 
 /// The name a type's own method without `self` is known by once resolved:
@@ -710,7 +766,7 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
     };
     for d in &p.decls {
         add_modules(&mut modules, &d.module);
-        let item = Item { module: d.module, public: d.public, foreign: matches!(&d.kind, DeclKind::Extern(ExternDecl { item: ExternItem::Fn(_), .. })) };
+        let item = Item { module: d.module, public: d.public, foreign: matches!(&d.kind, DeclKind::Extern(ExternDecl { item: ExternItem::Fn(_), .. })), mock: matches!(&d.kind, DeclKind::Type(t) if t.mock) };
         match &d.kind {
             DeclKind::Capability(c) => {
                 table.insert(qualified(d.module, c.name), item.clone());
@@ -749,7 +805,7 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
                 let tq = if head.contains('.') { Symbol::new(&head) } else { qualified(d.module, Symbol::new(&head)) };
                 for m in &i.methods {
                     let mq = qualified(d.module, m.name);
-                    table.insert(mq, Item { module: d.module, public: true, foreign: false });
+                    table.insert(mq, Item { module: d.module, public: true, foreign: false, mock: false });
                     children.entry(tq).or_default().push((m.name, mq));
                 }
             }
@@ -842,6 +898,16 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
             imports: &imports[&d.module],
             uses: &uses[&d.module],
             decl: d.qname(),
+            for_tests: match &d.kind {
+                DeclKind::Test(_) => true,
+                DeclKind::Type(t) => t.mock,
+                DeclKind::Impl(i) => {
+                    let head = crate::types::texpr_head(&i.for_type).sym();
+                    let q = scopes[&d.module].get(&head).copied().unwrap_or(if head.contains('.') { head } else { qualified(d.module, head) });
+                    table.get(&q).is_some_and(|it| it.mock)
+                }
+                _ => false,
+            },
             locals: vec![],
             tparams: vec![],
             errors: vec![],
@@ -893,6 +959,8 @@ struct Rw<'a> {
     /// the module's `use`s, for showing names of modules that aren't loaded
     uses: &'a [(Symbol, Option<Vec<Symbol>>)],
     decl: String,
+    /// The definition may use mocks: a test, a mock, or an implementation for one.
+    for_tests: bool,
     locals: Vec<HashSet<Symbol>>,
     tparams: Vec<HashSet<Symbol>>,
     errors: Vec<Diag>,
@@ -1000,8 +1068,20 @@ impl Rw<'_> {
         }
         self.written(name, qualified(m, name))
     }
+    /// A mock named outside tests is an error (`mock MemFiles = { ... }` is
+    /// for tests only).
+    fn test_only(&mut self, q: Symbol) {
+        if !self.for_tests && self.rename.is_none() && self.moves.is_none() && self.table.get(&q).is_some_and(|it| it.mock) && !self.is_local(q) {
+            self.errors.push(Diag {
+                decl: self.decl.clone(),
+                msg: format!("`{}` is a mock: it is for tests only (a `test`, another mock, or an `impl` for one), so a fake never reaches a real run", short(&q)),
+            });
+        }
+    }
+
     fn lookup(&mut self, n: Symbol) -> Symbol {
         if let Some(&q) = self.scope.get(&n) {
+            self.test_only(q);
             return q;
         }
         if !n.contains('.') {
@@ -1023,6 +1103,8 @@ impl Rw<'_> {
                     decl: self.decl.clone(),
                     msg: format!("`{n}` is private to module `{}` (only `pub` definitions are part of its contract)", it.module),
                 });
+            } else if it.mock {
+                self.test_only(n);
             } else if it.foreign && it.module != self.module && self.rename.is_none() {
                 // a foreign function is called only from its own module, which turns
                 // it into a capability for the rest of the program
@@ -1361,7 +1443,7 @@ impl Rw<'_> {
                 let refinement = t.refinement.as_ref().map(|r| self.expr(r));
                 self.pop();
                 self.tparams.pop();
-                DeclKind::Type(TypeDecl { distinct: t.distinct, name: self.declared(m, t.name), params: t.params.clone(), body, refinement })
+                DeclKind::Type(TypeDecl { distinct: t.distinct, name: self.declared(m, t.name), params: t.params.clone(), body, refinement , mock: t.mock })
             }
             DeclKind::Fn(f) => DeclKind::Fn(self.func(f, if self.store.is_none() && !self.writing() { root_fn(m, f.name, true) } else { self.declared(m, f.name) })),
             DeclKind::Extern(e) => DeclKind::Extern(ExternDecl {

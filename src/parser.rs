@@ -319,6 +319,15 @@ impl Parser {
             }
             t.distinct = true;
             DeclKind::Type(t)
+        } else if self.is_kw("mock") && matches!(self.peek_at(1), Tok::Ident(_)) && matches!(self.peek_at(2), Tok::Sym("=") | Tok::Sym("[")) {
+            // `mock MemFiles = { files: ... }`: a fake for tests, declared as a type
+            self.next();
+            let mut t = self.type_decl()?;
+            if !matches!(t.body, TypeBody::Record(_)) {
+                return Err(self.err(&format!("a mock holds the data of a fake: `mock {} = {{ fields }}` (`{{}}` for none)", t.name)));
+            }
+            t.mock = true;
+            DeclKind::Type(t)
         } else if self.eat_kw("type") {
             DeclKind::Type(self.type_decl()?)
         } else if self.is_kw("comptime") && matches!(self.peek_at(1), Tok::Ident(f) if f == "fn") {
@@ -566,7 +575,7 @@ impl Parser {
             TypeBody::Alias(self.type_union()?)
         };
         let refinement = if self.eat_kw("where") { Some(self.expr()?) } else { None };
-        Ok(TypeDecl { distinct: false, name, params, body, refinement })
+        Ok(TypeDecl { distinct: false, name, params, body, refinement, mock: false })
     }
 
     fn fields(&mut self) -> R<Vec<Field>> {
