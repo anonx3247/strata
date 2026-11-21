@@ -3932,7 +3932,7 @@ fn comptime_code_runs_while_compiling() {
         strata(&["--file", "c.strata", "run"], &d, None)
     };
     let (ok, out) = run("(99999999999999999999999 * len($Self.fields))");
-    assert!(ok && out == "[\"x!\",\"label!\"]\n199999999999999999999998\n", "{out}");
+    assert!(ok && out == "[\"x!\", \"label!\"]\n199999999999999999999998\n", "{out}");
     let (ok, out) = run("(len($Self.fields) / 0)");
     assert!(!ok && out.contains("deriving `count`: `comptime len($Self.fields) / 0` failed: division by zero"), "{out}");
     let (ok, out) = run("spin(1)");
