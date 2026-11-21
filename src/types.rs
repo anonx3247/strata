@@ -166,6 +166,53 @@ trait FiniteIterator[T]: Iterator[T] {
   }
 }
 
+/// The elements of a list one at a time, from `at`: what `iter()` gives
+/// on a list, a set (in order) or a dict (its entries, by key).
+type ListIter[T] = { items: List[T], at: Natural }
+
+impl[T] Iterator[T] for ListIter[T] {
+  fn next(mut self) -> Option[T] {
+    if self.at < len(self.items) {
+      x := self.items[self.at]
+      self.at += 1
+      Some(x)
+    } else {
+      None
+    }
+  }
+}
+
+impl[T] FiniteIterator[T] for ListIter[T] {
+  fn len(self) -> Natural {
+    if self.at < len(self.items) { len(self.items) - self.at } else { 0 }
+  }
+}
+
+/// A collection whose elements can be walked as an iterator: `xs.iter()`.
+/// (A list isn't an iterator itself: its `map` and `filter` are the
+/// builtins, which give lists.)
+trait Iterable[T] {
+  fn iter(self) -> ListIter[T]
+}
+
+impl[T] Iterable[T] for List[T] {
+  fn iter(self) -> ListIter[T] {
+    ListIter { items: self, at: 0 }
+  }
+}
+
+impl[T] Iterable[T] for Set[T] {
+  fn iter(self) -> ListIter[T] {
+    ListIter { items: to_list(self), at: 0 }
+  }
+}
+
+impl[K, V] Iterable[(K, V)] for Dict[K, V] {
+  fn iter(self) -> ListIter[(K, V)] {
+    ListIter { items: items(self), at: 0 }
+  }
+}
+
 /// `Set { e for x in it }` on a finite iterator (`set(it)` on one).
 fn set_of[T, I: FiniteIterator[T]](it: I) -> Set[T] {
   set(it.to_list())
@@ -202,6 +249,9 @@ impl[I: FiniteIterator[T], T] FiniteIterator[T] for Filtered[I, T] {
 /// and `filter`; `fold` on a `FiniteIterator`): called on an iterator, the
 /// call is its method's. Comprehensions are made of them.
 const ITERATOR_BUILTINS: &[&str] = &["map", "filter", "fold"];
+
+/// The built-in types with type arguments, which impls can be written for.
+const BUILTIN_HEADS: &[&str] = &["List", "Set", "Dict"];
 
 /// The module the prelude's code is in, once added to a program.
 pub const PRELUDE_MODULE: &str = "std.prelude";
@@ -1665,7 +1715,8 @@ impl<'a> Checker<'a> {
                 std::iter::once(head).chain(self.supers_of(&head, &args, 0).into_iter().map(|(s, _)| s)).collect()
             }
             Ty::Con(head, _) => {
-                if !self.env.types.contains_key(&head) || self.has_own_method(recv, m) {
+                // (a built-in type's impls too: `xs.iter()` on a `List`)
+                if !(self.env.types.contains_key(&head) || BUILTIN_HEADS.contains(&head.as_str())) || self.has_own_method(recv, m) {
                     return None;
                 }
                 self.env.impls.iter().filter(|i| !i.is_inherent() && texpr_head(&i.for_type) == head.as_str()).map(|i| i.trait_name).collect()

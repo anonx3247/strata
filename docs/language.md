@@ -433,7 +433,17 @@ odd_squares := [n * n for n in Naturals { at: 0 } where n % 2 == 1]   // 1, 9, 2
 Set { x % 2 for x in Count { at: 0, end: 4 } }                        // Set { 0, 1 }
 ```
 
-**Not yet:** lists, sets, dicts and ranges as iterators (so a nested comprehension's inner source must be a list), iterators over a string's units, generators and async.
+A list, a set or a dict isn't an iterator itself (its `map` and `filter` are the builtins, which give lists), but `iter()` gives one, finite: the prelude's `ListIter`, over a list's elements, a set's in order, or a dict's entries by key. A range is a list, so `(0..n).iter()` works too.
+
+```rust
+fn total[I: FiniteIterator[Int]](it: I) -> Int { it.fold(0, (a, b) -> a + b) }
+
+total([3, 1, 2].iter())                  // 6
+total((0..5).iter())                     // 10
+for (k, v) in d.iter() { … }             // a dict's entries, by key
+```
+
+**Not yet:** iterators over a string's units, a nested comprehension whose inner source is an iterator, generators and async.
 
 ## Foreign functions: `extern c`
 
