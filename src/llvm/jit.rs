@@ -55,6 +55,8 @@ unsafe extern "C" {
     fn strata_str_cmp();
     fn strata_alloc();
     fn strata_dup();
+    fn strata_ct_keep();
+    fn strata_ct_kept() -> i64;
     fn strata_int_dup();
     fn strata_int_drop();
     fn strata_release();
@@ -158,6 +160,7 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_str_cmp", strata_str_cmp as *const () as usize),
         ("strata_alloc", strata_alloc as *const () as usize),
         ("strata_dup", strata_dup as *const () as usize),
+        ("strata_ct_keep", strata_ct_keep as *const () as usize),
         ("strata_int_dup", strata_int_dup as *const () as usize),
         ("strata_int_drop", strata_int_drop as *const () as usize),
         ("strata_release", strata_release as *const () as usize),
@@ -307,6 +310,37 @@ pub fn fuzz_case(addr: usize, seed: u64, budget: i64) -> (Option<(String, String
         (text(unsafe { kind() }), String::from_utf8_lossy(msg).to_string(), text(unsafe { stack() }))
     });
     (fault, text(unsafe { args() }))
+}
+
+/// Run compile-time code (`llvm::compile_comptime`): each `strata.ct.N`,
+/// within `budget` steps, its value read (`native::read`) before the code
+/// is gone; a fault or the budget's end is its message.
+pub fn comptime(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget: i64) -> Result<Vec<Result<crate::interp::Value, String>>, String> {
+    use std::ffi::c_char;
+    let ctx = Context::create();
+    let engine = engine(&ctx, ir)?;
+    type Init = unsafe extern "C" fn(i32, *const *const c_char);
+    type Fuzz = unsafe extern "C" fn(unsafe extern "C" fn(), i64, i64) -> i32;
+    type Message = unsafe extern "C" fn() -> *const i64;
+    let (init, fuzz, message): (Init, Fuzz, Message) = unsafe {
+        (std::mem::transmute(strata_init as *const ()), std::mem::transmute(strata_fuzz as *const ()), std::mem::transmute(strata_test_message as *const ()))
+    };
+    let name = std::ffi::CString::new("comptime").unwrap();
+    let argv = [name.as_ptr()];
+    unsafe { init(1, argv.as_ptr()) };
+    let mut out = vec![];
+    for (i, root) in roots.iter().enumerate() {
+        let addr = engine.get_function_address(&format!("strata.ct.{i}")).map_err(|e| e.to_string())?;
+        let f: unsafe extern "C" fn() = unsafe { std::mem::transmute(addr) };
+        if unsafe { fuzz(f, 1, budget) } != 0 {
+            let m = unsafe { message() };
+            let msg = unsafe { std::slice::from_raw_parts(m.add(1) as *const u8, *m as usize) };
+            out.push(Err(String::from_utf8_lossy(msg).to_string()));
+            continue;
+        }
+        out.push(unsafe { super::native::read(root, shapes, strata_ct_kept()) });
+    }
+    Ok(out)
 }
 
 /// Run the IR's `main` with the program's arguments; its exit code. A fault

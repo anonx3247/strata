@@ -344,6 +344,12 @@ const char *strata_fuzz_args(void) {
 
 void strata_seed(int64_t seed) { rng = (uint64_t)seed; }
 
+// Compile-time code's value (`strata.ct.N` hands it over), for the compiler
+// to read (src/llvm/native.rs).
+static int64_t ct_kept;
+void strata_ct_keep(int64_t v) { ct_kept = v; }
+int64_t strata_ct_kept(void) { return ct_kept; }
+
 // The last test's fault: its kind, message and call stack, and what it printed.
 const char *strata_test_kind(void) { return KINDS[fault_kind & 255]; }
 Str *strata_test_message(void) { return fault_msg; }

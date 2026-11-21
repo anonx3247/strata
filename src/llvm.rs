@@ -39,6 +39,8 @@ use std::fmt::Write;
 
 #[cfg(feature = "jit")]
 pub mod jit;
+#[cfg(feature = "jit")]
+pub mod native;
 
 /// The list built-ins written in Strata, compiled with every program.
 const PRELUDE: &[u8] = include_bytes!("llvm/prelude.strata");
@@ -181,6 +183,57 @@ enum Entry<'e> {
     Main(&'e str),
     Tests,
     Fuzz(&'e [FuzzTarget]),
+    /// Compile-time code: each named function's body is `{ ..; _ := e; () }`.
+    Comptime(&'e [String]),
+}
+
+/// How a value is laid out in memory, to read one the compiled code made
+/// (a `comptime` result; the FFI's values later).
+#[cfg_attr(not(feature = "jit"), allow(dead_code))]
+#[derive(Debug, Clone)]
+pub enum Shape {
+    Int,
+    Float,
+    Bool,
+    Unit,
+    Str,
+    List(Box<Shape>),
+    Set(Box<Shape>),
+    Dict(Box<Shape>, Box<Shape>),
+    Tuple(Vec<Shape>),
+    /// A record or sum type (or a variant): its constructors in `Shapes`, by this key.
+    Named(String),
+    Distinct(String, Box<Shape>),
+    /// A union: each member, with its box's tag if it is boxed.
+    Union(Vec<(Option<i64>, Shape)>),
+}
+
+/// A constructor of a named shape: its tag, name, whether it makes a record
+/// (else a variant), and its fields.
+#[cfg_attr(not(feature = "jit"), allow(dead_code))]
+#[derive(Debug, Clone)]
+pub struct CtorShape {
+    pub tag: i64,
+    pub name: String,
+    pub record: bool,
+    pub fields: Vec<(Option<String>, Shape)>,
+}
+
+/// The named shapes a set of shapes refers to.
+#[cfg_attr(not(feature = "jit"), allow(dead_code))]
+#[derive(Debug, Clone, Default)]
+pub struct Shapes {
+    pub named: HashMap<String, Vec<CtorShape>>,
+}
+
+/// The IR of compile-time code: for each of `fns` (whose body is
+/// `{ _ := e; () }`), `@"strata.ct.N"` runs `e` and hands its value to the
+/// runtime (`strata_ct_keep`), with steps counted; and the shape of each value.
+#[cfg_attr(not(feature = "jit"), allow(dead_code))]
+pub fn compile_comptime(prog: &Program, fns: &[String]) -> Res<(String, Vec<Shape>, Shapes)> {
+    let (ir, _, shapes) = compile_with(prog, Entry::Comptime(fns), true)?;
+    let (roots, named) = shapes.unwrap_or_default();
+    Ok((ir, roots, named))
 }
 
 /// A function `strata verify --jit` fuzzes: its name, and its parameters'
@@ -206,11 +259,24 @@ pub fn compile_tests(prog: &Program) -> Res<(String, Vec<String>)> {
 }
 
 fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
+    let (ir, tests, _) = compile_with(prog, entry, false)?;
+    Ok((ir, tests))
+}
+
+#[allow(clippy::type_complexity)]
+/// `resolved`: `prog` is resolved already (with what was added to it): only
+/// the prelude is.
+fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Vec<String>, Option<(Vec<Shape>, Shapes)>)> {
     // the list built-ins in Strata, compiled with the program
     let mut with = prog.clone();
     let prelude = crate::binary::decode_module(PRELUDE).map_err(|e| format!("llvm/prelude.strata: {e}"))?;
-    with.decls.extend(prelude);
-    let (resolved, types) = crate::types::elaborate_typed(&with);
+    let (resolved, types) = if resolved {
+        with.decls.extend(crate::resolve::resolve(&Program { decls: prelude }).program.decls);
+        crate::types::elaborate_resolved(&with)
+    } else {
+        with.decls.extend(prelude);
+        crate::types::elaborate_typed(&with)
+    };
     let (env, _) = Env::build(&resolved.program);
     // every constructor gets a tag of its own, so a value's tag says what it is
     let mut ctors: Vec<&Symbol> = env.ctors.keys().collect();
@@ -245,7 +311,9 @@ fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
     }).collect();
     let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default() };
     let mut tests = vec![];
-    m.fuzzing = matches!(entry, Entry::Fuzz(_));
+    // compile-time code counts steps too (its budget)
+    m.fuzzing = matches!(entry, Entry::Fuzz(_) | Entry::Comptime(_));
+    let mut comptime: Vec<(String, Ty)> = vec![];
     match entry {
         Entry::Fuzz(targets) => {
             for (i, t) in targets.iter().enumerate() {
@@ -257,6 +325,15 @@ fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
             let ret = m.lower(&main.ret, &HashMap::default())?;
             // C's `main` first: it asks for the program's `main`, with its capabilities
             m.entry(entry, &main, &ret)?;
+        }
+        Entry::Comptime(fns) => {
+            // each an ordinary function without parameters, its result handed over below
+            for name in fns.iter() {
+                let f = env.fns.get(&Symbol::new(name)).ok_or(format!("no compile-time function `{name}`"))?.clone();
+                m.function(name, &[], &[], &f)?;
+                let t = m.lower(&f.ret, &HashMap::default())?;
+                comptime.push((sym_impls(name, &[], &[]), t));
+            }
         }
         Entry::Tests => {
             // each test, a function of its own (no frame of its own on the call stack)
@@ -292,6 +369,25 @@ fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
             m.body += text;
         }
     }
+    // compile-time code: a function per expression handing its value to the runtime, and its shape
+    let mut shapes = None;
+    if !comptime.is_empty() {
+        let mut named = Shapes::default();
+        let mut roots = vec![];
+        for (i, (sym, t)) in comptime.iter().enumerate() {
+            roots.push(m.shape(t, &mut named)?);
+            let ll = m.ll(t)?;
+            let (call, slot) = match ll {
+                "void" => (format!("  call void {sym}()"), "0".to_string()),
+                "i64" => (format!("  %r = call i64 {sym}()"), "%r".into()),
+                "double" => (format!("  %r = call double {sym}()\n  %s = bitcast double %r to i64"), "%s".into()),
+                "i1" => (format!("  %r = call i1 {sym}()\n  %s = zext i1 %r to i64"), "%s".into()),
+                _ => (format!("  %r = call ptr {sym}()\n  %s = ptrtoint ptr %r to i64"), "%s".into()),
+            };
+            writeln!(m.body, "define void @\"strata.ct.{i}\"() {{\nentry:\n{call}\n  call void @strata_ct_keep(i64 {slot})\n  ret void\n}}\n").unwrap();
+        }
+        shapes = Some((roots, named));
+    }
     let mut out = String::from("; Strata, compiled by `strata build`\n\n");
     out += &m.globals;
     out += "\n";
@@ -300,7 +396,7 @@ fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
     for line in m.foreign.values() {
         out += line;
     }
-    Ok((out, tests))
+    Ok((out, tests, shapes))
 }
 
 const DECLARATIONS: &str = "\
@@ -354,6 +450,7 @@ declare void @strata_fault(i32, ptr) noreturn
 declare void @strata_enter(ptr)
 declare void @strata_step()
 declare void @strata_fuzz_arg(ptr)
+declare void @strata_ct_keep(i64)
 declare void @strata_leave()
 declare void @strata_overflow() noreturn cold
 declare void @strata_main_error(ptr)
@@ -879,6 +976,55 @@ impl<'a> Module<'a> {
     fn member_of(&self, m: &Ty, u: &Ty) -> bool {
         let keys: Vec<String> = self.members(u).iter().map(|x| key(&self.repr(x).unwrap_or(Ty::Unit))).collect();
         self.members(m).iter().all(|x| keys.contains(&key(&self.repr(x).unwrap_or(Ty::Unit))))
+    }
+
+    /// How values of `t` are laid out (`Shape`), the named ones added to `named`.
+    fn shape(&mut self, t: &Ty, named: &mut Shapes) -> Res<Shape> {
+        if let Ty::Con(n, _) = t {
+            if self.is_distinct(n) {
+                let inner = self.repr(t)?;
+                return Ok(Shape::Distinct(n.to_string(), Box::new(self.shape(&inner, named)?)));
+            }
+        }
+        let r = self.repr(t)?;
+        Ok(match &r {
+            Ty::Int => Shape::Int,
+            Ty::Float => Shape::Float,
+            Ty::Bool => Shape::Bool,
+            Ty::Unit => Shape::Unit,
+            Ty::Str => Shape::Str,
+            Ty::Con(n, a) if n == "List" && a.len() == 1 => Shape::List(Box::new(self.shape(&a[0], named)?)),
+            Ty::Con(n, a) if n == "Set" && a.len() == 1 => Shape::Set(Box::new(self.shape(&a[0], named)?)),
+            Ty::Con(n, a) if n == "Dict" && a.len() == 2 => Shape::Dict(Box::new(self.shape(&a[0], named)?), Box::new(self.shape(&a[1], named)?)),
+            Ty::Con(n, a) if n == "Tuple" => Shape::Tuple(a.iter().map(|x| self.shape(x, named)).collect::<Res<_>>()?),
+            Ty::Union(ms) => {
+                let mut out = vec![];
+                for m in ms.clone() {
+                    let tag = self.boxes(&m).then(|| self.box_tag(&m));
+                    out.push((tag, self.shape(&m, named)?));
+                }
+                Shape::Union(out)
+            }
+            Ty::Con(n, _) if self.nominal(&r) => {
+                let k = key(&r);
+                if !named.named.contains_key(&k) {
+                    // (a recursive type refers to itself by its key)
+                    named.named.insert(k.clone(), vec![]);
+                    let record = matches!(self.env.types.get(n).map(|t| &t.body), Some(TypeBody::Record(_)));
+                    let mut cs = vec![];
+                    for c in self.ctors_of(&r) {
+                        let mut fields = vec![];
+                        for f in self.fields(&c, &self.ctor_args(&c, &r))? {
+                            fields.push((f.name.clone(), self.shape(&f.ty, named)?));
+                        }
+                        cs.push(CtorShape { tag: self.tags[&c], name: c.clone(), record, fields });
+                    }
+                    named.named.insert(k.clone(), cs);
+                }
+                Shape::Named(k)
+            }
+            other => return Err(format!("a `{}` made at compile time can't be kept in the program", key(other))),
+        })
     }
 
     /// The constructors a value of type `t` can have.
@@ -2741,7 +2887,11 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let mut conds = vec![];
         if self.m.nominal(&self.m.repr(&v.0)?) {
-            let target = Ty::Con(name.clone(), Module::args_of(&v.0));
+            // an alias (`Choice` is a refined `Sum`): its underlying type's constructors
+            let target = match self.m.env.types.get(name).map(|t| &t.body) {
+                Some(TypeBody::Alias(_)) => self.m.repr(&self.lower(written)?)?,
+                _ => Ty::Con(name.clone(), Module::args_of(&v.0)),
+            };
             let cs = self.m.ctors_of(&target);
             conds.push(self.tag_in(v, &cs)?);
         }

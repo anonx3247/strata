@@ -3918,3 +3918,23 @@ fn extern_c_declarations() {
     let (ok, out) = strata(&["rename", "db.strlen", "c_strlen", "--no-commit"], &pkg, None);
     assert!(!ok && out.contains("`db.strlen` is a foreign function: its name is the symbol it is linked to"), "{out}");
 }
+
+// Compile-time code that computes (not only data): a function of the
+// program, a lambda, a big integer; a fault in it and a runaway loop are
+// errors of the `derive`, showing the code as written.
+#[test]
+fn comptime_code_runs_while_compiling() {
+    let d = tmp("comptime-runs");
+    let src = "use std.typing.Record\n\nfn shout(s: String) -> String {\n  s + \"!\"\n}\n\nfn spin(n: Int) -> Int {\n  mut i := n\n  while i > 0 { i = i + 1 }\n  i\n}\n\nderivable(Record) trait Names\n  requires len($Self.fields) > 1 {\n  derived fn names(self) -> List[String] {\n    comptime $Self.fields.map(f -> shout(f.name))\n  }\n  derived fn count(self) -> Int {\n    comptime COUNT\n  }\n}\n\ntype P = { x: Int, label: String }\n\nderive Names for P\n\nfn main() {\n  p := P { x: 1, label: \"a\" }\n  print(p.names())\n  print(p.count())\n}\n";
+    let run = |count: &str| {
+        let (ok, out) = strata(&["--file", "c.strata", "edit"], &d, Some(&src.replace("COUNT", count)));
+        assert!(ok, "{out}");
+        strata(&["--file", "c.strata", "run"], &d, None)
+    };
+    let (ok, out) = run("(99999999999999999999999 * len($Self.fields))");
+    assert!(ok && out == "[\"x!\",\"label!\"]\n199999999999999999999998\n", "{out}");
+    let (ok, out) = run("(len($Self.fields) / 0)");
+    assert!(!ok && out.contains("deriving `count`: `comptime len($Self.fields) / 0` failed: division by zero"), "{out}");
+    let (ok, out) = run("spin(1)");
+    assert!(!ok && out.contains("`comptime spin(1)` ran for more than 5000000 steps: compile-time code must finish"), "{out}");
+}

@@ -327,7 +327,16 @@ pub fn split_trait_call(name: &str) -> Option<(&str, &str)> {
 /// expressions, by node address (in a generic function, with its type
 /// parameters as `Ty::Rigid`). The compiler works from these.
 pub fn elaborate_typed(prog: &Program) -> (crate::resolve::Resolution, HashMap<usize, Ty>) {
-    let mut r = crate::resolve::resolve(prog);
+    elaborate_from(crate::resolve::resolve(prog))
+}
+
+/// `elaborate_typed` of a program already resolved (`Checked::compiled`):
+/// resolving it again would qualify its names twice.
+pub fn elaborate_resolved(prog: &Program) -> (crate::resolve::Resolution, HashMap<usize, Ty>) {
+    elaborate_from(crate::resolve::Resolution { program: prog.clone(), errors: vec![] })
+}
+
+fn elaborate_from(mut r: crate::resolve::Resolution) -> (crate::resolve::Resolution, HashMap<usize, Ty>) {
     let (env, _) = Env::build(&r.program);
     let (_, _, targets, mut types) = check_decls(&r.program, &env, true);
     rewrite(&mut r.program, &env, targets, &mut types);
@@ -3127,7 +3136,7 @@ pub fn show_ty(t: &Ty) -> String {
 
 // ------------------------------------------------------------------
 
-fn ty_to_texpr(t: &Ty) -> TypeExpr {
+pub fn ty_to_texpr(t: &Ty) -> TypeExpr {
     let n = |s: &str| TypeExpr::Named(s.into(), vec![]);
     match t {
         Ty::Int | Ty::Var(_) | Ty::Rigid(_) => n("Int"),
@@ -3236,7 +3245,15 @@ pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<Symbol, TypeExpr>>
 }
 
 pub fn check(prog: &Program) -> CheckReport {
-    let resolved = crate::resolve::resolve(prog);
+    check_from(crate::resolve::resolve(prog))
+}
+
+/// `check` of a program already resolved (its report only).
+pub fn check_report_resolved(prog: &Program) -> CheckReport {
+    check_from(crate::resolve::Resolution { program: prog.clone(), errors: vec![] })
+}
+
+fn check_from(resolved: crate::resolve::Resolution) -> CheckReport {
     let prog = &resolved.program;
     let (env, mut errors) = Env::build_with(prog, false);
     errors.splice(0..0, resolved.errors);
