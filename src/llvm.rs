@@ -4781,18 +4781,6 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
                 let Expr::Call(_, args) = xs else { unreachable!() };
                 let (lo, hi) = (self.expr(&args[0])?, self.expr(&args[1])?);
-                // as the interpreter, which makes the list first
-                let (big, d) = (self.fresh("big"), self.fresh("span"));
-                self.emit(format!("{d} = sub i64 {}, {}", hi.1, lo.1));
-                let (up, far) = (self.fresh("up"), self.fresh("far"));
-                self.emit(format!("{up} = icmp sgt i64 {}, {}", hi.1, lo.1));
-                self.emit(format!("{far} = icmp ugt i64 {d}, 1000000"));
-                self.emit(format!("{big} = and i1 {up}, {far}"));
-                let (toobig, fine) = (self.fresh_label("range.big"), self.fresh_label("range.ok"));
-                self.cond_br(&bool_v(&big), &toobig, &fine);
-                self.block(&toobig);
-                self.fault(Fault::Runtime, vec![Part::Lit("range too large".into())])?;
-                self.block(&fine);
                 let counter = self.fresh("i");
                 writeln!(self.allocas, "  {counter} = alloca i64").unwrap();
                 self.store(&lo, &counter)?;

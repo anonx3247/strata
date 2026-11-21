@@ -212,9 +212,9 @@ impl Gen {
                     let vals = ftys.iter().map(|ft| self.produce(env, ft, it, depth + 1, &Hints::default())).collect::<Result<Vec<_>, _>>()?;
                     match (names, matches!(td.body, TypeBody::Record(_))) {
                         (Some(ns), true) => Value::Record(c.to_string(), ns.iter().map(|n| n.to_string()).zip(vals).collect()),
-                        (Some(ns), false) => Value::Variant(c.to_string(), Fields::Rec(ns.iter().map(|n| n.to_string()).zip(vals).collect())),
+                        (Some(ns), false) => Value::Variant(c.to_string(), Fields::rec(ns.iter().map(|n| n.to_string()).zip(vals).collect())),
                         (None, _) if vals.is_empty() => Value::Variant(c.to_string(), Fields::None),
-                        (None, _) => Value::Variant(c.to_string(), Fields::Pos(vals)),
+                        (None, _) => Value::Variant(c.to_string(), Fields::pos(vals)),
                     }
                 }
             };

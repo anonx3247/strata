@@ -178,8 +178,9 @@ fn lists_and_lambdas_run_as_interpreted() {
     let (out, code) = case(&d, "math", &math);
     assert!(out.contains("[120,6,1024,10,9,55,4,8]") && out.contains("division by zero"), "{out}");
     assert_eq!(code, 101);
-    let (out, code) = case(&d, "range", "fn main() { for i in range(0, 2000000) { print(i) } }");
-    assert!(out.contains("range too large") && code == 101, "{out}");
+    // no limit on a range's length (the interpreter's was 1,000,000)
+    let (out, code) = case(&d, "range", "fn main() {\n  mut n: Int = 0\n  for i in range(0, 2000000) { n = n + i }\n  print(n)\n  print(len(range(0, 1500000)))\n}");
+    assert_eq!((out.as_str(), code), ("1999999000000\n1500000\n", 0));
 }
 
 #[test]
@@ -1411,4 +1412,66 @@ fn verify_fuzzes_compiled() {
     assert!(out.contains("✗ pieces                   Refinement violation (found by the fuzzer)") && out.contains("result of `pieces`: 0 does not satisfy `Positive`"), "{out}");
     assert!(out.contains("✗ loops                    Limit violation (found by the fuzzer)") && out.contains("too many steps (stack: loops)"), "{out}");
     assert!(out.contains("~ fine                     fuzzed: 200 cases, 0 discarded"), "{out}");
+}
+
+// No limit on recursion or loops: a recursion runs until the stack is
+// nearly out, then faults (as compiled code does), its calls one entry of
+// the stack line; a test's runaway recursion fails that test.
+#[test]
+fn recursion_runs_until_the_stack_is_out() {
+    let d = tmp("no_limits");
+    let strata = env!("CARGO_BIN_EXE_strata");
+    let f = d.join("deep.strata");
+    save(
+        &f,
+        r#"type Chain =
+  | Link(Int, Chain)
+  | End
+
+fn down(n: Int) -> Int {
+  if n == 0 { 0 } else { 1 + down(n - 1) }
+}
+
+fn length(c: Chain) -> Int {
+  match c {
+    Link(_, rest) => 1 + length(rest),
+    End => 0,
+  }
+}
+
+fn main() {
+  print(down(20000))
+  mut c: Chain = End
+  mut i: Int = 0
+  while i < 1500000 {
+    i = i + 1
+  }
+  i = 0
+  while i < 20000 {
+    c = Link(i, c)
+    i = i + 1
+  }
+  print(length(c))
+  print(down(1000000000))
+}
+
+test "runaway" {
+  assert down(100) == 100
+  down(-1)
+}
+"#,
+    );
+    let o = Command::new(strata).args(["run", "--interpret"]).arg(&f).output().unwrap();
+    let (out, err) = (String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    assert_eq!((out.as_ref(), o.status.code()), ("20000\n20000\n", Some(101)), "{err}");
+    assert!(err.starts_with("fault (Limit): stack overflow (recursion too deep)\n    stack: main -> down ("), "{err}");
+    assert!(err.ends_with(" times)\n") && err.lines().count() == 2, "{err}");
+    for how in ["--interpret", "--jit"] {
+        let o = Command::new(strata).args(["test", how, "--file"]).arg(&f).output().unwrap();
+        let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+        if how == "--jit" && out.contains("built without the JIT") {
+            continue; // built without the JIT
+        }
+        assert!(out.contains("✗ runaway\n    Limit: stack overflow (recursion too deep)\n    stack: down (") && out.contains("0 passed, 1 failed"), "{how}: {out}");
+    }
 }

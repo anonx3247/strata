@@ -203,7 +203,7 @@ impl<'a> Expander<'a> {
     fn field(&mut self, name: &Symbol, doc: &[String], ty: &TypeExpr, default: Option<&Expr>) -> Value {
         let t = self.type_value(ty);
         let default = match default {
-            Some(e) => Value::Variant("Some".into(), Fields::Pos(vec![Value::Str(crate::printer::expr(e, 0))])),
+            Some(e) => Value::Variant("Some".into(), Fields::pos(vec![Value::Str(crate::printer::expr(e, 0))])),
             None => Value::Variant("None".into(), Fields::None),
         };
         record("Field", vec![("name", Value::Str(name.to_string())), ("doc", strs(doc)), ("type", t), ("written", Value::Str(crate::printer::ty(ty))), ("default", default)])
@@ -214,21 +214,21 @@ impl<'a> Expander<'a> {
         let v = match t {
             TypeExpr::Named(n, args) => {
                 let args = args.iter().map(|a| self.type_value(a)).collect();
-                Value::Variant(q("Named"), Fields::Rec(vec![("name".into(), Value::Str(crate::names::short(n).to_string())), ("args".into(), Value::List(args))]))
+                Value::Variant(q("Named"), Fields::rec(vec![("name".into(), Value::Str(crate::names::short(n).to_string())), ("args".into(), Value::List(args))]))
             }
             TypeExpr::Refined(b, pred) => {
                 let base = self.type_value(b);
-                Value::Variant(q("Refined"), Fields::Rec(vec![("base".into(), base), ("condition".into(), Value::Str(crate::printer::expr(pred, 0)))]))
+                Value::Variant(q("Refined"), Fields::rec(vec![("base".into(), base), ("condition".into(), Value::Str(crate::printer::expr(pred, 0)))]))
             }
             TypeExpr::Fn(ps, r) => {
                 let ps = ps.iter().map(|a| self.type_value(a)).collect();
                 let r = self.type_value(r);
-                Value::Variant(q("Function"), Fields::Rec(vec![("params".into(), Value::List(ps)), ("result".into(), r)]))
+                Value::Variant(q("Function"), Fields::rec(vec![("params".into(), Value::List(ps)), ("result".into(), r)]))
             }
             TypeExpr::Unit => Value::Variant(q("Nothing"), Fields::None),
             TypeExpr::Union(ms) => {
                 let ms = ms.iter().map(|a| self.type_value(a)).collect();
-                Value::Variant(q("Union"), Fields::Rec(vec![("members".into(), Value::List(ms))]))
+                Value::Variant(q("Union"), Fields::rec(vec![("members".into(), Value::List(ms))]))
             }
         };
         self.written.insert(json(&v), t.clone());

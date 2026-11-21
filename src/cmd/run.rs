@@ -146,7 +146,7 @@ fn test_interpreted(resolved: &Program, env: &types::Env, filter: &str) -> Vec<T
         let mut it = interp::Interp::new(env, 7);
         // each test prints into its own buffer, shown only if it fails
         it.output = interp::Output::Buffer(String::new());
-        let fault = it.eval(&t.body, &None).err().map(|f| (format!("{:?}", f.kind), f.msg, f.stack.join(" -> ")));
+        let fault = it.eval(&t.body, &None).err().map(|f| (format!("{:?}", f.kind), f.msg, crate::interp::show_stack(&f.stack)));
         let printed = match &it.output {
             interp::Output::Buffer(b) => b.clone(),
             _ => String::new(),
@@ -243,7 +243,7 @@ pub fn run_main(_p: &Program, env: &types::Env, prog: &str, program_args: Vec<St
                 let r = it.call_method(&call, vec![Value::Str(ty.clone()), Value::Str(prog.to_string()), args]).map_err(|f| format!("reading the options: {}", f.msg))?;
                 let field = |fs: &[(String, Value)], k: &str| fs.iter().find(|(n, _)| n == k).map(|(_, v)| interp::show(v)).unwrap_or_default();
                 match r {
-                    Value::Variant(c, interp::Fields::Pos(mut xs)) if c == "Ok" && xs.len() == 1 => xs.pop().unwrap(),
+                    Value::Variant(c, interp::Fields::Pos(xs)) if c == "Ok" && xs.len() == 1 => xs[0].clone(),
                     Value::Variant(c, interp::Fields::Pos(xs)) if c == "Err" => match xs.first() {
                         Some(Value::Variant(e, interp::Fields::Rec(fs))) if e.ends_with("ShowHelp") => {
                             print!("{}", field(fs, "text"));
@@ -278,7 +278,7 @@ pub fn run_main(_p: &Program, env: &types::Env, prog: &str, program_args: Vec<St
         other => Err(format!("`main` must return `()`, an `ExitCode` or a `Result` of either, not {}", interp::show(other))),
     };
     match res {
-        Ok(Value::Variant(c, interp::Fields::Pos(mut xs))) if c == "Ok" && xs.len() == 1 => code(&xs.pop().unwrap()),
+        Ok(Value::Variant(c, interp::Fields::Pos(xs))) if c == "Ok" && xs.len() == 1 => code(&xs[0]),
         Ok(Value::Variant(c, interp::Fields::Pos(xs))) if c == "Err" && xs.len() == 1 => {
             let shown = match &xs[0] {
                 Value::Str(s) => s.clone(),
@@ -291,7 +291,7 @@ pub fn run_main(_p: &Program, env: &types::Env, prog: &str, program_args: Vec<St
         Err(fault) => {
             eprintln!("fault ({:?}): {}", fault.kind, fault.msg);
             if !fault.stack.is_empty() {
-                eprintln!("    stack: {}", fault.stack.join(" -> "));
+                eprintln!("    stack: {}", crate::interp::show_stack(&fault.stack));
             }
             Ok(101)
         }
