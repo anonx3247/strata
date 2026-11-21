@@ -14,21 +14,19 @@
 <div class="bands"><svg id="bands" preserveAspectRatio="none" viewBox="0 0 1600 1000"></svg></div>
 <div id="wipe"><i></i><i></i><i></i><i></i></div>
 <div id="progress"></div>
-<a id="docs-link" href="docs.html?d=learn-strata">Learn Strata →</a>
+<a id="docs-link" href="https://github.com/anonx3247/strata">GitHub →</a>
 
 <main id="deck">
 
-<!-- ═════════════════════════ title ═════════════════════════ -->
 <section class="slide" id="hero" data-nav="Strata">
   <div class="inner">
     <h1 id="title">Strata</h1>
     <div class="tag"><span class="typed" id="tagline"></span></div>
-    <p class="lede fx" style="--d:1.6s">An experimental programming language where code is a tree of definitions, constraints live in the types, contracts are proven, and every edit is checked against the whole codebase before it is committed.</p>
+    <p class="lede fx" style="--d:1.6s">An experimental programming language where code is a tree of definitions, constraints live in the types, contracts are proven, and every edit is checked against the code it touches before it is committed.</p>
     <div class="cue fx" style="--d:2.2s"><kbd>→</kbd> or <kbd>space</kbd> to begin</div>
   </div>
 </section>
 
-<!-- ═════════════════════════ what Strata is ═════════════════════════ -->
 <section class="slide" id="ideas" data-nav="Three ideas" data-steps="4">
   <div class="kicker fx">What Strata is</div>
   <h2 class="fx small">Three ideas, and what they change.</h2>
@@ -36,12 +34,11 @@
   <div class="fixes" id="ideas-fixes"></div>
 </section>
 
-<!-- ═════════════════════════ code is a tree ═════════════════════════ -->
-<section class="slide" id="tree" data-nav="Definitions, not files" data-steps="3">
+<section class="slide" id="tree" data-nav="Definitions" data-steps="3">
   <div class="split wide-right">
     <div class="col">
-      <div class="kicker fx">Definitions, not files</div>
-      <h2 class="fx small">Not a pile of text: a graph of definitions.</h2>
+      <div class="kicker fx">Definitions</div>
+      <h2 class="fx small">A codebase is a graph of definitions.</h2>
       <div class="say" id="tree-say"></div>
       <div class="pane code-pane fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title" id="tree-title">orders.strata</span></div><div class="body" id="tree-code"></div></div>
     </div>
@@ -49,10 +46,9 @@
   </div>
 </section>
 
-<!-- ═════════════════════════ levels of detail ═════════════════════════ -->
-<section class="slide" id="levels" data-nav="Levels of detail" data-steps="3">
+<section class="slide" id="levels" data-nav="Read and write text" data-steps="5">
   <div class="kicker fx">Text is just a view</div>
-  <h2 class="fx small">An agent asks for the detail it needs.</h2>
+  <h2 class="fx small" id="levels-h">An agent reads the detail it needs.</h2>
   <p class="lede" id="levels-say" data-text="1">An agent asks for the slice it is working on, <code>slice:Order</code> here: <code>Order</code>, what it uses and what uses it, at the detail the task needs. What it sends back with <code>strata edit</code> is checked against everything else.</p>
   <div class="levels fx">
     <div class="pick" id="lv-pick"></div>
@@ -60,8 +56,7 @@
   </div>
 </section>
 
-<!-- ═════════════════════════ structural changes ═════════════════════════ -->
-<section class="slide" id="diffs" data-nav="Structural changes" data-steps="6">
+<section class="slide" id="diffs" data-nav="Structural changes" data-steps="5">
   <div class="kicker fx">Structural changes</div>
   <h2 class="fx small" id="diff-h"></h2>
   <p class="lede" id="diff-say"></p>
@@ -75,9 +70,67 @@
   </div>
 </section>
 
-<!-- ═════════════════════════ fix 2: proof, not tests ═════════════════════════ -->
-<section class="slide" id="proof" data-nav="Proof, not tests" data-steps="4">
-  <div class="kicker fx">Verification</div>
+<section class="slide" id="contracts" data-nav="Contracts" data-steps="10">
+  <div class="split">
+    <div class="col">
+      <div class="kicker fx">Contracts that travel</div>
+      <div class="say" id="c-say"></div>
+      <div class="pane term fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title" id="c-term-title">~/shop</span></div><div class="body wrap" id="c-term"></div></div>
+    </div>
+    <div class="col">
+      <div class="cgraph fx" id="cgraph"></div>
+      <div class="pane code-card" id="c-code"><div class="bar"><span class="title">piped into strata edit</span></div><div class="body"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═════════════════════════ only the signature matters ═════════════════════════ -->
+<section class="slide" id="signature" data-nav="Read the signature" data-steps="3">
+  <div class="split wide-right">
+    <div class="col">
+      <div class="kicker fx">Contracts that travel</div>
+      <h2 class="fx small" id="sig-h"></h2>
+      <div class="say" id="sig-say"></div>
+      <div class="pane term fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title" id="sig-term-title"></span></div><div class="body wrap" id="sig-term"></div></div>
+    </div>
+    <div class="col stage">
+      <div class="graph fx" id="sig-graph"></div>
+      <div class="pane code-card" id="sig-code"><div class="bar"><span class="title" id="sig-code-title"></span></div><div class="body"></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="session" data-nav="Holes and refusals" data-steps="12">
+  <div class="split wide-right">
+    <div class="col">
+      <div class="kicker fx">Every edit checked</div>
+      <div class="say" id="sess-say"></div>
+      <div class="pane term fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">~/shop</span></div><div class="body wrap" id="sess-term"></div></div>
+    </div>
+    <div class="col stage">
+      <div class="graph fx" id="sess-graph"></div>
+      <div class="pane code-card" id="sess-code"><div class="bar"><span class="title">piped into strata edit</span></div><div class="body"></div></div>
+      <div class="stamp" id="sess-stamp"></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="merge" data-nav="Two agents" data-steps="3">
+  <div class="kicker fx">Many agents, one codebase</div>
+  <h2 class="fx small">Two agents touch the same function. Nothing conflicts.</h2>
+  <p class="lede" id="merge-say"></p>
+  <div class="lanes fx" id="lanes"></div>
+  <div class="three">
+    <div class="pane" data-k="0"><div class="bar"><span class="title">agent A, on main</span></div><div class="body wrap" id="m-a"></div></div>
+    <div class="pane" data-k="1"><div class="bar"><span class="title">agent B, on agent-b</span></div><div class="body wrap" id="m-b"></div></div>
+    <div class="pane" data-k="2"><div class="bar"><span class="title">agent B: strata sync main</span></div><div class="body wrap" id="m-sync"></div></div>
+  </div>
+</section>
+
+<section class="slide feature" id="f-mocks" data-nav="Testing: fakes" data-steps="3"></section>
+
+<section class="slide" id="proof" data-nav="Testing: what tests miss" data-steps="4">
+  <div class="kicker fx">Testing</div>
   <h2 class="fx small">Every test passed. The bug was still there.</h2>
   <p class="lede" id="proof-say"></p>
   <div class="explorer fx" id="explorer">
@@ -100,12 +153,11 @@
   </div>
 </section>
 
-<!-- ═════════════════════════ the verifier on math.strata ═════════════════════════ -->
-<section class="slide" id="verdicts" data-nav="Verdicts" data-steps="2">
+<section class="slide" id="verdicts" data-nav="Testing: verdicts" data-steps="2">
   <div class="split wide-right">
     <div class="col">
-      <div class="kicker fx">Verification</div>
-      <h2 class="fx small">Proven, fuzzed, or refuted, with the input.</h2>
+      <div class="kicker fx">Testing</div>
+      <h2 class="fx small">Proven, fuzzed, or refuted, with the input that breaks it.</h2>
       <p class="lede" id="verdicts-say"></p>
       <div class="pane fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">$ strata verify · examples/math.strata</span></div><div class="body wrap" id="math-verify"></div></div>
     </div>
@@ -113,65 +165,10 @@
   </div>
 </section>
 
-<!-- ═════════════════════════ fix 3: contracts propagate ═════════════════════════ -->
-<section class="slide" id="contracts" data-nav="Contracts" data-steps="10">
-  <div class="split">
-    <div class="col">
-      <div class="kicker fx">Contracts that travel</div>
-      <div class="say" id="c-say"></div>
-      <div class="pane term fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title" id="c-term-title">~/shop</span></div><div class="body wrap" id="c-term"></div></div>
-    </div>
-    <div class="col">
-      <div class="cgraph fx" id="cgraph"></div>
-      <div class="pane code-card" id="c-code"><div class="bar"><span class="title">piped into strata edit</span></div><div class="body"></div></div>
-    </div>
-  </div>
-</section>
+<section class="slide feature" id="f-capabilities" data-nav="Capabilities" data-steps="3"></section>
 
-<!-- ═════════════════════════ the agent session ═════════════════════════ -->
-<section class="slide" id="session" data-nav="Holes and refusals" data-steps="12">
-  <div class="split wide-right">
-    <div class="col">
-      <div class="kicker fx">Every edit checked</div>
-      <div class="say" id="sess-say"></div>
-      <div class="pane term fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">~/shop</span></div><div class="body wrap" id="sess-term"></div></div>
-    </div>
-    <div class="col stage">
-      <div class="graph fx" id="sess-graph"></div>
-      <div class="pane code-card" id="sess-code"><div class="bar"><span class="title">piped into strata edit</span></div><div class="body"></div></div>
-      <div class="stamp" id="sess-stamp"></div>
-    </div>
-  </div>
-</section>
+<section class="slide feature" id="f-derive" data-nav="Code at compile time" data-steps="4"></section>
 
-<!-- ═════════════════════════ merging ═════════════════════════ -->
-<section class="slide" id="merge" data-nav="Two agents" data-steps="3">
-  <div class="kicker fx">Many agents, one codebase</div>
-  <h2 class="fx small">Two agents touch the same function. Nothing conflicts.</h2>
-  <p class="lede" id="merge-say"></p>
-  <div class="lanes fx" id="lanes"></div>
-  <div class="three">
-    <div class="pane" data-k="0"><div class="bar"><span class="title">agent A, on main</span></div><div class="body wrap" id="m-a"></div></div>
-    <div class="pane" data-k="1"><div class="bar"><span class="title">agent B, on agent-b</span></div><div class="body wrap" id="m-b"></div></div>
-    <div class="pane" data-k="2"><div class="bar"><span class="title">agent B: strata sync main</span></div><div class="body wrap" id="m-sync"></div></div>
-  </div>
-</section>
-
-<!-- ═════════════════════════ more of the language ═════════════════════════ -->
-<section class="slide" id="more" data-nav="More of the language">
-  <div class="kicker fx">More of the language</div>
-  <h2 class="fx">A few more features, briefly.</h2>
-  <p class="lede fx">How a program reaches the outside world, fakes for tests, code that writes code, lazy iteration, and calling C. Each is recorded from the real tools.</p>
-  <div class="tiles" id="tiles"></div>
-</section>
-
-<section class="slide feature" id="f-capabilities" data-nav="Capabilities" data-steps="2"></section>
-<section class="slide feature" id="f-mocks" data-nav="Mocks" data-steps="3"></section>
-<section class="slide feature" id="f-derive" data-nav="Derived code" data-steps="3"></section>
-<section class="slide feature" id="f-iterators" data-nav="Iterators" data-steps="2"></section>
-<section class="slide feature" id="f-native" data-nav="Compile time and C" data-steps="2"></section>
-
-<!-- ═════════════════════════ under the hood ═════════════════════════ -->
 <section class="slide" id="engine" data-nav="Under the hood" data-steps="2">
   <div class="kicker fx">Under the hood</div>
   <h2 class="fx small">Compiled, everywhere. And more and more of it in Strata.</h2>
@@ -186,16 +183,11 @@
   </div>
 </section>
 
-<!-- ═════════════════════════ start ═════════════════════════ -->
 <section class="slide" id="start" data-nav="Try it">
   <div class="kicker fx">Try it</div>
-  <h2 class="fx small">Strata is an experiment. Here is how to try it.</h2>
+  <h2 class="fx small">Strata is an experiment. You can try it.</h2>
   <div class="pane cmds fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">terminal</span></div><div class="body" id="start-cmds"></div></div>
-  <div class="links fx">
-    <a href="docs.html?d=learn-strata"><b>Learn Strata in Y minutes →</b><span>The whole language on one page, as one valid file. Give it to an agent before it writes Strata.</span></a>
-    <a href="docs.html?d=verification"><b>Verification →</b><span>What <code>strata verify</code> proves, with examples.</span></a>
-    <a href="docs.html?d=tools"><b>Tools →</b><span>The command line, the viewer, packages and git.</span></a>
-  </div>
+  <p class="lede fx">The code, the docs and the examples are on GitHub: <a href="https://github.com/anonx3247/strata">github.com/anonx3247/strata</a>.</p>
   <footer class="fx">Every output on these slides was recorded from the real <code>strata</code> CLI by <code>site/build.mjs</code>.</footer>
 </section>
 

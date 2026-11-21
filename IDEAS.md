@@ -598,7 +598,18 @@ Relations (decided): a definition has **dependencies** (what it mentions) and **
 ## The site: Strata, presented (built, `site/`)
 - **Slides, not a scrolling page** (user, 2026-11-21): one full view per step, ← → (or space) through each slide's steps and on to the next; the address names the slide and step (`#session/5`). It replaced the long page whose ← → only worked over a stepper on screen.
 - **No embedded viewers in the presentation** (user, 2026-11-21): instead, code typed out as it is written, beside a graph of the whole codebase (definitions in columns by how deep their dependencies go, edges for uses) that shows what changed, what must be re-checked, holes, verdicts and counterexamples. The docs keep their tour of the real viewer (Tools → The viewer), since that page documents the viewer itself.
-- **The order** (user, 2026-11-21): first what Strata is (code is a tree, types that say what they mean, every claim checked), previewing the problems they fix; then the tree and its views; then each problem shown first, and how Strata answers it (a long line diff scrolling by, then one rename; a one-line contract change, then a walk through an edit; a broken edit, then a session with holes and a refusal). The other features come after, briefly, with the explanation beside the code, appearing sentence by sentence. No history of the page, and nothing about unmerged branches.
+- **The order** (user, 2026-11-21):
+  - First, what Strata is: code stored as a tree, types that say what they mean, every claim checked. This previews the problems they fix.
+  - Then the tree, and text as a view both ways: read at a level of detail, write back through `strata edit`, checked.
+  - Then each problem, shown before Strata's answer:
+    - a long line diff scrolling by, then one rename;
+    - a one-line contract change, then a walk through an edit;
+    - modular verification: only the signature matters, a body change stops there;
+    - a broken edit, then a session with holes and a refusal.
+  - Then testing: fakes (mocks), what tests miss (verification), and the verdicts.
+  - Then side effects: capabilities and `extern c` are assumed, so the rest can be proven.
+  - Then code at compile time (derive, `comptime`).
+  - No history of the page, nothing about unmerged branches, and wording without the usual AI idioms (claudisms.ai).
 - **Everything shown is recorded** by `site/build.mjs` from the real CLI, the new-feature slides included (small packages stored with `strata edit`, so a snippet that stops checking breaks the build).
 
 ## Known gaps

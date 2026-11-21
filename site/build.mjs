@@ -132,7 +132,7 @@ const texts = []; // [before, after] of each step, as text
   await step({ who: 'you', title: 'A codebase, checked and verified', sel: 'refund', cmd: 'strata verify', args: ['verify'],
     say: 'An order system: refinement types, a `Db` capability, contracts. Everything proven, except `refund`: it is a hole.' });
   await step({ who: 'agent', title: 'The agent asks what is left to do', sel: 'refund', args: ['holes'],
-    say: 'A hole is a precise task: the type to produce, what is in scope, and the contract the code must meet.' });
+    say: 'A hole comes with what is needed to fill it: the type to produce, what is in scope, and the contract the code must meet.' });
   await step({ who: 'agent', title: 'It fills the hole', sel: 'refund', args: ['edit', '-m', 'refund policy: fee of 5.00'], cmd: 'strata edit -m "refund policy: fee of 5.00"',
     input: `
 /// Refund what was paid, minus a 5.00 handling fee.
@@ -149,7 +149,7 @@ test "refund keeps the handling fee" {
   line := Line { sku: "tea", qty: 2, unit_price: 450 }
   assert refund(Pending { id: "ord_abc123", lines: [line] }) == 400
 }
-`, say: 'With a test, as a careful agent would. The edit type-checks against the whole codebase and is committed. Only the implementation changed, so nothing that uses `refund` needs another look.' });
+`, say: 'With a test, as a careful agent would. The edit is checked against everything it touches, then committed. Only the implementation changed, so nothing that uses `refund` needs another look.' });
   await step({ who: 'agent', title: 'The tests pass', sel: 'refund', args: ['test'],
     say: 'Every test passes. They check the orders someone thought of: a 9.00 order, refunded 4.00.' });
   await step({ who: 'agent', title: 'Verification finds the bug', sel: 'refund', args: ['verify', 'refund'],
@@ -165,7 +165,7 @@ fn refund(o: Order) -> Cents
     Cancelled { .. } => 0,
   }
 }
-`, then: [['verify', 'refund']], say: 'Fixed, then `strata verify`: proven for every order, not just the ones a test thought of.' });
+`, then: [['verify', 'refund']], say: 'Fixed, then `strata verify`: proven for every order.' });
   await step({ who: 'agent', title: 'A breaking change becomes holes', sel: 'refund', args: ['edit', '-m', 'coupons'], cmd: 'strata edit -m "coupons"',
     input: `
 fn total(lines: NonEmpty[Line], coupon: Cents) -> Cents {
@@ -289,12 +289,12 @@ fn checkout(lines: NonEmpty[Line]) -> Cents {
   step({ title: 'Verification finds the caller that breaks', g: { discount: 'changed', checkout: 'fail', totals: 'pass', bad: true }, args: ['verify', 'checkout'],
     say: '`checkout` is checked against the new contract, and the input that breaks it comes with the verdict: a basket worth 0.00.' });
   step({ title: 'Fix the caller', g: { discount: 'changed', checkout: 'pass', totals: 'pass' }, args: ['edit', '-m', 'checkout: no discount under 1.00'], cmd: 'strata edit -m "checkout: no discount under 1.00"', then: [['verify', 'checkout']],
-    input: checkout('discount(t)'), say: 'Only discount amounts of 1.00 or more. Proven again.' });
+    input: checkout('discount(t)'), say: '`checkout` now applies the discount only from 1.00. Proven again.' });
   step({ title: 'Add a parameter: the callers become holes', g: { discount: 'changed', checkout: 'hole', totals: 'hole', lit: true }, args: ['edit', '-m', 'discount: members'], cmd: 'strata edit -m "discount: members"',
     input: discount('amount: Cents, member: Bool', true),
     say: '`discount` takes a `member` flag. Its two calls no longer check: rather than refusing the edit, Strata turns them into holes in a pending change.' });
   step({ title: 'See where the holes are', g: { discount: 'changed', checkout: 'hole', totals: 'hole' }, args: ['holes'],
-    say: 'Each hole says what it was, why it broke, and what is in scope to fill it: a precise task, for you or an agent.' });
+    say: 'Each hole says what it was, why it broke, and what is in scope to fill it, for you or an agent.' });
   step({ title: 'Fill them, and close the change', g: { discount: 'changed', checkout: 'recheck', totals: 'recheck' }, args: ['edit'], cmd: 'strata edit', then: [['done']],
     input: checkout('discount(t, false)') + `
 test "totals" {
@@ -347,6 +347,15 @@ function defs(src, names) {
   const name = c => (c.find(l => !l.startsWith('//') && l) || '').replace(/^(pub |extern c |capability |mock |distinct )*/, '');
   return chunks.filter(c => names.some(n => name(c).startsWith(n))).map(c => c.join('\n').trim()).join('\n\n');
 }
+/** `strata verify`'s lines about the package's own definitions (std's derived helpers left out). */
+const own = o => {
+  const out = []; let skip = false;
+  for (const l of o.out.split('\n')) {
+    if (/^\S/.test(l)) skip = /^[✓✗~≈○-] std\./.test(l);
+    if (!skip) out.push(l);
+  }
+  return { ...o, out: out.join('\n') };
+};
 {
   const F = {};
   const ex = name => { const dir = join(WORK, 'ex-' + name); cpSync(join(EX, name), dir, { recursive: true }); return dir; };
@@ -367,7 +376,7 @@ function defs(src, names) {
     writeFileSync(join(dir, 'notes.txt'), 'one two\nthree\n');
     F.capabilities = {
       main: defs(src, ['fn main(']), wc: defs(src, ['fn wc(']), test: defs(src, ['test "counts each file']),
-      test_out: out(dir, ['test']), run_out: out(dir, ['run', '--', '--only', 'words', 'notes.txt']),
+      test_out: out(dir, ['test']), run_out: out(dir, ['run', '--', '--only', 'words', 'notes.txt']), verify_out: own(out(dir, ['verify'])),
     };
   }
   // mocks: a fake declared as a type; what it leaves out is generated
@@ -437,31 +446,6 @@ fn main() {
       json: defs(json.src, ['type Signup', 'derive Json']), json_run: unfile(json.at('run')),
     };
   }
-  // iterators: lazy, possibly endless; verify says which loops end
-  {
-    const f = file('iter', `/// 0, 1, 2, … without end.
-type Naturals = { at: Int }
-
-impl Iterator[Int] for Naturals {
-  fn next(mut self) -> Option[Int] {
-    n := self.at
-    self.at = n + 1
-    Some(n)
-  }
-}
-
-fn main() {
-  squares := Naturals { at: 0 }.filter(n -> n % 2 == 0).map(n -> n * n)
-  for s in squares {
-    if s > 100 {
-      break
-    }
-    print(s)
-  }
-}
-`);
-    F.iterators = { src: f.src, run_out: unfile(f.at('run')), verify_out: unfile(f.at('verify')) };
-  }
   // comptime, and C called from Strata
   {
     const f = file('comptime', `fn fib(n: Natural) -> Natural {
@@ -485,7 +469,7 @@ fn main() {
     F.native = {
       comptime: f.src, comptime_run: unfile(f.at('run')),
       externs: run(dir, ['render', 'text']).out.trimEnd(),
-      fuzzy_run: out(dir, ['run', '--', '--word', 'recieve']),
+      fuzzy_run: out(dir, ['run', '--', '--word', 'recieve']), fuzzy_verify: own(out(dir, ['verify'])),
     };
   }
   // std written in Strata: the regex parser

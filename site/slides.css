@@ -307,3 +307,4 @@ kbd { font: 600 12px var(--mono); border: 1px solid var(--line2); border-bottom-
 .feature .split > .col:last-child { justify-content: center; }
 .feature .code-pane { flex: 0 1 auto; }
 .feature .outs { flex: 0 1 auto; max-height: 52%; }
+#signature .say, .feature .side-text .say { margin-top: 12px; }

@@ -350,11 +350,11 @@ const sayBlock = (el, title, html, fast, who = '') => {
   const verify = D.math.verify.split('\n');
   const pick = (re, extra = 0) => { const i = verify.findIndex(l => re.test(l)); return verify.slice(i, i + 1 + extra); };
   const ideas = [
-    { t: 'Code is a tree, not text', say: 'Each definition is stored on its own, as a syntax tree with a content hash. Text is only a view of it. So the tools see what code <b>is</b>: a rename, a new parameter, who uses what. Not lines.',
+    { t: 'Code is stored as a tree', say: 'Each definition is stored on its own, as a syntax tree with a content hash. Text is rendered from it when someone wants to read it. So the tools work with renames, parameters and uses instead of lines.',
       code: hl(D.orders.levels[0].trimEnd().split('\n').slice(0, 7).join('\n')) },
-    { t: 'Types say what they mean', say: 'A type can carry a condition: <code>Cents</code> is an <code>Int</code> that is never negative. Functions state what they need and what they guarantee, with <code>requires</code> and <code>ensures</code>. Unfinished code is a typed hole.',
+    { t: 'Types say what they mean', say: 'A type can include a condition: <code>Cents</code> is an <code>Int</code> that is never negative. Functions state what they need and what they guarantee, with <code>requires</code> and <code>ensures</code>. Unfinished code is a typed hole.',
       code: hl([txt('Cents'), txt('Quantity'), txt('refund').split('\n').filter(l => !l.startsWith('///')).join('\n')].join('\n\n')) },
-    { t: 'Every claim is checked', say: 'An SMT solver proves each contract for every input, or finds the input that breaks it; a fuzzer covers what it can\'t prove. And every edit is checked against the whole codebase before it is stored.',
+    { t: 'Every claim is checked', say: 'An SMT solver proves each contract for every input, or finds an input that breaks it; a fuzzer covers what it can\'t prove. Every edit is checked against the code it touches before it is stored.',
       code: term([...pick(/^✓ factorial/), ...pick(/^~ isqrt/), ...pick(/^✗ next_digit/, 2)].join('\n')) },
   ];
   $('#ideas-cards').innerHTML = ideas.map((x, i) => `<div class="idea"><div class="n">0${i + 1}</div><h3>${x.t}</h3><p></p><pre>${x.code}</pre></div>`).join('');
@@ -384,7 +384,7 @@ const sayBlock = (el, title, html, fast, who = '') => {
   B.tree = async (k, { fast, alive }) => {
     const code = $('#tree-code'), sy = (h, p) => sayBlock($('#tree-say'), h, p, fast);
     if (k === 0) {
-      sy('Each definition is stored on its own', 'As a syntax tree with a content hash, not as lines in a file. As each one is written, it takes its place among what it uses and what uses it.');
+      sy('Each definition is stored on its own', 'As a syntax tree with a content hash. When one is written, it appears next to what it uses and what uses it.');
       $('#tree-title').textContent = 'orders.strata · strata render';
       if (fast) { graph.set(g0, { statuses: false, fast }); code.innerHTML = order.map(d => hl(d.text)).join('\n\n'); return; }
       graph.set([], { layout: g0 }); code.innerHTML = '';
@@ -403,12 +403,12 @@ const sayBlock = (el, title, html, fast, who = '') => {
         await sleep(60);
       }
     } else if (k === 1) {
-      sy('Every name is resolved in the tree', 'Selecting <code>Order</code> lights what it uses and what uses it. The tools know these links exactly: they are how renames, re-checks and slices work.');
+      sy('Names are links', 'Selecting <code>Order</code> lights up what it uses and what uses it. The tools know these links exactly, and use them for renames, re-checks and slices.');
       $('#tree-title').textContent = '$ strata view slice:Order --level 1';
       graph.set(g0, { statuses: false, focus: 'Order', fast });
       await typeCode(code, D.orders.levels[1].trimEnd(), alive, { fast, ms: 14 });
     } else {
-      sy('Every definition carries its status', 'Proven by the solver, fuzzed, or refuted, and holes: unfinished code that still checks. <code>refund</code> is one: a precise task for an agent.');
+      sy('Each definition has a status', 'Proven by the solver, fuzzed, or refuted. Or a hole: unfinished code that still type-checks. <code>refund</code> is one, and <code>strata holes</code> describes exactly what is missing.');
       $('#tree-title').textContent = '$ strata holes';
       graph.set(g0, { fast });
       code.innerHTML = ''; await typeTerm(code, { cmd: 'strata holes', out: D.orders.holes }, alive, { fast });
@@ -416,16 +416,33 @@ const sayBlock = (el, title, html, fast, who = '') => {
   };
 }
 
-// ───────────────────────── levels ─────────────────────────
+// ───────────────────────── text is a view, both ways ─────────────────────────
 {
-  const L = D.orders.levels, lede = $('#levels-say').innerHTML;
-  const info = [[0, 'The map', 'one line per definition: what it depends on, and its status'], [1, 'The interfaces', 'types, signatures and contracts: what other code can rely on'], [2, 'The source', 'everything, exactly as stored']];
-  $('#lv-pick').innerHTML = info.map(([l, t, d], i) => `<button data-i="${i}"><b>${t} <span class="muted">· level ${l}</span></b><span>${d}</span></button>`).join('');
+  const L = D.orders.levels, fill = S('It fills the hole'), refused = S('A broken edit is refused');
+  const info = [[0, 'The map', 'one line per definition: what it uses, and its status'], [1, 'The interfaces', 'types, signatures and contracts: what other code can rely on'], [2, 'The source', 'everything, as stored'],
+    [null, 'Write it back', '<code>strata edit</code> takes text and stores it as definitions'], [null, 'Checked first', 'an edit that doesn\'t check is refused']];
+  const SAY = [
+    'An agent asks for what it is working on, <code>slice:Order</code> here: <code>Order</code>, what it uses and what uses it. The first level is a map of it.',
+    'The second level shows interfaces: enough to call code without reading how it works.',
+    'The third is the source. All three are rendered from the same trees, in one canonical format.',
+    'Edits go the other way through the same text. The agent sends definitions to <code>strata edit</code>; they are parsed, checked against everything they touch, and stored in place of the old ones.',
+    'An edit that doesn\'t check is refused, and nothing changes. So the codebase is never in a broken state, whoever wrote the last edit.',
+  ];
+  $('#lv-pick').innerHTML = info.map(([l, t, d], i) => `<button data-i="${i}"><b>${t} <span class="muted">· ${l == null ? 'strata edit' : 'level ' + l}</span></b><span>${d}</span></button>`).join('');
   $('#lv-pick').addEventListener('click', e => { const b = e.target.closest('button'); if (b) go(cur, +b.dataset.i, +b.dataset.i < sub ? -1 : 1); });
-  B.levels = (k, { fast, fresh, alive }) => {
-    if (fresh) say($('#levels-say'), lede, fast);
-    const l = info[k][0];
+  B.levels = (k, { fast, alive }) => {
+    $('#levels-h').textContent = k < 3 ? 'An agent reads the detail it needs.' : 'And writes text back, checked before it is stored.';
+    say($('#levels-say'), SAY[k], fast);
     $$('#lv-pick button').forEach((b, j) => b.classList.toggle('on', j === k));
+    const l = info[k][0];
+    if (l == null) {
+      const s = k === 3 ? fill : refused;
+      $('#lv-title').textContent = `$ ${s.cmd}`;
+      $('#lv-count').textContent = s.code ? 'refused' : 'stored';
+      $('#lv-count').className = 'count ' + (s.code ? 'bad' : 'ok');
+      return typeTerm($('#lv-body'), s, alive, { fast });
+    }
+    $('#lv-count').className = 'count ok';
     $('#lv-title').textContent = `$ strata view slice:Order --level ${l}`;
     $('#lv-count').textContent = `${L[l].trimEnd().split('\n').length} lines`;
     return typeCode($('#lv-body'), L[l].trimEnd(), alive, { fast, ms: 10 });
@@ -439,15 +456,13 @@ const sayBlock = (el, title, html, fast, who = '') => {
   const big = diffCount(R.diff), bigLines = R.diff.split('\n').length;
   const cases = [
     { tab: 'Rename a type', linediff: R.diff, snap: R, step: R.step, h: 'A rename should read as a rename.',
-      say: `It was <code>strata rename Task Job</code>: one type renamed, and the definitions that use it follow. As text, ${big} changed lines across four modules. As a change, one line.` },
+      say: `It was <code>strata rename Task Job</code>: one type renamed, and the twelve definitions that use it updated to match. Strata shows it as one line.` },
     { tab: 'Rename a variant', linediff: renameV.linediff, snap: renameV, step: lastStep(renameV), h: 'The same for a variant.',
       say: `<code>strata rename Shipped Sent</code>. As text, five definitions change, and a line in a test re-wraps because <code>Sent</code> is shorter. What happened is one rename.` },
     { tab: 'Add a parameter', linediff: C.paramDiff, snap: C, step: stepTitled(C, 'discount: members'), h: 'A new parameter, and the calls that follow it.',
       say: `<code>discount</code> takes a new <code>member</code> flag, not used yet. The change is the new parameter; its two call sites only follow it.` },
     { tab: 'Change a signature and its body', linediff: D.orders.couponsDiff, snap: fill, step: stepTitled(fill, 'coupons'), h: 'A new signature, and the body that uses it.',
-      say: `<code>total</code> takes a coupon and uses it: the signature and the body both changed, so both are shown. The callers that had to follow are listed, not repeated.` },
-    { tab: 'Change only a body', linediff: fix.linediff, snap: fix, step: lastStep(fix), h: 'Only a body changed: nothing else to re-check.',
-      say: `The fix to <code>refund</code> changes its body, not its signature or contract, so <b>nothing that uses it needs another look</b>. The verdict before and after is part of the change.` },
+      say: `<code>total</code> takes a coupon and uses it. The signature and the body both changed, so both are shown; the callers that had to follow are listed by name.` },
   ];
   $('#diff-tabs').innerHTML = cases.map((c, i) => `<button data-i="${i}">${esc(c.tab)}</button>`).join('');
   $('#diff-tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) go(cur, +b.dataset.i + 1, +b.dataset.i + 1 < sub ? -1 : 1); });
@@ -458,7 +473,7 @@ const sayBlock = (el, title, html, fast, who = '') => {
     $('#diffs').classList.toggle('big', k === 0);
     if (k === 0) {
       $('#diff-h').textContent = 'Here is a diff. What happened?'; flip($('#diff-h'));
-      say($('#diff-say'), `A change to <code>examples/tasks</code>, as <code>git diff</code> shows it: ${bigLines} lines over four modules. To review it, you read all of them.`, fast);
+      say($('#diff-say'), `A change to <code>examples/tasks</code>, as <code>git diff</code> shows it: ${bigLines} lines over four modules. To review it, you have to read all of them.`, fast);
       const body = $('#big-body');
       body.scrollTop = 0;
       count($('#big-count'), big, 'line', alive, 4000).then(() => alive() && ($('#big-count').textContent = `${big} lines changed`));
@@ -503,9 +518,9 @@ const sayBlock = (el, title, html, fast, who = '') => {
   }
   range.addEventListener('input', upd);
   const SAY = [
-    'An agent fills in a refund policy: what was paid, minus a 5.00 handling fee. The signature already says what must hold, for <b>every</b> order: <code>ensures it &gt;= 0</code>. Drag the order value.',
+    'Even with fakes, tests only check the inputs someone thought of. Here an agent fills in a refund policy: what was paid, minus a 5.00 handling fee. The signature already says what must hold for every order: <code>ensures it &gt;= 0</code>. Drag the order value.',
     'It writes a test, as a careful agent would: a 9.00 order, refunded 4.00. <b>The test passes.</b>',
-    '<code>strata verify</code> checks the contract for every order, not only the ones someone thought of. An order worth less than the fee gets a <b>negative refund</b>, and the input comes with the verdict.',
+    '<code>strata verify</code> checks the contract for every order. An order worth less than the fee gets a <b>negative refund</b>, and the verdict comes with that input.',
     'Fixed, then verified: <b>proven for every order</b>. Drag the value: nothing goes below zero.',
   ];
   $('#ex-test').onclick = () => go(cur, 1, 1);
@@ -590,7 +605,7 @@ const sayBlock = (el, title, html, fast, who = '') => {
   new ResizeObserver(edges).observe(g);
   const tighten = C.steps.find(s => s.title === 'Tighten discount’s contract');
   const PROBLEM = { title: 'Tighten a function, break a caller far away', g: { discount: 'changed', checkout: 'unknown', totals: 'unknown' },
-    say: 'A stricter precondition is one added line in a diff. Nothing in it says which callers relied on the old contract, or which of them now break. Let\'s walk through an edit, and see how contracts make this powerful for an agent.' };
+    say: 'A stricter precondition is one added line in a diff. Nothing in it says which callers relied on the old contract, or which of them now break. Follow this edit step by step, as an agent sees it.' };
   B.contracts = async (k, { fast, alive }) => {
     const s = k ? C.steps[k - 1] : PROBLEM;
     for (const n of Object.keys(nodes)) {
@@ -617,6 +632,34 @@ const sayBlock = (el, title, html, fast, who = '') => {
   };
 }
 
+// ───────────────────────── read the signature ─────────────────────────
+{
+  const ss = D.session, g0 = ss[0].graph, graph = new Graph($('#sig-graph'));
+  const every = [...new Map(ss.flatMap(s => s.graph).map(d => [d.name, d])).values()];
+  const fix = S('It fixes it, and proves it'), coupons = S('A breaking change becomes holes');
+  const iface = n => { const t = g0.find(d => d.name === n).text.split('\n').filter(l => !l.startsWith('///')); const i = t.findIndex(l => /\{\s*$/.test(l)); return t.slice(0, i + 1).join('\n').replace(/\s*\{\s*$/, ''); };
+  const proof = fix.out.split('$ strata verify refund\n')[1];
+  const STEPS = [
+    { h: 'You only need the signature.', say: 'To prove <code>refund</code>, the solver uses what <code>total</code> promises, its signature and contract, and not how it computes the result. An agent changing <code>refund</code> can work the same way, and so can a person reviewing it: if the contracts around it are right, their bodies can stay unread.',
+      term: ['strata verify refund', { cmd: 'strata verify refund', out: proof }], card: ['what the proof relies on', [iface('total'), g0.find(d => d.name === 'Cents').text.split('\n').filter(l => !l.startsWith('///')).join('\n')].join('\n\n')], graph: fast => graph.set(fix.graph, { layout: every, focus: 'refund', fast }) },
+    { h: 'A change inside a body stops there.', say: 'The fix to <code>refund</code> changed its body, not its signature or contract. Nothing that uses it has to be checked again, and the edit says so.',
+      term: ['~/shop', { cmd: fix.cmd, out: fix.out.split('\n\n$ strata verify')[0] }], graph: fast => graph.set(fix.graph, { layout: every, changed: new Set(['refund']), fast }) },
+    { h: 'A change to a contract reaches its users.', say: 'A new signature or contract is different: what relies on it is checked again. <code>total</code> took a coupon, so its two callers were checked against it, and since they no longer fit, they became holes.',
+      term: ['~/shop', coupons], graph: fast => graph.set(coupons.graph, { layout: every, changed: new Set(['total']), lit: new Set(['total']), fast }) },
+  ];
+  B.signature = async (k, { fast, alive }) => {
+    const s = STEPS[k];
+    $('#sig-h').textContent = s.h;
+    $('#sig-say').innerHTML = '<p></p>'; say($('#sig-say p'), s.say, fast);
+    s.graph(fast);
+    const card = $('#sig-code');
+    card.classList.toggle('on', !!s.card);
+    if (s.card) { $('#sig-code-title').textContent = s.card[0]; typeCode($('.body', card), s.card[1], alive, { fast, ms: 30 }); }
+    $('#sig-term-title').textContent = s.term[0];
+    await typeTerm($('#sig-term'), { ...s.term[1], input: null }, alive, { fast });
+  };
+}
+
 // ───────────────────────── an agent's session: holes and refusals ─────────────────────────
 {
   const ss = D.session, graph = new Graph($('#sess-graph'));
@@ -627,7 +670,7 @@ const sayBlock = (el, title, html, fast, who = '') => {
     stamp.className = 'stamp'; stamp.textContent = '';
     if (k === 0) {
       sayBlock($('#sess-say'), 'A broken edit lands, and someone finds out later',
-        'Text accepts anything: the breakage shows up in CI, in review, or in production. In Strata, an edit that doesn\'t check is refused, and one that breaks what uses it turns those uses into holes: typed tasks. Let\'s follow an agent through a session.', fast, '<div class="who you"><i></i>the problem</div>');
+        'A text file accepts anything, so breakage shows up later, in CI, in review, or in production. In Strata, an edit that doesn\'t check is refused, and one that breaks its callers turns those calls into holes for the agent to fill. Here is an agent\'s session, step by step.', fast, '<div class="who you"><i></i>the problem</div>');
       graph.set(ss[0].graph, { layout: every, fast });
       card.classList.remove('on');
       $('#sess-term').innerHTML = '<span class="term-line"><span class="prompt">$</span> <span class="cmd caret"></span></span>';
@@ -684,33 +727,23 @@ const sayBlock = (el, title, html, fast, who = '') => {
   };
 }
 
-// ───────────────────────── more of the language ─────────────────────────
-{
-  const tiles = [
-    ['f-capabilities', 'Capabilities', 'What a program may touch, in its signature.'],
-    ['f-mocks', 'Mocks', 'Fakes for tests, declared as types.'],
-    ['f-derive', 'Derived code', 'Code written by code, while compiling.'],
-    ['f-iterators', 'Iterators', 'Lazy, possibly endless, and honest about it.'],
-    ['f-native', 'comptime and C', 'Run code while compiling; call C with contracts.'],
-  ];
-  $('#tiles').innerHTML = tiles.map(([to, t, d], i) => `<button data-to="${to}" style="--i:${i}"><b>${t}</b><span>${d}</span></button>`).join('');
-  $('#tiles').addEventListener('click', e => { const b = e.target.closest('button'); if (b) goTo(b.dataset.to); });
-}
+// ───────────────────────── features: the explanation beside the code ─────────────────────────
 const F = D.features;
-/** A feature, briefly: the explanation on the side, arriving as it is read; the code and what the tools said beside it. */
-function feature(id, { title, steps }) {
+/** A slide with the explanation on the side, arriving as it is read, and the code and what the tools said beside it. */
+function feature(id, { kicker, title, steps }) {
   const el = $('#' + id);
-  el.innerHTML = `<div class="split"><div class="col side-text"><div class="kicker fx">More of the language</div><h2 class="fx small">${title}</h2><div class="say"></div></div>
+  el.innerHTML = `<div class="split"><div class="col side-text"><div class="kicker fx">${kicker}</div><h2 class="fx small">${title}</h2><div class="say"></div></div>
     <div class="col"><div class="pane code-pane fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title"></span></div><div class="body"></div></div><div class="outs"></div></div></div>`;
   let shown = null;
   B[id] = async (k, { fast, alive }) => {
     const s = steps[k];
     const sy = $('.say', el);
-    sy.innerHTML = `<p class="lede"></p>${s.points ? `<ul class="points">${s.points.map(p => `<li>${p}</li>`).join('')}</ul>` : ''}`;
+    sy.innerHTML = '<p class="lede"></p>';
     say($('p', sy), s.say, fast);
     $('.code-pane .title', el).textContent = s.file;
     let typed = Promise.resolve();
     if (shown !== s.code || fast) { shown = s.code; typed = typeCode($('.code-pane .body', el), s.code, alive, { fast, ms: 22, hot: s.hot }); }
+    else $$('.code-pane .body .ln', el).forEach(l => l.classList.toggle('hot', !!s.hot && s.hot.test(l.textContent)));
     const outs = $('.outs', el); outs.innerHTML = '';
     await typed;
     for (const o of s.outs || []) {
@@ -724,53 +757,39 @@ function feature(id, { title, steps }) {
     }
   };
 }
-feature('f-capabilities', {
-  title: 'What is a capability?',
-  steps: [
-    { file: 'examples/wc', code: F.capabilities.main + '\n\n' + F.capabilities.wc, hot: /Console|Disk|Files/,
-      say: 'A capability is the permission to reach the outside world: the terminal, the disk, a database. It holds no data and has no constructor: only the runtime makes one, for <code>main</code>. So a program\'s signature lists everything it can touch. <code>main</code> hands them on as traits, <code>Console</code> and <code>Files</code>, which anything may implement.' },
-    { file: 'examples/wc · a test', code: F.capabilities.test, where: '~/wc', outs: [F.capabilities.test_out, F.capabilities.run_out],
-      say: 'So tests hand in stand-ins: a console that records, files in memory. <code>strata test</code> never touches the terminal or the disk. Under <code>strata run</code>, the same code gets the real ones.' },
-  ],
-});
 feature('f-mocks', {
-  title: 'Mocks: fakes for tests',
+  kicker: 'Testing', title: 'Tests need fakes.',
   steps: [
     { file: 'mocks', code: F.mocks.src, hot: /^mock|^impl Files for MemDisk/, where: '~/mocks', outs: [F.mocks.test_out],
-      say: 'A fake is declared like a type, with <code>mock</code> in place of <code>type</code>, and implemented like any type. It may leave methods out: <code>Files</code> has seven, this one writes two.' },
+      say: 'Code that reads files or talks to a database is hard to test as it is, so tests need stand-ins. In Strata a fake is declared like a type, with <code>mock</code>, and implemented like any other type. It can leave methods out: <code>Files</code> has seven, and this one writes two.' },
     { file: 'mocks', code: F.mocks.src, hot: /^mock|^impl Files for MemDisk/, where: '~/mocks', outs: [F.mocks.verify_out],
-      say: 'The methods it left out are generated: they answer within the method\'s types and contracts. <code>verify</code> reports a mock as assumed, since the tests that use it check it.' },
+      say: 'The methods it leaves out are generated, and answer within each method\'s types and contract. <code>verify</code> doesn\'t try to prove a mock: the tests that use it are what check it.' },
     { file: 'mocks', code: F.mocks.src, where: '~/mocks', outs: [F.mocks.refused],
-      say: 'A fake never reaches a real run: using one outside a test is refused, and the codebase is left as it was.' },
+      say: 'A fake can\'t end up in a real run: using one outside a test is refused, and the codebase stays as it was.' },
+  ],
+});
+feature('f-capabilities', {
+  kicker: 'Side effects', title: 'What is a capability?',
+  steps: [
+    { file: 'examples/wc', code: F.capabilities.main + '\n\n' + F.capabilities.wc, hot: /Console|Disk|Files/,
+      say: 'A capability is what lets code reach the outside world: the terminal, the disk, the network. Only the runtime creates them, and only for <code>main</code>, which passes them on as traits like <code>Console</code> and <code>Files</code>. So the signatures show which code can have side effects.' },
+    { file: 'examples/wc', code: F.capabilities.main + '\n\n' + F.capabilities.wc, hot: /^fn main|^fn wc/, where: '~/wc', outs: [F.capabilities.verify_out],
+      say: 'This is what keeps the rest provable. The verifier can\'t reason about a disk, so it assumes the code that holds one, <code>main</code> here, and proves the rest: <code>wc</code> is checked against what <code>Console</code> and <code>Files</code> promise. Side effects stay at the edges, and everything between them can be verified.' },
+    { file: 'examples/fuzzy · module text', code: F.native.externs, hot: /^extern c/, where: '~/fuzzy', outs: [F.native.fuzzy_verify],
+      say: 'C code is handled the same way. <code>extern c</code> declares a C function with a signature and contracts, checked at run time in both directions. The verifier assumes it, and only the module that declares it may call it, so the assumption stays in one place.' },
   ],
 });
 feature('f-derive', {
-  title: 'Code that writes code',
+  kicker: 'Code at compile time', title: 'Code that writes code.',
   steps: [
     { file: 'examples/hello', code: F.derive.options, hot: /^derive/, where: '~/hello', outs: [F.derive.help],
-      say: '<code>derive CommandLine for Options</code> generates a command-line parser from the type: its fields, doc comments, defaults and refinements. Derives are written in Strata, run while compiling, and give ordinary <code>impl</code>s.' },
+      say: '<code>derive CommandLine for Options</code> generates a command-line parser from the type: its fields, doc comments, defaults and refinements. Derives are written in Strata, run by the compiler, and produce ordinary <code>impl</code>s.' },
     { file: 'examples/hello', code: F.derive.options, hot: /times/, where: '~/hello', outs: [F.derive.run_out, F.derive.bad],
-      say: 'The options arrive in <code>main</code> already checked. A value outside a refinement is refused at the boundary, and the message says which condition.' },
+      say: 'The options reach <code>main</code> already checked. A value outside a refinement is refused at the boundary, with the condition it broke.' },
     { file: 'signup', code: F.derive.json, hot: /^derive|where/, where: '~/signup', outs: [F.derive.json_run],
-      say: '<code>derive Json</code> works the same way: reading checks every refinement, and an error says where it broke.' },
-  ],
-});
-feature('f-iterators', {
-  title: 'Lazy, possibly endless',
-  steps: [
-    { file: 'naturals', code: F.iterators.src, hot: /Iterator|filter/, where: '~/naturals', outs: [F.iterators.run_out],
-      say: 'An iterator is a value walked once, lazily: a trait with <code>next(mut self)</code>. <code>map</code> and <code>filter</code> are lazy too, so they work on endless iterators.' },
-    { file: 'naturals', code: F.iterators.src, hot: /for s in/, where: '~/naturals', outs: [F.iterators.verify_out],
-      say: '<code>verify</code> shows that a loop ends over a list or a <code>FiniteIterator</code>. Over this endless one it can\'t, and says so instead of guessing.' },
-  ],
-});
-feature('f-native', {
-  title: 'Compile time, and C',
-  steps: [
+      say: '<code>derive Json</code> works the same way. Reading JSON checks every refinement, and an error says which field broke which condition.' },
     { file: 'comptime', code: F.native.comptime, hot: /comptime/, where: '~/comptime', outs: [F.native.comptime_run],
-      say: '<code>comptime e</code> is evaluated while compiling. The program carries only the result, and the value is cached between runs.' },
-    { file: 'examples/fuzzy · module text', code: F.native.externs, hot: /^extern c/, where: '~/fuzzy', outs: [F.native.fuzzy_run],
-      say: '<code>extern c</code> declares a C function: a signature with contracts, and no body. Arguments and results are checked at the boundary, both ways, and only the module that declares it may call it.' },
+      say: 'Any code can run while compiling. <code>comptime e</code> is evaluated by the compiler, and the program keeps only the result.' },
   ],
 });
 
@@ -779,7 +798,7 @@ feature('f-native', {
   const facts = [
     ['LLVM', 'One code generator. <code>run</code>, <code>test</code> and <code>verify</code> compile on the JIT, <code>strata build</code> makes executables.'],
     ['RC', 'Memory by reference counting: a value is freed when nothing holds it, and updated in place when only one thing does.'],
-    ['std', 'Written in Strata, precompiled. Rust is only the native I/O layer.'],
+    ['std', 'Written in Strata and precompiled. Rust is used only for the native I/O layer.'],
     ['∞', 'No limits on loops or recursion: <code>Int</code> grows into a big integer, and running out of stack is a fault that says where.'],
   ];
   $('#facts').innerHTML = facts.map(([b, t], i) => `<div style="transition-delay:${i * 90}ms"><b>${b}</b><span>${t}</span></div>`).join('');
