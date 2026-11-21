@@ -221,6 +221,10 @@ pub struct Interp<'a> {
     /// (innermost last): `T` is `Int` in `impl[T] Json for List[T]` called on
     /// `List[Int]`.
     impl_types: Vec<Vec<(String, String)>>,
+    /// Calls given their receiver's whole type (`$self_type`), by node.
+    typed_calls: Vec<(usize, String)>,
+    /// The receiver's whole type for the method about to be called.
+    next_self_type: Option<String>,
     /// The value of the `return` (or `!` / `?`) being carried out.
     returning: Option<Value>,
     /// At most this many evaluation steps, if set.
@@ -491,6 +495,8 @@ impl<'a> Interp<'a> {
             writeback: vec![],
             self_types: vec![],
             impl_types: vec![],
+            typed_calls: vec![],
+            next_self_type: None,
             returning: None,
             budget: None,
             steps: 0,
@@ -826,7 +832,25 @@ impl<'a> Interp<'a> {
 
     pub fn call_fn(&mut self, name: &str, args: Vec<Value>) -> R<Value> {
         let f = self.env.fns.get(&name.sym()).cloned().ok_or_else(|| fault(FaultKind::Runtime, format!("unknown function `{name}`")))?;
+        // a type's own method (`Pair.swap`) called on a value whose whole type is known
+        if let Some(w) = self.next_self_type.take() {
+            let head = crate::types::type_text_head(&w).to_string();
+            if let Some(imp) = self.env.inherent.get(&head.sym()).cloned() {
+                let mut b = vec![];
+                bind_type_params(&imp.for_type, &crate::types::parse_type_text(&w), &imp.type_params, &mut b);
+                self.impl_types.push(b);
+                let r = self.call_decl(&f, name, args);
+                self.impl_types.pop();
+                return r;
+            }
+        }
         self.call_decl(&f, name, args)
+    }
+
+    /// The receiver type given to this call node, if any.
+    fn typed_call(&mut self, e: &Expr) -> Option<String> {
+        let at = e as *const Expr as usize;
+        self.typed_calls.iter().rev().find(|(a, _)| *a == at).map(|(_, t)| t.clone())
     }
 
     /// The runtime type name used to pick a trait implementation.
@@ -855,7 +879,7 @@ impl<'a> Interp<'a> {
         // a method without `self` (`Trait::empty(type, ..)`): the type comes first
         let is_static = self.env.method_contract(name).is_some_and(|(_, d)| !crate::resolve::takes_self(d));
         // the type a method without `self` is called on, whole (`List[Int]`)
-        let mut whole = None;
+        let whole: Option<String>;
         let head = if is_static {
             match args.first() {
                 Some(Value::Str(h)) => {
@@ -867,6 +891,7 @@ impl<'a> Interp<'a> {
                 _ => return self.fail(FaultKind::Runtime, format!("`{name}` needs the type it is called on")),
             }
         } else {
+            whole = self.next_self_type.take();
             if let Some(Value::Mock(mt)) = args.first() {
                 let mt = mt.clone();
                 return self.mock_call(&mt, name, args);
@@ -905,8 +930,12 @@ impl<'a> Interp<'a> {
         decl.ensures.splice(0..0, ens);
         let label = format!("{head}.{}", crate::types::split_trait_call(name).map_or(name, |(_, m)| m));
         // the impl's type parameters, from the type it is called on
-        let bound = match (&whole, crate::types::split_trait_call(name)) {
-            (Some(w), Some((tr, _))) => self.env.impls.iter().find(|i| i.trait_name == tr && crate::types::texpr_head(&i.for_type) == head).map(|i| {
+        let tr = match crate::types::split_trait_call(name) {
+            Some((tr, _)) => Some(tr.to_string()),
+            None => self.env.method_traits.get(&name.sym()).and_then(|ts| ts.iter().find(|t| self.env.impls.iter().any(|i| i.trait_name == **t && crate::types::texpr_head(&i.for_type) == head)).map(|t| t.to_string())),
+        };
+        let bound = match (&whole, tr) {
+            (Some(w), Some(tr)) => self.env.impls.iter().find(|i| i.trait_name == tr && crate::types::texpr_head(&i.for_type) == crate::types::type_text_head(w)).map(|i| {
                 let mut b = vec![];
                 bind_type_params(&i.for_type, &crate::types::parse_type_text(w), &i.type_params, &mut b);
                 b
@@ -1648,11 +1677,30 @@ impl<'a> Interp<'a> {
             }
             Expr::Mut(x) | Expr::Comptime(x) => self.eval(x, s)?,
             Expr::Describe(t) => return self.fail(FaultKind::Runtime, format!("`${}` is only known in a derived method", crate::printer::ty(t))),
+            // `$self_type(type, call)`: the call's receiver type, whole, for the method it reaches
+            Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if n == crate::types::SELF_TYPE) && args.len() == 2 => {
+                // (a type parameter the caller wasn't given leaves it unknown)
+                // (the call itself: inside `mut` when it changes its receiver)
+                let call = match &args[1] {
+                    Expr::Mut(c) => &**c,
+                    c => c,
+                };
+                let at = call as *const Expr as usize;
+                if let Ok(Value::Str(t)) = self.eval(&args[0], s) {
+                    self.typed_calls.push((at, t));
+                }
+                let r = self.eval(&args[1], s);
+                self.typed_calls.retain(|(a, _)| *a != at);
+                r?
+            }
             Expr::Call(f, args) => {
                 let fv = self.eval(f, s)?;
                 let avs = args.iter().map(|a| self.eval(a, s)).collect::<R<Vec<_>>>()?;
                 self.writeback.clear();
-                let r = self.apply(fv, avs)?;
+                self.next_self_type = self.typed_call(e);
+                let r = self.apply(fv, avs);
+                self.next_self_type = None;
+                let r = r?;
                 let places: Vec<&Expr> = args.iter().collect();
                 self.write_back(&places, s)?;
                 r
@@ -1664,7 +1712,10 @@ impl<'a> Interp<'a> {
                 }
                 let f = lookup(s, m).unwrap_or(Value::FnRef(m.to_string()));
                 self.writeback.clear();
-                let out = self.apply(f, avs)?;
+                self.next_self_type = self.typed_call(e);
+                let out = self.apply(f, avs);
+                self.next_self_type = None;
+                let out = out?;
                 let places: Vec<&Expr> = std::iter::once(&**r).chain(args.iter()).collect();
                 self.write_back(&places, s)?;
                 out

@@ -278,6 +278,10 @@ pub fn texpr_head(t: &TypeExpr) -> Symbol {
 /// What a method call resolved to, when that depends on the receiver's type.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Target {
+    /// A method with `self` called on a value whose type has arguments
+    /// (`Pair[Int]`): the type is passed whole, so the impl's type parameters
+    /// are known in the method. Written as `$self_type(type, call)`.
+    SelfType(TypeRef),
     /// Through trait `.0`: dispatch on the runtime type among that trait's
     /// implementations only. Written as the method `Trait::method`.
     Trait(String),
@@ -309,6 +313,9 @@ pub enum TypeRef {
     Con(String, Vec<TypeRef>),
     Param(String),
 }
+
+/// The wrapper giving a method call its receiver's whole type.
+pub const SELF_TYPE: &str = "$self_type";
 
 /// The builtin that makes a type's text from its head and its arguments'
 /// texts, when some of them are known only when the code runs.
@@ -488,6 +495,9 @@ fn needs_rewrite(env: &Env) -> bool {
 /// Write the checker's decisions (`targets`, by node address) into the
 /// program; `types` follows the nodes that move.
 fn rewrite(program: &mut Program, env: &Env, targets: Vec<(usize, Target)>, types: &mut HashMap<usize, Ty>) {
+    // a call's receiver type is applied after its other decision (same node)
+    let (selfs, targets): (Vec<_>, Vec<_>) = targets.into_iter().partition(|(_, t)| matches!(t, Target::SelfType(_)));
+    let selfs: HashMap<usize, TypeRef> = selfs.into_iter().filter_map(|(a, t)| if let Target::SelfType(r) = t { Some((a, r)) } else { None }).collect();
     let targets: HashMap<usize, Target> = targets.into_iter().collect();
     for d in &mut program.decls {
         // a type parameter with a static method to call is passed when the function runs
@@ -498,7 +508,29 @@ fn rewrite(program: &mut Program, env: &Env, targets: Vec<(usize, Target)>, type
         }
         // children first, so a node's address is the one the checker saw when it is rewritten
         decl_exprs_mut_post(&mut d.kind, |e| {
-            let Some(t) = targets.get(&(e as *const Expr as usize)) else { return };
+            let at = e as *const Expr as usize;
+            let wrap = selfs.get(&at).cloned();
+            rewrite_node(e, targets.get(&at), types);
+            if let Some(r) = wrap {
+                let inner = std::mem::replace(e, Expr::Unit);
+                *e = Expr::Call(Box::new(Expr::Var(Symbol::from(SELF_TYPE))), vec![r.expr(), inner]);
+                if let Expr::Call(_, args) = &*e {
+                    rekey(types, &[at], vec![addr(&args[1])]);
+                    // the call's type is the wrapper's too
+                    if let Some(t) = types.get(&addr(&args[1])).cloned() {
+                        types.insert(at, t);
+                    }
+                }
+            }
+        });
+    }
+    self_type_outside_mut(program, types);
+}
+
+/// One node rewritten as the checker decided (`t`).
+fn rewrite_node(e: &mut Expr, t: Option<&Target>, types: &mut HashMap<usize, Ty>) {
+    {
+            let Some(t) = t else { return };
         match (t, &mut *e) {
             (Target::Trait(tr), Expr::Method(_, m, _)) => *m = Symbol::from(trait_call(tr, m)),
             (Target::Trait(tr), Expr::Call(f, _)) => {
@@ -537,6 +569,27 @@ fn rewrite(program: &mut Program, env: &Env, targets: Vec<(usize, Target)>, type
             (Target::Builtin(b), Expr::Call(f, _)) => **f = Expr::Var(Symbol::from(b.as_str())),
             _ => {}
         }
+    }
+}
+
+/// `mut $self_type(t, x.m())` as `$self_type(t, mut x.m())`: a `mut` call stays one.
+fn self_type_outside_mut(program: &mut Program, types: &mut HashMap<usize, Ty>) {
+    for d in &mut program.decls {
+        decl_exprs_mut_post(&mut d.kind, |e| {
+            let Expr::Mut(inner) = e else { return };
+            let Expr::Call(f, args) = &mut **inner else { return };
+            if !matches!(&**f, Expr::Var(n) if n == SELF_TYPE) || args.len() != 2 {
+                return;
+            }
+            let old = addr(&args[1]);
+            let call = std::mem::replace(&mut args[1], Expr::Unit);
+            let t = std::mem::replace(&mut args[0], Expr::Unit);
+            *e = Expr::Call(Box::new(Expr::Var(Symbol::from(SELF_TYPE))), vec![t, Expr::Mut(Box::new(call))]);
+            if let Expr::Call(_, args) = &*e {
+                if let Expr::Mut(c) = &args[1] {
+                    rekey(types, &[old], vec![addr(c)]);
+                }
+            }
         });
     }
 }
@@ -634,6 +687,16 @@ struct Checker<'a> {
     /// takes `self` (`T.m()` needs one without).
     impl_params: Vec<Symbol>,
     method_self: bool,
+    /// Calls of a method without `self` on a type, whose runtime type is made
+    /// once the declaration is inferred.
+    static_types: Vec<(usize, String, Ty)>,
+    /// Method calls (by node) and their receivers (by node), and the types
+    /// the receivers were inferred to have: a generic type's is passed whole.
+    recv_calls: Vec<(usize, usize)>,
+    recv_want: crate::fx::HashSet<usize>,
+    recv_seen: HashMap<usize, Ty>,
+    /// The types whose impls need their type parameters when a method runs.
+    typed_heads: &'a crate::fx::HashSet<Symbol>,
     /// Trait bounds on the rigid type parameters in scope (`T: Ord`).
     bounds: HashMap<Symbol, Vec<(Symbol, Vec<Ty>)>>,
     /// Obligations `type implements trait[args]`, solved at the end of the declaration.
@@ -1592,6 +1655,26 @@ impl<'a> Checker<'a> {
     /// The runtime type of each recorded instantiation, once the declaration
     /// is fully inferred: a concrete type, or the caller's own type parameter.
     fn finish_insts(&mut self) {
+        // a generic type's receiver, for an impl with type parameters: passed whole
+        for (site, ra) in std::mem::take(&mut self.recv_calls) {
+            let Some(t) = self.recv_seen.get(&ra).cloned() else { continue };
+            let t = self.resolve(&t);
+            let Ty::Con(h, args) = &t else { continue };
+            if args.is_empty() || self.env.traits.contains_key(h) {
+                continue;
+            }
+            let heads: Vec<Symbol> = std::iter::once(h.clone()).chain(self.env.variant_parent(h.sym())).collect();
+            let generic = heads.iter().any(|x| self.typed_heads.contains(x));
+            if let (true, Some(r)) = (generic, TypeRef::of(&t)) {
+                self.targets.push((site, Target::SelfType(r)));
+            }
+        }
+        for (site, tr, ty) in std::mem::take(&mut self.static_types) {
+            let t = self.resolve(&ty);
+            if let Some(r) = TypeRef::of(&t) {
+                self.targets.push((site, Target::Static(tr, r)));
+            }
+        }
         for (site, pairs) in std::mem::take(&mut self.insts) {
             let mut refs = Vec::new();
             for (p, t) in pairs {
@@ -1653,9 +1736,8 @@ impl<'a> Checker<'a> {
         } else if self.rigid.contains(&x) {
             // functions are given their type arguments when they run; an impl's
             // own come from the type a method without `self` is called on
-            if self.self_ty.is_some() && !(self.impl_params.contains(&x) && !self.method_self) {
-                let why = if self.impl_params.contains(&x) { "only in a method without `self` (the type it is called on says what it is)" } else { "only on a function's or an impl's type parameters" };
-                self.err(format!("`{}.{sm}()`: a method can be called on a type parameter {why}", short(&x)));
+            if self.self_ty.is_some() && !self.impl_params.contains(&x) {
+                self.err(format!("`{}.{sm}()`: a method can be called on a type parameter only on a function's or an impl's own", short(&x)));
                 return Some(self.fresh());
             }
             let k = rigid(self, &x);
@@ -1694,7 +1776,12 @@ impl<'a> Checker<'a> {
                 return Some(self.fresh());
             }
         };
-        self.targets.push((site, Target::Static(tr.to_string(), tref)));
+        // its arguments may be inferred later in the declaration (`Pair.decode(j)`
+        // returning a `Pair[Int]`): its runtime type is made at the end
+        match tref {
+            TypeRef::Con(..) => self.static_types.push((site, tr.to_string(), ty.clone())),
+            _ => self.targets.push((site, Target::Static(tr.to_string(), tref))),
+        }
         Some(self.trait_method_for(m, &tr, Some(ty)))
     }
 
@@ -1937,6 +2024,9 @@ impl<'a> Checker<'a> {
     /// to pick a variant's own type and to check branches against it.
     fn infer_at(&mut self, e: &Expr, expected: Option<&Ty>) -> Ty {
         let t = self.infer_node(e, expected);
+        if self.recv_want.contains(&(e as *const Expr as usize)) {
+            self.recv_seen.insert(e as *const Expr as usize, t.clone());
+        }
         if let Some(ts) = &mut self.types {
             ts.push((e as *const Expr as usize, t.clone()));
         }
@@ -2118,6 +2208,9 @@ impl<'a> Checker<'a> {
             }
             Expr::Method(recv, m, args) => {
                 self.dyn_self_args(recv, m, args);
+                let ra = &**recv as *const Expr as usize;
+                self.recv_want.insert(ra);
+                self.recv_calls.push((e as *const Expr as usize, ra));
                 // the program's own nodes, not copies: decisions are recorded by node
                 let all: Vec<&Expr> = std::iter::once(&**recv).chain(args.iter()).collect();
                 let marked = Some(self.marked.contains(&(e as *const Expr as usize)));
@@ -3268,6 +3361,11 @@ impl<'a> Checker<'a> {
             self_ty: None,
             impl_params: Vec::new(),
             method_self: false,
+            static_types: Vec::new(),
+            recv_calls: Vec::new(),
+            recv_want: Default::default(),
+            recv_seen: HashMap::default(),
+            typed_heads: no_heads(),
             bounds: HashMap::default(),
             pending: Vec::new(),
             lambda_floor: 0,
@@ -3371,6 +3469,7 @@ fn check_from(resolved: crate::resolve::Resolution) -> CheckReport {
 /// method-call decisions `elaborate` writes into the program.
 fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usize, Target)>, HashMap<usize, Ty>) {
     let (mut errors, mut holes, mut targets, mut types) = (Vec::new(), Vec::new(), Vec::new(), HashMap::default());
+    let typed_heads = heads_needing_types(prog, env);
     for d in &prog.decls {
         // a `derived fn` and a function with `comptime` parameters are checked
         // where they are specialized (each `derive`, each copy), not here
@@ -3389,6 +3488,11 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec
             self_ty: None,
             impl_params: Vec::new(),
             method_self: false,
+            static_types: Vec::new(),
+            recv_calls: Vec::new(),
+            recv_want: Default::default(),
+            recv_seen: HashMap::default(),
+            typed_heads: &typed_heads,
             bounds: HashMap::default(),
             pending: Vec::new(),
             lambda_floor: 0,
@@ -3638,6 +3742,37 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec
         targets.extend(c.targets);
     }
     (errors, holes, targets, types)
+}
+
+/// No types: for checks that don't elaborate the program.
+fn no_heads() -> &'static crate::fx::HashSet<Symbol> {
+    static EMPTY: std::sync::OnceLock<crate::fx::HashSet<Symbol>> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(Default::default)
+}
+
+/// The types with an impl whose methods need its type parameters when they
+/// run: they call a method on one (`T.zero()`), or a function given its
+/// type arguments when it runs. A call on such a type's value is given the
+/// value's whole type (`$self_type`).
+fn heads_needing_types(prog: &Program, env: &Env) -> crate::fx::HashSet<Symbol> {
+    let mut out = crate::fx::HashSet::default();
+    for d in prog.decls.iter().chain(&prelude().decls) {
+        let DeclKind::Impl(i) = &d.kind else { continue };
+        if i.type_params.is_empty() {
+            continue;
+        }
+        let uses = |e: &Expr| {
+            crate::ast::any_expr(e, |x| match x {
+                Expr::Method(r, _, _) => matches!(&**r, Expr::Var(n) | Expr::Ctor(n, CtorArgs::None) if i.type_params.contains(n)),
+                Expr::Call(f, _) => matches!(&**f, Expr::Var(n) if env.fns.get(n).is_some_and(|fd| !env.type_args(fd).is_empty())),
+                _ => false,
+            })
+        };
+        if i.methods.iter().any(|m| uses(&m.body)) {
+            out.insert(texpr_head(&i.for_type).sym());
+        }
+    }
+    out
 }
 
 /// A type's own method as the function it is called as (`Item.new`, or

@@ -283,3 +283,88 @@ true
 Set { 1, 3 }
 Dict {}
 "#;
+
+#[allow(dead_code)]
+pub const SELF_METHODS: &str = r#"trait Zero {
+  fn zero() -> Self
+}
+
+impl Zero for Int {
+  fn zero() -> Self { 0 }
+}
+
+impl Zero for String {
+  fn zero() -> Self { "z" }
+}
+
+trait Pad {
+  fn padded(self, n: Int) -> Self
+}
+
+impl[T: Zero] Pad for List[T] {
+  fn padded(self, n: Int) -> Self {
+    mut out := self
+    while len(out) < n {
+      out = push(out, T.zero())
+    }
+    out
+  }
+}
+
+type Cell[T] = { v: Option[T] }
+
+impl[T: Zero] Cell[T] {
+  fn get_or_zero(self) -> T {
+    match self.v {
+      Some(x) => x,
+      None => T.zero(),
+    }
+  }
+}
+
+fn pad_all[T: Zero](xs: List[List[T]], n: Int) -> List[List[T]] {
+  xs.map(x -> x.padded(n))
+}
+
+fn ints() -> List[List[Int]] { pad_all([[1], []], 3) }
+
+fn main() {
+  let e: List[String] = []
+  print(e.padded(2))
+  print([1].padded(3))
+  print(Cell { v: None }.get_or_zero() + 1)
+  let c: Cell[String] = Cell { v: None }
+  print(c.get_or_zero())
+  print(ints())
+}
+"#;
+
+#[allow(dead_code)]
+pub const SELF_METHODS_OUTPUT: &str = r#"["z", "z"]
+[1, 0, 0]
+1
+z
+[[1, 0, 0], [0, 0, 0]]
+"#;
+
+#[allow(dead_code)]
+pub const GENERIC_DERIVE: &str = r#"use std.json.{Json, parse, stringify}
+
+type Pair[T] = { a: T, b: T }
+
+derive Json for Pair
+
+type Box = { p: Pair[Int] }
+
+derive Json for Box
+
+fn main() {
+  print(stringify(Box { p: Pair { a: 1, b: 2 } }.encode() !! std.json.Null))
+  print(Box.decode(parse("{\"p\": {\"a\": 3, \"b\": 4}}") !! std.json.Null))
+}
+"#;
+
+#[allow(dead_code)]
+pub const GENERIC_DERIVE_OUTPUT: &str = r#"{"type":"Box","p":{"type":"Pair","a":1,"b":2}}
+Ok(Box { p: Pair { a: 3, b: 4 } })
+"#;

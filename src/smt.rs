@@ -1943,6 +1943,8 @@ impl<'a> Vc<'a> {
             }
             Expr::Ctor(c, args) => self.ctor(c, args),
             Expr::Call(f, args) => match &**f {
+                // a call given its receiver's whole type: the call
+                Expr::Var(name) if name == crate::types::SELF_TYPE && args.len() == 2 => self.eval(&args[1]),
                 Expr::Var(name) if self.lookup(name).is_none() => self.call_exprs(name, args),
                 _ => {
                     let callee = self.eval(f);

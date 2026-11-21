@@ -3255,6 +3255,10 @@ impl<'m, 'a> Func<'m, 'a> {
     /// checker narrowed it to a member (a matched variable in its arm) is
     /// that member's.
     fn expr(&mut self, e: &Expr) -> Res<V> {
+        // a type passed at runtime (`type:T`): compiled code is made per type
+        if matches!(e, Expr::Var(x) if x.starts_with("type:")) {
+            return Ok((Ty::Unit, String::new()));
+        }
         let v = self.expr_in(e)?;
         if !self.m.boxed(&v.0) {
             return Ok(v);
@@ -3806,6 +3810,10 @@ impl<'m, 'a> Func<'m, 'a> {
         // made per type, so the value is never used
         if name == crate::types::TYPE_TEXT {
             return Ok((Ty::Unit, String::new()));
+        }
+        // `$self_type(t, call)`: compiled code is made per type already
+        if name == crate::types::SELF_TYPE && args.len() == 2 {
+            return self.expr(args[1]);
         }
         if name == "matches" && args.len() == 2 && self.lookup(name).is_none() && !self.m.env.fns.contains_key(&Symbol::new(name)) {
             // a pattern built at run time: the runtime's engine (Rust's `regex`, under the JIT)

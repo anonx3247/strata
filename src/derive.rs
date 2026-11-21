@@ -106,6 +106,8 @@ struct Expander<'a> {
     ctors: HashMap<String, String>,
     /// Names bound inside the code being specialized, which hide known ones.
     hidden: Vec<Vec<Symbol>>,
+    /// The type parameters of the type derived for (`T` of `Pair[T]`).
+    params: Vec<Symbol>,
     /// The trait being derived, and its methods.
     trait_name: Symbol,
     trait_methods: Vec<Symbol>,
@@ -126,6 +128,17 @@ fn record(name: &str, fields: Vec<(&str, Value)>) -> Value {
 
 fn strs(xs: &[String]) -> Value {
     Value::List(xs.iter().map(|s| Value::Str(s.clone())).collect())
+}
+
+/// Whether a type mentions the name `p` (a type parameter).
+fn mentions_name(t: &TypeExpr, p: Symbol) -> bool {
+    match t {
+        TypeExpr::Named(n, args) => *n == p || args.iter().any(|a| mentions_name(a, p)),
+        TypeExpr::Refined(b, _) => mentions_name(b, p),
+        TypeExpr::Fn(ps, r) => ps.iter().any(|a| mentions_name(a, p)) || mentions_name(r, p),
+        TypeExpr::Union(ms) => ms.iter().any(|a| mentions_name(a, p)),
+        TypeExpr::Unit => false,
+    }
 }
 
 /// The pattern matching values of a type (`Int`, `List[Int]`, `Address`).
@@ -149,7 +162,7 @@ impl<'a> Expander<'a> {
         Expander {
             env,
             prog,
-            known: HashMap::new(), types: HashMap::new(), written: HashMap::new(), self_ty: TypeExpr::Unit, copies: vec![], made: HashMap::new(), ctors: HashMap::new(), hidden: vec![], arm_fields: vec![], trait_name: Symbol::new(""), trait_methods: vec![], defaults: HashMap::new() }
+            known: HashMap::new(), types: HashMap::new(), written: HashMap::new(), self_ty: TypeExpr::Unit, copies: vec![], made: HashMap::new(), ctors: HashMap::new(), hidden: vec![], arm_fields: vec![], params: vec![], trait_name: Symbol::new(""), trait_methods: vec![], defaults: HashMap::new() }
     }
 
     /// `derive Trait for Type { written }` as an ordinary `impl`.
@@ -163,6 +176,24 @@ impl<'a> Expander<'a> {
         let Some(dv) = &tr.derivable else {
             return Err(format!("`{}` can't be derived: only a `derivable` trait can (write `impl {} for {}` instead)", short(&tr.name), short(&tr.name), crate::printer::ty(&i.for_type)));
         };
+        // a generic type (`derive Json for Pair`): for `Pair[T]`, each `T` with the trait
+        let mut i = i.clone();
+        let head0 = crate::types::texpr_head(&i.for_type);
+        if let (TypeExpr::Named(n, args), Some(td)) = (&i.for_type, self.env.types.get(&Symbol::new(&head0))) {
+            if args.is_empty() && !td.params.is_empty() {
+                i.for_type = TypeExpr::Named(*n, td.params.iter().map(|p| TypeExpr::Named(*p, vec![])).collect());
+                for p in &td.params {
+                    if !i.type_params.contains(p) {
+                        i.type_params.push(*p);
+                    }
+                    if !i.bounds.iter().any(|b| b.param == *p) {
+                        i.bounds.push(Bound { param: *p, traits: vec![TypeExpr::Named(tr.name, vec![])] });
+                    }
+                }
+            }
+        }
+        let i = &i;
+        self.params = i.type_params.clone();
         self.self_ty = i.for_type.clone();
         self.trait_name = tr.name;
         self.trait_methods = tr.methods.iter().map(|m| m.decl.name).collect();
@@ -634,12 +665,12 @@ impl<'a> Expander<'a> {
                 let TypeExpr::Named(n, targs) = self.base(&t) else {
                     return Err(format!("`{}.{m}(..)`: `{}` has no methods of its own to call", crate::printer::expr(recv, 0), crate::printer::ty(&t)));
                 };
-                if !targs.is_empty() {
-                    return Err(format!("`{}.{m}(..)`: calling a method on a generic type (`{}`) isn't supported yet", crate::printer::expr(recv, 0), crate::printer::ty(&t)));
-                }
+                // (a generic type, `Pair[Int]`: called on `Pair`, its arguments are
+                // inferred from what the call must return)
+                let _ = targs;
                 // a method of the trait being derived: the type must have it (said
                 // here, at the `derive`, rather than in the code made for it)
-                let own = crate::types::texpr_head(&self.self_ty) == n.as_str();
+                let own = crate::types::texpr_head(&self.self_ty) == n.as_str() || self.params.contains(&n);
                 if !own && self.trait_methods.contains(m) && !self.env.impls.iter().any(|i| i.trait_name == self.trait_name && crate::types::texpr_head(&i.for_type) == n.as_str()) {
                     let tn = crate::names::short(&self.trait_name);
                     return Err(format!("`{}` doesn't implement `{tn}`: write `derive {tn} for {}`", crate::names::short(&n), crate::names::short(&n)));
@@ -1052,6 +1083,8 @@ impl<'a> Expander<'a> {
                     _ => false,
                 }
             }
+            // `Param`: a type parameter of the type derived for (`T` of `Pair[T]`)
+            Pattern::Ctor(c, CtorPat::None) if crate::names::short(c) == "Param" && self.env.types.get(c).is_none() => matches!(&base, TypeExpr::Named(n, a) if a.is_empty() && self.params.contains(n)),
             // `Union`: a union of types (its members: `std.typing.Union { members }`)
             Pattern::Ctor(c, CtorPat::None) if crate::names::short(c) == "Union" && self.env.types.get(c).is_none() => matches!(&base, TypeExpr::Union(_)),
             // `Distinct[x]`: a `distinct` type, `x` the type it is made of
@@ -1145,7 +1178,18 @@ impl<'a> Expander<'a> {
         }
         let _ = saved;
         (self.known, self.types, self.hidden) = outer;
-        let f = FnDecl { name: copy, params, ret, body: body?, comptime: false, ..own };
+        // made for a generic type: generic in its parameters that it mentions,
+        // each with the trait derived (`fn encode_as.for.Pair.2[T: Json](x: T, ..)`)
+        let mut tps = own.type_params.clone();
+        let mut bounds = own.bounds.clone();
+        for p in self.params.clone() {
+            let mentions = params.iter().map(|q| &q.ty).chain(std::iter::once(&ret)).any(|t| mentions_name(t, p));
+            if mentions && !tps.contains(&p) {
+                tps.push(p);
+                bounds.push(Bound { param: p, traits: vec![TypeExpr::Named(self.trait_name, vec![])] });
+            }
+        }
+        let f = FnDecl { name: copy, params, ret, body: body?, comptime: false, type_params: tps, bounds, ..own };
         self.copies.push(f);
         Ok(Expr::Call(Box::new(Expr::Var(copy)), rest))
     }
