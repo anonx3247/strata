@@ -276,6 +276,13 @@ declare void @strata_leave()
 declare void @strata_overflow() noreturn cold
 declare void @strata_main_error(ptr)
 declare i64 @strata_div(i64, i64)
+declare i64 @strata_int_add(i64, i64)
+declare i64 @strata_int_sub(i64, i64)
+declare i64 @strata_int_mul(i64, i64)
+declare i64 @strata_int_cmp(i64, i64)
+declare i1 @strata_int_eq(i64, i64)
+declare i64 @strata_int_lit(ptr)
+declare double @strata_int_to_float(i64)
 declare i64 @strata_mod(i64, i64)
 declare double @strata_fmod(double, double)
 declare double @strata_finite(double, double, double, ptr)
@@ -290,6 +297,7 @@ declare ptr @strata_range(i64, i64)
 declare i64 @llvm.smax.i64(i64, i64)
 declare i64 @llvm.smin.i64(i64, i64)
 declare ptr @strata_show_int(i64)
+declare ptr @strata_json_int(i64)
 declare ptr @strata_show_float(double)
 declare ptr @strata_show_bool(i1)
 declare ptr @strata_json_str(ptr)
@@ -1576,6 +1584,7 @@ impl<'m, 'a> Func<'m, 'a> {
             return Ok(self.call(&Ty::Str, &f, &[(t.clone(), v.1.clone())])?.1);
         }
         match t {
+            Ty::Int => Ok(self.call(&Ty::Str, "@strata_show_int", &[v.clone()])?.1),
             Ty::Str => {
                 // (owned, as every shown value: held once more)
                 if !constant(&v.1) {
@@ -1598,7 +1607,7 @@ impl<'m, 'a> Func<'m, 'a> {
             return self.dyn_entry_call(v, DYN_JSON);
         }
         Ok(match &t {
-            Ty::Int => self.call(&Ty::Str, "@strata_show_int", &[v.clone()])?.1,
+            Ty::Int => self.call(&Ty::Str, "@strata_json_int", &[v.clone()])?.1,
             Ty::Float => self.call(&Ty::Str, "@strata_show_float", &[v.clone()])?.1,
             Ty::Bool => self.call(&Ty::Str, "@strata_show_bool", &[v.clone()])?.1,
             Ty::Str => self.call(&Ty::Str, "@strata_json_str", &[v.clone()])?.1,
@@ -1630,7 +1639,23 @@ impl<'m, 'a> Func<'m, 'a> {
         let t = self.m.repr(&a.0)?;
         Ok(match &t {
             Ty::Unit => bool_v("true"),
-            Ty::Int | Ty::Bool => {
+            Ty::Int => {
+                // the same 64 bits, or two big integers of the same value
+                let (same, end, deep) = (self.fresh("same"), self.fresh_label("int.eqd"), self.fresh_label("int.deep"));
+                self.emit(format!("{same} = icmp eq i64 {}, {}", a.1, b.1));
+                let from = self.cur.clone();
+                self.emit(format!("br i1 {same}, label %{end}, label %{deep}"));
+                self.block(&deep);
+                let e = self.fresh("deq");
+                self.emit(format!("{e} = call i1 @strata_int_eq(i64 {}, i64 {})", a.1, b.1));
+                let from_deep = self.cur.clone();
+                self.br(&end);
+                self.block(&end);
+                let r = self.fresh("eq");
+                self.emit(format!("{r} = phi i1 [ true, %{from} ], [ {e}, %{from_deep} ]"));
+                bool_v(&r)
+            }
+            Ty::Bool => {
                 let r = self.fresh("eq");
                 self.emit(format!("{r} = icmp eq {} {}, {}", self.m.ll(&t)?, a.1, b.1));
                 bool_v(&r)
@@ -1714,9 +1739,13 @@ impl<'m, 'a> Func<'m, 'a> {
                         h.drop_value(&(Ty::Str, y))?;
                         h.emit(format!("ret i64 {}", c.1));
                     }
-                    Ty::Int | Ty::Bool => {
+                    Ty::Int => {
+                        let c = h.call(&Ty::Int, "@strata_int_cmp", &[a.clone(), b.clone()])?;
+                        h.emit(format!("ret i64 {}", c.1));
+                    }
+                    Ty::Bool => {
                         let (lt, gt) = (h.fresh("l"), h.fresh("g"));
-                        let (pl, pg) = if matches!(h.m.repr(t)?, Ty::Int) { ("slt", "sgt") } else { ("ult", "ugt") };
+                        let (pl, pg) = ("ult", "ugt");
                         h.emit(format!("{lt} = icmp {pl} {ll} %a, %b"));
                         h.emit(format!("{gt} = icmp {pg} {ll} %a, %b"));
                         three(&mut h, &lt, &gt);
@@ -2554,8 +2583,8 @@ impl<'m, 'a> Func<'m, 'a> {
 
     fn expr_in(&mut self, e: &Expr) -> Res<V> {
         Ok(match e {
-            Expr::Int(n) => (Ty::Int, n.to_string()),
-            Expr::BigInt(n) => return self.unsupported(&format!("the big integer {n}")),
+            Expr::Int(n) => self.int_lit(&n.to_string()),
+            Expr::BigInt(n) => self.int_lit(&n.to_string()),
             Expr::Float(x) => (Ty::Float, format!("0x{:016X}", x.to_bits())),
             Expr::Bool(b) => bool_v(&b.to_string()),
             Expr::Str(s) => self.string(s),
@@ -2804,17 +2833,96 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     /// `+`, `-`, `*` on `Int`: a fault on overflow.
+    /// `+`, `-`, `*` on `Int`s: here when both and the result are small
+    /// (runtime.c, "integers"), else in the runtime (a big integer).
     fn int_op(&mut self, op: &str, a: &V, b: &V) -> V {
         let (pair, r, ov) = (self.fresh("pair"), self.fresh("int"), self.fresh("ov"));
         self.emit(format!("{pair} = call {{ i64, i1 }} @llvm.{op}.with.overflow.i64(i64 {}, i64 {})", a.1, b.1));
         self.emit(format!("{r} = extractvalue {{ i64, i1 }} {pair}, 0"));
         self.emit(format!("{ov} = extractvalue {{ i64, i1 }} {pair}, 1"));
-        let (bad, ok) = (self.fresh_label("overflow"), self.fresh_label("no_overflow"));
-        self.emit(format!("br i1 {ov}, label %{bad}, label %{ok}"));
-        self.block(&bad);
-        self.emit("call void @strata_overflow()".into());
-        self.emit("unreachable".into());
-        self.block(&ok);
+        let ok = self.all_small(&[&a.1, &b.1, &r]);
+        let fine = self.fresh("fine");
+        self.emit(format!("{fine} = and i1 {ok}, true"));
+        let nov = self.fresh("nov");
+        self.emit(format!("{nov} = xor i1 {ov}, true"));
+        let both = self.fresh("fast");
+        self.emit(format!("{both} = and i1 {fine}, {nov}"));
+        let (fast, slow, end) = (self.fresh_label("int.small"), self.fresh_label("int.big"), self.fresh_label("int.done"));
+        self.emit(format!("br i1 {both}, label %{fast}, label %{slow}"));
+        self.block(&fast);
+        self.br(&end);
+        self.block(&slow);
+        let f = match op {
+            "sadd" => "add",
+            "ssub" => "sub",
+            _ => "mul",
+        };
+        let big = self.fresh("big");
+        self.emit(format!("{big} = call i64 @strata_int_{f}(i64 {}, i64 {})", a.1, b.1));
+        self.br(&end);
+        self.block(&end);
+        let v = self.fresh("n");
+        self.emit(format!("{v} = phi i64 [ {r}, %{fast} ], [ {big}, %{slow} ]"));
+        (Ty::Int, v)
+    }
+
+    /// Whether every one of these `Int`s is small (in [-2^62, 2^62): its two
+    /// top bits are equal).
+    fn all_small(&mut self, xs: &[&str]) -> String {
+        let mut acc = String::new();
+        for x in xs {
+            let (sh, xo) = (self.fresh("sh"), self.fresh("xo"));
+            self.emit(format!("{sh} = shl i64 {x}, 1"));
+            self.emit(format!("{xo} = xor i64 {x}, {sh}"));
+            if acc.is_empty() {
+                acc = xo;
+            } else {
+                let o = self.fresh("or");
+                self.emit(format!("{o} = or i64 {acc}, {xo}"));
+                acc = o;
+            }
+        }
+        let r = self.fresh("small");
+        self.emit(format!("{r} = icmp sge i64 {acc}, 0"));
+        r
+    }
+
+    /// `a` `pred` `b` on `Int`s: as 64-bit values unless both are big.
+    fn int_compare(&mut self, pred: &str, a: &str, b: &str) -> V {
+        let (sa, sb, xa, xb, both, bb) = (self.fresh("sh"), self.fresh("sh"), self.fresh("xo"), self.fresh("xo"), self.fresh("both"), self.fresh("bigs"));
+        self.emit(format!("{sa} = shl i64 {a}, 1"));
+        self.emit(format!("{xa} = xor i64 {a}, {sa}"));
+        self.emit(format!("{sb} = shl i64 {b}, 1"));
+        self.emit(format!("{xb} = xor i64 {b}, {sb}"));
+        self.emit(format!("{both} = and i64 {xa}, {xb}"));
+        self.emit(format!("{bb} = icmp slt i64 {both}, 0"));
+        let (fast, slow, end) = (self.fresh_label("cmp.small"), self.fresh_label("cmp.big"), self.fresh_label("cmp.done"));
+        self.emit(format!("br i1 {bb}, label %{slow}, label %{fast}"));
+        self.block(&fast);
+        let r1 = self.fresh("c");
+        self.emit(format!("{r1} = icmp {pred} i64 {a}, {b}"));
+        self.br(&end);
+        self.block(&slow);
+        let (c, r2) = (self.fresh("c"), self.fresh("c"));
+        self.emit(format!("{c} = call i64 @strata_int_cmp(i64 {a}, i64 {b})"));
+        self.emit(format!("{r2} = icmp {pred} i64 {c}, 0"));
+        self.br(&end);
+        self.block(&end);
+        let r = self.fresh("cmp");
+        self.emit(format!("{r} = phi i1 [ {r1}, %{fast} ], [ {r2}, %{slow} ]"));
+        bool_v(&r)
+    }
+
+    /// An integer literal: itself when small, else a big integer made at run time.
+    fn int_lit(&mut self, digits: &str) -> V {
+        if let Ok(n) = digits.parse::<i64>() {
+            if (-(1i64 << 62)..(1i64 << 62)).contains(&n) {
+                return (Ty::Int, n.to_string());
+            }
+        }
+        let s = self.m.string(digits);
+        let r = self.fresh("lit");
+        self.emit(format!("{r} = call i64 @strata_int_lit(ptr {s})"));
         (Ty::Int, r)
     }
 
@@ -2922,10 +3030,10 @@ impl<'m, 'a> Func<'m, 'a> {
                 let sym = self.string(op.symbol());
                 self.call(&Ty::Float, "@strata_finite", &[r, a.clone(), b.clone(), sym])?
             }
-            (Lt, Ty::Int) => cmp(self, "icmp slt")?,
-            (Le, Ty::Int) => cmp(self, "icmp sle")?,
-            (Gt, Ty::Int) => cmp(self, "icmp sgt")?,
-            (Ge, Ty::Int) => cmp(self, "icmp sge")?,
+            (Lt, Ty::Int) => self.int_compare("slt", &a.1, &b.1),
+            (Le, Ty::Int) => self.int_compare("sle", &a.1, &b.1),
+            (Gt, Ty::Int) => self.int_compare("sgt", &a.1, &b.1),
+            (Ge, Ty::Int) => self.int_compare("sge", &a.1, &b.1),
             (Lt, Ty::Float) => cmp(self, "fcmp olt")?,
             (Le, Ty::Float) => cmp(self, "fcmp ole")?,
             (Gt, Ty::Float) => cmp(self, "fcmp ogt")?,
@@ -3463,15 +3571,12 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             ("len", [Ty::Str]) => self.call(&Ty::Int, "@strata_str_len", &vs)?,
             ("abs", [Ty::Int]) => {
-                // |i64::MIN| doesn't fit
-                let is_min = self.apply(BinOp::Eq, &vs[0], &(Ty::Int, i64::MIN.to_string()))?;
-                let (bad, ok) = (self.fresh_label("overflow"), self.fresh_label("abs"));
-                self.cond_br(&is_min, &bad, &ok);
-                self.block(&bad);
-                self.emit("call void @strata_overflow()".into());
-                self.emit("unreachable".into());
-                self.block(&ok);
-                self.call(&Ty::Int, "@llvm.abs.i64", &[vs[0].clone(), bool_v("false")])?
+                // |n| of a small n is small, but for -2^62
+                let neg = self.int_op("ssub", &(Ty::Int, "0".into()), &vs[0]);
+                let lt = self.int_compare("slt", &vs[0].1, "0");
+                let r = self.fresh("abs");
+                self.emit(format!("{r} = select i1 {}, i64 {}, i64 {}", lt.1, neg.1, vs[0].1));
+                (Ty::Int, r)
             }
             ("abs", [Ty::Float]) => self.call(&Ty::Float, "@llvm.fabs.f64", &vs)?,
             ("min" | "max", [a, b]) if a == b && matches!(a, Ty::Int | Ty::Float) => {
@@ -3482,11 +3587,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.emit(format!("{r} = select i1 {}, {ll} {}, {ll} {}", lt.1, x.1, y.1));
                 (a.clone(), r)
             }
-            ("float", [Ty::Int]) => {
-                let r = self.fresh("fl");
-                self.emit(format!("{r} = sitofp i64 {} to double", vs[0].1));
-                (Ty::Float, r)
-            }
+            ("float", [Ty::Int]) => self.call(&Ty::Float, "@strata_int_to_float", &vs)?,
             ("sqrt", [Ty::Float]) => {
                 // no NaN: the square root of a negative number is a fault
                 self.call(&Ty::Float, "@strata_sqrt", &vs)?
@@ -4334,7 +4435,8 @@ impl<'m, 'a> Func<'m, 'a> {
             Pattern::Wild => {}
             Pattern::Bind(x) => self.bind(x, v)?,
             Pattern::Int(n) => {
-                let ok = self.apply(BinOp::Eq, v, &(Ty::Int, n.to_string()))?;
+                let lit = self.int_lit(&n.to_string());
+                let ok = self.apply(BinOp::Eq, v, &lit)?;
                 test(self, ok)?;
             }
             Pattern::Bool(b) => {

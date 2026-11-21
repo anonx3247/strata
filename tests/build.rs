@@ -871,8 +871,8 @@ fn main() {
 "#;
 
 /// With the JIT, `strata run` compiles by default: what doesn't compile is
-/// interpreted without a note (`--jit` gives one), and `--interpret` keeps
-/// the interpreter's big integers.
+/// interpreted without a note (`--jit` gives one); compiled and interpreted,
+/// `Int` grows into a big integer.
 #[cfg(feature = "jit")]
 #[test]
 fn run_compiles_by_default_with_the_jit() {
@@ -881,7 +881,7 @@ fn run_compiles_by_default_with_the_jit() {
     let f = d.join("big.strata");
     save(&f, "fn main() {\n  mut n := 1\n  for _ in 0..70 {\n    n = n * 2\n  }\n  print(n)\n}\n");
     let (out, code) = output(Command::new(strata).arg("run").arg(&f));
-    assert!(code == 101 && out.contains("overflow"), "compiled: {out}");
+    assert_eq!((out.as_str(), code), ("1180591620717411303424\n", 0), "compiled");
     let (out, code) = output(Command::new(strata).args(["run", "--interpret"]).arg(&f));
     assert_eq!((out.as_str(), code), ("1180591620717411303424\n", 0));
     let f = d.join("regex.strata");
@@ -1243,5 +1243,75 @@ fn main() {
   print(H { name: "h", on: twice })
   print([f, (a: Int) -> a])
   print(f(1))
+}
+"#;
+
+/// `Int` never overflows, compiled too: small integers are themselves, any
+/// other is a big integer (runtime.c, "integers"), through arithmetic,
+/// Euclidean `/` and `%`, comparisons, equality, ordering, printing,
+/// `float`, `floor`, `parse_int`, literals and patterns.
+#[test]
+fn big_integers_compile() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("bigint");
+    let (out, code) = case(&d, "bigint", BIG_INTEGERS);
+    assert!(code == 0 && out.starts_with("15511210043330985984000000\n870\n354224848179261915075\n") && out.contains("9223372036854775808\n-9223372036854775809\n"), "{out}");
+}
+
+const BIG_INTEGERS: &str = r#"fn factorial(n: Int) -> Int { if n <= 1 { 1 } else { n * factorial(n - 1) } }
+
+fn fib(n: Int) -> Int {
+  mut a := 0
+  mut b := 1
+  for _ in 0..n {
+    t := a + b
+    a = b
+    b = t
+  }
+  a
+}
+
+fn main() {
+  print(factorial(25))
+  print(factorial(30) / factorial(28))
+  print(fib(100))
+  print(fib(100) % 1000007)
+  big := 123456789012345678901234567890
+  print(big)
+  print(-big)
+  print(big * big)
+  print(big / -7)
+  print(big % -7)
+  print(-big / 7)
+  print(-big % 7)
+  print(big == 123456789012345678901234567890)
+  print(big > fib(100))
+  print(big < -big)
+  print(abs(-big))
+  print(min(big, 3))
+  print(max(-big, -3))
+  print(float(big))
+  print(floor(1000000000000000000000000000000.0))
+  print(parse_int("99999999999999999999999"))
+  print(parse_int("-4611686018427387905"))
+  n := 4611686018427387903
+  print(n + 1)
+  print(n + 1 - 1 == n)
+  print([big, 1, -big].sort())
+  print(Set { big, big * 1, 2 })
+  print(Dict { big: "big" })
+  print(f"{big:>40}")
+  print(9223372036854775807 + 1)
+  print(-9223372036854775808 - 1)
+  print(abs(-4611686018427387904))
+  match n + 1 {
+    4611686018427387904 => print("matched big"),
+    _ => print("no"),
+  }
+  print(2 * 3 + 4 - 5)
+  print(len([1, 2, 3]) * 1000000000000000000000)
 }
 "#;

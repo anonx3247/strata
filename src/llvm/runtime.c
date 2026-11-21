@@ -218,27 +218,326 @@ _Noreturn void strata_fault(int32_t kind, Str *msg) {
   exit(101);
 }
 
-_Noreturn void strata_overflow(void) {
-  strata_fault(4, str_c("integer overflow (big integers are not compiled yet)"));
+// ---- integers ----
+//
+// An `Int` never overflows (as the interpreter's): one in [-2^62, 2^62) is
+// itself, and any other is a big integer, a pointer kept in the 64-bit
+// values outside that range: above it for positive ones, below for
+// negative ones, so comparing a small and a big integer as 64-bit values
+// is right. The generated code does small arithmetic itself and calls
+// these when an operand or the result isn't small. Big integers are never
+// freed (they are rare: a program that overflows).
+
+#define SMALL_MIN (-(INT64_C(1) << 62))
+#define SMALL_MAX ((INT64_C(1) << 62) - 1)
+
+// A number: sign (-1, 0, 1) and magnitude, 32-bit digits, least first.
+typedef struct {
+  int sign;
+  int64_t n;
+  uint32_t *d;
+} Num;
+
+// A big integer's object.
+typedef struct {
+  int64_t sign, n;
+  uint32_t d[];
+} Big;
+
+static int is_big(int64_t v) { return v < SMALL_MIN || v > SMALL_MAX; }
+
+static Big *big_at(int64_t v) {
+  uint64_t k = v > 0 ? (uint64_t)v - ((uint64_t)1 << 62) : (uint64_t)(-(v + 1)) - ((uint64_t)1 << 62);
+  return (Big *)(uintptr_t)(k << 3);
 }
 
-// ---- numbers ----
+static uint32_t *digits(int64_t n) {
+  uint32_t *d = calloc((size_t)(n > 0 ? n : 1), 4);
+  if (!d) {
+    fputs("fault (Limit): out of memory\n", stderr);
+    exit(101);
+  }
+  return d;
+}
+
+// `v` as a number (its digits are the caller's to free).
+static Num num_of(int64_t v) {
+  Num x;
+  if (is_big(v)) {
+    Big *b = big_at(v);
+    x.sign = (int)b->sign, x.n = b->n, x.d = digits(b->n);
+    memcpy(x.d, b->d, (size_t)b->n * 4);
+    return x;
+  }
+  uint64_t m = v < 0 ? (uint64_t)0 - (uint64_t)v : (uint64_t)v;
+  x.sign = v < 0 ? -1 : v > 0, x.d = digits(2), x.n = 0;
+  if (m) x.d[x.n++] = (uint32_t)m;
+  if (m >> 32) x.d[x.n++] = (uint32_t)(m >> 32);
+  return x;
+}
+
+static void trim(Num *x) {
+  while (x->n > 0 && x->d[x->n - 1] == 0) x->n--;
+  if (x->n == 0) x->sign = 0;
+}
+
+// The `Int` of a number (which it frees): small, or a new big integer.
+static int64_t int_of(Num x) {
+  trim(&x);
+  if (x.n <= 2) {
+    uint64_t m = x.n ? x.d[0] | (x.n > 1 ? (uint64_t)x.d[1] << 32 : 0) : 0;
+    if (m <= (uint64_t)SMALL_MAX + (x.sign < 0)) {
+      free(x.d);
+      return x.sign < 0 ? (int64_t)((uint64_t)0 - m) : (int64_t)m;
+    }
+  }
+  Big *b = malloc(sizeof(Big) + (size_t)x.n * 4);
+  if (!b) {
+    fputs("fault (Limit): out of memory\n", stderr);
+    exit(101);
+  }
+  b->sign = x.sign, b->n = x.n;
+  memcpy(b->d, x.d, (size_t)x.n * 4);
+  free(x.d);
+  uint64_t k = (uint64_t)(uintptr_t)b >> 3;
+  return x.sign > 0 ? (int64_t)(((uint64_t)1 << 62) + k) : -(int64_t)(((uint64_t)1 << 62) + k) - 1;
+}
+
+static int mag_cmp(const uint32_t *a, int64_t an, const uint32_t *b, int64_t bn) {
+  if (an != bn) return an < bn ? -1 : 1;
+  for (int64_t i = an - 1; i >= 0; i--)
+    if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
+  return 0;
+}
+
+static Num mag_add(Num a, Num b, int sign) {
+  int64_t n = (a.n > b.n ? a.n : b.n) + 1;
+  Num r = {sign, n, digits(n)};
+  uint64_t c = 0;
+  for (int64_t i = 0; i < n; i++) {
+    c += (uint64_t)(i < a.n ? a.d[i] : 0) + (i < b.n ? b.d[i] : 0);
+    r.d[i] = (uint32_t)c;
+    c >>= 32;
+  }
+  return r;
+}
+
+// |a| - |b|, with |a| >= |b|.
+static Num mag_sub(Num a, Num b, int sign) {
+  Num r = {sign, a.n, digits(a.n)};
+  int64_t borrow = 0;
+  for (int64_t i = 0; i < a.n; i++) {
+    int64_t t = (int64_t)a.d[i] - (i < b.n ? b.d[i] : 0) - borrow;
+    borrow = t < 0;
+    r.d[i] = (uint32_t)(t + (borrow ? (INT64_C(1) << 32) : 0));
+  }
+  return r;
+}
+
+static Num num_add(Num a, Num b) {
+  if (a.sign == 0) return mag_add(b, (Num){0, 0, NULL}, b.sign);
+  if (b.sign == 0) return mag_add(a, (Num){0, 0, NULL}, a.sign);
+  if (a.sign == b.sign) return mag_add(a, b, a.sign);
+  int c = mag_cmp(a.d, a.n, b.d, b.n);
+  if (c == 0) return (Num){0, 0, digits(1)};
+  return c > 0 ? mag_sub(a, b, a.sign) : mag_sub(b, a, b.sign);
+}
+
+static Num num_mul(Num a, Num b) {
+  int64_t n = a.n + b.n;
+  Num r = {a.sign * b.sign, n, digits(n)};
+  for (int64_t i = 0; i < a.n; i++) {
+    uint64_t c = 0;
+    for (int64_t j = 0; j < b.n; j++) {
+      c += (uint64_t)a.d[i] * b.d[j] + r.d[i + j];
+      r.d[i + j] = (uint32_t)c;
+      c >>= 32;
+    }
+    for (int64_t k = i + b.n; c; k++) {
+      c += r.d[k];
+      r.d[k] = (uint32_t)c;
+      c >>= 32;
+    }
+  }
+  return r;
+}
+
+// Truncated |a| / |b| and |a| % |b| (b is not zero), bit by bit.
+static void mag_divmod(Num a, Num b, Num *q, Num *r) {
+  uint32_t *qd = digits(a.n), *rd = digits(b.n + 1);
+  int64_t rn = 0;
+  for (int64_t i = a.n * 32 - 1; i >= 0; i--) {
+    // r = 2r + bit i of a (r < 2|b| fits in b.n + 1 digits)
+    uint32_t carry = (a.d[i / 32] >> (i % 32)) & 1;
+    for (int64_t k = 0; k < rn; k++) {
+      uint32_t top = rd[k] >> 31;
+      rd[k] = rd[k] << 1 | carry;
+      carry = top;
+    }
+    if (carry) rd[rn++] = carry;
+    if (mag_cmp(rd, rn, b.d, b.n) >= 0) {
+      int64_t borrow = 0;
+      for (int64_t k = 0; k < rn; k++) {
+        int64_t t = (int64_t)rd[k] - (k < b.n ? b.d[k] : 0) - borrow;
+        borrow = t < 0;
+        rd[k] = (uint32_t)(t + (borrow ? (INT64_C(1) << 32) : 0));
+      }
+      while (rn > 0 && rd[rn - 1] == 0) rn--;
+      qd[i / 32] |= (uint32_t)1 << (i % 32);
+    }
+  }
+  *q = (Num){1, a.n, qd};
+  *r = (Num){1, rn, rd};
+}
+
+// Euclidean division: the remainder is never negative (as the interpreter's).
+static void num_divmod(Num a, Num b, int64_t *qv, int64_t *rv) {
+  Num q, r;
+  mag_divmod(a, b, &q, &r);
+  q.sign = a.sign * b.sign;
+  r.sign = a.sign;
+  trim(&q);
+  trim(&r);
+  if (r.sign < 0) {
+    // q -= sign(b) (toward the Euclidean quotient), r += |b|
+    Num one = {1, 1, digits(1)};
+    one.d[0] = 1;
+    one.sign = b.sign > 0 ? -1 : 1;
+    Num q2 = num_add(q, one);
+    Num bb = {1, b.n, b.d};
+    Num r2 = num_add(r, bb);
+    free(q.d), free(r.d), free(one.d);
+    q = q2, r = r2;
+  }
+  *qv = int_of(q);
+  *rv = int_of(r);
+}
+
+typedef enum { ADD, SUB, MUL } IntOp;
+
+static int64_t int_op(int64_t a, int64_t b, IntOp op) {
+  Num x = num_of(a), y = num_of(b);
+  if (op == SUB) y.sign = -y.sign;
+  Num r = op == MUL ? num_mul(x, y) : num_add(x, y);
+  free(x.d), free(y.d);
+  return int_of(r);
+}
+
+int64_t strata_int_add(int64_t a, int64_t b) { return int_op(a, b, ADD); }
+int64_t strata_int_sub(int64_t a, int64_t b) { return int_op(a, b, SUB); }
+int64_t strata_int_mul(int64_t a, int64_t b) { return int_op(a, b, MUL); }
+
+// -1, 0 or 1.
+int64_t strata_int_cmp(int64_t a, int64_t b) {
+  if (!is_big(a) || !is_big(b)) return a < b ? -1 : a > b;
+  Big *x = big_at(a), *y = big_at(b);
+  if (x->sign != y->sign) return x->sign < y->sign ? -1 : 1;
+  int c = mag_cmp(x->d, x->n, y->d, y->n);
+  return x->sign < 0 ? -c : c;
+}
+
+_Bool strata_int_eq(int64_t a, int64_t b) { return a == b || (is_big(a) && is_big(b) && strata_int_cmp(a, b) == 0); }
+
+int64_t strata_int_abs(int64_t a) {
+  Num x = num_of(a);
+  if (x.sign < 0) x.sign = 1;
+  return int_of(x);
+}
 
 int64_t strata_div(int64_t a, int64_t b) {
   if (b == 0) strata_fault(4, str_c("division by zero"));
-  if (a == INT64_MIN && b == -1) strata_overflow();
-  // Euclidean: the remainder is never negative
-  int64_t q = a / b, r = a % b;
-  if (r < 0) q = b > 0 ? q - 1 : q + 1;
+  if (!is_big(a) && !is_big(b)) {
+    // Euclidean: the remainder is never negative
+    int64_t q = a / b, r = a % b;
+    if (r < 0) q = b > 0 ? q - 1 : q + 1;
+    return is_big(q) ? int_of(num_of(q)) : q;
+  }
+  Num x = num_of(a), y = num_of(b);
+  int64_t q, r;
+  num_divmod(x, y, &q, &r);
+  free(x.d), free(y.d);
   return q;
 }
 
 int64_t strata_mod(int64_t a, int64_t b) {
   if (b == 0) strata_fault(4, str_c("division by zero"));
-  if (b == -1) return 0;
-  int64_t r = a % b;
-  if (r < 0) r = b > 0 ? r + b : r - b;
+  if (!is_big(a) && !is_big(b)) {
+    if (b == -1) return 0;
+    int64_t r = a % b;
+    if (r < 0) r = b > 0 ? r + b : r - b;
+    return r;
+  }
+  Num x = num_of(a), y = num_of(b);
+  int64_t q, r;
+  num_divmod(x, y, &q, &r);
+  free(x.d), free(y.d);
   return r;
+}
+
+// A big integer's decimal digits: chunks of nine, least first, divided out.
+static Str *big_show(int64_t v) {
+  Num x = num_of(v);
+  uint32_t *chunks = digits(x.n * 2 + 1);
+  int64_t nc = 0;
+  while (x.n > 0) {
+    uint64_t rem = 0;
+    for (int64_t i = x.n - 1; i >= 0; i--) {
+      uint64_t cur = rem << 32 | x.d[i];
+      x.d[i] = (uint32_t)(cur / 1000000000);
+      rem = cur % 1000000000;
+    }
+    while (x.n > 0 && x.d[x.n - 1] == 0) x.n--;
+    chunks[nc++] = (uint32_t)rem;
+  }
+  char *out = malloc((size_t)nc * 9 + 2), *p = out;
+  if (v < 0) *p++ = '-';
+  p += sprintf(p, "%u", nc ? chunks[nc - 1] : 0);
+  for (int64_t i = nc - 2; i >= 0; i--) p += sprintf(p, "%09u", chunks[i]);
+  Str *s = str_c(out);
+  free(out), free(chunks), free(x.d);
+  return s;
+}
+
+// The digits of an integer literal too large to be small.
+int64_t strata_int_lit(Str *s) {
+  Num x = {1, 0, digits(s->len / 9 + 2)};
+  int neg = s->len > 0 && s->bytes[0] == '-';
+  for (int64_t i = neg; i < s->len; i++) {
+    uint64_t c = (uint64_t)(s->bytes[i] - '0');
+    for (int64_t k = 0; k < x.n; k++) {
+      c += (uint64_t)x.d[k] * 10;
+      x.d[k] = (uint32_t)c;
+      c >>= 32;
+    }
+    if (c) x.d[x.n++] = (uint32_t)c;
+  }
+  x.sign = x.n ? (neg ? -1 : 1) : 0;
+  return int_of(x);
+}
+
+// `float(n)`: the nearest Float (Rust's `to_f64`: rounded to nearest, ties even).
+double strata_int_to_float(int64_t v) {
+  if (!is_big(v)) return (double)v;
+  Num x = num_of(v);
+  // the top 64 bits, the rest folded into the lowest (sticky), then scaled
+  int64_t bits = x.n * 32;
+  while (bits > 0 && !((x.d[(bits - 1) / 32] >> ((bits - 1) % 32)) & 1)) bits--;
+  uint64_t top = 0;
+  int sticky = 0;
+  for (int64_t i = bits - 1, k = 0; i >= 0; i--, k++) {
+    int bit = (x.d[i / 32] >> (i % 32)) & 1;
+    if (k < 64) top = top << 1 | (uint64_t)bit;
+    else sticky |= bit;
+  }
+  int64_t shift = bits > 64 ? bits - 64 : 0;
+  if (sticky) top |= 1;
+  double d = ldexp((double)top, (int)shift);
+  free(x.d);
+  if (!isfinite(d)) {
+    Str *m = big_show(v);
+    strata_fault(4, strata_concat(m, str_c(" is too large for a Float")));
+  }
+  return x.sign < 0 ? -d : d;
 }
 
 double strata_fmod(double a, double b) {
@@ -248,8 +547,25 @@ double strata_fmod(double a, double b) {
 }
 
 Str *strata_show_int(int64_t n) {
+  if (is_big(n)) return big_show(n);
   char buf[32];
   return str_c((snprintf(buf, sizeof buf, "%lld", (long long)n), buf));
+}
+
+// An `Int` in JSON, as the interpreter writes it: a number while it fits
+// in 64 bits, else its digits as a string.
+Str *strata_json_int(int64_t n) {
+  Str *d = strata_show_int(n);
+  if (!is_big(n)) return d;
+  Big *b = big_at(n);
+  uint64_t m = b->n <= 2 ? b->d[0] | (b->n > 1 ? (uint64_t)b->d[1] << 32 : 0) : UINT64_MAX;
+  if (b->n <= 2 && m <= (uint64_t)INT64_MAX + (b->sign < 0)) return d;
+  Str *q = strata_concat_owned(strata_concat_owned(str_c("\""), d), str_c("\""));
+  return q;
+}
+
+_Noreturn void strata_overflow(void) {
+  strata_fault(4, str_c("integer overflow"));
 }
 
 // The shortest decimal digits that read back as x (x is not 0): x is
@@ -357,10 +673,23 @@ double strata_finite(double r, double a, double b, Str *op) {
   strata_fault(4, strata_concat(strata_concat(m, show_float_plain(b)), str_c(" is not a finite number")));
 }
 
-// `floor`, `ceil`, `round` of `x` gave `r`, which must fit in an Int.
+// `floor`, `ceil`, `round` of `x` gave `r`, a whole number: as an Int
+// (exactly, a big integer when it isn't small).
 int64_t strata_float_to_int(double r, double x) {
-  if (r >= -9223372036854775808.0 && r < 9223372036854775808.0) return (int64_t)r;
-  strata_fault(4, strata_concat(show_float_plain(x), str_c(" is not a whole number")));
+  if (!isfinite(r)) strata_fault(4, strata_concat(show_float_plain(x), str_c(" is not a whole number")));
+  if (r >= -4611686018427387904.0 && r < 4611686018427387904.0) return (int64_t)r;
+  int e;
+  double m = frexp(fabs(r), &e);  // |r| = m * 2^e, 0.5 <= m < 1
+  uint64_t mant = (uint64_t)ldexp(m, 53);
+  int shift = e - 53;
+  int64_t n = (shift + 31) / 32 + 3;
+  Num v = {r < 0 ? -1 : 1, n, digits(n)};
+  for (int b = 0; b < 53; b++)
+    if ((mant >> b) & 1) {
+      int64_t at = b + shift;
+      v.d[at / 32] |= (uint32_t)1 << (at % 32);
+    }
+  return int_of(v);
 }
 
 double strata_sqrt(double x) {
@@ -1057,17 +1386,24 @@ static _Bool parse_int_trimmed(Str *t, int64_t *out) {
   int neg = 0;
   if (i < n && (t->bytes[i] == '+' || t->bytes[i] == '-')) neg = t->bytes[i++] == '-';
   if (i >= n || t->bytes[i] < '0' || t->bytes[i] > '9') return 0;
-  uint64_t v = 0;
-  int big = 0;
+  Num v = {1, 0, digits(n / 9 + 2)};
   for (; i < n; i++) {
     char c = t->bytes[i];
     if (c == '_') continue;
-    if (c < '0' || c > '9') return 0;
-    if (v > (UINT64_MAX - (uint64_t)(c - '0')) / 10) big = 1;
-    else v = v * 10 + (uint64_t)(c - '0');
+    if (c < '0' || c > '9') {
+      free(v.d);
+      return 0;
+    }
+    uint64_t carry = (uint64_t)(c - '0');
+    for (int64_t k = 0; k < v.n; k++) {
+      carry += (uint64_t)v.d[k] * 10;
+      v.d[k] = (uint32_t)carry;
+      carry >>= 32;
+    }
+    if (carry) v.d[v.n++] = (uint32_t)carry;
   }
-  if (big || v > (uint64_t)INT64_MAX + (uint64_t)neg) strata_overflow();
-  *out = neg ? (int64_t)(0 - v) : (int64_t)v;
+  v.sign = v.n ? (neg ? -1 : 1) : 0;
+  *out = int_of(v);
   return 1;
 }
 

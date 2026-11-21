@@ -50,10 +50,18 @@ unsafe extern "C" {
     fn strata_leave();
     fn strata_overflow();
     fn strata_div();
+    fn strata_int_to_float();
+    fn strata_int_lit();
+    fn strata_int_eq();
+    fn strata_int_cmp();
+    fn strata_int_mul();
+    fn strata_int_sub();
+    fn strata_int_add();
     fn strata_mod();
     fn strata_fmod();
     fn strata_finite();
     fn strata_show_int();
+    fn strata_json_int();
     fn strata_show_float();
     fn strata_show_bool();
     fn strata_json_str();
@@ -121,10 +129,18 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_leave", strata_leave as *const () as usize),
         ("strata_overflow", strata_overflow as *const () as usize),
         ("strata_div", strata_div as *const () as usize),
+        ("strata_int_to_float", strata_int_to_float as *const () as usize),
+        ("strata_int_lit", strata_int_lit as *const () as usize),
+        ("strata_int_eq", strata_int_eq as *const () as usize),
+        ("strata_int_cmp", strata_int_cmp as *const () as usize),
+        ("strata_int_mul", strata_int_mul as *const () as usize),
+        ("strata_int_sub", strata_int_sub as *const () as usize),
+        ("strata_int_add", strata_int_add as *const () as usize),
         ("strata_mod", strata_mod as *const () as usize),
         ("strata_fmod", strata_fmod as *const () as usize),
         ("strata_finite", strata_finite as *const () as usize),
         ("strata_show_int", strata_show_int as *const () as usize),
+        ("strata_json_int", strata_json_int as *const () as usize),
         ("strata_show_float", strata_show_float as *const () as usize),
         ("strata_show_bool", strata_show_bool as *const () as usize),
         ("strata_json_str", strata_json_str as *const () as usize),
