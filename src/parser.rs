@@ -1401,7 +1401,7 @@ impl Parser {
                 // `Option[x]`: a type pattern, in `match comptime t { .. }`
                 if self.is_sym("[") && !self.nl_before() {
                     self.next();
-                    return Ok(Pattern::Ctor(s, CtorPat::Positional(self.list("]", |p| p.pattern())?)));
+                    return Ok(Pattern::Ctor(s, CtorPat::Type(self.list("]", |p| p.pattern())?)));
                 }
                 if self.eat_sym("{") {
                     let mut fields = Vec::new();

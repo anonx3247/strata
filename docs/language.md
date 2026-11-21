@@ -109,7 +109,7 @@ fn describe(v: Int | String) -> String {
 
 **Patterns are sets of values**, and an arm takes what the arms above it left:
 
-- a type's name: `Positive =>`, `String =>`, `Circle =>` (a variant, whatever its fields), or a trait (`Named =>`, values that implement it);
+- a type's name: `Positive =>`, `String =>`, `List[Int] =>`, `Circle =>` (a variant, whatever its fields), or a trait (`Named =>`, values that implement it);
 - a variant or record with fields, as before: `Some(x)`, `Pending { id, .. }`;
 - a literal: `0`, `"x"`, `true`;
 - a condition on the value `it`: `where 3 <= it && it <= 5 =>`, `where len(it) > 0 =>`, `where it < 0.5 =>`;

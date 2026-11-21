@@ -921,13 +921,15 @@ impl Bin for CtorPat {
             CtorPat::None => w.byte(0),
             CtorPat::Positional(ps) => put!(w, 1, ps),
             CtorPat::Record(fs, rest) => put!(w, 2, fs, rest),
+            CtorPat::Type(ps) => put!(w, 3, ps),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
-        Ok(match r.tag("constructor pattern", 2)? {
+        Ok(match r.tag("constructor pattern", 3)? {
             0 => CtorPat::None,
             1 => CtorPat::Positional(Bin::dec(r)?),
-            _ => CtorPat::Record(Bin::dec(r)?, Bin::dec(r)?),
+            2 => CtorPat::Record(Bin::dec(r)?, Bin::dec(r)?),
+            _ => CtorPat::Type(Bin::dec(r)?),
         })
     }
 }

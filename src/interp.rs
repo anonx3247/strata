@@ -1702,8 +1702,8 @@ impl<'a> Interp<'a> {
             (Pattern::Or(ps), v) => ps.iter().find_map(|p| self.matches(p, v, s)),
             (Pattern::Cond(c), v) => (self.eval(c, &extend(s, "it", v.clone())).ok()? == Value::Bool(true)).then(|| s.clone()),
             // a type's name matches the values of that type
-            (Pattern::Ctor(c, CtorPat::None), v) if !self.env.ctors.contains_key(&c.sym()) && self.env.is_type_name(c) => {
-                self.value_in(&TypeExpr::Named(c.clone(), vec![]), v).ok()?.then(|| s.clone())
+            (Pattern::Ctor(..), v) if self.env.type_pattern(p).is_some() => {
+                self.value_in(&self.env.type_pattern(p).unwrap(), v).ok()?.then(|| s.clone())
             }
             (Pattern::Bind(x), v) => Some(extend(s, x, v.clone())),
             (Pattern::Int(a), Value::Int(b)) if a == b => Some(s.clone()),
