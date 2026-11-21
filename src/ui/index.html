@@ -6,46 +6,40 @@
 <title>Strata</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
 <style>
 :root {
-  --bg: #f7f7f5; --panel: #ffffff; --line: #e3e3df; --text: #1d1d1b; --muted: #74746f; --faint: #a5a5a0;
-  --accent: #3b5bdb; --accent-soft: #e8edfd;
-  --type: #7048e8; --effect: #c2255c; --fn: #1c7ed6; --test: #5c940d;
-  --ok: #2f9e44; --warn: #e67700; --bad: #e03131;
-  --code-bg: #fbfbfa; --kw: #9c36b5; --str: #2b8a3e; --num: #c92a2a; --com: #8d8d88; --hole-bg: #fff3bf;
-  --kw-ctl: #1864ab; --kw-spec: #c2255c; --base: #0b7285; --utype: #b35c00;
+  /* the tour's colours (site/style.css): dark blue-greys and a periwinkle accent;
+     the code keeps the viewer's own highlighting */
+  color-scheme: dark;
+  --bg: #0d0e12; --panel: #13151b; --line: #262a33; --line2: #323743; --text: #ecebe6; --muted: #9b9a94; --faint: #5f6069;
+  --accent: #8ea2ff; --accent-soft: #8ea2ff1f;
+  --type: #b197fc; --effect: #f783ac; --fn: #74c0fc; --test: #a9e34b;
+  --ok: #5fd07a; --warn: #e9d27a; --bad: #ff6b6b;
+  --code-bg: #171a21; --kw: #da77f2; --str: #8ce99a; --num: #ffa8a8; --com: #6f7079; --hole-bg: #4a3d0a;
+  --kw-ctl: #74c0fc; --kw-spec: #f783ac; --base: #66d9e8; --utype: #ffc078;
   --mono: "Fira Code", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #161615; --panel: #1e1e1c; --line: #2f2f2c; --text: #e9e9e6; --muted: #9a9a94; --faint: #5f5f5a;
-    --accent: #748ffc; --accent-soft: #232a45;
-    --type: #b197fc; --effect: #f783ac; --fn: #74c0fc; --test: #a9e34b;
-    --ok: #51cf66; --warn: #ffa94d; --bad: #ff6b6b;
-    --code-bg: #1a1a18; --kw: #da77f2; --str: #8ce99a; --num: #ffa8a8; --com: #6f6f69; --hole-bg: #4a3d0a;
-    --kw-ctl: #74c0fc; --kw-spec: #f783ac; --base: #66d9e8; --utype: #ffc078;
-  }
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --display: "Space Grotesk", "Inter", sans-serif;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body { font: 13px/1.45 var(--sans); background: var(--bg); color: var(--text); display: grid;
   grid-template-rows: auto auto 1fr; grid-template-columns: 240px 1fr 340px; grid-template-areas: "top top top" "banner banner banner" "left main right"; }
 header { grid-area: top; display: flex; align-items: center; gap: 14px; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
-header .brand { font-weight: 650; letter-spacing: .2px; }
+header .brand { font: 600 16px var(--display); letter-spacing: -.01em; }
 header .path { color: var(--muted); font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 28ch; }
 .chips { display: flex; gap: 6px; }
 .chip { font-size: 11.5px; padding: 2px 8px; border-radius: 999px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
 .chip b { color: var(--text); font-weight: 600; }
 .chip.warn b { color: var(--warn); } .chip.bad b { color: var(--bad); } .chip.ok b { color: var(--ok); }
 .spacer { flex: 1; }
-.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
 .seg button { font: inherit; font-size: 12px; border: 0; background: transparent; color: var(--muted); padding: 4px 10px; cursor: pointer; }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .seg button:hover:not(.on) { color: var(--text); }
-input[type=search] { font: inherit; padding: 4px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); width: 180px; }
+input[type=search] { font: inherit; padding: 4px 9px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--text); width: 180px; }
 .live { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11.5px; }
 .live i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); display: inline-block; }
 .live.off i { background: var(--bad); }
@@ -73,7 +67,7 @@ main { grid-area: main; position: relative; }
 /* code view */
 #code { padding: 16px 22px 60px; max-width: 980px; }
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; color: var(--muted); font-size: 12px; }
-.cgroup { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.cgroup { background: var(--code-bg); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .card { display: grid; grid-template-columns: 26px 1fr; scroll-margin-top: 12px; border-left: 2px solid transparent; }
 .card + .card { border-top: 1px solid var(--line); }
 .card.sel { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent-soft) 45%, var(--code-bg)); }
@@ -87,7 +81,7 @@ main { grid-area: main; position: relative; }
 a.tog { font: 11px var(--sans); color: var(--muted); cursor: pointer; border-radius: 4px; padding: 0 4px; white-space: nowrap; }
 a.tog:hover { color: var(--accent); background: var(--accent-soft); }
 a.tog .br { font-family: var(--mono); font-size: 12.5px; }
-.toolbar button.plain { font: inherit; font-size: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 7px; padding: 3px 9px; cursor: pointer; }
+.toolbar button.plain { font: inherit; font-size: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 9px; padding: 3px 9px; cursor: pointer; }
 .toolbar button.plain:hover { color: var(--text); }
 .navb button { font-size: 13px; padding: 2px 9px; }
 #nav .navb { background: var(--bg); }
@@ -132,7 +126,7 @@ a.ref:hover { color: var(--accent); text-decoration-color: var(--accent); }
 .tedge.hot { opacity: 1; stroke-width: 2; }
 .tedge.fade { opacity: .12; }
 .tlabel { font: 10.5px var(--mono); fill: var(--muted); text-anchor: middle; paint-order: stroke; stroke: var(--bg); stroke-width: 4px; pointer-events: none; }
-.maptools { position: absolute; left: 12px; top: 10px; right: 12px; display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; color: var(--muted); font-size: 11.5px; }
+.maptools { position: absolute; left: 12px; top: 10px; right: 12px; display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; color: var(--muted); font-size: 11.5px; }
 .maptools button { font: inherit; border: 1px solid var(--line); background: var(--bg); color: var(--text); border-radius: 6px; padding: 1px 8px; cursor: pointer; }
 .maptools .sep { width: 1px; height: 14px; background: var(--line); }
 .maptools span { display: inline-flex; align-items: center; gap: 5px; }
@@ -142,7 +136,7 @@ a.ref:hover { color: var(--accent); text-decoration-color: var(--accent); }
 /* code view sections, inspector source, mini graph, hover arrow */
 h2.sect { font: 600 11px var(--sans); text-transform: uppercase; letter-spacing: .7px; color: var(--faint); margin: 22px 0 8px; }
 .item.hover { background: color-mix(in srgb, var(--warn) 14%, transparent); }
-.card.hover { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 9%, var(--code-bg)); }
+.card.hover { border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, var(--code-bg)); }
 .mg { display: block; overflow: visible; }
 .mg-h { display: flex; justify-content: space-between; color: var(--faint); font-size: 10.5px; padding: 0 20px; }
 .mg-e { fill: none; stroke: var(--faint); stroke-width: 1.2; }
