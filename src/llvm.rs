@@ -377,7 +377,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     };
     // a literal pattern's matcher (a DFA, usually) is made now: data in the
     // program (not for compile-time code or std's library, which have none)
-    let matchers = if matches!(entry, Entry::Main(_) | Entry::Tests(_) | Entry::Fuzz(_)) { literal_patterns(&mut with) } else { HashMap::default() };
+    let matchers = if matches!(entry, Entry::Main(_) | Entry::Tests(..) | Entry::Fuzz(_)) { literal_patterns(&mut with) } else { HashMap::default() };
     let (resolved, types) = crate::types::elaborate_resolved(&with);
     let (env, _) = Env::build(&resolved.program);
     // every constructor gets a tag of its own, so a value's tag says what it is
