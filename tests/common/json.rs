@@ -541,9 +541,9 @@ impl Iterator[Int] for Count {
   }
 }
 
-type ListIter[T] = { items: List[T], pos: Int }
+type Items[T] = { items: List[T], pos: Int }
 
-impl[T] Iterator[T] for ListIter[T] {
+impl[T] Iterator[T] for Items[T] {
   fn next(mut self) -> Option[T] {
     if self.pos < len(self.items) {
       x := self.items[self.pos]
@@ -555,7 +555,7 @@ impl[T] Iterator[T] for ListIter[T] {
   }
 }
 
-type Padded[T] = { inner: ListIter[T], extra: Int }
+type Padded[T] = { inner: Items[T], extra: Int }
 
 impl[T: Zero] Iterator[T] for Padded[T] {
   fn next(mut self) -> Option[T] {
@@ -597,11 +597,11 @@ fn sum(it: Count) -> Int {
 }
 
 fn main() {
-  print(collect(ListIter { items: [1, 2, 3], pos: 0 }))
-  print(collect(Padded { inner: ListIter { items: [4, 5], pos: 0 }, extra: 2 }))
-  print(collect(Padded { inner: ListIter { items: ["a"], pos: 0 }, extra: 1 }))
+  print(collect(Items { items: [1, 2, 3], pos: 0 }))
+  print(collect(Padded { inner: Items { items: [4, 5], pos: 0 }, extra: 2 }))
+  print(collect(Padded { inner: Items { items: ["a"], pos: 0 }, extra: 1 }))
   print(sum(Count { at: 0, end: 10 }))
-  pairs := ListIter { items: [(1, "x"), (2, "y")], pos: 0 }
+  pairs := Items { items: [(1, "x"), (2, "y")], pos: 0 }
   for (i, s) in pairs {
     print(f"{i}{s}")
   }
@@ -794,4 +794,49 @@ pub const ITERATOR_COMPREHENSIONS_OUTPUT: &str = r#"10
 Set { 0, 1 }
 Dict { 0: 0, 1: 1, 2: 4, 3: 9 }
 [2, 4]
+"#;
+
+/// `iter()` on lists, ranges, sets (in order) and dicts (entries by key):
+/// finite iterators, for loops, generic code and comprehensions; the list
+/// builtins unchanged.
+#[allow(dead_code)]
+pub const COLLECTION_ITERATORS: &str = r#"fn total[I: FiniteIterator[Int]](it: I) -> Int {
+  it.fold(0, (a, b) -> a + b)
+}
+
+fn main() {
+  xs := [3, 1, 2]
+  it := xs.iter()
+  print(it.len())
+  for x in it {
+    print(x)
+  }
+  print(total(xs.iter()))
+  print(total((0..5).iter()))
+  print([x * 10 for x in xs.iter() where x > 1].to_list())
+  print(Set { 5, 1, 3 }.iter().to_list())
+  d := Dict { "b": 2, "a": 1 }
+  for (k, v) in d.iter() {
+    print(f"{k}={v}")
+  }
+  print(xs.map(x -> x + 1))
+  print(len(xs))
+  print(to_list(Set { 2, 1 }))
+}
+"#;
+
+#[allow(dead_code)]
+pub const COLLECTION_ITERATORS_OUTPUT: &str = r#"3
+3
+1
+2
+6
+10
+[30, 20]
+[1, 3, 5]
+a=1
+b=2
+[4, 2, 3]
+3
+[1, 2]
 "#;
