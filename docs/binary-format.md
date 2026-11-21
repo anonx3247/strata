@@ -112,20 +112,22 @@ Payload     = 0 None | 1 Positional(list(TypeExpr)) | 2 Record(list(Field))
 
 FnDecl      = doc:list(str)  comments:list(str)  name:str  type_params:list(str)  bounds:list(Bound)
               params:list(Param)  ret:TypeExpr  requires:list(Expr)  ensures:list(Expr)
-              terminates:bool  body:Expr
-Param       = name:str  ty:TypeExpr  mutable:bool
+              terminates:bool  body:Expr  comptime:bool  derived:bool
+Param       = name:str  ty:TypeExpr  mutable:bool  comptime:bool
 Bound       = param:str  traits:list(TypeExpr)
 
 TestDecl    = name:str  body:Expr
 TraitDecl   = name:str  params:list(str)  supers:list(TypeExpr)  methods:list(TraitMethod)  laws:list(Law)
+              derivable:option(Derivable)
+Derivable   = name:str  kind:TypeExpr  requires:list(Expr)
 TraitMethod = comments:list(str)  doc:list(str)  decl:FnDecl  default:bool
 Law         = comments:list(str)  doc:list(str)  name:str  params:list(Param)  body:Expr
 ImplDecl    = type_params:list(str)  bounds:list(Bound)  trait_name:str  trait_args:list(TypeExpr)
-              for_type:TypeExpr  methods:list(FnDecl)
+              for_type:TypeExpr  methods:list(FnDecl)  derived:bool
 UseDecl     = path:str  items:option(list(str))
 ```
 
-`module` is the dotted module path (`""` for the root module). A top-level function keeps its doc and comments on its `Decl`; `FnDecl.doc` / `comments` are for methods inside an `impl`. An inherent `impl Item { … }` has `trait_name = ""`. `items` is none for `use m.*`.
+`module` is the dotted module path (`""` for the root module). A top-level function keeps its doc and comments on its `Decl`; `FnDecl.doc` / `comments` are for methods inside an `impl`. An inherent `impl Item { … }` has `trait_name = ""`. `derive Trait for Type { … }` is an `ImplDecl` with `derived` set (its `methods` are the ones written by hand); `comptime fn` and `derived fn` set those flags of `FnDecl`, `derivable(t: Record) trait …` the trait's `derivable`. `items` is none for `use m.*`.
 
 ### Types
 
@@ -159,6 +161,7 @@ Expr = 0  Int(int)                       1  BigInt(digits:str)       2  Float(fl
      | 30 Dict(types:list(TypeExpr), list((Expr, Expr)))            Dict { "a": 1 }
      | 31 Set(types:list(TypeExpr), list(Expr))                     Set { 1, 2 }
      | 32 Or(Expr, fallback:Expr)                                   x or { … }, x ?? v
+     | 33 Comptime(Expr)                                            comptime e
 
 CtorArgs = 0 None | 1 Positional(list(Expr)) | 2 Record(list((str, Expr)))
          | 3 Update(base:Expr, list((str, Expr)))

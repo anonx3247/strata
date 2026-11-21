@@ -349,6 +349,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Block(..) => block(e, d),
         Expr::Mock(t) => format!("mock {}", ty(t)),
         Expr::Mut(x) => format!("mut {}", expr(x, d)),
+        Expr::Comptime(x) => format!("comptime {}", expr(x, d)),
         Expr::Interp(parts) => {
             let mut s = "f\"".to_string();
             for p in parts {
@@ -528,7 +529,12 @@ fn bounded(names: &[Symbol], bounds: &[Bound]) -> String {
 fn param_list(ps: &[Param]) -> String {
     ps.iter()
         .map(|p| {
-            let m = if p.mutable { "mut " } else { "" };
+            let m = match (p.comptime, p.mutable) {
+                (true, true) => "comptime mut ",
+                (true, false) => "comptime ",
+                (false, true) => "mut ",
+                (false, false) => "",
+            };
             if p.name == "self" && matches!(&p.ty, TypeExpr::Named(n, a) if n == "Self" && a.is_empty()) { format!("{m}self") } else { format!("{m}{}: {}", p.name, ty(&p.ty)) }
         })
         .collect::<Vec<_>>()
@@ -547,7 +553,17 @@ pub fn trait_interface(t: &TraitDecl) -> String {
 fn trait_text(t: &TraitDecl, bodies: bool) -> String {
     let tp = if t.params.is_empty() { String::new() } else { format!("[{}]", crate::symbol::join(&t.params, ", ")) };
     let sup = if t.supers.is_empty() { String::new() } else { format!(": {}", t.supers.iter().map(ty).collect::<Vec<_>>().join(" + ")) };
-    let mut s = format!("trait {}{tp}{sup} {{\n", t.name);
+    let mut s = match &t.derivable {
+        // `derivable(t: Record) trait CommandLine\n  requires ... {`
+        Some(d) => {
+            let mut h = format!("derivable({}: {}) trait {}{tp}{sup}", d.name, ty(&d.kind), t.name);
+            for r in &d.requires {
+                h += &format!("\n  requires {}", expr(r, 1));
+            }
+            h + " {\n"
+        }
+        None => format!("trait {}{tp}{sup} {{\n", t.name),
+    };
     for m in &t.methods {
         s += &comments(&m.comments, 1);
         for d in &m.doc {
@@ -589,10 +605,15 @@ fn impl_head(i: &ImplDecl) -> String {
         return format!("impl{} {}", bounded(&i.type_params, &i.bounds), ty(&i.for_type));
     }
     let tr = ty(&TypeExpr::Named(i.trait_name.clone(), i.trait_args.clone()));
-    format!("impl{} {tr} for {}", bounded(&i.type_params, &i.bounds), ty(&i.for_type))
+    let kw = if i.derived { "derive" } else { "impl" };
+    format!("{kw}{} {tr} for {}", bounded(&i.type_params, &i.bounds), ty(&i.for_type))
 }
 
 pub fn impl_decl(i: &ImplDecl) -> String {
+    // `derive CommandLine for Options`: no block when nothing is written by hand
+    if i.derived && i.methods.is_empty() {
+        return impl_head(i);
+    }
     let mut s = impl_head(i) + " {\n";
     for (k, m) in i.methods.iter().enumerate() {
         if k > 0 {
@@ -611,6 +632,9 @@ fn method_notes(m: &FnDecl) -> String {
 }
 
 pub fn impl_interface(i: &ImplDecl) -> String {
+    if i.derived && i.methods.is_empty() {
+        return impl_head(i);
+    }
     let mut s = impl_head(i) + " {\n";
     for m in &i.methods {
         s += &method_notes(m);
@@ -621,13 +645,18 @@ pub fn impl_interface(i: &ImplDecl) -> String {
 
 pub fn fn_signature(f: &FnDecl) -> String {
     let tp = bounded(&f.type_params, &f.bounds);
-    let mut s = format!("fn {}{}({}) -> {}", f.name, tp, param_list(&f.params), ty(&f.ret));
+    let kw = match (f.comptime, f.derived) {
+        (true, _) => "comptime fn",
+        (false, true) => "derived fn",
+        _ => "fn",
+    };
+    let mut s = format!("{kw} {}{}({}) -> {}", f.name, tp, param_list(&f.params), ty(&f.ret));
     // keep 2 columns for an enclosing `module { }` block
     if s.chars().count() > WIDTH - 2 && !f.params.is_empty() {
         let ps: Vec<String> = param_list(&f.params).split(", ").map(|p| p.to_string()).collect();
         // split(", ") is safe only when no parameter type itself contains ", "
         let ps = if ps.len() == f.params.len() { ps } else { f.params.iter().map(|p| param_list(std::slice::from_ref(p))).collect() };
-        s = format!("fn {}{}{} -> {}", f.name, tp, broken("(", ps, ")", 0), ty(&f.ret));
+        s = format!("{kw} {}{}{} -> {}", f.name, tp, broken("(", ps, ")", 0), ty(&f.ret));
     }
     for r in &f.requires {
         s += &format!("\n  requires {}", expr(r, 1));

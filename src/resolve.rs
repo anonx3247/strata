@@ -1218,7 +1218,7 @@ impl Rw<'_> {
     fn func(&mut self, f: &FnDecl, name: Symbol) -> FnDecl {
         self.tparams.push(f.type_params.iter().copied().collect());
         let bounds = self.bounds(&f.bounds);
-        let params: Vec<Param> = f.params.iter().map(|p| Param { name: p.name.clone(), ty: self.ty(&p.ty), mutable: p.mutable }).collect();
+        let params: Vec<Param> = f.params.iter().map(|p| Param { name: p.name.clone(), ty: self.ty(&p.ty), mutable: p.mutable, comptime: p.comptime }).collect();
         let names: Vec<Symbol> = f.params.iter().map(|p| p.name).collect();
         self.push(&names);
         let ret = self.ty(&f.ret);
@@ -1229,7 +1229,7 @@ impl Rw<'_> {
         self.pop();
         self.pop();
         self.tparams.pop();
-        FnDecl { doc: f.doc.clone(), comments: f.comments.clone(), name, type_params: f.type_params.clone(), bounds, params, ret, requires, ensures, terminates: f.terminates, body }
+        FnDecl { doc: f.doc.clone(), comments: f.comments.clone(), name, type_params: f.type_params.clone(), bounds, params, ret, requires, ensures, terminates: f.terminates, body, comptime: f.comptime, derived: f.derived }
     }
 
     fn decl(&mut self, k: &DeclKind) -> DeclKind {
@@ -1277,7 +1277,7 @@ impl Rw<'_> {
                     .laws
                     .iter()
                     .map(|l| {
-                        let params: Vec<Param> = l.params.iter().map(|p| Param { name: p.name.clone(), ty: self.ty(&p.ty), mutable: p.mutable }).collect();
+                        let params: Vec<Param> = l.params.iter().map(|p| Param { name: p.name.clone(), ty: self.ty(&p.ty), mutable: p.mutable, comptime: p.comptime }).collect();
                         let names: Vec<Symbol> = l.params.iter().map(|p| p.name).collect();
                         self.push(&names);
                         let body = self.expr(&l.body);
@@ -1285,8 +1285,15 @@ impl Rw<'_> {
                         Law { comments: l.comments.clone(), doc: l.doc.clone(), name: l.name.clone(), params, body }
                     })
                     .collect();
+                // the description of the type (`t`) is in scope in what it requires
+                let derivable = t.derivable.as_ref().map(|d| {
+                    self.push(&[d.name]);
+                    let requires = d.requires.iter().map(|r| self.expr(r)).collect();
+                    self.pop();
+                    Derivable { name: d.name, kind: self.ty(&d.kind), requires }
+                });
                 self.tparams.pop();
-                DeclKind::Trait(TraitDecl { name: self.declared(m, t.name), params: t.params.clone(), supers, methods, laws })
+                DeclKind::Trait(TraitDecl { name: self.declared(m, t.name), params: t.params.clone(), supers, methods, laws, derivable })
             }
             DeclKind::Impl(i) => {
                 self.tparams.push(i.type_params.iter().copied().collect());
@@ -1307,7 +1314,7 @@ impl Rw<'_> {
                 let tm = if i.is_inherent() { m } else { Symbol::new(module_of(&trait_q)) };
                 let methods = i.methods.iter().map(|f| self.func(f, self.declared(tm, f.name))).collect();
                 self.tparams.pop();
-                DeclKind::Impl(ImplDecl { type_params: i.type_params.clone(), bounds, trait_name, trait_args, for_type, methods })
+                DeclKind::Impl(ImplDecl { type_params: i.type_params.clone(), bounds, trait_name, trait_args, for_type, methods, derived: i.derived })
             }
             DeclKind::Use(u) => DeclKind::Use(u.clone()),
         }

@@ -3592,3 +3592,50 @@ fn record_defaults() {
     let (ok, out) = strata(&["run", &hello, "--", "--help"], &d, None);
     assert!(ok && out.contains("--times <Int>") && out.contains("(default: 1)"), "{out}");
 }
+
+/// Derived traits and `comptime`: stored and printed exactly, and refused by
+/// the checker until deriving is done (IDEAS.md).
+#[test]
+fn derive_syntax_round_trips() {
+    let d = tmp("derive-syntax");
+    let text = r#"/// Show a record as its field names.
+pub derivable(t: Record) trait Named
+  requires len(t.fields) > 0 {
+  /// The names of the fields.
+  derived fn names() -> List[String] {
+    comptime t.fields.map(f -> f.name)
+  }
+  fn shout(self) -> String
+}
+
+comptime fn kind_of(comptime f: Field) -> String {
+  match comptime f.type {
+    _ => f.name,
+  }
+}
+
+type Point = { x: Int, y: Int }
+
+derive Named for Point {
+  fn shout(self) -> String {
+    "point"
+  }
+}
+
+type Pair = { a: Int, b: Int }
+
+derive Named for Pair
+
+fn derive(derive: Int) -> Int {
+  derive + 1
+}
+"#;
+    let (ok, out) = strata(&["--file", "d.strata", "edit"], &d, Some(text));
+    assert!(ok, "{out}");
+    let (_, rendered) = strata(&["--file", "d.strata", "render"], &d, None);
+    assert_eq!(rendered, text);
+    let (ok, out) = strata(&["--file", "d.strata", "check"], &d, None);
+    assert!(!ok && out.contains("error in derive Named for Pair: `derive` is not done yet") && out.contains("error in Named: derivable traits are not checked yet"), "{out}");
+    // `derive` stays an ordinary name: the function `derive` checks
+    assert!(!out.contains("error in derive:"), "{out}");
+}

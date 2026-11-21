@@ -310,7 +310,7 @@ Not yet: `assumed` (no outside code exists yet); loop invariants (loops forget w
 - The first backend is SQLite. The database is a capability (a trait), so tests can use an in-memory implementation or `mock`.
 - Queries should be typed (checked against the record's fields), not strings.
 
-### Derived traits, `comptime` and special methods (decided with the user 2026-11-21; not built)
+### Derived traits, `comptime` and special methods (decided with the user 2026-11-21; step 1 built)
 Command-line options need code made from a record's fields; so will JSON codecs for compiled programs and the ORM. Instead of a hidden Rust generator (`src/cli.rs` today) or general metaprogramming over syntax trees, a trait can say how each of its methods is derived, as ordinary Strata code specialized per type at compile time (as Zig's `comptime` does). A derive returns a real function, never a syntax tree.
 
 ```rust
@@ -347,6 +347,8 @@ fn read(comptime f: Field, given: Given) -> Result[f.type, CliError] {
 - **Checking**: a derived body depends on the type, so it is checked when it is specialized, at each `derive ... for T` (as Zig and C++ templates are); errors point at that line and the field. The kind and `requires` catch most mistakes first. Less powerful than generating trees (a derive can't change a signature or add top-level definitions), which keeps derives tame.
 - **Special methods, marked `@`**: value-level specials are methods with a reserved `@` name, declared in std traits and implemented like any trait method: `trait Add[Rhs, Out] { fn @add(self, other: Rhs) -> Out  law associative(...) }`, then `a + b` on such a type. Also `@mul`, `@neg`, `@index`, `@call`, `@iter`, ... For a numpy-like library: generic numeric code (`T: Add[T, T] + Mul[T, T]`) and laws `verify` checks. In the tree a special method is a function with a kind (an enum), not a magic name: the checker enforces each kind's shape, `a + b` and a call of `@add` are the same node, and the text is only one rendering of it.
 - **Order of work**: (1) the syntax (parser, printer, binary format) and the checks; (2) the specialization: `std.typing`, `comptime` (run by the interpreter during checking), producing ordinary `impl`s that everything after it (checker, interpreter, compiler) sees unchanged; (3) `CommandLine` written this way in `std/cli.strata`, `main` calling `from_args`, and `src/cli.rs` removed (its messages and `--help` text kept exactly; tests compare the old and new on the same arguments). Then options compile. Special methods and operator overloading after.
+- **Step 1 (built, branch `derive-syntax`)**: The syntax is parsed, printed and stored (`derivable(t: Kind) trait ... requires ...`, `derived fn`, `derive Trait for Type` with or without a block, `comptime fn`, `comptime` parameters and expressions, a field named `type` after a dot); `derive`, `derived` and `derivable` are keywords only at the start of an item, so they stay ordinary names elsewhere; `comptime` is reserved. The checker refuses derivable traits, `derive` and `comptime` functions with a message saying they come next; a `comptime` expression is evaluated as written until then.
+
 
 ### Long-term goal: self-hosting
 The compiler should eventually be written in Strata. Gaps to close first:
