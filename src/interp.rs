@@ -222,6 +222,8 @@ pub struct Interp<'a> {
     /// At most this many evaluation steps, if set.
     pub budget: Option<u64>,
     steps: u64,
+    /// `budget` is `verify`'s default one (a runaway case), not one asked for.
+    pub default_budget: bool,
     /// Named types without a refinement anywhere in them (`plain`).
     plain_types: HashMap<Symbol, bool>,
     /// Access to the real system, for the `host_*` builtins under `std`.
@@ -427,6 +429,7 @@ impl<'a> Interp<'a> {
             returning: None,
             budget: None,
             steps: 0,
+            default_budget: false,
             plain_types: HashMap::default(),
             host: None,
             output: Output::Discard,
@@ -1444,7 +1447,7 @@ impl<'a> Interp<'a> {
         if let Some(b) = self.budget {
             self.steps += 1;
             if self.steps > b {
-                return self.fail(FaultKind::Limit, format!("ran for more than {b} steps"));
+                return self.fail(FaultKind::Limit, if self.default_budget { "too many steps".to_string() } else { format!("ran for more than {b} steps") });
             }
         }
         Ok(match e {
