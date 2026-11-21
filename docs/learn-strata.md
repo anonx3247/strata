@@ -2,7 +2,7 @@
 
 Strata is an experimental language for working with agents: constraints live in the types, contracts are proven by an SMT solver (or fuzzed when they can't be), unfinished code is a typed hole, and side effects are capabilities passed as parameters. Its syntax is close to Rust's, with Python's integers and f-strings.
 
-This page is meant to be read in one go, by a person or an agent, before writing Strata. The code below is a single valid file: a test runs `strata check`, `strata test` and the canonical formatter on it, so it can't drift from the language. Save it as `learn.strata` and try `strata --file learn.strata verify`.
+This page is meant to be read in one go, by a person or an agent, before writing Strata. The code below is a single valid program, exactly as `strata render` prints it: a test stores it, checks it and runs its tests, so it can't drift from the language. To try it, save it as text in `learn.st`, store it with `strata --file learn.strata edit < learn.st`, then run `strata --file learn.strata verify`.
 
 For more depth: [the language](language.md), [verification](verification.md), [tools](tools.md).
 
@@ -512,7 +512,7 @@ test "a mocked capability" {
 
 ## Rules that catch newcomers
 
-- **Write canonical code.** `strata ci` rejects any `.strata` file that isn't exactly what `strata render` prints (it's what the code above looks like: a refinement's `where` on its own line, `ensures … {`, trailing commas in multi-line lists, about 80 columns). `strata ci --fix` rewrites files; `strata edit` and `strata add` store canonical text anyway.
+- **Never write a `.strata` file yourself.** It is a binary module file: the syntax tree. Code goes in as text through an edit (`strata edit`, `strata add`, or `strata --file F edit < text` outside a package), which parses it, checks it and stores the tree; it comes out as text through `strata render` / `strata view`. How you lay the text out doesn't matter: it is printed back in one canonical style, the one the code above is in.
 - **Every name a variant introduces is a type**, so it must be unique across the project: no other variant, type or trait anywhere may share it (`Empty` as a variant would clash with a trait `Empty`).
 - **In one module, a function can't share a name with a trait method** (`fn describe` next to `trait Describe { fn describe … }`), since `x.describe()` could mean either. Across modules it can: `x.describe()` is the method, `describe(x)` the function.
 - **Overloaded builtins can't be passed by name** (`len`, `get`, `contains`, `sum`…): write `xs.map(x -> len(x))`. Ordinary functions can: `lines.map(line_total)`. Methods whose meaning depends on the receiver also need a lambda: `xs.map(x -> x.describe())`.
@@ -580,7 +580,7 @@ The standard library is written in Strata and needs no dependency: `std.io`, `st
 
 ## The tools
 
-Every command works on the package around the current folder, or on a file or folder with `--file PATH`.
+Every command works on the package around the current folder, or on a file or folder with `--file PATH`. Code is stored as binary `.strata` module files, so you read it through the views and change it through edits; `strata render --split DIR` writes a package out as `.st` text files, for reading only.
 
 ```sh
 strata check                  # types, exhaustiveness, refinements of literals. Run it after every edit
@@ -615,6 +615,6 @@ strata ui                             # live viewer in the browser (http://127.0
 
 An `edit` that breaks code elsewhere turns each broken use into a hole (`?pending_1`, …) and opens a pending change: fill them with more `edit`s, then `strata done` (or `strata abort`). In a git repository every recorded change is also a commit.
 
-**Before pushing:** `strata ci` (everything checks, exports exist, every file is canonical; `--fix` reformats). `strata sync` merges `main` into the branch definition by definition, applies the other side's renames, and commits only if `ci` passes.
+**Before pushing:** `strata ci` (everything checks, exports exist, every module file is exactly as strata writes it; `--fix` rewrites them). `strata setup-git` makes `git diff` show `.strata` files as text and merge them definition by definition. `strata sync` merges `main` into the branch definition by definition, applies the other side's renames, and commits only if `ci` passes.
 
 **A good loop for an agent:** read with `view --level 1` and `holes`; write definitions; `check`; `test`; `verify` the functions you touched, and when one fails, read the counterexample, then fix the code or strengthen the contract (`requires`, a refinement) until it is proven.

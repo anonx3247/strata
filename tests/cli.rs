@@ -3473,21 +3473,21 @@ fn serve_apps_take_values_and_forms() {
     }
 }
 
-/// docs/learn-strata.md's first code block is a whole Strata file: it must
-/// check, pass its tests, and be in canonical format.
+/// docs/learn-strata.md's first code block is a whole Strata program: it must
+/// store, check, pass its tests, and be exactly what `render` prints.
 #[test]
 fn learn_strata_code_is_valid_and_canonical() {
     let d = tmp("learn");
     let doc = std::fs::read_to_string(format!("{}/docs/learn-strata.md", env!("CARGO_MANIFEST_DIR"))).unwrap();
     let start = doc.find("```rust\n").expect("a ```rust block") + "```rust\n".len();
     let code = &doc[start..start + doc[start..].find("```\n").unwrap()];
-    std::fs::write(d.join("learn.strata"), code).unwrap();
+    save(&d.join("learn.strata"), code);
     let (ok, out) = strata(&["--file", "learn.strata", "check"], &d, None);
     assert!(ok, "{out}");
     let (ok, out) = strata(&["--file", "learn.strata", "test"], &d, None);
     assert!(ok && out.contains("0 failed"), "{out}");
     let (_, rendered) = strata(&["--file", "learn.strata", "render"], &d, None);
-    assert_eq!(rendered, code, "docs/learn-strata.md: the code is not in canonical format");
+    assert_eq!(rendered, code, "docs/learn-strata.md: the code is not as `render` prints it");
 }
 
 #[test]
