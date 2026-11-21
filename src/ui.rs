@@ -105,6 +105,10 @@ fn snapshot(target: &Target) -> Json {
         }
     }
     let shown = crate::resolve::written_form(p);
+    // a union's members inline (the default) or each on its own: each card's
+    // code in the view it differs in, and the types the inline view folds
+    // into a union (hidden there)
+    let (inline, folded, separate) = member_views(&shown);
     // mocks and their implementations: hidden in the viewer unless shown
     let mocks = crate::view::mock_decls(p);
     let decls: Vec<Json> = p
@@ -156,6 +160,9 @@ fn snapshot(target: &Target) -> Json {
                 "last_change": last_change.get(&name),
                 "has_body": iface != source,
                 "text": { "1": iface, "2": source },
+                "view_inline": inline.get(&name),
+                "view_separate": separate.get(&name),
+                "folded_into": folded.get(&name),
             })
         })
         .collect();
@@ -416,6 +423,50 @@ pub fn serve(target: Target, port: u16) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The two views of unions' members (`resolve::members_view`) for the
+/// viewer, by definition: the code of each definition the inline view shows
+/// differently, the union each type it folds goes into, and the code of
+/// each union the separate view shows with its members before it.
+fn member_views(shown: &Program) -> (HashMap<String, String>, HashMap<String, String>, HashMap<String, String>) {
+    use crate::resolve::{members_view, Members};
+    let text = |d: &Decl| crate::printer::decl(d).trim_end().to_string();
+    let before: HashMap<String, String> = shown.decls.iter().map(|d| (d.qname(), text(d))).collect();
+    let (mut inline, mut folded, mut separate) = (HashMap::default(), HashMap::default(), HashMap::default());
+    let iv = members_view(shown, Members::Inline);
+    let kept: crate::fx::HashSet<String> = iv.decls.iter().map(|d| d.qname()).collect();
+    for d in &iv.decls {
+        let t = text(d);
+        if before.get(&d.qname()) != Some(&t) {
+            inline.insert(d.qname(), t);
+        }
+        // the types it declares now that were on their own
+        if let DeclKind::Type(td) = &d.kind {
+            if let TypeBody::Sum(vs) = &td.body {
+                for v in vs.iter().filter(|v| !matches!(v.payload, Payload::Type(_))) {
+                    let q = if d.module.is_empty() { v.name.to_string() } else { format!("{}.{}", d.module, crate::names::short(&v.name)) };
+                    if before.contains_key(&q) && !kept.contains(&q) {
+                        folded.insert(q, d.qname());
+                    }
+                }
+            }
+        }
+    }
+    let mut pending: Vec<String> = vec![];
+    for d in &members_view(shown, Members::Separate).decls {
+        let t = text(d);
+        if !before.contains_key(&d.qname()) {
+            pending.push(t);
+            continue;
+        }
+        if !pending.is_empty() || before.get(&d.qname()) != Some(&t) {
+            pending.push(t);
+            separate.insert(d.qname(), pending.join("\n\n"));
+        }
+        pending.clear();
+    }
+    (inline, folded, separate)
 }
 
 /// Every named type mentioned in a type expression.
