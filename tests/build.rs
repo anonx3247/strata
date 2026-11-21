@@ -1395,3 +1395,20 @@ fn the_jit_runs_tests_as_the_interpreter() {
     assert_eq!(jit, report(&f, "--interpret"));
     assert!(jit.0.contains("✗ fails\n    Requires: precondition of `half` violated") && jit.0.contains("    stack: twice -> half\n    printed:\n      before\n") && jit.0.ends_with("1 passed, 2 failed\n"), "{}", jit.0);
 }
+
+/// `strata verify --jit` fuzzes compiled: the same verdicts as the
+/// interpreter's fuzzer (its inputs are the runtime's), a runaway loop
+/// stopped by the step budget.
+#[cfg(feature = "jit")]
+#[test]
+fn verify_fuzzes_compiled() {
+    let strata = env!("CARGO_BIN_EXE_strata");
+    let d = tmp("jit-verify");
+    let f = d.join("v.strata");
+    save(&f, "fn pieces(s: String) -> Positive { len(split(s, \"a\")) - 1 }\nfn loops(n: Natural) -> Int { mut i := 0 while i != n * 2 + 1 { i += 2 } i }\nfn fine(xs: List[String]) -> Natural { len(join(xs, \",\")) }\n");
+    let (out, _) = output(Command::new(strata).args(["verify", "--jit", "--file"]).arg(&f).env("STRATA_SOLVER", "none"));
+    assert!(!out.contains("note:"), "{out}");
+    assert!(out.contains("✗ pieces                   Refinement violation (found by the fuzzer)") && out.contains("result of `pieces`: 0 does not satisfy `Positive`"), "{out}");
+    assert!(out.contains("✗ loops                    Limit violation (found by the fuzzer)") && out.contains("too many steps (stack: loops)"), "{out}");
+    assert!(out.contains("~ fine                     fuzzed: 200 cases, 0 discarded"), "{out}");
+}

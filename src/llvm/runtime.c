@@ -218,6 +218,7 @@ static void print_stack(void) {
 // and what it prints is kept, as the interpreter does.
 
 static uint64_t rng;  // the generators' state (below)
+static uint64_t test_seed = 7;  // where a test's numbers start
 static jmp_buf *trap;
 static int32_t fault_kind;
 static Str *fault_msg;
@@ -249,7 +250,7 @@ static char *stack_text(void) {
 int32_t strata_test(void (*f)(void)) {
   jmp_buf here;
   depth = 0;
-  rng = 7;
+  rng = test_seed;
   printed_len = 0;
   if (printed) printed[0] = 0;
   capturing = 1;
@@ -263,6 +264,60 @@ int32_t strata_test(void (*f)(void)) {
   capturing = 0;
   return r;
 }
+
+// ---- fuzzing (`strata verify --jit`) ----
+//
+// A fuzz driver (llvm.rs, `compile_fuzz`) generates a function's arguments,
+// records them as JSON, and calls it; `strata_fuzz` runs one case as
+// `strata_test` runs a test, with the generators seeded and a step budget
+// (each loop iteration and call is a step): past it, a `Limit` fault.
+
+_Noreturn void strata_fault(int32_t kind, Str *msg);
+static char *fuzz_args;
+static size_t fuzz_len, fuzz_cap;
+
+static int64_t steps;
+static _Bool counting;
+
+void strata_fuzz_arg(Str *json) {
+  size_t need = fuzz_len + (size_t)json->len + 2;
+  if (need > fuzz_cap) fuzz_args = realloc(fuzz_args, fuzz_cap = need * 2);
+  if (fuzz_len > 1) fuzz_args[fuzz_len++] = ',';
+  memcpy(fuzz_args + fuzz_len, json->bytes, (size_t)json->len);
+  fuzz_len += (size_t)json->len;
+  fuzz_args[fuzz_len] = 0;
+}
+
+void strata_step(void) {
+  if (counting && --steps < 0) {
+    counting = 0;
+    strata_fault(6, str_c("too many steps"));
+  }
+}
+
+int32_t strata_fuzz(void (*f)(void), int64_t seed, int64_t budget) {
+  if (fuzz_cap < 2) fuzz_args = realloc(fuzz_args, fuzz_cap = 64);
+  fuzz_args[0] = '[', fuzz_args[1] = 0, fuzz_len = 1;
+  steps = budget;
+  counting = 1;
+  test_seed = (uint64_t)seed;
+  int32_t r = strata_test(f);
+  test_seed = 7;
+  counting = 0;
+  return r;
+}
+
+// The last case's arguments, as a JSON array.
+const char *strata_fuzz_args(void) {
+  static char *out;
+  free(out);
+  out = malloc(fuzz_len + 2);
+  memcpy(out, fuzz_args, fuzz_len);
+  out[fuzz_len] = ']', out[fuzz_len + 1] = 0;
+  return out;
+}
+
+void strata_seed(int64_t seed) { rng = (uint64_t)seed; }
 
 // The last test's fault: its kind, message and call stack, and what it printed.
 const char *strata_test_kind(void) { return KINDS[fault_kind & 255]; }

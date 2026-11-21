@@ -29,6 +29,11 @@ unsafe extern "C" {
     fn strata_host_write();
     fn strata_pid();
     fn strata_init();
+    fn strata_seed();
+    fn strata_step();
+    fn strata_fuzz_arg();
+    fn strata_fuzz_args();
+    fn strata_fuzz();
     fn strata_test_printed();
     fn strata_test_stack();
     fn strata_test_message();
@@ -120,6 +125,11 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_host_write", strata_host_write as *const () as usize),
         ("strata_pid", strata_pid as *const () as usize),
         ("strata_init", strata_init as *const () as usize),
+        ("strata_seed", strata_seed as *const () as usize),
+        ("strata_step", strata_step as *const () as usize),
+        ("strata_fuzz_arg", strata_fuzz_arg as *const () as usize),
+        ("strata_fuzz_args", strata_fuzz_args as *const () as usize),
+        ("strata_fuzz", strata_fuzz as *const () as usize),
         ("strata_test_printed", strata_test_printed as *const () as usize),
         ("strata_test_stack", strata_test_stack as *const () as usize),
         ("strata_test_message", strata_test_message as *const () as usize),
@@ -239,6 +249,50 @@ pub fn run_tests(ir: &str, which: &[usize]) -> Result<Vec<TestOutcome>, String> 
         out.push(TestOutcome { fault, printed: text(unsafe { printed() }) });
     }
     Ok(out)
+}
+
+/// The fuzz drivers of IR `compile_fuzz` made, compiled for good (the
+/// engine lives as long as the process): their addresses, in order.
+pub fn fuzzers(ir: &str, n: usize) -> Result<Vec<usize>, String> {
+    use std::ffi::c_char;
+    let ctx: &'static Context = Box::leak(Box::new(Context::create()));
+    let engine = engine(ctx, ir)?;
+    let addrs = (0..n).map(|i| engine.get_function_address(&format!("strata.fuzz.{i}")).map_err(|e| e.to_string())).collect::<Result<Vec<_>, _>>()?;
+    std::mem::forget(engine);
+    type Init = unsafe extern "C" fn(i32, *const *const c_char);
+    let init: Init = unsafe { std::mem::transmute(strata_init as *const ()) };
+    let name = std::ffi::CString::new("verify").unwrap();
+    let argv = [name.as_ptr()];
+    unsafe { init(1, argv.as_ptr()) };
+    Ok(addrs)
+}
+
+/// One fuzzing case of the driver at `addr`, seeded, within `budget` steps:
+/// the fault that ended it (kind, message, call stack), if any, and its
+/// arguments as JSON. (Not reentrant: the runtime's state is global.)
+pub fn fuzz_case(addr: usize, seed: u64, budget: i64) -> (Option<(String, String, String)>, String) {
+    use std::ffi::{c_char, CStr};
+    type Fuzz = unsafe extern "C" fn(unsafe extern "C" fn(), i64, i64) -> i32;
+    type Text = unsafe extern "C" fn() -> *const c_char;
+    type Message = unsafe extern "C" fn() -> *const i64;
+    let (fuzz, kind, message, stack, args): (Fuzz, Text, Message, Text, Text) = unsafe {
+        (
+            std::mem::transmute(strata_fuzz as *const ()),
+            std::mem::transmute(strata_test_kind as *const ()),
+            std::mem::transmute(strata_test_message as *const ()),
+            std::mem::transmute(strata_test_stack as *const ()),
+            std::mem::transmute(strata_fuzz_args as *const ()),
+        )
+    };
+    let text = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().to_string();
+    let f: unsafe extern "C" fn() = unsafe { std::mem::transmute(addr) };
+    let failed = unsafe { fuzz(f, seed as i64, budget) } != 0;
+    let fault = failed.then(|| {
+        let m = unsafe { message() };
+        let msg = unsafe { std::slice::from_raw_parts(m.add(1) as *const u8, *m as usize) };
+        (text(unsafe { kind() }), String::from_utf8_lossy(msg).to_string(), text(unsafe { stack() }))
+    });
+    (fault, text(unsafe { args() }))
 }
 
 /// Run the IR's `main` with the program's arguments; its exit code. A fault

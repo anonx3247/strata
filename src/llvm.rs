@@ -172,16 +172,40 @@ fn key(t: &Ty) -> String {
 /// The LLVM IR of a program whose entry point is `entry` (`main`): it takes
 /// no parameters and returns `()`, an exit code (`Int`), or a `Result` of either.
 pub fn compile(prog: &Program, entry: &str) -> Res<String> {
-    Ok(compile_for(prog, Some(entry))?.0)
+    Ok(compile_for(prog, Entry::Main(entry))?.0)
+}
+
+/// What a compilation starts from.
+#[cfg_attr(not(feature = "jit"), allow(dead_code))]
+enum Entry<'e> {
+    Main(&'e str),
+    Tests,
+    Fuzz(&'e [FuzzTarget]),
+}
+
+/// A function `strata verify --jit` fuzzes: its name, and its parameters'
+/// names, written types (generic ones at the instance tried) and `mut`ness.
+#[cfg_attr(not(feature = "jit"), allow(dead_code))]
+pub struct FuzzTarget {
+    pub name: String,
+    pub params: Vec<(String, TypeExpr, bool)>,
+}
+
+/// The LLVM IR of fuzz drivers (`@"strata.fuzz.N"` for target N): each
+/// generates the target's arguments, records them (`strata_fuzz_arg`), and
+/// calls it. Loops and calls count steps (`strata_step`).
+#[cfg_attr(not(feature = "jit"), allow(dead_code))]
+pub fn compile_fuzz(prog: &Program, targets: &[FuzzTarget]) -> Res<String> {
+    Ok(compile_for(prog, Entry::Fuzz(targets))?.0)
 }
 
 /// The LLVM IR of a program's `test` blocks: a function per test
 /// (`@"strata.test.N"`, taking and returning nothing), and their names.
 pub fn compile_tests(prog: &Program) -> Res<(String, Vec<String>)> {
-    compile_for(prog, None)
+    compile_for(prog, Entry::Tests)
 }
 
-fn compile_for(prog: &Program, entry: Option<&str>) -> Res<(String, Vec<String>)> {
+fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
     // the list built-ins in Strata, compiled with the program
     let mut with = prog.clone();
     let prelude = crate::binary::decode_module(PRELUDE).map_err(|e| format!("llvm/prelude.strata: {e}"))?;
@@ -219,16 +243,22 @@ fn compile_for(prog: &Program, entry: Option<&str>) -> Res<(String, Vec<String>)
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![] };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![] };
     let mut tests = vec![];
+    m.fuzzing = matches!(entry, Entry::Fuzz(_));
     match entry {
-        Some(entry) => {
+        Entry::Fuzz(targets) => {
+            for (i, t) in targets.iter().enumerate() {
+                m.fuzz_driver(i, t).map_err(|e| format!("can't compile the fuzzing of `{}`: {e}", t.name))?;
+            }
+        }
+        Entry::Main(entry) => {
             let main = env.fns.get(&Symbol::new(entry)).ok_or(format!("no `{entry}` function to compile"))?.clone();
             let ret = m.lower(&main.ret, &HashMap::default())?;
             // C's `main` first: it asks for the program's `main`, with its capabilities
             m.entry(entry, &main, &ret)?;
         }
-        None => {
+        Entry::Tests => {
             // each test, a function of its own (no frame of its own on the call stack)
             for d in &resolved.program.decls {
                 let DeclKind::Test(t) = &d.kind else { continue };
@@ -296,6 +326,8 @@ declare i64 @strata_str_cmp(ptr, ptr)
 declare i64 @strata_str_len(ptr)
 declare void @strata_fault(i32, ptr) noreturn
 declare void @strata_enter(ptr)
+declare void @strata_step()
+declare void @strata_fuzz_arg(ptr)
 declare void @strata_leave()
 declare void @strata_overflow() noreturn cold
 declare void @strata_main_error(ptr)
@@ -483,6 +515,8 @@ struct Module<'a> {
     /// The tag of each type a union boxes (by its key): unique in the
     /// program, so a smaller union's values are a larger one's as they are.
     box_tags: HashMap<String, i64>,
+    /// Compiled for `strata verify --jit`: loops and calls count steps.
+    fuzzing: bool,
     /// The tables of each regex `matches` uses (its globals' name, and its classes).
     regexes: HashMap<String, (String, usize)>,
     /// Generators made (by the type and hints they generate), and mock methods.
@@ -838,6 +872,9 @@ impl<'a> Module<'a> {
         if framed {
             let n = c.m.string(name);
             c.emit(format!("call void @strata_enter(ptr {n})"));
+        }
+        if c.m.fuzzing {
+            c.emit("call void @strata_step()".into());
         }
         // parameters live in slots, like every variable
         for (i, (p, t)) in f.params.iter().zip(&params).enumerate() {
@@ -4901,6 +4938,9 @@ impl<'m, 'a> Func<'m, 'a> {
     /// goes to `end`, and both leave the scopes above `depth`.
     fn loop_body(&mut self, body: &Expr, cont: &str, end: &str, depth: usize) -> Res<()> {
         self.loops.push((cont.to_string(), end.to_string(), depth));
+        if self.m.fuzzing {
+            self.emit("call void @strata_step()".into());
+        }
         self.push_scope(true);
         let r = self.expr(body);
         self.loops.pop();
@@ -4927,6 +4967,31 @@ impl<'m, 'a> Func<'m, 'a> {
 }
 
 impl Module<'_> {
+    /// Fuzz driver `i`: generate the arguments (each recorded as JSON), then call.
+    fn fuzz_driver(&mut self, i: usize, t: &FuzzTarget) -> Res<()> {
+        let mut c = Func::new(self, HashMap::default());
+        c.block("start");
+        let mut vs = vec![];
+        let mut places = vec![];
+        for (k, (_, ty, mutable)) in t.params.iter().enumerate() {
+            let v = c.generate(ty, &Hints::default(), "0")?;
+            let v = c.temp(v);
+            let j = c.json(&v)?;
+            c.emit(format!("call void @strata_fuzz_arg(ptr {j})"));
+            c.drop_value(&(Ty::Str, j))?;
+            let local = format!("fuzz.arg{k}");
+            c.local_owned(&local, v, None)?;
+            vs.push(c.load(&local)?);
+            places.push(mutable.then(|| (local.clone(), vec![])));
+        }
+        c.call_fn_at(&t.name, vs, None, &places)?;
+        c.drop_from(0, None)?;
+        c.emit("ret void".into());
+        let text = c.finish();
+        writeln!(self.body, "define void @\"strata.fuzz.{i}\"() {{\n{text}}}\n").unwrap();
+        Ok(())
+    }
+
     /// Make (again) the dispatchers whose trait has tables they don't cover
     /// yet: whether any changed.
     fn dispatchers(&mut self) -> Res<bool> {
