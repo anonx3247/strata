@@ -1466,7 +1466,44 @@ impl<'a> Checker<'a> {
 
     /// `dotted`: written `x.m(..)`, where a type's own method comes before a
     /// function of the same name (`m(x, ..)` always means the function).
+    /// The qualified name of method `m` of the one trait that the receiver's
+    /// type (a nominal type of the program or std, with no method `m` of its
+    /// own) implements and that declares `m`.
+    fn implemented_method(&mut self, recv: &Expr, m: &str) -> Option<(Symbol, Symbol)> {
+        let n = self.errors.len();
+        let rt = self.infer(recv);
+        self.errors.truncate(n);
+        let Ty::Con(head, _) = self.resolve(&rt) else { return None };
+        if !self.env.types.contains_key(&head) || self.has_own_method(recv, m) {
+            return None;
+        }
+        let mut found: Vec<(Symbol, Symbol)> = vec![];
+        for imp in &self.env.impls {
+            if imp.is_inherent() || texpr_head(&imp.for_type) != head.as_str() {
+                continue;
+            }
+            let Some(td) = self.env.traits.get(&imp.trait_name) else { continue };
+            for tm in &td.methods {
+                if crate::names::short(&tm.decl.name) == m && crate::resolve::takes_self(&tm.decl) && !found.contains(&(imp.trait_name, tm.decl.name)) {
+                    found.push((imp.trait_name, tm.decl.name));
+                }
+            }
+        }
+        (found.len() == 1).then(|| found.remove(0))
+    }
+
     fn by_receiver(&mut self, m: &str, all: &[&Expr], site: usize, dotted: bool, recv_marked: Option<bool>) -> Option<Ty> {
+        // a method of a trait the receiver's own type implements, written without the
+        // trait in scope (`disk.read(path)` with only `Disk` imported)
+        if dotted && !m.contains('.') && self.lookup(m.sym()).is_none() {
+            if let Some((t, mq)) = all.first().and_then(|r| self.implemented_method(r, m)) {
+                self.targets.push((site, Target::Other(t.to_string(), mq.to_string())));
+                self.check_mut_args(&mq, all, recv_marked);
+                let ft = self.trait_method(&mq, &t);
+                let muts = self.mut_mask(&mq);
+                return Some(self.call_with(ft, all, &Lazy(|| format!("call to `{m}`")), &muts));
+            }
+        }
         // a function of that name takes the call, unless the receiver's type
         // has a method of its own by that name (`app.handle(req)` inside a
         // `fn handle`)
@@ -3480,7 +3517,7 @@ pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<Symbol, TypeExpr>>
     for b in &bounded {
         let first = b.traits.first().map(texpr_head).unwrap_or_default();
         // never the real terminal, disk or process: fuzzing must not reach the system
-        let mut cs: Vec<TypeExpr> = env.impls.iter().filter(|i| i.trait_name == first && !crate::stdlib::HOST_TYPES.contains(&texpr_head(&i.for_type).as_str()) && !env.capabilities.contains(&texpr_head(&i.for_type).sym())).map(|i| i.for_type.clone()).collect();
+        let mut cs: Vec<TypeExpr> = env.impls.iter().filter(|i| i.trait_name == first && !env.capabilities.contains(&texpr_head(&i.for_type).sym())).map(|i| i.for_type.clone()).collect();
         cs.push(b.traits[0].clone());
         cands.push(cs);
     }

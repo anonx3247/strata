@@ -138,7 +138,7 @@ Checking:
 
 Running:
   run [PATH] [-- ARGS..]       run the program: `main` gets the capabilities it asks for
-                               (Console, Files, Environment from std) and ARGS; it
+                               (Console; Disk, Process from std; its own) and ARGS; it
                                returns (), an ExitCode, or a Result (Err: exit code 1).
                                PATH is a .strata file or a package folder (or --file).
                                It is compiled to machine code in memory (LLVM); what
@@ -149,7 +149,7 @@ Running:
                                removed
   serve [PATH] [--port N]      serve the web: each request is passed to the program's
                                `fn handle(req: Request) -> Response` (std.http), which may
-                               also ask for Console, Files, Environment (default port 8000);
+                               also ask for Console and capabilities (default port 8000);
                                or run it as an app: `init`, `update` and `view` (std.web)
   run <fn> [JSON-ARGS] [--trace]
                                call one function: args are a JSON array validated

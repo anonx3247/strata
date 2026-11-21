@@ -1425,25 +1425,18 @@ impl<'a> Module<'a> {
                     continue;
                 }
             }
-            let (imp, fields): (&str, Vec<(&str, V)>) = match wanted.as_str() {
-                "std.io.Console" => ("std.io.Terminal", vec![("stdout", (Ty::Int, "1".into())), ("stderr", (Ty::Int, "2".into()))]),
-                "std.fs.Files" => ("std.fs.Disk", vec![("root", c.string("."))]),
-                "std.process.Environment" => ("std.process.Process", vec![("pid", c.call(&Ty::Int, "@strata_pid", &[])?)]),
-                _ => return Err(format!("`{entry}` asks for `{}: {wanted}`: compiled programs get `Console`, `Files` and `Environment` and options (a record that implements `CommandLine`, std.cli)", p.name)),
-            };
-            let fs = c.m.fields(imp, &[])?;
-            let vals: Vec<V> = fs.iter().map(|f| fields.iter().find(|(n, _)| Some(*n) == f.name.as_deref()).map(|x| x.1.clone()).ok_or(format!("`{imp}` has a field `{}`", f.name.clone().unwrap_or_default()))).collect::<Res<_>>()?;
-            let t = Ty::Con(Symbol::new(imp), vec![]);
-            let b = c.block_of(c.m.tags[imp], &vals)?;
+            // `Console`: the one capability the environment chooses, the terminal here
+            if wanted != crate::cmd::CONSOLE || !c.m.env.capabilities.contains(&Symbol::new("std.io.Terminal")) {
+                return Err(crate::cmd::not_given(&wanted, &format!("`{entry}`")) + &format!(" Its parameter `{}` is a `{wanted}`", p.name));
+            }
+            let t = Ty::Con(Symbol::new("std.io.Terminal"), vec![]);
             if p.mutable {
                 let slot = c.fresh("cap");
                 writeln!(c.allocas, "  {slot} = alloca ptr").unwrap();
-                c.emit(format!("store ptr {b}, ptr {slot}"));
-                c.own_slot(&t, &slot);
+                c.emit(format!("store ptr null, ptr {slot}"));
                 args.push((Ty::Str, slot));
             } else {
-                c.temp((t.clone(), b.clone()));
-                args.push((t.clone(), b));
+                args.push((t.clone(), "null".into()));
             }
             impls.push(Some(t));
         }

@@ -212,7 +212,7 @@ fn average(xs: List[Int]) -> Int {
 - **fuzzed** (`~`): some checks could not be proven, so the function was run on generated inputs and nothing failed. Each unproven check says why, for example *depends on `fold` is not modelled*.
 - **failed** (`✗`): a counterexample. When the solver finds one, it is run in the interpreter first, and reported only if it really fails. Otherwise the fuzzer looks for one.
 - **incomplete** (`○`): the function still has a hole.
-- **assumed** (`≈`): trusted, not checked. Today these are the standard library's real terminal, disk and process (the `impl`s behind `Console`, `Files` and `Environment` that only `strata run` creates): their bodies call the system, so `verify` never runs them. Their contracts are taken as true, and callers are still checked against those contracts as usual.
+- **assumed** (`≈`): trusted, not checked. These are capabilities (`capability ...`: std's `Terminal`, `Disk` and `Process`, and a program's own) and the code that takes one, which only the runtime can give, and code that reaches C through `extern c`: they call the system, so `verify` never runs them. Their contracts are taken as true, and callers are still checked against those contracts as usual.
 
 Derived code is checked as well: `derive Json for Signup` makes `Signup.encode` and the rest, and also copies of `std.json`'s helpers made for `Signup`'s fields (`std.json.encode_as.for.Signup.4`), which are listed and checked with it, so a fault that only some field types can cause is reported there (with `integers = "proven"` under `[json]`, an `Int` field that may be beyond what JSON holds exactly).
 

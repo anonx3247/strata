@@ -368,9 +368,6 @@ fn has_hole(e: &Expr) -> bool {
 #[allow(clippy::too_many_arguments)]
 pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, key: &str, solver: Option<&crate::smt::Solver>, transparent: &crate::fx::HashMap<String, bool>, cases: usize, cross_check: usize, seed: u64) -> Verdict {
     // the real terminal, disk and process: trusted, never run here (only `strata run` reaches the system)
-    if imp.is_some_and(|i| crate::stdlib::HOST_TYPES.contains(&crate::types::texpr_head(&i.for_type).as_str())) {
-        return Verdict::Assumed { why: "it talks to the real system (only `strata run` reaches it)".into() };
-    }
     if let Some(why) = foreign(env, f, imp) {
         return Verdict::Assumed { why };
     }
@@ -557,7 +554,7 @@ pub fn wrappers(env: &Env, prog: &Program, chosen: &[bool]) -> Vec<FnDecl> {
             continue;
         }
         let head = crate::types::texpr_head(&imp.for_type);
-        if imp.is_inherent() || crate::stdlib::HOST_TYPES.contains(&head.as_str()) || env.capabilities.contains(&Symbol::new(&head)) {
+        if imp.is_inherent() || env.capabilities.contains(&Symbol::new(&head)) {
             continue;
         }
         let Some(tr) = env.traits.get(&imp.trait_name) else { continue };
