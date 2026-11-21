@@ -11,7 +11,11 @@
 // the object's contents and `strata_free`); objects never form cycles,
 // since values never change once built.
 
+#ifdef __linux__
+#define _GNU_SOURCE  // pthread_getattr_np
+#endif
 #include <dirent.h>
+#include <pthread.h>
 #include <errno.h>
 #include <math.h>
 #include <setjmp.h>
@@ -191,24 +195,53 @@ int64_t strata_str_len(Str *s) {
 // ---- faults ----
 
 // The functions being run, outermost first (as the interpreter's call
-// stack): a fault shows them. Only the first FRAMES are kept.
+// stack): a fault shows them. A recursion is one run of the same function
+// (`down (95846 times)`), so a deep one costs nothing to keep; only the
+// first FRAMES runs are kept.
 #define FRAMES 4096
 static Str *frames[FRAMES];
-static int64_t depth;
+static int64_t counts[FRAMES];
+static int64_t runs;  // runs in use, counting those past FRAMES
 
 void strata_enter(Str *name) {
-  if (depth < FRAMES) frames[depth] = name;
-  depth++;
+  if (runs > 0 && runs <= FRAMES && frames[runs - 1] == name) {
+    counts[runs - 1]++;
+    return;
+  }
+  if (runs < FRAMES) {
+    frames[runs] = name;
+    counts[runs] = 1;
+  }
+  runs++;
 }
 
-void strata_leave(void) { depth--; }
+void strata_leave(void) {
+  if (runs <= FRAMES && --counts[runs - 1] > 0) return;
+  runs--;
+}
+
+// The call stack as `strata run` shows it ("" when empty): as the
+// interpreter's `show_stack`, four or more calls in a row of one function
+// are one entry.
+static char *stack_text(void) {
+  size_t n = 16;
+  for (int64_t i = 0; i < runs && i < FRAMES; i++) n += ((size_t)frames[i]->len + 4) * (counts[i] < 4 ? (size_t)counts[i] : 1) + 32;
+  char *t = malloc(n), *p = t;
+  *p = 0;
+  for (int64_t i = 0; i < runs && i < FRAMES; i++) {
+    if (counts[i] >= 4) p += sprintf(p, "%s%.*s (%lld times)", i ? " -> " : "", (int)frames[i]->len, frames[i]->bytes, (long long)counts[i]);
+    else
+      for (int64_t k = 0; k < counts[i]; k++) p += sprintf(p, "%s%.*s", i || k ? " -> " : "", (int)frames[i]->len, frames[i]->bytes);
+  }
+  if (runs > FRAMES) strcpy(p, " -> ...");
+  return t;
+}
 
 static void print_stack(void) {
-  if (depth == 0) return;
-  fputs("    stack: ", stderr);
-  for (int64_t i = 0; i < depth && i < FRAMES; i++) fprintf(stderr, "%s%.*s", i ? " -> " : "", (int)frames[i]->len, frames[i]->bytes);
-  if (depth > FRAMES) fputs(" -> ...", stderr);
-  fputc('\n', stderr);
+  if (runs == 0) return;
+  char *t = stack_text();
+  fprintf(stderr, "    stack: %s\n", t);
+  free(t);
 }
 
 // ---- tests ----
@@ -219,7 +252,8 @@ static void print_stack(void) {
 
 static uint64_t rng;  // the generators' state (below)
 static uint64_t test_seed = 7;  // where a test's numbers start
-static jmp_buf *trap;
+static sigjmp_buf *trap;
+static void catch_overflow(void);
 static int32_t fault_kind;
 static Str *fault_msg;
 static char *fault_stack, *printed;
@@ -233,30 +267,21 @@ static void keep_printed(const char *b, size_t n) {
   printed[printed_len] = 0;
 }
 
-// The call stack as `strata run` shows it ("" when empty).
-static char *stack_text(void) {
-  size_t n = 1;
-  for (int64_t i = 0; i < depth && i < FRAMES; i++) n += (size_t)frames[i]->len + 4;
-  char *t = malloc(n + 8), *p = t;
-  *p = 0;
-  for (int64_t i = 0; i < depth && i < FRAMES; i++) p += sprintf(p, "%s%.*s", i ? " -> " : "", (int)frames[i]->len, frames[i]->bytes);
-  if (depth > FRAMES) strcpy(p, " -> ...");
-  return t;
-}
 
 // Run test `f`: 0 when it got to its end, 1 after a fault (then
 // `strata_test_fault` says which). Each starts as the interpreter's: no
 // call stack, the generators' numbers from the start, nothing printed.
 int32_t strata_test(void (*f)(void)) {
-  jmp_buf here;
-  depth = 0;
+  sigjmp_buf here;
+  catch_overflow();
+  runs = 0;
   rng = test_seed;
   printed_len = 0;
   if (printed) printed[0] = 0;
   capturing = 1;
   trap = &here;
   int32_t r = 1;
-  if (setjmp(here) == 0) {
+  if (sigsetjmp(here, 1) == 0) {
     f();
     r = 0;
   }
@@ -332,7 +357,7 @@ _Noreturn void strata_fault(int32_t kind, Str *msg) {
     fault_msg = msg;
     free(fault_stack);
     fault_stack = kind & 256 ? NULL : stack_text();
-    longjmp(*trap, 1);
+    siglongjmp(*trap, 1);
   }
   fflush(stdout);
   fprintf(stderr, "fault (%s): %.*s\n", KINDS[kind & 255], (int)msg->len, msg->bytes);
@@ -1002,7 +1027,6 @@ List *strata_list_concat(List *a, List *b, _Bool counted) {
 }
 
 List *strata_range(int64_t lo, int64_t hi) {
-  if (hi > lo && (uint64_t)hi - (uint64_t)lo > 1000000) strata_fault(4, str_c("range too large"));
   int64_t n = hi > lo ? hi - lo : 0;
   List *l = strata_list_new(n);
   for (int64_t i = 0; i < n; i++) l->buf->data[i] = lo + i;
@@ -1041,21 +1065,16 @@ static int prog_argc;
 static char *prog_name = "main";
 static char **prog_argv;
 
-// Running out of stack (deep recursion) is a fault, as the interpreter's
-// recursion limit is: a guard page hit near the stack's end, caught on a
-// stack of its own. Any other bad access is reported as a crash.
-static char *stack_top;
-static size_t stack_size;
+// Running out of stack (deep recursion) is a fault, as in the interpreter:
+// a guard page hit near the end of the thread's stack, caught on a stack of
+// its own, is `strata_fault` (so a test's trap catches it too). Any other
+// bad access is reported as a crash.
+static _Thread_local char *stack_lo, *stack_hi;
 
 static void on_segv(int sig, siginfo_t *info, void *ctx) {
   (void)ctx;
   char *at = info->si_addr;
-  if (stack_top && at <= stack_top && at >= stack_top - stack_size - 65536) {
-    static const char m[] = "fault (Limit): stack overflow (recursion too deep)\n";
-    fflush(stdout);
-    if (write(2, m, sizeof m - 1) < 0) {}
-    _exit(101);
-  }
+  if (stack_hi && at < stack_hi && at >= stack_lo - 65536) strata_fault(6, str_c("stack overflow (recursion too deep)"));
   // a crash: what was running, then the signal as it would have been
   fflush(stdout);
   fprintf(stderr, "crash (signal %d) in:\n", sig);
@@ -1064,25 +1083,39 @@ static void on_segv(int sig, siginfo_t *info, void *ctx) {
   raise(sig);
 }
 
+// Once per thread: the thread's stack (the JIT runs on strata's own, larger
+// than the process's limit) and a stack for the handler.
 static void catch_overflow(void) {
-  static char alt[65536];
-  stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt, .ss_flags = 0};
+  if (stack_hi) return;
+  static _Thread_local char *alt;
+  if (!alt) alt = malloc(65536);
+  stack_t ss = {.ss_sp = alt, .ss_size = 65536, .ss_flags = 0};
   sigaltstack(&ss, NULL);
   struct sigaction sa;
   memset(&sa, 0, sizeof sa);
   sa.sa_sigaction = on_segv;
-  sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+  sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_NODEFER;
   sigaction(SIGSEGV, &sa, NULL);
   sigaction(SIGBUS, &sa, NULL);
-  char here;
-  stack_top = &here;
-  struct rlimit rl;
-  stack_size = getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY ? (size_t)rl.rlim_cur : (size_t)8 << 20;
+#ifdef __APPLE__
+  stack_hi = pthread_get_stackaddr_np(pthread_self());
+  stack_lo = stack_hi - pthread_get_stacksize_np(pthread_self());
+#else
+  pthread_attr_t a;
+  void *addr;
+  size_t size;
+  if (pthread_getattr_np(pthread_self(), &a) == 0) {
+    pthread_attr_getstack(&a, &addr, &size);
+    pthread_attr_destroy(&a);
+    stack_lo = addr;
+    stack_hi = (char *)addr + size;
+  }
+#endif
 }
 
 // The program's arguments, without its name; a closed pipe ends it quietly.
 void strata_init(int32_t argc, char **argv) {
-  depth = 0;
+  runs = 0;
   rng = 7;
   catch_overflow();
   prog_argc = argc > 0 ? argc - 1 : 0;

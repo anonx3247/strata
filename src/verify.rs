@@ -511,6 +511,7 @@ fn fuzz_limited(env: &Env, f: &FnDecl, cases: usize, seed: u64, method: bool, bu
 
 /// A call stack for a message: deep ones (runaway recursion) are cut short.
 fn short_stack(stack: &[String]) -> String {
+    let stack = crate::interp::fold_stack(stack);
     if stack.len() <= 8 {
         return stack.join(" -> ");
     }

@@ -11,11 +11,48 @@ use num_traits::{FromPrimitive, Signed, ToPrimitive, Zero};
 use crate::fx::HashMap;
 use std::rc::Rc;
 
+/// A call stack as faults show it, outermost first: four or more calls in a
+/// row of one function (a recursion) are one entry, `down (95846 times)`.
+pub fn show_stack(stack: &[String]) -> String {
+    fold_stack(stack).join(" -> ")
+}
+
+/// A call stack's entries, a recursion's calls as one (`show_stack`).
+pub fn fold_stack(stack: &[String]) -> Vec<String> {
+    let mut parts = vec![];
+    let mut i = 0;
+    while i < stack.len() {
+        let n = stack[i..].iter().take_while(|f| **f == stack[i]).count();
+        if n >= 4 {
+            parts.push(format!("{} ({n} times)", stack[i]));
+        } else {
+            parts.extend(std::iter::repeat_n(stack[i].clone(), n));
+        }
+        i += n;
+    }
+    parts
+}
+
+/// A call faults `stack overflow` when less than this much stack is left:
+/// enough for the Rust frames between two calls of the program and for
+/// reporting the fault.
+const STACK_RED_ZONE: usize = 256 * 1024;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Fields {
     None,
-    Pos(Vec<Value>),
-    Rec(Vec<(String, Value)>),
+    // shared: copying a value (a long chain, a tree) doesn't copy its fields
+    Pos(Rc<Vec<Value>>),
+    Rec(Rc<Vec<(String, Value)>>),
+}
+
+impl Fields {
+    pub fn pos(vs: Vec<Value>) -> Fields {
+        Fields::Pos(Rc::new(vs))
+    }
+    pub fn rec(fs: Vec<(String, Value)>) -> Fields {
+        Fields::Rec(Rc::new(fs))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -120,7 +157,7 @@ fn set_path(base: Value, path: &[String], v: Value) -> Option<Value> {
             Some(Value::Record(n, fs))
         }
         Value::Variant(n, Fields::Rec(mut fs)) => {
-            let slot = fs.iter_mut().find(|(k, _)| k == first)?;
+            let slot = Rc::make_mut(&mut fs).iter_mut().find(|(k, _)| k == first)?;
             slot.1 = set_path(std::mem::replace(&mut slot.1, Value::Unit), rest, v)?;
             Some(Value::Variant(n, Fields::Rec(fs)))
         }
@@ -185,6 +222,8 @@ pub struct Interp<'a> {
     /// At most this many evaluation steps, if set.
     pub budget: Option<u64>,
     steps: u64,
+    /// Named types without a refinement anywhere in them (`plain`).
+    plain_types: HashMap<Symbol, bool>,
     /// Access to the real system, for the `host_*` builtins under `std`.
     /// Only `strata run` gives it, with the program's arguments: checks,
     /// tests, fuzzing and proofs never touch the terminal or the disk.
@@ -388,6 +427,7 @@ impl<'a> Interp<'a> {
             returning: None,
             budget: None,
             steps: 0,
+            plain_types: HashMap::default(),
             host: None,
             output: Output::Discard,
         }
@@ -406,10 +446,10 @@ impl<'a> Interp<'a> {
         let Some(host) = &self.host else {
             return self.fail(FaultKind::Runtime, format!("`{name}` needs the real system, which only `strata run` gives (tests and `verify` pass a stand-in such as `Recorder` or `mock Console`)"));
         };
-        let some = |v: Value| Variant("Some".into(), Fields::Pos(vec![v]));
+        let some = |v: Value| Variant("Some".into(), Fields::pos(vec![v]));
         let none = || Variant("None".into(), Fields::None);
         let io = |r: std::io::Result<Value>| match r {
-            Ok(v) => Variant("Ok".into(), Fields::Pos(vec![v])),
+            Ok(v) => Variant("Ok".into(), Fields::pos(vec![v])),
             Err(e) => {
                 use std::io::ErrorKind as K;
                 let kind = match e.kind() {
@@ -420,7 +460,7 @@ impl<'a> Interp<'a> {
                     K::IsADirectory => "is_a_directory",
                     _ => "other",
                 };
-                Variant("Err".into(), Fields::Pos(vec![Tuple(vec![Str(kind.into()), Str(e.to_string())])]))
+                Variant("Err".into(), Fields::pos(vec![Tuple(vec![Str(kind.into()), Str(e.to_string())])]))
             }
         };
         let s = |i: usize| match args.get(i) {
@@ -671,10 +711,53 @@ impl<'a> Interp<'a> {
     }
 
     fn enforce(&mut self, t: &TypeExpr, v: &Value, ctx: &str) -> R<()> {
+        // the checker proved the value's shape: only refinements can fail,
+        // and walking a value of a type without any (a long chain) is wasted
+        if self.plain(t, &[]) {
+            return Ok(());
+        }
         if let Some(e) = self.check_type(t, v)? {
             return self.fail(FaultKind::Refinement, format!("{ctx}: {e}"));
         }
         Ok(())
+    }
+
+    /// Whether no value of `t` can break a refinement: none in it, nor in
+    /// the types it names, their fields and variants (`params` are a
+    /// declaration's type parameters, whose arguments are checked apart).
+    fn plain(&mut self, t: &TypeExpr, params: &[Symbol]) -> bool {
+        match t {
+            TypeExpr::Unit | TypeExpr::Fn(..) => true,
+            TypeExpr::Refined(..) => false,
+            TypeExpr::Union(ms) => ms.iter().all(|m| self.plain(m, params)),
+            TypeExpr::Named(n, args) => {
+                if !args.iter().all(|a| self.plain(a, params)) {
+                    return false;
+                }
+                if params.contains(n) || matches!(n.as_str(), "Int" | "Float" | "Bool" | "String" | "Unit" | "List" | "Set" | "Dict" | "Tuple") {
+                    return true;
+                }
+                if let Some(&p) = self.plain_types.get(n) {
+                    return p;
+                }
+                let Some(td) = self.env.types.get(n).cloned() else { return false };
+                // a recursive type is plain if the rest of it is
+                self.plain_types.insert(*n, true);
+                let ps = td.params.clone();
+                let p = td.refinement.is_none()
+                    && match &td.body {
+                        TypeBody::Alias(a) => self.plain(a, &ps),
+                        TypeBody::Record(fs) => fs.iter().all(|f| self.plain(&f.ty, &ps)),
+                        TypeBody::Sum(vs) => vs.iter().all(|v| match &v.payload {
+                            Payload::None => true,
+                            Payload::Positional(ts) => ts.iter().all(|t| self.plain(t, &ps)),
+                            Payload::Record(fs) => fs.iter().all(|f| self.plain(&f.ty, &ps)),
+                        }),
+                    };
+                self.plain_types.insert(*n, p);
+                p
+            }
+        }
     }
 
     // ---------------- calls ----------------
@@ -807,8 +890,11 @@ impl<'a> Interp<'a> {
             return self.fail(FaultKind::Runtime, format!("`{name}` expects {} arguments", f.params.len()));
         }
         self.depth += 1;
-        if self.depth > 2000 {
-            return self.fail(FaultKind::Limit, "stack overflow (recursion depth > 2000)");
+        // no limit on the depth itself: a recursion faults when the stack is
+        // nearly out (as compiled code does), rather than crashing
+        if stacker::remaining_stack().is_some_and(|left| left < STACK_RED_ZONE) {
+            self.depth -= 1;
+            return self.fail(FaultKind::Limit, "stack overflow (recursion too deep)");
         }
         self.stack.push(name.to_string());
         if self.tracing {
@@ -1025,7 +1111,7 @@ impl<'a> Interp<'a> {
                     s.trim().parse::<f64>().ok().filter(|f| f.is_finite()).map(Float)
                 };
                 match parsed {
-                    Some(v) => Variant("Some".into(), Fields::Pos(vec![v])),
+                    Some(v) => Variant("Some".into(), Fields::pos(vec![v])),
                     None => Variant("None".into(), Fields::None),
                 }
             }
@@ -1099,7 +1185,7 @@ impl<'a> Interp<'a> {
                 for x in xs {
                     if self.apply(f.clone(), vec![x.clone()])? == Bool(true) {
                         if name == "find" {
-                            return Ok(Variant("Some".into(), Fields::Pos(vec![x])));
+                            return Ok(Variant("Some".into(), Fields::pos(vec![x])));
                         }
                         n += 1;
                     }
@@ -1133,7 +1219,7 @@ impl<'a> Interp<'a> {
                     _ => return self.fail(FaultKind::Runtime, "bad args"),
                 };
                 match found.as_ref() {
-                    Some(v) => Variant("Some".into(), Fields::Pos(vec![v.clone()])),
+                    Some(v) => Variant("Some".into(), Fields::pos(vec![v.clone()])),
                     None => Variant("None".into(), Fields::None),
                 }
             }
@@ -1154,9 +1240,6 @@ impl<'a> Interp<'a> {
             },
             "range" => {
                 let (Int(lo), Int(hi)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
-                if hi - lo > 1_000_000 {
-                    return self.fail(FaultKind::Runtime, "range too large");
-                }
                 List((lo..hi).map(Int).collect())
             }
             "abs" => match nx() {
@@ -1215,7 +1298,7 @@ impl<'a> Interp<'a> {
             "index_of" => {
                 let (Str(s), Str(sub)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
                 match s.find(&sub) {
-                    Some(byte) => Variant("Some".into(), Fields::Pos(vec![Int(s[..byte].chars().count() as i64)])),
+                    Some(byte) => Variant("Some".into(), Fields::pos(vec![Int(s[..byte].chars().count() as i64)])),
                     None => Variant("None".into(), Fields::None),
                 }
             }
@@ -1404,7 +1487,7 @@ impl<'a> Interp<'a> {
                     },
                     CtorArgs::None => Value::Variant(c.to_string(), Fields::None),
                     CtorArgs::Positional(es) => {
-                        Value::Variant(c.to_string(), Fields::Pos(es.iter().map(|x| self.eval(x, s)).collect::<R<_>>()?))
+                        Value::Variant(c.to_string(), Fields::pos(es.iter().map(|x| self.eval(x, s)).collect::<R<_>>()?))
                     }
                     CtorArgs::Record(fs) => {
                         // store fields in declaration order
@@ -1414,7 +1497,7 @@ impl<'a> Interp<'a> {
                             let (_, fe) = fs.iter().find(|(n, _)| n == f).unwrap();
                             vals.push((f.to_string(), self.eval(fe, s)?));
                         }
-                        if is_record { Value::Record(c.to_string(), vals) } else { Value::Variant(c.to_string(), Fields::Rec(vals)) }
+                        if is_record { Value::Record(c.to_string(), vals) } else { Value::Variant(c.to_string(), Fields::rec(vals)) }
                     }
                 };
                 // Refinements on fields and on the type itself are checked at construction.
@@ -1451,8 +1534,12 @@ impl<'a> Interp<'a> {
                     Some(v) => v,
                     None => return self.fail(FaultKind::Runtime, format!("tuple has no element {f}")),
                 },
-                Value::Record(_, fs) | Value::Variant(_, Fields::Rec(fs)) => match fs.into_iter().find(|(n, _)| n == f) {
+                Value::Record(_, fs) => match fs.into_iter().find(|(n, _)| n == f) {
                     Some((_, v)) => v,
+                    None => return self.fail(FaultKind::Runtime, format!("no field `{f}`")),
+                },
+                Value::Variant(_, Fields::Rec(fs)) => match fs.iter().find(|(n, _)| n == f) {
+                    Some((_, v)) => v.clone(),
                     None => return self.fail(FaultKind::Runtime, format!("no field `{f}`")),
                 },
                 other => return self.fail(FaultKind::Runtime, format!("no field `{f}` on {}", to_json(&other))),
@@ -1586,24 +1673,14 @@ impl<'a> Interp<'a> {
                             self.assign_place(place, v, &sc)?;
                         }
                         Stmt::While(c, b) => {
-                            let mut n = 0u64;
                             while self.eval(c, &sc)? == Value::Bool(true) {
-                                n += 1;
-                                if n > 1_000_000 {
-                                    return self.fail(FaultKind::Runtime, "`while` ran more than 1,000,000 times");
-                                }
                                 if self.loop_body(b, &sc)? {
                                     break;
                                 }
                             }
                         }
                         Stmt::Loop(b) => {
-                            let mut n = 0u64;
                             loop {
-                                n += 1;
-                                if n > 1_000_000 {
-                                    return self.fail(FaultKind::Runtime, "`loop` ran more than 1,000,000 times without `break`");
-                                }
                                 if self.loop_body(b, &sc)? {
                                     break;
                                 }
@@ -1673,20 +1750,20 @@ impl<'a> Interp<'a> {
                 return self.early_return(v);
             }
             Expr::Try(x, _) => match self.eval(x, s)? {
-                Value::Variant(c, Fields::Pos(mut xs)) if (c == "Ok" || c == "Some") && xs.len() == 1 => xs.pop().unwrap(),
+                Value::Variant(c, Fields::Pos(xs)) if (c == "Ok" || c == "Some") && xs.len() == 1 => xs[0].clone(),
                 v @ Value::Variant(..) => return self.early_return(v),
                 other => return self.fail(FaultKind::Runtime, format!("`!` / `?` on {}, not a Result or Option", to_json(&other))),
             },
             Expr::Or(x, fb) => match self.eval(x, s)? {
-                Value::Variant(c, Fields::Pos(mut xs)) if c == "Some" && xs.len() == 1 => xs.pop().unwrap(),
+                Value::Variant(c, Fields::Pos(xs)) if c == "Some" && xs.len() == 1 => xs[0].clone(),
                 Value::Variant(c, _) if c == "None" => self.eval(fb, s)?,
                 other => return self.fail(FaultKind::Runtime, format!("`or` on {}, not an Option", to_json(&other))),
             },
             Expr::Except(x, name, fb) => match self.eval(x, s)? {
-                Value::Variant(c, Fields::Pos(mut xs)) if c == "Ok" && xs.len() == 1 => xs.pop().unwrap(),
-                Value::Variant(c, Fields::Pos(mut xs)) if c == "Err" && xs.len() == 1 => {
+                Value::Variant(c, Fields::Pos(xs)) if c == "Ok" && xs.len() == 1 => xs[0].clone(),
+                Value::Variant(c, Fields::Pos(xs)) if c == "Err" && xs.len() == 1 => {
                     let s2 = match name {
-                        Some(n) => extend(s, n, xs.pop().unwrap()),
+                        Some(n) => extend(s, n, xs[0].clone()),
                         None => s.clone(),
                     };
                     self.eval(fb, &s2)?
@@ -1735,7 +1812,7 @@ impl<'a> Interp<'a> {
             }
             (Pattern::Ctor(c, cp), Value::Variant(n, _) | Value::Record(n, _)) if c == n => {
                 let fields = match v {
-                    Value::Record(_, fs) => Fields::Rec(fs.clone()),
+                    Value::Record(_, fs) => Fields::rec(fs.clone()),
                     Value::Variant(_, f) => f.clone(),
                     _ => unreachable!(),
                 };
@@ -1743,7 +1820,7 @@ impl<'a> Interp<'a> {
                     (CtorPat::None, _) => Some(s.clone()),
                     (CtorPat::Positional(ps), Fields::Pos(xs)) => {
                         let mut sc = s.clone();
-                        for (ip, x) in ps.iter().zip(xs) {
+                        for (ip, x) in ps.iter().zip(xs.iter()) {
                             sc = self.matches(ip, x, &sc)?;
                         }
                         Some(sc)
@@ -1889,7 +1966,7 @@ impl<'a> Interp<'a> {
                             if let Some(extra) = obj.keys().find(|k| !names.iter().any(|n| n == *k)) {
                                 return Err(format!("{p}: unknown field `{extra}`"));
                             }
-                            Ok(if is_record { Value::Record(cname.to_string(), fs) } else { Value::Variant(cname.to_string(), Fields::Rec(fs)) })
+                            Ok(if is_record { Value::Record(cname.to_string(), fs) } else { Value::Variant(cname.to_string(), Fields::rec(fs)) })
                         }
                         None if ftys.is_empty() => Ok(Value::Variant(cname.to_string(), Fields::None)),
                         None => {
@@ -1898,7 +1975,7 @@ impl<'a> Interp<'a> {
                                 return Err(format!("{p}: expected {} values", ftys.len()));
                             }
                             let vals = ftys.iter().zip(&items).enumerate().map(|(i, (ft, x))| self.from_json_raw(ft, x, &format!("{p}.{i}"))).collect::<Result<_, _>>()?;
-                            Ok(Value::Variant(cname.to_string(), Fields::Pos(vals)))
+                            Ok(Value::Variant(cname.to_string(), Fields::pos(vals)))
                         }
                     }
                 }

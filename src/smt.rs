@@ -3148,8 +3148,8 @@ fn to_value(env: &Env, v: &Val, m: &HashMap<String, String>) -> Option<Value> {
             let fields: Vec<Value> = payload.iter().map(|x| to_value(env, x, m)).collect::<Option<_>>()?;
             let f = match &vs.get(k)?.1 {
                 _ if fields.is_empty() => Fields::None,
-                Some(names) => Fields::Rec(names.iter().map(|n| n.to_string()).zip(fields).collect()),
-                None => Fields::Pos(fields),
+                Some(names) => Fields::rec(names.iter().map(|n| n.to_string()).zip(fields).collect()),
+                None => Fields::pos(fields),
             };
             Value::Variant(c.clone(), f)
         }
