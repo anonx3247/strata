@@ -603,7 +603,7 @@ strata builtins               # every builtin and prelude type
 ```sh
 strata view --level 0                 # a map: one line per definition, deps, holes, status
 strata view slice:Order --level 1     # Order, what it uses, what uses it: interfaces only
-strata view 'ship,refund' --level 3   # full source of a few definitions (levels: 0 map, 1 interfaces, 2 outline, 3 source)
+strata view 'ship,refund' --level 2   # full source of a few definitions (levels: 0 map, 1 interfaces, 2 source)
 strata interface shop.orders          # a module's public contract
 strata edit [MODULE] -m "why" < defs.strata
                                       # add or replace definitions by name; refused unless the

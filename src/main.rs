@@ -84,7 +84,7 @@ every change made through strata, committed with them):
                                with the working tree, one step per commit
   interface <module>           a module's public contract: what other modules can use
   render [MODULE] [--split DIR]
-                               print a module as text (L3): the file that holds it (the
+                               print a module as text (L2): the file that holds it (the
                                root module is `main`); --split writes one file per module
                                (as text files: `shop/orders.st`, never read back)
   pack <FILE.strata>           the whole program in one file (a bundle, with strata.toml);
@@ -116,7 +116,7 @@ Git:
 
 Views:
   ui [--port 7777]                live viewer in the browser (map, levels, holes, activity)
-  view [SELECTOR] [--level 0-3]   SELECTOR: name | prefix* | slice:Name | a,b
+  view [SELECTOR] [--level 0-2]   SELECTOR: name | prefix* | slice:Name | a,b
   ast <name>                      the stored syntax tree as JSON
 
 Checking:

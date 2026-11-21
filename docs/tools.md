@@ -176,8 +176,7 @@ POST / 405 (0 ms)
 |---|---|
 | `--level 0` | a map: one line per definition, with its dependencies, holes and verification status |
 | `--level 1` | interfaces only: types, traits, signatures and contracts |
-| `--level 2` | an outline: L1 plus a one-line summary of each body |
-| `--level 3` | full source; `render` output parses back to the same tree |
+| `--level 2` | full source; `render` output parses back to the same tree |
 
 Comments are part of the tree, so they survive every edit and render. A `//` comment belongs to what follows it: a definition (comments separated from it by a blank line, such as a file header or a section banner, keep that blank line), a field, a variant, a trait or impl method, a law, a statement or a match arm. Blank lines between statements are kept too (several in a row become one). A comment at the end of a line moves above the thing it follows. A comment anywhere else (inside an argument list, after the last statement of a block) is an error, never silently dropped. `///` doc comments work the same way and are the description the viewer shows. Comments are printed as written; changing one changes the definition's hash but not its interface hash, and does not invalidate verification results.
 

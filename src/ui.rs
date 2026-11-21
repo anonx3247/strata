@@ -104,7 +104,7 @@ fn snapshot(target: &Target) -> Json {
             // a card already shows its module, so drop the `module m { ... }` wrapper;
             // the doc comment is shown as the description, so drop it from the code too
             let render = |lvl| strip_doc(view::render(p, &one, lvl, &status).trim_end());
-            let (iface, source) = (render(1), render(3));
+            let (iface, source) = (render(1), render(2));
             let own = impl_of.get(&name);
             let deps: Vec<String> = graph
                 .get(&name)
@@ -141,7 +141,7 @@ fn snapshot(target: &Target) -> Json {
                 "errors": rep.errors.iter().filter(|e| qname_of.get(&e.decl).unwrap_or(&e.decl) == &name || e.decl == name).map(|e| e.msg.clone()).collect::<Vec<_>>(),
                 "last_change": last_change.get(&name),
                 "has_body": iface != source,
-                "text": { "1": iface, "2": render(2), "3": source },
+                "text": { "1": iface, "2": source },
             })
         })
         .collect();

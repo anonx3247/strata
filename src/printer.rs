@@ -714,7 +714,7 @@ pub fn doc(d: &Decl) -> String {
     out
 }
 
-/// Full (L3) rendering of a declaration.
+/// Full (L2) rendering of a declaration.
 pub fn decl(d: &Decl) -> String {
     comments(&d.comments, 0) + &doc(d) + &decl_body(d)
 }
