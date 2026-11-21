@@ -303,6 +303,11 @@ impl<'a> Expander<'a> {
 
     /// Run compile-time code, with the known values in scope.
     fn eval(&mut self, e: &Expr) -> Res<Value> {
+        // most compile-time code is data: a description written out, a known
+        // name, a field of one; nothing runs
+        if let Some(v) = self.data(e) {
+            return Ok(v);
+        }
         let mut scope: Scope = None;
         for (k, v) in &self.known {
             scope = crate::interp::extend(&scope, k, v.clone());
@@ -312,6 +317,54 @@ impl<'a> Expander<'a> {
             return Err(format!("`comptime {}` ran for more than {BUDGET} steps: compile-time code must finish", crate::printer::expr(e, 0)));
         }
         r.map_err(|f| format!("`comptime {}` failed: {}", crate::printer::expr(e, 0), f.msg))
+    }
+
+    /// The value of `e` if it is data: literals, constructors of them, known
+    /// names and their fields (as the interpreter would make it). `None`
+    /// when something would have to run.
+    fn data(&self, e: &Expr) -> Option<Value> {
+        Some(match e {
+            Expr::Int(n) => Value::Int(*n),
+            Expr::BigInt(b) => crate::interp::int_value(b.parse().ok()?),
+            Expr::Float(x) => Value::Float(*x),
+            Expr::Bool(b) => Value::Bool(*b),
+            Expr::Str(s) => Value::Str(s.clone()),
+            Expr::Unit => Value::Unit,
+            Expr::Var(x) if self.is_known(x) => self.known[x].clone(),
+            Expr::List(xs) => Value::List(xs.iter().map(|x| self.data(x)).collect::<Option<_>>()?),
+            Expr::Tuple(xs) => Value::Tuple(xs.iter().map(|x| self.data(x)).collect::<Option<_>>()?),
+            Expr::Field(r, f) => match self.data(r)? {
+                Value::Record(_, fs) => fs.into_iter().find(|(k, _)| k == f.as_str())?.1,
+                Value::Variant(_, Fields::Rec(fs)) => fs.iter().find(|(k, _)| k == f.as_str())?.1.clone(),
+                _ => return None,
+            },
+            Expr::Ctor(c, args) => {
+                let tname = *self.env.ctors.get(c)?;
+                let td = self.env.types.get(&tname)?;
+                if td.distinct || td.refinement.is_some() {
+                    return None;
+                }
+                match args {
+                    CtorArgs::None => Value::Variant(c.to_string(), Fields::None),
+                    CtorArgs::Positional(es) => Value::Variant(c.to_string(), Fields::pos(es.iter().map(|x| self.data(x)).collect::<Option<_>>()?)),
+                    CtorArgs::Record(fs) => {
+                        // in declaration order, every field given (a default would have to run)
+                        let order = self.env.variants_of(&tname, &[]).and_then(|vs| vs.into_iter().find(|v| &v.0 == c)).and_then(|v| v.1)?;
+                        if order.len() != fs.len() {
+                            return None;
+                        }
+                        let mut vals = vec![];
+                        for f in &order {
+                            let (_, fe) = fs.iter().find(|(n, _)| n == f)?;
+                            vals.push((f.to_string(), self.data(fe)?));
+                        }
+                        if matches!(td.body, TypeBody::Record(_)) { Value::Record(c.to_string(), vals) } else { Value::Variant(c.to_string(), Fields::rec(vals)) }
+                    }
+                    CtorArgs::Update(..) => return None,
+                }
+            }
+            _ => return None,
+        })
     }
 
     /// A value computed at compile time, written as code.
