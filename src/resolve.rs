@@ -1378,7 +1378,11 @@ fn move_apply(p: &Program, old: &str, target: &str) -> Result<(Program, String),
     let moves = moved_names(p, old, target)?;
     let new_q = moves[old].clone();
     let i = p.decls.iter().position(|d| d.qname() == old).unwrap();
-    let (out, needs) = run_with(p, None, Some(&moves), None);
+    let (out, _) = run_with(p, None, Some(&moves), None);
+    // references are stored in full, so they follow the move; imports are for
+    // the text: where it was written short, the new module is imported
+    let written_p = written_form(p);
+    let (_, needs) = run_with(&written_p, None, Some(&moves), None);
     let mut program = out.program;
     for (r, d) in program.decls.iter_mut().zip(&p.decls) {
         r.module = d.module.clone();
@@ -1386,7 +1390,7 @@ fn move_apply(p: &Program, old: &str, target: &str) -> Result<(Program, String),
     program.decls[i].module = Symbol::from(target);
     // what the moved definition uses from its old module (or that module's imports)
     // must be imported where it goes: names it writes short
-    let written = names_in(&p.decls[i].kind);
+    let written = names_in(&written_p.decls[i].kind);
     let deps = crate::store::graph(p).get(old).cloned().unwrap_or_default();
     let mut imports: Vec<(String, String, String)> = Vec::new();
     for dep in deps {
@@ -1512,7 +1516,7 @@ pub fn follow_move(merged: &Program, old: &str, new: &str) -> Option<Program> {
 mod tests {
     use super::*;
 
-    /// Every example, and the standard library, as written.
+    /// Every example, and the standard library, as stored.
     fn examples() -> Vec<(String, Program)> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut paths: Vec<_> = std::fs::read_dir(root.join("examples")).unwrap().map(|e| e.unwrap().path()).filter(|p| p.is_dir() || p.extension().is_some_and(|e| e == "strata")).collect();
@@ -1530,8 +1534,9 @@ mod tests {
 
     #[test]
     fn stored_and_written_forms_round_trip() {
-        for (name, p) in examples() {
-            let stored = stored_form(&p);
+        for (name, stored) in examples() {
+            // loaded as stored: storing again changes nothing
+            assert_eq!(stored_form(&stored), stored, "{name}: not in stored form");
             let written = written_form(&stored);
             // storing what is shown stores the same tree
             assert_eq!(stored_form(&written), stored, "{name}: stored form is not stable");
@@ -1541,11 +1546,9 @@ mod tests {
                 let reparsed = crate::parser::parse_module_file(&crate::printer::module_file(&written, &m), &m).unwrap();
                 assert_eq!(reparsed, own, "{name}: module {m} doesn't read back as shown");
             }
-            // and here, the text is as it was written
-            assert_eq!(text(&written), text(&p), "{name}: text changed");
             if name.ends_with("tasks") {
                 let t = text(&stored);
-                assert!(t.contains("core.Task") && t != text(&p), "references are stored qualified");
+                assert!(t.contains("core.Task") && t != text(&written), "references are stored qualified");
             }
         }
     }

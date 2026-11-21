@@ -1112,10 +1112,9 @@ mod tests {
         for (path, img) in examples() {
             let bytes = encode_bundle(&img);
             let back = read(&bytes).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-            // what is read back is the stored form, which shows as the program
-            let stored = crate::resolve::stored_form(&img.program);
-            assert_eq!(back, Image { manifest: img.manifest.clone(), program: stored.clone() }, "{}", path.display());
-            assert_eq!(crate::resolve::written_form(&back.program), img.program, "{}", path.display());
+            // the program is loaded as stored, and read back the same
+            let stored = img.program.clone();
+            assert_eq!(back, img, "{}", path.display());
             // canonical: encoding the decoded program gives the same bytes
             assert_eq!(encode_bundle(&back), bytes);
             for (m, file) in encode_modules(&img.program) {
