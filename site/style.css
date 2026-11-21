@@ -14,14 +14,7 @@ a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 code { font-family: var(--mono); font-size: .88em; background: #ffffff0d; border: 1px solid #ffffff12; padding: 0 5px; border-radius: 5px; }
 
-/* ───────── progress + nav ───────── */
 #progress { position: fixed; top: 0; left: 0; height: 2px; background: linear-gradient(90deg, var(--accent), var(--accent2)); z-index: 50; width: 0; }
-#nav { position: fixed; right: 18px; top: 50%; transform: translateY(-50%); z-index: 40; display: flex; flex-direction: column; gap: 10px; }
-#nav a { display: block; width: 9px; height: 9px; border-radius: 50%; background: var(--line2); position: relative; transition: background .3s, transform .3s; }
-#nav a.on { background: var(--accent); transform: scale(1.35); }
-#nav a span { position: absolute; right: 18px; top: 50%; transform: translateY(-50%); white-space: nowrap; font-size: 12px; color: var(--muted); opacity: 0; pointer-events: none; transition: opacity .2s; background: var(--panel); padding: 2px 8px; border-radius: 6px; border: 1px solid var(--line); }
-#nav a:hover span { opacity: 1; }
-#nav a:hover { text-decoration: none; }
 
 /* ───────── layout ───────── */
 section { position: relative; padding: 110px 6vw; max-width: 1500px; margin: 0 auto; }
@@ -36,42 +29,11 @@ h3 { font-size: 22px; letter-spacing: -.01em; }
 @media (max-width: 1000px) { .grid2 { grid-template-columns: 1fr; } }
 hr.strata { border: 0; height: 1px; background: linear-gradient(90deg, transparent, var(--line2), transparent); margin: 0; }
 
-/* ───────── reveal animations ───────── */
-.reveal { opacity: 0; transform: translateY(26px); transition: opacity .9s cubic-bezier(.2,.7,.2,1), transform .9s cubic-bezier(.2,.7,.2,1); }
-.reveal.in { opacity: 1; transform: none; }
-.words .w { display: inline-block; opacity: 0; transform: translateY(.45em); filter: blur(6px); transition: opacity .6s, transform .6s, filter .6s; }
-.words.in .w { opacity: 1; transform: none; filter: none; }
-.stagger > * { opacity: 0; transform: translateY(18px); transition: opacity .7s, transform .7s; }
-.stagger.in > * { opacity: 1; transform: none; }
-
-/* ───────── hero ───────── */
-#hero { min-height: 100vh; display: flex; flex-direction: column; justify-content: center; padding-top: 60px; max-width: none; overflow: hidden; }
-#hero .bands { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
-#hero .bands svg { width: 100%; height: 100%; }
-#hero .inner { position: relative; z-index: 1; max-width: 1500px; margin: 0 auto; width: 100%; }
-#hero h1 { font-size: clamp(80px, 13vw, 200px); line-height: .9; letter-spacing: -.05em; }
-#hero h1 .l { display: inline-block; opacity: 0; transform: translateY(60px) rotate(4deg); animation: rise 1.1s cubic-bezier(.2,.8,.2,1) forwards; }
-@keyframes rise { to { opacity: 1; transform: none; } }
-#hero .tag { font-family: var(--display); font-size: clamp(24px, 2.6vw, 38px); max-width: 26ch; line-height: 1.2; margin-top: 28px; }
-#hero .tag .dim { color: var(--muted); }
-#hero .cue { margin-top: 60px; font: 13px var(--mono); color: var(--muted); display: flex; align-items: center; gap: 10px; opacity: 0; animation: fade 1s 2.6s forwards; }
-#hero .cue i { width: 1px; height: 36px; background: linear-gradient(var(--accent), transparent); animation: drip 2s infinite; }
-@keyframes fade { to { opacity: 1; } }
-@keyframes drip { 0% { transform: scaleY(0); transform-origin: top; } 50% { transform: scaleY(1); transform-origin: top; } 51% { transform-origin: bottom; } 100% { transform: scaleY(0); transform-origin: bottom; } }
 .typed::after { content: "▍"; color: var(--accent); animation: blink 1s steps(1) infinite; margin-left: 2px; }
 .typed.done::after { display: none; }
+@keyframes rise { to { opacity: 1; transform: none; } }
 @keyframes blink { 50% { opacity: 0; } }
-
-/* ───────── problem statements ───────── */
-.problems { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; margin-top: 56px; }
-@media (max-width: 1100px) { .problems { grid-template-columns: 1fr 1fr; } }
-.problems > div { background: var(--bg2); padding: 26px 24px 28px; }
-.problems .n { font: 600 12px var(--mono); color: var(--bad); letter-spacing: .1em; }
-.problems h3 { margin: 10px 0 8px; font-size: 20px; }
-.problems p { margin: 0; color: var(--muted); font-size: 15px; }
-.problems .fix { margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--line2); font-size: 14.5px; color: var(--text); }
-.problems .fix::before { content: "Strata → "; color: var(--ok); font-family: var(--mono); font-size: 12.5px; }
-.problems a.go { display: inline-block; margin-top: 12px; font: 12.5px var(--mono); }
+@keyframes pulse { 50% { opacity: .35; } }
 
 /* ───────── panes: terminals, code, diffs ───────── */
 .pane { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: 0 30px 80px -40px #000; min-width: 0; }
@@ -189,9 +151,6 @@ hr.strata { border: 0; height: 1px; background: linear-gradient(90deg, transpare
 .frame .views button { font: 12px var(--mono); background: transparent; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 2px 9px; cursor: pointer; }
 .frame .views button.on { color: var(--text); border-color: var(--accent); }
 
-/* ───────── agent session ───────── */
-#session .player { display: grid; grid-template-columns: minmax(380px, 34%) 1fr; gap: 22px; margin-top: 44px; }
-@media (max-width: 1100px) { #session .player { grid-template-columns: 1fr; } }
 .steps { display: flex; gap: 6px; margin: 30px 0 0; flex-wrap: wrap; }
 .steps button { flex: 1; min-width: 32px; height: 6px; border-radius: 3px; border: 0; background: var(--line2); cursor: pointer; padding: 0; position: relative; overflow: hidden; }
 .steps button.done { background: #8ea2ff66; }
@@ -201,27 +160,11 @@ hr.strata { border: 0; height: 1px; background: linear-gradient(90deg, transpare
 .say .who { font: 600 12px var(--mono); text-transform: uppercase; letter-spacing: .1em; display: inline-flex; gap: 8px; align-items: center; color: var(--accent2); }
 .say .who i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 10px currentColor; animation: pulse 1.6s infinite; }
 .say .who.you { color: var(--muted); } .say .who.agentb { color: #63e6be; }
-@keyframes pulse { 50% { opacity: .35; } }
 .say h3 { font-size: 26px; margin: 8px 0 10px; }
 .say p { margin: 0; color: var(--muted); font-size: 16px; }
 .say p code { color: var(--text); }
-#sess-term .body { height: 470px; max-height: none; }
 .controls { display: flex; gap: 8px; margin-top: 14px; align-items: center; }
 .controls .n { font: 13px var(--mono); color: var(--muted); margin-left: auto; }
-.diffbox { margin-top: 12px; }
-.diffbox summary { cursor: pointer; font: 12.5px var(--mono); color: var(--muted); }
-.diffbox .body { max-height: 260px; }
-
-/* ───────── merge ───────── */
-.lanes { position: relative; margin-top: 40px; }
-.lanes svg { width: 100%; height: 190px; display: block; }
-.lanes .lane-label { font: 600 12px var(--mono); fill: var(--muted); }
-.lanes circle { fill: var(--bg); stroke-width: 2.5; }
-.lanes .commit text { font: 12px var(--mono); fill: var(--text); }
-.lanes .anim { opacity: 0; transition: opacity .6s; }
-.lanes.in .anim { opacity: 1; }
-.lanes path.draw { stroke-dasharray: 1200; stroke-dashoffset: 1200; transition: stroke-dashoffset 1.6s ease; }
-.lanes.in path.draw { stroke-dashoffset: 0; }
 
 /* ───────── levels ───────── */
 .levels { display: grid; grid-template-columns: 280px 1fr; gap: 26px; margin-top: 46px; }
@@ -233,7 +176,6 @@ hr.strata { border: 0; height: 1px; background: linear-gradient(90deg, transpare
 .levels .pane .body { max-height: 600px; transition: opacity .25s; }
 
 /* ───────── closing ───────── */
-#start .cmds { margin-top: 40px; }
 .links { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 30px; }
 @media (max-width: 900px) { .links { grid-template-columns: 1fr; } }
 .links a { display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; color: var(--text); transition: border-color .2s, transform .2s; }

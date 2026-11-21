@@ -31,6 +31,9 @@ const clean = s => s.replaceAll(WORK, '~').replace(/\s+$/, '');
 
 /** A viewer on a package, answering /api/state and /api/changes. */
 async function viewer(cwd, label = '~/' + cwd.split('/').pop()) {
+  // a port nothing answers on yet: the user may have viewers of their own running
+  const answers = q => { try { execFileSync('curl', ['-sf', '-o', '/dev/null', `http://127.0.0.1:${q}/`], { stdio: 'ignore' }); return true; } catch (e) { return e.status !== 7; } };
+  while (answers(port)) port++;
   const p = port++;
   const child = spawn(STRATA, ['ui', '--port', String(p)], { cwd, stdio: 'ignore' });
   for (let i = 0; i < 50; i++) {
@@ -71,12 +74,24 @@ function emit(name, value) {
   console.log(`  data/${name}.js  ${(JSON.stringify(value).length / 1024).toFixed(0)} KB`);
 }
 
+/** The codebase as the page draws it: each definition, what it uses, its status, its source. */
+function graph(state) {
+  const names = new Set(state.decls.map(d => d.name));
+  return state.decls.map(d => ({
+    name: d.name, label: d.label, kind: d.kind, hash: d.hash, interface: d.interface_hash,
+    deps: [...new Set(d.deps)].filter(n => names.has(n) && n !== d.name),
+    holes: d.holes.length, verdict: d.verdict?.status ?? null,
+    args: d.verdict?.args ?? null, message: d.verdict?.message ?? null,
+    text: d.text?.['2'] ?? d.text?.['1'] ?? '',
+  }));
+}
+
 // ───────────────────────── math: the verifier's tour ─────────────────────────
 {
   const dir = pkg('math', [join(EX, 'math.strata')]);
   const verify = run(dir, ['verify']);
   const v = await viewer(dir);
-  emit('math', { verify: clean(verify.out), source: run(dir, ['render']).out, ...await v.snap() });
+  emit('math', { verify: clean(verify.out), graph: graph((await v.snap()).state) });
   v.stop();
 }
 
@@ -210,7 +225,9 @@ fn discount(amount: Cents) -> Cents {
   const at = t => session.findIndex(x => x.title === t);
   const couponsDiff = lineDiff(texts[at('A breaking change becomes holes')][0], texts[at('It fills them, and closes the change')][1]);
   emit('orders', { couponsDiff, levels, trace: clean(trace.out), badInput: clean(badInput.out), holes, merge, source: levels[3] });
-  emit('session', session);
+  // the page draws each step's codebase as a graph; it needs the Changes view only for the diffs it shows
+  const DIFFS = ['It fills them, and closes the change', 'A rename is one change', 'It fixes it, and proves it'];
+  emit('session', session.map(x => ({ ...x, state: undefined, changes: DIFFS.includes(x.title) ? x.changes : undefined, graph: graph(x.state) })));
   // the docs' tour of the viewer: a few moments of the same session
   const pickSnap = (t, keep = []) => { const x = session.find(y => y.title === t); return { state: x.state, changes: Object.fromEntries(Object.entries(x.changes).filter(([k]) => k === 'all' || keep.includes(k))) }; };
   const last = session.at(-1), stepId = t => String(last.changes.all.steps.find(s => s.title === t).id);
@@ -294,8 +311,177 @@ test "totals" {
   const at = t => steps.findIndex(x => x.title === t);
   const paramDiff = lineDiff(texts[at('Add a parameter: the callers become holes')][0], texts[at('Fill them, and close the change')][1]);
   const v = await viewer(dir);
-  emit('contract', { steps, paramDiff, ...await v.snap() });
+  emit('contract', { steps, paramDiff, changes: (await v.snap()).changes });
   v.stop();
+}
+
+// ─────────────── what the language does now: small programs, stored, run and verified ───────────────
+/** Top-level definitions of rendered source by name (with their doc comments), in source order. */
+function defs(src, names) {
+  const chunks = [];
+  for (const l of src.trimEnd().split('\n')) {
+    if (!chunks.length || (l && !/^[\s}]/.test(l) && chunks.at(-1).at(-1) === '' && !chunks.at(-1).every(x => x === '' || x.startsWith('//')))) chunks.push([]);
+    chunks.at(-1).push(l);
+  }
+  const name = c => (c.find(l => !l.startsWith('//') && l) || '').replace(/^(pub |extern c |capability |mock |distinct )*/, '');
+  return chunks.filter(c => names.some(n => name(c).startsWith(n))).map(c => c.join('\n').trim()).join('\n\n');
+}
+{
+  const F = {};
+  const ex = name => { const dir = join(WORK, 'ex-' + name); cpSync(join(EX, name), dir, { recursive: true }); return dir; };
+  const out = (dir, args, input) => { const r = run(dir, args, input); return { cmd: `strata ${args.join(' ')}`, out: clean(r.out), code: r.code }; };
+  /** A small package: the program stored with `strata edit` (which checks it), then shown as stored. */
+  const file = (name, text) => {
+    const dir = pkg('f-' + name, []);
+    const r = run(dir, ['edit', '-m', name], text);
+    if (r.code) throw new Error(`${name} doesn't check:\n${r.out}`);
+    return { dir, src: run(dir, ['render']).out.trimEnd(), at: (...args) => out(dir, args) };
+  };
+  const unfile = o => o;
+
+  // capabilities: main names what it touches; the rest takes any implementation
+  {
+    const dir = ex('wc');
+    const src = run(dir, ['render']).out;
+    writeFileSync(join(dir, 'notes.txt'), 'one two\nthree\n');
+    F.capabilities = {
+      main: defs(src, ['fn main(']), wc: defs(src, ['fn wc(']), test: defs(src, ['test "counts each file']),
+      test_out: out(dir, ['test']), run_out: out(dir, ['run', '--', '--only', 'words', 'notes.txt']),
+    };
+  }
+  // mocks: a fake declared as a type; what it leaves out is generated
+  {
+    const f = file('mocks', `use std.fs.{Files, FsError}
+
+/// Save a note, then read it back.
+fn round_trip(mut fs: Files, text: String) -> Result[String, FsError] {
+  mut fs.write("note.txt", text)!
+  fs.read("note.txt")
+}
+
+/// An in-memory disk, for tests.
+mock MemDisk = { files: Dict[String, String] = Dict[String, String] {} }
+
+impl Files for MemDisk {
+  fn read(self, path: String) -> Result[String, FsError] {
+    Ok(get(self.files, path) ?? "")
+  }
+
+  fn write(mut self, path: String, text: String) -> Result[(), FsError] {
+    self.files = insert(self.files, path, text)
+    Ok(())
+  }
+}
+
+test "saving then loading" {
+  mut fs := MemDisk {}
+  assert round_trip(mut fs, "hi") == Ok("hi")
+}
+`);
+    const main = 'fn main() {\n  mut fs := MemDisk {}\n  print(round_trip(mut fs, "hi"))\n}\n';
+    F.mocks = { src: f.src, test_out: f.at('test'), verify_out: f.at('verify'), refused: { cmd: 'strata edit', input: main.trim(), ...out(f.dir, ['edit'], main), cmd: 'strata edit' } };
+  }
+  // derive: code written by code, at compile time
+  {
+    const dir = ex('hello');
+    const src = run(dir, ['render']).out;
+    const json = file('json', `use std.json.{Json, parse}
+
+type Signup = {
+  email: String where contains(it, "@"),
+  age: Int where it >= 13,
+  nickname: Option[String],
+}
+
+derive Json for Signup
+
+fn check(body: String) -> String {
+  json := parse(body) except e {
+    return f"not JSON: {e}"
+  }
+  match Signup.decode(json) {
+    Ok(s) => f"welcome, {s.email} ({s.age})",
+    Err(e) => f"refused: {e}",
+  }
+}
+
+fn main() {
+  print(check("{\\"email\\": \\"ada@example.com\\", \\"age\\": 36}"))
+  print(check("{\\"email\\": \\"ada@example.com\\", \\"age\\": 9}"))
+}
+`);
+    F.derive = {
+      options: defs(src, ['type Options', 'derive CommandLine']), main: defs(src, ['fn main(']),
+      help: out(dir, ['run', '--', '--help']), run_out: out(dir, ['run', '--', 'Ada', '--loud', '--times', '2']), bad: out(dir, ['run', '--', '--times', '11']),
+      json: defs(json.src, ['type Signup', 'derive Json']), json_run: unfile(json.at('run')),
+    };
+  }
+  // iterators: lazy, possibly endless; verify says which loops end
+  {
+    const f = file('iter', `/// 0, 1, 2, … without end.
+type Naturals = { at: Int }
+
+impl Iterator[Int] for Naturals {
+  fn next(mut self) -> Option[Int] {
+    n := self.at
+    self.at = n + 1
+    Some(n)
+  }
+}
+
+fn main() {
+  squares := Naturals { at: 0 }.filter(n -> n % 2 == 0).map(n -> n * n)
+  for s in squares {
+    if s > 100 {
+      break
+    }
+    print(s)
+  }
+}
+`);
+    F.iterators = { src: f.src, run_out: unfile(f.at('run')), verify_out: unfile(f.at('verify')) };
+  }
+  // comptime, and C called from Strata
+  {
+    const f = file('comptime', `fn fib(n: Natural) -> Natural {
+  if n < 2 {
+    n
+  } else {
+    fib(n - 1) + fib(n - 2)
+  }
+}
+
+/// Worked out while compiling: the program only carries the number.
+fn answer() -> Natural {
+  comptime fib(30)
+}
+
+fn main() {
+  print(answer())
+}
+`);
+    const dir = ex('fuzzy');
+    F.native = {
+      comptime: f.src, comptime_run: unfile(f.at('run')),
+      externs: run(dir, ['render', 'text']).out.trimEnd(),
+      fuzzy_run: out(dir, ['run', '--', '--word', 'recieve']),
+    };
+  }
+  // std written in Strata: the regex parser
+  {
+    const f = file('regex', `use std.regex.{parse, show}
+
+fn main() {
+  match parse("(?i)ab|ac") {
+    Ok(re) => print(show(re)),
+    Err(e) => print(f"error: {e}"),
+  }
+}
+`);
+    F.std = { src: f.src, run_out: unfile(f.at('run')) };
+  }
+  for (const [k, v] of Object.entries(F)) console.log(`  feature ${k}`);
+  emit('features', F);
 }
 
 // ─────────────── the docs, as pages ───────────────

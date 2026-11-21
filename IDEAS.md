@@ -595,6 +595,11 @@ Still open: **type map as a side panel** instead of a full tab. The user suggest
 
 Relations (decided): a definition has **dependencies** (what it mentions) and **references** (what mentions it). Implementing a trait is a separate relation, never a reference or a dependency: an `impl T for X` block is listed under *Implements* on `X` and *Implementations* on `T`, and its own trait and type are shown as *Trait* / *For*. The snapshot carries `deps`, `refs`, `impls` and `impl_of`. The type map shows dependency edges by default; *implementations* and *refinement types* are opt-in. There are no effects and no functions in the type map. The user wondered about a traits-only view, showing how traits work together; not decided.
 
+## The site: Strata, presented (built, `site/`)
+- **Slides, not a scrolling page** (user, 2026-11-21): one full view per step, ← → (or space) through each slide's steps and on to the next; the address names the slide and step (`#session/5`). It replaced the long page whose ← → only worked over a stepper on screen.
+- **No embedded viewers in the presentation** (user, 2026-11-21): instead, code typed out as it is written, beside a graph of the whole codebase (definitions in columns by how deep their dependencies go, edges for uses) that shows what changed, what must be re-checked, holes, verdicts and counterexamples. The docs keep their tour of the real viewer (Tools → The viewer), since that page documents the viewer itself.
+- **Everything shown is recorded** by `site/build.mjs` from the real CLI, the new-feature slides included (small packages stored with `strata edit`, so a snippet that stops checking breaks the build). The one exception is the slide about open branches, written by hand: when those branches merge, move them onto recorded slides.
+
 ## Known gaps
 
 - The interpreter (`--interpret`) doesn't know an impl's type parameters in a `mut self` method reached through a generic function (`T.zero()` in `impl[T: Zero] Iterator[T] for Padded[T]`, called from `collect[T, I: Iterator[T]]`: "the type `T` is not known here"). Compiled code handles it; per the rule under "Retiring the interpreter", the interpreter isn't fixed. (Methods on a generic impl's type parameters, `T.empty()` / `T.decode(j)`, work since #126.)
