@@ -1,14 +1,14 @@
 //! `strata ui`: a local, read-only viewer for a codebase.
 //!
 //! A tiny HTTP server (std only) serves one HTML page and a JSON snapshot of
-//! the codebase. The snapshot is rebuilt on every request, so edits made by
-//! agents through the CLI appear in the browser within a second or two.
+//! the codebase. The page polls it; the snapshot is rebuilt when a file under
+//! the target changed (and only then), so edits made by agents through the
+//! CLI appear in the browser within a second or two.
 
 use crate::ast::*;
 use crate::store::{self, Codebase};
 use crate::{types, verify, view};
 use serde_json::{json, Value as Json};
-use std::collections::BTreeSet;
 use crate::fx::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -53,20 +53,22 @@ fn snapshot(target: &Target) -> Json {
     };
     let p = &program;
     // modules: work on qualified names, report under each definition's qname
+    // resolve once (it expands derives, which runs code): everything below works from it
     let resolved = crate::resolve::resolve(p);
-    let rp = &resolved.program;
+    let graph = store::graph_of(p, &resolved.program);
+    let rp = &resolved.program.clone();
     let qname_of: HashMap<String, String> = rp.decls.iter().zip(&p.decls).map(|(r, d)| (r.name(), d.qname())).collect();
-    let types::Checked { report: mut rep, program: elaborated, env } = types::check_and_elaborate(p);
+    let types::Checked { report: mut rep, program: elaborated, env } = types::check_resolved(resolved);
     rep.errors.extend(verify::refinements_in(&elaborated, &env));
 
-    let graph = store::graph(p);
     let mut holes: HashMap<String, Vec<&types::HoleInfo>> = HashMap::default();
     for h in &rep.holes {
         holes.entry(qname_of.get(&h.decl).cloned().unwrap_or(h.decl.clone())).or_default().push(h);
     }
     let mut verdicts: HashMap<String, verify::Verdict> = HashMap::default();
-    for d in &p.decls {
-        if let Some(v) = cache.get(&store::closure_hash(p, &d.qname())) {
+    let code_hashes: HashMap<String, String> = p.decls.iter().map(|d| (d.qname(), store::code_hash(d))).collect();
+    for d in p.decls.iter().filter(|_| !cache.is_empty()) {
+        if let Some(v) = cache.get(&store::closure_hash_in(&graph, &code_hashes, &d.qname())) {
             verdicts.insert(d.qname(), v.clone());
         }
     }
@@ -95,15 +97,23 @@ fn snapshot(target: &Target) -> Json {
             _ => None,
         })
         .collect();
+    // who refers to each definition (the graph read backwards)
+    let mut referrers: HashMap<&str, Vec<&String>> = HashMap::default();
+    for (n, ds) in &graph {
+        for dep in ds {
+            referrers.entry(dep.as_str()).or_default().push(n);
+        }
+    }
+    let shown = crate::resolve::written_form(p);
     let decls: Vec<Json> = p
         .decls
         .iter()
-        .map(|d| {
+        .zip(&shown.decls)
+        .map(|(d, sd)| {
             let name = d.qname();
-            let one: BTreeSet<String> = [name.clone()].into();
             // a card already shows its module, so drop the `module m { ... }` wrapper;
             // the doc comment is shown as the description, so drop it from the code too
-            let render = |lvl| strip_doc(view::render(p, &one, lvl, &status).trim_end());
+            let render = |lvl| strip_doc(view::render_decl(sd, d, lvl, &status, &graph).trim_end());
             let (iface, source) = (render(1), render(2));
             let own = impl_of.get(&name);
             let deps: Vec<String> = graph
@@ -114,7 +124,7 @@ fn snapshot(target: &Target) -> Json {
                 .cloned()
                 .collect();
             let is_own_impl = |n: &String| impl_of.get(n).is_some_and(|(tr, ty)| *tr == name || *ty == name);
-            let mut references: Vec<String> = graph.iter().filter(|(n, ds)| ds.contains(&name) && !is_own_impl(n)).map(|(n, _)| n.clone()).collect();
+            let mut references: Vec<String> = referrers.get(name.as_str()).into_iter().flatten().filter(|n| !is_own_impl(n)).map(|n| (*n).clone()).collect();
             let mut impls: Vec<String> = impl_of.keys().filter(|n| is_own_impl(n)).cloned().collect();
             // the maps are unordered; sort so the lists don't reshuffle on every refresh
             references.sort();
@@ -283,27 +293,119 @@ fn respond(mut s: TcpStream, status: &str, ctype: &str, body: &[u8]) {
     let _ = s.write_all(body);
 }
 
+/// A fingerprint of what a snapshot is made from: every file under the
+/// target (path, size, modification time), so the viewer rebuilds the
+/// snapshot only when something changed, not on every poll.
+fn fingerprint(target: &Target) -> u64 {
+    use std::hash::{Hash, Hasher};
+    fn walk(p: &std::path::Path, h: &mut impl Hasher, depth: usize) {
+        let Ok(md) = std::fs::metadata(p) else { return };
+        if md.is_dir() {
+            if depth > 32 {
+                return;
+            }
+            let Ok(rd) = std::fs::read_dir(p) else { return };
+            let mut es: Vec<_> = rd.flatten().map(|e| e.path()).collect();
+            es.sort();
+            for e in es {
+                // build output and version control don't make the program
+                let skip = e.file_name().and_then(|n| n.to_str()).is_some_and(|n| matches!(n, ".git" | "target" | "node_modules"));
+                if !skip {
+                    walk(&e, h, depth + 1);
+                }
+            }
+        } else {
+            p.hash(h);
+            md.len().hash(h);
+            md.modified().ok().hash(h);
+        }
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    match target {
+        Target::Db(root) => walk(root, &mut h, 0),
+        Target::File(f) => walk(f, &mut h, 0),
+    }
+    h.finish()
+}
+
+/// The last snapshot and the fingerprint it was made at.
+type Cache = std::sync::Mutex<Option<(u64, std::sync::Arc<String>)>>;
+
+/// The snapshot as JSON text, rebuilt only if the files changed since the last one.
+fn cached_snapshot(target: &Target, cache: &Cache) -> (u64, std::sync::Arc<String>) {
+    // held while building, so polls that arrive meanwhile wait for this snapshot
+    // instead of building their own
+    let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+    let fp = fingerprint(target);
+    if let Some((f, body)) = c.as_ref() {
+        if *f == fp {
+            return (fp, body.clone());
+        }
+    }
+    let body = std::sync::Arc::new(snapshot(target).to_string());
+    *c = Some((fp, body.clone()));
+    (fp, body)
+}
+
+fn respond_etag(mut s: TcpStream, etag: u64, body: &[u8]) {
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nETag: \"{etag:x}\"\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = s.write_all(head.as_bytes());
+    let _ = s.write_all(body);
+}
+
+fn handle(stream: TcpStream, target: &Target, cache: &Cache) {
+    let mut reader = BufReader::new(&stream);
+    let mut line = String::new();
+    if reader.read_line(&mut line).is_err() {
+        return;
+    }
+    // the headers: only `If-None-Match` matters
+    let mut if_none_match = None;
+    loop {
+        let mut h = String::new();
+        if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+            break;
+        }
+        if let Some((k, v)) = h.split_once(':') {
+            if k.trim().eq_ignore_ascii_case("if-none-match") {
+                if_none_match = Some(v.trim().trim_matches('"').to_string());
+            }
+        }
+    }
+    let target_path = line.split_whitespace().nth(1).unwrap_or("/");
+    let (path, query) = target_path.split_once('?').unwrap_or((target_path, ""));
+    match path {
+        "/api/changes" => {
+            let body = changes(target, &parse_query(query)).to_string();
+            respond(stream, "200 OK", "application/json", body.as_bytes())
+        }
+        "/" | "/index.html" => respond(stream, "200 OK", "text/html; charset=utf-8", PAGE.as_bytes()),
+        "/api/state" => {
+            let (etag, body) = cached_snapshot(target, cache);
+            if if_none_match.as_deref() == Some(format!("{etag:x}").as_str()) {
+                let mut s = stream;
+                let _ = s.write_all(format!("HTTP/1.1 304 Not Modified\r\nETag: \"{etag:x}\"\r\nConnection: close\r\n\r\n").as_bytes());
+            } else {
+                respond_etag(stream, etag, body.as_bytes())
+            }
+        }
+        _ => respond(stream, "404 Not Found", "text/plain", b"not found"),
+    }
+}
+
 pub fn serve(target: Target, port: u16) -> Result<(), String> {
     let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| format!("cannot listen on port {port}: {e}"))?;
     println!("Strata viewer on http://127.0.0.1:{port}  (Ctrl-C to stop)");
+    let shared = std::sync::Arc::new((target, Cache::default()));
     for stream in listener.incoming().flatten() {
-        let mut line = String::new();
-        if BufReader::new(&stream).read_line(&mut line).is_err() {
-            continue;
-        }
-        let target_path = line.split_whitespace().nth(1).unwrap_or("/");
-        let (path, query) = target_path.split_once('?').unwrap_or((target_path, ""));
-        match path {
-            "/api/changes" => {
-                let body = changes(&target, &parse_query(query)).to_string();
-                respond(stream, "200 OK", "application/json", body.as_bytes())
-            }
-            "/" | "/index.html" => respond(stream, "200 OK", "text/html; charset=utf-8", PAGE.as_bytes()),
-            "/api/state" => {
-                let body = snapshot(&target).to_string();
-                respond(stream, "200 OK", "application/json", body.as_bytes())
-            }
-            _ => respond(stream, "404 Not Found", "text/plain", b"not found"),
+        // one thread per connection: a snapshot being rebuilt doesn't hold up the page or the Changes view
+        let shared = shared.clone();
+        let spawned = std::thread::Builder::new().stack_size(64 << 20).spawn(move || handle(stream, &shared.0, &shared.1));
+        if let Err(e) = spawned {
+            eprintln!("viewer: cannot start a thread: {e}");
         }
     }
     Ok(())

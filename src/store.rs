@@ -254,12 +254,15 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
 
 /// Dependency graph restricted to names defined in the program.
 pub fn graph(p: &Program) -> BTreeMap<String, BTreeSet<String>> {
-    // compute on resolved (qualified) names, report by each definition's qname
-    let original = p;
-    let mut resolved = crate::resolve::resolve(p);
+    graph_of(p, &crate::resolve::resolve(p).program)
+}
+
+/// [`graph`], given `p` already resolved (`resolved`), so a caller that has
+/// the resolution doesn't pay for it twice.
+pub fn graph_of(original: &Program, resolved: &Program) -> BTreeMap<String, BTreeSet<String>> {
+    // compute on resolved (qualified) names, report by each definition's qname;
     // only the program's own definitions: not the standard library resolution adds
-    resolved.program.decls.truncate(original.decls.len());
-    let p = &resolved.program;
+    let p = &Program { decls: resolved.decls[..original.decls.len().min(resolved.decls.len())].to_vec() };
     let to_q: HashMap<String, String> = p.decls.iter().zip(&original.decls).map(|(r, d)| (r.name(), d.qname())).collect();
     let names: BTreeSet<String> = p.decls.iter().map(|d| d.name()).collect();
     let mut ct = HashMap::default();
@@ -299,9 +302,14 @@ pub fn graph(p: &Program) -> BTreeMap<String, BTreeSet<String>> {
 /// Cached verification results are keyed by this: if nothing reachable changed,
 /// the result still holds.
 pub fn closure_hash(p: &Program, name: &str) -> String {
-    let g = graph(p);
     // docs and comments don't change what a definition does, so they don't invalidate results
     let hashes: HashMap<String, String> = p.decls.iter().map(|d| (d.qname(), code_hash(d))).collect();
+    closure_hash_in(&graph(p), &hashes, name)
+}
+
+/// [`closure_hash`] from the program's graph and each definition's [`code_hash`],
+/// to hash many definitions without rebuilding them.
+pub fn closure_hash_in(g: &BTreeMap<String, BTreeSet<String>>, hashes: &HashMap<String, String>, name: &str) -> String {
     let mut seen = BTreeSet::new();
     let mut todo = vec![name.to_string()];
     while let Some(n) = todo.pop() {

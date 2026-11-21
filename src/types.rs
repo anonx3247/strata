@@ -351,7 +351,11 @@ pub struct Checked {
 /// one type check, where `check`, `Env::new` and `elaborate` would each do
 /// their own.
 pub fn check_and_elaborate(prog: &Program) -> Checked {
-    let mut r = crate::resolve::resolve(prog);
+    check_resolved(crate::resolve::resolve(prog))
+}
+
+/// [`check_and_elaborate`] of a program already resolved.
+pub fn check_resolved(mut r: crate::resolve::Resolution) -> Checked {
     // checking needs signatures only; what runs needs the (rewritten) bodies
     let (env, mut errors) = Env::build_with(&r.program, false);
     errors.splice(0..0, std::mem::take(&mut r.errors));
