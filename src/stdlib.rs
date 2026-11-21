@@ -63,7 +63,7 @@ pub fn program() -> &'static Program {
         for (file, bytes) in FILES {
             decls.extend(crate::binary::decode_module(bytes).unwrap_or_else(|e| panic!("std/{file}: {e}")));
         }
-        crate::resolve::written_form(&Program { decls })
+        Program { decls }
     })
 }
 

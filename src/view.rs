@@ -82,19 +82,23 @@ fn body_summary(d: &Decl, f: &FnDecl, p: &Program) -> String {
     s + " }"
 }
 
-pub fn render(p: &Program, names: &BTreeSet<String>, level: u8, st: &Status) -> String {
-    let g = store::graph(p);
+/// The definitions of `p` (as stored) that `names` lists, shown as written.
+pub fn render(stored: &Program, names: &BTreeSet<String>, level: u8, st: &Status) -> String {
+    let g = store::graph(stored);
+    let shown = crate::resolve::written_form(stored);
+    let p = &shown;
     let mut out: Vec<(String, String)> = Vec::new();
-    for d in p.decls.iter().filter(|d| names.contains(&d.qname())) {
-        let note = status_note(d, st);
+    for (d, s) in shown.decls.iter().zip(&stored.decls).filter(|(_, s)| names.contains(&s.qname())) {
+        let (st_d, d) = (s, d);
+        let note = status_note(st_d, st);
         let text = match level {
             0 => {
-                let deps = g.get(&d.qname()).cloned().unwrap_or_default();
+                let deps = g.get(&st_d.qname()).cloned().unwrap_or_default();
                 let effs = "";
                 let deps = if deps.is_empty() { String::new() } else { format!("  → {}", deps.into_iter().collect::<Vec<_>>().join(", ")) };
                 let name = match &d.kind {
                     DeclKind::Test(t) => format!("{:?}", t.name),
-                    _ => d.qname(),
+                    _ => st_d.qname(),
                 };
                 format!("{:<6} {name}{effs}{deps}{note}", d.kind_str())
             }

@@ -91,6 +91,12 @@ fn edit_file(args: &Args, cmd: &str, f: &str) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Each definition's name as stored → as written (`impl std.cli.CommandLine
+/// for Options` is `impl CommandLine for Options`), for messages.
+fn shown_names(p: &Program) -> HashMap<String, String> {
+    p.decls.iter().zip(resolve::written_form(p).decls).map(|(s, w)| (s.qname(), w.qname())).collect()
+}
+
 /// `strata rename`.
 pub fn rename(args: &Args, json_out: bool) -> Result<bool, String> {
     let Source::Db(mut cb) = load(&args)? else { return Err("`rename` needs a codebase (it commits the change)".into()) };
@@ -138,11 +144,12 @@ pub fn rename(args: &Args, json_out: bool) -> Result<bool, String> {
     // what declares them (themselves, or the types / traits members belong to) isn't a reference
     let owners: Vec<String> = pairs.iter().filter_map(|(o, _, _)| resolve::owner(&cb.program, o)).collect();
     let before: HashMap<String, String> = cb.program.decls.iter().map(|d| (d.qname(), store::self_hash(d))).collect();
+    let shown = shown_names(&renamed);
     let updated: Vec<String> = renamed
         .decls
         .iter()
-        .filter(|d| !news.contains(&d.qname()) && !owners.contains(&d.qname()) && before.get(&d.qname()).is_some_and(|h| *h != store::self_hash(d)))
-        .map(|d| d.qname())
+        .filter(|d| !matches!(d.kind, DeclKind::Use(_)) && !news.contains(&d.qname()) && !owners.contains(&d.qname()) && before.get(&d.qname()).is_some_and(|h| *h != store::self_hash(d)))
+        .map(|d| shown[&d.qname()].clone())
         .collect();
     // prose is not rewritten: point at docs and comments that still say an old name
     let shorts: Vec<String> = pairs.iter().map(|(o, _, _)| crate::names::short(&o).to_string()).collect();
@@ -151,7 +158,7 @@ pub fn rename(args: &Args, json_out: bool) -> Result<bool, String> {
         .decls
         .iter()
         .filter(|d| d.doc.iter().chain(&d.comments).any(|l| word(l)))
-        .map(|d| d.qname())
+        .map(|d| shown[&d.qname()].clone())
         .collect();
     let arrows: Vec<String> = pairs.iter().zip(&news).map(|((o, _, _), n)| format!("{o} → {n}")).collect();
     let default_msg = format!("rename {}", arrows.join(", "));
@@ -203,7 +210,8 @@ pub fn move_def(args: &Args, json_out: bool) -> Result<bool, String> {
     let stored = |p: &Program| -> HashMap<String, String> { p.decls.iter().zip(resolve::stored_form(p).decls).map(|(d, s)| (d.qname(), store::self_hash(&s))).collect() };
     let (before, after) = (stored(&cb.program), stored(&moved));
     let is_use = |d: &Decl| matches!(d.kind, DeclKind::Use(_));
-    let updated: Vec<String> = moved.decls.iter().filter(|d| !is_use(d) && d.qname() != new_q && before.get(&d.qname()).is_some_and(|h| Some(h) != after.get(&d.qname()))).map(|d| d.qname()).collect();
+    let shown_q = shown_names(&moved);
+    let updated: Vec<String> = moved.decls.iter().filter(|d| !is_use(d) && d.qname() != new_q && before.get(&d.qname()).is_some_and(|h| Some(h) != after.get(&d.qname()))).map(|d| shown_q[&d.qname()].clone()).collect();
     let shown = |m: &str| if m.is_empty() { "main".to_string() } else { m.to_string() };
     // imports the move added or changed, by module
     let old_uses: std::collections::HashSet<(String, String)> = cb.program.decls.iter().filter(|d| is_use(d)).map(|d| (d.module.to_string(), printer::decl(d))).collect();
@@ -449,7 +457,9 @@ pub struct EditFile {
 /// parse or check, the editor opens again with the errors at the top; saving
 /// it unchanged gives up.
 pub fn edit_in_editor(cb: &mut Codebase, args: &Args, json_out: bool) -> Result<bool, String> {
-    let p = cb.program.clone();
+    // the code as written; a definition deleted from it is removed by its stored name
+    let p = resolve::written_form(&cb.program);
+    let stored_name: HashMap<String, String> = p.decls.iter().zip(&cb.program.decls).map(|(w, s)| (w.qname(), s.qname())).collect();
     let mut mods: Vec<String> = p.decls.iter().map(|d| d.module.to_string()).collect();
     mods.sort();
     mods.dedup();
@@ -545,7 +555,7 @@ pub fn edit_in_editor(cb: &mut Codebase, args: &Args, json_out: bool) -> Result<
         }
         if errors_at.iter().all(Vec::is_empty) {
             let kept: std::collections::HashSet<String> = edits.decls.iter().map(|d| d.qname()).collect();
-            let deletes: Vec<String> = files.iter().flat_map(|f| f.shown.iter()).filter(|q| !kept.contains(*q)).cloned().collect();
+            let deletes: Vec<String> = files.iter().flat_map(|f| f.shown.iter()).filter(|q| !kept.contains(*q)).map(|q| stored_name.get(q).cloned().unwrap_or_else(|| q.clone())).collect();
             match apply_edit(cb, "edit", edits, deletes, &msg, json_out)? {
                 Ok(()) => {
                     cleanup();

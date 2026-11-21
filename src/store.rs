@@ -629,6 +629,8 @@ pub fn apply(p: &mut Program, e: &serde_json::Value) -> Result<(), String> {
             (None, _) => p.decls.retain(|x| x.qname() != name),
         }
     }
+    // an entry's text is read in the program it changes: references as stored
+    *p = crate::resolve::stored_form(p);
     Ok(())
 }
 
@@ -668,6 +670,7 @@ pub fn undo(p: &mut Program, e: &serde_json::Value) -> Result<(), String> {
             (None, _) => p.decls.retain(|x| x.qname() != name),
         }
     }
+    *p = crate::resolve::stored_form(p);
     Ok(())
 }
 
@@ -695,6 +698,11 @@ pub fn set_name(d: &mut Decl, name: &str) {
 /// replaced in place, new ones appended.
 pub fn merge(base: &Program, edits: Program, delete: &[String]) -> Program {
     let mut decls: Vec<Decl> = base.decls.iter().filter(|d| !delete.contains(&d.qname())).cloned().collect();
+    // the edits as stored: their references qualified, given the program they go into
+    let n = edits.decls.len();
+    let mut with = Program { decls: decls.iter().cloned().chain(edits.decls).collect() };
+    with = crate::resolve::stored_form(&with);
+    let edits = Program { decls: with.decls.split_off(with.decls.len() - n) };
     for e in edits.decls {
         match decls.iter_mut().find(|d| d.qname() == e.qname()) {
             Some(slot) => *slot = e,

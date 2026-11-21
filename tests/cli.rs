@@ -1046,11 +1046,21 @@ test "boxes" {
     save(&d.join("a.strata"), a);
     save(&d.join("b.strata"), b);
 
-    // names that a local or another definition would capture are refused
-    let (ok, out) = strata(&["rename", "a.size", "count"], &d, None);
-    assert!(!ok && out.contains("would change what other names refer to"), "{out}");
-    let (ok, out) = strata(&["rename", "size", "tally"], &d, None);
-    assert!(!ok && out.contains("would change what other names refer to"), "{out}");
+    // a name a local or another definition has can't capture a reference: each
+    // is stored in full, and where the short name is taken, shown in full
+    let e = tmp("rename-capture");
+    std::fs::copy(d.join("strata.toml"), e.join("strata.toml")).unwrap();
+    for f in ["a.strata", "b.strata"] {
+        std::fs::copy(d.join(f), e.join(f)).unwrap();
+    }
+    let (ok, out) = strata(&["rename", "a.size", "count", "--no-commit"], &e, None);
+    assert!(ok, "{out}");
+    let b2 = text(&e.join("b.strata"));
+    assert!(b2.contains("a.count(b.items) + a.count([]) + count(1)"), "{b2}");
+    let (ok, out) = strata(&["rename", "a.count", "tally", "--no-commit"], &e, None);
+    assert!(ok && text(&e.join("a.strata")).contains("a.tally(xs)"), "{out}");
+    let (ok, out) = strata(&["test"], &e, None);
+    assert!(ok, "{out}");
     let (ok, out) = strata(&["rename", "Box", "crate"], &d, None);
     assert!(!ok && out.contains("uppercase"), "{out}");
 

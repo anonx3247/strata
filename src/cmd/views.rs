@@ -86,7 +86,8 @@ pub fn builtins(json_out: bool) -> Result<bool, String> {
 /// `strata render`.
 pub fn render(args: &Args) -> Result<bool, String> {
     let src = load(&args)?;
-    let p = src.program();
+    // shown as written: each reference as short as the module's `use`s allow
+    let p = &resolve::written_form(src.program());
     match args.val("--split") {
         None => {
             // a module is a file: print one

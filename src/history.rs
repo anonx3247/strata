@@ -33,6 +33,21 @@ pub struct Range {
     pub options: Json,
 }
 
+impl Range {
+    /// The programs as written, to be shown: each reference as short as its
+    /// module's `use`s allow.
+    fn shown(mut self) -> Range {
+        let w = |p: &Program| crate::resolve::written_form(p);
+        self.base = w(&self.base);
+        self.head = w(&self.head);
+        for s in &mut self.steps {
+            s.before = w(&s.before);
+            s.after = w(&s.after);
+        }
+        self
+    }
+}
+
 /// Definitions a step touched (by content hash).
 fn touched(s: &Step) -> Vec<String> {
     let before: HashMap<String, String> = s.before.decls.iter().map(|d| (d.qname(), store::self_hash(d))).collect();
@@ -118,7 +133,8 @@ pub fn log_range(cb: &Codebase, from: Option<usize>, to: Option<usize>) -> Resul
         steps,
         verdicts: cb.load_verdicts(),
         options,
-    })
+    }
+    .shown())
 }
 
 /// The program at a git revision: a file, or a folder of `.strata` module files.
@@ -133,7 +149,7 @@ fn sources_at(path: &Path, rev: &str) -> Result<Program, String> {
         let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
         let name = path.file_name().ok_or("not a file")?.to_string_lossy().to_string();
         match crate::git::bytes(Some(dir), &["show", &format!("{rev}:./{name}")]) {
-            Ok(bytes) => crate::package::decode_file(Path::new(&name), &bytes).map(|p| crate::resolve::written_form(&p)).map_err(|e| format!("at {rev}: {e}")),
+            Ok(bytes) => crate::package::decode_file(Path::new(&name), &bytes).map_err(|e| format!("at {rev}: {e}")),
             Err(_) => Ok(Program::default()),
         }
     }
@@ -224,5 +240,6 @@ pub fn git_range(path: &Path, base: Option<&str>) -> Result<Range, String> {
         steps,
         verdicts: HashMap::new(),
         options: git_options(path, Some(base)),
-    })
+    }
+    .shown())
 }
