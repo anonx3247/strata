@@ -5,7 +5,7 @@ Everything that keeps track of where Strata is going: open questions, ideas, wha
 ## Open questions (to discuss before building)
 
 - **A field as a `mut` argument** (decided with the user 2026-11-21: allowed, as now). `shift(mut r.lo)` is the same as `let mut t = r.lo; shift(mut t); r.lo = t`, and the record's own invariant is checked the same way after the call as after that assignment, so forbidding it would protect nothing. The check after a `mut` call is left out where the checker proves the parameter's type fits the variable's; undecided cases could become proof obligations for `verify`, with the runtime check kept only for what isn't proven.
-- **Generating code from a type's shape: `derive`, or metaprogramming** (user, 2026-11-21; undecided). Command-line options (`CommandLine`) need code made from a record's fields, and so will JSON codecs for compiled programs and the ORM. Options: (1) a built-in, hidden generator per trait, like Rust's `derive` (which is itself metaprogramming: a procedural macro is code run at compile time on the item's syntax tree, returning new code); (2) metaprogramming in Strata: access to any definition's syntax tree (function, trait, type, record), walked by Strata code to produce new definitions. The user wants the generated code hidden (viewable, not stored), is wary of metaprogramming being available everywhere by default, and asked for a recommendation (given in the conversation: compile-time and opt-in, through derivable traits, generators eventually written in Strata against a `std.ast` model, run by the interpreter at build time; no reflection at run time).
+- **Generating code from a type's shape** (decided 2026-11-21): see the decision "Derived traits, `comptime` and special methods" below.
 - **Marking a `mut self` call** (built 2026-11-20, see docs/language.md "Mutation"). `mut queue.claim(2)`, as Hylo's `&x.append(1)`: required when the method takes `mut self`, an error otherwise. The tree is `Expr::Mut(Method(..))`; a `Mut` around anything else is an argument for a `mut` parameter. The parser's `marked` reads a place after `mut`, then marks the first method call on it, and later calls apply to its result (rendered `(mut q.claim(2)).len()`); as an argument the marked call is rendered in parentheses, `call((mut o.pop()), x, y)` (the user's form). Results are not places (user's point): `mut f(x).m()` is a parse error, and a result can't be passed to a `mut` parameter; name it first. Rejected: `(mut queue).claim(2)`, `claim(mut queue, 2)`, and a separate call operator.
 - **What iterating a string yields** (user, 2026-11-20; undecided). Bytes, code points (Go's runes; what `chars` gives today), or grapheme clusters (what a reader calls a character). A slice's indices (`s[1..3]`) count the same units; today both count code points.
 - **Regex verification scope** (decided with the user 2026-11-20; not built). By default, regex refinements are proven over ASCII strings only, and the result always says so ("proven for ASCII strings"). Such a proof counts as proven in an ordinary `verify` run. Under a `[verify] proven = [...]` rule it does not, unless the project opts in to accepting ASCII proofs; it is still reported as proven for ASCII either way. Full Unicode proofs are asked for explicitly where they matter (per module in `[verify]`, or per function). The interpreter stays fully Unicode either way. Pairs with "two solvers": ASCII classes are small enough for Z3 to decide exactly; full-Unicode proofs can go to cvc5, which decides the large classes.
@@ -309,6 +309,44 @@ Not yet: `assumed` (no outside code exists yet); loop invariants (loops forget w
 - Records map directly to tables, building on the automatic JSON serialisation and on types being structural and validated. Refinements become column checks (`CHECK` constraints) and are validated on load. `distinct` ids map to keys.
 - The first backend is SQLite. The database is a capability (a trait), so tests can use an in-memory implementation or `mock`.
 - Queries should be typed (checked against the record's fields), not strings.
+
+### Derived traits, `comptime` and special methods (decided with the user 2026-11-21; not built)
+Command-line options need code made from a record's fields; so will JSON codecs for compiled programs and the ORM. Instead of a hidden Rust generator (`src/cli.rs` today) or general metaprogramming over syntax trees, a trait can say how each of its methods is derived, as ordinary Strata code specialized per type at compile time (as Zig's `comptime` does). A derive returns a real function, never a syntax tree.
+
+```rust
+use std.typing.{Record, Field}
+
+/// A record whose fields are a program's command-line options.
+pub derivable(t: Record) trait CommandLine
+  requires all(t.fields, f -> is_option_type(f.type)) {
+
+  derived fn from_args(args: List[String]) -> Result[Self, CliError] {
+    let given = parse(comptime t.fields.map(spec), args)!
+    t.try_make(f -> read(f, given))
+  }
+
+  derived fn help(program: String) -> String {
+    help_text(program, comptime t.doc, comptime t.fields.map(spec))
+  }
+}
+
+fn read(comptime f: Field, given: Given) -> Result[f.type, CliError] {
+  match comptime f.type {
+    Bool => Ok(given.has(f.name)),
+    Int => parse_number(given.text(f.name)),
+    ...
+  }
+}
+```
+
+- **`derivable(t: Kind)`**: parentheses, not brackets: `t` is an argument, a compile-time value describing the type derived for (`Self` is that type, `t` describes it). Its type is a kind from `std.typing` (`Record`, `Sum`, `Choice`: a sum whose variants carry nothing); deriving for another kind of type fails at the `derive` line. `requires` states finer conditions as a contract checked at compile time, naming the offending field.
+- **`derived fn`**: a method with an ordinary body, specialized for each type it is derived for. A method without `derived` is a default method, or one the user must write.
+- **Using it**: `derive CommandLine for Options`, or `derive CommandLine for Options { fn help(program: String) -> String { ... } }` to write some methods by hand (as overriding a default method). After specialization it is exactly an `impl` with those bodies: no inheritance, no relationship at run time. `impl CommandLine for Options { ... }` with every method written also works: it is an ordinary trait.
+- **`std.typing`**: ordinary types describing types, imported when writing a derivable trait (like Python's `typing`): `Record` (`name`, `doc`, `fields`), `Sum` / `Choice` (`variants`), `Field` (`name`, `type`, `doc`, `default`), `Variant`. `t.make(f -> ...)` builds a `Self` from a function giving each field's value (applied once per field, at compile time; each result must have that field's type); `t.try_make(f -> ...)` does it with a `Result`, stopping at the first `Err`. The syntax tree is only read through these descriptions.
+- **`comptime`**: on expressions (`comptime t.fields.map(spec)`: evaluated at build time, the result put in the program), functions, and parameters (`comptime f: Field`: the function is compiled once per value, so `f.type` is a real type in each copy). `match comptime f.type { ... }` keeps only the matching branch. Compile-time code can't take capabilities (so it is deterministic, which the type system already shows) and must terminate (proven by `verify`, or within a step budget, else the build fails saying so). Not for generics: type parameters already do that.
+- **Checking**: a derived body depends on the type, so it is checked when it is specialized, at each `derive ... for T` (as Zig and C++ templates are); errors point at that line and the field. The kind and `requires` catch most mistakes first. Less powerful than generating trees (a derive can't change a signature or add top-level definitions), which keeps derives tame.
+- **Special methods, marked `@`**: value-level specials are methods with a reserved `@` name, declared in std traits and implemented like any trait method: `trait Add[Rhs, Out] { fn @add(self, other: Rhs) -> Out  law associative(...) }`, then `a + b` on such a type. Also `@mul`, `@neg`, `@index`, `@call`, `@iter`, ... For a numpy-like library: generic numeric code (`T: Add[T, T] + Mul[T, T]`) and laws `verify` checks. In the tree a special method is a function with a kind (an enum), not a magic name: the checker enforces each kind's shape, `a + b` and a call of `@add` are the same node, and the text is only one rendering of it.
+- **Order of work**: (1) the syntax (parser, printer, binary format) and the checks; (2) the specialization: `std.typing`, `comptime` (run by the interpreter during checking), producing ordinary `impl`s that everything after it (checker, interpreter, compiler) sees unchanged; (3) `CommandLine` written this way in `std/cli.strata`, `main` calling `from_args`, and `src/cli.rs` removed (its messages and `--help` text kept exactly; tests compare the old and new on the same arguments). Then options compile. Special methods and operator overloading after.
 
 ### Long-term goal: self-hosting
 The compiler should eventually be written in Strata. Gaps to close first:
