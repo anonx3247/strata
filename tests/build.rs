@@ -459,7 +459,7 @@ fn zero_of(comptime f: Field) -> f.type {
 }
 
 fn read(comptime f: Field, texts: List[String]) -> Result[f.type, String] {
-  let text = get(texts, index_of_name(comptime f.name)) or { "" }
+  text := get(texts, index_of_name(comptime f.name)) or { "" }
   match comptime f.type {
     Int => match parse_int(text) {
       Some(n) => Ok(n),
@@ -484,7 +484,7 @@ type Point = { x: Int, label: String, on: Bool }
 
 derive FromText for Point
 
-fn main() -> () {
+fn main() {
   print(Point.zero().names())
   print(Point.zero())
   print(Point.parse(["3", "here", "yes"]))
