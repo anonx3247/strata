@@ -329,7 +329,7 @@ pub fn split_trait_call(name: &str) -> Option<(&str, &str)> {
 pub fn elaborate_typed(prog: &Program) -> (crate::resolve::Resolution, HashMap<usize, Ty>) {
     let mut r = crate::resolve::resolve(prog);
     let (env, _) = Env::build(&r.program);
-    let (_, _, targets, mut types) = check_decls(&r.program, &env);
+    let (_, _, targets, mut types) = check_decls(&r.program, &env, true);
     rewrite(&mut r.program, &env, targets, &mut types);
     (r, types)
 }
@@ -354,7 +354,7 @@ pub fn check_and_elaborate(prog: &Program) -> Checked {
     let mut r = crate::resolve::resolve(prog);
     let (env, mut errors) = Env::build(&r.program);
     errors.splice(0..0, std::mem::take(&mut r.errors));
-    let (errs, holes, targets, mut types) = check_decls(&r.program, &env);
+    let (errs, holes, targets, mut types) = check_decls(&r.program, &env, false);
     errors.extend(errs);
     let report = CheckReport { errors, holes };
     if !needs_rewrite(&env) {
@@ -552,8 +552,9 @@ struct Checker<'a> {
     callee: bool,
     /// Method calls marked `mut` (`mut q.claim(2)`), by node: they change their receiver.
     marked: HashSet<usize>,
-    /// The type of each expression, by node address (resolved at the end).
-    types: Vec<(usize, Ty)>,
+    /// The type of each expression, by node address (resolved at the end),
+    /// when asked for (the compiler): `None` otherwise.
+    types: Option<Vec<(usize, Ty)>>,
 }
 
 impl<'a> Checker<'a> {
@@ -1659,7 +1660,9 @@ impl<'a> Checker<'a> {
             if let Ty::Fn(pts, _) = self.resolve(exp) {
                 if pts.len() == ps.len() {
                     let t = self.lambda(ps, Some(pts), body);
-                    self.types.push((e as *const Expr as usize, t.clone()));
+                    if let Some(ts) = &mut self.types {
+                        ts.push((e as *const Expr as usize, t.clone()));
+                    }
                     return t;
                 }
             }
@@ -1746,7 +1749,9 @@ impl<'a> Checker<'a> {
     /// to pick a variant's own type and to check branches against it.
     fn infer_at(&mut self, e: &Expr, expected: Option<&Ty>) -> Ty {
         let t = self.infer_node(e, expected);
-        self.types.push((e as *const Expr as usize, t.clone()));
+        if let Some(ts) = &mut self.types {
+            ts.push((e as *const Expr as usize, t.clone()));
+        }
         t
     }
 
@@ -2987,7 +2992,7 @@ impl<'a> Checker<'a> {
             insts: Vec::new(),
             callee: false,
             marked: HashSet::default(),
-            types: Vec::new(),
+            types: None,
         }
     }
 }
@@ -3062,14 +3067,14 @@ pub fn check(prog: &Program) -> CheckReport {
     let prog = &resolved.program;
     let (env, mut errors) = Env::build(prog);
     errors.splice(0..0, resolved.errors);
-    let (errs, holes, _, _) = check_decls(prog, &env);
+    let (errs, holes, _, _) = check_decls(prog, &env, false);
     errors.extend(errs);
     CheckReport { errors, holes }
 }
 
 /// Check every declaration of a resolved program: errors, holes, and the
 /// method-call decisions `elaborate` writes into the program.
-fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usize, Target)>, HashMap<usize, Ty>) {
+fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usize, Target)>, HashMap<usize, Ty>) {
     let (mut errors, mut holes, mut targets, mut types) = (Vec::new(), Vec::new(), Vec::new(), HashMap::default());
     for d in &prog.decls {
         let mut c = Checker {
@@ -3093,7 +3098,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
         insts: Vec::new(),
         callee: false,
         marked: HashSet::default(),
-        types: Vec::new(),
+        types: record_types.then(Vec::new),
         };
         match &d.kind {
             DeclKind::Type(t) => {
@@ -3310,7 +3315,7 @@ fn check_decls(prog: &Program, env: &Env) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usi
             });
         }
         c.finish_insts();
-        for (at, t) in std::mem::take(&mut c.types) {
+        for (at, t) in c.types.take().into_iter().flatten() {
             types.insert(at, c.resolve(&t));
         }
         errors.extend(c.errors);
