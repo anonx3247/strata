@@ -169,7 +169,6 @@ Expr = 0  Int(int)                       1  BigInt(digits:str)       2  Float(fl
      | 31 Set(types:list(TypeExpr), list(Expr))                     Set { 1, 2 }
      | 32 Or(Expr, fallback:Expr)                                   x or { … }, x ?? v
      | 33 Comptime(Expr)                                            comptime e
-     | 34 Describe(TypeExpr)                                         $Self, $f.type
 
 CtorArgs = 0 None | 1 Positional(list(Expr)) | 2 Record(list((str, Expr)))
          | 3 Update(base:Expr, list((str, Expr)))
@@ -194,13 +193,13 @@ Stmt    = 0 Let(Pattern, option(TypeExpr), Expr)   1 Var(name:str, option(TypeEx
         | 2 Assign(place:Expr, Expr)               3 While(cond:Expr, body:Expr)
         | 4 For(Pattern, Expr, body:Expr)          5 Loop(body:Expr)
         | 6 Break   7 Continue   8 Expr(Expr)   9 Assert(Expr)   10 Comment(list(str))
-        | 11 ComptimeFor(Pattern, Expr, body:Expr)          comptime for v in $Self.variants { … }
+        | 11 ComptimeFor(Pattern, Expr, body:Expr)          comptime for v in Self.members { … }
 
 Pattern = 0 Wild   1 Bind(str)   2 Int(int)   3 Str(str)   4 Bool(bool)
         | 5 Ctor(name:str, CtorPat)
         | 6 List(list(Pattern), rest:option(str))     [a, ..rest]
         | 7 Tuple(list(Pattern))   8 Cond(Expr)   9 Or(list(Pattern))
-        | 10 For(arm:Pattern, each:Pattern, list:Expr)     v => e for v in $Self.variants
+        | 10 For(arm:Pattern, each:Pattern, list:Expr)     v => e for v in Self.members
 CtorPat = 0 None | 1 Positional(list(Pattern)) | 2 Record(list((str, Pattern)), dots:bool)
         | 3 Type(list(Pattern))                          a type's arguments: List[Int], Option[x]
 ```

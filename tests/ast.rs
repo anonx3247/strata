@@ -105,6 +105,12 @@ type S =
 
 mock M = { n: Int }
 
+type Pt = { px: Int }
+
+type Shape2 =
+  | Pt
+  | Dot2
+
 derivable(Record) trait Named {
   fn name() -> String
 }
@@ -195,14 +201,13 @@ fn f(x: Int) -> Int
   ix := ys[1] + ys[1..][0]
   ok := x < 1 || x <= 2 && x > 3 && x >= 4 && x != 5
   t := comptime twice(2)
-  desc := $Self
-  comptime for fld in $Self.fields {
+  comptime for fld in Self.fields {
     print(fld)
   }
   w := match comptime t {
     List[Int] => 1,
     Option[k] => 2,
-    v => 3 for v in $Self.variants,
+    v => 3 for v in Self.members,
   }
   if "s".len() == 1 {
     return 1
@@ -221,7 +226,7 @@ use e.*
 
 /// What `strata header --tree` of the program above must show: a variant
 /// or a field value of each kind.
-const NODES: &[&str] = &["TypeDef", "FnDef", "TestDef", "TraitDef", "ImplDef", "UseDef", "ExternDef", "CapabilityDef", "Alias", "RecordBody", "SumBody", "NoPayload", "Positional", "RecordPayload", "ExternFn", "ExternType", "Named", "FnType", "UnitType", "Refined", "UnionType", "IntLit", "BigIntLit", "FloatLit", "TupleExpr", "StrLit", "BoolLit", "UnitExpr", "Var(", "Hole(", "ListExpr", "CtorExpr", "Call {", "MethodCall", "FieldOf", "Lambda", "Binary", "Unary", "IsExpr", "IfExpr", "MatchExpr", "MutExpr", "Block {", "MockExpr", "Return(", "Try {", "Except {", "Interp(", "Range {", "Index {", "Comp {", "DictExpr", "SetExpr", "Fallback", "Comptime(", "Describe(", "NoArgs", "PositionalArgs", "RecordArgs", "UpdateArgs", "ListComp", "SetComp", "DictComp", "TextPart", "ValuePart", "Some(FmtSpec", "op: Add", "op: Sub", "op: Mul", "op: Div", "op: Mod", "op: Equal", "op: NotEqual", "op: Less,", "op: LessEq", "op: Greater,", "op: GreaterEq", "op: And", "op: Or", "op: Implies", "op: Neg", "op: Not", "TryResult", "TryOption", "Let {", "VarDecl", "Assign {", "While {", "For {", "Loop(", "Break", "Continue", "ExprStmt", "Assert(", "Comment(", "ComptimeFor", "Wild", "Bind(", "IntPat", "StrPat", "BoolPat", "CtorPattern", "ListPat", "TuplePat", "CondPat", "OrPat", "ForPat", "NoPats", "PositionalPats", "RecordPats", "TypePats", "mocked: true", "Some(Derivable", "compile_time: true", "distinct: true", "e+21", "FloatLit(-0.0)", "e-7", "align: Some", "precision: Some", "items: None", "binding: Some", "rest: Some", "capability: true", "derived: true", "terminating: true", "mutable: true", "default: Some", "inclusive: true", "lo: None"];
+const NODES: &[&str] = &["TypeDef", "FnDef", "TestDef", "TraitDef", "ImplDef", "UseDef", "ExternDef", "CapabilityDef", "Alias", "RecordBody", "SumBody", "NoPayload", "Positional", "RecordPayload", "MemberType", "ExternFn", "ExternType", "Named", "FnType", "UnitType", "Refined", "UnionType", "IntLit", "BigIntLit", "FloatLit", "TupleExpr", "StrLit", "BoolLit", "UnitExpr", "Var(", "Hole(", "ListExpr", "CtorExpr", "Call {", "MethodCall", "FieldOf", "Lambda", "Binary", "Unary", "IsExpr", "IfExpr", "MatchExpr", "MutExpr", "Block {", "MockExpr", "Return(", "Try {", "Except {", "Interp(", "Range {", "Index {", "Comp {", "DictExpr", "SetExpr", "Fallback", "Comptime(", "NoArgs", "PositionalArgs", "RecordArgs", "UpdateArgs", "ListComp", "SetComp", "DictComp", "TextPart", "ValuePart", "Some(FmtSpec", "op: Add", "op: Sub", "op: Mul", "op: Div", "op: Mod", "op: Equal", "op: NotEqual", "op: Less,", "op: LessEq", "op: Greater,", "op: GreaterEq", "op: And", "op: Or", "op: Implies", "op: Neg", "op: Not", "TryResult", "TryOption", "Let {", "VarDecl", "Assign {", "While {", "For {", "Loop(", "Break", "Continue", "ExprStmt", "Assert(", "Comment(", "ComptimeFor", "Wild", "Bind(", "IntPat", "StrPat", "BoolPat", "CtorPattern", "ListPat", "TuplePat", "CondPat", "OrPat", "ForPat", "NoPats", "PositionalPats", "RecordPats", "TypePats", "mocked: true", "Some(Derivable", "compile_time: true", "distinct: true", "e+21", "FloatLit(-0.0)", "e-7", "align: Some", "precision: Some", "items: None", "binding: Some", "rest: Some", "capability: true", "derived: true", "terminating: true", "mutable: true", "default: Some", "inclusive: true", "lo: None"];
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("strata-ast-test-{name}-{}", std::process::id()));

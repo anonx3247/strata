@@ -124,6 +124,7 @@ fn variant(v: &Variant) -> String {
         Payload::None => "NoPayload".into(),
         Payload::Positional(ts) => tag("Positional", list(ts, ty)),
         Payload::Record(fs) => tag("RecordPayload", list(fs, field)),
+        Payload::Type(t) => tag("MemberType", ty(t)),
     };
     rec("Variant", &[("comments", strs(&v.comments)), ("name", s(&v.name)), ("payload", payload)])
 }
@@ -360,7 +361,6 @@ fn expr(e: &Expr) -> String {
         Expr::Set(tys, xs) => rec("SetExpr", &[("types", list(tys, ty)), ("elems", exprs(xs))]),
         Expr::Or(x, fb) => rec("Fallback", &[("value", expr(x)), ("fallback", expr(fb))]),
         Expr::Comptime(x) => tag("Comptime", expr(x)),
-        Expr::Describe(t) => tag("Describe", ty(t)),
     }
 }
 
