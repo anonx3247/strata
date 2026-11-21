@@ -4807,3 +4807,17 @@ fn a_trait_method_named_like_a_builtin_leaves_the_builtin() {
     let (ok, out) = strata(&["--file", "t.strata", "run"], &d, None);
     assert!(ok && out == "Some((2, \"b\"))\nSome(\"a\")\n", "{out}");
 }
+
+// A long list literal compiles in linear time: whether a later operand may
+// assign was asked of the rest for each element (100,000 elements took 9 s
+// through `run f ARGS`, which writes its arguments as literals; 0.1 s now).
+#[test]
+fn long_list_literals_compile_in_linear_time() {
+    let d = tmp("long-literal");
+    save(&d.join("t.strata"), "fn total(xs: List[Int]) -> Int {\n  sum(xs)\n}\n");
+    let arg = format!("[[{}]]", vec!["1"; 100_000].join(","));
+    let start = std::time::Instant::now();
+    let (ok, out) = strata(&["--file", "t.strata", "run", "total", &arg], &d, None);
+    assert!(ok && out.trim() == "100000", "{out}");
+    assert!(start.elapsed().as_secs() < 5, "took {:?}", start.elapsed());
+}

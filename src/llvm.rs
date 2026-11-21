@@ -2157,10 +2157,16 @@ impl<'m, 'a> Func<'m, 'a> {
     /// assign a variable: in `f(x, { x = g(); 1 })` the assignment drops
     /// the value `x` held, which the call still reads.
     fn operands(&mut self, es: &[&Expr]) -> Res<Vec<V>> {
+        // whether some operand after each one may assign: from the right, once
+        // (asking it of the rest for each operand was quadratic in a list literal)
+        let mut later = vec![false; es.len()];
+        for i in (0..es.len().saturating_sub(1)).rev() {
+            later[i] = later[i + 1] || assigns(es[i + 1]);
+        }
         let mut vs = vec![];
         for (i, e) in es.iter().enumerate() {
             let v = self.expr(e)?;
-            let v = if es[i + 1..].iter().any(|x| assigns(x)) { self.hold(v) } else { v };
+            let v = if later[i] { self.hold(v) } else { v };
             vs.push(v);
         }
         Ok(vs)
