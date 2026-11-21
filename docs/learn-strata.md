@@ -114,21 +114,25 @@ fn divide(a: Int, b: Int) -> Int
 // ─── 5. Records, variants and unions ───────────────────────────────────────
 type Line = { sku: Sku, qty: Quantity, unit_price: Cents }
 
-// A sum type. Each variant is itself a type (`Shipped` can be a parameter type),
-// so variant names are unique across the whole project.
+// A union declaring its members. Each member is itself a type (`Shipped` can be
+// a parameter type), so member names are unique in their module.
 type Order =
   | Pending { id: NonEmptyString, lines: NonEmpty[Line] }
   | Shipped { id: NonEmptyString, lines: NonEmpty[Line], tracking: NonEmptyString }
   | Cancelled { id: NonEmptyString, reason: NonEmptyString }
 
-// Variants without fields make an enum; tuple-style variants exist too.
+// Members without fields (atoms) make an enum; tuple-style members exist too.
+// The bars may be left out: `type Size = Small | Large`.
 type Size =
   | Small
   | Large
 
 // A union of existing types. It normalizes like a set (`Int | Positive` is Int).
+// (A member with no doc and used by one union only is shown inside it.)
+/// A square, by its side.
 type Square = { side: Positive }
 
+/// A circle, by its radius.
 type Circle = { radius: Positive }
 
 type Shape = Square | Circle
@@ -514,10 +518,10 @@ test "a mocked capability" {
 ## Rules that catch newcomers
 
 - **Never write a `.strata` file yourself.** It is a binary module file: the syntax tree. Code goes in as text through an edit (`strata edit`, `strata add`, or `strata --file F edit < text` outside a package), which parses it, checks it and stores the tree; it comes out as text through `strata render` / `strata view`. How you lay the text out doesn't matter: it is printed back in one canonical style, the one the code above is in.
-- **Every name a variant introduces is a type**, so it must be unique in its module: no other variant, type or trait of that module may share it. Another module's type of the same name is told apart by its module (`geo.Circle`).
+- **Every name a union's member introduces is a type**, so it must be unique in its module: no other member, type or trait of that module may share it. Another module's type of the same name is told apart by its module (`geo.Circle`). A bare name in a union is an existing type when there is one (`type Shape = Circle | Dot` uses `Circle` and declares `Dot`).
 - **In one module, a function can't share a name with a trait method** (`fn describe` next to `trait Describe { fn describe … }`), since `x.describe()` could mean either. Across modules it can: `x.describe()` is the method, `describe(x)` the function.
 - **Overloaded builtins can't be passed by name** (`len`, `get`, `contains`, `sum`…): write `xs.map(x -> len(x))`. Ordinary functions can: `lines.map(line_total)`. Methods whose meaning depends on the receiver also need a lambda: `xs.map(x -> x.describe())`.
-- **`type Name = String` is an error**: a bare alias adds nothing. Add a `where`, or say `distinct type`.
+- **`type Name = String` is an error**: a bare alias adds nothing. Add a `where`, or say `distinct type`. So is a union naming a set its module (or the prelude) names already: `type Answer = Some(Int) | None` is `Option[Int]`.
 - **Any function can be called as a method** on its first argument: `xs.filter(p)` is `filter(xs, p)`, `line.line_total()` is `line_total(line)`.
 - **`mut` is visible on both sides**: `fn f(mut x: T)` and the call `f(mut x)`; `fn save(mut self, …)` and the call `mut db.save(o)` (required there, an error anywhere else). Only a `mut` variable, a `mut` parameter or a field of one can be changed, and a `mut` argument needs exactly the parameter's type. As an argument, a marked call takes parentheses: `f((mut q.pop()), x)`.
 - **A declared type holds forever**: `mut x: Positive = 1` then `x = 0` is an error (at compile time for literals, at run time otherwise).

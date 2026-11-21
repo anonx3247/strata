@@ -40,6 +40,10 @@ pub enum Payload {
     None,
     Positional(Vec<TypeExpr>),
     Record(Vec<Field>),
+    /// A member of a union that is a type defined elsewhere (`Circle` in
+    /// `type Shape = Circle | Square { side: Float }`): the variant's name
+    /// is that type's.
+    Type(TypeExpr),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -567,9 +571,6 @@ pub enum Expr {
     /// `comptime e`: evaluated while the program is compiled; the value is
     /// put in the program.
     Comptime(Box<Expr>),
-    /// `$Self`, `$f.type`: the description of a type (a `std.typing.Record`
-    /// or `Sum`), known while the program is compiled.
-    Describe(TypeExpr),
     /// `a..b` (`b` excluded), `a..=b` (`b` included): the integers between,
     /// as a `List[Int]`. An end may be left out only in a slice (`xs[2..]`).
     Range(Option<Box<Expr>>, Option<Box<Expr>>, bool),
@@ -799,7 +800,7 @@ macro_rules! visitor {
                     stmts.into_iter().for_each(|s| $stmt(v, s));
                     v.expr(last)
                 }
-                Expr::Mock(t) | Expr::Describe(t) => v.ty(t),
+                Expr::Mock(t) => v.ty(t),
                 Expr::Interp(parts) => {
                     for p in parts {
                         if let StrPart::Expr(x, _) = p {
@@ -942,6 +943,7 @@ macro_rules! visitor {
                                     Payload::None => {}
                                     Payload::Positional(ts) => ts.into_iter().for_each(|t| v.ty(t)),
                                     Payload::Record(fs) => fields(v, fs),
+                                    Payload::Type(t) => v.ty(t),
                                 }
                             }
                         }

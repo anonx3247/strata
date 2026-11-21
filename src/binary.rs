@@ -878,13 +878,15 @@ impl Bin for Payload {
             Payload::None => w.byte(0),
             Payload::Positional(ts) => put!(w, 1, ts),
             Payload::Record(fs) => put!(w, 2, fs),
+            Payload::Type(t) => put!(w, 3, t),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
-        Ok(match r.tag("variant payload", 2)? {
+        Ok(match r.tag("variant payload", 3)? {
             0 => Payload::None,
             1 => Payload::Positional(Bin::dec(r)?),
-            _ => Payload::Record(Bin::dec(r)?),
+            2 => Payload::Record(Bin::dec(r)?),
+            _ => Payload::Type(Bin::dec(r)?),
         })
     }
 }
@@ -1038,7 +1040,6 @@ impl Bin for Expr {
             Expr::Set(tys, xs) => put!(w, 31, tys, xs),
             Expr::Or(x, fb) => put!(w, 32, x, fb),
             Expr::Comptime(x) => put!(w, 33, x),
-            Expr::Describe(t) => put!(w, 34, t),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
@@ -1077,8 +1078,7 @@ impl Bin for Expr {
                 30 => Expr::Dict(Bin::dec(r)?, Bin::dec(r)?),
                 31 => Expr::Set(Bin::dec(r)?, Bin::dec(r)?),
                 32 => Expr::Or(Bin::dec(r)?, Bin::dec(r)?),
-                33 => Expr::Comptime(Bin::dec(r)?),
-                _ => Expr::Describe(Bin::dec(r)?),
+                _ => Expr::Comptime(Bin::dec(r)?),
             })
         })
     }

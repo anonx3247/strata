@@ -58,6 +58,7 @@ fn capabilities(p: &Program) -> std::borrow::Cow<'_, Program> {
 
 pub fn resolve(p: &Program) -> Resolution {
     let p = &*capabilities(p);
+    let p = &*union_members(p);
     // Programs without modules or imports are already resolved (unless they
     // call into the host, which `run` reports). The standard library goes
     // after the program's own definitions, so index `i` of the result is
@@ -709,7 +710,307 @@ pub fn stored_form(p: &Program) -> Program {
 /// `orders.Line` otherwise, or where a local hides `Line`), and a reference
 /// to another module's definition as the parser reads `orders.f(x)`.
 pub fn written_form(p: &Program) -> Program {
-    store(p, Store::Shorten)
+    store(&named_unions(p), Store::Shorten)
+}
+
+/// How a union's members are shown (`strata render --members ..`): the two
+/// views of the same program (IDEAS.md, "Sums and unions are one thing").
+#[derive(Clone, Copy, PartialEq)]
+pub enum Members {
+    /// Each member a union declares as a definition of its own, before it.
+    Separate,
+    /// A type on its own that one union lists, folded into it, when nothing
+    /// is lost: it has no doc, nothing implements or derives for it, and it
+    /// isn't generic.
+    Inline,
+}
+
+/// `p` (as written) with its unions' members shown as `view` says.
+pub fn members_view(p: &Program, view: Members) -> Program {
+    let own = |t: &TypeDecl| matches!(&t.body, TypeBody::Sum(vs) if vs.len() == 1 && short(&vs[0].name) == short(&t.name));
+    let mut out = Program { decls: vec![] };
+    match view {
+        Members::Separate => {
+            for d in &p.decls {
+                let DeclKind::Type(t) = &d.kind else {
+                    out.decls.push(d.clone());
+                    continue;
+                };
+                let TypeBody::Sum(vs) = &t.body else {
+                    out.decls.push(d.clone());
+                    continue;
+                };
+                if own(t) || !t.params.is_empty() || t.distinct {
+                    out.decls.push(d.clone());
+                    continue;
+                }
+                let mut members = vec![];
+                for v in vs {
+                    let body = match &v.payload {
+                        Payload::Type(x) => {
+                            members.push(x.clone());
+                            continue;
+                        }
+                        Payload::Record(fs) => TypeBody::Record(fs.clone()),
+                        _ => TypeBody::Sum(vec![Variant { comments: vec![], ..v.clone() }]),
+                    };
+                    out.decls.push(Decl { comments: v.comments.clone(), doc: vec![], kind: DeclKind::Type(TypeDecl { distinct: false, name: v.name, params: vec![], body, refinement: None, mock: false }), module: d.module, public: d.public });
+                    members.push(TypeExpr::Named(v.name, vec![]));
+                }
+                let body = TypeBody::Alias(if members.len() == 1 { members.remove(0) } else { TypeExpr::Union(members) });
+                out.decls.push(Decl { kind: DeclKind::Type(TypeDecl { body, ..t.clone() }), ..d.clone() });
+            }
+        }
+        Members::Inline => {
+            // each union's members, by short name, and who else implements or derives for them
+            let members_of = |t: &TypeDecl| -> Vec<String> {
+                match &t.body {
+                    TypeBody::Alias(TypeExpr::Union(ms)) => ms.iter().filter_map(|m| match m {
+                        TypeExpr::Named(n, a) if a.is_empty() => Some(short(n).to_string()),
+                        _ => None,
+                    }).collect(),
+                    TypeBody::Sum(vs) => vs.iter().filter_map(|v| match &v.payload {
+                        Payload::Type(TypeExpr::Named(n, a)) if a.is_empty() => Some(short(n).to_string()),
+                        _ => None,
+                    }).collect(),
+                    _ => vec![],
+                }
+            };
+            let mut users: HashMap<(Symbol, String), Vec<usize>> = HashMap::default();
+            for (k, d) in p.decls.iter().enumerate() {
+                if let DeclKind::Type(t) = &d.kind {
+                    for m in members_of(t) {
+                        users.entry((d.module, m)).or_default().push(k);
+                    }
+                }
+            }
+            let implemented: HashSet<String> = p.decls.iter().filter_map(|d| match &d.kind {
+                DeclKind::Impl(i) => Some(short(&crate::types::texpr_head(&i.for_type)).to_string()),
+                _ => None,
+            }).collect();
+            // the types folded, by name, into the union at that index
+            let mut fold: HashMap<String, (usize, Variant)> = HashMap::default();
+            for d in &p.decls {
+                let DeclKind::Type(t) = &d.kind else { continue };
+                let name = short(&t.name).to_string();
+                let us = users.get(&(d.module, name.clone()));
+                let Some([u]) = us.map(|v| v.as_slice()) else { continue };
+                if !d.doc.is_empty() || !t.params.is_empty() || t.distinct || t.refinement.is_some() || implemented.contains(&name) {
+                    continue;
+                }
+                let payload = match &t.body {
+                    TypeBody::Record(fs) => Payload::Record(fs.clone()),
+                    TypeBody::Sum(vs) if own(t) => vs[0].payload.clone(),
+                    _ => continue,
+                };
+                fold.insert(name, (*u, Variant { comments: d.comments.clone(), name: t.name, payload }));
+            }
+            for (k, d) in p.decls.iter().enumerate() {
+                let DeclKind::Type(t) = &d.kind else {
+                    out.decls.push(d.clone());
+                    continue;
+                };
+                if fold.contains_key(short(&t.name)) {
+                    continue;
+                }
+                let into = |m: &TypeExpr| -> Variant {
+                    match m {
+                        TypeExpr::Named(n, a) if a.is_empty() && fold.get(short(n)).is_some_and(|(u, _)| *u == k) => fold[short(n)].1.clone(),
+                        _ => Variant { comments: vec![], name: Symbol::new(&crate::types::texpr_head(m)), payload: Payload::Type(m.clone()) },
+                    }
+                };
+                let body = match &t.body {
+                    // (a union folding a member in declares it)
+                    TypeBody::Alias(TypeExpr::Union(ms)) if ms.iter().any(|m| !matches!(into(m).payload, Payload::Type(_))) => TypeBody::Sum(ms.iter().map(into).collect()),
+                    TypeBody::Sum(vs) => TypeBody::Sum(vs.iter().map(|v| match &v.payload {
+                        Payload::Type(m) => Variant { comments: v.comments.clone(), ..into(m) },
+                        _ => v.clone(),
+                    }).collect()),
+                    b => b.clone(),
+                };
+                out.decls.push(Decl { kind: DeclKind::Type(TypeDecl { body, ..t.clone() }), ..d.clone() });
+            }
+        }
+    }
+    out
+}
+
+/// Unions written out by their names (IDEAS.md, "Sums and unions are one
+/// thing"): a union whose members are a set its module (or the root
+/// module) names is that name (`x: B | C` is `x: A` for `type A = B | C`),
+/// and named subsets of it are their names when they don't overlap (`B | C
+/// | D` is `A | D`). A `distinct` type or a generic one is never used so,
+/// and a definition isn't written as its own name.
+fn named_unions(p: &Program) -> Program {
+    use std::collections::BTreeSet;
+    let module_of_name = |n: &str| crate::names::module_of(n).to_string();
+    // stored names: a definition's own short, references qualified
+    let qual = |d: &Decl, n: Symbol| if d.module.is_empty() { n.to_string() } else { format!("{}.{}", d.module, short(&n)) };
+    let mut aliases: HashMap<String, TypeExpr> = HashMap::default();
+    let mut sums: HashMap<String, Vec<String>> = HashMap::default();
+    // generic unions: their parameters and members (a declared one by its name)
+    let mut generic: Vec<(String, Vec<Symbol>, Vec<TypeExpr>)> = vec![];
+    for d in &p.decls {
+        let DeclKind::Type(t) = &d.kind else { continue };
+        if !t.distinct && !t.params.is_empty() && t.refinement.is_none() {
+            let ms: Vec<TypeExpr> = match &t.body {
+                TypeBody::Alias(TypeExpr::Union(ms)) => ms.clone(),
+                TypeBody::Sum(vs) if vs.iter().any(|v| matches!(v.payload, Payload::Type(_))) => vs.iter().map(|v| match &v.payload {
+                    Payload::Type(x) => x.clone(),
+                    _ => TypeExpr::Named(Symbol::new(&qual(d, v.name)), vec![]),
+                }).collect(),
+                _ => vec![],
+            };
+            if ms.len() >= 2 {
+                generic.push((qual(d, t.name), t.params.clone(), ms));
+            }
+        }
+        if t.distinct || !t.params.is_empty() {
+            continue;
+        }
+        match &t.body {
+            TypeBody::Alias(u @ TypeExpr::Union(_)) if t.refinement.is_none() => {
+                aliases.insert(qual(d, t.name), u.clone());
+            }
+            TypeBody::Sum(vs) => {
+                sums.insert(qual(d, t.name), vs.iter().map(|v| match &v.payload {
+                    Payload::Type(x) => crate::printer::ty(x),
+                    _ => qual(d, v.name),
+                }).collect());
+            }
+            _ => {}
+        }
+    }
+    if aliases.is_empty() && generic.is_empty() && sums.values().all(|vs| vs.len() < 2) {
+        return p.clone();
+    }
+    // a union written out as a generic one with its arguments (`List[Int] |
+    // Problem` is `Many[Int]`): its members paired by what they are, each
+    // parameter read off them
+    fn instance(written: &[TypeExpr], params: &[Symbol], members: &[TypeExpr]) -> Option<Vec<TypeExpr>> {
+        fn bind(pat: &TypeExpr, t: &TypeExpr, params: &[Symbol], out: &mut HashMap<Symbol, TypeExpr>) -> bool {
+            match (pat, t) {
+                (TypeExpr::Named(p, a), _) if a.is_empty() && params.contains(p) => match out.get(p) {
+                    Some(x) => x == t,
+                    None => {
+                        out.insert(*p, t.clone());
+                        true
+                    }
+                },
+                (TypeExpr::Named(n, a), TypeExpr::Named(m, b)) => n == m && a.len() == b.len() && a.iter().zip(b).all(|(x, y)| bind(x, y, params, out)),
+                _ => pat == t,
+            }
+        }
+        if written.len() != members.len() {
+            return None;
+        }
+        let mut out = HashMap::default();
+        for m in members {
+            let head = crate::types::texpr_head(m);
+            let mut alike = written.iter().filter(|w| crate::types::texpr_head(w) == head);
+            let (Some(w), None) = (alike.next(), alike.next()) else { return None };
+            if !bind(m, w, params, &mut out) {
+                return None;
+            }
+        }
+        params.iter().map(|p| out.get(p).cloned()).collect()
+    }
+    // a type's members, as a set of names
+    fn flat(t: &TypeExpr, aliases: &HashMap<String, TypeExpr>, sums: &HashMap<String, Vec<String>>, depth: usize, out: &mut BTreeSet<String>) {
+        match t {
+            TypeExpr::Union(ms) if depth < 16 => ms.iter().for_each(|m| flat(m, aliases, sums, depth + 1, out)),
+            TypeExpr::Named(n, args) if args.is_empty() && depth < 16 => match (aliases.get(n.as_str()), sums.get(n.as_str())) {
+                (Some(a), _) => flat(a, aliases, sums, depth + 1, out),
+                (_, Some(vs)) => vs.iter().for_each(|v| match aliases.get(v.as_str()).or(None) {
+                    Some(a) => flat(a, aliases, sums, depth + 1, out),
+                    None if sums.contains_key(v.as_str()) => flat(&TypeExpr::Named(Symbol::new(v), vec![]), aliases, sums, depth + 1, out),
+                    None => {
+                        out.insert(v.clone());
+                    }
+                }),
+                _ => {
+                    out.insert(n.to_string());
+                }
+            },
+            other => {
+                out.insert(crate::printer::ty(other));
+            }
+        }
+    }
+    let mut named: Vec<(String, BTreeSet<String>)> = aliases.keys().chain(sums.keys()).map(|n| {
+        let mut set = BTreeSet::new();
+        flat(&TypeExpr::Named(Symbol::new(n), vec![]), &aliases, &sums, 0, &mut set);
+        (n.clone(), set)
+    }).filter(|(_, s)| s.len() >= 2).collect();
+    named.sort();
+    struct Name<'x> {
+        generic: &'x [(String, Vec<Symbol>, Vec<TypeExpr>)],
+        named: &'x [(String, BTreeSet<String>)],
+        aliases: &'x HashMap<String, TypeExpr>,
+        sums: &'x HashMap<String, Vec<String>>,
+        module: String,
+        own: String,
+    }
+    impl VisitMut for Name<'_> {
+        fn ty(&mut self, t: &mut TypeExpr) {
+            walk_ty_mut(self, t);
+            let TypeExpr::Union(ms) = t else { return };
+            for (n, ps, gm) in self.generic {
+                let m = crate::names::module_of(n);
+                if *n == self.own || !(m == self.module || m.is_empty()) {
+                    continue;
+                }
+                if let Some(args) = instance(ms, ps, gm) {
+                    *t = TypeExpr::Named(Symbol::new(n), args);
+                    return;
+                }
+            }
+            let mut set = BTreeSet::new();
+            flat(&TypeExpr::Union(ms.clone()), self.aliases, self.sums, 0, &mut set);
+            let visible: Vec<&(String, BTreeSet<String>)> = self.named.iter().filter(|(n, _)| {
+                let m = crate::names::module_of(n);
+                *n != self.own && (m == self.module || m.is_empty())
+            }).collect();
+            if let Some((n, _)) = visible.iter().find(|(_, s)| *s == set) {
+                *t = TypeExpr::Named(Symbol::new(n), vec![]);
+                return;
+            }
+            // the largest named subsets, if they don't overlap
+            let subs: Vec<&&(String, BTreeSet<String>)> = visible.iter().filter(|(_, s)| s.is_subset(&set) && s.len() < set.len()).collect();
+            let maximal: Vec<&&(String, BTreeSet<String>)> = subs.iter().copied().filter(|(_, s)| !subs.iter().any(|(_, o)| s.is_subset(o) && s.len() < o.len())).collect();
+            if maximal.is_empty() || maximal.iter().enumerate().any(|(i, (_, a))| maximal.iter().skip(i + 1).any(|(_, b)| !a.is_disjoint(b))) {
+                return;
+            }
+            // in the order written: a name where the first member it covers was
+            let mut out: Vec<TypeExpr> = vec![];
+            let mut placed: Vec<&str> = vec![];
+            for m in ms.iter() {
+                let mut one = BTreeSet::new();
+                flat(m, self.aliases, self.sums, 0, &mut one);
+                match maximal.iter().find(|(_, s)| one.is_subset(s)) {
+                    Some((n, _)) if placed.contains(&n.as_str()) => {}
+                    Some((n, _)) => {
+                        placed.push(n);
+                        out.push(TypeExpr::Named(Symbol::new(n), vec![]));
+                    }
+                    None => out.push(m.clone()),
+                }
+            }
+            *t = TypeExpr::Union(out);
+        }
+    }
+    let mut out = p.clone();
+    for d in &mut out.decls {
+        let module = d.module.to_string();
+        let own = match &d.kind {
+            DeclKind::Type(t) => qual(d, t.name),
+            _ => String::new(),
+        };
+        let mut v = Name { generic: &generic, named: &named, aliases: &aliases, sums: &sums, module, own };
+        walk_decl_mut(&mut v, &mut d.kind);
+    }
+    let _ = module_of_name;
+    out
 }
 
 fn store(p: &Program, mode: Store) -> Program {
@@ -749,7 +1050,188 @@ enum Store {
 /// name → new qualified name). Also gives, per definition, the moved names
 /// it refers to by their short name from another module than theirs, which
 /// that module must then import.
+/// A union's bare member (`Dot` in `type Shape = Circle | Dot`) is the type
+/// of that name when one is in scope, and is declared by the union (an
+/// atom) only when none is: in scope are the module's types, its other
+/// unions' declared members (a bare name two unions share is declared by
+/// the first), the root module's, the prelude's, the built-ins and what it
+/// imports. A union whose members are then all defined elsewhere is an
+/// alias of their union.
+pub fn union_members(p: &Program) -> std::borrow::Cow<'_, Program> {
+    // (a member with fields named like a prelude type, `Some(Int)`, is that type too)
+    let prelude_names: HashSet<Symbol> = crate::types::prelude().decls.iter().flat_map(|d| match &d.kind {
+        DeclKind::Type(t) => match &t.body {
+            TypeBody::Sum(vs) => vs.iter().map(|v| v.name).chain([t.name]).collect::<Vec<_>>(),
+            _ => vec![t.name],
+        },
+        _ => vec![],
+    }).collect();
+    let bare = |t: &TypeDecl| matches!(&t.body, TypeBody::Sum(vs) if vs.iter().any(|v| v.payload == Payload::None || (!matches!(v.payload, Payload::Type(_)) && prelude_names.contains(&v.name))));
+    if !p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Type(t) if bare(t))) {
+        return std::borrow::Cow::Borrowed(p);
+    }
+    // the types each module defines (variants of earlier definitions, and
+    // those with fields, included), by short name
+    let mut defined: HashMap<Symbol, Vec<(usize, Symbol, bool, Symbol)>> = HashMap::default();
+    let mut publics: HashMap<Symbol, HashSet<Symbol>> = HashMap::default();
+    for (k, d) in p.decls.iter().enumerate() {
+        let owner = match &d.kind {
+            DeclKind::Type(t) => Symbol::new(short(&t.name)),
+            _ => Symbol::EMPTY,
+        };
+        let mut add = |n: Symbol, always: bool| {
+            defined.entry(d.module).or_default().push((k, Symbol::new(short(&n)), always, owner));
+            if d.public {
+                publics.entry(d.module).or_default().insert(Symbol::new(short(&n)));
+            }
+        };
+        match &d.kind {
+            DeclKind::Type(t) => {
+                add(t.name, true);
+                if let TypeBody::Sum(vs) = &t.body {
+                    for v in vs {
+                        match v.payload {
+                            Payload::Type(_) => {}
+                            Payload::None => add(v.name, false),
+                            _ => add(v.name, true),
+                        }
+                    }
+                }
+            }
+            DeclKind::Extern(ExternDecl { item: ExternItem::Type(t), .. }) => add(*t, true),
+            _ => {}
+        }
+    }
+    let mut known: HashSet<Symbol> = crate::types::prelude().decls.iter().flat_map(|d| match &d.kind {
+        DeclKind::Type(t) => {
+            let mut ns = vec![t.name];
+            if let TypeBody::Sum(vs) = &t.body {
+                ns.extend(vs.iter().map(|v| v.name));
+            }
+            ns
+        }
+        _ => vec![],
+    }).collect();
+    for b in crate::types::BUILTIN_TYPES {
+        known.insert(Symbol::new(b));
+    }
+    let root: Vec<(usize, Symbol, bool, Symbol)> = defined.get(&Symbol::EMPTY).cloned().unwrap_or_default();
+    let mut out = p.clone();
+    for k in 0..out.decls.len() {
+        let m = out.decls[k].module;
+        let DeclKind::Type(t) = &out.decls[k].kind else { continue };
+        if !bare(t) {
+            continue;
+        }
+        let own_name = t.name;
+        // what this definition sees by short name
+        let in_scope = |n: Symbol| -> bool {
+            if known.contains(&n) {
+                return true;
+            }
+            // (another version of this definition, as an edit has, isn't another)
+            let seen = |ds: &[(usize, Symbol, bool, Symbol)]| ds.iter().any(|&(j, x, always, o)| x == n && j != k && o != Symbol::new(short(&own_name)) && (always || j < k));
+            if seen(defined.get(&m).map(|v| &v[..]).unwrap_or(&[])) || (!m.is_empty() && seen(&root)) {
+                return true;
+            }
+            p.decls.iter().filter(|d| d.module == m).any(|d| match &d.kind {
+                DeclKind::Use(u) => match &u.items {
+                    Some(items) => items.contains(&n),
+                    None => publics.get(&u.path).is_some_and(|ns| ns.contains(&n)),
+                },
+                _ => false,
+            })
+        };
+        let refs: Vec<bool> = match &t.body {
+            // (one of its type parameters is that parameter)
+            TypeBody::Sum(vs) => vs.iter().map(|v| v.name != own_name && match v.payload {
+                Payload::None => t.params.contains(&v.name) || in_scope(v.name),
+                Payload::Type(_) => false,
+                _ => prelude_names.contains(&v.name),
+            }).collect(),
+            _ => unreachable!(),
+        };
+        if !refs.iter().any(|r| *r) {
+            continue;
+        }
+        let DeclKind::Type(t) = &mut out.decls[k].kind else { unreachable!() };
+        let TypeBody::Sum(vs) = &mut t.body else { unreachable!() };
+        for (v, r) in vs.iter_mut().zip(refs) {
+            if r {
+                v.payload = Payload::Type(TypeExpr::Named(v.name, vec![]));
+            }
+        }
+        if vs.iter().all(|v| matches!(v.payload, Payload::Type(_))) {
+            let mut ts: Vec<TypeExpr> = vs.iter().map(|v| match &v.payload {
+                Payload::Type(t) => t.clone(),
+                _ => unreachable!(),
+            }).collect();
+            t.body = TypeBody::Alias(if ts.len() == 1 { ts.remove(0) } else { TypeExpr::Union(ts) });
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// For an edit: each new atom a union of the definitions `edited` declares
+/// (`Circel` in `type Shape = Circel | Square`) whose name is close to a
+/// type the program (or the prelude) has, which it may have meant: a
+/// warning, as two types may well have close names.
+pub fn near_misses(p: &Program, edited: &[String]) -> Vec<String> {
+    let p = union_members(p);
+    let mut names: Vec<(Symbol, Symbol)> = vec![];
+    for d in crate::types::prelude().decls.iter().chain(p.decls.iter()) {
+        let DeclKind::Type(t) = &d.kind else { continue };
+        names.push((Symbol::new(short(&t.name)), t.name));
+        if let TypeBody::Sum(vs) = &t.body {
+            names.extend(vs.iter().filter(|v| !matches!(v.payload, Payload::Type(_))).map(|v| (Symbol::new(short(&v.name)), t.name)));
+        }
+    }
+    for b in crate::types::BUILTIN_TYPES {
+        names.push((Symbol::new(b), Symbol::EMPTY));
+    }
+    let close = |a: &str, b: &str| {
+        if a == b || a.len() < 3 {
+            return false;
+        }
+        if a.eq_ignore_ascii_case(b) {
+            return true;
+        }
+        // edit distance: a letter added, dropped, changed or two swapped
+        let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+        if a.len().abs_diff(b.len()) > 2 {
+            return false;
+        }
+        let mut d: Vec<Vec<usize>> = (0..=a.len()).map(|i| (0..=b.len()).map(|j| if i == 0 { j } else if j == 0 { i } else { 0 }).collect()).collect();
+        for i in 1..=a.len() {
+            for j in 1..=b.len() {
+                let c = usize::from(a[i - 1] != b[j - 1]);
+                d[i][j] = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + c);
+                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                    d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+                }
+            }
+        }
+        // (one change in a short name, `Dot` is not `Int`)
+        d[a.len()][b.len()] <= if a.len().min(b.len()) <= 5 { 1 } else { 2 }
+    };
+    let mut out = vec![];
+    for d in p.decls.iter().filter(|d| edited.contains(&d.qname())) {
+        let DeclKind::Type(t) = &d.kind else { continue };
+        let TypeBody::Sum(vs) = &t.body else { continue };
+        for v in vs.iter().filter(|v| v.payload == Payload::None) {
+            let mut near: Vec<String> = names.iter().filter(|(n, owner)| *owner != t.name && close(&v.name, n)).map(|(n, _)| format!("`{n}`")).collect();
+            near.sort();
+            near.dedup();
+            if !near.is_empty() {
+                out.push(format!("warning: `{}` in `{}` is a new type (nothing has that name): did you mean {}?", v.name, short(&t.name), near.join(" or ")));
+            }
+        }
+    }
+    out
+}
+
 fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMap<String, String>>, store: Option<Store>) -> (Resolution, Vec<Vec<String>>) {
+    let p = &*union_members(p);
     let rename: Option<(Symbol, Symbol)> = rename.map(|(o, n)| (o.into(), n.into()));
     let moves: Option<HashMap<Symbol, Symbol>> = moves.map(|m| m.iter().map(|(o, n)| (o.sym(), n.sym())).collect());
     let resolving = store.is_none() && rename.is_none() && moves.is_none();
@@ -1428,14 +1910,22 @@ impl Rw<'_> {
                     TypeBody::Record(fs) => TypeBody::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), doc: f.doc.clone(), name: f.name.clone(), ty: self.ty(&f.ty), default: f.default.as_ref().map(|x| self.expr(x)) }).collect()),
                     TypeBody::Sum(vs) => TypeBody::Sum(
                         vs.iter()
-                            .map(|v| Variant {
+                            .map(|v| match &v.payload {
+                                // a member defined elsewhere: a reference to it
+                                Payload::Type(t) => {
+                                    let t = self.ty(t);
+                                    Variant { comments: v.comments.clone(), name: Symbol::new(&crate::types::texpr_head(&t)), payload: Payload::Type(t) }
+                                }
+                                _ => Variant {
                                 comments: v.comments.clone(),
                                 name: self.declared(m, v.name),
                                 payload: match &v.payload {
+                                    Payload::Type(_) => unreachable!(),
                                     Payload::None => Payload::None,
                                     Payload::Positional(ts) => Payload::Positional(ts.iter().map(|t| self.ty(t)).collect()),
                                     Payload::Record(fs) => Payload::Record(fs.iter().map(|f| Field { comments: f.comments.clone(), doc: f.doc.clone(), name: f.name.clone(), ty: self.ty(&f.ty), default: f.default.as_ref().map(|x| self.expr(x)) }).collect()),
                                 },
+                            },
                             })
                             .collect(),
                     ),

@@ -481,15 +481,15 @@ fn derived_traits_compile() {
 derivable(Record) trait FromText {
   /// The fields' names.
   derived fn names(self) -> List[String] {
-    comptime $Self.fields.map(f -> f.name)
+    comptime Self.fields.map(f -> f.name)
   }
   /// A value with every field at its zero.
   derived fn zero() -> Self {
-    $Self.make(f -> zero_of(f))
+    Self.make(f -> zero_of(f))
   }
   /// A value read from one text per field.
   derived fn parse(texts: List[String]) -> Result[Self, String] {
-    $Self.try_make(f -> read(f, texts))
+    Self.try_make(f -> read(f, texts))
   }
 }
 
@@ -545,13 +545,13 @@ fn derived_for_sums_compile() {
     }
     let d = tmp("derived-sums");
     // `comptime for`, a match comprehension, `v.make()`
-    let (out, code) = case(&d, "sums", r#"use std.typing.{Choice, Sum, Field}
+    let (out, code) = case(&d, "sums", r#"use std.typing.{Choice, Union}
 
 /// A choice and its name.
 derivable(Choice) trait Named {
   derived fn from_name(name: String) -> Option[Self] {
-    comptime for v in $Self.variants {
-      if to_lower(v.name) == name {
+    comptime for v in Self.members {
+      if to_lower(v.name ?? "") == name {
         return Some(v.make())
       }
     }
@@ -559,17 +559,17 @@ derivable(Choice) trait Named {
   }
   derived fn name(self) -> String {
     match self {
-      v => to_lower(v.name) for v in $Self.variants
+      v => to_lower(v.name ?? "") for v in Self.members
     }
   }
 }
 
 /// How many fields each variant has.
-derivable(Sum) trait Width
-  requires len($Self.variants) > 0 {
+derivable(Union) trait Width
+  requires len(Self.members) > 0 {
   derived fn width(self) -> Int {
     match self {
-      v => len(v.fields) for v in $Self.variants
+      v => len(v.fields) + len(v.elements) for v in Self.members
     }
   }
 }

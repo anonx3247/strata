@@ -367,7 +367,7 @@ a.chfull { display: inline-block; font-size: 11.5px; margin: 2px 2px 8px; }
 
 <script>
 const lv = x => isNaN(+x) ? x : +x;
-const S = { data: null, raw: '', level: 1, sel: null, scope: 'slice', q: '', over: {}, prevHash: {}, flash: new Set(), prevLog: 0, newLog: 0, showTests: false, open: {}, allOpen: false };
+const S = { members: localStorage.getItem('strata-members') || 'inline', data: null, raw: '', level: 1, sel: null, scope: 'slice', q: '', over: {}, prevHash: {}, flash: new Set(), prevLog: 0, newLog: 0, showTests: false, open: {}, allOpen: false };
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const KIND = { type: 'T', fn: 'ƒ', test: '✓', trait: '◆', impl: '⊢', extern: '⇄', capability: '⚿' };
@@ -478,7 +478,7 @@ function visible() {
     set = all.filter(x => keep.has(x.name));
   }
   if (q) set = set.filter(x => x.label.toLowerCase().includes(q) || x.text['2'].toLowerCase().includes(q));
-  return set;
+  return set.filter(shownAlone);
 }
 
 // Navigation history: every definition you go to, so ← → step back and forth.
@@ -543,7 +543,7 @@ function renderLeft() {
   const many = mods.length > 1 || mods[0] !== '';
   const section = (decls) => groups.map(([k, title]) => {
     // mocks are for tests: hidden unless shown (a test's mocks still open from its code)
-    const items = decls.filter(d => d.kind === k && (S.showMocks || !d.mock));
+    const items = decls.filter(d => d.kind === k && (S.showMocks || !d.mock) && shownAlone(d));
     if (!items.length) return '';
     return `<div class="group"><h4>${title}</h4>${items.map(d => {
       const [cls] = status(d);
@@ -560,6 +560,7 @@ function renderLeft() {
   }).join('');
   const mocks = S.data.decls.filter(d => d.mock).length;
   if (mocks) $('#left').innerHTML += `<div class="group"><a class="muted" style="display:block;padding:6px 14px;cursor:pointer" data-mocks>${S.showMocks ? 'hide' : 'show'} ${mocks} mock${mocks > 1 ? 's' : ''} (for tests)</a></div>`;
+  if (S.data.decls.some(d => d.view_inline || d.view_separate || d.folded_into)) $('#left').innerHTML += `<div class="group"><a class="muted" style="display:block;padding:6px 14px;cursor:pointer" data-members title="How a union's members are shown: inside it (a type with a doc, an impl or a derive stays on its own), or each as a definition of its own">union members: <b>${S.members === 'inline' ? 'inline' : 'separate'}</b> (switch)</a></div>`;
 }
 
 // ---------- type map: types and traits as a general graph ----------
@@ -869,7 +870,8 @@ function sectionsFor(sel) {
   const by = byName(), d = by[sel];
   if (!d) return [];
   const isTest = n => by[n]?.kind === 'test';
-  const known = ns => ns.filter(n => by[n]);
+  // (a type shown inside its union, in the inline view, is in that union's card)
+  const known = ns => ns.filter(n => by[n] && shownAlone(by[n]));
   return [
     ['', [sel]],
     ['Trait', known(d.impl_of ? [d.impl_of.trait] : [])],
@@ -884,16 +886,20 @@ function sectionsFor(sel) {
 // A definition shows its interface; where the full text differs (a body), an
 // inline control shows or hides it. The selected definition starts open.
 const isOpen = d => d.has_body && (S.open[d.name] ?? (S.allOpen || d.name === S.sel));
+// a union's members inline (by default) or each on its own: the card's code in that view
+const textOf = (d, lvl) => (S.members === 'inline' ? d.view_inline : d.view_separate) || d.text[lvl];
+// in the inline view, a type shown inside its union has no card of its own
+const shownAlone = d => S.members !== 'inline' || !d.folded_into;
 function card(d) {
   const names = resolver(d.module);
   const [cls, txt] = status(d);
   const n = esc(d.name), open = isOpen(d);
   const meta = `<span class="meta">${d.module ? `<span>${esc(d.module)}</span>` : ''}${txt ? `<span class="${cls === 'none' ? '' : cls}">${esc(txt)}</span>` : ''}${open ? `<a class="tog" data-toggle="${n}" title="Show the interface only">hide body ▾</a>` : ''}</span>`;
   let code;
-  if (open) code = highlight(d.text['2'], names);
-  else if (!d.has_body) code = highlight(d.text['1'], names);
+  if (open) code = highlight(textOf(d, '2'), names);
+  else if (!d.has_body) code = highlight(textOf(d, '1'), names);
   else {
-    const iface = d.text['1'].replace(/\s*\{ … \}$/, '');
+    const iface = textOf(d, '1').replace(/\s*\{ … \}$/, '');
     const fnLike = d.kind === 'fn' || d.kind === 'test';
     code = highlight(iface, names) + (fnLike
       ? ` <a class="tog" data-toggle="${n}"><span class="br">{ … }</span> show body ▸</a>`
@@ -1345,12 +1351,13 @@ document.addEventListener('click', e => {
   }
   const nb = e.target.closest('[data-nav]');
   if (nb) { if (!nb.disabled) navGo(+nb.dataset.nav); return; }
-  const t = e.target.closest('[data-toggle],[data-all],[data-go],[data-pick],[data-l],[data-s],[data-mod],[data-mocks]');
+  const t = e.target.closest('[data-toggle],[data-all],[data-go],[data-pick],[data-l],[data-s],[data-mod],[data-mocks],[data-members]');
   if (!t) return;
   if (t.dataset.toggle) { const d = byName()[t.dataset.toggle]; if (d) { S.open[d.name] = !isOpen(d); render(); } return; }
   if (t.dataset.all) { S.allOpen = t.dataset.all === '1'; S.open = {}; render(); return; }
   if (t.dataset.l) { S.level = lv(t.dataset.l); render(); if (S.level === 'changes') loadChanges(); return; }
   if (t.dataset.mocks !== undefined) { S.showMocks = !S.showMocks; render(); return; }
+  if (t.dataset.members !== undefined) { S.members = S.members === 'inline' ? 'separate' : 'inline'; localStorage.setItem('strata-members', S.members); render(); return; }
   if (t.dataset.mod !== undefined) { S.closedMods ||= new Set(); S.closedMods.has(t.dataset.mod) ? S.closedMods.delete(t.dataset.mod) : S.closedMods.add(t.dataset.mod); render(); return; }
   if (t.dataset.s) { if (!t.disabled) { S.scope = t.dataset.s; render(); } return; }
   if (t.dataset.go) { clearArrow(); if (S.scope === 'all') S.scope = 'slice'; select(t.dataset.go, typeof S.level === 'number'); return; }

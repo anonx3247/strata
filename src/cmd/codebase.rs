@@ -116,6 +116,9 @@ fn edit_file(args: &Args, cmd: &str, f: &str) -> Result<bool, String> {
     }
     let changes = store::changes(&old, &new);
     println!("{f}: {} definition{} changed, {} in all", changes.len(), if changes.len() == 1 { "" } else { "s" }, new.decls.len());
+    for w in resolve::near_misses(&new, &changes.iter().map(|c| c.name.clone()).collect::<Vec<_>>()) {
+        println!("{w}");
+    }
     // a script or a folder outside a package is stored as written (a
     // package's edit, `strata edit`, is refused instead), but checked, so a mistake shows
     // now: the exit code says so. One module file of a folder can't be
@@ -415,6 +418,9 @@ pub fn apply_edit(cb: &mut Codebase, cmd: &str, edits: Program, deletes: Vec<Str
     }
     for m in contracts {
         println!("module {m}: its public contract changed (see `strata interface {m}`)");
+    }
+    for w in resolve::near_misses(&cb.program, &edited) {
+        println!("{w}");
     }
     if !rep.holes.is_empty() {
         println!("{} open hole(s) — see `strata holes`", rep.holes.len());

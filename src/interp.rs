@@ -821,6 +821,7 @@ impl<'a> Interp<'a> {
                         TypeBody::Alias(a) => self.plain(a, &ps),
                         TypeBody::Record(fs) => fs.iter().all(|f| self.plain(&f.ty, &ps)),
                         TypeBody::Sum(vs) => vs.iter().all(|v| match &v.payload {
+                            Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
                             Payload::None => true,
                             Payload::Positional(ts) => ts.iter().all(|t| self.plain(t, &ps)),
                             Payload::Record(fs) => fs.iter().all(|f| self.plain(&f.ty, &ps)),
@@ -1715,7 +1716,6 @@ impl<'a> Interp<'a> {
                 v
             }
             Expr::Mut(x) | Expr::Comptime(x) => self.eval(x, s)?,
-            Expr::Describe(t) => return self.fail(FaultKind::Runtime, format!("`${}` is only known in a derived method", crate::printer::ty(t))),
             // `$self_type(type, call)`: the call's receiver type, whole, for the method it reaches
             Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if n == crate::types::SELF_TYPE) && args.len() == 2 => {
                 // (a type parameter the caller wasn't given leaves it unknown)
