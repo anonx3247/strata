@@ -820,8 +820,9 @@ impl<'a> Checker<'a> {
     /// `trait_method`, with `Self` the given type when it is known (a static
     /// call names it: `Money.empty()`, `T.empty()`).
     fn trait_method_for(&mut self, name: &str, trait_name: &str, self_ty: Option<Ty>) -> Ty {
-        let tr = self.env.traits[&trait_name.sym()].clone();
-        let m = tr.methods.iter().find(|m| m.decl.name == name).unwrap().decl.clone();
+        let env = self.env;
+        let tr = &env.traits[&trait_name.sym()];
+        let m = &tr.methods.iter().find(|m| m.decl.name == name).unwrap().decl;
         let mut vars: HashMap<Symbol, Ty> = tr.params.iter().map(|p| (p.clone(), self.fresh())).collect();
         for p in &m.type_params {
             vars.insert(p.sym(), self.fresh());
@@ -837,7 +838,8 @@ impl<'a> Checker<'a> {
 
     /// Supertraits of `tr[args]`, transitively, with arguments substituted.
     fn supers_of(&mut self, tr: &str, args: &[Ty], depth: usize) -> Vec<(Symbol, Vec<Ty>)> {
-        let Some(td) = self.env.traits.get(&tr.sym()).cloned() else { return vec![] };
+        let env = self.env;
+        let Some(td) = env.traits.get(&tr.sym()) else { return vec![] };
         if depth > 8 {
             return vec![];
         }
@@ -1066,8 +1068,9 @@ impl<'a> Checker<'a> {
 
     /// Type of a named function value (top-level or builtin), freshly instantiated.
     fn global_fn(&mut self, name: &str) -> Option<Ty> {
-        if let Some(f) = self.env.fns.get(&name.sym()) {
-            let f = f.clone();
+        // the environment outlives the checker: borrow from it, don't copy
+        let env = self.env;
+        if let Some(f) = env.fns.get(&name.sym()) {
             let vars: HashMap<Symbol, Ty> = f.type_params.iter().map(|p| (p.clone(), self.fresh())).collect();
             let fty = self.lower(&Self::fn_scheme(&f), &vars);
             for b in &f.bounds {
@@ -1171,8 +1174,9 @@ impl<'a> Checker<'a> {
                 // the type's own method of that name comes first (a variant's before its sum's)
                 let heads: Vec<Symbol> = std::iter::once(head.sym()).chain(self.env.variant_parent(head.sym())).collect();
                 for h in &heads {
-                    if let Some(imp) = self.env.inherent.get(h).cloned() {
-                        if let Some(f) = imp.methods.iter().find(|x| short(&x.name) == sm && crate::resolve::takes_self(x)).cloned() {
+                    let env = self.env;
+                    if let Some(imp) = env.inherent.get(h) {
+                        if let Some(f) = imp.methods.iter().find(|x| short(&x.name) == sm && crate::resolve::takes_self(x)) {
                             self.targets.push((site, Target::Own(crate::resolve::static_name(h, &f.name))));
                             let ft = self.own_method_ty(&imp, &f);
                             let muts: Vec<Option<TypeExpr>> = f.params.iter().map(|p| p.mutable.then(|| p.ty.clone())).collect();
@@ -1316,8 +1320,9 @@ impl<'a> Checker<'a> {
         // the concrete type is known: its own method first, a variant's own before its sum's
         let heads: Vec<Symbol> = std::iter::once(head.sym()).chain(self.env.variant_parent(head.sym())).collect();
         for h in &heads {
-            if let Some(imp) = self.env.inherent.get(h).cloned() {
-                if let Some(f) = imp.methods.iter().find(|x| x.name == m && crate::resolve::takes_self(x)).cloned() {
+            let env = self.env;
+            if let Some(imp) = env.inherent.get(h) {
+                if let Some(f) = imp.methods.iter().find(|x| x.name == m && crate::resolve::takes_self(x)) {
                     self.targets.push((site, Target::Own(crate::resolve::static_name(h, &m))));
                     return Some(self.own_method_ty(&imp, &f));
                 }
@@ -1686,8 +1691,9 @@ impl<'a> Checker<'a> {
     }
 
     fn ctor_type(&mut self, c: Symbol) -> Option<(Ty, Vec<(Option<Symbol>, Ty)>)> {
-        let tname = self.env.ctors.get(&c.sym())?.clone();
-        let td = self.env.types[&tname].clone();
+        let env = self.env;
+        let tname = *env.ctors.get(&c.sym())?;
+        let td = &env.types[&tname];
         let vars: HashMap<Symbol, Ty> = td.params.iter().map(|p| (p.clone(), self.fresh())).collect();
         let result = Ty::Con(tname.clone(), td.params.iter().map(|p| vars[p].clone()).collect());
         let fields = match &td.body {
