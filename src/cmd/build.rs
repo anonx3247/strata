@@ -44,6 +44,8 @@ pub fn build(args: &Args) -> Result<bool, String> {
         .args(["-O2", "-Wno-override-module", "-o", &out])
         .arg(&ll)
         .arg(&rt)
+        // std's precompiled code, linked in (always statically: an executable stands alone)
+        .args(llvm::jit::std_library().map(|l| l.object.clone()))
         .args(&native)
         .arg("-lm")
         .status()

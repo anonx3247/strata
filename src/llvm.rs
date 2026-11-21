@@ -203,8 +203,25 @@ enum Entry<'e> {
     /// The tests, but those named here.
     Tests(&'e [String]),
     Fuzz(&'e [FuzzTarget]),
+    /// std's functions to precompile (`jit::std_library`): only they are exported.
+    Library(&'e [String]),
     /// Compile-time code: functions without parameters, whose results are kept.
     Comptime(&'e [String]),
+}
+
+/// Tags from here on are union boxes' (`box_tag`); below, constructors' (0 is a tuple's).
+const BOX_TAGS: i64 = 1 << 40;
+
+/// 40 bits of a name's hash (SHA-256: the same in every strata).
+fn hash40(name: &str) -> i64 {
+    use sha2::{Digest, Sha256};
+    let d = Sha256::digest(name.as_bytes());
+    (u64::from_le_bytes(d[..8].try_into().unwrap()) & ((1 << 40) - 1)) as i64
+}
+
+/// A constructor's tag, from its qualified name: in [1, 2^40).
+fn stable_tag(ctor: &str) -> i64 {
+    1 + hash40(ctor) % (BOX_TAGS - 1)
 }
 
 /// The label of compile-time code (a probe): it has no frame on the call stack.
@@ -304,7 +321,18 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     // every constructor gets a tag of its own, so a value's tag says what it is
     let mut ctors: Vec<&Symbol> = env.ctors.keys().collect();
     ctors.sort();
-    let tags = ctors.iter().enumerate().map(|(i, c)| (c.to_string(), i as i64 + 1)).collect();
+    // from the constructor's qualified name, not the program's numbering: the
+    // same in every program, so code compiled once (std, precompiled; the FFI)
+    // reads values alike
+    let mut tags: HashMap<String, i64> = HashMap::default();
+    let mut taken: HashMap<i64, String> = HashMap::default();
+    for c in ctors {
+        let t = stable_tag(c.as_str());
+        if let Some(other) = taken.insert(t, c.to_string()) {
+            return Err(format!("the constructors `{other}` and `{c}` have the same tag (rename one)"));
+        }
+        tags.insert(c.to_string(), t);
+    }
     // bodies as the checker saw them (its types are by node); signatures from `env`
     let mut bodies: HashMap<String, &FnDecl> = HashMap::default();
     for d in &resolved.program.decls {
@@ -333,7 +361,11 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default() };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None };
+    // std's precompiled functions, but while making them, tracing, or in a library
+    if !BUILDING_STD.with(|b| b.get()) && !m.tracing && !matches!(entry, Entry::Library(_)) {
+        m.precompiled = jit::std_library().map(|l| &l.names);
+    }
     let mut tests = vec![];
     // compile-time code counts steps too (its budget)
     m.fuzzing = matches!(entry, Entry::Fuzz(_) | Entry::Comptime(_));
@@ -349,6 +381,11 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
             let ret = m.lower(&main.ret, &HashMap::default())?;
             // C's `main` first: it asks for the program's `main`, with its capabilities
             m.entry(entry, &main, &ret)?;
+        }
+        Entry::Library(names) => {
+            for n in names.iter() {
+                m.want_impls(n, vec![], vec![]);
+            }
         }
         Entry::Comptime(fns) => {
             // each an ordinary function without parameters, its result handed over below
@@ -727,15 +764,73 @@ struct Module<'a> {
     dispatch: Vec<Dispatch>,
     /// The C functions `extern c` declarations call: symbol -> `declare` line.
     foreign: std::collections::BTreeMap<String, String>,
+    /// std's functions precompiled (`jit::std_library`): declared, not compiled.
+    precompiled: Option<&'static std::collections::HashSet<String>>,
+}
+
+thread_local! {
+    /// Set while std's library is being made: nothing is precompiled yet.
+    static BUILDING_STD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Make std's library: `names` compiled, everything else they use kept
+/// internal to it (helpers, lambdas, generic instances: each program has its own).
+pub fn compile_library(prog: &Program, names: &[String]) -> Res<String> {
+    BUILDING_STD.with(|b| b.set(true));
+    let r = compile_with(prog, Entry::Library(names), false);
+    BUILDING_STD.with(|b| b.set(false));
+    let ir = r?.0;
+    let exported: Vec<String> = names.iter().map(|n| format!("{}(", sym_impls(n, &[], &[]))).collect();
+    Ok(ir
+        .lines()
+        .map(|l| if l.starts_with("define ") && !l.starts_with("define internal ") && !exported.iter().any(|e| l.contains(e.as_str())) { l.replacen("define ", "define internal ", 1) } else { l.to_string() })
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+/// Whether std's function `f` can be precompiled: not generic, nothing it
+/// takes is a trait (compiled per implementation) or known only while compiling.
+pub fn precompilable(f: &FnDecl, env: &Env) -> bool {
+    let traitish = |t: &TypeExpr| matches!(t, TypeExpr::Named(n, _) if env.traits.contains_key(n));
+    f.name.as_str().starts_with("std.")
+        && !f.name.as_str().contains(".for.")
+        && f.type_params.is_empty()
+        && !crate::stdlib::is_host(&f.name)
+        && !traitish(&f.ret)
+        && f.params.iter().all(|p| !p.comptime && !traitish(&p.ty))
 }
 
 impl<'a> Module<'a> {
     fn want_impls(&mut self, name: &str, targs: Vec<Ty>, impls: Vec<Option<Ty>>) -> String {
         let s = sym_impls(name, &targs, &impls);
+        // precompiled in std's library: declared, its code is the library's
+        if targs.is_empty() && impls.iter().all(|i| i.is_none()) && self.precompiled.is_some_and(|p| p.contains(name)) {
+            if let Some(line) = self.declaration(name, &s) {
+                self.foreign.insert(s.clone(), line);
+                return s;
+            }
+        }
         if self.seen.insert(s.clone()) {
             self.queue.push_back(Job::Fn(name.to_string(), targs, impls));
         }
         s
+    }
+
+    /// The `declare` line of function `name`, compiled elsewhere, as its definition's signature is.
+    fn declaration(&self, name: &str, sym: &str) -> Option<String> {
+        let f = self.env.fns.get(&Symbol::new(name))?;
+        let mut ps = vec![];
+        for p in &f.params {
+            let t = self.lower(&p.ty, &HashMap::default()).ok()?;
+            if p.mutable {
+                ps.push("ptr".to_string());
+            } else if has_value(&t) {
+                ps.push(self.ll(&t).ok()?.to_string());
+            }
+        }
+        let r = self.lower(&f.ret, &HashMap::default()).ok()?;
+        let ret = if has_value(&r) { self.ll(&r).ok()? } else { "void" };
+        Some(format!("declare {ret} {sym}({})\n", ps.join(", ")))
     }
 
     /// Whether a written type is a trait (a parameter that takes any implementation).
@@ -989,8 +1084,9 @@ impl<'a> Module<'a> {
 
     fn box_tag(&mut self, m: &Ty) -> i64 {
         let k = key(&self.repr(m).unwrap_or(Ty::Unit));
-        let n = self.box_tags.len() as i64;
-        *self.box_tags.entry(k).or_insert(1 << 40 | n)
+        // (the member type's, beyond every constructor's)
+        let t = BOX_TAGS | (hash40(&k) & (BOX_TAGS - 1));
+        *self.box_tags.entry(k).or_insert(t)
     }
 
     /// The tags a value of member type `m` can have in a union.
