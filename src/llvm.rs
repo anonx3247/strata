@@ -220,7 +220,7 @@ fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
     let mut bodies: HashMap<String, &FnDecl> = HashMap::default();
     for d in &resolved.program.decls {
         match &d.kind {
-            DeclKind::Fn(f) => {
+            DeclKind::Fn(f) | DeclKind::Extern(ExternDecl { item: ExternItem::Fn(f), .. }) => {
                 bodies.insert(f.name.to_string(), f);
             }
             DeclKind::Impl(i) if i.is_inherent() => {
@@ -243,7 +243,7 @@ fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![] };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default() };
     let mut tests = vec![];
     m.fuzzing = matches!(entry, Entry::Fuzz(_));
     match entry {
@@ -297,6 +297,9 @@ fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
     out += "\n";
     out += &m.body;
     out += DECLARATIONS;
+    for line in m.foreign.values() {
+        out += line;
+    }
     Ok((out, tests))
 }
 
@@ -362,6 +365,11 @@ declare i64 @strata_int_cmp(i64, i64)
 declare i1 @strata_int_eq(i64, i64)
 declare i64 @strata_int_lit(ptr)
 declare i64 @strata_int_from_i64(i64)
+declare i64 @strata_int_from_u64(i64)
+declare i64 @strata_int_bits(i64)
+declare ptr @strata_cstr(ptr, ptr)
+declare void @strata_cstr_free(ptr)
+declare ptr @strata_str_from_c(ptr, ptr)
 declare i64 @strata_random(i64, i64)
 declare double @strata_random_unit()
 declare i64 @strata_gen_int(ptr, i64)
@@ -510,6 +518,44 @@ struct FieldInfo {
     ty: Ty,
 }
 
+/// A type as C has it, for `extern c`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum CType {
+    Int { bits: u32, signed: bool },
+    Double,
+    Bool,
+    Str,
+    Handle,
+    /// `Option[Handle]`: a pointer that may be NULL (`None`).
+    OptHandle,
+    Void,
+}
+
+impl CType {
+    fn ll(self) -> String {
+        match self {
+            CType::Int { bits, .. } => format!("i{bits}"),
+            CType::Double => "double".into(),
+            CType::Bool => "i1".into(),
+            CType::Str | CType::Handle | CType::OptHandle => "ptr".into(),
+            CType::Void => "void".into(),
+        }
+    }
+    /// As a result: its type after how it is widened (`zeroext i1`).
+    fn ret(self) -> String {
+        format!("{}{}", self.attr().trim_start(), if self.attr().is_empty() { self.ll() } else { format!(" {}", self.ll()) })
+    }
+    /// How C's calling convention widens it (as clang declares it).
+    fn attr(self) -> &'static str {
+        match self {
+            CType::Bool => " zeroext",
+            CType::Int { bits, signed: true } if bits < 32 => " signext",
+            CType::Int { bits, signed: false } if bits < 32 => " zeroext",
+            _ => "",
+        }
+    }
+}
+
 struct Module<'a> {
     env: &'a Env,
     /// The checker's type of each expression, by node address.
@@ -549,6 +595,8 @@ struct Module<'a> {
     /// Dispatchers for methods with type parameters of their own, called
     /// on trait values (made once every table is known).
     dispatch: Vec<Dispatch>,
+    /// The C functions `extern c` declarations call: symbol -> `declare` line.
+    foreign: std::collections::BTreeMap<String, String>,
 }
 
 impl<'a> Module<'a> {
@@ -709,6 +757,36 @@ impl<'a> Module<'a> {
             Ty::Union(_) => "ptr",
             other => return Err(format!("the type `{}` is not compiled yet", key(&other))),
         })
+    }
+
+    /// The C type of a type an `extern c` declaration names (the checker
+    /// allowed only these).
+    fn c_type(&self, t: &TypeExpr) -> Res<CType> {
+        Ok(match t {
+            TypeExpr::Unit => CType::Void,
+            TypeExpr::Named(n, _) => match n.as_str() {
+                "I8" => CType::Int { bits: 8, signed: true },
+                "I16" => CType::Int { bits: 16, signed: true },
+                "I32" => CType::Int { bits: 32, signed: true },
+                "I64" => CType::Int { bits: 64, signed: true },
+                "U8" => CType::Int { bits: 8, signed: false },
+                "U16" => CType::Int { bits: 16, signed: false },
+                "U32" => CType::Int { bits: 32, signed: false },
+                "U64" => CType::Int { bits: 64, signed: false },
+                "Float" => CType::Double,
+                "Bool" => CType::Bool,
+                "String" => CType::Str,
+                _ if self.env.externs.contains_key(n) => CType::Handle,
+                "Option" if matches!(t, TypeExpr::Named(_, a) if matches!(a.as_slice(), [TypeExpr::Named(h, x)] if x.is_empty() && self.env.externs.contains_key(h))) => CType::OptHandle,
+                other => return Err(format!("`{other}` doesn't cross to C")),
+            },
+            other => return Err(format!("`{}` doesn't cross to C", crate::printer::ty(other))),
+        })
+    }
+
+    /// An `extern c type`: a pointer C made, never counted, read or freed here.
+    fn handle(&self, t: &Ty) -> bool {
+        matches!(t, Ty::Con(n, args) if args.is_empty() && self.env.externs.contains_key(n))
     }
 
     /// A record, a sum, one of its variants, or a tuple: a block with a tag.
@@ -939,7 +1017,7 @@ impl<'a> Module<'a> {
         } else {
             c.ret_slot = Some((ret.clone(), String::new()));
         }
-        let v = c.expr(own.body)?;
+        let v = if c.m.env.externs.contains_key(&Symbol::new(name)) { c.foreign_call(name, own.own_params, own.own_ret)? } else { c.expr(own.body)? };
         c.return_value(&v)?;
         // every way out: the result's refinement, then the postconditions
         // (each way out dropped what the body held)
@@ -1318,13 +1396,141 @@ impl<'m, 'a> Func<'m, 'a> {
         self.scopes.iter().rev().find_map(|s| s.vars.get(name).cloned())
     }
 
+    // ---- foreign calls ----
+
+    /// The body of an `extern c` function: its arguments converted to C's
+    /// types, the call, its result converted back. A `mut` parameter is an
+    /// out-pointer: C's copy of the value, read back after the call.
+    fn foreign_call(&mut self, name: &str, params: &[Param], ret: &TypeExpr) -> Res<V> {
+        let symbol = crate::names::short(name).to_string();
+        let callee = self.m.string(&symbol);
+        let mut args = vec![];
+        let mut frees = vec![];
+        let mut outs = vec![];
+        for p in params {
+            let ct = self.m.c_type(&p.ty)?;
+            let v = self.load(&p.name)?;
+            let c = self.to_c(&v, ct, &callee)?;
+            if ct == CType::Str {
+                frees.push(c.clone());
+            }
+            if p.mutable {
+                let slot = self.fresh("out");
+                writeln!(self.allocas, "  {slot} = alloca {}", ct.ll()).unwrap();
+                self.emit(format!("store {} {c}, ptr {slot}", ct.ll()));
+                args.push(format!("ptr {slot}"));
+                outs.push((p.name.to_string(), ct, slot, v));
+            } else {
+                args.push(format!("{}{} {c}", ct.ll(), ct.attr()));
+            }
+        }
+        let rt = self.m.c_type(ret)?;
+        let ret_ty = self.m.lower(ret, &HashMap::default())?;
+        let decl = format!("declare {} @{symbol}({})\n", rt.ret(), params.iter().map(|p| self.m.c_type(&p.ty).map(|t| if p.mutable { "ptr".to_string() } else { format!("{}{}", t.ll(), t.attr()) })).collect::<Res<Vec<_>>>()?.join(", "));
+        match self.m.foreign.get(&symbol) {
+            Some(d) if *d != decl => return Err(format!("`{symbol}` is declared twice with different C types")),
+            _ => {
+                self.m.foreign.insert(symbol.clone(), decl);
+            }
+        }
+        let r = if rt == CType::Void {
+            self.emit(format!("call void @{symbol}({})", args.join(", ")));
+            String::new()
+        } else {
+            let r = self.fresh("c");
+            self.emit(format!("{r} = call {} @{symbol}({})", rt.ret(), args.join(", ")));
+            r
+        };
+        for c in frees {
+            self.emit(format!("call void @strata_cstr_free(ptr {c})"));
+        }
+        // what C wrote through the out-pointers, back in the caller's variables
+        for (name, ct, slot, old) in outs {
+            let raw = self.fresh("o");
+            self.emit(format!("{raw} = load {}, ptr {slot}", ct.ll()));
+            let v = self.from_c(&raw, ct, &old.0, &callee, &symbol)?;
+            let v = self.take(v);
+            self.drop_value(&old)?;
+            let l = self.lookup(&name).ok_or(format!("no parameter `{name}`"))?;
+            self.store(&v, &l.slot)?;
+        }
+        if rt == CType::Void {
+            return Ok((ret_ty, String::new()));
+        }
+        let v = self.from_c(&r, rt, &ret_ty, &callee, &symbol)?;
+        Ok(self.temp(v))
+    }
+
+    /// A value as C has it (a `String`: a copy to free after the call).
+    fn to_c(&mut self, v: &V, ct: CType, callee: &str) -> Res<String> {
+        let r = self.fresh("toc");
+        match ct {
+            CType::Int { bits: 64, .. } => self.emit(format!("{r} = call i64 @strata_int_bits(i64 {})", v.1)),
+            CType::Int { bits, .. } => self.emit(format!("{r} = trunc i64 {} to i{bits}", v.1)),
+            CType::Str => self.emit(format!("{r} = call ptr @strata_cstr(ptr {}, ptr {callee})", v.1)),
+            CType::Double | CType::Bool | CType::Handle => return Ok(v.1.clone()),
+            CType::OptHandle => {
+                // `Some(h)` is `h`, `None` is NULL
+                let Ty::Con(_, args) = &v.0 else { return Err("an `Option` of a handle expected".into()) };
+                let h = args[0].clone();
+                let tag = self.tag(v);
+                let is = self.fresh("some");
+                self.emit(format!("{is} = icmp eq i64 {tag}, {}", self.m.tags["Some"]));
+                let (some, none, end) = (self.fresh_label("c.some"), self.fresh_label("c.none"), self.fresh_label("c.opt"));
+                self.cond_br(&bool_v(&is), &some, &none);
+                self.block(&some);
+                let f = self.field(v, 0, &h)?;
+                let from = self.cur.clone();
+                self.br(&end);
+                self.block(&none);
+                self.br(&end);
+                self.block(&end);
+                self.emit(format!("{r} = phi ptr [ {}, %{from} ], [ null, %{none} ]", f.1));
+            }
+            CType::Void => return Ok(String::new()),
+        }
+        Ok(r)
+    }
+
+    /// A value C gave back, as a value of type `t`.
+    fn from_c(&mut self, raw: &str, ct: CType, t: &Ty, callee: &str, symbol: &str) -> Res<V> {
+        let r = self.fresh("fromc");
+        match ct {
+            CType::Int { bits: 64, signed: true } => self.emit(format!("{r} = call i64 @strata_int_from_i64(i64 {raw})")),
+            CType::Int { bits: 64, signed: false } => self.emit(format!("{r} = call i64 @strata_int_from_u64(i64 {raw})")),
+            CType::Int { bits, signed: true } => self.emit(format!("{r} = sext i{bits} {raw} to i64")),
+            CType::Int { bits, signed: false } => self.emit(format!("{r} = zext i{bits} {raw} to i64")),
+            CType::Str => self.emit(format!("{r} = call ptr @strata_str_from_c(ptr {raw}, ptr {callee})")),
+            CType::Double | CType::Bool => return Ok((t.clone(), raw.to_string())),
+            CType::Handle => {
+                // NULL is no handle: such a result is declared `Option[...]`
+                let (bad, good) = (self.fresh_label("c.null"), self.fresh_label("c.handle"));
+                self.emit(format!("{r} = icmp eq ptr {raw}, null"));
+                self.cond_br(&bool_v(&r), &bad, &good);
+                self.block(&bad);
+                let shown = key(t);
+                let shown = crate::names::short(&shown);
+                let msg = format!("`{symbol}` gave NULL for a `{shown}` (declare it `Option[{shown}]` if it can be NULL)");
+                self.fault(Fault::Runtime, vec![Part::Lit(msg)])?;
+                self.block(&good);
+                return Ok((t.clone(), raw.to_string()));
+            }
+            CType::OptHandle => {
+                let Ty::Con(_, args) = t else { return Err("an `Option` of a handle expected".into()) };
+                return self.optional(&(args[0].clone(), raw.to_string()), t);
+            }
+            CType::Void => return Ok((t.clone(), String::new())),
+        }
+        Ok((t.clone(), r))
+    }
+
     // ---- reference counting ----
 
     /// Whether values of type `t` are counted objects (pointers to the heap).
     /// An `Int` is: a big one is an object (a small one, most of them, is
     /// skipped by the inline test of `@strata.int_dup` / `@strata.int_drop`).
     fn counted(&self, t: &Ty) -> bool {
-        has_value(t) && !is_never(t) && !matches!(self.m.repr(t), Ok(Ty::Float | Ty::Bool | Ty::Unit) | Err(_))
+        has_value(t) && !is_never(t) && !self.m.handle(t) && !matches!(self.m.repr(t), Ok(Ty::Float | Ty::Bool | Ty::Unit) | Err(_))
     }
 
     fn is_int(&self, t: &Ty) -> bool {
@@ -1697,6 +1903,9 @@ impl<'m, 'a> Func<'m, 'a> {
     /// string (as `json`'s): `concat` consumes it, or it is dropped.
     fn show(&mut self, v: &V) -> Res<String> {
         let t = self.m.repr(&v.0)?;
+        if self.m.handle(&t) {
+            return self.json(v);
+        }
         if self.is_dyn(&t) {
             return self.dyn_entry_call(v, DYN_SHOW);
         }
@@ -1724,6 +1933,10 @@ impl<'m, 'a> Func<'m, 'a> {
     /// A value as JSON, for messages and nested in other values.
     fn json(&mut self, v: &V) -> Res<String> {
         let t = self.m.repr(&v.0)?;
+        if self.m.handle(&t) {
+            // only its type: what it points to is C's
+            return Ok(self.m.string(&format!("\"<{}>\"", crate::names::short(&key(&t)))));
+        }
         if self.is_dyn(&t) {
             return self.dyn_entry_call(v, DYN_JSON);
         }
@@ -1759,6 +1972,12 @@ impl<'m, 'a> Func<'m, 'a> {
     fn equal(&mut self, a: &V, b: &V) -> Res<V> {
         let t = self.m.repr(&a.0)?;
         Ok(match &t {
+            t if self.m.handle(t) => {
+                // the same pointer
+                let r = self.fresh("eq");
+                self.emit(format!("{r} = icmp eq ptr {}, {}", a.1, b.1));
+                bool_v(&r)
+            }
             Ty::Unit => bool_v("true"),
             Ty::Int => {
                 // the same 64 bits, or two big integers of the same value

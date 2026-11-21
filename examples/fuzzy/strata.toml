@@ -1,0 +1,5 @@
+name = "fuzzy"
+
+[native]
+sources = ["c/text.c"]
+libs = ["m"]

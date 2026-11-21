@@ -28,6 +28,11 @@ unsafe extern "C" {
     fn strata_host_read_line();
     fn strata_host_write();
     fn strata_pid();
+    fn strata_int_from_u64();
+    fn strata_int_bits();
+    fn strata_cstr();
+    fn strata_cstr_free();
+    fn strata_str_from_c();
     fn strata_init();
     fn strata_seed();
     fn strata_step();
@@ -112,6 +117,11 @@ unsafe extern "C" {
 fn runtime() -> Vec<(&'static str, usize)> {
     vec![
         ("strata_concat", strata_concat as *const () as usize),
+        ("strata_int_from_u64", strata_int_from_u64 as *const () as usize),
+        ("strata_int_bits", strata_int_bits as *const () as usize),
+        ("strata_cstr", strata_cstr as *const () as usize),
+        ("strata_cstr_free", strata_cstr_free as *const () as usize),
+        ("strata_str_from_c", strata_str_from_c as *const () as usize),
         ("strata_concat_owned", strata_concat_owned as *const () as usize),
         ("strata_host_env_var", strata_host_env_var as *const () as usize),
         ("strata_host_args", strata_host_args as *const () as usize),
@@ -317,6 +327,7 @@ fn engine<'ctx>(ctx: &'ctx Context, ir: &str) -> Result<inkwell::execution_engin
     module.set_triple(&triple);
     module.set_data_layout(&machine.get_target_data().get_data_layout());
     module.run_passes("default<O2>", &machine, PassBuilderOptions::create()).map_err(|e| e.to_string())?;
+    native()?;
     let engine = module.create_jit_execution_engine(OptimizationLevel::Aggressive).map_err(|e| e.to_string())?;
     let table = runtime();
     // a runtime function left out of the table would be a call to address 0
@@ -332,6 +343,40 @@ fn engine<'ctx>(ctx: &'ctx Context, ir: &str) -> Result<inkwell::execution_engin
         }
     }
     Ok(engine)
+}
+
+/// The package's C (`[native]` in strata.toml), for its `extern c`
+/// declarations: compiled by clang into a shared library, linked with its
+/// libraries, and loaded into this process once. Other C symbols (libc's)
+/// are found in the process.
+fn native() -> Result<(), String> {
+    static LOADED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+    LOADED
+        .get_or_init(|| {
+            let Some((dir, native)) = crate::package::native() else { return Ok(()) };
+            let tmp = std::env::temp_dir().join(format!("strata-native-{}", std::process::id()));
+            std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+            // an empty file, so libraries alone still make a library
+            let empty = tmp.join("empty.c");
+            std::fs::write(&empty, "").map_err(|e| e.to_string())?;
+            let lib = tmp.join(if cfg!(target_os = "macos") { "native.dylib" } else { "native.so" });
+            let cc = std::env::var("STRATA_CC").unwrap_or_else(|_| "clang".into());
+            let out = std::process::Command::new(&cc)
+                .args(["-shared", "-fPIC", "-O2", "-o"])
+                .arg(&lib)
+                .arg(&empty)
+                .args(native.clang_args(dir))
+                .output()
+                .map_err(|e| format!("can't run `{cc}` to compile the package's C ([native] in strata.toml): {e}"))?;
+            if !out.status.success() {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err(format!("`{cc}` failed on the package's C ([native] in strata.toml):\n{}", String::from_utf8_lossy(&out.stderr).trim_end()));
+            }
+            let loaded = inkwell::support::load_library_permanently(&lib).map_err(|e| format!("can't load the package's C: {e:?}"));
+            let _ = std::fs::remove_dir_all(&tmp);
+            loaded
+        })
+        .clone()
 }
 
 pub fn run(ir: &str, program: &str, args: &[String]) -> Result<i32, String> {

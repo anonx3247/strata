@@ -1543,3 +1543,138 @@ fn json_compiles() {
     let (out, code) = case(&d, "json", json_case::PROGRAM);
     assert_eq!((out.as_str(), code), (json_case::OUTPUT, 0));
 }
+
+// `extern c`: the package's C (`[native]`), called from compiled code with
+// each type converted both ways; the same output built and with the JIT.
+#[test]
+fn extern_c_calls() {
+    if !have_clang() {
+        return;
+    }
+    let d = tmp("extern_c");
+    let strata = env!("CARGO_BIN_EXE_strata");
+    std::fs::write(d.join("strata.toml"), "name = \"ffi\"\n\n[native]\nsources = [\"ffi.c\"]\n").unwrap();
+    std::fs::write(
+        d.join("ffi.c"),
+        r#"#include <ctype.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+int8_t neg8(int8_t x) { return (int8_t)-x; }
+uint8_t inc8(uint8_t x) { return (uint8_t)(x + 1); }
+uint64_t umax(void) { return UINT64_MAX; }
+int64_t imin(void) { return INT64_MIN; }
+uint64_t half(uint64_t x) { return x / 2; }
+bool even(int32_t x) { return x % 2 == 0; }
+double scale(double x, bool twice) { return twice ? x * 2 : x; }
+const char *shout(const char *s) {
+  static char buf[64];
+  size_t i = 0;
+  for (; s[i] && i < 63; i++) buf[i] = (char)toupper((unsigned char)s[i]);
+  buf[i] = 0;
+  return buf;
+}
+typedef struct { int32_t n; } Counter;
+int32_t counter_open(int32_t start, Counter **out) {
+  if (start < 0) { *out = NULL; return 1; }
+  *out = malloc(sizeof **out);
+  (*out)->n = start;
+  return 0;
+}
+int32_t counter_bump(Counter *c) { return ++c->n; }
+void counter_close(Counter *c) { free(c); }
+Counter *nothing(void) { return NULL; }
+void twice(int32_t *x) { *x *= 2; }
+"#,
+    )
+    .unwrap();
+    let (ok, out) = (|| {
+        let o = Command::new(strata).args(["--file", ".", "edit", "c"]).current_dir(&d).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let mut o = o;
+        o.stdin.take().unwrap().write_all(
+            br#"extern c type Counter
+
+extern c fn neg8(x: I8) -> I8
+extern c fn inc8(x: U8) -> U8
+extern c fn umax() -> U64
+extern c fn imin() -> I64
+extern c fn half(x: U64) -> U64
+extern c fn even(x: I32) -> Bool
+extern c fn scale(x: Float, twice: Bool) -> Float
+extern c fn shout(s: String) -> String
+extern c fn counter_open(start: I32, mut c: Option[Counter]) -> I32
+extern c fn counter_bump(c: Counter) -> I32
+extern c fn counter_close(c: Counter)
+extern c fn nothing() -> Counter
+extern c fn twice(mut x: I32)
+
+pub fn numbers() -> List[Int] {
+  [neg8(5), neg8(-128), inc8(254), umax(), imin(), half(umax()), (if even(4) { 1 } else { 0 })]
+}
+
+pub fn texts() -> String {
+  f"{shout("hello, c")} {scale(1.5, true)} {scale(1.5, false)}"
+}
+
+pub fn counting() -> List[Int] {
+  mut c: Option[Counter] = None
+  code := counter_open(41, mut c)
+  mut x: I32 = 21
+  twice(mut x)
+  match c {
+    Some(h) => {
+      first := counter_bump(h)
+      second := counter_bump(h)
+      counter_close(h)
+      [code, first, second, x]
+    }
+    None => [code],
+  }
+}
+
+pub fn refused() -> List[Int] {
+  mut c: Option[Counter] = None
+  code := counter_open(-1, mut c)
+  [code, (if c == None { 1 } else { 0 })]
+}
+
+pub fn null_handle() -> Int {
+  counter_bump(nothing())
+}
+
+pub fn nul_string() -> String {
+  shout("a" + chr(0) + "b")
+}
+"#,
+        )
+        .unwrap();
+        let r = o.wait_with_output().unwrap();
+        (r.status.success(), String::from_utf8_lossy(&r.stderr).to_string())
+    })();
+    assert!(ok, "{out}");
+    save(
+        &d.join("main.strata"),
+        "use c\n\nfn main() {\n  print(c.numbers())\n  print(c.texts())\n  print(c.counting())\n  print(c.refused())\n}\n\ntest \"null\" {\n  c.null_handle()\n}\n\ntest \"nul\" {\n  c.nul_string()\n}\n",
+    );
+    // (beyond 64 bits, an `Int` shows as a string of digits)
+    let want = "[-5,-128,255,\"18446744073709551615\",-9223372036854775808,9223372036854775807,1]\nHELLO, C 3.0 1.5\n[0,42,43,42]\n[1,1]\n";
+    // built: the same output, and every object freed
+    let exe = d.join("prog");
+    let b = Command::new(strata).args(["build", "-o"]).arg(&exe).current_dir(&d).output().unwrap();
+    assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
+    let (out, code) = freed_everything(output(Command::new(&exe).current_dir(&d).env("STRATA_MEMORY", "check")), &d);
+    assert_eq!((out.as_str(), code), (want, 0));
+    #[cfg(feature = "jit")]
+    {
+        let (out, code) = output(Command::new(strata).args(["run", "--jit", "."]).current_dir(&d));
+        assert_eq!((out.as_str(), code), (want, 0));
+        // compiled tests: C's NULL for a handle, a NUL in a string
+        let (out, _) = output(Command::new(strata).args(["test", "--jit"]).current_dir(&d));
+        assert!(out.contains("`nothing` gave NULL for a `Counter` (declare it `Option[Counter]` if it can be NULL)"), "{out}");
+        assert!(out.contains("a string passed to `shout` holds a NUL character"), "{out}");
+    }
+    // the interpreter doesn't call C
+    let (out, code) = output(Command::new(strata).args(["run", "--interpret", "."]).current_dir(&d));
+    assert!(code != 0 && out.contains("`neg8` is an `extern c` function: only compiled code calls it"), "{out}");
+}

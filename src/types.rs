@@ -1053,11 +1053,16 @@ impl<'a> Checker<'a> {
         if !f.type_params.is_empty() {
             self.err(format!("`{kw} fn {}` can't have type parameters: C has no generics", crate::names::short(&f.name)));
         }
+        if crate::names::short(&f.name).starts_with("strata_") {
+            self.err(format!("`{kw} fn {}`: names starting with `strata_` are the runtime's", crate::names::short(&f.name)));
+        }
         for p in &f.params {
             if p.comptime {
                 self.err(format!("`{kw} fn` parameter `{}` can't be `comptime`", p.name));
             }
-            if let Err(why) = self.ffi_type(&p.ty, p.mutable) {
+            if p.ty == TypeExpr::Unit {
+                self.err(format!("`{kw} fn {}`, parameter `{}`: `()` is no value to pass (leave the parameter out)", crate::names::short(&f.name), p.name));
+            } else if let Err(why) = self.ffi_type(&p.ty, p.mutable) {
                 self.err(format!("`{kw} fn {}`, parameter `{}`: {why}", crate::names::short(&f.name), p.name));
             }
         }
@@ -1106,8 +1111,9 @@ impl<'a> Checker<'a> {
                     Err(format!("`{shown}` doesn't cross to C: use a sized integer, `Float`, `Bool`, `String`, `()` or an `extern c type`"))
                 }
             }
+            TypeExpr::Named(n, args) if n.as_str() == "Option" && matches!(args.as_slice(), [TypeExpr::Named(h, x)] if x.is_empty() && self.env.externs.contains_key(h) && self.env.types.contains_key(h)) => Ok(()),
             TypeExpr::Unit => Err("`()` can't be `mut`".into()),
-            _ => Err(format!("`{shown}` doesn't cross to C: use a sized integer, `Float`, `Bool`, `String`, `()` or an `extern c type`")),
+            _ => Err(format!("`{shown}` doesn't cross to C: use a sized integer, `Float`, `Bool`, `String`, `()`, an `extern c type` or an `Option` of one")),
         }
     }
 

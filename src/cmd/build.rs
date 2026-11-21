@@ -25,10 +25,14 @@ pub fn build(args: &Args) -> Result<bool, String> {
     }
     // the executable is named after the package, or the file
     let path = std::path::Path::new(&path);
-    let name = match package::find(path) {
-        Ok(Some(pkg)) => pkg.name,
-        _ => path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "main".into()),
+    let pkg = package::find(path)?;
+    let name = match &pkg {
+        Some(pkg) => pkg.name.clone(),
+        None => path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "main".into()),
     };
+    // the package's C, for its `extern c` declarations
+    let mut native = pkg.as_ref().map(|p| p.native.clang_args(&p.dir)).unwrap_or_default();
+    native.retain(|a| a != "-lm"); // always linked
     let out = args.val("-o").map(String::from).unwrap_or(name);
     let dir = std::env::temp_dir().join(format!("strata-build-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -40,6 +44,7 @@ pub fn build(args: &Args) -> Result<bool, String> {
         .args(["-O2", "-Wno-override-module", "-o", &out])
         .arg(&ll)
         .arg(&rt)
+        .args(&native)
         .arg("-lm")
         .status()
         .map_err(|e| format!("can't run `{cc}` (a C compiler with LLVM, e.g. clang; set STRATA_CC to choose one): {e}"));
