@@ -116,6 +116,17 @@ fn edit_file(args: &Args, cmd: &str, f: &str) -> Result<bool, String> {
     }
     let changes = store::changes(&old, &new);
     println!("{f}: {} definition{} changed, {} in all", changes.len(), if changes.len() == 1 { "" } else { "s" }, new.decls.len());
+    // a script or a folder outside a package is stored as written (a
+    // package's edit, `strata edit`, is refused instead), but checked, so a mistake shows
+    // now: the exit code says so. One module file of a folder can't be
+    // checked alone (its neighbours may not be written yet).
+    let alone = in_package.is_none() && (dir || new.decls.iter().all(|d| d.module.is_empty()));
+    let rep = if alone { full_check(&new) } else { types::CheckReport::default() };
+    if !rep.ok() {
+        print_errors(&rep);
+        eprintln!("\nwritten, but {f} doesn't check");
+        return Ok(false);
+    }
     Ok(true)
 }
 
