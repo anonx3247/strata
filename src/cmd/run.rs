@@ -23,8 +23,11 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
     }
     let Some(name) = rest.first() else {
         let program_args = args.flags.get("--").cloned().unwrap_or_default();
-        if args.flag("--jit") && env.fns.contains_key(&Symbol::new("main")) {
-            if let Some(code) = run_jit(p, &prog, &program_args)? {
+        // compiled in memory when this strata has the JIT (unless asked not
+        // to, or tracing); `--jit` insists, and says why when it can't
+        let jit = args.flag("--jit") || (cfg!(feature = "jit") && !args.flag("--interpret") && !args.flag("--trace"));
+        if jit && env.fns.contains_key(&Symbol::new("main")) {
+            if let Some(code) = run_jit(p, &prog, &program_args, args.flag("--jit"))? {
                 std::process::exit(code);
             }
         }
@@ -61,21 +64,24 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
     Ok(true)
 }
 
-/// `strata run --jit`: compile `main` and run it in this process; `None`
-/// when the program uses what doesn't compile yet (it is then interpreted).
+/// `strata run` with the JIT: compile `main` and run it in this process;
+/// `None` when the program uses what doesn't compile yet (it is then
+/// interpreted, with a note saying why if `--jit` was asked for).
 #[cfg(feature = "jit")]
-fn run_jit(p: &Program, prog: &str, args: &[String]) -> Result<Option<i32>, String> {
+fn run_jit(p: &Program, prog: &str, args: &[String], asked: bool) -> Result<Option<i32>, String> {
     match llvm::compile(p, "main") {
         Ok(ir) => llvm::jit::run(&ir, prog, args).map(Some),
         Err(e) => {
-            eprintln!("note: interpreted, not compiled: {e}");
+            if asked {
+                eprintln!("note: interpreted, not compiled: {e}");
+            }
             Ok(None)
         }
     }
 }
 
 #[cfg(not(feature = "jit"))]
-fn run_jit(_: &Program, _: &str, _: &[String]) -> Result<Option<i32>, String> {
+fn run_jit(_: &Program, _: &str, _: &[String], _: bool) -> Result<Option<i32>, String> {
     Err("this strata was built without the JIT: build it with `cargo build --release --features jit` (needs LLVM 23)".into())
 }
 
