@@ -141,17 +141,22 @@ fn prec(e: &Expr) -> u8 {
         },
         Expr::Is(..) => 3,
         Expr::Lambda(..) | Expr::Return(..) | Expr::Range(..) => 0,
-        Expr::Except(..) if coalesce(e) => 4,
-        Expr::Except(..) => 7,
+        Expr::Except(..) | Expr::Or(..) if shorthand(e) => 4,
+        Expr::Except(..) | Expr::Or(..) => 7,
         Expr::Un(..) | Expr::Mut(..) => 7,
         _ => 8,
     }
 }
 
-/// `x except { fallback }` is written `x ?? fallback` when the fallback is a
-/// plain value: no error name, no block, no `return`.
-fn coalesce(e: &Expr) -> bool {
-    matches!(e, Expr::Except(_, None, fb) if !matches!(**fb, Expr::Block(..) | Expr::If(..) | Expr::Match(..) | Expr::Return(..) | Expr::Lambda(..)))
+/// `x or { v }` is written `x ?? v`, and `x except { v }` is `x !! v`, when
+/// the fallback is a plain value on one line: no error name, no block, no
+/// `return`.
+fn shorthand(e: &Expr) -> bool {
+    let fb = match e {
+        Expr::Except(_, None, fb) | Expr::Or(_, fb) => fb,
+        _ => return false,
+    };
+    !matches!(**fb, Expr::Block(..) | Expr::If(..) | Expr::Match(..) | Expr::Return(..) | Expr::Lambda(..)) && !expr(fb, 0).contains('\n')
 }
 
 fn wrap(e: &Expr, min: u8, d: usize) -> String {
@@ -386,12 +391,16 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Return(x) if **x == Expr::Unit => "return".into(),
         Expr::Return(x) => format!("return {}", expr(x, d)),
         Expr::Try(x, k) => format!("{}{}", wrap(x, 8, d), if *k == TryKind::Result { "!" } else { "?" }),
-        Expr::Except(x, _, fb) if coalesce(e) => format!("{} ?? {}", wrap(x, 5, d), wrap(fb, 4, d)),
-        Expr::Except(x, name, fb) => {
-            let head = match name {
-                Some(n) => format!("{} except {n}", wrap(x, 8, d)),
-                None => format!("{} except", wrap(x, 8, d)),
+        Expr::Except(x, _, fb) if shorthand(e) => format!("{} !! {}", wrap(x, 5, d), wrap(fb, 4, d)),
+        Expr::Or(x, fb) if shorthand(e) => format!("{} ?? {}", wrap(x, 5, d), wrap(fb, 4, d)),
+        Expr::Except(_, _, fb) | Expr::Or(_, fb) => {
+            let (x, keyword) = match e {
+                Expr::Except(x, Some(n), _) => (x, format!("except {n}")),
+                Expr::Except(x, None, _) => (x, "except".to_string()),
+                Expr::Or(x, _) => (x, "or".to_string()),
+                _ => unreachable!(),
             };
+            let head = format!("{} {keyword}", wrap(x, 8, d));
             // a short fallback stays on the line: `load(p) except { default() }`
             let short = match &**fb {
                 Expr::Block(..) => None,

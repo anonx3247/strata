@@ -58,7 +58,7 @@ Still open:
 #### Other syntax nits (noticed 2026-11-20; not decided)
 
 - **Dict and set literals** (built): `Dict { "a": 1 }`, `Set { 1, 2 }`, `Dict[String, Int] {}`, and comprehensions `Dict { w: len(w) for w in words }`, `Set { x % 3 for x in xs }` (`Expr::Dict`, `Expr::Set`, `Comp` with a `CompKind`; desugared to `dict` / `set`). In a `for` / `if` / `match` header they need parentheses, like record literals.
-- **`except` inside a `for` header** reads badly: `for _ in 0..opts.times except { 1 } {`. Proposed: the renderer parenthesizes any header expression (`for`, `while`, `if`, `match`) that ends in a `}`: `for _ in 0..(opts.times except { 1 }) {`. The parser accepts both. Done instead (user's choice): `a ?? b` (`Expr::Except` with no name; the renderer writes a plain-value fallback as `??` and keeps `except { … }` for blocks, `return` and named errors), so `for _ in 0..opts.times ?? 1 {`.
+- **`except` inside a `for` header** reads badly: `for _ in 0..opts.times except { 1 } {`. Proposed: the renderer parenthesizes any header expression (`for`, `while`, `if`, `match`) that ends in a `}`: `for _ in 0..(opts.times except { 1 }) {`. The parser accepts both. Done instead (user's choice, 2026-11-21): `or { … }` / `??` for an `Option` (`Expr::Or`) and `except { … }` / `!!` for a `Result` (`Expr::Except`), each only on its own type, so `Result[Option[T], E]` isn't ambiguous. The short forms are what the renderer writes for a single-value, one-line fallback. So `for _ in 0..opts.times ?? 1 {`.
 - **`len(xs)` and `xs.len()`** are both accepted, as for every builtin; the renderer could pick one form (method form for chains, say) so code reads the same everywhere.
 
 #### Default values for record fields (built 2026-11-20)

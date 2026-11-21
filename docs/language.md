@@ -26,7 +26,7 @@ trait Db {
 fn ship(mut db: Db, id: OrderId, tracking: NonEmptyString) -> Result[Order, ShipError]
   ensures match it { Ok(o) => o is Shipped, Err(_) => true }
 {
-  let order = db.load(id) except { return Err(NotFound) }
+  let order = db.load(id) or { return Err(NotFound) }
   match order {
     Pending { id, lines } => {
       let o = Shipped { id, lines, tracking }
@@ -247,9 +247,9 @@ They are written in the tree as such, so they render back as written. When the p
 
 Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7`, with optional parameter types (`(s: String) -> len(s)`; a refined one, such as `(n: Positive) -> …`, is checked on every call, like a named function's) and a block for a longer body (`x -> { ... }`). `return e` leaves the enclosing function or lambda early.
 
-## Errors: `Result`, `Option`, `!`, `?` and `except`
+## Errors: `Result`, `Option`, `!`, `?`, `except` and `or`
 
-A function that can fail returns a `Result` (or an `Option` for "maybe absent"). Three operators keep the happy path straight:
+A function that can fail returns a `Result` (or an `Option` for "maybe absent"). Each has its own pair of operators: `!` and `except` for a `Result`, `?` and `or` for an `Option`.
 
 ```rust
 fn transfer(from: Account, to: Account, amount: Cents) -> Result[(Account, Account), WithdrawError] {
@@ -259,14 +259,18 @@ fn transfer(from: Account, to: Account, amount: Cents) -> Result[(Account, Accou
 fn status_of(q: MemQueue, id: TaskId) -> Option[Status] {
   Some(q.entries.find(e -> e.task.id == id)?.status)  // None is returned from `status_of`
 }
-let port = parse_int(text) ?? 8080                          // handle it here: a fallback value
-let n = parse(s) except e { return describe_error(e) }      // the error, by name; the block may return
+let port = parse_int(text) ?? 8080                          // an Option: its value, or a fallback
+let user = find_user(id) or { return not_found() }          // ... or a block, which may return
+let n = parse(s) !! 0                                       // a Result: its value, or a fallback
+let n = parse(s) except e { return describe_error(e) }      // ... or a block, with the error by name
 ```
 
 - `e!` takes the `Ok` value of a `Result`, or returns its `Err` from the function. The error must fit the function's error type: the same type, or a variant of it, or a member of a union (there is no conversion function).
 - `e?` does the same for an `Option`: the `Some` value, or return `None`.
-- `e ?? fallback` handles a failed `Result` or a missing `Option` value inline: `e`'s value, or else the fallback (`a ?? b ?? 0` tries each in turn). It binds tighter than comparisons and looser than arithmetic: `n ?? 0 + 1` is `n ?? (0 + 1)`, `n ?? 0 == 1` is `(n ?? 0) == 1`.
-- `e except { fallback }` is the same with a block, for a longer fallback or one that leaves with `return`; a plain value is always written with `??`. `except err { ... }` names the error (an `Option` has none). The fallback must produce the same type, or leave with `return`.
+- `e except { fallback }` handles a failed `Result` here: the `Ok` value, or else the block. `except err { ... }` names the error. The fallback must produce the same type, or leave with `return`.
+- `e or { fallback }` does the same for an `Option`: the `Some` value, or else the block (`None` has nothing to name).
+- `e !! value` and `e ?? value` are the short forms, for a fallback that is a single value on one line; such a fallback is always written that way. They bind tighter than comparisons and looser than arithmetic (`n ?? 0 + 1` is `n ?? (0 + 1)`, `n ?? 0 == 1` is `(n ?? 0) == 1`), and chain: `a ?? b ?? 0`.
+- Each works on its own type only: `except` / `!!` on an `Option`, or `or` / `??` on a `Result`, is an error. So a `Result[Option[T], E]` reads one way: `(load(k) !! None) ?? default` handles the error, then the missing value.
 - They chain: `load(path)!.lines()`, `find(xs, p)?.name`.
 
 ## Built-in types
@@ -351,7 +355,7 @@ fn app() -> Router {
 }
 
 fn show_user(req: Request) -> Response {
-  let id = req.param("id") except { return not_found() }
+  let id = req.param("id") or { return not_found() }
   ok_text(f"user {id}")
 }
 

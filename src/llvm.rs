@@ -1661,7 +1661,13 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.block(&ok);
                 self.field(&v, 0, &t)?
             }
-            Expr::Except(x, name, fallback) => {
+            // `x or { … }` / `x ?? v` on an Option, `x except { … }` / `x !! v` on a Result
+            Expr::Except(..) | Expr::Or(..) => {
+                let (x, name, fallback) = match e {
+                    Expr::Except(x, name, fb) => (x, name, fb),
+                    Expr::Or(x, fb) => (x, &None, fb),
+                    _ => unreachable!(),
+                };
                 let want = self.ty_of(e)?;
                 let v = self.expr(x)?;
                 let vt = self.m.repr(&v.0)?;

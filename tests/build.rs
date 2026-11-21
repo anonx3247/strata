@@ -108,7 +108,7 @@ fn records_variants_and_generics_run_as_interpreted() {
             0,
         ),
         ("own_methods", "type Item = { name: String, price: Int }\nimpl Item {\n  fn new(name: String) -> Item { Item { name: name, price: 0 } }\n  fn label(self) -> String { f\"{self.name}: {self.price}\" }\n}\nfn main() -> () { print(Item.new(\"cup\").label()) }", 0),
-        ("refined_argument", "fn f(o: Option[Positive]) -> Int { o except { 0 } }\nfn main() -> () { print(f(Some(3))) let x: Option[Int] = Some(-2) print(f(x)) }", 101),
+        ("refined_argument", "fn f(o: Option[Positive]) -> Int { o ?? 0 }\nfn main() -> () { print(f(Some(3))) let x: Option[Int] = Some(-2) print(f(x)) }", 101),
         ("main_err", "fn main() -> Result[(), String] { print(\"working\") Err(\"it broke\") }", 1),
         (
             "errors",
