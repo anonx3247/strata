@@ -30,6 +30,26 @@ pub struct Package {
     pub verify: Policy,
     /// each change made through strata is also a git commit (default: yes)
     pub auto_commit: bool,
+    /// `[json]`: how `std.json` reads JSON in this package
+    pub json: JsonRules,
+}
+
+/// `[json]`: `unknown_keys = "error"` makes `decode` refuse keys a record
+/// doesn't have (by default they are ignored).
+#[derive(serde::Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct JsonRules {
+    #[serde(default)]
+    pub unknown_keys: Option<String>,
+}
+
+/// The settings of the package a command works on (the first one loaded),
+/// for compile-time code: `std.typing.setting("json.unknown_keys")`.
+static SETTINGS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+
+/// A setting of the package being worked on, by `section.key`.
+pub fn setting(key: &str) -> Option<String> {
+    SETTINGS.get()?.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
 }
 
 /// `[verify]`: what `strata verify` requires, each as a list of modules
@@ -70,13 +90,25 @@ struct Raw {
     verify: Policy,
     #[serde(default)]
     auto_commit: Option<bool>,
+    #[serde(default)]
+    json: JsonRules,
 }
 
 pub fn load(dir: &Path) -> Result<Package, String> {
     let path = dir.join(FILE);
     let src = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let raw: Raw = toml::from_str(&src).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(Package { dir: dir.to_path_buf(), name: raw.name, exports: raw.exports, verify: raw.verify, auto_commit: raw.auto_commit.unwrap_or(true) })
+    if let Some(k) = &raw.json.unknown_keys {
+        if k != "error" && k != "ignore" {
+            return Err(format!("{}: [json] unknown_keys is \"error\" or \"ignore\", not {k:?}", path.display()));
+        }
+    }
+    let mut settings = vec![];
+    if let Some(k) = &raw.json.unknown_keys {
+        settings.push(("json.unknown_keys".to_string(), k.clone()));
+    }
+    let _ = SETTINGS.set(settings);
+    Ok(Package { dir: dir.to_path_buf(), name: raw.name, exports: raw.exports, verify: raw.verify, auto_commit: raw.auto_commit.unwrap_or(true), json: raw.json })
 }
 
 /// The package a file or folder belongs to: the nearest folder at or above it
@@ -136,6 +168,8 @@ fn walk(path: &Path, ext: &str) -> Result<Vec<PathBuf>, String> {
 
 /// The program in a folder (each `.strata` file a module) or a single file.
 pub fn program(path: &Path) -> Result<Program, String> {
+    // the package's settings, for compile-time code
+    find(if path.is_dir() { path } else { path.parent().unwrap_or(Path::new(".")) })?;
     if !path.is_dir() {
         let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         return decode_file(path, &bytes);
