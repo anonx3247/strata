@@ -16,6 +16,8 @@ unsafe extern "C" {
     fn strata_concat();
     fn strata_host_env_var();
     fn strata_host_args();
+    fn strata_prog_name();
+    fn strata_options_error();
     fn strata_host_remove();
     fn strata_host_make_dir();
     fn strata_host_list_dir();
@@ -77,6 +79,8 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_concat", strata_concat as *const () as usize),
         ("strata_host_env_var", strata_host_env_var as *const () as usize),
         ("strata_host_args", strata_host_args as *const () as usize),
+        ("strata_prog_name", strata_prog_name as *const () as usize),
+        ("strata_options_error", strata_options_error as *const () as usize),
         ("strata_host_remove", strata_host_remove as *const () as usize),
         ("strata_host_make_dir", strata_host_make_dir as *const () as usize),
         ("strata_host_list_dir", strata_host_list_dir as *const () as usize),
@@ -152,7 +156,15 @@ pub fn run(ir: &str, program: &str, args: &[String]) -> Result<i32, String> {
     module.set_data_layout(&machine.get_target_data().get_data_layout());
     module.run_passes("default<O2>", &machine, PassBuilderOptions::create()).map_err(|e| e.to_string())?;
     let engine = module.create_jit_execution_engine(OptimizationLevel::Aggressive).map_err(|e| e.to_string())?;
-    for (name, addr) in runtime() {
+    let table = runtime();
+    // a runtime function left out of the table would be a call to address 0
+    for f in module.get_functions() {
+        let name = f.get_name().to_string_lossy();
+        if f.count_basic_blocks() == 0 && name.starts_with("strata_") && !table.iter().any(|(n, _)| *n == name) {
+            return Err(format!("the JIT does not know the runtime's `{name}` (add it to `runtime()` in src/llvm/jit.rs)"));
+        }
+    }
+    for (name, addr) in table {
         if let Some(f) = module.get_function(name) {
             engine.add_global_mapping(&f, addr);
         }

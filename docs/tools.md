@@ -116,9 +116,10 @@ A compiled program behaves as `strata run`: the same output, and contracts are c
 - f-strings with format specs (`{x:.2}`, `{n:>5}`, `{n:05}`, `{s:*^9}`), and `print`, `to_string`, `abs`, `min`, `max`, `float`, `floor`, `ceil`, `round`, `sqrt`;
 - `mut` parameters and receivers (`restock(mut line.qty, 5)`, `mut console.print(s)`): the function changes the caller's variable in place, and the variable's declared type is checked after the call;
 - capabilities: `main` can ask for `Console`, `Files` and `Environment` (std.io, std.fs, std.process), and gets the terminal, the disk and the process, as with `strata run` (the program's arguments too). A parameter whose type is a trait (`console: Console`) is compiled once per implementation passed to it, as the language defines it (`console: C` for some `C: Console`): the real console and a `Recorder` in a test each get their own. A trait used as the type of a field, a list element or a `let` (`{ console: Console }`, `List[Shape]`) holds any implementation: the value carries its implementation's table of methods, and calls go through it;
+- options: `main` can ask for a record that derives `CommandLine` (std.cli); the compiled program reads it with the same `from_args`, so `--help` and the messages for bad arguments are `strata run`'s (exit code 0 after the help, 2 after an error). The usage line names the executable as it was started (`strata build` names it after the package, as `strata run` does);
 - `main` returns `()`, an exit code, or a `Result` of either.
 
-Anything else (regexes, options from the command line) is refused, naming the function and what it uses: ``can't compile `main`: the built-in `matches` on (String, String) is not compiled yet``. `parse_int` of a number that doesn't fit in 64 bits is an overflow fault, as any `Int` overflow is (the interpreter makes a big integer). Memory is never freed yet.
+Anything else (regexes, for one) is refused, naming the function and what it uses: ``can't compile `main`: the built-in `matches` on (String, String) is not compiled yet``. `parse_int` of a number that doesn't fit in 64 bits is an overflow fault, as any `Int` overflow is (the interpreter makes a big integer). Memory is never freed yet.
 
 ### The JIT
 
