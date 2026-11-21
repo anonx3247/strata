@@ -1331,6 +1331,16 @@ Str *strata_host_read_file(Str *path, Str **kind, Str **msg) {
   return s;
 }
 
+// The file's bytes, each a small `Int`.
+List *strata_host_read_bytes(Str *path, Str **kind, Str **msg) {
+  Str *s = strata_host_read_file(path, kind, msg);
+  if (!s) return NULL;
+  List *l = strata_list_new(s->len);
+  for (int64_t i = 0; i < s->len; i++) l = append(l, (int64_t)(unsigned char)s->bytes[i]);
+  if (strata_release(s)) strata_free(s);
+  return l;
+}
+
 _Bool strata_host_write_file(Str *path, Str *text, _Bool append, Str **kind, Str **msg) {
   FILE *f = fopen(cstr(path), append ? "ab" : "wb");
   if (!f) {

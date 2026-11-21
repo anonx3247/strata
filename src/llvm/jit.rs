@@ -25,6 +25,7 @@ unsafe extern "C" {
     fn strata_host_exists();
     fn strata_host_write_file();
     fn strata_host_read_file();
+    fn strata_host_read_bytes();
     fn strata_host_read_line();
     fn strata_host_write();
     fn strata_pid();
@@ -139,6 +140,7 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_host_exists", strata_host_exists as *const () as usize),
         ("strata_host_write_file", strata_host_write_file as *const () as usize),
         ("strata_host_read_file", strata_host_read_file as *const () as usize),
+        ("strata_host_read_bytes", strata_host_read_bytes as *const () as usize),
         ("strata_host_read_line", strata_host_read_line as *const () as usize),
         ("strata_host_write", strata_host_write as *const () as usize),
         ("strata_pid", strata_pid as *const () as usize),

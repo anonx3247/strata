@@ -555,6 +555,7 @@ declare i64 @strata_pid()
 declare void @strata_host_write(i64, ptr)
 declare ptr @strata_host_read_line()
 declare ptr @strata_host_read_file(ptr, ptr, ptr)
+declare ptr @strata_host_read_bytes(ptr, ptr, ptr)
 declare i1 @strata_host_write_file(ptr, ptr, i1, ptr, ptr)
 declare i1 @strata_host_exists(ptr)
 declare ptr @strata_host_list_dir(ptr, ptr, ptr)
@@ -4633,7 +4634,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let r = self.call(&s_ty, &format!("@strata_{name}"), &vs)?;
                 self.optional(&r, &t)?
             }
-            "host_read_file" | "host_list_dir" => {
+            "host_read_file" | "host_list_dir" | "host_read_bytes" => {
                 // a value, or NULL and the failure
                 let (k, m) = (self.fresh("kind"), self.fresh("msg"));
                 writeln!(self.allocas, "  {k} = alloca ptr\n  {m} = alloca ptr").unwrap();
@@ -4642,7 +4643,12 @@ impl<'m, 'a> Func<'m, 'a> {
                 let r = self.call(&s_ty, &format!("@strata_{name}"), &args)?;
                 let ok = self.fresh("ok");
                 self.emit(format!("{ok} = icmp ne ptr {}, null", r.1));
-                let okv = (if name == "host_list_dir" { lst } else { Ty::Str }, r.1);
+                let okv = match name {
+                    "host_list_dir" => lst,
+                    "host_read_bytes" => Ty::Con(Symbol::new("List"), vec![Ty::Int]),
+                    _ => Ty::Str,
+                };
+                let okv = (okv, r.1);
                 self.outcome(&ok, Some(okv), &k, &m, &t)?
             }
             "host_write_file" | "host_make_dir" | "host_remove" => {
@@ -4827,6 +4833,21 @@ impl<'m, 'a> Func<'m, 'a> {
                 (a.clone(), r)
             }
             ("float", [Ty::Int]) => self.call(&Ty::Float, "@strata_int_to_float", &vs)?,
+            ("float_bits", [Ty::Float]) => {
+                let b = self.fresh("bits");
+                self.emit(format!("{b} = bitcast double {} to i64", vs[0].1));
+                let r = self.call(&Ty::Int, "@strata_int_from_u64", &[(Ty::Int, b)])?;
+                self.temp(r)
+            }
+            ("float_from_bits", [Ty::Int]) => {
+                // the low 64 bits; a NaN is not a `Float`
+                let b = self.call(&Ty::Int, "@strata_int_bits", &vs)?;
+                let f = self.fresh("f");
+                self.emit(format!("{f} = bitcast i64 {} to double", b.1));
+                let ok = self.fresh("num");
+                self.emit(format!("{ok} = fcmp ord double {f}, 0.0"));
+                self.option_if(&ok, &(Ty::Float, f), &Ty::Con("Option".into(), vec![Ty::Float]))?
+            }
             ("sqrt", [Ty::Float]) => {
                 // no NaN: the square root of a negative number is a fault
                 self.call(&Ty::Float, "@strata_sqrt", &vs)?

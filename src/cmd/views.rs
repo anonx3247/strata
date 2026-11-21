@@ -152,6 +152,13 @@ pub fn pack(args: &Args) -> Result<bool, String> {
 pub fn header(args: &Args) -> Result<bool, String> {
     let file = args.pos.get(1).ok_or("usage: strata header <FILE.strata>")?;
     let bytes = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
+    // each definition's tree as a `std.ast` value, one per line (a bundle's too)
+    if args.flag("--tree") {
+        for d in binary::read(&bytes).map_err(|e| format!("{file}: {e}"))?.program.decls {
+            println!("{}", crate::ast_value::decl(&d));
+        }
+        return Ok(true);
+    }
     let h = binary::read_header(&bytes).map_err(|e| format!("{file}: {e}"))?;
     let hex = |h: &binary::Hash| h[..8].iter().map(|b| format!("{b:02x}")).collect::<String>();
     println!("module {}: {} definitions", if h.module.is_empty() { "main" } else { &h.module }, h.entries.len());

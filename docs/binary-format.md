@@ -5,10 +5,10 @@ Strata code is stored as its syntax tree, not its text, in a binary format of ou
 - **Text goes in through an edit.** `strata edit` (from stdin or an editor) and `strata add FILE` parse text and store the result. Nothing else reads text: a `.strata` file that holds text is refused.
 - **Text comes out through the views.** `strata render` prints a module, `render --split DIR` writes one text file per module (`shop/orders.st`), `view` and `strata ui` show it.
 - `strata pack app.strata` writes a bundle; `--file`, `run`, `ui` and every view read it like a package.
-- `strata header core.strata` prints a module file's table of contents.
+- `strata header core.strata` prints a module file's table of contents; `strata header core.strata --tree` prints each definition (a bundle's too) as a `std.ast` value, one per line.
 - In git, `strata setup-git` makes `git diff` and `git log -p` show `.strata` files as text, and merges them definition by definition (a conflict is left as text; `strata resolve FILE` stores it again once fixed).
 
-The format is written by hand in `src/binary.rs`, with no serialization library, so that Strata can read and write it itself once it is bootstrapped. This page is its specification; the two are kept in step.
+The format is written by hand in `src/binary.rs`, with no serialization library, so that Strata can read and write it itself: `std.ast.binary` does (in Strata, on the tree `std.ast`), tested against `binary.rs` on every module file of the repository (`tests/ast.rs`). This page is its specification; the three are kept in step.
 
 Design:
 
@@ -122,7 +122,7 @@ Bound       = param:str  traits:list(TypeExpr)
 TestDecl    = name:str  params:list(Param)  body:Expr
 TraitDecl   = name:str  params:list(str)  supers:list(TypeExpr)  methods:list(TraitMethod)  laws:list(Law)
               derivable:option(Derivable)  capability:bool
-Derivable   = name:str  kind:TypeExpr  requires:list(Expr)
+Derivable   = kind:TypeExpr  requires:list(Expr)
 TraitMethod = comments:list(str)  doc:list(str)  decl:FnDecl  default:bool
 Law         = comments:list(str)  doc:list(str)  name:str  params:list(Param)  body:Expr
 ImplDecl    = type_params:list(str)  bounds:list(Bound)  trait_name:str  trait_args:list(TypeExpr)
@@ -169,6 +169,7 @@ Expr = 0  Int(int)                       1  BigInt(digits:str)       2  Float(fl
      | 31 Set(types:list(TypeExpr), list(Expr))                     Set { 1, 2 }
      | 32 Or(Expr, fallback:Expr)                                   x or { … }, x ?? v
      | 33 Comptime(Expr)                                            comptime e
+     | 34 Describe(TypeExpr)                                         $Self, $f.type
 
 CtorArgs = 0 None | 1 Positional(list(Expr)) | 2 Record(list((str, Expr)))
          | 3 Update(base:Expr, list((str, Expr)))
@@ -193,17 +194,20 @@ Stmt    = 0 Let(Pattern, option(TypeExpr), Expr)   1 Var(name:str, option(TypeEx
         | 2 Assign(place:Expr, Expr)               3 While(cond:Expr, body:Expr)
         | 4 For(Pattern, Expr, body:Expr)          5 Loop(body:Expr)
         | 6 Break   7 Continue   8 Expr(Expr)   9 Assert(Expr)   10 Comment(list(str))
+        | 11 ComptimeFor(Pattern, Expr, body:Expr)          comptime for v in $Self.variants { … }
 
 Pattern = 0 Wild   1 Bind(str)   2 Int(int)   3 Str(str)   4 Bool(bool)
         | 5 Ctor(name:str, CtorPat)
         | 6 List(list(Pattern), rest:option(str))     [a, ..rest]
         | 7 Tuple(list(Pattern))   8 Cond(Expr)   9 Or(list(Pattern))
+        | 10 For(arm:Pattern, each:Pattern, list:Expr)     v => e for v in $Self.variants
 CtorPat = 0 None | 1 Positional(list(Pattern)) | 2 Record(list((str, Pattern)), dots:bool)
+        | 3 Type(list(Pattern))                          a type's arguments: List[Int], Option[x]
 ```
 
 ## An example
 
-`fn one() -> Int { 1 }`, a script, is stored as a 150-byte file:
+`fn one() -> Int { 1 }`, a script, is stored as a 152-byte file:
 
 ```text
 53 54 52 41 54 41   "STRATA"
@@ -213,11 +217,11 @@ header:
    00                   module "" (the root)
    01                   1 entry:
       01 01 00             name "one", a function, private
-      7a 3f c5 … (32)      hash
-      ce 72 21 … (32)      interface_hash
-      7a 3f c5 … (32)      code_hash (the same as hash: no comments)
+      10 f4 ce … (32)      hash
+      a1 4f dd … (32)      interface_hash
+      10 f4 ce … (32)      code_hash (the same as hash: no comments)
       00                   no dependencies
-      20 1c                32 bytes, 28 of them interface
+      22 1e                34 bytes, 30 of them interface
 the definition:
    03 00 03 6f 6e 65 03 49 6e 74   3 strings: "", "one", "Int"
    00 00 00 00 01                  no comments or doc, module "", private; a function:
@@ -225,6 +229,7 @@ the definition:
    00 02 00                        returns Named("Int", [])
    00 00 00                        no requires, no ensures, not `terminates`
    06                              its body, left out: ()
+   00 00                           not `comptime`, not derived
    00                              the bodies add no strings
    01 00 02                        1 body: Int(1)  (1 zigzag-encodes to 2)
 ```

@@ -485,6 +485,9 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin::total("parse_int", "", "(String) -> Option[Int]"),
     Builtin::new("parse_float", "", "(String) -> Option[Float]"),
     Builtin::new("float", "", "(Int) -> Float"),
+    // the IEEE 754 bits of a float, from 0 to 2^64 - 1, and back (`None` for a NaN's)
+    Builtin::total("float_bits", "", "(Float) -> Int"),
+    Builtin::total("float_from_bits", "", "(Int) -> Option[Float]"),
     Builtin::new("floor", "", "(Float) -> Int"),
     Builtin::new("ceil", "", "(Float) -> Int"),
     Builtin::new("round", "", "(Float) -> Int"),
