@@ -3098,9 +3098,7 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             Ty::Con(l, _) if l == "List" => {
                 // the header holds the buffer; the buffer its elements up to `used`
-                // (a list whose element type isn't known, as in a generic impl
-                // fuzzed at its head: nothing it holds is counted)
-                let et = args.first().cloned().unwrap_or(Ty::Unit);
+                let et = args[0].clone();
                 h.emit("%bp = getelementptr i8, ptr %a, i64 8".into());
                 h.emit("%buf = load ptr, ptr %bp".into());
                 h.emit("call void @strata_free(ptr %a)".into());
@@ -4071,13 +4069,6 @@ impl<'m, 'a> Func<'m, 'a> {
                 t => format!("does not satisfy `{}`", key(t)),
             };
             let rt = Ty::Con("Result".into(), vec![Ty::Unit, Ty::Str]);
-            // (a collection whose element type isn't known, as in a generic impl
-            // fuzzed at its head, has nothing to check or show)
-            let unknown = |t: &Ty| matches!(t, Ty::Con(c, a) if a.is_empty() && matches!(c.as_str(), "List" | "Set" | "Dict"));
-            if unknown(&t) || unknown(&v.0) {
-                let empty = self.m.string("");
-                return self.call_fn(&prelude("check_result"), vec![bool_v("true"), (Ty::Str, empty.clone()), (Ty::Str, empty)], Some(rt));
-            }
             let shown = self.json(&v)?;
             let shown = self.temp((Ty::Str, shown));
             let why = self.m.string(&why);
@@ -6805,7 +6796,7 @@ impl Func<'_, '_> {
         };
         if let TypeExpr::Named(n, args) = t {
             if n == crate::types::TYPE_ARG {
-                let s = self.string(args.first().map(crate::types::texpr_head).unwrap_or_default().as_str());
+                let s = self.string(&args.first().map(crate::interp::type_text).unwrap_or_default());
                 return Ok(s);
             }
         }
