@@ -303,6 +303,29 @@ fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
 const DECLARATIONS: &str = "\
 declare ptr @strata_alloc(i64)
 declare void @strata_dup(ptr)
+declare void @strata_int_dup(i64)
+declare void @strata_int_drop(i64)
+; an `Int` outside [-2^62, 2^62) is a big integer, an object: only those are counted
+define internal void @strata.int_dup(i64 %v) alwaysinline {
+  %t = add i64 %v, 4611686018427387904
+  %big = icmp slt i64 %t, 0
+  br i1 %big, label %held, label %done
+held:
+  call void @strata_int_dup(i64 %v)
+  ret void
+done:
+  ret void
+}
+define internal void @strata.int_drop(i64 %v) alwaysinline {
+  %t = add i64 %v, 4611686018427387904
+  %big = icmp slt i64 %t, 0
+  br i1 %big, label %held, label %done
+held:
+  call void @strata_int_drop(i64 %v)
+  ret void
+done:
+  ret void
+}
 declare i1 @strata_release(ptr)
 declare void @strata_free(ptr)
 declare i1 @strata_unique(ptr)
@@ -352,9 +375,9 @@ declare double @strata_finite(double, double, double, ptr)
 declare i64 @strata_float_to_int(double, double)
 declare double @strata_sqrt(double)
 declare ptr @strata_list_new(i64)
-declare ptr @strata_list_push(ptr, i64, i1)
+declare ptr @strata_list_push(ptr, i64, i64)
 declare ptr @strata_list_slice(ptr, i64, i64)
-declare ptr @strata_list_concat(ptr, ptr, i1)
+declare ptr @strata_list_concat(ptr, ptr, i64)
 declare ptr @strata_concat_owned(ptr, ptr)
 declare ptr @strata_range(i64, i64)
 declare i64 @llvm.smax.i64(i64, i64)
@@ -1148,7 +1171,8 @@ struct Scope {
 
 /// An operand that is a constant (never counted, never freed).
 fn constant(op: &str) -> bool {
-    op.starts_with('@') || op.starts_with("getelementptr") || op == "null" || op == "poison" || op.is_empty()
+    // (a number is a small `Int`, never counted)
+    op.starts_with('@') || op.starts_with("getelementptr") || op == "null" || op == "poison" || op.is_empty() || op.parse::<i64>().is_ok()
 }
 
 struct Func<'m, 'a> {
@@ -1297,8 +1321,30 @@ impl<'m, 'a> Func<'m, 'a> {
     // ---- reference counting ----
 
     /// Whether values of type `t` are counted objects (pointers to the heap).
+    /// An `Int` is: a big one is an object (a small one, most of them, is
+    /// skipped by the inline test of `@strata.int_dup` / `@strata.int_drop`).
     fn counted(&self, t: &Ty) -> bool {
-        has_value(t) && !is_never(t) && !matches!(self.m.repr(t), Ok(Ty::Int | Ty::Float | Ty::Bool | Ty::Unit) | Err(_))
+        has_value(t) && !is_never(t) && !matches!(self.m.repr(t), Ok(Ty::Float | Ty::Bool | Ty::Unit) | Err(_))
+    }
+
+    fn is_int(&self, t: &Ty) -> bool {
+        matches!(self.m.repr(t), Ok(Ty::Int))
+    }
+
+    /// One holder more of `v` (counted).
+    fn dup_value(&mut self, v: &V) {
+        if self.is_int(&v.0) {
+            self.emit(format!("call void @strata.int_dup(i64 {})", v.1));
+        } else {
+            self.emit(format!("call void @strata_dup(ptr {})", v.1));
+        }
+    }
+
+    /// What the runtime's list operations do with the elements they copy:
+    /// 0 nothing, 1 hold each (objects), 2 hold the big ones (`Int`).
+    fn elements_kind(&self, et: &Ty) -> V {
+        let k = if !self.counted(et) { 0 } else if self.is_int(et) { 2 } else { 1 };
+        (Ty::Int, k.to_string())
     }
 
     fn push_scope(&mut self, transparent: bool) {
@@ -1328,7 +1374,8 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         for (t, slot) in s.owned.iter().rev() {
             let x = self.fresh("old");
-            self.emit(format!("{x} = load ptr, ptr {slot}"));
+            let ll = if self.is_int(t) { "i64" } else { "ptr" };
+            self.emit(format!("{x} = load {ll}, ptr {slot}"));
             self.drop_value(&(t.clone(), x))?;
         }
         Ok(())
@@ -1366,7 +1413,7 @@ impl<'m, 'a> Func<'m, 'a> {
             temps.remove(i);
             return v;
         }
-        self.emit(format!("call void @strata_dup(ptr {})", v.1));
+        self.dup_value(&v);
         v
     }
 
@@ -1379,7 +1426,7 @@ impl<'m, 'a> Func<'m, 'a> {
         if self.is_temp(&v.1) {
             return Some(v.1.clone());
         }
-        self.emit(format!("call void @strata_dup(ptr {})", v.1));
+        self.dup_value(v);
         None
     }
 
@@ -1402,13 +1449,17 @@ impl<'m, 'a> Func<'m, 'a> {
         if !self.counted(&v.0) || constant(&v.1) || self.is_temp(&v.1) {
             return v;
         }
-        self.emit(format!("call void @strata_dup(ptr {})", v.1));
+        self.dup_value(&v);
         self.temp(v)
     }
 
     /// One holder of `v` fewer (freed with what it holds, when it was the last).
     fn drop_value(&mut self, v: &V) -> Res<()> {
         if !self.counted(&v.0) || constant(&v.1) {
+            return Ok(());
+        }
+        if self.is_int(&v.0) {
+            self.emit(format!("call void @strata.int_drop(i64 {})", v.1));
             return Ok(());
         }
         let f = self.drop_fn(&v.0)?;
@@ -1585,7 +1636,7 @@ impl<'m, 'a> Func<'m, 'a> {
         for (i, t) in tys.iter().enumerate() {
             if Some(i) != except && self.counted(t) {
                 let f = self.field(&(v.0.clone(), p.clone()), i, t)?;
-                self.emit(format!("call void @strata_dup(ptr {})", f.1));
+                self.dup_value(&f);
             }
         }
         Ok(p)
@@ -2174,8 +2225,13 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
             }
             h.emit("call void @strata_free(ptr %a)".into());
-            let n = held.len();
-            for (k, v) in held.into_iter().enumerate() {
+            // the integers first, so an object field's drop can be the tail call
+            let (ints, objects): (Vec<V>, Vec<V>) = held.into_iter().partition(|v| h.is_int(&v.0));
+            for v in &ints {
+                h.drop_value(v)?;
+            }
+            let n = objects.len();
+            for (k, v) in objects.into_iter().enumerate() {
                 let f = h.drop_fn(&v.0)?;
                 let tail = if k + 1 == n { "tail " } else { "" };
                 h.emit(format!("{tail}call void {f}(ptr {})", v.1));
@@ -2214,7 +2270,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 h.emit("br i1 %blast, label %elements, label %kept".into());
                 h.block("elements");
                 if h.counted(&et) {
-                    let f = h.drop_fn(&et)?;
+                    let f = if h.is_int(&et) { "@strata_int_drop".to_string() } else { h.drop_fn(&et)? };
                     h.emit("%up = getelementptr i8, ptr %buf, i64 8".into());
                     h.emit("%used = load i64, ptr %up".into());
                     h.emit("%data = getelementptr i64, ptr %buf, i64 2".into());
@@ -2226,8 +2282,12 @@ impl<'m, 'a> Func<'m, 'a> {
                     h.block("body");
                     h.emit("%ep = getelementptr i64, ptr %data, i64 %i".into());
                     h.emit("%eraw = load i64, ptr %ep".into());
-                    h.emit("%e = inttoptr i64 %eraw to ptr".into());
-                    h.emit(format!("call void {f}(ptr %e)"));
+                    if h.is_int(&et) {
+                        h.emit(format!("call void {f}(i64 %eraw)"));
+                    } else {
+                        h.emit("%e = inttoptr i64 %eraw to ptr".into());
+                        h.emit(format!("call void {f}(ptr %e)"));
+                    }
                     h.emit("%next = add i64 %i, 1".into());
                     h.emit("br label %loop".into());
                     h.block("done");
@@ -2436,12 +2496,13 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok(())
     }
 
-    /// Whether `v` is a value of the type named `name` (a type's name as a
-    /// pattern, or `is`): its constructor, and every refinement.
-    fn holds(&mut self, name: &str, v: &V) -> Res<V> {
+    /// Whether `v` is a value of the type `written` names (a type pattern,
+    /// `Positive`, `List[Int]`, or `is`): its constructor, and every refinement.
+    fn holds(&mut self, written: &TypeExpr, v: &V) -> Res<V> {
+        let TypeExpr::Named(name, _) = written else { return self.unsupported("this type pattern") };
         if self.m.boxed(&v.0) {
             // the member first, then its refinements on the value as it
-            let target = self.lower(&TypeExpr::Named(Symbol::from(name), vec![]))?;
+            let target = self.lower(written)?;
             let is = self.holds_member(v, &target)?;
             if self.m.boxed(&target) || self.m.members(&target).len() > 1 {
                 return Ok(is);
@@ -2451,7 +2512,7 @@ impl<'m, 'a> Func<'m, 'a> {
             self.cond_br(&is, &yes, &end);
             self.block(&yes);
             let x = self.narrow(v, &target)?;
-            let ok = self.holds(name, &x)?;
+            let ok = self.holds(written, &x)?;
             let from_yes = self.cur.clone();
             self.br(&end);
             self.block(&end);
@@ -2461,11 +2522,11 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let mut conds = vec![];
         if self.m.nominal(&self.m.repr(&v.0)?) {
-            let target = Ty::Con(Symbol::from(Symbol::from(name)), Module::args_of(&v.0));
+            let target = Ty::Con(name.clone(), Module::args_of(&v.0));
             let cs = self.m.ctors_of(&target);
             conds.push(self.tag_in(v, &cs)?);
         }
-        let mut t = TypeExpr::Named(Symbol::from(Symbol::from(name)), vec![]);
+        let mut t = written.clone();
         loop {
             match t {
                 TypeExpr::Refined(b, pred) => {
@@ -2774,7 +2835,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 if self.m.env.ctors.contains_key(name) && !self.m.is_distinct(name) {
                     self.tag_in(&v, &[name.to_string()])?
                 } else if self.m.env.is_type_name(name) {
-                    self.holds(name, &v)?
+                    self.holds(&TypeExpr::Named(name.clone(), vec![]), &v)?
                 } else {
                     return self.unsupported(&format!("`is {name}`"));
                 }
@@ -2939,7 +3000,8 @@ impl<'m, 'a> Func<'m, 'a> {
         self.block(&end);
         let v = self.fresh("n");
         self.emit(format!("{v} = phi i64 [ {r}, %{fast} ], [ {big}, %{slow} ]"));
-        (Ty::Int, v)
+        // a new value (a big one is an object)
+        self.temp((Ty::Int, v))
     }
 
     /// Whether every one of these `Int`s is small (in [-2^62, 2^62): its two
@@ -2999,7 +3061,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let s = self.m.string(digits);
         let r = self.fresh("lit");
         self.emit(format!("{r} = call i64 @strata_int_lit(ptr {s})"));
-        (Ty::Int, r)
+        self.temp((Ty::Int, r))
     }
 
     fn binary(&mut self, op: BinOp, l: &Expr, r: &Expr) -> Res<V> {
@@ -3066,7 +3128,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.temp(r)
             }
             (Add, Ty::Con(l, et)) if l == "List" => {
-                let counted = bool_v(if self.counted(&et[0]) { "true" } else { "false" });
+                let counted = self.elements_kind(&et[0]);
                 let r = self.call(&a.0, "@strata_list_concat", &[a.clone(), b.clone(), counted])?;
                 self.temp(r)
             }
@@ -3085,8 +3147,14 @@ impl<'m, 'a> Func<'m, 'a> {
             (Add, Ty::Int) => self.int_op("sadd", a, b),
             (Sub, Ty::Int) => self.int_op("ssub", a, b),
             (Mul, Ty::Int) => self.int_op("smul", a, b),
-            (Div, Ty::Int) => self.call(&Ty::Int, "@strata_div", &[a.clone(), b.clone()])?,
-            (Mod, Ty::Int) => self.call(&Ty::Int, "@strata_mod", &[a.clone(), b.clone()])?,
+            (Div, Ty::Int) => {
+                let r = self.call(&Ty::Int, "@strata_div", &[a.clone(), b.clone()])?;
+                self.temp(r)
+            }
+            (Mod, Ty::Int) => {
+                let r = self.call(&Ty::Int, "@strata_mod", &[a.clone(), b.clone()])?;
+                self.temp(r)
+            }
             (Add | Sub | Mul | Div | Mod, Ty::Float) => {
                 let r = match op {
                     Mod => self.call(&Ty::Float, "@strata_fmod", &[a.clone(), b.clone()])?,
@@ -3559,7 +3627,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let x = self.coerce(vs[1].clone(), &et)?;
                 let x = self.take(x);
                 let s = self.to_slot(&x)?;
-                let counted = bool_v(if self.counted(&et) { "true" } else { "false" });
+                let counted = self.elements_kind(&et);
                 let r = self.call(&types[0], "@strata_list_push", &[vs[0].clone(), (Ty::Int, s), counted])?;
                 self.temp((vs[0].0.clone(), r.1))
             }
@@ -3670,7 +3738,8 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             ("floor" | "ceil" | "round", [Ty::Float]) => {
                 let r = self.call(&Ty::Float, &format!("@llvm.{name}.f64"), &vs)?;
-                self.call(&Ty::Int, "@strata_float_to_int", &[r, vs[0].clone()])?
+                let r = self.call(&Ty::Int, "@strata_float_to_int", &[r, vs[0].clone()])?;
+                self.temp(r)
             }
             _ => {
                 let ts: Vec<String> = types.iter().map(key).collect();
@@ -3794,7 +3863,7 @@ impl<'m, 'a> Func<'m, 'a> {
                     let s = c.to_slot(&y)?;
                     let cur = c.fresh("cur");
                     c.emit(format!("{cur} = load ptr, ptr {acc}"));
-                    let next = c.call(&Ty::Str, "@strata_list_push", &[(Ty::Str, cur.clone()), (Ty::Int, s), bool_v("true")])?;
+                    let next = c.call(&Ty::Str, "@strata_list_push", &[(Ty::Str, cur.clone()), (Ty::Int, s), (Ty::Int, "1".into())])?;
                     c.drop_value(&(lt.clone(), cur))?;
                     c.emit(format!("store ptr {}, ptr {acc}", next.1));
                     Ok(())
@@ -4035,7 +4104,7 @@ impl<'m, 'a> Func<'m, 'a> {
             if what == "drop" {
                 h.drop_value(&v)?;
             } else if h.counted(imp) {
-                h.emit(format!("call void @strata_dup(ptr {})", v.1));
+                h.dup_value(&v);
             }
             h.emit("ret void".into());
             let text = h.finish();
@@ -4481,7 +4550,8 @@ impl<'m, 'a> Func<'m, 'a> {
                 s.block(&unbind);
                 for (t, slot) in bound.iter().rev() {
                     let x = s.fresh("old");
-                    s.emit(format!("{x} = load ptr, ptr {slot}"));
+                    let ll = if s.is_int(t) { "i64" } else { "ptr" };
+                    s.emit(format!("{x} = load {ll}, ptr {slot}"));
                     s.drop_value(&(t.clone(), x))?;
                 }
                 s.br(fail);
@@ -4584,8 +4654,8 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
                 self.block(&matched);
             }
-            Pattern::Ctor(c, CtorPat::None) if !self.m.env.ctors.contains_key(c) && self.m.env.is_type_name(c) => {
-                let ok = self.holds(c, v)?;
+            Pattern::Ctor(..) if self.m.env.type_pattern(p).is_some() => {
+                let ok = self.holds(&self.m.env.type_pattern(p).unwrap(), v)?;
                 test(self, ok)?;
             }
             Pattern::Ctor(c, cp) => {
@@ -4600,7 +4670,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 test(self, ok)?;
                 let fs = self.m.fields(c, &self.m.ctor_args(c, &v.0))?;
                 match cp {
-                    CtorPat::None => {}
+                    CtorPat::None | CtorPat::Type(_) => {}
                     CtorPat::Positional(ps) => {
                         for (i, (sp, f)) in ps.iter().zip(&fs).enumerate() {
                             let x = self.field(v, i, &f.ty)?;
@@ -4781,18 +4851,6 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
                 let Expr::Call(_, args) = xs else { unreachable!() };
                 let (lo, hi) = (self.expr(&args[0])?, self.expr(&args[1])?);
-                // as the interpreter, which makes the list first
-                let (big, d) = (self.fresh("big"), self.fresh("span"));
-                self.emit(format!("{d} = sub i64 {}, {}", hi.1, lo.1));
-                let (up, far) = (self.fresh("up"), self.fresh("far"));
-                self.emit(format!("{up} = icmp sgt i64 {}, {}", hi.1, lo.1));
-                self.emit(format!("{far} = icmp ugt i64 {d}, 1000000"));
-                self.emit(format!("{big} = and i1 {up}, {far}"));
-                let (toobig, fine) = (self.fresh_label("range.big"), self.fresh_label("range.ok"));
-                self.cond_br(&bool_v(&big), &toobig, &fine);
-                self.block(&toobig);
-                self.fault(Fault::Runtime, vec![Part::Lit("range too large".into())])?;
-                self.block(&fine);
                 let counter = self.fresh("i");
                 writeln!(self.allocas, "  {counter} = alloca i64").unwrap();
                 self.store(&lo, &counter)?;
@@ -5355,7 +5413,9 @@ impl Func<'_, '_> {
                 let ok = self.call(&Ty::Bool, &format!("@strata_{name}"), &[args[0].clone(), (Ty::Str, slot.clone())])?;
                 let x = self.fresh("x");
                 self.emit(format!("{x} = load {ll}, ptr {slot}"));
-                self.option_if(&ok.1, &(t.clone(), x), &opt(t))?
+                // the parsed number is new (a big one, an object), and moves into the option
+                let x = self.temp((t.clone(), x));
+                self.option_if(&ok.1, &x, &opt(t))?
             }
             _ => return Ok(None),
         }))
@@ -5852,7 +5912,7 @@ impl Func<'_, '_> {
                 let (g, k) = self.pairs(&bounded(&hints.ints(), 1000, 100));
                 let r = self.fresh("i");
                 self.emit(format!("{r} = call i64 @strata_gen_int(ptr {g}, i64 {k})"));
-                return Ok((Ty::Int, r));
+                return Ok(self.temp((Ty::Int, r)));
             }
             "Float" => {
                 let (g, k) = self.pairs(&bounded(&hints.ints(), 1000, 100));
@@ -5942,7 +6002,7 @@ impl Func<'_, '_> {
                 let s = self.to_slot(&x)?;
                 let cur = self.fresh("cur");
                 self.emit(format!("{cur} = load ptr, ptr {acc}"));
-                let counted = bool_v(if self.counted(&x.0) { "true" } else { "false" });
+                let counted = self.elements_kind(&x.0);
                 let next = self.call(&lty, "@strata_list_push", &[(lty.clone(), cur.clone()), (Ty::Int, s), counted])?;
                 self.drop_value(&(lty.clone(), cur))?;
                 self.emit(format!("store ptr {}, ptr {acc}", next.1));

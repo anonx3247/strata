@@ -976,8 +976,8 @@ impl<'a> Vc<'a> {
                 out.sort();
                 out
             }
-            Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(&c.sym()) && self.env.is_type_name(c) => {
-                let t = TypeExpr::Named(c.clone(), vec![]);
+            Pattern::Ctor(..) if self.env.type_pattern(p).is_some() => {
+                let t = self.env.type_pattern(p).unwrap();
                 (0..slots.len()).filter(live).filter(|&i| self.shape_test(&t, &slots[i].1) != "false").collect()
             }
             _ => match self.pattern_key(p) {
@@ -1456,7 +1456,7 @@ impl<'a> Vc<'a> {
 
     fn pattern(&mut self, p: &Pattern, v: &Val, binds: &mut Vec<(String, Val)>) -> T {
         if let Val::Union { tag, slots } = v {
-            let type_name = matches!(p, Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(&c.sym()) && self.env.is_type_name(c));
+            let type_name = self.env.type_pattern(p).is_some();
             if let Some(k) = self.pattern_key(p).filter(|_| !type_name) {
                 // a literal, tuple, list or constructor pattern takes the member of its shape
                 let (tag, slots) = (tag.clone(), slots.clone());
@@ -1508,7 +1508,10 @@ impl<'a> Vc<'a> {
                 }
                 or(&conds)
             }
-            Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(&c.sym()) && self.env.is_type_name(c) => self.type_test(c, v),
+            Pattern::Ctor(..) if self.env.type_pattern(p).is_some() => {
+                let t = self.env.type_pattern(p).unwrap();
+                self.in_type(&t, v, &[])
+            }
             Pattern::Wild => "true".into(),
             Pattern::Bind(x) => {
                 binds.push((x.to_string(), v.clone()));
@@ -1582,7 +1585,7 @@ impl<'a> Vc<'a> {
                 let mut cs = vec![cond];
                 let get = |i: usize| fields.get(i).cloned().unwrap_or(Val::Opaque("an unknown field".into()));
                 match cp {
-                    CtorPat::None => {}
+                    CtorPat::None | CtorPat::Type(_) => {}
                     CtorPat::Positional(ps) => {
                         for (i, p) in ps.iter().enumerate() {
                             let x = get(i);
@@ -3145,8 +3148,8 @@ fn to_value(env: &Env, v: &Val, m: &HashMap<String, String>) -> Option<Value> {
             let fields: Vec<Value> = payload.iter().map(|x| to_value(env, x, m)).collect::<Option<_>>()?;
             let f = match &vs.get(k)?.1 {
                 _ if fields.is_empty() => Fields::None,
-                Some(names) => Fields::Rec(names.iter().map(|n| n.to_string()).zip(fields).collect()),
-                None => Fields::Pos(fields),
+                Some(names) => Fields::rec(names.iter().map(|n| n.to_string()).zip(fields).collect()),
+                None => Fields::pos(fields),
             };
             Value::Variant(c.clone(), f)
         }

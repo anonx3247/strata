@@ -67,9 +67,10 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     };
     let mut all_ok = true;
     let mut results = Vec::new();
-    // `--jit`: the functions fuzzed compiled, all in one module
-    if args.flag("--jit") {
-        jit_fuzzers(p, &resolved, &env);
+    // the functions fuzzed compiled, all in one module (unless `--interpret`;
+    // `--jit` says why when they can't be)
+    if !args.flag("--interpret") {
+        jit_fuzzers(p, &resolved, &env, args.flag("--jit"));
     }
     let solver = smt::solver();
     let solver_bin = solver.as_ref();
@@ -272,7 +273,7 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
 /// nor what takes a function), and have `verify` use them; what doesn't
 /// compile is fuzzed by the interpreter, with a note.
 #[cfg(feature = "jit")]
-fn jit_fuzzers(p: &Program, resolved: &Program, env: &types::Env) {
+fn jit_fuzzers(p: &Program, resolved: &Program, env: &types::Env, say_why: bool) {
     let mut targets = vec![];
     for d in &resolved.decls {
         let DeclKind::Fn(f) = &d.kind else { continue };
@@ -291,7 +292,9 @@ fn jit_fuzzers(p: &Program, resolved: &Program, env: &types::Env) {
     let ir = match llvm::compile_fuzz(p, &targets) {
         Ok(ir) => ir,
         Err(e) => {
-            eprintln!("note: fuzzed by the interpreter, not compiled: {e}");
+            if say_why {
+                eprintln!("note: fuzzed by the interpreter, not compiled: {e}");
+            }
             return;
         }
     };
@@ -300,11 +303,14 @@ fn jit_fuzzers(p: &Program, resolved: &Program, env: &types::Env) {
             let drivers = targets.iter().zip(addrs).map(|(t, a)| (t.name.clone(), a)).collect();
             let _ = verify::JIT_FUZZ.set(verify::JitFuzz { drivers, case: llvm::jit::fuzz_case, lock: std::sync::Mutex::new(()) });
         }
-        Err(e) => eprintln!("note: fuzzed by the interpreter, not compiled: {e}"),
+        Err(e) if say_why => eprintln!("note: fuzzed by the interpreter, not compiled: {e}"),
+        Err(_) => {}
     }
 }
 
 #[cfg(not(feature = "jit"))]
-fn jit_fuzzers(_: &Program, _: &Program, _: &types::Env) {
-    eprintln!("note: this strata was built without the JIT: fuzzed by the interpreter");
+fn jit_fuzzers(_: &Program, _: &Program, _: &types::Env, say_why: bool) {
+    if say_why {
+        eprintln!("note: this strata was built without the JIT: fuzzed by the interpreter");
+    }
 }

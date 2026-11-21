@@ -402,6 +402,8 @@ pub enum CtorPat {
     Positional(Vec<Pattern>),
     /// field patterns, and whether `..` was present
     Record(Vec<(Symbol, Pattern)>, bool),
+    /// a type's arguments: `List[Int]` (a type pattern), `Option[x]` (in `match comptime t`)
+    Type(Vec<Pattern>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -806,7 +808,7 @@ macro_rules! visitor {
             match p {
                 Pattern::Wild | Pattern::Bind(_) | Pattern::Int(_) | Pattern::Str(_) | Pattern::Bool(_) => {}
                 Pattern::Ctor(_, CtorPat::None) => {}
-                Pattern::Ctor(_, CtorPat::Positional(ps)) | Pattern::List(ps, _) | Pattern::Tuple(ps) | Pattern::Or(ps) => ps.into_iter().for_each(|p| v.pattern(p)),
+                Pattern::Ctor(_, CtorPat::Positional(ps) | CtorPat::Type(ps)) | Pattern::List(ps, _) | Pattern::Tuple(ps) | Pattern::Or(ps) => ps.into_iter().for_each(|p| v.pattern(p)),
                 Pattern::For(p, x, xs) => {
                     v.pattern(p);
                     v.pattern(x);

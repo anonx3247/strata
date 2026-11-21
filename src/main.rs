@@ -132,7 +132,9 @@ Checking:
                                the run when a checked function falls short (as do
                                strata.toml's [verify] rules). Proven functions that
                                terminate are still run on --cross-check N cases
-                               (default 20, 0: off), to catch a wrong proof
+                               (default 20, 0: off), to catch a wrong proof.
+                               Fuzzing runs compiled with the JIT (--interpret: in
+                               the interpreter; --jit: say why when it can't)
 
 Running:
   run [PATH] [-- ARGS..]       run the program: `main` gets the capabilities it asks for

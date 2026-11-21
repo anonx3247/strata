@@ -82,7 +82,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             Pattern::Ctor(c, cp) => {
                 out.insert(ct.get(c.as_str()).cloned().unwrap_or(c.to_string()));
                 match cp {
-                    CtorPat::Positional(ps) => ps.iter().for_each(|p| pat(p, out, ct)),
+                    CtorPat::Positional(ps) | CtorPat::Type(ps) => ps.iter().for_each(|p| pat(p, out, ct)),
                     CtorPat::Record(fs, _) => fs.iter().for_each(|(_, p)| pat(p, out, ct)),
                     CtorPat::None => {}
                 }

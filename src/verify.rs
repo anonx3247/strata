@@ -290,7 +290,9 @@ fn run_case(mut it: Interp, f: &FnDecl, args: Vec<crate::interp::Value>, method:
         return Case::Discarded;
     }
     let res = if method { it.call_method(&f.name, args.clone()) } else { it.call_fn(&f.name, args.clone()) };
-    if it.exhausted() {
+    // past a budget given for the run: no conclusion (past the default
+    // one, a runaway case, as compiled: `too many steps`)
+    if it.exhausted() && !it.default_budget {
         return Case::TooCostly;
     }
     match res {
@@ -406,9 +408,12 @@ pub struct JitFuzz {
 
 pub static JIT_FUZZ: std::sync::OnceLock<JitFuzz> = std::sync::OnceLock::new();
 
-/// The steps a compiled case may take when no budget is given (the
-/// interpreter stops a loop after 1,000,000 iterations).
+/// The steps a compiled case may take when no budget is given (each loop
+/// iteration and call); past them it is a runaway case, `too many steps`.
 const JIT_STEPS: i64 = 50_000_000;
+
+/// The same for an interpreted case (its steps are evaluation steps, finer).
+const INTERP_STEPS: u64 = 20_000_000;
 
 /// `fuzz_limited`, compiled: the same verdicts, from cases the driver
 /// generates (with the runtime's numbers, so not the interpreter's inputs).
@@ -489,7 +494,8 @@ fn fuzz_limited(env: &Env, f: &FnDecl, cases: usize, seed: u64, method: bool, bu
         let mut generator = std::mem::replace(&mut it.generator, crate::generate::Gen::new(0));
         let args: Result<Vec<crate::interp::Value>, String> = f.params.iter().map(|p| generator.value(env, &crate::types::subst_texpr(&p.ty, &inst), &mut it)).collect();
         it.generator = generator;
-        it.budget = budget;
+        it.budget = Some(budget.unwrap_or(INTERP_STEPS));
+        it.default_budget = budget.is_none();
         let args = match args {
             Ok(a) => a,
             Err(e) => return Verdict::Skipped { reason: e },
@@ -511,6 +517,7 @@ fn fuzz_limited(env: &Env, f: &FnDecl, cases: usize, seed: u64, method: bool, bu
 
 /// A call stack for a message: deep ones (runaway recursion) are cut short.
 fn short_stack(stack: &[String]) -> String {
+    let stack = crate::interp::fold_stack(stack);
     if stack.len() <= 8 {
         return stack.join(" -> ");
     }

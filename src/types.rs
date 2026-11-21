@@ -1931,6 +1931,7 @@ impl<'a> Checker<'a> {
                 self.call_with(ft, args, &what, &muts)
             }
             Expr::Method(recv, m, args) => {
+                self.dyn_self_args(recv, m, args);
                 // the program's own nodes, not copies: decisions are recorded by node
                 let all: Vec<&Expr> = std::iter::once(&**recv).chain(args.iter()).collect();
                 let marked = Some(self.marked.contains(&(e as *const Expr as usize)));
@@ -2114,7 +2115,7 @@ impl<'a> Checker<'a> {
                         }
                         // the arm's own refinement, for matches inside it
                         let arm_written = match &a.pat {
-                            Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(&c.sym()) && self.env.is_type_name(c) => Some(TypeExpr::Named(c.clone(), vec![])),
+                            Pattern::Ctor(..) if self.env.type_pattern(&a.pat).is_some() => self.env.type_pattern(&a.pat),
                             Pattern::Cond(pred) => Some(TypeExpr::Refined(Box::new(written.clone().unwrap_or_else(|| ty_to_texpr(&self.resolve(&st)))), pred.clone())),
                             Pattern::Wild | Pattern::Bind(_) => written.clone(),
                             _ => None,
@@ -2154,6 +2155,8 @@ impl<'a> Checker<'a> {
                             if let Some(a) = &ann {
                                 self.expect(a, &t, "let annotation");
                             }
+                            // the declared type, not the value's: `x: Int | String = 3` is a union, `s: Shape = sq` a trait value
+                            let t = ann.unwrap_or(t);
                             let (_, pp) = self.pattern(p, &t);
                             if let (Pattern::Bind(x), Some(w)) = (p, ann_written) {
                                 self.bind_written(x, w);
@@ -2169,7 +2172,7 @@ impl<'a> Checker<'a> {
                             if let Some(a) = &ann {
                                 self.expect(a, &t, "let annotation");
                             }
-                            self.bind(n.sym(), t);
+                            self.bind(n.sym(), ann.unwrap_or(t));
                             self.bind((&format!("mut:{n}")).sym(), Ty::Unit);
                             if let Some(w) = &written {
                                 self.bind_written(n, w);
@@ -2654,8 +2657,12 @@ impl<'a> Checker<'a> {
                 (lt, acc)
             }
             // a type's name matches the values of that type: `Positive`, `String`, `Shape`
-            Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(&c.sym()) && self.env.is_type_name(c) => {
-                let pt = self.type_named(c);
+            Pattern::Ctor(c, _) if self.env.type_pattern(p).is_some() => {
+                let written = self.env.type_pattern(p).unwrap();
+                let pt = match &written {
+                    TypeExpr::Named(_, args) if args.is_empty() => self.type_named(c),
+                    w => self.lower(w, &HashMap::default()),
+                };
                 if self.is_trait_ty(&pt) {
                     return (pt.clone(), P::Ty(pt));
                 }
@@ -2665,7 +2672,7 @@ impl<'a> Checker<'a> {
                     // already reported; don't also call it unreachable
                     return (pt, P::Lit);
                 }
-                let set = match self.int_refinement(&TypeExpr::Named(c.clone(), vec![])) {
+                let set = match self.int_refinement(&written) {
                     Refn::Plain => P::Ty(pt.clone()),
                     Refn::Ints(s) => P::Ints(s),
                     Refn::Lens(s) => P::Lens(s),
@@ -2687,6 +2694,10 @@ impl<'a> Checker<'a> {
                 let subs: Vec<P> = match cp {
                     // `Circle` alone: every value of that variant, whatever its fields
                     CtorPat::None => vec![P::Any; fields.len()],
+                    CtorPat::Type(_) => {
+                        self.err(format!("`{c}[..]`: `{c}` is a constructor, not a type; write `{c}(..)`"));
+                        vec![P::Any; fields.len()]
+                    }
                     CtorPat::Positional(ps) => {
                         if ps.len() != fields.len() {
                             self.err(format!("pattern `{c}` expects {} fields, got {}", fields.len(), ps.len()));
@@ -2767,6 +2778,81 @@ impl<'a> Checker<'a> {
         }
         if (f.plus || f.zero) && !int && !float {
             self.err(format!("format spec `{f}`: `+` and `0` apply to numbers, not `{}`", show_ty(&t)));
+        }
+    }
+
+    /// A method taking another `Self` (`fn bigger(self, other: Self)`)
+    /// can't be called on a trait value: the argument would have to be of
+    /// the receiver's implementation, and a `Shape` can be any. (Taking any
+    /// implementation is written so: `other: Shape`.)
+    fn dyn_self_args(&mut self, recv: &Expr, m: &str, args: &[Expr]) {
+        let sm = crate::names::short(m);
+        let is_self = |t: &TypeExpr| matches!(t, TypeExpr::Named(n, a) if n == "Self" && a.is_empty());
+        let takes_self = |td: &TraitDecl| -> Option<usize> {
+            let tm = td.methods.iter().find(|x| crate::names::short(&x.decl.name) == sm)?;
+            tm.decl.params.iter().skip(1).position(|p| is_self(&p.ty))
+        };
+        if !self.env.traits.values().any(|td| takes_self(td).is_some()) {
+            return;
+        }
+        // the receiver's type, without reporting its errors twice
+        let n = self.errors.len();
+        let rt = self.infer(recv);
+        self.errors.truncate(n);
+        let Ty::Con(tr, targs) = self.resolve(&rt) else { return };
+        if !self.env.traits.contains_key(&tr) {
+            return;
+        }
+        let mut traits = vec![tr];
+        traits.extend(self.supers_of(&tr, &targs, 0).into_iter().map(|(s, _)| s));
+        // what is surely of the receiver's implementation: the receiver (a
+        // variable) itself, or what a method returning `Self` makes of it
+        // (`s.bigger(s.scaled(2))`)
+        let makers: Vec<String> = traits
+            .iter()
+            .filter_map(|t| self.env.traits.get(t))
+            .flat_map(|td| td.methods.iter().filter(|x| is_self(&x.decl.ret)).map(|x| crate::names::short(&x.decl.name).to_string()))
+            .collect();
+        fn same(e: &Expr, recv: &str, makers: &[String]) -> bool {
+            match e {
+                Expr::Var(x) => x == recv,
+                Expr::Method(r, m, _) => makers.iter().any(|k| k == crate::names::short(m)) && same(r, recv, makers),
+                _ => false,
+            }
+        }
+        let Expr::Var(rv) = recv else { return self.refuse_self_args(recv, m, args, &traits, &takes_self) };
+        let rv = rv.to_string();
+        for t in &traits {
+            let Some(td) = self.env.traits.get(t) else { continue };
+            let Some(i) = takes_self(td) else { continue };
+            if !args.get(i).is_some_and(|a| same(a, &rv, &makers)) {
+                return self.refuse_self_args(recv, m, args, &traits, &takes_self);
+            }
+            return;
+        }
+    }
+
+    fn refuse_self_args(&mut self, recv: &Expr, m: &str, args: &[Expr], traits: &[Symbol], takes_self: &dyn Fn(&TraitDecl) -> Option<usize>) {
+        let sm = crate::names::short(m);
+        let Some(&tr) = traits.first() else { return };
+        for t in traits {
+            let Some(td) = self.env.traits.get(t) else { continue };
+            let Some(i) = takes_self(td) else { continue };
+            let tm = td.methods.iter().find(|x| crate::names::short(&x.decl.name) == sm).unwrap();
+            let p = tm.decl.params[i + 1].name;
+            let (st, owner) = (crate::names::short(&tr).to_string(), crate::names::short(&t).to_string());
+            // as written: `xs[0]` is `at(xs, 0)` once desugared
+            fn shown(e: &Expr) -> String {
+                match e {
+                    Expr::Call(f, xs) if matches!(&**f, Expr::Var(n) if n == "at") && xs.len() == 2 => format!("{}[{}]", shown(&xs[0]), crate::printer::expr(&xs[1], 0)),
+                    _ => crate::printer::expr(e, 0),
+                }
+            }
+            let (r, a) = (shown(recv), args.get(i).map(shown).unwrap_or_else(|| p.to_string()));
+            self.err(format!(
+                "`{sm}` takes `{p}: Self`, a value of the receiver's own type, but `{r}` is a `{st}`, which can be any implementation of it: nothing says `{a}` is the same one\n  help: to accept any `{owner}`, declare the parameter so: `{p}: {owner}` (in `trait {owner}`), and call `{st}` methods on it\n  help: or call `{sm}` where both values are known to be of one type"
+            ));
+            return;
         }
     }
 

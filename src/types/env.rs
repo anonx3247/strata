@@ -265,6 +265,18 @@ impl Env {
             || self.variant_parent(name.sym()).is_some()
     }
 
+    /// The type a type pattern names: `Positive`, `String`, `List[Int]`
+    /// (not a constructor's name, which is a variant's pattern).
+    pub fn type_pattern(&self, p: &Pattern) -> Option<TypeExpr> {
+        match p {
+            Pattern::Ctor(c, CtorPat::None) if !self.ctors.contains_key(&c.sym()) && self.is_type_name(c) => Some(TypeExpr::Named(c.clone(), vec![])),
+            Pattern::Ctor(c, CtorPat::Type(ps)) if self.is_type_name(c) => {
+                Some(TypeExpr::Named(c.clone(), ps.iter().map(|p| self.type_pattern(p)).collect::<Option<_>>()?))
+            }
+            _ => None,
+        }
+    }
+
     /// Follow refinement aliases to the underlying (unrefined) type expression.
     pub fn expand_alias(&self, t: &TypeExpr) -> TypeExpr {
         if let TypeExpr::Refined(b, _) = t {
