@@ -380,7 +380,7 @@ function status(d) {
 // (including matching), and what states rules the checker and fuzzer hold
 // the code to. `true`/`false` are literals.
 const KW_GROUPS = {
-  'kw': 'type distinct fn test let mut trait impl pub use module',
+  'kw': 'type distinct fn test let mut trait impl derive derivable derived comptime pub use module',
   'ctl': 'if else match is while for in loop break continue return except',
   'spec': 'where requires ensures assert law mock it',
   'lit': 'true false',
@@ -424,8 +424,8 @@ function highlight(src, resolve) {
     else if (hole) out += `<span class="t-hole">${esc(t)}</span>`;
     else if (num) out += `<span class="t-num">${t}</span>`;
     else if (KW.has(id)) {
-      // `impl Trait for Type`: here `for` declares, it does not loop
-      const decl = id === 'for' && /\bimpl\b[^\n{]*$/.test(src.slice(0, m.index));
+      // `impl Trait for Type`, `derive Trait for Type`: here `for` declares, it does not loop
+      const decl = id === 'for' && /\b(impl|derive)\b[^\n{]*$/.test(src.slice(0, m.index));
       out += `<span class="${decl ? 't-kw' : KW.get(id)}">${id}</span>`;
     }
     else {
