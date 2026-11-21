@@ -4067,6 +4067,59 @@ fn main() {
 }
 "##;
 
+/// An atom or a tuple-shaped type on its own (`type Dot`, `type
+/// Moved(Int)`), in several unions; and the two views of a union's members
+/// (`render --members separate | inline`), which read back as the same
+/// program.
+#[test]
+fn union_members_on_their_own_or_inline() {
+    let d = tmp("unions-views");
+    let (ok, out) = strata(&["--file", "s.strata", "edit"], &d, Some(STANDALONE));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "s.strata"], &d, None);
+    assert!(ok && out == "dot\nmoved 2\nsquare 3\n5\n", "{out}");
+    let (ok, inline) = strata(&["--file", "s.strata", "render", "--members", "inline"], &d, None);
+    assert!(ok && inline.contains("type Shape =\n  | Square { side: Int }\n  | Mark\n") && inline.contains("type Mark =\n  | Dot\n  | Moved(Int)\n"), "{inline}");
+    let (ok, out) = strata(&["--file", "i.strata", "edit"], &d, Some(&inline));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "i.strata"], &d, None);
+    assert!(ok && out == "dot\nmoved 2\nsquare 3\n5\n", "{out}");
+    let (ok, sep) = strata(&["--file", "i.strata", "render", "--members", "separate"], &d, None);
+    assert!(ok && sep.contains("type Square = { side: Int }\n") && sep.contains("type Dot\n") && sep.contains("type Moved(Int)\n") && sep.contains("type Shape = Square | Mark\n"), "{sep}");
+    let (ok, out) = strata(&["--file", "p.strata", "edit"], &d, Some(&sep));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "p.strata"], &d, None);
+    assert!(ok && out == "dot\nmoved 2\nsquare 3\n5\n", "{out}");
+}
+
+const STANDALONE: &str = r##"type Dot
+
+type Moved(Int)
+
+type Square = { side: Int }
+
+type Shape = Square | Dot | Moved
+
+type Mark = Dot | Moved
+
+fn f(s: Shape) -> String {
+  match s {
+    Square => f"square {s.side}",
+    Dot => "dot",
+    Moved(n) => f"moved {n}",
+  }
+}
+
+fn g(m: Mark) -> Int = match m { Dot => 0, Moved(n) => n }
+
+fn main() {
+  print(f(Dot))
+  print(f(Moved(2)))
+  print(f(Square { side: 3 }))
+  print(g(Moved(5)))
+}
+"##;
+
 /// The shapes `std.typing` describes, through `Json`: a recursive type, a
 /// generic one, a union of records, a tuple-shaped variant, `Option` of a
 /// refined alias, a `distinct` type; and a union's members keep their docs.

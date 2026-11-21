@@ -513,6 +513,18 @@ pub fn block(e: &Expr, d: usize) -> String {
 
 pub fn type_decl(t: &TypeDecl) -> String {
     let tp = if t.params.is_empty() { String::new() } else { format!("[{}]", crate::symbol::join(&t.params, ", ")) };
+    // an atom or a tuple-shaped type on its own: `type Dot`, `type Moved(Int)`
+    if let TypeBody::Sum(vs) = &t.body {
+        if let [v] = vs.as_slice() {
+            if crate::names::short(&v.name) == crate::names::short(&t.name) && !t.distinct && !t.mock && t.refinement.is_none() && !has_comments(&v.comments) {
+                match &v.payload {
+                    Payload::None => return format!("type {}{tp}", t.name),
+                    Payload::Positional(ts) => return format!("type {}{tp}({})", t.name, ts.iter().map(ty).collect::<Vec<_>>().join(", ")),
+                    _ => {}
+                }
+            }
+        }
+    }
     let kw = if t.mock { "mock" } else if t.distinct { "distinct type" } else { "type" };
     let mut s = format!("{kw} {}{} =", t.name, tp);
     if !matches!(t.body, TypeBody::Sum(_)) {

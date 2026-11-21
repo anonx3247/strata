@@ -184,7 +184,8 @@ impl Env {
             owners.entry(short(c)).or_default().push(format!("the variant `{c}` of `{t}`"));
         }
         for (c, t) in &variants {
-            let others: Vec<&String> = owners[&short(c)].iter().filter(|o| **o != format!("the variant `{c}` of `{t}`")).collect();
+            // (a type on its own, `type Dot`, is named as its one member)
+            let others: Vec<&String> = owners[&short(c)].iter().filter(|o| **o != format!("the variant `{c}` of `{t}`") && !(c == t && **o == format!("the type `{t}`"))).collect();
             if !others.is_empty() {
                 let list = others.iter().map(|o| o.as_str()).collect::<Vec<_>>().join(", ");
                 errs.push(Diag {

@@ -559,6 +559,12 @@ impl Parser {
     fn type_decl(&mut self) -> R<TypeDecl> {
         let name = self.ident()?;
         let params = self.type_params()?;
+        // an atom (`type Dot`) or a tuple-shaped type (`type Moved(Int)`) on its
+        // own: a union of one member, named as it is
+        if !self.is_sym("=") && (self.is_sym("(") || !self.is_sym("{")) {
+            let payload = if self.is_sym("(") { self.payload()? } else { Payload::None };
+            return Ok(TypeDecl { distinct: false, name, params, body: TypeBody::Sum(vec![Variant { comments: vec![], name, payload }]), refinement: None, mock: false });
+        }
         self.expect_sym("=")?;
         let body = if self.is_sym("|") {
             let mut vs = Vec::new();

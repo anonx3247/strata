@@ -88,6 +88,20 @@ pub fn render(args: &Args) -> Result<bool, String> {
     let src = load(&args)?;
     // shown as written: each reference as short as the module's `use`s allow
     let p = &resolve::written_form(src.program());
+    // a union's members inline or on their own (both read back the same)
+    let viewed;
+    let p = match args.val("--members") {
+        None => p,
+        Some("separate") => {
+            viewed = resolve::members_view(p, resolve::Members::Separate);
+            &viewed
+        }
+        Some("inline") => {
+            viewed = resolve::members_view(p, resolve::Members::Inline);
+            &viewed
+        }
+        Some(other) => return Err(format!("`--members {other}`: `separate` or `inline`")),
+    };
     match args.val("--split") {
         None => {
             // a module is a file: print one
