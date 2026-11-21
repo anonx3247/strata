@@ -361,7 +361,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None };
     // std's precompiled functions, but while making them, tracing, or in a library
     if !BUILDING_STD.with(|b| b.get()) && !m.tracing && !matches!(entry, Entry::Library(_)) {
         m.precompiled = jit::std_library().map(|l| &l.names);
@@ -737,6 +737,10 @@ struct Module<'a> {
     /// String constants.
     globals: String,
     strings: HashMap<String, String>,
+    /// How many constant lists and blocks there are (they are named by number).
+    constants: usize,
+    /// Each constant list or block by its contents, so equal ones are one.
+    constant_of: HashMap<String, String>,
     /// Compiled functions.
     body: String,
     /// Functions still to compile (with their type arguments): those the compiled ones call.
@@ -2161,6 +2165,81 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok((t.clone(), r))
     }
 
+    /// A value's slot as an LLVM constant, if the value is a constant that
+    /// fits one: a small `Int`, `()`, or a constant object (a string, a
+    /// constant list or block: `@...` or `getelementptr`, never freed).
+    fn constant_slot(&mut self, v: &V) -> Res<Option<(&'static str, String)>> {
+        if is_never(&v.0) || !constant(&v.1) {
+            return Ok(None);
+        }
+        Ok(match self.m.repr(&v.0)? {
+            Ty::Int if v.1.parse::<i64>().is_ok() => Some(("i64", v.1.clone())),
+            Ty::Unit => Some(("i64", "0".into())),
+            Ty::Int | Ty::Float | Ty::Bool => None,
+            _ if v.1 == "null" || v.1 == "poison" || v.1.is_empty() => None,
+            _ => Some(("ptr", v.1.clone())),
+        })
+    }
+
+    /// The slots as one constant array (`[n x i64]` or `[n x ptr]`; both are
+    /// 64-bit words), if every value is a constant of one kind.
+    fn constant_slots(&mut self, vs: &[V]) -> Res<Option<(String, String)>> {
+        let mut kind = None;
+        let mut items = vec![];
+        for v in vs {
+            let Some((k, c)) = self.constant_slot(v)? else { return Ok(None) };
+            if kind.is_some_and(|k0| k0 != k) {
+                return Ok(None);
+            }
+            kind = Some(k);
+            items.push(format!("{k} {c}"));
+        }
+        let ty = format!("[{} x {}]", vs.len(), kind.unwrap_or("i64"));
+        Ok(Some((ty.clone(), format!("{ty} [{}]", items.join(", ")))))
+    }
+
+    /// A block of constants (a tuple's) as a constant: its tag, then its
+    /// slots, after a count of 0 (never freed).
+    fn constant_block(&mut self, tag: i64, vs: &[V]) -> Res<Option<String>> {
+        if vs.is_empty() {
+            return Ok(None);
+        }
+        let Some((ty, arr)) = self.constant_slots(vs)? else { return Ok(None) };
+        let key = format!("block {tag} {arr}");
+        if let Some(at) = self.m.constant_of.get(&key) {
+            return Ok(Some(at.clone()));
+        }
+        let g = format!("@.const.{}", self.m.constants);
+        self.m.constants += 1;
+        writeln!(self.m.globals, "{g} = private unnamed_addr constant {{ i64, i64, {ty} }} {{ i64 0, i64 {tag}, {arr} }}, align 8").unwrap();
+        let at = format!("getelementptr inbounds (i8, ptr {g}, i64 8)");
+        self.m.constant_of.insert(key, at.clone());
+        Ok(Some(at))
+    }
+
+    /// A list of constants as a constant: its header (length, buffer,
+    /// offset) and its full buffer (capacity, used, elements), each after a
+    /// count of 0, so it is never freed and never changed in place (a push
+    /// or an update copies it, as for any list held elsewhere).
+    fn constant_list(&mut self, _et: &Ty, vs: &[V]) -> Res<Option<String>> {
+        if vs.is_empty() {
+            return Ok(None);
+        }
+        let Some((ty, arr)) = self.constant_slots(vs)? else { return Ok(None) };
+        let key = format!("list {arr}");
+        if let Some(at) = self.m.constant_of.get(&key) {
+            return Ok(Some(at.clone()));
+        }
+        let n = vs.len();
+        let (g, b) = (format!("@.const.{}", self.m.constants), format!("@.const.{}.buf", self.m.constants));
+        self.m.constants += 1;
+        writeln!(self.m.globals, "{b} = private unnamed_addr constant {{ i64, i64, i64, {ty} }} {{ i64 0, i64 {n}, i64 {n}, {arr} }}, align 8").unwrap();
+        writeln!(self.m.globals, "{g} = private unnamed_addr constant {{ i64, i64, ptr, i64 }} {{ i64 0, i64 {n}, ptr getelementptr inbounds (i8, ptr {b}, i64 8), i64 0 }}, align 8").unwrap();
+        let at = format!("getelementptr inbounds (i8, ptr {g}, i64 8)");
+        self.m.constant_of.insert(key, at.clone());
+        Ok(Some(at))
+    }
+
     /// A new block: a tag, then slots. It holds its fields (taken); the
     /// caller owns it.
     fn block_of(&mut self, tag: i64, fields: &[V]) -> Res<String> {
@@ -3572,6 +3651,9 @@ impl<'m, 'a> Func<'m, 'a> {
                 if vs.iter().any(|v| is_never(&v.0)) {
                     return Ok(never());
                 }
+                if let Some(b) = self.constant_block(0, &vs)? {
+                    return Ok((t, b));
+                }
                 let b = self.block_of(0, &vs)?;
                 self.temp((t, b))
             }
@@ -3656,6 +3738,10 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
                 let et = self.elem_ty(&t)?;
                 let vs: Vec<V> = vs.into_iter().map(|v| self.coerce(v, &et)).collect::<Res<_>>()?;
+                // every element a constant: the list is one too, built once
+                if let Some(l) = self.constant_list(&et, &vs)? {
+                    return Ok((t, l));
+                }
                 // a new list's buffer holds the elements (taken)
                 let l = self.call(&t, "@strata_list_new", &[(Ty::Int, vs.len().to_string())])?;
                 let (bp, buf, data) = (self.fresh("bufp"), self.fresh("buf"), self.fresh("data"));
