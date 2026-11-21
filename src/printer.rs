@@ -6,7 +6,7 @@ use crate::ast::*;
 /// A string literal's contents, written so the lexer reads them back the
 /// same: `\n`, `\t` and `"` are escaped, and so is a backslash that would
 /// otherwise start one of those escapes (others, like regex `\d`, stay as is).
-fn escape(s: &str) -> String {
+pub fn escape(s: &str) -> String {
     let mut out = String::new();
     let mut it = s.chars().peekable();
     while let Some(c) = it.next() {

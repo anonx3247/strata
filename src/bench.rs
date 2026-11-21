@@ -37,7 +37,7 @@ fn bench() {
         let check = time(&mut || drop(std::hint::black_box(crate::types::check(&p))));
         let once = time(&mut || drop(std::hint::black_box(crate::types::check_and_elaborate(&p))));
         let c = crate::types::check_and_elaborate(&p);
-        let refinements = time(&mut || drop(std::hint::black_box(crate::verify::refinements_in(&c.program, &c.env))));
+        let refinements = time(&mut || drop(std::hint::black_box(crate::verify::refinements_in(&c.program, &c.compiled, &c.env))));
         let full = time(&mut || drop(std::hint::black_box(crate::full_check(&p))));
         let load = time(&mut || drop(std::hint::black_box(crate::package::program(&root.join(name)).unwrap())));
         println!("{name:<15} load {load:>9.1?}  check_and_elaborate {once:>9.1?}  refinements {refinements:>9.1?}  full_check {full:>9.1?}");

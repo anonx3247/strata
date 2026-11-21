@@ -17,10 +17,12 @@
 //! 3. the result is `impl CommandLine for Options { ... }` with those methods
 //!    and the ones written by hand, and the copies are added to the program.
 //!
-//! Compile-time code runs in the interpreter, within a step budget.
+//! Compile-time code is mostly data (a description, a known name, a field
+//! of one), read as it is; the rest is compiled and run on the JIT, within
+//! a step budget, its value read back from memory (`llvm::native`).
 
 use crate::ast::*;
-use crate::interp::{Fields, Interp, Scope, Value};
+use crate::interp::{Fields, Value};
 use crate::symbol::Symbol;
 use crate::types::{Diag, Env};
 use std::collections::HashMap;
@@ -30,6 +32,7 @@ const BUDGET: u64 = 5_000_000;
 
 /// Replace each `derive` by its `impl` (or report why it can't be made).
 pub fn expand(p: &mut Program, errors: &mut Vec<Diag>) {
+    settings(p);
     if !p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Impl(i) if i.derived)) {
         return;
     }
@@ -63,13 +66,31 @@ pub fn expand(p: &mut Program, errors: &mut Vec<Diag>) {
     p.decls.extend(extra);
 }
 
+/// `setting("json.unknown_keys")` anywhere: the package's setting, written
+/// in as a constant (`Some("error")` or `None`), so it is known when the
+/// code runs, compiled or not.
+fn settings(p: &mut Program) {
+    for d in &mut p.decls {
+        decl_exprs_mut_post(&mut d.kind, |e| {
+            let Expr::Call(f, args) = &*e else { return };
+            if !matches!(&**f, Expr::Var(n) if n.as_str() == "std.typing.setting") {
+                return;
+            }
+            let [Expr::Str(key)] = args.as_slice() else { return };
+            *e = match crate::package::setting(key) {
+                Some(v) => Expr::Ctor(Symbol::new("Some"), CtorArgs::Positional(vec![Expr::Str(v)])),
+                None => Expr::Ctor(Symbol::new("None"), CtorArgs::None),
+            };
+        });
+    }
+}
+
 type Res<X> = Result<X, String>;
 
 struct Expander<'a> {
     env: &'a Env,
     prog: &'a Program,
 
-    it: Interp<'a>,
     /// Values known at compile time, by name (`t`, a `comptime` parameter).
     known: HashMap<Symbol, Value>,
     /// Types known at compile time, by name (`f.type`, `x` in `Option[x] =>`).
@@ -85,6 +106,8 @@ struct Expander<'a> {
     ctors: HashMap<String, String>,
     /// Names bound inside the code being specialized, which hide known ones.
     hidden: Vec<Vec<Symbol>>,
+    /// The type parameters of the type derived for (`T` of `Pair[T]`).
+    params: Vec<Symbol>,
     /// The trait being derived, and its methods.
     trait_name: Symbol,
     trait_methods: Vec<Symbol>,
@@ -107,6 +130,17 @@ fn strs(xs: &[String]) -> Value {
     Value::List(xs.iter().map(|s| Value::Str(s.clone())).collect())
 }
 
+/// Whether a type mentions the name `p` (a type parameter).
+fn mentions_name(t: &TypeExpr, p: Symbol) -> bool {
+    match t {
+        TypeExpr::Named(n, args) => *n == p || args.iter().any(|a| mentions_name(a, p)),
+        TypeExpr::Refined(b, _) => mentions_name(b, p),
+        TypeExpr::Fn(ps, r) => ps.iter().any(|a| mentions_name(a, p)) || mentions_name(r, p),
+        TypeExpr::Union(ms) => ms.iter().any(|a| mentions_name(a, p)),
+        TypeExpr::Unit => false,
+    }
+}
+
 /// The pattern matching values of a type (`Int`, `List[Int]`, `Address`).
 fn type_pattern(t: &TypeExpr) -> Option<Pattern> {
     match t {
@@ -125,9 +159,10 @@ fn json(v: &Value) -> String {
 
 impl<'a> Expander<'a> {
     fn new(env: &'a Env, prog: &'a Program) -> Self {
-        let mut it = Interp::new(env, 1);
-        it.budget = Some(BUDGET);
-        Expander { env, prog, it, known: HashMap::new(), types: HashMap::new(), written: HashMap::new(), self_ty: TypeExpr::Unit, copies: vec![], made: HashMap::new(), ctors: HashMap::new(), hidden: vec![], arm_fields: vec![], trait_name: Symbol::new(""), trait_methods: vec![], defaults: HashMap::new() }
+        Expander {
+            env,
+            prog,
+            known: HashMap::new(), types: HashMap::new(), written: HashMap::new(), self_ty: TypeExpr::Unit, copies: vec![], made: HashMap::new(), ctors: HashMap::new(), hidden: vec![], arm_fields: vec![], params: vec![], trait_name: Symbol::new(""), trait_methods: vec![], defaults: HashMap::new() }
     }
 
     /// `derive Trait for Type { written }` as an ordinary `impl`.
@@ -141,6 +176,24 @@ impl<'a> Expander<'a> {
         let Some(dv) = &tr.derivable else {
             return Err(format!("`{}` can't be derived: only a `derivable` trait can (write `impl {} for {}` instead)", short(&tr.name), short(&tr.name), crate::printer::ty(&i.for_type)));
         };
+        // a generic type (`derive Json for Pair`): for `Pair[T]`, each `T` with the trait
+        let mut i = i.clone();
+        let head0 = crate::types::texpr_head(&i.for_type);
+        if let (TypeExpr::Named(n, args), Some(td)) = (&i.for_type, self.env.types.get(&Symbol::new(&head0))) {
+            if args.is_empty() && !td.params.is_empty() {
+                i.for_type = TypeExpr::Named(*n, td.params.iter().map(|p| TypeExpr::Named(*p, vec![])).collect());
+                for p in &td.params {
+                    if !i.type_params.contains(p) {
+                        i.type_params.push(*p);
+                    }
+                    if !i.bounds.iter().any(|b| b.param == *p) {
+                        i.bounds.push(Bound { param: *p, traits: vec![TypeExpr::Named(tr.name, vec![])] });
+                    }
+                }
+            }
+        }
+        let i = &i;
+        self.params = i.type_params.clone();
         self.self_ty = i.for_type.clone();
         self.trait_name = tr.name;
         self.trait_methods = tr.methods.iter().map(|m| m.decl.name).collect();
@@ -158,7 +211,7 @@ impl<'a> Expander<'a> {
                 (Value::Record(n, _), Some(want)) => *n == want,
                 _ => false,
             };
-            if fits && self.it.check_type(k, &desc).map_err(|f| f.msg)?.is_none() {
+            if fits && self.of_kind(k, &desc)? {
                 kind_ok = true;
             }
         }
@@ -170,7 +223,7 @@ impl<'a> Expander<'a> {
         for r in &dv.requires {
             // `$Self` (and the like) written in, then run
             let r2 = self.expr(r)?;
-            let ok = self.it.eval(&r2, &None).map_err(|f| format!("checking what `{}` requires: {}", short(&tr.name), f.msg))?;
+            let ok = self.eval_as(&r2, r).map_err(|m| format!("checking what `{}` requires: {m}", short(&tr.name)))?;
             if ok != Value::Bool(true) {
                 return Err(format!("`{}` doesn't meet what `{}` requires: {}", short(&head), short(&tr.name), crate::printer::expr(r, 0)));
             }
@@ -190,6 +243,22 @@ impl<'a> Expander<'a> {
             }
         }
         Ok(ImplDecl { methods, derived: false, ..i.clone() })
+    }
+
+    /// Whether a description is of the kind (`Record`, `Choice`): its
+    /// refinements hold (a description is data, so only they can fail).
+    fn of_kind(&mut self, kind: &TypeExpr, desc: &Value) -> Res<bool> {
+        let refined = |t: &TypeExpr| match t {
+            TypeExpr::Refined(..) => true,
+            TypeExpr::Named(n, _) => self.env.types.get(n).is_some_and(|td| td.refinement.is_some() || matches!(&td.body, TypeBody::Alias(TypeExpr::Refined(..)))),
+            _ => false,
+        };
+        if !refined(kind) {
+            return Ok(true);
+        }
+        let TypeExpr::Named(n, _) = kind else { return Err(format!("the kind `{}` must be a type's name", crate::printer::ty(kind))) };
+        let x = self.literal(desc)?;
+        Ok(self.eval(&Expr::Is(Box::new(x), *n))? == Value::Bool(true))
     }
 
     /// The record type a kind is (or refines): `Record`, `Sum` (`Choice` is a `Sum`).
@@ -303,15 +372,191 @@ impl<'a> Expander<'a> {
 
     /// Run compile-time code, with the known values in scope.
     fn eval(&mut self, e: &Expr) -> Res<Value> {
-        let mut scope: Scope = None;
-        for (k, v) in &self.known {
-            scope = crate::interp::extend(&scope, k, v.clone());
+        self.eval_as(e, e)
+    }
+
+    /// `eval`, messages showing `written` (the code before the known values
+    /// were written in).
+    fn eval_as(&mut self, e: &Expr, written: &Expr) -> Res<Value> {
+        // most compile-time code is data: a description written out, a known
+        // name, a field of one; nothing runs
+        if let Some(v) = self.data(e) {
+            return Ok(v);
         }
-        let r = self.it.eval(e, &scope);
-        if self.it.exhausted() {
-            return Err(format!("`comptime {}` ran for more than {BUDGET} steps: compile-time code must finish", crate::printer::expr(e, 0)));
+        self.compiled(e, written)
+    }
+
+    /// Run compile-time code compiled: a function whose body is `e`, the
+    /// known values bound before it, checked with the program as it is
+    /// before its derived `impl`s (compile-time code can't use them), run
+    /// within the budget, its value read back.
+    fn compiled(&mut self, e: &Expr, written: &Expr) -> Res<Value> {
+        let shown = || crate::printer::expr(written, 0);
+        let name = Symbol::new("strata.comptime");
+        let mut stmts = vec![];
+        let mut known: Vec<(&Symbol, &Value)> = self.known.iter().filter(|(k, _)| self.is_known(k)).collect();
+        known.sort_by_key(|(k, _)| k.as_str());
+        for (k, v) in known {
+            if let Ok(x) = self.literal(v) {
+                stmts.push(Stmt::Let(Pattern::Bind(*k), None, x));
+            }
         }
-        r.map_err(|f| format!("`comptime {}` failed: {}", crate::printer::expr(e, 0), f.msg))
+        stmts.push(Stmt::Let(Pattern::Bind(Symbol::new("strata_ct")), None, e.clone()));
+        let f = FnDecl {
+            doc: vec![],
+            comments: vec![],
+            name,
+            type_params: vec![],
+            bounds: vec![],
+            params: vec![],
+            ret: TypeExpr::Unit,
+            requires: vec![],
+            ensures: vec![],
+            terminates: false,
+            body: Expr::Block(stmts, Box::new(Expr::Unit)),
+            comptime: false,
+            derived: false,
+        };
+        let mut p = Program { decls: vec![] };
+        for d in &crate::types::rooted(self.prog).decls {
+            match &d.kind {
+                DeclKind::Impl(i) if i.derived => {}
+                DeclKind::Test(_) => {}
+                _ => p.decls.push(d.clone()),
+            }
+        }
+        p.decls.extend(self.copies.iter().map(|c| Decl { comments: vec![], doc: vec![], kind: DeclKind::Fn(c.clone()), module: Symbol::new(""), public: false }));
+        p.decls.push(Decl { comments: vec![], doc: vec![], kind: DeclKind::Fn(f), module: Symbol::new(""), public: false });
+        let rep = crate::types::check_report_resolved(&p);
+        if let Some(err) = rep.errors.iter().find(|d| d.decl == name.as_str()) {
+            return Err(format!("`comptime {}`: {}", shown(), err.msg));
+        }
+        // its type, as the checker found it, is the function's result: `{ known; e }`
+        let (r, types) = crate::types::elaborate_resolved(&p);
+        let ty = r.program.decls.iter().find_map(|d| match &d.kind {
+            DeclKind::Fn(f) if f.name == name => match &f.body {
+                Expr::Block(stmts, _) => match stmts.last() {
+                    Some(Stmt::Let(_, _, x)) => types.get(&(x as *const Expr as usize)).cloned(),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        });
+        let ty = ty.ok_or(format!("`comptime {}`: its type isn't known", shown()))?;
+        let Some(Decl { kind: DeclKind::Fn(f), .. }) = p.decls.last_mut() else { unreachable!() };
+        let Expr::Block(stmts, _) = std::mem::replace(&mut f.body, Expr::Unit) else { unreachable!() };
+        let mut stmts = stmts;
+        let Some(Stmt::Let(_, _, x)) = stmts.pop() else { unreachable!() };
+        f.body = Expr::Block(stmts, Box::new(x));
+        f.ret = crate::types::ty_to_texpr(&ty);
+        let (ir, roots, shapes) = crate::llvm::compile_comptime(&p, &[name.to_string()]).map_err(|m| format!("`comptime {}` can't be compiled: {m}", shown()))?;
+        let mut vs = crate::llvm::jit::comptime(&ir, &roots, &shapes, BUDGET as i64)?;
+        match vs.pop() {
+            Some(Ok(v)) => Ok(v),
+            Some(Err(f)) if f.message == "too many steps" => Err(format!("`comptime {}` ran for more than {BUDGET} steps: compile-time code must finish", shown())),
+            Some(Err(f)) => Err(format!("`comptime {}` failed: {}", shown(), f.message)),
+            None => Err(format!("`comptime {}` gave nothing", shown())),
+        }
+    }
+
+    /// The value of `e` if it is data: literals, constructors of them, known
+    /// names and their fields (as the interpreter would make it). `None`
+    /// when something would have to run.
+    fn data(&self, e: &Expr) -> Option<Value> {
+        self.data_in(e, &mut vec![])
+    }
+
+    /// `data`, with a lambda's parameters bound (`locals`, innermost last).
+    fn data_in(&self, e: &Expr, locals: &mut Vec<(Symbol, Value)>) -> Option<Value> {
+        Some(match e {
+            Expr::Var(x) if locals.iter().any(|(n, _)| n == x) => locals.iter().rev().find(|(n, _)| n == x)?.1.clone(),
+            // `None is Some`: a constructor's name, known (a type's, as `Choice`, may be refined)
+            Expr::Is(x, c) if self.env.ctors.contains_key(c) && !self.env.types.contains_key(c) => match self.data_in(x, locals)? {
+                Value::Variant(n, _) | Value::Record(n, _) => Value::Bool(crate::names::short(&n) == crate::names::short(c)),
+                _ => return None,
+            },
+            // `$Self.fields.map(f -> f.name)`: each item through a lambda that is data too
+            Expr::Method(recv, m, args) if m == "map" && args.len() == 1 => {
+                let Value::List(items) = self.data_in(recv, locals)? else { return None };
+                let Expr::Lambda(ps, body) = &args[0] else { return None };
+                let [p] = ps.as_slice() else { return None };
+                let mut out = vec![];
+                for it in items {
+                    locals.push((p.name, it));
+                    let v = self.data_in(body, locals);
+                    locals.pop();
+                    out.push(v?);
+                }
+                Value::List(out)
+            }
+            Expr::Int(n) => Value::Int(*n),
+            Expr::BigInt(b) => crate::interp::int_value(b.parse().ok()?),
+            Expr::Float(x) => Value::Float(*x),
+            Expr::Bool(b) => Value::Bool(*b),
+            Expr::Str(s) => Value::Str(s.clone()),
+            Expr::Unit => Value::Unit,
+            Expr::Var(x) if self.is_known(x) => self.known[x].clone(),
+            // comparing what is known (`if comptime f.name == "type"`): nothing to run
+            Expr::Bin(op, a, b) => {
+                use BinOp::*;
+                let (x, y) = (self.data_in(a, locals)?, self.data_in(b, locals)?);
+                match (op, &x, &y) {
+                    (Eq, _, _) => Value::Bool(x == y),
+                    (Ne, _, _) => Value::Bool(x != y),
+                    (And, Value::Bool(p), Value::Bool(q)) => Value::Bool(*p && *q),
+                    (Or, Value::Bool(p), Value::Bool(q)) => Value::Bool(*p || *q),
+                    (Lt | Le | Gt | Ge, Value::Int(p), Value::Int(q)) => Value::Bool(match op {
+                        Lt => p < q,
+                        Le => p <= q,
+                        Gt => p > q,
+                        _ => p >= q,
+                    }),
+                    _ => return None,
+                }
+            }
+            Expr::Un(UnOp::Not, x) => match self.data_in(x, locals)? {
+                Value::Bool(b) => Value::Bool(!b),
+                _ => return None,
+            },
+            Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if n == "len") && args.len() == 1 => match self.data_in(&args[0], locals)? {
+                Value::List(xs) => Value::Int(xs.len() as i64),
+                _ => return None,
+            },
+            Expr::List(xs) => Value::List(xs.iter().map(|x| self.data_in(x, locals)).collect::<Option<_>>()?),
+            Expr::Tuple(xs) => Value::Tuple(xs.iter().map(|x| self.data_in(x, locals)).collect::<Option<_>>()?),
+            Expr::Field(r, f) => match self.data_in(r, locals)? {
+                Value::Record(_, fs) => fs.into_iter().find(|(k, _)| k == f.as_str())?.1,
+                Value::Variant(_, Fields::Rec(fs)) => fs.iter().find(|(k, _)| k == f.as_str())?.1.clone(),
+                _ => return None,
+            },
+            Expr::Ctor(c, args) => {
+                let tname = *self.env.ctors.get(c)?;
+                let td = self.env.types.get(&tname)?;
+                if td.distinct || td.refinement.is_some() {
+                    return None;
+                }
+                match args {
+                    CtorArgs::None => Value::Variant(c.to_string(), Fields::None),
+                    CtorArgs::Positional(es) => Value::Variant(c.to_string(), Fields::pos(es.iter().map(|x| self.data_in(x, locals)).collect::<Option<_>>()?)),
+                    CtorArgs::Record(fs) => {
+                        // in declaration order, every field given (a default would have to run)
+                        let order = self.env.variants_of(&tname, &[]).and_then(|vs| vs.into_iter().find(|v| &v.0 == c)).and_then(|v| v.1)?;
+                        if order.len() != fs.len() {
+                            return None;
+                        }
+                        let mut vals = vec![];
+                        for f in &order {
+                            let (_, fe) = fs.iter().find(|(n, _)| n == f)?;
+                            vals.push((f.to_string(), self.data_in(fe, locals)?));
+                        }
+                        if matches!(td.body, TypeBody::Record(_)) { Value::Record(c.to_string(), vals) } else { Value::Variant(c.to_string(), Fields::rec(vals)) }
+                    }
+                    CtorArgs::Update(..) => return None,
+                }
+            }
+            _ => return None,
+        })
     }
 
     /// A value computed at compile time, written as code.
@@ -341,8 +586,8 @@ impl<'a> Expander<'a> {
         match e {
             Expr::Comptime(x) => {
                 // what it uses (`$Self`, known names) written in, then run
-                let x = self.expr(x)?;
-                let v = self.eval(&x)?;
+                let known = self.expr(x)?;
+                let v = self.eval_as(&known, x)?;
                 return self.literal(&v);
             }
             // a known value used where the program runs: written in
@@ -420,12 +665,12 @@ impl<'a> Expander<'a> {
                 let TypeExpr::Named(n, targs) = self.base(&t) else {
                     return Err(format!("`{}.{m}(..)`: `{}` has no methods of its own to call", crate::printer::expr(recv, 0), crate::printer::ty(&t)));
                 };
-                if !targs.is_empty() {
-                    return Err(format!("`{}.{m}(..)`: calling a method on a generic type (`{}`) isn't supported yet", crate::printer::expr(recv, 0), crate::printer::ty(&t)));
-                }
+                // (a generic type, `Pair[Int]`: called on `Pair`, its arguments are
+                // inferred from what the call must return)
+                let _ = targs;
                 // a method of the trait being derived: the type must have it (said
                 // here, at the `derive`, rather than in the code made for it)
-                let own = crate::types::texpr_head(&self.self_ty) == n.as_str();
+                let own = crate::types::texpr_head(&self.self_ty) == n.as_str() || self.params.contains(&n);
                 if !own && self.trait_methods.contains(m) && !self.env.impls.iter().any(|i| i.trait_name == self.trait_name && crate::types::texpr_head(&i.for_type) == n.as_str()) {
                     let tn = crate::names::short(&self.trait_name);
                     return Err(format!("`{}` doesn't implement `{tn}`: write `derive {tn} for {}`", crate::names::short(&n), crate::names::short(&n)));
@@ -838,6 +1083,8 @@ impl<'a> Expander<'a> {
                     _ => false,
                 }
             }
+            // `Param`: a type parameter of the type derived for (`T` of `Pair[T]`)
+            Pattern::Ctor(c, CtorPat::None) if crate::names::short(c) == "Param" && self.env.types.get(c).is_none() => matches!(&base, TypeExpr::Named(n, a) if a.is_empty() && self.params.contains(n)),
             // `Union`: a union of types (its members: `std.typing.Union { members }`)
             Pattern::Ctor(c, CtorPat::None) if crate::names::short(c) == "Union" && self.env.types.get(c).is_none() => matches!(&base, TypeExpr::Union(_)),
             // `Distinct[x]`: a `distinct` type, `x` the type it is made of
@@ -883,8 +1130,8 @@ impl<'a> Expander<'a> {
         for (p, a) in fd.params.iter().zip(args) {
             if p.comptime {
                 // known here: evaluated (once the known values are written in)
-                let a = self.expr(a)?;
-                vals.push((p.clone(), self.eval(&a)?));
+                let known = self.expr(a)?;
+                vals.push((p.clone(), self.eval_as(&known, a)?));
             } else {
                 rest.push(self.expr(a)?);
             }
@@ -931,7 +1178,18 @@ impl<'a> Expander<'a> {
         }
         let _ = saved;
         (self.known, self.types, self.hidden) = outer;
-        let f = FnDecl { name: copy, params, ret, body: body?, comptime: false, ..own };
+        // made for a generic type: generic in its parameters that it mentions,
+        // each with the trait derived (`fn encode_as.for.Pair.2[T: Json](x: T, ..)`)
+        let mut tps = own.type_params.clone();
+        let mut bounds = own.bounds.clone();
+        for p in self.params.clone() {
+            let mentions = params.iter().map(|q| &q.ty).chain(std::iter::once(&ret)).any(|t| mentions_name(t, p));
+            if mentions && !tps.contains(&p) {
+                tps.push(p);
+                bounds.push(Bound { param: p, traits: vec![TypeExpr::Named(self.trait_name, vec![])] });
+            }
+        }
+        let f = FnDecl { name: copy, params, ret, body: body?, comptime: false, type_params: tps, bounds, ..own };
         self.copies.push(f);
         Ok(Expr::Call(Box::new(Expr::Var(copy)), rest))
     }

@@ -129,7 +129,7 @@ fn records_variants_and_generics_run_as_interpreted() {
     let d = tmp("data");
     let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/build/data.strata");
     let (out, code) = same_as_interpreter(&file, &d);
-    assert!(out.contains("{\"Err\":\"3 is odd\"}") && out.contains("big circle, circle, rect or dot, nothing"), "{out}");
+    assert!(out.contains("Err(\"3 is odd\")") && out.contains("big circle, circle, rect or dot, nothing"), "{out}");
     assert_eq!(code, 101);
     let cases = [
         ("field_refinement", "type Quantity = Int where 1 <= it && it <= 99\ntype Line = { sku: String, qty: Quantity }\nfn main() -> () { mut l := Line { sku: \"a\", qty: 5 } l.qty = 0 }", 101),
@@ -168,7 +168,7 @@ fn lists_and_lambdas_run_as_interpreted() {
     let d = tmp("lists");
     let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/build/lists.strata");
     let (out, code) = same_as_interpreter(&file, &d);
-    assert!(out.contains("[2,3,5,7,11,13,17,19,23,29]") && out.contains("[0]: -1 does not satisfy `Positive`"), "{out}");
+    assert!(out.contains("[2, 3, 5, 7, 11, 13, 17, 19, 23, 29]") && out.contains("[0]: -1 does not satisfy `Positive`"), "{out}");
     assert_eq!(code, 101);
     // examples/math.strata, with a `main` that prints what its test checks
     let math = Command::new(env!("CARGO_BIN_EXE_strata")).args(["render", "--file"]).arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/math.strata")).output().unwrap();
@@ -176,7 +176,7 @@ fn lists_and_lambdas_run_as_interpreted() {
     let math = math[..math.find("test \"values\"").unwrap()].to_string()
         + "fn main() {\n  print([factorial(5), gcd(12, 18), power(2, 10), digit_sum(1234), ackermann(2, 3), triangle(10), isqrt(17), collatz_steps(6)])\n  print(positive_squares([-2, 3, 0, 4]))\n  print(primes(20))\n  print(first_or_one([5, 1]))\n  print(average([]))\n}\n";
     let (out, code) = case(&d, "math", &math);
-    assert!(out.contains("[120,6,1024,10,9,55,4,8]") && out.contains("division by zero"), "{out}");
+    assert!(out.contains("[120, 6, 1024, 10, 9, 55, 4, 8]") && out.contains("division by zero"), "{out}");
     assert_eq!(code, 101);
     // no limit on a range's length (the interpreter's was 1,000,000)
     let (out, code) = case(&d, "range", "fn main() {\n  mut n: Int = 0\n  for i in range(0, 2000000) { n = n + i }\n  print(n)\n  print(len(range(0, 1500000)))\n}");
@@ -227,7 +227,7 @@ fn capabilities_and_mut_run_as_interpreted() {
     // the files test made and read a folder of its own, there
     assert!(d.join("fsplay/a.txt").exists());
     let (out, _) = case(&d, "args", "use std.process.Environment\nfn main(env: Environment) -> () { print(env.args()) }");
-    assert!(out.contains(r#"["one","two words"]"#), "{out}");
+    assert!(out.contains(r#"["one", "two words"]"#), "{out}");
 }
 
 /// A program's text (rendered), its tests turned into blocks of a `main`.
@@ -273,11 +273,11 @@ fn strings_dicts_and_sets_run_as_interpreted() {
     let wc = String::from_utf8(wc.stdout).unwrap();
     let wc = wc[..wc.find("test \"").unwrap()].replace("fn main(", "fn wc(") + WC_MAIN;
     let (out, code) = case(&d, "wc", &wc);
-    assert!(out.contains(r#"["2\t3\t14\ta.txt","1\t2\t12\tb.txt","3\t5\t26\ttotal"]"#) && out.contains("NotFound") && code == 0, "{out}");
+    assert!(out.contains(r#"["2\t3\t14\ta.txt", "1\t2\t12\tb.txt", "3\t5\t26\ttotal"]"#) && out.contains("NotFound") && code == 0, "{out}");
     let (out, code) = case(&d, "strings", STRINGS);
-    assert!(out.contains(r#"["STRASSE Ǆ ʼN","οδος σ ας. i̇","SS","ǆ"]"#) && out.contains("[-00042]") && code == 0, "{out}");
+    assert!(out.contains(r#"["STRASSE Ǆ ʼN", "οδος σ ας. i̇", "SS", "ǆ"]"#) && out.contains("[-00042]") && code == 0, "{out}");
     let (out, code) = case(&d, "dicts_and_sets", COLLECTIONS);
-    assert!(out.contains(r#"{"cat":2,"end":1,"hat":1,"the":3}"#) && out.contains("[[1,\"a\"],[2,\"b\"],[3,\"z\"]]") && code == 0, "{out}");
+    assert!(out.contains(r#"Dict { "cat": 2, "end": 1, "hat": 1, "the": 3 }"#) && out.contains("Dict { 1: \"a\", 2: \"b\", 3: \"z\" }") && code == 0, "{out}");
     let faults = [
         ("dict_value", "fn f() -> Dict[String, Positive] { Dict { \"a\": 1, \"b\": 0 } }\nfn main() -> () { print(f()) }"),
         ("set_element", "fn g(s: Set[Positive]) -> Int { len(s) }\nfn main() -> () { print(g(Set { 1 })) print(g(Set { 3, -2 })) }"),
@@ -565,7 +565,7 @@ fn main() {
   print([Dot, Rect(1, 2), Circle { r: 1, label: "c" }].map(s -> s.width()))
 }
 "#);
-    assert!(out.contains("{\"Some\":\"Loud\"}\nNone\nloud\n[0,2,2]") && code == 0, "{out}");
+    assert!(out.contains("Some(Loud)\nNone\nloud\n[0, 2, 2]") && code == 0, "{out}");
 }
 
 /// The argument sets the examples with options are run with: values,
@@ -626,11 +626,16 @@ fn options_from_the_command_line_compile() {
 #[test]
 fn what_is_not_compiled_yet_is_named() {
     let d = tmp("unsupported");
-    let f = d.join("lists.strata");
-    save(&f, "fn main() { p := \"[a-z]\" + \"[0-9]\" print(matches(\"a1\", p)) }\n");
+    let f = d.join("many.strata");
+    save(&f, "trait Many {\n  fn copies(self) -> List[Self]\n}\n\ntype A = { n: Int }\n\nimpl Many for A {\n  fn copies(self) -> List[A] { [self, self] }\n}\n\nfn main() {\n  let m: Many = A { n: 1 }\n  print(len(m.copies()))\n}\n");
     let o = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(!o.status.success() && err.contains("can't compile `main`: `matches` with a pattern that isn't a literal is not compiled yet"), "{err}");
+    let why = "can't compile `main`: calling `copies` (it mentions `Self` inside another type) on a value of the trait type `Many` is not compiled yet";
+    assert!(!o.status.success() && err.contains(why), "{err}");
+    // `strata run` says so too (nothing is interpreted instead)
+    let o = Command::new(env!("CARGO_BIN_EXE_strata")).arg("run").arg(&f).output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success() && err.contains(&format!("the program can't be compiled yet: {why}")), "{err}");
 }
 
 #[test]
@@ -645,7 +650,6 @@ fn emits_llvm_ir() {
 }
 
 /// `strata run --jit`: compiled in memory, same output as interpreted.
-#[cfg(feature = "jit")]
 #[test]
 fn the_jit_runs_as_the_interpreter() {
     let d = tmp("jit");
@@ -655,16 +659,20 @@ fn the_jit_runs_as_the_interpreter() {
     let interp = output(Command::new(strata).args(["run", "--interpret"]).arg(&file));
     assert_eq!(jit, interp);
     assert_eq!(jit.1, 101);
-    // what doesn't compile yet is interpreted, and says why
+    // a pattern built at run time: Rust's engine, given to the runtime (as the interpreter's)
     let f = d.join("lists.strata");
-    save(&f, "fn main() { p := \"[a-z]\" + \"[0-9]\" print(matches(\"a1\", p)) }\n");
-    let (out, code) = output(Command::new(strata).args(["run", "--jit"]).arg(&f));
-    assert_eq!(code, 0);
-    assert!(out.contains("true\n") && out.contains("note: interpreted, not compiled: can't compile `main`: `matches` with a pattern that isn't a literal is not compiled yet"), "{out}");
+    save(&f, "fn main() { p := \"[a-z]\" + \"[0-9]\" print(matches(\"a1\", p)) print(matches(\"a\", p + \"(\")) }\n");
+    let jit = output(Command::new(strata).args(["run", "--jit"]).arg(&f));
+    assert_eq!(jit, output(Command::new(strata).args(["run", "--interpret"]).arg(&f)));
+    assert!(jit.0.starts_with("true\nfault (Runtime): bad regex: regex parse error:") && jit.1 == 101, "{jit:?}");
+    // a built program has no engine for them, and says so
+    let exe = d.join("lists");
+    assert!(Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap().status.success());
+    let (out, code) = output(&mut Command::new(&exe));
+    assert!(code == 101 && out.contains("a pattern built at run time needs `strata run`"), "{out}");
 }
 
 /// `strata run --jit` with options: the derived `from_args`, compiled.
-#[cfg(feature = "jit")]
 #[test]
 fn the_jit_reads_options() {
     let strata = env!("CARGO_BIN_EXE_strata");
@@ -689,7 +697,7 @@ fn memory_is_freed() {
     }
     let d = tmp("memory");
     let (out, code) = case(&d, "features", MEMORY);
-    assert!(code == 0 && out.contains("{\"name\":\"new\",\"tags\":[\"t\",\"renamed\"]}"), "{out}");
+    assert!(code == 0 && out.contains("Named { name: \"new\", tags: [\"t\", \"renamed\"] }"), "{out}");
     // an operand that borrows a variable a later operand assigns
     let (out, code) = case(&d, "nested_assign", NESTED_ASSIGN);
     assert!(code == 0 && out.starts_with("first 1/1\nsecond 2\n"), "{out}");
@@ -874,7 +882,6 @@ fn main() {
 /// With the JIT, `strata run` compiles by default: what doesn't compile is
 /// interpreted without a note (`--jit` gives one); compiled and interpreted,
 /// `Int` grows into a big integer.
-#[cfg(feature = "jit")]
 #[test]
 fn run_compiles_by_default_with_the_jit() {
     let d = tmp("jit-default");
@@ -927,7 +934,7 @@ fn fields_trait_equality_and_stacks_compile() {
     }
     let d = tmp("small-gaps");
     let (out, code) = case(&d, "fields", FIELDS);
-    assert!(code == 0 && out.contains("{\"name\":\"renamed\",\"r\":2}\n") && out.contains("[[1,9],\"x\"]"), "{out}");
+    assert!(code == 0 && out.contains("Ci { name: \"renamed\", r: 2 }\n") && out.contains("((1, 9), \"x\")"), "{out}");
     let (out, code) = case(&d, "trait_equality", TRAIT_EQUALITY);
     assert!(code == 0 && out.starts_with("true\ntrue\ntrue\ntrue\n") && out.ends_with("zero\nzero\n"), "{out}");
     // the stack, which `output` leaves out
@@ -1031,7 +1038,7 @@ fn unions_compile() {
     }
     let d = tmp("unions");
     let (out, code) = case(&d, "unions", UNIONS);
-    assert!(code == 0 && out.starts_with("number 4\ntext 4\nzero\npositive 5\nnegative\n") && out.contains("[1,\"a\",2]"), "{out}");
+    assert!(code == 0 && out.starts_with("number 4\ntext 4\nzero\npositive 5\nnegative\n") && out.contains("[1, \"a\", 2]"), "{out}");
     let (out, code) = case(&d, "union_methods", UNION_METHODS);
     assert!(code == 101 && out.contains("-1 is not a `Positive | String`"), "{out}");
 }
@@ -1155,7 +1162,7 @@ fn trait_value_methods_compile() {
     }
     let d = tmp("trait-methods");
     let (out, code) = case(&d, "trait_methods", TRAIT_METHODS);
-    assert!(code == 0 && out.contains("[\"sq2\",\"x\"]") && out.ends_with("pretty square\n<4>\n100\ncircle\n"), "{out}");
+    assert!(code == 0 && out.contains("(\"sq2\", \"x\")") && out.ends_with("pretty square\n<4>\n100\ncircle\n"), "{out}");
 }
 
 const TRAIT_METHODS: &str = r#"trait Named {
@@ -1247,7 +1254,7 @@ fn regexes_and_shown_functions_compile() {
     let (out, code) = case(&d, "bad_regex", "fn main() { print(matches(\"a\", \"(\")) }\n");
     assert!(code == 101 && out.contains("bad regex: regex parse error"), "{out}");
     let (out, code) = case(&d, "shown_functions", SHOWN_FUNCTIONS);
-    assert!(code == 0 && out.starts_with("\"<closure (x) -> …>\"\n{\"name\":\"h\",\"on\":\"<fn twice>\"}\n"), "{out}");
+    assert!(code == 0 && out.starts_with("<closure (x) -> …>\nH { name: \"h\", on: <fn twice> }\n"), "{out}");
 }
 
 const REGEX: &str = r#"type Sku = String where matches(it, "[A-Z]{3}-[0-9]{4}")
@@ -1376,7 +1383,7 @@ fn mocks_compile() {
     }
     let d = tmp("mock");
     let (out, code) = case(&d, "mock", MOCKS);
-    assert!(code == 101 && out.starts_with("\"<mock Store>\"\nall good\nfault (Requires): precondition of `Store.find` violated: requires id > 0"), "{out}");
+    assert!(code == 101 && out.starts_with("<mock Store>\nall good\nfault (Requires): precondition of `Store.find` violated: requires id > 0"), "{out}");
     let (out, code) = case(&d, "orders", &tests_as_main("examples/orders.strata", ""));
     assert!(code == 0 && out.ends_with("all asserts hold\n"), "{out}");
 }
@@ -1424,7 +1431,6 @@ fn main() {
 /// `strata test` compiles the tests with the JIT: the same report as
 /// interpreted, for every example and for failing tests (fault, call stack,
 /// what they printed).
-#[cfg(feature = "jit")]
 #[test]
 fn the_jit_runs_tests_as_the_interpreter() {
     let strata = env!("CARGO_BIN_EXE_strata");
@@ -1447,18 +1453,15 @@ fn the_jit_runs_tests_as_the_interpreter() {
 /// `strata verify` fuzzes compiled (by default, as `--jit`): the same
 /// verdicts as the interpreter's fuzzer (its inputs are the runtime's), a
 /// runaway loop stopped by the step budget.
-#[cfg(feature = "jit")]
 #[test]
 fn verify_fuzzes_compiled() {
     let strata = env!("CARGO_BIN_EXE_strata");
     let d = tmp("jit-verify");
     let f = d.join("v.strata");
     save(&f, "fn pieces(s: String) -> Positive { len(split(s, \"a\")) - 1 }\nfn loops(n: Natural) -> Int { mut i := 0 while i != n * 2 + 1 { i += 2 } i }\nfn fine(xs: List[String]) -> Natural { len(join(xs, \",\")) }\n");
-    for how in ["--jit", "--interpret"] {
-        let (out, _) = output(Command::new(strata).args(["verify", how, "--file"]).arg(&f).env("STRATA_SOLVER", "none"));
-        assert!(!out.contains("note:"), "{out}");
-        assert!(out.contains("result of `pieces`: 0 does not satisfy `Positive`") && out.contains("~ fine                     fuzzed: 200 cases, 0 discarded"), "{how}: {out}");
-    }
+    let (out, _) = output(Command::new(strata).args(["verify", "--jit", "--file"]).arg(&f).env("STRATA_SOLVER", "none"));
+    assert!(!out.contains("note:"), "{out}");
+    assert!(out.contains("result of `pieces`: 0 does not satisfy `Positive`") && out.contains("~ fine                     fuzzed: 200 cases, 0 discarded"), "{out}");
     let (out, _) = output(Command::new(strata).args(["verify", "--file"]).arg(&f).env("STRATA_SOLVER", "none"));
     assert!(!out.contains("note:"), "{out}");
     assert!(out.contains("✗ pieces                   Refinement violation (found by the fuzzer)") && out.contains("result of `pieces`: 0 does not satisfy `Positive`"), "{out}");
@@ -1521,9 +1524,6 @@ test "runaway" {
     for how in ["--interpret", "--jit"] {
         let o = Command::new(strata).args(["test", how, "--file"]).arg(&f).output().unwrap();
         let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
-        if how == "--jit" && out.contains("built without the JIT") {
-            continue; // built without the JIT
-        }
         assert!(out.contains("✗ runaway\n    Limit: stack overflow (recursion too deep)\n    stack: down (") && out.contains("0 passed, 1 failed"), "{how}: {out}");
     }
 
@@ -1658,14 +1658,13 @@ pub fn nul_string() -> String {
         "use c\n\nfn main() {\n  print(c.numbers())\n  print(c.texts())\n  print(c.counting())\n  print(c.refused())\n}\n\ntest \"null\" {\n  c.null_handle()\n}\n\ntest \"nul\" {\n  c.nul_string()\n}\n",
     );
     // (beyond 64 bits, an `Int` shows as a string of digits)
-    let want = "[-5,-128,255,\"18446744073709551615\",-9223372036854775808,9223372036854775807,1]\nHELLO, C 3.0 1.5\n[0,42,43,42]\n[1,1]\n";
+    let want = "[-5, -128, 255, 18446744073709551615, -9223372036854775808, 9223372036854775807, 1]\nHELLO, C 3.0 1.5\n[0, 42, 43, 42]\n[1, 1]\n";
     // built: the same output, and every object freed
     let exe = d.join("prog");
     let b = Command::new(strata).args(["build", "-o"]).arg(&exe).current_dir(&d).output().unwrap();
     assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
     let (out, code) = freed_everything(output(Command::new(&exe).current_dir(&d).env("STRATA_MEMORY", "check")), &d);
     assert_eq!((out.as_str(), code), (want, 0));
-    #[cfg(feature = "jit")]
     {
         let (out, code) = output(Command::new(strata).args(["run", "--jit", "."]).current_dir(&d));
         assert_eq!((out.as_str(), code), (want, 0));
@@ -1677,4 +1676,18 @@ pub fn nul_string() -> String {
     // the interpreter doesn't call C
     let (out, code) = output(Command::new(strata).args(["run", "--interpret", "."]).current_dir(&d));
     assert!(code != 0 && out.contains("`neg8` is an `extern c` function: only compiled code calls it"), "{out}");
+}
+
+/// Types passed whole: compiled as interpreted.
+#[test]
+fn impl_type_parameters_compile() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("impl-statics");
+    for (name, prog, want) in [("statics", json_case::STATICS, json_case::STATICS_OUTPUT), ("builtins", json_case::BUILTINS, json_case::BUILTINS_OUTPUT), ("text", json_case::TEXT, json_case::TEXT_OUTPUT), ("self_methods", json_case::SELF_METHODS, json_case::SELF_METHODS_OUTPUT), ("generic_derive", json_case::GENERIC_DERIVE, json_case::GENERIC_DERIVE_OUTPUT), ("option_option", json_case::OPTION_OPTION, json_case::OPTION_OPTION_OUTPUT), ("root_builtin_name", json_case::ROOT_BUILTIN_NAME, json_case::ROOT_BUILTIN_NAME_OUTPUT)] {
+        let (out, code) = case(&d, name, prog);
+        assert_eq!((out.as_str(), code), (want, 0));
+    }
 }

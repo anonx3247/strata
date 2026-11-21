@@ -37,8 +37,8 @@ use std::collections::VecDeque;
 use crate::fx::{HashMap, HashSet};
 use std::fmt::Write;
 
-#[cfg(feature = "jit")]
 pub mod jit;
+pub mod native;
 
 /// The list built-ins written in Strata, compiled with every program.
 const PRELUDE: &[u8] = include_bytes!("llvm/prelude.strata");
@@ -132,10 +132,11 @@ fn bool_v(b: &str) -> V {
 /// then the trait's methods.
 const DYN_JSON: usize = 0;
 const DYN_SHOW: usize = 1;
-const DYN_DROP: usize = 2;
-const DYN_DUP: usize = 3;
-const DYN_EQ: usize = 4;
-const DYN_METHODS: usize = 5;
+const DYN_DEBUG: usize = 2;
+const DYN_DROP: usize = 3;
+const DYN_DUP: usize = 4;
+const DYN_EQ: usize = 5;
+const DYN_METHODS: usize = 6;
 
 /// Fault kinds, as numbered in the runtime (`KINDS` in runtime.c).
 #[derive(Clone, Copy)]
@@ -175,17 +176,88 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
     Ok(compile_for(prog, Entry::Main(entry))?.0)
 }
 
+thread_local! {
+    static TRACING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `compile_comptime`, traced (`strata run f [args] --trace`).
+pub fn compile_traced_comptime(prog: &Program, fns: &[String]) -> Res<(String, Vec<Shape>, Shapes)> {
+    TRACING.with(|t| t.set(true));
+    let r = compile_comptime(prog, fns);
+    TRACING.with(|t| t.set(false));
+    r
+}
+
+/// `compile`, each function of the program reporting its calls and returns
+/// on stderr as the interpreter's `--trace` did (`strata_trace_call`).
+pub fn compile_traced(prog: &Program, entry: &str) -> Res<String> {
+    TRACING.with(|t| t.set(true));
+    let r = compile(prog, entry);
+    TRACING.with(|t| t.set(false));
+    r
+}
+
 /// What a compilation starts from.
-#[cfg_attr(not(feature = "jit"), allow(dead_code))]
 enum Entry<'e> {
     Main(&'e str),
-    Tests,
+    /// The tests, but those named here.
+    Tests(&'e [String]),
     Fuzz(&'e [FuzzTarget]),
+    /// Compile-time code: functions without parameters, whose results are kept.
+    Comptime(&'e [String]),
+}
+
+/// The label of compile-time code (a probe): it has no frame on the call stack.
+const COMPTIME: &str = "compile-time code";
+
+/// How a value is laid out in memory, to read one the compiled code made
+/// (a `comptime` result; the FFI's values later).
+#[derive(Debug, Clone)]
+pub enum Shape {
+    Int,
+    Float,
+    Bool,
+    Unit,
+    Str,
+    List(Box<Shape>),
+    Set(Box<Shape>),
+    Dict(Box<Shape>, Box<Shape>),
+    Tuple(Vec<Shape>),
+    /// A record or sum type (or a variant): its constructors in `Shapes`, by this key.
+    Named(String),
+    Distinct(String, Box<Shape>),
+    /// A union: each member, with its box's tag if it is boxed.
+    Union(Vec<(Option<i64>, Shape)>),
+}
+
+/// A constructor of a named shape: its tag, name, whether it makes a record
+/// (else a variant), and its fields.
+#[derive(Debug, Clone)]
+pub struct CtorShape {
+    pub tag: i64,
+    pub name: String,
+    pub record: bool,
+    pub fields: Vec<(Option<String>, Shape)>,
+}
+
+/// The named shapes a set of shapes refers to.
+#[derive(Debug, Clone, Default)]
+pub struct Shapes {
+    pub named: HashMap<String, Vec<CtorShape>>,
+}
+
+/// The IR of compile-time code: for each of `fns` (functions of the program
+/// without parameters), `@"strata.ct.N"` calls it and hands its result to
+/// the runtime (`strata_ct_keep`), with steps counted; and the shape of each
+/// result.
+pub fn compile_comptime(prog: &Program, fns: &[String]) -> Res<(String, Vec<Shape>, Shapes)> {
+    let (ir, _, shapes) = compile_with(prog, Entry::Comptime(fns), true)?;
+    let (roots, named) = shapes.unwrap_or_default();
+    Ok((ir, roots, named))
 }
 
 /// A function `strata verify --jit` fuzzes: its name, and its parameters'
 /// names, written types (generic ones at the instance tried) and `mut`ness.
-#[cfg_attr(not(feature = "jit"), allow(dead_code))]
 pub struct FuzzTarget {
     pub name: String,
     pub params: Vec<(String, TypeExpr, bool)>,
@@ -194,23 +266,40 @@ pub struct FuzzTarget {
 /// The LLVM IR of fuzz drivers (`@"strata.fuzz.N"` for target N): each
 /// generates the target's arguments, records them (`strata_fuzz_arg`), and
 /// calls it. Loops and calls count steps (`strata_step`).
-#[cfg_attr(not(feature = "jit"), allow(dead_code))]
 pub fn compile_fuzz(prog: &Program, targets: &[FuzzTarget]) -> Res<String> {
-    Ok(compile_for(prog, Entry::Fuzz(targets))?.0)
+    Ok(compile_with(prog, Entry::Fuzz(targets), true)?.0)
 }
 
 /// The LLVM IR of a program's `test` blocks: a function per test
 /// (`@"strata.test.N"`, taking and returning nothing), and their names.
 pub fn compile_tests(prog: &Program) -> Res<(String, Vec<String>)> {
-    compile_for(prog, Entry::Tests)
+    compile_for(prog, Entry::Tests(&[]))
+}
+
+/// `compile_tests`, leaving out the tests named in `skip`.
+pub fn compile_tests_except(prog: &Program, skip: &[String]) -> Res<(String, Vec<String>)> {
+    compile_for(prog, Entry::Tests(skip))
 }
 
 fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
+    let (ir, tests, _) = compile_with(prog, entry, false)?;
+    Ok((ir, tests))
+}
+
+#[allow(clippy::type_complexity)]
+/// `resolved`: `prog` is resolved already (`Checked::compiled`, with what was
+/// added to it): only the prelude is.
+fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Vec<String>, Option<(Vec<Shape>, Shapes)>)> {
     // the list built-ins in Strata, compiled with the program
     let mut with = prog.clone();
     let prelude = crate::binary::decode_module(PRELUDE).map_err(|e| format!("llvm/prelude.strata: {e}"))?;
-    with.decls.extend(prelude);
-    let (resolved, types) = crate::types::elaborate_typed(&with);
+    let (resolved, types) = if resolved {
+        with.decls.extend(crate::resolve::resolve(&Program { decls: prelude }).program.decls);
+        crate::types::elaborate_resolved(&with)
+    } else {
+        with.decls.extend(prelude);
+        crate::types::elaborate_typed(&with)
+    };
     let (env, _) = Env::build(&resolved.program);
     // every constructor gets a tag of its own, so a value's tag says what it is
     let mut ctors: Vec<&Symbol> = env.ctors.keys().collect();
@@ -231,7 +320,8 @@ fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
             _ => {}
         }
     }
-    let traits = resolved.program.decls.iter().filter_map(|d| match &d.kind {
+    // (the prelude's traits too: `Debug`, `Display`)
+    let traits = crate::types::prelude().decls.iter().chain(resolved.program.decls.iter()).filter_map(|d| match &d.kind {
         DeclKind::Trait(t) => Some((t.name.clone(), t)),
         _ => None,
     }).collect();
@@ -243,9 +333,11 @@ fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default() };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default() };
     let mut tests = vec![];
-    m.fuzzing = matches!(entry, Entry::Fuzz(_));
+    // compile-time code counts steps too (its budget)
+    m.fuzzing = matches!(entry, Entry::Fuzz(_) | Entry::Comptime(_));
+    let mut comptime: Vec<(String, Ty)> = vec![];
     match entry {
         Entry::Fuzz(targets) => {
             for (i, t) in targets.iter().enumerate() {
@@ -258,10 +350,22 @@ fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
             // C's `main` first: it asks for the program's `main`, with its capabilities
             m.entry(entry, &main, &ret)?;
         }
-        Entry::Tests => {
+        Entry::Comptime(fns) => {
+            // each an ordinary function without parameters, its result handed over below
+            for name in fns.iter() {
+                let f = env.fns.get(&Symbol::new(name)).ok_or(format!("no compile-time function `{name}`"))?.clone();
+                m.function(name, &[], &[], &f)?;
+                let t = m.lower(&f.ret, &HashMap::default())?;
+                comptime.push((sym_impls(name, &[], &[]), t));
+            }
+        }
+        Entry::Tests(skip) => {
             // each test, a function of its own (no frame of its own on the call stack)
             for d in &resolved.program.decls {
                 let DeclKind::Test(t) = &d.kind else { continue };
+                if skip.iter().any(|s| s == t.name.as_str()) {
+                    continue;
+                }
                 let inst = Instance { label: format!("test {:?}", t.name.to_string()), symbol: format!("@\"strata.test.{}\"", tests.len()), impls: vec![], params: vec![], ret: TypeExpr::Unit, own_params: &[], own_ret: &TypeExpr::Unit, requires: vec![], ensures: vec![], body: &t.body, sub: HashMap::default() };
                 m.instance(&inst).map_err(|e| format!("can't compile test {:?}: {e}", t.name.to_string()))?;
                 tests.push(t.name.to_string());
@@ -292,6 +396,25 @@ fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
             m.body += text;
         }
     }
+    // compile-time code: a function per expression handing its value to the runtime, and its shape
+    let mut shapes = None;
+    if !comptime.is_empty() {
+        let mut named = Shapes::default();
+        let mut roots = vec![];
+        for (i, (sym, t)) in comptime.iter().enumerate() {
+            roots.push(m.shape(t, &mut named)?);
+            let ll = m.ll(t)?;
+            let (call, slot) = match ll {
+                "void" => (format!("  call void {sym}()"), "0".to_string()),
+                "i64" => (format!("  %r = call i64 {sym}()"), "%r".into()),
+                "double" => (format!("  %r = call double {sym}()\n  %s = bitcast double %r to i64"), "%s".into()),
+                "i1" => (format!("  %r = call i1 {sym}()\n  %s = zext i1 %r to i64"), "%s".into()),
+                _ => (format!("  %r = call ptr {sym}()\n  %s = ptrtoint ptr %r to i64"), "%s".into()),
+            };
+            writeln!(m.body, "define void @\"strata.ct.{i}\"() {{\nentry:\n{call}\n  call void @strata_ct_keep(i64 {slot})\n  ret void\n}}\n").unwrap();
+        }
+        shapes = Some((roots, named));
+    }
     let mut out = String::from("; Strata, compiled by `strata build`\n\n");
     out += &m.globals;
     out += "\n";
@@ -300,7 +423,7 @@ fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
     for line in m.foreign.values() {
         out += line;
     }
-    Ok((out, tests))
+    Ok((out, tests, shapes))
 }
 
 const DECLARATIONS: &str = "\
@@ -354,7 +477,11 @@ declare void @strata_fault(i32, ptr) noreturn
 declare void @strata_enter(ptr)
 declare void @strata_step()
 declare void @strata_fuzz_arg(ptr)
+declare void @strata_ct_keep(i64)
 declare void @strata_leave()
+declare i1 @strata_regex_match(ptr, ptr)
+declare void @strata_trace_call(ptr, ptr)
+declare void @strata_trace_return(ptr, ptr)
 declare void @strata_overflow() noreturn cold
 declare void @strata_main_error(ptr)
 declare i64 @strata_div(i64, i64)
@@ -395,6 +522,7 @@ declare ptr @strata_json_int(i64)
 declare ptr @strata_show_float(double)
 declare ptr @strata_show_bool(i1)
 declare ptr @strata_json_str(ptr)
+declare ptr @strata_debug_str(ptr)
 declare void @strata_print(ptr)
 declare ptr @strata_str_split(ptr, ptr)
 declare ptr @strata_str_trim(ptr)
@@ -586,6 +714,8 @@ struct Module<'a> {
     box_tags: HashMap<String, i64>,
     /// Compiled for `strata verify --jit`: loops and calls count steps.
     fuzzing: bool,
+    /// `strata run --trace`: each function of the program reports its calls and returns.
+    tracing: bool,
     /// The tables of each regex `matches` uses (its globals' name, and its classes).
     regexes: HashMap<String, (String, usize)>,
     /// Generators made (by the type and hints they generate), and mock methods.
@@ -881,6 +1011,55 @@ impl<'a> Module<'a> {
         self.members(m).iter().all(|x| keys.contains(&key(&self.repr(x).unwrap_or(Ty::Unit))))
     }
 
+    /// How values of `t` are laid out (`Shape`), the named ones added to `named`.
+    fn shape(&mut self, t: &Ty, named: &mut Shapes) -> Res<Shape> {
+        if let Ty::Con(n, _) = t {
+            if self.is_distinct(n) {
+                let inner = self.repr(t)?;
+                return Ok(Shape::Distinct(n.to_string(), Box::new(self.shape(&inner, named)?)));
+            }
+        }
+        let r = self.repr(t)?;
+        Ok(match &r {
+            Ty::Int => Shape::Int,
+            Ty::Float => Shape::Float,
+            Ty::Bool => Shape::Bool,
+            Ty::Unit => Shape::Unit,
+            Ty::Str => Shape::Str,
+            Ty::Con(n, a) if n == "List" && a.len() == 1 => Shape::List(Box::new(self.shape(&a[0], named)?)),
+            Ty::Con(n, a) if n == "Set" && a.len() == 1 => Shape::Set(Box::new(self.shape(&a[0], named)?)),
+            Ty::Con(n, a) if n == "Dict" && a.len() == 2 => Shape::Dict(Box::new(self.shape(&a[0], named)?), Box::new(self.shape(&a[1], named)?)),
+            Ty::Con(n, a) if n == "Tuple" => Shape::Tuple(a.iter().map(|x| self.shape(x, named)).collect::<Res<_>>()?),
+            Ty::Union(ms) => {
+                let mut out = vec![];
+                for m in ms.clone() {
+                    let tag = self.boxes(&m).then(|| self.box_tag(&m));
+                    out.push((tag, self.shape(&m, named)?));
+                }
+                Shape::Union(out)
+            }
+            Ty::Con(n, _) if self.nominal(&r) => {
+                let k = key(&r);
+                if !named.named.contains_key(&k) {
+                    // (a recursive type refers to itself by its key)
+                    named.named.insert(k.clone(), vec![]);
+                    let record = matches!(self.env.types.get(n).map(|t| &t.body), Some(TypeBody::Record(_)));
+                    let mut cs = vec![];
+                    for c in self.ctors_of(&r) {
+                        let mut fields = vec![];
+                        for f in self.fields(&c, &self.ctor_args(&c, &r))? {
+                            fields.push((f.name.clone(), self.shape(&f.ty, named)?));
+                        }
+                        cs.push(CtorShape { tag: self.tags[&c], name: c.clone(), record, fields });
+                    }
+                    named.named.insert(k.clone(), cs);
+                }
+                Shape::Named(k)
+            }
+            other => return Err(format!("a `{}` made at compile time can't be kept in the program", key(other))),
+        })
+    }
+
     /// The constructors a value of type `t` can have.
     fn ctors_of(&self, t: &Ty) -> Vec<String> {
         match t {
@@ -969,7 +1148,7 @@ impl<'a> Module<'a> {
         }
         c.block("entry.body");
         // on the call stack a fault shows (the program's functions, as the interpreter's)
-        let framed = !name.starts_with(PRELUDE_MODULE) && !name.starts_with("test \"");
+        let framed = !name.starts_with(PRELUDE_MODULE) && !name.starts_with("test \"") && name != COMPTIME;
         if framed {
             let n = c.m.string(name);
             c.emit(format!("call void @strata_enter(ptr {n})"));
@@ -986,6 +1165,26 @@ impl<'a> Module<'a> {
             }
             let slot = c.local(&p.name, t, None)?;
             c.store(&(t.clone(), format!("%p.{}", p.name)), &slot)?;
+        }
+        if c.m.tracing && framed && !name.starts_with("strata_") {
+            // `{"event":"call","fn":…,"args":[…],"depth":n}` (the runtime adds the depth)
+            let mut parts = vec![Part::Lit("[".into())];
+            for (i, p) in f.params.iter().enumerate() {
+                let v = c.load(&p.name)?;
+                if i > 0 {
+                    parts.push(Part::Lit(",".into()));
+                }
+                if has_value(&v.0) {
+                    let shown = c.json(&v)?;
+                    parts.push(Part::Val(shown));
+                } else {
+                    parts.push(Part::Lit("null".into()));
+                }
+            }
+            parts.push(Part::Lit("]".into()));
+            let args = c.concat(parts)?;
+            let n = c.m.string(&serde_json::to_string(name).unwrap());
+            c.emit(format!("call void @strata_trace_call(ptr {n}, ptr {})", args.1));
         }
         // the written types of the program's own declaration (inline refinements are its nodes)
         for p in own.own_params {
@@ -1051,6 +1250,11 @@ impl<'a> Module<'a> {
                 c.block(&pass);
             }
             c.pop_scope()?;
+        }
+        if c.m.tracing && framed && !name.starts_with("strata_") {
+            let shown = if has_value(&ret) { c.json(&result)? } else { c.m.string("null") };
+            let n = c.m.string(&serde_json::to_string(name).unwrap());
+            c.emit(format!("call void @strata_trace_return(ptr {n}, ptr {shown})"));
         }
         if framed {
             c.emit("call void @strata_leave()".into());
@@ -1355,6 +1559,33 @@ impl<'m, 'a> Func<'m, 'a> {
 
     fn lower(&self, t: &TypeExpr) -> Res<Ty> {
         self.m.lower(t, &self.sub)
+    }
+
+    /// The type a type argument stands for, known here: its text
+    /// (`"List[Int]"`), a type parameter of this instance (`type:T`), or
+    /// `$type(head, args..)`.
+    fn type_arg_ty(&self, e: &Expr, hint: Option<&Ty>) -> Res<Ty> {
+        match e {
+            Expr::Str(h) => {
+                let t = crate::types::parse_type_text(h);
+                match (&t, hint) {
+                    // a generic type named by its head only: the call's own type says the rest
+                    (TypeExpr::Named(n, args), Some(ht @ Ty::Con(m, _))) if args.is_empty() && n == m => Ok(ht.clone()),
+                    _ => self.lower(&t),
+                }
+            }
+            Expr::Var(x) if x.starts_with("type:") => self.sub.get(&Symbol::new(&x["type:".len()..])).cloned().ok_or(format!("the type `{x}` is not known here")),
+            Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if n == crate::types::TYPE_TEXT) => {
+                let Some(Expr::Str(h)) = args.first() else { return Err("a type's text without its head".into()) };
+                let targs = args[1..].iter().map(|a| self.type_arg_ty(a, None)).collect::<Res<Vec<_>>>()?;
+                let head = self.lower(&TypeExpr::Named(Symbol::new(h), vec![]))?;
+                Ok(match head {
+                    Ty::Con(n, _) => Ty::Con(n, targs),
+                    other => other,
+                })
+            }
+            _ => Err("a type argument that isn't known here".into()),
+        }
     }
 
     /// A variable that borrows its value (a parameter, `it`, a captured value).
@@ -1898,10 +2129,31 @@ impl<'m, 'a> Func<'m, 'a> {
 
     // ---- what values look like ----
 
-    /// A value as `to_string` shows it: a string as itself, a variant without
-    /// fields as its name, everything else as JSON. The caller owns the
-    /// string (as `json`'s): `concat` consumes it, or it is dropped.
+    /// The program's own `Debug` / `Display` for a value's type, called: the
+    /// string it returns (owned), if the type has one.
+    fn text_impl(&mut self, tr: &str, m: &str, v: &V) -> Res<Option<String>> {
+        let Ty::Con(n, _) = &v.0 else { return Ok(None) };
+        let parent = self.m.env.variant_parent(n.sym()).map(|p| p.to_string());
+        let has = |c: &Self, h: &str| c.m.env.impls.iter().any(|i| i.trait_name == tr && crate::types::texpr_head(&i.for_type) == h);
+        if !has(self, n.as_str()) && !parent.as_deref().is_some_and(|p| has(self, p)) {
+            return Ok(None);
+        }
+        let r = self.call_method(&crate::types::trait_call(tr, m), v.0.clone(), vec![v.clone()], Some(Ty::Str), &[])?;
+        let r = self.take(r);
+        Ok(Some(r.1))
+    }
+
+    /// A value as `print`, f-strings and `to_string` show it (`Display`): the
+    /// type's own `to_string`, a string as itself, else its `debug`. The
+    /// caller owns the string (as `json`'s): `concat` consumes it, or it is
+    /// dropped.
     fn show(&mut self, v: &V) -> Res<String> {
+        if let Some(s) = self.text_impl("Display", "to_string", v)? {
+            return Ok(s);
+        }
+        if matches!(&v.0, Ty::Con(n, _) if self.m.is_distinct(n)) {
+            return self.debug(v);
+        }
         let t = self.m.repr(&v.0)?;
         if self.m.handle(&t) {
             return self.json(v);
@@ -1914,7 +2166,6 @@ impl<'m, 'a> Func<'m, 'a> {
             return Ok(self.call(&Ty::Str, &f, &[(t.clone(), v.1.clone())])?.1);
         }
         match t {
-            Ty::Int => Ok(self.call(&Ty::Str, "@strata_show_int", &[v.clone()])?.1),
             Ty::Str => {
                 // (owned, as every shown value: held once more)
                 if !constant(&v.1) {
@@ -1922,12 +2173,54 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
                 Ok(v.1.clone())
             }
-            t if self.m.nominal(&t) && self.m.ctors_of(&t).iter().any(|c| self.m.fields(c, &[]).map(|f| f.is_empty()).unwrap_or(false)) => {
-                let f = self.helper("show", &t)?;
-                Ok(self.call(&Ty::Str, &f, &[(t.clone(), v.1.clone())])?.1)
-            }
-            _ => self.json(v),
+            _ => self.debug(v),
         }
+    }
+
+    /// A value as it is written in code (`Debug`): `Some("hi")`,
+    /// `Point { x: 1 }`, `[1, 2]`; the type's own `debug` if it has one.
+    /// Owned by the caller, as `show`'s.
+    fn debug(&mut self, v: &V) -> Res<String> {
+        if let Some(s) = self.text_impl("Debug", "debug", v)? {
+            return Ok(s);
+        }
+        // a `distinct` value: `UserId(7)` (it is represented as what it is made of)
+        if let Ty::Con(n, _) = &v.0 {
+            if self.m.is_distinct(n) {
+                let inner = (self.m.repr(&v.0)?, v.1.clone());
+                let d = self.debug(&inner)?;
+                return Ok(self.concat(vec![Part::Lit(format!("{}(", crate::names::short(n))), Part::Val(d), Part::Lit(")".into())])?.1);
+            }
+        }
+        let t = self.m.repr(&v.0)?;
+        if self.is_dyn(&t) {
+            return self.dyn_entry_call(v, DYN_DEBUG);
+        }
+        Ok(match &t {
+            Ty::Int => self.call(&Ty::Str, "@strata_show_int", &[v.clone()])?.1,
+            Ty::Float => self.call(&Ty::Str, "@strata_show_float", &[v.clone()])?.1,
+            Ty::Bool => self.call(&Ty::Str, "@strata_show_bool", &[v.clone()])?.1,
+            Ty::Str => self.call(&Ty::Str, "@strata_debug_str", &[v.clone()])?.1,
+            Ty::Unit => self.m.string("()"),
+            _ if is_never(&t) => self.m.string("()"),
+            Ty::Fn(..) => {
+                // how the closure shows
+                let shown = self.field(v, 1, &Ty::Str)?;
+                self.emit(format!("call void @strata_dup(ptr {})", shown.1));
+                shown.1
+            }
+            Ty::Con(n, args) if n == "Set" => {
+                let l = self.as_list(v)?;
+                let lt = Ty::Con("List".into(), args.clone());
+                let f = self.helper("debugset", &lt)?;
+                self.call(&Ty::Str, &f, &[(lt, l.1)])?.1
+            }
+            t if self.m.boxed(t) || self.m.nominal(t) || matches!(t, Ty::Con(l, _) if l == "List" || l == "Dict") => {
+                let f = self.helper("debug", t)?;
+                self.call(&Ty::Str, &f, &[(t.clone(), v.1.clone())])?.1
+            }
+            t => return Err(format!("showing a `{}` is not compiled yet", key(t))),
+        })
     }
 
     /// A value as JSON, for messages and nested in other values.
@@ -2180,9 +2473,13 @@ impl<'m, 'a> Func<'m, 'a> {
                 h.emit("ret i1 false".into());
                 format!("define i1 {name}(ptr %a, ptr %b)")
             }
-            "json" | "show" if h.m.boxed(t) => {
+            "json" | "show" | "debug" if h.m.boxed(t) => {
                 h.on_member(&a, |h, _, x| {
-                    let s = if what == "json" { h.json(&x)? } else { h.show(&x)? };
+                    let s = match what {
+                        "json" => h.json(&x)?,
+                        "show" => h.show(&x)?,
+                        _ => h.debug(&x)?,
+                    };
                     h.emit(format!("ret ptr {s}"));
                     Ok(())
                 })?;
@@ -2207,6 +2504,101 @@ impl<'m, 'a> Func<'m, 'a> {
                 h.block("no");
                 h.emit("ret i1 false".into());
                 format!("define i1 {name}(ptr %a, ptr %b)")
+            }
+            "debug" | "debugset" if list || matches!(t, Ty::Con(d, _) if d == "Dict") => {
+                // `[a, b]`, `Set { a, b }`, `Dict { k: v }` (empty: `Set {}`, `Dict {}`)
+                let dict = matches!(t, Ty::Con(d, _) if d == "Dict");
+                let (open, close, empty) = match (what, dict) {
+                    (_, true) => ("Dict { ", " }", "Dict {}"),
+                    ("debugset", _) => ("Set { ", " }", "Set {}"),
+                    _ => ("[", "]", "[]"),
+                };
+                let et = if dict { Ty::Con("Tuple".into(), args.clone()) } else { args[0].clone() };
+                let n = h.list_len(&a);
+                let none = h.fresh("none");
+                h.emit(format!("{none} = icmp eq i64 {}, 0", n.1));
+                h.emit(format!("br i1 {none}, label %none, label %some"));
+                h.block("none");
+                let e = h.m.string(empty);
+                h.emit(format!("ret ptr {e}"));
+                h.block("some");
+                let acc = h.fresh("acc");
+                writeln!(h.allocas, "  {acc} = alloca ptr").unwrap();
+                let o = h.m.string(open);
+                h.emit(format!("store ptr {o}, ptr {acc}"));
+                let (nothing, comma) = (h.m.string(""), h.m.string(", "));
+                h.each(&a, &et, |h, i, x| {
+                    let first = h.fresh("first");
+                    h.emit(format!("{first} = icmp eq i64 {i}, 0"));
+                    let sep = h.fresh("sep");
+                    h.emit(format!("{sep} = select i1 {first}, ptr {nothing}, ptr {comma}"));
+                    let cur = h.fresh("cur");
+                    h.emit(format!("{cur} = load ptr, ptr {acc}"));
+                    let parts = if dict {
+                        let (k, v) = (h.field(x, 0, &args[0])?, h.field(x, 1, &args[1])?);
+                        let (kd, vd) = (h.debug(&k)?, h.debug(&v)?);
+                        vec![Part::Val(cur), Part::Val(sep), Part::Val(kd), Part::Lit(": ".into()), Part::Val(vd)]
+                    } else {
+                        let d = h.debug(x)?;
+                        vec![Part::Val(cur), Part::Val(sep), Part::Val(d)]
+                    };
+                    let s = h.concat(parts)?;
+                    h.emit(format!("store ptr {}, ptr {acc}", s.1));
+                    Ok(())
+                })?;
+                let cur = h.fresh("cur");
+                h.emit(format!("{cur} = load ptr, ptr {acc}"));
+                let s = h.concat(vec![Part::Val(cur), Part::Lit(close.into())])?;
+                h.emit(format!("ret ptr {}", s.1));
+                format!("define ptr {name}(ptr %a)")
+            }
+            "debug" => {
+                // as written in code: `(a, b)`, `Name { f: v }`, `Name(a, b)`, `Name`
+                let fields_debug = |h: &mut Func, fs: &[FieldInfo], parts: &mut Vec<Part>| -> Res<()> {
+                    for (i, f) in fs.iter().enumerate() {
+                        if i > 0 {
+                            parts.push(Part::Lit(", ".into()));
+                        }
+                        if let Some(n) = &f.name {
+                            parts.push(Part::Lit(format!("{n}: ")));
+                        }
+                        let x = h.field(&a, i, &f.ty)?;
+                        let s = h.debug(&x)?;
+                        parts.push(Part::Val(s));
+                    }
+                    Ok(())
+                };
+                if tuple {
+                    let fs: Vec<FieldInfo> = args.iter().map(|t| FieldInfo { name: None, texpr: TypeExpr::Unit, ty: t.clone() }).collect();
+                    let mut parts = vec![Part::Lit("(".into())];
+                    fields_debug(&mut h, &fs, &mut parts)?;
+                    parts.push(Part::Lit(")".into()));
+                    let s = h.concat(parts)?;
+                    h.emit(format!("ret ptr {}", s.1));
+                } else {
+                    let tc = t.clone();
+                    h.on_ctor(&a, "", |h, c| {
+                        let fs = h.m.fields(c, &h.m.ctor_args(c, &tc))?;
+                        let short = crate::names::short(c).to_string();
+                        let mut parts = vec![];
+                        if fs.is_empty() {
+                            let is_record = matches!(h.m.env.types.get(&Symbol::new(c)).map(|td| &td.body), Some(TypeBody::Record(_)));
+                            parts.push(Part::Lit(if is_record { format!("{short} {{}}") } else { short }));
+                        } else if fs[0].name.is_none() {
+                            parts.push(Part::Lit(format!("{short}(")));
+                            fields_debug(h, &fs, &mut parts)?;
+                            parts.push(Part::Lit(")".into()));
+                        } else {
+                            parts.push(Part::Lit(format!("{short} {{ ")));
+                            fields_debug(h, &fs, &mut parts)?;
+                            parts.push(Part::Lit(" }".into()));
+                        }
+                        let s = h.concat(parts)?;
+                        h.emit(format!("ret ptr {}", s.1));
+                        Ok(())
+                    })?;
+                }
+                format!("define ptr {name}(ptr %a)")
             }
             "json" if matches!(t, Ty::Con(d, _) if d == "Dict") => {
                 // an object when the keys are strings (or there are none), else an array of pairs
@@ -2741,7 +3133,11 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let mut conds = vec![];
         if self.m.nominal(&self.m.repr(&v.0)?) {
-            let target = Ty::Con(name.clone(), Module::args_of(&v.0));
+            // an alias (`Choice` is a refined `Sum`): its underlying type's constructors
+            let target = match self.m.env.types.get(name).map(|t| &t.body) {
+                Some(TypeBody::Alias(_)) => self.m.repr(&self.lower(written)?)?,
+                _ => Ty::Con(name.clone(), Module::args_of(&v.0)),
+            };
             let cs = self.m.ctors_of(&target);
             conds.push(self.tag_in(v, &cs)?);
         }
@@ -2859,6 +3255,10 @@ impl<'m, 'a> Func<'m, 'a> {
     /// checker narrowed it to a member (a matched variable in its arm) is
     /// that member's.
     fn expr(&mut self, e: &Expr) -> Res<V> {
+        // a type passed at runtime (`type:T`): compiled code is made per type
+        if matches!(e, Expr::Var(x) if x.starts_with("type:")) {
+            return Ok((Ty::Unit, String::new()));
+        }
         let v = self.expr_in(e)?;
         if !self.m.boxed(&v.0) {
             return Ok(v);
@@ -3406,9 +3806,22 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     fn call_named(&mut self, call: &Expr, name: &str, args: Vec<&Expr>) -> Res<V> {
+        // a type passed at runtime (`$type("List", type:T)`): compiled code is
+        // made per type, so the value is never used
+        if name == crate::types::TYPE_TEXT {
+            return Ok((Ty::Unit, String::new()));
+        }
+        // `$self_type(t, call)`: compiled code is made per type already
+        if name == crate::types::SELF_TYPE && args.len() == 2 {
+            return self.expr(args[1]);
+        }
         if name == "matches" && args.len() == 2 && self.lookup(name).is_none() && !self.m.env.fns.contains_key(&Symbol::new(name)) {
+            // a pattern built at run time: the runtime's engine (Rust's `regex`, under the JIT)
+            let Expr::Str(re) = args[1] else {
+                let vs = self.operands(&args)?;
+                return self.call(&Ty::Bool, "@strata_regex_match", &vs);
+            };
             // a literal pattern, compiled to a DFA now
-            let Expr::Str(re) = args[1] else { return self.unsupported("`matches` with a pattern that isn't a literal") };
             let v = self.expr(args[0])?;
             if is_never(&v.0) {
                 return Ok(v);
@@ -3440,16 +3853,8 @@ impl<'m, 'a> Func<'m, 'a> {
             if !takes_self {
                 let hint = self.ty_of(call).ok();
                 let recv = match args.first() {
-                    Some(Expr::Str(h)) => match (h.as_str(), &hint) {
-                        ("Int", _) => Ty::Int,
-                        ("Float", _) => Ty::Float,
-                        ("Bool", _) => Ty::Bool,
-                        ("String", _) => Ty::Str,
-                        (_, Some(t @ Ty::Con(n, _))) if n == h => t.clone(),
-                        _ => Ty::Con(Symbol::new(h), vec![]),
-                    },
-                    Some(Expr::Var(x)) if x.starts_with("type:") => self.sub.get(&Symbol::new(&x["type:".len()..])).cloned().ok_or(format!("the type `{x}` is not known here"))?,
-                    _ => return Err(format!("`{name}` needs the type it is called on")),
+                    Some(e) => self.type_arg_ty(e, hint.as_ref())?,
+                    None => return Err(format!("`{name}` needs the type it is called on")),
                 };
                 let vs = self.operands(&args[1..])?;
                 return self.call_method(name, recv, vs, hint, &[]);
@@ -3685,8 +4090,14 @@ impl<'m, 'a> Func<'m, 'a> {
 
     /// Call the implementation of `name` for type `head` (on a `recv`).
     fn method_target(&mut self, name: &str, recv: Ty, head: String, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
+        // `Debug` and `Display` without an impl of the type's own: the built-in forms
+        let m = crate::types::split_trait_call(name).map_or(name, |(_, m)| m);
+        if matches!(m, "debug" | "to_string") && vs.len() == 1 && self.m.resolve_method(name, &head).is_none_or(|(tr, _)| self.m.impl_of(&tr, &head).is_none()) {
+            let s = if m == "debug" { self.debug(&vs[0])? } else { self.show(&vs[0])? };
+            return Ok(self.temp((Ty::Str, s)));
+        }
         let (tr, m) = self.m.resolve_method(name, &head).ok_or(format!("`{head}` has no method `{name}`"))?;
-        let tm = self.m.trait_method(&tr, &m).ok_or(format!("trait `{tr}` has no method `{m}`"))?;
+        let tm = self.m.trait_method(&tr, &m).ok_or(format!("trait `{tr}` has no method `{m}` (it has {:?})", self.m.traits.get(&Symbol::new(&tr)).map(|t| t.methods.iter().map(|x| x.decl.name.to_string()).collect::<Vec<_>>())))?;
         let imp = self.m.impl_of(&tr, &head).ok_or(format!("`{head}` does not implement `{tr}`"))?;
         let own = imp.methods.iter().find(|x| x.name == m).unwrap_or(&tm.decl);
         // the method's own type parameters, from the arguments and the result
@@ -3930,6 +4341,10 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             ("to_string", [_]) => {
                 let s = self.show(&vs[0])?;
+                self.temp((Ty::Str, s))
+            }
+            ("debug", [_]) => {
+                let s = self.debug(&vs[0])?;
                 self.temp((Ty::Str, s))
             }
             ("len", [Ty::Str]) => self.call(&Ty::Int, "@strata_str_len", &vs)?,
@@ -4287,8 +4702,8 @@ impl<'m, 'a> Func<'m, 'a> {
         let head = Module::head(imp).ok_or(format!("a `{}` can't be a `{tr}`", key(imp)))?;
         let ll = self.m.ll(imp)?;
         let mut entries = vec![];
-        // showing it: as JSON, and as `to_string`
-        for (i, what) in ["json", "show"].iter().enumerate() {
+        // showing it: as JSON, as `to_string` (`Display`), and as `debug`
+        for (i, what) in ["json", "show", "debug"].iter().enumerate() {
             let f = format!("@\"dyn{what}:{}\"", key(imp));
             entries.push(f.clone());
             if !self.m.helpers.insert(f.clone()) {
@@ -4297,7 +4712,11 @@ impl<'m, 'a> Func<'m, 'a> {
             let mut h = Func::new(self.m, HashMap::default());
             h.block("start");
             let v = h.from_slot("%v", imp)?;
-            let s = if i == 0 { h.json(&v)? } else { h.show(&v)? };
+            let s = match i {
+                0 => h.json(&v)?,
+                1 => h.show(&v)?,
+                _ => h.debug(&v)?,
+            };
             h.emit(format!("ret ptr {s}"));
             let text = h.finish();
             writeln!(self.m.body, "define ptr {f}(i64 %v) {{\n{text}}}\n").unwrap();
@@ -5877,9 +6296,10 @@ impl Func<'_, '_> {
         self.m.vtables.entry(key(tr_ty)).or_default().push((name.clone(), mock_marker(tr_ty)));
         let tag = key(tr_ty).replace('"', "");
         let shown = self.m.string(&format!("\"<mock {tag}>\""));
-        let plain = self.m.string(&format!("\"<mock {tag}>\""));
+        let plain = self.m.string(&format!("<mock {tag}>"));
         let mut entries = vec![];
-        for (what, text) in [("json", format!("  call void @strata_dup(ptr {shown})\n  ret ptr {shown}")), ("show", format!("  call void @strata_dup(ptr {plain})\n  ret ptr {plain}"))] {
+        // as JSON (a string), as `to_string` and as `debug`
+        for (what, text) in [("json", format!("  call void @strata_dup(ptr {shown})\n  ret ptr {shown}")), ("show", format!("  call void @strata_dup(ptr {plain})\n  ret ptr {plain}")), ("debug", format!("  call void @strata_dup(ptr {plain})\n  ret ptr {plain}"))] {
             let f = format!("@\"mock{what}:{}\"", key(tr_ty));
             writeln!(self.m.body, "define ptr {f}(i64 %v) {{\nentry:\n{text}\n}}\n").unwrap();
             entries.push(f);

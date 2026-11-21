@@ -397,7 +397,8 @@ impl Codebase {
     pub fn log_entry(&self, old: &Program, message: &str, extra: serde_json::Value) -> Result<Vec<Change>, String> {
         let new = &self.program;
         let changes = changes(old, new);
-        if changes.is_empty() {
+        // the standard library is built into strata: its changes are git's alone
+        if changes.is_empty() || crate::package::find(&self.root).ok().flatten().is_some_and(|p| p.name == crate::stdlib::NAME) {
             return Ok(changes);
         }
         let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);

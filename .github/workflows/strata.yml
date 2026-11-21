@@ -4,6 +4,15 @@
 # Make the `strata ci` job a required check and require branches to be up to
 # date before merging; `strata sync main` brings a branch up to date locally,
 # with the merge driver.
+#
+# Only what a change can break is checked (a job skipped by its `if` counts as
+# passed for a required check):
+# - Rust (src/, tests/, Cargo files, build.rs, std/, which is compiled into
+#   strata, or this workflow): `cargo test`, then `strata ci` with the strata
+#   it built (one build, not two);
+# - only .strata files and packages (examples/, tests/data/): `strata ci`;
+# - anything else (docs, IDEAS.md, site/): nothing.
+# A push to main checks everything.
 name: strata
 
 on:
@@ -11,41 +20,76 @@ on:
   push:
     branches: [main]
 
+# a new push to a pull request cancels its run still in progress
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# strata links LLVM 23's libraries in (the JIT), so every build installs them.
+env:
+  LLVM_SYS_231_PREFIX: /usr/lib/llvm-23
+
 jobs:
-  strata-ci:
-    name: strata ci
+  changes:
+    name: what changed
     runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ github.event_name == 'push' || steps.filter.outputs.rust == 'true' }}
+      strata: ${{ github.event_name == 'push' || steps.filter.outputs.strata == 'true' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release
-      # every package and script type-checks, every .strata file is canonical
-      - run: ./target/release/strata ci
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'src/**'
+              - 'tests/**'
+              - 'std/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'build.rs'
+              - '.github/workflows/**'
+            strata:
+              - '**/*.strata'
+              - '**/strata.toml'
+              - 'examples/**'
 
   cargo-test:
     name: cargo test
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # the SMT tests need z3; without it they are skipped
-      - run: sudo apt-get update && sudo apt-get install -y z3
+      # LLVM 23's libraries; the SMT tests need z3 (without it they are skipped)
+      - run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh 23
+          sudo apt-get install -y llvm-23-dev libpolly-23-dev libzstd-dev zlib1g-dev z3
       - run: cargo test --release
+      # the strata the tests built: every package and script type-checks, every .strata file is canonical
+      - run: ./target/release/strata ci
 
-  jit:
-    name: cargo test (jit)
+  strata-ci:
+    name: strata ci
+    needs: changes
+    # with Rust changes, `cargo test` runs `strata ci` itself
+    if: needs.changes.outputs.strata == 'true' && needs.changes.outputs.rust != 'true'
     runs-on: ubuntu-latest
-    env:
-      LLVM_SYS_231_PREFIX: /usr/lib/llvm-23
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # LLVM 23's libraries, for inkwell
       - run: |
           wget -q https://apt.llvm.org/llvm.sh
           sudo bash llvm.sh 23
           sudo apt-get install -y llvm-23-dev libpolly-23-dev libzstd-dev zlib1g-dev
-      - run: cargo test --release --features jit --test build
+      - run: cargo build --release
+      - run: ./target/release/strata ci

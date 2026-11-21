@@ -58,8 +58,8 @@ fn snapshot(target: &Target) -> Json {
     let graph = store::graph_of(p, &resolved.program);
     let rp = &resolved.program.clone();
     let qname_of: HashMap<String, String> = rp.decls.iter().zip(&p.decls).map(|(r, d)| (r.name(), d.qname())).collect();
-    let types::Checked { report: mut rep, program: elaborated, env } = types::check_resolved(resolved);
-    rep.errors.extend(verify::refinements_in(&elaborated, &env));
+    let types::Checked { report: mut rep, program: elaborated, env, compiled } = types::check_resolved(resolved);
+    rep.errors.extend(verify::refinements_in(&elaborated, &compiled, &env));
 
     let mut holes: HashMap<String, Vec<&types::HoleInfo>> = HashMap::default();
     for h in &rep.holes {
