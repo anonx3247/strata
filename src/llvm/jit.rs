@@ -410,6 +410,101 @@ extern "C" fn regex_engine(s: *const u8, n: i64, re: *const u8, m: i64, err: *mu
     })
 }
 
+/// std's non-generic functions, compiled once at O2 (`llvm::compile_library`)
+/// and kept in a cache by std's code and this strata: a shared library the
+/// JIT loads (its calls into the runtime resolve to strata's own, exported),
+/// and an object file `strata build` links statically. `None` without a C
+/// compiler, or with `STRATA_NO_STD_LIBRARY`.
+pub struct StdLibrary {
+    pub names: std::collections::HashSet<String>,
+    pub object: std::path::PathBuf,
+    handle: usize,
+}
+
+pub fn std_library() -> Option<&'static StdLibrary> {
+    static LIB: std::sync::OnceLock<Option<StdLibrary>> = std::sync::OnceLock::new();
+    LIB.get_or_init(|| {
+        if std::env::var_os("STRATA_NO_STD_LIBRARY").is_some() {
+            return None;
+        }
+        let r = make_std_library();
+        if let Err(e) = &r {
+            if std::env::var_os("STRATA_DEBUG").is_some() {
+                eprintln!("note: std is compiled with each program: {e}");
+            }
+        }
+        r.ok()
+    })
+    .as_ref()
+}
+
+fn make_std_library() -> Result<StdLibrary, String> {
+    use sha2::{Digest, Sha256};
+    let std = crate::stdlib::program();
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let meta = std::fs::metadata(&exe).map_err(|e| e.to_string())?;
+    let key: String = Sha256::digest(format!("{:?}{}{:?}", meta.modified().ok(), meta.len(), std).as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
+    let root = match std::env::var_os("STRATA_CACHE") {
+        Some(d) => std::path::PathBuf::from(d),
+        None => std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache/strata"),
+    };
+    let dir = root.join("std").join(&key);
+    let (lib, obj, names_file) = (dir.join("libstd.so"), dir.join("std.o"), dir.join("names"));
+    if !names_file.exists() {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        // what can be precompiled; what doesn't compile yet is left to each program
+        let resolved = crate::resolve::resolve(std).program;
+        let (env, _) = crate::types::Env::build(&resolved);
+        let mut names: Vec<String> = env.fns.values().filter(|f| super::precompilable(f, &env)).map(|f| f.name.to_string()).collect();
+        names.sort();
+        let ir = match super::compile_library(std, &names) {
+            Ok(ir) => ir,
+            Err(_) => {
+                names.retain(|n| super::compile_library(std, std::slice::from_ref(n)).is_ok());
+                super::compile_library(std, &names)?
+            }
+        };
+        let ll = dir.join("std.ll");
+        std::fs::write(&ll, ir).map_err(|e| e.to_string())?;
+        let cc = std::env::var("STRATA_CC").unwrap_or_else(|_| "clang".into());
+        let run = |args: &[&std::ffi::OsStr]| -> Result<(), String> {
+            let o = std::process::Command::new(&cc).args(args).output().map_err(|e| format!("{cc}: {e}"))?;
+            if o.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&o.stderr).to_string()) }
+        };
+        let os = |s: &str| std::ffi::OsString::from(s);
+        let mut shared = vec![os("-O2"), os("-fPIC"), os("-shared"), os("-Wno-override-module")];
+        if cfg!(target_os = "macos") {
+            shared.extend([os("-undefined"), os("dynamic_lookup")]);
+        }
+        shared.extend([os("-o"), lib.clone().into(), ll.clone().into()]);
+        run(&shared.iter().map(|s| s.as_os_str()).collect::<Vec<_>>())?;
+        run(&[os("-O2").as_os_str(), os("-fPIC").as_os_str(), os("-Wno-override-module").as_os_str(), os("-c").as_os_str(), os("-o").as_os_str(), obj.as_os_str(), ll.as_os_str()])?;
+        std::fs::write(&names_file, names.join("\n")).map_err(|e| e.to_string())?;
+    }
+    let names = std::fs::read_to_string(&names_file).map_err(|e| e.to_string())?.lines().map(String::from).collect();
+    let path = std::ffi::CString::new(lib.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+    unsafe extern "C" {
+        fn dlopen(path: *const std::ffi::c_char, mode: i32) -> *mut std::ffi::c_void;
+    }
+    // RTLD_NOW
+    let handle = unsafe { dlopen(path.as_ptr(), 2) };
+    if handle.is_null() {
+        return Err(format!("can't load {}", lib.display()));
+    }
+    Ok(StdLibrary { names, object: obj, handle: handle as usize })
+}
+
+/// The address of a precompiled std function, by its symbol (without `@"..."`).
+fn std_symbol(name: &str) -> Option<usize> {
+    unsafe extern "C" {
+        fn dlsym(handle: *mut std::ffi::c_void, symbol: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+    }
+    let lib = std_library()?;
+    let s = std::ffi::CString::new(name).ok()?;
+    let a = unsafe { dlsym(lib.handle as *mut std::ffi::c_void, s.as_ptr()) };
+    (!a.is_null()).then_some(a as usize)
+}
+
 fn engine_at<'ctx>(ctx: &'ctx Context, ir: &str, optimize: bool) -> Result<inkwell::execution_engine::ExecutionEngine<'ctx>, String> {
     unsafe { strata_set_regex_engine(regex_engine) };
     Target::initialize_native(&InitializationConfig::default())?;
@@ -440,6 +535,14 @@ fn engine_at<'ctx>(ctx: &'ctx Context, ir: &str, optimize: bool) -> Result<inkwe
     }
     for (name, addr) in table {
         if let Some(f) = module.get_function(name) {
+            engine.add_global_mapping(&f, addr);
+        }
+    }
+    // std's precompiled functions: the library's code, loaded once
+    for f in module.get_functions() {
+        let name = f.get_name().to_string_lossy().to_string();
+        if f.count_basic_blocks() == 0 && name.starts_with("strata:std.") {
+            let addr = std_symbol(&name).ok_or(format!("std's library has no `{name}`"))?;
             engine.add_global_mapping(&f, addr);
         }
     }
