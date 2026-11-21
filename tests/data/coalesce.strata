@@ -20,3 +20,36 @@ test "coalesce" {
   assert twice(None) == 5
   assert parse_int("x") ?? 0 == 0
 }
+
+fn half(n: Int) -> Result[Int, String] {
+  if n % 2 == 0 {
+    Ok(n / 2)
+  } else {
+    Err("odd")
+  }
+}
+
+fn lookup(k: Int) -> Result[Option[Int], String] {
+  if k < 0 {
+    Err("negative")
+  } else if k == 0 {
+    Ok(None)
+  } else {
+    Ok(Some(k))
+  }
+}
+
+fn either(k: Int) -> Int {
+  (lookup(k) !! None) ?? 7
+}
+
+fn first_even(xs: List[Int]) -> Int {
+  let x = xs.find(x -> x % 2 == 0) or { return -1 }
+  half(x) except e { len(e) }
+}
+
+test "or and except" {
+  assert half(3) !! 0 == 0 && half(4) !! 0 == 2
+  assert either(-1) == 7 && either(0) == 7 && either(3) == 3
+  assert first_even([1, 3]) == -1 && first_even([1, 8]) == 4
+}

@@ -1670,8 +1670,13 @@ impl<'a> Interp<'a> {
                 v @ Value::Variant(..) => return self.early_return(v),
                 other => return self.fail(FaultKind::Runtime, format!("`!` / `?` on {}, not a Result or Option", to_json(&other))),
             },
+            Expr::Or(x, fb) => match self.eval(x, s)? {
+                Value::Variant(c, Fields::Pos(mut xs)) if c == "Some" && xs.len() == 1 => xs.pop().unwrap(),
+                Value::Variant(c, _) if c == "None" => self.eval(fb, s)?,
+                other => return self.fail(FaultKind::Runtime, format!("`or` on {}, not an Option", to_json(&other))),
+            },
             Expr::Except(x, name, fb) => match self.eval(x, s)? {
-                Value::Variant(c, Fields::Pos(mut xs)) if (c == "Ok" || c == "Some") && xs.len() == 1 => xs.pop().unwrap(),
+                Value::Variant(c, Fields::Pos(mut xs)) if c == "Ok" && xs.len() == 1 => xs.pop().unwrap(),
                 Value::Variant(c, Fields::Pos(mut xs)) if c == "Err" && xs.len() == 1 => {
                     let s2 = match name {
                         Some(n) => extend(s, n, xs.pop().unwrap()),
@@ -1679,8 +1684,7 @@ impl<'a> Interp<'a> {
                     };
                     self.eval(fb, &s2)?
                 }
-                Value::Variant(..) => self.eval(fb, s)?,
-                other => return self.fail(FaultKind::Runtime, format!("`except` on {}, not a Result or Option", to_json(&other))),
+                other => return self.fail(FaultKind::Runtime, format!("`except` on {}, not a Result", to_json(&other))),
             },
         })
     }

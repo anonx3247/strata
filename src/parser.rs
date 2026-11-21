@@ -45,7 +45,7 @@ fn is_upper(s: &str) -> bool {
 
 const KEYWORDS: &[&str] = &[
     "type", "fn", "test", "let", "if", "else", "match", "mock", "where", "mut", "while", "for", "in", "loop", "break", "continue",
-    "requires", "ensures", "terminates", "true", "false", "is", "assert", "trait", "impl", "law", "for", "pub", "use", "return", "except",
+    "requires", "ensures", "terminates", "true", "false", "is", "assert", "trait", "impl", "law", "for", "pub", "use", "return", "except", "or",
 ];
 
 impl Parser {
@@ -613,9 +613,14 @@ impl Parser {
             return self.unary();
         }
         let mut lhs = self.binary(level + 1)?;
-        // `a ?? b`: `a`'s `Ok` / `Some` value, or else `b` (`a except { b }`); `a ?? b ?? c` is `a ?? (b ?? c)`
+        // `a ?? b`: an Option's `Some` value, or else `b` (`a or { b }`); `a !! b`: a Result's
+        // `Ok` value, or else `b` (`a except { b }`). `a ?? b ?? c` is `a ?? (b ?? c)`.
         if level == 3 {
             if self.eat_sym("??") {
+                let rhs = self.binary(3)?;
+                return Ok(Expr::Or(Box::new(lhs), Box::new(rhs)));
+            }
+            if self.eat_sym("!!") {
                 let rhs = self.binary(3)?;
                 return Ok(Expr::Except(Box::new(lhs), None, Box::new(rhs)));
             }
@@ -656,6 +661,10 @@ impl Parser {
         }
         if self.eat_sym("!") {
             return Ok(Expr::Un(UnOp::Not, Box::new(self.unary()?)));
+        }
+        // `!!x` lexes as one symbol
+        if self.eat_sym("!!") {
+            return Ok(Expr::Un(UnOp::Not, Box::new(Expr::Un(UnOp::Not, Box::new(self.unary()?)))));
         }
         if self.eat_kw("mut") {
             return self.marked();
@@ -748,6 +757,9 @@ impl Parser {
                     _ => None,
                 };
                 e = Expr::Except(Box::new(e), name, Box::new(self.block()?));
+            } else if self.is_kw("or") && matches!(self.peek_at(1), Tok::Sym("{")) {
+                self.next();
+                e = Expr::Or(Box::new(e), Box::new(self.block()?));
             } else {
                 break;
             }

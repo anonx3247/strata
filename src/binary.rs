@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 pub const MAGIC: &[u8; 6] = b"STRATA";
 /// Bumped on every change to the layout; older files are rejected (re-pack
 /// them from source: there is no backwards compatibility).
-pub const VERSION: u64 = 5;
+pub const VERSION: u64 = 6;
 const MODULE: u8 = 0;
 const BUNDLE: u8 = 1;
 /// Deepest nesting of expressions, patterns and types a file may have.
@@ -991,11 +991,12 @@ impl Bin for Expr {
             Expr::Comp(kind, elem, gens) => put!(w, 29, kind, elem, gens),
             Expr::Dict(tys, kvs) => put!(w, 30, tys, kvs),
             Expr::Set(tys, xs) => put!(w, 31, tys, xs),
+            Expr::Or(x, fb) => put!(w, 32, x, fb),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
         r.nest(|r| {
-            Ok(match r.tag("expression", 31)? {
+            Ok(match r.tag("expression", 32)? {
                 0 => Expr::Int(Bin::dec(r)?),
                 1 => Expr::BigInt(Bin::dec(r)?),
                 2 => Expr::Float(Bin::dec(r)?),
@@ -1027,7 +1028,8 @@ impl Bin for Expr {
                 28 => Expr::Index(Bin::dec(r)?, Bin::dec(r)?),
                 29 => Expr::Comp(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
                 30 => Expr::Dict(Bin::dec(r)?, Bin::dec(r)?),
-                _ => Expr::Set(Bin::dec(r)?, Bin::dec(r)?),
+                31 => Expr::Set(Bin::dec(r)?, Bin::dec(r)?),
+                _ => Expr::Or(Bin::dec(r)?, Bin::dec(r)?),
             })
         })
     }
