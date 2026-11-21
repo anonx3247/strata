@@ -4208,3 +4208,16 @@ fn mocks_for_tests() {
     let (ok, out) = strata(&["--file", "x.strata", "edit"], &d, Some("mock M = Int\n"));
     assert!(!ok && out.contains("a mock holds the data of a fake"), "{out}");
 }
+
+/// A trait method named like a builtin (`find`) is the trait's only on a
+/// type that implements the trait: on a list, `xs.find(…)` is still the
+/// builtin (it used to be the trait's, for every receiver).
+#[test]
+fn a_trait_method_named_like_a_builtin_leaves_the_builtin() {
+    let d = tmp("trait-builtin");
+    let src = "trait Store {\n  fn find(self, k: Int) -> Option[String]\n}\n\ntype Mem = { xs: List[(Int, String)] }\n\nimpl Store for Mem {\n  fn find(self, k: Int) -> Option[String] {\n    match self.xs.find(p -> p.0 == k) {\n      Some(p) => Some(p.1),\n      None => None,\n    }\n  }\n}\n\nfn main() {\n  xs := [(1, \"a\"), (2, \"b\")]\n  print(xs.find(p -> p.0 == 2))\n  m := Mem { xs }\n  print(m.find(1))\n}\n";
+    let (ok, out) = strata(&["--file", "t.strata", "edit"], &d, Some(src));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "t.strata", "run"], &d, None);
+    assert!(ok && out == "Some((2, \"b\"))\nSome(\"a\")\n", "{out}");
+}
