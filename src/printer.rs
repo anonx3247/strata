@@ -108,6 +108,9 @@ pub fn pat(p: &Pattern) -> String {
         Pattern::Ctor(c, CtorPat::Positional(ps)) => {
             format!("{c}({})", ps.iter().map(pat).collect::<Vec<_>>().join(", "))
         }
+        Pattern::Ctor(c, CtorPat::Type(ps)) => {
+            format!("{c}[{}]", ps.iter().map(pat).collect::<Vec<_>>().join(", "))
+        }
         Pattern::Ctor(c, CtorPat::Record(fs, open)) => {
             let mut parts: Vec<String> = fs
                 .iter()

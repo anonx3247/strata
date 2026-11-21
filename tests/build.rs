@@ -1035,6 +1035,42 @@ fn unions_compile() {
     assert!(code == 101 && out.contains("-1 is not a `Positive | String`"), "{out}");
 }
 
+#[test]
+fn declared_unions_and_parametric_type_patterns() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("declared_unions");
+    let (out, code) = case(&d, "declared", DECLARED_UNIONS);
+    assert_eq!((out.as_str(), code), ("text\n3\nlist 2\ntext\nempty\n", 0));
+}
+
+// a variable declared a union stays one (it was narrowed to its first
+// value's type); `List[Int]` is a type pattern
+const DECLARED_UNIONS: &str = r#"fn describe(v: List[Int] | String) -> String {
+  match v {
+    List[Int] => f"list {len(v)}",
+    String => "text",
+  }
+}
+
+fn main() {
+  mut u: Int | String = 3
+  u = "text"
+  print(u)
+  let w: Int | String = 3
+  print(w)
+  print(describe([1, 2]))
+  print(describe("x"))
+  let e: List[Int] | String = []
+  match e {
+    List[Int] => print("empty"),
+    String => print("text"),
+  }
+}
+"#;
+
 const UNIONS: &str = r#"type Sq = { side: Int }
 
 fn describe(v: Int | String) -> String {

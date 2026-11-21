@@ -285,7 +285,7 @@ impl Structural<'_> {
             }
             Pattern::Ctor(_, cp) => match cp {
                 CtorPat::None => {}
-                CtorPat::Positional(ps) => ps.iter().for_each(|p| self.bind(p, None, whole, depth + 1, vars)),
+                CtorPat::Positional(ps) | CtorPat::Type(ps) => ps.iter().for_each(|p| self.bind(p, None, whole, depth + 1, vars)),
                 CtorPat::Record(fs, _) => fs.iter().for_each(|(_, p)| self.bind(p, None, whole, depth + 1, vars)),
             },
             Pattern::Or(alts) => {

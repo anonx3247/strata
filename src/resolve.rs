@@ -1009,6 +1009,7 @@ impl Rw<'_> {
                 let cp = match cp {
                     CtorPat::None => CtorPat::None,
                     CtorPat::Positional(ps) => CtorPat::Positional(ps.iter().map(|x| self.pat(x)).collect()),
+                    CtorPat::Type(ps) => CtorPat::Type(ps.iter().map(|x| self.pat(x)).collect()),
                     CtorPat::Record(fs, open) => CtorPat::Record(fs.iter().map(|(f, x)| (f.clone(), self.pat(x))).collect(), *open),
                 };
                 Pattern::Ctor(c, cp)

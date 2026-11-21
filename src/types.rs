@@ -2114,7 +2114,7 @@ impl<'a> Checker<'a> {
                         }
                         // the arm's own refinement, for matches inside it
                         let arm_written = match &a.pat {
-                            Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(&c.sym()) && self.env.is_type_name(c) => Some(TypeExpr::Named(c.clone(), vec![])),
+                            Pattern::Ctor(..) if self.env.type_pattern(&a.pat).is_some() => self.env.type_pattern(&a.pat),
                             Pattern::Cond(pred) => Some(TypeExpr::Refined(Box::new(written.clone().unwrap_or_else(|| ty_to_texpr(&self.resolve(&st)))), pred.clone())),
                             Pattern::Wild | Pattern::Bind(_) => written.clone(),
                             _ => None,
@@ -2154,6 +2154,8 @@ impl<'a> Checker<'a> {
                             if let Some(a) = &ann {
                                 self.expect(a, &t, "let annotation");
                             }
+                            // the declared type, not the value's: `x: Int | String = 3` is a union, `s: Shape = sq` a trait value
+                            let t = ann.unwrap_or(t);
                             let (_, pp) = self.pattern(p, &t);
                             if let (Pattern::Bind(x), Some(w)) = (p, ann_written) {
                                 self.bind_written(x, w);
@@ -2169,7 +2171,7 @@ impl<'a> Checker<'a> {
                             if let Some(a) = &ann {
                                 self.expect(a, &t, "let annotation");
                             }
-                            self.bind(n.sym(), t);
+                            self.bind(n.sym(), ann.unwrap_or(t));
                             self.bind((&format!("mut:{n}")).sym(), Ty::Unit);
                             if let Some(w) = &written {
                                 self.bind_written(n, w);
@@ -2654,8 +2656,12 @@ impl<'a> Checker<'a> {
                 (lt, acc)
             }
             // a type's name matches the values of that type: `Positive`, `String`, `Shape`
-            Pattern::Ctor(c, CtorPat::None) if !self.env.ctors.contains_key(&c.sym()) && self.env.is_type_name(c) => {
-                let pt = self.type_named(c);
+            Pattern::Ctor(c, _) if self.env.type_pattern(p).is_some() => {
+                let written = self.env.type_pattern(p).unwrap();
+                let pt = match &written {
+                    TypeExpr::Named(_, args) if args.is_empty() => self.type_named(c),
+                    w => self.lower(w, &HashMap::default()),
+                };
                 if self.is_trait_ty(&pt) {
                     return (pt.clone(), P::Ty(pt));
                 }
@@ -2665,7 +2671,7 @@ impl<'a> Checker<'a> {
                     // already reported; don't also call it unreachable
                     return (pt, P::Lit);
                 }
-                let set = match self.int_refinement(&TypeExpr::Named(c.clone(), vec![])) {
+                let set = match self.int_refinement(&written) {
                     Refn::Plain => P::Ty(pt.clone()),
                     Refn::Ints(s) => P::Ints(s),
                     Refn::Lens(s) => P::Lens(s),
@@ -2687,6 +2693,10 @@ impl<'a> Checker<'a> {
                 let subs: Vec<P> = match cp {
                     // `Circle` alone: every value of that variant, whatever its fields
                     CtorPat::None => vec![P::Any; fields.len()],
+                    CtorPat::Type(_) => {
+                        self.err(format!("`{c}[..]`: `{c}` is a constructor, not a type; write `{c}(..)`"));
+                        vec![P::Any; fields.len()]
+                    }
                     CtorPat::Positional(ps) => {
                         if ps.len() != fields.len() {
                             self.err(format!("pattern `{c}` expects {} fields, got {}", fields.len(), ps.len()));

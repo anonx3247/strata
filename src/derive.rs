@@ -693,7 +693,7 @@ impl<'a> Expander<'a> {
                 }
             }
             Pattern::Ctor(c, CtorPat::None) => matches!(&base, TypeExpr::Named(n, _) if crate::names::short(n) == crate::names::short(c)),
-            Pattern::Ctor(c, CtorPat::Positional(ps)) => match &base {
+            Pattern::Ctor(c, CtorPat::Type(ps)) => match &base {
                 TypeExpr::Named(n, args) if crate::names::short(n) == crate::names::short(c) && args.len() == ps.len() => ps.iter().zip(args).all(|(p, a)| self.fits(p, a, binds)),
                 _ => false,
             },

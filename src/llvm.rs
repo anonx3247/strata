@@ -2436,12 +2436,13 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok(())
     }
 
-    /// Whether `v` is a value of the type named `name` (a type's name as a
-    /// pattern, or `is`): its constructor, and every refinement.
-    fn holds(&mut self, name: &str, v: &V) -> Res<V> {
+    /// Whether `v` is a value of the type `written` names (a type pattern,
+    /// `Positive`, `List[Int]`, or `is`): its constructor, and every refinement.
+    fn holds(&mut self, written: &TypeExpr, v: &V) -> Res<V> {
+        let TypeExpr::Named(name, _) = written else { return self.unsupported("this type pattern") };
         if self.m.boxed(&v.0) {
             // the member first, then its refinements on the value as it
-            let target = self.lower(&TypeExpr::Named(Symbol::from(name), vec![]))?;
+            let target = self.lower(written)?;
             let is = self.holds_member(v, &target)?;
             if self.m.boxed(&target) || self.m.members(&target).len() > 1 {
                 return Ok(is);
@@ -2451,7 +2452,7 @@ impl<'m, 'a> Func<'m, 'a> {
             self.cond_br(&is, &yes, &end);
             self.block(&yes);
             let x = self.narrow(v, &target)?;
-            let ok = self.holds(name, &x)?;
+            let ok = self.holds(written, &x)?;
             let from_yes = self.cur.clone();
             self.br(&end);
             self.block(&end);
@@ -2461,11 +2462,11 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let mut conds = vec![];
         if self.m.nominal(&self.m.repr(&v.0)?) {
-            let target = Ty::Con(Symbol::from(Symbol::from(name)), Module::args_of(&v.0));
+            let target = Ty::Con(name.clone(), Module::args_of(&v.0));
             let cs = self.m.ctors_of(&target);
             conds.push(self.tag_in(v, &cs)?);
         }
-        let mut t = TypeExpr::Named(Symbol::from(Symbol::from(name)), vec![]);
+        let mut t = written.clone();
         loop {
             match t {
                 TypeExpr::Refined(b, pred) => {
@@ -2774,7 +2775,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 if self.m.env.ctors.contains_key(name) && !self.m.is_distinct(name) {
                     self.tag_in(&v, &[name.to_string()])?
                 } else if self.m.env.is_type_name(name) {
-                    self.holds(name, &v)?
+                    self.holds(&TypeExpr::Named(name.clone(), vec![]), &v)?
                 } else {
                     return self.unsupported(&format!("`is {name}`"));
                 }
@@ -4584,8 +4585,8 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
                 self.block(&matched);
             }
-            Pattern::Ctor(c, CtorPat::None) if !self.m.env.ctors.contains_key(c) && self.m.env.is_type_name(c) => {
-                let ok = self.holds(c, v)?;
+            Pattern::Ctor(..) if self.m.env.type_pattern(p).is_some() => {
+                let ok = self.holds(&self.m.env.type_pattern(p).unwrap(), v)?;
                 test(self, ok)?;
             }
             Pattern::Ctor(c, cp) => {
@@ -4600,7 +4601,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 test(self, ok)?;
                 let fs = self.m.fields(c, &self.m.ctor_args(c, &v.0))?;
                 match cp {
-                    CtorPat::None => {}
+                    CtorPat::None | CtorPat::Type(_) => {}
                     CtorPat::Positional(ps) => {
                         for (i, (sp, f)) in ps.iter().zip(&fs).enumerate() {
                             let x = self.field(v, i, &f.ty)?;
