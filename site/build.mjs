@@ -804,15 +804,18 @@ fn main() {
 function markdown(md) {
   const esc = t => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const PAGES = { 'learn-strata.md': 'learn-strata', 'verification.md': 'verification', 'tools.md': 'tools' };
+  // a file of the repository that isn't one of these pages: on GitHub, so the site can be hosted alone
+  const REPO = 'https://github.com/anonx3247/strata/blob/main/';
+  const repoFile = href => REPO + new URL(href, 'https://repo/docs/').pathname.slice(1);
   const inline = t => {
     const codes = [];
     t = t.replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`);
     t = esc(t)
-      .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => `<img alt="${alt}" src="${src.startsWith('http') ? src : '../docs/' + src}">`)
+      .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => `<img alt="${alt}" src="${src.startsWith('http') ? src : repoFile(src) + '?raw=true'}">`)
       .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, txt, href) => {
         const [f, frag] = href.split('#');
         const page = PAGES[f.replace(/^\.\.?\/(docs\/)?/, '')];
-        const to = page ? `docs.html?d=${page}${frag ? '#' + frag : ''}` : href.startsWith('http') || href.startsWith('#') ? href : '../docs/' + href;
+        const to = page ? `docs.html?d=${page}${frag ? '#' + frag : ''}` : href.startsWith('http') || href.startsWith('#') ? href : repoFile(href);
         return `<a href="${to}">${txt}</a>`;
       })
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')

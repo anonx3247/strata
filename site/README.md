@@ -15,3 +15,7 @@ Opening `site/index.html` directly from disk works too.
 - `build.mjs` runs `strata` on scratch packages (from `examples/`, and small programs it stores with `strata edit`, so one that stops checking fails the build), records each command's output and the codebase after each step, and writes `data/*.js`. Nothing on the slides is written by hand.
 - `index.html`, `slides.css` and `app.js` are the deck; `style.css` and `common.js` (Strata highlighting, terminal colouring, steppers) are shared with `docs.html`, which renders `docs/learn-strata.md`, `verification.md` and `tools.md` (recorded into `data/docs.js`). In Tools, the viewer's screenshot is replaced by a tour of the real viewer (`data/tour.js`, in `viewer.html`).
 - `viewer.html` is generated from `src/ui/index.html`: the same viewer, forced to its dark theme, answering its API calls from the snapshots the docs post to it. Re-run the build after changing the viewer.
+
+## Hosting
+
+The folder is a static site: everything it shows is committed in `data/`, so hosting it needs no build and no `strata`. On Vercel, import the repository and set **Root Directory** to `site`; `site/vercel.json` turns the build off and serves the folder as it is. Re-run `node site/build.mjs` and commit `site/data/` to update what the site shows. Links to files of the repository other than the three doc pages go to GitHub.
