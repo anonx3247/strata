@@ -90,9 +90,9 @@ A `for` loop over a list always ends. Here every assignment must keep `total` a 
 
 ```rust
 fn triangle(n: Natural) -> Natural {
-  let mut total: Natural = 0
+  mut total: Natural = 0
   for i in 1..=n {
-    total = total + i
+    total += i
   }
   total
 }
@@ -111,9 +111,9 @@ A `while` loop ends when a bound taken from its condition goes down on every pas
 ```rust
 fn isqrt(n: Natural) -> Natural
   ensures it * it <= n {
-  let mut r: Natural = 0
+  mut r: Natural = 0
   while (r + 1) * (r + 1) <= n {
-    r = r + 1
+    r += 1
   }
   r
 }
@@ -129,11 +129,11 @@ Termination is never assumed. Whether the Collatz sequence always reaches 1 is a
 
 ```rust
 fn collatz_steps(n: Positive) -> Natural {
-  let mut x: Positive = n
-  let mut steps: Natural = 0
+  mut x: Positive = n
+  mut steps: Natural = 0
   while x != 1 {
-    if x % 2 == 0 { x = x / 2 } else { x = 3 * x + 1 }
-    steps = steps + 1
+    if x % 2 == 0 { x /= 2 } else { x = 3 * x + 1 }
+    steps += 1
   }
   steps
 }
@@ -214,7 +214,7 @@ fn average(xs: List[Int]) -> Int {
 - **incomplete** (`○`): the function still has a hole.
 - **assumed** (`≈`): trusted, not checked. Today these are the standard library's real terminal, disk and process (the `impl`s behind `Console`, `Files` and `Environment` that only `strata run` creates): their bodies call the system, so `verify` never runs them. Their contracts are taken as true, and callers are still checked against those contracts as usual.
 
-The checks are exactly the interpreter's runtime checks: a callee's parameter refinements and `requires`, the refinements of constructed values and assigned fields, annotated `let`s, `assert`, division by zero, and the function's own result type and `ensures`. Calls are checked against the callee's contract, never its body, which is how modules meet. A function passed by name (`lines.map(line_total)`) is checked against one arbitrary element of the list.
+The checks are exactly the interpreter's runtime checks: a callee's parameter refinements and `requires`, the refinements of constructed values and assigned fields, annotated bindings, `assert`, division by zero, and the function's own result type and `ensures`. Calls are checked against the callee's contract, never its body, which is how modules meet. A function passed by name (`lines.map(line_total)`) is checked against one arbitrary element of the list.
 
 How it works (`src/smt.rs`): the body is run symbolically, with values as SMT terms. Records and sums become structures of terms, a list is known by its length and by how its elements are made (a checked type, a literal, `range`, `filter`, `map`, `+`, `push`, a part of another list), so `all(xs, p)` is proven on an arbitrary element and, once known, gives `p` to every element the code looks at, a value of a union (`Square | Circle`) is a tag saying which member's shape it has plus a value for each member (a member value passed where the union is expected, or branches returning different members, become one; a `match` arm narrows it to its member), branches are merged with `ite`, and a loop forgets the variables it changes. Each check becomes the question "can the negation be true under what is known here?", which is sent to the solver (Z3, or cvc5) as SMT-LIB text (`verify --smt` prints the queries, termination ones included). `unsat` means proven; `sat` comes with a model, which becomes the counterexample. Anything not modelled (floats, dicts, sets, list contents, most higher-order builtins, unions whose members can share a shape such as `List[Int] | List[String]` or include a type parameter) becomes an unknown value. That can only make a proof fail, never make a false proof succeed, and the reason is kept for the report. `Int` is a mathematical integer, as it is when the code runs.
 Strings are sequences of characters (code points), as `chars()` counts them. These string builtins are modelled exactly: `len`, `+`, `contains`, `starts_with`, `ends_with`, `slice`, `get`, `chars` (its length), `index_of`, `replace` (every match, and a check that the pattern is not empty, which is a runtime fault), `to_string` of an `Int`, `Bool` or `String`, and `is_digit`. `parse_int` is exact for digits with an optional `-`, and for strings without a digit (`None`). Other forms (whitespace, `+`, `_`) are unknown. `trim` keeps only a length bound. `to_upper`, `to_lower`, `is_alpha`, `ord`, `chr`, `split`, `lines`, `repeat` and `reverse` are unknown. `matches(s, "regex")` becomes a regular-expression constraint with the interpreter's meaning. Strata regexes are Unicode regexes: `\d` is any decimal digit, `\w` and `\s` are Unicode classes, `\p{..}` works, `.` is any character but `\n`, and `(?i)` is Unicode case folding. The pattern is parsed the way the interpreter parses it, and translated exactly: literals, classes, groups, alternation, repetition, and `^` / `$` at the very start or end. Word boundaries, multi-line anchors and anchors elsewhere stay unknown. Z3 can't decide classes with hundreds of ranges (`\w`, `\p{L}`, Unicode `\d`), so such a class is bounded from both sides: `matches` is true on a subset of its ranges and false outside a superset of them. When one string is matched against two patterns, how their languages relate (one inside the other, or disjoint) is worked out exactly from the patterns' automata and added as a fact. So `\d{3}` implies `\d+`, and `[a-z]+` implies `\w+`.

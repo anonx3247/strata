@@ -1184,18 +1184,18 @@ trait Tr[P]: Eq { fn m(self: Self, mut q: P) -> Int
   law l(a: Self): a == a }
 impl[T: Eq + Tr[Int]] Tr[Int] for R[T] { fn m(self: Self, mut q: Int) -> Int { 0 } }
 fn f(x: Int) -> Int requires x > 0 ensures it >= 0 terminates {
-  let (a, _) = (1, 2.5)
-  let mut v: Int = -3
+  (a, _) := (1, 2.5)
+  mut v: Int = -3
   v = v + 99999999999999999999999
   while v < 0 { v = v + 1 }
   for [h, ..t] in [[1]] { break }
   loop { continue }
   assert !true ==> false
   // c
-  let g = (y: Int) -> y % 2
-  let z = match S.A as s { A | B(_, _) => 1, C { x: 3, .. } => 2, B("s", true) => 4, where it is C => 3, _ => ?hole }
-  let o = Some(v)? + Ok(1)! + (Err(2) except e { e })
-  let r = R { a: 1, b: g } ; let r2 = R { ..r, a: 2 }
+  g := (y: Int) -> y % 2
+  z := match S.A as s { A | B(_, _) => 1, C { x: 3, .. } => 2, B("s", true) => 4, where it is C => 3, _ => ?hole }
+  o := Some(v)? + Ok(1)! + (Err(2) except e { e })
+  r := R { a: 1, b: g } ; r2 := R { ..r, a: 2 }
   print(f"{x:>08.2} and {r.a}")
   mock Tr
   if "s".len() == 1 { return 1 } else { f(mut v) }

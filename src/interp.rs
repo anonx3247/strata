@@ -49,7 +49,7 @@ pub enum Value {
 #[derive(Debug, PartialEq)]
 pub struct Frame {
     name: String,
-    /// A cell, so `let mut` variables can be assigned.
+    /// A cell, so `mut` variables can be assigned.
     value: std::cell::RefCell<Value>,
     /// The declared type of a mutable variable: every value assigned to it
     /// (including a `mut` argument written back) must satisfy it.

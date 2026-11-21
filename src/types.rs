@@ -2381,7 +2381,7 @@ impl<'a> Checker<'a> {
             return;
         };
         if !self.scopes[idx].contains_key(&Symbol::from(format!("mut:{x}"))) {
-            self.err(format!("cannot {what} `{x}`: it is not mutable (declare it with `let mut {x}`, or make it a `mut` parameter)"));
+            self.err(format!("cannot {what} `{x}`: it is not mutable (declare it with `mut {x} := …`, or make it a `mut` parameter)"));
         } else if idx < self.lambda_floor {
             self.err(format!("a closure cannot change `{x}`, which belongs to the enclosing function"));
         }
