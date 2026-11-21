@@ -78,8 +78,8 @@ fn literal(s: &str) -> String {
 }
 
 /// What `std.regex` makes of each pattern, one line each.
-fn strata(patterns: &[String]) -> Vec<String> {
-    let dir = std::env::temp_dir().join(format!("strata-regex-test-{}", std::process::id()));
+fn strata(name: &str, patterns: &[String]) -> Vec<String> {
+    let dir = std::env::temp_dir().join(format!("strata-regex-test-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("parse.strata");
@@ -104,8 +104,8 @@ fn strata(patterns: &[String]) -> Vec<String> {
     String::from_utf8(o.stdout).unwrap().lines().map(String::from).collect()
 }
 
-fn same_as_regex_syntax(patterns: Vec<String>) {
-    let got = strata(&patterns);
+fn same_as_regex_syntax(name: &str, patterns: Vec<String>) {
+    let got = strata(name, &patterns);
     assert_eq!(got.len(), patterns.len(), "one line per pattern");
     let mut wrong = vec![];
     for (p, g) in patterns.iter().zip(&got) {
@@ -163,7 +163,7 @@ fn curated_patterns_read_as_regex_syntax_reads_them() {
     patterns.push("[".repeat(126) + "a" + &"]".repeat(126));
     patterns.push("[".repeat(260) + "a" + &"]".repeat(260));
     patterns.push("a*".repeat(3) + &"*".repeat(260));
-    same_as_regex_syntax(patterns);
+    same_as_regex_syntax("curated", patterns);
 }
 
 /// Pieces random patterns are made of: valid and broken syntax both.
@@ -185,5 +185,5 @@ fn random_pattern(rng: &mut impl RngExt) -> String {
 fn random_patterns_read_as_regex_syntax_reads_them() {
     let mut rng = rand::rngs::StdRng::seed_from_u64(std::env::var("REGEX_SEED").ok().and_then(|n| n.parse().ok()).unwrap_or(7));
     let patterns: Vec<String> = (0..std::env::var("REGEX_CASES").ok().and_then(|n| n.parse().ok()).unwrap_or(1000)).map(|_| random_pattern(&mut rng)).collect();
-    same_as_regex_syntax(patterns);
+    same_as_regex_syntax("random", patterns);
 }
