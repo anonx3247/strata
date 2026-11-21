@@ -1,8 +1,8 @@
 //! `std.regex` reads patterns as the `regex` crate does: `parse` gives the
 //! tree regex-syntax builds (shown the same way on both sides), or an error
-//! where regex-syntax gives one. Curated patterns, then random ones: 1000 by
-//! default; `REGEX_CASES=30000 REGEX_SEED=3 cargo test --release --features jit
-//! --test regex` tries more (the JIT runs them much faster than the interpreter).
+//! where regex-syntax gives one. Curated patterns, then random ones: 5000 by
+//! default; `REGEX_CASES=30000 REGEX_SEED=3 cargo test --release
+//! --test regex` tries more.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -184,6 +184,6 @@ fn random_pattern(rng: &mut impl RngExt) -> String {
 #[test]
 fn random_patterns_read_as_regex_syntax_reads_them() {
     let mut rng = rand::rngs::StdRng::seed_from_u64(std::env::var("REGEX_SEED").ok().and_then(|n| n.parse().ok()).unwrap_or(7));
-    let patterns: Vec<String> = (0..std::env::var("REGEX_CASES").ok().and_then(|n| n.parse().ok()).unwrap_or(1000)).map(|_| random_pattern(&mut rng)).collect();
+    let patterns: Vec<String> = (0..std::env::var("REGEX_CASES").ok().and_then(|n| n.parse().ok()).unwrap_or(5000)).map(|_| random_pattern(&mut rng)).collect();
     same_as_regex_syntax("random", patterns);
 }

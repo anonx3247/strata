@@ -73,17 +73,24 @@ def doc(out, text):
         out.append("/// " + line)
 
 
-def by_name_fn(out, name, what, src):
-    ts = tables(src)
-    doc(out, f"{what}, by its canonical name (encoded: see `std.unicode.decode`).")
-    out.append(f"pub fn {name}(name: String) -> Option[String] {{")
-    out.append("  match name {")
-    for n, t in by_name(src):
-        out.append(f"    {lit(n)} => Some({lit(encode(ts[t]))}),")
-    out.append("    _ => None,")
-    out.append("  }")
+def strings(xs):
+    return "[" + ", ".join(lit(x) for x in xs) + "]"
+
+
+def table_fn(out, name, what, pairs, public=True):
+    """`name(key)`: the value of a key, by binary search in two constant lists."""
+    pairs = sorted(pairs)
+    doc(out, what)
+    out.append(f"{'pub ' if public else ''}fn {name}(key: String) -> Option[String] {{")
+    out.append(f"  lookup({strings([k for k, _ in pairs])}, {strings([v for _, v in pairs])}, key)")
     out.append("}")
     out.append("")
+
+
+def by_name_fn(out, name, what, src):
+    ts = tables(src)
+    table_fn(out, name, f"{what}, by its canonical name (encoded: see `std.unicode.decode`).",
+             [(n, encode(ts[t])) for n, t in by_name(src)])
 
 
 def main():
@@ -99,6 +106,39 @@ def main():
         "/// The version of Unicode these tables are from.",
         "pub fn unicode_version() -> String {",
         f"  {lit(version)}",
+        "}",
+        "",
+        "/// Whether `a` sorts before `b` (by code point).",
+        "fn before(a: String, b: String) -> Bool {",
+        "  xs := chars(a)",
+        "  ys := chars(b)",
+        "  for i in 0..min(len(xs), len(ys)) {",
+        "    x := ord(get(xs, i) ?? \" \")",
+        "    y := ord(get(ys, i) ?? \" \")",
+        "    if x != y {",
+        "      return x < y",
+        "    }",
+        "  }",
+        "  len(xs) < len(ys)",
+        "}",
+        "",
+        "/// The value of `key`, by binary search: `keys` are sorted, and `values`",
+        "/// are in the same order.",
+        "fn lookup(keys: List[String], values: List[String], key: String) -> Option[String] {",
+        "  mut lo := 0",
+        "  mut hi := len(keys)",
+        "  while lo < hi {",
+        "    mid := (lo + hi) / 2",
+        "    k := get(keys, mid) ?? \"\"",
+        "    if before(key, k) {",
+        "      hi = mid",
+        "    } else if before(k, key) {",
+        "      lo = mid + 1",
+        "    } else {",
+        "      return get(values, mid)",
+        "    }",
+        "  }",
+        "  None",
         "}",
         "",
     ]
@@ -122,42 +162,34 @@ def main():
         out.append("")
     # simple case folding: each character with every other in its class
     src = f("case_folding_simple.rs")
-    entries = re.findall(r"\(" + CHAR + r",\s*&\[([^\]]*)\]\)", src)
-    parts = []
-    prev = 0
-    for c, others in entries:
-        c = char(c)
-        os_ = [char(o) for o in re.findall(CHAR, others)]
-        parts.append(",".join([str(c - prev)] + [str(o - c) for o in os_]))
-        prev = c
-    doc(out, "Simple case folding: for each character that has others in its case class, those others. Entries are separated by spaces, each the character (as the distance from the previous entry's), then the others (as distances from it), separated by commas.")
-    out.append("pub fn case_folding() -> String {")
-    out.append(f"  {lit(' '.join(parts))}")
+    entries = [(char(c), [char(o) for o in re.findall(CHAR, others)])
+               for c, others in re.findall(r"\(" + CHAR + r",\s*&\[([^\]]*)\]\)", src)]
+    doc(out, "Simple case folding: the characters that have others in their case class, in order (their others are `folding_others`).")
+    out.append("pub fn folding_keys() -> List[Int] {")
+    out.append("  [" + ", ".join(str(c) for c, _ in entries) + "]")
+    out.append("}")
+    out.append("")
+    doc(out, "For each of `folding_keys`, the other characters of its case class.")
+    out.append("pub fn folding_others() -> List[List[Int]] {")
+    out.append("  [" + ", ".join("[" + ", ".join(map(str, os_)) + "]" for _, os_ in entries) + "]")
     out.append("}")
     out.append("")
     # property names and values
     names = re.findall(r'\("([^"]+)",\s*"([^"]+)"\)', f("property_names.rs"))
-    doc(out, "A property's canonical name, from its name or an alias, normalized (`std.unicode.normalize`).")
-    out.append("pub fn property_name(normalized: String) -> Option[String] {")
-    out.append("  match normalized {")
-    for a, n in names:
-        out.append(f"    {lit(a)} => Some({lit(n)}),")
-    out.append("    _ => None,")
-    out.append("  }")
-    out.append("}")
-    out.append("")
+    table_fn(out, "property_name", "A property's canonical name, from its name or an alias, normalized (`std.unicode.normalize`).", names)
     src = f("property_values.rs")
     props = re.findall(r'\(\s*"([^"]+)",\s*&\[(.*?)\],\s*\)', src, re.S)
+    for p, body in props:
+        table_fn(out, "values_" + p.lower(), f"The values of `{p}`: a canonical name from a name or an alias, normalized.",
+                 re.findall(r'\("([^"]+)",\s*"([^"]+)"\)', body), public=False)
     doc(out, "A property value's canonical name, from its name or an alias, normalized (`std.unicode.normalize`), for the properties that have values here.")
     out.append("pub fn property_value(property: String, normalized: String) -> Option[String] {")
-    out.append("  match property {")
-    for p, body in props:
-        out.append(f"    {lit(p)} => match normalized {{")
-        for a, n in re.findall(r'\("([^"]+)",\s*"([^"]+)"\)', body):
-            out.append(f"      {lit(a)} => Some({lit(n)}),")
-        out.append("      _ => None,")
-        out.append("    },")
-    out.append("    _ => None,")
+    for i, (p, _) in enumerate(props):
+        kw = "if" if i == 0 else "} else if"
+        out.append(f"  {kw} property == {lit(p)} {{")
+        out.append(f"    values_{p.lower()}(normalized)")
+    out.append("  } else {")
+    out.append("    None")
     out.append("  }")
     out.append("}")
     print("\n".join(out))
