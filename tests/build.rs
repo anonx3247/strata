@@ -52,7 +52,7 @@ fn same_as_interpreter(file: &Path, dir: &Path) -> (String, i32) {
     assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
     // both run in `dir`, with the same arguments (what they read and write stays there)
     let native = freed_everything(output(Command::new(&exe).args(ARGS).current_dir(dir).env("STRATA_MEMORY", "check")), file);
-    let interp = output(Command::new(strata).arg("run").arg(file).arg("--").args(ARGS).current_dir(dir));
+    let interp = output(Command::new(strata).args(["run", "--interpret"]).arg(file).arg("--").args(ARGS).current_dir(dir));
     assert_eq!(native, interp, "native (left) and interpreted (right) runs differ for {}", file.display());
     native
 }
@@ -604,7 +604,7 @@ fn options_from_the_command_line_compile() {
     let mut codes = vec![];
     for (ex, args) in OPTION_RUNS {
         let native = output(Command::new(d.join(ex)).args(*args).current_dir(root).stdin(Stdio::null()));
-        let interp = output(Command::new(strata).arg("run").arg(root.join("examples").join(ex)).arg("--").args(*args).current_dir(root).stdin(Stdio::null()));
+        let interp = output(Command::new(strata).args(["run", "--interpret"]).arg(root.join("examples").join(ex)).arg("--").args(*args).current_dir(root).stdin(Stdio::null()));
         assert_eq!(native, interp, "native (left) and interpreted (right) differ for {ex} {args:?}");
         codes.push(native.1);
     }
@@ -617,7 +617,7 @@ fn options_from_the_command_line_compile() {
     assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
     for args in [&["--count", "4", "a", "b"][..], &[], &["--count"], &["--help"]] {
         let native = output(Command::new(&exe).args(args));
-        let interp = output(Command::new(strata).arg("run").arg(&f).arg("--").args(args));
+        let interp = output(Command::new(strata).args(["run", "--interpret"]).arg(&f).arg("--").args(args));
         assert_eq!(native, interp, "native (left) and interpreted (right) differ for {args:?}");
     }
 }
@@ -651,7 +651,7 @@ fn the_jit_runs_as_the_interpreter() {
     let strata = env!("CARGO_BIN_EXE_strata");
     let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/build/numbers.strata");
     let jit = output(Command::new(strata).args(["run", "--jit"]).arg(&file));
-    let interp = output(Command::new(strata).arg("run").arg(&file));
+    let interp = output(Command::new(strata).args(["run", "--interpret"]).arg(&file));
     assert_eq!(jit, interp);
     assert_eq!(jit.1, 101);
     // what doesn't compile yet is interpreted, and says why
@@ -669,7 +669,7 @@ fn the_jit_reads_options() {
     let strata = env!("CARGO_BIN_EXE_strata");
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     for (ex, args) in OPTION_RUNS {
-        let run = |jit: bool| output(Command::new(strata).arg("run").args(jit.then_some("--jit")).arg(root.join("examples").join(ex)).arg("--").args(*args).current_dir(root).stdin(Stdio::null()));
+        let run = |jit: bool| output(Command::new(strata).arg("run").arg(if jit { "--jit" } else { "--interpret" }).arg(root.join("examples").join(ex)).arg("--").args(*args).current_dir(root).stdin(Stdio::null()));
         let (jit, interp) = (run(true), run(false));
         assert!(!jit.0.contains("note: interpreted"), "{}", jit.0);
         assert_eq!(jit, interp, "the JIT (left) and the interpreter (right) differ for {ex} {args:?}");
@@ -866,3 +866,22 @@ fn main() {
   print(words.sort_by(w -> w).reverse())
 }
 "#;
+
+/// With the JIT, `strata run` compiles by default: what doesn't compile is
+/// interpreted without a note (`--jit` gives one), and `--interpret` keeps
+/// the interpreter's big integers.
+#[cfg(feature = "jit")]
+#[test]
+fn run_compiles_by_default_with_the_jit() {
+    let d = tmp("jit-default");
+    let strata = env!("CARGO_BIN_EXE_strata");
+    let f = d.join("big.strata");
+    save(&f, "fn main() {\n  mut n := 1\n  for _ in 0..70 {\n    n = n * 2\n  }\n  print(n)\n}\n");
+    let (out, code) = output(Command::new(strata).arg("run").arg(&f));
+    assert!(code == 101 && out.contains("overflow"), "compiled: {out}");
+    let (out, code) = output(Command::new(strata).args(["run", "--interpret"]).arg(&f));
+    assert_eq!((out.as_str(), code), ("1180591620717411303424\n", 0));
+    let f = d.join("regex.strata");
+    save(&f, "fn main() { print(matches(\"a1\", \"[a-z][0-9]\")) }\n");
+    assert_eq!(output(Command::new(strata).arg("run").arg(&f)), ("true\n".to_string(), 0));
+}

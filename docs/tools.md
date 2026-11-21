@@ -123,7 +123,7 @@ Anything else (regexes, for one) is refused, naming the function and what it use
 
 ### The JIT
 
-`strata run --jit` compiles the same IR in memory with LLVM's libraries and runs it, so a program runs at native speed without a build step (`fib(32)`: 26 ms, compilation included). A program that uses what doesn't compile yet is interpreted instead, with a note saying why. It is opt-in until big integers compile: an `Int` overflow is a fault there, where the interpreter goes on with a big integer.
+With the JIT, `strata run` compiles the same IR in memory with LLVM's libraries and runs it, so a program runs at native speed without a build step (`fib(32)`: 26 ms, compilation included). This is the default when strata is built with the JIT. A program that uses what doesn't compile yet is interpreted instead; `strata run --jit` says why (and is an error in a strata without the JIT). `strata run --interpret` always interprets (as does `--trace`): use it for big integers, since compiled `Int`s are 64 bits and an overflow is a fault, and for the call stack of a fault.
 
 The JIT needs LLVM 23's libraries, so it is a cargo feature:
 

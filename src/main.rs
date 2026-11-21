@@ -138,11 +138,15 @@ Running:
   run [PATH] [-- ARGS..]       run the program: `main` gets the capabilities it asks for
                                (Console, Files, Environment from std) and ARGS; it
                                returns (), an ExitCode, or a Result (Err: exit code 1).
-                               PATH is a .strata file or a package folder (or --file)
-  run --jit [PATH] [-- ARGS..] the same, compiled to machine code in memory (LLVM) and run:
-                               much faster, when the program only uses what compiles
-                               (see build); otherwise interpreted, with a note saying why.
-                               Needs strata built with `--features jit`
+                               PATH is a .strata file or a package folder (or --file).
+                               With a strata built with `--features jit`, `main` is
+                               compiled to machine code in memory (LLVM) when it only
+                               uses what compiles (see build), else interpreted
+  run --jit [PATH] [-- ARGS..] the same, saying why when it can't compile `main`
+                               (an error without the JIT)
+  run --interpret [PATH] [-- ARGS..]
+                               always interpret (big integers, call stacks in faults);
+                               `--trace` interprets too
   serve [PATH] [--port N]      serve the web: each request is passed to the program's
                                `fn handle(req: Request) -> Response` (std.http), which may
                                also ask for Console, Files, Environment (default port 8000);
