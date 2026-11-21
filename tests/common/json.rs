@@ -541,9 +541,9 @@ impl Iterator[Int] for Count {
   }
 }
 
-type ListIter[T] = { items: List[T], pos: Int }
+type Items[T] = { items: List[T], pos: Int }
 
-impl[T] Iterator[T] for ListIter[T] {
+impl[T] Iterator[T] for Items[T] {
   fn next(mut self) -> Option[T] {
     if self.pos < len(self.items) {
       x := self.items[self.pos]
@@ -555,7 +555,7 @@ impl[T] Iterator[T] for ListIter[T] {
   }
 }
 
-type Padded[T] = { inner: ListIter[T], extra: Int }
+type Padded[T] = { inner: Items[T], extra: Int }
 
 impl[T: Zero] Iterator[T] for Padded[T] {
   fn next(mut self) -> Option[T] {
@@ -597,11 +597,11 @@ fn sum(it: Count) -> Int {
 }
 
 fn main() {
-  print(collect(ListIter { items: [1, 2, 3], pos: 0 }))
-  print(collect(Padded { inner: ListIter { items: [4, 5], pos: 0 }, extra: 2 }))
-  print(collect(Padded { inner: ListIter { items: ["a"], pos: 0 }, extra: 1 }))
+  print(collect(Items { items: [1, 2, 3], pos: 0 }))
+  print(collect(Padded { inner: Items { items: [4, 5], pos: 0 }, extra: 2 }))
+  print(collect(Padded { inner: Items { items: ["a"], pos: 0 }, extra: 1 }))
   print(sum(Count { at: 0, end: 10 }))
-  pairs := ListIter { items: [(1, "x"), (2, "y")], pos: 0 }
+  pairs := Items { items: [(1, "x"), (2, "y")], pos: 0 }
   for (i, s) in pairs {
     print(f"{i}{s}")
   }
@@ -705,4 +705,138 @@ pub const LAZY_ITERATORS_OUTPUT: &str = r#"9
 12
 [2, 4, 6]
 3
+"#;
+
+/// `fold` / `len` over finite chains (shown to end, given their lambdas
+/// end), and comprehensions over iterators: lazy over an unbounded one,
+/// finite over a finite one, nested with a list, and set / dict ones.
+#[allow(dead_code)]
+pub const ITERATOR_COMPREHENSIONS: &str = r#"type Count = { at: Int, end: Int }
+
+impl Iterator[Int] for Count {
+  fn next(mut self) -> Option[Int] {
+    if self.at < self.end {
+      self.at += 1
+      Some(self.at - 1)
+    } else {
+      None
+    }
+  }
+}
+
+impl FiniteIterator[Int] for Count {
+  fn len(self) -> Natural {
+    if self.end > self.at { self.end - self.at } else { 0 }
+  }
+}
+
+type Naturals = { at: Int }
+
+impl Iterator[Int] for Naturals {
+  fn next(mut self) -> Option[Int] {
+    self.at += 1
+    Some(self.at - 1)
+  }
+}
+
+
+fn spin(n: Int) -> Int {
+  mut k := n
+  while true {
+    k += 1
+  }
+  k
+}
+
+fn ok_sum() -> Int {
+  Count { at: 0, end: 4 }.filter(x -> x > 1).map(x -> x * 2).fold(0, (a, b) -> a + b)
+}
+
+fn bad_lambda() -> Int {
+  Count { at: 0, end: 4 }.map(x -> spin(x)).fold(0, (a, b) -> a + b)
+}
+
+fn filtered_len() -> Int {
+  Count { at: 0, end: 10 }.filter(x -> x % 3 == 0).len()
+}
+
+fn main() {
+  print(ok_sum())
+  print(filtered_len())
+  odd_squares := [n * n for n in Naturals { at: 0 } where n % 2 == 1]
+  for s in odd_squares {
+    if s > 50 {
+      break
+    }
+    print(s)
+  }
+  c := Count { at: 0, end: 4 }
+  doubled := [x * 2 for x in c]
+  print(doubled.len())
+  print(doubled.to_list())
+  print([(a, b) for a in c for b in ["x", "y"] where a > 1])
+  print(Set { x % 2 for x in c })
+  print(Dict { x: x * x for x in c })
+  print([x + 1 for x in [1, 2, 3] where x != 2])
+}
+"#;
+
+#[allow(dead_code)]
+pub const ITERATOR_COMPREHENSIONS_OUTPUT: &str = r#"10
+4
+1
+9
+25
+49
+4
+[0, 2, 4, 6]
+[(2, "x"), (2, "y"), (3, "x"), (3, "y")]
+Set { 0, 1 }
+Dict { 0: 0, 1: 1, 2: 4, 3: 9 }
+[2, 4]
+"#;
+
+/// `iter()` on lists, ranges, sets (in order) and dicts (entries by key):
+/// finite iterators, for loops, generic code and comprehensions; the list
+/// builtins unchanged.
+#[allow(dead_code)]
+pub const COLLECTION_ITERATORS: &str = r#"fn total[I: FiniteIterator[Int]](it: I) -> Int {
+  it.fold(0, (a, b) -> a + b)
+}
+
+fn main() {
+  xs := [3, 1, 2]
+  it := xs.iter()
+  print(it.len())
+  for x in it {
+    print(x)
+  }
+  print(total(xs.iter()))
+  print(total((0..5).iter()))
+  print([x * 10 for x in xs.iter() where x > 1].to_list())
+  print(Set { 5, 1, 3 }.iter().to_list())
+  d := Dict { "b": 2, "a": 1 }
+  for (k, v) in d.iter() {
+    print(f"{k}={v}")
+  }
+  print(xs.map(x -> x + 1))
+  print(len(xs))
+  print(to_list(Set { 2, 1 }))
+}
+"#;
+
+#[allow(dead_code)]
+pub const COLLECTION_ITERATORS_OUTPUT: &str = r#"3
+3
+1
+2
+6
+10
+[30, 20]
+[1, 3, 5]
+a=1
+b=2
+[4, 2, 3]
+3
+[1, 2]
 "#;

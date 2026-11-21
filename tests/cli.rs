@@ -4000,7 +4000,11 @@ fn for_over_iterators() {
     assert!(out.contains("it has a `for` over an `Iterator` that isn't a `FiniteIterator`, which may never end"), "{out}");
     // the defaults of the prelude's traits are library code, not the program's
     assert!(!out.contains("Count.map") && !out.contains("Count.fold"), "{out}");
-    assert!(out.contains("index -1 out of range (length 0) (stack: ListIter.next)") && out.contains("it is recursive through `next`"), "{out}");
+    assert!(out.contains("index -1 out of range (length 0) (stack: Items.next)"), "{out}");
+    // `self.inner.next()` in `Padded.next` is recursion on a smaller value; the
+    // fault it then reaches is `Items.next`'s, not the prover's
+    assert!(!out.contains("recursive through") && !out.contains("bug in the prover"), "{out}");
+    assert!(out.contains("It fails in `Items.next`, which it calls"), "{out}");
     let bad = "type P = { x: Int }\n\nfn a(p: P) {\n  for x in p {\n    print(x)\n  }\n}\n\nfn b(s: String) {\n  for c in s {\n    print(c)\n  }\n}\n\nfn c[I](it: I) {\n  for x in it {\n    print(x)\n  }\n}\n";
     // written, and reported as not checking
     let (_, out) = strata(&["--file", "bad.strata", "edit"], &d, Some(bad));
@@ -4029,6 +4033,45 @@ fn finite_and_lazy_iterators() {
     }
     assert!(after("first_square_over").contains("it has a `for` over an `Iterator` that isn't a `FiniteIterator`"), "{out}");
     assert!(!out.contains("Count.map") && !out.contains("Mapped"), "{out}");
+}
+
+/// `fold` on finite iterators only, shown to end with its lambdas; and
+/// comprehensions over iterators.
+#[test]
+fn fold_ends_and_comprehensions_over_iterators() {
+    let d = tmp("iterator-comps");
+    let (ok, out) = strata(&["--file", "c.strata", "edit"], &d, Some(json_case::ITERATOR_COMPREHENSIONS));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "c.strata"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out, json_case::ITERATOR_COMPREHENSIONS_OUTPUT);
+    let (_, out) = strata(&["--file", "c.strata", "verify"], &d, None);
+    let after = |f: &str| out.split(&format!("✓ {f} ")).nth(1).and_then(|r| r.lines().nth(1)).unwrap_or("").to_string();
+    for f in ["ok_sum", "filtered_len"] {
+        assert!(!after(f).contains("may not terminate"), "{f} ends: {out}");
+    }
+    assert!(after("bad_lambda").contains("it calls `spin`, which may not terminate"), "{out}");
+    // `fold` on an unbounded iterator: never returns, so refused
+    let inf = "type N = { at: Int }\n\nimpl Iterator[Int] for N {\n  fn next(mut self) -> Option[Int] {\n    self.at += 1\n    Some(self.at)\n  }\n}\n\nfn f() -> Int {\n  N { at: 0 }.fold(0, (a, b) -> a + b)\n}\n\nfn g() -> Int {\n  N { at: 0 }.map(x -> x * 2).fold(0, (a, b) -> a + b)\n}\n";
+    let (_, out) = strata(&["--file", "inf.strata", "edit"], &d, Some(inf));
+    assert!(out.contains("error in f: `fold` needs a `FiniteIterator`: `N` is an `Iterator` but not a `FiniteIterator`"), "{out}");
+    assert!(out.contains("error in g: calling `fold`: `Mapped[N, Int, Int]` implements `FiniteIterator` only when"), "{out}");
+}
+
+/// `iter()` on lists, sets and dicts: finite iterators (loops over them end);
+/// the prelude's `ListIter` can't be defined again.
+#[test]
+fn collections_have_iterators() {
+    let d = tmp("collection-iterators");
+    let (ok, out) = strata(&["--file", "c.strata", "edit"], &d, Some(json_case::COLLECTION_ITERATORS));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "c.strata"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out, json_case::COLLECTION_ITERATORS_OUTPUT);
+    let (_, out) = strata(&["--file", "c.strata", "verify"], &d, None);
+    assert!(!out.contains("may not terminate"), "{out}");
+    let (_, out) = strata(&["--file", "d.strata", "edit"], &d, Some("type ListIter = { n: Int }\n"));
+    assert!(out.contains("`ListIter` is already defined in the prelude"), "{out}");
 }
 
 /// Types passed whole at runtime: `T.m()` on an impl's type parameters, and

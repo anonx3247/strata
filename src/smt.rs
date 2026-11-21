@@ -2909,7 +2909,7 @@ impl<'a> Vc<'a> {
             exits.push((pc, v, " (early return)"));
         }
         // a prelude trait's method by its short name (`FiniteIterator::len`)
-        let label = label.replace(&format!("{}.", crate::types::PRELUDE_MODULE), "");
+        let label = crate::types::shown_name(label);
         for (pc, res, how) in exits {
             self.pc = pc;
             self.dead = false;

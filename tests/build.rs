@@ -1727,6 +1727,20 @@ fn for_over_iterators_compiles() {
     assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
     let (out, code) = freed_everything(output(Command::new(&exe).current_dir(&d).env("STRATA_MEMORY", "check")), &f);
     assert_eq!((out.as_str(), code), (json_case::LAZY_ITERATORS_OUTPUT, 0));
+    // comprehensions over iterators, collecting into sets and dicts
+    let f = d.join("comps.strata");
+    save(&f, json_case::ITERATOR_COMPREHENSIONS);
+    let b = Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
+    assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
+    let (out, code) = freed_everything(output(Command::new(&exe).current_dir(&d).env("STRATA_MEMORY", "check")), &f);
+    assert_eq!((out.as_str(), code), (json_case::ITERATOR_COMPREHENSIONS_OUTPUT, 0));
+    // `iter()` on the built-in collections
+    let f = d.join("collections.strata");
+    save(&f, json_case::COLLECTION_ITERATORS);
+    let b = Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
+    assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
+    let (out, code) = freed_everything(output(Command::new(&exe).current_dir(&d).env("STRATA_MEMORY", "check")), &f);
+    assert_eq!((out.as_str(), code), (json_case::COLLECTION_ITERATORS_OUTPUT, 0));
 }
 
 /// Types passed whole: compiled as interpreted.

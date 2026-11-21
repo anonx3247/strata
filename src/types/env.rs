@@ -49,7 +49,8 @@ impl Env {
             capabilities: HashSet::default(),
         };
         let mut errs = Vec::new();
-        let prelude_names: Vec<String> = prelude.decls.iter().map(|d| d.name()).collect();
+        // (the prelude's code, added to every program, is the prelude too)
+        let prelude_names: Vec<String> = prelude.decls.iter().chain(&crate::types::prelude_code().decls).map(|d| d.name()).collect();
         // `T.check(x)` in a function's body: `T` is given when it runs
         for d in &prog.decls {
             if let DeclKind::Fn(f) = &d.kind {
