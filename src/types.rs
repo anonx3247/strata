@@ -32,6 +32,19 @@ pub fn field_owners(tagged: &Program) -> HashMap<String, BTreeSet<String>> {
 }
 
 pub const PRELUDE: &str = r#"
+/// How a value is written in code: `Some("hi")`, `Point { x: 1, y: 2 }`,
+/// `[1, 2]`. Every type has it; `impl Debug for T` replaces it.
+trait Debug {
+  fn debug(self) -> String
+}
+
+/// How a value is shown to people: what `print`, f-strings and `to_string`
+/// write. Every type has it: its `debug` (a `String` is its text);
+/// `impl Display for T` replaces it.
+trait Display {
+  fn to_string(self) -> String
+}
+
 /// An optional value.
 type Option[T] =
   | None
@@ -197,6 +210,7 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin::new("ord", "", "(String) -> Int"),
     Builtin::new("chr", "", "(Int) -> String"),
     Builtin::total("to_string", "A", "(A) -> String"),
+    Builtin::total("debug", "A", "(A) -> String"),
     // the value as compact JSON, as `strata run` writes it
     Builtin::total("to_json", "A", "(A) -> String"),
     // a line of output, shown as by `to_string`: on the terminal under `strata run`,
@@ -992,6 +1006,10 @@ impl<'a> Checker<'a> {
             return Err(format!("trait resolution for `{tr}` is too deep"));
         }
         let t = self.resolve(t);
+        // every type has `Debug` and `Display` (an impl only replaces them)
+        if matches!(tr, "Debug" | "Display") {
+            return Ok(());
+        }
         // a union implements a trait when every member does
         if let Ty::Union(ms) = &t {
             for m in ms.clone() {

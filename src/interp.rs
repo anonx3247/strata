@@ -407,13 +407,50 @@ pub fn format_spec(v: &Value, f: &FmtSpec) -> Result<String, String> {
     })
 }
 
+/// A value shown to people (`Display`, without the program's own impls): a
+/// string is its text, anything else as `debug_text` writes it.
 pub fn show(v: &Value) -> String {
     match v {
         Value::Str(s) => s.clone(),
-        Value::Big(b) => b.to_string(),
-        Value::Variant(c, Fields::None) => short(c).to_string(),
-        other => to_json(other).to_string(),
+        other => debug_text(other),
     }
+}
+
+/// A value as it is written in code (`Debug`, without the program's own
+/// impls): `Some("hi")`, `Point { x: 1, y: 2 }`, `[1, 2]`.
+pub fn debug_text(v: &Value) -> String {
+    debug_with(v, &mut |x| Ok::<_, ()>(debug_text(x))).unwrap_or_default()
+}
+
+/// `Debug`'s form of a value, its parts written by `part`.
+fn debug_with<E>(v: &Value, part: &mut dyn FnMut(&Value) -> Result<String, E>) -> Result<String, E> {
+    let parts = |xs: &[Value], part: &mut dyn FnMut(&Value) -> Result<String, E>| -> Result<String, E> {
+        Ok(xs.iter().map(|x| part(x)).collect::<Result<Vec<_>, E>>()?.join(", "))
+    };
+    let fields = |fs: &[(String, Value)], part: &mut dyn FnMut(&Value) -> Result<String, E>| -> Result<String, E> {
+        Ok(fs.iter().map(|(k, x)| Ok(format!("{k}: {}", part(x)?))).collect::<Result<Vec<_>, E>>()?.join(", "))
+    };
+    let braced = |name: &str, inner: String| if inner.is_empty() { format!("{name} {{}}") } else { format!("{name} {{ {inner} }}") };
+    Ok(match v {
+        Value::Int(n) => n.to_string(),
+        Value::Big(b) => b.to_string(),
+        Value::Float(_) => to_json(v).to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Str(s) => format!("\"{}\"", crate::printer::escape(s)),
+        Value::Unit => "()".into(),
+        Value::List(xs) => format!("[{}]", parts(xs, part)?),
+        Value::Tuple(xs) => format!("({})", parts(xs, part)?),
+        Value::Set(xs) => braced("Set", parts(xs, part)?),
+        Value::Dict(kvs) => braced("Dict", kvs.iter().map(|(k, x)| Ok(format!("{}: {}", part(k)?, part(x)?))).collect::<Result<Vec<_>, E>>()?.join(", ")),
+        Value::Record(n, fs) => braced(short(n), fields(fs, part)?),
+        Value::Variant(c, Fields::None) => short(c).to_string(),
+        Value::Variant(c, Fields::Pos(xs)) => format!("{}({})", short(c), parts(xs, part)?),
+        Value::Variant(c, Fields::Rec(fs)) => braced(short(c), fields(fs, part)?),
+        Value::Distinct(n, x) => format!("{}({})", short(n), part(x)?),
+        Value::Mock(t) => format!("<mock {}>", crate::printer::ty(t)),
+        Value::Closure(ps, ..) => format!("<closure ({}) -> …>", ps.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")),
+        Value::FnRef(n) => format!("<fn {n}>"),
+    })
 }
 
 /// A total order on values, used by `sort`: numbers numerically, strings
@@ -845,7 +882,22 @@ impl<'a> Interp<'a> {
             Some(Value::Variant(c, _)) => self.env.resolve_method(name, c),
             _ => None,
         };
-        let Some((mut decl, req, ens)) = own.or_else(|| self.env.resolve_method(name, &head)) else {
+        let found = own.or_else(|| self.env.resolve_method(name, &head));
+        // `Debug` and `Display` without an impl of the type's own: the built-in forms
+        if found.is_none() && !is_static {
+            match crate::types::split_trait_call(name).map_or(name, |(_, m)| m) {
+                "debug" => return Ok(Value::Str(debug_with(&args[0].clone(), &mut |x| self.debug_value(x))?)),
+                "to_string" => {
+                    let v = args[0].clone();
+                    return Ok(Value::Str(match v {
+                        Value::Str(s) => s,
+                        other => self.debug_value(&other)?,
+                    }));
+                }
+                _ => {}
+            }
+        }
+        let Some((mut decl, req, ens)) = found else {
             let trs = crate::symbol::join(&self.env.method_traits.get(&name.sym()).cloned().unwrap_or_default(), "` or `");
             return self.fail(FaultKind::Runtime, format!("`{head}` has no method `{name}` (it does not implement `{trs}`)"));
         };
@@ -867,6 +919,47 @@ impl<'a> Interp<'a> {
         self.impl_types.pop();
         self.self_types.pop();
         r
+    }
+
+    /// The program's own impl of `tr` (`Debug`, `Display`) for a value's type,
+    /// if it has one: a variant's own, else its sum's.
+    fn text_impl(&self, tr: &str, v: &Value) -> Option<String> {
+        let heads: Vec<String> = match v {
+            Value::Record(n, _) | Value::Distinct(n, _) => vec![n.clone()],
+            Value::Variant(c, _) => {
+                let mut h = vec![c.clone()];
+                h.extend(self.env.variant_parent(c.sym()).map(|p| p.to_string()));
+                h
+            }
+            _ => return None,
+        };
+        heads.into_iter().find(|h| self.env.impls.iter().any(|i| i.trait_name == tr && crate::types::texpr_head(&i.for_type) == h.as_str()))
+    }
+
+    /// `Display`: the type's own `to_string`, else a string's text, else `debug`.
+    pub fn display_value(&mut self, v: &Value) -> R<String> {
+        if self.text_impl("Display", v).is_some() {
+            return match self.call_method(&crate::types::trait_call("Display", "to_string"), vec![v.clone()])? {
+                Value::Str(s) => Ok(s),
+                other => Ok(show(&other)),
+            };
+        }
+        match v {
+            Value::Str(s) => Ok(s.clone()),
+            other => self.debug_value(other),
+        }
+    }
+
+    /// `Debug`: the type's own `debug`, else the value as written in code
+    /// (its parts by their `debug` too).
+    pub fn debug_value(&mut self, v: &Value) -> R<String> {
+        if self.text_impl("Debug", v).is_some() {
+            return match self.call_method(&crate::types::trait_call("Debug", "debug"), vec![v.clone()])? {
+                Value::Str(s) => Ok(s),
+                other => Ok(show(&other)),
+            };
+        }
+        debug_with(v, &mut |x| self.debug_value(x))
     }
 
     /// A method call on `mock T`: check the trait's `requires`, then generate a
@@ -1013,7 +1106,7 @@ impl<'a> Interp<'a> {
             return Ok(Str(format!("{}[{}]", parts[0], parts[1..].join(", "))));
         }
         if name == "print" {
-            let line = show(args.first().unwrap_or(&Unit)) + "\n";
+            let line = self.display_value(args.first().unwrap_or(&Unit))? + "\n";
             match &mut self.output {
                 Output::Terminal => {
                     use std::io::Write;
@@ -1308,7 +1401,8 @@ impl<'a> Interp<'a> {
                 let (Str(s), Str(p)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
                 Bool(s.starts_with(&p))
             }
-            "to_string" => Str(show(&nx())),
+            "to_string" => Str(self.display_value(&nx())?),
+            "debug" => Str(self.debug_value(&nx())?),
             "to_json" => Str(to_json(&nx()).to_string()),
             "ends_with" => {
                 let (Str(s), Str(p)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
@@ -1780,9 +1874,14 @@ impl<'a> Interp<'a> {
                 for p in parts {
                     match p {
                         StrPart::Lit(l) => out += l,
-                        StrPart::Expr(e, None) => out += &show(&self.eval(e, s)?),
+                        StrPart::Expr(e, None) => {
+                            let v = self.eval(e, s)?;
+                            out += &self.display_value(&v)?
+                        }
                         StrPart::Expr(e, Some(spec)) => {
                             let v = self.eval(e, s)?;
+                            // a value with a `Display` of its own is padded as its text
+                            let v = if self.text_impl("Display", &v).is_some() && spec.precision.is_none() && !spec.plus && !spec.zero { Value::Str(self.display_value(&v)?) } else { v };
                             match format_spec(&v, spec) {
                                 Ok(t) => out += &t,
                                 Err(m) => return self.fail(FaultKind::Runtime, m),

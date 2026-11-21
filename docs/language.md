@@ -172,7 +172,7 @@ This holds whichever modules the traits come from: with `Console` (`std.io`) and
 
 **`Self` or the trait as a parameter**: `fn bigger(self, other: Self)` takes a value of the receiver's own type, `fn bigger(self, other: Shape)` any implementation. On a trait value (a `Shape`, of any implementation) a method taking `Self` can only be given the value itself or what its `Self`-returning methods make (`s.bigger(s.scaled(2))`); `xs[0].bigger(xs[1])` is an error, since `xs[1]` may be another implementation.
 
-**Trait methods without `self`** are called on a type, never on a value: `Money.empty()`, `T.empty()` in a generic function, `Self.empty()` in a trait's default methods and laws. They are constructors and the like (`fn empty() -> Self`, `fn parse(s: String) -> Result[Self, ParseError]`), so the signature must mention `Self`: one that doesn't couldn't pick an implementation, and should be a plain function.
+**Trait methods without `self`** are called on a type, never on a value: `Money.empty()`, `T.empty()` in a generic function, `Self.empty()` in a trait's default methods and laws. They are constructors and the like (`fn empty() -> Self`, `fn parse(s: String) -> Result[Self, ParseError]`), so the signature must mention `Self`: one that doesn't couldn't pick an implementation, and should be a plain function. In a generic impl's method without `self`, they can be called on the impl's own type parameters too: `impl[T: Zero] Zero for List[T] { fn zero() -> Self { [T.zero()] } }`, since the type the method is called on (`List[Int]`) says what `T` is. (A method with `self` can't: the type of the value it is called on isn't passed whole.)
 
 ```rust
 trait Empty: Combine {
@@ -288,10 +288,20 @@ n := parse(s) except e { return describe_error(e) }      // ... or a block, with
 | `Result[T, E]` | `Ok(x)` or `Err(e)`: an operation that may fail |
 | `List[T]` | an ordered sequence, `[1, 2, 3]` |
 | `(A, B, …)` | tuples, `(word, 3)`, destructured with `(w, n) := …`, accessed with `t.0` |
-| `Dict[K, V]` | `Dict { "a": 1, "b": 2 }`, `Dict[String, Int] {}`, `dict(pairs)` from a list of pairs, `get`, `insert`, `remove`, `keys`, `values`, `items`; JSON object when keys are strings |
+| `Dict[K, V]` | `Dict { "a": 1, "b": 2 }`, `Dict[String, Int] {}`, `dict(pairs)` from a list of pairs, `get`, `insert`, `remove`, `keys`, `values`, `items`; a JSON object when keys are strings |
 | `Set[T]` | `Set { 1, 2 }`, `Set[Int] {}`, `set(xs)` from a list, `insert`, `union`, `intersection`, `difference`, `to_list` |
 
-`+` adds numbers and joins strings and lists (`"a" + "b"`, `[1] + [2]`). **Strings** are UTF-8 and indexed by character: `len`, `chars`, `s[i]`, `get(s, i)`, slices `s[start..end]` (clamped, as in Python; also on lists), `index_of`, `contains`, `starts_with`, `ends_with`, `split`, `join`, `lines`, `trim`, `replace`, `repeat`, `reverse`, `to_upper`, `to_lower`, `is_digit` / `is_alpha` / `is_space`, `ord` / `chr`, `parse_int`, `matches` (regex). `to_json(x)` gives any value as compact JSON, as `strata run` writes it. **f-strings** interpolate any expression, shown as by `to_string`: `f"{name} has {len(xs)} items"` (`{{` and `}}` are literal braces). A **format spec** follows a `:`, as in Python: `[[fill]align][+][0][width][.precision]`. `{price:.2}` gives two decimal places (or keeps at most 2 characters of a `String`), `{name:<12}` / `{n:>5}` / `{title:*^20}` pad to a width (numbers align right by default, everything else left), `{n:05}` pads with zeros after the sign, `{delta:+}` always shows the sign. A spec that doesn't suit the type is a check error.
+`+` adds numbers and joins strings and lists (`"a" + "b"`, `[1] + [2]`). **Strings** are UTF-8 and indexed by character: `len`, `chars`, `s[i]`, `get(s, i)`, slices `s[start..end]` (clamped, as in Python; also on lists), `index_of`, `contains`, `starts_with`, `ends_with`, `split`, `join`, `lines`, `trim`, `replace`, `repeat`, `reverse`, `to_upper`, `to_lower`, `is_digit` / `is_alpha` / `is_space`, `ord` / `chr`, `parse_int`, `matches` (regex). `to_json(x)` gives any value as compact JSON, as `strata run` writes it. **f-strings** interpolate any expression, shown as by `to_string` (`Display`, below): `f"{name} has {len(xs)} items"` (`{{` and `}}` are literal braces). A **format spec** follows a `:`, as in Python: `[[fill]align][+][0][width][.precision]`. `{price:.2}` gives two decimal places (or keeps at most 2 characters of a `String`), `{name:<12}` / `{n:>5}` / `{title:*^20}` pad to a width (numbers align right by default, everything else left), `{n:05}` pads with zeros after the sign, `{delta:+}` always shows the sign. A spec that doesn't suit the type is a check error.
+
+**Showing values: `Debug` and `Display`.** Every type has two traits without saying so. `Debug` (`debug(x)`, `x.debug()`) writes a value as it is written in code: `Some("hi")`, `Point { x: 1, y: 2 }`, `[1, 2]`, `(1, "a")`, `Dict { "a": 1 }`, `Set { 1, 2 }`, `UserId(7)`, strings quoted. `Display` (`to_string(x)`, `x.to_string()`) is what `print` and f-strings show: a `String` is its text, anything else its `debug`; inside a list, a record or any other value, the parts are shown with `debug` (as Python's `str` of a list uses `repr`), so `["a b"]` and `["a", "b"]` stay apart. A type replaces either with an impl of its own, which is used everywhere it is shown (nested values too):
+
+```rust
+impl Display for Money { fn to_string(self) -> String { f"${self.cents / 100}.{self.cents % 100:02}" } }
+impl Debug for Secret { fn debug(self) -> String { "Secret { key: *** }" } }
+print(Money { cents: 1234 })       // $12.34
+print([Money { cents: 5 }])        // [Money { cents: 5 }]: parts by their `debug`
+print(Some(Secret { key: "k" }))   // Some(Secret { key: *** })
+```
 
 All values are immutable (`insert` returns a new dict). Dicts and sets are kept in canonical order, so equal collections are equal values and serialise identically. `len`, `contains`, `get`, `insert`, `remove`, `sum`, `min`, `max` and `abs` work across the types they make sense for. `strata builtins` lists every builtin with its signature. See `examples/builtins.strata`.
 
@@ -379,7 +389,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 | `std.fs` | `Files` (`read`, `write`, `append`, `exists`, `list`, `make_dir`, `remove`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
 | `std.process` | `Environment` (`args`, `var`), `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
 | `std.cli` | `CommandLine`: a record of options read from the arguments |
-| `std.json` | `Json`: records and sum types read from JSON and written to it (`derive Json for Signup`; `Signup.decode(parse(text)!)`, `stringify(s.encode()!)`); `JsonValue`, `parse`, `stringify` |
+| `std.json` | `Json`: records and sum types read from JSON and written to it (`derive Json for Signup`; `Signup.decode(parse(text)!)`, `stringify(s.encode()!)`), and implemented for `Int`, `Float`, `Bool`, `String`, `List[T]`, `Option[T]` and `Dict[String, V]`, so `fn send[T: Json](x: T)` takes them; `JsonValue`, `parse`, `stringify` |
 | `std.http` | `Request`, `Response`, `Method`; `ok_html`, `ok_text`, `ok_json`, `not_found`, `redirect`, …; `Router` (`app.get("/users/:id", handler)`, `req.param("id")`), for `strata serve` |
 | `std.web` | `Html[M]` and `Attr[M]`: HTML as values, one function per element (`div`, `p`, `table`, `button`, …) and attribute (`class`, `href`, `on_click(msg)`, …); `render`, `document(title, head, body)` |
 

@@ -1287,7 +1287,7 @@ test "fstrings" {
   assert f"{n} + 1 = {n + 1}" == "3 + 1 = 4"
   assert f"{{literal}} {n}" == "{literal} 3"
   assert f"quote \" and {join(["a", "b"], "-")}" == "quote \" and a-b"
-  assert f"{Red} {[1, 2]} {Some(1)}" == "Red [1,2] {\"Some\":1}"
+  assert f"{Red} {[1, 2]} {Some(1)}" == "Red [1, 2] Some(1)"
   assert f"no parts" == "no parts"
   assert f"{if n > 2 { "big" } else { "small" }}" == "big"
 }
@@ -2973,7 +2973,7 @@ test "fails" {
 "#);
     // `print` is the prelude's even where `Console` (with its `print` method) is imported
     let (code, out, _) = strata_code(&["run", "p.strata"], &d, "");
-    assert_eq!((code, out.as_str()), (0, "plain\n[1,2]\nconsole\ndoubling 21\n42\n"));
+    assert_eq!((code, out.as_str()), (0, "plain\n[1, 2]\nconsole\ndoubling 21\n42\n"));
     // a test's output is shown only when it fails, once
     let (_, out) = strata(&["--file", "p.strata", "test"], &d, None);
     assert!(out.contains("✓ passes") && !out.contains("doubling 1"), "{out}");
@@ -3021,11 +3021,11 @@ fn main(opts: Options) {
     };
     let (code, out, err) = run(&["src", "3", "--verbose", "--mode", "dry-run", "--ratio=0.5", "7", "8"]);
     assert_eq!(code, 0, "{err}");
-    assert!(out.contains(r#""source":"src""#) && out.contains(r#""copies":3"#) && out.contains(r#""verbose":true"#), "{out}");
-    assert!(out.contains(r#""mode":{"Some":"DryRun"}"#) && out.contains(r#""ratio":{"Some":0.5}"#) && out.contains(r#""extra":[7,8]"#), "{out}");
+    assert!(out.contains(r#"source: "src""#) && out.contains("copies: 3") && out.contains("verbose: true"), "{out}");
+    assert!(out.contains("mode: Some(DryRun)") && out.contains("ratio: Some(0.5)") && out.contains("extra: [7, 8]"), "{out}");
     // defaults: a flag is false, an option None, the list empty
     let (code, out, _) = run(&["src", "1"]);
-    assert!(code == 0 && out.contains(r#""verbose":false"#) && out.contains(r#""mode":"None""#) && out.contains(r#""extra":[]"#), "{out}");
+    assert!(code == 0 && out.contains("verbose: false") && out.contains("mode: None") && out.contains("extra: []"), "{out}");
     // mistakes exit 2 and name the argument
     for (args, want) in [
         (vec!["src"], "missing <copies>: How many copies."),
@@ -3043,7 +3043,7 @@ fn main(opts: Options) {
     }
     // `--` ends the options
     let (code, out, _) = run(&["--", "--verbose", "2"]);
-    assert!(code == 0 && out.contains(r#""source":"--verbose""#), "{out}");
+    assert!(code == 0 && out.contains(r#"source: "--verbose""#), "{out}");
     // help comes from the doc comments
     let (code, out, _) = run(&["--help"]);
     assert_eq!(code, 0);
@@ -3747,7 +3747,7 @@ fn main() {
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "p.strata"], &d, None);
     assert!(ok, "{out}");
-    assert_eq!(out, "[\"x\",\"label\",\"on\"]\n{\"x\":0,\"label\":\"\",\"on\":false}\n{\"Ok\":{\"x\":3,\"label\":\"here\",\"on\":true}}\n{\"Err\":\"x: `three` is not a number\"}\n");
+    assert_eq!(out, "[\"x\", \"label\", \"on\"]\nPoint { x: 0, label: \"\", on: false }\nOk(Point { x: 3, label: \"here\", on: true })\nErr(\"x: `three` is not a number\")\n");
     // what can't be derived says why, at the `derive`
     let bad = [
         ("trait Plain { fn p(self) -> Int }\ntype A = { x: Int }\nderive Plain for A\n", "`Plain` can't be derived: only a `derivable` trait can"),
@@ -3774,7 +3774,7 @@ fn variant_names_are_per_module() {
     let (ok, out) = strata(&["--file", "./", "edit", "main"], &d, Some("use geo.Shape\n\ntype Circle = { cx: Int }\n\nfn main() {\n  a := geo.Circle { r: 1 }\n  b := Circle { cx: 2 }\n  print(f\"{a} {b}\")\n}\n"));
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "."], &d, None);
-    assert!(ok && out.contains(r#"{"Circle":{"r":1}} {"cx":2}"#), "{out}");
+    assert!(ok && out.contains(r#"Circle { r: 1 } Circle { cx: 2 }"#), "{out}");
     // in one module, still an error
     let (ok, out) = strata(&["--file", "one.strata", "edit"], &d, Some("type Shape =\n  | Circle { r: Int }\n  | Square { s: Int }\n\ntype Circle = { cx: Int }\n"));
     assert!(ok, "{out}");
@@ -3837,7 +3837,7 @@ fn json_is_derived() {
     let (ok, out) = strata(&["--file", "big.strata", "edit"], &d, Some(big));
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "big.strata"], &d, None);
-    assert!(ok && out == "{\"Err\":\"x: 9007199254740992 is beyond ±(2^53 - 1), the integers a JSON number holds exactly\"}\ntrue\n", "{out}");
+    assert!(ok && out == "Err(\"x: 9007199254740992 is beyond ±(2^53 - 1), the integers a JSON number holds exactly\")\ntrue\n", "{out}");
     let (ok, out) = strata(&["--file", "big.strata", "verify", "--cases", "20", "--require", "proven"], &d, None);
     assert!(ok && out.contains("✓ std.json.encode_as.for.A."), "{out}");
     // `integers = "proven"`: each integer field must be shown to be a `SafeInt`
@@ -3856,7 +3856,7 @@ fn json_is_derived() {
     let (ok, out) = strata(&["--file", "./", "edit", "main"], &p, Some(src));
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "."], &p, None);
-    assert!(ok && out == "{\"Err\":\"unknown field \\\"y\\\"\"}\n{\"Ok\":{\"x\":1}}\n", "{out}");
+    assert!(ok && out == "Err(\"unknown field \\\"y\\\"\")\nOk(A { x: 1 })\n", "{out}");
     std::fs::write(p.join("strata.toml"), "name = \"strict\"\n\n[json]\nunknown_keys = \"sometimes\"\n").unwrap();
     let (ok, out) = strata(&["run", "."], &p, None);
     assert!(!ok && out.contains("unknown_keys is \"error\" or \"ignore\""), "{out}");
@@ -3944,7 +3944,7 @@ fn comptime_code_runs_while_compiling() {
 #[test]
 fn impl_type_parameters_at_runtime() {
     let d = tmp("impl-statics");
-    for (name, prog, want) in [("statics", json_case::STATICS, json_case::STATICS_OUTPUT), ("builtins", json_case::BUILTINS, json_case::BUILTINS_OUTPUT)] {
+    for (name, prog, want) in [("statics", json_case::STATICS, json_case::STATICS_OUTPUT), ("builtins", json_case::BUILTINS, json_case::BUILTINS_OUTPUT), ("text", json_case::TEXT, json_case::TEXT_OUTPUT)] {
         let f = format!("{name}.strata");
         let (ok, out) = strata(&["--file", &f, "edit"], &d, Some(prog));
         assert!(ok, "{out}");

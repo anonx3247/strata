@@ -102,25 +102,25 @@ fn main() {
 /// The output of `PROGRAM`.
 pub const OUTPUT: &str = r#"{"type":"Signup","email":"a@b","age":20,"nickname":"al","tags":[],"home":{"type":"Address","city":"P","zip":"75001"},"shapes":[{"type":"Dot"},{"type":"Pixels","value":3},{"type":"Circle","r":1.5,"label":"c"}],"level":"Loud","scores":{"a":1}}
 true
-{"Ok":{"email":"x@y","age":15,"nickname":"None","tags":[],"home":{"city":"L","zip":"12345"},"shapes":["Dot",{"Pixels":2}],"level":"Quiet","scores":{}}}
-{"Err":"age: 12 does not satisfy `Int where it >= 13`"}
-{"Err":"home.zip: \"1234\" does not satisfy `String where len(it) == 5`"}
-{"Err":"shapes[0].r: expected a number, got \"no\""}
+Ok(Signup { email: "x@y", age: 15, nickname: None, tags: [], home: Address { city: "L", zip: "12345" }, shapes: [Dot, Pixels(2)], level: Quiet, scores: Dict {} })
+Err("age: 12 does not satisfy `Int where it >= 13`")
+Err("home.zip: \"1234\" does not satisfy `String where len(it) == 5`")
+Err("shapes[0].r: expected a number, got \"no\"")
 true
-{"Err":"unknown field \"extra\""}
-{"Err":"expected a `Signup`, got a `Address`"}
-{"Err":"at 5: expected `,` or `]` in an array"}
+Err("unknown field \"extra\"")
+Err("expected a `Signup`, got a `Address`")
+Err("at 5: expected `,` or `]` in an array")
 [1,-2500.0,"aé\n😀",true,null,{"k":[]}]
-{"Err":"at 0: 99999999999999999999 is beyond ±(2^53 - 1), the integers a JSON number holds exactly"}
-{"Ok":{"Integer":9007199254740991}}
-{"Err":"at 0: -9007199254740992 is beyond ±(2^53 - 1), the integers a JSON number holds exactly"}
+Err("at 0: 99999999999999999999 is beyond ±(2^53 - 1), the integers a JSON number holds exactly")
+Ok(Integer(9007199254740991))
+Err("at 0: -9007199254740992 is beyond ±(2^53 - 1), the integers a JSON number holds exactly")
 {"type":"Event","user":7,"at":[3,"pm"],"payload":{"type":"Address","city":"R","zip":"00100"},"kind":{"type":"Click","times":2}}
 true
-{"Ok":{"user":7,"at":[1,"am"],"payload":"hi","kind":{"Click":{"times":1}}}}
-{"Ok":{"user":7,"at":[1,"am"],"payload":4,"kind":{"Key":"k"}}}
-{"Err":"user: 0 does not satisfy `Int where it > 0`"}
-{"Err":"at: expected an array of 2 values, got [1]"}
-{"Err":"payload: expected Positive or String or Address, got []"}
+Ok(Event { user: UserId(7), at: (1, "am"), payload: "hi", kind: Click { times: 1 } })
+Ok(Event { user: UserId(7), at: (1, "am"), payload: 4, kind: Key("k") })
+Err("user: 0 does not satisfy `Int where it > 0`")
+Err("at: expected an array of 2 values, got [1]")
+Err("payload: expected Positive or String or Address, got []")
 "#;
 
 /// The built-in types are `Json` too: generic code over `T: Json`.
@@ -162,10 +162,10 @@ fn main() {
 pub const BUILTINS_OUTPUT: &str = r#"[1,2,3]
 {"a":[{"type":"P","name":"x","tags":[]}]}
 2.5
-{"Ok":[1,2]}
-{"Err":"[1]: expected an integer, got \"x\""}
-{"Ok":{"team":[{"name":"y","tags":["t"]}]}}
-{"Err":"team[0].name: expected a string, got 3"}
+Ok([1, 2])
+Err("[1]: expected an integer, got \"x\"")
+Ok(Dict { "team": [P { name: "y", tags: ["t"] }] })
+Err("team[0].name: expected a string, got 3")
 "#;
 
 /// Methods called on an impl's type parameters (`T.zero()` in
@@ -212,8 +212,74 @@ fn main() {
 "#;
 
 #[allow(dead_code)]
-pub const STATICS_OUTPUT: &str = r#"[0,0]
-[["z","z"],["z","z"]]
-{"z":[0,0]}
-[[0,0],[0,0]]
+pub const STATICS_OUTPUT: &str = r#"[0, 0]
+[["z", "z"], ["z", "z"]]
+Dict { "z": [0, 0] }
+[[0, 0], [0, 0]]
+"#;
+
+/// `Debug` and `Display`: values as written in code, a type's own impls.
+#[allow(dead_code)]
+pub const TEXT: &str = r#"type Money = { cents: Int }
+
+impl Display for Money {
+  fn to_string(self) -> String { f"${self.cents / 100}.{self.cents % 100:02}" }
+}
+
+type Shape =
+  | Dot
+  | Rect(Int, Int)
+  | Circle { r: Float, label: String }
+
+distinct type Id = Int
+
+type Secret = { key: String }
+
+impl Debug for Secret {
+  fn debug(self) -> String { "Secret { key: *** }" }
+}
+
+fn show_all[T: Display](xs: List[T]) -> List[String] { xs.map(x -> x.to_string()) }
+
+fn main() {
+  print("plain text")
+  print([Dot, Rect(1, 2), Circle { r: 1.5, label: "c \"q\"\n" }])
+  print(Some("hi"))
+  print((1, "a", ()))
+  print(dict([("a", 1)]))
+  print(Id(3))
+  print(Money { cents: 1234 })
+  print([Money { cents: 5 }])
+  print(f"total: {Money { cents: 99 }} / {Money { cents: 7 }:>8}|")
+  print(Secret { key: "k" })
+  print(Some(Secret { key: "k" }))
+  print(debug("x"))
+  print(Money { cents: 1 }.debug())
+  print(to_string(Money { cents: 100 }))
+  print(show_all([1, 2]))
+  print(Ok(3) == Ok(3))
+  print(set([3, 1]))
+  print(Dict[String, Int] {})
+}
+"#;
+
+#[allow(dead_code)]
+pub const TEXT_OUTPUT: &str = r#"plain text
+[Dot, Rect(1, 2), Circle { r: 1.5, label: "c \"q\"\n" }]
+Some("hi")
+(1, "a", ())
+Dict { "a": 1 }
+Id(3)
+$12.34
+[Money { cents: 5 }]
+total: $0.99 /    $0.07|
+Secret { key: *** }
+Some(Secret { key: *** })
+"x"
+Money { cents: 1 }
+$1.00
+["1", "2"]
+true
+Set { 1, 3 }
+Dict {}
 "#;

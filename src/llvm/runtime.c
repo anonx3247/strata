@@ -990,6 +990,26 @@ Str *strata_json_str(Str *s) {
   return o;
 }
 
+// A string as `Debug` writes it: a Strata string literal, escaped as the
+// printer escapes (\n, \t, \", and a backslash that would start one).
+Str *strata_debug_str(Str *s) {
+  Str *o = str_alloc(s->len * 2 + 2);
+  char *p = o->bytes;
+  *p++ = '"';
+  for (int64_t i = 0; i < s->len; i++) {
+    char c = s->bytes[i];
+    char n = i + 1 < s->len ? s->bytes[i + 1] : 0;
+    if (c == '\n') { *p++ = '\\'; *p++ = 'n'; }
+    else if (c == '\t') { *p++ = '\\'; *p++ = 't'; }
+    else if (c == '"') { *p++ = '\\'; *p++ = '"'; }
+    else if (c == '\\' && (i + 1 == s->len || n == 'n' || n == 't' || n == '"' || n == '\\')) { *p++ = '\\'; *p++ = '\\'; }
+    else *p++ = c;
+  }
+  *p++ = '"';
+  o->len = p - o->bytes;
+  return o;
+}
+
 // A float operation's result must be finite (no NaN or infinity).
 double strata_finite(double r, double a, double b, Str *op) {
   if (isfinite(r)) return r;
