@@ -129,7 +129,13 @@ static void memory_stats(void) {
     size_t size = usable_size(c) - 8;
     int64_t first = c[1];
     fprintf(stderr, "  live: count %lld, %zu bytes, first word %lld", (long long)*c, size, (long long)first);
-    if (first >= 0 && (size_t)first + 8 <= size) fprintf(stderr, " \"%.*s\"", (int)(first < 40 ? first : 40), (char *)(c + 2));
+    if (first >= 0 && (size_t)first + 8 <= size) {
+      // as text, one line: anything but printable ASCII as `.`
+      const unsigned char *t = (const unsigned char *)(c + 2);
+      fputs(" \"", stderr);
+      for (int64_t k = 0; k < first && k < 40; k++) fputc(t[k] >= 32 && t[k] < 127 ? t[k] : '.', stderr);
+      fputc('"', stderr);
+    }
     fputc('\n', stderr);
   }
 }
