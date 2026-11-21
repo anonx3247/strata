@@ -368,3 +368,47 @@ fn main() {
 pub const GENERIC_DERIVE_OUTPUT: &str = r#"{"type":"Box","p":{"type":"Pair","a":1,"b":2}}
 Ok(Box { p: Pair { a: 3, b: 4 } })
 "#;
+
+#[allow(dead_code)]
+pub const OPTION_OPTION: &str = r#"use std.json.{Json, stringify}
+
+fn send[T: Json](x: T) -> String {
+  match x.encode() {
+    Ok(j) => stringify(j),
+    Err(e) => f"error: {e}",
+  }
+}
+
+fn main() {
+  let a: Option[Option[Int]] = Some(None)
+  print(send(a))
+  let b: Option[Option[Int]] = Some(Some(2))
+  print(send(b))
+  let c: Option[Option[Int]] = None
+  print(send(c))
+}
+"#;
+
+#[allow(dead_code)]
+pub const OPTION_OPTION_OUTPUT: &str = r#"error: `Some` of a value written as null can't be JSON: it would read back as `None`
+2
+null
+"#;
+
+#[allow(dead_code)]
+pub const ROOT_BUILTIN_NAME: &str = r#"use std.io.{Console, recorder, printed}
+
+fn get(x: Int) -> Int { x * 10 }
+
+fn main() {
+  mut r := recorder([])
+  mut r.print("hi")
+  print(get(4))
+  print(printed(r))
+}
+"#;
+
+#[allow(dead_code)]
+pub const ROOT_BUILTIN_NAME_OUTPUT: &str = r#"40
+["hi"]
+"#;

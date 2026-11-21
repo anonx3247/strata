@@ -3,6 +3,8 @@
 
 /// The last part of a qualified name: `Order` for `shop.orders.Order`.
 pub fn short(q: &str) -> &str {
+    // (a root function named like a builtin, as resolved: `main$get` is `get`)
+    let q = q.strip_prefix(crate::resolve::ROOT_FN).unwrap_or(q);
     q.rsplit('.').next().unwrap_or(q)
 }
 
