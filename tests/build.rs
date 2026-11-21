@@ -914,3 +914,107 @@ fn main() {
   print(ws)
 }
 "#;
+
+/// Fields of unions of records (at different places in each), assigning
+/// tuple fields, `==` on trait values, any pattern in a `for` over a
+/// range; and the call stack a fault shows, as the interpreter's.
+#[test]
+fn fields_trait_equality_and_stacks_compile() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("small-gaps");
+    let (out, code) = case(&d, "fields", FIELDS);
+    assert!(code == 0 && out.contains("{\"name\":\"renamed\",\"r\":2}\n") && out.contains("[[1,9],\"x\"]"), "{out}");
+    let (out, code) = case(&d, "trait_equality", TRAIT_EQUALITY);
+    assert!(code == 0 && out.starts_with("true\ntrue\ntrue\ntrue\n") && out.ends_with("zero\nzero\n"), "{out}");
+    // the stack, which `output` leaves out
+    let f = d.join("stack.strata");
+    save(&f, STACK);
+    let exe = d.join("stack");
+    let strata = env!("CARGO_BIN_EXE_strata");
+    let b = Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
+    assert!(b.status.success(), "{}", String::from_utf8_lossy(&b.stderr));
+    let native = Command::new(&exe).output().unwrap();
+    let interp = Command::new(strata).arg("run").arg(&f).output().unwrap();
+    let err = String::from_utf8_lossy(&native.stderr).to_string();
+    assert_eq!(err, String::from_utf8_lossy(&interp.stderr));
+    assert!(err.contains("    stack: main -> Thing.describe -> inner -> half\n"), "{err}");
+    // running out of stack is a fault, not a crash
+    let (out, code) = {
+        let f = d.join("deep.strata");
+        save(&f, "fn deep(n: Int) -> Int { if n == 0 { 0 } else { 1 + deep(n - 1) } }\nfn main() { print(deep(100000000)) }\n");
+        let exe = d.join("deep");
+        assert!(Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap().status.success());
+        output(&mut Command::new(&exe))
+    };
+    assert!(code == 101 && out.contains("fault (Limit): stack overflow"), "{out}");
+}
+
+const FIELDS: &str = r#"type Sq = { side: Int, name: String }
+type Ci = { name: String, r: Int }
+
+fn label(s: Sq | Ci) -> String { s.name }
+
+fn main() {
+  print(label(Ci { name: "c", r: 2 }))
+  print(label(Sq { side: 1, name: "q" }))
+  mut s: Sq | Ci = Ci { name: "c", r: 2 }
+  s.name = "renamed"
+  print(s)
+  mut t: Sq | Ci = Sq { side: 3, name: "s" }
+  t.name = t.name + "!"
+  print(t)
+  mut pair := (1, "a")
+  pair.1 = "b"
+  pair.0 = pair.0 + 1
+  print(pair)
+  mut nested := ((1, 2), "x")
+  nested.0.1 = 9
+  print(nested)
+}
+"#;
+
+const TRAIT_EQUALITY: &str = r#"trait Area {
+  fn area(self) -> Int
+}
+type Sq = { side: Int }
+type Ci = { r: Int }
+impl Area for Sq { fn area(self) -> Int { self.side * self.side } }
+impl Area for Ci { fn area(self) -> Int { 3 * self.r * self.r } }
+impl Area for Int { fn area(self) -> Int { self } }
+
+fn main() {
+  let a: Area = Sq { side: 2 }
+  let b: Area = Sq { side: 2 }
+  let c: Area = Ci { r: 2 }
+  let d: Area = 4
+  print(a == b)
+  print(d == d)
+  let xs: List[Area] = [a, c, d]
+  print(contains(xs, b))
+  let ys: List[Area] = [Sq { side: 2 }, Ci { r: 2 }, 4]
+  print(xs == ys)
+  for (i, x) in enumerate(xs) { print(f"{i}: {x.area()}") }
+  for 0 in [0, 0] { print("zero") }
+}
+"#;
+
+const STACK: &str = r#"trait Describe {
+  fn describe(self) -> String
+}
+type Thing = { n: Int }
+impl Describe for Thing {
+  fn describe(self) -> String { f"{inner(self.n)}" }
+}
+impl Thing {
+  fn twice(self) -> Int { self.n * 2 }
+}
+fn inner(k: Int) -> Int { [1, 2].map(x -> half(x + k)).fold(0, (a, b) -> a + b) }
+fn half(n: Int) -> Int requires n % 2 == 0 { n / 2 }
+fn main() {
+  print(Thing { n: 2 }.twice())
+  print(Thing { n: 1 }.describe())
+}
+"#;

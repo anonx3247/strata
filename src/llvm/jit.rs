@@ -46,6 +46,8 @@ unsafe extern "C" {
     fn strata_str_eq();
     fn strata_str_len();
     fn strata_fault();
+    fn strata_enter();
+    fn strata_leave();
     fn strata_overflow();
     fn strata_div();
     fn strata_mod();
@@ -114,6 +116,8 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_str_eq", strata_str_eq as *const () as usize),
         ("strata_str_len", strata_str_len as *const () as usize),
         ("strata_fault", strata_fault as *const () as usize),
+        ("strata_enter", strata_enter as *const () as usize),
+        ("strata_leave", strata_leave as *const () as usize),
         ("strata_overflow", strata_overflow as *const () as usize),
         ("strata_div", strata_div as *const () as usize),
         ("strata_mod", strata_mod as *const () as usize),

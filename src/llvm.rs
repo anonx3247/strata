@@ -128,12 +128,14 @@ fn bool_v(b: &str) -> V {
 }
 
 /// The entries of a trait value's table: showing the value as JSON and as
-/// `to_string`, dropping and holding it, then the trait's methods.
+/// `to_string`, dropping and holding it, comparing two of the same type,
+/// then the trait's methods.
 const DYN_JSON: usize = 0;
 const DYN_SHOW: usize = 1;
 const DYN_DROP: usize = 2;
 const DYN_DUP: usize = 3;
-const DYN_METHODS: usize = 4;
+const DYN_EQ: usize = 4;
+const DYN_METHODS: usize = 5;
 
 /// Fault kinds, as numbered in the runtime (`KINDS` in runtime.c).
 #[derive(Clone, Copy)]
@@ -258,6 +260,8 @@ declare i1 @strata_str_eq(ptr, ptr)
 declare i64 @strata_str_cmp(ptr, ptr)
 declare i64 @strata_str_len(ptr)
 declare void @strata_fault(i32, ptr) noreturn
+declare void @strata_enter(ptr)
+declare void @strata_leave()
 declare void @strata_overflow() noreturn cold
 declare void @strata_main_error(ptr)
 declare i64 @strata_div(i64, i64)
@@ -501,7 +505,7 @@ impl<'a> Module<'a> {
             requires.extend(&own.requires);
             ensures.extend(&own.ensures);
         }
-        let label = format!("{}.{}", crate::names::short(&mi.head), mi.method);
+        let label = format!("{}.{}", mi.head, mi.method);
         let inst = Instance { label, symbol: mi.symbol(), impls: vec![], params: own.params.clone(), ret: own.ret.clone(), own_params: &own.params, own_ret: &own.ret, requires, ensures, body: &own.body, sub };
         self.instance(&inst)
     }
@@ -707,6 +711,12 @@ impl<'a> Module<'a> {
             }
         }
         c.block("entry.body");
+        // on the call stack a fault shows (the program's functions, as the interpreter's)
+        let framed = !name.starts_with(PRELUDE_MODULE);
+        if framed {
+            let n = c.m.string(name);
+            c.emit(format!("call void @strata_enter(ptr {n})"));
+        }
         // parameters live in slots, like every variable
         for (i, (p, t)) in f.params.iter().zip(&params).enumerate() {
             if p.mutable {
@@ -781,6 +791,9 @@ impl<'a> Module<'a> {
                 c.block(&pass);
             }
             c.pop_scope()?;
+        }
+        if framed {
+            c.emit("call void @strata_leave()".into());
         }
         if has_value(&ret) {
             c.emit(format!("ret {} {}", c.m.ll(&ret)?, result.1));
@@ -1541,6 +1554,29 @@ impl<'m, 'a> Func<'m, 'a> {
             t if self.m.nominal(t) || matches!(t, Ty::Con(l, _) if l == "List") => {
                 let f = self.helper("eq", t)?;
                 self.call(&Ty::Bool, &f, &[(t.clone(), a.1.clone()), (t.clone(), b.1.clone())])?
+            }
+            t if self.is_dyn(t) => {
+                // the same implementation's table, then its equality (values
+                // of different types are never equal)
+                let (ra, rb) = (self.fresh("vta"), self.fresh("vtb"));
+                self.emit(format!("{ra} = load i64, ptr {}", a.1));
+                self.emit(format!("{rb} = load i64, ptr {}", b.1));
+                let same = self.fresh("samevt");
+                self.emit(format!("{same} = icmp eq i64 {ra}, {rb}"));
+                let (cmp, end) = (self.fresh_label("dyn.eq"), self.fresh_label("dyn.eqd"));
+                let from = self.cur.clone();
+                self.emit(format!("br i1 {same}, label %{cmp}, label %{end}"));
+                self.block(&cmp);
+                let fp = self.dyn_entry(a, DYN_EQ);
+                let (sa, sb) = (self.field(a, 0, &Ty::Int)?, self.field(b, 0, &Ty::Int)?);
+                let r = self.fresh("deq");
+                self.emit(format!("{r} = call i1 {fp}(i64 {}, i64 {})", sa.1, sb.1));
+                let from_cmp = self.cur.clone();
+                self.br(&end);
+                self.block(&end);
+                let p = self.fresh("eq");
+                self.emit(format!("{p} = phi i1 [ false, %{from} ], [ {r}, %{from_cmp} ]"));
+                bool_v(&p)
             }
             t => return Err(format!("comparing `{}` values is not compiled yet", key(t))),
         })
@@ -2330,7 +2366,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.temp((t, b))
             }
             Expr::Ctor(c, args) => self.construct(e, c, args)?,
-            Expr::Field(r, f) => self.get_field(r, f)?,
+            Expr::Field(r, f) => self.get_field(e, r, f)?,
             Expr::Is(x, name) => {
                 let v = self.expr(x)?;
                 if self.m.env.ctors.contains_key(name) && !self.m.is_distinct(name) {
@@ -3350,8 +3386,8 @@ impl<'m, 'a> Func<'m, 'a> {
             let text = h.finish();
             writeln!(self.m.body, "define ptr {f}(i64 %v) {{\n{text}}}\n").unwrap();
         }
-        // dropping and holding it
-        for what in ["drop", "dup"] {
+        // dropping and holding it, comparing two
+        for what in ["drop", "dup", "eq"] {
             let f = format!("@\"dyn{what}:{}\"", key(imp));
             entries.push(f.clone());
             if !self.m.helpers.insert(f.clone()) {
@@ -3360,6 +3396,14 @@ impl<'m, 'a> Func<'m, 'a> {
             let mut h = Func::new(self.m, HashMap::default());
             h.block("start");
             let v = h.from_slot("%v", imp)?;
+            if what == "eq" {
+                let w = h.from_slot("%w", imp)?;
+                let e = h.equal(&v, &w)?;
+                h.emit(format!("ret i1 {}", e.1));
+                let text = h.finish();
+                writeln!(self.m.body, "define i1 {f}(i64 %v, i64 %w) {{\n{text}}}\n").unwrap();
+                continue;
+            }
             if what == "drop" {
                 h.drop_value(&v)?;
             } else if h.counted(imp) {
@@ -3655,7 +3699,7 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok(v)
     }
 
-    fn get_field(&mut self, r: &Expr, f: &str) -> Res<V> {
+    fn get_field(&mut self, e: &Expr, r: &Expr, f: &str) -> Res<V> {
         let v = self.expr(r)?;
         let raw = self.ty_of(r).unwrap_or_else(|_| v.0.clone());
         if is_never(&v.0) {
@@ -3686,7 +3730,44 @@ impl<'m, 'a> Func<'m, 'a> {
         if at.len() == cs.len() && at.iter().all(|x| x.1 == i) {
             return self.field(&v, i, &ft);
         }
-        self.unsupported(&format!("the field `{f}` at different places in `{}`'s variants", key(&t)))
+        // at different places (or not in every variant): by the variant
+        let want = self.ty_of(e).unwrap_or(ft);
+        let ll = self.m.ll(&want)?;
+        let slot = self.fresh("fld");
+        if has_value(&want) {
+            writeln!(self.allocas, "  {slot} = alloca {ll}").unwrap();
+        }
+        let end = self.fresh_label("got");
+        self.on_ctor(&v, &end, |s, c| {
+            match at.iter().find(|x| x.0 == c) {
+                Some((_, i, ft)) => {
+                    let x = s.field(&v, *i, ft)?;
+                    let x = s.coerce(x, &want)?;
+                    if has_value(&want) {
+                        s.emit(format!("store {ll} {}, ptr {slot}", x.1));
+                    }
+                    s.br(&end);
+                }
+                None => {
+                    // as the interpreter: a variant with named fields, or another value
+                    let named = s.m.fields(c, &s.m.ctor_args(c, &t))?.first().is_some_and(|x| x.name.is_some());
+                    if named {
+                        s.fault(Fault::Runtime, vec![Part::Lit(format!("no field `{f}`"))])?;
+                    } else {
+                        let shown = s.json(&v)?;
+                        s.fault(Fault::Runtime, vec![Part::Lit(format!("no field `{f}` on ")), Part::Val(shown)])?;
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        self.block(&end);
+        if !has_value(&want) {
+            return Ok((want, String::new()));
+        }
+        let r = self.fresh("fv");
+        self.emit(format!("{r} = load {ll}, ptr {slot}"));
+        Ok((want, r))
     }
 
     fn matching(&mut self, e: &Expr, scrut: &Expr, as_name: Option<&str>, arms: &[Arm]) -> Res<V> {
@@ -4021,12 +4102,14 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.block(&inner);
                 let depth = self.scopes.len();
                 self.push_scope(false);
-                match p {
-                    Pattern::Bind(x) => self.bind(x, &(Ty::Int, i.clone()))?,
-                    Pattern::Wild => {}
-                    _ => return self.unsupported("this `for` pattern"),
-                }
+                let x: V = (Ty::Int, i.clone());
+                let fail = self.fresh_label("for.nomatch");
+                self.fail_marks.insert(fail.clone(), 0);
+                self.pattern(p, &x, &fail)?;
                 self.loop_body(body, &step, &end, depth)?;
+                self.block(&fail);
+                let shown = self.json(&x)?;
+                self.fault(Fault::Runtime, vec![Part::Lit("for-loop pattern did not match ".into()), Part::Val(shown)])?;
                 self.block(&step);
                 let next = self.fresh("i");
                 self.emit(format!("{next} = add i64 {i}, 1"));
@@ -4075,27 +4158,70 @@ impl<'m, 'a> Func<'m, 'a> {
     /// `cur` with the field at `path` replaced by `v` (a new block per level),
     /// each changed record checked again as the interpreter does.
     fn set_path(&mut self, cur: &V, path: &[String], v: V, shown: &str) -> Res<V> {
-        let Some((f, rest)) = path.split_first() else { return Ok(v) };
+        let Some((f, _)) = path.split_first() else { return Ok(v) };
         let t = self.m.repr(&cur.0)?;
-        let cs = self.m.ctors_of(&t);
-        if cs.len() != 1 {
-            return self.unsupported(&format!("assigning to a field of a `{}`", key(&t)));
+        if let Ty::Con(n, args) = &t {
+            if n == "Tuple" {
+                let i: usize = f.parse().map_err(|_| format!("tuples have no field `{f}`"))?;
+                if i >= args.len() {
+                    return Err(format!("`{}` has no field `{f}`", key(&t)));
+                }
+                return self.set_in(cur, None, args.clone(), vec![], i, path, v, shown);
+            }
         }
-        let c = cs[0].clone();
-        let fs = self.m.fields(&c, &self.m.ctor_args(&c, &t))?;
-        let i = fs.iter().position(|x| x.name.as_deref() == Some(f)).ok_or(format!("`{}` has no field `{f}`", key(&t)))?;
-        let inner = self.field(cur, i, &fs[i].ty)?;
-        let new_inner = self.set_path(&inner, rest, v, shown)?;
-        let new_inner = self.coerce(new_inner, &fs[i].ty)?;
-        let tys: Vec<Ty> = fs.iter().map(|f| f.ty.clone()).collect();
+        let cs = self.m.ctors_of(&t);
+        let place = |s: &Self, c: &str| -> Res<Option<(Vec<Ty>, Vec<TypeExpr>, usize)>> {
+            let fs = s.m.fields(c, &s.m.ctor_args(c, &t))?;
+            Ok(fs.iter().position(|x| x.name.as_deref() == Some(f)).map(|i| (fs.iter().map(|x| x.ty.clone()).collect(), fs.iter().map(|x| x.texpr.clone()).collect(), i)))
+        };
+        if let [c] = cs.as_slice() {
+            let (tys, texprs, i) = place(self, c)?.ok_or(format!("`{}` has no field `{f}`", key(&t)))?;
+            return self.set_in(cur, Some(c), tys, texprs, i, path, v, shown);
+        }
+        // a sum: by its variant (one without the field can't be assigned, as the interpreter says)
+        let ll = self.m.ll(&cur.0)?;
+        let slot = self.fresh("setp");
+        writeln!(self.allocas, "  {slot} = alloca {ll}").unwrap();
+        let end = self.fresh_label("assigned");
+        let v = self.temp(v);
+        self.on_ctor(cur, &end, |s, c| {
+            match place(s, c)? {
+                Some((tys, texprs, i)) => {
+                    s.push_scope(true);
+                    let new = s.set_in(cur, Some(c), tys, texprs, i, path, v.clone(), shown)?;
+                    let new = s.take(new);
+                    s.pop_scope()?;
+                    s.emit(format!("store {ll} {}, ptr {slot}", new.1));
+                    s.br(&end);
+                }
+                None => s.fault(Fault::Runtime, vec![Part::Lit(format!("cannot assign to `{shown}`"))])?,
+            }
+            Ok(())
+        })?;
+        self.block(&end);
+        let r = self.fresh("set");
+        self.emit(format!("{r} = load {ll}, ptr {slot}"));
+        Ok(self.temp((cur.0.clone(), r)))
+    }
+
+    /// `set_path` for a value whose constructor is `c` (a tuple's: `None`),
+    /// with fields of types `tys` (written as `texprs`, when known): field
+    /// `i` replaced, in a copy (a temporary).
+    #[allow(clippy::too_many_arguments)]
+    fn set_in(&mut self, cur: &V, c: Option<&str>, tys: Vec<Ty>, texprs: Vec<TypeExpr>, i: usize, path: &[String], v: V, shown: &str) -> Res<V> {
+        let f = &path[0];
+        let inner = self.field(cur, i, &tys[i])?;
+        let new_inner = self.set_path(&inner, &path[1..], v, shown)?;
+        let new_inner = self.coerce(new_inner, &tys[i])?;
         let p = self.copy_block(cur, &tys, Some(i))?;
         let held = self.take(new_inner.clone());
         self.set_field(&p, i, &held)?;
         let new = self.temp((cur.0.clone(), p));
+        let Some(c) = c else { return Ok(new) };
         // the changed field's refinement, and the type's own
         let ctx = format!("assigning `{shown}`");
-        self.check(&fs[i].texpr, &new_inner, &format!("{ctx}: {}.{f}", crate::names::short(&c)), false)?;
-        let tname = self.m.env.ctors[&Symbol::new(&c)].clone();
+        self.check(&texprs[i], &new_inner, &format!("{ctx}: {}.{f}", crate::names::short(c)), false)?;
+        let tname = self.m.env.ctors[&Symbol::new(c)].clone();
         if let Some(r) = self.m.refinement(&tname) {
             let ok = self.with_it(&new, false, |s| s.expr(r))?;
             self.fail_unless(&ok, &ctx, &new, format!("does not satisfy `{tname}` (where {})", crate::printer::expr(&r, 0)))?;

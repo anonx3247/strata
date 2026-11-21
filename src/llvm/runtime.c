@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -30,7 +31,7 @@ typedef struct {
 } Str;
 
 // Fault kinds, in the order of the IR's constants (`FaultKind` in interp.rs).
-static const char *KINDS[] = {"Refinement", "Requires", "Ensures", "Assert", "Runtime", "Hole"};
+static const char *KINDS[] = {"Refinement", "Requires", "Ensures", "Assert", "Runtime", "Hole", "Limit"};
 
 // ---- memory ----
 
@@ -188,9 +189,31 @@ int64_t strata_str_len(Str *s) {
 
 // ---- faults ----
 
+// The functions being run, outermost first (as the interpreter's call
+// stack): a fault shows them. Only the first FRAMES are kept.
+#define FRAMES 4096
+static Str *frames[FRAMES];
+static int64_t depth;
+
+void strata_enter(Str *name) {
+  if (depth < FRAMES) frames[depth] = name;
+  depth++;
+}
+
+void strata_leave(void) { depth--; }
+
+static void print_stack(void) {
+  if (depth == 0) return;
+  fputs("    stack: ", stderr);
+  for (int64_t i = 0; i < depth && i < FRAMES; i++) fprintf(stderr, "%s%.*s", i ? " -> " : "", (int)frames[i]->len, frames[i]->bytes);
+  if (depth > FRAMES) fputs(" -> ...", stderr);
+  fputc('\n', stderr);
+}
+
 _Noreturn void strata_fault(int32_t kind, Str *msg) {
   fflush(stdout);
   fprintf(stderr, "fault (%s): %.*s\n", KINDS[kind], (int)msg->len, msg->bytes);
+  print_stack();
   exit(101);
 }
 
@@ -483,8 +506,45 @@ static int prog_argc;
 static char *prog_name = "main";
 static char **prog_argv;
 
+// Running out of stack (deep recursion) is a fault, as the interpreter's
+// recursion limit is: a guard page hit near the stack's end, caught on a
+// stack of its own. Any other bad access is reported as a crash.
+static char *stack_top;
+static size_t stack_size;
+
+static void on_segv(int sig, siginfo_t *info, void *ctx) {
+  (void)ctx;
+  char *at = info->si_addr;
+  if (stack_top && at <= stack_top && at >= stack_top - stack_size - 65536) {
+    static const char m[] = "fault (Limit): stack overflow (recursion too deep)\n";
+    fflush(stdout);
+    if (write(2, m, sizeof m - 1) < 0) {}
+    _exit(101);
+  }
+  signal(sig, SIG_DFL);
+  raise(sig);
+}
+
+static void catch_overflow(void) {
+  static char alt[65536];
+  stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt, .ss_flags = 0};
+  sigaltstack(&ss, NULL);
+  struct sigaction sa;
+  memset(&sa, 0, sizeof sa);
+  sa.sa_sigaction = on_segv;
+  sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+  sigaction(SIGSEGV, &sa, NULL);
+  sigaction(SIGBUS, &sa, NULL);
+  char here;
+  stack_top = &here;
+  struct rlimit rl;
+  stack_size = getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY ? (size_t)rl.rlim_cur : (size_t)8 << 20;
+}
+
 // The program's arguments, without its name; a closed pipe ends it quietly.
 void strata_init(int32_t argc, char **argv) {
+  depth = 0;
+  catch_overflow();
   prog_argc = argc > 0 ? argc - 1 : 0;
   prog_argv = argv + 1;
   if (argc > 0 && argv[0]) prog_name = argv[0];
