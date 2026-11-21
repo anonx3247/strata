@@ -29,6 +29,16 @@ unsafe extern "C" {
     fn strata_host_write();
     fn strata_pid();
     fn strata_init();
+    fn strata_seed();
+    fn strata_step();
+    fn strata_fuzz_arg();
+    fn strata_fuzz_args();
+    fn strata_fuzz();
+    fn strata_test_printed();
+    fn strata_test_stack();
+    fn strata_test_message();
+    fn strata_test_kind();
+    fn strata_test();
     fn strata_range();
     fn strata_list_concat();
     fn strata_list_slice();
@@ -46,12 +56,29 @@ unsafe extern "C" {
     fn strata_str_eq();
     fn strata_str_len();
     fn strata_fault();
+    fn strata_enter();
+    fn strata_leave();
     fn strata_overflow();
     fn strata_div();
+    fn strata_gen_string();
+    fn strata_gen_len();
+    fn strata_gen_float();
+    fn strata_gen_int();
+    fn strata_random_unit();
+    fn strata_random();
+    fn strata_int_from_i64();
+    fn strata_int_to_float();
+    fn strata_int_lit();
+    fn strata_int_eq();
+    fn strata_int_cmp();
+    fn strata_int_mul();
+    fn strata_int_sub();
+    fn strata_int_add();
     fn strata_mod();
     fn strata_fmod();
     fn strata_finite();
     fn strata_show_int();
+    fn strata_json_int();
     fn strata_show_float();
     fn strata_show_bool();
     fn strata_json_str();
@@ -71,6 +98,7 @@ unsafe extern "C" {
     fn strata_str_repeat();
     fn strata_str_case();
     fn strata_str_is();
+    fn strata_dfa_match();
     fn strata_str_ord();
     fn strata_str_chr();
     fn strata_parse_int();
@@ -97,6 +125,16 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_host_write", strata_host_write as *const () as usize),
         ("strata_pid", strata_pid as *const () as usize),
         ("strata_init", strata_init as *const () as usize),
+        ("strata_seed", strata_seed as *const () as usize),
+        ("strata_step", strata_step as *const () as usize),
+        ("strata_fuzz_arg", strata_fuzz_arg as *const () as usize),
+        ("strata_fuzz_args", strata_fuzz_args as *const () as usize),
+        ("strata_fuzz", strata_fuzz as *const () as usize),
+        ("strata_test_printed", strata_test_printed as *const () as usize),
+        ("strata_test_stack", strata_test_stack as *const () as usize),
+        ("strata_test_message", strata_test_message as *const () as usize),
+        ("strata_test_kind", strata_test_kind as *const () as usize),
+        ("strata_test", strata_test as *const () as usize),
         ("strata_range", strata_range as *const () as usize),
         ("strata_list_concat", strata_list_concat as *const () as usize),
         ("strata_list_slice", strata_list_slice as *const () as usize),
@@ -114,12 +152,29 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_str_eq", strata_str_eq as *const () as usize),
         ("strata_str_len", strata_str_len as *const () as usize),
         ("strata_fault", strata_fault as *const () as usize),
+        ("strata_enter", strata_enter as *const () as usize),
+        ("strata_leave", strata_leave as *const () as usize),
         ("strata_overflow", strata_overflow as *const () as usize),
         ("strata_div", strata_div as *const () as usize),
+        ("strata_gen_string", strata_gen_string as *const () as usize),
+        ("strata_gen_len", strata_gen_len as *const () as usize),
+        ("strata_gen_float", strata_gen_float as *const () as usize),
+        ("strata_gen_int", strata_gen_int as *const () as usize),
+        ("strata_random_unit", strata_random_unit as *const () as usize),
+        ("strata_random", strata_random as *const () as usize),
+        ("strata_int_from_i64", strata_int_from_i64 as *const () as usize),
+        ("strata_int_to_float", strata_int_to_float as *const () as usize),
+        ("strata_int_lit", strata_int_lit as *const () as usize),
+        ("strata_int_eq", strata_int_eq as *const () as usize),
+        ("strata_int_cmp", strata_int_cmp as *const () as usize),
+        ("strata_int_mul", strata_int_mul as *const () as usize),
+        ("strata_int_sub", strata_int_sub as *const () as usize),
+        ("strata_int_add", strata_int_add as *const () as usize),
         ("strata_mod", strata_mod as *const () as usize),
         ("strata_fmod", strata_fmod as *const () as usize),
         ("strata_finite", strata_finite as *const () as usize),
         ("strata_show_int", strata_show_int as *const () as usize),
+        ("strata_json_int", strata_json_int as *const () as usize),
         ("strata_show_float", strata_show_float as *const () as usize),
         ("strata_show_bool", strata_show_bool as *const () as usize),
         ("strata_json_str", strata_json_str as *const () as usize),
@@ -139,6 +194,7 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_str_repeat", strata_str_repeat as *const () as usize),
         ("strata_str_case", strata_str_case as *const () as usize),
         ("strata_str_is", strata_str_is as *const () as usize),
+        ("strata_dfa_match", strata_dfa_match as *const () as usize),
         ("strata_str_ord", strata_str_ord as *const () as usize),
         ("strata_str_chr", strata_str_chr as *const () as usize),
         ("strata_parse_int", strata_parse_int as *const () as usize),
@@ -148,11 +204,103 @@ fn runtime() -> Vec<(&'static str, usize)> {
     ]
 }
 
+/// How a test ran: the fault that ended it (kind, message, call stack), if
+/// one did, and what it printed.
+pub struct TestOutcome {
+    pub fault: Option<(String, String, String)>,
+    pub printed: String,
+}
+
+/// Run the tests of the IR `compile_tests` made, each in turn: test `i` is
+/// `strata.test.i`. A fault ends a test, not the process.
+pub fn run_tests(ir: &str, which: &[usize]) -> Result<Vec<TestOutcome>, String> {
+    use std::ffi::{c_char, CStr};
+    let ctx = Context::create();
+    let engine = engine(&ctx, ir)?;
+    type Init = unsafe extern "C" fn(i32, *const *const c_char);
+    type Test = unsafe extern "C" fn(unsafe extern "C" fn()) -> i32;
+    type Text = unsafe extern "C" fn() -> *const c_char;
+    type Message = unsafe extern "C" fn() -> *const i64;
+    let (init, test, kind, message, stack, printed): (Init, Test, Text, Message, Text, Text) = unsafe {
+        (
+            std::mem::transmute(strata_init as *const ()),
+            std::mem::transmute(strata_test as *const ()),
+            std::mem::transmute(strata_test_kind as *const ()),
+            std::mem::transmute(strata_test_message as *const ()),
+            std::mem::transmute(strata_test_stack as *const ()),
+            std::mem::transmute(strata_test_printed as *const ()),
+        )
+    };
+    let name = std::ffi::CString::new("test").unwrap();
+    let argv = [name.as_ptr()];
+    unsafe { init(1, argv.as_ptr()) };
+    let text = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().to_string();
+    let mut out = vec![];
+    for &i in which {
+        let addr = engine.get_function_address(&format!("strata.test.{i}")).map_err(|e| e.to_string())?;
+        let f: unsafe extern "C" fn() = unsafe { std::mem::transmute(addr) };
+        let failed = unsafe { test(f) } != 0;
+        let fault = failed.then(|| {
+            // the message: a runtime string (its length, then its bytes)
+            let m = unsafe { message() };
+            let msg = unsafe { std::slice::from_raw_parts(m.add(1) as *const u8, *m as usize) };
+            (text(unsafe { kind() }), String::from_utf8_lossy(msg).to_string(), text(unsafe { stack() }))
+        });
+        out.push(TestOutcome { fault, printed: text(unsafe { printed() }) });
+    }
+    Ok(out)
+}
+
+/// The fuzz drivers of IR `compile_fuzz` made, compiled for good (the
+/// engine lives as long as the process): their addresses, in order.
+pub fn fuzzers(ir: &str, n: usize) -> Result<Vec<usize>, String> {
+    use std::ffi::c_char;
+    let ctx: &'static Context = Box::leak(Box::new(Context::create()));
+    let engine = engine(ctx, ir)?;
+    let addrs = (0..n).map(|i| engine.get_function_address(&format!("strata.fuzz.{i}")).map_err(|e| e.to_string())).collect::<Result<Vec<_>, _>>()?;
+    std::mem::forget(engine);
+    type Init = unsafe extern "C" fn(i32, *const *const c_char);
+    let init: Init = unsafe { std::mem::transmute(strata_init as *const ()) };
+    let name = std::ffi::CString::new("verify").unwrap();
+    let argv = [name.as_ptr()];
+    unsafe { init(1, argv.as_ptr()) };
+    Ok(addrs)
+}
+
+/// One fuzzing case of the driver at `addr`, seeded, within `budget` steps:
+/// the fault that ended it (kind, message, call stack), if any, and its
+/// arguments as JSON. (Not reentrant: the runtime's state is global.)
+pub fn fuzz_case(addr: usize, seed: u64, budget: i64) -> (Option<(String, String, String)>, String) {
+    use std::ffi::{c_char, CStr};
+    type Fuzz = unsafe extern "C" fn(unsafe extern "C" fn(), i64, i64) -> i32;
+    type Text = unsafe extern "C" fn() -> *const c_char;
+    type Message = unsafe extern "C" fn() -> *const i64;
+    let (fuzz, kind, message, stack, args): (Fuzz, Text, Message, Text, Text) = unsafe {
+        (
+            std::mem::transmute(strata_fuzz as *const ()),
+            std::mem::transmute(strata_test_kind as *const ()),
+            std::mem::transmute(strata_test_message as *const ()),
+            std::mem::transmute(strata_test_stack as *const ()),
+            std::mem::transmute(strata_fuzz_args as *const ()),
+        )
+    };
+    let text = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().to_string();
+    let f: unsafe extern "C" fn() = unsafe { std::mem::transmute(addr) };
+    let failed = unsafe { fuzz(f, seed as i64, budget) } != 0;
+    let fault = failed.then(|| {
+        let m = unsafe { message() };
+        let msg = unsafe { std::slice::from_raw_parts(m.add(1) as *const u8, *m as usize) };
+        (text(unsafe { kind() }), String::from_utf8_lossy(msg).to_string(), text(unsafe { stack() }))
+    });
+    (fault, text(unsafe { args() }))
+}
+
 /// Run the IR's `main` with the program's arguments; its exit code. A fault
 /// exits the process from the runtime, as a compiled program does.
-pub fn run(ir: &str, program: &str, args: &[String]) -> Result<i32, String> {
+/// The IR compiled in memory (optimized as clang -O2 would), its runtime
+/// calls mapped to the runtime built into strata.
+fn engine<'ctx>(ctx: &'ctx Context, ir: &str) -> Result<inkwell::execution_engine::ExecutionEngine<'ctx>, String> {
     Target::initialize_native(&InitializationConfig::default())?;
-    let ctx = Context::create();
     let buf = MemoryBuffer::create_from_memory_range_copy(ir.as_bytes(), "strata");
     let module = ctx.create_module_from_ir(buf).map_err(|e| format!("LLVM rejected the generated IR: {e}"))?;
     let triple = TargetMachine::get_default_triple();
@@ -179,6 +327,12 @@ pub fn run(ir: &str, program: &str, args: &[String]) -> Result<i32, String> {
             engine.add_global_mapping(&f, addr);
         }
     }
+    Ok(engine)
+}
+
+pub fn run(ir: &str, program: &str, args: &[String]) -> Result<i32, String> {
+    let ctx = Context::create();
+    let engine = engine(&ctx, ir)?;
     let main = unsafe { engine.get_function::<unsafe extern "C" fn(i32, *const *const std::ffi::c_char) -> i32>("main") }.map_err(|e| e.to_string())?;
     // argv as C has it: the program's name, then its arguments
     let owned: Vec<std::ffi::CString> = std::iter::once(program).chain(args.iter().map(|a| a.as_str())).map(|a| std::ffi::CString::new(a).unwrap_or_default()).collect();

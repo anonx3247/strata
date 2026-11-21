@@ -395,6 +395,66 @@ pub fn check_law(env: &Env, imp: &ImplDecl, law: &Law, cases: usize, seed: u64) 
 /// costly to run (Ackermann's function), which proves nothing either way.
 const CROSS_CHECK_STEPS: u64 = 200_000;
 
+/// Functions fuzzed compiled (`strata verify --jit`): each one's driver,
+/// and how to run a case of one (seed, step budget) — the fault that ended
+/// it, if any, and its arguments as JSON.
+pub struct JitFuzz {
+    pub drivers: crate::fx::HashMap<String, usize>,
+    pub case: fn(usize, u64, i64) -> (Option<(String, String, String)>, String),
+    pub lock: std::sync::Mutex<()>,
+}
+
+pub static JIT_FUZZ: std::sync::OnceLock<JitFuzz> = std::sync::OnceLock::new();
+
+/// The steps a compiled case may take when no budget is given (the
+/// interpreter stops a loop after 1,000,000 iterations).
+const JIT_STEPS: i64 = 50_000_000;
+
+/// `fuzz_limited`, compiled: the same verdicts, from cases the driver
+/// generates (with the runtime's numbers, so not the interpreter's inputs).
+fn fuzz_compiled(j: &JitFuzz, addr: usize, f: &FnDecl, cases: usize, seed: u64, budget: Option<u64>) -> Verdict {
+    let _one = j.lock.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut ok, mut discarded) = (0, 0);
+    let name = f.name.to_string();
+    for i in 0..cases * 4 {
+        if ok >= cases {
+            break;
+        }
+        let (fault, args) = (j.case)(addr, seed.wrapping_add(i as u64), budget.map_or(JIT_STEPS, |b| b as i64));
+        let Some((kind, msg, stack)) = fault else {
+            ok += 1;
+            continue;
+        };
+        let stack: Vec<String> = if stack.is_empty() { vec![] } else { stack.split(" -> ").map(|s| s.to_string()).collect() };
+        // its own precondition, unmet: not its responsibility
+        if kind == "Requires" && stack == [name.clone()] && msg.starts_with(&format!("precondition of `{name}` violated")) {
+            discarded += 1;
+            continue;
+        }
+        if stack.is_empty() && msg.starts_with("could not generate") {
+            return Verdict::Skipped { reason: msg };
+        }
+        if budget.is_some() && kind == "Limit" {
+            discarded += 1;
+            continue;
+        }
+        if kind == "Hole" {
+            return Verdict::Incomplete { message: format!("{msg} (via {})", short_stack(&stack)), terminates: None };
+        }
+        return Verdict::Counterexample {
+            args: serde_json::from_str(&args).unwrap_or(Json::Array(vec![])),
+            kind,
+            message: format!("{msg} (stack: {})", short_stack(&stack)),
+            found_by: "fuzzer".into(),
+            terminates: None,
+        };
+    }
+    if ok == 0 && discarded > 0 {
+        return Verdict::Skipped { reason: format!("all {discarded} generated inputs violated the precondition") };
+    }
+    Verdict::Fuzzed { cases: ok, discarded, proven: 0, unproven: vec![], terminates: None }
+}
+
 fn fuzz_call(env: &Env, f: &FnDecl, cases: usize, seed: u64, method: bool) -> Verdict {
     fuzz_limited(env, f, cases, seed, method, None)
 }
@@ -402,6 +462,11 @@ fn fuzz_call(env: &Env, f: &FnDecl, cases: usize, seed: u64, method: bool) -> Ve
 /// Fuzz with an optional step budget per case. With a budget, a case that
 /// goes past a limit (steps or recursion depth) is set aside, not a failure.
 fn fuzz_limited(env: &Env, f: &FnDecl, cases: usize, seed: u64, method: bool, budget: Option<u64>) -> Verdict {
+    if let Some(j) = JIT_FUZZ.get().filter(|_| !method) {
+        if let Some(&addr) = j.drivers.get(f.name.as_str()) {
+            return fuzz_compiled(j, addr, f, cases, seed, budget);
+        }
+    }
     // Generic functions are fuzzed at one instance: every type parameter becomes `Int`.
     // Generic functions are fuzzed at one consistent instance (see `test_instance`).
     let inst = if f.type_params.is_empty() {

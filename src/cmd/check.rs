@@ -67,6 +67,10 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     };
     let mut all_ok = true;
     let mut results = Vec::new();
+    // `--jit`: the functions fuzzed compiled, all in one module
+    if args.flag("--jit") {
+        jit_fuzzers(p, &resolved, &env);
+    }
     let solver = smt::solver();
     let solver_bin = solver.as_ref();
     let analysis = termination::analyze(&env, solver_bin);
@@ -262,4 +266,45 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
         println!("policy: {v}");
     }
     Ok(all_ok)
+}
+
+/// Compile a fuzz driver for each function `verify` may fuzz (not methods,
+/// nor what takes a function), and have `verify` use them; what doesn't
+/// compile is fuzzed by the interpreter, with a note.
+#[cfg(feature = "jit")]
+fn jit_fuzzers(p: &Program, resolved: &Program, env: &types::Env) {
+    let mut targets = vec![];
+    for d in &resolved.decls {
+        let DeclKind::Fn(f) = &d.kind else { continue };
+        if f.params.iter().any(|p| p.comptime || matches!(p.ty, TypeExpr::Fn(..))) || crate::stdlib::is_host(&f.name) {
+            continue;
+        }
+        let inst = if f.type_params.is_empty() { Default::default() } else {
+            match types::test_instance(env, f) {
+                Some(i) => i,
+                None => continue,
+            }
+        };
+        let params = f.params.iter().map(|p| (p.name.to_string(), types::subst_texpr(&p.ty, &inst), p.mutable)).collect();
+        targets.push(llvm::FuzzTarget { name: f.name.to_string(), params });
+    }
+    let ir = match llvm::compile_fuzz(p, &targets) {
+        Ok(ir) => ir,
+        Err(e) => {
+            eprintln!("note: fuzzed by the interpreter, not compiled: {e}");
+            return;
+        }
+    };
+    match llvm::jit::fuzzers(&ir, targets.len()) {
+        Ok(addrs) => {
+            let drivers = targets.iter().zip(addrs).map(|(t, a)| (t.name.clone(), a)).collect();
+            let _ = verify::JIT_FUZZ.set(verify::JitFuzz { drivers, case: llvm::jit::fuzz_case, lock: std::sync::Mutex::new(()) });
+        }
+        Err(e) => eprintln!("note: fuzzed by the interpreter, not compiled: {e}"),
+    }
+}
+
+#[cfg(not(feature = "jit"))]
+fn jit_fuzzers(_: &Program, _: &Program, _: &types::Env) {
+    eprintln!("note: this strata was built without the JIT: fuzzed by the interpreter");
 }

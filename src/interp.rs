@@ -124,6 +124,11 @@ fn set_path(base: Value, path: &[String], v: Value) -> Option<Value> {
             slot.1 = set_path(std::mem::replace(&mut slot.1, Value::Unit), rest, v)?;
             Some(Value::Variant(n, Fields::Rec(fs)))
         }
+        Value::Tuple(mut xs) => {
+            let slot = xs.get_mut(first.parse::<usize>().ok()?)?;
+            *slot = set_path(std::mem::replace(slot, Value::Unit), rest, v)?;
+            Some(Value::Tuple(xs))
+        }
         _ => None,
     }
 }

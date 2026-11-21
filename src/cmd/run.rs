@@ -85,7 +85,9 @@ fn run_jit(_: &Program, _: &str, _: &[String], _: bool) -> Result<Option<i32>, S
     Err("this strata was built without the JIT: build it with `cargo build --release --features jit` (needs LLVM 23)".into())
 }
 
-/// `strata test`.
+/// `strata test`: each `test` block, compiled when this strata has the JIT
+/// (unless `--interpret`; `--jit` says why when it can't), else interpreted;
+/// the same report either way.
 pub fn run_tests(args: &Args) -> Result<bool, String> {
     let src = load(&args)?;
     let p = src.program();
@@ -95,32 +97,33 @@ pub fn run_tests(args: &Args) -> Result<bool, String> {
         return Ok(false);
     }
     let filter = args.pos.get(1).cloned().unwrap_or_default();
+    if args.flag("--emit-llvm") {
+        // the tests' IR (`strata.test.N`, in order)
+        print!("{}", llvm::compile_tests(p)?.0);
+        return Ok(true);
+    }
+    let jit = args.flag("--jit") || (cfg!(feature = "jit") && !args.flag("--interpret"));
+    let outcomes = match jit.then(|| test_jit(p, &filter, args.flag("--jit"))).transpose()?.flatten() {
+        Some(o) => o,
+        None => test_interpreted(&resolved, &env, &filter),
+    };
     let (mut pass, mut fail) = (0, 0);
-    for d in &resolved.decls {
-        let DeclKind::Test(t) = &d.kind else { continue };
-        if !t.name.contains(&filter) {
-            continue;
-        }
-        let mut it = interp::Interp::new(&env, 7);
-        // each test prints into its own buffer, shown only if it fails
-        it.output = interp::Output::Buffer(String::new());
-        match it.eval(&t.body, &None) {
-            Ok(_) => {
+    for (name, fault, printed) in outcomes {
+        match fault {
+            None => {
                 pass += 1;
-                println!("✓ {}", t.name);
+                println!("✓ {name}");
             }
-            Err(f) => {
+            Some((kind, msg, stack)) => {
                 fail += 1;
-                println!("✗ {}\n    {:?}: {}", t.name, f.kind, f.msg);
-                if !f.stack.is_empty() {
-                    println!("    stack: {}", f.stack.join(" -> "));
+                println!("✗ {name}\n    {kind}: {msg}");
+                if !stack.is_empty() {
+                    println!("    stack: {stack}");
                 }
-                if let interp::Output::Buffer(out) = &it.output {
-                    if !out.is_empty() {
-                        println!("    printed:");
-                        for l in out.lines() {
-                            println!("      {l}");
-                        }
+                if !printed.is_empty() {
+                    println!("    printed:");
+                    for l in printed.lines() {
+                        println!("      {l}");
                     }
                 }
             }
@@ -128,6 +131,52 @@ pub fn run_tests(args: &Args) -> Result<bool, String> {
     }
     println!("\n{pass} passed, {fail} failed");
     Ok(fail == 0)
+}
+
+/// A test's name, the fault that ended it (kind, message, call stack), and what it printed.
+type TestRun = (String, Option<(String, String, String)>, String);
+
+fn test_interpreted(resolved: &Program, env: &types::Env, filter: &str) -> Vec<TestRun> {
+    let mut out = vec![];
+    for d in &resolved.decls {
+        let DeclKind::Test(t) = &d.kind else { continue };
+        if !t.name.contains(filter) {
+            continue;
+        }
+        let mut it = interp::Interp::new(env, 7);
+        // each test prints into its own buffer, shown only if it fails
+        it.output = interp::Output::Buffer(String::new());
+        let fault = it.eval(&t.body, &None).err().map(|f| (format!("{:?}", f.kind), f.msg, f.stack.join(" -> ")));
+        let printed = match &it.output {
+            interp::Output::Buffer(b) => b.clone(),
+            _ => String::new(),
+        };
+        out.push((t.name.to_string(), fault, printed));
+    }
+    out
+}
+
+/// The tests compiled and run in this process; `None` when they use what
+/// doesn't compile yet (they are then interpreted, with a note if `--jit`).
+#[cfg(feature = "jit")]
+fn test_jit(p: &Program, filter: &str, asked: bool) -> Result<Option<Vec<TestRun>>, String> {
+    let (ir, names) = match llvm::compile_tests(p) {
+        Ok(x) => x,
+        Err(e) => {
+            if asked {
+                eprintln!("note: interpreted, not compiled: {e}");
+            }
+            return Ok(None);
+        }
+    };
+    let which: Vec<usize> = (0..names.len()).filter(|&i| names[i].contains(filter)).collect();
+    let runs = llvm::jit::run_tests(&ir, &which)?;
+    Ok(Some(which.iter().zip(runs).map(|(&i, r)| (names[i].clone(), r.fault, r.printed)).collect()))
+}
+
+#[cfg(not(feature = "jit"))]
+fn test_jit(_: &Program, _: &str, _: bool) -> Result<Option<Vec<TestRun>>, String> {
+    Err("this strata was built without the JIT: build it with `cargo build --release --features jit` (needs LLVM 23)".into())
 }
 
 /// The real implementation of a capability `main` (or `handle`) asks for:

@@ -190,7 +190,7 @@ fn traits_run_as_interpreted() {
     }
     let d = tmp("traits");
     // examples/traits.strata, its tests as `main` (without the regex of `Sku`)
-    let src = tests_as_main("examples/traits.strata", "Sku(");
+    let src = tests_as_main("examples/traits.strata", "");
     let (out, code) = case(&d, "traits_example", &src);
     assert!(out.contains("all asserts hold") && code == 0, "{out}");
     let cases = [
@@ -626,10 +626,10 @@ fn options_from_the_command_line_compile() {
 fn what_is_not_compiled_yet_is_named() {
     let d = tmp("unsupported");
     let f = d.join("lists.strata");
-    save(&f, "fn main() { print(matches(\"a1\", \"[a-z][0-9]\")) }\n");
+    save(&f, "fn main() { p := \"[a-z]\" + \"[0-9]\" print(matches(\"a1\", p)) }\n");
     let o = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(!o.status.success() && err.contains("can't compile `main`: the built-in `matches` on (String, String) is not compiled yet"), "{err}");
+    assert!(!o.status.success() && err.contains("can't compile `main`: `matches` with a pattern that isn't a literal is not compiled yet"), "{err}");
 }
 
 #[test]
@@ -656,10 +656,10 @@ fn the_jit_runs_as_the_interpreter() {
     assert_eq!(jit.1, 101);
     // what doesn't compile yet is interpreted, and says why
     let f = d.join("lists.strata");
-    save(&f, "fn main() { print(matches(\"a1\", \"[a-z][0-9]\")) }\n");
+    save(&f, "fn main() { p := \"[a-z]\" + \"[0-9]\" print(matches(\"a1\", p)) }\n");
     let (out, code) = output(Command::new(strata).args(["run", "--jit"]).arg(&f));
     assert_eq!(code, 0);
-    assert!(out.contains("true\n") && out.contains("note: interpreted, not compiled: can't compile `main`: the built-in `matches` on (String, String) is not compiled yet"), "{out}");
+    assert!(out.contains("true\n") && out.contains("note: interpreted, not compiled: can't compile `main`: `matches` with a pattern that isn't a literal is not compiled yet"), "{out}");
 }
 
 /// `strata run --jit` with options: the derived `from_args`, compiled.
@@ -871,8 +871,8 @@ fn main() {
 "#;
 
 /// With the JIT, `strata run` compiles by default: what doesn't compile is
-/// interpreted without a note (`--jit` gives one), and `--interpret` keeps
-/// the interpreter's big integers.
+/// interpreted without a note (`--jit` gives one); compiled and interpreted,
+/// `Int` grows into a big integer.
 #[cfg(feature = "jit")]
 #[test]
 fn run_compiles_by_default_with_the_jit() {
@@ -881,7 +881,7 @@ fn run_compiles_by_default_with_the_jit() {
     let f = d.join("big.strata");
     save(&f, "fn main() {\n  mut n := 1\n  for _ in 0..70 {\n    n = n * 2\n  }\n  print(n)\n}\n");
     let (out, code) = output(Command::new(strata).arg("run").arg(&f));
-    assert!(code == 101 && out.contains("overflow"), "compiled: {out}");
+    assert_eq!((out.as_str(), code), ("1180591620717411303424\n", 0), "compiled");
     let (out, code) = output(Command::new(strata).args(["run", "--interpret"]).arg(&f));
     assert_eq!((out.as_str(), code), ("1180591620717411303424\n", 0));
     let f = d.join("regex.strata");
@@ -914,3 +914,501 @@ fn main() {
   print(ws)
 }
 "#;
+
+/// Fields of unions of records (at different places in each), assigning
+/// tuple fields, `==` on trait values, any pattern in a `for` over a
+/// range; and the call stack a fault shows, as the interpreter's.
+#[test]
+fn fields_trait_equality_and_stacks_compile() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("small-gaps");
+    let (out, code) = case(&d, "fields", FIELDS);
+    assert!(code == 0 && out.contains("{\"name\":\"renamed\",\"r\":2}\n") && out.contains("[[1,9],\"x\"]"), "{out}");
+    let (out, code) = case(&d, "trait_equality", TRAIT_EQUALITY);
+    assert!(code == 0 && out.starts_with("true\ntrue\ntrue\ntrue\n") && out.ends_with("zero\nzero\n"), "{out}");
+    // the stack, which `output` leaves out
+    let f = d.join("stack.strata");
+    save(&f, STACK);
+    let exe = d.join("stack");
+    let strata = env!("CARGO_BIN_EXE_strata");
+    let b = Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
+    assert!(b.status.success(), "{}", String::from_utf8_lossy(&b.stderr));
+    let native = Command::new(&exe).output().unwrap();
+    let interp = Command::new(strata).arg("run").arg(&f).output().unwrap();
+    let err = String::from_utf8_lossy(&native.stderr).to_string();
+    assert_eq!(err, String::from_utf8_lossy(&interp.stderr));
+    assert!(err.contains("    stack: main -> Thing.describe -> inner -> half\n"), "{err}");
+    // running out of stack is a fault, not a crash
+    let (out, code) = {
+        let f = d.join("deep.strata");
+        save(&f, "fn deep(n: Int) -> Int { if n == 0 { 0 } else { 1 + deep(n - 1) } }\nfn main() { print(deep(100000000)) }\n");
+        let exe = d.join("deep");
+        assert!(Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap().status.success());
+        output(&mut Command::new(&exe))
+    };
+    assert!(code == 101 && out.contains("fault (Limit): stack overflow"), "{out}");
+}
+
+const FIELDS: &str = r#"type Sq = { side: Int, name: String }
+type Ci = { name: String, r: Int }
+
+fn label(s: Sq | Ci) -> String { s.name }
+
+fn main() {
+  print(label(Ci { name: "c", r: 2 }))
+  print(label(Sq { side: 1, name: "q" }))
+  mut s: Sq | Ci = Ci { name: "c", r: 2 }
+  s.name = "renamed"
+  print(s)
+  mut t: Sq | Ci = Sq { side: 3, name: "s" }
+  t.name = t.name + "!"
+  print(t)
+  mut pair := (1, "a")
+  pair.1 = "b"
+  pair.0 = pair.0 + 1
+  print(pair)
+  mut nested := ((1, 2), "x")
+  nested.0.1 = 9
+  print(nested)
+}
+"#;
+
+const TRAIT_EQUALITY: &str = r#"trait Area {
+  fn area(self) -> Int
+}
+type Sq = { side: Int }
+type Ci = { r: Int }
+impl Area for Sq { fn area(self) -> Int { self.side * self.side } }
+impl Area for Ci { fn area(self) -> Int { 3 * self.r * self.r } }
+impl Area for Int { fn area(self) -> Int { self } }
+
+fn main() {
+  let a: Area = Sq { side: 2 }
+  let b: Area = Sq { side: 2 }
+  let c: Area = Ci { r: 2 }
+  let d: Area = 4
+  print(a == b)
+  print(d == d)
+  let xs: List[Area] = [a, c, d]
+  print(contains(xs, b))
+  let ys: List[Area] = [Sq { side: 2 }, Ci { r: 2 }, 4]
+  print(xs == ys)
+  for (i, x) in enumerate(xs) { print(f"{i}: {x.area()}") }
+  for 0 in [0, 0] { print("zero") }
+}
+"#;
+
+const STACK: &str = r#"trait Describe {
+  fn describe(self) -> String
+}
+type Thing = { n: Int }
+impl Describe for Thing {
+  fn describe(self) -> String { f"{inner(self.n)}" }
+}
+impl Thing {
+  fn twice(self) -> Int { self.n * 2 }
+}
+fn inner(k: Int) -> Int { [1, 2].map(x -> half(x + k)).fold(0, (a, b) -> a + b) }
+fn half(n: Int) -> Int requires n % 2 == 0 { n / 2 }
+fn main() {
+  print(Thing { n: 2 }.twice())
+  print(Thing { n: 1 }.describe())
+}
+"#;
+
+/// Unions with members that aren't records or variants (`Int | String`):
+/// boxed members, narrowing in arms, type and literal patterns, `==`,
+/// printing, trait methods on a union, refinement checks of a union.
+#[test]
+fn unions_compile() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("unions");
+    let (out, code) = case(&d, "unions", UNIONS);
+    assert!(code == 0 && out.starts_with("number 4\ntext 4\nzero\npositive 5\nnegative\n") && out.contains("[1,\"a\",2]"), "{out}");
+    let (out, code) = case(&d, "union_methods", UNION_METHODS);
+    assert!(code == 101 && out.contains("-1 is not a `Positive | String`"), "{out}");
+}
+
+const UNIONS: &str = r#"type Sq = { side: Int }
+
+fn describe(v: Int | String) -> String {
+  match v {
+    Int => f"number {v}",
+    String => f"text {len(v)}",
+  }
+}
+
+fn kind(v: Int | String | Sq | List[Int]) -> String {
+  match v {
+    0 => "zero",
+    Positive => f"positive {v}",
+    Int => "negative",
+    "" => "empty text",
+    String => f"text {v}",
+    Sq => f"square {v.side}",
+    [] => "empty list",
+    [x, ..rest] => f"list from {x}, {len(rest)} more",
+  }
+}
+
+fn pick(b: Bool) -> Int | String {
+  if b { 1 } else { "one" }
+}
+
+fn main() {
+  print(describe(4))
+  print(describe("four"))
+  for x in [0, 5, -2] { print(kind(x)) }
+  print(kind(""))
+  print(kind("hey"))
+  print(kind(Sq { side: 3 }))
+  print(kind([]))
+  print(kind([1, 2]))
+  let xs: List[Int | String] = [1, "a", 2]
+  print(xs)
+  print(pick(true) == pick(true))
+  print(pick(true) == pick(false))
+  print(to_string(pick(false)))
+  print(xs.map(x -> describe(x)))
+  let u: Int | String = pick(false)
+  print(u)
+  print(u is String)
+  print(u is Int)
+}
+"#;
+
+const UNION_METHODS: &str = r#"trait Area {
+  fn area(self) -> Int
+}
+type Sq = { side: Int }
+type Ci = { r: Int }
+impl Area for Sq { fn area(self) -> Int { self.side * self.side } }
+impl Area for Ci { fn area(self) -> Int { 3 * self.r * self.r } }
+impl Area for Int { fn area(self) -> Int { self } }
+
+fn total(xs: List[Sq | Ci | Int]) -> Int { xs.map(x -> x.area()).fold(0, (a, b) -> a + b) }
+
+fn f(x: Positive | String) -> String { f"{x}" }
+
+fn main() {
+  print(total([Sq { side: 2 }, Ci { r: 1 }, 5]))
+  let s: Sq | Ci = Ci { r: 2 }
+  print(s.area())
+  print(f(3))
+  print(f("a"))
+  let n: Int = 0 - 1
+  print(f(n))
+}
+"#;
+
+/// Methods called on trait values that mention `Self`, take a `mut`
+/// parameter or type parameters of their own; a generic supertrait's
+/// methods; a function returning a trait-typed value.
+#[test]
+fn trait_value_methods_compile() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("trait-methods");
+    let (out, code) = case(&d, "trait_methods", TRAIT_METHODS);
+    assert!(code == 0 && out.contains("[\"sq2\",\"x\"]") && out.ends_with("pretty square\n<4>\n100\ncircle\n"), "{out}");
+}
+
+const TRAIT_METHODS: &str = r#"trait Named {
+  fn name(self) -> String
+}
+
+trait Shape: Named {
+  fn area(self) -> Int
+  fn bigger(self, other: Self) -> Self
+  fn scaled(self, k: Int) -> Self
+  fn tag[U](self, extra: U) -> (String, U)
+  fn grow(mut self, by: Int)
+  fn count(self, mut seen: Int) -> Int
+}
+
+type Sq = { side: Int }
+type Ci = { r: Int }
+
+impl Named for Sq { fn name(self) -> String { "square" } }
+impl Named for Ci { fn name(self) -> String { "circle" } }
+
+impl Shape for Sq {
+  fn area(self) -> Int { self.side * self.side }
+  fn bigger(self, other: Self) -> Self { if other.side > self.side { other } else { self } }
+  fn scaled(self, k: Int) -> Self { Sq { side: self.side * k } }
+  fn tag[U](self, extra: U) -> (String, U) { (f"sq{self.side}", extra) }
+  fn grow(mut self, by: Int) { self.side += by }
+  fn count(self, mut seen: Int) -> Int { seen += 1 seen }
+}
+
+impl Shape for Ci {
+  fn area(self) -> Int { 3 * self.r * self.r }
+  fn bigger(self, other: Self) -> Self { if other.r > self.r { other } else { self } }
+  fn scaled(self, k: Int) -> Self { Ci { r: self.r * k } }
+  fn tag[U](self, extra: U) -> (String, U) { (f"ci{self.r}", extra) }
+  fn grow(mut self, by: Int) { self.r += by }
+  fn count(self, mut seen: Int) -> Int { seen += 10 seen }
+}
+
+trait Convert[T] {
+  fn convert(self) -> T
+}
+trait Pretty: Convert[String] {
+  fn pretty(self) -> String
+}
+impl Convert[String] for Sq { fn convert(self) -> String { f"<{self.side}>" } }
+impl Pretty for Sq { fn pretty(self) -> String { "pretty square" } }
+
+fn make(big: Bool) -> Shape {
+  if big { Sq { side: 10 } } else { Ci { r: 1 } }
+}
+
+fn main() {
+  let shapes: List[Shape] = [Sq { side: 2 }, Ci { r: 1 }]
+  for s in shapes {
+    print(s.name())
+    print(s.area())
+    print(s.scaled(3).area())
+    print(s.bigger(s.scaled(2)).area())
+    print(s.tag(7))
+    print(s.tag("x"))
+    mut n := 0
+    print(s.count(mut n))
+    print(n)
+  }
+  mut g: Shape = Ci { r: 2 }
+  mut g.grow(3)
+  print(g.area())
+  let p: Pretty = Sq { side: 4 }
+  print(p.pretty())
+  print(p.convert())
+  print(make(true).area())
+  print(make(false).name())
+}
+"#;
+
+/// `matches` with a literal pattern, compiled to a DFA (the interpreter's
+/// engine): ASCII and Unicode classes, in a refinement too; a bad pattern
+/// faults with the interpreter's message. And functions shown as values.
+#[test]
+fn regexes_and_shown_functions_compile() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("regex");
+    let (out, code) = case(&d, "regex", REGEX);
+    assert!(code == 101 && out.starts_with("abc: true\nabc_d1: true\nAbc: false\n") && out.contains("does not satisfy `Sku`"), "{out}");
+    let (out, code) = case(&d, "bad_regex", "fn main() { print(matches(\"a\", \"(\")) }\n");
+    assert!(code == 101 && out.contains("bad regex: regex parse error"), "{out}");
+    let (out, code) = case(&d, "shown_functions", SHOWN_FUNCTIONS);
+    assert!(code == 0 && out.starts_with("\"<closure (x) -> …>\"\n{\"name\":\"h\",\"on\":\"<fn twice>\"}\n"), "{out}");
+}
+
+const REGEX: &str = r#"type Sku = String where matches(it, "[A-Z]{3}-[0-9]{4}")
+
+fn check(s: String) -> Bool { matches(s, "[a-z]+(_[a-z0-9]+)*") }
+
+fn main() {
+  for s in ["abc", "abc_d1", "Abc", "", "a__b", "héllo"] {
+    print(f"{s}: {check(s)}")
+  }
+  print(matches("héllo", "\\w+"))
+  print(matches("日本語", "\\p{Han}+"))
+  print(matches("x", "(a|b|x)"))
+  print(matches("2024-01-31", "\\d{4}-\\d{2}-\\d{2}"))
+  print("ab".matches("a.?b"))
+  let k: Sku = "ABC-1234"
+  print(k)
+  let s: String = "abc-1234"
+  let bad: Sku = s
+  print(bad)
+}
+"#;
+
+const SHOWN_FUNCTIONS: &str = r#"fn twice(n: Int) -> Int { n * 2 }
+type H = { name: String, on: (Int) -> Int }
+fn main() {
+  k := 3
+  f := (x: Int) -> x + k
+  print(f)
+  print(H { name: "h", on: twice })
+  print([f, (a: Int) -> a])
+  print(f(1))
+}
+"#;
+
+/// `Int` never overflows, compiled too: small integers are themselves, any
+/// other is a big integer (runtime.c, "integers"), through arithmetic,
+/// Euclidean `/` and `%`, comparisons, equality, ordering, printing,
+/// `float`, `floor`, `parse_int`, literals and patterns.
+#[test]
+fn big_integers_compile() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("bigint");
+    let (out, code) = case(&d, "bigint", BIG_INTEGERS);
+    assert!(code == 0 && out.starts_with("15511210043330985984000000\n870\n354224848179261915075\n") && out.contains("9223372036854775808\n-9223372036854775809\n"), "{out}");
+}
+
+const BIG_INTEGERS: &str = r#"fn factorial(n: Int) -> Int { if n <= 1 { 1 } else { n * factorial(n - 1) } }
+
+fn fib(n: Int) -> Int {
+  mut a := 0
+  mut b := 1
+  for _ in 0..n {
+    t := a + b
+    a = b
+    b = t
+  }
+  a
+}
+
+fn main() {
+  print(factorial(25))
+  print(factorial(30) / factorial(28))
+  print(fib(100))
+  print(fib(100) % 1000007)
+  big := 123456789012345678901234567890
+  print(big)
+  print(-big)
+  print(big * big)
+  print(big / -7)
+  print(big % -7)
+  print(-big / 7)
+  print(-big % 7)
+  print(big == 123456789012345678901234567890)
+  print(big > fib(100))
+  print(big < -big)
+  print(abs(-big))
+  print(min(big, 3))
+  print(max(-big, -3))
+  print(float(big))
+  print(floor(1000000000000000000000000000000.0))
+  print(parse_int("99999999999999999999999"))
+  print(parse_int("-4611686018427387905"))
+  n := 4611686018427387903
+  print(n + 1)
+  print(n + 1 - 1 == n)
+  print([big, 1, -big].sort())
+  print(Set { big, big * 1, 2 })
+  print(Dict { big: "big" })
+  print(f"{big:>40}")
+  print(9223372036854775807 + 1)
+  print(-9223372036854775808 - 1)
+  print(abs(-4611686018427387904))
+  match n + 1 {
+    4611686018427387904 => print("matched big"),
+    _ => print("no"),
+  }
+  print(2 * 3 + 4 - 5)
+  print(len([1, 2, 3]) * 1000000000000000000000)
+}
+"#;
+
+/// `mock T` compiled: methods whose results are generated within the
+/// result's refinements (bounds, lengths, regexes; rejection otherwise)
+/// until `ensures` holds, after `requires` (whose fault is the
+/// interpreter's). The values are not the interpreter's; what they satisfy is.
+#[test]
+fn mocks_compile() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("mock");
+    let (out, code) = case(&d, "mock", MOCKS);
+    assert!(code == 101 && out.starts_with("\"<mock Store>\"\nall good\nfault (Requires): precondition of `Store.find` violated: requires id > 0"), "{out}");
+    let (out, code) = case(&d, "orders", &tests_as_main("examples/orders.strata", ""));
+    assert!(code == 0 && out.ends_with("all asserts hold\n"), "{out}");
+}
+
+const MOCKS: &str = r#"type Item = { name: NonEmptyString, qty: Positive }
+type Color = | Red | Green | Rgb(Int, Int, Int)
+
+trait Store {
+  fn count(self) -> Natural
+  fn find(self, id: Int) -> Option[Item]
+    requires id > 0
+  fn all(self) -> List[Item]
+    ensures len(it) <= 3
+  fn color(self) -> Color
+  fn code(self) -> String where matches(it, "[A-Z]{2}[0-9]{3}")
+  fn save(mut self, i: Item) -> Result[(), String]
+  fn rate(self) -> Float where 0.0 <= it && it <= 1.0
+}
+
+fn main() {
+  mut s := mock Store
+  for _ in 0..20 {
+    n := s.count()
+    assert n >= 0
+    match s.find(3) {
+      Some(i) => { assert len(i.name) > 0 && i.qty > 0 },
+      None => (),
+    }
+    assert len(s.all()) <= 3
+    c := s.code()
+    assert matches(c, "[A-Z]{2}[0-9]{3}")
+    r := s.rate()
+    assert 0.0 <= r && r <= 1.0
+    k := s.color()
+    assert k is Red || k is Green || k is Rgb
+    res := mut s.save(Item { name: "a", qty: 1 })
+    assert res is Ok || res is Err
+  }
+  print(s)
+  print("all good")
+  print(s.find(0))
+}
+"#;
+
+/// `strata test` compiles the tests with the JIT: the same report as
+/// interpreted, for every example and for failing tests (fault, call stack,
+/// what they printed).
+#[cfg(feature = "jit")]
+#[test]
+fn the_jit_runs_tests_as_the_interpreter() {
+    let strata = env!("CARGO_BIN_EXE_strata");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let report = |file: &Path, how: &str| output(Command::new(strata).arg("test").arg(how).arg("--file").arg(file));
+    for ex in ["bank.strata", "builtins.strata", "math.strata", "orders.strata", "traits.strata", "tasks", "todos", "wc", "page"] {
+        let f = root.join("examples").join(ex);
+        let jit = report(&f, "--jit");
+        assert!(!jit.0.contains("note: interpreted"), "{ex}: {}", jit.0);
+        assert_eq!(jit, report(&f, "--interpret"), "the JIT (left) and the interpreter (right) differ for {ex}");
+    }
+    let d = tmp("jit-tests");
+    let f = d.join("t.strata");
+    save(&f, "fn half(n: Int) -> Int requires n % 2 == 0 { n / 2 }\nfn twice(n: Int) -> Int { half(n) * 4 }\ntest \"passes\" { assert twice(4) == 8 }\ntest \"fails\" { print(\"before\") print(twice(3)) }\ntest \"asserts\" { x := [1, 2] assert len(x) == 3 }\n");
+    let jit = report(&f, "--jit");
+    assert_eq!(jit, report(&f, "--interpret"));
+    assert!(jit.0.contains("✗ fails\n    Requires: precondition of `half` violated") && jit.0.contains("    stack: twice -> half\n    printed:\n      before\n") && jit.0.ends_with("1 passed, 2 failed\n"), "{}", jit.0);
+}
+
+/// `strata verify --jit` fuzzes compiled: the same verdicts as the
+/// interpreter's fuzzer (its inputs are the runtime's), a runaway loop
+/// stopped by the step budget.
+#[cfg(feature = "jit")]
+#[test]
+fn verify_fuzzes_compiled() {
+    let strata = env!("CARGO_BIN_EXE_strata");
+    let d = tmp("jit-verify");
+    let f = d.join("v.strata");
+    save(&f, "fn pieces(s: String) -> Positive { len(split(s, \"a\")) - 1 }\nfn loops(n: Natural) -> Int { mut i := 0 while i != n * 2 + 1 { i += 2 } i }\nfn fine(xs: List[String]) -> Natural { len(join(xs, \",\")) }\n");
+    let (out, _) = output(Command::new(strata).args(["verify", "--jit", "--file"]).arg(&f).env("STRATA_SOLVER", "none"));
+    assert!(!out.contains("note:"), "{out}");
+    assert!(out.contains("✗ pieces                   Refinement violation (found by the fuzzer)") && out.contains("result of `pieces`: 0 does not satisfy `Positive`"), "{out}");
+    assert!(out.contains("✗ loops                    Limit violation (found by the fuzzer)") && out.contains("too many steps (stack: loops)"), "{out}");
+    assert!(out.contains("~ fine                     fuzzed: 200 cases, 0 discarded"), "{out}");
+}

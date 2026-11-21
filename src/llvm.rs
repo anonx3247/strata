@@ -128,12 +128,14 @@ fn bool_v(b: &str) -> V {
 }
 
 /// The entries of a trait value's table: showing the value as JSON and as
-/// `to_string`, dropping and holding it, then the trait's methods.
+/// `to_string`, dropping and holding it, comparing two of the same type,
+/// then the trait's methods.
 const DYN_JSON: usize = 0;
 const DYN_SHOW: usize = 1;
 const DYN_DROP: usize = 2;
 const DYN_DUP: usize = 3;
-const DYN_METHODS: usize = 4;
+const DYN_EQ: usize = 4;
+const DYN_METHODS: usize = 5;
 
 /// Fault kinds, as numbered in the runtime (`KINDS` in runtime.c).
 #[derive(Clone, Copy)]
@@ -170,13 +172,46 @@ fn key(t: &Ty) -> String {
 /// The LLVM IR of a program whose entry point is `entry` (`main`): it takes
 /// no parameters and returns `()`, an exit code (`Int`), or a `Result` of either.
 pub fn compile(prog: &Program, entry: &str) -> Res<String> {
+    Ok(compile_for(prog, Entry::Main(entry))?.0)
+}
+
+/// What a compilation starts from.
+#[cfg_attr(not(feature = "jit"), allow(dead_code))]
+enum Entry<'e> {
+    Main(&'e str),
+    Tests,
+    Fuzz(&'e [FuzzTarget]),
+}
+
+/// A function `strata verify --jit` fuzzes: its name, and its parameters'
+/// names, written types (generic ones at the instance tried) and `mut`ness.
+#[cfg_attr(not(feature = "jit"), allow(dead_code))]
+pub struct FuzzTarget {
+    pub name: String,
+    pub params: Vec<(String, TypeExpr, bool)>,
+}
+
+/// The LLVM IR of fuzz drivers (`@"strata.fuzz.N"` for target N): each
+/// generates the target's arguments, records them (`strata_fuzz_arg`), and
+/// calls it. Loops and calls count steps (`strata_step`).
+#[cfg_attr(not(feature = "jit"), allow(dead_code))]
+pub fn compile_fuzz(prog: &Program, targets: &[FuzzTarget]) -> Res<String> {
+    Ok(compile_for(prog, Entry::Fuzz(targets))?.0)
+}
+
+/// The LLVM IR of a program's `test` blocks: a function per test
+/// (`@"strata.test.N"`, taking and returning nothing), and their names.
+pub fn compile_tests(prog: &Program) -> Res<(String, Vec<String>)> {
+    compile_for(prog, Entry::Tests)
+}
+
+fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
     // the list built-ins in Strata, compiled with the program
     let mut with = prog.clone();
     let prelude = crate::binary::decode_module(PRELUDE).map_err(|e| format!("llvm/prelude.strata: {e}"))?;
     with.decls.extend(prelude);
     let (resolved, types) = crate::types::elaborate_typed(&with);
     let (env, _) = Env::build(&resolved.program);
-    let main = env.fns.get(&Symbol::new(entry)).ok_or(format!("no `{entry}` function to compile"))?.clone();
     // every constructor gets a tag of its own, so a value's tag says what it is
     let mut ctors: Vec<&Symbol> = env.ctors.keys().collect();
     ctors.sort();
@@ -208,21 +243,53 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0 };
-    let ret = m.lower(&main.ret, &HashMap::default())?;
-    // C's `main` first: it asks for the program's `main`, with its capabilities
-    m.entry(entry, &main, &ret)?;
-    while let Some(job) = m.queue.pop_front() {
-        match job {
-            Job::Fn(name, targs, impls) => {
-                let f = env.fns[&Symbol::new(&name)].clone();
-                let shown = if targs.is_empty() { name.clone() } else { format!("{name}[{}]", targs.iter().map(key).collect::<Vec<_>>().join(", ")) };
-                m.function(&name, &targs, &impls, &f).map_err(|e| format!("can't compile `{shown}`: {e}"))?;
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![] };
+    let mut tests = vec![];
+    m.fuzzing = matches!(entry, Entry::Fuzz(_));
+    match entry {
+        Entry::Fuzz(targets) => {
+            for (i, t) in targets.iter().enumerate() {
+                m.fuzz_driver(i, t).map_err(|e| format!("can't compile the fuzzing of `{}`: {e}", t.name))?;
             }
-            Job::Method(mi) => {
-                let shown = format!("{}.{} for {}", mi.tr, mi.method, key(&mi.recv));
-                m.method(&mi).map_err(|e| format!("can't compile `{shown}`: {e}"))?;
+        }
+        Entry::Main(entry) => {
+            let main = env.fns.get(&Symbol::new(entry)).ok_or(format!("no `{entry}` function to compile"))?.clone();
+            let ret = m.lower(&main.ret, &HashMap::default())?;
+            // C's `main` first: it asks for the program's `main`, with its capabilities
+            m.entry(entry, &main, &ret)?;
+        }
+        Entry::Tests => {
+            // each test, a function of its own (no frame of its own on the call stack)
+            for d in &resolved.program.decls {
+                let DeclKind::Test(t) = &d.kind else { continue };
+                let inst = Instance { label: format!("test {:?}", t.name.to_string()), symbol: format!("@\"strata.test.{}\"", tests.len()), impls: vec![], params: vec![], ret: TypeExpr::Unit, own_params: &[], own_ret: &TypeExpr::Unit, requires: vec![], ensures: vec![], body: &t.body, sub: HashMap::default() };
+                m.instance(&inst).map_err(|e| format!("can't compile test {:?}: {e}", t.name.to_string()))?;
+                tests.push(t.name.to_string());
             }
+        }
+    }
+    loop {
+        while let Some(job) = m.queue.pop_front() {
+            match job {
+                Job::Fn(name, targs, impls) => {
+                    let f = env.fns[&Symbol::new(&name)].clone();
+                    let shown = if targs.is_empty() { name.clone() } else { format!("{name}[{}]", targs.iter().map(key).collect::<Vec<_>>().join(", ")) };
+                    m.function(&name, &targs, &impls, &f).map_err(|e| format!("can't compile `{shown}`: {e}"))?;
+                }
+                Job::Method(mi) => {
+                    let shown = format!("{}.{} for {}", mi.tr, mi.method, key(&mi.recv));
+                    m.method(&mi).map_err(|e| format!("can't compile `{shown}`: {e}"))?;
+                }
+            }
+        }
+        // dispatchers cover every table; making one may compile more (and make tables)
+        if !m.dispatchers()? && m.queue.is_empty() {
+            break;
+        }
+    }
+    for d in &m.dispatch {
+        if let Some((_, text)) = &d.made {
+            m.body += text;
         }
     }
     let mut out = String::from("; Strata, compiled by `strata build`\n\n");
@@ -230,7 +297,7 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
     out += "\n";
     out += &m.body;
     out += DECLARATIONS;
-    Ok(out)
+    Ok((out, tests))
 }
 
 const DECLARATIONS: &str = "\
@@ -258,9 +325,27 @@ declare i1 @strata_str_eq(ptr, ptr)
 declare i64 @strata_str_cmp(ptr, ptr)
 declare i64 @strata_str_len(ptr)
 declare void @strata_fault(i32, ptr) noreturn
+declare void @strata_enter(ptr)
+declare void @strata_step()
+declare void @strata_fuzz_arg(ptr)
+declare void @strata_leave()
 declare void @strata_overflow() noreturn cold
 declare void @strata_main_error(ptr)
 declare i64 @strata_div(i64, i64)
+declare i64 @strata_int_add(i64, i64)
+declare i64 @strata_int_sub(i64, i64)
+declare i64 @strata_int_mul(i64, i64)
+declare i64 @strata_int_cmp(i64, i64)
+declare i1 @strata_int_eq(i64, i64)
+declare i64 @strata_int_lit(ptr)
+declare i64 @strata_int_from_i64(i64)
+declare i64 @strata_random(i64, i64)
+declare double @strata_random_unit()
+declare i64 @strata_gen_int(ptr, i64)
+declare double @strata_gen_float(ptr, i64, ptr, i64)
+declare i64 @strata_gen_len(ptr, i64)
+declare ptr @strata_gen_string(i64)
+declare double @strata_int_to_float(i64)
 declare i64 @strata_mod(i64, i64)
 declare double @strata_fmod(double, double)
 declare double @strata_finite(double, double, double, ptr)
@@ -275,6 +360,7 @@ declare ptr @strata_range(i64, i64)
 declare i64 @llvm.smax.i64(i64, i64)
 declare i64 @llvm.smin.i64(i64, i64)
 declare ptr @strata_show_int(i64)
+declare ptr @strata_json_int(i64)
 declare ptr @strata_show_float(double)
 declare ptr @strata_show_bool(i1)
 declare ptr @strata_json_str(ptr)
@@ -294,6 +380,7 @@ declare ptr @strata_str_replace(ptr, ptr, ptr)
 declare ptr @strata_str_repeat(ptr, i64)
 declare ptr @strata_str_case(ptr, ptr, i64, ptr, i64, i1)
 declare i1 @strata_str_is(ptr, i64, ptr, i64)
+declare i1 @strata_dfa_match(ptr, ptr, i64, ptr, ptr, ptr)
 declare i64 @strata_str_ord(ptr)
 declare ptr @strata_str_chr(i64)
 declare i1 @strata_parse_int(ptr, ptr)
@@ -339,6 +426,18 @@ enum Job {
     /// for some `C: Console`).
     Fn(String, Vec<Ty>, Vec<Option<Ty>>),
     Method(MethodInst),
+}
+
+/// A dispatcher: method `m` of trait `trm` with type arguments `targs`,
+/// on a value of trait type `tr_ty`, by its table. `made`: how many tables
+/// it covered when last made, and its text.
+struct Dispatch {
+    name: String,
+    tr_ty: Ty,
+    trm: String,
+    m: String,
+    targs: Vec<Ty>,
+    made: Option<(usize, String)>,
 }
 
 /// A trait method for one receiver type (and type arguments of its own).
@@ -413,6 +512,20 @@ struct Module<'a> {
     helpers: HashSet<String>,
     /// Lambdas compiled so far (each is a function of its own).
     lambdas: usize,
+    /// The tag of each type a union boxes (by its key): unique in the
+    /// program, so a smaller union's values are a larger one's as they are.
+    box_tags: HashMap<String, i64>,
+    /// Compiled for `strata verify --jit`: loops and calls count steps.
+    fuzzing: bool,
+    /// The tables of each regex `matches` uses (its globals' name, and its classes).
+    regexes: HashMap<String, (String, usize)>,
+    /// Generators made (by the type and hints they generate), and mock methods.
+    gens: HashMap<String, String>,
+    /// The tables made for each trait type (by its key), with the implementation.
+    vtables: HashMap<String, Vec<(String, Ty)>>,
+    /// Dispatchers for methods with type parameters of their own, called
+    /// on trait values (made once every table is known).
+    dispatch: Vec<Dispatch>,
 }
 
 impl<'a> Module<'a> {
@@ -426,7 +539,7 @@ impl<'a> Module<'a> {
 
     /// Whether a written type is a trait (a parameter that takes any implementation).
     fn is_trait(&self, t: &TypeExpr) -> bool {
-        matches!(t, TypeExpr::Named(n, a) if a.is_empty() && self.traits.contains_key(n))
+        matches!(t, TypeExpr::Named(n, _) if self.traits.contains_key(n))
     }
 
     fn want_method(&mut self, mi: MethodInst) -> String {
@@ -501,7 +614,7 @@ impl<'a> Module<'a> {
             requires.extend(&own.requires);
             ensures.extend(&own.ensures);
         }
-        let label = format!("{}.{}", crate::names::short(&mi.head), mi.method);
+        let label = format!("{}.{}", mi.head, mi.method);
         let inst = Instance { label, symbol: mi.symbol(), impls: vec![], params: own.params.clone(), ret: own.ret.clone(), own_params: &own.params, own_ret: &own.ret, requires, ensures, body: &own.body, sub };
         self.instance(&inst)
     }
@@ -570,7 +683,7 @@ impl<'a> Module<'a> {
             Ty::Unit => "void",
             _ if is_never(t) => "void",
             Ty::Str | Ty::Con(..) | Ty::Fn(..) => "ptr",
-            Ty::Union(ms) if ms.iter().all(|m| self.nominal(m)) => "ptr",
+            Ty::Union(_) => "ptr",
             other => return Err(format!("the type `{}` is not compiled yet", key(&other))),
         })
     }
@@ -615,6 +728,56 @@ impl<'a> Module<'a> {
                 }
             }
         })
+    }
+
+    // ---- unions ----
+    //
+    // A union of records and variants is one of their blocks: its tag says
+    // which. A union with other members (`Int | String`) is a pointer too:
+    // a record's or a variant's block as it is, any other member in a box
+    // `{ tag, value }` whose tag is the member type's (`box_tag`, beyond the
+    // constructors' tags).
+
+    /// Whether values of `t` are a union with boxed members.
+    fn boxed(&self, t: &Ty) -> bool {
+        matches!(self.repr(t), Ok(Ty::Union(ms)) if ms.iter().any(|m| self.boxes(m)))
+    }
+
+    /// Whether a union holds values of member type `m` in a box.
+    fn boxes(&self, m: &Ty) -> bool {
+        !self.nominal(&self.repr(m).unwrap_or(Ty::Unit))
+    }
+
+    /// The members of a union type (itself, for any other type).
+    fn members(&self, t: &Ty) -> Vec<Ty> {
+        match self.repr(t) {
+            Ok(Ty::Union(ms)) => ms.iter().flat_map(|m| self.members(m)).collect(),
+            _ => vec![t.clone()],
+        }
+    }
+
+    fn box_tag(&mut self, m: &Ty) -> i64 {
+        let k = key(&self.repr(m).unwrap_or(Ty::Unit));
+        let n = self.box_tags.len() as i64;
+        *self.box_tags.entry(k).or_insert(1 << 40 | n)
+    }
+
+    /// The tags a value of member type `m` can have in a union.
+    fn member_tags(&mut self, m: &Ty) -> Vec<i64> {
+        if self.boxes(m) {
+            return vec![self.box_tag(m)];
+        }
+        let r = self.repr(m).unwrap_or(Ty::Unit);
+        if matches!(&r, Ty::Con(n, _) if n == "Tuple") {
+            return vec![0];
+        }
+        self.ctors_of(&r).iter().map(|c| self.tags[c]).collect()
+    }
+
+    /// Whether `m` is (or is part of) one of `u`'s members.
+    fn member_of(&self, m: &Ty, u: &Ty) -> bool {
+        let keys: Vec<String> = self.members(u).iter().map(|x| key(&self.repr(x).unwrap_or(Ty::Unit))).collect();
+        self.members(m).iter().all(|x| keys.contains(&key(&self.repr(x).unwrap_or(Ty::Unit))))
     }
 
     /// The constructors a value of type `t` can have.
@@ -693,9 +856,6 @@ impl<'a> Module<'a> {
             }
         }
         let ret = self.lower(&f.ret, &sub)?;
-        if self.is_trait(&f.ret) {
-            return Err(format!("returning a value of the trait type `{}` is not compiled yet", crate::printer::ty(&f.ret)));
-        }
         let mut c = Func::new(self, sub);
         let mut sig = vec![];
         for (p, t) in f.params.iter().zip(&params) {
@@ -707,6 +867,15 @@ impl<'a> Module<'a> {
             }
         }
         c.block("entry.body");
+        // on the call stack a fault shows (the program's functions, as the interpreter's)
+        let framed = !name.starts_with(PRELUDE_MODULE) && !name.starts_with("test \"");
+        if framed {
+            let n = c.m.string(name);
+            c.emit(format!("call void @strata_enter(ptr {n})"));
+        }
+        if c.m.fuzzing {
+            c.emit("call void @strata_step()".into());
+        }
         // parameters live in slots, like every variable
         for (i, (p, t)) in f.params.iter().zip(&params).enumerate() {
             if p.mutable {
@@ -781,6 +950,9 @@ impl<'a> Module<'a> {
                 c.block(&pass);
             }
             c.pop_scope()?;
+        }
+        if framed {
+            c.emit("call void @strata_leave()".into());
         }
         if has_value(&ret) {
             c.emit(format!("ret {} {}", c.m.ll(&ret)?, result.1));
@@ -1430,7 +1602,7 @@ impl<'m, 'a> Func<'m, 'a> {
     /// Whether `v`'s tag is one of `cs` (always, when it can't be anything else).
     fn tag_in(&mut self, v: &V, cs: &[String]) -> Res<V> {
         let all = self.m.ctors_of(&self.m.repr(&v.0)?);
-        if !all.is_empty() && all.iter().all(|c| cs.contains(c)) {
+        if !all.is_empty() && !self.m.boxed(&v.0) && all.iter().all(|c| cs.contains(c)) {
             return Ok(bool_v("true"));
         }
         let tag = self.tag(v);
@@ -1477,7 +1649,12 @@ impl<'m, 'a> Func<'m, 'a> {
         if self.is_dyn(&t) {
             return self.dyn_entry_call(v, DYN_SHOW);
         }
+        if self.m.boxed(&t) {
+            let f = self.helper("show", &t)?;
+            return Ok(self.call(&Ty::Str, &f, &[(t.clone(), v.1.clone())])?.1);
+        }
         match t {
+            Ty::Int => Ok(self.call(&Ty::Str, "@strata_show_int", &[v.clone()])?.1),
             Ty::Str => {
                 // (owned, as every shown value: held once more)
                 if !constant(&v.1) {
@@ -1500,15 +1677,24 @@ impl<'m, 'a> Func<'m, 'a> {
             return self.dyn_entry_call(v, DYN_JSON);
         }
         Ok(match &t {
-            Ty::Int => self.call(&Ty::Str, "@strata_show_int", &[v.clone()])?.1,
+            Ty::Int => self.call(&Ty::Str, "@strata_json_int", &[v.clone()])?.1,
             Ty::Float => self.call(&Ty::Str, "@strata_show_float", &[v.clone()])?.1,
             Ty::Bool => self.call(&Ty::Str, "@strata_show_bool", &[v.clone()])?.1,
             Ty::Str => self.call(&Ty::Str, "@strata_json_str", &[v.clone()])?.1,
             Ty::Unit => self.m.string("null"),
             _ if is_never(&t) => self.m.string("null"),
+            Ty::Fn(..) => {
+                // how the closure shows, as a JSON string
+                let shown = self.field(v, 1, &Ty::Str)?;
+                self.call(&Ty::Str, "@strata_json_str", &[shown])?.1
+            }
             Ty::Con(n, _) if n == "Set" => {
                 let l = self.as_list(v)?;
                 self.json(&l)?
+            }
+            t if self.m.boxed(t) => {
+                let f = self.helper("json", t)?;
+                self.call(&Ty::Str, &f, &[(t.clone(), v.1.clone())])?.1
             }
             t if self.m.nominal(t) || matches!(t, Ty::Con(l, _) if l == "List" || l == "Dict") => {
                 let f = self.helper("json", t)?;
@@ -1523,7 +1709,23 @@ impl<'m, 'a> Func<'m, 'a> {
         let t = self.m.repr(&a.0)?;
         Ok(match &t {
             Ty::Unit => bool_v("true"),
-            Ty::Int | Ty::Bool => {
+            Ty::Int => {
+                // the same 64 bits, or two big integers of the same value
+                let (same, end, deep) = (self.fresh("same"), self.fresh_label("int.eqd"), self.fresh_label("int.deep"));
+                self.emit(format!("{same} = icmp eq i64 {}, {}", a.1, b.1));
+                let from = self.cur.clone();
+                self.emit(format!("br i1 {same}, label %{end}, label %{deep}"));
+                self.block(&deep);
+                let e = self.fresh("deq");
+                self.emit(format!("{e} = call i1 @strata_int_eq(i64 {}, i64 {})", a.1, b.1));
+                let from_deep = self.cur.clone();
+                self.br(&end);
+                self.block(&end);
+                let r = self.fresh("eq");
+                self.emit(format!("{r} = phi i1 [ true, %{from} ], [ {e}, %{from_deep} ]"));
+                bool_v(&r)
+            }
+            Ty::Bool => {
                 let r = self.fresh("eq");
                 self.emit(format!("{r} = icmp eq {} {}, {}", self.m.ll(&t)?, a.1, b.1));
                 bool_v(&r)
@@ -1534,6 +1736,10 @@ impl<'m, 'a> Func<'m, 'a> {
                 bool_v(&r)
             }
             Ty::Str => self.call(&Ty::Bool, "@strata_str_eq", &[a.clone(), b.clone()])?,
+            t if self.m.boxed(t) => {
+                let f = self.helper("eq", t)?;
+                self.call(&Ty::Bool, &f, &[(t.clone(), a.1.clone()), (t.clone(), b.1.clone())])?
+            }
             t if collection(t).is_some() => {
                 let (x, y) = (self.as_list(a)?, self.as_list(b)?);
                 self.equal(&x, &y)?
@@ -1541,6 +1747,29 @@ impl<'m, 'a> Func<'m, 'a> {
             t if self.m.nominal(t) || matches!(t, Ty::Con(l, _) if l == "List") => {
                 let f = self.helper("eq", t)?;
                 self.call(&Ty::Bool, &f, &[(t.clone(), a.1.clone()), (t.clone(), b.1.clone())])?
+            }
+            t if self.is_dyn(t) => {
+                // the same implementation's table, then its equality (values
+                // of different types are never equal)
+                let (ra, rb) = (self.fresh("vta"), self.fresh("vtb"));
+                self.emit(format!("{ra} = load i64, ptr {}", a.1));
+                self.emit(format!("{rb} = load i64, ptr {}", b.1));
+                let same = self.fresh("samevt");
+                self.emit(format!("{same} = icmp eq i64 {ra}, {rb}"));
+                let (cmp, end) = (self.fresh_label("dyn.eq"), self.fresh_label("dyn.eqd"));
+                let from = self.cur.clone();
+                self.emit(format!("br i1 {same}, label %{cmp}, label %{end}"));
+                self.block(&cmp);
+                let fp = self.dyn_entry(a, DYN_EQ);
+                let (sa, sb) = (self.field(a, 0, &Ty::Int)?, self.field(b, 0, &Ty::Int)?);
+                let r = self.fresh("deq");
+                self.emit(format!("{r} = call i1 {fp}(i64 {}, i64 {})", sa.1, sb.1));
+                let from_cmp = self.cur.clone();
+                self.br(&end);
+                self.block(&end);
+                let p = self.fresh("eq");
+                self.emit(format!("{p} = phi i1 [ false, %{from} ], [ {r}, %{from_cmp} ]"));
+                bool_v(&p)
             }
             t => return Err(format!("comparing `{}` values is not compiled yet", key(t))),
         })
@@ -1580,9 +1809,13 @@ impl<'m, 'a> Func<'m, 'a> {
                         h.drop_value(&(Ty::Str, y))?;
                         h.emit(format!("ret i64 {}", c.1));
                     }
-                    Ty::Int | Ty::Bool => {
+                    Ty::Int => {
+                        let c = h.call(&Ty::Int, "@strata_int_cmp", &[a.clone(), b.clone()])?;
+                        h.emit(format!("ret i64 {}", c.1));
+                    }
+                    Ty::Bool => {
                         let (lt, gt) = (h.fresh("l"), h.fresh("g"));
-                        let (pl, pg) = if matches!(h.m.repr(t)?, Ty::Int) { ("slt", "sgt") } else { ("ult", "ugt") };
+                        let (pl, pg) = ("ult", "ugt");
                         h.emit(format!("{lt} = icmp {pl} {ll} %a, %b"));
                         h.emit(format!("{gt} = icmp {pg} {ll} %a, %b"));
                         three(&mut h, &lt, &gt);
@@ -1659,6 +1892,31 @@ impl<'m, 'a> Func<'m, 'a> {
                     }
                 }
                 format!("define i64 {name}({ll} %a, {ll} %b)")
+            }
+            "eq" if h.m.boxed(t) => {
+                // the same member, then equal as it
+                let (ta, tb) = (h.tag(&a), h.tag(&b));
+                let st = h.fresh("sametag");
+                h.emit(format!("{st} = icmp eq i64 {ta}, {tb}"));
+                h.emit(format!("br i1 {st}, label %members, label %no"));
+                h.block("members");
+                h.on_member(&a, |h, m, x| {
+                    let y = h.narrow(&b, m)?;
+                    let e = h.equal(&x, &y)?;
+                    h.emit(format!("ret i1 {}", e.1));
+                    Ok(())
+                })?;
+                h.block("no");
+                h.emit("ret i1 false".into());
+                format!("define i1 {name}(ptr %a, ptr %b)")
+            }
+            "json" | "show" if h.m.boxed(t) => {
+                h.on_member(&a, |h, _, x| {
+                    let s = if what == "json" { h.json(&x)? } else { h.show(&x)? };
+                    h.emit(format!("ret ptr {s}"));
+                    Ok(())
+                })?;
+                format!("define ptr {name}(ptr %a)")
             }
             "eq" if list => {
                 let et = args[0].clone();
@@ -1872,6 +2130,32 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let mut h = Func::new(self.m, HashMap::default());
         h.block("start");
+        if h.m.boxed(&t) {
+            // a record's or variant's block drops as itself; a box holds its value
+            let a: V = (t.clone(), "%a".into());
+            h.on_member(&a, |h, m, x| {
+                if h.m.boxes(m) {
+                    let (gone, unbox, kept) = (h.fresh("gone"), h.fresh_label("unbox"), h.fresh_label("kept"));
+                    h.emit(format!("{gone} = call i1 @strata_release(ptr %a)"));
+                    h.emit(format!("br i1 {gone}, label %{unbox}, label %{kept}"));
+                    h.block(&unbox);
+                    let x = h.field(&a, 0, m)?;
+                    h.emit("call void @strata_free(ptr %a)".into());
+                    h.drop_value(&x)?;
+                    h.emit("ret void".into());
+                    h.block(&kept);
+                    h.emit("ret void".into());
+                } else {
+                    let f = h.drop_fn(m)?;
+                    h.emit(format!("tail call void {f}(ptr {})", x.1));
+                    h.emit("ret void".into());
+                }
+                Ok(())
+            })?;
+            let text = h.finish();
+            writeln!(self.m.body, "define void {name}(ptr %a) {{\n{text}}}\n").unwrap();
+            return Ok(name);
+        }
         h.emit("%null = icmp eq ptr %a, null".into());
         h.emit("br i1 %null, label %kept, label %held".into());
         h.block("held");
@@ -1986,6 +2270,32 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let within = |ctx: &[Part], more: Vec<Part>| -> Vec<Part> { ctx.iter().cloned().chain(more).collect() };
         match t {
+            TypeExpr::Union(written) if matches!(self.m.repr(&v.0)?, Ty::Union(_)) => {
+                // the value is one of the members whose refinements it satisfies
+                let written: Vec<(Ty, TypeExpr)> = written.iter().map(|w| Ok((self.lower(w)?, w.clone()))).collect::<Res<_>>()?;
+                let slot = self.fresh("inunion");
+                writeln!(self.allocas, "  {slot} = alloca i1").unwrap();
+                let end = self.fresh_label("union.checked");
+                self.on_member(v, |s, m, x| {
+                    let mk = key(&s.m.repr(m)?);
+                    let mut ok = bool_v("false");
+                    for (wt, w) in &written {
+                        if s.m.members(wt).iter().any(|y| s.m.repr(y).map(|r| key(&r)).ok().as_deref() == Some(mk.as_str())) {
+                            let one = s.satisfies(w, &x)?;
+                            let r = s.fresh("or");
+                            s.emit(format!("{r} = or i1 {}, {}", ok.1, one.1));
+                            ok = bool_v(&r);
+                        }
+                    }
+                    s.emit(format!("store i1 {}, ptr {slot}", ok.1));
+                    s.br(&end);
+                    Ok(())
+                })?;
+                self.block(&end);
+                let ok = self.fresh("ok");
+                self.emit(format!("{ok} = load i1, ptr {slot}"));
+                self.fail_unless_in(&bool_v(&ok), ctx.to_vec(), v, format!("is not a `{}`", crate::printer::ty(t)))?;
+            }
             TypeExpr::Refined(b, pred) => {
                 self.check_in(b, v, ctx, false)?;
                 let ok = self.with_it(v, outer, |c| c.expr(pred))?;
@@ -2086,6 +2396,7 @@ impl<'m, 'a> Func<'m, 'a> {
                     None => false,
                 }
             }
+            TypeExpr::Union(ms) => ms.iter().any(|m| self.needs_check(m)),
             _ => false,
         }
     }
@@ -2128,6 +2439,26 @@ impl<'m, 'a> Func<'m, 'a> {
     /// Whether `v` is a value of the type named `name` (a type's name as a
     /// pattern, or `is`): its constructor, and every refinement.
     fn holds(&mut self, name: &str, v: &V) -> Res<V> {
+        if self.m.boxed(&v.0) {
+            // the member first, then its refinements on the value as it
+            let target = self.lower(&TypeExpr::Named(Symbol::from(name), vec![]))?;
+            let is = self.holds_member(v, &target)?;
+            if self.m.boxed(&target) || self.m.members(&target).len() > 1 {
+                return Ok(is);
+            }
+            let (yes, end) = (self.fresh_label("holds.member"), self.fresh_label("holds.end"));
+            let from = self.cur.clone();
+            self.cond_br(&is, &yes, &end);
+            self.block(&yes);
+            let x = self.narrow(v, &target)?;
+            let ok = self.holds(name, &x)?;
+            let from_yes = self.cur.clone();
+            self.br(&end);
+            self.block(&end);
+            let r = self.fresh("holds");
+            self.emit(format!("{r} = phi i1 [ false, %{from} ], [ {}, %{from_yes} ]", ok.1));
+            return Ok(bool_v(&r));
+        }
         let mut conds = vec![];
         if self.m.nominal(&self.m.repr(&v.0)?) {
             let target = Ty::Con(Symbol::from(Symbol::from(name)), Module::args_of(&v.0));
@@ -2153,6 +2484,37 @@ impl<'m, 'a> Func<'m, 'a> {
             }
         }
         // all of them, though each is evaluated (refinements are pure)
+        let mut acc = bool_v("true");
+        for c in conds {
+            let r = self.fresh("and");
+            self.emit(format!("{r} = and i1 {}, {}", acc.1, c.1));
+            acc = bool_v(&r);
+        }
+        Ok(acc)
+    }
+
+    /// Whether `v` satisfies the refinements of the written type `t` (its
+    /// conditions and those of the types it names, as `holds`).
+    fn satisfies(&mut self, t: &TypeExpr, v: &V) -> Res<V> {
+        let mut conds = vec![];
+        let mut t = t.clone();
+        loop {
+            match t {
+                TypeExpr::Refined(b, pred) => {
+                    conds.push(self.with_it(v, false, |c| c.expr(&pred))?);
+                    t = *b;
+                }
+                TypeExpr::Named(n, _) => {
+                    let Some(td) = self.m.env.types.get(&n).cloned() else { break };
+                    if let Some(r) = self.m.refinement(&n) {
+                        conds.push(self.with_it(v, false, |c| c.expr(r))?);
+                    }
+                    let TypeBody::Alias(a) = td.body else { break };
+                    t = a;
+                }
+                _ => break,
+            }
+        }
         let mut acc = bool_v("true");
         for c in conds {
             let r = self.fresh("and");
@@ -2213,10 +2575,86 @@ impl<'m, 'a> Func<'m, 'a> {
 
     // ---- expressions ----
 
+    /// The value of `e`, as the checker typed it: a union's value where the
+    /// checker narrowed it to a member (a matched variable in its arm) is
+    /// that member's.
     fn expr(&mut self, e: &Expr) -> Res<V> {
+        let v = self.expr_in(e)?;
+        if !self.m.boxed(&v.0) {
+            return Ok(v);
+        }
+        match self.ty_of(e) {
+            Ok(t) if !self.m.boxed(&t) && self.m.member_of(&t, &v.0) => self.narrow(&v, &t),
+            _ => Ok(v),
+        }
+    }
+
+    /// A union's value `v`, known to be of member type `t`: unboxed (borrowed from the box).
+    fn narrow(&mut self, v: &V, t: &Ty) -> Res<V> {
+        if self.m.boxes(t) {
+            let x = self.field(v, 0, t)?;
+            return Ok((t.clone(), x.1));
+        }
+        Ok((t.clone(), v.1.clone()))
+    }
+
+    /// `v` (of a member type, or a smaller union) as a value of union `u`:
+    /// boxed when `u` boxes its type (a temporary holding it).
+    fn boxed_into(&mut self, v: V, u: &Ty) -> Res<V> {
+        if self.m.boxed(&v.0) || matches!(self.m.repr(&v.0)?, Ty::Union(_)) || !self.m.boxes(&v.0) {
+            return Ok((u.clone(), v.1));
+        }
+        let tag = self.m.box_tag(&v.0);
+        let b = self.block_of(tag, &[v])?;
+        Ok(self.temp((u.clone(), b)))
+    }
+
+    /// A `switch` on the member a union's value `v` holds: `each` gets the
+    /// member type and the value as it (it must end its block).
+    fn on_member(&mut self, v: &V, mut each: impl FnMut(&mut Self, &Ty, V) -> Res<()>) -> Res<()> {
+        let ms = self.m.members(&v.0);
+        let tag = self.tag(v);
+        let labels: Vec<String> = ms.iter().map(|_| self.fresh_label("member")).collect();
+        let mut cases = vec![];
+        let mut seen = HashSet::default();
+        for (m, l) in ms.iter().zip(&labels) {
+            for t in self.m.member_tags(m) {
+                if seen.insert(t) {
+                    cases.push(format!("i64 {t}, label %{l}"));
+                }
+            }
+        }
+        let other = self.fresh_label("member.none");
+        self.emit(format!("switch i64 {tag}, label %{other} [ {} ]", cases.join(" ")));
+        for (m, l) in ms.iter().zip(&labels) {
+            self.block(l);
+            let x = self.narrow(v, m)?;
+            each(self, m, x)?;
+        }
+        self.block(&other);
+        self.emit("unreachable".into());
+        self.dead();
+        Ok(())
+    }
+
+    /// Whether union value `v` holds a member of type `t` (or of one of its members).
+    fn holds_member(&mut self, v: &V, t: &Ty) -> Res<V> {
+        let tags: Vec<i64> = self.m.members(t).iter().flat_map(|m| self.m.member_tags(m)).collect();
+        let tag = self.tag(v);
+        let mut acc = bool_v("false");
+        for n in tags {
+            let (e, o) = (self.fresh("is"), self.fresh("or"));
+            self.emit(format!("{e} = icmp eq i64 {tag}, {n}"));
+            self.emit(format!("{o} = or i1 {}, {e}", acc.1));
+            acc = bool_v(&o);
+        }
+        Ok(acc)
+    }
+
+    fn expr_in(&mut self, e: &Expr) -> Res<V> {
         Ok(match e {
-            Expr::Int(n) => (Ty::Int, n.to_string()),
-            Expr::BigInt(n) => return self.unsupported(&format!("the big integer {n}")),
+            Expr::Int(n) => self.int_lit(&n.to_string()),
+            Expr::BigInt(n) => self.int_lit(&n.to_string()),
             Expr::Float(x) => (Ty::Float, format!("0x{:016X}", x.to_bits())),
             Expr::Bool(b) => bool_v(&b.to_string()),
             Expr::Str(s) => self.string(s),
@@ -2330,7 +2768,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.temp((t, b))
             }
             Expr::Ctor(c, args) => self.construct(e, c, args)?,
-            Expr::Field(r, f) => self.get_field(r, f)?,
+            Expr::Field(r, f) => self.get_field(e, r, f)?,
             Expr::Is(x, name) => {
                 let v = self.expr(x)?;
                 if self.m.env.ctors.contains_key(name) && !self.m.is_distinct(name) {
@@ -2435,7 +2873,13 @@ impl<'m, 'a> Func<'m, 'a> {
             // evaluated at build time once deriving lands; until then, as written
             Expr::Comptime(x) => self.expr(x)?,
             Expr::Describe(_) => return self.unsupported("a type's description outside a derived method"),
-            Expr::Mock(_) => return self.unsupported("`mock`"),
+            Expr::Mock(t) => {
+                let tr_ty = self.lower(t)?;
+                if !self.is_dyn(&tr_ty) {
+                    return self.unsupported(&format!("`mock` of `{}`, which is not a trait", key(&tr_ty)));
+                }
+                self.mock_value(&tr_ty)?
+            }
             // rewritten into builtin calls when the program is resolved
             Expr::Range(..) | Expr::Index(..) | Expr::Comp(..) | Expr::Dict(..) | Expr::Set(..) => return self.unsupported("a range, slice, comprehension or collection literal not desugared"),
         })
@@ -2465,17 +2909,96 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     /// `+`, `-`, `*` on `Int`: a fault on overflow.
+    /// `+`, `-`, `*` on `Int`s: here when both and the result are small
+    /// (runtime.c, "integers"), else in the runtime (a big integer).
     fn int_op(&mut self, op: &str, a: &V, b: &V) -> V {
         let (pair, r, ov) = (self.fresh("pair"), self.fresh("int"), self.fresh("ov"));
         self.emit(format!("{pair} = call {{ i64, i1 }} @llvm.{op}.with.overflow.i64(i64 {}, i64 {})", a.1, b.1));
         self.emit(format!("{r} = extractvalue {{ i64, i1 }} {pair}, 0"));
         self.emit(format!("{ov} = extractvalue {{ i64, i1 }} {pair}, 1"));
-        let (bad, ok) = (self.fresh_label("overflow"), self.fresh_label("no_overflow"));
-        self.emit(format!("br i1 {ov}, label %{bad}, label %{ok}"));
-        self.block(&bad);
-        self.emit("call void @strata_overflow()".into());
-        self.emit("unreachable".into());
-        self.block(&ok);
+        let ok = self.all_small(&[&a.1, &b.1, &r]);
+        let fine = self.fresh("fine");
+        self.emit(format!("{fine} = and i1 {ok}, true"));
+        let nov = self.fresh("nov");
+        self.emit(format!("{nov} = xor i1 {ov}, true"));
+        let both = self.fresh("fast");
+        self.emit(format!("{both} = and i1 {fine}, {nov}"));
+        let (fast, slow, end) = (self.fresh_label("int.small"), self.fresh_label("int.big"), self.fresh_label("int.done"));
+        self.emit(format!("br i1 {both}, label %{fast}, label %{slow}"));
+        self.block(&fast);
+        self.br(&end);
+        self.block(&slow);
+        let f = match op {
+            "sadd" => "add",
+            "ssub" => "sub",
+            _ => "mul",
+        };
+        let big = self.fresh("big");
+        self.emit(format!("{big} = call i64 @strata_int_{f}(i64 {}, i64 {})", a.1, b.1));
+        self.br(&end);
+        self.block(&end);
+        let v = self.fresh("n");
+        self.emit(format!("{v} = phi i64 [ {r}, %{fast} ], [ {big}, %{slow} ]"));
+        (Ty::Int, v)
+    }
+
+    /// Whether every one of these `Int`s is small (in [-2^62, 2^62): its two
+    /// top bits are equal).
+    fn all_small(&mut self, xs: &[&str]) -> String {
+        let mut acc = String::new();
+        for x in xs {
+            let (sh, xo) = (self.fresh("sh"), self.fresh("xo"));
+            self.emit(format!("{sh} = shl i64 {x}, 1"));
+            self.emit(format!("{xo} = xor i64 {x}, {sh}"));
+            if acc.is_empty() {
+                acc = xo;
+            } else {
+                let o = self.fresh("or");
+                self.emit(format!("{o} = or i64 {acc}, {xo}"));
+                acc = o;
+            }
+        }
+        let r = self.fresh("small");
+        self.emit(format!("{r} = icmp sge i64 {acc}, 0"));
+        r
+    }
+
+    /// `a` `pred` `b` on `Int`s: as 64-bit values unless both are big.
+    fn int_compare(&mut self, pred: &str, a: &str, b: &str) -> V {
+        let (sa, sb, xa, xb, both, bb) = (self.fresh("sh"), self.fresh("sh"), self.fresh("xo"), self.fresh("xo"), self.fresh("both"), self.fresh("bigs"));
+        self.emit(format!("{sa} = shl i64 {a}, 1"));
+        self.emit(format!("{xa} = xor i64 {a}, {sa}"));
+        self.emit(format!("{sb} = shl i64 {b}, 1"));
+        self.emit(format!("{xb} = xor i64 {b}, {sb}"));
+        self.emit(format!("{both} = and i64 {xa}, {xb}"));
+        self.emit(format!("{bb} = icmp slt i64 {both}, 0"));
+        let (fast, slow, end) = (self.fresh_label("cmp.small"), self.fresh_label("cmp.big"), self.fresh_label("cmp.done"));
+        self.emit(format!("br i1 {bb}, label %{slow}, label %{fast}"));
+        self.block(&fast);
+        let r1 = self.fresh("c");
+        self.emit(format!("{r1} = icmp {pred} i64 {a}, {b}"));
+        self.br(&end);
+        self.block(&slow);
+        let (c, r2) = (self.fresh("c"), self.fresh("c"));
+        self.emit(format!("{c} = call i64 @strata_int_cmp(i64 {a}, i64 {b})"));
+        self.emit(format!("{r2} = icmp {pred} i64 {c}, 0"));
+        self.br(&end);
+        self.block(&end);
+        let r = self.fresh("cmp");
+        self.emit(format!("{r} = phi i1 [ {r1}, %{fast} ], [ {r2}, %{slow} ]"));
+        bool_v(&r)
+    }
+
+    /// An integer literal: itself when small, else a big integer made at run time.
+    fn int_lit(&mut self, digits: &str) -> V {
+        if let Ok(n) = digits.parse::<i64>() {
+            if (-(1i64 << 62)..(1i64 << 62)).contains(&n) {
+                return (Ty::Int, n.to_string());
+            }
+        }
+        let s = self.m.string(digits);
+        let r = self.fresh("lit");
+        self.emit(format!("{r} = call i64 @strata_int_lit(ptr {s})"));
         (Ty::Int, r)
     }
 
@@ -2583,10 +3106,10 @@ impl<'m, 'a> Func<'m, 'a> {
                 let sym = self.string(op.symbol());
                 self.call(&Ty::Float, "@strata_finite", &[r, a.clone(), b.clone(), sym])?
             }
-            (Lt, Ty::Int) => cmp(self, "icmp slt")?,
-            (Le, Ty::Int) => cmp(self, "icmp sle")?,
-            (Gt, Ty::Int) => cmp(self, "icmp sgt")?,
-            (Ge, Ty::Int) => cmp(self, "icmp sge")?,
+            (Lt, Ty::Int) => self.int_compare("slt", &a.1, &b.1),
+            (Le, Ty::Int) => self.int_compare("sle", &a.1, &b.1),
+            (Gt, Ty::Int) => self.int_compare("sgt", &a.1, &b.1),
+            (Ge, Ty::Int) => self.int_compare("sge", &a.1, &b.1),
             (Lt, Ty::Float) => cmp(self, "fcmp olt")?,
             (Le, Ty::Float) => cmp(self, "fcmp ole")?,
             (Gt, Ty::Float) => cmp(self, "fcmp ogt")?,
@@ -2596,6 +3119,28 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     fn call_named(&mut self, call: &Expr, name: &str, args: Vec<&Expr>) -> Res<V> {
+        if name == "matches" && args.len() == 2 && self.lookup(name).is_none() && !self.m.env.fns.contains_key(&Symbol::new(name)) {
+            // a literal pattern, compiled to a DFA now
+            let Expr::Str(re) = args[1] else { return self.unsupported("`matches` with a pattern that isn't a literal") };
+            let v = self.expr(args[0])?;
+            if is_never(&v.0) {
+                return Ok(v);
+            }
+            return match self.m.regex(re)? {
+                Ok((g, nc)) => {
+                    let t = |part: &str| (Ty::Str, format!("@\"{g}.{part}\""));
+                    self.call(&Ty::Bool, "@strata_dfa_match", &[(Ty::Str, v.1), t("cls"), (Ty::Int, nc.to_string()), t("next"), t("dead"), t("end")])
+                }
+                Err(msg) => {
+                    // (the interpreter shows no call stack for this one)
+                    let m = self.string(&msg);
+                    self.emit(format!("call void @strata_fault(i32 {}, ptr {})", Fault::Runtime as i32 | 256, m.1));
+                    self.emit("unreachable".into());
+                    self.dead();
+                    Ok(never())
+                }
+            };
+        }
         if self.lookup(name).is_some() {
             // a local closure
             let f = self.load(name)?;
@@ -2720,6 +3265,9 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         if self.m.env.is_method(Symbol::new(name)) {
             if let Some(recv) = vs.first().map(|v| v.0.clone()) {
+                if matches!(self.m.repr(&recv)?, Ty::Union(_)) {
+                    return self.call_on_union(name, vs, hint, &places);
+                }
                 if self.is_dyn(&recv) || Module::head(&recv).is_some_and(|h| self.m.resolve_method(name, &h).is_some() || self.m.ctors_of(&recv).iter().any(|c| self.m.resolve_method(name, c).is_some())) {
                     return self.call_method(name, recv, vs, hint, &places);
                 }
@@ -2757,6 +3305,49 @@ impl<'m, 'a> Func<'m, 'a> {
         self.builtin(name, vs)
     }
 
+    /// A trait method on a union's value: each member's implementation, by the member.
+    fn call_on_union(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
+        if vs.iter().any(|v| is_never(&v.0)) {
+            return Ok(never());
+        }
+        let _ = places;
+        let mutates = self.m.members(&vs[0].0).iter().filter_map(|m| Module::head(m)).find_map(|h| self.m.resolve_method(name, &h)).and_then(|(tr, m)| self.m.trait_method(&tr, &m)).is_some_and(|tm| tm.decl.params.first().is_some_and(|p| p.mutable));
+        if mutates {
+            // (it would write a member's value back where the union's goes)
+            return self.unsupported(&format!("a `mut self` method (`{name}`) on a union"));
+        }
+        let ret = hint.clone().ok_or(format!("the result type of `{name}`"))?;
+        let slot = self.fresh("ures");
+        if has_value(&ret) {
+            writeln!(self.allocas, "  {slot} = alloca {}", self.m.ll(&ret)?).unwrap();
+        }
+        let end = self.fresh_label("dispatched");
+        let v0 = vs[0].clone();
+        self.on_member(&v0, |c, m, x| {
+            c.push_scope(true);
+            let mut args = vec![x];
+            args.extend(vs[1..].iter().cloned());
+            let out = c.call_method(name, m.clone(), args, hint.clone(), &[])?;
+            let out = c.coerce(out, &ret)?;
+            let out = c.take(out);
+            c.pop_scope()?;
+            if has_value(&ret) && !is_never(&out.0) {
+                let ll = c.m.ll(&ret)?;
+                c.emit(format!("store {ll} {}, ptr {slot}", out.1));
+            }
+            c.br(&end);
+            Ok(())
+        })?;
+        self.block(&end);
+        if !has_value(&ret) {
+            return Ok((ret, String::new()));
+        }
+        let r = self.fresh("ur");
+        let ll = self.m.ll(&ret)?;
+        self.emit(format!("{r} = load {ll}, ptr {slot}"));
+        Ok(self.temp((ret, r)))
+    }
+
     /// Call trait method `name` on a value of type `recv` (`vs` includes it,
     /// unless the method has no `self`). The implementation is chosen here,
     /// from the type; a variant with an implementation of its own is chosen
@@ -2767,7 +3358,7 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let head = Module::head(&recv).ok_or(format!("`{name}` on a `{}`", key(&recv)))?;
         if self.m.traits.contains_key(&Symbol::new(&head)) {
-            return self.dyn_call(name, recv, vs, places);
+            return self.dyn_call(name, recv, vs, hint, places);
         }
         let args = Module::args_of(&recv);
         let own: Vec<String> = self.m.ctors_of(&recv).into_iter().filter(|c| *c != head && self.m.resolve_method(name, c).is_some_and(|(tr, _)| self.m.impl_of(&tr, c).is_some())).collect();
@@ -3056,15 +3647,12 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             ("len", [Ty::Str]) => self.call(&Ty::Int, "@strata_str_len", &vs)?,
             ("abs", [Ty::Int]) => {
-                // |i64::MIN| doesn't fit
-                let is_min = self.apply(BinOp::Eq, &vs[0], &(Ty::Int, i64::MIN.to_string()))?;
-                let (bad, ok) = (self.fresh_label("overflow"), self.fresh_label("abs"));
-                self.cond_br(&is_min, &bad, &ok);
-                self.block(&bad);
-                self.emit("call void @strata_overflow()".into());
-                self.emit("unreachable".into());
-                self.block(&ok);
-                self.call(&Ty::Int, "@llvm.abs.i64", &[vs[0].clone(), bool_v("false")])?
+                // |n| of a small n is small, but for -2^62
+                let neg = self.int_op("ssub", &(Ty::Int, "0".into()), &vs[0]);
+                let lt = self.int_compare("slt", &vs[0].1, "0");
+                let r = self.fresh("abs");
+                self.emit(format!("{r} = select i1 {}, i64 {}, i64 {}", lt.1, neg.1, vs[0].1));
+                (Ty::Int, r)
             }
             ("abs", [Ty::Float]) => self.call(&Ty::Float, "@llvm.fabs.f64", &vs)?,
             ("min" | "max", [a, b]) if a == b && matches!(a, Ty::Int | Ty::Float) => {
@@ -3075,11 +3663,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.emit(format!("{r} = select i1 {}, {ll} {}, {ll} {}", lt.1, x.1, y.1));
                 (a.clone(), r)
             }
-            ("float", [Ty::Int]) => {
-                let r = self.fresh("fl");
-                self.emit(format!("{r} = sitofp i64 {} to double", vs[0].1));
-                (Ty::Float, r)
-            }
+            ("float", [Ty::Int]) => self.call(&Ty::Float, "@strata_int_to_float", &vs)?,
             ("sqrt", [Ty::Float]) => {
                 // no NaN: the square root of a negative number is a fault
                 self.call(&Ty::Float, "@strata_sqrt", &vs)?
@@ -3179,6 +3763,9 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let want_r = self.m.repr(want)?;
         let have = self.m.repr(&v.0)?;
+        if self.m.boxed(&want_r) && !self.m.boxed(&have) {
+            return self.boxed_into(v, want);
+        }
         if self.is_dyn(&want_r) && !self.is_dyn(&have) {
             let vt = self.vtable(&want_r, &v.0)?;
             // the pair holds the value
@@ -3264,31 +3851,76 @@ impl<'m, 'a> Func<'m, 'a> {
 
     /// A method's signature for a call through a trait value: (method's
     /// trait, declaration, its types with the trait's parameters filled in).
+    ///
+    /// The types are the trait's parameters (a supertrait's, through the
+    /// subtrait's `supers`); `Self` is left to the caller (the trait type at
+    /// a call, the implementation in its table). `Self` may be a
+    /// parameter's or the result's whole type, not part of one.
     fn dyn_signature(&self, recv: &Ty, trm: &str, m: &str) -> Res<(&'a TraitMethod, HashMap<Symbol, Ty>)> {
         let tm = self.m.trait_method(trm, m).ok_or(format!("trait `{trm}` has no method `{m}`"))?;
         let Ty::Con(tr, args) = recv else { unreachable!() };
-        if tr.as_str() != trm && !self.m.traits[&Symbol::new(trm)].params.is_empty() {
-            return self.unsupported(&format!("calling `{m}` of the generic supertrait `{trm}` through a `{tr}`"));
-        }
+        let sub = self.super_sub(tr.as_str(), args, trm, 0).ok_or(format!("`{tr}` has no supertrait `{trm}`"))?;
+        let whole = |t: &TypeExpr| matches!(t, TypeExpr::Named(n, a) if n == "Self" && a.is_empty());
         let mentions = |t: &TypeExpr| crate::types::mentions_self(&FnDecl { params: vec![], ret: t.clone(), ..tm.decl.clone() });
-        if mentions(&tm.decl.ret) || tm.decl.params.iter().skip(1).any(|p| mentions(&p.ty) || p.mutable) || !tm.decl.type_params.is_empty() {
-            return self.unsupported(&format!("calling `{m}` (it mentions `Self`, has a `mut` parameter or type parameters of its own) on a value of the trait type `{tr}`"));
+        if (mentions(&tm.decl.ret) && !whole(&tm.decl.ret)) || tm.decl.params.iter().skip(1).any(|p| mentions(&p.ty) && !(whole(&p.ty) && !p.mutable)) {
+            return self.unsupported(&format!("calling `{m}` (it mentions `Self` inside another type) on a value of the trait type `{tr}`"));
         }
-        let td = self.m.traits[tr];
-        let sub: HashMap<Symbol, Ty> = if tr.as_str() == trm { td.params.iter().cloned().zip(args.iter().cloned()).collect() } else { HashMap::default() };
+        if !tm.decl.type_params.is_empty() && (mentions(&tm.decl.ret) || tm.decl.params[0].mutable || tm.decl.params.iter().skip(1).any(|p| p.mutable || mentions(&p.ty))) {
+            return self.unsupported(&format!("calling `{m}` (type parameters of its own, and `Self` or `mut`) on a value of the trait type `{tr}`"));
+        }
         Ok((tm, sub))
     }
 
+    /// The parameters of trait `trm` as seen from trait `tr` with arguments
+    /// `args`: `tr`'s own, or a supertrait's through `tr`'s `supers`.
+    fn super_sub(&self, tr: &str, args: &[Ty], trm: &str, depth: usize) -> Option<HashMap<Symbol, Ty>> {
+        let td = self.m.traits.get(&Symbol::new(tr))?;
+        let sub: HashMap<Symbol, Ty> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+        if tr == trm {
+            return Some(sub);
+        }
+        if depth > 32 {
+            return None;
+        }
+        td.supers.iter().find_map(|sup| {
+            let TypeExpr::Named(n, sargs) = sup else { return None };
+            let lowered: Vec<Ty> = sargs.iter().map(|a| self.m.lower(a, &sub)).collect::<Res<_>>().ok()?;
+            self.super_sub(n.as_str(), &lowered, trm, depth + 1)
+        })
+    }
+
     /// Call `name` on a value of a trait type, through its table.
-    fn dyn_call(&mut self, name: &str, recv: Ty, vs: Vec<V>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
+    fn dyn_call(&mut self, name: &str, recv: Ty, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
         let Ty::Con(tr, _) = &recv else { unreachable!() };
         let m = crate::types::split_trait_call(name).map_or(name, |(_, m)| m);
         let methods = self.dyn_methods(tr);
         let i = methods.iter().position(|(_, x)| x == m).ok_or(format!("`{tr}` has no method `{m}`"))?;
         let trm = methods[i].0.clone();
-        let (tm, sub) = self.dyn_signature(&recv, &trm, m)?;
+        let (tm, mut sub) = self.dyn_signature(&recv, &trm, m)?;
+        sub.insert(Symbol::new("Self"), recv.clone());
+        let fp = if tm.decl.type_params.is_empty() {
+            self.dyn_entry(&vs[0], i + DYN_METHODS)
+        } else {
+            // type parameters of its own: a dispatcher for these, by the table
+            let mut targs = HashMap::default();
+            for (p, v) in tm.decl.params.iter().zip(&vs).skip(1) {
+                self.m.bind_targs(&p.ty, &v.0, &tm.decl.type_params, &mut targs);
+            }
+            if let Some(rt) = &hint {
+                self.m.bind_targs(&tm.decl.ret, rt, &tm.decl.type_params, &mut targs);
+            }
+            let targs: Vec<Ty> = tm.decl.type_params.iter().map(|p| targs.get(p).cloned().unwrap_or(Ty::Unit)).collect();
+            for (p, t) in tm.decl.type_params.iter().zip(&targs) {
+                sub.insert(p.clone(), t.clone());
+            }
+            let d = format!("@\"dispatch:{trm}::{m}@{}[{}]\"", key(&recv), targs.iter().map(key).collect::<Vec<_>>().join(", "));
+            if !self.m.dispatch.iter().any(|x| x.name == d) {
+                self.m.dispatch.push(Dispatch { name: d.clone(), tr_ty: recv.clone(), trm: trm.clone(), m: m.to_string(), targs, made: None });
+            }
+            d
+        };
         let ret = self.m.lower(&tm.decl.ret, &sub)?;
-        let fp = self.dyn_entry(&vs[0], i + DYN_METHODS);
+        let dispatched = !tm.decl.type_params.is_empty();
         let mut args = vec![];
         let mut back = None;
         if tm.decl.params[0].mutable {
@@ -3309,12 +3941,23 @@ impl<'m, 'a> Func<'m, 'a> {
             self.emit(format!("{at} = getelementptr i64, ptr {copy}, i64 1"));
             args.push((Ty::Str, at));
             back = Some((place, slot));
+        } else if dispatched {
+            // the dispatcher reads the table from the pair
+            args.push((recv.clone(), vs[0].1.clone()));
         } else {
             let s = self.field(&vs[0], 0, &Ty::Int)?;
             args.push(s);
         }
-        for (p, v) in tm.decl.params.iter().skip(1).zip(vs.into_iter().skip(1)) {
+        let mut backs = vec![];
+        for (k, (p, v)) in tm.decl.params.iter().skip(1).zip(vs.into_iter().skip(1)).enumerate() {
             let t = self.m.lower(&p.ty, &sub)?;
+            if p.mutable {
+                let place = places.get(k + 1).cloned().flatten();
+                let slot = self.mut_slot(&place, &(t.clone(), v.1), &p.name)?;
+                args.push((Ty::Str, slot.clone()));
+                backs.push((place, slot, t, p.ty.clone()));
+                continue;
+            }
             args.push(self.coerce(v, &t)?);
         }
         let r = self.call(&ret, &fp, &args)?;
@@ -3322,7 +3965,27 @@ impl<'m, 'a> Func<'m, 'a> {
         if let Some((place, slot)) = back {
             self.write_back(&place, &slot, &recv, &tm.decl.params[0].ty)?;
         }
+        for (place, slot, t, pty) in backs {
+            self.write_back(&place, &slot, &t, &pty)?;
+        }
         Ok(r)
+    }
+
+    /// A trait value `a` passed as `Self` to a method of `imp`'s table
+    /// `vt`: its value, which must be of that same implementation.
+    fn unwrap_self(&mut self, a: &V, vt: &str, imp: &Ty, m: &str) -> Res<V> {
+        let (raw, mine, same) = (self.fresh("vt"), self.fresh("mine"), self.fresh("same"));
+        self.emit(format!("{raw} = load i64, ptr {}", a.1));
+        self.emit(format!("{mine} = ptrtoint ptr {vt} to i64"));
+        self.emit(format!("{same} = icmp eq i64 {raw}, {mine}"));
+        let (ok, bad) = (self.fresh_label("self.ok"), self.fresh_label("self.other"));
+        self.cond_br(&bool_v(&same), &ok, &bad);
+        self.block(&bad);
+        let shown = self.json(a)?;
+        self.fault(Fault::Runtime, vec![Part::Lit(format!("`{m}` of `{}` takes a `{}` as `Self`, not ", key(imp), key(imp))), Part::Val(shown)])?;
+        self.block(&ok);
+        let s = self.field(a, 0, &Ty::Int)?;
+        self.from_slot(&s.1, imp)
     }
 
     /// The table of `imp`'s implementation of trait type `tr_ty` (made once).
@@ -3332,6 +3995,7 @@ impl<'m, 'a> Func<'m, 'a> {
         if !self.m.helpers.insert(name.clone()) {
             return Ok(name);
         }
+        self.m.vtables.entry(key(tr_ty)).or_default().push((name.clone(), imp.clone()));
         let head = Module::head(imp).ok_or(format!("a `{}` can't be a `{tr}`", key(imp)))?;
         let ll = self.m.ll(imp)?;
         let mut entries = vec![];
@@ -3350,8 +4014,8 @@ impl<'m, 'a> Func<'m, 'a> {
             let text = h.finish();
             writeln!(self.m.body, "define ptr {f}(i64 %v) {{\n{text}}}\n").unwrap();
         }
-        // dropping and holding it
-        for what in ["drop", "dup"] {
+        // dropping and holding it, comparing two
+        for what in ["drop", "dup", "eq"] {
             let f = format!("@\"dyn{what}:{}\"", key(imp));
             entries.push(f.clone());
             if !self.m.helpers.insert(f.clone()) {
@@ -3360,6 +4024,14 @@ impl<'m, 'a> Func<'m, 'a> {
             let mut h = Func::new(self.m, HashMap::default());
             h.block("start");
             let v = h.from_slot("%v", imp)?;
+            if what == "eq" {
+                let w = h.from_slot("%w", imp)?;
+                let e = h.equal(&v, &w)?;
+                h.emit(format!("ret i1 {}", e.1));
+                let text = h.finish();
+                writeln!(self.m.body, "define i1 {f}(i64 %v, i64 %w) {{\n{text}}}\n").unwrap();
+                continue;
+            }
             if what == "drop" {
                 h.drop_value(&v)?;
             } else if h.counted(imp) {
@@ -3372,11 +4044,15 @@ impl<'m, 'a> Func<'m, 'a> {
         for (trm, m) in self.dyn_methods(tr) {
             let f = format!("@\"dyn:{trm}::{m}@{}\"", key(imp));
             entries.push(f.clone());
-            let Ok((tm, sub)) = self.dyn_signature(tr_ty, &trm, &m) else {
-                // not callable through the table: an entry that is never called
+            let sig_ok = self.dyn_signature(tr_ty, &trm, &m).ok().filter(|(tm, _)| tm.decl.type_params.is_empty());
+            let Some((tm, mut sub)) = sig_ok else {
+                // not called through the table (a dispatcher calls one with
+                // type parameters of its own): an entry that is never called
                 writeln!(self.m.body, "define void {f}() {{\nentry:\n  unreachable\n}}\n").unwrap();
                 continue;
             };
+            // in the table, `Self` is the trait type: the wrapper unwraps and wraps
+            sub.insert(Symbol::new("Self"), tr_ty.clone());
             let (_, imp_m) = self.m.resolve_method(&crate::types::trait_call(&trm, &m), &head).ok_or(format!("`{head}` has no method `{m}`"))?;
             let mi = MethodInst { tr: trm.clone(), method: imp_m, recv: imp.clone(), head: head.clone(), targs: vec![] };
             let symbol = self.m.want_method(mi);
@@ -3399,12 +4075,31 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             for (k, p) in tm.decl.params.iter().skip(1).enumerate() {
                 let t = h.m.lower(&p.ty, &sub)?;
+                if p.mutable {
+                    // the caller's slot
+                    sig.push(format!("ptr %a{k}"));
+                    args.push((Ty::Str, format!("%a{k}")));
+                    continue;
+                }
                 if has_value(&t) {
                     sig.push(format!("{} %a{k}", h.m.ll(&t)?));
                 }
-                args.push((t, format!("%a{k}")));
+                let a: V = (t.clone(), format!("%a{k}"));
+                if matches!(&p.ty, TypeExpr::Named(n, x) if n == "Self" && x.is_empty()) {
+                    // a `Self`: a value of this same implementation, as it
+                    args.push(h.unwrap_self(&a, &name, imp, &m)?);
+                } else {
+                    args.push(a);
+                }
             }
-            let r = h.call(&ret, &symbol, &args)?;
+            let self_ret = matches!(&tm.decl.ret, TypeExpr::Named(n, x) if n == "Self" && x.is_empty());
+            let r = if self_ret {
+                let r = h.call(imp, &symbol, &args)?;
+                let r = h.temp(r);
+                h.coerce(r, tr_ty)?
+            } else {
+                h.call(&ret, &symbol, &args)?
+            };
             if mutable {
                 let v = h.fresh("v");
                 h.emit(format!("{v} = load {ll}, ptr {tmp}"));
@@ -3449,13 +4144,15 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok(self.temp(r))
     }
 
-    /// A closure block: the function, its drop, then the captured values
-    /// (held by the block). A temporary of the current scope.
-    fn closure(&mut self, fsym: &str, captured: &[V]) -> Res<String> {
+    /// A closure block: the function, its drop, how it shows (`shown`, as
+    /// the interpreter's: `<closure (x) -> …>`, `<fn name>`), then the
+    /// captured values (held by the block). A temporary of the current scope.
+    fn closure(&mut self, fsym: &str, captured: &[V], shown: &str) -> Res<String> {
+        let shown = self.m.string(shown);
         if captured.is_empty() {
             let g = format!("@\"closure:{}\"", fsym.trim_start_matches('@').trim_matches('"'));
             if self.m.helpers.insert(g.clone()) {
-                writeln!(self.m.globals, "{g} = private constant {{ i64, ptr, ptr }} {{ i64 0, ptr {fsym}, ptr @strata_free }}, align 8").unwrap();
+                writeln!(self.m.globals, "{g} = private constant {{ i64, ptr, ptr, ptr }} {{ i64 0, ptr {fsym}, ptr @strata_free, ptr {shown} }}, align 8").unwrap();
             }
             return Ok(format!("getelementptr inbounds (i8, ptr {g}, i64 8)"));
         }
@@ -3467,7 +4164,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let mut held = vec![];
         for (i, c) in captured.iter().enumerate() {
             if h.counted(&c.0) {
-                held.push(h.field(&env, i + 1, &c.0)?);
+                held.push(h.field(&env, i + 2, &c.0)?);
             }
         }
         h.emit("call void @strata_free(ptr %a)".into());
@@ -3478,15 +4175,16 @@ impl<'m, 'a> Func<'m, 'a> {
         let text = h.finish();
         writeln!(self.m.body, "define void {dsym}(ptr %a) {{\n{text}}}\n").unwrap();
         let p = self.fresh("clo");
-        self.emit(format!("{p} = call ptr @strata_alloc(i64 {})", 8 * (captured.len() + 2)));
+        self.emit(format!("{p} = call ptr @strata_alloc(i64 {})", 8 * (captured.len() + 3)));
         let (a, d) = (self.fresh("fa"), self.fresh("fd"));
         self.emit(format!("{a} = ptrtoint ptr {fsym} to i64"));
         self.emit(format!("store i64 {a}, ptr {p}"));
         self.emit(format!("{d} = ptrtoint ptr {dsym} to i64"));
         self.set_field(&p, 0, &(Ty::Int, d))?;
+        self.set_field(&p, 1, &(Ty::Str, shown))?;
         for (i, c) in captured.iter().enumerate() {
             let c = self.take(c.clone());
-            self.set_field(&p, i + 1, &c)?;
+            self.set_field(&p, i + 2, &c)?;
         }
         self.temp((Ty::Fn(vec![], Box::new(Ty::Unit)), p.clone()));
         Ok(p)
@@ -3510,7 +4208,7 @@ impl<'m, 'a> Func<'m, 'a> {
         l.block("entry.body");
         let env: V = (Ty::Str, "%env".into());
         for (i, (x, v)) in free.iter().zip(&captured).enumerate() {
-            let val = l.field(&env, i + 1, &v.0)?;
+            let val = l.field(&env, i + 2, &v.0)?;
             let slot = l.local(x, &v.0, None)?;
             l.store(&val, &slot)?;
         }
@@ -3548,7 +4246,8 @@ impl<'m, 'a> Func<'m, 'a> {
         let text = l.finish();
         let ll = self.m.ll(&rt)?;
         writeln!(self.m.body, "define {ll} {fsym}({}) {{\n{text}}}\n", sig.join(", ")).unwrap();
-        let p = self.closure(&fsym, &captured)?;
+        let shown = format!("<closure ({}) -> …>", ps.iter().map(|p| p.name.to_string()).collect::<Vec<_>>().join(", "));
+        let p = self.closure(&fsym, &captured, &shown)?;
         Ok((t, p))
     }
 
@@ -3581,7 +4280,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let text = l.finish();
         let ll = self.m.ll(&rt)?;
         writeln!(self.m.body, "define {ll} {fsym}({}) {{\n{text}}}\n", sig.join(", ")).unwrap();
-        let p = self.closure(&fsym, &[])?;
+        let p = self.closure(&fsym, &[], &format!("<fn {name}>"))?;
         Ok((t, p))
     }
 
@@ -3593,7 +4292,7 @@ impl<'m, 'a> Func<'m, 'a> {
             let ll = self.m.ll(t)?;
             writeln!(self.m.body, "define i1 {fsym}(ptr %env, {ll} %a, {ll} %b) {{\nentry:\n  %c = call i64 {cmp}({ll} %a, {ll} %b)\n  %r = icmp slt i64 %c, 0\n  ret i1 %r\n}}\n").unwrap();
         }
-        let p = self.closure(&fsym, &[])?;
+        let p = self.closure(&fsym, &[], "<fn order>")?;
         Ok((Ty::Fn(vec![t.clone(), t.clone()], Box::new(Ty::Bool)), p))
     }
 
@@ -3655,7 +4354,7 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok(v)
     }
 
-    fn get_field(&mut self, r: &Expr, f: &str) -> Res<V> {
+    fn get_field(&mut self, e: &Expr, r: &Expr, f: &str) -> Res<V> {
         let v = self.expr(r)?;
         let raw = self.ty_of(r).unwrap_or_else(|_| v.0.clone());
         if is_never(&v.0) {
@@ -3686,7 +4385,44 @@ impl<'m, 'a> Func<'m, 'a> {
         if at.len() == cs.len() && at.iter().all(|x| x.1 == i) {
             return self.field(&v, i, &ft);
         }
-        self.unsupported(&format!("the field `{f}` at different places in `{}`'s variants", key(&t)))
+        // at different places (or not in every variant): by the variant
+        let want = self.ty_of(e).unwrap_or(ft);
+        let ll = self.m.ll(&want)?;
+        let slot = self.fresh("fld");
+        if has_value(&want) {
+            writeln!(self.allocas, "  {slot} = alloca {ll}").unwrap();
+        }
+        let end = self.fresh_label("got");
+        self.on_ctor(&v, &end, |s, c| {
+            match at.iter().find(|x| x.0 == c) {
+                Some((_, i, ft)) => {
+                    let x = s.field(&v, *i, ft)?;
+                    let x = s.coerce(x, &want)?;
+                    if has_value(&want) {
+                        s.emit(format!("store {ll} {}, ptr {slot}", x.1));
+                    }
+                    s.br(&end);
+                }
+                None => {
+                    // as the interpreter: a variant with named fields, or another value
+                    let named = s.m.fields(c, &s.m.ctor_args(c, &t))?.first().is_some_and(|x| x.name.is_some());
+                    if named {
+                        s.fault(Fault::Runtime, vec![Part::Lit(format!("no field `{f}`"))])?;
+                    } else {
+                        let shown = s.json(&v)?;
+                        s.fault(Fault::Runtime, vec![Part::Lit(format!("no field `{f}` on ")), Part::Val(shown)])?;
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        self.block(&end);
+        if !has_value(&want) {
+            return Ok((want, String::new()));
+        }
+        let r = self.fresh("fv");
+        self.emit(format!("{r} = load {ll}, ptr {slot}"));
+        Ok((want, r))
     }
 
     fn matching(&mut self, e: &Expr, scrut: &Expr, as_name: Option<&str>, arms: &[Arm]) -> Res<V> {
@@ -3753,11 +4489,60 @@ impl<'m, 'a> Func<'m, 'a> {
             s.block(&next);
             Ok(())
         };
+        // on a trait value: a constructor's (or a type's) pattern tests the
+        // implementation first (the pair's table), then matches its value
+        if self.is_dyn(&v.0) {
+            if let Pattern::Ctor(c, _) = p {
+                let tn = self.m.env.ctors.get(c).cloned().or_else(|| self.m.env.types.contains_key(c).then(|| c.clone()));
+                if let Some(tn) = tn {
+                    let imp = Ty::Con(tn.clone(), vec![]);
+                    let candidates: Vec<(String, Ty)> = if self.m.env.types.get(&tn).is_some_and(|td| td.params.is_empty()) {
+                        vec![(self.vtable(&v.0, &imp)?, imp)]
+                    } else {
+                        self.m.vtables.get(&key(&v.0)).cloned().unwrap_or_default().into_iter().filter(|(_, t)| Module::head(t).as_deref() == Some(tn.as_str())).collect()
+                    };
+                    let raw = self.fresh("vt");
+                    self.emit(format!("{raw} = load i64, ptr {}", v.1));
+                    let mut acc = bool_v("false");
+                    for (vt, _) in &candidates {
+                        let (mine, e, o) = (self.fresh("mine"), self.fresh("is"), self.fresh("or"));
+                        self.emit(format!("{mine} = ptrtoint ptr {vt} to i64"));
+                        self.emit(format!("{e} = icmp eq i64 {raw}, {mine}"));
+                        self.emit(format!("{o} = or i1 {}, {e}", acc.1));
+                        acc = bool_v(&o);
+                    }
+                    test(self, acc)?;
+                    let Some((_, imp)) = candidates.into_iter().next() else { return Ok(()) };
+                    let s = self.field(v, 0, &Ty::Int)?;
+                    let x = self.from_slot(&s.1, &imp)?;
+                    return self.pattern(p, &x, fail);
+                }
+            }
+        }
+        // on a union: a pattern of one member's values tests the member first
+        if self.m.boxed(&v.0) {
+            let ms = self.m.members(&v.0);
+            let member = match p {
+                Pattern::Int(_) => ms.iter().find(|m| matches!(m, Ty::Int)).cloned(),
+                Pattern::Bool(_) => ms.iter().find(|m| matches!(m, Ty::Bool)).cloned(),
+                Pattern::Str(_) => ms.iter().find(|m| matches!(m, Ty::Str)).cloned(),
+                Pattern::List(..) => ms.iter().find(|m| matches!(self.m.repr(m), Ok(Ty::Con(l, _)) if l == "List")).cloned(),
+                Pattern::Tuple(..) => ms.iter().find(|m| matches!(self.m.repr(m), Ok(Ty::Con(t, _)) if t == "Tuple")).cloned(),
+                _ => None,
+            };
+            if let Some(m) = member {
+                let is = self.holds_member(v, &m)?;
+                test(self, is)?;
+                let x = self.narrow(v, &m)?;
+                return self.pattern(p, &x, fail);
+            }
+        }
         match p {
             Pattern::Wild => {}
             Pattern::Bind(x) => self.bind(x, v)?,
             Pattern::Int(n) => {
-                let ok = self.apply(BinOp::Eq, v, &(Ty::Int, n.to_string()))?;
+                let lit = self.int_lit(&n.to_string());
+                let ok = self.apply(BinOp::Eq, v, &lit)?;
                 test(self, ok)?;
             }
             Pattern::Bool(b) => {
@@ -4021,12 +4806,14 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.block(&inner);
                 let depth = self.scopes.len();
                 self.push_scope(false);
-                match p {
-                    Pattern::Bind(x) => self.bind(x, &(Ty::Int, i.clone()))?,
-                    Pattern::Wild => {}
-                    _ => return self.unsupported("this `for` pattern"),
-                }
+                let x: V = (Ty::Int, i.clone());
+                let fail = self.fresh_label("for.nomatch");
+                self.fail_marks.insert(fail.clone(), 0);
+                self.pattern(p, &x, &fail)?;
                 self.loop_body(body, &step, &end, depth)?;
+                self.block(&fail);
+                let shown = self.json(&x)?;
+                self.fault(Fault::Runtime, vec![Part::Lit("for-loop pattern did not match ".into()), Part::Val(shown)])?;
                 self.block(&step);
                 let next = self.fresh("i");
                 self.emit(format!("{next} = add i64 {i}, 1"));
@@ -4075,27 +4862,70 @@ impl<'m, 'a> Func<'m, 'a> {
     /// `cur` with the field at `path` replaced by `v` (a new block per level),
     /// each changed record checked again as the interpreter does.
     fn set_path(&mut self, cur: &V, path: &[String], v: V, shown: &str) -> Res<V> {
-        let Some((f, rest)) = path.split_first() else { return Ok(v) };
+        let Some((f, _)) = path.split_first() else { return Ok(v) };
         let t = self.m.repr(&cur.0)?;
-        let cs = self.m.ctors_of(&t);
-        if cs.len() != 1 {
-            return self.unsupported(&format!("assigning to a field of a `{}`", key(&t)));
+        if let Ty::Con(n, args) = &t {
+            if n == "Tuple" {
+                let i: usize = f.parse().map_err(|_| format!("tuples have no field `{f}`"))?;
+                if i >= args.len() {
+                    return Err(format!("`{}` has no field `{f}`", key(&t)));
+                }
+                return self.set_in(cur, None, args.clone(), vec![], i, path, v, shown);
+            }
         }
-        let c = cs[0].clone();
-        let fs = self.m.fields(&c, &self.m.ctor_args(&c, &t))?;
-        let i = fs.iter().position(|x| x.name.as_deref() == Some(f)).ok_or(format!("`{}` has no field `{f}`", key(&t)))?;
-        let inner = self.field(cur, i, &fs[i].ty)?;
-        let new_inner = self.set_path(&inner, rest, v, shown)?;
-        let new_inner = self.coerce(new_inner, &fs[i].ty)?;
-        let tys: Vec<Ty> = fs.iter().map(|f| f.ty.clone()).collect();
+        let cs = self.m.ctors_of(&t);
+        let place = |s: &Self, c: &str| -> Res<Option<(Vec<Ty>, Vec<TypeExpr>, usize)>> {
+            let fs = s.m.fields(c, &s.m.ctor_args(c, &t))?;
+            Ok(fs.iter().position(|x| x.name.as_deref() == Some(f)).map(|i| (fs.iter().map(|x| x.ty.clone()).collect(), fs.iter().map(|x| x.texpr.clone()).collect(), i)))
+        };
+        if let [c] = cs.as_slice() {
+            let (tys, texprs, i) = place(self, c)?.ok_or(format!("`{}` has no field `{f}`", key(&t)))?;
+            return self.set_in(cur, Some(c), tys, texprs, i, path, v, shown);
+        }
+        // a sum: by its variant (one without the field can't be assigned, as the interpreter says)
+        let ll = self.m.ll(&cur.0)?;
+        let slot = self.fresh("setp");
+        writeln!(self.allocas, "  {slot} = alloca {ll}").unwrap();
+        let end = self.fresh_label("assigned");
+        let v = self.temp(v);
+        self.on_ctor(cur, &end, |s, c| {
+            match place(s, c)? {
+                Some((tys, texprs, i)) => {
+                    s.push_scope(true);
+                    let new = s.set_in(cur, Some(c), tys, texprs, i, path, v.clone(), shown)?;
+                    let new = s.take(new);
+                    s.pop_scope()?;
+                    s.emit(format!("store {ll} {}, ptr {slot}", new.1));
+                    s.br(&end);
+                }
+                None => s.fault(Fault::Runtime, vec![Part::Lit(format!("cannot assign to `{shown}`"))])?,
+            }
+            Ok(())
+        })?;
+        self.block(&end);
+        let r = self.fresh("set");
+        self.emit(format!("{r} = load {ll}, ptr {slot}"));
+        Ok(self.temp((cur.0.clone(), r)))
+    }
+
+    /// `set_path` for a value whose constructor is `c` (a tuple's: `None`),
+    /// with fields of types `tys` (written as `texprs`, when known): field
+    /// `i` replaced, in a copy (a temporary).
+    #[allow(clippy::too_many_arguments)]
+    fn set_in(&mut self, cur: &V, c: Option<&str>, tys: Vec<Ty>, texprs: Vec<TypeExpr>, i: usize, path: &[String], v: V, shown: &str) -> Res<V> {
+        let f = &path[0];
+        let inner = self.field(cur, i, &tys[i])?;
+        let new_inner = self.set_path(&inner, &path[1..], v, shown)?;
+        let new_inner = self.coerce(new_inner, &tys[i])?;
         let p = self.copy_block(cur, &tys, Some(i))?;
         let held = self.take(new_inner.clone());
         self.set_field(&p, i, &held)?;
         let new = self.temp((cur.0.clone(), p));
+        let Some(c) = c else { return Ok(new) };
         // the changed field's refinement, and the type's own
         let ctx = format!("assigning `{shown}`");
-        self.check(&fs[i].texpr, &new_inner, &format!("{ctx}: {}.{f}", crate::names::short(&c)), false)?;
-        let tname = self.m.env.ctors[&Symbol::new(&c)].clone();
+        self.check(&texprs[i], &new_inner, &format!("{ctx}: {}.{f}", crate::names::short(c)), false)?;
+        let tname = self.m.env.ctors[&Symbol::new(c)].clone();
         if let Some(r) = self.m.refinement(&tname) {
             let ok = self.with_it(&new, false, |s| s.expr(r))?;
             self.fail_unless(&ok, &ctx, &new, format!("does not satisfy `{tname}` (where {})", crate::printer::expr(&r, 0)))?;
@@ -4108,6 +4938,9 @@ impl<'m, 'a> Func<'m, 'a> {
     /// goes to `end`, and both leave the scopes above `depth`.
     fn loop_body(&mut self, body: &Expr, cont: &str, end: &str, depth: usize) -> Res<()> {
         self.loops.push((cont.to_string(), end.to_string(), depth));
+        if self.m.fuzzing {
+            self.emit("call void @strata_step()".into());
+        }
         self.push_scope(true);
         let r = self.expr(body);
         self.loops.pop();
@@ -4134,6 +4967,115 @@ impl<'m, 'a> Func<'m, 'a> {
 }
 
 impl Module<'_> {
+    /// Fuzz driver `i`: generate the arguments (each recorded as JSON), then call.
+    fn fuzz_driver(&mut self, i: usize, t: &FuzzTarget) -> Res<()> {
+        let mut c = Func::new(self, HashMap::default());
+        c.block("start");
+        let mut vs = vec![];
+        let mut places = vec![];
+        for (k, (_, ty, mutable)) in t.params.iter().enumerate() {
+            let v = c.generate(ty, &Hints::default(), "0")?;
+            let v = c.temp(v);
+            let j = c.json(&v)?;
+            c.emit(format!("call void @strata_fuzz_arg(ptr {j})"));
+            c.drop_value(&(Ty::Str, j))?;
+            let local = format!("fuzz.arg{k}");
+            c.local_owned(&local, v, None)?;
+            vs.push(c.load(&local)?);
+            places.push(mutable.then(|| (local.clone(), vec![])));
+        }
+        c.call_fn_at(&t.name, vs, None, &places)?;
+        c.drop_from(0, None)?;
+        c.emit("ret void".into());
+        let text = c.finish();
+        writeln!(self.body, "define void @\"strata.fuzz.{i}\"() {{\n{text}}}\n").unwrap();
+        Ok(())
+    }
+
+    /// Make (again) the dispatchers whose trait has tables they don't cover
+    /// yet: whether any changed.
+    fn dispatchers(&mut self) -> Res<bool> {
+        let mut changed = false;
+        for i in 0..self.dispatch.len() {
+            let tables = self.vtables.get(&key(&self.dispatch[i].tr_ty)).cloned().unwrap_or_default();
+            if self.dispatch[i].made.as_ref().is_some_and(|(n, _)| *n == tables.len()) {
+                continue;
+            }
+            let (name, tr_ty, trm, m, targs) = {
+                let d = &self.dispatch[i];
+                (d.name.clone(), d.tr_ty.clone(), d.trm.clone(), d.m.clone(), d.targs.clone())
+            };
+            let text = self.dispatcher(&name, &tr_ty, &trm, &m, &targs, &tables).map_err(|e| format!("can't compile `{trm}.{m}` on a `{}`: {e}", key(&tr_ty)))?;
+            self.dispatch[i].made = Some((tables.len(), text));
+            changed = true;
+        }
+        Ok(changed)
+    }
+
+    /// A dispatcher's text: by the pair's table, the implementation's method.
+    fn dispatcher(&mut self, name: &str, tr_ty: &Ty, trm: &str, m: &str, targs: &[Ty], tables: &[(String, Ty)]) -> Res<String> {
+        let mut h = Func::new(self, HashMap::default());
+        let (tm, mut sub) = h.dyn_signature(tr_ty, trm, m)?;
+        for (p, t) in tm.decl.type_params.iter().zip(targs) {
+            sub.insert(p.clone(), t.clone());
+        }
+        let ret = h.m.lower(&tm.decl.ret, &sub)?;
+        h.block("start");
+        let mut sig = vec!["ptr %pair".to_string()];
+        let mut rest = vec![];
+        for (k, p) in tm.decl.params.iter().skip(1).enumerate() {
+            let t = h.m.lower(&p.ty, &sub)?;
+            if has_value(&t) {
+                sig.push(format!("{} %a{k}", h.m.ll(&t)?));
+            }
+            rest.push((t, format!("%a{k}")));
+        }
+        let pair: V = (tr_ty.clone(), "%pair".into());
+        h.emit("%vt = load i64, ptr %pair".into());
+        let s = h.field(&pair, 0, &Ty::Int)?;
+        for (vt, imp) in tables {
+            if let Some(mocked) = mock_of(imp) {
+                // a mock's: a generated result
+                let f = h.mock_method(&mocked, trm, m, targs)?;
+                let (is, yes, no, mine) = (h.fresh("is"), h.fresh_label("mock"), h.fresh_label("next"), h.fresh("mine"));
+                h.emit(format!("{mine} = ptrtoint ptr {vt} to i64"));
+                h.emit(format!("{is} = icmp eq i64 %vt, {mine}"));
+                h.emit(format!("br i1 {is}, label %{yes}, label %{no}"));
+                h.block(&yes);
+                let r = h.call(&ret, &f, &rest)?;
+                if has_value(&ret) {
+                    h.emit(format!("ret {} {}", h.m.ll(&ret)?, r.1));
+                } else {
+                    h.emit("ret void".into());
+                }
+                h.block(&no);
+                continue;
+            }
+            let head = Module::head(imp).ok_or(format!("a `{}` can't be a `{trm}`", key(imp)))?;
+            let (_, imp_m) = h.m.resolve_method(&crate::types::trait_call(trm, m), &head).ok_or(format!("`{head}` has no method `{m}`"))?;
+            let symbol = h.m.want_method(MethodInst { tr: trm.to_string(), method: imp_m, recv: imp.clone(), head, targs: targs.to_vec() });
+            let (is, yes, no) = (h.fresh("is"), h.fresh_label("impl"), h.fresh_label("next"));
+            let mine = h.fresh("mine");
+            h.emit(format!("{mine} = ptrtoint ptr {vt} to i64"));
+            h.emit(format!("{is} = icmp eq i64 %vt, {mine}"));
+            h.emit(format!("br i1 {is}, label %{yes}, label %{no}"));
+            h.block(&yes);
+            let me = h.from_slot(&s.1, imp)?;
+            let mut args = vec![me];
+            args.extend(rest.iter().cloned());
+            let r = h.call(&ret, &symbol, &args)?;
+            if has_value(&ret) {
+                h.emit(format!("ret {} {}", h.m.ll(&ret)?, r.1));
+            } else {
+                h.emit("ret void".into());
+            }
+            h.block(&no);
+        }
+        h.emit("unreachable".into());
+        let text = h.finish();
+        Ok(format!("define {} {name}({}) {{\n{text}}}\n\n", h.m.ll(&ret)?, sig.join(", ")))
+    }
+
     /// Bind type parameters by matching a written type against an actual one.
     fn bind_targs(&self, te: &TypeExpr, t: &Ty, params: &[Symbol], out: &mut HashMap<Symbol, Ty>) {
         match (te, t) {
@@ -4232,6 +5174,75 @@ fn char_ranges(which: &str) -> &'static [[u32; 2]] {
 
 impl Module<'_> {
     /// A Unicode table as a global of `i32`s, and its number of rows.
+    /// The DFA of `matches(s, re)` (the interpreter's `^(?:re)$`, from the
+    /// same engine), as tables: each byte's class, the next state of each
+    /// (state, class), whether a state is dead, and whether it matches at
+    /// the end. The start state is 0. `Ok(Err(m))`: `re` is not a regex (the
+    /// interpreter's message).
+    fn regex(&mut self, re: &str) -> Res<Result<(String, usize), String>> {
+        use regex_automata::dfa::{dense, Automaton, StartKind};
+        use regex_automata::util::primitives::StateID;
+        use regex_automata::{Anchored, Input};
+        let full = format!("^(?:{re})$");
+        if let Err(e) = regex::Regex::new(&full) {
+            return Ok(Err(format!("bad regex: {e}")));
+        }
+        let g = format!("re:{}", self.strings.len() + self.helpers.len());
+        let key = format!("regex:{re}");
+        if let Some(known) = self.regexes.get(&key) {
+            return Ok(Ok(known.clone()));
+        }
+        let config = dense::Config::new().start_kind(StartKind::Anchored).dfa_size_limit(Some(64 << 20)).determinize_size_limit(Some(64 << 20));
+        let syntax = regex_automata::util::syntax::Config::new().unicode(true).utf8(true).nest_limit(250);
+        let dfa = dense::Builder::new().configure(config).syntax(syntax).build(&full).map_err(|e| format!("the regex `{re}` ({e})"))?;
+        let start = dfa.start_state_forward(&Input::new("").anchored(Anchored::Yes)).map_err(|e| format!("the regex `{re}` ({e})"))?;
+        // the classes, and a byte standing for each
+        let classes = dfa.byte_classes();
+        let nc = classes.alphabet_len() - 1;
+        let mut rep: Vec<Option<u8>> = vec![None; nc];
+        let cls: Vec<usize> = (0..=255u8).map(|b| classes.get(b) as usize).collect();
+        for b in 0..=255u8 {
+            let c = classes.get(b) as usize;
+            if c < nc && rep[c].is_none() {
+                rep[c] = Some(b);
+            }
+        }
+        // the states reachable from the start, numbered as they are found
+        let mut ids: HashMap<StateID, usize> = HashMap::default();
+        let mut order = vec![start];
+        ids.insert(start, 0);
+        let mut i = 0;
+        let mut next: Vec<usize> = vec![];
+        while i < order.len() {
+            let sid = order[i];
+            for c in 0..nc {
+                let n = rep[c].map_or(sid, |b| dfa.next_state(sid, b));
+                if dfa.is_quit_state(n) {
+                    return Err(format!("the regex `{re}` (its DFA gives up on some input)"));
+                }
+                let k = *ids.entry(n).or_insert_with(|| {
+                    order.push(n);
+                    order.len() - 1
+                });
+                next.push(k);
+            }
+            i += 1;
+            if order.len() * nc > 4 << 20 {
+                return Err(format!("the regex `{re}` (its DFA is too large)"));
+            }
+        }
+        let dead: Vec<u8> = order.iter().map(|&sid| dfa.is_dead_state(sid) as u8).collect();
+        let end: Vec<u8> = order.iter().map(|&sid| dfa.is_match_state(dfa.next_eoi_state(sid)) as u8).collect();
+        let list = |xs: &[String]| xs.join(", ");
+        writeln!(self.globals, "@\"{g}.cls\" = private unnamed_addr constant [256 x i16] [{}], align 2", list(&cls.iter().map(|c| format!("i16 {c}")).collect::<Vec<_>>())).unwrap();
+        writeln!(self.globals, "@\"{g}.next\" = private unnamed_addr constant [{} x i32] [{}], align 4", next.len(), list(&next.iter().map(|c| format!("i32 {c}")).collect::<Vec<_>>())).unwrap();
+        writeln!(self.globals, "@\"{g}.dead\" = private unnamed_addr constant [{} x i8] [{}], align 1", dead.len(), list(&dead.iter().map(|c| format!("i8 {c}")).collect::<Vec<_>>())).unwrap();
+        writeln!(self.globals, "@\"{g}.end\" = private unnamed_addr constant [{} x i8] [{}], align 1", end.len(), list(&end.iter().map(|c| format!("i8 {c}")).collect::<Vec<_>>())).unwrap();
+        self.helpers.insert(g.clone());
+        self.regexes.insert(key, (g.clone(), nc));
+        Ok(Ok((g, nc)))
+    }
+
     fn unicode_table(&mut self, which: &str) -> (String, usize) {
         let (cells, rows): (Vec<u32>, usize) = match which {
             "upper" | "lower" => {
@@ -4416,7 +5427,7 @@ impl Func<'_, '_> {
             let ll = self.m.ll(t)?;
             writeln!(self.m.body, "define i64 {fsym}(ptr %env, {ll} %a, {ll} %b) {{\nentry:\n  %c = call i64 {cmp}({ll} %a, {ll} %b)\n  ret i64 %c\n}}\n").unwrap();
         }
-        let p = self.closure(&fsym, &[])?;
+        let p = self.closure(&fsym, &[], "<fn order>")?;
         Ok((Ty::Fn(vec![t.clone(), t.clone()], Box::new(Ty::Int)), p))
     }
 
@@ -4482,4 +5493,607 @@ impl Func<'_, '_> {
         }))
     }
 
+}
+
+// ---- mocks and generated values ----
+//
+// `mock T` is a value of trait `T` whose methods generate their results, as
+// the interpreter's (src/interp.rs, `mock_call`): `requires` checked, then a
+// value of the result's type generated until `ensures` holds (200 tries).
+// Values are generated as src/generate.rs does: integers from the intervals
+// the refinements allow (often their ends, or 0), lengths likewise, strings
+// matching a refinement's regex (from samples made when compiling), and
+// rejection until the refinement holds (300 tries); past depth 3, the
+// smallest choices, so recursive types end. The random numbers are the
+// runtime's (runtime.c), not the interpreter's.
+
+/// The marker type of a mock's table (among a trait's tables).
+fn mock_marker(tr_ty: &Ty) -> Ty {
+    Ty::Con(Symbol::new("<mock>"), vec![tr_ty.clone()])
+}
+
+fn mock_of(imp: &Ty) -> Option<Ty> {
+    match imp {
+        Ty::Con(n, a) if n == "<mock>" => a.first().cloned(),
+        _ => None,
+    }
+}
+
+/// What a type's refinements say about the values to generate (as generate.rs).
+#[derive(Clone, Debug, Default)]
+struct Hints {
+    ints: Option<crate::types::ints::Ints>,
+    lens: Option<crate::types::ints::Ints>,
+    regex: Option<String>,
+}
+
+impl Hints {
+    fn ints(&self) -> crate::types::ints::Ints {
+        self.ints.clone().unwrap_or(vec![(crate::types::ints::MIN, crate::types::ints::MAX)])
+    }
+    fn lens(&self) -> crate::types::ints::Ints {
+        self.lens.clone().unwrap_or(vec![(0, crate::types::ints::MAX)])
+    }
+    fn and(&self, pred: &Expr) -> Hints {
+        use crate::types::ints;
+        Hints { ints: Some(ints::and(&self.ints(), &ints::hull(pred))), lens: Some(ints::and(&self.lens(), &ints::len_hull(pred))), regex: regex_of(pred).or_else(|| self.regex.clone()) }
+    }
+}
+
+/// The regex of a `matches(it, "...")` among a predicate's `&&`s.
+fn regex_of(e: &Expr) -> Option<String> {
+    let is_it = |e: &Expr| matches!(e, Expr::Var(v) if v == "it");
+    match e {
+        Expr::Bin(BinOp::And, l, r) => regex_of(l).or_else(|| regex_of(r)),
+        Expr::Call(f, a) if matches!(&**f, Expr::Var(n) if n == "matches") && a.len() == 2 && is_it(&a[0]) => match &a[1] {
+            Expr::Str(re) => Some(re.clone()),
+            _ => None,
+        },
+        Expr::Method(r, m, a) if m == "matches" && is_it(r) && a.len() == 1 => match &a[0] {
+            Expr::Str(re) => Some(re.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// An interval set with open ends brought within `below` / `above` of the
+/// finite one (or around 0), as generate.rs's `interval`.
+fn bounded(set: &crate::types::ints::Ints, below: i128, above: i128) -> Vec<(i64, i64)> {
+    use crate::types::ints::{MAX, MIN};
+    set.iter()
+        .map(|&(a, b)| {
+            let (lo, hi) = match (a == MIN, b == MAX) {
+                (true, true) => (-below, below),
+                (true, false) => (b - below, b),
+                (false, true) => (a, a + above),
+                (false, false) => (a, b),
+            };
+            let lo = lo.max(MIN);
+            (lo as i64, hi.min(MAX).max(lo) as i64)
+        })
+        .collect()
+}
+
+impl Func<'_, '_> {
+    /// A new mock of trait type `tr_ty`: a pair of its mock table and nothing.
+    fn mock_value(&mut self, tr_ty: &Ty) -> Res<V> {
+        let vt = self.mock_table(tr_ty)?;
+        let (p, a) = (self.fresh("mock"), self.fresh("vt"));
+        self.emit(format!("{p} = call ptr @strata_alloc(i64 16)"));
+        self.emit(format!("{a} = ptrtoint ptr {vt} to i64"));
+        self.emit(format!("store i64 {a}, ptr {p}"));
+        self.set_field(&p, 0, &(Ty::Int, "0".into()))?;
+        Ok(self.temp((tr_ty.clone(), p)))
+    }
+
+    /// The table of mocks of `tr_ty` (made once): shown as `<mock T>`, holding
+    /// nothing, equal to each other, and each method a generated result.
+    fn mock_table(&mut self, tr_ty: &Ty) -> Res<String> {
+        let Ty::Con(tr, _) = tr_ty else { unreachable!() };
+        let name = format!("@\"vt:{}@<mock>\"", key(tr_ty));
+        if !self.m.helpers.insert(name.clone()) {
+            return Ok(name);
+        }
+        self.m.vtables.entry(key(tr_ty)).or_default().push((name.clone(), mock_marker(tr_ty)));
+        let tag = key(tr_ty).replace('"', "");
+        let shown = self.m.string(&format!("\"<mock {tag}>\""));
+        let plain = self.m.string(&format!("\"<mock {tag}>\""));
+        let mut entries = vec![];
+        for (what, text) in [("json", format!("  call void @strata_dup(ptr {shown})\n  ret ptr {shown}")), ("show", format!("  call void @strata_dup(ptr {plain})\n  ret ptr {plain}"))] {
+            let f = format!("@\"mock{what}:{}\"", key(tr_ty));
+            writeln!(self.m.body, "define ptr {f}(i64 %v) {{\nentry:\n{text}\n}}\n").unwrap();
+            entries.push(f);
+        }
+        let f = format!("@\"mocknone:{}\"", key(tr_ty));
+        writeln!(self.m.body, "define void {f}(i64 %v) {{\nentry:\n  ret void\n}}\n").unwrap();
+        entries.push(f.clone());
+        entries.push(f);
+        let f = format!("@\"mockeq:{}\"", key(tr_ty));
+        writeln!(self.m.body, "define i1 {f}(i64 %v, i64 %w) {{\nentry:\n  ret i1 true\n}}\n").unwrap();
+        entries.push(f);
+        for (trm, m) in self.dyn_methods(tr) {
+            let f = format!("@\"mockdyn:{trm}::{m}@{}\"", key(tr_ty));
+            entries.push(f.clone());
+            let sig_ok = self.dyn_signature(tr_ty, &trm, &m).ok().filter(|(tm, _)| tm.decl.type_params.is_empty());
+            let Some((tm, mut sub)) = sig_ok else {
+                writeln!(self.m.body, "define void {f}() {{\nentry:\n  unreachable\n}}\n").unwrap();
+                continue;
+            };
+            sub.insert(Symbol::new("Self"), tr_ty.clone());
+            let made = self.mock_method(tr_ty, &trm, &m, &[])?;
+            let ret = self.m.lower(&tm.decl.ret, &sub)?;
+            // the table's signature: `self` first (its slot, or a pointer to it)
+            let mut sig = vec![if tm.decl.params[0].mutable { "ptr %self".to_string() } else { "i64 %self".to_string() }];
+            let mut args = vec![];
+            for (k, p) in tm.decl.params.iter().skip(1).enumerate() {
+                let t = self.m.lower(&p.ty, &sub)?;
+                if p.mutable {
+                    sig.push(format!("ptr %a{k}"));
+                    args.push(format!("ptr %a{k}"));
+                } else if has_value(&t) {
+                    sig.push(format!("{} %a{k}", self.m.ll(&t)?));
+                    args.push(format!("{} %a{k}", self.m.ll(&t)?));
+                }
+            }
+            let rl = self.m.ll(&ret)?;
+            let body = if has_value(&ret) { format!("  %r = call {rl} {made}({})\n  ret {rl} %r", args.join(", ")) } else { format!("  call void {made}({})\n  ret void", args.join(", ")) };
+            writeln!(self.m.body, "define {rl} {f}({}) {{\nentry:\n{body}\n}}\n", sig.join(", ")).unwrap();
+        }
+        let list: Vec<String> = entries.iter().map(|e| format!("ptr {e}")).collect();
+        writeln!(self.m.globals, "{name} = private constant [{} x ptr] [{}], align 8", entries.len(), list.join(", ")).unwrap();
+        Ok(name)
+    }
+
+    /// A mock's method `m` of trait `trm` (with these type arguments of its
+    /// own): its parameters (no `self`), `requires` checked, then a result
+    /// generated until `ensures` holds.
+    fn mock_method(&mut self, tr_ty: &Ty, trm: &str, m: &str, targs: &[Ty]) -> Res<String> {
+        let name = format!("@\"mock:{trm}::{m}@{}[{}]\"", key(tr_ty), targs.iter().map(key).collect::<Vec<_>>().join(", "));
+        if !self.m.helpers.insert(name.clone()) {
+            return Ok(name);
+        }
+        let (tm, mut sub) = self.dyn_signature(tr_ty, trm, m)?;
+        sub.insert(Symbol::new("Self"), tr_ty.clone());
+        for (p, t) in tm.decl.type_params.iter().zip(targs) {
+            sub.insert(p.clone(), t.clone());
+        }
+        let ret = self.m.lower(&tm.decl.ret, &sub)?;
+        let tn = crate::names::short(trm).to_string();
+        let mut h = Func::new(self.m, sub.clone());
+        h.block("start");
+        let mut sig = vec![];
+        for (k, p) in tm.decl.params.iter().enumerate().skip(1) {
+            let t = h.m.lower(&p.ty, &sub)?;
+            if p.mutable {
+                sig.push(format!("ptr %a{k}"));
+                h.scopes[0].vars.insert(p.name.to_string(), Local { t: t.clone(), slot: format!("%a{k}"), declared: None });
+                continue;
+            }
+            if has_value(&t) {
+                sig.push(format!("{} %a{k}", h.m.ll(&t)?));
+            }
+            let slot = h.local(&p.name, &t, None)?;
+            h.store(&(t, format!("%a{k}")), &slot)?;
+        }
+        for r in &tm.decl.requires {
+            h.push_scope(true);
+            let ok = h.expr(r)?;
+            h.pop_scope()?;
+            let (pass, fail) = (h.fresh_label("requires.ok"), h.fresh_label("requires.fail"));
+            h.cond_br(&ok, &pass, &fail);
+            h.block(&fail);
+            h.fault(Fault::Requires, vec![Part::Lit(format!("precondition of `{tn}.{m}` violated: requires {}", crate::printer::expr(r, 0)))])?;
+            h.block(&pass);
+        }
+        // the result's written type, with the trait's types in
+        let written = h.written(&tm.decl.ret, &sub);
+        let rl = h.m.ll(&ret)?;
+        let count = h.fresh("tries");
+        writeln!(h.allocas, "  {count} = alloca i64").unwrap();
+        h.emit(format!("store i64 0, ptr {count}"));
+        let (head, body, fail) = (h.fresh_label("mock.try"), h.fresh_label("mock.make"), h.fresh_label("mock.give_up"));
+        h.br(&head);
+        h.block(&head);
+        let n = h.fresh("n");
+        h.emit(format!("{n} = load i64, ptr {count}"));
+        let more = h.fresh("more");
+        h.emit(format!("{more} = icmp slt i64 {n}, 200"));
+        h.cond_br(&bool_v(&more), &body, &fail);
+        h.block(&body);
+        let n1 = h.fresh("n");
+        h.emit(format!("{n1} = add i64 {n}, 1"));
+        h.emit(format!("store i64 {n1}, ptr {count}"));
+        let v = h.generate(&written, &Hints::default(), "0")?;
+        let v = (ret.clone(), v.1);
+        // each `ensures`, with `it` the result
+        let mut ok = bool_v("true");
+        if !tm.decl.ensures.is_empty() {
+            h.push_scope(false);
+            let slot = h.local("it", &ret, None)?;
+            h.store(&v, &slot)?;
+            for en in &tm.decl.ensures {
+                h.push_scope(true);
+                let e = h.expr(en)?;
+                h.pop_scope()?;
+                let r = h.fresh("and");
+                h.emit(format!("{r} = and i1 {}, {}", ok.1, e.1));
+                ok = bool_v(&r);
+            }
+            h.pop_scope()?;
+        }
+        let (good, retry) = (h.fresh_label("mock.ok"), h.fresh_label("mock.retry"));
+        h.cond_br(&ok, &good, &retry);
+        h.block(&retry);
+        h.drop_value(&v)?;
+        h.br(&head);
+        h.block(&good);
+        if has_value(&ret) {
+            h.emit(format!("ret {rl} {}", v.1));
+        } else {
+            h.emit("ret void".into());
+        }
+        h.block(&fail);
+        h.fault(Fault::Runtime, vec![Part::Lit(format!("mock {tn}.{m}: could not generate a result satisfying its `ensures`"))])?;
+        let text = h.finish();
+        writeln!(self.m.body, "define {rl} {name}({}) {{\n{text}}}\n", sig.join(", ")).unwrap();
+        Ok(name)
+    }
+
+    /// A written type with the instance's types written in (`Self`, a trait's parameters).
+    fn written(&self, t: &TypeExpr, sub: &HashMap<Symbol, Ty>) -> TypeExpr {
+        let texprs: HashMap<Symbol, TypeExpr> = sub.iter().map(|(k, v)| (k.clone(), ty_texpr(v))).collect();
+        crate::types::subst_texpr(t, &texprs)
+    }
+
+    /// A value of written type `t` (owned, not a temporary), at `depth`.
+    fn generate(&mut self, t: &TypeExpr, hints: &Hints, depth: &str) -> Res<V> {
+        let f = self.gen_fn(t, hints)?;
+        let ty = self.m.lower(t, &HashMap::default())?;
+        if !has_value(&ty) {
+            self.emit(format!("call void {f}(i64 {depth})"));
+            return Ok((ty, String::new()));
+        }
+        let r = self.fresh("gen");
+        self.emit(format!("{r} = call {} {f}(i64 {depth})", self.m.ll(&ty)?));
+        Ok((ty, r))
+    }
+
+    /// The generator of written type `t` with `hints` (made once): `(i64 depth) -> t`.
+    fn gen_fn(&mut self, t: &TypeExpr, hints: &Hints) -> Res<String> {
+        let k = format!("{}|{:?}", crate::printer::ty(t), hints);
+        if let Some(n) = self.m.gens.get(&k) {
+            return Ok(n.clone());
+        }
+        let name = format!("@\"gen.{}\"", self.m.gens.len());
+        self.m.gens.insert(k, name.clone());
+        let ty = self.m.lower(t, &HashMap::default())?;
+        let mut h = Func::new(self.m, HashMap::default());
+        h.block("start");
+        let v = h.produce(t, &ty, hints)?;
+        if has_value(&ty) {
+            h.emit(format!("ret {} {}", h.m.ll(&ty)?, v.1));
+        } else {
+            h.emit("ret void".into());
+        }
+        let text = h.finish();
+        let ll = self.m.ll(&ty)?;
+        writeln!(self.m.body, "define {ll} {name}(i64 %depth) {{\n{text}}}\n").unwrap();
+        Ok(name)
+    }
+
+    /// Integer intervals as a constant table of pairs: (its operand, how many).
+    fn pairs(&mut self, ps: &[(i64, i64)]) -> (String, usize) {
+        let g = format!("@\"pairs.{}\"", self.m.helpers.len());
+        self.m.helpers.insert(g.clone());
+        let cells: Vec<String> = ps.iter().flat_map(|(a, b)| [format!("i64 {a}"), format!("i64 {b}")]).collect();
+        writeln!(self.m.globals, "{g} = private unnamed_addr constant [{} x i64] [{}], align 8", cells.len(), cells.join(", ")).unwrap();
+        (g, ps.len())
+    }
+
+    /// `depth > 3`: past it, the smallest choices.
+    fn deep(&mut self) -> V {
+        let r = self.fresh("deep");
+        self.emit(format!("{r} = icmp sgt i64 %depth, 3"));
+        bool_v(&r)
+    }
+
+    /// The body of a generator: an owned value of `t` (of type `ty`) in `%depth`.
+    fn produce(&mut self, t: &TypeExpr, ty: &Ty, hints: &Hints) -> Res<V> {
+        use crate::types::ints;
+        let next_depth = |s: &mut Self| {
+            let d = s.fresh("d");
+            s.emit(format!("{d} = add i64 %depth, 1"));
+            d
+        };
+        if let TypeExpr::Named(n, args) = t {
+            if n == crate::types::TYPE_ARG {
+                let s = self.string(args.first().map(crate::types::texpr_head).unwrap_or_default().as_str());
+                return Ok(s);
+            }
+        }
+        if let TypeExpr::Refined(b, pred) = t {
+            let h2 = hints.and(pred);
+            return self.until(t, ty, 300, |s| s.generate(b, &h2, "%depth"));
+        }
+        if let TypeExpr::Union(ms) = t {
+            let i = self.fresh("which");
+            self.emit(format!("{i} = call i64 @strata_random(i64 0, i64 {})", ms.len() - 1));
+            let slot = self.fresh("u");
+            writeln!(self.allocas, "  {slot} = alloca {}", self.m.ll(ty)?).unwrap();
+            let end = self.fresh_label("u.end");
+            let labels: Vec<String> = ms.iter().map(|_| self.fresh_label("u.member")).collect();
+            let cases: Vec<String> = labels.iter().enumerate().map(|(k, l)| format!("i64 {k}, label %{l}")).collect();
+            self.emit(format!("switch i64 {i}, label %{} [ {} ]", labels[0], cases.join(" ")));
+            for (m, l) in ms.iter().zip(&labels) {
+                self.block(l);
+                self.push_scope(true);
+                let v = self.generate(m, &Hints::default(), "%depth")?;
+                let v = self.temp(v);
+                let u = self.coerce(v, ty)?;
+                let u = self.take(u);
+                self.pop_scope()?;
+                self.emit(format!("store ptr {}, ptr {slot}", u.1));
+                self.br(&end);
+            }
+            self.block(&end);
+            let r = self.fresh("uv");
+            self.emit(format!("{r} = load ptr, ptr {slot}"));
+            return Ok((ty.clone(), r));
+        }
+        let TypeExpr::Named(n, args) = t else {
+            return match t {
+                TypeExpr::Unit => Ok((Ty::Unit, String::new())),
+                _ => self.unsupported(&format!("generating a value of `{}`", crate::printer::ty(t))),
+            };
+        };
+        match n.as_str() {
+            "Int" => {
+                let (g, k) = self.pairs(&bounded(&hints.ints(), 1000, 100));
+                let r = self.fresh("i");
+                self.emit(format!("{r} = call i64 @strata_gen_int(ptr {g}, i64 {k})"));
+                return Ok((Ty::Int, r));
+            }
+            "Float" => {
+                let (g, k) = self.pairs(&bounded(&hints.ints(), 1000, 100));
+                let raw: Vec<(i64, i64)> = hints.ints().iter().map(|&(a, b)| (a.max(ints::MIN) as i64, b.min(ints::MAX) as i64)).collect();
+                let (rg, rk) = self.pairs(&raw);
+                let r = self.fresh("f");
+                self.emit(format!("{r} = call double @strata_gen_float(ptr {g}, i64 {k}, ptr {rg}, i64 {rk})"));
+                return Ok((Ty::Float, r));
+            }
+            "Bool" => {
+                let (x, r) = (self.fresh("b"), self.fresh("b"));
+                self.emit(format!("{x} = call i64 @strata_random(i64 0, i64 1)"));
+                self.emit(format!("{r} = trunc i64 {x} to i1"));
+                return Ok(bool_v(&r));
+            }
+            "Unit" => return Ok((Ty::Unit, String::new())),
+            "String" => {
+                if let Some(re) = &hints.regex {
+                    // samples made now, one picked at run time
+                    let samples = regex_samples(re)?;
+                    let consts: Vec<String> = samples.iter().map(|x| self.m.string(x)).collect();
+                    let g = format!("@\"samples.{}\"", self.m.helpers.len());
+                    self.m.helpers.insert(g.clone());
+                    writeln!(self.m.globals, "{g} = private unnamed_addr constant [{} x ptr] [{}], align 8", consts.len(), consts.iter().map(|c| format!("ptr {c}")).collect::<Vec<_>>().join(", ")).unwrap();
+                    let (i, at, r) = (self.fresh("which"), self.fresh("at"), self.fresh("s"));
+                    self.emit(format!("{i} = call i64 @strata_random(i64 0, i64 {})", consts.len() - 1));
+                    self.emit(format!("{at} = getelementptr ptr, ptr {g}, i64 {i}"));
+                    self.emit(format!("{r} = load ptr, ptr {at}"));
+                    return Ok((Ty::Str, r));
+                }
+                let (g, k) = self.pairs(&bounded(&hints.lens(), 0, 8));
+                let (len, r) = (self.fresh("len"), self.fresh("s"));
+                self.emit(format!("{len} = call i64 @strata_gen_len(ptr {g}, i64 {k})"));
+                self.emit(format!("{r} = call ptr @strata_gen_string(i64 {len})"));
+                return Ok((Ty::Str, r));
+            }
+            "Tuple" => {
+                self.push_scope(true);
+                let d = next_depth(self);
+                let mut vs = vec![];
+                for a in args {
+                    let v = self.generate(a, &Hints::default(), &d)?;
+                    vs.push(self.temp(v));
+                }
+                let b = self.block_of(0, &vs)?;
+                self.pop_scope()?;
+                return Ok((ty.clone(), b));
+            }
+            "List" | "Set" | "Dict" => {
+                // a list of the elements (pairs for a dict), then the set or dict made of it
+                let el = match n.as_str() {
+                    "Dict" => TypeExpr::Named(Symbol::new("Tuple"), args.clone()),
+                    _ => args.first().cloned().unwrap_or(TypeExpr::Unit),
+                };
+                let lty = Ty::Con(Symbol::new("List"), vec![self.m.lower(&el, &HashMap::default())?]);
+                let deep = self.deep();
+                let len = self.fresh("len");
+                if n == "List" {
+                    let (g, k) = self.pairs(&bounded(&hints.lens(), 0, 4));
+                    let shortest = hints.lens().first().map_or(0, |&(lo, _)| lo.max(0) as i64);
+                    let any = self.fresh("len");
+                    self.emit(format!("{any} = call i64 @strata_gen_len(ptr {g}, i64 {k})"));
+                    self.emit(format!("{len} = select i1 {}, i64 {shortest}, i64 {any}", deep.1));
+                } else {
+                    let any = self.fresh("len");
+                    self.emit(format!("{any} = call i64 @strata_random(i64 0, i64 4)"));
+                    self.emit(format!("{len} = select i1 {}, i64 0, i64 {any}", deep.1));
+                }
+                let d = next_depth(self);
+                let acc = self.fresh("acc");
+                writeln!(self.allocas, "  {acc} = alloca ptr").unwrap();
+                let l0 = self.call(&lty, "@strata_list_new", &[(Ty::Int, len.clone())])?;
+                self.emit(format!("store ptr {}, ptr {acc}", l0.1));
+                let counter = self.fresh("k");
+                writeln!(self.allocas, "  {counter} = alloca i64").unwrap();
+                self.emit(format!("store i64 0, ptr {counter}"));
+                let (head, body, end) = (self.fresh_label("gen.each"), self.fresh_label("gen.el"), self.fresh_label("gen.done"));
+                self.br(&head);
+                self.block(&head);
+                let i = self.fresh("i");
+                self.emit(format!("{i} = load i64, ptr {counter}"));
+                let more = self.fresh("more");
+                self.emit(format!("{more} = icmp slt i64 {i}, {len}"));
+                self.cond_br(&bool_v(&more), &body, &end);
+                self.block(&body);
+                let x = self.generate(&el, &Hints::default(), &d)?;
+                let s = self.to_slot(&x)?;
+                let cur = self.fresh("cur");
+                self.emit(format!("{cur} = load ptr, ptr {acc}"));
+                let counted = bool_v(if self.counted(&x.0) { "true" } else { "false" });
+                let next = self.call(&lty, "@strata_list_push", &[(lty.clone(), cur.clone()), (Ty::Int, s), counted])?;
+                self.drop_value(&(lty.clone(), cur))?;
+                self.emit(format!("store ptr {}, ptr {acc}", next.1));
+                let i1 = self.fresh("i");
+                self.emit(format!("{i1} = add i64 {i}, 1"));
+                self.emit(format!("store i64 {i1}, ptr {counter}"));
+                self.br(&head);
+                self.block(&end);
+                let r = self.fresh("l");
+                self.emit(format!("{r} = load ptr, ptr {acc}"));
+                if n == "List" {
+                    return Ok((ty.clone(), r));
+                }
+                // a set or dict: from the list, as `set` and `dict` make one
+                self.push_scope(true);
+                let l = self.temp((lty.clone(), r));
+                let kt = self.m.lower(&args[0], &HashMap::default())?;
+                let less = self.less(&kt)?;
+                let made = self.call_fn(&prelude(if n == "Set" { "set_from" } else { "dict_from" }), vec![l, less], None)?;
+                let made = self.take(made);
+                self.pop_scope()?;
+                return Ok((ty.clone(), made.1));
+            }
+            _ => {}
+        }
+        if self.is_dyn(ty) {
+            let v = self.mock_value(ty)?;
+            return Ok(self.take(v));
+        }
+        // a variant's type: its sum's, only that variant
+        let (tn, only) = match self.m.env.variant_parent(n.sym()) {
+            Some(p) => (p.clone(), Some(n.clone())),
+            None => (n.clone(), None),
+        };
+        let td = self.m.env.types.get(&tn).cloned().ok_or(format!("generating a value of `{tn}`"))?;
+        let h2 = td.refinement.as_ref().map_or_else(Hints::default, |r| Hints::default().and(r));
+        let whole = t.clone();
+        self.until(&whole, ty, 300, |s| {
+            match &td.body {
+                TypeBody::Alias(a) => {
+                    let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+                    let inner = crate::types::subst_texpr(a, &sub);
+                    let v = s.generate(&inner, &h2, "%depth")?;
+                    Ok((ty.clone(), v.1))
+                }
+                TypeBody::Record(_) | TypeBody::Sum(_) => {
+                    let mut variants = s.m.env.variants_of(tn.as_str(), args).unwrap_or_default();
+                    if let Some(o) = &only {
+                        variants.retain(|v| &v.0 == o);
+                    }
+                    let smallest = (0..variants.len()).min_by_key(|i| variants[*i].2.len()).unwrap_or(0);
+                    let (deep, any, i) = (s.deep(), s.fresh("any"), s.fresh("which"));
+                    s.emit(format!("{any} = call i64 @strata_random(i64 0, i64 {})", variants.len().max(1) - 1));
+                    s.emit(format!("{i} = select i1 {}, i64 {smallest}, i64 {any}", deep.1));
+                    let slot = s.fresh("made");
+                    writeln!(s.allocas, "  {slot} = alloca ptr").unwrap();
+                    let end = s.fresh_label("made.end");
+                    let labels: Vec<String> = variants.iter().map(|_| s.fresh_label("variant")).collect();
+                    let cases: Vec<String> = labels.iter().enumerate().map(|(k, l)| format!("i64 {k}, label %{l}")).collect();
+                    s.emit(format!("switch i64 {i}, label %{} [ {} ]", labels[0], cases.join(" ")));
+                    let d = s.fresh("d");
+                    let first = labels[0].clone();
+                    let _ = first;
+                    for ((c, _, ftys), l) in variants.iter().zip(&labels) {
+                        s.block(l);
+                        s.emit(format!("{d}.{l} = add i64 %depth, 1"));
+                        let dl = format!("{d}.{l}");
+                        let b = if ftys.is_empty() {
+                            s.m.nullary(c.as_str())
+                        } else {
+                            s.push_scope(true);
+                            let mut vs = vec![];
+                            let fs = s.m.fields(c.as_str(), &s.m.ctor_args(c.as_str(), ty))?;
+                            for (ft, fi) in ftys.iter().zip(&fs) {
+                                let v = s.generate(ft, &Hints::default(), &dl)?;
+                                let v = s.temp(v);
+                                vs.push(s.coerce(v, &fi.ty)?);
+                            }
+                            let b = s.block_of(s.m.tags[c.as_str()], &vs)?;
+                            s.pop_scope()?;
+                            b
+                        };
+                        s.emit(format!("store ptr {b}, ptr {slot}"));
+                        s.br(&end);
+                    }
+                    s.block(&end);
+                    let r = s.fresh("v");
+                    s.emit(format!("{r} = load ptr, ptr {slot}"));
+                    Ok((ty.clone(), r))
+                }
+            }
+        })
+    }
+
+    /// `make` until the value satisfies `t`'s refinements (`tries` times),
+    /// dropping each one that doesn't; then a fault, as the interpreter's.
+    fn until(&mut self, t: &TypeExpr, ty: &Ty, tries: usize, mut make: impl FnMut(&mut Self) -> Res<V>) -> Res<V> {
+        let count = self.fresh("tries");
+        writeln!(self.allocas, "  {count} = alloca i64").unwrap();
+        self.emit(format!("store i64 0, ptr {count}"));
+        let (head, body, fail) = (self.fresh_label("gen.try"), self.fresh_label("gen.make"), self.fresh_label("gen.give_up"));
+        self.br(&head);
+        self.block(&head);
+        let n = self.fresh("n");
+        self.emit(format!("{n} = load i64, ptr {count}"));
+        let more = self.fresh("more");
+        self.emit(format!("{more} = icmp slt i64 {n}, {tries}"));
+        self.cond_br(&bool_v(&more), &body, &fail);
+        self.block(&body);
+        let n1 = self.fresh("n");
+        self.emit(format!("{n1} = add i64 {n}, 1"));
+        self.emit(format!("store i64 {n1}, ptr {count}"));
+        let v = make(self)?;
+        let v = (ty.clone(), v.1);
+        let ok = self.satisfies(t, &v)?;
+        let (good, retry) = (self.fresh_label("gen.ok"), self.fresh_label("gen.retry"));
+        self.cond_br(&ok, &good, &retry);
+        self.block(&retry);
+        self.drop_value(&v)?;
+        self.br(&head);
+        self.block(&fail);
+        self.fault(Fault::Runtime, vec![Part::Lit(format!("could not generate a value satisfying `{}` after {tries} attempts", crate::printer::ty(t)))])?;
+        self.block(&good);
+        Ok(v)
+    }
+}
+
+/// A type as written (for generators of a trait's types).
+fn ty_texpr(t: &Ty) -> TypeExpr {
+    let named = |n: &str, a: &[Ty]| TypeExpr::Named(Symbol::new(n), a.iter().map(ty_texpr).collect());
+    match t {
+        Ty::Int => named("Int", &[]),
+        Ty::Float => named("Float", &[]),
+        Ty::Bool => named("Bool", &[]),
+        Ty::Str => named("String", &[]),
+        Ty::Unit => TypeExpr::Unit,
+        Ty::Con(n, a) => named(n.as_str(), a),
+        Ty::Fn(ps, r) => TypeExpr::Fn(ps.iter().map(ty_texpr).collect(), Box::new(ty_texpr(r))),
+        Ty::Union(ms) => TypeExpr::Union(ms.iter().map(ty_texpr).collect()),
+        Ty::Rigid(n) => named(n.as_str(), &[]),
+        Ty::Var(_) => TypeExpr::Unit,
+    }
+}
+
+/// Strings matching `re`, made now (as the interpreter's generator makes them).
+fn regex_samples(re: &str) -> Res<Vec<String>> {
+    use rand::SeedableRng;
+    use rand::RngExt;
+    let mut parser = regex_syntax::ParserBuilder::new().unicode(false).build();
+    let hir = parser.parse(re).map_err(|e| format!("bad regex {re:?}: {e}"))?;
+    let g = rand_regex::Regex::with_hir(hir, 8).map_err(|e| e.to_string())?;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+    Ok((0..32).map(|_| rng.sample::<String, _>(&g)).collect())
 }
