@@ -82,6 +82,10 @@ pub struct Param {
     /// variable is updated when the call returns.
     #[serde(default)]
     pub mutable: bool,
+    /// `comptime f: Field`: known when the program is compiled; the function
+    /// is compiled once per value given (so `f.type` is a type in each copy).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub comptime: bool,
 }
 
 /// `T: Ord + Hash` on a type parameter.
@@ -115,6 +119,13 @@ pub struct FnDecl {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub terminates: bool,
     pub body: Expr,
+    /// `comptime fn`: runs only while the program is compiled.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub comptime: bool,
+    /// `derived fn` in a derivable trait: its body is specialized for each
+    /// type the trait is derived for.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub derived: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -156,6 +167,21 @@ pub struct TraitDecl {
     pub supers: Vec<TypeExpr>,
     pub methods: Vec<TraitMethod>,
     pub laws: Vec<Law>,
+    /// `derivable(t: Record) trait ... requires ...`: the trait can be
+    /// derived (`derive Trait for Type`) for types of that kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivable: Option<Derivable>,
+}
+
+/// What a derivable trait says about the types it can be derived for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Derivable {
+    /// The argument naming the description of the type (`t`).
+    pub name: Symbol,
+    /// Its kind, a type of `std.typing` (`Record`, `Sum`, `Choice`).
+    pub kind: TypeExpr,
+    /// Conditions on the type, checked when it is derived.
+    pub requires: Vec<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -167,6 +193,10 @@ pub struct ImplDecl {
     pub trait_args: Vec<TypeExpr>,
     pub for_type: TypeExpr,
     pub methods: Vec<FnDecl>,
+    /// `derive Trait for Type { ... }`: the trait's `derived` methods are
+    /// made for the type; `methods` are the ones written by hand.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub derived: bool,
 }
 
 impl FnDecl {
@@ -185,6 +215,8 @@ impl FnDecl {
             ensures: self.ensures.clone(),
             terminates: self.terminates,
             body: Expr::Unit,
+            comptime: self.comptime,
+            derived: self.derived,
         }
     }
 }
@@ -199,6 +231,7 @@ impl ImplDecl {
             trait_args: self.trait_args.clone(),
             for_type: self.for_type.clone(),
             methods: self.methods.iter().map(FnDecl::signature).collect(),
+            derived: self.derived,
         }
     }
 }
@@ -212,6 +245,7 @@ impl TraitDecl {
             supers: self.supers.clone(),
             methods: self.methods.iter().map(|m| TraitMethod { comments: vec![], doc: vec![], decl: m.decl.signature(), default: m.default }).collect(),
             laws: self.laws.clone(),
+            derivable: self.derivable.clone(),
         }
     }
 }
@@ -227,7 +261,8 @@ impl ImplDecl {
             return format!("impl {}", crate::printer::ty(&self.for_type));
         }
         let tr = crate::printer::ty(&TypeExpr::Named(self.trait_name.clone(), self.trait_args.clone()));
-        format!("impl {tr} for {}", crate::printer::ty(&self.for_type))
+        let kw = if self.derived { "derive" } else { "impl" };
+        format!("{kw} {tr} for {}", crate::printer::ty(&self.for_type))
     }
 }
 
@@ -450,6 +485,9 @@ pub enum Expr {
     Or(Box<Expr>, Box<Expr>),
     /// `f"{name} has {len(xs)} items"`: each part shown as by `to_string`.
     Interp(Vec<StrPart>),
+    /// `comptime e`: evaluated while the program is compiled; the value is
+    /// put in the program.
+    Comptime(Box<Expr>),
     /// `a..b` (`b` excluded), `a..=b` (`b` included): the integers between,
     /// as a `List[Int]`. An end may be left out only in a slice (`xs[2..]`).
     Range(Option<Box<Expr>>, Option<Box<Expr>>, bool),
@@ -650,7 +688,7 @@ macro_rules! visitor {
                     v.expr(f);
                     xs.into_iter().for_each(|x| v.expr(x))
                 }
-                Expr::Field(r, _) | Expr::Is(r, _) | Expr::Un(_, r) | Expr::Return(r) | Expr::Mut(r) | Expr::Try(r, _) => v.expr(r),
+                Expr::Field(r, _) | Expr::Is(r, _) | Expr::Un(_, r) | Expr::Return(r) | Expr::Mut(r) | Expr::Try(r, _) | Expr::Comptime(r) => v.expr(r),
                 Expr::Lambda(ps, body) => {
                     for p in ps {
                         if let Some(t) = &$($m)? p.ty {

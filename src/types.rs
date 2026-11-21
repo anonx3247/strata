@@ -390,7 +390,7 @@ fn rewrite(program: &mut Program, env: &Env, targets: Vec<(usize, Target)>, type
         // a type parameter with a static method to call is passed when the function runs
         if let DeclKind::Fn(f) = &mut d.kind {
             for p in env.type_args(f) {
-                f.params.push(Param { name: Symbol::from(type_arg(&p)), ty: TypeExpr::Named(TYPE_ARG.into(), vec![TypeExpr::Named(Symbol::from(p.as_str()), vec![])]), mutable: false });
+                f.params.push(Param { name: Symbol::from(type_arg(&p)), ty: TypeExpr::Named(TYPE_ARG.into(), vec![TypeExpr::Named(Symbol::from(p.as_str()), vec![])]), mutable: false, comptime: false });
             }
         }
         // children first, so a node's address is the one the checker saw when it is rewritten
@@ -1762,6 +1762,7 @@ impl<'a> Checker<'a> {
             Expr::Int(_) | Expr::BigInt(_) => Ty::Int,
             Expr::Float(_) => Ty::Float,
             Expr::Tuple(es) => Ty::Con("Tuple".into(), es.iter().map(|e| self.infer(e)).collect()),
+            Expr::Comptime(x) => self.infer_at(x, expected),
             Expr::Str(_) => Ty::Str,
             Expr::Bool(_) => Ty::Bool,
             Expr::Unit => Ty::Unit,
@@ -3079,6 +3080,11 @@ pub fn check(prog: &Program) -> CheckReport {
 fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usize, Target)>, HashMap<usize, Ty>) {
     let (mut errors, mut holes, mut targets, mut types) = (Vec::new(), Vec::new(), Vec::new(), HashMap::default());
     for d in &prog.decls {
+        // stored, not yet checked or run: deriving comes in the next step
+        if let Some(msg) = not_yet(d) {
+            errors.push(Diag { decl: d.name(), msg });
+            continue;
+        }
         let mut c = Checker {
             env: &env,
             subst: Vec::new(),
@@ -3324,6 +3330,21 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec
         targets.extend(c.targets);
     }
     (errors, holes, targets, types)
+}
+
+/// What a definition uses of derived traits and `comptime`, which are
+/// parsed, printed and stored, but not yet checked or run.
+fn not_yet(d: &Decl) -> Option<String> {
+    let soon = "(the syntax is stored; deriving and `comptime` come next, see IDEAS.md, \"Derived traits, `comptime` and special methods\")";
+    let comptime_in = |f: &FnDecl| f.comptime || f.params.iter().any(|p| p.comptime);
+    match &d.kind {
+        DeclKind::Trait(t) if t.derivable.is_some() || t.methods.iter().any(|m| m.decl.derived) => Some(format!("derivable traits are not checked yet {soon}")),
+        DeclKind::Trait(t) if t.methods.iter().any(|m| comptime_in(&m.decl)) => Some(format!("`comptime` parameters are not checked yet {soon}")),
+        DeclKind::Impl(i) if i.derived => Some(format!("`derive` is not done yet {soon}")),
+        DeclKind::Impl(i) if i.methods.iter().any(comptime_in) => Some(format!("`comptime` parameters are not checked yet {soon}")),
+        DeclKind::Fn(f) if comptime_in(f) => Some(format!("`comptime` functions and parameters are not checked yet {soon}")),
+        _ => None,
+    }
 }
 
 /// A type's own method as the function it is called as (`Item.new`, or

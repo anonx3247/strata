@@ -1750,7 +1750,7 @@ impl<'a> Vc<'a> {
             }
             Expr::Lambda(..) => self.fn_value(e, vec![]).0,
             Expr::Mock(t) => Val::Opaque(format!("`mock {}`", crate::printer::ty(t))),
-            Expr::Mut(x) => self.eval(x),
+            Expr::Mut(x) | Expr::Comptime(x) => self.eval(x),
             Expr::Interp(parts) => {
                 for part in parts {
                     if let StrPart::Expr(x, _) = part {

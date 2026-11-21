@@ -310,6 +310,9 @@ Not yet: `assumed` (no outside code exists yet); loop invariants (loops forget w
 - The first backend is SQLite. The database is a capability (a trait), so tests can use an in-memory implementation or `mock`.
 - Queries should be typed (checked against the record's fields), not strings.
 
+### Derived traits, `comptime` and special methods: step 1 (built, branch `derive-syntax`)
+The syntax is parsed, printed and stored (`derivable(t: Kind) trait ... requires ...`, `derived fn`, `derive Trait for Type` with or without a block, `comptime fn`, `comptime` parameters and expressions, a field named `type` after a dot); `derive`, `derived` and `derivable` are keywords only at the start of an item, so they stay ordinary names elsewhere; `comptime` is reserved. The checker refuses derivable traits, `derive` and `comptime` functions with a message saying they come next; a `comptime` expression is evaluated as written until then. The design itself is in the decision recorded by PR #73.
+
 ### Long-term goal: self-hosting
 The compiler should eventually be written in Strata. Gaps to close first:
 - **Native compilation**: the interpreter is too slow to run a compiler.

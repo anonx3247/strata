@@ -1417,7 +1417,7 @@ impl<'a> Interp<'a> {
                 self.enforce(&TypeExpr::Named(Symbol::from(tname.as_str()), vec![]), &v, &format!("constructing `{c}`"))?;
                 v
             }
-            Expr::Mut(x) => self.eval(x, s)?,
+            Expr::Mut(x) | Expr::Comptime(x) => self.eval(x, s)?,
             Expr::Call(f, args) => {
                 let fv = self.eval(f, s)?;
                 let avs = args.iter().map(|a| self.eval(a, s)).collect::<R<Vec<_>>>()?;

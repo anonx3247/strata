@@ -1934,6 +1934,8 @@ impl<'m, 'a> Func<'m, 'a> {
             Expr::Lambda(ps, body) => self.lambda(e, ps, body)?,
             // the mark of a `mut` argument or receiver: the call writes back to its place
             Expr::Mut(x) => self.expr(x)?,
+            // evaluated at build time once deriving lands; until then, as written
+            Expr::Comptime(x) => self.expr(x)?,
             Expr::Mock(_) => return self.unsupported("`mock`"),
             // rewritten into builtin calls when the program is resolved
             Expr::Range(..) | Expr::Index(..) | Expr::Comp(..) | Expr::Dict(..) | Expr::Set(..) => return self.unsupported("a range, slice, comprehension or collection literal not desugared"),

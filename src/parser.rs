@@ -45,7 +45,7 @@ fn is_upper(s: &str) -> bool {
 
 const KEYWORDS: &[&str] = &[
     "type", "fn", "test", "let", "if", "else", "match", "mock", "where", "mut", "while", "for", "in", "loop", "break", "continue",
-    "requires", "ensures", "terminates", "true", "false", "is", "assert", "trait", "impl", "law", "for", "pub", "use", "return", "except", "or",
+    "requires", "ensures", "terminates", "true", "false", "is", "assert", "trait", "impl", "law", "for", "pub", "use", "return", "except", "or", "comptime",
 ];
 
 impl Parser {
@@ -307,12 +307,32 @@ impl Parser {
             DeclKind::Type(t)
         } else if self.eat_kw("type") {
             DeclKind::Type(self.type_decl()?)
+        } else if self.is_kw("comptime") && matches!(self.peek_at(1), Tok::Ident(f) if f == "fn") {
+            self.next();
+            self.next();
+            let mut f = self.fn_decl()?;
+            f.comptime = true;
+            DeclKind::Fn(f)
+        } else if self.is_kw("derivable") && matches!(self.peek_at(1), Tok::Sym("(")) {
+            // `derivable(t: Record) trait ...`: contextual, like `distinct`
+            self.next();
+            self.next();
+            let name = self.ident()?;
+            self.expect_sym(":")?;
+            let kind = self.type_expr()?;
+            self.expect_sym(")")?;
+            self.expect_kw("trait")?;
+            DeclKind::Trait(self.trait_decl(Some((name, kind)))?)
+        } else if self.is_kw("derive") && matches!(self.peek_at(1), Tok::Ident(n) if !KEYWORDS.contains(&n.as_str())) {
+            // `derive Trait for Type`, with `{ ... }` for methods written by hand
+            self.next();
+            DeclKind::Impl(self.impl_rest(true)?)
         } else if self.is_kw("effect") {
             return Err(self.err("`effect` was removed: declare a `trait` and pass a value that implements it"));
         } else if self.eat_kw("fn") {
             DeclKind::Fn(self.fn_decl()?)
         } else if self.eat_kw("trait") {
-            DeclKind::Trait(self.trait_decl()?)
+            DeclKind::Trait(self.trait_decl(None)?)
         } else if self.eat_kw("impl") {
             DeclKind::Impl(self.impl_decl()?)
         } else if self.eat_kw("test") {
@@ -351,7 +371,7 @@ impl Parser {
         Ok((names, bounds))
     }
 
-    fn trait_decl(&mut self) -> R<TraitDecl> {
+    fn trait_decl(&mut self, derivable: Option<(Symbol, TypeExpr)>) -> R<TraitDecl> {
         let name = self.ident()?;
         let params = self.type_params()?;
         let mut supers = Vec::new();
@@ -361,6 +381,16 @@ impl Parser {
                 supers.push(self.type_expr_plain()?);
             }
         }
+        // what a derivable trait needs of the types it is derived for
+        let mut requires = Vec::new();
+        while self.eat_kw("requires") {
+            requires.push(self.expr_ns()?);
+        }
+        let derivable = match derivable {
+            Some((name, kind)) => Some(Derivable { name, kind, requires }),
+            None if !requires.is_empty() => return Err(self.err("only a `derivable` trait has `requires`: `derivable(t: Record) trait ... requires ...`")),
+            None => None,
+        };
         self.expect_sym("{")?;
         let (mut methods, mut laws) = (Vec::new(), Vec::new());
         while !self.eat_sym("}") {
@@ -380,27 +410,46 @@ impl Parser {
                 laws.push(Law { comments, doc, name: lname, params, body });
                 continue;
             }
+            // `derived fn`: its body is specialized for each type the trait is derived for
+            let derived = self.is_kw("derived") && matches!(self.peek_at(1), Tok::Ident(f) if f == "fn");
+            if derived {
+                self.next();
+            }
             self.expect_kw("fn")?;
             // a method without `self` is called on a type: `Money.empty()`, `T.empty()`
-            let (decl, default) = self.fn_rest(true)?;
+            let (mut decl, default) = self.fn_rest(true)?;
+            if derived && !default {
+                return Err(self.err(&format!("`derived fn {}` needs a body: the code specialized for each type", decl.name)));
+            }
+            decl.derived = derived;
             comments.extend(self.trailing());
             methods.push(TraitMethod { comments, doc, decl, default });
         }
-        Ok(TraitDecl { name, params, supers, methods, laws })
+        Ok(TraitDecl { name, params, supers, methods, laws, derivable })
     }
 
     fn impl_decl(&mut self) -> R<ImplDecl> {
+        self.impl_rest(false)
+    }
+
+    /// After `impl` (or `derive`, which needs a trait and may leave out its block).
+    fn impl_rest(&mut self, derived: bool) -> R<ImplDecl> {
         let (type_params, bounds) = self.bounded_params()?;
         let head = self.path()?;
         let head_args = if self.eat_sym("[") { self.list("]", |p| p.type_expr())? } else { vec![] };
         // `impl Trait for Type { ... }`, or `impl Type { ... }` for the type's own methods
         let (trait_name, trait_args, for_type) = if self.eat_kw("for") {
             (head, head_args, self.type_expr_plain()?)
+        } else if derived {
+            return Err(self.err("`derive` needs a trait and a type: `derive Trait for Type`"));
         } else {
             (Symbol::EMPTY, vec![], TypeExpr::Named(head, head_args))
         };
-        self.expect_sym("{")?;
         let mut methods = Vec::new();
+        if derived && !self.is_sym("{") {
+            return Ok(ImplDecl { type_params, bounds, trait_name, trait_args, for_type, methods, derived });
+        }
+        self.expect_sym("{")?;
         while !self.eat_sym("}") {
             let mut comments = self.leading();
             let mut doc = Vec::new();
@@ -418,7 +467,7 @@ impl Parser {
             (decl.doc, decl.comments) = (doc, comments);
             methods.push(decl);
         }
-        Ok(ImplDecl { type_params, bounds, trait_name, trait_args, for_type, methods })
+        Ok(ImplDecl { type_params, bounds, trait_name, trait_args, for_type, methods, derived })
     }
 
     fn type_decl(&mut self) -> R<TypeDecl> {
@@ -515,14 +564,15 @@ impl Parser {
     fn params(&mut self) -> R<Vec<Param>> {
         self.expect_sym("(")?;
         self.list(")", |p| {
+            let comptime = p.eat_kw("comptime");
             let mutable = p.eat_kw("mut");
             let name = if p.is_kw("self") { p.next(); Symbol::new("self") } else { p.ident()? };
             // `self` alone means `self: Self`
             if name == "self" && !p.is_sym(":") {
-                return Ok(Param { name, ty: TypeExpr::Named("Self".into(), vec![]), mutable });
+                return Ok(Param { name, ty: TypeExpr::Named("Self".into(), vec![]), mutable, comptime });
             }
             p.expect_sym(":")?;
-            Ok(Param { name, ty: p.type_expr()?, mutable })
+            Ok(Param { name, ty: p.type_expr()?, mutable, comptime })
         })
     }
 
@@ -564,7 +614,7 @@ impl Parser {
         } else {
             self.block()?
         };
-        Ok((FnDecl { doc: vec![], comments: vec![], name, type_params, bounds, params, ret, requires, ensures, terminates, body }, has_body))
+        Ok((FnDecl { doc: vec![], comments: vec![], name, type_params, bounds, params, ret, requires, ensures, terminates, body, comptime: false, derived: false }, has_body))
     }
 
     // ---------- expressions ----------
@@ -669,6 +719,10 @@ impl Parser {
         if self.eat_kw("mut") {
             return self.marked();
         }
+        // `comptime e`: evaluated when the program is compiled
+        if self.eat_kw("comptime") {
+            return Ok(Expr::Comptime(Box::new(self.unary()?)));
+        }
         self.postfix()
     }
 
@@ -732,7 +786,13 @@ impl Parser {
                     e = Expr::Field(Box::new(e), n.to_string().into());
                     continue;
                 }
-                let name = self.ident()?;
+                // `f.type`: a field may be named like a keyword after a dot
+                let name = if self.is_kw("type") {
+                    self.next();
+                    Symbol::new("type")
+                } else {
+                    self.ident()?
+                };
                 if self.is_sym("(") && !self.nl_before() {
                     self.next();
                     e = Expr::Method(Box::new(e), name, self.args()?);

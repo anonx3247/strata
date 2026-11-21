@@ -780,14 +780,15 @@ record!(Decl { comments, doc, module, public, kind });
 record!(TypeDecl { distinct, name, params, body, refinement });
 record!(Field { comments, doc, name, ty, default });
 record!(Variant { comments, name, payload });
-record!(Param { name, ty, mutable });
+record!(Param { name, ty, mutable, comptime });
 record!(Bound { param, traits });
-record!(FnDecl { doc, comments, name, type_params, bounds, params, ret, requires, ensures, terminates, body });
+record!(FnDecl { doc, comments, name, type_params, bounds, params, ret, requires, ensures, terminates, body, comptime, derived });
 record!(TestDecl { name, body });
 record!(TraitMethod { comments, doc, decl, default });
 record!(Law { comments, doc, name, params, body });
-record!(TraitDecl { name, params, supers, methods, laws });
-record!(ImplDecl { type_params, bounds, trait_name, trait_args, for_type, methods });
+record!(TraitDecl { name, params, supers, methods, laws, derivable });
+record!(Derivable { name, kind, requires });
+record!(ImplDecl { type_params, bounds, trait_name, trait_args, for_type, methods, derived });
 record!(UseDecl { path, items });
 record!(Arm { comments, pat, body });
 record!(LamParam { name, ty });
@@ -998,11 +999,12 @@ impl Bin for Expr {
             Expr::Dict(tys, kvs) => put!(w, 30, tys, kvs),
             Expr::Set(tys, xs) => put!(w, 31, tys, xs),
             Expr::Or(x, fb) => put!(w, 32, x, fb),
+            Expr::Comptime(x) => put!(w, 33, x),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
         r.nest(|r| {
-            Ok(match r.tag("expression", 32)? {
+            Ok(match r.tag("expression", 33)? {
                 0 => Expr::Int(Bin::dec(r)?),
                 1 => Expr::BigInt(Bin::dec(r)?),
                 2 => Expr::Float(Bin::dec(r)?),
@@ -1035,7 +1037,8 @@ impl Bin for Expr {
                 29 => Expr::Comp(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
                 30 => Expr::Dict(Bin::dec(r)?, Bin::dec(r)?),
                 31 => Expr::Set(Bin::dec(r)?, Bin::dec(r)?),
-                _ => Expr::Or(Bin::dec(r)?, Bin::dec(r)?),
+                32 => Expr::Or(Bin::dec(r)?, Bin::dec(r)?),
+                _ => Expr::Comptime(Bin::dec(r)?),
             })
         })
     }

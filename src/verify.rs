@@ -347,7 +347,7 @@ pub fn check_law(env: &Env, imp: &ImplDecl, law: &Law, cases: usize, seed: u64) 
         requires: vec![],
         ensures: vec![],
         terminates: false,
-        body: law.body.clone(),
+        body: law.body.clone(), comptime: false, derived: false,
     };
     let f = for_impl(imp, &as_fn);
     for i in 0..cases {
@@ -457,6 +457,6 @@ fn short_stack(stack: &[String]) -> String {
 fn static_type_arg(imp: &ImplDecl, f: &FnDecl, d: &mut FnDecl) {
     if !crate::resolve::takes_self(f) {
         let ty = TypeExpr::Named(crate::types::TYPE_ARG.into(), vec![imp.for_type.clone()]);
-        d.params.insert(0, Param { name: Symbol::from(crate::types::type_arg("Self")), ty, mutable: false });
+        d.params.insert(0, Param { name: Symbol::from(crate::types::type_arg("Self")), ty, mutable: false, comptime: false });
     }
 }
