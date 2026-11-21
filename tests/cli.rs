@@ -3505,6 +3505,41 @@ fn main(code: Code) {
 }
 
 #[test]
+fn ui_in_strata_shows_the_code() {
+    let d = tmp("ui-strata");
+    std::fs::write(d.join("strata.toml"), "name = \"demo\"\n").unwrap();
+    save_module(&d, "core", "/// Doubles.\npub fn double(x: Int) -> Int { x * 2 }\n\nfn quad(x: Int) -> Int { double(double(x)) }\n");
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    let mut server = Command::new(env!("CARGO_BIN_EXE_strata")).args(["ui", "--strata", "--file", &d.to_string_lossy(), "--port", &port.to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let up = (0..200).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    });
+    let post = |body: &str| http(port, &format!("POST /_strata/msg HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
+    let results = std::panic::catch_unwind(|| {
+        assert!(up, "the viewer didn't start");
+        let page = http(port, "GET / HTTP/1.1\r\n\r\n");
+        assert!(page.contains("<title>Strata</title>") && page.contains(r#"data-every="1500""#), "{page}");
+        assert!(page.contains(r#"title="core.double""#) && page.contains(r#"title="core.quad""#), "both definitions are listed: {page}");
+        let sid = page.split(r#"data-session=""#).nth(1).unwrap().split('"').next().unwrap().to_string();
+        // nothing changed: the timer's refresh doesn't render
+        assert!(post(&format!(r#"{{"session":"{sid}","msg":"Refresh"}}"#)).starts_with("HTTP/1.1 204"));
+        // selecting `quad` shows it with what it uses; its call of `double` links there
+        let r = post(&format!(r#"{{"session":"{sid}","msg":{{"Go":{{"name":"core.quad"}}}}}}"#));
+        assert!(r.contains("Dependencies") && r.contains("card sel") && r.contains("&quot;core.double&quot;"), "{r}");
+        // an edit shows up on the next refresh
+        save_module(&d, "core", "/// Doubles.\npub fn double(x: Int) -> Int { x * 2 }\n\nfn quad(x: Int) -> Int { double(double(x)) }\n\nfn triple(x: Int) -> Int { x * 3 }\n");
+        let r = post(&format!(r#"{{"session":"{sid}","msg":"Refresh"}}"#));
+        assert!(r.starts_with("HTTP/1.1 200") && r.contains(r#"title="core.triple""#), "{r}");
+    });
+    let _ = server.kill();
+    let _ = server.wait();
+    if let Err(e) = results {
+        std::panic::resume_unwind(e);
+    }
+}
+
+#[test]
 fn serve_runs_an_app() {
     let d = tmp("serve-app");
     let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();

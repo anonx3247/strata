@@ -60,7 +60,30 @@ pub fn ui(args: &Args) -> Result<bool, String> {
             ui::Target::Db(Codebase::find(&cwd).ok_or("no package here (no strata.toml in this folder or above: run `strata init`, or pass --file)")?)
         }
     };
+    if args.flag("--strata") {
+        return ui_in_strata(target, port);
+    }
     ui::serve(target, port)?;
+    Ok(true)
+}
+
+/// The viewer written in Strata (`src/ui/viewer.strata`), built into the
+/// binary: an app served by `strata serve`'s runtime, reading the codebase
+/// through `Code` (std.code), which reads the target.
+const VIEWER: &[u8] = include_bytes!("../ui/viewer.strata");
+
+fn ui_in_strata(target: ui::Target, port: u16) -> Result<bool, String> {
+    let root = match &target {
+        ui::Target::Db(p) | ui::Target::File(p) => p.to_string_lossy().to_string(),
+    };
+    ui::set_code_root(&root);
+    let p = package::decode_file(std::path::Path::new("viewer.strata"), VIEWER)?;
+    let types::Checked { report, env, .. } = full_checked(&p);
+    if !report.ok() {
+        print_errors(&report);
+        return Err("the built-in viewer doesn't check: this strata is broken".into());
+    }
+    crate::serve::serve(&env, port, "Strata")?;
     Ok(true)
 }
 

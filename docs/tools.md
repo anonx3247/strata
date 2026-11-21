@@ -178,6 +178,8 @@ POST / 405 (0 ms)
 
 `strata ui --file some.strata` views a single file instead of a codebase.
 
+`strata ui --strata` serves the viewer written in Strata instead ([`src/ui/viewer.strata`](../src/ui/viewer.strata), built into `strata`): an app (`std.web`) that reads the codebase through `Code` (`std.code`), served by `strata serve`'s runtime. It has the code view: the list, the cards around the selection with names linked to their definitions, the inspector and the log, the filter, back and forward, and the keys (`/`, `Esc`, `1`, `2`, `←`, `→`). It doesn't have the Changes view, the type map or the ⌘P palette yet. Apps run in the interpreter, so on a large codebase (`std`) each click takes seconds; running apps compiled is the next step.
+
 ## Views (levels of detail)
 
 | Level | Shows |
