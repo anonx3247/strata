@@ -71,7 +71,7 @@ fn main() {
     level: Loud,
     scores: dict([("a", 1)]),
   }
-  text := stringify(s.encode())
+  text := stringify(s.encode() !! Null)
   print(text)
   print(read(text) == Ok(s))
   home := "\"home\": {\"city\": \"L\", \"zip\": \"12345\"}"
@@ -89,8 +89,8 @@ fn main() {
   print(parse("9007199254740991"))
   print(parse("-9007199254740992"))
   e := Event { user: UserId(7), at: (3, "pm"), payload: Address { city: "R", zip: "00100" }, kind: Click { times: 2 } }
-  print(stringify(e.encode()))
-  print(event(stringify(e.encode())) == Ok(e))
+  print(stringify(e.encode() !! Null))
+  print(event(stringify(e.encode() !! Null)) == Ok(e))
   print(event("{\"user\": 7, \"at\": [1, \"am\"], \"payload\": \"hi\", \"kind\": {\"type\": \"Click\"}}"))
   print(event("{\"user\": 7, \"at\": [1, \"am\"], \"payload\": 4, \"kind\": {\"type\": \"Key\", \"value\": \"k\"}}"))
   print(event("{\"user\": 0, \"at\": [1, \"am\"], \"payload\": 4, \"kind\": \"Click\"}"))

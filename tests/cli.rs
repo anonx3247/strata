@@ -3831,19 +3831,23 @@ fn json_is_derived() {
         let (ok, out) = strata(&["--file", &f, "check"], &d, None);
         assert!(!ok && out.contains(want), "{src}: {out}");
     }
-    // an integer beyond 64 bits isn't written: most JSON readers would get it wrong
-    let (ok, out) = strata(&["--file", "big.strata", "edit"], &d, Some("use std.json.Json\n\ntype A = { x: Int }\n\nderive Json for A\n\nfn main() {\n  print(A { x: 99999999999999999999 }.encode())\n}\n"));
+    // an integer beyond what a JSON number holds exactly isn't written:
+    // `encode` returns an error, and verify has nothing to report
+    let big = "use std.json.Json\n\ntype A = { x: Int }\n\nderive Json for A\n\nfn main() {\n  print(A { x: 9007199254740992 }.encode())\n  print(A { x: 3 }.encode() is Ok)\n}\n";
+    let (ok, out) = strata(&["--file", "big.strata", "edit"], &d, Some(big));
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "big.strata"], &d, None);
-    assert!(!ok && out.contains("does not satisfy `std.json.SafeInt`"), "{out}");
-    // verify checks the code derived for a type: an `Int` field may be beyond
-    // what JSON holds exactly, a `SafeInt` (or a bounded one) never is
-    let (ok, out) = strata(&["--file", "big.strata", "verify", "--cases", "20"], &d, None);
-    assert!(!ok && out.contains("✗ std.json.encode_as.for.A.") && out.contains("does not satisfy `std.json.SafeInt`"), "{out}");
-    let (ok, out) = strata(&["--file", "safe.strata", "edit"], &d, Some("use std.json.{Json, SafeInt}\n\ntype A = { id: SafeInt, n: Int where 0 <= it && it < 100, name: String }\n\nderive Json for A\n"));
-    assert!(ok, "{out}");
-    let (ok, out) = strata(&["--file", "safe.strata", "verify", "--cases", "20", "--require", "proven"], &d, None);
+    assert!(ok && out == "{\"Err\":\"x: 9007199254740992 is beyond ±(2^53 - 1), the integers a JSON number holds exactly\"}\ntrue\n", "{out}");
+    let (ok, out) = strata(&["--file", "big.strata", "verify", "--cases", "20", "--require", "proven"], &d, None);
     assert!(ok && out.contains("✓ std.json.encode_as.for.A."), "{out}");
+    // `integers = "proven"`: each integer field must be shown to be a `SafeInt`
+    let q = d.join("proven");
+    std::fs::create_dir_all(&q).unwrap();
+    std::fs::write(q.join("strata.toml"), "name = \"proven\"\n\n[json]\nintegers = \"proven\"\n").unwrap();
+    let (ok, out) = strata(&["--file", "./", "edit", "main"], &q, Some("use std.json.{Json, SafeInt}\n\ntype A = { x: Int }\n\nderive Json for A\n\ntype B = { id: SafeInt, n: Int where 0 <= it && it < 100 }\n\nderive Json for B\n"));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["verify", "--cases", "20"], &q, None);
+    assert!(!ok && out.contains("✗ std.json.encode_as.for.A.") && out.contains("does not satisfy `std.json.SafeInt`") && !out.contains("✗ std.json.encode_as.for.B."), "{out}");
     // a package can make `decode` refuse keys a record doesn't have
     let p = d.join("strict");
     std::fs::create_dir_all(&p).unwrap();

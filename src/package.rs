@@ -35,12 +35,16 @@ pub struct Package {
 }
 
 /// `[json]`: `unknown_keys = "error"` makes `decode` refuse keys a record
-/// doesn't have (by default they are ignored).
+/// doesn't have (by default they are ignored); `integers = "proven"` makes
+/// every integer field have to be shown to fit a JSON number exactly (by
+/// default, `encode` returns an error for one that doesn't).
 #[derive(serde::Deserialize, Default, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct JsonRules {
     #[serde(default)]
     pub unknown_keys: Option<String>,
+    #[serde(default)]
+    pub integers: Option<String>,
 }
 
 /// The settings of the package a command works on (the first one loaded),
@@ -103,9 +107,17 @@ pub fn load(dir: &Path) -> Result<Package, String> {
             return Err(format!("{}: [json] unknown_keys is \"error\" or \"ignore\", not {k:?}", path.display()));
         }
     }
+    if let Some(k) = &raw.json.integers {
+        if k != "checked" && k != "proven" {
+            return Err(format!("{}: [json] integers is \"checked\" or \"proven\", not {k:?}", path.display()));
+        }
+    }
     let mut settings = vec![];
     if let Some(k) = &raw.json.unknown_keys {
         settings.push(("json.unknown_keys".to_string(), k.clone()));
+    }
+    if let Some(k) = &raw.json.integers {
+        settings.push(("json.integers".to_string(), k.clone()));
     }
     let _ = SETTINGS.set(settings);
     Ok(Package { dir: dir.to_path_buf(), name: raw.name, exports: raw.exports, verify: raw.verify, auto_commit: raw.auto_commit.unwrap_or(true), json: raw.json })

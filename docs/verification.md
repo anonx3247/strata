@@ -214,7 +214,7 @@ fn average(xs: List[Int]) -> Int {
 - **incomplete** (`○`): the function still has a hole.
 - **assumed** (`≈`): trusted, not checked. Today these are the standard library's real terminal, disk and process (the `impl`s behind `Console`, `Files` and `Environment` that only `strata run` creates): their bodies call the system, so `verify` never runs them. Their contracts are taken as true, and callers are still checked against those contracts as usual.
 
-Derived code is checked as well: `derive Json for Signup` makes `Signup.encode` and the rest, and also copies of `std.json`'s helpers made for `Signup`'s fields (`std.json.encode_as.for.Signup.4`), which are listed and checked with it, so a fault that only some field types can cause (an `Int` beyond what JSON holds exactly) is reported there.
+Derived code is checked as well: `derive Json for Signup` makes `Signup.encode` and the rest, and also copies of `std.json`'s helpers made for `Signup`'s fields (`std.json.encode_as.for.Signup.4`), which are listed and checked with it, so a fault that only some field types can cause is reported there (with `integers = "proven"` under `[json]`, an `Int` field that may be beyond what JSON holds exactly).
 
 The checks are exactly the interpreter's runtime checks: a callee's parameter refinements and `requires`, the refinements of constructed values and assigned fields, annotated bindings, `assert`, division by zero, and the function's own result type and `ensures`. Calls are checked against the callee's contract, never its body, which is how modules meet. A function passed by name (`lines.map(line_total)`) is checked against one arbitrary element of the list.
 
