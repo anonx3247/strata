@@ -406,6 +406,26 @@ fn main() -> () {
 "#;
 
 #[test]
+fn trait_values_run_as_interpreted() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("dyn");
+    let cases = [
+        ("trait_values_in_lists", "trait Shape {\n  fn area(self) -> Int\n  fn name(self) -> String {\n    \"shape\"\n  }\n}\n\ntype Square = { side: Int }\n\ntype Rect = { w: Int, h: Int }\n\nimpl Shape for Square {\n  fn area(self) -> Int {\n    self.side * self.side\n  }\n\n  fn name(self) -> String {\n    \"square\"\n  }\n}\n\nimpl Shape for Rect {\n  fn area(self) -> Int {\n    self.w * self.h\n  }\n}\n\nfn total(shapes: List[Shape]) -> Int {\n  sum(shapes.map(s -> s.area()))\n}\n\nfn main() -> () {\n  let shapes: List[Shape] = [Square { side: 2 }, Rect { w: 2, h: 5 }]\n  print(total(shapes))\n  print(shapes.map(s -> s.name()))\n  print(shapes)\n  let one: Shape = Square { side: 3 }\n  print(one.area())\n  print(one)\n}", 0),
+        ("trait_values_in_fields", "use std.io.{Console, recorder}\n\ntype Worker = { console: Console, count: Int }\n\nfn work(mut w: Worker) -> () {\n  mut w.console.print(f\"job {w.count}\")\n  w.count = w.count + 1\n}\n\nfn main(console: Console) -> () {\n  let mut real = Worker { console, count: 1 }\n  work(mut real)\n  work(mut real)\n  let mut fake = Worker { console: recorder([]), count: 7 }\n  work(mut fake)\n  print(fake.count)\n}", 0),
+        ("trait_values_are_values", "use std.io.{Console, recorder}\n\ntype Worker = { console: Console, count: Int }\n\nfn work(mut w: Worker) -> () {\n  mut w.console.print(f\"job {w.count}\")\n}\n\nfn main() -> () {\n  let mut a = Worker { console: recorder([]), count: 1 }\n  let mut b = a\n  work(mut a)\n  work(mut a)\n  work(mut b)\n  print(a.console)\n  print(b.console)\n  print(a)\n}", 0),
+        ("mut_proven_fits", "fn grow(mut n: Positive) -> () {\n  n = n + 1\n}\n\nfn main() -> () {\n  let mut p: Natural = 5\n  grow(mut p)\n  print(p)\n}", 0),
+        ("mut_field_breaks_invariant", "fn grow(mut n: Int) -> () {\n  n = n + 1\n}\n\ntype R = { lo: Int, hi: Int }\n  where it.lo <= it.hi\n\nfn main() -> () {\n  let mut r = R { lo: 1, hi: 2 }\n  grow(mut r.lo)\n  grow(mut r.lo)\n  print(r)\n}", 101),
+    ];
+    for (name, src, want) in cases {
+        let (out, code) = case(&d, name, src);
+        assert_eq!(code, want, "{name}: {out}");
+    }
+}
+
+#[test]
 fn what_is_not_compiled_yet_is_named() {
     let d = tmp("unsupported");
     let f = d.join("lists.strata");

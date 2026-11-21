@@ -22,9 +22,8 @@
 //! `(key, value)` pairs sorted by key.
 //!
 //! Not yet: big integers (`Int` overflow is a fault), regexes, options from
-//! the command line, trait-typed fields and list elements, unions of
-//! anything but records and variants, and a garbage collector (memory is
-//! never freed). A program that uses them is refused, with the function and
+//! the command line, unions of anything but records and variants, and a
+//! garbage collector (memory is never freed). A program that uses them is refused, with the function and
 //! the construct named.
 
 use crate::ast::*;
@@ -1126,6 +1125,9 @@ impl<'m, 'a> Func<'m, 'a> {
     /// fields as its name, everything else as JSON.
     fn show(&mut self, v: &V) -> Res<String> {
         let t = self.m.repr(&v.0)?;
+        if self.is_dyn(&t) {
+            return self.dyn_entry_call(v, 1);
+        }
         match t {
             Ty::Str => Ok(v.1.clone()),
             t if self.m.nominal(&t) && self.m.ctors_of(&t).iter().any(|c| self.m.fields(c, &[]).map(|f| f.is_empty()).unwrap_or(false)) => {
@@ -1139,6 +1141,9 @@ impl<'m, 'a> Func<'m, 'a> {
     /// A value as JSON, for messages and nested in other values.
     fn json(&mut self, v: &V) -> Res<String> {
         let t = self.m.repr(&v.0)?;
+        if self.is_dyn(&t) {
+            return self.dyn_entry_call(v, 0);
+        }
         Ok(match &t {
             Ty::Int => self.call(&Ty::Str, "@strata_show_int", &[v.clone()])?.1,
             Ty::Float => self.call(&Ty::Str, "@strata_show_float", &[v.clone()])?.1,
@@ -1709,6 +1714,7 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let (t, slot) = self.ret_slot.clone().ok_or("`return` outside a function")?;
         if has_value(&t) {
+            let v = self.coerce(v.clone(), &t)?;
             let ll = self.m.ll(&t)?;
             self.emit(format!("store {ll} {}, ptr {slot}", v.1));
         }
@@ -1779,10 +1785,12 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.cond_br(&cv, &lt, &lf);
                 self.block(&lt);
                 let tv = self.expr(t)?;
+                let tv = self.coerce(tv, &want)?;
                 let from_t = self.cur.clone();
                 self.br(&end);
                 self.block(&lf);
                 let fv = self.expr(f)?;
+                let fv = self.coerce(fv, &want)?;
                 let from_f = self.cur.clone();
                 self.br(&end);
                 self.block(&end);
@@ -1896,6 +1904,7 @@ impl<'m, 'a> Func<'m, 'a> {
                     self.store(&err, &slot)?;
                 }
                 let fv = self.expr(fallback)?;
+                let fv = self.coerce(fv, &want)?;
                 self.scopes.pop();
                 let from_f = self.cur.clone();
                 self.br(&end);
@@ -1911,6 +1920,8 @@ impl<'m, 'a> Func<'m, 'a> {
                 if vs.iter().any(|v| is_never(&v.0)) {
                     return Ok(never());
                 }
+                let et = self.elem_ty(&t)?;
+                let vs: Vec<V> = vs.into_iter().map(|v| self.coerce(v, &et)).collect::<Res<_>>()?;
                 let mut l = self.call(&t, "@strata_list_new", &[(Ty::Int, vs.len().to_string())])?;
                 for v in &vs {
                     let s = self.to_slot(v)?;
@@ -2144,7 +2155,7 @@ impl<'m, 'a> Func<'m, 'a> {
 
     /// After a call: a field passed `mut` goes back into its variable; the
     /// variable's declared type holds (`assigning \`x\``).
-    fn write_back(&mut self, place: &Option<(String, Vec<String>)>, slot: &str, t: &Ty) -> Res<()> {
+    fn write_back(&mut self, place: &Option<(String, Vec<String>)>, slot: &str, t: &Ty, param: &TypeExpr) -> Res<()> {
         let Some((root, path)) = place else { return Ok(()) };
         let l = self.lookup(root).ok_or(format!("`{root}` is not a local variable"))?;
         let shown = std::iter::once(root.clone()).chain(path.iter().cloned()).collect::<Vec<_>>().join(".");
@@ -2156,9 +2167,13 @@ impl<'m, 'a> Func<'m, 'a> {
             let new = self.set_path(&cur, path, (t.clone(), r), &shown)?;
             self.store(&(l.t.clone(), new.1), &l.slot)?;
         }
+        // the parameter's type held on every assignment in the callee: when it
+        // fits in the variable's (the checker proved it), so does the result
         if let Some(d) = &l.declared {
-            let v = self.load(root)?;
-            self.check(d, &v, &format!("assigning `{shown}`"), false)?;
+            if !(path.is_empty() && crate::types::refinement_within(self.m.env, param, d) == Some(true)) {
+                let v = self.load(root)?;
+                self.check(d, &v, &format!("assigning `{shown}`"), false)?;
+            }
         }
         Ok(())
     }
@@ -2166,7 +2181,7 @@ impl<'m, 'a> Func<'m, 'a> {
     /// Arguments for a function's parameters: `mut` ones as the slot of
     /// their place, the others as values (of the parameter's type; a
     /// trait-typed one keeps its own). Then what to write back.
-    fn bind_args(&mut self, params: &[Param], vs: Vec<V>, sub: &HashMap<Symbol, Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<(Vec<V>, Vec<(usize, String, Ty)>)> {
+    fn bind_args(&mut self, params: &[Param], vs: Vec<V>, sub: &HashMap<Symbol, Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<(Vec<V>, Vec<(usize, String, Ty, TypeExpr)>)> {
         let mut out = vec![];
         let mut backs = vec![];
         for (i, (p, v)) in params.iter().zip(vs).enumerate() {
@@ -2175,18 +2190,20 @@ impl<'m, 'a> Func<'m, 'a> {
                 let place = places.get(i).cloned().flatten();
                 let slot = self.mut_slot(&place, &(t.clone(), v.1), &p.name)?;
                 out.push((Ty::Str, slot.clone()));
-                backs.push((i, slot, t));
-            } else {
+                backs.push((i, slot, t, p.ty.clone()));
+            } else if self.m.is_trait(&p.ty) {
                 out.push((t, v.1));
+            } else {
+                out.push(self.coerce(v, &t)?);
             }
         }
         Ok((out, backs))
     }
 
-    fn write_backs(&mut self, backs: Vec<(usize, String, Ty)>, places: &[Option<(String, Vec<String>)>]) -> Res<()> {
-        for (i, slot, t) in backs {
+    fn write_backs(&mut self, backs: Vec<(usize, String, Ty, TypeExpr)>, places: &[Option<(String, Vec<String>)>]) -> Res<()> {
+        for (i, slot, t, param) in backs {
             let place = places.get(i).cloned().flatten();
-            self.write_back(&place, &slot, &t)?;
+            self.write_back(&place, &slot, &t, &param)?;
         }
         Ok(())
     }
@@ -2200,7 +2217,7 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         if self.m.env.is_method(Symbol::new(name)) {
             if let Some(recv) = vs.first().map(|v| v.0.clone()) {
-                if Module::head(&recv).is_some_and(|h| self.m.resolve_method(name, &h).is_some() || self.m.ctors_of(&recv).iter().any(|c| self.m.resolve_method(name, c).is_some())) {
+                if self.is_dyn(&recv) || Module::head(&recv).is_some_and(|h| self.m.resolve_method(name, &h).is_some() || self.m.ctors_of(&recv).iter().any(|c| self.m.resolve_method(name, c).is_some())) {
                     return self.call_method(name, recv, vs, hint, &places);
                 }
             }
@@ -2247,7 +2264,7 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let head = Module::head(&recv).ok_or(format!("`{name}` on a `{}`", key(&recv)))?;
         if self.m.traits.contains_key(&Symbol::new(&head)) {
-            return self.unsupported(&format!("calling `{name}` on a value of the trait type `{head}`"));
+            return self.dyn_call(name, recv, vs, places);
         }
         let args = Module::args_of(&recv);
         let own: Vec<String> = self.m.ctors_of(&recv).into_iter().filter(|c| *c != head && self.m.resolve_method(name, c).is_some_and(|(tr, _)| self.m.impl_of(&tr, c).is_some())).collect();
@@ -2430,7 +2447,8 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok(match (name, types.as_slice()) {
             ("len", [t]) if list_elem(t).is_some() => self.list_len(&vs[0]),
             ("push", [t, _]) if list_elem(t).is_some() => {
-                let s = self.to_slot(&vs[1])?;
+                let x = self.coerce(vs[1].clone(), &list_elem(t).unwrap())?;
+                let s = self.to_slot(&x)?;
                 let r = self.call(&types[0], "@strata_list_push", &[vs[0].clone(), (Ty::Int, s)])?;
                 (vs[0].0.clone(), r.1)
             }
@@ -2610,6 +2628,244 @@ impl<'m, 'a> Func<'m, 'a> {
         self.br(&head);
         self.block(&end);
         Ok(())
+    }
+
+    // ---- values of a trait type ----
+    //
+    // A `Console` that could be any implementation (a field `console:
+    // Console`, an element of `List[Shape]`) points to two slots: its
+    // implementation's table, then the value. The table is [show as JSON,
+    // show, then each method of the trait and its supertraits]; each entry
+    // takes the value's slot (a `mut self` method: a pointer to it). A
+    // parameter of a trait type doesn't need this: it is compiled per
+    // implementation.
+
+    fn is_dyn(&self, t: &Ty) -> bool {
+        matches!(t, Ty::Con(n, _) if self.m.traits.contains_key(n))
+    }
+
+    /// `v` where a value of type `want` is expected: a concrete value going
+    /// where a trait is wanted gets its table (in a list, each element).
+    fn coerce(&mut self, v: V, want: &Ty) -> Res<V> {
+        if is_never(&v.0) || is_never(want) {
+            return Ok(v);
+        }
+        let want_r = self.m.repr(want)?;
+        let have = self.m.repr(&v.0)?;
+        if self.is_dyn(&want_r) && !self.is_dyn(&have) {
+            let vt = self.vtable(&want_r, &v.0)?;
+            let s = self.to_slot(&v)?;
+            let (p, a) = (self.fresh("dyn"), self.fresh("vt"));
+            self.emit(format!("{p} = call ptr @strata_alloc(i64 16)"));
+            self.emit(format!("{a} = ptrtoint ptr {vt} to i64"));
+            self.emit(format!("store i64 {a}, ptr {p}"));
+            self.set_field(&p, 0, &(Ty::Int, s))?;
+            return Ok((want.clone(), p));
+        }
+        if let (Ty::Con(l, a), Ty::Con(l2, b)) = (&want_r, &have) {
+            if l == "List" && l2 == "List" && self.has_dyn(&a[0]) && a[0] != b[0] {
+                // each element, into a new list
+                let (et, from) = (a[0].clone(), b[0].clone());
+                let acc = self.fresh("conv");
+                writeln!(self.allocas, "  {acc} = alloca ptr").unwrap();
+                let n = self.list_len(&v);
+                let l0 = self.call(&want_r, "@strata_list_new", &[n])?;
+                self.emit(format!("store ptr {}, ptr {acc}", l0.1));
+                self.each(&v, &from, |c, _, x| {
+                    let y = c.coerce(x.clone(), &et)?;
+                    let s = c.to_slot(&y)?;
+                    let cur = c.fresh("cur");
+                    c.emit(format!("{cur} = load ptr, ptr {acc}"));
+                    let next = c.call(&Ty::Str, "@strata_list_push", &[(Ty::Str, cur), (Ty::Int, s)])?;
+                    c.emit(format!("store ptr {}, ptr {acc}", next.1));
+                    Ok(())
+                })?;
+                let r = self.fresh("conv");
+                self.emit(format!("{r} = load ptr, ptr {acc}"));
+                return Ok((want.clone(), r));
+            }
+        }
+        Ok((want.clone(), v.1))
+    }
+
+    fn has_dyn(&self, t: &Ty) -> bool {
+        self.is_dyn(t) || matches!(t, Ty::Con(_, a) if a.iter().any(|x| self.has_dyn(x)))
+    }
+
+    /// The methods a value of trait `tr` can be called with: its own, then
+    /// its supertraits', each once (as (trait, method)).
+    fn dyn_methods(&self, tr: &str) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = vec![];
+        let mut todo = vec![tr.to_string()];
+        while let Some(t) = todo.pop() {
+            let Some(td) = self.m.traits.get(&Symbol::new(&t)) else { continue };
+            for m in &td.methods {
+                if !out.iter().any(|(_, x)| *x == m.decl.name) {
+                    out.push((t.clone(), m.decl.name.to_string()));
+                }
+            }
+            for sup in td.supers.iter().rev() {
+                todo.push(crate::types::texpr_head(sup).to_string());
+            }
+        }
+        out
+    }
+
+    /// Call entry `i` of a trait value's table that shows it (0: JSON, 1: as `to_string`).
+    fn dyn_entry_call(&mut self, v: &V, i: usize) -> Res<String> {
+        let fp = self.dyn_entry(v, i);
+        let s = self.field(v, 0, &Ty::Int)?;
+        let r = self.fresh("shown");
+        self.emit(format!("{r} = call ptr {fp}(i64 {})", s.1));
+        Ok(r)
+    }
+
+    /// Entry `i` of a trait value's table.
+    fn dyn_entry(&mut self, v: &V, i: usize) -> String {
+        let (raw, vt, at, fp) = (self.fresh("vtr"), self.fresh("vt"), self.fresh("ent"), self.fresh("fn"));
+        self.emit(format!("{raw} = load i64, ptr {}", v.1));
+        self.emit(format!("{vt} = inttoptr i64 {raw} to ptr"));
+        self.emit(format!("{at} = getelementptr ptr, ptr {vt}, i64 {i}"));
+        self.emit(format!("{fp} = load ptr, ptr {at}"));
+        fp
+    }
+
+    /// A method's signature for a call through a trait value: (method's
+    /// trait, declaration, its types with the trait's parameters filled in).
+    fn dyn_signature(&self, recv: &Ty, trm: &str, m: &str) -> Res<(&'a TraitMethod, HashMap<Symbol, Ty>)> {
+        let tm = self.m.trait_method(trm, m).ok_or(format!("trait `{trm}` has no method `{m}`"))?;
+        let Ty::Con(tr, args) = recv else { unreachable!() };
+        if tr.as_str() != trm && !self.m.traits[&Symbol::new(trm)].params.is_empty() {
+            return self.unsupported(&format!("calling `{m}` of the generic supertrait `{trm}` through a `{tr}`"));
+        }
+        let mentions = |t: &TypeExpr| crate::types::mentions_self(&FnDecl { params: vec![], ret: t.clone(), ..tm.decl.clone() });
+        if mentions(&tm.decl.ret) || tm.decl.params.iter().skip(1).any(|p| mentions(&p.ty) || p.mutable) || !tm.decl.type_params.is_empty() {
+            return self.unsupported(&format!("calling `{m}` (it mentions `Self`, has a `mut` parameter or type parameters of its own) on a value of the trait type `{tr}`"));
+        }
+        let td = self.m.traits[tr];
+        let sub: HashMap<Symbol, Ty> = if tr.as_str() == trm { td.params.iter().cloned().zip(args.iter().cloned()).collect() } else { HashMap::new() };
+        Ok((tm, sub))
+    }
+
+    /// Call `name` on a value of a trait type, through its table.
+    fn dyn_call(&mut self, name: &str, recv: Ty, vs: Vec<V>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
+        let Ty::Con(tr, _) = &recv else { unreachable!() };
+        let m = crate::types::split_trait_call(name).map_or(name, |(_, m)| m);
+        let methods = self.dyn_methods(tr);
+        let i = methods.iter().position(|(_, x)| x == m).ok_or(format!("`{tr}` has no method `{m}`"))?;
+        let trm = methods[i].0.clone();
+        let (tm, sub) = self.dyn_signature(&recv, &trm, m)?;
+        let ret = self.m.lower(&tm.decl.ret, &sub)?;
+        let fp = self.dyn_entry(&vs[0], i + 2);
+        let mut args = vec![];
+        let mut back = None;
+        if tm.decl.params[0].mutable {
+            // a copy of the pair, changed by the method, then stored in the place
+            let place = places.first().cloned().flatten();
+            let slot = self.mut_slot(&place, &vs[0], "self")?;
+            let cur = self.fresh("cur");
+            self.emit(format!("{cur} = load ptr, ptr {slot}"));
+            let copy = self.copy_block(&(recv.clone(), cur), 1);
+            self.emit(format!("store ptr {copy}, ptr {slot}"));
+            let at = self.fresh("selfp");
+            self.emit(format!("{at} = getelementptr i64, ptr {copy}, i64 1"));
+            args.push((Ty::Str, at));
+            back = Some((place, slot));
+        } else {
+            let s = self.field(&vs[0], 0, &Ty::Int)?;
+            args.push(s);
+        }
+        for (p, v) in tm.decl.params.iter().skip(1).zip(vs.into_iter().skip(1)) {
+            let t = self.m.lower(&p.ty, &sub)?;
+            args.push(self.coerce(v, &t)?);
+        }
+        let r = self.call(&ret, &fp, &args)?;
+        if let Some((place, slot)) = back {
+            self.write_back(&place, &slot, &recv, &tm.decl.params[0].ty)?;
+        }
+        Ok(r)
+    }
+
+    /// The table of `imp`'s implementation of trait type `tr_ty` (made once).
+    fn vtable(&mut self, tr_ty: &Ty, imp: &Ty) -> Res<String> {
+        let Ty::Con(tr, _) = tr_ty else { unreachable!() };
+        let name = format!("@\"vt:{}@{}\"", key(tr_ty), key(imp));
+        if !self.m.helpers.insert(name.clone()) {
+            return Ok(name);
+        }
+        let head = Module::head(imp).ok_or(format!("a `{}` can't be a `{tr}`", key(imp)))?;
+        let ll = self.m.ll(imp)?;
+        let mut entries = vec![];
+        // showing it: as JSON, and as `to_string`
+        for (i, what) in ["json", "show"].iter().enumerate() {
+            let f = format!("@\"dyn{what}:{}\"", key(imp));
+            entries.push(f.clone());
+            if !self.m.helpers.insert(f.clone()) {
+                continue;
+            }
+            let mut h = Func::new(self.m, HashMap::new());
+            h.block("start");
+            let v = h.from_slot("%v", imp)?;
+            let s = if i == 0 { h.json(&v)? } else { h.show(&v)? };
+            h.emit(format!("ret ptr {s}"));
+            let text = h.finish();
+            writeln!(self.m.body, "define ptr {f}(i64 %v) {{\n{text}}}\n").unwrap();
+        }
+        for (trm, m) in self.dyn_methods(tr) {
+            let f = format!("@\"dyn:{trm}::{m}@{}\"", key(imp));
+            entries.push(f.clone());
+            let Ok((tm, sub)) = self.dyn_signature(tr_ty, &trm, &m) else {
+                // not callable through the table: an entry that is never called
+                writeln!(self.m.body, "define void {f}() {{\nentry:\n  unreachable\n}}\n").unwrap();
+                continue;
+            };
+            let (_, imp_m) = self.m.resolve_method(&crate::types::trait_call(&trm, &m), &head).ok_or(format!("`{head}` has no method `{m}`"))?;
+            let mi = MethodInst { tr: trm.clone(), method: imp_m, recv: imp.clone(), head: head.clone(), targs: vec![] };
+            let symbol = self.m.want_method(mi);
+            let ret = self.m.lower(&tm.decl.ret, &sub)?;
+            let mut h = Func::new(self.m, HashMap::new());
+            h.block("start");
+            let mutable = tm.decl.params[0].mutable;
+            let mut sig = vec![if mutable { "ptr %self".to_string() } else { "i64 %self".to_string() }];
+            let mut args = vec![];
+            let tmp = h.fresh("self");
+            if mutable {
+                writeln!(h.allocas, "  {tmp} = alloca {ll}").unwrap();
+                let s = h.fresh("s");
+                h.emit(format!("{s} = load i64, ptr %self"));
+                let v = h.from_slot(&s, imp)?;
+                h.store(&v, &tmp)?;
+                args.push((Ty::Str, tmp.clone()));
+            } else {
+                args.push(h.from_slot("%self", imp)?);
+            }
+            for (k, p) in tm.decl.params.iter().skip(1).enumerate() {
+                let t = h.m.lower(&p.ty, &sub)?;
+                if has_value(&t) {
+                    sig.push(format!("{} %a{k}", h.m.ll(&t)?));
+                }
+                args.push((t, format!("%a{k}")));
+            }
+            let r = h.call(&ret, &symbol, &args)?;
+            if mutable {
+                let v = h.fresh("v");
+                h.emit(format!("{v} = load {ll}, ptr {tmp}"));
+                let s = h.to_slot(&(imp.clone(), v))?;
+                h.emit(format!("store i64 {s}, ptr %self"));
+            }
+            if has_value(&ret) {
+                let rl = h.m.ll(&ret)?;
+                h.emit(format!("ret {rl} {}", r.1));
+            } else {
+                h.emit("ret void".into());
+            }
+            let text = h.finish();
+            let rl = self.m.ll(&ret)?;
+            writeln!(self.m.body, "define {rl} {f}({}) {{\n{text}}}\n", sig.join(", ")).unwrap();
+        }
+        let list: Vec<String> = entries.iter().map(|e| format!("ptr {e}")).collect();
+        writeln!(self.m.globals, "{name} = private constant [{} x ptr] [{}], align 8", entries.len(), list.join(", ")).unwrap();
+        Ok(name)
     }
 
     // ---- closures ----
@@ -2804,6 +3060,7 @@ impl<'m, 'a> Func<'m, 'a> {
             return Ok(never());
         }
         self.check_new(c, &vals, &fs)?;
+        let vals: Vec<V> = vals.into_iter().zip(&fs).map(|(v, f)| self.coerce(v, &f.ty)).collect::<Res<_>>()?;
         let p = self.block_of(self.m.tags[c], &vals)?;
         let v = (t, p);
         self.check_type_refinement(c, &v)?;
@@ -2862,6 +3119,7 @@ impl<'m, 'a> Func<'m, 'a> {
             self.scopes.push(HashMap::new());
             self.pattern(&arm.pat, &v, &next)?;
             let r = self.expr(&arm.body)?;
+            let r = self.coerce(r, &want)?;
             incoming.push((r, self.cur.clone()));
             self.br(&end);
             self.scopes.pop();
@@ -2999,7 +3257,8 @@ impl<'m, 'a> Func<'m, 'a> {
                 let v = match ty {
                     Some(t) => {
                         self.check(t, &v, "let binding", false)?;
-                        (self.lower(t)?, v.1)
+                        let w = self.lower(t)?;
+                        self.coerce(v, &w)?
                     }
                     None => v,
                 };
@@ -3042,6 +3301,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let shown = crate::printer::expr(place, 0);
                 let cur = self.load(x)?;
                 let new = self.set_path(&cur, &path.iter().map(|s| s.to_string()).collect::<Vec<_>>(), v, &shown)?;
+                let new = self.coerce(new, &l.t)?;
                 if let Some(t) = &l.declared {
                     self.check(t, &new, &format!("assigning `{shown}`"), false)?;
                 }
@@ -3191,6 +3451,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let i = fs.iter().position(|x| x.name.as_deref() == Some(f)).ok_or(format!("`{}` has no field `{f}`", key(&t)))?;
         let inner = self.field(cur, i, &fs[i].ty)?;
         let new_inner = self.set_path(&inner, rest, v, shown)?;
+        let new_inner = self.coerce(new_inner, &fs[i].ty)?;
         let p = self.copy_block(cur, fs.len());
         self.set_field(&p, i, &new_inner)?;
         let new = (cur.0.clone(), p);

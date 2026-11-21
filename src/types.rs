@@ -2895,34 +2895,48 @@ fn ty_to_texpr(t: &Ty) -> TypeExpr {
     }
 }
 
+impl<'a> Checker<'a> {
+    /// A checker for one declaration, `decl` (its name, for messages).
+    fn new(env: &'a Env, decl: String) -> Self {
+        Checker {
+            env,
+            subst: Vec::new(),
+            scopes: vec![HashMap::new()],
+            rigid: BTreeSet::new(),
+            decl,
+            errors: Vec::new(),
+            holes: Vec::new(),
+            matches: Vec::new(),
+            self_ty: None,
+            bounds: HashMap::new(),
+            pending: Vec::new(),
+            lambda_floor: 0,
+            loops: 0,
+            ret: None,
+            written: Vec::new(),
+            targets: Vec::new(),
+            last_inst: None,
+            insts: Vec::new(),
+            callee: false,
+            marked: HashSet::new(),
+            types: Vec::new(),
+        }
+    }
+}
+
+/// Whether every value of `narrow` is a value of `wide`, as far as the
+/// checker can compare their refinements (`None`: it cannot). The compiler
+/// leaves out a check the checker has already proven.
+pub fn refinement_within(env: &Env, narrow: &TypeExpr, wide: &TypeExpr) -> Option<bool> {
+    Checker::new(env, String::new()).refinement_within(narrow, wide)
+}
+
 /// Concrete types to test a generic function with: every bounded type
 /// parameter gets an implementation of its bounds (or a mock of the trait),
 /// chosen so that all the bounds agree (`Q: Queue[P, E]` and `W: Worker[P, E]`
 /// must share `P` and `E`). Unbounded parameters become `Int`.
 pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<Symbol, TypeExpr>> {
-    let mut c = Checker {
-        env,
-        subst: Vec::new(),
-        scopes: vec![HashMap::new()],
-        rigid: BTreeSet::new(),
-        decl: f.name.to_string(),
-        errors: Vec::new(),
-        holes: Vec::new(),
-        matches: Vec::new(),
-        self_ty: None,
-        bounds: HashMap::new(),
-        pending: Vec::new(),
-        lambda_floor: 0,
-        loops: 0,
-        ret: None,
-        written: Vec::new(),
-        targets: Vec::new(),
-        last_inst: None,
-        insts: Vec::new(),
-        callee: false,
-        marked: HashSet::new(),
-        types: Vec::new(),
-    };
+    let mut c = Checker::new(env, f.name.to_string());
     let vars: HashMap<Symbol, Ty> = f.type_params.iter().map(|p| (p.clone(), c.fresh())).collect();
     let bounded: Vec<&Bound> = f.bounds.iter().collect();
     // candidate types per bounded parameter: implementations first, then a mock
