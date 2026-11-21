@@ -787,7 +787,7 @@ record!(TestDecl { name, body });
 record!(TraitMethod { comments, doc, decl, default });
 record!(Law { comments, doc, name, params, body });
 record!(TraitDecl { name, params, supers, methods, laws, derivable });
-record!(Derivable { name, kind, requires });
+record!(Derivable { kind, requires });
 record!(ImplDecl { type_params, bounds, trait_name, trait_args, for_type, methods, derived });
 record!(UseDecl { path, items });
 record!(Arm { comments, pat, body });
@@ -893,11 +893,12 @@ impl Bin for Pattern {
             Pattern::Tuple(ps) => put!(w, 7, ps),
             Pattern::Cond(e) => put!(w, 8, e),
             Pattern::Or(ps) => put!(w, 9, ps),
+            Pattern::For(p, v, xs) => put!(w, 10, p, v, xs),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
         r.nest(|r| {
-            Ok(match r.tag("pattern", 9)? {
+            Ok(match r.tag("pattern", 10)? {
                 0 => Pattern::Wild,
                 1 => Pattern::Bind(Bin::dec(r)?),
                 2 => Pattern::Int(Bin::dec(r)?),
@@ -907,7 +908,8 @@ impl Bin for Pattern {
                 6 => Pattern::List(Bin::dec(r)?, Bin::dec(r)?),
                 7 => Pattern::Tuple(Bin::dec(r)?),
                 8 => Pattern::Cond(Bin::dec(r)?),
-                _ => Pattern::Or(Bin::dec(r)?),
+                9 => Pattern::Or(Bin::dec(r)?),
+                _ => Pattern::For(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
             })
         })
     }
@@ -944,10 +946,11 @@ impl Bin for Stmt {
             Stmt::Expr(e) => put!(w, 8, e),
             Stmt::Assert(e) => put!(w, 9, e),
             Stmt::Comment(ls) => put!(w, 10, ls),
+            Stmt::ComptimeFor(p, xs, b) => put!(w, 11, p, xs, b),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
-        Ok(match r.tag("statement", 10)? {
+        Ok(match r.tag("statement", 11)? {
             0 => Stmt::Let(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
             1 => Stmt::Var(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
             2 => Stmt::Assign(Bin::dec(r)?, Bin::dec(r)?),
@@ -958,7 +961,8 @@ impl Bin for Stmt {
             7 => Stmt::Continue,
             8 => Stmt::Expr(Bin::dec(r)?),
             9 => Stmt::Assert(Bin::dec(r)?),
-            _ => Stmt::Comment(Bin::dec(r)?),
+            10 => Stmt::Comment(Bin::dec(r)?),
+            _ => Stmt::ComptimeFor(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
         })
     }
 }
@@ -1000,11 +1004,12 @@ impl Bin for Expr {
             Expr::Set(tys, xs) => put!(w, 31, tys, xs),
             Expr::Or(x, fb) => put!(w, 32, x, fb),
             Expr::Comptime(x) => put!(w, 33, x),
+            Expr::Describe(t) => put!(w, 34, t),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
         r.nest(|r| {
-            Ok(match r.tag("expression", 33)? {
+            Ok(match r.tag("expression", 34)? {
                 0 => Expr::Int(Bin::dec(r)?),
                 1 => Expr::BigInt(Bin::dec(r)?),
                 2 => Expr::Float(Bin::dec(r)?),
@@ -1038,7 +1043,8 @@ impl Bin for Expr {
                 30 => Expr::Dict(Bin::dec(r)?, Bin::dec(r)?),
                 31 => Expr::Set(Bin::dec(r)?, Bin::dec(r)?),
                 32 => Expr::Or(Bin::dec(r)?, Bin::dec(r)?),
-                _ => Expr::Comptime(Bin::dec(r)?),
+                33 => Expr::Comptime(Bin::dec(r)?),
+                _ => Expr::Describe(Bin::dec(r)?),
             })
         })
     }

@@ -1936,6 +1936,7 @@ impl<'m, 'a> Func<'m, 'a> {
             Expr::Mut(x) => self.expr(x)?,
             // evaluated at build time once deriving lands; until then, as written
             Expr::Comptime(x) => self.expr(x)?,
+            Expr::Describe(_) => return self.unsupported("a type's description outside a derived method"),
             Expr::Mock(_) => return self.unsupported("`mock`"),
             // rewritten into builtin calls when the program is resolved
             Expr::Range(..) | Expr::Index(..) | Expr::Comp(..) | Expr::Dict(..) | Expr::Set(..) => return self.unsupported("a range, slice, comprehension or collection literal not desugared"),
@@ -3169,6 +3170,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.scopes.pop();
                 test(self, ok);
             }
+            Pattern::For(..) => return self.unsupported("a match comprehension outside a derived method"),
             Pattern::Or(ps) => {
                 // each alternative binds the same names, into the same slots
                 let matched = self.fresh_label("alt.matched");
@@ -3253,6 +3255,7 @@ impl<'m, 'a> Func<'m, 'a> {
 
     fn stmt(&mut self, s: &Stmt) -> Res<()> {
         match s {
+            Stmt::ComptimeFor(..) => return self.unsupported("`comptime for` outside a derived method"),
             Stmt::Let(_, ty, e) | Stmt::Var(_, ty, e) => {
                 let v = self.expr(e)?;
                 if is_never(&v.0) {

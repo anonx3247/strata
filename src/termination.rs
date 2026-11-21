@@ -143,6 +143,7 @@ fn calls_of(e: &Expr, env: &Env, locals: &[String], out: &mut BTreeSet<String>) 
                     self.scopes.push(vec![]);
                     for st in stmts {
                         match st {
+                            Stmt::ComptimeFor(..) => {}
                             Stmt::Let(p, _, x) => {
                                 self.expr(x);
                                 self.pattern(p);
@@ -254,6 +255,7 @@ impl Structural<'_> {
     /// inside a constructor or list: a strictly smaller piece.
     fn bind(&self, p: &Pattern, scrut: Option<&Expr>, whole: &Piece, depth: usize, vars: &mut HashMap<String, Piece>) {
         match p {
+            Pattern::For(..) => {}
             Pattern::Bind(x) => {
                 let piece = if self.assigned.contains(x.as_str()) {
                     Piece::default()
@@ -374,6 +376,7 @@ impl Structural<'_> {
                 let mut v = vars.clone();
                 for s in stmts {
                     match s {
+                        Stmt::ComptimeFor(..) => {}
                         Stmt::Let(p, _, x) => {
                             self.expr(x, &v);
                             let w = self.piece(x, &v);

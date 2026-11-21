@@ -1198,6 +1198,14 @@ impl Rw<'_> {
                             self.pop();
                             Stmt::For(p, it, b)
                         }
+                        Stmt::ComptimeFor(p, it, b) => {
+                            let it = self.expr(it);
+                            self.push(&[]);
+                            let p = self.pat(p);
+                            let b = self.expr(b);
+                            self.pop();
+                            Stmt::ComptimeFor(p, it, b)
+                        }
                         Stmt::Expr(x) => Stmt::Expr(self.expr(x)),
                         Stmt::Assert(x) => Stmt::Assert(self.expr(x)),
                         Stmt::Comment(c) => Stmt::Comment(c.clone()),
@@ -1286,13 +1294,7 @@ impl Rw<'_> {
                         Law { comments: l.comments.clone(), doc: l.doc.clone(), name: l.name.clone(), params, body }
                     })
                     .collect();
-                // the description of the type (`t`) is in scope in what it requires
-                let derivable = t.derivable.as_ref().map(|d| {
-                    self.push(&[d.name]);
-                    let requires = d.requires.iter().map(|r| self.expr(r)).collect();
-                    self.pop();
-                    Derivable { name: d.name, kind: self.ty(&d.kind), requires }
-                });
+                let derivable = t.derivable.as_ref().map(|d| Derivable { kind: self.ty(&d.kind), requires: d.requires.iter().map(|r| self.expr(r)).collect() });
                 self.tparams.pop();
                 DeclKind::Trait(TraitDecl { name: self.declared(m, t.name), params: t.params.clone(), supers, methods, laws, derivable })
             }

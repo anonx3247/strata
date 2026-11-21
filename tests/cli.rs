@@ -3639,11 +3639,11 @@ fn record_defaults() {
 fn derive_syntax_round_trips() {
     let d = tmp("derive-syntax");
     let text = r#"/// Show a record as its field names.
-pub derivable(t: Record) trait Named
-  requires len(t.fields) > 0 {
+pub derivable(Record) trait Named
+  requires len($Self.fields) > 0 {
   /// The names of the fields.
   derived fn names() -> List[String] {
-    comptime t.fields.map(f -> f.name)
+    comptime $Self.fields.map(f -> f.name)
   }
   fn shout(self) -> String
 }
@@ -3687,18 +3687,18 @@ fn derived_traits_are_specialized() {
     let text = r#"use std.typing.{Record, Field}
 
 /// Values from text, field by field.
-derivable(t: Record) trait FromText {
+derivable(Record) trait FromText {
   /// The fields' names.
   derived fn names(self) -> List[String] {
-    comptime t.fields.map(f -> f.name)
+    comptime $Self.fields.map(f -> f.name)
   }
   /// A value with every field at its zero.
   derived fn zero() -> Self {
-    t.make(f -> zero_of(f))
+    $Self.make(f -> zero_of(f))
   }
   /// A value read from one text per field.
   derived fn parse(texts: List[String]) -> Result[Self, String] {
-    t.try_make(f -> read(f, texts))
+    $Self.try_make(f -> read(f, texts))
   }
 }
 
@@ -3751,8 +3751,8 @@ fn main() {
     // what can't be derived says why, at the `derive`
     let bad = [
         ("trait Plain { fn p(self) -> Int }\ntype A = { x: Int }\nderive Plain for A\n", "`Plain` can't be derived: only a `derivable` trait can"),
-        ("use std.typing.Record\nderivable(t: Record) trait Sized { derived fn n(self) -> Int { comptime len(t.fields) } }\ntype S =\n  | One\n  | Two\nderive Sized for S\n", "`Sized` can only be derived for a `Record`, and `S` isn't one"),
-        ("use std.typing.Record\nderivable(t: Record) trait Sized\n  requires len(t.fields) > 1 { derived fn n(self) -> Int { comptime len(t.fields) } }\ntype A = { x: Int }\nderive Sized for A\n", "`A` doesn't meet what `Sized` requires: len(t.fields) > 1"),
+        ("use std.typing.Record\nderivable(Record) trait Sized { derived fn n(self) -> Int { comptime len($Self.fields) } }\ntype S =\n  | One\n  | Two\nderive Sized for S\n", "`Sized` can only be derived for a `Record`, and `S` isn't one"),
+        ("use std.typing.Record\nderivable(Record) trait Sized\n  requires len($Self.fields) > 1 { derived fn n(self) -> Int { comptime len($Self.fields) } }\ntype A = { x: Int }\nderive Sized for A\n", "`A` doesn't meet what `Sized` requires: len($Self.fields) > 1"),
     ];
     for (k, (src, want)) in bad.iter().enumerate() {
         let f = format!("bad{k}.strata");

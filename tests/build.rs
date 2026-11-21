@@ -435,18 +435,18 @@ fn derived_traits_compile() {
     let (out, code) = case(&d, "derived", r#"use std.typing.{Record, Field}
 
 /// Values from text, field by field.
-derivable(t: Record) trait FromText {
+derivable(Record) trait FromText {
   /// The fields' names.
   derived fn names(self) -> List[String] {
-    comptime t.fields.map(f -> f.name)
+    comptime $Self.fields.map(f -> f.name)
   }
   /// A value with every field at its zero.
   derived fn zero() -> Self {
-    t.make(f -> zero_of(f))
+    $Self.make(f -> zero_of(f))
   }
   /// A value read from one text per field.
   derived fn parse(texts: List[String]) -> Result[Self, String] {
-    t.try_make(f -> read(f, texts))
+    $Self.try_make(f -> read(f, texts))
   }
 }
 
@@ -501,31 +501,33 @@ fn derived_for_sums_compile() {
         return;
     }
     let d = tmp("derived-sums");
-    let (out, code) = case(&d, "sums", r#"use std.typing.{Sum, Choice, Field}
+    // `comptime for`, a match comprehension, `v.make()`
+    let (out, code) = case(&d, "sums", r#"use std.typing.{Choice, Sum, Field}
 
-/// A choice read from its name.
-derivable(t: Choice) trait Named {
+/// A choice and its name.
+derivable(Choice) trait Named {
   derived fn from_name(name: String) -> Option[Self] {
-    t.select(v -> to_lower(v.name) == name, v -> v.make(f -> zero_of(f)))
+    comptime for v in $Self.variants {
+      if to_lower(v.name) == name {
+        return Some(v.make())
+      }
+    }
+    None
+  }
+  derived fn name(self) -> String {
+    match self {
+      v => to_lower(v.name) for v in $Self.variants
+    }
   }
 }
 
-/// Each variant, with its fields at zero.
-derivable(t: Sum) trait Samples {
-  derived fn samples() -> List[Self] {
-    [t.select(v -> v.name == "Dot", v -> v.make(f -> zero_of(f))), t.select(v -> v.name == "Rect", v -> v.make(f -> zero_of(f))), t.select(v -> v.name == "Circle", v -> v.make(f -> zero_of(f)))]
-      .map(o -> o or { panic_value() })
-  }
-}
-
-fn panic_value[T]() -> T {
-  ?unreachable
-}
-
-fn zero_of(comptime f: Field) -> f.type {
-  match comptime f.type {
-    Int => 0,
-    String => "",
+/// How many fields each variant has.
+derivable(Sum) trait Width
+  requires len($Self.variants) > 0 {
+  derived fn width(self) -> Int {
+    match self {
+      v => len(v.fields) for v in $Self.variants
+    }
   }
 }
 
@@ -540,16 +542,16 @@ type Shape =
   | Rect(Int, Int)
   | Circle { r: Int, label: String }
 
-derive Samples for Shape
+derive Width for Shape
 
 fn main() {
   print(Level.from_name("loud"))
-  print(Level.from_name("quiet"))
-  print(Level.from_name("other"))
-  print(Shape.samples())
+  print(Level.from_name("nope"))
+  print(Loud.name())
+  print([Dot, Rect(1, 2), Circle { r: 1, label: "c" }].map(s -> s.width()))
 }
 "#);
-    assert!(out.contains(r#"["Dot",{"Rect":[0,0]},{"Circle":{"r":0,"label":""}}]"#) && code == 0, "{out}");
+    assert!(out.contains("{\"Some\":\"Loud\"}\nNone\nloud\n[0,2,2]") && code == 0, "{out}");
 }
 
 #[test]

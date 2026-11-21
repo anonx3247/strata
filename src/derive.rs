@@ -131,14 +131,15 @@ impl<'a> Expander<'a> {
         if !kind_ok || self.it.check_type(&dv.kind, &desc).map_err(|f| f.msg)?.is_some() {
             return Err(format!("`{}` can only be derived for a `{kind_name}`, and `{}` isn't one", short(&tr.name), short(&head)));
         }
-        let scope = crate::interp::extend(&None, &dv.name, desc.clone());
+        let _ = desc;
         for r in &dv.requires {
-            let ok = self.it.eval(r, &scope).map_err(|f| format!("checking what `{}` requires: {}", short(&tr.name), f.msg))?;
+            // `$Self` (and the like) written in, then run
+            let r2 = self.expr(r)?;
+            let ok = self.it.eval(&r2, &None).map_err(|f| format!("checking what `{}` requires: {}", short(&tr.name), f.msg))?;
             if ok != Value::Bool(true) {
                 return Err(format!("`{}` doesn't meet what `{}` requires: {}", short(&head), short(&tr.name), crate::printer::expr(r, 0)));
             }
         }
-        self.known.insert(dv.name, desc);
         let mut methods = i.methods.clone();
         for m in &tr.methods {
             if i.methods.iter().any(|w| w.name == m.decl.name) {
@@ -278,7 +279,9 @@ impl<'a> Expander<'a> {
     fn expr(&mut self, e: &Expr) -> Res<Expr> {
         match e {
             Expr::Comptime(x) => {
-                let v = self.eval(x)?;
+                // what it uses (`$Self`, known names) written in, then run
+                let x = self.expr(x)?;
+                let v = self.eval(&x)?;
                 return self.literal(&v);
             }
             // a known value used where the program runs: written in
@@ -286,16 +289,27 @@ impl<'a> Expander<'a> {
                 let v = self.known[x].clone();
                 return self.literal(&v);
             }
-            // `t.make(f -> e)`, `t.try_make(f -> e)`
-            Expr::Method(recv, m, args) if (m == "make" || m == "try_make") && matches!(&**recv, Expr::Var(x) if self.is_known(x)) => {
-                let Expr::Var(x) = &**recv else { unreachable!() };
-                return self.make(x, m == "try_make", args);
+            // `$Self`, `$f.type`: a type's description
+            Expr::Describe(t) => {
+                let t = self.ty(t);
+                let d = self.describe(&crate::types::texpr_head(&t))?;
+                return self.literal(&d);
             }
-            // `t.select(v -> test, v -> value)`: for each variant in turn
-            Expr::Method(recv, m, args) if m == "select" && matches!(&**recv, Expr::Var(x) if self.is_known(x)) => {
-                let Expr::Var(x) = &**recv else { unreachable!() };
-                return self.select(x, args);
+            // `$Self.make(f -> e)`, `v.make()`, `v.try_make(f -> e)`: only on a
+            // description known while compiling
+            Expr::Method(recv, m, args) if m == "make" || m == "try_make" => {
+                let known = self.expr(recv).and_then(|r| self.eval(&r));
+                let Ok(desc) = known else {
+                    return Err(format!(
+                        "`{}.{m}(..)` needs `{}` known at compile time: build each variant in a `comptime for v in $Self.variants` (or a match comprehension)",
+                        crate::printer::expr(recv, 0),
+                        crate::printer::expr(recv, 0)
+                    ));
+                };
+                return self.make(desc, m == "try_make", args);
             }
+            Expr::Block(stmts, last) => return self.block(stmts, last),
+            Expr::Match(s, name, arms) if arms.iter().any(|a| matches!(a.pat, Pattern::For(..))) => return self.comprehension(s, *name, arms),
             Expr::Match(s, None, arms) if matches!(&**s, Expr::Comptime(_)) => {
                 let Expr::Comptime(x) = &**s else { unreachable!() };
                 return self.match_type(x, arms);
@@ -367,11 +381,20 @@ impl<'a> Expander<'a> {
     /// `t.make(f -> e)`: the type's constructor, with `e` for each field
     /// (`f` known as that field); `try_make`: each `e` is a `Result`, the
     /// first `Err` is the result, else `Ok` of the value.
-    fn make(&mut self, t: &Symbol, fallible: bool, args: &[Expr]) -> Res<Expr> {
-        let [Expr::Lambda(ps, body)] = args else { return Err("`make` takes one function, `f -> e`".into()) };
-        let [p] = ps.as_slice() else { return Err("the function given to `make` takes one field".into()) };
-        let Value::Record(kind, desc) = self.known[t].clone() else { unreachable!() };
-        let Some((_, Value::List(fields))) = desc.iter().find(|(k, _)| k == "fields") else { return Err("`make` builds a record, or a variant (`v.make(..)` for `v` in `t.select(..)`)".into()) };
+    fn make(&mut self, d: Value, fallible: bool, args: &[Expr]) -> Res<Expr> {
+        let Value::Record(kind, desc) = d else { return Err("`make` is called on a type's description".into()) };
+        let Some((_, Value::List(fields))) = desc.iter().find(|(k, _)| k == "fields") else { return Err("`make` builds a record (`$Self.make(f -> e)`) or a variant (`v.make(..)`)".into()) };
+        // a variant without fields: `v.make()`
+        let none = (Symbol::new("_"), Expr::Unit);
+        let (p, body) = match args {
+            [Expr::Lambda(ps, body)] if ps.len() == 1 => (ps[0].name, (**body).clone()),
+            [] if fields.is_empty() => (none.0, none.1),
+            [] => return Err("`make()` without a function only builds what has no fields: pass `f -> e` to give each field's value".into()),
+            _ => return Err("`make` takes one function, `f -> e`".into()),
+        };
+        let p = LamParam { name: p, ty: None };
+        let p = &p;
+        let body = &body;
         // a record is built by its type's name; a variant by its own, in the sum's module
         let head = crate::types::texpr_head(&self.self_ty);
         let variant = kind == q("Variant");
@@ -433,30 +456,106 @@ impl<'a> Expander<'a> {
         Ok(out)
     }
 
-    /// `t.select(v -> test, v -> value)` on a sum: `Some(value)` for the first
-    /// variant whose test holds (both specialized with `v` known as it),
-    /// else `None`. The tests run when the program does.
-    fn select(&mut self, t: &Symbol, args: &[Expr]) -> Res<Expr> {
-        let [Expr::Lambda(tp, test), Expr::Lambda(vp, value)] = args else { return Err("`select` takes two functions: `v -> test`, `v -> value`".into()) };
-        let ([tp], [vp]) = (tp.as_slice(), vp.as_slice()) else { return Err("the functions given to `select` take one variant".into()) };
-        let Value::Record(_, desc) = self.known[t].clone() else { unreachable!() };
-        let Some((_, Value::List(variants))) = desc.iter().find(|(k, _)| k == "variants") else { return Err("`select` chooses a variant of a sum type".into()) };
-        let mut out = Expr::Ctor(Symbol::new("None"), CtorArgs::None);
-        for v in variants.iter().rev() {
-            let with = |x: &mut Self, name: Symbol, e: &Expr| -> Res<Expr> {
-                let saved = x.known.insert(name, v.clone());
-                let r = x.expr(e);
-                match saved {
-                    Some(o) => x.known.insert(name, o),
-                    None => x.known.remove(&name),
+    /// A block, with each `comptime for` written out: its body once per
+    /// element of the list (known while compiling), the element known in each.
+    fn block(&mut self, stmts: &[Stmt], last: &Expr) -> Res<Expr> {
+        let mut out = vec![];
+        for st in stmts {
+            if let Stmt::ComptimeFor(p, xs, body) = st {
+                let Pattern::Bind(x) = p else { return Err("`comptime for` names its element: `comptime for v in ..`".into()) };
+                let list = self.expr(xs)?;
+                let Value::List(items) = self.eval(&list).map_err(|e| format!("the list of a `comptime for` must be known at compile time: {e}"))? else {
+                    return Err("`comptime for` goes over a list".into());
                 };
-                r
-            };
-            let c = with(self, tp.name, test)?;
-            let b = with(self, vp.name, value)?;
-            out = Expr::If(Box::new(c), Box::new(Expr::Ctor(Symbol::new("Some"), CtorArgs::Positional(vec![b]))), Box::new(out));
+                for it in items {
+                    let saved = self.known.insert(*x, it);
+                    let b = self.expr(body);
+                    match saved {
+                        Some(v) => self.known.insert(*x, v),
+                        None => self.known.remove(x),
+                    };
+                    out.push(Stmt::Expr(b?));
+                }
+                continue;
+            }
+            // any other statement: specialized as a one-statement block
+            match self.children(&Expr::Block(vec![st.clone()], Box::new(Expr::Unit)))? {
+                Expr::Block(mut s1, _) => out.append(&mut s1),
+                _ => unreachable!(),
+            }
         }
-        Ok(out)
+        let last = self.expr(last)?;
+        Ok(Expr::Block(out, Box::new(last)))
+    }
+
+    /// A match whose arms come from a comprehension (`v => e for v in $Self.variants`):
+    /// one arm per element, written out. A variant's description as the
+    /// arm's pattern matches that variant (whatever its fields).
+    fn comprehension(&mut self, scrut: &Expr, name: Option<Symbol>, arms: &[Arm]) -> Res<Expr> {
+        let s = self.expr(scrut)?;
+        let mut out = vec![];
+        for arm in arms {
+            let Pattern::For(p, x, xs) = &arm.pat else {
+                let m = self.children(&Expr::Match(Box::new(Expr::Unit), None, vec![arm.clone()]))?;
+                if let Expr::Match(_, _, mut a) = m {
+                    out.append(&mut a);
+                }
+                continue;
+            };
+            let Pattern::Bind(x) = &**x else { return Err("a match comprehension names its element: `.. for v in ..`".into()) };
+            let list = self.expr(xs)?;
+            let Value::List(items) = self.eval(&list).map_err(|e| format!("the list of a match comprehension must be known at compile time: {e}"))? else {
+                return Err("a match comprehension goes over a list".into());
+            };
+            for it in items {
+                let saved = self.known.insert(*x, it.clone());
+                let pat = self.arm_pattern(p, x, &it);
+                let body = self.expr(&arm.body);
+                match saved {
+                    Some(v) => self.known.insert(*x, v),
+                    None => self.known.remove(x),
+                };
+                out.push(Arm { comments: vec![], pat: pat?, body: body? });
+            }
+        }
+        Ok(Expr::Match(Box::new(s), name, out))
+    }
+
+    /// An arm's pattern with the element written in: the element's own name
+    /// (a variant's description) matches that variant.
+    fn arm_pattern(&self, p: &Pattern, x: &Symbol, it: &Value) -> Res<Pattern> {
+        match p {
+            Pattern::Bind(y) if y == x => match it {
+                Value::Record(k, d) if *k == q("Variant") => {
+                    let vname = d.iter().find_map(|(k, v)| match (k.as_str(), v) {
+                        ("name", Value::Str(s)) => Some(s.clone()),
+                        _ => None,
+                    }).unwrap_or_default();
+                    let head = crate::types::texpr_head(&self.self_ty);
+                    // the variant's shape: nothing, `Rect(_, _)`, `Circle { .. }`
+                    let fields = match d.iter().find(|(k, _)| k == "fields") {
+                        Some((_, Value::List(fs))) => fs.clone(),
+                        _ => vec![],
+                    };
+                    let positional = fields.first().is_some_and(|f| matches!(f, Value::Record(_, fd) if fd.iter().any(|(k, v)| k == "name" && *v == Value::Str("0".into()))));
+                    let cp = if fields.is_empty() {
+                        CtorPat::None
+                    } else if positional {
+                        CtorPat::Positional(vec![Pattern::Wild; fields.len()])
+                    } else {
+                        CtorPat::Record(vec![], true)
+                    };
+                    Ok(Pattern::Ctor(Symbol::new(&crate::names::qualify(crate::names::module_of(&head), &vname)), cp))
+                }
+                other => match self.literal(other)? {
+                    Expr::Int(n) => Ok(Pattern::Int(n)),
+                    Expr::Str(s) => Ok(Pattern::Str(s)),
+                    Expr::Bool(b) => Ok(Pattern::Bool(b)),
+                    _ => Err("a match comprehension's element must be a variant, a number, a string or a Bool to be a pattern".into()),
+                },
+            },
+            other => Ok(other.clone()),
+        }
     }
 
     /// `match comptime ty { Int => .., Option[x] => .., _ => .. }`: the arm

@@ -1418,6 +1418,7 @@ impl<'a> Interp<'a> {
                 v
             }
             Expr::Mut(x) | Expr::Comptime(x) => self.eval(x, s)?,
+            Expr::Describe(t) => return self.fail(FaultKind::Runtime, format!("`${}` is only known in a derived method", crate::printer::ty(t))),
             Expr::Call(f, args) => {
                 let fv = self.eval(f, s)?;
                 let avs = args.iter().map(|a| self.eval(a, s)).collect::<R<Vec<_>>>()?;
@@ -1554,6 +1555,7 @@ impl<'a> Interp<'a> {
                 let mut sc = s.clone();
                 for st in stmts {
                     match st {
+                        Stmt::ComptimeFor(..) => return self.fail(FaultKind::Runtime, "`comptime for` is only written out in a derived method"),
                         Stmt::Let(p, ann, x) => {
                             let v = self.eval(x, &sc)?;
                             if let Some(t) = ann {

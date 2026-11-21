@@ -95,6 +95,8 @@ fn ind(n: usize) -> String {
 pub fn pat(p: &Pattern) -> String {
     match p {
         Pattern::Wild => "_".into(),
+        // the arm's body goes between: see `arm`
+        Pattern::For(p, _, _) => pat(p),
         Pattern::Bind(n) => n.to_string(),
         Pattern::Int(n) => n.to_string(),
         Pattern::Tuple(ps) => format!("({})", ps.iter().map(pat).collect::<Vec<_>>().join(", ")),
@@ -342,7 +344,11 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             let mut out = format!("match {}{as_name} {{\n", expr(s, d));
             for a in arms {
                 out += &comments(&a.comments, d + 1);
-                out += &format!("{}{} => {},\n", ind(d + 1), pat(&a.pat), expr(&a.body, d + 1));
+                let each = match &a.pat {
+                    Pattern::For(_, x, xs) => format!(" for {} in {}", pat(x), expr(xs, d + 1)),
+                    _ => String::new(),
+                };
+                out += &format!("{}{} => {}{each},\n", ind(d + 1), pat(&a.pat), expr(&a.body, d + 1));
             }
             out + &ind(d) + "}"
         }
@@ -350,6 +356,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Mock(t) => format!("mock {}", ty(t)),
         Expr::Mut(x) => format!("mut {}", expr(x, d)),
         Expr::Comptime(x) => format!("comptime {}", expr(x, d)),
+        Expr::Describe(t) => format!("${}", ty(t)),
         Expr::Interp(parts) => {
             let mut s = "f\"".to_string();
             for p in parts {
@@ -462,6 +469,7 @@ pub fn block(e: &Expr, d: usize) -> String {
             Stmt::Break => "break".into(),
             Stmt::Continue => "continue".into(),
             Stmt::For(p, it, b) => format!("for {} in {} {}", pat(p), expr(it, d + 1), block(b, d + 1)),
+            Stmt::ComptimeFor(p, it, b) => format!("comptime for {} in {} {}", pat(p), expr(it, d + 1), block(b, d + 1)),
             Stmt::Expr(e) => expr(e, d + 1),
             Stmt::Assert(e) => format!("assert {}", expr(e, d + 1)),
             Stmt::Comment(_) => unreachable!(),
@@ -560,9 +568,9 @@ fn trait_text(t: &TraitDecl, bodies: bool) -> String {
     let tp = if t.params.is_empty() { String::new() } else { format!("[{}]", crate::symbol::join(&t.params, ", ")) };
     let sup = if t.supers.is_empty() { String::new() } else { format!(": {}", t.supers.iter().map(ty).collect::<Vec<_>>().join(" + ")) };
     let mut s = match &t.derivable {
-        // `derivable(t: Record) trait CommandLine\n  requires ... {`
+        // `derivable(Record) trait CommandLine\n  requires ... {`
         Some(d) => {
-            let mut h = format!("derivable({}: {}) trait {}{tp}{sup}", d.name, ty(&d.kind), t.name);
+            let mut h = format!("derivable({}) trait {}{tp}{sup}", ty(&d.kind), t.name);
             for r in &d.requires {
                 h += &format!("\n  requires {}", expr(r, 1));
             }

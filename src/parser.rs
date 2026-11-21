@@ -328,15 +328,13 @@ impl Parser {
             f.comptime = true;
             DeclKind::Fn(f)
         } else if self.is_kw("derivable") && matches!(self.peek_at(1), Tok::Sym("(")) {
-            // `derivable(t: Record) trait ...`: contextual, like `distinct`
+            // `derivable(Record) trait ...`: contextual, like `distinct`
             self.next();
             self.next();
-            let name = self.ident()?;
-            self.expect_sym(":")?;
             let kind = self.type_expr()?;
             self.expect_sym(")")?;
             self.expect_kw("trait")?;
-            DeclKind::Trait(self.trait_decl(Some((name, kind)))?)
+            DeclKind::Trait(self.trait_decl(Some(kind))?)
         } else if self.is_kw("derive") && matches!(self.peek_at(1), Tok::Ident(n) if !KEYWORDS.contains(&n.as_str())) {
             // `derive Trait for Type`, with `{ ... }` for methods written by hand
             self.next();
@@ -385,7 +383,7 @@ impl Parser {
         Ok((names, bounds))
     }
 
-    fn trait_decl(&mut self, derivable: Option<(Symbol, TypeExpr)>) -> R<TraitDecl> {
+    fn trait_decl(&mut self, derivable: Option<TypeExpr>) -> R<TraitDecl> {
         let name = self.ident()?;
         let params = self.type_params()?;
         let mut supers = Vec::new();
@@ -401,8 +399,8 @@ impl Parser {
             requires.push(self.expr_ns()?);
         }
         let derivable = match derivable {
-            Some((name, kind)) => Some(Derivable { name, kind, requires }),
-            None if !requires.is_empty() => return Err(self.err("only a `derivable` trait has `requires`: `derivable(t: Record) trait ... requires ...`")),
+            Some(kind) => Some(Derivable { kind, requires }),
+            None if !requires.is_empty() => return Err(self.err("only a `derivable` trait has `requires`: `derivable(Record) trait ... requires ...`")),
             None => None,
         };
         self.expect_sym("{")?;
@@ -948,6 +946,23 @@ impl Parser {
                 self.expect_sym(")")?;
                 Ok(e)
             }
+            // `$Self`, `$f.type`, `$Option[Int]`: a type's description
+            Tok::Sym("$") => {
+                self.next();
+                let mut name = self.ident()?.to_string();
+                if self.is_sym(".") && matches!(self.peek_at(1), Tok::Ident(t) if t == "type") {
+                    self.next();
+                    self.next();
+                    name += ".type";
+                }
+                let args = if self.is_sym("[") && !self.nl_before() {
+                    self.next();
+                    self.list("]", |p| p.type_expr())?
+                } else {
+                    vec![]
+                };
+                Ok(Expr::Describe(TypeExpr::Named(Symbol::new(&name), args)))
+            }
             Tok::Sym("[") => {
                 self.next();
                 if self.eat_sym("]") {
@@ -1001,9 +1016,16 @@ impl Parser {
                 let mut arms = Vec::new();
                 while !self.eat_sym("}") {
                     let mut comments = self.leading();
-                    let pat = self.pattern()?;
+                    let mut pat = self.pattern()?;
                     self.expect_sym("=>")?;
                     let body = self.expr()?;
+                    // `v => e for v in $Self.variants`: an arm per element, written out while compiling
+                    if self.eat_kw("for") {
+                        let x = self.pattern()?;
+                        self.expect_kw("in")?;
+                        let xs = self.expr_ns()?;
+                        pat = Pattern::For(Box::new(pat), Box::new(x), Box::new(xs));
+                    }
                     self.eat_sym(",");
                     comments.extend(self.trailing());
                     arms.push(Arm { comments, pat, body });
@@ -1216,6 +1238,14 @@ impl Parser {
             } else if self.eat_kw("while") {
                 let cond = self.expr_ns()?;
                 stmts.push(Stmt::While(cond, self.block()?));
+            } else if self.is_kw("comptime") && matches!(self.peek_at(1), Tok::Ident(f) if f == "for") {
+                // `comptime for v in xs { ... }`: written out once per element while compiling
+                self.next();
+                self.next();
+                let pat = self.pattern()?;
+                self.expect_kw("in")?;
+                let iter = self.expr_ns()?;
+                stmts.push(Stmt::ComptimeFor(pat, iter, self.block()?));
             } else if self.eat_kw("for") {
                 let pat = self.pattern()?;
                 self.expect_kw("in")?;
