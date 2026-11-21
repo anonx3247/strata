@@ -315,6 +315,27 @@ test "totals" {
   v.stop();
 }
 
+// ─────────────── a rename in a larger codebase: what a line diff makes of it ───────────────
+{
+  const dir = join(WORK, 'tasks');
+  cpSync(join(EX, 'tasks'), dir, { recursive: true });
+  git(dir, 'init', '-q', '-b', 'main');
+  git(dir, 'config', 'user.name', 'agent');
+  git(dir, 'config', 'user.email', 'agent@example.com');
+  git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'tasks');
+  const mods = ['core', 'memory', 'print', 'sim'];
+  const text = () => mods.map(m => run(dir, ['render', m]).out).join('\n');
+  const before = text();
+  const r = run(dir, ['rename', 'Task', 'Job']);
+  if (r.code) throw new Error('rename Task Job: ' + r.out);
+  const diff = lineDiff(before, text()).replace('a/main.strata', 'a/tasks').replace('b/main.strata', 'b/tasks');
+  const v = await viewer(dir);
+  const snap = await v.snap();
+  v.stop();
+  const step = snap.changes.all.steps.at(-1).id;
+  emit('rename', { cmd: 'strata rename Task Job', out: clean(r.out), diff, changes: { all: snap.changes.all, [step]: snap.changes[step] }, step });
+}
+
 // ─────────────── what the language does now: small programs, stored, run and verified ───────────────
 /** Top-level definitions of rendered source by name (with their doc comments), in source order. */
 function defs(src, names) {

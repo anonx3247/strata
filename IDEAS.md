@@ -598,7 +598,8 @@ Relations (decided): a definition has **dependencies** (what it mentions) and **
 ## The site: Strata, presented (built, `site/`)
 - **Slides, not a scrolling page** (user, 2026-11-21): one full view per step, ← → (or space) through each slide's steps and on to the next; the address names the slide and step (`#session/5`). It replaced the long page whose ← → only worked over a stepper on screen.
 - **No embedded viewers in the presentation** (user, 2026-11-21): instead, code typed out as it is written, beside a graph of the whole codebase (definitions in columns by how deep their dependencies go, edges for uses) that shows what changed, what must be re-checked, holes, verdicts and counterexamples. The docs keep their tour of the real viewer (Tools → The viewer), since that page documents the viewer itself.
-- **Everything shown is recorded** by `site/build.mjs` from the real CLI, the new-feature slides included (small packages stored with `strata edit`, so a snippet that stops checking breaks the build). The one exception is the slide about open branches, written by hand: when those branches merge, move them onto recorded slides.
+- **The order** (user, 2026-11-21): first what Strata is (code is a tree, types that say what they mean, every claim checked), previewing the problems they fix; then the tree and its views; then each problem shown first, and how Strata answers it (a long line diff scrolling by, then one rename; a one-line contract change, then a walk through an edit; a broken edit, then a session with holes and a refusal). The other features come after, briefly, with the explanation beside the code, appearing sentence by sentence. No history of the page, and nothing about unmerged branches.
+- **Everything shown is recorded** by `site/build.mjs` from the real CLI, the new-feature slides included (small packages stored with `strata edit`, so a snippet that stops checking breaks the build).
 
 ## Known gaps
 

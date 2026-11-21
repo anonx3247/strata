@@ -27,6 +27,11 @@ const KINDS = { fn: 'fn', type: 'type', test: 'test', trait: 'trait', impl: 'imp
 /** One line saying what happened to a definition, read from the change's own words. */
 function headline(it, c) {
   const kind = `<span class="pill">${esc(KINDS[it.kind] || it.kind)}</span>`;
+  const moved = it.what.map(w => w.match(/^renamed from `([^`]+)`/)).find(Boolean);
+  if (moved) {
+    const to = it.label.split(' → ').pop();
+    return { cls: 'rename', html: `<div class="hl-tag">rename · ${esc(it.kind)}</div><div class="hl-big"><span class="from">${esc(moved[1])}</span> <span class="arrow">→</span> <span class="to">${esc(to)}</span></div>${it.detail.length ? `<div class="hl-why">${it.detail.map(esc).join(' · ')}</div>` : ''}` };
+  }
   for (const w of it.what) {
     const m = w.match(/^(variant|field|method) `([^`]+)` renamed to `([^`]+)`/);
     if (m) return { cls: 'rename', html: `<div class="hl-tag">rename · ${m[1]}</div><div class="hl-big">${esc(it.label)}.<span class="from">${esc(m[2])}</span> <span class="arrow">→</span> ${esc(it.label)}.<span class="to">${esc(m[3])}</span></div>` };
@@ -51,7 +56,7 @@ function structural(c) {
   const items = c.sections.flatMap(s => s.items);
   const ifc = items.filter(i => i.interface_changed);
   // the names an interface change is about: the definition's own, and any new name it gave
-  const names = ifc.flatMap(m => [m.label, ...m.what.flatMap(w => [...w.matchAll(/renamed to `([^`]+)`/g)].map(x => x[1]))]);
+  const names = ifc.flatMap(m => [...m.label.split(' → '), ...m.what.flatMap(w => [...w.matchAll(/renamed to `([^`]+)`/g)].map(x => x[1]))]);
   // a definition that only changed to keep up with another's new interface follows it
   const follows = i => !i.interface_changed && i.lines.some(l => '~+'.includes(l.s) && names.some(n => new RegExp(`\\b${n}\\b`).test(l.t)));
   const main = items.filter(i => !follows(i)), followers = items.filter(follows);
@@ -323,20 +328,63 @@ $('#title').innerHTML = [...'Strata'].map((c, i) => `<span class="l" style="anim
   };
 }
 
-// ───────────────────────── the problem: one card per step ─────────────────────────
-$('#rename-count').textContent = diffCount(S('A rename is one change').linediff);
-B.problem = k => $$('#problem .card').forEach((c, j) => { c.classList.toggle('in', j <= k); c.classList.toggle('cur', j === k); });
+// ───────────────────────── explanations, arriving sentence by sentence ─────────────────────────
+/** Put `html` in `el` a sentence at a time, each after the time it takes to read the one before. */
+function say(el, html, fast = false) {
+  const parts = html.split(/(?<=[.;!?])\s+(?=[A-Z<"`(])/);
+  let t = 0;
+  el.innerHTML = parts.map(p => {
+    const d = fast ? 0 : t;
+    t += Math.min(2400, 450 + p.replace(/<[^>]+>/g, '').length * 26);
+    return `<span class="sent" style="--t:${d}ms">${p}</span>`;
+  }).join(' ');
+}
+const sayBlock = (el, title, html, fast, who = '') => {
+  el.innerHTML = `${who}<h3>${title}</h3><p></p>`;
+  say($('p', el), html, fast);
+};
+
+// ───────────────────────── three ideas ─────────────────────────
+{
+  const g0 = D.session[0].graph, txt = n => g0.find(d => d.name === n).text;
+  const verify = D.math.verify.split('\n');
+  const pick = (re, extra = 0) => { const i = verify.findIndex(l => re.test(l)); return verify.slice(i, i + 1 + extra); };
+  const ideas = [
+    { t: 'Code is a tree, not text', say: 'Each definition is stored on its own, as a syntax tree with a content hash. Text is only a view of it. So the tools see what code <b>is</b>: a rename, a new parameter, who uses what. Not lines.',
+      code: hl(D.orders.levels[0].trimEnd().split('\n').slice(0, 7).join('\n')) },
+    { t: 'Types say what they mean', say: 'A type can carry a condition: <code>Cents</code> is an <code>Int</code> that is never negative. Functions state what they need and what they guarantee, with <code>requires</code> and <code>ensures</code>. Unfinished code is a typed hole.',
+      code: hl([txt('Cents'), txt('Quantity'), txt('refund').split('\n').filter(l => !l.startsWith('///')).join('\n')].join('\n\n')) },
+    { t: 'Every claim is checked', say: 'An SMT solver proves each contract for every input, or finds the input that breaks it; a fuzzer covers what it can\'t prove. And every edit is checked against the whole codebase before it is stored.',
+      code: term([...pick(/^✓ factorial/), ...pick(/^~ isqrt/), ...pick(/^✗ next_digit/, 2)].join('\n')) },
+  ];
+  $('#ideas-cards').innerHTML = ideas.map((x, i) => `<div class="idea"><div class="n">0${i + 1}</div><h3>${x.t}</h3><p></p><pre>${x.code}</pre></div>`).join('');
+  const fixes = [
+    ['diffs', 'Diffs are walls of red and green', 'changes you can read'],
+    ['proof', 'Tests check the cases someone thought of', 'proof for every input'],
+    ['contracts', 'A tighter contract breaks a caller far away', 'every caller re-checked'],
+    ['session', 'A broken edit lands, someone finds out later', 'refused, or turned into holes'],
+  ];
+  $('#ideas-fixes').innerHTML = fixes.map(([to, p, f], i) => `<button data-to="${to}" style="--i:${i}"><span class="p">${p}</span><span class="f">→ ${f}</span></button>`).join('');
+  $('#ideas-fixes').addEventListener('click', e => { const b = e.target.closest('button'); if (b) goTo(b.dataset.to); });
+  B.ideas = (k, { fast }) => {
+    $$('#ideas .idea').forEach((c, j) => {
+      const was = c.classList.contains('in');
+      c.classList.toggle('in', j <= k); c.classList.toggle('cur', j === k && k < 3);
+      if (j <= k && (!was || fast)) say($('p', c), ideas[j].say, fast || j < k);
+    });
+    $('#ideas-fixes').classList.toggle('in', k === 3);
+  };
+}
 
 // ───────────────────────── code is a graph of definitions ─────────────────────────
 {
   const g0 = D.session[0].graph, graph = new Graph($('#tree-graph'));
   const at = graph.layout(g0);
   const order = [...g0].sort((a, b) => at.get(a.name).x - at.get(b.name).x || at.get(a.name).y - at.get(b.name).y);
-  const say = (h, p) => { $('#tree-say').innerHTML = `<h3>${h}</h3><p>${p}</p>`; };
   B.tree = async (k, { fast, alive }) => {
-    const code = $('#tree-code');
+    const code = $('#tree-code'), sy = (h, p) => sayBlock($('#tree-say'), h, p, fast);
     if (k === 0) {
-      say('Each definition is stored on its own', 'As a syntax tree with a content hash, not as lines in a file. As each one is written, it takes its place among what it uses and what uses it.');
+      sy('Each definition is stored on its own', 'As a syntax tree with a content hash, not as lines in a file. As each one is written, it takes its place among what it uses and what uses it.');
       $('#tree-title').textContent = 'orders.strata · strata render';
       if (fast) { graph.set(g0, { statuses: false, fast }); code.innerHTML = order.map(d => hl(d.text)).join('\n\n'); return; }
       graph.set([], { layout: g0 }); code.innerHTML = '';
@@ -355,12 +403,12 @@ B.problem = k => $$('#problem .card').forEach((c, j) => { c.classList.toggle('in
         await sleep(60);
       }
     } else if (k === 1) {
-      say('An agent asks for a slice', '<code>strata view slice:Order --level 1</code>: <code>Order</code>, what it uses and what uses it, as interfaces. It never reads the rest.');
+      sy('Every name is resolved in the tree', 'Selecting <code>Order</code> lights what it uses and what uses it. The tools know these links exactly: they are how renames, re-checks and slices work.');
       $('#tree-title').textContent = '$ strata view slice:Order --level 1';
       graph.set(g0, { statuses: false, focus: 'Order', fast });
       await typeCode(code, D.orders.levels[1].trimEnd(), alive, { fast, ms: 14 });
     } else {
-      say('Every definition carries its status', 'Proven by the solver, fuzzed, or refuted, and holes: unfinished code that still checks. <code>refund</code> is one: a precise task for an agent.');
+      sy('Every definition carries its status', 'Proven by the solver, fuzzed, or refuted, and holes: unfinished code that still checks. <code>refund</code> is one: a precise task for an agent.');
       $('#tree-title').textContent = '$ strata holes';
       graph.set(g0, { fast });
       code.innerHTML = ''; await typeTerm(code, { cmd: 'strata holes', out: D.orders.holes }, alive, { fast });
@@ -368,30 +416,66 @@ B.problem = k => $$('#problem .card').forEach((c, j) => { c.classList.toggle('in
   };
 }
 
-// ───────────────────────── fix 1: structural diffs ─────────────────────────
+// ───────────────────────── levels ─────────────────────────
 {
-  const rename = S('A rename is one change'), fill = S('It fills them, and closes the change'), fix = S('It fixes it, and proves it');
-  const C = D.contract, Cs = t => C.steps.find(s => s.title === t);
+  const L = D.orders.levels, lede = $('#levels-say').innerHTML;
+  const info = [[0, 'The map', 'one line per definition: what it depends on, and its status'], [1, 'The interfaces', 'types, signatures and contracts: what other code can rely on'], [2, 'The source', 'everything, exactly as stored']];
+  $('#lv-pick').innerHTML = info.map(([l, t, d], i) => `<button data-i="${i}"><b>${t} <span class="muted">· level ${l}</span></b><span>${d}</span></button>`).join('');
+  $('#lv-pick').addEventListener('click', e => { const b = e.target.closest('button'); if (b) go(cur, +b.dataset.i, +b.dataset.i < sub ? -1 : 1); });
+  B.levels = (k, { fast, fresh, alive }) => {
+    if (fresh) say($('#levels-say'), lede, fast);
+    const l = info[k][0];
+    $$('#lv-pick button').forEach((b, j) => b.classList.toggle('on', j === k));
+    $('#lv-title').textContent = `$ strata view slice:Order --level ${l}`;
+    $('#lv-count').textContent = `${L[l].trimEnd().split('\n').length} lines`;
+    return typeCode($('#lv-body'), L[l].trimEnd(), alive, { fast, ms: 10 });
+  };
+}
+
+// ───────────────────────── structural changes ─────────────────────────
+{
+  const R = D.rename, renameV = S('A rename is one change'), fill = S('It fills them, and closes the change'), fix = S('It fixes it, and proves it');
+  const C = D.contract;
+  const big = diffCount(R.diff), bigLines = R.diff.split('\n').length;
   const cases = [
-    { tab: 'Rename a variant', linediff: rename.linediff, snap: rename, step: lastStep(rename),
-      note: `<b>strata rename Shipped Sent</b>. As text, five definitions change, and a line in a test re-wraps because <code>Sent</code> is shorter. What happened is one rename.` },
-    { tab: 'Add a parameter', linediff: C.paramDiff, snap: C, step: stepTitled(C, 'discount: members'),
-      note: `<code>discount</code> takes a new <code>member</code> flag, not used yet. The change is the new parameter; its two call sites only follow it.` },
-    { tab: 'Change a signature and its body', linediff: D.orders.couponsDiff, snap: fill, step: stepTitled(fill, 'coupons'),
-      note: `<code>total</code> takes a coupon and uses it: the signature and the body both changed, so both are shown. The callers that had to follow are listed, not repeated.` },
-    { tab: 'Change only a body', linediff: fix.linediff, snap: fix, step: lastStep(fix),
-      note: `The fix to <code>refund</code> changes its body, not its signature or contract: <b>nothing else needs re-checking</b>, and the verdict before and after is part of the change.` },
-    { tab: 'Tighten a contract', linediff: Cs('Tighten discount’s contract').linediff, snap: C, step: stepTitled(C, 'discount only from 1.00'),
-      note: `A new <code>requires</code> is a <b>stricter precondition</b>: every caller now has more to guarantee, so each of them is re-checked. That is the next fix.` },
+    { tab: 'Rename a type', linediff: R.diff, snap: R, step: R.step, h: 'A rename should read as a rename.',
+      say: `It was <code>strata rename Task Job</code>: one type renamed, and the definitions that use it follow. As text, ${big} changed lines across four modules. As a change, one line.` },
+    { tab: 'Rename a variant', linediff: renameV.linediff, snap: renameV, step: lastStep(renameV), h: 'The same for a variant.',
+      say: `<code>strata rename Shipped Sent</code>. As text, five definitions change, and a line in a test re-wraps because <code>Sent</code> is shorter. What happened is one rename.` },
+    { tab: 'Add a parameter', linediff: C.paramDiff, snap: C, step: stepTitled(C, 'discount: members'), h: 'A new parameter, and the calls that follow it.',
+      say: `<code>discount</code> takes a new <code>member</code> flag, not used yet. The change is the new parameter; its two call sites only follow it.` },
+    { tab: 'Change a signature and its body', linediff: D.orders.couponsDiff, snap: fill, step: stepTitled(fill, 'coupons'), h: 'A new signature, and the body that uses it.',
+      say: `<code>total</code> takes a coupon and uses it: the signature and the body both changed, so both are shown. The callers that had to follow are listed, not repeated.` },
+    { tab: 'Change only a body', linediff: fix.linediff, snap: fix, step: lastStep(fix), h: 'Only a body changed: nothing else to re-check.',
+      say: `The fix to <code>refund</code> changes its body, not its signature or contract, so <b>nothing that uses it needs another look</b>. The verdict before and after is part of the change.` },
   ];
   $('#diff-tabs').innerHTML = cases.map((c, i) => `<button data-i="${i}">${esc(c.tab)}</button>`).join('');
-  $('#diff-tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) go(cur, +b.dataset.i, +b.dataset.i < sub ? -1 : 1); });
-  const count = async (el, n, unit, alive) => { for (let i = 0; i <= n; i++) { if (!alive()) return; el.textContent = `${i} ${unit}${i === 1 ? '' : 's'}`; await sleep(Math.max(12, 260 / n)); } };
-  B.diffs = (k, { fast, alive }) => {
-    const c = cases[k];
-    $$('#diff-tabs button').forEach((b, j) => b.classList.toggle('on', j === k));
+  $('#diff-tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) go(cur, +b.dataset.i + 1, +b.dataset.i + 1 < sub ? -1 : 1); });
+  const count = async (el, n, unit, alive, ms = 260) => { for (let i = 0; i <= n; i++) { if (!alive()) return; el.textContent = `${i} ${unit}${i === 1 ? '' : 's'}`; await sleep(Math.max(12, ms / n)); } };
+  const flip = el => { el.classList.remove('flip'); void el.offsetWidth; el.classList.add('flip'); };
+  $('#big-body').innerHTML = diffHtml(R.diff);
+  B.diffs = async (k, { fast, alive }) => {
+    $('#diffs').classList.toggle('big', k === 0);
+    if (k === 0) {
+      $('#diff-h').textContent = 'Here is a diff. What happened?'; flip($('#diff-h'));
+      say($('#diff-say'), `A change to <code>examples/tasks</code>, as <code>git diff</code> shows it: ${bigLines} lines over four modules. To review it, you read all of them.`, fast);
+      const body = $('#big-body');
+      body.scrollTop = 0;
+      count($('#big-count'), big, 'line', alive, 4000).then(() => alive() && ($('#big-count').textContent = `${big} lines changed`));
+      await sleep(fast ? 300 : 1400);
+      while (alive()) {
+        body.scrollTop += 1.4;
+        if (body.scrollTop + body.clientHeight >= body.scrollHeight - 1) { await sleep(1500); if (!alive()) return; body.scrollTop = 0; await sleep(800); }
+        await new Promise(requestAnimationFrame);
+      }
+      return;
+    }
+    const c = cases[k - 1];
+    $('#diff-h').textContent = c.h; flip($('#diff-h'));
+    say($('#diff-say'), c.say, fast);
+    $$('#diff-tabs button').forEach((b, j) => b.classList.toggle('on', j === k - 1));
     const n = diffCount(c.linediff), st = structural(c.snap.changes[c.step]);
-    for (const [id, html] of [['#ld-body', diffHtml(c.linediff)], ['#sd-body', st.html], ['#diff-note', c.note]]) { const el = $(id); el.innerHTML = html; el.classList.remove('flip'); void el.offsetWidth; el.classList.add('flip'); }
+    for (const [id, html] of [['#ld-body', diffHtml(c.linediff)], ['#sd-body', st.html]]) { const el = $(id); el.innerHTML = html; flip(el); }
     $('#ld-count').textContent = `${n} line${n === 1 ? '' : 's'} changed`;
     $('#sd-count').textContent = `${st.count} change${st.count > 1 ? 's' : ''}`;
     $('#sd-title').textContent = `strata diff · ${c.snap.changes.all.steps.find(s => s.id === c.step).title}`;
@@ -400,7 +484,7 @@ B.problem = k => $$('#problem .card').forEach((c, j) => { c.classList.toggle('in
   };
 }
 
-// ───────────────────────── fix 2: the refund explorer ─────────────────────────
+// ───────────────────────── the refund explorer ─────────────────────────
 {
   const fillStep = S('It fills the hole'), testStep = S('The tests pass'), verStep = S('Verification finds the bug'), fixStep = S('It fixes it, and proves it');
   let fixed = false;
@@ -421,14 +505,14 @@ B.problem = k => $$('#problem .card').forEach((c, j) => { c.classList.toggle('in
   const SAY = [
     'An agent fills in a refund policy: what was paid, minus a 5.00 handling fee. The signature already says what must hold, for <b>every</b> order: <code>ensures it &gt;= 0</code>. Drag the order value.',
     'It writes a test, as a careful agent would: a 9.00 order, refunded 4.00. <b>The test passes.</b>',
-    '<code>strata verify</code> checks the contract for every order, not the ones someone thought of: an order worth less than the fee gets a <b>negative refund</b>, and the input comes with the verdict.',
+    '<code>strata verify</code> checks the contract for every order, not only the ones someone thought of. An order worth less than the fee gets a <b>negative refund</b>, and the input comes with the verdict.',
     'Fixed, then verified: <b>proven for every order</b>. Drag the value: nothing goes below zero.',
   ];
   $('#ex-test').onclick = () => go(cur, 1, 1);
   $('#ex-verify').onclick = () => go(cur, 2, 1);
   $('#ex-fix').onclick = () => go(cur, 3, 1);
   B.proof = async (k, { fast, alive }) => {
-    $('#proof-say').innerHTML = SAY[k];
+    say($('#proof-say'), SAY[k], fast);
     fixed = k >= 3;
     $('#ex-code').innerHTML = hl((fixed ? fixStep : fillStep).input);
     $('#ex-fix').disabled = k < 2;
@@ -464,12 +548,12 @@ B.problem = k => $$('#problem .card').forEach((c, j) => { c.classList.toggle('in
   B.verdicts = async (k, { fast, alive }) => {
     const el = $('#math-verify');
     if (k === 1) {
-      $('#verdicts-say').innerHTML = 'No test was written for <code>next_digit</code> or <code>average</code>. Their types and contracts were enough to find the input that breaks each.';
+      say($('#verdicts-say'), 'No test was written for <code>next_digit</code> or <code>average</code>. Their types and contracts were enough to find the input that breaks each.', fast);
       graph.set(G, { cex, fast });
       el.innerHTML = term(D.math.verify);
       return;
     }
-    $('#verdicts-say').innerHTML = 'Each verdict says which it is: <span class="o-ok">✓ proven</span> for every input, <span class="o-warn">~ fuzzed</span> where the solver couldn\'t prove it, <span class="o-bad">✗ refuted</span> with the input that breaks it. Termination too: nobody knows whether Collatz ends.';
+    say($('#verdicts-say'), 'Each verdict says how sure it is: <span class="o-ok">✓ proven</span> for every input, <span class="o-warn">~ fuzzed</span> where the solver couldn\'t prove it, <span class="o-bad">✗ refuted</span> with the input that breaks it. Termination too: nobody knows whether Collatz ends.', fast);
     if (fast) { graph.set(G, { fast }); el.innerHTML = term(D.math.verify); return; }
     const seen = new Set();
     graph.set(G.map(d => ({ ...d, verdict: null })), { fast: true });
@@ -488,7 +572,7 @@ B.problem = k => $$('#problem .card').forEach((c, j) => { c.classList.toggle('in
   };
 }
 
-// ───────────────────────── fix 3: contracts ─────────────────────────
+// ───────────────────────── contracts: the problem, then a walk through an edit ─────────────────────────
 {
   const C = D.contract, g = $('#cgraph');
   const nodes = {
@@ -496,7 +580,7 @@ B.problem = k => $$('#problem .card').forEach((c, j) => { c.classList.toggle('in
     checkout: { x: 74, y: 24, t: 'checkout', s: 'calls discount(…)' },
     totals: { x: 74, y: 76, t: 'test "totals"', s: 'calls discount(20000)' },
   };
-  const LABEL = { pass: '✓ proven', fail: '✗ counterexample', changed: 'changed', recheck: 're-check', hole: '?hole' };
+  const LABEL = { pass: '✓ proven', fail: '✗ counterexample', changed: 'changed', recheck: 're-check', hole: '?hole', unknown: '?' };
   g.innerHTML = `<svg><path id="e1"/><path id="e2"/></svg>` + Object.entries(nodes).map(([k, n]) => `<div class="node" id="n-${k}" style="left:${n.x}%;top:${n.y}%"><span class="badge"></span>${esc(n.t)}<small>${esc(n.s)}</small></div>`).join('');
   function edges() {
     const W = g.clientWidth, H = g.clientHeight, p = n => [nodes[n].x / 100 * W, nodes[n].y / 100 * H];
@@ -504,18 +588,28 @@ B.problem = k => $$('#problem .card').forEach((c, j) => { c.classList.toggle('in
     $('#e1').setAttribute('d', e('discount', 'checkout')); $('#e2').setAttribute('d', e('discount', 'totals'));
   }
   new ResizeObserver(edges).observe(g);
+  const tighten = C.steps.find(s => s.title === 'Tighten discount’s contract');
+  const PROBLEM = { title: 'Tighten a function, break a caller far away', g: { discount: 'changed', checkout: 'unknown', totals: 'unknown' },
+    say: 'A stricter precondition is one added line in a diff. Nothing in it says which callers relied on the old contract, or which of them now break. Let\'s walk through an edit, and see how contracts make this powerful for an agent.' };
   B.contracts = async (k, { fast, alive }) => {
-    const s = C.steps[k];
+    const s = k ? C.steps[k - 1] : PROBLEM;
     for (const n of Object.keys(nodes)) {
       const v = s.g[n] || '', el = $('#n-' + n), was = el.className;
       el.className = 'node ' + v;
-      if (!fast && was !== el.className) { el.classList.add('pop'); el.style.animation = 'none'; void el.offsetWidth; el.style.animation = 'nodeping .7s'; }
+      if (!fast && was !== el.className) { el.style.animation = 'none'; void el.offsetWidth; el.style.animation = 'nodeping .7s'; }
       $('#n-' + n + ' .badge').textContent = LABEL[v] || '';
     }
     $$('#cgraph path').forEach(p => { p.classList.toggle('lit', !!s.g.lit); p.style.stroke = ''; });
     if (s.g.bad) $('#e1').style.stroke = 'var(--bad)';
-    $('#c-say').innerHTML = `<h3>${esc(s.title)}</h3><p>${md(s.say)}</p>`;
+    sayBlock($('#c-say'), esc(s.title), k ? md(s.say) : s.say, fast, k ? `<div class="who"><i></i>step ${k} of ${C.steps.length}</div>` : '<div class="who you"><i></i>the problem</div>');
     const card = $('#c-code');
+    if (!k) {
+      card.classList.remove('on');
+      $('#c-term-title').textContent = 'git diff';
+      $('#c-term').innerHTML = diffHtml(tighten.linediff);
+      return;
+    }
+    $('#c-term-title').textContent = '~/shop';
     card.classList.toggle('on', !!s.input);
     const typing = s.input ? typeCode($('.body', card), s.input, alive, { fast, ms: 18 }) : null;
     await typeTerm($('#c-term'), { ...s, input: null }, alive, { fast });
@@ -523,22 +617,29 @@ B.problem = k => $$('#problem .card').forEach((c, j) => { c.classList.toggle('in
   };
 }
 
-// ───────────────────────── the agent session ─────────────────────────
+// ───────────────────────── an agent's session: holes and refusals ─────────────────────────
 {
   const ss = D.session, graph = new Graph($('#sess-graph'));
   // one layout for the whole session, so nothing moves but what changed
   const every = [...new Map(ss.flatMap(s => s.graph).map(d => [d.name, d])).values()];
   B.session = async (k, { fast, alive }) => {
-    const s = ss[k], before = ss[k - 1]?.graph;
+    const stamp = $('#sess-stamp'), card = $('#sess-code');
+    stamp.className = 'stamp'; stamp.textContent = '';
+    if (k === 0) {
+      sayBlock($('#sess-say'), 'A broken edit lands, and someone finds out later',
+        'Text accepts anything: the breakage shows up in CI, in review, or in production. In Strata, an edit that doesn\'t check is refused, and one that breaks what uses it turns those uses into holes: typed tasks. Let\'s follow an agent through a session.', fast, '<div class="who you"><i></i>the problem</div>');
+      graph.set(ss[0].graph, { layout: every, fast });
+      card.classList.remove('on');
+      $('#sess-term').innerHTML = '<span class="term-line"><span class="prompt">$</span> <span class="cmd caret"></span></span>';
+      return;
+    }
+    const s = ss[k - 1], before = ss[k - 2]?.graph;
     const who = s.who === 'you' ? 'you' : s.who === 'agent B' ? 'agentb' : '';
-    $('#sess-say').innerHTML = `<div class="who ${who}"><i></i>${esc(s.who)}</div><h3>${esc(s.title)}</h3><p>${md(s.say)}</p>`;
+    sayBlock($('#sess-say'), esc(s.title), md(s.say), fast, `<div class="who ${who}"><i></i>${esc(s.who)}</div>`);
     const refused = s.code && /refused/.test(s.title);
     const cex = {};
     for (const d of s.graph) if (d.verdict === 'counterexample') cex[d.name] = `${esc(d.name)}(${(d.args || []).map(a => esc(JSON.stringify(a))).join(', ')}): ${esc((d.message || '').replace(/\s*\(stack:.*$/, ''))}`;
-    graph.set(s.graph, { layout: every, focus: s.sel, changed: k ? changedBetween(before, s.graph) : new Set(), lit: k ? ifaceChanged(before, s.graph) : new Set(), cex, fast });
-    const stamp = $('#sess-stamp');
-    stamp.className = 'stamp'; stamp.textContent = '';
-    const card = $('#sess-code');
+    graph.set(s.graph, { layout: every, focus: s.sel, changed: before ? changedBetween(before, s.graph) : new Set(), lit: before ? ifaceChanged(before, s.graph) : new Set(), cex, fast });
     card.classList.toggle('on', !!s.input);
     const typing = s.input ? typeCode($('.body', card), s.input, alive, { fast, ms: 20 }) : Promise.resolve(true);
     const done = await typeTerm($('#sess-term'), { ...s, input: null }, alive, { fast });
@@ -570,7 +671,7 @@ B.problem = k => $$('#problem .card').forEach((c, j) => { c.classList.toggle('in
     'Strata\'s merge driver pairs definitions, applies A\'s rename to B\'s code, and checks the result before committing it.',
   ];
   B.merge = async (k, { fast, alive }) => {
-    $('#merge-say').innerHTML = SAY[k];
+    say($('#merge-say'), SAY[k], fast);
     $$('#lanes [data-k]').forEach(e => e.classList.toggle('in', +e.dataset.k <= k));
     $$('#merge .three .pane').forEach(p => p.classList.toggle('in', +p.dataset.k <= k));
     const panes = [['#m-a', { cmd: M.a.cmd, out: M.a.out }], ['#m-b', { cmd: M.b.cmd, input: M.b.input, out: M.b.out }], ['#m-sync', { cmd: 'strata sync main', out: M.sync }]];
@@ -583,125 +684,103 @@ B.problem = k => $$('#problem .card').forEach((c, j) => { c.classList.toggle('in
   };
 }
 
-// ───────────────────────── what's new: tiles, then a slide per feature ─────────────────────────
+// ───────────────────────── more of the language ─────────────────────────
 {
   const tiles = [
-    ['f-capabilities', 'Capabilities', '<code>main</code> names what it can touch; everything else takes traits.', '#144 #150 #152'],
-    ['f-mocks', 'Mocks', 'Fakes declared as types; what they leave out is generated.', '#153'],
-    ['f-derive', 'Derived code', 'Code written by code at compile time: <code>CommandLine</code>, <code>Json</code>.', '#74 #78 #105 #111'],
-    ['f-iterators', 'Iterators', 'Lazy <code>map</code> / <code>filter</code>, and <code>FiniteIterator</code> loops that end.', '#143 #157'],
-    ['f-native', 'comptime', '<code>comptime e</code> anywhere: evaluated while compiling.', '#112 #142'],
-    ['f-native', 'extern c', 'C functions with contracts, checked at the boundary.', '#108 #114'],
-    ['engine', 'Compiled everywhere', 'LLVM: <code>run</code>, <code>test</code>, <code>verify</code> on the JIT, no interpreter fallback.', '#85 #113 #118 #123'],
-    ['engine', 'std in Strata', 'JSON, the CLI parser, regexes and Unicode, written in Strata.', '#80 #124 #137 #158'],
+    ['f-capabilities', 'Capabilities', 'What a program may touch, in its signature.'],
+    ['f-mocks', 'Mocks', 'Fakes for tests, declared as types.'],
+    ['f-derive', 'Derived code', 'Code written by code, while compiling.'],
+    ['f-iterators', 'Iterators', 'Lazy, possibly endless, and honest about it.'],
+    ['f-native', 'comptime and C', 'Run code while compiling; call C with contracts.'],
   ];
-  $('#tiles').innerHTML = tiles.map(([to, t, d, pr], i) => `<button data-to="${to}" style="--i:${i}"><b>${t}</b><span>${d}</span><span class="pr">${pr}</span></button>`).join('');
+  $('#tiles').innerHTML = tiles.map(([to, t, d], i) => `<button data-to="${to}" style="--i:${i}"><b>${t}</b><span>${d}</span></button>`).join('');
   $('#tiles').addEventListener('click', e => { const b = e.target.closest('button'); if (b) goTo(b.dataset.to); });
 }
 const F = D.features;
-/** A slide that types code on the left and shows what the tools said on the right, step by step. */
-function feature(id, { kicker, title, steps }) {
+/** A feature, briefly: the explanation on the side, arriving as it is read; the code and what the tools said beside it. */
+function feature(id, { title, steps }) {
   const el = $('#' + id);
-  el.innerHTML = `<div class="kicker fx">${kicker}</div><h2 class="fx small">${title}</h2><div class="say"></div>
-    <div class="split"><div class="col"><div class="pane code-pane fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title"></span></div><div class="body"></div></div></div>
-    <div class="col"><div class="outs"></div></div></div>`;
+  el.innerHTML = `<div class="split"><div class="col side-text"><div class="kicker fx">More of the language</div><h2 class="fx small">${title}</h2><div class="say"></div></div>
+    <div class="col"><div class="pane code-pane fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title"></span></div><div class="body"></div></div><div class="outs"></div></div></div>`;
   let shown = null;
   B[id] = async (k, { fast, alive }) => {
     const s = steps[k];
-    $('.say', el).innerHTML = `<p class="lede">${s.say}</p>`;
+    const sy = $('.say', el);
+    sy.innerHTML = `<p class="lede"></p>${s.points ? `<ul class="points">${s.points.map(p => `<li>${p}</li>`).join('')}</ul>` : ''}`;
+    say($('p', sy), s.say, fast);
     $('.code-pane .title', el).textContent = s.file;
-    if (shown !== s.code || fast) { shown = s.code; typeCode($('.code-pane .body', el), s.code, alive, { fast: fast || s.instant, ms: 26, hot: s.hot }); }
-    const outs = $('.outs', el);
-    outs.innerHTML = s.points ? `<ul class="points">${s.points.map(p => `<li>${p}</li>`).join('')}</ul>` : '';
-    for (const [j, o] of (s.outs || []).entries()) {
-      const old = j < (s.outs.length - 1) && s.keep;
-      outs.insertAdjacentHTML('beforeend', `<div class="pane term ${old ? 'old' : ''} ${o.code ? 'bad' : ''}"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">${esc(s.where || '~')}</span>${o.code ? `<span class="count bad">exit ${o.code}</span>` : ''}</div><div class="body wrap"></div></div>`);
+    let typed = Promise.resolve();
+    if (shown !== s.code || fast) { shown = s.code; typed = typeCode($('.code-pane .body', el), s.code, alive, { fast, ms: 22, hot: s.hot }); }
+    const outs = $('.outs', el); outs.innerHTML = '';
+    await typed;
+    for (const o of s.outs || []) {
+      if (!alive()) return;
+      outs.insertAdjacentHTML('beforeend', `<div class="pane term ${o.code ? 'bad' : ''}"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">${esc(s.where || '~')}</span>${o.code ? `<span class="count bad">exit ${o.code}</span>` : ''}</div><div class="body wrap"></div></div>`);
       const body = $$('.outs .body', el).at(-1);
-      if (old || fast) { typeTerm(body, o, alive, { fast: true }); continue; }
-      await sleep(250);
+      if (fast) { typeTerm(body, o, alive, { fast: true }); continue; }
+      await sleep(200);
       await typeTerm(body, o, alive);
-      if (o.code && alive()) { const p = body.closest('.pane'); p.classList.add('shake'); }
+      if (o.code && alive()) body.closest('.pane').classList.add('shake');
     }
   };
 }
 feature('f-capabilities', {
-  kicker: 'New · Capabilities', title: 'A program\'s signature lists everything it can touch.',
+  title: 'What is a capability?',
   steps: [
-    { file: 'examples/wc · main', code: F.capabilities.main, hot: /console|disk/i,
-      say: '<code>main</code> asks for exactly what it touches: its options, the console and the disk. The runtime makes them; nothing else can.',
-      points: ['A <b>capability</b> holds no data and has no constructor: holding one is the permission.', '<code>Disk</code>, <code>Process</code>, <code>Terminal</code> are std\'s; packages can declare their own.'] },
-    { file: 'examples/wc · wc', code: F.capabilities.wc, hot: /Console|Files/,
-      say: 'It hands them on to <code>wc</code>, which takes <b>any</b> <code>Files</code> and <b>any</b> <code>Console</code>: capability traits, which anything may implement.',
-      points: ['A call that changes a capability is marked: <code>mut console.print(…)</code>.', '<code>verify</code> never runs code that reaches the outside world: it reports it as assumed.'] },
-    { file: 'examples/wc · a test', code: F.capabilities.test, where: '~/wc', outs: [F.capabilities.test_out],
-      say: 'Tests hand it stand-ins instead: a console that records, files in memory. <code>strata test</code> never touches the terminal or the disk.' },
-    { file: 'examples/wc · a test', code: F.capabilities.test, where: '~/wc', keep: true, outs: [F.capabilities.test_out, F.capabilities.run_out],
-      say: 'Under <code>strata run</code>, the same code gets the real terminal and disk.' },
+    { file: 'examples/wc', code: F.capabilities.main + '\n\n' + F.capabilities.wc, hot: /Console|Disk|Files/,
+      say: 'A capability is the permission to reach the outside world: the terminal, the disk, a database. It holds no data and has no constructor: only the runtime makes one, for <code>main</code>. So a program\'s signature lists everything it can touch. <code>main</code> hands them on as traits, <code>Console</code> and <code>Files</code>, which anything may implement.' },
+    { file: 'examples/wc · a test', code: F.capabilities.test, where: '~/wc', outs: [F.capabilities.test_out, F.capabilities.run_out],
+      say: 'So tests hand in stand-ins: a console that records, files in memory. <code>strata test</code> never touches the terminal or the disk. Under <code>strata run</code>, the same code gets the real ones.' },
   ],
 });
 feature('f-mocks', {
-  kicker: 'New · Mocks', title: 'Fakes for tests, declared as types.',
+  title: 'Mocks: fakes for tests',
   steps: [
-    { file: 'mocks · strata render', code: F.mocks.src, hot: /^mock|^impl Files for MemDisk/,
+    { file: 'mocks', code: F.mocks.src, hot: /^mock|^impl Files for MemDisk/, where: '~/mocks', outs: [F.mocks.test_out],
       say: 'A fake is declared like a type, with <code>mock</code> in place of <code>type</code>, and implemented like any type. It may leave methods out: <code>Files</code> has seven, this one writes two.' },
-    { file: 'mocks · strata render', code: F.mocks.src, hot: /^mock|^impl Files for MemDisk/, where: '~/mocks', outs: [F.mocks.test_out],
-      say: 'The test passes the fake where a <code>Files</code> is expected.' },
-    { file: 'mocks · strata render', code: F.mocks.src, hot: /^mock|^impl Files for MemDisk/, where: '~/mocks', outs: [F.mocks.verify_out],
-      say: 'The five it left out are <b>generated</b>: they check the method\'s <code>requires</code> and answer within its types and <code>ensures</code>. <code>verify</code> reports a mock as assumed: the tests that use it check it.' },
-    { file: 'mocks · strata render', code: F.mocks.src, where: '~/mocks', outs: [F.mocks.refused],
+    { file: 'mocks', code: F.mocks.src, hot: /^mock|^impl Files for MemDisk/, where: '~/mocks', outs: [F.mocks.verify_out],
+      say: 'The methods it left out are generated: they answer within the method\'s types and contracts. <code>verify</code> reports a mock as assumed, since the tests that use it check it.' },
+    { file: 'mocks', code: F.mocks.src, where: '~/mocks', outs: [F.mocks.refused],
       say: 'A fake never reaches a real run: using one outside a test is refused, and the codebase is left as it was.' },
   ],
 });
 feature('f-derive', {
-  kicker: 'New · Derived code', title: 'Code written by code, while compiling.',
+  title: 'Code that writes code',
   steps: [
-    { file: 'examples/hello', code: F.derive.options, hot: /^derive/,
-      say: '<code>derive CommandLine for Options</code>: a command-line parser generated from the type, its doc comments, defaults and refinements. Derives are written in Strata, as compile-time code, and give ordinary <code>impl</code>s.' },
     { file: 'examples/hello', code: F.derive.options, hot: /^derive/, where: '~/hello', outs: [F.derive.help],
-      say: 'The help text is the type: its docs, the defaults, the refinement on <code>times</code>.' },
-    { file: 'examples/hello', code: F.derive.options, hot: /^derive/, where: '~/hello', outs: [F.derive.run_out],
-      say: '<code>main(opts: Options)</code> gets the options parsed, already checked.' },
-    { file: 'examples/hello', code: F.derive.options, hot: /times/, where: '~/hello', outs: [F.derive.bad],
-      say: 'A value outside the refinement is refused at the boundary, and the message says which condition.' },
-    { file: 'signup · derive Json', code: F.derive.json, hot: /^derive|where/, where: '~/signup', outs: [F.derive.json_run],
-      say: '<code>derive Json</code> works the same way: reading checks every refinement, and an error says where (<code>age</code>) and what it broke.' },
+      say: '<code>derive CommandLine for Options</code> generates a command-line parser from the type: its fields, doc comments, defaults and refinements. Derives are written in Strata, run while compiling, and give ordinary <code>impl</code>s.' },
+    { file: 'examples/hello', code: F.derive.options, hot: /times/, where: '~/hello', outs: [F.derive.run_out, F.derive.bad],
+      say: 'The options arrive in <code>main</code> already checked. A value outside a refinement is refused at the boundary, and the message says which condition.' },
+    { file: 'signup', code: F.derive.json, hot: /^derive|where/, where: '~/signup', outs: [F.derive.json_run],
+      say: '<code>derive Json</code> works the same way: reading checks every refinement, and an error says where it broke.' },
   ],
 });
 feature('f-iterators', {
-  kicker: 'New · Iterators', title: 'Lazy, possibly endless, and honest about it.',
+  title: 'Lazy, possibly endless',
   steps: [
-    { file: 'naturals · strata render', code: F.iterators.src, hot: /Iterator|filter/,
-      say: 'An <code>Iterator</code> is a trait with <code>next(mut self)</code>. Every iterator has <code>map</code>, <code>filter</code> and <code>fold</code>; the first two are lazy, so they work on endless ones.' },
-    { file: 'naturals · strata render', code: F.iterators.src, hot: /Iterator|filter/, where: '~/naturals', outs: [F.iterators.run_out],
-      say: 'Squares of the even numbers, computed only as the loop asks for them.' },
-    { file: 'naturals · strata render', code: F.iterators.src, hot: /for s in/, where: '~/naturals', outs: [F.iterators.verify_out],
-      say: '<code>verify</code> shows that a loop ends over a list or a <code>FiniteIterator</code>. Over this one it can\'t, and says so instead of guessing.' },
+    { file: 'naturals', code: F.iterators.src, hot: /Iterator|filter/, where: '~/naturals', outs: [F.iterators.run_out],
+      say: 'An iterator is a value walked once, lazily: a trait with <code>next(mut self)</code>. <code>map</code> and <code>filter</code> are lazy too, so they work on endless iterators.' },
+    { file: 'naturals', code: F.iterators.src, hot: /for s in/, where: '~/naturals', outs: [F.iterators.verify_out],
+      say: '<code>verify</code> shows that a loop ends over a list or a <code>FiniteIterator</code>. Over this endless one it can\'t, and says so instead of guessing.' },
   ],
 });
 feature('f-native', {
-  kicker: 'New · comptime and C', title: 'Run code while compiling. Call C when you need it.',
+  title: 'Compile time, and C',
   steps: [
-    { file: 'comptime · strata render', code: F.native.comptime, hot: /comptime/,
-      say: '<code>comptime e</code> is evaluated while compiling, on the JIT, in ordinary code. The program carries only the result, and the value is cached between runs.' },
-    { file: 'comptime · strata render', code: F.native.comptime, hot: /comptime/, where: '~/comptime', outs: [F.native.comptime_run],
-      say: 'fib(30), computed before the program ever ran.' },
-    { file: 'examples/fuzzy · module text', code: F.native.externs, hot: /^extern c/,
-      say: 'C is declared with <code>extern c</code>: a signature with contracts and no body. Arguments and results are checked at the boundary, both ways; only the module that declares them may call them.',
-      points: ['<code>[native]</code> in <code>strata.toml</code> names the package\'s C; clang compiles it for the JIT and for executables.', '<code>verify</code> treats foreign code as assumed.'] },
+    { file: 'comptime', code: F.native.comptime, hot: /comptime/, where: '~/comptime', outs: [F.native.comptime_run],
+      say: '<code>comptime e</code> is evaluated while compiling. The program carries only the result, and the value is cached between runs.' },
     { file: 'examples/fuzzy · module text', code: F.native.externs, hot: /^extern c/, where: '~/fuzzy', outs: [F.native.fuzzy_run],
-      say: 'Edit distance and CRC-32 from the package\'s own C file, the cube root from libm.' },
+      say: '<code>extern c</code> declares a C function: a signature with contracts, and no body. Arguments and results are checked at the boundary, both ways, and only the module that declares it may call it.' },
   ],
 });
 
 // ───────────────────────── under the hood ─────────────────────────
 {
   const facts = [
-    ['LLVM', 'One code generator. <code>run</code>, <code>test</code> and <code>verify</code> compile on the JIT, <code>strata build</code> makes executables. No interpreter fallback.'],
+    ['LLVM', 'One code generator. <code>run</code>, <code>test</code> and <code>verify</code> compile on the JIT, <code>strata build</code> makes executables.'],
     ['RC', 'Memory by reference counting: a value is freed when nothing holds it, and updated in place when only one thing does.'],
-    ['std', 'Written in Strata, precompiled: linked dynamically under the JIT, statically into executables. Rust is only the native I/O layer.'],
+    ['std', 'Written in Strata, precompiled. Rust is only the native I/O layer.'],
     ['∞', 'No limits on loops or recursion: <code>Int</code> grows into a big integer, and running out of stack is a fault that says where.'],
-    ['fuzz', '<code>verify</code> fuzzes compiled code, generic impls included, at a whole type that meets their bounds.'],
-    ['CI', 'Compile-time values are cached between runs, and CI checks only what a change can break.'],
   ];
   $('#facts').innerHTML = facts.map(([b, t], i) => `<div style="transition-delay:${i * 90}ms"><b>${b}</b><span>${t}</span></div>`).join('');
   B.engine = async (k, { fast, alive }) => {
@@ -710,39 +789,6 @@ feature('f-native', {
     if (k === 0) { $('#std-term').innerHTML = '<span class="o-dim">→ run it</span>'; return; }
     await typeTerm($('#std-term'), F.std.run_out, alive, { fast });
     if (alive()) $('#std-term').insertAdjacentHTML('beforeend', '<span class="term-line o-dim">\n// the same tree as Rust\'s regex-syntax: tests/regex.rs\n// checks the two agree on curated and random patterns</span>');
-  };
-}
-
-// ───────────────────────── in progress: the open branches ─────────────────────────
-{
-  const wip = [
-    ['branch unions-are-sums', 'Sums and unions are one thing', 'A sum is a union whose members are declared inline. A named union names a set of values; <code>distinct</code> makes a nominal one.',
-      'type Shape = Circle | Square { side: Float } | Dot\n\n// the same, written apart:\ntype Square = { side: Float }\ntype Dot\ntype Shape = Circle | Square | Dot'],
-    ['PR #154 · typing-defs', 'std.typing: one Type with a Kind', 'What derive code sees of a type: one compile-time <code>Type</code> record, its <code>kind</code> telling which lists it has. No more <code>$</code>.',
-      'type Kind = Record | Tuple | Sum | Union\n  | Function | Atom | Unit | Builtin | Param\n\n// in a derive: Self is the type, as a value\nSelf.fields   Self.variants\nSelf.members  Self.elements'],
-    ['PR #159 · iterators-3', 'Iterators, step 3', '<code>fold</code> needs a <code>FiniteIterator</code>, and is shown to end on one. Comprehensions over an iterator are lazy, and may be endless.',
-      '// lazy, over an endless iterator:\nodd := [n * n for n in naturals\n  where n % 2 == 1]\n\n// refused on an unbounded one:\n// `fold` needs a `FiniteIterator`'],
-    ['PR #145 · viewer-to-main', 'The viewer, written in Strata', '<code>std.code</code> gives a Strata program the codebase as typed values; apps get capabilities, timers and keys. <code>strata ui --strata</code> runs the viewer as one.',
-      '$ strata ui --strata\n\n// an app over std.code:\n// init, update, view;\n// Codebase is the capability'],
-    ['PR #155 · host-values', 'Host values', '<code>strata run f ARGS</code> without the interpreter: JSON read against the type\'s shape, checked all the way down, written straight into compiled memory. How compiled apps will get their messages.',
-      '// errors name the path:\nNode.value: -5 does not satisfy `Score`'],
-  ];
-  $('#wip').innerHTML = wip.map(([br, t, p, code]) => `<div class="card"><div class="br">⎇ ${esc(br)}</div><h3>${esc(t)}</h3><p>${p}</p><pre>${code.startsWith('$') ? code.split('\n').map((l, i) => i ? hl(l) : termLine(l)).join('\n') : hl(code)}</pre></div>`).join('');
-  B.next = k => $$('#wip .card').forEach((c, j) => { c.classList.toggle('in', j <= k); c.classList.toggle('cur', j === k); });
-}
-
-// ───────────────────────── levels ─────────────────────────
-{
-  const L = D.orders.levels;
-  const info = [[0, 'The map', 'one line per definition: what it depends on, and its status'], [1, 'The interfaces', 'types, signatures and contracts: what other code can rely on'], [2, 'The source', 'everything, exactly as stored']];
-  $('#lv-pick').innerHTML = info.map(([l, t, d], i) => `<button data-i="${i}"><b>${t} <span class="muted">· level ${l}</span></b><span>${d}</span></button>`).join('');
-  $('#lv-pick').addEventListener('click', e => { const b = e.target.closest('button'); if (b) go(cur, +b.dataset.i, +b.dataset.i < sub ? -1 : 1); });
-  B.levels = (k, { fast, alive }) => {
-    const l = info[k][0];
-    $$('#lv-pick button').forEach((b, j) => b.classList.toggle('on', j === k));
-    $('#lv-title').textContent = `$ strata view slice:Order --level ${l}`;
-    $('#lv-count').textContent = `${L[l].trimEnd().split('\n').length} lines`;
-    return typeCode($('#lv-body'), L[l].trimEnd(), alive, { fast, ms: 10 });
   };
 }
 

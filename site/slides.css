@@ -252,3 +252,58 @@ kbd { font: 600 12px var(--mono); border: 1px solid var(--line2); border-bottom-
 .lanes circle { fill: var(--bg); stroke-width: 2.5; }
 .lanes .commit text { font: 12px var(--mono); fill: var(--text); }
 @keyframes nodeping { 0% { transform: translate(-50%, -50%) scale(1); } 40% { transform: translate(-50%, -50%) scale(1.08); } 100% { transform: translate(-50%, -50%) scale(1); } }
+
+/* explanations arriving sentence by sentence */
+.sent { opacity: 0; filter: blur(5px); display: inline; animation: sent .8s cubic-bezier(.2,.8,.2,1) forwards; animation-delay: var(--t, 0ms); }
+@keyframes sent { to { opacity: 1; filter: none; } }
+.say .who { font: 600 12px var(--mono); text-transform: uppercase; letter-spacing: .1em; display: inline-flex; gap: 8px; align-items: center; color: var(--accent2); }
+
+/* three ideas */
+.ideas { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 30px; }
+.idea { background: var(--bg2); border: 1px solid var(--line); border-radius: 16px; padding: 22px 22px 20px; display: flex; flex-direction: column; min-height: 400px;
+  opacity: .1; transform: translateY(30px) scale(.97); filter: blur(3px); transition: all .7s cubic-bezier(.2,.8,.2,1); }
+.idea.in { opacity: 1; transform: none; filter: none; }
+.idea.cur { border-color: var(--accent); box-shadow: 0 0 70px -24px var(--accent); }
+.idea .n { font: 600 13px var(--mono); color: var(--accent2); letter-spacing: .1em; }
+.idea h3 { font-size: 24px; margin: 8px 0 10px; }
+.idea p { color: var(--muted); font-size: 15.5px; margin: 0 0 16px; min-height: 6.5em; }
+.idea p b { color: var(--text); }
+.idea pre { margin: auto 0 0; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font: 12px/1.6 var(--mono); overflow: hidden; white-space: pre-wrap; }
+.idea pre .term-line { min-height: 0; }
+.fixes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 18px; }
+.fixes button { text-align: left; font: inherit; background: transparent; border: 1px dashed var(--line2); border-radius: 12px; padding: 12px 16px; cursor: pointer; color: var(--text);
+  opacity: 0; transform: translateY(20px); transition: opacity .6s, transform .6s, border-color .2s; transition-delay: calc(var(--i) * 140ms); }
+.fixes.in button { opacity: 1; transform: none; }
+.fixes button:hover { border-color: var(--accent); }
+.fixes .p { display: block; color: var(--muted); font-size: 14px; text-decoration: line-through; text-decoration-color: #ff6b6b88; }
+.fixes .f { display: block; color: var(--ok); font: 600 14px var(--mono); margin-top: 4px; }
+
+/* structural changes: first the wall of text, then the change */
+#diffs { display: flex; flex-direction: column; }
+#diffs .lede { min-height: 3.3em; }
+.bigdiff { display: none; flex: 1; min-height: 0; justify-content: center; margin-top: 10px; }
+.bigdiff .pane { width: min(1100px, 100%); display: flex; flex-direction: column; box-shadow: 0 0 120px -40px #ff6b6b55; }
+.bigdiff .body { flex: 1; overflow: hidden; font-size: 15px; line-height: 1.55; -webkit-mask-image: linear-gradient(transparent, #000 8%, #000 92%, transparent); }
+.bigdiff .count { font-size: 15px; padding: 3px 12px; }
+#diffs.big .bigdiff { display: flex; animation: flip .6s cubic-bezier(.2,.8,.2,1); }
+#diffs.big .diffview { display: none; }
+.diffview { flex: 1; min-height: 0; display: flex; flex-direction: column; animation: flip .6s cubic-bezier(.2,.8,.2,1); }
+#diffs .diffview .tabs { margin-top: 6px; align-self: flex-start; }
+#diffs .diffview .vs { flex: 1; min-height: 0; height: auto; margin-top: 14px; }
+
+/* contracts: a node nobody knows about yet */
+.cgraph .node.unknown { border-style: dashed; color: var(--muted); }
+.cgraph .node .badge:empty { display: none; }
+
+/* a feature, briefly: text on the side */
+.feature .split { grid-template-columns: minmax(340px, 34%) minmax(0, 1fr); height: 100%; }
+.feature .side-text { justify-content: center; padding-bottom: 40px; }
+.feature .side-text h2 { margin-bottom: 6px; }
+.feature .side-text .lede { font-size: clamp(17px, 1.3vw, 21px); line-height: 1.6; }
+.feature .code-pane { margin-top: 0; }
+.feature .outs { flex: none; max-height: 46%; margin-top: 14px; }
+.feature .outs .pane { min-height: 0; }
+.say h3 { line-height: 1.2; }
+.feature .split > .col:last-child { justify-content: center; }
+.feature .code-pane { flex: 0 1 auto; }
+.feature .outs { flex: 0 1 auto; max-height: 52%; }
