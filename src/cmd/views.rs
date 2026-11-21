@@ -88,15 +88,16 @@ pub fn render(args: &Args) -> Result<bool, String> {
     let src = load(&args)?;
     // shown as written: each reference as short as the module's `use`s allow
     let p = &resolve::written_form(src.program());
-    // a union's members inline or on their own (both read back the same)
+    // a union's members inline (by default: a type with a doc, an `impl` or
+    // a `derive` of its own stays on its own) or each on its own; both read
+    // back the same
     let viewed;
     let p = match args.val("--members") {
-        None => p,
         Some("separate") => {
             viewed = resolve::members_view(p, resolve::Members::Separate);
             &viewed
         }
-        Some("inline") => {
+        None | Some("inline") => {
             viewed = resolve::members_view(p, resolve::Members::Inline);
             &viewed
         }

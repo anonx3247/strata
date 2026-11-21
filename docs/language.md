@@ -109,9 +109,11 @@ fn describe(v: Int | String) -> String {
 
 **Only bare members flatten.** `type S2 = S | C` with `type S = A | B` is `A | B | C`; `type S3 = D(S) | E` is `D | E`: `D` is a new type holding an `S`.
 
+**A union's type parameters are wrapped** in members it declares, as `type Option[T] = Some(T) | None` does: `type OrError[T] = Value(T) | Problem`, not `T | Problem` (nor `List[T] | Problem`). A union of two types is written `A | B` where it is used; there is no `Either[A, B]`.
+
 **A named union names a set of values.** A member fits it without wrapping, and the same set written out (`x: Circle | Square | Dot`) is that type: `strata render` writes it as `x: Shape` (named subsets too: `B | C | D` is `A | D` when `type A = B | C`). A named union can have `impl`s, methods and `derive`s; for a value typed by it (or by its set), its own apply, and for a value of a member, the member's own. A union that adds nothing is refused as a bare alias is: one that is a single type once normalized (`type U = Int | Positive`), or a second name in its module for a set already named there, in the root module or in the prelude (`type Answer = Some(Int) | None` is `Option[Int]`). `distinct type Answer = Some(Int) | None` is a separate type, built as `Answer(Some(3))` and read with `.value`.
 
-`strata render --members separate` shows each member a union declares as a definition of its own, and `--members inline` folds a type that one union lists into it (when it has no doc and nothing implements or derives for it): both read back as the same program.
+`strata render` shows a type that one union lists inside it, unless it has a doc, an `impl` or a `derive` of its own (then on its own); `--members separate` shows each member on its own instead. Both read back as the same program.
 
 **Patterns are sets of values**, and an arm takes what the arms above it left:
 

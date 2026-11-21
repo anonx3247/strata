@@ -434,9 +434,10 @@ pub fn total_builtin(name: &str) -> bool {
 
 /// The prelude's definitions, parsed once.
 /// A named union (`type Shape = Circle | Square`), which can have `impl`s:
-/// not generic, not refined.
+/// not refined (a generic one has its parameters only in members it
+/// declares, so its set of members still names it).
 pub fn union_alias(t: &TypeDecl) -> bool {
-    matches!(t.body, TypeBody::Alias(TypeExpr::Union(_))) && !t.distinct && t.params.is_empty() && t.refinement.is_none()
+    matches!(t.body, TypeBody::Alias(TypeExpr::Union(_))) && !t.distinct && t.refinement.is_none()
 }
 
 /// The types every program has without defining them, by the names code
@@ -1458,7 +1459,7 @@ impl<'a> Checker<'a> {
         let mut names: Vec<Symbol> = env.types.iter().filter(|(_, td)| union_alias(td)).map(|(n, _)| *n).collect();
         names.sort();
         for n in names {
-            let lowered = self.lower(&TypeExpr::Named(n, vec![]), &HashMap::default());
+            let lowered = self.lower_fresh(n);
             if let Ty::Union(ns) = self.resolve(&lowered) {
                 if key(self, &ns) == want {
                     return Some(n);
@@ -1466,6 +1467,13 @@ impl<'a> Checker<'a> {
             }
         }
         None
+    }
+
+    /// The named type `n`, its type parameters fresh (`OrError[?]`).
+    fn lower_fresh(&mut self, n: Symbol) -> Ty {
+        let ps = self.env.types.get(&n).map(|t| t.params.clone()).unwrap_or_default();
+        let vars: HashMap<Symbol, Ty> = ps.iter().map(|p| (*p, self.fresh())).collect();
+        self.lower(&TypeExpr::Named(n, ps.iter().map(|p| TypeExpr::Named(*p, vec![])).collect()), &vars)
     }
 
     /// A union's members as a set, to compare unions: a sum counts as its
@@ -1491,7 +1499,7 @@ impl<'a> Checker<'a> {
     fn union_adds_nothing(&mut self, t: &TypeDecl) -> Option<String> {
         let TypeBody::Alias(written) = &t.body else { return None };
         let written = crate::printer::ty(written);
-        let lowered = self.lower(&TypeExpr::Named(t.name, vec![]), &HashMap::default());
+        let lowered = self.lower_fresh(t.name);
         let Ty::Union(ms) = self.resolve(&lowered) else {
             // (the members another union declares, `Square | Dot` of `Shape`, are named only here)
             if matches!(self.resolve(&lowered), Ty::Con(n, _) if n.contains(crate::desugar::OWN)) {
@@ -1517,7 +1525,7 @@ impl<'a> Checker<'a> {
                     k
                 }
                 _ => {
-                    let l = self.lower(&TypeExpr::Named(n, vec![]), &HashMap::default());
+                    let l = self.lower_fresh(n);
                     match self.resolve(&l) {
                         Ty::Union(ns) => self.set_key(&ns),
                         _ => continue,
@@ -1608,7 +1616,19 @@ impl<'a> Checker<'a> {
             let ft = self.lower(&imp.for_type, &vars);
             let targs: Vec<Ty> = imp.trait_args.iter().map(|a| self.lower(a, &vars)).collect();
             self.rigid = saved_rigid;
-            let ok = self.unify(&ft, &t).is_ok() && targs.len() == args.len() && targs.iter().zip(args).all(|(a, b)| self.unify(a, b).is_ok());
+            // (a named union's members, matched by name, whatever their order)
+            let same = match (self.resolve(&ft), &t) {
+                (Ty::Union(fs), Ty::Union(ts)) if fs.len() == ts.len() => fs.iter().all(|f| {
+                    let f = self.resolve(f);
+                    let head = ty_head(&f);
+                    match ts.iter().find(|x| ty_head(&self.resolve(x)) == head).cloned() {
+                        Some(x) => self.unify(&f, &x).is_ok(),
+                        None => false,
+                    }
+                }),
+                _ => self.unify(&ft, &t).is_ok(),
+            };
+            let ok = same && targs.len() == args.len() && targs.iter().zip(args).all(|(a, b)| self.unify(a, b).is_ok());
             if ok {
                 for b in &imp.bounds {
                     for btr in &b.traits {
@@ -4256,6 +4276,26 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
                 if union_alias(t) {
                     if let Some(m) = c.union_adds_nothing(t) {
                         c.err(m);
+                    }
+                }
+                // a union's type parameter is wrapped in a member it declares
+                // (`Some(T)`, as `Option` does), not a member on its own (`T`,
+                // `List[T]`): a set of members then names one union
+                if let (false, TypeBody::Alias(TypeExpr::Union(ms))) = (t.params.is_empty(), &t.body) {
+                    fn mentions(t: &TypeExpr, ps: &[Symbol]) -> Option<Symbol> {
+                        match t {
+                            TypeExpr::Named(n, args) => ps.iter().find(|p| *p == n).copied().or_else(|| args.iter().find_map(|a| mentions(a, ps))),
+                            TypeExpr::Refined(b, _) => mentions(b, ps),
+                            TypeExpr::Fn(xs, r) => xs.iter().find_map(|a| mentions(a, ps)).or_else(|| mentions(r, ps)),
+                            TypeExpr::Union(xs) => xs.iter().find_map(|a| mentions(a, ps)),
+                            TypeExpr::Unit => None,
+                        }
+                    }
+                    for m in ms.iter().filter(|m| !matches!(m, TypeExpr::Named(n, _) if n.contains(crate::desugar::OWN))) {
+                        if let Some(p) = mentions(m, &t.params) {
+                            let s = crate::names::short(&t.name);
+                            c.err(format!("`{}` can't be a member of `{s}` as it is: wrap `{p}` in a member `{s}` declares (`Value({p})`), as `Option` has `Some(T)`", crate::printer::ty(m)));
+                        }
                     }
                 }
                 if t.distinct && matches!(t.body, TypeBody::Sum(_)) {

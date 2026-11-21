@@ -3840,9 +3840,11 @@ fn unions_declare_members_or_name_them() {
     let (ok, out) = strata(&["run", "u.strata"], &d, None);
     assert!(ok, "{out}");
     assert_eq!(out, "3\n4\n0\ndown 3\nshape\n[Quiet, Loud]\n");
-    // written back as stored: `Circle` refers to the record
+    // `Circle` (no doc, one union) is shown inside it; on its own with `--members separate`
     let (ok, text) = strata(&["--file", "u.strata", "render"], &d, None);
-    assert!(ok && text.contains("type Shape =\n  | Circle\n  | Square { side: Int }\n  | Dot\n"), "{text}");
+    assert!(ok && text.contains("type Shape =\n  | Circle { r: Int }\n  | Square { side: Int }\n  | Dot\n"), "{text}");
+    let (ok, text) = strata(&["--file", "u.strata", "render", "--members", "separate"], &d, None);
+    assert!(ok && text.contains("type Circle = { r: Int }\n") && text.contains("type Shape = Circle | Square | Dot\n"), "{text}");
 }
 
 const UNIONS_PROGRAM: &str = r##"type Circle = { r: Int }
@@ -3959,6 +3961,10 @@ fn unions_that_add_nothing_are_refused() {
         ("type Shape = Circle | Square { s: Int } | Dot\ntype Circle = { r: Int }\ntype Part = Square | Dot", None),
         ("type Circle = { r: Int }\ntype Square = { s: Int }\ntype Shape = Circle | Square\ndistinct type Figure = Circle | Square\nfn f() -> Figure = Figure(Circle { r: 1 })", None),
         ("distinct type Lv = Up | Down", Some("`Lv` declares its members, so it is a type of its own already")),
+        // a type parameter is wrapped in a member the union declares, as `Option`'s `Some(T)`
+        ("type Problem = { why: String }\ntype OrError[T] = T | Problem", Some("`T` can't be a member of `OrError` as it is: wrap `T` in a member `OrError` declares")),
+        ("type Many[T] = List[T] | Int", Some("`List[T]` can't be a member of `Many` as it is")),
+        ("type Problem = { why: String }\ntype OrError[T] = Value(T) | Problem", None),
     ];
     for (k, (src, want)) in cases.iter().enumerate() {
         let f = format!("n{k}.strata");
@@ -4116,6 +4122,52 @@ fn main() {
   print(f(Moved(2)))
   print(f(Square { side: 3 }))
   print(g(Moved(5)))
+}
+"##;
+
+/// A generic union (its type parameters only in members it declares) has
+/// `impl`s of its own too.
+#[test]
+fn generic_unions_have_impls() {
+    let d = tmp("unions-generic");
+    let (ok, out) = strata(&["--file", "g.strata", "edit"], &d, Some(GENERIC_UNION));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "g.strata"], &d, None);
+    assert!(ok && out == "a value\nproblem: not positive\n5\n", "{out}");
+}
+
+const GENERIC_UNION: &str = r##"trait Show {
+  fn show(self) -> String
+}
+
+type Problem = { why: String }
+
+type OrError[T] = Value(T) | Problem
+
+impl[T] Show for OrError[T] {
+  fn show(self) -> String {
+    match self {
+      Value(_) => "a value",
+      Problem => f"problem: {self.why}",
+    }
+  }
+}
+
+fn get(n: Int) -> OrError[Int] {
+  if n > 0 {
+    Value(n)
+  } else {
+    Problem { why: "not positive" }
+  }
+}
+
+fn main() {
+  print(get(3).show())
+  print(get(0).show())
+  match get(5) {
+    Value(n) => print(n),
+    Problem => print("no"),
+  }
 }
 "##;
 

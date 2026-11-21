@@ -128,8 +128,11 @@ type Size =
   | Large
 
 // A union of existing types. It normalizes like a set (`Int | Positive` is Int).
+// (A member with no doc and used by one union only is shown inside it.)
+/// A square, by its side.
 type Square = { side: Positive }
 
+/// A circle, by its radius.
 type Circle = { radius: Positive }
 
 type Shape = Square | Circle

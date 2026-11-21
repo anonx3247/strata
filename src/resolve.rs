@@ -1086,8 +1086,9 @@ pub fn union_members(p: &Program) -> std::borrow::Cow<'_, Program> {
             })
         };
         let refs: Vec<bool> = match &t.body {
+            // (one of its type parameters is that parameter)
             TypeBody::Sum(vs) => vs.iter().map(|v| v.name != own_name && match v.payload {
-                Payload::None => in_scope(v.name),
+                Payload::None => t.params.contains(&v.name) || in_scope(v.name),
                 Payload::Type(_) => false,
                 _ => prelude_names.contains(&v.name),
             }).collect(),

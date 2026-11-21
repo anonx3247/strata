@@ -1170,7 +1170,12 @@ impl<'a> Module<'a> {
         }
         let mut names: Vec<&Symbol> = self.env.types.iter().filter(|(_, td)| crate::types::union_alias(td)).map(|(n, _)| n).collect();
         names.sort();
-        names.into_iter().find(|n| self.lower(&TypeExpr::Named(**n, vec![]), &HashMap::default()).is_ok_and(|u| key(self.members(&u)) == want)).map(|n| n.to_string())
+        // (a generic one's parameters don't matter: it is named by its members' names)
+        names.into_iter().find(|n| {
+            let ps = &self.env.types[*n].params;
+            let sub: HashMap<Symbol, Ty> = ps.iter().map(|p| (*p, Ty::Unit)).collect();
+            self.lower(&TypeExpr::Named(**n, ps.iter().map(|p| TypeExpr::Named(*p, vec![])).collect()), &sub).is_ok_and(|u| key(self.members(&u)) == want)
+        }).map(|n| n.to_string())
     }
 
     /// The members of a union type (itself, for any other type).
