@@ -247,12 +247,6 @@ fn full_checked(p: &Program) -> types::Checked {
             c.report.errors.push(d);
         }
     }
-    // a `CommandLine` record must be readable from arguments
-    for i in c.env.impls.iter().filter(|i| i.trait_name == cli::TRAIT) {
-        if let Err(msg) = cli::validate(&c.env, &types::texpr_head(&i.for_type)) {
-            c.report.errors.push(types::Diag { decl: i.name(), msg });
-        }
-    }
     c
 }
 

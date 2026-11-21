@@ -81,6 +81,8 @@ struct Expander<'a> {
     /// Copies of functions with `comptime` parameters, made for their values.
     copies: Vec<FnDecl>,
     made: HashMap<String, Symbol>,
+    /// A variant description's constructor, qualified (by its JSON).
+    ctors: HashMap<String, String>,
     /// Names bound inside the code being specialized, which hide known ones.
     hidden: Vec<Vec<Symbol>>,
 }
@@ -105,7 +107,7 @@ impl<'a> Expander<'a> {
     fn new(env: &'a Env, prog: &'a Program) -> Self {
         let mut it = Interp::new(env, 1);
         it.budget = Some(BUDGET);
-        Expander { env, prog, it, known: HashMap::new(), types: HashMap::new(), written: HashMap::new(), self_ty: TypeExpr::Unit, copies: vec![], made: HashMap::new(), hidden: vec![] }
+        Expander { env, prog, it, known: HashMap::new(), types: HashMap::new(), written: HashMap::new(), self_ty: TypeExpr::Unit, copies: vec![], made: HashMap::new(), ctors: HashMap::new(), hidden: vec![] }
     }
 
     /// `derive Trait for Type { written }` as an ordinary `impl`.
@@ -187,7 +189,9 @@ impl<'a> Expander<'a> {
                             Payload::Positional(ts) => ts.iter().enumerate().map(|(k, t)| self.field(&Symbol::new(&k.to_string()), &[], t, None)).collect(),
                             Payload::Record(fs) => fs.iter().map(|f| self.field(&f.name, &f.doc, &f.ty, f.default.as_ref())).collect(),
                         };
-                        record("Variant", vec![("name", Value::Str(crate::names::short(&v.name).to_string())), ("doc", Value::List(vec![])), ("fields", Value::List(fields))])
+                        let d = record("Variant", vec![("name", Value::Str(crate::names::short(&v.name).to_string())), ("doc", Value::List(vec![])), ("fields", Value::List(fields))]);
+                        self.ctors.insert(json(&d), v.name.to_string());
+                        d
                     })
                     .collect();
                 record("Sum", vec![("name", name), ("doc", strs(&doc)), ("variants", Value::List(variants))])
@@ -202,7 +206,7 @@ impl<'a> Expander<'a> {
             Some(e) => Value::Variant("Some".into(), Fields::Pos(vec![Value::Str(crate::printer::expr(e, 0))])),
             None => Value::Variant("None".into(), Fields::None),
         };
-        record("Field", vec![("name", Value::Str(name.to_string())), ("doc", strs(doc)), ("type", t), ("default", default)])
+        record("Field", vec![("name", Value::Str(name.to_string())), ("doc", strs(doc)), ("type", t), ("written", Value::Str(crate::printer::ty(ty))), ("default", default)])
     }
 
     /// A written type as a `std.typing.Type` (remembering which it was).
@@ -290,6 +294,36 @@ impl<'a> Expander<'a> {
                 return self.literal(&v);
             }
             // `$Self`, `$f.type`: a type's description
+            // `f.default_value`: the field's default, as written (`times: Int = 1`)
+            Expr::Field(r, d) if d == "default_value" && matches!(&**r, Expr::Var(x) if self.is_known(x)) => {
+                let Expr::Var(x) = &**r else { unreachable!() };
+                let name = match &self.known[x] {
+                    Value::Record(_, fs) => fs.iter().find_map(|(k, v)| match (k.as_str(), v) {
+                        ("name", Value::Str(s)) => Some(s.clone()),
+                        _ => None,
+                    }),
+                    _ => None,
+                }
+                .unwrap_or_default();
+                let head = crate::types::texpr_head(&self.self_ty);
+                let fields = match self.env.types.get(&Symbol::new(&head)).map(|t| &t.body) {
+                    Some(TypeBody::Record(fs)) => fs.clone(),
+                    _ => vec![],
+                };
+                return match fields.iter().find(|f| f.name == name).and_then(|f| f.default.clone()) {
+                    Some(e) => Ok(e),
+                    // only reached where `f.default is Some` holds: never, here
+                    None => Ok(Expr::Hole(Symbol::new("no_default"))),
+                };
+            }
+            // `$T.check(x)`: `Ok(())`, or `Err` with the interpreter's message
+            Expr::Method(recv, m, args) if m == "check" && matches!(&**recv, Expr::Describe(_)) => {
+                let Expr::Describe(t) = &**recv else { unreachable!() };
+                let [x] = args.as_slice() else { return Err("`check` takes the value to check".into()) };
+                let t = self.ty(t);
+                let x = self.expr(x)?;
+                return Ok(self.check(&t, &x));
+            }
             Expr::Describe(t) => {
                 let t = self.ty(t);
                 let d = self.describe(&crate::types::texpr_head(&t))?;
@@ -313,6 +347,14 @@ impl<'a> Expander<'a> {
             Expr::Match(s, None, arms) if matches!(&**s, Expr::Comptime(_)) => {
                 let Expr::Comptime(x) = &**s else { unreachable!() };
                 return self.match_type(x, arms);
+            }
+            // `compile_error(msg)`: reached in specialized code, the `derive` fails with it
+            Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if crate::names::short(n) == "compile_error") && args.len() == 1 => {
+                let m = self.expr(&args[0])?;
+                return Err(match self.eval(&m)? {
+                    Value::Str(s) => s,
+                    other => json(&other),
+                });
             }
             Expr::Call(f, args) => {
                 if let Expr::Var(name) = &**f {
@@ -403,7 +445,7 @@ impl<'a> Expander<'a> {
                 ("name", Value::Str(s)) => Some(s.clone()),
                 _ => None,
             }).unwrap_or_default();
-            crate::names::qualify(crate::names::module_of(&head), &vname)
+            self.ctors.get(&json(&Value::Record(kind.clone(), desc.clone()))).cloned().unwrap_or_else(|| crate::names::qualify(crate::names::module_of(&head), &vname))
         } else {
             head.to_string()
         };
@@ -545,7 +587,8 @@ impl<'a> Expander<'a> {
                     } else {
                         CtorPat::Record(vec![], true)
                     };
-                    Ok(Pattern::Ctor(Symbol::new(&crate::names::qualify(crate::names::module_of(&head), &vname)), cp))
+                    let c = self.ctors.get(&json(it)).cloned().unwrap_or_else(|| crate::names::qualify(crate::names::module_of(&head), &vname));
+                    Ok(Pattern::Ctor(Symbol::new(&c), cp))
                 }
                 other => match self.literal(other)? {
                     Expr::Int(n) => Ok(Pattern::Int(n)),
@@ -555,6 +598,43 @@ impl<'a> Expander<'a> {
                 },
             },
             other => Ok(other.clone()),
+        }
+    }
+
+    /// Code checking `x` against `t`, as `Interp::check_type` does: the
+    /// base type's refinement first, then the type's own.
+    fn check(&self, t: &TypeExpr, x: &Expr) -> Expr {
+        let ok = || Expr::Ctor(Symbol::new("Ok"), CtorArgs::Positional(vec![Expr::Unit]));
+        // `if { it := x; cond } { Ok(()) } else { Err(msg) }`, after `first`
+        let test = |cond: &Expr, msg: String, first: Expr| {
+            let holds = Expr::Block(vec![Stmt::Let(Pattern::Bind(Symbol::new("it")), None, x.clone())], Box::new(cond.clone()));
+            let shown = Expr::Call(Box::new(Expr::Var(Symbol::new("to_json"))), vec![x.clone()]);
+            let err = Expr::Ctor(Symbol::new("Err"), CtorArgs::Positional(vec![Expr::Interp(vec![StrPart::Expr(shown, None), StrPart::Lit(format!(" {msg}"))])]));
+            let this = Expr::If(Box::new(holds), Box::new(ok()), Box::new(err));
+            let e = Symbol::new("checked.err");
+            Expr::Match(
+                Box::new(first),
+                None,
+                vec![
+                    Arm { comments: vec![], pat: Pattern::Ctor(Symbol::new("Ok"), CtorPat::Positional(vec![Pattern::Wild])), body: this },
+                    Arm { comments: vec![], pat: Pattern::Ctor(Symbol::new("Err"), CtorPat::Positional(vec![Pattern::Bind(e)])), body: Expr::Ctor(Symbol::new("Err"), CtorArgs::Positional(vec![Expr::Var(e)])) },
+                ],
+            )
+        };
+        match t {
+            TypeExpr::Refined(b, pred) => test(pred, format!("does not satisfy `{}`", crate::printer::ty(t)), self.check(b, x)),
+            TypeExpr::Named(n, args) if args.is_empty() => match self.env.types.get(n) {
+                Some(td) if !td.distinct && matches!(td.body, TypeBody::Alias(_)) => {
+                    let TypeBody::Alias(a) = &td.body else { unreachable!() };
+                    let base = self.check(a, x);
+                    match &td.refinement {
+                        Some(r) => test(r, format!("does not satisfy `{}` (where {})", crate::names::short(n), crate::printer::expr(r, 0)), base),
+                        None => base,
+                    }
+                }
+                _ => ok(),
+            },
+            _ => ok(),
         }
     }
 
@@ -603,6 +683,15 @@ impl<'a> Expander<'a> {
                 binds.push((x.to_string(), t.clone()));
                 true
             }
+            // a kind: `Choice` (a sum whose variants carry nothing), `Sum`, `Record`
+            Pattern::Ctor(c, CtorPat::None) if matches!(crate::names::short(c), "Choice" | "Sum" | "Record") => {
+                let TypeExpr::Named(n, _) = &base else { return false };
+                match self.env.types.get(n).map(|t| &t.body) {
+                    Some(TypeBody::Sum(vs)) => crate::names::short(c) != "Record" && (crate::names::short(c) == "Sum" || vs.iter().all(|v| v.payload == Payload::None)),
+                    Some(TypeBody::Record(_)) => crate::names::short(c) == "Record",
+                    _ => false,
+                }
+            }
             Pattern::Ctor(c, CtorPat::None) => matches!(&base, TypeExpr::Named(n, _) if crate::names::short(n) == crate::names::short(c)),
             Pattern::Ctor(c, CtorPat::Positional(ps)) => match &base {
                 TypeExpr::Named(n, args) if crate::names::short(n) == crate::names::short(c) && args.len() == ps.len() => ps.iter().zip(args).all(|(p, a)| self.fits(p, a, binds)),
@@ -641,7 +730,9 @@ impl<'a> Expander<'a> {
         }
         let copy = Symbol::new(&format!("{name}.for.{}", self.made.len() + 1));
         self.made.insert(key, copy);
-        // the copy: the known parameters left out, their values (and types) written in
+        // the copy: the known parameters left out, their values (and types) written
+        // in; it sees only those, not what its caller knows
+        let outer = (std::mem::take(&mut self.known), std::mem::take(&mut self.types), std::mem::take(&mut self.hidden));
         let mut saved = vec![];
         for (p, v) in &vals {
             saved.push((p.name, self.known.insert(p.name, v.clone())));
@@ -651,6 +742,10 @@ impl<'a> Expander<'a> {
                         self.types.insert(format!("{}.type", p.name), t);
                     }
                 }
+            }
+            // a `comptime t: Type`: `t` is that type (`$t`, `match comptime t`)
+            if let Ok(t) = self.type_of(v) {
+                self.types.insert(p.name.to_string(), t);
             }
         }
         let own = self.prog.decls.iter().find_map(|d| match &d.kind {
@@ -668,6 +763,8 @@ impl<'a> Expander<'a> {
             };
             self.types.remove(&format!("{n}.type"));
         }
+        let _ = saved;
+        (self.known, self.types, self.hidden) = outer;
         let f = FnDecl { name: copy, params, ret, body: body?, comptime: false, ..own };
         self.copies.push(f);
         Ok(Expr::Call(Box::new(Expr::Var(copy)), rest))

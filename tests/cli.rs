@@ -3008,7 +3008,7 @@ type Options = {
   extra: List[Int],
 }
 
-impl CommandLine for Options {}
+derive CommandLine for Options
 
 fn main(opts: Options) {
   print(opts)
@@ -3051,7 +3051,7 @@ fn main(opts: Options) {
         assert!(out.contains(want), "missing {want:?} in\n{out}");
     }
     // a record that can't be read from arguments is a check error
-    save(&d.join("bad.strata"), "use std.cli.CommandLine\n\ntype Opts = { pairs: List[(Int, Int)] }\n\nimpl CommandLine for Opts {}\n");
+    save(&d.join("bad.strata"), "use std.cli.CommandLine\n\ntype Opts = { pairs: List[(Int, Int)] }\n\nderive CommandLine for Opts\n");
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok && out.contains("`Opts.pairs` is a `List[(Int, Int)]`"), "{out}");
     // field docs round-trip

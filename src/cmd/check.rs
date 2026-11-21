@@ -106,6 +106,9 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
         let mut jobs: Vec<(String, String, Box<dyn Fn() -> verify::Verdict + '_>)> = Vec::new();
         let base = store::closure_hash(p, &orig.qname());
         match &d.kind {
+            // a function with `comptime` parameters is a template for its
+            // copies, which are what runs (and are checked where they are made)
+            DeclKind::Fn(f) if f.params.iter().any(|p| p.comptime) => {}
             DeclKind::Fn(f) => {
                 let n = cc(&f.name);
                 jobs.push((f.name.to_string(), format!("{base}:{cases}:{n}:{skey}"), Box::new(move || verify::check_fn(env, f, None, solver_bin, transparent, cases, n, seed))))
