@@ -1350,6 +1350,17 @@ fn main() {
   }
   print(2 * 3 + 4 - 5)
   print(len([1, 2, 3]) * 1000000000000000000000)
+  // big integers are freed: this loop's thousands of them leave none live
+  mut acc: Int = big
+  mut i: Int = 0
+  while i < 2000 {
+    acc = (acc * big + i) % (big * big)
+    i = i + 1
+  }
+  print(acc > 0)
+  ys := [big * 2, big * 3]
+  zs := ys.push(big * 4)
+  print(len(zs))
 }
 "#;
 

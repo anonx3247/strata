@@ -50,6 +50,8 @@ unsafe extern "C" {
     fn strata_str_cmp();
     fn strata_alloc();
     fn strata_dup();
+    fn strata_int_dup();
+    fn strata_int_drop();
     fn strata_release();
     fn strata_free();
     fn strata_unique();
@@ -146,6 +148,8 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_str_cmp", strata_str_cmp as *const () as usize),
         ("strata_alloc", strata_alloc as *const () as usize),
         ("strata_dup", strata_dup as *const () as usize),
+        ("strata_int_dup", strata_int_dup as *const () as usize),
+        ("strata_int_drop", strata_int_drop as *const () as usize),
         ("strata_release", strata_release as *const () as usize),
         ("strata_free", strata_free as *const () as usize),
         ("strata_unique", strata_unique as *const () as usize),

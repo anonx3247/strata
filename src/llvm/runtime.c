@@ -398,6 +398,16 @@ static Big *big_at(int64_t v) {
   return (Big *)(uintptr_t)(k << 3);
 }
 
+// One holder more, or fewer, of a big integer (the generated code tests
+// whether an `Int` is big before calling these).
+void strata_int_dup(int64_t v) {
+  if (is_big(v)) strata_dup(big_at(v));
+}
+
+void strata_int_drop(int64_t v) {
+  if (is_big(v) && strata_release(big_at(v))) strata_free(big_at(v));
+}
+
 static uint32_t *digits(int64_t n) {
   uint32_t *d = calloc((size_t)(n > 0 ? n : 1), 4);
   if (!d) {
@@ -438,11 +448,8 @@ static int64_t int_of(Num x) {
       return x.sign < 0 ? (int64_t)((uint64_t)0 - m) : (int64_t)m;
     }
   }
-  Big *b = malloc(sizeof(Big) + (size_t)x.n * 4);
-  if (!b) {
-    fputs("fault (Limit): out of memory\n", stderr);
-    exit(101);
-  }
+  // an object, counted as any other (strata_alloc's are 8-byte aligned)
+  Big *b = strata_alloc((int64_t)(sizeof(Big) + (size_t)x.n * 4));
   b->sign = x.sign, b->n = x.n;
   memcpy(b->d, x.d, (size_t)x.n * 4);
   free(x.d);
@@ -603,6 +610,7 @@ int64_t strata_div(int64_t a, int64_t b) {
   int64_t q, r;
   num_divmod(x, y, &q, &r);
   free(x.d), free(y.d);
+  strata_int_drop(r);
   return q;
 }
 
@@ -618,6 +626,7 @@ int64_t strata_mod(int64_t a, int64_t b) {
   int64_t q, r;
   num_divmod(x, y, &q, &r);
   free(x.d), free(y.d);
+  strata_int_drop(q);
   return r;
 }
 
@@ -963,13 +972,19 @@ List *strata_list_new(int64_t cap) {
   return l;
 }
 
-static void dup_slots(int64_t *xs, int64_t n, _Bool counted) {
-  if (counted)
+void strata_int_dup(int64_t v);
+
+// Hold what `n` copied slots hold: `kind` 0 nothing, 1 objects, 2 integers
+// (the big ones are objects).
+static void dup_slots(int64_t *xs, int64_t n, int64_t kind) {
+  if (kind == 1)
     for (int64_t i = 0; i < n; i++) strata_dup((void *)(intptr_t)xs[i]);
+  else if (kind == 2)
+    for (int64_t i = 0; i < n; i++) strata_int_dup(xs[i]);
 }
 
 // `xs` with `x` after it (`x` is handed over).
-List *strata_list_push(List *xs, int64_t x, _Bool counted) {
+List *strata_list_push(List *xs, int64_t x, int64_t counted) {
   Buf *b = xs->buf;
   int64_t end = xs->off + xs->len;
   List *l = strata_alloc(sizeof(List));
@@ -1013,7 +1028,7 @@ List *strata_list_slice(List *xs, int64_t from, int64_t to) {
   return l;
 }
 
-List *strata_list_concat(List *a, List *b, _Bool counted) {
+List *strata_list_concat(List *a, List *b, int64_t counted) {
   if (b->len == 0) return strata_dup(a), a;
   if (a->len == 0) return strata_dup(b), b;
   Buf *n = buf_new(a->len + b->len);
