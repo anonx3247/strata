@@ -221,6 +221,9 @@ json = "https://example.com/strata-json"
 
 [verify]                               # what `strata verify` requires (see Verification)
 proven = ["core"]
+
+[json]                                 # how `std.json` reads JSON here
+unknown_keys = "error"                 # `decode` refuses keys a record doesn't have (default: "ignore")
 ```
 
 `strata ci` rejects an export that names nothing, or a definition that isn't `pub`.

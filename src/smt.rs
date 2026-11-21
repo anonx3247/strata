@@ -1109,31 +1109,44 @@ impl<'a> Vc<'a> {
 
     /// Does checking a value against `t` involve any refinement?
     fn refined(&self, t: &TypeExpr, depth: usize) -> bool {
+        self.refined_in(t, depth, &mut vec![])
+    }
+
+    /// `refined`, with the types being looked into: a type met again inside
+    /// itself (`Array(List[JsonValue])` in `JsonValue`) adds no refinement
+    /// of its own.
+    fn refined_in(&self, t: &TypeExpr, depth: usize, seen: &mut Vec<TypeExpr>) -> bool {
         if depth > 8 {
             return true;
         }
         match t {
             TypeExpr::Refined(..) => true,
             TypeExpr::Unit | TypeExpr::Fn(..) => false,
-            TypeExpr::Union(ms) => ms.iter().any(|m| self.refined(m, depth + 1)),
-            TypeExpr::Named(n, args) if self.env.variant_parent(n.sym()).is_some() => self.refined(&TypeExpr::Named(Symbol::from(self.env.variant_parent(n.sym()).unwrap()), args.clone()), depth + 1),
+            TypeExpr::Union(ms) => ms.iter().any(|m| self.refined_in(m, depth + 1, seen)),
+            TypeExpr::Named(n, args) if self.env.variant_parent(n.sym()).is_some() => self.refined_in(&TypeExpr::Named(Symbol::from(self.env.variant_parent(n.sym()).unwrap()), args.clone()), depth + 1, seen),
             TypeExpr::Named(n, args) => {
-                if args.iter().any(|a| self.refined(a, depth + 1)) {
+                if seen.contains(t) {
+                    return false;
+                }
+                if args.iter().any(|a| self.refined_in(a, depth + 1, seen)) {
                     return true;
                 }
                 let Some(td) = self.env.types.get(&n.sym()) else { return false };
                 if td.refinement.is_some() {
                     return true;
                 }
-                match &td.body {
-                    TypeBody::Alias(a) => self.refined(a, depth + 1),
-                    TypeBody::Record(fs) => fs.iter().any(|f| self.refined(&f.ty, depth + 1)),
+                seen.push(t.clone());
+                let r = match &td.body {
+                    TypeBody::Alias(a) => self.refined_in(a, depth + 1, seen),
+                    TypeBody::Record(fs) => fs.iter().any(|f| self.refined_in(&f.ty, depth + 1, seen)),
                     TypeBody::Sum(vs) => vs.iter().any(|v| match &v.payload {
                         Payload::None => false,
-                        Payload::Positional(ts) => ts.iter().any(|t| self.refined(t, depth + 1)),
-                        Payload::Record(fs) => fs.iter().any(|f| self.refined(&f.ty, depth + 1)),
+                        Payload::Positional(ts) => ts.iter().any(|t| self.refined_in(t, depth + 1, seen)),
+                        Payload::Record(fs) => fs.iter().any(|f| self.refined_in(&f.ty, depth + 1, seen)),
                     }),
-                }
+                };
+                seen.pop();
+                r
             }
         }
     }

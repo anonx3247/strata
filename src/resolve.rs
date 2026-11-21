@@ -1029,6 +1029,17 @@ impl Rw<'_> {
                 self.pop();
                 Pattern::Cond(Box::new(c))
             }
+            // a match comprehension's arm, `p for x in xs`: `xs` uses the
+            // module's names; `x` is bound in the arm
+            Pattern::For(p, x, xs) => {
+                let xs = self.expr(xs);
+                let x = self.pat(x);
+                let p = match &**p {
+                    Pattern::Bind(_) => (**p).clone(),
+                    other => self.pat(other),
+                };
+                Pattern::For(Box::new(p), Box::new(x), Box::new(xs))
+            }
             other => other.clone(),
         }
     }
@@ -1216,6 +1227,8 @@ impl Rw<'_> {
                 self.pop();
                 Expr::Block(stmts, Box::new(last))
             }
+            // compile-time code calls the module's functions like any other
+            Expr::Comptime(x) => Expr::Comptime(Box::new(self.expr(x))),
             _ => e.clone(),
         }
     }
