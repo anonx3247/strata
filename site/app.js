@@ -65,7 +65,8 @@ function structural(c) {
     c.summary.follow_renames ? `${c.summary.follow_renames + followers.length} definitions only follow the rename` : '',
     followers.length && !c.summary.follow_renames ? `call sites updated to follow it: ${followers.map(f => `<code>${esc(f.label)}</code>`).join(' ')}` : '',
   ].filter(Boolean).map(t => `<div class="hl-follow">↳ ${t}</div>`).join('');
-  const ver = c.verification?.length ? `<div class="hl-ver">${c.verification.map(v => `<span><code>${esc(v.name)}</code> ${esc(v.before)} → <b class="${/counter|fail/.test(v.after) ? 'o-bad' : /proven/.test(v.after) ? 'o-ok' : ''}">${esc(v.after)}</b></span>`).join('')}</div>` : '';
+  const vs = (c.verification || []).filter(v => !/not verified yet/.test(v.after));
+  const ver = vs.length ? `<div class="hl-ver">${vs.map(v => `<span><code>${esc(v.name)}</code> ${esc(v.before)} → <b class="${/counter|fail/.test(v.after) ? 'o-bad' : /proven/.test(v.after) ? 'o-ok' : ''}">${esc(v.after)}</b></span>`).join('')}</div>` : '';
   const code = items.map(it => `<div class="change"><div class="head"><span>${esc(it.label)}</span><span class="pill">${esc(it.kind)}</span><span class="what">${it.what.map(md).join(' · ')}</span></div><pre>${codeHtml(it)}</pre></div>`).join('');
   return {
     count: main.length,
@@ -459,7 +460,7 @@ const V = D.verify, F = D.features;
   const pick = (re, extra = 0) => { const i = verify.findIndex(l => re.test(l)); return verify.slice(i, i + 1 + extra); };
   const sig = V.contracts.discount.split('\n').filter(l => !l.startsWith('///')).join('\n').replace(/\s*\{[\s\S]*$/, '');
   const ideas = [
-    { t: 'Types as contracts', say: 'A type can include a condition, and a function states what it needs and what it guarantees. Both are part of the signature, and both are checked wherever the code is used.',
+    { t: 'Types as contracts', say: 'Types carry constraints, and functions have preconditions and postconditions. Both are part of the signature, and both are checked wherever the code is used.',
       code: hl(V.contracts.types.split('\n').slice(0, 2).join('\n') + '\n\n' + sig) },
     { t: 'Proving over testing', say: 'An SMT solver proves each contract for every input, or finds an input that breaks it, and a fuzzer covers what it can\'t prove. Most tests become a line in a signature.',
       code: term([...pick(/^✓ factorial/), ...pick(/^~ isqrt/), ...pick(/^✗ next_digit/, 2)].join('\n')) },
@@ -517,14 +518,25 @@ function feature(id, { kicker, title, steps }) {
 }
 
 feature('contracts', {
-  kicker: 'Types as contracts', title: 'Types that say what they mean.',
+  kicker: 'Types as contracts', title: 'Constraints on types.',
   steps: [
     { file: 'contracts', code: V.contracts.types, hot: /where/,
-      say: 'A type can include a condition. <code>Cents</code> is an <code>Int</code> that is never negative, and a <code>Percent</code> stays between 0 and 100. The condition is checked wherever a value of that type is made.' },
-    { title: 'Functions say what they need, and what they promise.', file: 'contracts', code: V.contracts.discount, hot: /requires|ensures/,
-      say: '<code>requires</code> is a precondition: what every caller must guarantee, here a price of at least 1.00. <code>ensures</code> is a postcondition: what the function promises about its result, called <code>it</code>. The discounted price is never more than the original.' },
+      say: 'Contract programming starts with the types. A type can carry a constraint: <code>Cents</code> is an <code>Int</code> that is never negative, and a <code>Percent</code> stays between 0 and 100. The condition is checked wherever a value of that type is made.' },
+    { title: 'Preconditions and postconditions.', file: 'contracts', code: V.contracts.discount, hot: /requires|ensures/,
+      say: 'A function has a contract too. <code>requires</code> is its precondition: what every caller must guarantee, here a price of at least 1.00. <code>ensures</code> is its postcondition: what holds for its result, called <code>it</code>, here that the discounted price is never more than the original.' },
     { title: 'Then the solver checks both sides.', file: 'contracts', code: V.contracts.callers, hot: /discount\(/, where: '~/contracts', outs: [V.contracts.verify],
-      say: '<code>strata verify</code> passes the contracts to an SMT solver. It proves that <code>discount</code> keeps its promise for every price and percentage, and checks every call against the precondition. <code>checkout</code> only calls it from 1.00 up, so it is proven. <code>sale</code> calls it with any price, and the solver gives the price that breaks it: 0.' },
+      say: '<code>strata verify</code> passes the contracts to an SMT solver. It proves that <code>discount</code> meets its postcondition for every price and percentage, and checks every call against the precondition. <code>checkout</code> only calls it from 1.00 up, so it is proven. <code>sale</code> calls it with any price, and the solver gives the price that breaks it: 0.' },
+  ],
+});
+feature('loops', {
+  kicker: 'Loops and termination', title: 'Loops, and whether they end.',
+  steps: [
+    { file: 'examples/math.strata', code: V.loops.ackermann.code, hot: /ackermann\(/, where: '~/math', outs: [V.loops.ackermann.verify],
+      say: '<code>verify</code> also checks that functions finish. For recursion it looks for a measure that goes down on every call and is never negative. For Ackermann\'s function, that is the pair <code>(m, n)</code>, compared in order.' },
+    { title: 'Loop invariants come next.', file: 'examples/math.strata', code: V.loops.isqrt.code, hot: /while|ensures/, where: '~/math', outs: [V.loops.isqrt.verify],
+      say: 'A <code>while</code> loop ends when a bound goes down on every pass, and here it does. The postcondition after the loop needs a loop invariant, <code>r * r &lt;= n</code> on every pass, and the verifier doesn\'t take invariants yet. So it fuzzed the postcondition instead, and says so. Loop invariants are the next step.' },
+    { title: 'And it says when it can\'t tell.', file: 'examples/math.strata', code: V.loops.collatz.code, hot: /while/, where: '~/math', outs: [V.loops.collatz.verify],
+      say: 'Whether the Collatz sequence always reaches 1 is an open problem. The verifier proves every assignment in the loop, and reports that the loop may not end, with the bounds it tried.' },
   ],
 });
 feature('shares', {
@@ -583,14 +595,14 @@ feature('points', {
 }
 
 feature('mocks', {
-  kicker: 'Proving over testing', title: 'Some tests still need fakes.',
+  kicker: 'Proving over testing', title: 'Some tests still need mocks.',
   steps: [
     { file: 'mocks', code: F.mocks.src, hot: /^mock|^impl Files for MemDisk/, where: '~/mocks', outs: [F.mocks.test_out],
-      say: 'Code that reads files or talks to a database still needs tests, and those need stand-ins. In Strata a fake is declared like a type, with <code>mock</code>, and implemented like any other type. It can leave methods out: <code>Files</code> has seven, and this one writes two.' },
+      say: 'Code that reads files or talks to a database still needs tests, and those need mocks. In Strata a mock is declared like a type, with the keyword <code>mock</code>, and implemented like any other type. It can leave methods out: <code>Files</code> has seven, and this one writes two.' },
     { file: 'mocks', code: F.mocks.src, hot: /^mock|^impl Files for MemDisk/, where: '~/mocks', outs: [F.mocks.verify_out],
       say: 'The methods it leaves out are generated, and answer within each method\'s types and contract. <code>verify</code> doesn\'t try to prove a mock: the tests that use it are what check it.' },
     { file: 'mocks', code: F.mocks.src, where: '~/mocks', outs: [F.mocks.refused],
-      say: 'A fake can\'t end up in a real run: using one outside a test is refused, and the codebase stays as it was.' },
+      say: 'A mock can\'t end up in a real run: using one outside a test is refused, and the codebase stays as it was.' },
   ],
 });
 feature('capabilities', {
@@ -613,7 +625,7 @@ feature('capabilities', {
   const iface = n => { const t = g0.find(d => d.name === n).text.split('\n').filter(l => !l.startsWith('///')); const i = t.findIndex(l => /\{\s*$/.test(l)); return t.slice(0, i + 1).join('\n').replace(/\s*\{\s*$/, ''); };
   const proof = fix.out.split('$ strata verify refund\n')[1];
   const STEPS = [
-    { h: 'You only need the signature.', say: 'To prove <code>refund</code>, the solver uses what <code>total</code> promises, its signature and contract, and not how it computes the result. An agent changing <code>refund</code> can work the same way, and so can a person reviewing it: if the contracts around it are right, their bodies can stay unread.',
+    { h: 'You only need the signature.', say: 'To prove <code>refund</code>, the solver uses <code>total</code>\'s signature and contract, and not how it computes the result. An agent changing <code>refund</code> can work the same way, and so can a person reviewing it: if the contracts around it are right, their bodies can stay unread.',
       term: ['strata verify refund', { cmd: 'strata verify refund', out: proof }], card: ['what the proof relies on', [iface('total'), g0.find(d => d.name === 'Cents').text.split('\n').filter(l => !l.startsWith('///')).join('\n')].join('\n\n')],
       graph: fast => graph.set(fix.graph, { layout: every, focus: 'refund', fast }) },
     { h: 'A change inside a body stays there.', say: 'The fix to <code>refund</code> changed its body, not its signature or contract. Nothing that uses it has to be checked again, and the edit says so. An agent can work on one definition, and leave everything else as it was.',
@@ -782,18 +794,18 @@ function drawTree(el, roots, fast) {
   const R = D.rename, renameV = S('A rename is one change'), fill = S('It fills them, and closes the change'), fix = S('It fixes it, and proves it');
   const C = D.contract;
   const big = diffCount(R.diff), bigLines = R.diff.split('\n').length;
+  // each step: the line diffs and the structural changes it shows, side by side
+  const ch = (snap, step) => ({ linediff: snap === R ? R.diff : snap.linediff, change: snap.changes[step], title: snap.changes.all.steps.find(s => s.id === step).title });
   const cases = [
-    { tab: 'Rename a type', linediff: R.diff, snap: R, step: R.step, h: 'A rename should read as a rename.',
-      say: `It was <code>strata rename Task Job</code>: one type renamed, and the twelve definitions that use it updated to match. Strata shows it as one line.` },
-    { tab: 'Rename a variant', linediff: renameV.linediff, snap: renameV, step: lastStep(renameV), h: 'The same for a variant.',
-      say: `<code>strata rename Shipped Sent</code>. As text, five definitions change, and a line in a test re-wraps because <code>Sent</code> is shorter. What happened is one rename.` },
-    { tab: 'Add a parameter', linediff: C.paramDiff, snap: C, step: stepTitled(C, 'discount: members'), h: 'A new parameter, and the calls that follow it.',
-      say: `<code>discount</code> takes a new <code>member</code> flag, not used yet. The change is the new parameter; its two call sites only follow it.` },
-    { tab: 'Change a signature and its body', linediff: D.orders.couponsDiff, snap: fill, step: stepTitled(fill, 'coupons'), h: 'A new signature, and the body that uses it.',
-      say: `<code>total</code> takes a coupon and uses it. The signature and the body both changed, so both are shown; the callers that had to follow are listed by name.` },
+    { tab: 0, parts: [ch(R, R.step), ch(renameV, lastStep(renameV))], h: 'A rename should read as a rename.',
+      say: `Two renames. <code>strata rename Task Job</code> renamed a type, and the twelve definitions that use it were updated; <code>strata rename Shipped Sent</code> renamed a variant, and every pattern and test that uses it. As text, that is ${big + diffCount(renameV.linediff)} changed lines. As changes, it is two lines.` },
+    { tab: 1, parts: [{ ...ch(C, stepTitled(C, 'discount: members')), linediff: C.paramDiff }], h: 'A new parameter, and the calls that follow it.',
+      say: `<code>discount</code> takes a new <code>member</code> flag, not used yet. The change is the new parameter, and its two call sites are listed as following it.` },
+    { tab: 1, parts: [{ ...ch(fill, stepTitled(fill, 'coupons')), linediff: D.orders.couponsDiff }], h: 'And when the body changes too.',
+      say: `<code>total</code> takes a coupon and uses it. The new signature and the lines of the body that changed are shown in place; the callers that had to follow are listed by name.` },
   ];
-  $('#diff-tabs').innerHTML = cases.map((c, i) => `<button data-i="${i}">${esc(c.tab)}</button>`).join('');
-  $('#diff-tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) go(cur, +b.dataset.i + 1, +b.dataset.i + 1 < sub ? -1 : 1); });
+  $('#diff-tabs').innerHTML = ['Renames', 'A new parameter'].map((t, i) => `<button data-i="${i}">${t}</button>`).join('');
+  $('#diff-tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) { const k = cases.findIndex(c => c.tab === +b.dataset.i) + 1; go(cur, k, k < sub ? -1 : 1); } });
   const count = async (el, n, unit, alive, ms = 260) => { for (let i = 0; i <= n; i++) { if (!alive()) return; el.textContent = `${i} ${unit}${i === 1 ? '' : 's'}`; await sleep(Math.max(12, ms / n)); } };
   const flip = el => { el.classList.remove('flip'); void el.offsetWidth; el.classList.add('flip'); };
   $('#big-body').innerHTML = diffHtml(R.diff);
@@ -816,12 +828,16 @@ function drawTree(el, roots, fast) {
     const c = cases[k - 1];
     $('#diff-h').textContent = c.h; flip($('#diff-h'));
     say($('#diff-say'), c.say, fast);
-    $$('#diff-tabs button').forEach((b, j) => b.classList.toggle('on', j === k - 1));
-    const n = diffCount(c.linediff), st = structural(c.snap.changes[c.step]);
-    for (const [id, html] of [['#ld-body', diffHtml(c.linediff)], ['#sd-body', st.html]]) { const el = $(id); el.innerHTML = html; flip(el); }
+    $$('#diff-tabs button').forEach((b, j) => b.classList.toggle('on', j === c.tab));
+    const sts = c.parts.map(p => structural(p.change));
+    const n = c.parts.reduce((t, p) => t + diffCount(p.linediff), 0), st = { count: sts.reduce((t, s) => t + s.count, 0) };
+    const sep = (p, j) => c.parts.length > 1 ? `<div class="part-title">${j + 1}. ${esc(p.title)}</div>` : '';
+    $('#ld-body').innerHTML = c.parts.map((p, j) => sep(p, j) + diffHtml(p.linediff)).join('<br>');
+    $('#sd-body').innerHTML = sts.map((s, j) => sep(c.parts[j], j) + s.html).join('');
+    for (const id of ['#ld-body', '#sd-body']) flip($(id));
     $('#ld-count').textContent = `${n} line${n === 1 ? '' : 's'} changed`;
     $('#sd-count').textContent = `${st.count} change${st.count > 1 ? 's' : ''}`;
-    $('#sd-title').textContent = `strata diff · ${c.snap.changes.all.steps.find(s => s.id === c.step).title}`;
+    $('#sd-title').textContent = `strata diff · ${c.parts.map(p => p.title).join(', ')}`;
     if (fast) { $('#ld-n').textContent = `${n} lines`; $('#sd-n').textContent = `${st.count} change${st.count > 1 ? 's' : ''}`; }
     else { count($('#ld-n'), n, 'line', alive); count($('#sd-n'), st.count, 'change', alive); }
   };

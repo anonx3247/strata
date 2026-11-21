@@ -603,11 +603,12 @@ Relations (decided): a definition has **dependencies** (what it mentions) and **
   2. Three ideas: types as contracts, proving over testing, the code is the AST.
   3. Verification first:
      - contracts spelled out (refinements, `requires` / `ensures`, what the solver checks);
+     - loops and termination: measures for recursion, bounds for `while`; loop invariants are not built yet (the verifier fuzzes what would need one), shown as the next step;
      - tests that miss a detail, against one line;
      - many tests against one `ensures`;
      - fuzzing as many tests at once;
      - verdicts;
-     - fakes (mocks);
+     - mocks (the keyword, so the slides say "mock", never "fake");
      - side effects assumed so the rest is proven (capabilities, `extern c`);
      - building a piece at a time (only the signature matters, a body change stays there, holes).
   4. The code is the AST:

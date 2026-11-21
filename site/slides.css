@@ -364,3 +364,5 @@ kbd { font: 600 12px var(--mono); border: 1px solid var(--line2); border-bottom-
   100% { opacity: 0; transform: translate(-30vw, -44vh) scale(.18); filter: blur(2px); }
 }
 .slide.intro .fx { --d: 1.35s; }
+.part-title { font: 600 11.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--accent2); margin: 4px 0 8px; display: block; }
+#start .links { grid-template-columns: repeat(4, 1fr); margin-top: 26px; }

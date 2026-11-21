@@ -656,6 +656,14 @@ fn main() {
 `);
     V.sugar = { src: run(dir, ['render']).out.trim(), run: out(dir, ['run']) };
   }
+  // loops and termination, on examples/math.strata
+  {
+    const dir = pkg('v-math', [join(EX, 'math.strata')]);
+    const src = run(dir, ['render']).out;
+    V.loops = {};
+    for (const [k, f] of [['ackermann', 'ackermann'], ['isqrt', 'isqrt'], ['collatz', 'collatz_steps']])
+      V.loops[k] = { code: defs(src, [`fn ${f}(`]), verify: out(dir, ['verify', f, '--checks']) };
+  }
   emit('verify', V);
 }
 
