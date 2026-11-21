@@ -126,7 +126,12 @@ fn calls_of(e: &Expr, env: &Env, locals: &[String], out: &mut BTreeSet<String>) 
                 // a function called, or passed as a value (it may be called)
                 Expr::Var(n) => self.name(n),
                 Expr::Method(r, m, args) => {
-                    self.name(m);
+                    // `next` on the `FiniteIterator` a `for` runs over (types::lower_iterator_fors):
+                    // the iterator's `len` says it returns, as many times as the loop runs
+                    let finite = matches!(&**r, Expr::Var(v) if v.as_str().starts_with(crate::types::FINITE_ITER_VAR));
+                    if !finite {
+                        self.name(m);
+                    }
                     self.expr(r);
                     args.iter().for_each(|a| self.expr(a));
                 }
@@ -192,9 +197,30 @@ fn has_stmt(e: &Expr, pred: &dyn Fn(&Stmt) -> bool) -> bool {
     found
 }
 
+/// Whether `e` has a `loop` other than one running over a `FiniteIterator`
+/// (`types::lower_iterator_fors`: the variable holding it just before),
+/// which ends once `next` has given the iterator's `len` elements.
+fn any_open_loop(e: &Expr) -> bool {
+    let mut found = false;
+    crate::ast::walk(e, |x| {
+        if let Expr::Block(stmts, _) = x {
+            for (i, s) in stmts.iter().enumerate() {
+                let finite = i > 0 && matches!(&stmts[i - 1], Stmt::Var(v, _, _) if v.as_str().starts_with(crate::types::FINITE_ITER_VAR));
+                found |= matches!(s, Stmt::Loop(_)) && !finite;
+            }
+        }
+    });
+    found
+}
+
 /// The loops of a body: `Ok(how they end)` or `Err(why one may not)`.
 fn loops(env: &Env, f: &FnDecl, solver: Option<&crate::smt::Solver>) -> Result<Vec<String>, String> {
-    if has_stmt(&f.body, &|s| matches!(s, Stmt::Loop(_))) {
+    // a `for` over an `Iterator` is a `loop` calling `next` (types::lower_iterator_fors)
+    let over_iterator = |s: &Stmt| matches!(s, Stmt::Var(v, _, _) if v.as_str().starts_with(crate::types::ITER_VAR));
+    if has_stmt(&f.body, &over_iterator) {
+        return Err("it has a `for` over an `Iterator` that isn't a `FiniteIterator`, which may never end (only `for` loops over lists, sets, dicts and finite iterators, and `while` loops whose bound goes down, are shown to end)".into());
+    }
+    if any_open_loop(&f.body) {
         return Err("it has a `loop` (only `for` loops, and `while` loops whose bound goes down, are shown to end)".into());
     }
     if !has_stmt(&f.body, &|s| matches!(s, Stmt::While(..))) {
@@ -653,7 +679,9 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
             Err(e) => Err(e.clone()),
             Ok(hows) => {
                 if let Some(other) = mutual(name) {
-                    Err(format!("it is recursive through `{}`", other.trim_start_matches("trait method ")))
+                    // a trait method by its short name (`next`, not `std.prelude.next`)
+                    let shown = other.strip_prefix("trait method ").map_or(other.as_str(), crate::names::short);
+                    Err(format!("it is recursive through `{shown}`"))
                 } else if n.calls.contains(name) {
                     match n.decl.as_ref().and_then(|f| structural(env, f)) {
                         Some(p) => Ok(format!("each recursive call gets a smaller piece of `{p}`")),
@@ -692,7 +720,8 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
                     Termination::Proven { .. } => {}
                     Termination::Assumed { by } => assumed.extend(by),
                     Termination::Unknown { .. } => {
-                        let shown = c.trim_start_matches("trait method ");
+                        // a trait method by its short name (`next`, not `std.prelude.next`)
+                        let shown = c.strip_prefix("trait method ").map_or(c.as_str(), crate::names::short);
                         t = Termination::Unknown { reason: format!("it calls `{shown}`, which may not terminate") };
                         break;
                     }

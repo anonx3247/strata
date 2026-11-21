@@ -377,7 +377,53 @@ print(Some(Secret { key: "k" }))   // Some(Secret { key: *** })
 
 All values are immutable (`insert` returns a new dict). Dicts and sets are kept in canonical order, so equal collections are equal values and serialise identically. `len`, `contains`, `get`, `insert`, `remove`, `sum`, `min`, `max` and `abs` work across the types they make sense for. `strata builtins` lists every builtin with its signature. See `examples/builtins.strata`.
 
-**Not yet:** lazy iterators, generators and async, which will be designed as language features of their own.
+**Iterators.** Besides lists, sets and dicts, a `for` loop runs over any value whose type implements the prelude's `Iterator`: `next` gives the elements one at a time, then `None`.
+
+```rust
+trait Iterator[T] {
+  fn next(mut self) -> Option[T]
+}
+
+type Countdown = { n: Int }
+
+impl Iterator[Int] for Countdown {
+  fn next(mut self) -> Option[Int] {
+    if self.n == 0 { None } else { self.n -= 1; Some(self.n + 1) }
+  }
+}
+
+c := Countdown { n: 3 }
+for i in c { print(i) }            // 3, 2, 1
+```
+
+Such a loop works on its own copy of the iterator (`c` is unchanged afterwards), and takes `break`, `continue` and patterns as any `for`. Generic code asks for the trait: `fn collect[T, I: Iterator[T]](it: I) -> List[T]`. `verify` doesn't show that such a loop ends, as it does for a list's: the iterator may never return `None`.
+
+An iterator that ends implements `FiniteIterator` too, a supertrait: its `len` is how many elements `next` still gives.
+
+```rust
+trait FiniteIterator[T]: Iterator[T] {
+  fn len(self) -> Natural
+}
+```
+
+`verify` shows that a `for` loop over a `FiniteIterator` ends, as one over a list: it relies on `len` (which it doesn't check yet). Over an iterator that may be unbounded, it says the loop may not end.
+
+Every iterator has `map`, `filter` and `fold`, and the first two are lazy: they give another iterator, which does the work as the loop asks for elements, so they work on unbounded iterators too.
+
+```rust
+type Naturals = { at: Int }   // impl Iterator[Int]: 0, 1, 2, … without end
+
+squares := Naturals { at: 0 }.filter(n -> n % 2 == 0).map(n -> n * n)
+for s in squares {
+  if s > 100 { break }
+  print(s)                     // 0, 4, 16, 36, 64, 100
+}
+Count { at: 0, end: 5 }.map(n -> n + 1).fold(0, (a, b) -> a + b)   // 15
+```
+
+On a list, `xs.map(f)`, `filter` and `fold` are still the builtins, which give a list.
+
+**Not yet:** lists, sets, dicts and ranges as iterators, comprehensions over iterators (an unbounded one giving an iterator), iterators over a string's units, generators and async.
 
 ## Foreign functions: `extern c`
 

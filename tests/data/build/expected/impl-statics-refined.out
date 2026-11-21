@@ -1,0 +1,10 @@
+Ok([80, 443])
+Err("[1]: 70000 does not satisfy `Port` (where 1 <= it && it <= 65535)")
+Ok(None)
+Err("0 does not satisfy `Positive` (where it > 0)")
+Err("b: -2 does not satisfy `Natural` (where it >= 0)")
+ok
+Err("0 does not satisfy `Port` (where 1 <= it && it <= 65535)")
+Ok(())
+
+--- exit 0

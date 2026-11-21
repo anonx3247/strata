@@ -1258,7 +1258,8 @@ impl<'a> Module<'a> {
         // on the call stack a fault shows (the program's functions, as the interpreter's)
         let framed = !name.starts_with(PRELUDE_MODULE) && !name.starts_with("test \"") && name != COMPTIME;
         if framed {
-            let n = c.m.string(name);
+            // a prelude trait's method by its short name (`ListIter.next`)
+            let n = c.m.string(&name.replace(&format!("{}.", crate::types::PRELUDE_MODULE), ""));
             c.emit(format!("call void @strata_enter(ptr {n})"));
         }
         if c.m.fuzzing {

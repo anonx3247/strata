@@ -1,0 +1,5 @@
+error: --times: 30 does not satisfy `Int where 1 <= it && it <= 10`
+
+Run `hello --help` for the options.
+
+--- exit 2

@@ -145,7 +145,12 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
                 for m in &tr.methods {
                     let mname = m.decl.name.clone();
                     let key = verify::wrapper_name(i, crate::names::short(&mname));
-                    let decl = imp.methods.iter().find(|x| x.name == mname).or(if m.default { Some(&m.decl) } else { None });
+                    let own = imp.methods.iter().find(|x| x.name == mname);
+                    // a default of the prelude's traits (`map` on any iterator) is library code
+                    if own.is_none() && mname.as_str().starts_with(&format!("{}.", types::PRELUDE_MODULE)) {
+                        continue;
+                    }
+                    let decl = own.or(if m.default { Some(&m.decl) } else { None });
                     match decl {
                         Some(decl) => {
                             let label = termination::impl_label(env, imp, &mname);

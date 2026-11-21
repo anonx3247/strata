@@ -1,0 +1,7 @@
+Ok(6)
+Err(NotFound)
+Err(Bad { why: "neg" })
+true
+5s
+
+--- exit 0

@@ -173,7 +173,9 @@ fn snapshot(target: &Target) -> Json {
     };
     let field_json = |name: Option<&str>, t: &TypeExpr| json!({"name": name, "ty": crate::printer::ty(t), "refs": refs_of(t)});
     let mut structure = Vec::new();
-    for d in &rp.decls {
+    // (the prelude's code, added to every program, isn't the program's)
+    let own = |d: &&Decl| d.module != crate::types::PRELUDE_MODULE;
+    for d in rp.decls.iter().filter(own) {
         match &d.kind {
             DeclKind::Type(t) => {
                 let (kind, base, fields, variants) = match &t.body {
@@ -206,7 +208,7 @@ fn snapshot(target: &Target) -> Json {
     }
 
     // ---- traits for the type map ----
-    for d in &rp.decls {
+    for d in rp.decls.iter().filter(own) {
         if let DeclKind::Trait(t) = &d.kind {
             let mut refs = Vec::new();
             for m in &t.methods {

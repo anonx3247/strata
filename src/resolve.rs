@@ -70,6 +70,7 @@ pub fn resolve(p: &Program) -> Resolution {
     } else {
         run(p, None)
     };
+    crate::types::with_prelude_code(&mut r.program);
     mock_methods(&mut r.program);
     static_calls(&mut r.program);
     crate::desugar::program(&mut r.program, &mut r.errors);

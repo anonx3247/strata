@@ -528,7 +528,7 @@ test "a mocked capability" {
 - **Empty literals need a type when nothing says it**: `let xs: List[Money] = []`, `Dict[String, Int] {}`.
 - **Indexing is checked**: `xs[i]` faults when `i` is out of range, and `verify` tries to prove it isn't. There are no negative indices (`xs[len(xs) - 1]`); use `get(xs, i)` for an `Option`.
 - **`print(x)` is for convenience.** Code whose output matters takes a `Console` (`std.io`), so tests can record it.
-- Not in the language (yet): shared references, exceptions, null, implicit effects, iterators/generators, async, macros, inheritance.
+- Not in the language (yet): shared references, exceptions, null, implicit effects, generators, async, macros, inheritance.
 
 ## Modules and packages
 
