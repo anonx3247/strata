@@ -626,11 +626,16 @@ fn options_from_the_command_line_compile() {
 #[test]
 fn what_is_not_compiled_yet_is_named() {
     let d = tmp("unsupported");
-    let f = d.join("lists.strata");
-    save(&f, "fn main() { p := \"[a-z]\" + \"[0-9]\" print(matches(\"a1\", p)) }\n");
+    let f = d.join("many.strata");
+    save(&f, "trait Many {\n  fn copies(self) -> List[Self]\n}\n\ntype A = { n: Int }\n\nimpl Many for A {\n  fn copies(self) -> List[A] { [self, self] }\n}\n\nfn main() {\n  let m: Many = A { n: 1 }\n  print(len(m.copies()))\n}\n");
     let o = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(!o.status.success() && err.contains("can't compile `main`: `matches` with a pattern that isn't a literal is not compiled yet"), "{err}");
+    let why = "can't compile `main`: calling `copies` (it mentions `Self` inside another type) on a value of the trait type `Many` is not compiled yet";
+    assert!(!o.status.success() && err.contains(why), "{err}");
+    // `strata run` says so too (nothing is interpreted instead)
+    let o = Command::new(env!("CARGO_BIN_EXE_strata")).arg("run").arg(&f).output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success() && err.contains(&format!("the program can't be compiled yet: {why}")), "{err}");
 }
 
 #[test]
@@ -645,7 +650,6 @@ fn emits_llvm_ir() {
 }
 
 /// `strata run --jit`: compiled in memory, same output as interpreted.
-#[cfg(feature = "jit")]
 #[test]
 fn the_jit_runs_as_the_interpreter() {
     let d = tmp("jit");
@@ -655,16 +659,20 @@ fn the_jit_runs_as_the_interpreter() {
     let interp = output(Command::new(strata).args(["run", "--interpret"]).arg(&file));
     assert_eq!(jit, interp);
     assert_eq!(jit.1, 101);
-    // what doesn't compile yet is interpreted, and says why
+    // a pattern built at run time: Rust's engine, given to the runtime (as the interpreter's)
     let f = d.join("lists.strata");
-    save(&f, "fn main() { p := \"[a-z]\" + \"[0-9]\" print(matches(\"a1\", p)) }\n");
-    let (out, code) = output(Command::new(strata).args(["run", "--jit"]).arg(&f));
-    assert_eq!(code, 0);
-    assert!(out.contains("true\n") && out.contains("note: interpreted, not compiled: can't compile `main`: `matches` with a pattern that isn't a literal is not compiled yet"), "{out}");
+    save(&f, "fn main() { p := \"[a-z]\" + \"[0-9]\" print(matches(\"a1\", p)) print(matches(\"a\", p + \"(\")) }\n");
+    let jit = output(Command::new(strata).args(["run", "--jit"]).arg(&f));
+    assert_eq!(jit, output(Command::new(strata).args(["run", "--interpret"]).arg(&f)));
+    assert!(jit.0.starts_with("true\nfault (Runtime): bad regex: regex parse error:") && jit.1 == 101, "{jit:?}");
+    // a built program has no engine for them, and says so
+    let exe = d.join("lists");
+    assert!(Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap().status.success());
+    let (out, code) = output(&mut Command::new(&exe));
+    assert!(code == 101 && out.contains("a pattern built at run time needs `strata run`"), "{out}");
 }
 
 /// `strata run --jit` with options: the derived `from_args`, compiled.
-#[cfg(feature = "jit")]
 #[test]
 fn the_jit_reads_options() {
     let strata = env!("CARGO_BIN_EXE_strata");
@@ -874,7 +882,6 @@ fn main() {
 /// With the JIT, `strata run` compiles by default: what doesn't compile is
 /// interpreted without a note (`--jit` gives one); compiled and interpreted,
 /// `Int` grows into a big integer.
-#[cfg(feature = "jit")]
 #[test]
 fn run_compiles_by_default_with_the_jit() {
     let d = tmp("jit-default");
@@ -1424,7 +1431,6 @@ fn main() {
 /// `strata test` compiles the tests with the JIT: the same report as
 /// interpreted, for every example and for failing tests (fault, call stack,
 /// what they printed).
-#[cfg(feature = "jit")]
 #[test]
 fn the_jit_runs_tests_as_the_interpreter() {
     let strata = env!("CARGO_BIN_EXE_strata");
@@ -1447,18 +1453,15 @@ fn the_jit_runs_tests_as_the_interpreter() {
 /// `strata verify` fuzzes compiled (by default, as `--jit`): the same
 /// verdicts as the interpreter's fuzzer (its inputs are the runtime's), a
 /// runaway loop stopped by the step budget.
-#[cfg(feature = "jit")]
 #[test]
 fn verify_fuzzes_compiled() {
     let strata = env!("CARGO_BIN_EXE_strata");
     let d = tmp("jit-verify");
     let f = d.join("v.strata");
     save(&f, "fn pieces(s: String) -> Positive { len(split(s, \"a\")) - 1 }\nfn loops(n: Natural) -> Int { mut i := 0 while i != n * 2 + 1 { i += 2 } i }\nfn fine(xs: List[String]) -> Natural { len(join(xs, \",\")) }\n");
-    for how in ["--jit", "--interpret"] {
-        let (out, _) = output(Command::new(strata).args(["verify", how, "--file"]).arg(&f).env("STRATA_SOLVER", "none"));
-        assert!(!out.contains("note:"), "{out}");
-        assert!(out.contains("result of `pieces`: 0 does not satisfy `Positive`") && out.contains("~ fine                     fuzzed: 200 cases, 0 discarded"), "{how}: {out}");
-    }
+    let (out, _) = output(Command::new(strata).args(["verify", "--jit", "--file"]).arg(&f).env("STRATA_SOLVER", "none"));
+    assert!(!out.contains("note:"), "{out}");
+    assert!(out.contains("result of `pieces`: 0 does not satisfy `Positive`") && out.contains("~ fine                     fuzzed: 200 cases, 0 discarded"), "{out}");
     let (out, _) = output(Command::new(strata).args(["verify", "--file"]).arg(&f).env("STRATA_SOLVER", "none"));
     assert!(!out.contains("note:"), "{out}");
     assert!(out.contains("✗ pieces                   Refinement violation (found by the fuzzer)") && out.contains("result of `pieces`: 0 does not satisfy `Positive`"), "{out}");
@@ -1521,9 +1524,6 @@ test "runaway" {
     for how in ["--interpret", "--jit"] {
         let o = Command::new(strata).args(["test", how, "--file"]).arg(&f).output().unwrap();
         let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
-        if how == "--jit" && out.contains("built without the JIT") {
-            continue; // built without the JIT
-        }
         assert!(out.contains("✗ runaway\n    Limit: stack overflow (recursion too deep)\n    stack: down (") && out.contains("0 passed, 1 failed"), "{how}: {out}");
     }
 
@@ -1665,7 +1665,6 @@ pub fn nul_string() -> String {
     assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
     let (out, code) = freed_everything(output(Command::new(&exe).current_dir(&d).env("STRATA_MEMORY", "check")), &d);
     assert_eq!((out.as_str(), code), (want, 0));
-    #[cfg(feature = "jit")]
     {
         let (out, code) = output(Command::new(strata).args(["run", "--jit", "."]).current_dir(&d));
         assert_eq!((out.as_str(), code), (want, 0));

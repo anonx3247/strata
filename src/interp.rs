@@ -436,12 +436,6 @@ impl<'a> Interp<'a> {
         }
     }
 
-    /// Did this run go past its step budget? Then whatever it reported (a
-    /// check that "failed" because evaluating it ran out) proves nothing.
-    pub fn exhausted(&self) -> bool {
-        self.budget.is_some_and(|b| self.steps > b)
-    }
-
     /// A native operation of the standard library (`host_*`).
     fn host_call(&mut self, name: &str, args: Vec<Value>) -> R<Value> {
         use std::io::{BufRead, Write};
@@ -829,14 +823,6 @@ impl<'a> Interp<'a> {
         let label = format!("{head}.{}", crate::types::split_trait_call(name).map_or(name, |(_, m)| m));
         self.self_types.push(head);
         let r = self.call_decl(&decl, &label, args);
-        self.self_types.pop();
-        r
-    }
-
-    /// Run `f` with `Self` known to be `head` (a trait law for one implementation).
-    pub fn with_self<T>(&mut self, head: &str, f: impl FnOnce(&mut Self) -> T) -> T {
-        self.self_types.push(head.to_string());
-        let r = f(self);
         self.self_types.pop();
         r
     }
@@ -1858,7 +1844,7 @@ impl<'a> Interp<'a> {
         }
     }
 
-    fn from_json_raw(&mut self, t: &TypeExpr, j: &Json, path: &str) -> Result<Value, String> {
+    pub fn from_json_raw(&mut self, t: &TypeExpr, j: &Json, path: &str) -> Result<Value, String> {
         let t = self.env.expand_alias(t);
         let bad = |what: &str| Err(format!("{path}: expected {what}, got {j}"));
         match &t {

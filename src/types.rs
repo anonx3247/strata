@@ -327,7 +327,16 @@ pub fn split_trait_call(name: &str) -> Option<(&str, &str)> {
 /// expressions, by node address (in a generic function, with its type
 /// parameters as `Ty::Rigid`). The compiler works from these.
 pub fn elaborate_typed(prog: &Program) -> (crate::resolve::Resolution, HashMap<usize, Ty>) {
-    let mut r = crate::resolve::resolve(prog);
+    elaborate_from(crate::resolve::resolve(prog))
+}
+
+/// `elaborate_typed` of a program already resolved (`Checked::compiled`):
+/// resolving it again would qualify its names twice.
+pub fn elaborate_resolved(prog: &Program) -> (crate::resolve::Resolution, HashMap<usize, Ty>) {
+    elaborate_from(crate::resolve::Resolution { program: prog.clone(), errors: vec![] })
+}
+
+fn elaborate_from(mut r: crate::resolve::Resolution) -> (crate::resolve::Resolution, HashMap<usize, Ty>) {
     let (env, _) = Env::build(&r.program);
     let (_, _, targets, mut types) = check_decls(&r.program, &env, true);
     rewrite(&mut r.program, &env, targets, &mut types);
@@ -345,6 +354,19 @@ pub struct Checked {
     /// resolved, with the checker's method-call decisions written in
     pub program: Program,
     pub env: Env,
+    /// resolved only, what code is compiled from: every declaration in the
+    /// root module (its names are already qualified, so resolving it again
+    /// changes nothing; elaborating it again would)
+    pub compiled: Program,
+}
+
+/// A resolved program as code is compiled from it (`Checked::compiled`).
+pub fn rooted(p: &Program) -> Program {
+    let mut p = p.clone();
+    for d in &mut p.decls {
+        d.module = Symbol::new("");
+    }
+    p
 }
 
 /// Check a program, and elaborate it from the same pass: one resolution and
@@ -362,14 +384,15 @@ pub fn check_resolved(mut r: crate::resolve::Resolution) -> Checked {
     let (errs, holes, targets, mut types) = check_decls(&r.program, &env, false);
     errors.extend(errs);
     let report = CheckReport { errors, holes };
+    let compiled = rooted(&r.program);
     if !needs_rewrite(&env) {
         let (env, _) = Env::build(&r.program);
-        return Checked { report, program: r.program, env };
+        return Checked { report, program: r.program, env, compiled };
     }
     rewrite(&mut r.program, &env, targets, &mut types);
     // a rewrite can add parameters (type arguments): the environment is the rewritten program's
     let (env, _) = Env::build(&r.program);
-    Checked { report, program: r.program, env }
+    Checked { report, program: r.program, env, compiled }
 }
 
 /// Whether elaborating changes the program: method calls to resolve by type,
@@ -862,6 +885,8 @@ impl<'a> Checker<'a> {
     fn trait_method_for(&mut self, name: &str, trait_name: &str, self_ty: Option<Ty>) -> Ty {
         let env = self.env;
         let tr = &env.traits[&trait_name.sym()];
+        // (an elaborated call names its trait: `Monoid::empty`)
+        let name = split_trait_call(name).map_or(name, |(_, m)| m);
         let m = &tr.methods.iter().find(|m| m.decl.name == name).unwrap().decl;
         let mut vars: HashMap<Symbol, Ty> = tr.params.iter().map(|p| (p.clone(), self.fresh())).collect();
         for p in &m.type_params {
@@ -3127,7 +3152,7 @@ pub fn show_ty(t: &Ty) -> String {
 
 // ------------------------------------------------------------------
 
-fn ty_to_texpr(t: &Ty) -> TypeExpr {
+pub fn ty_to_texpr(t: &Ty) -> TypeExpr {
     let n = |s: &str| TypeExpr::Named(s.into(), vec![]);
     match t {
         Ty::Int | Ty::Var(_) | Ty::Rigid(_) => n("Int"),
@@ -3236,7 +3261,15 @@ pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<Symbol, TypeExpr>>
 }
 
 pub fn check(prog: &Program) -> CheckReport {
-    let resolved = crate::resolve::resolve(prog);
+    check_from(crate::resolve::resolve(prog))
+}
+
+/// `check` of a program already resolved (its report only).
+pub fn check_report_resolved(prog: &Program) -> CheckReport {
+    check_from(crate::resolve::Resolution { program: prog.clone(), errors: vec![] })
+}
+
+fn check_from(resolved: crate::resolve::Resolution) -> CheckReport {
     let prog = &resolved.program;
     let (env, mut errors) = Env::build_with(prog, false);
     errors.splice(0..0, resolved.errors);

@@ -24,7 +24,7 @@
 | `src/git.rs` | running git |
 | `src/llvm.rs`, `src/llvm/runtime.c` | `strata build`: the elaborated program as LLVM IR (text), and the C runtime it links with (strings and the string built-ins, printing, number formatting, faults, the system) |
 | `src/llvm/prelude.strata` | the built-ins of lists, dictionaries and sets (each kept as a sorted list) and `lines`, in Strata, compiled with every program (module `strata.compiled`); the compiler calls them for `map`, `filter`, `sort`, `insert`, `union`, ... |
-| `src/llvm/jit.rs`, `build.rs` | `strata run --jit` (feature `jit`): LLVM's libraries (inkwell) parse that IR, optimize it and run it in memory; build.rs compiles the runtime into strata |
+| `src/llvm/jit.rs`, `build.rs` | the JIT (`strata run`, `test`, `verify`, compile-time code): LLVM's libraries (inkwell) parse that IR, optimize it and run it in memory; build.rs compiles the runtime into strata |
 | `src/derive.rs`, `std/typing.strata` | derived traits: each `derive Trait for Type` becomes an ordinary `impl`, its `derived fn`s specialized for the type at compile time (`comptime`, `make` / `try_make`, `f.of(x)`, `match comptime` / `if comptime`, methods called on types known while compiling, copies of functions with `comptime` parameters) |
 | `std/json.strata` | JSON text and the derived `Json` trait, in Strata |
 | `src/stdlib.rs`, `std/` | the standard library (Strata), built into the binary; the native `host_*` operations it alone can call |

@@ -53,7 +53,7 @@ pub fn holes(args: &Args, json_out: bool) -> Result<bool, String> {
 pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     let src = load(&args)?;
     let p = src.program();
-    let types::Checked { report: rep, program: resolved, env } = full_checked(p);
+    let types::Checked { report: rep, program: resolved, env, compiled } = full_checked(p);
     if !rep.ok() {
         print_errors(&rep);
         return Ok(false);
@@ -67,11 +67,9 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     };
     let mut all_ok = true;
     let mut results = Vec::new();
-    // the functions fuzzed compiled, all in one module (unless `--interpret`;
-    // `--jit` says why when they can't be)
-    if !args.flag("--interpret") {
-        jit_fuzzers(p, &resolved, &env, args.flag("--jit"));
-    }
+    // what is fuzzed, compiled, all in one module (`--jit` says why when something can't be)
+    let chosen: Vec<bool> = p.decls.iter().map(|d| names.contains(&d.qname())).collect();
+    jit_fuzzers(&compiled, &env, &chosen, args.flag("--jit"));
     let solver = smt::solver();
     let solver_bin = solver.as_ref();
     let analysis = termination::analyze(&env, solver_bin);
@@ -99,7 +97,7 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     }
     // results depend on the solver: it is part of the cache key
     let skey = solver.as_ref().map(|s| s.version.clone()).unwrap_or("no-solver".into());
-    for (orig, d) in p.decls.iter().zip(&resolved.decls) {
+    for (i, (orig, d)) in p.decls.iter().zip(&resolved.decls).enumerate() {
         if !names.contains(&orig.qname()) {
             continue;
         }
@@ -116,7 +114,7 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
             DeclKind::Fn(f) if f.params.iter().any(|p| p.comptime) => {}
             DeclKind::Fn(f) => {
                 let n = cc(&f.name);
-                jobs.push((f.name.to_string(), format!("{base}:{cases}:{n}:{skey}"), Box::new(move || verify::check_fn(env, f, None, solver_bin, transparent, cases, n, seed))))
+                jobs.push((f.name.to_string(), format!("{base}:{cases}:{n}:{skey}"), Box::new(move || verify::check_fn(env, f, None, &f.name, solver_bin, transparent, cases, n, seed))))
             }
             DeclKind::Impl(imp) if imp.is_inherent() => {
                 // a type's own methods are functions (`Item.new`, `Item.describe`), checked as such
@@ -125,7 +123,7 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
                     let f = types::static_fn(imp, m);
                     let n = cc(&f.name);
                     let key = format!("{base}:{short}:{cases}:{n}:{skey}");
-                    jobs.push((f.name.to_string(), key, Box::new(move || verify::check_fn(env, &f, None, solver_bin, transparent, cases, n, seed))));
+                    jobs.push((f.name.to_string(), key, Box::new(move || verify::check_fn(env, &f, None, &f.name, solver_bin, transparent, cases, n, seed))));
                 }
             }
             DeclKind::Impl(imp) => {
@@ -140,24 +138,26 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
                         let DeclKind::Fn(f) = &c.kind else { continue };
                         if f.name.as_str().contains(&tag) && f.name.as_str().starts_with(&format!("{module}.")) {
                             let n = cc(&f.name);
-                            jobs.push((f.name.to_string(), format!("{base}:{}:{cases}:{n}:{skey}", f.name), Box::new(move || verify::check_fn(env, f, None, solver_bin, transparent, cases, n, seed))));
+                            jobs.push((f.name.to_string(), format!("{base}:{}:{cases}:{n}:{skey}", f.name), Box::new(move || verify::check_fn(env, f, None, &f.name, solver_bin, transparent, cases, n, seed))));
                         }
                     }
                 }
                 for m in &tr.methods {
                     let mname = m.decl.name.clone();
+                    let key = verify::wrapper_name(i, crate::names::short(&mname));
                     let decl = imp.methods.iter().find(|x| x.name == mname).or(if m.default { Some(&m.decl) } else { None });
                     match decl {
                         Some(decl) => {
                             let label = termination::impl_label(env, imp, &mname);
                             let n = cc(&label);
-                            jobs.push((label, format!("{base}:{mname}:{cases}:{n}:{skey}"), Box::new(move || verify::check_fn(env, decl, Some(imp), solver_bin, transparent, cases, n, seed))))
+                            jobs.push((label, format!("{base}:{mname}:{cases}:{n}:{skey}"), Box::new(move || verify::check_fn(env, decl, Some(imp), &key, solver_bin, transparent, cases, n, seed))))
                         }
-                        None => jobs.push((termination::impl_label(env, imp, &mname), format!("{base}:{mname}:{cases}"), Box::new(move || verify::fuzz_impl_method(env, imp, &mname, cases, seed)))),
+                        None => jobs.push((termination::impl_label(env, imp, &mname), format!("{base}:{mname}:{cases}"), Box::new(move || verify::fuzz_impl_method(imp, &mname, &key, cases, seed)))),
                     }
                 }
                 for law in &tr.laws {
-                    jobs.push((format!("law {} for {ty}", law.name), format!("{base}:law:{}:{cases}", law.name), Box::new(move || verify::check_law(env, imp, law, cases, seed))));
+                    let key = verify::wrapper_name(i, &format!("law.{}", law.name));
+                    jobs.push((format!("law {} for {ty}", law.name), format!("{base}:law:{}:{cases}", law.name), Box::new(move || verify::check_law(imp, law, &key, cases, seed))));
                 }
             }
             _ => {}
@@ -282,48 +282,83 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     Ok(all_ok)
 }
 
-/// Compile a fuzz driver for each function `verify` may fuzz (not methods,
-/// nor what takes a function), and have `verify` use them; what doesn't
-/// compile is fuzzed by the interpreter, with a note.
-#[cfg(feature = "jit")]
-fn jit_fuzzers(p: &Program, resolved: &Program, env: &types::Env, say_why: bool) {
+/// Compile a fuzz driver for each function `verify` may fuzz (not what
+/// takes a function), and for each wrapper of a trait method or law
+/// (`verify::wrappers`), all in one module; what can't be compiled is left
+/// out, and says why when it is checked. The program with the wrappers is
+/// kept for replaying the solver's counterexamples.
+fn jit_fuzzers(resolved: &Program, env: &types::Env, chosen: &[bool], say_why: bool) {
+    let mut prog = resolved.clone();
+    // only what is checked: the chosen declarations (`chosen[i]`) and their wrappers
+    let wrappers = verify::wrappers(env, resolved, chosen);
     let mut targets = vec![];
-    for d in &resolved.decls {
-        let DeclKind::Fn(f) = &d.kind else { continue };
+    let push = |f: &FnDecl, targets: &mut Vec<llvm::FuzzTarget>| {
         if f.params.iter().any(|p| p.comptime || matches!(p.ty, TypeExpr::Fn(..))) || crate::stdlib::is_host(&f.name) {
-            continue;
+            return;
         }
         let inst = if f.type_params.is_empty() { Default::default() } else {
             match types::test_instance(env, f) {
                 Some(i) => i,
-                None => continue,
+                None => return,
             }
         };
         let params = f.params.iter().map(|p| (p.name.to_string(), types::subst_texpr(&p.ty, &inst), p.mutable)).collect();
         targets.push(llvm::FuzzTarget { name: f.name.to_string(), params });
-    }
-    let ir = match llvm::compile_fuzz(p, &targets) {
-        Ok(ir) => ir,
-        Err(e) => {
-            if say_why {
-                eprintln!("note: fuzzed by the interpreter, not compiled: {e}");
+    };
+    for (i, d) in resolved.decls.iter().enumerate() {
+        if !chosen.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        match &d.kind {
+            DeclKind::Fn(f) => push(f, &mut targets),
+            // a type's own methods are functions (`Item.new`)
+            DeclKind::Impl(imp) if imp.is_inherent() => {
+                for m in &imp.methods {
+                    push(&types::static_fn(imp, m), &mut targets);
+                }
             }
-            return;
+            _ => {}
+        }
+    }
+    for w in &wrappers {
+        push(w, &mut targets);
+        prog.decls.push(Decl { comments: vec![], doc: vec![], kind: DeclKind::Fn(w.clone()), module: Default::default(), public: false });
+    }
+    let _ = verify::PROGRAM.set(prog.clone());
+    // all at once; when that fails, each alone, to leave out only what doesn't compile
+    let mut failed = HashMap::default();
+    let ir = match llvm::compile_fuzz(&prog, &targets) {
+        Ok(ir) => Some(ir),
+        Err(_) => {
+            let mut ok = vec![];
+            for t in targets.drain(..) {
+                match llvm::compile_fuzz(&prog, std::slice::from_ref(&t)) {
+                    Ok(_) => ok.push(t),
+                    Err(e) => {
+                        if say_why {
+                            eprintln!("note: `{}` can't be fuzzed: {e}", t.name);
+                        }
+                        failed.insert(t.name.clone(), format!("it can't be compiled yet: {e}"));
+                    }
+                }
+            }
+            targets = ok;
+            llvm::compile_fuzz(&prog, &targets).ok()
         }
     };
-    match llvm::jit::fuzzers(&ir, targets.len()) {
-        Ok(addrs) => {
-            let drivers = targets.iter().zip(addrs).map(|(t, a)| (t.name.clone(), a)).collect();
-            let _ = verify::JIT_FUZZ.set(verify::JitFuzz { drivers, case: llvm::jit::fuzz_case, lock: std::sync::Mutex::new(()) });
+    let drivers = match ir.map(|ir| llvm::jit::fuzzers(&ir, targets.len())) {
+        Some(Ok(addrs)) => targets.iter().zip(addrs).map(|(t, a)| (t.name.clone(), a)).collect(),
+        Some(Err(e)) => {
+            if say_why {
+                eprintln!("note: nothing can be fuzzed: {e}");
+            }
+            for t in &targets {
+                failed.insert(t.name.clone(), format!("it can't be compiled yet: {e}"));
+            }
+            HashMap::default()
         }
-        Err(e) if say_why => eprintln!("note: fuzzed by the interpreter, not compiled: {e}"),
-        Err(_) => {}
-    }
+        None => HashMap::default(),
+    };
+    let _ = verify::JIT_FUZZ.set(verify::JitFuzz { drivers, failed, case: llvm::jit::fuzz_case, lock: std::sync::Mutex::new(()) });
 }
 
-#[cfg(not(feature = "jit"))]
-fn jit_fuzzers(_: &Program, _: &Program, _: &types::Env, say_why: bool) {
-    if say_why {
-        eprintln!("note: this strata was built without the JIT: fuzzed by the interpreter");
-    }
-}
