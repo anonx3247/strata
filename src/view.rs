@@ -69,39 +69,45 @@ fn status_note(d: &Decl, st: &Status) -> String {
     if parts.is_empty() { String::new() } else { format!("  // [{}]", parts.join(", ")) }
 }
 
+/// One definition at `level`: `shown` is its written form
+/// ([`crate::resolve::written_form`]), `stored` as stored; `g` is the
+/// program's [`store::graph`] (level 0 lists the dependencies).
+pub fn render_decl(shown: &Decl, stored: &Decl, level: u8, st: &Status, g: &std::collections::BTreeMap<String, BTreeSet<String>>) -> String {
+    let (st_d, d) = (stored, shown);
+    let note = status_note(st_d, st);
+    match level {
+        0 => {
+            let deps = g.get(&st_d.qname()).cloned().unwrap_or_default();
+            let deps = if deps.is_empty() { String::new() } else { format!("  → {}", deps.into_iter().collect::<Vec<_>>().join(", ")) };
+            let name = match &d.kind {
+                DeclKind::Test(t) => format!("{:?}", t.name),
+                _ => st_d.qname(),
+            };
+            format!("{:<6} {name}{deps}{note}", d.kind_str())
+        }
+        _ => {
+            let body = match &d.kind {
+                DeclKind::Fn(f) if level == 1 => format!("{}{note}", printer::fn_signature(f)),
+                DeclKind::Impl(i) if level < 2 => format!("{}{note}", printer::impl_interface(i)),
+                DeclKind::Trait(t) if level < 2 => format!("{}{note}", printer::trait_interface(t)),
+                DeclKind::Test(t) if level < 2 => format!("test {:?} {{ … }}", t.name),
+                _ => format!("{}{note}", printer::decl_body(d)),
+            };
+            let doc = printer::comments(&d.comments, 0) + &printer::doc(d);
+            let pubk = if d.public && !body.starts_with("pub ") { "pub " } else { "" };
+            format!("{doc}{pubk}{body}")
+        }
+    }
+}
+
 /// The definitions of `p` (as stored) that `names` lists, shown as written.
 pub fn render(stored: &Program, names: &BTreeSet<String>, level: u8, st: &Status) -> String {
-    let g = store::graph(stored);
+    // only the map (level 0) shows dependencies: don't resolve the program for the others
+    let g = if level == 0 { store::graph(stored) } else { Default::default() };
     let shown = crate::resolve::written_form(stored);
     let mut out: Vec<(String, String)> = Vec::new();
     for (d, s) in shown.decls.iter().zip(&stored.decls).filter(|(_, s)| names.contains(&s.qname())) {
-        let (st_d, d) = (s, d);
-        let note = status_note(st_d, st);
-        let text = match level {
-            0 => {
-                let deps = g.get(&st_d.qname()).cloned().unwrap_or_default();
-                let effs = "";
-                let deps = if deps.is_empty() { String::new() } else { format!("  → {}", deps.into_iter().collect::<Vec<_>>().join(", ")) };
-                let name = match &d.kind {
-                    DeclKind::Test(t) => format!("{:?}", t.name),
-                    _ => st_d.qname(),
-                };
-                format!("{:<6} {name}{effs}{deps}{note}", d.kind_str())
-            }
-            _ => {
-                let body = match &d.kind {
-                    DeclKind::Fn(f) if level == 1 => format!("{}{note}", printer::fn_signature(f)),
-                    DeclKind::Impl(i) if level < 2 => format!("{}{note}", printer::impl_interface(i)),
-                    DeclKind::Trait(t) if level < 2 => format!("{}{note}", printer::trait_interface(t)),
-                    DeclKind::Test(t) if level < 2 => format!("test {:?} {{ … }}", t.name),
-                    _ => format!("{}{note}", printer::decl_body(d)),
-                };
-                let doc = printer::comments(&d.comments, 0) + &printer::doc(d);
-                let pubk = if d.public && !body.starts_with("pub ") { "pub " } else { "" };
-                format!("{doc}{pubk}{body}")
-            }
-        };
-        out.push((d.module.to_string(), text));
+        out.push((d.module.to_string(), render_decl(d, s, level, st, &g)));
     }
     if level == 0 {
         return out.into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n") + "\n";

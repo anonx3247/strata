@@ -203,6 +203,10 @@ pub fn git_range(path: &Path, base: Option<&str>) -> Result<Range, String> {
     let dir = if path.is_dir() { path.to_path_buf() } else { path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")).to_path_buf() };
     crate::git::run(Some(&dir), &["rev-parse", "--show-toplevel"]).map_err(|_| format!("{} is not in a git repository, so there is nothing to compare it with", path.display()))?;
     let base = base.unwrap_or("HEAD");
+    // the viewer passes what the page sent: never let it read as a git option
+    if base.starts_with('-') {
+        return Err(format!("`{base}` is not a branch or commit in this repository"));
+    }
     let base_sha = crate::git::run(Some(&dir), &["rev-parse", "--short", "--verify", &format!("{base}^{{commit}}")])
         .map_err(|_| format!("`{base}` is not a branch or commit in this repository"))?
         .trim()
