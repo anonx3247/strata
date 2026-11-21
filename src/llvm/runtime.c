@@ -1697,6 +1697,19 @@ int64_t strata_str_ord(Str *s) {
   strata_fault(4, strata_concat(str_c("ord needs a single character, got "), debug_str(s)));
 }
 
+// A string's length in UTF-8 bytes, and its byte `i` (0 to 255): what the
+// prelude's `bytes()` and `code_points()` read, in Strata.
+int64_t strata_str_byte_len(Str *s) { return s->len; }
+
+int64_t strata_str_byte_at(Str *s, int64_t i) {
+  if (i < 0 || i >= s->len) {
+    char buf[96];
+    snprintf(buf, sizeof buf, "byte %lld out of range (%lld bytes)", (long long)i, (long long)s->len);
+    strata_fault(4, str_c(buf));
+  }
+  return (unsigned char)s->bytes[i];
+}
+
 Str *strata_str_chr(int64_t c) {
   if (c < 0 || c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF)) {
     char buf[64];

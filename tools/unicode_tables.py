@@ -2,7 +2,7 @@
 """Writes `std.unicode_tables` (Strata text) from regex-syntax's Unicode tables.
 
     python3 tools/unicode_tables.py ~/.cargo/registry/src/*/regex-syntax-0.8.12/src/unicode_tables \
-      > /tmp/unicode_tables.st
+      DerivedCoreProperties.txt > /tmp/unicode_tables.st
     cd std && ../target/release/strata edit unicode_tables < /tmp/unicode_tables.st
 
 regex-syntax's tables are made by ucd-generate from the Unicode Character
@@ -13,6 +13,10 @@ the UCD files directly.
 A set of code points is written as a string of decimal numbers separated by
 spaces, two per range: the gap since the previous range's end (+1), then the
 range's length - 1 (`std.unicode.decode` reads it back).
+
+The second file, the UCD's DerivedCoreProperties.txt of the same version
+(https://www.unicode.org/Public/<version>/ucd/), gives Indic_Conjunct_Break,
+which regex-syntax doesn't have (grapheme clusters' rule GB9c).
 """
 import os
 import re
@@ -93,6 +97,27 @@ def by_name_fn(out, name, what, src):
              [(n, encode(ts[t])) for n, t in by_name(src)])
 
 
+def incb(path):
+    """Indic_Conjunct_Break's values (`Consonant`, `Extend`, `Linker`) and their ranges."""
+    out = {}
+    for line in read(path).splitlines():
+        fields = [x.strip() for x in line.split("#")[0].split(";")]
+        if len(fields) == 3 and fields[1] == "InCB":
+            a, _, b = fields[0].partition("..")
+            out.setdefault(fields[2], []).append((int(a, 16), int(b or a, 16)))
+    merged = {}
+    for v, rs in out.items():
+        rs.sort()
+        m = []
+        for a, b in rs:
+            if m and a <= m[-1][1] + 1:
+                m[-1] = (m[-1][0], max(m[-1][1], b))
+            else:
+                m.append((a, b))
+        merged[v] = m
+    return merged
+
+
 def main():
     d = sys.argv[1]
     f = lambda n: read(os.path.join(d, n))
@@ -147,6 +172,11 @@ def main():
     by_name_fn(out, "script_extension", "The code points whose script extensions include a script", f("script_extension.rs"))
     by_name_fn(out, "bool_property", "A binary property's code points", f("property_bool.rs"))
     by_name_fn(out, "grapheme_cluster_break", "A Grapheme_Cluster_Break value's code points", f("grapheme_cluster_break.rs"))
+    derived = read(sys.argv[2])
+    ucd = re.search(r"DerivedCoreProperties-([0-9.]+)\.txt", derived).group(1)
+    assert ucd == version, (ucd, version)
+    table_fn(out, "indic_conjunct_break", "An Indic_Conjunct_Break value's code points (`Consonant`, `Extend`, `Linker`; from the UCD's DerivedCoreProperties.txt), by name (encoded: see `std.unicode.decode`).",
+             [(v, encode(rs)) for v, rs in incb(sys.argv[2]).items()])
     by_name_fn(out, "word_break", "A Word_Break value's code points", f("word_break.rs"))
     by_name_fn(out, "sentence_break", "A Sentence_Break value's code points", f("sentence_break.rs"))
     by_name_fn(out, "age", "The code points assigned in exactly one version (`V1_1`, ...)", f("age.rs"))

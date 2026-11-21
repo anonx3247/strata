@@ -213,6 +213,87 @@ impl[K, V] Iterable[(K, V)] for Dict[K, V] {
   }
 }
 
+/// A string's UTF-8 bytes (0 to 255), from byte `at`: `s.bytes()`.
+type Bytes = { text: String, at: Natural }
+
+impl Iterator[Int] for Bytes {
+  fn next(mut self) -> Option[Int] {
+    if self.at < byte_len(self.text) {
+      b := byte_at(self.text, self.at)
+      self.at += 1
+      Some(b)
+    } else {
+      None
+    }
+  }
+}
+
+impl FiniteIterator[Int] for Bytes {
+  fn len(self) -> Natural {
+    if self.at < byte_len(self.text) { byte_len(self.text) - self.at } else { 0 }
+  }
+}
+
+/// A string's code points (Unicode scalar values), from byte `at`:
+/// `s.code_points()`. Each is read once from its UTF-8 bytes.
+type CodePoints = { text: String, at: Natural }
+
+impl Iterator[Int] for CodePoints {
+  fn next(mut self) -> Option[Int] {
+    // from inside a code point's bytes (10xxxxxx), the next one's start
+    while self.at < byte_len(self.text) && byte_at(self.text, self.at) >= 128 && byte_at(self.text, self.at) < 192 {
+      self.at += 1
+    }
+    if self.at >= byte_len(self.text) {
+      return None
+    }
+    lead := byte_at(self.text, self.at)
+    if lead < 128 {
+      self.at += 1
+      return Some(lead)
+    }
+    // 110xxxxx, 1110xxxx or 11110xxx, then 10xxxxxx bytes
+    (n, first) := if lead >= 240 { (4, lead - 240) } else if lead >= 224 { (3, lead - 224) } else { (2, lead - 192) }
+    mut c := first
+    for k in 1..n {
+      c = c * 64 + (byte_at(self.text, self.at + k) - 128)
+    }
+    self.at += n
+    Some(c)
+  }
+}
+
+impl FiniteIterator[Int] for CodePoints {
+  fn len(self) -> Natural {
+    // the bytes that start a code point (not 10xxxxxx)
+    mut n := 0
+    for b in (Bytes { text: self.text, at: self.at }) {
+      if b < 128 || b >= 192 {
+        n += 1
+      }
+    }
+    n
+  }
+}
+
+/// A string's units, each an iterator: its UTF-8 bytes and its code points
+/// (a string is neither itself: the unit is always named). Its graphemes
+/// are `std.unicode`'s.
+trait TextUnits {
+  fn bytes(self) -> Bytes
+  fn code_points(self) -> CodePoints
+}
+
+impl TextUnits for String {
+  fn bytes(self) -> Bytes {
+    Bytes { text: self, at: 0 }
+  }
+
+  fn code_points(self) -> CodePoints {
+    CodePoints { text: self, at: 0 }
+  }
+}
+
 /// `Set { e for x in it }` on a finite iterator (`set(it)` on one).
 fn set_of[T, I: FiniteIterator[T]](it: I) -> Set[T] {
   set(it.to_list())
@@ -251,7 +332,7 @@ impl[I: FiniteIterator[T], T] FiniteIterator[T] for Filtered[I, T] {
 const ITERATOR_BUILTINS: &[&str] = &["map", "filter", "fold"];
 
 /// The built-in types with type arguments, which impls can be written for.
-const BUILTIN_HEADS: &[&str] = &["List", "Set", "Dict"];
+const BUILTIN_HEADS: &[&str] = &["List", "Set", "Dict", "String"];
 
 /// The module the prelude's code is in, once added to a program.
 pub const PRELUDE_MODULE: &str = "std.prelude";
@@ -439,6 +520,9 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin::new("is_alpha", "", "(String) -> Bool"),
     Builtin::new("is_space", "", "(String) -> Bool"),
     Builtin::new("ord", "", "(String) -> Int"),
+    // a string's UTF-8 bytes, what `s.bytes()` / `s.code_points()` read (the prelude's)
+    Builtin::total("byte_len", "", "(String) -> Int"),
+    Builtin::new("byte_at", "", "(String, Int) -> Int"),
     Builtin::new("chr", "", "(Int) -> String"),
     Builtin::total("to_string", "A", "(A) -> String"),
     Builtin::total("debug", "A", "(A) -> String"),
@@ -1449,6 +1533,25 @@ impl<'a> Checker<'a> {
         Err(format!("`{}` does not implement `{tr}`", show_ty(&t)))
     }
 
+    /// The pending obligations whose type is known by now, solved: what they
+    /// say about the trait's arguments is then known too. One that doesn't hold
+    /// stays, to be reported at the end (`solve_pending`).
+    fn settle_pending(&mut self) {
+        let pending = std::mem::take(&mut self.pending);
+        for ob in pending {
+            let t = self.resolve(&ob.0);
+            if matches!(t, Ty::Var(_) | Ty::Union(_)) {
+                self.pending.push(ob);
+                continue;
+            }
+            let snap = self.subst.clone();
+            if self.satisfies(&t, &ob.1, &ob.2, 0).is_err() {
+                self.subst = snap;
+                self.pending.push(ob);
+            }
+        }
+    }
+
     fn solve_pending(&mut self) {
         let pending = std::mem::take(&mut self.pending);
         for (t, tr, args, ctx) in pending {
@@ -1710,7 +1813,12 @@ impl<'a> Checker<'a> {
         self.errors.truncate(n);
         // the traits the receiver has: its type's impls, a trait-typed value's
         // trait, or a type parameter's bounds (with their supertraits)
-        let traits: Vec<Symbol> = match self.resolve(&rt) {
+        // (a `String` is `Ty::Str`: its impls are under its name)
+        let rt = match self.resolve(&rt) {
+            Ty::Str => Ty::Con(Symbol::from("String"), vec![]),
+            other => other,
+        };
+        let traits: Vec<Symbol> = match rt {
             Ty::Con(head, args) if self.env.traits.contains_key(&head) => {
                 std::iter::once(head).chain(self.supers_of(&head, &args, 0).into_iter().map(|(s, _)| s)).collect()
             }
@@ -2322,6 +2430,11 @@ impl<'a> Checker<'a> {
             return r;
         }
         for (i, (p, a)) in ps.iter().zip(args).enumerate() {
+            // a lambda's parameters may get their types from an obligation on an
+            // argument before it (`it.map(x -> x.m())`: `it: Iterator[T]` says what `x` is)
+            if i > 0 && matches!(a, Expr::Lambda(..)) {
+                self.settle_pending();
+            }
             let at = self.infer_arg(a, Some(p));
             if let Some(Some(pw)) = muts.get(i) {
                 // the callee may put any value of its parameter type into the caller's variable

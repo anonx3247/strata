@@ -634,6 +634,8 @@ declare ptr @strata_str_repeat(ptr, i64)
 declare ptr @strata_str_case(ptr, ptr, i64, ptr, i64, i1)
 declare i1 @strata_str_is(ptr, i64, ptr, i64)
 declare i64 @strata_str_ord(ptr)
+declare i64 @strata_str_byte_len(ptr)
+declare i64 @strata_str_byte_at(ptr, i64)
 declare ptr @strata_str_chr(i64)
 declare i1 @strata_parse_int(ptr, ptr)
 declare i1 @strata_parse_float(ptr, ptr)
@@ -835,12 +837,20 @@ thread_local! {
     static BUILDING_STD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// `f` run as part of making std's library: code compiled meanwhile (std's
+/// own `comptime` expressions, evaluated when std is resolved) doesn't wait
+/// for the library being made, which would wait for itself.
+pub fn building_std<T>(f: impl FnOnce() -> T) -> T {
+    let was = BUILDING_STD.with(|b| b.replace(true));
+    let r = f();
+    BUILDING_STD.with(|b| b.set(was));
+    r
+}
+
 /// Make std's library: `names` compiled, everything else they use kept
 /// internal to it (helpers, lambdas, generic instances: each program has its own).
 pub fn compile_library(prog: &Program, names: &[String]) -> Res<String> {
-    BUILDING_STD.with(|b| b.set(true));
-    let r = compile_with(prog, Entry::Library(names), false);
-    BUILDING_STD.with(|b| b.set(false));
+    let r = building_std(|| compile_with(prog, Entry::Library(names), false));
     let ir = r?.0;
     let exported: Vec<String> = names.iter().map(|n| format!("{}(", sym_impls(n, &[], &[]))).collect();
     Ok(ir
@@ -6369,6 +6379,8 @@ impl Func<'_, '_> {
                 self.call(&Ty::Bool, "@strata_str_is", &[args[0].clone(), (Ty::Int, class.into()), (Ty::Str, ranges), (Ty::Int, n.to_string())])?
             }
             ("ord", [_]) => self.call(&Ty::Int, "@strata_str_ord", &args)?,
+            ("byte_len", [_]) => self.call(&Ty::Int, "@strata_str_byte_len", &args)?,
+            ("byte_at", [_, Ty::Int]) => self.call(&Ty::Int, "@strata_str_byte_at", &args)?,
             ("chr", [Ty::Int]) => self.call(&s, "@strata_str_chr", &args)?,
             ("parse_int" | "parse_float", [_]) => {
                 let t = if name == "parse_int" { Ty::Int } else { Ty::Float };
