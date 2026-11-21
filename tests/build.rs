@@ -314,7 +314,7 @@ fn strings_dicts_and_sets_run_as_interpreted() {
         ("set_assigned", "fn main() { mut s: Set[Natural] = Set { 1 } s = insert(s, -1) }"),
         ("split", "fn main() { print(split(\"abc\", \"\")) }"),
         ("replace", "fn main() { print(replace(\"abc\", \"\", \"x\")) }"),
-        ("repeat", "fn main() { print(repeat(\"ab\", 3)) print(repeat(\"ab\", 60000000)) }"),
+        ("repeat", "fn main() { print(repeat(\"ab\", 3)) print(repeat(\"ab\", -1)) }"),
         ("ord", "fn main() { print(ord(\"a\")) print(ord(\"a\\\"\\n\")) }"),
         ("chr", "fn main() { print(chr(55296)) }"),
         ("string_index", "fn main() { print(\"abc\"[2]) print(\"abc\"[5]) }"),
