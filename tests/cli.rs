@@ -3953,3 +3953,25 @@ fn impl_type_parameters_at_runtime() {
         assert_eq!(out, want);
     }
 }
+
+// The standard library's folder is edited as a package, checked: a module
+// named `io` there is `std.io`, nothing is logged, and an edit that breaks
+// it is refused, as `strata edit` in it or `--file std` (both stored it).
+#[test]
+fn std_is_edited_as_a_checked_package() {
+    let d = tmp("std-edit");
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("std");
+    let std = d.join("std");
+    std::fs::create_dir_all(&std).unwrap();
+    for e in std::fs::read_dir(&src).unwrap() {
+        let e = e.unwrap();
+        std::fs::copy(e.path(), std.join(e.file_name())).unwrap();
+    }
+    let (ok, out) = strata(&["edit", "io"], &std, Some("pub fn shout(s: String) -> String {\n  s + \"!\"\n}\n"));
+    assert!(ok && out.contains("std.io.shout"), "{out}");
+    assert!(!std.join("strata.log").exists() && !std.join("io").exists());
+    let (ok, out) = strata(&["--file", "std", "edit", "std.io"], &d, Some("pub fn smallest(xs: List[Int], min: Int) -> Int {\n  fold(xs, min, (a, b) -> min(a, b))\n}\n"));
+    assert!(!ok && out.contains("`Int` is not a function") && out.contains("nothing was changed"), "{out}");
+    let (ok, out) = strata(&["--file", "std", "check"], &d, None);
+    assert!(ok, "{out}");
+}

@@ -18,6 +18,8 @@ fn edits_in(args: &Args, cmd: &str, p: &Program, default_module: &str) -> Result
         None => default_module.to_string(),
         Some(arg) => edit_module(p, arg).unwrap_or_else(|| arg.clone()),
     };
+    // inside the standard library, its modules are `std.io`, `std.web`, ... (`io` names `std.io`)
+    let module = if is_std(p) { std_module(&module) } else { module };
     let text = if cmd == "add" {
         let f = args.pos.get(1).ok_or("usage: strata add <FILE> [MODULE]  (a text file, or a .strata file or folder)")?;
         let path = std::path::Path::new(f);
@@ -34,12 +36,38 @@ fn edits_in(args: &Args, cmd: &str, p: &Program, default_module: &str) -> Result
     parser::parse_module_file(&text, &module).map_err(|e| format!("parse error at {e}"))
 }
 
+/// Whether a package's program is the standard library's (its modules are `std.*`).
+fn is_std(p: &Program) -> bool {
+    !p.decls.is_empty() && p.decls.iter().all(|d| d.module == crate::stdlib::NAME || d.module.as_str().starts_with("std."))
+}
+
+/// A module of the standard library as named inside it: `io` is `std.io`, the root `std`.
+fn std_module(m: &str) -> String {
+    if m.is_empty() || m == "main" {
+        crate::stdlib::NAME.to_string()
+    } else if m == crate::stdlib::NAME || m.starts_with("std.") {
+        m.to_string()
+    } else {
+        format!("{}.{m}", crate::stdlib::NAME)
+    }
+}
+
 /// `strata add | edit`.
 pub fn edit(args: &Args, cmd: &str, json_out: bool) -> Result<bool, String> {
-    if let Some(f) = args.val("--file") {
-        return edit_file(args, cmd, f);
-    }
-    let Source::Db(mut cb) = load(&args)? else { return Err("`add`/`edit` need a codebase".into()) };
+    let mut cb = match args.val("--file") {
+        // the standard library's folder is edited as a package is, checked: it is
+        // built into strata, so it must always check (another folder, or a
+        // file, is stored as it is and checked afterwards)
+        Some(f) if std::path::Path::new(f).is_dir() && crate::package::find(std::path::Path::new(f)).ok().flatten().is_some_and(|p| p.name == crate::stdlib::NAME) => {
+            let pkg = crate::package::find(std::path::Path::new(f))?.unwrap();
+            store::Codebase::open(&pkg.dir)?
+        }
+        Some(f) => return edit_file(args, cmd, f),
+        None => {
+            let Source::Db(cb) = load(&args)? else { return Err("`add`/`edit` need a codebase".into()) };
+            cb
+        }
+    };
     // `strata edit` at a terminal, with nothing piped in: edit the code in an editor
     if cmd == "edit" && (args.flag("--editor") || std::io::IsTerminal::is_terminal(&std::io::stdin())) {
         return edit_in_editor(&mut cb, &args, json_out);
