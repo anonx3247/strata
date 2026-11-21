@@ -88,16 +88,16 @@ fn faults_and_control_flow_match_the_interpreter() {
         ("early_return", "fn sign(n: Int) -> Int { if n < 0 { return -1 } else { 0 } }\nfn main() -> () { print(sign(-5)) print(sign(5)) }", 0),
         ("requires", "fn half(n: Int) -> Int requires n % 2 == 0 { n / 2 }\nfn main() -> () { print(half(4)) print(half(3)) }", 101),
         ("ensures", "fn f(x: Int) -> Int ensures it > x { x }\nfn main() -> () { print(f(2)) }", 101),
-        ("assert", "fn main() -> () { let s = \"a\\\"b\" assert s + \"!\" == \"x\" }", 101),
-        ("assignment", "fn main() -> () { let mut x: Int where it < 5 = 0 while true { x = x + 1 } }", 101),
-        ("division", "fn main() -> () { print(-7 / 2) print(-7 % 2) print(7 / -2) print(1 / 0) }", 101),
-        ("floats", "fn main() -> () { print(0.1 + 0.2) print(1000000000000000000000.0) print(0.00000015) print(100.0) print(-5.5 % 2.0) print(1.0 / 0.0) }", 101),
+        ("assert", "fn main() { s := \"a\\\"b\" assert s + \"!\" == \"x\" }", 101),
+        ("assignment", "fn main() { mut x: Int where it < 5 = 0 while true { x = x + 1 } }", 101),
+        ("division", "fn main() { print(-7 / 2) print(-7 % 2) print(7 / -2) print(1 / 0) }", 101),
+        ("floats", "fn main() { print(0.1 + 0.2) print(1000000000000000000000.0) print(0.00000015) print(100.0) print(-5.5 % 2.0) print(1.0 / 0.0) }", 101),
         ("exit_code", "fn main() -> Int { 3 }", 3),
         (
             "loops",
-            "fn g(n: Int) -> Int { let mut i = 0 while i < 10 { i = i + 1 if i == n { break } if i % 2 == 0 { continue } } i }\n\
+            "fn g(n: Int) -> Int { mut i := 0 while i < 10 { i = i + 1 if i == n { break } if i % 2 == 0 { continue } } i }\n\
              fn pick(b: Bool) -> String { match b { true => \"yes\", false => return \"no\" } }\n\
-             fn main() -> () { print(g(4)) print(g(40)) print(pick(true) + pick(false)) print(f\"{1.5} {true} {\"q\"} {len(\"héllo\")}\") }",
+             fn main() { print(g(4)) print(g(40)) print(pick(true) + pick(false)) print(f\"{1.5} {true} {\"q\"} {len(\"héllo\")}\") }",
             0,
         ),
     ];
@@ -119,13 +119,13 @@ fn records_variants_and_generics_run_as_interpreted() {
     assert!(out.contains("{\"Err\":\"3 is odd\"}") && out.contains("big circle, circle, rect or dot, nothing"), "{out}");
     assert_eq!(code, 101);
     let cases = [
-        ("field_refinement", "type Quantity = Int where 1 <= it && it <= 99\ntype Line = { sku: String, qty: Quantity }\nfn main() -> () { let mut l = Line { sku: \"a\", qty: 5 } l.qty = 0 }", 101),
+        ("field_refinement", "type Quantity = Int where 1 <= it && it <= 99\ntype Line = { sku: String, qty: Quantity }\nfn main() -> () { mut l := Line { sku: \"a\", qty: 5 } l.qty = 0 }", 101),
         (
             "tree",
             "type Tree[T] =\n  | Leaf\n  | Node(Tree[T], T, Tree[T])\n\
              fn insert(t: Tree[Int], x: Int) -> Tree[Int] { match t { Leaf => Node(Leaf, x, Leaf), Node(l, v, r) => if x < v { Node(insert(l, x), v, r) } else { Node(l, v, insert(r, x)) } } }\n\
              fn size[T](t: Tree[T]) -> Int { match t { Leaf => 0, Node(l, _, r) => size(l) + 1 + size(r) } }\n\
-             fn main() -> () { let mut t: Tree[Int] = Leaf for i in range(0, 10) { t = insert(t, (i * 7) % 10) } print(size(t)) print(insert(insert(Leaf, 2), 1)) }",
+             fn main() { mut t: Tree[Int] = Leaf for i in range(0, 10) { t = insert(t, (i * 7) % 10) } print(size(t)) print(insert(insert(Leaf, 2), 1)) }",
             0,
         ),
         ("own_methods", "type Item = { name: String, price: Int }\nimpl Item {\n  fn new(name: String) -> Item { Item { name: name, price: 0 } }\n  fn label(self) -> String { f\"{self.name}: {self.price}\" }\n}\nfn main() -> () { print(Item.new(\"cup\").label()) }", 0),
@@ -135,8 +135,8 @@ fn records_variants_and_generics_run_as_interpreted() {
             "errors",
             "type E =\n  | NotFound\n  | Bad { why: String }\n\
              fn g(n: Int) -> Result[Int, E] { if n == 0 { Err(NotFound) } else if n < 0 { Err(Bad { why: \"neg\" }) } else { Ok(n) } }\n\
-             fn h(n: Int) -> Result[Int, E] { let v = g(n)! Ok(v * 2) }\n\
-             fn main() -> () { print(h(3)) print(h(0)) print(h(-1)) print(h(0) == Err(NotFound)) let (x, y) = (5, \"s\") print(f\"{x}{y}\") }",
+             fn h(n: Int) -> Result[Int, E] { v := g(n)! Ok(v * 2) }\n\
+             fn main() { print(h(3)) print(h(0)) print(h(-1)) print(h(0) == Err(NotFound)); (x, y) := (5, \"s\") print(f\"{x}{y}\") }",
             0,
         ),
     ];
@@ -161,11 +161,11 @@ fn lists_and_lambdas_run_as_interpreted() {
     let math = Command::new(env!("CARGO_BIN_EXE_strata")).args(["render", "--file"]).arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/math.strata")).output().unwrap();
     let math = String::from_utf8(math.stdout).unwrap();
     let math = math[..math.find("test \"values\"").unwrap()].to_string()
-        + "fn main() -> () {\n  print([factorial(5), gcd(12, 18), power(2, 10), digit_sum(1234), ackermann(2, 3), triangle(10), isqrt(17), collatz_steps(6)])\n  print(positive_squares([-2, 3, 0, 4]))\n  print(primes(20))\n  print(first_or_one([5, 1]))\n  print(average([]))\n}\n";
+        + "fn main() {\n  print([factorial(5), gcd(12, 18), power(2, 10), digit_sum(1234), ackermann(2, 3), triangle(10), isqrt(17), collatz_steps(6)])\n  print(positive_squares([-2, 3, 0, 4]))\n  print(primes(20))\n  print(first_or_one([5, 1]))\n  print(average([]))\n}\n";
     let (out, code) = case(&d, "math", &math);
     assert!(out.contains("[120,6,1024,10,9,55,4,8]") && out.contains("division by zero"), "{out}");
     assert_eq!(code, 101);
-    let (out, code) = case(&d, "range", "fn main() -> () { for i in range(0, 2000000) { print(i) } }");
+    let (out, code) = case(&d, "range", "fn main() { for i in range(0, 2000000) { print(i) } }");
     assert!(out.contains("range too large") && code == 101, "{out}");
 }
 
@@ -202,9 +202,9 @@ fn capabilities_and_mut_run_as_interpreted() {
     let d = tmp("capabilities");
     let cases = [
         ("console", "use std.io.Console\nfn greet(mut console: Console, name: String) -> () { mut console.print(f\"hello, {name}\") }\nfn main(mut console: Console) -> () { greet(mut console, \"world\") mut console.eprint(\"to stderr\") mut console.write(\"no newline\") mut console.print(\"\") }"),
-        ("mut_params", "fn restock(mut n: Int, extra: Int) -> () { n = n + extra }\ntype Line = { sku: String, qty: Int }\nfn bump(mut l: Line) -> () { l.qty = l.qty + 1 }\nfn main() -> () { let mut k = 1 restock(mut k, 5) print(k) let mut line = Line { sku: \"a\", qty: 1 } bump(mut line) bump(mut line) print(line) restock(mut line.qty, 10) print(line) }"),
-        ("files_and_environment", "use std.io.Console\nuse std.fs.{Files, FsError}\nuse std.process.Environment\nfn main(mut console: Console, mut files: Files, env: Environment) -> Result[(), String] {\n  let _ = mut files.remove(\"fsplay/b.txt\")\n  let _ = mut files.remove(\"fsplay/a.txt\")\n  let _ = mut files.remove(\"fsplay/sub/deep\")\n  let _ = mut files.remove(\"fsplay/sub\")\n  let _ = mut files.remove(\"fsplay\")\n  print(files.exists(\"fsplay\"))\n  print(mut files.make_dir(\"fsplay/sub/deep\"))\n  print(mut files.write(\"fsplay/a.txt\", \"one\\n\"))\n  print(mut files.append(\"fsplay/a.txt\", \"two\\n\"))\n  print(files.read(\"fsplay/a.txt\"))\n  print(files.read(\"fsplay/missing.txt\"))\n  print(files.read(\"fsplay/sub\"))\n  print(mut files.write(\"fsplay/b.txt\", \"x\"))\n  print(files.list(\"fsplay\"))\n  print(files.list(\"fsplay/a.txt\"))\n  print(mut files.remove(\"fsplay/nope\"))\n  print(env.args())\n  print(env.var(\"HOME\") is Some)\n  print(env.var(\"STRATA_SURELY_UNSET_VAR\"))\n  mut console.print(\"done\")\n  Ok(())\n}"),
-        ("one_function_two_consoles", "use std.io.{Console, recorder}\nfn report(mut console: Console, n: Int) -> () {\n  for i in range(0, n) { mut console.print(f\"line {i}\") }\n}\nfn main(mut console: Console) -> () {\n  let mut r = recorder([])\n  report(mut r, 3)\n  report(mut console, 2)\n  print(r.out)\n  print(r)\n}"),
+        ("mut_params", "fn restock(mut n: Int, extra: Int) { n = n + extra }\ntype Line = { sku: String, qty: Int }\nfn bump(mut l: Line) -> () { l.qty = l.qty + 1 }\nfn main() -> () { mut k := 1 restock(mut k, 5) print(k) mut line := Line { sku: \"a\", qty: 1 } bump(mut line) bump(mut line) print(line) restock(mut line.qty, 10) print(line) }"),
+        ("files_and_environment", "use std.io.Console\nuse std.fs.{Files, FsError}\nuse std.process.Environment\nfn main(mut console: Console, mut files: Files, env: Environment) -> Result[(), String] {\n  _ := mut files.remove(\"fsplay/b.txt\")\n  _ := mut files.remove(\"fsplay/a.txt\")\n  _ := mut files.remove(\"fsplay/sub/deep\")\n  _ := mut files.remove(\"fsplay/sub\")\n  _ := mut files.remove(\"fsplay\")\n  print(files.exists(\"fsplay\"))\n  print(mut files.make_dir(\"fsplay/sub/deep\"))\n  print(mut files.write(\"fsplay/a.txt\", \"one\\n\"))\n  print(mut files.append(\"fsplay/a.txt\", \"two\\n\"))\n  print(files.read(\"fsplay/a.txt\"))\n  print(files.read(\"fsplay/missing.txt\"))\n  print(files.read(\"fsplay/sub\"))\n  print(mut files.write(\"fsplay/b.txt\", \"x\"))\n  print(files.list(\"fsplay\"))\n  print(files.list(\"fsplay/a.txt\"))\n  print(mut files.remove(\"fsplay/nope\"))\n  print(env.args())\n  print(env.var(\"HOME\") is Some)\n  print(env.var(\"STRATA_SURELY_UNSET_VAR\"))\n  mut console.print(\"done\")\n  Ok(())\n}"),
+        ("one_function_two_consoles", "use std.io.{Console, recorder}\nfn report(mut console: Console, n: Int) -> () {\n  for i in range(0, n) { mut console.print(f\"line {i}\") }\n}\nfn main(mut console: Console) -> () {\n  mut r := recorder([])\n  report(mut r, 3)\n  report(mut console, 2)\n  print(r.out)\n  print(r)\n}"),
     ];
     for (name, src) in cases {
         let (out, code) = case(&d, name, src);
@@ -221,7 +221,7 @@ fn tests_as_main(file: &str, skip: &str) -> String {
     let src = Command::new(env!("CARGO_BIN_EXE_strata")).args(["render", "--file"]).arg(Path::new(env!("CARGO_MANIFEST_DIR")).join(file)).output().unwrap();
     let src = String::from_utf8(src.stdout).unwrap();
     let mut decls = String::new();
-    let mut main = String::from("fn main() -> () {\n");
+    let mut main = String::from("fn main() {\n");
     let mut in_test = false;
     for line in src.lines() {
         if line.starts_with("test ") {
@@ -267,15 +267,15 @@ fn strings_dicts_and_sets_run_as_interpreted() {
     let faults = [
         ("dict_value", "fn f() -> Dict[String, Positive] { Dict { \"a\": 1, \"b\": 0 } }\nfn main() -> () { print(f()) }"),
         ("set_element", "fn g(s: Set[Positive]) -> Int { len(s) }\nfn main() -> () { print(g(Set { 1 })) print(g(Set { 3, -2 })) }"),
-        ("dict_key", "fn main() -> () { let d: Dict[NonEmptyString, Int] = Dict { \"x\": 1, \"\": 2 } print(d) }"),
-        ("set_assigned", "fn main() -> () { let mut s: Set[Natural] = Set { 1 } s = insert(s, -1) }"),
-        ("split", "fn main() -> () { print(split(\"abc\", \"\")) }"),
-        ("replace", "fn main() -> () { print(replace(\"abc\", \"\", \"x\")) }"),
-        ("repeat", "fn main() -> () { print(repeat(\"ab\", 3)) print(repeat(\"ab\", 60000000)) }"),
-        ("ord", "fn main() -> () { print(ord(\"a\")) print(ord(\"a\\\"\\n\")) }"),
-        ("chr", "fn main() -> () { print(chr(55296)) }"),
-        ("string_index", "fn main() -> () { print(\"abc\"[2]) print(\"abc\"[5]) }"),
-        ("list_index", "fn main() -> () { print([1, 2][-1]) }"),
+        ("dict_key", "fn main() { let d: Dict[NonEmptyString, Int] = Dict { \"x\": 1, \"\": 2 } print(d) }"),
+        ("set_assigned", "fn main() { mut s: Set[Natural] = Set { 1 } s = insert(s, -1) }"),
+        ("split", "fn main() { print(split(\"abc\", \"\")) }"),
+        ("replace", "fn main() { print(replace(\"abc\", \"\", \"x\")) }"),
+        ("repeat", "fn main() { print(repeat(\"ab\", 3)) print(repeat(\"ab\", 60000000)) }"),
+        ("ord", "fn main() { print(ord(\"a\")) print(ord(\"a\\\"\\n\")) }"),
+        ("chr", "fn main() { print(chr(55296)) }"),
+        ("string_index", "fn main() { print(\"abc\"[2]) print(\"abc\"[5]) }"),
+        ("list_index", "fn main() { print([1, 2][-1]) }"),
     ];
     for (name, src) in faults {
         let (out, code) = case(&d, name, src);
@@ -283,24 +283,24 @@ fn strings_dicts_and_sets_run_as_interpreted() {
     }
 }
 
-const WC_MAIN: &str = r#"fn main() -> () {
-  let files = mem_files([("a.txt", "one two\nthree\n"), ("b.txt", "four  five" + chr(13) + "\n")])
+const WC_MAIN: &str = r#"fn main() {
+  files := mem_files([("a.txt", "one two\nthree\n"), ("b.txt", "four  five" + chr(13) + "\n")])
   for (only, names) in [(None, ["a.txt", "b.txt"]), (Some(Words), ["a.txt"]), (Some(Chars), ["b.txt", "a.txt"]), (None, ["nope.txt"])] {
-    let mut console = recorder([])
-    let r = wc(Options { only: only, files: names }, mut console, files)
+    mut console := recorder([])
+    r := wc(Options { only: only, files: names }, mut console, files)
     print(r)
     print(printed(console))
   }
-  let mut console = recorder(["hello world", "bye"])
+  mut console := recorder(["hello world", "bye"])
   print(wc(Options { only: None, files: [] }, mut console, mem_files([])))
   print(printed(console))
   print(count("a b  c\n\nd"))
 }
 "#;
 
-const STRINGS: &str = r#"fn main() -> () {
-  let cr = chr(13)
-  let text = "one two" + cr + "\nthree\n\nfour" + cr
+const STRINGS: &str = r#"fn main() {
+  cr := chr(13)
+  text := "one two" + cr + "\nthree\n\nfour" + cr
   print(lines(text))
   print([lines(""), lines("\n"), lines("a\n"), lines("a\n\nb")])
   print(split("a,,b,", ","))
@@ -321,13 +321,13 @@ const STRINGS: &str = r#"fn main() -> () {
   print([chr(65), chr(8364), chr(128512)])
   print([parse_int("42"), parse_int(" -7 "), parse_int("+3"), parse_int("1_000_"), parse_int("x"), parse_int("9223372036854775807"), parse_int("-9223372036854775808")])
   print([parse_float("2.5"), parse_float("-1e-3"), parse_float("5."), parse_float(".5"), parse_float("1e"), parse_float("inf"), parse_float("12")])
-  let x = 3.14159
-  let n = -42
-  let s = "héllo"
+  x := 3.14159
+  n := -42
+  s := "héllo"
   print(f"[{x:.2}] [{x:8.3}] [{n:>6}] [{n:<6}] [{n:^7}] [{n:06}] [{n:+}] [{7:+05}] [{s:.2}] [{s:>8}] [{s:*^9}] [{s:3}] [{0.125:.2}] [{true:>6}] [{-0.0:.1}]")
-  let w = "abc"
+  w := "abc"
   print([w[0], w[2], w[1..], w[..2], w[..]])
-  let xs = [10, 20, 30, 40]
+  xs := [10, 20, 30, 40]
   print([xs[1], xs[3]])
   print([xs[1..3], xs[2..], xs[..1], xs[3..1], xs[-2..10]])
   print([to_json("a\"b"), to_json([1, 2]), to_json(Some("x"))])
@@ -344,15 +344,15 @@ distinct type UserId = Int
 type Point = { x: Int, y: Int }
 
 fn tally(words: List[String]) -> Dict[String, Int] {
-  let mut d: Dict[String, Int] = Dict {}
+  mut d: Dict[String, Int] = Dict {}
   for w in words {
     d = insert(d, w, (get(d, w) ?? 0) + 1)
   }
   d
 }
 
-fn main() -> () {
-  let d = Dict { "b": 2, "a": 1, "c": 3 }
+fn main() {
+  d := Dict { "b": 2, "a": 1, "c": 3 }
   print(d)
   print([len(d), len(Dict[Int, Int] {})])
   print(Dict[Int, String] {})
@@ -372,7 +372,7 @@ fn main() -> () {
     print(f"{k}={v}")
   }
   print(tally(split("the cat the hat the end cat", " ")))
-  let s = Set { 3, 1, 3, 2 }
+  s := Set { 3, 1, 3, 2 }
   print(s)
   print([len(s), len(Set[String] {})])
   print([contains(s, 2), contains(s, 7)])
@@ -397,7 +397,7 @@ fn main() -> () {
   print(Dict { (1, 2): "p", (0, 9): "q" })
   print(Set { Set { 2, 1 }, Set { 0 } })
   print(Dict { "x": Set { 1 }, "y": Set { } })
-  let nested = Dict { "k": Dict { 2: "two", 1: "one" } }
+  nested := Dict { "k": Dict { 2: "two", 1: "one" } }
   print(nested)
   print(f"{d} {s}")
   print(to_string(s) + to_json(d))
@@ -414,10 +414,10 @@ fn trait_values_run_as_interpreted() {
     let d = tmp("dyn");
     let cases = [
         ("trait_values_in_lists", "trait Shape {\n  fn area(self) -> Int\n  fn name(self) -> String {\n    \"shape\"\n  }\n}\n\ntype Square = { side: Int }\n\ntype Rect = { w: Int, h: Int }\n\nimpl Shape for Square {\n  fn area(self) -> Int {\n    self.side * self.side\n  }\n\n  fn name(self) -> String {\n    \"square\"\n  }\n}\n\nimpl Shape for Rect {\n  fn area(self) -> Int {\n    self.w * self.h\n  }\n}\n\nfn total(shapes: List[Shape]) -> Int {\n  sum(shapes.map(s -> s.area()))\n}\n\nfn main() -> () {\n  let shapes: List[Shape] = [Square { side: 2 }, Rect { w: 2, h: 5 }]\n  print(total(shapes))\n  print(shapes.map(s -> s.name()))\n  print(shapes)\n  let one: Shape = Square { side: 3 }\n  print(one.area())\n  print(one)\n}", 0),
-        ("trait_values_in_fields", "use std.io.{Console, recorder}\n\ntype Worker = { console: Console, count: Int }\n\nfn work(mut w: Worker) -> () {\n  mut w.console.print(f\"job {w.count}\")\n  w.count = w.count + 1\n}\n\nfn main(console: Console) -> () {\n  let mut real = Worker { console, count: 1 }\n  work(mut real)\n  work(mut real)\n  let mut fake = Worker { console: recorder([]), count: 7 }\n  work(mut fake)\n  print(fake.count)\n}", 0),
-        ("trait_values_are_values", "use std.io.{Console, recorder}\n\ntype Worker = { console: Console, count: Int }\n\nfn work(mut w: Worker) -> () {\n  mut w.console.print(f\"job {w.count}\")\n}\n\nfn main() -> () {\n  let mut a = Worker { console: recorder([]), count: 1 }\n  let mut b = a\n  work(mut a)\n  work(mut a)\n  work(mut b)\n  print(a.console)\n  print(b.console)\n  print(a)\n}", 0),
-        ("mut_proven_fits", "fn grow(mut n: Positive) -> () {\n  n = n + 1\n}\n\nfn main() -> () {\n  let mut p: Natural = 5\n  grow(mut p)\n  print(p)\n}", 0),
-        ("mut_field_breaks_invariant", "fn grow(mut n: Int) -> () {\n  n = n + 1\n}\n\ntype R = { lo: Int, hi: Int }\n  where it.lo <= it.hi\n\nfn main() -> () {\n  let mut r = R { lo: 1, hi: 2 }\n  grow(mut r.lo)\n  grow(mut r.lo)\n  print(r)\n}", 101),
+        ("trait_values_in_fields", "use std.io.{Console, recorder}\n\ntype Worker = { console: Console, count: Int }\n\nfn work(mut w: Worker) -> () {\n  mut w.console.print(f\"job {w.count}\")\n  w.count = w.count + 1\n}\n\nfn main(console: Console) -> () {\n  mut real := Worker { console, count: 1 }\n  work(mut real)\n  work(mut real)\n  mut fake := Worker { console: recorder([]), count: 7 }\n  work(mut fake)\n  print(fake.count)\n}", 0),
+        ("trait_values_are_values", "use std.io.{Console, recorder}\n\ntype Worker = { console: Console, count: Int }\n\nfn work(mut w: Worker) -> () {\n  mut w.console.print(f\"job {w.count}\")\n}\n\nfn main() -> () {\n  mut a := Worker { console: recorder([]), count: 1 }\n  mut b := a\n  work(mut a)\n  work(mut a)\n  work(mut b)\n  print(a.console)\n  print(b.console)\n  print(a)\n}", 0),
+        ("mut_proven_fits", "fn grow(mut n: Positive) {\n  n = n + 1\n}\n\nfn main() -> () {\n  mut p: Natural = 5\n  grow(mut p)\n  print(p)\n}", 0),
+        ("mut_field_breaks_invariant", "fn grow(mut n: Int) {\n  n = n + 1\n}\n\ntype R = { lo: Int, hi: Int }\n  where it.lo <= it.hi\n\nfn main() -> () {\n  mut r := R { lo: 1, hi: 2 }\n  grow(mut r.lo)\n  grow(mut r.lo)\n  print(r)\n}", 101),
     ];
     for (name, src, want) in cases {
         let (out, code) = case(&d, name, src);
@@ -429,7 +429,7 @@ fn trait_values_run_as_interpreted() {
 fn what_is_not_compiled_yet_is_named() {
     let d = tmp("unsupported");
     let f = d.join("lists.strata");
-    save(&f, "fn main() -> () { print(matches(\"a1\", \"[a-z][0-9]\")) }\n");
+    save(&f, "fn main() { print(matches(\"a1\", \"[a-z][0-9]\")) }\n");
     let o = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(!o.status.success() && err.contains("can't compile `main`: the built-in `matches` on (String, String) is not compiled yet"), "{err}");
@@ -459,7 +459,7 @@ fn the_jit_runs_as_the_interpreter() {
     assert_eq!(jit.1, 101);
     // what doesn't compile yet is interpreted, and says why
     let f = d.join("lists.strata");
-    save(&f, "fn main() -> () { print(matches(\"a1\", \"[a-z][0-9]\")) }\n");
+    save(&f, "fn main() { print(matches(\"a1\", \"[a-z][0-9]\")) }\n");
     let (out, code) = output(Command::new(strata).args(["run", "--jit"]).arg(&f));
     assert_eq!(code, 0);
     assert!(out.contains("true\n") && out.contains("note: interpreted, not compiled: can't compile `main`: the built-in `matches` on (String, String) is not compiled yet"), "{out}");

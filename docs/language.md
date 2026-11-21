@@ -20,16 +20,16 @@ type Order =
 
 trait Db {
   fn load(self, id: OrderId) -> Option[Order]
-  fn save(mut self, o: Order) -> ()        // `mut self`: saving changes the store
+  fn save(mut self, o: Order)        // `mut self`: saving changes the store
 }
 
 fn ship(mut db: Db, id: OrderId, tracking: NonEmptyString) -> Result[Order, ShipError]
   ensures match it { Ok(o) => o is Shipped, Err(_) => true }
 {
-  let order = db.load(id) or { return Err(NotFound) }
+  order := db.load(id) or { return Err(NotFound) }
   match order {
     Pending { id, lines } => {
-      let o = Shipped { id, lines, tracking }
+      o := Shipped { id, lines, tracking }
       mut db.save(o)
       Ok(o)
     }
@@ -42,8 +42,8 @@ fn refund(o: Order) -> Cents
   = ?refund_policy          // a typed hole: callers still check
 
 test "a mocked store never breaks ship's contract" {
-  let mut db = mock Db
-  let r = ship(mut db, "ord_zzz999", "TRK9")
+  mut db := mock Db
+  r := ship(mut db, "ord_zzz999", "TRK9")
   assert r is Ok || r is Err
 }
 ```
@@ -63,7 +63,7 @@ A bare alias adds nothing, so `type Name = String` is an error. Constrain it wit
 
 ```rust
 distinct type UserId = String where matches(it, "u_[0-9]+")
-let id = UserId("u_42")      // explicit construction, checked
+id := UserId("u_42")      // explicit construction, checked
 id.value                     // the underlying String
 ```
 
@@ -79,8 +79,8 @@ type Retry = {
   backoff: List[Int] = [100, 200],
   label: String = "retry",
 }
-let r = Retry { attempts: 5 }      // backoff: [100, 200], label: "retry"
-let d = Retry {}
+r := Retry { attempts: 5 }      // backoff: [100, 200], label: "retry"
+d := Retry {}
 ```
 
 A constructor that leaves out a field with a default gets the default; so does JSON input with the key missing, and a command line without the option. A variant's record fields can have defaults too (`Queued { name: String, priority: Int = 0 }`). A default is checked where the type is defined: it must have the field's type, and a literal must satisfy the field's refinement (`n: Positive = 0` is an error). It sees no variables, not even the other fields, and it is evaluated each time it is used. Generated values (mocks, fuzzing) still generate every field.
@@ -116,7 +116,7 @@ fn describe(v: Int | String) -> String {
 - alternatives: `Square | Triangle =>`, `0 | 1 | 2 =>`, `(0, x) | (x, 0) =>` (they bind the same names);
 - `_`.
 
-**Narrowing.** Inside an arm, the matched variable has the arm's type (`s` is a `Square` above), and no new name is needed. To match the result of an expression, name it: `match lines(text) as ls { … }`. A matched field (`match t.status { Closed => t.status.why, … }`) narrows too. Assigning to a narrowed `let mut` variable ends its narrowing.
+**Narrowing.** Inside an arm, the matched variable has the arm's type (`s` is a `Square` above), and no new name is needed. To match the result of an expression, name it: `match lines(text) as ls { … }`. A matched field (`match t.status { Closed => t.status.why, … }`) narrows too. Assigning to a narrowed `mut` variable ends its narrowing.
 
 **Exhaustive and reachable.** The checker splits the matched type into variants, union members, and the ranges the arms' bounds cut out: of an `Int`, of a `Float`, or of the length of a `String` or `List`. It reports a value no arm takes (`` `where 3 <= it && it <= 5` is not covered``), and an arm the arms above already cover (`unreachable match arm `Positive``). Conditions that compare `it` (or `len(it)`) with constants, combined with `&&`, `||`, `!` and `==>`, are decided exactly. Any other condition (`matches(it, …)`, a call, another variable) covers nothing until the SMT backend decides it, so such a match needs a `_` arm.
 
@@ -157,7 +157,7 @@ impl Item {
   fn new(name: NonEmptyString) -> Item { Item { name, cents: 0 } }
   fn priced(self, cents: Natural) -> Item { Item { ..self, cents } }
 }
-let tea = Item.new("tea").priced(42)
+tea := Item.new("tea").priced(42)
 ```
 
 **Shared method names.** Two traits may declare methods with the same name, and each implementation keeps its own body. A call picks by what is known about the value it is called on:
@@ -207,31 +207,33 @@ pub fn invoice(o: Order) -> Cents { ... }
 
 ```rust
 fn total(lines: List[Line]) -> Natural {
-  let mut sum = 0
-  for line in lines { sum = sum + line.qty * line.price }
+  mut sum := 0
+  for line in lines { sum += line.qty * line.price }
   sum
 }
-fn restock(mut line: Line, extra: Int) -> () { line.qty = line.qty + extra }   // changes the caller's variable
-restock(mut line, 5)                                                         // and the call says so
+fn restock(mut line: Line, extra: Int) { line.qty += extra }   // changes the caller's variable
+restock(mut line, 5)                                           // and the call says so
 ```
 
 Procedural code is normal Strata: `loop { … }` repeats until `break`, and `continue` skips to the next iteration. Method chains can be split across lines:
 
 ```rust
-let best = scores
+best := scores
   .filter(s -> s > 0)
   .sort()
   .reverse()
   .take(3)
 ```
 
- Variables are immutable unless declared `let mut`. `while` and `for` loops are available, and fields can be assigned (`line.qty = …`). Mutation is always *visible*:
+**Bindings.** `:=` names a new value and infers its type: `n := 0`, `(w, k) := pair()`. With a type, the colon is already there, so the sign is `=`: `let x: Int = 5`. A mutable variable is `mut x := 0` or `mut x: Int = 0`. A plain `=` changes an existing variable or field (`x = e`, `line.qty = …`), and `+=`, `-=`, `*=`, `/=`, `%=` are short for `x = x + e` and so on (and are how such an assignment is printed). A function that returns `()` leaves out `-> ()`: `fn log(s: String) { … }`.
+
+Variables are immutable unless declared `mut`. `while` and `for` loops are available. Mutation is always *visible*:
 - a function that changes an argument declares it `mut`, and the caller passes a mutable variable marked `mut` at the call (`restock(mut line, 5)`), which is updated when the call returns. The marker is required there, and an error anywhere else;
 - a method that changes its receiver takes `mut self`, and the call is marked the same way: `mut queue.claim(2)` (as Hylo writes `&x.append(1)`). The mark is required for such a method, and an error on any other. It marks the first call on the place after it: `mut queue.claim(2).len()` changes `queue` through `claim`, and is written `(mut queue.claim(2)).len()`. As an argument, the marked call is put in parentheses, `f((mut queue.pop()), x)`, to tell it from `f(mut queue)`, which passes `queue` to a `mut` parameter.
 
-Only a variable declared `let mut`, a `mut` parameter, or a field of one can be changed: passed `mut`, or marked as a receiver. A call's result is a value, not a place, and the changes would have nowhere to go: `mut first(xs).tick()` is an error. Name it first (`let mut x = first(xs)`).
+Only a variable declared `mut`, a `mut` parameter, or a field of one can be changed: passed `mut`, or marked as a receiver. A call's result is a value, not a place, and the changes would have nowhere to go: `mut first(xs).tick()` is an error. Name it first (`mut x := first(xs)`).
 
-There are no shared references, so nothing changes behind your back. A declared type holds for the variable's whole life: every assignment is checked against it (`line.qty = 120` fails if `qty` is a `Quantity`; `x = -1` fails if `x` was declared `let mut x: Positive`), at compile time for literals and at runtime otherwise, and so is the value a `mut` argument writes back. Passing a `Positive` variable to a `mut k: Int` parameter is a compile error, since the function could store any `Int` in it. Closures cannot change outer variables.
+There are no shared references, so nothing changes behind your back. A declared type holds for the variable's whole life: every assignment is checked against it (`line.qty = 120` fails if `qty` is a `Quantity`; `x = -1` fails if `x` was declared `mut x: Positive`), at compile time for literals and at runtime otherwise, and so is the value a `mut` argument writes back. Passing a `Positive` variable to a `mut k: Int` parameter is a compile error, since the function could store any `Int` in it. Closures cannot change outer variables.
 
 **Ranges, slices and comprehensions.** `0..n` is the integers from `0` to `n - 1`, and `1..=n` includes `n`; a range is a `List[Int]` (`for i in 0..n { … }`, `(0..n).map(…)`). A list or string is sliced with a range: `xs[1..3]`, `s[..3]`, `xs[2..]`, `xs[..=i]`, clamped to its length as in Python. There are no negative indices: the end of `xs` is `len(xs)`, as in `xs[..len(xs) - 1]`. One element is `xs[i]` (`s[i]` is a one-character string): `i` must be in range, which is checked when the code runs and proven by `verify` (`xs[0]` on a `NonEmpty[Int]` is proven; `xs[len(xs) - 1]` on any list is not). `get(xs, i)` gives an `Option` instead. A comprehension builds a list from one or more others, with a `where` to keep only some elements, as in a refinement:
 
@@ -253,16 +255,16 @@ A function that can fail returns a `Result` (or an `Option` for "maybe absent").
 
 ```rust
 fn transfer(from: Account, to: Account, amount: Cents) -> Result[(Account, Account), WithdrawError] {
-  let from = withdraw(from, amount)!        // an Err is returned from `transfer` as is
+  from := withdraw(from, amount)!        // an Err is returned from `transfer` as is
   Ok((from, Account { ..to, balance: to.balance + amount }))
 }
 fn status_of(q: MemQueue, id: TaskId) -> Option[Status] {
   Some(q.entries.find(e -> e.task.id == id)?.status)  // None is returned from `status_of`
 }
-let port = parse_int(text) ?? 8080                          // an Option: its value, or a fallback
-let user = find_user(id) or { return not_found() }          // ... or a block, which may return
-let n = parse(s) !! 0                                       // a Result: its value, or a fallback
-let n = parse(s) except e { return describe_error(e) }      // ... or a block, with the error by name
+port := parse_int(text) ?? 8080                          // an Option: its value, or a fallback
+user := find_user(id) or { return not_found() }          // ... or a block, which may return
+n := parse(s) !! 0                                       // a Result: its value, or a fallback
+n := parse(s) except e { return describe_error(e) }      // ... or a block, with the error by name
 ```
 
 - `e!` takes the `Ok` value of a `Result`, or returns its `Err` from the function. The error must fit the function's error type: the same type, or a variant of it, or a member of a union (there is no conversion function).
@@ -283,7 +285,7 @@ let n = parse(s) except e { return describe_error(e) }      // ... or a block, w
 | `Option[T]` | `None` or `Some(x)`: a value that may be absent |
 | `Result[T, E]` | `Ok(x)` or `Err(e)`: an operation that may fail |
 | `List[T]` | an ordered sequence, `[1, 2, 3]` |
-| `(A, B, …)` | tuples, `(word, 3)`, destructured with `let (w, n) = …`, accessed with `t.0` |
+| `(A, B, …)` | tuples, `(word, 3)`, destructured with `(w, n) := …`, accessed with `t.0` |
 | `Dict[K, V]` | `Dict { "a": 1, "b": 2 }`, `Dict[String, Int] {}`, `dict(pairs)` from a list of pairs, `get`, `insert`, `remove`, `keys`, `values`, `items`; JSON object when keys are strings |
 | `Set[T]` | `Set { 1, 2 }`, `Set[Int] {}`, `set(xs)` from a list, `insert`, `union`, `intersection`, `difference`, `to_list` |
 
@@ -312,8 +314,8 @@ type Options = {
 
 impl CommandLine for Options {}
 
-fn main(opts: Options) -> () {
-  let who = if len(opts.names) == 0 { "world" } else { join(opts.names, " and ") }
+fn main(opts: Options) {
+  who := if len(opts.names) == 0 { "world" } else { join(opts.names, " and ") }
   for _ in 0..opts.times {
     print(if opts.loud { to_upper(f"hello, {who}!") } else { f"hello, {who}!" })
   }
@@ -348,14 +350,14 @@ The **standard library** is the `std/` package, written in Strata and built into
 
 ```rust
 fn app() -> Router {
-  let mut app = Router.new()
+  mut app := Router.new()
   app.get("/", req -> redirect("/users"))
   app.get("/users/:id", show_user)
   app
 }
 
 fn show_user(req: Request) -> Response {
-  let id = req.param("id") or { return not_found() }
+  id := req.param("id") or { return not_found() }
   ok_text(f"user {id}")
 }
 

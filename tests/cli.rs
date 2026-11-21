@@ -84,6 +84,43 @@ fn render_round_trips() {
 }
 
 #[test]
+fn bindings_and_assignments() {
+    let d = tmp("bindings");
+    let f = d.join("b.strata");
+    // written loosely; render prints the canonical forms
+    save(&f, "fn log(s: String) -> () { print(s) }\n\
+              fn f() -> Int {\n\
+                n := 1\n\
+                let k: Int = 2\n\
+                (a, b) := (3, 4)\n\
+                mut x := 0\n\
+                mut y: Int = 10\n\
+                x += n + k\n\
+                x = x * 2\n\
+                y -= a - b\n\
+                y %= 7\n\
+                x + y\n\
+              }\n\
+              test \"f\" { assert f() == 10 }\n");
+    let t = text(&f);
+    assert!(t.contains("fn log(s: String) {"), "{t}");
+    for line in ["n := 1", "let k: Int = 2", "(a, b) := (3, 4)", "mut x := 0", "mut y: Int = 10", "x += n + k", "x *= 2", "y -= a - b", "y %= 7"] {
+        assert!(t.contains(line), "{line}: {t}");
+    }
+    let (ok, out) = strata(&["--file", "b.strata", "test"], &d, None);
+    assert!(ok, "{out}");
+    // `let` needs a type; `:=` can't change a field
+    for (src, msg) in [
+        ("fn g() -> Int { let n = 1\n n }", "`let` needs a type"),
+        ("type P = { a: Int }\nfn g(p: P) -> Int { p.a := 1\n 0 }", "`:=` declares a new name"),
+    ] {
+        let _ = std::fs::remove_file(d.join("e.strata"));
+        let (ok, out) = strata(&["--file", "e.strata", "edit"], &d, Some(src));
+        assert!(!ok && out.contains(msg), "{src}: {out}");
+    }
+}
+
+#[test]
 fn pack_a_package_into_one_file() {
     let d = tmp("pack");
     let pkg = format!("{}/examples/tasks", env!("CARGO_MANIFEST_DIR"));
@@ -119,7 +156,7 @@ fn run_a_binary_file() {
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok && out.contains("corrupt binary Strata file"), "{out}");
     // text is not read: it goes in through an edit
-    std::fs::write(d.join("text.strata"), "fn main() -> () { print(1) }\n").unwrap();
+    std::fs::write(d.join("text.strata"), "fn main() { print(1) }\n").unwrap();
     let (ok, out) = strata(&["run", "text.strata"], &d, None);
     assert!(!ok && out.contains("text goes in through `strata edit`"), "{out}");
 }
@@ -204,7 +241,7 @@ fn loops_forget_variables_changed_anywhere_in_their_body() {
         return;
     }
     let d = tmp("loop-changes");
-    let src = "fn bump(mut x: Int) -> Int {\n  x = x + 1\n  x\n}\n\nfn count() -> Int\n  ensures it == 0\n{\n  let mut n = 0\n  let mut i = 0\n  while i < 3 {\n    let ys = [bump(mut n)]\n    i = i + 1\n  }\n  n\n}\n";
+    let src = "fn bump(mut x: Int) -> Int {\n  x = x + 1\n  x\n}\n\nfn count() -> Int\n  ensures it == 0\n{\n  mut n := 0\n  mut i := 0\n  while i < 3 {\n    ys := [bump(mut n)]\n    i = i + 1\n  }\n  n\n}\n";
     save(&d.join("l.strata"), src);
     let (ok, out) = strata(&["--file", "l.strata", "verify"], &d, None);
     assert!(!ok && out.contains("✗ count") && !out.contains("bug in the prover"), "{out}");
@@ -279,7 +316,7 @@ fn package_verify_policies() {
     let d = tmp("policy");
     std::fs::write(d.join("strata.toml"), "name = \"pol\"\n\n[verify]\nterminates = [\"*\"]\nno_recursion = [\"core\"]\nproven = [\"core\"]\n").unwrap();
     save_module(&d, "core",
-        "pub fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }\npub fn spin(n: Int) -> Int {\n  let mut k = n\n  loop {\n    if k == 1 { break }\n    k = k - 1\n  }\n  k\n}\n");
+        "pub fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }\npub fn spin(n: Int) -> Int {\n  mut k := n\n  loop {\n    if k == 1 { break }\n    k = k - 1\n  }\n  k\n}\n");
     save_module(&d, "main", "use core.*\nfn fib(n: Natural) -> Natural { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\n");
     let (ok, out) = strata(&["--file", ".", "verify", "--cases", "20"], &d, None);
     assert!(!ok && out.contains("policy: `core.fact` is recursive (strata.toml [verify])") && out.contains("policy: `core.spin` may not terminate"), "{out}");
@@ -304,7 +341,7 @@ fn termination_is_shown_or_flagged() {
 fn gcd(a: Natural, b: Natural) -> Natural { if b == 0 { a } else { gcd(b, a % b) } }
 fn length(xs: List[Int]) -> Natural { match xs { [] => 0, [_, ..rest] => 1 + length(rest) } }
 fn count_up(n: Natural) -> Natural {
-  let mut i = 0
+  mut i := 0
   while i < n {
     i = i + 1
   }
@@ -312,7 +349,7 @@ fn count_up(n: Natural) -> Natural {
 }
 fn forever(n: Int) -> Int { forever(n) }
 fn spin(n: Int) -> Int {
-  let mut k = n
+  mut k := n
   loop {
     if k == 1 { break }
     k = k - 1
@@ -331,7 +368,7 @@ fn search(xs: List[Int], t: Int, lo: Int, hi: Int) -> Bool {
   if lo >= hi {
     false
   } else {
-    let mid = (lo + hi) / 2
+    mid := (lo + hi) / 2
     match get(xs, mid) {
       Some(x) => if x < t { search(xs, t, mid + 1, hi) } else { x == t || search(xs, t, lo, mid) },
       None => false,
@@ -413,14 +450,14 @@ fn grow(c: Circle) -> Circle { Circle { radius: c.radius + 1 } }
 fn small(n: Int) -> Natural { match n { 0 | 1 | 2 => n, where it < 0 => 0, _ => 3 } }
 fn bad_small(n: Int) -> Natural { match n { 0 | 1 | -2 => n, _ => 3 } }
 fn countdown(start: Natural) -> Natural {
-  let mut k: Natural = start
+  mut k: Natural = start
   while k > 0 {
     k = k - 1
   }
   k
 }
 fn bad_countdown(start: Natural) -> Int {
-  let mut k: Natural = start
+  mut k: Natural = start
   k = k - 1
   k
 }
@@ -435,19 +472,19 @@ fn bad_countdown(start: Natural) -> Int {
     assert!(out.contains("✗ bad_countdown") && out.contains("assigning `k`: -1 does not satisfy `Natural`"), "a declared type holds after assignment: {out}");
     // what a `mut` argument held before the call is forgotten, field or not
     let src = "type Box = { n: Int }
-fn bump(mut x: Int) -> () { x = x - 5 }
+fn bump(mut x: Int) { x = x - 5 }
 fn stale(a: Natural) -> Natural {
-  let mut x = a
+  mut x := a
   bump(mut x)
   x
 }
 fn stale_field(a: Natural) -> Natural {
-  let mut b = Box { n: a }
+  mut b := Box { n: a }
   bump(mut b.n)
   b.n
 }
 fn fine(a: Natural) -> Natural {
-  let mut x = a
+  mut x := a
   bump(mut x)
   a
 }
@@ -479,11 +516,11 @@ fn bad_area(s: Shape) -> Positive { match s { Square => s.side - 1, Circle => s.
 fn pick(big: Bool) -> Shape { if big { Square { side: 5 } } else { Circle { radius: 1 } } }
 fn pick_area(big: Bool) -> Positive { area(pick(big)) }
 fn make(big: Bool) -> Int where it > 2 {
-  let s = if big { Square { side: 5 } } else { Circle { radius: 1 } }
+  s := if big { Square { side: 5 } } else { Circle { radius: 1 } }
   match s { Square => s.side, Circle => s.radius + 2 }
 }
 fn bad_make(big: Bool) -> Int where it > 2 {
-  let s = if big { Square { side: 5 } } else { Circle { radius: 1 } }
+  s := if big { Square { side: 5 } } else { Circle { radius: 1 } }
   match s { Square => s.side, Circle => s.radius }
 }
 fn describe(v: Int | String) -> Natural { match v { Int => abs(v), String => len(v) } }
@@ -680,7 +717,7 @@ fn bad_code(s: String) -> Code { "ord_" + s }
 fn caller(x: Int) -> Natural { if x > 0 { dec(x) } else { 0 } }
 fn bad_caller(x: Int) -> Natural { dec(x) }
 fn count_up(n: Natural) -> Natural {
-  let mut i = 0
+  mut i := 0
   while i < n {
     i = i + 1
   }
@@ -886,13 +923,13 @@ fn procedural_mutation_is_explicit() {
     let d = tmp("mutation");
     save(&d.join("m.strata"),
         "type Line = { qty: Int where 1 <= it && it <= 99 }\n\
-         fn restock(mut line: Line, extra: Int) -> () { line.qty = line.qty + extra }\n\
-         fn sum(xs: List[Int]) -> Int {\n  let mut s = 0\n  for x in xs { s = s + x }\n  s\n}\n\
-         test \"ok\" {\n  let mut l = Line { qty: 2 }\n  restock(mut l, 3)\n  assert l.qty == 5\n  assert sum([1, 2, 3]) == 6\n}\n\
-         test \"refined\" {\n  let mut l = Line { qty: 98 }\n  restock(mut l, 5)\n}\n");
+         fn restock(mut line: Line, extra: Int) { line.qty = line.qty + extra }\n\
+         fn sum(xs: List[Int]) -> Int {\n  mut s := 0\n  for x in xs { s = s + x }\n  s\n}\n\
+         test \"ok\" {\n  mut l := Line { qty: 2 }\n  restock(mut l, 3)\n  assert l.qty == 5\n  assert sum([1, 2, 3]) == 6\n}\n\
+         test \"refined\" {\n  mut l := Line { qty: 98 }\n  restock(mut l, 5)\n}\n");
     let (ok, out) = strata(&["--file", "m.strata", "test"], &d, None);
     assert!(!ok && out.contains("✓ ok") && out.contains("103 does not satisfy"), "{out}");
-    save(&d.join("e.strata"), "fn f() -> Int {\n  let x = 1\n  x = 2\n  x\n}\nfn g() -> Int {\n  let mut y = 0\n  let add = z -> { y = y + z; y }\n  add(1)\n}\n");
+    save(&d.join("e.strata"), "fn f() -> Int {\n  x := 1\n  x = 2\n  x\n}\nfn g() -> Int {\n  mut y := 0\n  add := z -> { y = y + z; y }\n  add(1)\n}\n");
     let (ok, out) = strata(&["--file", "e.strata", "check"], &d, None);
     assert!(!ok && out.contains("`x`: it is not mutable") && out.contains("a closure cannot change `y`"), "{out}");
 
@@ -900,16 +937,16 @@ fn procedural_mutation_is_explicit() {
     save(&d.join("c.strata"),
         "type Line = { qty: Int }\n\
          trait Counter { fn tick(mut self) -> ()  fn peek(self) -> Int }\n\
-         impl Counter for Line { fn tick(mut self) -> () { self.qty = self.qty + 1 }  fn peek(self) -> Int { self.qty } }\n\
-         fn restock(mut line: Line, extra: Int) -> () { line.qty = line.qty + extra }\n\
+         impl Counter for Line { fn tick(mut self) { self.qty = self.qty + 1 }  fn peek(self) -> Int { self.qty } }\n\
+         fn restock(mut line: Line, extra: Int) { line.qty = line.qty + extra }\n\
          fn qty(line: Line) -> Int { line.qty }\n\
-         fn unmarked() -> Int {\n  let mut l = Line { qty: 1 }\n  restock(l, 2)\n  l.qty\n}\n\
-         fn needless() -> Int {\n  let mut l = Line { qty: 1 }\n  qty(mut l)\n}\n\
-         fn builtin() -> Int {\n  let mut xs = [1]\n  len(mut xs)\n}\n\
-         fn receiver() -> Int {\n  let mut l = Line { qty: 1 }\n  mut l.tick()\n  restock(mut l, 1)\n  l.qty\n}\n\
-         fn unmarked_receiver() -> () {\n  let mut l = Line { qty: 1 }\n  l.tick()\n}\n\
-         fn needless_receiver() -> Int {\n  let mut l = Line { qty: 1 }\n  mut l.peek()\n}\n\
-         fn stray() -> Int {\n  let mut n = 1\n  let m = mut n\n  m\n}\n\
+         fn unmarked() -> Int {\n  mut l := Line { qty: 1 }\n  restock(l, 2)\n  l.qty\n}\n\
+         fn needless() -> Int {\n  mut l := Line { qty: 1 }\n  qty(mut l)\n}\n\
+         fn builtin() -> Int {\n  mut xs := [1]\n  len(mut xs)\n}\n\
+         fn receiver() -> Int {\n  mut l := Line { qty: 1 }\n  mut l.tick()\n  restock(mut l, 1)\n  l.qty\n}\n\
+         fn unmarked_receiver() {\n  mut l := Line { qty: 1 }\n  l.tick()\n}\n\
+         fn needless_receiver() -> Int {\n  mut l := Line { qty: 1 }\n  mut l.peek()\n}\n\
+         fn stray() -> Int {\n  mut n := 1\n  m := mut n\n  m\n}\n\
          fn first(ls: List[Line]) -> Line { Line { qty: 1 } }\n",
     );
     let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
@@ -923,7 +960,7 @@ fn procedural_mutation_is_explicit() {
     assert!(out.contains("in needless_receiver: `mut l.peek(…)`: `peek` doesn't change its receiver"), "{out}");
     assert!(out.contains("in stray: `mut n` marks an argument"), "{out}");
     // results are not places: name them first
-    let (ok, out) = strata(&["--file", "r.strata", "edit"], &d, Some("fn f(xs: List[Int]) -> () {\n  mut first(xs).tick()\n}\n"));
+    let (ok, out) = strata(&["--file", "r.strata", "edit"], &d, Some("fn f(xs: List[Int]) {\n  mut first(xs).tick()\n}\n"));
     assert!(!ok && out.contains("only a variable or a field can be `mut`"), "{out}");
     let (ok, out) = strata(&["--file", "c.strata", "render"], &d, None);
     assert!(ok && out.contains("restock(mut l, 1)"), "{out}");
@@ -933,7 +970,7 @@ fn procedural_mutation_is_explicit() {
 fn loops_chains_and_80_columns() {
     let d = tmp("fmt");
     save(&d.join("l.strata"),
-        "fn steps(start: Positive) -> Natural {\n  let mut n = start\n  let mut k = 0\n  loop {\n    if n == 1 { break }\n    n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 }\n    k = k + 1\n  }\n  k\n}\n\
+        "fn steps(start: Positive) -> Natural {\n  mut n := start\n  mut k := 0\n  loop {\n    if n == 1 { break }\n    n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 }\n    k = k + 1\n  }\n  k\n}\n\
          fn top(xs: List[Int]) -> Int {\n  xs\n    .filter(x -> x > 0)\n    .sort()\n    .reverse()\n    .take(3)\n    .sum()\n}\n\
          test \"t\" {\n  assert steps(6) == 8\n  assert top([5, -1, 9, 2, 7]) == 21\n}\n");
     let (ok, out) = strata(&["--file", "l.strata", "test"], &d, None);
@@ -981,10 +1018,10 @@ impl Shape for Point {
 
 fn label(s: Status) -> String {
   // the common case first
-  let n = 1 // one
+  n := 1 // one
 
 
-  let m = n
+  m := n
   match s {
     // still going
     Pending => "pending",
@@ -997,7 +1034,7 @@ fn label(s: Status) -> String {
     assert!(ok, "{r1}");
     for c in ["// file header\n//\n// second paragraph\n\n// section banner\n/// A status.", "  // waiting\n  | Pending", "  // finished\n  | Done",
         "// the y axis points down", "  // area, never negative\n  /// The area.", "  // checked by verify\n  /// Areas are never negative.\n  law nonneg", "  // a point has no area\n  /// Always zero.",
-        "  // the common case first\n  // one\n  let n = 1\n\n  let m = n\n  match", "    // still going\n    Pending", "    // all good\n    Done"] {
+        "  // the common case first\n  // one\n  n := 1\n\n  m := n\n  match", "    // still going\n    Pending", "    // all good\n    Done"] {
         assert!(r1.contains(c), "missing {c:?} in\n{r1}");
     }
     save(&d.join("r1.strata"), &r1);
@@ -1029,8 +1066,8 @@ fn rename_updates_every_reference() {
 pub fn size(xs: List[Int]) -> Int { len(xs) }
 pub type Box = { items: List[Int] }
 pub fn twice(xs: List[Int]) -> Int {
-  let n = size(xs)
-  let tally = x -> x + n
+  n := size(xs)
+  tally := x -> x + n
   tally(size(xs))
 }
 "#;
@@ -1070,7 +1107,7 @@ test "boxes" {
     let (ok, out) = strata(&["rename", "a.Box", "Crate"], &d, None);
     assert!(ok, "{out}");
     let r = strata(&["render", "a"], &d, None).1 + &strata(&["render", "b"], &d, None).1;
-    for s in ["pub fn length(xs: List[Int])", "let n = length(xs)", "tally(length(xs))", "use a.{length, Crate}", "length(b.items) + length([])", "fn total(b: Crate)", "Crate { items: [1, 2] }"] {
+    for s in ["pub fn length(xs: List[Int])", "n := length(xs)", "tally(length(xs))", "use a.{length, Crate}", "length(b.items) + length([])", "fn total(b: Crate)", "Crate { items: [1, 2] }"] {
         assert!(r.contains(s), "missing {s:?} in\n{r}");
     }
     let (ok, out) = strata(&["test"], &d, None);
@@ -1137,10 +1174,10 @@ test "arrows" {
   assert [1, 2, 3].map(x -> x * 2) == [2, 4, 6]
   assert fold([1, 2, 3], 0, (acc, x) -> acc + x) == 6
   assert apply((n: Int) -> n + 1, 1) == 2
-  let k = () -> 7
+  k := () -> 7
   assert k() == 7
-  let f = x -> {
-    let y = x + 1
+  f := x -> {
+    y := x + 1
     y * y
   }
   assert f(2) == 9
@@ -1170,19 +1207,19 @@ fn parse(s: String) -> Result[Int, ParseError] {
 }
 
 fn sum_two(a: String, b: String) -> Result[Int, ParseError] {
-  let x = parse(a)!
+  x := parse(a)!
   Ok(x + parse(b)!)
 }
 
 fn first_even(xs: List[Int]) -> Option[Int] {
-  let x = xs.find(x -> x % 2 == 0)?
+  x := xs.find(x -> x % 2 == 0)?
   Some(x * 10)
 }
 
 fn or_zero(s: String) -> Int { parse(s) except { 0 } }
 
 fn describe(s: String) -> String {
-  let n = parse(s) except e {
+  n := parse(s) except e {
     return match e {
       Empty => "empty",
       NotANumber(t) => "not a number: " + t,
@@ -1208,7 +1245,7 @@ test "errors" {
   assert or_zero("zz") == 0
   assert first_negative([3, -2, -5]) == -2
   assert first_negative([3]) == 0
-  let f = x -> {
+  f := x -> {
     if x > 1 { return "big" }
     "small"
   }
@@ -1244,7 +1281,7 @@ fn report(name: String, xs: List[Int]) -> String { f"{name} has {len(xs)} items"
 
 test "fstrings" {
   assert report("ana", [1, 2]) == "ana has 2 items"
-  let n = 3
+  n := 3
   assert f"{n} + 1 = {n + 1}" == "3 + 1 = 4"
   assert f"{{literal}} {n}" == "{literal} 3"
   assert f"quote \" and {join(["a", "b"], "-")}" == "quote \" and a-b"
@@ -1268,7 +1305,7 @@ fn string_primitives() {
         r##"fn count_digits(s: String) -> Int { s.chars().count(c -> is_digit(c)) }
 
 test "strings" {
-  let s = "héllo wörld"
+  s := "héllo wörld"
   assert len(s) == 11
   assert s.chars().take(2) == ["h", "é"]
   assert s.get(1) == Some("é") && s.get(99) == None
@@ -1474,7 +1511,7 @@ fn label(t: Ticket) -> String {
 }
 fn closed_name(c: Closed) -> String { c.name() }
 fn reset(n: Int) -> Int {
-  let mut x = n
+  mut x := n
   match x {
     Positive => {
       x = -1
@@ -1550,7 +1587,7 @@ fn opaque(s: String) -> Int {
 fn no_field(s: Shape) -> Int { s.side }
 
 fn mixed() -> Int {
-  let x = if true { Square { side: 1 } } else { Circle { radius: 1 } }
+  x := if true { Square { side: 1 } } else { Circle { radius: 1 } }
   1
 }
 "#;
@@ -1698,24 +1735,24 @@ type Shape = Square | Circle
 type Err1 = | TooBig | TooSmall
 
 fn total(shapes: List[Shape]) -> Int { len(shapes) }
-fn grow(mut shapes: List[Shape]) -> () { shapes = shapes + [Square { side: 1 }] }
+fn grow(mut shapes: List[Shape]) { shapes = shapes + [Square { side: 1 }] }
 fn mixed(big: Bool) -> Int {
-  let s = if big { Square { side: 2 } } else { Circle { radius: 1 } }
-  let xs = [Square { side: 1 }, Circle { radius: 1 }]
+  s := if big { Square { side: 2 } } else { Circle { radius: 1 } }
+  xs := [Square { side: 1 }, Circle { radius: 1 }]
   total(xs)
 }
 fn ok_list() -> Int {
-  let cs = [Circle { radius: 1 }]
+  cs := [Circle { radius: 1 }]
   total(cs)
 }
 fn bad_mut() -> Int {
-  let mut cs = [Circle { radius: 1 }]
+  mut cs := [Circle { radius: 1 }]
   grow(mut cs)
   len(cs)
 }
 fn inner() -> Result[Int, TooBig] { Err(TooBig) }
 fn outer() -> Result[Int, Err1] {
-  let x = inner()!
+  x := inner()!
   Ok(x)
 }
 fn apply(f: (Circle) -> Shape) -> Int { 1 }
@@ -1736,19 +1773,19 @@ fn changes_in_arm(mut n: Positive) -> String {
   }
 }
 fn lit() -> Int {
-  let mut x: Positive = 3
+  mut x: Positive = 3
   x = -1
   x
 }
-fn set_neg(mut k: Int) -> () { k = -3 }
+fn set_neg(mut k: Int) { k = -3 }
 fn wb() -> Int {
-  let mut p: Positive = 4
+  mut p: Positive = 4
   set_neg(mut p)
   p
 }
-fn bump(mut k: Positive) -> () { k = k + 1 }
+fn bump(mut k: Positive) { k = k + 1 }
 fn wb_ok() -> Int {
-  let mut p: Natural = 1
+  mut p: Natural = 1
   bump(mut p)
   p
 }
@@ -1790,9 +1827,9 @@ fn merge_file_merges_each_definition_separately() {
     assert_eq!(plain.status.code(), Some(1), "plain git conflicts on these");
 
     // one definition changed on both sides, in different places: merged line by line
-    let base = "fn f(x: Int) -> Int {\n  let a = x + 1\n  let b = a * 2\n  let c = b - 3\n  c\n}\n";
-    let ours = "fn f(x: Int) -> Int {\n  let a = x + 100\n  let b = a * 2\n  let c = b - 3\n  c\n}\n";
-    let theirs = "fn f(x: Int) -> Int {\n  let a = x + 1\n  let b = a * 2\n  let c = b - 300\n  c\n}\n";
+    let base = "fn f(x: Int) -> Int {\n  a := x + 1\n  b := a * 2\n  c := b - 3\n  c\n}\n";
+    let ours = "fn f(x: Int) -> Int {\n  a := x + 100\n  b := a * 2\n  c := b - 3\n  c\n}\n";
+    let theirs = "fn f(x: Int) -> Int {\n  a := x + 1\n  b := a * 2\n  c := b - 300\n  c\n}\n";
     let (ok, text, out) = merge3("merge-lines", base, ours, theirs);
     assert!(ok && text.contains("x + 100") && text.contains("b - 300"), "{out}\n{text}");
 
@@ -2034,7 +2071,7 @@ fn sync_carries_logged_renames_into_the_other_sides_files() {
     git(&d, &["merge", "-q", "feature"]);
     assert!(strata(&["rename", "surface", "extent"], &d, None).0);
     git(&d, &["checkout", "-q", "feature"]);
-    save(&d.join("b.strata"), b.clone() + "\nfn padded(s: Int) -> Int {\n  let extent = 2\n  surface(s, s) + extent\n}\n");
+    save(&d.join("b.strata"), b.clone() + "\nfn padded(s: Int) -> Int {\n  extent := 2\n  surface(s, s) + extent\n}\n");
     git(&d, &["commit", "-q", "-am", "padded"]);
     let head = git(&d, &["rev-parse", "HEAD"]);
     let (ok, out) = strata_git(&["sync", "main"], &d);
@@ -2094,12 +2131,12 @@ fn main(mut console: Console, mut files: Files, env: Environment) -> Result[Exit
     assert_eq!(String::from_utf8_lossy(&o.stderr), "ab\n");
 
     // the host is the standard library's alone
-    save(&d.join("sneaky.strata"), "fn main() -> () {\n  host_write(1, \"hi\")\n}\n");
+    save(&d.join("sneaky.strata"), "fn main() {\n  host_write(1, \"hi\")\n}\n");
     let (code, out, err) = strata_code(&["run", "sneaky.strata"], &d, "");
     assert!(code != 0 && out.is_empty() && err.contains("internal to the standard library"), "{out}{err}");
 
     // `main` may only ask for capabilities the runtime has
-    save(&d.join("odd.strata"), "fn main(n: Int) -> () {\n  ()\n}\n");
+    save(&d.join("odd.strata"), "fn main(n: Int) {\n  ()\n}\n");
     let (code, _, err) = strata_code(&["run", "odd.strata"], &d, "");
     assert!(code != 0 && err.contains("can ask for `Console`"), "{err}");
 
@@ -2130,7 +2167,7 @@ fn string_escapes_round_trip() {
 }
 
 const SHAPES: &str = "pub type Shape =\n  | Circle { radius: Int }\n  | Square(Int)\n\npub type Line = { sku: String, qty: Int }\n\npub trait Sized {\n  fn size(self) -> Int\n}\n\nimpl Sized for Line {\n  fn size(self) -> Int {\n    self.qty\n  }\n}\n";
-const SHAPES_MAIN: &str = "use shapes.*\n\nfn area(s: Shape) -> Int {\n  match s {\n    Circle { radius } => 3 * radius * radius,\n    Square(n) => n * n,\n  }\n}\n\nfn bigger(l: Line) -> Line {\n  Line { ..l, qty: l.qty + 1 }\n}\n\ntest \"shapes\" {\n  assert area(Circle { radius: 1 }) == 3\n  assert Square(2) is Square\n  let l = Line { sku: \"a\", qty: 2 }\n  assert bigger(l).size() == 3\n  assert l.size() == 2\n}\n";
+const SHAPES_MAIN: &str = "use shapes.*\n\nfn area(s: Shape) -> Int {\n  match s {\n    Circle { radius } => 3 * radius * radius,\n    Square(n) => n * n,\n  }\n}\n\nfn bigger(l: Line) -> Line {\n  Line { ..l, qty: l.qty + 1 }\n}\n\ntest \"shapes\" {\n  assert area(Circle { radius: 1 }) == 3\n  assert Square(2) is Square\n  l := Line { sku: \"a\", qty: 2 }\n  assert bigger(l).size() == 3\n  assert l.size() == 2\n}\n";
 
 #[test]
 fn rename_variants_methods_and_fields() {
@@ -2212,7 +2249,7 @@ fn sync_follows_member_renames() {
 #[test]
 fn rename_a_field_that_another_record_also_has() {
     let d = tmp("shared-field");
-    let src = "type Line = { sku: String, qty: Int }\n\ntype Order = { sku: String, lines: List[Line] }\n\nfn label(l: Line, o: Order) -> String {\n  l.sku + \"/\" + o.sku\n}\n\nfn first_skus(o: Order) -> List[String] {\n  o.lines.map(l -> l.sku)\n}\n\nfn fix(l: Line) -> Line {\n  match l {\n    Line { sku, .. } => Line { ..l, sku: sku + \"!\" },\n  }\n}\n\ntest \"skus\" {\n  let l = Line { sku: \"a\", qty: 1 }\n  let o = Order { sku: \"o\", lines: [l] }\n  assert label(l, o) == \"a/o\"\n  assert first_skus(o) == [\"a\"]\n  assert fix(l).sku == \"a!\"\n}\n";
+    let src = "type Line = { sku: String, qty: Int }\n\ntype Order = { sku: String, lines: List[Line] }\n\nfn label(l: Line, o: Order) -> String {\n  l.sku + \"/\" + o.sku\n}\n\nfn first_skus(o: Order) -> List[String] {\n  o.lines.map(l -> l.sku)\n}\n\nfn fix(l: Line) -> Line {\n  match l {\n    Line { sku, .. } => Line { ..l, sku: sku + \"!\" },\n  }\n}\n\ntest \"skus\" {\n  l := Line { sku: \"a\", qty: 1 }\n  o := Order { sku: \"o\", lines: [l] }\n  assert label(l, o) == \"a/o\"\n  assert first_skus(o) == [\"a\"]\n  assert fix(l).sku == \"a!\"\n}\n";
     assert!(strata(&["init"], &d, None).0);
     save(&d.join("main.strata"), src);
     // the checker says which record each `.sku` reads: Line's are renamed, Order's stay
@@ -2249,7 +2286,7 @@ fn move_a_definition_to_another_module() {
     assert!(strata(&["init"], &d, None).0);
     save(&d.join("orders.strata"), "pub type Order = { id: String, total: Int }\n\nfn doubled(o: Order) -> Int {\n  o.total * 2\n}\n\npub fn charge(o: Order) -> Int {\n  o.total + 1\n}\n\npub fn ship(o: Order) -> Int {\n  charge(o) + doubled(o)\n}\n");
     save(&d.join("billing.strata"), "use orders.{Order, charge}\n\npub fn invoice(o: Order) -> Int {\n  charge(o) + orders.ship(o)\n}\n");
-    save(&d.join("main.strata"), "use orders.*\n\ntest \"charges\" {\n  let o = Order { id: \"a\", total: 1 }\n  assert charge(o) == 2\n  assert orders.charge(o) == 2\n  assert ship(o) == 4\n}\n");
+    save(&d.join("main.strata"), "use orders.*\n\ntest \"charges\" {\n  o := Order { id: \"a\", total: 1 }\n  assert charge(o) == 2\n  assert orders.charge(o) == 2\n  assert ship(o) == 4\n}\n");
 
     let (ok, out) = strata(&["move", "charge", "billing"], &d, None);
     assert!(ok && out.contains("moved orders.charge from orders to billing (billing.strata)"), "{out}");
@@ -2589,7 +2626,7 @@ fn all_of(xs: List[Describe]) -> List[String] {
 }
 
 test "which describe runs" {
-  let i = Item.new("tea", 3)
+  i := Item.new("tea", 3)
   assert i.describe() == "own tea"
   assert show(i) == "describe tea"
   assert shout(i) == "LOG TEA"
@@ -2916,7 +2953,7 @@ fn double(n: Int) -> Int {
   n * 2
 }
 
-fn main(mut console: Console) -> () {
+fn main(mut console: Console) {
   print("plain")
   print([1, 2])
   mut console.print("console")
@@ -2970,7 +3007,7 @@ type Options = {
 
 impl CommandLine for Options {}
 
-fn main(opts: Options) -> () {
+fn main(opts: Options) {
   print(opts)
 }
 "#);
@@ -3027,7 +3064,7 @@ fn method_names_follow_the_receiver_across_modules_and_builtins() {
         r#"use std.io.{Console, recorder, printed}
 use std.fs.{Files, NotFound, mem_files}
 
-fn save(mut console: Console, mut files: Files) -> () {
+fn save(mut console: Console, mut files: Files) {
   mut files.write("a.txt", "hi") except { () }
   mut console.write("saved ")
   mut console.print(files.read("a.txt") except { "?" })
@@ -3035,25 +3072,25 @@ fn save(mut console: Console, mut files: Files) -> () {
   mut console.print(f"{files.exists("a.txt")}")
 }
 
-fn shout[C: Console](mut c: C, s: String) -> () {
+fn shout[C: Console](mut c: C, s: String) {
   mut c.write(to_upper(s))
   mut c.print("!")
 }
 
-fn main(mut console: Console, mut files: Files) -> () {
+fn main(mut console: Console, mut files: Files) {
   mut files.write("x.txt", "disk") except { () }
   shout(mut console, files.read("x.txt") except { "?" })
   mut files.remove("x.txt") except { () }
 }
 
 test "each call means its receiver's method" {
-  let mut c = recorder([])
-  let mut f = mem_files([("b.txt", "x")])
+  mut c := recorder([])
+  mut f := mem_files([("b.txt", "x")])
   save(mut c, mut f)
   assert printed(c) == ["saved hi", "false"]
   shout(mut c, "yo")
   assert printed(c) == ["saved hi", "false", "YO!"]
-  let dict_ = dict([("k", 1), ("j", 2)])
+  dict_ := dict([("k", 1), ("j", 2)])
   assert keys(dict_.remove("k")) == ["j"]
   assert keys(remove(dict_, "j")) == ["k"]
   assert to_list(set([1, 2]).remove(1)) == [2]
@@ -3108,7 +3145,7 @@ test "each call means its receiver's size" {
   assert Bag { n: 3 }.size() == 300
   assert via_sized(Box { n: 4 }) == 4
   assert via_weighed(Bag { n: 4 }) == 400
-  let b = Both { n: 0 }
+  b := Both { n: 0 }
   assert b.size() == 7
   assert via_sized(b) == 1
   assert via_weighed(b) == 2
@@ -3268,7 +3305,7 @@ fn serve_calls_handle_for_each_request() {
     save(&d.join("app.strata"),
         r#"use std.http.{Request, Response, ok_text, ok_json, not_found}
 fn handle(req: Request) -> Response {
-  let q = get(req.query, "q") or { "-" }
+  q := get(req.query, "q") or { "-" }
   match req.path {
     "/" => ok_text(f"{req.method} q={q} body={req.body} agent={get(req.headers, "x-agent") or { "-" }}"),
     "/json" => ok_json([1, 2]),
@@ -3317,7 +3354,7 @@ fn own_methods_locals_and_function_values() {
         "pub type Counter = { n: Natural }
 
 impl Counter {
-  fn bump(mut self) -> () {
+  fn bump(mut self) {
     self.n = self.n + 1
   }
 }
@@ -3329,21 +3366,21 @@ type Twice = { f: (Natural) -> Natural }
 /// A function named like `Counter`'s method (in another module): `k.bump()`
 /// is still the method.
 fn bump(c: Counter) -> Natural {
-  let mut k = c
+  mut k := c
   k.bump()
   k.n
 }
 
 /// A local named like the function hides it: this is not recursion.
 fn fresh() -> Counter {
-  let mut fresh = Counter { n: 0 }
+  mut fresh := Counter { n: 0 }
   fresh.bump()
   fresh
 }
 
 /// What a function value returns is a valid value of its result type.
 fn twice(t: Twice, x: Natural) -> Natural {
-  let f = t.f
+  f := t.f
   f(f(x))
 }
 

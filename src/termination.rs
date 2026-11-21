@@ -76,7 +76,7 @@ pub fn impl_label(env: &Env, imp: &ImplDecl, m: &str) -> String {
 
 /// The functions and trait methods `e` calls or passes as values. `locals`
 /// are names bound outside `e` (the parameters): a local of the same name as
-/// a function hides it (`let mut app = Router.new()` inside `fn app`).
+/// a function hides it (`mut app := Router.new()` inside `fn app`).
 fn calls_of(e: &Expr, env: &Env, locals: &[String], out: &mut BTreeSet<String>) {
     use crate::ast::{walk_expr, walk_pattern, Visit};
     /// The names a pattern binds.

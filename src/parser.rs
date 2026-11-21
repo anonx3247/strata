@@ -734,7 +734,7 @@ impl Parser {
         let mut place = Expr::Var(self.ident()?);
         loop {
             if (self.is_sym("(") || self.is_sym("[")) && !self.nl_before() {
-                return Err(self.err("only a variable or a field can be `mut`: name the value first (`let mut x = …`)"));
+                return Err(self.err("only a variable or a field can be `mut`: name the value first (`mut x := …`)"));
             }
             if !self.is_sym(".") {
                 return Ok(Expr::Mut(Box::new(place)));
@@ -1163,17 +1163,34 @@ impl Parser {
                 stmts.push(Stmt::Comment(above));
             }
             if self.eat_kw("let") {
-                if self.eat_kw("mut") {
-                    let name = self.ident()?;
-                    let ty = if self.eat_sym(":") { Some(self.type_expr()?) } else { None };
-                    self.expect_sym("=")?;
-                    stmts.push(Stmt::Var(name, ty, self.expr()?));
-                } else {
-                    let pat = self.pattern()?;
-                    let ty = if self.eat_sym(":") { Some(self.type_expr()?) } else { None };
-                    self.expect_sym("=")?;
-                    stmts.push(Stmt::Let(pat, ty, self.expr()?));
+                // `let` only introduces a typed binding: `let p: T = e`
+                let pat = self.pattern()?;
+                if self.is_sym("=") || self.is_sym(":=") {
+                    return Err(self.err("`let` needs a type (`let x: T = e`); without one, write `x := e`"));
                 }
+                self.expect_sym(":")?;
+                let ty = self.type_expr()?;
+                self.expect_sym("=")?;
+                stmts.push(Stmt::Let(pat, Some(ty), self.expr()?));
+            } else if self.is_kw("mut")
+                && matches!(self.peek_at(1), Tok::Ident(_))
+                && matches!(self.peek_at(2), Tok::Sym(":=" | ":" | "="))
+            {
+                // `mut x := e`, `mut x: T = e`
+                self.next();
+                let name = self.ident()?;
+                if self.eat_sym(":=") {
+                    stmts.push(Stmt::Var(name, None, self.expr()?));
+                } else if self.eat_sym(":") {
+                    let ty = self.type_expr()?;
+                    self.expect_sym("=")?;
+                    stmts.push(Stmt::Var(name, Some(ty), self.expr()?));
+                } else {
+                    return Err(self.err("a new variable is `mut x := e` or `mut x: T = e`"));
+                }
+            } else if let Some(pat) = self.binding_pattern() {
+                // `p := e`
+                stmts.push(Stmt::Let(pat, None, self.expr()?));
             } else if self.eat_kw("assert") {
                 stmts.push(Stmt::Assert(self.expr()?));
             } else if self.eat_kw("loop") {
@@ -1192,11 +1209,28 @@ impl Parser {
                 stmts.push(Stmt::For(pat, iter, self.block()?));
             } else {
                 let e = self.expr()?;
-                if self.eat_sym("=") {
+                let op = match self.peek() {
+                    Tok::Sym("=") => Some(None),
+                    Tok::Sym("+=") => Some(Some(BinOp::Add)),
+                    Tok::Sym("-=") => Some(Some(BinOp::Sub)),
+                    Tok::Sym("*=") => Some(Some(BinOp::Mul)),
+                    Tok::Sym("/=") => Some(Some(BinOp::Div)),
+                    Tok::Sym("%=") => Some(Some(BinOp::Mod)),
+                    Tok::Sym(":=") => return Err(self.err("`:=` declares a new name: `x := e`, `(a, b) := e`")),
+                    _ => None,
+                };
+                if let Some(op) = op {
                     if !matches!(e, Expr::Var(_) | Expr::Field(..)) {
                         return Err(self.err("only a variable or a field (`x`, `x.f`) can be assigned"));
                     }
-                    stmts.push(Stmt::Assign(e, self.expr()?));
+                    self.next();
+                    let rhs = self.expr()?;
+                    // `x += e` is `x = x + e`
+                    let rhs = match op {
+                        Some(op) => Expr::Bin(op, Box::new(e.clone()), Box::new(rhs)),
+                        None => rhs,
+                    };
+                    stmts.push(Stmt::Assign(e, rhs));
                 } else {
                     stmts.push(Stmt::Expr(e));
                 }
@@ -1229,6 +1263,20 @@ impl Parser {
     }
 
     // ---------- patterns ----------
+
+    /// The pattern of `p := e`, with the `:=` taken; None (and nothing
+    /// taken) if the statement is not a binding.
+    fn binding_pattern(&mut self) -> Option<Pattern> {
+        let (pos, used) = (self.pos, self.used.clone());
+        if let Ok(p) = self.pattern() {
+            if self.eat_sym(":=") {
+                return Some(p);
+            }
+        }
+        self.pos = pos;
+        self.used = used;
+        None
+    }
 
     /// A pattern, or alternatives: `Square | Circle`.
     fn pattern(&mut self) -> R<Pattern> {

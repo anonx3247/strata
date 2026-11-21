@@ -4,7 +4,7 @@ Everything that keeps track of where Strata is going: open questions, ideas, wha
 
 ## Open questions (to discuss before building)
 
-- **A field as a `mut` argument** (decided with the user 2026-11-21: allowed, as now). `shift(mut r.lo)` is the same as `let mut t = r.lo; shift(mut t); r.lo = t`, and the record's own invariant is checked the same way after the call as after that assignment, so forbidding it would protect nothing. The check after a `mut` call is left out where the checker proves the parameter's type fits the variable's; undecided cases could become proof obligations for `verify`, with the runtime check kept only for what isn't proven.
+- **A field as a `mut` argument** (decided with the user 2026-11-21: allowed, as now). `shift(mut r.lo)` is the same as `mut t := r.lo; shift(mut t); r.lo = t`, and the record's own invariant is checked the same way after the call as after that assignment, so forbidding it would protect nothing. The check after a `mut` call is left out where the checker proves the parameter's type fits the variable's; undecided cases could become proof obligations for `verify`, with the runtime check kept only for what isn't proven.
 - **Generating code from a type's shape** (decided 2026-11-21): see the decision "Derived traits, `comptime` and special methods" below.
 - **Marking a `mut self` call** (built 2026-11-20, see docs/language.md "Mutation"). `mut queue.claim(2)`, as Hylo's `&x.append(1)`: required when the method takes `mut self`, an error otherwise. The tree is `Expr::Mut(Method(..))`; a `Mut` around anything else is an argument for a `mut` parameter. The parser's `marked` reads a place after `mut`, then marks the first method call on it, and later calls apply to its result (rendered `(mut q.claim(2)).len()`); as an argument the marked call is rendered in parentheses, `call((mut o.pop()), x, y)` (the user's form). Results are not places (user's point): `mut f(x).m()` is a parse error, and a result can't be passed to a `mut` parameter; name it first. Rejected: `(mut queue).claim(2)`, `claim(mut queue, 2)`, and a separate call operator.
 - **What iterating a string yields** (user, 2026-11-20; undecided). Bytes, code points (Go's runes; what `chars` gives today), or grapheme clusters (what a reader calls a character). A slice's indices (`s[1..3]`) count the same units; today both count code points.
@@ -88,10 +88,10 @@ type Model = { count: Int where 0 <= it }
 type Msg = | Increment | Decrement | Reset
 
 impl App[Msg] for Model {
-  fn update(mut self, msg: Msg) -> () {
+  fn update(mut self, msg: Msg) {
     match msg {
-      Increment => self.count = self.count + 1
-      Decrement => if self.count > 0 { self.count = self.count - 1 }
+      Increment => self.count += 1
+      Decrement => if self.count > 0 { self.count -= 1 }
       Reset     => self.count = 0
     }
   }
@@ -385,7 +385,7 @@ The `smt-verification` worktree (uncommitted, on old main) already has: symbolic
 
 ### Mutation at the call site, references, and unproven checks (decided 2026-11-19)
 - **`mut` at the call site (done)**: an argument to a `mut` parameter is written `f(mut x)`; missing it, or writing it for a parameter that is not `mut` (or a builtin, or a closure), is an error. A `mut self` method's call is marked too, `mut queue.claim(2)` (since 2026-11-20; it was unmarked, as in Swift). `Expr::Mut`, checked in `check_mut_args`.
-- **References**: immutable values can always be shared (no copying in the compiled form); a mutable reference only exists as a `mut` parameter (copy-in/copy-out today, in place later). Recommended to the user: keep references second-class (never stored or returned), like Swift `inout` / Hylo, since first-class ones would need a borrow checker; a possible local form is `let mut l = mut order.lines[0]`. Not decided beyond the call-site marker.
+- **References**: immutable values can always be shared (no copying in the compiled form); a mutable reference only exists as a `mut` parameter (copy-in/copy-out today, in place later). Recommended to the user: keep references second-class (never stored or returned), like Swift `inout` / Hylo, since first-class ones would need a borrow checker; a possible local form is `mut l := mut order.lines[0]`. Not decided beyond the call-site marker.
 - **Unproven checks are reported by default** (with the runtime check kept); a project policy can require `proven` for chosen modules. For the SMT work: an assignment to a refined variable is one more obligation (e.g. `x = f(x) - 3` with `x: Positive` needs `f`'s contract to imply it).
 
 ### Lambda syntax (done)
@@ -394,6 +394,12 @@ The `smt-verification` worktree (uncommitted, on old main) already has: symbolic
 - **No shorthand lambdas** (no `$`, `_` or implicit parameter) and **no separate anonymous-`fn` form**.
 - **Refinements keep `it`** for "the value" (`where it > 0`).
 - When implementing, update the parser, printer, examples, README and tests; `render` must still round-trip.
+
+### Bindings and assignment (decided with the user 2026-11-21, built)
+- `:=` declares and infers the type: `n := 0`, `(w, k) := pair()`, `mut x := 0`. With a type, the colon is already written, so the sign is `=`: `let x: Int = 5`, `mut x: Int = 0`. `let` only appears with a type; `let x = e` is a parse error pointing at `x := e`.
+- `=` only reassigns a variable or field. `+=`, `-=`, `*=`, `/=`, `%=` parse to `x = x op e` (no new node), and the printer writes `x = x op e` back as `x op= e`.
+- A function returning `()` leaves out `-> ()` (it was already optional when parsing; the printer now omits it). Function *types* keep it: `(A) -> ()`.
+- Without `let`, a binding starting with `(` after an expression on the same line reads as a call (`f() (a, b) := …`): separate them with a newline or `;`.
 
 ### Requested cleanups (done)
 - **String concatenation uses `+`**, not `++`: `"a" + "b"`. Lists use `+` too (`[1] + [2]`, decided), so `++` goes away entirely. Update the checker (`numeric` currently rejects `String` for `+`), the interpreter, the printer and all examples.
