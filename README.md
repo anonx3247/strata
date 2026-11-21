@@ -75,3 +75,4 @@ strata ui                          # open http://127.0.0.1:7777: the live viewer
 - [Internals](docs/internals.md): how the source is laid out.
 - [The binary format](docs/binary-format.md): code stored as its syntax tree, a module file per module, each with a header.
 - [Ideas, decisions and open questions](IDEAS.md): where Strata is going.
+- [site/](site/README.md): an interactive presentation of Strata, built from the real tools' output.
