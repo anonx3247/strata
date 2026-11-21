@@ -166,7 +166,7 @@ pub fn serve_program(args: &Args) -> Result<bool, String> {
 /// `main` asks for the capabilities it needs by type (`Console`, `Files`,
 /// `Environment`, in any order) and may return `()` (0), an exit code, or a
 /// `Result` of either, whose `Err` is printed to standard error (exit code 1).
-pub fn run_main(p: &Program, env: &types::Env, prog: &str, program_args: Vec<String>, trace: bool) -> Result<i32, String> {
+pub fn run_main(_p: &Program, env: &types::Env, prog: &str, program_args: Vec<String>, trace: bool) -> Result<i32, String> {
     use interp::Value;
     let f = env.fns.get(&Symbol::new("main")).ok_or("no `main` function to run (the entry point is `fn main` in main.strata, or in the file you run)")?.clone();
     let mut it = interp::Interp::new(env, 1);
@@ -179,18 +179,28 @@ pub fn run_main(p: &Program, env: &types::Env, prog: &str, program_args: Vec<Str
         vals.push(match ty.as_str() {
             _ if capability(&ty).is_some() => capability(&ty).unwrap(),
             // options read from the command line
+            // `Options.from_args(program, args)`, derived in Strata (std.cli)
             _ if cli::is_options(env, &pm.ty) => {
-                let doc = p.decls.iter().find(|d| matches!(d.kind, DeclKind::Type(_)) && d.qname() == ty).map(|d| d.doc.clone()).unwrap_or_default();
-                match cli::parse(&mut it, env, &ty, &doc, prog, &program_args) {
-                    cli::Parsed::Options(v) => v,
-                    cli::Parsed::Help(text) => {
-                        print!("{text}");
-                        return Ok(0);
-                    }
-                    cli::Parsed::Error(e) => {
-                        eprintln!("error: {e}");
-                        return Ok(2);
-                    }
+                let args = Value::List(program_args.iter().map(|a| Value::Str(a.clone())).collect());
+                // the method's name as resolved (`std.cli.from_args`)
+                let m = env.traits.get(&Symbol::new(cli::TRAIT)).and_then(|t| t.methods.iter().find(|m| crate::names::short(&m.decl.name) == "from_args")).map(|m| m.decl.name.to_string()).ok_or("std.cli has no `from_args`")?;
+                let call = types::trait_call(cli::TRAIT, &m);
+                let r = it.call_method(&call, vec![Value::Str(ty.clone()), Value::Str(prog.to_string()), args]).map_err(|f| format!("reading the options: {}", f.msg))?;
+                let field = |fs: &[(String, Value)], k: &str| fs.iter().find(|(n, _)| n == k).map(|(_, v)| interp::show(v)).unwrap_or_default();
+                match r {
+                    Value::Variant(c, interp::Fields::Pos(mut xs)) if c == "Ok" && xs.len() == 1 => xs.pop().unwrap(),
+                    Value::Variant(c, interp::Fields::Pos(xs)) if c == "Err" => match xs.first() {
+                        Some(Value::Variant(e, interp::Fields::Rec(fs))) if e.ends_with("ShowHelp") => {
+                            print!("{}", field(fs, "text"));
+                            return Ok(0);
+                        }
+                        Some(Value::Variant(_, interp::Fields::Rec(fs))) => {
+                            eprintln!("error: {}", field(fs, "message"));
+                            return Ok(2);
+                        }
+                        _ => return Err("reading the options gave an unexpected error".into()),
+                    },
+                    other => return Err(format!("reading the options gave {}", interp::show(&other))),
                 }
             }
             _ => {

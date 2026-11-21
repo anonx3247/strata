@@ -81,6 +81,8 @@ struct Expander<'a> {
     /// Copies of functions with `comptime` parameters, made for their values.
     copies: Vec<FnDecl>,
     made: HashMap<String, Symbol>,
+    /// A variant description's constructor, qualified (by its JSON).
+    ctors: HashMap<String, String>,
     /// Names bound inside the code being specialized, which hide known ones.
     hidden: Vec<Vec<Symbol>>,
 }
@@ -105,7 +107,7 @@ impl<'a> Expander<'a> {
     fn new(env: &'a Env, prog: &'a Program) -> Self {
         let mut it = Interp::new(env, 1);
         it.budget = Some(BUDGET);
-        Expander { env, prog, it, known: HashMap::new(), types: HashMap::new(), written: HashMap::new(), self_ty: TypeExpr::Unit, copies: vec![], made: HashMap::new(), hidden: vec![] }
+        Expander { env, prog, it, known: HashMap::new(), types: HashMap::new(), written: HashMap::new(), self_ty: TypeExpr::Unit, copies: vec![], made: HashMap::new(), ctors: HashMap::new(), hidden: vec![] }
     }
 
     /// `derive Trait for Type { written }` as an ordinary `impl`.
@@ -187,7 +189,9 @@ impl<'a> Expander<'a> {
                             Payload::Positional(ts) => ts.iter().enumerate().map(|(k, t)| self.field(&Symbol::new(&k.to_string()), &[], t, None)).collect(),
                             Payload::Record(fs) => fs.iter().map(|f| self.field(&f.name, &f.doc, &f.ty, f.default.as_ref())).collect(),
                         };
-                        record("Variant", vec![("name", Value::Str(crate::names::short(&v.name).to_string())), ("doc", Value::List(vec![])), ("fields", Value::List(fields))])
+                        let d = record("Variant", vec![("name", Value::Str(crate::names::short(&v.name).to_string())), ("doc", Value::List(vec![])), ("fields", Value::List(fields))]);
+                        self.ctors.insert(json(&d), v.name.to_string());
+                        d
                     })
                     .collect();
                 record("Sum", vec![("name", name), ("doc", strs(&doc)), ("variants", Value::List(variants))])
@@ -308,7 +312,8 @@ impl<'a> Expander<'a> {
                 };
                 return match fields.iter().find(|f| f.name == name).and_then(|f| f.default.clone()) {
                     Some(e) => Ok(e),
-                    None => Err(format!("`{name}` has no default value")),
+                    // only reached where `f.default is Some` holds: never, here
+                    None => Ok(Expr::Hole(Symbol::new("no_default"))),
                 };
             }
             // `$T.check(x)`: `Ok(())`, or `Err` with the interpreter's message
@@ -432,7 +437,7 @@ impl<'a> Expander<'a> {
                 ("name", Value::Str(s)) => Some(s.clone()),
                 _ => None,
             }).unwrap_or_default();
-            crate::names::qualify(crate::names::module_of(&head), &vname)
+            self.ctors.get(&json(&Value::Record(kind.clone(), desc.clone()))).cloned().unwrap_or_else(|| crate::names::qualify(crate::names::module_of(&head), &vname))
         } else {
             head.to_string()
         };
@@ -574,7 +579,8 @@ impl<'a> Expander<'a> {
                     } else {
                         CtorPat::Record(vec![], true)
                     };
-                    Ok(Pattern::Ctor(Symbol::new(&crate::names::qualify(crate::names::module_of(&head), &vname)), cp))
+                    let c = self.ctors.get(&json(it)).cloned().unwrap_or_else(|| crate::names::qualify(crate::names::module_of(&head), &vname));
+                    Ok(Pattern::Ctor(Symbol::new(&c), cp))
                 }
                 other => match self.literal(other)? {
                     Expr::Int(n) => Ok(Pattern::Int(n)),
@@ -707,7 +713,9 @@ impl<'a> Expander<'a> {
         }
         let copy = Symbol::new(&format!("{name}.for.{}", self.made.len() + 1));
         self.made.insert(key, copy);
-        // the copy: the known parameters left out, their values (and types) written in
+        // the copy: the known parameters left out, their values (and types) written
+        // in; it sees only those, not what its caller knows
+        let outer = (std::mem::take(&mut self.known), std::mem::take(&mut self.types), std::mem::take(&mut self.hidden));
         let mut saved = vec![];
         for (p, v) in &vals {
             saved.push((p.name, self.known.insert(p.name, v.clone())));
@@ -738,6 +746,8 @@ impl<'a> Expander<'a> {
             };
             self.types.remove(&format!("{n}.type"));
         }
+        let _ = saved;
+        (self.known, self.types, self.hidden) = outer;
         let f = FnDecl { name: copy, params, ret, body: body?, comptime: false, ..own };
         self.copies.push(f);
         Ok(Expr::Call(Box::new(Expr::Var(copy)), rest))
