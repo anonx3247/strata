@@ -258,6 +258,7 @@ pub fn run_tests(ir: &str, which: &[usize]) -> Result<Vec<TestOutcome>, String> 
     };
     let name = std::ffi::CString::new("test").unwrap();
     let argv = [name.as_ptr()];
+    let _one = one_run();
     unsafe { init(1, argv.as_ptr()) };
     let text = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().to_string();
     let mut out = vec![];
@@ -289,6 +290,7 @@ pub fn fuzzers(ir: &str, n: usize) -> Result<Vec<usize>, String> {
     let init: Init = unsafe { std::mem::transmute(strata_init as *const ()) };
     let name = std::ffi::CString::new("verify").unwrap();
     let argv = [name.as_ptr()];
+    let _one = one_run();
     unsafe { init(1, argv.as_ptr()) };
     Ok(addrs)
 }
@@ -297,6 +299,7 @@ pub fn fuzzers(ir: &str, n: usize) -> Result<Vec<usize>, String> {
 /// the fault that ended it (kind, message, call stack), if any, and its
 /// arguments as JSON. (Not reentrant: the runtime's state is global.)
 pub fn fuzz_case(addr: usize, seed: u64, budget: i64) -> (Option<(String, String, String)>, String) {
+    let _one = one_run();
     use std::ffi::{c_char, CStr};
     type Fuzz = unsafe extern "C" fn(unsafe extern "C" fn(), i64, i64) -> i32;
     type Text = unsafe extern "C" fn() -> *const c_char;
@@ -333,6 +336,14 @@ pub struct Fault {
 /// Run compile-time code (`llvm::compile_comptime`): each `strata.ct.N`,
 /// within `budget` steps, its value read (`native::read`) before the code
 /// is gone; a fault or the budget's end is its message.
+/// The runtime's state is the process's (its heap, the budget, the message,
+/// what was printed, the values kept): code is run one at a time, so threads
+/// (the tests', the viewer's) don't run into each other's.
+fn one_run() -> std::sync::MutexGuard<'static, ()> {
+    static RUNTIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    RUNTIME.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub fn comptime(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget: i64) -> Result<Vec<Result<crate::interp::Value, Fault>>, String> {
     Ok(run_kept(ir, roots, shapes, budget, false)?.into_iter().map(|(r, _)| r).collect())
 }
@@ -358,6 +369,7 @@ pub fn run_kept(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget
         )
     };
     let text = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().to_string();
+    let _one = one_run();
     let name = std::ffi::CString::new("comptime").unwrap();
     let argv = [name.as_ptr()];
     unsafe { init(1, argv.as_ptr()) };
