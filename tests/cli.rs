@@ -3822,6 +3822,7 @@ fn json_is_derived() {
         ("type B = { x: Int }\n\ntype A = { b: B }", "`B` doesn't implement `Json`: write `derive Json for B`"),
         ("type A = { x: Int | Float }", "`Int | Float` can't be JSON: two members are written as a JSON number"),
         ("type A = { x: List[Int] | List[String] }", "two members are written as a JSON array"),
+        ("type L =\n  | Quiet\n  | Loud\n\nderive Json for L\n\ntype A = { x: String | L }", "`Quiet`, `Loud` would be read as a String"),
     ];
     for (k, (src, want)) in bad.iter().enumerate() {
         let f = format!("bad{k}.strata");
@@ -3834,7 +3835,15 @@ fn json_is_derived() {
     let (ok, out) = strata(&["--file", "big.strata", "edit"], &d, Some("use std.json.Json\n\ntype A = { x: Int }\n\nderive Json for A\n\nfn main() {\n  print(A { x: 99999999999999999999 }.encode())\n}\n"));
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "big.strata"], &d, None);
-    assert!(!ok && out.contains("does not satisfy `std.json.Int64`"), "{out}");
+    assert!(!ok && out.contains("does not satisfy `std.json.SafeInt`"), "{out}");
+    // verify checks the code derived for a type: an `Int` field may be beyond
+    // what JSON holds exactly, a `SafeInt` (or a bounded one) never is
+    let (ok, out) = strata(&["--file", "big.strata", "verify", "--cases", "20"], &d, None);
+    assert!(!ok && out.contains("✗ std.json.encode_as.for.A.") && out.contains("does not satisfy `std.json.SafeInt`"), "{out}");
+    let (ok, out) = strata(&["--file", "safe.strata", "edit"], &d, Some("use std.json.{Json, SafeInt}\n\ntype A = { id: SafeInt, n: Int where 0 <= it && it < 100, name: String }\n\nderive Json for A\n"));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "safe.strata", "verify", "--cases", "20", "--require", "proven"], &d, None);
+    assert!(ok && out.contains("✓ std.json.encode_as.for.A."), "{out}");
     // a package can make `decode` refuse keys a record doesn't have
     let p = d.join("strict");
     std::fs::create_dir_all(&p).unwrap();

@@ -45,7 +45,7 @@ type Kind =
 type Event = {
   user: UserId,
   at: (Int, String),
-  payload: Int | String | Address,
+  payload: Positive | String | Address,
   kind: Kind,
 }
 
@@ -86,6 +86,8 @@ fn main() {
   print(read("[1, 2"))
   print(stringify(parse("[1, -2.5e3, \"a\\u00e9\\n\\ud83d\\ude00\", true, null, {\"k\": []}]") !! Null))
   print(parse("99999999999999999999"))
+  print(parse("9007199254740991"))
+  print(parse("-9007199254740992"))
   e := Event { user: UserId(7), at: (3, "pm"), payload: Address { city: "R", zip: "00100" }, kind: Click { times: 2 } }
   print(stringify(e.encode()))
   print(event(stringify(e.encode())) == Ok(e))
@@ -109,12 +111,14 @@ true
 {"Err":"expected a `Signup`, got a `Address`"}
 {"Err":"at 5: expected `,` or `]` in an array"}
 [1,-2500.0,"aé\n😀",true,null,{"k":[]}]
-{"Err":"at 0: 99999999999999999999 is too large (integers are within 64 bits)"}
+{"Err":"at 0: 99999999999999999999 is beyond ±(2^53 - 1), the integers a JSON number holds exactly"}
+{"Ok":{"Integer":9007199254740991}}
+{"Err":"at 0: -9007199254740992 is beyond ±(2^53 - 1), the integers a JSON number holds exactly"}
 {"type":"Event","user":7,"at":[3,"pm"],"payload":{"type":"Address","city":"R","zip":"00100"},"kind":{"type":"Click","times":2}}
 true
 {"Ok":{"user":7,"at":[1,"am"],"payload":"hi","kind":{"Click":{"times":1}}}}
 {"Ok":{"user":7,"at":[1,"am"],"payload":4,"kind":{"Key":"k"}}}
 {"Err":"user: 0 does not satisfy `Int where it > 0`"}
 {"Err":"at: expected an array of 2 values, got [1]"}
-{"Err":"payload: expected Int or String or Address, got []"}
+{"Err":"payload: expected Positive or String or Address, got []"}
 "#;

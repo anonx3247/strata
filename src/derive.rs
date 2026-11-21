@@ -112,6 +112,9 @@ fn type_pattern(t: &TypeExpr) -> Option<Pattern> {
     match t {
         TypeExpr::Named(n, args) if args.is_empty() => Some(Pattern::Ctor(*n, CtorPat::None)),
         TypeExpr::Named(n, args) => Some(Pattern::Ctor(*n, CtorPat::Type(args.iter().map(type_pattern).collect::<Option<_>>()?))),
+        // a refined member: its base (a union's members are told apart by
+        // their JSON, so the base is enough to know which it is)
+        TypeExpr::Refined(b, _) => type_pattern(b),
         _ => None,
     }
 }
@@ -721,7 +724,9 @@ impl<'a> Expander<'a> {
                 }
                 // a type (a union's member): the type pattern for it
                 Value::Variant(k, _) if k.starts_with("std.typing.") && self.type_of(it).is_ok() => {
-                    let t = self.type_of(it)?;
+                    // its base type (aliases expanded, refinements set aside): the
+                    // members' JSON can't overlap, so the base tells them apart
+                    let t = self.base(&self.type_of(it)?);
                     type_pattern(&t).ok_or_else(|| format!("a union member `{}` can't be told apart at run time: use a named type", crate::printer::ty(&t)))
                 }
                 other => match self.literal(other)? {
