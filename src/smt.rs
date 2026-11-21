@@ -1474,6 +1474,7 @@ impl<'a> Vc<'a> {
             }
         }
         match p {
+            Pattern::For(..) => "false".into(),
             Pattern::Cond(c) => {
                 // `where …`: evaluated with `it` and what is in scope; a fault just means no match
                 self.scopes.push([("it".to_string(), v.clone())].into_iter().collect());
@@ -1751,6 +1752,7 @@ impl<'a> Vc<'a> {
             Expr::Lambda(..) => self.fn_value(e, vec![]).0,
             Expr::Mock(t) => Val::Opaque(format!("`mock {}`", crate::printer::ty(t))),
             Expr::Mut(x) | Expr::Comptime(x) => self.eval(x),
+            Expr::Describe(_) => Val::Opaque("a type's description".into()),
             Expr::Interp(parts) => {
                 for part in parts {
                     if let StrPart::Expr(x, _) = part {
@@ -2624,7 +2626,7 @@ impl<'a> Vc<'a> {
 
     fn stmt(&mut self, s: &Stmt) {
         match s {
-            Stmt::Comment(_) => {}
+            Stmt::Comment(_) | Stmt::ComptimeFor(..) => {}
             Stmt::Expr(e) => {
                 self.eval(e);
             }

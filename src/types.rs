@@ -1762,6 +1762,10 @@ impl<'a> Checker<'a> {
             Expr::Int(_) | Expr::BigInt(_) => Ty::Int,
             Expr::Float(_) => Ty::Float,
             Expr::Tuple(es) => Ty::Con("Tuple".into(), es.iter().map(|e| self.infer(e)).collect()),
+            Expr::Describe(t) => {
+                self.err(format!("`${}` is only known in a derived method", crate::printer::ty(t)));
+                self.fresh()
+            }
             Expr::Comptime(x) => self.infer_at(x, expected),
             Expr::Str(_) => Ty::Str,
             Expr::Bool(_) => Ty::Bool,
@@ -2141,6 +2145,8 @@ impl<'a> Checker<'a> {
                 self.scopes.push(HashMap::default());
                 for s in stmts {
                     match s {
+                        // written out (and checked) where the derived method is specialized
+                        Stmt::ComptimeFor(..) => {}
                         Stmt::Let(p, ann, e) => {
                             let ann_written = ann.as_ref();
                             let ann = ann.as_ref().map(|a| self.lower(a, &HashMap::default()));
@@ -2566,6 +2572,10 @@ impl<'a> Checker<'a> {
     fn pattern(&mut self, p: &Pattern, t: &Ty) -> (Ty, P) {
         match p {
             Pattern::Wild => (t.clone(), P::Any),
+            Pattern::For(..) => {
+                self.err("a match comprehension (`p => e for x in xs`) is only written out in a derived method");
+                (t.clone(), P::Any)
+            }
             Pattern::Bind(x) => {
                 self.bind(x.sym(), t.clone());
                 (t.clone(), P::Any)

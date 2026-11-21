@@ -176,9 +176,7 @@ pub struct TraitDecl {
 /// What a derivable trait says about the types it can be derived for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Derivable {
-    /// The argument naming the description of the type (`t`).
-    pub name: Symbol,
-    /// Its kind, a type of `std.typing` (`Record`, `Sum`, `Choice`).
+    /// The kind, a type of `std.typing` (`Record`, `Sum`, `Choice`).
     pub kind: TypeExpr,
     /// Conditions on the type, checked when it is derived.
     pub requires: Vec<Expr>,
@@ -392,6 +390,10 @@ pub enum Pattern {
     Cond(Box<Expr>),
     /// `Square | Circle`, `0 | 1`: any of the alternatives (they bind the same names).
     Or(Vec<Pattern>),
+    /// `v => body for v in $Self.variants`, as a match arm: one arm per
+    /// element of a list known while compiling, the element known in each
+    /// (the arm's pattern, the loop's pattern, the list).
+    For(Box<Pattern>, Box<Pattern>, Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -431,6 +433,10 @@ pub enum Stmt {
     Assert(Expr),
     /// `//` comment lines before the next statement; no effect when run.
     Comment(Vec<String>),
+    /// `comptime for v in $Self.variants { ... }`: the loop runs while the
+    /// program is compiled; its body is written out once per element, with
+    /// the element known in each copy.
+    ComptimeFor(Pattern, Expr, Expr),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -489,6 +495,9 @@ pub enum Expr {
     /// `comptime e`: evaluated while the program is compiled; the value is
     /// put in the program.
     Comptime(Box<Expr>),
+    /// `$Self`, `$f.type`: the description of a type (a `std.typing.Record`
+    /// or `Sum`), known while the program is compiled.
+    Describe(TypeExpr),
     /// `a..b` (`b` excluded), `a..=b` (`b` included): the integers between,
     /// as a `List[Int]`. An end may be left out only in a slice (`xs[2..]`).
     Range(Option<Box<Expr>>, Option<Box<Expr>>, bool),
@@ -718,7 +727,7 @@ macro_rules! visitor {
                     stmts.into_iter().for_each(|s| $stmt(v, s));
                     v.expr(last)
                 }
-                Expr::Mock(t) => v.ty(t),
+                Expr::Mock(t) | Expr::Describe(t) => v.ty(t),
                 Expr::Interp(parts) => {
                     for p in parts {
                         if let StrPart::Expr(x, _) = p {
@@ -779,7 +788,7 @@ macro_rules! visitor {
                     }
                     v.expr(x)
                 }
-                Stmt::For(p, a, b) => {
+                Stmt::For(p, a, b) | Stmt::ComptimeFor(p, a, b) => {
                     v.pattern(p);
                     v.expr(a);
                     v.expr(b)
@@ -798,6 +807,11 @@ macro_rules! visitor {
                 Pattern::Wild | Pattern::Bind(_) | Pattern::Int(_) | Pattern::Str(_) | Pattern::Bool(_) => {}
                 Pattern::Ctor(_, CtorPat::None) => {}
                 Pattern::Ctor(_, CtorPat::Positional(ps)) | Pattern::List(ps, _) | Pattern::Tuple(ps) | Pattern::Or(ps) => ps.into_iter().for_each(|p| v.pattern(p)),
+                Pattern::For(p, x, xs) => {
+                    v.pattern(p);
+                    v.pattern(x);
+                    v.expr(xs)
+                }
                 Pattern::Ctor(_, CtorPat::Record(fs, _)) => fs.into_iter().for_each(|(_, p)| v.pattern(p)),
                 Pattern::Cond(e) => v.expr(e),
             }

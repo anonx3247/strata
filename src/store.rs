@@ -158,6 +158,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             Expr::Block(stmts, last) => {
                 for s in stmts {
                     match s {
+                        Stmt::ComptimeFor(..) => {}
                         Stmt::Var(_, t, x) => {
                             if let Some(t) = t {
                                 ty(t, out);
