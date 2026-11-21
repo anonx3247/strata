@@ -111,67 +111,20 @@ pub(super) fn class_ranges(c: &regex_syntax::hir::ClassUnicode, mode: Mode) -> V
     }
 }
 
-/// How two patterns' languages relate, over every string the interpreter
-/// can match (so also over the SMT strings): `(a <= b, b <= a, disjoint)`,
-/// each `false` when it does not hold or could not be decided. Decided on
-/// the product of the two patterns' DFAs (as `regex` builds them, on UTF-8
-/// bytes; a string either accepts is valid UTF-8).
+/// How two patterns' languages relate (whole-text matches): `(a <= b,
+/// b <= a, disjoint)`, each `false` when it does not hold or could not be
+/// decided. Decided by `std.regex.relations`, on the product of the two
+/// patterns' DFAs (over code points), run as compile-time code
+/// (`stdlib::regex_value`). Code points past `MAX_CHAR` are in no SMT
+/// string, so what holds of every string holds of the SMT strings too.
 pub fn regex_relations(a: &str, b: &str) -> (bool, bool, bool) {
-    use regex_automata::dfa::{dense, Automaton, StartKind};
-    use regex_automata::util::primitives::StateID;
-    use regex_automata::{Anchored, Input, MatchKind};
-    thread_local! {
-        static DFAS: std::cell::RefCell<HashMap<String, Option<std::rc::Rc<dense::DFA<Vec<u32>>>>>> = Default::default();
+    match crate::stdlib::regex_value("relations", vec![Expr::Str(a.to_string()), Expr::Str(b.to_string())]) {
+        Ok(Expr::Tuple(xs)) => match xs.as_slice() {
+            [Expr::Bool(sub), Expr::Bool(sup), Expr::Bool(disjoint)] => (*sub, *sup, *disjoint),
+            _ => (false, false, false),
+        },
+        _ => (false, false, false),
     }
-    let dfa = |re: &str| {
-        DFAS.with(|c| {
-            c.borrow_mut()
-                .entry(re.to_string())
-                .or_insert_with(|| {
-                    let config = dense::Config::new().match_kind(MatchKind::All).start_kind(StartKind::Anchored).dfa_size_limit(Some(16 << 20)).determinize_size_limit(Some(16 << 20));
-                    let syntax = regex_automata::util::syntax::Config::new().unicode(true).utf8(true).nest_limit(250);
-                    dense::Builder::new().configure(config).syntax(syntax).build(&format!("^(?:{re})$")).ok().map(std::rc::Rc::new)
-                })
-                .clone()
-        })
-    };
-    let (Some(da), Some(db)) = (dfa(a), dfa(b)) else { return (false, false, false) };
-    let start = |d: &dense::DFA<Vec<u32>>| d.start_state_forward(&Input::new("").anchored(Anchored::Yes)).ok();
-    let (Some(sa), Some(sb)) = (start(&da), start(&db)) else { return (false, false, false) };
-    // is there a string with `want(in a, in b)`? `None` if the search is too large
-    let exists = |want: &dyn Fn(bool, bool) -> bool| -> Option<bool> {
-        let mut seen: HashSet<(StateID, StateID)> = HashSet::from_iter([(sa, sb)]);
-        let mut todo = vec![(sa, sb)];
-        while let Some((x, y)) = todo.pop() {
-            let (ex, ey) = (da.next_eoi_state(x), db.next_eoi_state(y));
-            if da.is_quit_state(ex) || db.is_quit_state(ey) {
-                return None;
-            }
-            if want(da.is_match_state(ex), db.is_match_state(ey)) {
-                return Some(true);
-            }
-            for byte in 0..=255u8 {
-                let (nx, ny) = (da.next_state(x, byte), db.next_state(y, byte));
-                if da.is_quit_state(nx) || db.is_quit_state(ny) {
-                    return None;
-                }
-                // every witness is in at least one language: one side must stay alive
-                if (da.is_dead_state(nx) && db.is_dead_state(ny)) || !seen.insert((nx, ny)) {
-                    continue;
-                }
-                if seen.len() > 50_000 {
-                    return None;
-                }
-                todo.push((nx, ny));
-            }
-        }
-        Some(false)
-    };
-    (
-        exists(&|x, y| x && !y) == Some(false),
-        exists(&|x, y| y && !x) == Some(false),
-        exists(&|x, y| x && y) == Some(false),
-    )
 }
 
 pub(super) fn re_empty() -> T {

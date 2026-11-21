@@ -313,7 +313,7 @@ fn literal_patterns(p: &mut Program) -> HashMap<String, String> {
     let mut patterns: Vec<String> = vec![];
     for d in &p.decls {
         let mut k = d.kind.clone();
-        decl_exprs_mut(&mut k, |e| {
+        crate::ast::decl_all_exprs_mut(&mut k, |e| {
             if let Expr::Call(f, args) = e {
                 if let (Expr::Var(n), [_, Expr::Str(s)]) = (&**f, args.as_slice()) {
                     if n.as_str() == "matches" && !patterns.contains(s) {
@@ -4525,7 +4525,7 @@ impl<'m, 'a> Func<'m, 'a> {
 
     /// `call_fn`, with the places of the arguments (for `mut` parameters).
     fn call_fn_at(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
-        let f = &self.m.env.fns[&Symbol::new(name)];
+        let f = self.m.env.fns.get(&Symbol::new(name)).ok_or_else(|| format!("`{name}` is not in the program"))?;
         if f.params.len() != vs.len() {
             return Err(format!("`{name}` takes {} arguments", f.params.len()));
         }
@@ -7130,13 +7130,20 @@ fn ty_texpr(t: &Ty) -> TypeExpr {
     }
 }
 
-/// Strings matching `re`, made now (as the interpreter's generator makes them).
+/// Strings matching `re`, made now (`std.regex.samples`: the same ones
+/// every time), or why there are none.
 fn regex_samples(re: &str) -> Res<Vec<String>> {
-    use rand::SeedableRng;
-    use rand::RngExt;
-    let mut parser = regex_syntax::ParserBuilder::new().unicode(false).build();
-    let hir = parser.parse(re).map_err(|e| format!("bad regex {re:?}: {e}"))?;
-    let g = rand_regex::Regex::with_hir(hir, 8).map_err(|e| e.to_string())?;
-    let mut rng = rand::rngs::StdRng::seed_from_u64(7);
-    Ok((0..32).map(|_| rng.sample::<String, _>(&g)).collect())
+    let v = crate::stdlib::regex_value("samples", vec![Expr::Str(re.to_string()), Expr::Int(32), Expr::Int(7)])?;
+    let texts = |xs: &[Expr]| xs.iter().map(|x| if let Expr::Str(s) = x { Ok(s.clone()) } else { Err(format!("a sample of {re:?} is not a string")) }).collect::<Res<Vec<String>>>();
+    match v {
+        Expr::Ctor(c, CtorArgs::Positional(xs)) if c.as_str().ends_with("Ok") => match xs.as_slice() {
+            [Expr::List(xs)] => texts(xs),
+            _ => Err(format!("the samples of {re:?} are not a list")),
+        },
+        Expr::Ctor(c, CtorArgs::Positional(xs)) if c.as_str().ends_with("Err") => match xs.as_slice() {
+            [Expr::Str(m)] => Err(format!("can't generate strings matching {re:?}: {m}")),
+            _ => Err(format!("can't generate strings matching {re:?}")),
+        },
+        _ => Err(format!("no samples of {re:?}")),
+    }
 }
