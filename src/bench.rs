@@ -35,6 +35,12 @@ fn bench() {
         let resolve = time(&mut || drop(std::hint::black_box(crate::resolve::resolve(&p))));
         let graph = time(&mut || drop(std::hint::black_box(crate::store::graph(&p))));
         let check = time(&mut || drop(std::hint::black_box(crate::types::check(&p))));
+        let env = time(&mut || drop(std::hint::black_box(crate::types::Env::new(&p))));
+        let (e, _) = crate::types::Env::new(&p);
+        let refinements = time(&mut || drop(std::hint::black_box(crate::verify::static_refinements(&p, &e))));
+        let full = time(&mut || drop(std::hint::black_box(crate::full_check(&p))));
+        let load = time(&mut || drop(std::hint::black_box(crate::package::program(&root.join(name)).unwrap())));
+        println!("{name:<15} load {load:>9.1?}  env {env:>9.1?}  static_refinements {refinements:>9.1?}  full_check {full:>9.1?}");
         let hashes = time(&mut || p.decls.iter().for_each(|d| drop(std::hint::black_box((crate::store::self_hash(d), crate::store::interface_hash(d), crate::store::code_hash(d))))));
         println!("{name:<15} parse {parse:>9.1?}  decode {decode:>9.1?}  clone {clone:>9.1?}  resolve {resolve:>9.1?}  graph {graph:>9.1?}  check {check:>9.1?}  hashes {hashes:>9.1?}");
     }
