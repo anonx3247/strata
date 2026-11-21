@@ -564,6 +564,84 @@ Str *strata_json_int(int64_t n) {
   return q;
 }
 
+// A 64-bit integer as an `Int` (a big integer when it isn't small).
+int64_t strata_int_from_i64(int64_t raw) {
+  if (!is_big(raw)) return raw;
+  uint64_t m = raw < 0 ? (uint64_t)0 - (uint64_t)raw : (uint64_t)raw;
+  Num x = {raw < 0 ? -1 : 1, 0, digits(2)};
+  x.d[x.n++] = (uint32_t)m;
+  if (m >> 32) x.d[x.n++] = (uint32_t)(m >> 32);
+  return int_of(x);
+}
+
+// ---- generated values (`mock`) ----
+//
+// As the interpreter's generators (src/generate.rs): the generated code
+// picks with these, from bounds the compiler read in the refinements. The
+// numbers are a fixed sequence (splitmix64 from 7), not the interpreter's.
+
+static uint64_t rng = 7;
+
+static uint64_t next_random(void) {
+  uint64_t z = (rng += UINT64_C(0x9E3779B97F4A7C15));
+  z = (z ^ (z >> 30)) * UINT64_C(0xBF58476D1CE4E5B9);
+  z = (z ^ (z >> 27)) * UINT64_C(0x94D049BB133111EB);
+  return z ^ (z >> 31);
+}
+
+// From `lo` to `hi`, both included (as 64-bit values).
+int64_t strata_random(int64_t lo, int64_t hi) {
+  if (hi <= lo) return lo;
+  uint64_t span = (uint64_t)hi - (uint64_t)lo + 1;
+  return span ? (int64_t)((uint64_t)lo + next_random() % span) : (int64_t)next_random();
+}
+
+double strata_random_unit(void) { return (double)(next_random() >> 11) * 0x1.0p-53; }
+
+// One of `k` intervals (pairs, open ends already brought in), then its low
+// end, its high end, 0, or anything in it (boundary values find bugs).
+static int64_t pick_int(const int64_t *pairs, int64_t k) {
+  if (k == 0) return 0;
+  int64_t i = strata_random(0, k - 1), lo = pairs[2 * i], hi = pairs[2 * i + 1];
+  switch (strata_random(0, 9)) {
+  case 0:
+    return lo;
+  case 1:
+    return hi;
+  case 2:
+    if (lo <= 0 && 0 <= hi) return 0;
+    // fall through
+  default:
+    return strata_random(lo, hi);
+  }
+}
+
+int64_t strata_gen_int(const int64_t *pairs, int64_t k) { return strata_int_from_i64(pick_int(pairs, k)); }
+
+// A Float: a whole number from the intervals, and a fraction when the next
+// integer is still allowed (`raw`, the intervals as the refinements say).
+double strata_gen_float(const int64_t *pairs, int64_t k, const int64_t *raw, int64_t rk) {
+  int64_t whole = pick_int(pairs, k);
+  double frac = strata_random_unit();
+  int inside = 0;
+  for (int64_t i = 0; i < rk && whole < INT64_MAX; i++)
+    if (raw[2 * i] <= whole + 1 && whole + 1 <= raw[2 * i + 1]) inside = 1;
+  return inside ? (double)whole + frac : (double)whole;
+}
+
+int64_t strata_gen_len(const int64_t *pairs, int64_t k) {
+  if (k == 0) return 0;
+  int64_t i = strata_random(0, k - 1), lo = pairs[2 * i] > 0 ? pairs[2 * i] : 0, hi = pairs[2 * i + 1] > 0 ? pairs[2 * i + 1] : 0;
+  return strata_random(lo, hi > lo ? hi : lo);
+}
+
+Str *strata_gen_string(int64_t n) {
+  static const char CH[] = "abcdefghijklmnopqrstuvwxyz0123456789 _-";
+  Str *s = str_alloc(n);
+  for (int64_t i = 0; i < n; i++) s->bytes[i] = CH[strata_random(0, (int64_t)sizeof CH - 2)];
+  return s;
+}
+
 _Noreturn void strata_overflow(void) {
   strata_fault(4, str_c("integer overflow"));
 }
@@ -874,6 +952,7 @@ static void catch_overflow(void) {
 // The program's arguments, without its name; a closed pipe ends it quietly.
 void strata_init(int32_t argc, char **argv) {
   depth = 0;
+  rng = 7;
   catch_overflow();
   prog_argc = argc > 0 ? argc - 1 : 0;
   prog_argv = argv + 1;

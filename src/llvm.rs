@@ -210,7 +210,7 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, box_tags: HashMap::default(), regexes: HashMap::default(), vtables: HashMap::default(), dispatch: vec![] };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![] };
     let ret = m.lower(&main.ret, &HashMap::default())?;
     // C's `main` first: it asks for the program's `main`, with its capabilities
     m.entry(entry, &main, &ret)?;
@@ -282,6 +282,13 @@ declare i64 @strata_int_mul(i64, i64)
 declare i64 @strata_int_cmp(i64, i64)
 declare i1 @strata_int_eq(i64, i64)
 declare i64 @strata_int_lit(ptr)
+declare i64 @strata_int_from_i64(i64)
+declare i64 @strata_random(i64, i64)
+declare double @strata_random_unit()
+declare i64 @strata_gen_int(ptr, i64)
+declare double @strata_gen_float(ptr, i64, ptr, i64)
+declare i64 @strata_gen_len(ptr, i64)
+declare ptr @strata_gen_string(i64)
 declare double @strata_int_to_float(i64)
 declare i64 @strata_mod(i64, i64)
 declare double @strata_fmod(double, double)
@@ -454,6 +461,8 @@ struct Module<'a> {
     box_tags: HashMap<String, i64>,
     /// The tables of each regex `matches` uses (its globals' name, and its classes).
     regexes: HashMap<String, (String, usize)>,
+    /// Generators made (by the type and hints they generate), and mock methods.
+    gens: HashMap<String, String>,
     /// The tables made for each trait type (by its key), with the implementation.
     vtables: HashMap<String, Vec<(String, Ty)>>,
     /// Dispatchers for methods with type parameters of their own, called
@@ -2803,7 +2812,13 @@ impl<'m, 'a> Func<'m, 'a> {
             // evaluated at build time once deriving lands; until then, as written
             Expr::Comptime(x) => self.expr(x)?,
             Expr::Describe(_) => return self.unsupported("a type's description outside a derived method"),
-            Expr::Mock(_) => return self.unsupported("`mock`"),
+            Expr::Mock(t) => {
+                let tr_ty = self.lower(t)?;
+                if !self.is_dyn(&tr_ty) {
+                    return self.unsupported(&format!("`mock` of `{}`, which is not a trait", key(&tr_ty)));
+                }
+                self.mock_value(&tr_ty)?
+            }
             // rewritten into builtin calls when the program is resolved
             Expr::Range(..) | Expr::Index(..) | Expr::Comp(..) | Expr::Dict(..) | Expr::Set(..) => return self.unsupported("a range, slice, comprehension or collection literal not desugared"),
         })
@@ -4900,6 +4915,23 @@ impl Module<'_> {
         h.emit("%vt = load i64, ptr %pair".into());
         let s = h.field(&pair, 0, &Ty::Int)?;
         for (vt, imp) in tables {
+            if let Some(mocked) = mock_of(imp) {
+                // a mock's: a generated result
+                let f = h.mock_method(&mocked, trm, m, targs)?;
+                let (is, yes, no, mine) = (h.fresh("is"), h.fresh_label("mock"), h.fresh_label("next"), h.fresh("mine"));
+                h.emit(format!("{mine} = ptrtoint ptr {vt} to i64"));
+                h.emit(format!("{is} = icmp eq i64 %vt, {mine}"));
+                h.emit(format!("br i1 {is}, label %{yes}, label %{no}"));
+                h.block(&yes);
+                let r = h.call(&ret, &f, &rest)?;
+                if has_value(&ret) {
+                    h.emit(format!("ret {} {}", h.m.ll(&ret)?, r.1));
+                } else {
+                    h.emit("ret void".into());
+                }
+                h.block(&no);
+                continue;
+            }
             let head = Module::head(imp).ok_or(format!("a `{}` can't be a `{trm}`", key(imp)))?;
             let (_, imp_m) = h.m.resolve_method(&crate::types::trait_call(trm, m), &head).ok_or(format!("`{head}` has no method `{m}`"))?;
             let symbol = h.m.want_method(MethodInst { tr: trm.to_string(), method: imp_m, recv: imp.clone(), head, targs: targs.to_vec() });
@@ -5342,4 +5374,607 @@ impl Func<'_, '_> {
         }))
     }
 
+}
+
+// ---- mocks and generated values ----
+//
+// `mock T` is a value of trait `T` whose methods generate their results, as
+// the interpreter's (src/interp.rs, `mock_call`): `requires` checked, then a
+// value of the result's type generated until `ensures` holds (200 tries).
+// Values are generated as src/generate.rs does: integers from the intervals
+// the refinements allow (often their ends, or 0), lengths likewise, strings
+// matching a refinement's regex (from samples made when compiling), and
+// rejection until the refinement holds (300 tries); past depth 3, the
+// smallest choices, so recursive types end. The random numbers are the
+// runtime's (runtime.c), not the interpreter's.
+
+/// The marker type of a mock's table (among a trait's tables).
+fn mock_marker(tr_ty: &Ty) -> Ty {
+    Ty::Con(Symbol::new("<mock>"), vec![tr_ty.clone()])
+}
+
+fn mock_of(imp: &Ty) -> Option<Ty> {
+    match imp {
+        Ty::Con(n, a) if n == "<mock>" => a.first().cloned(),
+        _ => None,
+    }
+}
+
+/// What a type's refinements say about the values to generate (as generate.rs).
+#[derive(Clone, Debug, Default)]
+struct Hints {
+    ints: Option<crate::types::ints::Ints>,
+    lens: Option<crate::types::ints::Ints>,
+    regex: Option<String>,
+}
+
+impl Hints {
+    fn ints(&self) -> crate::types::ints::Ints {
+        self.ints.clone().unwrap_or(vec![(crate::types::ints::MIN, crate::types::ints::MAX)])
+    }
+    fn lens(&self) -> crate::types::ints::Ints {
+        self.lens.clone().unwrap_or(vec![(0, crate::types::ints::MAX)])
+    }
+    fn and(&self, pred: &Expr) -> Hints {
+        use crate::types::ints;
+        Hints { ints: Some(ints::and(&self.ints(), &ints::hull(pred))), lens: Some(ints::and(&self.lens(), &ints::len_hull(pred))), regex: regex_of(pred).or_else(|| self.regex.clone()) }
+    }
+}
+
+/// The regex of a `matches(it, "...")` among a predicate's `&&`s.
+fn regex_of(e: &Expr) -> Option<String> {
+    let is_it = |e: &Expr| matches!(e, Expr::Var(v) if v == "it");
+    match e {
+        Expr::Bin(BinOp::And, l, r) => regex_of(l).or_else(|| regex_of(r)),
+        Expr::Call(f, a) if matches!(&**f, Expr::Var(n) if n == "matches") && a.len() == 2 && is_it(&a[0]) => match &a[1] {
+            Expr::Str(re) => Some(re.clone()),
+            _ => None,
+        },
+        Expr::Method(r, m, a) if m == "matches" && is_it(r) && a.len() == 1 => match &a[0] {
+            Expr::Str(re) => Some(re.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// An interval set with open ends brought within `below` / `above` of the
+/// finite one (or around 0), as generate.rs's `interval`.
+fn bounded(set: &crate::types::ints::Ints, below: i128, above: i128) -> Vec<(i64, i64)> {
+    use crate::types::ints::{MAX, MIN};
+    set.iter()
+        .map(|&(a, b)| {
+            let (lo, hi) = match (a == MIN, b == MAX) {
+                (true, true) => (-below, below),
+                (true, false) => (b - below, b),
+                (false, true) => (a, a + above),
+                (false, false) => (a, b),
+            };
+            let lo = lo.max(MIN);
+            (lo as i64, hi.min(MAX).max(lo) as i64)
+        })
+        .collect()
+}
+
+impl Func<'_, '_> {
+    /// A new mock of trait type `tr_ty`: a pair of its mock table and nothing.
+    fn mock_value(&mut self, tr_ty: &Ty) -> Res<V> {
+        let vt = self.mock_table(tr_ty)?;
+        let (p, a) = (self.fresh("mock"), self.fresh("vt"));
+        self.emit(format!("{p} = call ptr @strata_alloc(i64 16)"));
+        self.emit(format!("{a} = ptrtoint ptr {vt} to i64"));
+        self.emit(format!("store i64 {a}, ptr {p}"));
+        self.set_field(&p, 0, &(Ty::Int, "0".into()))?;
+        Ok(self.temp((tr_ty.clone(), p)))
+    }
+
+    /// The table of mocks of `tr_ty` (made once): shown as `<mock T>`, holding
+    /// nothing, equal to each other, and each method a generated result.
+    fn mock_table(&mut self, tr_ty: &Ty) -> Res<String> {
+        let Ty::Con(tr, _) = tr_ty else { unreachable!() };
+        let name = format!("@\"vt:{}@<mock>\"", key(tr_ty));
+        if !self.m.helpers.insert(name.clone()) {
+            return Ok(name);
+        }
+        self.m.vtables.entry(key(tr_ty)).or_default().push((name.clone(), mock_marker(tr_ty)));
+        let tag = key(tr_ty).replace('"', "");
+        let shown = self.m.string(&format!("\"<mock {tag}>\""));
+        let plain = self.m.string(&format!("\"<mock {tag}>\""));
+        let mut entries = vec![];
+        for (what, text) in [("json", format!("  call void @strata_dup(ptr {shown})\n  ret ptr {shown}")), ("show", format!("  call void @strata_dup(ptr {plain})\n  ret ptr {plain}"))] {
+            let f = format!("@\"mock{what}:{}\"", key(tr_ty));
+            writeln!(self.m.body, "define ptr {f}(i64 %v) {{\nentry:\n{text}\n}}\n").unwrap();
+            entries.push(f);
+        }
+        let f = format!("@\"mocknone:{}\"", key(tr_ty));
+        writeln!(self.m.body, "define void {f}(i64 %v) {{\nentry:\n  ret void\n}}\n").unwrap();
+        entries.push(f.clone());
+        entries.push(f);
+        let f = format!("@\"mockeq:{}\"", key(tr_ty));
+        writeln!(self.m.body, "define i1 {f}(i64 %v, i64 %w) {{\nentry:\n  ret i1 true\n}}\n").unwrap();
+        entries.push(f);
+        for (trm, m) in self.dyn_methods(tr) {
+            let f = format!("@\"mockdyn:{trm}::{m}@{}\"", key(tr_ty));
+            entries.push(f.clone());
+            let sig_ok = self.dyn_signature(tr_ty, &trm, &m).ok().filter(|(tm, _)| tm.decl.type_params.is_empty());
+            let Some((tm, mut sub)) = sig_ok else {
+                writeln!(self.m.body, "define void {f}() {{\nentry:\n  unreachable\n}}\n").unwrap();
+                continue;
+            };
+            sub.insert(Symbol::new("Self"), tr_ty.clone());
+            let made = self.mock_method(tr_ty, &trm, &m, &[])?;
+            let ret = self.m.lower(&tm.decl.ret, &sub)?;
+            // the table's signature: `self` first (its slot, or a pointer to it)
+            let mut sig = vec![if tm.decl.params[0].mutable { "ptr %self".to_string() } else { "i64 %self".to_string() }];
+            let mut args = vec![];
+            for (k, p) in tm.decl.params.iter().skip(1).enumerate() {
+                let t = self.m.lower(&p.ty, &sub)?;
+                if p.mutable {
+                    sig.push(format!("ptr %a{k}"));
+                    args.push(format!("ptr %a{k}"));
+                } else if has_value(&t) {
+                    sig.push(format!("{} %a{k}", self.m.ll(&t)?));
+                    args.push(format!("{} %a{k}", self.m.ll(&t)?));
+                }
+            }
+            let rl = self.m.ll(&ret)?;
+            let body = if has_value(&ret) { format!("  %r = call {rl} {made}({})\n  ret {rl} %r", args.join(", ")) } else { format!("  call void {made}({})\n  ret void", args.join(", ")) };
+            writeln!(self.m.body, "define {rl} {f}({}) {{\nentry:\n{body}\n}}\n", sig.join(", ")).unwrap();
+        }
+        let list: Vec<String> = entries.iter().map(|e| format!("ptr {e}")).collect();
+        writeln!(self.m.globals, "{name} = private constant [{} x ptr] [{}], align 8", entries.len(), list.join(", ")).unwrap();
+        Ok(name)
+    }
+
+    /// A mock's method `m` of trait `trm` (with these type arguments of its
+    /// own): its parameters (no `self`), `requires` checked, then a result
+    /// generated until `ensures` holds.
+    fn mock_method(&mut self, tr_ty: &Ty, trm: &str, m: &str, targs: &[Ty]) -> Res<String> {
+        let name = format!("@\"mock:{trm}::{m}@{}[{}]\"", key(tr_ty), targs.iter().map(key).collect::<Vec<_>>().join(", "));
+        if !self.m.helpers.insert(name.clone()) {
+            return Ok(name);
+        }
+        let (tm, mut sub) = self.dyn_signature(tr_ty, trm, m)?;
+        sub.insert(Symbol::new("Self"), tr_ty.clone());
+        for (p, t) in tm.decl.type_params.iter().zip(targs) {
+            sub.insert(p.clone(), t.clone());
+        }
+        let ret = self.m.lower(&tm.decl.ret, &sub)?;
+        let tn = crate::names::short(trm).to_string();
+        let mut h = Func::new(self.m, sub.clone());
+        h.block("start");
+        let mut sig = vec![];
+        for (k, p) in tm.decl.params.iter().enumerate().skip(1) {
+            let t = h.m.lower(&p.ty, &sub)?;
+            if p.mutable {
+                sig.push(format!("ptr %a{k}"));
+                h.scopes[0].vars.insert(p.name.to_string(), Local { t: t.clone(), slot: format!("%a{k}"), declared: None });
+                continue;
+            }
+            if has_value(&t) {
+                sig.push(format!("{} %a{k}", h.m.ll(&t)?));
+            }
+            let slot = h.local(&p.name, &t, None)?;
+            h.store(&(t, format!("%a{k}")), &slot)?;
+        }
+        for r in &tm.decl.requires {
+            h.push_scope(true);
+            let ok = h.expr(r)?;
+            h.pop_scope()?;
+            let (pass, fail) = (h.fresh_label("requires.ok"), h.fresh_label("requires.fail"));
+            h.cond_br(&ok, &pass, &fail);
+            h.block(&fail);
+            h.fault(Fault::Requires, vec![Part::Lit(format!("precondition of `{tn}.{m}` violated: requires {}", crate::printer::expr(r, 0)))])?;
+            h.block(&pass);
+        }
+        // the result's written type, with the trait's types in
+        let written = h.written(&tm.decl.ret, &sub);
+        let rl = h.m.ll(&ret)?;
+        let count = h.fresh("tries");
+        writeln!(h.allocas, "  {count} = alloca i64").unwrap();
+        h.emit(format!("store i64 0, ptr {count}"));
+        let (head, body, fail) = (h.fresh_label("mock.try"), h.fresh_label("mock.make"), h.fresh_label("mock.give_up"));
+        h.br(&head);
+        h.block(&head);
+        let n = h.fresh("n");
+        h.emit(format!("{n} = load i64, ptr {count}"));
+        let more = h.fresh("more");
+        h.emit(format!("{more} = icmp slt i64 {n}, 200"));
+        h.cond_br(&bool_v(&more), &body, &fail);
+        h.block(&body);
+        let n1 = h.fresh("n");
+        h.emit(format!("{n1} = add i64 {n}, 1"));
+        h.emit(format!("store i64 {n1}, ptr {count}"));
+        let v = h.generate(&written, &Hints::default(), "0")?;
+        let v = (ret.clone(), v.1);
+        // each `ensures`, with `it` the result
+        let mut ok = bool_v("true");
+        if !tm.decl.ensures.is_empty() {
+            h.push_scope(false);
+            let slot = h.local("it", &ret, None)?;
+            h.store(&v, &slot)?;
+            for en in &tm.decl.ensures {
+                h.push_scope(true);
+                let e = h.expr(en)?;
+                h.pop_scope()?;
+                let r = h.fresh("and");
+                h.emit(format!("{r} = and i1 {}, {}", ok.1, e.1));
+                ok = bool_v(&r);
+            }
+            h.pop_scope()?;
+        }
+        let (good, retry) = (h.fresh_label("mock.ok"), h.fresh_label("mock.retry"));
+        h.cond_br(&ok, &good, &retry);
+        h.block(&retry);
+        h.drop_value(&v)?;
+        h.br(&head);
+        h.block(&good);
+        if has_value(&ret) {
+            h.emit(format!("ret {rl} {}", v.1));
+        } else {
+            h.emit("ret void".into());
+        }
+        h.block(&fail);
+        h.fault(Fault::Runtime, vec![Part::Lit(format!("mock {tn}.{m}: could not generate a result satisfying its `ensures`"))])?;
+        let text = h.finish();
+        writeln!(self.m.body, "define {rl} {name}({}) {{\n{text}}}\n", sig.join(", ")).unwrap();
+        Ok(name)
+    }
+
+    /// A written type with the instance's types written in (`Self`, a trait's parameters).
+    fn written(&self, t: &TypeExpr, sub: &HashMap<Symbol, Ty>) -> TypeExpr {
+        let texprs: HashMap<Symbol, TypeExpr> = sub.iter().map(|(k, v)| (k.clone(), ty_texpr(v))).collect();
+        crate::types::subst_texpr(t, &texprs)
+    }
+
+    /// A value of written type `t` (owned, not a temporary), at `depth`.
+    fn generate(&mut self, t: &TypeExpr, hints: &Hints, depth: &str) -> Res<V> {
+        let f = self.gen_fn(t, hints)?;
+        let ty = self.m.lower(t, &HashMap::default())?;
+        if !has_value(&ty) {
+            self.emit(format!("call void {f}(i64 {depth})"));
+            return Ok((ty, String::new()));
+        }
+        let r = self.fresh("gen");
+        self.emit(format!("{r} = call {} {f}(i64 {depth})", self.m.ll(&ty)?));
+        Ok((ty, r))
+    }
+
+    /// The generator of written type `t` with `hints` (made once): `(i64 depth) -> t`.
+    fn gen_fn(&mut self, t: &TypeExpr, hints: &Hints) -> Res<String> {
+        let k = format!("{}|{:?}", crate::printer::ty(t), hints);
+        if let Some(n) = self.m.gens.get(&k) {
+            return Ok(n.clone());
+        }
+        let name = format!("@\"gen.{}\"", self.m.gens.len());
+        self.m.gens.insert(k, name.clone());
+        let ty = self.m.lower(t, &HashMap::default())?;
+        let mut h = Func::new(self.m, HashMap::default());
+        h.block("start");
+        let v = h.produce(t, &ty, hints)?;
+        if has_value(&ty) {
+            h.emit(format!("ret {} {}", h.m.ll(&ty)?, v.1));
+        } else {
+            h.emit("ret void".into());
+        }
+        let text = h.finish();
+        let ll = self.m.ll(&ty)?;
+        writeln!(self.m.body, "define {ll} {name}(i64 %depth) {{\n{text}}}\n").unwrap();
+        Ok(name)
+    }
+
+    /// Integer intervals as a constant table of pairs: (its operand, how many).
+    fn pairs(&mut self, ps: &[(i64, i64)]) -> (String, usize) {
+        let g = format!("@\"pairs.{}\"", self.m.helpers.len());
+        self.m.helpers.insert(g.clone());
+        let cells: Vec<String> = ps.iter().flat_map(|(a, b)| [format!("i64 {a}"), format!("i64 {b}")]).collect();
+        writeln!(self.m.globals, "{g} = private unnamed_addr constant [{} x i64] [{}], align 8", cells.len(), cells.join(", ")).unwrap();
+        (g, ps.len())
+    }
+
+    /// `depth > 3`: past it, the smallest choices.
+    fn deep(&mut self) -> V {
+        let r = self.fresh("deep");
+        self.emit(format!("{r} = icmp sgt i64 %depth, 3"));
+        bool_v(&r)
+    }
+
+    /// The body of a generator: an owned value of `t` (of type `ty`) in `%depth`.
+    fn produce(&mut self, t: &TypeExpr, ty: &Ty, hints: &Hints) -> Res<V> {
+        use crate::types::ints;
+        let next_depth = |s: &mut Self| {
+            let d = s.fresh("d");
+            s.emit(format!("{d} = add i64 %depth, 1"));
+            d
+        };
+        if let TypeExpr::Named(n, args) = t {
+            if n == crate::types::TYPE_ARG {
+                let s = self.string(args.first().map(crate::types::texpr_head).unwrap_or_default().as_str());
+                return Ok(s);
+            }
+        }
+        if let TypeExpr::Refined(b, pred) = t {
+            let h2 = hints.and(pred);
+            return self.until(t, ty, 300, |s| s.generate(b, &h2, "%depth"));
+        }
+        if let TypeExpr::Union(ms) = t {
+            let i = self.fresh("which");
+            self.emit(format!("{i} = call i64 @strata_random(i64 0, i64 {})", ms.len() - 1));
+            let slot = self.fresh("u");
+            writeln!(self.allocas, "  {slot} = alloca {}", self.m.ll(ty)?).unwrap();
+            let end = self.fresh_label("u.end");
+            let labels: Vec<String> = ms.iter().map(|_| self.fresh_label("u.member")).collect();
+            let cases: Vec<String> = labels.iter().enumerate().map(|(k, l)| format!("i64 {k}, label %{l}")).collect();
+            self.emit(format!("switch i64 {i}, label %{} [ {} ]", labels[0], cases.join(" ")));
+            for (m, l) in ms.iter().zip(&labels) {
+                self.block(l);
+                self.push_scope(true);
+                let v = self.generate(m, &Hints::default(), "%depth")?;
+                let v = self.temp(v);
+                let u = self.coerce(v, ty)?;
+                let u = self.take(u);
+                self.pop_scope()?;
+                self.emit(format!("store ptr {}, ptr {slot}", u.1));
+                self.br(&end);
+            }
+            self.block(&end);
+            let r = self.fresh("uv");
+            self.emit(format!("{r} = load ptr, ptr {slot}"));
+            return Ok((ty.clone(), r));
+        }
+        let TypeExpr::Named(n, args) = t else {
+            return match t {
+                TypeExpr::Unit => Ok((Ty::Unit, String::new())),
+                _ => self.unsupported(&format!("generating a value of `{}`", crate::printer::ty(t))),
+            };
+        };
+        match n.as_str() {
+            "Int" => {
+                let (g, k) = self.pairs(&bounded(&hints.ints(), 1000, 100));
+                let r = self.fresh("i");
+                self.emit(format!("{r} = call i64 @strata_gen_int(ptr {g}, i64 {k})"));
+                return Ok((Ty::Int, r));
+            }
+            "Float" => {
+                let (g, k) = self.pairs(&bounded(&hints.ints(), 1000, 100));
+                let raw: Vec<(i64, i64)> = hints.ints().iter().map(|&(a, b)| (a.max(ints::MIN) as i64, b.min(ints::MAX) as i64)).collect();
+                let (rg, rk) = self.pairs(&raw);
+                let r = self.fresh("f");
+                self.emit(format!("{r} = call double @strata_gen_float(ptr {g}, i64 {k}, ptr {rg}, i64 {rk})"));
+                return Ok((Ty::Float, r));
+            }
+            "Bool" => {
+                let (x, r) = (self.fresh("b"), self.fresh("b"));
+                self.emit(format!("{x} = call i64 @strata_random(i64 0, i64 1)"));
+                self.emit(format!("{r} = trunc i64 {x} to i1"));
+                return Ok(bool_v(&r));
+            }
+            "Unit" => return Ok((Ty::Unit, String::new())),
+            "String" => {
+                if let Some(re) = &hints.regex {
+                    // samples made now, one picked at run time
+                    let samples = regex_samples(re)?;
+                    let consts: Vec<String> = samples.iter().map(|x| self.m.string(x)).collect();
+                    let g = format!("@\"samples.{}\"", self.m.helpers.len());
+                    self.m.helpers.insert(g.clone());
+                    writeln!(self.m.globals, "{g} = private unnamed_addr constant [{} x ptr] [{}], align 8", consts.len(), consts.iter().map(|c| format!("ptr {c}")).collect::<Vec<_>>().join(", ")).unwrap();
+                    let (i, at, r) = (self.fresh("which"), self.fresh("at"), self.fresh("s"));
+                    self.emit(format!("{i} = call i64 @strata_random(i64 0, i64 {})", consts.len() - 1));
+                    self.emit(format!("{at} = getelementptr ptr, ptr {g}, i64 {i}"));
+                    self.emit(format!("{r} = load ptr, ptr {at}"));
+                    return Ok((Ty::Str, r));
+                }
+                let (g, k) = self.pairs(&bounded(&hints.lens(), 0, 8));
+                let (len, r) = (self.fresh("len"), self.fresh("s"));
+                self.emit(format!("{len} = call i64 @strata_gen_len(ptr {g}, i64 {k})"));
+                self.emit(format!("{r} = call ptr @strata_gen_string(i64 {len})"));
+                return Ok((Ty::Str, r));
+            }
+            "Tuple" => {
+                self.push_scope(true);
+                let d = next_depth(self);
+                let mut vs = vec![];
+                for a in args {
+                    let v = self.generate(a, &Hints::default(), &d)?;
+                    vs.push(self.temp(v));
+                }
+                let b = self.block_of(0, &vs)?;
+                self.pop_scope()?;
+                return Ok((ty.clone(), b));
+            }
+            "List" | "Set" | "Dict" => {
+                // a list of the elements (pairs for a dict), then the set or dict made of it
+                let el = match n.as_str() {
+                    "Dict" => TypeExpr::Named(Symbol::new("Tuple"), args.clone()),
+                    _ => args.first().cloned().unwrap_or(TypeExpr::Unit),
+                };
+                let lty = Ty::Con(Symbol::new("List"), vec![self.m.lower(&el, &HashMap::default())?]);
+                let deep = self.deep();
+                let len = self.fresh("len");
+                if n == "List" {
+                    let (g, k) = self.pairs(&bounded(&hints.lens(), 0, 4));
+                    let shortest = hints.lens().first().map_or(0, |&(lo, _)| lo.max(0) as i64);
+                    let any = self.fresh("len");
+                    self.emit(format!("{any} = call i64 @strata_gen_len(ptr {g}, i64 {k})"));
+                    self.emit(format!("{len} = select i1 {}, i64 {shortest}, i64 {any}", deep.1));
+                } else {
+                    let any = self.fresh("len");
+                    self.emit(format!("{any} = call i64 @strata_random(i64 0, i64 4)"));
+                    self.emit(format!("{len} = select i1 {}, i64 0, i64 {any}", deep.1));
+                }
+                let d = next_depth(self);
+                let acc = self.fresh("acc");
+                writeln!(self.allocas, "  {acc} = alloca ptr").unwrap();
+                let l0 = self.call(&lty, "@strata_list_new", &[(Ty::Int, len.clone())])?;
+                self.emit(format!("store ptr {}, ptr {acc}", l0.1));
+                let counter = self.fresh("k");
+                writeln!(self.allocas, "  {counter} = alloca i64").unwrap();
+                self.emit(format!("store i64 0, ptr {counter}"));
+                let (head, body, end) = (self.fresh_label("gen.each"), self.fresh_label("gen.el"), self.fresh_label("gen.done"));
+                self.br(&head);
+                self.block(&head);
+                let i = self.fresh("i");
+                self.emit(format!("{i} = load i64, ptr {counter}"));
+                let more = self.fresh("more");
+                self.emit(format!("{more} = icmp slt i64 {i}, {len}"));
+                self.cond_br(&bool_v(&more), &body, &end);
+                self.block(&body);
+                let x = self.generate(&el, &Hints::default(), &d)?;
+                let s = self.to_slot(&x)?;
+                let cur = self.fresh("cur");
+                self.emit(format!("{cur} = load ptr, ptr {acc}"));
+                let counted = bool_v(if self.counted(&x.0) { "true" } else { "false" });
+                let next = self.call(&lty, "@strata_list_push", &[(lty.clone(), cur.clone()), (Ty::Int, s), counted])?;
+                self.drop_value(&(lty.clone(), cur))?;
+                self.emit(format!("store ptr {}, ptr {acc}", next.1));
+                let i1 = self.fresh("i");
+                self.emit(format!("{i1} = add i64 {i}, 1"));
+                self.emit(format!("store i64 {i1}, ptr {counter}"));
+                self.br(&head);
+                self.block(&end);
+                let r = self.fresh("l");
+                self.emit(format!("{r} = load ptr, ptr {acc}"));
+                if n == "List" {
+                    return Ok((ty.clone(), r));
+                }
+                // a set or dict: from the list, as `set` and `dict` make one
+                self.push_scope(true);
+                let l = self.temp((lty.clone(), r));
+                let kt = self.m.lower(&args[0], &HashMap::default())?;
+                let less = self.less(&kt)?;
+                let made = self.call_fn(&prelude(if n == "Set" { "set_from" } else { "dict_from" }), vec![l, less], None)?;
+                let made = self.take(made);
+                self.pop_scope()?;
+                return Ok((ty.clone(), made.1));
+            }
+            _ => {}
+        }
+        if self.is_dyn(ty) {
+            let v = self.mock_value(ty)?;
+            return Ok(self.take(v));
+        }
+        // a variant's type: its sum's, only that variant
+        let (tn, only) = match self.m.env.variant_parent(n.sym()) {
+            Some(p) => (p.clone(), Some(n.clone())),
+            None => (n.clone(), None),
+        };
+        let td = self.m.env.types.get(&tn).cloned().ok_or(format!("generating a value of `{tn}`"))?;
+        let h2 = td.refinement.as_ref().map_or_else(Hints::default, |r| Hints::default().and(r));
+        let whole = t.clone();
+        self.until(&whole, ty, 300, |s| {
+            match &td.body {
+                TypeBody::Alias(a) => {
+                    let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+                    let inner = crate::types::subst_texpr(a, &sub);
+                    let v = s.generate(&inner, &h2, "%depth")?;
+                    Ok((ty.clone(), v.1))
+                }
+                TypeBody::Record(_) | TypeBody::Sum(_) => {
+                    let mut variants = s.m.env.variants_of(tn.as_str(), args).unwrap_or_default();
+                    if let Some(o) = &only {
+                        variants.retain(|v| &v.0 == o);
+                    }
+                    let smallest = (0..variants.len()).min_by_key(|i| variants[*i].2.len()).unwrap_or(0);
+                    let (deep, any, i) = (s.deep(), s.fresh("any"), s.fresh("which"));
+                    s.emit(format!("{any} = call i64 @strata_random(i64 0, i64 {})", variants.len().max(1) - 1));
+                    s.emit(format!("{i} = select i1 {}, i64 {smallest}, i64 {any}", deep.1));
+                    let slot = s.fresh("made");
+                    writeln!(s.allocas, "  {slot} = alloca ptr").unwrap();
+                    let end = s.fresh_label("made.end");
+                    let labels: Vec<String> = variants.iter().map(|_| s.fresh_label("variant")).collect();
+                    let cases: Vec<String> = labels.iter().enumerate().map(|(k, l)| format!("i64 {k}, label %{l}")).collect();
+                    s.emit(format!("switch i64 {i}, label %{} [ {} ]", labels[0], cases.join(" ")));
+                    let d = s.fresh("d");
+                    let first = labels[0].clone();
+                    let _ = first;
+                    for ((c, _, ftys), l) in variants.iter().zip(&labels) {
+                        s.block(l);
+                        s.emit(format!("{d}.{l} = add i64 %depth, 1"));
+                        let dl = format!("{d}.{l}");
+                        let b = if ftys.is_empty() {
+                            s.m.nullary(c.as_str())
+                        } else {
+                            s.push_scope(true);
+                            let mut vs = vec![];
+                            let fs = s.m.fields(c.as_str(), &s.m.ctor_args(c.as_str(), ty))?;
+                            for (ft, fi) in ftys.iter().zip(&fs) {
+                                let v = s.generate(ft, &Hints::default(), &dl)?;
+                                let v = s.temp(v);
+                                vs.push(s.coerce(v, &fi.ty)?);
+                            }
+                            let b = s.block_of(s.m.tags[c.as_str()], &vs)?;
+                            s.pop_scope()?;
+                            b
+                        };
+                        s.emit(format!("store ptr {b}, ptr {slot}"));
+                        s.br(&end);
+                    }
+                    s.block(&end);
+                    let r = s.fresh("v");
+                    s.emit(format!("{r} = load ptr, ptr {slot}"));
+                    Ok((ty.clone(), r))
+                }
+            }
+        })
+    }
+
+    /// `make` until the value satisfies `t`'s refinements (`tries` times),
+    /// dropping each one that doesn't; then a fault, as the interpreter's.
+    fn until(&mut self, t: &TypeExpr, ty: &Ty, tries: usize, mut make: impl FnMut(&mut Self) -> Res<V>) -> Res<V> {
+        let count = self.fresh("tries");
+        writeln!(self.allocas, "  {count} = alloca i64").unwrap();
+        self.emit(format!("store i64 0, ptr {count}"));
+        let (head, body, fail) = (self.fresh_label("gen.try"), self.fresh_label("gen.make"), self.fresh_label("gen.give_up"));
+        self.br(&head);
+        self.block(&head);
+        let n = self.fresh("n");
+        self.emit(format!("{n} = load i64, ptr {count}"));
+        let more = self.fresh("more");
+        self.emit(format!("{more} = icmp slt i64 {n}, {tries}"));
+        self.cond_br(&bool_v(&more), &body, &fail);
+        self.block(&body);
+        let n1 = self.fresh("n");
+        self.emit(format!("{n1} = add i64 {n}, 1"));
+        self.emit(format!("store i64 {n1}, ptr {count}"));
+        let v = make(self)?;
+        let v = (ty.clone(), v.1);
+        let ok = self.satisfies(t, &v)?;
+        let (good, retry) = (self.fresh_label("gen.ok"), self.fresh_label("gen.retry"));
+        self.cond_br(&ok, &good, &retry);
+        self.block(&retry);
+        self.drop_value(&v)?;
+        self.br(&head);
+        self.block(&fail);
+        self.fault(Fault::Runtime, vec![Part::Lit(format!("could not generate a value satisfying `{}` after {tries} attempts", crate::printer::ty(t)))])?;
+        self.block(&good);
+        Ok(v)
+    }
+}
+
+/// A type as written (for generators of a trait's types).
+fn ty_texpr(t: &Ty) -> TypeExpr {
+    let named = |n: &str, a: &[Ty]| TypeExpr::Named(Symbol::new(n), a.iter().map(ty_texpr).collect());
+    match t {
+        Ty::Int => named("Int", &[]),
+        Ty::Float => named("Float", &[]),
+        Ty::Bool => named("Bool", &[]),
+        Ty::Str => named("String", &[]),
+        Ty::Unit => TypeExpr::Unit,
+        Ty::Con(n, a) => named(n.as_str(), a),
+        Ty::Fn(ps, r) => TypeExpr::Fn(ps.iter().map(ty_texpr).collect(), Box::new(ty_texpr(r))),
+        Ty::Union(ms) => TypeExpr::Union(ms.iter().map(ty_texpr).collect()),
+        Ty::Rigid(n) => named(n.as_str(), &[]),
+        Ty::Var(_) => TypeExpr::Unit,
+    }
+}
+
+/// Strings matching `re`, made now (as the interpreter's generator makes them).
+fn regex_samples(re: &str) -> Res<Vec<String>> {
+    use rand::SeedableRng;
+    use rand::RngExt;
+    let mut parser = regex_syntax::ParserBuilder::new().unicode(false).build();
+    let hir = parser.parse(re).map_err(|e| format!("bad regex {re:?}: {e}"))?;
+    let g = rand_regex::Regex::with_hir(hir, 8).map_err(|e| e.to_string())?;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+    Ok((0..32).map(|_| rng.sample::<String, _>(&g)).collect())
 }

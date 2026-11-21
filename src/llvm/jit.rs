@@ -50,6 +50,13 @@ unsafe extern "C" {
     fn strata_leave();
     fn strata_overflow();
     fn strata_div();
+    fn strata_gen_string();
+    fn strata_gen_len();
+    fn strata_gen_float();
+    fn strata_gen_int();
+    fn strata_random_unit();
+    fn strata_random();
+    fn strata_int_from_i64();
     fn strata_int_to_float();
     fn strata_int_lit();
     fn strata_int_eq();
@@ -129,6 +136,13 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_leave", strata_leave as *const () as usize),
         ("strata_overflow", strata_overflow as *const () as usize),
         ("strata_div", strata_div as *const () as usize),
+        ("strata_gen_string", strata_gen_string as *const () as usize),
+        ("strata_gen_len", strata_gen_len as *const () as usize),
+        ("strata_gen_float", strata_gen_float as *const () as usize),
+        ("strata_gen_int", strata_gen_int as *const () as usize),
+        ("strata_random_unit", strata_random_unit as *const () as usize),
+        ("strata_random", strata_random as *const () as usize),
+        ("strata_int_from_i64", strata_int_from_i64 as *const () as usize),
         ("strata_int_to_float", strata_int_to_float as *const () as usize),
         ("strata_int_lit", strata_int_lit as *const () as usize),
         ("strata_int_eq", strata_int_eq as *const () as usize),
