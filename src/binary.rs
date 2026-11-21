@@ -146,7 +146,7 @@ fn take_bodies(k: &mut DeclKind) -> Vec<Expr> {
         DeclKind::Test(t) => vec![take(&mut t.body)],
         DeclKind::Trait(t) => t.methods.iter_mut().map(|m| take(&mut m.decl.body)).collect(),
         DeclKind::Impl(i) => i.methods.iter_mut().map(|m| take(&mut m.body)).collect(),
-        DeclKind::Type(_) | DeclKind::Use(_) => vec![],
+        DeclKind::Type(_) | DeclKind::Use(_) | DeclKind::Extern(_) => vec![],
     }
 }
 
@@ -156,7 +156,7 @@ fn put_bodies(k: &mut DeclKind, bodies: Vec<Expr>) -> Result<(), String> {
         DeclKind::Test(t) => vec![&mut t.body],
         DeclKind::Trait(t) => t.methods.iter_mut().map(|m| &mut m.decl.body).collect(),
         DeclKind::Impl(i) => i.methods.iter_mut().map(|m| &mut m.body).collect(),
-        DeclKind::Type(_) | DeclKind::Use(_) => vec![],
+        DeclKind::Type(_) | DeclKind::Use(_) | DeclKind::Extern(_) => vec![],
     };
     if slots.len() != bodies.len() {
         return Err(format!("{} bodies for a definition that has {}", bodies.len(), slots.len()));
@@ -225,6 +225,11 @@ pub fn without_notes(mut d: Decl) -> Decl {
             }
         }
         DeclKind::Impl(i) => i.methods.iter_mut().for_each(func),
+        DeclKind::Extern(e) => {
+            if let ExternItem::Fn(f) = &mut e.item {
+                func(f)
+            }
+        }
         DeclKind::Test(_) | DeclKind::Use(_) => {}
     }
     walk_decl_mut(&mut Strip, &mut d.kind);
@@ -350,7 +355,7 @@ pub fn decode_module(bytes: &[u8]) -> Result<Vec<Decl>, String> {
         .collect()
 }
 
-const KINDS: [&str; 6] = ["type", "fn", "test", "trait", "impl", "use"];
+const KINDS: [&str; 7] = ["type", "fn", "test", "trait", "impl", "use", "extern"];
 
 fn kind_tag(k: &DeclKind) -> u8 {
     match k {
@@ -360,6 +365,7 @@ fn kind_tag(k: &DeclKind) -> u8 {
         DeclKind::Trait(_) => 3,
         DeclKind::Impl(_) => 4,
         DeclKind::Use(_) => 5,
+        DeclKind::Extern(_) => 6,
     }
 }
 
@@ -790,6 +796,7 @@ record!(TraitDecl { name, params, supers, methods, laws, derivable });
 record!(Derivable { kind, requires });
 record!(ImplDecl { type_params, bounds, trait_name, trait_args, for_type, methods, derived });
 record!(UseDecl { path, items });
+record!(ExternDecl { lang, item });
 record!(Arm { comments, pat, body });
 record!(LamParam { name, ty });
 record!(CompFor { pat, iter, cond });
@@ -799,6 +806,7 @@ tags!(BinOp { Add = 0, Sub = 1, Mul = 2, Div = 3, Mod = 4, Eq = 5, Ne = 6, Lt = 
 tags!(UnOp { Neg = 0, Not = 1 });
 tags!(TryKind { Result = 0, Option = 1 });
 tags!(CompKind { List = 0, Set = 1, Dict = 2 });
+tags!(Lang { C = 0 });
 
 impl Bin for DeclKind {
     fn enc(&self, w: &mut Writer) {
@@ -809,16 +817,33 @@ impl Bin for DeclKind {
             DeclKind::Trait(x) => put!(w, 3, x),
             DeclKind::Impl(x) => put!(w, 4, x),
             DeclKind::Use(x) => put!(w, 5, x),
+            DeclKind::Extern(x) => put!(w, 6, x),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
-        Ok(match r.tag("declaration", 5)? {
+        Ok(match r.tag("declaration", 6)? {
             0 => DeclKind::Type(Bin::dec(r)?),
             1 => DeclKind::Fn(Bin::dec(r)?),
             2 => DeclKind::Test(Bin::dec(r)?),
             3 => DeclKind::Trait(Bin::dec(r)?),
             4 => DeclKind::Impl(Bin::dec(r)?),
-            _ => DeclKind::Use(Bin::dec(r)?),
+            5 => DeclKind::Use(Bin::dec(r)?),
+            _ => DeclKind::Extern(Bin::dec(r)?),
+        })
+    }
+}
+
+impl Bin for ExternItem {
+    fn enc(&self, w: &mut Writer) {
+        match self {
+            ExternItem::Fn(f) => put!(w, 0, f),
+            ExternItem::Type(t) => put!(w, 1, t),
+        }
+    }
+    fn dec(r: &mut Reader) -> Result<Self, String> {
+        Ok(match r.tag("extern item", 1)? {
+            0 => ExternItem::Fn(Bin::dec(r)?),
+            _ => ExternItem::Type(Bin::dec(r)?),
         })
     }
 }

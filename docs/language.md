@@ -297,6 +297,29 @@ All values are immutable (`insert` returns a new dict). Dicts and sets are kept 
 
 **Not yet:** lazy iterators, generators and async, which will be designed as language features of their own.
 
+## Foreign functions: `extern c`
+
+A function written in C is declared with `extern c fn`, a signature with contracts and no body, and a handle C gives out with `extern c type`:
+
+```rust
+/// An open database (`sqlite3 *`).
+extern c type Sqlite3
+
+extern c fn sqlite3_open(path: String, mut db: Sqlite3) -> I32
+extern c fn sqlite3_errmsg(db: Sqlite3) -> String
+extern c fn strlen(s: String) -> U64
+  ensures it >= 0
+```
+
+- **What crosses.** The sized integers (`I8` … `I64`, `U8` … `U64`, C's `int8_t` … `uint64_t`), `Float` (`double`), `Bool`, `String` (copied each way, as a NUL-terminated string), `()` (`void`) and `extern c type` handles. `Int` doesn't: its size isn't fixed. A `mut` parameter is an out-pointer (`mut db: Sqlite3` is a `sqlite3 **`): copied in, and back out after the call, as `mut` always is. A `String` can't be `mut`.
+- **A handle** is a type with no constructor and nothing inside: only C makes one, and Strata code only passes it back.
+- **The name is the C symbol**, so an extern function can't be renamed (wrap it instead).
+- **Only its own module calls it.** Extern definitions are never `pub`, and code in other modules (submodules included) can't call them. The module that declares them turns them into a capability the rest of the program is given, as `std.fs` does with the real disk, so a signature still shows what code can touch.
+- **Contracts are assumed.** `verify` never proves or runs foreign code: a function in a module that declares externs, one that takes one of its types, and one that calls into it are all reported as assumed.
+- **Only compiled code calls C** (`strata build`, and `strata run` with the JIT). The interpreter refuses: calling an extern function there is a fault that says so.
+
+Not yet: linking and calling (the next step: libraries named in `strata.toml`), structs passed by value, callbacks, and other languages (`extern python`, `extern ts`, `extern rust`, with values crossing as `Json`; see IDEAS.md).
+
 ## Programs and the standard library
 
 A program's entry point is `main`. It asks for what it needs by type, and `strata run` passes it in: its command-line options, and the capabilities it uses.

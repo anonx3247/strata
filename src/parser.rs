@@ -327,6 +327,27 @@ impl Parser {
             let mut f = self.fn_decl()?;
             f.comptime = true;
             DeclKind::Fn(f)
+        } else if self.is_kw("extern") && matches!(self.peek_at(1), Tok::Ident(_)) && matches!(self.peek_at(2), Tok::Ident(k) if k == "fn" || k == "type") {
+            self.next();
+            let lang_name = self.ident()?;
+            let Some(lang) = Lang::from_name(&lang_name) else {
+                return Err(self.err(&format!("unknown foreign language `{lang_name}` (only `extern c` so far)")));
+            };
+            let item = if self.eat_kw("fn") {
+                let (f, has_body) = self.fn_rest(true)?;
+                if has_body {
+                    return Err(self.err(&format!("`extern {lang_name} fn {}` has no body: it is defined in {}", f.name, lang_name.to_uppercase())));
+                }
+                ExternItem::Fn(f)
+            } else {
+                self.expect_kw("type")?;
+                let name = self.ident()?;
+                if self.is_sym("[") || self.is_sym("=") {
+                    return Err(self.err(&format!("`extern {lang_name} type {name}` is an opaque handle: no type parameters, no definition")));
+                }
+                ExternItem::Type(name)
+            };
+            DeclKind::Extern(ExternDecl { lang, item })
         } else if self.is_kw("derivable") && matches!(self.peek_at(1), Tok::Sym("(")) {
             // `derivable(Record) trait ...`: contextual, like `distinct`
             self.next();

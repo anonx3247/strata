@@ -735,6 +735,10 @@ pub fn decl_body(d: &Decl) -> String {
             Some(items) if items.len() == 1 => format!("use {}.{}", u.path, items[0]),
             Some(items) => format!("use {}.{{{}}}", u.path, crate::symbol::join(items, ", ")),
         },
+        DeclKind::Extern(e) => match &e.item {
+            ExternItem::Fn(f) => format!("extern {} {}", e.lang.name(), fn_signature(f)),
+            ExternItem::Type(t) => format!("extern {} type {t}", e.lang.name()),
+        },
     };
     (if d.public { "pub " } else { "" }).to_string() + &body
 }

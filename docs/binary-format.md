@@ -102,7 +102,7 @@ When writing, a string gets the next index the first time it is written, and eac
 
 ```text
 Decl        = comments:list(str)  doc:list(str)  module:str  public:bool  kind:DeclKind
-DeclKind    = 0 TypeDecl | 1 FnDecl | 2 TestDecl | 3 TraitDecl | 4 ImplDecl | 5 UseDecl
+DeclKind    = 0 TypeDecl | 1 FnDecl | 2 TestDecl | 3 TraitDecl | 4 ImplDecl | 5 UseDecl | 6 ExternDecl
 
 TypeDecl    = distinct:bool  name:str  params:list(str)  body:TypeBody  refinement:option(Expr)
 TypeBody    = 0 Alias(TypeExpr) | 1 Record(list(Field)) | 2 Sum(list(Variant))
@@ -125,9 +125,12 @@ Law         = comments:list(str)  doc:list(str)  name:str  params:list(Param)  b
 ImplDecl    = type_params:list(str)  bounds:list(Bound)  trait_name:str  trait_args:list(TypeExpr)
               for_type:TypeExpr  methods:list(FnDecl)  derived:bool
 UseDecl     = path:str  items:option(list(str))
+ExternDecl  = lang:Lang  item:ExternItem
+Lang        = 0 C
+ExternItem  = 0 Fn(FnDecl) | 1 Type(name:str)
 ```
 
-`module` is the dotted module path (`""` for the root module). A top-level function keeps its doc and comments on its `Decl`; `FnDecl.doc` / `comments` are for methods inside an `impl`. An inherent `impl Item { … }` has `trait_name = ""`. `derive Trait for Type { … }` is an `ImplDecl` with `derived` set (its `methods` are the ones written by hand); `comptime fn` and `derived fn` set those flags of `FnDecl`, `derivable(t: Record) trait …` the trait's `derivable`. `items` is none for `use m.*`.
+`module` is the dotted module path (`""` for the root module). A top-level function keeps its doc and comments on its `Decl`; `FnDecl.doc` / `comments` are for methods inside an `impl`. An inherent `impl Item { … }` has `trait_name = ""`. `derive Trait for Type { … }` is an `ImplDecl` with `derived` set (its `methods` are the ones written by hand); `comptime fn` and `derived fn` set those flags of `FnDecl`, `derivable(t: Record) trait …` the trait's `derivable`. `items` is none for `use m.*`. An `extern c fn` is an `ExternItem.Fn` whose `FnDecl` has no body (`()`, so it has no body part) and whose name is the C symbol; `extern c type` is `ExternItem.Type`. Its header `kind` is `6`.
 
 ### Types
 
