@@ -181,6 +181,10 @@ fn lists_and_lambdas_run_as_interpreted() {
     // no limit on a range's length (the interpreter's was 1,000,000)
     let (out, code) = case(&d, "range", "fn main() {\n  mut n: Int = 0\n  for i in range(0, 2000000) { n = n + i }\n  print(n)\n  print(len(range(0, 1500000)))\n}");
     assert_eq!((out.as_str(), code), ("1999999000000\n1500000\n", 0));
+    // a list or tuple of constants is one constant (never freed); changing it copies it
+    let src = "fn table() -> List[(Int, Int)] {\n  [(1, 2), (3, 4)]\n}\n\nfn grow(mut xs: List[String]) {\n  xs = push(xs, \"d\")\n}\n\nfn main() {\n  mut xs := table()\n  xs = push(xs, (5, 6))\n  mut t := (1, 2)\n  t.0 = 9\n  mut zs := [\"a\", \"b\", \"c\"]\n  grow(mut zs)\n  print(f\"{xs} {table()} {t} {(1, 2)} {zs} {[\"a\", \"b\", \"c\"]} {[[1], [2, 3]]} {[None, Some(1)]}\")\n}\n";
+    let (out, code) = case(&d, "constants", src);
+    assert_eq!((out.as_str(), code), ("[(1, 2), (3, 4), (5, 6)] [(1, 2), (3, 4)] (9, 2) (1, 2) [\"a\", \"b\", \"c\", \"d\"] [\"a\", \"b\", \"c\"] [[1], [2, 3]] [None, Some(1)]\n", 0));
 }
 
 #[test]
@@ -217,7 +221,7 @@ fn capabilities_and_mut_run_as_interpreted() {
     let cases = [
         ("console", "use std.io.Console\nfn greet(mut console: Console, name: String) -> () { mut console.print(f\"hello, {name}\") }\nfn main(mut console: Console) -> () { greet(mut console, \"world\") mut console.eprint(\"to stderr\") mut console.write(\"no newline\") mut console.print(\"\") }"),
         ("mut_params", "fn restock(mut n: Int, extra: Int) { n = n + extra }\ntype Line = { sku: String, qty: Int }\nfn bump(mut l: Line) -> () { l.qty = l.qty + 1 }\nfn main() -> () { mut k := 1 restock(mut k, 5) print(k) mut line := Line { sku: \"a\", qty: 1 } bump(mut line) bump(mut line) print(line) restock(mut line.qty, 10) print(line) }"),
-        ("files_and_environment", "use std.io.Console\nuse std.fs.{Files, FsError}\nuse std.process.Environment\nfn main(mut console: Console, mut files: Files, env: Environment) -> Result[(), String] {\n  _ := mut files.remove(\"fsplay/b.txt\")\n  _ := mut files.remove(\"fsplay/a.txt\")\n  _ := mut files.remove(\"fsplay/sub/deep\")\n  _ := mut files.remove(\"fsplay/sub\")\n  _ := mut files.remove(\"fsplay\")\n  print(files.exists(\"fsplay\"))\n  print(mut files.make_dir(\"fsplay/sub/deep\"))\n  print(mut files.write(\"fsplay/a.txt\", \"one\\n\"))\n  print(mut files.append(\"fsplay/a.txt\", \"two\\n\"))\n  print(files.read(\"fsplay/a.txt\"))\n  print(files.read(\"fsplay/missing.txt\"))\n  print(files.read(\"fsplay/sub\"))\n  print(mut files.write(\"fsplay/b.txt\", \"x\"))\n  print(files.list(\"fsplay\"))\n  print(files.list(\"fsplay/a.txt\"))\n  print(mut files.remove(\"fsplay/nope\"))\n  print(env.args())\n  print(env.var(\"HOME\") is Some)\n  print(env.var(\"STRATA_SURELY_UNSET_VAR\"))\n  mut console.print(\"done\")\n  Ok(())\n}"),
+        ("files_and_environment", "use std.io.Console\nuse std.fs.{Disk, FsError}\nuse std.process.Process\nfn main(mut console: Console, mut files: Disk, env: Process) -> Result[(), String] {\n  _ := mut files.remove(\"fsplay/b.txt\")\n  _ := mut files.remove(\"fsplay/a.txt\")\n  _ := mut files.remove(\"fsplay/sub/deep\")\n  _ := mut files.remove(\"fsplay/sub\")\n  _ := mut files.remove(\"fsplay\")\n  print(files.exists(\"fsplay\"))\n  print(mut files.make_dir(\"fsplay/sub/deep\"))\n  print(mut files.write(\"fsplay/a.txt\", \"one\\n\"))\n  print(mut files.append(\"fsplay/a.txt\", \"two\\n\"))\n  print(files.read(\"fsplay/a.txt\"))\n  print(files.read(\"fsplay/missing.txt\"))\n  print(files.read(\"fsplay/sub\"))\n  print(mut files.write(\"fsplay/b.txt\", \"x\"))\n  print(files.list(\"fsplay\"))\n  print(files.list(\"fsplay/a.txt\"))\n  print(mut files.remove(\"fsplay/nope\"))\n  print(env.args())\n  print(env.var(\"HOME\") is Some)\n  print(env.var(\"STRATA_SURELY_UNSET_VAR\"))\n  mut console.print(\"done\")\n  Ok(())\n}"),
         ("one_function_two_consoles", "use std.io.{Console, recorder}\nfn report(mut console: Console, n: Int) -> () {\n  for i in range(0, n) { mut console.print(f\"line {i}\") }\n}\nfn main(mut console: Console) -> () {\n  mut r := recorder([])\n  report(mut r, 3)\n  report(mut console, 2)\n  print(r.out)\n  print(r)\n}"),
     ];
     for (name, src) in cases {
@@ -226,7 +230,7 @@ fn capabilities_and_mut_run_as_interpreted() {
     }
     // the files test made and read a folder of its own, there
     assert!(d.join("fsplay/a.txt").exists());
-    let (out, _) = case(&d, "args", "use std.process.Environment\nfn main(env: Environment) -> () { print(env.args()) }");
+    let (out, _) = case(&d, "args", "use std.process.Process\nfn main(env: Process) -> () { print(env.args()) }");
     assert!(out.contains(r#"["one", "two words"]"#), "{out}");
 }
 
@@ -1686,7 +1690,7 @@ fn impl_type_parameters_compile() {
         return;
     }
     let d = tmp("impl-statics");
-    for (name, prog, want) in [("statics", json_case::STATICS, json_case::STATICS_OUTPUT), ("builtins", json_case::BUILTINS, json_case::BUILTINS_OUTPUT), ("text", json_case::TEXT, json_case::TEXT_OUTPUT), ("self_methods", json_case::SELF_METHODS, json_case::SELF_METHODS_OUTPUT), ("generic_derive", json_case::GENERIC_DERIVE, json_case::GENERIC_DERIVE_OUTPUT), ("option_option", json_case::OPTION_OPTION, json_case::OPTION_OPTION_OUTPUT), ("root_builtin_name", json_case::ROOT_BUILTIN_NAME, json_case::ROOT_BUILTIN_NAME_OUTPUT), ("refined", json_case::REFINED, json_case::REFINED_OUTPUT)] {
+    for (name, prog, want) in [("statics", json_case::STATICS, json_case::STATICS_OUTPUT), ("builtins", json_case::BUILTINS, json_case::BUILTINS_OUTPUT), ("text", json_case::TEXT, json_case::TEXT_OUTPUT), ("self_methods", json_case::SELF_METHODS, json_case::SELF_METHODS_OUTPUT), ("generic_derive", json_case::GENERIC_DERIVE, json_case::GENERIC_DERIVE_OUTPUT), ("option_option", json_case::OPTION_OPTION, json_case::OPTION_OPTION_OUTPUT), ("root_builtin_name", json_case::ROOT_BUILTIN_NAME, json_case::ROOT_BUILTIN_NAME_OUTPUT), ("refined", json_case::REFINED, json_case::REFINED_OUTPUT), ("refined_more", json_case::REFINED_MORE, json_case::REFINED_MORE_OUTPUT)] {
         let (out, code) = case(&d, name, prog);
         assert_eq!((out.as_str(), code), (want, 0));
     }

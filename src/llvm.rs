@@ -361,7 +361,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None };
     // std's precompiled functions, but while making them, tracing, or in a library
     if !BUILDING_STD.with(|b| b.get()) && !m.tracing && !matches!(entry, Entry::Library(_)) {
         m.precompiled = jit::std_library().map(|l| &l.names);
@@ -403,7 +403,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
                 if skip.iter().any(|s| s == t.name.as_str()) {
                     continue;
                 }
-                let inst = Instance { label: format!("test {:?}", t.name.to_string()), symbol: format!("@\"strata.test.{}\"", tests.len()), impls: vec![], params: vec![], ret: TypeExpr::Unit, own_params: &[], own_ret: &TypeExpr::Unit, requires: vec![], ensures: vec![], body: &t.body, sub: HashMap::default() };
+                let inst = Instance { label: format!("test {:?}", t.name.to_string()), symbol: format!("@\"strata.test.{}\"", tests.len()), impls: vec![], params: vec![], ret: TypeExpr::Unit, own_params: &[], own_ret: &TypeExpr::Unit, requires: vec![], ensures: vec![], body: &t.body, sub: HashMap::default(), given: &t.params };
                 m.instance(&inst).map_err(|e| format!("can't compile test {:?}: {e}", t.name.to_string()))?;
                 tests.push(t.name.to_string());
             }
@@ -497,8 +497,8 @@ declare i64 @strata_pid()
 declare void @strata_host_write(i64, ptr)
 declare ptr @strata_host_read_line()
 declare ptr @strata_host_read_file(ptr, ptr, ptr)
-declare ptr @strata_host_code_version(ptr)
-declare ptr @strata_host_code_snapshot(ptr, ptr)
+declare ptr @strata_host_code_version()
+declare ptr @strata_host_code_snapshot(ptr)
 declare i1 @strata_host_write_file(ptr, ptr, i1, ptr, ptr)
 declare i1 @strata_host_exists(ptr)
 declare ptr @strata_host_list_dir(ptr, ptr, ptr)
@@ -675,6 +675,8 @@ struct Instance<'a> {
     body: &'a Expr,
     /// Type parameters (and `Self`) -> types.
     sub: HashMap<Symbol, Ty>,
+    /// Capabilities the runtime makes for it (a test's), bound before the body.
+    given: &'a [Param],
 }
 
 /// A constructor's fields: name (positional ones have none), written type,
@@ -739,6 +741,10 @@ struct Module<'a> {
     /// String constants.
     globals: String,
     strings: HashMap<String, String>,
+    /// How many constant lists and blocks there are (they are named by number).
+    constants: usize,
+    /// Each constant list or block by its contents, so equal ones are one.
+    constant_of: HashMap<String, String>,
     /// Compiled functions.
     body: String,
     /// Functions still to compile (with their type arguments): those the compiled ones call.
@@ -913,7 +919,7 @@ impl<'a> Module<'a> {
             ensures.extend(&own.ensures);
         }
         let label = format!("{}.{}", mi.head, mi.method);
-        let inst = Instance { label, symbol: mi.symbol(), impls: vec![], params: own.params.clone(), ret: own.ret.clone(), own_params: &own.params, own_ret: &own.ret, requires, ensures, body: &own.body, sub };
+        let inst = Instance { label, symbol: mi.symbol(), impls: vec![], params: own.params.clone(), ret: own.ret.clone(), own_params: &own.params, own_ret: &own.ret, requires, ensures, body: &own.body, sub, given: &[] };
         self.instance(&inst)
     }
 
@@ -963,8 +969,8 @@ impl<'a> Module<'a> {
     fn repr(&self, t: &Ty) -> Res<Ty> {
         Ok(match t {
             // a refined alias (`Positive`, kept by name in a type argument): its base
-            Ty::Con(n, args) if args.is_empty() && crate::types::refined_alias(self.env, *n) => {
-                let base = crate::types::alias_base(self.env, *n);
+            Ty::Con(n, args) if crate::types::refined_alias(self.env, *n) => {
+                let base = crate::types::alias_base(self.env, *n, args);
                 self.repr(&base)?
             }
             Ty::Con(n, args) if self.is_distinct(n) => {
@@ -1018,7 +1024,7 @@ impl<'a> Module<'a> {
 
     /// An `extern c type`: a pointer C made, never counted, read or freed here.
     fn handle(&self, t: &Ty) -> bool {
-        matches!(t, Ty::Con(n, args) if args.is_empty() && self.env.externs.contains_key(n))
+        matches!(t, Ty::Con(n, args) if args.is_empty() && (self.env.externs.contains_key(n) || self.env.capabilities.contains(n)))
     }
 
     /// A record, a sum, one of its variants, or a tuple: a block with a tag.
@@ -1221,6 +1227,7 @@ impl<'a> Module<'a> {
             ensures: own.ensures.iter().collect(),
             body: &own.body,
             sub,
+            given: &[],
         };
         self.instance(&inst)
     }
@@ -1268,6 +1275,12 @@ impl<'a> Module<'a> {
             }
             let slot = c.local(&p.name, t, None)?;
             c.store(&(t.clone(), format!("%p.{}", p.name)), &slot)?;
+        }
+        // a capability holds nothing: the runtime's is a null pointer
+        for p in inst.given {
+            let t = c.m.lower(&p.ty, &HashMap::default())?;
+            let slot = c.local(&p.name, &t, None)?;
+            c.store(&(t, "null".into()), &slot)?;
         }
         if c.m.tracing && framed && !name.starts_with("strata_") {
             // `{"event":"call","fn":…,"args":[…],"depth":n}` (the runtime adds the depth)
@@ -1398,26 +1411,34 @@ impl<'a> Module<'a> {
                 impls.push(None);
                 continue;
             }
-            let (imp, fields): (&str, Vec<(&str, V)>) = match wanted.as_str() {
-                "std.io.Console" => ("std.io.Terminal", vec![("stdout", (Ty::Int, "1".into())), ("stderr", (Ty::Int, "2".into()))]),
-                "std.fs.Files" => ("std.fs.Disk", vec![("root", c.string("."))]),
-                "std.process.Environment" => ("std.process.Process", vec![("pid", c.call(&Ty::Int, "@strata_pid", &[])?)]),
-                "std.code.Code" => ("std.code.Workspace", vec![("root", c.string(&crate::ui::code_root()))]),
-                _ => return Err(format!("`{entry}` asks for `{}: {wanted}`: compiled programs get `Console`, `Files`, `Environment`, `Code` and options (a record that implements `CommandLine`, std.cli)", p.name)),
-            };
-            let fs = c.m.fields(imp, &[])?;
-            let vals: Vec<V> = fs.iter().map(|f| fields.iter().find(|(n, _)| Some(*n) == f.name.as_deref()).map(|x| x.1.clone()).ok_or(format!("`{imp}` has a field `{}`", f.name.clone().unwrap_or_default()))).collect::<Res<_>>()?;
-            let t = Ty::Con(Symbol::new(imp), vec![]);
-            let b = c.block_of(c.m.tags[imp], &vals)?;
+            // a capability of the program (`capability Sqlite { ... }`): it holds nothing
+            if let TypeExpr::Named(n, a) = &p.ty {
+                if a.is_empty() && c.m.env.capabilities.contains(n) {
+                    let t = Ty::Con(*n, vec![]);
+                    if p.mutable {
+                        let slot = c.fresh("cap");
+                        writeln!(c.allocas, "  {slot} = alloca ptr").unwrap();
+                        c.emit(format!("store ptr null, ptr {slot}"));
+                        args.push((Ty::Str, slot));
+                    } else {
+                        args.push((t, "null".into()));
+                    }
+                    impls.push(None);
+                    continue;
+                }
+            }
+            // `Console`: the one capability the environment chooses, the terminal here
+            if wanted != crate::cmd::CONSOLE || !c.m.env.capabilities.contains(&Symbol::new("std.io.Terminal")) {
+                return Err(crate::cmd::not_given(&wanted, &format!("`{entry}`")) + &format!(" Its parameter `{}` is a `{wanted}`", p.name));
+            }
+            let t = Ty::Con(Symbol::new("std.io.Terminal"), vec![]);
             if p.mutable {
                 let slot = c.fresh("cap");
                 writeln!(c.allocas, "  {slot} = alloca ptr").unwrap();
-                c.emit(format!("store ptr {b}, ptr {slot}"));
-                c.own_slot(&t, &slot);
+                c.emit(format!("store ptr null, ptr {slot}"));
                 args.push((Ty::Str, slot));
             } else {
-                c.temp((t.clone(), b.clone()));
-                args.push((t.clone(), b));
+                args.push((t.clone(), "null".into()));
             }
             impls.push(Some(t));
         }
@@ -1671,7 +1692,7 @@ impl<'m, 'a> Func<'m, 'a> {
     /// argument, which says which refinements its values have.
     fn lower_named(&self, t: &TypeExpr) -> Res<Ty> {
         match t {
-            TypeExpr::Named(n, a) if a.is_empty() && crate::types::refined_alias(self.m.env, *n) => Ok(Ty::Con(*n, vec![])),
+            TypeExpr::Named(n, a) if crate::types::refined_alias(self.m.env, *n) => Ok(Ty::Con(*n, a.iter().map(|x| self.lower_named(x)).collect::<Res<_>>()?)),
             TypeExpr::Named(_, a) if !a.is_empty() => match self.lower(t)? {
                 Ty::Con(h, la) if la.len() == a.len() => Ok(Ty::Con(h, a.iter().map(|x| self.lower_named(x)).collect::<Res<_>>()?)),
                 other => Ok(other),
@@ -2162,6 +2183,81 @@ impl<'m, 'a> Func<'m, 'a> {
             _ => self.emit(format!("{r} = inttoptr i64 {s} to ptr")),
         }
         Ok((t.clone(), r))
+    }
+
+    /// A value's slot as an LLVM constant, if the value is a constant that
+    /// fits one: a small `Int`, `()`, or a constant object (a string, a
+    /// constant list or block: `@...` or `getelementptr`, never freed).
+    fn constant_slot(&mut self, v: &V) -> Res<Option<(&'static str, String)>> {
+        if is_never(&v.0) || !constant(&v.1) {
+            return Ok(None);
+        }
+        Ok(match self.m.repr(&v.0)? {
+            Ty::Int if v.1.parse::<i64>().is_ok() => Some(("i64", v.1.clone())),
+            Ty::Unit => Some(("i64", "0".into())),
+            Ty::Int | Ty::Float | Ty::Bool => None,
+            _ if v.1 == "null" || v.1 == "poison" || v.1.is_empty() => None,
+            _ => Some(("ptr", v.1.clone())),
+        })
+    }
+
+    /// The slots as one constant array (`[n x i64]` or `[n x ptr]`; both are
+    /// 64-bit words), if every value is a constant of one kind.
+    fn constant_slots(&mut self, vs: &[V]) -> Res<Option<(String, String)>> {
+        let mut kind = None;
+        let mut items = vec![];
+        for v in vs {
+            let Some((k, c)) = self.constant_slot(v)? else { return Ok(None) };
+            if kind.is_some_and(|k0| k0 != k) {
+                return Ok(None);
+            }
+            kind = Some(k);
+            items.push(format!("{k} {c}"));
+        }
+        let ty = format!("[{} x {}]", vs.len(), kind.unwrap_or("i64"));
+        Ok(Some((ty.clone(), format!("{ty} [{}]", items.join(", ")))))
+    }
+
+    /// A block of constants (a tuple's) as a constant: its tag, then its
+    /// slots, after a count of 0 (never freed).
+    fn constant_block(&mut self, tag: i64, vs: &[V]) -> Res<Option<String>> {
+        if vs.is_empty() {
+            return Ok(None);
+        }
+        let Some((ty, arr)) = self.constant_slots(vs)? else { return Ok(None) };
+        let key = format!("block {tag} {arr}");
+        if let Some(at) = self.m.constant_of.get(&key) {
+            return Ok(Some(at.clone()));
+        }
+        let g = format!("@.const.{}", self.m.constants);
+        self.m.constants += 1;
+        writeln!(self.m.globals, "{g} = private unnamed_addr constant {{ i64, i64, {ty} }} {{ i64 0, i64 {tag}, {arr} }}, align 8").unwrap();
+        let at = format!("getelementptr inbounds (i8, ptr {g}, i64 8)");
+        self.m.constant_of.insert(key, at.clone());
+        Ok(Some(at))
+    }
+
+    /// A list of constants as a constant: its header (length, buffer,
+    /// offset) and its full buffer (capacity, used, elements), each after a
+    /// count of 0, so it is never freed and never changed in place (a push
+    /// or an update copies it, as for any list held elsewhere).
+    fn constant_list(&mut self, _et: &Ty, vs: &[V]) -> Res<Option<String>> {
+        if vs.is_empty() {
+            return Ok(None);
+        }
+        let Some((ty, arr)) = self.constant_slots(vs)? else { return Ok(None) };
+        let key = format!("list {arr}");
+        if let Some(at) = self.m.constant_of.get(&key) {
+            return Ok(Some(at.clone()));
+        }
+        let n = vs.len();
+        let (g, b) = (format!("@.const.{}", self.m.constants), format!("@.const.{}.buf", self.m.constants));
+        self.m.constants += 1;
+        writeln!(self.m.globals, "{b} = private unnamed_addr constant {{ i64, i64, i64, {ty} }} {{ i64 0, i64 {n}, i64 {n}, {arr} }}, align 8").unwrap();
+        writeln!(self.m.globals, "{g} = private unnamed_addr constant {{ i64, i64, ptr, i64 }} {{ i64 0, i64 {n}, ptr getelementptr inbounds (i8, ptr {b}, i64 8), i64 0 }}, align 8").unwrap();
+        let at = format!("getelementptr inbounds (i8, ptr {g}, i64 8)");
+        self.m.constant_of.insert(key, at.clone());
+        Ok(Some(at))
     }
 
     /// A new block: a tag, then slots. It holds its fields (taken); the
@@ -3575,6 +3671,9 @@ impl<'m, 'a> Func<'m, 'a> {
                 if vs.iter().any(|v| is_never(&v.0)) {
                     return Ok(never());
                 }
+                if let Some(b) = self.constant_block(0, &vs)? {
+                    return Ok((t, b));
+                }
                 let b = self.block_of(0, &vs)?;
                 self.temp((t, b))
             }
@@ -3659,6 +3758,10 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
                 let et = self.elem_ty(&t)?;
                 let vs: Vec<V> = vs.into_iter().map(|v| self.coerce(v, &et)).collect::<Res<_>>()?;
+                // every element a constant: the list is one too, built once
+                if let Some(l) = self.constant_list(&et, &vs)? {
+                    return Ok((t, l));
+                }
                 // a new list's buffer holds the elements (taken)
                 let l = self.call(&t, "@strata_list_new", &[(Ty::Int, vs.len().to_string())])?;
                 let (bp, buf, data) = (self.fresh("bufp"), self.fresh("buf"), self.fresh("data"));
@@ -3952,10 +4055,15 @@ impl<'m, 'a> Func<'m, 'a> {
                 _ => bool_v("true"),
             };
             let why = match &t {
-                Ty::Con(n, a) if a.is_empty() && crate::types::refined_alias(self.m.env, *n) => {
+                Ty::Con(n, _) if crate::types::refined_alias(self.m.env, *n) => {
                     let td = &self.m.env.types[n];
                     let pred = td.refinement.clone().or_else(|| if let TypeBody::Alias(TypeExpr::Refined(_, p)) = &td.body { Some((**p).clone()) } else { None });
                     match pred {
+                        // a refinement written as a type argument: as written
+                        Some(p) if n.as_str().starts_with(crate::desugar::WHERE) => match &td.body {
+                            TypeBody::Alias(a) => format!("does not satisfy `{} where {}`", crate::printer::ty(a), crate::printer::expr(&p, 0)),
+                            _ => format!("does not satisfy `{}`", crate::names::short(n)),
+                        },
                         Some(p) => format!("does not satisfy `{}` (where {})", crate::names::short(n), crate::printer::expr(&p, 0)),
                         None => format!("does not satisfy `{}`", crate::names::short(n)),
                     }
@@ -4225,7 +4333,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let head = Module::head(&recv).ok_or(format!("`{name}` on a `{}`", key(&recv)))?;
         // a refined alias (`Positive`) has its base type's methods
         let head = match &recv {
-            Ty::Con(n, a) if a.is_empty() && crate::types::refined_alias(self.m.env, *n) => Module::head(&self.m.repr(&recv)?).unwrap_or(head),
+            Ty::Con(n, _) if crate::types::refined_alias(self.m.env, *n) => Module::head(&self.m.repr(&recv)?).unwrap_or(head),
             _ => head,
         };
         if self.m.traits.contains_key(&Symbol::new(&head)) {
@@ -4368,15 +4476,14 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.outcome(&ok, Some(okv), &k, &m, &t)?
             }
             "host_code_version" => {
-                let r = self.call(&s_ty, "@strata_host_code_version", &vs)?;
+                let r = self.call(&s_ty, "@strata_host_code_version", &[])?;
                 self.temp(r)
             }
             "host_code_snapshot" => {
                 // the snapshot, or NULL and the failure (a string)
                 let e = self.fresh("err");
                 writeln!(self.allocas, "  {e} = alloca ptr").unwrap();
-                let mut args = vs.clone();
-                args.push((Ty::Str, e.clone()));
+                let args = [(Ty::Str, e.clone())];
                 let snap = Ty::Con(Symbol::new("std.code.Snapshot"), vec![]);
                 let r = self.call(&snap, "@strata_host_code_snapshot", &args)?;
                 let r = self.temp(r);
@@ -6723,7 +6830,7 @@ impl Func<'_, '_> {
         };
         if let TypeExpr::Named(n, args) = t {
             if n == crate::types::TYPE_ARG {
-                let s = self.string(args.first().map(crate::types::texpr_head).unwrap_or_default().as_str());
+                let s = self.string(&args.first().map(crate::interp::type_text).unwrap_or_default());
                 return Ok(s);
             }
         }
@@ -6907,6 +7014,10 @@ impl Func<'_, '_> {
                     let mut variants = s.m.env.variants_of(tn.as_str(), args).unwrap_or_default();
                     if let Some(o) = &only {
                         variants.retain(|v| &v.0 == o);
+                    }
+                    if variants.is_empty() {
+                        // a capability or a C handle: only the runtime, or C, makes one
+                        return Err(format!("a `{}` can't be made here (only the runtime, or C, makes one)", crate::names::short(&tn)));
                     }
                     let smallest = (0..variants.len()).min_by_key(|i| variants[*i].2.len()).unwrap_or(0);
                     let (deep, any, i) = (s.deep(), s.fresh("any"), s.fresh("which"));

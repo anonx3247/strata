@@ -115,7 +115,7 @@ pub unsafe fn read(s: &Shape, shapes: &Shapes, raw: i64) -> Res<Value> {
 }
 
 unsafe extern "C" {
-    fn strata_alloc(n: i64) -> *mut i64;
+    pub(super) fn strata_alloc(n: i64) -> *mut i64;
 }
 
 /// A new string in compiled code's memory, held once.

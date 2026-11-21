@@ -111,7 +111,8 @@ impl Gen {
         // a hidden type argument (`$Type[Money]`): the type's name
         if let TypeExpr::Named(n, args) = t {
             if n == crate::types::TYPE_ARG {
-                return Ok(Value::Str((args.first().map(crate::types::texpr_head).unwrap_or_default()).to_string()));
+                // (whole: `List[Int]`, so an impl's type parameters are known)
+                return Ok(Value::Str(args.first().map(crate::interp::type_text).unwrap_or_default()));
             }
         }
         if let TypeExpr::Refined(b, pred) = t {

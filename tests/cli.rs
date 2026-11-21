@@ -2116,10 +2116,10 @@ fn std_io_programs_run_with_capabilities_and_exit_codes() {
     // an exit code, writing files and environment variables
     save(&d.join("prog.strata"),
         r#"use std.io.Console
-use std.fs.{Files, FsError}
-use std.process.{Environment, ExitCode}
+use std.fs.{Disk, FsError}
+use std.process.{Process, ExitCode}
 
-fn main(mut console: Console, mut files: Files, env: Environment) -> Result[ExitCode, FsError] {
+fn main(mut console: Console, mut files: Disk, env: Process) -> Result[ExitCode, FsError] {
   mut files.write("out/x.txt", "a")!
   mut files.append("out/x.txt", "b")!
   mut console.eprint(files.read("out/x.txt")!)
@@ -2153,7 +2153,7 @@ fn main(mut console: Console, mut files: Files, env: Environment) -> Result[Exit
     // and `proven` accepts them, listing them
     let (ok, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "verify", "--cases", "10", "--require", "proven"], &d, None);
     assert!(ok && !out.contains("needs the real system"), "{out}");
-    assert!(out.lines().any(|l| l.starts_with("≈ std.io.Terminal.print") && l.contains("assumed: it talks to the real system")), "{out}");
+    assert!(out.lines().any(|l| l.starts_with("≈ std.io.Terminal.print") && l.contains("assumed: `Terminal` is a capability")), "{out}");
     assert!(out.contains("policy: `proven` accepts") && out.contains("`std.fs.Disk.remove`") && !out.contains("is not proven"), "{out}");
     let (_, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "verify", "--json"], &d, None);
     assert!(out.contains(r#""status": "assumed""#), "{out}");
@@ -3065,7 +3065,7 @@ fn method_names_follow_the_receiver_across_modules_and_builtins() {
     // `Console.write` / `Files.write` from two modules, `Files.remove` / the builtin `remove`
     save(&d.join("main.strata"),
         r#"use std.io.{Console, recorder, printed}
-use std.fs.{Files, NotFound, mem_files}
+use std.fs.{Disk, Files, NotFound, mem_files}
 
 fn save(mut console: Console, mut files: Files) {
   mut files.write("a.txt", "hi") except { () }
@@ -3080,7 +3080,7 @@ fn shout[C: Console](mut c: C, s: String) {
   mut c.print("!")
 }
 
-fn main(mut console: Console, mut files: Files) {
+fn main(mut console: Console, mut files: Disk) {
   mut files.write("x.txt", "disk") except { () }
   shout(mut console, files.read("x.txt") except { "?" })
   mut files.remove("x.txt") except { () }
@@ -3416,7 +3416,7 @@ fn serve_app_capabilities_timers_and_keys() {
     std::fs::write(d.join("note.txt"), "first").unwrap();
     save(&d.join("app.strata"),
         r#"use std.web.{Html, div, text, every, key_bindings, focused, input}
-use std.fs.{Files}
+use std.fs.{Disk, Files}
 type Model = { note: String, searching: Bool }
 type Msg =
   | Check
@@ -3427,12 +3427,12 @@ fn note(files: Files) -> String {
     Err(_) => "none",
   }
 }
-fn init(files: Files) -> Model {
-  Model { note: note(files), searching: false }
+fn init(disk: Disk) -> Model {
+  Model { note: note(disk), searching: false }
 }
-fn update(model: Model, msg: Msg, files: Files) -> Model {
+fn update(model: Model, msg: Msg, disk: Disk) -> Model {
   match msg {
-    Check => Model { ..model, note: note(files) },
+    Check => Model { ..model, note: note(disk) },
     Search => Model { ..model, searching: true },
   }
 }
@@ -3453,7 +3453,7 @@ fn view(model: Model) -> Html[Msg] {
     let results = std::panic::catch_unwind(|| {
         assert!(up, "the server didn't start");
         let page = http(port, "GET / HTTP/1.1\r\n\r\n");
-        assert!(page.contains("note=first"), "`init` read the file through `Files`: {page}");
+        assert!(page.contains("note=first"), "`init` read the file through its `Disk`: {page}");
         assert!(page.contains(r#"data-every="500" data-on-every="&quot;Check&quot;""#), "{page}");
         assert!(page.contains(r#"data-key="/" data-on-key="&quot;Search&quot;""#) && page.contains(r#"data-key="meta+k""#), "{page}");
         let sid = page.split(r#"data-session=""#).nth(1).unwrap().split('"').next().unwrap().to_string();
@@ -3480,8 +3480,8 @@ fn code_capability_reads_the_codebase() {
     save_module(&d, "core", "/// Doubles.\npub fn double(x: Int) -> Int { x * 2 }\n\nfn quad(x: Int) -> Int { double(double(x)) }\n");
     // the program is outside the package it reads (the current folder)
     let prog = tmp("code-cap-prog").join("show.strata");
-    save(&prog, r#"use std.code.{Code}
-fn main(code: Code) {
+    save(&prog, r#"use std.code.{Codebase}
+fn main(code: Codebase) {
   match code.snapshot() {
     Ok(s) => {
       for x in s.definitions {
@@ -4071,12 +4071,33 @@ fn comptime_code_runs_while_compiling() {
     assert!(!ok && out.contains("`comptime spin(1)` ran for more than 5000000 steps: compile-time code must finish"), "{out}");
 }
 
+/// `comptime e` in ordinary code: evaluated while compiling, its value
+/// written in (the program never calls what computed it); a variable around
+/// it can't be used. Evaluating it once made the program resolve itself
+/// again, without end (each level evaluating the same `comptime`), until
+/// memory ran out: this would hang.
+#[test]
+fn comptime_in_ordinary_code_runs_while_compiling() {
+    let d = tmp("comptime-anywhere");
+    let src = "use std.regex.{parse, show}\n\nfn shout(s: String) -> String {\n  s + \"!\"\n}\n\nfn main() {\n  r := comptime parse(\"(?i)ab|ac\")\n  print(match r {\n    Ok(x) => show(x),\n    Err(e) => e,\n  })\n  print(comptime shout(\"hi\"))\n}\n";
+    let (ok, out) = strata(&["--file", "c.strata", "edit"], &d, Some(src));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "c.strata", "run"], &d, None);
+    assert!(ok && out == "cat(cls(41-41 61-61),cls(42-43 62-63))\nhi!\n", "{out}");
+    let (ok, out) = strata(&["--file", "c.strata", "build", "--emit-llvm", "-o", "c.ll"], &d, None);
+    let ir = std::fs::read_to_string(d.join("c.ll")).unwrap_or_default();
+    assert!(ok && ir.contains("define") && !ir.contains("std.regex.parse") && !ir.contains("@\"strata:shout\""), "the values are constants: {out}{ir}");
+    let (_, out) = strata(&["--file", "v.strata", "edit"], &d, Some("fn main() {\n  n := 3\n  print(comptime n + 1)\n}\n"));
+    let (ok, out2) = strata(&["--file", "v.strata", "check"], &d, None);
+    assert!(!ok && out2.contains("unknown variable `n`: compile-time code can use definitions, not the variables around it"), "{out}{out2}");
+}
+
 /// Types passed whole at runtime: `T.m()` on an impl's type parameters, and
 /// `std.json` for the built-in types through `T: Json`.
 #[test]
 fn impl_type_parameters_at_runtime() {
     let d = tmp("impl-statics");
-    for (name, prog, want) in [("statics", json_case::STATICS, json_case::STATICS_OUTPUT), ("builtins", json_case::BUILTINS, json_case::BUILTINS_OUTPUT), ("text", json_case::TEXT, json_case::TEXT_OUTPUT), ("self_methods", json_case::SELF_METHODS, json_case::SELF_METHODS_OUTPUT), ("generic_derive", json_case::GENERIC_DERIVE, json_case::GENERIC_DERIVE_OUTPUT), ("option_option", json_case::OPTION_OPTION, json_case::OPTION_OPTION_OUTPUT), ("root_builtin_name", json_case::ROOT_BUILTIN_NAME, json_case::ROOT_BUILTIN_NAME_OUTPUT), ("refined", json_case::REFINED, json_case::REFINED_OUTPUT)] {
+    for (name, prog, want) in [("statics", json_case::STATICS, json_case::STATICS_OUTPUT), ("builtins", json_case::BUILTINS, json_case::BUILTINS_OUTPUT), ("text", json_case::TEXT, json_case::TEXT_OUTPUT), ("self_methods", json_case::SELF_METHODS, json_case::SELF_METHODS_OUTPUT), ("generic_derive", json_case::GENERIC_DERIVE, json_case::GENERIC_DERIVE_OUTPUT), ("option_option", json_case::OPTION_OPTION, json_case::OPTION_OPTION_OUTPUT), ("root_builtin_name", json_case::ROOT_BUILTIN_NAME, json_case::ROOT_BUILTIN_NAME_OUTPUT), ("refined", json_case::REFINED, json_case::REFINED_OUTPUT), ("refined_more", json_case::REFINED_MORE, json_case::REFINED_MORE_OUTPUT)] {
         let f = format!("{name}.strata");
         let (ok, out) = strata(&["--file", &f, "edit"], &d, Some(prog));
         assert!(ok, "{out}");
@@ -4106,4 +4127,84 @@ fn std_is_edited_as_a_checked_package() {
     assert!(!ok && out.contains("`Int` is not a function") && out.contains("nothing was changed"), "{out}");
     let (ok, out) = strata(&["--file", "std", "check"], &d, None);
     assert!(ok, "{out}");
+}
+
+// Capabilities: made only by the runtime, for `main` and tests that ask;
+// capability traits for everything else.
+#[test]
+fn capabilities_given_by_the_runtime() {
+    let d = tmp("capabilities");
+    let p = d.join("p");
+    std::fs::create_dir_all(&p).unwrap();
+    std::fs::write(p.join("strata.toml"), "name = \"p\"\n").unwrap();
+    let clock = "/// Reading the time.\npub capability trait Clock {\n  fn now(self) -> Int\n}\n\n/// The machine's clock.\npub capability SystemClock {\n  /// Seconds, as the system tells.\n  fn seconds() -> Int {\n    42\n  }\n}\n\nimpl Clock for SystemClock {\n  fn now(self) -> Int {\n    self.seconds()\n  }\n}\n\npub type Fixed = { at: Int }\n\nimpl Clock for Fixed {\n  fn now(self) -> Int {\n    self.at\n  }\n}\n\npub fn late(c: Clock) -> Bool {\n  c.now() > 40\n}\n";
+    save_module(&p, "clock", clock);
+    let main = "use clock.{SystemClock, Fixed, late}\n\nfn main(sys: SystemClock) {\n  print(f\"{sys.seconds()} {late(sys)} {late(Fixed { at: 1 })}\")\n}\n\ntest \"the real clock\" (sys: SystemClock) {\n  assert late(sys)\n}\n\ntest \"a fixed clock\" {\n  assert !late(Fixed { at: 1 })\n}\n";
+    save_module(&p, "main", main);
+    // the text round-trips
+    for (m, src) in [("clock", clock), ("main", main)] {
+        let (ok, out) = strata(&["--file", "p", "render", m], &d, None);
+        assert!(ok && out == src, "{out}");
+    }
+    let (ok, out) = strata(&["--file", "p", "check"], &d, None);
+    assert!(ok, "{out}");
+    // the runtime makes it: compiled, interpreted, built
+    for args in [&["run", "p"][..], &["run", "--interpret", "p"][..]] {
+        let (ok, out) = strata(args, &d, None);
+        assert!(ok && out == "42 true false\n", "{args:?}: {out}");
+    }
+    let (ok, out) = strata(&["--file", "p", "test"], &d, None);
+    assert!(ok && out.contains("✓ the real clock") && out.contains("2 passed"), "{out}");
+    let (ok, out) = strata(&["--file", "p", "test", "--interpret"], &d, None);
+    assert!(ok && out.contains("2 passed"), "{out}");
+    let exe = d.join("clockprog");
+    let (ok, out) = strata(&["build", "p", "-o", &exe.to_string_lossy()], &d, None);
+    if ok {
+        let o = Command::new(&exe).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&o.stdout), "42 true false\n");
+    } else {
+        assert!(out.contains("clang"), "{out}");
+    }
+    // verify runs nothing that needs one
+    let (_, out) = strata(&["--file", "p", "verify"], &d, None);
+    assert!(out.contains("assumed: `SystemClock` is a capability") && out.contains("assumed: it takes the capability `SystemClock`"), "{out}");
+    assert!(out.contains("clock.late") && !out.contains("panicked"), "{out}");
+    // nothing else makes one
+    save_module(&p, "bad", "use clock.{SystemClock}\n\nfn forge() -> SystemClock {\n  SystemClock {}\n}\n\nfn mocked() -> SystemClock {\n  mock SystemClock\n}\n\ntest \"asks for an int\" (n: Int) {\n  assert n == 1\n}\n");
+    let (ok, out) = strata(&["--file", "p", "check"], &d, None);
+    assert!(!ok, "{out}");
+    for m in [
+        "`SystemClock` is a capability: only the runtime makes one, for `main` or a test that asks for it (`system_clock: SystemClock`)",
+        "`mock` needs a trait, found `clock.SystemClock`",
+        "test parameter `n: Int`: a test asks only for capabilities",
+    ] {
+        assert!(out.contains(m), "{m}: {out}");
+    }
+    std::fs::remove_file(p.join("bad.strata")).unwrap();
+    // its functions don't take `self`
+    let (ok, out) = strata(&["--file", "x.strata", "edit"], &d, Some("capability C {\n  fn f(self) -> Int {\n    1\n  }\n}\n"));
+    assert!(!ok && out.contains("a capability's functions don't take `self`"), "{out}");
+    // std's: `main` names `Disk` and `Process`, and calls their traits' methods
+    // without the traits imported; `Files` itself is for code below `main`
+    save(&d.join("std_caps.strata"), "use std.fs.{Disk}\nuse std.process.{Process}\n\nfn main(mut disk: Disk, process: Process) {\n  mut disk.write(\"cap.txt\", \"hi\") except { () }\n  print(disk.read(\"cap.txt\") except { \"?\" })\n  mut disk.remove(\"cap.txt\") except { () }\n  print(disk.exists(\"cap.txt\"))\n  print(len(process.args()))\n}\n");
+    for args in [&["run", "std_caps.strata", "--", "a", "b"][..], &["run", "--interpret", "std_caps.strata", "--", "a", "b"][..]] {
+        let (ok, out) = strata(args, &d, None);
+        assert!(ok && out == "hi\nfalse\n2\n", "{args:?}: {out}");
+    }
+    save(&d.join("asks_files.strata"), "use std.fs.{Files}\n\nfn main(files: Files) {\n  print(files.exists(\"x\"))\n}\n");
+    let (ok, out) = strata(&["run", "asks_files.strata"], &d, None);
+    assert!(!ok && out.contains("Name the capability instead, `disk: Disk` (std.fs), and pass it where `Files` is wanted"), "{out}");
+}
+
+/// `verify` checks a generic impl's methods at a whole type whose type
+/// arguments meet the impl's bounds (`List[String]` for `impl[T: Zero] ..
+/// for List[T]` when only `String` is a `Zero`), not at its head alone.
+#[test]
+fn generic_impls_are_verified_at_a_whole_type() {
+    let d = tmp("fuzz-whole-types");
+    let src = "trait Zero {\n  fn zero() -> Self\n}\n\nimpl Zero for String {\n  fn zero() -> Self {\n    \"z\"\n  }\n}\n\nimpl[T: Zero] Zero for List[T] {\n  fn zero() -> Self {\n    [T.zero(), T.zero()]\n  }\n}\n";
+    let (ok, out) = strata(&["--file", "z.strata", "edit"], &d, Some(src));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "z.strata", "verify", "--cases", "10"], &d, None);
+    assert!(ok && out.contains("✓ List[T].zero") && !out.contains("✗"), "{out}");
 }

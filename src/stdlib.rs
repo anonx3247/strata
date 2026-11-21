@@ -27,6 +27,9 @@ const FILES: &[(&str, &[u8])] = &[
     ("typing.strata", include_bytes!("../std/typing.strata")),
     ("json.strata", include_bytes!("../std/json.strata")),
     ("code.strata", include_bytes!("../std/code.strata")),
+    ("unicode_tables.strata", include_bytes!("../std/unicode_tables.strata")),
+    ("unicode.strata", include_bytes!("../std/unicode.strata")),
+    ("regex.strata", include_bytes!("../std/regex.strata")),
 ];
 
 /// Native operations, callable only from `std`.
@@ -42,14 +45,13 @@ pub const HOST: &[Builtin] = &[
     Builtin::new("host_remove", "", "(String) -> Result[(), (String, String)]"),
     Builtin::new("host_args", "", "() -> List[String]"),
     Builtin::new("host_env_var", "", "(String) -> Option[String]"),
-    Builtin::new("host_code_version", "", "(String) -> String"),
-    Builtin::new("host_code_snapshot", "", "(String) -> Result[std.code.Snapshot, String]"),
+    Builtin::new("host_code_version", "", "() -> String"),
+    Builtin::new("host_code_snapshot", "", "() -> Result[std.code.Snapshot, String]"),
 ];
 
 /// The private types that reach the real system. Only `strata run` makes
 /// them (for `main`), `verify` never runs them, and fuzzing never picks them
 /// for a type parameter.
-pub const HOST_TYPES: &[&str] = &["std.io.Terminal", "std.fs.Disk", "std.process.Process", "std.code.Workspace"];
 
 pub fn is_host(name: &str) -> bool {
     HOST.iter().any(|h| h.name == name)

@@ -467,3 +467,47 @@ ok
 Err("0 does not satisfy `Port` (where 1 <= it && it <= 65535)")
 Ok(())
 "#;
+
+/// Refined aliases with type parameters (`Many[Int]`) and refinements
+/// written as type arguments (`List[Int where it % 2 == 0]`).
+#[allow(dead_code)]
+pub const REFINED_MORE: &str = r#"use std.json.{Json, parse}
+
+type Many[T] = List[T]
+  where len(it) >= 2
+
+fn read[T: Json](text: String) -> Result[T, String] {
+  T.decode(parse(text)!)
+}
+
+fn pairs(text: String) -> Result[Many[Int], String] {
+  read(text)
+}
+
+fn evens(text: String) -> Result[List[Int where it % 2 == 0], String] {
+  read(text)
+}
+
+fn names(text: String) -> Result[Dict[String, String where len(it) > 0], String] {
+  read(text)
+}
+
+fn main() {
+  print(pairs("[1, 2, 3]"))
+  print(pairs("[1]"))
+  print(evens("[2, 4]"))
+  print(evens("[2, 3]"))
+  print(names("{\"a\": \"x\", \"b\": \"\"}"))
+  let m: Many[String] = ["a", "b"]
+  print(len(m))
+}
+"#;
+
+#[allow(dead_code)]
+pub const REFINED_MORE_OUTPUT: &str = r#"Ok([1, 2, 3])
+Err("[1] does not satisfy `Many` (where len(it) >= 2)")
+Ok([2, 4])
+Err("[1]: 3 does not satisfy `Int where it % 2 == 0`")
+Err("b: \"\" does not satisfy `String where len(it) > 0`")
+2
+"#;

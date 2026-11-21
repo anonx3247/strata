@@ -446,6 +446,9 @@ fn words(o: &Decl, n: &Decl) -> Vec<String> {
         }
         (DeclKind::Type(a), DeclKind::Type(b)) => type_words(a, b, &mut out),
         (DeclKind::Trait(a), DeclKind::Trait(b)) => {
+            if a.capability != b.capability {
+                out.push(if b.capability { "made a capability trait".into() } else { "no longer a capability trait".into() });
+            }
             let ma: Vec<(String, Option<&FnDecl>)> = a.methods.iter().map(|m| (m.decl.name.to_string(), Some(&m.decl))).collect();
             let mb: Vec<(String, Option<&FnDecl>)> = b.methods.iter().map(|m| (m.decl.name.to_string(), Some(&m.decl))).collect();
             methods_words(&ma, &mb, &mut out, true);
@@ -460,6 +463,12 @@ fn words(o: &Decl, n: &Decl) -> Vec<String> {
             let mb: Vec<(String, Option<&FnDecl>)> = b.methods.iter().map(|m| (m.name.to_string(), Some(m))).collect();
             methods_words(&ma, &mb, &mut out, false);
         }
+        (DeclKind::Capability(a), DeclKind::Capability(b)) => {
+            let ma: Vec<(String, Option<&FnDecl>)> = a.methods.iter().map(|m| (m.name.to_string(), Some(m))).collect();
+            let mb: Vec<(String, Option<&FnDecl>)> = b.methods.iter().map(|m| (m.name.to_string(), Some(m))).collect();
+            methods_words(&ma, &mb, &mut out, false);
+        }
+        (DeclKind::Test(a), DeclKind::Test(b)) if a.params != b.params => out.push("capabilities asked for changed".into()),
         (DeclKind::Test(_), DeclKind::Test(_)) => out.push("body changed".into()),
         (DeclKind::Use(a), DeclKind::Use(b)) if a != b => out.push("imports changed".into()),
         (DeclKind::Use(_), DeclKind::Use(_)) => {}
@@ -562,7 +571,7 @@ fn verdict_word(v: Option<&Verdict>) -> String {
 fn section(kind: &str, mk: &str, interface_changed: bool) -> &'static str {
     match kind {
         "type" => "Types",
-        "trait" | "use" | "extern" => "Interfaces",
+        "trait" | "use" | "extern" | "capability" => "Interfaces",
         "fn" if mk == "ren" || (mk == "chg" && interface_changed) => "Interfaces",
         "test" => "Tests",
         _ => "Implementations",

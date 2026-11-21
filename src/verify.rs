@@ -288,6 +288,20 @@ impl Verdict {
 /// its functions, directly or through other functions.
 fn foreign(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>) -> Option<String> {
     use crate::names::module_of;
+    // a capability's own code reaches the outside world; one passed in can't be made here
+    if let Some(i) = imp {
+        let head = crate::types::texpr_head(&i.for_type);
+        if env.capabilities.contains(&Symbol::new(&head)) {
+            return Some(format!("`{}` is a capability: it reaches the outside world (only `strata run` gives one)", crate::names::short(&head)));
+        }
+    }
+    for p in &f.params {
+        let mut named = Vec::new();
+        crate::ast::Visit::ty(&mut Names(&mut named), &p.ty);
+        if let Some(n) = named.iter().find(|n| env.capabilities.contains(*n)) {
+            return Some(format!("it takes the capability `{}`, which only the runtime makes", crate::names::short(n)));
+        }
+    }
     if env.externs.is_empty() {
         return None;
     }
@@ -354,9 +368,6 @@ fn has_hole(e: &Expr) -> bool {
 #[allow(clippy::too_many_arguments)]
 pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, key: &str, solver: Option<&crate::smt::Solver>, transparent: &crate::fx::HashMap<String, bool>, cases: usize, cross_check: usize, seed: u64) -> Verdict {
     // the real terminal, disk and process: trusted, never run here (only `strata run` reaches the system)
-    if imp.is_some_and(|i| crate::stdlib::HOST_TYPES.contains(&crate::types::texpr_head(&i.for_type).as_str())) {
-        return Verdict::Assumed { why: "it talks to the real system (only `strata run` reaches it)".into() };
-    }
     if let Some(why) = foreign(env, f, imp) {
         return Verdict::Assumed { why };
     }
@@ -366,7 +377,7 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, key: &str, solver
             let mut d = method_decl(env, imp, f);
             // run through its trait: the name may be shared with another trait or the type's own method
             d.name = Symbol::from(crate::types::trait_call(&imp.trait_name, &f.name));
-            static_type_arg(imp, f, &mut d);
+            static_type_arg(env, imp, f, &mut d);
             d
         }
     };
@@ -497,9 +508,30 @@ pub fn literal_of(v: &Value) -> Option<Expr> {
 
 /// Replace `Self` (and the impl's type parameters, at `Int`) in a method
 /// signature so its inputs can be generated.
-pub fn for_impl(imp: &ImplDecl, f: &FnDecl) -> FnDecl {
-    let mut sub: crate::fx::HashMap<Symbol, TypeExpr> =
-        imp.type_params.iter().map(|p| (p.clone(), TypeExpr::Named("Int".into(), vec![]))).collect();
+/// A type for each of an impl's type parameters that meets its bounds
+/// (`Int` for `T: Zero` when `Int` implements `Zero`): what its methods are
+/// checked and fuzzed at.
+pub fn impl_instance(env: &Env, imp: &ImplDecl) -> crate::fx::HashMap<Symbol, TypeExpr> {
+    let named = |n: &str| TypeExpr::Named(n.into(), vec![]);
+    imp.type_params
+        .iter()
+        .map(|p| {
+            let wants: Vec<Symbol> = imp.bounds.iter().filter(|b| b.param == *p).flat_map(|b| b.traits.iter().map(crate::types::texpr_head)).collect();
+            let has = |h: &str| wants.iter().all(|tr| env.impls.iter().any(|i| i.trait_name == *tr && crate::types::texpr_head(&i.for_type) == h && i.type_params.is_empty()));
+            // a built-in type first, then any type of the program that has them all
+            let t = ["Int", "String", "Bool", "Float"]
+                .iter()
+                .find(|h| has(h))
+                .map(|h| named(h))
+                .or_else(|| env.impls.iter().filter(|i| i.type_params.is_empty()).map(|i| crate::types::texpr_head(&i.for_type)).find(|h| has(h.as_str())).map(|h| named(h.as_str())))
+                .unwrap_or_else(|| named("Int"));
+            (*p, t)
+        })
+        .collect()
+}
+
+pub fn for_impl(env: &Env, imp: &ImplDecl, f: &FnDecl) -> FnDecl {
+    let mut sub = impl_instance(env, imp);
     let self_ty = crate::types::subst_texpr(&imp.for_type, &sub);
     sub.insert("Self".into(), self_ty);
     let mut g = f.clone();
@@ -514,10 +546,10 @@ pub fn for_impl(imp: &ImplDecl, f: &FnDecl) -> FnDecl {
 /// implementation, the trait's contract (which binds every implementation)
 /// before its own.
 fn method_decl(env: &Env, imp: &ImplDecl, f: &FnDecl) -> FnDecl {
-    let mut d = for_impl(imp, f);
+    let mut d = for_impl(env, imp, f);
     if let Some(tm) = env.traits.get(&imp.trait_name).and_then(|t| t.methods.iter().find(|m| m.decl.name == f.name)) {
         if !std::ptr::eq(&tm.decl, f) {
-            let tm = for_impl(imp, &tm.decl);
+            let tm = for_impl(env, imp, &tm.decl);
             d.requires.splice(0..0, tm.requires);
             d.ensures.splice(0..0, tm.ensures);
         }
@@ -542,7 +574,8 @@ pub fn wrappers(env: &Env, prog: &Program, chosen: &[bool]) -> Vec<FnDecl> {
         if !chosen.get(i).copied().unwrap_or(false) {
             continue;
         }
-        if imp.is_inherent() || crate::stdlib::HOST_TYPES.contains(&crate::types::texpr_head(&imp.for_type).as_str()) {
+        let head = crate::types::texpr_head(&imp.for_type);
+        if imp.is_inherent() || env.capabilities.contains(&Symbol::new(&head)) {
             continue;
         }
         let Some(tr) = env.traits.get(&imp.trait_name) else { continue };
@@ -585,7 +618,7 @@ pub fn wrappers(env: &Env, prog: &Program, chosen: &[bool]) -> Vec<FnDecl> {
                 comptime: false,
                 derived: false,
             };
-            let mut kind = DeclKind::Fn(for_impl(imp, &as_fn));
+            let mut kind = DeclKind::Fn(for_impl(env, imp, &as_fn));
             // `Self.empty()` in a law means this implementation's
             let self_arg = crate::types::type_arg("Self");
             decl_exprs_mut(&mut kind, |e| {
@@ -725,9 +758,12 @@ fn short_stack(stack: &[String]) -> String {
 
 /// A trait method without `self` is called with the type first (`Trait::empty(type)`):
 /// give its checked form that argument, so the solver knows the type.
-fn static_type_arg(imp: &ImplDecl, f: &FnDecl, d: &mut FnDecl) {
+fn static_type_arg(env: &Env, imp: &ImplDecl, f: &FnDecl, d: &mut FnDecl) {
     if !crate::resolve::takes_self(f) {
-        let ty = TypeExpr::Named(crate::types::TYPE_ARG.into(), vec![imp.for_type.clone()]);
+        // the whole type (`List[Int]`, not `List`): the impl's type parameters
+        // are known in the method
+        let whole = crate::types::subst_texpr(&imp.for_type, &impl_instance(env, imp));
+        let ty = TypeExpr::Named(crate::types::TYPE_ARG.into(), vec![whole]);
         d.params.insert(0, Param { name: Symbol::from(crate::types::type_arg("Self")), ty, mutable: false, comptime: false });
     }
 }

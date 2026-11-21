@@ -31,13 +31,13 @@ fn handler(env: &Env) -> Result<FnDecl, String> {
         .get(&Symbol::new("handle"))
         .ok_or("no `handle` function to serve: write `fn handle(req: Request) -> Response` (with `use std.http.{Request, Response}`)")?
         .clone();
-    let usage = "`handle` takes a `Request` (std.http) and may ask for `Console`, `Files`, `Environment` and `Code`";
+    let usage = "`handle` takes a `Request` (std.http) and may ask for `Console` and capabilities (`Disk`, `Process`, or the program's own)";
     let mut requests = 0;
     for p in &f.params {
         let ty = crate::printer::ty(&p.ty);
         if ty == REQUEST {
             requests += 1;
-        } else if crate::cmd::capability(&ty).is_none() {
+        } else if crate::cmd::capability(env, &ty).is_none() {
             return Err(format!("{usage}. Its parameter `{}` has type `{ty}`", p.name));
         }
     }
@@ -128,7 +128,7 @@ fn fault_text(f: &interp::Fault) -> String {
 impl App {
     /// Check the three functions' signatures.
     fn new(env: &Env, name: &str) -> Result<App, String> {
-        let usage = "an app is `fn init() -> Model`, `fn update(model: Model, msg: Msg) -> Model` and `fn view(model: Model) -> Html[Msg]` (std.web), for your own `Model` and `Msg` types; `init` and `update` may also ask for `Console`, `Files`, `Environment` and `Code`, after their other parameters";
+        let usage = "an app is `fn init() -> Model`, `fn update(model: Model, msg: Msg) -> Model` and `fn view(model: Model) -> Html[Msg]` (std.web), for your own `Model` and `Msg` types; `init` and `update` may also ask for `Console` and capabilities (`Disk`, `Process`, `Codebase`, or the program's own), after their other parameters";
         let get = |n: &str| env.fns.get(&Symbol::new(n)).cloned().ok_or(format!("no `{n}` function: {usage}"));
         let (init, update, view) = (get("init")?, get("update")?, get("view")?);
         let ty = crate::printer::ty;
@@ -139,7 +139,7 @@ impl App {
                 .iter()
                 .map(|p| {
                     let t = ty(&p.ty);
-                    match crate::cmd::capability(&t) {
+                    match crate::cmd::capability(env, &t) {
                         Some(_) => Ok(t),
                         None => Err(format!("`{}`'s parameter `{}` is a `{t}`, not a capability: {usage}", f.name, p.name)),
                     }
@@ -168,8 +168,8 @@ impl App {
     }
 
     /// The values of the capabilities `caps` names.
-    fn caps(caps: &[String]) -> Vec<Value> {
-        caps.iter().filter_map(|c| crate::cmd::capability(c)).collect()
+    fn caps(env: &Env, caps: &[String]) -> Vec<Value> {
+        caps.iter().filter_map(|c| crate::cmd::capability(env, c)).collect()
     }
 
     /// The model's view, as HTML.
@@ -189,7 +189,7 @@ impl App {
         };
         match (req["method"].as_str().unwrap_or(""), req["path"].as_str().unwrap_or("")) {
             ("GET" | "HEAD", "/") => {
-                let model = match App::interp(env).call_fn("init", App::caps(&self.init_caps)) {
+                let model = match App::interp(env).call_fn("init", App::caps(env, &self.init_caps)) {
                     Ok(m) => m,
                     Err(f) => return error(500, fault_text(&f)),
                 };
@@ -241,7 +241,7 @@ impl App {
                     }
                 };
                 let mut args = vec![model.clone(), msg];
-                args.extend(App::caps(&self.update_caps));
+                args.extend(App::caps(env, &self.update_caps));
                 let new = match it.call_fn("update", args) {
                     Ok(m) => m,
                     Err(f) => return error(500, fault_text(&f)),
@@ -286,7 +286,7 @@ fn call(env: &Env, f: &FnDecl, req: &Json) -> (u16, Vec<(String, String)>, Strin
     let mut args = Vec::new();
     for p in &f.params {
         let ty = crate::printer::ty(&p.ty);
-        match crate::cmd::capability(&ty) {
+        match crate::cmd::capability(env, &ty) {
             Some(v) => args.push(v),
             None => match it.from_json(&p.ty, req, &p.name) {
                 Ok(v) => args.push(v),

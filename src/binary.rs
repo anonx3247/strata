@@ -146,6 +146,7 @@ fn take_bodies(k: &mut DeclKind) -> Vec<Expr> {
         DeclKind::Test(t) => vec![take(&mut t.body)],
         DeclKind::Trait(t) => t.methods.iter_mut().map(|m| take(&mut m.decl.body)).collect(),
         DeclKind::Impl(i) => i.methods.iter_mut().map(|m| take(&mut m.body)).collect(),
+        DeclKind::Capability(c) => c.methods.iter_mut().map(|m| take(&mut m.body)).collect(),
         DeclKind::Type(_) | DeclKind::Use(_) | DeclKind::Extern(_) => vec![],
     }
 }
@@ -156,6 +157,7 @@ fn put_bodies(k: &mut DeclKind, bodies: Vec<Expr>) -> Result<(), String> {
         DeclKind::Test(t) => vec![&mut t.body],
         DeclKind::Trait(t) => t.methods.iter_mut().map(|m| &mut m.decl.body).collect(),
         DeclKind::Impl(i) => i.methods.iter_mut().map(|m| &mut m.body).collect(),
+        DeclKind::Capability(c) => c.methods.iter_mut().map(|m| &mut m.body).collect(),
         DeclKind::Type(_) | DeclKind::Use(_) | DeclKind::Extern(_) => vec![],
     };
     if slots.len() != bodies.len() {
@@ -225,6 +227,7 @@ pub fn without_notes(mut d: Decl) -> Decl {
             }
         }
         DeclKind::Impl(i) => i.methods.iter_mut().for_each(func),
+        DeclKind::Capability(c) => c.methods.iter_mut().for_each(func),
         DeclKind::Extern(e) => {
             if let ExternItem::Fn(f) = &mut e.item {
                 func(f)
@@ -355,7 +358,7 @@ pub fn decode_module(bytes: &[u8]) -> Result<Vec<Decl>, String> {
         .collect()
 }
 
-const KINDS: [&str; 7] = ["type", "fn", "test", "trait", "impl", "use", "extern"];
+const KINDS: [&str; 8] = ["type", "fn", "test", "trait", "impl", "use", "extern", "capability"];
 
 fn kind_tag(k: &DeclKind) -> u8 {
     match k {
@@ -366,6 +369,7 @@ fn kind_tag(k: &DeclKind) -> u8 {
         DeclKind::Impl(_) => 4,
         DeclKind::Use(_) => 5,
         DeclKind::Extern(_) => 6,
+        DeclKind::Capability(_) => 7,
     }
 }
 
@@ -789,14 +793,15 @@ record!(Variant { comments, name, payload });
 record!(Param { name, ty, mutable, comptime });
 record!(Bound { param, traits });
 record!(FnDecl { doc, comments, name, type_params, bounds, params, ret, requires, ensures, terminates, body, comptime, derived });
-record!(TestDecl { name, body });
+record!(TestDecl { name, params, body });
 record!(TraitMethod { comments, doc, decl, default });
 record!(Law { comments, doc, name, params, body });
-record!(TraitDecl { name, params, supers, methods, laws, derivable });
+record!(TraitDecl { name, params, supers, methods, laws, derivable, capability });
 record!(Derivable { kind, requires });
 record!(ImplDecl { type_params, bounds, trait_name, trait_args, for_type, methods, derived });
 record!(UseDecl { path, items });
 record!(ExternDecl { lang, item });
+record!(CapabilityDecl { name, methods });
 record!(Arm { comments, pat, body });
 record!(LamParam { name, ty });
 record!(CompFor { pat, iter, cond });
@@ -818,17 +823,19 @@ impl Bin for DeclKind {
             DeclKind::Impl(x) => put!(w, 4, x),
             DeclKind::Use(x) => put!(w, 5, x),
             DeclKind::Extern(x) => put!(w, 6, x),
+            DeclKind::Capability(x) => put!(w, 7, x),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
-        Ok(match r.tag("declaration", 6)? {
+        Ok(match r.tag("declaration", 7)? {
             0 => DeclKind::Type(Bin::dec(r)?),
             1 => DeclKind::Fn(Bin::dec(r)?),
             2 => DeclKind::Test(Bin::dec(r)?),
             3 => DeclKind::Trait(Bin::dec(r)?),
             4 => DeclKind::Impl(Bin::dec(r)?),
             5 => DeclKind::Use(Bin::dec(r)?),
-            _ => DeclKind::Extern(Bin::dec(r)?),
+            6 => DeclKind::Extern(Bin::dec(r)?),
+            _ => DeclKind::Capability(Bin::dec(r)?),
         })
     }
 }
@@ -1280,7 +1287,7 @@ use e.*
                 for _ in 0..2 * MAX_DEPTH {
                     e = Expr::Mut(Box::new(e));
                 }
-                let d = Decl { comments: vec![], doc: vec![], module: Symbol::EMPTY, public: false, kind: DeclKind::Test(TestDecl { name: "t".into(), body: e }) };
+                let d = Decl { comments: vec![], doc: vec![], module: Symbol::EMPTY, public: false, kind: DeclKind::Test(TestDecl { name: "t".into(), params: vec![], body: e }) };
                 assert!(decode_definition(&encode_definition(&d)).unwrap_err().contains("nesting too deep"));
             })
             .unwrap()

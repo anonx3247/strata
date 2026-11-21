@@ -34,11 +34,8 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
         // what `main` may ask for: a mistake of the program's, not something not compiled yet
         for pm in &main.params {
             let ty = printer::ty(&pm.ty);
-            if capability(&ty).is_none() && !cli::is_options(&env, &pm.ty) {
-                return Err(format!(
-                    "`main` can ask for `Console` (std.io), `Files` (std.fs), `Environment` (std.process), and options: a record that implements `CommandLine` (std.cli). Its parameter `{}` is a `{ty}`",
-                    pm.name
-                ));
+            if capability(&env, &ty).is_none() && !cli::is_options(&env, &pm.ty) {
+                return Err(format!("{} Its parameter `{}` is a `{ty}`", not_given(&ty, "`main`"), pm.name));
             }
         }
         let ir = if args.flag("--trace") { llvm::compile_traced(p, "main") } else { llvm::compile(p, "main") };
@@ -215,7 +212,14 @@ fn test_interpreted(resolved: &Program, env: &types::Env, filter: &str) -> Vec<T
         let mut it = interp::Interp::new(env, 7);
         // each test prints into its own buffer, shown only if it fails
         it.output = interp::Output::Buffer(String::new());
-        let fault = it.eval(&t.body, &None).err().map(|f| (format!("{:?}", f.kind), f.msg, crate::interp::show_stack(&f.stack)));
+        // the capabilities it asks for, made as for `main`
+        let mut scope = None;
+        for p in &t.params {
+            if let Some(v) = capability(env, &printer::ty(&p.ty)) {
+                scope = interp::extend(&scope, &p.name, v);
+            }
+        }
+        let fault = it.eval(&t.body, &scope).err().map(|f| (format!("{:?}", f.kind), f.msg, crate::interp::show_stack(&f.stack)));
         let printed = match &it.output {
             interp::Output::Buffer(b) => b.clone(),
             _ => String::new(),
@@ -260,18 +264,27 @@ fn test_jit(p: &Program, filter: &str) -> Result<Vec<TestRun>, String> {
     Ok(out)
 }
 
-/// The real implementation of a capability `main` (or `handle`) asks for:
-/// `Console`, `Files` or `Environment`, by the parameter's type.
-pub fn capability(ty: &str) -> Option<interp::Value> {
+/// What the runtime gives for a parameter of `main` (or `handle`, `init`,
+/// `update`, or a test), by its type: a capability (`Disk`, `Process`, the
+/// program's own), which holds nothing; or, for `Console`, the one capability
+/// the environment chooses: the terminal (a test's output is its own).
+pub fn capability(env: &types::Env, ty: &str) -> Option<interp::Value> {
     use interp::Value;
-    let rec = |name: &str, fields: Vec<(&str, Value)>| Value::Record(name.into(), fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
-    Some(match ty {
-        "std.io.Console" => rec("std.io.Terminal", vec![("stdout", Value::Int(1)), ("stderr", Value::Int(2))]),
-        "std.fs.Files" => rec("std.fs.Disk", vec![("root", Value::Str(".".into()))]),
-        "std.process.Environment" => rec("std.process.Process", vec![("pid", Value::Int(std::process::id() as i64))]),
-        "std.code.Code" => rec("std.code.Workspace", vec![("root", Value::Str(crate::ui::code_root()))]),
-        _ => return None,
-    })
+    let made = if ty == CONSOLE { "std.io.Terminal" } else { ty };
+    env.capabilities.contains(&Symbol::new(made)).then(|| Value::Record(made.into(), Default::default()))
+}
+
+/// The capability trait the environment fills in.
+pub const CONSOLE: &str = "std.io.Console";
+
+/// Why `main` can't ask for `ty`, with what to ask for instead.
+pub fn not_given(ty: &str, what: &str) -> String {
+    let instead = match ty {
+        "std.fs.Files" => " Name the capability instead, `disk: Disk` (std.fs), and pass it where `Files` is wanted.",
+        "std.process.Environment" => " Name the capability instead, `process: Process` (std.process), and pass it where `Environment` is wanted.",
+        _ => "",
+    };
+    format!("{what} can ask for `Console` (std.io), capabilities (`Disk` from std.fs, `Process` from std.process, or the program's own `capability ...`), and options: a record that implements `CommandLine` (std.cli).{instead}")
 }
 
 /// `strata serve [PATH] [--port N]`: serve the program's `handle`, or run
@@ -314,7 +327,7 @@ pub fn run_main(_p: &Program, env: &types::Env, prog: &str, program_args: Vec<St
     for pm in &f.params {
         let ty = printer::ty(&pm.ty);
         vals.push(match ty.as_str() {
-            _ if capability(&ty).is_some() => capability(&ty).unwrap(),
+            _ if capability(env, &ty).is_some() => capability(env, &ty).unwrap(),
             // options read from the command line
             // `Options.from_args(program, args)`, derived in Strata (std.cli)
             _ if cli::is_options(env, &pm.ty) => {

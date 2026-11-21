@@ -101,6 +101,8 @@ pre { margin: 0; padding: 10px 14px; background: var(--code-bg); font: 12.5px/1.
 .t-ctl { color: var(--kw-ctl); } .t-spec { color: var(--kw-spec); } .t-lit { color: var(--num); }
 /* a reference keeps its token colour; only the underline marks it clickable */
 a.ref.t-ty { color: var(--base); } a.ref.t-uty { color: var(--utype); }
+/* capabilities and capability traits: what reaches the outside world */
+.t-cap, a.ref.t-cap { color: var(--effect); font-weight: 600; } .k-capability { color: var(--effect); }
 .t-hole { background: var(--hole-bg); border-radius: 3px; padding: 0 2px; font-weight: 600; }
 a.ref { color: inherit; text-decoration: underline dotted var(--faint); text-underline-offset: 3px; cursor: pointer; }
 a.ref:hover { color: var(--accent); text-decoration-color: var(--accent); }
@@ -368,7 +370,7 @@ const lv = x => isNaN(+x) ? x : +x;
 const S = { data: null, raw: '', level: 1, sel: null, scope: 'slice', q: '', over: {}, prevHash: {}, flash: new Set(), prevLog: 0, newLog: 0, showTests: false, open: {}, allOpen: false };
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const KIND = { type: 'T', fn: 'ƒ', test: '✓', trait: '◆', impl: '⊢', extern: '⇄' };
+const KIND = { type: 'T', fn: 'ƒ', test: '✓', trait: '◆', impl: '⊢', extern: '⇄', capability: '⚿' };
 const byName = () => Object.fromEntries(S.data.decls.map(d => [d.name, d]));
 
 function status(d) {
@@ -391,7 +393,7 @@ function status(d) {
 // (including matching), and what states rules the checker and fuzzer hold
 // the code to. `true`/`false` are literals.
 const KW_GROUPS = {
-  'kw': 'type distinct fn test let mut trait impl derive derivable derived comptime extern pub use module',
+  'kw': 'type distinct fn test let mut trait impl derive derivable derived comptime extern capability pub use module',
   'ctl': 'if else match is while for in loop break continue return except',
   'spec': 'where requires ensures assert law mock it',
   'lit': 'true false',
@@ -423,6 +425,16 @@ function resolver(mod) {
   };
 }
 
+// the names of capabilities and capability traits, coloured apart wherever they appear
+let capNames = null, capData = null;
+function capabilityNames() {
+  if (capData !== S.data) {
+    capData = S.data;
+    capNames = new Set((S.data?.decls || []).filter(d => d.kind === 'capability' || d.capability).map(d => d.name));
+  }
+  return capNames;
+}
+
 function highlight(src, resolve) {
   const re = /(\/\/\/[^\n]*)|(\/\/[^\n]*)|("(?:[^"\\]|\\.)*")|(\?[A-Za-z_]\w*)|(\b\d+\b)|([A-Za-z_]\w*)/g;
   let out = '', last = 0, m;
@@ -445,7 +457,8 @@ function highlight(src, resolve) {
       // may be a parameter or local that shadows one (`policy`)
       const called = /^\s*[([]/.test(src.slice(re.lastIndex, re.lastIndex + 3));
       const target = cls || called ? resolve(id) : null;
-      out += target ? `<a class="ref ${cls}" data-go="${esc(target)}">${id}</a>` : (cls ? `<span class="${cls}">${id}</span>` : id);
+      const shown = target && capabilityNames().has(target) ? 't-cap' : cls;
+      out += target ? `<a class="ref ${shown}" data-go="${esc(target)}">${id}</a>` : (cls ? `<span class="${cls}">${id}</span>` : id);
     }
   }
   return out + esc(src.slice(last));
@@ -524,7 +537,7 @@ function renderHeader() {
 }
 
 function renderLeft() {
-  const groups = [['type', 'Types'], ['trait', 'Traits'], ['extern', 'Foreign'], ['impl', 'Implementations'], ['fn', 'Functions'], ['test', 'Tests']];
+  const groups = [['capability', 'Capabilities'], ['type', 'Types'], ['trait', 'Traits'], ['extern', 'Foreign'], ['impl', 'Implementations'], ['fn', 'Functions'], ['test', 'Tests']];
   const vis = new Set(visible().map(d => d.name));
   const mods = [...new Set(S.data.decls.map(d => d.module))];
   const many = mods.length > 1 || mods[0] !== '';

@@ -579,7 +579,7 @@ fn trait_text(t: &TraitDecl, bodies: bool) -> String {
             }
             h + " {\n"
         }
-        None => format!("trait {}{tp}{sup} {{\n", t.name),
+        None => format!("{}trait {}{tp}{sup} {{\n", if t.capability { "capability " } else { "" }, t.name),
     };
     for m in &t.methods {
         s += &comments(&m.comments, 1);
@@ -639,6 +639,28 @@ pub fn impl_decl(i: &ImplDecl) -> String {
         s += &method_notes(m);
         let body = fn_decl(m).lines().map(|l| format!("  {l}\n")).collect::<String>();
         s += &body;
+    }
+    close(s)
+}
+
+pub fn capability_decl(c: &CapabilityDecl) -> String {
+    capability_text(c, true)
+}
+
+/// A capability with its functions' bodies left out (the interface level).
+pub fn capability_interface(c: &CapabilityDecl) -> String {
+    capability_text(c, false)
+}
+
+fn capability_text(c: &CapabilityDecl, bodies: bool) -> String {
+    let mut s = format!("capability {} {{\n", c.name);
+    for (k, m) in c.methods.iter().enumerate() {
+        if k > 0 && bodies {
+            s += "\n";
+        }
+        s += &method_notes(m);
+        let text = if bodies { fn_decl(m) } else { fn_signature(m) };
+        s += &text.lines().map(|l| format!("  {l}\n")).collect::<String>();
     }
     close(s)
 }
@@ -727,7 +749,9 @@ pub fn decl_body(d: &Decl) -> String {
     let body = match &d.kind {
         DeclKind::Type(t) => type_decl(t),
         DeclKind::Fn(f) => fn_decl(f),
-        DeclKind::Test(t) => format!("test {:?} {}", t.name, block(&t.body, 0)),
+        DeclKind::Test(t) if t.params.is_empty() => format!("test {:?} {}", t.name, block(&t.body, 0)),
+        DeclKind::Test(t) => format!("test {:?} ({}) {}", t.name, param_list(&t.params), block(&t.body, 0)),
+        DeclKind::Capability(c) => capability_decl(c),
         DeclKind::Trait(t) => trait_decl(t),
         DeclKind::Impl(i) => impl_decl(i),
         DeclKind::Use(u) => match &u.items {

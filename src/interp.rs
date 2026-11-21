@@ -583,8 +583,8 @@ impl<'a> Interp<'a> {
                 Ok(v) => some(Str(v)),
                 Err(_) => none(),
             },
-            "host_code_version" => Str(crate::ui::code_version(std::path::Path::new(&s(0)))),
-            "host_code_snapshot" => match crate::ui::code_snapshot(std::path::Path::new(&s(0))) {
+            "host_code_version" => Str(crate::ui::code_version(std::path::Path::new(&crate::ui::code_root()))),
+            "host_code_snapshot" => match crate::ui::code_snapshot(std::path::Path::new(&crate::ui::code_root())) {
                 Ok(j) => {
                     let t = crate::ast::TypeExpr::Named("std.code.Snapshot".into(), vec![]);
                     match self.from_json(&t, &j, "snapshot") {
@@ -736,6 +736,10 @@ impl<'a> Interp<'a> {
         if let Some(r) = &td.refinement {
             let ok = self.eval(r, &extend(&None, "it", v.clone()))?;
             if ok != Value::Bool(true) {
+                // (a refinement written as a type argument shows as written)
+                if let (Some(_), TypeBody::Alias(a)) = (n.as_str().strip_prefix(crate::desugar::WHERE), &td.body) {
+                    return Ok(Some(format!("{} does not satisfy `{} where {}`", to_json(v), crate::printer::ty(a), crate::printer::expr(r, 0))));
+                }
                 return Ok(Some(format!(
                     "{} does not satisfy `{n}` (where {})",
                     to_json(v),
@@ -862,7 +866,8 @@ impl<'a> Interp<'a> {
     /// `Positive`), else itself.
     fn base_head(&self, head: &str) -> String {
         if crate::types::refined_alias(self.env, head.sym()) {
-            if let Some(h) = crate::types::ty_head(&crate::types::alias_base(self.env, head.sym())) {
+            let params = self.env.types.get(&head.sym()).map(|t| t.params.len()).unwrap_or(0);
+            if let Some(h) = crate::types::ty_head(&crate::types::alias_base(self.env, head.sym(), &vec![crate::types::Ty::Unit; params])) {
                 return h.to_string();
             }
         }
@@ -958,9 +963,22 @@ impl<'a> Interp<'a> {
             None => self.env.method_traits.get(&name.sym()).and_then(|ts| ts.iter().find(|t| self.env.impls.iter().any(|i| i.trait_name == **t && crate::types::texpr_head(&i.for_type) == head)).map(|t| t.to_string())),
         };
         let bound = match (&whole, tr) {
-            (Some(w), Some(tr)) => self.env.impls.iter().find(|i| i.trait_name == tr && crate::types::texpr_head(&i.for_type) == crate::types::type_text_head(w)).map(|i| {
+            (Some(w), Some(tr)) => self.env.impls.iter().find(|i| i.trait_name == tr && crate::types::texpr_head(&i.for_type) == head).map(|i| {
+                // (a refined alias, `Many[Int]`, as what it stands for: `List[Int]`)
+                let mut t = crate::types::parse_type_text(w);
+                for _ in 0..16 {
+                    let e = self.env.expand_alias(&t);
+                    let e = match e {
+                        TypeExpr::Refined(b, _) => *b,
+                        e => e,
+                    };
+                    if e == t {
+                        break;
+                    }
+                    t = e;
+                }
                 let mut b = vec![];
-                bind_type_params(&i.for_type, &crate::types::parse_type_text(w), &i.type_params, &mut b);
+                bind_type_params(&i.for_type, &t, &i.type_params, &mut b);
                 b
             }).unwrap_or_default(),
             _ => vec![],

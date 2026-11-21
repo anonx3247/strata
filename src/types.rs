@@ -751,8 +751,8 @@ impl<'a> Checker<'a> {
                 None => t.clone(),
             },
             // a refined alias is its base to every check
-            Ty::Con(n, args) if args.is_empty() && refined_alias(self.env, *n) => {
-                let b = alias_base(self.env, *n);
+            Ty::Con(n, args) if refined_alias(self.env, *n) => {
+                let b = alias_base(self.env, *n, args);
                 self.resolve(&b)
             }
             Ty::Con(n, args) => Ty::Con(n.clone(), args.iter().map(|a| self.resolve(a)).collect()),
@@ -1041,10 +1041,11 @@ impl<'a> Checker<'a> {
                                 // a refined alias (`Positive`) keeps its name: it is its base
                                 // to every check (`resolve` expands it), and what the code is
                                 // given when it runs (`T` is `Positive`, not `Int`)
-                                if td.params.is_empty() && refined_alias(self.env, n.sym()) {
+                                if refined_alias(self.env, n.sym()) && td.params.len() == largs.len() {
                                     let a = a.clone();
-                                    let _ = self.lower(&a, &HashMap::default());
-                                    return Ty::Con(n.sym(), vec![]);
+                                    let sub: HashMap<Symbol, Ty> = td.params.iter().cloned().zip(largs.iter().cloned()).collect();
+                                    let _ = self.lower(&a, &sub);
+                                    return Ty::Con(n.sym(), largs);
                                 }
                                 let sub: HashMap<Symbol, Ty> = td.params.iter().cloned().zip(largs).collect();
                                 let a = a.clone();
@@ -1465,7 +1466,44 @@ impl<'a> Checker<'a> {
 
     /// `dotted`: written `x.m(..)`, where a type's own method comes before a
     /// function of the same name (`m(x, ..)` always means the function).
+    /// The qualified name of method `m` of the one trait that the receiver's
+    /// type (a nominal type of the program or std, with no method `m` of its
+    /// own) implements and that declares `m`.
+    fn implemented_method(&mut self, recv: &Expr, m: &str) -> Option<(Symbol, Symbol)> {
+        let n = self.errors.len();
+        let rt = self.infer(recv);
+        self.errors.truncate(n);
+        let Ty::Con(head, _) = self.resolve(&rt) else { return None };
+        if !self.env.types.contains_key(&head) || self.has_own_method(recv, m) {
+            return None;
+        }
+        let mut found: Vec<(Symbol, Symbol)> = vec![];
+        for imp in &self.env.impls {
+            if imp.is_inherent() || texpr_head(&imp.for_type) != head.as_str() {
+                continue;
+            }
+            let Some(td) = self.env.traits.get(&imp.trait_name) else { continue };
+            for tm in &td.methods {
+                if crate::names::short(&tm.decl.name) == m && crate::resolve::takes_self(&tm.decl) && !found.contains(&(imp.trait_name, tm.decl.name)) {
+                    found.push((imp.trait_name, tm.decl.name));
+                }
+            }
+        }
+        (found.len() == 1).then(|| found.remove(0))
+    }
+
     fn by_receiver(&mut self, m: &str, all: &[&Expr], site: usize, dotted: bool, recv_marked: Option<bool>) -> Option<Ty> {
+        // a method of a trait the receiver's own type implements, written without the
+        // trait in scope (`disk.read(path)` with only `Disk` imported)
+        if dotted && !m.contains('.') && self.lookup(m.sym()).is_none() {
+            if let Some((t, mq)) = all.first().and_then(|r| self.implemented_method(r, m)) {
+                self.targets.push((site, Target::Other(t.to_string(), mq.to_string())));
+                self.check_mut_args(&mq, all, recv_marked);
+                let ft = self.trait_method(&mq, &t);
+                let muts = self.mut_mask(&mq);
+                return Some(self.call_with(ft, all, &Lazy(|| format!("call to `{m}`")), &muts));
+            }
+        }
         // a function of that name takes the call, unless the receiver's type
         // has a method of its own by that name (`app.handle(req)` inside a
         // `fn handle`)
@@ -1819,6 +1857,13 @@ impl<'a> Checker<'a> {
             (t, TypeRef::Con(x.to_string(), vec![]), k)
         };
         if check {
+            // `Self.check(x)` in an impl: the type the method was called on, which
+            // may be a refined alias of the impl's (`Many[Int]` for `List[T]`)
+            if x == "Self" && self.self_ty.is_some() && !matches!(self.self_ty, Some(Ty::Rigid(_))) {
+                self.targets.push((site, Target::Static(CHECK.to_string(), TypeRef::Param("Self".into()))));
+                let result = Ty::Con("Result".into(), vec![Ty::Unit, Ty::Str]);
+                return Some(Ty::Fn(vec![ty], Box::new(result)));
+            }
             self.static_types.push((site, CHECK.to_string(), ty.clone()));
             let result = Ty::Con("Result".into(), vec![Ty::Unit, Ty::Str]);
             return Some(Ty::Fn(vec![ty], Box::new(result)));
@@ -2149,6 +2194,12 @@ impl<'a> Checker<'a> {
                 let Some((rt, fields)) = self.ctor_type(c.sym()) else {
                     if self.env.traits.contains_key(&c.sym()) {
                         self.err(format!("`{c}` is a trait, not a value: call its methods on a value that implements it (e.g. a `{}` parameter)", c.to_lowercase()));
+                        return self.fresh();
+                    }
+                    if self.env.capabilities.contains(&c.sym()) {
+                        let short = crate::names::short(c);
+                        let snake: String = short.chars().enumerate().flat_map(|(i, ch)| if ch.is_uppercase() && i > 0 { vec!['_', ch.to_ascii_lowercase()] } else { vec![ch.to_ascii_lowercase()] }).collect();
+                        self.err(format!("`{short}` is a capability: only the runtime makes one, for `main` or a test that asks for it (`{snake}: {short}`); call its functions on that value"));
                         return self.fresh();
                     }
                     self.err(format!("unknown constructor `{c}`"));
@@ -3466,7 +3517,7 @@ pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<Symbol, TypeExpr>>
     for b in &bounded {
         let first = b.traits.first().map(texpr_head).unwrap_or_default();
         // never the real terminal, disk or process: fuzzing must not reach the system
-        let mut cs: Vec<TypeExpr> = env.impls.iter().filter(|i| i.trait_name == first && !crate::stdlib::HOST_TYPES.contains(&texpr_head(&i.for_type).as_str())).map(|i| i.for_type.clone()).collect();
+        let mut cs: Vec<TypeExpr> = env.impls.iter().filter(|i| i.trait_name == first && !env.capabilities.contains(&texpr_head(&i.for_type).sym())).map(|i| i.for_type.clone()).collect();
         cs.push(b.traits[0].clone());
         cands.push(cs);
     }
@@ -3756,8 +3807,23 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec
                 c.impl_params.clear();
             }
             DeclKind::Test(t) => {
+                // what it asks for: capabilities only, made by the runtime as for `main`
+                c.scopes.push(HashMap::default());
+                for p in &t.params {
+                    if !matches!(&p.ty, TypeExpr::Named(n, a) if a.is_empty() && env.capabilities.contains(n)) {
+                        c.err(format!("test parameter `{}: {}`: a test asks only for capabilities (`capability ...`), which the runtime makes", p.name, crate::printer::ty(&p.ty)));
+                    }
+                    let ty = c.lower(&p.ty, &HashMap::default());
+                    c.bind(p.name, ty);
+                    if p.mutable {
+                        c.bind((&format!("mut:{}", p.name)).sym(), Ty::Unit);
+                    }
+                }
                 c.infer(&t.body);
+                c.scopes.pop();
             }
+            // its functions are checked as the type's own methods (`resolve` makes them an `impl`)
+            DeclKind::Capability(_) => {}
             DeclKind::Use(_) => {}
             DeclKind::Extern(e) => {
                 let kw = format!("extern {}", e.lang.name());
@@ -3837,18 +3903,19 @@ pub fn refined_alias(env: &Env, n: Symbol) -> bool {
 
 /// The type a refined alias stands for, without its refinements (`Int` for
 /// `Positive`).
-pub fn alias_base(env: &Env, n: Symbol) -> Ty {
-    fn low(env: &Env, t: &TypeExpr, depth: usize) -> Ty {
+pub fn alias_base(env: &Env, n: Symbol, args: &[Ty]) -> Ty {
+    fn low(env: &Env, t: &TypeExpr, vars: &HashMap<Symbol, Ty>, depth: usize) -> Ty {
         if depth > 32 {
             return Ty::Unit;
         }
         match t {
             TypeExpr::Unit => Ty::Unit,
-            TypeExpr::Refined(b, _) => low(env, b, depth + 1),
-            TypeExpr::Union(ms) => Ty::Union(ms.iter().map(|m| low(env, m, depth + 1)).collect()),
-            TypeExpr::Fn(ps, r) => Ty::Fn(ps.iter().map(|p| low(env, p, depth + 1)).collect(), Box::new(low(env, r, depth + 1))),
+            TypeExpr::Refined(b, _) => low(env, b, vars, depth + 1),
+            TypeExpr::Union(ms) => Ty::Union(ms.iter().map(|m| low(env, m, vars, depth + 1)).collect()),
+            TypeExpr::Fn(ps, r) => Ty::Fn(ps.iter().map(|p| low(env, p, vars, depth + 1)).collect(), Box::new(low(env, r, vars, depth + 1))),
+            TypeExpr::Named(n, args) if args.is_empty() && vars.contains_key(n) => vars[n].clone(),
             TypeExpr::Named(n, args) => {
-                let args: Vec<Ty> = args.iter().map(|a| low(env, a, depth + 1)).collect();
+                let args: Vec<Ty> = args.iter().map(|a| low(env, a, vars, depth + 1)).collect();
                 match n.as_str() {
                     "Int" => Ty::Int,
                     "Float" => Ty::Float,
@@ -3856,9 +3923,10 @@ pub fn alias_base(env: &Env, n: Symbol) -> Ty {
                     "String" => Ty::Str,
                     "Unit" => Ty::Unit,
                     _ => match env.types.get(n) {
-                        Some(td) if !td.distinct && td.params.is_empty() && matches!(td.body, TypeBody::Alias(_)) => {
+                        Some(td) if !td.distinct && td.params.len() == args.len() && matches!(td.body, TypeBody::Alias(_)) => {
                             let TypeBody::Alias(a) = &td.body else { unreachable!() };
-                            low(env, a, depth + 1)
+                            let sub: HashMap<Symbol, Ty> = td.params.iter().cloned().zip(args).collect();
+                            low(env, a, &sub, depth + 1)
                         }
                         _ => Ty::Con(*n, args),
                     },
@@ -3866,9 +3934,15 @@ pub fn alias_base(env: &Env, n: Symbol) -> Ty {
             }
         }
     }
-    match env.types.get(&n).map(|td| &td.body) {
-        Some(TypeBody::Alias(a)) => low(env, a, 0),
-        _ => Ty::Unit,
+    match env.types.get(&n) {
+        Some(td) => match &td.body {
+            TypeBody::Alias(a) => {
+                let vars: HashMap<Symbol, Ty> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+                low(env, a, &vars, 0)
+            }
+            _ => Ty::Unit,
+        },
+        None => Ty::Unit,
     }
 }
 

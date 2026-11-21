@@ -53,11 +53,10 @@ unsafe extern "C" {
     fn strata_float_to_int();
     fn strata_main_error();
     fn strata_str_cmp();
-    fn strata_alloc();
     fn strata_dup();
     fn strata_regex_match();
     fn strata_set_regex_engine(e: extern "C" fn(*const u8, i64, *const u8, i64, *mut *const std::ffi::c_char) -> i32);
-    fn strata_set_code_host(v: extern "C" fn(*const i64) -> i64, s: extern "C" fn(*const i64, *mut i64) -> i64);
+    fn strata_set_code_host(v: extern "C" fn() -> i64, s: extern "C" fn(*mut i64) -> i64);
     fn strata_host_code_version();
     fn strata_host_code_snapshot();
     fn strata_trace_call();
@@ -168,7 +167,7 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_float_to_int", strata_float_to_int as *const () as usize),
         ("strata_main_error", strata_main_error as *const () as usize),
         ("strata_str_cmp", strata_str_cmp as *const () as usize),
-        ("strata_alloc", strata_alloc as *const () as usize),
+        ("strata_alloc", super::native::strata_alloc as *const () as usize),
         ("strata_dup", strata_dup as *const () as usize),
         ("strata_regex_match", strata_regex_match as *const () as usize),
         ("strata_trace_call", strata_trace_call as *const () as usize),
@@ -531,25 +530,16 @@ fn std_symbol(name: &str) -> Option<usize> {
     (!a.is_null()).then_some(a as usize)
 }
 
-/// A string compiled code passed (borrowed).
-unsafe fn borrowed_str(p: *const i64) -> String {
-    unsafe {
-        let len = *p as usize;
-        String::from_utf8_lossy(std::slice::from_raw_parts(p.add(1) as *const u8, len)).into_owned()
-    }
-}
-
 /// `Code.version()` for compiled code (std.code): the codebase's fingerprint.
-extern "C" fn code_version(root: *const i64) -> i64 {
-    let root = unsafe { borrowed_str(root) };
-    super::native::new_string(&crate::ui::code_version(std::path::Path::new(&root)))
+extern "C" fn code_version() -> i64 {
+    super::native::new_string(&crate::ui::code_version(std::path::Path::new(&crate::ui::code_root())))
 }
 
 /// `Code.snapshot()` for compiled code: the snapshot (src/ui.rs) read against
 /// `std.code.Snapshot` and written into compiled memory, or 0 and the
 /// failure in `*err`.
-extern "C" fn code_snapshot(root: *const i64, err: *mut i64) -> i64 {
-    let root = unsafe { borrowed_str(root) };
+extern "C" fn code_snapshot(err: *mut i64) -> i64 {
+    let root = crate::ui::code_root();
     let fail = |m: String| {
         unsafe { *err = super::native::new_string(&m) };
         0
