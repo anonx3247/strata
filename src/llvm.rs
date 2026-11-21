@@ -11,7 +11,12 @@
 //! tuple points to a heap block of 8-byte slots: a tag (the constructor, a
 //! number unique in the program), then its fields in declaration order, each
 //! converted to 64 bits. A `distinct` type is its underlying value. Values
-//! never change once built, so they are shared freely.
+//! never change once built, so they are shared freely. Every heap object has
+//! a reference count just before it (runtime.c, "memory"); constants have a
+//! count of 0 and are never freed. The generated code counts (`Scope` has
+//! the conventions) and drops each value with a function made for its type
+//! (`drop_fn`), so a value is freed as soon as nothing holds it; values
+//! never form cycles.
 //!
 //! Contracts are checked at run time as the interpreter does, with its fault
 //! messages: refinements of parameters, results, annotated `let`s, declared
@@ -22,9 +27,9 @@
 //! `(key, value)` pairs sorted by key.
 //!
 //! Not yet: big integers (`Int` overflow is a fault), regexes, options from
-//! the command line, unions of anything but records and variants, and a
-//! garbage collector (memory is never freed). A program that uses them is refused, with the function and
-//! the construct named.
+//! the command line, and unions of anything but records and variants. A
+//! program that uses them is refused, with the function and the construct
+//! named.
 
 use crate::ast::*;
 use crate::types::{Env, Ty};
@@ -98,6 +103,14 @@ fn has_value(t: &Ty) -> bool {
 fn bool_v(b: &str) -> V {
     (Ty::Bool, b.to_string())
 }
+
+/// The entries of a trait value's table: showing the value as JSON and as
+/// `to_string`, dropping and holding it, then the trait's methods.
+const DYN_JSON: usize = 0;
+const DYN_SHOW: usize = 1;
+const DYN_DROP: usize = 2;
+const DYN_DUP: usize = 3;
+const DYN_METHODS: usize = 4;
 
 /// Fault kinds, as numbered in the runtime (`KINDS` in runtime.c).
 #[derive(Clone, Copy)]
@@ -199,6 +212,10 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
 
 const DECLARATIONS: &str = "\
 declare ptr @strata_alloc(i64)
+declare void @strata_dup(ptr)
+declare i1 @strata_release(ptr)
+declare void @strata_free(ptr)
+declare i1 @strata_unique(ptr)
 declare void @strata_init(i32, ptr)
 declare i64 @strata_pid()
 declare void @strata_host_write(i64, ptr)
@@ -227,9 +244,10 @@ declare double @strata_finite(double, double, double, ptr)
 declare i64 @strata_float_to_int(double, double)
 declare double @strata_sqrt(double)
 declare ptr @strata_list_new(i64)
-declare ptr @strata_list_push(ptr, i64)
+declare ptr @strata_list_push(ptr, i64, i1)
 declare ptr @strata_list_slice(ptr, i64, i64)
-declare ptr @strata_list_concat(ptr, ptr)
+declare ptr @strata_list_concat(ptr, ptr, i1)
+declare ptr @strata_concat_owned(ptr, ptr)
 declare ptr @strata_range(i64, i64)
 declare i64 @llvm.smax.i64(i64, i64)
 declare i64 @llvm.smin.i64(i64, i64)
@@ -465,12 +483,15 @@ impl<'a> Module<'a> {
         self.instance(&inst)
     }
 
-    /// A string constant, laid out as the runtime's `Str`: its length, then its bytes.
+    /// A string constant, laid out as the runtime's `Str`: its length, then
+    /// its bytes, after a count of 0 (never freed). The operand points past
+    /// the count, as the runtime's objects do.
     fn string(&mut self, s: &str) -> String {
         if let Some(g) = self.strings.get(s) {
             return g.clone();
         }
         let g = format!("@.str.{}", self.strings.len());
+        let at = format!("getelementptr inbounds (i8, ptr {g}, i64 8)");
         let n = s.len();
         let mut bytes = String::new();
         for b in s.bytes() {
@@ -480,18 +501,19 @@ impl<'a> Module<'a> {
                 write!(bytes, "\\{b:02X}").unwrap();
             }
         }
-        writeln!(self.globals, "{g} = private unnamed_addr constant {{ i64, [{n} x i8] }} {{ i64 {n}, [{n} x i8] c\"{bytes}\" }}, align 8").unwrap();
-        self.strings.insert(s.to_string(), g.clone());
-        g
+        writeln!(self.globals, "{g} = private unnamed_addr constant {{ i64, i64, [{n} x i8] }} {{ i64 0, i64 {n}, [{n} x i8] c\"{bytes}\" }}, align 8").unwrap();
+        self.strings.insert(s.to_string(), at.clone());
+        at
     }
 
-    /// A value of a constructor without fields: one shared block holding its tag.
+    /// A value of a constructor without fields: one shared block holding its
+    /// tag, after a count of 0 (never freed).
     fn nullary(&mut self, c: &str) -> String {
         let g = format!("@\"ctor:{c}\"");
         if self.helpers.insert(g.clone()) {
-            writeln!(self.globals, "{g} = private unnamed_addr constant i64 {}, align 8", self.tags[c]).unwrap();
+            writeln!(self.globals, "{g} = private unnamed_addr constant [2 x i64] [i64 0, i64 {}], align 8", self.tags[c]).unwrap();
         }
-        g
+        format!("getelementptr inbounds (i8, ptr {g}, i64 8)")
     }
 
     /// The refinement of the type named `n`, as the checker saw it.
@@ -666,7 +688,7 @@ impl<'a> Module<'a> {
         for (i, (p, t)) in f.params.iter().zip(&params).enumerate() {
             if p.mutable {
                 let declared = own.own_params.get(i).map(|q| q.ty.clone());
-                c.scopes.last_mut().unwrap().insert(p.name.to_string(), Local { t: t.clone(), slot: format!("%p.{}", p.name), declared });
+                c.scopes.last_mut().unwrap().vars.insert(p.name.to_string(), Local { t: t.clone(), slot: format!("%p.{}", p.name), declared });
                 continue;
             }
             let slot = c.local(&p.name, t, None)?;
@@ -678,7 +700,9 @@ impl<'a> Module<'a> {
             c.check(&p.ty, &v, &format!("argument `{}` of `{name}`", p.name), false)?;
         }
         for r in own.requires.clone() {
+            c.push_scope(true);
             let ok = c.expr(r)?;
+            c.pop_scope()?;
             let (pass, fail) = (c.fresh_label("requires.ok"), c.fresh_label("requires.fail"));
             c.cond_br(&ok, &pass, &fail);
             c.block(&fail);
@@ -703,7 +727,9 @@ impl<'a> Module<'a> {
         let v = c.expr(own.body)?;
         c.return_value(&v)?;
         // every way out: the result's refinement, then the postconditions
+        // (each way out dropped what the body held)
         c.block("exit");
+        c.forget_drops();
         let result = if has_value(&ret) {
             let slot = c.ret_slot.clone().unwrap().1;
             let r = c.fresh("result");
@@ -714,11 +740,13 @@ impl<'a> Module<'a> {
         };
         c.check(own.own_ret, &result, &format!("result of `{name}`"), true)?;
         if !own.ensures.is_empty() {
-            c.scopes.push(HashMap::default());
+            c.push_scope(false);
             let slot = c.local("it", &ret, None)?;
             c.store(&result, &slot)?;
             for en in own.ensures.clone() {
+                c.push_scope(true);
                 let ok = c.expr(en)?;
+                c.pop_scope()?;
                 let (pass, fail) = (c.fresh_label("ensures.ok"), c.fresh_label("ensures.fail"));
                 c.cond_br(&ok, &pass, &fail);
                 c.block(&fail);
@@ -729,7 +757,7 @@ impl<'a> Module<'a> {
                 )?;
                 c.block(&pass);
             }
-            c.scopes.pop();
+            c.pop_scope()?;
         }
         if has_value(&ret) {
             c.emit(format!("ret {} {}", c.m.ll(&ret)?, result.1));
@@ -754,9 +782,12 @@ impl<'a> Module<'a> {
             if crate::cli::is_options(c.m.env, &p.ty) {
                 let v = c.options(&p.ty)?;
                 if p.mutable {
+                    // the slot holds the options (main may replace them)
                     let slot = c.fresh("opts");
                     writeln!(c.allocas, "  {slot} = alloca {}", c.m.ll(&v.0)?).unwrap();
+                    let v = c.take(v);
                     c.emit(format!("store {} {}, ptr {slot}", c.m.ll(&v.0)?, v.1));
+                    c.own_slot(&v.0, &slot);
                     args.push((Ty::Str, slot));
                 } else {
                     args.push(v);
@@ -778,26 +809,32 @@ impl<'a> Module<'a> {
                 let slot = c.fresh("cap");
                 writeln!(c.allocas, "  {slot} = alloca ptr").unwrap();
                 c.emit(format!("store ptr {b}, ptr {slot}"));
+                c.own_slot(&t, &slot);
                 args.push((Ty::Str, slot));
             } else {
+                c.temp((t.clone(), b.clone()));
                 args.push((t.clone(), b));
             }
             impls.push(Some(t));
         }
         let f = c.m.want_impls(entry, vec![], impls);
+        // before each way out: drop the capabilities (and the result)
         match ret {
             Ty::Unit => {
                 c.call(&Ty::Unit, &f, &args)?;
+                c.drop_from(0, None)?;
                 c.emit("ret i32 0".into());
             }
             Ty::Int => {
                 let r = c.call(&Ty::Int, &f, &args)?;
+                c.drop_from(0, None)?;
                 c.emit(format!("%r = add i64 {}, 0", r.1));
                 c.emit("%c = trunc i64 %r to i32".into());
                 c.emit("ret i32 %c".into());
             }
             Ty::Con(n, rargs) if n == "Result" && matches!(rargs[0], Ty::Unit | Ty::Int) => {
                 let args0 = c.call(ret, &f, &args)?;
+                c.temp(args0.clone());
                 c.emit(format!("%r = getelementptr i8, ptr {}, i64 0", args0.1));
                 let args = rargs;
                 let r: V = (ret.clone(), "%r".into());
@@ -810,14 +847,18 @@ impl<'a> Module<'a> {
                     let v = c.field(&r, 0, &Ty::Int)?;
                     let code = c.fresh("code");
                     c.emit(format!("{code} = trunc i64 {} to i32", v.1));
+                    c.drop_from(0, None)?;
                     c.emit(format!("ret i32 {code}"));
                 } else {
+                    c.drop_from(0, None)?;
                     c.emit("ret i32 0".into());
                 }
                 c.block("err");
                 let e = c.field(&r, 0, &args[1])?;
                 let shown = c.show(&e)?;
                 c.emit(format!("call void @strata_main_error(ptr {shown})"));
+                c.drop_value(&(Ty::Str, shown))?;
+                c.drop_from(0, None)?;
                 c.emit("ret i32 1".into());
             }
             other => return Err(format!("`{entry}` must return `()`, an exit code (`Int`) or a `Result` of either, not `{}`", key(other))),
@@ -839,7 +880,9 @@ impl Func<'_, '_> {
         let tm = self.m.traits.get(&Symbol::new(crate::cli::TRAIT)).and_then(|t| t.methods.iter().find(|m| crate::names::short(&m.decl.name) == "from_args")).ok_or("std.cli has no `from_args`")?;
         let name = crate::types::trait_call(crate::cli::TRAIT, &tm.decl.name);
         let prog = self.call(&Ty::Str, "@strata_prog_name", &[])?;
+        let prog = self.temp(prog);
         let argv = self.call(&Ty::Con(Symbol::new("List"), vec![Ty::Str]), "@strata_host_args", &[])?;
+        let argv = self.temp(argv);
         let r = self.call_method(&name, recv.clone(), vec![prog, argv], Some(res.clone()), &[])?;
         let r = (res, r.1);
         let (ok, err, help, bad) = (self.fresh_label("opts_ok"), self.fresh_label("opts_err"), self.fresh_label("opts_help"), self.fresh_label("opts_bad"));
@@ -858,6 +901,7 @@ impl Func<'_, '_> {
             self.block(label);
             let text = self.field(&e, 0, &Ty::Str)?;
             self.emit(format!("call void @strata_options_error(i1 {}, ptr {})", code == 0, text.1));
+            self.drop_from(0, None)?;
             self.emit(format!("ret i32 {code}"));
         }
         self.block(&ok);
@@ -881,6 +925,37 @@ struct Local {
     declared: Option<TypeExpr>,
 }
 
+/// A scope: its variables, and what it drops when it ends.
+///
+/// Memory is reference-counted (runtime.c, "memory"). The conventions:
+/// - a function borrows its arguments (the caller keeps them alive for the
+///   call) and returns a value it owns, which the caller then owns;
+/// - reading a variable, a field or an element borrows it (no counting);
+/// - a value stored somewhere (a variable, a field, a list, a closure, the
+///   result) is held once more there, unless it was a temporary of the
+///   current scope, which moves (`take`);
+/// - a scope drops, when it ends, its temporaries (values made in it that
+///   nothing holds) and the variables it owns; `return`, `break` and
+///   `continue` drop what they leave (`drop_from`).
+///
+/// Each branch, loop iteration and statement is a scope, so a temporary is
+/// always dropped in code its making dominates.
+#[derive(Default)]
+struct Scope {
+    vars: HashMap<String, Local>,
+    /// Slots of the variables it owns.
+    owned: Vec<(Ty, String)>,
+    /// Values made in it that nothing holds yet.
+    temps: Vec<V>,
+    /// A statement's or a branch's: its variables belong to the enclosing scope.
+    transparent: bool,
+}
+
+/// An operand that is a constant (never counted, never freed).
+fn constant(op: &str) -> bool {
+    op.starts_with('@') || op.starts_with("getelementptr") || op == "null" || op == "poison" || op.is_empty()
+}
+
 struct Func<'m, 'a> {
     m: &'m mut Module<'a>,
     /// The type arguments of the instance being compiled.
@@ -890,9 +965,13 @@ struct Func<'m, 'a> {
     code: String,
     tmp: usize,
     label: usize,
-    scopes: Vec<HashMap<String, Local>>,
-    /// The enclosing loops: where `continue` and `break` go.
-    loops: Vec<(String, String)>,
+    scopes: Vec<Scope>,
+    /// The enclosing loops: where `continue` and `break` go, and how many
+    /// scopes were open outside the loop (what they leave).
+    loops: Vec<(String, String, usize)>,
+    /// The labels patterns jump to when they don't match, with how many of
+    /// the scope's owned variables were bound before (what the jump drops).
+    fail_marks: HashMap<String, usize>,
     /// The result's type and slot.
     ret_slot: Option<(Ty, String)>,
     /// The current block, and whether it has ended (with a jump or `ret`).
@@ -904,7 +983,7 @@ struct Func<'m, 'a> {
 
 impl<'m, 'a> Func<'m, 'a> {
     fn new(m: &'m mut Module<'a>, sub: HashMap<Symbol, Ty>) -> Self {
-        Func { m, sub, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![HashMap::default()], loops: vec![], ret_slot: None, cur: String::new(), terminated: true, places: vec![] }
+        Func { m, sub, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, cur: String::new(), terminated: true, places: vec![] }
     }
 
     /// The function's text: the slots, then the code.
@@ -981,17 +1060,175 @@ impl<'m, 'a> Func<'m, 'a> {
         self.m.lower(t, &self.sub)
     }
 
+    /// A variable that borrows its value (a parameter, `it`, a captured value).
     fn local(&mut self, name: &str, t: &Ty, declared: Option<TypeExpr>) -> Res<String> {
         let slot = self.fresh(&format!("v.{}", name.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_', "_")));
         if has_value(t) {
             writeln!(self.allocas, "  {slot} = alloca {}", self.m.ll(t)?).unwrap();
         }
-        self.scopes.last_mut().unwrap().insert(name.to_string(), Local { t: t.clone(), slot: slot.clone(), declared });
+        let i = self.var_scope();
+        self.scopes[i].vars.insert(name.to_string(), Local { t: t.clone(), slot: slot.clone(), declared });
         Ok(slot)
     }
 
+    /// A variable holding `v`, which it owns (held once more, or moved).
+    fn local_owned(&mut self, name: &str, v: V, declared: Option<TypeExpr>) -> Res<()> {
+        let slot = self.local(name, &v.0, declared)?;
+        let v = self.take(v);
+        self.store(&v, &slot)?;
+        self.own_slot(&v.0, &slot);
+        Ok(())
+    }
+
+    /// The scope variables go in: the innermost that isn't a statement's or a branch's.
+    fn var_scope(&self) -> usize {
+        self.scopes.iter().rposition(|s| !s.transparent).unwrap_or(0)
+    }
+
+    /// The variable scope drops the slot's value when it ends.
+    fn own_slot(&mut self, t: &Ty, slot: &str) {
+        if self.counted(t) {
+            let i = self.var_scope();
+            if !self.scopes[i].owned.iter().any(|(_, s)| s == slot) {
+                self.scopes[i].owned.push((t.clone(), slot.to_string()));
+            }
+        }
+    }
+
     fn lookup(&self, name: &str) -> Option<Local> {
-        self.scopes.iter().rev().find_map(|s| s.get(name).cloned())
+        self.scopes.iter().rev().find_map(|s| s.vars.get(name).cloned())
+    }
+
+    // ---- reference counting ----
+
+    /// Whether values of type `t` are counted objects (pointers to the heap).
+    fn counted(&self, t: &Ty) -> bool {
+        has_value(t) && !is_never(t) && !matches!(self.m.repr(t), Ok(Ty::Int | Ty::Float | Ty::Bool | Ty::Unit) | Err(_))
+    }
+
+    fn push_scope(&mut self, transparent: bool) {
+        self.scopes.push(Scope { transparent, ..Scope::default() });
+    }
+
+    /// End the innermost scope: drop its temporaries, then its variables.
+    fn pop_scope(&mut self) -> Res<()> {
+        let s = self.scopes.pop().expect("a scope");
+        if !self.terminated {
+            self.drop_scope(&s, None)?;
+        }
+        Ok(())
+    }
+
+    /// End the innermost scope without dropping anything: what follows is
+    /// unreachable (a fault), or its values were dropped on every way out.
+    fn discard_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn drop_scope(&mut self, s: &Scope, keep: Option<&str>) -> Res<()> {
+        for v in s.temps.iter().rev() {
+            if Some(v.1.as_str()) != keep {
+                self.drop_value(v)?;
+            }
+        }
+        for (t, slot) in s.owned.iter().rev() {
+            let x = self.fresh("old");
+            self.emit(format!("{x} = load ptr, ptr {slot}"));
+            self.drop_value(&(t.clone(), x))?;
+        }
+        Ok(())
+    }
+
+    /// Leave scopes `depth..` (a `return`, a `break`): drop what they hold,
+    /// except the temporary `keep` (the value leaving with the jump).
+    fn drop_from(&mut self, depth: usize, keep: Option<&str>) -> Res<()> {
+        let scopes = std::mem::take(&mut self.scopes);
+        let r = scopes[depth.min(scopes.len())..].iter().rev().try_for_each(|s| self.drop_scope(s, keep));
+        self.scopes = scopes;
+        r
+    }
+
+    /// Note `v` as a temporary of the innermost scope (a value just made, that nothing holds).
+    fn temp(&mut self, v: V) -> V {
+        if self.counted(&v.0) && !constant(&v.1) && !self.is_temp(&v.1) {
+            self.scopes.last_mut().unwrap().temps.push(v.clone());
+        }
+        v
+    }
+
+    fn is_temp(&self, op: &str) -> bool {
+        self.scopes.iter().any(|s| s.temps.iter().any(|t| t.1 == op))
+    }
+
+    /// `v`, to be stored somewhere that will hold it: a temporary of the
+    /// innermost scope moves there; anything else is held once more.
+    fn take(&mut self, v: V) -> V {
+        if !self.counted(&v.0) || constant(&v.1) {
+            return v;
+        }
+        let temps = &mut self.scopes.last_mut().unwrap().temps;
+        if let Some(i) = temps.iter().rposition(|t| t.1 == v.1) {
+            temps.remove(i);
+            return v;
+        }
+        self.emit(format!("call void @strata_dup(ptr {})", v.1));
+        v
+    }
+
+    /// `take` for a value leaving every scope (the result): a temporary of
+    /// any scope moves; the operand to keep when they are dropped.
+    fn take_out(&mut self, v: &V) -> Option<String> {
+        if !self.counted(&v.0) || constant(&v.1) {
+            return None;
+        }
+        if self.is_temp(&v.1) {
+            return Some(v.1.clone());
+        }
+        self.emit(format!("call void @strata_dup(ptr {})", v.1));
+        None
+    }
+
+    /// One holder of `v` fewer (freed with what it holds, when it was the last).
+    fn drop_value(&mut self, v: &V) -> Res<()> {
+        if !self.counted(&v.0) || constant(&v.1) {
+            return Ok(());
+        }
+        let f = self.drop_fn(&v.0)?;
+        self.emit(format!("call void {f}(ptr {})", v.1));
+        Ok(())
+    }
+
+    /// A branch's value (an `if`'s, an arm's), coerced to `want`, in a scope
+    /// of its own; taken, for the `phi` that joins the branches.
+    fn branch(&mut self, want: &Ty, f: impl FnOnce(&mut Self) -> Res<V>) -> Res<V> {
+        self.push_scope(true);
+        let v = match f(self).and_then(|v| self.coerce(v, want)) {
+            Ok(v) => v,
+            Err(e) => {
+                self.discard_scope();
+                return Err(e);
+            }
+        };
+        let v = self.take(v);
+        self.pop_scope()?;
+        Ok(v)
+    }
+
+    /// Evaluate `f` in a scope of its own whose value leaves it: the value is
+    /// taken before the scope ends, and is a temporary of the enclosing one.
+    fn scoped(&mut self, transparent: bool, f: impl FnOnce(&mut Self) -> Res<V>) -> Res<V> {
+        self.push_scope(transparent);
+        let v = f(self);
+        let v = match v {
+            Ok(v) => v,
+            Err(e) => {
+                self.discard_scope();
+                return Err(e);
+            }
+        };
+        let v = self.take(v);
+        self.pop_scope()?;
+        Ok(self.temp(v))
     }
 
     fn store(&mut self, v: &V, slot: &str) -> Res<()> {
@@ -1033,7 +1270,9 @@ impl<'m, 'a> Func<'m, 'a> {
         (Ty::Str, self.m.string(s))
     }
 
-    /// A string built from pieces.
+    /// A string built from pieces, which it consumes: a `Val` is a string
+    /// the caller hands over (as `show` and `json` return). The caller owns
+    /// the result.
     fn concat(&mut self, parts: Vec<Part>) -> Res<V> {
         let mut acc: Option<V> = None;
         for p in parts {
@@ -1044,7 +1283,7 @@ impl<'m, 'a> Func<'m, 'a> {
             };
             acc = Some(match acc {
                 None => v,
-                Some(a) => self.call(&Ty::Str, "@strata_concat", &[a, v])?,
+                Some(a) => self.call(&Ty::Str, "@strata_concat_owned", &[a, v])?,
             });
         }
         Ok(acc.unwrap_or_else(|| self.string("")))
@@ -1088,8 +1327,10 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok((t.clone(), r))
     }
 
-    /// A new block: a tag, then slots.
+    /// A new block: a tag, then slots. It holds its fields (taken); the
+    /// caller owns it.
     fn block_of(&mut self, tag: i64, fields: &[V]) -> Res<String> {
+        let fields: Vec<V> = fields.iter().map(|f| self.take(f.clone())).collect();
         let p = self.fresh("obj");
         self.emit(format!("{p} = call ptr @strata_alloc(i64 {})", 8 * (fields.len() + 1)));
         self.emit(format!("store i64 {tag}, ptr {p}"));
@@ -1116,13 +1357,20 @@ impl<'m, 'a> Func<'m, 'a> {
         self.from_slot(&s, t)
     }
 
-    /// A copy of a block of `n` fields.
-    fn copy_block(&mut self, v: &V, n: usize) -> String {
+    /// A copy of a block whose fields have types `tys`: it holds them too,
+    /// but for field `except` (about to be replaced). The caller owns it.
+    fn copy_block(&mut self, v: &V, tys: &[Ty], except: Option<usize>) -> Res<String> {
         let p = self.fresh("copy");
-        let size = 8 * (n + 1);
+        let size = 8 * (tys.len() + 1);
         self.emit(format!("{p} = call ptr @strata_alloc(i64 {size})"));
         self.emit(format!("call void @llvm.memcpy.p0.p0.i64(ptr {p}, ptr {}, i64 {size}, i1 false)", v.1));
-        p
+        for (i, t) in tys.iter().enumerate() {
+            if Some(i) != except && self.counted(t) {
+                let f = self.field(&(v.0.clone(), p.clone()), i, t)?;
+                self.emit(format!("call void @strata_dup(ptr {})", f.1));
+            }
+        }
+        Ok(p)
     }
 
     fn set_field(&mut self, p: &str, i: usize, v: &V) -> Res<()> {
@@ -1176,14 +1424,21 @@ impl<'m, 'a> Func<'m, 'a> {
     // ---- what values look like ----
 
     /// A value as `to_string` shows it: a string as itself, a variant without
-    /// fields as its name, everything else as JSON.
+    /// fields as its name, everything else as JSON. The caller owns the
+    /// string (as `json`'s): `concat` consumes it, or it is dropped.
     fn show(&mut self, v: &V) -> Res<String> {
         let t = self.m.repr(&v.0)?;
         if self.is_dyn(&t) {
-            return self.dyn_entry_call(v, 1);
+            return self.dyn_entry_call(v, DYN_SHOW);
         }
         match t {
-            Ty::Str => Ok(v.1.clone()),
+            Ty::Str => {
+                // (owned, as every shown value: held once more)
+                if !constant(&v.1) {
+                    self.emit(format!("call void @strata_dup(ptr {})", v.1));
+                }
+                Ok(v.1.clone())
+            }
             t if self.m.nominal(&t) && self.m.ctors_of(&t).iter().any(|c| self.m.fields(c, &[]).map(|f| f.is_empty()).unwrap_or(false)) => {
                 let f = self.helper("show", &t)?;
                 Ok(self.call(&Ty::Str, &f, &[(t.clone(), v.1.clone())])?.1)
@@ -1196,7 +1451,7 @@ impl<'m, 'a> Func<'m, 'a> {
     fn json(&mut self, v: &V) -> Res<String> {
         let t = self.m.repr(&v.0)?;
         if self.is_dyn(&t) {
-            return self.dyn_entry_call(v, 0);
+            return self.dyn_entry_call(v, DYN_JSON);
         }
         Ok(match &t {
             Ty::Int => self.call(&Ty::Str, "@strata_show_int", &[v.clone()])?.1,
@@ -1274,7 +1529,9 @@ impl<'m, 'a> Func<'m, 'a> {
                     _ if distinct => {
                         // a `distinct` value is not a number or a string to `compare`: by its JSON
                         let (x, y) = (h.json(&a)?, h.json(&b)?);
-                        let c = h.call(&Ty::Int, "@strata_str_cmp", &[(Ty::Str, x), (Ty::Str, y)])?;
+                        let c = h.call(&Ty::Int, "@strata_str_cmp", &[(Ty::Str, x.clone()), (Ty::Str, y.clone())])?;
+                        h.drop_value(&(Ty::Str, x))?;
+                        h.drop_value(&(Ty::Str, y))?;
                         h.emit(format!("ret i64 {}", c.1));
                     }
                     Ty::Int | Ty::Bool => {
@@ -1349,7 +1606,9 @@ impl<'m, 'a> Func<'m, 'a> {
                     _ => {
                         // anything else: by its JSON
                         let (x, y) = (h.json(&a)?, h.json(&b)?);
-                        let c = h.call(&Ty::Int, "@strata_str_cmp", &[(Ty::Str, x), (Ty::Str, y)])?;
+                        let c = h.call(&Ty::Int, "@strata_str_cmp", &[(Ty::Str, x.clone()), (Ty::Str, y.clone())])?;
+                        h.drop_value(&(Ty::Str, x))?;
+                        h.drop_value(&(Ty::Str, y))?;
                         h.emit(format!("ret i64 {}", c.1));
                     }
                 }
@@ -1555,6 +1814,114 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok(name)
     }
 
+    /// The function that drops one holder of a value of type `t`
+    /// (`@"drop:T"(ptr)`): when it was the last, what the value holds is
+    /// dropped and its memory freed. A constant (count 0) is never freed.
+    fn drop_fn(&mut self, t: &Ty) -> Res<String> {
+        let t = self.m.repr(t)?;
+        let t = collection(&t).map(|c| c.1).unwrap_or(t);
+        let name = format!("@\"drop:{}\"", key(&t));
+        if !self.m.helpers.insert(name.clone()) {
+            return Ok(name);
+        }
+        let mut h = Func::new(self.m, HashMap::default());
+        h.block("start");
+        h.emit("%null = icmp eq ptr %a, null".into());
+        h.emit("br i1 %null, label %kept, label %held".into());
+        h.block("held");
+        h.emit("%gone = call i1 @strata_release(ptr %a)".into());
+        h.emit("br i1 %gone, label %last, label %kept".into());
+        h.block("last");
+        let a: V = (t.clone(), "%a".into());
+        let args = Module::args_of(&t);
+        // the fields to drop, then free the block and drop them (the last one
+        // as a tail call, so a long chain doesn't grow the stack)
+        let fields_then_free = |h: &mut Func, tys: &[Ty]| -> Res<()> {
+            let mut held = vec![];
+            for (i, ft) in tys.iter().enumerate() {
+                if h.counted(ft) {
+                    held.push(h.field(&a, i, ft)?);
+                }
+            }
+            h.emit("call void @strata_free(ptr %a)".into());
+            let n = held.len();
+            for (k, v) in held.into_iter().enumerate() {
+                let f = h.drop_fn(&v.0)?;
+                let tail = if k + 1 == n { "tail " } else { "" };
+                h.emit(format!("{tail}call void {f}(ptr {})", v.1));
+            }
+            h.emit("ret void".into());
+            Ok(())
+        };
+        match &t {
+            Ty::Str => {
+                h.emit("call void @strata_free(ptr %a)".into());
+                h.emit("ret void".into());
+            }
+            Ty::Fn(..) => {
+                // the closure's own function drops what it captured, and frees it
+                h.emit("%dp = getelementptr i64, ptr %a, i64 1".into());
+                h.emit("%draw = load i64, ptr %dp".into());
+                h.emit("%d = inttoptr i64 %draw to ptr".into());
+                h.emit("tail call void %d(ptr %a)".into());
+                h.emit("ret void".into());
+            }
+            _ if h.is_dyn(&t) => {
+                // the table's entry for the value's type drops the value
+                let fp = h.dyn_entry(&a, DYN_DROP);
+                let s = h.field(&a, 0, &Ty::Int)?;
+                h.emit("call void @strata_free(ptr %a)".into());
+                h.emit(format!("tail call void {fp}(i64 {})", s.1));
+                h.emit("ret void".into());
+            }
+            Ty::Con(l, _) if l == "List" => {
+                // the header holds the buffer; the buffer its elements up to `used`
+                let et = args[0].clone();
+                h.emit("%bp = getelementptr i8, ptr %a, i64 8".into());
+                h.emit("%buf = load ptr, ptr %bp".into());
+                h.emit("call void @strata_free(ptr %a)".into());
+                h.emit("%blast = call i1 @strata_release(ptr %buf)".into());
+                h.emit("br i1 %blast, label %elements, label %kept".into());
+                h.block("elements");
+                if h.counted(&et) {
+                    let f = h.drop_fn(&et)?;
+                    h.emit("%up = getelementptr i8, ptr %buf, i64 8".into());
+                    h.emit("%used = load i64, ptr %up".into());
+                    h.emit("%data = getelementptr i64, ptr %buf, i64 2".into());
+                    h.emit("br label %loop".into());
+                    h.block("loop");
+                    h.emit("%i = phi i64 [ 0, %elements ], [ %next, %body ]".into());
+                    h.emit("%more = icmp slt i64 %i, %used".into());
+                    h.emit("br i1 %more, label %body, label %done".into());
+                    h.block("body");
+                    h.emit("%ep = getelementptr i64, ptr %data, i64 %i".into());
+                    h.emit("%eraw = load i64, ptr %ep".into());
+                    h.emit("%e = inttoptr i64 %eraw to ptr".into());
+                    h.emit(format!("call void {f}(ptr %e)"));
+                    h.emit("%next = add i64 %i, 1".into());
+                    h.emit("br label %loop".into());
+                    h.block("done");
+                }
+                h.emit("call void @strata_free(ptr %buf)".into());
+                h.emit("ret void".into());
+            }
+            Ty::Con(n, _) if n == "Tuple" => fields_then_free(&mut h, &args)?,
+            _ if h.m.nominal(&t) || matches!(t, Ty::Union(_)) => {
+                let tc = t.clone();
+                h.on_ctor(&a, "", |h, c| {
+                    let tys: Vec<Ty> = h.m.fields(c, &h.m.ctor_args(c, &tc))?.into_iter().map(|f| f.ty).collect();
+                    fields_then_free(h, &tys)
+                })?;
+            }
+            other => return Err(format!("dropping a `{}` is not compiled yet", key(other))),
+        }
+        h.block("kept");
+        h.emit("ret void".into());
+        let text = h.finish();
+        writeln!(self.m.body, "define void {name}(ptr %a) {{\n{text}}}\n").unwrap();
+        Ok(name)
+    }
+
     // ---- contracts ----
 
     /// Fault unless `v` is a value of type `t`: the refinements reachable
@@ -1584,8 +1951,10 @@ impl<'m, 'a> Func<'m, 'a> {
                 let et = self.m.repr(&self.lower(&args[0])?)?;
                 let et_written = args[0].clone();
                 let ctx = ctx.to_vec();
+                // (what a message would show is made first: a temporary, unless it is used)
                 self.each(v, &et, |c, i, x| {
                     let shown = c.json(&(Ty::Int, i.to_string()))?;
+                    let shown = c.temp((Ty::Str, shown)).1;
                     let inner = within(&ctx, vec![Part::Lit(": [".into()), Part::Val(shown), Part::Lit("]".into())]);
                     c.check_in(&et_written, x, &inner, false)
                 })?;
@@ -1599,10 +1968,12 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.each(&list, &et, |c, _, x| {
                     if written.len() == 1 {
                         let shown = c.json(x)?;
+                        let shown = c.temp((Ty::Str, shown)).1;
                         return c.check_in(&written[0], x, &within(&ctx, vec![Part::Lit(": element ".into()), Part::Val(shown)]), false);
                     }
                     let (k, val) = (c.field(x, 0, &lowered[0])?, c.field(x, 1, &lowered[1])?);
                     let shown = c.json(&k)?;
+                    let shown = c.temp((Ty::Str, shown)).1;
                     c.check_in(&written[0], &k, &within(&ctx, vec![Part::Lit(": key ".into()), Part::Val(shown.clone())]), false)?;
                     c.check_in(&written[1], &val, &within(&ctx, vec![Part::Lit(": [".into()), Part::Val(shown), Part::Lit("]".into())]), false)
                 })?;
@@ -1747,11 +2118,11 @@ impl<'m, 'a> Func<'m, 'a> {
 
     /// Evaluate `f` with `it` bound to `v` (and only that, unless `outer`).
     fn with_it(&mut self, v: &V, outer: bool, f: impl FnOnce(&mut Self) -> Res<V>) -> Res<V> {
-        let saved = if outer { None } else { Some(std::mem::replace(&mut self.scopes, vec![HashMap::default()])) };
-        self.scopes.push(HashMap::default());
+        let saved = if outer { None } else { Some(std::mem::replace(&mut self.scopes, vec![Scope::default()])) };
+        self.push_scope(false);
         let slot = self.local("it", &v.0, None);
         let r = slot.and_then(|slot| self.store(v, &slot)).and_then(|_| f(self));
-        self.scopes.pop();
+        let r = r.and_then(|r| self.pop_scope().map(|_| r));
         if let Some(s) = saved {
             self.scopes = s;
         }
@@ -1762,18 +2133,32 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok(r)
     }
 
+    /// Leave the function with `v`: it moves to the result (or is held once
+    /// more), and every scope drops what it holds.
     fn return_value(&mut self, v: &V) -> Res<()> {
         if is_never(&v.0) {
             return Ok(());
         }
         let (t, slot) = self.ret_slot.clone().ok_or("`return` outside a function")?;
+        let mut keep = None;
         if has_value(&t) {
             let v = self.coerce(v.clone(), &t)?;
+            keep = self.take_out(&v);
             let ll = self.m.ll(&t)?;
             self.emit(format!("store {ll} {}, ptr {slot}", v.1));
         }
+        self.drop_from(0, keep.as_deref())?;
         self.br("exit");
         Ok(())
+    }
+
+    /// After every way out of the body dropped what its scopes held: nothing
+    /// left to drop (the variables stay known, for the postconditions).
+    fn forget_drops(&mut self) {
+        for s in &mut self.scopes {
+            s.temps.clear();
+            s.owned.clear();
+        }
     }
 
     fn unsupported<X>(&self, what: &str) -> Res<X> {
@@ -1838,27 +2223,31 @@ impl<'m, 'a> Func<'m, 'a> {
                 let (lt, lf, end) = (self.fresh_label("then"), self.fresh_label("else"), self.fresh_label("endif"));
                 self.cond_br(&cv, &lt, &lf);
                 self.block(&lt);
-                let tv = self.expr(t)?;
-                let tv = self.coerce(tv, &want)?;
+                let tv = self.branch(&want, |s| s.expr(t))?;
                 let from_t = self.cur.clone();
                 self.br(&end);
                 self.block(&lf);
-                let fv = self.expr(f)?;
-                let fv = self.coerce(fv, &want)?;
+                let fv = self.branch(&want, |s| s.expr(f))?;
                 let from_f = self.cur.clone();
                 self.br(&end);
                 self.block(&end);
-                self.join(&want, vec![(tv, from_t), (fv, from_f)])?
+                let r = self.join(&want, vec![(tv, from_t), (fv, from_f)])?;
+                self.temp(r)
             }
-            Expr::Block(stmts, last) => {
-                self.scopes.push(HashMap::default());
-                for s in stmts {
-                    self.stmt(s)?;
+            Expr::Block(stmts, last) => self.scoped(false, |s| {
+                for st in stmts {
+                    s.push_scope(true);
+                    let r = s.stmt(st);
+                    match r {
+                        Ok(()) => s.pop_scope()?,
+                        Err(e) => {
+                            s.discard_scope();
+                            return Err(e);
+                        }
+                    }
                 }
-                let v = self.expr(last)?;
-                self.scopes.pop();
-                v
-            }
+                s.expr(last)
+            })?,
             Expr::Return(x) => {
                 let v = self.expr(x)?;
                 self.return_value(&v)?;
@@ -1882,7 +2271,8 @@ impl<'m, 'a> Func<'m, 'a> {
                         }
                     }
                 }
-                self.concat(ps)?
+                let s = self.concat(ps)?;
+                self.temp(s)
             }
             Expr::Match(scrut, as_name, arms) => self.matching(e, scrut, as_name.as_deref(), arms)?,
             Expr::Tuple(xs) => {
@@ -1894,7 +2284,8 @@ impl<'m, 'a> Func<'m, 'a> {
                 if vs.iter().any(|v| is_never(&v.0)) {
                     return Ok(never());
                 }
-                (t, self.block_of(0, &vs)?)
+                let b = self.block_of(0, &vs)?;
+                self.temp((t, b))
             }
             Expr::Ctor(c, args) => self.construct(e, c, args)?,
             Expr::Field(r, f) => self.get_field(r, f)?,
@@ -1943,27 +2334,31 @@ impl<'m, 'a> Func<'m, 'a> {
                 let (ok, fail, end) = (self.fresh_label("except.ok"), self.fresh_label("except.else"), self.fresh_label("except.end"));
                 self.cond_br(&is_good, &ok, &fail);
                 self.block(&ok);
-                let gv = self.field(&v, 0, &want)?;
+                let gv = self.branch(&want, |s| s.field(&v, 0, &want))?;
                 let from_ok = self.cur.clone();
                 self.br(&end);
                 self.block(&fail);
-                self.scopes.push(HashMap::default());
-                if let Some(n) = name {
-                    let et = match &vt {
-                        Ty::Con(n, a) if n == "Result" => a[1].clone(),
-                        _ => Ty::Unit,
-                    };
-                    let err = self.field(&v, 0, &et)?;
-                    let slot = self.local(n, &et, None)?;
-                    self.store(&err, &slot)?;
-                }
-                let fv = self.expr(fallback)?;
-                let fv = self.coerce(fv, &want)?;
-                self.scopes.pop();
+                let fv = self.branch(&want, |s| {
+                    s.push_scope(false);
+                    if let Some(n) = name {
+                        let et = match &vt {
+                            Ty::Con(n, a) if n == "Result" => a[1].clone(),
+                            _ => Ty::Unit,
+                        };
+                        let err = s.field(&v, 0, &et)?;
+                        s.local_owned(n, err, None)?;
+                    }
+                    let fv = s.expr(fallback)?;
+                    let fv = s.coerce(fv, &want)?;
+                    let fv = s.take(fv);
+                    s.pop_scope()?;
+                    Ok(s.temp(fv))
+                })?;
                 let from_f = self.cur.clone();
                 self.br(&end);
                 self.block(&end);
-                self.join(&want, vec![(gv, from_ok), (fv, from_f)])?
+                let r = self.join(&want, vec![(gv, from_ok), (fv, from_f)])?;
+                self.temp(r)
             }
             Expr::List(xs) => {
                 let t = self.ty_of(e)?;
@@ -1976,12 +2371,24 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
                 let et = self.elem_ty(&t)?;
                 let vs: Vec<V> = vs.into_iter().map(|v| self.coerce(v, &et)).collect::<Res<_>>()?;
-                let mut l = self.call(&t, "@strata_list_new", &[(Ty::Int, vs.len().to_string())])?;
-                for v in &vs {
-                    let s = self.to_slot(v)?;
-                    l = self.call(&t, "@strata_list_push", &[l, (Ty::Int, s)])?;
+                // a new list's buffer holds the elements (taken)
+                let l = self.call(&t, "@strata_list_new", &[(Ty::Int, vs.len().to_string())])?;
+                let (bp, buf, data) = (self.fresh("bufp"), self.fresh("buf"), self.fresh("data"));
+                self.emit(format!("{bp} = getelementptr i8, ptr {}, i64 8", l.1));
+                self.emit(format!("{buf} = load ptr, ptr {bp}"));
+                self.emit(format!("{data} = getelementptr i64, ptr {buf}, i64 2"));
+                for (i, v) in vs.iter().enumerate() {
+                    let v = self.take(v.clone());
+                    let s = self.to_slot(&v)?;
+                    let at = self.fresh("at");
+                    self.emit(format!("{at} = getelementptr i64, ptr {data}, i64 {i}"));
+                    self.emit(format!("store i64 {s}, ptr {at}"));
                 }
-                l
+                let up = self.fresh("usedp");
+                self.emit(format!("{up} = getelementptr i8, ptr {buf}, i64 8"));
+                self.emit(format!("store i64 {}, ptr {up}", vs.len()));
+                self.emit(format!("store i64 {}, ptr {}", vs.len(), l.1));
+                self.temp(l)
             }
             Expr::Lambda(ps, body) => self.lambda(e, ps, body)?,
             // the mark of a `mut` argument or receiver: the call writes back to its place
@@ -2058,7 +2465,9 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
             };
             self.block(&rhs);
+            self.push_scope(true);
             let b = self.expr(r)?;
+            self.pop_scope()?;
             let from_b = self.cur.clone();
             self.br(&end);
             self.block(&end);
@@ -2091,8 +2500,15 @@ impl<'m, 'a> Func<'m, 'a> {
             Ok(bool_v(&r))
         };
         Ok(match (op, &t) {
-            (Add, Ty::Str) => self.call(&Ty::Str, "@strata_concat", &[a.clone(), b.clone()])?,
-            (Add, Ty::Con(l, _)) if l == "List" => self.call(&a.0, "@strata_list_concat", &[a.clone(), b.clone()])?,
+            (Add, Ty::Str) => {
+                let r = self.call(&Ty::Str, "@strata_concat", &[a.clone(), b.clone()])?;
+                self.temp(r)
+            }
+            (Add, Ty::Con(l, et)) if l == "List" => {
+                let counted = bool_v(if self.counted(&et[0]) { "true" } else { "false" });
+                let r = self.call(&a.0, "@strata_list_concat", &[a.clone(), b.clone(), counted])?;
+                self.temp(r)
+            }
             (Lt | Le | Gt | Ge, Ty::Str) => {
                 let c = self.call(&Ty::Int, "@strata_str_cmp", &[a.clone(), b.clone()])?;
                 let r = self.fresh("cmp");
@@ -2196,17 +2612,17 @@ impl<'m, 'a> Func<'m, 'a> {
         self.call_values(name, vs, hint)
     }
 
-    /// The slot a `mut` parameter changes: the variable's own, or for a field
-    /// (`mut o.status`) a slot of its own, written back after the call.
+    /// The slot a `mut` parameter changes: a slot of its own holding the
+    /// argument (held once more), written back to the place after the call.
+    /// (Not the variable's own slot: the callee drops what it replaces, and
+    /// the caller may still be reading the old value, as in `f(x, mut x.pop())`.)
     fn mut_slot(&mut self, place: &Option<(String, Vec<String>)>, v: &V, param: &str) -> Res<String> {
-        let Some((root, path)) = place else { return Err(format!("the argument for the `mut` parameter `{param}` must be a variable or its field")) };
-        let l = self.lookup(root).ok_or(format!("`{root}` is not a local variable"))?;
-        if path.is_empty() {
-            return Ok(l.slot);
-        }
+        let Some((root, _)) = place else { return Err(format!("the argument for the `mut` parameter `{param}` must be a variable or its field")) };
+        self.lookup(root).ok_or(format!("`{root}` is not a local variable"))?;
         let tmp = self.fresh("mutarg");
         writeln!(self.allocas, "  {tmp} = alloca {}", self.m.ll(&v.0)?).unwrap();
-        self.store(v, &tmp)?;
+        let v = self.take(v.clone());
+        self.store(&v, &tmp)?;
         Ok(tmp)
     }
 
@@ -2216,14 +2632,18 @@ impl<'m, 'a> Func<'m, 'a> {
         let Some((root, path)) = place else { return Ok(()) };
         let l = self.lookup(root).ok_or(format!("`{root}` is not a local variable"))?;
         let shown = std::iter::once(root.clone()).chain(path.iter().cloned()).collect::<Vec<_>>().join(".");
-        if !path.is_empty() {
-            let r = self.fresh("back");
-            let ll = self.m.ll(t)?;
-            self.emit(format!("{r} = load {ll}, ptr {slot}"));
+        // the slot's value (owned) goes back into the place
+        let r = self.fresh("back");
+        let ll = self.m.ll(t)?;
+        self.emit(format!("{r} = load {ll}, ptr {slot}"));
+        let r = self.temp((t.clone(), r));
+        let new = if path.is_empty() {
+            r
+        } else {
             let cur = self.load(root)?;
-            let new = self.set_path(&cur, path, (t.clone(), r), &shown)?;
-            self.store(&(l.t.clone(), new.1), &l.slot)?;
-        }
+            self.set_path(&cur, path, r, &shown)?
+        };
+        self.replace(&l, (l.t.clone(), new.1))?;
         // the parameter's type held on every assignment in the callee: when it
         // fits in the variable's (the checker proved it), so does the result
         if let Some(d) = &l.declared {
@@ -2338,7 +2758,10 @@ impl<'m, 'a> Func<'m, 'a> {
         let v0 = vs[0].clone();
         self.on_ctor(&v0, &end, |c, ctor| {
             let (r, h) = if own.iter().any(|o| o == ctor) { (Ty::Con(Symbol::new(ctor), args.clone()), ctor.to_string()) } else { (recv.clone(), head.clone()) };
+            c.push_scope(true);
             let out = c.method_target(name, r, h, vs.clone(), hint.clone(), places)?;
+            let out = c.take(out);
+            c.pop_scope()?;
             if has_value(&ret) && !is_never(&out.0) {
                 let ll = c.m.ll(&ret)?;
                 c.emit(format!("store {ll} {}, ptr {slot}", out.1));
@@ -2353,7 +2776,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let r = self.fresh("mr");
         let ll = self.m.ll(&ret)?;
         self.emit(format!("{r} = load {ll}, ptr {slot}"));
-        Ok((ret, r))
+        Ok(self.temp((ret, r)))
     }
 
     /// Call the implementation of `name` for type `head` (on a `recv`).
@@ -2378,6 +2801,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let ret = self.m.lower(&own.ret, &sub)?;
         let (args, backs) = self.bind_args(&own_params, vs, &sub, places)?;
         let r = self.call(&ret, &symbol, &args)?;
+        let r = self.temp(r);
         self.write_backs(backs, places)?;
         Ok(r)
     }
@@ -2411,6 +2835,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let (args, backs) = self.bind_args(&params, vs, &sub, places)?;
         let symbol = self.m.want_impls(name, targs.clone(), impls);
         let r = self.call(&ret, &symbol, &args)?;
+        let r = self.temp(r);
         self.write_backs(backs, places)?;
         Ok(r)
     }
@@ -2424,7 +2849,10 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok(match name {
             "host_write" => self.call(&Ty::Unit, "@strata_host_write", &vs)?,
             "host_exists" => self.call(&Ty::Bool, "@strata_host_exists", &vs)?,
-            "host_args" => self.call(&lst, "@strata_host_args", &[])?,
+            "host_args" => {
+                let r = self.call(&lst, "@strata_host_args", &[])?;
+                self.temp(r)
+            }
             "host_read_line" | "host_env_var" => {
                 let r = self.call(&s_ty, &format!("@strata_{name}"), &vs)?;
                 self.optional(&r, &t)?
@@ -2455,6 +2883,8 @@ impl<'m, 'a> Func<'m, 'a> {
 
     /// `Some(v)` when the pointer `v` is not NULL, else `None`.
     fn optional(&mut self, v: &V, t: &Ty) -> Res<V> {
+        // (`Some` takes it; when it is NULL there is nothing to drop)
+        let v = &self.temp(v.clone());
         let (some, none, end) = (self.fresh_label("some"), self.fresh_label("none"), self.fresh_label("opt"));
         let isnull = self.fresh("null");
         self.emit(format!("{isnull} = icmp eq ptr {}, null", v.1));
@@ -2469,11 +2899,13 @@ impl<'m, 'a> Func<'m, 'a> {
         self.block(&end);
         let r = self.fresh("o");
         self.emit(format!("{r} = phi ptr [ {b}, %{from} ], [ {n}, %{none} ]"));
-        Ok((t.clone(), r))
+        Ok(self.temp((t.clone(), r)))
     }
 
     /// `Ok(v)` (or `Ok(())`) when `ok`, else `Err((kind, message))` from the slots.
     fn outcome(&mut self, ok: &str, v: Option<V>, kslot: &str, mslot: &str, t: &Ty) -> Res<V> {
+        // (`Ok` takes it; on a failure it is NULL)
+        let v = v.map(|v| self.temp(v));
         let (good, bad, end) = (self.fresh_label("ok"), self.fresh_label("err"), self.fresh_label("res"));
         self.cond_br(&bool_v(ok), &good, &bad);
         self.block(&good);
@@ -2484,14 +2916,16 @@ impl<'m, 'a> Func<'m, 'a> {
         let (k, m) = (self.fresh("k"), self.fresh("m"));
         self.emit(format!("{k} = load ptr, ptr {kslot}"));
         self.emit(format!("{m} = load ptr, ptr {mslot}"));
-        let pair = self.block_of(0, &[(Ty::Str, k), (Ty::Str, m)])?;
-        let errb = self.block_of(self.m.tags["Err"], &[(Ty::Str, pair)])?;
+        let (k, m) = (self.temp((Ty::Str, k)), self.temp((Ty::Str, m)));
+        let pair = self.block_of(0, &[k, m])?;
+        let pair = self.temp((Ty::Con("Tuple".into(), vec![Ty::Str, Ty::Str]), pair));
+        let errb = self.block_of(self.m.tags["Err"], &[pair])?;
         let from_err = self.cur.clone();
         self.br(&end);
         self.block(&end);
         let r = self.fresh("r");
         self.emit(format!("{r} = phi ptr [ {okb}, %{from_ok} ], [ {errb}, %{from_err} ]"));
-        Ok((t.clone(), r))
+        Ok(self.temp((t.clone(), r)))
     }
 
     /// A native built-in.
@@ -2504,10 +2938,13 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok(match (name, types.as_slice()) {
             ("len", [t]) if list_elem(t).is_some() => self.list_len(&vs[0]),
             ("push", [t, _]) if list_elem(t).is_some() => {
-                let x = self.coerce(vs[1].clone(), &list_elem(t).unwrap())?;
+                let et = list_elem(t).unwrap();
+                let x = self.coerce(vs[1].clone(), &et)?;
+                let x = self.take(x);
                 let s = self.to_slot(&x)?;
-                let r = self.call(&types[0], "@strata_list_push", &[vs[0].clone(), (Ty::Int, s)])?;
-                (vs[0].0.clone(), r.1)
+                let counted = bool_v(if self.counted(&et) { "true" } else { "false" });
+                let r = self.call(&types[0], "@strata_list_push", &[vs[0].clone(), (Ty::Int, s), counted])?;
+                self.temp((vs[0].0.clone(), r.1))
             }
             ("get", [t, Ty::Int]) if list_elem(t).is_some() => {
                 let et = list_elem(t).unwrap();
@@ -2531,7 +2968,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.block(&end);
                 let r = self.fresh("opt");
                 self.emit(format!("{r} = phi ptr [ {b}, %{from_some} ], [ {nothing}, %{none} ]"));
-                (opt, r)
+                self.temp((opt, r))
             }
             ("take" | "drop", [t, Ty::Int]) if list_elem(t).is_some() => {
                 // the count, within 0..len
@@ -2541,7 +2978,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.emit(format!("{k} = call i64 @llvm.smin.i64(i64 {k0}, i64 {})", n.1));
                 let (from, to) = if name == "take" { ("0".to_string(), k) } else { (k, n.1.clone()) };
                 let r = self.call(&types[0], "@strata_list_slice", &[vs[0].clone(), (Ty::Int, from), (Ty::Int, to)])?;
-                (vs[0].0.clone(), r.1)
+                self.temp((vs[0].0.clone(), r.1))
             }
             ("at", [t, Ty::Int]) if list_elem(t).is_some() => {
                 let et = list_elem(t).unwrap();
@@ -2571,20 +3008,25 @@ impl<'m, 'a> Func<'m, 'a> {
                 let to = self.fresh("to");
                 self.emit(format!("{to} = call i64 @llvm.smax.i64(i64 {}, i64 {})", ends[0], ends[1]));
                 let r = self.call(&types[0], "@strata_list_slice", &[vs[0].clone(), (Ty::Int, ends[0].clone()), (Ty::Int, to)])?;
-                (vs[0].0.clone(), r.1)
+                self.temp((vs[0].0.clone(), r.1))
             }
             ("to_json", [_]) => {
                 let s = self.json(&vs[0])?;
-                (Ty::Str, s)
+                self.temp((Ty::Str, s))
             }
-            ("range", [Ty::Int, Ty::Int]) => self.call(&Ty::Con("List".into(), vec![Ty::Int]), "@strata_range", &vs)?,
+            ("range", [Ty::Int, Ty::Int]) => {
+                let r = self.call(&Ty::Con("List".into(), vec![Ty::Int]), "@strata_range", &vs)?;
+                self.temp(r)
+            }
             ("print", [_]) => {
                 let s = self.show(&vs[0])?;
-                self.call(&Ty::Unit, "@strata_print", &[(Ty::Str, s)])?
+                let r = self.call(&Ty::Unit, "@strata_print", &[(Ty::Str, s.clone())])?;
+                self.drop_value(&(Ty::Str, s))?;
+                r
             }
             ("to_string", [_]) => {
                 let s = self.show(&vs[0])?;
-                (Ty::Str, s)
+                self.temp((Ty::Str, s))
             }
             ("len", [Ty::Str]) => self.call(&Ty::Int, "@strata_str_len", &vs)?,
             ("abs", [Ty::Int]) => {
@@ -2678,7 +3120,9 @@ impl<'m, 'a> Func<'m, 'a> {
         self.cond_br(&bool_v(&more), &body, &end);
         self.block(&body);
         let x = self.list_at(v, &i, et)?;
+        self.push_scope(true);
         f(self, &i, &x)?;
+        self.pop_scope()?;
         let next = self.fresh("i");
         self.emit(format!("{next} = add i64 {i}, 1"));
         self.emit(format!("store i64 {next}, ptr {counter}"));
@@ -2711,13 +3155,15 @@ impl<'m, 'a> Func<'m, 'a> {
         let have = self.m.repr(&v.0)?;
         if self.is_dyn(&want_r) && !self.is_dyn(&have) {
             let vt = self.vtable(&want_r, &v.0)?;
+            // the pair holds the value
+            let v = self.take(v);
             let s = self.to_slot(&v)?;
             let (p, a) = (self.fresh("dyn"), self.fresh("vt"));
             self.emit(format!("{p} = call ptr @strata_alloc(i64 16)"));
             self.emit(format!("{a} = ptrtoint ptr {vt} to i64"));
             self.emit(format!("store i64 {a}, ptr {p}"));
             self.set_field(&p, 0, &(Ty::Int, s))?;
-            return Ok((want.clone(), p));
+            return Ok(self.temp((want.clone(), p)));
         }
         if let (Ty::Con(l, a), Ty::Con(l2, b)) = (&want_r, &have) {
             if l == "List" && l2 == "List" && self.has_dyn(&a[0]) && a[0] != b[0] {
@@ -2728,18 +3174,21 @@ impl<'m, 'a> Func<'m, 'a> {
                 let n = self.list_len(&v);
                 let l0 = self.call(&want_r, "@strata_list_new", &[n])?;
                 self.emit(format!("store ptr {}, ptr {acc}", l0.1));
+                let lt = want_r.clone();
                 self.each(&v, &from, |c, _, x| {
                     let y = c.coerce(x.clone(), &et)?;
+                    let y = c.take(y);
                     let s = c.to_slot(&y)?;
                     let cur = c.fresh("cur");
                     c.emit(format!("{cur} = load ptr, ptr {acc}"));
-                    let next = c.call(&Ty::Str, "@strata_list_push", &[(Ty::Str, cur), (Ty::Int, s)])?;
+                    let next = c.call(&Ty::Str, "@strata_list_push", &[(Ty::Str, cur.clone()), (Ty::Int, s), bool_v("true")])?;
+                    c.drop_value(&(lt.clone(), cur))?;
                     c.emit(format!("store ptr {}, ptr {acc}", next.1));
                     Ok(())
                 })?;
                 let r = self.fresh("conv");
                 self.emit(format!("{r} = load ptr, ptr {acc}"));
-                return Ok((want.clone(), r));
+                return Ok(self.temp((want.clone(), r)));
             }
         }
         Ok((want.clone(), v.1))
@@ -2813,7 +3262,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let trm = methods[i].0.clone();
         let (tm, sub) = self.dyn_signature(&recv, &trm, m)?;
         let ret = self.m.lower(&tm.decl.ret, &sub)?;
-        let fp = self.dyn_entry(&vs[0], i + 2);
+        let fp = self.dyn_entry(&vs[0], i + DYN_METHODS);
         let mut args = vec![];
         let mut back = None;
         if tm.decl.params[0].mutable {
@@ -2822,7 +3271,13 @@ impl<'m, 'a> Func<'m, 'a> {
             let slot = self.mut_slot(&place, &vs[0], "self")?;
             let cur = self.fresh("cur");
             self.emit(format!("{cur} = load ptr, ptr {slot}"));
-            let copy = self.copy_block(&(recv.clone(), cur), 1);
+            // the copy holds the value too (through the table: its type isn't known here)
+            let cur: V = (recv.clone(), cur);
+            let copy = self.copy_block(&cur, &[Ty::Int], None)?;
+            let dup = self.dyn_entry(&cur, DYN_DUP);
+            let s = self.field(&cur, 0, &Ty::Int)?;
+            self.emit(format!("call void {dup}(i64 {})", s.1));
+            self.drop_value(&cur)?;
             self.emit(format!("store ptr {copy}, ptr {slot}"));
             let at = self.fresh("selfp");
             self.emit(format!("{at} = getelementptr i64, ptr {copy}, i64 1"));
@@ -2837,6 +3292,7 @@ impl<'m, 'a> Func<'m, 'a> {
             args.push(self.coerce(v, &t)?);
         }
         let r = self.call(&ret, &fp, &args)?;
+        let r = self.temp(r);
         if let Some((place, slot)) = back {
             self.write_back(&place, &slot, &recv, &tm.decl.params[0].ty)?;
         }
@@ -2867,6 +3323,25 @@ impl<'m, 'a> Func<'m, 'a> {
             h.emit(format!("ret ptr {s}"));
             let text = h.finish();
             writeln!(self.m.body, "define ptr {f}(i64 %v) {{\n{text}}}\n").unwrap();
+        }
+        // dropping and holding it
+        for what in ["drop", "dup"] {
+            let f = format!("@\"dyn{what}:{}\"", key(imp));
+            entries.push(f.clone());
+            if !self.m.helpers.insert(f.clone()) {
+                continue;
+            }
+            let mut h = Func::new(self.m, HashMap::default());
+            h.block("start");
+            let v = h.from_slot("%v", imp)?;
+            if what == "drop" {
+                h.drop_value(&v)?;
+            } else if h.counted(imp) {
+                h.emit(format!("call void @strata_dup(ptr {})", v.1));
+            }
+            h.emit("ret void".into());
+            let text = h.finish();
+            writeln!(self.m.body, "define void {f}(i64 %v) {{\n{text}}}\n").unwrap();
         }
         for (trm, m) in self.dyn_methods(tr) {
             let f = format!("@\"dyn:{trm}::{m}@{}\"", key(imp));
@@ -2927,9 +3402,10 @@ impl<'m, 'a> Func<'m, 'a> {
 
     // ---- closures ----
     //
-    // A function value points to a block: the function's address, then the
-    // values it captured. The function takes that block first, then its
-    // parameters.
+    // A function value points to a block: the function's address, the
+    // function that drops the block (what it captured, then the block
+    // itself), then the values it captured. The function takes that block
+    // first, then its parameters. One that captures nothing is a constant.
 
     fn call_closure(&mut self, f: &V, args: Vec<V>) -> Res<V> {
         if is_never(&f.0) || args.iter().any(|a| is_never(&a.0)) {
@@ -2943,19 +3419,50 @@ impl<'m, 'a> Func<'m, 'a> {
         for (t, a) in pts.iter().zip(args) {
             all.push((t.clone(), a.1));
         }
-        self.call(&rt, &fp, &all)
+        let r = self.call(&rt, &fp, &all)?;
+        Ok(self.temp(r))
     }
 
-    /// A closure block: the function, then the captured values.
+    /// A closure block: the function, its drop, then the captured values
+    /// (held by the block). A temporary of the current scope.
     fn closure(&mut self, fsym: &str, captured: &[V]) -> Res<String> {
+        if captured.is_empty() {
+            let g = format!("@\"closure:{}\"", fsym.trim_start_matches('@').trim_matches('"'));
+            if self.m.helpers.insert(g.clone()) {
+                writeln!(self.m.globals, "{g} = private constant {{ i64, ptr, ptr }} {{ i64 0, ptr {fsym}, ptr @strata_free }}, align 8").unwrap();
+            }
+            return Ok(format!("getelementptr inbounds (i8, ptr {g}, i64 8)"));
+        }
+        // the block's drop: what it captured, then itself
+        let dsym = format!("@\"drop.{}\"", fsym.trim_start_matches('@').trim_matches('"'));
+        let mut h = Func::new(self.m, HashMap::default());
+        h.block("start");
+        let env: V = (Ty::Str, "%a".into());
+        let mut held = vec![];
+        for (i, c) in captured.iter().enumerate() {
+            if h.counted(&c.0) {
+                held.push(h.field(&env, i + 1, &c.0)?);
+            }
+        }
+        h.emit("call void @strata_free(ptr %a)".into());
+        for v in &held {
+            h.drop_value(v)?;
+        }
+        h.emit("ret void".into());
+        let text = h.finish();
+        writeln!(self.m.body, "define void {dsym}(ptr %a) {{\n{text}}}\n").unwrap();
         let p = self.fresh("clo");
-        self.emit(format!("{p} = call ptr @strata_alloc(i64 {})", 8 * (captured.len() + 1)));
-        let a = self.fresh("fa");
+        self.emit(format!("{p} = call ptr @strata_alloc(i64 {})", 8 * (captured.len() + 2)));
+        let (a, d) = (self.fresh("fa"), self.fresh("fd"));
         self.emit(format!("{a} = ptrtoint ptr {fsym} to i64"));
         self.emit(format!("store i64 {a}, ptr {p}"));
+        self.emit(format!("{d} = ptrtoint ptr {dsym} to i64"));
+        self.set_field(&p, 0, &(Ty::Int, d))?;
         for (i, c) in captured.iter().enumerate() {
-            self.set_field(&p, i, c)?;
+            let c = self.take(c.clone());
+            self.set_field(&p, i + 1, &c)?;
         }
+        self.temp((Ty::Fn(vec![], Box::new(Ty::Unit)), p.clone()));
         Ok(p)
     }
 
@@ -2977,7 +3484,7 @@ impl<'m, 'a> Func<'m, 'a> {
         l.block("entry.body");
         let env: V = (Ty::Str, "%env".into());
         for (i, (x, v)) in free.iter().zip(&captured).enumerate() {
-            let val = l.field(&env, i, &v.0)?;
+            let val = l.field(&env, i + 1, &v.0)?;
             let slot = l.local(x, &v.0, None)?;
             l.store(&val, &slot)?;
         }
@@ -3037,6 +3544,8 @@ impl<'m, 'a> Func<'m, 'a> {
             args.push((pt.clone(), format!("%p.{i}")));
         }
         let r = l.call_values(name, args, Some((*rt).clone()))?;
+        let keep = l.take_out(&r);
+        l.drop_from(0, keep.as_deref())?;
         if has_value(&rt) {
             let ll = l.m.ll(&rt)?;
             l.emit(format!("ret {ll} {}", r.1));
@@ -3119,7 +3628,7 @@ impl<'m, 'a> Func<'m, 'a> {
         self.check_new(c, &vals, &fs)?;
         let vals: Vec<V> = vals.into_iter().zip(&fs).map(|(v, f)| self.coerce(v, &f.ty)).collect::<Res<_>>()?;
         let p = self.block_of(self.m.tags[c], &vals)?;
-        let v = (t, p);
+        let v = self.temp((t, p));
         self.check_type_refinement(c, &v)?;
         Ok(v)
     }
@@ -3164,73 +3673,105 @@ impl<'m, 'a> Func<'m, 'a> {
         if is_never(&v.0) {
             return Ok(v);
         }
-        self.scopes.push(HashMap::default());
+        // the arms borrow the matched value: it is a temporary of the
+        // enclosing scope, or a variable an arm's bindings no longer need
+        // once they hold what they bound
+        self.push_scope(false);
         if let Some(n) = as_name {
-            let slot = self.local(n, &v.0, None)?;
-            self.store(&v, &slot)?;
+            self.local_owned(n, v.clone(), None)?;
         }
         let end = self.fresh_label("endmatch");
         let mut incoming = vec![];
         for arm in arms {
             let next = self.fresh_label("next_arm");
-            self.scopes.push(HashMap::default());
+            self.push_scope(false);
+            self.fail_marks.insert(next.clone(), 0);
             self.pattern(&arm.pat, &v, &next)?;
             let r = self.expr(&arm.body)?;
             let r = self.coerce(r, &want)?;
+            let r = self.take(r);
+            self.pop_scope()?;
             incoming.push((r, self.cur.clone()));
             self.br(&end);
-            self.scopes.pop();
             self.block(&next);
         }
         let shown = self.json(&v)?;
         self.fault(Fault::Runtime, vec![Part::Lit("no match arm for ".into()), Part::Val(shown)])?;
         self.block(&end);
-        self.scopes.pop();
-        self.join(&want, incoming)
+        let r = self.join(&want, incoming)?;
+        self.pop_scope()?;
+        Ok(self.temp(r))
     }
 
     /// Match `v` against a pattern: jump to `fail` if it doesn't match, else
     /// go on with its names bound in the current scope.
+    ///
+    /// Bound names own what they hold. A jump to `fail` first drops what
+    /// was bound since `fail` was noted (`fail_marks`; all of the scope's
+    /// when it wasn't).
     fn pattern(&mut self, p: &Pattern, v: &V, fail: &str) -> Res<()> {
-        let test = |s: &mut Self, ok: V| {
+        let test = |s: &mut Self, ok: V| -> Res<()> {
             let next = s.fresh_label("matched");
-            s.cond_br(&ok, &next, fail);
+            let i = s.var_scope();
+            let mark = s.fail_marks.get(fail).copied().unwrap_or(0).min(s.scopes[i].owned.len());
+            let bound: Vec<(Ty, String)> = s.scopes[i].owned[mark..].to_vec();
+            if bound.is_empty() {
+                s.cond_br(&ok, &next, fail);
+            } else {
+                let unbind = s.fresh_label("unbind");
+                s.cond_br(&ok, &next, &unbind);
+                s.block(&unbind);
+                for (t, slot) in bound.iter().rev() {
+                    let x = s.fresh("old");
+                    s.emit(format!("{x} = load ptr, ptr {slot}"));
+                    s.drop_value(&(t.clone(), x))?;
+                }
+                s.br(fail);
+            }
             s.block(&next);
+            Ok(())
         };
         match p {
             Pattern::Wild => {}
             Pattern::Bind(x) => self.bind(x, v)?,
             Pattern::Int(n) => {
                 let ok = self.apply(BinOp::Eq, v, &(Ty::Int, n.to_string()))?;
-                test(self, ok);
+                test(self, ok)?;
             }
             Pattern::Bool(b) => {
                 let ok = self.apply(BinOp::Eq, v, &bool_v(&b.to_string()))?;
-                test(self, ok);
+                test(self, ok)?;
             }
             Pattern::Str(s) => {
                 let l = self.string(s);
                 let ok = self.apply(BinOp::Eq, v, &l)?;
-                test(self, ok);
+                test(self, ok)?;
             }
             Pattern::Cond(c) => {
                 // the condition sees the variables in scope, and `it`
-                self.scopes.push(HashMap::default());
+                self.push_scope(false);
                 let slot = self.local("it", &v.0, None)?;
                 self.store(v, &slot)?;
                 let ok = self.expr(c)?;
-                self.scopes.pop();
-                test(self, ok);
+                self.pop_scope()?;
+                test(self, ok)?;
             }
             Pattern::For(..) => return self.unsupported("a match comprehension outside a derived method"),
             Pattern::Or(ps) => {
-                // each alternative binds the same names, into the same slots
+                // each alternative binds the same names, into the same slots;
+                // one that fails drops what it bound before the next is tried
                 let matched = self.fresh_label("alt.matched");
+                let scope = self.var_scope();
+                let mark = self.scopes[scope].owned.len();
                 for (i, alt) in ps.iter().enumerate() {
                     let next = if i + 1 == ps.len() { fail.to_string() } else { self.fresh_label("alt.next") };
+                    if i + 1 < ps.len() {
+                        self.fail_marks.insert(next.clone(), mark);
+                    }
                     self.pattern(alt, v, &next)?;
                     self.br(&matched);
                     if i + 1 < ps.len() {
+                        self.scopes[scope].owned.truncate(mark);
                         self.block(&next);
                     }
                 }
@@ -3238,7 +3779,7 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             Pattern::Ctor(c, CtorPat::None) if !self.m.env.ctors.contains_key(c) && self.m.env.is_type_name(c) => {
                 let ok = self.holds(c, v)?;
-                test(self, ok);
+                test(self, ok)?;
             }
             Pattern::Ctor(c, cp) => {
                 if self.m.is_distinct(c) {
@@ -3249,7 +3790,7 @@ impl<'m, 'a> Func<'m, 'a> {
                     return Ok(());
                 }
                 let ok = self.tag_in(v, &[c.to_string()])?;
-                test(self, ok);
+                test(self, ok)?;
                 let fs = self.m.fields(c, &self.m.ctor_args(c, &v.0))?;
                 match cp {
                     CtorPat::None => {}
@@ -3281,13 +3822,14 @@ impl<'m, 'a> Func<'m, 'a> {
                 let ok = self.fresh("lenok");
                 let cmp = if rest.is_some() { "sge" } else { "eq" };
                 self.emit(format!("{ok} = icmp {cmp} i64 {}, {}", n.1, items.len()));
-                test(self, bool_v(&ok));
+                test(self, bool_v(&ok))?;
                 for (i, ip) in items.iter().enumerate() {
                     let x = self.list_at(v, &i.to_string(), &et)?;
                     self.pattern(ip, &x, fail)?;
                 }
                 if let Some(r) = rest.as_ref().filter(|r| *r != "_") {
                     let tail = self.call(&v.0, "@strata_list_slice", &[v.clone(), (Ty::Int, items.len().to_string()), n])?;
+                    let tail = self.temp(tail);
                     self.bind(r, &tail)?;
                 }
             }
@@ -3298,11 +3840,15 @@ impl<'m, 'a> Func<'m, 'a> {
     /// Bind a name in the current scope (again, in the same slot, for another
     /// alternative of an or-pattern).
     fn bind(&mut self, x: &str, v: &V) -> Res<()> {
-        let slot = match self.scopes.last().unwrap().get(x) {
+        let i = self.var_scope();
+        let slot = match self.scopes[i].vars.get(x) {
             Some(l) => l.slot.clone(),
             None => self.local(x, &v.0, None)?,
         };
-        self.store(v, &slot)
+        let v = self.take(v.clone());
+        self.store(&v, &slot)?;
+        self.own_slot(&v.0, &slot);
+        Ok(())
     }
 
     fn stmt(&mut self, s: &Stmt) -> Res<()> {
@@ -3322,16 +3868,12 @@ impl<'m, 'a> Func<'m, 'a> {
                     None => v,
                 };
                 match s {
-                    Stmt::Var(n, ty, _) => {
-                        let slot = self.local(n, &v.0, ty.clone())?;
-                        self.store(&v, &slot)?;
-                    }
-                    Stmt::Let(Pattern::Bind(n), _, _) => {
-                        let slot = self.local(n, &v.0, None)?;
-                        self.store(&v, &slot)?;
-                    }
+                    Stmt::Var(n, ty, _) => self.local_owned(n, v, ty.clone())?,
+                    Stmt::Let(Pattern::Bind(n), _, _) => self.local_owned(n, v, None)?,
                     Stmt::Let(p, _, _) => {
                         let (ok, fail) = (self.fresh_label("let.ok"), self.fresh_label("let.fail"));
+                        let i = self.var_scope();
+                        self.fail_marks.insert(fail.clone(), self.scopes[i].owned.len());
                         self.pattern(p, &v, &fail)?;
                         self.br(&ok);
                         self.block(&fail);
@@ -3364,23 +3906,29 @@ impl<'m, 'a> Func<'m, 'a> {
                 if let Some(t) = &l.declared {
                     self.check(t, &new, &format!("assigning `{shown}`"), false)?;
                 }
-                self.store(&(l.t.clone(), new.1), &l.slot)?;
+                self.replace(&l, new)?;
             }
             Stmt::While(c, body) => {
                 let (head, inner, end) = (self.fresh_label("while"), self.fresh_label("do"), self.fresh_label("endwhile"));
                 self.br(&head);
                 self.block(&head);
+                self.push_scope(true);
                 let cv = self.expr(c)?;
+                self.pop_scope()?;
                 self.cond_br(&cv, &inner, &end);
                 self.block(&inner);
-                self.loop_body(body, &head, &end)?;
+                let depth = self.scopes.len();
+                self.push_scope(true);
+                self.loop_body(body, &head, &end, depth)?;
                 self.block(&end);
             }
             Stmt::Loop(body) => {
                 let (head, end) = (self.fresh_label("loop"), self.fresh_label("endloop"));
                 self.br(&head);
                 self.block(&head);
-                self.loop_body(body, &head, &end)?;
+                let depth = self.scopes.len();
+                self.push_scope(true);
+                self.loop_body(body, &head, &end, depth)?;
                 self.block(&end);
             }
             Stmt::For(p, xs, body) => {
@@ -3390,6 +3938,9 @@ impl<'m, 'a> Func<'m, 'a> {
                     if is_never(&v.0) {
                         return Ok(());
                     }
+                    // the loop holds the list (the body may change the variable it came from)
+                    let v = self.take(v);
+                    let v = self.temp(v);
                     let et = self.elem_ty(&v.0)?;
                     let counter = self.fresh("idx");
                     writeln!(self.allocas, "  {counter} = alloca i64").unwrap();
@@ -3404,14 +3955,15 @@ impl<'m, 'a> Func<'m, 'a> {
                     self.cond_br(&more, &inner, &end);
                     self.block(&inner);
                     let x = self.list_at(&v, &i, &et)?;
-                    self.scopes.push(HashMap::default());
+                    let depth = self.scopes.len();
+                    self.push_scope(false);
                     let fail = self.fresh_label("for.nomatch");
+                    self.fail_marks.insert(fail.clone(), 0);
                     self.pattern(p, &x, &fail)?;
-                    self.loop_body(body, &step, &end)?;
+                    self.loop_body(body, &step, &end, depth)?;
                     self.block(&fail);
                     let shown = self.json(&x)?;
                     self.fault(Fault::Runtime, vec![Part::Lit("for-loop pattern did not match ".into()), Part::Val(shown)])?;
-                    self.scopes.pop();
                     self.block(&step);
                     let next = self.fresh("i");
                     self.emit(format!("{next} = add i64 {i}, 1"));
@@ -3445,14 +3997,14 @@ impl<'m, 'a> Func<'m, 'a> {
                 let more = self.apply(BinOp::Lt, &(Ty::Int, i.clone()), &hi)?;
                 self.cond_br(&more, &inner, &end);
                 self.block(&inner);
-                self.scopes.push(HashMap::default());
+                let depth = self.scopes.len();
+                self.push_scope(false);
                 match p {
                     Pattern::Bind(x) => self.bind(x, &(Ty::Int, i.clone()))?,
                     Pattern::Wild => {}
                     _ => return self.unsupported("this `for` pattern"),
                 }
-                self.loop_body(body, &step, &end)?;
-                self.scopes.pop();
+                self.loop_body(body, &step, &end, depth)?;
                 self.block(&step);
                 let next = self.fresh("i");
                 self.emit(format!("{next} = add i64 {i}, 1"));
@@ -3461,7 +4013,8 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.block(&end);
             }
             Stmt::Break | Stmt::Continue => {
-                let (cont, brk) = self.loops.last().cloned().ok_or("`break` or `continue` outside a loop")?;
+                let (cont, brk, depth) = self.loops.last().cloned().ok_or("`break` or `continue` outside a loop")?;
+                self.drop_from(depth, None)?;
                 self.br(if matches!(s, Stmt::Break) { &brk } else { &cont });
                 self.dead();
             }
@@ -3511,9 +4064,11 @@ impl<'m, 'a> Func<'m, 'a> {
         let inner = self.field(cur, i, &fs[i].ty)?;
         let new_inner = self.set_path(&inner, rest, v, shown)?;
         let new_inner = self.coerce(new_inner, &fs[i].ty)?;
-        let p = self.copy_block(cur, fs.len());
-        self.set_field(&p, i, &new_inner)?;
-        let new = (cur.0.clone(), p);
+        let tys: Vec<Ty> = fs.iter().map(|f| f.ty.clone()).collect();
+        let p = self.copy_block(cur, &tys, Some(i))?;
+        let held = self.take(new_inner.clone());
+        self.set_field(&p, i, &held)?;
+        let new = self.temp((cur.0.clone(), p));
         // the changed field's refinement, and the type's own
         let ctx = format!("assigning `{shown}`");
         self.check(&fs[i].texpr, &new_inner, &format!("{ctx}: {}.{f}", crate::names::short(&c)), false)?;
@@ -3525,13 +4080,33 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok(new)
     }
 
-    /// A loop's body, then back to `cont`; `break` goes to `end`.
-    fn loop_body(&mut self, body: &Expr, cont: &str, end: &str) -> Res<()> {
-        self.loops.push((cont.to_string(), end.to_string()));
-        self.expr(body)?;
+    /// A loop's body, in the iteration's scope (opened by the caller, above
+    /// `depth` scopes): then the scope ends and it's back to `cont`. `break`
+    /// goes to `end`, and both leave the scopes above `depth`.
+    fn loop_body(&mut self, body: &Expr, cont: &str, end: &str, depth: usize) -> Res<()> {
+        self.loops.push((cont.to_string(), end.to_string(), depth));
+        self.push_scope(true);
+        let r = self.expr(body);
         self.loops.pop();
+        r?;
+        self.pop_scope()?;
+        self.pop_scope()?;
         self.br(cont);
         Ok(())
+    }
+
+    /// Store `new` in variable `l`, which owns it (taken); its old value is
+    /// dropped when the enclosing statement ends (something in it may still
+    /// read the old one, as `f(x, mut x.pop())` does).
+    fn replace(&mut self, l: &Local, new: V) -> Res<()> {
+        let new = self.take(new);
+        if self.counted(&l.t) {
+            let old = self.fresh("old");
+            let ll = self.m.ll(&l.t)?;
+            self.emit(format!("{old} = load {ll}, ptr {}", l.slot));
+            self.temp((l.t.clone(), old));
+        }
+        self.store(&(l.t.clone(), new.1), &l.slot)
     }
 }
 
@@ -3674,7 +4249,7 @@ impl Func<'_, '_> {
         self.block(&end);
         let r = self.fresh("o");
         self.emit(format!("{r} = phi ptr [ {b}, %{from} ], [ {n}, %{none} ]"));
-        Ok((t.clone(), r))
+        Ok(self.temp((t.clone(), r)))
     }
 
     /// A string built-in on `vs` (the first a `String`), if `name` is one.
@@ -3683,11 +4258,17 @@ impl Func<'_, '_> {
         if types.first() != Some(&Ty::Str) && !(name == "chr" && types == [Ty::Int]) {
             return Ok(None);
         }
+        let args: Vec<V> = vs.iter().zip(&types).map(|(v, t)| (t.clone(), v.1.clone())).collect();
+        let r = self.string_builtin_in(name, &types, &args)?;
+        Ok(r.map(|v| self.temp(v)))
+    }
+
+    fn string_builtin_in(&mut self, name: &str, types: &[Ty], args: &[V]) -> Res<Option<V>> {
+        let args = args.to_vec();
         let s = Ty::Str;
         let strings = Ty::Con("List".into(), vec![Ty::Str]);
         let opt = |t: Ty| Ty::Con("Option".into(), vec![t]);
-        let args: Vec<V> = vs.iter().zip(&types).map(|(v, t)| (t.clone(), v.1.clone())).collect();
-        Ok(Some(match (name, types.as_slice()) {
+        Ok(Some(match (name, types) {
             ("split", [_, Ty::Str]) => self.call(&strings, "@strata_str_split", &args)?,
             ("trim", [_]) => self.call(&s, "@strata_str_trim", &args)?,
             ("contains", [_, Ty::Str]) => self.call(&Ty::Bool, "@strata_str_contains", &args)?,
@@ -3698,6 +4279,7 @@ impl Func<'_, '_> {
             ("lines", [_]) => self.call_fn(&prelude("lines"), args, Some(strings))?,
             ("get", [_, Ty::Int]) => {
                 let c = self.call(&s, "@strata_str_at", &args)?;
+                let c = self.temp(c);
                 let ok = self.fresh("found");
                 self.emit(format!("{ok} = icmp ne ptr {}, null", c.1));
                 self.option_if(&ok, &c, &opt(Ty::Str))?
