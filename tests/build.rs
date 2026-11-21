@@ -495,6 +495,64 @@ fn main() {
 }
 
 #[test]
+fn derived_for_sums_compile() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("derived-sums");
+    let (out, code) = case(&d, "sums", r#"use std.typing.{Sum, Choice, Field}
+
+/// A choice read from its name.
+derivable(t: Choice) trait Named {
+  derived fn from_name(name: String) -> Option[Self] {
+    t.select(v -> to_lower(v.name) == name, v -> v.make(f -> zero_of(f)))
+  }
+}
+
+/// Each variant, with its fields at zero.
+derivable(t: Sum) trait Samples {
+  derived fn samples() -> List[Self] {
+    [t.select(v -> v.name == "Dot", v -> v.make(f -> zero_of(f))), t.select(v -> v.name == "Rect", v -> v.make(f -> zero_of(f))), t.select(v -> v.name == "Circle", v -> v.make(f -> zero_of(f)))]
+      .map(o -> o or { panic_value() })
+  }
+}
+
+fn panic_value[T]() -> T {
+  ?unreachable
+}
+
+fn zero_of(comptime f: Field) -> f.type {
+  match comptime f.type {
+    Int => 0,
+    String => "",
+  }
+}
+
+type Level =
+  | Quiet
+  | Loud
+
+derive Named for Level
+
+type Shape =
+  | Dot
+  | Rect(Int, Int)
+  | Circle { r: Int, label: String }
+
+derive Samples for Shape
+
+fn main() {
+  print(Level.from_name("loud"))
+  print(Level.from_name("quiet"))
+  print(Level.from_name("other"))
+  print(Shape.samples())
+}
+"#);
+    assert!(out.contains(r#"["Dot",{"Rect":[0,0]},{"Circle":{"r":0,"label":""}}]"#) && code == 0, "{out}");
+}
+
+#[test]
 fn what_is_not_compiled_yet_is_named() {
     let d = tmp("unsupported");
     let f = d.join("lists.strata");

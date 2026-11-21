@@ -514,7 +514,7 @@ test "a mocked capability" {
 ## Rules that catch newcomers
 
 - **Never write a `.strata` file yourself.** It is a binary module file: the syntax tree. Code goes in as text through an edit (`strata edit`, `strata add`, or `strata --file F edit < text` outside a package), which parses it, checks it and stores the tree; it comes out as text through `strata render` / `strata view`. How you lay the text out doesn't matter: it is printed back in one canonical style, the one the code above is in.
-- **Every name a variant introduces is a type**, so it must be unique across the project: no other variant, type or trait anywhere may share it (`Empty` as a variant would clash with a trait `Empty`).
+- **Every name a variant introduces is a type**, so it must be unique in its module: no other variant, type or trait of that module may share it. Another module's type of the same name is told apart by its module (`geo.Circle`).
 - **In one module, a function can't share a name with a trait method** (`fn describe` next to `trait Describe { fn describe … }`), since `x.describe()` could mean either. Across modules it can: `x.describe()` is the method, `describe(x)` the function.
 - **Overloaded builtins can't be passed by name** (`len`, `get`, `contains`, `sum`…): write `xs.map(x -> len(x))`. Ordinary functions can: `lines.map(line_total)`. Methods whose meaning depends on the receiver also need a lambda: `xs.map(x -> x.describe())`.
 - **`type Name = String` is an error**: a bare alias adds nothing. Add a `where`, or say `distinct type`.

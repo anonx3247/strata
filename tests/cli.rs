@@ -1409,12 +1409,13 @@ fn unions_variants_as_types_and_narrowing() {
     }
     assert!(!out.contains("unreachable match arm `String`"), "{out}");
 
-    // a variant is a type, so its name is unique across the project
+    // a variant is a type, so its name is unique in its module; two modules
+    // may each have a `Done` (told apart as `a.Done`, `b.Done`)
     std::fs::create_dir_all(d.join("clash")).unwrap();
     save_module(&d.join("clash"), "a", "pub type Status = | Done | Open\n");
     save_module(&d.join("clash"), "b", "pub type Outcome = | Done | Failed\n");
     let (ok, out) = strata(&["--file", "clash", "check"], &d, None);
-    assert!(!ok && out.contains("variant `a.Done` of `a.Status` has the same name as the variant `b.Done` of `b.Outcome`"), "{out}");
+    assert!(ok, "{out}");
 }
 
 const UNIONS: &str = r#"type Square = { side: Positive }
@@ -3760,4 +3761,23 @@ fn main() {
         let (ok, out) = strata(&["--file", &f, "check"], &d, None);
         assert!(!ok && out.contains(want), "{out}");
     }
+}
+
+/// A variant's name is unique in its module only: another module's type of
+/// the same name is told apart by its module.
+#[test]
+fn variant_names_are_per_module() {
+    let d = tmp("variant-names");
+    std::fs::write(d.join("strata.toml"), "name = \"vn\"\n").unwrap();
+    let (ok, out) = strata(&["--file", "./", "edit", "geo"], &d, Some("pub type Shape =\n  | Circle { r: Int }\n  | Square { s: Int }\n"));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "./", "edit", "main"], &d, Some("use geo.Shape\n\ntype Circle = { cx: Int }\n\nfn main() {\n  a := geo.Circle { r: 1 }\n  b := Circle { cx: 2 }\n  print(f\"{a} {b}\")\n}\n"));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "."], &d, None);
+    assert!(ok && out.contains(r#"{"Circle":{"r":1}} {"cx":2}"#), "{out}");
+    // in one module, still an error
+    let (ok, out) = strata(&["--file", "one.strata", "edit"], &d, Some("type Shape =\n  | Circle { r: Int }\n  | Square { s: Int }\n\ntype Circle = { cx: Int }\n"));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "one.strata", "check"], &d, None);
+    assert!(!ok && out.contains("must be unique in its module"), "{out}");
 }

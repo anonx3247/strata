@@ -107,9 +107,11 @@ impl Env {
                 errs.push(Diag { decl: name.clone(), msg });
             }
         }
-        // a variant is a type too, so its name must be unique in the whole
-        // project: no other variant, type or trait (in any module) may share it
-        let short = |q: &str| crate::names::short(q).to_string();
+        // a variant is a type too, so its name must be unique in its module: no
+        // other variant, type or trait of that module may share it (names are
+        // qualified here, so `std.typing.Named` and `app.Named` don't clash:
+        // another module tells them apart by their module)
+        let short = |q: &str| q.to_string();
         let mut owners: HashMap<String, Vec<String>> = HashMap::default();
         for n in env.types.keys().chain(env.traits.keys()) {
             owners.entry(short(n)).or_default().push(format!("the type `{n}`"));
@@ -130,7 +132,7 @@ impl Env {
                 let list = others.iter().map(|o| o.as_str()).collect::<Vec<_>>().join(", ");
                 errs.push(Diag {
                     decl: ((*t).clone()).to_string(),
-                    msg: format!("variant `{c}` of `{t}` has the same name as {list}: a variant is a type of its own, so its name must be unique across the project (rename one)"),
+                    msg: format!("variant `{c}` of `{t}` has the same name as {list}: a variant is a type of its own, so its name must be unique in its module (rename one)"),
                 });
             }
         }
