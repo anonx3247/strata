@@ -3,11 +3,16 @@
 // It mirrors the interpreter (src/interp.rs): the same output, the same fault
 // messages. Memory is never freed yet (no garbage collector).
 
+#include <dirent.h>
+#include <errno.h>
 #include <math.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 // A string: its length in bytes, then its UTF-8 bytes (not NUL-terminated).
 // String literals are laid out the same way as constants in the IR.
@@ -324,3 +329,174 @@ void strata_print(Str *s) {
   fwrite(s->bytes, 1, (size_t)s->len, stdout);
   fputc('\n', stdout);
 }
+
+// ---- the system (the `host_*` operations of std) ----
+//
+// As the interpreter's (`Interp::host_call`): a failure is a kind and a
+// message, the message as Rust writes an OS error ("No such file or
+// directory (os error 2)"). The generated code wraps results in `Option`
+// and `Result` (whose tags only it knows).
+
+static int prog_argc;
+static char **prog_argv;
+
+// The program's arguments, without its name; a closed pipe ends it quietly.
+void strata_init(int32_t argc, char **argv) {
+  prog_argc = argc > 0 ? argc - 1 : 0;
+  prog_argv = argv + 1;
+  signal(SIGPIPE, SIG_IGN);
+}
+
+static char *cstr(Str *s) {
+  char *c = strata_alloc(s->len + 1);
+  memcpy(c, s->bytes, (size_t)s->len);
+  c[s->len] = 0;
+  return c;
+}
+
+// The failure in `errno`, as (kind, message).
+static void os_error(Str **kind, Str **msg) {
+  int e = errno;
+  const char *k = "other";
+  if (e == ENOENT) k = "not_found";
+  else if (e == EACCES || e == EPERM) k = "permission_denied";
+  else if (e == EEXIST) k = "already_exists";
+  else if (e == ENOTDIR) k = "not_a_directory";
+  else if (e == EISDIR) k = "is_a_directory";
+  char buf[300];
+  snprintf(buf, sizeof buf, "%s (os error %d)", strerror(e), e);
+  *kind = str_c(k);
+  *msg = str_c(buf);
+}
+
+void strata_host_write(int64_t fd, Str *text) {
+  FILE *f = fd == 2 ? stderr : stdout;
+  if (fd == 2) fflush(stdout);
+  if (fwrite(text->bytes, 1, (size_t)text->len, f) < (size_t)text->len || fflush(f) != 0) {
+    if (errno == EPIPE) exit(0);
+  }
+}
+
+// A line without its end, or NULL at the end of the input.
+Str *strata_host_read_line(void) {
+  size_t cap = 0;
+  char *line = NULL;
+  ssize_t n = getline(&line, &cap, stdin);
+  if (n <= 0) return NULL;
+  if (n > 0 && line[n - 1] == '\n') n--;
+  if (n > 0 && line[n - 1] == '\r') n--;
+  return str_from(line, n);
+}
+
+Str *strata_host_read_file(Str *path, Str **kind, Str **msg) {
+  FILE *f = fopen(cstr(path), "rb");
+  struct stat st;
+  if (!f) {
+    os_error(kind, msg);
+    return NULL;
+  }
+  if (fstat(fileno(f), &st) == 0 && S_ISDIR(st.st_mode)) {
+    errno = EISDIR;
+    os_error(kind, msg);
+    fclose(f);
+    return NULL;
+  }
+  size_t cap = 4096, len = 0;
+  char *buf = malloc(cap);
+  size_t got;
+  while ((got = fread(buf + len, 1, cap - len, f)) > 0) {
+    len += got;
+    if (len == cap) buf = realloc(buf, cap *= 2);
+  }
+  fclose(f);
+  Str *s = str_from(buf, (int64_t)len);
+  free(buf);
+  return s;
+}
+
+_Bool strata_host_write_file(Str *path, Str *text, _Bool append, Str **kind, Str **msg) {
+  FILE *f = fopen(cstr(path), append ? "ab" : "wb");
+  if (!f) {
+    os_error(kind, msg);
+    return 0;
+  }
+  if (fwrite(text->bytes, 1, (size_t)text->len, f) < (size_t)text->len) {
+    os_error(kind, msg);
+    fclose(f);
+    return 0;
+  }
+  fclose(f);
+  return 1;
+}
+
+_Bool strata_host_exists(Str *path) {
+  struct stat st;
+  return stat(cstr(path), &st) == 0;
+}
+
+static int by_name(const void *a, const void *b) {
+  Str *x = *(Str *const *)a, *y = *(Str *const *)b;
+  return (int)strata_str_cmp(x, y);
+}
+
+// The names in a directory, sorted.
+List *strata_host_list_dir(Str *path, Str **kind, Str **msg) {
+  DIR *d = opendir(cstr(path));
+  if (!d) {
+    os_error(kind, msg);
+    return NULL;
+  }
+  List *l = strata_list_new(16);
+  struct dirent *e;
+  while ((e = readdir(d))) {
+    if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+    l = strata_list_push(l, (int64_t)(intptr_t)str_c(e->d_name));
+  }
+  closedir(d);
+  qsort(l->buf->data + l->off, (size_t)l->len, 8, by_name);
+  return l;
+}
+
+// `mkdir -p`.
+_Bool strata_host_make_dir(Str *path, Str **kind, Str **msg) {
+  char *p = cstr(path);
+  for (char *c = p + 1; *c; c++) {
+    if (*c != '/') continue;
+    *c = 0;
+    if (mkdir(p, 0777) != 0 && errno != EEXIST) {
+      os_error(kind, msg);
+      return 0;
+    }
+    *c = '/';
+  }
+  struct stat st;
+  if (mkdir(p, 0777) != 0 && !(errno == EEXIST && stat(p, &st) == 0 && S_ISDIR(st.st_mode))) {
+    os_error(kind, msg);
+    return 0;
+  }
+  return 1;
+}
+
+_Bool strata_host_remove(Str *path, Str **kind, Str **msg) {
+  char *p = cstr(path);
+  struct stat st;
+  int r = stat(p, &st) == 0 && S_ISDIR(st.st_mode) ? rmdir(p) : unlink(p);
+  if (r != 0) {
+    os_error(kind, msg);
+    return 0;
+  }
+  return 1;
+}
+
+List *strata_host_args(void) {
+  List *l = strata_list_new(prog_argc);
+  for (int i = 0; i < prog_argc; i++) l = strata_list_push(l, (int64_t)(intptr_t)str_c(prog_argv[i]));
+  return l;
+}
+
+Str *strata_host_env_var(Str *name) {
+  const char *v = getenv(cstr(name));
+  return v ? str_c(v) : NULL;
+}
+
+int64_t strata_pid(void) { return (int64_t)getpid(); }
