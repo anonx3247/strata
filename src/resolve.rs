@@ -587,14 +587,48 @@ fn resolved_defs(p: &Program) -> Vec<Decl> {
 }
 
 fn run(p: &Program, rename: Option<(String, String)>) -> Resolution {
-    run_with(p, rename, None).0
+    run_with(p, rename, None, None).0
+}
+
+/// How code is stored: every reference to a definition by its qualified
+/// name (`orders.Line`, whatever `use` brought it in as), the definitions'
+/// own names short, and nothing else rewritten. Names that resolve to
+/// nothing stay as written; locals and method names are left alone.
+pub fn stored_form(p: &Program) -> Program {
+    store(p, Store::Qualify)
+}
+
+/// Stored code as it is written: each qualified reference as short as its
+/// module's scope allows (`Line` where `use orders.{Line}` imports it,
+/// `orders.Line` otherwise, or where a local hides `Line`), and a reference
+/// to another module's definition as the parser reads `orders.f(x)`.
+pub fn written_form(p: &Program) -> Program {
+    store(p, Store::Shorten)
+}
+
+fn store(p: &Program, mode: Store) -> Program {
+    // the standard library's names are in scope for those who `use` it
+    let full = crate::stdlib::with_std(p);
+    let (r, _) = run_with(full.as_ref().unwrap_or(p), None, None, Some(mode));
+    let mut decls = r.program.decls;
+    decls.truncate(p.decls.len());
+    for (d, o) in decls.iter_mut().zip(&p.decls) {
+        d.module = o.module;
+    }
+    Program { decls }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Store {
+    Qualify,
+    Shorten,
 }
 
 /// Resolve, or write back (with a rename, or with `moves`: old qualified
 /// name → new qualified name). Also gives, per definition, the moved names
 /// it refers to by their short name from another module than theirs, which
 /// that module must then import.
-fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMap<String, String>>) -> (Resolution, Vec<Vec<String>>) {
+fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMap<String, String>>, store: Option<Store>) -> (Resolution, Vec<Vec<String>>) {
     let rename: Option<(Symbol, Symbol)> = rename.map(|(o, n)| (o.into(), n.into()));
     let moves: Option<HashMap<Symbol, Symbol>> = moves.map(|m| m.iter().map(|(o, n)| (o.sym(), n.sym())).collect());
     let mut table: HashMap<Symbol, Item> = HashMap::new();
@@ -639,7 +673,9 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
             }
             // a type's own methods come with the type, like a trait's
             DeclKind::Impl(i) if i.is_inherent() => {
-                let tq = qualified(d.module, Symbol::new(&crate::types::texpr_head(&i.for_type)));
+                // (stored code names the type in full)
+                let head = crate::types::texpr_head(&i.for_type);
+                let tq = if head.contains('.') { Symbol::new(&head) } else { qualified(d.module, Symbol::new(&head)) };
                 for m in &i.methods {
                     let mq = qualified(d.module, m.name);
                     table.insert(mq, Item { module: d.module, public: true });
@@ -716,6 +752,11 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
         .iter()
         .map(|&m| (m, p.decls.iter().filter(|d| d.module == m).filter_map(|d| if let DeclKind::Use(u) = &d.kind { Some(u.path) } else { None }).collect()))
         .collect();
+    // each module's `use`s: (module, the names it lists, or `None` for `*`)
+    let uses: HashMap<Symbol, Vec<(Symbol, Option<Vec<Symbol>>)>> = all_modules
+        .iter()
+        .map(|&m| (m, p.decls.iter().filter(|d| d.module == m).filter_map(|d| if let DeclKind::Use(u) = &d.kind { Some((u.path, u.items.clone())) } else { None }).collect()))
+        .collect();
     let mut decls = Vec::new();
     let mut needs = Vec::new();
     for d in &p.decls {
@@ -726,12 +767,14 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
             modules: &modules,
             module: d.module,
             imports: &imports[&d.module],
+            uses: &uses[&d.module],
             decl: d.qname(),
             locals: vec![],
             tparams: vec![],
             errors: vec![],
             rename: rename.as_ref(),
             moves: moves.as_ref(),
+            store,
             needs: Default::default(),
         };
         let kind = match (&d.kind, rename.as_ref()) {
@@ -774,6 +817,8 @@ struct Rw<'a> {
     module: Symbol,
     /// modules this one `use`s, for "that's private" hints
     imports: &'a [Symbol],
+    /// the module's `use`s, for showing names of modules that aren't loaded
+    uses: &'a [(Symbol, Option<Vec<Symbol>>)],
     decl: String,
     locals: Vec<HashSet<Symbol>>,
     tparams: Vec<HashSet<Symbol>>,
@@ -787,6 +832,8 @@ struct Rw<'a> {
     moves: Option<&'a HashMap<Symbol, Symbol>>,
     /// moved names this definition writes short, from a module that must import them
     needs: std::cell::RefCell<Vec<Symbol>>,
+    /// Converting between the written and the stored form (see `stored_form`)
+    store: Option<Store>,
 }
 
 impl Rw<'_> {
@@ -816,6 +863,14 @@ impl Rw<'_> {
         self.rename.is_some() || self.moves.is_some()
     }
     fn written(&self, n: Symbol, q: Symbol) -> Symbol {
+        match self.store {
+            // only what names a definition is qualified
+            // what this module's scope gives that name (a private name used
+            // from outside stays as written, so its error reads the same)
+            Some(Store::Qualify) => return if n == q || self.scope.get(&n) == Some(&q) { q } else { n },
+            Some(Store::Shorten) => return self.shortest(n, q),
+            None => {}
+        }
         if let Some(&nq) = self.moves.and_then(|m| m.get(&q)) {
             if n.contains('.') {
                 return nq;
@@ -835,8 +890,41 @@ impl Rw<'_> {
             Some(_) => n,
         }
     }
+    /// The shortest way to write `q` (written `n`) here: its name without
+    /// its module, if this module's scope gives it that name and no local
+    /// hides it; else in full.
+    fn shortest(&self, n: Symbol, q: Symbol) -> Symbol {
+        // stored short: it named nothing in scope (an error, or a hole), keep it
+        if n == short(&n) && !self.table.get(&n).is_some_and(|it| it.module.is_empty()) {
+            return n;
+        }
+        let Some(it) = self.table.get(&q) else { return self.shortest_unloaded(n) };
+        let short = if it.module.is_empty() { q } else { Symbol::new(&q[it.module.len() + 1..]) };
+        let first = Symbol::new(short.split('.').next().unwrap_or(""));
+        if self.scope.get(&short) == Some(&q) && !self.is_local(first) {
+            return short;
+        }
+        q
+    }
+    /// `shortest` for a module file read without the modules it uses (`git
+    /// diff` shows one file at a time): `orders.Line` is `Line` if this
+    /// module imports it (`use orders.*` or `use orders.{Line}`) and nothing
+    /// here has that name. (Two modules imported with `*` that both have a
+    /// `Line` can't be told apart without them.)
+    fn shortest_unloaded(&self, n: Symbol) -> Symbol {
+        let Some((module, short)) = n.rsplit_once('.') else { return n };
+        let short = Symbol::new(short);
+        let imported = self.uses.iter().any(|(path, items)| path == module && items.as_ref().is_none_or(|is| is.contains(&short)));
+        if imported && self.scope.get(&short).is_none() && !self.is_local(short) {
+            return short;
+        }
+        n
+    }
     /// The name of a definition being declared, `name` in module `m`.
     fn declared(&self, m: Symbol, name: Symbol) -> Symbol {
+        if self.store.is_some() {
+            return name;
+        }
         self.written(name, qualified(m, name))
     }
     fn lookup(&mut self, n: Symbol) -> Symbol {
@@ -950,6 +1038,11 @@ impl Rw<'_> {
     fn expr(&mut self, e: &Expr) -> Expr {
         match e {
             Expr::Var(x) if self.is_local(*x) => e.clone(),
+            // another module's definition, written as the parser reads `orders.total`
+            Expr::Var(x) if self.store == Some(Store::Shorten) => {
+                let n = self.name(*x);
+                if n.contains('.') { path_expr(&n) } else { Expr::Var(n) }
+            }
             Expr::Var(x) => Expr::Var(self.name(*x)),
             Expr::List(es) => Expr::List(self.exprs(es)),
             Expr::Tuple(es) => Expr::Tuple(self.exprs(es)),
@@ -968,6 +1061,11 @@ impl Rw<'_> {
             Expr::Call(f, args) if matches!(&**f, Expr::Var(x) if PRELUDE_FNS.contains(&x.as_str()) && !self.is_local(*x) && self.scope.get(x).is_none_or(|q| self.methods.contains(q))) => {
                 Expr::Call(f.clone(), self.exprs(args))
             }
+            // `orders.ship(x)` is read as a method call on the module
+            Expr::Call(f, args) if self.store == Some(Store::Shorten) => match self.expr(f) {
+                Expr::Field(r, m) if matches!(&**f, Expr::Var(x) if !self.is_local(*x)) => Expr::Method(r, m, self.exprs(args)),
+                f => Expr::Call(Box::new(f), self.exprs(args)),
+            },
             Expr::Call(f, args) => Expr::Call(Box::new(self.expr(f)), self.exprs(args)),
             Expr::Method(recv, m, args) => {
                 if let Some(path) = self.module_path(recv) {
@@ -982,7 +1080,8 @@ impl Rw<'_> {
                     return Expr::Call(Box::new(Expr::Var(f)), self.exprs(args));
                 }
                 let recv = self.expr(recv);
-                let m = if self.is_local(*m) {
+                // a method is found from its receiver: stored as written
+                let m = if self.is_local(*m) || self.store.is_some() {
                     *m
                 } else {
                     let q = self.scope.get(m).copied().unwrap_or(*m);
@@ -1163,7 +1262,7 @@ impl Rw<'_> {
             }
             DeclKind::Fn(f) => DeclKind::Fn(self.func(f, self.declared(m, f.name))),
             DeclKind::Test(t) => {
-                let name = if m.is_empty() || self.writing() { t.name.clone() } else { format!("{m}: {}", t.name) };
+                let name = if m.is_empty() || self.writing() || self.store.is_some() { t.name.clone() } else { format!("{m}: {}", t.name) };
                 DeclKind::Test(TestDecl { name, body: self.expr(&t.body) })
             }
             DeclKind::Trait(t) => {
@@ -1279,7 +1378,7 @@ fn move_apply(p: &Program, old: &str, target: &str) -> Result<(Program, String),
     let moves = moved_names(p, old, target)?;
     let new_q = moves[old].clone();
     let i = p.decls.iter().position(|d| d.qname() == old).unwrap();
-    let (out, needs) = run_with(p, None, Some(&moves));
+    let (out, needs) = run_with(p, None, Some(&moves), None);
     let mut program = out.program;
     for (r, d) in program.decls.iter_mut().zip(&p.decls) {
         r.module = d.module.clone();
@@ -1393,12 +1492,14 @@ pub fn follow_move(merged: &Program, old: &str, new: &str) -> Option<Program> {
     for d in program.decls.iter().filter(|d| !matches!(d.kind, DeclKind::Use(_))) {
         let q = d.qname();
         let touched = q != new && tb.get(&q).is_some_and(|b| b != d);
-        let expect = if touched {
-            renamed(rb.get(&q)?, &moves)
-        } else {
-            rm.get(&q)?.clone()
-        };
-        if ra.get(&q)? != &expect {
+        let moved_meaning = || rb.get(&q).map(|b| renamed(b, &moves));
+        let got = ra.get(&q)?;
+        // a definition the follow changed means what it meant before the move,
+        // moved; one it didn't change means the same as in the merge, or (a
+        // use the merge broke, `charge(o)` written short, its import fixed)
+        // what it meant before the move, moved
+        let ok = if touched { moved_meaning().as_ref() == Some(got) } else { rm.get(&q) == Some(got) || moved_meaning().as_ref() == Some(got) };
+        if !ok {
             return None;
         }
     }
@@ -1406,3 +1507,47 @@ pub fn follow_move(merged: &Program, old: &str, new: &str) -> Option<Program> {
     let changed = program.decls.len() != merged.decls.len() || program.decls.iter().zip(&merged.decls).any(|(a, b)| a != b);
     changed.then_some(program)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every example, and the standard library, as written.
+    fn examples() -> Vec<(String, Program)> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut paths: Vec<_> = std::fs::read_dir(root.join("examples")).unwrap().map(|e| e.unwrap().path()).filter(|p| p.is_dir() || p.extension().is_some_and(|e| e == "strata")).collect();
+        paths.push(root.join("std"));
+        paths.push(root.join("tests/data/sugar.strata"));
+        paths.sort();
+        paths.into_iter().map(|p| (p.display().to_string(), crate::package::program(&p).unwrap())).collect()
+    }
+
+    fn text(p: &Program) -> String {
+        let mut mods: Vec<Symbol> = p.decls.iter().map(|d| d.module).collect();
+        mods.dedup();
+        mods.iter().map(|m| crate::printer::module_file(p, m)).collect::<Vec<_>>().join("\n// ---\n")
+    }
+
+    #[test]
+    fn stored_and_written_forms_round_trip() {
+        for (name, p) in examples() {
+            let stored = stored_form(&p);
+            let written = written_form(&stored);
+            // storing what is shown stores the same tree
+            assert_eq!(stored_form(&written), stored, "{name}: stored form is not stable");
+            // what is shown is what the parser reads from its text
+            for m in written.decls.iter().map(|d| d.module).collect::<std::collections::BTreeSet<_>>() {
+                let own = Program { decls: written.decls.iter().filter(|d| d.module == m).cloned().collect() };
+                let reparsed = crate::parser::parse_module_file(&crate::printer::module_file(&written, &m), &m).unwrap();
+                assert_eq!(reparsed, own, "{name}: module {m} doesn't read back as shown");
+            }
+            // and here, the text is as it was written
+            assert_eq!(text(&written), text(&p), "{name}: text changed");
+            if name.ends_with("tasks") {
+                let t = text(&stored);
+                assert!(t.contains("core.Task") && t != text(&p), "references are stored qualified");
+            }
+        }
+    }
+}
+
