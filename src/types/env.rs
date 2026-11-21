@@ -23,6 +23,9 @@ pub struct Env {
     pub externs: HashMap<Symbol, Lang>,
     /// Capabilities (`capability Sqlite { ... }`): only the runtime makes them.
     pub capabilities: HashSet<Symbol>,
+    /// Where each type is defined, in the order the program defines them
+    /// (the prelude's first).
+    pub type_order: HashMap<Symbol, usize>,
 }
 
 impl Env {
@@ -47,6 +50,7 @@ impl Env {
             checked_params: HashMap::default(),
             externs: HashMap::default(),
             capabilities: HashSet::default(),
+            type_order: HashMap::default(),
         };
         let mut errs = Vec::new();
         // (the prelude's code, added to every program, is the prelude too)
@@ -95,6 +99,8 @@ impl Env {
                         }
                         TypeBody::Alias(_) => {}
                     }
+                    let at = env.type_order.len();
+                    env.type_order.entry(t.name).or_insert(at);
                     env.types.insert(t.name, t.clone()).is_some()
                 }
                 DeclKind::Fn(f) => env.fns.insert(f.name, if bodies { f.clone() } else { f.signature() }).is_some(),
@@ -178,7 +184,8 @@ impl Env {
             owners.entry(short(c)).or_default().push(format!("the variant `{c}` of `{t}`"));
         }
         for (c, t) in &variants {
-            let others: Vec<&String> = owners[&short(c)].iter().filter(|o| **o != format!("the variant `{c}` of `{t}`")).collect();
+            // (a type on its own, `type Dot`, is named as its one member)
+            let others: Vec<&String> = owners[&short(c)].iter().filter(|o| **o != format!("the variant `{c}` of `{t}`") && !(c == t && **o == format!("the type `{t}`"))).collect();
             if !others.is_empty() {
                 let list = others.iter().map(|o| o.as_str()).collect::<Vec<_>>().join(", ");
                 errs.push(Diag {
@@ -367,6 +374,7 @@ impl Env {
             TypeBody::Sum(vs) => Some(
                 vs.iter()
                     .map(|v| match &v.payload {
+                        Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
                         Payload::None => (v.name.clone(), None, vec![]),
                         Payload::Positional(ts) => (v.name.clone(), None, ts.iter().map(s).collect()),
                         Payload::Record(fs) => (

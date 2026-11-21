@@ -111,6 +111,7 @@ TypeBody    = 0 Alias(TypeExpr) | 1 Record(list(Field)) | 2 Sum(list(Variant))
 Field       = comments:list(str)  doc:list(str)  name:str  ty:TypeExpr  default:option(Expr)
 Variant     = comments:list(str)  name:str  payload:Payload
 Payload     = 0 None | 1 Positional(list(TypeExpr)) | 2 Record(list(Field))
+            | 3 Type(TypeExpr)        a union member defined elsewhere (`Circle` in `Circle | Square { .. }`)
 
 FnDecl      = doc:list(str)  comments:list(str)  name:str  type_params:list(str)  bounds:list(Bound)
               params:list(Param)  ret:TypeExpr  requires:list(Expr)  ensures:list(Expr)

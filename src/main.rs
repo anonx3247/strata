@@ -177,7 +177,7 @@ struct Args {
 impl Args {
     fn parse() -> Args {
         let raw: Vec<String> = std::env::args().skip(1).collect();
-        let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed", "--port", "--split", "--from", "--to", "--step", "--base", "--require", "--cross-check", "-o"];
+        let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed", "--port", "--split", "--members", "--from", "--to", "--step", "--base", "--require", "--cross-check", "-o"];
         let (mut pos, mut flags) = (Vec::new(), HashMap::<String, Vec<String>>::default());
         let mut i = 0;
         while i < raw.len() {

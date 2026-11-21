@@ -1151,6 +1151,47 @@ impl<'a> Module<'a> {
         !self.nominal(&self.repr(m).unwrap_or(Ty::Unit))
     }
 
+    /// The named union a union type is (`Shape` for `Circle | Square`), as
+    /// the checker finds it (`Checker::union_name`): its methods are its own.
+    fn union_name(&self, t: &Ty) -> Option<String> {
+        // a sum counts as its variants (`Circle | Shape$own` is `Circle | Square | Dot`)
+        let exact = |ms: Vec<Ty>| {
+            let mut k: Vec<String> = ms.iter().flat_map(|m| match self.ctors_of(m) {
+                cs if cs.is_empty() => vec![key(m)],
+                cs => cs,
+            }).collect();
+            k.sort();
+            k.dedup();
+            k
+        };
+        let want = exact(self.members(t));
+        if want.len() < 2 {
+            return None;
+        }
+        let mut names: Vec<&Symbol> = self.env.types.iter().filter(|(_, td)| crate::types::union_alias(td)).map(|(n, _)| n).collect();
+        names.sort();
+        // one without type parameters, exactly; else a generic one, its
+        // members paired by what they are (`List[T]` with `List[Int]`): the
+        // checker made sure no two of its members are alike
+        if let Some(n) = names.iter().find(|n| self.env.types[**n].params.is_empty() && self.lower(&TypeExpr::Named(***n, vec![]), &HashMap::default()).is_ok_and(|u| exact(self.members(&u)) == want)) {
+            return Some(n.to_string());
+        }
+        let heads = |ms: Vec<Ty>| {
+            let mut k: Vec<String> = ms.iter().flat_map(|m| match self.ctors_of(m) {
+                cs if cs.is_empty() => vec![Module::head(m).unwrap_or_else(|| key(m))],
+                cs => cs,
+            }).collect();
+            k.sort();
+            k
+        };
+        let want = heads(self.members(t));
+        names.into_iter().filter(|n| !self.env.types[*n].params.is_empty()).find(|n| {
+            let ps = &self.env.types[*n].params;
+            let sub: HashMap<Symbol, Ty> = ps.iter().map(|p| (*p, Ty::Unit)).collect();
+            self.lower(&TypeExpr::Named(**n, ps.iter().map(|p| TypeExpr::Named(*p, vec![])).collect()), &sub).is_ok_and(|u| heads(self.members(&u)) == want)
+        }).map(|n| n.to_string())
+    }
+
     /// The members of a union type (itself, for any other type).
     fn members(&self, t: &Ty) -> Vec<Ty> {
         match self.repr(t) {
@@ -1267,6 +1308,7 @@ impl<'a> Module<'a> {
             TypeBody::Sum(vs) => {
                 let v = vs.iter().find(|v| v.name == c).unwrap();
                 match &v.payload {
+                    Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
                     Payload::None => Ok(vec![]),
                     Payload::Positional(ts) => ts.iter().map(|t| mk(None, t)).collect(),
                     Payload::Record(fs) => fs.iter().map(|f| mk(Some(f.name.to_string()), &f.ty)).collect(),
@@ -3439,8 +3481,17 @@ impl<'m, 'a> Func<'m, 'a> {
     fn holds(&mut self, written: &TypeExpr, v: &V) -> Res<V> {
         let TypeExpr::Named(name, _) = written else { return self.unsupported("this type pattern") };
         if self.m.boxed(&v.0) {
-            // the member first, then its refinements on the value as it
-            let target = self.lower(written)?;
+            // the member first, then its refinements on the value as it; a
+            // generic one named without its arguments (`List =>`) is the
+            // union's member of that name (`List[Int]`)
+            let bare = match written {
+                TypeExpr::Named(n, a) if a.is_empty() => self.m.members(&v.0).into_iter().find(|m| Module::head(m).as_deref() == Some(n.as_str()) && !Module::args_of(m).is_empty()),
+                _ => None,
+            };
+            let target = match bare {
+                Some(m) => m,
+                None => self.lower(written)?,
+            };
             let is = self.holds_member(v, &target)?;
             if self.m.boxed(&target) || self.m.members(&target).len() > 1 {
                 return Ok(is);
@@ -4349,6 +4400,10 @@ impl<'m, 'a> Func<'m, 'a> {
         if self.m.env.is_method(Symbol::new(name)) {
             if let Some(recv) = vs.first().map(|v| v.0.clone()) {
                 if matches!(self.m.repr(&recv)?, Ty::Union(_)) {
+                    // a named union's own implementation, else each member's
+                    if let Some(h) = self.m.union_name(&recv).filter(|h| self.m.resolve_method(name, h).is_some_and(|(tr, _)| self.m.impl_of(&tr, h).is_some())) {
+                        return self.method_target(name, recv, h, vs, hint, &places);
+                    }
                     return self.call_on_union(name, vs, hint, &places);
                 }
                 if self.is_dyn(&recv) || Module::head(&recv).is_some_and(|h| self.m.resolve_method(name, &h).is_some() || self.m.ctors_of(&recv).iter().any(|c| self.m.resolve_method(name, c).is_some())) {
@@ -4439,7 +4494,7 @@ impl<'m, 'a> Func<'m, 'a> {
         if vs.iter().any(|v| is_never(&v.0)) {
             return Ok(never());
         }
-        let head = Module::head(&recv).ok_or(format!("`{name}` on a `{}`", key(&recv)))?;
+        let head = Module::head(&recv).or_else(|| self.m.union_name(&recv)).ok_or(format!("`{name}` on a `{}`", key(&recv)))?;
         // a refined alias (`Positive`) has its base type's methods
         let head = match &recv {
             Ty::Con(n, _) if crate::types::refined_alias(self.m.env, *n) => Module::head(&self.m.repr(&recv)?).unwrap_or(head),
@@ -6203,6 +6258,15 @@ impl Module<'_> {
                     self.bind_targs(p, q, params, out);
                 }
                 self.bind_targs(r, s, params, out);
+            }
+            // a union's members, paired by what they are (`List[T]` with `List[Int]`)
+            (TypeExpr::Union(ws), Ty::Union(ts)) => {
+                for w in ws {
+                    let head = crate::types::texpr_head(w);
+                    if let Some(x) = ts.iter().find(|x| Module::head(x).as_deref() == Some(head.as_str())) {
+                        self.bind_targs(w, x, params, out);
+                    }
+                }
             }
             _ => {}
         }

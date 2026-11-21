@@ -72,6 +72,7 @@ fn refined(env: &Env, t: &TypeExpr, seen: &mut Vec<Symbol>) -> Option<bool> {
                 TypeBody::Sum(vs) => {
                     for v in vs {
                         match &v.payload {
+                            Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
                             Payload::None => {}
                             Payload::Positional(ts) => {
                                 for t in ts {

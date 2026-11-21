@@ -821,6 +821,7 @@ impl<'a> Interp<'a> {
                         TypeBody::Alias(a) => self.plain(a, &ps),
                         TypeBody::Record(fs) => fs.iter().all(|f| self.plain(&f.ty, &ps)),
                         TypeBody::Sum(vs) => vs.iter().all(|v| match &v.payload {
+                            Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
                             Payload::None => true,
                             Payload::Positional(ts) => ts.iter().all(|t| self.plain(t, &ps)),
                             Payload::Record(fs) => fs.iter().all(|f| self.plain(&f.ty, &ps)),

@@ -878,13 +878,15 @@ impl Bin for Payload {
             Payload::None => w.byte(0),
             Payload::Positional(ts) => put!(w, 1, ts),
             Payload::Record(fs) => put!(w, 2, fs),
+            Payload::Type(t) => put!(w, 3, t),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
-        Ok(match r.tag("variant payload", 2)? {
+        Ok(match r.tag("variant payload", 3)? {
             0 => Payload::None,
             1 => Payload::Positional(Bin::dec(r)?),
-            _ => Payload::Record(Bin::dec(r)?),
+            2 => Payload::Record(Bin::dec(r)?),
+            _ => Payload::Type(Bin::dec(r)?),
         })
     }
 }
