@@ -31,7 +31,7 @@ fn handler(env: &Env) -> Result<FnDecl, String> {
         .get(&Symbol::new("handle"))
         .ok_or("no `handle` function to serve: write `fn handle(req: Request) -> Response` (with `use std.http.{Request, Response}`)")?
         .clone();
-    let usage = "`handle` takes a `Request` (std.http) and may ask for `Console`, `Files` and `Environment`";
+    let usage = "`handle` takes a `Request` (std.http) and may ask for `Console`, `Files`, `Environment` and `Code`";
     let mut requests = 0;
     for p in &f.params {
         let ty = crate::printer::ty(&p.ty);
@@ -128,7 +128,7 @@ fn fault_text(f: &interp::Fault) -> String {
 impl App {
     /// Check the three functions' signatures.
     fn new(env: &Env, name: &str) -> Result<App, String> {
-        let usage = "an app is `fn init() -> Model`, `fn update(model: Model, msg: Msg) -> Model` and `fn view(model: Model) -> Html[Msg]` (std.web), for your own `Model` and `Msg` types; `init` and `update` may also ask for `Console`, `Files` and `Environment`, after their other parameters";
+        let usage = "an app is `fn init() -> Model`, `fn update(model: Model, msg: Msg) -> Model` and `fn view(model: Model) -> Html[Msg]` (std.web), for your own `Model` and `Msg` types; `init` and `update` may also ask for `Console`, `Files`, `Environment` and `Code`, after their other parameters";
         let get = |n: &str| env.fns.get(&Symbol::new(n)).cloned().ok_or(format!("no `{n}` function: {usage}"));
         let (init, update, view) = (get("init")?, get("update")?, get("view")?);
         let ty = crate::printer::ty;

@@ -369,7 +369,7 @@ cat README.md | strata run examples/wc
 
 **Command-line options** are a record that implements `CommandLine` (`std.cli`); the trait has no methods. Each field is read from the arguments by its type: a `Bool` is a flag (`--loud`), an `Option[T]` an option with a value (`--times 3` or `--times=3`), a `List[T]` the remaining positional arguments, and any other field a required positional argument, in field order, or an option (`--times 3`) when it has a default. A field left out takes its default. `T` is an `Int`, `Float`, `String`, a refinement of one, or a choice (a type whose variants carry nothing: `type Count = | Lines | Words` is `lines` or `words`). Names take dashes (`dry_run` is `--dry-run`), `--` ends the options, every refinement is checked (`--times: 0 does not satisfy …`), and a mistake exits with code 2. `--help` is built from the record's and fields' `///` doc comments. `strata check` rejects a `CommandLine` record a command line can't fill.
 
-`main` can also ask for `Console` (`std.io`), `Files` (`std.fs`) and `Environment` (`std.process`), in any order. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [JSON-ARGS]` still calls a single function.
+`main` can also ask for `Console` (`std.io`), `Files` (`std.fs`), `Environment` (`std.process`) and `Code` (`std.code`), in any order. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [JSON-ARGS]` still calls a single function.
 
 The **standard library** is the `std/` package, written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency:
 
@@ -378,6 +378,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 | `std.io` | `Console` (`print`, `write`, `eprint`, `read_line`); `Recorder` / `recorder(input)` / `printed(r)` for tests |
 | `std.fs` | `Files` (`read`, `write`, `append`, `exists`, `list`, `make_dir`, `remove`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
 | `std.process` | `Environment` (`args`, `var`), `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
+| `std.code` | `Code` (`version`, `snapshot`): the codebase in the current folder as the tools see it: each `Definition` with its interface and source text, what it uses and what uses it, holes, errors and cached verdicts, and the package's log. `strata ui`'s viewer reads it |
 | `std.cli` | `CommandLine`: a record of options read from the arguments |
 | `std.json` | `Json`: records and sum types read from JSON and written to it (`derive Json for Signup`; `Signup.decode(parse(text)!)`, `stringify(s.encode()!)`); `JsonValue`, `parse`, `stringify` |
 | `std.http` | `Request`, `Response`, `Method`; `ok_html`, `ok_text`, `ok_json`, `not_found`, `redirect`, …; `Router` (`app.get("/users/:id", handler)`, `req.param("id")`), for `strata serve` |

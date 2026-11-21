@@ -548,7 +548,7 @@ use shop.orders.{Order, ship}          // or `use shop.orders.*`, or `shop.order
 
 ## Programs
 
-`main` asks for what it needs by type and `strata run` passes it in: a command-line options record, and the capabilities `Console` (`std.io`), `Files` (`std.fs`), `Environment` (`std.process`). It returns `()`, an `ExitCode`, or a `Result` of either (an `Err` exits with 1).
+`main` asks for what it needs by type and `strata run` passes it in: a command-line options record, and the capabilities `Console` (`std.io`), `Files` (`std.fs`), `Environment` (`std.process`), `Code` (`std.code`: the codebase itself, as the tools see it). It returns `()`, an `ExitCode`, or a `Result` of either (an `Err` exits with 1).
 
 ```rust
 use std.cli.CommandLine

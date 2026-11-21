@@ -3474,6 +3474,37 @@ fn view(model: Model) -> Html[Msg] {
 }
 
 #[test]
+fn code_capability_reads_the_codebase() {
+    let d = tmp("code-cap");
+    std::fs::write(d.join("strata.toml"), "name = \"demo\"\n").unwrap();
+    save_module(&d, "core", "/// Doubles.\npub fn double(x: Int) -> Int { x * 2 }\n\nfn quad(x: Int) -> Int { double(double(x)) }\n");
+    // the program is outside the package it reads (the current folder)
+    let prog = tmp("code-cap-prog").join("show.strata");
+    save(&prog, r#"use std.code.{Code}
+fn main(code: Code) {
+  match code.snapshot() {
+    Ok(s) => {
+      for x in s.definitions {
+        print(f"{x.name} {x.kind} deps={x.deps} refs={x.refs} doc={x.doc} iface={x.interface}")
+      }
+      print(f"log={len(s.log)} same={s.version == code.version()}")
+    },
+    Err(e) => print(f"error {e}"),
+  }
+}
+"#);
+    let (ok, out) = strata(&["run", &prog.to_string_lossy()], &d, None);
+    assert!(ok, "{out}");
+    assert!(out.contains(r#"core.double fn deps=[] refs=["core.quad"] doc=Doubles. iface=pub fn double(x: Int) -> Int"#), "{out}");
+    assert!(out.contains(r#"core.quad fn deps=["core.double"] refs=[]"#), "{out}");
+    assert!(out.contains("same=true"), "{out}");
+    // a file that doesn't decode is an `Err`, not a fault
+    std::fs::write(d.join("core.strata"), "garbage").unwrap();
+    let (_, out) = strata(&["run", &prog.to_string_lossy()], &d, None);
+    assert!(out.contains("error ") && out.contains("core.strata"), "{out}");
+}
+
+#[test]
 fn serve_runs_an_app() {
     let d = tmp("serve-app");
     let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();

@@ -188,6 +188,7 @@ pub fn capability(ty: &str) -> Option<interp::Value> {
         "std.io.Console" => rec("std.io.Terminal", vec![("stdout", Value::Int(1)), ("stderr", Value::Int(2))]),
         "std.fs.Files" => rec("std.fs.Disk", vec![("root", Value::Str(".".into()))]),
         "std.process.Environment" => rec("std.process.Process", vec![("pid", Value::Int(std::process::id() as i64))]),
+        "std.code.Code" => rec("std.code.Workspace", vec![("root", Value::Str(crate::ui::code_root()))]),
         _ => return None,
     })
 }
@@ -260,7 +261,7 @@ pub fn run_main(_p: &Program, env: &types::Env, prog: &str, program_args: Vec<St
             }
             _ => {
                 return Err(format!(
-                    "`main` can ask for `Console` (std.io), `Files` (std.fs), `Environment` (std.process), and options: a record that implements `CommandLine` (std.cli). Its parameter `{}` is a `{ty}`",
+                    "`main` can ask for `Console` (std.io), `Files` (std.fs), `Environment` (std.process), `Code` (std.code), and options: a record that implements `CommandLine` (std.cli). Its parameter `{}` is a `{ty}`",
                     pm.name
                 ))
             }
