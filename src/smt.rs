@@ -199,6 +199,9 @@ pub struct Vc<'a> {
     binding: usize,
     /// The functions passed to the builtin being called, by argument.
     fn_args: Vec<Option<Func>>,
+    /// The constant standing for each bit operation met (`& x y`), so one met
+    /// twice is one value.
+    bit_terms: HashMap<String, T>,
 }
 
 fn and(ts: &[T]) -> T {
@@ -310,6 +313,7 @@ impl<'a> Vc<'a> {
             lists: vec![],
             binding: 0,
             fn_args: vec![],
+            bit_terms: HashMap::default(),
         }
     }
 
@@ -1757,7 +1761,19 @@ impl<'a> Vc<'a> {
                 }
             }
         }
+        // the same operation on the same operands is the same value (a refinement
+        // assumed of `x` and checked again of it are about one number)
+        // (not under a quantifier, whose constants are bound by it)
+        let key = format!("{} {x} {y}", op.symbol());
+        if self.binding == 0 {
+            if let Some(r) = self.bit_terms.get(&key) {
+                return Val::Int(r.clone());
+            }
+        }
         let r = self.fresh_why("Int", &format!("`{}` is only bounded, not modelled exactly", op.symbol()));
+        if self.binding == 0 {
+            self.bit_terms.insert(key, r.clone());
+        }
         let nonneg = format!("(and (>= {x} 0) (>= {y} 0))");
         let fact = match op {
             BitAnd => format!("(and (=> (>= {x} 0) (and (<= 0 {r}) (<= {r} {x}))) (=> (>= {y} 0) (and (<= 0 {r}) (<= {r} {y}))))"),

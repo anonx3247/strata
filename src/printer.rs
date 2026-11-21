@@ -195,6 +195,11 @@ fn shorthand(e: &Expr) -> bool {
     !matches!(**fb, Expr::Block(..) | Expr::If(..) | Expr::Match(..) | Expr::Return(..) | Expr::Lambda(..)) && !expr(fb, 0).contains('\n')
 }
 
+/// `a & b`, `a | b` or `a ^ b`.
+fn bitwise(e: &Expr) -> bool {
+    matches!(e, Expr::Bin(BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor, ..))
+}
+
 fn wrap(e: &Expr, min: u8, d: usize) -> String {
     let s = expr(e, d);
     if prec(e) < min { format!("({s})") } else { s }
@@ -381,6 +386,11 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             let p = prec(e);
             if *op == BinOp::Implies {
                 format!("{} ==> {}", wrap(l, p + 1, d), wrap(r, p, d))
+            } else if matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
+                // `(x & 255) == x`: a bit operation compared is shown in parentheses,
+                // since C (and its readers) put `==` before `&`, `|`, `^`
+                let side = |x: &Expr, min: u8| if bitwise(x) { format!("({})", expr(x, d)) } else { wrap(x, min, d) };
+                format!("{} {} {}", side(l, p), op.symbol(), side(r, p + 1))
             } else {
                 format!("{} {} {}", wrap(l, p, d), op.symbol(), wrap(r, p + 1, d))
             }
