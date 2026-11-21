@@ -16,6 +16,9 @@ pub struct Env {
     pub method_traits: HashMap<Symbol, Vec<Symbol>>,
     /// type name -> its own methods (`impl Item { ... }`)
     pub inherent: HashMap<Symbol, ImplDecl>,
+    /// A function's type parameters it calls `T.check(x)` on (read from the
+    /// bodies even when they aren't kept): given when the function runs.
+    pub checked_params: HashMap<Symbol, Vec<Symbol>>,
     /// Foreign definitions: `extern` functions and handle types, by name.
     pub externs: HashMap<Symbol, Lang>,
 }
@@ -39,10 +42,30 @@ impl Env {
             impls: Vec::new(),
             method_traits: HashMap::default(),
             inherent: HashMap::default(),
+            checked_params: HashMap::default(),
             externs: HashMap::default(),
         };
         let mut errs = Vec::new();
         let prelude_names: Vec<String> = prelude.decls.iter().map(|d| d.name()).collect();
+        // `T.check(x)` in a function's body: `T` is given when it runs
+        for d in &prog.decls {
+            if let DeclKind::Fn(f) = &d.kind {
+                let mut ps = vec![];
+                crate::ast::any_expr(&f.body, |x| {
+                    if let Expr::Method(r, m, _) = x {
+                        if let Expr::Var(p) | Expr::Ctor(p, CtorArgs::None) = &**r {
+                            if crate::names::short(m) == "check" && f.type_params.contains(p) && !ps.contains(p) {
+                                ps.push(*p);
+                            }
+                        }
+                    }
+                    false
+                });
+                if !ps.is_empty() {
+                    env.checked_params.insert(f.name, ps);
+                }
+            }
+        }
         for d in prelude.decls.iter().chain(prog.decls.iter()) {
             let name = d.name();
             let dup = match &d.kind {
@@ -190,7 +213,8 @@ impl Env {
             }
             false
         };
-        f.type_params.iter().filter(|p| f.bounds.iter().any(|b| &b.param == *p && b.traits.iter().any(|t| has_static(texpr_head(t))))).cloned().collect()
+        let checked = self.checked_params.get(&f.name);
+        f.type_params.iter().filter(|p| checked.is_some_and(|c| c.contains(p)) || f.bounds.iter().any(|b| &b.param == *p && b.traits.iter().any(|t| has_static(texpr_head(t))))).cloned().collect()
     }
 
     /// The traits declaring `method` that values of type `head` implement.
