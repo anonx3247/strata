@@ -131,6 +131,19 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
             DeclKind::Impl(imp) => {
                 let Some(tr) = env.traits.get(&imp.trait_name) else { continue };
                 let ty = printer::ty(&imp.for_type);
+                // a derived impl: the copies of the trait module's functions made
+                // for this type (`std.json.encode_as.for.A.2`) are its code too
+                if matches!(&orig.kind, DeclKind::Impl(i) if i.derived) {
+                    let module = crate::names::module_of(&imp.trait_name).to_string();
+                    let tag = format!(".for.{}.", crate::names::short(&types::texpr_head(&imp.for_type)));
+                    for c in &resolved.decls[p.decls.len()..] {
+                        let DeclKind::Fn(f) = &c.kind else { continue };
+                        if f.name.as_str().contains(&tag) && f.name.as_str().starts_with(&format!("{module}.")) {
+                            let n = cc(&f.name);
+                            jobs.push((f.name.to_string(), format!("{base}:{}:{cases}:{n}:{skey}", f.name), Box::new(move || verify::check_fn(env, f, None, solver_bin, transparent, cases, n, seed))));
+                        }
+                    }
+                }
                 for m in &tr.methods {
                     let mname = m.decl.name.clone();
                     let decl = imp.methods.iter().find(|x| x.name == mname).or(if m.default { Some(&m.decl) } else { None });
