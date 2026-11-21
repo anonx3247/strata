@@ -184,7 +184,7 @@ fn lists_and_lambdas_run_as_interpreted() {
     // a list or tuple of constants is one constant (never freed); changing it copies it
     let src = "fn table() -> List[(Int, Int)] {\n  [(1, 2), (3, 4)]\n}\n\nfn grow(mut xs: List[String]) {\n  xs = push(xs, \"d\")\n}\n\nfn main() {\n  mut xs := table()\n  xs = push(xs, (5, 6))\n  mut t := (1, 2)\n  t.0 = 9\n  mut zs := [\"a\", \"b\", \"c\"]\n  grow(mut zs)\n  print(f\"{xs} {table()} {t} {(1, 2)} {zs} {[\"a\", \"b\", \"c\"]} {[[1], [2, 3]]} {[None, Some(1)]}\")\n}\n";
     let (out, code) = case(&d, "constants", src);
-    assert_eq!((out.as_str(), code), ("[[1,2],[3,4],[5,6]] [[1,2],[3,4]] [9,2] [1,2] [\"a\",\"b\",\"c\",\"d\"] [\"a\",\"b\",\"c\"] [[1],[2,3]] [\"None\",{\"Some\":1}]\n", 0));
+    assert_eq!((out.as_str(), code), ("[(1, 2), (3, 4), (5, 6)] [(1, 2), (3, 4)] (9, 2) (1, 2) [\"a\", \"b\", \"c\", \"d\"] [\"a\", \"b\", \"c\"] [[1], [2, 3]] [None, Some(1)]\n", 0));
 }
 
 #[test]
