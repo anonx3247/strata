@@ -1279,9 +1279,12 @@ var render = function () {
 // ---------- live polling ----------
 async function poll() {
   try {
-    const r = await fetch('/api/state', { cache: 'no-store' });
-    const txt = await r.text();
+    // the server answers 304 while nothing changed: no download, no parse, no render
+    const r = await fetch('/api/state', { cache: 'no-store', headers: S.etag ? { 'If-None-Match': S.etag } : {} });
     $('#live').classList.remove('off'); $('#live span').textContent = 'live';
+    if (r.status === 304) return;
+    const txt = await r.text();
+    S.etag = r.headers.get('ETag');
     if (txt !== S.raw) {
       S.raw = txt;
       const data = JSON.parse(txt);
@@ -1302,6 +1305,8 @@ async function poll() {
     $('#live').classList.add('off'); $('#live span').textContent = 'disconnected';
   }
 }
+// poll again 1.5s after the last answer (not every 1.5s: a slow snapshot would pile requests up)
+async function pollLoop() { await poll(); setTimeout(pollLoop, 1500); }
 
 // ---------- events ----------
 document.addEventListener('click', e => {
@@ -1416,7 +1421,7 @@ window.addEventListener('error', e => { $('#banner').innerHTML = `<div class="er
 const _render = render;
 render = function () { try { _render(); } catch (err) { $('#banner').innerHTML = `<div class="err">viewer error: ${esc(err.message)} ${esc((err.stack || '').split('\n')[1] || '')}</div>`; } };
 tmEvents();
-poll(); setInterval(poll, 1500);
+pollLoop();
 </script>
 </body>
 </html>
