@@ -372,22 +372,30 @@ fn elaborate_with(prog: &Program, typed: bool) -> (crate::resolve::Resolution, H
                 }
             }
             (Target::Own(f), Expr::Method(recv, _, args)) => {
-                let moved = &**recv as *const Expr as usize;
+                let old: Vec<usize> = std::iter::once(&**recv).chain(args.iter()).map(addr).collect();
                 let mut all = vec![std::mem::replace(&mut **recv, Expr::Unit)];
                 all.append(args);
-                *e = Expr::Call(Box::new(Expr::Var(Symbol::from(Symbol::from(f.as_str())))), all);
-                // the receiver now lives in the argument list
-                if let (Some(t), Expr::Call(_, all)) = (types.remove(&moved), &*e) {
-                    types.insert(&all[0] as *const Expr as usize, t);
+                *e = Expr::Call(Box::new(Expr::Var(Symbol::from(f.as_str()))), all);
+                // the receiver and arguments now live in a new argument list
+                if let Expr::Call(_, all) = &*e {
+                    rekey(&mut types, &old, all.iter().map(addr).collect());
                 }
             }
             (Target::Own(f), Expr::Call(g, _)) => **g = Expr::Var(Symbol::from(f.as_str())),
             (Target::Static(tr, ty), Expr::Method(_, m, args)) => {
+                let old: Vec<usize> = args.iter().map(addr).collect();
                 let mut all = vec![ty.expr()];
                 all.append(args);
                 *e = Expr::Call(Box::new(Expr::Var(Symbol::from(trait_call(tr, m)))), all);
+                if let Expr::Call(_, all) = &*e {
+                    rekey(&mut types, &old, all[1..].iter().map(addr).collect());
+                }
             }
-            (Target::TypeArgs(tys), Expr::Call(_, args) | Expr::Method(_, _, args)) => args.extend(tys.iter().map(|t| t.expr())),
+            (Target::TypeArgs(tys), Expr::Call(_, args) | Expr::Method(_, _, args)) => {
+                let old: Vec<usize> = args.iter().map(addr).collect();
+                args.extend(tys.iter().map(|t| t.expr()));
+                rekey(&mut types, &old, args.iter().map(addr).collect());
+            }
             (Target::Other(tr, mq), Expr::Method(_, m, _)) => *m = Symbol::from(trait_call(tr, mq)),
             (Target::Other(tr, mq), Expr::Call(f, _)) => **f = Expr::Var(Symbol::from(trait_call(tr, mq))),
             (Target::Builtin(b), Expr::Method(_, m, _)) => *m = Symbol::from(b.as_str()),
@@ -397,6 +405,20 @@ fn elaborate_with(prog: &Program, typed: bool) -> (crate::resolve::Resolution, H
         });
     }
     (r, types)
+}
+
+fn addr(e: &Expr) -> usize {
+    e as *const Expr as usize
+}
+
+/// Nodes moved by a rewrite (into a new argument list) keep their types.
+fn rekey(types: &mut HashMap<usize, Ty>, old: &[usize], new: Vec<usize>) {
+    let moved: Vec<Option<Ty>> = old.iter().map(|a| types.remove(a)).collect();
+    for (t, a) in moved.into_iter().zip(new) {
+        if let Some(t) = t {
+            types.insert(a, t);
+        }
+    }
 }
 
 /// `f(mut x)`: an argument marked for a `mut` parameter (not `mut q.claim()`,
@@ -2203,19 +2225,35 @@ impl<'a> Checker<'a> {
                 }
                 inner
             }
+            Expr::Or(x, fb) => {
+                let t = self.infer(x);
+                let inner = match self.resolve(&t) {
+                    Ty::Con(n, args) if n == "Option" && args.len() == 1 => args[0].clone(),
+                    Ty::Con(n, args) if n == "Result" && args.len() == 2 => {
+                        self.err("`or` / `??` handle an Option; a Result is handled with `except { … }` / `!!`");
+                        args[0].clone()
+                    }
+                    other => {
+                        let shown = show_ty(&other);
+                        self.err(format!("`or` / `??` handle an Option, found `{shown}`"));
+                        self.fresh()
+                    }
+                };
+                let ft = self.infer_with(fb, Some(&inner));
+                self.expect(&inner, &ft, "`or` fallback");
+                inner
+            }
             Expr::Except(x, name, fb) => {
                 let t = self.infer(x);
                 let (inner, err_ty) = match self.resolve(&t) {
                     Ty::Con(n, args) if n == "Result" && args.len() == 2 => (args[0].clone(), Some(args[1].clone())),
                     Ty::Con(n, args) if n == "Option" && args.len() == 1 => {
-                        if let Some(n) = name {
-                            self.err(format!("`except {n}`: an Option has no error to name (`None` carries no value), write `except {{ ... }}`"));
-                        }
+                        self.err("`except` / `!!` handle a Result; an Option is handled with `or { … }` / `??`");
                         (args[0].clone(), None)
                     }
                     other => {
                         let shown = show_ty(&other);
-                        self.err(format!("`except` handles a Result or an Option, found `{shown}`"));
+                        self.err(format!("`except` / `!!` handle a Result, found `{shown}`"));
                         (self.fresh(), None)
                     }
                 };

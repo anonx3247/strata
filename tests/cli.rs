@@ -115,7 +115,7 @@ fn run_a_binary_file() {
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "hello.strata"], &d, None);
     assert!(ok && out.contains("hello, world!"), "{out}");
-    std::fs::write(d.join("bad.strata"), b"STRATA\x05\x00\x05").unwrap();
+    std::fs::write(d.join("bad.strata"), b"STRATA\x06\x00\x05").unwrap();
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok && out.contains("corrupt binary Strata file"), "{out}");
     // text is not read: it goes in through an edit
@@ -541,7 +541,7 @@ fn parsed() -> Bool ensures it { parse_int("-17") == Some(0 - 17) && parse_int("
 fn round_trip(n: Int) -> Bool ensures it { parse_int(to_string(n)) == Some(n) }
 fn bad_parsed(s: String) -> Bool ensures it { parse_int(s) is None }
 fn spaced() -> Bool ensures it { parse_int(" 7") == Some(7) }
-fn digits(s: String where is_digit(it)) -> Int ensures it >= 0 { parse_int(s) except { 0 } }
+fn digits(s: String where is_digit(it)) -> Int ensures it >= 0 { parse_int(s) or { 0 } }
 fn ends(s: String) -> Bool ensures it { ends_with(s + ".txt", ".txt") }
 fn bad_ends(s: String) -> Bool ensures it { ends_with(s, ".txt") }
 fn rep() -> Bool ensures it { replace("aaa", "aa", "b") == "ba" }
@@ -1206,7 +1206,7 @@ test "errors" {
   assert describe("q") == "not a number: q"
   assert describe("") == "empty"
   assert f(5) == "big" && f(0) == "small"
-  assert [1, 2, 3].find(x -> x > 5) except { 9 } == 9
+  assert [1, 2, 3].find(x -> x > 5) or { 9 } == 9
 }
 "#,
         "1 passed",
@@ -1215,8 +1215,9 @@ test "errors" {
     check_fails("bang", &format!("{pre}fn f() -> Int {{ p(\"a\")! }}"), "`!` returns the error early, so the result type must be `Result[");
     check_fails("bangerr", &format!("{pre}fn f() -> Result[Int, Int] {{ Ok(p(\"a\")!) }}"), "`!` returns the error early");
     check_fails("qonresult", &format!("{pre}fn f() -> Option[Int] {{ Some(p(\"a\")?) }}"), "`?` needs an Option");
-    check_fails("exceptname", "fn f() -> Int { [1].find(x -> x > 0) except e { 0 } }", "an Option has no error to name");
-    check_fails("exceptint", "fn f() -> Int { 1 except { 0 } }", "`except` handles a Result or an Option");
+    check_fails("exceptoption", "fn f() -> Int { [1].find(x -> x > 0) except e { 0 } }", "an Option is handled with `or");
+    check_fails("exceptint", "fn f() -> Int { 1 except { 0 } }", "`except` / `!!` handle a Result, found `Int`");
+    check_fails("orint", "fn f() -> Int { 1 ?? 0 }", "`or` / `??` handle an Option, found `Int`");
     check_fails("returntest", "test \"t\" { return 1 }", "`return` outside a function");
     check_fails("returntype", "fn f() -> Int { return \"a\" }", "`return` value");
 }
@@ -2072,7 +2073,7 @@ fn main(mut console: Console, mut files: Files, env: Environment) -> Result[Exit
   mut files.write("out/x.txt", "a")!
   mut files.append("out/x.txt", "b")!
   mut console.eprint(files.read("out/x.txt")!)
-  mut console.write(env.var("STRATA_TEST_VAR") except { "unset" })
+  mut console.write(env.var("STRATA_TEST_VAR") or { "unset" })
   Ok(len(files.list("out")!) + 6)
 }
 "#);
@@ -3255,9 +3256,9 @@ fn serve_calls_handle_for_each_request() {
     save(&d.join("app.strata"),
         r#"use std.http.{Request, Response, ok_text, ok_json, not_found}
 fn handle(req: Request) -> Response {
-  let q = get(req.query, "q") except { "-" }
+  let q = get(req.query, "q") or { "-" }
   match req.path {
-    "/" => ok_text(f"{req.method} q={q} body={req.body} agent={get(req.headers, "x-agent") except { "-" }}"),
+    "/" => ok_text(f"{req.method} q={q} body={req.body} agent={get(req.headers, "x-agent") or { "-" }}"),
     "/json" => ok_json([1, 2]),
     "/crash" => ok_text(to_string(10 / len(req.body))),
     "/inject" => Response { status: 200, headers: dict([("x-a", "b\r\nset-cookie: evil=1")]), body: "" },
@@ -3506,15 +3507,19 @@ fn coalesce() {
     let d = tmp("coalesce");
     let src = format!("{}/tests/data/coalesce.strata", env!("CARGO_MANIFEST_DIR"));
     let (ok, out) = strata(&["--file", &src, "test"], &d, None);
-    assert!(ok && out.contains("1 passed"), "{out}");
+    assert!(ok && out.contains("2 passed"), "{out}");
     let (ok, out) = strata(&["--file", &src, "render"], &d, None);
     assert!(ok, "{out}");
     save(&d.join("again.strata"), &out);
     assert_eq!(text(&d.join("again.strata")), out);
-    // a short `except { value }` is written `??`
-    save(&d.join("e.strata"), "fn f(s: String) -> Int { parse_int(s) except { 0 } }\n");
+    // a short `or { value }` is written `??`, a short `except { value }` `!!`
+    save(&d.join("e.strata"), "fn f(s: String) -> Int { parse_int(s) or { 0 } }\nfn g(r: Result[Int, String]) -> Int { r except { 0 } }\n");
     let (ok, out) = strata(&["--file", "e.strata", "render"], &d, None);
-    assert!(ok && out.contains("parse_int(s) ?? 0"), "{out}");
+    assert!(ok && out.contains("parse_int(s) ?? 0") && out.contains("r !! 0"), "{out}");
+    // each on its own type only
+    save(&d.join("w.strata"), "fn f(x: Option[Int]) -> Int { x except { 0 } }\nfn g(x: Result[Int, String]) -> Int { x ?? 0 }\n");
+    let (ok, out) = strata(&["--file", "w.strata", "check"], &d, None);
+    assert!(!ok && out.contains("in f: `except` / `!!` handle a Result") && out.contains("in g: `or` / `??` handle an Option"), "{out}");
 }
 
 #[test]

@@ -107,14 +107,14 @@ A compiled program behaves as `strata run`: the same output, and contracts are c
 
 - `Int` (64 bits for now: an overflow is a fault, where the interpreter switches to a big integer), `Float`, `Bool`, `String`, `()`, and refinements of them;
 - records, variants (`Option`, `Result` and your own), tuples, `distinct` types, unions of variants; field access, `{ ..e, f: x }`, assigning a field (`x.a.b = e`), `is`, `==` on any of them, and printing them as the interpreter does;
-- generic functions and types (each compiled once per set of type arguments), and a type's own methods (`impl Item { ... }`);
+- generic functions and types (each compiled once per set of type arguments), a type's own methods (`impl Item { ... }`), and traits: implementations chosen from the type where the call is compiled (default methods, supertraits, generic traits and implementations, static methods like `T.empty()`, a variant's own implementation chosen by its tag), with the trait's `requires` and `ensures` on every implementation;
 - lists: literals, `+`, list patterns (`[x, ..rest]`), `for` over a list, and the list built-ins (`len`, `get`, `push`, `take`, `drop`, `range`, `map`, `filter`, `fold`, `all`, `any`, `find`, `count`, `contains`, `reverse`, `sort`, `sort_by`, `zip`, `enumerate`, `sum`, `join`), most of them written in Strata (`src/llvm/prelude.strata`);
 - lambdas and closures, named functions as values (`filter(is_prime)`), functions returning functions;
 - functions and recursion, `let` (with patterns), `let mut` and assignment, `if`, `match` with every pattern, `while`, `loop`, `for`, `break`, `continue`, `return`, `assert`, `!`, `?`, `except`;
 - f-strings without format specs, and `print`, `to_string`, `len` (of a string), `abs`, `min`, `max`, `float`, `floor`, `ceil`, `round`, `sqrt`;
 - `main` takes no parameters, and returns `()`, an exit code, or a `Result` of either.
 
-Anything else (dictionaries and sets, most string built-ins, regexes, traits, `mut` parameters, capabilities) is refused, naming the function and what it uses: `can't compile `main`: a list is not compiled yet`. Memory is never freed yet.
+Anything else (dictionaries and sets, most string built-ins, regexes, values whose type is a trait, `mut` parameters, capabilities) is refused, naming the function and what it uses: `can't compile `main`: a list is not compiled yet`. Memory is never freed yet.
 
 ### The JIT
 
