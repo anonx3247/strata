@@ -758,7 +758,15 @@ enum Store {
 /// imports. A union whose members are then all defined elsewhere is an
 /// alias of their union.
 pub fn union_members(p: &Program) -> std::borrow::Cow<'_, Program> {
-    let bare = |t: &TypeDecl| matches!(&t.body, TypeBody::Sum(vs) if vs.iter().any(|v| v.payload == Payload::None));
+    // (a member with fields named like a prelude type, `Some(Int)`, is that type too)
+    let prelude_names: HashSet<Symbol> = crate::types::prelude().decls.iter().flat_map(|d| match &d.kind {
+        DeclKind::Type(t) => match &t.body {
+            TypeBody::Sum(vs) => vs.iter().map(|v| v.name).chain([t.name]).collect::<Vec<_>>(),
+            _ => vec![t.name],
+        },
+        _ => vec![],
+    }).collect();
+    let bare = |t: &TypeDecl| matches!(&t.body, TypeBody::Sum(vs) if vs.iter().any(|v| v.payload == Payload::None || (!matches!(v.payload, Payload::Type(_)) && prelude_names.contains(&v.name))));
     if !p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Type(t) if bare(t))) {
         return std::borrow::Cow::Borrowed(p);
     }
@@ -835,7 +843,11 @@ pub fn union_members(p: &Program) -> std::borrow::Cow<'_, Program> {
             })
         };
         let refs: Vec<bool> = match &t.body {
-            TypeBody::Sum(vs) => vs.iter().map(|v| v.payload == Payload::None && v.name != own_name && in_scope(v.name)).collect(),
+            TypeBody::Sum(vs) => vs.iter().map(|v| v.name != own_name && match v.payload {
+                Payload::None => in_scope(v.name),
+                Payload::Type(_) => false,
+                _ => prelude_names.contains(&v.name),
+            }).collect(),
             _ => unreachable!(),
         };
         if !refs.iter().any(|r| *r) {
@@ -857,6 +869,64 @@ pub fn union_members(p: &Program) -> std::borrow::Cow<'_, Program> {
         }
     }
     std::borrow::Cow::Owned(out)
+}
+
+/// For an edit: each new atom a union of the definitions `edited` declares
+/// (`Circel` in `type Shape = Circel | Square`) whose name is close to a
+/// type the program (or the prelude) has, which it may have meant: a
+/// warning, as two types may well have close names.
+pub fn near_misses(p: &Program, edited: &[String]) -> Vec<String> {
+    let p = union_members(p);
+    let mut names: Vec<(Symbol, Symbol)> = vec![];
+    for d in crate::types::prelude().decls.iter().chain(p.decls.iter()) {
+        let DeclKind::Type(t) = &d.kind else { continue };
+        names.push((Symbol::new(short(&t.name)), t.name));
+        if let TypeBody::Sum(vs) = &t.body {
+            names.extend(vs.iter().filter(|v| !matches!(v.payload, Payload::Type(_))).map(|v| (Symbol::new(short(&v.name)), t.name)));
+        }
+    }
+    for b in crate::types::BUILTIN_TYPES {
+        names.push((Symbol::new(b), Symbol::EMPTY));
+    }
+    let close = |a: &str, b: &str| {
+        if a == b || a.len() < 3 {
+            return false;
+        }
+        if a.eq_ignore_ascii_case(b) {
+            return true;
+        }
+        // edit distance: a letter added, dropped, changed or two swapped
+        let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+        if a.len().abs_diff(b.len()) > 2 {
+            return false;
+        }
+        let mut d: Vec<Vec<usize>> = (0..=a.len()).map(|i| (0..=b.len()).map(|j| if i == 0 { j } else if j == 0 { i } else { 0 }).collect()).collect();
+        for i in 1..=a.len() {
+            for j in 1..=b.len() {
+                let c = usize::from(a[i - 1] != b[j - 1]);
+                d[i][j] = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + c);
+                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                    d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+                }
+            }
+        }
+        // (one change in a short name, `Dot` is not `Int`)
+        d[a.len()][b.len()] <= if a.len().min(b.len()) <= 5 { 1 } else { 2 }
+    };
+    let mut out = vec![];
+    for d in p.decls.iter().filter(|d| edited.contains(&d.qname())) {
+        let DeclKind::Type(t) = &d.kind else { continue };
+        let TypeBody::Sum(vs) = &t.body else { continue };
+        for v in vs.iter().filter(|v| v.payload == Payload::None) {
+            let mut near: Vec<String> = names.iter().filter(|(n, owner)| *owner != t.name && close(&v.name, n)).map(|(n, _)| format!("`{n}`")).collect();
+            near.sort();
+            near.dedup();
+            if !near.is_empty() {
+                out.push(format!("warning: `{}` in `{}` is a new type (nothing has that name): did you mean {}?", v.name, short(&t.name), near.join(" or ")));
+            }
+        }
+    }
+    out
 }
 
 fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMap<String, String>>, store: Option<Store>) -> (Resolution, Vec<Vec<String>>) {

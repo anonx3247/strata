@@ -314,7 +314,9 @@ impl Parser {
             self.next();
             self.expect_kw("type")?;
             let mut t = self.type_decl()?;
-            if !matches!(t.body, TypeBody::Alias(_)) {
+            // (a union of bare names may be one of types defined elsewhere:
+            // decided when it is stored)
+            if matches!(t.body, TypeBody::Record(_)) {
                 return Err(self.err("only an alias can be `distinct` (records and sum types already are)"));
             }
             t.distinct = true;

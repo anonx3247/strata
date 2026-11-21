@@ -23,6 +23,9 @@ pub struct Env {
     pub externs: HashMap<Symbol, Lang>,
     /// Capabilities (`capability Sqlite { ... }`): only the runtime makes them.
     pub capabilities: HashSet<Symbol>,
+    /// Where each type is defined, in the order the program defines them
+    /// (the prelude's first).
+    pub type_order: HashMap<Symbol, usize>,
 }
 
 impl Env {
@@ -47,6 +50,7 @@ impl Env {
             checked_params: HashMap::default(),
             externs: HashMap::default(),
             capabilities: HashSet::default(),
+            type_order: HashMap::default(),
         };
         let mut errs = Vec::new();
         // (the prelude's code, added to every program, is the prelude too)
@@ -95,6 +99,8 @@ impl Env {
                         }
                         TypeBody::Alias(_) => {}
                     }
+                    let at = env.type_order.len();
+                    env.type_order.entry(t.name).or_insert(at);
                     env.types.insert(t.name, t.clone()).is_some()
                 }
                 DeclKind::Fn(f) => env.fns.insert(f.name, if bodies { f.clone() } else { f.signature() }).is_some(),

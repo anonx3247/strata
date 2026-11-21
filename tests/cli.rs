@@ -3944,6 +3944,36 @@ fn main() {
 }
 "##;
 
+/// A named union that adds nothing is refused as a bare alias is: one type
+/// once normalized, or a set its module (or the prelude) names already; a
+/// `distinct` one is a type of its own. A new member named like an existing
+/// type is a warning.
+#[test]
+fn unions_that_add_nothing_are_refused() {
+    let d = tmp("unions-nothing");
+    let cases = [
+        ("type U = Int | Positive", Some("`type U = Int | Positive` adds nothing: it is `Int`")),
+        ("type Circle = { r: Int }\ntype Square = { s: Int }\ntype Shape = Circle | Square\ntype Figure = Square | Circle", Some("`type Figure = Square | Circle` adds nothing: it is `Shape`")),
+        ("type Answer = Some(Int) | None", Some("adds nothing: it is `Option`")),
+        ("type Level = Quiet | Loud\ntype Mood = Loud | Quiet", Some("`type Mood = Loud | Quiet` adds nothing: it is `Level`")),
+        ("type Shape = Circle | Square { s: Int } | Dot\ntype Circle = { r: Int }\ntype Part = Square | Dot", None),
+        ("type Circle = { r: Int }\ntype Square = { s: Int }\ntype Shape = Circle | Square\ndistinct type Figure = Circle | Square\nfn f() -> Figure = Figure(Circle { r: 1 })", None),
+        ("distinct type Lv = Up | Down", Some("`Lv` declares its members, so it is a type of its own already")),
+    ];
+    for (k, (src, want)) in cases.iter().enumerate() {
+        let f = format!("n{k}.strata");
+        let (ok, out) = strata(&["--file", &f, "edit"], &d, Some(&format!("{src}\n\nfn main() {{ }}\n")));
+        assert!(ok, "{out}");
+        let (ok, out) = strata(&["--file", &f, "check"], &d, None);
+        match want {
+            Some(w) => assert!(!ok && out.contains(w), "{src}: {out}"),
+            None => assert!(ok, "{src}: {out}"),
+        }
+    }
+    let (ok, out) = strata(&["--file", "w.strata", "edit"], &d, Some("type Circle = { r: Int }\ntype Shape = Circel | Dot\n"));
+    assert!(ok && out.contains("warning: `Circel` in `Shape` is a new type (nothing has that name): did you mean `Circle`?") && !out.contains("`Dot`"), "{out}");
+}
+
 /// The shapes `std.typing` describes, through `Json`: a recursive type, a
 /// generic one, a union of records, a tuple-shaped variant, `Option` of a
 /// refined alias, a `distinct` type; and a union's members keep their docs.

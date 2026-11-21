@@ -1452,20 +1452,7 @@ impl<'a> Checker<'a> {
     /// are compared as a set; a generic or refined alias doesn't count.
     fn union_name(&mut self, t: &Ty) -> Option<Symbol> {
         let Ty::Union(ms) = self.resolve(t) else { return None };
-        // a sum counts as its variants (`Circle | Shape$own` is `Circle | Square | Dot`)
-        let key = |c: &mut Self, ms: &[Ty]| {
-            let mut k: Vec<String> = ms.iter().flat_map(|m| match c.resolve(m) {
-                Ty::Con(n, _) if matches!(c.env.types.get(&n).map(|t| &t.body), Some(TypeBody::Sum(_))) => match &c.env.types[&n].body {
-                    TypeBody::Sum(vs) => vs.iter().map(|v| v.name.to_string()).collect::<Vec<_>>(),
-                    _ => unreachable!(),
-                },
-                Ty::Con(n, args) if args.is_empty() => vec![n.to_string()],
-                r => vec![show_ty(&r)],
-            }).collect();
-            k.sort();
-            k.dedup();
-            k
-        };
+        let key = |c: &mut Self, ms: &[Ty]| c.set_key(ms);
         let want = key(self, &ms);
         let env = self.env;
         let mut names: Vec<Symbol> = env.types.iter().filter(|(_, td)| union_alias(td)).map(|(n, _)| *n).collect();
@@ -1476,6 +1463,70 @@ impl<'a> Checker<'a> {
                 if key(self, &ns) == want {
                     return Some(n);
                 }
+            }
+        }
+        None
+    }
+
+    /// A union's members as a set, to compare unions: a sum counts as its
+    /// variants (`Circle | Shape$own` is `Circle | Square | Dot`).
+    fn set_key(&mut self, ms: &[Ty]) -> Vec<String> {
+        let mut k: Vec<String> = ms.iter().flat_map(|m| match self.resolve(m) {
+            Ty::Con(n, _) if matches!(self.env.types.get(&n).map(|t| &t.body), Some(TypeBody::Sum(_))) => match &self.env.types[&n].body {
+                TypeBody::Sum(vs) => vs.iter().map(|v| v.name.to_string()).collect::<Vec<_>>(),
+                _ => unreachable!(),
+            },
+            // a variant by its name (`Some`, whatever `Option`'s argument)
+            Ty::Con(n, args) if args.is_empty() || self.env.variant_parent(n.sym()).is_some() => vec![n.to_string()],
+            r => vec![show_ty(&r)],
+        }).collect();
+        k.sort();
+        k.dedup();
+        k
+    }
+
+    /// A named union that adds nothing: one type once normalized, or a set
+    /// another name in its module (or the root module, or the prelude, in
+    /// scope everywhere) names already.
+    fn union_adds_nothing(&mut self, t: &TypeDecl) -> Option<String> {
+        let TypeBody::Alias(written) = &t.body else { return None };
+        let written = crate::printer::ty(written);
+        let lowered = self.lower(&TypeExpr::Named(t.name, vec![]), &HashMap::default());
+        let Ty::Union(ms) = self.resolve(&lowered) else {
+            // (the members another union declares, `Square | Dot` of `Shape`, are named only here)
+            if matches!(self.resolve(&lowered), Ty::Con(n, _) if n.contains(crate::desugar::OWN)) {
+                return None;
+            }
+            return Some(format!("`type {} = {written}` adds nothing: it is `{}` (use that, or make it a separate type: `distinct type {} = {written}`)", crate::names::short(&t.name), show_ty(&self.resolve(&lowered)), crate::names::short(&t.name)));
+        };
+        let want = self.set_key(&ms);
+        let module = crate::names::module_of(&t.name).to_string();
+        let env = self.env;
+        // (the first name of a set keeps it: the later one adds nothing)
+        let at = |n: &Symbol| env.type_order.get(n).copied().unwrap_or(usize::MAX);
+        let mut others: Vec<(Symbol, &TypeDecl)> = env.types.iter().filter(|(n, d)| **n != t.name && at(n) < at(&t.name) && !n.as_str().contains(crate::desugar::OWN) && (union_alias(d) || matches!(d.body, TypeBody::Sum(_)))).map(|(n, d)| (*n, d)).filter(|(n, _)| {
+            let m = crate::names::module_of(n);
+            m == module || m.is_empty()
+        }).collect();
+        others.sort_by_key(|(n, _)| *n);
+        for (n, d) in others {
+            let key = match &d.body {
+                TypeBody::Sum(vs) => {
+                    let mut k: Vec<String> = vs.iter().map(|v| v.name.to_string()).collect();
+                    k.sort();
+                    k
+                }
+                _ => {
+                    let l = self.lower(&TypeExpr::Named(n, vec![]), &HashMap::default());
+                    match self.resolve(&l) {
+                        Ty::Union(ns) => self.set_key(&ns),
+                        _ => continue,
+                    }
+                }
+            };
+            if key == want {
+                let s = crate::names::short(&t.name);
+                return Some(format!("`type {s} = {written}` adds nothing: it is `{}` (use that, or make it a separate type: `distinct type {s} = {written}`)", crate::names::short(&n)));
             }
         }
         None
@@ -4195,6 +4246,14 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
         };
         match &d.kind {
             DeclKind::Type(t) => {
+                if union_alias(t) {
+                    if let Some(m) = c.union_adds_nothing(t) {
+                        c.err(m);
+                    }
+                }
+                if t.distinct && matches!(t.body, TypeBody::Sum(_)) {
+                    c.err(format!("`{}` declares its members, so it is a type of its own already: `distinct` adds nothing", crate::names::short(&t.name)));
+                }
                 if matches!(t.body, TypeBody::Alias(ref a) if !matches!(a, TypeExpr::Union(_))) && t.refinement.is_none() && !t.distinct {
                     c.err(format!(
                         "`type {0} = {1}` adds nothing: constrain it (`type {0} = {1} where …`) or make it a separate type (`distinct type {0} = {1}`)",

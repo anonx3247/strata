@@ -57,7 +57,7 @@ fn mixed_unions(p: &mut Program) {
         made.push(Decl {
             comments: vec![],
             doc: vec![],
-            kind: DeclKind::Type(TypeDecl { distinct: false, name: own_name, params: t.params.clone(), body: TypeBody::Sum(own), refinement: None }),
+            kind: DeclKind::Type(TypeDecl { distinct: false, name: own_name, params: t.params.clone(), body: TypeBody::Sum(own), refinement: None, mock: false }),
             module: d.module,
             public: d.public,
         });
