@@ -399,6 +399,8 @@ impl<'a> Expander<'a> {
     }
 
     fn field(&mut self, name: &Symbol, doc: &[String], ty: &TypeExpr, default: Option<&Expr>) -> Value {
+        // a refinement written as a type argument, as written (not its `$where_` alias)
+        let ty = &self.unwhere(ty);
         let t = self.type_value(ty);
         let dv = match default {
             Some(e) => Value::Variant("Some".into(), Fields::pos(vec![Value::Str(crate::printer::expr(e, 0))])),
@@ -409,6 +411,22 @@ impl<'a> Expander<'a> {
             self.defaults.insert(json(&f), e.clone());
         }
         f
+    }
+
+    /// `t` with each alias made for a refinement written as a type argument
+    /// (`$where_0`) back as that refinement (`Float where 0.0 <= it`).
+    fn unwhere(&self, t: &TypeExpr) -> TypeExpr {
+        match t {
+            TypeExpr::Named(n, args) if args.is_empty() && n.as_str().starts_with(crate::desugar::WHERE) => match self.env.types.get(n) {
+                Some(TypeDecl { body: TypeBody::Alias(b), refinement: Some(r), .. }) => TypeExpr::Refined(Box::new(b.clone()), Box::new(r.clone())),
+                _ => t.clone(),
+            },
+            TypeExpr::Named(n, args) => TypeExpr::Named(*n, args.iter().map(|a| self.unwhere(a)).collect()),
+            TypeExpr::Refined(b, p) => TypeExpr::Refined(Box::new(self.unwhere(b)), p.clone()),
+            TypeExpr::Fn(ps, r) => TypeExpr::Fn(ps.iter().map(|a| self.unwhere(a)).collect(), Box::new(self.unwhere(r))),
+            TypeExpr::Union(ms) => TypeExpr::Union(ms.iter().map(|a| self.unwhere(a)).collect()),
+            TypeExpr::Unit => TypeExpr::Unit,
+        }
     }
 
     /// The type a `distinct` type is made of: its name, if `t` is one.

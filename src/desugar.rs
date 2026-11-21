@@ -26,6 +26,57 @@ pub fn program(p: &mut Program, errors: &mut Vec<Diag>) {
         errors.extend(s.errors);
     }
     defaults(p);
+    inline_refinements(p);
+}
+
+/// The prefix of the name given to a refinement written inside a type
+/// argument (`List[Int where it > 0]`): `$where_0`, an alias like `Positive`,
+/// so the type argument names it when the code runs.
+pub const WHERE: &str = "$where_";
+
+/// Each refinement written as a type argument becomes an alias of its own
+/// (the same text, the same alias).
+fn inline_refinements(p: &mut Program) {
+    struct Named {
+        made: Vec<(String, Symbol, TypeExpr, Expr)>,
+    }
+    impl Named {
+        fn name(&mut self, b: &TypeExpr, pred: &Expr) -> Symbol {
+            let text = crate::printer::ty(&TypeExpr::Refined(Box::new(b.clone()), Box::new(pred.clone())));
+            if let Some((_, n, _, _)) = self.made.iter().find(|m| m.0 == text) {
+                return *n;
+            }
+            let n = Symbol::new(&format!("{WHERE}{}", self.made.len()));
+            self.made.push((text, n, b.clone(), pred.clone()));
+            n
+        }
+    }
+    impl VisitMut for Named {
+        fn ty(&mut self, t: &mut TypeExpr) {
+            walk_ty_mut(self, t);
+            if let TypeExpr::Named(_, args) = t {
+                for a in args.iter_mut() {
+                    if let TypeExpr::Refined(b, pred) = a {
+                        let n = self.name(b, pred);
+                        *a = TypeExpr::Named(n, vec![]);
+                    }
+                }
+            }
+        }
+    }
+    let mut v = Named { made: vec![] };
+    for d in &mut p.decls {
+        walk_decl_mut(&mut v, &mut d.kind);
+    }
+    for (_, n, b, pred) in v.made {
+        p.decls.push(Decl {
+            comments: vec![],
+            doc: vec![],
+            kind: DeclKind::Type(TypeDecl { distinct: false, name: n, params: vec![], body: TypeBody::Alias(b), refinement: Some(pred) }),
+            module: Symbol::new(""),
+            public: true,
+        });
+    }
 }
 
 /// Fill in the fields a record constructor leaves out that have defaults.
