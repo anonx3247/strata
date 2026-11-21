@@ -312,19 +312,36 @@ pub fn fuzz_case(addr: usize, seed: u64, budget: i64) -> (Option<(String, String
     (fault, text(unsafe { args() }))
 }
 
+/// A fault that ended compiled code: its kind (`Refinement`, `Limit`, ...),
+/// message and call stack (as `strata run` shows it, "" when empty).
+#[derive(Debug, Clone)]
+pub struct Fault {
+    pub kind: String,
+    pub message: String,
+    pub stack: String,
+}
+
 /// Run compile-time code (`llvm::compile_comptime`): each `strata.ct.N`,
 /// within `budget` steps, its value read (`native::read`) before the code
 /// is gone; a fault or the budget's end is its message.
-pub fn comptime(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget: i64) -> Result<Vec<Result<crate::interp::Value, String>>, String> {
-    use std::ffi::c_char;
+pub fn comptime(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget: i64) -> Result<Vec<Result<crate::interp::Value, Fault>>, String> {
+    use std::ffi::{c_char, CStr};
     let ctx = Context::create();
-    let engine = engine(&ctx, ir)?;
+    let engine = engine_at(&ctx, ir, false)?;
     type Init = unsafe extern "C" fn(i32, *const *const c_char);
     type Fuzz = unsafe extern "C" fn(unsafe extern "C" fn(), i64, i64) -> i32;
     type Message = unsafe extern "C" fn() -> *const i64;
-    let (init, fuzz, message): (Init, Fuzz, Message) = unsafe {
-        (std::mem::transmute(strata_init as *const ()), std::mem::transmute(strata_fuzz as *const ()), std::mem::transmute(strata_test_message as *const ()))
+    type Text = unsafe extern "C" fn() -> *const c_char;
+    let (init, fuzz, message, kind, stack): (Init, Fuzz, Message, Text, Text) = unsafe {
+        (
+            std::mem::transmute(strata_init as *const ()),
+            std::mem::transmute(strata_fuzz as *const ()),
+            std::mem::transmute(strata_test_message as *const ()),
+            std::mem::transmute(strata_test_kind as *const ()),
+            std::mem::transmute(strata_test_stack as *const ()),
+        )
     };
+    let text = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().to_string();
     let name = std::ffi::CString::new("comptime").unwrap();
     let argv = [name.as_ptr()];
     unsafe { init(1, argv.as_ptr()) };
@@ -335,10 +352,10 @@ pub fn comptime(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget
         if unsafe { fuzz(f, 1, budget) } != 0 {
             let m = unsafe { message() };
             let msg = unsafe { std::slice::from_raw_parts(m.add(1) as *const u8, *m as usize) };
-            out.push(Err(String::from_utf8_lossy(msg).to_string()));
+            out.push(Err(Fault { kind: text(unsafe { kind() }), message: String::from_utf8_lossy(msg).to_string(), stack: text(unsafe { stack() }) }));
             continue;
         }
-        out.push(unsafe { super::native::read(root, shapes, strata_ct_kept()) });
+        out.push(unsafe { super::native::read(root, shapes, strata_ct_kept()) }.map_err(|m| Fault { kind: "Runtime".into(), message: format!("reading the value: {m}"), stack: String::new() }));
     }
     Ok(out)
 }
@@ -348,6 +365,12 @@ pub fn comptime(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget
 /// The IR compiled in memory (optimized as clang -O2 would), its runtime
 /// calls mapped to the runtime built into strata.
 fn engine<'ctx>(ctx: &'ctx Context, ir: &str) -> Result<inkwell::execution_engine::ExecutionEngine<'ctx>, String> {
+    engine_at(ctx, ir, true)
+}
+
+/// `engine`, optimized or not: code run once (compile-time code, a probe)
+/// costs less to compile unoptimized than it would save.
+fn engine_at<'ctx>(ctx: &'ctx Context, ir: &str, optimize: bool) -> Result<inkwell::execution_engine::ExecutionEngine<'ctx>, String> {
     Target::initialize_native(&InitializationConfig::default())?;
     let buf = MemoryBuffer::create_from_memory_range_copy(ir.as_bytes(), "strata");
     let module = ctx.create_module_from_ir(buf).map_err(|e| format!("LLVM rejected the generated IR: {e}"))?;
@@ -360,9 +383,12 @@ fn engine<'ctx>(ctx: &'ctx Context, ir: &str) -> Result<inkwell::execution_engin
         .ok_or("LLVM has no target machine for this host")?;
     module.set_triple(&triple);
     module.set_data_layout(&machine.get_target_data().get_data_layout());
-    module.run_passes("default<O2>", &machine, PassBuilderOptions::create()).map_err(|e| e.to_string())?;
+    if optimize {
+        module.run_passes("default<O2>", &machine, PassBuilderOptions::create()).map_err(|e| e.to_string())?;
+    }
     native()?;
-    let engine = module.create_jit_execution_engine(OptimizationLevel::Aggressive).map_err(|e| e.to_string())?;
+    let level = if optimize { OptimizationLevel::Aggressive } else { OptimizationLevel::None };
+    let engine = module.create_jit_execution_engine(level).map_err(|e| e.to_string())?;
     let table = runtime();
     // a runtime function left out of the table would be a call to address 0
     for f in module.get_functions() {

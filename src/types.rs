@@ -871,6 +871,8 @@ impl<'a> Checker<'a> {
     fn trait_method_for(&mut self, name: &str, trait_name: &str, self_ty: Option<Ty>) -> Ty {
         let env = self.env;
         let tr = &env.traits[&trait_name.sym()];
+        // (an elaborated call names its trait: `Monoid::empty`)
+        let name = split_trait_call(name).map_or(name, |(_, m)| m);
         let m = &tr.methods.iter().find(|m| m.decl.name == name).unwrap().decl;
         let mut vars: HashMap<Symbol, Ty> = tr.params.iter().map(|p| (p.clone(), self.fresh())).collect();
         for p in &m.type_params {

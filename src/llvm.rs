@@ -180,9 +180,12 @@ enum Entry<'e> {
     Main(&'e str),
     Tests,
     Fuzz(&'e [FuzzTarget]),
-    /// Compile-time code: each named function's body is `{ ..; _ := e; () }`.
+    /// Compile-time code: functions without parameters, whose results are kept.
     Comptime(&'e [String]),
 }
+
+/// The label of compile-time code (a probe): it has no frame on the call stack.
+const COMPTIME: &str = "compile-time code";
 
 /// How a value is laid out in memory, to read one the compiled code made
 /// (a `comptime` result; the FFI's values later).
@@ -220,9 +223,10 @@ pub struct Shapes {
     pub named: HashMap<String, Vec<CtorShape>>,
 }
 
-/// The IR of compile-time code: for each of `fns` (whose body is
-/// `{ _ := e; () }`), `@"strata.ct.N"` runs `e` and hands its value to the
-/// runtime (`strata_ct_keep`), with steps counted; and the shape of each value.
+/// The IR of compile-time code: for each of `fns` (functions of the program
+/// without parameters), `@"strata.ct.N"` calls it and hands its result to
+/// the runtime (`strata_ct_keep`), with steps counted; and the shape of each
+/// result.
 pub fn compile_comptime(prog: &Program, fns: &[String]) -> Res<(String, Vec<Shape>, Shapes)> {
     let (ir, _, shapes) = compile_with(prog, Entry::Comptime(fns), true)?;
     let (roots, named) = shapes.unwrap_or_default();
@@ -1106,7 +1110,7 @@ impl<'a> Module<'a> {
         }
         c.block("entry.body");
         // on the call stack a fault shows (the program's functions, as the interpreter's)
-        let framed = !name.starts_with(PRELUDE_MODULE) && !name.starts_with("test \"");
+        let framed = !name.starts_with(PRELUDE_MODULE) && !name.starts_with("test \"") && name != COMPTIME;
         if framed {
             let n = c.m.string(name);
             c.emit(format!("call void @strata_enter(ptr {n})"));

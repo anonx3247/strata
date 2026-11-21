@@ -1,17 +1,19 @@
-//! Verification passes beyond type checking.
+//! Verification passes beyond type checking, all running compiled code
+//! (the interpreter isn't used).
 //!
-//! * `static_refinements`: compile-time evaluation of refinements on literal
-//!   arguments (`make_port(80)` is rejected before anything runs).
-//! * `fuzz_fn`: property-based checking of every contract of a function with
-//!   inputs generated from its parameter types.
-//!
+//! * `refinements_in`: a literal argument or field that breaks its type's
+//!   refinement (`make_port(80)`) is an error before anything runs: each is
+//!   a probe, `let x: T = <literal>`, compiled and run.
 //! * `check_fn`: the layered check. Every contract becomes an SMT obligation
 //!   (`smt.rs`); if the solver proves them all the function is `proven`.
-//!   A counterexample from the solver is run in the interpreter, and becomes
-//!   a failure only if it really fails. Whatever is left is fuzzed.
+//!   A counterexample from the solver is run (a probe calling the function
+//!   with it), and becomes a failure only if it really fails. Whatever is
+//!   left is fuzzed by compiled drivers (`llvm::compile_fuzz`): functions,
+//!   and through `wrappers`, trait methods and laws.
 
 use crate::ast::*;
-use crate::interp::{to_json, FaultKind, Interp};
+use crate::interp::{to_json, Value};
+use crate::llvm::jit::Fault;
 use crate::types::{Diag, Env};
 use serde::Serialize;
 use serde_json::Value as Json;
@@ -27,9 +29,105 @@ fn literal(e: &Expr) -> bool {
     }
 }
 
+/// Whether a value of `t` can break a refinement: one is in it, or in the
+/// types it names, their fields and variants. `None`: `t` names something
+/// not known here (a type parameter), so it can't be checked alone.
+fn refined(env: &Env, t: &TypeExpr, seen: &mut Vec<Symbol>) -> Option<bool> {
+    Some(match t {
+        TypeExpr::Unit | TypeExpr::Fn(..) => false,
+        TypeExpr::Refined(..) => true,
+        TypeExpr::Union(ms) => {
+            let mut any = false;
+            for m in ms {
+                any |= refined(env, m, seen)?;
+            }
+            any
+        }
+        TypeExpr::Named(n, args) => {
+            let mut any = false;
+            for a in args {
+                any |= refined(env, a, seen)?;
+            }
+            if matches!(n.as_str(), "Int" | "Float" | "Bool" | "String" | "Unit" | "List" | "Set" | "Dict" | "Tuple") || seen.contains(n) {
+                return Some(any);
+            }
+            let td = env.types.get(n)?;
+            if td.refinement.is_some() {
+                return Some(true);
+            }
+            seen.push(*n);
+            // a declaration's own parameters stand for the arguments, checked above
+            let own = |t: &TypeExpr, seen: &mut Vec<Symbol>| match t {
+                TypeExpr::Named(p, a) if a.is_empty() && td.params.contains(p) => Some(false),
+                t => refined(env, t, seen),
+            };
+            let mut r = any;
+            match &td.body {
+                TypeBody::Alias(a) => r |= own(a, seen)?,
+                TypeBody::Record(fs) => {
+                    for f in fs {
+                        r |= own(&f.ty, seen)?;
+                    }
+                }
+                TypeBody::Sum(vs) => {
+                    for v in vs {
+                        match &v.payload {
+                            Payload::None => {}
+                            Payload::Positional(ts) => {
+                                for t in ts {
+                                    r |= own(t, seen)?;
+                                }
+                            }
+                            Payload::Record(fs) => {
+                                for f in fs {
+                                    r |= own(&f.ty, seen)?;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            r
+        }
+    })
+}
+
+/// A function of compile-time code, `{ stmts; () }`.
+fn probe(name: &str, stmts: Vec<Stmt>) -> Decl {
+    let f = FnDecl {
+        doc: vec![],
+        comments: vec![],
+        name: Symbol::new(name),
+        type_params: vec![],
+        bounds: vec![],
+        params: vec![],
+        ret: TypeExpr::Unit,
+        requires: vec![],
+        ensures: vec![],
+        terminates: false,
+        body: Expr::Block(stmts, Box::new(Expr::Unit)),
+        comptime: false,
+        derived: false,
+    };
+    Decl { comments: vec![], doc: vec![], kind: DeclKind::Fn(f), module: Symbol::new(""), public: false }
+}
+
+/// Run probes added to `prog`: each one's fault, if any (`Err` when they
+/// can't be compiled).
+fn run_probes(prog: &Program, probes: Vec<Decl>, budget: i64) -> Result<Vec<Option<Fault>>, String> {
+    let names: Vec<String> = probes.iter().map(|d| d.name()).collect();
+    let mut p = prog.clone();
+    p.decls.extend(probes);
+    let (ir, roots, shapes) = crate::llvm::compile_comptime(&p, &names)?;
+    Ok(crate::llvm::jit::comptime(&ir, &roots, &shapes, budget)?.into_iter().map(|r| r.err()).collect())
+}
+
+/// Literal arguments and fields that break their types' refinements, found
+/// while compiling: a probe for each, `let x: T = <literal>`, all compiled
+/// as one module and run. (Nothing is reported when they can't be compiled.)
 pub fn refinements_in(prog: &Program, env: &Env) -> Vec<Diag> {
-    let mut out = Vec::new();
-    let mut it = Interp::new(env, 0);
+    // (where, the probe's statement, how to report its fault)
+    let mut sites: Vec<(String, Stmt, Option<String>)> = vec![];
     for d in &prog.decls {
         let bodies: Vec<&Expr> = match &d.kind {
             DeclKind::Fn(f) => vec![&f.body],
@@ -38,38 +136,35 @@ pub fn refinements_in(prog: &Program, env: &Env) -> Vec<Diag> {
         };
         for b in bodies {
             walk(b, |e| {
-                let check = |it: &mut Interp, ty: &TypeExpr, arg: &Expr, ctx: String, out: &mut Vec<Diag>| {
-                    if !literal(arg) {
-                        return;
-                    }
-                    let Ok(v) = it.eval(arg, &None) else { return };
-                    if let Ok(Some(msg)) = it.check_type(ty, &v) {
-                        out.push(Diag { decl: d.name(), msg: format!("refinement violated at compile time in {ctx}: {msg}") });
+                let mut check = |ty: &TypeExpr, arg: &Expr, ctx: String| {
+                    if literal(arg) && refined(env, ty, &mut vec![]) == Some(true) {
+                        sites.push((d.name(), Stmt::Let(Pattern::Wild, Some(ty.clone()), arg.clone()), Some(ctx)));
                     }
                 };
                 match e {
                     Expr::Call(f, args) => {
                         if let Expr::Var(n) = &**f {
                             if let Some(fd) = env.fns.get(&n.sym()) {
+                                // (a type parameter's isn't known here: `refined` says so)
                                 for (p, a) in fd.params.iter().zip(args) {
-                                    check(&mut it, &p.ty, a, format!("argument `{}` of `{n}`", p.name), &mut out);
+                                    check(&p.ty, a, format!("argument `{}` of `{n}`", p.name));
                                 }
                             }
                         }
                     }
+                    // constructing the value runs its checks
                     Expr::Ctor(c, CtorArgs::Positional(xs)) if env.types.get(&c.sym()).is_some_and(|t| t.distinct) && xs.len() == 1 && literal(&xs[0]) => {
-                        // constructing the value runs its checks
-                        if let Err(fault) = it.eval(e, &None) {
-                            out.push(Diag { decl: d.name(), msg: format!("refinement violated at compile time: {}", fault.msg) });
-                        }
+                        sites.push((d.name(), Stmt::Let(Pattern::Wild, None, e.clone()), None));
                     }
                     Expr::Ctor(c, CtorArgs::Record(fs)) => {
                         let tname = env.ctors.get(&c.sym()).cloned().unwrap_or_default();
-                        if let Some(vs) = env.variants_of(&tname, &[]) {
-                            if let Some((_, Some(names), tys)) = vs.iter().find(|v| &v.0 == c) {
-                                for (fname, fe) in fs {
-                                    if let Some(i) = names.iter().position(|n| n == fname) {
-                                        check(&mut it, &tys[i], fe, format!("field `{c}.{fname}`"), &mut out);
+                        if env.types.get(&tname).is_some_and(|t| t.params.is_empty()) {
+                            if let Some(vs) = env.variants_of(&tname, &[]) {
+                                if let Some((_, Some(names), tys)) = vs.iter().find(|v| &v.0 == c) {
+                                    for (fname, fe) in fs {
+                                        if let Some(i) = names.iter().position(|n| n == fname) {
+                                            check(&tys[i], fe, format!("field `{c}.{fname}`"));
+                                        }
                                     }
                                 }
                             }
@@ -78,6 +173,23 @@ pub fn refinements_in(prog: &Program, env: &Env) -> Vec<Diag> {
                     _ => {}
                 }
             });
+        }
+    }
+    if sites.is_empty() {
+        return vec![];
+    }
+    let probes = sites.iter().enumerate().map(|(i, (_, s, _))| probe(&format!("strata_verify_literal_{i}"), vec![s.clone()])).collect();
+    let Ok(faults) = run_probes(prog, probes, JIT_STEPS) else { return vec![] };
+    let mut out = vec![];
+    for ((decl, _, ctx), fault) in sites.into_iter().zip(faults) {
+        let Some(f) = fault else { continue };
+        let msg = f.message.strip_prefix("let binding: ").unwrap_or(&f.message).to_string();
+        let msg = match ctx {
+            Some(ctx) => format!("refinement violated at compile time in {ctx}: {msg}"),
+            None => format!("refinement violated at compile time: {msg}"),
+        };
+        if !out.iter().any(|d: &Diag| d.decl == decl && d.msg == msg) {
+            out.push(Diag { decl, msg });
         }
     }
     out
@@ -235,10 +347,12 @@ fn has_hole(e: &Expr) -> bool {
 
 /// The layered check of a function (or of an implementation's method, when
 /// `imp` is given): prove what the solver can, confirm its counterexamples by
-/// running them, and fuzz the rest.
+/// running them, and fuzz the rest. `key` names what is fuzzed: the function,
+/// or the method's wrapper (`wrappers`).
 /// `cross_check`: how many generated cases a proven function is still run on.
 /// A failure there means the prover itself is wrong, and is reported as such.
-pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&crate::smt::Solver>, transparent: &crate::fx::HashMap<String, bool>, cases: usize, cross_check: usize, seed: u64) -> Verdict {
+#[allow(clippy::too_many_arguments)]
+pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, key: &str, solver: Option<&crate::smt::Solver>, transparent: &crate::fx::HashMap<String, bool>, cases: usize, cross_check: usize, seed: u64) -> Verdict {
     // the real terminal, disk and process: trusted, never run here (only `strata run` reaches the system)
     if imp.is_some_and(|i| crate::stdlib::HOST_TYPES.contains(&crate::types::texpr_head(&i.for_type).as_str())) {
         return Verdict::Assumed { why: "it talks to the real system (only `strata run` reaches it)".into() };
@@ -246,23 +360,18 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&c
     if let Some(why) = foreign(env, f, imp) {
         return Verdict::Assumed { why };
     }
-    let (decl, method) = match imp {
-        None => (f.clone(), false),
+    let decl = match imp {
+        None => f.clone(),
         Some(imp) => {
-            let mut d = for_impl(imp, f);
+            let mut d = method_decl(env, imp, f);
             // run through its trait: the name may be shared with another trait or the type's own method
             d.name = Symbol::from(crate::types::trait_call(&imp.trait_name, &f.name));
             static_type_arg(imp, f, &mut d);
-            // the trait's contract binds every implementation
-            if let Some(tm) = env.traits.get(&imp.trait_name).and_then(|t| t.methods.iter().find(|m| m.decl.name == f.name)) {
-                let tm = for_impl(imp, &tm.decl);
-                d.requires.splice(0..0, tm.requires);
-                d.ensures.splice(0..0, tm.ensures);
-            }
-            (d, true)
+            d
         }
     };
-    let fuzz = |proven: usize, unproven: Vec<String>| match fuzz_call(env, &decl, cases, seed, method) {
+    let shown = decl.name.to_string();
+    let fuzz = |proven: usize, unproven: Vec<String>| match fuzz_limited(key, &shown, cases, seed, None) {
         Verdict::Fuzzed { cases, discarded, .. } => Verdict::Fuzzed { cases, discarded, proven, unproven, terminates: None },
         // not fuzzed either: say what the solver couldn't prove
         Verdict::Skipped { reason } if !unproven.is_empty() => Verdict::Skipped { reason: format!("{reason}; not proven: {}", unproven.join("; ")) },
@@ -286,9 +395,9 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&c
         match vc.solve(bin, i) {
             crate::smt::Outcome::Proven => proven.push(what),
             crate::smt::Outcome::Refuted(args, msg) => {
-                let vals: Vec<crate::interp::Value> = args.into_iter().map(|a| a.1).collect();
-                match run_case(Interp::new(env, seed), &decl, vals, method, true) {
-                    Case::Fault(Verdict::Counterexample { args, kind, message, .. }) => {
+                let vals: Vec<Value> = args.into_iter().map(|a| a.1).collect();
+                match replay(key, &shown, &decl, imp.is_some(), &vals) {
+                    Some(Verdict::Counterexample { args, kind, message, .. }) => {
                         return Verdict::Counterexample { args, kind, message, found_by: "solver".into(), terminates: None };
                     }
                     _ => unproven.push(format!("{what}: {msg}, but running it did not fail")),
@@ -303,7 +412,7 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, solver: Option<&c
     if unproven.is_empty() {
         // a safety net for the prover: proven code is still run a little
         if cross_check > 0 {
-            if let Verdict::Counterexample { args, kind, message, .. } = fuzz_limited(env, &decl, cross_check, seed, method, Some(CROSS_CHECK_STEPS)) {
+            if let Verdict::Counterexample { args, kind, message, .. } = fuzz_limited(key, &shown, cross_check, seed, Some(CROSS_CHECK_STEPS)) {
                 return Verdict::Counterexample {
                     args,
                     kind,
@@ -326,50 +435,65 @@ pub fn smt_queries(env: &Env, f: &FnDecl, transparent: &crate::fx::HashMap<Strin
     (0..vc.obligations.len()).filter(|&i| !vc.obligations[i].termination).map(|i| (vc.obligations[i].what.clone(), vc.smtlib(i))).collect()
 }
 
-enum Case {
-    /// The inputs are not valid for the function (type or `requires`).
-    Discarded,
-    /// The run went past its step budget: no conclusion either way.
-    TooCostly,
-    Ok,
-    Hole(String),
-    Fault(Verdict),
-}
-
-/// Run one call with the given arguments, as the fuzzer does. `validate`
-/// checks the arguments against the parameter types first (generated
-/// arguments are valid already).
-fn run_case(mut it: Interp, f: &FnDecl, args: Vec<crate::interp::Value>, method: bool, validate: bool) -> Case {
-    let mut scope: crate::interp::Scope = None;
-    for (p, a) in f.params.iter().zip(&args) {
-        if validate && !matches!(it.check_type(&p.ty, a), Ok(None)) {
-            return Case::Discarded;
+/// Run what `key` names on the solver's counterexample, compiled: a probe
+/// binding each value to its parameter's type (an invalid one is a fault
+/// there, of the probe's own: the input is discarded), then calling it. Its
+/// own precondition unmet discards it too. `None`: nothing to conclude.
+fn replay(key: &str, shown: &str, decl: &FnDecl, method: bool, vals: &[Value]) -> Option<Verdict> {
+    let prog = PROGRAM.get()?;
+    // a method's checked form has the hidden type argument first; its wrapper doesn't
+    let params: Vec<&Param> = decl.params.iter().filter(|p| !(method && p.name == crate::types::type_arg("Self"))).collect();
+    let vals: Vec<&Value> = decl.params.iter().zip(vals).filter(|(p, _)| !(method && p.name == crate::types::type_arg("Self"))).map(|(_, v)| v).collect();
+    let mut stmts = vec![];
+    let mut args = vec![];
+    for (i, (p, v)) in params.iter().zip(&vals).enumerate() {
+        let x = literal_of(v)?;
+        let name = Symbol::new(&format!("strata_arg_{i}"));
+        // a type argument is a type's name; generic types aren't checked here
+        let ty = (!matches!(&p.ty, TypeExpr::Named(n, _) if n == crate::types::TYPE_ARG)).then(|| p.ty.clone());
+        if p.mutable {
+            stmts.push(Stmt::Var(name, ty, x));
+            args.push(Expr::Mut(Box::new(Expr::Var(name))));
+        } else {
+            stmts.push(Stmt::Let(Pattern::Bind(name), ty, x));
+            args.push(Expr::Var(name));
         }
-        scope = Some(std::rc::Rc::new(crate::interp::Frame::new(&p.name, a.clone(), scope)));
     }
-    // Inputs that fail the precondition are not the function's responsibility.
-    if f.requires.iter().any(|r| !matches!(it.eval(r, &scope), Ok(crate::interp::Value::Bool(true)))) {
-        return Case::Discarded;
+    stmts.push(Stmt::Let(Pattern::Wild, None, Expr::Call(Box::new(Expr::Var(Symbol::new(key))), args)));
+    let fault = run_probes(prog, vec![probe("strata_verify_replay", stmts)], JIT_STEPS).ok()?.pop()??;
+    let stack = frames(&fault.stack);
+    // an argument not of its parameter's type (a fault of the probe, which has no frame)
+    if stack.is_empty() && fault.kind == "Refinement" {
+        return None;
     }
-    let res = if method { it.call_method(&f.name, args.clone()) } else { it.call_fn(&f.name, args.clone()) };
-    // past a budget given for the run: no conclusion (past the default
-    // one, a runaway case, as compiled: `too many steps`)
-    if it.exhausted() && !it.default_budget {
-        return Case::TooCostly;
+    if fault.kind == "Requires" && stack.len() == 1 && fault.message.starts_with(&format!("precondition of `{key}` violated")) {
+        return None;
     }
-    match res {
-        Ok(_) => Case::Ok,
-        Err(fault) if fault.kind == FaultKind::Hole => Case::Hole(format!("{} (via {})", fault.msg, short_stack(&fault.stack))),
-        Err(fault) => Case::Fault(Verdict::Counterexample {
-            args: Json::Array(args.iter().map(to_json).collect()),
-            kind: format!("{:?}", fault.kind),
-            message: format!("{} (stack: {})", fault.msg, short_stack(&fault.stack)),
-            found_by: "fuzzer".into(),
-            terminates: None,
-        }),
-    }
+    Some(counterexample(fault, &Json::Array(vals.iter().map(|v| to_json(v)).collect()), key, shown))
 }
 
+/// A value as code (what `derive` writes compile-time values as).
+fn literal_of(v: &Value) -> Option<Expr> {
+    use crate::interp::Fields;
+    Some(match v {
+        Value::Int(n) => Expr::Int(*n),
+        Value::Big(b) => Expr::BigInt(b.to_string()),
+        Value::Float(x) => Expr::Float(*x),
+        Value::Bool(b) => Expr::Bool(*b),
+        Value::Str(s) => Expr::Str(s.clone()),
+        Value::Unit => Expr::Unit,
+        Value::List(xs) => Expr::List(xs.iter().map(literal_of).collect::<Option<_>>()?),
+        Value::Tuple(xs) => Expr::Tuple(xs.iter().map(literal_of).collect::<Option<_>>()?),
+        Value::Record(n, fs) => Expr::Ctor(Symbol::new(n), CtorArgs::Record(fs.iter().map(|(k, x)| Some((Symbol::new(k), literal_of(x)?))).collect::<Option<_>>()?)),
+        Value::Variant(n, Fields::None) => Expr::Ctor(Symbol::new(n), CtorArgs::None),
+        Value::Variant(n, Fields::Pos(xs)) => Expr::Ctor(Symbol::new(n), CtorArgs::Positional(xs.iter().map(literal_of).collect::<Option<_>>()?)),
+        Value::Variant(n, Fields::Rec(fs)) => Expr::Ctor(Symbol::new(n), CtorArgs::Record(fs.iter().map(|(k, x)| Some((Symbol::new(k), literal_of(x)?))).collect::<Option<_>>()?)),
+        Value::Distinct(n, x) => Expr::Ctor(Symbol::new(n), CtorArgs::Positional(vec![literal_of(x)?])),
+        Value::Dict(kvs) => Expr::Call(Box::new(Expr::Var(Symbol::new("dict"))), vec![Expr::List(kvs.iter().map(|(k, x)| Some(Expr::Tuple(vec![literal_of(k)?, literal_of(x)?]))).collect::<Option<_>>()?)]),
+        Value::Set(xs) => Expr::Call(Box::new(Expr::Var(Symbol::new("set"))), vec![Expr::List(xs.iter().map(literal_of).collect::<Option<_>>()?)]),
+        Value::Closure(..) | Value::FnRef(_) | Value::Mock(_) => return None,
+    })
+}
 
 /// Replace `Self` (and the impl's type parameters, at `Int`) in a method
 /// signature so its inputs can be generated.
@@ -386,103 +510,173 @@ pub fn for_impl(imp: &ImplDecl, f: &FnDecl) -> FnDecl {
     g
 }
 
-/// Fuzz every method of an implementation (the trait's contracts included).
-pub fn fuzz_impl_method(env: &Env, imp: &ImplDecl, method: &str, cases: usize, seed: u64) -> Verdict {
-    let tr = &env.traits[&imp.trait_name];
-    let Some(decl) = imp.methods.iter().find(|m| m.name == method).or_else(|| tr.methods.iter().find(|m| m.decl.name == method).map(|m| &m.decl)) else {
-        return Verdict::Skipped { reason: format!("no method `{method}`") };
-    };
-    let mut d = for_impl(imp, decl);
-    d.name = Symbol::from(crate::types::trait_call(&imp.trait_name, method));
-    static_type_arg(imp, decl, &mut d);
-    fuzz_call(env, &d, cases, seed, true)
-}
-
-/// Check a trait law for one implementation with generated inputs.
-pub fn check_law(env: &Env, imp: &ImplDecl, law: &Law, cases: usize, seed: u64) -> Verdict {
-    let as_fn = FnDecl {
-        doc: vec![],
-        comments: vec![],
-        name: law.name.clone(),
-        type_params: vec![],
-        bounds: vec![],
-        params: law.params.clone(),
-        ret: TypeExpr::Named("Bool".into(), vec![]),
-        requires: vec![],
-        ensures: vec![],
-        terminates: false,
-        body: law.body.clone(), comptime: false, derived: false,
-    };
-    let f = for_impl(imp, &as_fn);
-    for i in 0..cases {
-        let mut it = Interp::new(env, seed.wrapping_add(i as u64));
-        let mut generator = std::mem::replace(&mut it.generator, crate::generate::Gen::new(0));
-        let args: Result<Vec<crate::interp::Value>, String> = f.params.iter().map(|p| generator.value(env, &p.ty, &mut it)).collect();
-        it.generator = generator;
-        let args = match args {
-            Ok(a) => a,
-            Err(e) => return Verdict::Skipped { reason: e },
-        };
-        let mut scope: crate::interp::Scope = None;
-        for (p, a) in f.params.iter().zip(&args) {
-            scope = Some(std::rc::Rc::new(crate::interp::Frame::new(&p.name, a.clone(), scope)));
-        }
-        // `Self.empty()` in a law means this implementation's
-        let head = crate::types::texpr_head(&imp.for_type);
-        match it.with_self(&head, |it| it.eval(&f.body, &scope)) {
-            Ok(crate::interp::Value::Bool(true)) => {}
-            Ok(_) => {
-                let shown: Vec<String> = f.params.iter().zip(&args).map(|(p, a)| format!("{} = {}", p.name, to_json(a))).collect();
-                return Verdict::Counterexample {
-                    args: Json::Array(args.iter().map(to_json).collect()),
-                    kind: "Law".into(),
-                    message: format!("law `{}` does not hold for `{}` with {}", law.name, crate::printer::ty(&imp.for_type), shown.join(", ")),
-                    found_by: "fuzzer".into(),
-                    terminates: None,
-                };
-            }
-            Err(fault) => {
-                return Verdict::Counterexample {
-                    args: Json::Array(args.iter().map(to_json).collect()),
-                    kind: format!("{:?}", fault.kind),
-                    message: format!("evaluating law `{}`: {}", law.name, fault.msg),
-                    found_by: "fuzzer".into(),
-                    terminates: None,
-                };
-            }
+/// An implementation's method as checked: its signature for the
+/// implementation, the trait's contract (which binds every implementation)
+/// before its own.
+fn method_decl(env: &Env, imp: &ImplDecl, f: &FnDecl) -> FnDecl {
+    let mut d = for_impl(imp, f);
+    if let Some(tm) = env.traits.get(&imp.trait_name).and_then(|t| t.methods.iter().find(|m| m.decl.name == f.name)) {
+        if !std::ptr::eq(&tm.decl, f) {
+            let tm = for_impl(imp, &tm.decl);
+            d.requires.splice(0..0, tm.requires);
+            d.ensures.splice(0..0, tm.ensures);
         }
     }
-    Verdict::Fuzzed { cases, discarded: 0, proven: 0, unproven: vec![], terminates: None }
+    d
+}
+
+/// The wrapper of what the declaration at `index` (an implementation) has
+/// under `what` (a method's name, or `law.NAME`).
+pub fn wrapper_name(index: usize, what: &str) -> String {
+    format!("strata_verify_{index}_{}", what.replace(|c: char| !c.is_ascii_alphanumeric(), "_"))
+}
+
+/// What `verify` fuzzes besides the program's functions, as functions too:
+/// for each trait implementation (declaration `i` of `prog`), a wrapper per
+/// method, with its contract, calling it through the trait; and per law, one
+/// whose result is the law, ensured to hold. Keyed by `wrapper_name`.
+pub fn wrappers(env: &Env, prog: &Program) -> Vec<FnDecl> {
+    let mut out = vec![];
+    for (i, d) in prog.decls.iter().enumerate() {
+        let DeclKind::Impl(imp) = &d.kind else { continue };
+        if imp.is_inherent() || crate::stdlib::HOST_TYPES.contains(&crate::types::texpr_head(&imp.for_type).as_str()) {
+            continue;
+        }
+        let Some(tr) = env.traits.get(&imp.trait_name) else { continue };
+        let head = crate::types::texpr_head(&crate::types::subst_texpr(&imp.for_type, &imp.type_params.iter().map(|p| (p.clone(), TypeExpr::Named("Int".into(), vec![]))).collect()));
+        for m in &tr.methods {
+            let Some(decl) = imp.methods.iter().find(|x| x.name == m.decl.name).or(if m.default { Some(&m.decl) } else { None }) else { continue };
+            if !decl.type_params.is_empty() || decl.params.iter().any(|p| p.comptime || matches!(p.ty, TypeExpr::Fn(..))) {
+                continue;
+            }
+            let mut w = method_decl(env, imp, decl);
+            w.name = Symbol::new(&wrapper_name(i, crate::names::short(&m.decl.name)));
+            w.doc = vec![];
+            w.comments = vec![];
+            let call = crate::types::trait_call(&imp.trait_name, &m.decl.name);
+            let vars: Vec<Expr> = w.params.iter().map(|p| if p.mutable { Expr::Mut(Box::new(Expr::Var(p.name))) } else { Expr::Var(p.name) }).collect();
+            w.body = if crate::resolve::takes_self(decl) {
+                let mut rest = vars;
+                let recv = rest.remove(0);
+                Expr::Method(Box::new(recv), Symbol::new(&call), rest)
+            } else {
+                let mut args = vec![Expr::Str(head.to_string())];
+                args.extend(vars);
+                Expr::Call(Box::new(Expr::Var(Symbol::new(&call))), args)
+            };
+            out.push(w);
+        }
+        for law in &tr.laws {
+            let as_fn = FnDecl {
+                doc: vec![],
+                comments: vec![],
+                name: Symbol::new(&wrapper_name(i, &format!("law.{}", law.name))),
+                type_params: vec![],
+                bounds: vec![],
+                params: law.params.clone(),
+                ret: TypeExpr::Named("Bool".into(), vec![]),
+                requires: vec![],
+                ensures: vec![Expr::Var(Symbol::new("it"))],
+                terminates: false,
+                body: law.body.clone(),
+                comptime: false,
+                derived: false,
+            };
+            let mut kind = DeclKind::Fn(for_impl(imp, &as_fn));
+            // `Self.empty()` in a law means this implementation's
+            let self_arg = crate::types::type_arg("Self");
+            decl_exprs_mut(&mut kind, |e| {
+                if matches!(e, Expr::Var(x) if x.as_str() == self_arg) {
+                    *e = Expr::Str(head.to_string());
+                }
+            });
+            let DeclKind::Fn(f) = kind else { unreachable!() };
+            out.push(f);
+        }
+    }
+    out
+}
+
+/// Fuzz an implementation's method that only the trait defines (its default).
+pub fn fuzz_impl_method(imp: &ImplDecl, method: &str, key: &str, cases: usize, seed: u64) -> Verdict {
+    fuzz_limited(key, &crate::types::trait_call(&imp.trait_name, method), cases, seed, None)
+}
+
+/// Check a trait law for one implementation with generated inputs: its
+/// wrapper ensures it holds.
+pub fn check_law(imp: &ImplDecl, law: &Law, key: &str, cases: usize, seed: u64) -> Verdict {
+    let shown = format!("law `{}`", law.name);
+    match fuzz_limited(key, &shown, cases, seed, None) {
+        Verdict::Counterexample { args, kind, message, found_by, terminates } => {
+            if kind == "Ensures" && message.contains(&format!("of {shown}")) && message.ends_with(&format!("(stack: {shown})")) || kind == "Ensures" && message.ends_with("(stack: )") {
+                let vals: Vec<Json> = match &args {
+                    Json::Array(xs) => xs.clone(),
+                    _ => vec![],
+                };
+                let with: Vec<String> = law.params.iter().zip(&vals).map(|(p, v)| format!("{} = {v}", p.name)).collect();
+                return Verdict::Counterexample {
+                    args,
+                    kind: "Law".into(),
+                    message: format!("law `{}` does not hold for `{}` with {}", law.name, crate::printer::ty(&imp.for_type), with.join(", ")),
+                    found_by,
+                    terminates,
+                };
+            }
+            Verdict::Counterexample { args, kind, message: format!("evaluating law `{}`: {message}", law.name), found_by, terminates }
+        }
+        other => other,
+    }
 }
 
 /// The step budget of one cross-check run: proven code can still be too
 /// costly to run (Ackermann's function), which proves nothing either way.
 const CROSS_CHECK_STEPS: u64 = 200_000;
 
-/// Functions fuzzed compiled (`strata verify --jit`): each one's driver,
-/// and how to run a case of one (seed, step budget) — the fault that ended
-/// it, if any, and its arguments as JSON.
+/// What is fuzzed compiled: each function's (or wrapper's) driver, those
+/// that couldn't be compiled and why, and how to run a case of one (seed,
+/// step budget) — the fault that ended it, if any, and its arguments as JSON.
 pub struct JitFuzz {
     pub drivers: crate::fx::HashMap<String, usize>,
+    pub failed: crate::fx::HashMap<String, String>,
     pub case: fn(usize, u64, i64) -> (Option<(String, String, String)>, String),
     pub lock: std::sync::Mutex<()>,
 }
 
 pub static JIT_FUZZ: std::sync::OnceLock<JitFuzz> = std::sync::OnceLock::new();
 
-/// The steps a compiled case may take when no budget is given (each loop
-/// iteration and call); past them it is a runaway case, `too many steps`.
+/// The program verified, with the wrappers: what probes (a counterexample's
+/// replay) are compiled with.
+pub static PROGRAM: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
+
+/// The steps a case may take when no budget is given (each loop iteration
+/// and call); past them it is a runaway case, `too many steps`.
 const JIT_STEPS: i64 = 50_000_000;
 
-/// The same for an interpreted case (its steps are evaluation steps, finer).
-const INTERP_STEPS: u64 = 20_000_000;
+/// A call stack's frames, without the wrappers' (an implementation detail).
+fn frames(stack: &str) -> Vec<String> {
+    if stack.is_empty() {
+        return vec![];
+    }
+    stack.split(" -> ").filter(|s| !s.starts_with("strata_verify_")).map(|s| s.to_string()).collect()
+}
 
-/// `fuzz_limited`, compiled: the same verdicts, from cases the driver
-/// generates (with the runtime's numbers, so not the interpreter's inputs).
-fn fuzz_compiled(j: &JitFuzz, addr: usize, f: &FnDecl, cases: usize, seed: u64, budget: Option<u64>) -> Verdict {
+/// A fault of a case as a counterexample: the wrapper's name shown as what it stands for.
+fn counterexample(f: Fault, args: &Json, key: &str, shown: &str) -> Verdict {
+    let stack = frames(&f.stack);
+    let message = f.message.replace(&format!("`{key}`"), &format!("`{shown}`"));
+    Verdict::Counterexample { args: args.clone(), kind: f.kind, message: format!("{message} (stack: {})", short_stack(&stack)), found_by: "fuzzer".into(), terminates: None }
+}
+
+/// Fuzz what `key` names (a function or a wrapper) with its compiled driver,
+/// with an optional step budget per case: with one, a case that goes past
+/// it is set aside, not a failure. `shown`: what messages call it.
+fn fuzz_limited(key: &str, shown: &str, cases: usize, seed: u64, budget: Option<u64>) -> Verdict {
+    let Some(j) = JIT_FUZZ.get() else { return Verdict::Skipped { reason: "not compiled".into() } };
+    let Some(&addr) = j.drivers.get(key) else {
+        return Verdict::Skipped { reason: j.failed.get(key).cloned().unwrap_or_else(|| "not compiled".into()) };
+    };
     let _one = j.lock.lock().unwrap_or_else(|e| e.into_inner());
     let (mut ok, mut discarded) = (0, 0);
-    let name = f.name.to_string();
     for i in 0..cases * 4 {
         if ok >= cases {
             break;
@@ -492,13 +686,13 @@ fn fuzz_compiled(j: &JitFuzz, addr: usize, f: &FnDecl, cases: usize, seed: u64, 
             ok += 1;
             continue;
         };
-        let stack: Vec<String> = if stack.is_empty() { vec![] } else { stack.split(" -> ").map(|s| s.to_string()).collect() };
+        let all: Vec<&str> = if stack.is_empty() { vec![] } else { stack.split(" -> ").collect() };
         // its own precondition, unmet: not its responsibility
-        if kind == "Requires" && stack == [name.clone()] && msg.starts_with(&format!("precondition of `{name}` violated")) {
+        if kind == "Requires" && all == [key] && msg.starts_with(&format!("precondition of `{key}` violated")) {
             discarded += 1;
             continue;
         }
-        if stack.is_empty() && msg.starts_with("could not generate") {
+        if all.is_empty() && msg.starts_with("could not generate") {
             return Verdict::Skipped { reason: msg };
         }
         if budget.is_some() && kind == "Limit" {
@@ -506,70 +700,10 @@ fn fuzz_compiled(j: &JitFuzz, addr: usize, f: &FnDecl, cases: usize, seed: u64, 
             continue;
         }
         if kind == "Hole" {
-            return Verdict::Incomplete { message: format!("{msg} (via {})", short_stack(&stack)), terminates: None };
+            return Verdict::Incomplete { message: format!("{msg} (via {})", short_stack(&frames(&stack))), terminates: None };
         }
-        return Verdict::Counterexample {
-            args: serde_json::from_str(&args).unwrap_or(Json::Array(vec![])),
-            kind,
-            message: format!("{msg} (stack: {})", short_stack(&stack)),
-            found_by: "fuzzer".into(),
-            terminates: None,
-        };
-    }
-    if ok == 0 && discarded > 0 {
-        return Verdict::Skipped { reason: format!("all {discarded} generated inputs violated the precondition") };
-    }
-    Verdict::Fuzzed { cases: ok, discarded, proven: 0, unproven: vec![], terminates: None }
-}
-
-fn fuzz_call(env: &Env, f: &FnDecl, cases: usize, seed: u64, method: bool) -> Verdict {
-    fuzz_limited(env, f, cases, seed, method, None)
-}
-
-/// Fuzz with an optional step budget per case. With a budget, a case that
-/// goes past a limit (steps or recursion depth) is set aside, not a failure.
-fn fuzz_limited(env: &Env, f: &FnDecl, cases: usize, seed: u64, method: bool, budget: Option<u64>) -> Verdict {
-    if let Some(j) = JIT_FUZZ.get().filter(|_| !method) {
-        if let Some(&addr) = j.drivers.get(f.name.as_str()) {
-            return fuzz_compiled(j, addr, f, cases, seed, budget);
-        }
-    }
-    // Generic functions are fuzzed at one instance: every type parameter becomes `Int`.
-    // Generic functions are fuzzed at one consistent instance (see `test_instance`).
-    let inst = if f.type_params.is_empty() {
-        crate::fx::HashMap::default()
-    } else {
-        match crate::types::test_instance(env, f) {
-            Some(i) => i,
-            None => return Verdict::Skipped { reason: "no combination of types satisfies the bounds".into() },
-        }
-    };
-    if f.params.iter().any(|p| matches!(p.ty, TypeExpr::Fn(..))) {
-        return Verdict::Skipped { reason: "higher-order parameters are not generated yet".into() };
-    }
-    let (mut ok, mut discarded) = (0, 0);
-    for i in 0..cases * 4 {
-        if ok >= cases {
-            break;
-        }
-        let mut it = Interp::new(env, seed.wrapping_add(i as u64));
-        let mut generator = std::mem::replace(&mut it.generator, crate::generate::Gen::new(0));
-        let args: Result<Vec<crate::interp::Value>, String> = f.params.iter().map(|p| generator.value(env, &crate::types::subst_texpr(&p.ty, &inst), &mut it)).collect();
-        it.generator = generator;
-        it.budget = Some(budget.unwrap_or(INTERP_STEPS));
-        it.default_budget = budget.is_none();
-        let args = match args {
-            Ok(a) => a,
-            Err(e) => return Verdict::Skipped { reason: e },
-        };
-        match run_case(it, f, args, method, false) {
-            Case::Fault(Verdict::Counterexample { kind, .. }) if budget.is_some() && kind == "Limit" => discarded += 1,
-            Case::TooCostly => discarded += 1,
-            Case::Discarded => discarded += 1,
-            Case::Ok => ok += 1,
-            Case::Hole(message) => return Verdict::Incomplete { message, terminates: None },
-            Case::Fault(v) => return v,
-        }
+        let args: Json = serde_json::from_str(&args).unwrap_or(Json::Array(vec![]));
+        return counterexample(Fault { kind, message: msg, stack }, &args, key, shown);
     }
     if ok == 0 && discarded > 0 {
         return Verdict::Skipped { reason: format!("all {discarded} generated inputs violated the precondition") };
@@ -587,7 +721,7 @@ fn short_stack(stack: &[String]) -> String {
 }
 
 /// A trait method without `self` is called with the type first (`Trait::empty(type)`):
-/// give its checked form that argument, so the generator supplies the type.
+/// give its checked form that argument, so the solver knows the type.
 fn static_type_arg(imp: &ImplDecl, f: &FnDecl, d: &mut FnDecl) {
     if !crate::resolve::takes_self(f) {
         let ty = TypeExpr::Named(crate::types::TYPE_ARG.into(), vec![imp.for_type.clone()]);

@@ -403,8 +403,8 @@ impl<'a> Expander<'a> {
         let mut vs = crate::llvm::jit::comptime(&ir, &roots, &shapes, BUDGET as i64)?;
         match vs.pop() {
             Some(Ok(v)) => Ok(v),
-            Some(Err(f)) if f == "too many steps" => Err(format!("`comptime {}` ran for more than {BUDGET} steps: compile-time code must finish", shown())),
-            Some(Err(f)) => Err(format!("`comptime {}` failed: {f}", shown())),
+            Some(Err(f)) if f.message == "too many steps" => Err(format!("`comptime {}` ran for more than {BUDGET} steps: compile-time code must finish", shown())),
+            Some(Err(f)) => Err(format!("`comptime {}` failed: {}", shown(), f.message)),
             None => Err(format!("`comptime {}` gave nothing", shown())),
         }
     }

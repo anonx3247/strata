@@ -1449,11 +1449,9 @@ fn verify_fuzzes_compiled() {
     let d = tmp("jit-verify");
     let f = d.join("v.strata");
     save(&f, "fn pieces(s: String) -> Positive { len(split(s, \"a\")) - 1 }\nfn loops(n: Natural) -> Int { mut i := 0 while i != n * 2 + 1 { i += 2 } i }\nfn fine(xs: List[String]) -> Natural { len(join(xs, \",\")) }\n");
-    for how in ["--jit", "--interpret"] {
-        let (out, _) = output(Command::new(strata).args(["verify", how, "--file"]).arg(&f).env("STRATA_SOLVER", "none"));
-        assert!(!out.contains("note:"), "{out}");
-        assert!(out.contains("result of `pieces`: 0 does not satisfy `Positive`") && out.contains("~ fine                     fuzzed: 200 cases, 0 discarded"), "{how}: {out}");
-    }
+    let (out, _) = output(Command::new(strata).args(["verify", "--jit", "--file"]).arg(&f).env("STRATA_SOLVER", "none"));
+    assert!(!out.contains("note:"), "{out}");
+    assert!(out.contains("result of `pieces`: 0 does not satisfy `Positive`") && out.contains("~ fine                     fuzzed: 200 cases, 0 discarded"), "{out}");
     let (out, _) = output(Command::new(strata).args(["verify", "--file"]).arg(&f).env("STRATA_SOLVER", "none"));
     assert!(!out.contains("note:"), "{out}");
     assert!(out.contains("✗ pieces                   Refinement violation (found by the fuzzer)") && out.contains("result of `pieces`: 0 does not satisfy `Positive`"), "{out}");

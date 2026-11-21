@@ -133,8 +133,8 @@ Checking:
                                strata.toml's [verify] rules). Proven functions that
                                terminate are still run on --cross-check N cases
                                (default 20, 0: off), to catch a wrong proof.
-                               Fuzzing runs compiled with the JIT (--interpret: in
-                               the interpreter; --jit: say why when it can't)
+                               Everything run is compiled (--jit: say why what
+                               can't be compiled yet is skipped)
 
 Running:
   run [PATH] [-- ARGS..]       run the program: `main` gets the capabilities it asks for
