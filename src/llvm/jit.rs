@@ -14,6 +14,7 @@ use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, Targe
 // the IR's declarations of the same names.
 unsafe extern "C" {
     fn strata_concat();
+    fn strata_concat_owned();
     fn strata_host_env_var();
     fn strata_host_args();
     fn strata_prog_name();
@@ -81,6 +82,7 @@ unsafe extern "C" {
 fn runtime() -> Vec<(&'static str, usize)> {
     vec![
         ("strata_concat", strata_concat as *const () as usize),
+        ("strata_concat_owned", strata_concat_owned as *const () as usize),
         ("strata_host_env_var", strata_host_env_var as *const () as usize),
         ("strata_host_args", strata_host_args as *const () as usize),
         ("strata_prog_name", strata_prog_name as *const () as usize),
