@@ -2116,10 +2116,10 @@ fn std_io_programs_run_with_capabilities_and_exit_codes() {
     // an exit code, writing files and environment variables
     save(&d.join("prog.strata"),
         r#"use std.io.Console
-use std.fs.{Files, FsError}
-use std.process.{Environment, ExitCode}
+use std.fs.{Disk, FsError}
+use std.process.{Process, ExitCode}
 
-fn main(mut console: Console, mut files: Files, env: Environment) -> Result[ExitCode, FsError] {
+fn main(mut console: Console, mut files: Disk, env: Process) -> Result[ExitCode, FsError] {
   mut files.write("out/x.txt", "a")!
   mut files.append("out/x.txt", "b")!
   mut console.eprint(files.read("out/x.txt")!)
@@ -2153,7 +2153,7 @@ fn main(mut console: Console, mut files: Files, env: Environment) -> Result[Exit
     // and `proven` accepts them, listing them
     let (ok, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "verify", "--cases", "10", "--require", "proven"], &d, None);
     assert!(ok && !out.contains("needs the real system"), "{out}");
-    assert!(out.lines().any(|l| l.starts_with("≈ std.io.Terminal.print") && l.contains("assumed: it talks to the real system")), "{out}");
+    assert!(out.lines().any(|l| l.starts_with("≈ std.io.Terminal.print") && l.contains("assumed: `Terminal` is a capability")), "{out}");
     assert!(out.contains("policy: `proven` accepts") && out.contains("`std.fs.Disk.remove`") && !out.contains("is not proven"), "{out}");
     let (_, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "verify", "--json"], &d, None);
     assert!(out.contains(r#""status": "assumed""#), "{out}");
@@ -3065,7 +3065,7 @@ fn method_names_follow_the_receiver_across_modules_and_builtins() {
     // `Console.write` / `Files.write` from two modules, `Files.remove` / the builtin `remove`
     save(&d.join("main.strata"),
         r#"use std.io.{Console, recorder, printed}
-use std.fs.{Files, NotFound, mem_files}
+use std.fs.{Disk, Files, NotFound, mem_files}
 
 fn save(mut console: Console, mut files: Files) {
   mut files.write("a.txt", "hi") except { () }
@@ -3080,7 +3080,7 @@ fn shout[C: Console](mut c: C, s: String) {
   mut c.print("!")
 }
 
-fn main(mut console: Console, mut files: Files) {
+fn main(mut console: Console, mut files: Disk) {
   mut files.write("x.txt", "disk") except { () }
   shout(mut console, files.read("x.txt") except { "?" })
   mut files.remove("x.txt") except { () }
@@ -4052,4 +4052,14 @@ fn capabilities_given_by_the_runtime() {
     // its functions don't take `self`
     let (ok, out) = strata(&["--file", "x.strata", "edit"], &d, Some("capability C {\n  fn f(self) -> Int {\n    1\n  }\n}\n"));
     assert!(!ok && out.contains("a capability's functions don't take `self`"), "{out}");
+    // std's: `main` names `Disk` and `Process`, and calls their traits' methods
+    // without the traits imported; `Files` itself is for code below `main`
+    save(&d.join("std_caps.strata"), "use std.fs.{Disk}\nuse std.process.{Process}\n\nfn main(mut disk: Disk, process: Process) {\n  mut disk.write(\"cap.txt\", \"hi\") except { () }\n  print(disk.read(\"cap.txt\") except { \"?\" })\n  mut disk.remove(\"cap.txt\") except { () }\n  print(disk.exists(\"cap.txt\"))\n  print(len(process.args()))\n}\n");
+    for args in [&["run", "std_caps.strata", "--", "a", "b"][..], &["run", "--interpret", "std_caps.strata", "--", "a", "b"][..]] {
+        let (ok, out) = strata(args, &d, None);
+        assert!(ok && out == "hi\nfalse\n2\n", "{args:?}: {out}");
+    }
+    save(&d.join("asks_files.strata"), "use std.fs.{Files}\n\nfn main(files: Files) {\n  print(files.exists(\"x\"))\n}\n");
+    let (ok, out) = strata(&["run", "asks_files.strata"], &d, None);
+    assert!(!ok && out.contains("Name the capability instead, `disk: Disk` (std.fs), and pass it where `Files` is wanted"), "{out}");
 }

@@ -35,10 +35,7 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
         for pm in &main.params {
             let ty = printer::ty(&pm.ty);
             if capability(&env, &ty).is_none() && !cli::is_options(&env, &pm.ty) {
-                return Err(format!(
-                    "`main` can ask for `Console` (std.io), `Files` (std.fs), `Environment` (std.process), the program's capabilities (`capability ...`), and options: a record that implements `CommandLine` (std.cli). Its parameter `{}` is a `{ty}`",
-                    pm.name
-                ));
+                return Err(format!("{} Its parameter `{}` is a `{ty}`", not_given(&ty, "`main`"), pm.name));
             }
         }
         let ir = if args.flag("--trace") { llvm::compile_traced(p, "main") } else { llvm::compile(p, "main") };
@@ -267,21 +264,27 @@ fn test_jit(p: &Program, filter: &str) -> Result<Vec<TestRun>, String> {
     Ok(out)
 }
 
-/// The real implementation of a capability `main` (or `handle`, or a test)
-/// asks for, by the parameter's type: `Console`, `Files` or `Environment`, or
-/// one of the program's capabilities (which holds nothing).
+/// What the runtime gives for a parameter of `main` (or `handle`, `init`,
+/// `update`, or a test), by its type: a capability (`Disk`, `Process`, the
+/// program's own), which holds nothing; or, for `Console`, the one capability
+/// the environment chooses: the terminal (a test's output is its own).
 pub fn capability(env: &types::Env, ty: &str) -> Option<interp::Value> {
     use interp::Value;
-    if env.capabilities.contains(&Symbol::new(ty)) {
-        return Some(Value::Record(ty.into(), Default::default()));
-    }
-    let rec = |name: &str, fields: Vec<(&str, Value)>| Value::Record(name.into(), fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
-    Some(match ty {
-        "std.io.Console" => rec("std.io.Terminal", vec![("stdout", Value::Int(1)), ("stderr", Value::Int(2))]),
-        "std.fs.Files" => rec("std.fs.Disk", vec![("root", Value::Str(".".into()))]),
-        "std.process.Environment" => rec("std.process.Process", vec![("pid", Value::Int(std::process::id() as i64))]),
-        _ => return None,
-    })
+    let made = if ty == CONSOLE { "std.io.Terminal" } else { ty };
+    env.capabilities.contains(&Symbol::new(made)).then(|| Value::Record(made.into(), Default::default()))
+}
+
+/// The capability trait the environment fills in.
+pub const CONSOLE: &str = "std.io.Console";
+
+/// Why `main` can't ask for `ty`, with what to ask for instead.
+pub fn not_given(ty: &str, what: &str) -> String {
+    let instead = match ty {
+        "std.fs.Files" => " Name the capability instead, `disk: Disk` (std.fs), and pass it where `Files` is wanted.",
+        "std.process.Environment" => " Name the capability instead, `process: Process` (std.process), and pass it where `Environment` is wanted.",
+        _ => "",
+    };
+    format!("{what} can ask for `Console` (std.io), capabilities (`Disk` from std.fs, `Process` from std.process, or the program's own `capability ...`), and options: a record that implements `CommandLine` (std.cli).{instead}")
 }
 
 /// `strata serve [PATH] [--port N]`: serve the program's `handle`, or run

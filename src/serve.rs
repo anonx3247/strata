@@ -31,7 +31,7 @@ fn handler(env: &Env) -> Result<FnDecl, String> {
         .get(&Symbol::new("handle"))
         .ok_or("no `handle` function to serve: write `fn handle(req: Request) -> Response` (with `use std.http.{Request, Response}`)")?
         .clone();
-    let usage = "`handle` takes a `Request` (std.http) and may ask for `Console`, `Files` and `Environment`";
+    let usage = "`handle` takes a `Request` (std.http) and may ask for `Console` and capabilities (`Disk`, `Process`, or the program's own)";
     let mut requests = 0;
     for p in &f.params {
         let ty = crate::printer::ty(&p.ty);
