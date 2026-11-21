@@ -2162,6 +2162,25 @@ fn main(mut console: Console, mut files: Disk, env: Process) -> Result[ExitCode,
     assert!(out.contains(r#""status": "assumed""#), "{out}");
 }
 
+/// A record literal heading a loop, `if`, `match` or contract is rendered
+/// in parentheses, as it must be written: the text reads back the same.
+#[test]
+fn record_literals_in_conditions_round_trip() {
+    let d = tmp("brace-heads");
+    let src = "type W = { ok: Bool }\n\nfn f(n: Int) -> Int\n  requires (W { ok: true }).ok\n{\n  while (W { ok: false }).ok {\n    print(1)\n  }\n  for x in (Dict { 1: 2 }) {\n    print(x)\n  }\n  if (W { ok: n > 0 }) == (W { ok: true }) {\n    print(2)\n  }\n  match (W { ok: true }) {\n    W { ok } => if ok { 1 } else { 2 },\n  }\n}\n";
+    let (ok, out) = strata(&["--file", "a.strata", "edit"], &d, Some(src));
+    assert!(ok, "{out}");
+    let (ok, text) = strata(&["--file", "a.strata", "render"], &d, None);
+    assert!(ok, "{text}");
+    for line in ["requires (W { ok: true }.ok)", "while (W { ok: false }.ok) {", "for x in (Dict { 1: 2 }) {", "if (W { ok: n > 0 } == W { ok: true }) {", "match (W { ok: true }) {"] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+    let (ok, out) = strata(&["--file", "b.strata", "edit"], &d, Some(&text));
+    assert!(ok, "{out}");
+    let (_, again) = strata(&["--file", "b.strata", "render"], &d, None);
+    assert_eq!(again, text);
+}
+
 #[test]
 fn string_escapes_round_trip() {
     let d = tmp("escapes");
