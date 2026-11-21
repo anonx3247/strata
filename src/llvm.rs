@@ -1558,6 +1558,33 @@ impl<'m, 'a> Func<'m, 'a> {
         self.m.lower(t, &self.sub)
     }
 
+    /// The type a type argument stands for, known here: its text
+    /// (`"List[Int]"`), a type parameter of this instance (`type:T`), or
+    /// `$type(head, args..)`.
+    fn type_arg_ty(&self, e: &Expr, hint: Option<&Ty>) -> Res<Ty> {
+        match e {
+            Expr::Str(h) => {
+                let t = crate::types::parse_type_text(h);
+                match (&t, hint) {
+                    // a generic type named by its head only: the call's own type says the rest
+                    (TypeExpr::Named(n, args), Some(ht @ Ty::Con(m, _))) if args.is_empty() && n == m => Ok(ht.clone()),
+                    _ => self.lower(&t),
+                }
+            }
+            Expr::Var(x) if x.starts_with("type:") => self.sub.get(&Symbol::new(&x["type:".len()..])).cloned().ok_or(format!("the type `{x}` is not known here")),
+            Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if n == crate::types::TYPE_TEXT) => {
+                let Some(Expr::Str(h)) = args.first() else { return Err("a type's text without its head".into()) };
+                let targs = args[1..].iter().map(|a| self.type_arg_ty(a, None)).collect::<Res<Vec<_>>>()?;
+                let head = self.lower(&TypeExpr::Named(Symbol::new(h), vec![]))?;
+                Ok(match head {
+                    Ty::Con(n, _) => Ty::Con(n, targs),
+                    other => other,
+                })
+            }
+            _ => Err("a type argument that isn't known here".into()),
+        }
+    }
+
     /// A variable that borrows its value (a parameter, `it`, a captured value).
     fn local(&mut self, name: &str, t: &Ty, declared: Option<TypeExpr>) -> Res<String> {
         let slot = self.fresh(&format!("v.{}", name.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_', "_")));
@@ -3611,6 +3638,11 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     fn call_named(&mut self, call: &Expr, name: &str, args: Vec<&Expr>) -> Res<V> {
+        // a type passed at runtime (`$type("List", type:T)`): compiled code is
+        // made per type, so the value is never used
+        if name == crate::types::TYPE_TEXT {
+            return Ok((Ty::Unit, String::new()));
+        }
         if name == "matches" && args.len() == 2 && self.lookup(name).is_none() && !self.m.env.fns.contains_key(&Symbol::new(name)) {
             // a pattern built at run time: the runtime's engine (Rust's `regex`, under the JIT)
             let Expr::Str(re) = args[1] else {
@@ -3649,16 +3681,8 @@ impl<'m, 'a> Func<'m, 'a> {
             if !takes_self {
                 let hint = self.ty_of(call).ok();
                 let recv = match args.first() {
-                    Some(Expr::Str(h)) => match (h.as_str(), &hint) {
-                        ("Int", _) => Ty::Int,
-                        ("Float", _) => Ty::Float,
-                        ("Bool", _) => Ty::Bool,
-                        ("String", _) => Ty::Str,
-                        (_, Some(t @ Ty::Con(n, _))) if n == h => t.clone(),
-                        _ => Ty::Con(Symbol::new(h), vec![]),
-                    },
-                    Some(Expr::Var(x)) if x.starts_with("type:") => self.sub.get(&Symbol::new(&x["type:".len()..])).cloned().ok_or(format!("the type `{x}` is not known here"))?,
-                    _ => return Err(format!("`{name}` needs the type it is called on")),
+                    Some(e) => self.type_arg_ty(e, hint.as_ref())?,
+                    None => return Err(format!("`{name}` needs the type it is called on")),
                 };
                 let vs = self.operands(&args[1..])?;
                 return self.call_method(name, recv, vs, hint, &[]);

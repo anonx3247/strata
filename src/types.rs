@@ -287,22 +287,84 @@ pub enum Target {
     Other(String, String),
 }
 
-/// A type as passed at runtime: a concrete type's name, or the caller's own
-/// type parameter (forwarded from its hidden argument `type:T`).
+/// A type as passed at runtime: a type with its arguments (`List[Int]`),
+/// in which the caller's own type parameters are forwarded from their hidden
+/// arguments `type:T`. At runtime it is its text: `"List[Int]"`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeRef {
-    Head(String),
+    Con(String, Vec<TypeRef>),
     Param(String),
 }
 
+/// The builtin that makes a type's text from its head and its arguments'
+/// texts, when some of them are known only when the code runs.
+pub const TYPE_TEXT: &str = "$type";
+
 impl TypeRef {
-    /// The expression that evaluates to this type at runtime.
-    pub fn expr(&self) -> Expr {
-        match self {
-            TypeRef::Head(h) => Expr::Str(h.clone()),
-            TypeRef::Param(p) => Expr::Var(Symbol::from(type_arg(p))),
+    /// A checker type, as passed at runtime (its head only, when an argument
+    /// isn't known).
+    pub fn of(t: &Ty) -> Option<TypeRef> {
+        match t {
+            Ty::Rigid(q) => Some(TypeRef::Param(q.to_string())),
+            Ty::Con(h, args) => Some(TypeRef::Con(h.to_string(), args.iter().map(TypeRef::of).collect::<Option<Vec<_>>>().unwrap_or_default())),
+            _ => Some(TypeRef::Con(ty_head(t)?.to_string(), vec![])),
         }
     }
+
+    /// Its text, when it has no type parameter in it.
+    fn text(&self) -> Option<String> {
+        match self {
+            TypeRef::Param(_) => None,
+            TypeRef::Con(h, args) if args.is_empty() => Some(h.clone()),
+            TypeRef::Con(h, args) => Some(format!("{h}[{}]", args.iter().map(|a| a.text()).collect::<Option<Vec<_>>>()?.join(", "))),
+        }
+    }
+
+    /// The expression that evaluates to this type at runtime.
+    pub fn expr(&self) -> Expr {
+        if let Some(t) = self.text() {
+            return Expr::Str(t);
+        }
+        match self {
+            TypeRef::Param(p) => Expr::Var(Symbol::from(type_arg(p))),
+            TypeRef::Con(h, args) => Expr::Call(Box::new(Expr::Var(Symbol::from(TYPE_TEXT))), std::iter::once(Expr::Str(h.clone())).chain(args.iter().map(|a| a.expr())).collect()),
+        }
+    }
+}
+
+/// The head of a type's runtime text: `List` of `List[Int]`.
+pub fn type_text_head(t: &str) -> &str {
+    t.split('[').next().unwrap_or(t)
+}
+
+/// A type's runtime text read back (`List[Int]`): names with arguments.
+pub fn parse_type_text(t: &str) -> TypeExpr {
+    fn go(s: &[char], i: &mut usize) -> TypeExpr {
+        let start = *i;
+        while *i < s.len() && !matches!(s[*i], '[' | ']' | ',') {
+            *i += 1;
+        }
+        let name: String = s[start..*i].iter().collect::<String>().trim().to_string();
+        let mut args = vec![];
+        if *i < s.len() && s[*i] == '[' {
+            *i += 1;
+            loop {
+                args.push(go(s, i));
+                if *i < s.len() && s[*i] == ',' {
+                    *i += 1;
+                    continue;
+                }
+                *i += 1; // `]`
+                break;
+            }
+        }
+        match name.as_str() {
+            "Unit" => TypeExpr::Unit,
+            _ => TypeExpr::Named(Symbol::from(name.as_str()), args),
+        }
+    }
+    let s: Vec<char> = t.chars().collect();
+    go(&s, &mut 0)
 }
 
 /// The hidden parameter carrying type parameter `p` at runtime.
@@ -554,6 +616,10 @@ struct Checker<'a> {
     matches: Vec<Coverage>,
     /// What `Self` means here (inside a trait or impl).
     self_ty: Option<Ty>,
+    /// In an impl: its type parameters, and whether the method being checked
+    /// takes `self` (`T.m()` needs one without).
+    impl_params: Vec<Symbol>,
+    method_self: bool,
     /// Trait bounds on the rigid type parameters in scope (`T: Ord`).
     bounds: HashMap<Symbol, Vec<(Symbol, Vec<Ty>)>>,
     /// Obligations `type implements trait[args]`, solved at the end of the declaration.
@@ -1518,8 +1584,8 @@ impl<'a> Checker<'a> {
                         self.err(format!("`{p}` must be a concrete type here (it has methods called on the type), not any `{}`", crate::names::short(&h)));
                         continue;
                     }
-                    _ => match ty_head(&t) {
-                        Some(h) => TypeRef::Head(h.to_string()),
+                    _ => match TypeRef::of(&t) {
+                        Some(r) => r,
                         // unknown: the bound's obligation already asks for an annotation
                         None => continue,
                     },
@@ -1561,14 +1627,17 @@ impl<'a> Checker<'a> {
                 Some(t) => {
                     let h = ty_head(&self.resolve(&t))?;
                     let k = self.env.impls.iter().filter(|i| texpr_head(&i.for_type) == h).map(|i| i.trait_name.clone()).collect();
-                    (t, TypeRef::Head(h.to_string()), k)
+                    let r = TypeRef::of(&self.resolve(&t))?;
+                    (t, r, k)
                 }
                 None => return None,
             }
         } else if self.rigid.contains(&x) {
-            // only functions are given their type arguments when they run
-            if self.self_ty.is_some() {
-                self.err(format!("`{}.{sm}()`: methods can't be called on an impl's or trait's own type parameters yet (only a function's)", short(&x)));
+            // functions are given their type arguments when they run; an impl's
+            // own come from the type a method without `self` is called on
+            if self.self_ty.is_some() && !(self.impl_params.contains(&x) && !self.method_self) {
+                let why = if self.impl_params.contains(&x) { "only in a method without `self` (the type it is called on says what it is)" } else { "only on a function's or an impl's type parameters" };
+                self.err(format!("`{}.{sm}()`: a method can be called on a type parameter {why}", short(&x)));
                 return Some(self.fresh());
             }
             let k = rigid(self, &x);
@@ -1588,7 +1657,7 @@ impl<'a> Checker<'a> {
                 },
             };
             let k = self.env.impls.iter().filter(|i| texpr_head(&i.for_type) == x).map(|i| i.trait_name.clone()).collect();
-            (t, TypeRef::Head(x.to_string()), k)
+            (t, TypeRef::Con(x.to_string(), vec![]), k)
         };
         let mut cands: Vec<Symbol> = known.into_iter().filter(|t| statics.contains(t)).collect();
         cands.sort();
@@ -1596,7 +1665,7 @@ impl<'a> Checker<'a> {
         let tr = match cands.as_slice() {
             [tr] => tr.clone(),
             // not known to have it: with a single candidate, the obligation says what is missing
-            [] if statics.len() == 1 && matches!(tref, TypeRef::Head(_)) => statics[0].clone(),
+            [] if statics.len() == 1 && matches!(tref, TypeRef::Con(..)) => statics[0].clone(),
             [] => {
                 self.err(format!("`{}` has no method `{sm}` called on the type (none of its traits declares one)", short(&x)));
                 return Some(self.fresh());
@@ -3179,6 +3248,8 @@ impl<'a> Checker<'a> {
             holes: Vec::new(),
             matches: Vec::new(),
             self_ty: None,
+            impl_params: Vec::new(),
+            method_self: false,
             bounds: HashMap::default(),
             pending: Vec::new(),
             lambda_floor: 0,
@@ -3312,6 +3383,8 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec
             holes: Vec::new(),
             matches: Vec::new(),
             self_ty: None,
+            impl_params: Vec::new(),
+            method_self: false,
             bounds: HashMap::default(),
             pending: Vec::new(),
             lambda_floor: 0,
@@ -3499,11 +3572,14 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec
                         }
                     }
                 }
+                c.impl_params = i.type_params.iter().map(|p| p.sym()).collect();
                 for im in &i.methods {
                     let saved = c.rigid.clone();
+                    c.method_self = crate::resolve::takes_self(im);
                     c.check_fn(im);
                     c.rigid = saved;
                 }
+                c.impl_params.clear();
             }
             DeclKind::Test(t) => {
                 c.infer(&t.body);

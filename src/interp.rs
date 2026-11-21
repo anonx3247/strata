@@ -217,6 +217,10 @@ pub struct Interp<'a> {
     /// What `Self` is in the trait methods being run (innermost last): a
     /// default method calling `Self.empty()` uses it.
     self_types: Vec<String>,
+    /// An impl's type parameters, for the method without `self` being run
+    /// (innermost last): `T` is `Int` in `impl[T] Json for List[T]` called on
+    /// `List[Int]`.
+    impl_types: Vec<Vec<(String, String)>>,
     /// The value of the `return` (or `!` / `?`) being carried out.
     returning: Option<Value>,
     /// At most this many evaluation steps, if set.
@@ -316,6 +320,29 @@ fn div_rem_euclid(a: &BigInt, b: &BigInt) -> (BigInt, BigInt) {
         }
     }
     (q, r)
+}
+
+/// The type text of a type, as passed at runtime (`List[Int]`).
+pub fn type_text(t: &TypeExpr) -> String {
+    match t {
+        TypeExpr::Named(n, args) if args.is_empty() => n.to_string(),
+        TypeExpr::Named(n, args) => format!("{n}[{}]", args.iter().map(type_text).collect::<Vec<_>>().join(", ")),
+        TypeExpr::Unit => "Unit".into(),
+        other => crate::printer::ty(other),
+    }
+}
+
+/// `impl[T] .. for List[T]` called on `List[Int]`: `T` is `Int`.
+fn bind_type_params(pattern: &TypeExpr, t: &TypeExpr, params: &[Symbol], out: &mut Vec<(String, String)>) {
+    match (pattern, t) {
+        (TypeExpr::Named(p, pa), _) if pa.is_empty() && params.contains(p) => out.push((p.to_string(), type_text(t))),
+        (TypeExpr::Named(_, pa), TypeExpr::Named(_, ta)) => {
+            for (a, b) in pa.iter().zip(ta) {
+                bind_type_params(a, b, params, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub fn to_json(v: &Value) -> Json {
@@ -426,6 +453,7 @@ impl<'a> Interp<'a> {
             regexes: HashMap::default(),
             writeback: vec![],
             self_types: vec![],
+            impl_types: vec![],
             returning: None,
             budget: None,
             steps: 0,
@@ -789,12 +817,15 @@ impl<'a> Interp<'a> {
     pub fn call_method(&mut self, name: &str, mut args: Vec<Value>) -> R<Value> {
         // a method without `self` (`Trait::empty(type, ..)`): the type comes first
         let is_static = self.env.method_contract(name).is_some_and(|(_, d)| !crate::resolve::takes_self(d));
+        // the type a method without `self` is called on, whole (`List[Int]`)
+        let mut whole = None;
         let head = if is_static {
             match args.first() {
                 Some(Value::Str(h)) => {
                     let h = h.clone();
                     args.remove(0);
-                    h
+                    whole = Some(h.clone());
+                    crate::types::type_text_head(&h).to_string()
                 }
                 _ => return self.fail(FaultKind::Runtime, format!("`{name}` needs the type it is called on")),
             }
@@ -821,8 +852,19 @@ impl<'a> Interp<'a> {
         decl.requires.splice(0..0, req);
         decl.ensures.splice(0..0, ens);
         let label = format!("{head}.{}", crate::types::split_trait_call(name).map_or(name, |(_, m)| m));
-        self.self_types.push(head);
+        // the impl's type parameters, from the type it is called on
+        let bound = match (&whole, crate::types::split_trait_call(name)) {
+            (Some(w), Some((tr, _))) => self.env.impls.iter().find(|i| i.trait_name == tr && crate::types::texpr_head(&i.for_type) == head).map(|i| {
+                let mut b = vec![];
+                bind_type_params(&i.for_type, &crate::types::parse_type_text(w), &i.type_params, &mut b);
+                b
+            }).unwrap_or_default(),
+            _ => vec![],
+        };
+        self.self_types.push(whole.unwrap_or(head));
+        self.impl_types.push(bound);
         let r = self.call_decl(&decl, &label, args);
+        self.impl_types.pop();
         self.self_types.pop();
         r
     }
@@ -964,6 +1006,11 @@ impl<'a> Interp<'a> {
         use Value::*;
         if crate::stdlib::is_host(name) {
             return self.host_call(name, args);
+        }
+        // a type's runtime text from its head and arguments' texts: `List[Int]`
+        if name == crate::types::TYPE_TEXT {
+            let parts: Vec<String> = args.iter().map(|a| if let Str(t) = a { t.clone() } else { String::new() }).collect();
+            return Ok(Str(format!("{}[{}]", parts[0], parts[1..].join(", "))));
         }
         if name == "print" {
             let line = show(args.first().unwrap_or(&Unit)) + "\n";
@@ -1456,6 +1503,14 @@ impl<'a> Interp<'a> {
                     Some(h) => Value::Str(h.clone()),
                     None => return self.fail(FaultKind::Runtime, "`Self` is not known here"),
                 },
+                // `T.m()` in an impl's method without `self`: from the type it was called on
+                None if x.as_str().starts_with("type:") => {
+                    let p = &x.as_str()["type:".len()..];
+                    match self.impl_types.last().and_then(|b| b.iter().find(|(n, _)| n == p)) {
+                        Some((_, t)) => Value::Str(t.clone()),
+                        None => return self.fail(FaultKind::Runtime, format!("the type `{p}` is not known here")),
+                    }
+                }
                 None => Value::FnRef(x.to_string()),
             },
             Expr::List(es) => Value::List(es.iter().map(|x| self.eval(x, s)).collect::<R<_>>()?),
