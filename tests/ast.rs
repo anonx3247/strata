@@ -378,9 +378,9 @@ fn bad_input_is_an_error_not_a_crash() {
 /// `std.ast.binary`'s SHA-256 (private: it names definitions, nothing else)
 /// against the `sha2` crate: every length from 0 to 200 bytes (each padding
 /// case, one to four blocks), longer ones around block and power-of-two
-/// edges, inputs of all zeros and all ones, and 20,000 `a`s; then FIPS
-/// 180's examples against their published digests. (Not a `test` in the
-/// module: a test in std runs in every program's `strata test`.)
+/// edges, inputs of all zeros and all ones, and 20,000 `a`s. FIPS 180's
+/// examples are a test of the module, run by `strata --file std test` (and
+/// not by other programs' `strata test`).
 #[test]
 fn sha256_agrees_with_the_sha2_crate() {
     use sha2::{Digest, Sha256};
@@ -429,19 +429,14 @@ fn sha256_agrees_with_the_sha2_crate() {
         handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
     });
     assert!(wrong.is_empty(), "{} of {} inputs differ:\n{}", wrong.len(), inputs.len(), wrong.join("\n"));
-    // FIPS 180's examples, against their published digests (no library involved)
-    for (text, want) in [
-        ("", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
-        ("abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
-        ("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"),
-        (
-            "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu",
-            "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1",
-        ),
-    ] {
-        let arg = format!("[{:?}]", text.as_bytes());
-        let out = run(&["--file", &std_dir, "run", "std.ast.binary.sha256", &arg]);
-        let got: String = out.split(|c: char| !c.is_ascii_digit()).filter(|t| !t.is_empty()).map(|t| format!("{:02x}", t.parse::<u8>().unwrap())).collect();
-        assert_eq!(got, want, "SHA-256 of {text:?}");
-    }
+    // FIPS 180's examples, the million `a`s included: a test of the module,
+    // run with std's own tests, and only there (std is tested on its own)
+    let out = run(&["--file", &std_dir, "test"]);
+    assert!(out.contains("✓ std.ast.binary: sha256 gives FIPS 180's examples"), "{out}");
+    let dir = scratch("std-tests");
+    let file = dir.join("mine.strata");
+    save(&file, "use std.ast.binary.{version}\n\ntest \"mine\" {\n  assert version() == 1\n}\n");
+    let out = run(&["--file", &file.to_string_lossy(), "test"]);
+    assert_eq!(out, "✓ mine\n\n1 passed, 0 failed\n", "a program's tests are its own, not std's");
+    let _ = std::fs::remove_dir_all(&dir);
 }
