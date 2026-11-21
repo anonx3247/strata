@@ -12,6 +12,7 @@
 <body>
 <div id="progress"></div>
 <nav id="nav"></nav>
+<a id="docs-link" href="docs.html?d=learn-strata">Learn Strata →</a>
 
 <!-- ═════════════════════════ hero ═════════════════════════ -->
 <section id="hero" data-nav="Strata">
@@ -105,18 +106,17 @@
 <section id="contracts" data-nav="Contracts">
   <div class="kicker">Fix 03 · Contracts that travel</div>
   <h2 class="words">Change a contract, and everything that relied on it is checked again.</h2>
-  <p class="lede reveal"><code>discount</code> now only applies to amounts of at least 1.00: one new line, <code>requires amount &gt;= 100</code>. <code>checkout</code> calls it with any total, including 0. Step through what happens.</p>
-  <div class="grid2" style="grid-template-columns: 1.1fr .9fr">
-    <div class="reveal">
-      <div class="cgraph" id="cgraph"></div>
-      <div class="row" style="margin-top:14px"><button class="btn" id="c-next">1 · edit discount</button><button class="btn ghost" id="c-reset">reset</button></div>
-      <p class="caption" id="c-say">Below: the two definitions, as an agent would send them.</p>
+  <p class="lede reveal">You say once what a function needs and what it guarantees. When that changes, Strata knows who relied on it: <code>discount</code> gets a stricter precondition, then a new parameter. Step through it with the arrows, or the <b>← →</b> keys.</p>
+  <div id="c-player" class="player-box reveal">
+    <div class="steps"></div>
+    <div class="cplay">
+      <div>
+        <div class="say" id="c-say"></div>
+        <div class="cgraph" id="cgraph"></div>
+        <div class="controls"></div>
+      </div>
+      <div class="pane"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">~/shop</span></div><div class="body wrap" id="c-term"></div></div>
     </div>
-    <div class="pane tall reveal"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">terminal</span></div><div class="body wrap" id="c-term"></div></div>
-  </div>
-  <div class="vs" style="margin-top:46px">
-    <div class="side old reveal"><h4>✗ what a line diff says</h4><div class="pane"><div class="bar"><span class="title">git diff</span><span class="count bad">+1 line</span></div><div class="body" id="c-linediff"></div></div><p class="caption">One added line. Nothing says it is a stricter precondition, or who depends on it.</p></div>
-    <div class="side new reveal"><h4>✓ what Strata says</h4><div class="pane"><div class="bar"><span class="title">strata diff</span></div><div class="body wrap" id="c-diff" style="white-space:normal"></div></div><p class="caption">"Stricter precondition", who uses it, and the verdicts before and after.</p></div>
   </div>
 </section>
 
@@ -132,7 +132,7 @@
     <div>
       <div class="say" id="sess-say"></div>
       <div class="pane" id="sess-term" style="margin-top:16px"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">~/shop</span></div><div class="body wrap"></div></div>
-      <div class="controls"><button class="btn ghost" id="sess-prev">←</button><button class="btn" id="sess-play">▶ play</button><button class="btn ghost" id="sess-next">→</button><span class="n" id="sess-n"></span></div>
+      <div class="controls"></div>
       <details class="diffbox" id="sess-diffbox"><summary>the same step as a line diff</summary><div class="pane" style="margin-top:8px"><div class="body" id="sess-diff"></div></div></details>
     </div>
     <div class="frame" id="sess-viewer" data-w="1150" data-h="860"></div>
@@ -172,9 +172,11 @@
 <!-- ═════════════════════════ explore ═════════════════════════ -->
 <section id="explore" data-nav="Explore">
   <div class="kicker">Explore</div>
-  <h2 class="words">A real package, in the real viewer.</h2>
-  <p class="lede reveal">Backend-agnostic task queues in four modules: traits with contracts, an in-memory backend whose invariants are part of its type, and model-based simulation. Switch to the type map, click through the references, or press <code>⌘P</code> inside the viewer.</p>
-  <div class="frame reveal" id="explore-viewer" data-w="1600" data-h="920" data-sel="core.run_worker" style="margin-top:40px"></div>
+  <h2 class="words">Small programs, in the real viewer.</h2>
+  <p class="lede reveal">Pick an example. Click a name to follow it, hover one for an arrow to where it is, switch to the type map, or press <code>⌘P</code> inside the viewer.</p>
+  <div class="tabs" id="ex-tabs"></div>
+  <p class="caption" id="ex-say" style="max-width:80ch"></p>
+  <div class="frame" id="explore-viewer" data-w="1500" data-h="860" style="margin-top:18px"></div>
 </section>
 
 <!-- ═════════════════════════ start ═════════════════════════ -->
@@ -183,9 +185,9 @@
   <h2 class="words">Strata is an experiment. Here is how to try it.</h2>
   <div class="pane cmds reveal"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">terminal</span></div><div class="body" id="start-cmds"></div></div>
   <div class="links stagger">
-    <a href="../docs/learn-strata.md"><b>Learn Strata in Y minutes →</b><span>The whole language on one page, as one valid file. Give it to an agent before it writes Strata.</span></a>
-    <a href="../docs/verification.md"><b>Verification →</b><span>What <code>strata verify</code> proves, with examples.</span></a>
-    <a href="../docs/tools.md"><b>Tools →</b><span>The command line, the viewer, packages and git.</span></a>
+    <a href="docs.html?d=learn-strata"><b>Learn Strata in Y minutes →</b><span>The whole language on one page, as one valid file. Give it to an agent before it writes Strata.</span></a>
+    <a href="docs.html?d=verification"><b>Verification →</b><span>What <code>strata verify</code> proves, with examples.</span></a>
+    <a href="docs.html?d=tools"><b>Tools →</b><span>The command line, the viewer, packages and git.</span></a>
   </div>
   <footer>Every output on this page was recorded from the real <code>strata</code> CLI by <code>site/build.mjs</code>.</footer>
 </section>
@@ -194,8 +196,9 @@
 <script src="data/orders.js"></script>
 <script src="data/contract.js"></script>
 <script src="data/math.js"></script>
-<script src="data/tasks.js"></script>
+<script src="data/explore.js"></script>
 <script src="data/session.js"></script>
+<script src="common.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -80,15 +80,20 @@ function emit(name, value) {
   v.stop();
 }
 
-// ───────────────────── tasks: a four-module package to explore ─────────────────────
+// ───────────────────── small examples to explore in the viewer ─────────────────────
 {
-  const dir = join(WORK, 'tasks');
-  cpSync(join(EX, 'tasks'), dir, { recursive: true });
-  run(dir, ['verify']);
-  const v = await viewer(dir);
-  const { state } = await v.snap();
-  emit('tasks', { state, changes: { all: { error: 'this package has no history here: see the agent session above' } } });
-  v.stop();
+  const explore = {};
+  for (const [name, src] of [['bank', join(EX, 'bank.strata')], ['traits', join(EX, 'traits.strata')], ['wc', join(EX, 'wc')]]) {
+    let dir;
+    if (src.endsWith('.strata')) dir = pkg(name, [src]);
+    else { dir = join(WORK, name); cpSync(src, dir, { recursive: true }); }
+    run(dir, ['verify']);
+    const v = await viewer(dir, `examples/${name}`);
+    const { state } = await v.snap();
+    explore[name] = { state, changes: { all: { error: 'no history recorded for this example' } } };
+    v.stop();
+  }
+  emit('explore', explore);
 }
 
 // ─────────────── orders: levels of detail, holes, a trace, the agent session ───────────────
@@ -224,18 +229,14 @@ fn discount(amount: Cents) -> Cents {
   emit('session', session);
 }
 
-// ─────────────── contracts: a stricter precondition, and who relied on the old one ───────────────
+// ─────────────── contracts: tighten one, then change a signature ───────────────
 {
   const dir = pkg('contract', [join(EX, 'orders.strata')]);
-  const checkoutSrc = `/// What the customer pays: the total, with the discount applied.
-fn checkout(lines: NonEmpty[Line]) -> Cents {
-  discount(total(lines))
-}
-`;
-  const discountSrc = `/// 10% off orders of 100.00 or more.
-fn discount(amount: Cents) -> Cents
-  requires amount >= 100
-  ensures it <= amount {
+  // the example's `?refund_policy` hole is another story: fill it, so the only holes are this one's
+  run(dir, ['edit', '-m', 'refund: nothing yet'], 'fn refund(o: Order) -> Cents\n  ensures it >= 0 {\n  0\n}\n');
+  const discount = (params, req) => `/// 10% off orders of 100.00 or more.
+fn discount(${params}) -> Cents
+${req ? '  requires amount >= 100\n' : ''}  ensures it <= amount {
   if amount >= 10000 {
     amount - amount / 10
   } else {
@@ -243,21 +244,133 @@ fn discount(amount: Cents) -> Cents
   }
 }
 `;
-  const c = run(dir, ['edit', '-m', 'checkout'], checkoutSrc);
-  const vc = run(dir, ['verify', 'checkout']);
-  const before = run(dir, ['render']).out;
-  const d = run(dir, ['edit', '-m', 'discount only from 1.00'], discountSrc);
-  const linediff = lineDiff(before, run(dir, ['render']).out);
-  const test = run(dir, ['test']);
-  const verify = run(dir, ['verify']);
-  const diff = run(dir, ['diff']);
+  const checkout = call => `/// What the customer pays: the total, with the discount applied.
+fn checkout(lines: NonEmpty[Line]) -> Cents {
+  t := total(lines)
+  if t >= 100 {
+    ${call}
+  } else {
+    t
+  }
+}
+`;
+  const steps = [];
+  const texts = [];
+  /** One step: a command, what was piped into it, and the commands run right after it. */
+  function step(s) {
+    const before = run(dir, ['render']).out;
+    const r = run(dir, s.args, s.input);
+    let out = clean(r.out);
+    for (const t of s.then || []) out += '\n\n$ strata ' + t.join(' ') + '\n' + clean(run(dir, t).out);
+    const after = run(dir, ['render']).out;
+    texts.push([before, after]);
+    steps.push({ ...s, args: undefined, then: undefined, cmd: s.cmd ?? `strata ${s.args.join(' ')}`, input: s.input?.trim(), out, linediff: lineDiff(before, after) });
+    console.log(`  contract ${steps.length}: ${s.title}`);
+  }
+  step({ title: 'Today, checkout is proven', g: { checkout: 'pass' }, args: ['edit', '-m', 'checkout'], cmd: 'strata edit -m "checkout"', then: [['verify', 'checkout']],
+    input: '/// What the customer pays: the total, with the discount applied.\nfn checkout(lines: NonEmpty[Line]) -> Cents {\n  discount(total(lines))\n}\n',
+    say: '`checkout` applies `discount` to the total. Verified: proven.' });
+  step({ title: 'Tighten discount’s contract', g: { discount: 'changed', checkout: 'recheck', totals: 'recheck', lit: true }, args: ['edit', '-m', 'discount only from 1.00'], cmd: 'strata edit -m "discount only from 1.00"',
+    input: discount('amount: Cents', true),
+    say: 'One new line: `requires amount >= 100`. The interface changed, so the edit names what depends on it and must be re-checked.' });
+  step({ title: 'The tests still pass', g: { discount: 'changed', checkout: 'recheck', totals: 'pass' }, args: ['test'],
+    say: 'The only test calls `discount(20000)`. No test tried a basket under 1.00.' });
+  step({ title: 'Verification finds the caller that breaks', g: { discount: 'changed', checkout: 'fail', totals: 'pass', bad: true }, args: ['verify', 'checkout'],
+    say: '`checkout` is checked against the new contract, and the input that breaks it comes with the verdict: a basket worth 0.00.' });
+  step({ title: 'Fix the caller', g: { discount: 'changed', checkout: 'pass', totals: 'pass' }, args: ['edit', '-m', 'checkout: no discount under 1.00'], cmd: 'strata edit -m "checkout: no discount under 1.00"', then: [['verify', 'checkout']],
+    input: checkout('discount(t)'), say: 'Only discount amounts of 1.00 or more. Proven again.' });
+  step({ title: 'Add a parameter: the callers become holes', g: { discount: 'changed', checkout: 'hole', totals: 'hole', lit: true }, args: ['edit', '-m', 'discount: members'], cmd: 'strata edit -m "discount: members"',
+    input: discount('amount: Cents, member: Bool', true),
+    say: '`discount` takes a `member` flag. Its two calls no longer check: rather than refusing the edit, Strata turns them into holes in a pending change.' });
+  step({ title: 'See where the holes are', g: { discount: 'changed', checkout: 'hole', totals: 'hole' }, args: ['holes'],
+    say: 'Each hole says what it was, why it broke, and what is in scope to fill it: a precise task, for you or an agent.' });
+  step({ title: 'Fill them, and close the change', g: { discount: 'changed', checkout: 'recheck', totals: 'recheck' }, args: ['edit'], cmd: 'strata edit', then: [['done']],
+    input: checkout('discount(t, false)') + `
+test "totals" {
+  lines := [
+    Line { sku: "a", qty: 3, unit_price: 100 },
+    Line { sku: "b", qty: 1, unit_price: 50 },
+  ]
+  assert total(lines) == 350
+  assert discount(20000, false) == 18000
+}
+`, say: '`strata done` records it all as one change, one commit: the new parameter, and the two calls that follow it.' });
+  step({ title: 'Verify everything', g: { discount: 'pass', checkout: 'pass', totals: 'pass' }, args: ['verify'],
+    say: 'Every contract holds again, for every input.' });
+  const at = t => steps.findIndex(x => x.title === t);
+  const paramDiff = lineDiff(texts[at('Add a parameter: the callers become holes')][0], texts[at('Fill them, and close the change')][1]);
   const v = await viewer(dir);
-  emit('contract', {
-    checkout: { input: checkoutSrc.trim(), out: clean(c.out), verify: clean(vc.out) },
-    discount: { input: discountSrc.trim(), out: clean(d.out) },
-    linediff, test: clean(test.out), verify: clean(verify.out), diff: clean(diff.out), ...await v.snap(),
-  });
+  emit('contract', { steps, paramDiff, ...await v.snap() });
   v.stop();
+}
+
+// ─────────────── the docs, as pages ───────────────
+/** A small markdown renderer: enough for docs/learn-strata.md, verification.md and tools.md. */
+function markdown(md) {
+  const esc = t => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const PAGES = { 'learn-strata.md': 'learn-strata', 'verification.md': 'verification', 'tools.md': 'tools' };
+  const inline = t => {
+    const codes = [];
+    t = t.replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`);
+    t = esc(t)
+      .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => `<img alt="${alt}" src="${src.startsWith('http') ? src : '../docs/' + src}">`)
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, txt, href) => {
+        const [f, frag] = href.split('#');
+        const page = PAGES[f.replace(/^\.\.?\/(docs\/)?/, '')];
+        const to = page ? `docs.html?d=${page}${frag ? '#' + frag : ''}` : href.startsWith('http') || href.startsWith('#') ? href : '../docs/' + href;
+        return `<a href="${to}">${txt}</a>`;
+      })
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[^*\w])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>');
+    return t.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${esc(codes[+i])}</code>`);
+  };
+  const slug = t => t.toLowerCase().replace(/<[^>]+>/g, '').replace(/[^a-z0-9 -]/g, '').trim().replace(/ +/g, '-');
+  const lines = md.split('\n'), out = [], toc = [];
+  for (let i = 0; i < lines.length;) {
+    const l = lines[i];
+    if (/^```/.test(l)) {
+      const lang = l.slice(3).trim(), body = [];
+      for (i++; i < lines.length && !/^```/.test(lines[i]); i++) body.push(lines[i]);
+      i++;
+      out.push(`<pre class="code" data-lang="${lang || 'text'}">${esc(body.join('\n'))}</pre>`);
+    } else if (/^#{1,4} /.test(l)) {
+      const n = l.match(/^#+/)[0].length, text = inline(l.slice(n + 1)), id = slug(l.slice(n + 1));
+      if (n === 2 || n === 3) toc.push({ n, id, text: text.replace(/<[^>]+>/g, '') });
+      out.push(`<h${n} id="${id}">${text}</h${n}>`); i++;
+    } else if (/^\|/.test(l)) {
+      const rows = [];
+      for (; i < lines.length && /^\|/.test(lines[i]); i++) rows.push(lines[i]);
+      const cells = r => r.replace(/^\||\|$/g, '').split(/(?<!\\)\|/).map(c => inline(c.trim().replace(/\\\|/g, '|')));
+      const [head, , ...body] = rows;
+      out.push(`<table><thead><tr>${cells(head).map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>${body.map(r => `<tr>${cells(r).map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
+    } else if (/^\s*([-*]|\d+\.) /.test(l)) {
+      const ordered = /^\s*\d+\./.test(l), items = [];
+      for (; i < lines.length && (/^\s*([-*]|\d+\.) /.test(lines[i]) || (/^\s+\S/.test(lines[i]) && items.length)); i++) {
+        if (/^\s*([-*]|\d+\.) /.test(lines[i])) items.push(lines[i].replace(/^\s*([-*]|\d+\.) /, ''));
+        else items[items.length - 1] += ' ' + lines[i].trim();
+      }
+      const tag = ordered ? 'ol' : 'ul';
+      out.push(`<${tag}>${items.map(t => `<li>${inline(t)}</li>`).join('')}</${tag}>`);
+    } else if (/^> /.test(l)) {
+      const q = [];
+      for (; i < lines.length && /^>/.test(lines[i]); i++) q.push(lines[i].replace(/^> ?/, ''));
+      out.push(`<blockquote>${inline(q.join(' '))}</blockquote>`);
+    } else if (!l.trim()) i++;
+    else {
+      const p = [];
+      for (; i < lines.length && lines[i].trim() && !/^(```|#{1,4} |\||> |\s*([-*]|\d+\.) )/.test(lines[i]); i++) p.push(lines[i]);
+      out.push(`<p>${inline(p.join(' '))}</p>`);
+    }
+  }
+  return { html: out.join('\n'), toc };
+}
+{
+  const docs = {};
+  for (const [id, file] of [['learn-strata', 'learn-strata.md'], ['verification', 'verification.md'], ['tools', 'tools.md']]) {
+    const md = readFileSync(join(ROOT, 'docs', file), 'utf8');
+    docs[id] = { title: md.match(/^# (.*)/m)[1], ...markdown(md.replace(/^# .*\n/, '')) };
+  }
+  emit('docs', docs);
 }
 
 // ─────────────── the viewer, answering from recorded snapshots ───────────────

@@ -240,3 +240,61 @@ hr.strata { border: 0; height: 1px; background: linear-gradient(90deg, transpare
 .links a:hover { border-color: var(--accent); transform: translateY(-2px); text-decoration: none; }
 .links a b { display: block; margin-bottom: 4px; } .links a span { color: var(--muted); font-size: 14px; }
 footer { text-align: center; color: var(--faint); font-size: 13px; padding: 60px 0 80px; }
+
+/* ───────── structural headlines ───────── */
+.headline { border: 1px solid var(--line2); border-radius: 14px; padding: 18px 20px; background: var(--bg2); margin-bottom: 12px; font-family: var(--sans); }
+.hl-tag { font: 600 11.5px var(--mono); text-transform: uppercase; letter-spacing: .12em; color: var(--accent); margin-bottom: 8px; }
+.hl-tag.warn { color: var(--warn); font-size: 13px; }
+.hl-tag.ok { color: var(--ok); }
+.hl-big { font: 500 22px/1.35 var(--mono); color: var(--text); word-break: break-word; }
+.hl-big.code { font-size: 17px; }
+.hl-big .from { color: #ffb3b3; text-decoration: line-through; text-decoration-thickness: 2px; text-decoration-color: #ff6b6b99; }
+.hl-big .to { color: #b9f3c6; }
+.hl-big .arrow { color: var(--accent2); padding: 0 4px; }
+.hl-big .pill, .change .pill { font: 600 11px var(--mono); padding: 2px 8px; border-radius: 999px; background: #8ea2ff22; color: var(--accent); text-transform: uppercase; letter-spacing: .06em; vertical-align: middle; }
+.hl-big .ins, .change .ins { background: #5fd07a2e; color: #c9f7d4; border-radius: 4px; font-weight: 600; padding: 0 2px; }
+.hl-big .del, .change .del { background: #ff6b6b24; color: #ffc2c2; text-decoration: line-through; border-radius: 4px; }
+.headline.contract { border-color: #ffb05c88; background: linear-gradient(135deg, #ffb05c14, transparent 60%), var(--bg2); box-shadow: 0 0 40px -18px var(--warn); }
+.hl-clause { display: block; margin-top: 10px; }
+.hl-clause b { display: inline-block; font-weight: 700; color: #ffd8a8; background: #ffb05c1f; border: 1px solid #ffb05c66; border-radius: 8px; padding: 4px 12px; }
+.hl-why { margin-top: 10px; color: var(--muted); font-size: 15px; }
+.hl-follow { color: var(--muted); font-size: 14px; margin: 2px 0 10px 6px; }
+.hl-ver { display: flex; flex-direction: column; gap: 4px; margin: 12px 0; padding: 12px 16px; border-radius: 12px; border: 1px dashed var(--line2); font-size: 14px; color: var(--muted); }
+.code-details { margin-top: 14px; }
+.code-details summary { cursor: pointer; font: 13px var(--mono); color: var(--accent); margin-bottom: 10px; }
+.change .head { flex-wrap: wrap; }
+.change .head .what { font: 13px var(--sans); color: var(--muted); font-weight: 400; }
+.change .note { color: var(--warn); font-weight: 700; }
+
+/* ───────── steppers ───────── */
+.steps button { overflow: visible; }
+.steps button::after { border-radius: 3px; }
+.steps .tip { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); white-space: nowrap; font: 12px var(--sans); color: var(--text); background: var(--panel); border: 1px solid var(--line2); border-radius: 6px; padding: 3px 8px; opacity: 0; pointer-events: none; transition: opacity .15s; z-index: 3; }
+.steps button:hover .tip { opacity: 1; }
+.controls .keys { font: 11.5px var(--mono); color: var(--faint); margin-left: 12px; }
+.controls .btn:disabled { opacity: .3; }
+
+/* ───────── contract player ───────── */
+.player-box { margin-top: 44px; }
+.cplay { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 26px; margin-top: 26px; }
+@media (max-width: 1000px) { .cplay { grid-template-columns: 1fr; } }
+#c-say { min-height: 120px; }
+#c-say h3 { font-size: 26px; margin-bottom: 8px; }
+#c-say p { margin: 0; color: var(--muted); }
+#c-term { height: 500px; max-height: none; }
+.cgraph .node .badge { position: absolute; top: -10px; right: -8px; font: 600 10.5px var(--mono); padding: 1px 7px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line2); color: var(--muted); }
+.cgraph .node .badge:empty { display: none; }
+.cgraph .node.pass .badge { color: var(--ok); border-color: var(--ok); }
+.cgraph .node.fail .badge { color: var(--bad); border-color: var(--bad); }
+.cgraph .node.changed .badge { color: var(--accent2); border-color: var(--accent2); }
+.cgraph .node.recheck .badge { color: var(--accent); border-color: var(--accent); }
+.cgraph .node.hole { border-color: var(--hole); box-shadow: 0 0 24px -6px var(--hole); background: #f5d56512; }
+.cgraph .node.hole .badge { color: #1d1d1b; background: var(--hole); border-color: var(--hole); }
+
+/* ───────── docs link ───────── */
+#docs-link { position: fixed; top: 16px; right: 22px; z-index: 45; font: 600 13px var(--sans); color: var(--text); background: #171a21cc; backdrop-filter: blur(8px); border: 1px solid var(--line2); border-radius: 999px; padding: 7px 14px; }
+#docs-link:hover { border-color: var(--accent); text-decoration: none; }
+.c.doc { color: #8f97b8; }
+.vs .side { display: flex; flex-direction: column; }
+.vs .side .pane { height: auto; flex: 1; }
+#diff-note { margin-top: 22px; }

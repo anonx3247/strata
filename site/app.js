@@ -1,82 +1,132 @@
 // The presentation. Everything it shows comes from site/data/*.js, recorded by
 // site/build.mjs from the real CLI; the viewer frames run src/ui/index.html.
+// Highlighting and terminal colouring live in common.js.
 'use strict';
 const D = window.STRATA;
-const $ = (s, el = document) => el.querySelector(s);
-const $$ = (s, el = document) => [...el.querySelectorAll(s)];
-const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 const lastStep = snap => snap.changes.all.steps.at(-1).id;
 const stepTitled = (snap, t) => snap.changes.all.steps.find(s => s.title === t).id;
 const S = t => D.session.find(s => s.title === t);
-
-// ───────────────────────── highlighting ─────────────────────────
-const KW = new Set('fn type trait impl for in if else match while loop return break continue mut let pub use test assert requires ensures where it self true false mock distinct derive or except invariant law'.split(' '));
-function hl(code) {
-  const re = /(\/\/[^\n]*)|("(?:[^"\\]|\\.)*")|(\?[a-z_][a-z0-9_]*)|(\b\d+\b)|([A-Za-z_][A-Za-z0-9_]*)|([\s\S])/g;
-  let out = '', m;
-  while ((m = re.exec(code))) {
-    if (m[1]) out += `<span class="c">${esc(m[1])}</span>`;
-    else if (m[2]) out += `<span class="s">${esc(m[2])}</span>`;
-    else if (m[3]) out += `<span class="h">${esc(m[3])}</span>`;
-    else if (m[4]) out += `<span class="nm">${m[4]}</span>`;
-    else if (m[5]) out += KW.has(m[5]) ? `<span class="k">${m[5]}</span>` : /^[A-Z]/.test(m[5]) ? `<span class="t">${m[5]}</span>` : esc(m[5]);
-    else out += esc(m[6]);
-  }
-  return out;
-}
-/** A line of terminal output, coloured as the meaning of strata's output suggests. */
-function termLine(l) {
-  const e = esc(l);
-  if (/^✓/.test(l)) return `<span class="o-ok">${e}</span>`;
-  if (/^✗|^error|^rejected/.test(l)) return `<span class="o-bad">${e}</span>`;
-  if (/^[~○]/.test(l)) return `<span class="o-warn">${e}</span>`;
-  if (/^\s+input:/.test(l)) return `<span class="o-in">${e}</span>`;
-  if (/^committed to git|^Auto-merging|^Automatic merge/.test(l)) return `<span class="o-dim">${e}</span>`;
-  if (/^\s*\?[a-z_]/.test(l)) return e.replace(/(\?[a-z_0-9]+)/, '<span class="h">$1</span>');
-  if (/^strata: .*applied/.test(l)) return `<span class="o-acc">${e}</span>`;
-  if (/^(fn|type|test|trait|impl)\s+\S/.test(l)) return e.replace(/(#[0-9a-f]{8,})/g, '<span class="o-dim">$1</span>').replace(/(added|changed)/, '<b>$1</b>');
-  if (/^\$ /.test(l)) return `<span class="prompt">$</span> <span class="cmd">${esc(l.slice(2))}</span>`;
-  return e.replace(/(#[0-9a-f]{8,})/g, '<span class="o-dim">$1</span>');
-}
-const term = out => out.split('\n').map(l => `<span class="term-line">${termLine(l)}</span>`).join('');
-const cmdLine = c => `<span class="term-line"><span class="prompt">$</span> <span class="cmd">${esc(c)}</span></span>`;
-const piped = src => `<span class="piped">${hl(src)}</span>`;
-function diffHtml(d) {
-  return d.split('\n').map(l => {
-    const c = /^(\+\+\+|---)/.test(l) ? 'd-file' : l[0] === '+' ? 'd-add' : l[0] === '-' ? 'd-del' : l[0] === '@' ? 'd-hunk' : 'd-ctx';
-    return `<span class="${c}">${esc(l) || ' '}</span>`;
-  }).join('');
-}
-const diffCount = d => d.split('\n').filter(l => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l)).length;
+const md = s => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>');
 
 // ───────────────────────── a structural change, from the viewer's /api/changes ─────────────────────────
+// The headline says what happened in one line (a rename is "Order.Shipped → Order.Sent");
+// the code is there on demand.
 function segs(ss) {
-  return ss.map(([k, t]) => k === '=' ? esc(t) : k === '+' ? `<span class="ins">${esc(t)}</span>` : '').join('');
+  return ss.map(([k, t]) => k === '=' ? esc(t) : k === '+' ? `<span class="ins">${esc(t)}</span>` : `<span class="del">${esc(t)}</span>`).join('');
 }
-function changeHtml(it) {
-  const pill = it.mk === 'add' ? 'ok' : it.mk === 'del' ? 'bad' : it.interface_changed ? 'warn' : '';
-  const lines = it.lines.map(l => {
+function codeHtml(it) {
+  return it.lines.map(l => {
     if (l.s === 'fold') return `<span class="fold">  … ${esc(l.t)}</span>`;
-    if (l.s === '-') return null;
+    if (l.s === '-') return `<span class="del">${esc(l.t)}</span>`;
     if (l.s === '~' && l.segs) return `<span class="mark">${segs(l.segs)}</span>`;
-    if (l.s === '+') return `<span class="ins">${esc(l.t)}</span>`;
+    if (l.s === '+') return `<span class="ins">${esc(l.t)}</span>${l.note ? `  <span class="note">◀ ${esc(l.note)}</span>` : ''}`;
     return esc(l.t);
-  }).filter(x => x != null).join('\n');
-  const updated = it.affected?.filter(a => a.updated).map(a => a.name) || [];
-  return `<div class="change"><div class="head"><span>${esc(it.label)}</span><span class="pill ${pill}">${esc(it.kind)}</span></div>
-    <div class="what">${it.what.map(w => esc(w).replace(/`([^`]+)`/g, '<code>$1</code>')).join(' · ')}</div>
-    ${it.detail.length ? `<div class="detail">${it.detail.map(esc).join(' · ')}</div>` : ''}
-    ${updated.length ? `<div class="detail">updated with it: ${updated.map(n => `<code>${esc(n)}</code>`).join(' ')}</div>` : ''}
-    <pre>${lines}</pre></div>`;
+  }).join('\n');
+}
+const KINDS = { fn: 'fn', type: 'type', test: 'test', trait: 'trait', impl: 'impl' };
+/** One line saying what happened to a definition, read from the change's own words. */
+function headline(it, c) {
+  const kind = `<span class="pill">${esc(KINDS[it.kind] || it.kind)}</span>`;
+  for (const w of it.what) {
+    const m = w.match(/^(variant|field|method) `([^`]+)` renamed to `([^`]+)`/);
+    if (m) return { cls: 'rename', html: `<div class="hl-tag">rename · ${m[1]}</div><div class="hl-big">${esc(it.label)}.<span class="from">${esc(m[2])}</span> <span class="arrow">→</span> ${esc(it.label)}.<span class="to">${esc(m[3])}</span></div>` };
+  }
+  const noted = it.lines.find(l => l.note);
+  if (noted) {
+    const cond = noted.t.trim().replace(/^(requires|ensures)\s+/, '').replace(/\s*\{$/, '');
+    const isReq = /^\s*requires/.test(noted.t);
+    const users = it.affected?.map(a => a.name) || [];
+    const why = isReq ? `Every caller must now guarantee <code>${esc(cond)}</code>.` : `Callers can now rely on <code>${esc(cond)}</code>.`;
+    return { cls: 'contract', html: `<div class="hl-tag warn">⚠ ${esc(noted.note)}</div><div class="hl-big">${kind} ${esc(it.label)} <span class="hl-clause"><b>${esc(noted.t.trim().replace(/\s*\{$/, ''))}</b></span></div>
+      <div class="hl-why">${why}${users.length ? ` ${users.length === 1 ? 'Its user is' : `Its ${users.length} users are`} re-checked: ${users.map(u => `<code>${esc(u)}</code>`).join(' ')}.` : ''}</div>` };
+  }
+  if (it.what.includes('signature changed')) {
+    const sig = it.lines.find(l => l.s === '~' && l.segs);
+    return { cls: 'sig', html: `<div class="hl-tag">signature changed</div><div class="hl-big code">${sig ? segs(sig.segs).replace(/\s*\{\s*$/, '') : esc(it.label)}</div>${it.what.includes('body changed') ? '<div class="hl-why">and its body changed</div>' : ''}` };
+  }
+  if (it.mk === 'add') return { cls: 'add', html: `<div class="hl-tag ok">added</div><div class="hl-big">${kind} ${esc(it.label)}</div>` };
+  return { cls: 'body', html: `<div class="hl-tag">${it.what.map(esc).join(' · ')}</div><div class="hl-big">${kind} ${esc(it.label)}</div>${it.detail.length ? `<div class="hl-why">${it.detail.map(esc).join(' · ')}</div>` : ''}` };
 }
 function structural(c) {
   const items = c.sections.flatMap(s => s.items);
-  const sum = c.summary;
-  const parts = [sum.added && `${sum.added} added`, sum.changed && `${sum.changed} changed`, sum.renamed && `${sum.renamed} renamed`, sum.interface_changes && `${sum.interface_changes} interface change${sum.interface_changes > 1 ? 's' : ''}`].filter(Boolean);
-  const follow = sum.follow_renames ? `<div class="detail" style="margin:4px 0 14px">+ ${sum.follow_renames} definitions that only follow the rename, folded into it</div>` : '';
-  const ver = c.verification?.length ? `<div class="change"><div class="head">verification</div><pre>${c.verification.map(v => `${esc(v.name.padEnd(12))} ${esc(v.before)} → <b>${esc(v.after)}</b>`).join('\n')}</pre></div>` : '';
-  return { html: `<div class="detail" style="margin-bottom:12px;font-family:var(--mono);font-size:12.5px">${parts.join(' · ')}</div>` + follow + items.map(changeHtml).join('') + ver, count: items.length };
+  const ifc = items.filter(i => i.interface_changed);
+  // the names an interface change is about: the definition's own, and any new name it gave
+  const names = ifc.flatMap(m => [m.label, ...m.what.flatMap(w => [...w.matchAll(/renamed to `([^`]+)`/g)].map(x => x[1]))]);
+  // a definition that only changed to keep up with another's new interface follows it
+  const follows = i => !i.interface_changed && i.lines.some(l => '~+'.includes(l.s) && names.some(n => new RegExp(`\\b${n}\\b`).test(l.t)));
+  const main = items.filter(i => !follows(i)), followers = items.filter(follows);
+  const hs = main.map(it => headline(it, c));
+  const followLine = [
+    c.summary.follow_renames ? `${c.summary.follow_renames + followers.length} definitions only follow the rename` : '',
+    followers.length && !c.summary.follow_renames ? `call sites updated to follow it: ${followers.map(f => `<code>${esc(f.label)}</code>`).join(' ')}` : '',
+  ].filter(Boolean).map(t => `<div class="hl-follow">↳ ${t}</div>`).join('');
+  const ver = c.verification?.length ? `<div class="hl-ver">${c.verification.map(v => `<span><code>${esc(v.name)}</code> ${esc(v.before)} → <b class="${/counter|fail/.test(v.after) ? 'o-bad' : /proven/.test(v.after) ? 'o-ok' : ''}">${esc(v.after)}</b></span>`).join('')}</div>` : '';
+  const code = items.map(it => `<div class="change"><div class="head"><span>${esc(it.label)}</span><span class="pill">${esc(it.kind)}</span><span class="what">${it.what.map(md).join(' · ')}</span></div><pre>${codeHtml(it)}</pre></div>`).join('');
+  return {
+    count: main.length,
+    html: hs.map(h => `<div class="headline ${h.cls}">${h.html}</div>`).join('') + followLine + ver +
+      `<details class="code-details"><summary>show the code</summary>${code}</details>`,
+  };
+}
+
+// ───────────────────────── steppers: a bar of steps, arrows, and the ← → keys ─────────────────────────
+const STEPPERS = [];
+class Stepper {
+  /** `bar` gets the step segments, `controls` the arrows; `go(i)` shows step i. */
+  constructor(root, titles, go, { play = false } = {}) {
+    this.root = root; this.n = titles.length; this.cur = -1; this.go_ = go; this.playing = false;
+    $('.steps', root).innerHTML = titles.map((t, i) => `<button data-i="${i}"><span class="tip">${i + 1}. ${esc(t)}</span></button>`).join('');
+    $('.controls', root).innerHTML = `<button class="btn ghost" data-a="prev" title="previous (←)">←</button>${play ? '<button class="btn" data-a="play">▶ play</button>' : ''}<button class="btn ${play ? 'ghost' : ''}" data-a="next" title="next (→)">→</button><span class="n"></span><span class="keys">← → keys</span>`;
+    $('.steps', root).addEventListener('click', e => { const b = e.target.closest('button'); if (b) { this.stop(); this.go(+b.dataset.i); } });
+    $('.controls', root).addEventListener('click', e => {
+      const a = e.target.closest('[data-a]')?.dataset.a;
+      if (a === 'prev') this.prev(); else if (a === 'next') this.next(); else if (a === 'play') this.playing ? this.stop() : this.play();
+    });
+    STEPPERS.push(this);
+  }
+  go(i) {
+    if (i < 0 || i >= this.n) return;
+    this.cur = i;
+    $$('.steps button', this.root).forEach((b, j) => { b.classList.toggle('on', j === i); b.classList.toggle('done', j < i); b.style.setProperty('--p', this.playing ? 0 : 1); });
+    $('.controls .n', this.root).textContent = `${i + 1} / ${this.n}`;
+    $('[data-a=prev]', this.root).disabled = i === 0;
+    $('[data-a=next]', this.root).disabled = i === this.n - 1;
+    this.go_(i);
+  }
+  prev() { this.stop(); this.go(this.cur - 1); }
+  next() { this.stop(); this.go(this.cur + 1); }
+  play() { this.playing = true; const b = $('[data-a=play]', this.root); if (b) b.textContent = '❚❚ pause'; this.go(this.cur + 1 < this.n ? this.cur + 1 : 0); }
+  stop() { this.playing = false; const b = $('[data-a=play]', this.root); if (b) b.textContent = '▶ play'; $$('.steps button', this.root).forEach(b => b.style.setProperty('--p', 1)); }
+  /** While playing: fill the current segment over `ms`, then go on. Resolves false if interrupted. */
+  async wait(ms, i) {
+    const btn = $$('.steps button', this.root)[i], t0 = performance.now();
+    while (performance.now() - t0 < ms) { if (!this.playing || this.cur !== i) return; btn.style.setProperty('--p', (performance.now() - t0) / ms); await sleep(50); }
+    if (this.playing && this.cur === i) { if (i + 1 < this.n) this.go(i + 1); else this.stop(); }
+  }
+}
+// ← → drive whichever stepper takes up most of the screen
+addEventListener('keydown', e => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  if (e.metaKey || e.ctrlKey || e.altKey || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+  const seen = s => { const r = s.root.getBoundingClientRect(); return Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0)); };
+  const best = STEPPERS.map(s => [s, seen(s)]).sort((a, b) => b[1] - a[1])[0];
+  if (!best || best[1] < innerHeight * 0.25) return;
+  e.preventDefault();
+  e.key === 'ArrowLeft' ? best[0].prev() : best[0].next();
+});
+/** Type a command into a terminal, then what was piped in, then its output; stops if `alive()` turns false. */
+async function typeInto(body, s, alive = () => true) {
+  body.innerHTML = '';
+  const line = document.createElement('span'); line.className = 'term-line'; line.innerHTML = '<span class="prompt">$</span> <span class="cmd"></span>';
+  body.appendChild(line);
+  for (const ch of s.cmd) { if (!alive()) return false; $('.cmd', line).textContent += ch; await sleep(20); }
+  if (s.input) { body.insertAdjacentHTML('beforeend', piped(s.input)); await sleep(250); }
+  for (const l of s.out.split('\n')) {
+    if (!alive()) return false;
+    body.insertAdjacentHTML('beforeend', `<span class="term-line">${termLine(l)}</span>`);
+    body.scrollTop = body.scrollHeight; await sleep(45);
+  }
+  return true;
 }
 
 // ───────────────────────── scroll reveal, nav, progress ─────────────────────────
@@ -167,16 +217,18 @@ class Viewer {
 // ───────────────────────── fix 1: structural diffs ─────────────────────────
 (() => {
   const rename = S('A rename is one change'), fill = S('It fills them, and closes the change'), fix = S('It fixes it, and proves it');
-  const C = D.contract;
+  const C = D.contract, Cs = t => C.steps.find(s => s.title === t);
   const cases = [
     { tab: 'Rename a variant', linediff: rename.linediff, snap: rename, step: lastStep(rename),
-      note: `<b>strata rename Shipped Sent</b>: the line diff touches five definitions and re-wraps a line in a test, because <code>Sent</code> is shorter. Strata reports one rename; the definitions that only follow it are folded in.` },
-    { tab: 'Add a parameter', linediff: D.orders.couponsDiff, snap: fill, step: stepTitled(fill, 'coupons'),
-      note: `<code>total</code> takes a coupon now. Strata separates the <b>interface change</b> (what other code relies on) from the bodies that had to follow it, and says it was one change across three definitions.` },
+      note: `<b>strata rename Shipped Sent</b>. As text, five definitions change, and a line in a test re-wraps because <code>Sent</code> is shorter. What happened is one rename.` },
+    { tab: 'Add a parameter', linediff: C.paramDiff, snap: C, step: stepTitled(C, 'discount: members'),
+      note: `<code>discount</code> takes a new <code>member</code> flag, not used yet. The change is the new parameter; its two call sites only follow it.` },
+    { tab: 'Change a signature and its body', linediff: D.orders.couponsDiff, snap: fill, step: stepTitled(fill, 'coupons'),
+      note: `<code>total</code> takes a coupon and uses it: the signature and the body both changed, so both are shown. The callers that had to follow are listed, not repeated.` },
     { tab: 'Change only a body', linediff: fix.linediff, snap: fix, step: lastStep(fix),
       note: `The fix to <code>refund</code> changes its body, not its signature or contract: <b>nothing else needs re-checking</b>, and the verdict before and after is part of the change.` },
-    { tab: 'Tighten a contract', linediff: C.linediff, snap: C, step: lastStep(C),
-      note: `A new <code>requires</code> is a <b>stricter precondition</b>: Strata marks it so, and lists who uses the definition. <a href="#contracts">More on contracts ↓</a>` },
+    { tab: 'Tighten a contract', linediff: Cs('Tighten discount’s contract').linediff, snap: C, step: stepTitled(C, 'discount only from 1.00'),
+      note: `A new <code>requires</code> is a <b>stricter precondition</b>: every caller now has more to guarantee, so each of them is re-checked. <a href="#contracts">What happens next ↓</a>` },
   ];
   $('#rename-count').textContent = diffCount(rename.linediff);
   const viewer = new Viewer($('#diff-viewer'), 'strata ui · Changes');
@@ -186,7 +238,7 @@ class Viewer {
     const c = cases[i];
     $$('#diff-tabs button').forEach((b, j) => b.classList.toggle('on', j === i));
     $('#ld-body').innerHTML = diffHtml(c.linediff);
-    $('#ld-count').textContent = `${diffCount(c.linediff)} lines changed`;
+    { const n = diffCount(c.linediff); $('#ld-count').textContent = `${n} line${n === 1 ? '' : 's'} changed`; }
     const st = structural(c.snap.changes[c.step]);
     $('#sd-body').innerHTML = st.html;
     $('#sd-count').textContent = `${st.count} change${st.count > 1 ? 's' : ''}`;
@@ -254,84 +306,55 @@ class Viewer {
 
 // ───────────────────────── fix 3: contracts ─────────────────────────
 (() => {
-  const C = D.contract;
-  const g = $('#cgraph');
+  const C = D.contract, g = $('#cgraph');
   const nodes = {
-    discount: { x: 22, y: 50, t: 'discount', s: 'fn · the contract changes' },
-    checkout: { x: 70, y: 22, t: 'checkout', s: 'discount(total(lines))' },
-    totals: { x: 70, y: 78, t: 'test "totals"', s: 'discount(20000)' },
+    discount: { x: 20, y: 50, t: 'discount', s: 'the contract changes here' },
+    checkout: { x: 72, y: 22, t: 'checkout', s: 'calls discount(…)' },
+    totals: { x: 72, y: 78, t: 'test "totals"', s: 'calls discount(20000)' },
   };
-  g.innerHTML = `<svg><path id="e1"/><path id="e2"/></svg>` + Object.entries(nodes).map(([k, n]) => `<div class="node" id="n-${k}" style="left:${n.x}%;top:${n.y}%">${esc(n.t)}<small>${esc(n.s)}</small></div>`).join('');
+  const LABEL = { pass: '✓ proven', fail: '✗ counterexample', changed: 'changed', recheck: 're-check', hole: '?hole' };
+  g.innerHTML = `<svg><path id="e1"/><path id="e2"/></svg>` + Object.entries(nodes).map(([k, n]) => `<div class="node" id="n-${k}" style="left:${n.x}%;top:${n.y}%"><span class="badge"></span>${esc(n.t)}<small>${esc(n.s)}</small></div>`).join('');
   function edges() {
     const W = g.clientWidth, H = g.clientHeight, p = n => [nodes[n].x / 100 * W, nodes[n].y / 100 * H];
-    const e = (a, b) => { const [x1, y1] = p(a), [x2, y2] = p(b); return `M${x1 + 60} ${y1} C${(x1 + x2) / 2} ${y1}, ${(x1 + x2) / 2} ${y2}, ${x2 - 70} ${y2}`; };
+    const e = (a, b) => { const [x1, y1] = p(a), [x2, y2] = p(b); return `M${x1 + 70} ${y1} C${(x1 + x2) / 2} ${y1}, ${(x1 + x2) / 2} ${y2}, ${x2 - 80} ${y2}`; };
     $('#e1').setAttribute('d', e('discount', 'checkout')); $('#e2').setAttribute('d', e('discount', 'totals'));
   }
   new ResizeObserver(edges).observe(g);
-  $('#c-linediff').innerHTML = diffHtml(C.linediff);
-  $('#c-diff').innerHTML = structural(C.changes[lastStep(C)]).html;
-  const steps = [
-    { btn: '1 · checkout, as it is', run: () => { $('#c-term').innerHTML = cmdLine('strata edit -m "checkout"') + piped(C.checkout.input) + term(C.checkout.out) + cmdLine('strata verify checkout') + term(C.checkout.verify); $('#n-checkout').className = 'node pass'; },
-      say: 'First, as it is today: <code>checkout</code> is proven.' },
-    { btn: '2 · edit discount', run: () => { $('#c-term').innerHTML += cmdLine('strata edit -m "discount only from 1.00"') + piped(C.discount.input) + term(C.discount.out); $('#n-discount').className = 'node changed'; $('#n-checkout').className = 'node recheck'; $('#n-totals').className = 'node recheck'; $$('#cgraph path').forEach(p => p.classList.add('lit')); },
-      say: 'The interface changed, so the edit names the dependents to re-check: <code>checkout</code> and the test.' },
-    { btn: '3 · strata test', run: () => { $('#c-term').innerHTML += cmdLine('strata test') + term(C.test); $('#n-totals').className = 'node pass'; },
-      say: 'The tests still pass: the only test calls <code>discount(20000)</code>. Nothing tested an empty basket.' },
-    { btn: '4 · strata verify', run: () => { $('#c-term').innerHTML += cmdLine('strata verify') + term(C.verify); $('#n-checkout').className = 'node fail'; $$('#cgraph path').forEach(p => p.classList.remove('lit')); $('#e1').style.stroke = 'var(--bad)'; },
-      say: 'Verification checks <code>checkout</code> against the <b>new</b> contract, and finds the call that breaks it: a basket worth 0.00.' },
-  ];
-  let i = 0;
-  const term_ = $('#c-term');
-  function reset() { i = 0; term_.innerHTML = '<span class="o-dim">Press the button to step through.</span>'; Object.keys(nodes).forEach(k => ($('#n-' + k).className = 'node')); $$('#cgraph path').forEach(p => { p.classList.remove('lit'); p.style.stroke = ''; }); $('#c-next').textContent = steps[0].btn; $('#c-next').disabled = false; $('#c-say').innerHTML = 'Step through what happens.'; }
-  $('#c-next').onclick = () => {
-    if (i >= steps.length) return;
-    if (i === 0) term_.innerHTML = '';
-    steps[i].run(); $('#c-say').innerHTML = steps[i].say;
-    i++; $('#c-next').textContent = i < steps.length ? steps[i].btn : 'done';
-    $('#c-next').disabled = i >= steps.length;
-    term_.scrollTop = term_.scrollHeight;
-  };
-  $('#c-reset').onclick = reset; reset();
+  const body = $('#c-term');
+  let token = 0;
+  const st = new Stepper($('#c-player'), C.steps.map(s => s.title), async i => {
+    const s = C.steps[i], my = ++token;
+    for (const k of Object.keys(nodes)) {
+      const v = s.g[k] || '';
+      $('#n-' + k).className = 'node ' + v;
+      $('#n-' + k + ' .badge').textContent = LABEL[v] || '';
+    }
+    $$('#cgraph path').forEach(p => { p.classList.toggle('lit', !!s.g.lit); p.style.stroke = ''; });
+    if (s.g.bad) $('#e1').style.stroke = 'var(--bad)';
+    $('#c-say').innerHTML = `<h3>${esc(s.title)}</h3><p>${md(s.say)}</p>`;
+    await typeInto(body, s, () => my === token);
+  });
+  const o = new IntersectionObserver(es => { if (es[0].isIntersecting) { o.disconnect(); st.go(0); } }, { threshold: 0.3 });
+  o.observe($('#c-player'));
 })();
 
 // ───────────────────────── the agent session ─────────────────────────
 (() => {
   const ss = D.session, viewer = new Viewer($('#sess-viewer'), 'strata ui · ~/shop');
-  let cur = -1, playing = false, token = 0;
-  $('#sess-steps').innerHTML = ss.map((s, i) => `<button data-i="${i}" title="${esc(s.title)}"></button>`).join('');
-  $('#sess-steps').addEventListener('click', e => { const b = e.target.closest('button'); if (b) { stop(); go(+b.dataset.i); } });
-  async function go(i) {
-    if (i < 0 || i >= ss.length) return;
-    cur = i; const s = ss[i], my = ++token;
-    $$('#sess-steps button').forEach((b, j) => { b.classList.toggle('on', j === i); b.classList.toggle('done', j < i); b.style.setProperty('--p', playing ? 0 : 1); });
+  let token = 0;
+  const st = new Stepper($('#session'), ss.map(s => s.title), async i => {
+    const s = ss[i], my = ++token;
     const who = s.who === 'you' ? 'you' : s.who === 'agent B' ? 'agentb' : '';
-    $('#sess-say').innerHTML = `<div class="who ${who}"><i></i>${esc(s.who)}</div><h3>${esc(s.title)}</h3><p>${esc(s.say).replace(/`([^`]+)`/g, '<code>$1</code>')}</p>`;
-    $('#sess-n').textContent = `${i + 1} / ${ss.length}`;
+    $('#sess-say').innerHTML = `<div class="who ${who}"><i></i>${esc(s.who)}</div><h3>${esc(s.title)}</h3><p>${md(s.say)}</p>`;
     $('#sess-diffbox').style.display = s.linediff ? '' : 'none';
     if (s.linediff) $('#sess-diff').innerHTML = diffHtml(s.linediff);
-    const body = $('#sess-term .body');
-    body.innerHTML = '';
-    // type the command, show what was piped in, then the output
-    const line = document.createElement('span'); line.className = 'term-line'; line.innerHTML = '<span class="prompt">$</span> <span class="cmd"></span>';
-    body.appendChild(line);
-    for (const ch of s.cmd) { if (my !== token) return; $('.cmd', line).textContent += ch; await sleep(22); }
-    if (s.input) { body.insertAdjacentHTML('beforeend', piped(s.input)); await sleep(300); }
-    if (my !== token) return;
     viewer.show(s, { sel: s.sel, level: 1 });
-    for (const l of s.out.split('\n')) { if (my !== token) return; body.insertAdjacentHTML('beforeend', `<span class="term-line">${termLine(l)}</span>`); body.scrollTop = body.scrollHeight; await sleep(60); }
-    if (s.code) body.insertAdjacentHTML('beforeend', `<span class="term-line o-dim">exit ${s.code}</span>`);
-    if (playing) {
-      const btn = $$('#sess-steps button')[i], t0 = performance.now(), dur = 5200 + s.say.length * 18;
-      while (performance.now() - t0 < dur) { if (my !== token || !playing) return; btn.style.setProperty('--p', (performance.now() - t0) / dur); await sleep(50); }
-      if (my === token && playing) { if (i + 1 < ss.length) go(i + 1); else stop(); }
-    }
-  }
-  function stop() { playing = false; $('#sess-play').textContent = '▶ play'; $$('#sess-steps button').forEach(b => b.style.setProperty('--p', 1)); }
-  $('#sess-play').onclick = () => { if (playing) return stop(); playing = true; $('#sess-play').textContent = '❚❚ pause'; go(cur + 1 < ss.length ? cur + 1 : 0); };
-  $('#sess-next').onclick = () => { stop(); go(cur + 1); };
-  $('#sess-prev').onclick = () => { stop(); go(cur - 1); };
-  // start when it is first seen
-  const o = new IntersectionObserver(es => { if (es[0].isIntersecting) { o.disconnect(); playing = true; $('#sess-play').textContent = '❚❚ pause'; go(0); } }, { threshold: 0.35 });
+    const done = await typeInto($('#sess-term .body'), s, () => my === token);
+    if (done && s.code) $('#sess-term .body').insertAdjacentHTML('beforeend', `<span class="term-line o-dim">exit ${s.code}</span>`);
+    if (done && st.playing) st.wait(5200 + s.say.length * 18, i);
+  }, { play: true });
+  // start playing when it is first seen
+  const o = new IntersectionObserver(es => { if (es[0].isIntersecting) { o.disconnect(); st.play(); } }, { threshold: 0.35 });
   o.observe($('#session .player'));
 })();
 
@@ -368,8 +391,29 @@ class Viewer {
   pick(1);
 })();
 
-// ───────────────────────── explore + start ─────────────────────────
-new Viewer($('#explore-viewer'), 'strata ui · examples/tasks').show(D.tasks, { sel: 'core.run_worker' });
+// ───────────────────────── explore: small examples ─────────────────────────
+(() => {
+  const ex = [
+    { id: 'bank', tab: 'bank: money that can’t go negative', sel: 'transfer',
+      say: '`Cents` is an `Int` that is never negative. `withdraw` and `transfer` say in their contracts what happens to the balances, and the verifier proves it: a transfer never creates or loses money.' },
+    { id: 'traits', tab: 'traits: laws that are checked', sel: 'impl Combine for Midpoint',
+      say: 'A trait can state laws. `Combine` says `combine` is associative; the verifier checks every implementation, and finds that averaging two numbers isn’t.' },
+    { id: 'wc', tab: 'wc: capabilities as parameters', sel: 'main',
+      say: 'The Unix word count. `main` asks for exactly what it touches (its options, the console, the files), so its signature says what it can do, and the tests hand it stand-ins.' },
+  ];
+  const viewer = new Viewer($('#explore-viewer'), 'strata ui');
+  function pick(i) {
+    const e = ex[i];
+    $$('#ex-tabs button').forEach((b, j) => b.classList.toggle('on', j === i));
+    $('#ex-say').innerHTML = md(e.say);
+    viewer.setLabel(`strata ui · examples/${e.id}`);
+    viewer.show(D.explore[e.id], { sel: e.sel, level: 1 });
+  }
+  $('#ex-tabs').innerHTML = ex.map((e, i) => `<button data-i="${i}">${esc(e.tab)}</button>`).join('');
+  $('#ex-tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) pick(+b.dataset.i); });
+  pick(0);
+})();
+
 $('#start-cmds').innerHTML = [
   ['cargo build --release', ''], ['alias strata=$PWD/target/release/strata', ''],
   ['strata --file examples/math.strata verify', 'prove what can be proven, fuzz the rest'],
