@@ -90,7 +90,9 @@ pub fn render_decl(shown: &Decl, stored: &Decl, level: u8, st: &Status, g: &std:
                 DeclKind::Fn(f) if level == 1 => format!("{}{note}", printer::fn_signature(f)),
                 DeclKind::Impl(i) if level < 2 => format!("{}{note}", printer::impl_interface(i)),
                 DeclKind::Trait(t) if level < 2 => format!("{}{note}", printer::trait_interface(t)),
-                DeclKind::Test(t) if level < 2 => format!("test {:?} {{ … }}", t.name),
+                DeclKind::Capability(c) if level < 2 => format!("{}{note}", printer::capability_interface(c)),
+                DeclKind::Test(t) if level < 2 && t.params.is_empty() => format!("test {:?} {{ … }}", t.name),
+                DeclKind::Test(t) if level < 2 => format!("test {:?} ({}) {{ … }}", t.name, t.params.iter().map(|p| format!("{}{}: {}", if p.mutable { "mut " } else { "" }, p.name, printer::ty(&p.ty))).collect::<Vec<_>>().join(", ")),
                 _ => format!("{}{note}", printer::decl_body(d)),
             };
             let doc = printer::comments(&d.comments, 0) + &printer::doc(d);

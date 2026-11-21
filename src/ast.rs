@@ -131,6 +131,9 @@ pub struct FnDecl {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TestDecl {
     pub name: String,
+    /// The capabilities it asks for, as `main` does (`test "opens" (sqlite: Sqlite) { ... }`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<Param>,
     pub body: Expr,
 }
 
@@ -171,6 +174,10 @@ pub struct TraitDecl {
     /// derived (`derive Trait for Type`) for types of that kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derivable: Option<Derivable>,
+    /// `capability trait`: an interface to the outside world (`Console`,
+    /// `Files`, `Database`). Anything may implement one (fakes for tests do).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub capability: bool,
 }
 
 /// What a derivable trait says about the types it can be derived for.
@@ -244,6 +251,7 @@ impl TraitDecl {
             methods: self.methods.iter().map(|m| TraitMethod { comments: vec![], doc: vec![], decl: m.decl.signature(), default: m.default }).collect(),
             laws: self.laws.clone(),
             derivable: self.derivable.clone(),
+            capability: self.capability,
         }
     }
 }
@@ -275,6 +283,18 @@ pub enum DeclKind {
     /// `extern c fn ...` / `extern c type ...`: a definition made in another
     /// language, called through its ABI (docs/language.md, "Foreign functions").
     Extern(ExternDecl),
+    /// `capability Sqlite { fn open(path: String) -> ... }`: functions that
+    /// reach the outside world, holding no data. Only the runtime makes one,
+    /// for an entry point (`main`, a test); its functions are called on it.
+    Capability(CapabilityDecl),
+}
+
+/// A capability: its name and its functions (written without `self`: the
+/// value they are called on is the permission, and holds nothing).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CapabilityDecl {
+    pub name: Symbol,
+    pub methods: Vec<FnDecl>,
 }
 
 /// A foreign definition: its language and what it is.
@@ -355,6 +375,7 @@ impl Decl {
                 ExternItem::Fn(f) => f.name.to_string(),
                 ExternItem::Type(t) => t.to_string(),
             },
+            DeclKind::Capability(c) => c.name.to_string(),
         }
     }
     pub fn kind_str(&self) -> &'static str {
@@ -366,6 +387,7 @@ impl Decl {
             DeclKind::Impl(_) => "impl",
             DeclKind::Use(_) => "use",
             DeclKind::Extern(_) => "extern",
+            DeclKind::Capability(_) => "capability",
         }
     }
 }
@@ -925,7 +947,12 @@ macro_rules! visitor {
                     }
                 }
                 DeclKind::Fn(f) => $func(v, f),
-                DeclKind::Test(t) => v.expr(&$($m)? t.body),
+                DeclKind::Test(t) => {
+                    for p in &$($m)? t.params {
+                        v.ty(&$($m)? p.ty)
+                    }
+                    v.expr(&$($m)? t.body)
+                }
                 DeclKind::Trait(t) => {
                     (&$($m)? t.supers).into_iter().for_each(|t| v.ty(t));
                     for m in &$($m)? t.methods {
@@ -953,6 +980,11 @@ macro_rules! visitor {
                     ExternItem::Fn(f) => $func(v, f),
                     ExternItem::Type(_) => {}
                 },
+                DeclKind::Capability(c) => {
+                    for m in &$($m)? c.methods {
+                        $func(v, m)
+                    }
+                }
             }
         }
     };

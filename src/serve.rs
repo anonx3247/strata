@@ -37,7 +37,7 @@ fn handler(env: &Env) -> Result<FnDecl, String> {
         let ty = crate::printer::ty(&p.ty);
         if ty == REQUEST {
             requests += 1;
-        } else if crate::cmd::capability(&ty).is_none() {
+        } else if crate::cmd::capability(env, &ty).is_none() {
             return Err(format!("{usage}. Its parameter `{}` has type `{ty}`", p.name));
         }
     }
@@ -256,7 +256,7 @@ fn call(env: &Env, f: &FnDecl, req: &Json) -> (u16, Vec<(String, String)>, Strin
     let mut args = Vec::new();
     for p in &f.params {
         let ty = crate::printer::ty(&p.ty);
-        match crate::cmd::capability(&ty) {
+        match crate::cmd::capability(env, &ty) {
             Some(v) => args.push(v),
             None => match it.from_json(&p.ty, req, &p.name) {
                 Ok(v) => args.push(v),

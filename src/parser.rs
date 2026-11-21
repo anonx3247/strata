@@ -364,6 +364,17 @@ impl Parser {
             return Err(self.err("`effect` was removed: declare a `trait` and pass a value that implements it"));
         } else if self.eat_kw("fn") {
             DeclKind::Fn(self.fn_decl()?)
+        } else if self.is_kw("capability") && matches!(self.peek_at(1), Tok::Ident(t) if t == "trait") {
+            // `capability trait Database { ... }`: an interface to the outside world
+            self.next();
+            self.next();
+            let mut t = self.trait_decl(None)?;
+            t.capability = true;
+            DeclKind::Trait(t)
+        } else if self.is_kw("capability") && matches!(self.peek_at(1), Tok::Ident(_)) && matches!(self.peek_at(2), Tok::Sym("{")) {
+            // `capability Sqlite { fn open(...) ... }`: functions only the runtime gives
+            self.next();
+            DeclKind::Capability(self.capability_decl()?)
         } else if self.eat_kw("trait") {
             DeclKind::Trait(self.trait_decl(None)?)
         } else if self.eat_kw("impl") {
@@ -373,7 +384,9 @@ impl Parser {
                 Tok::Str(s) => s,
                 _ => return Err(self.err("expected test name string")),
             };
-            DeclKind::Test(TestDecl { name, body: self.block()? })
+            // the capabilities it asks for, as `main` does
+            let params = if self.is_sym("(") { self.params()? } else { vec![] };
+            DeclKind::Test(TestDecl { name, params, body: self.block()? })
         } else {
             return Err(self.err("expected `type`, `effect`, `trait`, `impl`, `fn` or `test`"));
         };
@@ -458,7 +471,7 @@ impl Parser {
             comments.extend(self.trailing());
             methods.push(TraitMethod { comments, doc, decl, default });
         }
-        Ok(TraitDecl { name, params, supers, methods, laws, derivable })
+        Ok(TraitDecl { name, params, supers, methods, laws, derivable, capability: false })
     }
 
     fn impl_decl(&mut self) -> R<ImplDecl> {
@@ -466,6 +479,35 @@ impl Parser {
     }
 
     /// After `impl` (or `derive`, which needs a trait and may leave out its block).
+    /// After `capability`: its name and its functions, which don't take `self`
+    /// (the value they're called on is the permission, and holds nothing).
+    fn capability_decl(&mut self) -> R<CapabilityDecl> {
+        let name = self.ident()?;
+        self.expect_sym("{")?;
+        let mut methods = Vec::new();
+        while !self.eat_sym("}") {
+            let mut comments = self.leading();
+            let mut doc = Vec::new();
+            while let Tok::Doc(d) = self.peek().clone() {
+                doc.push(d);
+                self.next();
+            }
+            comments.extend(self.leading());
+            self.expect_kw("fn")?;
+            let (mut decl, has_body) = self.fn_rest(false)?;
+            if !has_body {
+                return Err(self.err(&format!("`{}` in a capability needs a body", decl.name)));
+            }
+            if decl.params.first().is_some_and(|p| p.name == "self") {
+                return Err(self.err(&format!("`{}`: a capability's functions don't take `self` (they are called on the capability, which holds nothing)", decl.name)));
+            }
+            comments.extend(self.trailing());
+            (decl.doc, decl.comments) = (doc, comments);
+            methods.push(decl);
+        }
+        Ok(CapabilityDecl { name, methods })
+    }
+
     fn impl_rest(&mut self, derived: bool) -> R<ImplDecl> {
         let (type_params, bounds) = self.bounded_params()?;
         let head = self.path()?;

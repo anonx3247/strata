@@ -288,6 +288,20 @@ impl Verdict {
 /// its functions, directly or through other functions.
 fn foreign(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>) -> Option<String> {
     use crate::names::module_of;
+    // a capability's own code reaches the outside world; one passed in can't be made here
+    if let Some(i) = imp {
+        let head = crate::types::texpr_head(&i.for_type);
+        if env.capabilities.contains(&Symbol::new(&head)) {
+            return Some(format!("`{}` is a capability: it reaches the outside world (only `strata run` gives one)", crate::names::short(&head)));
+        }
+    }
+    for p in &f.params {
+        let mut named = Vec::new();
+        crate::ast::Visit::ty(&mut Names(&mut named), &p.ty);
+        if let Some(n) = named.iter().find(|n| env.capabilities.contains(*n)) {
+            return Some(format!("it takes the capability `{}`, which only the runtime makes", crate::names::short(n)));
+        }
+    }
     if env.externs.is_empty() {
         return None;
     }
@@ -542,7 +556,8 @@ pub fn wrappers(env: &Env, prog: &Program, chosen: &[bool]) -> Vec<FnDecl> {
         if !chosen.get(i).copied().unwrap_or(false) {
             continue;
         }
-        if imp.is_inherent() || crate::stdlib::HOST_TYPES.contains(&crate::types::texpr_head(&imp.for_type).as_str()) {
+        let head = crate::types::texpr_head(&imp.for_type);
+        if imp.is_inherent() || crate::stdlib::HOST_TYPES.contains(&head.as_str()) || env.capabilities.contains(&Symbol::new(&head)) {
             continue;
         }
         let Some(tr) = env.traits.get(&imp.trait_name) else { continue };

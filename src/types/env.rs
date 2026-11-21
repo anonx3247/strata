@@ -21,6 +21,8 @@ pub struct Env {
     pub checked_params: HashMap<Symbol, Vec<Symbol>>,
     /// Foreign definitions: `extern` functions and handle types, by name.
     pub externs: HashMap<Symbol, Lang>,
+    /// Capabilities (`capability Sqlite { ... }`): only the runtime makes them.
+    pub capabilities: HashSet<Symbol>,
 }
 
 impl Env {
@@ -44,6 +46,7 @@ impl Env {
             inherent: HashMap::default(),
             checked_params: HashMap::default(),
             externs: HashMap::default(),
+            capabilities: HashSet::default(),
         };
         let mut errs = Vec::new();
         let prelude_names: Vec<String> = prelude.decls.iter().map(|d| d.name()).collect();
@@ -95,6 +98,13 @@ impl Env {
                 }
                 DeclKind::Fn(f) => env.fns.insert(f.name, if bodies { f.clone() } else { f.signature() }).is_some(),
                 DeclKind::Test(_) | DeclKind::Use(_) => false,
+                // a nominal type with no constructor and nothing inside: only the
+                // runtime makes one (its functions are its `impl`, made by `resolve`)
+                DeclKind::Capability(c) => {
+                    env.capabilities.insert(c.name);
+                    let td = TypeDecl { distinct: false, name: c.name, params: vec![], body: TypeBody::Sum(vec![]), refinement: None };
+                    env.types.insert(c.name, td).is_some()
+                }
                 DeclKind::Extern(e) => match &e.item {
                     // a signature only: the body is foreign
                     ExternItem::Fn(f) => {

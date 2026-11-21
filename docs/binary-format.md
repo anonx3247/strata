@@ -69,6 +69,7 @@ The interface part comes first: its strings, then the `Decl` with each body repl
 The bodies, in order, are:
 - a function's body;
 - a test's body;
+- the body of each function of a capability, in order;
 - the body of each method of a trait, in order (a method without a default has `()`);
 - the body of each method of an impl, in order.
 
@@ -103,6 +104,7 @@ When writing, a string gets the next index the first time it is written, and eac
 ```text
 Decl        = comments:list(str)  doc:list(str)  module:str  public:bool  kind:DeclKind
 DeclKind    = 0 TypeDecl | 1 FnDecl | 2 TestDecl | 3 TraitDecl | 4 ImplDecl | 5 UseDecl | 6 ExternDecl
+            | 7 CapabilityDecl
 
 TypeDecl    = distinct:bool  name:str  params:list(str)  body:TypeBody  refinement:option(Expr)
 TypeBody    = 0 Alias(TypeExpr) | 1 Record(list(Field)) | 2 Sum(list(Variant))
@@ -116,9 +118,9 @@ FnDecl      = doc:list(str)  comments:list(str)  name:str  type_params:list(str)
 Param       = name:str  ty:TypeExpr  mutable:bool  comptime:bool
 Bound       = param:str  traits:list(TypeExpr)
 
-TestDecl    = name:str  body:Expr
+TestDecl    = name:str  params:list(Param)  body:Expr
 TraitDecl   = name:str  params:list(str)  supers:list(TypeExpr)  methods:list(TraitMethod)  laws:list(Law)
-              derivable:option(Derivable)
+              derivable:option(Derivable)  capability:bool
 Derivable   = name:str  kind:TypeExpr  requires:list(Expr)
 TraitMethod = comments:list(str)  doc:list(str)  decl:FnDecl  default:bool
 Law         = comments:list(str)  doc:list(str)  name:str  params:list(Param)  body:Expr
@@ -127,10 +129,11 @@ ImplDecl    = type_params:list(str)  bounds:list(Bound)  trait_name:str  trait_a
 UseDecl     = path:str  items:option(list(str))
 ExternDecl  = lang:Lang  item:ExternItem
 Lang        = 0 C
+CapabilityDecl = name:str  methods:list(FnDecl)
 ExternItem  = 0 Fn(FnDecl) | 1 Type(name:str)
 ```
 
-`module` is the dotted module path (`""` for the root module). A top-level function keeps its doc and comments on its `Decl`; `FnDecl.doc` / `comments` are for methods inside an `impl`. An inherent `impl Item { … }` has `trait_name = ""`. `derive Trait for Type { … }` is an `ImplDecl` with `derived` set (its `methods` are the ones written by hand); `comptime fn` and `derived fn` set those flags of `FnDecl`, `derivable(t: Record) trait …` the trait's `derivable`. `items` is none for `use m.*`. An `extern c fn` is an `ExternItem.Fn` whose `FnDecl` has no body (`()`, so it has no body part) and whose name is the C symbol; `extern c type` is `ExternItem.Type`. Its header `kind` is `6`.
+`module` is the dotted module path (`""` for the root module). A top-level function keeps its doc and comments on its `Decl`; `FnDecl.doc` / `comments` are for methods inside an `impl`. An inherent `impl Item { … }` has `trait_name = ""`. `derive Trait for Type { … }` is an `ImplDecl` with `derived` set (its `methods` are the ones written by hand); `comptime fn` and `derived fn` set those flags of `FnDecl`, `derivable(t: Record) trait …` the trait's `derivable`. `items` is none for `use m.*`. An `extern c fn` is an `ExternItem.Fn` whose `FnDecl` has no body (`()`, so it has no body part) and whose name is the C symbol; `extern c type` is `ExternItem.Type`. Its header `kind` is `6`. `capability Name { ... }` is a `CapabilityDecl` (its functions written without `self`; their bodies are its body part, in order), `capability trait` sets the trait's `capability`, and a test's `params` are the capabilities it asks for.
 
 ### Types
 

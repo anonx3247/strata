@@ -139,6 +139,7 @@ fn snapshot(target: &Target) -> Json {
                 "public": d.public,
                 "label": label,
                 "kind": d.kind_str(),
+                "capability": matches!(&d.kind, DeclKind::Trait(t) if t.capability),
                 "doc": d.doc.join("\n"),
                 "hash": store::self_hash(d),
                 "interface_hash": store::interface_hash(d),

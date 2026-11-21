@@ -2151,6 +2151,12 @@ impl<'a> Checker<'a> {
                         self.err(format!("`{c}` is a trait, not a value: call its methods on a value that implements it (e.g. a `{}` parameter)", c.to_lowercase()));
                         return self.fresh();
                     }
+                    if self.env.capabilities.contains(&c.sym()) {
+                        let short = crate::names::short(c);
+                        let snake: String = short.chars().enumerate().flat_map(|(i, ch)| if ch.is_uppercase() && i > 0 { vec!['_', ch.to_ascii_lowercase()] } else { vec![ch.to_ascii_lowercase()] }).collect();
+                        self.err(format!("`{short}` is a capability: only the runtime makes one, for `main` or a test that asks for it (`{snake}: {short}`); call its functions on that value"));
+                        return self.fresh();
+                    }
                     self.err(format!("unknown constructor `{c}`"));
                     return self.fresh();
                 };
@@ -3466,7 +3472,7 @@ pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<Symbol, TypeExpr>>
     for b in &bounded {
         let first = b.traits.first().map(texpr_head).unwrap_or_default();
         // never the real terminal, disk or process: fuzzing must not reach the system
-        let mut cs: Vec<TypeExpr> = env.impls.iter().filter(|i| i.trait_name == first && !crate::stdlib::HOST_TYPES.contains(&texpr_head(&i.for_type).as_str())).map(|i| i.for_type.clone()).collect();
+        let mut cs: Vec<TypeExpr> = env.impls.iter().filter(|i| i.trait_name == first && !crate::stdlib::HOST_TYPES.contains(&texpr_head(&i.for_type).as_str()) && !env.capabilities.contains(&texpr_head(&i.for_type).sym())).map(|i| i.for_type.clone()).collect();
         cs.push(b.traits[0].clone());
         cands.push(cs);
     }
@@ -3756,8 +3762,23 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec
                 c.impl_params.clear();
             }
             DeclKind::Test(t) => {
+                // what it asks for: capabilities only, made by the runtime as for `main`
+                c.scopes.push(HashMap::default());
+                for p in &t.params {
+                    if !matches!(&p.ty, TypeExpr::Named(n, a) if a.is_empty() && env.capabilities.contains(n)) {
+                        c.err(format!("test parameter `{}: {}`: a test asks only for capabilities (`capability ...`), which the runtime makes", p.name, crate::printer::ty(&p.ty)));
+                    }
+                    let ty = c.lower(&p.ty, &HashMap::default());
+                    c.bind(p.name, ty);
+                    if p.mutable {
+                        c.bind((&format!("mut:{}", p.name)).sym(), Ty::Unit);
+                    }
+                }
                 c.infer(&t.body);
+                c.scopes.pop();
             }
+            // its functions are checked as the type's own methods (`resolve` makes them an `impl`)
+            DeclKind::Capability(_) => {}
             DeclKind::Use(_) => {}
             DeclKind::Extern(e) => {
                 let kw = format!("extern {}", e.lang.name());

@@ -3996,3 +3996,60 @@ fn std_is_edited_as_a_checked_package() {
     let (ok, out) = strata(&["--file", "std", "check"], &d, None);
     assert!(ok, "{out}");
 }
+
+// Capabilities: made only by the runtime, for `main` and tests that ask;
+// capability traits for everything else.
+#[test]
+fn capabilities_given_by_the_runtime() {
+    let d = tmp("capabilities");
+    let p = d.join("p");
+    std::fs::create_dir_all(&p).unwrap();
+    std::fs::write(p.join("strata.toml"), "name = \"p\"\n").unwrap();
+    let clock = "/// Reading the time.\npub capability trait Clock {\n  fn now(self) -> Int\n}\n\n/// The machine's clock.\npub capability SystemClock {\n  /// Seconds, as the system tells.\n  fn seconds() -> Int {\n    42\n  }\n}\n\nimpl Clock for SystemClock {\n  fn now(self) -> Int {\n    self.seconds()\n  }\n}\n\npub type Fixed = { at: Int }\n\nimpl Clock for Fixed {\n  fn now(self) -> Int {\n    self.at\n  }\n}\n\npub fn late(c: Clock) -> Bool {\n  c.now() > 40\n}\n";
+    save_module(&p, "clock", clock);
+    let main = "use clock.{SystemClock, Fixed, late}\n\nfn main(sys: SystemClock) {\n  print(f\"{sys.seconds()} {late(sys)} {late(Fixed { at: 1 })}\")\n}\n\ntest \"the real clock\" (sys: SystemClock) {\n  assert late(sys)\n}\n\ntest \"a fixed clock\" {\n  assert !late(Fixed { at: 1 })\n}\n";
+    save_module(&p, "main", main);
+    // the text round-trips
+    for (m, src) in [("clock", clock), ("main", main)] {
+        let (ok, out) = strata(&["--file", "p", "render", m], &d, None);
+        assert!(ok && out == src, "{out}");
+    }
+    let (ok, out) = strata(&["--file", "p", "check"], &d, None);
+    assert!(ok, "{out}");
+    // the runtime makes it: compiled, interpreted, built
+    for args in [&["run", "p"][..], &["run", "--interpret", "p"][..]] {
+        let (ok, out) = strata(args, &d, None);
+        assert!(ok && out == "42 true false\n", "{args:?}: {out}");
+    }
+    let (ok, out) = strata(&["--file", "p", "test"], &d, None);
+    assert!(ok && out.contains("✓ the real clock") && out.contains("2 passed"), "{out}");
+    let (ok, out) = strata(&["--file", "p", "test", "--interpret"], &d, None);
+    assert!(ok && out.contains("2 passed"), "{out}");
+    let exe = d.join("clockprog");
+    let (ok, out) = strata(&["build", "p", "-o", &exe.to_string_lossy()], &d, None);
+    if ok {
+        let o = Command::new(&exe).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&o.stdout), "42 true false\n");
+    } else {
+        assert!(out.contains("clang"), "{out}");
+    }
+    // verify runs nothing that needs one
+    let (_, out) = strata(&["--file", "p", "verify"], &d, None);
+    assert!(out.contains("assumed: `SystemClock` is a capability") && out.contains("assumed: it takes the capability `SystemClock`"), "{out}");
+    assert!(out.contains("clock.late") && !out.contains("panicked"), "{out}");
+    // nothing else makes one
+    save_module(&p, "bad", "use clock.{SystemClock}\n\nfn forge() -> SystemClock {\n  SystemClock {}\n}\n\nfn mocked() -> SystemClock {\n  mock SystemClock\n}\n\ntest \"asks for an int\" (n: Int) {\n  assert n == 1\n}\n");
+    let (ok, out) = strata(&["--file", "p", "check"], &d, None);
+    assert!(!ok, "{out}");
+    for m in [
+        "`SystemClock` is a capability: only the runtime makes one, for `main` or a test that asks for it (`system_clock: SystemClock`)",
+        "`mock` needs a trait, found `clock.SystemClock`",
+        "test parameter `n: Int`: a test asks only for capabilities",
+    ] {
+        assert!(out.contains(m), "{m}: {out}");
+    }
+    std::fs::remove_file(p.join("bad.strata")).unwrap();
+    // its functions don't take `self`
+    let (ok, out) = strata(&["--file", "x.strata", "edit"], &d, Some("capability C {\n  fn f(self) -> Int {\n    1\n  }\n}\n"));
+    assert!(!ok && out.contains("a capability's functions don't take `self`"), "{out}");
+}

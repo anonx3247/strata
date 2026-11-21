@@ -298,6 +298,11 @@ fn jit_fuzzers(resolved: &Program, env: &types::Env, chosen: &[bool], say_why: b
         if f.params.iter().any(|p| p.comptime || matches!(p.ty, TypeExpr::Fn(..))) || crate::stdlib::is_host(&f.name) {
             return;
         }
+        // nothing can make a capability or a C handle: `verify` reports these as assumed
+        let made_outside = |t: &TypeExpr| matches!(t, TypeExpr::Named(n, _) if env.capabilities.contains(n) || env.externs.contains_key(n));
+        if f.params.iter().any(|p| made_outside(&p.ty)) {
+            return;
+        }
         let inst = if f.type_params.is_empty() { Default::default() } else {
             match types::test_instance(env, f) {
                 Some(i) => i,
