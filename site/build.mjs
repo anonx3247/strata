@@ -664,6 +664,138 @@ fn main() {
     for (const [k, f] of [['ackermann', 'ackermann'], ['isqrt', 'isqrt'], ['collatz', 'collatz_steps']])
       V.loops[k] = { code: defs(src, [`fn ${f}(`]), verify: out(dir, ['verify', f, '--checks']) };
   }
+  // more of the language: data types, traits, values, comptime
+  {
+    const L = {};
+    const one = (name, text) => { const dir = prog(name, text); return { dir, src: run(dir, ['render']).out.trim(), run: out(dir, ['run']) }; };
+    const refused = (dir, text) => ({ ...out(dir, ['edit'], text), cmd: 'strata edit', input: text.trim() });
+    const a = one('shapes', `/// A shape: one of three variants, each with its own fields.
+type Shape =
+  | Circle { radius: Positive }
+  | Rect { w: Positive, h: Positive }
+  | Point
+
+type Percent = Int
+  where 0 <= it && it <= 100
+
+fn area(s: Shape) -> Natural {
+  match s {
+    Circle { radius } => 3 * radius * radius,
+    Rect { w, h } => w * h,
+    Point => 0,
+  }
+}
+
+fn grade(score: Percent) -> String {
+  match score {
+    where it >= 90 => "A",
+    where it >= 70 => "B",
+    _ => "C",
+  }
+}
+
+/// A percentage from text, or the reason it isn't one.
+fn percent(text: String) -> Result[Percent, String] {
+  n := parse_int(text) or { return Err(f"not a number: {text}") }
+  if 0 <= n && n <= 100 {
+    Ok(n)
+  } else {
+    Err(f"out of range: {n}")
+  }
+}
+
+fn main() {
+  print([area(s) for s in [Circle { radius: 2 }, Rect { w: 3, h: 4 }, Point]])
+  print(grade(percent("93") !! 0))
+  print(percent("150"))
+  print(percent("ten"))
+}
+`);
+    L.adt = { src: a.src, run: a.run, refused: refused(a.dir, `fn area(s: Shape) -> Natural {
+  match s {
+    Circle { radius } => 3 * radius * radius,
+    Rect { w, h } => w * h,
+  }
+}
+`) };
+    const t = one('priced', `/// Anything with a price, in cents.
+trait Priced {
+  fn price(self) -> Natural
+
+  /// A default method: every implementation gets it.
+  fn label(self) -> String {
+    f"{self.price() / 100}.{self.price() % 100:02}"
+  }
+}
+
+type Tea = { grams: Positive }
+
+type Cup = { color: String }
+
+impl Priced for Tea {
+  fn price(self) -> Natural {
+    self.grams * 5
+  }
+}
+
+impl Priced for Cup {
+  fn price(self) -> Natural {
+    1200
+  }
+}
+
+/// Any type that implements \`Priced\`.
+fn receipt(item: Priced) -> String {
+  f"{item.label()} EUR"
+}
+
+fn main() {
+  print(receipt(Tea { grams: 250 }))
+  print(receipt(Cup { color: "blue" }))
+  let basket: List[Priced] = [Tea { grams: 100 }, Cup { color: "red" }]
+  print(sum([x.price() for x in basket]))
+}
+`);
+    L.traits = { src: t.src, run: t.run };
+    const m = one('cart', `type Cart = { items: List[String] }
+
+/// Changes the caller's cart: the parameter says \`mut\`, and so does every call.
+fn add(mut cart: Cart, item: String) {
+  cart.items = push(cart.items, item)
+}
+
+fn main() {
+  a := Cart { items: ["tea"] }
+  mut b := a
+  add(mut b, "cup")
+  print(a.items)
+  print(b.items)
+}
+`);
+    L.values = { src: m.src, run: m.run, refused: refused(m.dir, `fn main() {
+  mut b := Cart { items: [] }
+  add(b, "pot")
+  print(b.items)
+}
+`) };
+    const c = one('tables', `/// Primes below 60, found while compiling: the program only holds the list.
+fn small_primes() -> List[Int] {
+  comptime [n for n in 2..60 where all(2..n, d -> n % d != 0)]
+}
+
+/// A table of the squares of 0 to 12, built while compiling.
+fn squares() -> List[Int] {
+  comptime [n * n for n in 0..=12]
+}
+
+fn main() {
+  print(small_primes())
+  print(squares()[7])
+}
+`);
+    L.comptime = { src: c.src, run: c.run };
+    V.lang = L;
+  }
   emit('verify', V);
 }
 

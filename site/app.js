@@ -886,7 +886,7 @@ function drawTree(el, roots, fast) {
     const card = $('#travel-code'), stamp = $('#travel-stamp');
     stamp.className = 'stamp';
     if (k === 0) {
-      sayBlock($('#travel-say'), 'A stricter precondition. Who relied on the old one?',
+      sayBlock($('#travel-say'), 'What happens when contracts change?',
         '<code>discount</code> is about to require a price of at least 1.00. Every caller that passes less now breaks, wherever it is. In a codebase of text files, finding them means searching and hoping. In Strata, the edit follows the edges of the graph.', fast, '<div class="who you"><i></i>the problem</div>');
       graph.set(C.steps[0].graph, { layout: every, focus: 'discount', fast });
       card.classList.remove('on');
@@ -978,19 +978,52 @@ function drawTree(el, roots, fast) {
 }
 
 // ───────────────────────── more of the language ─────────────────────────
-feature('more', {
-  kicker: 'More of the language', title: 'Code that writes code.',
-  steps: [
-    { file: 'examples/hello', code: F.derive.options, hot: /^derive/, where: '~/hello', outs: [F.derive.help],
-      say: '<code>derive CommandLine for Options</code> generates a command-line parser from the type: its fields, doc comments, defaults and refinements. Derives are written in Strata, run by the compiler, and produce ordinary <code>impl</code>s.' },
-    { file: 'signup', code: F.derive.json, hot: /^derive|where/, where: '~/signup', outs: [F.derive.json_run],
-      say: '<code>derive Json</code> works the same way: a signup is written to JSON and read back. Reading checks every refinement, so a 9-year-old or an email without an <code>@</code> is refused, and the error names the field and the condition it broke.' },
-    { title: 'Code that runs while compiling.', file: 'comptime', code: F.native.comptime, hot: /comptime/, where: '~/comptime', outs: [F.native.comptime_run],
-      say: 'Any code can run while compiling. <code>comptime e</code> is evaluated by the compiler, and the program keeps only the result.' },
-    { title: 'And the small things.', file: 'lines', code: V.sugar.src, hot: /for l in|f"/, where: '~/lines', outs: [V.sugar.run],
-      say: 'List and dictionary comprehensions, f-strings with format specs, lambdas, method syntax on any function, <code>!</code> and <code>?</code> to pass errors up. The everyday syntax is close to Rust\'s and Python\'s.' },
-  ],
-});
+{
+  const L = V.lang, K = 'More of the language';
+  feature('adt', {
+    kicker: K, title: 'Algebraic data types.',
+    steps: [
+      { file: 'shapes', code: L.adt.src, hot: /^type|\| |where it/, where: '~/shapes', outs: [L.adt.run],
+        say: 'Types are built from records and variants: a <code>Shape</code> is a circle, a rectangle or a point, each with its own fields. The same building blocks give <code>Option</code> and <code>Result</code>, so a missing value or an error is part of the type. With constraints on top, types can be as precise as the domain needs. <code>match</code> takes values apart, and an arm can test a condition with <code>where</code>.' },
+      { title: 'Every case is covered.', file: 'shapes', code: L.adt.src, hot: /match s|Point =>/, where: '~/shapes', outs: [L.adt.refused],
+        say: 'A <code>match</code> has to cover every case. Leave <code>Point</code> out, and the edit is refused before anything is stored.' },
+    ],
+  });
+  feature('traits', {
+    kicker: K, title: 'Traits.',
+    steps: [
+      { file: 'priced', code: L.traits.src, hot: /^trait|^impl|Priced\)/, where: '~/priced', outs: [L.traits.run],
+        say: 'Traits are inspired by Rust\'s. A type implements a trait, and a trait can give its methods default bodies. They are how Strata does polymorphism, by composition instead of inheritance: <code>receipt</code> takes anything <code>Priced</code>, and one list can hold different types that share a trait.' },
+    ],
+  });
+  feature('values', {
+    kicker: K, title: 'Values, and visible mutation.',
+    steps: [
+      { file: 'cart', code: L.values.src, hot: /mut/, where: '~/cart', outs: [L.values.run],
+        say: 'Values are never shared: changing <code>b</code> leaves <code>a</code> as it was. Memory is managed by reference counting, so this is cheap, and a value is only copied when it is changed while something else still holds it. Everything is immutable unless it is declared <code>mut</code>, and a function that changes its argument says <code>mut</code> in its signature and at every call.' },
+      { title: 'No state changes unseen.', file: 'cart', code: L.values.src, hot: /add\(mut b/, where: '~/cart', outs: [L.values.refused],
+        say: 'Leave <code>mut</code> out at the call, and the edit is refused. Reading any line of code, you can see what it may change.' },
+    ],
+  });
+  feature('sugar', {
+    kicker: K, title: 'The everyday syntax.',
+    steps: [
+      { file: 'lines', code: V.sugar.src, hot: /for l in|f"|->/, where: '~/lines', outs: [V.sugar.run],
+        say: 'List and dictionary comprehensions with filters, string interpolation with format specs, lambdas, and method syntax on any function. The everyday syntax stays close to Rust and Python.' },
+    ],
+  });
+  feature('comptime', {
+    kicker: K, title: 'Code that runs while compiling.',
+    steps: [
+      { file: 'tables', code: L.comptime.src, hot: /comptime/, where: '~/tables', outs: [L.comptime.run],
+        say: '<code>comptime e</code> is evaluated by the compiler, and the program keeps only the value: here the primes below 60, and a table of squares. The evaluation is deterministic, and its results are cached between builds.' },
+      { title: 'Derived code is built on it.', file: 'examples/hello', code: F.derive.options, hot: /^derive/, where: '~/hello', outs: [F.derive.help, F.derive.bad],
+        say: '<code>derive CommandLine for Options</code> is Strata code that runs while compiling. It reads the type\'s fields, doc comments, defaults and constraints, and generates an ordinary <code>impl</code>: a parser, with its help text, that refuses values outside the constraints.' },
+      { title: 'The same for JSON.', file: 'signup', code: F.derive.json, hot: /^derive|where/, where: '~/signup', outs: [F.derive.json_run],
+        say: '<code>derive Json</code> generates the encoder and the decoder: a signup is written to JSON and read back. Reading checks every constraint, and an error names the field and the condition it broke.' },
+    ],
+  });
+}
 
 // ───────────────────────── under the hood ─────────────────────────
 {

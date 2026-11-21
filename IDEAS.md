@@ -619,7 +619,12 @@ Relations (decided): a definition has **dependencies** (what it mentions) and **
      - several agents at once: every change is checked, and merges pair definitions, so they don't conflict;
      - views of just what an agent needs;
      - editing through text (parsed into a tree, checked, rendered back).
-  5. The rest briefly: derive, `comptime`, comprehensions.
+  5. More of the language, one compact slide each, recorded:
+     - algebraic data types (variants, `Option` / `Result`, `match` with `where`, a non-exhaustive match refused);
+     - traits (as in Rust, composition over inheritance);
+     - value semantics with reference counting, and `mut` visible at declarations and calls (a call without it refused);
+     - the everyday syntax;
+     - `comptime` (tables computed while compiling), with derive built on it (CLI, JSON both ways).
   - Each section opens with its title, which then moves out of the way.
   - No history of the page, nothing about unmerged branches, and wording without the usual AI idioms (claudisms.ai).
 - **Everything shown is recorded** by `site/build.mjs` from the real CLI, the new-feature slides included (small packages stored with `strata edit`, so a snippet that stops checking breaks the build).
