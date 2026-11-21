@@ -352,12 +352,14 @@ pub struct Checked {
 /// their own.
 pub fn check_and_elaborate(prog: &Program) -> Checked {
     let mut r = crate::resolve::resolve(prog);
-    let (env, mut errors) = Env::build(&r.program);
+    // checking needs signatures only; what runs needs the (rewritten) bodies
+    let (env, mut errors) = Env::build_with(&r.program, false);
     errors.splice(0..0, std::mem::take(&mut r.errors));
     let (errs, holes, targets, mut types) = check_decls(&r.program, &env, false);
     errors.extend(errs);
     let report = CheckReport { errors, holes };
     if !needs_rewrite(&env) {
+        let (env, _) = Env::build(&r.program);
         return Checked { report, program: r.program, env };
     }
     rewrite(&mut r.program, &env, targets, &mut types);
@@ -3065,7 +3067,7 @@ pub fn test_instance(env: &Env, f: &FnDecl) -> Option<HashMap<Symbol, TypeExpr>>
 pub fn check(prog: &Program) -> CheckReport {
     let resolved = crate::resolve::resolve(prog);
     let prog = &resolved.program;
-    let (env, mut errors) = Env::build(prog);
+    let (env, mut errors) = Env::build_with(prog, false);
     errors.splice(0..0, resolved.errors);
     let (errs, holes, _, _) = check_decls(prog, &env, false);
     errors.extend(errs);
