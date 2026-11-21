@@ -185,6 +185,10 @@ fn lists_and_lambdas_run_as_interpreted() {
     let src = "fn table() -> List[(Int, Int)] {\n  [(1, 2), (3, 4)]\n}\n\nfn grow(mut xs: List[String]) {\n  xs = push(xs, \"d\")\n}\n\nfn main() {\n  mut xs := table()\n  xs = push(xs, (5, 6))\n  mut t := (1, 2)\n  t.0 = 9\n  mut zs := [\"a\", \"b\", \"c\"]\n  grow(mut zs)\n  print(f\"{xs} {table()} {t} {(1, 2)} {zs} {[\"a\", \"b\", \"c\"]} {[[1], [2, 3]]} {[None, Some(1)]}\")\n}\n";
     let (out, code) = case(&d, "constants", src);
     assert_eq!((out.as_str(), code), ("[(1, 2), (3, 4), (5, 6)] [(1, 2), (3, 4)] (9, 2) (1, 2) [\"a\", \"b\", \"c\", \"d\"] [\"a\", \"b\", \"c\"] [[1], [2, 3]] [None, Some(1)]\n", 0));
+    // constructors of constants too: records with fields of each kind, variants, Some/Ok
+    let src = "type P = { name: String, n: Int, x: Float, on: Bool }\ntype Shape =\n  | Dot\n  | Circle(Float)\n  | Named { label: String, sides: Int }\n\nfn main() {\n  p := P { name: \"a\", n: 1, x: 1.5, on: true }\n  mut q := P { name: \"a\", n: 1, x: 1.5, on: true }\n  q.n = 2\n  print(f\"{p} {q} {Some(1)} {[Some(2), None]} {Circle(2.5)} {Named { label: \"sq\", sides: 4 }} {Ok(1) == Ok(1)}\")\n}\n";
+    let (out, code) = case(&d, "constant_ctors", src);
+    assert_eq!((out.as_str(), code), ("P { name: \"a\", n: 1, x: 1.5, on: true } P { name: \"a\", n: 2, x: 1.5, on: true } Some(1) [Some(2), None] Circle(2.5) Named { label: \"sq\", sides: 4 } true\n", 0));
 }
 
 #[test]

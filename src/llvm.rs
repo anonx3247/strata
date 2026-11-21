@@ -2213,14 +2213,17 @@ impl<'m, 'a> Func<'m, 'a> {
     /// fits one: a small `Int`, `()`, or a constant object (a string, a
     /// constant list or block: `@...` or `getelementptr`, never freed).
     fn constant_slot(&mut self, v: &V) -> Res<Option<(&'static str, String)>> {
-        if is_never(&v.0) || !constant(&v.1) {
+        if is_never(&v.0) {
             return Ok(None);
         }
         Ok(match self.m.repr(&v.0)? {
             Ty::Int if v.1.parse::<i64>().is_ok() => Some(("i64", v.1.clone())),
             Ty::Unit => Some(("i64", "0".into())),
-            Ty::Int | Ty::Float | Ty::Bool => None,
-            _ if v.1 == "null" || v.1 == "poison" || v.1.is_empty() => None,
+            // a float literal is its bits in hex (`0x3FF8000000000000`)
+            Ty::Float => v.1.strip_prefix("0x").and_then(|h| u64::from_str_radix(h, 16).ok()).map(|b| ("i64", (b as i64).to_string())),
+            Ty::Bool if v.1 == "true" || v.1 == "false" => Some(("i64", if v.1 == "true" { "1" } else { "0" }.into())),
+            Ty::Int | Ty::Bool => None,
+            _ if !constant(&v.1) || v.1 == "null" || v.1 == "poison" || v.1.is_empty() => None,
             _ => Some(("ptr", v.1.clone())),
         })
     }
@@ -2248,14 +2251,20 @@ impl<'m, 'a> Func<'m, 'a> {
         if vs.is_empty() {
             return Ok(None);
         }
-        let Some((ty, arr)) = self.constant_slots(vs)? else { return Ok(None) };
-        let key = format!("block {tag} {arr}");
+        let mut tys = vec![];
+        let mut items = vec![];
+        for v in vs {
+            let Some((k, c)) = self.constant_slot(v)? else { return Ok(None) };
+            tys.push(k);
+            items.push(format!("{k} {c}"));
+        }
+        let key = format!("block {tag} {}", items.join(", "));
         if let Some(at) = self.m.constant_of.get(&key) {
             return Ok(Some(at.clone()));
         }
         let g = format!("@.const.{}", self.m.constants);
         self.m.constants += 1;
-        writeln!(self.m.globals, "{g} = private unnamed_addr constant {{ i64, i64, {ty} }} {{ i64 0, i64 {tag}, {arr} }}, align 8").unwrap();
+        writeln!(self.m.globals, "{g} = private unnamed_addr constant {{ i64, i64, {} }} {{ i64 0, i64 {tag}, {} }}, align 8", tys.join(", "), items.join(", ")).unwrap();
         let at = format!("getelementptr inbounds (i8, ptr {g}, i64 8)");
         self.m.constant_of.insert(key, at.clone());
         Ok(Some(at))
@@ -5370,6 +5379,12 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         self.check_new(c, &vals, &fs)?;
         let vals: Vec<V> = vals.into_iter().zip(&fs).map(|(v, f)| self.coerce(v, &f.ty)).collect::<Res<_>>()?;
+        // every field a constant: the value is one too, built once (its checks are made above)
+        if let Some(b) = self.constant_block(self.m.tags[c], &vals)? {
+            let v = (t, b);
+            self.check_type_refinement(c, &v)?;
+            return Ok(v);
+        }
         let p = self.block_of(self.m.tags[c], &vals)?;
         let v = self.temp((t, p));
         self.check_type_refinement(c, &v)?;
