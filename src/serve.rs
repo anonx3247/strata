@@ -116,7 +116,7 @@ fn text(status: u16, body: String) -> Reply {
 }
 
 fn fault_text(f: &interp::Fault) -> String {
-    let stack = if f.stack.is_empty() { String::new() } else { format!("\n    stack: {}", f.stack.join(" -> ")) };
+    let stack = if f.stack.is_empty() { String::new() } else { format!("\n    stack: {}", crate::interp::show_stack(&f.stack)) };
     format!("fault ({:?}): {}{stack}", f.kind, f.msg)
 }
 
@@ -211,7 +211,7 @@ impl App {
                             Err(f) => return error(500, fault_text(&f)),
                         };
                         match it.call_fn("std.web.dispatch", vec![page, Value::Int(id), value, fields]) {
-                            Ok(Value::Variant(c, interp::Fields::Pos(mut xs))) if c == "Some" && xs.len() == 1 => xs.pop().unwrap(),
+                            Ok(Value::Variant(c, interp::Fields::Pos(xs))) if c == "Some" && xs.len() == 1 => xs[0].clone(),
                             Ok(_) => return error(400, format!("the page has no handler {id}")),
                             Err(f) => return error(500, fault_text(&f)),
                         }
@@ -267,7 +267,7 @@ fn call(env: &Env, f: &FnDecl, req: &Json) -> (u16, Vec<(String, String)>, Strin
     match it.call_fn("handle", args) {
         Ok(v) => response(&v).unwrap_or_else(error),
         Err(fault) => {
-            let stack = if fault.stack.is_empty() { String::new() } else { format!("\n    stack: {}", fault.stack.join(" -> ")) };
+            let stack = if fault.stack.is_empty() { String::new() } else { format!("\n    stack: {}", crate::interp::show_stack(&fault.stack)) };
             error(format!("fault ({:?}): {}{stack}", fault.kind, fault.msg))
         }
     }
