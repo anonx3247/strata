@@ -210,6 +210,8 @@ declare ptr @strata_host_list_dir(ptr, ptr, ptr)
 declare i1 @strata_host_make_dir(ptr, ptr, ptr)
 declare i1 @strata_host_remove(ptr, ptr, ptr)
 declare ptr @strata_host_args()
+declare ptr @strata_prog_name()
+declare void @strata_options_error(i1, ptr)
 declare ptr @strata_host_env_var(ptr)
 declare ptr @strata_concat(ptr, ptr)
 declare i1 @strata_str_eq(ptr, ptr)
@@ -749,11 +751,24 @@ impl<'a> Module<'a> {
         let (mut args, mut impls) = (vec![], vec![]);
         for p in &main.params {
             let wanted = crate::printer::ty(&p.ty);
+            if crate::cli::is_options(c.m.env, &p.ty) {
+                let v = c.options(&p.ty)?;
+                if p.mutable {
+                    let slot = c.fresh("opts");
+                    writeln!(c.allocas, "  {slot} = alloca {}", c.m.ll(&v.0)?).unwrap();
+                    c.emit(format!("store {} {}, ptr {slot}", c.m.ll(&v.0)?, v.1));
+                    args.push((Ty::Str, slot));
+                } else {
+                    args.push(v);
+                }
+                impls.push(None);
+                continue;
+            }
             let (imp, fields): (&str, Vec<(&str, V)>) = match wanted.as_str() {
                 "std.io.Console" => ("std.io.Terminal", vec![("stdout", (Ty::Int, "1".into())), ("stderr", (Ty::Int, "2".into()))]),
                 "std.fs.Files" => ("std.fs.Disk", vec![("root", c.string("."))]),
                 "std.process.Environment" => ("std.process.Process", vec![("pid", c.call(&Ty::Int, "@strata_pid", &[])?)]),
-                _ => return Err(format!("`{entry}` asks for `{}: {wanted}`: compiled programs get `Console`, `Files` and `Environment` (options from the command line are not compiled yet)", p.name)),
+                _ => return Err(format!("`{entry}` asks for `{}: {wanted}`: compiled programs get `Console`, `Files` and `Environment` and options (a record that implements `CommandLine`, std.cli)", p.name)),
             };
             let fs = c.m.fields(imp, &[])?;
             let vals: Vec<V> = fs.iter().map(|f| fields.iter().find(|(n, _)| Some(*n) == f.name.as_deref()).map(|x| x.1.clone()).ok_or(format!("`{imp}` has a field `{}`", f.name.clone().unwrap_or_default()))).collect::<Res<_>>()?;
@@ -810,6 +825,43 @@ impl<'a> Module<'a> {
         let text = c.finish();
         writeln!(self.body, "define i32 @main(i32 %argc, ptr %argv) {{\n{text}}}\n").unwrap();
         Ok(())
+    }
+}
+
+impl Func<'_, '_> {
+    /// `main`'s options, read from the arguments by the derived
+    /// `from_args` (std.cli): `--help` prints the help and exits with 0, bad
+    /// arguments print the message and exit with 2, as `strata run` does.
+    fn options(&mut self, ty: &TypeExpr) -> Res<V> {
+        let recv = self.lower(ty)?;
+        let err_ty = Ty::Con(Symbol::new("std.cli.CliError"), vec![]);
+        let res = Ty::Con(Symbol::new("Result"), vec![recv.clone(), err_ty.clone()]);
+        let tm = self.m.traits.get(&Symbol::new(crate::cli::TRAIT)).and_then(|t| t.methods.iter().find(|m| crate::names::short(&m.decl.name) == "from_args")).ok_or("std.cli has no `from_args`")?;
+        let name = crate::types::trait_call(crate::cli::TRAIT, &tm.decl.name);
+        let prog = self.call(&Ty::Str, "@strata_prog_name", &[])?;
+        let argv = self.call(&Ty::Con(Symbol::new("List"), vec![Ty::Str]), "@strata_host_args", &[])?;
+        let r = self.call_method(&name, recv.clone(), vec![prog, argv], Some(res.clone()), &[])?;
+        let r = (res, r.1);
+        let (ok, err, help, bad) = (self.fresh_label("opts_ok"), self.fresh_label("opts_err"), self.fresh_label("opts_help"), self.fresh_label("opts_bad"));
+        let tag = self.tag(&r);
+        let is_ok = self.fresh("ok");
+        self.emit(format!("{is_ok} = icmp eq i64 {tag}, {}", self.m.tags["Ok"]));
+        self.emit(format!("br i1 {is_ok}, label %{ok}, label %{err}"));
+        self.block(&err);
+        let e = self.field(&r, 0, &err_ty)?;
+        let etag = self.tag(&e);
+        let is_help = self.fresh("help");
+        let help_tag = *self.m.tags.get("std.cli.ShowHelp").ok_or("std.cli has no `ShowHelp`")?;
+        self.emit(format!("{is_help} = icmp eq i64 {etag}, {help_tag}"));
+        self.emit(format!("br i1 {is_help}, label %{help}, label %{bad}"));
+        for (label, code) in [(&help, 0), (&bad, 2)] {
+            self.block(label);
+            let text = self.field(&e, 0, &Ty::Str)?;
+            self.emit(format!("call void @strata_options_error(i1 {}, ptr {})", code == 0, text.1));
+            self.emit(format!("ret i32 {code}"));
+        }
+        self.block(&ok);
+        self.field(&r, 0, &recv)
     }
 }
 

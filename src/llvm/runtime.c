@@ -338,13 +338,33 @@ void strata_print(Str *s) {
 // and `Result` (whose tags only it knows).
 
 static int prog_argc;
+// The program's name, as `--help` shows it: its file's, without the folder.
+static char *prog_name = "main";
 static char **prog_argv;
 
 // The program's arguments, without its name; a closed pipe ends it quietly.
 void strata_init(int32_t argc, char **argv) {
   prog_argc = argc > 0 ? argc - 1 : 0;
   prog_argv = argv + 1;
+  if (argc > 0 && argv[0]) prog_name = argv[0];
   signal(SIGPIPE, SIG_IGN);
+}
+
+Str *strata_prog_name(void) {
+  const char *slash = strrchr(prog_name, '/');
+  return str_c(slash ? slash + 1 : prog_name);
+}
+
+// The options could not be read: the help asked for (on standard output), or
+// what is wrong with the arguments (on standard error).
+void strata_options_error(_Bool help, Str *text) {
+  if (help) {
+    fwrite(text->bytes, 1, (size_t)text->len, stdout);
+    fflush(stdout);
+  } else {
+    fflush(stdout);
+    fprintf(stderr, "error: %.*s\n", (int)text->len, text->bytes);
+  }
 }
 
 static char *cstr(Str *s) {

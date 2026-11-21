@@ -554,6 +554,61 @@ fn main() {
     assert!(out.contains("{\"Some\":\"Loud\"}\nNone\nloud\n[0,2,2]") && code == 0, "{out}");
 }
 
+/// The argument sets the examples with options are run with: values,
+/// defaults, `--help`, and bad arguments (exit code 2).
+const OPTION_RUNS: &[(&str, &[&str])] = &[
+    ("hello", &[]),
+    ("hello", &["Ada", "--loud"]),
+    ("hello", &["--times", "2", "Ada", "Bob"]),
+    ("hello", &["--times=3"]),
+    ("hello", &["--times", "30"]),
+    ("hello", &["--times", "x"]),
+    ("hello", &["--help"]),
+    ("hello", &["-h"]),
+    ("hello", &["--bogus"]),
+    ("wc", &["--help"]),
+    ("wc", &["--only", "lines", "examples/wc/strata.toml", "README.md"]),
+    ("wc", &["--only", "bytes"]),
+    ("wc", &["examples/wc/strata.toml"]),
+];
+
+/// `main(opts: Options)`: a compiled program reads its options with the
+/// derived `from_args`, as `strata run` does (same output, same exit code).
+#[test]
+fn options_from_the_command_line_compile() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("options");
+    let strata = env!("CARGO_BIN_EXE_strata");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // named after the package, as `strata build` names it (`--help` shows the name)
+    for ex in ["hello", "wc"] {
+        let b = Command::new(strata).arg("build").arg(root.join("examples").join(ex)).arg("-o").arg(d.join(ex)).output().unwrap();
+        assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
+    }
+    let mut codes = vec![];
+    for (ex, args) in OPTION_RUNS {
+        let native = output(Command::new(d.join(ex)).args(*args).current_dir(root).stdin(Stdio::null()));
+        let interp = output(Command::new(strata).arg("run").arg(root.join("examples").join(ex)).arg("--").args(*args).current_dir(root).stdin(Stdio::null()));
+        assert_eq!(native, interp, "native (left) and interpreted (right) differ for {ex} {args:?}");
+        codes.push(native.1);
+    }
+    assert_eq!(codes, [0, 0, 0, 0, 2, 2, 0, 0, 2, 0, 0, 2, 0]);
+    // a mutable options parameter, in a script
+    let f = d.join("opts.strata");
+    save(&f, "use std.cli.CommandLine\n\ntype Options = {\n  /// How many.\n  count: Option[Int],\n  names: List[String],\n}\n\nderive CommandLine for Options\n\nfn main(mut opts: Options) {\n  opts.names = opts.names + [\"end\"]\n  print(f\"{opts.count} {opts.names}\")\n}\n");
+    let exe = d.join("opts");
+    let b = Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
+    assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
+    for args in [&["--count", "4", "a", "b"][..], &[], &["--count"], &["--help"]] {
+        let native = output(Command::new(&exe).args(args));
+        let interp = output(Command::new(strata).arg("run").arg(&f).arg("--").args(args));
+        assert_eq!(native, interp, "native (left) and interpreted (right) differ for {args:?}");
+    }
+}
+
 #[test]
 fn what_is_not_compiled_yet_is_named() {
     let d = tmp("unsupported");
@@ -592,4 +647,18 @@ fn the_jit_runs_as_the_interpreter() {
     let (out, code) = output(Command::new(strata).args(["run", "--jit"]).arg(&f));
     assert_eq!(code, 0);
     assert!(out.contains("true\n") && out.contains("note: interpreted, not compiled: can't compile `main`: the built-in `matches` on (String, String) is not compiled yet"), "{out}");
+}
+
+/// `strata run --jit` with options: the derived `from_args`, compiled.
+#[cfg(feature = "jit")]
+#[test]
+fn the_jit_reads_options() {
+    let strata = env!("CARGO_BIN_EXE_strata");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (ex, args) in OPTION_RUNS {
+        let run = |jit: bool| output(Command::new(strata).arg("run").args(jit.then_some("--jit")).arg(root.join("examples").join(ex)).arg("--").args(*args).current_dir(root).stdin(Stdio::null()));
+        let (jit, interp) = (run(true), run(false));
+        assert!(!jit.0.contains("note: interpreted"), "{}", jit.0);
+        assert_eq!(jit, interp, "the JIT (left) and the interpreter (right) differ for {ex} {args:?}");
+    }
 }
