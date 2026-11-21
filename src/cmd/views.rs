@@ -198,7 +198,7 @@ pub fn ast(args: &Args) -> Result<bool, String> {
 pub fn view(args: &Args) -> Result<bool, String> {
     let src = load(&args)?;
     let p = src.program();
-    let level: u8 = args.val("--level").unwrap_or("1").parse().map_err(|_| "--level must be 0-3")?;
+    let level: u8 = args.val("--level").unwrap_or("1").parse().ok().filter(|l| *l <= 2).ok_or("--level must be 0 (map), 1 (interfaces) or 2 (source)")?;
     let names = view::select(p, args.pos.get(1).map(|s| s.as_str()));
     let rep = types::check(p);
     let mut holes: HashMap<String, Vec<String>> = HashMap::default();
