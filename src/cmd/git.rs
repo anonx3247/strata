@@ -17,7 +17,8 @@ pub fn merge_file(args: &Args) -> Result<bool, String> {
         if bytes.is_empty() {
             return Ok(Program::default());
         }
-        package::decode_file(std::path::Path::new(side), &bytes)
+        // each side alone: names from other modules stay in full in the text merged
+        package::decode_file(std::path::Path::new(side), &bytes).map(|p| resolve::written_form(&p))
     };
     let sides = (read(o, "base"), read(a, "ours"), read(b, "theirs"));
     let (Ok(base), Ok(ours), Ok(theirs)) = sides else {

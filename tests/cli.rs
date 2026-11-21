@@ -1060,7 +1060,7 @@ test "boxes" {
     let (ok, out) = strata(&["rename", "a.Box", "Crate"], &d, None);
     assert!(ok, "{out}");
     let r = strata(&["render", "a"], &d, None).1 + &strata(&["render", "b"], &d, None).1;
-    for s in ["pub fn length(xs: List[Int])", "let n = length(xs)", "tally(length(xs))", "use a.{length, Crate}", "a.length(b.items) + length([])", "fn total(b: Crate)", "Crate { items: [1, 2] }"] {
+    for s in ["pub fn length(xs: List[Int])", "let n = length(xs)", "tally(length(xs))", "use a.{length, Crate}", "length(b.items) + length([])", "fn total(b: Crate)", "Crate { items: [1, 2] }"] {
         assert!(r.contains(s), "missing {s:?} in\n{r}");
     }
     let (ok, out) = strata(&["test"], &d, None);
@@ -2243,11 +2243,12 @@ fn move_a_definition_to_another_module() {
 
     let (ok, out) = strata(&["move", "charge", "billing"], &d, None);
     assert!(ok && out.contains("moved orders.charge from orders to billing (billing.strata)"), "{out}");
-    assert!(out.contains("updated 1 definition that refers to it: test \"charges\"") && out.contains("orders: use billing.charge") && out.contains("main: use billing.charge"), "{out}");
+    assert!(out.contains("updated 3 definitions that refer to it: billing.invoice, test \"charges\", orders.ship") && out.contains("orders: use billing.charge") && out.contains("main: use billing.charge"), "{out}");
     let (o, b, m) = (text(&d.join("orders.strata")), text(&d.join("billing.strata")), text(&d.join("main.strata")));
     assert!(o.starts_with("use billing.charge\n") && !o.contains("fn charge"), "{o}");
     assert!(b.starts_with("use orders.Order\n") && b.contains("pub fn charge(o: Order) -> Int"), "{b}");
-    assert!(m.contains("use billing.charge") && m.contains("billing.charge(o) == 2") && !m.contains("orders.charge"), "{m}");
+    // `orders.charge(o)` was stored as a reference to the definition: now `billing.charge`, shown short since imported
+    assert!(m.contains("use billing.charge") && m.contains("assert charge(o) == 2") && !m.contains("orders.charge"), "{m}");
     let (ok, out) = strata(&["test"], &d, None);
     assert!(ok && out.contains("1 passed"), "{out}");
 
@@ -2285,8 +2286,9 @@ fn sync_follows_moves() {
 
     let (ok, out) = strata_git(&["sync", "main"], &d);
     assert!(ok && out.contains("merged main") && out.contains("follows the rename orders.charge → billing.charge"), "{out}");
+    // both calls name the same definition: stored alike, shown short where it is imported
     let r = text(&d.join("report.strata"));
-    assert!(r.contains("use orders.Order") && r.contains("use billing.charge") && r.contains("charge(o) + billing.charge(o)"), "{r}");
+    assert!(r.contains("use orders.Order") && r.contains("use billing.charge") && r.contains("charge(o) + charge(o)"), "{r}");
 }
 
 const TAXES: &str = "fn tax(amount: Int) -> Int {\n  amount / 10\n}\n\nfn total(amount: Int) -> Int {\n  amount + tax(amount)\n}\n\nfn double_tax(a: Int) -> Int {\n  tax(a) * 2\n}\n\ntest \"totals\" {\n  assert total(100) == 110\n}\n";

@@ -138,13 +138,13 @@ fn walk(path: &Path, ext: &str) -> Result<Vec<PathBuf>, String> {
 pub fn program(path: &Path) -> Result<Program, String> {
     if !path.is_dir() {
         let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        return decode_file(path, &bytes);
+        return Ok(crate::resolve::written_form(&decode_file(path, &bytes)?));
     }
     let mut decls = Vec::new();
     for (rel, bytes) in files(path)? {
         decls.extend(decode_file(&path.join(rel), &bytes)?.decls);
     }
-    Ok(Program { decls })
+    Ok(crate::resolve::written_form(&Program { decls }))
 }
 
 /// Decode a program's files, as `files` gives them (a bundle, or module files).
@@ -153,11 +153,13 @@ pub fn decode(files: Vec<(PathBuf, Vec<u8>)>) -> Result<Program, String> {
     for (rel, bytes) in files {
         decls.extend(decode_file(&rel, &bytes)?.decls);
     }
-    Ok(Program { decls })
+    Ok(crate::resolve::written_form(&Program { decls }))
 }
 
-/// One file's definitions: a module file or a bundle. Text is refused: it
-/// only goes in through an edit (`strata edit`, `strata add`).
+/// One file's definitions, as stored (references qualified: shown as written
+/// by `resolve::written_form`, given the other modules they use): a module
+/// file or a bundle. Text is refused: it only goes in through an edit
+/// (`strata edit`, `strata add`).
 pub fn decode_file(rel: &Path, bytes: &[u8]) -> Result<Program, String> {
     if !crate::binary::is_binary(bytes) {
         return Err(format!("{}: not a Strata file (code is stored in binary: text goes in through `strata edit` or `strata add`)", rel.display()));

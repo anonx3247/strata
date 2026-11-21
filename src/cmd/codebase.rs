@@ -198,9 +198,12 @@ pub fn move_def(args: &Args, json_out: bool) -> Result<bool, String> {
     }
     let short = crate::names::short(&old_q).to_string();
     let new_q = if target.is_empty() { short.clone() } else { format!("{target}.{short}") };
-    let before: HashMap<String, String> = cb.program.decls.iter().map(|d| (d.qname(), store::self_hash(d))).collect();
+    // what refers to it: definitions whose stored form changed (their text may
+    // not: `charge(o)` where `charge` is imported stays `charge(o)`)
+    let stored = |p: &Program| -> HashMap<String, String> { p.decls.iter().zip(resolve::stored_form(p).decls).map(|(d, s)| (d.qname(), store::self_hash(&s))).collect() };
+    let (before, after) = (stored(&cb.program), stored(&moved));
     let is_use = |d: &Decl| matches!(d.kind, DeclKind::Use(_));
-    let updated: Vec<String> = moved.decls.iter().filter(|d| !is_use(d) && d.qname() != new_q && before.get(&d.qname()).is_some_and(|h| *h != store::self_hash(d))).map(|d| d.qname()).collect();
+    let updated: Vec<String> = moved.decls.iter().filter(|d| !is_use(d) && d.qname() != new_q && before.get(&d.qname()).is_some_and(|h| Some(h) != after.get(&d.qname()))).map(|d| d.qname()).collect();
     let shown = |m: &str| if m.is_empty() { "main".to_string() } else { m.to_string() };
     // imports the move added or changed, by module
     let old_uses: std::collections::HashSet<(String, String)> = cb.program.decls.iter().filter(|d| is_use(d)).map(|d| (d.module.to_string(), printer::decl(d))).collect();

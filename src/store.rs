@@ -472,7 +472,10 @@ pub fn encode_script(p: &Program) -> Vec<u8> {
     let mut modules = p.decls.iter().map(|d| d.module);
     match modules.next() {
         Some(m) if modules.any(|n| n != m) => crate::binary::encode_bundle(&crate::binary::Image { manifest: None, program: p.clone() }),
-        m => crate::binary::encode_module(p, m.as_ref().map_or("", |m| m.as_str()), &graph(p)),
+        m => {
+            let stored = crate::resolve::stored_form(p);
+            crate::binary::encode_module(&stored, m.as_ref().map_or("", |m| m.as_str()), &graph(&stored))
+        }
     }
 }
 
@@ -510,9 +513,11 @@ pub fn encode_at(path: &Path, mut decls: Vec<Decl>) -> Result<Vec<u8>, String> {
     for d in &mut decls {
         d.module = Symbol::from(m.as_str());
     }
+    // the other modules as stored, this one as written: storing qualifies both alike
     all.extend(decls);
     let p = Program { decls: all };
-    Ok(crate::binary::encode_module(&p, &m, &graph(&p)))
+    let stored = crate::resolve::stored_form(&p);
+    Ok(crate::binary::encode_module(&stored, &m, &graph(&stored)))
 }
 
 /// Write `new`'s module files under `root`: only those whose bytes change;

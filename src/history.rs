@@ -133,7 +133,7 @@ fn sources_at(path: &Path, rev: &str) -> Result<Program, String> {
         let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
         let name = path.file_name().ok_or("not a file")?.to_string_lossy().to_string();
         match crate::git::bytes(Some(dir), &["show", &format!("{rev}:./{name}")]) {
-            Ok(bytes) => crate::package::decode_file(Path::new(&name), &bytes).map_err(|e| format!("at {rev}: {e}")),
+            Ok(bytes) => crate::package::decode_file(Path::new(&name), &bytes).map(|p| crate::resolve::written_form(&p)).map_err(|e| format!("at {rev}: {e}")),
             Err(_) => Ok(Program::default()),
         }
     }
