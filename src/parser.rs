@@ -178,6 +178,15 @@ impl Parser {
     fn expect_kw(&mut self, s: &str) -> R<()> {
         if self.eat_kw(s) { Ok(()) } else { Err(self.err(&format!("expected `{s}`"))) }
     }
+    /// A field's name: an identifier, or `type` (`std.typing.Field.type`).
+    fn field_name(&mut self) -> R<Symbol> {
+        if self.is_kw("type") {
+            self.next();
+            return Ok(Symbol::new("type"));
+        }
+        self.ident()
+    }
+
     fn ident(&mut self) -> R<Symbol> {
         match self.peek().clone() {
             Tok::Ident(s) if !KEYWORDS.contains(&s.as_str()) => {
@@ -253,7 +262,8 @@ impl Parser {
         while self.is_sym(".") && matches!(self.peek_at(1), Tok::Ident(_)) {
             self.next();
             s.push('.');
-            s.push_str(&self.ident()?);
+            // `f.type`: the type of a known field (a `comptime` parameter)
+            s.push_str(&self.field_name()?);
         }
         Ok(s.into())
     }
@@ -506,7 +516,7 @@ impl Parser {
                 doc.push(d);
                 p.next();
             }
-            let name = p.ident()?;
+            let name = p.field_name()?;
             p.expect_sym(":")?;
             let ty = p.type_expr()?;
             let default = if p.eat_sym("=") { Some(p.expr()?) } else { None };
@@ -1043,7 +1053,7 @@ impl Parser {
                         return Ok(Expr::Ctor(name, CtorArgs::Update(Box::new(base), fields)));
                     }
                     let fields = self.list("}", |p| {
-                        let f = p.ident()?;
+                        let f = p.field_name()?;
                         if p.eat_sym(":") { Ok((f, p.expr()?)) } else { Ok((f.clone(), Expr::Var(f))) }
                     })?;
                     return Ok(Expr::Ctor(name, CtorArgs::Record(fields)));
@@ -1366,8 +1376,14 @@ impl Parser {
                             open = true;
                             break;
                         }
-                        let f = self.ident()?;
-                        let p = if self.eat_sym(":") { self.pattern()? } else { Pattern::Bind(f.clone()) };
+                        let f = self.field_name()?;
+                        let p = if self.eat_sym(":") {
+                            self.pattern()?
+                        } else if f == "type" {
+                            return Err(self.err("`type` can't be a variable: write `type: t`"));
+                        } else {
+                            Pattern::Bind(f.clone())
+                        };
                         fields.push((f, p));
                         if !self.eat_sym(",") {
                             break;

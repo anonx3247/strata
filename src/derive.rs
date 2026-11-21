@@ -1,0 +1,524 @@
+//! Derived traits: each `derive Trait for Type` becomes an ordinary `impl`,
+//! made once the program is resolved, so nothing that checks, runs, verifies
+//! or compiles code sees a `derive` (IDEAS.md, "Derived traits, `comptime`
+//! and special methods").
+//!
+//! For `derive CommandLine for Options`:
+//! 1. `Options` is described as a value of `std.typing` (`Record`, or `Sum`
+//!    for a sum type), and checked against the trait's kind
+//!    (`derivable(t: Record)`; a kind may be a refinement, as `Choice` is)
+//!    and its `requires`, by running them;
+//! 2. each `derived fn` of the trait is specialized: `t` is that value,
+//!    `comptime e` is evaluated and its value written in its place,
+//!    `t.make(f -> e)` / `t.try_make(f -> e)` become the construction of an
+//!    `Options`, field by field, and a call of a function with `comptime`
+//!    parameters becomes a call of a copy made for those values, where
+//!    `f.type` is the field's type and `match comptime` keeps one arm;
+//! 3. the result is `impl CommandLine for Options { ... }` with those methods
+//!    and the ones written by hand, and the copies are added to the program.
+//!
+//! Compile-time code runs in the interpreter, within a step budget.
+
+use crate::ast::*;
+use crate::interp::{Fields, Interp, Scope, Value};
+use crate::symbol::Symbol;
+use crate::types::{Diag, Env};
+use std::collections::HashMap;
+
+/// The most steps compile-time code may take, for one `derive`.
+const BUDGET: u64 = 5_000_000;
+
+/// Replace each `derive` by its `impl` (or report why it can't be made).
+pub fn expand(p: &mut Program, errors: &mut Vec<Diag>) {
+    if !p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Impl(i) if i.derived)) {
+        return;
+    }
+    let (env, _) = Env::build(p);
+    let mut extra: Vec<Decl> = Vec::new();
+    let mut keep = vec![true; p.decls.len()];
+    let snapshot = p.clone();
+    for (k, d) in p.decls.iter_mut().enumerate() {
+        let DeclKind::Impl(i) = &d.kind else { continue };
+        if !i.derived {
+            continue;
+        }
+        let name = d.name();
+        let mut x = Expander::new(&env, &snapshot);
+        match x.derive(i) {
+            Ok(imp) => {
+                d.kind = DeclKind::Impl(imp);
+                extra.extend(x.copies.into_iter().map(|f| Decl { comments: vec![], doc: vec![], kind: DeclKind::Fn(f), module: d.module, public: false }));
+            }
+            Err(msg) => {
+                errors.push(Diag { decl: name, msg });
+                keep[k] = false;
+            }
+        }
+    }
+    let mut k = 0;
+    p.decls.retain(|_| {
+        k += 1;
+        keep[k - 1]
+    });
+    p.decls.extend(extra);
+}
+
+type Res<X> = Result<X, String>;
+
+struct Expander<'a> {
+    env: &'a Env,
+    prog: &'a Program,
+
+    it: Interp<'a>,
+    /// Values known at compile time, by name (`t`, a `comptime` parameter).
+    known: HashMap<Symbol, Value>,
+    /// Types known at compile time, by name (`f.type`, `x` in `Option[x] =>`).
+    types: HashMap<String, TypeExpr>,
+    /// The written type behind each type description made (by its JSON).
+    written: HashMap<String, TypeExpr>,
+    /// The type derived for.
+    self_ty: TypeExpr,
+    /// Copies of functions with `comptime` parameters, made for their values.
+    copies: Vec<FnDecl>,
+    made: HashMap<String, Symbol>,
+    /// Names bound inside the code being specialized, which hide known ones.
+    hidden: Vec<Vec<Symbol>>,
+}
+
+fn q(name: &str) -> String {
+    format!("std.typing.{name}")
+}
+
+fn record(name: &str, fields: Vec<(&str, Value)>) -> Value {
+    Value::Record(q(name), fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+}
+
+fn strs(xs: &[String]) -> Value {
+    Value::List(xs.iter().map(|s| Value::Str(s.clone())).collect())
+}
+
+fn json(v: &Value) -> String {
+    crate::interp::to_json(v).to_string()
+}
+
+impl<'a> Expander<'a> {
+    fn new(env: &'a Env, prog: &'a Program) -> Self {
+        let mut it = Interp::new(env, 1);
+        it.budget = Some(BUDGET);
+        Expander { env, prog, it, known: HashMap::new(), types: HashMap::new(), written: HashMap::new(), self_ty: TypeExpr::Unit, copies: vec![], made: HashMap::new(), hidden: vec![] }
+    }
+
+    /// `derive Trait for Type { written }` as an ordinary `impl`.
+    fn derive(&mut self, i: &ImplDecl) -> Res<ImplDecl> {
+        let short = |n: &str| crate::names::short(n).to_string();
+        let tr = self.prog.decls.iter().find_map(|d| match &d.kind {
+            DeclKind::Trait(t) if t.name == i.trait_name => Some(t),
+            _ => None,
+        });
+        let Some(tr) = tr else { return Err(format!("`{}` is not a trait", short(&i.trait_name))) };
+        let Some(dv) = &tr.derivable else {
+            return Err(format!("`{}` can't be derived: only a `derivable` trait can (write `impl {} for {}` instead)", short(&tr.name), short(&tr.name), crate::printer::ty(&i.for_type)));
+        };
+        self.self_ty = i.for_type.clone();
+        let head = crate::types::texpr_head(&i.for_type);
+        let desc = self.describe(&head)?;
+        // the kind: the description is a value of it (a refinement, as `Choice` is, holds too)
+        let kind_ok = match (&desc, self.base_record(&dv.kind)) {
+            (Value::Record(n, _), Some(want)) => *n == want,
+            _ => false,
+        };
+        let kind_name = short(&crate::types::texpr_head(&dv.kind));
+        if !kind_ok || self.it.check_type(&dv.kind, &desc).map_err(|f| f.msg)?.is_some() {
+            return Err(format!("`{}` can only be derived for a `{kind_name}`, and `{}` isn't one", short(&tr.name), short(&head)));
+        }
+        let scope = crate::interp::extend(&None, &dv.name, desc.clone());
+        for r in &dv.requires {
+            let ok = self.it.eval(r, &scope).map_err(|f| format!("checking what `{}` requires: {}", short(&tr.name), f.msg))?;
+            if ok != Value::Bool(true) {
+                return Err(format!("`{}` doesn't meet what `{}` requires: {}", short(&head), short(&tr.name), crate::printer::expr(r, 0)));
+            }
+        }
+        self.known.insert(dv.name, desc);
+        let mut methods = i.methods.clone();
+        for m in &tr.methods {
+            if i.methods.iter().any(|w| w.name == m.decl.name) {
+                continue;
+            }
+            if m.decl.derived {
+                let mut f = m.decl.clone();
+                f.derived = false;
+                f.body = self.expr(&m.decl.body).map_err(|e| format!("deriving `{}`: {e}", short(&m.decl.name)))?;
+                methods.push(f);
+            } else if !m.default {
+                return Err(format!("`{}` doesn't derive `{}`: write it in `derive {} for {} {{ ... }}`", short(&tr.name), short(&m.decl.name), short(&tr.name), short(&head)));
+            }
+        }
+        Ok(ImplDecl { methods, derived: false, ..i.clone() })
+    }
+
+    /// The record type a kind is (or refines): `Record`, `Sum` (`Choice` is a `Sum`).
+    fn base_record(&self, kind: &TypeExpr) -> Option<String> {
+        let n = crate::types::texpr_head(kind);
+        let td = self.env.types.get(&Symbol::new(&n))?;
+        match &td.body {
+            TypeBody::Record(_) => Some(n.to_string()),
+            TypeBody::Alias(a) => self.base_record(a),
+            TypeBody::Sum(_) => None,
+        }
+    }
+
+    /// A type's description: a `std.typing.Record` or `Sum`.
+    fn describe(&mut self, head: &str) -> Res<Value> {
+        let td = self.env.types.get(&Symbol::new(head)).ok_or(format!("`{head}` is not a type defined in this program"))?.clone();
+        let doc = self.prog.decls.iter().find(|d| matches!(&d.kind, DeclKind::Type(t) if t.name == head)).map(|d| d.doc.clone()).unwrap_or_default();
+        let name = Value::Str(crate::names::short(head).to_string());
+        Ok(match &td.body {
+            TypeBody::Record(fs) => {
+                let fields = fs.iter().map(|f| self.field(&f.name, &f.doc, &f.ty, f.default.as_ref())).collect();
+                record("Record", vec![("name", name), ("doc", strs(&doc)), ("fields", Value::List(fields))])
+            }
+            TypeBody::Sum(vs) => {
+                let variants = vs
+                    .iter()
+                    .map(|v| {
+                        let fields = match &v.payload {
+                            Payload::None => vec![],
+                            Payload::Positional(ts) => ts.iter().enumerate().map(|(k, t)| self.field(&Symbol::new(&k.to_string()), &[], t, None)).collect(),
+                            Payload::Record(fs) => fs.iter().map(|f| self.field(&f.name, &f.doc, &f.ty, f.default.as_ref())).collect(),
+                        };
+                        record("Variant", vec![("name", Value::Str(crate::names::short(&v.name).to_string())), ("doc", Value::List(vec![])), ("fields", Value::List(fields))])
+                    })
+                    .collect();
+                record("Sum", vec![("name", name), ("doc", strs(&doc)), ("variants", Value::List(variants))])
+            }
+            TypeBody::Alias(_) => return Err(format!("`{}` is an alias: a derived trait needs a record or a sum type", crate::names::short(head))),
+        })
+    }
+
+    fn field(&mut self, name: &Symbol, doc: &[String], ty: &TypeExpr, default: Option<&Expr>) -> Value {
+        let t = self.type_value(ty);
+        let default = match default {
+            Some(e) => Value::Variant("Some".into(), Fields::Pos(vec![Value::Str(crate::printer::expr(e, 0))])),
+            None => Value::Variant("None".into(), Fields::None),
+        };
+        record("Field", vec![("name", Value::Str(name.to_string())), ("doc", strs(doc)), ("type", t), ("default", default)])
+    }
+
+    /// A written type as a `std.typing.Type` (remembering which it was).
+    fn type_value(&mut self, t: &TypeExpr) -> Value {
+        let v = match t {
+            TypeExpr::Named(n, args) => {
+                let args = args.iter().map(|a| self.type_value(a)).collect();
+                Value::Variant(q("NamedType"), Fields::Rec(vec![("name".into(), Value::Str(crate::names::short(n).to_string())), ("args".into(), Value::List(args))]))
+            }
+            TypeExpr::Refined(b, pred) => {
+                let base = self.type_value(b);
+                Value::Variant(q("RefinedType"), Fields::Rec(vec![("base".into(), base), ("condition".into(), Value::Str(crate::printer::expr(pred, 0)))]))
+            }
+            TypeExpr::Fn(ps, r) => {
+                let ps = ps.iter().map(|a| self.type_value(a)).collect();
+                let r = self.type_value(r);
+                Value::Variant(q("FunctionType"), Fields::Rec(vec![("params".into(), Value::List(ps)), ("result".into(), r)]))
+            }
+            TypeExpr::Unit => Value::Variant(q("UnitType"), Fields::None),
+            TypeExpr::Union(ms) => {
+                let ms = ms.iter().map(|a| self.type_value(a)).collect();
+                Value::Variant(q("UnionType"), Fields::Rec(vec![("members".into(), Value::List(ms))]))
+            }
+        };
+        self.written.insert(json(&v), t.clone());
+        v
+    }
+
+    /// The written type a description stands for.
+    fn type_of(&self, v: &Value) -> Res<TypeExpr> {
+        self.written.get(&json(v)).cloned().ok_or(format!("{} is not a type known here", json(v)))
+    }
+
+    fn is_known(&self, x: &Symbol) -> bool {
+        self.known.contains_key(x) && !self.hidden.iter().any(|h| h.contains(x))
+    }
+
+    /// Run compile-time code, with the known values in scope.
+    fn eval(&mut self, e: &Expr) -> Res<Value> {
+        let mut scope: Scope = None;
+        for (k, v) in &self.known {
+            scope = crate::interp::extend(&scope, k, v.clone());
+        }
+        let r = self.it.eval(e, &scope);
+        if self.it.exhausted() {
+            return Err(format!("`comptime {}` ran for more than {BUDGET} steps: compile-time code must finish", crate::printer::expr(e, 0)));
+        }
+        r.map_err(|f| format!("`comptime {}` failed: {}", crate::printer::expr(e, 0), f.msg))
+    }
+
+    /// A value computed at compile time, written as code.
+    fn literal(&self, v: &Value) -> Res<Expr> {
+        Ok(match v {
+            Value::Int(n) => Expr::Int(*n),
+            Value::Big(b) => Expr::BigInt(b.to_string()),
+            Value::Float(x) => Expr::Float(*x),
+            Value::Bool(b) => Expr::Bool(*b),
+            Value::Str(s) => Expr::Str(s.clone()),
+            Value::Unit => Expr::Unit,
+            Value::List(xs) => Expr::List(xs.iter().map(|x| self.literal(x)).collect::<Res<_>>()?),
+            Value::Tuple(xs) => Expr::Tuple(xs.iter().map(|x| self.literal(x)).collect::<Res<_>>()?),
+            Value::Record(n, fs) => Expr::Ctor(Symbol::new(n), CtorArgs::Record(fs.iter().map(|(k, x)| Ok((Symbol::new(k), self.literal(x)?))).collect::<Res<_>>()?)),
+            Value::Variant(n, Fields::None) => Expr::Ctor(Symbol::new(n), CtorArgs::None),
+            Value::Variant(n, Fields::Pos(xs)) => Expr::Ctor(Symbol::new(n), CtorArgs::Positional(xs.iter().map(|x| self.literal(x)).collect::<Res<_>>()?)),
+            Value::Variant(n, Fields::Rec(fs)) => Expr::Ctor(Symbol::new(n), CtorArgs::Record(fs.iter().map(|(k, x)| Ok((Symbol::new(k), self.literal(x)?))).collect::<Res<_>>()?)),
+            Value::Distinct(n, x) => Expr::Ctor(Symbol::new(n), CtorArgs::Positional(vec![self.literal(x)?])),
+            Value::Dict(kvs) => Expr::Call(Box::new(Expr::Var(Symbol::new("dict"))), vec![Expr::List(kvs.iter().map(|(k, x)| Ok(Expr::Tuple(vec![self.literal(k)?, self.literal(x)?]))).collect::<Res<_>>()?)]),
+            Value::Set(xs) => Expr::Call(Box::new(Expr::Var(Symbol::new("set"))), vec![Expr::List(xs.iter().map(|x| self.literal(x)).collect::<Res<_>>()?)]),
+            Value::Closure(..) | Value::FnRef(_) | Value::Mock(_) => return Err("a function made at compile time can't be kept in the program".into()),
+        })
+    }
+
+    /// Specialize code for the known values.
+    fn expr(&mut self, e: &Expr) -> Res<Expr> {
+        match e {
+            Expr::Comptime(x) => {
+                let v = self.eval(x)?;
+                return self.literal(&v);
+            }
+            // a known value used where the program runs: written in
+            Expr::Var(x) if self.is_known(x) => {
+                let v = self.known[x].clone();
+                return self.literal(&v);
+            }
+            // `t.make(f -> e)`, `t.try_make(f -> e)`
+            Expr::Method(recv, m, args) if (m == "make" || m == "try_make") && matches!(&**recv, Expr::Var(x) if self.is_known(x)) => {
+                let Expr::Var(x) = &**recv else { unreachable!() };
+                return self.make(x, m == "try_make", args);
+            }
+            Expr::Match(s, None, arms) if matches!(&**s, Expr::Comptime(_)) => {
+                let Expr::Comptime(x) = &**s else { unreachable!() };
+                return self.match_type(x, arms);
+            }
+            Expr::Call(f, args) => {
+                if let Expr::Var(name) = &**f {
+                    if let Some(fd) = self.env.fns.get(name).filter(|fd| fd.params.iter().any(|p| p.comptime)).cloned() {
+                        return self.call_copy(name, &fd, args);
+                    }
+                }
+            }
+            Expr::Lambda(ps, _) => {
+                self.hidden.push(ps.iter().map(|p| p.name).collect());
+                let r = self.children(e);
+                self.hidden.pop();
+                return r;
+            }
+            _ => {}
+        }
+        self.children(e)
+    }
+
+    /// `e` with its children specialized.
+    fn children(&mut self, e: &Expr) -> Res<Expr> {
+        struct Walk<'x, 'a> {
+            x: &'x mut Expander<'a>,
+            err: Option<String>,
+            top: bool,
+        }
+        impl VisitMut for Walk<'_, '_> {
+            fn expr(&mut self, e: &mut Expr) {
+                if self.err.is_some() {
+                    return;
+                }
+                if std::mem::replace(&mut self.top, false) {
+                    return walk_expr_mut(self, e);
+                }
+                match self.x.expr(e) {
+                    Ok(n) => *e = n,
+                    Err(m) => self.err = Some(m),
+                }
+            }
+            fn ty(&mut self, t: &mut TypeExpr) {
+                *t = self.x.ty(t);
+            }
+        }
+        let mut out = e.clone();
+        let mut w = Walk { x: self, err: None, top: true };
+        w.expr(&mut out);
+        match w.err {
+            Some(m) => Err(m),
+            None => Ok(out),
+        }
+    }
+
+    /// A type with the known ones written in (`f.type`, an arm's `x`, `Self`).
+    fn ty(&self, t: &TypeExpr) -> TypeExpr {
+        match t {
+            TypeExpr::Named(n, args) if args.is_empty() && self.types.contains_key(n.as_str()) => self.types[n.as_str()].clone(),
+            TypeExpr::Named(n, args) if args.is_empty() && n == "Self" => self.self_ty.clone(),
+            TypeExpr::Named(n, args) => TypeExpr::Named(*n, args.iter().map(|a| self.ty(a)).collect()),
+            TypeExpr::Fn(ps, r) => TypeExpr::Fn(ps.iter().map(|a| self.ty(a)).collect(), Box::new(self.ty(r))),
+            TypeExpr::Refined(b, p) => TypeExpr::Refined(Box::new(self.ty(b)), p.clone()),
+            TypeExpr::Union(ms) => TypeExpr::Union(ms.iter().map(|a| self.ty(a)).collect()),
+            TypeExpr::Unit => TypeExpr::Unit,
+        }
+    }
+
+    /// `t.make(f -> e)`: the type's constructor, with `e` for each field
+    /// (`f` known as that field); `try_make`: each `e` is a `Result`, the
+    /// first `Err` is the result, else `Ok` of the value.
+    fn make(&mut self, t: &Symbol, fallible: bool, args: &[Expr]) -> Res<Expr> {
+        let [Expr::Lambda(ps, body)] = args else { return Err("`make` takes one function, `f -> e`".into()) };
+        let [p] = ps.as_slice() else { return Err("the function given to `make` takes one field".into()) };
+        let Value::Record(_, desc) = self.known[t].clone() else { unreachable!() };
+        let Some((_, Value::List(fields))) = desc.iter().find(|(k, _)| k == "fields") else { return Err("`make` builds a record".into()) };
+        let head = crate::types::texpr_head(&self.self_ty);
+        let mut vals = vec![];
+        for fv in fields {
+            let Value::Record(_, fd) = fv else { continue };
+            let fname = fd.iter().find(|(k, _)| k == "name").and_then(|(_, v)| if let Value::Str(s) = v { Some(s.clone()) } else { None }).unwrap_or_default();
+            let ftype = fd.iter().find(|(k, _)| k == "type").map(|(_, v)| v.clone()).unwrap_or(Value::Unit);
+            let saved = self.known.insert(p.name, fv.clone());
+            let saved_ty = self.type_of(&ftype).ok().map(|t| self.types.insert(format!("{}.type", p.name), t));
+            let e = self.expr(body);
+            self.types.remove(&format!("{}.type", p.name));
+            if let Some(Some(old)) = saved_ty {
+                self.types.insert(format!("{}.type", p.name), old);
+            }
+            match saved {
+                Some(v) => self.known.insert(p.name, v),
+                None => self.known.remove(&p.name),
+            };
+            vals.push((Symbol::new(&fname), e?));
+        }
+        let ctor = |vals: Vec<(Symbol, Expr)>| Expr::Ctor(Symbol::new(&head), CtorArgs::Record(vals));
+        if !fallible {
+            return Ok(ctor(vals));
+        }
+        // match e1 { Ok(v1) => match e2 { ... Ok(T { .. }) }, Err(e) => Err(e) }
+        let names: Vec<Symbol> = (0..vals.len()).map(|k| Symbol::new(&format!("made.{k}"))).collect();
+        let mut out = Expr::Ctor(Symbol::new("Ok"), CtorArgs::Positional(vec![ctor(vals.iter().zip(&names).map(|((f, _), n)| (*f, Expr::Var(*n))).collect())]));
+        for ((_, e), n) in vals.into_iter().zip(&names).rev() {
+            let err = Symbol::new("made.err");
+            out = Expr::Match(
+                Box::new(e),
+                None,
+                vec![
+                    Arm { comments: vec![], pat: Pattern::Ctor(Symbol::new("Ok"), CtorPat::Positional(vec![Pattern::Bind(*n)])), body: out },
+                    Arm { comments: vec![], pat: Pattern::Ctor(Symbol::new("Err"), CtorPat::Positional(vec![Pattern::Bind(err)])), body: Expr::Ctor(Symbol::new("Err"), CtorArgs::Positional(vec![Expr::Var(err)])) },
+                ],
+            );
+        }
+        Ok(out)
+    }
+
+    /// `match comptime ty { Int => .., Option[x] => .., _ => .. }`: the arm
+    /// whose type pattern fits, with its names bound to types.
+    fn match_type(&mut self, scrut: &Expr, arms: &[Arm]) -> Res<Expr> {
+        let v = self.eval(scrut)?;
+        let t = self.type_of(&v)?;
+        for arm in arms {
+            let mut binds = vec![];
+            if self.fits(&arm.pat, &t, &mut binds) {
+                let saved: Vec<_> = binds.iter().map(|(n, ty)| (n.clone(), self.types.insert(n.clone(), ty.clone()))).collect();
+                // a bound name also stands for the type's description
+                let mut values = vec![];
+                for (n, ty) in &binds {
+                    let tv = self.type_value(ty);
+                    values.push((Symbol::new(n), self.known.insert(Symbol::new(n), tv)));
+                }
+                let r = self.expr(&arm.body);
+                for (n, old) in values {
+                    match old {
+                        Some(v) => self.known.insert(n, v),
+                        None => self.known.remove(&n),
+                    };
+                }
+                for (n, old) in saved {
+                    match old {
+                        Some(o) => self.types.insert(n, o),
+                        None => self.types.remove(&n),
+                    };
+                }
+                return r;
+            }
+        }
+        Err(format!("no arm of `match comptime` fits `{}`", crate::printer::ty(&t)))
+    }
+
+    /// Whether a type fits a type pattern (`Int`, `Option[x]`, `_`, `x`).
+    /// Aliases are seen through and refinements set aside, so a `Natural`
+    /// fits `Int`; a bound name takes the type as written.
+    fn fits(&self, p: &Pattern, t: &TypeExpr, binds: &mut Vec<(String, TypeExpr)>) -> bool {
+        let base = self.base(t);
+        match p {
+            Pattern::Wild => true,
+            Pattern::Bind(x) => {
+                binds.push((x.to_string(), t.clone()));
+                true
+            }
+            Pattern::Ctor(c, CtorPat::None) => matches!(&base, TypeExpr::Named(n, _) if crate::names::short(n) == crate::names::short(c)),
+            Pattern::Ctor(c, CtorPat::Positional(ps)) => match &base {
+                TypeExpr::Named(n, args) if crate::names::short(n) == crate::names::short(c) && args.len() == ps.len() => ps.iter().zip(args).all(|(p, a)| self.fits(p, a, binds)),
+                _ => false,
+            },
+            Pattern::Or(ps) => ps.iter().any(|p| self.fits(p, t, binds)),
+            _ => false,
+        }
+    }
+
+    /// A type without its refinements, aliases expanded.
+    fn base(&self, t: &TypeExpr) -> TypeExpr {
+        match self.env.expand_alias(t) {
+            TypeExpr::Refined(b, _) => self.base(&b),
+            other => other,
+        }
+    }
+
+    /// A call of a function with `comptime` parameters: a call of the copy
+    /// made for the values given.
+    fn call_copy(&mut self, name: &Symbol, fd: &FnDecl, args: &[Expr]) -> Res<Expr> {
+        let mut vals = vec![];
+        let mut rest = vec![];
+        for (p, a) in fd.params.iter().zip(args) {
+            if p.comptime {
+                // known here: evaluated (once the known values are written in)
+                let a = self.expr(a)?;
+                vals.push((p.clone(), self.eval(&a)?));
+            } else {
+                rest.push(self.expr(a)?);
+            }
+        }
+        let key = format!("{name}({})", vals.iter().map(|(_, v)| json(v)).collect::<Vec<_>>().join(", "));
+        if let Some(n) = self.made.get(&key) {
+            return Ok(Expr::Call(Box::new(Expr::Var(*n)), rest));
+        }
+        let copy = Symbol::new(&format!("{name}.for.{}", self.made.len() + 1));
+        self.made.insert(key, copy);
+        // the copy: the known parameters left out, their values (and types) written in
+        let mut saved = vec![];
+        for (p, v) in &vals {
+            saved.push((p.name, self.known.insert(p.name, v.clone())));
+            if let Value::Record(_, fs) = v {
+                if let Some((_, tv)) = fs.iter().find(|(k, _)| k == "type") {
+                    if let Ok(t) = self.type_of(tv) {
+                        self.types.insert(format!("{}.type", p.name), t);
+                    }
+                }
+            }
+        }
+        let own = self.prog.decls.iter().find_map(|d| match &d.kind {
+            DeclKind::Fn(f) if f.name == *name => Some(f.clone()),
+            _ => None,
+        });
+        let own = own.unwrap_or_else(|| fd.clone());
+        let body = self.expr(&own.body);
+        let params: Vec<Param> = own.params.iter().filter(|p| !p.comptime).map(|p| Param { ty: self.ty(&p.ty), ..p.clone() }).collect();
+        let ret = self.ty(&own.ret);
+        for (n, old) in saved {
+            match old {
+                Some(v) => self.known.insert(n, v),
+                None => self.known.remove(&n),
+            };
+            self.types.remove(&format!("{n}.type"));
+        }
+        let f = FnDecl { name: copy, params, ret, body: body?, comptime: false, ..own };
+        self.copies.push(f);
+        Ok(Expr::Call(Box::new(Expr::Var(copy)), rest))
+    }
+}

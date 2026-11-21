@@ -25,6 +25,7 @@
 | `src/llvm.rs`, `src/llvm/runtime.c` | `strata build`: the elaborated program as LLVM IR (text), and the C runtime it links with (strings and the string built-ins, printing, number formatting, faults, the system) |
 | `src/llvm/prelude.strata` | the built-ins of lists, dictionaries and sets (each kept as a sorted list) and `lines`, in Strata, compiled with every program (module `strata.compiled`); the compiler calls them for `map`, `filter`, `sort`, `insert`, `union`, ... |
 | `src/llvm/jit.rs`, `build.rs` | `strata run --jit` (feature `jit`): LLVM's libraries (inkwell) parse that IR, optimize it and run it in memory; build.rs compiles the runtime into strata |
+| `src/derive.rs`, `std/typing.strata` | derived traits: each `derive Trait for Type` becomes an ordinary `impl`, its `derived fn`s specialized for the type at compile time (`comptime`, `make` / `try_make`, copies of functions with `comptime` parameters) |
 | `src/stdlib.rs`, `std/` | the standard library (Strata), built into the binary; the native `host_*` operations it alone can call |
 | `src/view.rs` | level-of-detail projections and selectors |
 | `src/ui.rs`, `src/ui/index.html` | `strata ui`: the live viewer (a std-only HTTP server and one page) |

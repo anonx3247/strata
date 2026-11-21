@@ -24,6 +24,7 @@ const FILES: &[(&str, &[u8])] = &[
     ("cli.strata", include_bytes!("../std/cli.strata")),
     ("web.strata", include_bytes!("../std/web.strata")),
     ("http.strata", include_bytes!("../std/http.strata")),
+    ("typing.strata", include_bytes!("../std/typing.strata")),
 ];
 
 /// Native operations, callable only from `std`.

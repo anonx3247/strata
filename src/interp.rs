@@ -93,7 +93,7 @@ fn lookup(s: &Scope, x: &str) -> Option<Value> {
     None
 }
 
-fn extend(s: &Scope, x: &str, v: Value) -> Scope {
+pub fn extend(s: &Scope, x: &str, v: Value) -> Scope {
     Some(Rc::new(Frame::new(x, v, s.clone())))
 }
 

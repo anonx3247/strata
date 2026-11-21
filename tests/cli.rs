@@ -3673,8 +3673,91 @@ fn derive(derive: Int) -> Int {
     assert!(ok, "{out}");
     let (_, rendered) = strata(&["--file", "d.strata", "render"], &d, None);
     assert_eq!(rendered, text);
-    let (ok, out) = strata(&["--file", "d.strata", "check"], &d, None);
-    assert!(!ok && out.contains("error in derive Named for Pair: `derive` is not done yet") && out.contains("error in Named: derivable traits are not checked yet"), "{out}");
     // `derive` stays an ordinary name: the function `derive` checks
+    let (_, out) = strata(&["--file", "d.strata", "check"], &d, None);
     assert!(!out.contains("error in derive:"), "{out}");
+}
+
+/// A derived trait, specialized for a record: `comptime`, `make`,
+/// `try_make`, functions with `comptime` parameters, `match comptime`.
+#[test]
+fn derived_traits_are_specialized() {
+    let d = tmp("derive-expand");
+    let text = r#"use std.typing.{Record, Field}
+
+/// Values from text, field by field.
+derivable(t: Record) trait FromText {
+  /// The fields' names.
+  derived fn names(self) -> List[String] {
+    comptime t.fields.map(f -> f.name)
+  }
+  /// A value with every field at its zero.
+  derived fn zero() -> Self {
+    t.make(f -> zero_of(f))
+  }
+  /// A value read from one text per field.
+  derived fn parse(texts: List[String]) -> Result[Self, String] {
+    t.try_make(f -> read(f, texts))
+  }
+}
+
+fn zero_of(comptime f: Field) -> f.type {
+  match comptime f.type {
+    Int => 0,
+    String => "",
+    Bool => false,
+  }
+}
+
+fn read(comptime f: Field, texts: List[String]) -> Result[f.type, String] {
+  text := get(texts, index_of_name(comptime f.name)) or { "" }
+  match comptime f.type {
+    Int => match parse_int(text) {
+      Some(n) => Ok(n),
+      None => Err(f"{f.name}: `{text}` is not a number"),
+    },
+    String => Ok(text),
+    Bool => Ok(text == "yes"),
+  }
+}
+
+fn index_of_name(name: String) -> Int {
+  if name == "x" {
+    0
+  } else if name == "label" {
+    1
+  } else {
+    2
+  }
+}
+
+type Point = { x: Int, label: String, on: Bool }
+
+derive FromText for Point
+
+fn main() {
+  print(Point.zero().names())
+  print(Point.zero())
+  print(Point.parse(["3", "here", "yes"]))
+  print(Point.parse(["three", "here", "yes"]))
+}
+"#;
+    let (ok, out) = strata(&["--file", "p.strata", "edit"], &d, Some(text));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "p.strata"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out, "[\"x\",\"label\",\"on\"]\n{\"x\":0,\"label\":\"\",\"on\":false}\n{\"Ok\":{\"x\":3,\"label\":\"here\",\"on\":true}}\n{\"Err\":\"x: `three` is not a number\"}\n");
+    // what can't be derived says why, at the `derive`
+    let bad = [
+        ("trait Plain { fn p(self) -> Int }\ntype A = { x: Int }\nderive Plain for A\n", "`Plain` can't be derived: only a `derivable` trait can"),
+        ("use std.typing.Record\nderivable(t: Record) trait Sized { derived fn n(self) -> Int { comptime len(t.fields) } }\ntype S =\n  | One\n  | Two\nderive Sized for S\n", "`Sized` can only be derived for a `Record`, and `S` isn't one"),
+        ("use std.typing.Record\nderivable(t: Record) trait Sized\n  requires len(t.fields) > 1 { derived fn n(self) -> Int { comptime len(t.fields) } }\ntype A = { x: Int }\nderive Sized for A\n", "`A` doesn't meet what `Sized` requires: len(t.fields) > 1"),
+    ];
+    for (k, (src, want)) in bad.iter().enumerate() {
+        let f = format!("bad{k}.strata");
+        let (ok, out) = strata(&["--file", &f, "edit"], &d, Some(src));
+        assert!(ok, "{out}");
+        let (ok, out) = strata(&["--file", &f, "check"], &d, None);
+        assert!(!ok && out.contains(want), "{out}");
+    }
 }
