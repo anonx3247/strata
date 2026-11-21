@@ -285,7 +285,6 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
 /// Compile a fuzz driver for each function `verify` may fuzz (not methods,
 /// nor what takes a function), and have `verify` use them; what doesn't
 /// compile is fuzzed by the interpreter, with a note.
-#[cfg(feature = "jit")]
 fn jit_fuzzers(p: &Program, resolved: &Program, env: &types::Env, say_why: bool) {
     let mut targets = vec![];
     for d in &resolved.decls {
@@ -321,9 +320,3 @@ fn jit_fuzzers(p: &Program, resolved: &Program, env: &types::Env, say_why: bool)
     }
 }
 
-#[cfg(not(feature = "jit"))]
-fn jit_fuzzers(_: &Program, _: &Program, _: &types::Env, say_why: bool) {
-    if say_why {
-        eprintln!("note: this strata was built without the JIT: fuzzed by the interpreter");
-    }
-}

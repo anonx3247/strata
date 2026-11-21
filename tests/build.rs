@@ -645,7 +645,6 @@ fn emits_llvm_ir() {
 }
 
 /// `strata run --jit`: compiled in memory, same output as interpreted.
-#[cfg(feature = "jit")]
 #[test]
 fn the_jit_runs_as_the_interpreter() {
     let d = tmp("jit");
@@ -664,7 +663,6 @@ fn the_jit_runs_as_the_interpreter() {
 }
 
 /// `strata run --jit` with options: the derived `from_args`, compiled.
-#[cfg(feature = "jit")]
 #[test]
 fn the_jit_reads_options() {
     let strata = env!("CARGO_BIN_EXE_strata");
@@ -874,7 +872,6 @@ fn main() {
 /// With the JIT, `strata run` compiles by default: what doesn't compile is
 /// interpreted without a note (`--jit` gives one); compiled and interpreted,
 /// `Int` grows into a big integer.
-#[cfg(feature = "jit")]
 #[test]
 fn run_compiles_by_default_with_the_jit() {
     let d = tmp("jit-default");
@@ -1424,7 +1421,6 @@ fn main() {
 /// `strata test` compiles the tests with the JIT: the same report as
 /// interpreted, for every example and for failing tests (fault, call stack,
 /// what they printed).
-#[cfg(feature = "jit")]
 #[test]
 fn the_jit_runs_tests_as_the_interpreter() {
     let strata = env!("CARGO_BIN_EXE_strata");
@@ -1447,7 +1443,6 @@ fn the_jit_runs_tests_as_the_interpreter() {
 /// `strata verify` fuzzes compiled (by default, as `--jit`): the same
 /// verdicts as the interpreter's fuzzer (its inputs are the runtime's), a
 /// runaway loop stopped by the step budget.
-#[cfg(feature = "jit")]
 #[test]
 fn verify_fuzzes_compiled() {
     let strata = env!("CARGO_BIN_EXE_strata");
@@ -1521,9 +1516,6 @@ test "runaway" {
     for how in ["--interpret", "--jit"] {
         let o = Command::new(strata).args(["test", how, "--file"]).arg(&f).output().unwrap();
         let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
-        if how == "--jit" && out.contains("built without the JIT") {
-            continue; // built without the JIT
-        }
         assert!(out.contains("✗ runaway\n    Limit: stack overflow (recursion too deep)\n    stack: down (") && out.contains("0 passed, 1 failed"), "{how}: {out}");
     }
 
@@ -1665,7 +1657,6 @@ pub fn nul_string() -> String {
     assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
     let (out, code) = freed_everything(output(Command::new(&exe).current_dir(&d).env("STRATA_MEMORY", "check")), &d);
     assert_eq!((out.as_str(), code), (want, 0));
-    #[cfg(feature = "jit")]
     {
         let (out, code) = output(Command::new(strata).args(["run", "--jit", "."]).current_dir(&d));
         assert_eq!((out.as_str(), code), (want, 0));

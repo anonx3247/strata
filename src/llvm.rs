@@ -37,9 +37,7 @@ use std::collections::VecDeque;
 use crate::fx::{HashMap, HashSet};
 use std::fmt::Write;
 
-#[cfg(feature = "jit")]
 pub mod jit;
-#[cfg(feature = "jit")]
 pub mod native;
 
 /// The list built-ins written in Strata, compiled with every program.
@@ -178,7 +176,6 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
 }
 
 /// What a compilation starts from.
-#[cfg_attr(not(feature = "jit"), allow(dead_code))]
 enum Entry<'e> {
     Main(&'e str),
     Tests,
@@ -189,7 +186,6 @@ enum Entry<'e> {
 
 /// How a value is laid out in memory, to read one the compiled code made
 /// (a `comptime` result; the FFI's values later).
-#[cfg_attr(not(feature = "jit"), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub enum Shape {
     Int,
@@ -210,7 +206,6 @@ pub enum Shape {
 
 /// A constructor of a named shape: its tag, name, whether it makes a record
 /// (else a variant), and its fields.
-#[cfg_attr(not(feature = "jit"), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub struct CtorShape {
     pub tag: i64,
@@ -220,7 +215,6 @@ pub struct CtorShape {
 }
 
 /// The named shapes a set of shapes refers to.
-#[cfg_attr(not(feature = "jit"), allow(dead_code))]
 #[derive(Debug, Clone, Default)]
 pub struct Shapes {
     pub named: HashMap<String, Vec<CtorShape>>,
@@ -229,7 +223,6 @@ pub struct Shapes {
 /// The IR of compile-time code: for each of `fns` (whose body is
 /// `{ _ := e; () }`), `@"strata.ct.N"` runs `e` and hands its value to the
 /// runtime (`strata_ct_keep`), with steps counted; and the shape of each value.
-#[cfg_attr(not(feature = "jit"), allow(dead_code))]
 pub fn compile_comptime(prog: &Program, fns: &[String]) -> Res<(String, Vec<Shape>, Shapes)> {
     let (ir, _, shapes) = compile_with(prog, Entry::Comptime(fns), true)?;
     let (roots, named) = shapes.unwrap_or_default();
@@ -238,7 +231,6 @@ pub fn compile_comptime(prog: &Program, fns: &[String]) -> Res<(String, Vec<Shap
 
 /// A function `strata verify --jit` fuzzes: its name, and its parameters'
 /// names, written types (generic ones at the instance tried) and `mut`ness.
-#[cfg_attr(not(feature = "jit"), allow(dead_code))]
 pub struct FuzzTarget {
     pub name: String,
     pub params: Vec<(String, TypeExpr, bool)>,
@@ -247,7 +239,6 @@ pub struct FuzzTarget {
 /// The LLVM IR of fuzz drivers (`@"strata.fuzz.N"` for target N): each
 /// generates the target's arguments, records them (`strata_fuzz_arg`), and
 /// calls it. Loops and calls count steps (`strata_step`).
-#[cfg_attr(not(feature = "jit"), allow(dead_code))]
 pub fn compile_fuzz(prog: &Program, targets: &[FuzzTarget]) -> Res<String> {
     Ok(compile_for(prog, Entry::Fuzz(targets))?.0)
 }

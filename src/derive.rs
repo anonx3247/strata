@@ -23,8 +23,6 @@
 
 use crate::ast::*;
 use crate::interp::{Fields, Value};
-#[cfg(not(feature = "jit"))]
-use crate::interp::{Interp, Scope};
 use crate::symbol::Symbol;
 use crate::types::{Diag, Env};
 use std::collections::HashMap;
@@ -73,9 +71,6 @@ struct Expander<'a> {
     env: &'a Env,
     prog: &'a Program,
 
-    /// (without the JIT, compile-time code is interpreted)
-    #[cfg(not(feature = "jit"))]
-    it: Interp<'a>,
     /// Values known at compile time, by name (`t`, a `comptime` parameter).
     known: HashMap<Symbol, Value>,
     /// Types known at compile time, by name (`f.type`, `x` in `Option[x] =>`).
@@ -131,17 +126,9 @@ fn json(v: &Value) -> String {
 
 impl<'a> Expander<'a> {
     fn new(env: &'a Env, prog: &'a Program) -> Self {
-        #[cfg(not(feature = "jit"))]
-        let it = {
-            let mut it = Interp::new(env, 1);
-            it.budget = Some(BUDGET);
-            it
-        };
         Expander {
             env,
             prog,
-            #[cfg(not(feature = "jit"))]
-            it,
             known: HashMap::new(), types: HashMap::new(), written: HashMap::new(), self_ty: TypeExpr::Unit, copies: vec![], made: HashMap::new(), ctors: HashMap::new(), hidden: vec![], arm_fields: vec![], trait_name: Symbol::new(""), trait_methods: vec![], defaults: HashMap::new() }
     }
 
@@ -345,17 +332,13 @@ impl<'a> Expander<'a> {
         if let Some(v) = self.data(e) {
             return Ok(v);
         }
-        #[cfg(feature = "jit")]
-        return self.compiled(e, written);
-        #[cfg(not(feature = "jit"))]
-        self.interpreted(e, written)
+        self.compiled(e, written)
     }
 
     /// Run compile-time code compiled: a function whose body is `e`, the
     /// known values bound before it, checked with the program as it is
     /// before its derived `impl`s (compile-time code can't use them), run
     /// within the budget, its value read back.
-    #[cfg(feature = "jit")]
     fn compiled(&mut self, e: &Expr, written: &Expr) -> Res<Value> {
         let shown = || crate::printer::expr(written, 0);
         let name = Symbol::new("strata.comptime");
@@ -424,19 +407,6 @@ impl<'a> Expander<'a> {
             Some(Err(f)) => Err(format!("`comptime {}` failed: {f}", shown())),
             None => Err(format!("`comptime {}` gave nothing", shown())),
         }
-    }
-
-    #[cfg(not(feature = "jit"))]
-    fn interpreted(&mut self, e: &Expr, written: &Expr) -> Res<Value> {
-        let mut scope: Scope = None;
-        for (k, v) in &self.known {
-            scope = crate::interp::extend(&scope, k, v.clone());
-        }
-        let r = self.it.eval(e, &scope);
-        if self.it.exhausted() {
-            return Err(format!("`comptime {}` ran for more than {BUDGET} steps: compile-time code must finish", crate::printer::expr(written, 0)));
-        }
-        r.map_err(|f| format!("`comptime {}` failed: {}", crate::printer::expr(written, 0), f.msg))
     }
 
     /// The value of `e` if it is data: literals, constructors of them, known

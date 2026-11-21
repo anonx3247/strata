@@ -40,7 +40,11 @@ $ strata --file examples/math.strata verify
 
 ## Try it
 
+Strata links LLVM 23's libraries in (it compiles and runs code in memory), so building it needs them:
+
 ```sh
+brew install llvm                      # or apt.llvm.org's llvm-23-dev
+export LLVM_SYS_231_PREFIX=$(brew --prefix llvm)
 cargo build --release
 alias strata=$PWD/target/release/strata
 

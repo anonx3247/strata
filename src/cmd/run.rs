@@ -25,7 +25,7 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
         let program_args = args.flags.get("--").cloned().unwrap_or_default();
         // compiled in memory when this strata has the JIT (unless asked not
         // to, or tracing); `--jit` insists, and says why when it can't
-        let jit = args.flag("--jit") || (cfg!(feature = "jit") && !args.flag("--interpret") && !args.flag("--trace"));
+        let jit = args.flag("--jit") || (!args.flag("--interpret") && !args.flag("--trace"));
         if jit && env.fns.contains_key(&Symbol::new("main")) {
             if let Some(code) = run_jit(p, &prog, &program_args, args.flag("--jit"))? {
                 std::process::exit(code);
@@ -67,7 +67,6 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
 /// `strata run` with the JIT: compile `main` and run it in this process;
 /// `None` when the program uses what doesn't compile yet (it is then
 /// interpreted, with a note saying why if `--jit` was asked for).
-#[cfg(feature = "jit")]
 fn run_jit(p: &Program, prog: &str, args: &[String], asked: bool) -> Result<Option<i32>, String> {
     match llvm::compile(p, "main") {
         Ok(ir) => llvm::jit::run(&ir, prog, args).map(Some),
@@ -78,11 +77,6 @@ fn run_jit(p: &Program, prog: &str, args: &[String], asked: bool) -> Result<Opti
             Ok(None)
         }
     }
-}
-
-#[cfg(not(feature = "jit"))]
-fn run_jit(_: &Program, _: &str, _: &[String], _: bool) -> Result<Option<i32>, String> {
-    Err("this strata was built without the JIT: build it with `cargo build --release --features jit` (needs LLVM 23)".into())
 }
 
 /// `strata test`: each `test` block, compiled when this strata has the JIT
@@ -102,7 +96,7 @@ pub fn run_tests(args: &Args) -> Result<bool, String> {
         print!("{}", llvm::compile_tests(p)?.0);
         return Ok(true);
     }
-    let jit = args.flag("--jit") || (cfg!(feature = "jit") && !args.flag("--interpret"));
+    let jit = args.flag("--jit") || (!args.flag("--interpret"));
     let outcomes = match jit.then(|| test_jit(p, &filter, args.flag("--jit"))).transpose()?.flatten() {
         Some(o) => o,
         None => test_interpreted(&resolved, &env, &filter),
@@ -158,7 +152,6 @@ fn test_interpreted(resolved: &Program, env: &types::Env, filter: &str) -> Vec<T
 
 /// The tests compiled and run in this process; `None` when they use what
 /// doesn't compile yet (they are then interpreted, with a note if `--jit`).
-#[cfg(feature = "jit")]
 fn test_jit(p: &Program, filter: &str, asked: bool) -> Result<Option<Vec<TestRun>>, String> {
     let (ir, names) = match llvm::compile_tests(p) {
         Ok(x) => x,
@@ -172,11 +165,6 @@ fn test_jit(p: &Program, filter: &str, asked: bool) -> Result<Option<Vec<TestRun
     let which: Vec<usize> = (0..names.len()).filter(|&i| names[i].contains(filter)).collect();
     let runs = llvm::jit::run_tests(&ir, &which)?;
     Ok(Some(which.iter().zip(runs).map(|(&i, r)| (names[i].clone(), r.fault, r.printed)).collect()))
-}
-
-#[cfg(not(feature = "jit"))]
-fn test_jit(_: &Program, _: &str, _: bool) -> Result<Option<Vec<TestRun>>, String> {
-    Err("this strata was built without the JIT: build it with `cargo build --release --features jit` (needs LLVM 23)".into())
 }
 
 /// The real implementation of a capability `main` (or `handle`) asks for:

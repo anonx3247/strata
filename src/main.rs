@@ -141,11 +141,10 @@ Running:
                                (Console, Files, Environment from std) and ARGS; it
                                returns (), an ExitCode, or a Result (Err: exit code 1).
                                PATH is a .strata file or a package folder (or --file).
-                               With a strata built with `--features jit`, `main` is
-                               compiled to machine code in memory (LLVM) when it only
-                               uses what compiles (see build), else interpreted
+                               `main` is compiled to machine code in memory (LLVM)
+                               when it only uses what compiles (see build), else
+                               interpreted
   run --jit [PATH] [-- ARGS..] the same, saying why when it can't compile `main`
-                               (an error without the JIT)
   run --interpret [PATH] [-- ARGS..]
                                always interpret (big integers, call stacks in faults);
                                `--trace` interprets too

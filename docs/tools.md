@@ -125,17 +125,17 @@ A fault prints the call stack as `strata run` does (`    stack: main -> inner ->
 
 ### The JIT
 
-`strata verify` fuzzes compiled when strata has the JIT (`--interpret` fuzzes in the interpreter; `--jit` says why when it can't compile them): a driver per function generates its arguments (the generators `mock` uses), records them for a counterexample, and calls it, all in one module compiled once; loops and calls count steps, so a runaway case is a `Limit` fault (`too many steps`). The verdicts are the interpreter's fuzzer's; the inputs are the runtime's random numbers, so a counterexample's input may differ. Methods, and what doesn't compile, are fuzzed by the interpreter.
+`strata verify` fuzzes compiled (`--interpret` fuzzes in the interpreter; `--jit` says why when it can't compile them): a driver per function generates its arguments (the generators `mock` uses), records them for a counterexample, and calls it, all in one module compiled once; loops and calls count steps, so a runaway case is a `Limit` fault (`too many steps`). The verdicts are the interpreter's fuzzer's; the inputs are the runtime's random numbers, so a counterexample's input may differ. Methods, and what doesn't compile, are fuzzed by the interpreter.
 
-`strata test` compiles the tests the same way when strata has the JIT (`--interpret` runs them in the interpreter, `--jit` says why when it can't compile them): each `test` block is a function, a fault ends the test instead of the process, and what a test prints is kept for the report, which is the interpreter's (`strata test --emit-llvm` prints the tests' IR).
+`strata test` compiles the tests the same way (`--interpret` runs them in the interpreter, `--jit` says why when it can't compile them): each `test` block is a function, a fault ends the test instead of the process, and what a test prints is kept for the report, which is the interpreter's (`strata test --emit-llvm` prints the tests' IR).
 
-With the JIT, `strata run` compiles the same IR in memory with LLVM's libraries and runs it, so a program runs at native speed without a build step (`fib(32)`: 26 ms, compilation included). This is the default when strata is built with the JIT. A program that uses what doesn't compile yet is interpreted instead; `strata run --jit` says why (and is an error in a strata without the JIT). `strata run --interpret` always interprets (as does `--trace`): use it for big integers, since compiled `Int`s are 64 bits and an overflow is a fault, and for the call stack of a fault.
+`strata run` compiles the same IR in memory with LLVM's libraries and runs it (the JIT), so a program runs at native speed without a build step (`fib(32)`: 26 ms, compilation included). A program that uses what doesn't compile yet is interpreted instead; `strata run --jit` says why. `strata run --interpret` always interprets (as does `--trace`). Compile-time code (`comptime`, in a `derive`) runs on the JIT too.
 
-The JIT needs LLVM 23's libraries, so it is a cargo feature:
+LLVM 23's libraries are linked into strata, so building it needs them (nothing is needed to run it):
 
 ```sh
 brew install llvm                      # or apt.llvm.org's llvm-23-dev
-LLVM_SYS_231_PREFIX=$(brew --prefix llvm) cargo build --release --features jit
+LLVM_SYS_231_PREFIX=$(brew --prefix llvm) cargo build --release
 ```
 
 Both ways share one code generator (the IR as text, which LLVM parses for the JIT) and one runtime (`runtime.c`, built into `strata` for the JIT, compiled with the program by `strata build`).
