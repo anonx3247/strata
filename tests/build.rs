@@ -1748,6 +1748,13 @@ fn for_over_iterators_compiles() {
     assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
     let (out, code) = freed_everything(output(Command::new(&exe).current_dir(&d).env("STRATA_MEMORY", "check")), &f);
     assert_eq!((out.as_str(), code), (json_case::STRING_UNITS_OUTPUT, 0));
+    // `len`, indexing and slicing on iterators
+    let f = d.join("indexing.strata");
+    save(&f, json_case::ITERATOR_INDEXING);
+    let b = Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
+    assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
+    let (out, code) = freed_everything(output(Command::new(&exe).current_dir(&d).env("STRATA_MEMORY", "check")), &f);
+    assert_eq!((out.as_str(), code), (json_case::ITERATOR_INDEXING_OUTPUT, 0));
 }
 
 /// Types passed whole: compiled as interpreted.

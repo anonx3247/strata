@@ -464,6 +464,16 @@ s.graphemes().len()                                   // 7
 
 Each walks the string once: `bytes()` and `code_points()` are the prelude's, read from the UTF-8 bytes (the only native part, `byte_len` and `byte_at`); `graphemes()` is `std.unicode`'s (loaded for a program that calls it), Unicode 16.0's extended grapheme clusters, combining marks, emoji sequences, flags, Hangul syllables and Indic conjuncts included (it agrees with every case of Unicode's GraphemeBreakTest.txt).
 
+A finite iterator is measured, indexed and sliced as a list is, with the same syntax: `len(it)`, `it[i]` (`at`; its precondition is that `i` is in range), `get(it, i)`, `it[a..b]`, `it[a..]`. Slicing is lazy (`drop` then `take`), and `join` collects a finite iterator of strings. Every iterator has `take(n)` (finite, even on an unbounded one) and `drop(n)`. Each walks the iterator from the start, so indexing is linear in `i`.
+
+```rust
+s := "héllo 👋🏽!"
+len(s.graphemes())                  // 8   (len(s.bytes()) is 16)
+s.graphemes()[6]                    // "👋🏽"
+join(s.graphemes()[1..3], "")       // "él"
+Naturals { at: 0 }.drop(3).take(4)  // 3, 4, 5, 6
+```
+
 **Not yet:** a nested comprehension whose inner source is an iterator, generators and async.
 
 ## Foreign functions: `extern c`

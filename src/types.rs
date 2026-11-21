@@ -113,6 +113,60 @@ trait Iterator[T] {
   fn filter(self, keep: (T) -> Bool) -> Filtered[Self, T] {
     Filtered { inner: self, keep: keep }
   }
+
+  /// The first `n` elements (all, if there are fewer): finite, even when
+  /// this iterator isn't.
+  fn take(self, n: Int) -> Taken[Self, T] {
+    Taken { inner: self, left: if n > 0 { n } else { 0 } }
+  }
+
+  /// The elements after the first `n`.
+  fn drop(self, n: Int) -> Dropped[Self, T] {
+    Dropped { inner: self, skip: if n > 0 { n } else { 0 } }
+  }
+}
+
+type Taken[I, T] = { inner: I, left: Natural }
+
+impl[I: Iterator[T], T] Iterator[T] for Taken[I, T] {
+  fn next(mut self) -> Option[T] {
+    if self.left == 0 {
+      return None
+    }
+    self.left -= 1
+    mut self.inner.next()
+  }
+}
+
+/// At most `left` elements (each `next` takes one off): counted on a copy,
+/// without going further.
+impl[I: Iterator[T], T] FiniteIterator[T] for Taken[I, T] {
+  fn len(self) -> Natural {
+    mut n: Natural = 0
+    for _ in self {
+      n += 1
+    }
+    n
+  }
+}
+
+type Dropped[I, T] = { inner: I, skip: Natural }
+
+impl[I: Iterator[T], T] Iterator[T] for Dropped[I, T] {
+  fn next(mut self) -> Option[T] {
+    for _ in 0..self.skip {
+      mut self.inner.next()
+    }
+    self.skip = 0
+    mut self.inner.next()
+  }
+}
+
+impl[I: FiniteIterator[T], T] FiniteIterator[T] for Dropped[I, T] {
+  fn len(self) -> Natural {
+    n := self.inner.len()
+    if n > self.skip { n - self.skip } else { 0 }
+  }
 }
 
 type Mapped[I, A, B] = { inner: I, f: (A) -> B }
@@ -154,6 +208,33 @@ trait FiniteIterator[T]: Iterator[T] {
       acc = f(acc, x)
     }
     acc
+  }
+
+  /// Element `i` (from 0), if there is one.
+  fn get(self, i: Int) -> Option[T] {
+    mut k := 0
+    for x in self {
+      if k == i {
+        return Some(x)
+      }
+      k += 1
+    }
+    None
+  }
+
+  /// Element `i` (from 0): `it[i]`.
+  fn at(self, i: Int) -> T
+    requires 0 <= i && i < self.len()
+  {
+    match self.get(i) {
+      Some(x) => x,
+      None => self.to_list()[i],
+    }
+  }
+
+  /// The elements from `a` up to (not including) `b`, lazily: `it[a..b]`.
+  fn slice(self, a: Int, b: Int) -> Taken[Dropped[Self, T], T] {
+    self.drop(a).take(b - (if a > 0 { a } else { 0 }))
   }
 
   /// The elements, in a list.
@@ -299,6 +380,11 @@ fn set_of[T, I: FiniteIterator[T]](it: I) -> Set[T] {
   set(it.to_list())
 }
 
+/// `join(it, sep)` on a finite iterator of strings.
+fn join_of[I: FiniteIterator[String]](it: I, sep: String) -> String {
+  join(it.to_list(), sep)
+}
+
 /// `Dict { k: v for x in it }` on a finite iterator (`dict(it)` on one).
 fn dict_of[K, V, I: FiniteIterator[(K, V)]](it: I) -> Dict[K, V] {
   dict(it.to_list())
@@ -329,7 +415,7 @@ impl[I: FiniteIterator[T], T] FiniteIterator[T] for Filtered[I, T] {
 /// The builtins on lists that every iterator has as methods (lazy `map`
 /// and `filter`; `fold` on a `FiniteIterator`): called on an iterator, the
 /// call is its method's. Comprehensions are made of them.
-const ITERATOR_BUILTINS: &[&str] = &["map", "filter", "fold"];
+const ITERATOR_BUILTINS: &[&str] = &["map", "filter", "fold", "len", "get", "at", "slice", "take", "drop"];
 
 /// The built-in types with type arguments, which impls can be written for.
 const BUILTIN_HEADS: &[&str] = &["List", "Set", "Dict", "String"];
@@ -340,7 +426,12 @@ pub const PRELUDE_MODULE: &str = "std.prelude";
 /// A name as messages show it: a prelude trait's method short
 /// (`fold`, not `std.prelude.fold`; `FiniteIterator::len`).
 pub fn shown_name(name: &str) -> String {
-    name.replace(&format!("{PRELUDE_MODULE}."), "")
+    let mut s = name.replace(&format!("{PRELUDE_MODULE}."), "");
+    // a call through a prelude trait, as written (`self.len()`, not `self.FiniteIterator::len()`)
+    for t in prelude_traits() {
+        s = s.replace(&format!(".{t}::"), ".");
+    }
+    s
 }
 
 /// The prelude's code, parsed once (`PRELUDE_CODE`).
@@ -2037,15 +2128,17 @@ impl<'a> Checker<'a> {
         (found.len() == 1).then(|| found.remove(0))
     }
 
-    /// `set(it)` / `dict(it)` (a set or dict comprehension) on a finite
-    /// iterator: the prelude's `set_of` / `dict_of`, which collect it.
+    /// `set(it)` / `dict(it)` (a set or dict comprehension) and `join(it, sep)`
+    /// on a finite iterator: the prelude's `set_of` / `dict_of` / `join_of`,
+    /// which collect it.
     fn collect_call(&mut self, n: &Symbol, args: &[&Expr], site: usize) -> Option<Ty> {
-        let target = match n.as_str() {
-            "set" => "set_of",
-            "dict" => "dict_of",
+        let (target, arity) = match n.as_str() {
+            "set" => ("set_of", 1),
+            "dict" => ("dict_of", 1),
+            "join" => ("join_of", 2),
             _ => return None,
         };
-        if args.len() != 1 || self.lookup(n.sym()).is_some() || self.env.fns.contains_key(n) {
+        if args.len() != arity || self.lookup(n.sym()).is_some() || self.env.fns.contains_key(n) {
             return None;
         }
         let errs = self.errors.len();

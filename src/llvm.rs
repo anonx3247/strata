@@ -1432,7 +1432,7 @@ impl<'a> Module<'a> {
             let (pass, fail) = (c.fresh_label("requires.ok"), c.fresh_label("requires.fail"));
             c.cond_br(&ok, &pass, &fail);
             c.block(&fail);
-            let mut parts = vec![Part::Lit(format!("precondition of `{name}` violated: requires {} (with ", crate::printer::expr(r, 0)))];
+            let mut parts = vec![Part::Lit(crate::types::shown_name(&format!("precondition of `{name}` violated: requires {} (with ", crate::printer::expr(r, 0))))];
             for (i, p) in f.params.iter().enumerate() {
                 let v = c.load(&p.name)?;
                 let shown = c.json(&v)?;
@@ -6785,7 +6785,7 @@ impl Func<'_, '_> {
             let (pass, fail) = (h.fresh_label("requires.ok"), h.fresh_label("requires.fail"));
             h.cond_br(&ok, &pass, &fail);
             h.block(&fail);
-            h.fault(Fault::Requires, vec![Part::Lit(format!("precondition of `{tn}.{m}` violated: requires {}", crate::printer::expr(r, 0)))])?;
+            h.fault(Fault::Requires, vec![Part::Lit(crate::types::shown_name(&format!("precondition of `{tn}.{m}` violated: requires {}", crate::printer::expr(r, 0))))])?;
             h.block(&pass);
         }
         // the result's written type, with the trait's types in

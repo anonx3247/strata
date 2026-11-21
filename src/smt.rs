@@ -347,6 +347,8 @@ impl<'a> Vc<'a> {
         if g == "true" {
             return;
         }
+        // (the prelude's names as written: `self.len()`, not `self.FiniteIterator::std.prelude.len()`)
+        let what = crate::types::shown_name(&what);
         self.obligations.push(Obligation { what, goal: g.clone(), pc: self.pc.clone(), facts: self.facts.len(), termination: false });
         // past a check, execution continues only if it held
         self.pc.push(g);
@@ -2289,7 +2291,7 @@ impl<'a> Vc<'a> {
             let b = binds.clone();
             self.oblige(format!("precondition of `{label}`: requires {}", crate::printer::expr(r, 0)), |vc| vc.pred(r, b));
         }
-        let why = format!("the result of `{label}` (only its contract is known)");
+        let why = format!("the result of `{}` (only its contract is known)", crate::types::shown_name(&label));
         let old = self.reason.replace(why);
         let res = self.shape(&f.ret, 0);
         self.reason = old;

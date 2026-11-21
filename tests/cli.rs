@@ -4617,6 +4617,22 @@ fn strings_have_bytes_code_points_and_graphemes() {
     assert!(ok && out.ends_with("1093 cases, 0 wrong\n"), "{out}");
 }
 
+/// `len`, indexing and slicing on an iterator; an index out of range is the
+/// precondition of `at`, as written.
+#[test]
+fn iterators_are_indexed_and_sliced() {
+    let d = tmp("iterator-indexing");
+    let (ok, out) = strata(&["--file", "i.strata", "edit"], &d, Some(json_case::ITERATOR_INDEXING));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "i.strata"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out, json_case::ITERATOR_INDEXING_OUTPUT);
+    let (ok, out) = strata(&["--file", "o.strata", "edit"], &d, Some("fn main() {\n  print(\"ab\".graphemes()[5])\n}\n"));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "o.strata"], &d, None);
+    assert!(!ok && out.contains("precondition of `std.unicode.Graphemes.at` violated: requires 0 <= i && i < self.len()"), "{out}");
+}
+
 /// Types passed whole at runtime: `T.m()` on an impl's type parameters, and
 /// `std.json` for the built-in types through `T: Json`.
 #[test]
