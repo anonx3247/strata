@@ -63,6 +63,29 @@ fn place_of(e: &Expr) -> Option<(String, Vec<String>)> {
     }
 }
 
+/// Whether evaluating `e` may assign a variable: an assignment in a block,
+/// or a `mut` argument or receiver (a lambda's body can't change outer
+/// variables, and runs later).
+fn assigns(e: &Expr) -> bool {
+    struct Assigns(bool);
+    impl Visit for Assigns {
+        fn expr(&mut self, e: &Expr) {
+            match e {
+                Expr::Mut(_) => self.0 = true,
+                Expr::Lambda(..) => return,
+                Expr::Block(stmts, _) if stmts.iter().any(|s| matches!(s, Stmt::Assign(..))) => self.0 = true,
+                _ => {}
+            }
+            if !self.0 {
+                walk_expr(self, e)
+            }
+        }
+    }
+    let mut a = Assigns(false);
+    a.expr(e);
+    a.0
+}
+
 /// The variables an expression uses (what a lambda captures).
 fn vars_in(e: &Expr) -> Vec<String> {
     struct Vars(Vec<String>);
@@ -1188,6 +1211,29 @@ impl<'m, 'a> Func<'m, 'a> {
         None
     }
 
+    /// The values of `es`, in order. One that only borrows (a variable, a
+    /// field) is held until the statement ends when a later operand may
+    /// assign a variable: in `f(x, { x = g(); 1 })` the assignment drops
+    /// the value `x` held, which the call still reads.
+    fn operands(&mut self, es: &[&Expr]) -> Res<Vec<V>> {
+        let mut vs = vec![];
+        for (i, e) in es.iter().enumerate() {
+            let v = self.expr(e)?;
+            let v = if es[i + 1..].iter().any(|x| assigns(x)) { self.hold(v) } else { v };
+            vs.push(v);
+        }
+        Ok(vs)
+    }
+
+    /// `v`, held by the innermost scope if it only borrows (a temporary already is).
+    fn hold(&mut self, v: V) -> V {
+        if !self.counted(&v.0) || constant(&v.1) || self.is_temp(&v.1) {
+            return v;
+        }
+        self.emit(format!("call void @strata_dup(ptr {})", v.1));
+        self.temp(v)
+    }
+
     /// One holder of `v` fewer (freed with what it holds, when it was the last).
     fn drop_value(&mut self, v: &V) -> Res<()> {
         if !self.counted(&v.0) || constant(&v.1) {
@@ -2184,11 +2230,10 @@ impl<'m, 'a> Func<'m, 'a> {
             Expr::Call(f, args) => match &**f {
                 Expr::Var(name) => self.call_named(e, name, args.iter().collect())?,
                 other => {
-                    let fv = self.expr(other)?;
-                    let mut vs = vec![];
-                    for a in args {
-                        vs.push(self.expr(a)?);
-                    }
+                    let mut es: Vec<&Expr> = vec![other];
+                    es.extend(args.iter());
+                    let mut vs = self.operands(&es)?;
+                    let fv = vs.remove(0);
                     self.call_closure(&fv, vs)?
                 }
             },
@@ -2277,10 +2322,7 @@ impl<'m, 'a> Func<'m, 'a> {
             Expr::Match(scrut, as_name, arms) => self.matching(e, scrut, as_name.as_deref(), arms)?,
             Expr::Tuple(xs) => {
                 let t = self.ty_of(e)?;
-                let mut vs = vec![];
-                for x in xs {
-                    vs.push(self.expr(x)?);
-                }
+                let vs = self.operands(&xs.iter().collect::<Vec<_>>())?;
                 if vs.iter().any(|v| is_never(&v.0)) {
                     return Ok(never());
                 }
@@ -2362,10 +2404,7 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             Expr::List(xs) => {
                 let t = self.ty_of(e)?;
-                let mut vs = vec![];
-                for x in xs {
-                    vs.push(self.expr(x)?);
-                }
+                let vs = self.operands(&xs.iter().collect::<Vec<_>>())?;
                 if vs.iter().any(|v| is_never(&v.0)) {
                     return Ok(never());
                 }
@@ -2473,9 +2512,8 @@ impl<'m, 'a> Func<'m, 'a> {
             self.block(&end);
             return self.join(&Ty::Bool, vec![(bool_v(short), from), (b, from_b)]);
         }
-        let a = self.expr(l)?;
-        let b = self.expr(r)?;
-        self.apply(op, &a, &b)
+        let ab = self.operands(&[l, r])?;
+        self.apply(op, &ab[0], &ab[1])
     }
 
     fn apply(&mut self, op: BinOp, a: &V, b: &V) -> Res<V> {
@@ -2561,10 +2599,7 @@ impl<'m, 'a> Func<'m, 'a> {
         if self.lookup(name).is_some() {
             // a local closure
             let f = self.load(name)?;
-            let mut vs = vec![];
-            for a in &args {
-                vs.push(self.expr(a)?);
-            }
+            let vs = self.operands(&args)?;
             return self.call_closure(&f, vs);
         }
         // `Trait::m(type, ..)`: a trait method without `self`, for a type known here
@@ -2584,25 +2619,16 @@ impl<'m, 'a> Func<'m, 'a> {
                     Some(Expr::Var(x)) if x.starts_with("type:") => self.sub.get(&Symbol::new(&x["type:".len()..])).cloned().ok_or(format!("the type `{x}` is not known here"))?,
                     _ => return Err(format!("`{name}` needs the type it is called on")),
                 };
-                let mut vs = vec![];
-                for a in &args[1..] {
-                    vs.push(self.expr(a)?);
-                }
+                let vs = self.operands(&args[1..])?;
                 return self.call_method(name, recv, vs, hint, &[]);
             }
         }
         if crate::stdlib::is_host(name) {
-            let mut vs = vec![];
-            for a in &args {
-                vs.push(self.expr(a)?);
-            }
+            let vs = self.operands(&args)?;
             let hint = self.ty_of(call).ok();
             return self.host(name, vs, hint);
         }
-        let mut vs = vec![];
-        for a in &args {
-            vs.push(self.expr(a)?);
-        }
+        let vs = self.operands(&args)?;
         if vs.iter().any(|v| is_never(&v.0)) {
             return Ok(never());
         }
@@ -3591,27 +3617,23 @@ impl<'m, 'a> Func<'m, 'a> {
                 let g = self.m.nullary(c);
                 return Ok((t, g));
             }
-            CtorArgs::Positional(xs) => {
-                let mut vs = vec![];
-                for x in xs {
-                    vs.push(self.expr(x)?);
-                }
-                vs
-            }
+            CtorArgs::Positional(xs) => self.operands(&xs.iter().collect::<Vec<_>>())?,
             CtorArgs::Record(given) => {
                 // in declaration order
-                let mut vs = vec![];
+                let mut es = vec![];
                 for f in &fs {
                     let x = given.iter().find(|(n, _)| f.name.as_ref().map(|s| s.as_str()) == Some(n.as_str())).ok_or(format!("`{c}` needs its field `{}`", f.name.clone().unwrap_or_default()))?;
-                    vs.push(self.expr(&x.1)?);
+                    es.push(&x.1);
                 }
-                vs
+                self.operands(&es)?
             }
             CtorArgs::Update(base, changed) => {
                 let b = self.expr(base)?;
                 if is_never(&b.0) {
                     return Ok(b);
                 }
+                // the fields not changed are read from `b` after the changes are evaluated
+                let b = if changed.iter().any(|(_, x)| assigns(x)) { self.hold(b) } else { b };
                 let mut vs = vec![];
                 for (i, f) in fs.iter().enumerate() {
                     match changed.iter().find(|(n, _)| f.name.as_ref().map(|s| s.as_str()) == Some(n.as_str())) {
@@ -4025,7 +4047,8 @@ impl<'m, 'a> Func<'m, 'a> {
                 // a comparison shows both sides when it fails
                 let (ok, sides) = match x {
                     Expr::Bin(op, l, r) if !matches!(op, BinOp::And | BinOp::Or | BinOp::Implies) => {
-                        let (a, b) = (self.expr(l)?, self.expr(r)?);
+                        let ab = self.operands(&[l, r])?;
+                        let (a, b) = (ab[0].clone(), ab[1].clone());
                         (self.apply(*op, &a, &b)?, Some((*op, a, b)))
                     }
                     _ => (self.expr(x)?, None),

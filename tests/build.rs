@@ -689,6 +689,9 @@ fn memory_is_freed() {
     let d = tmp("memory");
     let (out, code) = case(&d, "features", MEMORY);
     assert!(code == 0 && out.contains("{\"name\":\"new\",\"tags\":[\"t\",\"renamed\"]}"), "{out}");
+    // an operand that borrows a variable a later operand assigns
+    let (out, code) = case(&d, "nested_assign", NESTED_ASSIGN);
+    assert!(code == 0 && out.starts_with("first 1/1\nsecond 2\n"), "{out}");
     let chain = "type Chain = | End | Link(Int, Chain)\nfn main() { mut c: Chain = End mut i := 0 while i < 1000000 { c = Link(i, c) i += 1 } match c { Link(x, _) => print(x), End => print(0) } }\n";
     // natively only: the interpreter takes minutes on this loop
     let f = d.join("chain.strata");
@@ -885,3 +888,29 @@ fn run_compiles_by_default_with_the_jit() {
     save(&f, "fn main() { print(matches(\"a1\", \"[a-z][0-9]\")) }\n");
     assert_eq!(output(Command::new(strata).arg("run").arg(&f)), ("true\n".to_string(), 0));
 }
+
+const NESTED_ASSIGN: &str = r#"type P = { name: String, n: Int }
+
+fn show2(a: String, b: Int) -> String { f"{a}/{b}" }
+
+fn pop(mut xs: List[String]) -> String {
+  x := xs[len(xs) - 1]
+  xs = xs[..len(xs) - 1]
+  x
+}
+
+fn main() {
+  mut s := f"first {1}"
+  print(show2(s, { s = f"second {2}"; 1 }))
+  print(s)
+  mut xs := [f"a{1}", f"b{2}"]
+  print([xs, { xs = [f"c{3}"]; [] }])
+  print(xs[0] + { xs = []; "!" })
+  mut p := P { name: f"p{1}", n: 1 }
+  q := P { ..p, n: { p = P { name: f"z{9}", n: 9 }; 2 } }
+  print(q)
+  mut ws := [f"w{1}", f"w{2}"]
+  print((ws, mut ws.pop()))
+  print(ws)
+}
+"#;
