@@ -85,6 +85,11 @@ struct Expander<'a> {
     ctors: HashMap<String, String>,
     /// Names bound inside the code being specialized, which hide known ones.
     hidden: Vec<Vec<Symbol>>,
+    /// The trait being derived, and its methods.
+    trait_name: Symbol,
+    trait_methods: Vec<Symbol>,
+    /// The default of each field described (by the description's JSON).
+    defaults: HashMap<String, Expr>,
     /// In a match comprehension's arm: the matched expression (as text) and
     /// the names its variant's fields are bound to, for `f.of(x)`.
     arm_fields: Vec<(String, Vec<(String, Symbol)>)>,
@@ -102,6 +107,15 @@ fn strs(xs: &[String]) -> Value {
     Value::List(xs.iter().map(|s| Value::Str(s.clone())).collect())
 }
 
+/// The pattern matching values of a type (`Int`, `List[Int]`, `Address`).
+fn type_pattern(t: &TypeExpr) -> Option<Pattern> {
+    match t {
+        TypeExpr::Named(n, args) if args.is_empty() => Some(Pattern::Ctor(*n, CtorPat::None)),
+        TypeExpr::Named(n, args) => Some(Pattern::Ctor(*n, CtorPat::Type(args.iter().map(type_pattern).collect::<Option<_>>()?))),
+        _ => None,
+    }
+}
+
 fn json(v: &Value) -> String {
     crate::interp::to_json(v).to_string()
 }
@@ -110,7 +124,7 @@ impl<'a> Expander<'a> {
     fn new(env: &'a Env, prog: &'a Program) -> Self {
         let mut it = Interp::new(env, 1);
         it.budget = Some(BUDGET);
-        Expander { env, prog, it, known: HashMap::new(), types: HashMap::new(), written: HashMap::new(), self_ty: TypeExpr::Unit, copies: vec![], made: HashMap::new(), ctors: HashMap::new(), hidden: vec![], arm_fields: vec![] }
+        Expander { env, prog, it, known: HashMap::new(), types: HashMap::new(), written: HashMap::new(), self_ty: TypeExpr::Unit, copies: vec![], made: HashMap::new(), ctors: HashMap::new(), hidden: vec![], arm_fields: vec![], trait_name: Symbol::new(""), trait_methods: vec![], defaults: HashMap::new() }
     }
 
     /// `derive Trait for Type { written }` as an ordinary `impl`.
@@ -125,6 +139,8 @@ impl<'a> Expander<'a> {
             return Err(format!("`{}` can't be derived: only a `derivable` trait can (write `impl {} for {}` instead)", short(&tr.name), short(&tr.name), crate::printer::ty(&i.for_type)));
         };
         self.self_ty = i.for_type.clone();
+        self.trait_name = tr.name;
+        self.trait_methods = tr.methods.iter().map(|m| m.decl.name).collect();
         let head = crate::types::texpr_head(&i.for_type);
         let desc = self.describe(&head)?;
         // the kind: the description is a value of it (a refinement, as `Choice` is,
@@ -216,11 +232,21 @@ impl<'a> Expander<'a> {
 
     fn field(&mut self, name: &Symbol, doc: &[String], ty: &TypeExpr, default: Option<&Expr>) -> Value {
         let t = self.type_value(ty);
-        let default = match default {
+        let dv = match default {
             Some(e) => Value::Variant("Some".into(), Fields::pos(vec![Value::Str(crate::printer::expr(e, 0))])),
             None => Value::Variant("None".into(), Fields::None),
         };
-        record("Field", vec![("name", Value::Str(name.to_string())), ("doc", strs(doc)), ("type", t), ("written", Value::Str(crate::printer::ty(ty))), ("default", default)])
+        let f = record("Field", vec![("name", Value::Str(name.to_string())), ("doc", strs(doc)), ("type", t), ("written", Value::Str(crate::printer::ty(ty))), ("default", dv)]);
+        if let Some(e) = default {
+            self.defaults.insert(json(&f), e.clone());
+        }
+        f
+    }
+
+    /// The type a `distinct` type is made of: its name, if `t` is one.
+    fn distinct_head(&self, t: &TypeExpr) -> Option<Symbol> {
+        let TypeExpr::Named(n, _) = t else { return None };
+        self.env.types.get(n).filter(|td| td.distinct).map(|_| *n)
     }
 
     /// A written type as a `std.typing.Type` (remembering which it was).
@@ -325,21 +351,8 @@ impl<'a> Expander<'a> {
             // `f.default_value`: the field's default, as written (`times: Int = 1`)
             Expr::Field(r, d) if d == "default_value" && matches!(&**r, Expr::Var(x) if self.is_known(x)) => {
                 let Expr::Var(x) = &**r else { unreachable!() };
-                let name = match &self.known[x] {
-                    Value::Record(_, fs) => fs.iter().find_map(|(k, v)| match (k.as_str(), v) {
-                        ("name", Value::Str(s)) => Some(s.clone()),
-                        _ => None,
-                    }),
-                    _ => None,
-                }
-                .unwrap_or_default();
-                let head = crate::types::texpr_head(&self.self_ty);
-                let fields = match self.env.types.get(&Symbol::new(&head)).map(|t| &t.body) {
-                    Some(TypeBody::Record(fs)) => fs.clone(),
-                    _ => vec![],
-                };
-                return match fields.iter().find(|f| f.name == name).and_then(|f| f.default.clone()) {
-                    Some(e) => Ok(e),
+                return match self.defaults.get(&json(&self.known[x])) {
+                    Some(e) => Ok(e.clone()),
                     // only reached where `f.default is Some` holds: never, here
                     None => Ok(Expr::Hole(Symbol::new("no_default"))),
                 };
@@ -407,6 +420,13 @@ impl<'a> Expander<'a> {
                 if !targs.is_empty() {
                     return Err(format!("`{}.{m}(..)`: calling a method on a generic type (`{}`) isn't supported yet", crate::printer::expr(recv, 0), crate::printer::ty(&t)));
                 }
+                // a method of the trait being derived: the type must have it (said
+                // here, at the `derive`, rather than in the code made for it)
+                let own = crate::types::texpr_head(&self.self_ty) == n.as_str();
+                if !own && self.trait_methods.contains(m) && !self.env.impls.iter().any(|i| i.trait_name == self.trait_name && crate::types::texpr_head(&i.for_type) == n.as_str()) {
+                    let tn = crate::names::short(&self.trait_name);
+                    return Err(format!("`{}` doesn't implement `{tn}`: write `derive {tn} for {}`", crate::names::short(&n), crate::names::short(&n)));
+                }
                 let args = args.iter().map(|a| self.expr(a)).collect::<Res<Vec<_>>>()?;
                 return Ok(Expr::Method(Box::new(Expr::Var(n)), *m, args));
             }
@@ -433,6 +453,21 @@ impl<'a> Expander<'a> {
                     Value::Str(s) => s,
                     other => json(&other),
                 });
+            }
+            // `setting("json.unknown_keys")`: the package's setting (`strata.toml`), if set
+            Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if n.as_str() == "std.typing.setting") && args.len() == 1 => {
+                let k = self.expr(&args[0])?;
+                let Value::Str(key) = self.eval(&k)? else { return Err("`setting` takes the setting's name, `section.key`".into()) };
+                return Ok(match crate::package::setting(&key) {
+                    Some(v) => Expr::Ctor(Symbol::new("Some"), CtorArgs::Positional(vec![Expr::Str(v)])),
+                    None => Expr::Ctor(Symbol::new("None"), CtorArgs::None),
+                });
+            }
+            // `t(v)`: a value of the `distinct` type `t`, known while compiling
+            Expr::Call(f, args) if self.type_named(f).is_some_and(|t| self.distinct_head(&t).is_some()) => {
+                let head = self.distinct_head(&self.type_named(f).unwrap()).unwrap();
+                let args = args.iter().map(|a| self.expr(a)).collect::<Res<Vec<_>>>()?;
+                return Ok(Expr::Ctor(head, CtorArgs::Positional(args)));
             }
             Expr::Call(f, args) => {
                 if let Expr::Var(name) = &**f {
@@ -684,6 +719,11 @@ impl<'a> Expander<'a> {
                     let c = self.ctors.get(&json(it)).cloned().unwrap_or_else(|| crate::names::qualify(crate::names::module_of(&head), &vname));
                     Ok(Pattern::Ctor(Symbol::new(&c), cp))
                 }
+                // a type (a union's member): the type pattern for it
+                Value::Variant(k, _) if k.starts_with("std.typing.") && self.type_of(it).is_ok() => {
+                    let t = self.type_of(it)?;
+                    type_pattern(&t).ok_or_else(|| format!("a union member `{}` can't be told apart at run time: use a named type", crate::printer::ty(&t)))
+                }
                 other => match self.literal(other)? {
                     Expr::Int(n) => Ok(Pattern::Int(n)),
                     Expr::Str(s) => Ok(Pattern::Str(s)),
@@ -790,6 +830,25 @@ impl<'a> Expander<'a> {
                 match self.env.types.get(n).map(|t| &t.body) {
                     Some(TypeBody::Sum(vs)) => crate::names::short(c) != "Record" && (crate::names::short(c) == "Sum" || vs.iter().all(|v| v.payload == Payload::None)),
                     Some(TypeBody::Record(_)) => crate::names::short(c) == "Record",
+                    _ => false,
+                }
+            }
+            // `Union`: a union of types (its members: `std.typing.Union { members }`)
+            Pattern::Ctor(c, CtorPat::None) if crate::names::short(c) == "Union" && self.env.types.get(c).is_none() => matches!(&base, TypeExpr::Union(_)),
+            // `Distinct[x]`: a `distinct` type, `x` the type it is made of
+            Pattern::Ctor(c, CtorPat::Type(ps)) if crate::names::short(c) == "Distinct" && ps.len() == 1 && self.env.types.get(c).is_none() => {
+                let TypeExpr::Named(n, _) = &base else { return false };
+                match self.env.types.get(n) {
+                    Some(td) if td.distinct => match &td.body {
+                        TypeBody::Alias(a) => {
+                            let inner = match &td.refinement {
+                                Some(r) => TypeExpr::Refined(Box::new(a.clone()), Box::new(r.clone())),
+                                None => a.clone(),
+                            };
+                            self.fits(&ps[0], &inner, binds)
+                        }
+                        _ => false,
+                    },
                     _ => false,
                 }
             }

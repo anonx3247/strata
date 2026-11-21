@@ -3819,7 +3819,9 @@ fn json_is_derived() {
         ("type A = { x: Option[Option[Int]] }", "`None` and `Some(None)` would both be `null`"),
         ("type A = { f: (Int) -> Int }", "`(Int) -> Int` can't be JSON"),
         ("type A =\n  | P(Int, Int)", "`P` has several positional fields"),
-        ("type B = { x: Int }\n\ntype A = { b: B }", "`B` does not implement `std.json.Json`"),
+        ("type B = { x: Int }\n\ntype A = { b: B }", "`B` doesn't implement `Json`: write `derive Json for B`"),
+        ("type A = { x: Int | Float }", "`Int | Float` can't be JSON: two members are written as a JSON number"),
+        ("type A = { x: List[Int] | List[String] }", "two members are written as a JSON array"),
     ];
     for (k, (src, want)) in bad.iter().enumerate() {
         let f = format!("bad{k}.strata");
@@ -3833,4 +3835,16 @@ fn json_is_derived() {
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "big.strata"], &d, None);
     assert!(!ok && out.contains("does not satisfy `std.json.Int64`"), "{out}");
+    // a package can make `decode` refuse keys a record doesn't have
+    let p = d.join("strict");
+    std::fs::create_dir_all(&p).unwrap();
+    std::fs::write(p.join("strata.toml"), "name = \"strict\"\n\n[json]\nunknown_keys = \"error\"\n").unwrap();
+    let src = "use std.json.{Json, Ignore, parse}\n\ntype A = { x: Int }\n\nderive Json for A\n\nfn main() {\n  j := parse(\"{\\\"x\\\": 1, \\\"y\\\": 2}\") !! std.json.Null\n  print(A.decode(j))\n  print(A.decode_with(j, Ignore))\n}\n";
+    let (ok, out) = strata(&["--file", "./", "edit", "main"], &p, Some(src));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "."], &p, None);
+    assert!(ok && out == "{\"Err\":\"unknown field \\\"y\\\"\"}\n{\"Ok\":{\"x\":1}}\n", "{out}");
+    std::fs::write(p.join("strata.toml"), "name = \"strict\"\n\n[json]\nunknown_keys = \"sometimes\"\n").unwrap();
+    let (ok, out) = strata(&["run", "."], &p, None);
+    assert!(!ok && out.contains("unknown_keys is \"error\" or \"ignore\""), "{out}");
 }
