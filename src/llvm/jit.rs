@@ -443,7 +443,7 @@ fn make_std_library() -> Result<StdLibrary, String> {
     let std = crate::stdlib::program();
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let meta = std::fs::metadata(&exe).map_err(|e| e.to_string())?;
-    let key: String = Sha256::digest(format!("{:?}{}{:?}", meta.modified().ok(), meta.len(), std).as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
+    let key: String = Sha256::digest(format!("v2{:?}{}{:?}", meta.modified().ok(), meta.len(), std).as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
     let root = match std::env::var_os("STRATA_CACHE") {
         Some(d) => std::path::PathBuf::from(d),
         None => std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache/strata"),
@@ -455,7 +455,28 @@ fn make_std_library() -> Result<StdLibrary, String> {
         // what can be precompiled; what doesn't compile yet is left to each program
         let resolved = crate::resolve::resolve(std).program;
         let (env, _) = crate::types::Env::build(&resolved);
-        let mut names: Vec<String> = env.fns.values().filter(|f| super::precompilable(f, &env)).map(|f| f.name.to_string()).collect();
+        // a function reading a package's setting (`setting("json.unknown_keys")`,
+        // written in per program), or calling one that does, stays per program
+        let raw_fns: Vec<(String, &crate::ast::FnDecl)> = std.decls.iter().filter_map(|d| match &d.kind {
+            crate::ast::DeclKind::Fn(f) => Some((crate::names::short(&f.name).to_string(), f)),
+            _ => None,
+        }).collect();
+        let mut per_program: std::collections::HashSet<String> = ["setting".to_string()].into();
+        loop {
+            let before = per_program.len();
+            for (n, f) in &raw_fns {
+                let mut all = vec![&f.body];
+                all.extend(f.requires.iter());
+                all.extend(f.ensures.iter());
+                if all.iter().any(|b| crate::ast::any_expr(b, |e| matches!(e, crate::ast::Expr::Var(v) if per_program.contains(crate::names::short(v))))) {
+                    per_program.insert(n.clone());
+                }
+            }
+            if per_program.len() == before {
+                break;
+            }
+        }
+        let mut names: Vec<String> = env.fns.values().filter(|f| super::precompilable(f, &env) && !per_program.contains(crate::names::short(&f.name))).map(|f| f.name.to_string()).collect();
         names.sort();
         let ir = match super::compile_library(std, &names) {
             Ok(ir) => ir,
