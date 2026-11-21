@@ -3781,3 +3781,20 @@ fn variant_names_are_per_module() {
     let (ok, out) = strata(&["--file", "one.strata", "check"], &d, None);
     assert!(!ok && out.contains("must be unique in its module"), "{out}");
 }
+
+// A method taking another `Self` can't be called on a trait value with
+// what may be another implementation (help: take the trait instead); the
+// receiver itself, or what its `Self`-returning methods make, is fine.
+#[test]
+fn self_arguments_on_trait_values() {
+    let d = tmp("dyn-self");
+    let src = "trait Shape {\n  fn size(self) -> Int\n  fn grown(self) -> Self\n  fn bigger(self, other: Self) -> Bool\n  fn bigger_shape(self, other: Shape) -> Bool {\n    self.size() > other.size()\n  }\n}\n\ntype Sq = { side: Int }\n\ntype Ci = { r: Int }\n\nimpl Shape for Sq {\n  fn size(self) -> Int { self.side }\n  fn grown(self) -> Sq { Sq { side: self.side + 1 } }\n  fn bigger(self, other: Sq) -> Bool { self.side > other.side }\n}\n\nimpl Shape for Ci {\n  fn size(self) -> Int { self.r }\n  fn grown(self) -> Ci { Ci { r: self.r + 1 } }\n  fn bigger(self, other: Ci) -> Bool { self.r > other.r }\n}\n\nfn main() {\n  let xs: List[Shape] = [Sq { side: 2 }, Ci { r: 3 }]\n  for s in xs {\n    print(s.bigger(s.grown().grown()))\n    print(s.bigger_shape(xs[1]))\n  }\n  print(Sq { side: 1 }.bigger(Sq { side: 2 }))\n  MIXED\n}\n";
+    let (ok, out) = strata(&["--file", "ok.strata", "edit"], &d, Some(&src.replace("MIXED", "")));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "ok.strata", "run", "--interpret"], &d, None);
+    assert!(ok && out == "false\nfalse\nfalse\nfalse\nfalse\n", "{out}");
+    let (ok, out) = strata(&["--file", "bad.strata", "edit"], &d, Some(&src.replace("MIXED", "print(xs[0].bigger(xs[1]))")));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
+    assert!(!ok && out.contains("`bigger` takes `other: Self`, a value of the receiver's own type, but `xs[0]` is a `Shape`") && out.contains("help: to accept any `Shape`, declare the parameter so: `other: Shape`"), "{out}");
+}

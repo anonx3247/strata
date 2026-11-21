@@ -1931,6 +1931,7 @@ impl<'a> Checker<'a> {
                 self.call_with(ft, args, &what, &muts)
             }
             Expr::Method(recv, m, args) => {
+                self.dyn_self_args(recv, m, args);
                 // the program's own nodes, not copies: decisions are recorded by node
                 let all: Vec<&Expr> = std::iter::once(&**recv).chain(args.iter()).collect();
                 let marked = Some(self.marked.contains(&(e as *const Expr as usize)));
@@ -2777,6 +2778,81 @@ impl<'a> Checker<'a> {
         }
         if (f.plus || f.zero) && !int && !float {
             self.err(format!("format spec `{f}`: `+` and `0` apply to numbers, not `{}`", show_ty(&t)));
+        }
+    }
+
+    /// A method taking another `Self` (`fn bigger(self, other: Self)`)
+    /// can't be called on a trait value: the argument would have to be of
+    /// the receiver's implementation, and a `Shape` can be any. (Taking any
+    /// implementation is written so: `other: Shape`.)
+    fn dyn_self_args(&mut self, recv: &Expr, m: &str, args: &[Expr]) {
+        let sm = crate::names::short(m);
+        let is_self = |t: &TypeExpr| matches!(t, TypeExpr::Named(n, a) if n == "Self" && a.is_empty());
+        let takes_self = |td: &TraitDecl| -> Option<usize> {
+            let tm = td.methods.iter().find(|x| crate::names::short(&x.decl.name) == sm)?;
+            tm.decl.params.iter().skip(1).position(|p| is_self(&p.ty))
+        };
+        if !self.env.traits.values().any(|td| takes_self(td).is_some()) {
+            return;
+        }
+        // the receiver's type, without reporting its errors twice
+        let n = self.errors.len();
+        let rt = self.infer(recv);
+        self.errors.truncate(n);
+        let Ty::Con(tr, targs) = self.resolve(&rt) else { return };
+        if !self.env.traits.contains_key(&tr) {
+            return;
+        }
+        let mut traits = vec![tr];
+        traits.extend(self.supers_of(&tr, &targs, 0).into_iter().map(|(s, _)| s));
+        // what is surely of the receiver's implementation: the receiver (a
+        // variable) itself, or what a method returning `Self` makes of it
+        // (`s.bigger(s.scaled(2))`)
+        let makers: Vec<String> = traits
+            .iter()
+            .filter_map(|t| self.env.traits.get(t))
+            .flat_map(|td| td.methods.iter().filter(|x| is_self(&x.decl.ret)).map(|x| crate::names::short(&x.decl.name).to_string()))
+            .collect();
+        fn same(e: &Expr, recv: &str, makers: &[String]) -> bool {
+            match e {
+                Expr::Var(x) => x == recv,
+                Expr::Method(r, m, _) => makers.iter().any(|k| k == crate::names::short(m)) && same(r, recv, makers),
+                _ => false,
+            }
+        }
+        let Expr::Var(rv) = recv else { return self.refuse_self_args(recv, m, args, &traits, &takes_self) };
+        let rv = rv.to_string();
+        for t in &traits {
+            let Some(td) = self.env.traits.get(t) else { continue };
+            let Some(i) = takes_self(td) else { continue };
+            if !args.get(i).is_some_and(|a| same(a, &rv, &makers)) {
+                return self.refuse_self_args(recv, m, args, &traits, &takes_self);
+            }
+            return;
+        }
+    }
+
+    fn refuse_self_args(&mut self, recv: &Expr, m: &str, args: &[Expr], traits: &[Symbol], takes_self: &dyn Fn(&TraitDecl) -> Option<usize>) {
+        let sm = crate::names::short(m);
+        let Some(&tr) = traits.first() else { return };
+        for t in traits {
+            let Some(td) = self.env.traits.get(t) else { continue };
+            let Some(i) = takes_self(td) else { continue };
+            let tm = td.methods.iter().find(|x| crate::names::short(&x.decl.name) == sm).unwrap();
+            let p = tm.decl.params[i + 1].name;
+            let (st, owner) = (crate::names::short(&tr).to_string(), crate::names::short(&t).to_string());
+            // as written: `xs[0]` is `at(xs, 0)` once desugared
+            fn shown(e: &Expr) -> String {
+                match e {
+                    Expr::Call(f, xs) if matches!(&**f, Expr::Var(n) if n == "at") && xs.len() == 2 => format!("{}[{}]", shown(&xs[0]), crate::printer::expr(&xs[1], 0)),
+                    _ => crate::printer::expr(e, 0),
+                }
+            }
+            let (r, a) = (shown(recv), args.get(i).map(shown).unwrap_or_else(|| p.to_string()));
+            self.err(format!(
+                "`{sm}` takes `{p}: Self`, a value of the receiver's own type, but `{r}` is a `{st}`, which can be any implementation of it: nothing says `{a}` is the same one\n  help: to accept any `{owner}`, declare the parameter so: `{p}: {owner}` (in `trait {owner}`), and call `{st}` methods on it\n  help: or call `{sm}` where both values are known to be of one type"
+            ));
+            return;
         }
     }
 
