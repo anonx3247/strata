@@ -1564,11 +1564,15 @@ impl<'a> Checker<'a> {
             self.err(format!("which `{short}` runs depends on the type of the value it is called on (several types or traits have one): call it on a value, or pass a lambda such as `x -> x.{short}()`"));
             return Some(self.fresh());
         }
-        if let Some(Builtin { params: ps, sig, .. }) = BUILTINS.iter().chain(crate::stdlib::HOST).find(|b| b.name == name) {
-            let ps: Vec<Symbol> = ps.split(',').filter(|s| !s.is_empty()).map(Symbol::from).collect();
-            return Some(self.instantiate(&ps, &parse_type_str(sig)));
-        }
-        None
+        self.builtin_fn(name)
+    }
+
+    /// The type of the builtin `name` (or std's host operation), whatever else
+    /// the name means.
+    fn builtin_fn(&mut self, name: &str) -> Option<Ty> {
+        let Builtin { params: ps, sig, .. } = BUILTINS.iter().chain(crate::stdlib::HOST).find(|b| b.name == name)?;
+        let ps: Vec<Symbol> = ps.split(',').filter(|s| !s.is_empty()).map(Symbol::from).collect();
+        Some(self.instantiate(&ps, &parse_type_str(sig)))
     }
 
     /// A method name means the method of that name among the traits of the
@@ -1651,11 +1655,15 @@ impl<'a> Checker<'a> {
         // a function of that name takes the call, unless the receiver's type
         // has a method of its own by that name (`app.handle(req)` inside a
         // `fn handle`)
-        if self.lookup(m.sym()).is_some() || self.env.fns.contains_key(&Symbol::new(m)) {
+        // A trait method named like a built-in one (`find`) is the trait's only
+        // on a receiver whose type implements it: on a list, the built-in
+        // (decided below, by the receiver's traits).
+        let builtin_too = dotted && self.lookup(m.sym()).is_none() && self.env.is_method(m.sym()) && BUILTINS.iter().any(|b| b.name == m);
+        if !builtin_too && (self.lookup(m.sym()).is_some() || self.env.fns.contains_key(&Symbol::new(m))) {
             if !dotted || !all.first().is_some_and(|r| self.has_own_method(r, m)) {
                 return None;
             }
-        } else if split_trait_call(m).is_some() || !self.env.is_method(m.sym()) {
+        } else if !builtin_too && (split_trait_call(m).is_some() || !self.env.is_method(m.sym())) {
             return None;
         }
         let short = |q: &str| crate::names::short(q).to_string();
@@ -1728,7 +1736,7 @@ impl<'a> Checker<'a> {
                 if let Some(t) = self.overloaded(sm.sym(), all) {
                     return Some(t);
                 }
-                let ft = self.global_fn(&sm)?;
+                let ft = self.builtin_fn(&sm)?;
                 Some(self.call_with(ft, all, &Lazy(|| format!("call to `{sm}`")), &[]))
             }
             [] => None,
