@@ -55,9 +55,8 @@ fn snapshot(target: &Target) -> Json {
     let resolved = crate::resolve::resolve(p);
     let rp = &resolved.program;
     let qname_of: HashMap<String, String> = rp.decls.iter().zip(&p.decls).map(|(r, d)| (r.name(), d.qname())).collect();
-    let mut rep = types::check(p);
-    let (env, _) = types::Env::new(p);
-    rep.errors.extend(verify::static_refinements(p, &env));
+    let types::Checked { report: mut rep, program: elaborated, env } = types::check_and_elaborate(p);
+    rep.errors.extend(verify::refinements_in(&elaborated, &env));
 
     let graph = store::graph(p);
     let mut holes: HashMap<String, Vec<&types::HoleInfo>> = HashMap::new();

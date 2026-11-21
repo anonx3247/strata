@@ -53,12 +53,11 @@ pub fn holes(args: &Args, json_out: bool) -> Result<bool, String> {
 pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     let src = load(&args)?;
     let p = src.program();
-    let rep = full_check(p);
+    let types::Checked { report: rep, program: resolved, env } = full_checked(p);
     if !rep.ok() {
         print_errors(&rep);
         return Ok(false);
     }
-    let (env, _) = types::Env::new(p);
     let cases: usize = args.val("--cases").unwrap_or("200").parse().map_err(|_| "bad --cases")?;
     let seed: u64 = args.val("--seed").unwrap_or("1").parse().map_err(|_| "bad --seed")?;
     let names = view::select(p, args.pos.get(1).map(|s| s.as_str()));
@@ -68,7 +67,6 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     };
     let mut all_ok = true;
     let mut results = Vec::new();
-    let resolved = types::elaborate(p).program;
     let solver = smt::solver();
     let solver_bin = solver.as_ref();
     let analysis = termination::analyze(&env, solver_bin);

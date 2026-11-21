@@ -322,25 +322,52 @@ pub fn split_trait_call(name: &str) -> Option<(&str, &str)> {
     name.split_once("::")
 }
 
-/// The program as it runs: resolved, then each method call whose meaning
-/// depends on the receiver's static type made explicit, as the checker
-/// decided it. A call through a trait becomes `x.Trait::m(..)`, a call to a
-/// type's own method a direct call `Item.m(x, ..)`. Everything that runs or
-/// verifies code works on this.
-pub fn elaborate(prog: &Program) -> crate::resolve::Resolution {
-    elaborate_with(prog, false).0
-}
-
 /// The elaborated program, and the type the checker inferred for each of its
 /// expressions, by node address (in a generic function, with its type
 /// parameters as `Ty::Rigid`). The compiler works from these.
 pub fn elaborate_typed(prog: &Program) -> (crate::resolve::Resolution, HashMap<usize, Ty>) {
-    elaborate_with(prog, true)
-}
-
-fn elaborate_with(prog: &Program, typed: bool) -> (crate::resolve::Resolution, HashMap<usize, Ty>) {
     let mut r = crate::resolve::resolve(prog);
     let (env, _) = Env::build(&r.program);
+    let (_, _, targets, mut types) = check_decls(&r.program, &env);
+    rewrite(&mut r.program, &env, targets, &mut types);
+    (r, types)
+}
+
+/// The result of checking a program once: the report, and the program as it
+/// runs, with its environment. That program is resolved, then each method
+/// call whose meaning depends on the receiver's static type is made
+/// explicit, as the checker decided it: a call through a trait becomes
+/// `x.Trait::m(..)`, a call to a type's own method a direct call
+/// `Item.m(x, ..)`. Everything that runs or verifies code works on it.
+pub struct Checked {
+    pub report: CheckReport,
+    /// resolved, with the checker's method-call decisions written in
+    pub program: Program,
+    pub env: Env,
+}
+
+/// Check a program, and elaborate it from the same pass: one resolution and
+/// one type check, where `check`, `Env::new` and `elaborate` would each do
+/// their own.
+pub fn check_and_elaborate(prog: &Program) -> Checked {
+    let mut r = crate::resolve::resolve(prog);
+    let (env, mut errors) = Env::build(&r.program);
+    errors.splice(0..0, std::mem::take(&mut r.errors));
+    let (errs, holes, targets, mut types) = check_decls(&r.program, &env);
+    errors.extend(errs);
+    let report = CheckReport { errors, holes };
+    if !needs_rewrite(&env) {
+        return Checked { report, program: r.program, env };
+    }
+    rewrite(&mut r.program, &env, targets, &mut types);
+    // a rewrite can add parameters (type arguments): the environment is the rewritten program's
+    let (env, _) = Env::build(&r.program);
+    Checked { report, program: r.program, env }
+}
+
+/// Whether elaborating changes the program: method calls to resolve by type,
+/// or type arguments to pass.
+fn needs_rewrite(env: &Env) -> bool {
     let shared = env.method_traits.values().any(|v| v.len() > 1);
     let statics = env.traits.values().any(|t| t.methods.iter().any(|m| !crate::resolve::takes_self(&m.decl)));
     // a trait method named like a builtin (`Files.remove`) may mean the builtin
@@ -349,12 +376,14 @@ fn elaborate_with(prog: &Program, typed: bool) -> (crate::resolve::Resolution, H
     let like_builtin = shorts.iter().any(|s| BUILTINS.iter().any(|b| b.name == *s));
     shorts.sort();
     let across = shorts.windows(2).any(|w| w[0] == w[1]);
-    if env.inherent.is_empty() && !shared && !statics && !like_builtin && !across && !typed {
-        return (r, HashMap::new());
-    }
-    let (_, _, targets, mut types) = check_decls(&r.program, &env);
+    !(env.inherent.is_empty() && !shared && !statics && !like_builtin && !across)
+}
+
+/// Write the checker's decisions (`targets`, by node address) into the
+/// program; `types` follows the nodes that move.
+fn rewrite(program: &mut Program, env: &Env, targets: Vec<(usize, Target)>, types: &mut HashMap<usize, Ty>) {
     let targets: HashMap<usize, Target> = targets.into_iter().collect();
-    for d in &mut r.program.decls {
+    for d in &mut program.decls {
         // a type parameter with a static method to call is passed when the function runs
         if let DeclKind::Fn(f) = &mut d.kind {
             for p in env.type_args(f) {
@@ -378,7 +407,7 @@ fn elaborate_with(prog: &Program, typed: bool) -> (crate::resolve::Resolution, H
                 *e = Expr::Call(Box::new(Expr::Var(Symbol::from(f.as_str()))), all);
                 // the receiver and arguments now live in a new argument list
                 if let Expr::Call(_, all) = &*e {
-                    rekey(&mut types, &old, all.iter().map(addr).collect());
+                    rekey(types, &old, all.iter().map(addr).collect());
                 }
             }
             (Target::Own(f), Expr::Call(g, _)) => **g = Expr::Var(Symbol::from(f.as_str())),
@@ -388,13 +417,13 @@ fn elaborate_with(prog: &Program, typed: bool) -> (crate::resolve::Resolution, H
                 all.append(args);
                 *e = Expr::Call(Box::new(Expr::Var(Symbol::from(trait_call(tr, m)))), all);
                 if let Expr::Call(_, all) = &*e {
-                    rekey(&mut types, &old, all[1..].iter().map(addr).collect());
+                    rekey(types, &old, all[1..].iter().map(addr).collect());
                 }
             }
             (Target::TypeArgs(tys), Expr::Call(_, args) | Expr::Method(_, _, args)) => {
                 let old: Vec<usize> = args.iter().map(addr).collect();
                 args.extend(tys.iter().map(|t| t.expr()));
-                rekey(&mut types, &old, args.iter().map(addr).collect());
+                rekey(types, &old, args.iter().map(addr).collect());
             }
             (Target::Other(tr, mq), Expr::Method(_, m, _)) => *m = Symbol::from(trait_call(tr, mq)),
             (Target::Other(tr, mq), Expr::Call(f, _)) => **f = Expr::Var(Symbol::from(trait_call(tr, mq))),
@@ -404,7 +433,6 @@ fn elaborate_with(prog: &Program, typed: bool) -> (crate::resolve::Resolution, H
         }
         });
     }
-    (r, types)
 }
 
 fn addr(e: &Expr) -> usize {

@@ -232,20 +232,26 @@ fn load(args: &Args) -> Result<Source, String> {
 
 /// Full static check: types, exhaustiveness, then literal refinements.
 fn full_check(p: &Program) -> types::CheckReport {
-    let mut rep = types::check(p);
-    let (env, _) = types::Env::new(p);
-    for d in verify::static_refinements(p, &env) {
-        if !rep.errors.iter().any(|e| e.decl == d.decl && e.msg == d.msg) {
-            rep.errors.push(d);
+    full_checked(p).report
+}
+
+/// `full_check`, keeping the elaborated program and its environment, which
+/// running, testing and verifying work from: the program is resolved and
+/// type-checked once.
+fn full_checked(p: &Program) -> types::Checked {
+    let mut c = types::check_and_elaborate(p);
+    for d in verify::refinements_in(&c.program, &c.env) {
+        if !c.report.errors.iter().any(|e| e.decl == d.decl && e.msg == d.msg) {
+            c.report.errors.push(d);
         }
     }
     // a `CommandLine` record must be readable from arguments
-    for i in env.impls.iter().filter(|i| i.trait_name == cli::TRAIT) {
-        if let Err(msg) = cli::validate(&env, &types::texpr_head(&i.for_type)) {
-            rep.errors.push(types::Diag { decl: i.name(), msg });
+    for i in c.env.impls.iter().filter(|i| i.trait_name == cli::TRAIT) {
+        if let Err(msg) = cli::validate(&c.env, &types::texpr_head(&i.for_type)) {
+            c.report.errors.push(types::Diag { decl: i.name(), msg });
         }
     }
-    rep
+    c
 }
 
 fn print_errors(rep: &types::CheckReport) {
