@@ -4832,4 +4832,20 @@ fn long_list_literals_compile_in_linear_time() {
     let (ok, out) = strata(&["--file", "t.strata", "run", "total", &arg], &d, None);
     assert!(ok && out.trim() == "60000", "{out}");
     assert!(start.elapsed().as_secs_f64() < 2.0, "took {:?}", start.elapsed());
+// `&`, `|`, `^`, `<<`, `>>` on integers, small and big, as Python's (two's
+// complement, infinitely sign-extended; `>>` rounds down), with Rust's
+// precedence (`&` before `==`); a negative shift is a fault, and `verify`
+// finds it; a `|` in a `where` pattern is in parentheses.
+#[test]
+fn bit_operators() {
+    let d = tmp("bits");
+    save(&d.join("bits.strata"), "fn show3(a: Int, b: Int) {\n  print(f\"{a & b} {a | b} {a ^ b}\")\n}\n\nfn show2(a: Int, k: Int) {\n  print(f\"{a << k} {a >> k}\")\n}\n\nfn main() {\n  show3(12, 10)\n  show3(-12, 10)\n  show3(-1, 1180591620717411303429)\n  show3(18446744073709551619, -36893488147419103232)\n  show3(7, 0)\n  show2(1, 70)\n  show2(-5, 1)\n  show2(-5, 3)\n  show2(1180591620717411303424, 69)\n  show2(-1180591620717411303425, 68)\n  show2(3, 0)\n  print(1 + 2 << 3 & 7 | 8 ^ 1)\n  print(-1 & 255 == 255)\n}\n");
+    let (ok, out) = strata(&["--file", "bits.strata", "run"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out.trim(), "8 14 6\n0 -2 -2\n1180591620717411303429 -1 -1180591620717411303430\n0 -18446744073709551613 -18446744073709551613\n0 7 7\n1180591620717411303424 0\n-10 -3\n-40 -1\n696898287454081973172991196020261297061888 2\n-348449143727040986586790745915310001356800 -5\n3 3\n9\ntrue");
+    save(&d.join("neg.strata"), "fn shifted(n: Int) -> Int {\n  1 << n\n}\n\nfn low(x: Int) -> Int\n  requires x >= 0\n  ensures it <= 255\n{\n  x & 255\n}\n\nfn kind(n: Int) -> Int {\n  match n {\n    where (it | 1 == 3) | 0 => 1,\n    _ => 2,\n  }\n}\n");
+    let (_, out) = strata(&["--file", "neg.strata", "verify", "--cases", "10"], &d, None);
+    assert!(out.contains("✗ shifted") && out.contains("by a negative number of bits") && out.contains("✓ low") && out.contains("✓ kind"), "{out}");
+    let (_, out) = strata(&["--file", "neg.strata", "render"], &d, None);
+    assert!(out.contains("where (it | 1 == 3) | 0 => 1,") && out.contains("x & 255"), "{out}");
 }

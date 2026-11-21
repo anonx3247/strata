@@ -653,6 +653,113 @@ int64_t strata_mod(int64_t a, int64_t b) {
   return r;
 }
 
+// ---- bits: `&`, `|`, `^`, `<<`, `>>` ----
+//
+// On two's complement, infinitely sign-extended (as Python's integers): a
+// number is written in `len` words, its sign repeated in the last.
+
+static void to_twos(Num x, uint32_t *w, int64_t len) {
+  memset(w, 0, (size_t)len * 4);
+  memcpy(w, x.d, (size_t)x.n * 4);
+  if (x.sign < 0) {
+    uint64_t carry = 1;
+    for (int64_t i = 0; i < len; i++) {
+      uint64_t v = (uint64_t)(uint32_t)~w[i] + carry;
+      w[i] = (uint32_t)v;
+      carry = v >> 32;
+    }
+  }
+}
+
+// The number `w` holds (it takes `w`).
+static Num from_twos(uint32_t *w, int64_t len) {
+  Num x = {1, len, w};
+  if (len > 0 && (w[len - 1] >> 31)) {
+    uint64_t carry = 1;
+    for (int64_t i = 0; i < len; i++) {
+      uint64_t v = (uint64_t)(uint32_t)~w[i] + carry;
+      w[i] = (uint32_t)v;
+      carry = v >> 32;
+    }
+    x.sign = -1;
+  }
+  return x;
+}
+
+typedef enum { AND, OR, XOR } BitOp;
+
+static int64_t bit_op(int64_t a, int64_t b, BitOp op) {
+  if (!is_big(a) && !is_big(b)) return op == AND ? (a & b) : op == OR ? (a | b) : (a ^ b);
+  Num x = num_of(a), y = num_of(b);
+  int64_t len = (x.n > y.n ? x.n : y.n) + 1;
+  uint32_t *u = digits(len), *v = digits(len);
+  to_twos(x, u, len);
+  to_twos(y, v, len);
+  for (int64_t i = 0; i < len; i++) u[i] = op == AND ? (u[i] & v[i]) : op == OR ? (u[i] | v[i]) : (u[i] ^ v[i]);
+  free(x.d), free(y.d), free(v);
+  return int_of(from_twos(u, len));
+}
+
+int64_t strata_int_and(int64_t a, int64_t b) { return bit_op(a, b, AND); }
+int64_t strata_int_or(int64_t a, int64_t b) { return bit_op(a, b, OR); }
+int64_t strata_int_xor(int64_t a, int64_t b) { return bit_op(a, b, XOR); }
+
+// The shift `n` as a count of bits; a negative one is a fault.
+static int64_t shift_of(int64_t n, const char *op) {
+  if (n < 0 || (is_big(n) && big_at(n)->sign < 0)) {
+    strata_fault(4, strata_concat(str_c(op), str_c(" by a negative number of bits")));
+  }
+  return is_big(n) ? INT64_MAX : n;
+}
+
+// `a << n`: `a` times 2^n.
+int64_t strata_shl(int64_t a, int64_t n) {
+  int64_t k = shift_of(n, "`<<`");
+  if (a == 0) return 0;
+  if (k > ((int64_t)1 << 32)) strata_fault(6, str_c("`<<` by more than 2^32 bits"));
+  if (!is_big(a) && k < 62) {
+    int64_t lim = (int64_t)1 << (62 - k);
+    if (a > -lim && a < lim) return a * ((int64_t)1 << k);
+  }
+  Num x = num_of(a);
+  int64_t words = k / 32, bits = k % 32, len = x.n + words + 1;
+  uint32_t *d = digits(len);
+  for (int64_t i = 0; i < x.n; i++) {
+    uint64_t v = (uint64_t)x.d[i] << bits;
+    d[i + words] |= (uint32_t)v;
+    d[i + words + 1] |= (uint32_t)(v >> 32);
+  }
+  Num r = {x.sign, len, d};
+  free(x.d);
+  return int_of(r);
+}
+
+// `a >> n`: `a` divided by 2^n, rounded down (as `/` by a power of two).
+int64_t strata_shr(int64_t a, int64_t n) {
+  int64_t k = shift_of(n, "`>>`");
+  if (!is_big(a)) return a >> (k > 63 ? 63 : k);
+  Num x = num_of(a);
+  int64_t words = k / 32, bits = k % 32;
+  if (words >= x.n) {
+    int neg = x.sign < 0;
+    free(x.d);
+    return neg ? -1 : 0;
+  }
+  // on the two's complement, so a negative number rounds down
+  int64_t len = x.n + 1;
+  uint32_t *w = digits(len);
+  to_twos(x, w, len);
+  uint32_t fill = (w[len - 1] >> 31) ? 0xffffffffu : 0;
+  int64_t out = len - words;
+  uint32_t *d = digits(out);
+  for (int64_t i = 0; i < out; i++) {
+    uint64_t lo = w[i + words], hi = i + words + 1 < len ? w[i + words + 1] : fill;
+    d[i] = (uint32_t)(((hi << 32) | lo) >> bits);
+  }
+  free(x.d), free(w);
+  return int_of(from_twos(d, out));
+}
+
 // A big integer's decimal digits: chunks of nine, least first, divided out.
 static Str *big_show(int64_t v) {
   Num x = num_of(v);

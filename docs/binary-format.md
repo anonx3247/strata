@@ -180,6 +180,7 @@ StrPart  = 0 Lit(str) | 1 Expr(Expr, spec:option(FmtSpec))
 FmtSpec  = fill:char  align:option(char)  plus:bool  zero:bool  width:uint  precision:option(uint)
 
 BinOp    = 0 +  1 -  2 *  3 /  4 %  5 ==  6 !=  7 <  8 <=  9 >  10 >=  11 &&  12 ||  13 ==>
+         | 14 &  15 |  16 ^  17 <<  18 >>
 UnOp     = 0 -  1 !
 TryKind  = 0 `!` (Result)  1 `?` (Option)
 ```

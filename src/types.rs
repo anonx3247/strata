@@ -3080,6 +3080,12 @@ impl<'a> Checker<'a> {
                         self.expect(&Ty::Bool, &rt, Lazy(|| format!("right of `{}`", op.symbol())));
                         Ty::Bool
                     }
+                    // on integers only (a refined one, `U32`, is an `Int`)
+                    BitAnd | BitOr | BitXor | Shl | Shr => {
+                        self.expect(&Ty::Int, &lt, Lazy(|| format!("left of `{}`", op.symbol())));
+                        self.expect(&Ty::Int, &rt, Lazy(|| format!("right of `{}`", op.symbol())));
+                        Ty::Int
+                    }
                 }
             }
             Expr::Un(UnOp::Neg, x) => {

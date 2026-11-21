@@ -21,6 +21,33 @@ pub fn escape(s: &str) -> String {
     out
 }
 
+/// A refinement or a `where` pattern, where a `|` would end it (it
+/// separates a union's members, a pattern's alternatives): in parentheses
+/// when it has a bit-or outside any brackets.
+fn unpiped(text: String) -> String {
+    let (mut depth, mut quoted, mut escaped) = (0i32, false, false);
+    let cs: Vec<char> = text.chars().collect();
+    for (i, &c) in cs.iter().enumerate() {
+        if quoted {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => quoted = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => quoted = true,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            '|' if depth == 0 && cs.get(i + 1) != Some(&'|') && (i == 0 || cs[i - 1] != '|') => return format!("({text})"),
+            _ => {}
+        }
+    }
+    text
+}
+
 pub fn ty(t: &TypeExpr) -> String {
     match t {
         TypeExpr::Unit => "()".into(),
@@ -28,7 +55,7 @@ pub fn ty(t: &TypeExpr) -> String {
         TypeExpr::Named(n, args) if args.is_empty() => n.to_string(),
         TypeExpr::Named(n, args) => format!("{n}[{}]", args.iter().map(ty).collect::<Vec<_>>().join(", ")),
         TypeExpr::Fn(ps, r) => format!("({}) -> {}", ps.iter().map(ty).collect::<Vec<_>>().join(", "), ty(r)),
-        TypeExpr::Refined(b, p) => format!("{} where {}", ty(b), head(p, 0)),
+        TypeExpr::Refined(b, p) => format!("{} where {}", ty(b), unpiped(head(p, 0))),
         // a refined or function member needs parentheses, or `where` / `->` would take in the rest
         TypeExpr::Union(ms) => ms
             .iter()
@@ -102,7 +129,7 @@ pub fn pat(p: &Pattern) -> String {
         Pattern::Tuple(ps) => format!("({})", ps.iter().map(pat).collect::<Vec<_>>().join(", ")),
         Pattern::Str(s) => format!("{s:?}"),
         Pattern::Bool(b) => b.to_string(),
-        Pattern::Cond(c) => format!("where {}", expr(c, 0)),
+        Pattern::Cond(c) => format!("where {}", unpiped(expr(c, 0))),
         Pattern::Or(ps) => ps.iter().map(pat).collect::<Vec<_>>().join(" | "),
         Pattern::Ctor(c, CtorPat::None) => c.to_string(),
         Pattern::Ctor(c, CtorPat::Positional(ps)) => {
@@ -141,15 +168,19 @@ fn prec(e: &Expr) -> u8 {
             BinOp::Or => 1,
             BinOp::And => 2,
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => 3,
-            BinOp::Add | BinOp::Sub => 5,
-            BinOp::Mul | BinOp::Div | BinOp::Mod => 6,
+            BinOp::BitOr => 5,
+            BinOp::BitXor => 6,
+            BinOp::BitAnd => 7,
+            BinOp::Shl | BinOp::Shr => 8,
+            BinOp::Add | BinOp::Sub => 9,
+            BinOp::Mul | BinOp::Div | BinOp::Mod => 10,
         },
         Expr::Is(..) => 3,
         Expr::Lambda(..) | Expr::Return(..) | Expr::Range(..) => 0,
         Expr::Except(..) | Expr::Or(..) if shorthand(e) => 4,
-        Expr::Except(..) | Expr::Or(..) => 7,
-        Expr::Un(..) | Expr::Mut(..) => 7,
-        _ => 8,
+        Expr::Except(..) | Expr::Or(..) => 11,
+        Expr::Un(..) | Expr::Mut(..) => 11,
+        _ => 12,
     }
 }
 
@@ -246,15 +277,15 @@ pub fn expr(e: &Expr, d: usize) -> String {
             }
             if chain.len() < 2 {
                 let (m, es) = chain[0];
-                return format!("{}.{m}{}", wrap(cur, 8, d), broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d));
+                return format!("{}.{m}{}", wrap(cur, 12, d), broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d));
             }
-            let mut s = wrap(cur, 8, d);
+            let mut s = wrap(cur, 12, d);
             for (m, es) in chain.into_iter().rev() {
                 s += &format!("\n{}.{m}({})", ind(d + 1), args(es, d + 1));
             }
             s
         }
-        Expr::Call(f, es) if !es.is_empty() => format!("{}{}", wrap(f, 8, d), broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d)),
+        Expr::Call(f, es) if !es.is_empty() => format!("{}{}", wrap(f, 12, d), broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d)),
         Expr::List(es) if !es.is_empty() => broken("[", es.iter().map(|a| expr(a, d + 1)).collect(), "]", d),
         Expr::Tuple(es) => broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d),
         Expr::Ctor(c, CtorArgs::Record(fs)) => broken(
@@ -342,9 +373,9 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             }));
             format!("{c} {{ {} }}", parts.join(", "))
         }
-        Expr::Call(f, es) => format!("{}({})", wrap(f, 8, d), args(es, d)),
-        Expr::Method(r, m, es) => format!("{}.{m}({})", wrap(r, 8, d), args(es, d)),
-        Expr::Field(r, f) => format!("{}.{f}", wrap(r, 8, d)),
+        Expr::Call(f, es) => format!("{}({})", wrap(f, 12, d), args(es, d)),
+        Expr::Method(r, m, es) => format!("{}.{m}({})", wrap(r, 12, d), args(es, d)),
+        Expr::Field(r, f) => format!("{}.{f}", wrap(r, 12, d)),
         Expr::Lambda(ps, b) => format!("{} -> {}", lambda_params(ps), expr(b, d)),
         Expr::Bin(op, l, r) => {
             let p = prec(e);
@@ -354,8 +385,8 @@ fn expr_inline(e: &Expr, d: usize) -> String {
                 format!("{} {} {}", wrap(l, p, d), op.symbol(), wrap(r, p + 1, d))
             }
         }
-        Expr::Un(UnOp::Neg, x) => format!("-{}", wrap(x, 7, d)),
-        Expr::Un(UnOp::Not, x) => format!("!{}", wrap(x, 7, d)),
+        Expr::Un(UnOp::Neg, x) => format!("-{}", wrap(x, 11, d)),
+        Expr::Un(UnOp::Not, x) => format!("!{}", wrap(x, 11, d)),
         Expr::Is(x, c) => format!("{} is {c}", wrap(x, 4, d)),
         Expr::If(c, t, f) => {
             let mut s = format!("if {} {}", head(c, d), block(t, d));
@@ -398,7 +429,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             let end = |x: &Option<Box<Expr>>| x.as_ref().map(|x| wrap(x, 1, d)).unwrap_or_default();
             format!("{}{}{}", end(lo), if *inclusive { "..=" } else { ".." }, end(hi))
         }
-        Expr::Index(x, r) => format!("{}[{}]", wrap(x, 8, d), expr(r, d)),
+        Expr::Index(x, r) => format!("{}[{}]", wrap(x, 12, d), expr(r, d)),
         Expr::Comp(kind, elem, gens) => {
             let (open, close) = match kind {
                 CompKind::List => ("[".to_string(), "]"),
@@ -425,7 +456,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Set(tys, xs) => collection("Set", tys, &xs.iter().map(|x| expr(x, d)).collect::<Vec<_>>()),
         Expr::Return(x) if **x == Expr::Unit => "return".into(),
         Expr::Return(x) => format!("return {}", expr(x, d)),
-        Expr::Try(x, k) => format!("{}{}", wrap(x, 8, d), if *k == TryKind::Result { "!" } else { "?" }),
+        Expr::Try(x, k) => format!("{}{}", wrap(x, 12, d), if *k == TryKind::Result { "!" } else { "?" }),
         Expr::Except(x, _, fb) if shorthand(e) => format!("{} !! {}", wrap(x, 5, d), wrap(fb, 4, d)),
         Expr::Or(x, fb) if shorthand(e) => format!("{} ?? {}", wrap(x, 5, d), wrap(fb, 4, d)),
         Expr::Except(_, _, fb) | Expr::Or(_, fb) => {
@@ -435,7 +466,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
                 Expr::Or(x, _) => (x, "or".to_string()),
                 _ => unreachable!(),
             };
-            let head = format!("{} {keyword}", wrap(x, 8, d));
+            let head = format!("{} {keyword}", wrap(x, 12, d));
             // a short fallback stays on the line: `load(p) except { default() }`
             let short = match &**fb {
                 Expr::Block(..) => None,
