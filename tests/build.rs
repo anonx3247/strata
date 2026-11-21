@@ -1277,7 +1277,7 @@ fn regexes_and_shown_functions_compile() {
     let (out, code) = case(&d, "regex", REGEX);
     assert!(code == 101 && out.starts_with("abc: true\nabc_d1: true\nAbc: false\n") && out.contains("does not satisfy `Sku`"), "{out}");
     let (out, code) = case(&d, "bad_regex", "fn main() { print(matches(\"a\", \"(\")) }\n");
-    assert!(code == 101 && out.contains("bad regex: regex parse error"), "{out}");
+    assert!(code == 101 && out.contains("bad regex: unclosed group"), "{out}");
     let (out, code) = case(&d, "shown_functions", SHOWN_FUNCTIONS);
     assert!(code == 0 && out.starts_with("<closure (x) -> …>\nH { name: \"h\", on: <fn twice> }\n"), "{out}");
 }

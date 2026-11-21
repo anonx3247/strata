@@ -538,9 +538,6 @@ pub fn split_trait_call(name: &str) -> Option<(&str, &str)> {
 /// The elaborated program, and the type the checker inferred for each of its
 /// expressions, by node address (in a generic function, with its type
 /// parameters as `Ty::Rigid`). The compiler works from these.
-pub fn elaborate_typed(prog: &Program) -> (crate::resolve::Resolution, HashMap<usize, Ty>) {
-    elaborate_from(crate::resolve::resolve(prog))
-}
 
 /// `elaborate_typed` of a program already resolved (`Checked::compiled`):
 /// resolving it again would qualify its names twice.

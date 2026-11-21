@@ -110,7 +110,6 @@ unsafe extern "C" {
     fn strata_str_repeat();
     fn strata_str_case();
     fn strata_str_is();
-    fn strata_dfa_match();
     fn strata_str_ord();
     fn strata_str_chr();
     fn strata_parse_int();
@@ -217,7 +216,6 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_str_repeat", strata_str_repeat as *const () as usize),
         ("strata_str_case", strata_str_case as *const () as usize),
         ("strata_str_is", strata_str_is as *const () as usize),
-        ("strata_dfa_match", strata_dfa_match as *const () as usize),
         ("strata_str_ord", strata_str_ord as *const () as usize),
         ("strata_str_chr", strata_str_chr as *const () as usize),
         ("strata_parse_int", strata_parse_int as *const () as usize),
