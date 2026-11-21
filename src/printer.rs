@@ -28,7 +28,7 @@ pub fn ty(t: &TypeExpr) -> String {
         TypeExpr::Named(n, args) if args.is_empty() => n.to_string(),
         TypeExpr::Named(n, args) => format!("{n}[{}]", args.iter().map(ty).collect::<Vec<_>>().join(", ")),
         TypeExpr::Fn(ps, r) => format!("({}) -> {}", ps.iter().map(ty).collect::<Vec<_>>().join(", "), ty(r)),
-        TypeExpr::Refined(b, p) => format!("{} where {}", ty(b), expr(p, 0)),
+        TypeExpr::Refined(b, p) => format!("{} where {}", ty(b), head(p, 0)),
         // a refined or function member needs parentheses, or `where` / `->` would take in the rest
         TypeExpr::Union(ms) => ms
             .iter()
@@ -204,6 +204,30 @@ fn broken(open: &str, items: Vec<String>, close: &str, d: usize) -> String {
 }
 
 /// Render an expression, breaking lines so the result stays within ~80 columns.
+/// An expression where the parser reads a `{` as the start of a block, not
+/// of a record literal (`if`, `match`, `while` and `for` subjects, contracts,
+/// refinements): in parentheses when a record literal, `Dict { .. }` or
+/// `Set { .. }` would otherwise come first or after an operator there.
+pub fn head(e: &Expr, d: usize) -> String {
+    if brace_on_spine(e) {
+        format!("({})", expr(e, d))
+    } else {
+        expr(e, d)
+    }
+}
+
+/// Whether `e` has a literal with braces outside every delimiter (call
+/// arguments, indexes, lists and parentheses end the parser's restriction).
+fn brace_on_spine(e: &Expr) -> bool {
+    match e {
+        Expr::Ctor(_, CtorArgs::Record(_) | CtorArgs::Update(..)) | Expr::Dict(..) | Expr::Set(..) => true,
+        Expr::Call(x, _) | Expr::Method(x, _, _) | Expr::Field(x, _) | Expr::Index(x, _) | Expr::Un(_, x) | Expr::Is(x, _) | Expr::Mut(x) | Expr::Try(x, _) | Expr::Return(x) | Expr::Lambda(_, x) => brace_on_spine(x),
+        Expr::Bin(_, l, r) | Expr::Or(l, r) | Expr::Except(l, _, r) => brace_on_spine(l) || brace_on_spine(r),
+        Expr::Range(lo, hi, _) => lo.as_deref().is_some_and(brace_on_spine) || hi.as_deref().is_some_and(brace_on_spine),
+        _ => false,
+    }
+}
+
 pub fn expr(e: &Expr, d: usize) -> String {
     let inline = expr_inline(e, d);
     // a chain whose parts had to break is laid out one item per line
@@ -334,7 +358,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Un(UnOp::Not, x) => format!("!{}", wrap(x, 7, d)),
         Expr::Is(x, c) => format!("{} is {c}", wrap(x, 4, d)),
         Expr::If(c, t, f) => {
-            let mut s = format!("if {} {}", expr(c, d), block(t, d));
+            let mut s = format!("if {} {}", head(c, d), block(t, d));
             match &**f {
                 Expr::Unit => {}
                 Expr::If(..) => s += &format!(" else {}", expr(f, d)),
@@ -344,11 +368,11 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         }
         Expr::Match(s, name, arms) => {
             let as_name = name.as_ref().map(|n| format!(" as {n}")).unwrap_or_default();
-            let mut out = format!("match {}{as_name} {{\n", expr(s, d));
+            let mut out = format!("match {}{as_name} {{\n", head(s, d));
             for a in arms {
                 out += &comments(&a.comments, d + 1);
                 let each = match &a.pat {
-                    Pattern::For(_, x, xs) => format!(" for {} in {}", pat(x), expr(xs, d + 1)),
+                    Pattern::For(_, x, xs) => format!(" for {} in {}", pat(x), head(xs, d + 1)),
                     _ => String::new(),
                 };
                 out += &format!("{}{} => {}{each},\n", ind(d + 1), pat(&a.pat), expr(&a.body, d + 1));
@@ -467,12 +491,12 @@ pub fn block(e: &Expr, d: usize) -> String {
                 }
                 _ => format!("{} = {}", expr(p, d + 1), expr(e, d + 1)),
             },
-            Stmt::While(c, b) => format!("while {} {}", expr(c, d + 1), block(b, d + 1)),
+            Stmt::While(c, b) => format!("while {} {}", head(c, d + 1), block(b, d + 1)),
             Stmt::Loop(b) => format!("loop {}", block(b, d + 1)),
             Stmt::Break => "break".into(),
             Stmt::Continue => "continue".into(),
-            Stmt::For(p, it, b) => format!("for {} in {} {}", pat(p), expr(it, d + 1), block(b, d + 1)),
-            Stmt::ComptimeFor(p, it, b) => format!("comptime for {} in {} {}", pat(p), expr(it, d + 1), block(b, d + 1)),
+            Stmt::For(p, it, b) => format!("for {} in {} {}", pat(p), head(it, d + 1), block(b, d + 1)),
+            Stmt::ComptimeFor(p, it, b) => format!("comptime for {} in {} {}", pat(p), head(it, d + 1), block(b, d + 1)),
             Stmt::Expr(e) => expr(e, d + 1),
             Stmt::Assert(e) => format!("assert {}", expr(e, d + 1)),
             Stmt::Comment(_) => unreachable!(),
@@ -576,7 +600,7 @@ fn trait_text(t: &TraitDecl, bodies: bool) -> String {
         Some(d) => {
             let mut h = format!("derivable({}) trait {}{tp}{sup}", ty(&d.kind), t.name);
             for r in &d.requires {
-                h += &format!("\n  requires {}", expr(r, 1));
+                h += &format!("\n  requires {}", head(r, 1));
             }
             h + " {\n"
         }
@@ -701,10 +725,10 @@ pub fn fn_signature(f: &FnDecl) -> String {
         s = format!("{kw} {}{}{}{ret}", f.name, tp, broken("(", ps, ")", 0));
     }
     for r in &f.requires {
-        s += &format!("\n  requires {}", expr(r, 1));
+        s += &format!("\n  requires {}", head(r, 1));
     }
     for e in &f.ensures {
-        s += &format!("\n  ensures {}", expr(e, 1));
+        s += &format!("\n  ensures {}", head(e, 1));
     }
     if f.terminates {
         s += "\n  terminates";
