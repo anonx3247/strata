@@ -3974,6 +3974,52 @@ fn unions_that_add_nothing_are_refused() {
     assert!(ok && out.contains("warning: `Circel` in `Shape` is a new type (nothing has that name): did you mean `Circle`?") && !out.contains("`Dot`"), "{out}");
 }
 
+/// A union written out renders as its name when its module names that
+/// set (and named subsets as their names); never as a `distinct` type.
+#[test]
+fn unions_render_by_their_names() {
+    let d = tmp("unions-render");
+    let (ok, out) = strata(&["--file", "r.strata", "edit"], &d, Some(RENDER_NAMES));
+    assert!(ok, "{out}");
+    let (ok, text) = strata(&["--file", "r.strata", "render"], &d, None);
+    assert!(ok, "{text}");
+    for want in ["type S2 = A | D\n", "fn f(x: A) -> Int", "fn g(x: S2) -> Int", "fn h(e: Problem) -> Int", "fn k(w: B | D) -> Int"] {
+        assert!(text.contains(want), "{want}: {text}");
+    }
+    // and it reads back as the same program
+    let (ok, out) = strata(&["--file", "r2.strata", "edit"], &d, Some(&text));
+    assert!(ok, "{out}");
+    let (ok, again) = strata(&["--file", "r2.strata", "render"], &d, None);
+    assert!(ok && again == text, "{again}");
+}
+
+const RENDER_NAMES: &str = r##"type B = { x: Int }
+
+type C = { y: Int }
+
+type D = { z: Int }
+
+type A = B | C
+
+type Problem =
+  | Empty
+  | TooBig { max: Int }
+
+distinct type Wrapped = B | D
+
+type S2 = B | C | D
+
+fn f(x: B | C) -> Int = 1
+
+fn g(x: B | C | D) -> Int = 2
+
+fn h(e: Empty | TooBig) -> Int = 3
+
+fn k(w: B | D) -> Int = 4
+
+fn main() { }
+"##;
+
 /// The shapes `std.typing` describes, through `Json`: a recursive type, a
 /// generic one, a union of records, a tuple-shaped variant, `Option` of a
 /// refined alias, a `distinct` type; and a union's members keep their docs.

@@ -710,7 +710,123 @@ pub fn stored_form(p: &Program) -> Program {
 /// `orders.Line` otherwise, or where a local hides `Line`), and a reference
 /// to another module's definition as the parser reads `orders.f(x)`.
 pub fn written_form(p: &Program) -> Program {
-    store(p, Store::Shorten)
+    store(&named_unions(p), Store::Shorten)
+}
+
+/// Unions written out by their names (IDEAS.md, "Sums and unions are one
+/// thing"): a union whose members are a set its module (or the root
+/// module) names is that name (`x: B | C` is `x: A` for `type A = B | C`),
+/// and named subsets of it are their names when they don't overlap (`B | C
+/// | D` is `A | D`). A `distinct` type or a generic one is never used so,
+/// and a definition isn't written as its own name.
+fn named_unions(p: &Program) -> Program {
+    use std::collections::BTreeSet;
+    let module_of_name = |n: &str| crate::names::module_of(n).to_string();
+    // stored names: a definition's own short, references qualified
+    let qual = |d: &Decl, n: Symbol| if d.module.is_empty() { n.to_string() } else { format!("{}.{}", d.module, short(&n)) };
+    let mut aliases: HashMap<String, TypeExpr> = HashMap::default();
+    let mut sums: HashMap<String, Vec<String>> = HashMap::default();
+    for d in &p.decls {
+        let DeclKind::Type(t) = &d.kind else { continue };
+        if t.distinct || !t.params.is_empty() {
+            continue;
+        }
+        match &t.body {
+            TypeBody::Alias(u @ TypeExpr::Union(_)) if t.refinement.is_none() => {
+                aliases.insert(qual(d, t.name), u.clone());
+            }
+            TypeBody::Sum(vs) => {
+                sums.insert(qual(d, t.name), vs.iter().map(|v| match &v.payload {
+                    Payload::Type(x) => crate::printer::ty(x),
+                    _ => qual(d, v.name),
+                }).collect());
+            }
+            _ => {}
+        }
+    }
+    if aliases.is_empty() && sums.values().all(|vs| vs.len() < 2) {
+        return p.clone();
+    }
+    // a type's members, as a set of names
+    fn flat(t: &TypeExpr, aliases: &HashMap<String, TypeExpr>, sums: &HashMap<String, Vec<String>>, depth: usize, out: &mut BTreeSet<String>) {
+        match t {
+            TypeExpr::Union(ms) if depth < 16 => ms.iter().for_each(|m| flat(m, aliases, sums, depth + 1, out)),
+            TypeExpr::Named(n, args) if args.is_empty() && depth < 16 => match (aliases.get(n.as_str()), sums.get(n.as_str())) {
+                (Some(a), _) => flat(a, aliases, sums, depth + 1, out),
+                (_, Some(vs)) => vs.iter().for_each(|v| match aliases.get(v.as_str()).or(None) {
+                    Some(a) => flat(a, aliases, sums, depth + 1, out),
+                    None if sums.contains_key(v.as_str()) => flat(&TypeExpr::Named(Symbol::new(v), vec![]), aliases, sums, depth + 1, out),
+                    None => {
+                        out.insert(v.clone());
+                    }
+                }),
+                _ => {
+                    out.insert(n.to_string());
+                }
+            },
+            other => {
+                out.insert(crate::printer::ty(other));
+            }
+        }
+    }
+    let mut named: Vec<(String, BTreeSet<String>)> = aliases.keys().chain(sums.keys()).map(|n| {
+        let mut set = BTreeSet::new();
+        flat(&TypeExpr::Named(Symbol::new(n), vec![]), &aliases, &sums, 0, &mut set);
+        (n.clone(), set)
+    }).filter(|(_, s)| s.len() >= 2).collect();
+    named.sort();
+    struct Name<'x> {
+        named: &'x [(String, BTreeSet<String>)],
+        aliases: &'x HashMap<String, TypeExpr>,
+        sums: &'x HashMap<String, Vec<String>>,
+        module: String,
+        own: String,
+    }
+    impl VisitMut for Name<'_> {
+        fn ty(&mut self, t: &mut TypeExpr) {
+            walk_ty_mut(self, t);
+            let TypeExpr::Union(ms) = t else { return };
+            let mut set = BTreeSet::new();
+            flat(&TypeExpr::Union(ms.clone()), self.aliases, self.sums, 0, &mut set);
+            let visible: Vec<&(String, BTreeSet<String>)> = self.named.iter().filter(|(n, _)| {
+                let m = crate::names::module_of(n);
+                *n != self.own && (m == self.module || m.is_empty())
+            }).collect();
+            if let Some((n, _)) = visible.iter().find(|(_, s)| *s == set) {
+                *t = TypeExpr::Named(Symbol::new(n), vec![]);
+                return;
+            }
+            // the largest named subsets, if they don't overlap
+            let subs: Vec<&&(String, BTreeSet<String>)> = visible.iter().filter(|(_, s)| s.is_subset(&set) && s.len() < set.len()).collect();
+            let maximal: Vec<&&(String, BTreeSet<String>)> = subs.iter().copied().filter(|(_, s)| !subs.iter().any(|(_, o)| s.is_subset(o) && s.len() < o.len())).collect();
+            if maximal.is_empty() || maximal.iter().enumerate().any(|(i, (_, a))| maximal.iter().skip(i + 1).any(|(_, b)| !a.is_disjoint(b))) {
+                return;
+            }
+            let covered: BTreeSet<String> = maximal.iter().flat_map(|(_, s)| s.iter().cloned()).collect();
+            let mut out: Vec<TypeExpr> = maximal.iter().map(|(n, _)| TypeExpr::Named(Symbol::new(n), vec![])).collect();
+            // the members left, as written
+            for m in ms.iter() {
+                let mut one = BTreeSet::new();
+                flat(m, self.aliases, self.sums, 0, &mut one);
+                if !one.is_subset(&covered) {
+                    out.push(m.clone());
+                }
+            }
+            *t = TypeExpr::Union(out);
+        }
+    }
+    let mut out = p.clone();
+    for d in &mut out.decls {
+        let module = d.module.to_string();
+        let own = match &d.kind {
+            DeclKind::Type(t) => qual(d, t.name),
+            _ => String::new(),
+        };
+        let mut v = Name { named: &named, aliases: &aliases, sums: &sums, module, own };
+        walk_decl_mut(&mut v, &mut d.kind);
+    }
+    let _ = module_of_name;
+    out
 }
 
 fn store(p: &Program, mode: Store) -> Program {
