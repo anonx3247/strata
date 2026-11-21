@@ -105,7 +105,7 @@ fn describe(v: Int | String) -> String {
 }
 ```
 
-**Variants are types.** `type ShapeError = | Empty | TooBig { max: Int }` declares the types `Empty` and `TooBig`, and `ShapeError` is `Empty | TooBig`. A function can take `e: TooBig` (and read `e.max`), or return `Result[Shape, TooBig]`. Constructors still need wrapping (`Err(TooBig { max: 9 })`), so `Result[Int, Int]` stays unambiguous. Since a variant is a type, its name must be unique across the project: no other variant, type or trait in any module may share it.
+**Variants are types.** `type ShapeError = | Empty | TooBig { max: Int }` declares the types `Empty` and `TooBig`, and `ShapeError` is `Empty | TooBig`. A function can take `e: TooBig` (and read `e.max`), or return `Result[Shape, TooBig]`. Constructors still need wrapping (`Err(TooBig { max: 9 })`), so `Result[Int, Int]` stays unambiguous. Since a variant is a type, its name must be unique in its module (another module's type of the same name is told apart by its module, as `geo.Circle`).
 
 **Patterns are sets of values**, and an arm takes what the arms above it left:
 

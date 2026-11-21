@@ -209,21 +209,21 @@ impl<'a> Expander<'a> {
         let v = match t {
             TypeExpr::Named(n, args) => {
                 let args = args.iter().map(|a| self.type_value(a)).collect();
-                Value::Variant(q("NamedType"), Fields::Rec(vec![("name".into(), Value::Str(crate::names::short(n).to_string())), ("args".into(), Value::List(args))]))
+                Value::Variant(q("Named"), Fields::Rec(vec![("name".into(), Value::Str(crate::names::short(n).to_string())), ("args".into(), Value::List(args))]))
             }
             TypeExpr::Refined(b, pred) => {
                 let base = self.type_value(b);
-                Value::Variant(q("RefinedType"), Fields::Rec(vec![("base".into(), base), ("condition".into(), Value::Str(crate::printer::expr(pred, 0)))]))
+                Value::Variant(q("Refined"), Fields::Rec(vec![("base".into(), base), ("condition".into(), Value::Str(crate::printer::expr(pred, 0)))]))
             }
             TypeExpr::Fn(ps, r) => {
                 let ps = ps.iter().map(|a| self.type_value(a)).collect();
                 let r = self.type_value(r);
-                Value::Variant(q("FunctionType"), Fields::Rec(vec![("params".into(), Value::List(ps)), ("result".into(), r)]))
+                Value::Variant(q("Function"), Fields::Rec(vec![("params".into(), Value::List(ps)), ("result".into(), r)]))
             }
-            TypeExpr::Unit => Value::Variant(q("UnitType"), Fields::None),
+            TypeExpr::Unit => Value::Variant(q("Nothing"), Fields::None),
             TypeExpr::Union(ms) => {
                 let ms = ms.iter().map(|a| self.type_value(a)).collect();
-                Value::Variant(q("UnionType"), Fields::Rec(vec![("members".into(), Value::List(ms))]))
+                Value::Variant(q("Union"), Fields::Rec(vec![("members".into(), Value::List(ms))]))
             }
         };
         self.written.insert(json(&v), t.clone());
@@ -290,6 +290,11 @@ impl<'a> Expander<'a> {
             Expr::Method(recv, m, args) if (m == "make" || m == "try_make") && matches!(&**recv, Expr::Var(x) if self.is_known(x)) => {
                 let Expr::Var(x) = &**recv else { unreachable!() };
                 return self.make(x, m == "try_make", args);
+            }
+            // `t.select(v -> test, v -> value)`: for each variant in turn
+            Expr::Method(recv, m, args) if m == "select" && matches!(&**recv, Expr::Var(x) if self.is_known(x)) => {
+                let Expr::Var(x) = &**recv else { unreachable!() };
+                return self.select(x, args);
             }
             Expr::Match(s, None, arms) if matches!(&**s, Expr::Comptime(_)) => {
                 let Expr::Comptime(x) = &**s else { unreachable!() };
@@ -365,9 +370,21 @@ impl<'a> Expander<'a> {
     fn make(&mut self, t: &Symbol, fallible: bool, args: &[Expr]) -> Res<Expr> {
         let [Expr::Lambda(ps, body)] = args else { return Err("`make` takes one function, `f -> e`".into()) };
         let [p] = ps.as_slice() else { return Err("the function given to `make` takes one field".into()) };
-        let Value::Record(_, desc) = self.known[t].clone() else { unreachable!() };
-        let Some((_, Value::List(fields))) = desc.iter().find(|(k, _)| k == "fields") else { return Err("`make` builds a record".into()) };
+        let Value::Record(kind, desc) = self.known[t].clone() else { unreachable!() };
+        let Some((_, Value::List(fields))) = desc.iter().find(|(k, _)| k == "fields") else { return Err("`make` builds a record, or a variant (`v.make(..)` for `v` in `t.select(..)`)".into()) };
+        // a record is built by its type's name; a variant by its own, in the sum's module
         let head = crate::types::texpr_head(&self.self_ty);
+        let variant = kind == q("Variant");
+        let head = if variant {
+            let vname = desc.iter().find_map(|(k, v)| match (k.as_str(), v) {
+                ("name", Value::Str(s)) => Some(s.clone()),
+                _ => None,
+            }).unwrap_or_default();
+            crate::names::qualify(crate::names::module_of(&head), &vname)
+        } else {
+            head.to_string()
+        };
+        let positional = variant && fields.first().is_some_and(|f| matches!(f, Value::Record(_, fd) if fd.iter().any(|(k, v)| k == "name" && *v == Value::Str("0".into()))));
         let mut vals = vec![];
         for fv in fields {
             let Value::Record(_, fd) = fv else { continue };
@@ -386,7 +403,16 @@ impl<'a> Expander<'a> {
             };
             vals.push((Symbol::new(&fname), e?));
         }
-        let ctor = |vals: Vec<(Symbol, Expr)>| Expr::Ctor(Symbol::new(&head), CtorArgs::Record(vals));
+        let ctor = |vals: Vec<(Symbol, Expr)>| {
+            let args = if variant && vals.is_empty() {
+                CtorArgs::None
+            } else if positional {
+                CtorArgs::Positional(vals.into_iter().map(|(_, e)| e).collect())
+            } else {
+                CtorArgs::Record(vals)
+            };
+            Expr::Ctor(Symbol::new(&head), args)
+        };
         if !fallible {
             return Ok(ctor(vals));
         }
@@ -403,6 +429,32 @@ impl<'a> Expander<'a> {
                     Arm { comments: vec![], pat: Pattern::Ctor(Symbol::new("Err"), CtorPat::Positional(vec![Pattern::Bind(err)])), body: Expr::Ctor(Symbol::new("Err"), CtorArgs::Positional(vec![Expr::Var(err)])) },
                 ],
             );
+        }
+        Ok(out)
+    }
+
+    /// `t.select(v -> test, v -> value)` on a sum: `Some(value)` for the first
+    /// variant whose test holds (both specialized with `v` known as it),
+    /// else `None`. The tests run when the program does.
+    fn select(&mut self, t: &Symbol, args: &[Expr]) -> Res<Expr> {
+        let [Expr::Lambda(tp, test), Expr::Lambda(vp, value)] = args else { return Err("`select` takes two functions: `v -> test`, `v -> value`".into()) };
+        let ([tp], [vp]) = (tp.as_slice(), vp.as_slice()) else { return Err("the functions given to `select` take one variant".into()) };
+        let Value::Record(_, desc) = self.known[t].clone() else { unreachable!() };
+        let Some((_, Value::List(variants))) = desc.iter().find(|(k, _)| k == "variants") else { return Err("`select` chooses a variant of a sum type".into()) };
+        let mut out = Expr::Ctor(Symbol::new("None"), CtorArgs::None);
+        for v in variants.iter().rev() {
+            let with = |x: &mut Self, name: Symbol, e: &Expr| -> Res<Expr> {
+                let saved = x.known.insert(name, v.clone());
+                let r = x.expr(e);
+                match saved {
+                    Some(o) => x.known.insert(name, o),
+                    None => x.known.remove(&name),
+                };
+                r
+            };
+            let c = with(self, tp.name, test)?;
+            let b = with(self, vp.name, value)?;
+            out = Expr::If(Box::new(c), Box::new(Expr::Ctor(Symbol::new("Some"), CtorArgs::Positional(vec![b]))), Box::new(out));
         }
         Ok(out)
     }
