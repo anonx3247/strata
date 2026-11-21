@@ -228,6 +228,16 @@ fn brace_on_spine(e: &Expr) -> bool {
     }
 }
 
+/// A name as written: the prelude's methods, which only checked code holds
+/// (`FiniteIterator::std.prelude.len`, in messages), short (`len`).
+fn shown(n: &str) -> std::borrow::Cow<'_, str> {
+    if n.contains(crate::types::PRELUDE_MODULE) {
+        std::borrow::Cow::Owned(crate::types::shown_name(n))
+    } else {
+        std::borrow::Cow::Borrowed(n)
+    }
+}
+
 pub fn expr(e: &Expr, d: usize) -> String {
     let inline = expr_inline(e, d);
     // a chain whose parts had to break is laid out one item per line
@@ -246,11 +256,11 @@ pub fn expr(e: &Expr, d: usize) -> String {
             }
             if chain.len() < 2 {
                 let (m, es) = chain[0];
-                return format!("{}.{m}{}", wrap(cur, 8, d), broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d));
+                return format!("{}.{}{}", wrap(cur, 8, d), shown(m), broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d));
             }
             let mut s = wrap(cur, 8, d);
             for (m, es) in chain.into_iter().rev() {
-                s += &format!("\n{}.{m}({})", ind(d + 1), args(es, d + 1));
+                s += &format!("\n{}.{}({})", ind(d + 1), shown(m), args(es, d + 1));
             }
             s
         }
@@ -318,7 +328,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Str(s) => format!("\"{}\"", escape(s)),
         Expr::Bool(b) => b.to_string(),
         Expr::Unit => "()".into(),
-        Expr::Var(v) => v.to_string(),
+        Expr::Var(v) => shown(v).into_owned(),
         Expr::Hole(h) => format!("?{h}"),
         Expr::List(es) => format!("[{}]", args(es, d)),
         Expr::Ctor(c, CtorArgs::None) => c.to_string(),
@@ -343,7 +353,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             format!("{c} {{ {} }}", parts.join(", "))
         }
         Expr::Call(f, es) => format!("{}({})", wrap(f, 8, d), args(es, d)),
-        Expr::Method(r, m, es) => format!("{}.{m}({})", wrap(r, 8, d), args(es, d)),
+        Expr::Method(r, m, es) => format!("{}.{}({})", wrap(r, 8, d), shown(m), args(es, d)),
         Expr::Field(r, f) => format!("{}.{f}", wrap(r, 8, d)),
         Expr::Lambda(ps, b) => format!("{} -> {}", lambda_params(ps), expr(b, d)),
         Expr::Bin(op, l, r) => {

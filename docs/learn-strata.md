@@ -43,7 +43,14 @@ fn basics() -> Int {
     a := 1
     a + 1
   }
-  back + y + len(greeting) + len(both) + len(msg) + len(sign)
+  // A string isn't counted itself: name the unit (`bytes`, `code_points`,
+  // `graphemes`, each an iterator).
+  back
+    + y
+    + len(greeting.graphemes())
+    + len(both)
+    + len(msg.bytes())
+    + len(sign.code_points())
 }
 
 // ─── 2. Functions ──────────────────────────────────────────────────────────
@@ -64,7 +71,7 @@ fn evens_squared(xs: List[Int]) -> List[Int] {
 }
 
 // A named function can be passed as a value (an overloaded builtin such as
-// `len` needs a lambda: `w -> len(w)`).
+// `len` needs a lambda: `xs -> len(xs)`).
 fn line_totals(lines: List[Line]) -> List[Cents] {
   lines.map(line_total)
 }
@@ -100,8 +107,9 @@ distinct type UserId = String
   where matches(it, "u_[0-9]+")
 
 fn user_number(id: UserId) -> String {
-  // build one with UserId("u_42"); `.value` is the underlying String
-  id.value[2..]
+  // build one with UserId("u_42"); `.value` is the underlying String.
+  // Positions in a string are byte offsets: cut it with byte_slice.
+  byte_slice(id.value, 2, byte_len(id.value))
 }
 
 // ─── 4. Contracts: requires / ensures (`it` is the result) ─────────────────
@@ -184,7 +192,7 @@ fn area(s: Shape) -> Int {
 fn kind_of(v: Int | String) -> String {
   match v {
     Int => f"number {v}",
-    String => f"text of {len(v)}",
+    String => f"text of {len(v.graphemes())}",
   }
 }
 
@@ -227,7 +235,7 @@ type ParseError =
   | NotANumber { text: String }
 
 fn parse_qty(s: String) -> Result[Quantity, ParseError] {
-  if len(trim(s)) == 0 {
+  if trim(s) == "" {
     return Err(Blank)
   }
   match parse_int(trim(s)) {
@@ -248,7 +256,7 @@ fn double_qty(s: String) -> Result[Int, ParseError] {
 }
 
 fn first_upper(words: List[String]) -> Option[String] {
-  Some(to_upper(words.find(w -> len(w) > 0)?))
+  Some(to_upper(words.find(w -> w != "")?))
 }
 
 // Handle it here instead. A Result: `e !! fallback`, or `e except err { … }`.
@@ -263,7 +271,7 @@ fn port(text: String) -> Int {
 }
 
 fn first_long(words: List[String]) -> String {
-  w := words.find(w -> len(w) > 3) or { return "none" }
+  w := words.find(w -> len(w.graphemes()) > 3) or { return "none" }
   to_upper(w)
 }
 
@@ -324,16 +332,18 @@ fn collections(xs: NonEmpty[Int], text: String) -> Int {
   // is NonEmpty). get(xs, i) gives an Option instead. No negative indices.
   head := xs[0]
   maybe := get(xs, 5) ?? 0
-  // Slices take a range and are clamped, as in Python; strings too.
+  // Slices take a range and are clamped, as in Python.
   rest := xs[1..]
-  prefix := text[..3]
+  // A string isn't counted or indexed itself: the unit is named (bytes,
+  // code points or graphemes, each an iterator); its positions are bytes.
+  prefix := text.graphemes()[..3]
   // Comprehensions, with `where` to filter.
   squares := [x * x for x in xs where x > 0]
   grid := [(a, b) for a in 1..=2 for b in ["x", "y"]]
   d := Dict { "tea": 450, "cup": 1200 }
   d2 := insert(d, "pot", 3000)
   price := get(d2, "tea") ?? 0
-  lengths := Dict { w: len(w) for w in split(text, " ") }
+  lengths := Dict { w: len(w.code_points()) for w in split(text, " ") }
   s := Set { 1, 2, 2, 3 }
   empty := Dict[String, Int] {}
   total := fold(xs, 0, (acc, x) -> acc + x)
@@ -360,7 +370,7 @@ trait Priced {
 trait Describe {
   // A contract on a trait method binds every implementation.
   fn describe(self) -> String
-    ensures len(it) > 0
+    ensures it != ""
 }
 
 // Supertraits, default methods, and laws (checked by `strata verify`).

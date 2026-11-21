@@ -636,6 +636,7 @@ declare i1 @strata_str_is(ptr, i64, ptr, i64)
 declare i64 @strata_str_ord(ptr)
 declare i64 @strata_str_byte_len(ptr)
 declare i64 @strata_str_byte_at(ptr, i64)
+declare ptr @strata_str_byte_slice(ptr, i64, i64)
 declare ptr @strata_str_chr(i64)
 declare i1 @strata_parse_int(ptr, ptr)
 declare i1 @strata_parse_float(ptr, ptr)
@@ -6444,6 +6445,7 @@ impl Func<'_, '_> {
             ("ord", [_]) => self.call(&Ty::Int, "@strata_str_ord", &args)?,
             ("byte_len", [_]) => self.call(&Ty::Int, "@strata_str_byte_len", &args)?,
             ("byte_at", [_, Ty::Int]) => self.call(&Ty::Int, "@strata_str_byte_at", &args)?,
+            ("byte_slice", [_, Ty::Int, Ty::Int]) => self.call(&s, "@strata_str_byte_slice", &args)?,
             ("chr", [Ty::Int]) => self.call(&s, "@strata_str_chr", &args)?,
             ("parse_int" | "parse_float", [_]) => {
                 let t = if name == "parse_int" { Ty::Int } else { Ty::Float };

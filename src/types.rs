@@ -72,7 +72,7 @@ type Percentage = Float where 0.0 <= it && it <= 100.0
 /// A list with at least one element.
 type NonEmpty[T] = List[T] where len(it) > 0
 /// A string with at least one character.
-type NonEmptyString = String where len(it) > 0
+type NonEmptyString = String where it != ""
 
 // Sized integers: `Int` with the range of a machine integer. They are checked
 // like any refinement; a compiler can store each in its own width.
@@ -427,9 +427,13 @@ pub const PRELUDE_MODULE: &str = "std.prelude";
 /// (`fold`, not `std.prelude.fold`; `FiniteIterator::len`).
 pub fn shown_name(name: &str) -> String {
     let mut s = name.replace(&format!("{PRELUDE_MODULE}."), "");
-    // a call through a prelude trait, as written (`self.len()`, not `self.FiniteIterator::len()`)
+    // a call through a prelude trait, as written (`self.len()`, not `self.FiniteIterator::len()`;
+    // `len(..)`, not `FiniteIterator::len(..)`)
     for t in prelude_traits() {
         s = s.replace(&format!(".{t}::"), ".");
+        if let Some(rest) = s.strip_prefix(&format!("{t}::")) {
+            s = rest.to_string();
+        }
     }
     s
 }
@@ -544,7 +548,6 @@ pub fn prelude() -> &'static Program {
 /// Builtin functions and their type schemes.
 pub const BUILTINS: &[Builtin] = &[
     Builtin::total("len", "A", "(List[A]) -> Int"),
-    Builtin::total("len", "", "(String) -> Int"),
     Builtin::total("len", "K,V", "(Dict[K, V]) -> Int"),
     Builtin::total("len", "A", "(Set[A]) -> Int"),
     Builtin::total("contains", "A", "(Set[A], A) -> Bool"),
@@ -605,14 +608,16 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin::total("max", "", "(Float, Float) -> Float"),
     Builtin::new("matches", "", "(String, String) -> Bool"),
     Builtin::total("starts_with", "", "(String, String) -> Bool"),
-    // strings are UTF-8 and indexed by character
+    // strings are UTF-8: positions in them are byte offsets (`index_of`,
+    // `byte_slice`); counting and indexing name a unit (`s.graphemes()[i]`)
     Builtin::new("ends_with", "", "(String, String) -> Bool"),
     Builtin::new("chars", "", "(String) -> List[String]"),
-    Builtin::total("get", "", "(String, Int) -> Option[String]"),
-    Builtin::new("at", "", "(String, Int) -> String"),
-    Builtin::new("slice", "", "(String, Int, Int) -> String"),
     Builtin::new("slice", "A", "(List[A], Int, Int) -> List[A]"),
+    // the byte offset of the first match ("" is found at 0)
     Builtin::new("index_of", "", "(String, String) -> Option[Int]"),
+    // the bytes from offset `a` to `b`, clamped to the string; an offset inside a
+    // character moves back to its start
+    Builtin::total("byte_slice", "", "(String, Int, Int) -> String"),
     Builtin::new("replace", "", "(String, String, String) -> String"),
     Builtin::new("lines", "", "(String) -> List[String]"),
     Builtin::new("repeat", "", "(String, Int) -> String"),
@@ -924,8 +929,9 @@ fn rewrite(program: &mut Program, env: &Env, targets: Vec<(usize, Target)>, type
                 f.params.push(Param { name: Symbol::from(type_arg(&p)), ty: TypeExpr::Named(TYPE_ARG.into(), vec![TypeExpr::Named(Symbol::from(p.as_str()), vec![])]), mutable: false, comptime: false });
             }
         }
-        // children first, so a node's address is the one the checker saw when it is rewritten
-        decl_exprs_mut_post(&mut d.kind, |e| {
+        // children first, so a node's address is the one the checker saw when it is
+        // rewritten; refinements written in types too (they run when checked)
+        decl_exprs_mut_post_typed(&mut d.kind, |e| {
             let at = e as *const Expr as usize;
             let wrap = selfs.get(&at).cloned();
             rewrite_node(e, targets.get(&at), types);
@@ -2128,6 +2134,26 @@ impl<'a> Checker<'a> {
         (found.len() == 1).then(|| found.remove(0))
     }
 
+    /// `len(s)`, `s[i]` (`at`), `get(s, i)` or `s[a..b]` (`slice`) on a `String`:
+    /// refused, with what to write instead. A string isn't counted or indexed
+    /// itself: the unit is named, and positions in it are byte offsets.
+    fn string_position(&mut self, n: &Symbol, args: &[&Expr]) -> Option<String> {
+        if !matches!(n.as_str(), "len" | "at" | "get" | "slice") || self.lookup(n.sym()).is_some() || self.env.fns.contains_key(n) {
+            return None;
+        }
+        let errs = self.errors.len();
+        let t = self.infer(args.first()?);
+        self.errors.truncate(errs);
+        if self.resolve(&t) != Ty::Str {
+            return None;
+        }
+        Some(match n.as_str() {
+            "len" => "a `String` has no `len`: name the unit, `len(s.bytes())`, `len(s.code_points())` or `len(s.graphemes())`".to_string(),
+            "slice" => "a `String` isn't sliced by a range: by byte offsets, `byte_slice(s, a, b)` (as `index_of` gives them), or by a unit, `join(s.graphemes()[a..b], \"\")`".to_string(),
+            _ => "a `String` isn't indexed: name the unit, `s.graphemes()[i]` (or `s.code_points()`, `s.bytes()`)".to_string(),
+        })
+    }
+
     /// `set(it)` / `dict(it)` (a set or dict comprehension) and `join(it, sep)`
     /// on a finite iterator: the prelude's `set_of` / `dict_of` / `join_of`,
     /// which collect it.
@@ -3016,6 +3042,15 @@ impl<'a> Checker<'a> {
                     if let Some(t) = self.collect_call(n, args, e as *const Expr as usize) {
                         return t;
                     }
+                    if let Some(msg) = self.string_position(n, args) {
+                        self.err(msg);
+                        // what the call gave before, so the rest is checked as written
+                        return match n.as_str() {
+                            "len" => Ty::Int,
+                            "get" => Ty::Con("Option".into(), vec![Ty::Str]),
+                            _ => Ty::Str,
+                        };
+                    }
                     if ITERATOR_BUILTINS.contains(&n.as_str()) && self.lookup(n.sym()).is_none() && !self.env.fns.contains_key(n) {
                         if let Some(&recv) = args.first() {
                             if let Some((t, mq)) = self.implemented_method(recv, n) {
@@ -3064,6 +3099,16 @@ impl<'a> Checker<'a> {
                 self.call_with(ft, args, &what, &muts)
             }
             Expr::Method(recv, m, args) => {
+                // `s.len()`, `s.get(i)` on a `String`: refused as the calls are
+                let all: Vec<&Expr> = std::iter::once(&**recv).chain(args.iter()).collect();
+                if let Some(msg) = self.string_position(m, &all) {
+                    self.err(msg);
+                    return match m.as_str() {
+                        "len" => Ty::Int,
+                        "get" => Ty::Con("Option".into(), vec![Ty::Str]),
+                        _ => Ty::Str,
+                    };
+                }
                 self.dyn_self_args(recv, m, args);
                 let ra = &**recv as *const Expr as usize;
                 self.recv_want.insert(ra);
