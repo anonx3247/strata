@@ -200,8 +200,9 @@ pub fn compile_traced(prog: &Program, entry: &str) -> Res<String> {
 /// What a compilation starts from.
 enum Entry<'e> {
     Main(&'e str),
-    /// The tests, but those named here.
-    Tests(&'e [String]),
+    /// The tests, but those named here; with `true`, also those of what the
+    /// program imports (std, dependencies), not only its own.
+    Tests(&'e [String], bool),
     Fuzz(&'e [FuzzTarget]),
     /// std's functions to precompile (`jit::std_library`): only they are exported.
     Library(&'e [String]),
@@ -289,13 +290,16 @@ pub fn compile_fuzz(prog: &Program, targets: &[FuzzTarget]) -> Res<String> {
 
 /// The LLVM IR of a program's `test` blocks: a function per test
 /// (`@"strata.test.N"`, taking and returning nothing), and their names.
-pub fn compile_tests(prog: &Program) -> Res<(String, Vec<String>)> {
-    compile_for(prog, Entry::Tests(&[]))
+/// Only the program's own tests (its files'), unless `with_deps`: what it
+/// imports is tested on its own (std with `--file std`), and compiled and
+/// verified there.
+pub fn compile_tests(prog: &Program, with_deps: bool) -> Res<(String, Vec<String>)> {
+    compile_for(prog, Entry::Tests(&[], with_deps))
 }
 
 /// `compile_tests`, leaving out the tests named in `skip`.
-pub fn compile_tests_except(prog: &Program, skip: &[String]) -> Res<(String, Vec<String>)> {
-    compile_for(prog, Entry::Tests(skip))
+pub fn compile_tests_except(prog: &Program, skip: &[String], with_deps: bool) -> Res<(String, Vec<String>)> {
+    compile_for(prog, Entry::Tests(skip, with_deps))
 }
 
 fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
@@ -454,10 +458,14 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
                 comptime.push((sym_impls(name, &[], &[]), t));
             }
         }
-        Entry::Tests(skip) => {
-            // each test, a function of its own (no frame of its own on the call stack)
-            for d in &resolved.program.decls {
+        Entry::Tests(skip, with_deps) => {
+            // each test, a function of its own (no frame of its own on the call stack);
+            // the program's own definitions come first, what it imports after them
+            for (i, d) in resolved.program.decls.iter().enumerate() {
                 let DeclKind::Test(t) = &d.kind else { continue };
+                if !with_deps && i >= prog.decls.len() {
+                    continue;
+                }
                 if skip.iter().any(|s| s == t.name.as_str()) {
                     continue;
                 }

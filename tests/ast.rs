@@ -379,8 +379,8 @@ fn bad_input_is_an_error_not_a_crash() {
 /// against the `sha2` crate: every length from 0 to 200 bytes (each padding
 /// case, one to four blocks), longer ones around block and power-of-two
 /// edges, inputs of all zeros and all ones, and 20,000 `a`s. FIPS 180's
-/// examples are a test of the module, run by `strata --file std test` (and
-/// not by other programs' `strata test`).
+/// examples are a test of the module, run by `strata --file std test` and
+/// `--with-deps`, not by other projects' `strata test`.
 #[test]
 fn sha256_agrees_with_the_sha2_crate() {
     use sha2::{Digest, Sha256};
@@ -438,5 +438,7 @@ fn sha256_agrees_with_the_sha2_crate() {
     save(&file, "use std.ast.binary.{version}\n\ntest \"mine\" {\n  assert version() == 1\n}\n");
     let out = run(&["--file", &file.to_string_lossy(), "test"]);
     assert_eq!(out, "✓ mine\n\n1 passed, 0 failed\n", "a program's tests are its own, not std's");
+    let out = run(&["--file", &file.to_string_lossy(), "test", "--with-deps"]);
+    assert!(out.contains("✓ std.ast.binary: sha256 gives FIPS 180's examples") && out.contains("2 passed, 0 failed"), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }

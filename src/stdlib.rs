@@ -95,8 +95,7 @@ fn run_time_pattern(d: &crate::ast::DeclKind) -> bool {
 }
 
 /// `p` with the standard library added after its own definitions, if it uses
-/// it and does not already contain it (when `std/` itself is being checked),
-/// leaving out std's tests.
+/// it and does not already contain it (when `std/` itself is being checked).
 pub fn with_std(p: &Program) -> Option<Program> {
     use crate::ast::DeclKind;
     // (`matches` is std.regex's, compiled; `s.graphemes()` std.unicode's)
@@ -115,10 +114,8 @@ pub fn with_std(p: &Program) -> Option<Program> {
     if !uses || has_std {
         return None;
     }
-    // without std's tests: std is checked, verified and tested on its own
-    // (`--file std`), and precompiled; another program's tests are its own
     let mut out = p.clone();
-    out.decls.extend(program().decls.iter().filter(|d| !matches!(d.kind, DeclKind::Test(_))).cloned());
+    out.decls.extend(program().decls.iter().cloned());
     Some(out)
 }
 
