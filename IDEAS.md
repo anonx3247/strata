@@ -648,6 +648,40 @@ Still open: **type map as a side panel** instead of a full tab. The user suggest
 
 Relations (decided): a definition has **dependencies** (what it mentions) and **references** (what mentions it). Implementing a trait is a separate relation, never a reference or a dependency: an `impl T for X` block is listed under *Implements* on `X` and *Implementations* on `T`, and its own trait and type are shown as *Trait* / *For*. The snapshot carries `deps`, `refs`, `impls` and `impl_of`. The type map shows dependency edges by default; *implementations* and *refinement types* are opt-in. There are no effects and no functions in the type map. The user wondered about a traits-only view, showing how traits work together; not decided.
 
+## The site: Strata, presented (built, `site/`)
+- **Slides, not a scrolling page** (user, 2026-11-21): one full view per step, ← → (or space) through each slide's steps and on to the next; the address names the slide and step (`#session/5`). It replaced the long page whose ← → only worked over a stepper on screen.
+- **No embedded viewers in the presentation** (user, 2026-11-21): instead, code typed out as it is written, beside a graph of the whole codebase (definitions in columns by how deep their dependencies go, edges for uses) that shows what changed, what must be re-checked, holes, verdicts and counterexamples. The docs keep their tour of the real viewer (Tools → The viewer), since that page documents the viewer itself.
+- **The thread** (user, 2026-11-21):
+  1. The problem: how an agent works in a codebase of text files today (animated): mapping it with searches, editing lines in many files, finding out what broke, writing hundreds of tests, diffs nobody reads.
+  2. Three ideas: types as contracts, proving over testing, the code is the AST.
+  3. Verification first:
+     - contracts spelled out (refinements, `requires` / `ensures`, what the solver checks);
+     - loops and termination: measures for recursion, bounds for `while`; loop invariants are not built yet (the verifier fuzzes what would need one), shown as the next step;
+     - tests that miss a detail, against one line;
+     - many tests against one `ensures`;
+     - fuzzing as many tests at once;
+     - verdicts;
+     - mocks (the keyword, so the slides say "mock", never "fake");
+     - side effects assumed so the rest is proven (capabilities, `extern c`);
+     - building a piece at a time (only the signature matters, a body change stays there, holes).
+  4. The code is the AST:
+     - text → tokens → tree → graph → execution (animated);
+     - Strata stores the graph;
+     - structural diffs (a long diff scrolling fast, then one rename);
+     - changes following the graph (a stricter precondition, then holes);
+     - several agents at once: every change is checked, and merges pair definitions, so they don't conflict;
+     - views of just what an agent needs;
+     - editing through text (parsed into a tree, checked, rendered back).
+  5. More of the language, one compact slide each, recorded:
+     - algebraic data types (variants, `Option` / `Result`, `match` with `where`, a non-exhaustive match refused);
+     - traits (as in Rust, composition over inheritance);
+     - value semantics with reference counting, and `mut` visible at declarations and calls (a call without it refused);
+     - the everyday syntax;
+     - `comptime` (tables computed while compiling), with derive built on it (CLI, JSON both ways).
+  - Each section opens with its title, which then moves out of the way.
+  - No history of the page, nothing about unmerged branches, and wording without the usual AI idioms (claudisms.ai).
+- **Everything shown is recorded** by `site/build.mjs` from the real CLI, the new-feature slides included (small packages stored with `strata edit`, so a snippet that stops checking breaks the build).
+
 ## Known gaps
 
 - The interpreter (`--interpret`) doesn't know an impl's type parameters in a `mut self` method reached through a generic function (`T.zero()` in `impl[T: Zero] Iterator[T] for Padded[T]`, called from `collect[T, I: Iterator[T]]`: "the type `T` is not known here"). Compiled code handles it; per the rule under "Retiring the interpreter", the interpreter isn't fixed. (Methods on a generic impl's type parameters, `T.empty()` / `T.decode(j)`, work since #126.)
