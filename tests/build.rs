@@ -1690,7 +1690,7 @@ fn impl_type_parameters_compile() {
         return;
     }
     let d = tmp("impl-statics");
-    for (name, prog, want) in [("statics", json_case::STATICS, json_case::STATICS_OUTPUT), ("builtins", json_case::BUILTINS, json_case::BUILTINS_OUTPUT), ("text", json_case::TEXT, json_case::TEXT_OUTPUT), ("self_methods", json_case::SELF_METHODS, json_case::SELF_METHODS_OUTPUT), ("generic_derive", json_case::GENERIC_DERIVE, json_case::GENERIC_DERIVE_OUTPUT), ("option_option", json_case::OPTION_OPTION, json_case::OPTION_OPTION_OUTPUT), ("root_builtin_name", json_case::ROOT_BUILTIN_NAME, json_case::ROOT_BUILTIN_NAME_OUTPUT), ("refined", json_case::REFINED, json_case::REFINED_OUTPUT)] {
+    for (name, prog, want) in [("statics", json_case::STATICS, json_case::STATICS_OUTPUT), ("builtins", json_case::BUILTINS, json_case::BUILTINS_OUTPUT), ("text", json_case::TEXT, json_case::TEXT_OUTPUT), ("self_methods", json_case::SELF_METHODS, json_case::SELF_METHODS_OUTPUT), ("generic_derive", json_case::GENERIC_DERIVE, json_case::GENERIC_DERIVE_OUTPUT), ("option_option", json_case::OPTION_OPTION, json_case::OPTION_OPTION_OUTPUT), ("root_builtin_name", json_case::ROOT_BUILTIN_NAME, json_case::ROOT_BUILTIN_NAME_OUTPUT), ("refined", json_case::REFINED, json_case::REFINED_OUTPUT), ("refined_more", json_case::REFINED_MORE, json_case::REFINED_MORE_OUTPUT)] {
         let (out, code) = case(&d, name, prog);
         assert_eq!((out.as_str(), code), (want, 0));
     }

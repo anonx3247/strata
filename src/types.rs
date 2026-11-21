@@ -751,8 +751,8 @@ impl<'a> Checker<'a> {
                 None => t.clone(),
             },
             // a refined alias is its base to every check
-            Ty::Con(n, args) if args.is_empty() && refined_alias(self.env, *n) => {
-                let b = alias_base(self.env, *n);
+            Ty::Con(n, args) if refined_alias(self.env, *n) => {
+                let b = alias_base(self.env, *n, args);
                 self.resolve(&b)
             }
             Ty::Con(n, args) => Ty::Con(n.clone(), args.iter().map(|a| self.resolve(a)).collect()),
@@ -1041,10 +1041,11 @@ impl<'a> Checker<'a> {
                                 // a refined alias (`Positive`) keeps its name: it is its base
                                 // to every check (`resolve` expands it), and what the code is
                                 // given when it runs (`T` is `Positive`, not `Int`)
-                                if td.params.is_empty() && refined_alias(self.env, n.sym()) {
+                                if refined_alias(self.env, n.sym()) && td.params.len() == largs.len() {
                                     let a = a.clone();
-                                    let _ = self.lower(&a, &HashMap::default());
-                                    return Ty::Con(n.sym(), vec![]);
+                                    let sub: HashMap<Symbol, Ty> = td.params.iter().cloned().zip(largs.iter().cloned()).collect();
+                                    let _ = self.lower(&a, &sub);
+                                    return Ty::Con(n.sym(), largs);
                                 }
                                 let sub: HashMap<Symbol, Ty> = td.params.iter().cloned().zip(largs).collect();
                                 let a = a.clone();
@@ -1819,6 +1820,13 @@ impl<'a> Checker<'a> {
             (t, TypeRef::Con(x.to_string(), vec![]), k)
         };
         if check {
+            // `Self.check(x)` in an impl: the type the method was called on, which
+            // may be a refined alias of the impl's (`Many[Int]` for `List[T]`)
+            if x == "Self" && self.self_ty.is_some() && !matches!(self.self_ty, Some(Ty::Rigid(_))) {
+                self.targets.push((site, Target::Static(CHECK.to_string(), TypeRef::Param("Self".into()))));
+                let result = Ty::Con("Result".into(), vec![Ty::Unit, Ty::Str]);
+                return Some(Ty::Fn(vec![ty], Box::new(result)));
+            }
             self.static_types.push((site, CHECK.to_string(), ty.clone()));
             let result = Ty::Con("Result".into(), vec![Ty::Unit, Ty::Str]);
             return Some(Ty::Fn(vec![ty], Box::new(result)));
@@ -3858,18 +3866,19 @@ pub fn refined_alias(env: &Env, n: Symbol) -> bool {
 
 /// The type a refined alias stands for, without its refinements (`Int` for
 /// `Positive`).
-pub fn alias_base(env: &Env, n: Symbol) -> Ty {
-    fn low(env: &Env, t: &TypeExpr, depth: usize) -> Ty {
+pub fn alias_base(env: &Env, n: Symbol, args: &[Ty]) -> Ty {
+    fn low(env: &Env, t: &TypeExpr, vars: &HashMap<Symbol, Ty>, depth: usize) -> Ty {
         if depth > 32 {
             return Ty::Unit;
         }
         match t {
             TypeExpr::Unit => Ty::Unit,
-            TypeExpr::Refined(b, _) => low(env, b, depth + 1),
-            TypeExpr::Union(ms) => Ty::Union(ms.iter().map(|m| low(env, m, depth + 1)).collect()),
-            TypeExpr::Fn(ps, r) => Ty::Fn(ps.iter().map(|p| low(env, p, depth + 1)).collect(), Box::new(low(env, r, depth + 1))),
+            TypeExpr::Refined(b, _) => low(env, b, vars, depth + 1),
+            TypeExpr::Union(ms) => Ty::Union(ms.iter().map(|m| low(env, m, vars, depth + 1)).collect()),
+            TypeExpr::Fn(ps, r) => Ty::Fn(ps.iter().map(|p| low(env, p, vars, depth + 1)).collect(), Box::new(low(env, r, vars, depth + 1))),
+            TypeExpr::Named(n, args) if args.is_empty() && vars.contains_key(n) => vars[n].clone(),
             TypeExpr::Named(n, args) => {
-                let args: Vec<Ty> = args.iter().map(|a| low(env, a, depth + 1)).collect();
+                let args: Vec<Ty> = args.iter().map(|a| low(env, a, vars, depth + 1)).collect();
                 match n.as_str() {
                     "Int" => Ty::Int,
                     "Float" => Ty::Float,
@@ -3877,9 +3886,10 @@ pub fn alias_base(env: &Env, n: Symbol) -> Ty {
                     "String" => Ty::Str,
                     "Unit" => Ty::Unit,
                     _ => match env.types.get(n) {
-                        Some(td) if !td.distinct && td.params.is_empty() && matches!(td.body, TypeBody::Alias(_)) => {
+                        Some(td) if !td.distinct && td.params.len() == args.len() && matches!(td.body, TypeBody::Alias(_)) => {
                             let TypeBody::Alias(a) = &td.body else { unreachable!() };
-                            low(env, a, depth + 1)
+                            let sub: HashMap<Symbol, Ty> = td.params.iter().cloned().zip(args).collect();
+                            low(env, a, &sub, depth + 1)
                         }
                         _ => Ty::Con(*n, args),
                     },
@@ -3887,9 +3897,15 @@ pub fn alias_base(env: &Env, n: Symbol) -> Ty {
             }
         }
     }
-    match env.types.get(&n).map(|td| &td.body) {
-        Some(TypeBody::Alias(a)) => low(env, a, 0),
-        _ => Ty::Unit,
+    match env.types.get(&n) {
+        Some(td) => match &td.body {
+            TypeBody::Alias(a) => {
+                let vars: HashMap<Symbol, Ty> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+                low(env, a, &vars, 0)
+            }
+            _ => Ty::Unit,
+        },
+        None => Ty::Unit,
     }
 }
 

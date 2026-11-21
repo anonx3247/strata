@@ -967,8 +967,8 @@ impl<'a> Module<'a> {
     fn repr(&self, t: &Ty) -> Res<Ty> {
         Ok(match t {
             // a refined alias (`Positive`, kept by name in a type argument): its base
-            Ty::Con(n, args) if args.is_empty() && crate::types::refined_alias(self.env, *n) => {
-                let base = crate::types::alias_base(self.env, *n);
+            Ty::Con(n, args) if crate::types::refined_alias(self.env, *n) => {
+                let base = crate::types::alias_base(self.env, *n, args);
                 self.repr(&base)?
             }
             Ty::Con(n, args) if self.is_distinct(n) => {
@@ -1697,7 +1697,7 @@ impl<'m, 'a> Func<'m, 'a> {
     /// argument, which says which refinements its values have.
     fn lower_named(&self, t: &TypeExpr) -> Res<Ty> {
         match t {
-            TypeExpr::Named(n, a) if a.is_empty() && crate::types::refined_alias(self.m.env, *n) => Ok(Ty::Con(*n, vec![])),
+            TypeExpr::Named(n, a) if crate::types::refined_alias(self.m.env, *n) => Ok(Ty::Con(*n, a.iter().map(|x| self.lower_named(x)).collect::<Res<_>>()?)),
             TypeExpr::Named(_, a) if !a.is_empty() => match self.lower(t)? {
                 Ty::Con(h, la) if la.len() == a.len() => Ok(Ty::Con(h, a.iter().map(|x| self.lower_named(x)).collect::<Res<_>>()?)),
                 other => Ok(other),
@@ -3105,7 +3105,9 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             Ty::Con(l, _) if l == "List" => {
                 // the header holds the buffer; the buffer its elements up to `used`
-                let et = args[0].clone();
+                // (a list whose element type isn't known, as in a generic impl
+                // fuzzed at its head: nothing it holds is counted)
+                let et = args.first().cloned().unwrap_or(Ty::Unit);
                 h.emit("%bp = getelementptr i8, ptr %a, i64 8".into());
                 h.emit("%buf = load ptr, ptr %bp".into());
                 h.emit("call void @strata_free(ptr %a)".into());
@@ -4060,10 +4062,15 @@ impl<'m, 'a> Func<'m, 'a> {
                 _ => bool_v("true"),
             };
             let why = match &t {
-                Ty::Con(n, a) if a.is_empty() && crate::types::refined_alias(self.m.env, *n) => {
+                Ty::Con(n, _) if crate::types::refined_alias(self.m.env, *n) => {
                     let td = &self.m.env.types[n];
                     let pred = td.refinement.clone().or_else(|| if let TypeBody::Alias(TypeExpr::Refined(_, p)) = &td.body { Some((**p).clone()) } else { None });
                     match pred {
+                        // a refinement written as a type argument: as written
+                        Some(p) if n.as_str().starts_with(crate::desugar::WHERE) => match &td.body {
+                            TypeBody::Alias(a) => format!("does not satisfy `{} where {}`", crate::printer::ty(a), crate::printer::expr(&p, 0)),
+                            _ => format!("does not satisfy `{}`", crate::names::short(n)),
+                        },
                         Some(p) => format!("does not satisfy `{}` (where {})", crate::names::short(n), crate::printer::expr(&p, 0)),
                         None => format!("does not satisfy `{}`", crate::names::short(n)),
                     }
@@ -4071,6 +4078,13 @@ impl<'m, 'a> Func<'m, 'a> {
                 t => format!("does not satisfy `{}`", key(t)),
             };
             let rt = Ty::Con("Result".into(), vec![Ty::Unit, Ty::Str]);
+            // (a collection whose element type isn't known, as in a generic impl
+            // fuzzed at its head, has nothing to check or show)
+            let unknown = |t: &Ty| matches!(t, Ty::Con(c, a) if a.is_empty() && matches!(c.as_str(), "List" | "Set" | "Dict"));
+            if unknown(&t) || unknown(&v.0) {
+                let empty = self.m.string("");
+                return self.call_fn(&prelude("check_result"), vec![bool_v("true"), (Ty::Str, empty.clone()), (Ty::Str, empty)], Some(rt));
+            }
             let shown = self.json(&v)?;
             let shown = self.temp((Ty::Str, shown));
             let why = self.m.string(&why);
@@ -4333,7 +4347,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let head = Module::head(&recv).ok_or(format!("`{name}` on a `{}`", key(&recv)))?;
         // a refined alias (`Positive`) has its base type's methods
         let head = match &recv {
-            Ty::Con(n, a) if a.is_empty() && crate::types::refined_alias(self.m.env, *n) => Module::head(&self.m.repr(&recv)?).unwrap_or(head),
+            Ty::Con(n, _) if crate::types::refined_alias(self.m.env, *n) => Module::head(&self.m.repr(&recv)?).unwrap_or(head),
             _ => head,
         };
         if self.m.traits.contains_key(&Symbol::new(&head)) {
