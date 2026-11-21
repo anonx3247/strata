@@ -3883,6 +3883,67 @@ fn main() {
 }
 "##;
 
+/// A named union's `impl`s and methods: for a value typed by the union (or
+/// by the same set written out), the union's; a member's own for a member.
+#[test]
+fn named_unions_have_impls() {
+    let d = tmp("unions-impls");
+    let (ok, out) = strata(&["--file", "u.strata", "edit"], &d, Some(UNION_IMPLS));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "u.strata"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out, "circle 1\n3\ncircle 1\nsquare 2\n4\nsquare 2\ndot\n0\ndot\na circle on its own\ncircle 2\n");
+}
+
+const UNION_IMPLS: &str = r##"trait Show {
+  fn show(self) -> String
+}
+
+type Circle = { r: Int }
+
+type Shape = Circle | Square { side: Int } | Dot
+
+impl Show for Shape {
+  fn show(self) -> String {
+    match self {
+      Circle => f"circle {self.r}",
+      Square => f"square {self.side}",
+      Dot => "dot",
+    }
+  }
+}
+
+impl Show for Circle {
+  fn show(self) -> String = "a circle on its own"
+}
+
+impl Shape {
+  fn area(self) -> Int {
+    match self {
+      Circle => 3 * self.r * self.r,
+      Square => self.side * self.side,
+      Dot => 0,
+    }
+  }
+}
+
+fn describe[T: Show](x: T) -> String = x.show()
+
+fn shapes() -> List[Shape] = [Circle { r: 1 }, Square { side: 2 }, Dot]
+
+fn written(x: Circle | Square | Dot) -> String = x.show()
+
+fn main() {
+  for s in shapes() {
+    print(s.show())
+    print(s.area())
+    print(describe(s))
+  }
+  print(Circle { r: 5 }.show())
+  print(written(Circle { r: 2 }))
+}
+"##;
+
 /// The shapes `std.typing` describes, through `Json`: a recursive type, a
 /// generic one, a union of records, a tuple-shaped variant, `Option` of a
 /// refined alias, a `distinct` type; and a union's members keep their docs.

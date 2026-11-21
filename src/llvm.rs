@@ -1151,6 +1151,28 @@ impl<'a> Module<'a> {
         !self.nominal(&self.repr(m).unwrap_or(Ty::Unit))
     }
 
+    /// The named union a union type is (`Shape` for `Circle | Square`), as
+    /// the checker finds it (`Checker::union_name`): its methods are its own.
+    fn union_name(&self, t: &Ty) -> Option<String> {
+        // a sum counts as its variants (`Circle | Shape$own` is `Circle | Square | Dot`)
+        let key = |ms: Vec<Ty>| {
+            let mut k: Vec<String> = ms.iter().flat_map(|m| match self.ctors_of(m) {
+                cs if cs.is_empty() => vec![key(m)],
+                cs => cs,
+            }).collect();
+            k.sort();
+            k.dedup();
+            k
+        };
+        let want = key(self.members(t));
+        if want.len() < 2 {
+            return None;
+        }
+        let mut names: Vec<&Symbol> = self.env.types.iter().filter(|(_, td)| crate::types::union_alias(td)).map(|(n, _)| n).collect();
+        names.sort();
+        names.into_iter().find(|n| self.lower(&TypeExpr::Named(**n, vec![]), &HashMap::default()).is_ok_and(|u| key(self.members(&u)) == want)).map(|n| n.to_string())
+    }
+
     /// The members of a union type (itself, for any other type).
     fn members(&self, t: &Ty) -> Vec<Ty> {
         match self.repr(t) {
@@ -4350,6 +4372,10 @@ impl<'m, 'a> Func<'m, 'a> {
         if self.m.env.is_method(Symbol::new(name)) {
             if let Some(recv) = vs.first().map(|v| v.0.clone()) {
                 if matches!(self.m.repr(&recv)?, Ty::Union(_)) {
+                    // a named union's own implementation, else each member's
+                    if let Some(h) = self.m.union_name(&recv).filter(|h| self.m.resolve_method(name, h).is_some_and(|(tr, _)| self.m.impl_of(&tr, h).is_some())) {
+                        return self.method_target(name, recv, h, vs, hint, &places);
+                    }
                     return self.call_on_union(name, vs, hint, &places);
                 }
                 if self.is_dyn(&recv) || Module::head(&recv).is_some_and(|h| self.m.resolve_method(name, &h).is_some() || self.m.ctors_of(&recv).iter().any(|c| self.m.resolve_method(name, c).is_some())) {
