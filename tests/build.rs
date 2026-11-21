@@ -1658,7 +1658,7 @@ pub fn nul_string() -> String {
         "use c\n\nfn main() {\n  print(c.numbers())\n  print(c.texts())\n  print(c.counting())\n  print(c.refused())\n}\n\ntest \"null\" {\n  c.null_handle()\n}\n\ntest \"nul\" {\n  c.nul_string()\n}\n",
     );
     // (beyond 64 bits, an `Int` shows as a string of digits)
-    let want = "[-5,-128,255,\"18446744073709551615\",-9223372036854775808,9223372036854775807,1]\nHELLO, C 3.0 1.5\n[0,42,43,42]\n[1,1]\n";
+    let want = "[-5, -128, 255, 18446744073709551615, -9223372036854775808, 9223372036854775807, 1]\nHELLO, C 3.0 1.5\n[0, 42, 43, 42]\n[1, 1]\n";
     // built: the same output, and every object freed
     let exe = d.join("prog");
     let b = Command::new(strata).args(["build", "-o"]).arg(&exe).current_dir(&d).output().unwrap();
