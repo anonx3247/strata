@@ -382,9 +382,12 @@ impl<'a> Expander<'a> {
                 kind == ks
             } else if kn == q("Choice") {
                 choice
-            } else {
+            } else if self.env.types.get(&Symbol::new(&kn)).is_some_and(|td| matches!(&td.body, TypeBody::Alias(TypeExpr::Named(b, _)) if *b == q("Type")) && td.refinement.is_some()) {
+                // another refinement of `Type`: the type's value meets it
                 let desc = self.type_value(&i.for_type);
                 self.of_kind(k, &desc)?
+            } else {
+                false
             };
             kind_ok = kind_ok || fits;
         }
