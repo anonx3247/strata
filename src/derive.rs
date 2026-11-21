@@ -290,6 +290,35 @@ impl<'a> Expander<'a> {
                 return self.literal(&v);
             }
             // `$Self`, `$f.type`: a type's description
+            // `f.default_value`: the field's default, as written (`times: Int = 1`)
+            Expr::Field(r, d) if d == "default_value" && matches!(&**r, Expr::Var(x) if self.is_known(x)) => {
+                let Expr::Var(x) = &**r else { unreachable!() };
+                let name = match &self.known[x] {
+                    Value::Record(_, fs) => fs.iter().find_map(|(k, v)| match (k.as_str(), v) {
+                        ("name", Value::Str(s)) => Some(s.clone()),
+                        _ => None,
+                    }),
+                    _ => None,
+                }
+                .unwrap_or_default();
+                let head = crate::types::texpr_head(&self.self_ty);
+                let fields = match self.env.types.get(&Symbol::new(&head)).map(|t| &t.body) {
+                    Some(TypeBody::Record(fs)) => fs.clone(),
+                    _ => vec![],
+                };
+                return match fields.iter().find(|f| f.name == name).and_then(|f| f.default.clone()) {
+                    Some(e) => Ok(e),
+                    None => Err(format!("`{name}` has no default value")),
+                };
+            }
+            // `$T.check(x)`: `Ok(())`, or `Err` with the interpreter's message
+            Expr::Method(recv, m, args) if m == "check" && matches!(&**recv, Expr::Describe(_)) => {
+                let Expr::Describe(t) = &**recv else { unreachable!() };
+                let [x] = args.as_slice() else { return Err("`check` takes the value to check".into()) };
+                let t = self.ty(t);
+                let x = self.expr(x)?;
+                return Ok(self.check(&t, &x));
+            }
             Expr::Describe(t) => {
                 let t = self.ty(t);
                 let d = self.describe(&crate::types::texpr_head(&t))?;
@@ -558,6 +587,43 @@ impl<'a> Expander<'a> {
         }
     }
 
+    /// Code checking `x` against `t`, as `Interp::check_type` does: the
+    /// base type's refinement first, then the type's own.
+    fn check(&self, t: &TypeExpr, x: &Expr) -> Expr {
+        let ok = || Expr::Ctor(Symbol::new("Ok"), CtorArgs::Positional(vec![Expr::Unit]));
+        // `if { it := x; cond } { Ok(()) } else { Err(msg) }`, after `first`
+        let test = |cond: &Expr, msg: String, first: Expr| {
+            let holds = Expr::Block(vec![Stmt::Let(Pattern::Bind(Symbol::new("it")), None, x.clone())], Box::new(cond.clone()));
+            let shown = Expr::Call(Box::new(Expr::Var(Symbol::new("to_json"))), vec![x.clone()]);
+            let err = Expr::Ctor(Symbol::new("Err"), CtorArgs::Positional(vec![Expr::Interp(vec![StrPart::Expr(shown, None), StrPart::Lit(format!(" {msg}"))])]));
+            let this = Expr::If(Box::new(holds), Box::new(ok()), Box::new(err));
+            let e = Symbol::new("checked.err");
+            Expr::Match(
+                Box::new(first),
+                None,
+                vec![
+                    Arm { comments: vec![], pat: Pattern::Ctor(Symbol::new("Ok"), CtorPat::Positional(vec![Pattern::Wild])), body: this },
+                    Arm { comments: vec![], pat: Pattern::Ctor(Symbol::new("Err"), CtorPat::Positional(vec![Pattern::Bind(e)])), body: Expr::Ctor(Symbol::new("Err"), CtorArgs::Positional(vec![Expr::Var(e)])) },
+                ],
+            )
+        };
+        match t {
+            TypeExpr::Refined(b, pred) => test(pred, format!("does not satisfy `{}`", crate::printer::ty(t)), self.check(b, x)),
+            TypeExpr::Named(n, args) if args.is_empty() => match self.env.types.get(n) {
+                Some(td) if !td.distinct && matches!(td.body, TypeBody::Alias(_)) => {
+                    let TypeBody::Alias(a) = &td.body else { unreachable!() };
+                    let base = self.check(a, x);
+                    match &td.refinement {
+                        Some(r) => test(r, format!("does not satisfy `{}` (where {})", crate::names::short(n), crate::printer::expr(r, 0)), base),
+                        None => base,
+                    }
+                }
+                _ => ok(),
+            },
+            _ => ok(),
+        }
+    }
+
     /// `match comptime ty { Int => .., Option[x] => .., _ => .. }`: the arm
     /// whose type pattern fits, with its names bound to types.
     fn match_type(&mut self, scrut: &Expr, arms: &[Arm]) -> Res<Expr> {
@@ -651,6 +717,10 @@ impl<'a> Expander<'a> {
                         self.types.insert(format!("{}.type", p.name), t);
                     }
                 }
+            }
+            // a `comptime t: Type`: `t` is that type (`$t`, `match comptime t`)
+            if let Ok(t) = self.type_of(v) {
+                self.types.insert(p.name.to_string(), t);
             }
         }
         let own = self.prog.decls.iter().find_map(|d| match &d.kind {
