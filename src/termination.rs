@@ -618,7 +618,7 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
             let mut calls = BTreeSet::new();
             let params: Vec<String> = decl.params.iter().map(|p| p.name.to_string()).collect();
             calls_of(&decl.body, env, &params, &mut calls);
-            let d = crate::verify::for_impl(imp, decl);
+            let d = crate::verify::for_impl(env, imp, decl);
             nodes.insert(label.clone(), Node { decl: None, calls, loops: loops(env, &d, solver) });
             nodes.entry(trait_node(&tm.decl.name)).or_insert(Node { decl: None, calls: BTreeSet::new(), loops: Ok(vec![]) }).calls.insert(label);
         }

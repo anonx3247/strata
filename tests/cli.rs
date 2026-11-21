@@ -4063,3 +4063,16 @@ fn capabilities_given_by_the_runtime() {
     let (ok, out) = strata(&["run", "asks_files.strata"], &d, None);
     assert!(!ok && out.contains("Name the capability instead, `disk: Disk` (std.fs), and pass it where `Files` is wanted"), "{out}");
 }
+
+/// `verify` checks a generic impl's methods at a whole type whose type
+/// arguments meet the impl's bounds (`List[String]` for `impl[T: Zero] ..
+/// for List[T]` when only `String` is a `Zero`), not at its head alone.
+#[test]
+fn generic_impls_are_verified_at_a_whole_type() {
+    let d = tmp("fuzz-whole-types");
+    let src = "trait Zero {\n  fn zero() -> Self\n}\n\nimpl Zero for String {\n  fn zero() -> Self {\n    \"z\"\n  }\n}\n\nimpl[T: Zero] Zero for List[T] {\n  fn zero() -> Self {\n    [T.zero(), T.zero()]\n  }\n}\n";
+    let (ok, out) = strata(&["--file", "z.strata", "edit"], &d, Some(src));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "z.strata", "verify", "--cases", "10"], &d, None);
+    assert!(ok && out.contains("✓ List[T].zero") && !out.contains("✗"), "{out}");
+}
