@@ -89,48 +89,21 @@ fn call_compiled(args: &Args, resolved: &Program, env: &types::Env, name: &str, 
     if raw.len() != f.params.len() {
         return Err(format!("`{name}` takes {} arguments", f.params.len()));
     }
-    // JSON read against the types (their shapes; refinements are checked compiled)
-    let mut reader = interp::Interp::new(env, 1);
-    let mut stmts = vec![];
-    let mut call_args = vec![];
-    for (i, (pm, j)) in f.params.iter().zip(&raw).enumerate() {
-        let v = reader.from_json_raw(&pm.ty, j, &pm.name).map_err(|e| format!("invalid input: {e}"))?;
-        let x = verify::literal_of(&v).ok_or(format!("invalid input: `{}` can't be given as JSON", pm.name))?;
-        let n = Symbol::new(&format!("strata_arg_{i}"));
-        if pm.mutable {
-            stmts.push(Stmt::Var(n, Some(pm.ty.clone()), x));
-            call_args.push(Expr::Mut(Box::new(Expr::Var(n))));
-        } else {
-            // (its refinements are checked by `f`, which names the argument)
-            stmts.push(Stmt::Let(Pattern::Bind(n), None, x));
-            call_args.push(Expr::Var(n));
+    // the call compiled first: it gives the parameters' shapes
+    let (ir, roots, shapes) = llvm::compile_call(resolved, name, args.flag("--trace")).map_err(|e| format!("`{name}` can't be compiled yet: {e}"))?;
+    let probe = "strata.ct.0";
+    // the arguments read against them and written into memory, once the
+    // runtime has started (their refinements are checked by `f`, which names
+    // the argument)
+    let write = || {
+        let mut slots = vec![];
+        for ((pm, shape), j) in f.params.iter().zip(&roots[1..]).zip(&raw) {
+            let v = llvm::native::decode(shape, &shapes, j, pm.name.as_str()).map_err(|e| format!("invalid input: {e}"))?;
+            slots.push(llvm::native::write(shape, &shapes, &v).map_err(|e| format!("invalid input: {e}"))?);
         }
-    }
-    let probe = "strata_run_call";
-    let call = FnDecl {
-        doc: vec![],
-        comments: vec![],
-        name: Symbol::new(probe),
-        type_params: vec![],
-        bounds: vec![],
-        params: vec![],
-        ret: f.ret.clone(),
-        requires: vec![],
-        ensures: vec![],
-        terminates: false,
-        body: Expr::Block(stmts, Box::new(Expr::Call(Box::new(Expr::Var(Symbol::new(name))), call_args))),
-        comptime: false,
-        derived: false,
+        Ok(slots)
     };
-    let mut prog = resolved.clone();
-    prog.decls.push(Decl { comments: vec![], doc: vec![], kind: DeclKind::Fn(call), module: Default::default(), public: false });
-    let ir = if args.flag("--trace") {
-        llvm::compile_traced_comptime(&prog, &[probe.to_string()])
-    } else {
-        llvm::compile_comptime(&prog, &[probe.to_string()])
-    };
-    let (ir, roots, shapes) = ir.map_err(|e| format!("`{name}` can't be compiled yet: {e}"))?;
-    let (result, printed) = llvm::jit::run_kept(&ir, &roots, &shapes, i64::MAX, true)?.pop().ok_or("nothing ran")?;
+    let (result, printed) = llvm::jit::run_call(&ir, &roots[0], &shapes, true, &write)?;
     print!("{printed}");
     match result {
         Ok(v) => {

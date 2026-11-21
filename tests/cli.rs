@@ -4208,3 +4208,86 @@ fn generic_impls_are_verified_at_a_whole_type() {
     let (ok, out) = strata(&["--file", "z.strata", "verify", "--cases", "10"], &d, None);
     assert!(ok && out.contains("✓ List[T].zero") && !out.contains("✗"), "{out}");
 }
+
+
+// `run f ARGS`: the arguments read against the parameters' shapes and
+// written into memory for compiled code (no interpreter), every kind of
+// value; checked all the way down as making them would, defaults filled in.
+#[test]
+fn run_writes_arguments_into_memory() {
+    let d = tmp("host-values");
+    save(&d.join("h.strata"), r#"distinct type Id = Int where it > 0
+
+type Score = Int where it >= 0
+
+type Figure =
+  | Circle { r: Float }
+  | Square(Float)
+  | Pair(Int, String)
+  | Dot
+
+type Tree =
+  | Leaf
+  | Node { left: Tree, value: Score, right: Tree }
+
+type Everything = {
+  id: Id,
+  tags: Set[String],
+  scores: Dict[String, List[Score]],
+  pos: (Int, Bool),
+  either: Int | String,
+  many: List[Int | Figure],
+  big: Int,
+  maybe: Option[Figure],
+  tree: Tree,
+  level: Int = 3,
+}
+
+fn total(t: Tree) -> Int {
+  match t {
+    Leaf => 0,
+    Node { left, value, right } => total(left) + value + total(right),
+  }
+}
+
+fn show_one(m: Int | Figure) -> String {
+  match m {
+    Int => f"{m}",
+    Figure => debug(m),
+  }
+}
+
+fn describe(e: Everything) -> String {
+  x := e.either
+  either := match x {
+    Int => f"int {x}",
+    String => f"text {x}",
+  }
+  many := e.many.map(m -> show_one(m))
+  f"{debug(e.id)} {e.tags} {e.scores} {e.pos} {either} {many} {e.big * 2} {e.maybe} tree={total(e.tree)} level={e.level} has_a={contains(e.tags, "a")}"
+}
+"#);
+    let args = r#"[{"id": 7, "tags": ["b", "a"], "scores": {"x": [1, 2], "y": []}, "pos": [4, true], "either": "hi", "many": [1, {"Circle": {"r": 1.5}}, "Dot", {"Pair": [2, "two"]}], "big": "123456789012345678901234567890", "maybe": {"Some": {"Square": 2.0}}, "tree": {"Node": {"left": {"Node": {"left": "Leaf", "value": 5, "right": "Leaf"}}, "value": 1, "right": "Leaf"}}}]"#;
+    let run = |a: &str| strata(&["--file", "h.strata", "run", "describe", a], &d, None);
+    let (ok, out) = run(args);
+    assert!(ok, "{out}");
+    for part in [
+        r#"Id(7) Set { \"a\", \"b\" } Dict { \"x\": [1, 2], \"y\": [] } (4, true) text hi"#,
+        r#"Circle { r: 1.5 }\", \"Dot\", \"Pair(2"#,
+        "246913578024691357802469135780 Some(Square(2.0)) tree=6 level=3 has_a=true",
+    ] {
+        assert!(out.contains(part), "{part}: {out}");
+    }
+    let (ok, out) = run(&args.replace(r#""either": "hi""#, r#""either": 5"#));
+    assert!(ok && out.contains("int 5"), "the union's other member: {out}");
+    for (from, to, why) in [
+        (r#""value": 5"#, r#""value": -5"#, "invalid input: Node.value: -5 does not satisfy `Score`"),
+        (r#""id": 7"#, r#""id": 0"#, "invalid input: Id: 0 does not satisfy `Id`"),
+        (r#""y": []"#, r#""y": [-1]"#, r#"invalid input: Everything.scores: ["y"]: [0]: -1 does not satisfy `Score`"#),
+        (r#""pos": [4, true]"#, r#""pos": [4]"#, "invalid input: e.pos: expected an array of 2 values"),
+        (r#""Dot""#, r#""Spot""#, "invalid input: e.many[2]: expected a value of one of the union's types"),
+    ] {
+        let (ok, out) = run(&args.replace(from, to));
+        assert!(!ok && out.contains(why), "{why}: {out}");
+    }
+}

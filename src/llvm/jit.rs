@@ -62,6 +62,8 @@ unsafe extern "C" {
     fn strata_trace_call();
     fn strata_trace_return();
     fn strata_ct_keep();
+    fn strata_given();
+    pub(super) fn strata_set_given(g: *const i64);
     fn strata_ct_kept() -> i64;
     fn strata_int_dup();
     fn strata_int_drop();
@@ -173,6 +175,7 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_trace_call", strata_trace_call as *const () as usize),
         ("strata_trace_return", strata_trace_return as *const () as usize),
         ("strata_ct_keep", strata_ct_keep as *const () as usize),
+        ("strata_given", strata_given as *const () as usize),
         ("strata_int_dup", strata_int_dup as *const () as usize),
         ("strata_int_drop", strata_int_drop as *const () as usize),
         ("strata_release", strata_release as *const () as usize),
@@ -345,6 +348,17 @@ pub fn comptime(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget
 /// `comptime`, optionally optimized (`strata run f [args]`: what it runs may
 /// be long), with what each one printed.
 pub fn run_kept(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget: i64, optimize: bool) -> Result<Vec<(Result<crate::interp::Value, Fault>, String)>, String> {
+    run_kept_given(ir, roots, shapes, budget, optimize, &|| Ok(vec![]))
+}
+
+/// A function called with arguments the host writes (`llvm::compile_call`):
+/// `given` writes them, once the runtime has started; the result, read back
+/// by `result`'s shape, and what it printed.
+pub fn run_call(ir: &str, result: &super::Shape, shapes: &super::Shapes, optimize: bool, given: &dyn Fn() -> Result<Vec<i64>, String>) -> Result<(Result<crate::interp::Value, Fault>, String), String> {
+    run_kept_given(ir, std::slice::from_ref(result), shapes, i64::MAX, optimize, given)?.pop().ok_or("nothing ran".into())
+}
+
+fn run_kept_given(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget: i64, optimize: bool, given: &dyn Fn() -> Result<Vec<i64>, String>) -> Result<Vec<(Result<crate::interp::Value, Fault>, String)>, String> {
     use std::ffi::{c_char, CStr};
     let ctx = Context::create();
     let engine = engine_at(&ctx, ir, optimize)?;
@@ -366,6 +380,9 @@ pub fn run_kept(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget
     let name = std::ffi::CString::new("comptime").unwrap();
     let argv = [name.as_ptr()];
     unsafe { init(1, argv.as_ptr()) };
+    // (kept alive until the calls are done)
+    let args = given()?;
+    unsafe { strata_set_given(args.as_ptr()) };
     let mut out = vec![];
     for (i, root) in roots.iter().enumerate() {
         let addr = engine.get_function_address(&format!("strata.ct.{i}")).map_err(|e| e.to_string())?;
@@ -535,27 +552,31 @@ extern "C" fn code_version() -> i64 {
     super::native::new_string(&crate::ui::code_version(std::path::Path::new(&crate::ui::code_root())))
 }
 
-/// `Code.snapshot()` for compiled code: the snapshot (src/ui.rs) read against
-/// `std.code.Snapshot` and written into compiled memory, or 0 and the
-/// failure in `*err`.
+/// `Code.snapshot()` for compiled code: the snapshot (src/ui.rs), read
+/// against `std.code.Snapshot`'s shape and written into compiled memory, or
+/// 0 and the failure in `*err`.
 extern "C" fn code_snapshot(err: *mut i64) -> i64 {
-    let root = crate::ui::code_root();
     let fail = |m: String| {
         unsafe { *err = super::native::new_string(&m) };
         0
     };
-    let j = match crate::ui::code_snapshot(std::path::Path::new(&root)) {
+    // the shape of a snapshot: std's, the same in every program
+    static SHAPE: std::sync::OnceLock<Result<(super::Shape, super::Shapes), String>> = std::sync::OnceLock::new();
+    let shape = SHAPE.get_or_init(|| {
+        let t = crate::ast::TypeExpr::Named("std.code.Snapshot".into(), vec![]);
+        super::shapes_of(crate::stdlib::program(), &[t]).map(|(mut roots, named)| (roots.remove(0), named))
+    });
+    let (root, named) = match shape {
+        Ok(x) => x,
+        Err(e) => return fail(format!("the shape of `std.code.Snapshot`: {e}")),
+    };
+    let j = match crate::ui::code_snapshot(std::path::Path::new(&crate::ui::code_root())) {
         Ok(j) => j,
         Err(e) => return fail(e),
     };
-    // std's types, to read the snapshot against
-    static STD: std::sync::OnceLock<crate::types::Env> = std::sync::OnceLock::new();
-    let env = STD.get_or_init(|| crate::types::check_and_elaborate(crate::stdlib::program()).env);
-    let mut it = crate::interp::Interp::new(env, 1);
-    let t = crate::ast::TypeExpr::Named("std.code.Snapshot".into(), vec![]);
-    match it.from_json(&t, &j, "snapshot").map_err(|e| format!("the codebase's snapshot doesn't fit `std.code.Snapshot`: {e}")).and_then(|v| super::native::write(&v)) {
+    match super::native::decode(root, named, &j, "snapshot").and_then(|v| super::native::write(root, named, &v)) {
         Ok(p) => p,
-        Err(e) => fail(e),
+        Err(e) => fail(format!("the codebase's snapshot doesn't fit `std.code.Snapshot`: {e}")),
     }
 }
 

@@ -403,6 +403,12 @@ void *strata_host_code_snapshot(Str **err) {
   return code_snapshot(err);
 }
 
+// Values the host wrote into memory for compiled code to take
+// (`strata_run_call`'s arguments; llvm.rs, `Entry::Call`).
+static int64_t *given;
+void strata_set_given(int64_t *g) { given = g; }
+int64_t strata_given(int64_t i) { return given[i]; }
+
 // Compile-time code's value (`strata.ct.N` hands it over), for the compiler
 // to read (src/llvm/native.rs).
 static int64_t ct_kept;
