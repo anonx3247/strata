@@ -3939,6 +3939,27 @@ fn comptime_code_runs_while_compiling() {
     assert!(!ok && out.contains("`comptime spin(1)` ran for more than 5000000 steps: compile-time code must finish"), "{out}");
 }
 
+/// `comptime e` in ordinary code: evaluated while compiling, its value
+/// written in (the program never calls what computed it); a variable around
+/// it can't be used. Evaluating it once made the program resolve itself
+/// again, without end (each level evaluating the same `comptime`), until
+/// memory ran out: this would hang.
+#[test]
+fn comptime_in_ordinary_code_runs_while_compiling() {
+    let d = tmp("comptime-anywhere");
+    let src = "use std.regex.{parse, show}\n\nfn shout(s: String) -> String {\n  s + \"!\"\n}\n\nfn main() {\n  r := comptime parse(\"(?i)ab|ac\")\n  print(match r {\n    Ok(x) => show(x),\n    Err(e) => e,\n  })\n  print(comptime shout(\"hi\"))\n}\n";
+    let (ok, out) = strata(&["--file", "c.strata", "edit"], &d, Some(src));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["--file", "c.strata", "run"], &d, None);
+    assert!(ok && out == "cat(cls(41-41 61-61),cls(42-43 62-63))\nhi!\n", "{out}");
+    let (ok, out) = strata(&["--file", "c.strata", "build", "--emit-llvm", "-o", "c.ll"], &d, None);
+    let ir = std::fs::read_to_string(d.join("c.ll")).unwrap_or_default();
+    assert!(ok && ir.contains("define") && !ir.contains("std.regex.parse") && !ir.contains("@\"strata:shout\""), "the values are constants: {out}{ir}");
+    let (_, out) = strata(&["--file", "v.strata", "edit"], &d, Some("fn main() {\n  n := 3\n  print(comptime n + 1)\n}\n"));
+    let (ok, out2) = strata(&["--file", "v.strata", "check"], &d, None);
+    assert!(!ok && out2.contains("unknown variable `n`: compile-time code can use definitions, not the variables around it"), "{out}{out2}");
+}
+
 /// Types passed whole at runtime: `T.m()` on an impl's type parameters, and
 /// `std.json` for the built-in types through `T: Json`.
 #[test]

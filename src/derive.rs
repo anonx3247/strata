@@ -33,6 +33,11 @@ const BUDGET: u64 = 5_000_000;
 /// Replace each `derive` by its `impl` (or report why it can't be made).
 pub fn expand(p: &mut Program, errors: &mut Vec<Diag>) {
     settings(p);
+    derive_all(p, errors);
+    fold_comptime(p, errors);
+}
+
+fn derive_all(p: &mut Program, errors: &mut Vec<Diag>) {
     if !p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Impl(i) if i.derived)) {
         return;
     }
@@ -64,6 +69,74 @@ pub fn expand(p: &mut Program, errors: &mut Vec<Diag>) {
         keep[k - 1]
     });
     p.decls.extend(extra);
+}
+
+/// A function made once per compile-time value (`comptime fn`, `comptime`
+/// parameters), specialized where it is called: its `comptime` code is
+/// evaluated there, not here.
+fn is_template(f: &FnDecl) -> bool {
+    f.comptime || f.derived || f.params.iter().any(|x| x.comptime)
+}
+
+/// `comptime e` in ordinary code (outside a `derive`): evaluated while
+/// compiling, as a derive's, and its value written in as a literal, so
+/// `comptime parse("[a-z]+")` is a constant in the program. `e` may use
+/// definitions, not the variables around it.
+fn fold_comptime(p: &mut Program, errors: &mut Vec<Diag>) {
+    let has = |f: &FnDecl| !is_template(f) && any_expr(&f.body, |e| matches!(e, Expr::Comptime(_)));
+    let wanted = p.decls.iter().any(|d| match &d.kind {
+        DeclKind::Fn(f) => has(f),
+        DeclKind::Impl(i) => i.methods.iter().any(has),
+        DeclKind::Test(_) => {
+            let mut found = false;
+            let mut k = d.kind.clone();
+            decl_exprs_mut(&mut k, |e| found = found || matches!(e, Expr::Comptime(_)));
+            found
+        }
+        _ => false,
+    });
+    if !wanted {
+        return;
+    }
+    // evaluating one resolves the program made for it (`cache_key`), which
+    // would come back here: that program holds no `comptime` to fold
+    // (`compiled` leaves out what holds one), and this is the backstop
+    thread_local!(static FOLDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+    if FOLDING.with(|f| f.replace(true)) {
+        return;
+    }
+    let (env, _) = Env::build(p);
+    let snapshot = p.clone();
+    let fold = |k: &mut DeclKind, errs: &mut Vec<String>| {
+        decl_exprs_mut(k, |e| {
+            let Expr::Comptime(x) = &*e else { return };
+            let mut ex = Expander::new(&env, &snapshot);
+            match ex.eval_as(x, x).and_then(|v| ex.literal(&v)) {
+                Ok(lit) => *e = lit,
+                Err(m) if m.contains("unknown variable") => errs.push(format!("{m}: compile-time code can use definitions, not the variables around it")),
+                Err(m) => errs.push(m),
+            }
+        })
+    };
+    for d in p.decls.iter_mut() {
+        let name = d.name();
+        let mut errs = vec![];
+        match &mut d.kind {
+            DeclKind::Fn(f) if !is_template(f) => fold(&mut d.kind, &mut errs),
+            DeclKind::Test(_) => fold(&mut d.kind, &mut errs),
+            DeclKind::Impl(i) => {
+                for m in i.methods.iter_mut().filter(|m| !is_template(m)) {
+                    let mut k = DeclKind::Fn(m.clone());
+                    fold(&mut k, &mut errs);
+                    let DeclKind::Fn(f) = k else { unreachable!() };
+                    *m = f;
+                }
+            }
+            _ => {}
+        }
+        errors.extend(errs.into_iter().map(|msg| Diag { decl: name.clone(), msg }));
+    }
+    FOLDING.with(|f| f.set(false));
 }
 
 /// `setting("json.unknown_keys")` anywhere: the package's setting, written
@@ -445,6 +518,9 @@ impl<'a> Expander<'a> {
             match &d.kind {
                 DeclKind::Impl(i) if i.derived => {}
                 DeclKind::Test(_) => {}
+                // ordinary code with its own `comptime` still to evaluate (the
+                // one being evaluated, perhaps): resolving it would evaluate that
+                DeclKind::Fn(f) if !is_template(f) && any_expr(&f.body, |x| matches!(x, Expr::Comptime(_))) => {}
                 _ => p.decls.push(d.clone()),
             }
         }
