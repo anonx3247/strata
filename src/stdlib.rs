@@ -6,7 +6,7 @@
 //! The standard library is written in Strata. Only the thin layer that talks
 //! to the operating system is native: the `host_*` builtins below, which only
 //! code inside `std` can call. Programs reach the system through capabilities
-//! (`Console`, `Files`, `Environment`), and the only real implementations are
+//! (`Console`, `Files`, `Environment`, `Code`), and the only real implementations are
 //! private types of `std` that the runtime hands to `main`.
 
 use crate::types::Builtin;
@@ -26,6 +26,7 @@ const FILES: &[(&str, &[u8])] = &[
     ("http.strata", include_bytes!("../std/http.strata")),
     ("typing.strata", include_bytes!("../std/typing.strata")),
     ("json.strata", include_bytes!("../std/json.strata")),
+    ("code.strata", include_bytes!("../std/code.strata")),
 ];
 
 /// Native operations, callable only from `std`.
@@ -41,12 +42,14 @@ pub const HOST: &[Builtin] = &[
     Builtin::new("host_remove", "", "(String) -> Result[(), (String, String)]"),
     Builtin::new("host_args", "", "() -> List[String]"),
     Builtin::new("host_env_var", "", "(String) -> Option[String]"),
+    Builtin::new("host_code_version", "", "(String) -> String"),
+    Builtin::new("host_code_snapshot", "", "(String) -> Result[std.code.Snapshot, String]"),
 ];
 
 /// The private types that reach the real system. Only `strata run` makes
 /// them (for `main`), `verify` never runs them, and fuzzing never picks them
 /// for a type parameter.
-pub const HOST_TYPES: &[&str] = &["std.io.Terminal", "std.fs.Disk", "std.process.Process"];
+pub const HOST_TYPES: &[&str] = &["std.io.Terminal", "std.fs.Disk", "std.process.Process", "std.code.Workspace"];
 
 pub fn is_host(name: &str) -> bool {
     HOST.iter().any(|h| h.name == name)

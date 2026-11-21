@@ -518,6 +518,17 @@ impl<'a> Interp<'a> {
                 Ok(v) => some(Str(v)),
                 Err(_) => none(),
             },
+            "host_code_version" => Str(crate::ui::code_version(std::path::Path::new(&s(0)))),
+            "host_code_snapshot" => match crate::ui::code_snapshot(std::path::Path::new(&s(0))) {
+                Ok(j) => {
+                    let t = crate::ast::TypeExpr::Named("std.code.Snapshot".into(), vec![]);
+                    match self.from_json(&t, &j, "snapshot") {
+                        Ok(v) => Variant("Ok".into(), Fields::pos(vec![v])),
+                        Err(e) => return self.fail(FaultKind::Runtime, format!("the codebase's snapshot doesn't fit `std.code.Snapshot`: {e}")),
+                    }
+                }
+                Err(e) => Variant("Err".into(), Fields::pos(vec![Str(e)])),
+            },
             _ => return self.fail(FaultKind::Runtime, format!("unknown host operation `{name}`")),
         })
     }

@@ -429,3 +429,120 @@ fn mentions(t: &TypeExpr, out: &mut Vec<String>) {
         TypeExpr::Union(ms) => ms.iter().for_each(|m| mentions(m, out)),
     }
 }
+
+// ---- the codebase for Strata programs (`std.code`) ----
+
+/// The codebase a `Code` capability reads: the current folder, unless the
+/// viewer set it to the one it shows.
+static CODE_ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+pub fn code_root() -> String {
+    CODE_ROOT.get().cloned().unwrap_or_else(|| ".".into())
+}
+
+/// Make `Code` capabilities read `root` (once, before any is handed out).
+pub fn set_code_root(root: &str) {
+    let _ = CODE_ROOT.set(root.to_string());
+}
+
+/// A package's folder is read as the package (with its log and cached
+/// verdicts); anything else as source files.
+fn target_of(root: &std::path::Path) -> Target {
+    if root.is_dir() && root.join(crate::package::FILE).is_file() {
+        Target::Db(root.to_path_buf())
+    } else {
+        Target::File(root.to_path_buf())
+    }
+}
+
+/// What changes whenever the code under `root` does: compare it to skip
+/// reading a snapshot that hasn't changed.
+pub fn code_version(root: &std::path::Path) -> String {
+    format!("{:016x}", fingerprint(&target_of(root)))
+}
+
+/// The snapshot of the code under `root`, as the JSON of a `std.code.Snapshot`;
+/// kept, per folder, until its files change.
+pub fn code_snapshot(root: &std::path::Path) -> Result<Json, String> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, (u64, std::sync::Arc<Json>)>>> = std::sync::OnceLock::new();
+    let target = target_of(root);
+    let fp = fingerprint(&target);
+    let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((f, j)) = cache.get(root) {
+        if *f == fp {
+            return Ok((**j).clone());
+        }
+    }
+    let s = snapshot(&target);
+    if let Some(e) = s["fatal"].as_str() {
+        return Err(e.to_string());
+    }
+    let j = for_strata(&s, &format!("{fp:016x}"));
+    cache.insert(root.to_path_buf(), (fp, std::sync::Arc::new(j.clone())));
+    Ok(j)
+}
+
+/// The viewer's snapshot reshaped as a `std.code.Snapshot`.
+fn for_strata(s: &Json, version: &str) -> Json {
+    // an `Option` as `from_json` reads it
+    let opt = |j: Json| if j.is_null() { json!("None") } else { json!({ "Some": j }) };
+    let strs = |j: &Json| -> Vec<String> { j.as_array().into_iter().flatten().filter_map(|x| x.as_str().map(String::from)).collect() };
+    let text = |j: &Json| j.as_str().unwrap_or("").to_string();
+    let definitions: Vec<Json> = s["decls"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|d| {
+            json!({
+                "name": text(&d["name"]),
+                "module": text(&d["module"]),
+                "label": text(&d["label"]),
+                "kind": text(&d["kind"]),
+                "public": d["public"].as_bool().unwrap_or(false),
+                "doc": text(&d["doc"]),
+                "hash": text(&d["hash"]),
+                "interface": text(&d["text"]["1"]),
+                "source": text(&d["text"]["2"]),
+                "deps": strs(&d["deps"]),
+                "refs": strs(&d["refs"]),
+                "impls": strs(&d["impls"]),
+                "holes": d["holes"].as_array().into_iter().flatten().map(|h| text(&h["name"])).collect::<Vec<_>>(),
+                "errors": strs(&d["errors"]),
+                "verdict": opt(d["verdict"]["status"].clone()),
+                "last_change": opt(d["last_change"].clone()),
+            })
+        })
+        .collect();
+    let errors: Vec<String> = s["errors"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|e| match e["decl"].as_str().filter(|d| !d.is_empty()) {
+            Some(d) => format!("{d}: {}", text(&e["msg"])),
+            None => text(&e["msg"]),
+        })
+        .collect();
+    let log: Vec<Json> = s["log"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|e| {
+            let changes: Vec<Json> = e["changes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|c| {
+                    let what = match (c["old"].is_null(), c["new"].is_null()) {
+                        (true, _) => "added",
+                        (_, true) => "removed",
+                        _ if c["interface_changed"] == true => "interface",
+                        _ => "body",
+                    };
+                    json!({"name": text(&c["name"]), "what": what})
+                })
+                .collect();
+            json!({"message": text(&e["message"]), "time": opt(e["time"].clone()), "changes": changes})
+        })
+        .collect();
+    json!({"version": version, "label": text(&s["label"]), "definitions": definitions, "errors": errors, "log": log})
+}

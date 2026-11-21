@@ -116,6 +116,7 @@ Git:
 
 Views:
   ui [--port 7777]                live viewer in the browser (map, levels, holes, activity)
+  ui --strata                     the viewer written in Strata (std.web, std.code): code view only for now
   view [SELECTOR] [--level 0-2]   SELECTOR: name | prefix* | slice:Name | a,b
   ast <name>                      the stored syntax tree as JSON
 
