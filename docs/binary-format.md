@@ -15,6 +15,7 @@ Design:
 - **A header, like a C header file, but inside the module file.** It comes first and lists every definition: its name, kind, visibility, three hashes, the definitions it depends on and the size of its bytes. Listing a module, building the dependency graph or finding what changed reads only the header. That takes 14 µs for all of `examples/tasks`; decoding everything takes about 170 µs.
 - **Interface first, bodies after.** Each definition's bytes start with its interface: types, signatures, contracts, laws, with each body written as `()`. Its bodies follow. Checking code against a module only needs the interfaces, and a reader can stop there.
 - **Self-contained definitions.** Each definition carries its own strings, so its bytes mean the same in any file. Its hash is the hash of those bytes. The same bytes could also be stored as one object under that hash (the hash-store idea in IDEAS.md).
+- **References by what they name.** Every reference to a definition is stored by its qualified name (`orders.Line`), however it was written (`Line` under `use orders.{Line}`, or `orders.Line`); a call to another module's function is stored as a call of that name (`orders.ship(x)` is `Call(Var("orders.ship"), [x])`, not a method call on `orders`). A definition's own name, its variants and methods, locals, fields and method calls (found from their receiver) are stored as written, and so is a name that resolves to nothing. When code is shown, each reference is written as short as its module's `use`s allow, so text is normalised: `orders.Line` written where `Line` is imported shows as `Line`. A module file shown alone (`git diff`) decides from its own `use` lines. In `src/resolve.rs`: `stored_form` and `written_form`.
 - **Exact.** Decoding gives back the very tree that was encoded: comments, docs, blank lines between groups, big integers (as their digits) and floats (as their bits).
 - **Canonical.** A tree has one encoding. Strings are numbered in the order they are first written, integers use the shortest form, and the decoder refuses anything else. A module file's bytes are what strata writes for it, so `strata ci` checks every file is exactly that (a header's dependency lists can go stale when another module changes outside strata; `ci --fix` rewrites them).
 - **Safe to read.** A truncated or corrupt file is an error, never a crash. Lengths can't exceed what is left of the file, nesting deeper than 10,000 levels is refused, and a definition whose bytes don't match the hash in the header is rejected.
@@ -28,7 +29,7 @@ module-file = "STRATA" version:uint 0  header  definitions
 bundle      = "STRATA" version:uint 1  manifest:option(raw-string)  modules:list(raw-bytes)
 ```
 
-- the six ASCII bytes `STRATA` (`53 54 52 41 54 41`), the format `version` (currently `6`), then `0` for a module file or `1` for a bundle;
+- the six ASCII bytes `STRATA` (`53 54 52 41 54 41`), the format `version` (`1`: the format is not settled, so changes to it convert the files rather than bump it), then `0` for a module file or `1` for a bundle;
 - a bundle holds the package's `strata.toml`, as written (none for a script), then each module file, as its length and its bytes, in the order the modules first appear in the program.
 
 ### The header
@@ -196,7 +197,7 @@ CtorPat = 0 None | 1 Positional(list(Pattern)) | 2 Record(list((str, Pattern)), 
 
 ```text
 53 54 52 41 54 41   "STRATA"
-06 00               version 6, a module file
+01 00               version 1, a module file
 header:
    02 00 03 6f 6e 65    2 strings: "", "one"
    00                   module "" (the root)
@@ -220,11 +221,11 @@ the definition:
 
 ## Changing the format
 
-The code is stored in this format, so a change to the tree (a new node, a new field) changes the files of every package and script in the repository. Bump `VERSION`, and convert them in the same change:
+The code is stored in this format, so a change to the tree (a new node, a new field) changes the files of every package and script in the repository. Until the format is settled, `VERSION` stays `1`: there is nothing to stay compatible with. Convert the files in the same change:
 
 1. with the strata of before the change, write each file's text: `strata render --file F > F.st` (`render --split DIR` for a package);
 2. make the change and build;
 3. read the text back in: `strata --file F edit < F.st` for a script, `strata --file PKG/ edit MODULE < M.st` for each module of a package (the standard library first: its modules are `std.io`, …; the compiled prelude, `src/llvm/prelude.strata`, is module `strata.compiled`);
 4. `strata ci --fix` brings the headers' dependency lists up to date, and `strata ci` must pass.
 
-Adding a node or a field at the end of a list of tags keeps old files readable in principle; whether the reader should accept older versions (and `ci --fix` upgrade them) instead of every change converting the files is an open question (IDEAS.md).
+Adding a node at the end of a list of tags keeps old files readable, so it needs no conversion; adding a field to a node, or changing a node, does. Once the format is settled, the version will count changes, and the reader may accept older versions.

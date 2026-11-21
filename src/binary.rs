@@ -23,10 +23,11 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub const MAGIC: &[u8; 6] = b"STRATA";
-/// Bumped on every change to the layout; older files are rejected. Code is
-/// stored in this format, so a change to it means converting the repository's
-/// files: see "Changing the format" in docs/binary-format.md.
-pub const VERSION: u64 = 6;
+/// The format isn't settled yet, so it stays 1 (user, 2026-11-21): a change
+/// to the layout doesn't bump it, it converts the repository's files instead
+/// (see "Changing the format" in docs/binary-format.md). Numbering starts
+/// once files must stay readable across versions.
+pub const VERSION: u64 = 1;
 const MODULE: u8 = 0;
 const BUNDLE: u8 = 1;
 /// Deepest nesting of expressions, patterns and types a file may have.
@@ -262,6 +263,9 @@ pub fn encode_module(p: &Program, module: &str, deps: &BTreeMap<String, BTreeSet
 
 /// One module file per module of `p`, in the order the modules first appear.
 pub fn encode_modules(p: &Program) -> Vec<(String, Vec<u8>)> {
+    // stored with every reference qualified (see `resolve::stored_form`);
+    // the header names definitions as stored (`impl std.cli.CommandLine for Options`)
+    let p = &crate::resolve::stored_form(p);
     let deps = crate::store::graph(p);
     let mut modules: Vec<&Symbol> = Vec::new();
     for d in &p.decls {
@@ -1108,11 +1112,14 @@ mod tests {
         for (path, img) in examples() {
             let bytes = encode_bundle(&img);
             let back = read(&bytes).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-            assert_eq!(back, img, "{}", path.display());
+            // what is read back is the stored form, which shows as the program
+            let stored = crate::resolve::stored_form(&img.program);
+            assert_eq!(back, Image { manifest: img.manifest.clone(), program: stored.clone() }, "{}", path.display());
+            assert_eq!(crate::resolve::written_form(&back.program), img.program, "{}", path.display());
             // canonical: encoding the decoded program gives the same bytes
             assert_eq!(encode_bundle(&back), bytes);
             for (m, file) in encode_modules(&img.program) {
-                let own: Vec<Decl> = img.program.decls.iter().filter(|d| d.module == m).cloned().collect();
+                let own: Vec<Decl> = stored.decls.iter().filter(|d| d.module == m).cloned().collect();
                 assert_eq!(decode_module(&file).unwrap(), own);
             }
         }
@@ -1121,11 +1128,12 @@ mod tests {
     #[test]
     fn the_header_describes_each_definition() {
         let (_, img) = examples().into_iter().find(|(p, _)| p.ends_with("tasks")).unwrap();
-        let graph = crate::store::graph(&img.program);
+        let stored = crate::resolve::stored_form(&img.program);
+        let graph = crate::store::graph(&stored);
         for (m, file) in encode_modules(&img.program) {
             let h = read_header(&file).unwrap();
             assert_eq!(h.module, m);
-            let own: Vec<&Decl> = img.program.decls.iter().filter(|d| d.module == m).collect();
+            let own: Vec<&Decl> = stored.decls.iter().filter(|d| d.module == m).collect();
             assert_eq!(h.entries.len(), own.len());
             for (e, d) in h.entries.iter().zip(own) {
                 assert_eq!((e.name.as_str(), e.kind, e.public), (d.name().as_str(), d.kind_str(), d.public));
@@ -1198,8 +1206,9 @@ use e.*
         for d in &program.decls {
             assert_eq!(&decode_definition(&encode_definition(d)).unwrap(), d);
         }
+        let stored = crate::resolve::stored_form(&program);
         let img = Image { manifest: None, program };
-        assert_eq!(read(&encode_bundle(&img)).unwrap(), img);
+        assert_eq!(read(&encode_bundle(&img)).unwrap().program, stored);
     }
 
     #[test]

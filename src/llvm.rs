@@ -135,7 +135,8 @@ fn key(t: &Ty) -> String {
 pub fn compile(prog: &Program, entry: &str) -> Res<String> {
     // the list built-ins in Strata, compiled with the program
     let mut with = prog.clone();
-    with.decls.extend(crate::binary::decode_module(PRELUDE).map_err(|e| format!("llvm/prelude.strata: {e}"))?);
+    let prelude = crate::binary::decode_module(PRELUDE).map_err(|e| format!("llvm/prelude.strata: {e}"))?;
+    with.decls.extend(crate::resolve::written_form(&Program { decls: prelude }).decls);
     let (resolved, types) = crate::types::elaborate_typed(&with);
     let (env, _) = Env::build(&resolved.program);
     let main = env.fns.get(&Symbol::new(entry)).ok_or(format!("no `{entry}` function to compile"))?.clone();
