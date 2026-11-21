@@ -113,18 +113,6 @@ trait Iterator[T] {
   fn filter(self, keep: (T) -> Bool) -> Filtered[Self, T] {
     Filtered { inner: self, keep: keep }
   }
-
-  fn fold[B](self, init: B, f: (B, T) -> B) -> B {
-    mut acc := init
-    mut it := self
-    loop {
-      match mut it.next() {
-        Some(x) => { acc = f(acc, x) },
-        None => { break },
-      }
-    }
-    acc
-  }
 }
 
 type Mapped[I, A, B] = { inner: I, f: (A) -> B }
@@ -154,13 +142,75 @@ impl[I: Iterator[T], T] Iterator[T] for Filtered[I, T] {
 
 /// An iterator that ends: `len` is how many elements `next` still gives.
 /// A `for` loop over one is shown to end.
+/// `fold` is here, not in `Iterator`: on an unbounded iterator it would never
+/// return. It ends as its loop does, given that `f` ends (checked where the
+/// function passed is written).
 trait FiniteIterator[T]: Iterator[T] {
   fn len(self) -> Natural
+
+  fn fold[B](self, init: B, f: (B, T) -> B) -> B {
+    mut acc := init
+    for x in self {
+      acc = f(acc, x)
+    }
+    acc
+  }
+
+  /// The elements, in a list.
+  fn to_list(self) -> List[T] {
+    mut out := []
+    for x in self {
+      out = push(out, x)
+    }
+    out
+  }
+}
+
+/// `Set { e for x in it }` on a finite iterator (`set(it)` on one).
+fn set_of[T, I: FiniteIterator[T]](it: I) -> Set[T] {
+  set(it.to_list())
+}
+
+/// `Dict { k: v for x in it }` on a finite iterator (`dict(it)` on one).
+fn dict_of[K, V, I: FiniteIterator[(K, V)]](it: I) -> Dict[K, V] {
+  dict(it.to_list())
+}
+
+/// A finite iterator mapped is as long.
+impl[I: FiniteIterator[A], A, B] FiniteIterator[B] for Mapped[I, A, B] {
+  fn len(self) -> Natural {
+    self.inner.len()
+  }
+}
+
+/// A finite iterator filtered: its length is counted, on a copy (the
+/// elements `keep` keeps).
+impl[I: FiniteIterator[T], T] FiniteIterator[T] for Filtered[I, T] {
+  fn len(self) -> Natural {
+    mut n := 0
+    for x in self.inner {
+      if (self.keep)(x) {
+        n += 1
+      }
+    }
+    n
+  }
 }
 "#;
 
+/// The builtins on lists that every iterator has as methods (lazy `map`
+/// and `filter`; `fold` on a `FiniteIterator`): called on an iterator, the
+/// call is its method's. Comprehensions are made of them.
+const ITERATOR_BUILTINS: &[&str] = &["map", "filter", "fold"];
+
 /// The module the prelude's code is in, once added to a program.
 pub const PRELUDE_MODULE: &str = "std.prelude";
+
+/// A name as messages show it: a prelude trait's method short
+/// (`fold`, not `std.prelude.fold`; `FiniteIterator::len`).
+pub fn shown_name(name: &str) -> String {
+    name.replace(&format!("{PRELUDE_MODULE}."), "")
+}
 
 /// The prelude's code, parsed once (`PRELUDE_CODE`).
 pub fn prelude_code() -> &'static Program {
@@ -169,10 +219,15 @@ pub fn prelude_code() -> &'static Program {
         let mut p = crate::parser::parse_program(PRELUDE_CODE).expect("prelude code parses");
         for d in &mut p.decls {
             d.module = Symbol::new(PRELUDE_MODULE);
-            if let DeclKind::Trait(t) = &mut d.kind {
-                for m in &mut t.methods {
-                    m.decl.name = prelude_method(m.decl.name);
+            match &mut d.kind {
+                DeclKind::Trait(t) => {
+                    for m in &mut t.methods {
+                        m.decl.name = prelude_method(m.decl.name);
+                    }
                 }
+                // (named apart from the program's: `std.prelude.set_of`)
+                DeclKind::Fn(f) => f.name = prelude_method(f.name),
+                _ => {}
             }
         }
         qualify_prelude_impls(&mut p);
@@ -1223,7 +1278,7 @@ impl<'a> Checker<'a> {
         let fty = self.lower(&Self::fn_scheme(&m), &vars);
         self.self_ty = saved;
         let args: Vec<Ty> = tr.params.iter().map(|p| vars[p].clone()).collect();
-        self.pending.push((self_t, trait_name.to_string(), args, format!("calling `{name}`")));
+        self.pending.push((self_t, trait_name.to_string(), args, format!("calling `{}`", shown_name(name))));
         fty
     }
 
@@ -1540,7 +1595,7 @@ impl<'a> Checker<'a> {
                 for tr in &b.traits {
                     if let TypeExpr::Named(tn, targs) = tr {
                         let args: Vec<Ty> = targs.iter().map(|a| self.lower(a, &vars)).collect();
-                        self.pending.push((vars[&b.param].clone(), tn.to_string(), args, format!("calling `{name}`")));
+                        self.pending.push((vars[&b.param].clone(), tn.to_string(), args, format!("calling `{}`", shown_name(name))));
                     }
                 }
             }
@@ -1637,6 +1692,70 @@ impl<'a> Checker<'a> {
         (found.len() == 1).then(|| found.remove(0))
     }
 
+    /// `set(it)` / `dict(it)` (a set or dict comprehension) on a finite
+    /// iterator: the prelude's `set_of` / `dict_of`, which collect it.
+    fn collect_call(&mut self, n: &Symbol, args: &[&Expr], site: usize) -> Option<Ty> {
+        let target = match n.as_str() {
+            "set" => "set_of",
+            "dict" => "dict_of",
+            _ => return None,
+        };
+        if args.len() != 1 || self.lookup(n.sym()).is_some() || self.env.fns.contains_key(n) {
+            return None;
+        }
+        let errs = self.errors.len();
+        let at = self.infer(args[0]);
+        self.errors.truncate(errs);
+        let at = self.resolve(&at);
+        let iterable = match &at {
+            Ty::Con(h, _) => self.env.types.contains_key(h) || self.env.traits.contains_key(h),
+            Ty::Rigid(_) => true,
+            _ => false,
+        };
+        if !iterable {
+            return None;
+        }
+        let snap = (self.subst.clone(), self.pending.len());
+        let el = self.fresh();
+        if self.satisfies(&at, FINITE_ITERATOR, std::slice::from_ref(&el), 0).is_err() {
+            self.subst = snap.0;
+            self.pending.truncate(snap.1);
+            return None;
+        }
+        let f = prelude_method(Symbol::from(target));
+        self.targets.push((site, Target::Own(f.to_string())));
+        let ft = self.global_fn(&f)?;
+        Some(self.call_with(ft, args, &Lazy(|| format!("call to `{n}`")), &[]))
+    }
+
+    /// `m` called on a value of a type that has none, where a trait declares
+    /// `m` whose supertrait the type implements (`fold` on an `Iterator` that
+    /// isn't a `FiniteIterator`): what to say instead of trying the builtin.
+    fn missing_subtrait(&mut self, recv: &Expr, m: &str) -> Option<String> {
+        let n = self.errors.len();
+        let rt = self.infer(recv);
+        self.errors.truncate(n);
+        let Ty::Con(head, args) = self.resolve(&rt) else { return None };
+        if !self.env.types.contains_key(&head) || self.has_own_method(recv, m) {
+            return None;
+        }
+        let has: Vec<Symbol> = self.env.impls.iter().filter(|i| !i.is_inherent() && texpr_head(&i.for_type) == head.as_str()).map(|i| i.trait_name).collect();
+        let short = |q: &str| crate::names::short(q).to_string();
+        let shown = show_ty(&Ty::Con(head, args));
+        for (tn, td) in &self.env.traits {
+            let declares = td.methods.iter().any(|x| short(&x.decl.name) == m && crate::resolve::takes_self(&x.decl));
+            let sup = td.supers.iter().map(texpr_head).find(|s| has.iter().any(|h| h.as_str() == s.as_str()));
+            if let (true, Some(sup)) = (declares, sup) {
+                if !has.contains(tn) {
+                    let a = |w: &str| if w.starts_with(['A', 'E', 'I', 'O', 'U']) { "an" } else { "a" };
+                    let (t, s) = (short(tn), short(&sup));
+                    return Some(format!("`{m}` needs {} `{t}`: `{shown}` is {} `{s}` but not {} `{t}`", a(&t), a(&s), a(&t)));
+                }
+            }
+        }
+        None
+    }
+
     fn by_receiver(&mut self, m: &str, all: &[&Expr], site: usize, dotted: bool, recv_marked: Option<bool>) -> Option<Ty> {
         // a method of a trait the receiver's own type implements, written without the
         // trait in scope (`disk.read(path)` with only `Disk` imported)
@@ -1647,6 +1766,10 @@ impl<'a> Checker<'a> {
                 let ft = self.trait_method(&mq, &t);
                 let muts = self.mut_mask(&mq);
                 return Some(self.call_with(ft, all, &Lazy(|| format!("call to `{m}`")), &muts));
+            }
+            if let Some(msg) = all.first().and_then(|r| self.missing_subtrait(r, m)) {
+                self.err(msg);
+                return Some(self.fresh());
             }
         }
         // a function of that name takes the call, unless the receiver's type
@@ -2056,7 +2179,7 @@ impl<'a> Checker<'a> {
                 if let TypeExpr::Named(tn, targs) = tr {
                     let args: Vec<Ty> = targs.iter().map(|a| self.lower(a, &vars)).collect();
                     if let Some(v) = vars.get(&b.param) {
-                        self.pending.push((v.clone(), tn.to_string(), args, format!("calling `{}`", f.name)));
+                        self.pending.push((v.clone(), tn.to_string(), args, format!("calling `{}`", shown_name(&f.name))));
                     }
                 }
             }
@@ -2436,6 +2559,24 @@ impl<'a> Checker<'a> {
                 let args: Vec<&Expr> = args.iter().collect();
                 let args = &args[..];
                 if let Expr::Var(n) = &**f {
+                    // `map(xs, f)`, `filter`, `fold` (what comprehensions are made of) on an
+                    // iterator: its method, lazy (a list's are the builtins)
+                    if let Some(t) = self.collect_call(n, args, e as *const Expr as usize) {
+                        return t;
+                    }
+                    if ITERATOR_BUILTINS.contains(&n.as_str()) && self.lookup(n.sym()).is_none() && !self.env.fns.contains_key(n) {
+                        if let Some(&recv) = args.first() {
+                            if let Some((t, mq)) = self.implemented_method(recv, n) {
+                                self.targets.push((e as *const Expr as usize, Target::Other(t.to_string(), mq.to_string())));
+                                let ft = self.trait_method(&mq, &t);
+                                return self.call_with(ft, args, &Lazy(|| format!("call to `{n}`")), &[]);
+                            }
+                            if let Some(msg) = self.missing_subtrait(recv, n) {
+                                self.err(msg);
+                                return self.fresh();
+                            }
+                        }
+                    }
                     if let Some(t) = self.by_receiver(n, args, e as *const Expr as usize, false, None) {
                         return t;
                     }

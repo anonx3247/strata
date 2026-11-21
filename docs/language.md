@@ -403,12 +403,14 @@ An iterator that ends implements `FiniteIterator` too, a supertrait: its `len` i
 ```rust
 trait FiniteIterator[T]: Iterator[T] {
   fn len(self) -> Natural
+  fn fold[B](self, init: B, f: (B, T) -> B) -> B   // given
+  fn to_list(self) -> List[T]                      // given
 }
 ```
 
-`verify` shows that a `for` loop over a `FiniteIterator` ends, as one over a list: it relies on `len` (which it doesn't check yet). Over an iterator that may be unbounded, it says the loop may not end.
+`verify` shows that a `for` loop over a `FiniteIterator` ends, as one over a list: it relies on `len` (which it doesn't check yet). Over an iterator that may be unbounded, it says the loop may not end. `fold` is only on finite iterators: on an unbounded one it would never return (`fold` needs a `FiniteIterator`: `N` is an `Iterator` but not a `FiniteIterator`).
 
-Every iterator has `map`, `filter` and `fold`, and the first two are lazy: they give another iterator, which does the work as the loop asks for elements, so they work on unbounded iterators too.
+Every iterator has `map` and `filter`, which are lazy: they give another iterator, which does the work as the loop asks for elements, so they work on unbounded iterators too. Mapped or filtered, a finite iterator is still one (a filtered one's `len` counts the elements kept). A function passed to them must end, as the code it is written in must: `verify` follows a lambda's calls from the function it is written in (`it calls spin, which may not terminate`), which is what shows `fold` over a mapped and filtered finite iterator ends.
 
 ```rust
 type Naturals = { at: Int }   // impl Iterator[Int]: 0, 1, 2, … without end
@@ -423,7 +425,15 @@ Count { at: 0, end: 5 }.map(n -> n + 1).fold(0, (a, b) -> a + b)   // 15
 
 On a list, `xs.map(f)`, `filter` and `fold` are still the builtins, which give a list.
 
-**Not yet:** lists, sets, dicts and ranges as iterators, comprehensions over iterators (an unbounded one giving an iterator), iterators over a string's units, generators and async.
+A comprehension over an iterator is an iterator: lazy, so it can be unbounded, and finite when its source is. Set and dict comprehensions collect a finite one.
+
+```rust
+odd_squares := [n * n for n in Naturals { at: 0 } where n % 2 == 1]   // 1, 9, 25, … on demand
+[x * 2 for x in Count { at: 0, end: 4 }].to_list()                    // [0, 2, 4, 6]
+Set { x % 2 for x in Count { at: 0, end: 4 } }                        // Set { 0, 1 }
+```
+
+**Not yet:** lists, sets, dicts and ranges as iterators (so a nested comprehension's inner source must be a list), iterators over a string's units, generators and async.
 
 ## Foreign functions: `extern c`
 
