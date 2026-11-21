@@ -16,7 +16,9 @@ fn save(path: &std::path::Path, src: impl AsRef<str>) {
         .unwrap();
     c.stdin.take().unwrap().write_all(src.as_ref().as_bytes()).unwrap();
     let o = c.wait_with_output().unwrap();
-    assert!(o.status.success(), "{}: {}", path.display(), String::from_utf8_lossy(&o.stderr));
+    // stored either way: some programs here are wrong on purpose
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success() || err.contains("doesn't check"), "{}: {err}", path.display());
 }
 
 /// Store a module of the folder program `dir` (no package: its files are its
@@ -25,7 +27,8 @@ fn save_module(dir: &std::path::Path, module: &str, src: impl AsRef<str>) {
     let rel = if module == "main" { "main".to_string() } else { module.replace('.', "/") };
     let _ = std::fs::remove_file(dir.join(format!("{rel}.strata")));
     let (ok, out) = strata(&["--file", &format!("{}/", dir.display()), "edit", module], dir, Some(src.as_ref()));
-    assert!(ok, "{module}: {out}");
+    // stored either way: the folder may not check until its other modules are written
+    assert!(ok || out.contains("doesn't check"), "{module}: {out}");
 }
 
 /// A module file, as text.
@@ -3670,8 +3673,9 @@ fn derive(derive: Int) -> Int {
   derive + 1
 }
 "#;
+    // stored as written; it doesn't check (`Point` and `Pair` aren't records), as the edit says
     let (ok, out) = strata(&["--file", "d.strata", "edit"], &d, Some(text));
-    assert!(ok, "{out}");
+    assert!(!ok && out.contains("written, but") && out.contains("`Point` isn't one"), "{out}");
     let (_, rendered) = strata(&["--file", "d.strata", "render"], &d, None);
     assert_eq!(rendered, text);
     // `derive` stays an ordinary name: the function `derive` checks
@@ -3757,7 +3761,7 @@ fn main() {
     for (k, (src, want)) in bad.iter().enumerate() {
         let f = format!("bad{k}.strata");
         let (ok, out) = strata(&["--file", &f, "edit"], &d, Some(src));
-        assert!(ok, "{out}");
+        assert!(!ok && out.contains(want) && out.contains("written, but"), "{out}");
         let (ok, out) = strata(&["--file", &f, "check"], &d, None);
         assert!(!ok && out.contains(want), "{out}");
     }
@@ -3794,7 +3798,7 @@ fn self_arguments_on_trait_values() {
     let (ok, out) = strata(&["--file", "ok.strata", "run", "--interpret"], &d, None);
     assert!(ok && out == "false\nfalse\nfalse\nfalse\nfalse\n", "{out}");
     let (ok, out) = strata(&["--file", "bad.strata", "edit"], &d, Some(&src.replace("MIXED", "print(xs[0].bigger(xs[1]))")));
-    assert!(ok, "{out}");
+    assert!(!ok && out.contains("written, but") && out.contains("`bigger` takes `other: Self`"), "{out}");
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok && out.contains("`bigger` takes `other: Self`, a value of the receiver's own type, but `xs[0]` is a `Shape`") && out.contains("help: to accept any `Shape`, declare the parameter so: `other: Shape`"), "{out}");
 
@@ -3827,7 +3831,7 @@ fn json_is_derived() {
     for (k, (src, want)) in bad.iter().enumerate() {
         let f = format!("bad{k}.strata");
         let (ok, out) = strata(&["--file", &f, "edit"], &d, Some(&format!("use std.json.Json\n\n{src}\n\nderive Json for A\n")));
-        assert!(ok, "{out}");
+        assert!(!ok && out.contains(want), "{src}: {out}");
         let (ok, out) = strata(&["--file", &f, "check"], &d, None);
         assert!(!ok && out.contains(want), "{src}: {out}");
     }
@@ -3927,8 +3931,9 @@ fn comptime_code_runs_while_compiling() {
     let d = tmp("comptime-runs");
     let src = "use std.typing.Record\n\nfn shout(s: String) -> String {\n  s + \"!\"\n}\n\nfn spin(n: Int) -> Int {\n  mut i := n\n  while i > 0 { i = i + 1 }\n  i\n}\n\nderivable(Record) trait Names\n  requires len($Self.fields) > 1 {\n  derived fn names(self) -> List[String] {\n    comptime $Self.fields.map(f -> shout(f.name))\n  }\n  derived fn count(self) -> Int {\n    comptime COUNT\n  }\n}\n\ntype P = { x: Int, label: String }\n\nderive Names for P\n\nfn main() {\n  p := P { x: 1, label: \"a\" }\n  print(p.names())\n  print(p.count())\n}\n";
     let run = |count: &str| {
+        // stored either way; the edit already says when it doesn't check
         let (ok, out) = strata(&["--file", "c.strata", "edit"], &d, Some(&src.replace("COUNT", count)));
-        assert!(ok, "{out}");
+        assert!(ok || out.contains("written, but"), "{out}");
         strata(&["--file", "c.strata", "run"], &d, None)
     };
     let (ok, out) = run("(99999999999999999999999 * len($Self.fields))");
@@ -3955,7 +3960,9 @@ fn comptime_in_ordinary_code_runs_while_compiling() {
     let (ok, out) = strata(&["--file", "c.strata", "build", "--emit-llvm", "-o", "c.ll"], &d, None);
     let ir = std::fs::read_to_string(d.join("c.ll")).unwrap_or_default();
     assert!(ok && ir.contains("define") && !ir.contains("std.regex.parse") && !ir.contains("@\"strata:shout\""), "the values are constants: {out}{ir}");
-    let (_, out) = strata(&["--file", "v.strata", "edit"], &d, Some("fn main() {\n  n := 3\n  print(comptime n + 1)\n}\n"));
+    // the edit says so at once (it is stored, as a script's edit is)
+    let (ok, out) = strata(&["--file", "v.strata", "edit"], &d, Some("fn main() {\n  n := 3\n  print(comptime n + 1)\n}\n"));
+    assert!(!ok && out.contains("unknown variable `n`") && out.contains("written, but"), "{out}");
     let (ok, out2) = strata(&["--file", "v.strata", "check"], &d, None);
     assert!(!ok && out2.contains("unknown variable `n`: compile-time code can use definitions, not the variables around it"), "{out}{out2}");
 }
