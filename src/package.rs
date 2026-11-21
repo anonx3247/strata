@@ -1,5 +1,5 @@
 //! Packages. A folder with a `strata.toml` is a package; its `.strata` files
-//! are its modules, named after their path inside it (`shop/orders.strata`
+//! (binary module files) are its modules, named after their path inside it (`shop/orders.strata`
 //! is `shop.orders`, `main.strata` is the root module and the default entry
 //! point). A folder below it with its own `strata.toml` is another package.
 //! A `.strata` file outside every package is a standalone script.
@@ -17,7 +17,7 @@
 //! no_recursion = ["core"]                # ... where no function may be recursive
 //! ```
 
-use crate::ast::{Program, Symbol};
+use crate::ast::Program;
 use std::path::{Path, PathBuf};
 
 pub const FILE: &str = "strata.toml";
@@ -95,20 +95,23 @@ pub fn template(dir: &Path) -> String {
     format!("name = {name:?}\n")
 }
 
-/// A program's `.strata` files, relative to its folder, with their text: a
+/// A program's module files, relative to its folder, with their bytes: a
 /// package's (without those of packages nested in it), or a single file as `""`.
-pub fn files(path: &Path) -> Result<Vec<(PathBuf, String)>, String> {
+pub fn files(path: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
     if !path.is_dir() {
-        let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        return Ok(vec![(PathBuf::new(), src)]);
+        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        return Ok(vec![(PathBuf::new(), bytes)]);
     }
     let mut files = Vec::new();
-    for p in walk(path, "strata")? {
-        let src = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-        files.push((p.strip_prefix(path).unwrap().to_path_buf(), src));
+    for p in walk(path, EXT)? {
+        let bytes = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+        files.push((p.strip_prefix(path).unwrap().to_path_buf(), bytes));
     }
     Ok(files)
 }
+
+/// The extension of Strata files: binary module files (docs/binary-format.md).
+pub const EXT: &str = "strata";
 
 /// The files with extension `ext` in a package folder, sorted (not those of
 /// packages nested in it, nor hidden folders).
@@ -131,38 +134,35 @@ fn walk(path: &Path, ext: &str) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
-/// The program in a folder (or a single file): its files, parsed. The
-/// standard library's modules are named `std.io`, ..., also when `std/`
-/// itself is the package being worked on.
+/// The program in a folder (each `.strata` file a module) or a single file.
 pub fn program(path: &Path) -> Result<Program, String> {
-    // a folder of module files (`strata pack DIR`)
-    let binaries = if path.is_dir() { walk(path, "stb")? } else { vec![] };
-    if !binaries.is_empty() {
-        if !walk(path, "strata")?.is_empty() {
-            return Err(format!("{} has both .strata and .stb modules: keep one or the other", path.display()));
-        }
-        let mut decls = Vec::new();
-        for f in binaries {
-            let bytes = std::fs::read(&f).map_err(|e| format!("{}: {e}", f.display()))?;
-            decls.extend(crate::binary::decode_module(&bytes).map_err(|e| format!("{}: {e}", f.display()))?);
-        }
-        return Ok(Program { decls });
+    if !path.is_dir() {
+        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        return decode_file(path, &bytes);
     }
-    let mut p = parse(files(path)?)?;
-    if path.join(FILE).is_file() && load(path).is_ok_and(|p| p.name == crate::stdlib::NAME) {
-        for d in &mut p.decls {
-            d.module = if d.module.is_empty() { Symbol::from(crate::stdlib::NAME.to_string()) } else { format!("{}.{}", crate::stdlib::NAME, d.module).into() };
-        }
+    let mut decls = Vec::new();
+    for (rel, bytes) in files(path)? {
+        decls.extend(decode_file(&path.join(rel), &bytes)?.decls);
     }
-    Ok(p)
+    Ok(Program { decls })
 }
 
-/// Parse a program's files, as `files` gives them.
-pub fn parse(files: Vec<(PathBuf, String)>) -> Result<Program, String> {
-    match files.as_slice() {
-        [(rel, src)] if rel.as_os_str().is_empty() => crate::parser::parse_module_file(src, ""),
-        _ => crate::parse_files(files),
+/// Decode a program's files, as `files` gives them (a bundle, or module files).
+pub fn decode(files: Vec<(PathBuf, Vec<u8>)>) -> Result<Program, String> {
+    let mut decls = Vec::new();
+    for (rel, bytes) in files {
+        decls.extend(decode_file(&rel, &bytes)?.decls);
     }
+    Ok(Program { decls })
+}
+
+/// One file's definitions: a module file or a bundle. Text is refused: it
+/// only goes in through an edit (`strata edit`, `strata add`).
+pub fn decode_file(rel: &Path, bytes: &[u8]) -> Result<Program, String> {
+    if !crate::binary::is_binary(bytes) {
+        return Err(format!("{}: not a Strata file (code is stored in binary: text goes in through `strata edit` or `strata add`)", rel.display()));
+    }
+    crate::binary::read(bytes).map(|img| img.program).map_err(|e| format!("{}: {e}", rel.display()))
 }
 
 /// What is under `top`: package folders, and `.strata` files outside every
@@ -193,7 +193,7 @@ pub fn discover(top: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
     packages.sort();
     let mut scripts: Vec<PathBuf> = all
         .into_iter()
-        .filter(|p| p.extension().is_some_and(|e| e == "strata"))
+        .filter(|p| p.extension().is_some_and(|e| e == EXT))
         .filter(|p| !p.ancestors().skip(1).take_while(|d| d.starts_with(top)).any(|d| d.join(FILE).is_file()))
         .collect();
     scripts.sort();

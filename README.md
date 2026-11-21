@@ -44,7 +44,10 @@ $ strata --file examples/math.strata verify
 cargo build --release
 alias strata=$PWD/target/release/strata
 
-# Work directly on a file…
+# Code is stored as its syntax tree (binary .strata files): read it as text…
+strata --file examples/orders.strata render
+
+# …work directly on a file…
 strata --file examples/orders.strata check
 strata --file examples/orders.strata test
 strata --file examples/orders.strata verify

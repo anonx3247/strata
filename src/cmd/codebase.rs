@@ -10,29 +10,85 @@ pub fn init() -> Result<bool, String> {
     Ok(true)
 }
 
+/// The text an `add` or a piped `edit` brings in, as definitions: `add`'s
+/// file (text, or a module file), `edit`'s standard input; unqualified
+/// definitions go into the module named (`strata edit shop < defs`).
+fn edits_in(args: &Args, cmd: &str, p: &Program, default_module: &str) -> Result<Program, String> {
+    let module = match args.pos.get(if cmd == "add" { 2 } else { 1 }) {
+        None => default_module.to_string(),
+        Some(arg) => edit_module(p, arg).unwrap_or_else(|| arg.clone()),
+    };
+    let text = if cmd == "add" {
+        let f = args.pos.get(1).ok_or("usage: strata add <FILE> [MODULE]  (a text file, or a .strata file or folder)")?;
+        let path = std::path::Path::new(f);
+        let bytes = if path.is_dir() { vec![] } else { std::fs::read(path).map_err(|e| format!("{f}: {e}"))? };
+        if path.is_dir() || binary::is_binary(&bytes) {
+            return read_sources(f);
+        }
+        String::from_utf8(bytes).map_err(|_| format!("{f}: neither text nor a Strata file"))?
+    } else {
+        let mut s = String::new();
+        std::io::stdin().read_to_string(&mut s).map_err(|e| e.to_string())?;
+        s
+    };
+    parser::parse_module_file(&text, &module).map_err(|e| format!("parse error at {e}"))
+}
+
 /// `strata add | edit`.
 pub fn edit(args: &Args, cmd: &str, json_out: bool) -> Result<bool, String> {
+    if let Some(f) = args.val("--file") {
+        return edit_file(args, cmd, f);
+    }
     let Source::Db(mut cb) = load(&args)? else { return Err("`add`/`edit` need a codebase".into()) };
     // `strata edit` at a terminal, with nothing piped in: edit the code in an editor
     if cmd == "edit" && (args.flag("--editor") || std::io::IsTerminal::is_terminal(&std::io::stdin())) {
         return edit_in_editor(&mut cb, &args, json_out);
     }
-    let edits = if cmd == "add" {
-        let f = args.pos.get(1).ok_or("usage: strata add <file.strata | folder>")?;
-        read_sources(f, args.val("--module"))?
-    } else {
-        let mut s = String::new();
-        std::io::stdin().read_to_string(&mut s).map_err(|e| e.to_string())?;
-        // `strata edit shop < defs`: unqualified definitions go into the module `shop`
-        let module = match args.pos.get(1) {
-            None => String::new(),
-            Some(arg) => edit_module(&cb.program, arg).unwrap_or_else(|| arg.clone()),
-        };
-        parser::parse_module_file(&s, &module).map_err(|e| format!("parse error at {e}"))?
-    };
+    let edits = edits_in(args, cmd, &cb.program, "")?;
     let deletes: Vec<String> = args.flags.get("--rm").cloned().unwrap_or_default();
     let msg = args.val("-m").unwrap_or(if cmd == "add" { "import" } else { "edit" });
     Ok(apply_edit(&mut cb, cmd, edits, deletes, msg, json_out)?.is_ok())
+}
+
+/// `strata --file F edit | add`: change a file outside a package's log (a
+/// script, or a folder of module files), created if it doesn't exist. Only
+/// what doesn't parse is refused: the result is stored as it is, and checked
+/// like any program afterwards.
+fn edit_file(args: &Args, cmd: &str, f: &str) -> Result<bool, String> {
+    let path = std::path::Path::new(f);
+    let dir = path.is_dir() || f.ends_with('/');
+    if !dir {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        }
+    }
+    // a module file in a package is the module its path names
+    let in_package = if dir { None } else { store::module_at(path)? };
+    let old = if path.exists() { read_sources(f)? } else { Program::default() };
+    // a script keeps its module; a folder's definitions go into its root module by default
+    let module = match &in_package {
+        Some((_, m)) => m.clone(),
+        None if dir => String::new(),
+        None => old.decls.first().map(|d| d.module.to_string()).unwrap_or_default(),
+    };
+    let edits = edits_in(args, cmd, &old, &module)?;
+    let deletes: Vec<String> = args.flags.get("--rm").cloned().unwrap_or_default();
+    for q in &deletes {
+        if !old.decls.iter().any(|d| d.qname() == *q) {
+            return Err(format!("no definition `{q}` to remove"));
+        }
+    }
+    let new = store::merge(&old, edits, &deletes);
+    if dir {
+        store::write_modules(path, &old, &new)?;
+    } else if in_package.is_some() {
+        store::write_file(path, &store::encode_at(path, new.decls.clone())?)?;
+    } else {
+        store::write_file(path, &store::encode_script(&new))?;
+    }
+    let changes = store::changes(&old, &new);
+    println!("{f}: {} definition{} changed, {} in all", changes.len(), if changes.len() == 1 { "" } else { "s" }, new.decls.len());
+    Ok(true)
 }
 
 /// `strata rename`.
@@ -401,7 +457,7 @@ pub fn edit_in_editor(cb: &mut Codebase, args: &Args, json_out: bool) -> Result<
     };
     let dir = cb.cache_dir().join("edit");
     let _ = std::fs::remove_dir_all(&dir);
-    let file = |module: String, shown: Vec<String>, text: String| EditFile { path: dir.join(store::module_path(&module)), module, shown, text };
+    let file = |module: String, shown: Vec<String>, text: String| EditFile { path: dir.join(store::module_path(&module)).with_extension(store::TEXT_EXT), module, shown, text };
     let mut files: Vec<EditFile> = match args.pos.get(1) {
         None if mods.is_empty() => vec![file(String::new(), vec![], String::new())],
         None => mods.iter().map(|m| {

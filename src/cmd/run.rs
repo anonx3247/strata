@@ -6,7 +6,7 @@ use crate::*;
 pub fn run_program(args: &Args) -> Result<bool, String> {
     // `strata run hello.strata`: the program's path in place of --file
     let (src, rest, path) = match args.pos.get(1) {
-        Some(f) if f.ends_with(".strata") || f.ends_with(".stb") || std::path::Path::new(f).join(package::FILE).is_file() => (Source::File(read_sources(f, None)?), &args.pos[2..], f.clone()),
+        Some(f) if f.ends_with(".strata") || std::path::Path::new(f).join(package::FILE).is_file() => (Source::File(read_sources(f)?), &args.pos[2..], f.clone()),
         _ => (load(&args)?, &args.pos[1..], args.val("--file").unwrap_or(".").to_string()),
     };
     // the program's name, for `--help`: its package's, or the file's
@@ -145,7 +145,7 @@ pub fn capability(ty: &str) -> Option<interp::Value> {
 pub fn serve_program(args: &Args) -> Result<bool, String> {
     // `strata serve app/`: the program's path in place of --file
     let (src, path) = match args.pos.get(1) {
-        Some(f) => (Source::File(read_sources(f, None)?), f.clone()),
+        Some(f) => (Source::File(read_sources(f)?), f.clone()),
         None => (load(args)?, args.val("--file").unwrap_or(".").to_string()),
     };
     // the program's name, for an app's page title: its package's, or the file's

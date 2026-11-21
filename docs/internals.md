@@ -20,7 +20,7 @@
 | `src/verify.rs` | compile-time refinement checks on literals; the layered check (prove, confirm counterexamples, fuzz the rest); contract fuzzing |
 | `src/store.rs` | content-addressed codebase, dependency graph, patch log |
 | `src/merge.rs` | `strata merge-file`: three-way merge per definition, renames |
-| `src/package.rs` | packages: `strata.toml`, their files, finding packages and scripts |
+| `src/package.rs` | packages: `strata.toml`, their module files (decoded, never parsed: text goes in through `edit`), finding packages and scripts |
 | `src/git.rs` | running git |
 | `src/llvm.rs`, `src/llvm/runtime.c` | `strata build`: the elaborated program as LLVM IR (text), and the C runtime it links with (strings, printing, number formatting, faults) |
 | `src/llvm/prelude.strata` | the list built-ins in Strata, compiled with every program (module `strata.compiled`); the compiler calls them for `map`, `filter`, `sort`, ... |

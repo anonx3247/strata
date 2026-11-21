@@ -7,8 +7,14 @@
 fn bench() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     for name in ["examples/tasks", "std"] {
-        let files = crate::package::files(&root.join(name)).unwrap();
         let p = crate::package::program(&root.join(name)).unwrap();
+        // the same modules as text, to compare parsing with decoding
+        let mut texts: Vec<(String, String)> = Vec::new();
+        for d in &p.decls {
+            if !texts.iter().any(|(m, _)| *m == d.module) {
+                texts.push((d.module.to_string(), crate::printer::module_file(&p, &d.module)));
+            }
+        }
         let modules: Vec<Vec<u8>> = crate::binary::encode_modules(&p).into_iter().map(|(_, b)| b).collect();
         // the best of 10 batches of 20 runs: other load on the machine only slows a batch down
         let time = |f: &mut dyn FnMut()| {
@@ -23,7 +29,7 @@ fn bench() {
                 .min()
                 .unwrap()
         };
-        let parse = time(&mut || drop(std::hint::black_box(crate::package::parse(files.clone()).unwrap())));
+        let parse = time(&mut || drop(std::hint::black_box(texts.iter().map(|(m, t)| crate::parser::parse_module_file(t, m).unwrap()).collect::<Vec<_>>())));
         let decode = time(&mut || modules.iter().for_each(|m| drop(std::hint::black_box(crate::binary::decode_module(m).unwrap()))));
         let clone = time(&mut || drop(std::hint::black_box(p.clone())));
         let resolve = time(&mut || drop(std::hint::black_box(crate::resolve::resolve(&p))));

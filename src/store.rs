@@ -369,25 +369,10 @@ impl Codebase {
         self.log_entry(&old, message, extra)
     }
 
-    /// Rewrite the files to `new` (one file per module; a module left with no
-    /// definitions loses its file), without logging.
+    /// Rewrite the files to `new` (one module file per module; a module left
+    /// with no definitions loses its file), without logging.
     pub fn write(&mut self, new: Program) -> Result<(), String> {
-        let mut mods: BTreeSet<String> = self.program.decls.iter().map(|d| d.module.to_string()).collect();
-        mods.extend(new.decls.iter().map(|d| d.module.to_string()));
-        for m in mods {
-            let path = self.root.join(module_path(&m));
-            if new.decls.iter().any(|d| d.module == m) {
-                let text = printer::module_file(&new, &m);
-                if fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
-                    if let Some(dir) = path.parent() {
-                        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-                    }
-                    fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
-                }
-            } else if path.exists() {
-                fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            }
-        }
+        write_modules(&self.root, &self.program, &new)?;
         self.program = new;
         Ok(())
     }
@@ -475,6 +460,95 @@ impl Codebase {
         let _ = fs::write(self.cache().join("verdicts.json"), serde_json::to_string_pretty(v).unwrap());
     }
 }
+
+/// Each module of `p` as a module file: (path in its package, bytes).
+pub fn encode_files(p: &Program) -> Vec<(PathBuf, Vec<u8>)> {
+    crate::binary::encode_modules(p).into_iter().map(|(m, bytes)| (module_path(&m), bytes)).collect()
+}
+
+/// A file that is a whole program on its own (a script): one module file
+/// if it has one module (or none), else a bundle of them.
+pub fn encode_script(p: &Program) -> Vec<u8> {
+    let mut modules = p.decls.iter().map(|d| d.module);
+    match modules.next() {
+        Some(m) if modules.any(|n| n != m) => crate::binary::encode_bundle(&crate::binary::Image { manifest: None, program: p.clone() }),
+        m => crate::binary::encode_module(p, m.as_ref().map_or("", |m| m.as_str()), &graph(p)),
+    }
+}
+
+/// The module a file is: in its package, named after its path in it
+/// (`shop/orders.strata` is `shop.orders`, `main.strata` the root module,
+/// `std/io.strata` is `std.io`); a file outside every package is a script,
+/// and keeps the module it has (`None`).
+pub fn module_at(path: &Path) -> Result<Option<(crate::package::Package, String)>, String> {
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let Some(pkg) = crate::package::find(parent)? else { return Ok(None) };
+    let full = fs::canonicalize(parent).unwrap_or(parent.to_path_buf()).join(path.file_name().unwrap_or_default());
+    let rel = full.strip_prefix(&pkg.dir).map_err(|_| format!("{} is not in its package's folder", path.display()))?;
+    let mut m = rel.with_extension("").to_string_lossy().replace(std::path::MAIN_SEPARATOR, ".");
+    if m == "main" {
+        m.clear();
+    }
+    if pkg.name == crate::stdlib::NAME {
+        m = if m.is_empty() { crate::stdlib::NAME.to_string() } else { format!("{}.{m}", crate::stdlib::NAME) };
+    }
+    Ok(Some((pkg, m)))
+}
+
+/// The bytes of the file at `path` holding `decls`: in a package, the module
+/// file of its module, with the package's other files as they are on disk
+/// (a definition's header entry lists what it uses there); else a script.
+pub fn encode_at(path: &Path, mut decls: Vec<Decl>) -> Result<Vec<u8>, String> {
+    let Some((pkg, m)) = module_at(path)? else { return Ok(encode_script(&Program { decls })) };
+    let full = fs::canonicalize(path).unwrap_or(pkg.dir.join(module_path(&m)));
+    let mut all = Vec::new();
+    for (rel, bytes) in crate::package::files(&pkg.dir)? {
+        if pkg.dir.join(&rel) != full {
+            all.extend(crate::package::decode_file(&rel, &bytes)?.decls);
+        }
+    }
+    for d in &mut decls {
+        d.module = Symbol::from(m.as_str());
+    }
+    all.extend(decls);
+    let p = Program { decls: all };
+    Ok(crate::binary::encode_module(&p, &m, &graph(&p)))
+}
+
+/// Write `new`'s module files under `root`: only those whose bytes change;
+/// the files of `old`'s modules that `new` no longer has are removed.
+pub fn write_modules(root: &Path, old: &Program, new: &Program) -> Result<(), String> {
+    let files = encode_files(new);
+    for (rel, bytes) in &files {
+        let path = root.join(rel);
+        if fs::read(&path).ok().as_deref() != Some(bytes.as_slice()) {
+            if let Some(dir) = path.parent() {
+                fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            }
+            write_file(&path, bytes)?;
+        }
+    }
+    for d in &old.decls {
+        let rel = module_path(&d.module);
+        let path = root.join(&rel);
+        if !files.iter().any(|(r, _)| *r == rel) && path.exists() {
+            fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Write a file through a temporary one renamed over it, so a reader never
+/// sees half of it.
+pub fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp = path.with_extension("strata-tmp");
+    fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The extension of a module rendered as text (`strata render --split`, the
+/// files `strata edit` opens in an editor): never read as a module file.
+pub const TEXT_EXT: &str = "st";
 
 /// The log file at a package's root, committed with the sources.
 pub const LOG: &str = "strata.log";

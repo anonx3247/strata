@@ -1,6 +1,40 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+
+/// Store a program written as text at `path` (a module file): text only goes
+/// in through an edit.
+fn save(path: &std::path::Path, src: impl AsRef<str>) {
+    // the file is replaced, not edited
+    let _ = std::fs::remove_file(path);
+    let mut c = Command::new(env!("CARGO_BIN_EXE_strata"))
+        .args(["--file", &path.to_string_lossy(), "edit"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    c.stdin.take().unwrap().write_all(src.as_ref().as_bytes()).unwrap();
+    let o = c.wait_with_output().unwrap();
+    assert!(o.status.success(), "{}: {}", path.display(), String::from_utf8_lossy(&o.stderr));
+}
+
+/// Store a module of the folder program `dir` (no package: its files are its
+/// modules), written as text.
+fn save_module(dir: &std::path::Path, module: &str, src: impl AsRef<str>) {
+    let rel = if module == "main" { "main".to_string() } else { module.replace('.', "/") };
+    let _ = std::fs::remove_file(dir.join(format!("{rel}.strata")));
+    let (ok, out) = strata(&["--file", &format!("{}/", dir.display()), "edit", module], dir, Some(src.as_ref()));
+    assert!(ok, "{module}: {out}");
+}
+
+/// A module file, as text.
+fn text(path: &std::path::Path) -> String {
+    let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["render", "--file"]).arg(path).output().unwrap();
+    assert!(o.status.success(), "{}: {}", path.display(), String::from_utf8_lossy(&o.stderr));
+    String::from_utf8(o.stdout).unwrap()
+}
+
 fn strata(args: &[&str], dir: &std::path::Path, stdin: Option<&str>) -> (bool, String) {
     let mut c = Command::new(env!("CARGO_BIN_EXE_strata"))
         .args(args)
@@ -44,71 +78,62 @@ fn example_checks_tests_and_verifies() {
 fn render_round_trips() {
     let d = tmp("render");
     let (_, r1) = strata(&["--file", &example(), "render"], &d, None);
-    std::fs::write(d.join("r1.strata"), &r1).unwrap();
+    save(&d.join("r1.strata"), &r1);
     let (_, r2) = strata(&["--file", "r1.strata", "render"], &d, None);
     assert_eq!(r1, r2);
 }
 
 #[test]
-fn pack_and_unpack_a_package() {
+fn pack_a_package_into_one_file() {
     let d = tmp("pack");
     let pkg = format!("{}/examples/tasks", env!("CARGO_MANIFEST_DIR"));
-    let modules = ["core", "memory", "print", "sim"];
-    // a folder of module files, and one bundle
-    let (ok, out) = strata(&["--file", &pkg, "pack", "bin"], &d, None);
-    assert!(ok && out.contains("67 definitions in 4 module files"), "{out}");
-    for m in modules {
-        assert!(std::fs::read(d.join(format!("bin/{m}.stb"))).unwrap().starts_with(b"STRATA"));
-    }
-    let (ok, out) = strata(&["--file", &pkg, "pack", "tasks.stb"], &d, None);
+    // a package is a folder of module files; `pack` makes one bundle of it
+    let (ok, out) = strata(&["--file", &pkg, "pack", "tasks.strata"], &d, None);
     assert!(ok && out.contains("67 definitions"), "{out}");
-    // every command reads either like source
-    for input in ["bin", "tasks.stb"] {
-        let (ok, out) = strata(&["--file", input, "check"], &d, None);
-        assert!(ok && out.contains("67 definitions check"), "{out}");
-        let (ok, out) = strata(&["--file", input, "test"], &d, None);
-        assert!(ok && out.contains("0 failed"), "{out}");
-    }
+    assert!(std::fs::read(d.join("tasks.strata")).unwrap().starts_with(b"STRATA"));
+    // every command reads a bundle like the package
+    let (ok, out) = strata(&["--file", "tasks.strata", "check"], &d, None);
+    assert!(ok && out.contains("67 definitions check"), "{out}");
+    let (ok, out) = strata(&["--file", "tasks.strata", "test"], &d, None);
+    assert!(ok && out.contains("0 failed"), "{out}");
     // the header, read without decoding the definitions
-    let (ok, out) = strata(&["header", "bin/core.stb"], &d, None);
+    let (ok, out) = strata(&["header", &format!("{pkg}/core.strata")], &d, None);
     assert!(ok && out.starts_with("module core:") && out.contains("uses "), "{out}");
-    // unpacked, it is the same package, file for file
-    for (input, dir) in [("bin", "out1"), ("tasks.stb", "out2")] {
-        let (ok, out) = strata(&["unpack", input, dir], &d, None);
-        assert!(ok, "{out}");
-        let files = std::iter::once("strata.toml".to_string()).chain(modules.map(|m| format!("{m}.strata")));
-        for f in files {
-            let a = std::fs::read_to_string(format!("{pkg}/{f}")).unwrap();
-            assert_eq!(a, std::fs::read_to_string(d.join(dir).join(&f)).unwrap(), "{f}");
-        }
+    // rendered back as text, module by module, it is the package's text
+    let (ok, out) = strata(&["--file", "tasks.strata", "render", "--split", "out"], &d, None);
+    assert!(ok, "{out}");
+    for m in ["core", "memory", "print", "sim"] {
+        assert_eq!(text(std::path::Path::new(&format!("{pkg}/{m}.strata"))), std::fs::read_to_string(d.join(format!("out/{m}.st"))).unwrap(), "{m}");
     }
-    let (ok, out) = strata(&["unpack", "tasks.stb", "out1"], &d, None);
-    assert!(!ok && out.contains("not empty"), "{out}");
 }
 
 #[test]
 fn run_a_binary_file() {
     let d = tmp("pack-run");
     let hello = format!("{}/examples/hello", env!("CARGO_MANIFEST_DIR"));
-    let (ok, out) = strata(&["--file", &hello, "pack", "hello.stb"], &d, None);
+    let (ok, out) = strata(&["--file", &hello, "pack", "hello.strata"], &d, None);
     assert!(ok, "{out}");
-    let (ok, out) = strata(&["run", "hello.stb"], &d, None);
+    let (ok, out) = strata(&["run", "hello.strata"], &d, None);
     assert!(ok && out.contains("hello, world!"), "{out}");
-    std::fs::write(d.join("bad.stb"), b"STRATA\x06\x00\x05").unwrap();
-    let (ok, out) = strata(&["--file", "bad.stb", "check"], &d, None);
+    std::fs::write(d.join("bad.strata"), b"STRATA\x06\x00\x05").unwrap();
+    let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok && out.contains("corrupt binary Strata file"), "{out}");
+    // text is not read: it goes in through an edit
+    std::fs::write(d.join("text.strata"), "fn main() -> () { print(1) }\n").unwrap();
+    let (ok, out) = strata(&["run", "text.strata"], &d, None);
+    assert!(!ok && out.contains("text goes in through `strata edit`"), "{out}");
 }
 
 #[test]
 fn static_errors_are_reported() {
     let d = tmp("errors");
-    let src = std::fs::read_to_string(example()).unwrap()
+    let src = text(std::path::Path::new(&example()))
         + r#"
 fn status(o: Order) -> String { match o { Pending { .. } => "p", Shipped { .. } => "s" } }
 fn sneaky(id: OrderId) -> Bool { id.load(id) is Some }
 fn bad_qty() -> Line { Line { sku: "x", qty: 1200, unit_price: 5 } }
 "#;
-    std::fs::write(d.join("bad.strata"), src).unwrap();
+    save(&d.join("bad.strata"), src);
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok);
     assert!(out.contains("`Cancelled` is not covered"), "{out}");
@@ -119,9 +144,9 @@ fn bad_qty() -> Line { Line { sku: "x", qty: 1200, unit_price: 5 } }
 #[test]
 fn verify_finds_counterexamples() {
     let d = tmp("cex");
-    let src = std::fs::read_to_string(example()).unwrap()
+    let src = text(std::path::Path::new(&example()))
         + "fn promo(amount: Cents, coupon: Int) -> Cents requires coupon >= 0 { amount - coupon }\n";
-    std::fs::write(d.join("bug.strata"), src).unwrap();
+    save(&d.join("bug.strata"), src);
     let (ok, out) = strata(&["--file", "bug.strata", "verify", "promo"], &d, None);
     assert!(!ok && out.contains("does not satisfy `Cents`"), "{out}");
 }
@@ -155,7 +180,7 @@ test \"big integers\" {
   assert f\"{fact(21)}\" == \"51090942171709440000\"
 }
 ";
-    std::fs::write(d.join("b.strata"), src).unwrap();
+    save(&d.join("b.strata"), src);
     let (ok, out) = strata(&["--file", "b.strata", "test"], &d, None);
     assert!(ok && out.contains("1 passed"), "{out}");
     // larger than 64 bits in JSON: a number up to 2^64 - 1, or a string of digits
@@ -180,7 +205,7 @@ fn loops_forget_variables_changed_anywhere_in_their_body() {
     }
     let d = tmp("loop-changes");
     let src = "fn bump(mut x: Int) -> Int {\n  x = x + 1\n  x\n}\n\nfn count() -> Int\n  ensures it == 0\n{\n  let mut n = 0\n  let mut i = 0\n  while i < 3 {\n    let ys = [bump(mut n)]\n    i = i + 1\n  }\n  n\n}\n";
-    std::fs::write(d.join("l.strata"), src).unwrap();
+    save(&d.join("l.strata"), src);
     let (ok, out) = strata(&["--file", "l.strata", "verify"], &d, None);
     assert!(!ok && out.contains("✗ count") && !out.contains("bug in the prover"), "{out}");
 }
@@ -189,7 +214,7 @@ fn loops_forget_variables_changed_anywhere_in_their_body() {
 fn generators_read_disjunctive_refinements() {
     // without a solver everything is fuzzed: values of `Far` must be generated, not rejected 300 times
     let d = tmp("gen-or");
-    std::fs::write(d.join("g.strata"), "type Far = Int where it > 1000000 || it < -1000000\n\nfn half(x: Far) -> Int\n  ensures it != 0\n{\n  x / 2\n}\n").unwrap();
+    save(&d.join("g.strata"), "type Far = Int where it > 1000000 || it < -1000000\n\nfn half(x: Far) -> Int\n  ensures it != 0\n{\n  x / 2\n}\n");
     let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["--file", "g.strata", "verify"]).env("STRATA_SOLVER", d.join("no-solver")).current_dir(&d).output().unwrap();
     let out = String::from_utf8_lossy(&o.stdout).to_string();
     assert!(out.contains("fuzzed: 200 cases"), "{out}");
@@ -206,7 +231,7 @@ fn cross_check_catches_a_wrong_prover() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    std::fs::write(d.join("b.strata"), "type Quantity = Int where 1 <= it && it <= 99\nfn bump(q: Quantity) -> Quantity { q + 1 }\n").unwrap();
+    save(&d.join("b.strata"), "type Quantity = Int where 1 <= it && it <= 99\nfn bump(q: Quantity) -> Quantity { q + 1 }\n");
     let run = |extra: &[&str]| {
         let o = Command::new(env!("CARGO_BIN_EXE_strata"))
             .args(["--file", "b.strata", "verify"])
@@ -227,7 +252,7 @@ fn cross_check_catches_a_wrong_prover() {
 fn solver_flags_follow_the_solver() {
     // fake solvers that record how they are called: cvc5 gets its own flags
     let d = tmp("solver-flags");
-    std::fs::write(d.join("b.strata"), "type Quantity = Int where 1 <= it && it <= 99\nfn clamp(q: Quantity) -> Quantity { if q < 99 { q + 1 } else { q } }\n").unwrap();
+    save(&d.join("b.strata"), "type Quantity = Int where 1 <= it && it <= 99\nfn clamp(q: Quantity) -> Quantity { if q < 99 { q + 1 } else { q } }\n");
     for (name, version, expected) in [("cvc5", "This is cvc5 version 1.4.2", "--lang smt2 --produce-models --rlimit-per="), ("z3", "Z3 version 4.15.0 - 64 bit", "-in -T:20 rlimit=")] {
         let fake = d.join(format!("fake-{name}"));
         let log = d.join(format!("{name}.log"));
@@ -253,12 +278,9 @@ fn package_verify_policies() {
     }
     let d = tmp("policy");
     std::fs::write(d.join("strata.toml"), "name = \"pol\"\n\n[verify]\nterminates = [\"*\"]\nno_recursion = [\"core\"]\nproven = [\"core\"]\n").unwrap();
-    std::fs::write(
-        d.join("core.strata"),
-        "pub fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }\npub fn spin(n: Int) -> Int {\n  let mut k = n\n  loop {\n    if k == 1 { break }\n    k = k - 1\n  }\n  k\n}\n",
-    )
-    .unwrap();
-    std::fs::write(d.join("main.strata"), "use core.*\nfn fib(n: Natural) -> Natural { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\n").unwrap();
+    save_module(&d, "core",
+        "pub fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }\npub fn spin(n: Int) -> Int {\n  let mut k = n\n  loop {\n    if k == 1 { break }\n    k = k - 1\n  }\n  k\n}\n");
+    save_module(&d, "main", "use core.*\nfn fib(n: Natural) -> Natural { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\n");
     let (ok, out) = strata(&["--file", ".", "verify", "--cases", "20"], &d, None);
     assert!(!ok && out.contains("policy: `core.fact` is recursive (strata.toml [verify])") && out.contains("policy: `core.spin` may not terminate"), "{out}");
     assert!(!out.contains("`fib` is recursive"), "no_recursion covers only `core`: {out}");
@@ -322,7 +344,7 @@ fn ack(m: Natural, n: Natural) -> Natural {
 fn total(xs: List[Int]) -> Int { if len(xs) == 0 { 0 } else { total(drop(xs, 1)) } }
 fn skip2(n: Int) -> Int { if n == 0 { 0 } else { skip2(n - 2) } }
 ";
-    std::fs::write(d.join("t.strata"), src).unwrap();
+    save(&d.join("t.strata"), src);
     let (_, out) = strata(&["--file", "t.strata", "verify", "--checks", "--cases", "20"], &d, None);
     let after = |name: &str| -> String {
         let mut lines = out.lines().skip_while(|l| l.split_whitespace().nth(1) != Some(name));
@@ -349,7 +371,7 @@ fn skip2(n: Int) -> Int { if n == 0 { 0 } else { skip2(n - 2) } }
     // `terminates` round-trips
     let (_, r) = strata(&["--file", "t.strata", "render"], &d, None);
     assert!(r.contains("fn trusted(n: Int) -> Int\n  terminates {"), "{r}");
-    std::fs::write(d.join("r.strata"), &r).unwrap();
+    save(&d.join("r.strata"), &r);
     let (_, r2) = strata(&["--file", "r.strata", "render"], &d, None);
     assert_eq!(r, r2);
 }
@@ -369,7 +391,7 @@ fn up(n: Int) -> Bool { if n > 100 { true } else { up(n + 1) } }
 type Odd = Int where up(it)
 fn odd() -> Odd { 1 }
 ";
-    std::fs::write(d.join("h.strata"), src).unwrap();
+    save(&d.join("h.strata"), src);
     let (_, out) = strata(&["--file", "h.strata", "verify", "zero,ten,odd", "--cases", "20"], &d, None);
     assert!(out.contains("✓ zero") && out.contains("proven"), "a terminating helper is seen through: {out}");
     assert!(out.contains("✗ ten") && out.contains("found by the solver"), "{out}");
@@ -403,7 +425,7 @@ fn bad_countdown(start: Natural) -> Int {
   k
 }
 ";
-    std::fs::write(d.join("p.strata"), src).unwrap();
+    save(&d.join("p.strata"), src);
     let (ok, out) = strata(&["--file", "p.strata", "verify", "--cases", "20"], &d, None);
     assert!(!ok, "{out}");
     for name in ["area", "grow", "small", "countdown"] {
@@ -430,7 +452,7 @@ fn fine(a: Natural) -> Natural {
   a
 }
 ";
-    std::fs::write(d.join("m.strata"), src).unwrap();
+    save(&d.join("m.strata"), src);
     let (ok, out) = strata(&["--file", "m.strata", "verify", "--cases", "20"], &d, None);
     assert!(!ok && out.contains("✗ stale ") && out.contains("✗ stale_field") && out.contains("✓ fine"), "{out}");
 }
@@ -481,7 +503,7 @@ fn bad_field(h: Holder) -> Bool ensures it { h.s is Circle }
 fn common(v: One | Two) -> Positive { v.n }
 fn bad_common(v: One | Two) -> Positive { v.n - 1 }
 ";
-    std::fs::write(d.join("u.strata"), src).unwrap();
+    save(&d.join("u.strata"), src);
     let (ok, out) = strata(&["--file", "u.strata", "verify", "--cases", "20"], &d, None);
     assert!(!ok, "{out}");
     for name in ["area", "pick", "pick_area", "make", "describe", "is_sq", "lit", "nonzero", "variants", "opt", "self_eq", "common"] {
@@ -526,7 +548,7 @@ fn rep() -> Bool ensures it { replace("aaa", "aa", "b") == "ba" }
 fn bad_rep() -> Bool ensures it { replace("aaa", "aa", "b") == "bb" }
 fn empty_rep(s: String, p: String) -> String { replace(s, p, "b") }
 "#;
-    std::fs::write(d.join("s.strata"), src).unwrap();
+    save(&d.join("s.strata"), src);
     let (ok, out) = strata(&["--file", "s.strata", "verify", "--cases", "20"], &d, None);
     assert!(!ok, "{out}");
     for name in ["head", "tail", "back", "first", "neg_get", "n_chars", "find", "empty_found", "shown", "shown_len", "parsed", "digits", "ends", "rep"] {
@@ -541,7 +563,7 @@ fn empty_rep(s: String, p: String) -> String { replace(s, p, "b") }
     // leading whitespace is trimmed by the interpreter: not modelled, so not refuted either
     assert!(out.contains("~ spaced") && out.contains("replace: empty pattern"), "{out}");
     // a big index is clamped like any other
-    std::fs::write(d.join("b.strata"), "fn s(t: String) -> String { slice(t, 0, 99999999999999999999) }\n").unwrap();
+    save(&d.join("b.strata"), "fn s(t: String) -> String { slice(t, 0, 99999999999999999999) }\n");
     let (ok, out) = strata(&["--file", "b.strata", "run", "s", "[\"abc\"]"], &d, None);
     assert!(ok && out.contains("\"abc\""), "{out}");
 }
@@ -570,7 +592,7 @@ fn anchored(s: String where matches(it, "^ab$")) -> Bool ensures it { s == "ab" 
 fn far() -> Bool ensures it { len("TAG") == 9 }
 "#
     .replace("TAG", "\u{E0041}");
-    std::fs::write(d.join("r.strata"), src).unwrap();
+    save(&d.join("r.strata"), src);
     let (ok, out) = strata(&["--file", "r.strata", "verify", "--cases", "20"], &d, None);
     assert!(!ok, "{out}");
     for name in ["f", "word", "letters", "spaces", "nbsp", "caseless", "kelvin", "arabic", "anchored"] {
@@ -618,8 +640,8 @@ fn smt_knows_what_holds_for_every_element() {
         return;
     }
     let d = tmp("smt-elements");
-    let src = std::fs::read_to_string(format!("{}/tests/data/elements.strata", env!("CARGO_MANIFEST_DIR"))).unwrap();
-    std::fs::write(d.join("e.strata"), src).unwrap();
+    let src = text(std::path::Path::new(&format!("{}/tests/data/elements.strata", env!("CARGO_MANIFEST_DIR"))));
+    save(&d.join("e.strata"), src);
     let (ok, out) = strata(&["--file", "e.strata", "verify", "--cases", "30"], &d, None);
     assert!(!ok, "{out}");
     for name in ["positives", "doubled", "digits", "lit", "pushed", "joined", "all_from", "first_big", "found", "rest_ok", "empty_is_fine"] {
@@ -670,7 +692,7 @@ fn total(lines: List[Line]) -> Cents { sum(lines.map(line_total)) }
 fn checked(a: Int, b: Int) -> Int requires b != 0 { a % b }
 fn use_checked(a: Int) -> Int { checked(a, a - 3) }
 "#;
-    std::fs::write(d.join("s.strata"), src).unwrap();
+    save(&d.join("s.strata"), src);
     let (ok, out) = strata(&["--file", "s.strata", "verify"], &d, None);
     assert!(!ok, "{out}");
     let line = |name: &str| out.lines().find(|l| l.split_whitespace().nth(1) == Some(name)).unwrap_or("").to_string();
@@ -682,7 +704,7 @@ fn use_checked(a: Int) -> Int { checked(a, a - 3) }
     }
     assert!(out.contains("division by zero") && out.contains("100 does not satisfy `Quantity`"), "{out}");
     // what can't be proven is fuzzed, with the reason
-    std::fs::write(d.join("f.strata"), "fn mean(xs: List[Int]) -> Int where it >= 0 { if len(xs) == 0 { 0 } else { abs(xs.fold(0, (a, x) -> a + x)) / len(xs) } }\nfn neg(xs: List[Int]) -> Natural { xs.fold(0, (a, x) -> a + x) }\n").unwrap();
+    save(&d.join("f.strata"), "fn mean(xs: List[Int]) -> Int where it >= 0 { if len(xs) == 0 { 0 } else { abs(xs.fold(0, (a, x) -> a + x)) / len(xs) } }\nfn neg(xs: List[Int]) -> Natural { xs.fold(0, (a, x) -> a + x) }\n");
     let (ok, out) = strata(&["--file", "f.strata", "verify"], &d, None);
     assert!(!ok && out.contains("~ mean") && out.contains("not proven: result of `mean`") && out.contains("`fold` is not modelled") && out.contains("✗ neg") && out.contains("found by the fuzzer"), "{out}");
     let (ok, out) = strata(&["--file", "s.strata", "verify", "bad_caller", "--smt"], &d, None);
@@ -736,7 +758,7 @@ fn builtin_collections_work() {
     assert!(ok && out.contains("2 passed"), "{out}");
     let (ok, out) = strata(&["--file", &ex, "verify"], &d, None);
     assert!(ok, "{out}");
-    std::fs::write(d.join("e.strata"), "fn f(x: Int) -> Float { x * 1.5 }\nfn g(b: Bool) -> Int { len(b) }\n").unwrap();
+    save(&d.join("e.strata"), "fn f(x: Int) -> Float { x * 1.5 }\nfn g(b: Bool) -> Int { len(b) }\n");
     let (ok, out) = strata(&["--file", "e.strata", "check"], &d, None);
     assert!(!ok && out.contains("no version of `len` accepts (Bool)") && out.contains("expected `Int`, found `Float`"), "{out}");
 }
@@ -747,7 +769,7 @@ fn every_example_round_trips_through_render() {
     for ex in ["bank.strata", "orders.strata", "builtins.strata", "traits.strata"] {
         let path = format!("{}/examples/{ex}", env!("CARGO_MANIFEST_DIR"));
         let (_, r1) = strata(&["--file", &path, "render"], &d, None);
-        std::fs::write(d.join("r.strata"), &r1).unwrap();
+        save(&d.join("r.strata"), &r1);
         let (_, r2) = strata(&["--file", "r.strata", "render"], &d, None);
         assert_eq!(r1, r2, "{ex} does not round-trip");
         let (ok, out) = strata(&["--file", "r.strata", "test"], &d, None);
@@ -757,11 +779,17 @@ fn every_example_round_trips_through_render() {
     let path = format!("{}/examples/tasks", env!("CARGO_MANIFEST_DIR"));
     let (ok, out) = strata(&["--file", &path, "render", "--split", "t1"], &d, None);
     assert!(ok, "{out}");
-    let (ok, out) = strata(&["--file", "t1", "render", "--split", "t2"], &d, None);
+    // the text read back in, module by module, prints the same
+    std::fs::create_dir_all(d.join("t2")).unwrap();
+    std::fs::copy(format!("{path}/strata.toml"), d.join("t2/strata.toml")).unwrap();
+    for m in ["core", "memory", "print", "sim"] {
+        save(&d.join(format!("t2/{m}.strata")), std::fs::read_to_string(d.join(format!("t1/{m}.st"))).unwrap());
+    }
+    let (ok, out) = strata(&["--file", "t2", "render", "--split", "t3"], &d, None);
     assert!(ok, "{out}");
     for m in ["core", "memory", "print", "sim"] {
-        let f = format!("{m}.strata");
-        assert_eq!(std::fs::read_to_string(d.join("t1").join(&f)).unwrap(), std::fs::read_to_string(d.join("t2").join(&f)).unwrap(), "tasks/{f} does not round-trip");
+        let f = format!("{m}.st");
+        assert_eq!(std::fs::read_to_string(d.join("t1").join(&f)).unwrap(), std::fs::read_to_string(d.join("t3").join(&f)).unwrap(), "tasks/{f} does not round-trip");
     }
     let (ok, out) = strata(&["--file", "t2", "test"], &d, None);
     assert!(ok, "tasks tests fail after round-trip: {out}");
@@ -770,15 +798,12 @@ fn every_example_round_trips_through_render() {
 #[test]
 fn inline_refinements_in_signatures() {
     let d = tmp("inline");
-    std::fs::write(
-        d.join("i.strata"),
+    save(&d.join("i.strata"),
         "fn pick(level: Int where 5 <= it && it <= 13) -> Positive { level - 4 }\n\
-         fn halve_up(n: Natural) -> Int where it * 2 <= n { (n + 1) / 2 }\n",
-    )
-    .unwrap();
+         fn halve_up(n: Natural) -> Int where it * 2 <= n { (n + 1) / 2 }\n");
     let (ok, out) = strata(&["--file", "i.strata", "verify"], &d, None);
     assert!(!ok && passed(&out, "pick") && out.contains("does not satisfy `Int where it * 2 <= n`"), "{out}");
-    std::fs::write(d.join("c.strata"), "fn pick(level: Int where 5 <= it && it <= 13) -> Int { level }\nfn caller() -> Int { pick(20) }\n").unwrap();
+    save(&d.join("c.strata"), "fn pick(level: Int where 5 <= it && it <= 13) -> Int { level }\nfn caller() -> Int { pick(20) }\n");
     let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
     assert!(!ok && out.contains("20 does not satisfy `Int where 5 <= it && it <= 13`"), "{out}");
 }
@@ -792,8 +817,7 @@ fn traits_laws_and_distinct_types() {
     let (ok, out) = strata(&["--file", &ex, "verify"], &d, None);
     assert!(!ok && out.contains("law `associative` does not hold for `Midpoint`") && out.contains("~ law associative for Money"), "{out}");
     assert!(passed(&out, "combine_all") && passed(&out, "receipt"), "bounded generics checked at an implementing type: {out}");
-    std::fs::write(
-        d.join("e.strata"),
+    save(&d.join("e.strata"),
         "type Name = String\n\
          distinct type UserId = String where matches(it, \"u_[0-9]+\")\n\
          distinct type OrderId = String where matches(it, \"o_[0-9]+\")\n\
@@ -801,9 +825,7 @@ fn traits_laws_and_distinct_types() {
          fn mixed(o: OrderId) -> UserId { o }\n\
          fn lit() -> UserId { UserId(\"alice\") }\n\
          fn nobound[T](xs: List[T]) -> Int { sum(xs.map(price)) }\n\
-         fn notimpl() -> Int { true.price() }\n",
-    )
-    .unwrap();
+         fn notimpl() -> Int { true.price() }\n");
     let (ok, out) = strata(&["--file", "e.strata", "check"], &d, None);
     assert!(!ok, "{out}");
     for needle in [
@@ -825,25 +847,23 @@ fn modules_contracts_and_files() {
     let (ok, out) = strata(&["--file", &ex, "render", "--split", "split"], &d, None);
     assert!(ok, "{out}");
     for m in ["core", "memory", "print", "sim"] {
-        let f = format!("{m}.strata");
-        assert_eq!(std::fs::read_to_string(format!("{ex}/{f}")).unwrap(), std::fs::read_to_string(d.join("split").join(&f)).unwrap(), "{f}");
+        assert_eq!(text(std::path::Path::new(&format!("{ex}/{m}.strata"))), std::fs::read_to_string(d.join(format!("split/{m}.st"))).unwrap(), "{m}");
     }
     // `render` prints one module; with several it asks which
     let (ok, out) = strata(&["--file", &ex, "render", "core"], &d, None);
-    assert!(ok && out == std::fs::read_to_string(format!("{ex}/core.strata")).unwrap(), "{out}");
+    assert!(ok && out == text(std::path::Path::new(&format!("{ex}/core.strata"))), "{out}");
     let (ok, out) = strata(&["--file", &ex, "render"], &d, None);
     assert!(!ok && out.contains("4 modules, one file each"), "{out}");
     // `module` blocks are gone: a file is a module
-    std::fs::write(d.join("blocks.strata"), "module a {\n  fn f() -> Int {\n    1\n  }\n}\n").unwrap();
-    let (ok, _) = strata(&["--file", "blocks.strata", "check"], &d, None);
+    let (ok, _) = strata(&["--file", "blocks.strata", "edit"], &d, Some("module a {\n  fn f() -> Int {\n    1\n  }\n}\n"));
     assert!(!ok, "`module a {{ }}` must not parse");
     // the contract shows public definitions only
     let (ok, out) = strata(&["--file", &ex, "interface", "core"], &d, None);
     assert!(ok && out.contains("pub fn run_worker") && !out.contains("same_ids"), "{out}");
     // private definitions are not part of the contract
     std::fs::create_dir_all(d.join("p")).unwrap();
-    std::fs::write(d.join("p/a.strata"), "pub fn open() -> Int { secret() }\nfn secret() -> Int { 1 }\n").unwrap();
-    std::fs::write(d.join("p/b.strata"), "use a.*\nfn f() -> Int { open() + secret() }\nfn g() -> Int { a.secret() }\n").unwrap();
+    save_module(&d.join("p"), "a", "pub fn open() -> Int { secret() }\nfn secret() -> Int { 1 }\n");
+    save_module(&d.join("p"), "b", "use a.*\nfn f() -> Int { open() + secret() }\nfn g() -> Int { a.secret() }\n");
     let (ok, out) = strata(&["--file", "p", "check"], &d, None);
     assert!(!ok && out.contains("`secret` is private to module `a`") && out.contains("`a.secret` is private to module `a`"), "{out}");
     // a package keeps qualified names; a private edit leaves dependents alone
@@ -856,7 +876,7 @@ fn modules_contracts_and_files() {
     }
     let (ok, out) = strata(&["edit", "core"], &pkg, Some("fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool { len(claimed) == len(reported) && all(claimed, c -> count(reported, r -> r == c) == 1) && all(reported, r -> contains(claimed, r)) }"));
     assert!(ok && out.contains("core.same_ids") && out.contains("implementation only"), "{out}");
-    assert!(std::fs::read_to_string(pkg.join("core.strata")).unwrap().contains("all(reported, r -> contains(claimed, r))"), "the edit is in the file");
+    assert!(text(&pkg.join("core.strata")).contains("all(reported, r -> contains(claimed, r))"), "the edit is in the file");
     let (ok, out) = strata(&["test"], &pkg, None);
     assert!(ok && out.contains("0 failed"), "{out}");
 }
@@ -864,24 +884,20 @@ fn modules_contracts_and_files() {
 #[test]
 fn procedural_mutation_is_explicit() {
     let d = tmp("mutation");
-    std::fs::write(
-        d.join("m.strata"),
+    save(&d.join("m.strata"),
         "type Line = { qty: Int where 1 <= it && it <= 99 }\n\
          fn restock(mut line: Line, extra: Int) -> () { line.qty = line.qty + extra }\n\
          fn sum(xs: List[Int]) -> Int {\n  let mut s = 0\n  for x in xs { s = s + x }\n  s\n}\n\
          test \"ok\" {\n  let mut l = Line { qty: 2 }\n  restock(mut l, 3)\n  assert l.qty == 5\n  assert sum([1, 2, 3]) == 6\n}\n\
-         test \"refined\" {\n  let mut l = Line { qty: 98 }\n  restock(mut l, 5)\n}\n",
-    )
-    .unwrap();
+         test \"refined\" {\n  let mut l = Line { qty: 98 }\n  restock(mut l, 5)\n}\n");
     let (ok, out) = strata(&["--file", "m.strata", "test"], &d, None);
     assert!(!ok && out.contains("✓ ok") && out.contains("103 does not satisfy"), "{out}");
-    std::fs::write(d.join("e.strata"), "fn f() -> Int {\n  let x = 1\n  x = 2\n  x\n}\nfn g() -> Int {\n  let mut y = 0\n  let add = z -> { y = y + z; y }\n  add(1)\n}\n").unwrap();
+    save(&d.join("e.strata"), "fn f() -> Int {\n  let x = 1\n  x = 2\n  x\n}\nfn g() -> Int {\n  let mut y = 0\n  let add = z -> { y = y + z; y }\n  add(1)\n}\n");
     let (ok, out) = strata(&["--file", "e.strata", "check"], &d, None);
     assert!(!ok && out.contains("`x`: it is not mutable") && out.contains("a closure cannot change `y`"), "{out}");
 
     // a call that can change an argument says so: `mut` at the call site
-    std::fs::write(
-        d.join("c.strata"),
+    save(&d.join("c.strata"),
         "type Line = { qty: Int }\n\
          trait Counter { fn tick(mut self) -> ()  fn peek(self) -> Int }\n\
          impl Counter for Line { fn tick(mut self) -> () { self.qty = self.qty + 1 }  fn peek(self) -> Int { self.qty } }\n\
@@ -895,8 +911,7 @@ fn procedural_mutation_is_explicit() {
          fn needless_receiver() -> Int {\n  let mut l = Line { qty: 1 }\n  mut l.peek()\n}\n\
          fn stray() -> Int {\n  let mut n = 1\n  let m = mut n\n  m\n}\n\
          fn first(ls: List[Line]) -> Line { Line { qty: 1 } }\n",
-    )
-    .unwrap();
+    );
     let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
     assert!(!ok, "{out}");
     assert!(out.contains("in unmarked: `restock` can change its `mut line` parameter: write `mut l` to show that `l` may change"), "{out}");
@@ -908,8 +923,7 @@ fn procedural_mutation_is_explicit() {
     assert!(out.contains("in needless_receiver: `mut l.peek(…)`: `peek` doesn't change its receiver"), "{out}");
     assert!(out.contains("in stray: `mut n` marks an argument"), "{out}");
     // results are not places: name them first
-    std::fs::write(d.join("r.strata"), "fn f(xs: List[Int]) -> () {\n  mut first(xs).tick()\n}\n").unwrap();
-    let (ok, out) = strata(&["--file", "r.strata", "check"], &d, None);
+    let (ok, out) = strata(&["--file", "r.strata", "edit"], &d, Some("fn f(xs: List[Int]) -> () {\n  mut first(xs).tick()\n}\n"));
     assert!(!ok && out.contains("only a variable or a field can be `mut`"), "{out}");
     let (ok, out) = strata(&["--file", "c.strata", "render"], &d, None);
     assert!(ok && out.contains("restock(mut l, 1)"), "{out}");
@@ -918,13 +932,10 @@ fn procedural_mutation_is_explicit() {
 #[test]
 fn loops_chains_and_80_columns() {
     let d = tmp("fmt");
-    std::fs::write(
-        d.join("l.strata"),
+    save(&d.join("l.strata"),
         "fn steps(start: Positive) -> Natural {\n  let mut n = start\n  let mut k = 0\n  loop {\n    if n == 1 { break }\n    n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 }\n    k = k + 1\n  }\n  k\n}\n\
          fn top(xs: List[Int]) -> Int {\n  xs\n    .filter(x -> x > 0)\n    .sort()\n    .reverse()\n    .take(3)\n    .sum()\n}\n\
-         test \"t\" {\n  assert steps(6) == 8\n  assert top([5, -1, 9, 2, 7]) == 21\n}\n",
-    )
-    .unwrap();
+         test \"t\" {\n  assert steps(6) == 8\n  assert top([5, -1, 9, 2, 7]) == 21\n}\n");
     let (ok, out) = strata(&["--file", "l.strata", "test"], &d, None);
     assert!(ok, "{out}");
     let ex = format!("{}/examples/tasks", env!("CARGO_MANIFEST_DIR"));
@@ -981,7 +992,7 @@ fn label(s: Status) -> String {
   }
 }
 "#;
-    std::fs::write(d.join("c.strata"), src).unwrap();
+    save(&d.join("c.strata"), src);
     let (ok, r1) = strata(&["--file", "c.strata", "render"], &d, None);
     assert!(ok, "{r1}");
     for c in ["// file header\n//\n// second paragraph\n\n// section banner\n/// A status.", "  // waiting\n  | Pending", "  // finished\n  | Done",
@@ -989,16 +1000,15 @@ fn label(s: Status) -> String {
         "  // the common case first\n  // one\n  let n = 1\n\n  let m = n\n  match", "    // still going\n    Pending", "    // all good\n    Done"] {
         assert!(r1.contains(c), "missing {c:?} in\n{r1}");
     }
-    std::fs::write(d.join("r1.strata"), &r1).unwrap();
+    save(&d.join("r1.strata"), &r1);
     let (_, r2) = strata(&["--file", "r1.strata", "render"], &d, None);
     assert_eq!(r1, r2);
     let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
     assert!(ok, "{out}");
 
     // a comment the tree has no place for is an error, not silently dropped
-    std::fs::write(d.join("bad.strata"), "fn f(a: Int, // why\n  b: Int) -> Int { a }\n").unwrap();
-    let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
-    assert!(!ok && out.contains("bad.strata:1:14: this comment would be lost"), "{out}");
+    let (ok, out) = strata(&["--file", "bad.strata", "edit"], &d, Some("fn f(a: Int, // why\n  b: Int) -> Int { a }\n"));
+    assert!(!ok && out.contains("1:14: this comment would be lost"), "{out}");
 
     // editing a comment changes the definition, but not its interface
     let hash = |file: &str| {
@@ -1006,7 +1016,7 @@ fn label(s: Status) -> String {
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         (v["hash"].as_str().unwrap().to_string(), v["interface_hash"].as_str().unwrap().to_string())
     };
-    std::fs::write(d.join("c2.strata"), src.replace("points down", "points up")).unwrap();
+    save(&d.join("c2.strata"), src.replace("points down", "points up"));
     let (a, b) = (hash("c.strata"), hash("c2.strata"));
     assert_ne!(a.0, b.0);
     assert_eq!(a.1, b.1);
@@ -1032,9 +1042,9 @@ test "boxes" {
 }
 "#;
     // a package written by hand: its files are its modules
-    std::fs::write(d.join("a.strata"), a).unwrap();
-    std::fs::write(d.join("b.strata"), b).unwrap();
     assert!(strata(&["init"], &d, None).0);
+    save(&d.join("a.strata"), a);
+    save(&d.join("b.strata"), b);
 
     // names that a local or another definition would capture are refused
     let (ok, out) = strata(&["rename", "a.size", "count"], &d, None);
@@ -1058,7 +1068,7 @@ test "boxes" {
     let (_, log) = strata(&["log", "--json"], &d, None);
     assert!(log.contains(r#""from":"a.size""#) && log.contains(r#""to":"a.length""#), "{log}");
     // the files are the source; the log is next to them, to be committed
-    assert!(std::fs::read_to_string(d.join("b.strata")).unwrap().contains("fn total(b: Crate)"));
+    assert!(text(&d.join("b.strata")).contains("fn total(b: Crate)"));
     assert_eq!(std::fs::read_to_string(d.join("strata.log")).unwrap().lines().count(), 2);
     // the log replays backwards from the files: the first step starts from what was written by hand
     let (ok, out) = strata(&["diff", "--from", "0", "--step", "0"], &d, None);
@@ -1068,20 +1078,22 @@ test "boxes" {
 /// Run the `test` blocks of `src` and check that it round-trips through `render`.
 fn run_tests(name: &str, src: &str, passed: &str) {
     let d = tmp(&format!("lang-{name}"));
-    std::fs::write(d.join("a.strata"), src).unwrap();
+    save(&d.join("a.strata"), src);
     let (ok, out) = strata(&["--file", "a.strata", "test"], &d, None);
     assert!(ok && out.contains(passed), "{out}");
     let (_, r1) = strata(&["--file", "a.strata", "render"], &d, None);
-    std::fs::write(d.join("r1.strata"), &r1).unwrap();
+    save(&d.join("r1.strata"), &r1);
     let (_, r2) = strata(&["--file", "r1.strata", "render"], &d, None);
     assert_eq!(r1, r2);
 }
 
 /// `check` on `src` fails with a message containing `msg`.
+/// `src` is refused: it doesn't parse (the edit storing it fails), or it
+/// doesn't check.
 fn check_fails(name: &str, src: &str, msg: &str) {
     let d = tmp(&format!("lang-{name}"));
-    std::fs::write(d.join("a.strata"), src).unwrap();
-    let (ok, out) = strata(&["--file", "a.strata", "check"], &d, None);
+    let (ok, out) = strata(&["--file", "a.strata", "edit"], &d, Some(src));
+    let (ok, out) = if ok { strata(&["--file", "a.strata", "check"], &d, None) } else { (ok, out) };
     assert!(!ok && out.contains(msg), "{out}");
 }
 
@@ -1315,14 +1327,14 @@ fn diff_shows_changes_structurally() {
 #[test]
 fn unions_variants_as_types_and_narrowing() {
     let d = tmp("unions");
-    std::fs::write(d.join("u.strata"), UNIONS).unwrap();
-    std::fs::write(d.join("t.strata"), TRAITS_PATHS).unwrap();
+    save(&d.join("u.strata"), UNIONS);
+    save(&d.join("t.strata"), TRAITS_PATHS);
     for f in ["u.strata", "t.strata"] {
         let (ok, out) = strata(&["--file", f, "test"], &d, None);
         assert!(ok && out.contains("1 passed"), "{out}");
         let (ok, r1) = strata(&["--file", f, "render"], &d, None);
         assert!(ok, "{r1}");
-        std::fs::write(d.join("r.strata"), &r1).unwrap();
+        save(&d.join("r.strata"), &r1);
         let (_, r2) = strata(&["--file", "r.strata", "render"], &d, None);
         assert_eq!(r1, r2);
     }
@@ -1332,7 +1344,7 @@ fn unions_variants_as_types_and_narrowing() {
     let (ok, out) = strata(&["--file", "u.strata", "run", "max_of", r#"["NonEmptyErr"]"#], &d, None);
     assert!(!ok && out.contains("expected a `TooBig`"), "{out}");
 
-    std::fs::write(d.join("bad.strata"), BAD).unwrap();
+    save(&d.join("bad.strata"), BAD);
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok);
     for e in [
@@ -1350,8 +1362,8 @@ fn unions_variants_as_types_and_narrowing() {
 
     // a variant is a type, so its name is unique across the project
     std::fs::create_dir_all(d.join("clash")).unwrap();
-    std::fs::write(d.join("clash/a.strata"), "pub type Status = | Done | Open\n").unwrap();
-    std::fs::write(d.join("clash/b.strata"), "pub type Outcome = | Done | Failed\n").unwrap();
+    save_module(&d.join("clash"), "a", "pub type Status = | Done | Open\n");
+    save_module(&d.join("clash"), "b", "pub type Outcome = | Done | Failed\n");
     let (ok, out) = strata(&["--file", "clash", "check"], &d, None);
     assert!(!ok && out.contains("variant `a.Done` of `a.Status` has the same name as the variant `b.Done` of `b.Outcome`"), "{out}");
 }
@@ -1537,17 +1549,17 @@ fn mixed() -> Int {
 fn or_patterns_refined_scrutinees_lengths_floats_and_variance() {
     let d = tmp("patterns2");
     for (f, src) in [("or.strata", OR_PATTERNS), ("dom.strata", DOMAINS)] {
-        std::fs::write(d.join(f), src).unwrap();
+        save(&d.join(f), src);
         let (ok, out) = strata(&["--file", f, "test"], &d, None);
         assert!(ok && out.contains("1 passed"), "{out}");
         let (ok, r1) = strata(&["--file", f, "render"], &d, None);
         assert!(ok, "{r1}");
-        std::fs::write(d.join("r.strata"), &r1).unwrap();
+        save(&d.join("r.strata"), &r1);
         let (_, r2) = strata(&["--file", "r.strata", "render"], &d, None);
         assert_eq!(r1, r2);
     }
     let check = |name: &str, src: &str| {
-        std::fs::write(d.join(name), src).unwrap();
+        save(&d.join(name), src);
         strata(&["--file", name, "check"], &d, None)
     };
     let (ok, out) = check("bad.strata", DOMAINS_BAD);
@@ -1567,7 +1579,7 @@ fn or_patterns_refined_scrutinees_lengths_floats_and_variance() {
     assert_eq!(errors.len(), 2, "{out}");
     assert!(out.contains("in lit: refinement violated at compile time in assigning `x`: -1 does not satisfy `Positive`"), "{out}");
     assert!(out.contains("in wb: call to `set_neg`, argument 1: `p` is declared `Positive`, but the `mut` parameter is `Int`"), "{out}");
-    std::fs::write(d.join("mut_run.strata"), "fn a(mut n: Positive) -> Int {\n  n = n - 10\n  n\n}\n").unwrap();
+    save(&d.join("mut_run.strata"), "fn a(mut n: Positive) -> Int {\n  n = n - 10\n  n\n}\n");
     let (ok, out) = strata(&["--file", "mut_run.strata", "run", "a", "[3]"], &d, None);
     assert!(!ok && out.contains("assigning `n`: -7 does not satisfy `Positive`"), "{out}");
     let (ok, out) = check("or_bad.strata", "type Light = | Red | Amber | Green\nfn a(l: Light) -> Bool { match l { Red | Amber => false } }\nfn b(p: (Int, Int)) -> Int { match p { (0, x) | (y, 0) => 1, _ => 2 } }\n");
@@ -1732,14 +1744,17 @@ fn wb_ok() -> Int {
 }
 "#;
 
-/// Run `strata merge-file` on three texts: (exit ok, merged text, output).
+/// Run `strata merge-file` on three module files, given as text: (exit ok,
+/// merged text, output). A conflict leaves the file as text.
 fn merge3(name: &str, base: &str, ours: &str, theirs: &str) -> (bool, String, String) {
     let d = tmp(name);
     for (f, t) in [("o.strata", base), ("a.strata", ours), ("b.strata", theirs)] {
-        std::fs::write(d.join(f), t).unwrap();
+        save(&d.join(f), t);
     }
     let (ok, out) = strata(&["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"], &d, None);
-    (ok, std::fs::read_to_string(d.join("a.strata")).unwrap(), out)
+    let bytes = std::fs::read(d.join("a.strata")).unwrap();
+    let merged = if bytes.starts_with(b"STRATA") { text(&d.join("a.strata")) } else { String::from_utf8(bytes).unwrap() };
+    (ok, merged, out)
 }
 
 #[test]
@@ -1810,9 +1825,13 @@ fn merge_file_follows_renames_and_type_checks() {
     let (ok, _, out) = merge3("merge-semantic", base, ours, &theirs);
     assert!(!ok && out.contains("doesn't check") && out.contains("double_square"), "{out}");
 
-    // sides that don't parse are merged as text
-    let (ok, text, out) = merge3("merge-text", "fn (\n", "fn (\nours\n", "fn (\n");
-    assert!(ok && text == "fn (\nours\n" && out.contains("merging it as text"), "{out}");
+    // sides that aren't module files are left alone: ours stays
+    let d = tmp("merge-text");
+    for (f, t) in [("o.strata", "fn (\n"), ("a.strata", "fn (\nours\n"), ("b.strata", "fn (\n")] {
+        std::fs::write(d.join(f), t).unwrap();
+    }
+    let (ok, out) = strata(&["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"], &d, None);
+    assert!(!ok && out.contains("can't merge") && std::fs::read_to_string(d.join("a.strata")).unwrap() == "fn (\nours\n", "{out}");
 }
 
 fn git(dir: &std::path::Path, args: &[&str]) -> String {
@@ -1854,15 +1873,16 @@ fn ci_checks_packages_scripts_and_canonical_format() {
     git(&d, &["init", "-q", "-b", "main"]);
     std::fs::create_dir_all(d.join("shop/tools")).unwrap();
     std::fs::write(d.join("shop/strata.toml"), "name = \"shop\"\nexports = [\"orders.total\"]\n").unwrap();
-    std::fs::write(d.join("shop/orders.strata"), "pub fn total(xs: List[Int]) -> Int { sum(xs) }\n").unwrap();
-    std::fs::write(d.join("shop/main.strata"), "use orders.total\n\nfn run() -> Int {\n  total([1, 2])\n}\n").unwrap();
+    // main is stored before orders exists: its header says `run` uses nothing
+    save(&d.join("shop/main.strata"), "use orders.total\n\nfn run() -> Int {\n  total([1, 2])\n}\n");
+    save(&d.join("shop/orders.strata"), "pub fn total(xs: List[Int]) -> Int { sum(xs) }\n");
     // a package nested in another is a separate program: its `use` doesn't see shop's modules
     std::fs::write(d.join("shop/tools/strata.toml"), "name = \"tools\"\n").unwrap();
-    std::fs::write(d.join("shop/tools/main.strata"), "fn one() -> Int {\n  1\n}\n").unwrap();
+    save(&d.join("shop/tools/main.strata"), "fn one() -> Int {\n  1\n}\n");
     // a file outside every package is a script
-    std::fs::write(d.join("loose.strata"), "fn x() -> Int {\n  1\n}\n").unwrap();
+    save(&d.join("loose.strata"), "fn x() -> Int {\n  1\n}\n");
     let (ok, out) = strata_git(&["ci"], &d);
-    assert!(!ok && out.contains("shop/orders.strata: not in canonical format"), "{out}");
+    assert!(!ok && out.contains("shop/main.strata: not in canonical form"), "{out}");
     assert!(out.contains("✓ package shop (shop): 3 definitions") && out.contains("✓ package tools (shop/tools): 1 definitions") && out.contains("✓ loose.strata"), "{out}");
     let (ok, out) = strata_git(&["ci", "--fix"], &d);
     assert!(ok, "{out}");
@@ -1889,21 +1909,21 @@ fn sync_merges_main_with_the_driver_then_checks() {
     let d = tmp("sync");
     git(&d, &["init", "-q", "-b", "main"]);
     let base = "fn f(x: Int) -> Int {\n  x + 1\n}\n\nfn g(x: Int) -> Int {\n  x * 2\n}\n";
-    std::fs::write(d.join("app.strata"), base).unwrap();
+    save(&d.join("app.strata"), base);
     git(&d, &["add", "."]);
     git(&d, &["commit", "-q", "-m", "base"]);
     git(&d, &["checkout", "-q", "-b", "feature"]);
-    std::fs::write(d.join("app.strata"), "fn g(x: Int) -> Int {\n  x * 2\n}\n").unwrap();
+    save(&d.join("app.strata"), "fn g(x: Int) -> Int {\n  x * 2\n}\n");
     git(&d, &["commit", "-q", "-am", "feature: drop f"]);
     git(&d, &["checkout", "-q", "main"]);
-    std::fs::write(d.join("app.strata"), base.replace("g(x: Int) -> Int {\n  x * 2", "g(y: Int) -> Int {\n  y * 20")).unwrap();
+    save(&d.join("app.strata"), base.replace("g(x: Int) -> Int {\n  x * 2", "g(y: Int) -> Int {\n  y * 20"));
     git(&d, &["commit", "-q", "-am", "main: g"]);
     git(&d, &["checkout", "-q", "feature"]);
 
     // plain git conflicts: f's deletion touches the line before g's signature
     let (ok, out) = strata_git(&["sync", "main"], &d);
     assert!(ok && out.contains("merged main") && out.contains("✓ app.strata"), "{out}");
-    let merged = std::fs::read_to_string(d.join("app.strata")).unwrap();
+    let merged = text(&d.join("app.strata"));
     assert_eq!(merged, "fn g(y: Int) -> Int {\n  y * 20\n}\n");
     assert!(git(&d, &["log", "-1", "--format=%p"]).split_whitespace().count() == 2, "a merge commit");
     let (ok, out) = strata_git(&["sync", "main"], &d);
@@ -1911,10 +1931,10 @@ fn sync_merges_main_with_the_driver_then_checks() {
 
     // a merge that doesn't check is left staged, not committed
     git(&d, &["checkout", "-q", "main"]);
-    std::fs::write(d.join("app.strata"), merged.replace("fn g(y: Int)", "fn g(x: Int, y: Int)").replace("y * 20", "x * y")).unwrap();
+    save(&d.join("app.strata"), merged.replace("fn g(y: Int)", "fn g(x: Int, y: Int)").replace("y * 20", "x * y"));
     git(&d, &["commit", "-q", "-am", "main: g takes two"]);
     git(&d, &["checkout", "-q", "feature"]);
-    std::fs::write(d.join("app.strata"), merged.clone() + "\nfn h() -> Int {\n  g(1)\n}\n").unwrap();
+    save(&d.join("app.strata"), merged.clone() + "\nfn h() -> Int {\n  g(1)\n}\n");
     git(&d, &["commit", "-q", "-am", "feature: h"]);
     let head = git(&d, &["rev-parse", "HEAD"]);
     let (ok, out) = strata_git(&["sync", "main"], &d);
@@ -1926,9 +1946,9 @@ fn sync_merges_main_with_the_driver_then_checks() {
 fn the_log_is_committed_and_splits_git_diffs_into_steps() {
     let d = tmp("gitlog");
     git(&d, &["init", "-q", "-b", "main"]);
-    std::fs::write(d.join("a.strata"), "pub fn area(w: Int, h: Int) -> Int {\n  w * h\n}\n").unwrap();
-    std::fs::write(d.join("b.strata"), "use a.area\n\nfn square(s: Int) -> Int {\n  area(s, s)\n}\n").unwrap();
     assert!(strata(&["init"], &d, None).0);
+    save(&d.join("a.strata"), "pub fn area(w: Int, h: Int) -> Int {\n  w * h\n}\n");
+    save(&d.join("b.strata"), "use a.area\n\nfn square(s: Int) -> Int {\n  area(s, s)\n}\n");
     git(&d, &["add", "."]);
     git(&d, &["commit", "-q", "-m", "base"]);
 
@@ -1936,9 +1956,9 @@ fn the_log_is_committed_and_splits_git_diffs_into_steps() {
     assert!(strata(&["rename", "area", "rect_area", "--no-commit"], &d, None).0);
     let (ok, out) = strata(&["edit", "--no-commit", "a", "-m", "areas are never negative"], &d, Some("pub fn rect_area(w: Int, h: Int) -> Int requires w >= 0 && h >= 0 {\n  w * h\n}\n"));
     assert!(ok, "{out}");
-    let b = std::fs::read_to_string(d.join("b.strata")).unwrap();
+    let b = text(&d.join("b.strata"));
     assert!(b.contains("rect_area(s, s)"), "the rename rewrote the other file: {b}");
-    std::fs::write(d.join("b.strata"), b.replace("rect_area(s, s)\n}", "rect_area(s, s)\n}\n\nfn cube(s: Int) -> Int {\n  square(s) * s\n}")).unwrap();
+    save(&d.join("b.strata"), b.replace("rect_area(s, s)\n}", "rect_area(s, s)\n}\n\nfn cube(s: Int) -> Int {\n  square(s) * s\n}"));
     git(&d, &["add", "."]);
     git(&d, &["commit", "-q", "-m", "rect areas"]);
 
@@ -1961,9 +1981,9 @@ fn the_log_is_committed_and_splits_git_diffs_into_steps() {
 fn sync_carries_logged_renames_into_the_other_sides_files() {
     let d = tmp("follow");
     git(&d, &["init", "-q", "-b", "main"]);
-    std::fs::write(d.join("a.strata"), "pub fn area(w: Int, h: Int) -> Int {\n  w * h\n}\n").unwrap();
-    std::fs::write(d.join("b.strata"), "use a.area\n\nfn square(s: Int) -> Int {\n  area(s, s)\n}\n").unwrap();
     assert!(strata(&["init"], &d, None).0);
+    save(&d.join("a.strata"), "pub fn area(w: Int, h: Int) -> Int {\n  w * h\n}\n");
+    save(&d.join("b.strata"), "use a.area\n\nfn square(s: Int) -> Int {\n  area(s, s)\n}\n");
     git(&d, &["add", "."]);
     git(&d, &["commit", "-q", "-m", "base"]);
 
@@ -1971,7 +1991,7 @@ fn sync_carries_logged_renames_into_the_other_sides_files() {
     git(&d, &["checkout", "-q", "-b", "feature"]);
     assert!(strata(&["rename", "area", "rect_area"], &d, None).0);
     git(&d, &["checkout", "-q", "main"]);
-    std::fs::write(d.join("c.strata"), "use a.area\n\nfn cube(s: Int) -> Int {\n  area(s, s) * s\n}\n").unwrap();
+    save(&d.join("c.strata"), "use a.area\n\nfn cube(s: Int) -> Int {\n  area(s, s) * s\n}\n");
     git(&d, &["add", "."]);
     git(&d, &["commit", "-q", "-m", "cubes"]);
     git(&d, &["checkout", "-q", "feature"]);
@@ -1979,7 +1999,7 @@ fn sync_carries_logged_renames_into_the_other_sides_files() {
     let (ok, out) = strata_git(&["sync", "main"], &d);
     assert!(ok && out.contains("merged main"), "{out}");
     assert!(out.contains("merge: theirs code follows the rename a.area → a.rect_area (c.use a, c.cube)"), "{out}");
-    let c = std::fs::read_to_string(d.join("c.strata")).unwrap();
+    let c = text(&d.join("c.strata"));
     assert_eq!(c, "use a.rect_area\n\nfn cube(s: Int) -> Int {\n  rect_area(s, s) * s\n}\n");
     // the fix is logged, and part of the merge commit
     let log = std::fs::read_to_string(d.join("strata.log")).unwrap();
@@ -1992,11 +2012,11 @@ fn sync_carries_logged_renames_into_the_other_sides_files() {
     git(&d, &["merge", "-q", "feature"]);
     assert!(strata(&["rename", "rect_area", "surface"], &d, None).0);
     git(&d, &["checkout", "-q", "feature"]);
-    std::fs::write(d.join("b.strata"), std::fs::read_to_string(d.join("b.strata")).unwrap() + "\nfn twice(s: Int) -> Int {\n  rect_area(s, s) * 2\n}\n").unwrap();
+    save(&d.join("b.strata"), text(&d.join("b.strata")) + "\nfn twice(s: Int) -> Int {\n  rect_area(s, s) * 2\n}\n");
     git(&d, &["commit", "-q", "-am", "twice"]);
     let (ok, out) = strata_git(&["sync", "main"], &d);
     assert!(ok && out.contains("merged main"), "{out}");
-    let b = std::fs::read_to_string(d.join("b.strata")).unwrap();
+    let b = text(&d.join("b.strata"));
     assert!(b.contains("surface(s, s) * 2") && !b.contains("rect_area"), "{b}");
 
     // a rename the other side's code can't follow (a local would capture the new name) is left alone
@@ -2004,12 +2024,12 @@ fn sync_carries_logged_renames_into_the_other_sides_files() {
     git(&d, &["merge", "-q", "feature"]);
     assert!(strata(&["rename", "surface", "extent"], &d, None).0);
     git(&d, &["checkout", "-q", "feature"]);
-    std::fs::write(d.join("b.strata"), b.clone() + "\nfn padded(s: Int) -> Int {\n  let extent = 2\n  surface(s, s) + extent\n}\n").unwrap();
+    save(&d.join("b.strata"), b.clone() + "\nfn padded(s: Int) -> Int {\n  let extent = 2\n  surface(s, s) + extent\n}\n");
     git(&d, &["commit", "-q", "-am", "padded"]);
     let head = git(&d, &["rev-parse", "HEAD"]);
     let (ok, out) = strata_git(&["sync", "main"], &d);
     assert!(!ok && out.contains("doesn't check") && out.contains("b.padded"), "{out}");
-    assert!(std::fs::read_to_string(d.join("b.strata")).unwrap().contains("surface(s, s) + extent"), "not captured");
+    assert!(text(&d.join("b.strata")).contains("surface(s, s) + extent"), "not captured");
     assert_eq!(git(&d, &["rev-parse", "HEAD"]), head, "nothing committed");
 }
 
@@ -2044,8 +2064,7 @@ fn std_io_programs_run_with_capabilities_and_exit_codes() {
     assert!(ok && out.contains("4 passed"), "{out}");
 
     // an exit code, writing files and environment variables
-    std::fs::write(
-        d.join("prog.strata"),
+    save(&d.join("prog.strata"),
         r#"use std.io.Console
 use std.fs.{Files, FsError}
 use std.process.{Environment, ExitCode}
@@ -2057,9 +2076,7 @@ fn main(mut console: Console, mut files: Files, env: Environment) -> Result[Exit
   mut console.write(env.var("STRATA_TEST_VAR") or { "unset" })
   Ok(len(files.list("out")!) + 6)
 }
-"#,
-    )
-    .unwrap();
+"#);
     std::fs::create_dir_all(d.join("out")).unwrap();
     let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "prog.strata"]).current_dir(&d).env("STRATA_TEST_VAR", "set!").output().unwrap();
     assert_eq!(o.status.code(), Some(7), "{}", String::from_utf8_lossy(&o.stderr));
@@ -2067,17 +2084,17 @@ fn main(mut console: Console, mut files: Files, env: Environment) -> Result[Exit
     assert_eq!(String::from_utf8_lossy(&o.stderr), "ab\n");
 
     // the host is the standard library's alone
-    std::fs::write(d.join("sneaky.strata"), "fn main() -> () {\n  host_write(1, \"hi\")\n}\n").unwrap();
+    save(&d.join("sneaky.strata"), "fn main() -> () {\n  host_write(1, \"hi\")\n}\n");
     let (code, out, err) = strata_code(&["run", "sneaky.strata"], &d, "");
     assert!(code != 0 && out.is_empty() && err.contains("internal to the standard library"), "{out}{err}");
 
     // `main` may only ask for capabilities the runtime has
-    std::fs::write(d.join("odd.strata"), "fn main(n: Int) -> () {\n  ()\n}\n").unwrap();
+    save(&d.join("odd.strata"), "fn main(n: Int) -> () {\n  ()\n}\n");
     let (code, _, err) = strata_code(&["run", "odd.strata"], &d, "");
     assert!(code != 0 && err.contains("can ask for `Console`"), "{err}");
 
     // verify never reaches the real system: capabilities are mocks there
-    std::fs::write(d.join("greet.strata"), "use std.io.Console\n\nfn greet(mut c: Console, n: Int) -> () {\n  mut c.print(f\"MARKER {n}\")\n}\n").unwrap();
+    save(&d.join("greet.strata"), "use std.io.Console\n\nfn greet(mut c: Console, n: Int) -> () {\n  mut c.print(f\"MARKER {n}\")\n}\n");
     let (_, out, err) = strata_code(&["--file", "greet.strata", "verify", "--cases", "20"], &d, "");
     assert!(!out.contains("MARKER") && !err.contains("MARKER"), "{out}{err}");
     let (ok, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "check"], &d, None);
@@ -2095,7 +2112,7 @@ fn main(mut console: Console, mut files: Files, env: Environment) -> Result[Exit
 #[test]
 fn string_escapes_round_trip() {
     let d = tmp("escapes");
-    std::fs::write(d.join("e.strata"), "fn s() -> String {\n  \"a\tb\\\\n\"\n}\n").unwrap();
+    save(&d.join("e.strata"), "fn s() -> String {\n  \"a\tb\\\\n\"\n}\n");
     let (_, r1) = strata(&["--file", "e.strata", "render"], &d, None);
     assert!(r1.contains(r#""a\tb\\n""#), "{r1}");
     let (_, out) = strata(&["--file", "e.strata", "run", "s"], &d, None);
@@ -2108,9 +2125,9 @@ const SHAPES_MAIN: &str = "use shapes.*\n\nfn area(s: Shape) -> Int {\n  match s
 #[test]
 fn rename_variants_methods_and_fields() {
     let d = tmp("members");
-    std::fs::write(d.join("shapes.strata"), SHAPES).unwrap();
-    std::fs::write(d.join("main.strata"), SHAPES_MAIN).unwrap();
     assert!(strata(&["init"], &d, None).0);
+    save(&d.join("shapes.strata"), SHAPES);
+    save(&d.join("main.strata"), SHAPES_MAIN);
 
     // a variant: constructors, patterns and `is`
     let (ok, out) = strata(&["rename", "Circle", "Round"], &d, None);
@@ -2121,7 +2138,7 @@ fn rename_variants_methods_and_fields() {
     // a field: the declaration, accesses, literals, updates
     let (ok, out) = strata(&["rename", "Line.qty", "quantity"], &d, None);
     assert!(ok && out.contains("renamed shapes.Line.qty → shapes.Line.quantity"), "{out}");
-    let (s, m) = (std::fs::read_to_string(d.join("shapes.strata")).unwrap(), std::fs::read_to_string(d.join("main.strata")).unwrap());
+    let (s, m) = (text(&d.join("shapes.strata")), text(&d.join("main.strata")));
     for x in ["| Round { radius: Int }", "fn measure(self) -> Int {\n    self.quantity", "quantity: Int }"] {
         assert!(s.contains(x), "missing {x:?} in\n{s}");
     }
@@ -2142,16 +2159,16 @@ fn rename_variants_methods_and_fields() {
     // refused: a taken name, a field another record also has, `.value` with distinct types around
     let (ok, out) = strata(&["rename", "Round", "Square"], &d, None);
     assert!(!ok && out.contains("`shapes.Square` already exists"), "{out}");
-    std::fs::write(d.join("more.strata"), "pub type Order = { sku: String, total: Int }\n\ndistinct type Id = String\n").unwrap();
+    save(&d.join("more.strata"), "pub type Order = { sku: String, total: Int }\n\ndistinct type Id = String\n");
     // a field another record also has: the checker tells their accesses apart
     let (ok, out) = strata(&["rename", "Line.sku", "code"], &d, None);
     assert!(ok, "{out}");
-    assert!(std::fs::read_to_string(d.join("more.strata")).unwrap().contains("pub type Order = { sku: String"), "Order keeps its field");
+    assert!(text(&d.join("more.strata")).contains("pub type Order = { sku: String"), "Order keeps its field");
     // `value`, which distinct types also have
-    std::fs::write(d.join("more.strata"), "pub type Order = { value: Int }\n\ndistinct type Id = String\n\nfn both(o: Order, i: Id) -> String {\n  f\"{o.value} {i.value}\"\n}\n").unwrap();
+    save(&d.join("more.strata"), "pub type Order = { value: Int }\n\ndistinct type Id = String\n\nfn both(o: Order, i: Id) -> String {\n  f\"{o.value} {i.value}\"\n}\n");
     let (ok, out) = strata(&["rename", "Order.value", "amount"], &d, None);
     assert!(ok, "{out}");
-    assert!(std::fs::read_to_string(d.join("more.strata")).unwrap().contains("f\"{o.amount} {i.value}\""), "the distinct type's `.value` stays");
+    assert!(text(&d.join("more.strata")).contains("f\"{o.amount} {i.value}\""), "the distinct type's `.value` stays");
     let (_, log) = strata(&["log", "--json"], &d, None);
     assert!(log.contains(r#""kind":"variant""#) && log.contains(r#""kind":"method""#) && log.contains(r#""kind":"field""#), "{log}");
 }
@@ -2160,9 +2177,9 @@ fn rename_variants_methods_and_fields() {
 fn sync_follows_member_renames() {
     let d = tmp("follow-members");
     git(&d, &["init", "-q", "-b", "main"]);
-    std::fs::write(d.join("shapes.strata"), SHAPES).unwrap();
-    std::fs::write(d.join("main.strata"), SHAPES_MAIN).unwrap();
     assert!(strata(&["init"], &d, None).0);
+    save(&d.join("shapes.strata"), SHAPES);
+    save(&d.join("main.strata"), SHAPES_MAIN);
     git(&d, &["add", "."]);
     git(&d, &["commit", "-q", "-m", "base"]);
 
@@ -2171,14 +2188,14 @@ fn sync_follows_member_renames() {
     assert!(strata(&["rename", "Circle", "Round"], &d, None).0);
     assert!(strata(&["rename", "Line.qty", "quantity"], &d, None).0);
     git(&d, &["checkout", "-q", "main"]);
-    std::fs::write(d.join("extra.strata"), "use shapes.*\n\nfn unit() -> Shape {\n  Circle { radius: 1 }\n}\n\nfn doubled(l: Line) -> Int {\n  l.qty * 2\n}\n").unwrap();
+    save(&d.join("extra.strata"), "use shapes.*\n\nfn unit() -> Shape {\n  Circle { radius: 1 }\n}\n\nfn doubled(l: Line) -> Int {\n  l.qty * 2\n}\n");
     git(&d, &["add", "."]);
     git(&d, &["commit", "-q", "-m", "extra"]);
     git(&d, &["checkout", "-q", "feature"]);
 
     let (ok, out) = strata_git(&["sync", "main"], &d);
     assert!(ok && out.contains("merged main"), "{out}");
-    let e = std::fs::read_to_string(d.join("extra.strata")).unwrap();
+    let e = text(&d.join("extra.strata"));
     assert!(e.contains("Round { radius: 1 }") && e.contains("l.quantity * 2"), "{e}");
 }
 
@@ -2186,12 +2203,12 @@ fn sync_follows_member_renames() {
 fn rename_a_field_that_another_record_also_has() {
     let d = tmp("shared-field");
     let src = "type Line = { sku: String, qty: Int }\n\ntype Order = { sku: String, lines: List[Line] }\n\nfn label(l: Line, o: Order) -> String {\n  l.sku + \"/\" + o.sku\n}\n\nfn first_skus(o: Order) -> List[String] {\n  o.lines.map(l -> l.sku)\n}\n\nfn fix(l: Line) -> Line {\n  match l {\n    Line { sku, .. } => Line { ..l, sku: sku + \"!\" },\n  }\n}\n\ntest \"skus\" {\n  let l = Line { sku: \"a\", qty: 1 }\n  let o = Order { sku: \"o\", lines: [l] }\n  assert label(l, o) == \"a/o\"\n  assert first_skus(o) == [\"a\"]\n  assert fix(l).sku == \"a!\"\n}\n";
-    std::fs::write(d.join("main.strata"), src).unwrap();
     assert!(strata(&["init"], &d, None).0);
+    save(&d.join("main.strata"), src);
     // the checker says which record each `.sku` reads: Line's are renamed, Order's stay
     let (ok, out) = strata(&["rename", "Line.sku", "code"], &d, None);
     assert!(ok, "{out}");
-    let m = std::fs::read_to_string(d.join("main.strata")).unwrap();
+    let m = text(&d.join("main.strata"));
     for x in ["type Line = { code: String, qty: Int }", "type Order = { sku: String", "l.code + \"/\" + o.sku", "o.lines.map(l -> l.code)", "Line { code: sku, .. } => Line { ..l, code: sku + \"!\" }", "Line { code: \"a\", qty: 1 }", "Order { sku: \"o\"", "fix(l).code == \"a!\""] {
         assert!(m.contains(x), "missing {x:?} in\n{m}");
     }
@@ -2200,8 +2217,8 @@ fn rename_a_field_that_another_record_also_has() {
 
     // read from a union of both records: renaming one would break it
     let e = tmp("shared-field-union");
-    std::fs::write(e.join("main.strata"), "type A = { tag: String, n: Int }\n\ntype B = { tag: String }\n\nfn tag_of(x: A | B) -> String {\n  x.tag\n}\n").unwrap();
     assert!(strata(&["init"], &e, None).0);
+    save(&e.join("main.strata"), "type A = { tag: String, n: Int }\n\ntype B = { tag: String }\n\nfn tag_of(x: A | B) -> String {\n  x.tag\n}\n");
     let (ok, out) = strata(&["rename", "A.tag", "label"], &e, None);
     assert!(!ok && out.contains("in `tag_of`, `.tag` is read from a union that also has `B.tag` (rename it too, in the same command)"), "{out}");
     // both records' fields to different names: the union access can't follow
@@ -2210,7 +2227,7 @@ fn rename_a_field_that_another_record_also_has() {
     // both, to the same name, in one step
     let (ok, out) = strata(&["rename", "A.tag", "label", "B.tag", "label"], &e, None);
     assert!(ok && out.contains("renamed A.tag → A.label, B.tag → B.label") && out.contains("updated 1 definition that refers to them: tag_of"), "{out}");
-    let m = std::fs::read_to_string(e.join("main.strata")).unwrap();
+    let m = text(&e.join("main.strata"));
     assert!(m.contains("type A = { label: String, n: Int }") && m.contains("type B = { label: String }") && m.contains("x.label"), "{m}");
     let log = std::fs::read_to_string(e.join("strata.log")).unwrap();
     assert_eq!(log.lines().count(), 1, "one step");
@@ -2219,15 +2236,15 @@ fn rename_a_field_that_another_record_also_has() {
 #[test]
 fn move_a_definition_to_another_module() {
     let d = tmp("move");
-    std::fs::write(d.join("orders.strata"), "pub type Order = { id: String, total: Int }\n\nfn doubled(o: Order) -> Int {\n  o.total * 2\n}\n\npub fn charge(o: Order) -> Int {\n  o.total + 1\n}\n\npub fn ship(o: Order) -> Int {\n  charge(o) + doubled(o)\n}\n").unwrap();
-    std::fs::write(d.join("billing.strata"), "use orders.{Order, charge}\n\npub fn invoice(o: Order) -> Int {\n  charge(o) + orders.ship(o)\n}\n").unwrap();
-    std::fs::write(d.join("main.strata"), "use orders.*\n\ntest \"charges\" {\n  let o = Order { id: \"a\", total: 1 }\n  assert charge(o) == 2\n  assert orders.charge(o) == 2\n  assert ship(o) == 4\n}\n").unwrap();
     assert!(strata(&["init"], &d, None).0);
+    save(&d.join("orders.strata"), "pub type Order = { id: String, total: Int }\n\nfn doubled(o: Order) -> Int {\n  o.total * 2\n}\n\npub fn charge(o: Order) -> Int {\n  o.total + 1\n}\n\npub fn ship(o: Order) -> Int {\n  charge(o) + doubled(o)\n}\n");
+    save(&d.join("billing.strata"), "use orders.{Order, charge}\n\npub fn invoice(o: Order) -> Int {\n  charge(o) + orders.ship(o)\n}\n");
+    save(&d.join("main.strata"), "use orders.*\n\ntest \"charges\" {\n  let o = Order { id: \"a\", total: 1 }\n  assert charge(o) == 2\n  assert orders.charge(o) == 2\n  assert ship(o) == 4\n}\n");
 
     let (ok, out) = strata(&["move", "charge", "billing"], &d, None);
     assert!(ok && out.contains("moved orders.charge from orders to billing (billing.strata)"), "{out}");
     assert!(out.contains("updated 1 definition that refers to it: test \"charges\"") && out.contains("orders: use billing.charge") && out.contains("main: use billing.charge"), "{out}");
-    let (o, b, m) = (std::fs::read_to_string(d.join("orders.strata")).unwrap(), std::fs::read_to_string(d.join("billing.strata")).unwrap(), std::fs::read_to_string(d.join("main.strata")).unwrap());
+    let (o, b, m) = (text(&d.join("orders.strata")), text(&d.join("billing.strata")), text(&d.join("main.strata")));
     assert!(o.starts_with("use billing.charge\n") && !o.contains("fn charge"), "{o}");
     assert!(b.starts_with("use orders.Order\n") && b.contains("pub fn charge(o: Order) -> Int"), "{b}");
     assert!(m.contains("use billing.charge") && m.contains("billing.charge(o) == 2") && !m.contains("orders.charge"), "{m}");
@@ -2251,9 +2268,9 @@ fn move_a_definition_to_another_module() {
 fn sync_follows_moves() {
     let d = tmp("follow-move");
     git(&d, &["init", "-q", "-b", "main"]);
-    std::fs::write(d.join("orders.strata"), "pub type Order = { id: String, total: Int }\n\npub fn charge(o: Order) -> Int {\n  o.total + 1\n}\n").unwrap();
-    std::fs::write(d.join("billing.strata"), "use orders.Order\n\npub fn invoice(o: Order) -> Int {\n  o.total\n}\n").unwrap();
     assert!(strata(&["init"], &d, None).0);
+    save(&d.join("orders.strata"), "pub type Order = { id: String, total: Int }\n\npub fn charge(o: Order) -> Int {\n  o.total + 1\n}\n");
+    save(&d.join("billing.strata"), "use orders.Order\n\npub fn invoice(o: Order) -> Int {\n  o.total\n}\n");
     git(&d, &["add", "."]);
     git(&d, &["commit", "-q", "-m", "base"]);
 
@@ -2261,14 +2278,14 @@ fn sync_follows_moves() {
     git(&d, &["checkout", "-q", "-b", "feature"]);
     assert!(strata(&["move", "charge", "billing"], &d, None).0);
     git(&d, &["checkout", "-q", "main"]);
-    std::fs::write(d.join("report.strata"), "use orders.{Order, charge}\n\nfn twice(o: Order) -> Int {\n  charge(o) + orders.charge(o)\n}\n").unwrap();
+    save(&d.join("report.strata"), "use orders.{Order, charge}\n\nfn twice(o: Order) -> Int {\n  charge(o) + orders.charge(o)\n}\n");
     git(&d, &["add", "."]);
     git(&d, &["commit", "-q", "-m", "report"]);
     git(&d, &["checkout", "-q", "feature"]);
 
     let (ok, out) = strata_git(&["sync", "main"], &d);
     assert!(ok && out.contains("merged main") && out.contains("follows the rename orders.charge → billing.charge"), "{out}");
-    let r = std::fs::read_to_string(d.join("report.strata")).unwrap();
+    let r = text(&d.join("report.strata"));
     assert!(r.contains("use orders.Order") && r.contains("use billing.charge") && r.contains("charge(o) + billing.charge(o)"), "{r}");
 }
 
@@ -2277,14 +2294,14 @@ const TAXES: &str = "fn tax(amount: Int) -> Int {\n  amount / 10\n}\n\nfn total(
 #[test]
 fn a_breaking_edit_opens_a_pending_change_with_holes() {
     let d = tmp("pending");
-    std::fs::write(d.join("main.strata"), TAXES).unwrap();
     assert!(strata(&["init"], &d, None).0);
+    save(&d.join("main.strata"), TAXES);
 
     // the edit itself checks; the uses it breaks become holes that remember what they were
     let (ok, out) = strata(&["edit", "-m", "tax takes a rate"], &d, Some("fn tax(amount: Int, rate: Int) -> Int { amount * rate / 100 }"));
     assert!(ok && out.contains("the edit breaks 2 uses elsewhere"), "{out}");
     assert!(out.contains("?pending_1  in total\n      was: tax(amount)\n      why: call to `tax`: expects 2 arguments, got 1"), "{out}");
-    let m = std::fs::read_to_string(d.join("main.strata")).unwrap();
+    let m = text(&d.join("main.strata"));
     assert!(m.contains("amount + ?pending_1") && m.contains("?pending_2 * 2"), "{m}");
     assert_eq!(std::fs::read_to_string(d.join("strata.log")).unwrap(), "", "nothing logged yet");
     let (_, out) = strata(&["holes"], &d, None);
@@ -2321,15 +2338,15 @@ fn a_breaking_edit_opens_a_pending_change_with_holes() {
 #[test]
 fn a_pending_change_can_be_aborted_or_kept_with_its_holes() {
     let d = tmp("pending-abort");
-    std::fs::write(d.join("main.strata"), TAXES).unwrap();
     assert!(strata(&["init"], &d, None).0);
+    save(&d.join("main.strata"), TAXES);
     assert!(strata(&["edit"], &d, Some("fn tax(amount: Int, rate: Int) -> Int { amount * rate / 100 }")).0);
     assert!(strata(&["edit", "extra"], &d, Some("fn more() -> Int { 1 }")).0);
     assert!(d.join("extra.strata").exists());
     // abort: every file as it was, including the module the change added
     let (ok, out) = strata(&["abort"], &d, None);
     assert!(ok && out.contains("undid the pending change"), "{out}");
-    assert_eq!(std::fs::read_to_string(d.join("main.strata")).unwrap(), TAXES);
+    assert_eq!(text(&d.join("main.strata")), TAXES);
     assert!(!d.join("extra.strata").exists());
     assert_eq!(std::fs::read_to_string(d.join("strata.log")).unwrap(), "");
 
@@ -2337,7 +2354,7 @@ fn a_pending_change_can_be_aborted_or_kept_with_its_holes() {
     assert!(strata(&["edit"], &d, Some("fn tax(amount: Int, rate: Int) -> Int { amount * rate / 100 }")).0);
     let (ok, out) = strata(&["done", "--keep-holes", "-m", "rates, callers to do"], &d, None);
     assert!(ok && out.contains("2 holes kept as ?todo_"), "{out}");
-    let m = std::fs::read_to_string(d.join("main.strata")).unwrap();
+    let m = text(&d.join("main.strata"));
     assert!(m.contains("amount + ?todo_1") && m.contains("?todo_2 * 2"), "{m}");
     let (ok, out) = strata(&["ci"], &d, None);
     assert!(ok, "ordinary holes are fine: {out}");
@@ -2347,11 +2364,11 @@ fn a_pending_change_can_be_aborted_or_kept_with_its_holes() {
 /// `seen<n>.strata` and saves `v<n>.strata` (or leaves the file as it is).
 fn fake_editor(d: &std::path::Path, versions: &[&str]) -> String {
     for (i, v) in versions.iter().enumerate() {
-        std::fs::write(d.join(format!("v{}.strata", i + 1)), v).unwrap();
+        std::fs::write(d.join(format!("v{}.st", i + 1)), v).unwrap();
     }
     let script = d.join("editor.sh");
     let dir = d.display();
-    std::fs::write(&script, format!("#!/bin/sh\nn=$(cat '{dir}/count' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{dir}/count'\ncp \"$1\" '{dir}/seen'$n.strata\nif [ -f '{dir}/v'$n.strata ]; then cp '{dir}/v'$n.strata \"$1\"; fi\n")).unwrap();
+    std::fs::write(&script, format!("#!/bin/sh\nn=$(cat '{dir}/count' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '{dir}/count'\ncp \"$1\" '{dir}/seen'$n.st\nif [ -f '{dir}/v'$n.st ]; then cp '{dir}/v'$n.st \"$1\"; fi\n")).unwrap();
     format!("sh '{}'", script.display())
 }
 
@@ -2364,11 +2381,11 @@ fn strata_with_editor(args: &[&str], dir: &std::path::Path, editor: &str) -> (bo
 fn renames_leave_string_literals_alone() {
     // a string equal to the old name is text, not a reference: the rename goes ahead and keeps it
     let d = tmp("rename-literal");
-    std::fs::write(d.join("main.strata"), "fn greet() -> String {\n  \"hello\"\n}\n\nfn label() -> String {\n  \"greet\"\n}\n").unwrap();
     assert!(strata(&["init"], &d, None).0);
+    save(&d.join("main.strata"), "fn greet() -> String {\n  \"hello\"\n}\n\nfn label() -> String {\n  \"greet\"\n}\n");
     let (ok, out) = strata(&["rename", "greet", "welcome", "--no-commit"], &d, None);
     assert!(ok, "{out}");
-    let src = std::fs::read_to_string(d.join("main.strata")).unwrap();
+    let src = text(&d.join("main.strata"));
     assert!(src.contains("fn welcome()") && src.contains("\"greet\""), "{src}");
 }
 
@@ -2377,8 +2394,8 @@ fn edit_opens_the_code_in_an_editor() {
     let d = tmp("editor");
     let pkg = d.join("pkg");
     std::fs::create_dir_all(&pkg).unwrap();
-    std::fs::write(pkg.join("main.strata"), TAXES).unwrap();
     assert!(strata(&["init"], &pkg, None).0);
+    save(&pkg.join("main.strata"), TAXES);
 
     // one definition: the editor shows it alone, and what is saved is the edit
     let ed = d.join("one");
@@ -2386,8 +2403,8 @@ fn edit_opens_the_code_in_an_editor() {
     let editor = fake_editor(&ed, &["fn tax(amount: Int) -> Int {\n  amount / 5\n}\n"]);
     let (ok, out) = strata_with_editor(&["edit", "tax", "--editor", "-m", "more tax"], &pkg, &editor);
     assert!(ok && out.contains("changed"), "{out}");
-    assert_eq!(std::fs::read_to_string(ed.join("seen1.strata")).unwrap(), "fn tax(amount: Int) -> Int {\n  amount / 10\n}\n");
-    assert!(std::fs::read_to_string(pkg.join("main.strata")).unwrap().contains("amount / 5"));
+    assert_eq!(std::fs::read_to_string(ed.join("seen1.st")).unwrap(), "fn tax(amount: Int) -> Int {\n  amount / 10\n}\n");
+    assert!(text(&pkg.join("main.strata")).contains("amount / 5"));
     assert!(std::fs::read_to_string(pkg.join("strata.log")).unwrap().contains("more tax"));
 
     // an edit that doesn't check: the editor opens again with the errors on top
@@ -2396,18 +2413,18 @@ fn edit_opens_the_code_in_an_editor() {
     let editor = fake_editor(&ed, &["fn total(amount: Int) -> Int {\n  amount + true\n}\n", "fn total(amount: Int) -> Int {\n  amount + tax(amount) + 1\n}\n"]);
     let (ok, out) = strata_with_editor(&["edit", "total", "--editor"], &pkg, &editor);
     assert!(ok, "{out}");
-    let second = std::fs::read_to_string(ed.join("seen2.strata")).unwrap();
+    let second = std::fs::read_to_string(ed.join("seen2.st")).unwrap();
     assert!(second.starts_with("// ✗ error in total") && second.contains("// ✗ not applied") && second.contains("amount + true"), "{second}");
-    assert!(std::fs::read_to_string(pkg.join("main.strata")).unwrap().contains("amount + tax(amount) + 1"));
+    assert!(text(&pkg.join("main.strata")).contains("amount + tax(amount) + 1"));
 
     // the whole module; a definition deleted from the buffer is removed
     let ed = d.join("module");
     std::fs::create_dir_all(&ed).unwrap();
-    let without = std::fs::read_to_string(pkg.join("main.strata")).unwrap().replace("fn double_tax(a: Int) -> Int {\n  tax(a) * 2\n}\n\n", "");
+    let without = text(&pkg.join("main.strata")).replace("fn double_tax(a: Int) -> Int {\n  tax(a) * 2\n}\n\n", "");
     let editor = fake_editor(&ed, &[&without]);
     let (ok, out) = strata_with_editor(&["edit", "--editor"], &pkg, &editor);
     assert!(ok && out.contains("removed"), "{out}");
-    assert!(!std::fs::read_to_string(pkg.join("main.strata")).unwrap().contains("double_tax"));
+    assert!(!text(&pkg.join("main.strata")).contains("double_tax"));
 
     // saved unchanged: nothing happens
     let ed = d.join("same");
@@ -2423,21 +2440,21 @@ fn edit_opens_modules_and_the_whole_package() {
     let d = tmp("editor-modules");
     let pkg = d.join("pkg");
     std::fs::create_dir_all(pkg.join("shop")).unwrap();
-    std::fs::write(pkg.join("main.strata"), "use shop.orders.{price}\n\nfn total() -> Int {\n  price() + 1\n}\n").unwrap();
-    std::fs::write(pkg.join("shop/orders.strata"), "pub fn price() -> Int {\n  10\n}\n").unwrap();
     assert!(strata(&["init"], &pkg, None).0);
+    save(&pkg.join("main.strata"), "use shop.orders.{price}\n\nfn total() -> Int {\n  price() + 1\n}\n");
+    save(&pkg.join("shop/orders.strata"), "pub fn price() -> Int {\n  10\n}\n");
 
     // the whole package: one file per module, given to the editor together
     let ed = d.join("whole");
     std::fs::create_dir_all(&ed).unwrap();
     let script = ed.join("editor.sh");
     let dir = ed.display();
-    std::fs::write(&script, format!("#!/bin/sh\nfor f in \"$@\"; do echo \"$f\" >> '{dir}/files'; done\nfor f in \"$@\"; do case \"$f\" in */shop/orders.strata) sed 's/10/12/' \"$f\" > \"$f.new\" && mv \"$f.new\" \"$f\";; esac; done\n")).unwrap();
+    std::fs::write(&script, format!("#!/bin/sh\nfor f in \"$@\"; do echo \"$f\" >> '{dir}/files'; done\nfor f in \"$@\"; do case \"$f\" in */shop/orders.st) sed 's/10/12/' \"$f\" > \"$f.new\" && mv \"$f.new\" \"$f\";; esac; done\n")).unwrap();
     let (ok, out) = strata_with_editor(&["edit", "--editor"], &pkg, &format!("sh '{}'", script.display()));
     assert!(ok && out.contains("changed"), "{out}");
     let opened = std::fs::read_to_string(ed.join("files")).unwrap();
-    assert!(opened.lines().count() == 2 && opened.contains("main.strata") && opened.contains("shop/orders.strata"), "{opened}");
-    assert!(std::fs::read_to_string(pkg.join("shop/orders.strata")).unwrap().contains("12"));
+    assert!(opened.lines().count() == 2 && opened.contains("main.st") && opened.contains("shop/orders.st"), "{opened}");
+    assert!(text(&pkg.join("shop/orders.strata")).contains("12"));
 
     // a module by name: only its file
     let ed = d.join("module");
@@ -2445,8 +2462,8 @@ fn edit_opens_modules_and_the_whole_package() {
     let editor = fake_editor(&ed, &["pub fn price() -> Int {\n  15\n}\n"]);
     let (ok, out) = strata_with_editor(&["edit", "shop.orders", "--editor"], &pkg, &editor);
     assert!(ok, "{out}");
-    assert_eq!(std::fs::read_to_string(ed.join("seen1.strata")).unwrap(), "pub fn price() -> Int {\n  12\n}\n");
-    assert!(std::fs::read_to_string(pkg.join("shop/orders.strata")).unwrap().contains("15"));
+    assert_eq!(std::fs::read_to_string(ed.join("seen1.st")).unwrap(), "pub fn price() -> Int {\n  12\n}\n");
+    assert!(text(&pkg.join("shop/orders.strata")).contains("15"));
 
     // a new module, by its file
     let ed = d.join("new");
@@ -2454,7 +2471,7 @@ fn edit_opens_modules_and_the_whole_package() {
     let editor = fake_editor(&ed, &["pub fn tax() -> Int {\n  2\n}\n"]);
     let (ok, out) = strata_with_editor(&["edit", "shop/tax.strata", "--editor"], &pkg, &editor);
     assert!(ok && out.contains("added"), "{out}");
-    assert!(std::fs::read_to_string(pkg.join("shop/tax.strata")).unwrap().contains("pub fn tax"));
+    assert!(text(&pkg.join("shop/tax.strata")).contains("pub fn tax"));
 
     // `main` is the root module; `main.total` is its definition `total`
     let ed = d.join("root-def");
@@ -2462,12 +2479,12 @@ fn edit_opens_modules_and_the_whole_package() {
     let editor = fake_editor(&ed, &[]);
     let (ok, out) = strata_with_editor(&["edit", "main.total", "--editor"], &pkg, &editor);
     assert!(ok && out.contains("no changes"), "{out}");
-    assert_eq!(std::fs::read_to_string(ed.join("seen1.strata")).unwrap(), "fn total() -> Int {\n  price() + 1\n}\n");
+    assert_eq!(std::fs::read_to_string(ed.join("seen1.st")).unwrap(), "fn total() -> Int {\n  price() + 1\n}\n");
     let ed = d.join("root-module");
     std::fs::create_dir_all(&ed).unwrap();
     let editor = fake_editor(&ed, &[]);
     assert!(strata_with_editor(&["edit", "main", "--editor"], &pkg, &editor).0);
-    assert!(std::fs::read_to_string(ed.join("seen1.strata")).unwrap().starts_with("use shop.orders"));
+    assert!(std::fs::read_to_string(ed.join("seen1.st")).unwrap().starts_with("use shop.orders"));
 
     // neither a module nor a definition
     let (ok, out) = strata_with_editor(&["edit", "nothing_here", "--editor"], &pkg, "true");
@@ -2477,11 +2494,8 @@ fn edit_opens_modules_and_the_whole_package() {
 #[test]
 fn lambda_parameter_refinements_hold_at_runtime() {
     let d = tmp("lambda-refine");
-    std::fs::write(
-        d.join("l.strata"),
-        "fn apply(f: (Int) -> Int, x: Int) -> Int {\n  f(x)\n}\n\nfn bad() -> Int {\n  apply((n: Positive) -> n * 2, -3)\n}\n\nfn good() -> Int {\n  apply((n: Positive) -> n * 2, 3)\n}\n",
-    )
-    .unwrap();
+    save(&d.join("l.strata"),
+        "fn apply(f: (Int) -> Int, x: Int) -> Int {\n  f(x)\n}\n\nfn bad() -> Int {\n  apply((n: Positive) -> n * 2, -3)\n}\n\nfn good() -> Int {\n  apply((n: Positive) -> n * 2, 3)\n}\n");
     let (ok, out) = strata(&["--file", "l.strata", "run", "good"], &d, None);
     assert!(ok && out.trim() == "6", "{out}");
     let (ok, out) = strata(&["--file", "l.strata", "run", "bad"], &d, None);
@@ -2491,28 +2505,25 @@ fn lambda_parameter_refinements_hold_at_runtime() {
 #[test]
 fn f_string_format_specs() {
     let d = tmp("fmt-spec");
-    std::fs::write(
-        d.join("f.strata"),
-        "type Cents = Int where it >= 0\n\nfn row(name: String, price: Float, qty: Cents, delta: Int) -> String {\n  f\"[{name:<8}|{price:>8.2}|{qty:03}|{delta:+}|{name:*^10}|{name:.3}|{len([1, 2].map((n: Int) -> n))}]\"\n}\n\ntest \"specs\" {\n  assert row(\"tea\", 3.14159, 7, 5) == \"[tea     |    3.14|007|+5|***tea****|tea|2]\"\n  assert row(\"biscuits\", -2.5, 42, -3) == \"[biscuits|   -2.50|042|-3|*biscuits*|bis|2]\"\n  assert f\"{-42:06}\" == \"-00042\"\n}\n",
-    )
-    .unwrap();
+    save(&d.join("f.strata"),
+        "type Cents = Int where it >= 0\n\nfn row(name: String, price: Float, qty: Cents, delta: Int) -> String {\n  f\"[{name:<8}|{price:>8.2}|{qty:03}|{delta:+}|{name:*^10}|{name:.3}|{len([1, 2].map((n: Int) -> n))}]\"\n}\n\ntest \"specs\" {\n  assert row(\"tea\", 3.14159, 7, 5) == \"[tea     |    3.14|007|+5|***tea****|tea|2]\"\n  assert row(\"biscuits\", -2.5, 42, -3) == \"[biscuits|   -2.50|042|-3|*biscuits*|bis|2]\"\n  assert f\"{-42:06}\" == \"-00042\"\n}\n");
     let (ok, out) = strata(&["--file", "f.strata", "test"], &d, None);
     assert!(ok && out.contains("1 passed"), "{out}");
     // specs survive rendering
     let (_, r) = strata(&["--file", "f.strata", "render"], &d, None);
     assert!(r.contains("{price:>8.2}") && r.contains("{name:*^10}") && r.contains("{qty:03}"), "{r}");
-    std::fs::write(d.join("e.strata"), "fn a(n: Int) -> String { f\"{n:.2}\" }\nfn b(s: String) -> String { f\"{s:05}\" }\n").unwrap();
+    save(&d.join("e.strata"), "fn a(n: Int) -> String { f\"{n:.2}\" }\nfn b(s: String) -> String { f\"{s:05}\" }\n");
     let (ok, out) = strata(&["--file", "e.strata", "check"], &d, None);
     assert!(!ok && out.contains("`.N` applies to a Float") && out.contains("`+` and `0` apply to numbers"), "{out}");
-    std::fs::write(d.join("x.strata"), "fn c(n: Int) -> String { f\"{n:x}\" }\n").unwrap();
-    let (ok, out) = strata(&["--file", "x.strata", "check"], &d, None);
+    // a spec that doesn't parse can't be stored
+    let (ok, out) = strata(&["--file", "x.strata", "edit"], &d, Some("fn c(n: Int) -> String { f\"{n:x}\" }\n"));
     assert!(!ok && out.contains("bad format spec `x`"), "{out}");
 }
 
 #[test]
 fn a_types_own_methods_and_shared_names() {
     let d = tmp("own-methods");
-    std::fs::write(d.join("o.strata"), r#"trait Describe {
+    save(&d.join("o.strata"), r#"trait Describe {
   fn describe(self) -> String
     ensures len(it) > 0
 }
@@ -2574,7 +2585,7 @@ test "which describe runs" {
   assert show(Sku { code: "AB" }) == "SKU AB"
   assert describe(Sku { code: "X" }) == "SKU X"
 }
-"#).unwrap();
+"#);
     // a call through a trait runs that trait's implementation; on a known type, the type's own method
     let (ok, out) = strata(&["--file", "o.strata", "test"], &d, None);
     assert!(ok && out.contains("1 passed"), "{out}");
@@ -2585,9 +2596,9 @@ test "which describe runs" {
     }
     assert!(!out.contains('✗'), "{out}");
     let (_, r) = strata(&["--file", "o.strata", "render"], &d, None);
-    assert_eq!(r, std::fs::read_to_string(d.join("o.strata")).unwrap());
+    assert_eq!(r, text(&d.join("o.strata")));
 
-    std::fs::write(d.join("bad.strata"), r#"trait A {
+    save(&d.join("bad.strata"), r#"trait A {
   fn tag(self) -> String
 }
 
@@ -2652,7 +2663,7 @@ fn both[T: A + B](x: T) -> String {
 fn as_value(q: Q) -> List[String] {
   [q].map(tag)
 }
-"#).unwrap();
+"#);
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok, "{out}");
     for want in [
@@ -2667,7 +2678,7 @@ fn as_value(q: Q) -> List[String] {
     assert!(!out.contains("concrete_with_own") && !out.contains("through_a"), "{out}");
     assert_eq!(out.matches("error in").count(), 4, "{out}");
 
-    std::fs::write(d.join("misc.strata"), "type Q = { y: Int }\n\nimpl Int {\n  fn twice(self) -> Int {\n    self * 2\n  }\n}\n\nfn g() -> Int {\n  Q.nope()\n}\n").unwrap();
+    save(&d.join("misc.strata"), "type Q = { y: Int }\n\nimpl Int {\n  fn twice(self) -> Int {\n    self * 2\n  }\n}\n\nfn g() -> Int {\n  Q.nope()\n}\n");
     let (ok, out) = strata(&["--file", "misc.strata", "check"], &d, None);
     assert!(!ok && out.contains("`impl Int`: methods can only be added to a record, sum or `distinct` type") && out.contains("`Q` has no method `nope` called on the type"), "{out}");
 }
@@ -2676,7 +2687,7 @@ fn as_value(q: Q) -> List[String] {
 fn trait_methods_without_self() {
     let d = tmp("static-methods");
     // `Money.empty()`, `T.empty()` (the type passed when the generic function runs), `Self.empty()` in a default method and a law
-    std::fs::write(d.join("m.strata"), r#"trait Monoid {
+    save(&d.join("m.strata"), r#"trait Monoid {
   fn empty() -> Self
   fn combine(self, other: Self) -> Self
   fn twice(self) -> Self {
@@ -2729,7 +2740,7 @@ test "static trait methods" {
   assert concat_twice(["x"]) == "xx"
   assert String.empty() == ""
 }
-"#).unwrap();
+"#);
     let (ok, out) = strata(&["--file", "m.strata", "test"], &d, None);
     assert!(ok && out.contains("1 passed"), "{out}");
     let (ok, out) = strata(&["--file", "m.strata", "verify"], &d, None);
@@ -2738,7 +2749,7 @@ test "static trait methods" {
     assert!(r.contains("fn empty() -> Self") && r.contains("T.empty()") && r.contains("Self.empty().combine(a) == a"), "{r}");
 
     // contracts of static methods are used by the solver; a law catches a wrong `empty`
-    std::fs::write(d.join("s.strata"), r#"trait Bounded {
+    save(&d.join("s.strata"), r#"trait Bounded {
   fn lowest() -> Self
   fn rank(self) -> Int
     ensures it >= 0
@@ -2791,10 +2802,10 @@ impl Monoid for Max {
 test "generic with no arguments" {
   assert level_floor() == 0
 }
-"#).unwrap();
+"#);
     let (_, out) = strata(&["--file", "s.strata", "verify"], &d, None);
     assert!(passed(&out, "lowest_rank") && passed(&out, "level_floor") && out.contains("✗ law left_identity for Max"), "{out}");
-    std::fs::write(d.join("p.strata"), r#"trait Parse {
+    save(&d.join("p.strata"), r#"trait Parse {
   fn parse(s: String) -> Self
     requires len(s) > 0
   fn size(self) -> Int
@@ -2824,11 +2835,11 @@ fn word_size(s: NonEmptyString) -> Natural {
 test "parse" {
   assert word_size("hello") == 5
 }
-"#).unwrap();
+"#);
     let (ok, out) = strata(&["--file", "p.strata", "verify"], &d, None);
     assert!(ok && passed(&out, "read") && passed(&out, "word_size"), "{out}");
 
-    std::fs::write(d.join("bad.strata"), r#"trait Monoid {
+    save(&d.join("bad.strata"), r#"trait Monoid {
   fn empty() -> Self
   fn combine(self, other: Self) -> Self
 }
@@ -2868,7 +2879,7 @@ fn not_impl() -> Int {
 test "unknown type" {
   assert concat([]) == concat([])
 }
-"#).unwrap();
+"#);
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok, "{out}");
     for want in [
@@ -2885,8 +2896,7 @@ test "unknown type" {
 #[test]
 fn print_goes_to_the_terminal_a_test_buffer_or_nowhere() {
     let d = tmp("print");
-    std::fs::write(
-        d.join("p.strata"),
+    save(&d.join("p.strata"),
         r#"use std.io.Console
 
 fn double(n: Int) -> Int {
@@ -2908,9 +2918,7 @@ test "passes" {
 test "fails" {
   assert double(2) == 5
 }
-"#,
-    )
-    .unwrap();
+"#);
     // `print` is the prelude's even where `Console` (with its `print` method) is imported
     let (code, out, _) = strata_code(&["run", "p.strata"], &d, "");
     assert_eq!((code, out.as_str()), (0, "plain\n[1,2]\nconsole\ndoubling 21\n42\n"));
@@ -2928,9 +2936,8 @@ fn command_line_options_are_read_into_a_record() {
     let d = tmp("cli");
     std::fs::create_dir_all(d.join("tool/kinds")).unwrap();
     std::fs::write(d.join("tool/strata.toml"), "name = \"tool\"\n").unwrap();
-    std::fs::write(d.join("tool/kinds.strata"), "pub type Mode =\n  | Fast\n  | DryRun\n").unwrap();
-    std::fs::write(
-        d.join("tool/main.strata"),
+    save(&d.join("tool/kinds.strata"), "pub type Mode =\n  | Fast\n  | DryRun\n");
+    save(&d.join("tool/main.strata"),
         r#"use std.cli.CommandLine
 use kinds.*
 
@@ -2954,9 +2961,7 @@ impl CommandLine for Options {}
 fn main(opts: Options) -> () {
   print(opts)
 }
-"#,
-    )
-    .unwrap();
+"#);
     let run = |args: &[&str]| {
         let mut a = vec!["run", "tool", "--"];
         a.extend_from_slice(args);
@@ -2994,7 +2999,7 @@ fn main(opts: Options) -> () {
         assert!(out.contains(want), "missing {want:?} in\n{out}");
     }
     // a record that can't be read from arguments is a check error
-    std::fs::write(d.join("bad.strata"), "use std.cli.CommandLine\n\ntype Opts = { pairs: List[(Int, Int)] }\n\nimpl CommandLine for Opts {}\n").unwrap();
+    save(&d.join("bad.strata"), "use std.cli.CommandLine\n\ntype Opts = { pairs: List[(Int, Int)] }\n\nimpl CommandLine for Opts {}\n");
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok && out.contains("`Opts.pairs` is a `List[(Int, Int)]`"), "{out}");
     // field docs round-trip
@@ -3006,8 +3011,7 @@ fn main(opts: Options) -> () {
 fn method_names_follow_the_receiver_across_modules_and_builtins() {
     let d = tmp("names");
     // `Console.write` / `Files.write` from two modules, `Files.remove` / the builtin `remove`
-    std::fs::write(
-        d.join("main.strata"),
+    save(&d.join("main.strata"),
         r#"use std.io.{Console, recorder, printed}
 use std.fs.{Files, NotFound, mem_files}
 
@@ -3043,9 +3047,7 @@ test "each call means its receiver's method" {
   assert to_list(set([1, 2]).remove(1)) == [2]
   assert f.list("nope") == Err(NotFound { path: "nope" })
 }
-"#,
-    )
-    .unwrap();
+"#);
     let (ok, out) = strata(&["--file", "main.strata", "test"], &d, None);
     assert!(ok && out.contains("1 passed"), "{out}");
     let (code, out, err) = strata_code(&["run", "main.strata"], &d, "");
@@ -3060,10 +3062,9 @@ test "each call means its receiver's method" {
 fn shared_method_names_across_modules() {
     let d = tmp("xmod");
     std::fs::write(d.join("strata.toml"), "name = \"xmod\"\n").unwrap();
-    std::fs::write(d.join("a.strata"), "pub trait Sized {\n  fn size(self) -> Int\n}\n").unwrap();
-    std::fs::write(d.join("b.strata"), "pub trait Weighed {\n  fn size(self) -> Int\n}\n").unwrap();
-    std::fs::write(
-        d.join("main.strata"),
+    save_module(&d, "a", "pub trait Sized {\n  fn size(self) -> Int\n}\n");
+    save_module(&d, "b", "pub trait Weighed {\n  fn size(self) -> Int\n}\n");
+    save_module(&d, "main",
         r#"use a.Sized
 use b.Weighed
 
@@ -3100,14 +3101,11 @@ test "each call means its receiver's size" {
   assert via_sized(b) == 1
   assert via_weighed(b) == 2
 }
-"#,
-    )
-    .unwrap();
+"#);
     let (ok, out) = strata(&["--file", ".", "test"], &d, None);
     assert!(ok && out.contains("1 passed"), "{out}");
     // two traits of the receiver have the name, from different modules: an error, as within one
-    std::fs::write(
-        d.join("amb.strata"),
+    save_module(&d, "amb",
         r#"use a.Sized
 use b.Weighed
 
@@ -3121,9 +3119,7 @@ impl Weighed for Two {
 
 fn concrete(x: Two) -> Int { x.size() }
 fn bounded[T: Sized + Weighed](x: T) -> Int { x.size() }
-"#,
-    )
-    .unwrap();
+"#);
     let (ok, out) = strata(&["--file", ".", "check"], &d, None);
     assert!(!ok && out.contains("`Two` implements `Sized` and `Weighed`, which both have `size`"), "{out}");
     assert!(out.contains("`T` is known only as `Sized` and `Weighed`"), "{out}");
@@ -3132,18 +3128,15 @@ fn bounded[T: Sized + Weighed](x: T) -> Int { x.size() }
 #[test]
 fn a_pending_change_handles_removed_and_added_variants() {
     let d = tmp("pending-variants");
-    std::fs::write(
-        d.join("main.strata"),
-        "type Status =\n  | Pending\n  | Shipped { tracking: String }\n  | Cancelled\n\nfn label(s: Status) -> String {\n  match s {\n    Pending => \"pending\",\n    Shipped { tracking, .. } => \"shipped \" + tracking,\n    Cancelled => \"cancelled\",\n  }\n}\n\nfn done(s: Status) -> Bool {\n  match s {\n    Shipped { .. } | Cancelled => true,\n    Pending => false,\n  }\n}\n\nfn only_cancelled(s: Status) -> Int {\n  match s {\n    Cancelled => 1,\n  }\n}\n\nfn cancel() -> Status {\n  Cancelled\n}\n\ntest \"labels\" {\n  assert label(Pending) == \"pending\"\n}\n",
-    )
-    .unwrap();
     assert!(strata(&["init"], &d, None).0);
+    save(&d.join("main.strata"),
+        "type Status =\n  | Pending\n  | Shipped { tracking: String }\n  | Cancelled\n\nfn label(s: Status) -> String {\n  match s {\n    Pending => \"pending\",\n    Shipped { tracking, .. } => \"shipped \" + tracking,\n    Cancelled => \"cancelled\",\n  }\n}\n\nfn done(s: Status) -> Bool {\n  match s {\n    Shipped { .. } | Cancelled => true,\n    Pending => false,\n  }\n}\n\nfn only_cancelled(s: Status) -> Int {\n  match s {\n    Cancelled => 1,\n  }\n}\n\nfn cancel() -> Status {\n  Cancelled\n}\n\ntest \"labels\" {\n  assert label(Pending) == \"pending\"\n}\n");
     let (ok, out) = strata(&["edit", "-m", "lost parcels"], &d, Some("type Status =\n  | Pending\n  | Shipped { tracking: String }\n  | Lost(Int)\n"));
     assert!(ok, "{out}");
     // a removed variant's arms go (or just its alternative); an added one gets an arm with a hole
     assert!(out.contains("in label: dropped the arm for `Cancelled` (removed)") && out.contains("in done: dropped `Cancelled` (removed) from an arm"), "{out}");
     assert!(out.contains("in label\n      why: `Lost` is a new variant of `Status`"), "{out}");
-    let m = std::fs::read_to_string(d.join("main.strata")).unwrap();
+    let m = text(&d.join("main.strata"));
     assert!(m.contains("    Shipped { tracking, .. } => \"shipped \" + tracking,\n    Lost(_) => ?pending_"), "{m}");
     assert!(m.contains("    Shipped { .. } => true,\n    Pending => false,\n    Lost(_) => ?pending_"), "{m}");
     // a match with no arm left is a hole; so is building the removed variant
@@ -3166,8 +3159,8 @@ fn changes_are_committed_to_git() {
     git(&d, &["init", "-q", "-b", "main"]);
     let pkg = d.join("pkg");
     std::fs::create_dir_all(&pkg).unwrap();
-    std::fs::write(pkg.join("main.strata"), TAXES).unwrap();
     assert!(strata(&["init"], &pkg, None).0);
+    save(&pkg.join("main.strata"), TAXES);
     git(&d, &["add", "."]);
     git(&d, &["commit", "-q", "-m", "base"]);
     let count = || git(&d, &["rev-list", "--count", "HEAD"]).trim().parse::<usize>().unwrap();
@@ -3227,11 +3220,11 @@ fn std_web_renders_and_proves_pages() {
     assert!(ok && out.starts_with("<!DOCTYPE html>") && out.contains("&lt;script&gt;alert(1)&lt;/script&gt;"), "text is escaped: {out}");
     assert!(out.contains(r#"<a href="/?sort=year">By year</a>"#), "{out}");
     // an inline script can't be an attribute: caught when checking
-    std::fs::write(d.join("bad.strata"), "use std.web.{Html, render, attr, button}\nfn b() -> String { render(button([attr(\"onclick\", \"evil()\")], [])) }\n").unwrap();
+    save(&d.join("bad.strata"), "use std.web.{Html, render, attr, button}\nfn b() -> String { render(button([attr(\"onclick\", \"evil()\")], [])) }\n");
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok && out.contains("does not satisfy `std.web.AttrName`"), "{out}");
     // nor can `Html` be built around the functions that check names
-    std::fs::write(d.join("sneak.strata"), "use std.web.{Html, render}\nfn b() -> String { render(Html { node: Element { tag: \"x y\", attrs: [], children: [] } }) }\n").unwrap();
+    save(&d.join("sneak.strata"), "use std.web.{Html, render}\nfn b() -> String { render(Html { node: Element { tag: \"x y\", attrs: [], children: [] } }) }\n");
     let (ok, out) = strata(&["--file", "sneak.strata", "check"], &d, None);
     assert!(!ok && out.contains("`Element` is private to module `std.web`"), "{out}");
     if !has_solver() {
@@ -3260,8 +3253,7 @@ fn serve_calls_handle_for_each_request() {
     let d = tmp("serve");
     // a free port: bound, then released for the server
     let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
-    std::fs::write(
-        d.join("app.strata"),
+    save(&d.join("app.strata"),
         r#"use std.http.{Request, Response, ok_text, ok_json, not_found}
 fn handle(req: Request) -> Response {
   let q = get(req.query, "q") or { "-" }
@@ -3273,9 +3265,7 @@ fn handle(req: Request) -> Response {
     _ => not_found(),
   }
 }
-"#,
-    )
-    .unwrap();
+"#);
     let mut server = Command::new(env!("CARGO_BIN_EXE_strata")).args(["serve", "app.strata", "--port", &port.to_string()]).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
     let up = (0..100).any(|_| {
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -3302,7 +3292,7 @@ fn handle(req: Request) -> Response {
         std::panic::resume_unwind(e);
     }
     // `handle`'s signature is checked before serving
-    std::fs::write(d.join("wrong.strata"), "fn handle(n: Int) -> Int {\n  n\n}\n").unwrap();
+    save(&d.join("wrong.strata"), "fn handle(n: Int) -> Int {\n  n\n}\n");
     let (ok, out) = strata(&["serve", "wrong.strata"], &d, None);
     assert!(!ok && out.contains("Its parameter `n` has type `Int`"), "{out}");
 }
@@ -3311,8 +3301,7 @@ fn handle(req: Request) -> Response {
 fn own_methods_locals_and_function_values() {
     let d = tmp("own-locals-fns");
     std::fs::write(d.join("strata.toml"), "name = \"m\"\n").unwrap();
-    std::fs::write(
-        d.join("counter.strata"),
+    save_module(&d, "counter",
         "pub type Counter = { n: Natural }
 
 impl Counter {
@@ -3320,9 +3309,7 @@ impl Counter {
     self.n = self.n + 1
   }
 }
-",
-    )
-    .unwrap();
+");
     let src = "use counter.Counter
 
 type Twice = { f: (Natural) -> Natural }
@@ -3358,7 +3345,7 @@ test \"methods\" {
   assert fresh().n == 1
 }
 ";
-    std::fs::write(d.join("main.strata"), src).unwrap();
+    save_module(&d, "main", src);
     let (ok, out) = strata(&["--file", ".", "test"], &d, None);
     assert!(ok && out.contains("1 passed"), "{out}");
     if !has_solver() {
@@ -3374,8 +3361,7 @@ test \"methods\" {
 fn serve_runs_an_app() {
     let d = tmp("serve-app");
     let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
-    std::fs::write(
-        d.join("app.strata"),
+    save(&d.join("app.strata"),
         r#"use std.web.{Html, div, button, text, on_click}
 type Model = { n: Int where 0 <= it && it <= 3 }
 type Msg =
@@ -3395,9 +3381,7 @@ fn update(model: Model, msg: Msg) -> Model {
 fn view(model: Model) -> Html[Msg] {
   div([], [text(f"n={model.n}"), button([on_click(Up)], [text("up")])])
 }
-"#,
-    )
-    .unwrap();
+"#);
     let mut server = Command::new(env!("CARGO_BIN_EXE_strata")).args(["serve", "app.strata", "--port", &port.to_string()]).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
     let up = (0..100).any(|_| {
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -3434,7 +3418,7 @@ fn view(model: Model) -> Html[Msg] {
         std::panic::resume_unwind(e);
     }
     // the three functions' signatures are checked before serving
-    std::fs::write(d.join("bad.strata"), "use std.web.{Html, text}\nfn init() -> Int {\n  0\n}\nfn update(m: Int, msg: String) -> String {\n  msg\n}\nfn view(m: Int) -> Html[String] {\n  text(\"x\")\n}\n").unwrap();
+    save(&d.join("bad.strata"), "use std.web.{Html, text}\nfn init() -> Int {\n  0\n}\nfn update(m: Int, msg: String) -> String {\n  msg\n}\nfn view(m: Int) -> Html[String] {\n  text(\"x\")\n}\n");
     let (ok, out) = strata(&["serve", "bad.strata"], &d, None);
     assert!(!ok && out.contains("`update` takes and returns the model `Int`"), "{out}");
     // the example app is proven: `update` keeps the model's refinements, and
@@ -3512,23 +3496,25 @@ fn ranges_slices_and_comprehensions() {
     let src = format!("{}/tests/data/sugar.strata", env!("CARGO_MANIFEST_DIR"));
     let (ok, out) = strata(&["--file", &src, "test"], &d, None);
     assert!(ok && out.contains("1 passed"), "{out}");
-    // written as they were, in text and through the binary format
-    let (ok, out) = strata(&["--file", &src, "render"], &d, None);
-    assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
-    let (ok, out) = strata(&["--file", &src, "pack", "sugar.stb"], &d, None);
+    // written as they were: the text read back in prints the same, also through a bundle
+    let (ok, written) = strata(&["--file", &src, "render"], &d, None);
+    assert!(ok, "{written}");
+    save(&d.join("again.strata"), &written);
+    assert_eq!(text(&d.join("again.strata")), written);
+    let (ok, out) = strata(&["--file", &src, "pack", "sugar.strata"], &d, None);
     assert!(ok, "{out}");
-    let (ok, out) = strata(&["--file", "sugar.stb", "render"], &d, None);
-    assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
+    let (ok, out) = strata(&["--file", "sugar.strata", "render"], &d, None);
+    assert!(ok && out == written, "{out}");
     let (ok, out) = strata(&["--file", &src, "run", "first", "[[]]"], &d, None);
     assert!(!ok && out.contains("does not satisfy"), "{out}");
-    std::fs::write(d.join("last.strata"), "fn last(xs: List[Int]) -> Int { xs[len(xs) - 1] }").unwrap();
+    save(&d.join("last.strata"), "fn last(xs: List[Int]) -> Int { xs[len(xs) - 1] }");
     let (ok, out) = strata(&["--file", "last.strata", "run", "last", "[[]]"], &d, None);
     assert!(!ok && out.contains("index -1 out of range (length 0)"), "{out}");
     for (code, err) in [
         ("fn f(xs: List[Int]) -> List[Int] { xs[1..=] }", "`..=` needs an end"),
     ] {
-        std::fs::write(d.join("e.strata"), code).unwrap();
-        let (ok, out) = strata(&["--file", "e.strata", "check"], &d, None);
+        // it doesn't parse, so it can't be stored
+        let (ok, out) = strata(&["--file", "e.strata", "edit"], &d, Some(code));
         assert!(!ok && out.contains(err), "{code}: {out}");
     }
 }
@@ -3540,13 +3526,15 @@ fn coalesce() {
     let (ok, out) = strata(&["--file", &src, "test"], &d, None);
     assert!(ok && out.contains("2 passed"), "{out}");
     let (ok, out) = strata(&["--file", &src, "render"], &d, None);
-    assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
+    assert!(ok, "{out}");
+    save(&d.join("again.strata"), &out);
+    assert_eq!(text(&d.join("again.strata")), out);
     // a short `or { value }` is written `??`, a short `except { value }` `!!`
-    std::fs::write(d.join("e.strata"), "fn f(s: String) -> Int { parse_int(s) or { 0 } }\nfn g(r: Result[Int, String]) -> Int { r except { 0 } }\n").unwrap();
+    save(&d.join("e.strata"), "fn f(s: String) -> Int { parse_int(s) or { 0 } }\nfn g(r: Result[Int, String]) -> Int { r except { 0 } }\n");
     let (ok, out) = strata(&["--file", "e.strata", "render"], &d, None);
     assert!(ok && out.contains("parse_int(s) ?? 0") && out.contains("r !! 0"), "{out}");
     // each on its own type only
-    std::fs::write(d.join("w.strata"), "fn f(x: Option[Int]) -> Int { x except { 0 } }\nfn g(x: Result[Int, String]) -> Int { x ?? 0 }\n").unwrap();
+    save(&d.join("w.strata"), "fn f(x: Option[Int]) -> Int { x except { 0 } }\nfn g(x: Result[Int, String]) -> Int { x ?? 0 }\n");
     let (ok, out) = strata(&["--file", "w.strata", "check"], &d, None);
     assert!(!ok && out.contains("in f: `except` / `!!` handle a Result") && out.contains("in g: `or` / `??` handle an Option"), "{out}");
 }
@@ -3557,12 +3545,14 @@ fn dict_and_set_literals() {
     let src = format!("{}/tests/data/collections.strata", env!("CARGO_MANIFEST_DIR"));
     let (ok, out) = strata(&["--file", &src, "test"], &d, None);
     assert!(ok && out.contains("1 passed"), "{out}");
-    let (ok, out) = strata(&["--file", &src, "render"], &d, None);
-    assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
-    let (ok, out) = strata(&["--file", &src, "pack", "c.stb"], &d, None);
+    let (ok, written) = strata(&["--file", &src, "render"], &d, None);
+    assert!(ok, "{written}");
+    save(&d.join("again.strata"), &written);
+    assert_eq!(text(&d.join("again.strata")), written);
+    let (ok, out) = strata(&["--file", &src, "pack", "c.strata"], &d, None);
     assert!(ok, "{out}");
-    let (ok, out) = strata(&["--file", "c.stb", "render"], &d, None);
-    assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
+    let (ok, out) = strata(&["--file", "c.strata", "render"], &d, None);
+    assert!(ok && out == written, "{out}");
 }
 
 #[test]
@@ -3572,13 +3562,15 @@ fn record_defaults() {
     let (ok, out) = strata(&["--file", &src, "test"], &d, None);
     assert!(ok && out.contains("1 passed"), "{out}");
     let (ok, out) = strata(&["--file", &src, "render"], &d, None);
-    assert!(ok && out == std::fs::read_to_string(&src).unwrap(), "{out}");
+    assert!(ok, "{out}");
+    save(&d.join("again.strata"), &out);
+    assert_eq!(text(&d.join("again.strata")), out);
     // JSON input: a missing key takes the default
-    std::fs::write(d.join("r.strata"), "type R = { n: Int = 1, s: String }\nfn f(r: R) -> Int { r.n }\n").unwrap();
+    save(&d.join("r.strata"), "type R = { n: Int = 1, s: String }\nfn f(r: R) -> Int { r.n }\n");
     let (ok, out) = strata(&["--file", "r.strata", "run", "f", r#"[{"s": "x"}]"#], &d, None);
     assert!(ok && out.trim() == "1", "{out}");
     // checked where the type is defined
-    std::fs::write(d.join("bad.strata"), "type R = { n: Int where it > 0 = 0 }\ntype S = { s: String = 1 }\n").unwrap();
+    save(&d.join("bad.strata"), "type R = { n: Int where it > 0 = 0 }\ntype S = { s: String = 1 }\n");
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok && out.contains("the default of `n`, 0, does not satisfy") && out.contains("default of field `s`: expected `String`"), "{out}");
     // the command line: a field with a default is an option
