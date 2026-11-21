@@ -135,6 +135,10 @@ impl Parser {
     fn nl_before(&self) -> bool {
         self.toks[self.pos].nl_before
     }
+    /// The next token is a call's `(`: written against what precedes it.
+    fn call_paren(&self) -> bool {
+        self.is_sym("(") && !self.toks[self.pos].space_before
+    }
     fn next(&mut self) -> Tok {
         let t = self.toks[self.pos].tok.clone();
         if self.pos < self.toks.len() - 1 {
@@ -733,7 +737,7 @@ impl Parser {
     fn marked(&mut self) -> R<Expr> {
         let mut place = Expr::Var(self.ident()?);
         loop {
-            if (self.is_sym("(") || self.is_sym("[")) && !self.nl_before() {
+            if self.call_paren() || (self.is_sym("[") && !self.nl_before()) {
                 return Err(self.err("only a variable or a field can be `mut`: name the value first (`mut x := …`)"));
             }
             if !self.is_sym(".") {
@@ -746,7 +750,7 @@ impl Parser {
                 continue;
             }
             let Tok::Ident(name) = self.peek_at(1).clone() else { return Err(self.err("expected a field or method name")) };
-            if matches!(self.peek_at(2), Tok::Sym("(")) && !self.toks[self.pos + 2].nl_before {
+            if matches!(self.peek_at(2), Tok::Sym("(")) && !self.toks[self.pos + 2].space_before {
                 self.next();
                 self.next();
                 self.next();
@@ -776,7 +780,7 @@ impl Parser {
     /// Calls, fields, indexes, `!`, `?` and `except` after `e`.
     fn postfix_from(&mut self, mut e: Expr) -> R<Expr> {
         loop {
-            if self.is_sym("(") && !self.nl_before() {
+            if self.call_paren() {
                 self.next();
                 e = Expr::Call(Box::new(e), self.args()?);
             } else if self.is_sym(".") {
@@ -793,7 +797,7 @@ impl Parser {
                 } else {
                     self.ident()?
                 };
-                if self.is_sym("(") && !self.nl_before() {
+                if self.call_paren() {
                     self.next();
                     e = Expr::Method(Box::new(e), name, self.args()?);
                 } else {
@@ -1021,7 +1025,7 @@ impl Parser {
                 if name == "Dict" || name == "Set" {
                     return self.collection(name == "Dict");
                 }
-                if self.is_sym("(") && !self.nl_before() {
+                if self.call_paren() {
                     self.next();
                     return Ok(Expr::Ctor(name, CtorArgs::Positional(self.args()?)));
                 }

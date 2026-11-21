@@ -399,7 +399,7 @@ The `smt-verification` worktree (uncommitted, on old main) already has: symbolic
 - `:=` declares and infers the type: `n := 0`, `(w, k) := pair()`, `mut x := 0`. With a type, the colon is already written, so the sign is `=`: `let x: Int = 5`, `mut x: Int = 0`. `let` only appears with a type; `let x = e` is a parse error pointing at `x := e`.
 - `=` only reassigns a variable or field. `+=`, `-=`, `*=`, `/=`, `%=` parse to `x = x op e` (no new node), and the printer writes `x = x op e` back as `x op= e`.
 - A function returning `()` leaves out `-> ()` (it was already optional when parsing; the printer now omits it). Function *types* keep it: `(A) -> ()`.
-- Without `let`, a binding starting with `(` after an expression on the same line reads as a call (`f() (a, b) := …`): separate them with a newline or `;`.
+- A call's `(` must be written against the name: `f(x)` is a call, `f (x)` is `f` followed by `(x)`. So without `let`, `f() (a, b) := …` on one line is still a call then a binding (the printer puts them on separate lines anyway). Decided with the user 2026-11-21; the rendering is meant to be customizable per reader later (e.g. `let` everywhere, sums expanded or compressed), since the tree is the language.
 
 ### Requested cleanups (done)
 - **String concatenation uses `+`**, not `++`: `"a" + "b"`. Lists use `+` too (`[1] + [2]`, decided), so `++` goes away entirely. Update the checker (`numeric` currently rejects `String` for `+`), the interpreter, the printer and all examples.

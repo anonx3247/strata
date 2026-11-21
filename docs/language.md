@@ -225,7 +225,7 @@ best := scores
   .take(3)
 ```
 
-**Bindings.** `:=` names a new value and infers its type: `n := 0`, `(w, k) := pair()`. With a type, the colon is already there, so the sign is `=`: `let x: Int = 5`. A mutable variable is `mut x := 0` or `mut x: Int = 0`. A plain `=` changes an existing variable or field (`x = e`, `line.qty = …`), and `+=`, `-=`, `*=`, `/=`, `%=` are short for `x = x + e` and so on (and are how such an assignment is printed). A function that returns `()` leaves out `-> ()`: `fn log(s: String) { … }`.
+**Bindings.** `:=` names a new value and infers its type: `n := 0`, `(w, k) := pair()`. With a type, the colon is already there, so the sign is `=`: `let x: Int = 5`. A mutable variable is `mut x := 0` or `mut x: Int = 0`. A plain `=` changes an existing variable or field (`x = e`, `line.qty = …`), and `+=`, `-=`, `*=`, `/=`, `%=` are short for `x = x + e` and so on (and are how such an assignment is printed). A function that returns `()` leaves out `-> ()`: `fn log(s: String) { … }`. A call's parentheses are written against the name: `f(x)` is a call, while `f (x)` is `f` followed by `(x)`.
 
 Variables are immutable unless declared `mut`. `while` and `for` loops are available. Mutation is always *visible*:
 - a function that changes an argument declares it `mut`, and the caller passes a mutable variable marked `mut` at the call (`restock(mut line, 5)`), which is updated when the call returns. The marker is required there, and an error anywhere else;

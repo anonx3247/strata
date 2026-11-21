@@ -44,6 +44,10 @@ pub struct Token {
     /// true if a newline separates this token from the previous one.
     /// Used so `f\n(x)` is two statements rather than a call.
     pub nl_before: bool,
+    /// true if whitespace (or a newline) separates this token from the
+    /// previous one: a call's `(` is written against the name, so
+    /// `f (x)` is not a call.
+    pub space_before: bool,
 }
 
 const SYMS: &[&str] = &[
@@ -85,8 +89,9 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), String
             continue;
         }
         let (sl, sc) = (line, col);
+        let space_before = i == 0 || chars[i - 1].is_whitespace();
         let mut push = |tok: Tok, nl: &mut bool| {
-            out.push(Token { tok, line: sl, col: sc, nl_before: *nl });
+            out.push(Token { tok, line: sl, col: sc, nl_before: *nl, space_before: space_before || *nl });
             *nl = false;
         };
         if c == '/' && chars.get(i + 1) == Some(&'/') {
@@ -267,6 +272,6 @@ pub fn lex_with_comments(src: &str) -> Result<(Vec<Token>, Vec<Comment>), String
         }
         return Err(format!("{line}:{col}: unexpected character {c:?}"));
     }
-    out.push(Token { tok: Tok::Eof, line, col, nl_before: true });
+    out.push(Token { tok: Tok::Eof, line, col, nl_before: true, space_before: true });
     Ok((out, comments))
 }

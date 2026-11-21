@@ -87,12 +87,14 @@ fn render_round_trips() {
 fn bindings_and_assignments() {
     let d = tmp("bindings");
     let f = d.join("b.strata");
-    // written loosely; render prints the canonical forms
+    // written loosely; render prints the canonical forms. A call's `(` is
+    // against the name, so `a (q, r) := …` is `a`, then a binding.
     save(&f, "fn log(s: String) -> () { print(s) }\n\
               fn f() -> Int {\n\
                 n := 1\n\
                 let k: Int = 2\n\
                 (a, b) := (3, 4)\n\
+                m := a (q, r) := (a, b)\n\
                 mut x := 0\n\
                 mut y: Int = 10\n\
                 x += n + k\n\
@@ -104,7 +106,7 @@ fn bindings_and_assignments() {
               test \"f\" { assert f() == 10 }\n");
     let t = text(&f);
     assert!(t.contains("fn log(s: String) {"), "{t}");
-    for line in ["n := 1", "let k: Int = 2", "(a, b) := (3, 4)", "mut x := 0", "mut y: Int = 10", "x += n + k", "x *= 2", "y -= a - b", "y %= 7"] {
+    for line in ["n := 1", "let k: Int = 2", "(a, b) := (3, 4)", "m := a\n  (q, r) := (a, b)", "mut x := 0", "mut y: Int = 10", "x += n + k", "x *= 2", "y -= a - b", "y %= 7"] {
         assert!(t.contains(line), "{line}: {t}");
     }
     let (ok, out) = strata(&["--file", "b.strata", "test"], &d, None);
