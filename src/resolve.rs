@@ -40,6 +40,7 @@ pub fn resolve(p: &Program) -> Resolution {
     };
     static_calls(&mut r.program);
     crate::desugar::program(&mut r.program, &mut r.errors);
+    crate::derive::expand(&mut r.program, &mut r.errors);
     r
 }
 

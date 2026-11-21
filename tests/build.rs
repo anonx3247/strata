@@ -426,6 +426,75 @@ fn trait_values_run_as_interpreted() {
 }
 
 #[test]
+fn derived_traits_compile() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("derived");
+    let (out, code) = case(&d, "derived", r#"use std.typing.{Record, Field}
+
+/// Values from text, field by field.
+derivable(t: Record) trait FromText {
+  /// The fields' names.
+  derived fn names(self) -> List[String] {
+    comptime t.fields.map(f -> f.name)
+  }
+  /// A value with every field at its zero.
+  derived fn zero() -> Self {
+    t.make(f -> zero_of(f))
+  }
+  /// A value read from one text per field.
+  derived fn parse(texts: List[String]) -> Result[Self, String] {
+    t.try_make(f -> read(f, texts))
+  }
+}
+
+fn zero_of(comptime f: Field) -> f.type {
+  match comptime f.type {
+    Int => 0,
+    String => "",
+    Bool => false,
+  }
+}
+
+fn read(comptime f: Field, texts: List[String]) -> Result[f.type, String] {
+  let text = get(texts, index_of_name(comptime f.name)) or { "" }
+  match comptime f.type {
+    Int => match parse_int(text) {
+      Some(n) => Ok(n),
+      None => Err(f"{f.name}: `{text}` is not a number"),
+    },
+    String => Ok(text),
+    Bool => Ok(text == "yes"),
+  }
+}
+
+fn index_of_name(name: String) -> Int {
+  if name == "x" {
+    0
+  } else if name == "label" {
+    1
+  } else {
+    2
+  }
+}
+
+type Point = { x: Int, label: String, on: Bool }
+
+derive FromText for Point
+
+fn main() -> () {
+  print(Point.zero().names())
+  print(Point.zero())
+  print(Point.parse(["3", "here", "yes"]))
+  print(Point.parse(["three", "here", "yes"]))
+}
+"#);
+    assert!(out.contains("is not a number") && code == 0, "{out}");
+}
+
+#[test]
 fn what_is_not_compiled_yet_is_named() {
     let d = tmp("unsupported");
     let f = d.join("lists.strata");

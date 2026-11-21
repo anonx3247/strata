@@ -7,6 +7,7 @@ mod binary;
 mod cli;
 mod cmd;
 mod desugar;
+mod derive;
 mod diff;
 mod history;
 mod generate;

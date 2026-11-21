@@ -3080,11 +3080,25 @@ pub fn check(prog: &Program) -> CheckReport {
 fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec<HoleInfo>, Vec<(usize, Target)>, HashMap<usize, Ty>) {
     let (mut errors, mut holes, mut targets, mut types) = (Vec::new(), Vec::new(), Vec::new(), HashMap::default());
     for d in &prog.decls {
-        // stored, not yet checked or run: deriving comes in the next step
-        if let Some(msg) = not_yet(d) {
-            errors.push(Diag { decl: d.name(), msg });
+        // a `derived fn` and a function with `comptime` parameters are checked
+        // where they are specialized (each `derive`, each copy), not here
+        if matches!(&d.kind, DeclKind::Fn(f) if f.params.iter().any(|p| p.comptime)) {
             continue;
         }
+        let spec;
+        let d = match &d.kind {
+            DeclKind::Trait(t) if t.methods.iter().any(|m| m.decl.derived) => {
+                let mut t = t.clone();
+                for m in &mut t.methods {
+                    if m.decl.derived {
+                        m.default = false;
+                    }
+                }
+                spec = Decl { kind: DeclKind::Trait(t), ..d.clone() };
+                &spec
+            }
+            _ => d,
+        };
         let mut c = Checker {
             env: &env,
             subst: Vec::new(),
@@ -3330,21 +3344,6 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec
         targets.extend(c.targets);
     }
     (errors, holes, targets, types)
-}
-
-/// What a definition uses of derived traits and `comptime`, which are
-/// parsed, printed and stored, but not yet checked or run.
-fn not_yet(d: &Decl) -> Option<String> {
-    let soon = "(the syntax is stored; deriving and `comptime` come next, see IDEAS.md, \"Derived traits, `comptime` and special methods\")";
-    let comptime_in = |f: &FnDecl| f.comptime || f.params.iter().any(|p| p.comptime);
-    match &d.kind {
-        DeclKind::Trait(t) if t.derivable.is_some() || t.methods.iter().any(|m| m.decl.derived) => Some(format!("derivable traits are not checked yet {soon}")),
-        DeclKind::Trait(t) if t.methods.iter().any(|m| comptime_in(&m.decl)) => Some(format!("`comptime` parameters are not checked yet {soon}")),
-        DeclKind::Impl(i) if i.derived => Some(format!("`derive` is not done yet {soon}")),
-        DeclKind::Impl(i) if i.methods.iter().any(comptime_in) => Some(format!("`comptime` parameters are not checked yet {soon}")),
-        DeclKind::Fn(f) if comptime_in(f) => Some(format!("`comptime` functions and parameters are not checked yet {soon}")),
-        _ => None,
-    }
 }
 
 /// A type's own method as the function it is called as (`Item.new`, or
