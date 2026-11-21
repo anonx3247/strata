@@ -17,11 +17,15 @@
 //! messages: refinements of parameters, results, annotated `let`s, declared
 //! variables and constructed values, `requires`, `ensures`, `assert`.
 //!
-//! Not yet: big integers (`Int` overflow is a fault), lists and the other
-//! collections, lambdas, traits, `mut` parameters, capabilities, format
-//! specs, unions of anything but records and variants, and a garbage
-//! collector (memory is never freed). A program that uses them is refused,
-//! with the function and the construct named.
+//! Lists point to a header over a shared buffer of 8-byte slots; a `Set` is
+//! a list kept sorted in the interpreter's order, a `Dict` a list of
+//! `(key, value)` pairs sorted by key.
+//!
+//! Not yet: big integers (`Int` overflow is a fault), regexes, options from
+//! the command line, trait-typed fields and list elements, unions of
+//! anything but records and variants, and a garbage collector (memory is
+//! never freed). A program that uses them is refused, with the function and
+//! the construct named.
 
 use crate::ast::*;
 use crate::types::{Env, Ty};
@@ -231,6 +235,27 @@ declare ptr @strata_show_float(double)
 declare ptr @strata_show_bool(i1)
 declare ptr @strata_json_str(ptr)
 declare void @strata_print(ptr)
+declare ptr @strata_str_split(ptr, ptr)
+declare ptr @strata_str_trim(ptr)
+declare i1 @strata_str_contains(ptr, ptr)
+declare i1 @strata_str_starts_with(ptr, ptr)
+declare i1 @strata_str_ends_with(ptr, ptr)
+declare i64 @strata_str_index_of(ptr, ptr)
+declare ptr @strata_str_reverse(ptr)
+declare ptr @strata_str_chars(ptr)
+declare ptr @strata_str_at(ptr, i64)
+declare ptr @strata_str_at_or_fault(ptr, i64)
+declare ptr @strata_str_slice(ptr, i64, i64)
+declare ptr @strata_str_replace(ptr, ptr, ptr)
+declare ptr @strata_str_repeat(ptr, i64)
+declare ptr @strata_str_case(ptr, ptr, i64, ptr, i64, i1)
+declare i1 @strata_str_is(ptr, i64, ptr, i64)
+declare i64 @strata_str_ord(ptr)
+declare ptr @strata_str_chr(i64)
+declare i1 @strata_parse_int(ptr, ptr)
+declare i1 @strata_parse_float(ptr, ptr)
+declare ptr @strata_show_float_fixed(double, i64)
+declare ptr @strata_format(ptr, i1, i32, i32, i1, i1, i64)
 declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
 declare { i64, i1 } @llvm.ssub.with.overflow.i64(i64, i64)
 declare { i64, i1 } @llvm.smul.with.overflow.i64(i64, i64)
@@ -1121,7 +1146,11 @@ impl<'m, 'a> Func<'m, 'a> {
             Ty::Str => self.call(&Ty::Str, "@strata_json_str", &[v.clone()])?.1,
             Ty::Unit => self.m.string("null"),
             _ if is_never(&t) => self.m.string("null"),
-            t if self.m.nominal(t) || matches!(t, Ty::Con(l, _) if l == "List") => {
+            Ty::Con(n, _) if n == "Set" => {
+                let l = self.as_list(v)?;
+                self.json(&l)?
+            }
+            t if self.m.nominal(t) || matches!(t, Ty::Con(l, _) if l == "List" || l == "Dict") => {
                 let f = self.helper("json", t)?;
                 self.call(&Ty::Str, &f, &[(t.clone(), v.1.clone())])?.1
             }
@@ -1145,6 +1174,10 @@ impl<'m, 'a> Func<'m, 'a> {
                 bool_v(&r)
             }
             Ty::Str => self.call(&Ty::Bool, "@strata_str_eq", &[a.clone(), b.clone()])?,
+            t if collection(t).is_some() => {
+                let (x, y) = (self.as_list(a)?, self.as_list(b)?);
+                self.equal(&x, &y)?
+            }
             t if self.m.nominal(t) || matches!(t, Ty::Con(l, _) if l == "List") => {
                 let f = self.helper("eq", t)?;
                 self.call(&Ty::Bool, &f, &[(t.clone(), a.1.clone()), (t.clone(), b.1.clone())])?
@@ -1177,7 +1210,14 @@ impl<'m, 'a> Func<'m, 'a> {
                     h.emit(format!("{r} = sub i64 {y}, {x}"));
                     h.emit(format!("ret i64 {r}"));
                 };
+                let distinct = matches!(t, Ty::Con(n, _) if h.m.is_distinct(n));
                 match h.m.repr(t)? {
+                    _ if distinct => {
+                        // a `distinct` value is not a number or a string to `compare`: by its JSON
+                        let (x, y) = (h.json(&a)?, h.json(&b)?);
+                        let c = h.call(&Ty::Int, "@strata_str_cmp", &[(Ty::Str, x), (Ty::Str, y)])?;
+                        h.emit(format!("ret i64 {}", c.1));
+                    }
                     Ty::Int | Ty::Bool => {
                         let (lt, gt) = (h.fresh("l"), h.fresh("g"));
                         let (pl, pg) = if matches!(h.m.repr(t)?, Ty::Int) { ("slt", "sgt") } else { ("ult", "ugt") };
@@ -1186,9 +1226,19 @@ impl<'m, 'a> Func<'m, 'a> {
                         three(&mut h, &lt, &gt);
                     }
                     Ty::Float => {
+                        // `f64::total_cmp`: the bits, negative numbers' flipped, as signed integers (-0.0 < 0.0)
+                        let mut keyed = vec![];
+                        for x in ["%a", "%b"] {
+                            let (i, sign, mask, k) = (h.fresh("bits"), h.fresh("sign"), h.fresh("mask"), h.fresh("key"));
+                            h.emit(format!("{i} = bitcast double {x} to i64"));
+                            h.emit(format!("{sign} = ashr i64 {i}, 63"));
+                            h.emit(format!("{mask} = lshr i64 {sign}, 1"));
+                            h.emit(format!("{k} = xor i64 {i}, {mask}"));
+                            keyed.push(k);
+                        }
                         let (lt, gt) = (h.fresh("l"), h.fresh("g"));
-                        h.emit(format!("{lt} = fcmp olt double %a, %b"));
-                        h.emit(format!("{gt} = fcmp ogt double %a, %b"));
+                        h.emit(format!("{lt} = icmp slt i64 {}, {}", keyed[0], keyed[1]));
+                        h.emit(format!("{gt} = icmp sgt i64 {}, {}", keyed[0], keyed[1]));
                         three(&mut h, &lt, &gt);
                     }
                     Ty::Str => {
@@ -1265,6 +1315,48 @@ impl<'m, 'a> Func<'m, 'a> {
                 h.block("no");
                 h.emit("ret i1 false".into());
                 format!("define i1 {name}(ptr %a, ptr %b)")
+            }
+            "json" if matches!(t, Ty::Con(d, _) if d == "Dict") => {
+                // an object when the keys are strings (or there are none), else an array of pairs
+                let (kt, vt) = (args[0].clone(), args[1].clone());
+                let object = kt == Ty::Str;
+                let pair = Ty::Con("Tuple".into(), args.clone());
+                let n = h.list_len(&a);
+                let empty = h.fresh("empty");
+                h.emit(format!("{empty} = icmp eq i64 {}, 0", n.1));
+                h.emit(format!("br i1 {empty}, label %none, label %some"));
+                h.block("none");
+                let braces = h.m.string("{}");
+                h.emit(format!("ret ptr {braces}"));
+                h.block("some");
+                let acc = h.fresh("acc");
+                writeln!(h.allocas, "  {acc} = alloca ptr").unwrap();
+                let open = h.m.string(if object { "{" } else { "[" });
+                h.emit(format!("store ptr {open}, ptr {acc}"));
+                let (empty_s, comma) = (h.m.string(""), h.m.string(","));
+                h.each(&a, &pair, |h, i, p| {
+                    let first = h.fresh("first");
+                    h.emit(format!("{first} = icmp eq i64 {i}, 0"));
+                    let sep = h.fresh("sep");
+                    h.emit(format!("{sep} = select i1 {first}, ptr {empty_s}, ptr {comma}"));
+                    let (k, v) = (h.field(p, 0, &kt)?, h.field(p, 1, &vt)?);
+                    let (kj, vj) = (h.json(&k)?, h.json(&v)?);
+                    let cur = h.fresh("cur");
+                    h.emit(format!("{cur} = load ptr, ptr {acc}"));
+                    let parts = if object {
+                        vec![Part::Val(cur), Part::Val(sep), Part::Val(kj), Part::Lit(":".into()), Part::Val(vj)]
+                    } else {
+                        vec![Part::Val(cur), Part::Val(sep), Part::Lit("[".into()), Part::Val(kj), Part::Lit(",".into()), Part::Val(vj), Part::Lit("]".into())]
+                    };
+                    let s = h.concat(parts)?;
+                    h.emit(format!("store ptr {}, ptr {acc}", s.1));
+                    Ok(())
+                })?;
+                let cur = h.fresh("cur");
+                h.emit(format!("{cur} = load ptr, ptr {acc}"));
+                let s = h.concat(vec![Part::Val(cur), Part::Lit(if object { "}" } else { "]" }.into())])?;
+                h.emit(format!("ret ptr {}", s.1));
+                format!("define ptr {name}(ptr %a)")
             }
             "json" if list => {
                 let et = args[0].clone();
@@ -1439,6 +1531,23 @@ impl<'m, 'a> Func<'m, 'a> {
                     c.check_in(&et_written, x, &inner, false)
                 })?;
             }
+            TypeExpr::Named(n, args) if (n == "Set" && args.len() == 1) || (n == "Dict" && args.len() == 2) => {
+                // every element (`element 3: …`), every key and value (`key "a": …`, `["a"]: …`)
+                let lowered: Vec<Ty> = args.iter().map(|a| self.lower(a)).collect::<Res<_>>()?;
+                let list = self.as_list(&(Ty::Con(n.clone(), lowered.clone()), v.1.clone()))?;
+                let et = self.elem_ty(&list.0)?;
+                let (written, ctx) = (args.clone(), ctx.to_vec());
+                self.each(&list, &et, |c, _, x| {
+                    if written.len() == 1 {
+                        let shown = c.json(x)?;
+                        return c.check_in(&written[0], x, &within(&ctx, vec![Part::Lit(": element ".into()), Part::Val(shown)]), false);
+                    }
+                    let (k, val) = (c.field(x, 0, &lowered[0])?, c.field(x, 1, &lowered[1])?);
+                    let shown = c.json(&k)?;
+                    c.check_in(&written[0], &k, &within(&ctx, vec![Part::Lit(": key ".into()), Part::Val(shown.clone())]), false)?;
+                    c.check_in(&written[1], &val, &within(&ctx, vec![Part::Lit(": [".into()), Part::Val(shown), Part::Lit("]".into())]), false)
+                })?;
+            }
             TypeExpr::Named(n, args) => {
                 let n = match self.m.env.variant_parent(n.sym()) {
                     Some(p) => p,
@@ -1488,7 +1597,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 if self.sub.contains_key(&n.sym()) {
                     return false;
                 }
-                if n == "List" {
+                if n == "List" || n == "Set" || n == "Dict" {
                     return args.iter().any(|x| self.needs_check(x));
                 }
                 let n = self.m.env.variant_parent(n.sym()).unwrap_or(n.clone());
@@ -1704,7 +1813,11 @@ impl<'m, 'a> Func<'m, 'a> {
                             let s = self.show(&v)?;
                             ps.push(Part::Val(s));
                         }
-                        StrPart::Expr(_, Some(_)) => return self.unsupported("a format spec in an f-string"),
+                        StrPart::Expr(x, Some(spec)) => {
+                            let v = self.expr(x)?;
+                            let s = self.format_spec(&v, spec)?;
+                            ps.push(Part::Val(s));
+                        }
                     }
                 }
                 self.concat(ps)?
@@ -2092,6 +2205,12 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
             }
         }
+        if let Some(v) = self.string_builtin(name, &vs)? {
+            return Ok(v);
+        }
+        if let Some(v) = self.collection_builtin(name, &vs, &hint)? {
+            return Ok(v);
+        }
         // the list built-ins written in Strata (llvm/prelude.strata)
         if let Some(Ty::Con(l, et)) = vs.first().map(|v| self.m.repr(&v.0)).transpose()? {
             if l == "List" {
@@ -2349,6 +2468,40 @@ impl<'m, 'a> Func<'m, 'a> {
                 let r = self.call(&types[0], "@strata_list_slice", &[vs[0].clone(), (Ty::Int, from), (Ty::Int, to)])?;
                 (vs[0].0.clone(), r.1)
             }
+            ("at", [t, Ty::Int]) if list_elem(t).is_some() => {
+                let et = list_elem(t).unwrap();
+                let n = self.list_len(&vs[0]);
+                let (lo, hi, inside) = (self.fresh("lo"), self.fresh("hi"), self.fresh("in"));
+                self.emit(format!("{lo} = icmp sge i64 {}, 0", vs[1].1));
+                self.emit(format!("{hi} = icmp slt i64 {}, {}", vs[1].1, n.1));
+                self.emit(format!("{inside} = and i1 {lo}, {hi}"));
+                let (ok, bad) = (self.fresh_label("at.ok"), self.fresh_label("at.out"));
+                self.cond_br(&bool_v(&inside), &ok, &bad);
+                self.block(&bad);
+                let (si, sn) = (self.json(&vs[1])?, self.json(&n)?);
+                self.fault(Fault::Runtime, vec![Part::Lit("index ".into()), Part::Val(si), Part::Lit(" out of range (length ".into()), Part::Val(sn), Part::Lit(")".into())])?;
+                self.block(&ok);
+                self.list_at(&vs[0], &vs[1].1, &et)?
+            }
+            ("slice", [t, Ty::Int, Ty::Int]) if list_elem(t).is_some() => {
+                // clamped to 0..len, empty when the end is before the start (as in Python)
+                let n = self.list_len(&vs[0]);
+                let mut ends = vec![];
+                for x in [&vs[1], &vs[2]] {
+                    let (k0, k) = (self.fresh("k"), self.fresh("k"));
+                    self.emit(format!("{k0} = call i64 @llvm.smax.i64(i64 {}, i64 0)", x.1));
+                    self.emit(format!("{k} = call i64 @llvm.smin.i64(i64 {k0}, i64 {})", n.1));
+                    ends.push(k);
+                }
+                let to = self.fresh("to");
+                self.emit(format!("{to} = call i64 @llvm.smax.i64(i64 {}, i64 {})", ends[0], ends[1]));
+                let r = self.call(&types[0], "@strata_list_slice", &[vs[0].clone(), (Ty::Int, ends[0].clone()), (Ty::Int, to)])?;
+                (vs[0].0.clone(), r.1)
+            }
+            ("to_json", [_]) => {
+                let s = self.json(&vs[0])?;
+                (Ty::Str, s)
+            }
             ("range", [Ty::Int, Ty::Int]) => self.call(&Ty::Con("List".into(), vec![Ty::Int]), "@strata_range", &vs)?,
             ("print", [_]) => {
                 let s = self.show(&vs[0])?;
@@ -2429,6 +2582,7 @@ impl<'m, 'a> Func<'m, 'a> {
     fn elem_ty(&self, t: &Ty) -> Res<Ty> {
         match self.m.repr(t)? {
             Ty::Con(l, a) if l == "List" => Ok(a[0].clone()),
+            t if collection(&t).is_some() => self.elem_ty(&collection(&t).unwrap().1),
             other => Err(format!("`{}` is not a list", key(&other))),
         }
     }
@@ -3105,4 +3259,302 @@ impl Module<'_> {
             _ => vec![],
         }
     }
+}
+
+// ---- Unicode tables ----
+//
+// What the string built-ins need from Unicode, made from Rust's own tables
+// (which the interpreter uses), so a compiled program agrees with it.
+
+/// Rows of a character and the (up to three) characters `to_upper` or
+/// `to_lower` makes of it, for those it changes; sorted.
+fn case_table(upper: bool) -> &'static [[u32; 4]] {
+    static UPPER: std::sync::OnceLock<Vec<[u32; 4]>> = std::sync::OnceLock::new();
+    static LOWER: std::sync::OnceLock<Vec<[u32; 4]>> = std::sync::OnceLock::new();
+    (if upper { &UPPER } else { &LOWER }).get_or_init(|| {
+        let mut rows = vec![];
+        for c in (0..=0x10FFFFu32).filter_map(char::from_u32) {
+            let to: Vec<char> = if upper { c.to_uppercase().collect() } else { c.to_lowercase().collect() };
+            if to != [c] {
+                let mut row = [c as u32, 0, 0, 0];
+                for (i, x) in to.iter().enumerate() {
+                    row[i + 1] = *x as u32;
+                }
+                rows.push(row);
+            }
+        }
+        rows
+    })
+}
+
+/// The characters with a property, as ranges (first, last): `alpha` is
+/// Unicode's Alphabetic (`char::is_alphabetic`), `cased` those with a case.
+fn char_ranges(which: &str) -> &'static [[u32; 2]] {
+    static ALPHA: std::sync::OnceLock<Vec<[u32; 2]>> = std::sync::OnceLock::new();
+    static CASED: std::sync::OnceLock<Vec<[u32; 2]>> = std::sync::OnceLock::new();
+    let alpha = which == "alpha";
+    (if alpha { &ALPHA } else { &CASED }).get_or_init(|| {
+        let has = |c: char| {
+            if alpha {
+                c.is_alphabetic()
+            } else {
+                c.is_lowercase() || c.is_uppercase() || c.to_lowercase().ne([c]) || c.to_uppercase().ne([c])
+            }
+        };
+        let mut out: Vec<[u32; 2]> = vec![];
+        for c in (0..=0x10FFFFu32).filter_map(char::from_u32).filter(|c| has(*c)) {
+            match out.last_mut() {
+                Some(r) if r[1] + 1 == c as u32 => r[1] = c as u32,
+                _ => out.push([c as u32, c as u32]),
+            }
+        }
+        out
+    })
+}
+
+impl Module<'_> {
+    /// A Unicode table as a global of `i32`s, and its number of rows.
+    fn unicode_table(&mut self, which: &str) -> (String, usize) {
+        let (cells, rows): (Vec<u32>, usize) = match which {
+            "upper" | "lower" => {
+                let t = case_table(which == "upper");
+                (t.iter().flatten().copied().collect(), t.len())
+            }
+            _ => {
+                let t = char_ranges(which);
+                (t.iter().flatten().copied().collect(), t.len())
+            }
+        };
+        let g = format!("@\"unicode:{which}\"");
+        if self.helpers.insert(g.clone()) {
+            let xs: Vec<String> = cells.iter().map(|c| format!("i32 {c}")).collect();
+            writeln!(self.globals, "{g} = private unnamed_addr constant [{} x i32] [{}], align 4", cells.len(), xs.join(", ")).unwrap();
+        }
+        (g, rows)
+    }
+}
+
+// ---- strings ----
+//
+// The string built-ins: native (runtime.c), but `lines`, which is Strata
+// (llvm/prelude.strata) over `split`.
+
+impl Func<'_, '_> {
+    /// `Some(v)` when `ok`, else `None` (an `Option` of type `t`).
+    fn option_if(&mut self, ok: &str, v: &V, t: &Ty) -> Res<V> {
+        let (some, none, end) = (self.fresh_label("some"), self.fresh_label("none"), self.fresh_label("opt"));
+        self.cond_br(&bool_v(ok), &some, &none);
+        self.block(&some);
+        let b = self.block_of(self.m.tags["Some"], &[v.clone()])?;
+        let from = self.cur.clone();
+        self.br(&end);
+        self.block(&none);
+        let n = self.m.nullary("None");
+        self.br(&end);
+        self.block(&end);
+        let r = self.fresh("o");
+        self.emit(format!("{r} = phi ptr [ {b}, %{from} ], [ {n}, %{none} ]"));
+        Ok((t.clone(), r))
+    }
+
+    /// A string built-in on `vs` (the first a `String`), if `name` is one.
+    fn string_builtin(&mut self, name: &str, vs: &[V]) -> Res<Option<V>> {
+        let types: Vec<Ty> = vs.iter().map(|v| self.m.repr(&v.0)).collect::<Res<_>>()?;
+        if types.first() != Some(&Ty::Str) && !(name == "chr" && types == [Ty::Int]) {
+            return Ok(None);
+        }
+        let s = Ty::Str;
+        let strings = Ty::Con("List".into(), vec![Ty::Str]);
+        let opt = |t: Ty| Ty::Con("Option".into(), vec![t]);
+        let args: Vec<V> = vs.iter().zip(&types).map(|(v, t)| (t.clone(), v.1.clone())).collect();
+        Ok(Some(match (name, types.as_slice()) {
+            ("split", [_, Ty::Str]) => self.call(&strings, "@strata_str_split", &args)?,
+            ("trim", [_]) => self.call(&s, "@strata_str_trim", &args)?,
+            ("contains", [_, Ty::Str]) => self.call(&Ty::Bool, "@strata_str_contains", &args)?,
+            ("starts_with", [_, Ty::Str]) => self.call(&Ty::Bool, "@strata_str_starts_with", &args)?,
+            ("ends_with", [_, Ty::Str]) => self.call(&Ty::Bool, "@strata_str_ends_with", &args)?,
+            ("reverse", [_]) => self.call(&s, "@strata_str_reverse", &args)?,
+            ("chars", [_]) => self.call(&strings, "@strata_str_chars", &args)?,
+            ("lines", [_]) => self.call_fn(&prelude("lines"), args, Some(strings))?,
+            ("get", [_, Ty::Int]) => {
+                let c = self.call(&s, "@strata_str_at", &args)?;
+                let ok = self.fresh("found");
+                self.emit(format!("{ok} = icmp ne ptr {}, null", c.1));
+                self.option_if(&ok, &c, &opt(Ty::Str))?
+            }
+            ("at", [_, Ty::Int]) => self.call(&s, "@strata_str_at_or_fault", &args)?,
+            ("slice", [_, Ty::Int, Ty::Int]) => self.call(&s, "@strata_str_slice", &args)?,
+            ("index_of", [_, Ty::Str]) => {
+                let i = self.call(&Ty::Int, "@strata_str_index_of", &args)?;
+                let ok = self.fresh("found");
+                self.emit(format!("{ok} = icmp sge i64 {}, 0", i.1));
+                self.option_if(&ok, &i, &opt(Ty::Int))?
+            }
+            ("replace", [_, Ty::Str, Ty::Str]) => self.call(&s, "@strata_str_replace", &args)?,
+            ("repeat", [_, Ty::Int]) => self.call(&s, "@strata_str_repeat", &args)?,
+            ("to_upper" | "to_lower", [_]) => {
+                let (table, n) = self.m.unicode_table(if name == "to_upper" { "upper" } else { "lower" });
+                let (cased, m) = self.m.unicode_table("cased");
+                let lower = bool_v(if name == "to_lower" { "true" } else { "false" });
+                let a = [args[0].clone(), (Ty::Str, table), (Ty::Int, n.to_string()), (Ty::Str, cased), (Ty::Int, m.to_string()), lower];
+                self.call(&s, "@strata_str_case", &a)?
+            }
+            ("is_digit" | "is_alpha" | "is_space", [_]) => {
+                let (ranges, n) = self.m.unicode_table("alpha");
+                let class = match name {
+                    "is_digit" => "0",
+                    "is_alpha" => "1",
+                    _ => "2",
+                };
+                self.call(&Ty::Bool, "@strata_str_is", &[args[0].clone(), (Ty::Int, class.into()), (Ty::Str, ranges), (Ty::Int, n.to_string())])?
+            }
+            ("ord", [_]) => self.call(&Ty::Int, "@strata_str_ord", &args)?,
+            ("chr", [Ty::Int]) => self.call(&s, "@strata_str_chr", &args)?,
+            ("parse_int" | "parse_float", [_]) => {
+                let t = if name == "parse_int" { Ty::Int } else { Ty::Float };
+                let ll = self.m.ll(&t)?;
+                let slot = self.fresh("parsed");
+                writeln!(self.allocas, "  {slot} = alloca {ll}").unwrap();
+                self.emit(format!("store {ll} {}, ptr {slot}", if name == "parse_int" { "0" } else { "0.0" }));
+                let ok = self.call(&Ty::Bool, &format!("@strata_{name}"), &[args[0].clone(), (Ty::Str, slot.clone())])?;
+                let x = self.fresh("x");
+                self.emit(format!("{x} = load {ll}, ptr {slot}"));
+                self.option_if(&ok.1, &(t.clone(), x), &opt(t))?
+            }
+            _ => return Ok(None),
+        }))
+    }
+
+    /// An f-string part with a format spec (`{x:.2}`, `{n:>5}`, `{n:05}`),
+    /// as `interp::format_spec`.
+    fn format_spec(&mut self, v: &V, f: &FmtSpec) -> Res<String> {
+        // what the value is at run time: a distinct type's is not a number or a string
+        let numeric = matches!(v.0, Ty::Int | Ty::Float);
+        if (f.plus || f.zero) && !numeric {
+            let shown = self.json(v)?;
+            self.fault(Fault::Runtime, vec![Part::Lit(format!("format spec `{f}`: `+` and `0` apply to numbers, not ")), Part::Val(shown)])?;
+            return Ok(self.m.string(""));
+        }
+        let body = match (&v.0, f.precision) {
+            (Ty::Float, Some(p)) => self.call(&Ty::Str, "@strata_show_float_fixed", &[v.clone(), (Ty::Int, p.to_string())])?.1,
+            (Ty::Str, Some(p)) => self.call(&Ty::Str, "@strata_str_slice", &[v.clone(), (Ty::Int, "0".into()), (Ty::Int, p.to_string())])?.1,
+            (_, Some(_)) => {
+                let shown = self.json(v)?;
+                self.fault(Fault::Runtime, vec![Part::Lit(format!("format spec `{f}`: `.N` applies to a Float or a String, not ")), Part::Val(shown)])?;
+                return Ok(self.m.string(""));
+            }
+            _ => self.show(v)?,
+        };
+        let align = f.align.map(|c| c as u32).unwrap_or(0);
+        let r = self.fresh("fmt");
+        self.emit(format!(
+            "{r} = call ptr @strata_format(ptr {body}, i1 {numeric}, i32 {fill}, i32 {align}, i1 {plus}, i1 {zero}, i64 {width})",
+            fill = f.fill as u32,
+            plus = f.plus,
+            zero = f.zero,
+            width = f.width
+        ));
+        Ok(r)
+    }
+}
+
+// ---- dictionaries and sets ----
+//
+// A `Set[A]` is a `List[A]` kept sorted in the interpreter's order
+// (`interp::compare`, the generated `cmp`) without duplicates; a
+// `Dict[K, V]` is a `List[(K, V)]` sorted by key, one pair per key. So equal
+// collections are equal lists, `for`, `len` and `items` are the list's, and
+// the built-ins are Strata over lists (llvm/prelude.strata), given the order.
+
+/// `Dict` or `Set`, and the list type it is kept as.
+fn collection(t: &Ty) -> Option<(&'static str, Ty)> {
+    let list = |t: Ty| Ty::Con("List".into(), vec![t]);
+    match t {
+        Ty::Con(n, a) if n == "Set" && a.len() == 1 => Some(("Set", list(a[0].clone()))),
+        Ty::Con(n, a) if n == "Dict" && a.len() == 2 => Some(("Dict", list(Ty::Con("Tuple".into(), a.clone())))),
+        _ => None,
+    }
+}
+
+impl Func<'_, '_> {
+    /// A dictionary or set as the list it is kept as.
+    fn as_list(&self, v: &V) -> Res<V> {
+        let t = self.m.repr(&v.0)?;
+        Ok((collection(&t).map(|c| c.1).unwrap_or(t), v.1.clone()))
+    }
+
+    /// The order on values of type `t`, as a closure `(a, b) -> Int`: -1, 0 or 1.
+    fn ordering(&mut self, t: &Ty) -> Res<V> {
+        let cmp = self.helper("cmp", t)?;
+        let fsym = format!("@\"order:{}\"", key(t));
+        if self.m.helpers.insert(fsym.clone()) {
+            let ll = self.m.ll(t)?;
+            writeln!(self.m.body, "define i64 {fsym}(ptr %env, {ll} %a, {ll} %b) {{\nentry:\n  %c = call i64 {cmp}({ll} %a, {ll} %b)\n  ret i64 %c\n}}\n").unwrap();
+        }
+        let p = self.closure(&fsym, &[])?;
+        Ok((Ty::Fn(vec![t.clone(), t.clone()], Box::new(Ty::Int)), p))
+    }
+
+    /// A built-in on dictionaries or sets (or making one), if `name` is one.
+    fn collection_builtin(&mut self, name: &str, vs: &[V], hint: &Option<Ty>) -> Res<Option<V>> {
+        let Some(first) = vs.first() else { return Ok(None) };
+        let ft = self.m.repr(&first.0)?;
+        // the type of the result, as written: the call's, or `t` when it has none
+        let typed = |v: V, t: Ty| -> V { (hint.clone().filter(|h| !matches!(h, Ty::Unit)).unwrap_or(t), v.1) };
+        // making one from a list
+        if let (Ty::Con(l, et), "set" | "dict") = (&ft, name) {
+            if l != "List" {
+                return Ok(None);
+            }
+            let et = et[0].clone();
+            let made = if name == "set" {
+                let less = self.less(&et)?;
+                let r = self.call_fn(&prelude("set_from"), vec![first.clone(), less], None)?;
+                typed(r, Ty::Con("Set".into(), vec![et]))
+            } else {
+                let Ty::Con(_, kv) = self.m.repr(&et)? else { return Err("`dict` needs a list of pairs".into()) };
+                let less = self.less(&kv[0])?;
+                let r = self.call_fn(&prelude("dict_from"), vec![first.clone(), less], None)?;
+                typed(r, Ty::Con("Dict".into(), kv))
+            };
+            return Ok(Some(made));
+        }
+        let Some((kind, _)) = collection(&ft) else { return Ok(None) };
+        let Ty::Con(_, targs) = ft.clone() else { unreachable!() };
+        let c = self.as_list(first)?;
+        let rest: Vec<V> = vs[1..].to_vec();
+        let same = |v: V| (ft.clone(), v.1);
+        let with = |s: &mut Self, f: &str, mut more: Vec<V>, order: bool, ret: Option<Ty>| -> Res<V> {
+            let mut args = vec![c.clone()];
+            args.append(&mut more);
+            if order {
+                let o = s.ordering(&targs[0])?;
+                args.push(o);
+            }
+            s.call_fn(&prelude(f), args, ret)
+        };
+        Ok(Some(match (kind, name, rest.len()) {
+            (_, "len", 0) => self.list_len(&c),
+            ("Set", "to_list", 0) | ("Dict", "items", 0) => c.clone(),
+            ("Set", "contains", 1) => with(self, "set_contains", rest, true, None)?,
+            ("Set", "insert", 1) => same(with(self, "set_insert", rest, true, None)?),
+            ("Set", "remove", 1) => same(with(self, "set_remove", rest, false, None)?),
+            ("Set", "union" | "intersection" | "difference", 1) => {
+                let other = self.as_list(&rest[0])?;
+                same(with(self, &format!("set_{name}"), vec![other], true, None)?)
+            }
+            ("Dict", "contains", 1) => with(self, "dict_contains", rest, true, None)?,
+            ("Dict", "get", 1) => with(self, "dict_get", rest, true, hint.clone())?,
+            ("Dict", "insert", 2) => same(with(self, "dict_insert", rest, true, None)?),
+            ("Dict", "remove", 1) => same(with(self, "dict_remove", rest, false, None)?),
+            ("Dict", "keys" | "values", 0) => with(self, &format!("dict_{name}"), vec![], false, None)?,
+            ("Dict", "map_values", 1) => {
+                let r = with(self, "dict_map_values", rest, false, None)?;
+                let Ty::Con(_, kv) = self.elem_ty(&r.0).and_then(|t| self.m.repr(&t))? else { unreachable!() };
+                typed(r, Ty::Con("Dict".into(), kv))
+            }
+            _ => return Ok(None),
+        }))
+    }
+
 }
