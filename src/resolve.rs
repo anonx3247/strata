@@ -1216,6 +1216,8 @@ impl Rw<'_> {
                 self.pop();
                 Expr::Block(stmts, Box::new(last))
             }
+            // compile-time code calls the module's functions like any other
+            Expr::Comptime(x) => Expr::Comptime(Box::new(self.expr(x))),
             _ => e.clone(),
         }
     }

@@ -1526,4 +1526,18 @@ test "runaway" {
         }
         assert!(out.contains("✗ runaway\n    Limit: stack overflow (recursion too deep)\n    stack: down (") && out.contains("0 passed, 1 failed"), "{how}: {out}");
     }
+
+#[path = "common/json.rs"]
+mod json_case;
+
+/// `derive Json` and `std.json`'s text compiled: what the interpreter prints.
+#[test]
+fn json_compiles() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("derive-json");
+    let (out, code) = case(&d, "json", json_case::PROGRAM);
+    assert_eq!((out.as_str(), code), (json_case::OUTPUT, 0));
 }

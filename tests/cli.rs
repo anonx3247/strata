@@ -3797,4 +3797,38 @@ fn self_arguments_on_trait_values() {
     assert!(ok, "{out}");
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok && out.contains("`bigger` takes `other: Self`, a value of the receiver's own type, but `xs[0]` is a `Shape`") && out.contains("help: to accept any `Shape`, declare the parameter so: `other: Shape`"), "{out}");
+
+#[path = "common/json.rs"]
+mod json_case;
+
+/// `derive Json`: JSON as a web front end sends it, read into records and
+/// sums with every refinement checked, and what has no JSON form refused
+/// at the `derive`.
+#[test]
+fn json_is_derived() {
+    let d = tmp("derive-json");
+    let (ok, out) = strata(&["--file", "j.strata", "edit"], &d, Some(json_case::PROGRAM));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "j.strata"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out, json_case::OUTPUT);
+    let bad = [
+        ("type A = { type: String }", "a field named `type` can't be written to JSON"),
+        ("type A = { x: Option[Option[Int]] }", "`None` and `Some(None)` would both be `null`"),
+        ("type A = { f: (Int) -> Int }", "`(Int) -> Int` can't be JSON"),
+        ("type A =\n  | P(Int, Int)", "`P` has several positional fields"),
+        ("type B = { x: Int }\n\ntype A = { b: B }", "`B` does not implement `std.json.Json`"),
+    ];
+    for (k, (src, want)) in bad.iter().enumerate() {
+        let f = format!("bad{k}.strata");
+        let (ok, out) = strata(&["--file", &f, "edit"], &d, Some(&format!("use std.json.Json\n\n{src}\n\nderive Json for A\n")));
+        assert!(ok, "{out}");
+        let (ok, out) = strata(&["--file", &f, "check"], &d, None);
+        assert!(!ok && out.contains(want), "{src}: {out}");
+    }
+    // an integer beyond 64 bits isn't written: most JSON readers would get it wrong
+    let (ok, out) = strata(&["--file", "big.strata", "edit"], &d, Some("use std.json.Json\n\ntype A = { x: Int }\n\nderive Json for A\n\nfn main() {\n  print(A { x: 99999999999999999999 }.encode())\n}\n"));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "big.strata"], &d, None);
+    assert!(!ok && out.contains("does not satisfy `std.json.Int64`"), "{out}");
 }
