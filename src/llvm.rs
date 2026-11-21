@@ -203,8 +203,25 @@ enum Entry<'e> {
     /// The tests, but those named here.
     Tests(&'e [String]),
     Fuzz(&'e [FuzzTarget]),
+    /// std's functions to precompile (`jit::std_library`): only they are exported.
+    Library(&'e [String]),
     /// Compile-time code: functions without parameters, whose results are kept.
     Comptime(&'e [String]),
+}
+
+/// Tags from here on are union boxes' (`box_tag`); below, constructors' (0 is a tuple's).
+const BOX_TAGS: i64 = 1 << 40;
+
+/// 40 bits of a name's hash (SHA-256: the same in every strata).
+fn hash40(name: &str) -> i64 {
+    use sha2::{Digest, Sha256};
+    let d = Sha256::digest(name.as_bytes());
+    (u64::from_le_bytes(d[..8].try_into().unwrap()) & ((1 << 40) - 1)) as i64
+}
+
+/// A constructor's tag, from its qualified name: in [1, 2^40).
+fn stable_tag(ctor: &str) -> i64 {
+    1 + hash40(ctor) % (BOX_TAGS - 1)
 }
 
 /// The label of compile-time code (a probe): it has no frame on the call stack.
@@ -304,7 +321,18 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     // every constructor gets a tag of its own, so a value's tag says what it is
     let mut ctors: Vec<&Symbol> = env.ctors.keys().collect();
     ctors.sort();
-    let tags = ctors.iter().enumerate().map(|(i, c)| (c.to_string(), i as i64 + 1)).collect();
+    // from the constructor's qualified name, not the program's numbering: the
+    // same in every program, so code compiled once (std, precompiled; the FFI)
+    // reads values alike
+    let mut tags: HashMap<String, i64> = HashMap::default();
+    let mut taken: HashMap<i64, String> = HashMap::default();
+    for c in ctors {
+        let t = stable_tag(c.as_str());
+        if let Some(other) = taken.insert(t, c.to_string()) {
+            return Err(format!("the constructors `{other}` and `{c}` have the same tag (rename one)"));
+        }
+        tags.insert(c.to_string(), t);
+    }
     // bodies as the checker saw them (its types are by node); signatures from `env`
     let mut bodies: HashMap<String, &FnDecl> = HashMap::default();
     for d in &resolved.program.decls {
@@ -333,7 +361,11 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default() };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None };
+    // std's precompiled functions, but while making them, tracing, or in a library
+    if !BUILDING_STD.with(|b| b.get()) && !m.tracing && !matches!(entry, Entry::Library(_)) {
+        m.precompiled = jit::std_library().map(|l| &l.names);
+    }
     let mut tests = vec![];
     // compile-time code counts steps too (its budget)
     m.fuzzing = matches!(entry, Entry::Fuzz(_) | Entry::Comptime(_));
@@ -349,6 +381,11 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
             let ret = m.lower(&main.ret, &HashMap::default())?;
             // C's `main` first: it asks for the program's `main`, with its capabilities
             m.entry(entry, &main, &ret)?;
+        }
+        Entry::Library(names) => {
+            for n in names.iter() {
+                m.want_impls(n, vec![], vec![]);
+            }
         }
         Entry::Comptime(fns) => {
             // each an ordinary function without parameters, its result handed over below
@@ -727,15 +764,73 @@ struct Module<'a> {
     dispatch: Vec<Dispatch>,
     /// The C functions `extern c` declarations call: symbol -> `declare` line.
     foreign: std::collections::BTreeMap<String, String>,
+    /// std's functions precompiled (`jit::std_library`): declared, not compiled.
+    precompiled: Option<&'static std::collections::HashSet<String>>,
+}
+
+thread_local! {
+    /// Set while std's library is being made: nothing is precompiled yet.
+    static BUILDING_STD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Make std's library: `names` compiled, everything else they use kept
+/// internal to it (helpers, lambdas, generic instances: each program has its own).
+pub fn compile_library(prog: &Program, names: &[String]) -> Res<String> {
+    BUILDING_STD.with(|b| b.set(true));
+    let r = compile_with(prog, Entry::Library(names), false);
+    BUILDING_STD.with(|b| b.set(false));
+    let ir = r?.0;
+    let exported: Vec<String> = names.iter().map(|n| format!("{}(", sym_impls(n, &[], &[]))).collect();
+    Ok(ir
+        .lines()
+        .map(|l| if l.starts_with("define ") && !l.starts_with("define internal ") && !exported.iter().any(|e| l.contains(e.as_str())) { l.replacen("define ", "define internal ", 1) } else { l.to_string() })
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+/// Whether std's function `f` can be precompiled: not generic, nothing it
+/// takes is a trait (compiled per implementation) or known only while compiling.
+pub fn precompilable(f: &FnDecl, env: &Env) -> bool {
+    let traitish = |t: &TypeExpr| matches!(t, TypeExpr::Named(n, _) if env.traits.contains_key(n));
+    f.name.as_str().starts_with("std.")
+        && !f.name.as_str().contains(".for.")
+        && f.type_params.is_empty()
+        && !crate::stdlib::is_host(&f.name)
+        && !traitish(&f.ret)
+        && f.params.iter().all(|p| !p.comptime && !traitish(&p.ty))
 }
 
 impl<'a> Module<'a> {
     fn want_impls(&mut self, name: &str, targs: Vec<Ty>, impls: Vec<Option<Ty>>) -> String {
         let s = sym_impls(name, &targs, &impls);
+        // precompiled in std's library: declared, its code is the library's
+        if targs.is_empty() && impls.iter().all(|i| i.is_none()) && self.precompiled.is_some_and(|p| p.contains(name)) {
+            if let Some(line) = self.declaration(name, &s) {
+                self.foreign.insert(s.clone(), line);
+                return s;
+            }
+        }
         if self.seen.insert(s.clone()) {
             self.queue.push_back(Job::Fn(name.to_string(), targs, impls));
         }
         s
+    }
+
+    /// The `declare` line of function `name`, compiled elsewhere, as its definition's signature is.
+    fn declaration(&self, name: &str, sym: &str) -> Option<String> {
+        let f = self.env.fns.get(&Symbol::new(name))?;
+        let mut ps = vec![];
+        for p in &f.params {
+            let t = self.lower(&p.ty, &HashMap::default()).ok()?;
+            if p.mutable {
+                ps.push("ptr".to_string());
+            } else if has_value(&t) {
+                ps.push(self.ll(&t).ok()?.to_string());
+            }
+        }
+        let r = self.lower(&f.ret, &HashMap::default()).ok()?;
+        let ret = if has_value(&r) { self.ll(&r).ok()? } else { "void" };
+        Some(format!("declare {ret} {sym}({})\n", ps.join(", ")))
     }
 
     /// Whether a written type is a trait (a parameter that takes any implementation).
@@ -865,6 +960,11 @@ impl<'a> Module<'a> {
     /// The type a value is represented as: a `distinct` type is its underlying one.
     fn repr(&self, t: &Ty) -> Res<Ty> {
         Ok(match t {
+            // a refined alias (`Positive`, kept by name in a type argument): its base
+            Ty::Con(n, args) if args.is_empty() && crate::types::refined_alias(self.env, *n) => {
+                let base = crate::types::alias_base(self.env, *n);
+                self.repr(&base)?
+            }
             Ty::Con(n, args) if self.is_distinct(n) => {
                 let td = &self.env.types[n];
                 let TypeBody::Alias(a) = &td.body else { unreachable!("distinct types are aliases") };
@@ -989,8 +1089,9 @@ impl<'a> Module<'a> {
 
     fn box_tag(&mut self, m: &Ty) -> i64 {
         let k = key(&self.repr(m).unwrap_or(Ty::Unit));
-        let n = self.box_tags.len() as i64;
-        *self.box_tags.entry(k).or_insert(1 << 40 | n)
+        // (the member type's, beyond every constructor's)
+        let t = BOX_TAGS | (hash40(&k) & (BOX_TAGS - 1));
+        *self.box_tags.entry(k).or_insert(t)
     }
 
     /// The tags a value of member type `m` can have in a union.
@@ -1461,6 +1562,8 @@ struct Func<'m, 'a> {
     m: &'m mut Module<'a>,
     /// The type arguments of the instance being compiled.
     sub: HashMap<Symbol, Ty>,
+    /// The type arguments of the generic call being compiled, as written.
+    named_targs: Option<Vec<(Symbol, Ty)>>,
     /// Slots of the variables, in the entry block (so LLVM keeps them in registers).
     allocas: String,
     code: String,
@@ -1484,7 +1587,7 @@ struct Func<'m, 'a> {
 
 impl<'m, 'a> Func<'m, 'a> {
     fn new(m: &'m mut Module<'a>, sub: HashMap<Symbol, Ty>) -> Self {
-        Func { m, sub, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, cur: String::new(), terminated: true, places: vec![] }
+        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, cur: String::new(), terminated: true, places: vec![] }
     }
 
     /// The function's text: the slots, then the code.
@@ -1561,6 +1664,31 @@ impl<'m, 'a> Func<'m, 'a> {
         self.m.lower(t, &self.sub)
     }
 
+    /// `lower`, keeping refined aliases by name (`List[Positive]`): a type
+    /// argument, which says which refinements its values have.
+    fn lower_named(&self, t: &TypeExpr) -> Res<Ty> {
+        match t {
+            TypeExpr::Named(n, a) if a.is_empty() && crate::types::refined_alias(self.m.env, *n) => Ok(Ty::Con(*n, vec![])),
+            TypeExpr::Named(_, a) if !a.is_empty() => match self.lower(t)? {
+                Ty::Con(h, la) if la.len() == a.len() => Ok(Ty::Con(h, a.iter().map(|x| self.lower_named(x)).collect::<Res<_>>()?)),
+                other => Ok(other),
+            },
+            _ => self.lower(t),
+        }
+    }
+
+    /// A type as written (for checking a value against it): `Positive`, `List[Int]`.
+    fn written_of(t: &Ty) -> TypeExpr {
+        match t {
+            Ty::Int => TypeExpr::Named("Int".into(), vec![]),
+            Ty::Float => TypeExpr::Named("Float".into(), vec![]),
+            Ty::Bool => TypeExpr::Named("Bool".into(), vec![]),
+            Ty::Str => TypeExpr::Named("String".into(), vec![]),
+            Ty::Con(n, a) => TypeExpr::Named(*n, a.iter().map(Self::written_of).collect()),
+            _ => TypeExpr::Unit,
+        }
+    }
+
     /// The type a type argument stands for, known here: its text
     /// (`"List[Int]"`), a type parameter of this instance (`type:T`), or
     /// `$type(head, args..)`.
@@ -1571,7 +1699,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 match (&t, hint) {
                     // a generic type named by its head only: the call's own type says the rest
                     (TypeExpr::Named(n, args), Some(ht @ Ty::Con(m, _))) if args.is_empty() && n == m => Ok(ht.clone()),
-                    _ => self.lower(&t),
+                    _ => self.lower_named(&t),
                 }
             }
             Expr::Var(x) if x.starts_with("type:") => self.sub.get(&Symbol::new(&x["type:".len()..])).cloned().ok_or(format!("the type `{x}` is not known here")),
@@ -3811,6 +3939,32 @@ impl<'m, 'a> Func<'m, 'a> {
         if name == crate::types::TYPE_TEXT {
             return Ok((Ty::Unit, String::new()));
         }
+        // `T.check(x)`: `Ok(())` when `x` meets the refinements of the type
+        if name == crate::types::CHECK && args.len() == 2 {
+            let t = self.type_arg_ty(args[0], None)?;
+            let written = Self::written_of(&t);
+            let v = self.expr(args[1])?;
+            let ok = match &written {
+                TypeExpr::Named(..) => self.holds(&written, &v)?,
+                _ => bool_v("true"),
+            };
+            let why = match &t {
+                Ty::Con(n, a) if a.is_empty() && crate::types::refined_alias(self.m.env, *n) => {
+                    let td = &self.m.env.types[n];
+                    let pred = td.refinement.clone().or_else(|| if let TypeBody::Alias(TypeExpr::Refined(_, p)) = &td.body { Some((**p).clone()) } else { None });
+                    match pred {
+                        Some(p) => format!("does not satisfy `{}` (where {})", crate::names::short(n), crate::printer::expr(&p, 0)),
+                        None => format!("does not satisfy `{}`", crate::names::short(n)),
+                    }
+                }
+                t => format!("does not satisfy `{}`", key(t)),
+            };
+            let rt = Ty::Con("Result".into(), vec![Ty::Unit, Ty::Str]);
+            let shown = self.json(&v)?;
+            let shown = self.temp((Ty::Str, shown));
+            let why = self.m.string(&why);
+            return self.call_fn(&prelude("check_result"), vec![ok, shown, (Ty::Str, why)], Some(rt));
+        }
         // `$self_type(t, call)`: compiled code is made per type already
         if name == crate::types::SELF_TYPE && args.len() == 2 {
             return self.expr(args[1]);
@@ -3864,6 +4018,23 @@ impl<'m, 'a> Func<'m, 'a> {
             let vs = self.operands(&args)?;
             let hint = self.ty_of(call).ok();
             return self.host(name, vs, hint);
+        }
+        // a generic function given its type arguments: as written (`Positive`),
+        // so its instance knows their refinements
+        if let Some(f) = self.m.env.fns.get(&Symbol::new(name)) {
+            let mut named = vec![];
+            for (p, a) in f.params.iter().zip(&args) {
+                if let TypeExpr::Named(n, targs) = &p.ty {
+                    if n == crate::types::TYPE_ARG {
+                        if let (Some(TypeExpr::Named(tp, _)), Ok(t)) = (targs.first(), self.type_arg_ty(a, None)) {
+                            named.push((*tp, t));
+                        }
+                    }
+                }
+            }
+            if !named.is_empty() {
+                self.named_targs = Some(named);
+            }
         }
         let vs = self.operands(&args)?;
         if vs.iter().any(|v| is_never(&v.0)) {
@@ -4049,6 +4220,11 @@ impl<'m, 'a> Func<'m, 'a> {
             return Ok(never());
         }
         let head = Module::head(&recv).ok_or(format!("`{name}` on a `{}`", key(&recv)))?;
+        // a refined alias (`Positive`) has its base type's methods
+        let head = match &recv {
+            Ty::Con(n, a) if a.is_empty() && crate::types::refined_alias(self.m.env, *n) => Module::head(&self.m.repr(&recv)?).unwrap_or(head),
+            _ => head,
+        };
         if self.m.traits.contains_key(&Symbol::new(&head)) {
             return self.dyn_call(name, recv, vs, hint, places);
         }
@@ -4139,6 +4315,10 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         if let Some(rt) = hint {
             self.m.bind_targs(&f.ret, &rt, &f.type_params, &mut targs);
+        }
+        // (type arguments passed as written: refined aliases by name)
+        for (p, t) in self.named_targs.take().unwrap_or_default() {
+            targs.insert(p, t);
         }
         let targs: Vec<Ty> = f.type_params.iter().map(|p| targs.get(p).cloned().unwrap_or(Ty::Unit)).collect();
         let sub: HashMap<Symbol, Ty> = f.type_params.iter().cloned().zip(targs.iter().cloned()).collect();

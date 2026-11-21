@@ -314,6 +314,9 @@ pub enum TypeRef {
     Param(String),
 }
 
+/// `T.check(x)` is written as `$check::check(type, x)`.
+pub const CHECK: &str = "$check";
+
 /// The wrapper giving a method call its receiver's whole type.
 pub const SELF_TYPE: &str = "$self_type";
 
@@ -553,7 +556,9 @@ fn rewrite_node(e: &mut Expr, t: Option<&Target>, types: &mut HashMap<usize, Ty>
                 let old: Vec<usize> = args.iter().map(addr).collect();
                 let mut all = vec![ty.expr()];
                 all.append(args);
-                *e = Expr::Call(Box::new(Expr::Var(Symbol::from(trait_call(tr, m)))), all);
+                // (`T.check(x)` is the builtin `$check(type, x)`)
+                let name = if tr == CHECK { CHECK.to_string() } else { trait_call(tr, m) };
+                *e = Expr::Call(Box::new(Expr::Var(Symbol::from(name.as_str()))), all);
                 if let Expr::Call(_, all) = &*e {
                     rekey(types, &old, all[1..].iter().map(addr).collect());
                 }
@@ -745,9 +750,29 @@ impl<'a> Checker<'a> {
                 Some(t) => self.resolve(t),
                 None => t.clone(),
             },
+            // a refined alias is its base to every check
+            Ty::Con(n, args) if args.is_empty() && refined_alias(self.env, *n) => {
+                let b = alias_base(self.env, *n);
+                self.resolve(&b)
+            }
             Ty::Con(n, args) => Ty::Con(n.clone(), args.iter().map(|a| self.resolve(a)).collect()),
             Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(|a| self.resolve(a)).collect(), Box::new(self.resolve(r))),
             Ty::Union(ms) => self.union_of(ms.iter().map(|m| self.resolve(m)).collect()),
+            _ => t.clone(),
+        }
+    }
+
+    /// `resolve`, keeping refined aliases by name (`List[Positive]`): what a
+    /// type is passed as when the code runs.
+    fn resolve_named(&self, t: &Ty) -> Ty {
+        match t {
+            Ty::Var(v) => match &self.subst[*v] {
+                Some(t) => self.resolve_named(t),
+                None => t.clone(),
+            },
+            Ty::Con(n, args) => Ty::Con(n.clone(), args.iter().map(|a| self.resolve_named(a)).collect()),
+            Ty::Fn(ps, r) => Ty::Fn(ps.iter().map(|a| self.resolve_named(a)).collect(), Box::new(self.resolve_named(r))),
+            Ty::Union(ms) => Ty::Union(ms.iter().map(|m| self.resolve_named(m)).collect()),
             _ => t.clone(),
         }
     }
@@ -801,18 +826,34 @@ impl<'a> Checker<'a> {
     }
 
     fn unify(&mut self, a: &Ty, b: &Ty) -> Result<(), String> {
-        let (a, b) = (self.resolve(a), self.resolve(b));
+        // compared as their bases; a type variable takes the named form
+        // (`Positive`), which is what the code is given when it runs
+        let (na, nb) = (self.resolve_named(a), self.resolve_named(b));
+        let (a, b) = (self.resolve(&na), self.resolve(&nb));
         match (&a, &b) {
             _ if a == b => Ok(()),
-            (Ty::Var(v), t) | (t, Ty::Var(v)) => {
+            (Ty::Var(v), t) => {
                 if self.occurs(*v, t) {
                     return Err(format!("infinite type {} ~ {}", show_ty(&a), show_ty(&b)));
                 }
-                self.subst[*v] = Some(t.clone());
+                self.subst[*v] = Some(nb.clone());
+                Ok(())
+            }
+            (t, Ty::Var(v)) => {
+                if self.occurs(*v, t) {
+                    return Err(format!("infinite type {} ~ {}", show_ty(&a), show_ty(&b)));
+                }
+                self.subst[*v] = Some(na.clone());
                 Ok(())
             }
             (Ty::Con(n1, a1), Ty::Con(n2, a2)) if n1 == n2 && a1.len() == a2.len() => {
-                for (x, y) in a1.iter().zip(a2) {
+                // the arguments as written, when both are (so names reach variables)
+                let named = match (&na, &nb) {
+                    (Ty::Con(m1, x1), Ty::Con(m2, x2)) if m1 == n1 && m2 == n2 && x1.len() == a1.len() && x2.len() == a2.len() => Some((x1.clone(), x2.clone())),
+                    _ => None,
+                };
+                let (a1, a2) = named.unwrap_or((a1.clone(), a2.clone()));
+                for (x, y) in a1.iter().zip(&a2) {
                     self.unify(x, y)?;
                 }
                 Ok(())
@@ -843,7 +884,8 @@ impl<'a> Checker<'a> {
         }
         let mismatch = || format!("expected `{}`, found `{}`", show_ty(&e), show_ty(&a));
         match (&e, &a) {
-            (Ty::Var(_), _) | (_, Ty::Var(_)) => self.unify(&e, &a),
+            // (as written, so a type variable takes a refined alias by name)
+            (Ty::Var(_), _) | (_, Ty::Var(_)) => self.unify(expected, actual),
             (_, Ty::Union(ms)) => {
                 for m in ms {
                     self.fits(&e, m).map_err(|_| mismatch())?;
@@ -873,7 +915,13 @@ impl<'a> Checker<'a> {
             // the exact type; `call` checks that with `unify`. A trait's type
             // arguments stay exact.
             (Ty::Con(n1, ea), Ty::Con(n2, aa)) if n1 == n2 && ea.len() == aa.len() && !self.env.traits.contains_key(n1) => {
-                for (x, y) in ea.iter().zip(aa) {
+                // the arguments as written, when both are (so refined aliases reach variables)
+                let (ne, na) = (self.resolve_named(expected), self.resolve_named(actual));
+                let (ea, aa) = match (&ne, &na) {
+                    (Ty::Con(m1, x1), Ty::Con(m2, x2)) if m1 == n1 && m2 == n2 && x1.len() == ea.len() && x2.len() == aa.len() => (x1.clone(), x2.clone()),
+                    _ => (ea.clone(), aa.clone()),
+                };
+                for (x, y) in ea.iter().zip(&aa) {
                     self.fits(x, y).map_err(|_| mismatch())?;
                 }
                 Ok(())
@@ -990,6 +1038,14 @@ impl<'a> Checker<'a> {
                                 self.err(format!("type `{n}` expects {} type arguments, got {}", td.params.len(), largs.len()));
                             }
                             if let (TypeBody::Alias(a), false) = (&td.body, td.distinct) {
+                                // a refined alias (`Positive`) keeps its name: it is its base
+                                // to every check (`resolve` expands it), and what the code is
+                                // given when it runs (`T` is `Positive`, not `Int`)
+                                if td.params.is_empty() && refined_alias(self.env, n.sym()) {
+                                    let a = a.clone();
+                                    let _ = self.lower(&a, &HashMap::default());
+                                    return Ty::Con(n.sym(), vec![]);
+                                }
                                 let sub: HashMap<Symbol, Ty> = td.params.iter().cloned().zip(largs).collect();
                                 let a = a.clone();
                                 return self.lower(&a, &sub);
@@ -1658,7 +1714,7 @@ impl<'a> Checker<'a> {
         // a generic type's receiver, for an impl with type parameters: passed whole
         for (site, ra) in std::mem::take(&mut self.recv_calls) {
             let Some(t) = self.recv_seen.get(&ra).cloned() else { continue };
-            let t = self.resolve(&t);
+            let t = self.resolve_named(&t);
             let Ty::Con(h, args) = &t else { continue };
             if args.is_empty() || self.env.traits.contains_key(h) {
                 continue;
@@ -1670,7 +1726,7 @@ impl<'a> Checker<'a> {
             }
         }
         for (site, tr, ty) in std::mem::take(&mut self.static_types) {
-            let t = self.resolve(&ty);
+            let t = self.resolve_named(&ty);
             if let Some(r) = TypeRef::of(&t) {
                 self.targets.push((site, Target::Static(tr, r)));
             }
@@ -1678,7 +1734,7 @@ impl<'a> Checker<'a> {
         for (site, pairs) in std::mem::take(&mut self.insts) {
             let mut refs = Vec::new();
             for (p, t) in pairs {
-                let t = self.resolve(&t);
+                let t = self.resolve_named(&t);
                 refs.push(match &t {
                     Ty::Rigid(q) => TypeRef::Param(q.to_string()),
                     Ty::Con(h, _) if self.env.traits.contains_key(h) => {
@@ -1704,8 +1760,11 @@ impl<'a> Checker<'a> {
             Expr::Ctor(x, CtorArgs::None) | Expr::Var(x) if self.lookup(x.sym()).is_none() => x.clone(),
             _ => return None,
         };
-        let statics: Vec<Symbol> = self.env.method_traits.get(&m.sym())?.iter().filter(|t| self.env.traits.get(*t).is_some_and(|td| td.methods.iter().any(|tm| tm.decl.name == m && !crate::resolve::takes_self(&tm.decl)))).cloned().collect();
-        if statics.is_empty() {
+        let statics: Vec<Symbol> = self.env.method_traits.get(&m.sym()).map(|ts| ts.iter().filter(|t| self.env.traits.get(*t).is_some_and(|td| td.methods.iter().any(|tm| tm.decl.name == m && !crate::resolve::takes_self(&tm.decl)))).cloned().collect()).unwrap_or_default();
+        // `T.check(x)`, on every type: `Ok(())` when `x` meets the type's
+        // refinements (a type parameter's: the type it is when the code runs)
+        let check = statics.is_empty() && crate::names::short(m) == "check";
+        if statics.is_empty() && !check {
             return None;
         }
         let short = |q: &str| crate::names::short(q).to_string();
@@ -1759,6 +1818,11 @@ impl<'a> Checker<'a> {
             let k = self.env.impls.iter().filter(|i| texpr_head(&i.for_type) == x).map(|i| i.trait_name.clone()).collect();
             (t, TypeRef::Con(x.to_string(), vec![]), k)
         };
+        if check {
+            self.static_types.push((site, CHECK.to_string(), ty.clone()));
+            let result = Ty::Con("Result".into(), vec![Ty::Unit, Ty::Str]);
+            return Some(Ty::Fn(vec![ty], Box::new(result)));
+        }
         let mut cands: Vec<Symbol> = known.into_iter().filter(|t| statics.contains(t)).collect();
         cands.sort();
         cands.dedup();
@@ -3748,6 +3812,64 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> (Vec<Diag>, Vec
 fn no_heads() -> &'static crate::fx::HashSet<Symbol> {
     static EMPTY: std::sync::OnceLock<crate::fx::HashSet<Symbol>> = std::sync::OnceLock::new();
     EMPTY.get_or_init(Default::default)
+}
+
+/// Whether `n` is a refined alias (`type Positive = Int where it > 0`, or an
+/// alias of one): kept by name in the checker's types.
+pub fn refined_alias(env: &Env, n: Symbol) -> bool {
+    let mut n = n;
+    for _ in 0..16 {
+        let Some(td) = env.types.get(&n) else { return false };
+        if td.distinct {
+            return false;
+        }
+        let TypeBody::Alias(a) = &td.body else { return false };
+        if td.refinement.is_some() || matches!(a, TypeExpr::Refined(..)) {
+            return true;
+        }
+        match a {
+            TypeExpr::Named(m, args) if args.is_empty() => n = *m,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// The type a refined alias stands for, without its refinements (`Int` for
+/// `Positive`).
+pub fn alias_base(env: &Env, n: Symbol) -> Ty {
+    fn low(env: &Env, t: &TypeExpr, depth: usize) -> Ty {
+        if depth > 32 {
+            return Ty::Unit;
+        }
+        match t {
+            TypeExpr::Unit => Ty::Unit,
+            TypeExpr::Refined(b, _) => low(env, b, depth + 1),
+            TypeExpr::Union(ms) => Ty::Union(ms.iter().map(|m| low(env, m, depth + 1)).collect()),
+            TypeExpr::Fn(ps, r) => Ty::Fn(ps.iter().map(|p| low(env, p, depth + 1)).collect(), Box::new(low(env, r, depth + 1))),
+            TypeExpr::Named(n, args) => {
+                let args: Vec<Ty> = args.iter().map(|a| low(env, a, depth + 1)).collect();
+                match n.as_str() {
+                    "Int" => Ty::Int,
+                    "Float" => Ty::Float,
+                    "Bool" => Ty::Bool,
+                    "String" => Ty::Str,
+                    "Unit" => Ty::Unit,
+                    _ => match env.types.get(n) {
+                        Some(td) if !td.distinct && td.params.is_empty() && matches!(td.body, TypeBody::Alias(_)) => {
+                            let TypeBody::Alias(a) = &td.body else { unreachable!() };
+                            low(env, a, depth + 1)
+                        }
+                        _ => Ty::Con(*n, args),
+                    },
+                }
+            }
+        }
+    }
+    match env.types.get(&n).map(|td| &td.body) {
+        Some(TypeBody::Alias(a)) => low(env, a, 0),
+        _ => Ty::Unit,
+    }
 }
 
 /// The types with an impl whose methods need its type parameters when they

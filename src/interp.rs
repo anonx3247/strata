@@ -858,6 +858,17 @@ impl<'a> Interp<'a> {
         self.call_decl(&f, name, args)
     }
 
+    /// The type whose methods a type has: a refined alias's base (`Int` for
+    /// `Positive`), else itself.
+    fn base_head(&self, head: &str) -> String {
+        if crate::types::refined_alias(self.env, head.sym()) {
+            if let Some(h) = crate::types::ty_head(&crate::types::alias_base(self.env, head.sym())) {
+                return h.to_string();
+            }
+        }
+        head.to_string()
+    }
+
     /// The receiver type given to this call node, if any.
     fn typed_call(&mut self, e: &Expr) -> Option<String> {
         let at = e as *const Expr as usize;
@@ -897,7 +908,8 @@ impl<'a> Interp<'a> {
                     let h = h.clone();
                     args.remove(0);
                     whole = Some(h.clone());
-                    crate::types::type_text_head(&h).to_string()
+                    // a refined alias (`Positive`) has its base type's methods
+                    self.base_head(crate::types::type_text_head(&h))
                 }
                 _ => return self.fail(FaultKind::Runtime, format!("`{name}` needs the type it is called on")),
             }
@@ -1139,6 +1151,15 @@ impl<'a> Interp<'a> {
         use Value::*;
         if crate::stdlib::is_host(name) {
             return self.host_call(name, args);
+        }
+        // `T.check(x)`: whether `x` meets the refinements of the type `T` is when the code runs
+        if name == crate::types::CHECK {
+            let (Some(Str(t)), Some(v)) = (args.first(), args.get(1)) else { return self.fail(FaultKind::Runtime, "bad args") };
+            let te = crate::types::parse_type_text(t);
+            return Ok(match self.check_type(&te, v)? {
+                None => Variant("Ok".into(), Fields::pos(vec![Unit])),
+                Some(why) => Variant("Err".into(), Fields::pos(vec![Str(why)])),
+            });
         }
         // a type's runtime text from its head and arguments' texts: `List[Int]`
         if name == crate::types::TYPE_TEXT {
