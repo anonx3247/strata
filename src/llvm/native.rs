@@ -365,7 +365,7 @@ type Everything = {
         let t = crate::ast::TypeExpr::Named("Everything".into(), vec![]);
         let (roots, shapes) = crate::llvm::shapes_of(&prog, &[t]).unwrap();
         let lit = |s: &str| crate::parser::parse_expr(s).unwrap();
-        let given = lit(r#"Everything { id: Id(7), tags: Set { "b", "a", "b" }, scores: { "y": -2, "x": 1 }, keyed: { 3: true, 1: false },
+        let given = lit(r#"Everything { id: Id(7), tags: Set { "b", "a", "b" }, scores: Dict { "y": -2, "x": 1 }, keyed: Dict { 3: true, 1: false },
             pos: (4, true), either: "text", many: [1, Circle { r: 1.5 }, ["s"], Dot],
             big: 123456789012345678901234567890, small: -4611686018427387904, nothing: (),
             maybe: Some(Pair(2, "two")), figures: [Square(2.0), Dot] }"#);
@@ -373,7 +373,7 @@ type Everything = {
         let back = unsafe { read(&roots[0], &shapes, raw) }.unwrap();
         assert_eq!(
             crate::printer::literal(&back),
-            crate::printer::literal(&lit(r#"Everything { id: Id(7), tags: Set { "a", "b" }, scores: { "x": 1, "y": -2 }, keyed: { 1: false, 3: true },
+            crate::printer::literal(&lit(r#"Everything { id: Id(7), tags: Set { "a", "b" }, scores: Dict { "x": 1, "y": -2 }, keyed: Dict { 1: false, 3: true },
             pos: (4, true), either: "text", many: [1, Circle { r: 1.5 }, ["s"], Dot],
             big: 123456789012345678901234567890, small: -4611686018427387904, nothing: (),
             maybe: Some(Pair(2, "two")), figures: [Square(2.0), Dot] }"#))
