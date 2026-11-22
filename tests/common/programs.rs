@@ -113,7 +113,6 @@ pub const STRINGS: &str = r#"fn main() {
   xs := [10, 20, 30, 40]
   print([xs[1], xs[3]])
   print([xs[1..3], xs[2..], xs[..1], xs[3..1], xs[-2..10]])
-  print([to_json("a\"b"), to_json([1, 2]), to_json(Some("x"))])
 }
 "#;
 
@@ -183,7 +182,7 @@ fn main() {
   nested := Dict { "k": Dict { 2: "two", 1: "one" } }
   print(nested)
   print(f"{d} {s}")
-  print(to_string(s) + to_json(d))
+  print(to_string(s))
   print([d][0])
 }
 "#;

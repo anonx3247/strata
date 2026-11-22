@@ -1015,12 +1015,66 @@ void strata_host_sleep(int64_t ns) {
   pthread_mutex_unlock(&chan_lock);
 }
 
+// ---- fake time (std.time.FakeClock) ----
+//
+// A `Timeline` is a time that only moves when told (`advance`, `set`), shared
+// by every copy of the clock holding it (a counted object, as a channel).
+// It is read and moved under `chan_lock`; moving it wakes every waiter, so a
+// task sleeping on it, or a `select` with one of its timers, looks again at
+// once: no polling.
+
+typedef struct Timeline {
+  int64_t now;  // nanoseconds from the clock's start
+} Timeline;
+
+Timeline *strata_timeline_new(int64_t start) {
+  Timeline *t = strata_alloc(sizeof(Timeline));
+  t->now = start;
+  return t;
+}
+
+void strata_timeline_drop(Timeline *t) {
+  if (strata_release(t)) strata_free(t);
+}
+
+int64_t strata_timeline_now(Timeline *t) {
+  pthread_mutex_lock(&chan_lock);
+  int64_t v = t->now;
+  pthread_mutex_unlock(&chan_lock);
+  return v;
+}
+
+// Move the time to `to` (never back), waking whoever waits for it.
+void strata_timeline_set(Timeline *t, int64_t to) {
+  pthread_mutex_lock(&chan_lock);
+  if (to > t->now) t->now = to;
+  pthread_cond_broadcast(&chan_cond);
+  pthread_mutex_unlock(&chan_lock);
+}
+
+// Move the time `ns` forward (not back), waking whoever waits for it.
+void strata_timeline_advance(Timeline *t, int64_t ns) {
+  pthread_mutex_lock(&chan_lock);
+  if (ns > 0) t->now += ns;
+  pthread_cond_broadcast(&chan_cond);
+  pthread_mutex_unlock(&chan_lock);
+}
+
+// Wait until the time has moved `ns` past now; a cancelled task stops at once.
+void strata_timeline_sleep(Timeline *t, int64_t ns) {
+  pthread_mutex_lock(&chan_lock);
+  int64_t deadline = t->now + ns;
+  while (t->now < deadline && !strata_cancelled()) pthread_cond_wait(&chan_cond, &chan_lock);
+  pthread_mutex_unlock(&chan_lock);
+}
+
 // What a `select` arm waits on: kind 0 `recv` (`ok` says whether a value
 // came, into `slot`), 1 `send` (of `slot`), 2 `await` (a task), 3 a timer of
 // the system clock (`clock.after(d)`: `slot` is its deadline, monotonic
 // nanoseconds), 4 a timer of another clock (`slot` is 1 once that clock said
 // its deadline has passed: the compiled code asks the clock, `strata_select`
-// gives -2 when it should ask again).
+// gives -2 when it should ask again), 5 a timer of a `FakeClock` (`target` its
+// `Timeline`, `slot` its deadline in that time: moving the time wakes it).
 typedef struct {
   int64_t kind;
   void *target;
@@ -1080,6 +1134,8 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
         }
       } else if (op->kind == 2) {
         if (((Task *)op->target)->done) chosen = i;
+      } else if (op->kind == 5) {
+        if (((Timeline *)op->target)->now >= op->slot) chosen = i;
       } else if (op->kind == 3 ? mono_ns() >= op->slot : op->slot != 0) {
         chosen = i;
       }
@@ -1578,18 +1634,6 @@ Str *strata_show_int(int64_t n) {
   return str_c((snprintf(buf, sizeof buf, "%lld", (long long)n), buf));
 }
 
-// An `Int` in JSON, as the interpreter writes it: a number while it fits
-// in 64 bits, else its digits as a string.
-Str *strata_json_int(int64_t n) {
-  Str *d = strata_show_int(n);
-  if (!is_big(n)) return d;
-  Big *b = big_at(n);
-  uint64_t m = b->n <= 2 ? b->d[0] | (b->n > 1 ? (uint64_t)b->d[1] << 32 : 0) : UINT64_MAX;
-  if (b->n <= 2 && m <= (uint64_t)INT64_MAX + (b->sign < 0)) return d;
-  Str *q = strata_concat_owned(strata_concat_owned(str_c("\""), d), str_c("\""));
-  return q;
-}
-
 // A 64-bit integer as an `Int` (a big integer when it isn't small).
 int64_t strata_int_from_i64(int64_t raw) {
   if (!is_big(raw)) return raw;
@@ -1798,31 +1842,6 @@ static Str *show_float_plain(double x) {
 }
 
 Str *strata_show_bool(_Bool b) { return str_c(b ? "true" : "false"); }
-
-// A string as JSON (quoted, escaped), for fault messages.
-Str *strata_json_str(Str *s) {
-  Str *o = str_alloc(s->len * 6 + 2);
-  char *p = o->bytes;
-  *p++ = '"';
-  for (int64_t i = 0; i < s->len; i++) {
-    unsigned char c = (unsigned char)s->bytes[i];
-    switch (c) {
-    case '"': p += sprintf(p, "\\\""); break;
-    case '\\': p += sprintf(p, "\\\\"); break;
-    case '\n': p += sprintf(p, "\\n"); break;
-    case '\r': p += sprintf(p, "\\r"); break;
-    case '\t': p += sprintf(p, "\\t"); break;
-    case '\b': p += sprintf(p, "\\b"); break;
-    case '\f': p += sprintf(p, "\\f"); break;
-    default:
-      if (c < 0x20) p += sprintf(p, "\\u%04x", c);
-      else *p++ = (char)c;
-    }
-  }
-  *p++ = '"';
-  o->len = p - o->bytes;
-  return o;
-}
 
 // A string as `Debug` writes it: a Strata string literal, escaped as the
 // printer escapes (\n, \t, \", and a backslash that would start one).

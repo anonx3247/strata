@@ -54,11 +54,11 @@ derive Json for Kind
 derive Json for Event
 
 fn event(text: String) -> Result[Event, String] {
-  Event.decode(parse(text)!)
+  Event.from_json(parse(text)!)
 }
 
 fn read(text: String) -> Result[Signup, String] {
-  Signup.decode(parse(text)!)
+  Signup.from_json(parse(text)!)
 }
 
 fn main() {
@@ -71,7 +71,7 @@ fn main() {
     level: Loud,
     scores: dict([("a", 1)]),
   }
-  text := stringify(s.encode() !! Null)
+  text := stringify(s.to_json() !! Null)
   print(text)
   print(read(text) == Ok(s))
   home := "\"home\": {\"city\": \"L\", \"zip\": \"12345\"}"
@@ -81,7 +81,7 @@ fn main() {
   print(read(f"{{\"email\": \"x@y\", \"age\": 15, {home}, \"shapes\": [{{\"type\": \"Circle\", \"r\": \"no\", \"label\": \"x\"}}], \"level\": \"Quiet\", \"scores\": {{}}}}"))
   extra := f"{{\"email\": \"x@y\", \"age\": 15, {home}, \"shapes\": [], \"level\": \"Loud\", \"scores\": {{}}, \"extra\": 1}}"
   print(read(extra) is Ok)
-  print(Signup.decode_with(parse(extra) !! Null, Reject))
+  print(Signup.from_json_with(parse(extra) !! Null, Reject))
   print(read(f"{{\"type\": \"Address\", \"email\": \"x@y\"}}"))
   print(read("[1, 2"))
   print(stringify(parse("[1, -2.5e3, \"a\\u00e9\\n\\ud83d\\ude00\", true, null, {\"k\": []}]") !! Null))
@@ -89,8 +89,8 @@ fn main() {
   print(parse("9007199254740991"))
   print(parse("-9007199254740992"))
   e := Event { user: UserId(7), at: (3, "pm"), payload: Address { city: "R", zip: "00100" }, kind: Click { times: 2 } }
-  print(stringify(e.encode() !! Null))
-  print(event(stringify(e.encode() !! Null)) == Ok(e))
+  print(stringify(e.to_json() !! Null))
+  print(event(stringify(e.to_json() !! Null)) == Ok(e))
   print(event("{\"user\": 7, \"at\": [1, \"am\"], \"payload\": \"hi\", \"kind\": {\"type\": \"Click\"}}"))
   print(event("{\"user\": 7, \"at\": [1, \"am\"], \"payload\": 4, \"kind\": {\"type\": \"Key\", \"value\": \"k\"}}"))
   print(event("{\"user\": 0, \"at\": [1, \"am\"], \"payload\": 4, \"kind\": \"Click\"}"))
@@ -132,11 +132,11 @@ type P = { name: String, tags: List[String] }
 derive Json for P
 
 fn send[T: Json](x: T) -> String {
-  stringify(x.encode() !! std.json.Null)
+  stringify(x.to_json() !! std.json.Null)
 }
 
 fn read[T: Json](text: String) -> Result[T, String] {
-  T.decode(parse(text)!)
+  T.from_json(parse(text)!)
 }
 
 fn ints(text: String) -> Result[List[Int], String] {
@@ -359,8 +359,8 @@ type Box = { p: Pair[Int] }
 derive Json for Box
 
 fn main() {
-  print(stringify(Box { p: Pair { a: 1, b: 2 } }.encode() !! std.json.Null))
-  print(Box.decode(parse("{\"p\": {\"a\": 3, \"b\": 4}}") !! std.json.Null))
+  print(stringify(Box { p: Pair { a: 1, b: 2 } }.to_json() !! std.json.Null))
+  print(Box.from_json(parse("{\"p\": {\"a\": 3, \"b\": 4}}") !! std.json.Null))
 }
 "#;
 
@@ -373,7 +373,7 @@ Ok(Box { p: Pair { a: 3, b: 4 } })
 pub const OPTION_OPTION: &str = r#"from std.json use Json, stringify
 
 fn send[T: Json](x: T) -> String {
-  match x.encode() {
+  match x.to_json() {
     Ok(j) => stringify(j),
     Err(e) => f"error: {e}",
   }
@@ -422,7 +422,7 @@ type Port = Int
   where 1 <= it && it <= 65535
 
 fn read[T: Json](text: String) -> Result[T, String] {
-  T.decode(parse(text)!)
+  T.from_json(parse(text)!)
 }
 
 fn ports(text: String) -> Result[List[Port], String] {
@@ -477,7 +477,7 @@ type Many[T] = List[T]
   where len(it) >= 2
 
 fn read[T: Json](text: String) -> Result[T, String] {
-  T.decode(parse(text)!)
+  T.from_json(parse(text)!)
 }
 
 fn pairs(text: String) -> Result[Many[Int], String] {

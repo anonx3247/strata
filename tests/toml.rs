@@ -485,7 +485,7 @@ fn main() {
         Err(_) => (),
       }
       // a type may derive both: the methods are named for each format
-      print(Server { host: "x", port: 1 }.encode())
+      print(Server { host: "x", port: 1 }.to_json())
       print(Server { host: "x", port: 1 }.to_toml())
     },
     Err(_) => (),
