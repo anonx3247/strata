@@ -3583,9 +3583,11 @@ impl<'a> Vc<'a> {
             // (`split` and `repeat` are total: an empty separator splits at every
             // character, a count below 1 gives ""; out of memory isn't modelled)
             ("ord", _) => self.oblige(format!("`{name}` with arguments it accepts"), |vc| vc.unknown_bool(&format!("`{name}` of a value not modelled"))),
-            // a Float past 1.79e308 is no number
+            // exactly the Ints that round to a finite Float: below 2^1024 - 2^970,
+            // halfway between the largest Float and 2^1024 (from there, up)
             ("float", [Val::Int(n)]) => self.oblige("`float` of an Int a Float can hold".into(), |_| {
-                let big = format!("1{}", "0".repeat(308));
+                use num_bigint::BigInt;
+                let big = (BigInt::from(1) << 1024u32) - (BigInt::from(1) << 970u32);
                 format!("(and (< {n} {big}) (< (- {big}) {n}))")
             }),
             ("sqrt", [_]) => self.oblige("`sqrt` of a number that is not negative".into(), |vc| vc.unknown_bool(floats)),

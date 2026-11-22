@@ -88,7 +88,8 @@ every change made through strata, committed with them):
                                root module is `main`); --split writes one file per module
                                (as text files: `shop/orders.st`, never read back)
   pack <FILE.strata>           the whole program in one file (a bundle, with strata.toml);
-                               --file, run, ui and every view read it like a package
+                               --file, run, ui and every view read it like a package;
+                               --prelude: the prelude's definitions instead (for std.ast.eval)
   header <FILE.strata>         a module file's table of contents: each definition's kind,
                                name, hashes, size and dependencies, read without decoding it;
                                --tree: each definition (a bundle's too) as a `std.ast` value, one per line
