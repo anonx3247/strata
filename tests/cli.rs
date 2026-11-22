@@ -4906,6 +4906,7 @@ fn bit_operators() {
     let (_, out) = strata(&["--file", "neg.strata", "render"], &d, None);
     // a bit operation compared keeps its parentheses (C reads `x | 15 == 15` otherwise)
     assert!(out.contains("where (it | 1) == 3 | 0 => 1,") && out.contains("where (it | 15) == 15") && out.contains("x & 255"), "{out}");
+}
 
 /// `strata ui`'s workspace, end to end against a scratch repository: the
 /// activity (branches → commits → definitions) and diffs between them, an
