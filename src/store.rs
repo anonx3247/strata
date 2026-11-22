@@ -260,7 +260,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             }
             out.remove(c.name.as_str());
         }
-        DeclKind::Use(_) | DeclKind::Extern(ExternDecl { item: ExternItem::Type(_), .. }) => {}
+        DeclKind::Use(_) | DeclKind::Extern(ExternDecl { item: ExternItem::Type(..), .. }) => {}
         DeclKind::Extern(ExternDecl { item: ExternItem::Fn(f), .. }) => {
             f.params.iter().for_each(|p| ty(&p.ty, &mut out));
             ty(&f.ret, &mut out);
@@ -430,7 +430,7 @@ impl Codebase {
         let new = &self.program;
         let changes = changes(old, new);
         // the standard library is built into strata: its changes are git's alone
-        if changes.is_empty() || crate::package::find(&self.root).ok().flatten().is_some_and(|p| p.name == crate::stdlib::NAME) {
+        if changes.is_empty() || crate::package::find(&self.root).ok().flatten().is_some_and(|p| crate::stdlib::builtin_package(&p.name)) {
             return Ok(changes);
         }
         let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
@@ -733,8 +733,8 @@ pub fn module_at(path: &Path) -> Result<Option<(crate::package::Package, String)
     if m == "main" {
         m.clear();
     }
-    if pkg.name == crate::stdlib::NAME {
-        m = if m.is_empty() { crate::stdlib::NAME.to_string() } else { format!("{}.{m}", crate::stdlib::NAME) };
+    if crate::stdlib::builtin_package(&pkg.name) {
+        m = crate::stdlib::package_module(&pkg.name, &m);
     }
     Ok(Some((pkg, m)))
 }
@@ -802,8 +802,8 @@ pub const LOG: &str = "strata.log";
 /// Where a module's file is, relative to its package: `shop.orders` is
 /// `shop/orders.strata`, the root module `main.strata`.
 pub fn module_path(m: &str) -> PathBuf {
-    // inside `std/` itself, `std.io` is `io.strata`
-    let m = m.strip_prefix("std.").unwrap_or(if m == crate::stdlib::NAME { "" } else { m });
+    // inside `std/` itself, `std.io` is `io.strata` (and `core.types` is `types.strata` in `core/`)
+    let m = m.strip_prefix("std.").or_else(|| m.strip_prefix("core.")).unwrap_or(if m == crate::stdlib::NAME || m == crate::core::NAME { "" } else { m });
     if m.is_empty() { PathBuf::from("main.strata") } else { PathBuf::from(format!("{}.strata", m.replace('.', "/"))) }
 }
 

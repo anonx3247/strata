@@ -478,7 +478,7 @@ fn words(o: &Decl, n: &Decl) -> Vec<String> {
             }
             contract_words(a, b, &mut out);
         }
-        (DeclKind::Extern(ExternDecl { item: ExternItem::Type(_), .. }), DeclKind::Extern(ExternDecl { item: ExternItem::Type(_), .. })) => {}
+        (DeclKind::Extern(ExternDecl { item: ExternItem::Type(..), .. }), DeclKind::Extern(ExternDecl { item: ExternItem::Type(..), .. })) => {}
         _ => out.push("kind changed".into()),
     }
     if o.public != n.public {

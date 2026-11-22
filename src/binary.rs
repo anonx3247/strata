@@ -813,7 +813,7 @@ tags!(BinOp { Add = 0, Sub = 1, Mul = 2, Div = 3, Mod = 4, Eq = 5, Ne = 6, Lt = 
 tags!(UnOp { Neg = 0, Not = 1 });
 tags!(TryKind { Result = 0, Option = 1 });
 tags!(CompKind { List = 0, Set = 1, Dict = 2 });
-tags!(Lang { C = 0 });
+tags!(Lang { C = 0, Builtin = 1 });
 
 impl Bin for DeclKind {
     fn enc(&self, w: &mut Writer) {
@@ -846,13 +846,15 @@ impl Bin for ExternItem {
     fn enc(&self, w: &mut Writer) {
         match self {
             ExternItem::Fn(f) => put!(w, 0, f),
-            ExternItem::Type(t) => put!(w, 1, t),
+            ExternItem::Type(t, ps) if ps.is_empty() => put!(w, 1, t),
+            ExternItem::Type(t, ps) => put!(w, 2, t, ps),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
-        Ok(match r.tag("extern item", 1)? {
+        Ok(match r.tag("extern item", 2)? {
             0 => ExternItem::Fn(Bin::dec(r)?),
-            _ => ExternItem::Type(Bin::dec(r)?),
+            1 => ExternItem::Type(Bin::dec(r)?, vec![]),
+            _ => ExternItem::Type(Bin::dec(r)?, Bin::dec(r)?),
         })
     }
 }
