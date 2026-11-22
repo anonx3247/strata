@@ -91,6 +91,8 @@ error: invalid input: lines: [] does not satisfy `NonEmpty` (where len(it) > 0)
 
 Outside a package, `strata --file F edit < text` writes a script (or a folder's module) as given, then checks it: what doesn't check is still written, its errors are printed with `written, but F doesn't check`, and the exit code is 1. (A package's `strata edit` refuses such an edit instead.) One module file of a folder isn't checked alone, since its neighbours may not be written yet.
 
+`strata --file F check --compare` also runs the type checker written in Strata (the repository's `compiler/` program, `compiler check`) on the script, and prints the errors only one of the two checkers finds (`only in rust: …`, `only in strata: …`); the exit code is 0 when they agree. The compiler package is the `compiler/` folder of the repository `strata` runs in (in the current folder or above, or above the `strata` executable; `STRATA_COMPILER=DIR` names another), built once with `strata build` into `~/.cache/strata/compiler/<hash>` (`STRATA_CACHE`) and rebuilt when it, `std/` or `strata` changes. Without it, `--compare` says so and exits 2; scripts only for now (not a folder or a package).
+
 ## Compiling to native code
 
 `strata build` compiles a program to an executable through LLVM: it writes LLVM IR as text, and `clang` compiles it with a small C runtime (`STRATA_CC` chooses another compiler). `--emit-llvm` prints the IR instead. `build` first verifies what changed since it was last verified (`--no-verify` doesn't), and the checks proven are left out of the program (`--all-checks` keeps them; see [verification](verification.md#what-is-proven-isnt-checked-again)).
