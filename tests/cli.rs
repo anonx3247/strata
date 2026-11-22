@@ -335,6 +335,75 @@ fn package_verify_policies() {
     assert!(!ok && out.contains("[verify] proven names `nope`, which is not a module of this package"), "{out}");
 }
 
+/// Lists are known by position: `xs[k]`, slices, `+`, `push`, `reverse` and
+/// literals keep which element is where, and a fact over every position
+/// (`all(1..len(it), i -> ...)`) reaches the elements the code takes.
+#[test]
+fn lists_are_known_by_position() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("list-positions");
+    let src = "type Sorted = List[Int] where all(1..len(it), i -> it[i - 1] <= it[i])
+type Message = { content: List[Int] }
+type Chain = List[Message] where all(1..len(it), i -> all(it[i].content, c -> c > 0))
+fn first_le_second(xs: Sorted) -> Bool
+  requires len(xs) >= 2
+  ensures it
+{
+  xs[0] <= xs[1]
+}
+fn tail(xs: Sorted) -> Sorted
+  requires len(xs) > 0
+{
+  xs[1..len(xs)]
+}
+fn add_max(xs: Sorted, x: Int) -> Sorted
+  requires len(xs) == 0 || xs[len(xs) - 1] <= x
+{
+  push(xs, x)
+}
+fn bad_add(xs: Sorted, x: Int) -> Sorted {
+  push(xs, x)
+}
+fn bad_lit() -> Sorted {
+  [1, 3, 2]
+}
+fn last_of_rev(xs: List[Int]) -> Bool
+  requires len(xs) > 0
+  ensures it
+{
+  reverse(xs)[len(xs) - 1] == xs[0]
+}
+fn joined(a: List[Int], b: List[Int]) -> Bool
+  requires len(a) == 2 && len(b) > 0
+  ensures it
+{
+  (a + b)[2] == b[0]
+}
+fn some_positive(xs: List[Int]) -> Bool
+  requires len(xs) > 0 && xs[0] > 0
+  ensures it
+{
+  any(xs, x -> x > 0)
+}
+fn inner(ms: Chain, k: Int, j: Int) -> Bool
+  requires 1 <= k && k < len(ms) && 0 <= j && j < len(ms[k].content)
+  ensures ms[k].content[j] > 0
+{
+  true
+}
+";
+    save(&d.join("t.strata"), src);
+    let (ok, out) = strata(&["--file", "t.strata", "verify", "--cases", "30"], &d, None);
+    assert!(!ok, "{out}");
+    for name in ["first_le_second", "tail", "add_max", "last_of_rev", "joined", "some_positive", "inner"] {
+        assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
+    }
+    assert!(out.contains("✗ bad_add") && out.contains("✗ bad_lit"), "{out}");
+}
+
 /// After a loop, the state is the loop head's with the condition false, or
 /// the state at one of its `break`s: a `break` doesn't make the condition false.
 #[test]
