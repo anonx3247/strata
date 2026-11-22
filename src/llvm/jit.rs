@@ -119,6 +119,7 @@ unsafe extern "C" {
     fn strata_str_ord();
     fn strata_str_byte_len();
     fn strata_str_byte_at();
+    fn strata_str_byte_slice();
     fn strata_str_chr();
     fn strata_parse_int();
     fn strata_parse_float();
@@ -233,6 +234,7 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_str_ord", strata_str_ord as *const () as usize),
         ("strata_str_byte_len", strata_str_byte_len as *const () as usize),
         ("strata_str_byte_at", strata_str_byte_at as *const () as usize),
+        ("strata_str_byte_slice", strata_str_byte_slice as *const () as usize),
         ("strata_str_chr", strata_str_chr as *const () as usize),
         ("strata_parse_int", strata_parse_int as *const () as usize),
         ("strata_parse_float", strata_parse_float as *const () as usize),

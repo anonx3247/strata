@@ -1045,6 +1045,31 @@ impl<F: FnMut(&mut Expr)> VisitMut for ExprsMut<F> {
     fn ty(&mut self, _: &mut TypeExpr) {}
 }
 
+/// `ExprsMut`, innermost first, going into types and patterns too: the
+/// refinements written in them (`zip: String where len(it.code_points()) == 5`)
+/// and their `where` conditions.
+struct ExprsMutTyped<F>(F);
+
+impl<F: FnMut(&mut Expr)> VisitMut for ExprsMutTyped<F> {
+    fn expr(&mut self, e: &mut Expr) {
+        walk_expr_mut(self, e);
+        (self.0)(e);
+    }
+    // (a pattern's `where` conditions run too)
+    fn pattern(&mut self, p: &mut Pattern) {
+        walk_pattern_mut(self, p)
+    }
+    fn ty(&mut self, t: &mut TypeExpr) {
+        walk_ty_mut(self, t)
+    }
+}
+
+/// Every expression of a declaration, innermost first, those in its types'
+/// refinements and its patterns' conditions too.
+pub fn decl_exprs_mut_post_typed(d: &mut DeclKind, f: impl FnMut(&mut Expr)) {
+    walk_decl_mut(&mut ExprsMutTyped(f), d)
+}
+
 /// Visit `e` and every expression inside it, outermost first (not those in
 /// patterns or types).
 pub fn walk(e: &Expr, f: impl FnMut(&Expr)) {

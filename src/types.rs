@@ -72,7 +72,7 @@ type Percentage = Float where 0.0 <= it && it <= 100.0
 /// A list with at least one element.
 type NonEmpty[T] = List[T] where len(it) > 0
 /// A string with at least one character.
-type NonEmptyString = String where len(it) > 0
+type NonEmptyString = String where it != ""
 
 // Sized integers: `Int` with the range of a machine integer. They are checked
 // like any refinement; a compiler can store each in its own width.
@@ -112,6 +112,60 @@ trait Iterator[T] {
 
   fn filter(self, keep: (T) -> Bool) -> Filtered[Self, T] {
     Filtered { inner: self, keep: keep }
+  }
+
+  /// The first `n` elements (all, if there are fewer): finite, even when
+  /// this iterator isn't.
+  fn take(self, n: Int) -> Taken[Self, T] {
+    Taken { inner: self, left: if n > 0 { n } else { 0 } }
+  }
+
+  /// The elements after the first `n`.
+  fn drop(self, n: Int) -> Dropped[Self, T] {
+    Dropped { inner: self, skip: if n > 0 { n } else { 0 } }
+  }
+}
+
+type Taken[I, T] = { inner: I, left: Natural }
+
+impl[I: Iterator[T], T] Iterator[T] for Taken[I, T] {
+  fn next(mut self) -> Option[T] {
+    if self.left == 0 {
+      return None
+    }
+    self.left -= 1
+    mut self.inner.next()
+  }
+}
+
+/// At most `left` elements (each `next` takes one off): counted on a copy,
+/// without going further.
+impl[I: Iterator[T], T] FiniteIterator[T] for Taken[I, T] {
+  fn len(self) -> Natural {
+    mut n: Natural = 0
+    for _ in self {
+      n += 1
+    }
+    n
+  }
+}
+
+type Dropped[I, T] = { inner: I, skip: Natural }
+
+impl[I: Iterator[T], T] Iterator[T] for Dropped[I, T] {
+  fn next(mut self) -> Option[T] {
+    for _ in 0..self.skip {
+      mut self.inner.next()
+    }
+    self.skip = 0
+    mut self.inner.next()
+  }
+}
+
+impl[I: FiniteIterator[T], T] FiniteIterator[T] for Dropped[I, T] {
+  fn len(self) -> Natural {
+    n := self.inner.len()
+    if n > self.skip { n - self.skip } else { 0 }
   }
 }
 
@@ -154,6 +208,33 @@ trait FiniteIterator[T]: Iterator[T] {
       acc = f(acc, x)
     }
     acc
+  }
+
+  /// Element `i` (from 0), if there is one.
+  fn get(self, i: Int) -> Option[T] {
+    mut k := 0
+    for x in self {
+      if k == i {
+        return Some(x)
+      }
+      k += 1
+    }
+    None
+  }
+
+  /// Element `i` (from 0): `it[i]`.
+  fn at(self, i: Int) -> T
+    requires 0 <= i && i < self.len()
+  {
+    match self.get(i) {
+      Some(x) => x,
+      None => self.to_list()[i],
+    }
+  }
+
+  /// The elements from `a` up to (not including) `b`, lazily: `it[a..b]`.
+  fn slice(self, a: Int, b: Int) -> Taken[Dropped[Self, T], T] {
+    self.drop(a).take(b - (if a > 0 { a } else { 0 }))
   }
 
   /// The elements, in a list.
@@ -299,6 +380,11 @@ fn set_of[T, I: FiniteIterator[T]](it: I) -> Set[T] {
   set(it.to_list())
 }
 
+/// `join(it, sep)` on a finite iterator of strings.
+fn join_of[I: FiniteIterator[String]](it: I, sep: String) -> String {
+  join(it.to_list(), sep)
+}
+
 /// `Dict { k: v for x in it }` on a finite iterator (`dict(it)` on one).
 fn dict_of[K, V, I: FiniteIterator[(K, V)]](it: I) -> Dict[K, V] {
   dict(it.to_list())
@@ -329,7 +415,7 @@ impl[I: FiniteIterator[T], T] FiniteIterator[T] for Filtered[I, T] {
 /// The builtins on lists that every iterator has as methods (lazy `map`
 /// and `filter`; `fold` on a `FiniteIterator`): called on an iterator, the
 /// call is its method's. Comprehensions are made of them.
-const ITERATOR_BUILTINS: &[&str] = &["map", "filter", "fold"];
+const ITERATOR_BUILTINS: &[&str] = &["map", "filter", "fold", "len", "get", "at", "slice", "take", "drop"];
 
 /// The built-in types with type arguments, which impls can be written for.
 const BUILTIN_HEADS: &[&str] = &["List", "Set", "Dict", "String"];
@@ -340,7 +426,16 @@ pub const PRELUDE_MODULE: &str = "std.prelude";
 /// A name as messages show it: a prelude trait's method short
 /// (`fold`, not `std.prelude.fold`; `FiniteIterator::len`).
 pub fn shown_name(name: &str) -> String {
-    name.replace(&format!("{PRELUDE_MODULE}."), "")
+    let mut s = name.replace(&format!("{PRELUDE_MODULE}."), "");
+    // a call through a prelude trait, as written (`self.len()`, not `self.FiniteIterator::len()`;
+    // `len(..)`, not `FiniteIterator::len(..)`)
+    for t in prelude_traits() {
+        s = s.replace(&format!(".{t}::"), ".");
+        if let Some(rest) = s.strip_prefix(&format!("{t}::")) {
+            s = rest.to_string();
+        }
+    }
+    s
 }
 
 /// The prelude's code, parsed once (`PRELUDE_CODE`).
@@ -453,7 +548,6 @@ pub fn prelude() -> &'static Program {
 /// Builtin functions and their type schemes.
 pub const BUILTINS: &[Builtin] = &[
     Builtin::total("len", "A", "(List[A]) -> Int"),
-    Builtin::total("len", "", "(String) -> Int"),
     Builtin::total("len", "K,V", "(Dict[K, V]) -> Int"),
     Builtin::total("len", "A", "(Set[A]) -> Int"),
     Builtin::total("contains", "A", "(Set[A], A) -> Bool"),
@@ -517,14 +611,16 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin::total("max", "", "(Float, Float) -> Float"),
     Builtin::new("matches", "", "(String, String) -> Bool"),
     Builtin::total("starts_with", "", "(String, String) -> Bool"),
-    // strings are UTF-8 and indexed by character
+    // strings are UTF-8: positions in them are byte offsets (`index_of`,
+    // `byte_slice`); counting and indexing name a unit (`s.graphemes()[i]`)
     Builtin::new("ends_with", "", "(String, String) -> Bool"),
     Builtin::new("chars", "", "(String) -> List[String]"),
-    Builtin::total("get", "", "(String, Int) -> Option[String]"),
-    Builtin::new("at", "", "(String, Int) -> String"),
-    Builtin::new("slice", "", "(String, Int, Int) -> String"),
     Builtin::new("slice", "A", "(List[A], Int, Int) -> List[A]"),
+    // the byte offset of the first match ("" is found at 0)
     Builtin::new("index_of", "", "(String, String) -> Option[Int]"),
+    // the bytes from offset `a` to `b`, clamped to the string; an offset inside a
+    // character moves back to its start
+    Builtin::total("byte_slice", "", "(String, Int, Int) -> String"),
     Builtin::new("replace", "", "(String, String, String) -> String"),
     Builtin::new("lines", "", "(String) -> List[String]"),
     Builtin::new("repeat", "", "(String, Int) -> String"),
@@ -864,8 +960,9 @@ fn rewrite(program: &mut Program, env: &Env, targets: Vec<(usize, Target)>, type
                 f.params.push(Param { name: Symbol::from(type_arg(&p)), ty: TypeExpr::Named(TYPE_ARG.into(), vec![TypeExpr::Named(Symbol::from(p.as_str()), vec![])]), mutable: false, comptime: false });
             }
         }
-        // children first, so a node's address is the one the checker saw when it is rewritten
-        decl_exprs_mut_post(&mut d.kind, |e| {
+        // children first, so a node's address is the one the checker saw when it is
+        // rewritten; refinements written in types too (they run when checked)
+        decl_exprs_mut_post_typed(&mut d.kind, |e| {
             let at = e as *const Expr as usize;
             let wrap = selfs.get(&at).cloned();
             rewrite_node(e, targets.get(&at), types);
@@ -2072,15 +2169,37 @@ impl<'a> Checker<'a> {
         (found.len() == 1).then(|| found.remove(0))
     }
 
-    /// `set(it)` / `dict(it)` (a set or dict comprehension) on a finite
-    /// iterator: the prelude's `set_of` / `dict_of`, which collect it.
+    /// `len(s)`, `s[i]` (`at`), `get(s, i)` or `s[a..b]` (`slice`) on a `String`:
+    /// refused, with what to write instead. A string isn't counted or indexed
+    /// itself: the unit is named, and positions in it are byte offsets.
+    fn string_position(&mut self, n: &Symbol, args: &[&Expr]) -> Option<String> {
+        if !matches!(n.as_str(), "len" | "at" | "get" | "slice") || self.lookup(n.sym()).is_some() || self.env.fns.contains_key(n) {
+            return None;
+        }
+        let errs = self.errors.len();
+        let t = self.infer(args.first()?);
+        self.errors.truncate(errs);
+        if self.resolve(&t) != Ty::Str {
+            return None;
+        }
+        Some(match n.as_str() {
+            "len" => "a `String` has no `len`: name the unit, `len(s.bytes())`, `len(s.code_points())` or `len(s.graphemes())`".to_string(),
+            "slice" => "a `String` isn't sliced by a range: by byte offsets, `byte_slice(s, a, b)` (as `index_of` gives them), or by a unit, `join(s.graphemes()[a..b], \"\")`".to_string(),
+            _ => "a `String` isn't indexed: name the unit, `s.graphemes()[i]` (or `s.code_points()`, `s.bytes()`)".to_string(),
+        })
+    }
+
+    /// `set(it)` / `dict(it)` (a set or dict comprehension) and `join(it, sep)`
+    /// on a finite iterator: the prelude's `set_of` / `dict_of` / `join_of`,
+    /// which collect it.
     fn collect_call(&mut self, n: &Symbol, args: &[&Expr], site: usize) -> Option<Ty> {
-        let target = match n.as_str() {
-            "set" => "set_of",
-            "dict" => "dict_of",
+        let (target, arity) = match n.as_str() {
+            "set" => ("set_of", 1),
+            "dict" => ("dict_of", 1),
+            "join" => ("join_of", 2),
             _ => return None,
         };
-        if args.len() != 1 || self.lookup(n.sym()).is_some() || self.env.fns.contains_key(n) {
+        if args.len() != arity || self.lookup(n.sym()).is_some() || self.env.fns.contains_key(n) {
             return None;
         }
         let errs = self.errors.len();
@@ -2960,6 +3079,15 @@ impl<'a> Checker<'a> {
                     if let Some(t) = self.collect_call(n, args, e as *const Expr as usize) {
                         return t;
                     }
+                    if let Some(msg) = self.string_position(n, args) {
+                        self.err(msg);
+                        // what the call gave before, so the rest is checked as written
+                        return match n.as_str() {
+                            "len" => Ty::Int,
+                            "get" => Ty::Con("Option".into(), vec![Ty::Str]),
+                            _ => Ty::Str,
+                        };
+                    }
                     if ITERATOR_BUILTINS.contains(&n.as_str()) && self.lookup(n.sym()).is_none() && !self.env.fns.contains_key(n) {
                         if let Some(&recv) = args.first() {
                             if let Some((t, mq)) = self.implemented_method(recv, n) {
@@ -3008,6 +3136,16 @@ impl<'a> Checker<'a> {
                 self.call_with(ft, args, &what, &muts)
             }
             Expr::Method(recv, m, args) => {
+                // `s.len()`, `s.get(i)` on a `String`: refused as the calls are
+                let all: Vec<&Expr> = std::iter::once(&**recv).chain(args.iter()).collect();
+                if let Some(msg) = self.string_position(m, &all) {
+                    self.err(msg);
+                    return match m.as_str() {
+                        "len" => Ty::Int,
+                        "get" => Ty::Con("Option".into(), vec![Ty::Str]),
+                        _ => Ty::Str,
+                    };
+                }
                 self.dyn_self_args(recv, m, args);
                 let ra = &**recv as *const Expr as usize;
                 self.recv_want.insert(ra);

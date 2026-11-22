@@ -1622,13 +1622,26 @@ _Bool strata_str_starts_with(Str *s, Str *p) { return p->len <= s->len && memcmp
 _Bool strata_str_ends_with(Str *s, Str *p) { return p->len <= s->len && memcmp(s->bytes + s->len - p->len, p->bytes, (size_t)p->len) == 0; }
 
 // The character index of the first `sub`, or -1.
+// The byte offset of the first match of `sub`, or -1.
 int64_t strata_str_index_of(Str *s, Str *sub) {
-  int64_t at = find_from(s, sub, 0);
-  if (at < 0) return -1;
-  int64_t k = 0;
-  for (int64_t i = 0; i < at; i++)
-    if ((s->bytes[i] & 0xC0) != 0x80) k++;
-  return k;
+  return find_from(s, sub, 0);
+}
+
+// The bytes from offset `a` to `b`, both clamped to 0..len; an offset inside
+// a character's bytes moves back to its start (never a fault).
+static int64_t char_start(Str *s, int64_t i) {
+  while (i > 0 && i < s->len && ((unsigned char)s->bytes[i] & 0xC0) == 0x80) i--;
+  return i;
+}
+
+Str *strata_str_byte_slice(Str *s, int64_t a, int64_t b) {
+  if (a < 0) a = 0;
+  if (b > s->len) b = s->len;
+  if (a > s->len) a = s->len;
+  a = char_start(s, a);
+  b = char_start(s, b);
+  if (b <= a) return str_from("", 0);
+  return str_from(s->bytes + a, b - a);
 }
 
 Str *strata_str_reverse(Str *s) {

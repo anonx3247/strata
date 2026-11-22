@@ -264,6 +264,16 @@ fn brace_on_spine(e: &Expr) -> bool {
     }
 }
 
+/// A name as written: the prelude's methods, which only checked code holds
+/// (`FiniteIterator::std.prelude.len`, in messages), short (`len`).
+fn shown(n: &str) -> std::borrow::Cow<'_, str> {
+    if n.contains(crate::types::PRELUDE_MODULE) {
+        std::borrow::Cow::Owned(crate::types::shown_name(n))
+    } else {
+        std::borrow::Cow::Borrowed(n)
+    }
+}
+
 pub fn expr(e: &Expr, d: usize) -> String {
     let inline = expr_inline(e, d);
     // a chain whose parts had to break is laid out one item per line
@@ -282,11 +292,11 @@ pub fn expr(e: &Expr, d: usize) -> String {
             }
             if chain.len() < 2 {
                 let (m, es) = chain[0];
-                return format!("{}.{m}{}", wrap(cur, 12, d), broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d));
+                return format!("{}.{}{}", wrap(cur, 12, d), shown(m), broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d));
             }
             let mut s = wrap(cur, 12, d);
             for (m, es) in chain.into_iter().rev() {
-                s += &format!("\n{}.{m}({})", ind(d + 1), args(es, d + 1));
+                s += &format!("\n{}.{}({})", ind(d + 1), shown(m), args(es, d + 1));
             }
             s
         }
@@ -354,7 +364,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Str(s) => format!("\"{}\"", escape(s)),
         Expr::Bool(b) => b.to_string(),
         Expr::Unit => "()".into(),
-        Expr::Var(v) => v.to_string(),
+        Expr::Var(v) => shown(v).into_owned(),
         Expr::Hole(h) => format!("?{h}"),
         Expr::List(es) => format!("[{}]", args(es, d)),
         Expr::Ctor(c, CtorArgs::None) => c.to_string(),
@@ -379,7 +389,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             format!("{c} {{ {} }}", parts.join(", "))
         }
         Expr::Call(f, es) => format!("{}({})", wrap(f, 12, d), args(es, d)),
-        Expr::Method(r, m, es) => format!("{}.{m}({})", wrap(r, 12, d), args(es, d)),
+        Expr::Method(r, m, es) => format!("{}.{}({})", wrap(r, 12, d), shown(m), args(es, d)),
         Expr::Field(r, f) => format!("{}.{f}", wrap(r, 12, d)),
         Expr::Lambda(ps, b) => format!("{} -> {}", lambda_params(ps), expr(b, d)),
         Expr::Bin(op, l, r) => {
@@ -424,7 +434,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Mock(t) => format!("mock {}", ty(t)),
         Expr::Mut(x) => format!("mut {}", expr(x, d)),
         // `comptime` takes a unary expression: `comptime (a ?? b)`
-        Expr::Comptime(x) => format!("comptime {}", wrap(x, 7, d)),
+        Expr::Comptime(x) => format!("comptime {}", wrap(x, 11, d)),
         Expr::Interp(parts) => {
             let mut s = "f\"".to_string();
             for p in parts {

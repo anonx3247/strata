@@ -528,8 +528,8 @@ fn bad_make(big: Bool) -> Int where it > 2 {
   s := if big { Square { side: 5 } } else { Circle { radius: 1 } }
   match s { Square => s.side, Circle => s.radius }
 }
-fn describe(v: Int | String) -> Natural { match v { Int => abs(v), String => len(v) } }
-fn bad_describe(v: Int | String) -> Positive { match v { Int => abs(v) + 1, String => len(v) } }
+fn describe(v: Int | String) -> Natural { match v { Int => abs(v), String => len(v.code_points()) } }
+fn bad_describe(v: Int | String) -> Positive { match v { Int => abs(v) + 1, String => len(v.code_points()) } }
 fn is_sq(s: Shape) -> Bool ensures it == (s is Square) { match s { Square => true, Circle => false } }
 fn always_sq(s: Shape) -> Bool ensures it { s is Square }
 fn lit(v: Int | String) -> Positive { match v { 0 => 1, \"a\" => 2, _ => 3 } }
@@ -537,8 +537,8 @@ fn nonzero(x: Positive | Negative) -> Int where it != 0 { x }
 fn bad_nonzero(x: Int) -> Positive | Negative { x }
 fn variants(v: A | B) -> Natural { match v { A => abs(v.x), B => 0 } }
 fn bad_variants(v: A | C) -> Bool ensures it { v is A }
-fn opt(v: Option[Natural] | String) -> Natural { match v { Some(x) => x, None => 0, String => len(v) } }
-fn bad_opt(v: Option[Int] | String) -> Natural { match v { Some(x) => x, None => 0, String => len(v) } }
+fn opt(v: Option[Natural] | String) -> Natural { match v { Some(x) => x, None => 0, String => len(v.code_points()) } }
+fn bad_opt(v: Option[Int] | String) -> Natural { match v { Some(x) => x, None => 0, String => len(v.code_points()) } }
 fn self_eq(a: Int | String) -> Bool ensures it { a == a }
 fn bad_eq(a: Int | String, b: Int | String) -> Bool ensures it { a == b }
 fn bad_field(h: Holder) -> Bool ensures it { h.s is Circle }
@@ -565,20 +565,18 @@ fn smt_models_string_builtins() {
         return;
     }
     let d = tmp("smt-strings");
-    let src = r#"fn head(s: String, n: Natural) -> String ensures len(it) <= n && len(it) <= len(s) { slice(s, 0, n) }
-fn bad_head(s: String, n: Int) -> String ensures len(it) == n { slice(s, 0, n) }
-fn tail(s: String) -> String ensures len(s) > 0 ==> len(it) == len(s) - 1 { slice(s, 1, len(s)) }
-fn back(s: String) -> String ensures it == "" { slice(s, 5, 2) }
-fn first(s: String where len(it) > 0) -> String ensures len(it) == 1 { match get(s, 0) { Some(c) => c, None => "x" } }
-fn bad_first(s: String) -> String ensures len(it) == 1 { match get(s, 0) { Some(c) => c, None => "" } }
-fn neg_get(s: String) -> Bool ensures it { get(s, -1) is None }
-fn n_chars(s: String) -> Bool ensures it { len(chars(s)) == len(s) }
-fn find(s: String, p: String) -> Int ensures it <= len(s) { match index_of(s, p) { Some(i) => i + len(p), None => 0 } }
-fn bad_find(s: String, p: String) -> Natural ensures it < len(s) { match index_of(s, p) { Some(i) => i, None => 0 } }
+    let src = r#"fn head(s: String, n: Natural) -> String ensures byte_len(it) <= n && byte_len(it) <= byte_len(s) { byte_slice(s, 0, n) }
+fn bad_head(s: String, n: Int) -> String ensures byte_len(it) == n { byte_slice(s, 0, n) }
+fn tail(s: String) -> String ensures byte_len(it) <= byte_len(s) { byte_slice(s, 1, byte_len(s)) }
+fn back(s: String) -> String ensures it == "" { byte_slice(s, 5, 2) }
+fn n_chars(s: String) -> Bool ensures it { len(chars(s)) == len(s.code_points()) }
+fn bytes_bound(s: String) -> Bool ensures it { len(s.code_points()) <= len(s.bytes()) }
+fn find(s: String, p: String) -> Int ensures it <= byte_len(s) { match index_of(s, p) { Some(i) => i + byte_len(p), None => 0 } }
+fn bad_find(s: String, p: String) -> Natural ensures it < byte_len(s) { match index_of(s, p) { Some(i) => i, None => 0 } }
 fn empty_found(s: String) -> Bool ensures it { index_of(s, "") == Some(0) }
 fn shown(n: Int) -> String ensures n < 0 ==> starts_with(it, "-") { to_string(n) }
-fn shown_len(n: Int where 10 <= it && it <= 99) -> String ensures len(it) == 2 { to_string(n) }
-fn bad_shown(n: Int) -> String ensures len(it) <= 2 { to_string(n) }
+fn shown_len(n: Int where 10 <= it && it <= 99) -> String ensures len(it.code_points()) == 2 { to_string(n) }
+fn bad_shown(n: Int) -> String ensures len(it.code_points()) <= 2 { to_string(n) }
 fn parsed() -> Bool ensures it { parse_int("-17") == Some(0 - 17) && parse_int("abc") is None && parse_int("") is None }
 fn round_trip(n: Int) -> Bool ensures it { parse_int(to_string(n)) == Some(n) }
 fn bad_parsed(s: String) -> Bool ensures it { parse_int(s) is None }
@@ -593,21 +591,23 @@ fn empty_rep(s: String, p: String) -> String { replace(s, p, "b") }
     save(&d.join("s.strata"), src);
     let (ok, out) = strata(&["--file", "s.strata", "verify", "--cases", "20"], &d, None);
     assert!(!ok, "{out}");
-    for name in ["head", "tail", "back", "first", "neg_get", "n_chars", "find", "empty_found", "shown", "shown_len", "parsed", "digits", "ends", "rep"] {
+    for name in ["head", "tail", "back", "n_chars", "bytes_bound", "find", "empty_found", "shown", "shown_len", "parsed", "digits", "ends", "rep"] {
         assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
     }
     // Z3 proves the round trip through `str.from_int` / `str.to_int`; cvc5 answers unknown
     assert!(passed(&out, "round_trip"), "round_trip must not be refuted: {out}");
-    for name in ["bad_head", "bad_first", "bad_find", "bad_shown", "bad_parsed", "bad_ends", "bad_rep", "empty_rep"] {
+    for name in ["bad_head", "bad_find", "bad_shown", "bad_parsed", "bad_ends", "bad_rep", "empty_rep"] {
         let line = out.lines().find(|l| l.split_whitespace().nth(1) == Some(name)).unwrap_or("");
         assert!(line.starts_with("✗") && line.contains("found by the solver"), "{name} should be refuted by the solver: {out}");
     }
     // leading whitespace is trimmed by the interpreter: not modelled, so not refuted either
     assert!(out.contains("~ spaced") && out.contains("replace: empty pattern"), "{out}");
-    // a big index is clamped like any other
-    save(&d.join("b.strata"), "fn s(t: String) -> String { slice(t, 0, 99999999999999999999) }\n");
+    // a big offset is clamped like any other, and one inside a character moves back to its start
+    save(&d.join("b.strata"), "fn s(t: String) -> String { byte_slice(t, 0, 99999999999999999999) }\nfn m(t: String) -> String { byte_slice(t, 0, 2) }\n");
     let (ok, out) = strata(&["--file", "b.strata", "run", "s", "[\"abc\"]"], &d, None);
     assert!(ok && out.contains("\"abc\""), "{out}");
+    let (ok, out) = strata(&["--file", "b.strata", "run", "m", "[\"aé\"]"], &d, None);
+    assert!(ok && out.contains("\"a\""), "{out}");
 }
 
 #[test]
@@ -625,13 +625,13 @@ fn letters(s: String where matches(it, "\p{L}+")) -> String where matches(it, "\
 fn bad_letters(s: String where matches(it, "\w+")) -> String where matches(it, "\p{L}+") { s }
 fn spaces(s: String where matches(it, "\s*")) -> Bool ensures it { !matches(s, ".*\w.*") }
 fn nbsp() -> Bool ensures it { matches(" ", "\s") }
-fn caseless(s: String where matches(it, "(?i)abc")) -> Bool ensures it { len(s) == 3 }
+fn caseless(s: String where matches(it, "(?i)abc")) -> Bool ensures it { len(s.code_points()) == 3 }
 fn kelvin() -> Bool ensures it { matches("K", "(?i)k") }
 fn bad_caseless(s: String where matches(it, "(?i)abc")) -> Bool ensures it { s == "abc" }
 fn arabic() -> Bool ensures it { matches("٣", "\d") }
 fn ascii_only(s: String where matches(it, "\d")) -> Bool ensures it { matches(s, "[0-9]") }
 fn anchored(s: String where matches(it, "^ab$")) -> Bool ensures it { s == "ab" }
-fn far() -> Bool ensures it { len("TAG") == 9 }
+fn far() -> Bool ensures it { len("TAG".code_points()) == 9 }
 "#
     .replace("TAG", "\u{E0041}");
     save(&d.join("r.strata"), src);
@@ -666,9 +666,9 @@ fn builtins_that_fault_are_checked() {
     }
     let d = tmp("builtin-faults");
     let src = r#"fn bad_chr(n: Int) -> String { chr(n) }
-fn good_chr(n: Int where 97 <= it && it <= 122) -> String ensures len(it) == 1 { chr(n) }
+fn good_chr(n: Int where 97 <= it && it <= 122) -> String ensures len(it.code_points()) == 1 { chr(n) }
 fn bad_ord(s: String) -> Int { ord(s) }
-fn good_ord(s: String) -> Int { if len(s) == 1 { ord(s) } else { 0 } }
+fn good_ord(s: String) -> Int { if len(s.code_points()) == 1 { ord(s) } else { 0 } }
 fn each_ord(s: String) -> Int { chars(s).fold(0, (a, c) -> a + ord(c)) }
 fn round_trip() -> Bool ensures it { ord(chr(955)) == 955 }
 fn bad_split(s: String, sep: String) -> Int { len(split(s, sep)) }
@@ -695,9 +695,9 @@ fn fuzzes_strings_a_refinement_pattern_matches() {
     // inputs made by `std.regex.samples`: Unicode classes and word
     // boundaries too, in a parameter's own refinement (the harness checks it)
     let d = tmp("regex-samples");
-    let src = r#"fn shout(s: String where matches(it, "\p{L}{2,4}")) -> String ensures len(it) >= 1 { to_upper(s) }
-fn edge(s: String where matches(it, "a\b b?|\bx\w+")) -> String ensures len(it) >= 0 { to_lower(s) }
-fn sku(s: String where matches(it, "[A-Z]{3}-[0-9]{4}")) -> Int ensures it == 99 { len(to_lower(s)) }
+    let src = r#"fn shout(s: String where matches(it, "\p{L}{2,4}")) -> String ensures len(it.code_points()) >= 1 { to_upper(s) }
+fn edge(s: String where matches(it, "a\b b?|\bx\w+")) -> String ensures len(it.code_points()) >= 0 { to_lower(s) }
+fn sku(s: String where matches(it, "[A-Z]{3}-[0-9]{4}")) -> Int ensures it == 99 { len(to_lower(s).code_points()) }
 "#;
     save(&d.join("g.strata"), src);
     let (ok, out) = strata(&["--file", "g.strata", "verify", "--cases", "30"], &d, None);
@@ -1210,7 +1210,7 @@ fn greet(name: String) -> String { "hello " + name + "!" }
 test "join" {
   assert greet("ana") == "hello ana!"
   assert [1, 2] + [3] == [1, 2, 3]
-  assert len("héllo") == 5
+  assert len("héllo".code_points()) == 5 && len("héllo".bytes()) == 6
   assert 1 + 2 == 3
 }
 "#,
@@ -1363,12 +1363,12 @@ fn string_primitives() {
 
 test "strings" {
   s := "héllo wörld"
-  assert len(s) == 11
+  assert len(s.code_points()) == 11 && len(s.graphemes()) == 11 && len(s.bytes()) == 13 && s.byte_len() == 13
   assert s.chars().take(2) == ["h", "é"]
-  assert s.get(1) == Some("é") && s.get(99) == None
-  assert s.slice(6, 11) == "wörld" && s.slice(-3, 2) == "hé" && s.slice(8, 3) == ""
+  assert s.graphemes().get(1) == Some("é") && s.graphemes().get(99) == None
+  assert s.byte_slice(7, 13) == "wörld" && s.byte_slice(-3, 3) == "hé" && s.byte_slice(8, 3) == "" && s.byte_slice(0, 2) == "h"
   assert [1, 2, 3, 4].slice(1, 3) == [2, 3]
-  assert s.index_of("wö") == Some(6) && s.index_of("z") == None
+  assert s.index_of("wö") == Some(7) && s.index_of("z") == None
   assert s.ends_with("rld") && s.starts_with("hé")
   assert s.replace("l", "L") == "héLLo wörLd"
   assert "a\nb\n".lines() == ["a", "b"]
@@ -1457,7 +1457,7 @@ fn unions_variants_as_types_and_narrowing() {
         "unreachable match arm `Positive`",
         "unreachable match arm `7`",
         "pattern `String`: expected `Circle | Square`, found `String`",
-        "non-exhaustive match on `String`: `where len(it) == 0` is not covered",
+        "non-exhaustive match on `String`: `where len(it.code_points()) == 0` is not covered",
         "not every `Circle | Square` does",
     ] {
         assert!(out.contains(e), "missing {e:?} in\n{out}");
@@ -1507,7 +1507,7 @@ fn sign(x: Int) -> String {
 fn describe(v: Int | String) -> String {
   match v {
     Int => f"number {v + 1}",
-    String => f"text {len(v)}",
+    String => f"text {len(v.code_points())}",
   }
 }
 
@@ -1673,7 +1673,7 @@ fn or_patterns_refined_scrutinees_lengths_floats_and_variance() {
         "non-exhaustive match on `Positive`: `2` is not covered",
         "unreachable match arm `where it <= 0`: no `Positive` matches it",
         "non-exhaustive match on `Float`: `where it == 0.0` is not covered",
-        "non-exhaustive match on `String`: `where len(it) <= 3` is not covered",
+        "non-exhaustive match on `String`: `where len(it.code_points()) <= 3` is not covered",
     ] {
         assert!(out.contains(e), "missing {e:?} in\n{out}");
     }
@@ -1735,10 +1735,10 @@ fn head(xs: NonEmpty[Int]) -> Int {
   match xs { [x, ..] => x }
 }
 fn word(s: String) -> String {
-  match s { where len(it) == 0 => "empty", where len(it) > 0 => "some" }
+  match s { where len(it.code_points()) == 0 => "empty", where len(it.code_points()) > 0 => "some" }
 }
 fn ne(s: NonEmptyString) -> String {
-  match s { where len(it) == 1 => "char", where len(it) >= 2 => "word" }
+  match s { where len(it.code_points()) == 1 => "char", where len(it.code_points()) >= 2 => "word" }
 }
 fn temp(x: Float) -> String {
   match x { where it < 0.0 => "freezing", where 0.0 <= it && it < 20.0 => "mild", where it >= 20.0 => "warm" }
@@ -1780,7 +1780,7 @@ fn temp(x: Float) -> String {
   match x { where it < 0.0 => "a", where it > 0.0 => "b" }
 }
 fn word(s: String) -> String {
-  match s { where len(it) > 3 => "long" }
+  match s { where len(it.code_points()) > 3 => "long" }
 }
 fn m(mut n: Positive) -> String {
   match n { 1 => "one", where it > 1 => "more" }
@@ -2651,7 +2651,7 @@ fn a_types_own_methods_and_shared_names() {
     let d = tmp("own-methods");
     save(&d.join("o.strata"), r#"trait Describe {
   fn describe(self) -> String
-    ensures len(it) > 0
+    ensures it != ""
 }
 
 trait Log {
@@ -2933,7 +2933,7 @@ test "generic with no arguments" {
     assert!(passed(&out, "lowest_rank") && passed(&out, "level_floor") && out.contains("✗ law left_identity for Max"), "{out}");
     save(&d.join("p.strata"), r#"trait Parse {
   fn parse(s: String) -> Self
-    requires len(s) > 0
+    requires s != ""
   fn size(self) -> Int
     ensures it >= 0
 }
@@ -2946,7 +2946,7 @@ impl Parse for Word {
   }
 
   fn size(self) -> Int {
-    len(self.text)
+    len(self.text.code_points())
   }
 }
 
@@ -3386,7 +3386,7 @@ fn handle(req: Request) -> Response {
   match req.path {
     "/" => ok_text(f"{req.method} q={q} body={req.body} agent={get(req.headers, "x-agent") or { "-" }}"),
     "/json" => ok_json([1, 2]),
-    "/crash" => ok_text(to_string(10 / len(req.body))),
+    "/crash" => ok_text(to_string(10 / len(req.body.code_points()))),
     "/inject" => Response { status: 200, headers: dict([("x-a", "b\r\nset-cookie: evil=1")]), body: "" },
     _ => not_found(),
   }
@@ -4650,6 +4650,22 @@ fn strings_have_bytes_code_points_and_graphemes() {
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "g.strata"], &d, None);
     assert!(ok && out.ends_with("1093 cases, 0 wrong\n"), "{out}");
+}
+
+/// `len`, indexing and slicing on an iterator; an index out of range is the
+/// precondition of `at`, as written.
+#[test]
+fn iterators_are_indexed_and_sliced() {
+    let d = tmp("iterator-indexing");
+    let (ok, out) = strata(&["--file", "i.strata", "edit"], &d, Some(json_case::ITERATOR_INDEXING));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "i.strata"], &d, None);
+    assert!(ok, "{out}");
+    assert_eq!(out, json_case::ITERATOR_INDEXING_OUTPUT);
+    let (ok, out) = strata(&["--file", "o.strata", "edit"], &d, Some("fn main() {\n  print(\"ab\".graphemes()[5])\n}\n"));
+    assert!(ok, "{out}");
+    let (ok, out) = strata(&["run", "o.strata"], &d, None);
+    assert!(!ok && out.contains("precondition of `std.unicode.Graphemes.at` violated: requires 0 <= i && i < self.len()"), "{out}");
 }
 
 /// Types passed whole at runtime: `T.m()` on an impl's type parameters, and
