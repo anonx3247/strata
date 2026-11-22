@@ -787,6 +787,12 @@ The user asked for a standard library usable from any program, starting with I/O
 - Examples: `examples/hello`, `examples/wc` (with tests that use the stand-ins).
 - Also fixed: the printer now escapes tabs and backslashes in string literals (it used to write a literal tab, and `"\\n"` came back as a newline).
 
+### `std.toml` (asked for by the user 2026-11-22, for `strata.toml` files; built, branch `toml`)
+
+TOML 1.1 (the version the `toml` crate implements) read and written in Strata, as `std.json` is: `parse(text)` gives the root table as `List[(String, TomlValue)]` (keys in the order written, as `JsonValue`'s objects), `TomlValue` = `Text | Integer | Number | Boolean | Moment(DateTime) | Array | Table`; `DateTime` keeps TOML's four kinds as optional `date`, `time`, `offset` (`Utc` for `Z`, `Minutes(n)`); a time without seconds reads as `:00`. The parser works on bytes (`byte_at`, `byte_slice`): all of TOML's syntax is ASCII. Tables are built as a tree of `Node`s (`Leaf` for values, inline tables and arrays, which are closed; `Branch` with how the table came to be: `Implicit`, `Header`, `Dotted`; `Tables` for arrays of tables), the rules as the `toml` crate applies them (a dotted key may extend a table made implicitly by a header path, which makes it dotted). Errors are `line:column: message`. `inf` and `nan` are errors (a `Float` is finite). `stringify` writes a table's values, then its tables as `[sections]` and arrays of tables as `[[sections]]`.
+Tested (`tests/toml.rs`) against the `toml` crate on curated documents and, with `STRATA_TOML_CORPUS`, the 711 UTF-8 files of toml-test's 1.1 list: same values, same refusals (all 493 invalid ones), `inf`/`nan` aside.
+Not yet: the tools reading `strata.toml` through it (they still use the `toml` crate, `src/package.rs`, until that code is Strata's); a writer that keeps comments and layout (editing `strata.toml` in place).
+
 ### `print` and command-line options (decided with the user 2026-11-20; built, branch `worktree-stdlib-print-cli`, stacked on `worktree-stdlib-io`)
 - **Capabilities stay** (user, asked explicitly): I/O is reached through `Console` / `Files` / `Environment` values; the value is the prefix (`files.read…`, `console.write…`). Plain ambient `fs.read(path)` functions were considered and rejected.
 - **Except `print`**, which is a prelude builtin, available with no `use`: shorthand for "the console of wherever the code runs". To the terminal under `strata run` (both `main` and `run <fn>`) and in a built executable, into a buffer per test under `strata test` (printed under the failure only), nowhere under `verify` and fuzzing. A plain call `print(x)` always means the builtin, even where an imported trait has a `print` method (`resolve::PRELUDE_FNS`); `console.print(x)` is the method. A failing `assert` no longer prints a second time when it re-evaluates its sides for the message.
@@ -875,6 +881,7 @@ Not yet:
 - A `Bool` option whose default is `true` can't be turned off (no `--no-x`), and `javascript:` URLs in `std.web`'s `href` aren't rejected (both listed where they were decided).
 - FFI is C only (`extern c`, see "Foreign functions: `extern LANG`"): `main` can't yet ask for a native module's capability, and there is no std SQLite module yet.
 - `strata verify` on the tasks example takes about 30 s of CPU, most of it Z3: two checks of `memory.mem_record` run into the solver's 20 s limit.
+- `Files.read` (`host_read_file`) and `Console.read_line` don't check that the bytes are UTF-8: a file that isn't gives a `String` that faults later (`code_points` on it). Found with toml-test's `invalid/encoding` files; it should be an `FsError`.
 - `d[k]` on dicts isn't accepted (`at` has no `Dict` version).
 - `--json` is missing on `view`, `render`, `interface`, `status`, `done`, `test`, `run` and `ci`.
 
