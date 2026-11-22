@@ -416,8 +416,11 @@ fn main() { print(1) }
 "#;
 
 const EARLY: &str = r#"fn r() -> Result[Int, String] { Ok(1) }
+fn o() -> Option[Int] { None }
+fn a() -> Int { r()! }
+fn b() -> Int { o()? }
+fn c() -> Option[Int] { Some(r()!) }
 fn d() -> Result[Int, Int] { Ok(r()!) }
-fn e() -> Result[Int, String] { Ok(r()!) }
 fn main() { print(1) }
 "#;
 
@@ -791,7 +794,7 @@ fn misused_values_as_in_rust() {
 
 #[test]
 fn early_errors_as_in_rust() {
-    same_errors("early", EARLY, &["returns the error early"]);
+    same_errors("early", EARLY, &["returns the error early", "returns `None` early"]);
 }
 
 #[test]
@@ -828,4 +831,33 @@ fn capabilities_and_concurrency_as_in_rust() {
         CAPABILITIES,
         &["outside a `scope`", "can't leave a task", "can't return from a task", "needs at least one arm", "arm waits on", "gives nothing to name", "never closed here", "holds a copy of", "is a capability", "test parameter", "never `pub`"],
     );
+}
+
+/// `strata check --compare` runs both checkers on a script: they agree on
+/// its errors, so it exits 0 and says so.
+#[test]
+fn compare_flag_agrees_on_a_script() {
+    let cc = std::env::var("STRATA_CC").unwrap_or_else(|_| "clang".into());
+    if !Command::new(cc).arg("--version").output().is_ok_and(|o| o.status.success()) {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("strata-check-test-compare-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let prog = dir.join("compare.strata");
+    save(&prog, TYPES);
+    // the compiler is built once into this cache, shared by later runs
+    let cache = std::env::temp_dir().join("strata-compare-test-cache");
+    let o = Command::new(STRATA).args(["--file", &prog.to_string_lossy(), "check", "--compare"]).env("STRATA_CACHE", &cache).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(0), "{out}");
+    assert!(out.contains("compare: they agree (") && !out.contains("only in"), "{out}");
+    assert!(out.contains("error in f:"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+    // a package: its modules checked together
+    let pkg = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/tasks");
+    let o = Command::new(STRATA).args(["--file", &pkg.to_string_lossy(), "check", "--compare"]).env("STRATA_CACHE", &cache).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(0), "{out}");
 }

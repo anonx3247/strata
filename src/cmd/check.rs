@@ -4,6 +4,9 @@ use crate::*;
 
 /// `strata check`.
 pub fn check(args: &Args, json_out: bool) -> Result<bool, String> {
+    if args.flag("--strata") {
+        return super::compare::check_strata(args.val("--file").unwrap_or("."));
+    }
     let src = load(&args)?;
     let rep = full_check(src.program());
     if json_out {
@@ -14,6 +17,9 @@ pub fn check(args: &Args, json_out: bool) -> Result<bool, String> {
         if rep.ok() {
             println!("ok: {n} definitions check ({} open holes)", rep.holes.len());
         }
+    }
+    if args.flag("--compare") {
+        return super::compare::compare(args.val("--file").unwrap_or("."), &rep);
     }
     Ok(rep.ok())
 }
