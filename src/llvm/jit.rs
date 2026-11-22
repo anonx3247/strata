@@ -66,6 +66,10 @@ unsafe extern "C" {
     fn strata_release();
     fn strata_free();
     fn strata_unique();
+    fn strata_scope_begin();
+    fn strata_scope_end();
+    fn strata_spawn();
+    fn strata_await();
     fn strata_str_eq();
     fn strata_str_len();
     fn strata_fault();
@@ -184,6 +188,10 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_release", strata_release as *const () as usize),
         ("strata_free", strata_free as *const () as usize),
         ("strata_unique", strata_unique as *const () as usize),
+        ("strata_scope_begin", strata_scope_begin as *const () as usize),
+        ("strata_scope_end", strata_scope_end as *const () as usize),
+        ("strata_spawn", strata_spawn as *const () as usize),
+        ("strata_await", strata_await as *const () as usize),
         ("strata_str_eq", strata_str_eq as *const () as usize),
         ("strata_str_len", strata_str_len as *const () as usize),
         ("strata_fault", strata_fault as *const () as usize),
