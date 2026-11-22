@@ -23,18 +23,14 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
     }
     let Some(name) = rest.first() else {
         let program_args = args.flags.get("--").cloned().unwrap_or_default();
-        // compiled in memory; `--interpret` runs the old interpreter (kept
-        // until it is removed, to compare with)
-        if args.flag("--interpret") {
-            std::process::exit(run_main(p, &env, &prog, program_args, args.flag("--trace"))?);
-        }
+        // compiled in memory
         let Some(main) = env.fns.get(&Symbol::new("main")) else {
             return Err("no `main` function to run (the entry point is `fn main` in main.strata, or in the file you run)".into());
         };
         // what `main` may ask for: a mistake of the program's, not something not compiled yet
         for pm in &main.params {
             let ty = printer::ty(&pm.ty);
-            if capability(&env, &ty).is_none() && !cli::is_options(&env, &pm.ty) {
+            if !capability(&env, &ty) && !cli::is_options(&env, &pm.ty) {
                 return Err(format!("{} Its parameter `{}` is a `{ty}`", not_given(&ty, "`main`"), pm.name));
             }
         }
@@ -51,8 +47,8 @@ const PROBE: &str = "strata_run_call";
 
 /// `strata run f ARGS`: the arguments, written as code, in a function that
 /// calls `f`, checked with the program (so a wrong argument is an error
-/// before anything runs), then run, compiled (`--interpret`: by the old
-/// interpreter); the result printed as the code that writes it.
+/// before anything runs), then run, compiled; the result printed as the
+/// code that writes it.
 fn call(args: &Args, p: &Program, env: &types::Env, name: &str, raw: &str) -> Result<bool, String> {
     let f = env.fns.get(&name.sym()).ok_or(format!("no function `{name}`"))?.clone();
     if !f.type_params.is_empty() {
@@ -113,9 +109,6 @@ fn call(args: &Args, p: &Program, env: &types::Env, name: &str, raw: &str) -> Re
     if let Some(e) = checked.report.errors.iter().find(|e| e.decl == probe_name) {
         return Err(format!("invalid input: {}", e.msg));
     }
-    if args.flag("--interpret") {
-        return call_interpreted(args, &checked.env, name, &probe_name);
-    }
     let ir = if args.flag("--trace") {
         llvm::compile_traced_comptime(&checked.compiled, &[probe_name.clone()])
     } else {
@@ -147,40 +140,12 @@ fn call(args: &Args, p: &Program, env: &types::Env, name: &str, raw: &str) -> Re
     }
 }
 
-/// `call`, run by the old interpreter.
-fn call_interpreted(args: &Args, env: &types::Env, name: &str, probe: &str) -> Result<bool, String> {
-    let seed: u64 = args.val("--seed").unwrap_or("1").parse().map_err(|_| "bad --seed")?;
-    let mut it = interp::Interp::new(env, seed);
-    it.tracing = args.flag("--trace");
-    // what it prints comes before its result
-    it.output = interp::Output::Terminal;
-    let res = it.call_fn(probe, vec![]);
-    if it.tracing {
-        for t in &it.trace {
-            eprintln!("{t}");
-        }
-    }
-    match res {
-        Ok(v) => println!("{}", it.debug_value(&v).map_err(|f| f.msg)?),
-        Err(fault) => {
-            let stack: Vec<String> = fault.stack.iter().filter(|s| *s != probe && *s != name).cloned().collect();
-            eprintln!("fault ({:?}): {}", fault.kind, fault.msg);
-            if !stack.is_empty() {
-                eprintln!("    stack: {}", stack.join(" -> "));
-            }
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-/// `strata test`: each `test` block, compiled when this strata has the JIT
-/// (unless `--interpret`; `--jit` says why when it can't), else interpreted;
-/// the same report either way.
+/// `strata test`: each `test` block, compiled; a test that can't be
+/// compiled yet fails, saying why.
 pub fn run_tests(args: &Args) -> Result<bool, String> {
     let src = load(&args)?;
     let p = src.program();
-    let types::Checked { report: rep, program: resolved, env, .. } = full_checked(p);
+    let rep = full_checked(p).report;
     if !rep.ok() {
         print_errors(&rep);
         return Ok(false);
@@ -193,8 +158,7 @@ pub fn run_tests(args: &Args) -> Result<bool, String> {
         print!("{}", llvm::compile_tests(p, with_deps)?.0);
         return Ok(true);
     }
-    let own = if with_deps { usize::MAX } else { p.decls.len() };
-    let outcomes = if args.flag("--interpret") { test_interpreted(&resolved, &env, &filter, own) } else { test_jit(p, &filter, with_deps)? };
+    let outcomes = test_jit(p, &filter, with_deps)?;
     let (mut pass, mut fail) = (0, 0);
     for (name, fault, printed) in outcomes {
         match fault {
@@ -223,37 +187,6 @@ pub fn run_tests(args: &Args) -> Result<bool, String> {
 
 /// A test's name, the fault that ended it (kind, message, call stack), and what it printed.
 type TestRun = (String, Option<(String, String, String)>, String);
-
-/// `own`: how many of `resolved`'s definitions (the first) are the program's
-/// own; only their tests run.
-fn test_interpreted(resolved: &Program, env: &types::Env, filter: &str, own: usize) -> Vec<TestRun> {
-    let mut out = vec![];
-    for d in resolved.decls.iter().take(own) {
-        let DeclKind::Test(t) = &d.kind else { continue };
-        if !t.name.contains(filter) {
-            continue;
-        }
-        let mut it = interp::Interp::new(env, 7);
-        // each test prints into its own buffer, shown only if it fails
-        it.output = interp::Output::Buffer(String::new());
-        // the capabilities it asks for, made as for `main`
-        let mut scope = None;
-        for p in &t.params {
-            let ty = printer::ty(&p.ty);
-            let v = if ty == RUN_MODE { Some(run_mode("Testing")) } else { capability(env, &ty) };
-            if let Some(v) = v {
-                scope = interp::extend(&scope, &p.name, v);
-            }
-        }
-        let fault = it.eval(&t.body, &scope).err().map(|f| (format!("{:?}", f.kind), f.msg, crate::names::show_stack(&f.stack)));
-        let printed = match &it.output {
-            interp::Output::Buffer(b) => b.clone(),
-            _ => String::new(),
-        };
-        out.push((t.name.to_string(), fault, printed));
-    }
-    out
-}
 
 /// The tests compiled and run in this process. A test that can't be
 /// compiled yet fails, saying why (the others still run).
@@ -290,17 +223,17 @@ fn test_jit(p: &Program, filter: &str, with_deps: bool) -> Result<Vec<TestRun>, 
     Ok(out)
 }
 
-/// What the runtime gives for a parameter of `main` (or `handle`, `init`,
-/// `update`, or a test), by its type: a capability (`Disk`, `Process`, the
-/// program's own), which holds nothing; or, for `Console`, the one capability
-/// the environment chooses: the terminal (a test's output is its own).
-pub fn capability(env: &types::Env, ty: &str) -> Option<interp::Value> {
-    use interp::Value;
+/// Whether the runtime gives a parameter of `main` (or `handle`, `init`,
+/// `update`, or a test) of this type: a capability (`Disk`, `Process`, the
+/// program's own), which holds nothing; `Console`, the one capability the
+/// environment chooses (the terminal; a test's output is its own); or the
+/// `RunMode`, when the package lets programs ask for it.
+pub fn capability(env: &types::Env, ty: &str) -> bool {
     if ty == RUN_MODE {
-        return run_mode_allowed().then(|| run_mode("Running"));
+        return run_mode_allowed();
     }
     let made = if ty == CONSOLE { "std.io.Terminal" } else { ty };
-    env.capabilities.contains(&Symbol::new(made)).then(|| Value::Record(made.into(), Default::default()))
+    env.capabilities.contains(&Symbol::new(made))
 }
 
 /// The capability trait the environment fills in.
@@ -313,11 +246,6 @@ pub const RUN_MODE: &str = "std.process.RunMode";
 /// Whether the package lets `main` and tests ask for its `RunMode`.
 pub fn run_mode_allowed() -> bool {
     crate::package::setting("run.mode").as_deref() == Some("true")
-}
-
-/// A `RunMode` (`Running`, `Testing`, `Tracing`), for the interpreter.
-pub fn run_mode(which: &str) -> interp::Value {
-    interp::Value::Variant(format!("std.process.{which}"), interp::Fields::None)
 }
 
 /// Why `main` can't ask for `ty`, with what to ask for instead.
@@ -354,86 +282,4 @@ pub fn serve_program(args: &Args) -> Result<bool, String> {
     }
     crate::serve::serve(p, &env, port, &name)?;
     Ok(true)
-}
-
-/// Run the program's `main` with the real system, and give its exit code.
-/// `main` asks for the capabilities it needs by type (`Console`, `Files`,
-/// `Environment`, in any order) and may return `()` (0), an exit code, or a
-/// `Result` of either, whose `Err` is printed to standard error (exit code 1).
-pub fn run_main(_p: &Program, env: &types::Env, prog: &str, program_args: Vec<String>, trace: bool) -> Result<i32, String> {
-    use interp::Value;
-    let f = env.fns.get(&Symbol::new("main")).ok_or("no `main` function to run (the entry point is `fn main` in main.strata, or in the file you run)")?.clone();
-    let mut it = interp::Interp::new(env, 1);
-    it.tracing = trace;
-    it.host = Some(interp::Host { args: program_args.clone() });
-    it.output = interp::Output::Terminal;
-    let mut vals = Vec::new();
-    for pm in &f.params {
-        let ty = printer::ty(&pm.ty);
-        vals.push(match ty.as_str() {
-            _ if ty == RUN_MODE && trace && run_mode_allowed() => run_mode("Tracing"),
-            _ if capability(env, &ty).is_some() => capability(env, &ty).unwrap(),
-            // options read from the command line
-            // `Options.from_args(program, args)`, derived in Strata (std.cli)
-            _ if cli::is_options(env, &pm.ty) => {
-                let args = Value::List(program_args.iter().map(|a| Value::Str(a.clone())).collect());
-                // the method's name as resolved (`std.cli.from_args`)
-                let m = env.traits.get(&Symbol::new(cli::TRAIT)).and_then(|t| t.methods.iter().find(|m| crate::names::short(&m.decl.name) == "from_args")).map(|m| m.decl.name.to_string()).ok_or("std.cli has no `from_args`")?;
-                let call = types::trait_call(cli::TRAIT, &m);
-                let r = it.call_method(&call, vec![Value::Str(ty.clone()), Value::Str(prog.to_string()), args]).map_err(|f| format!("reading the options: {}", f.msg))?;
-                let field = |fs: &[(String, Value)], k: &str| fs.iter().find(|(n, _)| n == k).map(|(_, v)| interp::show(v)).unwrap_or_default();
-                match r {
-                    Value::Variant(c, interp::Fields::Pos(xs)) if c == "Ok" && xs.len() == 1 => xs[0].clone(),
-                    Value::Variant(c, interp::Fields::Pos(xs)) if c == "Err" => match xs.first() {
-                        Some(Value::Variant(e, interp::Fields::Rec(fs))) if e.ends_with("ShowHelp") => {
-                            print!("{}", field(fs, "text"));
-                            return Ok(0);
-                        }
-                        Some(Value::Variant(_, interp::Fields::Rec(fs))) => {
-                            eprintln!("error: {}", field(fs, "message"));
-                            return Ok(2);
-                        }
-                        _ => return Err("reading the options gave an unexpected error".into()),
-                    },
-                    other => return Err(format!("reading the options gave {}", interp::show(&other))),
-                }
-            }
-            _ => {
-                return Err(format!(
-                    "`main` can ask for `Console` (std.io), `Files` (std.fs), `Environment` (std.process), `Code` (std.code), and options: a record that implements `CommandLine` (std.cli). Its parameter `{}` is a `{ty}`",
-                    pm.name
-                ))
-            }
-        });
-    }
-    let res = it.call_fn("main", vals);
-    if it.tracing {
-        for t in &it.trace {
-            eprintln!("{t}");
-        }
-    }
-    let code = |v: &Value| match v {
-        Value::Unit => Ok(0),
-        Value::Int(n) => i32::try_from(*n).map_err(|_| format!("`main` returned {n}, which is not an exit code")),
-        other => Err(format!("`main` must return `()`, an `ExitCode` or a `Result` of either, not {}", interp::show(other))),
-    };
-    match res {
-        Ok(Value::Variant(c, interp::Fields::Pos(xs))) if c == "Ok" && xs.len() == 1 => code(&xs[0]),
-        Ok(Value::Variant(c, interp::Fields::Pos(xs))) if c == "Err" && xs.len() == 1 => {
-            let shown = match &xs[0] {
-                Value::Str(s) => s.clone(),
-                e => interp::show(e),
-            };
-            eprintln!("error: {shown}");
-            Ok(1)
-        }
-        Ok(v) => code(&v),
-        Err(fault) => {
-            eprintln!("fault ({:?}): {}", fault.kind, fault.msg);
-            if !fault.stack.is_empty() {
-                eprintln!("    stack: {}", crate::names::show_stack(&fault.stack));
-            }
-            Ok(101)
-        }
-    }
 }

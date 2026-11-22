@@ -4184,11 +4184,12 @@ fn variant_names_are_per_module() {
 #[test]
 fn self_arguments_on_trait_values() {
     let d = tmp("dyn-self");
-    let src = "trait Shape {\n  fn size(self) -> Int\n  fn grown(self) -> Self\n  fn bigger(self, other: Self) -> Bool\n  fn bigger_shape(self, other: Shape) -> Bool {\n    self.size() > other.size()\n  }\n}\n\ntype Sq = { side: Int }\n\ntype Ci = { r: Int }\n\nimpl Shape for Sq {\n  fn size(self) -> Int { self.side }\n  fn grown(self) -> Sq { Sq { side: self.side + 1 } }\n  fn bigger(self, other: Sq) -> Bool { self.side > other.side }\n}\n\nimpl Shape for Ci {\n  fn size(self) -> Int { self.r }\n  fn grown(self) -> Ci { Ci { r: self.r + 1 } }\n  fn bigger(self, other: Ci) -> Bool { self.r > other.r }\n}\n\nfn main() {\n  let xs: List[Shape] = [Sq { side: 2 }, Ci { r: 3 }]\n  for s in xs {\n    print(s.bigger(s.grown().grown()))\n    print(s.bigger_shape(xs[1]))\n  }\n  print(Sq { side: 1 }.bigger(Sq { side: 2 }))\n  MIXED\n}\n";
+    let src = "trait Shape {\n  fn size(self) -> Int\n  fn grown(self) -> Self\n  fn bigger(self, other: Self) -> Bool\n  fn bigger_shape(self, other: Shape) -> Bool {\n    self.size() > other.size()\n  }\n}\n\ntype Sq = { side: Int }\n\ntype Ci = { r: Int }\n\nimpl Shape for Sq {\n  fn size(self) -> Int { self.side }\n  fn grown(self) -> Sq { Sq { side: self.side + 1 } }\n  fn bigger(self, other: Sq) -> Bool { self.side > other.side }\n}\n\nimpl Shape for Ci {\n  fn size(self) -> Int { self.r }\n  fn grown(self) -> Ci { Ci { r: self.r + 1 } }\n  fn bigger(self, other: Ci) -> Bool { self.r > other.r }\n}\n\nfn main() {\n  let xs: List[Shape] = [Sq { side: 2 }, Ci { r: 3 }]\n  for s in xs {\n    print(s.bigger(s.grown().grown()))\n    print(s.bigger_shape(xs[1]))\n  }\n  print(Sq { side: 1 }.bigger(Sq { side: 2 }))\n  print(Sq { side: 5 }.bigger_shape(Ci { r: 4 }))\n  MIXED\n}\n";
     let (ok, out) = strata(&["--file", "ok.strata", "edit"], &d, Some(&src.replace("MIXED", "")));
     assert!(ok, "{out}");
-    let (ok, out) = strata(&["--file", "ok.strata", "run", "--interpret"], &d, None);
-    assert!(ok && out == "false\nfalse\nfalse\nfalse\nfalse\n", "{out}");
+    // a method's trait-typed parameter takes a trait value, from a list or made from a concrete one
+    let (ok, out) = strata(&["--file", "ok.strata", "run"], &d, None);
+    assert!(ok && out == "false\nfalse\nfalse\nfalse\nfalse\ntrue\n", "{out}");
     let (ok, out) = strata(&["--file", "bad.strata", "edit"], &d, Some(&src.replace("MIXED", "print(xs[0].bigger(xs[1]))")));
     assert!(!ok && out.contains("written, but") && out.contains("`bigger` takes `other: Self`"), "{out}");
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
@@ -4782,9 +4783,6 @@ fn extern_c_declarations() {
     assert!(ok && out == db, "{out}");
     let (ok, out) = strata(&["--file", "p", "check"], &d, None);
     assert!(ok, "{out}");
-    // the interpreter refuses to call C
-    let (ok, out) = strata(&["--file", "p", "run", "--interpret"], &d, None);
-    assert!(!ok && out.contains("`strlen` is an `extern c` function: only compiled code calls it"), "{out}");
     // verify runs nothing that reaches C
     let (_, out) = strata(&["--file", "p", "verify"], &d, None);
     assert!(out.contains("db.length") && out.contains("assumed: module `db` calls foreign code"), "{out}");
@@ -5056,15 +5054,11 @@ fn capabilities_given_by_the_runtime() {
     }
     let (ok, out) = strata(&["--file", "p", "check"], &d, None);
     assert!(ok, "{out}");
-    // the runtime makes it: compiled, interpreted, built
-    for args in [&["run", "p"][..], &["run", "--interpret", "p"][..]] {
-        let (ok, out) = strata(args, &d, None);
-        assert!(ok && out == "42 true false\n", "{args:?}: {out}");
-    }
+    // the runtime makes it: compiled, built
+    let (ok, out) = strata(&["run", "p"], &d, None);
+    assert!(ok && out == "42 true false\n", "{out}");
     let (ok, out) = strata(&["--file", "p", "test"], &d, None);
     assert!(ok && out.contains("✓ the real clock") && out.contains("2 passed"), "{out}");
-    let (ok, out) = strata(&["--file", "p", "test", "--interpret"], &d, None);
-    assert!(ok && out.contains("2 passed"), "{out}");
     let exe = d.join("clockprog");
     let (ok, out) = strata(&["build", "p", "-o", &exe.to_string_lossy()], &d, None);
     if ok {
@@ -5095,10 +5089,8 @@ fn capabilities_given_by_the_runtime() {
     // std's: `main` names `Disk` and `Process`, and calls their traits' methods
     // without the traits imported; `Files` itself is for code below `main`
     save(&d.join("std_caps.strata"), "use std.fs.{Disk}\nuse std.process.{Process}\n\nfn main(mut disk: Disk, process: Process) {\n  mut disk.write(\"cap.txt\", \"hi\") except { () }\n  print(disk.read(\"cap.txt\") except { \"?\" })\n  mut disk.remove(\"cap.txt\") except { () }\n  print(disk.exists(\"cap.txt\"))\n  print(len(process.args()))\n}\n");
-    for args in [&["run", "std_caps.strata", "--", "a", "b"][..], &["run", "--interpret", "std_caps.strata", "--", "a", "b"][..]] {
-        let (ok, out) = strata(args, &d, None);
-        assert!(ok && out == "hi\nfalse\n2\n", "{args:?}: {out}");
-    }
+    let (ok, out) = strata(&["run", "std_caps.strata", "--", "a", "b"], &d, None);
+    assert!(ok && out == "hi\nfalse\n2\n", "{out}");
     save(&d.join("asks_files.strata"), "use std.fs.{Files}\n\nfn main(files: Files) {\n  print(files.exists(\"x\"))\n}\n");
     let (ok, out) = strata(&["run", "asks_files.strata"], &d, None);
     assert!(!ok && out.contains("Name the capability instead, `disk: Disk` (std.fs), and pass it where `Files` is wanted"), "{out}");
@@ -5133,10 +5125,8 @@ fn run_mode_console_in_tests_and_trace() {
     let (ok, out) = strata(&["--file", "p", "check"], &d, None);
     assert!(!ok && out.contains("test parameter `mode: RunMode`: how the program is run is hidden by default; say `mode = true` under `[run]`"), "{out}");
     std::fs::write(p.join("strata.toml"), "name = \"p\"\n\n[run]\nmode = true\n").unwrap();
-    for (args, want) in [(&["--file", "p", "run"][..], "running\n"), (&["--file", "p", "run", "--interpret"][..], "running\n")] {
-        let (ok, out) = strata(args, &d, None);
-        assert!(ok && out == want, "{args:?}: {out}");
-    }
+    let (ok, out) = strata(&["--file", "p", "run"], &d, None);
+    assert!(ok && out == "running\n", "{out}");
     // under --trace: `Tracing`, and the console's calls are in the trace
     let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["--file", "p", "run", "--trace"]).current_dir(&d).output().unwrap();
     let (stdout, stderr) = (String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
@@ -5156,10 +5146,8 @@ fn mocks_for_tests() {
     save(&d.join("m.strata"), src);
     let (ok, out) = strata(&["--file", "m.strata", "render"], &d, None);
     assert!(ok && out == src, "{out}");
-    for args in [&["--file", "m.strata", "test"][..], &["--file", "m.strata", "test", "--interpret"][..]] {
-        let (ok, out) = strata(args, &d, None);
-        assert!(ok && out.contains("1 passed"), "{args:?}: {out}");
-    }
+    let (ok, out) = strata(&["--file", "m.strata", "test"], &d, None);
+    assert!(ok && out.contains("1 passed"), "{out}");
     let (_, out) = strata(&["--file", "m.strata", "verify"], &d, None);
     assert!(out.contains("assumed: `MemDisk` is a mock") && !out.contains("may not terminate"), "{out}");
     let (ok, out) = strata(&["--file", "m.strata", "view", "--level", "0"], &d, None);

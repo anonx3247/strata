@@ -1488,7 +1488,9 @@ impl<'a> Module<'a> {
         for (i, p) in f.params.iter().enumerate() {
             match f.impls.get(i).cloned().flatten() {
                 Some(t) => params.push(t),
-                None if self.is_trait(&p.ty) => return Err(format!("`{}` takes any `{}`: compiled for the implementation a caller passes, not on its own", p.name, crate::printer::ty(&p.ty))),
+                None if p.mutable && self.is_trait(&p.ty) => return Err(format!("`mut {}` takes any `{}`: not compiled yet in a method", p.name, crate::printer::ty(&p.ty))),
+                // no implementation given (a method, compiled once): a trait
+                // value, its methods called through its table
                 None => params.push(self.lower(&p.ty, &sub)?),
             }
         }
@@ -2984,7 +2986,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let list = matches!(t, Ty::Con(l, _) if l == "List");
         let sig = match what {
             "cmp" => {
-                // the interpreter's order (`interp::compare`): -1, 0 or 1
+                // -1, 0 or 1
                 let ll = h.m.ll(t)?;
                 let three = |h: &mut Func, lt: &str, gt: &str| {
                     let (x, y, r) = (h.fresh("lt"), h.fresh("gt"), h.fresh("c"));
@@ -4788,17 +4790,21 @@ impl<'m, 'a> Func<'m, 'a> {
     /// Arguments for a function's parameters: `mut` ones as the slot of
     /// their place, the others as values (of the parameter's type; a
     /// trait-typed one keeps its own). Then what to write back.
-    fn bind_args(&mut self, params: &[Param], vs: Vec<V>, sub: &HashMap<Symbol, Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<(Vec<V>, Vec<(usize, String, Ty, TypeExpr)>)> {
+    /// `per_impl`: a trait-typed parameter takes the implementation passed
+    /// (a function, compiled once per implementation); otherwise (a method,
+    /// compiled once) it takes a trait value.
+    fn bind_args(&mut self, params: &[Param], vs: Vec<V>, sub: &HashMap<Symbol, Ty>, places: &[Option<(String, Vec<String>)>], per_impl: bool) -> Res<(Vec<V>, Vec<(usize, String, Ty, TypeExpr)>)> {
         let mut out = vec![];
         let mut backs = vec![];
         for (i, (p, v)) in params.iter().zip(vs).enumerate() {
-            let t = if self.m.is_trait(&p.ty) { v.0.clone() } else { self.m.lower(&p.ty, sub)? };
+            let as_passed = per_impl && self.m.is_trait(&p.ty);
+            let t = if as_passed { v.0.clone() } else { self.m.lower(&p.ty, sub)? };
             if p.mutable {
                 let place = places.get(i).cloned().flatten();
                 let slot = self.mut_slot(&place, &(t.clone(), v.1), &p.name)?;
                 out.push((Ty::Str, slot.clone()));
                 backs.push((i, slot, t, p.ty.clone()));
-            } else if self.m.is_trait(&p.ty) {
+            } else if as_passed {
                 out.push((t, v.1));
             } else {
                 out.push(self.coerce(v, &t)?);
@@ -4990,7 +4996,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let symbol = self.m.want_method(mi);
         let own_params = own.params.clone();
         let ret = self.m.lower(&own.ret, &sub)?;
-        let (args, backs) = self.bind_args(&own_params, vs, &sub, places)?;
+        let (args, backs) = self.bind_args(&own_params, vs, &sub, places, false)?;
         let r = self.call(&ret, &symbol, &args)?;
         let r = self.temp(r);
         self.write_backs(backs, places)?;
@@ -5027,7 +5033,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let impls: Vec<Option<Ty>> = f.params.iter().zip(&vs).map(|(p, v)| self.m.is_trait(&p.ty).then(|| v.0.clone())).collect();
         let params = f.params.clone();
         // an argument's own type may differ from the parameter's (a variant for its sum): same representation
-        let (args, backs) = self.bind_args(&params, vs, &sub, places)?;
+        let (args, backs) = self.bind_args(&params, vs, &sub, places, true)?;
         let symbol = self.m.want_impls(name, targs.clone(), impls);
         let r = self.call(&ret, &symbol, &args)?;
         let r = self.temp(r);
@@ -6948,7 +6954,7 @@ impl Func<'_, '_> {
     }
 
     /// An f-string part with a format spec (`{x:.2}`, `{n:>5}`, `{n:05}`),
-    /// as `interp::format_spec`.
+    /// as the old interpreter did.
     fn format_spec(&mut self, v: &V, f: &FmtSpec) -> Res<String> {
         // what the value is at run time: a distinct type's is not a number or a string
         let numeric = matches!(v.0, Ty::Int | Ty::Float);
@@ -6982,8 +6988,8 @@ impl Func<'_, '_> {
 
 // ---- dictionaries and sets ----
 //
-// A `Set[A]` is a `List[A]` kept sorted in the interpreter's order
-// (`interp::compare`, the generated `cmp`) without duplicates; a
+// A `Set[A]` is a `List[A]` kept sorted in the order of the generated
+// `cmp` without duplicates; a
 // `Dict[K, V]` is a `List[(K, V)]` sorted by key, one pair per key. So equal
 // collections are equal lists, `for`, `len` and `items` are the list's, and
 // the built-ins are Strata over lists (llvm/prelude.strata), given the order.
@@ -7084,7 +7090,7 @@ impl Func<'_, '_> {
 // ---- mocks and generated values ----
 //
 // `mock T` is a value of trait `T` whose methods generate their results, as
-// the interpreter's (src/interp.rs, `mock_call`): `requires` checked, then a
+// the old interpreter's: `requires` checked, then a
 // value of the result's type generated until `ensures` holds (200 tries).
 // Values are generated as src/generate.rs does: integers from the intervals
 // the refinements allow (often their ends, or 0), lengths likewise, strings

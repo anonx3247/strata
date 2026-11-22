@@ -506,7 +506,7 @@ libs = ["m"]             # libraries (-lm)
 - **The name is the C symbol**, so an extern function can't be renamed (wrap it instead).
 - **Only its own module calls it.** Extern definitions are never `pub`, and code in other modules (submodules included) can't call them. The module that declares them gives the rest of the program its own functions, or a capability for what touches the outside world, so a signature still shows what code can touch.
 - **Contracts are assumed.** `verify` never proves or runs foreign code: a function in a module that declares externs, one that takes one of its types, and one that calls into it are all reported as assumed.
-- **Only compiled code calls C** (`strata build`, and `strata run` / `strata test` with the JIT, which compiles the `[native]` sources into a library with clang and loads it). The interpreter refuses: calling an extern function there is a fault that says so. C's own library (`strlen`, …) needs no `[native]`.
+- **Calling C** works wherever code runs: `strata build`, and `strata run` / `strata test` with the JIT, which compiles the `[native]` sources into a library with clang and loads it. C's own library (`strlen`, …) needs no `[native]`.
 
 Not yet: `main` asking for a native module's capability, structs passed by value, callbacks, buffers, and other languages (`extern python`, `extern ts`, `extern rust`, with values crossing as `Json`; see IDEAS.md).
 

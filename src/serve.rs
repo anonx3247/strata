@@ -69,7 +69,7 @@ fn handler(env: &Env) -> Result<(FnDecl, usize), String> {
         let ty = crate::printer::ty(&p.ty);
         if ty == REQUEST && request.is_none() {
             request = Some(i);
-        } else if crate::cmd::capability(env, &ty).is_none() {
+        } else if !crate::cmd::capability(env, &ty) {
             return Err(format!("{usage}. Its parameter `{}` has type `{ty}`", p.name));
         }
     }
@@ -100,7 +100,7 @@ fn app_fns(env: &Env) -> Result<AppFns, String> {
     for (f, skip) in [(&init, 0), (&update, 2)] {
         for p in &f.params[skip.min(f.params.len())..] {
             let t = ty(&p.ty);
-            if crate::cmd::capability(env, &t).is_none() {
+            if !crate::cmd::capability(env, &t) {
                 return Err(format!("`{}`'s parameter `{}` is a `{t}`, not a capability: {usage}", f.name, p.name));
             }
         }
