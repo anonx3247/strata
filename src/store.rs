@@ -500,13 +500,9 @@ impl Codebase {
         Ok(out)
     }
 
-    pub fn load_verdicts(&self) -> HashMap<String, crate::verify::Verdict> {
-        fs::read_to_string(self.cache().join("verdicts.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
-    }
-
-    pub fn save_verdicts(&self, v: &HashMap<String, crate::verify::Verdict>) {
-        let _ = fs::create_dir_all(self.cache());
-        let _ = fs::write(self.cache().join("verdicts.json"), serde_json::to_string_pretty(v).unwrap());
+    /// `verify`'s verdicts for this package (see [`Verdicts`]).
+    pub fn load_verdicts(&self) -> Verdicts {
+        Verdicts::at(&self.root)
     }
 
     /// Where `verify` keeps what it proved for `build` (`proofs`).
@@ -534,18 +530,130 @@ pub fn load_proofs(dir: &Path) -> ProofFile {
 }
 
 pub fn save_proofs(dir: &Path, v: &ProofFile) {
-    let _ = fs::create_dir_all(dir);
-    let _ = fs::write(dir.join("proofs.json"), serde_json::to_string_pretty(v).unwrap());
+    write_atomically(&dir.join("proofs.json"), serde_json::to_string_pretty(v).unwrap().as_bytes());
 }
 
-/// `verify`'s verdicts, by cache key, kept in `dir` (`verdicts.json`).
-pub fn load_verdicts(dir: &Path) -> HashMap<String, crate::verify::Verdict> {
-    fs::read_to_string(dir.join("verdicts.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+/// `verify`'s verdicts, kept between runs and shared by every worktree of a
+/// git repository: in `<git common dir>/strata/verdicts`, else in
+/// `~/.cache/strata/verdicts` (`STRATA_CACHE`; `STRATA_VERDICTS` names the
+/// folder itself). Each verdict is a file of its own, written whole and
+/// renamed into place, so runs at the same time neither see half a verdict
+/// nor lose one another's.
+///
+/// A check's verdict (`get_check`) is under `<compiler>/`, the hash of the
+/// compiler's sources made when strata is built, and its key is a hash of
+/// the check's label, its key (the closure hash of its definition, with all
+/// it depends on, and the cases), and the run's settings (seed, race,
+/// solver, std's hash). A definition's latest verdict, the worst of its
+/// checks, is under `definitions/` by its closure hash (`get`): what the
+/// viewer and `diff` show.
+pub struct Verdicts {
+    root: Option<PathBuf>,
+    settings: String,
 }
 
-pub fn save_verdicts(dir: &Path, v: &HashMap<String, crate::verify::Verdict>) {
-    let _ = fs::create_dir_all(dir);
-    let _ = fs::write(dir.join("verdicts.json"), serde_json::to_string_pretty(v).unwrap());
+/// Bumped when what a kept verdict means (or how it is stored) changes.
+const VERDICTS_FORMAT: u32 = 1;
+
+impl Verdicts {
+    /// No verdicts.
+    pub fn none() -> Verdicts {
+        Verdicts { root: None, settings: String::new() }
+    }
+
+    /// The verdicts of the code at `at` (a package's folder, a script, a folder of modules).
+    pub fn at(at: &Path) -> Verdicts {
+        Verdicts { root: Self::root(at), settings: String::new() }
+    }
+
+    fn root(at: &Path) -> Option<PathBuf> {
+        if let Some(d) = std::env::var_os("STRATA_VERDICTS") {
+            return Some(PathBuf::from(d));
+        }
+        let dir = if at.is_dir() { at.to_path_buf() } else { at.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")).to_path_buf() };
+        let git = std::process::Command::new("git").arg("-C").arg(&dir).args(["rev-parse", "--git-common-dir"]).stderr(std::process::Stdio::null()).output().ok();
+        match git.filter(|o| o.status.success()) {
+            Some(o) => Some(dir.join(String::from_utf8_lossy(&o.stdout).trim()).join("strata/verdicts")),
+            None => Some(crate::verify::cache_root()?.join("verdicts")),
+        }
+    }
+
+    /// The same verdicts, for checks run with `settings`; other compilers'
+    /// verdicts unused for two weeks are removed.
+    pub fn with_settings(mut self, settings: &str) -> Verdicts {
+        self.settings = format!("{VERDICTS_FORMAT}:{settings}");
+        if let Some(r) = &self.root {
+            let old = std::time::Duration::from_secs(14 * 24 * 3600);
+            for e in fs::read_dir(r).into_iter().flatten().flatten() {
+                let name = e.file_name();
+                let stale = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > old);
+                if stale && name != crate::verify::SOURCE_HASH && name != "definitions" {
+                    let _ = fs::remove_dir_all(e.path());
+                }
+            }
+            // the folder's time says when this compiler was last used
+            let _ = fs::File::open(r.join(crate::verify::SOURCE_HASH)).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        }
+        self
+    }
+
+    fn check_file(&self, label: &str, key: &str) -> Option<PathBuf> {
+        use sha2::{Digest, Sha256};
+        let h: String = Sha256::digest(format!("{}\n{label}\n{key}", self.settings).as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
+        Some(self.root.as_ref()?.join(crate::verify::SOURCE_HASH).join(&h[..2]).join(&h[2..]))
+    }
+
+    fn definition_file(&self, hash: &str) -> Option<PathBuf> {
+        use sha2::{Digest, Sha256};
+        let h: String = Sha256::digest(hash.as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
+        Some(self.root.as_ref()?.join("definitions").join(h))
+    }
+
+    fn read(path: Option<PathBuf>) -> Option<crate::verify::Verdict> {
+        serde_json::from_str(&fs::read_to_string(path?).ok()?).ok()
+    }
+
+    fn write(path: Option<PathBuf>, v: &crate::verify::Verdict) {
+        let Some(path) = path else { return };
+        let Ok(text) = serde_json::to_string(v) else { return };
+        write_atomically(&path, text.as_bytes());
+    }
+
+    /// The verdict of the check `label` with `key`, from an earlier run with the same settings.
+    pub fn get_check(&self, label: &str, key: &str) -> Option<crate::verify::Verdict> {
+        Self::read(self.check_file(label, key))
+    }
+
+    /// Keep a check's verdict, unless the solver gave up: it may have run out
+    /// of time on a busy machine (its time limit is a backstop).
+    pub fn put_check(&self, label: &str, key: &str, v: &crate::verify::Verdict) {
+        let text = serde_json::to_string(v).unwrap_or_default();
+        if text.contains("the solver gave up") || text.contains("the solver could not be run") {
+            return;
+        }
+        Self::write(self.check_file(label, key), v)
+    }
+
+    /// The latest verdict of the definition whose closure hash is `hash`.
+    pub fn get(&self, hash: &str) -> Option<crate::verify::Verdict> {
+        Self::read(self.definition_file(hash))
+    }
+
+    pub fn put(&self, hash: &str, v: &crate::verify::Verdict) {
+        Self::write(self.definition_file(hash), v)
+    }
+
+    /// Has no definition a verdict yet?
+    pub fn is_empty(&self) -> bool {
+        self.root.as_ref().and_then(|r| fs::read_dir(r.join("definitions")).ok()).map_or(true, |mut d| d.next().is_none())
+    }
+}
+
+/// Write `path` whole: into a file of its own first, then renamed into place.
+pub fn write_atomically(path: &Path, bytes: &[u8]) {
+    let Some(dir) = path.parent() else { return };
+    let tmp = dir.join(format!(".{}.{:?}.tmp", std::process::id(), std::thread::current().id()));
+    let _ = fs::create_dir_all(dir).and_then(|_| fs::write(&tmp, bytes)).and_then(|_| fs::rename(&tmp, path));
 }
 
 /// What `build` may leave out of `p`: the proofs made for each function's

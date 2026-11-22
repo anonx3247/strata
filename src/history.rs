@@ -5,7 +5,6 @@
 use crate::ast::Program;
 use crate::diff;
 use crate::store::{self, Codebase};
-use crate::verify::Verdict;
 use serde_json::{json, Value as Json};
 use crate::fx::HashMap;
 use std::path::{Path, PathBuf};
@@ -28,7 +27,7 @@ pub struct Range {
     pub base: Program,
     pub head: Program,
     pub steps: Vec<Step>,
-    pub verdicts: HashMap<String, Verdict>,
+    pub verdicts: crate::store::Verdicts,
     /// what the base can be set to, for the viewer
     pub options: Json,
 }
@@ -242,7 +241,7 @@ pub fn git_range(path: &Path, base: Option<&str>) -> Result<Range, String> {
         base: base_prog,
         head,
         steps,
-        verdicts: HashMap::default(),
+        verdicts: crate::store::Verdicts::none(),
         options: git_options(path, Some(base)),
     }
     .shown())

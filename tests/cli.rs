@@ -42,6 +42,7 @@ fn strata(args: &[&str], dir: &std::path::Path, stdin: Option<&str>) -> (bool, S
     let mut c = Command::new(env!("CARGO_BIN_EXE_strata"))
         .args(args)
         .current_dir(dir)
+        .env("STRATA_VERDICTS", verdicts(dir))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -52,6 +53,12 @@ fn strata(args: &[&str], dir: &std::path::Path, stdin: Option<&str>) -> (bool, S
     }
     let o = c.wait_with_output().unwrap();
     (o.status.success(), String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr))
+}
+
+/// Where a test's `verify` keeps its verdicts: in its own folder, so that a
+/// test sees fresh verdicts unless it ran `verify` before.
+fn verdicts(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.join(".verdicts")
 }
 
 fn example() -> String {
@@ -368,13 +375,64 @@ fn std_termination_is_kept_between_runs() {
             std::fs::copy(e.path(), d.join(e.file_name())).unwrap();
         }
     }
-    let (_, first) = strata(&["--file", ".", "verify", "--force"], &d, None);
+    let (_, first) = strata(&["--file", ".", "verify", "--no-cache"], &d, None);
     let root = std::env::var_os("STRATA_CACHE").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".cache/strata"));
     let kept: String = std::fs::read_dir(root.join("termination")).unwrap().flatten().map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).collect();
     assert!(kept.lines().any(|l| l.starts_with("L\tstd.")), "std's loops are kept: {kept}");
     assert!(!kept.contains(".for."), "functions made for a program are not std's own");
-    let (_, second) = strata(&["--file", ".", "verify", "--force"], &d, None);
+    let (_, second) = strata(&["--file", ".", "verify", "--no-cache"], &d, None);
     assert_eq!(first, second);
+}
+
+/// A check's verdict is kept under its definition's hash with all it
+/// depends on: a second run reuses all of them (and says the same), a changed
+/// definition is checked again, with what calls it, and nothing else.
+#[test]
+fn verify_keeps_verdicts_of_unchanged_definitions() {
+    let d = tmp("verify-kept");
+    let program = |f: &str, h: &str| format!("type Small = Int where 0 <= it && it <= 10\nfn f(x: Small) -> Int\n  ensures it >= 0\n{{\n  {f}\n}}\nfn g(x: Small) -> Int\n  ensures it >= 0\n{{\n  f(x) + 1\n}}\nfn h(x: Small) -> Int\n  ensures it <= 10\n{{\n  {h}\n}}\n");
+    save(&d.join("k.strata"), program("x * 2", "x"));
+    let verdicts = |out: &str| -> Vec<(String, bool)> {
+        out.lines().filter(|l| l.starts_with(['✓', '~', '✗', '○'])).map(|l| (l.split_whitespace().nth(1).unwrap().to_string(), l.ends_with(" (cached)"))).collect()
+    };
+    let (ok, first) = strata(&["--file", "k.strata", "verify", "--cases", "20"], &d, None);
+    assert!(ok && verdicts(&first).len() == 3 && verdicts(&first).iter().all(|(_, c)| !c), "{first}");
+    let (ok, second) = strata(&["--file", "k.strata", "verify", "--cases", "20"], &d, None);
+    assert!(ok && verdicts(&second).iter().all(|(_, c)| *c), "{second}");
+    assert_eq!(first, second.replace(" (cached)", ""), "the same verdicts");
+    // other settings are other checks
+    let (_, other) = strata(&["--file", "k.strata", "verify", "--cases", "21"], &d, None);
+    assert!(verdicts(&other).iter().all(|(_, c)| !c), "{other}");
+    let (_, forced) = strata(&["--file", "k.strata", "verify", "--cases", "20", "--no-cache"], &d, None);
+    assert!(verdicts(&forced).iter().all(|(_, c)| !c), "{forced}");
+    // `f` changes: it and `g`, which calls it, are checked again
+    save(&d.join("k.strata"), program("x * 3", "x"));
+    let (ok, out) = strata(&["--file", "k.strata", "verify", "--cases", "20"], &d, None);
+    assert!(ok, "{out}");
+    let kept = |v: Vec<(String, bool)>| v.into_iter().filter(|(_, c)| *c).map(|(n, _)| n).collect::<Vec<_>>();
+    assert_eq!(kept(verdicts(&out)), ["h"], "{out}");
+    // a change that breaks `h`: the policy sees the new verdict
+    save(&d.join("k.strata"), program("x * 3", "x + 1"));
+    let (ok, out) = strata(&["--file", "k.strata", "verify", "--cases", "20", "--require", "proven"], &d, None);
+    assert!(!ok && out.contains("✗ h"), "{out}");
+    assert_eq!(kept(verdicts(&out)), ["f", "g"], "{out}");
+    // and a kept failure still fails the run
+    let (ok, out) = strata(&["--file", "k.strata", "verify", "--cases", "20", "--require", "proven"], &d, None);
+    assert!(!ok && out.contains("✗ h") && verdicts(&out).iter().all(|(_, c)| *c), "{out}");
+}
+
+/// Functions that call each other have the same closure (and closure hash),
+/// not the same verdict: each keeps its own.
+#[test]
+fn verify_keeps_one_verdict_per_function_of_a_closure() {
+    let d = tmp("verify-kept-cycle");
+    save(&d.join("c.strata"), "type Small = Int where 0 <= it && it <= 10\nfn a(x: Small) -> Int\n  ensures it >= 0\n{\n  if x == 0 { 0 } else { b(x - 1) }\n}\nfn b(x: Small) -> Int {\n  if x == 0 { 1 } else { a(x - 1) }\n}\n");
+    let line = |out: &str, f: &str| out.lines().find(|l| l.starts_with(['✓', '~', '✗', '○']) && l.split_whitespace().nth(1) == Some(f)).unwrap_or_default().replace(" (cached)", "");
+    let (_, first) = strata(&["--file", "c.strata", "verify", "--cases", "20"], &d, None);
+    assert_ne!(line(&first, "a"), line(&first, "b"), "{first}");
+    let (_, second) = strata(&["--file", "c.strata", "verify", "--cases", "20"], &d, None);
+    assert!(second.contains("(cached)"), "{second}");
+    assert_eq!((line(&first, "a"), line(&first, "b")), (line(&second, "a"), line(&second, "b")), "{second}");
 }
 
 /// A type random values rarely meet (consecutive integers) gets its inputs
@@ -638,7 +696,7 @@ fn the_fuzzer_stops_a_slow_solver() {
     }
     save(&d.join("b.strata"), "type Quantity = Int where 1 <= it && it <= 99\nfn bump(q: Quantity) -> Quantity { q + 1 }\n");
     let start = std::time::Instant::now();
-    let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["--file", "b.strata", "verify"]).env("STRATA_SOLVER", &slow).current_dir(&d).output().unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["--file", "b.strata", "verify"]).env("STRATA_SOLVER", &slow).env("STRATA_VERDICTS", verdicts(&d)).current_dir(&d).output().unwrap();
     let out = String::from_utf8_lossy(&o.stdout).to_string();
     assert!(!o.status.success() && out.contains("✗ bump") && out.contains("found by the fuzzer"), "{out}");
     assert!(start.elapsed() < std::time::Duration::from_secs(20), "the solver was waited for: {:?}", start.elapsed());
@@ -790,6 +848,7 @@ fn main() { print(count([])) }
     let mut c = Command::new(env!("CARGO_BIN_EXE_strata"))
         .args(["--file", "t.strata", "verify", "count,deep,same,down", "--cases", "5"])
         .current_dir(&d)
+        .env("STRATA_VERDICTS", verdicts(&d))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -2932,7 +2991,7 @@ fn sync_carries_logged_renames_into_the_other_sides_files() {
 
 /// Run strata and give (exit code, stdout, stderr).
 fn strata_code(args: &[&str], dir: &std::path::Path, stdin: &str) -> (i32, String, String) {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_strata")).args(args).current_dir(dir).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_strata")).args(args).current_dir(dir).env("STRATA_VERDICTS", verdicts(dir)).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     c.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
     let o = c.wait_with_output().unwrap();
     (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string())
@@ -3285,7 +3344,7 @@ fn fake_editor(d: &std::path::Path, versions: &[&str]) -> String {
 }
 
 fn strata_with_editor(args: &[&str], dir: &std::path::Path, editor: &str) -> (bool, String) {
-    let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(args).current_dir(dir).env("EDITOR", editor).env_remove("VISUAL").stdin(Stdio::null()).output().unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(args).current_dir(dir).env("STRATA_VERDICTS", verdicts(dir)).env("EDITOR", editor).env_remove("VISUAL").stdin(Stdio::null()).output().unwrap();
     (o.status.success(), String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr))
 }
 
@@ -4144,7 +4203,7 @@ fn std_web_renders_and_proves_pages() {
         return;
     }
     // names are checked where elements are made; `Html` itself has nothing to check
-    let (ok, out) = strata(&["--file", &ex, "verify", "--force", "--require", "proven"], &d, None);
+    let (ok, out) = strata(&["--file", &ex, "verify", "--no-cache", "--require", "proven"], &d, None);
     assert!(ok && out.contains("✓ page") && out.contains("✓ row"), "{out}");
     // the router's handlers too: a lambda's request is valid, and `app` isn't recursive
     assert!(out.contains("✓ app") && out.contains("✓ language") && out.contains("✓ handle"), "{out}");
@@ -4504,7 +4563,7 @@ fn view(model: Model) -> Html[Msg] {
     let (ok, out) = strata(&["--file", &ex, "test"], &d, None);
     assert!(ok, "{out}");
     if has_solver() {
-        let (ok, out) = strata(&["--file", &ex, "verify", "--force", "--require", "proven"], &d, None);
+        let (ok, out) = strata(&["--file", &ex, "verify", "--no-cache", "--require", "proven"], &d, None);
         assert!(ok && out.contains("✓ update") && out.contains("✓ view"), "{out}");
     }
 }
@@ -4545,7 +4604,7 @@ fn serve_apps_take_values_and_forms() {
     }
     if has_solver() {
         // `update` keeps every title within bounds and the list within 50
-        let (ok, out) = strata(&["--file", &ex, "verify", "--force", "--require", "proven"], &d, None);
+        let (ok, out) = strata(&["--file", &ex, "verify", "--no-cache", "--require", "proven"], &d, None);
         assert!(ok && out.contains("✓ update") && out.contains("✓ new_todo_form"), "{out}");
     }
 }

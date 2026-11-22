@@ -420,3 +420,118 @@ fn main() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Edit `src` into a script and run it: its output, or the edit's error.
+fn edit_and_run(dir: &Path, name: &str, src: &str) -> Result<String, String> {
+    let prog = dir.join(format!("{name}.strata"));
+    let mut c = Command::new(STRATA).args(["--file", &prog.to_string_lossy(), "edit"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    c.stdin.take().unwrap().write_all(src.as_bytes()).unwrap();
+    let o = c.wait_with_output().unwrap();
+    if !o.status.success() {
+        return Err(format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)));
+    }
+    let o = Command::new(STRATA).args(["--file", &prog.to_string_lossy(), "run"]).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    Ok(String::from_utf8_lossy(&o.stdout).into_owned())
+}
+
+const DERIVED: &str = r#"use std.toml.{Toml, Date, DateTime}
+use std.json.Json
+
+type Level =
+  | Quiet
+  | Loud
+
+type Shape =
+  | Circle { r: Float }
+  | Square { side: Int }
+  | Dot
+
+type Server = { host: String, port: Int where 0 < it && it < 65536 = 8080 }
+
+type Config = {
+  name: String where it != "",
+  level: Level = Quiet,
+  owner: Option[String],
+  tags: List[String] = [],
+  servers: List[Server] = [],
+  shapes: List[Shape] = [],
+  limits: Dict[String, Int] = Dict {},
+  pair: (Int, String) = (1, "a"),
+  since: Option[Date],
+  stamp: Option[DateTime],
+}
+
+derive Toml for Level
+
+derive Toml for Shape
+
+derive Toml for Server
+
+derive Toml for Config
+
+derive Json for Server
+
+fn main() {
+  text := "name = \"app\"\nlevel = \"Loud\"\ntags = [\"a\", \"b\"]\nsince = 2024-02-29\nstamp = 1979-05-27T07:32:00Z\npair = [2, \"b\"]\nshapes = [{ type = \"Circle\", r = 1 }, \"Dot\", { type = \"Square\", side = 3 }]\n\n[limits]\ncpu = 4\n\n[[servers]]\nhost = \"a.example\"\n\n[[servers]]\nhost = \"b.example\"\nport = 9000\n"
+  c := Config.read_toml(text)
+  print(c)
+  match c {
+    Ok(cfg) => {
+      out := cfg.write_toml()
+      print(out)
+      match out {
+        Ok(t) => print(Config.read_toml(t) == Ok(cfg)),
+        Err(_) => (),
+      }
+      // a type may derive both: the methods are named for each format
+      print(Server { host: "x", port: 1 }.encode())
+      print(Server { host: "x", port: 1 }.to_toml())
+    },
+    Err(_) => (),
+  }
+  print(Config.read_toml("level = \"Loud\""))
+  print(Config.read_toml("name = \"\""))
+  print(Config.read_toml("name = \"a\"\n[[servers]]\nhost = \"h\"\nport = 70000"))
+  print(Config.read_toml("name = \"a\"\nlevel = \"Medium\""))
+  print(Config.read_toml("name = \"a\"\nsince = 07:32"))
+  print(Config.read_toml("name = \"a\"\nshapes = [{ type = \"Circle\" }]"))
+  print(Config.read_toml("name = \"a\"\nnope = 1"))
+  print(Config.from_toml_with(std.toml.Table([("name", std.toml.Text("a")), ("nope", std.toml.Integer(1))]), std.json.Reject))
+  print(Loud.write_toml())
+}
+"#;
+
+#[test]
+fn derives_toml() {
+    let dir = scratch("derive");
+    let out = edit_and_run(&dir, "config", DERIVED).unwrap();
+    let want = r#"Ok(Config { name: "app", level: Loud, owner: None, tags: ["a", "b"], servers: [Server { host: "a.example", port: 8080 }, Server { host: "b.example", port: 9000 }], shapes: [Circle { r: 1.0 }, Dot, Square { side: 3 }], limits: Dict { "cpu": 4 }, pair: (2, "b"), since: Some(Date { year: 2024, month: 2, day: 29 }), stamp: Some(DateTime { date: Some(Date { year: 1979, month: 5, day: 27 }), time: Some(Time { hour: 7, minute: 32, second: 0, nanosecond: 0 }), offset: Some(Utc) }) })
+Ok("name = \"app\"\nlevel = \"Loud\"\ntags = [\"a\", \"b\"]\npair = [2, \"b\"]\nsince = 2024-02-29\nstamp = 1979-05-27T07:32:00Z\n\n[[servers]]\nhost = \"a.example\"\nport = 8080\n\n[[servers]]\nhost = \"b.example\"\nport = 9000\n\n[[shapes]]\ntype = \"Circle\"\nr = 1.0\n\n[[shapes]]\ntype = \"Dot\"\n\n[[shapes]]\ntype = \"Square\"\nside = 3\n\n[limits]\ncpu = 4\n")
+true
+Ok(Object([("type", Text("Server")), ("host", Text("x")), ("port", Integer(1))]))
+Ok(Table([("host", Text("x")), ("port", Integer(1))]))
+Err("missing key \"name\"")
+Err("name: \"\" does not satisfy `String where it != \"\"`")
+Err("servers[0].port: 70000 does not satisfy `Int where 0 < it && it < 65536`")
+Err("level: `Medium` is not one of Quiet, Loud")
+Err("since: expected a date (1979-05-27), got 07:32:00")
+Err("shapes[0]: missing key \"r\"")
+Ok(Config { name: "a", level: Quiet, owner: None, tags: [], servers: [], shapes: [], limits: Dict {}, pair: (1, "a"), since: None, stamp: None })
+Err("unknown key \"nope\"")
+Err("a TOML document is a table, not \"Loud\"")
+"#;
+    assert_eq!(out, want);
+
+    // what has no TOML form is an error at the `derive`
+    for (name, src, message) in [
+        ("optional_element", "type A = { xs: List[Option[Int]] }", "TOML has no null"),
+        ("double_option", "type A = { x: Option[Option[Int]] }", "`None` and `Some(None)` would both be left out"),
+        ("type_field", "type A = { type: String }", "a field named `type`"),
+        ("overlap", "type A = { x: Int | Float }", "two members are written as a TOML number"),
+    ] {
+        let err = edit_and_run(&dir, name, &format!("use std.toml.Toml\n\n{src}\n\nderive Toml for A\n")).unwrap_err();
+        assert!(err.contains(message), "{name}: {err}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

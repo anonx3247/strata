@@ -222,6 +222,11 @@ struct Expander<'a> {
     trait_methods: Vec<Symbol>,
     /// The default of each field (by its `Field` value's JSON).
     defaults: RefCell<HashMap<String, Expr>>,
+    /// Each type's `Type` value, by the type as written: made once (a
+    /// type's value holds its fields' types, a few levels down, and each
+    /// node is keyed by its printed text, so remaking it on every `f.type`
+    /// took minutes for nested records such as `std.toml.DateTime`).
+    type_values: RefCell<HashMap<String, Expr>>,
     /// In a match comprehension's arm: the matched expression (as text) and
     /// the names its variant's fields are bound to, for `f.of(x)`.
     arm_fields: Vec<(String, Vec<(String, Symbol)>)>,
@@ -319,9 +324,11 @@ fn type_pattern(t: &TypeExpr) -> Option<Pattern> {
     }
 }
 
-/// A value as a key (a map of the values made): the code that writes it.
+/// A value as a key (a map of the values made): its tree, as `Debug`
+/// writes it. Not the printer's text: laying out a `Type` value (its fields'
+/// types, a few levels down) for every lookup took minutes.
 fn key(v: &Expr) -> String {
-    crate::printer::expr(v, 0)
+    format!("{v:?}")
 }
 
 impl<'a> Expander<'a> {
@@ -329,7 +336,7 @@ impl<'a> Expander<'a> {
         Expander {
             env,
             prog,
-            known: HashMap::new(), types: HashMap::new(), written: RefCell::default(), self_ty: TypeExpr::Unit, copies: vec![], made: HashMap::new(), ctors: RefCell::default(), hidden: vec![], arm_fields: vec![], params: vec![], trait_name: Symbol::new(""), trait_methods: vec![], defaults: RefCell::default() }
+            known: HashMap::new(), types: HashMap::new(), written: RefCell::default(), self_ty: TypeExpr::Unit, copies: vec![], made: HashMap::new(), ctors: RefCell::default(), hidden: vec![], arm_fields: vec![], params: vec![], trait_name: Symbol::new(""), trait_methods: vec![], defaults: RefCell::default(), type_values: RefCell::default() }
     }
 
     /// `derive Trait for Type { written }` as an ordinary `impl`.
@@ -438,7 +445,13 @@ impl<'a> Expander<'a> {
     /// inside another: reading them from a type known while compiling
     /// (`f.type.fields`) writes them out then.
     fn type_value(&self, t: &TypeExpr) -> Expr {
-        self.type_value_in(t, &mut vec![])
+        let k = crate::printer::ty(t);
+        if let Some(v) = self.type_values.borrow().get(&k) {
+            return v.clone();
+        }
+        let v = self.type_value_in(t, &mut vec![]);
+        self.type_values.borrow_mut().insert(k, v.clone());
+        v
     }
 
     fn type_value_in(&self, t: &TypeExpr, stack: &mut Vec<TypeExpr>) -> Expr {
@@ -642,7 +655,7 @@ impl<'a> Expander<'a> {
 
     /// The type of a `Type` value.
     fn type_of(&self, v: &Expr) -> Res<TypeExpr> {
-        self.written.borrow().get(&key(v)).cloned().ok_or(format!("{} is not a type known here", key(v)))
+        self.written.borrow().get(&key(v)).cloned().ok_or_else(|| format!("{} is not a type known here", crate::printer::expr(v, 0)))
     }
 
     /// `t.fields` (or another list) of a `Type` value, written out in full.
@@ -1077,7 +1090,7 @@ impl<'a> Expander<'a> {
                 let m = self.expr(&args[0])?;
                 return Err(match self.eval(&m)? {
                     Expr::Str(s) => s,
-                    other => key(&other),
+                    other => crate::printer::expr(&other, 0),
                 });
             }
             // `setting("json.unknown_keys")`: the package's setting (`strata.toml`), if set

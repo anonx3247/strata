@@ -707,11 +707,7 @@ impl StdCache {
         let exe = std::env::current_exe().ok()?;
         let meta = std::fs::metadata(&exe).ok()?;
         let key: String = Sha256::digest(format!("termination v1 {:?} {} {} {}", meta.modified().ok()?, meta.len(), solver.bin, solver.version).as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
-        let root = match std::env::var_os("STRATA_CACHE") {
-            Some(d) => std::path::PathBuf::from(d),
-            None => std::path::PathBuf::from(std::env::var_os("HOME")?).join(".cache/strata"),
-        };
-        Some(root.join("termination").join(key))
+        Some(crate::verify::cache_root()?.join("termination").join(key))
     }
 
     /// Is `name` one of std's own functions?
