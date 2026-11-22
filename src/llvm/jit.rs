@@ -103,6 +103,7 @@ unsafe extern "C" {
     fn strata_random_unit();
     fn strata_random();
     fn strata_int_from_i64();
+    fn strata_raw_alloc();
     fn strata_int_to_float();
     fn strata_int_lit();
     fn strata_int_eq();
@@ -240,6 +241,7 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_random_unit", strata_random_unit as *const () as usize),
         ("strata_random", strata_random as *const () as usize),
         ("strata_int_from_i64", strata_int_from_i64 as *const () as usize),
+        ("strata_raw_alloc", strata_raw_alloc as *const () as usize),
         ("strata_int_to_float", strata_int_to_float as *const () as usize),
         ("strata_int_lit", strata_int_lit as *const () as usize),
         ("strata_int_eq", strata_int_eq as *const () as usize),

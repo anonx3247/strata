@@ -26,7 +26,12 @@ pub const FILES: &[(&str, &[u8])] = &[
     ("types.strata", include_bytes!("../core/types.strata")),
     ("builtins.strata", include_bytes!("../core/builtins.strata")),
     ("prelude.strata", include_bytes!("../core/prelude.strata")),
+    ("mem.strata", include_bytes!("../core/mem.strata")),
 ];
+
+/// The module of raw memory (`Ptr`, `raw_alloc`, `load_i64`, ...): only
+/// core's own modules can use it.
+pub const MEM: &str = "core.mem";
 
 /// The definitions of module `core.<file>`, decoded once.
 fn module(file: &str) -> &'static [Decl] {
@@ -54,12 +59,14 @@ pub fn prelude() -> Program {
     Program { decls: module("prelude.strata").to_vec() }
 }
 
-/// The builtin types (`builtin type List[T]`): their names and parameters.
+/// The builtin types (`builtin type List[T]`, and core.mem's `Ptr`): their
+/// names and parameters.
 pub fn builtin_types() -> &'static [(Symbol, Vec<Symbol>)] {
     static T: OnceLock<Vec<(Symbol, Vec<Symbol>)>> = OnceLock::new();
     T.get_or_init(|| {
         module("types.strata")
             .iter()
+            .chain(module("mem.strata"))
             .filter_map(|d| match &d.kind {
                 DeclKind::Extern(e) if e.lang == Lang::Builtin => match &e.item {
                     ExternItem::Type(t, ps) => Some((*t, ps.clone())),
@@ -72,15 +79,43 @@ pub fn builtin_types() -> &'static [(Symbol, Vec<Symbol>)] {
 }
 
 /// The builtin functions (`builtin fn`), each signature in the order
-/// written (overloads are tried in that order).
-pub fn builtin_fns() -> impl Iterator<Item = &'static crate::ast::FnDecl> {
-    module("builtins.strata").iter().filter_map(|d| match &d.kind {
+/// written (overloads are tried in that order), with their module
+/// (`core.builtins`, `core.mem`).
+pub fn builtin_fns() -> impl Iterator<Item = (Symbol, &'static crate::ast::FnDecl)> {
+    module("builtins.strata").iter().chain(module("mem.strata")).filter_map(|d| match &d.kind {
         DeclKind::Extern(e) if e.lang == Lang::Builtin => match &e.item {
-            ExternItem::Fn(f) => Some(f),
+            ExternItem::Fn(f) => Some((d.module, f)),
             ExternItem::Type(..) => None,
         },
         _ => None,
     })
+}
+
+/// Whether the definition named `name` in `module` is core's own (one of
+/// its files' definitions): what may use core.mem. Once resolved, a
+/// definition's module is in its name (`core.mem.f`, `test "core.mem: ..."`).
+/// A package's module can't pass for one by its name alone: the definition
+/// must be one core has.
+pub fn owns(module: &str, name: &str) -> bool {
+    let (module, short) = if is_core(module) {
+        (module.to_string(), crate::names::short(name).to_string())
+    } else if let Some(label) = name.strip_prefix("test \"") {
+        match label.split_once(": ") {
+            Some((m, rest)) => (m.to_string(), format!("test \"{rest}")),
+            None => return false,
+        }
+    } else {
+        match name.rsplit_once('.') {
+            Some((m, n)) => (m.to_string(), n.to_string()),
+            None => return false,
+        }
+    };
+    is_core(&module) && FILES.iter().any(|(f, _)| module_of(f) == module && crate::core::module(f).iter().any(|d| d.name() == short))
+}
+
+/// `core.mem` for `mem.strata`.
+fn module_of(file: &str) -> String {
+    format!("{NAME}.{}", file.trim_end_matches(".strata"))
 }
 
 /// The builtins that can fail in ways not yet written as contracts: a
@@ -119,4 +154,10 @@ pub fn check(dir: &std::path::Path) -> crate::types::CheckReport {
     // (as written: resolving would name them `core.builtins.len`)
     rep.errors.extend(crate::types::check_report_resolved(&builtins).errors);
     rep
+}
+
+/// core's own tests (`test` blocks in its modules), as a program.
+pub fn tests() -> Program {
+    let decls = FILES.iter().flat_map(|(f, _)| module(f).iter().filter(|d| matches!(d.kind, DeclKind::Test(_))).cloned()).collect();
+    Program { decls }
 }

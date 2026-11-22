@@ -6308,3 +6308,32 @@ fn commands_run_programs() {
     let (ok, out) = strata(&["--file", "lib.strata", "verify"], &d, None);
     assert!(ok && out.contains("status_code") && out.contains("proven"), "{out}");
 }
+
+/// `core.mem`: raw memory (`Ptr`, `raw_alloc`, loads and stores), compiled
+/// to plain loads and stores, usable only by core's own modules.
+#[test]
+fn core_mem_is_core_only() {
+    let d = tmp("core_mem");
+    let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("core");
+    let core = core.to_str().unwrap();
+    // core's own tests use it
+    let (ok, out) = strata(&["--file", core, "test"], &d, None);
+    assert!(ok && out.contains("✓ core.mem: a block holds the words and bytes stored in it") && out.contains("2 passed"), "{out}");
+    // anywhere else it is refused, its type included
+    let src = "fn main() {\n  p := raw_alloc(8)\n  store_i64(p, 0, 1)\n}\n\nfn keep(p: Ptr) -> Ptr {\n  p\n}\n";
+    let (_, out) = strata(&["--file", "x.strata", "edit"], &d, Some(src));
+    for m in [
+        "error in main: `raw_alloc` is core's: only core's modules can use raw memory (`core.mem`)",
+        "error in main: `store_i64` is core's",
+        "error in keep: `Ptr` is core's",
+    ] {
+        assert!(out.contains(m), "{m}: {out}");
+    }
+    // a package's module named like core's is not core
+    let p = d.join("p");
+    std::fs::create_dir_all(&p).unwrap();
+    save_module(&p, "main", "fn main() {}\n");
+    save_module(&p, "core.mem", "pub fn grab() -> Int {\n  load_i64(raw_alloc(8), 0)\n}\n");
+    let (ok, out) = strata(&["--file", "p", "check"], &d, None);
+    assert!(!ok && out.contains("`raw_alloc` is core's"), "{out}");
+}

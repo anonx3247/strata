@@ -114,6 +114,17 @@ void *strata_alloc(int64_t n) {
   return c + 1;
 }
 
+// A raw block (core.mem's `raw_alloc`): not counted, not cleared; out of
+// memory ends the program, as for any allocation.
+void *strata_raw_alloc(int64_t n) {
+  void *p = malloc((size_t)n);
+  if (!p) {
+    fputs("fault (Limit): out of memory\n", stderr);
+    exit(101);
+  }
+  return p;
+}
+
 // One more holder of `p`.
 void strata_dup(void *p) {
   int64_t *c = count_of(p);

@@ -134,11 +134,13 @@ pub struct Builtin {
     pub total: bool,
     /// its declaration in `core.builtins` (std's host operations have none)
     pub decl: Option<&'static FnDecl>,
+    /// raw memory (`core.mem`): only core's own modules can call it
+    pub core_only: bool,
 }
 
 impl Builtin {
     pub const fn new(name: &'static str, params: &'static str, sig: &'static str) -> Builtin {
-        Builtin { name, params, sig, total: false, decl: None }
+        Builtin { name, params, sig, total: false, decl: None, core_only: false }
     }
 }
 
@@ -150,19 +152,27 @@ pub fn builtins() -> &'static [Builtin] {
     B.get_or_init(|| {
         let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
         crate::core::builtin_fns()
-            .map(|f| {
+            .map(|(module, f)| {
+                let core_only = module == crate::core::MEM;
                 let params: Vec<String> = f.params.iter().map(|p| crate::printer::ty(&p.ty)).collect();
                 let tps: Vec<&str> = f.type_params.iter().map(|t| t.as_str()).collect();
                 Builtin {
                     name: f.name.as_str(),
                     params: leak(tps.join(",")),
                     sig: leak(format!("({}) -> {}", params.join(", "), crate::printer::ty(&f.ret))),
-                    total: f.requires.is_empty() && !crate::core::NOT_YET_CONTRACTS.contains(&f.name.as_str()),
+                    // (raw memory is never total: nothing checks an address)
+                    total: f.requires.is_empty() && !core_only && !crate::core::NOT_YET_CONTRACTS.contains(&f.name.as_str()),
                     decl: Some(f),
+                    core_only,
                 }
             })
             .collect()
     })
+}
+
+/// Using raw memory (`core.mem`'s `Ptr` and functions) outside core.
+fn core_only_error(name: &str) -> String {
+    format!("`{name}` is core's: only core's modules can use raw memory (`core.mem`)")
 }
 
 /// Whether every overload of the builtin `name` always returns.
@@ -673,6 +683,8 @@ impl<F: Fn() -> String> Label for Lazy<F> {
 
 struct Checker<'a> {
     env: &'a Env,
+    /// checking one of core's own definitions: it may use raw memory (`core.mem`)
+    in_core: bool,
     subst: Vec<Option<Ty>>,
     scopes: Vec<HashMap<Symbol, Ty>>,
     rigid: BTreeSet<Symbol>,
@@ -1044,6 +1056,12 @@ impl<'a> Checker<'a> {
                     "List" if largs.len() == 1 => Ty::Con("List".into(), largs),
                     "Sender" if largs.len() == 1 => Ty::Con("Sender".into(), largs),
                     "Receiver" if largs.len() == 1 => Ty::Con("Receiver".into(), largs),
+                    "Ptr" if largs.is_empty() => {
+                        if !self.in_core {
+                            self.err(core_only_error("Ptr"));
+                        }
+                        Ty::Con("Ptr".into(), vec![])
+                    }
                     _ => match self.env.types.get(&n.sym()) {
                         Some(td) => {
                             if td.params.len() != largs.len() {
@@ -1670,9 +1688,17 @@ impl<'a> Checker<'a> {
     /// The type of the builtin `name` (or std's host operation), whatever else
     /// the name means.
     fn builtin_fn(&mut self, name: &str) -> Option<Ty> {
-        let Builtin { params: ps, sig, .. } = builtins().iter().chain(crate::stdlib::HOST).find(|b| b.name == name)?;
+        let Builtin { params: ps, sig, core_only, .. } = builtins().iter().chain(crate::stdlib::HOST).find(|b| b.name == name)?;
+        if *core_only && !self.in_core {
+            self.err(core_only_error(name));
+        }
         let ps: Vec<Symbol> = ps.split(',').filter(|s| !s.is_empty()).map(Symbol::from).collect();
-        Some(self.instantiate(&ps, &parse_type_str(sig)))
+        // (its signature's `Ptr` is said once, by the call)
+        let outer = self.in_core;
+        self.in_core = outer || *core_only;
+        let t = self.instantiate(&ps, &parse_type_str(sig));
+        self.in_core = outer;
+        Some(t)
     }
 
     /// A method name means the method of that name among the traits of the
@@ -4187,6 +4213,7 @@ impl<'a> Checker<'a> {
     fn new(env: &'a Env, decl: String) -> Self {
         Checker {
             env,
+            in_core: false,
             subst: Vec::new(),
             scopes: vec![HashMap::default()],
             rigid: BTreeSet::new(),
@@ -4418,6 +4445,7 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
         }
         let mut c = Checker {
             env: &env,
+            in_core: crate::core::owns(&d.module, &d.name()),
             subst: Vec::new(),
             scopes: vec![HashMap::default()],
                 rigid: BTreeSet::new(),

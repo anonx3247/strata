@@ -996,6 +996,8 @@ declare ptr @strata_list_concat(ptr, ptr, i64)
 declare ptr @strata_concat_owned(ptr, ptr)
 declare ptr @strata_range(i64, i64)
 declare i64 @llvm.smax.i64(i64, i64)
+declare ptr @strata_raw_alloc(i64)
+declare void @free(ptr)
 declare i64 @llvm.smin.i64(i64, i64)
 declare ptr @strata_show_int(i64)
 declare ptr @strata_show_float(double)
@@ -1503,7 +1505,8 @@ impl<'a> Module<'a> {
 
     fn handle(&self, t: &Ty) -> bool {
         // (a task's handle: its scope holds the task, and frees it)
-        matches!(t, Ty::Con(n, args) if args.is_empty() && (self.env.externs.contains_key(n) || self.env.capabilities.contains(n)) || n == "Task" && args.len() == 1)
+        // (core.mem's `Ptr`: an address, never counted)
+        matches!(t, Ty::Con(n, args) if args.is_empty() && (self.env.externs.contains_key(n) || self.env.capabilities.contains(n) || n == "Ptr") || n == "Task" && args.len() == 1)
     }
 
     /// A record, a sum, one of its variants, or a tuple: a block with a tag.
@@ -5745,6 +5748,61 @@ impl<'m, 'a> Func<'m, 'a> {
                 (a.clone(), r)
             }
             ("float", [Ty::Int]) => self.call(&Ty::Float, "@strata_int_to_float", &vs)?,
+            // raw memory (core.mem): plain loads and stores; an `Int` crosses
+            // as its low 64 bits, and comes back from a word as any `Int`
+            ("raw_alloc", [Ty::Int]) => {
+                let n = self.call(&Ty::Int, "@strata_int_bits", &vs)?;
+                self.call(&Ty::Con("Ptr".into(), vec![]), "@strata_raw_alloc", &[n])?
+            }
+            ("raw_free", [_]) => {
+                self.emit(format!("call void @free(ptr {})", vs[0].1));
+                (Ty::Unit, "0".into())
+            }
+            ("ptr_offset", [p, Ty::Int]) => {
+                let n = self.call(&Ty::Int, "@strata_int_bits", &vs[1..])?;
+                let r = self.fresh("at");
+                self.emit(format!("{r} = getelementptr i8, ptr {}, i64 {}", vs[0].1, n.1));
+                (p.clone(), r)
+            }
+            ("load_i64" | "load_u8" | "store_i64" | "store_u8" | "atomic_add_i64", [_, Ty::Int, ..]) => {
+                let at = self.call(&Ty::Int, "@strata_int_bits", &vs[1..2])?;
+                let a = self.fresh("at");
+                self.emit(format!("{a} = getelementptr i8, ptr {}, i64 {}", vs[0].1, at.1));
+                let word = |c: &mut Self, v: &V| c.call(&Ty::Int, "@strata_int_bits", std::slice::from_ref(v));
+                match name {
+                    "load_i64" => {
+                        let w = self.fresh("w");
+                        self.emit(format!("{w} = load i64, ptr {a}"));
+                        let r = self.call(&Ty::Int, "@strata_int_from_i64", &[(Ty::Int, w)])?;
+                        self.temp(r)
+                    }
+                    "load_u8" => {
+                        let (b, w) = (self.fresh("b"), self.fresh("w"));
+                        self.emit(format!("{b} = load i8, ptr {a}"));
+                        self.emit(format!("{w} = zext i8 {b} to i64"));
+                        (Ty::Int, w)
+                    }
+                    "store_i64" => {
+                        let v = word(self, &vs[2])?;
+                        self.emit(format!("store i64 {}, ptr {a}", v.1));
+                        (Ty::Unit, "0".into())
+                    }
+                    "store_u8" => {
+                        let v = word(self, &vs[2])?;
+                        let b = self.fresh("b");
+                        self.emit(format!("{b} = trunc i64 {} to i8", v.1));
+                        self.emit(format!("store i8 {b}, ptr {a}"));
+                        (Ty::Unit, "0".into())
+                    }
+                    _ => {
+                        let v = word(self, &vs[2])?;
+                        let w = self.fresh("w");
+                        self.emit(format!("{w} = atomicrmw add ptr {a}, i64 {} seq_cst", v.1));
+                        let r = self.call(&Ty::Int, "@strata_int_from_i64", &[(Ty::Int, w)])?;
+                        self.temp(r)
+                    }
+                }
+            }
             ("float_bits", [Ty::Float]) => {
                 let b = self.fresh("bits");
                 self.emit(format!("{b} = bitcast double {} to i64", vs[0].1));
