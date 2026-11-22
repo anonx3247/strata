@@ -287,6 +287,53 @@ fn f() -> String { Item.zero() }
 fn main() { print(1) }
 "#;
 
+const UNION_ARMS: &str = r#"fn a(x: Int | String) -> String { if x is Int { x } else { x } }
+fn b(x: Int | String) -> Bool {
+  if x is String { return true }
+  x
+}
+fn c(x: Int | String) -> Bool { match x { Int => x, String => false } }
+fn main() { print(1) }
+"#;
+
+const WHOLE_ARMS: &str = r#"type Sh =
+  | Sq(Int)
+  | Rc(Int, Int)
+  | Dot
+fn a(x: Int | String) -> Bool { match x { Int => true, other => other } }
+fn b(s: Sh) -> Int { match s { Dot => 0, other => other } }
+fn c(s: Sh) -> Int { match s { Dot => 0, Sq(_) => 1, other => other } }
+fn d(o: Option[Int]) -> String { match o { None => "n", other => other } }
+fn e(mut s: Sh) -> Int { match s { Sq(_) => {
+  s = Dot
+  s
+}, _ => 0 } }
+fn main() { print(1) }
+"#;
+
+const TRAIT_VALUES: &str = r#"trait Shape {
+  fn area(self) -> Int
+}
+trait Named: Shape {
+  fn name(self) -> String
+}
+type Sq = { s: Int }
+type Pt = { x: Int }
+impl Shape for Sq {
+  fn area(self) -> Int { self.s }
+}
+impl Named for Sq {
+  fn name(self) -> String { "sq" }
+}
+fn a(xs: List[Shape]) -> String { (xs[0] ?? Sq { s: 1 }).area() }
+fn b() -> List[Shape] { [Sq { s: 1 }, Pt { x: 2 }] }
+fn c(s: Shape) -> String { s.area() }
+fn d(s: Shape) -> Int { s }
+fn e[T: Named](x: T) -> String { x.area() }
+fn f(q: Sq) -> Shape { q }
+fn main() { print(1) }
+"#;
+
 const RECORDS: &str = r#"type Pt = { x: Int, y: Int }
 type Sh =
   | Sq(Int)
@@ -576,6 +623,21 @@ fn lamp() -> Int {
 test "asks" (n: Int, p: Pt, l: NightLamp) { assert true }
 fn main() { print(1) }
 "#;
+
+#[test]
+fn union_arms_as_in_rust() {
+    same_errors("union-arms", UNION_ARMS, &["expected `"]);
+}
+
+#[test]
+fn whole_value_and_assigning_arms_as_in_rust() {
+    same_errors("whole-arms", WHOLE_ARMS, &["expected `"]);
+}
+
+#[test]
+fn trait_values_and_supertraits_as_in_rust() {
+    same_errors("trait-values", TRAIT_VALUES, &["expected `", "does not implement", "handle an Option"]);
+}
 
 /// The compiler's errors on `text` are `strata check`'s, on the lines holding one of `keys`.
 fn same_errors(name: &str, text: &str, keys: &[&str]) {
