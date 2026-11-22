@@ -225,14 +225,14 @@ test \"big integers\" {
     save(&d.join("b.strata"), src);
     let (ok, out) = strata(&["--file", "b.strata", "test"], &d, None);
     assert!(ok && out.contains("1 passed"), "{out}");
-    // larger than 64 bits in JSON: a number up to 2^64 - 1, or a string of digits
-    let (ok, out) = strata(&["--file", "b.strata", "run", "widen", "[18446744073709551614]"], &d, None);
-    assert!(ok && out.contains("\"18446744073709551615\""), "{out}");
-    let (ok, out) = strata(&["--file", "b.strata", "run", "widen", "[\"18446744073709551615\"]"], &d, None);
+    // larger than 64 bits, written as any integer is
+    let (ok, out) = strata(&["--file", "b.strata", "run", "widen", "18446744073709551614"], &d, None);
+    assert!(ok && out.trim() == "18446744073709551615", "{out}");
+    let (ok, out) = strata(&["--file", "b.strata", "run", "widen", "18446744073709551615"], &d, None);
     assert!(!ok && out.contains("18446744073709551616") && out.contains("does not satisfy `U64`"), "{out}");
     if has_solver() {
         let (ok, out) = strata(&["--file", "b.strata", "verify", "wrap,neg,widen", "--cases", "20"], &d, None);
-        assert!(!ok && out.contains("input:   [255]") && out.contains("input:   [-128]") && out.contains("input:   [\"18446744073709551615\"]"), "sized types catch overflow: {out}");
+        assert!(!ok && out.contains("input:   255\n") && out.contains("input:   -128\n") && out.contains("input:   18446744073709551615\n"), "sized types catch overflow: {out}");
     }
     // render keeps big literals
     let (_, r) = strata(&["--file", "b.strata", "render"], &d, None);
@@ -333,6 +333,160 @@ fn package_verify_policies() {
     std::fs::write(d.join("strata.toml"), "name = \"pol\"\n\n[verify]\nproven = [\"nope\"]\n").unwrap();
     let (ok, out) = strata(&["ci"], &d, None);
     assert!(!ok && out.contains("[verify] proven names `nope`, which is not a module of this package"), "{out}");
+}
+
+/// Lists are known by position: `xs[k]`, slices, `+`, `push`, `reverse` and
+/// literals keep which element is where, and a fact over every position
+/// (`all(1..len(it), i -> ...)`) reaches the elements the code takes.
+#[test]
+fn lists_are_known_by_position() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("list-positions");
+    let src = "type Sorted = List[Int] where all(1..len(it), i -> it[i - 1] <= it[i])
+type Message = { content: List[Int] }
+type Chain = List[Message] where all(1..len(it), i -> all(it[i].content, c -> c > 0))
+fn first_le_second(xs: Sorted) -> Bool
+  requires len(xs) >= 2
+  ensures it
+{
+  xs[0] <= xs[1]
+}
+fn tail(xs: Sorted) -> Sorted
+  requires len(xs) > 0
+{
+  xs[1..len(xs)]
+}
+fn add_max(xs: Sorted, x: Int) -> Sorted
+  requires len(xs) == 0 || xs[len(xs) - 1] <= x
+{
+  push(xs, x)
+}
+fn bad_add(xs: Sorted, x: Int) -> Sorted {
+  push(xs, x)
+}
+fn bad_lit() -> Sorted {
+  [1, 3, 2]
+}
+fn last_of_rev(xs: List[Int]) -> Bool
+  requires len(xs) > 0
+  ensures it
+{
+  reverse(xs)[len(xs) - 1] == xs[0]
+}
+fn joined(a: List[Int], b: List[Int]) -> Bool
+  requires len(a) == 2 && len(b) > 0
+  ensures it
+{
+  (a + b)[2] == b[0]
+}
+fn some_positive(xs: List[Int]) -> Bool
+  requires len(xs) > 0 && xs[0] > 0
+  ensures it
+{
+  any(xs, x -> x > 0)
+}
+fn inner(ms: Chain, k: Int, j: Int) -> Bool
+  requires 1 <= k && k < len(ms) && 0 <= j && j < len(ms[k].content)
+  ensures ms[k].content[j] > 0
+{
+  true
+}
+";
+    save(&d.join("t.strata"), src);
+    let (ok, out) = strata(&["--file", "t.strata", "verify", "--cases", "30"], &d, None);
+    assert!(!ok, "{out}");
+    for name in ["first_le_second", "tail", "add_max", "last_of_rev", "joined", "some_positive", "inner"] {
+        assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
+    }
+    assert!(out.contains("✗ bad_add") && out.contains("✗ bad_lit"), "{out}");
+}
+
+/// After a loop, the state is the loop head's with the condition false, or
+/// the state at one of its `break`s: a `break` doesn't make the condition false.
+#[test]
+fn a_break_leaves_the_loop_in_its_own_state() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("loop-break");
+    let src = "fn early() -> Int
+  ensures it >= 10
+{
+  mut i: Int = 0
+  while i < 10 {
+    if i == 3 { break }
+    i += 1
+  }
+  i
+}
+fn no_break() -> Int
+  ensures it >= 10
+{
+  mut i: Int = 0
+  while i < 10 { i += 1 }
+  i
+}
+fn two_exits(n: Int) -> Int
+  ensures it == 1 || it == 2 || it >= 5
+{
+  mut r: Int = 0
+  while r < 5 {
+    if n > 0 {
+      r = 1
+      break
+    }
+    if n < -3 {
+      r = 2
+      break
+    }
+    r += 1
+  }
+  r
+}
+fn found(n: Natural) -> Int
+  ensures it == 7
+{
+  mut k: Int = 0
+  loop {
+    k = n
+    if k > 3 {
+      k = 7
+      break
+    }
+  }
+  k
+}
+fn inner_break(xs: List[Int]) -> Int
+  ensures it >= 4
+{
+  mut i: Int = 0
+  while i < 4 {
+    for x in xs {
+      if x > 0 { break }
+    }
+    i += 1
+  }
+  i
+}
+fn after_forever(n: Int) -> Int
+  ensures it == 0
+{
+  mut k: Int = n
+  loop { k = k + 1 }
+  k
+}
+";
+    save(&d.join("t.strata"), src);
+    let (ok, out) = strata(&["--file", "t.strata", "verify", "--cases", "20"], &d, None);
+    assert!(!ok, "{out}");
+    assert!(out.contains("✗ early") && out.contains("(found by the solver)") && out.contains("it = 3"), "{out}");
+    for name in ["no_break", "two_exits", "found", "inner_break", "after_forever"] {
+        assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
+    }
 }
 
 #[test]
@@ -473,7 +627,7 @@ fn bad_countdown(start: Natural) -> Int {
     for name in ["area", "grow", "small", "countdown"] {
         assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
     }
-    assert!(out.contains("✗ bad_small") && out.contains("input:   [-2]"), "{out}");
+    assert!(out.contains("✗ bad_small") && out.contains("input:   -2\n"), "{out}");
     assert!(out.contains("✗ bad_countdown") && out.contains("assigning `k`: -1 does not satisfy `Natural`"), "a declared type holds after assignment: {out}");
     // what a `mut` argument held before the call is forgotten, field or not
     let src = "type Box = { n: Int }
@@ -555,7 +709,7 @@ fn bad_common(v: One | Two) -> Positive { v.n - 1 }
         let line = out.lines().find(|l| l.split_whitespace().nth(1) == Some(name)).unwrap_or("");
         assert!(line.starts_with("✗") && line.contains("found by the solver"), "{name} should be refuted by the solver: {out}");
     }
-    assert!(out.contains("input:   [{\"radius\":1}]") && out.contains("input:   [\"C\"]"), "counterexamples are union members: {out}");
+    assert!(out.contains("input:   Circle { radius: 1 }\n") && out.contains("input:   C\n"), "counterexamples are union members: {out}");
 }
 
 #[test]
@@ -605,9 +759,9 @@ fn empty_rep(s: String, p: String) -> String { replace(s, p, "b") }
     assert!(out.contains("~ spaced") && !out.contains("✗ empty_rep"), "{out}");
     // a big offset is clamped like any other, and one inside a character moves back to its start
     save(&d.join("b.strata"), "fn s(t: String) -> String { byte_slice(t, 0, 99999999999999999999) }\nfn m(t: String) -> String { byte_slice(t, 0, 2) }\n");
-    let (ok, out) = strata(&["--file", "b.strata", "run", "s", "[\"abc\"]"], &d, None);
+    let (ok, out) = strata(&["--file", "b.strata", "run", "s", "\"abc\""], &d, None);
     assert!(ok && out.contains("\"abc\""), "{out}");
-    let (ok, out) = strata(&["--file", "b.strata", "run", "m", "[\"aé\"]"], &d, None);
+    let (ok, out) = strata(&["--file", "b.strata", "run", "m", "\"aé\""], &d, None);
     assert!(ok && out.contains("\"a\""), "{out}");
 }
 
@@ -706,7 +860,7 @@ fn sku(s: String where matches(it, "[A-Z]{3}-[0-9]{4}")) -> Int ensures it == 99
     assert!(!ok && !out.contains("skipped") && !out.contains("internal error"), "{out}");
     assert!(out.lines().any(|l| l.starts_with("~ shout") && l.contains("fuzzed: 30 cases")), "{out}");
     let sku = out.lines().skip_while(|l| !l.starts_with("✗ sku")).nth(1).unwrap_or("");
-    assert!(sku.contains("input:   [\"") && sku.contains("-"), "refuted, with an input: {out}");
+    assert!(sku.contains("input:   \"") && sku.contains("-"), "refuted, with an input: {out}");
 }
 
 #[test]
@@ -726,7 +880,7 @@ fn math_example_verifies_as_documented() {
     }
     assert!(out.contains("~ isqrt") && out.contains("not proven: ensures it * it <= n"), "{out}");
     assert!(out.contains("the pair (`m`, `n`), compared in order") && out.contains("may not terminate: the loop `while x != 1`"), "{out}");
-    assert!(out.contains("✗ average") && out.contains("input:   [[]]") && out.contains("✗ next_digit") && out.contains("input:   [9]"), "{out}");
+    assert!(out.contains("✗ average") && out.contains("input:   []\n") && out.contains("✗ next_digit") && out.contains("input:   9\n"), "{out}");
 }
 
 #[test]
@@ -826,11 +980,11 @@ fn codebase_edits_are_checked_and_atomic() {
 }
 
 #[test]
-fn json_inputs_are_validated_against_refinements() {
-    let d = tmp("json");
-    let (ok, out) = strata(&["--file", &example(), "run", "total", r#"[[{"sku":"a","qty":0,"unit_price":5}]]"#], &d, None);
-    assert!(!ok && out.contains("Line.qty: 0 does not satisfy `Quantity`"), "{out}");
-    let (ok, out) = strata(&["--file", &example(), "run", "total", r#"[[{"sku":"a","qty":2,"unit_price":5}]]"#], &d, None);
+fn run_inputs_are_validated_against_refinements() {
+    let d = tmp("run-inputs");
+    let (ok, out) = strata(&["--file", &example(), "run", "total", r#"[Line { sku: "a", qty: 0, unit_price: 5 }]"#], &d, None);
+    assert!(!ok && out.contains("`Line.qty`: 0 does not satisfy `Quantity`"), "{out}");
+    let (ok, out) = strata(&["--file", &example(), "run", "total", r#"[Line { sku: "a", qty: 2, unit_price: 5 }]"#], &d, None);
     assert!(ok && out.trim() == "10", "{out}");
 }
 
@@ -1444,11 +1598,11 @@ fn unions_variants_as_types_and_narrowing() {
         let (_, r2) = strata(&["--file", "r.strata", "render"], &d, None);
         assert_eq!(r1, r2);
     }
-    // JSON input picks the union member it is a valid value of
-    let (ok, out) = strata(&["--file", "u.strata", "run", "area", r#"[{"radius": 2}]"#], &d, None);
+    // an argument of a union type is a value of one of its members
+    let (ok, out) = strata(&["--file", "u.strata", "run", "area", "Circle { radius: 2 }"], &d, None);
     assert!(ok && out.trim() == "12", "{out}");
-    let (ok, out) = strata(&["--file", "u.strata", "run", "max_of", r#"["NonEmptyErr"]"#], &d, None);
-    assert!(!ok && out.contains("expected a `TooBig`"), "{out}");
+    let (ok, out) = strata(&["--file", "u.strata", "run", "max_of", "NonEmptyErr"], &d, None);
+    assert!(!ok && out.contains("expected `TooBig`, found `ShapeError`"), "{out}");
 
     save(&d.join("bad.strata"), BAD);
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
@@ -1687,7 +1841,7 @@ fn or_patterns_refined_scrutinees_lengths_floats_and_variance() {
     assert!(out.contains("in lit: refinement violated at compile time in assigning `x`: -1 does not satisfy `Positive`"), "{out}");
     assert!(out.contains("in wb: call to `set_neg`, argument 1: `p` is declared `Positive`, but the `mut` parameter is `Int`"), "{out}");
     save(&d.join("mut_run.strata"), "fn a(mut n: Positive) -> Int {\n  n = n - 10\n  n\n}\n");
-    let (ok, out) = strata(&["--file", "mut_run.strata", "run", "a", "[3]"], &d, None);
+    let (ok, out) = strata(&["--file", "mut_run.strata", "run", "a", "3"], &d, None);
     assert!(!ok && out.contains("assigning `n`: -7 does not satisfy `Positive`"), "{out}");
     let (ok, out) = check("or_bad.strata", "type Light = | Red | Amber | Green\nfn a(l: Light) -> Bool { match l { Red | Amber => false } }\nfn b(p: (Int, Int)) -> Int { match p { (0, x) | (y, 0) => 1, _ => 2 } }\n");
     assert!(!ok && out.contains("`Green` is not covered") && out.contains("must bind the same names"), "{out}");
@@ -3486,6 +3640,136 @@ test \"methods\" {
 }
 
 #[test]
+fn serve_app_capabilities_timers_and_keys() {
+    let d = tmp("serve-app-caps");
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    std::fs::write(d.join("note.txt"), "first").unwrap();
+    save(&d.join("app.strata"),
+        r#"use std.web.{Html, div, text, every, key_bindings, focused, input}
+use std.fs.{Disk, Files}
+type Model = { note: String, searching: Bool }
+type Msg =
+  | Check
+  | Search
+fn note(files: Files) -> String {
+  match files.read("note.txt") {
+    Ok(t) => t,
+    Err(_) => "none",
+  }
+}
+fn init(disk: Disk) -> Model {
+  Model { note: note(disk), searching: false }
+}
+fn update(model: Model, msg: Msg, disk: Disk) -> Model {
+  match msg {
+    Check => Model { ..model, note: note(disk) },
+    Search => Model { ..model, searching: true },
+  }
+}
+fn view(model: Model) -> Html[Msg] {
+  div([every(500, Check)], [
+    key_bindings([("/", Search), ("meta+k", Search)]),
+    text(f"note={model.note}"),
+    if model.searching { input([focused()]) } else { text("") },
+  ])
+}
+"#);
+    let mut server = Command::new(env!("CARGO_BIN_EXE_strata")).args(["serve", "app.strata", "--port", &port.to_string()]).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let up = (0..100).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    });
+    let post = |body: &str| http(port, &format!("POST /_strata/msg HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
+    let results = std::panic::catch_unwind(|| {
+        assert!(up, "the server didn't start");
+        let page = http(port, "GET / HTTP/1.1\r\n\r\n");
+        assert!(page.contains("note=first"), "`init` read the file through its `Disk`: {page}");
+        assert!(page.contains(r#"data-every="500" data-on-every="&quot;Check&quot;""#), "{page}");
+        assert!(page.contains(r#"data-key="/" data-on-key="&quot;Search&quot;""#) && page.contains(r#"data-key="meta+k""#), "{page}");
+        let sid = page.split(r#"data-session=""#).nth(1).unwrap().split('"').next().unwrap().to_string();
+        let check = format!(r#"{{"session":"{sid}","msg":"Check"}}"#);
+        assert!(post(&check).starts_with("HTTP/1.1 204"), "nothing changed: no view");
+        std::fs::write(d.join("note.txt"), "second").unwrap();
+        assert!(post(&check).contains("note=second"), "`update` reads the file too");
+        let r = post(&format!(r#"{{"session":"{sid}","msg":"Search"}}"#));
+        assert!(r.contains("<input data-focus>"), "{r}");
+        let js = http(port, "GET /_strata/app.js HTTP/1.1\r\n\r\n");
+        assert!(js.contains("data-every") && js.contains("data-key") && js.contains("data-focus"));
+    });
+    let _ = server.kill();
+    let _ = server.wait();
+    if let Err(e) = results {
+        std::panic::resume_unwind(e);
+    }
+}
+
+#[test]
+fn code_capability_reads_the_codebase() {
+    let d = tmp("code-cap");
+    std::fs::write(d.join("strata.toml"), "name = \"demo\"\n").unwrap();
+    save_module(&d, "core", "/// Doubles.\npub fn double(x: Int) -> Int { x * 2 }\n\nfn quad(x: Int) -> Int { double(double(x)) }\n");
+    // the program is outside the package it reads (the current folder)
+    let prog = tmp("code-cap-prog").join("show.strata");
+    save(&prog, r#"use std.code.{Codebase}
+fn main(code: Codebase) {
+  match code.snapshot() {
+    Ok(s) => {
+      for x in s.definitions {
+        print(f"{x.name} {x.kind} deps={x.deps} refs={x.refs} doc={x.doc} iface={x.interface}")
+      }
+      print(f"log={len(s.log)} same={s.version == code.version()}")
+    },
+    Err(e) => print(f"error {e}"),
+  }
+}
+"#);
+    let (ok, out) = strata(&["run", &prog.to_string_lossy()], &d, None);
+    assert!(ok, "{out}");
+    assert!(out.contains(r#"core.double fn deps=[] refs=["core.quad"] doc=Doubles. iface=pub fn double(x: Int) -> Int"#), "{out}");
+    assert!(out.contains(r#"core.quad fn deps=["core.double"] refs=[]"#), "{out}");
+    assert!(out.contains("same=true"), "{out}");
+    // a file that doesn't decode is an `Err`, not a fault
+    std::fs::write(d.join("core.strata"), "garbage").unwrap();
+    let (_, out) = strata(&["run", &prog.to_string_lossy()], &d, None);
+    assert!(out.contains("error ") && out.contains("core.strata"), "{out}");
+}
+
+#[test]
+fn ui_in_strata_shows_the_code() {
+    let d = tmp("ui-strata");
+    std::fs::write(d.join("strata.toml"), "name = \"demo\"\n").unwrap();
+    save_module(&d, "core", "/// Doubles.\npub fn double(x: Int) -> Int { x * 2 }\n\nfn quad(x: Int) -> Int { double(double(x)) }\n");
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    let mut server = Command::new(env!("CARGO_BIN_EXE_strata")).args(["ui", "--strata", "--file", &d.to_string_lossy(), "--port", &port.to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let up = (0..200).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    });
+    let post = |body: &str| http(port, &format!("POST /_strata/msg HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
+    let results = std::panic::catch_unwind(|| {
+        assert!(up, "the viewer didn't start");
+        let page = http(port, "GET / HTTP/1.1\r\n\r\n");
+        assert!(page.contains("<title>Strata</title>") && page.contains(r#"data-every="1500""#), "{page}");
+        assert!(page.contains(r#"title="core.double""#) && page.contains(r#"title="core.quad""#), "both definitions are listed: {page}");
+        let sid = page.split(r#"data-session=""#).nth(1).unwrap().split('"').next().unwrap().to_string();
+        // nothing changed: the timer's refresh doesn't render
+        assert!(post(&format!(r#"{{"session":"{sid}","msg":"Refresh"}}"#)).starts_with("HTTP/1.1 204"));
+        // selecting `quad` shows it with what it uses; its call of `double` links there
+        let r = post(&format!(r#"{{"session":"{sid}","msg":{{"Go":{{"name":"core.quad"}}}}}}"#));
+        assert!(r.contains("Dependencies") && r.contains("card sel") && r.contains("&quot;core.double&quot;"), "{r}");
+        // an edit shows up on the next refresh
+        save_module(&d, "core", "/// Doubles.\npub fn double(x: Int) -> Int { x * 2 }\n\nfn quad(x: Int) -> Int { double(double(x)) }\n\nfn triple(x: Int) -> Int { x * 3 }\n");
+        let r = post(&format!(r#"{{"session":"{sid}","msg":"Refresh"}}"#));
+        assert!(r.starts_with("HTTP/1.1 200") && r.contains(r#"title="core.triple""#), "{r}");
+    });
+    let _ = server.kill();
+    let _ = server.wait();
+    if let Err(e) = results {
+        std::panic::resume_unwind(e);
+    }
+}
+
+#[test]
 fn serve_runs_an_app() {
     let d = tmp("serve-app");
     let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
@@ -3535,7 +3819,9 @@ fn view(model: Model) -> Html[Msg] {
         // a fault in `update` is a 500, and the model stays as it was
         let r = post(&format!(r#"{{"session":"{sid}","msg":"Boom"}}"#));
         assert!(r.starts_with("HTTP/1.1 500") && r.contains("division by zero"), "{r}");
-        assert!(post(&format!(r#"{{"session":"{sid}","msg":"Up"}}"#)).contains("n=3"));
+        // the model stayed at 3, so `Up` (capped at 3) changes nothing: 204, no view
+        assert!(post(&format!(r#"{{"session":"{sid}","msg":"Up"}}"#)).starts_with("HTTP/1.1 204"));
+        assert!(post(&format!(r#"{{"session":"{sid}","msg":{{"Set":{{"n":1}}}}}}"#)).contains("n=1"));
         // an unknown session: the page reloads
         assert!(post(r#"{"session":"gone","msg":"Up"}"#).starts_with("HTTP/1.1 410"));
         assert!(http(port, "GET /_strata/app.js HTTP/1.1\r\n\r\n").contains("data-on-"));
@@ -3633,10 +3919,10 @@ fn ranges_slices_and_comprehensions() {
     assert!(ok, "{out}");
     let (ok, out) = strata(&["--file", "sugar.strata", "render"], &d, None);
     assert!(ok && out == written, "{out}");
-    let (ok, out) = strata(&["--file", &src, "run", "first", "[[]]"], &d, None);
+    let (ok, out) = strata(&["--file", &src, "run", "first", "[]"], &d, None);
     assert!(!ok && out.contains("does not satisfy"), "{out}");
     save(&d.join("last.strata"), "fn last(xs: List[Int]) -> Int { xs[len(xs) - 1] }");
-    let (ok, out) = strata(&["--file", "last.strata", "run", "last", "[[]]"], &d, None);
+    let (ok, out) = strata(&["--file", "last.strata", "run", "last", "[]"], &d, None);
     assert!(!ok && out.contains("index -1 out of range (length 0)"), "{out}");
     for (code, err) in [
         ("fn f(xs: List[Int]) -> List[Int] { xs[1..=] }", "`..=` needs an end"),
@@ -3693,9 +3979,9 @@ fn record_defaults() {
     assert!(ok, "{out}");
     save(&d.join("again.strata"), &out);
     assert_eq!(text(&d.join("again.strata")), out);
-    // JSON input: a missing key takes the default
+    // an argument: a field left out takes its default
     save(&d.join("r.strata"), "type R = { n: Int = 1, s: String }\nfn f(r: R) -> Int { r.n }\n");
-    let (ok, out) = strata(&["--file", "r.strata", "run", "f", r#"[{"s": "x"}]"#], &d, None);
+    let (ok, out) = strata(&["--file", "r.strata", "run", "f", r#"R { s: "x" }"#], &d, None);
     assert!(ok && out.trim() == "1", "{out}");
     // checked where the type is defined
     save(&d.join("bad.strata"), "type R = { n: Int where it > 0 = 0 }\ntype S = { s: String = 1 }\n");
@@ -4822,7 +5108,7 @@ fn run_mode_console_in_tests_and_trace() {
     let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["--file", "p", "run", "--trace"]).current_dir(&d).output().unwrap();
     let (stdout, stderr) = (String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
     assert_eq!(stdout, "tracing\n");
-    assert!(stderr.lines().any(|l| l.contains(r#""event":"call""#) && l.contains("std.io.Terminal") && l.contains(r#""tracing""#)), "{stderr}");
+    assert!(stderr.lines().any(|l| l.trim_start().starts_with("→ ") && l.contains("std.io.Terminal") && l.contains(r#""tracing""#)), "{stderr}");
     // in a test: `Testing`, and the console's output is the test's, shown only if it fails
     let (ok, out) = strata(&["--file", "p", "test"], &d, None);
     assert!(!ok && out.contains("✓ sees it") && out.contains("✗ fails") && out.contains("shown: the test fails") && !out.contains("hidden: the test passes"), "{out}");
@@ -4877,9 +5163,9 @@ fn long_list_literals_compile_in_linear_time() {
     let d = tmp("long-literal");
     save(&d.join("t.strata"), "fn total(xs: List[Int]) -> Int {\n  sum(xs)\n}\n");
     // 60,000 elements: one argument stays under Linux's 128 KB (3.6 s before, 0.08 s now)
-    let arg = format!("[[{}]]", vec!["1"; 60_000].join(","));
+    let arg = format!("[{}]", vec!["1"; 60_000].join(","));
     // (a first run may precompile std, once per strata binary)
-    let (ok, out) = strata(&["--file", "t.strata", "run", "total", "[[1, 2]]"], &d, None);
+    let (ok, out) = strata(&["--file", "t.strata", "run", "total", "[1, 2]"], &d, None);
     assert!(ok && out.trim() == "3", "{out}");
     let start = std::time::Instant::now();
     let (ok, out) = strata(&["--file", "t.strata", "run", "total", &arg], &d, None);
@@ -4906,4 +5192,247 @@ fn bit_operators() {
     let (_, out) = strata(&["--file", "neg.strata", "render"], &d, None);
     // a bit operation compared keeps its parentheses (C reads `x | 15 == 15` otherwise)
     assert!(out.contains("where (it | 1) == 3 | 0 => 1,") && out.contains("where (it | 15) == 15") && out.contains("x & 255"), "{out}");
+}
+
+/// `strata ui`'s workspace, end to end against a scratch repository: the
+/// activity (branches → commits → definitions) and diffs between them, an
+/// agent session over ACP (a fake agent: a turn with a permission request),
+/// and PRs through a fake `gh` (a stack merged top-down). Nothing leaves the
+/// machine.
+#[test]
+fn ui_workspace_activity_agents_and_prs() {
+    use std::io::{Read, Write as _};
+    let d = tmp("ui-workspace");
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let o = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    let repo = d.join("repo");
+    std::fs::create_dir_all(repo.join("pkg")).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["config", "user.email", "t@example.com"]);
+    git(&repo, &["config", "user.name", "Tester"]);
+    std::fs::write(repo.join("pkg/strata.toml"), "name = \"pkg\"\n").unwrap();
+    let edit = |text: &str, msg: &str| {
+        let (ok, out) = strata(&["edit", "-m", msg], &repo.join("pkg"), Some(text));
+        assert!(ok, "{out}");
+    };
+    edit("pub fn one() -> Int {\n  1\n}\n", "one");
+    git(&repo, &["add", "-A"]);
+    let _ = Command::new("git").arg("-C").arg(&repo).args(["commit", "-qm", "the package"]).output();
+    git(&repo, &["checkout", "-qb", "feature"]);
+    edit("pub fn two() -> Int {\n  one() + 1\n}\n", "two");
+    let _ = Command::new("git").arg("-C").arg(&repo).args(["commit", "-qam", "two"]).output();
+    git(&repo, &["checkout", "-q", "main"]);
+    // an origin, with the PR's head where GitHub keeps it
+    let origin = d.join("origin.git");
+    git(&d, &["clone", "-q", "--bare", repo.to_str().unwrap(), origin.to_str().unwrap()]);
+    git(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+    git(&repo, &["push", "-q", "origin", "feature:refs/pull/1/head"]);
+    git(&repo, &["fetch", "-q", "origin"]);
+    let feature = git(&repo, &["rev-parse", "feature"]);
+
+    // a fake agent: one turn, which asks before running `strata edit`
+    let bin = d.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let exe = |name: &str, text: &str| {
+        let p = bin.join(name);
+        std::fs::write(&p, text).unwrap();
+        Command::new("chmod").arg("+x").arg(&p).status().unwrap();
+        p
+    };
+    let agent = exe(
+        "agent.sh",
+        r#"#!/bin/sh
+upd() { printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":%s}}\n' "$1"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1}}\n' "$id" ;;
+    *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1"}}\n' "$id" ;;
+    *'"method":"session/prompt"'*)
+      upd '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"On it."}}'
+      upd '{"sessionUpdate":"tool_call","toolCallId":"t1","title":"edit","kind":"execute","status":"pending","rawInput":{"command":"strata edit <<EOF\nfn three() -> Int {\n  3\n}\nEOF"}}'
+      printf '{"jsonrpc":"2.0","id":"p1","method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"t1"},"options":[{"optionId":"yes","name":"Allow","kind":"allow_once"},{"optionId":"no","name":"Reject","kind":"reject_once"}]}}\n'
+      IFS= read -r answer
+      case "$answer" in *'"optionId":"yes"'*) st=completed ;; *) st=failed ;; esac
+      upd "{\"sessionUpdate\":\"tool_call_update\",\"toolCallId\":\"t1\",\"status\":\"$st\"}"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id" ;;
+  esac
+done
+"#,
+    );
+    // a fake gh: PR #1 (feature into main), behind its base; every call logged
+    let log = d.join("gh.log");
+    let gh = exe(
+        "gh",
+        &format!(
+            r#"#!/bin/sh
+echo "$*" >> '{log}'
+pr='{{"number":1,"title":"two","headRefName":"feature","baseRefName":"main","headRefOid":"{feature}","baseRefOid":"","state":"OPEN","isDraft":false,"author":{{"login":"t"}},"mergeStateStatus":"BEHIND","commits":[],"comments":[],"reviews":[],"statusCheckRollup":[],"files":[]}}'
+case "$1 $2" in
+  "pr list") echo "[$pr]" ;;
+  "pr view") echo "$pr" ;;
+  "run list") echo "[]" ;;
+  "pr comment"|"pr review") cat >> '{log}' ;;
+  "pr update-branch"|"pr merge") echo ok ;;
+  *) echo "no $*" >&2; exit 1 ;;
+esac
+"#,
+            log = log.display()
+        ),
+    );
+
+    // a saved Claude Code session of this repository, where Claude keeps them
+    let home = d.join("home");
+    let top = std::fs::canonicalize(&repo).unwrap().to_string_lossy().replace(['/', '.'], "-");
+    let saved = home.join(".claude/projects").join(top);
+    std::fs::create_dir_all(&saved).unwrap();
+    std::fs::write(
+        saved.join("0123abcd-0000-4000-8000-000000000001.jsonl"),
+        [
+            r#"{"type":"user","message":{"role":"user","content":"<command-name>/clear</command-name>"},"cwd":"CWD","gitBranch":"main","timestamp":"2026-11-22T10:00:00Z"}"#,
+            r#"{"type":"user","message":{"role":"user","content":"add three<system-reminder>ignore</system-reminder>"},"cwd":"CWD","gitBranch":"main","timestamp":"2026-11-22T10:00:01Z"}"#,
+            r#"{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"On it."},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"strata check"}}]},"cwd":"CWD"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok: 2 definitions check"}]},"cwd":"CWD"}"#,
+            r#"{"type":"assistant","isSidechain":true,"message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"a subagent"}]}}"#,
+            r#"{"type":"ai-title","aiTitle":"Add three"}"#,
+        ]
+        .join("\n")
+        .replace("CWD", &std::fs::canonicalize(&repo).unwrap().to_string_lossy()),
+    )
+    .unwrap();
+
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let mut server = Command::new(env!("CARGO_BIN_EXE_strata"))
+        .args(["ui", "--port", &port.to_string()])
+        .current_dir(repo.join("pkg"))
+        .env("HOME", &home)
+        .env("STRATA_UI_AGENT", &agent)
+        .env("STRATA_UI_GH", &gh)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // a request as the page makes it (or as `headers` says)
+    let call = |method: &str, path: &str, body: &str, headers: &str| -> (u16, String) {
+        for _ in 0..100 {
+            if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+                let req = format!("{method} {path} HTTP/1.1\r\n{headers}Content-Length: {}\r\n\r\n{body}", body.len());
+                s.write_all(req.as_bytes()).unwrap();
+                let mut out = String::new();
+                s.read_to_string(&mut out).unwrap();
+                let code = out.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+                return (code, out.split_once("\r\n\r\n").map(|x| x.1.to_string()).unwrap_or_default());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("the viewer didn't start");
+    };
+    let host = format!("Host: 127.0.0.1:{port}\r\n");
+    let page = format!("{host}X-Strata: 1\r\n");
+    let get = |path: &str| -> serde_json::Value { serde_json::from_str(&call("GET", path, "", &host).1).unwrap() };
+    let post = |path: &str, body: &str| -> serde_json::Value { serde_json::from_str(&call("POST", path, body, &page).1).unwrap() };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // only the page itself
+        assert_eq!(call("GET", "/", "", &host).0, 200);
+        assert_eq!(call("GET", "/api/state", "", &format!("Host: evil.example:{port}\r\n")).0, 403);
+        assert_eq!(call("POST", "/api/agents", "{}", &host).0, 403, "a POST without X-Strata");
+        assert_eq!(call("POST", "/api/agents", "{}", &format!("{page}Origin: http://evil.example\r\n")).0, 403);
+
+        // the activity: main, and feature with its commit and the definition it added
+        let act = get("/api/activity");
+        let branches = act["branches"].as_array().unwrap();
+        let feat = branches.iter().find(|b| b["name"] == "feature").unwrap_or_else(|| panic!("{act}"));
+        assert_eq!(feat["commits"][0]["subject"], "two", "{act}");
+        assert_eq!(feat["commits"][0]["defs"], serde_json::json!([{"name": "two", "mk": "add", "kind": "fn"}]), "{act}");
+        assert!(branches.iter().any(|b| b["name"] == "main" && b["here"] == true), "{act}");
+        let diff = get(&format!("/api/diff?base={}&head=feature", feat["base"].as_str().unwrap()));
+        assert_eq!(diff["summary"]["added"], 1, "{diff}");
+        assert!(get("/api/diff?base=--output=x&head=feature")["error"].is_string());
+
+        // an agent session: its turn streams in, and it waits for the permission
+        let s = post("/api/agents", r#"{"title":"three","prompt":"add three","auto_allow":false}"#);
+        assert_eq!(s["id"], 1, "{s}");
+        let wait_for = |kind: &str| -> serde_json::Value {
+            for _ in 0..100 {
+                let ev = get("/api/agents/1?since=0");
+                if ev["list"].as_array().unwrap().iter().any(|e| e["kind"] == kind) {
+                    return ev;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            panic!("no {kind} event: {}", get("/api/agents/1?since=0"));
+        };
+        let ev = wait_for("permission");
+        assert_eq!(ev["status"], "working");
+        assert_eq!(ev["asking"], 1);
+        let perm = ev["list"].as_array().unwrap().iter().find(|e| e["kind"] == "permission").unwrap().clone();
+        assert!(post("/api/agents/1/answer", &serde_json::json!({"rpc": perm["rpc"], "option": "yes"}).to_string())["error"].is_null());
+        let ev = wait_for("stop");
+        let kinds: Vec<String> = ev["list"].as_array().unwrap().iter().map(|e| format!("{}{}", e["kind"].as_str().unwrap(), e["update"]["sessionUpdate"].as_str().map(|u| format!(":{u}")).unwrap_or_default())).collect();
+        assert_eq!(kinds, ["user", "agent", "ready", "update:agent_message_chunk", "update:tool_call", "permission", "answer", "update:tool_call_update", "stop"], "{ev}");
+        assert!(ev["list"].as_array().unwrap().iter().any(|e| e["update"]["status"] == "completed"), "allowed: {ev}");
+        assert_eq!(ev["status"], "ready");
+        // answered once only; then a second turn, and the session ends
+        assert!(post("/api/agents/1/answer", &serde_json::json!({"rpc": perm["rpc"], "option": "yes"}).to_string())["error"].is_string());
+        assert_eq!(get("/api/agents/1?since=9")["list"].as_array().unwrap().len(), 0);
+        post("/api/agents/1/stop", "{}");
+        wait_for("exit");
+
+        // saved sessions: listed with their title, read as a live session's events
+        let hist = get("/api/history");
+        assert_eq!(hist[0]["id"], "0123abcd-0000-4000-8000-000000000001", "{hist}");
+        assert_eq!(hist[0]["title"], "Add three");
+        assert_eq!(hist[0]["branch"], "main");
+        let t = get("/api/history/0123abcd-0000-4000-8000-000000000001");
+        let kinds: Vec<String> = t["list"].as_array().unwrap().iter().map(|e| format!("{}{}", e["kind"].as_str().unwrap(), e["update"]["sessionUpdate"].as_str().map(|u| format!(":{u}")).unwrap_or_default())).collect();
+        assert_eq!(kinds, ["user", "user", "update:agent_message_chunk", "update:tool_call", "update:tool_call_update"], "{t}");
+        assert_eq!(t["list"][0]["text"], "/clear");
+        assert_eq!(t["list"][1]["text"], "add three", "reminders left out");
+        assert_eq!(t["list"][3]["update"]["rawInput"]["command"], "strata check");
+        assert!(get("/api/history/..%2Fx")["error"].is_string());
+
+        // PRs: the list, the page, the structural diff, the actions
+        assert_eq!(get("/api/prs")["prs"][0]["number"], 1);
+        let pr = get("/api/prs/1");
+        assert_eq!(pr["below"], serde_json::json!([]), "{pr}");
+        let pd = get("/api/prs/1/diff");
+        assert_eq!(pd["structural"][0]["path"], "pkg", "{pd}");
+        assert_eq!(pd["structural"][0]["diff"]["summary"]["added"], 1, "{pd}");
+        assert!(post("/api/prs/1/review", r#"{"event":"request_changes","body":" "}"#)["error"].is_string(), "changes need a reason");
+        assert_eq!(post("/api/prs/1/comment", r#"{"body":"Looks good"}"#)["ok"], true);
+        let m = post("/api/prs/1/merge", r#"{"stack":true}"#);
+        assert_eq!(m["ok"], true, "{m}");
+        assert!(get("/api/prs/x")["error"].is_string());
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(calls.contains("pr comment 1 --body-file -\nLooks good"), "{calls}");
+        let update = calls.find("pr update-branch 1").expect("behind: updated first");
+        assert!(calls.find("pr merge 1 --merge").is_some_and(|m| m > update), "{calls}");
+    }));
+    let _ = server.kill();
+    let _ = server.wait();
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// The viewer's page is one script: a function or constant defined twice
+/// silently replaces the first (a `clip` for tool output once broke the
+/// type map's `clip`).
+#[test]
+fn ui_page_defines_each_name_once() {
+    let page = std::fs::read_to_string(format!("{}/src/ui/index.html", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let mut seen = std::collections::HashMap::new();
+    for line in page.lines() {
+        let rest = line.strip_prefix("async function ").or_else(|| line.strip_prefix("function ")).or_else(|| line.strip_prefix("const ")).or_else(|| line.strip_prefix("let ")).or_else(|| line.strip_prefix("var "));
+        let Some(rest) = rest else { continue };
+        let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$').collect();
+        if !name.is_empty() {
+            *seen.entry(name).or_insert(0) += 1;
+        }
+    }
+    let twice: Vec<_> = seen.iter().filter(|(_, n)| **n > 1).map(|(k, _)| k.clone()).collect();
+    assert!(twice.is_empty(), "defined more than once in src/ui/index.html: {twice:?}");
 }

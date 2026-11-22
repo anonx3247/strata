@@ -6,6 +6,16 @@
 // - `data-handle-input="3"`: handler 3 of the page makes the message from
 //   what the user entered: the field's value, or a form's fields
 //   (`std.web.dispatch`, on the server).
+// - `data-every="1500" data-on-every="<message>"`: sent every 1.5s while the
+//   element is on the page (`std.web.every`), skipped while another message
+//   is on its way.
+// - `data-key="meta+p" data-on-key="<message>"`: sent when the key is
+//   pressed (`std.web.on_key`).
+// - `data-focus`, `data-reveal`: the element takes the focus, or is scrolled
+//   into view, when the attribute appears.
+//
+// The server answers 204 when the message didn't change the model: the page
+// stays as it is.
 //
 // The page is patched, not replaced, so focus and scroll stay, and the field
 // being typed in keeps its cursor and what was typed since (after a submit,
@@ -67,32 +77,91 @@
   }
 
   function show(html) {
+    const before = new Set(root.querySelectorAll("[data-focus], [data-reveal]"));
     const next = document.createElement("div");
     next.innerHTML = html;
     morph(root, Object.assign(next, { id: root.id }));
     // `morph` copied the new root's attributes: keep the session
     root.dataset.session = sessionId;
+    arrived(before);
+    timers();
   }
+
+  /// Focus, or scroll to, the elements whose `data-focus` or `data-reveal`
+  /// wasn't there before (`before`: those that were).
+  function arrived(before) {
+    for (const el of root.querySelectorAll("[data-focus]")) if (!before.has(el) && el !== document.activeElement) el.focus();
+    for (const el of root.querySelectorAll("[data-reveal]")) if (!before.has(el)) el.scrollIntoView({ block: "nearest" });
+  }
+
+  // ---- messages sent on a timer (`every`) ----
+
+  /// The running timers, by what they send: "<ms> <message>".
+  const running = new Map();
+  /// Messages sent or waiting to be: a timer's message waits for none.
+  let busy = 0;
+
+  function timers() {
+    const wanted = new Set();
+    for (const el of root.querySelectorAll("[data-every]")) {
+      const ms = Math.max(100, Number(el.dataset.every) || 0);
+      const key = `${ms} ${el.dataset.onEvery}`;
+      wanted.add(key);
+      if (!running.has(key)) {
+        const msg = JSON.parse(el.dataset.onEvery);
+        running.set(key, setInterval(() => { if (!busy) enqueue({ msg }); }, ms));
+      }
+    }
+    for (const [key, t] of running) if (!wanted.has(key)) { clearInterval(t); running.delete(key); }
+  }
+
+  // ---- keys (`on_key`) ----
+
+  function keyName(e) {
+    if (["Control", "Alt", "Meta", "Shift"].includes(e.key)) return null;
+    // with ctrl or meta held, a letter is named in lowercase whatever shift does
+    const key = e.key.length === 1 && (e.ctrlKey || e.metaKey) ? e.key.toLowerCase() : e.key;
+    return (e.ctrlKey ? "ctrl+" : "") + (e.altKey ? "alt+" : "") + (e.metaKey ? "meta+" : "") + key;
+  }
+
+  document.addEventListener("keydown", (e) => {
+    const name = keyName(e);
+    if (!name) return;
+    const t = e.target;
+    const typing = t instanceof HTMLElement && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
+    if (typing && !(e.ctrlKey || e.metaKey || name === "Escape")) return;
+    const el = [...root.querySelectorAll("[data-key]")].find((k) => k.dataset.key === name);
+    if (!el) return;
+    e.preventDefault();
+    enqueue({ msg: JSON.parse(el.dataset.onKey) });
+  }, true);
 
   const sessionId = root.dataset.session;
 
   async function send(body, from) {
-    const res = await fetch("/_strata/msg", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ session: sessionId, ...body }),
-    });
-    const text = await res.text();
-    if (res.status === 410) return location.reload();
-    if (!res.ok) return banner(`${res.status}: ${text}`);
-    document.getElementById("strata-error")?.remove();
-    typing = from;
-    show(text);
-    typing = null;
+    try {
+      const res = await fetch("/_strata/msg", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ session: sessionId, ...body }),
+      });
+      const text = await res.text();
+      if (res.status === 410) return location.reload();
+      if (!res.ok) return banner(`${res.status}: ${text}`);
+      document.getElementById("strata-error")?.remove();
+      // the model didn't change: neither does the page
+      if (res.status === 204) return;
+      typing = from;
+      show(text);
+      typing = null;
+    } finally {
+      busy--;
+    }
   }
 
   /// `from`: the field whose typing this is, if it is.
   function enqueue(body, from = null) {
+    busy++;
     queue = queue.then(() => send(body, from)).catch((err) => banner(String(err)));
   }
 
@@ -120,4 +189,7 @@
       else enqueue({ handler, value: valueOf(el) }, event === "input" ? el : null);
     });
   }
+
+  arrived(new Set());
+  timers();
 })();

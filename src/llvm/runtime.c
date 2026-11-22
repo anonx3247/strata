@@ -215,30 +215,13 @@ void strata_enter(Str *name) {
   runs++;
 }
 
-// `strata run --trace`: a JSON line per call and return, on stderr, as the
-// interpreter wrote them (the depth counted here). `fn` is the name as JSON;
-// the arguments and value are JSON made by the generated code (consumed).
-static _Thread_local int64_t trace_depth;
-
-void strata_trace_call(Str *fn, Str *args) {
-  trace_depth++;
-  fprintf(stderr, "{\"event\":\"call\",\"fn\":%.*s,\"args\":%.*s,\"depth\":%lld}\n", (int)fn->len, fn->bytes, (int)args->len, args->bytes, (long long)trace_depth);
-  str_drop(args);
-}
-
-void strata_trace_return(Str *fn, Str *value) {
-  fprintf(stderr, "{\"event\":\"return\",\"fn\":%.*s,\"value\":%.*s,\"depth\":%lld}\n", (int)fn->len, fn->bytes, (int)value->len, value->bytes, (long long)trace_depth);
-  trace_depth--;
-  str_drop(value);
-}
-
 void strata_leave(void) {
   if (runs <= FRAMES && --counts[runs - 1] > 0) return;
   runs--;
 }
 
 // The call stack as `strata run` shows it ("" when empty): as the
-// interpreter's `show_stack`, four or more calls in a row of one function
+// `names::show_stack`, four or more calls in a row of one function
 // are one entry.
 static char *stack_text(void) {
   size_t n = 16;
@@ -312,25 +295,15 @@ int32_t strata_test(void (*f)(void)) {
 // ---- fuzzing (`strata verify --jit`) ----
 //
 // A fuzz driver (llvm.rs, `compile_fuzz`) generates a function's arguments,
-// records them as JSON, and calls it; `strata_fuzz` runs one case as
+// hands each to strata (`strata_fuzz_keep`, src/llvm/jit.rs: read by its
+// shape), and calls it; `strata_fuzz` runs one case as
 // `strata_test` runs a test, with the generators seeded and a step budget
 // (each loop iteration and call is a step): past it, a `Limit` fault.
 
 _Noreturn void strata_fault(int32_t kind, Str *msg);
-static _Thread_local char *fuzz_args;
-static _Thread_local size_t fuzz_len, fuzz_cap;
 
 static _Thread_local int64_t steps;
 static _Thread_local _Bool counting;
-
-void strata_fuzz_arg(Str *json) {
-  size_t need = fuzz_len + (size_t)json->len + 2;
-  if (need > fuzz_cap) fuzz_args = realloc(fuzz_args, fuzz_cap = need * 2);
-  if (fuzz_len > 1) fuzz_args[fuzz_len++] = ',';
-  memcpy(fuzz_args + fuzz_len, json->bytes, (size_t)json->len);
-  fuzz_len += (size_t)json->len;
-  fuzz_args[fuzz_len] = 0;
-}
 
 void strata_step(void) {
   if (counting && --steps < 0) {
@@ -340,8 +313,6 @@ void strata_step(void) {
 }
 
 int32_t strata_fuzz(void (*f)(void), int64_t seed, int64_t budget) {
-  if (fuzz_cap < 2) fuzz_args = realloc(fuzz_args, fuzz_cap = 64);
-  fuzz_args[0] = '[', fuzz_args[1] = 0, fuzz_len = 1;
   steps = budget;
   counting = 1;
   test_seed = (uint64_t)seed;
@@ -351,17 +322,38 @@ int32_t strata_fuzz(void (*f)(void), int64_t seed, int64_t budget) {
   return r;
 }
 
-// The last case's arguments, as a JSON array.
-const char *strata_fuzz_args(void) {
-  static char *out;
-  free(out);
-  out = malloc(fuzz_len + 2);
-  memcpy(out, fuzz_args, fuzz_len);
-  out[fuzz_len] = ']', out[fuzz_len + 1] = 0;
-  return out;
+void strata_seed(int64_t seed) { rng = (uint64_t)seed; }
+
+// The `Code` capability (std.code): the codebase as typed values, which
+// strata builds (src/ui.rs) and writes into this program's memory
+// (src/llvm/native.rs) when it runs one. A built program has none.
+typedef Str *(*CodeVersion)(void);
+typedef void *(*CodeSnapshot)(Str **err);
+static CodeVersion code_version;
+static CodeSnapshot code_snapshot;
+void strata_set_code_host(CodeVersion v, CodeSnapshot s) {
+  code_version = v;
+  code_snapshot = s;
 }
 
-void strata_seed(int64_t seed) { rng = (uint64_t)seed; }
+static void no_code(void) { strata_fault(4, str_c("`Codebase` is given only under `strata run` and `strata serve` (a built program has none)")); }
+
+Str *strata_host_code_version(void) {
+  if (!code_version) no_code();
+  return code_version();
+}
+
+// The snapshot, or NULL and the failure in `*err`.
+void *strata_host_code_snapshot(Str **err) {
+  if (!code_snapshot) no_code();
+  return code_snapshot(err);
+}
+
+// Values the host wrote into memory for compiled code to take
+// (`strata_run_call`'s arguments; llvm.rs, `Entry::Call`).
+static _Thread_local int64_t *given;
+void strata_set_given(int64_t *g) { given = g; }
+int64_t strata_given(int64_t i) { return given[i]; }
 
 // Compile-time code's value (`strata.ct.N` hands it over), for the compiler
 // to read (src/llvm/native.rs).

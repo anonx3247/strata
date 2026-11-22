@@ -3,11 +3,14 @@
 //!
 //! The body is executed symbolically. Values are SMT terms (`Int`, `Bool`,
 //! `String`), records and sums are kept as structures of terms (a sum is a tag
-//! plus the payload of every constructor), and lists are tracked by their
+//! plus the payload of every constructor), and lists are tracked by position
+//! where they can be (a checked list's element is a function of its position;
+//! slices, `+` and literals translate positions) and otherwise by their
 //! length only. A branch splits the path condition and the two results are
 //! merged with `ite`. A loop forgets what it changes: those variables become
 //! fresh values that keep only what their types guarantee (loop invariants
-//! come later).
+//! come later). After the loop, the state is that one with a `while`'s
+//! condition false, or the state at one of its `break`s.
 //!
 //! Every runtime check of the interpreter is an obligation: a callee's
 //! parameter refinements and `requires`, constructor and field refinements,
@@ -25,7 +28,6 @@
 //! `div` and `mod` and like the interpreter.
 
 use crate::ast::*;
-use crate::interp::{Fields, Value};
 use crate::types::{subst_texpr, Env};
 use crate::fx::{HashMap, HashSet};
 use std::io::Write;
@@ -76,6 +78,8 @@ pub enum Func {
     Named(String),
     /// "is a valid value of this type".
     Valid(TypeExpr),
+    /// The negation of a function to Bool (`any(xs, f)` is `!all(xs, !f)`).
+    Not(Box<Func>),
 }
 
 /// How an arbitrary element of a list is made: each list's elements are
@@ -97,8 +101,57 @@ pub enum Gen {
     /// A function of an element of another list (`map`).
     Map(usize, Func),
     /// An element of the first list when the term holds, else of the second
-    /// (`a + b` with a free choice, or two branches merged).
+    /// (two branches merged): the same position in either.
     Either(T, usize, usize),
+    /// The elements of another list from a position on (`drop`, `slice`,
+    /// `take`, a `..rest` pattern): element `i` is the other's `off + i`.
+    Shift(usize, T),
+    /// Another list backwards (`reverse`), of this length.
+    Rev(usize, T),
+    /// The first list, then the second (`a + b`, `push`), the first of this
+    /// length.
+    Concat(usize, usize, T),
+}
+
+/// The element of a list of a checked type at a placeholder position
+/// (`IDX`): its unknowns are functions of the position, so equal positions
+/// hold equal elements. What is known of it holds for every element.
+#[derive(Clone, Debug)]
+struct Template {
+    val: Val,
+    facts: Vec<T>,
+}
+
+/// Stands for the position in a `Template`'s terms; `@@o0`, `@@o1`, … for
+/// the positions of the lists it is inside of.
+const IDX: &str = "@@i";
+
+/// `t` with `IDX` replaced by `own` and `@@oK` by `outer[K]`, all at once
+/// (a replacement may itself hold a placeholder).
+fn place(t: &str, own: &str, outer: &[T]) -> T {
+    if !t.contains("@@") {
+        return t.to_string();
+    }
+    let mut out = String::with_capacity(t.len());
+    let mut rest = t;
+    while let Some(k) = rest.find("@@") {
+        out.push_str(&rest[..k]);
+        let after = &rest[k + 2..];
+        if let Some(a) = after.strip_prefix('i') {
+            out.push_str(own);
+            rest = a;
+        } else if let Some(a) = after.strip_prefix('o') {
+            let n = a.chars().take_while(|c| c.is_ascii_digit()).count();
+            let idx: usize = a[..n].parse().unwrap_or(0);
+            out.push_str(outer.get(idx).map(String::as_str).unwrap_or("0"));
+            rest = &a[n..];
+        } else {
+            out.push_str("@@");
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// What the prover knows about the elements of one list.
@@ -111,6 +164,17 @@ struct ListInfo {
     /// Elements made so far, with the condition under which each exists, so
     /// that facts learnt later reach them too.
     seen: Vec<(T, Val)>,
+    /// For a list of a checked type: its element at any position.
+    template: Option<Template>,
+    /// The positions this list is inside of (an element's list in a list of
+    /// records is made once per element): its elements' unknowns are
+    /// functions of these and of their own position.
+    outer: Vec<T>,
+    /// The list whose template this one shares (a copy made per element).
+    tpl_from: Option<usize>,
+    /// Elements taken by position, by the position's term, with what was
+    /// assumed of them (assumed again on another path).
+    at: HashMap<String, (Val, Vec<T>)>,
 }
 
 /// One `while` loop, for the termination check.
@@ -184,6 +248,9 @@ pub struct Vc<'a> {
     pub relied_on: std::collections::BTreeSet<String>,
     /// Early returns (`return e`, `e!`, `e?`): the path and the value.
     returns: Vec<(Vec<T>, Val)>,
+    /// For each loop being run, innermost last: the path and the variables
+    /// at each `break`, merged into the state after the loop.
+    breaks: Vec<Vec<(Vec<T>, Vec<HashMap<String, Val>>)>>,
     /// Declared types of variables (`let x: T`, `mut p: T`): they hold for
     /// the variable's whole life, so every assignment is checked against
     /// them. Kept by name; a shadowed name keeps all its declarations, which
@@ -197,6 +264,13 @@ pub struct Vc<'a> {
     /// Making an element under a quantifier (`every`): it is not a real
     /// element, so facts are not attached to it later.
     binding: usize,
+    /// Fresh unknowns are functions of these positions: the placeholders
+    /// while making a `Template`, a quantified fact's variable while making it.
+    indexing: Option<Vec<String>>,
+    /// Names of the variables of quantified facts made so far.
+    qvars: usize,
+    /// Unknowns bound by a quantifier (`every`): not free in what contains it.
+    bound: HashSet<String>,
     /// The functions passed to the builtin being called, by argument.
     fn_args: Vec<Option<Func>>,
     /// The constant standing for each bit operation met (`& x y`), so one met
@@ -219,6 +293,22 @@ fn or(ts: &[T]) -> T {
         _ => format!("(or {})", ts.join(" ")),
     }
 }
+/// The sort of a function from a position to a value of `sort`.
+fn fn_sort(sort: &str, arity: usize) -> Option<&'static str> {
+    Some(match (sort, arity) {
+        ("Int", 1) => "(Int) Int",
+        ("Bool", 1) => "(Int) Bool",
+        ("String", 1) => "(Int) String",
+        ("Int", 2) => "(Int Int) Int",
+        ("Bool", 2) => "(Int Int) Bool",
+        ("String", 2) => "(Int Int) String",
+        ("Int", 3) => "(Int Int Int) Int",
+        ("Bool", 3) => "(Int Int Int) Bool",
+        ("String", 3) => "(Int Int Int) String",
+        _ => return None,
+    })
+}
+
 fn not(t: &str) -> T {
     match t {
         "true" => "false".into(),
@@ -308,10 +398,14 @@ impl<'a> Vc<'a> {
             transparent: HashMap::default(),
             relied_on: Default::default(),
             returns: vec![],
+            breaks: vec![],
             declared: HashMap::default(),
             matched: vec![],
             lists: vec![],
             binding: 0,
+            indexing: None,
+            qvars: 0,
+            bound: HashSet::default(),
             fn_args: vec![],
             bit_terms: HashMap::default(),
         }
@@ -319,11 +413,15 @@ impl<'a> Vc<'a> {
 
     fn fresh(&mut self, sort: &'static str) -> T {
         let n = format!("v{}", self.decls.len());
-        self.decls.push((n.clone(), sort));
+        let indexed = self.indexing.as_ref().and_then(|args| fn_sort(sort, args.len()));
+        self.decls.push((n.clone(), indexed.unwrap_or(sort)));
         if let Some(r) = &self.reason {
             self.reasons.insert(n.clone(), r.clone());
         }
-        n
+        match (indexed, &self.indexing) {
+            (Some(_), Some(args)) => format!("({n} {})", args.join(" ")),
+            _ => n,
+        }
     }
     fn fresh_why(&mut self, sort: &'static str, why: &str) -> T {
         let old = self.reason.replace(why.to_string());
@@ -367,7 +465,7 @@ impl<'a> Vc<'a> {
     // ---- lists: how their elements are made, and what holds for all of them ----
 
     fn new_list(&mut self, len: T, gen_: Gen) -> Val {
-        self.lists.push(ListInfo { source: gen_, preds: vec![], seen: vec![] });
+        self.lists.push(ListInfo { source: gen_, preds: vec![], seen: vec![], template: None, at: HashMap::default(), outer: self.indexing.clone().unwrap_or_default(), tpl_from: None });
         Val::List { len, id: self.lists.len() - 1 }
     }
 
@@ -376,7 +474,7 @@ impl<'a> Vc<'a> {
         match v {
             Val::List { id, .. } => *id,
             _ => {
-                self.lists.push(ListInfo { source: Gen::Unknown, preds: vec![], seen: vec![] });
+                self.lists.push(ListInfo { source: Gen::Unknown, preds: vec![], seen: vec![], template: None, at: HashMap::default(), outer: vec![], tpl_from: None });
                 self.lists.len() - 1
             }
         }
@@ -386,7 +484,7 @@ impl<'a> Vc<'a> {
     fn elem_type(&self, id: usize) -> Option<TypeExpr> {
         match &self.lists[id].source {
             Gen::Type(t) => Some(t.clone()),
-            Gen::Sub(p) | Gen::Filter(p, _) => self.elem_type(*p),
+            Gen::Sub(p) | Gen::Filter(p, _) | Gen::Shift(p, _) | Gen::Rev(p, _) => self.elem_type(*p),
             _ => None,
         }
     }
@@ -400,8 +498,8 @@ impl<'a> Vc<'a> {
         }
         match &info.source {
             Gen::Type(t2) => same(t2),
-            Gen::Sub(p) | Gen::Filter(p, _) => self.valid_known(*p, t),
-            Gen::Either(_, a, b) => self.valid_known(*a, t) && self.valid_known(*b, t),
+            Gen::Sub(p) | Gen::Filter(p, _) | Gen::Shift(p, _) | Gen::Rev(p, _) => self.valid_known(*p, t),
+            Gen::Either(_, a, b) | Gen::Concat(a, b, _) => self.valid_known(*a, t) && self.valid_known(*b, t),
             // `[]`: no element to be invalid
             Gen::Values(vs) if vs.is_empty() => true,
             _ => false,
@@ -429,6 +527,10 @@ impl<'a> Vc<'a> {
                 let v = self.call(n, &[Expr::Unit], vec![x]);
                 self.spec -= 1;
                 v
+            }
+            Func::Not(f) => {
+                let v = self.apply(f, x);
+                Val::Bool(not(&self.as_bool(&v)))
             }
             Func::Valid(t) => {
                 self.spec += 1;
@@ -473,7 +575,19 @@ impl<'a> Vc<'a> {
                 self.assume(format!("(and (<= {lo} {x}) (< {x} {hi}))"));
                 Val::Int(x)
             }
-            Gen::Sub(p) => self.element_inner(p),
+            Gen::Sub(p) | Gen::Shift(p, _) | Gen::Rev(p, _) => self.element_inner(p),
+            // an element of `a + b` is one of `a`'s or one of `b`'s
+            Gen::Concat(a, b, _) => {
+                let c = self.fresh("Bool");
+                let n = self.pc.len();
+                self.pc.push(c.clone());
+                let ea = self.element_inner(a);
+                self.pc.truncate(n);
+                self.pc.push(not(&c));
+                let eb = self.element_inner(b);
+                self.pc.truncate(n);
+                self.merge(&c, &ea, &eb)
+            }
             Gen::Filter(p, f) => {
                 let x = self.element_inner(p);
                 let c = self.apply(&f, x.clone());
@@ -518,6 +632,238 @@ impl<'a> Vc<'a> {
         x
     }
 
+    /// The element at position `i` of list `id`, when the list's positions
+    /// are known (`None` for `filter`, `sort`, a list nothing is known of).
+    /// It exists when `exists` holds, and what is known of it is assumed
+    /// there.
+    fn element_at(&mut self, id: usize, i: &str, exists: &str) -> Option<Val> {
+        let n = self.pc.len();
+        self.pc.push(exists.to_string());
+        let x = self.element_at_inner(id, i);
+        self.pc.truncate(n);
+        x
+    }
+
+    /// Can elements of list `id` be taken by position?
+    fn positional(&self, id: usize) -> bool {
+        match &self.lists[id].source {
+            Gen::Type(_) | Gen::Values(_) | Gen::Range(..) => true,
+            Gen::Shift(p, _) | Gen::Rev(p, _) | Gen::Map(p, _) => self.positional(*p),
+            Gen::Either(_, a, b) | Gen::Concat(a, b, _) => self.positional(*a) && self.positional(*b),
+            Gen::Unknown | Gen::Sub(_) | Gen::Filter(..) => false,
+        }
+    }
+
+    fn element_at_inner(&mut self, id: usize, i: &str) -> Option<Val> {
+        if !self.positional(id) {
+            return None;
+        }
+        let x = match self.lists[id].source.clone() {
+            Gen::Type(_) => self.instance(id, i)?,
+            Gen::Values(vs) if vs.is_empty() => {
+                self.assume("false".into());
+                Val::Opaque("an element of an empty list".into())
+            }
+            Gen::Values(vs) => {
+                let mut v = vs.last().unwrap().clone();
+                for k in (0..vs.len() - 1).rev() {
+                    v = self.merge(&format!("(= {i} {k})"), &vs[k], &v);
+                }
+                v
+            }
+            Gen::Range(lo, _) => Val::Int(format!("(+ {lo} {i})")),
+            Gen::Shift(p, off) => self.element_at_inner(p, &format!("(+ {off} {i})"))?,
+            Gen::Rev(p, l) => self.element_at_inner(p, &format!("(- {l} 1 {i})"))?,
+            Gen::Map(p, f) => {
+                let y = self.element_at_inner(p, i)?;
+                self.apply(&f, y)
+            }
+            Gen::Concat(a, b, la) => {
+                let c = format!("(< {i} {la})");
+                self.positions_either(&c, (a, i.to_string()), (b, format!("(- {i} {la})")))?
+            }
+            Gen::Either(c, a, b) => self.positions_either(&c, (a, i.to_string()), (b, i.to_string()))?,
+            Gen::Unknown | Gen::Sub(_) | Gen::Filter(..) => return None,
+        };
+        for (g, f) in self.lists[id].preds.clone() {
+            let p = self.apply(&f, x.clone());
+            let p = self.as_bool(&p);
+            self.assume(implies(&g, &p));
+        }
+        if self.binding == 0 {
+            let exists = and(&self.pc);
+            self.lists[id].seen.push((exists, x.clone()));
+        }
+        Some(x)
+    }
+
+    /// The element at position `ia` of list `a` when `c` holds, else at `ib` of `b`.
+    fn positions_either(&mut self, c: &str, (a, ia): (usize, String), (b, ib): (usize, String)) -> Option<Val> {
+        // one side is `[]`: the element is the other's
+        let empty = |vc: &Self, l: usize| matches!(&vc.lists[l].source, Gen::Values(vs) if vs.is_empty());
+        if empty(self, a) {
+            self.assume(not(c));
+            return self.element_at_inner(b, &ib);
+        }
+        if empty(self, b) {
+            self.assume(c.to_string());
+            return self.element_at_inner(a, &ia);
+        }
+        let n = self.pc.len();
+        self.pc.push(c.to_string());
+        let ea = self.element_at_inner(a, &ia);
+        self.pc.truncate(n);
+        self.pc.push(not(c));
+        let eb = self.element_at_inner(b, &ib);
+        self.pc.truncate(n);
+        Some(self.merge(c, &ea?, &eb?))
+    }
+
+    /// The element at position `i` of a list of a checked type.
+    fn instance(&mut self, id: usize, i: &str) -> Option<Val> {
+        if let Some((v, fs)) = self.lists[id].at.get(i).cloned() {
+            for f in fs {
+                self.assume(f);
+            }
+            return Some(v);
+        }
+        let tpl = self.template(id)?;
+        let outer = self.lists[id].outer.clone();
+        let v = self.subst_val(&tpl.val, i, &outer);
+        let fs: Vec<T> = tpl.facts.iter().map(|f| place(f, i, &outer)).collect();
+        for f in &fs {
+            self.assume(f.clone());
+        }
+        self.lists[id].at.insert(i.to_string(), (v.clone(), fs));
+        Some(v)
+    }
+
+    /// The element of list `id` (of a checked type) at position `IDX`, inside
+    /// the positions `@@o0`, … (made once, for the list and its copies).
+    fn template(&mut self, id: usize) -> Option<Template> {
+        let root = self.lists[id].tpl_from.unwrap_or(id);
+        if let Some(t) = &self.lists[root].template {
+            return Some(t.clone());
+        }
+        let Gen::Type(t) = self.lists[root].source.clone() else { return None };
+        let n = self.lists[root].outer.len();
+        let mut args: Vec<String> = (0..n).map(|k| format!("@@o{k}")).collect();
+        args.push(IDX.to_string());
+        if fn_sort("Int", args.len()).is_none() {
+            return None;
+        }
+        let nf = self.facts.len();
+        let pc = std::mem::take(&mut self.pc);
+        let indexing = self.indexing.replace(args);
+        self.spec += 1;
+        let v = self.shape(&t, 0);
+        let valid = self.check_type(&t, &v, &[]);
+        self.spec -= 1;
+        self.indexing = indexing;
+        self.pc = pc;
+        let mut facts: Vec<T> = self.facts.drain(nf..).collect();
+        facts.push(valid);
+        let tpl = Template { val: v, facts };
+        self.lists[root].template = Some(tpl.clone());
+        Some(tpl)
+    }
+
+    /// `v` at position `i` inside `outer` (see `place`); each list in it is
+    /// a new list, sharing the template of the one it copies.
+    fn subst_val(&mut self, v: &Val, i: &str, outer: &[T]) -> Val {
+        let t = |x: &T| place(x, i, outer);
+        match v {
+            Val::Int(x) => Val::Int(t(x)),
+            Val::Bool(x) => Val::Bool(t(x)),
+            Val::Str(x) => Val::Str(t(x)),
+            Val::Tuple(xs) => Val::Tuple(xs.iter().map(|x| self.subst_val(x, i, outer)).collect()),
+            Val::Rec(n, fs) => Val::Rec(n.clone(), fs.iter().map(|(f, x)| (f.clone(), self.subst_val(x, i, outer))).collect()),
+            Val::Sum { ty, args, tag, ctors } => Val::Sum {
+                ty: ty.clone(),
+                args: args.clone(),
+                tag: t(tag),
+                ctors: ctors.iter().map(|(c, xs)| (c.clone(), xs.iter().map(|x| self.subst_val(x, i, outer)).collect())).collect(),
+            },
+            Val::Union { tag, slots } => Val::Union { tag: t(tag), slots: slots.iter().map(|(k, x)| (k.clone(), self.subst_val(x, i, outer))).collect() },
+            Val::Distinct(n, x) => Val::Distinct(n.clone(), Box::new(self.subst_val(x, i, outer))),
+            Val::List { len, id } => {
+                let mut info = self.lists[*id].clone();
+                info.preds = info.preds.iter().map(|(g, f)| (t(g), self.subst_func(f, i, outer))).collect();
+                info.seen = info.seen.iter().map(|(g, x)| (t(g), self.subst_val(x, i, outer))).collect();
+                info.tpl_from = Some(info.tpl_from.unwrap_or(*id));
+                info.template = None;
+                info.at = HashMap::default();
+                info.outer = info.outer.iter().map(|o| t(o)).collect();
+                info.source = match info.source {
+                    Gen::Range(a, b) => Gen::Range(t(&a), t(&b)),
+                    Gen::Values(vs) => Gen::Values(vs.iter().map(|x| self.subst_val(x, i, outer)).collect()),
+                    // a checked type: the lists of a template are only made by `shape`
+                    g => g,
+                };
+                self.lists.push(info);
+                Val::List { len: t(len), id: self.lists.len() - 1 }
+            }
+            Val::Unit | Val::Absent | Val::Opaque(_) | Val::FnOf { .. } => v.clone(),
+        }
+    }
+
+    fn subst_func(&mut self, f: &Func, i: &str, outer: &[T]) -> Func {
+        match f {
+            Func::Lambda { param, body, scopes } => Func::Lambda {
+                param: param.clone(),
+                body: body.clone(),
+                scopes: scopes.iter().map(|s| s.iter().map(|(k, x)| (k.clone(), self.subst_val(x, i, outer))).collect()).collect(),
+            },
+            Func::Not(f) => Func::Not(Box::new(self.subst_func(f, i, outer))),
+            f => f.clone(),
+        }
+    }
+
+    /// `f` of the element at every position of list `id` (of length `len`),
+    /// as one quantified fact, so that it reaches the elements the code
+    /// takes by position (`xs[k]`). `None` when `f` of an element made
+    /// unknowns of its own (a call's result, a nested `all`): they would be
+    /// the same for every position.
+    fn forall_positions(&mut self, id: usize, len: &str, f: &Func) -> Option<T> {
+        if !self.positional(id) {
+            return None;
+        }
+        self.qvars += 1;
+        let j = format!("q{}", self.qvars);
+        let (nd, nf, nm) = (self.decls.len(), self.facts.len(), self.matched.len());
+        let inside = format!("(and (<= 0 {j}) (< {j} {len}))");
+        let pc = std::mem::take(&mut self.pc);
+        // what is learnt in here is about position `j`: it stays inside
+        let preds: Vec<usize> = self.lists.iter().map(|l| l.preds.len()).collect();
+        let (memo, cutoffs) = (self.memo.clone(), self.cutoffs.clone());
+        let indexing = self.indexing.replace(vec![j.clone()]);
+        self.binding += 1;
+        self.spec += 1;
+        let p = self.element_at(id, &j, &inside).map(|x| {
+            let p = self.apply(f, x);
+            self.as_bool(&p)
+        });
+        self.spec -= 1;
+        self.binding -= 1;
+        self.indexing = indexing;
+        self.pc = pc;
+        (self.memo, self.cutoffs) = (memo, cutoffs);
+        for (l, n) in self.lists.iter_mut().zip(preds) {
+            l.preds.truncate(n);
+        }
+        let known: Vec<T> = self.facts.drain(nf..).collect();
+        self.matched.truncate(nm);
+        let p = p?;
+        // (an unknown of a sort that can't be a function of `j` would be one for every position)
+        if self.decls[nd..].iter().any(|(n, s)| !s.starts_with('(') && !self.bound.contains(n)) {
+            return None;
+        }
+        // what is known of the elements, and of the unknowns made for them, holds at every position
+        let mut body = known;
+        body.push(p);
+        Some(format!("(forall (({j} Int)) (=> {inside} {}))", and(&body)))
+    }
+
     /// From now on, `f` holds for every element of list `id` when `guard`
     /// does: for the elements made so far, and for every one made later.
     fn know_all(&mut self, id: usize, guard: T, f: Func) {
@@ -535,19 +881,33 @@ impl<'a> Vc<'a> {
     /// `prop` holds. The quantifier sits where the solver only has to find
     /// one counterexample element (a skolem), so it stays decidable. `None`
     /// when `prop` gives up on the element.
-    fn every(&mut self, id: usize, prop: impl FnOnce(&mut Self, Val) -> Option<T>) -> Option<T> {
+    fn every(&mut self, id: usize, len: &str, prop: impl FnOnce(&mut Self, Val) -> Option<T>) -> Option<T> {
         let (nd, nf, nm) = (self.decls.len(), self.facts.len(), self.matched.len());
+        let indexing = self.indexing.take();
         self.binding += 1;
         self.spec += 1;
-        let x = self.element(id, "true");
+        // by position when the list has them, so that facts about positions reach it
+        let x = match self.positional(id) {
+            true => {
+                let k = self.fresh("Int");
+                let inside = format!("(and (<= 0 {k}) (< {k} {len}))");
+                self.assume(inside.clone());
+                self.element_at(id, &k, &inside).unwrap_or(Val::Opaque("an element".into()))
+            }
+            false => self.element(id, "true"),
+        };
         let p = prop(self, x);
         self.spec -= 1;
         self.binding -= 1;
+        self.indexing = indexing;
         let ant = and(&self.facts[nf..].to_vec());
         self.facts.truncate(nf);
         self.matched.truncate(nm);
         let p = p?;
-        let bound: Vec<String> = self.decls[nd..].iter().map(|(n, s)| format!("({n} {s})")).collect();
+        // (functions of a position belong to a list's template, not to this element)
+        let bound: Vec<String> = self.decls[nd..].iter().filter(|(_, s)| !s.starts_with('(')).map(|(n, s)| format!("({n} {s})")).collect();
+        let names: Vec<String> = self.decls[nd..].iter().filter(|(_, s)| !s.starts_with('(')).map(|(n, _)| n.clone()).collect();
+        self.bound.extend(names);
         let body = implies(&ant, &p);
         Some(if bound.is_empty() { body } else { format!("(forall ({}) {body})", bound.join(" ")) })
     }
@@ -561,11 +921,14 @@ impl<'a> Vc<'a> {
         let b = self.fresh("Bool");
         self.facts.push(format!("(=> (= {len} 0) {b})"));
         let f2 = f.clone();
-        if let Some(q) = self.every(id, |vc, x| {
+        if let Some(q) = self.every(id, &len, |vc, x| {
             let p = vc.apply(&f2, x);
             Some(vc.as_bool(&p))
         }) {
             self.facts.push(implies(&q, &b));
+        }
+        if let Some(q) = self.forall_positions(id, &len, &f) {
+            self.facts.push(implies(&b, &q));
         }
         self.know_all(id, b.clone(), f);
         b
@@ -1563,11 +1926,15 @@ impl<'a> Vc<'a> {
                 let mut cs = vec![if rest.is_some() { format!("(>= {len} {n})") } else { format!("(= {len} {n})") }];
                 for (i, p) in ps.iter().enumerate() {
                     // the i-th element exists when the list is long enough
-                    let x = self.element(id, &format!("(> {len} {i})"));
+                    let exists = format!("(> {len} {i})");
+                    let x = match self.element_at(id, &i.to_string(), &exists) {
+                        Some(x) => x,
+                        None => self.element(id, &exists),
+                    };
                     cs.push(self.pattern(p, &x, binds));
                 }
                 if let Some(r) = rest {
-                    let rest_list = self.new_list(format!("(- {len} {n})"), Gen::Sub(id));
+                    let rest_list = self.new_list(format!("(- {len} {n})"), Gen::Shift(id, n.to_string()));
                     binds.push((r.to_string(), rest_list));
                 }
                 and(&cs)
@@ -2060,9 +2427,7 @@ impl<'a> Vc<'a> {
             (Val::List { .. }, _) | (_, Val::List { .. }) => {
                 let (x, y) = (self.list_len(&a), self.list_len(&b));
                 let (ia, ib) = (self.list_id(&a), self.list_id(&b));
-                // an element of `a + b` is an element of one of them
-                let choice = self.fresh("Bool");
-                self.new_list(format!("(+ {x} {y})"), Gen::Either(choice, ia, ib))
+                self.new_list(format!("(+ {x} {y})"), Gen::Concat(ia, ib, x))
             }
             (Val::Str(_), _) | (_, Val::Str(_)) => {
                 let (x, y) = (self.as_str(&a), self.as_str(&b));
@@ -2511,18 +2876,21 @@ impl<'a> Vc<'a> {
             ("push", 2) => {
                 let l = self.list_len(&arg(0));
                 let id = self.list_id(&arg(0));
-                // an element is one of the list's, or the new one
+                // the list's elements, then the new one
                 let one = self.new_list("1".into(), Gen::Values(vec![arg(1)]));
                 let one = self.list_id(&one);
-                let choice = self.fresh("Bool");
-                self.new_list(format!("(+ {l} 1)"), Gen::Either(choice, id, one))
+                self.new_list(format!("(+ {l} 1)"), Gen::Concat(id, one, l))
             }
             ("take" | "drop", 2) => {
                 let l = self.list_len(&arg(0));
                 let n = self.as_int(&arg(1));
                 let k = format!("(ite (< {n} 0) 0 (ite (< {n} {l}) {n} {l}))");
                 let id = self.list_id(&arg(0));
-                self.new_list(if name == "take" { k } else { format!("(- {l} {k})") }, Gen::Sub(id))
+                if name == "take" {
+                    self.new_list(k, Gen::Shift(id, "0".into()))
+                } else {
+                    self.new_list(format!("(- {l} {k})"), Gen::Shift(id, k))
+                }
             }
             // elements start..end of a list, both clamped to 0..len
             ("slice", 3) if matches!(arg(0), Val::List { .. }) => {
@@ -2531,9 +2899,14 @@ impl<'a> Vc<'a> {
                 let clamp = |x: &str| format!("(ite (< {x} 0) 0 (ite (> {x} {l}) {l} {x}))");
                 let (a, b) = (clamp(&a), clamp(&b));
                 let id = self.list_id(&arg(0));
-                self.new_list(format!("(ite (< {a} {b}) (- {b} {a}) 0)"), Gen::Sub(id))
+                self.new_list(format!("(ite (< {a} {b}) (- {b} {a}) 0)"), Gen::Shift(id, a))
             }
-            ("reverse" | "sort" | "sort_by", _) if !matches!(arg(0), Val::Str(_)) => {
+            ("reverse", _) if !matches!(arg(0), Val::Str(_)) => {
+                let l = self.list_len(&arg(0));
+                let id = self.list_id(&arg(0));
+                self.new_list(l.clone(), Gen::Rev(id, l))
+            }
+            ("sort" | "sort_by", _) if !matches!(arg(0), Val::Str(_)) => {
                 let l = self.list_len(&arg(0));
                 let id = self.list_id(&arg(0));
                 self.new_list(l, Gen::Sub(id))
@@ -2585,7 +2958,10 @@ impl<'a> Vc<'a> {
                 let i = self.as_int(&arg(1));
                 let inside = format!("(and (<= 0 {i}) (< {i} {l}))");
                 self.oblige("index in range".into(), |_| inside.clone());
-                self.element(id, &inside)
+                match self.element_at(id, &i, &inside) {
+                    Some(x) => x,
+                    None => self.element(id, &inside),
+                }
             }
             ("at", 2) if matches!(arg(0), Val::Str(_)) => {
                 let s = self.as_str(&arg(0));
@@ -2598,7 +2974,10 @@ impl<'a> Vc<'a> {
                 let id = self.list_id(&arg(0));
                 let i = self.as_int(&arg(1));
                 let inside = format!("(and (<= 0 {i}) (< {i} {l}))");
-                let x = self.element(id, &inside);
+                let x = match self.element_at(id, &i, &inside) {
+                    Some(x) => x,
+                    None => self.element(id, &inside),
+                };
                 let t = self.elem_type(id).unwrap_or(TypeExpr::Named("_".into(), vec![]));
                 self.option(&t, &inside, x)
             }
@@ -2637,6 +3016,11 @@ impl<'a> Vc<'a> {
                 let f = self.fn_args[1].clone().unwrap();
                 Val::Bool(self.all_of(&arg(0), f))
             }
+            // some element satisfies `f`: not every element fails it
+            ("any", 2) if self.fn_args.get(1).cloned().flatten().is_some() => {
+                let f = self.fn_args[1].clone().unwrap();
+                Val::Bool(not(&self.all_of(&arg(0), Func::Not(Box::new(f)))))
+            }
             ("all" | "any", 2) => {
                 // otherwise only the empty case is modelled
                 let l = self.list_len(&arg(0));
@@ -2647,9 +3031,9 @@ impl<'a> Vc<'a> {
             ("sum", 1) => {
                 // an Int list (a Float list's elements are unknown values)
                 let v = arg(0);
-                let Val::List { id, .. } = v else { return Val::Opaque(not_modelled) };
+                let Val::List { id, len } = v.clone() else { return Val::Opaque(not_modelled) };
                 let mut ints = true;
-                let q = self.every(id, |vc, x| match x {
+                let q = self.every(id, &len, |vc, x| match x {
                     Val::Int(x) => Some(format!("(>= {x} 0)")),
                     other => {
                         ints = false;
@@ -2874,9 +3258,18 @@ impl<'a> Vc<'a> {
                 let b = self.as_bool(&v);
                 self.oblige(format!("assert {}", crate::printer::expr(e, 0)), |_| b);
             }
-            Stmt::Break | Stmt::Continue => self.dead = true,
+            Stmt::Break => {
+                if !self.dead {
+                    if let Some(frame) = self.breaks.last_mut() {
+                        frame.push((self.pc.clone(), self.scopes.clone()));
+                    }
+                }
+                self.dead = true;
+            }
+            Stmt::Continue => self.dead = true,
             Stmt::While(c, body) => {
                 self.havoc_loop(body, Some(c));
+                self.breaks.push(vec![]);
                 let cv = self.eval(c);
                 let cv = self.as_bool(&cv);
                 let saved = self.scopes.clone();
@@ -2925,11 +3318,14 @@ impl<'a> Vc<'a> {
                 self.pc.truncate(n);
                 self.dead = false;
                 self.scopes = saved;
-                self.pc.push(not(&cv));
+                // left when the condition is false, or at a `break`
+                let breaks = self.breaks.pop().unwrap_or_default();
+                self.leave_loop(n, Some(not(&cv)), breaks);
             }
             Stmt::For(p, xs, body) => {
                 let xv = self.eval(xs);
                 self.havoc_loop(body, None);
+                self.breaks.push(vec![]);
                 let saved = self.scopes.clone();
                 let n = self.pc.len();
                 let x = match &xv {
@@ -2951,15 +3347,22 @@ impl<'a> Vc<'a> {
                 self.pc.truncate(n);
                 self.dead = false;
                 self.scopes = saved;
+                // after the last element the loop's variables are any values
+                // of their types, which covers the state at a `break` too
+                self.breaks.pop();
             }
             Stmt::Loop(body) => {
                 self.havoc_loop(body, None);
+                self.breaks.push(vec![]);
                 let saved = self.scopes.clone();
                 let n = self.pc.len();
                 self.eval(body);
                 self.pc.truncate(n);
                 self.dead = false;
                 self.scopes = saved;
+                // left only at a `break`
+                let breaks = self.breaks.pop().unwrap_or_default();
+                self.leave_loop(n, None, breaks);
             }
         }
     }
@@ -3010,6 +3413,39 @@ impl<'a> Vc<'a> {
             }
         }
         self.set(x, new);
+    }
+
+    /// After a loop: the state is the loop head's when it is left normally
+    /// (under `normal`, the condition being false), or the state at one of its
+    /// `break`s. `n` is the length of the path before the loop, which every
+    /// `break`'s path extends; `self.scopes` is the loop head's state.
+    fn leave_loop(&mut self, n: usize, normal: Option<T>, breaks: Vec<(Vec<T>, Vec<HashMap<String, Val>>)>) {
+        let depth = self.scopes.len();
+        let mut exits: Vec<(T, Vec<HashMap<String, Val>>)> =
+            breaks.into_iter().map(|(pc, mut s)| (and(pc.get(n..).unwrap_or_default()), { s.truncate(depth); s })).collect();
+        let mut alive: Vec<T> = exits.iter().map(|e| e.0.clone()).collect();
+        alive.extend(normal.clone());
+        if alive.is_empty() {
+            // never left: what follows is unreachable
+            self.dead = true;
+            return;
+        }
+        self.pc.push(or(&alive));
+        // the paths are disjoint: a pass that breaks began with the condition true
+        let mut scopes = match normal {
+            Some(_) => std::mem::take(&mut self.scopes),
+            None => exits.pop().unwrap().1,
+        };
+        for (g, other) in exits.into_iter().rev() {
+            for (layer, o) in scopes.iter_mut().zip(&other) {
+                for (name, val) in layer.iter_mut() {
+                    if let Some(ov) = o.get(name) {
+                        *val = self.merge(&g, ov, val);
+                    }
+                }
+            }
+        }
+        self.scopes = scopes;
     }
 
     /// Before a loop: every variable the loop may change takes any value.
@@ -3164,7 +3600,7 @@ pub enum Outcome {
     Proven,
     /// The solver found values that break the obligation (not yet confirmed
     /// by running them): parameter name -> value.
-    Refuted(Vec<(String, Value)>, String),
+    Refuted(Vec<(String, Expr)>, String),
     Unknown(String),
 }
 
@@ -3243,7 +3679,11 @@ impl Vc<'_> {
         let mut s = String::from("(set-option :produce-models true)\n(set-logic ALL)\n(declare-fun utf8_len (String) Int)\n");
         for (n, sort) in &self.decls {
             if consts.contains(n) || leaves.contains(n) {
-                s.push_str(&format!("(declare-const {n} {sort})\n"));
+                if sort.starts_with('(') {
+                    s.push_str(&format!("(declare-fun {n} {sort})\n"));
+                } else {
+                    s.push_str(&format!("(declare-const {n} {sort})\n"));
+                }
             }
         }
         for f in facts {
@@ -3294,8 +3734,8 @@ impl Vc<'_> {
             "unsat" => Outcome::Proven,
             "sat" => {
                 let model = parse_values(&out[first.len()..]);
-                let args: Option<Vec<(String, Value)>> = self.params.iter().map(|(n, v)| to_value(self.env, v, &model).map(|x| (n.clone(), x))).collect();
-                let shown = |args: &[(String, Value)]| args.iter().map(|(n, v)| format!("{n} = {}", crate::interp::to_json(v))).collect::<Vec<_>>().join(", ");
+                let args: Option<Vec<(String, Expr)>> = self.params.iter().map(|(n, v)| to_literal(self.env, v, &model).map(|x| (n.clone(), x))).collect();
+                let shown = |args: &[(String, Expr)]| args.iter().map(|(n, v)| format!("{n} = {}", crate::printer::literal(v))).collect::<Vec<_>>().join(", ");
                 match args {
                     Some(a) => {
                         let s = shown(&a);
@@ -3328,37 +3768,37 @@ fn leaves_of(v: &Val, out: &mut Vec<String>) {
     }
 }
 
-/// A parameter's value in a model, as an interpreter value (when it can be
-/// rebuilt: lists only when empty, nothing opaque).
-fn to_value(env: &Env, v: &Val, m: &HashMap<String, String>) -> Option<Value> {
+/// A parameter's value in a model, as the code that writes it (when it can
+/// be rebuilt: lists only when empty, nothing opaque).
+fn to_literal(env: &Env, v: &Val, m: &HashMap<String, String>) -> Option<Expr> {
     Some(match v {
-        Val::Int(t) => crate::interp::int_value(parse_big(m.get(t)?)?),
-        Val::Bool(t) => Value::Bool(m.get(t)? == "true"),
-        Val::Str(t) => Value::Str(parse_str(m.get(t)?)?),
-        Val::Unit => Value::Unit,
-        Val::Tuple(xs) => Value::Tuple(xs.iter().map(|x| to_value(env, x, m)).collect::<Option<_>>()?),
-        Val::Rec(n, fs) => Value::Record(n.clone(), fs.iter().map(|(f, x)| to_value(env, x, m).map(|y| (f.clone(), y))).collect::<Option<_>>()?),
-        Val::Distinct(n, x) => Value::Distinct(n.clone(), Box::new(to_value(env, x, m)?)),
+        Val::Int(t) => crate::llvm::native::int_expr(parse_big(m.get(t)?)?),
+        Val::Bool(t) => Expr::Bool(m.get(t)? == "true"),
+        Val::Str(t) => Expr::Str(parse_str(m.get(t)?)?),
+        Val::Unit => Expr::Unit,
+        Val::Tuple(xs) => Expr::Tuple(xs.iter().map(|x| to_literal(env, x, m)).collect::<Option<_>>()?),
+        Val::Rec(n, fs) => Expr::Ctor(Symbol::new(n), CtorArgs::Record(fs.iter().map(|(f, x)| to_literal(env, x, m).map(|y| (Symbol::new(f), y))).collect::<Option<_>>()?)),
+        Val::Distinct(n, x) => Expr::Ctor(Symbol::new(n), CtorArgs::Positional(vec![to_literal(env, x, m)?])),
         Val::List { len, .. } => {
             if parse_int(m.get(len)?)? != 0 {
                 return None;
             }
-            Value::List(vec![])
+            Expr::List(vec![])
         }
         Val::Sum { ty, args, tag, ctors } => {
             let k = parse_int(m.get(tag)?)? as usize;
             let (c, payload) = ctors.get(k)?;
             let vs = env.variants_of(ty, args)?;
-            let fields: Vec<Value> = payload.iter().map(|x| to_value(env, x, m)).collect::<Option<_>>()?;
+            let fields: Vec<Expr> = payload.iter().map(|x| to_literal(env, x, m)).collect::<Option<_>>()?;
             let f = match &vs.get(k)?.1 {
-                _ if fields.is_empty() => Fields::None,
-                Some(names) => Fields::rec(names.iter().map(|n| n.to_string()).zip(fields).collect()),
-                None => Fields::pos(fields),
+                _ if fields.is_empty() => CtorArgs::None,
+                Some(names) => CtorArgs::Record(names.iter().copied().zip(fields).collect()),
+                None => CtorArgs::Positional(fields),
             };
-            Value::Variant(c.clone(), f)
+            Expr::Ctor(Symbol::new(c), f)
         }
         // a union value is its active member's value
-        Val::Union { tag, slots } => to_value(env, &slots.get(parse_int(m.get(tag)?)? as usize)?.1, m)?,
+        Val::Union { tag, slots } => to_literal(env, &slots.get(parse_int(m.get(tag)?)? as usize)?.1, m)?,
         // a function can't be shown as a counterexample
         Val::Absent | Val::Opaque(_) | Val::FnOf { .. } => return None,
     })

@@ -26,7 +26,7 @@ fn next_digit(d: Digit) -> Digit {
 
 ```text
 ✗ next_digit               Refinement violation (found by the solver)
-    input:   [9]
+    input:   9
     result of `next_digit`: 10 does not satisfy `Digit` (where 0 <= it && it <= 9)
 ```
 
@@ -105,6 +105,8 @@ fn triangle(n: Natural) -> Natural {
     proven:  result of `triangle`: Natural
     terminates: no recursion, and only `for` loops
 ```
+
+A loop is verified from any state its variables can be in: the variables it changes take any values of their declared types, and one pass is checked from there. After a `while`, the state is that one with the condition false, or the state at one of its `break`s (a `break` leaves the loop with the condition still true). A `loop` is left only at a `break`; with none, the code after it is never reached. After a `for`, the variables it changed are any values of their types.
 
 A `while` loop ends when a bound taken from its condition goes down on every pass. A property that holds *after* a loop usually needs a loop invariant, which the verifier doesn't infer yet: then the check is fuzzed, and the result says so.
 
@@ -189,6 +191,36 @@ fn first_or_one(xs: List[Int]) -> Positive
 ✓ first_or_one             proven (1 check)
 ```
 
+Positions are known too: `xs[k]`, a slice, `+`, `push`, `reverse` and a literal keep which element is where, so a property relating neighbours can be stated and kept:
+
+```rust
+type Sorted = List[Int] where all(1..len(it), i -> it[i - 1] <= it[i])
+
+fn tail(xs: Sorted) -> Sorted
+  requires len(xs) > 0 {
+  xs[1..len(xs)]
+}
+
+fn add_max(xs: Sorted, x: Int) -> Sorted
+  requires len(xs) == 0 || xs[len(xs) - 1] <= x {
+  push(xs, x)
+}
+
+fn add(xs: Sorted, x: Int) -> Sorted {
+  push(xs, x)
+}
+```
+
+```text
+✓ tail                     proven (1 check)
+✓ add_max                  proven (1 check)
+✗ add                      Refinement violation (found by the fuzzer)
+    input:   [-952, 0, 1000], -676
+    result of `add`: [-952,0,1000,-676] does not satisfy `Sorted` (…)
+```
+
+An element of a list of a checked type is a function of its position: its integers, strings and booleans are SMT functions of the position, so equal positions hold equal elements, and the list inside an element (a record's field) is a function of both positions. `all(xs, p)` and `all(lo..hi, i -> …)`, once known, become a fact quantified over the positions, which reaches the elements the code takes. Not yet: a non-empty list as a counterexample (here the fuzzer finds it), positions after `filter` and `sort` (only "some element of the list" is known there), and quantified facts nested inside one another with strings (the agent loop's `answers`), on which the solver times out.
+
 ## Bugs the solver finds
 
 ```rust
@@ -200,7 +232,7 @@ fn average(xs: List[Int]) -> Int {
 
 ```text
 ✗ average                  Runtime violation (found by the solver)
-    input:   [[]]
+    input:   []
     division by zero (stack: average)
 ```
 
@@ -218,7 +250,7 @@ Derived code is checked as well: `derive Json for Signup` makes `Signup.encode` 
 
 The checks are exactly the interpreter's runtime checks: a callee's parameter refinements and `requires`, the refinements of constructed values and assigned fields, annotated bindings, `assert`, division by zero, and the function's own result type and `ensures`. Calls are checked against the callee's contract, never its body, which is how modules meet. A function passed by name (`lines.map(line_total)`) is checked against one arbitrary element of the list.
 
-How it works (`src/smt.rs`): the body is run symbolically, with values as SMT terms. Records and sums become structures of terms, a list is known by its length and by how its elements are made (a checked type, a literal, `range`, `filter`, `map`, `+`, `push`, a part of another list), so `all(xs, p)` is proven on an arbitrary element and, once known, gives `p` to every element the code looks at, a value of a union (`Square | Circle`) is a tag saying which member's shape it has plus a value for each member (a member value passed where the union is expected, or branches returning different members, become one; a `match` arm narrows it to its member), branches are merged with `ite`, and a loop forgets the variables it changes. Each check becomes the question "can the negation be true under what is known here?", which is sent to the solver (Z3, or cvc5) as SMT-LIB text (`verify --smt` prints the queries, termination ones included). `unsat` means proven; `sat` comes with a model, which becomes the counterexample. Anything not modelled (floats, dicts, sets, list contents, most higher-order builtins, unions whose members can share a shape such as `List[Int] | List[String]` or include a type parameter) becomes an unknown value. That can only make a proof fail, never make a false proof succeed, and the reason is kept for the report. `Int` is a mathematical integer, as it is when the code runs.
+How it works (`src/smt.rs`): the body is run symbolically, with values as SMT terms. Records and sums become structures of terms, a list is known by its length and by how its elements are made (a checked type, a literal, `range`, `filter`, `map`, `+`, `push`, a part of another list), position by position where it can be, so `all(xs, p)` is proven on an arbitrary element and, once known, gives `p` to every element the code looks at, a value of a union (`Square | Circle`) is a tag saying which member's shape it has plus a value for each member (a member value passed where the union is expected, or branches returning different members, become one; a `match` arm narrows it to its member), branches are merged with `ite`, and a loop forgets the variables it changes (after a `while`, they are known only to make its condition false, unless a `break` left it). Each check becomes the question "can the negation be true under what is known here?", which is sent to the solver (Z3, or cvc5) as SMT-LIB text (`verify --smt` prints the queries, termination ones included). `unsat` means proven; `sat` comes with a model, which becomes the counterexample. Anything not modelled (floats, dicts, sets, list contents, most higher-order builtins, unions whose members can share a shape such as `List[Int] | List[String]` or include a type parameter) becomes an unknown value. That can only make a proof fail, never make a false proof succeed, and the reason is kept for the report. `Int` is a mathematical integer, as it is when the code runs.
 Strings are sequences of characters (code points), as `chars()` counts them. These string builtins are modelled exactly: `len`, `+`, `contains`, `starts_with`, `ends_with`, `slice`, `get`, `chars` (its length), `index_of`, `replace` (every match, and a check that the pattern is not empty, which is a runtime fault), `to_string` of an `Int`, `Bool` or `String`, and `is_digit`. `parse_int` is exact for digits with an optional `-`, and for strings without a digit (`None`). Other forms (whitespace, `+`, `_`) are unknown. `trim` keeps only a length bound. `to_upper`, `to_lower`, `is_alpha`, `ord`, `chr`, `split`, `lines`, `repeat` and `reverse` are unknown. `matches(s, "regex")` becomes a regular-expression constraint with the interpreter's meaning. Strata regexes are Unicode regexes: `\d` is any decimal digit, `\w` and `\s` are Unicode classes, `\p{..}` works, `.` is any character but `\n`, and `(?i)` is Unicode case folding. The pattern is parsed the way the interpreter parses it, and translated exactly: literals, classes, groups, alternation, repetition, and `^` / `$` at the very start or end. Word boundaries, multi-line anchors and anchors elsewhere stay unknown. Z3 can't decide classes with hundreds of ranges (`\w`, `\p{L}`, Unicode `\d`), so such a class is bounded from both sides: `matches` is true on a subset of its ranges and false outside a superset of them. When one string is matched against two patterns, how their languages relate (one inside the other, or disjoint) is worked out exactly from the patterns' automata and added as a fact. So `\d{3}` implies `\d+`, and `[a-z]+` implies `\w+`.
 
 **Strings past U+2FFFF.** SMT-LIB strings hold the code points U+0000 to U+2FFFF (Z3 and cvc5 both stop there). Rust strings go up to U+10FFFF. So a proof about strings covers the strings whose characters are all at most U+2FFFF. A string literal with a later character (planes 3 to 16: rare CJK, tags, private use) is an unknown. The cross-check, which runs proven functions on generated inputs, is the backstop.

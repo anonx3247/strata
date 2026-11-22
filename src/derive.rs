@@ -22,7 +22,6 @@
 //! a step budget, its value read back from memory (`llvm::native`).
 
 use crate::ast::*;
-use crate::interp::{Fields, Value};
 use crate::symbol::Symbol;
 use crate::types::{Diag, Env};
 use std::cell::RefCell;
@@ -202,7 +201,7 @@ struct Expander<'a> {
     prog: &'a Program,
 
     /// Values known at compile time, by name (`t`, a `comptime` parameter).
-    known: HashMap<Symbol, Value>,
+    known: HashMap<Symbol, Expr>,
     /// Types known at compile time, by name (`f.type`, `x` in `Option[x] =>`).
     types: HashMap<String, TypeExpr>,
     /// The type behind each `Type` value made (by its JSON).
@@ -232,8 +231,13 @@ fn q(name: &str) -> String {
     format!("std.typing.{name}")
 }
 
-fn record(name: &str, fields: Vec<(&str, Value)>) -> Value {
-    Value::Record(q(name), fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+fn record(name: &str, fields: Vec<(&str, Expr)>) -> Expr {
+    Expr::Ctor(Symbol::new(&q(name)), CtorArgs::Record(fields.into_iter().map(|(k, v)| (Symbol::new(k), v)).collect()))
+}
+
+/// A constructor without fields (`None`, `std.typing.Record`).
+fn atom(name: &str) -> Expr {
+    Expr::Ctor(Symbol::new(name), CtorArgs::None)
 }
 
 /// `Self` used as a value (`Self.fields`, `match comptime Self`): the
@@ -242,27 +246,27 @@ fn is_self(e: &Expr) -> bool {
     matches!(e, Expr::Var(x) | Expr::Ctor(x, CtorArgs::None) if x == "Self")
 }
 
-fn some(v: Value) -> Value {
-    Value::Variant("Some".into(), Fields::pos(vec![v]))
+fn some(v: Expr) -> Expr {
+    Expr::Ctor(Symbol::new("Some"), CtorArgs::Positional(vec![v]))
 }
 
-fn none() -> Value {
-    Value::Variant("None".into(), Fields::None)
+fn none() -> Expr {
+    atom("None")
 }
 
 /// The shapes of `std.typing.Kind`.
 const KINDS: [&str; 8] = ["Record", "Tuple", "Union", "Function", "Atom", "Unit", "Builtin", "Param"];
 
 /// A field of a record value (`Type`, `Field`).
-fn get<'v>(v: &'v Value, key: &str) -> Option<&'v Value> {
+fn get<'v>(v: &'v Expr, key: &str) -> Option<&'v Expr> {
     match v {
-        Value::Record(_, fs) => fs.iter().find(|(k, _)| k == key).map(|(_, x)| x),
+        Expr::Ctor(_, CtorArgs::Record(fs)) => fs.iter().find(|(k, _)| k == key).map(|(_, x)| x),
         _ => None,
     }
 }
 
-fn set(v: &mut Value, key: &str, x: Value) {
-    if let Value::Record(_, fs) = v {
+fn set(v: &mut Expr, key: &str, x: Expr) {
+    if let Expr::Ctor(_, CtorArgs::Record(fs)) = v {
         if let Some(f) = fs.iter_mut().find(|(k, _)| k == key) {
             f.1 = x;
         }
@@ -270,27 +274,26 @@ fn set(v: &mut Value, key: &str, x: Value) {
 }
 
 /// A `Type` value's kind (`"Record"`, `"Atom"`, ..).
-fn kind_name(v: &Value) -> Option<String> {
+fn kind_name(v: &Expr) -> Option<String> {
     match get(v, "kind")? {
-        Value::Variant(k, _) => Some(crate::names::short(k).to_string()),
+        Expr::Ctor(k, CtorArgs::None) => Some(crate::names::short(k).to_string()),
         _ => None,
     }
 }
 
-fn str_of(v: &Value, key: &str) -> Option<String> {
+fn str_of(v: &Expr, key: &str) -> Option<String> {
     match get(v, key)? {
-        Value::Str(s) => Some(s.clone()),
-        Value::Variant(_, Fields::Pos(xs)) => match xs.first() {
-            Some(Value::Str(s)) => Some(s.clone()),
+        Expr::Str(s) => Some(s.clone()),
+        Expr::Ctor(_, CtorArgs::Positional(xs)) => match xs.first() {
+            Some(Expr::Str(s)) => Some(s.clone()),
             _ => None,
         },
         _ => None,
     }
 }
 
-
-fn strs(xs: &[String]) -> Value {
-    Value::List(xs.iter().map(|s| Value::Str(s.clone())).collect())
+fn strs(xs: &[String]) -> Expr {
+    Expr::List(xs.iter().map(|s| Expr::Str(s.clone())).collect())
 }
 
 /// Whether a type mentions the name `p` (a type parameter).
@@ -316,8 +319,9 @@ fn type_pattern(t: &TypeExpr) -> Option<Pattern> {
     }
 }
 
-fn json(v: &Value) -> String {
-    crate::interp::to_json(v).to_string()
+/// A value as a key (a map of the values made): the code that writes it.
+fn key(v: &Expr) -> String {
+    crate::printer::expr(v, 0)
 }
 
 impl<'a> Expander<'a> {
@@ -400,7 +404,7 @@ impl<'a> Expander<'a> {
             // `$Self` (and the like) written in, then run
             let r2 = self.expr(r)?;
             let ok = self.eval_as(&r2, r).map_err(|m| format!("checking what `{}` requires: {m}", short(&tr.name)))?;
-            if ok != Value::Bool(true) {
+            if ok != Expr::Bool(true) {
                 return Err(format!("`{}` doesn't meet what `{}` requires: {}", short(&head), short(&tr.name), crate::printer::expr(r, 0)));
             }
         }
@@ -422,10 +426,10 @@ impl<'a> Expander<'a> {
     }
 
     /// Whether a type's value meets a kind that refines `Type`.
-    fn of_kind(&mut self, kind: &TypeExpr, desc: &Value) -> Res<bool> {
+    fn of_kind(&mut self, kind: &TypeExpr, desc: &Expr) -> Res<bool> {
         let TypeExpr::Named(n, _) = kind else { return Err(format!("the kind `{}` must be a type's name", crate::printer::ty(kind))) };
         let x = self.literal(desc)?;
-        Ok(self.eval(&Expr::Is(Box::new(x), *n))? == Value::Bool(true))
+        Ok(self.eval(&Expr::Is(Box::new(x), *n))? == Expr::Bool(true))
     }
 
     /// A type as a `std.typing.Type` value (remembering which type it is).
@@ -433,11 +437,11 @@ impl<'a> Expander<'a> {
     /// the type is already being written out (a recursive type) or deep
     /// inside another: reading them from a type known while compiling
     /// (`f.type.fields`) writes them out then.
-    fn type_value(&self, t: &TypeExpr) -> Value {
+    fn type_value(&self, t: &TypeExpr) -> Expr {
         self.type_value_in(t, &mut vec![])
     }
 
-    fn type_value_in(&self, t: &TypeExpr, stack: &mut Vec<TypeExpr>) -> Value {
+    fn type_value_in(&self, t: &TypeExpr, stack: &mut Vec<TypeExpr>) -> Expr {
         let short = |n: &Symbol| crate::names::short(n).to_string();
         let mut name = none();
         let mut doc: Vec<String> = vec![];
@@ -452,9 +456,9 @@ impl<'a> Expander<'a> {
                     Some(c) => format!("{c} && {cond}"),
                     None => cond,
                 };
-                set(&mut v, "condition", some(Value::Str(cond)));
-                set(&mut v, "written", Value::Str(crate::printer::ty(t)));
-                self.written.borrow_mut().insert(json(&v), t.clone());
+                set(&mut v, "condition", some(Expr::Str(cond)));
+                set(&mut v, "written", Expr::Str(crate::printer::ty(t)));
+                self.written.borrow_mut().insert(key(&v), t.clone());
                 return v;
             }
             TypeExpr::Unit => "Unit",
@@ -472,7 +476,7 @@ impl<'a> Expander<'a> {
                     let own = matches!(a, TypeExpr::Named(n, _) if n.contains(crate::desugar::OWN));
                     match kind_name(&m).as_deref() {
                         Some("Union") if own => match self.full(&m, "members") {
-                            Some(Value::List(xs)) => members.extend(xs),
+                            Some(Expr::List(xs)) => members.extend(xs),
                             _ => members.push(m),
                         },
                         _ => members.push(m),
@@ -481,7 +485,7 @@ impl<'a> Expander<'a> {
                 "Union"
             }
             TypeExpr::Named(n, targs) => {
-                name = some(Value::Str(short(n)));
+                name = some(Expr::Str(short(n)));
                 args = targs.iter().map(|a| self.type_value_in(a, stack)).collect();
                 // written out once on the way down, and not too deep
                 let shallow = stack.contains(t) || stack.len() >= 4;
@@ -516,11 +520,11 @@ impl<'a> Expander<'a> {
                             };
                             let mut v = self.type_value_in(&full, stack);
                             stack.pop();
-                            set(&mut v, "name", some(Value::Str(short(n))));
+                            set(&mut v, "name", some(Expr::Str(short(n))));
                             set(&mut v, "doc", strs(&doc));
-                            set(&mut v, "args", Value::List(args));
-                            set(&mut v, "written", Value::Str(crate::printer::ty(t)));
-                            self.written.borrow_mut().insert(json(&v), t.clone());
+                            set(&mut v, "args", Expr::List(args));
+                            set(&mut v, "written", Expr::Str(crate::printer::ty(t)));
+                            self.written.borrow_mut().insert(key(&v), t.clone());
                             return v;
                         }
                     }
@@ -544,18 +548,18 @@ impl<'a> Expander<'a> {
             vec![
                 ("name", name),
                 ("doc", strs(&doc)),
-                ("kind", Value::Variant(q(kind), Fields::None)),
-                ("args", Value::List(args)),
-                ("written", Value::Str(crate::printer::ty(t))),
+                ("kind", atom(&q(kind))),
+                ("args", Expr::List(args)),
+                ("written", Expr::Str(crate::printer::ty(t))),
                 ("condition", none()),
-                ("fields", Value::List(fields)),
-                ("elements", Value::List(elements)),
-                ("members", Value::List(members)),
-                ("params", Value::List(params)),
+                ("fields", Expr::List(fields)),
+                ("elements", Expr::List(elements)),
+                ("members", Expr::List(members)),
+                ("params", Expr::List(params)),
                 ("result", result),
             ],
         );
-        self.written.borrow_mut().insert(json(&v), t.clone());
+        self.written.borrow_mut().insert(key(&v), t.clone());
         v
     }
 
@@ -569,7 +573,7 @@ impl<'a> Expander<'a> {
     }
 
     /// A sum's variant as a `Type`: a record, a tuple or an atom.
-    fn variant_value(&self, v: &Variant, targs: &[TypeExpr], sub: &crate::fx::HashMap<Symbol, TypeExpr>, stack: &mut Vec<TypeExpr>) -> Value {
+    fn variant_value(&self, v: &Variant, targs: &[TypeExpr], sub: &crate::fx::HashMap<Symbol, TypeExpr>, stack: &mut Vec<TypeExpr>) -> Expr {
         let s = |x: &TypeExpr| crate::types::subst_texpr(x, sub);
         let (kind, fields, elements) = match &v.payload {
             Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
@@ -581,36 +585,36 @@ impl<'a> Expander<'a> {
         let d = record(
             "Type",
             vec![
-                ("name", some(Value::Str(name.clone()))),
-                ("doc", Value::List(vec![])),
-                ("kind", Value::Variant(q(kind), Fields::None)),
-                ("args", Value::List(vec![])),
-                ("written", Value::Str(name)),
+                ("name", some(Expr::Str(name.clone()))),
+                ("doc", Expr::List(vec![])),
+                ("kind", atom(&q(kind))),
+                ("args", Expr::List(vec![])),
+                ("written", Expr::Str(name)),
                 ("condition", none()),
-                ("fields", Value::List(fields)),
-                ("elements", Value::List(elements)),
-                ("members", Value::List(vec![])),
-                ("params", Value::List(vec![])),
+                ("fields", Expr::List(fields)),
+                ("elements", Expr::List(elements)),
+                ("members", Expr::List(vec![])),
+                ("params", Expr::List(vec![])),
                 ("result", none()),
             ],
         );
-        let key = json(&d);
+        let key = key(&d);
         self.ctors.borrow_mut().insert(key.clone(), v.name.to_string());
         self.written.borrow_mut().insert(key, TypeExpr::Named(v.name, targs.to_vec()));
         d
     }
 
-    fn field(&self, name: &Symbol, doc: &[String], ty: &TypeExpr, default: Option<&Expr>, stack: &mut Vec<TypeExpr>) -> Value {
+    fn field(&self, name: &Symbol, doc: &[String], ty: &TypeExpr, default: Option<&Expr>, stack: &mut Vec<TypeExpr>) -> Expr {
         // a refinement written as a type argument, as written (not its `$where_` alias)
         let ty = &self.unwhere(ty);
         let t = self.type_value_in(ty, stack);
         let dv = match default {
-            Some(e) => some(Value::Str(crate::printer::expr(e, 0))),
+            Some(e) => some(Expr::Str(crate::printer::expr(e, 0))),
             None => none(),
         };
-        let f = record("Field", vec![("name", Value::Str(name.to_string())), ("doc", strs(doc)), ("type", t), ("default", dv)]);
+        let f = record("Field", vec![("name", Expr::Str(name.to_string())), ("doc", strs(doc)), ("type", t), ("default", dv)]);
         if let Some(e) = default {
-            self.defaults.borrow_mut().insert(json(&f), e.clone());
+            self.defaults.borrow_mut().insert(key(&f), e.clone());
         }
         f
     }
@@ -632,17 +636,17 @@ impl<'a> Expander<'a> {
     }
 
     /// The type of a variant, if `t` is one: `TooBig` of `ShapeError`.
-    fn is_variant(&self, v: &Value) -> bool {
-        self.ctors.borrow().contains_key(&json(v))
+    fn is_variant(&self, v: &Expr) -> bool {
+        self.ctors.borrow().contains_key(&key(v))
     }
 
     /// The type of a `Type` value.
-    fn type_of(&self, v: &Value) -> Res<TypeExpr> {
-        self.written.borrow().get(&json(v)).cloned().ok_or(format!("{} is not a type known here", json(v)))
+    fn type_of(&self, v: &Expr) -> Res<TypeExpr> {
+        self.written.borrow().get(&key(v)).cloned().ok_or(format!("{} is not a type known here", key(v)))
     }
 
     /// `t.fields` (or another list) of a `Type` value, written out in full.
-    fn full(&self, v: &Value, key: &str) -> Option<Value> {
+    fn full(&self, v: &Expr, key: &str) -> Option<Expr> {
         let t = self.type_of(v).ok()?;
         get(&self.type_value(&t), key).cloned()
     }
@@ -706,13 +710,13 @@ impl<'a> Expander<'a> {
     }
 
     /// Run compile-time code, with the known values in scope.
-    fn eval(&mut self, e: &Expr) -> Res<Value> {
+    fn eval(&mut self, e: &Expr) -> Res<Expr> {
         self.eval_as(e, e)
     }
 
     /// `eval`, messages showing `written` (the code before the known values
     /// were written in).
-    fn eval_as(&mut self, e: &Expr, written: &Expr) -> Res<Value> {
+    fn eval_as(&mut self, e: &Expr, written: &Expr) -> Res<Expr> {
         // most compile-time code is data: a description written out, a known
         // name, a field of one; nothing runs
         if let Some(v) = self.data(e) {
@@ -725,11 +729,11 @@ impl<'a> Expander<'a> {
     /// known values bound before it, checked with the program as it is
     /// before its derived `impl`s (compile-time code can't use them), run
     /// within the budget, its value read back.
-    fn compiled(&mut self, e: &Expr, written: &Expr) -> Res<Value> {
+    fn compiled(&mut self, e: &Expr, written: &Expr) -> Res<Expr> {
         let shown = || crate::printer::expr(written, 0);
         let name = Symbol::new("strata.comptime");
         let mut stmts = vec![];
-        let mut known: Vec<(&Symbol, &Value)> = self.known.iter().filter(|(k, _)| self.is_known(k)).collect();
+        let mut known: Vec<(&Symbol, &Expr)> = self.known.iter().filter(|(k, _)| self.is_known(k)).collect();
         known.sort_by_key(|(k, _)| k.as_str());
         for (k, v) in known {
             if let Ok(x) = self.literal(v) {
@@ -793,7 +797,7 @@ impl<'a> Expander<'a> {
         let Some(Stmt::Let(_, _, x)) = stmts.pop() else { unreachable!() };
         f.body = Expr::Block(stmts, Box::new(x));
         f.ret = crate::types::ty_to_texpr(&ty);
-        let (ir, roots, shapes) = crate::llvm::compile_comptime(&p, &[name.to_string()]).map_err(|m| format!("`comptime {}` can't be compiled: {m}", shown()))?;
+        let (ir, roots, shapes) = crate::llvm::untraced(|| crate::llvm::compile_comptime(&p, &[name.to_string()])).map_err(|m| format!("`comptime {}` can't be compiled: {m}", shown()))?;
         let mut vs = crate::llvm::jit::comptime(&ir, &roots, &shapes, BUDGET as i64)?;
         match vs.pop() {
             Some(Ok(v)) => {
@@ -826,7 +830,7 @@ impl<'a> Expander<'a> {
     }
 
     /// A compile-time value computed before (`cache_key`): its code, read as data.
-    fn cached(&self, key: &str) -> Option<Value> {
+    fn cached(&self, key: &str) -> Option<Expr> {
         let text = std::fs::read_to_string(cache_dir().join(key)).ok()?;
         let e = crate::parser::parse_expr(&text).ok()?;
         self.data(&e)
@@ -835,22 +839,22 @@ impl<'a> Expander<'a> {
     /// The value of `e` if it is data: literals, constructors of them, known
     /// names and their fields (as the interpreter would make it). `None`
     /// when something would have to run.
-    fn data(&self, e: &Expr) -> Option<Value> {
+    fn data(&self, e: &Expr) -> Option<Expr> {
         self.data_in(e, &mut vec![])
     }
 
     /// `data`, with a lambda's parameters bound (`locals`, innermost last).
-    fn data_in(&self, e: &Expr, locals: &mut Vec<(Symbol, Value)>) -> Option<Value> {
+    fn data_in(&self, e: &Expr, locals: &mut Vec<(Symbol, Expr)>) -> Option<Expr> {
         Some(match e {
             Expr::Var(x) if locals.iter().any(|(n, _)| n == x) => locals.iter().rev().find(|(n, _)| n == x)?.1.clone(),
             // `None is Some`: a constructor's name, known (a type's, as `Choice`, may be refined)
             Expr::Is(x, c) if self.env.ctors.contains_key(c) && !self.env.types.contains_key(c) => match self.data_in(x, locals)? {
-                Value::Variant(n, _) | Value::Record(n, _) => Value::Bool(crate::names::short(&n) == crate::names::short(c)),
+                Expr::Ctor(n, _) => Expr::Bool(crate::names::short(&n) == crate::names::short(c)),
                 _ => return None,
             },
             // `$Self.fields.map(f -> f.name)`: each item through a lambda that is data too
             Expr::Method(recv, m, args) if m == "map" && args.len() == 1 => {
-                let Value::List(items) = self.data_in(recv, locals)? else { return None };
+                let Expr::List(items) = self.data_in(recv, locals)? else { return None };
                 let Expr::Lambda(ps, body) = &args[0] else { return None };
                 let [p] = ps.as_slice() else { return None };
                 let mut out = vec![];
@@ -860,21 +864,21 @@ impl<'a> Expander<'a> {
                     locals.pop();
                     out.push(v?);
                 }
-                Value::List(out)
+                Expr::List(out)
             }
-            Expr::Int(n) => Value::Int(*n),
-            Expr::BigInt(b) => crate::interp::int_value(b.parse().ok()?),
-            Expr::Float(x) => Value::Float(*x),
-            Expr::Bool(b) => Value::Bool(*b),
-            Expr::Str(s) => Value::Str(s.clone()),
-            Expr::Unit => Value::Unit,
+            Expr::Int(n) => Expr::Int(*n),
+            Expr::BigInt(b) => crate::llvm::native::int_expr(b.parse().ok()?),
+            Expr::Float(x) => Expr::Float(*x),
+            Expr::Bool(b) => Expr::Bool(*b),
+            Expr::Str(s) => Expr::Str(s.clone()),
+            Expr::Unit => Expr::Unit,
             Expr::Var(x) if self.is_known(x) => self.known[x].clone(),
             // `Self`: the type derived for
             _ if is_self(e) && self.self_ty != TypeExpr::Unit => self.type_value(&self.self_ty),
             // `a ?? b`
             Expr::Or(a, b) => match self.data_in(a, locals)? {
-                Value::Variant(n, Fields::Pos(xs)) if n == "Some" => xs.first()?.clone(),
-                Value::Variant(n, Fields::None) if n == "None" => self.data_in(b, locals)?,
+                Expr::Ctor(n, CtorArgs::Positional(xs)) if n == "Some" => xs.first()?.clone(),
+                Expr::Ctor(n, CtorArgs::None) if n == "None" => self.data_in(b, locals)?,
                 _ => return None,
             },
             // comparing what is known (`if comptime f.name == "type"`): nothing to run
@@ -882,11 +886,11 @@ impl<'a> Expander<'a> {
                 use BinOp::*;
                 let (x, y) = (self.data_in(a, locals)?, self.data_in(b, locals)?);
                 match (op, &x, &y) {
-                    (Eq, _, _) => Value::Bool(x == y),
-                    (Ne, _, _) => Value::Bool(x != y),
-                    (And, Value::Bool(p), Value::Bool(q)) => Value::Bool(*p && *q),
-                    (Or, Value::Bool(p), Value::Bool(q)) => Value::Bool(*p || *q),
-                    (Lt | Le | Gt | Ge, Value::Int(p), Value::Int(q)) => Value::Bool(match op {
+                    (Eq, _, _) => Expr::Bool(x == y),
+                    (Ne, _, _) => Expr::Bool(x != y),
+                    (And, Expr::Bool(p), Expr::Bool(q)) => Expr::Bool(*p && *q),
+                    (Or, Expr::Bool(p), Expr::Bool(q)) => Expr::Bool(*p || *q),
+                    (Lt | Le | Gt | Ge, Expr::Int(p), Expr::Int(q)) => Expr::Bool(match op {
                         Lt => p < q,
                         Le => p <= q,
                         Gt => p > q,
@@ -896,20 +900,19 @@ impl<'a> Expander<'a> {
                 }
             }
             Expr::Un(UnOp::Not, x) => match self.data_in(x, locals)? {
-                Value::Bool(b) => Value::Bool(!b),
+                Expr::Bool(b) => Expr::Bool(!b),
                 _ => return None,
             },
             Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if n == "len") && args.len() == 1 => match self.data_in(&args[0], locals)? {
-                Value::List(xs) => Value::Int(xs.len() as i64),
+                Expr::List(xs) => Expr::Int(xs.len() as i64),
                 _ => return None,
             },
-            Expr::List(xs) => Value::List(xs.iter().map(|x| self.data_in(x, locals)).collect::<Option<_>>()?),
-            Expr::Tuple(xs) => Value::Tuple(xs.iter().map(|x| self.data_in(x, locals)).collect::<Option<_>>()?),
+            Expr::List(xs) => Expr::List(xs.iter().map(|x| self.data_in(x, locals)).collect::<Option<_>>()?),
+            Expr::Tuple(xs) => Expr::Tuple(xs.iter().map(|x| self.data_in(x, locals)).collect::<Option<_>>()?),
             Expr::Field(r, f) => match self.data_in(r, locals)? {
                 // a type's lists, written out in full (`f.type.fields`)
-                v @ Value::Record(..) if matches!(&v, Value::Record(k, _) if *k == q("Type")) && matches!(f.as_str(), "fields" | "elements" | "members") => self.full(&v, f.as_str())?,
-                Value::Record(_, fs) => fs.into_iter().find(|(k, _)| k == f.as_str())?.1,
-                Value::Variant(_, Fields::Rec(fs)) => fs.iter().find(|(k, _)| k == f.as_str())?.1.clone(),
+                v @ Expr::Ctor(..) if matches!(&v, Expr::Ctor(k, _) if *k == q("Type")) && matches!(f.as_str(), "fields" | "elements" | "members") => self.full(&v, f.as_str())?,
+                Expr::Ctor(_, CtorArgs::Record(fs)) => fs.into_iter().find(|(k, _)| k == f.as_str())?.1,
                 _ => return None,
             },
             Expr::Ctor(c, args) => {
@@ -919,8 +922,8 @@ impl<'a> Expander<'a> {
                     return None;
                 }
                 match args {
-                    CtorArgs::None => Value::Variant(c.to_string(), Fields::None),
-                    CtorArgs::Positional(es) => Value::Variant(c.to_string(), Fields::pos(es.iter().map(|x| self.data_in(x, locals)).collect::<Option<_>>()?)),
+                    CtorArgs::None => Expr::Ctor(*c, CtorArgs::None),
+                    CtorArgs::Positional(es) => Expr::Ctor(*c, CtorArgs::Positional(es.iter().map(|x| self.data_in(x, locals)).collect::<Option<_>>()?)),
                     CtorArgs::Record(fs) => {
                         // in declaration order, every field given (a default would have to run)
                         let order = self.env.variants_of(&tname, &[]).and_then(|vs| vs.into_iter().find(|v| &v.0 == c)).and_then(|v| v.1)?;
@@ -930,9 +933,9 @@ impl<'a> Expander<'a> {
                         let mut vals = vec![];
                         for f in &order {
                             let (_, fe) = fs.iter().find(|(n, _)| n == f)?;
-                            vals.push((f.to_string(), self.data_in(fe, locals)?));
+                            vals.push((*f, self.data_in(fe, locals)?));
                         }
-                        if matches!(td.body, TypeBody::Record(_)) { Value::Record(c.to_string(), vals) } else { Value::Variant(c.to_string(), Fields::rec(vals)) }
+                        Expr::Ctor(*c, CtorArgs::Record(vals))
                     }
                     CtorArgs::Update(..) => return None,
                 }
@@ -941,26 +944,9 @@ impl<'a> Expander<'a> {
         })
     }
 
-    /// A value computed at compile time, written as code.
-    fn literal(&self, v: &Value) -> Res<Expr> {
-        Ok(match v {
-            Value::Int(n) => Expr::Int(*n),
-            Value::Big(b) => Expr::BigInt(b.to_string()),
-            Value::Float(x) => Expr::Float(*x),
-            Value::Bool(b) => Expr::Bool(*b),
-            Value::Str(s) => Expr::Str(s.clone()),
-            Value::Unit => Expr::Unit,
-            Value::List(xs) => Expr::List(xs.iter().map(|x| self.literal(x)).collect::<Res<_>>()?),
-            Value::Tuple(xs) => Expr::Tuple(xs.iter().map(|x| self.literal(x)).collect::<Res<_>>()?),
-            Value::Record(n, fs) => Expr::Ctor(Symbol::new(n), CtorArgs::Record(fs.iter().map(|(k, x)| Ok((Symbol::new(k), self.literal(x)?))).collect::<Res<_>>()?)),
-            Value::Variant(n, Fields::None) => Expr::Ctor(Symbol::new(n), CtorArgs::None),
-            Value::Variant(n, Fields::Pos(xs)) => Expr::Ctor(Symbol::new(n), CtorArgs::Positional(xs.iter().map(|x| self.literal(x)).collect::<Res<_>>()?)),
-            Value::Variant(n, Fields::Rec(fs)) => Expr::Ctor(Symbol::new(n), CtorArgs::Record(fs.iter().map(|(k, x)| Ok((Symbol::new(k), self.literal(x)?))).collect::<Res<_>>()?)),
-            Value::Distinct(n, x) => Expr::Ctor(Symbol::new(n), CtorArgs::Positional(vec![self.literal(x)?])),
-            Value::Dict(kvs) => Expr::Call(Box::new(Expr::Var(Symbol::new("dict"))), vec![Expr::List(kvs.iter().map(|(k, x)| Ok(Expr::Tuple(vec![self.literal(k)?, self.literal(x)?]))).collect::<Res<_>>()?)]),
-            Value::Set(xs) => Expr::Call(Box::new(Expr::Var(Symbol::new("set"))), vec![Expr::List(xs.iter().map(|x| self.literal(x)).collect::<Res<_>>()?)]),
-            Value::Closure(..) | Value::FnRef(_) | Value::Mock(_) => return Err("a function made at compile time can't be kept in the program".into()),
-        })
+    /// A value computed at compile time, written as code: it is already.
+    fn literal(&self, v: &Expr) -> Res<Expr> {
+        Ok(v.clone())
     }
 
     /// Specialize code for the known values.
@@ -980,7 +966,7 @@ impl<'a> Expander<'a> {
             // `f.default_value`: the field's default, as written (`times: Int = 1`)
             Expr::Field(r, d) if d == "default_value" && matches!(&**r, Expr::Var(x) if self.is_known(x)) => {
                 let Expr::Var(x) = &**r else { unreachable!() };
-                return match self.defaults.borrow().get(&json(&self.known[x])) {
+                return match self.defaults.borrow().get(&key(&self.known[x])) {
                     Some(e) => Ok(e.clone()),
                     // only reached where `f.default is Some` holds: never, here
                     None => Ok(Expr::Hole(Symbol::new("no_default"))),
@@ -1026,8 +1012,8 @@ impl<'a> Expander<'a> {
                 let Expr::Var(f) = &**recv else { unreachable!() };
                 let [x] = args.as_slice() else { return Err("`f.of(x)` takes the value to read the field of".into()) };
                 let fname = match &self.known[f] {
-                    Value::Record(k, fs) if *k == q("Field") => fs.iter().find_map(|(k, v)| match (k.as_str(), v) {
-                        ("name", Value::Str(s)) => Some(s.clone()),
+                    Expr::Ctor(k, CtorArgs::Record(fs)) if *k == q("Field") => fs.iter().find_map(|(k, v)| match (k.as_str(), v) {
+                        ("name", Expr::Str(s)) => Some(s.clone()),
                         _ => None,
                     }),
                     _ => None,
@@ -1075,8 +1061,8 @@ impl<'a> Expander<'a> {
             Expr::If(c, a, b) if any_expr(c, |x| matches!(x, Expr::Comptime(_))) => {
                 let c = self.expr(c)?;
                 return match self.eval(&c) {
-                    Ok(Value::Bool(true)) => self.expr(a),
-                    Ok(Value::Bool(false)) => self.expr(b),
+                    Ok(Expr::Bool(true)) => self.expr(a),
+                    Ok(Expr::Bool(false)) => self.expr(b),
                     _ => Err(format!("`if {}`: the condition must be known while compiling", crate::printer::expr(&c, 0))),
                 };
             }
@@ -1090,14 +1076,14 @@ impl<'a> Expander<'a> {
             Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if crate::names::short(n) == "compile_error") && args.len() == 1 => {
                 let m = self.expr(&args[0])?;
                 return Err(match self.eval(&m)? {
-                    Value::Str(s) => s,
-                    other => json(&other),
+                    Expr::Str(s) => s,
+                    other => key(&other),
                 });
             }
             // `setting("json.unknown_keys")`: the package's setting (`strata.toml`), if set
             Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if n.as_str() == "std.typing.setting") && args.len() == 1 => {
                 let k = self.expr(&args[0])?;
-                let Value::Str(key) = self.eval(&k)? else { return Err("`setting` takes the setting's name, `section.key`".into()) };
+                let Expr::Str(key) = self.eval(&k)? else { return Err("`setting` takes the setting's name, `section.key`".into()) };
                 return Ok(match crate::package::setting(&key) {
                     Some(v) => Expr::Ctor(Symbol::new("Some"), CtorArgs::Positional(vec![Expr::Str(v)])),
                     None => Expr::Ctor(Symbol::new("None"), CtorArgs::None),
@@ -1178,18 +1164,18 @@ impl<'a> Expander<'a> {
     /// `x` for each element (`i` its index, `e` its type); `v.make()` an
     /// atom. `try_make`: each value is a `Result`, the first `Err` is the
     /// result, else `Ok` of the value.
-    fn make(&mut self, d: Value, fallible: bool, args: &[Expr]) -> Res<Expr> {
+    fn make(&mut self, d: Expr, fallible: bool, args: &[Expr]) -> Res<Expr> {
         let Some(kind) = kind_name(&d) else { return Err("`make` is called on a type known while compiling".into()) };
         let t = self.type_of(&d)?;
         let variant = self.is_variant(&d);
         let list = |k: &str| match self.full(&d, k) {
-            Some(Value::List(xs)) => xs,
+            Some(Expr::List(xs)) => xs,
             _ => vec![],
         };
         let (fields, elements) = (list("fields"), list("elements"));
         // a record is built by its type's name; a variant by its own
         let head = if variant {
-            Some(self.ctors.borrow()[&json(&d)].clone())
+            Some(self.ctors.borrow()[&key(&d)].clone())
         } else if kind == "Record" {
             Some(crate::types::texpr_head(&t).to_string())
         } else if kind == "Tuple" {
@@ -1198,7 +1184,7 @@ impl<'a> Expander<'a> {
             return Err(format!("`make` builds a record, a tuple or a variant, not a `{}`", crate::printer::ty(&t)));
         };
         let mut vals: Vec<(Symbol, Expr)> = vec![];
-        let each = |this: &mut Self, binds: Vec<(Symbol, Value, Option<(String, TypeExpr)>)>, body: &Expr| -> Res<Expr> {
+        let each = |this: &mut Self, binds: Vec<(Symbol, Expr, Option<(String, TypeExpr)>)>, body: &Expr| -> Res<Expr> {
             let mut saved = vec![];
             for (n, v, ty) in binds {
                 saved.push((n, this.known.insert(n, v), ty.as_ref().map(|(k, t)| (k.clone(), this.types.insert(k.clone(), t.clone())))));
@@ -1234,7 +1220,7 @@ impl<'a> Expander<'a> {
                 let (pi, pe) = (ps[0].name, ps[1].name);
                 for (k, el) in elements.iter().enumerate() {
                     let et = self.type_of(el).ok();
-                    let e = each(self, vec![(pi, Value::Int(k as i64), None), (pe, el.clone(), et.map(|t| (pe.to_string(), t)))], body)?;
+                    let e = each(self, vec![(pi, Expr::Int(k as i64), None), (pe, el.clone(), et.map(|t| (pe.to_string(), t)))], body)?;
                     vals.push((Symbol::new(&k.to_string()), e));
                 }
             }
@@ -1284,7 +1270,7 @@ impl<'a> Expander<'a> {
             if let Stmt::ComptimeFor(p, xs, body) = st {
                 let Pattern::Bind(x) = p else { return Err("`comptime for` names its element: `comptime for v in ..`".into()) };
                 let list = self.expr(xs)?;
-                let Value::List(items) = self.eval(&list).map_err(|e| format!("the list of a `comptime for` must be known at compile time: {e}"))? else {
+                let Expr::List(items) = self.eval(&list).map_err(|e| format!("the list of a `comptime for` must be known at compile time: {e}"))? else {
                     return Err("`comptime for` goes over a list".into());
                 };
                 for it in items {
@@ -1324,7 +1310,7 @@ impl<'a> Expander<'a> {
             };
             let Pattern::Bind(x) = &**x else { return Err("a match comprehension names its element: `.. for v in ..`".into()) };
             let list = self.expr(xs)?;
-            let Value::List(items) = self.eval(&list).map_err(|e| format!("the list of a match comprehension must be known at compile time: {e}"))? else {
+            let Expr::List(items) = self.eval(&list).map_err(|e| format!("the list of a match comprehension must be known at compile time: {e}"))? else {
                 return Err("a match comprehension goes over a list".into());
             };
             let shown = crate::printer::expr(&s, 0);
@@ -1351,15 +1337,15 @@ impl<'a> Expander<'a> {
 
     /// An arm's pattern with the element written in: the element's own name
     /// (a variant's description) matches that variant.
-    fn arm_pattern(&self, p: &Pattern, x: &Symbol, it: &Value) -> Res<Pattern> {
+    fn arm_pattern(&self, p: &Pattern, x: &Symbol, it: &Expr) -> Res<Pattern> {
         match p {
             Pattern::Bind(y) if y == x => match it {
                 // a variant: matched by its constructor, its fields or elements
                 // bound (`of.r`, `of.0`) for `f.of(x)` and `x.0` in the arm
                 _ if self.is_variant(it) => {
-                    let c = self.ctors.borrow()[&json(it)].clone();
+                    let c = self.ctors.borrow()[&key(it)].clone();
                     let names = |k: &str| match self.full(it, k) {
-                        Some(Value::List(xs)) => xs,
+                        Some(Expr::List(xs)) => xs,
                         _ => vec![],
                     };
                     let cp = match kind_name(it).as_deref() {
@@ -1370,7 +1356,7 @@ impl<'a> Expander<'a> {
                     Ok(Pattern::Ctor(Symbol::new(&c), cp))
                 }
                 // a type (a union's member): the type pattern for it
-                Value::Record(k, _) if *k == q("Type") && self.type_of(it).is_ok() => {
+                Expr::Ctor(k, CtorArgs::Record(_)) if *k == q("Type") && self.type_of(it).is_ok() => {
                     // its base type (aliases expanded, refinements set aside): the
                     // members' JSON can't overlap, so the base tells them apart
                     let t = self.base(&self.type_of(it)?);
@@ -1394,7 +1380,7 @@ impl<'a> Expander<'a> {
         // `if { it := x; cond } { Ok(()) } else { Err(msg) }`, after `first`
         let test = |cond: &Expr, msg: String, first: Expr| {
             let holds = Expr::Block(vec![Stmt::Let(Pattern::Bind(Symbol::new("it")), None, x.clone())], Box::new(cond.clone()));
-            let shown = Expr::Call(Box::new(Expr::Var(Symbol::new("to_json"))), vec![x.clone()]);
+            let shown = Expr::Call(Box::new(Expr::Var(Symbol::new("debug"))), vec![x.clone()]);
             let err = Expr::Ctor(Symbol::new("Err"), CtorArgs::Positional(vec![Expr::Interp(vec![StrPart::Expr(shown, None), StrPart::Lit(format!(" {msg}"))])]));
             let this = Expr::If(Box::new(holds), Box::new(ok()), Box::new(err));
             let e = Symbol::new("checked.err");
@@ -1531,7 +1517,7 @@ impl<'a> Expander<'a> {
                 rest.push(self.expr(a)?);
             }
         }
-        let key = format!("{name}({})", vals.iter().map(|(_, v)| json(v)).collect::<Vec<_>>().join(", "));
+        let key = format!("{name}({})", vals.iter().map(|(_, v)| key(v)).collect::<Vec<_>>().join(", "));
         if let Some(n) = self.made.get(&key) {
             return Ok(Expr::Call(Box::new(Expr::Var(*n)), rest));
         }
@@ -1544,7 +1530,7 @@ impl<'a> Expander<'a> {
         let mut saved = vec![];
         for (p, v) in &vals {
             saved.push((p.name, self.known.insert(p.name, v.clone())));
-            if let Value::Record(_, fs) = v {
+            if let Expr::Ctor(_, CtorArgs::Record(fs)) = v {
                 if let Some((_, tv)) = fs.iter().find(|(k, _)| k == "type") {
                     if let Ok(t) = self.type_of(tv) {
                         self.types.insert(format!("{}.type", p.name), t);

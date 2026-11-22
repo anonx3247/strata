@@ -31,13 +31,13 @@ true
 true
 Set { "apple", "fig", "pear" }
 Set { -1.0, -0.5, 0.0, 2.5 }
-Set { Blue, Green, Red }
-Set { UserId(10), UserId(100), UserId(9) }
+Set { Red, Green, Blue }
+Set { UserId(9), UserId(10), UserId(100) }
 Set { Point { x: 1, y: 5 }, Point { x: 2, y: 1 } }
 Set { (1, "z"), (2, "a"), (2, "b") }
 Set { [1], [1, 0], [2, 1] }
 Set { None, Some(1), Some(3) }
-Dict { Blue: 2, Red: 1 }
+Dict { Red: 1, Blue: 2 }
 Dict { (0, 9): "q", (1, 2): "p" }
 Set { Set { 0 }, Set { 1, 2 } }
 Dict { "x": Set { 1 }, "y": Set {} }

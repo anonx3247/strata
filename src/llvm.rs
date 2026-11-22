@@ -180,6 +180,16 @@ thread_local! {
     static TRACING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// `f` compiling without tracing: compile-time code made while a traced
+/// program compiles (a literal pattern's matcher) is the compiler's work,
+/// not the program's.
+pub fn untraced<R>(f: impl FnOnce() -> R) -> R {
+    let was = TRACING.with(|t| t.replace(false));
+    let r = f();
+    TRACING.with(|t| t.set(was));
+    r
+}
+
 /// `compile_comptime`, traced (`strata run f [args] --trace`).
 pub fn compile_traced_comptime(prog: &Program, fns: &[String]) -> Res<(String, Vec<Shape>, Shapes)> {
     TRACING.with(|t| t.set(true));
@@ -208,6 +218,12 @@ enum Entry<'e> {
     Library(&'e [String]),
     /// Compile-time code: functions without parameters, whose results are kept.
     Comptime(&'e [String]),
+    /// A function called with arguments the host writes (`strata_given`):
+    /// `@"strata.ct.0"` calls it and keeps its result, as compile-time code does.
+    Call(&'e str),
+    /// Nothing compiled: the shapes of these types, for values the host
+    /// writes or reads (`native::write`, `native::read`).
+    Shapes(&'e [TypeExpr]),
 }
 
 /// Tags from here on are union boxes' (`box_tag`); below, constructors' (0 is a tuple's).
@@ -248,6 +264,14 @@ pub enum Shape {
     Union(Vec<(Option<i64>, Shape)>),
 }
 
+/// What `--trace` reads: each traced function instance's name, arguments'
+/// shapes (`None`: no value) and result's, and the named shapes they use.
+#[derive(Debug, Clone, Default)]
+pub struct Traced {
+    pub fns: Vec<(String, Vec<Option<Shape>>, Option<Shape>)>,
+    pub named: Shapes,
+}
+
 /// A constructor of a named shape: its tag, name, whether it makes a record
 /// (else a variant), and its fields.
 #[derive(Debug, Clone)]
@@ -274,6 +298,27 @@ pub fn compile_comptime(prog: &Program, fns: &[String]) -> Res<(String, Vec<Shap
     Ok((ir, roots, named))
 }
 
+/// The IR of a call of `name` (a function of the resolved `prog`) with
+/// arguments the host writes into memory: `@"strata.ct.0"` reads argument `i`
+/// with `strata_given(i)`, calls the function (which checks its arguments'
+/// refinements and its contract), keeps its result (`strata_ct_keep`) and
+/// drops the arguments. The shapes: the result's, then each parameter's.
+pub fn compile_call(prog: &Program, name: &str, traced: bool) -> Res<(String, Vec<Shape>, Shapes)> {
+    TRACING.with(|t| t.set(traced));
+    let r = compile_with(prog, Entry::Call(name), true);
+    TRACING.with(|t| t.set(false));
+    let (ir, _, shapes) = r?;
+    let (roots, named) = shapes.unwrap_or_default();
+    Ok((ir, roots, named))
+}
+
+/// How values of `types` are laid out in memory, in any program that has
+/// them: tags come from names, so a shape found in `prog` holds wherever the
+/// types mean the same (std's, in every program).
+pub fn shapes_of(prog: &Program, types: &[TypeExpr]) -> Res<(Vec<Shape>, Shapes)> {
+    Ok(compile_with(prog, Entry::Shapes(types), false)?.2.unwrap_or_default())
+}
+
 /// A function `strata verify --jit` fuzzes: its name, and its parameters'
 /// names, written types (generic ones at the instance tried) and `mut`ness.
 pub struct FuzzTarget {
@@ -282,10 +327,18 @@ pub struct FuzzTarget {
 }
 
 /// The LLVM IR of fuzz drivers (`@"strata.fuzz.N"` for target N): each
-/// generates the target's arguments, records them (`strata_fuzz_arg`), and
+/// generates the target's arguments, hands them over (`strata_fuzz_keep`), and
 /// calls it. Loops and calls count steps (`strata_step`).
-pub fn compile_fuzz(prog: &Program, targets: &[FuzzTarget]) -> Res<String> {
-    Ok(compile_with(prog, Entry::Fuzz(targets), true)?.0)
+pub fn compile_fuzz(prog: &Program, targets: &[FuzzTarget]) -> Res<(String, Vec<Vec<Shape>>, Shapes)> {
+    let (ir, _, shapes) = compile_with(prog, Entry::Fuzz(targets), true)?;
+    let (mut all, named) = shapes.unwrap_or_default();
+    // split back into each driver's
+    let mut per = vec![];
+    for t in targets {
+        let rest = all.split_off(t.params.len().min(all.len()));
+        per.push(std::mem::replace(&mut all, rest));
+    }
+    Ok((ir, per, named))
 }
 
 /// The LLVM IR of a program's `test` blocks: a function per test
@@ -423,7 +476,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers };
     // std's precompiled functions, but while making them, tracing, or in a library
     if !BUILDING_STD.with(|b| b.get()) && !m.tracing && !matches!(entry, Entry::Library(_)) {
         m.precompiled = jit::std_library().map(|l| &l.names);
@@ -432,7 +485,13 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     // compile-time code counts steps too (its budget)
     m.fuzzing = matches!(entry, Entry::Fuzz(_) | Entry::Comptime(_));
     let mut comptime: Vec<(String, Ty)> = vec![];
+    // `Entry::Call`'s result and parameter types, for their shapes
+    let mut called: Option<Vec<Ty>> = None;
     match entry {
+        Entry::Call(name) => {
+            let f = env.fns.get(&Symbol::new(name)).ok_or(format!("no function `{name}`"))?.clone();
+            called = Some(m.call_entry(name, &f)?);
+        }
         Entry::Fuzz(targets) => {
             for (i, t) in targets.iter().enumerate() {
                 m.fuzz_driver(i, t).map_err(|e| format!("can't compile the fuzzing of `{}`: {e}", t.name))?;
@@ -457,6 +516,15 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
                 let t = m.lower(&f.ret, &HashMap::default())?;
                 comptime.push((sym_impls(name, &[], &[]), t));
             }
+        }
+        Entry::Shapes(types) => {
+            let mut named = Shapes::default();
+            let mut roots = vec![];
+            for t in types.iter() {
+                let t = m.lower(t, &HashMap::default())?;
+                roots.push(m.shape(&t, &mut named)?);
+            }
+            return Ok((String::new(), vec![], Some((roots, named))));
         }
         Entry::Tests(skip, with_deps) => {
             // each test, a function of its own (no frame of its own on the call stack);
@@ -501,6 +569,11 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     }
     // compile-time code: a function per expression handing its value to the runtime, and its shape
     let mut shapes = None;
+    if let Some(tys) = called {
+        let mut named = Shapes::default();
+        let roots = tys.iter().map(|t| m.shape(t, &mut named)).collect::<Res<Vec<_>>>()?;
+        shapes = Some((roots, named));
+    }
     if !comptime.is_empty() {
         let mut named = Shapes::default();
         let mut roots = vec![];
@@ -517,6 +590,15 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
             writeln!(m.body, "define void @\"strata.ct.{i}\"() {{\nentry:\n{call}\n  call void @strata_ct_keep(i64 {slot})\n  ret void\n}}\n").unwrap();
         }
         shapes = Some((roots, named));
+    }
+    if matches!(entry, Entry::Fuzz(_)) {
+        // each driver's arguments, one after another
+        let (per, named) = std::mem::take(&mut m.fuzz_kept);
+        shapes = Some((per.into_iter().flatten().collect(), named));
+    }
+    // what `--trace` reads values by (the JIT's hooks print them)
+    if m.tracing {
+        jit::set_traced(std::mem::take(&mut m.traced));
     }
     let mut out = String::from("; Strata, compiled by `strata build`\n\n");
     out += &m.globals;
@@ -563,6 +645,8 @@ declare i64 @strata_pid()
 declare void @strata_host_write(i64, ptr)
 declare ptr @strata_host_read_line()
 declare ptr @strata_host_read_file(ptr, ptr, ptr)
+declare ptr @strata_host_code_version()
+declare ptr @strata_host_code_snapshot(ptr)
 declare ptr @strata_host_read_bytes(ptr, ptr, ptr)
 declare i1 @strata_host_write_file(ptr, ptr, i1, ptr, ptr)
 declare i1 @strata_host_exists(ptr)
@@ -580,11 +664,13 @@ declare i64 @strata_str_len(ptr)
 declare void @strata_fault(i32, ptr) noreturn
 declare void @strata_enter(ptr)
 declare void @strata_step()
-declare void @strata_fuzz_arg(ptr)
+declare void @strata_fuzz_keep(i64, i64)
 declare void @strata_ct_keep(i64)
+declare i64 @strata_given(i64)
 declare void @strata_leave()
-declare void @strata_trace_call(ptr, ptr)
-declare void @strata_trace_return(ptr, ptr)
+declare void @strata_trace_arg(i64, i64, i64)
+declare void @strata_trace_call(i64)
+declare void @strata_trace_return(i64, i64)
 declare void @strata_overflow() noreturn cold
 declare void @strata_main_error(ptr)
 declare i64 @strata_div(i64, i64)
@@ -832,6 +918,12 @@ struct Module<'a> {
     box_tags: HashMap<String, i64>,
     /// Compiled for `strata verify --jit`: loops and calls count steps.
     fuzzing: bool,
+    /// The shapes of each fuzz driver's arguments (handed to the runtime as
+    /// they are made: `strata_fuzz_keep`), and the named shapes they use.
+    fuzz_kept: (Vec<Vec<Shape>>, Shapes),
+    /// `--trace`: each traced function instance (its id is its place): its
+    /// name, its arguments' shapes (`None`: no value) and its result's.
+    traced: Traced,
     /// `strata run --trace`: each function of the program reports its calls and returns.
     tracing: bool,
     /// Generators made (by the type and hints they generate), and mock methods.
@@ -997,7 +1089,7 @@ impl<'a> Module<'a> {
             requires.extend(&own.requires);
             ensures.extend(&own.ensures);
         }
-        let label = format!("{}.{}", mi.head, mi.method);
+        let label = format!("{}.{}", mi.head, crate::names::short(&mi.method));
         let inst = Instance { label, symbol: mi.symbol(), impls: vec![], params: own.params.clone(), ret: own.ret.clone(), own_params: &own.params, own_ret: &own.ret, requires, ensures, body: &own.body, sub, given: &[] };
         self.instance(&inst)
     }
@@ -1416,24 +1508,25 @@ impl<'a> Module<'a> {
             c.store(&v, &slot)?;
         }
         if c.m.tracing && framed && !name.starts_with("strata_") {
-            // `{"event":"call","fn":…,"args":[…],"depth":n}` (the runtime adds the depth)
-            let mut parts = vec![Part::Lit("[".into())];
-            for (i, p) in f.params.iter().enumerate() {
+            // each argument handed to strata (`strata_trace_arg`, read by its shape), then the call
+            let id = c.m.traced.fns.len();
+            let mut named = std::mem::take(&mut c.m.traced.named);
+            let mut shapes = vec![];
+            for (k, p) in f.params.iter().enumerate() {
                 let v = c.load(&p.name)?;
-                if i > 0 {
-                    parts.push(Part::Lit(",".into()));
-                }
                 if has_value(&v.0) {
-                    let shown = c.json(&v)?;
-                    parts.push(Part::Val(shown));
+                    shapes.push(Some(c.m.shape(&v.0, &mut named)?));
+                    let slot = c.as_slot(&v)?;
+                    c.emit(format!("call void @strata_trace_arg(i64 {id}, i64 {k}, i64 {slot})"));
                 } else {
-                    parts.push(Part::Lit("null".into()));
+                    shapes.push(None);
                 }
             }
-            parts.push(Part::Lit("]".into()));
-            let args = c.concat(parts)?;
-            let n = c.m.string(&serde_json::to_string(name).unwrap());
-            c.emit(format!("call void @strata_trace_call(ptr {n}, ptr {})", args.1));
+            let result = if has_value(&ret) { Some(c.m.shape(&ret, &mut named)?) } else { None };
+            c.m.traced.named = named;
+            c.m.traced.fns.push((name.to_string(), shapes, result));
+            c.emit(format!("call void @strata_trace_call(i64 {id})"));
+            c.trace_id = Some(id);
         }
         // the written types of the program's own declaration (inline refinements are its nodes)
         for p in own.own_params {
@@ -1450,7 +1543,7 @@ impl<'a> Module<'a> {
             let mut parts = vec![Part::Lit(crate::types::shown_name(&format!("precondition of `{name}` violated: requires {} (with ", crate::printer::expr(r, 0))))];
             for (i, p) in f.params.iter().enumerate() {
                 let v = c.load(&p.name)?;
-                let shown = c.json(&v)?;
+                let shown = c.shown(&v)?;
                 parts.push(Part::Lit(format!("{}{} = ", if i > 0 { ", " } else { "" }, p.name)));
                 parts.push(Part::Val(shown));
             }
@@ -1491,7 +1584,7 @@ impl<'a> Module<'a> {
                 let (pass, fail) = (c.fresh_label("ensures.ok"), c.fresh_label("ensures.fail"));
                 c.cond_br(&ok, &pass, &fail);
                 c.block(&fail);
-                let shown = c.json(&result)?;
+                let shown = c.shown(&result)?;
                 c.fault(
                     Fault::Ensures,
                     vec![Part::Lit(format!("postcondition of `{name}` violated: ensures {} (it = ", crate::printer::expr(en, 0))), Part::Val(shown), Part::Lit(")".into())],
@@ -1500,10 +1593,9 @@ impl<'a> Module<'a> {
             }
             c.pop_scope()?;
         }
-        if c.m.tracing && framed && !name.starts_with("strata_") {
-            let shown = if has_value(&ret) { c.json(&result)? } else { c.m.string("null") };
-            let n = c.m.string(&serde_json::to_string(name).unwrap());
-            c.emit(format!("call void @strata_trace_return(ptr {n}, ptr {shown})"));
+        if let Some(id) = c.trace_id {
+            let slot = if has_value(&ret) { c.as_slot(&result)? } else { "0".into() };
+            c.emit(format!("call void @strata_trace_return(i64 {id}, i64 {slot})"));
         }
         if framed {
             c.emit("call void @strata_leave()".into());
@@ -1642,6 +1734,53 @@ impl<'a> Module<'a> {
     }
 }
 
+impl<'a> Module<'a> {
+    /// `Entry::Call`'s function: `name`'s arguments read from the host's
+    /// slots, the call, its result kept, the arguments dropped. The result's
+    /// type, then the parameters'.
+    fn call_entry(&mut self, name: &str, f: &FnDecl) -> Res<Vec<Ty>> {
+        if !f.type_params.is_empty() {
+            return Err(format!("`{name}` is generic"));
+        }
+        let mut c = Func::new(self, HashMap::default());
+        c.block("start");
+        let ret = c.m.lower(&f.ret, &HashMap::default())?;
+        let mut tys = vec![ret.clone()];
+        let mut args = vec![];
+        for (i, p) in f.params.iter().enumerate() {
+            let t = c.m.lower(&p.ty, &HashMap::default())?;
+            tys.push(t.clone());
+            let raw = c.fresh("given");
+            c.emit(format!("{raw} = call i64 @strata_given(i64 {i})"));
+            // the host's: held by this function, dropped at the end; checked
+            // all the way down, as nothing made it here
+            let v = c.from_slot(&raw, &t)?;
+            c.validate(&v)?;
+            if p.mutable {
+                let slot = c.fresh("arg");
+                writeln!(c.allocas, "  {slot} = alloca {}", c.m.ll(&t)?).unwrap();
+                if has_value(&t) {
+                    c.emit(format!("store {} {}, ptr {slot}", c.m.ll(&t)?, v.1));
+                }
+                c.own_slot(&t, &slot);
+                args.push((Ty::Str, slot));
+            } else {
+                args.push(c.temp(v));
+            }
+        }
+        let sym = c.m.want_impls(name, vec![], vec![None; f.params.len()]);
+        let r = c.call(&ret, &sym, &args)?;
+        let slot = if has_value(&ret) { c.to_slot(&r)? } else { "0".into() };
+        // (the result is the host's now: not dropped)
+        c.emit(format!("call void @strata_ct_keep(i64 {slot})"));
+        c.drop_from(0, None)?;
+        c.emit("ret void".into());
+        let text = c.finish();
+        writeln!(self.body, "define void @\"strata.ct.0\"() {{\n{text}}}\n").unwrap();
+        Ok(tys)
+    }
+}
+
 impl Func<'_, '_> {
     /// `main`'s options, read from the arguments by the derived
     /// `from_args` (std.cli): `--help` prints the help and exits with 0, bad
@@ -1750,6 +1889,8 @@ struct Func<'m, 'a> {
     fail_marks: HashMap<String, usize>,
     /// The result's type and slot.
     ret_slot: Option<(Ty, String)>,
+    /// `--trace`: this function's id among the traced (it reports its return).
+    trace_id: Option<usize>,
     /// The current block, and whether it has ended (with a jump or `ret`).
     cur: String,
     terminated: bool,
@@ -1759,7 +1900,7 @@ struct Func<'m, 'a> {
 
 impl<'m, 'a> Func<'m, 'a> {
     fn new(m: &'m mut Module<'a>, sub: HashMap<Symbol, Ty>) -> Self {
-        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, cur: String::new(), terminated: true, places: vec![] }
+        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![] }
     }
 
     /// The function's text: the slots, then the code.
@@ -2546,7 +2687,7 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let t = self.m.repr(&v.0)?;
         if self.m.handle(&t) {
-            return self.json(v);
+            return self.shown(v);
         }
         if self.is_dyn(&t) {
             return self.dyn_entry_call(v, DYN_SHOW);
@@ -2613,7 +2754,67 @@ impl<'m, 'a> Func<'m, 'a> {
         })
     }
 
-    /// A value as JSON, for messages and nested in other values.
+    /// Check a value made outside compiled code (the host wrote it) as
+    /// making it here would have: every constructor's fields and type, all
+    /// the way down, and a `distinct` type's refinement. Faults on the first
+    /// that fails.
+    fn validate(&mut self, v: &V) -> Res<()> {
+        if let Ty::Con(n, _) = &v.0 {
+            if self.m.is_distinct(n) {
+                if let Some(r) = self.m.refinement(n.as_str()) {
+                    let ok = self.with_it(v, false, |s| s.expr(r))?;
+                    self.fail_unless(&ok, crate::names::short(n), v, format!("does not satisfy `{}` (where {})", crate::names::short(n), crate::printer::expr(r, 0)))?;
+                }
+                let inner = (self.m.repr(&v.0)?, v.1.clone());
+                return self.validate(&inner);
+            }
+        }
+        let t = self.m.repr(&v.0)?;
+        let deep = self.m.boxed(&t) || self.m.nominal(&t) || matches!(&t, Ty::Con(n, _) if n == "List" || n == "Set" || n == "Dict" || n == "Tuple");
+        if deep && !self.m.handle(&t) && !self.is_dyn(&t) {
+            let f = self.helper("valid", &t)?;
+            self.call(&Ty::Unit, &f, &[(t, v.1.clone())])?;
+        }
+        Ok(())
+    }
+
+    /// A value as the 8-byte slot it is kept in (`native::read` reads it):
+    /// itself, a float's bits, a Bool widened, a pointer's address.
+    fn as_slot(&mut self, v: &V) -> Res<String> {
+        let ll = self.m.ll(&v.0)?;
+        Ok(match ll {
+            "void" => "0".into(),
+            "i64" => v.1.clone(),
+            "double" => {
+                let r = self.fresh("slot");
+                self.emit(format!("{r} = bitcast double {} to i64", v.1));
+                r
+            }
+            "i1" => {
+                let r = self.fresh("slot");
+                self.emit(format!("{r} = zext i1 {} to i64", v.1));
+                r
+            }
+            _ => {
+                let r = self.fresh("slot");
+                self.emit(format!("{r} = ptrtoint ptr {} to i64", v.1));
+                r
+            }
+        })
+    }
+
+    /// A value as messages show it: as `debug` does (the code that writes
+    /// it, unless its type has a `Debug` of its own); a native handle by its
+    /// type (`<Db>`: what it points to is C's).
+    fn shown(&mut self, v: &V) -> Res<String> {
+        let t = self.m.repr(&v.0)?;
+        if self.m.handle(&t) {
+            return Ok(self.m.string(&format!("<{}>", crate::names::short(&key(&t)))));
+        }
+        self.debug(v)
+    }
+
+    /// A value as JSON (`to_json`, `derive Json`).
     fn json(&mut self, v: &V) -> Res<String> {
         let t = self.m.repr(&v.0)?;
         if self.m.handle(&t) {
@@ -2755,11 +2956,10 @@ impl<'m, 'a> Func<'m, 'a> {
                 let distinct = matches!(t, Ty::Con(n, _) if h.m.is_distinct(n));
                 match h.m.repr(t)? {
                     _ if distinct => {
-                        // a `distinct` value is not a number or a string to `compare`: by its JSON
-                        let (x, y) = (h.json(&a)?, h.json(&b)?);
-                        let c = h.call(&Ty::Int, "@strata_str_cmp", &[(Ty::Str, x.clone()), (Ty::Str, y.clone())])?;
-                        h.drop_value(&(Ty::Str, x))?;
-                        h.drop_value(&(Ty::Str, y))?;
+                        // a `distinct` value: as what it is made of (`UserId(9) < UserId(10)`)
+                        let r = h.m.repr(t)?;
+                        let f = h.helper("cmp", &r)?;
+                        let c = h.call(&Ty::Int, &f, &[(r.clone(), "%a".into()), (r, "%b".into())])?;
                         h.emit(format!("ret i64 {}", c.1));
                     }
                     Ty::Int => {
@@ -2835,16 +3035,74 @@ impl<'m, 'a> Func<'m, 'a> {
                         h.emit(format!("{gt} = icmp sgt i64 {}, {}", na.1, nb.1));
                         three(&mut h, &lt, &gt);
                     }
-                    _ => {
-                        // anything else: by its JSON
-                        let (x, y) = (h.json(&a)?, h.json(&b)?);
-                        let c = h.call(&Ty::Int, "@strata_str_cmp", &[(Ty::Str, x.clone()), (Ty::Str, y.clone())])?;
-                        h.drop_value(&(Ty::Str, x))?;
-                        h.drop_value(&(Ty::Str, y))?;
+                    Ty::Con(sn, el) if sn == "Set" => {
+                        // as its elements, in order
+                        let list = Ty::Con("List".into(), el.clone());
+                        let f = h.helper("cmp", &list)?;
+                        let c = h.call(&Ty::Int, &f, &[(list.clone(), "%a".into()), (list, "%b".into())])?;
                         h.emit(format!("ret i64 {}", c.1));
                     }
+                    Ty::Con(d, kv) if d == "Dict" => {
+                        // as its pairs, in key order
+                        let pairs = Ty::Con("List".into(), vec![Ty::Con("Tuple".into(), kv.clone())]);
+                        let f = h.helper("cmp", &pairs)?;
+                        let c = h.call(&Ty::Int, &f, &[(pairs.clone(), "%a".into()), (pairs, "%b".into())])?;
+                        h.emit(format!("ret i64 {}", c.1));
+                    }
+                    r if h.m.boxed(&r) => {
+                        // a union: by member, in the order written, then as that member
+                        let ms = h.m.members(t);
+                        let tc = t.clone();
+                        h.on_member(&a, |h, ma, x| {
+                            let ra = ms.iter().position(|m| m == ma).unwrap_or(0);
+                            let (ms, ma) = (ms.clone(), ma.clone());
+                            h.on_member(&(tc.clone(), "%b".into()), |h, mb, y| {
+                                let rb = ms.iter().position(|m| m == mb).unwrap_or(0);
+                                if ra != rb {
+                                    h.emit(format!("ret i64 {}", if ra < rb { -1 } else { 1 }));
+                                    return Ok(());
+                                }
+                                let f = h.helper("cmp", &ma)?;
+                                let c = h.call(&Ty::Int, &f, &[x.clone(), y])?;
+                                h.emit(format!("ret i64 {}", c.1));
+                                Ok(())
+                            })
+                        })?;
+                    }
+                    r if h.m.nominal(&r) => {
+                        // a record or variant: by variant, in the order declared, then field by field
+                        let cs = h.m.ctors_of(&r);
+                        let tc = t.clone();
+                        h.on_ctor(&a, "", |h, ca| {
+                            let ra = cs.iter().position(|c| c == ca).unwrap_or(0);
+                            let (cs, ca) = (cs.clone(), ca.to_string());
+                            h.on_ctor(&(tc.clone(), "%b".into()), "", |h, cb| {
+                                let rb = cs.iter().position(|c| c == cb).unwrap_or(0);
+                                if ra != rb {
+                                    h.emit(format!("ret i64 {}", if ra < rb { -1 } else { 1 }));
+                                    return Ok(());
+                                }
+                                let fs = h.m.fields(&ca, &h.m.ctor_args(&ca, &tc))?;
+                                for (i, fi) in fs.iter().enumerate() {
+                                    let (x, y) = (h.field(&(tc.clone(), "%a".into()), i, &fi.ty)?, h.field(&(tc.clone(), "%b".into()), i, &fi.ty)?);
+                                    let f = h.helper("cmp", &fi.ty)?;
+                                    let c = h.call(&Ty::Int, &f, &[x, y])?;
+                                    let (z, next, out) = (h.fresh("z"), h.fresh_label("next"), h.fresh_label("differ"));
+                                    h.emit(format!("{z} = icmp eq i64 {}, 0", c.1));
+                                    h.emit(format!("br i1 {z}, label %{next}, label %{out}"));
+                                    h.block(&out);
+                                    h.emit(format!("ret i64 {}", c.1));
+                                    h.block(&next);
+                                }
+                                h.emit("ret i64 0".into());
+                                Ok(())
+                            })
+                        })?;
+                    }
+                    r => return Err(format!("comparing a `{}` is not compiled yet", key(&r))),
                 }
-                format!("define i64 {name}({ll} %a, {ll} %b)")
+                // (a type without a value, `()`, takes nothing: `call` passes nothing for it)
+                if has_value(t) { format!("define i64 {name}({ll} %a, {ll} %b)") } else { format!("define i64 {name}()") }
             }
             "eq" if h.m.boxed(t) => {
                 // the same member, then equal as it
@@ -2941,6 +3199,54 @@ impl<'m, 'a> Func<'m, 'a> {
                 let s = h.concat(vec![Part::Val(cur), Part::Lit(close.into())])?;
                 h.emit(format!("ret ptr {}", s.1));
                 format!("define ptr {name}(ptr %a)")
+            }
+            "valid" => {
+                // every part, then each constructor's fields and its type, as making it checks them
+                let elements = |h: &mut Func, l: &V| -> Res<()> {
+                    let et = h.elem_ty(&l.0)?;
+                    h.each(l, &et, |h, _, x| h.validate(x))
+                };
+                match h.m.repr(t)? {
+                    _ if tuple => {
+                        for (i, et) in args.iter().enumerate() {
+                            let x = h.field(&a, i, et)?;
+                            h.validate(&x)?;
+                        }
+                        h.emit("ret void".into());
+                    }
+                    Ty::Con(n, _) if n == "List" => {
+                        elements(&mut h, &a)?;
+                        h.emit("ret void".into());
+                    }
+                    Ty::Con(n, _) if n == "Set" || n == "Dict" => {
+                        let l = h.as_list(&a)?;
+                        elements(&mut h, &l)?;
+                        h.emit("ret void".into());
+                    }
+                    r if h.m.boxed(&r) => {
+                        h.on_member(&a, |h, _, x| {
+                            h.validate(&x)?;
+                            h.emit("ret void".into());
+                            Ok(())
+                        })?;
+                    }
+                    _ => {
+                        let tc = t.clone();
+                        h.on_ctor(&a, "", |h, c| {
+                            let fs = h.m.fields(c, &h.m.ctor_args(c, &tc))?;
+                            for (i, f) in fs.iter().enumerate() {
+                                let x = h.field(&a, i, &f.ty)?;
+                                let fname = f.name.clone().unwrap_or(i.to_string());
+                                h.check(&f.texpr, &x, &format!("{}.{fname}", crate::names::short(c)), false)?;
+                                h.validate(&x)?;
+                            }
+                            h.check_type_refinement(c, &a)?;
+                            h.emit("ret void".into());
+                            Ok(())
+                        })?;
+                    }
+                }
+                format!("define void {name}(ptr %a)")
             }
             "debug" => {
                 // as written in code: `(a, b)`, `Name { f: v }`, `Name(a, b)`, `Name`
@@ -3104,8 +3410,9 @@ impl<'m, 'a> Func<'m, 'a> {
                         let s = h.m.string(crate::names::short(c));
                         h.emit(format!("ret ptr {s}"));
                     } else {
-                        let j = h.json(&a)?;
-                        h.emit(format!("ret ptr {j}"));
+                        // with fields: as the code that writes it (`debug`'s)
+                        let d = h.debug(&a)?;
+                        h.emit(format!("ret ptr {d}"));
                     }
                     Ok(())
                 })?;
@@ -3370,7 +3677,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let ctx = ctx.to_vec();
                 // (what a message would show is made first: a temporary, unless it is used)
                 self.each(v, &et, |c, i, x| {
-                    let shown = c.json(&(Ty::Int, i.to_string()))?;
+                    let shown = c.shown(&(Ty::Int, i.to_string()))?;
                     let shown = c.temp((Ty::Str, shown)).1;
                     let inner = within(&ctx, vec![Part::Lit(": [".into()), Part::Val(shown), Part::Lit("]".into())]);
                     c.check_in(&et_written, x, &inner, false)
@@ -3384,12 +3691,12 @@ impl<'m, 'a> Func<'m, 'a> {
                 let (written, ctx) = (args.clone(), ctx.to_vec());
                 self.each(&list, &et, |c, _, x| {
                     if written.len() == 1 {
-                        let shown = c.json(x)?;
+                        let shown = c.shown(x)?;
                         let shown = c.temp((Ty::Str, shown)).1;
                         return c.check_in(&written[0], x, &within(&ctx, vec![Part::Lit(": element ".into()), Part::Val(shown)]), false);
                     }
                     let (k, val) = (c.field(x, 0, &lowered[0])?, c.field(x, 1, &lowered[1])?);
-                    let shown = c.json(&k)?;
+                    let shown = c.shown(&k)?;
                     let shown = c.temp((Ty::Str, shown)).1;
                     c.check_in(&written[0], &k, &within(&ctx, vec![Part::Lit(": key ".into()), Part::Val(shown.clone())]), false)?;
                     c.check_in(&written[1], &val, &within(&ctx, vec![Part::Lit(": [".into()), Part::Val(shown), Part::Lit("]".into())]), false)
@@ -3490,7 +3797,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let (pass, fail) = (self.fresh_label("check.ok"), self.fresh_label("check.fail"));
         self.cond_br(ok, &pass, &fail);
         self.block(&fail);
-        let shown = self.json(v)?;
+        let shown = self.shown(v)?;
         ctx.extend([Part::Lit(": ".into()), Part::Val(shown), Part::Lit(format!(" {msg}"))]);
         self.fault(Fault::Refinement, ctx)?;
         self.block(&pass);
@@ -4273,7 +4580,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 t => format!("does not satisfy `{}`", key(t)),
             };
             let rt = Ty::Con("Result".into(), vec![Ty::Unit, Ty::Str]);
-            let shown = self.json(&v)?;
+            let shown = self.shown(&v)?;
             let shown = self.temp((Ty::Str, shown));
             let why = self.m.string(&why);
             return self.call_fn(&prelude("check_result"), vec![ok, shown, (Ty::Str, why)], Some(rt));
@@ -4696,6 +5003,38 @@ impl<'m, 'a> Func<'m, 'a> {
                 let okv = (okv, r.1);
                 self.outcome(&ok, Some(okv), &k, &m, &t)?
             }
+            "host_code_version" => {
+                let r = self.call(&s_ty, "@strata_host_code_version", &[])?;
+                self.temp(r)
+            }
+            "host_code_snapshot" => {
+                // the snapshot, or NULL and the failure (a string)
+                let e = self.fresh("err");
+                writeln!(self.allocas, "  {e} = alloca ptr").unwrap();
+                let args = [(Ty::Str, e.clone())];
+                let snap = Ty::Con(Symbol::new("std.code.Snapshot"), vec![]);
+                let r = self.call(&snap, "@strata_host_code_snapshot", &args)?;
+                let r = self.temp(r);
+                let ok = self.fresh("ok");
+                self.emit(format!("{ok} = icmp ne ptr {}, null", r.1));
+                let (good, bad, end) = (self.fresh_label("ok"), self.fresh_label("err"), self.fresh_label("res"));
+                self.cond_br(&bool_v(&ok), &good, &bad);
+                self.block(&good);
+                let okb = self.block_of(self.m.tags["Ok"], &[r])?;
+                let from_ok = self.cur.clone();
+                self.br(&end);
+                self.block(&bad);
+                let m = self.fresh("msg");
+                self.emit(format!("{m} = load ptr, ptr {e}"));
+                let m = self.temp((Ty::Str, m));
+                let errb = self.block_of(self.m.tags["Err"], &[m])?;
+                let from_err = self.cur.clone();
+                self.br(&end);
+                self.block(&end);
+                let x = self.fresh("r");
+                self.emit(format!("{x} = phi ptr [ {okb}, %{from_ok} ], [ {errb}, %{from_err} ]"));
+                self.temp((t.clone(), x))
+            }
             "host_write_file" | "host_make_dir" | "host_remove" => {
                 let (k, m) = (self.fresh("kind"), self.fresh("msg"));
                 writeln!(self.allocas, "  {k} = alloca ptr\n  {m} = alloca ptr").unwrap();
@@ -4817,7 +5156,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let (ok, bad) = (self.fresh_label("at.ok"), self.fresh_label("at.out"));
                 self.cond_br(&bool_v(&inside), &ok, &bad);
                 self.block(&bad);
-                let (si, sn) = (self.json(&vs[1])?, self.json(&n)?);
+                let (si, sn) = (self.shown(&vs[1])?, self.shown(&n)?);
                 self.fault(Fault::Runtime, vec![Part::Lit("index ".into()), Part::Val(si), Part::Lit(" out of range (length ".into()), Part::Val(sn), Part::Lit(")".into())])?;
                 self.block(&ok);
                 self.list_at(&vs[0], &vs[1].1, &et)?
@@ -5211,7 +5550,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let (ok, bad) = (self.fresh_label("self.ok"), self.fresh_label("self.other"));
         self.cond_br(&bool_v(&same), &ok, &bad);
         self.block(&bad);
-        let shown = self.json(a)?;
+        let shown = self.shown(a)?;
         self.fault(Fault::Runtime, vec![Part::Lit(format!("`{m}` of `{}` takes a `{}` as `Self`, not ", key(imp), key(imp))), Part::Val(shown)])?;
         self.block(&ok);
         let s = self.field(a, 0, &Ty::Int)?;
@@ -5523,8 +5862,13 @@ impl<'m, 'a> Func<'m, 'a> {
         let cmp = self.helper("cmp", t)?;
         let fsym = format!("@\"less:{}\"", key(t));
         if self.m.helpers.insert(fsym.clone()) {
-            let ll = self.m.ll(t)?;
-            writeln!(self.m.body, "define i1 {fsym}(ptr %env, {ll} %a, {ll} %b) {{\nentry:\n  %c = call i64 {cmp}({ll} %a, {ll} %b)\n  %r = icmp slt i64 %c, 0\n  ret i1 %r\n}}\n").unwrap();
+            if has_value(t) {
+                let ll = self.m.ll(t)?;
+                writeln!(self.m.body, "define i1 {fsym}(ptr %env, {ll} %a, {ll} %b) {{\nentry:\n  %c = call i64 {cmp}({ll} %a, {ll} %b)\n  %r = icmp slt i64 %c, 0\n  ret i1 %r\n}}\n").unwrap();
+            } else {
+                // values without one (`()`) are all equal: never less
+                writeln!(self.m.body, "define i1 {fsym}(ptr %env) {{\nentry:\n  ret i1 false\n}}\n").unwrap();
+            }
         }
         let p = self.closure(&fsym, &[], "<fn order>")?;
         Ok((Ty::Fn(vec![t.clone(), t.clone()], Box::new(Ty::Bool)), p))
@@ -5649,7 +5993,7 @@ impl<'m, 'a> Func<'m, 'a> {
                     if named {
                         s.fault(Fault::Runtime, vec![Part::Lit(format!("no field `{f}`"))])?;
                     } else {
-                        let shown = s.json(&v)?;
+                        let shown = s.shown(&v)?;
                         s.fault(Fault::Runtime, vec![Part::Lit(format!("no field `{f}` on ")), Part::Val(shown)])?;
                     }
                 }
@@ -5693,7 +6037,7 @@ impl<'m, 'a> Func<'m, 'a> {
             self.br(&end);
             self.block(&next);
         }
-        let shown = self.json(&v)?;
+        let shown = self.shown(&v)?;
         self.fault(Fault::Runtime, vec![Part::Lit("no match arm for ".into()), Part::Val(shown)])?;
         self.block(&end);
         let r = self.join(&want, incoming)?;
@@ -5925,7 +6269,7 @@ impl<'m, 'a> Func<'m, 'a> {
                         self.pattern(p, &v, &fail)?;
                         self.br(&ok);
                         self.block(&fail);
-                        let shown = self.json(&v)?;
+                        let shown = self.shown(&v)?;
                         self.fault(Fault::Runtime, vec![Part::Lit("let pattern did not match ".into()), Part::Val(shown)])?;
                         self.block(&ok);
                     }
@@ -6010,7 +6354,7 @@ impl<'m, 'a> Func<'m, 'a> {
                     self.pattern(p, &x, &fail)?;
                     self.loop_body(body, &step, &end, depth)?;
                     self.block(&fail);
-                    let shown = self.json(&x)?;
+                    let shown = self.shown(&x)?;
                     self.fault(Fault::Runtime, vec![Part::Lit("for-loop pattern did not match ".into()), Part::Val(shown)])?;
                     self.block(&step);
                     let next = self.fresh("i");
@@ -6041,7 +6385,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.pattern(p, &x, &fail)?;
                 self.loop_body(body, &step, &end, depth)?;
                 self.block(&fail);
-                let shown = self.json(&x)?;
+                let shown = self.shown(&x)?;
                 self.fault(Fault::Runtime, vec![Part::Lit("for-loop pattern did not match ".into()), Part::Val(shown)])?;
                 self.block(&step);
                 let next = self.fresh("i");
@@ -6077,7 +6421,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.block(&fail);
                 let mut parts = vec![Part::Lit(format!("assertion failed: {}", crate::printer::expr(x, 0)))];
                 if let Some((op, a, b)) = sides {
-                    let (sa, sb) = (self.json(&a)?, self.json(&b)?);
+                    let (sa, sb) = (self.shown(&a)?, self.shown(&b)?);
                     parts.extend([Part::Lit(format!(" (left of {} = ", op.symbol())), Part::Val(sa), Part::Lit(", right = ".into()), Part::Val(sb), Part::Lit(")".into())]);
                 }
                 self.fault(Fault::Assert, parts)?;
@@ -6196,8 +6540,12 @@ impl<'m, 'a> Func<'m, 'a> {
 }
 
 impl Module<'_> {
-    /// Fuzz driver `i`: generate the arguments (each recorded as JSON), then call.
+    /// Fuzz driver `i`: generate the arguments, each handed to the runtime
+    /// as it is made (`strata_fuzz_keep`: read by its shape, before the call
+    /// can change it), then call.
     fn fuzz_driver(&mut self, i: usize, t: &FuzzTarget) -> Res<()> {
+        let mut named = std::mem::take(&mut self.fuzz_kept.1);
+        let mut shapes = vec![];
         let mut c = Func::new(self, HashMap::default());
         c.block("start");
         let mut vs = vec![];
@@ -6205,9 +6553,9 @@ impl Module<'_> {
         for (k, (_, ty, mutable)) in t.params.iter().enumerate() {
             let v = c.generate(ty, &Hints::default(), "0")?;
             let v = c.temp(v);
-            let j = c.json(&v)?;
-            c.emit(format!("call void @strata_fuzz_arg(ptr {j})"));
-            c.drop_value(&(Ty::Str, j))?;
+            shapes.push(c.m.shape(&v.0, &mut named)?);
+            let slot = c.as_slot(&v)?;
+            c.emit(format!("call void @strata_fuzz_keep(i64 {k}, i64 {slot})"));
             let local = format!("fuzz.arg{k}");
             c.local_owned(&local, v, None)?;
             vs.push(c.load(&local)?);
@@ -6218,6 +6566,8 @@ impl Module<'_> {
         c.emit("ret void".into());
         let text = c.finish();
         writeln!(self.body, "define void @\"strata.fuzz.{i}\"() {{\n{text}}}\n").unwrap();
+        self.fuzz_kept.0.push(shapes);
+        self.fuzz_kept.1 = named;
         Ok(())
     }
 
@@ -6537,7 +6887,7 @@ impl Func<'_, '_> {
         // what the value is at run time: a distinct type's is not a number or a string
         let numeric = matches!(v.0, Ty::Int | Ty::Float);
         if (f.plus || f.zero) && !numeric {
-            let shown = self.json(v)?;
+            let shown = self.shown(v)?;
             self.fault(Fault::Runtime, vec![Part::Lit(format!("format spec `{f}`: `+` and `0` apply to numbers, not ")), Part::Val(shown)])?;
             return Ok(self.m.string(""));
         }
@@ -6545,7 +6895,7 @@ impl Func<'_, '_> {
             (Ty::Float, Some(p)) => self.call(&Ty::Str, "@strata_show_float_fixed", &[v.clone(), (Ty::Int, p.to_string())])?.1,
             (Ty::Str, Some(p)) => self.call(&Ty::Str, "@strata_str_slice", &[v.clone(), (Ty::Int, "0".into()), (Ty::Int, p.to_string())])?.1,
             (_, Some(_)) => {
-                let shown = self.json(v)?;
+                let shown = self.shown(v)?;
                 self.fault(Fault::Runtime, vec![Part::Lit(format!("format spec `{f}`: `.N` applies to a Float or a String, not ")), Part::Val(shown)])?;
                 return Ok(self.m.string(""));
             }
@@ -6979,7 +7329,7 @@ impl Func<'_, '_> {
         };
         if let TypeExpr::Named(n, args) = t {
             if n == crate::types::TYPE_ARG {
-                let s = self.string(&args.first().map(crate::interp::type_text).unwrap_or_default());
+                let s = self.string(&args.first().map(crate::printer::type_text).unwrap_or_default());
                 return Ok(s);
             }
         }

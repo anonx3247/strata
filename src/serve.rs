@@ -102,10 +102,15 @@ type Reply = (u16, Vec<(String, String)>, String);
 
 /// An app: `fn init() -> Model`, `fn update(model: Model, msg: Msg) -> Model`
 /// and `fn view(model: Model) -> Html[Msg]`, and the sessions' models.
+/// `init` and `update` may also ask for capabilities (`Files`, `Console`,
+/// `Environment`), after their other parameters.
 struct App {
     /// The page's title: the program's name.
     title: String,
     msg: TypeExpr,
+    /// The capabilities `init` and `update` ask for, by type.
+    init_caps: Vec<String>,
+    update_caps: Vec<String>,
     sessions: HashMap<String, Value>,
     /// Session ids, oldest first.
     order: Vec<String>,
@@ -116,22 +121,34 @@ fn text(status: u16, body: String) -> Reply {
 }
 
 fn fault_text(f: &interp::Fault) -> String {
-    let stack = if f.stack.is_empty() { String::new() } else { format!("\n    stack: {}", crate::interp::show_stack(&f.stack)) };
+    let stack = if f.stack.is_empty() { String::new() } else { format!("\n    stack: {}", crate::names::show_stack(&f.stack)) };
     format!("fault ({:?}): {}{stack}", f.kind, f.msg)
 }
 
 impl App {
     /// Check the three functions' signatures.
     fn new(env: &Env, name: &str) -> Result<App, String> {
-        let usage = "an app is `fn init() -> Model`, `fn update(model: Model, msg: Msg) -> Model` and `fn view(model: Model) -> Html[Msg]` (std.web), for your own `Model` and `Msg` types";
+        let usage = "an app is `fn init() -> Model`, `fn update(model: Model, msg: Msg) -> Model` and `fn view(model: Model) -> Html[Msg]` (std.web), for your own `Model` and `Msg` types; `init` and `update` may also ask for `Console` and capabilities (`Disk`, `Process`, `Codebase`, or the program's own), after their other parameters";
         let get = |n: &str| env.fns.get(&Symbol::new(n)).cloned().ok_or(format!("no `{n}` function: {usage}"));
         let (init, update, view) = (get("init")?, get("update")?, get("view")?);
         let ty = crate::printer::ty;
         let model = ty(&init.ret);
-        if !init.params.is_empty() {
-            return Err(format!("`init` takes no parameters: {usage}"));
-        }
-        let [m, msg] = &update.params[..] else { return Err(format!("`update` takes the model and a message: {usage}")) };
+        // the capabilities after the parameters a function needs
+        let caps = |f: &FnDecl, skip: usize| -> Result<Vec<String>, String> {
+            f.params[skip.min(f.params.len())..]
+                .iter()
+                .map(|p| {
+                    let t = ty(&p.ty);
+                    match crate::cmd::capability(env, &t) {
+                        Some(_) => Ok(t),
+                        None => Err(format!("`{}`'s parameter `{}` is a `{t}`, not a capability: {usage}", f.name, p.name)),
+                    }
+                })
+                .collect()
+        };
+        let init_caps = caps(&init, 0)?;
+        let update_caps = caps(&update, 2)?;
+        let [m, msg, ..] = &update.params[..] else { return Err(format!("`update` takes the model and a message: {usage}")) };
         if ty(&m.ty) != model || ty(&update.ret) != model {
             return Err(format!("`update` takes and returns the model `{model}` that `init` returns: {usage}"));
         }
@@ -140,13 +157,19 @@ impl App {
         if ty(&vm.ty) != model || ty(&view.ret) != html {
             return Err(format!("`view` takes the model `{model}` and returns `{html}`: {usage}"));
         }
-        Ok(App { title: name.to_string(), msg: msg.ty.clone(), sessions: HashMap::default(), order: vec![] })
+        Ok(App { title: name.to_string(), msg: msg.ty.clone(), init_caps, update_caps, sessions: HashMap::default(), order: vec![] })
     }
 
     fn interp<'a>(env: &'a Env) -> Interp<'a> {
         let mut it = Interp::new(env, 1);
+        it.host = Some(interp::Host { args: vec![] });
         it.output = interp::Output::Terminal;
         it
+    }
+
+    /// The values of the capabilities `caps` names.
+    fn caps(env: &Env, caps: &[String]) -> Vec<Value> {
+        caps.iter().filter_map(|c| crate::cmd::capability(env, c)).collect()
     }
 
     /// The model's view, as HTML.
@@ -166,7 +189,7 @@ impl App {
         };
         match (req["method"].as_str().unwrap_or(""), req["path"].as_str().unwrap_or("")) {
             ("GET" | "HEAD", "/") => {
-                let model = match App::interp(env).call_fn("init", vec![]) {
+                let model = match App::interp(env).call_fn("init", App::caps(env, &self.init_caps)) {
                     Ok(m) => m,
                     Err(f) => return error(500, fault_text(&f)),
                 };
@@ -217,10 +240,17 @@ impl App {
                         }
                     }
                 };
-                let model = match it.call_fn("update", vec![model, msg]) {
+                let mut args = vec![model.clone(), msg];
+                args.extend(App::caps(env, &self.update_caps));
+                let new = match it.call_fn("update", args) {
                     Ok(m) => m,
                     Err(f) => return error(500, fault_text(&f)),
                 };
+                // nothing changed (a timer's check found nothing new): the page stays
+                if new == model {
+                    return (204, vec![], String::new());
+                }
+                let model = new;
                 let body = match App::render(env, &model) {
                     Ok(b) => b,
                     Err(e) => return error(500, e),
@@ -267,7 +297,7 @@ fn call(env: &Env, f: &FnDecl, req: &Json) -> (u16, Vec<(String, String)>, Strin
     match it.call_fn("handle", args) {
         Ok(v) => response(&v).unwrap_or_else(error),
         Err(fault) => {
-            let stack = if fault.stack.is_empty() { String::new() } else { format!("\n    stack: {}", crate::interp::show_stack(&fault.stack)) };
+            let stack = if fault.stack.is_empty() { String::new() } else { format!("\n    stack: {}", crate::names::show_stack(&fault.stack)) };
             error(format!("fault ({:?}): {}{stack}", fault.kind, fault.msg))
         }
     }
