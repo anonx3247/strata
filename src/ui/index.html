@@ -668,6 +668,16 @@ label.switch input:checked + .knob::after { transform: translateX(10px); backgro
 .maptools button, .toolbar button.plain { border: 0; background: none; color: var(--muted); font: 500 12px var(--sans); padding: 3px 8px; border-radius: 7px; }
 .maptools button:hover, .toolbar button.plain:hover { color: var(--text); background: color-mix(in srgb, var(--text) 7%, transparent); }
 .maptools { border-color: var(--line); background: color-mix(in srgb, var(--panel) 85%, transparent); }
+#composer { position: relative; }
+#slash { display: none; position: absolute; left: 12px; right: 12px; bottom: 100%; margin-bottom: 6px; max-height: 300px; overflow: auto; background: var(--panel); border: 1px solid var(--line2); border-radius: 10px; box-shadow: 0 12px 34px rgba(0,0,0,.45); padding: 4px; z-index: 5; }
+#slash.on { display: block; }
+#slash .sc { display: flex; gap: 10px; align-items: baseline; padding: 5px 9px; border-radius: 6px; cursor: pointer; font-size: 12.5px; min-width: 0; }
+#slash .sc.on { background: var(--accent-soft); }
+#slash .sc b { font: 500 12.5px var(--mono); color: var(--text); flex: none; }
+#slash .sc b u { text-decoration: none; color: var(--accent); }
+#slash .sh { font: 11.5px var(--mono); color: var(--faint); flex: none; }
+#slash .sd { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.msg-u.slashc { font-family: var(--mono); font-size: 12.5px; }
 </style>
 </head>
 <body>
@@ -2015,28 +2025,47 @@ function renderActDiff() {
 let CFG = {};
 api('/api/config').then(c => { CFG = c; render(); }).catch(() => { });
 // sessions (from the server), their events, and what they fold into
-const AG = { list: [], sel: null, ev: {}, items: {}, snaps: {}, mounted: null, busy: false, drafts: {}, toolOpen: new Map(), toolAll: new Set(), symbols: localStorage.getItem('strata-symbols') !== '0' };
+const AG = { list: [], sel: null, ev: {}, items: {}, snaps: {}, mounted: null, busy: false, drafts: {}, cmds: {}, slash: null, toolOpen: new Map(), toolAll: new Set(), symbols: localStorage.getItem('strata-symbols') !== '0' };
 const STRATA_SUBS = new Set('init add edit rename move status done abort log diff interface render pack header merge-file resolve setup-git sync ci ui view ast check holes verify test run build bench doc fmt deps fetch builtins'.split(' '));
 const SHELL_OP = /^(<<-?|<|>|>>|\||\|\||&&|;|2>&1|&)$/;
 // A `strata …` command in a shell command line: its subcommand, arguments,
 // and for `edit`, the text piped in (a here-document, an echo, or a file)
+// The strata binary as a shell command line calls it: `strata`, a path to
+// it (`./target/release/strata`), or a variable set to one (`S=…/strata; $S check`).
+function strataExe(cmd) {
+  const vars = [...cmd.matchAll(/(?:^|[\s;&(])([A-Za-z_]\w*)=(["']?)(?:[^\s;'"&|]*\/)?strata\2(?=[\s;&|)]|$)/gm)].map(m => m[1]);
+  return ['(?:[\\w./~-]*/)?strata', ...vars.map(v => `"?\\$\\{?=?${v}\\}?"?`)].join('|');
+}
+// Each place a command line runs strata: what follows it, up to the next command
+function strataRuns(cmd) {
+  // a command's position: the start of a line, after ; & | ( `, or after then/do/else/time/exec
+  const re = new RegExp(`(?:^|[;&|(\`]|\\b(?:then|do|else|time|exec))[ \\t]*(?:\\w+=\\S*[ \\t]+)*(?:${strataExe(cmd)})(?=[ \\t]|$)([^\\n;&|]*)`, 'gm');
+  return [...cmd.matchAll(re)].map(m => {
+    const toks = m[1].trim().split(/\s+/).filter(Boolean);
+    let sub = null, k = 0, file = null;
+    for (; k < toks.length; k++) {
+      const t = toks[k];
+      if (t === '--file' || t === '-f') { file = toks[++k]; continue; }
+      if (t.startsWith('-')) continue;
+      if (STRATA_SUBS.has(t)) sub = t;
+      else k--; // a variable (`$c`) or something else: no subcommand, keep it as an argument
+      break;
+    }
+    const rest = [];
+    for (const t of toks.slice(k + 1)) { if (SHELL_OP.test(t) || /^<</.test(t) || /^\d*[<>]/.test(t)) break; rest.push(t); }
+    return { sub, file, rest };
+  });
+}
+// A command line that runs strata: its subcommand(s), arguments, and for
+// `edit`, the text piped in (a here-document, an echo, or a file)
 function strataCmd(cmd) {
   if (typeof cmd !== 'string') return null;
-  const m = cmd.match(/(?:^|[\s;&|(`])(?:[\w./~-]*\/)?strata(?=\s)([^\n]*)/);
-  if (!m) return null;
-  const toks = m[1].trim().split(/\s+/);
-  let sub = null, k = 0, file = null;
-  for (; k < toks.length; k++) {
-    const t = toks[k];
-    if (t === '--file' || t === '-f') { file = toks[++k]; continue; }
-    if (t.startsWith('-')) continue;
-    if (STRATA_SUBS.has(t)) sub = t;
-    break;
-  }
-  if (!sub) return null;
-  const rest = [];
-  for (const t of toks.slice(k + 1)) { if (SHELL_OP.test(t) || /^<</.test(t)) break; rest.push(t); }
-  const r = { sub, file, args: rest.join(' '), module: null, input: null, inputFrom: null, removed: [] };
+  const runs = strataRuns(cmd);
+  if (!runs.length) return null;
+  const subs = [...new Set(runs.map(r => r.sub).filter(Boolean))];
+  const first = runs.find(r => r.sub === 'edit' || r.sub === 'add') || runs.find(r => r.sub) || runs[0];
+  const sub = first.sub, rest = first.rest;
+  const r = { sub, subs, file: first.file, args: rest.join(' ') + (runs.length > 1 ? ' …' : ''), module: null, input: null, inputFrom: null, removed: [] };
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === '-m') { i++; continue; }
     if (rest[i] === '--rm') { r.removed.push(rest[++i]); continue; }
@@ -2044,9 +2073,10 @@ function strataCmd(cmd) {
   }
   if (r.module === 'main') r.module = '';
   if (sub === 'edit' || sub === 'add') {
+    const exe = strataExe(cmd);
     const hd = cmd.match(/<<-?\s*(['"]?)(\w+)\1[^\n]*\n([\s\S]*?)\n[ \t]*\2[ \t]*(?:\n|$)/);
-    const echo = cmd.match(/(?:echo|printf)\s+(?:-e\s+)?(['"])([\s\S]*?)\1\s*\|\s*(?:[\w./~-]*\/)?strata/);
-    const from = cmd.match(/strata[^\n|]*\s<\s*(\S+)/) || cmd.match(/cat\s+(\S+)\s*\|\s*(?:[\w./~-]*\/)?strata/);
+    const echo = cmd.match(new RegExp(`(?:echo|printf)\\s+(?:-e\\s+)?(['"])([\\s\\S]*?)\\1\\s*\\|\\s*(?:${exe})`));
+    const from = cmd.match(new RegExp(`(?:${exe})[^\\n|]*\\s<\\s*(\\S+)`)) || cmd.match(new RegExp(`cat\\s+(\\S+)\\s*\\|\\s*(?:${exe})`));
     if (hd) r.input = hd[3];
     else if (echo) r.input = echo[1] === "'" ? echo[2] : echo[2].replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"');
     if (from && !hd) r.inputFrom = from[1];
@@ -2179,7 +2209,7 @@ async function agentsLoop() {
       working ||= s.status === 'working' || s.status === 'starting';
       if (s.events > have.length) {
         const r = await api(`/api/agents/${s.id}?since=${have.length}`);
-        if (r.list && r.from === have.length) { have.push(...r.list); AG.items[s.id] = fold(have); marked = liveFrom(s, r.list) || marked; changed = true; }
+        if (r.list && r.from === have.length) { have.push(...r.list); AG.items[s.id] = fold(have); const cu = r.list.findLast(e => e.update?.sessionUpdate === 'available_commands_update'); if (cu) AG.cmds[s.id] = cu.update.availableCommands || []; marked = liveFrom(s, r.list) || marked; changed = true; }
       }
     }
     const sum = JSON.stringify(AG.list.map(s => [s.id, s.status, s.asking, s.auto_allow]));
@@ -2229,7 +2259,7 @@ function toolHtml(tc, sid, open) {
   const full = AG.toolAll.has(tc.toolCallId);
   const block = (text, html, what) => { const [t, n] = full ? [text, 0] : clipLines(text, 12); return `<pre>${html(t)}</pre>${more(n, what)}`; };
   if (sc) {
-    name = 'strata ' + sc.sub;
+    name = sc.subs.length > 1 ? 'strata ' + sc.subs.join(', ') : sc.sub ? 'strata ' + sc.sub : 'strata';
     if (sc.sub === 'edit' || sc.sub === 'add') {
       const s = AG.list.find(x => x.id === sid), data = snapFor(s);
       const names = [...editedNames(sc.input).map(n => [n, false]), ...sc.removed.map(n => [n, true])];
@@ -2258,7 +2288,7 @@ function toolHtml(tc, sid, open) {
 }
 function permHtml(p, sid) {
   const t = p.tool || {}, cmd = commandOf(t), sc = strataCmd(cmd);
-  const line = cmd && (sc ? `strata ${sc.sub} ${sc.args}`.trim() : cmd.split('\n')[0]);
+  const line = cmd && (sc ? `strata ${sc.sub || ''} ${sc.args}`.replace(/\s+/g, ' ').trim() : cmd.split('\n')[0]);
   const what = line ? `<code>${esc(line.length > 160 ? line.slice(0, 160) + '…' : line)}</code>` : esc(t.title || 'a tool');
   if (p.done) {
     const o = (p.options || []).find(o => o.optionId === p.answer);
@@ -2275,7 +2305,7 @@ function convHtml(id) {
   const isOpen = tc => AG.toolOpen.has(tc.toolCallId) ? AG.toolOpen.get(tc.toolCallId) : recent.has(tc.toolCallId) || tc.status === 'in_progress';
   return items.map(it => {
     switch (it.t) {
-      case 'user': return `<div class="msg-u">${esc(it.text)}</div>`;
+      case 'user': return `<div class="msg-u ${/^\/\S/.test(it.text) ? 'slashc' : ''}">${esc(it.text)}</div>`;
       case 'msg': return `<div class="msg-a md">${md(it.text)}</div>`;
       case 'thought': return `<details class="msg-t"><summary>thinking</summary><div>${esc(it.text)}</div></details>`;
       case 'tool': return toolHtml(it, id, isOpen(it));
@@ -2300,10 +2330,14 @@ function renderAgentsMain() {
   }
   if (AG.mounted !== s.id) {
     AG.mounted = s.id; $('#main')._html = null;
-    $('#main').innerHTML = `<div id="agent"><div id="agent-h"></div><div id="conv"></div><div id="composer"><textarea id="prompt" placeholder="Tell the agent what to do"></textarea><div class="row"><span>Enter to send · Shift+Enter for a new line</span><span class="spacer"></span><button class="btn" data-cancel title="stop what the agent is doing (it keeps the session)">${icon('stop')}Stop</button><label class="switch" title="let the agent run its tools without asking"><input type="checkbox" id="auto" ${s.auto_allow ? 'checked' : ''}><span class="knob"></span>Allow tools</label><button class="btn danger" data-stop title="end the session: the agent's process stops">${icon('power')}End</button></div></div></div>`;
+    $('#main').innerHTML = `<div id="agent"><div id="agent-h"></div><div id="conv"></div><div id="composer"><div id="slash"></div><textarea id="prompt" placeholder="Tell the agent what to do (/ for commands)"></textarea><div class="row"><span>Enter to send · Shift+Enter for a new line</span><span class="spacer"></span><button class="btn" data-cancel title="stop what the agent is doing (it keeps the session)">${icon('stop')}Stop</button><label class="switch" title="let the agent run its tools without asking"><input type="checkbox" id="auto" ${s.auto_allow ? 'checked' : ''}><span class="knob"></span>Allow tools</label><button class="btn danger" data-stop title="end the session: the agent's process stops">${icon('power')}End</button></div></div></div>`;
     $('#prompt').value = AG.drafts[s.id] || '';
-    $('#prompt').addEventListener('input', e => AG.drafts[s.id] = e.target.value);
-    $('#prompt').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendPrompt(); } });
+    $('#prompt').addEventListener('input', e => { AG.drafts[s.id] = e.target.value; slashUpdate(); });
+    $('#prompt').addEventListener('keydown', e => {
+      if (slashKey(e)) return;
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendPrompt(); }
+    });
+    $('#prompt').addEventListener('blur', () => setTimeout(() => { AG.slash = null; slashDraw(); }, 150));
   }
   const st = statusOf(s);
   setHtml($('#agent-h'), `<span class="sdot ${st}"></span><span class="t">${esc(s.title)}</span><span>${esc(STATUS_WORD[st] || st)}</span><span class="spacer"></span><code title="${esc(s.cwd)} · runs ${esc(s.command)}">${esc(shortPath(s.cwd))}</code>`);
@@ -2312,7 +2346,7 @@ function renderAgentsMain() {
   if (atEnd) conv.scrollTop = conv.scrollHeight;
   $('#auto').checked = !!s.auto_allow;
   const ended = s.status === 'stopped' || s.status === 'failed';
-  $('#prompt').disabled = ended; $('#prompt').placeholder = ended ? 'This session has ended.' : 'Tell the agent what to do'; $('[data-cancel]').disabled = s.status !== 'working'; $('[data-stop]').disabled = ended;
+  $('#prompt').disabled = ended; $('#prompt').placeholder = ended ? 'This session has ended.' : 'Tell the agent what to do (/ for commands)'; $('[data-cancel]').disabled = s.status !== 'working'; $('[data-stop]').disabled = ended;
 }
 // the right half: the code (or an activity selection's diff) of the session's worktree
 function renderAgentsRight() {
@@ -2364,6 +2398,40 @@ async function sendPrompt() {
   if (r.error) { el.value = text; banner(r.error); }
 }
 function banner(msg) { $('#banner').innerHTML = `<div class="err">${esc(msg)}</div>`; setTimeout(() => { if ($('#banner').textContent.includes(msg)) $('#banner').innerHTML = ''; }, 8000); }
+
+
+// ---------- slash commands: the agent's (ACP `available_commands_update`), offered as you type `/` ----------
+function slashUpdate() {
+  const el = $('#prompt'), v = el.value, m = v.match(/^\/(\S*)$/);
+  const cmds = AG.cmds[AG.sel] || [];
+  if (!m || !cmds.length) { AG.slash = null; slashDraw(); return; }
+  const q = m[1].toLowerCase();
+  const items = cmds.map(c => ({ c, m: q ? palMatch(q, c.name) : { score: 0, hits: [] } })).filter(x => x.m).sort((a, b) => b.m.score - a.m.score).slice(0, 12);
+  AG.slash = items.length ? { items, i: Math.min(AG.slash?.i || 0, items.length - 1) } : null;
+  slashDraw();
+}
+function slashDraw() {
+  const box = $('#slash'); if (!box) return;
+  const sl = AG.slash;
+  if (!sl) { box.classList.remove('on'); box.innerHTML = ''; return; }
+  box.classList.add('on');
+  box.innerHTML = sl.items.map(({ c, m }, k) => `<div class="sc ${k === sl.i ? 'on' : ''}" data-slash="${k}"><b>/${[...c.name].map((ch, j) => m.hits.includes(j) ? `<u>${esc(ch)}</u>` : esc(ch)).join('')}</b>${c.input?.hint ? `<span class="sh">${esc(c.input.hint)}</span>` : ''}<span class="sd">${esc((c.description || '').split('\n')[0].slice(0, 140))}</span></div>`).join('');
+  box.querySelector('.sc.on')?.scrollIntoView({ block: 'nearest' });
+}
+function slashPick(k) {
+  const it = AG.slash?.items[k]; if (!it) return;
+  const el = $('#prompt');
+  el.value = '/' + it.c.name + ' '; AG.drafts[AG.sel] = el.value;
+  AG.slash = null; slashDraw(); el.focus();
+}
+function slashKey(e) {
+  const sl = AG.slash; if (!sl) return false;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); const n = sl.items.length; sl.i = (sl.i + (e.key === 'ArrowDown' ? 1 : n - 1)) % n; slashDraw(); return true; }
+  if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) { e.preventDefault(); slashPick(sl.i); return true; }
+  if (e.key === 'Escape') { AG.slash = null; slashDraw(); return true; }
+  return false;
+}
+document.addEventListener('mousedown', e => { const r = e.target.closest('[data-slash]'); if (r) { e.preventDefault(); slashPick(+r.dataset.slash); } });
 
 // ---------- the dialog: a new session ----------
 function openDialog(html) { $('#dlg-b').innerHTML = html; $('#dlg').classList.add('on'); $('#dlg-b').querySelector('textarea, input:not([type=checkbox]), select')?.focus(); }
