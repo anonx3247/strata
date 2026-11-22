@@ -84,6 +84,24 @@ fn k(c: Bool) -> Int {
 fn main() { print(1) }
 "#;
 
+const RECORDS: &str = r#"type Pt = { x: Int, y: Int }
+type Sh =
+  | Sq(Int)
+  | Rc { w: Int, h: Int }
+  | Dot
+fn a() -> Pt { Pt { x: 1, y: "two" } }
+fn b(p: Pt) -> String { p.x }
+fn c() -> Sh { Sq("s") }
+fn d() -> Sh { Rc { w: true, h: 2 } }
+fn e(s: Sh) -> Int { match s { Sq(n) => n, Rc { w, h } => w + h, Dot => "z" } }
+fn f() -> Int { Dot }
+fn g(p: Pt) -> Pt { Pt { ..p, x: "q" } }
+fn h(p: Pt) -> Bool { p.z }
+fn k(s: Sh) -> String { match s { Sq(n) => n, _ => "o" } }
+fn m(p: Pt) -> Int { p == Dot }
+fn main() { print(1) }
+"#;
+
 const UNKNOWN: &str = r#"type Pt = { x: Int, y: Int }
 fn f(a: Int) -> Int {
   b := a + c
@@ -131,6 +149,11 @@ fn types_as_in_rust() {
 #[test]
 fn statement_types_as_in_rust() {
     same_errors("statements", STATEMENTS, &["expected `", "Int or Float"]);
+}
+
+#[test]
+fn record_and_sum_types_as_in_rust() {
+    same_errors("records", RECORDS, &["expected `", "Int or Float", "has no field", "missing field"]);
 }
 
 /// `std.ast.check`'s errors on `text` are `strata check`'s lines holding one of `keys`.
