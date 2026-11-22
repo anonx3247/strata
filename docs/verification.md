@@ -288,6 +288,13 @@ Recursion is allowed unless `no_recursion` says otherwise. A run that breaks a r
 
 **Cross-check.** A proven function that terminates is still run on a few generated inputs (`--cross-check N`, 20 by default, 0 turns it off). If one of them fails, the prover was wrong, and `verify` says so: the result is a failure *found by the cross-check*, flagged as a bug in the prover. Each run has a step budget. A run that goes past it, or past the recursion limit, proves nothing either way and is set aside: proven code can still be far too costly to run, like Ackermann's function.
 
+**Inputs from the solver.** Random values rarely meet some types: a list whose elements are consecutive integers, or a record whose indices must stay within its own list. When the fuzzer can't make inputs for one ("could not generate a value", or every input broke the `requires`), the solver makes them. It looks for values that satisfy the parameters' types and the `requires`, with lists of at most 6 elements. Up to 20 of them, each different from the ones before, are run as the fuzzer's cases. A failure is reported as *found by the fuzzer, on inputs from the solver*:
+
+```text
+✗ last                     Ensures violation (found by the fuzzer, on inputs from the solver)
+    input:   [-1, 0, 1, 2]
+```
+
 **The solver and the fuzzer race.** A function's obligations go to the solver and its inputs to the fuzzer at the same time. The fuzzer waits up to 0.3 s first, because most proofs take milliseconds. Until the solver has answered, the fuzzer runs on a cross-check's budget of steps. The first to find a failure stops the other, and the solver's processes are killed. So a query the solver would give up on after 20 s doesn't hold up a bug the fuzzer finds in a millisecond. When the solver proves everything, the fuzzer runs only the cross-check's cases. When it doesn't, the fuzzer runs the full search, and the cases that ran out of the smaller budget are run again first. Which side finishes first depends on timing, so a failure the fuzzer finds before the solver has proven everything is reported as the fuzzer's, not as a bug in the prover. `--no-race` runs the solver first, then the fuzzer: every result is the same from run to run, and the cross-check can tell a bug in the prover.
 
 **Std's termination is kept.** What the solver finds about std's own functions (a loop's bound, a recursion's measure) is kept between runs in `~/.cache/strata/termination` (`STRATA_CACHE` moves it), one file per strata binary and solver: std is part of the binary, so it can't change in between. Functions made from std for a program (`std.json.encode_as.for.Signup.4`) are the program's, and are analysed every time.

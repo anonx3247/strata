@@ -176,6 +176,11 @@ struct Template {
     facts: Vec<T>,
 }
 
+/// The most elements a list made by the solver as an input has, and how many
+/// levels of lists and sums inside an input are made.
+pub const INPUT_LEN: usize = 6;
+const INPUT_DEPTH: usize = 3;
+
 /// Stands for the position in a `Template`'s terms; `@@o0`, `@@o1`, … for
 /// the positions of the lists it is inside of.
 const IDX: &str = "@@i";
@@ -332,6 +337,8 @@ pub struct Vc<'a> {
     bit_terms: HashMap<String, T>,
     /// The lazy parts of values (`Val::Lazy`).
     cells: Vec<Cell>,
+    /// For inputs made by the solver (`inputs`): each list's first elements.
+    input_elems: HashMap<usize, Vec<Val>>,
     /// The scopes open, innermost last (see `Region`).
     regions: Vec<Region>,
     next_region: usize,
@@ -476,6 +483,7 @@ impl<'a> Vc<'a> {
             fn_args: vec![],
             bit_terms: HashMap::default(),
             cells: vec![],
+            input_elems: HashMap::default(),
             regions: vec![],
             next_region: 1,
             eq_atoms: HashMap::default(),
@@ -3904,6 +3912,132 @@ impl<'a> Vc<'a> {
 
     /// The obligations of a function: its body under its parameters'
     /// refinements and `requires`, checked against every contract it meets.
+    /// Values of `f`'s parameters that meet their types and its `requires`,
+    /// made by the solver: up to `n` of them, each different from the ones
+    /// before. Lists have at most `INPUT_LEN` elements. For the refinements
+    /// random values rarely meet (`all(1..len(it), i -> it[i - 1] <= it[i])`,
+    /// a record whose fields depend on each other).
+    pub fn inputs(&mut self, f: &FnDecl, solver: &Solver, n: usize, seed: u64) -> Vec<Vec<Expr>> {
+        self.self_name = f.name.to_string();
+        for p in &f.params {
+            let v = self.havoc(&p.ty);
+            self.params.push((p.name.to_string(), v.clone()));
+            self.bind(&p.name, v);
+        }
+        let binds = self.params.clone();
+        for r in &f.requires {
+            let c = self.pred(r, binds.clone());
+            self.pc.push(c);
+        }
+        // every part a value is shown with: its lazy parts, its lists' first elements
+        let mut lens = vec![];
+        let mut leaves: Vec<(T, &'static str)> = vec![];
+        for (_, v) in self.params.clone() {
+            self.open_input(&v, 0, &mut lens, &mut leaves);
+        }
+        let mut seen: HashSet<String> = HashSet::default();
+        leaves.retain(|(t, _)| seen.insert(t.clone()));
+        let ob = Obligation { what: "inputs".into(), goal: "false".into(), pc: self.pc.clone(), facts: self.facts.len(), termination: false };
+        // a constant for each leaf (the model is read by name)
+        let names: Vec<String> = (0..leaves.len()).map(|k| format!("input{k}")).collect();
+        let seeds: Vec<String> = leaves.iter().flat_map(|(t, _)| t.split(|c: char| !c.is_alphanumeric() && c != '_').filter(|w| w.starts_with('v') && w.len() > 1 && w[1..].chars().all(|c| c.is_ascii_digit())).map(String::from)).collect();
+        let script = self.script(&ob, &seeds);
+        let Some(head) = script.find("(check-sat)") else { return vec![] };
+        let mut defs = String::new();
+        for ((t, sort), a) in leaves.iter().zip(&names) {
+            defs.push_str(&format!("(declare-const {a} {sort})\n(assert (= {a} {t}))\n"));
+        }
+        for l in &lens {
+            defs.push_str(&format!("(assert (<= {l} {INPUT_LEN}))\n"));
+        }
+        let mut found: Vec<Vec<Expr>> = vec![];
+        let mut blocked = String::new();
+        let never = std::sync::atomic::AtomicBool::new(false);
+        for k in 0..n {
+            let s = seed.wrapping_add(k as u64) % 1_000_000;
+            let q = format!("(set-option :smt.random_seed {s})\n(set-option :sat.random_seed {s})\n{}{defs}{blocked}(check-sat)\n(get-value ({}))\n", &script[..head], names.join(" "));
+            let Ok(Some(out)) = run_solver(solver, &q, &never) else { break };
+            let first = out.lines().next().unwrap_or("").trim();
+            if first != "sat" {
+                break;
+            }
+            let by_name = parse_values(&out[first.len()..]);
+            let mut model: HashMap<String, String> = HashMap::default();
+            for ((t, _), a) in leaves.iter().zip(&names) {
+                if let Some(v) = by_name.get(a) {
+                    model.insert(t.clone(), v.clone());
+                }
+            }
+            // the next model differs from this one
+            let same: Vec<String> = names.iter().filter_map(|a| by_name.get(a).map(|v| format!("(= {a} {v})"))).collect();
+            if same.is_empty() {
+                break;
+            }
+            blocked.push_str(&format!("(assert (not (and {})))\n", same.join(" ")));
+            // (a method's hidden type argument is no value: the run leaves it out)
+            let args: Option<Vec<Expr>> = self
+                .params
+                .iter()
+                .zip(&f.params)
+                .map(|((_, v), p)| match &p.ty {
+                    TypeExpr::Named(n, _) if n == crate::types::TYPE_ARG => Some(Expr::Unit),
+                    _ => to_literal_in(self.env, &self.cells, &self.input_elems, v, &model),
+                })
+                .collect();
+            if let Some(a) = args {
+                found.push(a);
+            }
+        }
+        found
+    }
+
+    /// Make the parts of `v` an input is shown with: lazy parts, and each
+    /// list's first `INPUT_LEN` elements (kept in `input_elems`), down to
+    /// `INPUT_DEPTH` levels; collect the lists' lengths and every leaf.
+    fn open_input(&mut self, v: &Val, depth: usize, lens: &mut Vec<T>, leaves: &mut Vec<(T, &'static str)>) {
+        if depth > INPUT_DEPTH {
+            return;
+        }
+        let v = self.force(v.clone());
+        match &v {
+            Val::Int(t) => leaves.push((t.clone(), "Int")),
+            Val::Bool(t) => leaves.push((t.clone(), "Bool")),
+            Val::Str(t) => leaves.push((t.clone(), "String")),
+            Val::Tuple(xs) => xs.iter().for_each(|x| self.open_input(x, depth, lens, leaves)),
+            Val::Rec(_, fs) => fs.iter().for_each(|(_, x)| self.open_input(x, depth, lens, leaves)),
+            Val::Distinct(_, x) => self.open_input(x, depth, lens, leaves),
+            Val::Sum { tag, ctors, .. } => {
+                leaves.push((tag.clone(), "Int"));
+                ctors.iter().flat_map(|c| &c.1).for_each(|x| self.open_input(x, depth + 1, lens, leaves));
+            }
+            Val::Union { tag, slots } => {
+                leaves.push((tag.clone(), "Int"));
+                slots.iter().for_each(|(_, x)| self.open_input(x, depth, lens, leaves));
+            }
+            Val::List { len, id } => {
+                leaves.push((len.clone(), "Int"));
+                lens.push(len.clone());
+                if self.input_elems.contains_key(id) || !self.positional(*id) {
+                    return;
+                }
+                let xs: Vec<Val> = (0..INPUT_LEN).filter_map(|k| self.element_at(*id, &k.to_string(), &format!("(> {len} {k})"))).collect();
+                if xs.len() < INPUT_LEN {
+                    return;
+                }
+                let xs: Vec<Val> = xs.into_iter().map(|x| self.force(x)).collect();
+                self.input_elems.insert(*id, xs.clone());
+                for x in &xs {
+                    self.open_input(x, depth + 1, lens, leaves);
+                }
+            }
+            Val::Lazy(_) | Val::Unit | Val::Absent | Val::Opaque(_) | Val::FnOf { .. } => {}
+        }
+    }
+
+    pub fn env(&self) -> &'a Env {
+        self.env
+    }
+
     pub fn function(&mut self, f: &FnDecl, label: &str) {
         self.self_name = label.to_string();
         for p in &f.params {
@@ -4032,6 +4166,43 @@ impl Solver {
     }
 }
 
+/// Run `script` on the solver: its answer, `Ok(None)` if it can't be run,
+/// `Err(())` once `stop` is set (the process is killed).
+fn run_solver(solver: &Solver, script: &str, stop: &std::sync::atomic::AtomicBool) -> Result<Option<String>, ()> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let Some(_slot) = solver_slot_until(stop) else { return Err(()) };
+    let Ok(mut child) = Command::new(&solver.bin).args(solver.args()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return Ok(None) };
+    let Some(mut stdin) = child.stdin.take() else { return Ok(None) };
+    if stdin.write_all(script.as_bytes()).is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Ok(None);
+    }
+    drop(stdin);
+    // read the answer on another thread, so a long one can't fill the pipe while we wait
+    let Some(mut stdout) = child.stdout.take() else { return Ok(None) };
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ = std::io::Read::read_to_string(&mut stdout, &mut out);
+        out
+    });
+    loop {
+        if stop.load(Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            // (the reader ends when the pipe closes: not waited for, a child of the solver may hold it)
+            drop(reader);
+            return Err(());
+        }
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(2)),
+            Err(_) => return Ok(None),
+        }
+    }
+    Ok(reader.join().ok())
+}
+
 /// Solver processes running at once, at most one per core: `verify` checks
 /// functions, and each function's obligations, in parallel.
 static RUNNING: (std::sync::Mutex<usize>, std::sync::Condvar) = (std::sync::Mutex::new(0), std::sync::Condvar::new());
@@ -4149,48 +4320,13 @@ impl Vc<'_> {
     /// `solve`, giving up (`Stopped`) as soon as `stop` is set: the solver
     /// process is killed.
     pub fn solve_until(&self, solver: &Solver, i: usize, stop: &std::sync::atomic::AtomicBool) -> Outcome {
-        use std::sync::atomic::Ordering::Relaxed;
         let ob = &self.obligations[i];
         let mut leaves = vec![];
         for (_, v) in &self.params {
             leaves_of(&self.cells, v, &mut leaves);
         }
         let script = self.script(ob, &leaves);
-        // Err(()) when stopped
-        let run = || -> Result<Option<String>, ()> {
-            let Some(_slot) = solver_slot_until(stop) else { return Err(()) };
-            let Ok(mut child) = Command::new(&solver.bin).args(solver.args()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return Ok(None) };
-            let Some(mut stdin) = child.stdin.take() else { return Ok(None) };
-            if stdin.write_all(script.as_bytes()).is_err() {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Ok(None);
-            }
-            drop(stdin);
-            // read the answer on another thread, so a long one can't fill the pipe while we wait
-            let Some(mut stdout) = child.stdout.take() else { return Ok(None) };
-            let reader = std::thread::spawn(move || {
-                let mut out = String::new();
-                let _ = std::io::Read::read_to_string(&mut stdout, &mut out);
-                out
-            });
-            loop {
-                if stop.load(Relaxed) {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    // (the reader ends when the pipe closes: not waited for, a child of the solver may hold it)
-                    drop(reader);
-                    return Err(());
-                }
-                match child.try_wait() {
-                    Ok(Some(_)) => break,
-                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(2)),
-                    Err(_) => return Ok(None),
-                }
-            }
-            Ok(reader.join().ok())
-        };
-        let out = match run() {
+        let out = match run_solver(solver, &script, stop) {
             Err(()) => return Outcome::Stopped,
             Ok(None) => return Outcome::Unknown("the solver could not be run".into()),
             Ok(Some(out)) => out,
@@ -4321,7 +4457,13 @@ fn some_literal(env: &Env, t: &TypeExpr, depth: usize) -> Option<Expr> {
 /// A parameter's value in a model, as the code that writes it (when it can
 /// be rebuilt: lists only when empty, nothing opaque).
 fn to_literal(env: &Env, cells: &[Cell], v: &Val, m: &HashMap<String, String>) -> Option<Expr> {
-    let to_literal = |env: &Env, v: &Val, m: &HashMap<String, String>| to_literal(env, cells, v, m);
+    to_literal_in(env, cells, &HashMap::default(), v, m)
+}
+
+/// `to_literal`, with the first elements of lists (`Vc::input_elems`): a
+/// list is shown when the model's length is within them.
+fn to_literal_in(env: &Env, cells: &[Cell], elems: &HashMap<usize, Vec<Val>>, v: &Val, m: &HashMap<String, String>) -> Option<Expr> {
+    let to_literal = |env: &Env, v: &Val, m: &HashMap<String, String>| to_literal_in(env, cells, elems, v, m);
     Some(match v {
         Val::Lazy(id) => match &cells[*id].value {
             Some(x) => to_literal(env, x, m)?,
@@ -4334,11 +4476,13 @@ fn to_literal(env: &Env, cells: &[Cell], v: &Val, m: &HashMap<String, String>) -
         Val::Tuple(xs) => Expr::Tuple(xs.iter().map(|x| to_literal(env, x, m)).collect::<Option<_>>()?),
         Val::Rec(n, fs) => Expr::Ctor(Symbol::new(n), CtorArgs::Record(fs.iter().map(|(f, x)| to_literal(env, x, m).map(|y| (Symbol::new(f), y))).collect::<Option<_>>()?)),
         Val::Distinct(n, x) => Expr::Ctor(Symbol::new(n), CtorArgs::Positional(vec![to_literal(env, x, m)?])),
-        Val::List { len, .. } => {
-            if parse_int(m.get(len)?)? != 0 {
-                return None;
+        Val::List { len, id } => {
+            let n = parse_int(m.get(len)?)?;
+            if n == 0 {
+                return Some(Expr::List(vec![]));
             }
-            Expr::List(vec![])
+            let xs = elems.get(id).filter(|xs| (n as usize) <= xs.len())?;
+            Expr::List(xs[..n as usize].iter().map(|x| to_literal(env, x, m)).collect::<Option<_>>()?)
         }
         Val::Sum { ty, args, tag, ctors } => {
             let k = parse_int(m.get(tag)?)? as usize;
