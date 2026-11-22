@@ -214,11 +214,12 @@ main.strata, a/b.strata, …
 strata.log            one JSON entry per change made through strata: its id, message, which
                       definitions changed (with their text before and after), interface vs.
                       implementation, which dependents are affected, and renames
-.strata/verdicts.json local cache (not committed): verification results, keyed by the hash of a
-                      definition *and everything it depends on*
+.strata/proofs.json   local cache (not committed): what `verify` proved, for `build` to leave out
 ```
 
-The files and `strata.log` are committed. The log is append-only and merges by union (`.gitattributes`), and each entry carries the definitions' text, so it replays without anything else: `strata diff` splits a git commit into the changes made through strata (with their renames), plus a step for edits made by hand. Because verification results are keyed by content, `verify` reruns only what is affected by a change.
+`verify`'s verdicts are kept outside the package, shared by every worktree of its git repository (`.git/strata/verdicts`; outside a repository, `~/.cache/strata/verdicts`), one file per verdict, keyed by the hash of a definition *and everything it depends on*, with the check's name and the run's settings.
+
+The files and `strata.log` are committed. The log is append-only and merges by union (`.gitattributes`), and each entry carries the definitions' text, so it replays without anything else: `strata diff` splits a git commit into the changes made through strata (with their renames), plus a step for edits made by hand. Because verification results are keyed by content, `verify` reruns only what is affected by a change, in a package, a script or `std/`, and in any worktree (`--no-cache` reruns everything).
 
 The code is stored as its syntax tree, in binary: each `.strata` file is a module file (the format is Strata's own, specified in [binary-format.md](binary-format.md)). Text goes in only through an edit (`strata edit`, `strata add`) and comes out through the views (`render`, `view`, `strata ui`); `strata render --split DIR` writes a package's text, one `.st` file per module, to read rather than to read back; a type one union lists is shown inside it unless it has a doc or an `impl` of its own, and `--members separate` shows every member as a definition of its own (the same program either way). Outside a package's log, `strata --file F edit < text` stores a script (or, with `--file DIR/ edit MODULE`, a module of a folder), created if it is new; only text that doesn't parse is refused. Each module file starts with a header listing its definitions, their hashes and dependencies (`strata header core.strata` prints it), and each definition stores its interface before its bodies. `strata pack app.strata` writes the whole program as one bundle, which `--file`, `strata run` and every view read like the package. The hashes `strata` shows are those of the binary encoding (see the spec).
 
