@@ -118,6 +118,9 @@ impl Env {
                     let td = TypeDecl { distinct: false, name: c.name, params: vec![], body: TypeBody::Sum(vec![]), refinement: None, mock: false };
                     env.types.insert(c.name, td).is_some()
                 }
+                // what the compiler provides (core's `builtin fn` / `builtin type`):
+                // known through the builtins' tables, not as definitions
+                DeclKind::Extern(e) if e.lang == crate::ast::Lang::Builtin => false,
                 DeclKind::Extern(e) => match &e.item {
                     // a signature only: the body is foreign
                     ExternItem::Fn(f) => {
@@ -126,7 +129,7 @@ impl Env {
                     }
                     // a nominal type with no constructor and nothing inside (a sum with no
                     // variants): a handle only foreign code makes
-                    ExternItem::Type(t) => {
+                    ExternItem::Type(t, _) => {
                         env.externs.insert(*t, e.lang);
                         let td = TypeDecl { distinct: false, name: *t, params: vec![], body: TypeBody::Sum(vec![]), refinement: None, mock: false };
                         env.types.insert(*t, td).is_some()

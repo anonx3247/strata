@@ -4,6 +4,14 @@ use crate::*;
 
 /// `strata check`.
 pub fn check(args: &Args, json_out: bool) -> Result<bool, String> {
+    if let Some(dir) = crate::core::dir_of(args.val("--file")) {
+        let rep = crate::core::check(&dir);
+        print_errors(&rep);
+        if rep.ok() {
+            println!("ok: core checks");
+        }
+        return Ok(rep.ok());
+    }
     if args.flag("--strata") {
         return super::compare::check_strata(args.val("--file").unwrap_or("."));
     }

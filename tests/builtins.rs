@@ -1,6 +1,6 @@
-//! `compiler/builtins` holds the signatures of `src/types.rs`'s `BUILTINS`:
-//! printed as text (the compiler package's `builtins` command), they are
-//! `strata builtins`' lines, in the same order.
+//! Both compilers read the builtins' signatures from `core/builtins.strata`:
+//! the compiler package's (`compiler/builtins`' `core_of`, its `builtins`
+//! command) are `strata builtins`' lines, in the same order.
 
 use std::process::Command;
 

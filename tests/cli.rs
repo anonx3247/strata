@@ -363,7 +363,8 @@ fn solver_flags_follow_the_solver() {
     // fake solvers that record how they are called: cvc5 gets its own flags
     let d = tmp("solver-flags");
     save(&d.join("b.strata"), "type Quantity = Int where 1 <= it && it <= 99\nfn clamp(q: Quantity) -> Quantity { if q < 99 { q + 1 } else { q } }\n");
-    for (name, version, expected) in [("cvc5", "This is cvc5 version 1.4.2", "--lang smt2 --produce-models --dt-nested-rec --rlimit-per="), ("z3", "Z3 version 4.15.0 - 64 bit", "-in -T:20 rlimit=")] {
+    // (a function's queries in one process take a time limit per query: `-t` for Z3)
+    for (name, version, expected) in [("cvc5", "This is cvc5 version 1.4.2", ["--lang smt2 --produce-models --dt-nested-rec --rlimit-per=", "--lang smt2 --produce-models --dt-nested-rec --rlimit-per="]), ("z3", "Z3 version 4.15.0 - 64 bit", ["-in -T:20 rlimit=", "-in -t:20000 rlimit="])] {
         let fake = d.join(format!("fake-{name}"));
         let log = d.join(format!("{name}.log"));
         std::fs::write(&fake, format!("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '{version}'; exit 0; fi\necho \"$@\" >> {}\ncat > /dev/null\necho unsat\n", log.display())).unwrap();
@@ -376,7 +377,7 @@ fn solver_flags_follow_the_solver() {
         let out = String::from_utf8_lossy(&o.stdout);
         assert!(o.status.success() && out.contains("✓ clamp"), "{out}");
         let calls = std::fs::read_to_string(&log).unwrap();
-        assert!(calls.lines().count() > 0 && calls.lines().all(|l| l.starts_with(expected)), "{name} was called as: {calls}");
+        assert!(calls.lines().count() > 0 && calls.lines().all(|l| expected.iter().any(|e| l.starts_with(e))), "{name} was called as: {calls}");
     }
 }
 
@@ -6249,6 +6250,34 @@ fn ui_page_defines_each_name_once() {
     }
     let twice: Vec<_> = seen.iter().filter(|(_, n)| **n > 1).map(|(k, _)| k.clone()).collect();
     assert!(twice.is_empty(), "defined more than once in src/ui/index.html: {twice:?}");
+}
+
+/// `core`: the builtin types and functions are declared in it (`builtin
+/// type`, `builtin fn` with `requires` where they fail), and nowhere else.
+#[test]
+fn core_declares_the_builtins() {
+    let d = tmp("core_builtins");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let core = root.join("core");
+    let core = core.to_str().unwrap();
+    // the files are those strata is built with, and they check
+    let (ok, out) = strata(&["--file", core, "check"], &d, None);
+    assert!(ok && out.contains("ok: core checks"), "{out}");
+    let (ok, out) = strata(&["--file", core, "render", "builtins"], &d, None);
+    assert!(ok && out.contains("builtin fn at[A](xs: List[A], i: Int) -> A\n  requires 0 <= i && i < len(xs)\n"), "{out}");
+    let (ok, out) = strata(&["--file", core, "render", "types"], &d, None);
+    assert!(ok && out.contains("builtin type Dict[K, V]\n") && out.contains("type Option[T] ="), "{out}");
+    // `strata builtins` lists core's
+    let (ok, out) = strata(&["builtins"], &d, None);
+    assert!(ok && out.contains("at[A](List[A], Int) -> A") && out.contains("builtin type Int"), "{out}");
+    // the syntax round-trips; anywhere but core, a `builtin` definition is refused
+    let src = "builtin type Pair[A, B]\n\nbuiltin fn first[A, B](p: Pair[A, B]) -> A\n  requires true\n";
+    let (_, out) = strata(&["--file", "x.strata", "edit"], &d, Some(src));
+    assert!(out.contains("`builtin` definitions are only in `core`: `first`") && out.contains("`builtin` definitions are only in `core`: `Pair`"), "{out}");
+    let (ok, out) = strata(&["--file", "x.strata", "render"], &d, None);
+    assert!(ok && out == src, "{out}");
+    let (ok, out) = strata(&["--file", "y.strata", "edit"], &d, Some("builtin fn f() -> Int { 1 }\n"));
+    assert!(!ok && out.contains("`builtin fn f` has no body: the compiler provides it"), "{out}");
 }
 
 /// `Commands` (std.process): `main` (or a test) names `Launcher` and runs real

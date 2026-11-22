@@ -186,7 +186,7 @@ pub fn member(p: &Program, q: &str) -> Option<(&'static str, String)> {
                 DeclKind::Type(_) => Some(("type", d.module.to_string())),
                 DeclKind::Trait(_) => Some(("trait", d.module.to_string())),
                 DeclKind::Extern(ExternDecl { item: ExternItem::Fn(_), .. }) => Some(("function", d.module.to_string())),
-                DeclKind::Extern(ExternDecl { item: ExternItem::Type(_), .. }) | DeclKind::Capability(_) => Some(("type", d.module.to_string())),
+                DeclKind::Extern(ExternDecl { item: ExternItem::Type(..), .. }) | DeclKind::Capability(_) => Some(("type", d.module.to_string())),
                 _ => None,
             };
         }
@@ -240,7 +240,7 @@ pub fn set_member_name(p: &mut Program, q: &str, new: &str) {
                 DeclKind::Trait(t) => t.name = Symbol::from(new),
                 DeclKind::Extern(e) => match &mut e.item {
                     ExternItem::Fn(f) => f.name = Symbol::from(new),
-                    ExternItem::Type(t) => *t = Symbol::from(new),
+                    ExternItem::Type(t, _) => *t = Symbol::from(new),
                 },
                 DeclKind::Capability(c) => c.name = Symbol::from(new),
                 _ => {}
@@ -662,7 +662,7 @@ fn names_mut(d: &mut DeclKind, f: &mut dyn FnMut(&mut Symbol)) {
         DeclKind::Test(_) => {}
         DeclKind::Extern(e) => match &mut e.item {
             ExternItem::Fn(fd) => f(&mut fd.name),
-            ExternItem::Type(t) => f(t),
+            ExternItem::Type(t, _) => f(t),
         },
     }
 }
@@ -1030,7 +1030,7 @@ fn store(p: &Program, mode: Store) -> Program {
 /// other modules' calls of the builtin (the standard library's too) still
 /// reach the builtin. The root module's own uses of `get` mean its function.
 fn root_fn(module: Symbol, name: Symbol, resolving: bool) -> Symbol {
-    if resolving && module.is_empty() && crate::types::BUILTINS.iter().any(|b| b.name == name.as_str()) {
+    if resolving && module.is_empty() && crate::types::builtins().iter().any(|b| b.name == name.as_str()) {
         Symbol::new(&format!("{ROOT_FN}{name}"))
     } else {
         qualified(module, name)
@@ -1098,7 +1098,7 @@ pub fn union_members(p: &Program) -> std::borrow::Cow<'_, Program> {
                     }
                 }
             }
-            DeclKind::Extern(ExternDecl { item: ExternItem::Type(t), .. }) => add(*t, true),
+            DeclKind::Extern(ExternDecl { item: ExternItem::Type(t, _), .. }) => add(*t, true),
             _ => {}
         }
     }
@@ -1112,7 +1112,7 @@ pub fn union_members(p: &Program) -> std::borrow::Cow<'_, Program> {
         }
         _ => vec![],
     }).collect();
-    for b in crate::types::BUILTIN_TYPES {
+    for b in crate::types::builtin_types() {
         known.insert(Symbol::new(b));
     }
     let root: Vec<(usize, Symbol, bool, Symbol)> = defined.get(&Symbol::EMPTY).cloned().unwrap_or_default();
@@ -1183,7 +1183,7 @@ pub fn near_misses(p: &Program, edited: &[String]) -> Vec<String> {
             names.extend(vs.iter().filter(|v| !matches!(v.payload, Payload::Type(_))).map(|v| (Symbol::new(short(&v.name)), t.name)));
         }
     }
-    for b in crate::types::BUILTIN_TYPES {
+    for b in crate::types::builtin_types() {
         names.push((Symbol::new(b), Symbol::EMPTY));
     }
     let close = |a: &str, b: &str| {
@@ -1275,7 +1275,7 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
             DeclKind::Fn(f) | DeclKind::Extern(ExternDecl { item: ExternItem::Fn(f), .. }) => {
                 table.insert(root_fn(d.module, f.name, resolving), item);
             }
-            DeclKind::Extern(ExternDecl { item: ExternItem::Type(t), .. }) => {
+            DeclKind::Extern(ExternDecl { item: ExternItem::Type(t, _), .. }) => {
                 table.insert(qualified(d.module, *t), item);
             }
             // a type's own methods come with the type, like a trait's
@@ -2022,7 +2022,7 @@ impl Rw<'_> {
                 lang: e.lang,
                 item: match &e.item {
                     ExternItem::Fn(f) => ExternItem::Fn(self.func(f, self.declared(m, f.name))),
-                    ExternItem::Type(t) => ExternItem::Type(self.declared(m, *t)),
+                    ExternItem::Type(t, ps) => ExternItem::Type(self.declared(m, *t), ps.clone()),
                 },
             }),
             DeclKind::Test(t) => {

@@ -18,7 +18,23 @@ fn compiler() -> Result<(PathBuf, Option<PathBuf>), String> {
 
 /// The built compiler's stdout for `args`.
 fn run_compiler(exe: &Path, args: &[String]) -> Result<String, String> {
-    let o = Command::new(exe).args(args).output().map_err(|e| format!("running {}: {e}", exe.display()))?;
+    // it reads `core/` from the folder it runs in, the repository's root: the
+    // files it is given, made absolute
+    let root = compiler_dir().and_then(|d| d.canonicalize().ok()).and_then(|d| Some(d.parent()?.to_path_buf()));
+    let args: Vec<String> = args
+        .iter()
+        .enumerate()
+        .map(|(k, a)| match Path::new(a).canonicalize() {
+            // (the first is the command's name)
+            Ok(abs) if k > 0 && root.is_some() => abs.to_string_lossy().into_owned(),
+            _ => a.clone(),
+        })
+        .collect();
+    let mut c = Command::new(exe);
+    if let Some(r) = &root {
+        c.current_dir(r);
+    }
+    let o = c.args(&args).output().map_err(|e| format!("running {}: {e}", exe.display()))?;
     if !o.status.success() {
         return Err(format!("the Strata implementation failed ({}): {}", o.status, String::from_utf8_lossy(&o.stderr).trim()));
     }
