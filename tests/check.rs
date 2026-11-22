@@ -225,6 +225,26 @@ fn e2(c: Bool) -> Float { z := if c { "s" } else { 1 }
 fn main() { print(1) }
 "#;
 
+const STATIC: &str = r#"type Item = { n: Int }
+impl Item {
+  fn new(n: Int) -> Item { Item { n } }
+  fn size(self) -> Int { self.n }
+}
+trait Zero {
+  fn zero() -> Self
+}
+impl Zero for Item {
+  fn zero() -> Self { Item { n: 0 } }
+}
+fn a() -> Int { Item.new(1) }
+fn b() -> Item { Item.new("x") }
+fn c() -> Item { Item.make() }
+fn d[T: Zero]() -> Int { T.zero() }
+fn e(i: Item) -> Int { i.nope() }
+fn f() -> String { Item.zero() }
+fn main() { print(1) }
+"#;
+
 const RECORDS: &str = r#"type Pt = { x: Int, y: Int }
 type Sh =
   | Sq(Int)
@@ -437,6 +457,11 @@ fn mut_rules_as_in_rust() {
 #[test]
 fn unions_and_refinements_as_in_rust() {
     same_errors("unions", UNIONS, &["expected `"]);
+}
+
+#[test]
+fn static_calls_and_unknown_methods_as_in_rust() {
+    same_errors("static", STATIC, &["expected `", "has no method", "unknown function", "needs"]);
 }
 
 /// The compiler's errors on `text` are `strata check`'s, on the lines holding one of `keys`.
