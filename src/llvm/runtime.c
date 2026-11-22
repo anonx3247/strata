@@ -269,7 +269,7 @@ static void print_stack(void) {
 
 // A run's state is per thread: the JIT may run code on several threads at
 // once (compile-time code in one, a test or fuzz case in another).
-static _Thread_local uint64_t rng;  // the generators' state (below)
+static _Thread_local uint64_t rng = 7;  // the generators' state (below)
 static _Thread_local uint64_t test_seed = 7;  // where a test's numbers start
 static _Thread_local sigjmp_buf *trap;
 static void catch_overflow(void);
@@ -811,7 +811,7 @@ Str *strata_str_from_c(const char *c, Str *callee) {
 // picks with these, from bounds the compiler read in the refinements. The
 // numbers are a fixed sequence (splitmix64 from 7), not the interpreter's.
 
-static _Thread_local uint64_t rng = 7;
+// (`rng`, the state, is defined above)
 
 static uint64_t next_random(void) {
   uint64_t z = (rng += UINT64_C(0x9E3779B97F4A7C15));
