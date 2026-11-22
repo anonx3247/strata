@@ -1,0 +1,3 @@
+fault (Runtime): `send` on a channel that has ended (every copy of its sender was closed)
+
+--- exit 101
