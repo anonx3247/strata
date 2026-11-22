@@ -274,6 +274,27 @@ fn shown(n: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// A value (a literal: what compiled code or the solver gave back) as code
+/// writes it: constructors by their own names (`Circle`, not `shop.Circle`).
+pub fn literal(e: &Expr) -> String {
+    let mut e = e.clone();
+    crate::ast::VisitMut::expr(&mut Shorten, &mut e);
+    expr(&e, 0)
+}
+
+struct Shorten;
+
+impl crate::ast::VisitMut for Shorten {
+    fn expr(&mut self, e: &mut Expr) {
+        if let Expr::Ctor(c, _) = e {
+            *c = crate::ast::Symbol::new(crate::names::short(c));
+        }
+        crate::ast::walk_expr_mut(self, e);
+    }
+    fn pattern(&mut self, _: &mut crate::ast::Pattern) {}
+    fn ty(&mut self, _: &mut crate::ast::TypeExpr) {}
+}
+
 pub fn expr(e: &Expr, d: usize) -> String {
     let inline = expr_inline(e, d);
     // a chain whose parts had to break is laid out one item per line

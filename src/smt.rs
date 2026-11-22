@@ -26,7 +26,6 @@
 //! `div` and `mod` and like the interpreter.
 
 use crate::ast::*;
-use crate::interp::{Fields, Value};
 use crate::types::{subst_texpr, Env};
 use crate::fx::{HashMap, HashSet};
 use std::io::Write;
@@ -3221,7 +3220,7 @@ pub enum Outcome {
     Proven,
     /// The solver found values that break the obligation (not yet confirmed
     /// by running them): parameter name -> value.
-    Refuted(Vec<(String, Value)>, String),
+    Refuted(Vec<(String, Expr)>, String),
     Unknown(String),
 }
 
@@ -3351,8 +3350,8 @@ impl Vc<'_> {
             "unsat" => Outcome::Proven,
             "sat" => {
                 let model = parse_values(&out[first.len()..]);
-                let args: Option<Vec<(String, Value)>> = self.params.iter().map(|(n, v)| to_value(self.env, v, &model).map(|x| (n.clone(), x))).collect();
-                let shown = |args: &[(String, Value)]| args.iter().map(|(n, v)| format!("{n} = {}", crate::interp::to_json(v))).collect::<Vec<_>>().join(", ");
+                let args: Option<Vec<(String, Expr)>> = self.params.iter().map(|(n, v)| to_literal(self.env, v, &model).map(|x| (n.clone(), x))).collect();
+                let shown = |args: &[(String, Expr)]| args.iter().map(|(n, v)| format!("{n} = {}", crate::printer::literal(v))).collect::<Vec<_>>().join(", ");
                 match args {
                     Some(a) => {
                         let s = shown(&a);
@@ -3385,37 +3384,37 @@ fn leaves_of(v: &Val, out: &mut Vec<String>) {
     }
 }
 
-/// A parameter's value in a model, as an interpreter value (when it can be
-/// rebuilt: lists only when empty, nothing opaque).
-fn to_value(env: &Env, v: &Val, m: &HashMap<String, String>) -> Option<Value> {
+/// A parameter's value in a model, as the code that writes it (when it can
+/// be rebuilt: lists only when empty, nothing opaque).
+fn to_literal(env: &Env, v: &Val, m: &HashMap<String, String>) -> Option<Expr> {
     Some(match v {
-        Val::Int(t) => crate::interp::int_value(parse_big(m.get(t)?)?),
-        Val::Bool(t) => Value::Bool(m.get(t)? == "true"),
-        Val::Str(t) => Value::Str(parse_str(m.get(t)?)?),
-        Val::Unit => Value::Unit,
-        Val::Tuple(xs) => Value::Tuple(xs.iter().map(|x| to_value(env, x, m)).collect::<Option<_>>()?),
-        Val::Rec(n, fs) => Value::Record(n.clone(), fs.iter().map(|(f, x)| to_value(env, x, m).map(|y| (f.clone(), y))).collect::<Option<_>>()?),
-        Val::Distinct(n, x) => Value::Distinct(n.clone(), Box::new(to_value(env, x, m)?)),
+        Val::Int(t) => crate::llvm::native::int_expr(parse_big(m.get(t)?)?),
+        Val::Bool(t) => Expr::Bool(m.get(t)? == "true"),
+        Val::Str(t) => Expr::Str(parse_str(m.get(t)?)?),
+        Val::Unit => Expr::Unit,
+        Val::Tuple(xs) => Expr::Tuple(xs.iter().map(|x| to_literal(env, x, m)).collect::<Option<_>>()?),
+        Val::Rec(n, fs) => Expr::Ctor(Symbol::new(n), CtorArgs::Record(fs.iter().map(|(f, x)| to_literal(env, x, m).map(|y| (Symbol::new(f), y))).collect::<Option<_>>()?)),
+        Val::Distinct(n, x) => Expr::Ctor(Symbol::new(n), CtorArgs::Positional(vec![to_literal(env, x, m)?])),
         Val::List { len, .. } => {
             if parse_int(m.get(len)?)? != 0 {
                 return None;
             }
-            Value::List(vec![])
+            Expr::List(vec![])
         }
         Val::Sum { ty, args, tag, ctors } => {
             let k = parse_int(m.get(tag)?)? as usize;
             let (c, payload) = ctors.get(k)?;
             let vs = env.variants_of(ty, args)?;
-            let fields: Vec<Value> = payload.iter().map(|x| to_value(env, x, m)).collect::<Option<_>>()?;
+            let fields: Vec<Expr> = payload.iter().map(|x| to_literal(env, x, m)).collect::<Option<_>>()?;
             let f = match &vs.get(k)?.1 {
-                _ if fields.is_empty() => Fields::None,
-                Some(names) => Fields::rec(names.iter().map(|n| n.to_string()).zip(fields).collect()),
-                None => Fields::pos(fields),
+                _ if fields.is_empty() => CtorArgs::None,
+                Some(names) => CtorArgs::Record(names.iter().copied().zip(fields).collect()),
+                None => CtorArgs::Positional(fields),
             };
-            Value::Variant(c.clone(), f)
+            Expr::Ctor(Symbol::new(c), f)
         }
         // a union value is its active member's value
-        Val::Union { tag, slots } => to_value(env, &slots.get(parse_int(m.get(tag)?)? as usize)?.1, m)?,
+        Val::Union { tag, slots } => to_literal(env, &slots.get(parse_int(m.get(tag)?)? as usize)?.1, m)?,
         // a function can't be shown as a counterexample
         Val::Absent | Val::Opaque(_) | Val::FnOf { .. } => return None,
     })

@@ -25,7 +25,7 @@ $ strata verify                              # prove every contract with Z3; fuz
 
 $ strata verify bump                         # fn bump(q: Quantity) -> Quantity { q + 1 }
 ✗ bump                     Refinement violation (found by the solver)
-    input:   [99]
+    input:   99
     result of `bump`: 100 does not satisfy `Quantity` (where 1 <= it && it <= 99) (stack: bump)
 
 $ strata edit -m "steeper discount" < discount.strata
@@ -76,7 +76,7 @@ $ strata edit main.main                   # the definition `main` of the root mo
 $ strata edit                             # the whole package, one file per module
 $ strata edit shop < defs.strata          # piped: the definitions go into the module `shop`
 
-$ strata run total '[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]]' --trace
+$ strata run total '[Line { sku: "tea", qty: 2, unit_price: 450 }, Line { sku: "cup", qty: 1, unit_price: 1200 }]' --trace
 {"event":"call","fn":"total","args":[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]],"depth":1}
 {"event":"call","fn":"line_total","args":[{"sku":"tea","qty":2,"unit_price":450}],"depth":2}
 {"event":"return","fn":"line_total","value":900,"depth":2}
@@ -85,7 +85,7 @@ $ strata run total '[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":
 {"event":"return","fn":"total","value":2100,"depth":1}
 2100
 
-$ strata run total '[[]]'                    # arguments are checked against the types
+$ strata run total '[]'                      # the arguments, as code, checked against the types
 error: invalid input: lines: [] does not satisfy `NonEmpty` (where len(it) > 0)
 ```
 
@@ -131,7 +131,7 @@ A fault prints the call stack as `strata run` does (`    stack: main -> inner ->
 
 `strata test` compiles the tests the same way: each `test` block is a function, a fault ends the test instead of the process, and what a test prints is kept for the report (`strata test --emit-llvm` prints the tests' IR). A test that can't be compiled yet fails, saying why; the others run. Only the project's own tests run, those in its files (the package's, or the script's): what it imports (std, and dependencies once they are fetched) is compiled, verified and tested on its own (std with `strata --file std test`), so its tests aren't run again. `strata test --with-deps` runs them too. `--interpret` runs them in the old interpreter.
 
-`strata run` compiles the same IR in memory with LLVM's libraries and runs it (the JIT), so a program runs at native speed without a build step (`fib(32)`: 26 ms, compilation included). What can't be compiled yet is an error that says why; nothing is interpreted instead. `strata run f [JSON-ARGS]` calls one function, compiled (its arguments written into a function that calls it, its result read back and printed as JSON), and `--trace` has compiled code print each call and return. `strata run --interpret` runs the old interpreter, kept until it is removed to compare compiled code with (the build tests do). Compile-time code runs on the JIT too: in a `derive`, and `comptime e` anywhere else, whose value is computed while compiling and written into the program as a constant (`re := comptime parse("[a-z]+")` never calls `parse` when the program runs). `e` may use definitions, not the variables around it.
+`strata run` compiles the same IR in memory with LLVM's libraries and runs it (the JIT), so a program runs at native speed without a build step (`fib(32)`: 26 ms, compilation included). What can't be compiled yet is an error that says why; nothing is interpreted instead. `strata run f [ARGS]` calls one function, compiled: its arguments, written as code (`'"abc", 3'`), go into a function that calls it, checked with the program, and its result is read back from memory and printed as code, and `--trace` has compiled code print each call and return. `strata run --interpret` runs the old interpreter, kept until it is removed to compare compiled code with (the build tests do). Compile-time code runs on the JIT too: in a `derive`, and `comptime e` anywhere else, whose value is computed while compiling and written into the program as a constant (`re := comptime parse("[a-z]+")` never calls `parse` when the program runs). `e` may use definitions, not the variables around it.
 
 LLVM 23's libraries are linked into strata, so building it needs them (nothing is needed to run it):
 

@@ -16,7 +16,7 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
         _ => path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "main".into()),
     };
     let p = src.program();
-    let types::Checked { report: rep, env, compiled, .. } = full_checked(p);
+    let types::Checked { report: rep, env, .. } = full_checked(p);
     if !rep.ok() {
         print_errors(&rep);
         return Ok(false);
@@ -42,75 +42,45 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
         let ir = ir.map_err(|e| format!("the program can't be compiled yet: {e}"))?;
         std::process::exit(llvm::jit::run(&ir, &prog, &program_args)?);
     };
-    if !args.flag("--interpret") {
-        return call_compiled(args, &compiled, &env, name, rest.get(1).map(|s| s.as_str()).unwrap_or("[]"));
-    }
-    let f = env.fns.get(&name.sym()).ok_or(format!("no function `{name}`"))?.clone();
-    let raw: serde_json::Value = serde_json::from_str(rest.get(1).map(|s| s.as_str()).unwrap_or("[]")).map_err(|e| format!("args: {e}"))?;
-    let raw = raw.as_array().cloned().ok_or("args must be a JSON array")?;
-    if raw.len() != f.params.len() {
-        return Err(format!("`{name}` takes {} arguments", f.params.len()));
-    }
-    let seed: u64 = args.val("--seed").unwrap_or("1").parse().map_err(|_| "bad --seed")?;
-    let mut it = interp::Interp::new(&env, seed);
-    it.tracing = args.flag("--trace");
-    // what it prints comes before its result
-    it.output = interp::Output::Terminal;
-    let mut vals = Vec::new();
-    for (pm, j) in f.params.iter().zip(&raw) {
-        vals.push(it.from_json(&pm.ty, j, &pm.name).map_err(|e| format!("invalid input: {e}"))?);
-    }
-    let res = it.call_fn(name, vals);
-    if it.tracing {
-        for t in &it.trace {
-            eprintln!("{t}");
-        }
-    }
-    match res {
-        Ok(v) => println!("{}", serde_json::to_string_pretty(&interp::to_json(&v)).unwrap()),
-        Err(fault) => {
-            println!("{}", serde_json::to_string_pretty(&json!({"fault": fault})).unwrap());
-            return Ok(false);
-        }
-    }
-    Ok(true)
+    call(args, p, &env, name, rest.get(1).map(|s| s.as_str()).unwrap_or(""))
 }
 
-/// `strata run f [JSON-ARGS]`, compiled: the arguments (read against the
-/// parameters' types) written into a function that calls `f`, whose result
-/// is read back and printed as JSON; a fault as `{"fault": ..}`.
-fn call_compiled(args: &Args, resolved: &Program, env: &types::Env, name: &str, raw: &str) -> Result<bool, String> {
+/// The function `strata run f ARGS` runs: `f` called on the arguments, as
+/// they are written (Strata code: `"abc", 3`, `Circle { radius: 2 }`).
+const PROBE: &str = "strata_run_call";
+
+/// `strata run f ARGS`: the arguments, written as code, in a function that
+/// calls `f`, checked with the program (so a wrong argument is an error
+/// before anything runs), then run, compiled (`--interpret`: by the old
+/// interpreter); the result printed as the code that writes it.
+fn call(args: &Args, p: &Program, env: &types::Env, name: &str, raw: &str) -> Result<bool, String> {
     let f = env.fns.get(&name.sym()).ok_or(format!("no function `{name}`"))?.clone();
     if !f.type_params.is_empty() {
         return Err(format!("`{name}` is generic: call it from a function that says which types it is used at"));
     }
-    let raw: serde_json::Value = serde_json::from_str(raw).map_err(|e| format!("args: {e}"))?;
-    let raw = raw.as_array().cloned().ok_or("args must be a JSON array")?;
-    if raw.len() != f.params.len() {
+    let Expr::Call(_, given) = crate::parser::parse_expr(&format!("f({raw})")).map_err(|e| format!("the arguments: {e}"))? else {
+        return Err("the arguments: expected values separated by commas".into());
+    };
+    if given.len() != f.params.len() {
         return Err(format!("`{name}` takes {} arguments", f.params.len()));
     }
-    // JSON read against the types (their shapes; refinements are checked compiled)
-    let mut reader = interp::Interp::new(env, 1);
     let mut stmts = vec![];
     let mut call_args = vec![];
-    for (i, (pm, j)) in f.params.iter().zip(&raw).enumerate() {
-        let v = reader.from_json_raw(&pm.ty, j, &pm.name).map_err(|e| format!("invalid input: {e}"))?;
-        let x = verify::literal_of(&v).ok_or(format!("invalid input: `{}` can't be given as JSON", pm.name))?;
+    for (i, (pm, x)) in f.params.iter().zip(given).enumerate() {
         let n = Symbol::new(&format!("strata_arg_{i}"));
         if pm.mutable {
             stmts.push(Stmt::Var(n, Some(pm.ty.clone()), x));
             call_args.push(Expr::Mut(Box::new(Expr::Var(n))));
         } else {
-            // (its refinements are checked by `f`, which names the argument)
+            // (its type and refinements are checked where `f` takes it, which names the argument)
             stmts.push(Stmt::Let(Pattern::Bind(n), None, x));
             call_args.push(Expr::Var(n));
         }
     }
-    let probe = "strata_run_call";
-    let call = FnDecl {
+    let probe = FnDecl {
         doc: vec![],
         comments: vec![],
-        name: Symbol::new(probe),
+        name: Symbol::new(PROBE),
         type_params: vec![],
         bounds: vec![],
         params: vec![],
@@ -122,37 +92,86 @@ fn call_compiled(args: &Args, resolved: &Program, env: &types::Env, name: &str, 
         comptime: false,
         derived: false,
     };
-    let mut prog = resolved.clone();
-    prog.decls.push(Decl { comments: vec![], doc: vec![], kind: DeclKind::Fn(call), module: Default::default(), public: false });
+    // in the function's own module (it may be private there), the arguments
+    // written as that module writes values
+    let module = p
+        .decls
+        .iter()
+        .find(|d| matches!(&d.kind, DeclKind::Fn(g) if crate::names::qualified(d.module, g.name).as_str() == name))
+        .map(|d| d.module)
+        .unwrap_or_default();
+    let mut probe = probe;
+    if let Expr::Block(_, call) = &mut probe.body {
+        if let Expr::Call(f, _) = &mut **call {
+            **f = Expr::Var(Symbol::new(crate::names::short(name)));
+        }
+    }
+    let mut with = p.clone();
+    with.decls.push(Decl { comments: vec![], doc: vec![], kind: DeclKind::Fn(probe), module, public: false });
+    let probe_name = crate::names::qualified(module, Symbol::new(PROBE)).to_string();
+    let checked = full_checked(&with);
+    if let Some(e) = checked.report.errors.iter().find(|e| e.decl == probe_name) {
+        return Err(format!("invalid input: {}", e.msg));
+    }
+    if args.flag("--interpret") {
+        return call_interpreted(args, &checked.env, name, &probe_name);
+    }
     let ir = if args.flag("--trace") {
-        llvm::compile_traced_comptime(&prog, &[probe.to_string()])
+        llvm::compile_traced_comptime(&checked.compiled, &[probe_name.clone()])
     } else {
-        llvm::compile_comptime(&prog, &[probe.to_string()])
+        llvm::compile_comptime(&checked.compiled, &[probe_name.clone()])
     };
     let (ir, roots, shapes) = ir.map_err(|e| format!("`{name}` can't be compiled yet: {e}"))?;
     let (result, printed) = llvm::jit::run_kept(&ir, &roots, &shapes, i64::MAX, true)?.pop().ok_or("nothing ran")?;
     print!("{printed}");
     match result {
         Ok(v) => {
-            println!("{}", serde_json::to_string_pretty(&interp::to_json(&v)).unwrap());
+            println!("{}", printer::literal(&v));
             Ok(true)
         }
         Err(fault) => {
-            let stack: Vec<&str> = fault.stack.split(" -> ").filter(|s| !s.is_empty() && *s != probe).collect();
+            let stack: Vec<&str> = fault.stack.split(" -> ").filter(|s| !s.is_empty() && *s != probe_name).collect();
             // an argument that breaks its type's refinement (checked by `f` on entry)
             let arg = fault.message.strip_prefix("argument `").and_then(|m| m.split_once(&format!("` of `{name}`: ")));
             if fault.kind == "Refinement" && stack.len() <= 1 {
                 if let Some((param, rest)) = arg {
                     return Err(format!("invalid input: {param}: {rest}"));
                 }
-                if stack.is_empty() {
-                    return Err(format!("invalid input: {}", fault.message.strip_prefix("let binding: ").unwrap_or(&fault.message)));
-                }
             }
-            println!("{}", serde_json::to_string_pretty(&json!({"fault": {"kind": fault.kind, "msg": fault.message, "stack": stack}})).unwrap());
+            eprintln!("fault ({}): {}", fault.kind, fault.message);
+            if !stack.is_empty() {
+                eprintln!("    stack: {}", stack.join(" -> "));
+            }
             Ok(false)
         }
     }
+}
+
+/// `call`, run by the old interpreter.
+fn call_interpreted(args: &Args, env: &types::Env, name: &str, probe: &str) -> Result<bool, String> {
+    let seed: u64 = args.val("--seed").unwrap_or("1").parse().map_err(|_| "bad --seed")?;
+    let mut it = interp::Interp::new(env, seed);
+    it.tracing = args.flag("--trace");
+    // what it prints comes before its result
+    it.output = interp::Output::Terminal;
+    let res = it.call_fn(probe, vec![]);
+    if it.tracing {
+        for t in &it.trace {
+            eprintln!("{t}");
+        }
+    }
+    match res {
+        Ok(v) => println!("{}", it.debug_value(&v).map_err(|f| f.msg)?),
+        Err(fault) => {
+            let stack: Vec<String> = fault.stack.iter().filter(|s| *s != probe && *s != name).cloned().collect();
+            eprintln!("fault ({:?}): {}", fault.kind, fault.msg);
+            if !stack.is_empty() {
+                eprintln!("    stack: {}", stack.join(" -> "));
+            }
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// `strata test`: each `test` block, compiled when this strata has the JIT
