@@ -1,0 +1,4 @@
+a
+fault (Ensures): postcondition of `Thing.describe` violated: ensures it != "" (it = "")
+
+--- exit 101

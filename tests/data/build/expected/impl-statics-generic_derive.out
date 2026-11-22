@@ -1,0 +1,4 @@
+{"type":"Box","p":{"type":"Pair","a":1,"b":2}}
+Ok(Box { p: Pair { a: 3, b: 4 } })
+
+--- exit 0

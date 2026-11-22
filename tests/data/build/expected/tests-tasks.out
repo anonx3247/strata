@@ -1,0 +1,12 @@
+✓ sim: end to end: batches of two, everything succeeds
+✓ sim: retry then success
+✓ sim: retries exhausted marks the task failed and it is never claimed again
+✓ sim: skipped counts as done
+✓ sim: producer re-run is idempotent
+✓ sim: a worker that misreports gets its claim released
+✓ sim: a claim released on the last attempt is exhausted, not stuck pending
+✓ sim: demo: job #3 fails once, then everything is done
+
+8 passed, 0 failed
+
+--- exit 0

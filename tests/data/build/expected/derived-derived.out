@@ -1,0 +1,6 @@
+["x", "label", "on"]
+Point { x: 0, label: "", on: false }
+Ok(Point { x: 3, label: "here", on: true })
+Err("x: `three` is not a number")
+
+--- exit 0

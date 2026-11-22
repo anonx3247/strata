@@ -5,6 +5,10 @@ pub struct Parser {
     toks: Vec<Token>,
     pos: usize,
     no_struct: bool,
+    /// A `|` ends the expression (a refinement or a `where` pattern, where
+    /// `|` separates a union's members or a pattern's alternatives): a
+    /// bit-or there is written in parentheses.
+    no_pipe: bool,
     comments: Vec<Comment>,
     used: Vec<bool>,
 }
@@ -55,7 +59,7 @@ impl Parser {
     fn new(src: &str) -> R<Parser> {
         let (toks, comments) = lex_with_comments(src)?;
         let used = vec![false; comments.len()];
-        Ok(Parser { toks, pos: 0, no_struct: false, comments, used })
+        Ok(Parser { toks, pos: 0, no_struct: false, no_pipe: false, comments, used })
     }
 
     // ---------- comments ----------
@@ -314,10 +318,21 @@ impl Parser {
             self.next();
             self.expect_kw("type")?;
             let mut t = self.type_decl()?;
-            if !matches!(t.body, TypeBody::Alias(_)) {
+            // (a union of bare names may be one of types defined elsewhere:
+            // decided when it is stored)
+            if matches!(t.body, TypeBody::Record(_)) {
                 return Err(self.err("only an alias can be `distinct` (records and sum types already are)"));
             }
             t.distinct = true;
+            DeclKind::Type(t)
+        } else if self.is_kw("mock") && matches!(self.peek_at(1), Tok::Ident(_)) && matches!(self.peek_at(2), Tok::Sym("=") | Tok::Sym("[")) {
+            // `mock MemFiles = { files: ... }`: a fake for tests, declared as a type
+            self.next();
+            let mut t = self.type_decl()?;
+            if !matches!(t.body, TypeBody::Record(_)) {
+                return Err(self.err(&format!("a mock holds the data of a fake: `mock {} = {{ fields }}` (`{{}}` for none)", t.name)));
+            }
+            t.mock = true;
             DeclKind::Type(t)
         } else if self.eat_kw("type") {
             DeclKind::Type(self.type_decl()?)
@@ -548,25 +563,79 @@ impl Parser {
     fn type_decl(&mut self) -> R<TypeDecl> {
         let name = self.ident()?;
         let params = self.type_params()?;
+        // an atom (`type Dot`) or a tuple-shaped type (`type Moved(Int)`) on its
+        // own: a union of one member, named as it is
+        if !self.is_sym("=") && (self.is_sym("(") || !self.is_sym("{")) {
+            let payload = if self.is_sym("(") { self.payload()? } else { Payload::None };
+            return Ok(TypeDecl { distinct: false, name, params, body: TypeBody::Sum(vec![Variant { comments: vec![], name, payload }]), refinement: None, mock: false });
+        }
         self.expect_sym("=")?;
         let body = if self.is_sym("|") {
             let mut vs = Vec::new();
             while self.is_sym("|") {
                 let mut comments = self.leading();
                 self.next();
-                let vname = self.ident()?;
-                let payload = self.payload()?;
-                comments.extend(self.trailing());
-                vs.push(Variant { comments, name: vname, payload });
+                vs.push(self.member(&mut comments)?);
             }
-            TypeBody::Sum(vs)
+            Self::union_of(vs)
         } else if self.eat_sym("{") {
             TypeBody::Record(self.fields()?)
         } else {
-            TypeBody::Alias(self.type_union()?)
+            let mut vs = Vec::new();
+            loop {
+                let mut comments = self.leading();
+                vs.push(self.member(&mut comments)?);
+                if !self.eat_sym("|") {
+                    break;
+                }
+            }
+            // one bare name is an alias (`type Port = Int where ..`): a union
+            // of one atom is written `type X = | Dot`
+            if let [v] = vs.as_mut_slice() {
+                if v.payload == Payload::None {
+                    v.payload = Payload::Type(TypeExpr::Named(v.name, vec![]));
+                }
+            }
+            Self::union_of(vs)
         };
         let refinement = if self.eat_kw("where") { Some(self.expr()?) } else { None };
-        Ok(TypeDecl { distinct: false, name, params, body, refinement })
+        Ok(TypeDecl { distinct: false, name, params, body, refinement, mock: false })
+    }
+
+    /// A member of a union: a type declared here (`Square { side: Float }`,
+    /// `Moved(Int)`, or a bare name, `Dot`, which is a type defined
+    /// elsewhere if one has that name: decided when the code is stored), or
+    /// another type (`List[Int]`, `geo.Circle`, `(Int, Int)`).
+    fn member(&mut self, comments: &mut Vec<String>) -> R<Variant> {
+        let declared = matches!(self.peek(), Tok::Ident(_)) && !matches!(self.peek_at(1), Tok::Sym("[") | Tok::Sym("."));
+        let v = if declared {
+            let name = self.ident()?;
+            let payload = match self.payload()? {
+                // a built-in type is never declared again
+                Payload::None if crate::types::BUILTIN_TYPES.contains(&name.as_str()) => Payload::Type(TypeExpr::Named(name, vec![])),
+                p => p,
+            };
+            Variant { comments: vec![], name, payload }
+        } else {
+            let t = self.type_expr_plain()?;
+            Variant { comments: vec![], name: Symbol::new(&crate::types::texpr_head(&t)), payload: Payload::Type(t) }
+        };
+        comments.extend(self.trailing());
+        Ok(Variant { comments: std::mem::take(comments), ..v })
+    }
+
+    /// A union's members as a body: an alias when every one is a type
+    /// defined elsewhere (`type Shape = geo.Circle | List[Int]`), else a sum
+    /// (some declared here).
+    fn union_of(vs: Vec<Variant>) -> TypeBody {
+        if !vs.iter().all(|v| matches!(v.payload, Payload::Type(_))) {
+            return TypeBody::Sum(vs);
+        }
+        let mut ts: Vec<TypeExpr> = vs.into_iter().map(|v| match v.payload {
+            Payload::Type(t) => t,
+            _ => unreachable!(),
+        }).collect();
+        TypeBody::Alias(if ts.len() == 1 { ts.remove(0) } else { TypeExpr::Union(ts) })
     }
 
     fn fields(&mut self) -> R<Vec<Field>> {
@@ -601,7 +670,11 @@ impl Parser {
     pub fn type_expr(&mut self) -> R<TypeExpr> {
         let t = self.type_union()?;
         if self.eat_kw("where") {
-            return Ok(TypeExpr::Refined(Box::new(t), Box::new(self.expr_ns()?)));
+            let old = self.no_pipe;
+            self.no_pipe = true;
+            let pred = self.expr_ns();
+            self.no_pipe = old;
+            return Ok(TypeExpr::Refined(Box::new(t), Box::new(pred?)));
         }
         Ok(t)
     }
@@ -696,10 +769,10 @@ impl Parser {
 
     /// expression where a `{` cannot start a record literal / be swallowed
     fn expr_ns(&mut self) -> R<Expr> {
-        let old = self.no_struct;
+        let old = (self.no_struct, self.no_pipe);
         self.no_struct = true;
         let e = self.expr();
-        self.no_struct = old;
+        (self.no_struct, self.no_pipe) = old;
         e
     }
 
@@ -726,15 +799,19 @@ impl Parser {
             0 => &[("||", Or)],
             1 => &[("&&", And)],
             2 => &[("==", Eq), ("!=", Ne), ("<=", Le), (">=", Ge), ("<", Lt), (">", Gt)],
-            4 => &[("+", Add), ("-", Sub)],
-            5 => &[("*", Mul), ("/", Div), ("%", Mod)],
+            4 if !self.no_pipe => &[("|", BitOr)],
+            5 => &[("^", BitXor)],
+            6 => &[("&", BitAnd)],
+            7 => &[("<<", Shl), (">>", Shr)],
+            8 => &[("+", Add), ("-", Sub)],
+            9 => &[("*", Mul), ("/", Div), ("%", Mod)],
             _ => &[],
         };
         table.iter().find(|(t, _)| t == s).map(|(_, op)| *op)
     }
 
     fn binary(&mut self, level: usize) -> R<Expr> {
-        if level > 5 {
+        if level > 9 {
             return self.unary();
         }
         let mut lhs = self.binary(level + 1)?;
@@ -757,7 +834,7 @@ impl Parser {
                 lhs = Expr::Is(Box::new(lhs), ctor);
                 continue;
             }
-            // `|` cannot be a binary op; `-` on a new line starts a new statement
+            // `-` on a new line starts a new statement
             if self.nl_before() && matches!(self.peek(), Tok::Sym("-")) {
                 break;
             }
@@ -835,11 +912,11 @@ impl Parser {
     }
 
     fn args(&mut self) -> R<Vec<Expr>> {
-        let old = self.no_struct;
-        self.no_struct = false;
+        let old = (self.no_struct, self.no_pipe);
+        (self.no_struct, self.no_pipe) = (false, false);
         // `f(mut x)`: the call may change `x` (its parameter is `mut`); see `marked`
         let r = self.list(")", |p| p.expr());
-        self.no_struct = old;
+        (self.no_struct, self.no_pipe) = old;
         r
     }
 
@@ -905,8 +982,8 @@ impl Parser {
     /// What is inside `xs[...]`, past the `[`: an index `i`, or a range
     /// `a..b`, `a..=b`, `a..`, `..b`, `..`.
     fn index(&mut self) -> R<Expr> {
-        let old = self.no_struct;
-        self.no_struct = false;
+        let old = (self.no_struct, self.no_pipe);
+        (self.no_struct, self.no_pipe) = (false, false);
         let lo = if self.is_sym("..") || self.is_sym("..=") { None } else { Some(Box::new(self.binary(0)?)) };
         let inclusive = if self.eat_sym("..=") {
             true
@@ -914,7 +991,7 @@ impl Parser {
             false
         } else if let Some(i) = lo {
             self.expect_sym("]")?;
-            self.no_struct = old;
+            (self.no_struct, self.no_pipe) = old;
             return Ok(*i);
         } else {
             unreachable!()
@@ -924,7 +1001,7 @@ impl Parser {
             return Err(self.err("`..=` needs an end: `xs[a..=b]`"));
         }
         self.expect_sym("]")?;
-        self.no_struct = old;
+        (self.no_struct, self.no_pipe) = old;
         Ok(Expr::Range(lo, hi, inclusive))
     }
 
@@ -996,48 +1073,31 @@ impl Parser {
                 if self.eat_sym(")") {
                     return Ok(Expr::Unit);
                 }
-                let old = self.no_struct;
-                self.no_struct = false;
+                let old = (self.no_struct, self.no_pipe);
+                (self.no_struct, self.no_pipe) = (false, false);
                 let e = self.expr()?;
                 if self.eat_sym(",") {
                     let mut items = vec![e];
                     items.extend(self.list(")", |p| p.expr())?);
-                    self.no_struct = old;
+                    (self.no_struct, self.no_pipe) = old;
                     return Ok(Expr::Tuple(items));
                 }
-                self.no_struct = old;
+                (self.no_struct, self.no_pipe) = old;
                 self.expect_sym(")")?;
                 Ok(e)
-            }
-            // `$Self`, `$f.type`, `$Option[Int]`: a type's description
-            Tok::Sym("$") => {
-                self.next();
-                let mut name = self.ident()?.to_string();
-                if self.is_sym(".") && matches!(self.peek_at(1), Tok::Ident(t) if t == "type") {
-                    self.next();
-                    self.next();
-                    name += ".type";
-                }
-                let args = if self.is_sym("[") && !self.nl_before() {
-                    self.next();
-                    self.list("]", |p| p.type_expr())?
-                } else {
-                    vec![]
-                };
-                Ok(Expr::Describe(TypeExpr::Named(Symbol::new(&name), args)))
             }
             Tok::Sym("[") => {
                 self.next();
                 if self.eat_sym("]") {
                     return Ok(Expr::List(vec![]));
                 }
-                let old = self.no_struct;
-                self.no_struct = false;
+                let old = (self.no_struct, self.no_pipe);
+                (self.no_struct, self.no_pipe) = (false, false);
                 let first = self.expr()?;
                 // `[e for x in xs where c for y in ys]`
                 if self.is_kw("for") {
                     let gens = self.comp_fors("]")?;
-                    self.no_struct = old;
+                    (self.no_struct, self.no_pipe) = old;
                     return Ok(Expr::Comp(CompKind::List, Box::new(first), gens));
                 }
                 let mut items = vec![first];
@@ -1046,7 +1106,7 @@ impl Parser {
                 } else {
                     self.expect_sym("]")?;
                 }
-                self.no_struct = old;
+                (self.no_struct, self.no_pipe) = old;
                 Ok(Expr::List(items))
             }
             Tok::Sym("{") => self.block(),
@@ -1181,10 +1241,10 @@ impl Parser {
             return Err(self.err(&format!("put the `{what} {{ … }}` in parentheses here")));
         }
         self.next();
-        let old = self.no_struct;
-        self.no_struct = false;
+        let old = (self.no_struct, self.no_pipe);
+        (self.no_struct, self.no_pipe) = (false, false);
         let r = self.collection_body(dict, tys);
-        self.no_struct = old;
+        (self.no_struct, self.no_pipe) = old;
         r
     }
 
@@ -1248,8 +1308,8 @@ impl Parser {
 
     fn block(&mut self) -> R<Expr> {
         self.expect_sym("{")?;
-        let old = self.no_struct;
-        self.no_struct = false;
+        let old = (self.no_struct, self.no_pipe);
+        (self.no_struct, self.no_pipe) = (false, false);
         let mut stmts = Vec::new();
         while !self.is_sym("}") {
             // a blank line between statements is kept, as "" before what follows
@@ -1355,7 +1415,7 @@ impl Parser {
             }
         }
         self.expect_sym("}")?;
-        self.no_struct = old;
+        (self.no_struct, self.no_pipe) = old;
         let last = match stmts.last() {
             Some(Stmt::Expr(_)) => match stmts.pop() {
                 Some(Stmt::Expr(e)) => e,
@@ -1444,7 +1504,11 @@ impl Parser {
             }
             Tok::Ident(s) if s == "where" => {
                 self.next();
-                Ok(Pattern::Cond(Box::new(self.expr()?)))
+                let old = self.no_pipe;
+                self.no_pipe = true;
+                let cond = self.expr();
+                self.no_pipe = old;
+                Ok(Pattern::Cond(Box::new(cond?)))
             }
             Tok::Ident(s) if s == "true" || s == "false" => {
                 self.next();

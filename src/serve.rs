@@ -121,7 +121,7 @@ fn text(status: u16, body: String) -> Reply {
 }
 
 fn fault_text(f: &interp::Fault) -> String {
-    let stack = if f.stack.is_empty() { String::new() } else { format!("\n    stack: {}", crate::interp::show_stack(&f.stack)) };
+    let stack = if f.stack.is_empty() { String::new() } else { format!("\n    stack: {}", crate::names::show_stack(&f.stack)) };
     format!("fault ({:?}): {}{stack}", f.kind, f.msg)
 }
 
@@ -297,7 +297,7 @@ fn call(env: &Env, f: &FnDecl, req: &Json) -> (u16, Vec<(String, String)>, Strin
     match it.call_fn("handle", args) {
         Ok(v) => response(&v).unwrap_or_else(error),
         Err(fault) => {
-            let stack = if fault.stack.is_empty() { String::new() } else { format!("\n    stack: {}", crate::interp::show_stack(&fault.stack)) };
+            let stack = if fault.stack.is_empty() { String::new() } else { format!("\n    stack: {}", crate::names::show_stack(&fault.stack)) };
             error(format!("fault ({:?}): {}{stack}", fault.kind, fault.msg))
         }
     }

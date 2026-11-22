@@ -1,0 +1,4 @@
+true
+fault (Runtime): bad regex: unclosed group (at character 11)
+
+--- exit 101

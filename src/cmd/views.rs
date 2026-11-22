@@ -111,6 +111,21 @@ pub fn render(args: &Args) -> Result<bool, String> {
     let src = load(&args)?;
     // shown as written: each reference as short as the module's `use`s allow
     let p = &resolve::written_form(src.program());
+    // a union's members inline (by default: a type with a doc, an `impl` or
+    // a `derive` of its own stays on its own) or each on its own; both read
+    // back the same
+    let viewed;
+    let p = match args.val("--members") {
+        Some("separate") => {
+            viewed = resolve::members_view(p, resolve::Members::Separate);
+            &viewed
+        }
+        None | Some("inline") => {
+            viewed = resolve::members_view(p, resolve::Members::Inline);
+            &viewed
+        }
+        Some(other) => return Err(format!("`--members {other}`: `separate` or `inline`")),
+    };
     match args.val("--split") {
         None => {
             // a module is a file: print one
@@ -160,6 +175,13 @@ pub fn pack(args: &Args) -> Result<bool, String> {
 pub fn header(args: &Args) -> Result<bool, String> {
     let file = args.pos.get(1).ok_or("usage: strata header <FILE.strata>")?;
     let bytes = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
+    // each definition's tree as a `std.ast` value, one per line (a bundle's too)
+    if args.flag("--tree") {
+        for d in binary::read(&bytes).map_err(|e| format!("{file}: {e}"))?.program.decls {
+            println!("{}", crate::ast_value::decl(&d));
+        }
+        return Ok(true);
+    }
     let h = binary::read_header(&bytes).map_err(|e| format!("{file}: {e}"))?;
     let hex = |h: &binary::Hash| h[..8].iter().map(|b| format!("{b:02x}")).collect::<String>();
     println!("module {}: {} definitions", if h.module.is_empty() { "main" } else { &h.module }, h.entries.len());
@@ -222,7 +244,12 @@ pub fn view(args: &Args) -> Result<bool, String> {
     let src = load(&args)?;
     let p = src.program();
     let level: u8 = args.val("--level").unwrap_or("1").parse().ok().filter(|l| *l <= 2).ok_or("--level must be 0 (map), 1 (interfaces) or 2 (source)")?;
-    let names = view::select(p, args.pos.get(1).map(|s| s.as_str()));
+    let mut names = view::select(p, args.pos.get(1).map(|s| s.as_str()));
+    // mocks are for tests: shown when asked for, or picked by name
+    if !args.flag("--mocks") && args.pos.get(1).is_none() {
+        let hidden = view::mock_decls(p);
+        names.retain(|n| !hidden.contains(n));
+    }
     let rep = types::check(p);
     let mut holes: HashMap<String, Vec<String>> = HashMap::default();
     for h in rep.holes {

@@ -43,7 +43,14 @@ fn basics() -> Int {
     a := 1
     a + 1
   }
-  back + y + len(greeting) + len(both) + len(msg) + len(sign)
+  // A string isn't counted itself: name the unit (`bytes`, `code_points`,
+  // `graphemes`, each an iterator).
+  back
+    + y
+    + len(greeting.graphemes())
+    + len(both)
+    + len(msg.bytes())
+    + len(sign.code_points())
 }
 
 // ─── 2. Functions ──────────────────────────────────────────────────────────
@@ -64,7 +71,7 @@ fn evens_squared(xs: List[Int]) -> List[Int] {
 }
 
 // A named function can be passed as a value (an overloaded builtin such as
-// `len` needs a lambda: `w -> len(w)`).
+// `len` needs a lambda: `xs -> len(xs)`).
 fn line_totals(lines: List[Line]) -> List[Cents] {
   lines.map(line_total)
 }
@@ -100,8 +107,9 @@ distinct type UserId = String
   where matches(it, "u_[0-9]+")
 
 fn user_number(id: UserId) -> String {
-  // build one with UserId("u_42"); `.value` is the underlying String
-  id.value[2..]
+  // build one with UserId("u_42"); `.value` is the underlying String.
+  // Positions in a string are byte offsets: cut it with byte_slice.
+  byte_slice(id.value, 2, byte_len(id.value))
 }
 
 // ─── 4. Contracts: requires / ensures (`it` is the result) ─────────────────
@@ -114,21 +122,25 @@ fn divide(a: Int, b: Int) -> Int
 // ─── 5. Records, variants and unions ───────────────────────────────────────
 type Line = { sku: Sku, qty: Quantity, unit_price: Cents }
 
-// A sum type. Each variant is itself a type (`Shipped` can be a parameter type),
-// so variant names are unique across the whole project.
+// A union declaring its members. Each member is itself a type (`Shipped` can be
+// a parameter type), so member names are unique in their module.
 type Order =
   | Pending { id: NonEmptyString, lines: NonEmpty[Line] }
   | Shipped { id: NonEmptyString, lines: NonEmpty[Line], tracking: NonEmptyString }
   | Cancelled { id: NonEmptyString, reason: NonEmptyString }
 
-// Variants without fields make an enum; tuple-style variants exist too.
+// Members without fields (atoms) make an enum; tuple-style members exist too.
+// The bars may be left out: `type Size = Small | Large`.
 type Size =
   | Small
   | Large
 
 // A union of existing types. It normalizes like a set (`Int | Positive` is Int).
+// (A member with no doc and used by one union only is shown inside it.)
+/// A square, by its side.
 type Square = { side: Positive }
 
+/// A circle, by its radius.
 type Circle = { radius: Positive }
 
 type Shape = Square | Circle
@@ -180,7 +192,7 @@ fn area(s: Shape) -> Int {
 fn kind_of(v: Int | String) -> String {
   match v {
     Int => f"number {v}",
-    String => f"text of {len(v)}",
+    String => f"text of {len(v.graphemes())}",
   }
 }
 
@@ -223,7 +235,7 @@ type ParseError =
   | NotANumber { text: String }
 
 fn parse_qty(s: String) -> Result[Quantity, ParseError] {
-  if len(trim(s)) == 0 {
+  if trim(s) == "" {
     return Err(Blank)
   }
   match parse_int(trim(s)) {
@@ -244,7 +256,7 @@ fn double_qty(s: String) -> Result[Int, ParseError] {
 }
 
 fn first_upper(words: List[String]) -> Option[String] {
-  Some(to_upper(words.find(w -> len(w) > 0)?))
+  Some(to_upper(words.find(w -> w != "")?))
 }
 
 // Handle it here instead. A Result: `e !! fallback`, or `e except err { … }`.
@@ -259,7 +271,7 @@ fn port(text: String) -> Int {
 }
 
 fn first_long(words: List[String]) -> String {
-  w := words.find(w -> len(w) > 3) or { return "none" }
+  w := words.find(w -> len(w.graphemes()) > 3) or { return "none" }
   to_upper(w)
 }
 
@@ -320,16 +332,18 @@ fn collections(xs: NonEmpty[Int], text: String) -> Int {
   // is NonEmpty). get(xs, i) gives an Option instead. No negative indices.
   head := xs[0]
   maybe := get(xs, 5) ?? 0
-  // Slices take a range and are clamped, as in Python; strings too.
+  // Slices take a range and are clamped, as in Python.
   rest := xs[1..]
-  prefix := text[..3]
+  // A string isn't counted or indexed itself: the unit is named (bytes,
+  // code points or graphemes, each an iterator); its positions are bytes.
+  prefix := text.graphemes()[..3]
   // Comprehensions, with `where` to filter.
   squares := [x * x for x in xs where x > 0]
   grid := [(a, b) for a in 1..=2 for b in ["x", "y"]]
   d := Dict { "tea": 450, "cup": 1200 }
   d2 := insert(d, "pot", 3000)
   price := get(d2, "tea") ?? 0
-  lengths := Dict { w: len(w) for w in split(text, " ") }
+  lengths := Dict { w: len(w.code_points()) for w in split(text, " ") }
   s := Set { 1, 2, 2, 3 }
   empty := Dict[String, Int] {}
   total := fold(xs, 0, (acc, x) -> acc + x)
@@ -356,7 +370,7 @@ trait Priced {
 trait Describe {
   // A contract on a trait method binds every implementation.
   fn describe(self) -> String
-    ensures len(it) > 0
+    ensures it != ""
 }
 
 // Supertraits, default methods, and laws (checked by `strata verify`).
@@ -514,10 +528,10 @@ test "a mocked capability" {
 ## Rules that catch newcomers
 
 - **Never write a `.strata` file yourself.** It is a binary module file: the syntax tree. Code goes in as text through an edit (`strata edit`, `strata add`, or `strata --file F edit < text` outside a package), which parses it, checks it and stores the tree; it comes out as text through `strata render` / `strata view`. How you lay the text out doesn't matter: it is printed back in one canonical style, the one the code above is in.
-- **Every name a variant introduces is a type**, so it must be unique in its module: no other variant, type or trait of that module may share it. Another module's type of the same name is told apart by its module (`geo.Circle`).
+- **Every name a union's member introduces is a type**, so it must be unique in its module: no other member, type or trait of that module may share it. Another module's type of the same name is told apart by its module (`geo.Circle`). A bare name in a union is an existing type when there is one (`type Shape = Circle | Dot` uses `Circle` and declares `Dot`).
 - **In one module, a function can't share a name with a trait method** (`fn describe` next to `trait Describe { fn describe … }`), since `x.describe()` could mean either. Across modules it can: `x.describe()` is the method, `describe(x)` the function.
 - **Overloaded builtins can't be passed by name** (`len`, `get`, `contains`, `sum`…): write `xs.map(x -> len(x))`. Ordinary functions can: `lines.map(line_total)`. Methods whose meaning depends on the receiver also need a lambda: `xs.map(x -> x.describe())`.
-- **`type Name = String` is an error**: a bare alias adds nothing. Add a `where`, or say `distinct type`.
+- **`type Name = String` is an error**: a bare alias adds nothing. Add a `where`, or say `distinct type`. So is a union naming a set its module (or the prelude) names already: `type Answer = Some(Int) | None` is `Option[Int]`.
 - **Any function can be called as a method** on its first argument: `xs.filter(p)` is `filter(xs, p)`, `line.line_total()` is `line_total(line)`.
 - **`mut` is visible on both sides**: `fn f(mut x: T)` and the call `f(mut x)`; `fn save(mut self, …)` and the call `mut db.save(o)` (required there, an error anywhere else). Only a `mut` variable, a `mut` parameter or a field of one can be changed, and a `mut` argument needs exactly the parameter's type. As an argument, a marked call takes parentheses: `f((mut q.pop()), x)`.
 - **A declared type holds forever**: `mut x: Positive = 1` then `x = 0` is an error (at compile time for literals, at run time otherwise).
@@ -528,7 +542,7 @@ test "a mocked capability" {
 - **Empty literals need a type when nothing says it**: `let xs: List[Money] = []`, `Dict[String, Int] {}`.
 - **Indexing is checked**: `xs[i]` faults when `i` is out of range, and `verify` tries to prove it isn't. There are no negative indices (`xs[len(xs) - 1]`); use `get(xs, i)` for an `Option`.
 - **`print(x)` is for convenience.** Code whose output matters takes a `Console` (`std.io`), so tests can record it.
-- Not in the language (yet): shared references, exceptions, null, implicit effects, iterators/generators, async, macros, inheritance.
+- Not in the language (yet): shared references, exceptions, null, implicit effects, generators, async, macros, inheritance.
 
 ## Modules and packages
 

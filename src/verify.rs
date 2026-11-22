@@ -12,11 +12,9 @@
 //!   and through `wrappers`, trait methods and laws.
 
 use crate::ast::*;
-use crate::interp::{to_json, Value};
 use crate::llvm::jit::Fault;
 use crate::types::{Diag, Env};
 use serde::Serialize;
-use serde_json::Value as Json;
 
 fn literal(e: &Expr) -> bool {
     match e {
@@ -72,6 +70,7 @@ fn refined(env: &Env, t: &TypeExpr, seen: &mut Vec<Symbol>) -> Option<bool> {
                 TypeBody::Sum(vs) => {
                     for v in vs {
                         match &v.payload {
+                            Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
                             Payload::None => {}
                             Payload::Positional(ts) => {
                                 for t in ts {
@@ -219,7 +218,8 @@ pub enum Verdict {
     /// A contract was violated; here is a concrete counterexample, found by
     /// the solver (and confirmed by running it) or by the fuzzer.
     Counterexample {
-        args: Json,
+        /// Each argument, as the code that writes it.
+        args: Vec<String>,
         kind: String,
         message: String,
         #[serde(default)]
@@ -291,6 +291,9 @@ fn foreign(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>) -> Option<String> {
     // a capability's own code reaches the outside world; one passed in can't be made here
     if let Some(i) = imp {
         let head = crate::types::texpr_head(&i.for_type);
+        if env.types.get(&Symbol::new(&head)).is_some_and(|t| t.mock) {
+            return Some(format!("`{}` is a mock, for tests only: its methods are checked by the tests that use it", crate::names::short(&head)));
+        }
         if env.capabilities.contains(&Symbol::new(&head)) {
             return Some(format!("`{}` is a capability: it reaches the outside world (only `strata run` gives one)", crate::names::short(&head)));
         }
@@ -406,7 +409,7 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, key: &str, solver
         match vc.solve(bin, i) {
             crate::smt::Outcome::Proven => proven.push(what),
             crate::smt::Outcome::Refuted(args, msg) => {
-                let vals: Vec<Value> = args.into_iter().map(|a| a.1).collect();
+                let vals: Vec<Expr> = args.into_iter().map(|a| a.1).collect();
                 match replay(key, &shown, &decl, imp.is_some(), &vals) {
                     Some(Verdict::Counterexample { args, kind, message, .. }) => {
                         return Verdict::Counterexample { args, kind, message, found_by: "solver".into(), terminates: None };
@@ -424,10 +427,17 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, key: &str, solver
         // a safety net for the prover: proven code is still run a little
         if cross_check > 0 {
             if let Verdict::Counterexample { args, kind, message, .. } = fuzz_limited(key, &shown, cross_check, seed, Some(CROSS_CHECK_STEPS)) {
+                // a fault in a function it calls is that function's (the prover relies on
+                // its contract, which doesn't rule the fault out); one in its own code is the prover's
+                let frames: Vec<&str> = message.rsplit_once("(stack: ").and_then(|(_, s)| s.strip_suffix(')')).map(|s| s.split(" -> ").collect()).unwrap_or_default();
+                let why = match frames.as_slice() {
+                    [first, .., last] if first != last => format!("{message}. It fails in `{last}`, which it calls: see `{last}`'s own verdict"),
+                    _ => format!("{message}. The solver had proven every check, so this is a bug in the prover: please report it"),
+                };
                 return Verdict::Counterexample {
                     args,
                     kind,
-                    message: format!("{message}. The solver had proven every check, so this is a bug in the prover: please report it"),
+                    message: why,
                     found_by: "cross-check".into(),
                     terminates: None,
                 };
@@ -450,15 +460,15 @@ pub fn smt_queries(env: &Env, f: &FnDecl, transparent: &crate::fx::HashMap<Strin
 /// binding each value to its parameter's type (an invalid one is a fault
 /// there, of the probe's own: the input is discarded), then calling it. Its
 /// own precondition unmet discards it too. `None`: nothing to conclude.
-fn replay(key: &str, shown: &str, decl: &FnDecl, method: bool, vals: &[Value]) -> Option<Verdict> {
+fn replay(key: &str, shown: &str, decl: &FnDecl, method: bool, vals: &[Expr]) -> Option<Verdict> {
     let prog = PROGRAM.get()?;
     // a method's checked form has the hidden type argument first; its wrapper doesn't
     let params: Vec<&Param> = decl.params.iter().filter(|p| !(method && p.name == crate::types::type_arg("Self"))).collect();
-    let vals: Vec<&Value> = decl.params.iter().zip(vals).filter(|(p, _)| !(method && p.name == crate::types::type_arg("Self"))).map(|(_, v)| v).collect();
+    let vals: Vec<&Expr> = decl.params.iter().zip(vals).filter(|(p, _)| !(method && p.name == crate::types::type_arg("Self"))).map(|(_, v)| v).collect();
     let mut stmts = vec![];
     let mut args = vec![];
     for (i, (p, v)) in params.iter().zip(&vals).enumerate() {
-        let x = literal_of(v)?;
+        let x = (*v).clone();
         let name = Symbol::new(&format!("strata_arg_{i}"));
         // a type argument is a type's name; generic types aren't checked here
         let ty = (!matches!(&p.ty, TypeExpr::Named(n, _) if n == crate::types::TYPE_ARG)).then(|| p.ty.clone());
@@ -480,30 +490,7 @@ fn replay(key: &str, shown: &str, decl: &FnDecl, method: bool, vals: &[Value]) -
     if fault.kind == "Requires" && stack.len() == 1 && fault.message.starts_with(&format!("precondition of `{key}` violated")) {
         return None;
     }
-    Some(counterexample(fault, &Json::Array(vals.iter().map(|v| to_json(v)).collect()), key, shown))
-}
-
-/// A value as code (what `derive` writes compile-time values as).
-pub fn literal_of(v: &Value) -> Option<Expr> {
-    use crate::interp::Fields;
-    Some(match v {
-        Value::Int(n) => Expr::Int(*n),
-        Value::Big(b) => Expr::BigInt(b.to_string()),
-        Value::Float(x) => Expr::Float(*x),
-        Value::Bool(b) => Expr::Bool(*b),
-        Value::Str(s) => Expr::Str(s.clone()),
-        Value::Unit => Expr::Unit,
-        Value::List(xs) => Expr::List(xs.iter().map(literal_of).collect::<Option<_>>()?),
-        Value::Tuple(xs) => Expr::Tuple(xs.iter().map(literal_of).collect::<Option<_>>()?),
-        Value::Record(n, fs) => Expr::Ctor(Symbol::new(n), CtorArgs::Record(fs.iter().map(|(k, x)| Some((Symbol::new(k), literal_of(x)?))).collect::<Option<_>>()?)),
-        Value::Variant(n, Fields::None) => Expr::Ctor(Symbol::new(n), CtorArgs::None),
-        Value::Variant(n, Fields::Pos(xs)) => Expr::Ctor(Symbol::new(n), CtorArgs::Positional(xs.iter().map(literal_of).collect::<Option<_>>()?)),
-        Value::Variant(n, Fields::Rec(fs)) => Expr::Ctor(Symbol::new(n), CtorArgs::Record(fs.iter().map(|(k, x)| Some((Symbol::new(k), literal_of(x)?))).collect::<Option<_>>()?)),
-        Value::Distinct(n, x) => Expr::Ctor(Symbol::new(n), CtorArgs::Positional(vec![literal_of(x)?])),
-        Value::Dict(kvs) => Expr::Call(Box::new(Expr::Var(Symbol::new("dict"))), vec![Expr::List(kvs.iter().map(|(k, x)| Some(Expr::Tuple(vec![literal_of(k)?, literal_of(x)?]))).collect::<Option<_>>()?)]),
-        Value::Set(xs) => Expr::Call(Box::new(Expr::Var(Symbol::new("set"))), vec![Expr::List(xs.iter().map(literal_of).collect::<Option<_>>()?)]),
-        Value::Closure(..) | Value::FnRef(_) | Value::Mock(_) => return None,
-    })
+    Some(counterexample(fault, vals.iter().map(|v| crate::printer::literal(v)).collect(), key, shown))
 }
 
 /// Replace `Self` (and the impl's type parameters, at `Int`) in a method
@@ -645,11 +632,7 @@ pub fn check_law(imp: &ImplDecl, law: &Law, key: &str, cases: usize, seed: u64) 
     match fuzz_limited(key, &shown, cases, seed, None) {
         Verdict::Counterexample { args, kind, message, found_by, terminates } => {
             if kind == "Ensures" && message.contains(&format!("of {shown}")) && message.ends_with(&format!("(stack: {shown})")) || kind == "Ensures" && message.ends_with("(stack: )") {
-                let vals: Vec<Json> = match &args {
-                    Json::Array(xs) => xs.clone(),
-                    _ => vec![],
-                };
-                let with: Vec<String> = law.params.iter().zip(&vals).map(|(p, v)| format!("{} = {v}", p.name)).collect();
+                let with: Vec<String> = law.params.iter().zip(&args).map(|(p, v)| format!("{} = {v}", p.name)).collect();
                 return Verdict::Counterexample {
                     args,
                     kind: "Law".into(),
@@ -670,11 +653,11 @@ const CROSS_CHECK_STEPS: u64 = 200_000;
 
 /// What is fuzzed compiled: each function's (or wrapper's) driver, those
 /// that couldn't be compiled and why, and how to run a case of one (seed,
-/// step budget) — the fault that ended it, if any, and its arguments as JSON.
+/// step budget) — the fault that ended it, if any, and its arguments.
 pub struct JitFuzz {
     pub drivers: crate::fx::HashMap<String, usize>,
     pub failed: crate::fx::HashMap<String, String>,
-    pub case: fn(usize, u64, i64) -> (Option<(String, String, String)>, String),
+    pub case: fn(usize, u64, i64) -> (Option<(String, String, String)>, Vec<Expr>),
     pub lock: std::sync::Mutex<()>,
 }
 
@@ -697,10 +680,10 @@ fn frames(stack: &str) -> Vec<String> {
 }
 
 /// A fault of a case as a counterexample: the wrapper's name shown as what it stands for.
-fn counterexample(f: Fault, args: &Json, key: &str, shown: &str) -> Verdict {
+fn counterexample(f: Fault, args: Vec<String>, key: &str, shown: &str) -> Verdict {
     let stack = frames(&f.stack);
     let message = f.message.replace(&format!("`{key}`"), &format!("`{shown}`"));
-    Verdict::Counterexample { args: args.clone(), kind: f.kind, message: format!("{message} (stack: {})", short_stack(&stack)), found_by: "fuzzer".into(), terminates: None }
+    Verdict::Counterexample { args, kind: f.kind, message: format!("{message} (stack: {})", short_stack(&stack)), found_by: "fuzzer".into(), terminates: None }
 }
 
 /// Fuzz what `key` names (a function or a wrapper) with its compiled driver,
@@ -738,8 +721,8 @@ fn fuzz_limited(key: &str, shown: &str, cases: usize, seed: u64, budget: Option<
         if kind == "Hole" {
             return Verdict::Incomplete { message: format!("{msg} (via {})", short_stack(&frames(&stack))), terminates: None };
         }
-        let args: Json = serde_json::from_str(&args).unwrap_or(Json::Array(vec![]));
-        return counterexample(Fault { kind, message: msg, stack }, &args, key, shown);
+        let args = args.iter().map(|v| crate::printer::literal(v)).collect();
+        return counterexample(Fault { kind, message: msg, stack }, args, key, shown);
     }
     if ok == 0 && discarded > 0 {
         return Verdict::Skipped { reason: format!("all {discarded} generated inputs violated the precondition") };
@@ -749,7 +732,7 @@ fn fuzz_limited(key: &str, shown: &str, cases: usize, seed: u64, budget: Option<
 
 /// A call stack for a message: deep ones (runaway recursion) are cut short.
 fn short_stack(stack: &[String]) -> String {
-    let stack = crate::interp::fold_stack(stack);
+    let stack = crate::names::fold_stack(stack);
     if stack.len() <= 8 {
         return stack.join(" -> ");
     }

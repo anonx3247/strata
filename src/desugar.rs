@@ -27,6 +27,43 @@ pub fn program(p: &mut Program, errors: &mut Vec<Diag>) {
     }
     defaults(p);
     inline_refinements(p);
+    mixed_unions(p);
+}
+
+/// The suffix of the sum made for the members a union declares when it also
+/// has members defined elsewhere (`Shape$own` for `Square` and `Dot` in
+/// `type Shape = Circle | Square { side: Float } | Dot`).
+pub const OWN: &str = "$own";
+
+/// A union with members of both kinds becomes a sum of the members it
+/// declares and the union of that sum with the others, so what checks and
+/// runs code sees only sums and unions.
+fn mixed_unions(p: &mut Program) {
+    let mut made = vec![];
+    for d in &mut p.decls {
+        let DeclKind::Type(t) = &mut d.kind else { continue };
+        let TypeBody::Sum(vs) = &t.body else { continue };
+        if !vs.iter().any(|v| matches!(v.payload, Payload::Type(_))) {
+            continue;
+        }
+        let (others, own): (Vec<Variant>, Vec<Variant>) = vs.iter().cloned().partition(|v| matches!(v.payload, Payload::Type(_)));
+        let own_name = Symbol::new(&format!("{}{OWN}", t.name));
+        let params: Vec<TypeExpr> = t.params.iter().map(|p| TypeExpr::Named(*p, vec![])).collect();
+        let mut members: Vec<TypeExpr> = others.into_iter().map(|v| match v.payload {
+            Payload::Type(x) => x,
+            _ => unreachable!(),
+        }).collect();
+        members.push(TypeExpr::Named(own_name, params));
+        made.push(Decl {
+            comments: vec![],
+            doc: vec![],
+            kind: DeclKind::Type(TypeDecl { distinct: false, name: own_name, params: t.params.clone(), body: TypeBody::Sum(own), refinement: None, mock: false }),
+            module: d.module,
+            public: d.public,
+        });
+        t.body = TypeBody::Alias(TypeExpr::Union(members));
+    }
+    p.decls.extend(made);
 }
 
 /// The prefix of the name given to a refinement written inside a type
@@ -72,7 +109,7 @@ fn inline_refinements(p: &mut Program) {
         p.decls.push(Decl {
             comments: vec![],
             doc: vec![],
-            kind: DeclKind::Type(TypeDecl { distinct: false, name: n, params: vec![], body: TypeBody::Alias(b), refinement: Some(pred) }),
+            kind: DeclKind::Type(TypeDecl { distinct: false, name: n, params: vec![], body: TypeBody::Alias(b), refinement: Some(pred) , mock: false }),
             module: Symbol::new(""),
             public: true,
         });

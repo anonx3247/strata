@@ -5,7 +5,7 @@
 /// defaults, lists, dictionaries, refinements, and JSON text both ways.
 pub const PROGRAM: &str = r#"use std.json.{Json, JsonValue, Reject, parse, stringify}
 
-type Address = { city: String, zip: String where len(it) == 5 }
+type Address = { city: String, zip: String where len(it.code_points()) == 5 }
 
 type Shape =
   | Dot
@@ -104,7 +104,7 @@ pub const OUTPUT: &str = r#"{"type":"Signup","email":"a@b","age":20,"nickname":"
 true
 Ok(Signup { email: "x@y", age: 15, nickname: None, tags: [], home: Address { city: "L", zip: "12345" }, shapes: [Dot, Pixels(2)], level: Quiet, scores: Dict {} })
 Err("age: 12 does not satisfy `Int where it >= 13`")
-Err("home.zip: \"1234\" does not satisfy `String where len(it) == 5`")
+Err("home.zip: \"1234\" does not satisfy `String where len(it.code_points()) == 5`")
 Err("shapes[0].r: expected a number, got \"no\"")
 true
 Err("unknown field \"extra\"")
@@ -488,7 +488,7 @@ fn evens(text: String) -> Result[List[Int where it % 2 == 0], String] {
   read(text)
 }
 
-fn names(text: String) -> Result[Dict[String, String where len(it) > 0], String] {
+fn names(text: String) -> Result[Dict[String, String where it != ""], String] {
   read(text)
 }
 
@@ -508,6 +508,427 @@ pub const REFINED_MORE_OUTPUT: &str = r#"Ok([1, 2, 3])
 Err("[1] does not satisfy `Many` (where len(it) >= 2)")
 Ok([2, 4])
 Err("[1]: 3 does not satisfy `Int where it % 2 == 0`")
-Err("b: \"\" does not satisfy `String where len(it) > 0`")
+Err("b: \"\" does not satisfy `String where it != \"\"`")
 2
+"#;
+
+/// `for` over values implementing `Iterator`: a concrete type, a generic one,
+/// one calling `T.zero()` in `next`, through a generic function, nested, with
+/// `break` / `continue`, and a tuple pattern.
+#[allow(dead_code)]
+pub const ITERATORS: &str = r#"trait Zero {
+  fn zero() -> Self
+}
+
+impl Zero for Int {
+  fn zero() -> Self { 0 }
+}
+
+impl Zero for String {
+  fn zero() -> Self { "z" }
+}
+
+type Count = { at: Int, end: Int }
+
+impl Iterator[Int] for Count {
+  fn next(mut self) -> Option[Int] {
+    if self.at < self.end {
+      self.at = self.at + 1
+      Some(self.at - 1)
+    } else {
+      None
+    }
+  }
+}
+
+type Items[T] = { items: List[T], pos: Int }
+
+impl[T] Iterator[T] for Items[T] {
+  fn next(mut self) -> Option[T] {
+    if self.pos < len(self.items) {
+      x := self.items[self.pos]
+      self.pos = self.pos + 1
+      Some(x)
+    } else {
+      None
+    }
+  }
+}
+
+type Padded[T] = { inner: Items[T], extra: Int }
+
+impl[T: Zero] Iterator[T] for Padded[T] {
+  fn next(mut self) -> Option[T] {
+    match mut self.inner.next() {
+      Some(x) => Some(x),
+      None => if self.extra > 0 {
+        self.extra = self.extra - 1
+        Some(T.zero())
+      } else {
+        None
+      },
+    }
+  }
+}
+
+fn collect[T, I: Iterator[T]](it: I) -> List[T] {
+  mut out := []
+  for x in it {
+    out = push(out, x)
+  }
+  out
+}
+
+fn sum(it: Count) -> Int {
+  mut total := 0
+  for i in it {
+    if i == 2 {
+      continue
+    }
+    if i == 6 {
+      break
+    }
+    inner := Count { at: 0, end: i }
+    for j in inner {
+      total = total + j
+    }
+  }
+  total
+}
+
+fn main() {
+  print(collect(Items { items: [1, 2, 3], pos: 0 }))
+  print(collect(Padded { inner: Items { items: [4, 5], pos: 0 }, extra: 2 }))
+  print(collect(Padded { inner: Items { items: ["a"], pos: 0 }, extra: 1 }))
+  print(sum(Count { at: 0, end: 10 }))
+  pairs := Items { items: [(1, "x"), (2, "y")], pos: 0 }
+  for (i, s) in pairs {
+    print(f"{i}{s}")
+  }
+}
+"#;
+
+#[allow(dead_code)]
+pub const ITERATORS_OUTPUT: &str = r#"[1, 2, 3]
+[4, 5, 0, 0]
+["a", "z"]
+19
+1x
+2y
+"#;
+
+/// `FiniteIterator` (`len`, on a type parameter too), and the lazy `map` /
+/// `filter` / `fold` of every iterator, unbounded ones included; a list's
+/// `map` and `len` are still the builtins.
+#[allow(dead_code)]
+pub const LAZY_ITERATORS: &str = r#"type Count = { at: Int, end: Int }
+
+impl Iterator[Int] for Count {
+  fn next(mut self) -> Option[Int] {
+    if self.at < self.end {
+      self.at += 1
+      Some(self.at - 1)
+    } else {
+      None
+    }
+  }
+}
+
+impl FiniteIterator[Int] for Count {
+  fn len(self) -> Natural {
+    if self.end > self.at { self.end - self.at } else { 0 }
+  }
+}
+
+type Naturals = { at: Int }
+
+impl Iterator[Int] for Naturals {
+  fn next(mut self) -> Option[Int] {
+    self.at += 1
+    Some(self.at - 1)
+  }
+}
+
+fn total(c: Count) -> Int {
+  mut t := 0
+  for i in c {
+    t += i
+  }
+  t
+}
+
+fn size[I: FiniteIterator[Int]](it: I) -> Int {
+  mut k := 0
+  for _ in it {
+    k += 1
+  }
+  k * 100 + it.len()
+}
+
+fn first_square_over(n: Int) -> Int {
+  squares := Naturals { at: 0 }.map(x -> x * x)
+  for s in squares {
+    if s > n {
+      return s
+    }
+  }
+  0
+}
+
+fn main() {
+  c := Count { at: 2, end: 5 }
+  print(total(c))
+  print(size(c))
+  print(first_square_over(50))
+  evens := Naturals { at: 0 }.filter(n -> n % 2 == 0).map(n -> f"<{n}>")
+  for e in evens {
+    if e == "<8>" {
+      break
+    }
+    print(e)
+  }
+  print(Count { at: 0, end: 5 }.map(n -> n + 1).filter(n -> n != 3).fold(0, (a, b) -> a + b))
+  xs := [1, 2, 3]
+  print(xs.map(x -> x * 2))
+  print(len(xs))
+}
+"#;
+
+#[allow(dead_code)]
+pub const LAZY_ITERATORS_OUTPUT: &str = r#"9
+303
+64
+<0>
+<2>
+<4>
+<6>
+12
+[2, 4, 6]
+3
+"#;
+
+/// `fold` / `len` over finite chains (shown to end, given their lambdas
+/// end), and comprehensions over iterators: lazy over an unbounded one,
+/// finite over a finite one, nested with a list, and set / dict ones.
+#[allow(dead_code)]
+pub const ITERATOR_COMPREHENSIONS: &str = r#"type Count = { at: Int, end: Int }
+
+impl Iterator[Int] for Count {
+  fn next(mut self) -> Option[Int] {
+    if self.at < self.end {
+      self.at += 1
+      Some(self.at - 1)
+    } else {
+      None
+    }
+  }
+}
+
+impl FiniteIterator[Int] for Count {
+  fn len(self) -> Natural {
+    if self.end > self.at { self.end - self.at } else { 0 }
+  }
+}
+
+type Naturals = { at: Int }
+
+impl Iterator[Int] for Naturals {
+  fn next(mut self) -> Option[Int] {
+    self.at += 1
+    Some(self.at - 1)
+  }
+}
+
+
+fn spin(n: Int) -> Int {
+  mut k := n
+  while true {
+    k += 1
+  }
+  k
+}
+
+fn ok_sum() -> Int {
+  Count { at: 0, end: 4 }.filter(x -> x > 1).map(x -> x * 2).fold(0, (a, b) -> a + b)
+}
+
+fn bad_lambda() -> Int {
+  Count { at: 0, end: 4 }.map(x -> spin(x)).fold(0, (a, b) -> a + b)
+}
+
+fn filtered_len() -> Int {
+  Count { at: 0, end: 10 }.filter(x -> x % 3 == 0).len()
+}
+
+fn main() {
+  print(ok_sum())
+  print(filtered_len())
+  odd_squares := [n * n for n in Naturals { at: 0 } where n % 2 == 1]
+  for s in odd_squares {
+    if s > 50 {
+      break
+    }
+    print(s)
+  }
+  c := Count { at: 0, end: 4 }
+  doubled := [x * 2 for x in c]
+  print(doubled.len())
+  print(doubled.to_list())
+  print([(a, b) for a in c for b in ["x", "y"] where a > 1])
+  print(Set { x % 2 for x in c })
+  print(Dict { x: x * x for x in c })
+  print([x + 1 for x in [1, 2, 3] where x != 2])
+}
+"#;
+
+#[allow(dead_code)]
+pub const ITERATOR_COMPREHENSIONS_OUTPUT: &str = r#"10
+4
+1
+9
+25
+49
+4
+[0, 2, 4, 6]
+[(2, "x"), (2, "y"), (3, "x"), (3, "y")]
+Set { 0, 1 }
+Dict { 0: 0, 1: 1, 2: 4, 3: 9 }
+[2, 4]
+"#;
+
+/// `iter()` on lists, ranges, sets (in order) and dicts (entries by key):
+/// finite iterators, for loops, generic code and comprehensions; the list
+/// builtins unchanged.
+#[allow(dead_code)]
+pub const COLLECTION_ITERATORS: &str = r#"fn total[I: FiniteIterator[Int]](it: I) -> Int {
+  it.fold(0, (a, b) -> a + b)
+}
+
+fn main() {
+  xs := [3, 1, 2]
+  it := xs.iter()
+  print(it.len())
+  for x in it {
+    print(x)
+  }
+  print(total(xs.iter()))
+  print(total((0..5).iter()))
+  print([x * 10 for x in xs.iter() where x > 1].to_list())
+  print(Set { 5, 1, 3 }.iter().to_list())
+  d := Dict { "b": 2, "a": 1 }
+  for (k, v) in d.iter() {
+    print(f"{k}={v}")
+  }
+  print(xs.map(x -> x + 1))
+  print(len(xs))
+  print(to_list(Set { 2, 1 }))
+}
+"#;
+
+#[allow(dead_code)]
+pub const COLLECTION_ITERATORS_OUTPUT: &str = r#"3
+3
+1
+2
+6
+10
+[30, 20]
+[1, 3, 5]
+a=1
+b=2
+[4, 2, 3]
+3
+[1, 2]
+"#;
+
+/// A string's units: `bytes()` (UTF-8), `code_points()` (decoded from
+/// them) and `graphemes()` (std.unicode's UAX #29 clusters: combining marks,
+/// emoji ZWJ sequences, flags, Hangul, CR LF, an Indic conjunct).
+#[allow(dead_code)]
+pub const STRING_UNITS: &str = r#"fn main() {
+  s := "héllo, wörld 👋🏽"
+  print(s.bytes().len())
+  print(s.code_points().len())
+  print(len(s.code_points()))
+  print(s.code_points().to_list())
+  print([chr(c) for c in s.code_points() where c > 127].to_list())
+  print(s.bytes().fold(0, (a, b) -> a + b))
+  for b in "é".bytes() {
+    print(b)
+  }
+  crlf := chr(13) + "\nab"
+  print(crlf.graphemes().len())
+  for w in ["éa", "👨‍👩‍👧x", "🇫🇷🇩🇪🇺", "한국어", "👋🏽!", "क्षि", ""] {
+    g := w.graphemes()
+    print(f"{g.len()} {[len(x.code_points().to_list()) for x in g].to_list()}")
+  }
+}
+"#;
+
+#[allow(dead_code)]
+pub const STRING_UNITS_OUTPUT: &str = r#"23
+15
+15
+[104, 233, 108, 108, 111, 44, 32, 119, 246, 114, 108, 100, 32, 128075, 127997]
+["é", "ö", "👋", "🏽"]
+3135
+195
+169
+3
+2 [2, 1]
+2 [5, 1]
+3 [2, 2, 1]
+3 [1, 1, 1]
+2 [2, 1]
+1 [4]
+0 []
+"#;
+
+/// `len`, indexing and slicing on an iterator (a string's units:
+/// `len(s.graphemes())`, `s.graphemes()[6]`, `join(s.graphemes()[1..3], "")`),
+/// lazy `take` / `drop` (on an unbounded iterator too); lists unchanged.
+#[allow(dead_code)]
+pub const ITERATOR_INDEXING: &str = r#"type Naturals = { at: Int }
+
+impl Iterator[Int] for Naturals {
+  fn next(mut self) -> Option[Int] {
+    self.at += 1
+    Some(self.at - 1)
+  }
+}
+
+fn main() {
+  s := "héllo 👋🏽!"
+  print(len(s.bytes()))
+  print(len(s.code_points()))
+  print(len(s.graphemes()))
+  print(s.graphemes()[6])
+  print(get(s.graphemes(), 9))
+  print(join(s.graphemes()[1..3], ""))
+  print(join(s.graphemes()[5..], "|"))
+  print(s.code_points()[1])
+  print(Naturals { at: 0 }.drop(3).take(4).to_list())
+  print(len(Naturals { at: 0 }.take(5)))
+  print(take(Naturals { at: 10 }, 2).to_list())
+  print([1, 2, 3][1..])
+  print(len([1, 2]))
+  print(get([1, 2], 5))
+}
+"#;
+
+#[allow(dead_code)]
+pub const ITERATOR_INDEXING_OUTPUT: &str = r#"16
+9
+8
+👋🏽
+None
+él
+ |👋🏽|!
+233
+[3, 4, 5, 6]
+5
+[10, 11]
+[2, 3]
+2
+None
 "#;

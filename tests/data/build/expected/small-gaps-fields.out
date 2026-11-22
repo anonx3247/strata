@@ -1,0 +1,8 @@
+c
+q
+Ci { name: "renamed", r: 2 }
+Sq { side: 3, name: "s!" }
+(2, "b")
+((1, 9), "x")
+
+--- exit 0

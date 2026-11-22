@@ -1,0 +1,4 @@
+1
+fault (Refinement): argument `s` of `g`: element -2: -2 does not satisfy `Positive` (where it > 0)
+
+--- exit 101

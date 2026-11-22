@@ -1,0 +1,39 @@
+["item-a", "item-bb", "item-cccc", "item-ddddd"]
+["item-bb", "item-cccc", "item-ddddd"]
+6
+Some("cccc")
+None
+Ok(6)
+Err("bad x")
+Named { name: "new", tags: ["t", "renamed"] }
+Named { name: "inner", tags: ["t", "renamed"] }
+Named { name: "new", tags: ["t", "renamed"] }
+[4, 3]
+16
+27
+empty
+one 7
+one then 2 then [3, 4]
+starts 5, 2 more
+unit
+size 4
+["n1", "n3", "n5", "n7"]
+a!
+cccc!
+Dict { "a": 3, "b": 2 }
+Some(3)
+["a", "b"]
+Set { "x", "y", "z" }
+true
+HELLO, WORLD
+["a", "b", "c"]
+a--b--c
+3.14 [    42] [ab  ]
+["o", "l", "l", "é", "h"]
+Some(2.5)
+["one", "two"]
+["w0", "w1", "w2", "w3", "w4"]
+["w1", "w2"]
+["w4", "w3", "w2", "w1", "w0"]
+
+--- exit 0

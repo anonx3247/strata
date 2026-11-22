@@ -112,7 +112,7 @@ impl Gen {
         if let TypeExpr::Named(n, args) = t {
             if n == crate::types::TYPE_ARG {
                 // (whole: `List[Int]`, so an impl's type parameters are known)
-                return Ok(Value::Str(args.first().map(crate::interp::type_text).unwrap_or_default()));
+                return Ok(Value::Str(args.first().map(crate::printer::type_text).unwrap_or_default()));
             }
         }
         if let TypeExpr::Refined(b, pred) = t {

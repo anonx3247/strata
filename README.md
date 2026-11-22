@@ -21,7 +21,7 @@ fn next_digit(d: Digit) -> Digit {
 $ strata --file examples/math.strata verify
 ✓ factorial                proven (2 checks)
 ✗ next_digit               Refinement violation (found by the solver)
-    input:   [9]
+    input:   9
     result of `next_digit`: 10 does not satisfy `Digit` (where 0 <= it && it <= 9)
 ```
 
@@ -63,10 +63,10 @@ strata add path/to/examples/orders.strata
 strata view --level 0              # map of everything
 strata view slice:Order --level 1  # Order, what it uses, what uses it: interfaces only
 strata holes                       # what's left to implement
-strata ui                          # open http://127.0.0.1:7777: the live viewer
+strata ui                          # open http://127.0.0.1:7777: agents, the code, PRs
 ```
 
-`strata ui` is the live viewer. Here it shows `examples/math.strata` after `strata verify`: every definition with its status, the selected function's code, and what the verifier said about it, here proven, but not shown to terminate (it is the Collatz sequence).
+`strata ui` is a workspace in the browser: agent sessions over ACP, the code with its git activity, and PRs. Here its Code mode shows `examples/math.strata` after `strata verify`: every definition with its status, the selected function's code, and what the verifier said about it, here proven, but not shown to terminate (it is the Collatz sequence).
 
 ![The Strata viewer, showing collatz_steps from examples/math.strata: its code, six proven checks, and "may not terminate"](docs/images/viewer.png)
 

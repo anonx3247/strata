@@ -200,6 +200,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                 TypeBody::Sum(vs) => vs.iter().for_each(|v| match &v.payload {
                     Payload::Positional(ts) => ts.iter().for_each(|t| ty(t, &mut out)),
                     Payload::Record(fs) => fs.iter().for_each(|f| ty(&f.ty, &mut out)),
+                    Payload::Type(t) => ty(t, &mut out),
                     Payload::None => {}
                 }),
             }

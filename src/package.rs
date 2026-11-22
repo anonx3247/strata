@@ -16,6 +16,9 @@
 //! terminates = ["*"]                     # ... whose functions must terminate (or be marked)
 //! no_recursion = ["core"]                # ... where no function may be recursive
 //!
+//! [run]
+//! mode = true                            # `main` and tests may ask for `RunMode` (std.process)
+//!
 //! [native]                               # C for `extern c` (compiled code only)
 //! sources = ["c/distance.c"]             # the package's C files, compiled with it
 //! libs = ["sqlite3"]                     # libraries to link (`-lsqlite3`)
@@ -38,6 +41,17 @@ pub struct Package {
     pub json: JsonRules,
     /// `[native]`: the C that `extern c` declarations are linked to
     pub native: Native,
+    /// `[ui]`: the viewer's settings
+    pub ui: UiRules,
+}
+
+/// `[run]`: `mode = true` lets `main` and tests ask how the program is run
+/// (`RunMode`, std.process). By default they can't tell.
+#[derive(serde::Deserialize, Default, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct RunRules {
+    #[serde(default)]
+    pub mode: bool,
 }
 
 /// `[native]`: C files of the package (paths relative to its folder), and
@@ -140,6 +154,20 @@ struct Raw {
     json: JsonRules,
     #[serde(default)]
     native: Native,
+    #[serde(default)]
+    run: RunRules,
+    #[serde(default)]
+    ui: UiRules,
+}
+
+/// `[ui]`: the viewer's settings (`strata ui`).
+#[derive(serde::Deserialize, Clone, Default, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct UiRules {
+    /// the command that runs an agent over ACP, in the Agents mode
+    pub agent: Option<String>,
+    /// new agent sessions run their tools without asking
+    pub auto_allow: Option<bool>,
 }
 
 pub fn load(dir: &Path) -> Result<Package, String> {
@@ -163,6 +191,9 @@ pub fn load(dir: &Path) -> Result<Package, String> {
     if let Some(k) = &raw.json.integers {
         settings.push(("json.integers".to_string(), k.clone()));
     }
+    if raw.run.mode {
+        settings.push(("run.mode".to_string(), "true".to_string()));
+    }
     let _ = SETTINGS.set(settings);
     for src in &raw.native.sources {
         if !dir.join(src).is_file() {
@@ -170,7 +201,7 @@ pub fn load(dir: &Path) -> Result<Package, String> {
         }
     }
     let _ = NATIVE.set((dir.to_path_buf(), raw.native.clone()));
-    Ok(Package { dir: dir.to_path_buf(), name: raw.name, exports: raw.exports, verify: raw.verify, auto_commit: raw.auto_commit.unwrap_or(true), json: raw.json, native: raw.native })
+    Ok(Package { dir: dir.to_path_buf(), name: raw.name, exports: raw.exports, verify: raw.verify, auto_commit: raw.auto_commit.unwrap_or(true), json: raw.json, native: raw.native, ui: raw.ui })
 }
 
 /// The package a file or folder belongs to: the nearest folder at or above it

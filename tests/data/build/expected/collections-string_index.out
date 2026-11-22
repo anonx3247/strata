@@ -1,0 +1,4 @@
+c
+fault (Requires): precondition of `std.unicode.Graphemes.at` violated: requires 0 <= i && i < self.len() (with self = {"points":{"text":"abc","at":0},"pending":"None"}, i = 5)
+
+--- exit 101

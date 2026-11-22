@@ -30,6 +30,9 @@ const FILES: &[(&str, &[u8])] = &[
     ("unicode_tables.strata", include_bytes!("../std/unicode_tables.strata")),
     ("unicode.strata", include_bytes!("../std/unicode.strata")),
     ("regex.strata", include_bytes!("../std/regex.strata")),
+    ("utf8.strata", include_bytes!("../std/utf8.strata")),
+    ("ast.strata", include_bytes!("../std/ast.strata")),
+    ("ast/binary.strata", include_bytes!("../std/ast/binary.strata")),
 ];
 
 /// Native operations, callable only from `std`.
@@ -38,6 +41,8 @@ pub const HOST: &[Builtin] = &[
     Builtin::new("host_write", "", "(Int, String) -> ()"),
     Builtin::new("host_read_line", "", "() -> Option[String]"),
     Builtin::new("host_read_file", "", "(String) -> Result[String, (String, String)]"),
+    // the file's bytes, each an `Int` from 0 to 255
+    Builtin::new("host_read_bytes", "", "(String) -> Result[List[Int], (String, String)]"),
     Builtin::new("host_write_file", "", "(String, String, Bool) -> Result[(), (String, String)]"),
     Builtin::new("host_exists", "", "(String) -> Bool"),
     Builtin::new("host_list_dir", "", "(String) -> Result[List[String], (String, String)]"),
@@ -74,14 +79,34 @@ pub fn program() -> &'static Program {
     })
 }
 
+/// Whether a definition calls `matches` (compiled code matches with
+/// `std.regex`: a literal pattern's matcher is made while compiling) or
+/// `s.graphemes()` (`std.unicode`'s): std is loaded for them.
+fn run_time_pattern(d: &crate::ast::DeclKind) -> bool {
+    use crate::ast::Expr;
+    let mut found = false;
+    let mut k = d.clone();
+    crate::ast::decl_all_exprs_mut(&mut k, |e| {
+        found = found
+            || match e {
+                Expr::Call(f, args) => matches!(&**f, Expr::Var(n) if n.as_str() == "matches") && args.len() == 2,
+                Expr::Method(_, m, args) => (m.as_str() == "matches" && args.len() == 1) || (m.as_str() == "graphemes" && args.is_empty()),
+                _ => false,
+            }
+    });
+    found
+}
+
 /// `p` with the standard library added after its own definitions, if it uses
 /// it and does not already contain it (when `std/` itself is being checked).
 pub fn with_std(p: &Program) -> Option<Program> {
     use crate::ast::DeclKind;
-    let uses = p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Use(u) if is_std(&u.path)));
+    // (`matches` is std.regex's, compiled; `s.graphemes()` std.unicode's)
+    let uses = p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Use(u) if is_std(&u.path))) || p.decls.iter().any(|d| run_time_pattern(&d.kind));
     // a resolved program has it already, under qualified names in the root module
     let has_std = p.decls.iter().any(|d| {
-        is_std(&d.module)
+        // (the prelude's code is added to every program: it says nothing about std)
+        (is_std(&d.module) && d.module != crate::types::PRELUDE_MODULE)
             || match &d.kind {
                 DeclKind::Type(t) => is_std(&t.name),
                 DeclKind::Trait(t) => is_std(&t.name),
@@ -95,4 +120,29 @@ pub fn with_std(p: &Program) -> Option<Program> {
     let mut out = p.clone();
     out.decls.extend(program().decls.iter().cloned());
     Some(out)
+}
+
+/// The value of `std.regex.<name>(args)` (literals), computed as
+/// compile-time code is (on the JIT, cached between runs, and here per call):
+/// the compiler's own uses of `std.regex` (the prover's relations between
+/// patterns, the generator's samples), written as a literal.
+pub fn regex_value(name: &str, args: Vec<crate::ast::Expr>) -> Result<crate::ast::Expr, String> {
+    use crate::ast::{Expr, Symbol};
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    thread_local! {
+        static STD: Option<Program> = crate::parser::parse_program("use std.regex.*\n").ok().map(|p| crate::resolve::resolve(&p).program);
+        static DONE: RefCell<HashMap<String, Result<Expr, String>>> = Default::default();
+    }
+    let call = Expr::Call(Box::new(Expr::Var(Symbol::new(&format!("std.regex.{name}")))), args);
+    let key = crate::printer::expr(&call, 0);
+    if let Some(v) = DONE.with(|d| d.borrow().get(&key).cloned()) {
+        return v;
+    }
+    let v = STD.with(|p| match p {
+        Some(p) => crate::derive::comptime_literals(p, std::slice::from_ref(&call)).pop().unwrap_or_else(|| Err("no value".into())),
+        None => Err("std.regex could not be read".into()),
+    });
+    DONE.with(|d| d.borrow_mut().insert(key, v.clone()));
+    v
 }

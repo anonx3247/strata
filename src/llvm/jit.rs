@@ -4,6 +4,7 @@
 //! machine code in memory. Its runtime calls go to the C runtime built into
 //! strata (build.rs), the one `strata build` links with.
 
+use crate::ast::Expr;
 use inkwell::OptimizationLevel;
 use inkwell::context::Context;
 use inkwell::memory_buffer::MemoryBuffer;
@@ -25,6 +26,7 @@ unsafe extern "C" {
     fn strata_host_exists();
     fn strata_host_write_file();
     fn strata_host_read_file();
+    fn strata_host_read_bytes();
     fn strata_host_read_line();
     fn strata_host_write();
     fn strata_pid();
@@ -36,8 +38,6 @@ unsafe extern "C" {
     fn strata_init();
     fn strata_seed();
     fn strata_step();
-    fn strata_fuzz_arg();
-    fn strata_fuzz_args();
     fn strata_fuzz();
     fn strata_test_printed();
     fn strata_test_stack();
@@ -54,13 +54,9 @@ unsafe extern "C" {
     fn strata_main_error();
     fn strata_str_cmp();
     fn strata_dup();
-    fn strata_regex_match();
-    fn strata_set_regex_engine(e: extern "C" fn(*const u8, i64, *const u8, i64, *mut *const std::ffi::c_char) -> i32);
     fn strata_set_code_host(v: extern "C" fn() -> i64, s: extern "C" fn(*mut i64) -> i64);
     fn strata_host_code_version();
     fn strata_host_code_snapshot();
-    fn strata_trace_call();
-    fn strata_trace_return();
     fn strata_ct_keep();
     fn strata_ct_kept() -> i64;
     fn strata_int_dup();
@@ -90,6 +86,11 @@ unsafe extern "C" {
     fn strata_int_sub();
     fn strata_int_add();
     fn strata_mod();
+    fn strata_int_and();
+    fn strata_int_or();
+    fn strata_int_xor();
+    fn strata_shl();
+    fn strata_shr();
     fn strata_fmod();
     fn strata_finite();
     fn strata_show_int();
@@ -114,8 +115,10 @@ unsafe extern "C" {
     fn strata_str_repeat();
     fn strata_str_case();
     fn strata_str_is();
-    fn strata_dfa_match();
     fn strata_str_ord();
+    fn strata_str_byte_len();
+    fn strata_str_byte_at();
+    fn strata_str_byte_slice();
     fn strata_str_chr();
     fn strata_parse_int();
     fn strata_parse_float();
@@ -144,14 +147,14 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_host_read_file", strata_host_read_file as *const () as usize),
         ("strata_host_code_version", strata_host_code_version as *const () as usize),
         ("strata_host_code_snapshot", strata_host_code_snapshot as *const () as usize),
+        ("strata_host_read_bytes", strata_host_read_bytes as *const () as usize),
         ("strata_host_read_line", strata_host_read_line as *const () as usize),
         ("strata_host_write", strata_host_write as *const () as usize),
         ("strata_pid", strata_pid as *const () as usize),
         ("strata_init", strata_init as *const () as usize),
         ("strata_seed", strata_seed as *const () as usize),
         ("strata_step", strata_step as *const () as usize),
-        ("strata_fuzz_arg", strata_fuzz_arg as *const () as usize),
-        ("strata_fuzz_args", strata_fuzz_args as *const () as usize),
+        ("strata_fuzz_keep", fuzz_keep as *const () as usize),
         ("strata_fuzz", strata_fuzz as *const () as usize),
         ("strata_test_printed", strata_test_printed as *const () as usize),
         ("strata_test_stack", strata_test_stack as *const () as usize),
@@ -169,9 +172,9 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_str_cmp", strata_str_cmp as *const () as usize),
         ("strata_alloc", super::native::strata_alloc as *const () as usize),
         ("strata_dup", strata_dup as *const () as usize),
-        ("strata_regex_match", strata_regex_match as *const () as usize),
-        ("strata_trace_call", strata_trace_call as *const () as usize),
-        ("strata_trace_return", strata_trace_return as *const () as usize),
+        ("strata_trace_arg", trace_arg as *const () as usize),
+        ("strata_trace_call", trace_call as *const () as usize),
+        ("strata_trace_return", trace_return as *const () as usize),
         ("strata_ct_keep", strata_ct_keep as *const () as usize),
         ("strata_int_dup", strata_int_dup as *const () as usize),
         ("strata_int_drop", strata_int_drop as *const () as usize),
@@ -200,6 +203,11 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_int_sub", strata_int_sub as *const () as usize),
         ("strata_int_add", strata_int_add as *const () as usize),
         ("strata_mod", strata_mod as *const () as usize),
+        ("strata_int_and", strata_int_and as *const () as usize),
+        ("strata_int_or", strata_int_or as *const () as usize),
+        ("strata_int_xor", strata_int_xor as *const () as usize),
+        ("strata_shl", strata_shl as *const () as usize),
+        ("strata_shr", strata_shr as *const () as usize),
         ("strata_fmod", strata_fmod as *const () as usize),
         ("strata_finite", strata_finite as *const () as usize),
         ("strata_show_int", strata_show_int as *const () as usize),
@@ -224,8 +232,10 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_str_repeat", strata_str_repeat as *const () as usize),
         ("strata_str_case", strata_str_case as *const () as usize),
         ("strata_str_is", strata_str_is as *const () as usize),
-        ("strata_dfa_match", strata_dfa_match as *const () as usize),
         ("strata_str_ord", strata_str_ord as *const () as usize),
+        ("strata_str_byte_len", strata_str_byte_len as *const () as usize),
+        ("strata_str_byte_at", strata_str_byte_at as *const () as usize),
+        ("strata_str_byte_slice", strata_str_byte_slice as *const () as usize),
         ("strata_str_chr", strata_str_chr as *const () as usize),
         ("strata_parse_int", strata_parse_int as *const () as usize),
         ("strata_parse_float", strata_parse_float as *const () as usize),
@@ -263,6 +273,7 @@ pub fn run_tests(ir: &str, which: &[usize]) -> Result<Vec<TestOutcome>, String> 
     };
     let name = std::ffi::CString::new("test").unwrap();
     let argv = [name.as_ptr()];
+    let _one = one_run();
     unsafe { init(1, argv.as_ptr()) };
     let text = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().to_string();
     let mut out = vec![];
@@ -281,49 +292,141 @@ pub fn run_tests(ir: &str, which: &[usize]) -> Result<Vec<TestOutcome>, String> 
     Ok(out)
 }
 
+/// `--trace`'s table (`llvm::Traced`), set when traced code is compiled.
+static TRACED: std::sync::Mutex<Option<super::Traced>> = std::sync::Mutex::new(None);
+
+pub fn set_traced(t: super::Traced) {
+    *TRACED.lock().unwrap_or_else(|e| e.into_inner()) = Some(t);
+}
+
+thread_local! {
+    /// The calls traced so far that haven't returned, and the arguments of
+    /// the one being entered.
+    static TRACE: std::cell::RefCell<(usize, Vec<String>)> = const { std::cell::RefCell::new((0, Vec::new())) };
+}
+
+/// A traced value, read by its shape, as the code that writes it.
+fn traced_value(id: i64, which: Option<i64>, raw: i64) -> String {
+    let t = TRACED.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(t) = t.as_ref() else { return "?".into() };
+    let Some((_, args, ret)) = t.fns.get(id as usize) else { return "?".into() };
+    let shape = match which {
+        Some(k) => args.get(k as usize).and_then(|s| s.as_ref()),
+        None => ret.as_ref(),
+    };
+    match shape {
+        // SAFETY: the traced code passes a live value of the shape it was compiled with
+        Some(s) => match unsafe { super::native::read(s, &t.named, raw) } {
+            Ok(v) => crate::printer::literal(&v),
+            Err(m) => format!("<{m}>"),
+        },
+        None => "()".into(),
+    }
+}
+
+fn traced_name(id: i64) -> String {
+    TRACED.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|t| t.fns.get(id as usize)).map(|f| f.0.clone()).unwrap_or_default()
+}
+
+/// `strata_trace_arg(id, k, slot)`: argument `k` of the traced call about to start.
+extern "C" fn trace_arg(id: i64, k: i64, raw: i64) {
+    let v = traced_value(id, Some(k), raw);
+    TRACE.with(|t| t.borrow_mut().1.push(v));
+}
+
+/// `strata_trace_call(id)`: a call, on stderr, indented by depth:
+/// `→ total([Line { .. }])`.
+extern "C" fn trace_call(id: i64) {
+    let name = traced_name(id);
+    TRACE.with(|t| {
+        let mut t = t.borrow_mut();
+        let args = std::mem::take(&mut t.1).join(", ");
+        eprintln!("{}→ {name}({args})", "  ".repeat(t.0));
+        t.0 += 1;
+    });
+}
+
+/// `strata_trace_return(id, slot)`: its return and value: `← total: 2100`.
+extern "C" fn trace_return(id: i64, raw: i64) {
+    let name = traced_name(id);
+    let has = TRACED.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|t| t.fns.get(id as usize)).is_some_and(|f| f.2.is_some());
+    let v = if has { format!(": {}", traced_value(id, None, raw)) } else { String::new() };
+    TRACE.with(|t| {
+        let mut t = t.borrow_mut();
+        t.0 = t.0.saturating_sub(1);
+        eprintln!("{}← {name}{v}", "  ".repeat(t.0));
+    });
+}
+
+/// The shapes of each fuzz driver's arguments, by the driver's address.
+static FUZZ_SHAPES: std::sync::Mutex<Option<(std::collections::HashMap<usize, Vec<super::Shape>>, super::Shapes)>> = std::sync::Mutex::new(None);
+
+thread_local! {
+    /// The driver running (its address), and the arguments it made so far.
+    static FUZZING: std::cell::RefCell<(usize, Vec<Expr>)> = const { std::cell::RefCell::new((0, Vec::new())) };
+}
+
+/// `strata_fuzz_keep(k, slot)`: the running driver's argument `k`, just
+/// made, read by its shape (before the call it is passed to can change it).
+extern "C" fn fuzz_keep(k: i64, raw: i64) {
+    let shapes = FUZZ_SHAPES.lock().unwrap_or_else(|e| e.into_inner());
+    let Some((per, named)) = shapes.as_ref() else { return };
+    FUZZING.with(|f| {
+        let mut f = f.borrow_mut();
+        let Some(shape) = per.get(&f.0).and_then(|ss| ss.get(k as usize)) else { return };
+        // SAFETY: the driver passes a live value of the shape it was compiled with
+        let v = unsafe { super::native::read(shape, named, raw) }.unwrap_or_else(|m| Expr::Str(format!("<{m}>")));
+        f.1.push(v);
+    });
+}
+
 /// The fuzz drivers of IR `compile_fuzz` made, compiled for good (the
-/// engine lives as long as the process): their addresses, in order.
-pub fn fuzzers(ir: &str, n: usize) -> Result<Vec<usize>, String> {
+/// engine lives as long as the process): their addresses, in order. `shapes`:
+/// each one's arguments'.
+pub fn fuzzers(ir: &str, shapes: Vec<Vec<super::Shape>>, named: super::Shapes) -> Result<Vec<usize>, String> {
     use std::ffi::c_char;
     let ctx: &'static Context = Box::leak(Box::new(Context::create()));
     // unoptimized: compiling the drivers costs more than optimizing saves on a few hundred cases
     let engine = engine_at(ctx, ir, false)?;
-    let addrs = (0..n).map(|i| engine.get_function_address(&format!("strata.fuzz.{i}")).map_err(|e| e.to_string())).collect::<Result<Vec<_>, _>>()?;
+    let addrs = (0..shapes.len()).map(|i| engine.get_function_address(&format!("strata.fuzz.{i}")).map_err(|e| e.to_string())).collect::<Result<Vec<_>, _>>()?;
     std::mem::forget(engine);
+    *FUZZ_SHAPES.lock().unwrap_or_else(|e| e.into_inner()) = Some((addrs.iter().copied().zip(shapes).collect(), named));
     type Init = unsafe extern "C" fn(i32, *const *const c_char);
     let init: Init = unsafe { std::mem::transmute(strata_init as *const ()) };
     let name = std::ffi::CString::new("verify").unwrap();
     let argv = [name.as_ptr()];
+    let _one = one_run();
     unsafe { init(1, argv.as_ptr()) };
     Ok(addrs)
 }
 
 /// One fuzzing case of the driver at `addr`, seeded, within `budget` steps:
 /// the fault that ended it (kind, message, call stack), if any, and its
-/// arguments as JSON. (Not reentrant: the runtime's state is global.)
-pub fn fuzz_case(addr: usize, seed: u64, budget: i64) -> (Option<(String, String, String)>, String) {
+/// arguments, as the code that writes them.
+pub fn fuzz_case(addr: usize, seed: u64, budget: i64) -> (Option<(String, String, String)>, Vec<Expr>) {
+    let _one = one_run();
     use std::ffi::{c_char, CStr};
     type Fuzz = unsafe extern "C" fn(unsafe extern "C" fn(), i64, i64) -> i32;
     type Text = unsafe extern "C" fn() -> *const c_char;
     type Message = unsafe extern "C" fn() -> *const i64;
-    let (fuzz, kind, message, stack, args): (Fuzz, Text, Message, Text, Text) = unsafe {
+    let (fuzz, kind, message, stack): (Fuzz, Text, Message, Text) = unsafe {
         (
             std::mem::transmute(strata_fuzz as *const ()),
             std::mem::transmute(strata_test_kind as *const ()),
             std::mem::transmute(strata_test_message as *const ()),
             std::mem::transmute(strata_test_stack as *const ()),
-            std::mem::transmute(strata_fuzz_args as *const ()),
         )
     };
     let text = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().to_string();
     let f: unsafe extern "C" fn() = unsafe { std::mem::transmute(addr) };
+    FUZZING.with(|f| *f.borrow_mut() = (addr, vec![]));
     let failed = unsafe { fuzz(f, seed as i64, budget) } != 0;
     let fault = failed.then(|| {
         let m = unsafe { message() };
         let msg = unsafe { std::slice::from_raw_parts(m.add(1) as *const u8, *m as usize) };
         (text(unsafe { kind() }), String::from_utf8_lossy(msg).to_string(), text(unsafe { stack() }))
     });
-    (fault, text(unsafe { args() }))
+    (fault, FUZZING.with(|f| std::mem::take(&mut f.borrow_mut().1)))
 }
 
 /// A fault that ended compiled code: its kind (`Refinement`, `Limit`, ...),
@@ -338,13 +441,21 @@ pub struct Fault {
 /// Run compile-time code (`llvm::compile_comptime`): each `strata.ct.N`,
 /// within `budget` steps, its value read (`native::read`) before the code
 /// is gone; a fault or the budget's end is its message.
-pub fn comptime(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget: i64) -> Result<Vec<Result<crate::interp::Value, Fault>>, String> {
+/// The runtime's state is the process's (its heap, the budget, the message,
+/// what was printed, the values kept): code is run one at a time, so threads
+/// (the tests', the viewer's) don't run into each other's.
+fn one_run() -> std::sync::MutexGuard<'static, ()> {
+    static RUNTIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    RUNTIME.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+pub fn comptime(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget: i64) -> Result<Vec<Result<crate::ast::Expr, Fault>>, String> {
     Ok(run_kept(ir, roots, shapes, budget, false)?.into_iter().map(|(r, _)| r).collect())
 }
 
 /// `comptime`, optionally optimized (`strata run f [args]`: what it runs may
 /// be long), with what each one printed.
-pub fn run_kept(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget: i64, optimize: bool) -> Result<Vec<(Result<crate::interp::Value, Fault>, String)>, String> {
+pub fn run_kept(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget: i64, optimize: bool) -> Result<Vec<(Result<crate::ast::Expr, Fault>, String)>, String> {
     use std::ffi::{c_char, CStr};
     let ctx = Context::create();
     let engine = engine_at(&ctx, ir, optimize)?;
@@ -363,6 +474,7 @@ pub fn run_kept(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget
         )
     };
     let text = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().to_string();
+    let _one = one_run();
     let name = std::ffi::CString::new("comptime").unwrap();
     let argv = [name.as_ptr()];
     unsafe { init(1, argv.as_ptr()) };
@@ -392,27 +504,6 @@ fn engine<'ctx>(ctx: &'ctx Context, ir: &str) -> Result<inkwell::execution_engin
 
 /// `engine`, optimized or not: code run once (compile-time code, a probe)
 /// costs less to compile unoptimized than it would save.
-/// The runtime's engine for patterns built at run time: Rust's `regex`, as
-/// the interpreter's `matches` (the whole string, `^(?:re)$`), each pattern
-/// compiled once.
-extern "C" fn regex_engine(s: *const u8, n: i64, re: *const u8, m: i64, err: *mut *const std::ffi::c_char) -> i32 {
-    thread_local! {
-        static CACHE: std::cell::RefCell<std::collections::HashMap<String, Result<regex::Regex, std::ffi::CString>>> = Default::default();
-    }
-    let (s, re) = unsafe { (std::slice::from_raw_parts(s, n as usize), std::slice::from_raw_parts(re, m as usize)) };
-    let (s, re) = (String::from_utf8_lossy(s), String::from_utf8_lossy(re).to_string());
-    CACHE.with(|c| {
-        let mut c = c.borrow_mut();
-        let r = c.entry(re.clone()).or_insert_with(|| regex::Regex::new(&format!("^(?:{re})$")).map_err(|e| std::ffi::CString::new(format!("bad regex: {e}")).unwrap_or_default()));
-        match r {
-            Ok(r) => r.is_match(&s) as i32,
-            Err(m) => {
-                unsafe { *err = m.as_ptr() };
-                -1
-            }
-        }
-    })
-}
 
 /// std's non-generic functions, compiled once at O2 (`llvm::compile_library`)
 /// and kept in a cache by std's code and this strata: a shared library the
@@ -457,7 +548,7 @@ fn make_std_library() -> Result<StdLibrary, String> {
     if !names_file.exists() {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         // what can be precompiled; what doesn't compile yet is left to each program
-        let resolved = crate::resolve::resolve(std).program;
+        let resolved = super::building_std(|| crate::resolve::resolve(std).program);
         let (env, _) = crate::types::Env::build(&resolved);
         // a function reading a package's setting (`setting("json.unknown_keys")`,
         // written in per program), or calling one that does, stays per program
@@ -560,7 +651,6 @@ extern "C" fn code_snapshot(err: *mut i64) -> i64 {
 }
 
 fn engine_at<'ctx>(ctx: &'ctx Context, ir: &str, optimize: bool) -> Result<inkwell::execution_engine::ExecutionEngine<'ctx>, String> {
-    unsafe { strata_set_regex_engine(regex_engine) };
     unsafe { strata_set_code_host(code_version, code_snapshot) };
     Target::initialize_native(&InitializationConfig::default())?;
     let buf = MemoryBuffer::create_from_memory_range_copy(ir.as_bytes(), "strata");

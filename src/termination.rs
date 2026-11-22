@@ -78,6 +78,15 @@ pub fn impl_label(env: &Env, imp: &ImplDecl, m: &str) -> String {
 /// are names bound outside `e` (the parameters): a local of the same name as
 /// a function hides it (`mut app := Router.new()` inside `fn app`).
 fn calls_of(e: &Expr, env: &Env, locals: &[String], out: &mut BTreeSet<String>) {
+    calls_within(e, env, locals, None, out)
+}
+
+/// `calls_of` in an implementation of trait method `own` (its trait node):
+/// a call of `own` on a field of `self` (`self.inner.len()` in `len`) is
+/// left out. It is recursion on a strictly smaller value (values are finite
+/// trees), whichever implementation it reaches; an implementation that
+/// calls `own` on anything else is a cycle through the trait method still.
+fn calls_within(e: &Expr, env: &Env, locals: &[String], own: Option<&str>, out: &mut BTreeSet<String>) {
     use crate::ast::{walk_expr, walk_pattern, Visit};
     /// The names a pattern binds.
     struct Binds(Vec<String>);
@@ -99,6 +108,14 @@ fn calls_of(e: &Expr, env: &Env, locals: &[String], out: &mut BTreeSet<String>) 
         env: &'a Env,
         out: &'a mut BTreeSet<String>,
         scopes: Vec<Vec<String>>,
+        own: Option<&'a str>,
+    }
+    /// `self.a.b`: a field (of a field) of `self`.
+    fn self_field(e: &Expr) -> bool {
+        match e {
+            Expr::Field(x, _) => matches!(&**x, Expr::Var(v) if v.as_str() == "self") || self_field(x),
+            _ => false,
+        }
     }
     impl Calls<'_> {
         fn local(&self, n: &str) -> bool {
@@ -126,7 +143,13 @@ fn calls_of(e: &Expr, env: &Env, locals: &[String], out: &mut BTreeSet<String>) 
                 // a function called, or passed as a value (it may be called)
                 Expr::Var(n) => self.name(n),
                 Expr::Method(r, m, args) => {
-                    self.name(m);
+                    // `next` on the `FiniteIterator` a `for` runs over (types::lower_iterator_fors):
+                    // the iterator's `len` says it returns, as many times as the loop runs
+                    let finite = matches!(&**r, Expr::Var(v) if v.as_str().starts_with(crate::types::FINITE_ITER_VAR));
+                    let smaller = self.own.is_some_and(|o| trait_node(m) == o) && self_field(r);
+                    if !finite && !smaller {
+                        self.name(m);
+                    }
                     self.expr(r);
                     args.iter().for_each(|a| self.expr(a));
                 }
@@ -179,7 +202,7 @@ fn calls_of(e: &Expr, env: &Env, locals: &[String], out: &mut BTreeSet<String>) 
         }
         fn ty(&mut self, _: &TypeExpr) {}
     }
-    Calls { env, out, scopes: vec![locals.to_vec()] }.expr(e)
+    Calls { env, out, scopes: vec![locals.to_vec()], own }.expr(e)
 }
 
 fn has_stmt(e: &Expr, pred: &dyn Fn(&Stmt) -> bool) -> bool {
@@ -192,9 +215,30 @@ fn has_stmt(e: &Expr, pred: &dyn Fn(&Stmt) -> bool) -> bool {
     found
 }
 
+/// Whether `e` has a `loop` other than one running over a `FiniteIterator`
+/// (`types::lower_iterator_fors`: the variable holding it just before),
+/// which ends once `next` has given the iterator's `len` elements.
+fn any_open_loop(e: &Expr) -> bool {
+    let mut found = false;
+    crate::ast::walk(e, |x| {
+        if let Expr::Block(stmts, _) = x {
+            for (i, s) in stmts.iter().enumerate() {
+                let finite = i > 0 && matches!(&stmts[i - 1], Stmt::Var(v, _, _) if v.as_str().starts_with(crate::types::FINITE_ITER_VAR));
+                found |= matches!(s, Stmt::Loop(_)) && !finite;
+            }
+        }
+    });
+    found
+}
+
 /// The loops of a body: `Ok(how they end)` or `Err(why one may not)`.
 fn loops(env: &Env, f: &FnDecl, solver: Option<&crate::smt::Solver>) -> Result<Vec<String>, String> {
-    if has_stmt(&f.body, &|s| matches!(s, Stmt::Loop(_))) {
+    // a `for` over an `Iterator` is a `loop` calling `next` (types::lower_iterator_fors)
+    let over_iterator = |s: &Stmt| matches!(s, Stmt::Var(v, _, _) if v.as_str().starts_with(crate::types::ITER_VAR));
+    if has_stmt(&f.body, &over_iterator) {
+        return Err("it has a `for` over an `Iterator` that isn't a `FiniteIterator`, which may never end (only `for` loops over lists, sets, dicts and finite iterators, and `while` loops whose bound goes down, are shown to end)".into());
+    }
+    if any_open_loop(&f.body) {
         return Err("it has a `loop` (only `for` loops, and `while` loops whose bound goes down, are shown to end)".into());
     }
     if !has_stmt(&f.body, &|s| matches!(s, Stmt::While(..))) {
@@ -617,7 +661,7 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
             let label = impl_label(env, imp, &tm.decl.name);
             let mut calls = BTreeSet::new();
             let params: Vec<String> = decl.params.iter().map(|p| p.name.to_string()).collect();
-            calls_of(&decl.body, env, &params, &mut calls);
+            calls_within(&decl.body, env, &params, Some(&trait_node(&tm.decl.name)), &mut calls);
             let d = crate::verify::for_impl(env, imp, decl);
             nodes.insert(label.clone(), Node { decl: None, calls, loops: loops(env, &d, solver) });
             nodes.entry(trait_node(&tm.decl.name)).or_insert(Node { decl: None, calls: BTreeSet::new(), loops: Ok(vec![]) }).calls.insert(label);
@@ -653,7 +697,9 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
             Err(e) => Err(e.clone()),
             Ok(hows) => {
                 if let Some(other) = mutual(name) {
-                    Err(format!("it is recursive through `{}`", other.trim_start_matches("trait method ")))
+                    // a trait method by its short name (`next`, not `std.prelude.next`)
+                    let shown = other.strip_prefix("trait method ").map_or(other.as_str(), crate::names::short);
+                    Err(format!("it is recursive through `{shown}`"))
                 } else if n.calls.contains(name) {
                     match n.decl.as_ref().and_then(|f| structural(env, f)) {
                         Some(p) => Ok(format!("each recursive call gets a smaller piece of `{p}`")),
@@ -692,7 +738,8 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
                     Termination::Proven { .. } => {}
                     Termination::Assumed { by } => assumed.extend(by),
                     Termination::Unknown { .. } => {
-                        let shown = c.trim_start_matches("trait method ");
+                        // a trait method by its short name (`next`, not `std.prelude.next`)
+                        let shown = c.strip_prefix("trait method ").map_or(c.as_str(), crate::names::short);
                         t = Termination::Unknown { reason: format!("it calls `{shown}`, which may not terminate") };
                         break;
                     }

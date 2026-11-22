@@ -1,0 +1,10 @@
+Usage: opts [OPTIONS] [names...]
+
+Arguments:
+  [names...]
+
+Options:
+  --count <Int>  How many.
+  -h, --help     Show this help.
+
+--- exit 0

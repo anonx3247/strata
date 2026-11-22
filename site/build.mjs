@@ -31,6 +31,9 @@ const clean = s => s.replaceAll(WORK, '~').replace(/\s+$/, '');
 
 /** A viewer on a package, answering /api/state and /api/changes. */
 async function viewer(cwd, label = '~/' + cwd.split('/').pop()) {
+  // a port nothing answers on yet: the user may have viewers of their own running
+  const answers = q => { try { execFileSync('curl', ['-sf', '-o', '/dev/null', `http://127.0.0.1:${q}/`], { stdio: 'ignore' }); return true; } catch (e) { return e.status !== 7; } };
+  while (answers(port)) port++;
   const p = port++;
   const child = spawn(STRATA, ['ui', '--port', String(p)], { cwd, stdio: 'ignore' });
   for (let i = 0; i < 50; i++) {
@@ -48,6 +51,8 @@ async function viewer(cwd, label = '~/' + cwd.split('/').pop()) {
       for (const s of all.steps || []) changes[s.id] = await get(`/api/changes?step=${s.id}`);
       return { state, changes };
     },
+    /** Only the codebase, without the Changes view. */
+    async state() { return get('/api/state'); },
     stop() { child.kill(); },
   };
 }
@@ -71,12 +76,24 @@ function emit(name, value) {
   console.log(`  data/${name}.js  ${(JSON.stringify(value).length / 1024).toFixed(0)} KB`);
 }
 
+/** The codebase as the page draws it: each definition, what it uses, its status, its source. */
+function graph(state) {
+  const names = new Set(state.decls.map(d => d.name));
+  return state.decls.map(d => ({
+    name: d.name, label: d.label, kind: d.kind, hash: d.hash, interface: d.interface_hash,
+    deps: [...new Set(d.deps)].filter(n => names.has(n) && n !== d.name),
+    holes: d.holes.length, verdict: d.verdict?.status ?? null,
+    args: d.verdict?.args ?? null, message: d.verdict?.message ?? null,
+    text: d.text?.['2'] ?? d.text?.['1'] ?? '',
+  }));
+}
+
 // ───────────────────────── math: the verifier's tour ─────────────────────────
 {
   const dir = pkg('math', [join(EX, 'math.strata')]);
   const verify = run(dir, ['verify']);
   const v = await viewer(dir);
-  emit('math', { verify: clean(verify.out), source: run(dir, ['render']).out, ...await v.snap() });
+  emit('math', { verify: clean(verify.out), graph: graph((await v.snap()).state) });
   v.stop();
 }
 
@@ -117,7 +134,7 @@ const texts = []; // [before, after] of each step, as text
   await step({ who: 'you', title: 'A codebase, checked and verified', sel: 'refund', cmd: 'strata verify', args: ['verify'],
     say: 'An order system: refinement types, a `Db` capability, contracts. Everything proven, except `refund`: it is a hole.' });
   await step({ who: 'agent', title: 'The agent asks what is left to do', sel: 'refund', args: ['holes'],
-    say: 'A hole is a precise task: the type to produce, what is in scope, and the contract the code must meet.' });
+    say: 'A hole comes with what is needed to fill it: the type to produce, what is in scope, and the contract the code must meet.' });
   await step({ who: 'agent', title: 'It fills the hole', sel: 'refund', args: ['edit', '-m', 'refund policy: fee of 5.00'], cmd: 'strata edit -m "refund policy: fee of 5.00"',
     input: `
 /// Refund what was paid, minus a 5.00 handling fee.
@@ -134,7 +151,7 @@ test "refund keeps the handling fee" {
   line := Line { sku: "tea", qty: 2, unit_price: 450 }
   assert refund(Pending { id: "ord_abc123", lines: [line] }) == 400
 }
-`, say: 'With a test, as a careful agent would. The edit type-checks against the whole codebase and is committed. Only the implementation changed, so nothing that uses `refund` needs another look.' });
+`, say: 'With a test, as a careful agent would. The edit is checked against everything it touches, then committed. Only the implementation changed, so nothing that uses `refund` needs another look.' });
   await step({ who: 'agent', title: 'The tests pass', sel: 'refund', args: ['test'],
     say: 'Every test passes. They check the orders someone thought of: a 9.00 order, refunded 4.00.' });
   await step({ who: 'agent', title: 'Verification finds the bug', sel: 'refund', args: ['verify', 'refund'],
@@ -150,7 +167,7 @@ fn refund(o: Order) -> Cents
     Cancelled { .. } => 0,
   }
 }
-`, then: [['verify', 'refund']], say: 'Fixed, then `strata verify`: proven for every order, not just the ones a test thought of.' });
+`, then: [['verify', 'refund']], say: 'Fixed, then `strata verify`: proven for every order.' });
   await step({ who: 'agent', title: 'A breaking change becomes holes', sel: 'refund', args: ['edit', '-m', 'coupons'], cmd: 'strata edit -m "coupons"',
     input: `
 fn total(lines: NonEmpty[Line], coupon: Cents) -> Cents {
@@ -210,7 +227,9 @@ fn discount(amount: Cents) -> Cents {
   const at = t => session.findIndex(x => x.title === t);
   const couponsDiff = lineDiff(texts[at('A breaking change becomes holes')][0], texts[at('It fills them, and closes the change')][1]);
   emit('orders', { couponsDiff, levels, trace: clean(trace.out), badInput: clean(badInput.out), holes, merge, source: levels[3] });
-  emit('session', session);
+  // the page draws each step's codebase as a graph; it needs the Changes view only for the diffs it shows
+  const DIFFS = ['It fills them, and closes the change', 'A rename is one change', 'It fixes it, and proves it'];
+  emit('session', session.map(x => ({ ...x, state: undefined, changes: DIFFS.includes(x.title) ? x.changes : undefined, graph: graph(x.state) })));
   // the docs' tour of the viewer: a few moments of the same session
   const pickSnap = (t, keep = []) => { const x = session.find(y => y.title === t); return { state: x.state, changes: Object.fromEntries(Object.entries(x.changes).filter(([k]) => k === 'all' || keep.includes(k))) }; };
   const last = session.at(-1), stepId = t => String(last.changes.all.steps.find(s => s.title === t).id);
@@ -250,35 +269,34 @@ fn checkout(lines: NonEmpty[Line]) -> Cents {
 `;
   const steps = [];
   const texts = [];
-  /** One step: a command, what was piped into it, and the commands run right after it. */
-  function step(s) {
+  const cv = await viewer(dir);
+  /** One step: a command, what was piped into it, and the commands run right after it; the codebase after it. */
+  async function step(s) {
     const before = run(dir, ['render']).out;
     const r = run(dir, s.args, s.input);
     let out = clean(r.out);
     for (const t of s.then || []) out += '\n\n$ strata ' + t.join(' ') + '\n' + clean(run(dir, t).out);
     const after = run(dir, ['render']).out;
     texts.push([before, after]);
-    steps.push({ ...s, args: undefined, then: undefined, cmd: s.cmd ?? `strata ${s.args.join(' ')}`, input: s.input?.trim(), out, linediff: lineDiff(before, after) });
+    steps.push({ ...s, args: undefined, then: undefined, cmd: s.cmd ?? `strata ${s.args.join(' ')}`, input: s.input?.trim(), out, linediff: lineDiff(before, after), graph: graph(await cv.state()) });
     console.log(`  contract ${steps.length}: ${s.title}`);
   }
-  step({ title: 'Today, checkout is proven', g: { checkout: 'pass' }, args: ['edit', '-m', 'checkout'], cmd: 'strata edit -m "checkout"', then: [['verify', 'checkout']],
+  await step({ title: 'Today, checkout is proven', g: { checkout: 'pass' }, args: ['edit', '-m', 'checkout'], cmd: 'strata edit -m "checkout"', then: [['verify', 'checkout']],
     input: '/// What the customer pays: the total, with the discount applied.\nfn checkout(lines: NonEmpty[Line]) -> Cents {\n  discount(total(lines))\n}\n',
     say: '`checkout` applies `discount` to the total. Verified: proven.' });
-  step({ title: 'Tighten discount’s contract', g: { discount: 'changed', checkout: 'recheck', totals: 'recheck', lit: true }, args: ['edit', '-m', 'discount only from 1.00'], cmd: 'strata edit -m "discount only from 1.00"',
+  await step({ title: 'Tighten discount’s contract', g: { discount: 'changed', checkout: 'recheck', totals: 'recheck', lit: true }, args: ['edit', '-m', 'discount only from 1.00'], cmd: 'strata edit -m "discount only from 1.00"',
     input: discount('amount: Cents', true),
     say: 'One new line: `requires amount >= 100`. The interface changed, so the edit names what depends on it and must be re-checked.' });
-  step({ title: 'The tests still pass', g: { discount: 'changed', checkout: 'recheck', totals: 'pass' }, args: ['test'],
-    say: 'The only test calls `discount(20000)`. No test tried a basket under 1.00.' });
-  step({ title: 'Verification finds the caller that breaks', g: { discount: 'changed', checkout: 'fail', totals: 'pass', bad: true }, args: ['verify', 'checkout'],
-    say: '`checkout` is checked against the new contract, and the input that breaks it comes with the verdict: a basket worth 0.00.' });
-  step({ title: 'Fix the caller', g: { discount: 'changed', checkout: 'pass', totals: 'pass' }, args: ['edit', '-m', 'checkout: no discount under 1.00'], cmd: 'strata edit -m "checkout: no discount under 1.00"', then: [['verify', 'checkout']],
-    input: checkout('discount(t)'), say: 'Only discount amounts of 1.00 or more. Proven again.' });
-  step({ title: 'Add a parameter: the callers become holes', g: { discount: 'changed', checkout: 'hole', totals: 'hole', lit: true }, args: ['edit', '-m', 'discount: members'], cmd: 'strata edit -m "discount: members"',
+  await step({ title: 'Verification finds the caller that breaks', g: { discount: 'changed', checkout: 'fail', totals: 'pass', bad: true }, args: ['verify', 'checkout'],
+    say: '`checkout` is checked against the new contract, and the verdict comes with an input that breaks it: a basket under 1.00.' });
+  await step({ title: 'Fix the caller', g: { discount: 'changed', checkout: 'pass', totals: 'pass' }, args: ['edit', '-m', 'checkout: no discount under 1.00'], cmd: 'strata edit -m "checkout: no discount under 1.00"', then: [['verify', 'checkout']],
+    input: checkout('discount(t)'), say: '`checkout` now applies the discount only from 1.00. Proven again.' });
+  await step({ title: 'Add a parameter: the callers become holes', g: { discount: 'changed', checkout: 'hole', totals: 'hole', lit: true }, args: ['edit', '-m', 'discount: members'], cmd: 'strata edit -m "discount: members"',
     input: discount('amount: Cents, member: Bool', true),
     say: '`discount` takes a `member` flag. Its two calls no longer check: rather than refusing the edit, Strata turns them into holes in a pending change.' });
-  step({ title: 'See where the holes are', g: { discount: 'changed', checkout: 'hole', totals: 'hole' }, args: ['holes'],
-    say: 'Each hole says what it was, why it broke, and what is in scope to fill it: a precise task, for you or an agent.' });
-  step({ title: 'Fill them, and close the change', g: { discount: 'changed', checkout: 'recheck', totals: 'recheck' }, args: ['edit'], cmd: 'strata edit', then: [['done']],
+  await step({ title: 'See where the holes are', g: { discount: 'changed', checkout: 'hole', totals: 'hole' }, args: ['holes'],
+    say: 'Each hole says what it was, why it broke, and what is in scope to fill it, for you or an agent.' });
+  await step({ title: 'Fill them, and close the change', g: { discount: 'changed', checkout: 'recheck', totals: 'recheck' }, args: ['edit'], cmd: 'strata edit', then: [['done']],
     input: checkout('discount(t, false)') + `
 test "totals" {
   lines := [
@@ -289,13 +307,496 @@ test "totals" {
   assert discount(20000, false) == 18000
 }
 `, say: '`strata done` records it all as one change, one commit: the new parameter, and the two calls that follow it.' });
-  step({ title: 'Verify everything', g: { discount: 'pass', checkout: 'pass', totals: 'pass' }, args: ['verify'],
+  await step({ title: 'Verify everything', g: { discount: 'pass', checkout: 'pass', totals: 'pass' }, args: ['verify'],
     say: 'Every contract holds again, for every input.' });
   const at = t => steps.findIndex(x => x.title === t);
   const paramDiff = lineDiff(texts[at('Add a parameter: the callers become holes')][0], texts[at('Fill them, and close the change')][1]);
+  emit('contract', { steps, paramDiff, changes: (await cv.snap()).changes });
+  cv.stop();
+}
+
+// ─────────────── a rename in a larger codebase: what a line diff makes of it ───────────────
+{
+  const dir = join(WORK, 'tasks');
+  cpSync(join(EX, 'tasks'), dir, { recursive: true });
+  git(dir, 'init', '-q', '-b', 'main');
+  git(dir, 'config', 'user.name', 'agent');
+  git(dir, 'config', 'user.email', 'agent@example.com');
+  git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'tasks');
+  const mods = ['core', 'memory', 'print', 'sim'];
+  const text = () => mods.map(m => run(dir, ['render', m]).out).join('\n');
+  const before = text();
+  const r = run(dir, ['rename', 'Task', 'Job']);
+  if (r.code) throw new Error('rename Task Job: ' + r.out);
+  const diff = lineDiff(before, text()).replace('a/main.strata', 'a/tasks').replace('b/main.strata', 'b/tasks');
   const v = await viewer(dir);
-  emit('contract', { steps, paramDiff, ...await v.snap() });
+  const snap = await v.snap();
   v.stop();
+  const step = snap.changes.all.steps.at(-1).id;
+  emit('rename', { cmd: 'strata rename Task Job', out: clean(r.out), diff, changes: { all: snap.changes.all, [step]: snap.changes[step] }, step });
+}
+
+// ─────────────── what the language does now: small programs, stored, run and verified ───────────────
+/** Top-level definitions of rendered source by name (with their doc comments), in source order. */
+function defs(src, names) {
+  const chunks = [];
+  for (const l of src.trimEnd().split('\n')) {
+    if (!chunks.length || (l && !/^[\s}]/.test(l) && chunks.at(-1).at(-1) === '' && !chunks.at(-1).every(x => x === '' || x.startsWith('//')))) chunks.push([]);
+    chunks.at(-1).push(l);
+  }
+  const name = c => (c.find(l => !l.startsWith('//') && l) || '').replace(/^(pub |extern c |capability |mock |distinct )*/, '');
+  return chunks.filter(c => names.some(n => name(c).startsWith(n))).map(c => c.join('\n').trim()).join('\n\n');
+}
+/** `strata verify`'s lines about the package's own definitions (std's derived helpers left out). */
+const own = o => {
+  const out = []; let skip = false;
+  for (const l of o.out.split('\n')) {
+    if (/^\S/.test(l)) skip = /^[✓✗~≈○-] std\./.test(l);
+    if (!skip) out.push(l);
+  }
+  return { ...o, out: out.join('\n') };
+};
+{
+  const F = {};
+  const ex = name => { const dir = join(WORK, 'ex-' + name); cpSync(join(EX, name), dir, { recursive: true }); return dir; };
+  const out = (dir, args, input) => { const r = run(dir, args, input); return { cmd: `strata ${args.join(' ')}`, out: clean(r.out), code: r.code }; };
+  /** A small package: the program stored with `strata edit` (which checks it), then shown as stored. */
+  const file = (name, text) => {
+    const dir = pkg('f-' + name, []);
+    const r = run(dir, ['edit', '-m', name], text);
+    if (r.code) throw new Error(`${name} doesn't check:\n${r.out}`);
+    return { dir, src: run(dir, ['render']).out.trimEnd(), at: (...args) => out(dir, args) };
+  };
+  const unfile = o => o;
+
+  // capabilities: main names what it touches; the rest takes any implementation
+  {
+    const dir = ex('wc');
+    const src = run(dir, ['render']).out;
+    writeFileSync(join(dir, 'notes.txt'), 'one two\nthree\n');
+    F.capabilities = {
+      main: defs(src, ['fn main(']), wc: defs(src, ['fn wc(']), test: defs(src, ['test "counts each file']),
+      test_out: out(dir, ['test']), run_out: out(dir, ['run', '--', '--only', 'words', 'notes.txt']), verify_out: own(out(dir, ['verify'])),
+    };
+  }
+  // mocks: a fake declared as a type; what it leaves out is generated
+  {
+    const f = file('mocks', `use std.fs.{Files, FsError}
+
+/// Save a note, then read it back.
+fn round_trip(mut fs: Files, text: String) -> Result[String, FsError] {
+  mut fs.write("note.txt", text)!
+  fs.read("note.txt")
+}
+
+/// An in-memory disk, for tests.
+mock MemDisk = { files: Dict[String, String] = Dict[String, String] {} }
+
+impl Files for MemDisk {
+  fn read(self, path: String) -> Result[String, FsError] {
+    Ok(get(self.files, path) ?? "")
+  }
+
+  fn write(mut self, path: String, text: String) -> Result[(), FsError] {
+    self.files = insert(self.files, path, text)
+    Ok(())
+  }
+}
+
+test "saving then loading" {
+  mut fs := MemDisk {}
+  assert round_trip(mut fs, "hi") == Ok("hi")
+}
+`);
+    const main = 'fn main() {\n  mut fs := MemDisk {}\n  print(round_trip(mut fs, "hi"))\n}\n';
+    F.mocks = { src: f.src, test_out: f.at('test'), verify_out: f.at('verify'), refused: { cmd: 'strata edit', input: main.trim(), ...out(f.dir, ['edit'], main), cmd: 'strata edit' } };
+  }
+  // derive: code written by code, at compile time
+  {
+    const dir = ex('hello');
+    const src = run(dir, ['render']).out;
+    const json = file('json', `use std.json.{Json, parse, stringify}
+
+type Signup = {
+  email: String where contains(it, "@"),
+  age: Int where it >= 13,
+  nickname: Option[String],
+}
+
+derive Json for Signup
+
+/// Read a signup from JSON text: parsed, then checked against the type.
+fn read(text: String) -> String {
+  json := parse(text) except e {
+    return f"not JSON: {e}"
+  }
+  match Signup.decode(json) {
+    Ok(s) => f"read: {s}",
+    Err(e) => f"refused: {e}",
+  }
+}
+
+/// Write a signup as JSON text.
+fn write(s: Signup) -> String {
+  match s.encode() {
+    Ok(json) => stringify(json),
+    Err(e) => f"can't write: {e}",
+  }
+}
+
+fn main() {
+  text := write(Signup { email: "ada@example.com", age: 36, nickname: Some("ada") })
+  print(f"written: {text}")
+  print(read(text))
+  print(read("{\\"email\\": \\"bob@example.com\\", \\"age\\": 9}"))
+  print(read("{\\"email\\": \\"bob\\", \\"age\\": 40}"))
+}
+`);
+    F.derive = {
+      options: defs(src, ['type Options', 'derive CommandLine']), main: defs(src, ['fn main(']),
+      help: out(dir, ['run', '--', '--help']), run_out: out(dir, ['run', '--', 'Ada', '--loud', '--times', '2']), bad: out(dir, ['run', '--', '--times', '11']),
+      json: json.src.replace(/^use [^\n]*\n\n/, ''), json_run: unfile(json.at('run')),
+    };
+  }
+  // comptime, and C called from Strata
+  {
+    const f = file('comptime', `fn fib(n: Natural) -> Natural {
+  if n < 2 {
+    n
+  } else {
+    fib(n - 1) + fib(n - 2)
+  }
+}
+
+/// Worked out while compiling: the program only carries the number.
+fn answer() -> Natural {
+  comptime fib(30)
+}
+
+fn main() {
+  print(answer())
+}
+`);
+    const dir = ex('fuzzy');
+    F.native = {
+      comptime: f.src, comptime_run: unfile(f.at('run')),
+      externs: run(dir, ['render', 'text']).out.trimEnd(),
+      fuzzy_run: out(dir, ['run', '--', '--word', 'recieve']), fuzzy_verify: own(out(dir, ['verify'])),
+    };
+  }
+  // std written in Strata: the regex parser
+  {
+    const f = file('regex', `use std.regex.{parse, show}
+
+fn main() {
+  match parse("(?i)ab|ac") {
+    Ok(re) => print(show(re)),
+    Err(e) => print(f"error: {e}"),
+  }
+}
+`);
+    F.std = { src: f.src, run_out: unfile(f.at('run')) };
+  }
+  for (const [k, v] of Object.entries(F)) console.log(`  feature ${k}`);
+  emit('features', F);
+}
+
+// ─────────────── verification, on small programs ───────────────
+{
+  /** A small package from text: stored with `strata edit`, which checks it. */
+  const prog = (name, text) => {
+    const dir = pkg('v-' + name, []);
+    const r = run(dir, ['edit', '-m', name], text);
+    if (r.code) throw new Error(`${name} doesn't check:\n${r.out}`);
+    return dir;
+  };
+  const out = (dir, args, input) => { const r = run(dir, args, input); return { cmd: `strata ${args.join(' ')}`, out: clean(r.out), code: r.code }; };
+  const V = {};
+  // what a contract says, and what the solver does with it
+  {
+    const dir = prog('contracts', `type Cents = Int
+  where it >= 0
+
+type Percent = Int
+  where 0 <= it && it <= 100
+
+/// A price after taking a percentage off.
+fn discount(price: Cents, pct: Percent) -> Cents
+  requires price >= 100
+  ensures it <= price {
+  price - price * pct / 100
+}
+
+/// What the customer pays.
+fn checkout(price: Cents) -> Cents {
+  if price >= 100 {
+    discount(price, 10)
+  } else {
+    price
+  }
+}
+
+/// Half price, on everything.
+fn sale(price: Cents) -> Cents {
+  discount(price, 50)
+}
+`);
+    const src = run(dir, ['render']).out;
+    V.contracts = { types: defs(src, ['type Cents', 'type Percent']), discount: defs(src, ['fn discount']), callers: defs(src, ['fn checkout', 'fn sale']), verify: out(dir, ['verify']) };
+  }
+  // tests that pass, and the detail they missed
+  {
+    const dir = prog('shares', `type Cents = Int
+  where it >= 0
+
+/// Split a bill between people.
+fn shares(total: Cents, people: Positive) -> List[Cents] {
+  [total / people for _ in 0..people]
+}
+
+test "splits a bill evenly" {
+  assert shares(900, 3) == [300, 300, 300]
+}
+
+test "one person pays it all" {
+  assert shares(1234, 1) == [1234]
+}
+
+test "everyone pays, and it adds up" {
+  s := shares(1000, 4)
+  assert len(s) == 4
+  assert sum(s) == 1000
+}
+`);
+    const src = run(dir, ['render']).out;
+    const tests = defs(src, ['test ']);
+    const t = out(dir, ['test']);
+    const withContract = `/// Split a bill between people. The shares add up to the total.
+fn shares(total: Cents, people: Positive) -> List[Cents]
+  ensures sum(it) == total {
+  [total / people for _ in 0..people]
+}
+`;
+    const e1 = out(dir, ['edit', '-m', 'shares: say what must hold'], withContract);
+    const v1 = out(dir, ['verify', 'shares']);
+    const fixed = `/// Split a bill between people. The shares add up to the total.
+fn shares(total: Cents, people: Positive) -> List[Cents]
+  ensures sum(it) == total {
+  extra := total % people
+  [total / people + (if i < extra { 1 } else { 0 }) for i in 0..people]
+}
+`;
+    out(dir, ['edit', '-m', 'shares: spread the remainder'], fixed);
+    const v2 = out(dir, ['verify', 'shares']);
+    V.shares = { code: defs(src, ['fn shares']), tests, test: t, contract: run(dir, ['view', 'shares', '--level', '2']).out.trim() && withContract.trim(), verify: v1, fixed: fixed.trim(), verify_fixed: v2 };
+    if (e1.code) throw new Error('shares contract: ' + e1.out);
+  }
+  // four tests, or one line
+  {
+    const dir = prog('points', `/// Loyalty points earned on an order: 1 per euro, at most 500.
+fn points(cents: Int where it >= 0) -> Int {
+  min(cents / 100, 500)
+}
+
+test "no points under a euro" {
+  assert points(99) == 0
+}
+
+test "one point per euro" {
+  assert points(1234) == 12
+}
+
+test "capped at 500" {
+  assert points(1000000) == 500
+}
+
+test "never negative" {
+  assert points(0) >= 0
+}
+`);
+    const src = run(dir, ['render']).out;
+    const t = out(dir, ['test']);
+    const one = `/// Loyalty points earned on an order: 1 per euro, at most 500.
+fn points(cents: Int where it >= 0) -> Int
+  ensures 0 <= it && it <= 500 && it <= cents / 100 {
+  min(cents / 100, 500)
+}
+`;
+    out(dir, ['edit', '-m', 'points: say it once'], one);
+    V.points = { tests: src.trim(), test: t, one: one.trim(), verify: out(dir, ['verify', 'points']) };
+  }
+  // text in, a tree stored, text out
+  {
+    const dir = pkg('edits', [join(EX, 'orders.strata')]);
+    const sloppy = 'fn line_total(l:Line)->Cents ensures it==l.qty*l.unit_price {l.unit_price*l.qty}';
+    const bad = 'fn line_total(l: Line) -> Cents {\n  l.unit_price * l.sku\n}';
+    V.edit = {
+      sloppy, stored: { ...out(dir, ['edit', '-m', 'line_total: say what it is'], sloppy + '\n'), cmd: 'strata edit -m "line_total: say what it is"' },
+      rendered: run(dir, ['view', 'line_total', '--level', '2']).out.trim(),
+      bad, refused: { ...out(dir, ['edit'], bad + '\n'), cmd: 'strata edit' },
+    };
+  }
+  // comprehensions and friends
+  {
+    const dir = prog('lines', `type Line = { sku: String, qty: Int, price: Int }
+
+fn main() {
+  lines := [
+    Line { sku: "tea", qty: 2, price: 450 },
+    Line { sku: "cup", qty: 1, price: 1200 },
+    Line { sku: "pot", qty: 0, price: 3000 },
+  ]
+  ordered := [l.sku for l in lines where l.qty > 0]
+  totals := Dict { l.sku: l.qty * l.price for l in lines }
+  best := sort_by(lines, l -> -l.qty * l.price)[0]
+  print(f"ordered: {ordered}")
+  print(f"totals: {totals}")
+  print(f"biggest line: {best.sku}, {float(best.qty * best.price) / 100.0:.2}")
+}
+`);
+    V.sugar = { src: run(dir, ['render']).out.trim(), run: out(dir, ['run']) };
+  }
+  // loops and termination, on examples/math.strata
+  {
+    const dir = pkg('v-math', [join(EX, 'math.strata')]);
+    const src = run(dir, ['render']).out;
+    V.loops = {};
+    for (const [k, f] of [['ackermann', 'ackermann'], ['isqrt', 'isqrt'], ['collatz', 'collatz_steps']])
+      V.loops[k] = { code: defs(src, [`fn ${f}(`]), verify: out(dir, ['verify', f, '--checks']) };
+  }
+  // more of the language: data types, traits, values, comptime
+  {
+    const L = {};
+    const one = (name, text) => { const dir = prog(name, text); return { dir, src: run(dir, ['render']).out.trim(), run: out(dir, ['run']) }; };
+    const refused = (dir, text) => ({ ...out(dir, ['edit'], text), cmd: 'strata edit', input: text.trim() });
+    const a = one('shapes', `/// A shape: one of three variants, each with its own fields.
+type Shape =
+  | Circle { radius: Positive }
+  | Rect { w: Positive, h: Positive }
+  | Point
+
+type Percent = Int
+  where 0 <= it && it <= 100
+
+fn area(s: Shape) -> Natural {
+  match s {
+    Circle { radius } => 3 * radius * radius,
+    Rect { w, h } => w * h,
+    Point => 0,
+  }
+}
+
+fn grade(score: Percent) -> String {
+  match score {
+    where it >= 90 => "A",
+    where it >= 70 => "B",
+    _ => "C",
+  }
+}
+
+/// A percentage from text, or the reason it isn't one.
+fn percent(text: String) -> Result[Percent, String] {
+  n := parse_int(text) or { return Err(f"not a number: {text}") }
+  if 0 <= n && n <= 100 {
+    Ok(n)
+  } else {
+    Err(f"out of range: {n}")
+  }
+}
+
+fn main() {
+  print([area(s) for s in [Circle { radius: 2 }, Rect { w: 3, h: 4 }, Point]])
+  print(grade(percent("93") !! 0))
+  print(percent("150"))
+  print(percent("ten"))
+}
+`);
+    L.adt = { src: a.src, run: a.run, refused: refused(a.dir, `fn area(s: Shape) -> Natural {
+  match s {
+    Circle { radius } => 3 * radius * radius,
+    Rect { w, h } => w * h,
+  }
+}
+`) };
+    const t = one('priced', `/// Anything with a price, in cents.
+trait Priced {
+  fn price(self) -> Natural
+
+  /// A default method: every implementation gets it.
+  fn label(self) -> String {
+    f"{self.price() / 100}.{self.price() % 100:02}"
+  }
+}
+
+type Tea = { grams: Positive }
+
+type Cup = { color: String }
+
+impl Priced for Tea {
+  fn price(self) -> Natural {
+    self.grams * 5
+  }
+}
+
+impl Priced for Cup {
+  fn price(self) -> Natural {
+    1200
+  }
+}
+
+/// Any type that implements \`Priced\`.
+fn receipt(item: Priced) -> String {
+  f"{item.label()} EUR"
+}
+
+fn main() {
+  print(receipt(Tea { grams: 250 }))
+  print(receipt(Cup { color: "blue" }))
+  let basket: List[Priced] = [Tea { grams: 100 }, Cup { color: "red" }]
+  print(sum([x.price() for x in basket]))
+}
+`);
+    L.traits = { src: t.src, run: t.run };
+    const m = one('cart', `type Cart = { items: List[String] }
+
+/// Changes the caller's cart: the parameter says \`mut\`, and so does every call.
+fn add(mut cart: Cart, item: String) {
+  cart.items = push(cart.items, item)
+}
+
+fn main() {
+  a := Cart { items: ["tea"] }
+  mut b := a
+  add(mut b, "cup")
+  print(a.items)
+  print(b.items)
+}
+`);
+    L.values = { src: m.src, run: m.run, refused: refused(m.dir, `fn main() {
+  mut b := Cart { items: [] }
+  add(b, "pot")
+  print(b.items)
+}
+`) };
+    const c = one('tables', `/// Primes below 60, found while compiling: the program only holds the list.
+fn small_primes() -> List[Int] {
+  comptime [n for n in 2..60 where all(2..n, d -> n % d != 0)]
+}
+
+/// A table of the squares of 0 to 12, built while compiling.
+fn squares() -> List[Int] {
+  comptime [n * n for n in 0..=12]
+}
+
+fn main() {
+  print(small_primes())
+  print(squares()[7])
+}
+`);
+    L.comptime = { src: c.src, run: c.run };
+    V.lang = L;
+  }
+  emit('verify', V);
 }
 
 // ─────────────── the docs, as pages ───────────────
@@ -303,15 +804,18 @@ test "totals" {
 function markdown(md) {
   const esc = t => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const PAGES = { 'learn-strata.md': 'learn-strata', 'verification.md': 'verification', 'tools.md': 'tools' };
+  // a file of the repository that isn't one of these pages: on GitHub, so the site can be hosted alone
+  const REPO = 'https://github.com/anonx3247/strata/blob/main/';
+  const repoFile = href => REPO + new URL(href, 'https://repo/docs/').pathname.slice(1);
   const inline = t => {
     const codes = [];
     t = t.replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`);
     t = esc(t)
-      .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => `<img alt="${alt}" src="${src.startsWith('http') ? src : '../docs/' + src}">`)
+      .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => `<img alt="${alt}" src="${src.startsWith('http') ? src : repoFile(src) + '?raw=true'}">`)
       .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, txt, href) => {
         const [f, frag] = href.split('#');
         const page = PAGES[f.replace(/^\.\.?\/(docs\/)?/, '')];
-        const to = page ? `docs.html?d=${page}${frag ? '#' + frag : ''}` : href.startsWith('http') || href.startsWith('#') ? href : '../docs/' + href;
+        const to = page ? `docs.html?d=${page}${frag ? '#' + frag : ''}` : href.startsWith('http') || href.startsWith('#') ? href : repoFile(href);
         return `<a href="${to}">${txt}</a>`;
       })
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
@@ -408,9 +912,8 @@ addEventListener('keydown', e => {
 parent.postMessage({ type: 'strata-ready' }, '*');
 </script>
 `;
-  // the page is dark: give the viewer its dark theme whatever the system's
-  const dark = page.match(/@media \(prefers-color-scheme: dark\) \{\s*(:root \{[^}]*\})/)[1];
-  const themed = page.replace('</style>', `/* site: always dark */\n${dark}\n</style>`);
+  // the viewer is dark, in the site's colours, already
+  const themed = page;
   const i = themed.indexOf('<script>');
   const j = themed.lastIndexOf('</body>');
   writeFileSync(join(SITE, 'viewer.html'), '<!-- generated by site/build.mjs from src/ui/index.html: do not edit -->\n' + themed.slice(0, i) + before + themed.slice(i, j) + after + themed.slice(j));

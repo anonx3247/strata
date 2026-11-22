@@ -1,0 +1,3 @@
+fault (Refinement): result of `f`: ["b"]: 0 does not satisfy `Positive` (where it > 0)
+
+--- exit 101

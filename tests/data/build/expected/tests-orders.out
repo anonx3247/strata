@@ -1,0 +1,8 @@
+✓ shipping a pending order saves it as shipped
+✓ shipping a cancelled order is rejected
+✓ a mocked store never breaks ship's contract
+✓ totals
+
+4 passed, 0 failed
+
+--- exit 0

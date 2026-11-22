@@ -1,0 +1,5 @@
+error: `Some` of a value written as null can't be JSON: it would read back as `None`
+2
+null
+
+--- exit 0

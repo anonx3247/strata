@@ -199,9 +199,9 @@ int64_t strata_str_len(Str *s) {
 // (`down (95846 times)`), so a deep one costs nothing to keep; only the
 // first FRAMES runs are kept.
 #define FRAMES 4096
-static Str *frames[FRAMES];
-static int64_t counts[FRAMES];
-static int64_t runs;  // runs in use, counting those past FRAMES
+static _Thread_local Str *frames[FRAMES];
+static _Thread_local int64_t counts[FRAMES];
+static _Thread_local int64_t runs;  // runs in use, counting those past FRAMES
 
 void strata_enter(Str *name) {
   if (runs > 0 && runs <= FRAMES && frames[runs - 1] == name) {
@@ -215,30 +215,13 @@ void strata_enter(Str *name) {
   runs++;
 }
 
-// `strata run --trace`: a JSON line per call and return, on stderr, as the
-// interpreter wrote them (the depth counted here). `fn` is the name as JSON;
-// the arguments and value are JSON made by the generated code (consumed).
-static int64_t trace_depth;
-
-void strata_trace_call(Str *fn, Str *args) {
-  trace_depth++;
-  fprintf(stderr, "{\"event\":\"call\",\"fn\":%.*s,\"args\":%.*s,\"depth\":%lld}\n", (int)fn->len, fn->bytes, (int)args->len, args->bytes, (long long)trace_depth);
-  str_drop(args);
-}
-
-void strata_trace_return(Str *fn, Str *value) {
-  fprintf(stderr, "{\"event\":\"return\",\"fn\":%.*s,\"value\":%.*s,\"depth\":%lld}\n", (int)fn->len, fn->bytes, (int)value->len, value->bytes, (long long)trace_depth);
-  trace_depth--;
-  str_drop(value);
-}
-
 void strata_leave(void) {
   if (runs <= FRAMES && --counts[runs - 1] > 0) return;
   runs--;
 }
 
 // The call stack as `strata run` shows it ("" when empty): as the
-// interpreter's `show_stack`, four or more calls in a row of one function
+// `names::show_stack`, four or more calls in a row of one function
 // are one entry.
 static char *stack_text(void) {
   size_t n = 16;
@@ -267,15 +250,17 @@ static void print_stack(void) {
 // `strata_test`: a fault ends the test (back here, not out of the process),
 // and what it prints is kept, as the interpreter does.
 
-static uint64_t rng;  // the generators' state (below)
-static uint64_t test_seed = 7;  // where a test's numbers start
-static sigjmp_buf *trap;
+// A run's state is per thread: the JIT may run code on several threads at
+// once (compile-time code in one, a test or fuzz case in another).
+static _Thread_local uint64_t rng = 7;  // the generators' state (below)
+static _Thread_local uint64_t test_seed = 7;  // where a test's numbers start
+static _Thread_local sigjmp_buf *trap;
 static void catch_overflow(void);
-static int32_t fault_kind;
-static Str *fault_msg;
-static char *fault_stack, *printed;
-static size_t printed_len, printed_cap;
-static _Bool capturing;
+static _Thread_local int32_t fault_kind;
+static _Thread_local Str *fault_msg;
+static _Thread_local char *fault_stack, *printed;
+static _Thread_local size_t printed_len, printed_cap;
+static _Thread_local _Bool capturing;
 
 static void keep_printed(const char *b, size_t n) {
   if (printed_len + n + 1 > printed_cap) printed = realloc(printed, printed_cap = (printed_len + n + 1) * 2);
@@ -310,25 +295,15 @@ int32_t strata_test(void (*f)(void)) {
 // ---- fuzzing (`strata verify --jit`) ----
 //
 // A fuzz driver (llvm.rs, `compile_fuzz`) generates a function's arguments,
-// records them as JSON, and calls it; `strata_fuzz` runs one case as
+// hands each to strata (`strata_fuzz_keep`, src/llvm/jit.rs: read by its
+// shape), and calls it; `strata_fuzz` runs one case as
 // `strata_test` runs a test, with the generators seeded and a step budget
 // (each loop iteration and call is a step): past it, a `Limit` fault.
 
 _Noreturn void strata_fault(int32_t kind, Str *msg);
-static char *fuzz_args;
-static size_t fuzz_len, fuzz_cap;
 
-static int64_t steps;
-static _Bool counting;
-
-void strata_fuzz_arg(Str *json) {
-  size_t need = fuzz_len + (size_t)json->len + 2;
-  if (need > fuzz_cap) fuzz_args = realloc(fuzz_args, fuzz_cap = need * 2);
-  if (fuzz_len > 1) fuzz_args[fuzz_len++] = ',';
-  memcpy(fuzz_args + fuzz_len, json->bytes, (size_t)json->len);
-  fuzz_len += (size_t)json->len;
-  fuzz_args[fuzz_len] = 0;
-}
+static _Thread_local int64_t steps;
+static _Thread_local _Bool counting;
 
 void strata_step(void) {
   if (counting && --steps < 0) {
@@ -338,8 +313,6 @@ void strata_step(void) {
 }
 
 int32_t strata_fuzz(void (*f)(void), int64_t seed, int64_t budget) {
-  if (fuzz_cap < 2) fuzz_args = realloc(fuzz_args, fuzz_cap = 64);
-  fuzz_args[0] = '[', fuzz_args[1] = 0, fuzz_len = 1;
   steps = budget;
   counting = 1;
   test_seed = (uint64_t)seed;
@@ -349,34 +322,7 @@ int32_t strata_fuzz(void (*f)(void), int64_t seed, int64_t budget) {
   return r;
 }
 
-// The last case's arguments, as a JSON array.
-const char *strata_fuzz_args(void) {
-  static char *out;
-  free(out);
-  out = malloc(fuzz_len + 2);
-  memcpy(out, fuzz_args, fuzz_len);
-  out[fuzz_len] = ']', out[fuzz_len + 1] = 0;
-  return out;
-}
-
 void strata_seed(int64_t seed) { rng = (uint64_t)seed; }
-
-// A pattern built at run time (`matches(s, p)`, `p` not a literal): matched
-// by the engine strata gives the runtime when it runs a program (Rust's
-// `regex`, the interpreter's): 1 or 0, or -1 with the error in `*err`. A
-// built program has none (its literal patterns are compiled to DFAs).
-typedef int32_t (*RegexEngine)(const char *s, int64_t n, const char *re, int64_t m, const char **err);
-static RegexEngine regex_engine;
-void strata_set_regex_engine(RegexEngine e) { regex_engine = e; }
-
-_Bool strata_regex_match(Str *s, Str *re) {
-  if (!regex_engine) strata_fault(4, str_c("a pattern built at run time needs `strata run` (a built program has only literal patterns)"));
-  const char *err = NULL;
-  int32_t r = regex_engine(s->bytes, s->len, re->bytes, re->len, &err);
-  // (the interpreter shows no call stack for a bad pattern)
-  if (r < 0) strata_fault(4 | 256, str_c(err));
-  return r == 1;
-}
 
 // The `Code` capability (std.code): the codebase as typed values, which
 // strata builds (src/ui.rs) and writes into this program's memory
@@ -405,7 +351,7 @@ void *strata_host_code_snapshot(Str **err) {
 
 // Compile-time code's value (`strata.ct.N` hands it over), for the compiler
 // to read (src/llvm/native.rs).
-static int64_t ct_kept;
+static _Thread_local int64_t ct_kept;
 void strata_ct_keep(int64_t v) { ct_kept = v; }
 int64_t strata_ct_kept(void) { return ct_kept; }
 
@@ -695,6 +641,113 @@ int64_t strata_mod(int64_t a, int64_t b) {
   return r;
 }
 
+// ---- bits: `&`, `|`, `^`, `<<`, `>>` ----
+//
+// On two's complement, infinitely sign-extended (as Python's integers): a
+// number is written in `len` words, its sign repeated in the last.
+
+static void to_twos(Num x, uint32_t *w, int64_t len) {
+  memset(w, 0, (size_t)len * 4);
+  memcpy(w, x.d, (size_t)x.n * 4);
+  if (x.sign < 0) {
+    uint64_t carry = 1;
+    for (int64_t i = 0; i < len; i++) {
+      uint64_t v = (uint64_t)(uint32_t)~w[i] + carry;
+      w[i] = (uint32_t)v;
+      carry = v >> 32;
+    }
+  }
+}
+
+// The number `w` holds (it takes `w`).
+static Num from_twos(uint32_t *w, int64_t len) {
+  Num x = {1, len, w};
+  if (len > 0 && (w[len - 1] >> 31)) {
+    uint64_t carry = 1;
+    for (int64_t i = 0; i < len; i++) {
+      uint64_t v = (uint64_t)(uint32_t)~w[i] + carry;
+      w[i] = (uint32_t)v;
+      carry = v >> 32;
+    }
+    x.sign = -1;
+  }
+  return x;
+}
+
+typedef enum { AND, OR, XOR } BitOp;
+
+static int64_t bit_op(int64_t a, int64_t b, BitOp op) {
+  if (!is_big(a) && !is_big(b)) return op == AND ? (a & b) : op == OR ? (a | b) : (a ^ b);
+  Num x = num_of(a), y = num_of(b);
+  int64_t len = (x.n > y.n ? x.n : y.n) + 1;
+  uint32_t *u = digits(len), *v = digits(len);
+  to_twos(x, u, len);
+  to_twos(y, v, len);
+  for (int64_t i = 0; i < len; i++) u[i] = op == AND ? (u[i] & v[i]) : op == OR ? (u[i] | v[i]) : (u[i] ^ v[i]);
+  free(x.d), free(y.d), free(v);
+  return int_of(from_twos(u, len));
+}
+
+int64_t strata_int_and(int64_t a, int64_t b) { return bit_op(a, b, AND); }
+int64_t strata_int_or(int64_t a, int64_t b) { return bit_op(a, b, OR); }
+int64_t strata_int_xor(int64_t a, int64_t b) { return bit_op(a, b, XOR); }
+
+// The shift `n` as a count of bits; a negative one is a fault.
+static int64_t shift_of(int64_t n, const char *op) {
+  if (n < 0 || (is_big(n) && big_at(n)->sign < 0)) {
+    strata_fault(4, strata_concat(str_c(op), str_c(" by a negative number of bits")));
+  }
+  return is_big(n) ? INT64_MAX : n;
+}
+
+// `a << n`: `a` times 2^n.
+int64_t strata_shl(int64_t a, int64_t n) {
+  int64_t k = shift_of(n, "`<<`");
+  if (a == 0) return 0;
+  if (k > ((int64_t)1 << 32)) strata_fault(6, str_c("`<<` by more than 2^32 bits"));
+  if (!is_big(a) && k < 62) {
+    int64_t lim = (int64_t)1 << (62 - k);
+    if (a > -lim && a < lim) return a * ((int64_t)1 << k);
+  }
+  Num x = num_of(a);
+  int64_t words = k / 32, bits = k % 32, len = x.n + words + 1;
+  uint32_t *d = digits(len);
+  for (int64_t i = 0; i < x.n; i++) {
+    uint64_t v = (uint64_t)x.d[i] << bits;
+    d[i + words] |= (uint32_t)v;
+    d[i + words + 1] |= (uint32_t)(v >> 32);
+  }
+  Num r = {x.sign, len, d};
+  free(x.d);
+  return int_of(r);
+}
+
+// `a >> n`: `a` divided by 2^n, rounded down (as `/` by a power of two).
+int64_t strata_shr(int64_t a, int64_t n) {
+  int64_t k = shift_of(n, "`>>`");
+  if (!is_big(a)) return a >> (k > 63 ? 63 : k);
+  Num x = num_of(a);
+  int64_t words = k / 32, bits = k % 32;
+  if (words >= x.n) {
+    int neg = x.sign < 0;
+    free(x.d);
+    return neg ? -1 : 0;
+  }
+  // on the two's complement, so a negative number rounds down
+  int64_t len = x.n + 1;
+  uint32_t *w = digits(len);
+  to_twos(x, w, len);
+  uint32_t fill = (w[len - 1] >> 31) ? 0xffffffffu : 0;
+  int64_t out = len - words;
+  uint32_t *d = digits(out);
+  for (int64_t i = 0; i < out; i++) {
+    uint64_t lo = w[i + words], hi = i + words + 1 < len ? w[i + words + 1] : fill;
+    d[i] = (uint32_t)(((hi << 32) | lo) >> bits);
+  }
+  free(x.d), free(w);
+  return int_of(from_twos(d, out));
+}
+
 // A big integer's decimal digits: chunks of nine, least first, divided out.
 static Str *big_show(int64_t v) {
   Num x = num_of(v);
@@ -851,7 +904,7 @@ Str *strata_str_from_c(const char *c, Str *callee) {
 // picks with these, from bounds the compiler read in the refinements. The
 // numbers are a fixed sequence (splitmix64 from 7), not the interpreter's.
 
-static uint64_t rng = 7;
+// (`rng`, the state, is defined above)
 
 static uint64_t next_random(void) {
   uint64_t z = (rng += UINT64_C(0x9E3779B97F4A7C15));
@@ -1272,7 +1325,9 @@ void strata_init(int32_t argc, char **argv) {
   prog_argv = argv + 1;
   if (argc > 0 && argv[0]) prog_name = argv[0];
   signal(SIGPIPE, SIG_IGN);
+  // (what compile-time code made before, in this process, isn't the program's)
   allocated = freed = 0;
+  nmade = 0;
   static _Bool registered;
   const char *m = getenv("STRATA_MEMORY");
   checking = m && !strcmp(m, "check");
@@ -1322,6 +1377,11 @@ static void os_error(Str **kind, Str **msg) {
 }
 
 void strata_host_write(int64_t fd, Str *text) {
+  // in a test, the terminal's output is the test's own, as `print`'s is
+  if (capturing) {
+    keep_printed(text->bytes, (size_t)text->len);
+    return;
+  }
   FILE *f = fd == 2 ? stderr : stdout;
   if (fd == 2) fflush(stdout);
   if (fwrite(text->bytes, 1, (size_t)text->len, f) < (size_t)text->len || fflush(f) != 0) {
@@ -1364,6 +1424,16 @@ Str *strata_host_read_file(Str *path, Str **kind, Str **msg) {
   Str *s = str_from(buf, (int64_t)len);
   free(buf);
   return s;
+}
+
+// The file's bytes, each a small `Int`.
+List *strata_host_read_bytes(Str *path, Str **kind, Str **msg) {
+  Str *s = strata_host_read_file(path, kind, msg);
+  if (!s) return NULL;
+  List *l = strata_list_new(s->len);
+  for (int64_t i = 0; i < s->len; i++) l = append(l, (int64_t)(unsigned char)s->bytes[i]);
+  if (strata_release(s)) strata_free(s);
+  return l;
 }
 
 _Bool strata_host_write_file(Str *path, Str *text, _Bool append, Str **kind, Str **msg) {
@@ -1537,14 +1607,26 @@ _Bool strata_str_starts_with(Str *s, Str *p) { return p->len <= s->len && memcmp
 
 _Bool strata_str_ends_with(Str *s, Str *p) { return p->len <= s->len && memcmp(s->bytes + s->len - p->len, p->bytes, (size_t)p->len) == 0; }
 
-// The character index of the first `sub`, or -1.
+// The byte offset of the first match of `sub`, or -1.
 int64_t strata_str_index_of(Str *s, Str *sub) {
-  int64_t at = find_from(s, sub, 0);
-  if (at < 0) return -1;
-  int64_t k = 0;
-  for (int64_t i = 0; i < at; i++)
-    if ((s->bytes[i] & 0xC0) != 0x80) k++;
-  return k;
+  return find_from(s, sub, 0);
+}
+
+// The bytes from offset `a` to `b`, both clamped to 0..len; an offset inside
+// a character's bytes moves back to its start (never a fault).
+static int64_t char_start(Str *s, int64_t i) {
+  while (i > 0 && i < s->len && ((unsigned char)s->bytes[i] & 0xC0) == 0x80) i--;
+  return i;
+}
+
+Str *strata_str_byte_slice(Str *s, int64_t a, int64_t b) {
+  if (a < 0) a = 0;
+  if (b > s->len) b = s->len;
+  if (a > s->len) a = s->len;
+  a = char_start(s, a);
+  b = char_start(s, b);
+  if (b <= a) return str_from("", 0);
+  return str_from(s->bytes + a, b - a);
 }
 
 Str *strata_str_reverse(Str *s) {
@@ -1617,11 +1699,17 @@ Str *strata_str_replace(Str *s, Str *from, Str *to) {
   return strata_concat_owned(out, str_from(s->bytes + start, s->len - start));
 }
 
+// A count that is not negative is accepted: a string too large to hold is
+// out of memory, as when it is built any other way.
 Str *strata_str_repeat(Str *s, int64_t n) {
-  if (n < 0 || (s->len > 0 && n > 100000000 / s->len)) {
+  if (n < 0) {
     char buf[64];
-    snprintf(buf, sizeof buf, "repeat: bad count %lld", (long long)n);
+    snprintf(buf, sizeof buf, "repeat: negative count %lld", (long long)n);
     strata_fault(4, str_c(buf));
+  }
+  if (s->len > 0 && n > (INT64_MAX - 64) / s->len) {
+    fputs("fault (Limit): out of memory\n", stderr);
+    exit(101);
   }
   Str *o = str_alloc(s->len * n);
   for (int64_t i = 0; i < n; i++) memcpy(o->bytes + i * s->len, s->bytes, (size_t)s->len);
@@ -1732,6 +1820,19 @@ int64_t strata_str_ord(Str *s) {
   strata_fault(4, strata_concat(str_c("ord needs a single character, got "), debug_str(s)));
 }
 
+// A string's length in UTF-8 bytes, and its byte `i` (0 to 255): what the
+// prelude's `bytes()` and `code_points()` read, in Strata.
+int64_t strata_str_byte_len(Str *s) { return s->len; }
+
+int64_t strata_str_byte_at(Str *s, int64_t i) {
+  if (i < 0 || i >= s->len) {
+    char buf[96];
+    snprintf(buf, sizeof buf, "byte %lld out of range (%lld bytes)", (long long)i, (long long)s->len);
+    strata_fault(4, str_c(buf));
+  }
+  return (unsigned char)s->bytes[i];
+}
+
 Str *strata_str_chr(int64_t c) {
   if (c < 0 || c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF)) {
     char buf[64];
@@ -1740,18 +1841,6 @@ Str *strata_str_chr(int64_t c) {
   }
   char b[4];
   return str_from(b, utf8_put((int32_t)c, b));
-}
-
-// `matches(s, re)`: the DFA the compiler made of `^(?:re)$` (llvm.rs,
-// `regex`): each byte's class, the next state of (state, class), the dead
-// states, and those that match at the end. It starts in state 0.
-_Bool strata_dfa_match(Str *s, const int16_t *cls, int64_t nc, const int32_t *next, const uint8_t *dead, const uint8_t *end) {
-  int64_t st = 0;
-  for (int64_t i = 0; i < s->len; i++) {
-    st = next[st * nc + cls[(unsigned char)s->bytes[i]]];
-    if (dead[st]) return 0;
-  }
-  return end[st];
 }
 
 // `parse_int`, as Rust's `BigInt` reads the trimmed string: a sign, then a
