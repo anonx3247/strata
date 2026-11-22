@@ -6407,7 +6407,7 @@ impl Func<'_, '_> {
         let strings = Ty::Con("List".into(), vec![Ty::Str]);
         let opt = |t: Ty| Ty::Con("Option".into(), vec![t]);
         Ok(Some(match (name, types) {
-            ("split", [_, Ty::Str]) => self.call(&strings, "@strata_str_split", &args)?,
+            ("split", [_, Ty::Str]) => self.call_fn(&prelude("str_split"), args, Some(strings))?,
             ("trim", [_]) => self.call(&s, "@strata_str_trim", &args)?,
             // written in Strata (llvm/prelude.strata), over the string's bytes
             ("contains", [_, Ty::Str]) => self.call_fn(&prelude("str_contains"), args, Some(Ty::Bool))?,
@@ -6426,8 +6426,8 @@ impl Func<'_, '_> {
             ("at", [_, Ty::Int]) => self.call(&s, "@strata_str_at_or_fault", &args)?,
             ("slice", [_, Ty::Int, Ty::Int]) => self.call(&s, "@strata_str_slice", &args)?,
             ("index_of", [_, Ty::Str]) => self.call_fn(&prelude("str_index_of"), args, Some(opt(Ty::Int)))?,
-            ("replace", [_, Ty::Str, Ty::Str]) => self.call(&s, "@strata_str_replace", &args)?,
-            ("repeat", [_, Ty::Int]) => self.call(&s, "@strata_str_repeat", &args)?,
+            ("replace", [_, Ty::Str, Ty::Str]) => self.call_fn(&prelude("str_replace"), args, Some(s))?,
+            ("repeat", [_, Ty::Int]) => self.call_fn(&prelude("str_repeat"), args, Some(s))?,
             ("to_upper" | "to_lower", [_]) => {
                 let (table, n) = self.m.unicode_table(if name == "to_upper" { "upper" } else { "lower" });
                 let (cased, m) = self.m.unicode_table("cased");

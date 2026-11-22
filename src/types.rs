@@ -574,7 +574,7 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin::total("sort_by", "A,B", "(List[A], (A) -> B) -> List[A]"),
     Builtin::total("reverse", "A", "(List[A]) -> List[A]"),
     Builtin::total("join", "", "(List[String], String) -> String"),
-    Builtin::new("split", "", "(String, String) -> List[String]"),
+    Builtin::total("split", "", "(String, String) -> List[String]"),
     Builtin::total("trim", "", "(String) -> String"),
     Builtin::total("parse_int", "", "(String) -> Option[Int]"),
     Builtin::new("parse_float", "", "(String) -> Option[Float]"),
@@ -618,9 +618,9 @@ pub const BUILTINS: &[Builtin] = &[
     // the bytes from offset `a` to `b`, clamped to the string; an offset inside a
     // character moves back to its start
     Builtin::total("byte_slice", "", "(String, Int, Int) -> String"),
-    Builtin::new("replace", "", "(String, String, String) -> String"),
+    Builtin::total("replace", "", "(String, String, String) -> String"),
     Builtin::new("lines", "", "(String) -> List[String]"),
-    Builtin::new("repeat", "", "(String, Int) -> String"),
+    Builtin::total("repeat", "", "(String, Int) -> String"),
     Builtin::total("reverse", "", "(String) -> String"),
     Builtin::new("to_upper", "", "(String) -> String"),
     Builtin::new("to_lower", "", "(String) -> String"),

@@ -596,12 +596,13 @@ fn empty_rep(s: String, p: String) -> String { replace(s, p, "b") }
     }
     // Z3 proves the round trip through `str.from_int` / `str.to_int`; cvc5 answers unknown
     assert!(passed(&out, "round_trip"), "round_trip must not be refuted: {out}");
-    for name in ["bad_head", "bad_find", "bad_shown", "bad_parsed", "bad_ends", "bad_rep", "empty_rep"] {
+    for name in ["bad_head", "bad_find", "bad_shown", "bad_parsed", "bad_ends", "bad_rep"] {
         let line = out.lines().find(|l| l.split_whitespace().nth(1) == Some(name)).unwrap_or("");
         assert!(line.starts_with("✗") && line.contains("found by the solver"), "{name} should be refuted by the solver: {out}");
     }
     // leading whitespace is trimmed by the interpreter: not modelled, so not refuted either
-    assert!(out.contains("~ spaced") && out.contains("replace: empty pattern"), "{out}");
+    // `replace` is total (an empty pattern is found around every character): nothing to refute
+    assert!(out.contains("~ spaced") && !out.contains("✗ empty_rep"), "{out}");
     // a big offset is clamped like any other, and one inside a character moves back to its start
     save(&d.join("b.strata"), "fn s(t: String) -> String { byte_slice(t, 0, 99999999999999999999) }\nfn m(t: String) -> String { byte_slice(t, 0, 2) }\n");
     let (ok, out) = strata(&["--file", "b.strata", "run", "s", "[\"abc\"]"], &d, None);
@@ -671,8 +672,8 @@ fn bad_ord(s: String) -> Int { ord(s) }
 fn good_ord(s: String) -> Int { if len(s.code_points()) == 1 { ord(s) } else { 0 } }
 fn each_ord(s: String) -> Int { chars(s).fold(0, (a, c) -> a + ord(c)) }
 fn round_trip() -> Bool ensures it { ord(chr(955)) == 955 }
-fn bad_split(s: String, sep: String) -> Int { len(split(s, sep)) }
-fn bad_repeat(s: String, n: Int) -> String { repeat(s, n) }
+fn any_split(s: String, sep: String) -> Int { len(split(s, sep)) }
+fn any_repeat(s: String, n: Int) -> String { repeat(s, n) }
 fn good_repeat(n: Int where 0 <= it && it <= 10) -> String { repeat("ab", n) }
 fn floats(x: Float) -> Float { x * x }
 fn doubled(xs: List[Int]) -> List[Int] { xs.map(x -> x * 2) }
@@ -681,10 +682,11 @@ fn doubled(xs: List[Int]) -> List[Int] { xs.map(x -> x * 2) }
     let (ok, out) = strata(&["--file", "f.strata", "verify", "--cases", "30"], &d, None);
     assert!(!ok, "{out}");
     let line = |name: &str| out.lines().find(|l| l.split_whitespace().nth(1) == Some(name)).unwrap_or("").to_string();
-    for name in ["good_chr", "good_ord", "each_ord", "round_trip", "good_repeat", "doubled"] {
+    // (`split` and `repeat` are total: any arguments)
+    for name in ["good_chr", "good_ord", "each_ord", "round_trip", "good_repeat", "any_split", "any_repeat", "doubled"] {
         assert!(line(name).starts_with("✓"), "{name} should be proven: {out}");
     }
-    for name in ["bad_chr", "bad_ord", "bad_split", "bad_repeat"] {
+    for name in ["bad_chr", "bad_ord"] {
         assert!(line(name).starts_with("✗") && line(name).contains("found by the solver"), "{name} should be refuted by the solver: {out}");
     }
     assert!(line("floats").starts_with("~") && out.contains("`*` gives a finite number"), "{out}");
