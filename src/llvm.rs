@@ -37,6 +37,7 @@ use std::collections::VecDeque;
 use crate::fx::{HashMap, HashSet};
 use std::fmt::Write;
 
+pub mod escape;
 pub mod jit;
 pub mod native;
 
@@ -48,6 +49,11 @@ const PRELUDE_MODULE: &str = "strata.compiled";
 fn prelude(name: &str) -> String {
     format!("{PRELUDE_MODULE}.{name}")
 }
+
+/// Where a `mut` argument's changes go: its variable, the path of fields
+/// (`x`, `o.status`), and whether no other argument of the call mentions
+/// the variable (then a whole variable is moved into the call: `bind_args`).
+type Place = Option<(String, Vec<String>, bool)>;
 
 /// The place an argument names (`x`, `o.status`): its variable and the path of fields.
 fn place_of(e: &Expr) -> Option<(String, Vec<String>)> {
@@ -676,7 +682,8 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers, tasks: uses_tasks(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()), supervises: uses_supervised(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()) };
+    let keeps = escape::Kept::of(&bodies);
+    let mut m = Module { env: &env, types: &types, keeps, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers, tasks: uses_tasks(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()), supervises: uses_supervised(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()) };
     if !m.proofs.is_empty() {
         m.refs = Refs::of(prog);
     }
@@ -924,6 +931,7 @@ declare ptr @strata_host_read_bytes(ptr, ptr, ptr)
 declare i1 @strata_host_write_file(ptr, ptr, i1, ptr, ptr)
 declare i1 @strata_host_exists(ptr)
 declare ptr @strata_host_list_dir(ptr, ptr, ptr)
+declare ptr @strata_host_run(ptr, ptr, ptr, ptr, ptr)
 declare i1 @strata_host_make_dir(ptr, ptr, ptr)
 declare i1 @strata_host_remove(ptr, ptr, ptr)
 declare ptr @strata_host_args()
@@ -1164,6 +1172,9 @@ struct Module<'a> {
     types: &'a HashMap<usize, Ty>,
     /// Each function's own declaration in the program (its body, `requires`, `ensures`).
     bodies: HashMap<String, &'a FnDecl>,
+    /// Which parameters each function may keep (`escape`): a value passed
+    /// to one it doesn't keep can live on the caller's stack.
+    keeps: escape::Kept,
     /// Traits and their implementations, as written (their bodies are what the checker typed).
     traits: HashMap<Symbol, &'a TraitDecl>,
     impls: Vec<&'a ImplDecl>,
@@ -2219,7 +2230,7 @@ struct Func<'m, 'a> {
     cur: String,
     terminated: bool,
     /// The places of the arguments of the call being compiled (for `mut` parameters).
-    places: Vec<Option<(String, Vec<String>)>>,
+    places: Vec<Place>,
     /// The program's function being compiled, whose proofs `proven` reads
     /// (none in a lambda, a helper, or std's and the prelude's code).
     proofs_of: Option<String>,
@@ -2228,11 +2239,20 @@ struct Func<'m, 'a> {
     /// In the function's `exit` block (its result's checks): nothing left to
     /// drop there, so a panic can't leave as a cancellation does.
     in_exit: bool,
+    /// The constructor (by node address) of the `x := C { … }` being
+    /// compiled, when `x` doesn't escape its block: its value goes on the
+    /// stack (`stack_block`).
+    stack_ctor: Option<usize>,
+    /// The field types of the value the last `stack_block` made.
+    stack_made: Option<Vec<Ty>>,
+    /// The slots of variables holding a value on the stack, with its field
+    /// types: when the variable is dropped, only its fields are.
+    stack_slots: HashMap<String, Vec<Ty>>,
 }
 
 impl<'m, 'a> Func<'m, 'a> {
     fn new(m: &'m mut Module<'a>, sub: HashMap<Symbol, Ty>) -> Self {
-        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![], unwinds: false, in_exit: false, proofs_of: None }
+        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![], unwinds: false, in_exit: false, proofs_of: None, stack_ctor: None, stack_made: None, stack_slots: HashMap::default() }
     }
 
     /// The function's text: the slots, then the code.
@@ -2653,7 +2673,19 @@ impl<'m, 'a> Func<'m, 'a> {
             let x = self.fresh("old");
             let ll = if self.is_int(t) { "i64" } else { "ptr" };
             self.emit(format!("{x} = load {ll}, ptr {slot}"));
-            self.drop_value(&(t.clone(), x))?;
+            match self.stack_slots.get(slot).cloned() {
+                // a value on the stack: only what it holds
+                Some(tys) => {
+                    let v = (t.clone(), x);
+                    for (i, ft) in tys.iter().enumerate() {
+                        if self.counted(ft) {
+                            let f = self.field(&v, i, ft)?;
+                            self.drop_value(&f)?;
+                        }
+                    }
+                }
+                None => self.drop_value(&(t.clone(), x))?,
+            }
         }
         Ok(())
     }
@@ -3001,6 +3033,26 @@ impl<'m, 'a> Func<'m, 'a> {
         let fields: Vec<V> = fields.iter().map(|f| self.take(f.clone())).collect();
         let p = self.fresh("obj");
         self.emit(format!("{p} = call ptr @strata_alloc(i64 {})", 8 * (fields.len() + 1)));
+        self.emit(format!("store i64 {tag}, ptr {p}"));
+        for (i, f) in fields.iter().enumerate() {
+            let s = self.to_slot(f)?;
+            let at = self.fresh("at");
+            self.emit(format!("{at} = getelementptr i64, ptr {p}, i64 {}", i + 1));
+            self.emit(format!("store i64 {s}, ptr {at}"));
+        }
+        Ok(p)
+    }
+
+    /// `block_of`, in a slot of the function's frame, with a count of 0 (as
+    /// a constant: nothing counts it or frees it), for a value that doesn't
+    /// outlive the variable it is bound to (`escape`); the variable's drop
+    /// drops its fields (`stack_slots`).
+    fn stack_block(&mut self, tag: i64, fields: &[V]) -> Res<String> {
+        let fields: Vec<V> = fields.iter().map(|f| self.take(f.clone())).collect();
+        let (frame, p) = (self.fresh("stack"), self.fresh("obj"));
+        writeln!(self.allocas, "  {frame} = alloca [{} x i64], align 8", fields.len() + 2).unwrap();
+        self.emit(format!("store i64 0, ptr {frame}"));
+        self.emit(format!("{p} = getelementptr i64, ptr {frame}, i64 1"));
         self.emit(format!("store i64 {tag}, ptr {p}"));
         for (i, f) in fields.iter().enumerate() {
             let s = self.to_slot(f)?;
@@ -4447,9 +4499,21 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.temp(r)
             }
             Expr::Block(stmts, last) => self.scoped(false, |s| {
-                for st in stmts {
+                for (i, st) in stmts.iter().enumerate() {
+                    // `x := C { … }` with `x` staying in the block: on the stack
+                    if let Stmt::Let(Pattern::Bind(x), None, c @ Expr::Ctor(_, args)) = st {
+                        if !matches!(args, CtorArgs::None) && !escape::escapes_after(stmts, i, last, x, &s.m.keeps) {
+                            s.stack_ctor = Some(c as *const Expr as usize);
+                        }
+                    }
                     s.push_scope(true);
                     let r = s.stmt(st);
+                    s.stack_ctor = None;
+                    if let (Some(tys), Stmt::Let(Pattern::Bind(x), ..)) = (s.stack_made.take(), st) {
+                        if let Some(l) = s.lookup(x) {
+                            s.stack_slots.insert(l.slot, tys);
+                        }
+                    }
                     match r {
                         Ok(()) => s.pop_scope()?,
                         Err(e) => {
@@ -5067,7 +5131,15 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let hint = self.ty_of(call).ok();
         // where a `mut` parameter's changes go: the argument's place
-        self.places = args.iter().map(|a| place_of(a)).collect();
+        self.places = args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let (root, path) = place_of(a)?;
+                let alone = args.iter().enumerate().all(|(j, b)| j == i || !vars_in(b).contains(&root));
+                Some((root, path, alone))
+            })
+            .collect();
         self.call_values(name, vs, hint)
     }
 
@@ -5075,8 +5147,8 @@ impl<'m, 'a> Func<'m, 'a> {
     /// argument (held once more), written back to the place after the call.
     /// (Not the variable's own slot: the callee drops what it replaces, and
     /// the caller may still be reading the old value, as in `f(x, mut x.pop())`.)
-    fn mut_slot(&mut self, place: &Option<(String, Vec<String>)>, v: &V, param: &str) -> Res<String> {
-        let Some((root, _)) = place else { return Err(format!("the argument for the `mut` parameter `{param}` must be a variable or its field")) };
+    fn mut_slot(&mut self, place: &Place, v: &V, param: &str) -> Res<String> {
+        let Some((root, _, _)) = place else { return Err(format!("the argument for the `mut` parameter `{param}` must be a variable or its field")) };
         self.lookup(root).ok_or(format!("`{root}` is not a local variable"))?;
         let tmp = self.fresh("mutarg");
         writeln!(self.allocas, "  {tmp} = alloca {}", self.m.ll(&v.0)?).unwrap();
@@ -5087,10 +5159,23 @@ impl<'m, 'a> Func<'m, 'a> {
 
     /// After a call: a field passed `mut` goes back into its variable; the
     /// variable's declared type holds (`assigning \`x\``).
-    fn write_back(&mut self, place: &Option<(String, Vec<String>)>, slot: &str, t: &Ty, param: &TypeExpr) -> Res<()> {
-        let Some((root, path)) = place else { return Ok(()) };
+    fn write_back(&mut self, place: &Place, slot: &str, t: &Ty, param: &TypeExpr) -> Res<()> {
+        let Some((root, path, alone)) = place else { return Ok(()) };
         let l = self.lookup(root).ok_or(format!("`{root}` is not a local variable"))?;
         let shown = std::iter::once(root.clone()).chain(path.iter().cloned()).collect::<Vec<_>>().join(".");
+        if *alone && path.is_empty() && self.movable(t) {
+            // moved in (`bind_args`): back into the variable, which held nothing meanwhile
+            let r = self.fresh("back");
+            self.emit(format!("{r} = load ptr, ptr {slot}"));
+            self.store(&(l.t.clone(), r), &l.slot)?;
+            if let Some(d) = &l.declared {
+                if crate::types::refinement_within(self.m.env, param, d) != Some(true) {
+                    let v = self.load(root)?;
+                    self.check_keyed(d, &v, &format!("assigning `{shown}`"), false, Some(format!("writing back `{shown}`")))?;
+                }
+            }
+            return Ok(());
+        }
         // the slot's value (owned) goes back into the place
         let r = self.fresh("back");
         let ll = self.m.ll(t)?;
@@ -5121,7 +5206,7 @@ impl<'m, 'a> Func<'m, 'a> {
     /// `per_impl`: a trait-typed parameter takes the implementation passed
     /// (a function, compiled once per implementation); otherwise (a method,
     /// compiled once) it takes a trait value.
-    fn bind_args(&mut self, params: &[Param], vs: Vec<V>, sub: &HashMap<Symbol, Ty>, places: &[Option<(String, Vec<String>)>], per_impl: bool) -> Res<(Vec<V>, Vec<(usize, String, Ty, TypeExpr)>)> {
+    fn bind_args(&mut self, params: &[Param], vs: Vec<V>, sub: &HashMap<Symbol, Ty>, places: &[Place], per_impl: bool) -> Res<(Vec<V>, Vec<(usize, String, Ty, TypeExpr)>)> {
         let mut out = vec![];
         let mut backs = vec![];
         for (i, (p, v)) in params.iter().zip(vs).enumerate() {
@@ -5129,6 +5214,21 @@ impl<'m, 'a> Func<'m, 'a> {
             let t = if as_passed { v.0.clone() } else { self.m.lower(&p.ty, sub)? };
             if p.mutable {
                 let place = places.get(i).cloned().flatten();
+                if let Some((root, path, true)) = &place {
+                    if path.is_empty() && self.movable(&t) {
+                        // the variable's value moved into the call (left null
+                        // meanwhile: nothing else in the call reads it), so a
+                        // value only it held is changed in place by the callee
+                        let l = self.lookup(root).ok_or(format!("`{root}` is not a local variable"))?;
+                        let tmp = self.fresh("mutarg");
+                        writeln!(self.allocas, "  {tmp} = alloca ptr").unwrap();
+                        self.emit(format!("store ptr {}, ptr {tmp}", v.1));
+                        self.emit(format!("store ptr null, ptr {}", l.slot));
+                        out.push((Ty::Str, tmp.clone()));
+                        backs.push((i, tmp, t, p.ty.clone()));
+                        continue;
+                    }
+                }
                 let slot = self.mut_slot(&place, &(t.clone(), v.1), &p.name)?;
                 out.push((Ty::Str, slot.clone()));
                 backs.push((i, slot, t, p.ty.clone()));
@@ -5141,7 +5241,13 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok((out, backs))
     }
 
-    fn write_backs(&mut self, backs: Vec<(usize, String, Ty, TypeExpr)>, places: &[Option<(String, Vec<String>)>]) -> Res<()> {
+    /// Whether a `mut` argument of type `t` can be moved into the call: a
+    /// counted object whose drop takes a null (left in the variable meanwhile).
+    fn movable(&self, t: &Ty) -> bool {
+        self.counted(t) && !self.is_int(t) && !self.m.boxed(t) && !self.m.opaque(t) && !self.is_dyn(t) && !matches!(t, Ty::Con(n, _) if n == "Sender" || n == "Receiver")
+    }
+
+    fn write_backs(&mut self, backs: Vec<(usize, String, Ty, TypeExpr)>, places: &[Place]) -> Res<()> {
         for (i, slot, t, param) in backs {
             let place = places.get(i).cloned().flatten();
             self.write_back(&place, &slot, &t, &param)?;
@@ -5206,7 +5312,7 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     /// A trait method on a union's value: each member's implementation, by the member.
-    fn call_on_union(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
+    fn call_on_union(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>, places: &[Place]) -> Res<V> {
         if vs.iter().any(|v| is_never(&v.0)) {
             return Ok(never());
         }
@@ -5252,7 +5358,7 @@ impl<'m, 'a> Func<'m, 'a> {
     /// unless the method has no `self`). The implementation is chosen here,
     /// from the type; a variant with an implementation of its own is chosen
     /// by its tag.
-    fn call_method(&mut self, name: &str, recv: Ty, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
+    fn call_method(&mut self, name: &str, recv: Ty, vs: Vec<V>, hint: Option<Ty>, places: &[Place]) -> Res<V> {
         if vs.iter().any(|v| is_never(&v.0)) {
             return Ok(never());
         }
@@ -5302,7 +5408,7 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     /// Call the implementation of `name` for type `head` (on a `recv`).
-    fn method_target(&mut self, name: &str, recv: Ty, head: String, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
+    fn method_target(&mut self, name: &str, recv: Ty, head: String, vs: Vec<V>, hint: Option<Ty>, places: &[Place]) -> Res<V> {
         // `Debug` and `Display` without an impl of the type's own: the built-in forms
         let m = crate::types::split_trait_call(name).map_or(name, |(_, m)| m);
         if matches!(m, "debug" | "to_string") && vs.len() == 1 && self.m.resolve_method(name, &head).is_none_or(|(tr, _)| self.m.impl_of(&tr, &head).is_none()) {
@@ -5340,7 +5446,7 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     /// `call_fn`, with the places of the arguments (for `mut` parameters).
-    fn call_fn_at(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
+    fn call_fn_at(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>, places: &[Place]) -> Res<V> {
         let f = self.m.env.fns.get(&Symbol::new(name)).ok_or_else(|| format!("`{name}` is not in the program"))?;
         if f.params.len() != vs.len() {
             return Err(format!("`{name}` takes {} arguments", f.params.len()));
@@ -5408,7 +5514,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.cancel_point()?;
                 r
             }
-            "host_read_file" | "host_list_dir" | "host_read_bytes" => {
+            "host_read_file" | "host_list_dir" | "host_read_bytes" | "host_run" => {
                 // a value, or NULL and the failure
                 let (k, m) = (self.fresh("kind"), self.fresh("msg"));
                 writeln!(self.allocas, "  {k} = alloca ptr\n  {m} = alloca ptr").unwrap();
@@ -5418,7 +5524,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let ok = self.fresh("ok");
                 self.emit(format!("{ok} = icmp ne ptr {}, null", r.1));
                 let okv = match name {
-                    "host_list_dir" => lst,
+                    "host_list_dir" | "host_run" => lst,
                     "host_read_bytes" => Ty::Con(Symbol::new("List"), vec![Ty::Int]),
                     _ => Ty::Str,
                 };
@@ -5919,7 +6025,7 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     /// Call `name` on a value of a trait type, through its table.
-    fn dyn_call(&mut self, name: &str, recv: Ty, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
+    fn dyn_call(&mut self, name: &str, recv: Ty, vs: Vec<V>, hint: Option<Ty>, places: &[Place]) -> Res<V> {
         let Ty::Con(tr, _) = &recv else { unreachable!() };
         let m = crate::types::split_trait_call(name).map_or(name, |(_, m)| m);
         let methods = self.dyn_methods(tr);
@@ -6973,7 +7079,13 @@ impl<'m, 'a> Func<'m, 'a> {
             self.check_type_refinement(c, &v)?;
             return Ok(v);
         }
-        let p = self.block_of(self.m.tags[c], &vals)?;
+        let on_stack = self.stack_ctor.take() == Some(e as *const Expr as usize) && !self.m.boxed(&t) && !self.is_dyn(&t);
+        let p = if on_stack {
+            self.stack_made = Some(fs.iter().map(|f| f.ty.clone()).collect());
+            self.stack_block(self.m.tags[c], &vals)?
+        } else {
+            self.block_of(self.m.tags[c], &vals)?
+        };
         let v = self.temp((t, p));
         self.check_type_refinement(c, &v)?;
         Ok(v)
@@ -7334,6 +7446,20 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
                 let shown = crate::printer::expr(place, 0);
                 let cur = self.load(x)?;
+                // (declared as the record's own type, without type arguments,
+                // the record's check is the one `in_place_field` rules out)
+                let plain = match &l.declared {
+                    None => true,
+                    Some(d @ TypeExpr::Named(_, targs)) => targs.is_empty() && self.lower(d).ok().map(|t| self.m.repr(&t).ok()) == Some(self.m.repr(&cur.0).ok()),
+                    Some(_) => false,
+                };
+                if path.len() == 1 && plain {
+                    if let Some((tys, texprs, i, c)) = self.in_place_field(&cur.0, &path[0])? {
+                        let new = self.set_field_in_place(&cur, &tys, &texprs, (i, &path[0]), &c, v, &shown)?;
+                        self.replace(&l, new)?;
+                        return Ok(());
+                    }
+                }
                 let new = self.set_path(&cur, &path.iter().map(|s| s.to_string()).collect::<Vec<_>>(), v, &shown)?;
                 let new = self.coerce(new, &l.t)?;
                 if let Some(t) = &l.declared {
@@ -7602,6 +7728,69 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok(())
     }
 
+    /// Field `f` of a value of type `t`, when an assignment to it can change
+    /// the value in place: `t` is a record (one constructor) or a tuple, with
+    /// no refinement of its own to check on the new value. Its field types,
+    /// as written, its position and the constructor (`None`: a tuple).
+    fn in_place_field(&self, t: &Ty, f: &str) -> Res<Option<(Vec<Ty>, Vec<TypeExpr>, usize, Option<String>)>> {
+        let t = self.m.repr(t)?;
+        if self.m.boxed(&t) || self.is_dyn(&t) {
+            return Ok(None);
+        }
+        if let Ty::Con(n, args) = &t {
+            if n == "Tuple" {
+                let Ok(i) = f.parse::<usize>() else { return Ok(None) };
+                if i >= args.len() {
+                    return Ok(None);
+                }
+                return Ok(Some((args.clone(), vec![], i, None)));
+            }
+        }
+        let cs = self.m.ctors_of(&t);
+        let [c] = cs.as_slice() else { return Ok(None) };
+        if self.m.is_distinct(c) || self.m.refinement(&self.m.env.ctors[&Symbol::new(c)]).is_some() {
+            return Ok(None);
+        }
+        let fs = self.m.fields(c, &self.m.ctor_args(c, &t))?;
+        let Some(i) = fs.iter().position(|x| x.name.as_deref() == Some(f)) else { return Ok(None) };
+        Ok(Some((fs.iter().map(|x| x.ty.clone()).collect(), fs.iter().map(|x| x.texpr.clone()).collect(), i, Some(c.clone()))))
+    }
+
+    /// `x.f = v` (`cur` is `x`'s value): when nothing but `x` holds it (a
+    /// count of 1), the field is replaced in place (its old value dropped),
+    /// else in a copy, as `set_in` does. Either way the result is a value
+    /// the caller owns (in place: `cur` held once more, which `replace`
+    /// gives back when it drops the old value).
+    #[allow(clippy::too_many_arguments)]
+    fn set_field_in_place(&mut self, cur: &V, tys: &[Ty], texprs: &[TypeExpr], (i, f): (usize, &str), c: &Option<String>, v: V, shown: &str) -> Res<V> {
+        let v = self.coerce(v, &tys[i])?;
+        if let Some(c) = c {
+            let ctx = format!("assigning `{shown}`");
+            self.check(&texprs[i], &v, &format!("{ctx}: {}.{f}", crate::names::short(c)), false)?;
+        }
+        let v = self.take(v);
+        let uniq = self.fresh("unique");
+        self.emit(format!("{uniq} = call i1 @strata_unique(ptr {})", cur.1));
+        let (here, copy, done) = (self.fresh_label("set.here"), self.fresh_label("set.copy"), self.fresh_label("set.done"));
+        self.emit(format!("br i1 {uniq}, label %{here}, label %{copy}"));
+        self.block(&here);
+        let old = self.field(cur, i, &tys[i])?;
+        self.set_field(&cur.1, i, &v)?;
+        self.drop_value(&old)?;
+        self.emit(format!("call void @strata.dup(ptr {})", cur.1));
+        let from_here = self.cur.clone();
+        self.br(&done);
+        self.block(&copy);
+        let p = self.copy_block(cur, tys, Some(i))?;
+        self.set_field(&p, i, &v)?;
+        let from_copy = self.cur.clone();
+        self.br(&done);
+        self.block(&done);
+        let r = self.fresh("set");
+        self.emit(format!("{r} = phi ptr [ {}, %{from_here} ], [ {p}, %{from_copy} ]", cur.1));
+        Ok(self.temp((cur.0.clone(), r)))
+    }
+
     /// Store `new` in variable `l`, which owns it (taken); its old value is
     /// dropped when the enclosing statement ends (something in it may still
     /// read the old one, as `f(x, mut x.pop())` does).
@@ -7637,7 +7826,7 @@ impl Module<'_> {
             let local = format!("fuzz.arg{k}");
             c.local_owned(&local, v, None)?;
             vs.push(c.load(&local)?);
-            places.push(mutable.then(|| (local.clone(), vec![])));
+            places.push(mutable.then(|| (local.clone(), vec![], false)));
         }
         c.call_fn_at(&t.name, vs, None, &places)?;
         c.drop_from(0, None)?;

@@ -595,7 +595,7 @@ impl<'a> Vc<'a> {
             self.given.push(crate::types::shown_name(&what));
             return;
         }
-        // (the prelude's names as written: `self.len()`, not `self.FiniteIterator::std.prelude.len()`)
+        // (the prelude's names as written: `self.len()`, not `self.FiniteIterator::core.prelude.len()`)
         let what = crate::types::shown_name(&what);
         self.obligations.push(Obligation { what, goal: g.clone(), pc: self.pc.clone(), facts: self.facts.len(), termination: false });
         // past a check, execution continues only if it held
@@ -3469,7 +3469,7 @@ impl<'a> Vc<'a> {
             _ => {
                 // anything else: a fresh value of the builtin's result type, when it has one
                 // (when every version of it returns the same type, free of type variables)
-                let rets: Vec<TypeExpr> = crate::types::BUILTINS
+                let rets: Vec<TypeExpr> = crate::types::builtins()
                     .iter()
                     .filter(|b| b.name == name)
                     .filter_map(|b| match crate::types::parse_type_str(b.sig) {
@@ -3477,7 +3477,7 @@ impl<'a> Vc<'a> {
                         _ => None,
                     })
                     .collect();
-                let n = crate::types::BUILTINS.iter().filter(|b| b.name == name).count();
+                let n = crate::types::builtins().iter().filter(|b| b.name == name).count();
                 match rets.first() {
                     Some(ret) if rets.len() == n && rets.iter().all(|r| r == ret) => {
                         let old = self.reason.replace(not_modelled);

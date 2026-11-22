@@ -58,7 +58,8 @@ fn both(dir: &Path, name: &str, file: &Path) -> ((String, String, Option<i32>), 
     (outcome(&rust), outcome(&ours))
 }
 
-/// Programs of the constructs step 1 compiles, each ending as it ends
+/// Programs of the constructs compiled so far (step 1: scalars, functions,
+/// control flow; step 2: records, sums, tuples, `match`), each ending as it ends
 /// (normally, with an exit code, or with a fault).
 const PROGRAMS: &[(&str, &str)] = &[
     (
@@ -235,6 +236,241 @@ fn main() {
     }
 }
 ",
+    ),    (
+        "records",
+        "type Point = { x: Int, y: Int }
+
+type Line = { from: Point, to: Point, label: String = \"line\" }
+
+fn shift(p: Point, dx: Int) -> Point {
+    Point { ..p, x: p.x + dx }
+}
+
+fn length2(l: Line) -> Int {
+    dx := l.to.x - l.from.x
+    dy := l.to.y - l.from.y
+    dx * dx + dy * dy
+}
+
+fn main() {
+    p := Point { x: 1, y: 2 }
+    q := shift(p, 3)
+    print(p)
+    print(q)
+    print(q.x + q.y)
+    l := Line { from: p, to: q }
+    print(l)
+    print(length2(l))
+    print(f\"{l.label}: {l.from} -> {l.to}\")
+    print(p == Point { x: 1, y: 2 })
+    print(p == q)
+    print(p != q)
+    pair := (p.x, \"two\", 3.5, true)
+    print(pair)
+    print(pair.1)
+    (a, b, _, d) := pair
+    print(f\"{a} {b} {d}\")
+    print((1, (2, 3)) == (1, (2, 3)))
+}
+",
+    ),
+    (
+        "sums",
+        "type Shape =
+    | Circle { radius: Float }
+    | Rect(Float, Float)
+    | Dot
+
+type Tree = Leaf | Node(Tree, Int, Tree)
+
+fn area(s: Shape) -> Float {
+    match s {
+        Circle { radius } => 3.0 * radius * radius,
+        Rect(w, h) => w * h,
+        Dot => 0.0,
+    }
+}
+
+fn insert(t: Tree, n: Int) -> Tree {
+    match t {
+        Leaf => Node(Leaf, n, Leaf),
+        Node(l, m, r) => if n < m {
+            Node(insert(l, n), m, r)
+        } else {
+            Node(l, m, insert(r, n))
+        },
+    }
+}
+
+fn total(t: Tree) -> Int {
+    match t {
+        Leaf => 0,
+        Node(l, n, r) => total(l) + n + total(r),
+    }
+}
+
+fn describe(n: Int) -> String {
+    match n {
+        0 => \"zero\",
+        1 | 2 | 3 => \"small\",
+        _ => \"big\",
+    }
+}
+
+fn first_word(s: String) -> Option[Int] {
+    if s == \"\" {
+        None
+    } else {
+        Some(if s == \"abc\" { 3 } else { 5 })
+    }
+}
+
+fn main() {
+    print(area(Circle { radius: 1.0 }))
+    print(area(Rect(2.0, 3.0)))
+    print(area(Dot))
+    print(Rect(2.0, 3.0))
+    print(Dot)
+    mut t := Leaf
+    t = insert(t, 5)
+    t = insert(t, 2)
+    t = insert(t, 8)
+    print(t)
+    print(total(t))
+    print(describe(0))
+    print(describe(2))
+    print(describe(9))
+    print(first_word(\"abc\"))
+    print(first_word(\"\"))
+    o := first_word(\"hello\")
+    x := match o {
+        Some(n) => n,
+        None => -1,
+    }
+    print(x)
+    print(o is Some)
+    print(Dot is Dot)
+    print(Rect(1.0, 2.0) == Rect(1.0, 2.0))
+    print(Circle { radius: 1.0 } == Dot)
+    let r: Result[Int, String] = Err(\"bad\")
+    match r {
+        Ok(v) => print(v),
+        Err(m) => print(f\"error: {m}\"),
+    }
+    print(r)
+}
+",
+    ),
+    (
+        "generic",
+        "type Pair[A, B] = { first: A, second: B }
+
+type Expr =
+    | Num(Int)
+    | Add(Expr, Expr)
+    | Mul { left: Expr, right: Expr }
+    | Neg(Expr)
+
+type Empty = {}
+
+type Flags = { on: Bool, ratio: Float, note: String, nothing: () }
+
+fn swap(p: Pair[Int, String]) -> Pair[String, Int] {
+    Pair { first: p.second, second: p.first }
+}
+
+fn eval(e: Expr) -> Int {
+    match e {
+        Num(n) => n,
+        Add(Num(0), r) => eval(r),
+        Add(l, r) => eval(l) + eval(r),
+        Mul { left: Num(1), right } => eval(right),
+        Mul { left, right } => eval(left) * eval(right),
+        Neg(x) => -eval(x),
+    }
+}
+
+fn classify(t: (Int, Bool, String)) -> String {
+    match t {
+        (0, _, _) => \"zero\",
+        (_, true, \"yes\") => \"yes\",
+        (n, false, s) => f\"{s}{n}\",
+        _ => \"other\",
+    }
+}
+
+fn divmod(a: Int, b: Int) -> (Int, Int) {
+    (a / b, a % b)
+}
+
+fn main() {
+    p := Pair { first: 1, second: \"one\" }
+    print(p)
+    print(swap(p))
+    let nested: Option[Option[Int]] = Some(Some(4))
+    print(nested)
+    match nested {
+        Some(Some(n)) => print(n),
+        Some(None) => print(\"inner none\"),
+        None => print(\"none\"),
+    }
+    e := Add(Mul { left: Num(1), right: Num(7) }, Neg(Add(Num(0), Num(2))))
+    print(e)
+    print(eval(e))
+    print(classify((0, true, \"a\")))
+    print(classify((1, true, \"yes\")))
+    print(classify((2, false, \"n=\")))
+    print(classify((3, true, \"no\")))
+    (q, r) := divmod(17, 5)
+    print(f\"{q} {r}\")
+    ((a, b), c) := ((1, \"x\"), 2.5)
+    print(f\"{a}{b}{c}\")
+    print(Empty {})
+    print(Empty {} == Empty {})
+    fl := Flags { on: true, ratio: 0.5, note: \"say \\\"hi\\\"\\n\", nothing: () }
+    print(fl)
+    big := Pair { first: 1 << 80, second: true }
+    print(big.first)
+    w := match eval(e) as v {
+        5 => f\"five {v}\",
+        _ => f\"not five {v}\",
+    }
+    print(w)
+    k := match 5 {
+        where it > 3 => 3,
+        _ => 0,
+    }
+    print(k)
+}
+",
+    ),
+    (
+        "assert_records",
+        "type Point = { x: Int, y: Int }
+
+type Status = Active | Closed { why: String }
+
+fn close(s: Status) -> Status {
+    match s {
+        Active => Closed { why: \"done\" },
+        Closed { .. } => s,
+    }
+}
+
+fn main() -> Int {
+    s := close(Active)
+    code := match s {
+        Active => 0,
+        Closed { why: \"done\" } => 3,
+        Closed { why } => 4,
+    }
+    print(code)
+    assert close(s) == Closed { why: \"done\" }
+    p := Point { x: 1, y: 2 }
+    assert p == Point { ..p, y: 3 }
+    code
+}
+",
     ),
 ];
 
@@ -257,8 +493,8 @@ fn compiled_programs_do_what_rust_compiled_ones_do() {
 #[test]
 fn refuses_what_it_does_not_compile_yet() {
     let dir = scratch("refused");
-    let file = dir.join("records.strata");
-    save(&file, "type P = { x: Int }\n\nfn main() {\n    p := P { x: 1 }\n    print(p.x)\n}\n");
+    let file = dir.join("lists.strata");
+    save(&file, "fn main() {\n    xs := [1, 2]\n    print(xs)\n}\n");
     let out = compiler::run(&["codegen".to_string(), file.to_string_lossy().into_owned()]);
     assert!(out.starts_with("error: in `main`: not compiled yet: "), "{out}");
     let _ = std::fs::remove_dir_all(&dir);

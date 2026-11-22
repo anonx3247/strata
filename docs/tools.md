@@ -91,6 +91,8 @@ error: invalid input: lines: [] does not satisfy `NonEmpty` (where len(it) > 0)
 
 Outside a package, `strata --file F edit < text` writes a script (or a folder's module) as given, then checks it: what doesn't check is still written, its errors are printed with `written, but F doesn't check`, and the exit code is 1. (A package's `strata edit` refuses such an edit instead.) One module file of a folder isn't checked alone, since its neighbours may not be written yet.
 
+`--strata` and `--compare` run the front end and code generator written in Strata (the repository's `compiler/` program) in place of, or next to, the Rust ones, on the commands it implements: `check` (`compiler check`; a script or a package, its modules checked together), `lex` and `parse` (`compiler lex`, `parse`, and `stored` for `parse --stored`), `render` (`compiler text`, a whole script), `run` (`compiler eval`, which gives the program the arguments `one` and `two words`, as the tests do) and `build` (`compiler codegen`, linked with `src/llvm/runtime.c` by clang). `--strata` prints the Strata implementation's output alone (`build --strata` writes the executable); `--compare` runs both and prints the lines only one of them gives (`only in rust: …`, `only in strata: …`; for `check` the errors, for `build` the two programs' stdout, stderr and exit code), exit 0 when they agree, 1 when not. Where the Strata side doesn't cover a case (a package for commands other than `check`, a program `compiler/codegen` can't compile yet), it says so and exits 2. The compiler package is the `compiler/` folder of the repository `strata` runs in (in the current folder or above, or above the `strata` executable; `STRATA_COMPILER=DIR` names another), built once with `strata build` into `~/.cache/strata/compiler/<hash>` (`STRATA_CACHE`) and rebuilt when it, `std/` or `strata` changes; without it, the flags say so and exit 2. `verify` has no Strata implementation yet.
+
 ## Compiling to native code
 
 `strata build` compiles a program to an executable through LLVM: it writes LLVM IR as text, and `clang` compiles it with a small C runtime (`STRATA_CC` chooses another compiler). `--emit-llvm` prints the IR instead. `build` first verifies what changed since it was last verified (`--no-verify` doesn't), and the checks proven are left out of the program (`--all-checks` keeps them; see [verification](verification.md#what-is-proven-isnt-checked-again)).
@@ -231,8 +233,8 @@ A folder with a `strata.toml` is a **package**. Its `.strata` files are its modu
 name = "tasks"                         # `strata init` uses the folder's name; it stays when the folder moves (a worktree, a rename)
 exports = ["core", "memory.MemQueue"]  # optional: modules or definitions other packages can use; default every `pub`
 
-[deps]                                 # accepted, not fetched yet
-json = "https://example.com/strata-json"
+[deps]                                 # other packages, by local path (read by the compiler in Strata, `compiler/deps`)
+json = { path = "../json" }
 
 [verify]                               # what `strata verify` requires (see Verification)
 proven = ["core"]
@@ -244,6 +246,8 @@ integers = "proven"                    # integer fields must be proven to fit a 
 [toml]                                 # how `std.toml`'s derived `Toml` reads TOML here
 unknown_keys = "error"                 # `from_toml` refuses keys a record doesn't have (default: "ignore")
 ```
+
+**Dependencies.** `[deps]` names other packages by local path (`json = { path = "../json" }`; the key is the dependency's `name`). A dependency's modules are named with its package's name as prefix, as std's are with `std`: its root module (`main.strata`) is `json`, its module `text` is `json.text`. Inside the dependency nothing changes (its root module stays visible short to its other modules); everywhere else it is reached only through `use` (`use json`, `from json use parse`, `use json.text`), and only its `pub` definitions. There are no cycles between packages: if `a` depends on `b`, `b` may not depend on `a`, directly or through others (`dependency cycle: a -> b -> a`); cycles between the modules of one package are fine. std depends on nothing. A dependency is checked, verified and tested in its own package: the commands report and test only the package's own definitions (`strata test --with-deps` also runs dependencies' tests). So far this is built in the compiler written in Strata (`compiler/deps`, its `package [--std DIR] DIR` command); the Rust `strata` commands don't load dependencies yet.
 
 Loading a package (for `check`, `run`, `verify`, …) fails on an export that names nothing, or a definition that isn't `pub`.
 

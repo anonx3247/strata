@@ -50,6 +50,9 @@ pub const HOST: &[Builtin] = &[
     Builtin::new("host_remove", "", "(String) -> Result[(), (String, String)]"),
     Builtin::new("host_args", "", "() -> List[String]"),
     Builtin::new("host_env_var", "", "(String) -> Option[String]"),
+    // runs a program (no shell) with its arguments in a folder (`""`: the current one):
+    // `[exit code as decimal text, stdout, stderr]`, or the failure to start it
+    Builtin::new("host_run", "", "(String, List[String], String) -> Result[List[String], (String, String)]"),
     // the monotonic clock, in nanoseconds; waiting (a task that is cancelled stops at once)
     Builtin::new("host_now", "", "() -> Int"),
     Builtin::new("host_sleep", "", "(Int) -> ()"),
@@ -66,6 +69,25 @@ pub const HOST: &[Builtin] = &[
 
 pub fn is_host(name: &str) -> bool {
     HOST.iter().any(|h| h.name == name)
+}
+
+/// Whether a package is built into strata (`std`, and `core` below it): its
+/// modules are named after it (`std/io.strata` is `std.io`, `core/types.strata`
+/// is `core.types`), and its changes are git's alone (no strata.log).
+pub fn builtin_package(name: &str) -> bool {
+    name == NAME || name == crate::core::NAME
+}
+
+/// Module `m` of the built-in package `pkg` as named everywhere: `io` is
+/// `std.io`, the root module `std`.
+pub fn package_module(pkg: &str, m: &str) -> String {
+    if m.is_empty() || m == "main" {
+        pkg.to_string()
+    } else if m == pkg || m.starts_with(&format!("{pkg}.")) {
+        m.to_string()
+    } else {
+        format!("{pkg}.{m}")
+    }
 }
 
 /// Whether a module belongs to the standard library.

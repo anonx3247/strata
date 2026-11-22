@@ -541,6 +541,25 @@ fn memory_is_freed() {
     // an operand that borrows a variable a later operand assigns
     let (out, code) = case(&d, "nested_assign", NESTED_ASSIGN);
     assert!(code == 0 && out.starts_with("first 1/1\nsecond 2\n"), "{out}");
+    // values that don't outlive their variable, on the stack: their fields
+    // (strings, a record, a list, a big integer) dropped with the variable,
+    // on every way out of its block
+    let f = d.join("stack.strata");
+    save(&f, STACK_VALUES);
+    let ir = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
+    let ir = String::from_utf8_lossy(&ir.stdout);
+    assert_eq!(ir.matches(" = alloca [").count(), 2, "the values that stay in their block, on the stack:\n{ir}");
+    let (out, code) = case(&d, "stack", STACK_VALUES);
+    assert!(code == 0 && out.ends_with("15840\n1\nfound Ada7 at 1\n"), "{out}");
+    // a field assigned in place when nothing else holds the value, in a
+    // copy when something does (another variable, a list, an operand, a
+    // task, a constant)
+    let f = d.join("in_place.strata");
+    save(&f, IN_PLACE);
+    let ir = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
+    assert!(String::from_utf8_lossy(&ir.stdout).contains("@strata_unique(ptr"), "no assignment in place");
+    let (out, code) = case(&d, "in_place", IN_PLACE);
+    assert!(code == 0 && out.ends_with("done\n"), "{out}");
     let chain = "type Chain = | End | Link(Int, Chain)\nfn main() { mut c: Chain = End mut i := 0 while i < 1000000 { c = Link(i, c) i += 1 } match c { Link(x, _) => print(x), End => print(0) } }\n";
     // natively only: the interpreter takes minutes on this loop
     let f = d.join("chain.strata");
@@ -1985,3 +2004,162 @@ fn impl_type_parameters_compile() {
         assert_eq!((out.as_str(), code), (want, 0));
     }
 }
+
+/// Values that stay in their block (`llvm/escape.rs`), next to values that
+/// don't: those passed to a function that keeps them, copied, or returned.
+const STACK_VALUES: &str = "type Name = { first: String, last: String }
+
+type Person = { name: Name, age: Int, tags: List[String] }
+
+// borrows `n`: a field read
+fn full(n: Name) -> String {
+    n.first + \" \" + n.last
+}
+
+// borrows `p` (passes it on to a function that borrows it)
+fn label(p: Person) -> String {
+    full(p.name) + \"/\" + to_string(len(p.tags))
+}
+
+// keeps `p`
+fn keep(p: Person) -> List[Person] {
+    [p]
+}
+
+// a value on the stack left by `return`
+fn find(names: List[String], wanted: String) -> Int {
+    mut i := 0
+    while i < len(names) {
+        n := Name { first: names[i], last: \"L\" }
+        if n.first == wanted {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+fn main() {
+    mut total := 0
+    mut kept := []
+    mut i := 0
+    while i < 1000 {
+        i += 1
+        n := Name { first: \"Ada\" + to_string(i), last: \"Lovelace\" }
+        p := Person { name: Name { first: \"x\", last: to_string(i) }, age: i * 4611686018427387904, tags: [\"a\", to_string(i)] }
+        if i % 3 == 0 {
+            continue
+        }
+        total += byte_len(full(n)) + byte_len(label(p))
+        if i == 500 {
+            kept = kept + keep(p)
+        }
+        q := Person { name: n, age: i, tags: [] }
+        match q {
+            Person { age, .. } => {
+                total += age % 5
+            },
+        }
+        if i == 998 {
+            break
+        }
+    }
+    print(total)
+    print(len(kept))
+    names := [\"Ada1\", \"Ada7\", \"Bob\"]
+    at := find(names, \"Ada7\")
+    print(f\"found Ada7 at {at}\")
+}
+";
+
+/// Fields assigned in place, and the values that must not change with them.
+const IN_PLACE: &str = "type State = { n: Int, name: String, errs: List[String], at: (Int, String) }
+
+type P = { x: Int, y: Int }
+
+fn bump(mut s: State) {
+    s.n += 1
+    s.errs = push(s.errs, \"bumped\")
+}
+
+// replaces the whole value moved in
+fn reset(mut s: State) {
+    s = State { n: 42, name: \"reset\", errs: [\"r\"], at: (4, \"d\") }
+}
+
+// another argument mentions the variable: not moved
+fn set_n(mut s: State, n: Int) {
+    s.n = n
+}
+
+// passes it on
+fn twice(mut s: State) {
+    bump(mut s)
+    bump(mut s)
+}
+
+fn both(a: State, b: Int) -> String {
+    f\"{a.n} {b}\"
+}
+
+fn main() {
+    mut s := State { n: 0, name: \"s\", errs: [], at: (0, \"a\") }
+    mut i := 0
+    while i < 1000 {
+        s.n += 1
+        s.name = \"s\" + to_string(i)
+        s.errs = push(s.errs, to_string(i))
+        i += 1
+    }
+    print(f\"{s.n} {s.name} {len(s.errs)}\")
+    // a copy keeps its value
+    t := s
+    s.n = -1
+    print(f\"{t.n} {s.n}\")
+    // so does the value in a list
+    xs := [s]
+    s.name = \"changed\"
+    print(f\"{xs[0].name} {s.name}\")
+    // an operand that reads `s` before a later one assigns it
+    print(both(s, {
+        s.n = 7
+        2
+    }))
+    // a loop over a field the body assigns
+    mut k := 0
+    for e in s.errs {
+        if k < 3 {
+            s.errs = push(s.errs, e)
+        }
+        k += 1
+    }
+    print(f\"{k} {len(s.errs)}\")
+    // a `mut` parameter
+    bump(mut s)
+    print(f\"{s.n} {s.errs[len(s.errs) - 1]}\")
+    twice(mut s)
+    set_n(mut s, s.n + 1)
+    print(f\"{s.n} {len(s.errs)}\")
+    u := s
+    reset(mut s)
+    print(f\"{s.n} {s.name} {u.n} {u.name}\")
+    // a task holding `s` while it changes
+    r := scope {
+        h := spawn s.n * 10
+        s.n = 100
+        await h
+    }
+    print(f\"{r} {s.n}\")
+    // a tuple field, and a tuple
+    s.at = (1, \"b\")
+    mut pair := (1, \"one\")
+    pair.1 = \"uno\"
+    print(f\"{s.at.1} {pair.1}\")
+    // a constant record (every field a literal): never written in place
+    mut c := P { x: 1, y: 2 }
+    c.x = 10
+    d := P { x: 1, y: 2 }
+    print(f\"{c.x} {d.x}\")
+    print(\"done\")
+}
+";

@@ -219,7 +219,7 @@ test "the real clock" (sys: SystemClock) {
 - `verify` never runs a capability's code (it reports it as assumed), nor code that takes one; that code is proven from the capability's contracts like any other.
 - The viewer colours capabilities and capability traits apart from other types.
 
-std's are capabilities too: `Disk` (`std.fs`, for `Files`) and `Process` (`std.process`, for `Environment`), which `main` names. `Console` is the one capability the environment chooses, so `main` asks for the trait: it gets the terminal under `strata run`. A test may ask for it too (`test "..." (mut console: Console) { ... }`): what it writes is the test's own output, shown only if the test fails. Under `strata run --trace`, the console's calls are in the trace with the rest, what was written and what was read.
+std's are capabilities too: `Disk` (`std.fs`, for `Files`), `Process` (`std.process`, for `Environment`) and `Launcher` (`std.process`, for `Commands`: running other programs), which `main` names. `Commands` has one method, `run(mut self, program: String, args: List[String], dir: String) -> Result[Finished, String]` (`Finished = { code: Int, out: String, err: String }`): it starts `program` (looked up in `PATH`) with `args`, never through a shell, in the folder `dir` (`""`: the current one), with nothing on its standard input, waits, and gives its exit code (128 + the signal for one killed by a signal) and what it wrote; `Err` only when it can't be started (no such program or folder). Its `ensures` says the code is never negative, which is all `verify` assumes of a call. Code that takes `Commands` is tested with `mock Commands` or a mock type that answers the calls the test expects. `Console` is the one capability the environment chooses, so `main` asks for the trait: it gets the terminal under `strata run`. A test may ask for it too (`test "..." (mut console: Console) { ... }`): what it writes is the test's own output, shown only if the test fails. Under `strata run --trace`, the console's calls are in the trace with the rest, what was written and what was read.
 
 **How the program is run** is hidden by default, so a program behaves the same everywhere. A package that needs to know says so in `strata.toml`:
 
@@ -540,6 +540,20 @@ test "a receipt shows the time" {
 
 ## Built-in types
 
+**`core`.** What every program has without a `use` is declared in `core/`, a package below the standard library that depends on nothing (std depends on it): `core.types` (the types below, `Debug`, `Display`, `Option`, `Result`, the refinements), `core.builtins` (the builtin functions) and `core.prelude` (the code every program gets: iterators, channels' methods, a string's units). What the compiler itself provides is declared with `builtin`, which only `core` may use: a type with its parameters (`builtin type Dict[K, V]`) and a function's signature, with `requires` where it fails on some arguments, so a builtin's precondition is a contract like any other, and one without `requires` always returns:
+
+```rust
+/// `xs[i]`: element `i`, from 0.
+builtin fn at[A](xs: List[A], i: Int) -> A
+  requires 0 <= i && i < len(xs)
+
+/// The string of one character, code point `c` (not a surrogate).
+builtin fn chr(c: Int) -> String
+  requires 0 <= c && c <= 1114111 && !(55296 <= c && c <= 57343)
+```
+
+A name may have several signatures (`len` of a list, a dict or a set): the first whose parameters fit the arguments is called. `strata --file core render builtins` shows them all (`strata builtins` lists them in short); `strata --file core/ edit MODULE < text` stores a module of core as written (its names are global, nobody's module's), and `strata --file core check` checks the core strata is built with. Not yet contracts: `matches` with a pattern that isn't a regular expression, and a channel used after it ended.
+
 | Type | Notes |
 |---|---|
 | `Int`, `Float`, `Bool`, `String` | `Int` never overflows: it is a machine integer while it fits and a big integer when it doesn't (like Python), literals included. `Float` is never NaN or infinite: an operation whose result would be is a fault (`1e308 * 10.0`). Where that can't be ruled out (code that runs other programs' arithmetic), `checked_add`, `checked_sub`, `checked_mul`, `checked_div`, `checked_rem`, `checked_sqrt` give an `Option[Float]` and `checked_floor`, `checked_ceil`, `checked_round` an `Option[Int]`, `None` instead of the fault. There is no implicit Int/Float mixing (`float(n)`, `round(x)`) |
@@ -729,7 +743,7 @@ cat README.md | strata run examples/wc
 
 **Command-line options** are a record that derives `CommandLine` (`std.cli`): `derive CommandLine for Options` writes its `from_args` and `help` for that record, at compile time. Each field is read from the arguments by its type: a `Bool` is a flag (`--loud`), an `Option[T]` an option with a value (`--times 3` or `--times=3`), a `List[T]` the remaining positional arguments, and any other field a required positional argument, in field order, or an option (`--times 3`) when it has a default. A field left out takes its default. `T` is an `Int`, `Float`, `String`, a refinement of one, or a choice (a type whose variants carry nothing: `type Count = | Lines | Words` is `lines` or `words`). Names take dashes (`dry_run` is `--dry-run`), `--` ends the options, every refinement is checked (`--times: 0 does not satisfy …`), and a mistake exits with code 2. `--help` is built from the record's and fields' `///` doc comments. `strata check` rejects a `CommandLine` record a command line can't fill.
 
-`main` can also ask for `Console` (`std.io`; the environment chooses it: the terminal) and capabilities, in any order: std's `Disk` (`std.fs`), `Process` (`std.process`) and `Codebase` (`std.code`: the codebase itself, as the tools see it, a `Code`), or the program's own. It names them, and passes them on where `Files` or `Environment` is wanted: `fn main(mut console: Console, disk: Disk) { wc(mut console, disk) }`, with `wc` taking any `Files` so that tests can pass `mem_files(...)`. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [ARGS]` still calls a single function (its arguments written as code).
+`main` can also ask for `Console` (`std.io`; the environment chooses it: the terminal) and capabilities, in any order: std's `Disk` (`std.fs`), `Process` and `Launcher` (`std.process`) and `Codebase` (`std.code`: the codebase itself, as the tools see it, a `Code`), or the program's own. It names them, and passes them on where `Files` or `Environment` is wanted: `fn main(mut console: Console, disk: Disk) { wc(mut console, disk) }`, with `wc` taking any `Files` so that tests can pass `mem_files(...)`. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [ARGS]` still calls a single function (its arguments written as code).
 
 The **standard library** is the `std/` package, written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency:
 
@@ -738,7 +752,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 | `std.io` | `Console` (`print`, `write`, `eprint`, `read_line`); `Recorder` / `recorder(input)` / `printed(r)` for tests |
 | `std.fs` | `Files` (`read`, `read_bytes`, `write`, `append`, `exists`, `list`, `make_dir`, `remove`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
 | `std.time` | `Clock` (`now`, `sleep`), the `SystemClock` capability, and the `VirtualClock` capability (its own time per test, moving by itself) for tests; `Duration` (`nanos`, `micros`, `ms`, `seconds`), `Instant`, `elapsed`; `clock.after(d)` as a `select` arm |
-| `std.process` | `Environment` (`args`, `var`), `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
+| `std.process` | `Environment` (`args`, `var`), `Commands` (`run`, giving a `Finished`) with the runtime's `Launcher`, `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
 | `std.code` | `Codebase`, a capability, and the capability trait it implements, `Code` (`version`, `snapshot`): the codebase in the current folder as the tools see it: each `Definition` with its interface and source text, what it uses and what uses it, holes, errors and cached verdicts, and the package's log. `strata ui`'s viewer reads it |
 | `std.cli` | `CommandLine`: a record of options read from the arguments |
 | `std.typing` | types as compile-time values, for derivable traits: `Type` (`name`, `doc`, `kind`, `args`, `fields`, `elements`, `members`, …, and `check`), `Kind`, `Field`, `Choice`; `setting(key)` reads the package's `strata.toml` while compiling, `compile_error` fails a `derive` with a message |

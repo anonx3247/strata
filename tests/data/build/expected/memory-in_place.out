@@ -1,0 +1,14 @@
+1000 s999 1000
+1000 -1
+s999 changed
+-1 2
+1000 1003
+8 bumped
+11 1006
+42 reset 11 changed
+420 100
+b uno
+10 1
+done
+
+--- exit 0

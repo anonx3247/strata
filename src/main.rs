@@ -9,6 +9,7 @@ mod binary;
 mod cli;
 mod cmd;
 mod desugar;
+mod core;
 mod derive;
 mod diff;
 mod history;
@@ -339,6 +340,9 @@ fn run() -> Result<bool, String> {
         return Ok(true);
     };
     let json_out = args.flag("--json");
+    if matches!(cmd, "lex" | "parse" | "render" | "run" | "build") && (args.flag("--strata") || args.flag("--compare")) {
+        return cmd::compare::command(&args, cmd);
+    }
     match cmd {
         "help" | "--help" => {
             println!("{USAGE}");
