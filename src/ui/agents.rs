@@ -306,6 +306,12 @@ impl Agents {
         // a group of its own, so that stopping it stops everything it started
         #[cfg(unix)]
         std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+        // the agent finds `strata` as the viewer's own binary, first on its PATH
+        if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())) {
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            let joined = std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path))).unwrap_or(path);
+            cmd.env("PATH", joined);
+        }
         let mut child = cmd
             .arg("-c")
             .arg(&command)
