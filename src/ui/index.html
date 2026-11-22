@@ -640,6 +640,34 @@ ins { background: color-mix(in srgb, var(--ok) 17%, transparent); } del { backgr
 .msg-u { max-width: none; }
 .pill.contract { background: none; color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
 .sess .wh { color: var(--faint); }
+/* ---------- buttons: an icon and a word, quiet until hovered ---------- */
+svg.i { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.btn, .btn.small, .btn.primary, .btn.danger { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 7px; font: 500 12px var(--sans); color: var(--muted); letter-spacing: 0; text-transform: none; }
+.btn svg.i { width: 13px; height: 13px; }
+.btn:hover:not(:disabled) { color: var(--text); background: color-mix(in srgb, var(--text) 7%, transparent); }
+.btn.primary { color: var(--accent); }
+.btn.primary:hover:not(:disabled) { color: var(--accent); background: var(--accent-soft); }
+.btn.danger:hover:not(:disabled) { color: var(--bad); background: color-mix(in srgb, var(--bad) 9%, transparent); }
+.seg button { display: inline-flex; align-items: center; gap: 6px; }
+.seg button svg.i { width: 13px; height: 13px; }
+.navb button { padding: 3px 7px; } .navb svg.i { width: 13px; height: 13px; }
+.pr-meta a.lnk, .ck a { display: inline-flex; align-items: center; gap: 4px; }
+.ck a { color: var(--faint); } .ck a:hover { color: var(--text); }
+.ck a svg.i { width: 12px; height: 12px; }
+/* a switch instead of a checkbox */
+label.switch { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; color: var(--muted); font: 500 12px var(--sans); padding: 4px 6px; border-radius: 7px; margin: 0; }
+label.switch:hover { color: var(--text); }
+label.switch input { display: none; }
+label.switch .knob { width: 24px; height: 14px; border-radius: 999px; background: var(--line2); position: relative; transition: background .15s; flex: none; }
+label.switch .knob::after { content: ''; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 50%; background: var(--muted); transition: transform .15s, background .15s; }
+label.switch input:checked + .knob { background: color-mix(in srgb, var(--accent) 45%, var(--line2)); }
+label.switch input:checked + .knob::after { transform: translateX(10px); background: var(--text); }
+#composer .row { gap: 2px; padding: 2px 10px 8px 18px; }
+#composer .row > span:first-child { color: var(--faint); }
+.side-h .btn { padding: 3px 7px; }
+.maptools button, .toolbar button.plain { border: 0; background: none; color: var(--muted); font: 500 12px var(--sans); padding: 3px 8px; border-radius: 7px; }
+.maptools button:hover, .toolbar button.plain:hover { color: var(--text); background: color-mix(in srgb, var(--text) 7%, transparent); }
+.maptools { border-color: var(--line); background: color-mix(in srgb, var(--panel) 85%, transparent); }
 </style>
 </head>
 <body>
@@ -809,7 +837,7 @@ function navGo(d) {
 function navButtons() {
   const lbl = n => n ? (byName()[n]?.label || n) : 'everything';
   const back = NAV.stack[NAV.pos - 1], fwd = NAV.stack[NAV.pos + 1];
-  return `<div class="seg navb"><button data-nav="-1" ${NAV.pos > 0 ? '' : 'disabled'} title="${NAV.pos > 0 ? 'back to ' + esc(lbl(back)) + ' (←)' : 'back (←)'}">←</button><button data-nav="1" ${NAV.pos < NAV.stack.length - 1 ? '' : 'disabled'} title="${NAV.pos < NAV.stack.length - 1 ? 'forward to ' + esc(lbl(fwd)) + ' (→)' : 'forward (→)'}">→</button></div>`;
+  return `<div class="seg navb"><button data-nav="-1" ${NAV.pos > 0 ? '' : 'disabled'} title="${NAV.pos > 0 ? 'back to ' + esc(lbl(back)) + ' (←)' : 'back (←)'}">${icon('left')}</button><button data-nav="1" ${NAV.pos < NAV.stack.length - 1 ? '' : 'disabled'} title="${NAV.pos < NAV.stack.length - 1 ? 'forward to ' + esc(lbl(fwd)) + ' (→)' : 'forward (→)'}">${icon('right')}</button></div>`;
 }
 
 function select(name, scroll = true, record = true) {
@@ -1740,6 +1768,28 @@ $('#pal').addEventListener('mousedown', e => { const r = e.target.closest('[data
 // ======================================================================
 // The workspace: Agents, the activity sidebar, PRs
 // ======================================================================
+// icons: 24-unit strokes in the current colour
+const ICONS = {
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+  power: '<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>',
+  sidebar: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  checks: '<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
+  x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  ban: '<circle cx="12" cy="12" r="9"/><path d="m5.7 5.7 12.6 12.6"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/>',
+  external: '<path d="M15 3h6v6M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  message: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  diff: '<path d="M12 3v14M5 10h14M5 21h14"/>',
+  merge: '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/>',
+  layers: '<path d="m12 2 10 5-10 5L2 7z"/><path d="m2 17 10 5 10-5M2 12l10 5 10-5"/>',
+  alert: '<circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/>',
+  play: '<path d="m7 4 13 8-13 8z"/>',
+  left: '<path d="m12 19-7-7 7-7M19 12H5"/>',
+  right: '<path d="M5 12h14M12 5l7 7-7 7"/>',
+};
+const icon = n => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n] || ''}</svg>`;
 const api = async (path, body) => {
   const r = await fetch(path, body === undefined ? { cache: 'no-store' } : { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Strata': '1' }, body: JSON.stringify(body) });
   return r.json();
@@ -2160,13 +2210,13 @@ function renderAgentsLeft() {
     const st = statusOf(s), names = sessionNames(s.id).filter(isLive).slice(0, 4);
     return `<div class="sess ${s.id === AG.sel ? 'sel' : ''}" data-sess="${s.id}"><span class="sdot ${st}"></span><span class="nm">${esc(s.title)}</span><span class="st ${st}">${esc(STATUS_WORD[st] || st)}</span>${sessWhere(s) ? `<span class="wh">⎇ ${esc(sessWhere(s))}</span>` : ''}${names.length ? `<span class="on-defs">${names.map(n => `<code>${esc(n.split('.').pop())}</code>`).join('')}</span>` : ''}</div>`;
   }).join('') : '<div class="empty" style="padding:4px 14px 8px">No sessions yet.</div>';
-  setHtml($('#left'), `<div class="side-h"><span>Sessions</span><button class="btn small" data-newsess>+ New session</button></div>${sess}`);
+  setHtml($('#left'), `<div class="side-h"><span>Sessions</span><button class="btn small" data-newsess title="a new agent session">${icon('plus')}New</button></div>${sess}`);
 }
 
 // A tool call as one thin line (a dot for its status, its name, its arguments),
 // opening to a short body: what an edit was given, what a command printed.
 const TOOL_NAME = { read: 'Read', edit: 'Edit', delete: 'Delete', move: 'Move', search: 'Search', execute: 'Run', think: 'Think', fetch: 'Fetch', switch_mode: 'Mode', other: 'Tool' };
-function clip(text, n) {
+function clipLines(text, n) {
   const ls = text.split('\n');
   return ls.length > n ? [ls.slice(0, n).join('\n'), ls.length - n] : [text, 0];
 }
@@ -2177,7 +2227,7 @@ function toolHtml(tc, sid, open) {
   let name, args = '', body = '', peek = '';
   const more = (n, what) => n ? `<div class="tmore" data-toolall="${id}">… ${n} more line${n > 1 ? 's' : ''} of ${what}</div>` : '';
   const full = AG.toolAll.has(tc.toolCallId);
-  const block = (text, html, what) => { const [t, n] = full ? [text, 0] : clip(text, 12); return `<pre>${html(t)}</pre>${more(n, what)}`; };
+  const block = (text, html, what) => { const [t, n] = full ? [text, 0] : clipLines(text, 12); return `<pre>${html(t)}</pre>${more(n, what)}`; };
   if (sc) {
     name = 'strata ' + sc.sub;
     if (sc.sub === 'edit' || sc.sub === 'add') {
@@ -2214,7 +2264,7 @@ function permHtml(p, sid) {
     const o = (p.options || []).find(o => o.optionId === p.answer);
     return `<div class="perm done">${p.auto ? 'allowed' : o ? esc(o.name.toLowerCase()) : 'cancelled'}: ${what}</div>`;
   }
-  return `<div class="perm"><div class="q">Allow ${what}?</div><div class="opts">${(p.options || []).map(o => `<button class="btn small ${o.kind === 'allow_once' ? 'primary' : ''}" data-perm="${sid}" data-rpc="${esc(JSON.stringify(p.rpc))}" data-opt="${esc(o.optionId)}">→ ${esc(o.name)}</button>`).join('')}<button class="btn small" data-perm="${sid}" data-rpc="${esc(JSON.stringify(p.rpc))}" data-opt="">Cancel</button></div></div>`;
+  return `<div class="perm"><div class="q">Allow ${what}?</div><div class="opts">${(p.options || []).map(o => `<button class="btn small ${o.kind === 'allow_once' ? 'primary' : ''}" data-perm="${sid}" data-rpc="${esc(JSON.stringify(p.rpc))}" data-opt="${esc(o.optionId)}">${icon({ allow_once: 'check', allow_always: 'checks', reject_once: 'x', reject_always: 'ban' }[o.kind] || 'check')}${esc(o.name)}</button>`).join('')}<button class="btn small" data-perm="${sid}" data-rpc="${esc(JSON.stringify(p.rpc))}" data-opt="">Cancel</button></div></div>`;
 }
 function convHtml(id) {
   const items = AG.items[id] || [];
@@ -2245,12 +2295,12 @@ function renderAgentsMain() {
   const s = AG.list.find(x => x.id === AG.sel);
   if (!s) {
     AG.mounted = null;
-    setHtml($('#main'), `<div class="empty-big"><b>No agent session</b>Start one to work with an agent over ACP: in this checkout, in another worktree, or in a new one.<br><br><button class="btn primary" data-newsess>+ New session</button><br><br><span style="font-size:11.5px">agent: <code>${esc(CFG.agent || '')}</code></span></div>`);
+    setHtml($('#main'), `<div class="empty-big"><b>No agent session</b>Start one to work with an agent over ACP: in this checkout, in another worktree, or in a new one.<br><br><button class="btn primary" data-newsess>${icon('plus')}New session</button><br><br><span style="font-size:11.5px">agent: <code>${esc(CFG.agent || '')}</code></span></div>`);
     return;
   }
   if (AG.mounted !== s.id) {
     AG.mounted = s.id; $('#main')._html = null;
-    $('#main').innerHTML = `<div id="agent"><div id="agent-h"></div><div id="conv"></div><div id="composer"><textarea id="prompt" placeholder="Tell the agent what to do"></textarea><div class="row"><span>Enter to send · Shift+Enter for a new line</span><span class="spacer"></span><button class="btn" data-cancel>■ Stop the turn</button><label><input type="checkbox" id="auto" ${s.auto_allow ? 'checked' : ''}> allow tools</label><button class="btn danger" data-stop>× End session</button></div></div></div>`;
+    $('#main').innerHTML = `<div id="agent"><div id="agent-h"></div><div id="conv"></div><div id="composer"><textarea id="prompt" placeholder="Tell the agent what to do"></textarea><div class="row"><span>Enter to send · Shift+Enter for a new line</span><span class="spacer"></span><button class="btn" data-cancel title="stop what the agent is doing (it keeps the session)">${icon('stop')}Stop</button><label class="switch" title="let the agent run its tools without asking"><input type="checkbox" id="auto" ${s.auto_allow ? 'checked' : ''}><span class="knob"></span>Allow tools</label><button class="btn danger" data-stop title="end the session: the agent's process stops">${icon('power')}End</button></div></div></div>`;
     $('#prompt').value = AG.drafts[s.id] || '';
     $('#prompt').addEventListener('input', e => AG.drafts[s.id] = e.target.value);
     $('#prompt').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendPrompt(); } });
@@ -2277,7 +2327,7 @@ function renderAgentsRight() {
   const html = withData(data, () => {
     const by = byName();
     const missing = S.sel && !by[S.sel] ? `<div class="box warn" style="margin:0 0 12px"><code>${esc(S.sel)}</code> isn't in the code here (yet, or any more).</div>` : '';
-    return `<div class="cpanel ${AG.symbols ? '' : 'nosym'}"><div class="cp-sym">${symbolsHtml()}</div><div class="cp-code"><div class="panel-h"><button class="btn small" data-symtoggle title="the list of definitions">${AG.symbols ? '◂' : '▸'} Symbols</button><span>Code</span><b>${esc(where)}</b><span class="spacer"></span>${navButtons()}</div><div class="panel-b">${err ? `<div class="box warn">${esc(err)}</div>` : ''}${missing}${codeHtml(true)}</div></div></div>`;
+    return `<div class="cpanel ${AG.symbols ? '' : 'nosym'}"><div class="cp-sym">${symbolsHtml()}</div><div class="cp-code"><div class="panel-h"><button class="btn small" data-symtoggle title="the list of definitions">${icon('sidebar')}Symbols</button><span>Code</span><b>${esc(where)}</b><span class="spacer"></span>${navButtons()}</div><div class="panel-b">${err ? `<div class="box warn">${esc(err)}</div>` : ''}${missing}${codeHtml(true)}</div></div></div>`;
   });
   setHtml($('#right'), html);
 }
@@ -2330,7 +2380,7 @@ function newSessionDialog() {
     <label class="fl" style="display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="ns-auto" ${CFG.auto_allow ? 'checked' : ''}> allow its tools without asking</label>
     <div class="hint2">runs <code>${esc(CFG.agent || '')}</code> (set <code>[ui] agent</code> in strata.toml, or STRATA_UI_AGENT)</div>
     <div class="hint2" id="ns-err"></div>
-    <div class="acts"><button class="btn" data-dlgclose>Cancel</button><button class="btn primary" data-nsgo>Start</button></div>`);
+    <div class="acts"><button class="btn" data-dlgclose>Cancel</button><button class="btn primary" data-nsgo>${icon('play')}Start</button></div>`);
   $('#ns-where').addEventListener('change', e => { $('#ns-new').style.display = e.target.value === 'new' ? '' : 'none'; });
 }
 async function startSession() {
@@ -2383,7 +2433,7 @@ function prItem(p, inStack) {
 }
 function renderPrList() {
   const L = PR.list;
-  const filt = `<div class="pr-f"><div class="seg">${['open', 'merged', 'closed', 'all'].map(s => `<button data-prstate="${s}" class="${PR.state === s ? 'on' : ''}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}</div><span class="spacer"></span><button class="btn small" data-prreload title="read again">↻</button></div>`;
+  const filt = `<div class="pr-f"><div class="seg">${['open', 'merged', 'closed', 'all'].map(s => `<button data-prstate="${s}" class="${PR.state === s ? 'on' : ''}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}</div><span class="spacer"></span><button class="btn small" data-prreload title="read again">${icon('refresh')}</button></div>`;
   let body;
   if (!L) body = '<div class="empty" style="padding:8px 14px">Asking gh…</div>';
   else if (L.error) body = `<div class="box bad" style="margin:8px 14px">${esc(L.error)}</div>`;
@@ -2436,9 +2486,9 @@ function renderPrMain() {
   if (v.error) { setHtml($('#main'), `<div id="pr"><div class="box bad">${esc(v.error)}</div></div>`); return; }
   const st = prState(v);
   const head = `<h1>${esc(v.title)} <span class="n">#${v.number}</span></h1>
-    <div class="pr-meta"><span class="st-b ${st}">${st.toLowerCase()}</span><span>${esc(who(v.author))} · <code>${esc(v.baseRefName)}</code> ← <code>${esc(v.headRefName)}</code> · ${(v.commits || []).length} commit${(v.commits || []).length === 1 ? '' : 's'}</span><span class="okc">+${v.additions}</span><span class="badc">−${v.deletions}</span><a class="lnk" href="${esc(v.url)}" target="_blank" rel="noreferrer">GitHub ↗</a></div>`;
-  const nfiles = (PR.diff?.files || v.files || []).length;
-  const bar = `<div class="pr-bar"><div class="seg"><button data-prview="conv" class="${PR.showDiff ? '' : 'on'}">Conversation</button><button data-prview="diff" class="${PR.showDiff ? 'on' : ''}">Diff · ${nfiles} file${nfiles === 1 ? '' : 's'}</button></div></div>`;
+    <div class="pr-meta"><span class="st-b ${st}">${st.toLowerCase()}</span><span>${esc(who(v.author))} · <code>${esc(v.baseRefName)}</code> ← <code>${esc(v.headRefName)}</code> · ${(v.commits || []).length} commit${(v.commits || []).length === 1 ? '' : 's'}</span><span class="okc">+${v.additions}</span><span class="badc">−${v.deletions}</span><a class="lnk" href="${esc(v.url)}" target="_blank" rel="noreferrer">${icon('external')}GitHub</a></div>`;
+  const nfiles = (PR.diff?.files || v.files || []).filter(f => !(f.path || f).endsWith('strata.log')).length;
+  const bar = `<div class="pr-bar"><div class="seg"><button data-prview="conv" class="${PR.showDiff ? '' : 'on'}">${icon('message')}Conversation</button><button data-prview="diff" class="${PR.showDiff ? 'on' : ''}">${icon('diff')}Diff · ${nfiles} file${nfiles === 1 ? '' : 's'}</button></div></div>`;
   if (PR.showDiff) { setHtml($('#main'), `<div id="pr">${head}${bar}<div id="changes" style="padding:0;max-width:none">${prDiffHtml()}</div></div>`); return; }
   const events = [
     ...(v.comments || []).map(c => ({ t: c.createdAt, html: `<div class="cmt"><div class="cmt-h"><b>${esc(who(c.author))}</b><span>${when(c.createdAt)}</span></div><div class="cmt-b md">${md(c.body)}</div></div>` })),
@@ -2455,15 +2505,15 @@ function renderPrRight() {
   const open = v.state === 'OPEN';
   const { n, total } = checksSummary(v);
   const ms = { CLEAN: ['okc', 'ready to merge'], BEHIND: ['warnc', 'behind its base (updated first)'], BLOCKED: ['warnc', 'blocked: reviews or checks'], DIRTY: ['badc', 'has conflicts'], UNSTABLE: ['warnc', 'checks failing'], HAS_HOOKS: ['okc', 'ready'], DRAFT: ['muted', 'draft'], UNKNOWN: ['muted', 'GitHub is working it out'] }[v.mergeStateStatus] || ['muted', (v.mergeStateStatus || '').toLowerCase()];
-  const checks = (v.statusCheckRollup || []).map(c => { const [cl, ic] = checkIcon(c); const url = c.detailsUrl || c.targetUrl; return `<div class="ck"><span class="ic ${cl}">${ic}</span><span class="nm3" title="${esc((c.workflowName ? c.workflowName + ' / ' : '') + (c.name || c.context))}">${esc(c.name || c.context)}</span>${url ? `<a href="${esc(url)}" target="_blank" rel="noreferrer">↗</a>` : ''}</div>`; }).join('');
-  const runs = (v.runs || []).slice(0, 4).map(r => { const [cl, ic] = checkIcon(r); return `<div class="ck"><span class="ic ${cl}">${ic}</span><span class="nm3">${esc(r.name)} · ${esc((r.headSha || '').slice(0, 7))} · ${when(r.createdAt)}</span><a href="${esc(r.url)}" target="_blank" rel="noreferrer">↗</a></div>`; }).join('');
+  const checks = (v.statusCheckRollup || []).map(c => { const [cl, ic] = checkIcon(c); const url = c.detailsUrl || c.targetUrl; return `<div class="ck"><span class="ic ${cl}">${ic}</span><span class="nm3" title="${esc((c.workflowName ? c.workflowName + ' / ' : '') + (c.name || c.context))}">${esc(c.name || c.context)}</span>${url ? `<a href="${esc(url)}" target="_blank" rel="noreferrer" title="details">${icon('external')}</a>` : ''}</div>`; }).join('');
+  const runs = (v.runs || []).slice(0, 4).map(r => { const [cl, ic] = checkIcon(r); return `<div class="ck"><span class="ic ${cl}">${ic}</span><span class="nm3">${esc(r.name)} · ${esc((r.headSha || '').slice(0, 7))} · ${when(r.createdAt)}</span><a href="${esc(r.url)}" target="_blank" rel="noreferrer" title="details">${icon('external')}</a></div>`; }).join('');
   const res = PR.result ? `<div class="mlog">${PR.result.error ? `<div class="bad">${esc(PR.result.error)}</div>` : ''}${(PR.result.log || []).map(l => `<div class="${l.ok ? 'ok' : 'bad'}">${l.ok ? '✓' : '✗'} #${esc(l.pr)} ${esc(l.step)}</div>${l.out ? `<div class="o">${esc(String(l.out).slice(0, 400))}</div>` : ''}`).join('')}${PR.result.ok && PR.result.out !== undefined ? `<div class="ok">✓ done</div>` : ''}${PR.result.merged ? `<div class="${PR.result.ok ? 'ok' : 'bad'}">${PR.result.ok ? 'merged ' : 'merged so far: '}${PR.result.merged.map(m => '#' + m).join(', ') || 'none'}</div>` : ''}</div>` : '';
   const stackN = v.below.length + 1;
   setHtml($('#right'), `<div class="pr-act"><h3>Checks <span>${total ? `${n.ok}/${total}${n.bad ? ` · <span class="badc">${n.bad} failing</span>` : ''}${n.run ? ` · ${n.run} running` : ''}` : 'none'}</span></h3>${checks}${runs ? `<div class="lbl3">CI runs</div>${runs}` : ''}</div>
     ${open ? `<div class="pr-act"><h3>Merge</h3><div class="${ms[0]}" style="font-size:12px">${esc(ms[1])}${v.reviewDecision ? ` · ${esc(v.reviewDecision.replace(/_/g, ' ').toLowerCase())}` : ''}</div>
-      <div class="row2"><button class="btn primary small" data-prmerge="one" ${PR.busy ? 'disabled' : ''}>Merge into ${esc(v.baseRefName)}</button>${v.below.length ? `<button class="btn small" data-prmerge="stack" ${PR.busy ? 'disabled' : ''} title="top-down: #${v.number} into ${esc(v.baseRefName)}, then ${v.below.map(p => '#' + p.number).join(', then ')}">Merge the stack (${stackN}, top-down)</button>` : ''}</div></div>
+      <div class="row2"><button class="btn primary small" data-prmerge="one" ${PR.busy ? 'disabled' : ''}>${icon('merge')}Merge into ${esc(v.baseRefName)}</button>${v.below.length ? `<button class="btn small" data-prmerge="stack" ${PR.busy ? 'disabled' : ''} title="top-down: #${v.number} into ${esc(v.baseRefName)}, then ${v.below.map(p => '#' + p.number).join(', then ')}">${icon('layers')}Merge the stack (${stackN}, top-down)</button>` : ''}</div></div>
     <div class="pr-act"><h3>Review</h3><textarea id="pr-text" rows="4" placeholder="Leave a comment (markdown)"></textarea>
-      <div class="row2"><button class="btn small" data-pract="comment" ${PR.busy ? 'disabled' : ''}>Comment</button><button class="btn small primary" data-pract="approve" ${PR.busy ? 'disabled' : ''}>Approve</button><button class="btn small danger" data-pract="request_changes" ${PR.busy ? 'disabled' : ''}>Request changes</button></div></div>` : ''}
+      <div class="row2"><button class="btn small" data-pract="comment" ${PR.busy ? 'disabled' : ''}>${icon('message')}Comment</button><button class="btn small primary" data-pract="approve" ${PR.busy ? 'disabled' : ''}>${icon('check')}Approve</button><button class="btn small danger" data-pract="request_changes" ${PR.busy ? 'disabled' : ''}>${icon('alert')}Request changes</button></div></div>` : ''}
     ${PR.busy || res ? `<div class="pr-act">${PR.busy ? `<div class="muted">${esc(PR.busy)}…</div>` : ''}${res}</div>` : ''}`);
   const ta = $('#pr-text');
   if (ta && ta.value !== PR.draft && document.activeElement !== ta) ta.value = PR.draft;

@@ -5096,3 +5096,22 @@ esac
         std::panic::resume_unwind(e);
     }
 }
+
+/// The viewer's page is one script: a function or constant defined twice
+/// silently replaces the first (a `clip` for tool output once broke the
+/// type map's `clip`).
+#[test]
+fn ui_page_defines_each_name_once() {
+    let page = std::fs::read_to_string(format!("{}/src/ui/index.html", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let mut seen = std::collections::HashMap::new();
+    for line in page.lines() {
+        let rest = line.strip_prefix("async function ").or_else(|| line.strip_prefix("function ")).or_else(|| line.strip_prefix("const ")).or_else(|| line.strip_prefix("let ")).or_else(|| line.strip_prefix("var "));
+        let Some(rest) = rest else { continue };
+        let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$').collect();
+        if !name.is_empty() {
+            *seen.entry(name).or_insert(0) += 1;
+        }
+    }
+    let twice: Vec<_> = seen.iter().filter(|(_, n)| **n > 1).map(|(k, _)| k.clone()).collect();
+    assert!(twice.is_empty(), "defined more than once in src/ui/index.html: {twice:?}");
+}
