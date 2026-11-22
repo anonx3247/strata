@@ -46,7 +46,7 @@ const BUILTIN_HEADS: &[&str] = &["List", "Set", "Dict", "String", "Sender", "Rec
 pub const PRELUDE_MODULE: &str = "core.prelude";
 
 /// A name as messages show it: a prelude trait's method short
-/// (`fold`, not `std.prelude.fold`; `FiniteIterator::len`).
+/// (`fold`, not `core.prelude.fold`; `FiniteIterator::len`).
 pub fn shown_name(name: &str) -> String {
     let mut s = name.replace(&format!("{PRELUDE_MODULE}."), "");
     // a call through a prelude trait, as written (`self.len()`, not `self.FiniteIterator::len()`;
@@ -73,7 +73,7 @@ pub fn prelude_code() -> &'static Program {
                         m.decl.name = prelude_method(m.decl.name);
                     }
                 }
-                // (named apart from the program's: `std.prelude.set_of`)
+                // (named apart from the program's: `core.prelude.set_of`)
                 DeclKind::Fn(f) => f.name = prelude_method(f.name),
                 _ => {}
             }
@@ -83,7 +83,7 @@ pub fn prelude_code() -> &'static Program {
     })
 }
 
-/// A method of a prelude trait as named once resolved (`std.prelude.len`),
+/// A method of a prelude trait as named once resolved (`core.prelude.len`),
 /// as std's are named in their modules: apart from the builtins of the same
 /// name (`len(xs)` on a list).
 fn prelude_method(m: Symbol) -> Symbol {
@@ -99,7 +99,7 @@ fn prelude_traits() -> &'static [Symbol] {
 }
 
 /// The methods of each impl of a prelude trait named as the trait's are
-/// (`fn len` in `impl FiniteIterator[Int] for Count` is `std.prelude.len`).
+/// (`fn len` in `impl FiniteIterator[Int] for Count` is `core.prelude.len`).
 fn qualify_prelude_impls(p: &mut Program) {
     for d in &mut p.decls {
         if let DeclKind::Impl(i) = &mut d.kind {

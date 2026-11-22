@@ -540,6 +540,20 @@ test "a receipt shows the time" {
 
 ## Built-in types
 
+**`core`.** What every program has without a `use` is declared in `core/`, a package below the standard library that depends on nothing (std depends on it): `core.types` (the types below, `Debug`, `Display`, `Option`, `Result`, the refinements), `core.builtins` (the builtin functions) and `core.prelude` (the code every program gets: iterators, channels' methods, a string's units). What the compiler itself provides is declared with `builtin`, which only `core` may use: a type with its parameters (`builtin type Dict[K, V]`) and a function's signature, with `requires` where it fails on some arguments, so a builtin's precondition is a contract like any other, and one without `requires` always returns:
+
+```rust
+/// `xs[i]`: element `i`, from 0.
+builtin fn at[A](xs: List[A], i: Int) -> A
+  requires 0 <= i && i < len(xs)
+
+/// The string of one character, code point `c` (not a surrogate).
+builtin fn chr(c: Int) -> String
+  requires 0 <= c && c <= 1114111 && !(55296 <= c && c <= 57343)
+```
+
+A name may have several signatures (`len` of a list, a dict or a set): the first whose parameters fit the arguments is called. `strata --file core render builtins` shows them all (`strata builtins` lists them in short); `strata --file core/ edit MODULE < text` stores a module of core as written (its names are global, nobody's module's), and `strata --file core check` checks the core strata is built with. Not yet contracts: `matches` with a pattern that isn't a regular expression, and a channel used after it ended.
+
 | Type | Notes |
 |---|---|
 | `Int`, `Float`, `Bool`, `String` | `Int` never overflows: it is a machine integer while it fits and a big integer when it doesn't (like Python), literals included. `Float` is never NaN or infinite: an operation whose result would be is a fault (`1e308 * 10.0`). Where that can't be ruled out (code that runs other programs' arithmetic), `checked_add`, `checked_sub`, `checked_mul`, `checked_div`, `checked_rem`, `checked_sqrt` give an `Option[Float]` and `checked_floor`, `checked_ceil`, `checked_round` an `Option[Int]`, `None` instead of the fault. There is no implicit Int/Float mixing (`float(n)`, `round(x)`) |

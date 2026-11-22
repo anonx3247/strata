@@ -315,7 +315,7 @@ fn brace_on_spine(e: &Expr) -> bool {
 }
 
 /// A name as written: the prelude's methods, which only checked code holds
-/// (`FiniteIterator::std.prelude.len`, in messages), short (`len`).
+/// (`FiniteIterator::core.prelude.len`, in messages), short (`len`).
 fn shown(n: &str) -> std::borrow::Cow<'_, str> {
     if n.contains(crate::types::PRELUDE_MODULE) {
         std::borrow::Cow::Owned(crate::types::shown_name(n))

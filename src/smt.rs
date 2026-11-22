@@ -607,7 +607,7 @@ impl<'a> Vc<'a> {
             self.given.push(crate::types::shown_name(&what));
             return;
         }
-        // (the prelude's names as written: `self.len()`, not `self.FiniteIterator::std.prelude.len()`)
+        // (the prelude's names as written: `self.len()`, not `self.FiniteIterator::core.prelude.len()`)
         let what = crate::types::shown_name(&what);
         self.obligations.push(Obligation { what, goal: g.clone(), pc: self.pc.clone(), facts: self.facts.len(), termination: false });
         // past a check, execution continues only if it held
