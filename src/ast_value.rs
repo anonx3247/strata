@@ -374,6 +374,10 @@ fn expr(e: &Expr) -> String {
             let arm = |a: &SelectArm| rec("SelectArm", &[("comments", strs(&a.comments)), ("op", expr(&a.op)), ("name", opt(&a.name, |n| s(n))), ("body", expr(&a.body))]);
             tag("Select", list(arms, arm))
         }
+        Expr::Race(arms) => {
+            let arm = |a: &SelectArm| rec("SelectArm", &[("comments", strs(&a.comments)), ("op", expr(&a.op)), ("name", opt(&a.name, |n| s(n))), ("body", expr(&a.body))]);
+            tag("Race", list(arms, arm))
+        }
     }
 }
 

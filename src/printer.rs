@@ -474,8 +474,8 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Spawn(x) => format!("spawn {}", expr(x, d)),
         Expr::Await(x) => format!("await {}", wrap(x, 11, d)),
         Expr::Scope(b) => format!("scope {}", block(b, d)),
-        Expr::Select(arms) => {
-            let mut out = "select {\n".to_string();
+        Expr::Select(arms) | Expr::Race(arms) => {
+            let mut out = if matches!(e, Expr::Race(_)) { "race {\n" } else { "select {\n" }.to_string();
             for a in arms {
                 out += &comments(&a.comments, d + 1);
                 let as_name = a.name.as_ref().map(|n| format!(" as {n}")).unwrap_or_default();
