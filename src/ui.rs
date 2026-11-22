@@ -69,7 +69,7 @@ fn snapshot(target: &Target) -> Json {
             Err(e) => return json!({"fatal": e}),
         },
         Target::File(f) => match crate::read_sources(&f.to_string_lossy()) {
-            Ok(p) => (p, vec![], HashMap::default(), f.display().to_string()),
+            Ok(p) => (p, vec![], store::Verdicts::none(), f.display().to_string()),
             Err(e) => return json!({"fatal": e}),
         },
     };
@@ -91,7 +91,7 @@ fn snapshot(target: &Target) -> Json {
     let code_hashes: HashMap<String, String> = p.decls.iter().map(|d| (d.qname(), store::code_hash(d))).collect();
     for d in p.decls.iter().filter(|_| !cache.is_empty()) {
         if let Some(v) = cache.get(&store::closure_hash_in(&graph, &code_hashes, &d.qname())) {
-            verdicts.insert(d.qname(), v.clone());
+            verdicts.insert(d.qname(), v);
         }
     }
     let status = view::Status {

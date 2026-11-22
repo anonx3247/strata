@@ -216,7 +216,7 @@ test "the real clock" (sys: SystemClock) {
 - A capability has no constructor: `SystemClock {}`, `mock SystemClock`, JSON input and `SystemClock.seconds()` are all errors. A program's signature (`main`'s parameters) lists every capability it can use.
 - `main` names the capabilities it may use and picks among them in ordinary code (an option choosing SQLite or Postgres), handing the rest of the program a capability trait value (`late(sys)`).
 - A test may ask for capabilities the same way (`test "..." (sys: SystemClock) { ... }`); one that doesn't uses fakes.
-- `verify` never runs a capability's code, nor code that takes one: it reports them as assumed.
+- `verify` never runs a capability's code (it reports it as assumed), nor code that takes one; that code is proven from the capability's contracts like any other.
 - The viewer colours capabilities and capability traits apart from other types.
 
 std's are capabilities too: `Disk` (`std.fs`, for `Files`) and `Process` (`std.process`, for `Environment`), which `main` names. `Console` is the one capability the environment chooses, so `main` asks for the trait: it gets the terminal under `strata run`. A test may ask for it too (`test "..." (mut console: Console) { ... }`): what it writes is the test's own output, shown only if the test fails. Under `strata run --trace`, the console's calls are in the trace with the rest, what was written and what was read.
@@ -634,7 +634,7 @@ libs = ["m"]             # libraries (-lm)
 - **Faults at the boundary.** Arguments are checked against their types (`I8` is in range) and `requires` before the call; the result against its type and `ensures` after it. A string holding a NUL character can't be passed (C would read it as its end).
 - **The name is the C symbol**, so an extern function can't be renamed (wrap it instead).
 - **Only its own module calls it.** Extern definitions are never `pub`, and code in other modules (submodules included) can't call them. The module that declares them gives the rest of the program its own functions, or a capability for what touches the outside world, so a signature still shows what code can touch.
-- **Contracts are assumed.** `verify` never proves or runs foreign code: a function in a module that declares externs, one that takes one of its types, and one that calls into it are all reported as assumed.
+- **Contracts are assumed.** `verify` never proves foreign code: a foreign function's contract (`ensures it >= 0`) is taken as true where it is called, and the code calling it is verified like any other (fuzzing runs the compiled code, C included). A compiled program checks that contract at each call, as nothing proves it.
 - **Calling C** works wherever code runs: `strata build`, and `strata run` / `strata test` with the JIT, which compiles the `[native]` sources into a library with clang and loads it. C's own library (`strlen`, …) needs no `[native]`.
 
 Not yet: `main` asking for a native module's capability, structs passed by value, callbacks, buffers, and other languages (`extern python`, `extern ts`, `extern rust`, with values crossing as `Json`; see IDEAS.md).
@@ -691,7 +691,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 | `std.cli` | `CommandLine`: a record of options read from the arguments |
 | `std.typing` | types as compile-time values, for derivable traits: `Type` (`name`, `doc`, `kind`, `args`, `fields`, `elements`, `members`, …, and `check`), `Kind`, `Field`, `Choice`; `setting(key)` reads the package's `strata.toml` while compiling, `compile_error` fails a `derive` with a message |
 | `std.json` | `Json`: records and sum types read from JSON and written to it (`derive Json for Signup`; `Signup.decode(parse(text)!)`, `stringify(s.encode()!)`), and implemented for `Int`, `Float`, `Bool`, `String`, `List[T]`, `Option[T]` and `Dict[String, V]`, so `fn send[T: Json](x: T)` takes them; `JsonValue`, `parse`, `stringify` |
-| `std.toml` | TOML 1.1 read and written in Strata: `parse(text)` gives the document's root table (`List[(String, TomlValue)]`, keys in the order written) or an error saying where (`3:1: `b` is defined twice`); `TomlValue` is `Text`, `Integer`, `Number`, `Boolean`, `Moment` (a `DateTime`: optional `Date`, `Time` and `Offset`, TOML's four kinds), `Array` or `Table`; `lookup(doc, ["server", "port"])`; `stringify(doc)` writes TOML text |
+| `std.toml` | `Toml`: records and sum types read from TOML and written to it (`derive Toml for Config`; `Config.read_toml(text)`, `config.write_toml()`, `to_toml` / `from_toml` for `TomlValue`s), implemented for `Int`, `Float`, `Bool`, `String`, `List[T]`, `Dict[String, V]`, `Date`, `Time` and `DateTime`. TOML 1.1 read and written in Strata: `parse(text)` gives the document's root table (`List[(String, TomlValue)]`, keys in the order written) or an error saying where (`3:1: `b` is defined twice`); `TomlValue` is `Text`, `Integer`, `Number`, `Boolean`, `Moment` (a `DateTime`: optional `Date`, `Time` and `Offset`, TOML's four kinds), `Array` or `Table`; `lookup(doc, ["server", "port"])`; `stringify(doc)` writes TOML text |
 | `std.http` | `Request`, `Response`, `Method`; `ok_html`, `ok_text`, `ok_json`, `not_found`, `redirect`, …; `Router` (`app.get("/users/:id", handler)`, `req.param("id")`), for `strata serve` |
 | `std.web` | `Html[M]` and `Attr[M]`: HTML as values, one function per element (`div`, `p`, `table`, `button`, …) and attribute (`class`, `href`, `on_click(msg)`, …); `render`, `document(title, head, body)` |
 | `std.regex` | regular expressions written in Strata: `parse(pattern)` gives a `Regex` (`Literal`, `Class` of code-point ranges, `Look`, `Repeat`, `Capture`, `Concat`, `Alternation`) or an error; `show` prints the tree. `compile(r)` makes its Thompson NFA (`List[Inst]`), `is_full_match(prog, text)` runs it as a Pike VM, and `full_match(text, pattern)` does both: what `matches` means. `matcher(pattern)` makes a DFA (`Automaton`) when the pattern asserts nothing but `^` and `$`, else keeps the NFA; `run_matcher(m, text)` runs it. Compiled code uses them for every `matches` |
@@ -733,6 +733,20 @@ port := match lookup(doc, ["server", "port"]) {
   Some(Integer(n)) => n,
   _ => 80,
 }
+```
+
+`derive Toml` reads records and sum types from TOML as `derive Json` does from JSON, in the form a configuration file is written: a record is a table of its fields (no `type` key), a field left out takes its default, and an `Option` field is left out for `None` (TOML has no null, so an `Option` anywhere but a field is an error at the `derive`). A sum's variant is a table whose `type` names it (one positional field as `value`), a sum whose variants carry nothing is a string, a tuple is an array, a `Dict[String, V]` a table, and `Date`, `Time`, `DateTime` are TOML's dates and times. Every refinement is checked, errors say where (`servers[0].port: 70000 does not satisfy …`), integers are 64-bit, and keys a record doesn't have are ignored unless `strata.toml` says `unknown_keys = "error"` under `[toml]` (or `from_toml_with(v, Reject)`). The methods are named for TOML (`to_toml`, `from_toml`, `read_toml`, `write_toml`), so a type may derive `Json` too.
+
+```rust
+use std.toml.Toml
+
+type Server = { host: String, port: Int where 0 < it && it < 65536 = 8080 }
+type Config = { name: String, servers: List[Server] = [] }
+derive Toml for Server
+derive Toml for Config
+
+config := Config.read_toml("name = \"app\"\n[[servers]]\nhost = \"a.example\"\n")!
+text := config.write_toml()!
 ```
 
 **Regular expressions** (`std.regex`) are written in Strata, so a self-hosted compiler can use them. `parse` reads the syntax of Rust's `regex` crate (Unicode by default: `\d`, `\w`, `\s` and `.` are Unicode's; `\p{Greek}`, `\p{gc=Lu}`, `\p{age=6.0}`; classes with `&&`, `--`, `~~` and `[[:alpha:]]`; named groups; the flags `imsUuRx`; `\b`, `\b{start}`, `\A`, `\z`; no look-around or back-references) into the tree regex-syntax builds: classes as ranges of code points with `(?i)` folded in, flags gone, the same simplifications (`ab|ac` is `a(?:b|c)`, `a|b` is `[ab]`). `tests/regex.rs` checks the two agree on curated and random patterns. The Unicode data (`std.unicode_tables`) is generated by `tools/unicode_tables.py` from regex-syntax's tables (Unicode 16.0.0).
