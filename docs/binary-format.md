@@ -169,12 +169,17 @@ Expr = 0  Int(int)                       1  BigInt(digits:str)       2  Float(fl
      | 31 Set(types:list(TypeExpr), list(Expr))                     Set { 1, 2 }
      | 32 Or(Expr, fallback:Expr)                                   x or { … }, x ?? v
      | 33 Comptime(Expr)                                            comptime e
+     | 34 Scope(Expr)                                               scope { … }
+     | 35 Spawn(Expr)                                               spawn e
+     | 36 Await(Expr)                                               await h
+     | 37 Select(list(SelectArm))                                   select { rx.recv() as x => … }
 
 CtorArgs = 0 None | 1 Positional(list(Expr)) | 2 Record(list((str, Expr)))
          | 3 Update(base:Expr, list((str, Expr)))
 LamParam = name:str  ty:option(TypeExpr)
 CompFor  = pat:Pattern  iter:Expr  cond:option(Expr)
 CompKind = 0 List | 1 Set | 2 Dict        (a Dict comprehension's element is a Tuple of the key and value)
+SelectArm = comments:list(str)  op:Expr  name:option(str)  body:Expr      (`op` is `rx.recv()`, `tx.send(v)` or `await h`)
 Arm      = comments:list(str)  pat:Pattern  body:Expr
 StrPart  = 0 Lit(str) | 1 Expr(Expr, spec:option(FmtSpec))
 FmtSpec  = fill:char  align:option(char)  plus:bool  zero:bool  width:uint  precision:option(uint)
