@@ -4992,3 +4992,246 @@ fn bit_operators() {
     // a bit operation compared keeps its parentheses (C reads `x | 15 == 15` otherwise)
     assert!(out.contains("where (it | 1) == 3 | 0 => 1,") && out.contains("where (it | 15) == 15") && out.contains("x & 255"), "{out}");
 }
+
+/// `strata ui`'s workspace, end to end against a scratch repository: the
+/// activity (branches → commits → definitions) and diffs between them, an
+/// agent session over ACP (a fake agent: a turn with a permission request),
+/// and PRs through a fake `gh` (a stack merged top-down). Nothing leaves the
+/// machine.
+#[test]
+fn ui_workspace_activity_agents_and_prs() {
+    use std::io::{Read, Write as _};
+    let d = tmp("ui-workspace");
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let o = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    let repo = d.join("repo");
+    std::fs::create_dir_all(repo.join("pkg")).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["config", "user.email", "t@example.com"]);
+    git(&repo, &["config", "user.name", "Tester"]);
+    std::fs::write(repo.join("pkg/strata.toml"), "name = \"pkg\"\n").unwrap();
+    let edit = |text: &str, msg: &str| {
+        let (ok, out) = strata(&["edit", "-m", msg], &repo.join("pkg"), Some(text));
+        assert!(ok, "{out}");
+    };
+    edit("pub fn one() -> Int {\n  1\n}\n", "one");
+    git(&repo, &["add", "-A"]);
+    let _ = Command::new("git").arg("-C").arg(&repo).args(["commit", "-qm", "the package"]).output();
+    git(&repo, &["checkout", "-qb", "feature"]);
+    edit("pub fn two() -> Int {\n  one() + 1\n}\n", "two");
+    let _ = Command::new("git").arg("-C").arg(&repo).args(["commit", "-qam", "two"]).output();
+    git(&repo, &["checkout", "-q", "main"]);
+    // an origin, with the PR's head where GitHub keeps it
+    let origin = d.join("origin.git");
+    git(&d, &["clone", "-q", "--bare", repo.to_str().unwrap(), origin.to_str().unwrap()]);
+    git(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+    git(&repo, &["push", "-q", "origin", "feature:refs/pull/1/head"]);
+    git(&repo, &["fetch", "-q", "origin"]);
+    let feature = git(&repo, &["rev-parse", "feature"]);
+
+    // a fake agent: one turn, which asks before running `strata edit`
+    let bin = d.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let exe = |name: &str, text: &str| {
+        let p = bin.join(name);
+        std::fs::write(&p, text).unwrap();
+        Command::new("chmod").arg("+x").arg(&p).status().unwrap();
+        p
+    };
+    let agent = exe(
+        "agent.sh",
+        r#"#!/bin/sh
+upd() { printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":%s}}\n' "$1"; }
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1}}\n' "$id" ;;
+    *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1"}}\n' "$id" ;;
+    *'"method":"session/prompt"'*)
+      upd '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"On it."}}'
+      upd '{"sessionUpdate":"tool_call","toolCallId":"t1","title":"edit","kind":"execute","status":"pending","rawInput":{"command":"strata edit <<EOF\nfn three() -> Int {\n  3\n}\nEOF"}}'
+      printf '{"jsonrpc":"2.0","id":"p1","method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"toolCallId":"t1"},"options":[{"optionId":"yes","name":"Allow","kind":"allow_once"},{"optionId":"no","name":"Reject","kind":"reject_once"}]}}\n'
+      IFS= read -r answer
+      case "$answer" in *'"optionId":"yes"'*) st=completed ;; *) st=failed ;; esac
+      upd "{\"sessionUpdate\":\"tool_call_update\",\"toolCallId\":\"t1\",\"status\":\"$st\"}"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id" ;;
+  esac
+done
+"#,
+    );
+    // a fake gh: PR #1 (feature into main), behind its base; every call logged
+    let log = d.join("gh.log");
+    let gh = exe(
+        "gh",
+        &format!(
+            r#"#!/bin/sh
+echo "$*" >> '{log}'
+pr='{{"number":1,"title":"two","headRefName":"feature","baseRefName":"main","headRefOid":"{feature}","baseRefOid":"","state":"OPEN","isDraft":false,"author":{{"login":"t"}},"mergeStateStatus":"BEHIND","commits":[],"comments":[],"reviews":[],"statusCheckRollup":[],"files":[]}}'
+case "$1 $2" in
+  "pr list") echo "[$pr]" ;;
+  "pr view") echo "$pr" ;;
+  "run list") echo "[]" ;;
+  "pr comment"|"pr review") cat >> '{log}' ;;
+  "pr update-branch"|"pr merge") echo ok ;;
+  *) echo "no $*" >&2; exit 1 ;;
+esac
+"#,
+            log = log.display()
+        ),
+    );
+
+    // a saved Claude Code session of this repository, where Claude keeps them
+    let home = d.join("home");
+    let top = std::fs::canonicalize(&repo).unwrap().to_string_lossy().replace(['/', '.'], "-");
+    let saved = home.join(".claude/projects").join(top);
+    std::fs::create_dir_all(&saved).unwrap();
+    std::fs::write(
+        saved.join("0123abcd-0000-4000-8000-000000000001.jsonl"),
+        [
+            r#"{"type":"user","message":{"role":"user","content":"<command-name>/clear</command-name>"},"cwd":"CWD","gitBranch":"main","timestamp":"2026-11-22T10:00:00Z"}"#,
+            r#"{"type":"user","message":{"role":"user","content":"add three<system-reminder>ignore</system-reminder>"},"cwd":"CWD","gitBranch":"main","timestamp":"2026-11-22T10:00:01Z"}"#,
+            r#"{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"On it."},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"strata check"}}]},"cwd":"CWD"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok: 2 definitions check"}]},"cwd":"CWD"}"#,
+            r#"{"type":"assistant","isSidechain":true,"message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"a subagent"}]}}"#,
+            r#"{"type":"ai-title","aiTitle":"Add three"}"#,
+        ]
+        .join("\n")
+        .replace("CWD", &std::fs::canonicalize(&repo).unwrap().to_string_lossy()),
+    )
+    .unwrap();
+
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let mut server = Command::new(env!("CARGO_BIN_EXE_strata"))
+        .args(["ui", "--port", &port.to_string()])
+        .current_dir(repo.join("pkg"))
+        .env("HOME", &home)
+        .env("STRATA_UI_AGENT", &agent)
+        .env("STRATA_UI_GH", &gh)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // a request as the page makes it (or as `headers` says)
+    let call = |method: &str, path: &str, body: &str, headers: &str| -> (u16, String) {
+        for _ in 0..100 {
+            if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+                let req = format!("{method} {path} HTTP/1.1\r\n{headers}Content-Length: {}\r\n\r\n{body}", body.len());
+                s.write_all(req.as_bytes()).unwrap();
+                let mut out = String::new();
+                s.read_to_string(&mut out).unwrap();
+                let code = out.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
+                return (code, out.split_once("\r\n\r\n").map(|x| x.1.to_string()).unwrap_or_default());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("the viewer didn't start");
+    };
+    let host = format!("Host: 127.0.0.1:{port}\r\n");
+    let page = format!("{host}X-Strata: 1\r\n");
+    let get = |path: &str| -> serde_json::Value { serde_json::from_str(&call("GET", path, "", &host).1).unwrap() };
+    let post = |path: &str, body: &str| -> serde_json::Value { serde_json::from_str(&call("POST", path, body, &page).1).unwrap() };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // only the page itself
+        assert_eq!(call("GET", "/", "", &host).0, 200);
+        assert_eq!(call("GET", "/api/state", "", &format!("Host: evil.example:{port}\r\n")).0, 403);
+        assert_eq!(call("POST", "/api/agents", "{}", &host).0, 403, "a POST without X-Strata");
+        assert_eq!(call("POST", "/api/agents", "{}", &format!("{page}Origin: http://evil.example\r\n")).0, 403);
+
+        // the activity: main, and feature with its commit and the definition it added
+        let act = get("/api/activity");
+        let branches = act["branches"].as_array().unwrap();
+        let feat = branches.iter().find(|b| b["name"] == "feature").unwrap_or_else(|| panic!("{act}"));
+        assert_eq!(feat["commits"][0]["subject"], "two", "{act}");
+        assert_eq!(feat["commits"][0]["defs"], serde_json::json!([{"name": "two", "mk": "add", "kind": "fn"}]), "{act}");
+        assert!(branches.iter().any(|b| b["name"] == "main" && b["here"] == true), "{act}");
+        let diff = get(&format!("/api/diff?base={}&head=feature", feat["base"].as_str().unwrap()));
+        assert_eq!(diff["summary"]["added"], 1, "{diff}");
+        assert!(get("/api/diff?base=--output=x&head=feature")["error"].is_string());
+
+        // an agent session: its turn streams in, and it waits for the permission
+        let s = post("/api/agents", r#"{"title":"three","prompt":"add three","auto_allow":false}"#);
+        assert_eq!(s["id"], 1, "{s}");
+        let wait_for = |kind: &str| -> serde_json::Value {
+            for _ in 0..100 {
+                let ev = get("/api/agents/1?since=0");
+                if ev["list"].as_array().unwrap().iter().any(|e| e["kind"] == kind) {
+                    return ev;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            panic!("no {kind} event: {}", get("/api/agents/1?since=0"));
+        };
+        let ev = wait_for("permission");
+        assert_eq!(ev["status"], "working");
+        assert_eq!(ev["asking"], 1);
+        let perm = ev["list"].as_array().unwrap().iter().find(|e| e["kind"] == "permission").unwrap().clone();
+        assert!(post("/api/agents/1/answer", &serde_json::json!({"rpc": perm["rpc"], "option": "yes"}).to_string())["error"].is_null());
+        let ev = wait_for("stop");
+        let kinds: Vec<String> = ev["list"].as_array().unwrap().iter().map(|e| format!("{}{}", e["kind"].as_str().unwrap(), e["update"]["sessionUpdate"].as_str().map(|u| format!(":{u}")).unwrap_or_default())).collect();
+        assert_eq!(kinds, ["user", "agent", "ready", "update:agent_message_chunk", "update:tool_call", "permission", "answer", "update:tool_call_update", "stop"], "{ev}");
+        assert!(ev["list"].as_array().unwrap().iter().any(|e| e["update"]["status"] == "completed"), "allowed: {ev}");
+        assert_eq!(ev["status"], "ready");
+        // answered once only; then a second turn, and the session ends
+        assert!(post("/api/agents/1/answer", &serde_json::json!({"rpc": perm["rpc"], "option": "yes"}).to_string())["error"].is_string());
+        assert_eq!(get("/api/agents/1?since=9")["list"].as_array().unwrap().len(), 0);
+        post("/api/agents/1/stop", "{}");
+        wait_for("exit");
+
+        // saved sessions: listed with their title, read as a live session's events
+        let hist = get("/api/history");
+        assert_eq!(hist[0]["id"], "0123abcd-0000-4000-8000-000000000001", "{hist}");
+        assert_eq!(hist[0]["title"], "Add three");
+        assert_eq!(hist[0]["branch"], "main");
+        let t = get("/api/history/0123abcd-0000-4000-8000-000000000001");
+        let kinds: Vec<String> = t["list"].as_array().unwrap().iter().map(|e| format!("{}{}", e["kind"].as_str().unwrap(), e["update"]["sessionUpdate"].as_str().map(|u| format!(":{u}")).unwrap_or_default())).collect();
+        assert_eq!(kinds, ["user", "user", "update:agent_message_chunk", "update:tool_call", "update:tool_call_update"], "{t}");
+        assert_eq!(t["list"][0]["text"], "/clear");
+        assert_eq!(t["list"][1]["text"], "add three", "reminders left out");
+        assert_eq!(t["list"][3]["update"]["rawInput"]["command"], "strata check");
+        assert!(get("/api/history/..%2Fx")["error"].is_string());
+
+        // PRs: the list, the page, the structural diff, the actions
+        assert_eq!(get("/api/prs")["prs"][0]["number"], 1);
+        let pr = get("/api/prs/1");
+        assert_eq!(pr["below"], serde_json::json!([]), "{pr}");
+        let pd = get("/api/prs/1/diff");
+        assert_eq!(pd["structural"][0]["path"], "pkg", "{pd}");
+        assert_eq!(pd["structural"][0]["diff"]["summary"]["added"], 1, "{pd}");
+        assert!(post("/api/prs/1/review", r#"{"event":"request_changes","body":" "}"#)["error"].is_string(), "changes need a reason");
+        assert_eq!(post("/api/prs/1/comment", r#"{"body":"Looks good"}"#)["ok"], true);
+        let m = post("/api/prs/1/merge", r#"{"stack":true}"#);
+        assert_eq!(m["ok"], true, "{m}");
+        assert!(get("/api/prs/x")["error"].is_string());
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(calls.contains("pr comment 1 --body-file -\nLooks good"), "{calls}");
+        let update = calls.find("pr update-branch 1").expect("behind: updated first");
+        assert!(calls.find("pr merge 1 --merge").is_some_and(|m| m > update), "{calls}");
+    }));
+    let _ = server.kill();
+    let _ = server.wait();
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// The viewer's page is one script: a function or constant defined twice
+/// silently replaces the first (a `clip` for tool output once broke the
+/// type map's `clip`).
+#[test]
+fn ui_page_defines_each_name_once() {
+    let page = std::fs::read_to_string(format!("{}/src/ui/index.html", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let mut seen = std::collections::HashMap::new();
+    for line in page.lines() {
+        let rest = line.strip_prefix("async function ").or_else(|| line.strip_prefix("function ")).or_else(|| line.strip_prefix("const ")).or_else(|| line.strip_prefix("let ")).or_else(|| line.strip_prefix("var "));
+        let Some(rest) = rest else { continue };
+        let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$').collect();
+        if !name.is_empty() {
+            *seen.entry(name).or_insert(0) += 1;
+        }
+    }
+    let twice: Vec<_> = seen.iter().filter(|(_, n)| **n > 1).map(|(k, _)| k.clone()).collect();
+    assert!(twice.is_empty(), "defined more than once in src/ui/index.html: {twice:?}");
+}
