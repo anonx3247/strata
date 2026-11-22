@@ -305,27 +305,31 @@ impl Parser {
         let comments = self.leading();
         let public = self.eat_kw("pub");
         if self.eat_kw("use") {
-            let mut path = self.ident()?.to_string();
-            let mut items = Some(vec![]);
-            while self.eat_sym(".") {
-                if self.eat_sym("*") {
-                    items = None;
-                    break;
+            // `use std.time`, `use std.time as t`
+            let path = self.use_path()?;
+            if let Some((m, last)) = path.rsplit_once('.') {
+                if last.chars().next().is_some_and(|c| c.is_uppercase()) {
+                    return Err(self.err(&format!("`use` names a module: to import `{last}` from `{m}`, write `from {m} use {last}`")));
                 }
-                if self.eat_sym("{") {
-                    items = Some(self.list("}", |p| p.ident())?);
-                    break;
-                }
-                let seg = self.ident()?;
-                // `use orders.Line` imports one item
-                if seg.chars().next().is_some_and(|c| c.is_uppercase()) || !self.is_sym(".") {
-                    items = Some(vec![seg]);
-                    break;
-                }
-                path.push('.');
-                path.push_str(&seg);
             }
-            return Ok(Decl { comments, doc, kind: DeclKind::Use(UseDecl { path: path.into(), items }), module: Symbol::EMPTY, public });
+            let alias = if self.eat_kw("as") { Some(self.ident()?) } else { None };
+            return Ok(Decl { comments, doc, kind: DeclKind::Use(UseDecl { path: path.into(), alias, items: None }), module: Symbol::EMPTY, public });
+        }
+        if self.is_kw("from") && matches!(self.peek_at(1), Tok::Ident(_)) {
+            // `from std.time use Clock, Timer as T`
+            self.next();
+            let path = self.use_path()?;
+            self.expect_kw("use")?;
+            let mut items = vec![];
+            loop {
+                let name = self.ident()?;
+                let alias = if self.eat_kw("as") { Some(self.ident()?) } else { None };
+                items.push(UseItem { name, alias });
+                if !self.eat_sym(",") {
+                    break;
+                }
+            }
+            return Ok(Decl { comments, doc, kind: DeclKind::Use(UseDecl { path: path.into(), alias: None, items: Some(items) }), module: Symbol::EMPTY, public });
         }
         // `distinct` is only a keyword at the start of a declaration
         let kind = if self.is_kw("distinct") && matches!(self.peek_at(1), Tok::Ident(t) if t == "type") {
@@ -1384,6 +1388,20 @@ impl Parser {
             i += 1;
         }
         false
+    }
+
+    /// A module's path after `use` or `from`: `std.time`. The old forms
+    /// (`use m.{x}`, `use m.*`) say what to write instead.
+    fn use_path(&mut self) -> R<String> {
+        let mut path = self.ident()?.to_string();
+        while self.eat_sym(".") {
+            if self.is_sym("{") || self.is_sym("*") {
+                return Err(self.err(&format!("to import names from `{path}`, write `from {path} use x, y` (and `use {path}` for the module, its names written `{}.x`)", path.rsplit('.').next().unwrap_or(&path))));
+            }
+            path.push('.');
+            path.push_str(&self.ident()?);
+        }
+        Ok(path)
     }
 
     /// A loop's body, after its `invariant e` clauses (`invariant` is a

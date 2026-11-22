@@ -16,9 +16,9 @@ const STRATA: &str = env!("CARGO_BIN_EXE_strata");
 
 /// Each file's value in canonical form, then the value of the text
 /// `stringify` wrote for it; or its error.
-const CHECKER: &str = r#"use std.fs.{Files, Disk}
-use std.process.{Environment, Process}
-use std.toml.{parse, stringify, TomlValue, Text, Integer, Number, Boolean, Moment, Array, Table, DateTime, Utc, Minutes}
+const CHECKER: &str = r#"from std.fs use Files, Disk
+from std.process use Environment, Process
+from std.toml use parse, stringify, TomlValue, Text, Integer, Number, Boolean, Moment, Array, Table, DateTime, Utc, Minutes
 
 fn main(disk: Disk, process: Process) {
   for p in process.args() {
@@ -385,7 +385,7 @@ fn reads_toml_as_the_toml_crate_does() {
 fn errors_say_where() {
     let dir = scratch("errors");
     let prog = dir.join("p.strata");
-    let src = r#"use std.toml.{parse, lookup, Text, Integer}
+    let src = r#"from std.toml use parse, lookup, Text, Integer
 
 fn main() {
   for t in ["a = 1\nb = 2\nb = 3\n", "[x]\ny = \"é\" z\n", "a = 1979-02-30\n", "n = inf\n"] {
@@ -435,8 +435,8 @@ fn edit_and_run(dir: &Path, name: &str, src: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
-const DERIVED: &str = r#"use std.toml.{Toml, Date, DateTime}
-use std.json.Json
+const DERIVED: &str = r#"from std.toml use Toml, Date, DateTime
+from std.json use Json
 
 type Level =
   | Quiet
@@ -530,7 +530,7 @@ Err("a TOML document is a table, not \"Loud\"")
         ("type_field", "type A = { type: String }", "a field named `type`"),
         ("overlap", "type A = { x: Int | Float }", "two members are written as a TOML number"),
     ] {
-        let err = edit_and_run(&dir, name, &format!("use std.toml.Toml\n\n{src}\n\nderive Toml for A\n")).unwrap_err();
+        let err = edit_and_run(&dir, name, &format!("from std.toml use Toml\n\n{src}\n\nderive Toml for A\n")).unwrap_err();
         assert!(err.contains(message), "{name}: {err}");
     }
     let _ = std::fs::remove_dir_all(&dir);

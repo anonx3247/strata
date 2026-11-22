@@ -82,7 +82,7 @@ fn strata(name: &str, patterns: &[String]) -> Vec<String> {
     let list = patterns.iter().map(|p| literal(p)).collect::<Vec<_>>().join(",\n    ");
     run(
         name,
-        &format!("use std.regex.{{parse, show}}\n\nfn main() {{\n  for p in [\n    {list},\n  ] {{\n    print(match parse(p) {{\n      Ok(r) => \"ok \" + show(r),\n      Err(_) => \"err\",\n    }})\n  }}\n}}\n"),
+        &format!("from std.regex use parse, show\n\nfn main() {{\n  for p in [\n    {list},\n  ] {{\n    print(match parse(p) {{\n      Ok(r) => \"ok \" + show(r),\n      Err(_) => \"err\",\n    }})\n  }}\n}}\n"),
     )
 }
 
@@ -237,9 +237,9 @@ fn same_matches_as_regex(name: &str, cases: Vec<(String, String)>, via_matcher: 
     let got = run(
         name,
         &if via_matcher {
-            format!("use std.regex.{{matcher, run_matcher}}\n\nfn main() {{\n  for (p, t) in [\n    {list},\n  ] {{\n    print(f\"{{run_matcher(matcher(p), t)}}\")\n  }}\n}}\n")
+            format!("from std.regex use matcher, run_matcher\n\nfn main() {{\n  for (p, t) in [\n    {list},\n  ] {{\n    print(f\"{{run_matcher(matcher(p), t)}}\")\n  }}\n}}\n")
         } else {
-            format!("use std.regex.{{full_match}}\n\nfn main() {{\n  for (p, t) in [\n    {list},\n  ] {{\n    print(match full_match(t, p) {{\n      Ok(m) => f\"{{m}}\",\n      Err(e) => \"error \" + e,\n    }})\n  }}\n}}\n")
+            format!("from std.regex use full_match\n\nfn main() {{\n  for (p, t) in [\n    {list},\n  ] {{\n    print(match full_match(t, p) {{\n      Ok(m) => f\"{{m}}\",\n      Err(e) => \"error \" + e,\n    }})\n  }}\n}}\n")
         },
     );
     assert_eq!(got.len(), cases.len(), "one line per case");
@@ -348,7 +348,7 @@ fn same_relations_as_regex(name: &str, pairs: Vec<(String, String)>) {
     let got = run(
         name,
         &format!(
-            "use std.regex.{{relations, matcher, Deterministic}}\n\nfn main() {{\n  for (a, b) in [\n    {list},\n  ] {{\n    print(f\"{{relations(a, b)}}\")\n  }}\n  for p in [\n    {kinds},\n  ] {{\n    print(match matcher(p) {{\n      Deterministic(_) => \"dfa\",\n      _ => \"none\",\n    }})\n  }}\n}}\n"
+            "from std.regex use relations, matcher, Deterministic\n\nfn main() {{\n  for (a, b) in [\n    {list},\n  ] {{\n    print(f\"{{relations(a, b)}}\")\n  }}\n  for p in [\n    {kinds},\n  ] {{\n    print(match matcher(p) {{\n      Deterministic(_) => \"dfa\",\n      _ => \"none\",\n    }})\n  }}\n}}\n"
         ),
     );
     assert_eq!(got.len(), pairs.len() + pats.len(), "one line per pair, then per pattern");
@@ -424,7 +424,7 @@ fn samples_match(name: &str, patterns: Vec<String>) {
     let list = patterns.iter().map(|p| literal(p)).collect::<Vec<_>>().join(",\n    ");
     let got = run(
         name,
-        &format!("use std.regex.samples\n\nfn main() {{\n  for p in [\n    {list},\n  ] {{\n    match samples(p, 8, 7) {{\n      Ok(xs) => {{\n        print(f\"{{len(xs)}}\")\n        for x in xs {{\n          print(join(chars(x).map(c -> f\"{{ord(c)}}\"), \" \"))\n        }}\n      }},\n      Err(_) => print(\"0\"),\n    }}\n  }}\n}}\n"),
+        &format!("from std.regex use samples\n\nfn main() {{\n  for p in [\n    {list},\n  ] {{\n    match samples(p, 8, 7) {{\n      Ok(xs) => {{\n        print(f\"{{len(xs)}}\")\n        for x in xs {{\n          print(join(chars(x).map(c -> f\"{{ord(c)}}\"), \" \"))\n        }}\n      }},\n      Err(_) => print(\"0\"),\n    }}\n  }}\n}}\n"),
     );
     let mut lines = got.iter();
     let (mut wrong, mut made) = (vec![], 0);
@@ -649,7 +649,7 @@ fn same_smt_models(name: &str, patterns: Vec<String>) {
     let list = patterns.iter().map(|p| literal(p)).collect::<Vec<_>>().join(",\n    ");
     let got = run(
         name,
-        &format!("use std.regex.{{smt_model, ExactModel, Between}}\n\nfn main() {{\n  for p in [\n    {list},\n  ] {{\n    print(match smt_model(p) {{\n      Some(ExactModel(r)) => \"exact \" + r,\n      Some(Between(u, o)) => \"between \" + u + \" \" + o,\n      None => \"none\",\n    }})\n  }}\n}}\n"),
+        &format!("from std.regex use smt_model, ExactModel, Between\n\nfn main() {{\n  for p in [\n    {list},\n  ] {{\n    print(match smt_model(p) {{\n      Some(ExactModel(r)) => \"exact \" + r,\n      Some(Between(u, o)) => \"between \" + u + \" \" + o,\n      None => \"none\",\n    }})\n  }}\n}}\n"),
     );
     assert_eq!(got.len(), patterns.len(), "one line per pattern");
     let (mut wrong, mut modelled) = (vec![], 0);

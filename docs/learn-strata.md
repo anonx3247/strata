@@ -605,7 +605,7 @@ pub fn ship(mut db: Db, id: OrderId) -> Result[Order, ShipError] { ... }
 fn helper() -> Int { ... }             // private to shop.orders
 
 // billing.strata
-use shop.orders.{Order, ship}          // or `use shop.orders.*`, or `shop.orders.ship(x)`
+from shop.orders use Order, ship      // or `use shop.orders`, then `orders.ship(x)`
 ```
 
 ## Programs
@@ -613,8 +613,8 @@ use shop.orders.{Order, ship}          // or `use shop.orders.*`, or `shop.order
 `main` asks for what it needs by type and `strata run` passes it in: a command-line options record, `Console` (`std.io`, chosen by the environment), and capabilities it names: `Disk` (`std.fs`, a `Files`), `Process` (`std.process`, an `Environment`), `Codebase` (`std.code`, a `Code`: the codebase itself, as the tools see it), or the program's own. It returns `()`, an `ExitCode`, or a `Result` of either (an `Err` exits with 1).
 
 ```rust
-use std.cli.CommandLine
-use std.io.Console
+from std.cli use CommandLine
+from std.io use Console
 
 /// Greet people by name.
 type Options = {
