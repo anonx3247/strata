@@ -861,3 +861,11 @@ fn compare_flag_agrees_on_a_script() {
     let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(0), "{out}");
 }
+
+/// Raw memory (`core.mem`) used outside core.
+const CORE_MEM: &str = "fn main() {\n  p := raw_alloc(8)\n  store_i64(p, 0, 1)\n  print(load_i64(p, 0))\n}\n\nfn keep(p: Ptr, f: (Int) -> Ptr) -> List[Ptr] {\n  [p]\n}\n";
+
+#[test]
+fn raw_memory_outside_core_as_in_rust() {
+    same_errors("core_mem", CORE_MEM, &["is core's"]);
+}
