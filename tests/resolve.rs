@@ -265,3 +265,45 @@ fn use_errors_as_in_rust() {
     assert_eq!(got, want, "{check}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Write `text` as module `m` of the package in `dir` (named `name`, with
+/// `deps` as its `[deps]` lines).
+fn package_module(dir: &Path, name: &str, deps: &str, m: &str, text: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("strata.toml"), format!("name = \"{name}\"\n[deps]\n{deps}")).unwrap();
+    if text.is_empty() {
+        return;
+    }
+    let mut c = Command::new(STRATA).args(["--file", &format!("{}/", dir.display()), "edit", m]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    c.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+    c.wait_with_output().unwrap();
+}
+
+/// Path dependencies (`compiler/deps`, the compiler's `package` command): a
+/// dependency's modules are named with its package's name (`json`,
+/// `json.text`), reached through `use`; its private definitions are refused;
+/// a missing dependency and a cycle between packages are errors.
+#[test]
+fn path_dependencies() {
+    let dir = scratch("deps");
+    let std_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("std");
+    let package = |p: &str| compiler::run(&["package", "--std", &std_dir.to_string_lossy(), &dir.join(p).to_string_lossy()]);
+    let json = dir.join("json");
+    package_module(&json, "json", "", "main", "pub type Tok = { n: Int }\npub fn parse(s: String) -> Tok { Tok { n: helper(s) } }\nfn helper(s: String) -> Int { 1 }\n");
+    package_module(&json, "json", "", "text", "pub fn twice(s: String) -> Int { parse(s).n + helper(s) }\n");
+    let dep = "json = { path = \"../json\" }\n";
+    package_module(&dir.join("app"), "app", dep, "main", "from json use parse, Tok\nuse json.text\nfn first(t: Tok) -> Int { t.n }\nfn main() { print(first(parse(\"x\")) + text.twice(\"y\")) }\n");
+    let out = package("app");
+    assert!(!out.contains("error"), "{out}");
+    assert!(out.contains("fn first(t: json.Tok)") && out.contains("json.parse(\"x\")") && out.contains("json.text.twice(\"y\")"), "{out}");
+    package_module(&dir.join("private"), "private", dep, "main", "from json use helper\nfn main() { print(helper(\"x\")) }\n");
+    assert!(package("private").contains("error in main: `helper` is private to module `json`"));
+    package_module(&dir.join("missing"), "missing", "nope = { path = \"../nope\" }\n", "", "");
+    let out = package("missing");
+    assert!(out.starts_with("error: dependency `nope`: no package at"), "{out}");
+    package_module(&dir.join("a"), "a", "b = { path = \"../b\" }\n", "", "");
+    package_module(&dir.join("b"), "b", "c = { path = \"../c\" }\n", "", "");
+    package_module(&dir.join("c"), "c", "a = { path = \"../a\" }\n", "", "");
+    assert_eq!(package("a").trim(), "error: dependency cycle: a -> b -> c -> a");
+    let _ = std::fs::remove_dir_all(&dir);
+}
