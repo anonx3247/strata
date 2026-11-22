@@ -647,6 +647,23 @@ fn cannot_fail(env: &Env, f: &FnDecl, total: &dyn Fn(&str) -> bool) -> bool {
     ok
 }
 
+/// The predicates of the refinements written in `t`.
+fn refinements_in(t: &TypeExpr, out: &mut Vec<Expr>) {
+    match t {
+        TypeExpr::Refined(b, p) => {
+            out.push((**p).clone());
+            refinements_in(b, out);
+        }
+        TypeExpr::Named(_, args) => args.iter().for_each(|a| refinements_in(a, out)),
+        TypeExpr::Union(ms) => ms.iter().for_each(|m| refinements_in(m, out)),
+        TypeExpr::Fn(ps, r) => {
+            ps.iter().for_each(|p| refinements_in(p, out));
+            refinements_in(r, out);
+        }
+        TypeExpr::Unit => {}
+    }
+}
+
 /// The termination verdict of every function and implementation method
 /// (`roots: None`), or of those `roots` reach: a verdict depends only on what
 /// the code calls, and showing that loops end costs a solver run per loop, so
@@ -696,8 +713,40 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>, roots: Option<&Ha
     };
     let reaches: HashMap<String, HashSet<String>> = nodes.keys().map(|k| (k.clone(), reach(k))).collect();
     let recursive: HashSet<String> = nodes.keys().filter(|n| reaches[n.as_str()].contains(n.as_str())).cloned().collect();
-    // the nodes whose verdict is wanted: the roots and what they reach
-    let needed: Option<HashSet<String>> = roots.map(|rs| rs.iter().filter(|r| nodes.contains_key(r.as_str())).flat_map(|r| reaches[r.as_str()].iter().cloned().chain([r.clone()])).collect());
+    // the nodes whose verdict is wanted: the roots, the helpers refinements
+    // call (seen through wherever a type is checked), and what they reach
+    let roots: Option<HashSet<String>> = roots.map(|rs| {
+        let mut rs = rs.clone();
+        let mut preds: Vec<Expr> = vec![];
+        for td in env.types.values() {
+            preds.extend(td.refinement.iter().cloned());
+            match &td.body {
+                TypeBody::Alias(a) => refinements_in(a, &mut preds),
+                TypeBody::Record(fs) => fs.iter().for_each(|f| refinements_in(&f.ty, &mut preds)),
+                TypeBody::Sum(vs) => {
+                    for v in vs {
+                        match &v.payload {
+                            Payload::Positional(ts) => ts.iter().for_each(|t| refinements_in(t, &mut preds)),
+                            Payload::Record(fs) => fs.iter().for_each(|f| refinements_in(&f.ty, &mut preds)),
+                            Payload::Type(t) => refinements_in(t, &mut preds),
+                            Payload::None => {}
+                        }
+                    }
+                }
+            }
+        }
+        for f in env.fns.values() {
+            f.params.iter().for_each(|p| refinements_in(&p.ty, &mut preds));
+            refinements_in(&f.ret, &mut preds);
+        }
+        let mut calls = BTreeSet::new();
+        for e in &preds {
+            calls_of(e, env, &["it".to_string()], &mut calls);
+        }
+        rs.extend(calls);
+        rs
+    });
+    let needed: Option<HashSet<String>> = roots.as_ref().map(|rs| rs.iter().filter(|r| nodes.contains_key(r.as_str())).flat_map(|r| reaches[r.as_str()].iter().cloned().chain([r.clone()])).collect());
     let wanted = |n: &str| needed.as_ref().is_none_or(|s| s.contains(n));
     let skipped = "not analysed (nothing being verified reaches it)".to_string();
     for (name, n) in nodes.iter_mut() {

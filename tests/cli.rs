@@ -404,6 +404,88 @@ fn inner(ms: Chain, k: Int, j: Int) -> Bool
     assert!(out.contains("✗ bad_add") && out.contains("✗ bad_lit"), "{out}");
 }
 
+/// A value's parts are made when the code reads them: the cost follows what
+/// a function reads, not the size of its types. A loop over a list of a wide
+/// recursive sum (once ~(fields × variants)^3 terms per element: 20 variants
+/// took over 4 GB) stays small, and a pattern reads as deep as it goes (past
+/// the three levels that were all once modelled), with what the types of
+/// the parts guarantee.
+#[test]
+fn parts_of_values_are_made_when_read() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("lazy-parts");
+    let mut src = String::from("type Pos = Int where it > 0\ntype Node =\n");
+    for i in 0..50 {
+        src.push_str(&format!("  | V{i}(Node, Node, Int)\n"));
+    }
+    src.push_str(
+        "  | P(Node, Pos)
+  | Leaf
+fn count(xs: List[Node]) -> Int {
+  mut i := 0
+  mut n := 0
+  while i < len(xs) {
+    x := get(xs, i)
+    if x is Some {
+      n += 1
+    }
+    i += 1
+  }
+  n
+}
+fn deep(n: Node) -> Int
+  ensures it > 0
+{
+  match n {
+    P(P(P(P(P(_, p), _), _), _), _) => p,
+    _ => 1,
+  }
+}
+fn same(a: Node, b: Node) -> Bool
+  requires a == b
+  ensures it
+{
+  match a {
+    P(P(x, _), _) => match b {
+      P(P(y, _), _) => x == y,
+      _ => false,
+    },
+    _ => true,
+  }
+}
+fn main() { print(count([])) }
+",
+    );
+    save(&d.join("t.strata"), &src);
+    // run under a watchdog: a regression would take gigabytes
+    let mut c = Command::new(env!("CARGO_BIN_EXE_strata"))
+        .args(["--file", "t.strata", "verify", "count,deep,same", "--cases", "5"])
+        .current_dir(&d)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (pid, start) = (c.id().to_string(), std::time::Instant::now());
+    let mut peak = 0u64;
+    while c.try_wait().unwrap().is_none() {
+        let rss = Command::new("ps").args(["-o", "rss=", "-p", &pid]).output().ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok()).unwrap_or(0);
+        peak = peak.max(rss / 1024);
+        if peak > 1000 || start.elapsed().as_secs() > 120 {
+            let _ = c.kill();
+            panic!("verify took {peak} MB / {:?}", start.elapsed());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let o = c.wait_with_output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+    for name in ["count", "deep", "same"] {
+        assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
+    }
+}
+
 /// After a loop, the state is the loop head's with the condition false, or
 /// the state at one of its `break`s: a `break` doesn't make the condition false.
 #[test]
