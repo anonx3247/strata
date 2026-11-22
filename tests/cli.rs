@@ -6250,3 +6250,33 @@ fn ui_page_defines_each_name_once() {
     let twice: Vec<_> = seen.iter().filter(|(_, n)| **n > 1).map(|(k, _)| k.clone()).collect();
     assert!(twice.is_empty(), "defined more than once in src/ui/index.html: {twice:?}");
 }
+
+/// `Commands` (std.process): `main` (or a test) names `Launcher` and runs real
+/// programs, never through a shell; code that takes `Commands` is tested with
+/// `mock Commands` or a mock type, and proven from `run`'s contract.
+#[test]
+fn commands_run_programs() {
+    let d = tmp("commands");
+    std::fs::create_dir_all(d.join("sub")).unwrap();
+    let main = "from std.process use Commands, Launcher\n\nfn show(mut c: Commands, program: String, args: List[String], dir: String) {\n  match mut c.run(program, args, dir) {\n    Ok(f) => print(f\"{f.code}|{f.out}|{f.err}\"),\n    Err(e) => print(f\"err {e}\"),\n  }\n}\n\nfn main(mut launcher: Launcher) {\n  show(mut launcher, \"echo\", [\"hello\", \"a b\"], \"\")\n  show(mut launcher, \"sh\", [\"-c\", \"echo oops >&2; exit 3\"], \"\")\n  show(mut launcher, \"sh\", [\"-c\", \"basename $(pwd)\"], \"sub\")\n  show(mut launcher, \"no-such-program-strata\", [], \"\")\n  show(mut launcher, \"echo\", [\"*\"], \"no-such-folder\")\n}\n";
+    save(&d.join("cmds.strata"), main);
+    let (ok, out) = strata(&["run", "cmds.strata"], &d, None);
+    assert!(ok, "{out}");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(&lines[..5], ["0|hello a b", "|", "3||oops", "", "0|sub"], "{out}");
+    assert!(lines[6].starts_with("err can't run `no-such-program-strata`"), "{out}");
+    assert!(lines[7].starts_with("err can't run `echo` in no-such-folder"), "{out}");
+    // the built executable runs them the same way
+    let (ok, out2) = strata(&["--file", "cmds.strata", "build", "-o", "cmds"], &d, None);
+    assert!(ok, "{out2}");
+    let o = Command::new(d.join("cmds")).current_dir(&d).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&o.stdout), out);
+    // tests: a mock type answering what is expected, `mock Commands`, and the
+    // real one when a test names it
+    let lib = "from std.process use Commands, Finished, Launcher\n\nfn status_code(mut commands: Commands) -> Int\n  ensures it >= 0\n{\n  match mut commands.run(\"git\", [\"status\"], \"\") {\n    Ok(f) => f.code,\n    Err(_) => 0,\n  }\n}\n\nmock GitFailing = {}\n\nimpl Commands for GitFailing {\n  fn run(mut self, program: String, args: List[String], dir: String) -> Result[Finished, String] {\n    if program == \"git\" { Ok(Finished { code: 1, out: \"\", err: \"\" }) } else { Err(\"unexpected\") }\n  }\n}\n\ntest \"git failing\" {\n  mut c := GitFailing {}\n  assert status_code(mut c) == 1\n}\n\ntest \"any commands\" {\n  mut c := mock Commands\n  assert status_code(mut c) >= 0\n}\n\ntest \"the real one\" (mut launcher: Launcher) {\n  assert (mut launcher.run(\"sh\", [\"-c\", \"exit 4\"], \"\") except { Finished { code: 0, out: \"\", err: \"\" } }).code == 4\n}\n";
+    save(&d.join("lib.strata"), lib);
+    let (ok, out) = strata(&["--file", "lib.strata", "test"], &d, None);
+    assert!(ok && out.contains("3 passed"), "{out}");
+    let (ok, out) = strata(&["--file", "lib.strata", "verify"], &d, None);
+    assert!(ok && out.contains("status_code") && out.contains("proven"), "{out}");
+}
