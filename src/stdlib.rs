@@ -33,6 +33,8 @@ const FILES: &[(&str, &[u8])] = &[
     ("utf8.strata", include_bytes!("../std/utf8.strata")),
     ("ast.strata", include_bytes!("../std/ast.strata")),
     ("ast/binary.strata", include_bytes!("../std/ast/binary.strata")),
+    ("ast/text.strata", include_bytes!("../std/ast/text.strata")),
+    ("ast/eval.strata", include_bytes!("../std/ast/eval.strata")),
 ];
 
 /// Native operations, callable only from `std`.

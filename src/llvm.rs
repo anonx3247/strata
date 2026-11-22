@@ -5308,6 +5308,44 @@ impl<'m, 'a> Func<'m, 'a> {
                 // no NaN: the square root of a negative number is a fault
                 self.call(&Ty::Float, "@strata_sqrt", &vs)?
             }
+            // the float operations without their fault: `None` for a result that
+            // isn't a finite number
+            ("checked_add" | "checked_sub" | "checked_mul" | "checked_div" | "checked_rem", [Ty::Float, Ty::Float]) => {
+                let (a, b) = (vs[0].clone(), vs[1].clone());
+                let r = if name == "checked_rem" {
+                    self.call(&Ty::Float, "@strata_fmod", &[a, b])?
+                } else {
+                    let ins = match name {
+                        "checked_add" => "fadd",
+                        "checked_sub" => "fsub",
+                        "checked_mul" => "fmul",
+                        _ => "fdiv",
+                    };
+                    let r = self.fresh("f");
+                    self.emit(format!("{r} = {ins} double {}, {}", a.1, b.1));
+                    (Ty::Float, r)
+                };
+                let ok = self.finite(&r.1);
+                self.option_if(&ok, &r, &Ty::Con("Option".into(), vec![Ty::Float]))?
+            }
+            ("checked_sqrt", [Ty::Float]) => {
+                let ok = self.fresh("nonneg");
+                self.emit(format!("{ok} = fcmp oge double {}, 0.0", vs[0].1));
+                let r = self.fresh("f");
+                self.emit(format!("{r} = call double @llvm.sqrt.f64(double {})", vs[0].1));
+                self.option_if(&ok, &(Ty::Float, r), &Ty::Con("Option".into(), vec![Ty::Float]))?
+            }
+            ("checked_floor" | "checked_ceil" | "checked_round", [Ty::Float]) => {
+                // (on 0.0 when it isn't finite, so that nothing faults)
+                let ok = self.finite(&vs[0].1);
+                let x = self.fresh("x");
+                self.emit(format!("{x} = select i1 {ok}, double {}, double 0.0", vs[0].1));
+                let f = format!("@llvm.{}.f64", name.trim_start_matches("checked_"));
+                let r = self.call(&Ty::Float, &f, &[(Ty::Float, x.clone())])?;
+                let n = self.call(&Ty::Int, "@strata_float_to_int", &[r, (Ty::Float, x)])?;
+                let n = self.temp(n);
+                self.option_if(&ok, &n, &Ty::Con("Option".into(), vec![Ty::Int]))?
+            }
             ("floor" | "ceil" | "round", [Ty::Float]) => {
                 let r = self.call(&Ty::Float, &format!("@llvm.{name}.f64"), &vs)?;
                 let r = self.call(&Ty::Int, "@strata_float_to_int", &[r, vs[0].clone()])?;
@@ -6861,6 +6899,14 @@ impl Module<'_> {
 
 impl Func<'_, '_> {
     /// `Some(v)` when `ok`, else `None` (an `Option` of type `t`).
+    /// Whether a double is a finite number (not a NaN, not infinite).
+    fn finite(&mut self, x: &str) -> String {
+        let (a, ok) = (self.fresh("abs"), self.fresh("finite"));
+        self.emit(format!("{a} = call double @llvm.fabs.f64(double {x})"));
+        self.emit(format!("{ok} = fcmp olt double {a}, 0x7FF0000000000000"));
+        ok
+    }
+
     fn option_if(&mut self, ok: &str, v: &V, t: &Ty) -> Res<V> {
         let (some, none, end) = (self.fresh_label("some"), self.fresh_label("none"), self.fresh_label("opt"));
         self.cond_br(&bool_v(ok), &some, &none);

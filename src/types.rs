@@ -586,6 +586,18 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin::new("ceil", "", "(Float) -> Int"),
     Builtin::new("round", "", "(Float) -> Int"),
     Builtin::new("sqrt", "", "(Float) -> Float"),
+    // the operations on floats without their fault: `None` where the result
+    // isn't a finite number (for code that can't rule that out, as an
+    // evaluator of other programs)
+    Builtin::total("checked_add", "", "(Float, Float) -> Option[Float]"),
+    Builtin::total("checked_sub", "", "(Float, Float) -> Option[Float]"),
+    Builtin::total("checked_mul", "", "(Float, Float) -> Option[Float]"),
+    Builtin::total("checked_div", "", "(Float, Float) -> Option[Float]"),
+    Builtin::total("checked_rem", "", "(Float, Float) -> Option[Float]"),
+    Builtin::total("checked_sqrt", "", "(Float) -> Option[Float]"),
+    Builtin::total("checked_floor", "", "(Float) -> Option[Int]"),
+    Builtin::total("checked_ceil", "", "(Float) -> Option[Int]"),
+    Builtin::total("checked_round", "", "(Float) -> Option[Int]"),
     Builtin::total("map", "A,B", "(List[A], (A) -> B) -> List[B]"),
     Builtin::total("filter", "A", "(List[A], (A) -> Bool) -> List[A]"),
     Builtin::total("fold", "A,B", "(List[A], B, (B, A) -> B) -> B"),
