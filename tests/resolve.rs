@@ -1,57 +1,19 @@
-//! `std.ast.resolve` stores a program as `src/resolve.rs`'s `stored_form`
-//! does, every reference to a definition qualified, with std in scope: on
-//! the scripts of the repository (their text as `strata render` writes it)
-//! and on hand-written ones (imports, shadowing locals, module paths).
-//! Both sides print each definition as the `std.ast` value `debug` prints
+//! `compiler/resolve` (the compiler package's `stored` commands) stores a
+//! program as `src/resolve.rs`'s `stored_form` does, every reference to a
+//! definition qualified, with std in scope: on the scripts of the
+//! repository (their text as `strata render` writes it) and on hand-written
+//! ones (imports, shadowing locals, module paths).
+//! Both sides print each definition as the `ast` value `debug` prints
 //! (`strata parse FILE --stored`).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+#[path = "common/compiler.rs"]
+mod compiler;
+
 const STRATA: &str = env!("CARGO_BIN_EXE_strata");
-
-/// The checker: each file's tokens and comments, or its error, after a
-/// line `=== FILE`.
-const CHECKER: &str = r#"use std.fs.{Files, Disk}
-use std.process.{Environment, Process}
-use std.ast.binary.{decode_module}
-use std.ast.parse.{parse_program}
-use std.ast.resolve.{stored}
-
-fn main(disk: Disk, process: Process) {
-  mut std := []
-  mut after := false
-  for a in process.args() {
-    if a == "--" {
-      after = true
-    } else if !after {
-      match disk.read_bytes(a) {
-        Ok(bs) => match decode_module(bs) {
-          Ok(ds) => {
-            std = std + ds
-          },
-          Err(_) => {},
-        },
-        Err(_) => {},
-      }
-    } else {
-      print("=== " + a)
-      match disk.read(a) {
-        Ok(text) => match parse_program(text) {
-          Ok(ds) => {
-            for d in stored(ds, std) {
-              print(debug(d))
-            }
-          },
-          Err(e) => print(f"error: {e}"),
-        },
-        Err(_) => print("unreadable"),
-      }
-    }
-  }
-}
-"#;
 
 /// Text rendering never makes, each with what it tests.
 const CASES: &[(&str, &str)] = &[
@@ -120,10 +82,6 @@ fn std_files() -> Vec<PathBuf> {
 #[test]
 fn stores_as_in_rust() {
     let dir = scratch("all");
-    let checker = dir.join("check.strata");
-    let mut c = Command::new(STRATA).args(["--file", &checker.to_string_lossy(), "edit"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    c.stdin.take().unwrap().write_all(CHECKER.as_bytes()).unwrap();
-    assert!(c.wait_with_output().unwrap().status.success());
     // the text of each module file, as rendered, and the cases
     let mut texts = vec![];
     for (i, f) in module_files().iter().enumerate() {
@@ -140,11 +98,11 @@ fn stores_as_in_rust() {
     }
     let paths: Vec<String> = texts.iter().map(|t| t.1.to_string_lossy().into_owned()).collect();
     let std_files: Vec<String> = std_files().iter().map(|p| p.to_string_lossy().into_owned()).collect();
-    let mut args = vec!["--file", checker.to_str().unwrap(), "run", "--"];
+    let mut args = vec!["stored"];
     args.extend(std_files.iter().map(|s| s.as_str()));
     args.push("--");
     args.extend(paths.iter().map(|s| s.as_str()));
-    let got = run(&args);
+    let got = compiler::run(&args);
     let mut wrong = vec![];
     for (i, (name, p)) in texts.iter().enumerate() {
         let start = format!("=== {}\n", p.display());
@@ -155,60 +113,13 @@ fn stores_as_in_rust() {
         if strata != want {
             let (g, w): (Vec<&str>, Vec<&str>) = (strata.lines().collect(), want.lines().collect());
             let at = g.iter().zip(&w).position(|(a, b)| a != b).unwrap_or(g.len().min(w.len()));
-            wrong.push(format!("{name}, definition {}:\n  std.ast.resolve: {}\n  Rust:            {}", at + 1, g.get(at).unwrap_or(&"(none)"), w.get(at).unwrap_or(&"(none)")));
+            wrong.push(format!("{name}, definition {}:\n  compiler (resolve): {}\n  Rust:               {}", at + 1, g.get(at).unwrap_or(&"(none)"), w.get(at).unwrap_or(&"(none)")));
         }
     }
     assert!(wrong.is_empty(), "{} of {} texts store differently:\n{}", wrong.len(), texts.len(), wrong.join("\n"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The checker for packages: std's module files, `--`, then `TEXT=MODULE`
-/// pairs; the package's definitions stored together, one per line.
-const PACKAGE_CHECKER: &str = r#"use std.fs.{Files, Disk}
-use std.process.{Environment, Process}
-use std.ast.binary.{decode_module}
-use std.ast.parse.{parse_module}
-use std.ast.resolve.{stored}
-
-/// Args: std module files, `--`, then `TEXT=MODULE` pairs of one package:
-/// the package's definitions in stored form, one per line.
-fn main(disk: Disk, process: Process) {
-  mut std := []
-  mut mine := []
-  mut after := false
-  for a in process.args() {
-    if a == "--" {
-      after = true
-    } else if !after {
-      match disk.read_bytes(a) {
-        Ok(bs) => match decode_module(bs) {
-          Ok(ds) => {
-            std = std + ds
-          },
-          Err(_) => {},
-        },
-        Err(_) => {},
-      }
-    } else {
-      parts := split(a, "=")
-      file := get(parts, 0) ?? ""
-      module := get(parts, 1) ?? ""
-      match disk.read(file) {
-        Ok(text) => match parse_module(text, module) {
-          Ok(ds) => {
-            mine = mine + ds
-          },
-          Err(e) => print(f"error: {e}"),
-        },
-        Err(_) => print("unreadable"),
-      }
-    }
-  }
-  for d in stored(mine, std) {
-    print(debug(d))
-  }
-}
-"#;
 
 /// A package's modules (a folder's `.strata` files), each named after its
 /// path (`main` is the root), with a prefix (`std.` for std).
@@ -233,18 +144,14 @@ fn package_modules(dir: &Path, prefix: &str) -> Vec<(PathBuf, String)> {
     out
 }
 
-/// Every package of the examples, and std: each module's text (as
+/// Every package of the examples, std and the compiler: each module's text (as
 /// `render` writes it) parsed as that module, all stored together, are
 /// the package's files' trees (`header --tree`: the files are the stored form).
 #[test]
 fn packages_store_as_in_rust() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let dir = scratch("packages");
-    let checker = dir.join("check.strata");
-    let mut c = Command::new(STRATA).args(["--file", &checker.to_string_lossy(), "edit"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    c.stdin.take().unwrap().write_all(PACKAGE_CHECKER.as_bytes()).unwrap();
-    assert!(c.wait_with_output().unwrap().status.success());
-    let mut packages: Vec<(PathBuf, String)> = vec![(root.join("std"), "std.".into())];
+    let mut packages: Vec<(PathBuf, String)> = vec![(root.join("std"), "std.".into()), (root.join("compiler"), String::new())];
     for e in std::fs::read_dir(root.join("examples")).unwrap() {
         let p = e.unwrap().path();
         if p.join("strata.toml").exists() {
@@ -254,8 +161,8 @@ fn packages_store_as_in_rust() {
     let std_files: Vec<String> = std_files().iter().map(|p| p.to_string_lossy().into_owned()).collect();
     assert!(packages.len() > 5);
     for (k, (pkg, prefix)) in packages.iter().enumerate() {
-        let mut args: Vec<String> = vec!["--file".into(), checker.to_string_lossy().into(), "run".into(), "--".into()];
-        if prefix.is_empty() {
+        let mut args: Vec<String> = vec!["stored-package".into()];
+        if prefix != "std." {
             args.extend(std_files.iter().cloned());
         }
         args.push("--".into());
@@ -267,7 +174,7 @@ fn packages_store_as_in_rust() {
             args.push(format!("{}={m}", t.display()));
             want.extend(run(&["header", &file.to_string_lossy(), "--tree"]).lines().map(String::from));
         }
-        let mut got: Vec<String> = run(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>()).lines().map(String::from).collect();
+        let mut got: Vec<String> = compiler::run(&args).lines().map(String::from).collect();
         got.sort();
         want.sort();
         let wrong: Vec<&String> = got.iter().filter(|g| !want.contains(g)).collect();
@@ -276,54 +183,15 @@ fn packages_store_as_in_rust() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The written-form checker: std's module files, `--`, then one stored
-/// module file; its text as `render` writes it.
-const WRITTEN_CHECKER: &str = r#"use std.fs.{Files, Disk}
-use std.process.{Environment, Process}
-use std.ast.binary.{decode_module}
-use std.ast.resolve.{written, inline_members}
-use std.ast.text.{module_text}
 
-/// Args: std module files, `--`, then one stored module file: its text as
-/// `render` writes it.
-fn main(disk: Disk, process: Process) {
-  mut std := []
-  mut mine := []
-  mut after := false
-  for a in process.args() {
-    if a == "--" {
-      after = true
-    } else {
-      match disk.read_bytes(a) {
-        Ok(bs) => match decode_module(bs) {
-          Ok(ds) => if after {
-            mine = mine + ds
-          } else {
-            std = std + ds
-          },
-          Err(e) => print(e),
-        },
-        Err(_) => print("unreadable"),
-      }
-    }
-  }
-  print(module_text(inline_members(written(mine, std))))
-}
-"#;
-
-/// Every script of the repository and every module of std, as stored,
-/// written back (`std.ast.resolve.written`) and printed (`std.ast.text`),
+/// Every script of the repository and every module of std and of the
+/// compiler, as stored, written back (`compiler/resolve`, the
+/// compiler's `written` command) and printed (`compiler/text`),
 /// is the text `strata render` shows.
 #[test]
 fn written_as_rendered() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let dir = scratch("written");
-    let checker = dir.join("check.strata");
-    let mut c = Command::new(STRATA).args(["--file", &checker.to_string_lossy(), "edit"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    c.stdin.take().unwrap().write_all(WRITTEN_CHECKER.as_bytes()).unwrap();
-    assert!(c.wait_with_output().unwrap().status.success());
-    let exe = dir.join("check");
-    run(&["build", &checker.to_string_lossy(), "-o", &exe.to_string_lossy()]);
     let std_files: Vec<PathBuf> = std_files();
     let mut wrong = vec![];
     let mut cases: Vec<(PathBuf, Vec<String>, String)> = vec![];
@@ -352,8 +220,15 @@ fn written_as_rendered() {
         let want = run(&["--file", &root.join("std").to_string_lossy(), "render", &m]);
         cases.push((f.clone(), std_files.iter().filter(|p| **p != f).map(|p| p.to_string_lossy().into_owned()).collect(), want));
     }
+    // and every module of the compiler, with std's and its other modules
+    let compiler_modules = package_modules(&root.join("compiler"), "");
+    for (f, m) in &compiler_modules {
+        let want = run(&["--file", &root.join("compiler").to_string_lossy(), "render", if m.is_empty() { "main" } else { m }]);
+        let others = std_files.iter().chain(compiler_modules.iter().map(|c| &c.0)).filter(|p| *p != f).map(|p| p.to_string_lossy().into_owned()).collect();
+        cases.push((f.clone(), others, want));
+    }
     for (f, others, want) in &cases {
-        let o = Command::new(&exe).args(others).arg("--").arg(f).output().unwrap();
+        let o = Command::new(compiler::exe()).arg("written").args(others).arg("--").arg(f).output().unwrap();
         let got = String::from_utf8_lossy(&o.stdout).to_string();
         // (`print` ends the text with one more newline)
         if got != format!("{want}\n") {
@@ -364,39 +239,6 @@ fn written_as_rendered() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The errors checker: std's module files, `--`, a package's module files;
-/// each of the resolver's errors as `strata check` writes it.
-const ERRORS_CHECKER: &str = r#"use std.fs.{Files, Disk}
-use std.process.{Environment, Process}
-use std.ast.binary.{decode_module}
-use std.ast.resolve.{errors}
-
-fn main(disk: Disk, process: Process) {
-  mut std := []
-  mut mine := []
-  mut after := false
-  for a in process.args() {
-    if a == "--" {
-      after = true
-    } else {
-      match disk.read_bytes(a) {
-        Ok(bs) => match decode_module(bs) {
-          Ok(ds) => if after {
-            mine = mine + ds
-          } else {
-            std = std + ds
-          },
-          Err(e) => print(e),
-        },
-        Err(_) => print("unreadable"),
-      }
-    }
-  }
-  for e in errors(mine, std) {
-    print(f"error in {e.0}: {e.1}")
-  }
-}
-"#;
 
 /// A `use` of a module there isn't, of what a module doesn't have, or of a
 /// private definition: the errors `strata check` gives for them.
@@ -411,15 +253,11 @@ fn use_errors_as_in_rust() {
         c.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
         c.wait_with_output().unwrap();
     }
-    let checker = dir.join("check.strata");
-    let mut c = Command::new(STRATA).args(["--file", &checker.to_string_lossy(), "edit"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    c.stdin.take().unwrap().write_all(ERRORS_CHECKER.as_bytes()).unwrap();
-    assert!(c.wait_with_output().unwrap().status.success());
-    let mut args: Vec<String> = vec!["--file".into(), checker.to_string_lossy().into(), "run".into(), "--".into()];
+    let mut args: Vec<String> = vec!["use-errors".into()];
     args.extend(std_files().iter().map(|p| p.to_string_lossy().into_owned()));
     args.push("--".into());
     args.extend(["util.strata", "main.strata"].iter().map(|f| pkg.join(f).to_string_lossy().into_owned()));
-    let got: Vec<String> = run(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>()).lines().map(String::from).collect();
+    let got: Vec<String> = compiler::run(&args).lines().map(String::from).collect();
     let o = Command::new(STRATA).args(["--file", &format!("{}/", pkg.display()), "check"]).output().unwrap();
     let check = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
     let want: Vec<String> = check.lines().filter(|l| l.starts_with("error in use ") || l.contains("is private to") || l.contains("internal to the standard library") || l.contains("is a mock") || l.contains("foreign function")).map(String::from).collect();

@@ -1,40 +1,18 @@
-//! `std.ast.parse` parses text into the trees `src/parser.rs` makes,
-//! comments included, and refuses what it refuses with the same message: on
+//! `compiler/parse` (the compiler package's `parse` command) parses text
+//! into the trees `src/parser.rs` makes, comments included, and refuses what it refuses with the same message: on
 //! the text of every module file in the repository (as `strata render`
 //! writes it) and on hand-written text with what rendering never produces
 //! (comments in odd places, shorthands, every kind of error). Both sides
-//! print each definition as the `std.ast` value `debug` prints
+//! print each definition as the `ast` value `debug` prints
 //! (`strata parse`).
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+
+#[path = "common/compiler.rs"]
+mod compiler;
 
 const STRATA: &str = env!("CARGO_BIN_EXE_strata");
-
-/// The checker: each file's tokens and comments, or its error, after a
-/// line `=== FILE`.
-const CHECKER: &str = r#"use std.fs.{Files, Disk}
-use std.process.{Environment, Process}
-use std.ast.parse.{parse_program}
-
-fn main(disk: Disk, process: Process) {
-  for p in process.args() {
-    print("=== " + p)
-    match disk.read(p) {
-      Ok(text) => match parse_program(text) {
-        Ok(ds) => {
-          for d in ds {
-            print(debug(d))
-          }
-        },
-        Err(e) => print(f"error: {e}"),
-      },
-      Err(_) => print("unreadable"),
-    }
-  }
-}
-"#;
 
 /// Text rendering never makes, each with what it tests.
 const CASES: &[(&str, &str)] = &[
@@ -75,7 +53,7 @@ fn run(args: &[&str]) -> String {
 fn module_files() -> Vec<PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut out = vec![];
-    let mut todo = vec![root.join("std"), root.join("examples"), root.join("tests/data"), root.join("src/llvm")];
+    let mut todo = vec![root.join("std"), root.join("compiler"), root.join("examples"), root.join("tests/data"), root.join("src/llvm")];
     while let Some(d) = todo.pop() {
         for e in std::fs::read_dir(&d).unwrap() {
             let p = e.unwrap().path();
@@ -95,10 +73,6 @@ fn module_files() -> Vec<PathBuf> {
 #[test]
 fn parses_as_in_rust() {
     let dir = scratch("all");
-    let checker = dir.join("check.strata");
-    let mut c = Command::new(STRATA).args(["--file", &checker.to_string_lossy(), "edit"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
-    c.stdin.take().unwrap().write_all(CHECKER.as_bytes()).unwrap();
-    assert!(c.wait_with_output().unwrap().status.success());
     // the text of each module file, as rendered, and the cases
     let mut texts = vec![];
     for (i, f) in module_files().iter().enumerate() {
@@ -114,9 +88,9 @@ fn parses_as_in_rust() {
         texts.push((name.to_string(), p));
     }
     let paths: Vec<String> = texts.iter().map(|t| t.1.to_string_lossy().into_owned()).collect();
-    let mut args = vec!["--file", checker.to_str().unwrap(), "run", "--"];
+    let mut args = vec!["parse"];
     args.extend(paths.iter().map(|s| s.as_str()));
-    let got = run(&args);
+    let got = compiler::run(&args);
     let mut wrong = vec![];
     for (i, (name, p)) in texts.iter().enumerate() {
         let start = format!("=== {}\n", p.display());
@@ -127,7 +101,7 @@ fn parses_as_in_rust() {
         if strata != want {
             let (g, w): (Vec<&str>, Vec<&str>) = (strata.lines().collect(), want.lines().collect());
             let at = g.iter().zip(&w).position(|(a, b)| a != b).unwrap_or(g.len().min(w.len()));
-            wrong.push(format!("{name}, definition {}:\n  std.ast.parse: {}\n  Rust:          {}", at + 1, g.get(at).unwrap_or(&"(none)"), w.get(at).unwrap_or(&"(none)")));
+            wrong.push(format!("{name}, definition {}:\n  compiler/parse: {}\n  Rust:           {}", at + 1, g.get(at).unwrap_or(&"(none)"), w.get(at).unwrap_or(&"(none)")));
         }
     }
     assert!(wrong.is_empty(), "{} of {} texts parse differently:\n{}", wrong.len(), texts.len(), wrong.join("\n"));
