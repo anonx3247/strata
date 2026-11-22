@@ -4415,7 +4415,7 @@ pub fn solver() -> Option<Solver> {
 impl Solver {
     /// The command line: a deterministic resource limit per query (so
     /// results can be cached), and a time limit only as a backstop.
-    /// In a session (`Session`), the time limit is per query and the
+    /// In a batch (`run_batch`), the time limit is per query and the
     /// solver takes `push` / `pop`.
     fn args(&self, limit: Limit, session: bool) -> Vec<String> {
         match self.kind {
@@ -4445,74 +4445,65 @@ pub enum Limit {
     Search,
 }
 
-/// Why a session gave no answer.
-enum SessionEnd {
-    /// `stop` was set (the process is killed).
-    Stopped,
-    /// The process ended or couldn't be written to.
-    Dead,
-}
-
-/// A solver process answering one function's queries in turn (`solve_all`).
-struct Session {
-    child: std::process::Child,
-    stdin: std::process::ChildStdin,
-    lines: std::sync::mpsc::Receiver<String>,
-    _slot: SolverSlot,
-}
-
-/// Printed after each answer, to know where it ends.
+/// Printed after each answer of a batch, to know where it ends.
 const ANSWERED: &str = "@@answered";
 
-impl Session {
-    fn start(solver: &Solver, stop: &std::sync::atomic::AtomicBool) -> Option<Session> {
-        let slot = solver_slot_until(stop)?;
-        let mut child = Command::new(&solver.bin).args(solver.args(Limit::Proof, true)).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
-        let stdin = child.stdin.take()?;
-        let stdout = child.stdout.take()?;
-        let (tx, lines) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            use std::io::BufRead;
-            for line in std::io::BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
-                if tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-        Some(Session { child, stdin, lines, _slot: slot })
+/// Run several queries in one solver process (`solve_all`): `header`, then
+/// each query between `push` and `pop`, all written at once (input closed,
+/// as for a single query, so any solver that answers a script answers
+/// this), and the answers read in order as they come, each passed to `each`
+/// with its index. Returns how many were answered: fewer when the process
+/// ends early (or can't be run), and the rest are for the caller to run
+/// alone. `Err(())` once `stop` is set (the process is killed).
+fn run_batch(solver: &Solver, header: &str, queries: &[String], stop: &std::sync::atomic::AtomicBool, mut each: impl FnMut(usize, &str)) -> Result<usize, ()> {
+    use std::sync::atomic::Ordering::Relaxed;
+    use std::sync::mpsc::RecvTimeoutError;
+    let Some(_slot) = solver_slot_until(stop) else { return Err(()) };
+    let Ok(mut child) = Command::new(&solver.bin).args(solver.args(Limit::Proof, true)).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return Ok(0) };
+    let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else { return Ok(0) };
+    let mut script = header.to_string();
+    for q in queries {
+        script.push_str(&format!("(push)\n{q}(pop)\n(echo \"{ANSWERED}\")\n"));
     }
-
-    /// Send `text`, and read what the solver prints for it.
-    fn send(&mut self, text: &str, stop: &std::sync::atomic::AtomicBool) -> Result<String, SessionEnd> {
-        use std::sync::mpsc::RecvTimeoutError;
-        if self.stdin.write_all(format!("{text}(echo \"{ANSWERED}\")\n").as_bytes()).and_then(|_| self.stdin.flush()).is_err() {
-            return Err(SessionEnd::Dead);
-        }
-        let mut out = String::new();
-        loop {
-            if stop.load(std::sync::atomic::Ordering::Relaxed) {
-                let _ = self.child.kill();
-                return Err(SessionEnd::Stopped);
-            }
-            match self.lines.recv_timeout(std::time::Duration::from_millis(5)) {
-                Ok(line) if line.trim().trim_matches('"') == ANSWERED => return Ok(out),
-                Ok(line) => {
-                    out.push_str(&line);
-                    out.push('\n');
-                }
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return Err(SessionEnd::Dead),
+    // written and read on threads of their own, so neither pipe can fill while the other waits
+    std::thread::spawn(move || {
+        let _ = stdin.write_all(script.as_bytes());
+    });
+    let (tx, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
             }
         }
+    });
+    let mut done = 0;
+    let mut out = String::new();
+    while done < queries.len() {
+        if stop.load(Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(());
+        }
+        match lines.recv_timeout(std::time::Duration::from_millis(5)) {
+            Ok(line) if line.trim().trim_matches('"') == ANSWERED => {
+                each(done, &out);
+                out.clear();
+                done += 1;
+            }
+            Ok(line) => {
+                out.push_str(&line);
+                out.push('\n');
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
     }
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Ok(done)
 }
 
 /// Run `script` on the solver: its answer, `Ok(None)` if it can't be run,
@@ -4732,30 +4723,19 @@ impl Vc<'_> {
             return out;
         }
         let leaves = self.leaves();
-        let mut session = Session::start(solver, stop);
-        if let Some(s) = &mut session {
-            if s.send(&self.header(), stop).is_err() {
-                session = None;
-            }
-        }
-        for i in todo {
-            if stop.load(std::sync::atomic::Ordering::Relaxed) {
-                out[i] = Some(Outcome::Stopped);
-                continue;
-            }
-            let answer = match &mut session {
-                Some(s) => s.send(&format!("(push)\n{}(pop)\n", self.body(&self.obligations[i], &leaves)), stop),
-                None => Err(SessionEnd::Dead),
-            };
-            out[i] = Some(match answer {
-                Ok(text) => self.outcome(i, &leaves, &text),
-                Err(SessionEnd::Stopped) => Outcome::Stopped,
-                // (the process died: this one, and the rest, each on its own)
-                Err(SessionEnd::Dead) => {
-                    session = None;
-                    self.solve_until(solver, i, stop)
+        let queries: Vec<String> = todo.iter().map(|&i| self.body(&self.obligations[i], &leaves)).collect();
+        match run_batch(solver, &self.header(), &queries, stop, |k, text| out[todo[k]] = Some(self.outcome(todo[k], &leaves, text))) {
+            Err(()) => {
+                for &i in &todo {
+                    out[i].get_or_insert(Outcome::Stopped);
                 }
-            });
+            }
+            // (those the process didn't answer: each on its own)
+            Ok(done) => {
+                for &i in &todo[done..] {
+                    out[i] = Some(self.solve_until(solver, i, stop));
+                }
+            }
         }
         out
     }
