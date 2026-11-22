@@ -167,10 +167,14 @@ fn snapshot(target: &Target) -> Json {
         })
         .collect();
     // ---- structure for the type map ----
+    // (resolved, std's definitions are named `std.io.Recorder`)
+    let std_prefix = format!("{}.", crate::stdlib::NAME);
+    // (nor what the compiler makes: `$where_0`, `Shape$own`)
+    let is_std = |d: &Decl| d.name().starts_with(&std_prefix) || d.name().contains('$');
     let declared: crate::fx::HashSet<String> = rp
         .decls
         .iter()
-        .filter(|d| matches!(d.kind, DeclKind::Type(_) | DeclKind::Trait(_)))
+        .filter(|d| matches!(d.kind, DeclKind::Type(_) | DeclKind::Trait(_)) && !is_std(d))
         .map(|d| d.name())
         .collect();
     let refs_of = |t: &TypeExpr| -> Vec<String> {
@@ -180,8 +184,10 @@ fn snapshot(target: &Target) -> Json {
     };
     let field_json = |name: Option<&str>, t: &TypeExpr| json!({"name": name, "ty": crate::printer::ty(t), "refs": refs_of(t)});
     let mut structure = Vec::new();
-    // (the prelude's code, added to every program, isn't the program's)
-    let own = |d: &&Decl| d.module != crate::types::PRELUDE_MODULE;
+    // (the prelude's code, added to every program, isn't the program's; nor
+    // is the standard library's, which resolving brings in: the map is the
+    // program's types, whether it uses std's or not)
+    let own = |d: &&Decl| d.module != crate::types::PRELUDE_MODULE && !is_std(d);
     for d in rp.decls.iter().filter(own) {
         match &d.kind {
             DeclKind::Type(t) => {
