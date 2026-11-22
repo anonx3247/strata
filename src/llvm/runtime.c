@@ -956,8 +956,46 @@ void strata_channel_close(Channel *c) {
   pthread_mutex_unlock(&chan_lock);
 }
 
+// ---- the clock (std.time) ----
+//
+// Monotonic time in nanoseconds. Waiting for it is a wait like a `recv`:
+// under `chan_lock`, on `chan_cond` with a deadline, so a cancellation wakes
+// it and it gives up at once.
+
+static int64_t mono_ns(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+}
+
+// Wait on `chan_cond` (holding `chan_lock`) until woken or `deadline`
+// (monotonic) has come. `pthread_cond_timedwait` takes the wall clock.
+static void wait_until(int64_t deadline) {
+  int64_t left = deadline - mono_ns();
+  if (left <= 0) return;
+  struct timespec now, at;
+  clock_gettime(CLOCK_REALTIME, &now);
+  int64_t abs = (int64_t)now.tv_sec * 1000000000 + now.tv_nsec + left;
+  at.tv_sec = abs / 1000000000;
+  at.tv_nsec = abs % 1000000000;
+  pthread_cond_timedwait(&chan_cond, &chan_lock, &at);
+}
+
+int64_t strata_host_now(void) { return mono_ns(); }
+
+void strata_host_sleep(int64_t ns) {
+  int64_t deadline = mono_ns() + ns;
+  pthread_mutex_lock(&chan_lock);
+  while (mono_ns() < deadline && !strata_cancelled()) wait_until(deadline);
+  pthread_mutex_unlock(&chan_lock);
+}
+
 // What a `select` arm waits on: kind 0 `recv` (`ok` says whether a value
-// came, into `slot`), 1 `send` (of `slot`), 2 `await` (a task).
+// came, into `slot`), 1 `send` (of `slot`), 2 `await` (a task), 3 a timer of
+// the system clock (`clock.after(d)`: `slot` is its deadline, monotonic
+// nanoseconds), 4 a timer of another clock (`slot` is 1 once that clock said
+// its deadline has passed: the compiled code asks the clock, `strata_select`
+// gives -2 when it should ask again).
 typedef struct {
   int64_t kind;
   void *target;
@@ -977,6 +1015,14 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
     }
   rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
   int64_t start = (int64_t)((rng >> 33) % (uint64_t)n);
+  // the first of the system clock's deadlines; whether another clock's
+  // timer needs asking again (then this wait is short)
+  int64_t first = INT64_MAX;
+  _Bool other_clocks = 0;
+  for (int64_t i = 0; i < n; i++) {
+    if (ops[i].kind == 3 && ops[i].slot < first) first = ops[i].slot;
+    if (ops[i].kind == 4) other_clocks = 1;
+  }
   for (int64_t i = 0; i < n; i++)
     if (ops[i].kind == 0) ((Channel *)ops[i].target)->waiting++;
   pthread_cond_broadcast(&chan_cond);
@@ -1001,19 +1047,30 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
           push_item(c, op->slot);
           chosen = i;
         }
-      } else if (((Task *)op->target)->done) {
+      } else if (op->kind == 2) {
+        if (((Task *)op->target)->done) chosen = i;
+      } else if (op->kind == 3 ? mono_ns() >= op->slot : op->slot != 0) {
         chosen = i;
       }
     }
     if (chosen < 0) {
       if (strata_cancelled()) break;
-      pthread_cond_wait(&chan_cond, &chan_lock);
+      if (other_clocks) {
+        // another clock's time may have moved: wait a little, then let the
+        // compiled code ask it again
+        int64_t soon = mono_ns() + 1000000;
+        wait_until(first < soon ? first : soon);
+        chosen = -2;
+        break;
+      }
+      if (first == INT64_MAX) pthread_cond_wait(&chan_cond, &chan_lock);
+      else wait_until(first);
     }
   }
   for (int64_t i = 0; i < n; i++)
     if (ops[i].kind == 0) ((Channel *)ops[i].target)->waiting--;
   pthread_cond_broadcast(&chan_cond);
-  if (chosen >= 0) {
+  if (chosen >= 0 || chosen == -2) {
     pthread_mutex_unlock(&chan_lock);
     return chosen;
   }

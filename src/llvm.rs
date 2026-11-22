@@ -841,6 +841,8 @@ declare ptr @strata_host_list_dir(ptr, ptr, ptr)
 declare i1 @strata_host_make_dir(ptr, ptr, ptr)
 declare i1 @strata_host_remove(ptr, ptr, ptr)
 declare ptr @strata_host_args()
+declare i64 @strata_host_now()
+declare void @strata_host_sleep(i64)
 declare ptr @strata_prog_name()
 declare void @strata_options_error(i1, ptr)
 declare ptr @strata_host_env_var(ptr)
@@ -5427,6 +5429,13 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok(match name {
             "host_write" => self.call(&Ty::Unit, "@strata_host_write", &vs)?,
             "host_exists" => self.call(&Ty::Bool, "@strata_host_exists", &vs)?,
+            "host_now" => self.call(&Ty::Int, "@strata_host_now", &[])?,
+            "host_sleep" => {
+                let r = self.call(&Ty::Unit, "@strata_host_sleep", &vs)?;
+                // a wait: a cancelled task stops here
+                self.cancel_point()?;
+                r
+            }
             "host_args" => {
                 let r = self.call(&lst, "@strata_host_args", &[])?;
                 self.temp(r)
@@ -6593,9 +6602,39 @@ impl<'m, 'a> Func<'m, 'a> {
         // arm that loses drops it)
         let mut sent: Vec<Option<V>> = vec![];
         let mut targets: Vec<V> = vec![];
+        // the timers of clocks other than the system's: (arm, clock, its type, deadline)
+        let mut other_clocks: Vec<(usize, V, Ty, String)> = vec![];
+        let instant = Ty::Con(Symbol::new("std.time.Instant"), vec![]);
         for (i, a) in arms.iter().enumerate() {
             let (kind, target, value) = match &a.op {
                 Expr::Method(r, _, args) if args.is_empty() => (0, self.expr(r)?, None),
+                // `clock.after(d)`: a timer, its deadline `d` after now in that
+                // clock's time. The system clock's the runtime waits for itself
+                // (kind 3); another clock is asked for its time again whenever
+                // the select looks (kind 4: ready once it has passed).
+                Expr::Method(clock, m, args) if m == "after" && args.len() == 1 => {
+                    // (its type in this instance: a function taking a `Clock` is
+                    // compiled per implementation, so the system's is seen here)
+                    let cv = self.expr(clock)?;
+                    let ct = cv.0.clone();
+                    let d = self.expr(&args[0])?;
+                    let p = self.fresh("op");
+                    self.emit(format!("{p} = getelementptr i64, ptr {ops}, i64 {}", 4 * i + 2));
+                    let deadline = self.fresh("deadline");
+                    if matches!(&ct, Ty::Con(n, _) if n == "std.time.SystemClock") {
+                        let now = self.fresh("now");
+                        self.emit(format!("{now} = call i64 @strata_host_now()"));
+                        self.emit(format!("{deadline} = add i64 {now}, {}", d.1));
+                        self.emit(format!("store i64 {deadline}, ptr {p}"));
+                        (3, (Ty::Unit, "null".to_string()), None)
+                    } else {
+                        let t0 = self.call_method(&crate::types::trait_call("std.time.Clock", "std.time.now"), ct.clone(), vec![cv.clone()], Some(instant.clone()), &[])?;
+                        self.emit(format!("{deadline} = add i64 {}, {}", t0.1, d.1));
+                        self.emit(format!("store i64 0, ptr {p}"));
+                        other_clocks.push((i, cv, ct, deadline));
+                        (4, (Ty::Unit, "null".to_string()), None)
+                    }
+                }
                 Expr::Method(s, _, args) => {
                     let tx = self.expr(s)?;
                     let et = match self.m.repr(&tx.0)? {
@@ -6626,8 +6665,29 @@ impl<'m, 'a> Func<'m, 'a> {
             sent.push(value);
             targets.push(target);
         }
+        // another clock's timers: ask it its time, then look; again while
+        // `strata_select` says so (-2)
+        let poll = self.fresh_label("sel.poll");
+        if !other_clocks.is_empty() {
+            self.br(&poll);
+            self.block(&poll);
+            for (i, cv, ct, deadline) in &other_clocks {
+                let now = self.call_method(&crate::types::trait_call("std.time.Clock", "std.time.now"), ct.clone(), vec![cv.clone()], Some(instant.clone()), &[])?;
+                let (ready, flag, p) = (self.fresh("ready"), self.fresh("flag"), self.fresh("op"));
+                self.emit(format!("{ready} = icmp sge i64 {}, {deadline}", now.1));
+                self.emit(format!("{flag} = zext i1 {ready} to i64"));
+                self.emit(format!("{p} = getelementptr i64, ptr {ops}, i64 {}", 4 * i + 2));
+                self.emit(format!("store i64 {flag}, ptr {p}"));
+            }
+        }
         let k = self.fresh("chosen");
         self.emit(format!("{k} = call i64 @strata_select(ptr {ops}, i64 {n})"));
+        if !other_clocks.is_empty() {
+            let (again, go) = (self.fresh("again"), self.fresh_label("sel.go"));
+            self.emit(format!("{again} = icmp eq i64 {k}, -2"));
+            self.emit(format!("br i1 {again}, label %{poll}, label %{go}"));
+            self.block(&go);
+        }
         let labels: Vec<String> = (0..n).map(|_| self.fresh_label("sel.arm")).collect();
         let (none, end) = (self.fresh_label("sel.none"), self.fresh_label("sel.end"));
         let cases: Vec<String> = labels.iter().enumerate().map(|(i, l)| format!("i64 {i}, label %{l}")).collect();

@@ -3034,6 +3034,22 @@ impl<'a> Checker<'a> {
                     self.expect(&Ty::Con("Receiver".into(), vec![el.clone()]), &t, "`recv` in a `select`");
                     Some(Ty::Con("Option".into(), vec![el]))
                 }
+                // a timer: `clock.after(d)`, `d` from the select's start (std.time)
+                Expr::Method(c, m, args) if m == "after" && args.len() == 1 => {
+                    let ct = self.infer(c);
+                    // its time is that clock's (`now`): the system's, or a stand-in
+                    if self.satisfies(&ct, "std.time.Clock", &[], 0).is_err() {
+                        let shown = self.show(&ct);
+                        self.err(format!("an `after` arm waits on a clock: `{shown}` doesn't implement `Clock` (std.time)"));
+                    }
+                    let want = Ty::Con("std.time.Duration".into(), vec![]);
+                    let dt = self.infer_with(&args[0], Some(&want));
+                    self.expect(&want, &dt, "the time an `after` arm waits");
+                    if a.name.is_some() {
+                        self.err("an `after` arm gives nothing to name: drop its `as`");
+                    }
+                    None
+                }
                 Expr::Method(s, m, args) if m == "send" && args.len() == 1 => {
                     let t = self.infer(s);
                     let el = self.fresh();
@@ -3052,7 +3068,7 @@ impl<'a> Checker<'a> {
                     Some(r)
                 }
                 _ => {
-                    self.err("a `select` arm waits on `rx.recv()`, `tx.send(v)` or `await h`");
+                    self.err("a `select` arm waits on `rx.recv()`, `tx.send(v)`, `await h` or `clock.after(d)`");
                     self.infer(&a.op);
                     None
                 }
