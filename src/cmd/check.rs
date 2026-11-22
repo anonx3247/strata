@@ -95,8 +95,13 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
         }
         return Ok(true);
     }
+    let closures = store::Closures::new(p);
     // results depend on the solver: it is part of the cache key
     let skey = solver.as_ref().map(|s| s.version.clone()).unwrap_or("no-solver".into());
+    // every check to make, by definition: (label, cache key, how), with the
+    // definition's key and module; run in parallel below, reported in order
+    type Job<'a> = Box<dyn Fn() -> verify::Verdict + Send + Sync + 'a>;
+    let mut defs: Vec<(String, String, Vec<(String, String, Job)>)> = vec![];
     for (i, (orig, d)) in p.decls.iter().zip(&resolved.decls).enumerate() {
         if !names.contains(&orig.qname()) {
             continue;
@@ -106,8 +111,8 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
         let analysis = &analysis;
         let cc = move |label: &str| if matches!(analysis.status.get(label), Some(termination::Termination::Proven { .. })) { cross_check } else { 0 };
         // (label, cache key, how to check)
-        let mut jobs: Vec<(String, String, Box<dyn Fn() -> verify::Verdict + '_>)> = Vec::new();
-        let base = store::closure_hash(p, &orig.qname());
+        let mut jobs: Vec<(String, String, Job)> = Vec::new();
+        let base = closures.hash(&orig.qname());
         match &d.kind {
             // a function with `comptime` parameters is a template for its
             // copies, which are what runs (and are checked where they are made)
@@ -167,11 +172,21 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
             }
             _ => {}
         }
+        defs.push((base, orig.module.to_string(), jobs));
+    }
+    // the checks not cached, on as many threads as there are cores: each
+    // solver query is a process of its own
+    let force = args.flag("--force");
+    let fresh: Vec<bool> = defs.iter().flat_map(|d| &d.2).map(|j| force || !cache.contains_key(&j.1)).collect();
+    let todo: Vec<&Job> = defs.iter().flat_map(|d| &d.2).zip(&fresh).filter(|(_, f)| **f).map(|(j, _)| &j.2).collect();
+    let mut made = crate::par::map(&todo, |job| job()).into_iter();
+    let mut fresh = fresh.into_iter();
+    for (base, module, jobs) in defs {
         let mut worst: Option<verify::Verdict> = None;
-        for (label, key, job) in jobs {
-            let (verdict, cached) = match cache.get(&key) {
-                Some(v) if !args.flag("--force") => (v.clone(), true),
-                _ => (job(), false),
+        for (label, key, _) in jobs {
+            let (verdict, cached) = match fresh.next() {
+                Some(false) => (cache[&key].clone(), true),
+                _ => (made.next().expect("a verdict per check"), false),
             };
             let verdict = verdict.with_termination(analysis.status.get(&label).cloned());
             cache.insert(key.clone(), verdict.clone());
@@ -181,7 +196,7 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
             if worst.as_ref().map_or(true, |w| verdict.rank() > w.rank()) {
                 worst = Some(verdict.clone());
             }
-            module_of.insert(label.clone(), orig.module.to_string());
+            module_of.insert(label.clone(), module.clone());
             results.push((label, verdict, cached));
         }
         // the viewer shows one status per definition
@@ -339,7 +354,19 @@ fn jit_fuzzers(resolved: &Program, env: &types::Env, chosen: &[bool], say_why: b
     let _ = verify::PROGRAM.set(prog.clone());
     // all at once; when that fails, each alone, to leave out only what doesn't compile
     let mut failed = HashMap::default();
-    let ir = match llvm::compile_fuzz(&prog, &targets) {
+    // a target that can't be compiled is named in the error: leave it out and
+    // compile the others again (one more compile per such target, not one per target)
+    let mut first = llvm::compile_fuzz(&prog, &targets);
+    while let Err(e) = &first {
+        let Some(i) = targets.iter().position(|t| e.contains(&format!("can't compile the fuzzing of `{}`", t.name))) else { break };
+        let t = targets.remove(i);
+        if say_why {
+            eprintln!("note: `{}` can't be fuzzed: {e}", t.name);
+        }
+        failed.insert(t.name.clone(), format!("it can't be compiled yet: {e}"));
+        first = llvm::compile_fuzz(&prog, &targets);
+    }
+    let ir = match first {
         Ok(made) => Some(made),
         Err(_) => {
             let mut ok = vec![];
