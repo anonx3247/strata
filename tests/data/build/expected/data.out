@@ -21,6 +21,6 @@ big circle, circle, rect or dot, nothing
 true
 6
 4
-fault (Refinement): constructing `Range`: {"lo":9,"hi":5} does not satisfy `Range` (where it.lo <= it.hi)
+fault (Refinement): constructing `Range`: Range { lo: 9, hi: 5 } does not satisfy `Range` (where it.lo <= it.hi)
 
 --- exit 101

@@ -1089,7 +1089,7 @@ impl<'a> Module<'a> {
             requires.extend(&own.requires);
             ensures.extend(&own.ensures);
         }
-        let label = format!("{}.{}", mi.head, mi.method);
+        let label = format!("{}.{}", mi.head, crate::names::short(&mi.method));
         let inst = Instance { label, symbol: mi.symbol(), impls: vec![], params: own.params.clone(), ret: own.ret.clone(), own_params: &own.params, own_ret: &own.ret, requires, ensures, body: &own.body, sub, given: &[] };
         self.instance(&inst)
     }
@@ -1543,7 +1543,7 @@ impl<'a> Module<'a> {
             let mut parts = vec![Part::Lit(crate::types::shown_name(&format!("precondition of `{name}` violated: requires {} (with ", crate::printer::expr(r, 0))))];
             for (i, p) in f.params.iter().enumerate() {
                 let v = c.load(&p.name)?;
-                let shown = c.json(&v)?;
+                let shown = c.shown(&v)?;
                 parts.push(Part::Lit(format!("{}{} = ", if i > 0 { ", " } else { "" }, p.name)));
                 parts.push(Part::Val(shown));
             }
@@ -1584,7 +1584,7 @@ impl<'a> Module<'a> {
                 let (pass, fail) = (c.fresh_label("ensures.ok"), c.fresh_label("ensures.fail"));
                 c.cond_br(&ok, &pass, &fail);
                 c.block(&fail);
-                let shown = c.json(&result)?;
+                let shown = c.shown(&result)?;
                 c.fault(
                     Fault::Ensures,
                     vec![Part::Lit(format!("postcondition of `{name}` violated: ensures {} (it = ", crate::printer::expr(en, 0))), Part::Val(shown), Part::Lit(")".into())],
@@ -2687,7 +2687,7 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let t = self.m.repr(&v.0)?;
         if self.m.handle(&t) {
-            return self.json(v);
+            return self.shown(v);
         }
         if self.is_dyn(&t) {
             return self.dyn_entry_call(v, DYN_SHOW);
@@ -2803,7 +2803,18 @@ impl<'m, 'a> Func<'m, 'a> {
         })
     }
 
-    /// A value as JSON, for messages and nested in other values.
+    /// A value as messages show it: as `debug` does (the code that writes
+    /// it, unless its type has a `Debug` of its own); a native handle by its
+    /// type (`<Db>`: what it points to is C's).
+    fn shown(&mut self, v: &V) -> Res<String> {
+        let t = self.m.repr(&v.0)?;
+        if self.m.handle(&t) {
+            return Ok(self.m.string(&format!("<{}>", crate::names::short(&key(&t)))));
+        }
+        self.debug(v)
+    }
+
+    /// A value as JSON (`to_json`, `derive Json`).
     fn json(&mut self, v: &V) -> Res<String> {
         let t = self.m.repr(&v.0)?;
         if self.m.handle(&t) {
@@ -2945,11 +2956,10 @@ impl<'m, 'a> Func<'m, 'a> {
                 let distinct = matches!(t, Ty::Con(n, _) if h.m.is_distinct(n));
                 match h.m.repr(t)? {
                     _ if distinct => {
-                        // a `distinct` value is not a number or a string to `compare`: by its JSON
-                        let (x, y) = (h.json(&a)?, h.json(&b)?);
-                        let c = h.call(&Ty::Int, "@strata_str_cmp", &[(Ty::Str, x.clone()), (Ty::Str, y.clone())])?;
-                        h.drop_value(&(Ty::Str, x))?;
-                        h.drop_value(&(Ty::Str, y))?;
+                        // a `distinct` value: as what it is made of (`UserId(9) < UserId(10)`)
+                        let r = h.m.repr(t)?;
+                        let f = h.helper("cmp", &r)?;
+                        let c = h.call(&Ty::Int, &f, &[(r.clone(), "%a".into()), (r, "%b".into())])?;
                         h.emit(format!("ret i64 {}", c.1));
                     }
                     Ty::Int => {
@@ -3025,16 +3035,74 @@ impl<'m, 'a> Func<'m, 'a> {
                         h.emit(format!("{gt} = icmp sgt i64 {}, {}", na.1, nb.1));
                         three(&mut h, &lt, &gt);
                     }
-                    _ => {
-                        // anything else: by its JSON
-                        let (x, y) = (h.json(&a)?, h.json(&b)?);
-                        let c = h.call(&Ty::Int, "@strata_str_cmp", &[(Ty::Str, x.clone()), (Ty::Str, y.clone())])?;
-                        h.drop_value(&(Ty::Str, x))?;
-                        h.drop_value(&(Ty::Str, y))?;
+                    Ty::Con(sn, el) if sn == "Set" => {
+                        // as its elements, in order
+                        let list = Ty::Con("List".into(), el.clone());
+                        let f = h.helper("cmp", &list)?;
+                        let c = h.call(&Ty::Int, &f, &[(list.clone(), "%a".into()), (list, "%b".into())])?;
                         h.emit(format!("ret i64 {}", c.1));
                     }
+                    Ty::Con(d, kv) if d == "Dict" => {
+                        // as its pairs, in key order
+                        let pairs = Ty::Con("List".into(), vec![Ty::Con("Tuple".into(), kv.clone())]);
+                        let f = h.helper("cmp", &pairs)?;
+                        let c = h.call(&Ty::Int, &f, &[(pairs.clone(), "%a".into()), (pairs, "%b".into())])?;
+                        h.emit(format!("ret i64 {}", c.1));
+                    }
+                    r if h.m.boxed(&r) => {
+                        // a union: by member, in the order written, then as that member
+                        let ms = h.m.members(t);
+                        let tc = t.clone();
+                        h.on_member(&a, |h, ma, x| {
+                            let ra = ms.iter().position(|m| m == ma).unwrap_or(0);
+                            let (ms, ma) = (ms.clone(), ma.clone());
+                            h.on_member(&(tc.clone(), "%b".into()), |h, mb, y| {
+                                let rb = ms.iter().position(|m| m == mb).unwrap_or(0);
+                                if ra != rb {
+                                    h.emit(format!("ret i64 {}", if ra < rb { -1 } else { 1 }));
+                                    return Ok(());
+                                }
+                                let f = h.helper("cmp", &ma)?;
+                                let c = h.call(&Ty::Int, &f, &[x.clone(), y])?;
+                                h.emit(format!("ret i64 {}", c.1));
+                                Ok(())
+                            })
+                        })?;
+                    }
+                    r if h.m.nominal(&r) => {
+                        // a record or variant: by variant, in the order declared, then field by field
+                        let cs = h.m.ctors_of(&r);
+                        let tc = t.clone();
+                        h.on_ctor(&a, "", |h, ca| {
+                            let ra = cs.iter().position(|c| c == ca).unwrap_or(0);
+                            let (cs, ca) = (cs.clone(), ca.to_string());
+                            h.on_ctor(&(tc.clone(), "%b".into()), "", |h, cb| {
+                                let rb = cs.iter().position(|c| c == cb).unwrap_or(0);
+                                if ra != rb {
+                                    h.emit(format!("ret i64 {}", if ra < rb { -1 } else { 1 }));
+                                    return Ok(());
+                                }
+                                let fs = h.m.fields(&ca, &h.m.ctor_args(&ca, &tc))?;
+                                for (i, fi) in fs.iter().enumerate() {
+                                    let (x, y) = (h.field(&(tc.clone(), "%a".into()), i, &fi.ty)?, h.field(&(tc.clone(), "%b".into()), i, &fi.ty)?);
+                                    let f = h.helper("cmp", &fi.ty)?;
+                                    let c = h.call(&Ty::Int, &f, &[x, y])?;
+                                    let (z, next, out) = (h.fresh("z"), h.fresh_label("next"), h.fresh_label("differ"));
+                                    h.emit(format!("{z} = icmp eq i64 {}, 0", c.1));
+                                    h.emit(format!("br i1 {z}, label %{next}, label %{out}"));
+                                    h.block(&out);
+                                    h.emit(format!("ret i64 {}", c.1));
+                                    h.block(&next);
+                                }
+                                h.emit("ret i64 0".into());
+                                Ok(())
+                            })
+                        })?;
+                    }
+                    r => return Err(format!("comparing a `{}` is not compiled yet", key(&r))),
                 }
-                format!("define i64 {name}({ll} %a, {ll} %b)")
+                // (a type without a value, `()`, takes nothing: `call` passes nothing for it)
+                if has_value(t) { format!("define i64 {name}({ll} %a, {ll} %b)") } else { format!("define i64 {name}()") }
             }
             "eq" if h.m.boxed(t) => {
                 // the same member, then equal as it
@@ -3342,8 +3410,9 @@ impl<'m, 'a> Func<'m, 'a> {
                         let s = h.m.string(crate::names::short(c));
                         h.emit(format!("ret ptr {s}"));
                     } else {
-                        let j = h.json(&a)?;
-                        h.emit(format!("ret ptr {j}"));
+                        // with fields: as the code that writes it (`debug`'s)
+                        let d = h.debug(&a)?;
+                        h.emit(format!("ret ptr {d}"));
                     }
                     Ok(())
                 })?;
@@ -3608,7 +3677,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let ctx = ctx.to_vec();
                 // (what a message would show is made first: a temporary, unless it is used)
                 self.each(v, &et, |c, i, x| {
-                    let shown = c.json(&(Ty::Int, i.to_string()))?;
+                    let shown = c.shown(&(Ty::Int, i.to_string()))?;
                     let shown = c.temp((Ty::Str, shown)).1;
                     let inner = within(&ctx, vec![Part::Lit(": [".into()), Part::Val(shown), Part::Lit("]".into())]);
                     c.check_in(&et_written, x, &inner, false)
@@ -3622,12 +3691,12 @@ impl<'m, 'a> Func<'m, 'a> {
                 let (written, ctx) = (args.clone(), ctx.to_vec());
                 self.each(&list, &et, |c, _, x| {
                     if written.len() == 1 {
-                        let shown = c.json(x)?;
+                        let shown = c.shown(x)?;
                         let shown = c.temp((Ty::Str, shown)).1;
                         return c.check_in(&written[0], x, &within(&ctx, vec![Part::Lit(": element ".into()), Part::Val(shown)]), false);
                     }
                     let (k, val) = (c.field(x, 0, &lowered[0])?, c.field(x, 1, &lowered[1])?);
-                    let shown = c.json(&k)?;
+                    let shown = c.shown(&k)?;
                     let shown = c.temp((Ty::Str, shown)).1;
                     c.check_in(&written[0], &k, &within(&ctx, vec![Part::Lit(": key ".into()), Part::Val(shown.clone())]), false)?;
                     c.check_in(&written[1], &val, &within(&ctx, vec![Part::Lit(": [".into()), Part::Val(shown), Part::Lit("]".into())]), false)
@@ -3728,7 +3797,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let (pass, fail) = (self.fresh_label("check.ok"), self.fresh_label("check.fail"));
         self.cond_br(ok, &pass, &fail);
         self.block(&fail);
-        let shown = self.json(v)?;
+        let shown = self.shown(v)?;
         ctx.extend([Part::Lit(": ".into()), Part::Val(shown), Part::Lit(format!(" {msg}"))]);
         self.fault(Fault::Refinement, ctx)?;
         self.block(&pass);
@@ -4511,7 +4580,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 t => format!("does not satisfy `{}`", key(t)),
             };
             let rt = Ty::Con("Result".into(), vec![Ty::Unit, Ty::Str]);
-            let shown = self.json(&v)?;
+            let shown = self.shown(&v)?;
             let shown = self.temp((Ty::Str, shown));
             let why = self.m.string(&why);
             return self.call_fn(&prelude("check_result"), vec![ok, shown, (Ty::Str, why)], Some(rt));
@@ -5087,7 +5156,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let (ok, bad) = (self.fresh_label("at.ok"), self.fresh_label("at.out"));
                 self.cond_br(&bool_v(&inside), &ok, &bad);
                 self.block(&bad);
-                let (si, sn) = (self.json(&vs[1])?, self.json(&n)?);
+                let (si, sn) = (self.shown(&vs[1])?, self.shown(&n)?);
                 self.fault(Fault::Runtime, vec![Part::Lit("index ".into()), Part::Val(si), Part::Lit(" out of range (length ".into()), Part::Val(sn), Part::Lit(")".into())])?;
                 self.block(&ok);
                 self.list_at(&vs[0], &vs[1].1, &et)?
@@ -5481,7 +5550,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let (ok, bad) = (self.fresh_label("self.ok"), self.fresh_label("self.other"));
         self.cond_br(&bool_v(&same), &ok, &bad);
         self.block(&bad);
-        let shown = self.json(a)?;
+        let shown = self.shown(a)?;
         self.fault(Fault::Runtime, vec![Part::Lit(format!("`{m}` of `{}` takes a `{}` as `Self`, not ", key(imp), key(imp))), Part::Val(shown)])?;
         self.block(&ok);
         let s = self.field(a, 0, &Ty::Int)?;
@@ -5793,8 +5862,13 @@ impl<'m, 'a> Func<'m, 'a> {
         let cmp = self.helper("cmp", t)?;
         let fsym = format!("@\"less:{}\"", key(t));
         if self.m.helpers.insert(fsym.clone()) {
-            let ll = self.m.ll(t)?;
-            writeln!(self.m.body, "define i1 {fsym}(ptr %env, {ll} %a, {ll} %b) {{\nentry:\n  %c = call i64 {cmp}({ll} %a, {ll} %b)\n  %r = icmp slt i64 %c, 0\n  ret i1 %r\n}}\n").unwrap();
+            if has_value(t) {
+                let ll = self.m.ll(t)?;
+                writeln!(self.m.body, "define i1 {fsym}(ptr %env, {ll} %a, {ll} %b) {{\nentry:\n  %c = call i64 {cmp}({ll} %a, {ll} %b)\n  %r = icmp slt i64 %c, 0\n  ret i1 %r\n}}\n").unwrap();
+            } else {
+                // values without one (`()`) are all equal: never less
+                writeln!(self.m.body, "define i1 {fsym}(ptr %env) {{\nentry:\n  ret i1 false\n}}\n").unwrap();
+            }
         }
         let p = self.closure(&fsym, &[], "<fn order>")?;
         Ok((Ty::Fn(vec![t.clone(), t.clone()], Box::new(Ty::Bool)), p))
@@ -5919,7 +5993,7 @@ impl<'m, 'a> Func<'m, 'a> {
                     if named {
                         s.fault(Fault::Runtime, vec![Part::Lit(format!("no field `{f}`"))])?;
                     } else {
-                        let shown = s.json(&v)?;
+                        let shown = s.shown(&v)?;
                         s.fault(Fault::Runtime, vec![Part::Lit(format!("no field `{f}` on ")), Part::Val(shown)])?;
                     }
                 }
@@ -5963,7 +6037,7 @@ impl<'m, 'a> Func<'m, 'a> {
             self.br(&end);
             self.block(&next);
         }
-        let shown = self.json(&v)?;
+        let shown = self.shown(&v)?;
         self.fault(Fault::Runtime, vec![Part::Lit("no match arm for ".into()), Part::Val(shown)])?;
         self.block(&end);
         let r = self.join(&want, incoming)?;
@@ -6195,7 +6269,7 @@ impl<'m, 'a> Func<'m, 'a> {
                         self.pattern(p, &v, &fail)?;
                         self.br(&ok);
                         self.block(&fail);
-                        let shown = self.json(&v)?;
+                        let shown = self.shown(&v)?;
                         self.fault(Fault::Runtime, vec![Part::Lit("let pattern did not match ".into()), Part::Val(shown)])?;
                         self.block(&ok);
                     }
@@ -6280,7 +6354,7 @@ impl<'m, 'a> Func<'m, 'a> {
                     self.pattern(p, &x, &fail)?;
                     self.loop_body(body, &step, &end, depth)?;
                     self.block(&fail);
-                    let shown = self.json(&x)?;
+                    let shown = self.shown(&x)?;
                     self.fault(Fault::Runtime, vec![Part::Lit("for-loop pattern did not match ".into()), Part::Val(shown)])?;
                     self.block(&step);
                     let next = self.fresh("i");
@@ -6311,7 +6385,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.pattern(p, &x, &fail)?;
                 self.loop_body(body, &step, &end, depth)?;
                 self.block(&fail);
-                let shown = self.json(&x)?;
+                let shown = self.shown(&x)?;
                 self.fault(Fault::Runtime, vec![Part::Lit("for-loop pattern did not match ".into()), Part::Val(shown)])?;
                 self.block(&step);
                 let next = self.fresh("i");
@@ -6347,7 +6421,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.block(&fail);
                 let mut parts = vec![Part::Lit(format!("assertion failed: {}", crate::printer::expr(x, 0)))];
                 if let Some((op, a, b)) = sides {
-                    let (sa, sb) = (self.json(&a)?, self.json(&b)?);
+                    let (sa, sb) = (self.shown(&a)?, self.shown(&b)?);
                     parts.extend([Part::Lit(format!(" (left of {} = ", op.symbol())), Part::Val(sa), Part::Lit(", right = ".into()), Part::Val(sb), Part::Lit(")".into())]);
                 }
                 self.fault(Fault::Assert, parts)?;
@@ -6813,7 +6887,7 @@ impl Func<'_, '_> {
         // what the value is at run time: a distinct type's is not a number or a string
         let numeric = matches!(v.0, Ty::Int | Ty::Float);
         if (f.plus || f.zero) && !numeric {
-            let shown = self.json(v)?;
+            let shown = self.shown(v)?;
             self.fault(Fault::Runtime, vec![Part::Lit(format!("format spec `{f}`: `+` and `0` apply to numbers, not ")), Part::Val(shown)])?;
             return Ok(self.m.string(""));
         }
@@ -6821,7 +6895,7 @@ impl Func<'_, '_> {
             (Ty::Float, Some(p)) => self.call(&Ty::Str, "@strata_show_float_fixed", &[v.clone(), (Ty::Int, p.to_string())])?.1,
             (Ty::Str, Some(p)) => self.call(&Ty::Str, "@strata_str_slice", &[v.clone(), (Ty::Int, "0".into()), (Ty::Int, p.to_string())])?.1,
             (_, Some(_)) => {
-                let shown = self.json(v)?;
+                let shown = self.shown(v)?;
                 self.fault(Fault::Runtime, vec![Part::Lit(format!("format spec `{f}`: `.N` applies to a Float or a String, not ")), Part::Val(shown)])?;
                 return Ok(self.m.string(""));
             }
