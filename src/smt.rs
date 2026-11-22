@@ -3990,6 +3990,8 @@ pub enum Outcome {
     /// by running them): parameter name -> value.
     Refuted(Vec<(String, Expr)>, String),
     Unknown(String),
+    /// Stopped before it answered (`verify`'s fuzzer found a failure first).
+    Stopped,
 }
 
 /// Which SMT solver runs the queries: they are plain SMT-LIB, only the
@@ -4037,15 +4039,22 @@ static RUNNING: (std::sync::Mutex<usize>, std::sync::Condvar) = (std::sync::Mute
 /// A place to run a solver process, held until dropped.
 pub struct SolverSlot;
 
-pub fn solver_slot() -> SolverSlot {
+/// A place to run a solver process, or `None` once `stop` is set.
+pub fn solver_slot_until(stop: &std::sync::atomic::AtomicBool) -> Option<SolverSlot> {
     let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
     let (lock, cv) = &RUNNING;
     let mut n = lock.lock().unwrap_or_else(|e| e.into_inner());
     while *n >= cores {
-        n = cv.wait(n).unwrap_or_else(|e| e.into_inner());
+        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        n = cv.wait_timeout(n, std::time::Duration::from_millis(20)).unwrap_or_else(|e| e.into_inner()).0;
+    }
+    if stop.load(std::sync::atomic::Ordering::Relaxed) {
+        return None;
     }
     *n += 1;
-    SolverSlot
+    Some(SolverSlot)
 }
 
 impl Drop for SolverSlot {
@@ -4134,20 +4143,58 @@ impl Vc<'_> {
     }
 
     pub fn solve(&self, solver: &Solver, i: usize) -> Outcome {
+        self.solve_until(solver, i, &std::sync::atomic::AtomicBool::new(false))
+    }
+
+    /// `solve`, giving up (`Stopped`) as soon as `stop` is set: the solver
+    /// process is killed.
+    pub fn solve_until(&self, solver: &Solver, i: usize, stop: &std::sync::atomic::AtomicBool) -> Outcome {
+        use std::sync::atomic::Ordering::Relaxed;
         let ob = &self.obligations[i];
         let mut leaves = vec![];
         for (_, v) in &self.params {
             leaves_of(&self.cells, v, &mut leaves);
         }
         let script = self.script(ob, &leaves);
-        let run = || -> Option<String> {
-            let _slot = solver_slot();
-            let mut child = Command::new(&solver.bin).args(solver.args()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
-            child.stdin.take()?.write_all(script.as_bytes()).ok()?;
-            let out = child.wait_with_output().ok()?;
-            Some(String::from_utf8_lossy(&out.stdout).to_string())
+        // Err(()) when stopped
+        let run = || -> Result<Option<String>, ()> {
+            let Some(_slot) = solver_slot_until(stop) else { return Err(()) };
+            let Ok(mut child) = Command::new(&solver.bin).args(solver.args()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return Ok(None) };
+            let Some(mut stdin) = child.stdin.take() else { return Ok(None) };
+            if stdin.write_all(script.as_bytes()).is_err() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(None);
+            }
+            drop(stdin);
+            // read the answer on another thread, so a long one can't fill the pipe while we wait
+            let Some(mut stdout) = child.stdout.take() else { return Ok(None) };
+            let reader = std::thread::spawn(move || {
+                let mut out = String::new();
+                let _ = std::io::Read::read_to_string(&mut stdout, &mut out);
+                out
+            });
+            loop {
+                if stop.load(Relaxed) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    // (the reader ends when the pipe closes: not waited for, a child of the solver may hold it)
+                    drop(reader);
+                    return Err(());
+                }
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(2)),
+                    Err(_) => return Ok(None),
+                }
+            }
+            Ok(reader.join().ok())
         };
-        let Some(out) = run() else { return Outcome::Unknown("the solver could not be run".into()) };
+        let out = match run() {
+            Err(()) => return Outcome::Stopped,
+            Ok(None) => return Outcome::Unknown("the solver could not be run".into()),
+            Ok(Some(out)) => out,
+        };
         let first = out.lines().next().unwrap_or("").trim();
         let why = self.why(ob);
         let because = if why.is_empty() { String::new() } else { format!(" (depends on {})", why.join("; ")) };

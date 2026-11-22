@@ -128,7 +128,7 @@ Views:
 Checking:
   check [--json]               types, exhaustiveness, literal refinements
   holes [--json]               typed holes with goal type, context and obligations
-  verify [SELECTOR] [--cases N] [--checks] [--smt] [--require R,..] [--json]
+  verify [SELECTOR] [--cases N] [--checks] [--smt] [--require R,..] [--no-race] [--json]
                                prove every contract with an SMT solver (z3), confirm
                                its counterexamples by running them, fuzz the rest;
                                results cached by content hash. --checks lists the
@@ -139,6 +139,11 @@ Checking:
                                strata.toml's [verify] rules). Proven functions that
                                terminate are still run on --cross-check N cases
                                (default 20, 0: off), to catch a wrong proof.
+                               The solver and the fuzzer race: the first to find a
+                               failure stops the other (--no-race: the solver
+                               first, then the fuzzer; every result the same from
+                               run to run, and a failure of proven code is shown
+                               as a bug in the prover).
                                Everything run is compiled (--jit: say why what
                                can't be compiled yet is skipped)
 

@@ -401,10 +401,27 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, key: &str, solver
     let mut vc = crate::smt::Vc::new(env);
     vc.transparent = transparent.clone();
     vc.function(&decl, &decl.name);
+    if !RACE.load(std::sync::atomic::Ordering::Relaxed) {
+        return solve_then_fuzz(&vc, bin, key, &shown, &decl, imp.is_some(), cases, cross_check, seed);
+    }
+    race(&vc, bin, key, &shown, &decl, imp.is_some(), cases, cross_check, seed)
+}
+
+/// Race the fuzzer against the solver (`race`); `verify --no-race` turns it
+/// off: the solver first, then the fuzzer, so every result is the same from
+/// run to run and the cross-check can tell a bug in the prover.
+/// How long the solver works alone before the fuzzer races it.
+const HEAD_START: std::time::Duration = std::time::Duration::from_millis(300);
+
+pub static RACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// The solver, then the fuzzer: for what the solver doesn't prove, or as a
+/// cross-check of what it does.
+#[allow(clippy::too_many_arguments)]
+fn solve_then_fuzz(vc: &crate::smt::Vc, bin: &crate::smt::Solver, key: &str, shown: &str, decl: &FnDecl, method: bool, cases: usize, cross_check: usize, seed: u64) -> Verdict {
     let (mut proven, mut unproven) = (vec![], vec![]);
     // every obligation at once (each a solver process), then read in order
     let outcomes: Vec<Option<crate::smt::Outcome>> = std::thread::scope(|sc| {
-        let vc = &vc;
         let handles: Vec<_> = (0..vc.obligations.len()).map(|i| (!vc.obligations[i].termination).then(|| sc.spawn(move || vc.solve(bin, i)))).collect();
         handles.into_iter().map(|h| h.map(|h| h.join().expect("a solver thread"))).collect()
     });
@@ -415,7 +432,7 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, key: &str, solver
             crate::smt::Outcome::Proven => proven.push(what),
             crate::smt::Outcome::Refuted(args, msg) => {
                 let vals: Vec<Expr> = args.into_iter().map(|a| a.1).collect();
-                match replay(key, &shown, &decl, imp.is_some(), &vals) {
+                match replay(key, shown, decl, method, &vals) {
                     Some(Verdict::Counterexample { args, kind, message, .. }) => {
                         return Verdict::Counterexample { args, kind, message, found_by: "solver".into(), terminates: None };
                     }
@@ -423,6 +440,7 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, key: &str, solver
                 }
             }
             crate::smt::Outcome::Unknown(msg) => unproven.push(format!("{what}: {msg}")),
+            crate::smt::Outcome::Stopped => unproven.push(format!("{what}: stopped")),
         }
     }
     for g in &vc.relied_on {
@@ -431,26 +449,116 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, key: &str, solver
     if unproven.is_empty() {
         // a safety net for the prover: proven code is still run a little
         if cross_check > 0 {
-            if let Verdict::Counterexample { args, kind, message, .. } = fuzz_limited(key, &shown, cross_check, seed, Some(CROSS_CHECK_STEPS)) {
-                // a fault in a function it calls is that function's (the prover relies on
-                // its contract, which doesn't rule the fault out); one in its own code is the prover's
-                let frames: Vec<&str> = message.rsplit_once("(stack: ").and_then(|(_, s)| s.strip_suffix(')')).map(|s| s.split(" -> ").collect()).unwrap_or_default();
-                let why = match frames.as_slice() {
-                    [first, .., last] if first != last => format!("{message}. It fails in `{last}`, which it calls: see `{last}`'s own verdict"),
-                    _ => format!("{message}. The solver had proven every check, so this is a bug in the prover: please report it"),
-                };
-                return Verdict::Counterexample {
-                    args,
-                    kind,
-                    message: why,
-                    found_by: "cross-check".into(),
-                    terminates: None,
-                };
+            if let Verdict::Counterexample { args, kind, message, .. } = fuzz_limited(key, shown, cross_check, seed, Some(CROSS_CHECK_STEPS)) {
+                return Verdict::Counterexample { args, kind, message: prover_bug(&message), found_by: "cross-check".into(), terminates: None };
             }
         }
         return Verdict::Proven { checks: proven, terminates: None };
     }
-    fuzz(proven.len(), unproven)
+    match fuzz_limited(key, shown, cases, seed, None) {
+        Verdict::Fuzzed { cases, discarded, .. } => Verdict::Fuzzed { cases, discarded, proven: proven.len(), unproven, terminates: None },
+        Verdict::Skipped { reason } if !unproven.is_empty() => Verdict::Skipped { reason: format!("{reason}; not proven: {}", unproven.join("; ")) },
+        other => other,
+    }
+}
+
+/// What a failure of code the solver proved means: a fault in a function it
+/// calls is that function's (the prover relies on its contract, which
+/// doesn't rule the fault out); one in its own code is the prover's.
+fn prover_bug(message: &str) -> String {
+    let frames: Vec<&str> = message.rsplit_once("(stack: ").and_then(|(_, s)| s.strip_suffix(')')).map(|s| s.split(" -> ").collect()).unwrap_or_default();
+    match frames.as_slice() {
+        [first, .., last] if first != last => format!("{message}. It fails in `{last}`, which it calls: see `{last}`'s own verdict"),
+        _ => format!("{message}. The solver had proven every check, so this is a bug in the prover: please report it"),
+    }
+}
+
+/// The solver and the fuzzer at once. The fuzzer runs the cases an
+/// unproven function gets; the solver solves every obligation at once.
+/// - The fuzzer finds a failure first: the solver is stopped, and the
+///   failure is the verdict.
+/// - The solver proves everything: the fuzzer is cut down to the
+///   cross-check's cases (none when the function may not terminate); a
+///   failure there, unless it only ran out of steps, is a bug in the prover.
+/// - The solver's counterexample, confirmed by running it: the verdict, and
+///   the fuzzer stops.
+/// - Otherwise the fuzzer's verdict, with what was proven.
+/// Which finishes first depends on timing; the inputs each finds don't.
+#[allow(clippy::too_many_arguments)]
+fn race(vc: &crate::smt::Vc, bin: &crate::smt::Solver, key: &str, shown: &str, decl: &FnDecl, method: bool, cases: usize, cross_check: usize, seed: u64) -> Verdict {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+    let stop_solver = AtomicBool::new(false);
+    let solved = AtomicBool::new(false);
+    let cap = AtomicUsize::new(cases);
+    // a cross-check's steps until the solver has answered
+    let budget = std::sync::atomic::AtomicU64::new(CROSS_CHECK_STEPS);
+    std::thread::scope(|sc| {
+        let fuzzer = sc.spawn(|| {
+            // most proofs take a few milliseconds: the fuzzer only races a
+            // solver still at work after HEAD_START (else it would take the
+            // cores from solvers about to finish)
+            let start = std::time::Instant::now();
+            while !solved.load(Relaxed) && start.elapsed() < HEAD_START {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let v = fuzz_capped(key, shown, cases, seed, &budget, &cap);
+            if matches!(v, Verdict::Counterexample { .. }) {
+                stop_solver.store(true, Relaxed);
+            }
+            v
+        });
+        let handles: Vec<_> = (0..vc.obligations.len()).map(|i| {
+            let stop = &stop_solver;
+            (!vc.obligations[i].termination).then(|| sc.spawn(move || vc.solve_until(bin, i, stop)))
+        }).collect();
+        let outcomes: Vec<Option<crate::smt::Outcome>> = handles.into_iter().map(|h| h.map(|h| h.join().expect("a solver thread"))).collect();
+        // (the fuzzer is told only once the cases it may run are settled, below)
+        let (mut proven, mut unproven) = (vec![], vec![]);
+        let mut stopped = false;
+        for (i, out) in outcomes.into_iter().enumerate() {
+            let Some(out) = out else { continue };
+            let what = vc.obligations[i].what.clone();
+            match out {
+                crate::smt::Outcome::Proven => proven.push(what),
+                crate::smt::Outcome::Refuted(args, msg) => {
+                    let vals: Vec<Expr> = args.into_iter().map(|a| a.1).collect();
+                    match replay(key, shown, decl, method, &vals) {
+                        Some(Verdict::Counterexample { args, kind, message, .. }) if !stop_solver.load(Relaxed) => {
+                            cap.store(0, Relaxed);
+                            solved.store(true, Relaxed);
+                            let _ = fuzzer.join();
+                            return Verdict::Counterexample { args, kind, message, found_by: "solver".into(), terminates: None };
+                        }
+                        _ => unproven.push(format!("{what}: {msg}, but running it did not fail")),
+                    }
+                }
+                crate::smt::Outcome::Unknown(msg) => unproven.push(format!("{what}: {msg}")),
+                crate::smt::Outcome::Stopped => stopped = true,
+            }
+        }
+        for g in &vc.relied_on {
+            proven.push(format!("(seeing through `{g}`, assuming it terminates as marked)"));
+        }
+        if unproven.is_empty() && !stopped {
+            // a safety net for the prover: proven code is still run a little
+            cap.store(cross_check, Relaxed);
+            solved.store(true, Relaxed);
+            let v = fuzzer.join().expect("the fuzzer");
+            if let Verdict::Counterexample { args, kind, message, .. } = v {
+                if cross_check > 0 && kind != "Limit" {
+                    return Verdict::Counterexample { args, kind, message: prover_bug(&message), found_by: "cross-check".into(), terminates: None };
+                }
+            }
+            return Verdict::Proven { checks: proven, terminates: None };
+        }
+        budget.store(FULL, Relaxed);
+        solved.store(true, Relaxed);
+        match fuzzer.join().expect("the fuzzer") {
+            Verdict::Fuzzed { cases, discarded, .. } => Verdict::Fuzzed { cases, discarded, proven: proven.len(), unproven, terminates: None },
+            Verdict::Skipped { reason } if !unproven.is_empty() => Verdict::Skipped { reason: format!("{reason}; not proven: {}", unproven.join("; ")) },
+            other => other,
+        }
+    })
 }
 
 /// The SMT-LIB query of each obligation of a function (for `verify --smt`).
@@ -695,16 +803,43 @@ fn counterexample(f: Fault, args: Vec<String>, key: &str, shown: &str) -> Verdic
 /// with an optional step budget per case: with one, a case that goes past
 /// it is set aside, not a failure. `shown`: what messages call it.
 fn fuzz_limited(key: &str, shown: &str, cases: usize, seed: u64, budget: Option<u64>) -> Verdict {
+    let b = std::sync::atomic::AtomicU64::new(budget.unwrap_or(FULL));
+    fuzz_capped(key, shown, cases, seed, &b, &std::sync::atomic::AtomicUsize::new(cases))
+}
+
+/// A fuzzing budget that is `JIT_STEPS` per case, where running out of
+/// steps is a failure (the code may not end); a smaller one is a cross-check's,
+/// where running out only discards the case.
+const FULL: u64 = u64::MAX;
+
+/// `fuzz_limited`, stopping once `cap` cases passed, with the steps per case
+/// in `budget`: both can change while it runs (the solver proved everything:
+/// only a cross-check is left; it didn't: the full search). A case that ran
+/// out of a cross-check's steps is run again first once the budget is full.
+fn fuzz_capped(key: &str, shown: &str, cases: usize, seed: u64, budget: &std::sync::atomic::AtomicU64, cap: &std::sync::atomic::AtomicUsize) -> Verdict {
+    use std::sync::atomic::Ordering::Relaxed;
     let Some(j) = JIT_FUZZ.get() else { return Verdict::Skipped { reason: "not compiled".into() } };
     let Some(&addr) = j.drivers.get(key) else {
         return Verdict::Skipped { reason: j.failed.get(key).cloned().unwrap_or_else(|| "not compiled".into()) };
     };
     let _one = j.lock.lock().unwrap_or_else(|e| e.into_inner());
     let (mut ok, mut discarded) = (0, 0);
-    for i in 0..cases * 4 {
-        if ok >= cases {
+    let (mut next, mut again): (usize, Vec<usize>) = (0, vec![]);
+    loop {
+        if ok >= cases.min(cap.load(Relaxed)) {
             break;
         }
+        let b = budget.load(Relaxed);
+        let full = b == FULL;
+        let i = match (full, again.is_empty()) {
+            (true, false) => again.remove(0),
+            _ if next < cases * 4 => {
+                next += 1;
+                next - 1
+            }
+            _ => break,
+        };
+        let budget = (!full).then_some(b);
         let (fault, args) = (j.case)(addr, seed.wrapping_add(i as u64), budget.map_or(JIT_STEPS, |b| b as i64));
         let Some((kind, msg, stack)) = fault else {
             ok += 1;
@@ -720,7 +855,8 @@ fn fuzz_limited(key: &str, shown: &str, cases: usize, seed: u64, budget: Option<
             return Verdict::Skipped { reason: msg };
         }
         if budget.is_some() && kind == "Limit" {
-            discarded += 1;
+            // (counted as discarded only if the budget stays a cross-check's)
+            again.push(i);
             continue;
         }
         if kind == "Hole" {
@@ -729,6 +865,7 @@ fn fuzz_limited(key: &str, shown: &str, cases: usize, seed: u64, budget: Option<
         let args = args.iter().map(|v| crate::printer::literal(v)).collect();
         return counterexample(Fault { kind, message: msg, stack }, args, key, shown);
     }
+    discarded += again.len();
     if ok == 0 && discarded > 0 {
         return Verdict::Skipped { reason: format!("all {discarded} generated inputs violated the precondition") };
     }

@@ -284,9 +284,9 @@ fn cross_check_catches_a_wrong_prover() {
             .unwrap();
         (o.status.success(), String::from_utf8_lossy(&o.stdout).to_string())
     };
-    let (ok, out) = run(&[]);
+    let (ok, out) = run(&["--no-race"]);
     assert!(!ok && out.contains("✗ bump") && out.contains("found by the cross-check") && out.contains("a bug in the prover"), "{out}");
-    let (ok, out) = run(&["--cross-check", "0"]);
+    let (ok, out) = run(&["--cross-check", "0", "--no-race"]);
     assert!(ok && out.contains("✓ bump"), "without the cross-check the wrong proof stands: {out}");
 }
 
@@ -333,6 +333,54 @@ fn package_verify_policies() {
     std::fs::write(d.join("strata.toml"), "name = \"pol\"\n\n[verify]\nproven = [\"nope\"]\n").unwrap();
     let (ok, out) = strata(&["ci"], &d, None);
     assert!(!ok && out.contains("[verify] proven names `nope`, which is not a module of this package"), "{out}");
+}
+
+/// What termination's solver finds about std's own functions is kept
+/// between runs (std is part of the binary), so a second run doesn't redo it
+/// and says the same.
+#[test]
+fn std_termination_is_kept_between_runs() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    // a copy of examples/hello: it reaches std's functions
+    let d = tmp("std-termination");
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/hello");
+    for e in std::fs::read_dir(&src).unwrap().flatten() {
+        if e.path().extension().is_some_and(|x| x == "strata" || x == "toml") {
+            std::fs::copy(e.path(), d.join(e.file_name())).unwrap();
+        }
+    }
+    let (_, first) = strata(&["--file", ".", "verify", "--force"], &d, None);
+    let root = std::env::var_os("STRATA_CACHE").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".cache/strata"));
+    let kept: String = std::fs::read_dir(root.join("termination")).unwrap().flatten().map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).collect();
+    assert!(kept.lines().any(|l| l.starts_with("L\tstd.")), "std's loops are kept: {kept}");
+    assert!(!kept.contains(".for."), "functions made for a program are not std's own");
+    let (_, second) = strata(&["--file", ".", "verify", "--force"], &d, None);
+    assert_eq!(first, second);
+}
+
+/// The solver and the fuzzer race: a failure the fuzzer finds stops the
+/// solver's processes, so a slow query doesn't hold the verdict up.
+#[test]
+fn the_fuzzer_stops_a_slow_solver() {
+    let d = tmp("race");
+    // a solver that takes half a minute to give up on `bump`'s queries (the
+    // ones about 99), and gives up at once on the others (termination's)
+    let slow = d.join("slow-solver");
+    std::fs::write(&slow, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo slow 1.0; exit 0; fi\nif grep -q 99; then sleep 30; fi\necho unknown\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    save(&d.join("b.strata"), "type Quantity = Int where 1 <= it && it <= 99\nfn bump(q: Quantity) -> Quantity { q + 1 }\n");
+    let start = std::time::Instant::now();
+    let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["--file", "b.strata", "verify"]).env("STRATA_SOLVER", &slow).current_dir(&d).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(!o.status.success() && out.contains("✗ bump") && out.contains("found by the fuzzer"), "{out}");
+    assert!(start.elapsed() < std::time::Duration::from_secs(20), "the solver was waited for: {:?}", start.elapsed());
 }
 
 /// Lists are known by position: `xs[k]`, slices, `+`, `push`, `reverse` and
@@ -580,7 +628,7 @@ fn after_forever(n: Int) -> Int
 }
 ";
     save(&d.join("t.strata"), src);
-    let (ok, out) = strata(&["--file", "t.strata", "verify", "--cases", "20"], &d, None);
+    let (ok, out) = strata(&["--file", "t.strata", "verify", "--cases", "20", "--no-race"], &d, None);
     assert!(!ok, "{out}");
     assert!(out.contains("✗ early") && out.contains("(found by the solver)") && out.contains("it = 3"), "{out}");
     for name in ["no_break", "two_exits", "found", "inner_break", "after_forever"] {
@@ -687,7 +735,7 @@ type Odd = Int where up(it)
 fn odd() -> Odd { 1 }
 ";
     save(&d.join("h.strata"), src);
-    let (_, out) = strata(&["--file", "h.strata", "verify", "zero,ten,odd", "--cases", "20"], &d, None);
+    let (_, out) = strata(&["--file", "h.strata", "verify", "zero,ten,odd", "--cases", "20", "--no-race"], &d, None);
     assert!(out.contains("✓ zero") && out.contains("proven"), "a terminating helper is seen through: {out}");
     assert!(out.contains("✗ ten") && out.contains("found by the solver"), "{out}");
     assert!(out.contains("~ odd") && out.contains("the result of `up` (only its contract is known)"), "a helper that may not terminate is not unfolded: {out}");
@@ -799,7 +847,7 @@ fn common(v: One | Two) -> Positive { v.n }
 fn bad_common(v: One | Two) -> Positive { v.n - 1 }
 ";
     save(&d.join("u.strata"), src);
-    let (ok, out) = strata(&["--file", "u.strata", "verify", "--cases", "20"], &d, None);
+    let (ok, out) = strata(&["--file", "u.strata", "verify", "--cases", "20", "--no-race"], &d, None);
     assert!(!ok, "{out}");
     for name in ["area", "pick", "pick_area", "make", "describe", "is_sq", "lit", "nonzero", "variants", "opt", "self_eq", "common"] {
         assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
@@ -842,7 +890,7 @@ fn bad_rep() -> Bool ensures it { replace("aaa", "aa", "b") == "bb" }
 fn empty_rep(s: String, p: String) -> String { replace(s, p, "b") }
 "#;
     save(&d.join("s.strata"), src);
-    let (ok, out) = strata(&["--file", "s.strata", "verify", "--cases", "20"], &d, None);
+    let (ok, out) = strata(&["--file", "s.strata", "verify", "--cases", "20", "--no-race"], &d, None);
     assert!(!ok, "{out}");
     for name in ["head", "tail", "back", "n_chars", "bytes_bound", "find", "empty_found", "shown", "shown_len", "parsed", "digits", "ends", "rep"] {
         assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
@@ -889,7 +937,7 @@ fn far() -> Bool ensures it { len("TAG".code_points()) == 9 }
 "#
     .replace("TAG", "\u{E0041}");
     save(&d.join("r.strata"), src);
-    let (ok, out) = strata(&["--file", "r.strata", "verify", "--cases", "20"], &d, None);
+    let (ok, out) = strata(&["--file", "r.strata", "verify", "--cases", "20", "--no-race"], &d, None);
     assert!(!ok, "{out}");
     for name in ["f", "word", "letters", "spaces", "nbsp", "caseless", "kelvin", "arabic", "anchored"] {
         assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
@@ -932,7 +980,7 @@ fn floats(x: Float) -> Float { x * x }
 fn doubled(xs: List[Int]) -> List[Int] { xs.map(x -> x * 2) }
 "#;
     save(&d.join("f.strata"), src);
-    let (ok, out) = strata(&["--file", "f.strata", "verify", "--cases", "30"], &d, None);
+    let (ok, out) = strata(&["--file", "f.strata", "verify", "--cases", "30", "--no-race"], &d, None);
     assert!(!ok, "{out}");
     let line = |name: &str| out.lines().find(|l| l.split_whitespace().nth(1) == Some(name)).unwrap_or("").to_string();
     // (`split` and `repeat` are total: any arguments)
@@ -1042,7 +1090,7 @@ fn checked(a: Int, b: Int) -> Int requires b != 0 { a % b }
 fn use_checked(a: Int) -> Int { checked(a, a - 3) }
 "#;
     save(&d.join("s.strata"), src);
-    let (ok, out) = strata(&["--file", "s.strata", "verify"], &d, None);
+    let (ok, out) = strata(&["--file", "s.strata", "verify", "--no-race"], &d, None);
     assert!(!ok, "{out}");
     let line = |name: &str| out.lines().find(|l| l.split_whitespace().nth(1) == Some(name)).unwrap_or("").to_string();
     for name in ["dec", "discount", "code", "caller", "count_up", "first_qty", "line_total", "total", "checked"] {
@@ -1054,7 +1102,7 @@ fn use_checked(a: Int) -> Int { checked(a, a - 3) }
     assert!(out.contains("division by zero") && out.contains("100 does not satisfy `Quantity`"), "{out}");
     // what can't be proven is fuzzed, with the reason
     save(&d.join("f.strata"), "fn mean(xs: List[Int]) -> Int where it >= 0 { if len(xs) == 0 { 0 } else { abs(xs.fold(0, (a, x) -> a + x)) / len(xs) } }\nfn neg(xs: List[Int]) -> Natural { xs.fold(0, (a, x) -> a + x) }\n");
-    let (ok, out) = strata(&["--file", "f.strata", "verify"], &d, None);
+    let (ok, out) = strata(&["--file", "f.strata", "verify", "--no-race"], &d, None);
     assert!(!ok && out.contains("~ mean") && out.contains("not proven: result of `mean`") && out.contains("`fold` is not modelled") && out.contains("✗ neg") && out.contains("found by the fuzzer"), "{out}");
     let (ok, out) = strata(&["--file", "s.strata", "verify", "bad_caller", "--smt"], &d, None);
     assert!(ok && out.contains("(check-sat)") && out.contains("(assert (not (> v0 0)))"), "{out}");
@@ -4975,7 +5023,7 @@ fn for_over_iterators() {
     let (ok, out) = strata(&["run", "it.strata"], &d, None);
     assert!(ok, "{out}");
     assert_eq!(out, json_case::ITERATORS_OUTPUT);
-    let (_, out) = strata(&["--file", "it.strata", "verify"], &d, None);
+    let (_, out) = strata(&["--file", "it.strata", "verify", "--no-race"], &d, None);
     assert!(out.contains("it has a `for` over an `Iterator` that isn't a `FiniteIterator`, which may never end"), "{out}");
     // the defaults of the prelude's traits are library code, not the program's
     assert!(!out.contains("Count.map") && !out.contains("Count.fold"), "{out}");

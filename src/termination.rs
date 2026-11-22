@@ -669,6 +669,119 @@ fn refinements_in(t: &TypeExpr, out: &mut Vec<Expr>) {
 /// the code calls, and showing that loops end costs a solver run per loop, so
 /// verifying one function does not pay for the whole program's (std's) loops.
 /// The others are left unknown, and none of them is transparent.
+/// The solver's findings about std's own functions (a loop's bound, a
+/// recursion's measure), kept between runs: they depend only on std, which
+/// is part of the strata binary, and on the solver. One file per binary and
+/// solver, under `~/.cache/strata/termination` (`STRATA_CACHE` moves it).
+/// Functions made from std for a program (`std.json.encode_as.for.A.2`) are
+/// not std's own, and are not kept.
+struct StdCache {
+    path: Option<std::path::PathBuf>,
+    loops: HashMap<String, Result<Vec<String>, String>>,
+    measures: HashMap<String, Option<String>>,
+    changed: bool,
+}
+
+impl StdCache {
+    fn load(solver: Option<&crate::smt::Solver>) -> StdCache {
+        let path = solver.and_then(Self::file);
+        let mut c = StdCache { path, loops: HashMap::default(), measures: HashMap::default(), changed: false };
+        let text = c.path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+        for line in text.lines() {
+            let f: Vec<String> = line.split('\t').map(unescape).collect();
+            match f.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+                ["L", name, "ok", rest @ ..] => drop(c.loops.insert(name.to_string(), Ok(rest.iter().map(|s| s.to_string()).collect()))),
+                ["L", name, "err", why] => drop(c.loops.insert(name.to_string(), Err(why.to_string()))),
+                ["M", name, "some", m] => drop(c.measures.insert(name.to_string(), Some(m.to_string()))),
+                ["M", name, "none"] => drop(c.measures.insert(name.to_string(), None)),
+                _ => {}
+            }
+        }
+        c
+    }
+
+    fn file(solver: &crate::smt::Solver) -> Option<std::path::PathBuf> {
+        use sha2::{Digest, Sha256};
+        let exe = std::env::current_exe().ok()?;
+        let meta = std::fs::metadata(&exe).ok()?;
+        let key: String = Sha256::digest(format!("termination v1 {:?} {} {} {}", meta.modified().ok()?, meta.len(), solver.bin, solver.version).as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
+        let root = match std::env::var_os("STRATA_CACHE") {
+            Some(d) => std::path::PathBuf::from(d),
+            None => std::path::PathBuf::from(std::env::var_os("HOME")?).join(".cache/strata"),
+        };
+        Some(root.join("termination").join(key))
+    }
+
+    /// Is `name` one of std's own functions?
+    fn std_own(name: &str) -> bool {
+        static NAMES: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+        NAMES.get_or_init(|| crate::stdlib::program().decls.iter().map(|d| d.qname()).collect()).contains(name)
+    }
+
+    fn put_loops(&mut self, name: &str, r: &Result<Vec<String>, String>) {
+        if self.path.is_some() && Self::std_own(name) {
+            self.loops.insert(name.to_string(), r.clone());
+            self.changed = true;
+        }
+    }
+
+    fn put_measure(&mut self, name: &str, m: &Option<String>) {
+        if self.path.is_some() && Self::std_own(name) {
+            self.measures.insert(name.to_string(), m.clone());
+            self.changed = true;
+        }
+    }
+
+    /// Written whole, then renamed into place (another strata may be writing too).
+    fn save(&self) {
+        let (Some(path), true) = (&self.path, self.changed) else { return };
+        let mut lines: Vec<String> = vec![];
+        for (n, r) in &self.loops {
+            let mut f = vec!["L".to_string(), escape(n)];
+            match r {
+                Ok(hows) => {
+                    f.push("ok".into());
+                    f.extend(hows.iter().map(|h| escape(h)));
+                }
+                Err(why) => f.extend(["err".to_string(), escape(why)]),
+            }
+            lines.push(f.join("\t"));
+        }
+        for (n, m) in &self.measures {
+            lines.push(match m {
+                Some(m) => format!("M\t{}\tsome\t{}", escape(n), escape(m)),
+                None => format!("M\t{}\tnone", escape(n)),
+            });
+        }
+        lines.sort();
+        let Some(dir) = path.parent() else { return };
+        let tmp = dir.join(format!(".{}.{}", std::process::id(), path.file_name().and_then(|f| f.to_str()).unwrap_or("t")));
+        let _ = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&tmp, lines.join("\n") + "\n")).and_then(|_| std::fs::rename(&tmp, path));
+    }
+}
+
+fn escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\t', "\\t").replace('\n', "\\n")
+}
+
+fn unescape(s: &str) -> String {
+    let mut out = String::new();
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('t') => out.push('\t'),
+            Some('n') => out.push('\n'),
+            Some(o) => out.push(o),
+            None => {}
+        }
+    }
+    out
+}
+
 pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>, roots: Option<&HashSet<String>>) -> Analysis {
     let mut nodes: HashMap<String, Node> = HashMap::default();
     for (name, f) in &env.fns {
@@ -751,8 +864,14 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>, roots: Option<&Ha
     let skipped = "not analysed (nothing being verified reaches it)".to_string();
     // the loops' bounds of what is wanted, each function's on a thread (each
     // query a solver process)
-    let todo: Vec<(String, FnDecl)> = nodes.iter().filter_map(|(name, n)| n.body.clone().filter(|_| wanted(name)).map(|b| (name.clone(), b))).collect();
-    let found: HashMap<String, Result<Vec<String>, String>> = crate::par::map(&todo, |(name, b)| (name.clone(), loops(env, b, solver))).into_iter().collect();
+    // (std's are kept between runs: `StdCache`)
+    let mut cache = StdCache::load(solver);
+    let todo: Vec<(String, FnDecl)> = nodes.iter().filter_map(|(name, n)| n.body.clone().filter(|_| wanted(name) && !cache.loops.contains_key(name)).map(|b| (name.clone(), b))).collect();
+    let mut found: HashMap<String, Result<Vec<String>, String>> = crate::par::map(&todo, |(name, b)| (name.clone(), loops(env, b, solver))).into_iter().collect();
+    for (name, r) in &found {
+        cache.put_loops(name, r);
+    }
+    found.extend(cache.loops.iter().filter(|(n, _)| nodes.contains_key(n.as_str())).map(|(n, r)| (n.clone(), r.clone())));
     for (name, n) in nodes.iter_mut() {
         if n.body.is_some() {
             n.loops = found.get(name).cloned().unwrap_or_else(|| Err(skipped.clone()));
@@ -765,10 +884,15 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>, roots: Option<&Ha
     // of a parameter, each on a thread (each a few solver processes)
     let needs: Vec<(&String, &FnDecl)> = nodes
         .iter()
-        .filter(|(name, n)| wanted(name) && n.loops.is_ok() && mutual(name).is_none() && n.calls.contains(*name))
+        .filter(|(name, n)| wanted(name) && n.loops.is_ok() && mutual(name).is_none() && n.calls.contains(*name) && !cache.measures.contains_key(name.as_str()))
         .filter_map(|(name, n)| n.decl.as_ref().filter(|f| structural(env, f).is_none()).map(|f| (name, f)))
         .collect();
-    let measures: HashMap<String, Option<String>> = crate::par::map(&needs, |(name, f)| ((*name).clone(), measured_recursion(env, f, solver))).into_iter().collect();
+    let mut measures: HashMap<String, Option<String>> = crate::par::map(&needs, |(name, f)| ((*name).clone(), measured_recursion(env, f, solver))).into_iter().collect();
+    for (name, m) in &measures {
+        cache.put_measure(name, m);
+    }
+    measures.extend(cache.measures.clone());
+    cache.save();
     let mut own: HashMap<String, Result<String, String>> = HashMap::default();
     for (name, n) in &nodes {
         if !wanted(name) {

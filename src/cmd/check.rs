@@ -107,6 +107,7 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     });
     let analysis = termination::analyze(&env, solver_bin, roots.as_ref());
     let transparent = &analysis.transparent;
+    verify::RACE.store(!args.flag("--no-race"), std::sync::atomic::Ordering::Relaxed);
     let cross_check: usize = args.val("--cross-check").unwrap_or("20").parse().map_err(|_| "bad --cross-check")?;
     let require: Vec<String> = args.val("--require").map(|r| r.split(',').map(|s| s.trim().to_string()).collect()).unwrap_or_default();
     // the package's `[verify]` rules apply too
