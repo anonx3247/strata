@@ -274,3 +274,74 @@ fn packages_store_as_in_rust() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The written-form checker: std's module files, `--`, then one stored
+/// module file; its text as `render` writes it.
+const WRITTEN_CHECKER: &str = r#"use std.fs.{Files, Disk}
+use std.process.{Environment, Process}
+use std.ast.binary.{decode_module}
+use std.ast.resolve.{written}
+use std.ast.text.{module_text}
+
+/// Args: std module files, `--`, then one stored module file: its text as
+/// `render` writes it.
+fn main(disk: Disk, process: Process) {
+  mut std := []
+  mut mine := []
+  mut after := false
+  for a in process.args() {
+    if a == "--" {
+      after = true
+    } else {
+      match disk.read_bytes(a) {
+        Ok(bs) => match decode_module(bs) {
+          Ok(ds) => if after {
+            mine = mine + ds
+          } else {
+            std = std + ds
+          },
+          Err(e) => print(e),
+        },
+        Err(_) => print("unreadable"),
+      }
+    }
+  }
+  print(module_text(written(mine, std)))
+}
+"#;
+
+/// Every script of the repository and every module of std, as stored,
+/// written back (`std.ast.resolve.written`) and printed (`std.ast.text`),
+/// is the text `strata render` shows.
+#[test]
+fn written_as_rendered() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("written");
+    let checker = dir.join("check.strata");
+    let mut c = Command::new(STRATA).args(["--file", &checker.to_string_lossy(), "edit"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    c.stdin.take().unwrap().write_all(WRITTEN_CHECKER.as_bytes()).unwrap();
+    assert!(c.wait_with_output().unwrap().status.success());
+    let exe = dir.join("check");
+    run(&["build", &checker.to_string_lossy(), "-o", &exe.to_string_lossy()]);
+    let std_files: Vec<PathBuf> = std_files();
+    let mut wrong = vec![];
+    let mut cases: Vec<(PathBuf, Vec<String>, String)> = vec![];
+    for f in module_files() {
+        let want = run(&["--file", &f.to_string_lossy(), "render"]);
+        cases.push((f, std_files.iter().map(|p| p.to_string_lossy().into_owned()).collect(), want));
+    }
+    for (f, m) in package_modules(&root.join("std"), "std.") {
+        let want = run(&["--file", &root.join("std").to_string_lossy(), "render", &m]);
+        cases.push((f.clone(), std_files.iter().filter(|p| **p != f).map(|p| p.to_string_lossy().into_owned()).collect(), want));
+    }
+    for (f, others, want) in &cases {
+        let o = Command::new(&exe).args(others).arg("--").arg(f).output().unwrap();
+        let got = String::from_utf8_lossy(&o.stdout).to_string();
+        // (`print` ends the text with one more newline)
+        if got != format!("{want}\n") {
+            wrong.push(f.display().to_string());
+        }
+    }
+    assert!(wrong.is_empty(), "{} of {} files are written differently: {wrong:?}", wrong.len(), cases.len());
+    let _ = std::fs::remove_dir_all(&dir);
+}
