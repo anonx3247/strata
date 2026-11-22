@@ -528,7 +528,7 @@ pub fn edit_in_editor(cb: &mut Codebase, args: &Args, json_out: bool) -> Result<
                 vec![file(m, shown, text)]
             }
             None => {
-                let names = view::select(&p, Some(arg));
+                let names = view::select(&p, Some(arg)).unwrap_or_default();
                 let picked: Vec<&Decl> = p.decls.iter().filter(|d| names.contains(&d.qname())).collect();
                 if picked.is_empty() {
                     return Err(format!("`{arg}` is no module and picks no definition (a new module is opened by its file: `strata edit {arg}.strata`)"));

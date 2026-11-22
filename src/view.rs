@@ -27,35 +27,48 @@ fn glob(pat: &str, name: &str) -> bool {
 }
 
 /// Resolve a selector to the set of definition names it covers.
-/// `a,b` (union), `prefix*`, `slice:Name` (Name, what it uses, and what uses it).
-/// `main.name` is `name` in the root module.
-pub fn select(p: &Program, selector: Option<&str>) -> BTreeSet<String> {
+/// `a,b` (union), `prefix*`, `slice:Name` (Name, what it uses, and what uses it),
+/// `module:m`; a plain name is a definition, or a module (with the modules
+/// inside it: `std.ast.check`, `std.ast`). `main.name` is `name` in the root
+/// module. A part that covers nothing is an error, saying so.
+pub fn select(p: &Program, selector: Option<&str>) -> Result<BTreeSet<String>, String> {
     let all: Vec<String> = p.decls.iter().map(|d| d.qname()).collect();
-    let Some(sel) = selector else { return all.into_iter().collect() };
+    let Some(sel) = selector else { return Ok(all.into_iter().collect()) };
     let g = store::graph(p);
+    let in_module = |m: &str| -> Vec<String> { p.decls.iter().filter(|d| d.module == m || d.module.starts_with(&format!("{m}."))).map(|d| d.qname()).collect() };
     let mut out = BTreeSet::new();
     for term in sel.split(',').map(str::trim) {
+        let mut got: BTreeSet<String> = BTreeSet::new();
         if let Some(m) = term.strip_prefix("module:") {
-            out.extend(p.decls.iter().filter(|d| d.module == m || d.module.starts_with(&format!("{m}."))).map(|d| d.qname()));
+            got.extend(in_module(m));
         } else if let Some(n) = term.strip_prefix("slice:") {
             for (name, deps) in &g {
                 if glob(n, name) {
-                    out.insert(name.clone());
-                    out.extend(deps.iter().cloned());
+                    got.insert(name.clone());
+                    got.extend(deps.iter().cloned());
                 }
                 if deps.iter().any(|d| glob(n, d)) {
-                    out.insert(name.clone());
+                    got.insert(name.clone());
                 }
             }
         } else {
-            out.extend(all.iter().filter(|a| glob(term, a)).cloned());
+            got.extend(all.iter().filter(|a| glob(term, a)).cloned());
             // `main.total`: a definition of the root module, whose names have no prefix
             if let Some(rest) = term.strip_prefix("main.") {
-                out.extend(p.decls.iter().filter(|d| d.module.is_empty() && glob(rest, &d.qname())).map(|d| d.qname()));
+                got.extend(p.decls.iter().filter(|d| d.module.is_empty() && glob(rest, &d.qname())).map(|d| d.qname()));
+            }
+            // a module's name: its definitions (and its modules')
+            if !term.ends_with('*') {
+                got.extend(in_module(term));
             }
         }
+        // (a part that covers nothing is a mistake, not an empty selection)
+        if got.is_empty() {
+            return Err(format!("`{term}` names no definition and no module"));
+        }
+        out.extend(got);
     }
-    out
+    Ok(out)
 }
 
 fn status_note(d: &Decl, st: &Status) -> String {
