@@ -83,7 +83,7 @@ fn ui_in_strata(target: ui::Target, port: u16) -> Result<bool, String> {
         print_errors(&report);
         return Err("the built-in viewer doesn't check: this strata is broken".into());
     }
-    crate::serve::serve(&env, port, "Strata")?;
+    crate::serve::serve(&p, &env, port, "Strata")?;
     Ok(true)
 }
 

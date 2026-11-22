@@ -2,15 +2,17 @@
 // view; this sends back what the user does, one message at a time, and
 // patches the page to match the view the server answers with.
 //
-// - `data-on-click="<message as JSON>"`: the message itself.
-// - `data-handle-input="3"`: handler 3 of the page makes the message from
-//   what the user entered: the field's value, or a form's fields
-//   (`std.web.dispatch`, on the server).
-// - `data-every="1500" data-on-every="<message>"`: sent every 1.5s while the
+// Messages aren't in the page: each handler has a number, which is sent
+// back, and the server finds the message in the page it served
+// (`std.web.dispatch`).
+// - `data-handle-click="2"`: handler 2's message, when the element is clicked.
+// - `data-handle-input="3"`: handler 3 makes the message from what the user
+//   entered: the field's value, or a form's fields.
+// - `data-every="1500" data-handle-every="4"`: sent every 1.5s while the
 //   element is on the page (`std.web.every`), skipped while another message
 //   is on its way.
-// - `data-key="meta+p" data-on-key="<message>"`: sent when the key is
-//   pressed (`std.web.on_key`).
+// - `data-key="meta+p" data-handle-key="5"`: sent when the key is pressed
+//   (`std.web.on_key`).
 // - `data-focus`, `data-reveal`: the element takes the focus, or is scrolled
 //   into view, when the attribute appears.
 //
@@ -96,7 +98,7 @@
 
   // ---- messages sent on a timer (`every`) ----
 
-  /// The running timers, by what they send: "<ms> <message>".
+  /// The running timers, by what they send: "<ms> <handler>".
   const running = new Map();
   /// Messages sent or waiting to be: a timer's message waits for none.
   let busy = 0;
@@ -105,12 +107,10 @@
     const wanted = new Set();
     for (const el of root.querySelectorAll("[data-every]")) {
       const ms = Math.max(100, Number(el.dataset.every) || 0);
-      const key = `${ms} ${el.dataset.onEvery}`;
+      const handler = Number(el.dataset.handleEvery);
+      const key = `${ms} ${handler}`;
       wanted.add(key);
-      if (!running.has(key)) {
-        const msg = JSON.parse(el.dataset.onEvery);
-        running.set(key, setInterval(() => { if (!busy) enqueue({ msg }); }, ms));
-      }
+      if (!running.has(key)) running.set(key, setInterval(() => { if (!busy) enqueue({ handler }); }, ms));
     }
     for (const [key, t] of running) if (!wanted.has(key)) { clearInterval(t); running.delete(key); }
   }
@@ -133,7 +133,7 @@
     const el = [...root.querySelectorAll("[data-key]")].find((k) => k.dataset.key === name);
     if (!el) return;
     e.preventDefault();
-    enqueue({ msg: JSON.parse(el.dataset.onKey) });
+    enqueue({ handler: Number(el.dataset.handleKey) });
   }, true);
 
   const sessionId = root.dataset.session;
@@ -179,11 +179,9 @@
 
   for (const event of ["click", "dblclick", "submit", "change", "input"]) {
     root.addEventListener(event, (e) => {
-      const el = e.target.closest(`[data-on-${event}], [data-handle-${event}]`);
+      const el = e.target.closest(`[data-handle-${event}]`);
       if (!el || !root.contains(el)) return;
       if (event === "click" || event === "dblclick" || event === "submit") e.preventDefault();
-      const msg = el.getAttribute(`data-on-${event}`);
-      if (msg !== null) return enqueue({ msg: JSON.parse(msg) });
       const handler = Number(el.getAttribute(`data-handle-${event}`));
       if (event === "submit") enqueue({ handler, fields: fieldsOf(el) });
       else enqueue({ handler, value: valueOf(el) }, event === "input" ? el : null);

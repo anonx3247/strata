@@ -497,6 +497,68 @@ pub fn run_kept(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget
     Ok(out)
 }
 
+/// Functions compiled once and called many times (`llvm::compile_calls`:
+/// `strata serve`), with values the host keeps between calls: compiled
+/// code's raw slots.
+pub struct Calls<'ctx> {
+    entries: Vec<unsafe extern "C" fn()>,
+    _engine: inkwell::execution_engine::ExecutionEngine<'ctx>,
+}
+
+/// `f` given the calls in `ir`, compiled (optimized) and the runtime started.
+pub fn with_calls<R>(ir: &str, n: usize, f: impl FnOnce(&Calls) -> R) -> Result<R, String> {
+    let ctx = Context::create();
+    let engine = engine_at(&ctx, ir, true)?;
+    let mut entries = vec![];
+    for i in 0..n {
+        let addr = engine.get_function_address(&format!("strata.ct.{i}")).map_err(|e| e.to_string())?;
+        entries.push(unsafe { std::mem::transmute::<usize, unsafe extern "C" fn()>(addr) });
+    }
+    let name = std::ffi::CString::new("serve").unwrap();
+    let argv = [name.as_ptr()];
+    {
+        let _one = one_run();
+        let init: unsafe extern "C" fn(i32, *const *const std::ffi::c_char) = unsafe { std::mem::transmute(strata_init as *const ()) };
+        unsafe { init(1, argv.as_ptr()) };
+    }
+    Ok(f(&Calls { entries, _engine: engine }))
+}
+
+impl Calls<'_> {
+    /// Call `i` with the arguments' slots (those it is given become its):
+    /// the slot of its result, now the host's, or its fault; and what it
+    /// printed.
+    pub fn call(&self, i: usize, args: &[i64]) -> (Result<i64, Fault>, String) {
+        use std::ffi::{c_char, CStr};
+        type Fuzz = unsafe extern "C" fn(unsafe extern "C" fn(), i64, i64) -> i32;
+        type Message = unsafe extern "C" fn() -> *const i64;
+        type Text = unsafe extern "C" fn() -> *const c_char;
+        let (fuzz, message, kind, stack, printed): (Fuzz, Message, Text, Text, Text) = unsafe {
+            (
+                std::mem::transmute(strata_fuzz as *const ()),
+                std::mem::transmute(strata_test_message as *const ()),
+                std::mem::transmute(strata_test_kind as *const ()),
+                std::mem::transmute(strata_test_stack as *const ()),
+                std::mem::transmute(strata_test_printed as *const ()),
+            )
+        };
+        let text = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().to_string();
+        // (not under `one_run`: a call may need strata to run compiled code,
+        // `Codebase`'s snapshot verifying, which it does on a thread of its own)
+        unsafe { strata_set_given(args.as_ptr()) };
+        // (no steps are counted: the budget is never reached)
+        let r = if unsafe { fuzz(self.entries[i], 1, i64::MAX) } != 0 {
+            let m = unsafe { message() };
+            let msg = unsafe { std::slice::from_raw_parts(m.add(1) as *const u8, *m as usize) };
+            Err(Fault { kind: text(unsafe { kind() }), message: String::from_utf8_lossy(msg).to_string(), stack: text(unsafe { stack() }) })
+        } else {
+            Ok(unsafe { strata_ct_kept() })
+        };
+        unsafe { strata_set_given(std::ptr::null()) };
+        (r, text(unsafe { printed() }))
+    }
+}
+
 /// Run the IR's `main` with the program's arguments; its exit code. A fault
 /// exits the process from the runtime, as a compiled program does.
 /// The IR compiled in memory (optimized as clang -O2 would), its runtime
@@ -648,7 +710,15 @@ extern "C" fn code_snapshot(err: *mut i64) -> i64 {
         Ok(s) => s,
         Err(e) => return fail(e.clone()),
     };
-    let e = match crate::ui::code_snapshot(std::path::Path::new(&crate::ui::code_root())) {
+    // made on a thread of its own: making it runs compiled code (verifying
+    // refinements), which would reset this thread's run (its trap, what it printed)
+    let made = std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(|| crate::ui::code_snapshot(std::path::Path::new(&crate::ui::code_root())))
+        .map_err(|e| e.to_string())
+        .and_then(|t| t.join().map_err(|_| "making the snapshot panicked".to_string()))
+        .and_then(|r| r);
+    let e = match made {
         Ok(e) => e,
         Err(e) => return fail(e),
     };

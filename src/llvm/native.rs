@@ -79,6 +79,7 @@ pub unsafe fn read(s: &Shape, shapes: &Shapes, raw: i64) -> Res<Expr> {
     }
     unsafe {
         Ok(match s {
+            Shape::Opaque(why) => return Err(why.clone()),
             Shape::Int => int(raw),
             Shape::Float => Expr::Float(f64::from_bits(raw as u64)),
             Shape::Bool => Expr::Bool(raw & 1 != 0),
