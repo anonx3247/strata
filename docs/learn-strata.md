@@ -678,6 +678,6 @@ strata ui                             # live viewer in the browser (http://127.0
 
 An `edit` that breaks code elsewhere turns each broken use into a hole (`?pending_1`, …) and opens a pending change: fill them with more `edit`s, then `strata done` (or `strata abort`). In a git repository every recorded change is also a commit.
 
-**Before pushing:** `strata ci` (everything checks, exports exist, every module file is exactly as strata writes it; `--fix` rewrites them). `strata setup-git` makes `git diff` show `.strata` files as text and merge them definition by definition. `strata sync` merges `main` into the branch definition by definition, applies the other side's renames, and commits only if `ci` passes.
+Code is stored only in binary form, and a saved file is checked, so there is nothing to re-check before pushing; `strata upgrade` rewrites every file in the current form after a change to the format. `strata setup-git` makes `git diff` show `.strata` files as text and merge them definition by definition. `strata sync` merges `main` into the branch definition by definition, applies the other side's renames, and commits only if everything checks.
 
 **A good loop for an agent:** read with `view --level 1` and `holes`; write definitions; `check`; `test`; `verify` the functions you touched, and when one fails, read the counterexample, then fix the code or strengthen the contract (`requires`, a refinement) until it is proven.

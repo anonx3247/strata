@@ -18,7 +18,7 @@ use crate::fx::{HashMap, HashSet};
 
 const FILE: &str = "pending.json";
 
-/// Hole names of a pending change start with this; `strata ci` refuses them.
+/// Hole names of a pending change start with this.
 pub const PREFIX: &str = "pending_";
 
 #[derive(Serialize, Deserialize, Clone)]

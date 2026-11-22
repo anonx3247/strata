@@ -117,10 +117,9 @@ Git:
                                and show .strata files as text in `git diff` and `git log -p`
   sync [BRANCH]                merge BRANCH (default main; origin's if there is a remote)
                                into this branch with the driver, then check; commits the
-                               merge only if `ci` passes
-  ci [--fix]                   what CI requires: every package and script in the repository
-                               checks, exports exist, and every .strata file is in canonical
-                               form, the bytes strata writes for it (--fix rewrites them)
+                               merge only if every package and script checks
+  upgrade                      rewrite every package and script in the repository in the
+                               current binary form (after a change to the format)
 
 Views:
   ui [--port 7777]                the workspace in the browser: agents over ACP, the code
@@ -249,12 +248,22 @@ fn read_sources(path: &str) -> Result<Program, String> {
 }
 
 fn load(args: &Args) -> Result<Source, String> {
+    // commands that write code load a package whose settings may name what they are about to write
+    let writes = matches!(args.pos.first().map(|s| s.as_str()), Some("add" | "edit" | "rename" | "move" | "status" | "done" | "abort"));
     if let Some(f) = args.val("--file") {
-        return Ok(Source::File(read_sources(f)?));
+        let p = read_sources(f)?;
+        if !writes {
+            package::check_settings(std::path::Path::new(f), &p)?;
+        }
+        return Ok(Source::File(p));
     }
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let root = Codebase::find(&cwd).ok_or("no package here (no strata.toml in this folder or above: run `strata init`, or pass --file)")?;
-    Ok(Source::Db(Codebase::open(&root)?))
+    let cb = Codebase::open(&root)?;
+    if !writes {
+        package::check_settings(&root, &cb.program)?;
+    }
+    Ok(Source::Db(cb))
 }
 
 /// Full static check: types, exhaustiveness, then literal refinements.
@@ -334,7 +343,7 @@ fn run() -> Result<bool, String> {
         "resolve" => cmd::resolve(&args),
         "setup-git" => cmd::setup_git(),
         "sync" => cmd::sync(&args),
-        "ci" => cmd::ci(args.flag("--fix")),
+        "upgrade" => cmd::upgrade(),
         "log" => cmd::log(&args, json_out),
         "ui" => cmd::ui(&args),
         "builtins" => cmd::builtins(json_out),

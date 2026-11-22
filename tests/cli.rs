@@ -331,7 +331,7 @@ fn package_verify_policies() {
     assert!(out.contains("termination: measure (n) goes down at recursive call 1") && out.contains("termination: measure (n) goes down at recursive call 2"), "{out}");
     // a rule must name a module of the package
     std::fs::write(d.join("strata.toml"), "name = \"pol\"\n\n[verify]\nproven = [\"nope\"]\n").unwrap();
-    let (ok, out) = strata(&["ci"], &d, None);
+    let (ok, out) = strata(&["check"], &d, None);
     assert!(!ok && out.contains("[verify] proven names `nope`, which is not a module of this package"), "{out}");
 }
 
@@ -2670,8 +2670,8 @@ fn strata_git(args: &[&str], dir: &std::path::Path) -> (bool, String) {
 }
 
 #[test]
-fn ci_checks_packages_scripts_and_canonical_format() {
-    let d = tmp("ci");
+fn upgrade_rewrites_files_and_packages_check_their_settings() {
+    let d = tmp("upgrade");
     git(&d, &["init", "-q", "-b", "main"]);
     std::fs::create_dir_all(d.join("shop/tools")).unwrap();
     std::fs::write(d.join("shop/strata.toml"), "name = \"shop\"\nexports = [\"orders.total\"]\n").unwrap();
@@ -2683,20 +2683,17 @@ fn ci_checks_packages_scripts_and_canonical_format() {
     save(&d.join("shop/tools/main.strata"), "fn one() -> Int {\n  1\n}\n");
     // a file outside every package is a script
     save(&d.join("loose.strata"), "fn x() -> Int {\n  1\n}\n");
-    let (ok, out) = strata_git(&["ci"], &d);
-    assert!(!ok && out.contains("shop/main.strata: not in canonical form"), "{out}");
-    assert!(out.contains("✓ package shop (shop): 3 definitions") && out.contains("✓ package tools (shop/tools): 1 definitions") && out.contains("✓ loose.strata"), "{out}");
-    let (ok, out) = strata_git(&["ci", "--fix"], &d);
-    assert!(ok, "{out}");
-    let (ok, out) = strata_git(&["ci"], &d);
-    assert!(ok, "{out}");
+    let (ok, out) = strata_git(&["upgrade"], &d);
+    assert!(ok && out.contains("shop/main.strata: rewritten") && !out.contains("orders.strata") && !out.contains("loose.strata"), "{out}");
+    let (ok, out) = strata_git(&["upgrade"], &d);
+    assert!(ok && out.contains("every file is already in the current form"), "{out}");
 
     // exports must name a module or a `pub` definition
     std::fs::write(d.join("shop/strata.toml"), "name = \"shop\"\nexports = [\"orders.totl\", \"run\"]\n").unwrap();
-    let (ok, out) = strata_git(&["ci"], &d);
+    let (ok, out) = strata(&["check"], &d.join("shop"), None);
     assert!(!ok && out.contains("exports `orders.totl`, which is neither") && out.contains("exports `run`, which isn't `pub`"), "{out}");
     std::fs::write(d.join("shop/strata.toml"), "name = \"shop\"\nversion = 1\n").unwrap();
-    let (_, out) = strata_git(&["ci"], &d);
+    let (_, out) = strata(&["check"], &d.join("shop"), None);
     assert!(out.contains("unknown field `version`"), "{out}");
 
     // `init` names the package after its folder; the name stays when the folder moves
@@ -2724,7 +2721,7 @@ fn sync_merges_main_with_the_driver_then_checks() {
 
     // plain git conflicts: f's deletion touches the line before g's signature
     let (ok, out) = strata_git(&["sync", "main"], &d);
-    assert!(ok && out.contains("merged main") && out.contains("✓ app.strata"), "{out}");
+    assert!(ok && out.contains("merged main"), "{out}");
     let merged = text(&d.join("app.strata"));
     assert_eq!(merged, "fn g(y: Int) -> Int {\n  y * 20\n}\n");
     assert!(git(&d, &["log", "-1", "--format=%p"]).split_whitespace().count() == 2, "a merge commit");
@@ -3129,10 +3126,6 @@ fn a_breaking_edit_opens_a_pending_change_with_holes() {
     assert_eq!(std::fs::read_to_string(d.join("strata.log")).unwrap(), "", "nothing logged yet");
     let (_, out) = strata(&["holes"], &d, None);
     assert!(out.contains("?pending_1  in total\n  goal:    Int\n  was:     tax(amount)"), "{out}");
-    // a pending change's holes don't get merged
-    let (ok, out) = strata(&["ci"], &d, None);
-    assert!(!ok && out.contains("?pending_1 in total belongs to an unfinished change"), "{out}");
-
     // an edit that doesn't check in itself is still rejected
     let (ok, out) = strata(&["edit"], &d, Some("fn total(amount: Int) -> Int { amount + true }"));
     assert!(!ok && out.contains("rejected"), "{out}");
@@ -3179,8 +3172,6 @@ fn a_pending_change_can_be_aborted_or_kept_with_its_holes() {
     assert!(ok && out.contains("2 holes kept as ?todo_"), "{out}");
     let m = text(&d.join("main.strata"));
     assert!(m.contains("amount + ?todo_1") && m.contains("?todo_2 * 2"), "{m}");
-    let (ok, out) = strata(&["ci"], &d, None);
-    assert!(ok, "ordinary holes are fine: {out}");
 }
 
 /// A stand-in editor: on its n-th run it keeps what it was shown as
