@@ -245,7 +245,14 @@ impl Env {
     /// call through a specific trait (`Trait::method`, see `elaborate`).
     pub fn is_method(&self, name: Symbol) -> bool {
         split_trait_call(&name).is_some()
-            || self.method_traits.contains_key(&name.sym()) || self.inherent.values().any(|i| i.methods.iter().any(|m| (m.name == name || crate::names::short(&m.name) == name.as_str()) && crate::resolve::takes_self(m)))
+            || self.method_traits.contains_key(&name.sym()) || self.inherent.values().any(|i| i.methods.iter().any(|m| m.name == name && crate::resolve::takes_self(m)))
+    }
+
+    /// `is_method`, or a type's own method by its short name (`clock.advance()`
+    /// with `FakeClock` not imported): for a call written as a method only,
+    /// never to decide that a plain call isn't a built-in's.
+    pub fn is_method_on_receiver(&self, name: Symbol) -> bool {
+        self.is_method(name) || self.inherent.values().any(|i| i.methods.iter().any(|m| crate::names::short(&m.name) == name.as_str() && crate::resolve::takes_self(m)))
     }
 
     /// The declaration of method `name` when it means the same thing on every

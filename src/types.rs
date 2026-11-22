@@ -2147,7 +2147,7 @@ impl<'a> Checker<'a> {
             let tn = tr.name.clone();
             return Some(self.trait_method(name, &tn));
         }
-        if self.env.is_method(name.sym()) {
+        if self.env.is_method_on_receiver(name.sym()) {
             let short = crate::names::short(&name);
             self.err(format!("which `{short}` runs depends on the type of the value it is called on (several types or traits have one): call it on a value, or pass a lambda such as `x -> x.{short}()`"));
             return Some(self.fresh());
@@ -2342,12 +2342,12 @@ impl<'a> Checker<'a> {
         // A trait method named like a built-in one (`find`) is the trait's only
         // on a receiver whose type implements it: on a list, the built-in
         // (decided below, by the receiver's traits).
-        let builtin_too = dotted && self.lookup(m.sym()).is_none() && self.env.is_method(m.sym()) && BUILTINS.iter().any(|b| b.name == m);
+        let builtin_too = dotted && self.lookup(m.sym()).is_none() && self.env.is_method_on_receiver(m.sym()) && BUILTINS.iter().any(|b| b.name == m);
         if !builtin_too && (self.lookup(m.sym()).is_some() || self.env.fns.contains_key(&Symbol::new(m))) {
             if !dotted || !all.first().is_some_and(|r| self.has_own_method(r, m)) {
                 return None;
             }
-        } else if !builtin_too && (split_trait_call(m).is_some() || !self.env.is_method(m.sym())) {
+        } else if !builtin_too && (split_trait_call(m).is_some() || !self.env.is_method_on_receiver(m.sym())) {
             return None;
         }
         let short = |q: &str| crate::names::short(q).to_string();
@@ -2460,7 +2460,7 @@ impl<'a> Checker<'a> {
             if !dotted || !recv.is_some_and(|r| self.has_own_method(r, m)) {
                 return None;
             }
-        } else if !self.env.is_method(m.sym()) || self.env.method_contract(m).is_some() {
+        } else if !(self.env.is_method_on_receiver(m.sym())) || self.env.method_contract(m).is_some() {
             return None;
         }
         let short = |q: &str| crate::names::short(q).to_string();
