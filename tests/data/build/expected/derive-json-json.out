@@ -2,7 +2,7 @@
 true
 Ok(Signup { email: "x@y", age: 15, nickname: None, tags: [], home: Address { city: "L", zip: "12345" }, shapes: [Dot, Pixels(2)], level: Quiet, scores: Dict {} })
 Err("age: 12 does not satisfy `Int where it >= 13`")
-Err("home.zip: \"1234\" does not satisfy `String where len(it) == 5`")
+Err("home.zip: \"1234\" does not satisfy `String where len(it.code_points()) == 5`")
 Err("shapes[0].r: expected a number, got \"no\"")
 true
 Err("unknown field \"extra\"")

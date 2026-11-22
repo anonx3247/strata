@@ -131,7 +131,7 @@ fn faults_and_control_flow_match_the_interpreter() {
             "loops",
             "fn g(n: Int) -> Int { mut i := 0 while i < 10 { i = i + 1 if i == n { break } if i % 2 == 0 { continue } } i }\n\
              fn pick(b: Bool) -> String { match b { true => \"yes\", false => return \"no\" } }\n\
-             fn main() { print(g(4)) print(g(40)) print(pick(true) + pick(false)) print(f\"{1.5} {true} {\"q\"} {len(\"héllo\")}\") }",
+             fn main() { print(g(4)) print(g(40)) print(pick(true) + pick(false)) print(f\"{1.5} {true} {\"q\"} {len(\"héllo\".code_points())}\") }",
             0,
         ),
     ];
@@ -224,7 +224,7 @@ fn traits_run_as_interpreted() {
     let (out, code) = case(&d, "traits_example", &src);
     assert!(out.contains("all asserts hold") && code == 0, "{out}");
     let cases = [
-        ("trait_ensures", "trait Describe {\n  fn describe(self) -> String\n    ensures len(it) > 0\n}\ntype Thing = { name: String }\nimpl Describe for Thing {\n  fn describe(self) -> String { self.name }\n}\nfn main() -> () { print(Thing { name: \"a\" }.describe()) print(Thing { name: \"\" }.describe()) }", 101),
+        ("trait_ensures", "trait Describe {\n  fn describe(self) -> String\n    ensures it != \"\"\n}\ntype Thing = { name: String }\nimpl Describe for Thing {\n  fn describe(self) -> String { self.name }\n}\nfn main() -> () { print(Thing { name: \"a\" }.describe()) print(Thing { name: \"\" }.describe()) }", 101),
         ("variant_impls", "trait Area {\n  fn area(self) -> Int\n    requires true\n}\ntype Shape =\n  | Square { side: Int }\n  | Circle { r: Int }\nimpl Area for Shape {\n  fn area(self) -> Int { 0 }\n}\nimpl Area for Square {\n  fn area(self) -> Int { self.side * self.side }\n}\nfn main() -> () { let shapes: List[Shape] = [Square { side: 3 }, Circle { r: 2 }] print(shapes.map(s -> s.area())) }", 0),
         ("generic_traits", "trait Convert[T] {\n  fn convert(self) -> T\n}\ntype Celsius = { deg: Int }\nimpl Convert[String] for Celsius {\n  fn convert(self) -> String { f\"{self.deg}C\" }\n}\nimpl Convert[Int] for Int {\n  fn convert(self) -> Int { self * 2 }\n}\nfn twice[A: Convert[String]](xs: List[A]) -> List[String] { xs.map(x -> x.convert()) }\nfn main() -> () { print(Celsius { deg: 20 }.convert()) print(twice([Celsius { deg: 1 }])) print(21.convert()) }", 0),
         ("default_methods", "trait Shown {\n  fn shown(self) -> String\n  fn twice(self) -> String { self.shown() + self.shown() }\n}\nimpl Shown for Bool { fn shown(self) -> String { if self { \"yes\" } else { \"no\" } } }\nimpl Shown for String { fn shown(self) -> String { self } }\nfn all_shown[T: Shown](xs: List[T]) -> String { join(xs.map(x -> x.twice()), \" \") }\nfn main() -> () { print(all_shown([true, false])) print(all_shown([\"a\", \"b\"])) }", 0),
@@ -317,7 +317,7 @@ fn strings_dicts_and_sets_run_as_interpreted() {
         ("repeat", "fn main() { print(repeat(\"ab\", 3)) print(repeat(\"ab\", 60000000)) }"),
         ("ord", "fn main() { print(ord(\"a\")) print(ord(\"a\\\"\\n\")) }"),
         ("chr", "fn main() { print(chr(55296)) }"),
-        ("string_index", "fn main() { print(\"abc\"[2]) print(\"abc\"[5]) }"),
+        ("string_index", "fn main() { print(\"abc\".graphemes()[2]) print(\"abc\".graphemes()[5]) }"),
         ("list_index", "fn main() { print([1, 2][-1]) }"),
     ];
     for (name, src) in faults {
@@ -353,8 +353,9 @@ const STRINGS: &str = r#"fn main() {
   print([contains("héllo", "ll"), contains("a", ""), starts_with("Zoë", "Zo"), ends_with("Zoë", "ë"), ends_with("a", "ab")])
   print(reverse("Zoë!"))
   print(chars("añb€😀"))
-  print([get("Zoë", 2), get("Zoë", 3), get("Zoë", -1)])
-  print([slice("héllo", 1, 3), slice("héllo", -5, 2), slice("héllo", 3, 1), slice("héllo", 2, 100)])
+  print([get("Zoë".graphemes(), 2), get("Zoë".graphemes(), 3), get("Zoë".graphemes(), -1)])
+  print([join("héllo".graphemes()[1..3], ""), join(slice("héllo".graphemes(), -5, 2), ""), join(slice("héllo".graphemes(), 3, 1), ""), join(slice("héllo".graphemes(), 2, 100), "")])
+  print([byte_slice("héllo", 0, 3), byte_slice("héllo", 3, 100), byte_slice("héllo", -1, 1), byte_len("héllo")])
   print([index_of("añb€", "€"), index_of("abc", "z"), index_of("abc", "")])
   print(replace("a-b-c--", "-", "+=") + "|" + replace("aaa", "aa", "b"))
   print(repeat("ab", 3) + "|" + repeat("x", 0) + "|")
@@ -369,7 +370,7 @@ const STRINGS: &str = r#"fn main() {
   s := "héllo"
   print(f"[{x:.2}] [{x:8.3}] [{n:>6}] [{n:<6}] [{n:^7}] [{n:06}] [{n:+}] [{7:+05}] [{s:.2}] [{s:>8}] [{s:*^9}] [{s:3}] [{0.125:.2}] [{true:>6}] [{-0.0:.1}]")
   w := "abc"
-  print([w[0], w[2], w[1..], w[..2], w[..]])
+  print([w.graphemes()[0], w.graphemes()[2], join(w.graphemes()[1..], ""), join(w.graphemes()[..2], ""), join(w.graphemes()[..], "")])
   xs := [10, 20, 30, 40]
   print([xs[1], xs[3]])
   print([xs[1..3], xs[2..], xs[..1], xs[3..1], xs[-2..10]])
@@ -767,7 +768,7 @@ type Box = { shape: Area, label: String }
 
 fn first_long(xs: List[String]) -> Option[String] {
   for x in xs {
-    if len(x) > 3 {
+    if len(x.code_points()) > 3 {
       return Some(x)
     }
   }
@@ -815,8 +816,8 @@ fn main() {
   names := ["a", "bb", "cccc", "ddddd"]
   labelled := names.map(n -> prefix + n)
   print(labelled)
-  print(labelled.filter(n -> len(n) > 6))
-  adder := (x: Int) -> x + len(prefix)
+  print(labelled.filter(n -> len(n.code_points()) > 6))
+  adder := (x: Int) -> x + len(prefix.code_points())
   print(adder(1))
   // early return inside a loop, Option
   print(first_long(names))
@@ -866,10 +867,10 @@ fn main() {
   print(acc)
   for w in names {
     t := w + "!"
-    if len(w) == 2 {
+    if len(w.code_points()) == 2 {
       continue
     }
-    if len(w) == 5 {
+    if len(w.code_points()) == 5 {
       break
     }
     print(t)
@@ -1109,7 +1110,7 @@ const UNIONS: &str = r#"type Sq = { side: Int }
 fn describe(v: Int | String) -> String {
   match v {
     Int => f"number {v}",
-    String => f"text {len(v)}",
+    String => f"text {len(v.code_points())}",
   }
 }
 
@@ -1434,7 +1435,7 @@ fn main() {
     n := s.count()
     assert n >= 0
     match s.find(3) {
-      Some(i) => { assert len(i.name) > 0 && i.qty > 0 },
+      Some(i) => { assert i.name != "" && i.qty > 0 },
       None => (),
     }
     assert len(s.all()) <= 3
@@ -1482,7 +1483,7 @@ fn verify_fuzzes_compiled() {
     let strata = env!("CARGO_BIN_EXE_strata");
     let d = tmp("jit-verify");
     let f = d.join("v.strata");
-    save(&f, "fn pieces(s: String) -> Positive { len(split(s, \"a\")) - 1 }\nfn loops(n: Natural) -> Int { mut i := 0 while i != n * 2 + 1 { i += 2 } i }\nfn fine(xs: List[String]) -> Natural { len(join(xs, \",\")) }\n");
+    save(&f, "fn pieces(s: String) -> Positive { len(split(s, \"a\")) - 1 }\nfn loops(n: Natural) -> Int { mut i := 0 while i != n * 2 + 1 { i += 2 } i }\nfn fine(xs: List[String]) -> Natural { len(join(xs, \",\").code_points()) }\n");
     let (out, _) = output(Command::new(strata).args(["verify", "--jit", "--file"]).arg(&f).env("STRATA_SOLVER", "none"));
     assert!(!out.contains("note:"), "{out}");
     assert!(out.contains("result of `pieces`: 0 does not satisfy `Positive`") && out.contains("~ fine                     fuzzed: 200 cases, 0 discarded"), "{out}");

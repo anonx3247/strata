@@ -187,10 +187,11 @@ impl Checker<'_> {
             AtomKey::Opaque(k) => if in_union { k.clone() } else { "_".into() },
             AtomKey::Len(lo, hi) => match (*lo, *hi) {
                 (0, ints::MAX) => if in_union { "String".into() } else { "_".into() },
-                (l, h) if l == h => format!("where len(it) == {l}"),
-                (l, ints::MAX) => format!("where len(it) >= {l}"),
-                (0, h) => format!("where len(it) <= {h}"),
-                (l, h) => format!("where {l} <= len(it) && len(it) <= {h}"),
+                // (a string's length is its code points')
+                (l, h) if l == h => format!("where len(it.code_points()) == {l}"),
+                (l, ints::MAX) => format!("where len(it.code_points()) >= {l}"),
+                (0, h) => format!("where len(it.code_points()) <= {h}"),
+                (l, h) => format!("where {l} <= len(it.code_points()) && len(it.code_points()) <= {h}"),
             },
             AtomKey::Real { lo, hi, point } => match (*point, lo.is_infinite(), hi.is_infinite()) {
                 (true, ..) => format!("where it == {lo:?}"),

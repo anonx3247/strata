@@ -1497,12 +1497,37 @@ impl<'a> Interp<'a> {
                     _ => return self.fail(FaultKind::Runtime, "bad args"),
                 }
             }
+            // byte offsets, as compiled code (the interpreter is frozen, but `serve` still runs on it)
             "index_of" => {
                 let (Str(s), Str(sub)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
                 match s.find(&sub) {
-                    Some(byte) => Variant("Some".into(), Fields::pos(vec![Int(s[..byte].chars().count() as i64)])),
+                    Some(byte) => Variant("Some".into(), Fields::pos(vec![Int(byte as i64)])),
                     None => Variant("None".into(), Fields::None),
                 }
+            }
+            "byte_len" => {
+                let Str(s) = nx() else { return self.fail(FaultKind::Runtime, "bad args") };
+                Int(s.len() as i64)
+            }
+            "byte_at" => {
+                let (Str(s), Int(i)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                match usize::try_from(i).ok().and_then(|i| s.as_bytes().get(i)) {
+                    Some(b) => Int(*b as i64),
+                    None => return self.fail(FaultKind::Runtime, format!("byte {i} out of range ({} bytes)", s.len())),
+                }
+            }
+            "byte_slice" => {
+                let (Str(s), Int(a), Int(b)) = (nx(), nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                let n = s.len() as i64;
+                // an offset inside a character moves back to its start, as compiled
+                let start = |mut i: usize| {
+                    while !s.is_char_boundary(i) {
+                        i -= 1;
+                    }
+                    i
+                };
+                let (a, b) = (start(a.clamp(0, n) as usize), start(b.clamp(0, n) as usize));
+                Str(if a < b { s[a..b].to_string() } else { String::new() })
             }
             "replace" => {
                 let (Str(s), Str(from), Str(to)) = (nx(), nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };

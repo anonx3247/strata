@@ -2214,7 +2214,25 @@ impl<'a> Vc<'a> {
         (!key.contains("Opaque(")).then_some(key)
     }
 
+    /// `byte_len(s)`: the SMT function `utf8_len`, with what is known of it.
+    fn utf8_len(&mut self, s: &str) -> T {
+        let (n, chars) = (format!("(utf8_len {s})"), format!("(str.len {s})"));
+        self.facts.push(format!("(and (<= {chars} {n}) (<= {n} (* 4 {chars})) (=> {} (= {n} {chars})))", ascii(s)));
+        n
+    }
+
     fn call(&mut self, name: &str, arg_exprs: &[Expr], args: Vec<Val>) -> Val {
+        // `len(s.code_points())` is the SMT string's length (its code points), and
+        // `len(s.bytes())` its `byte_len`: modelled on `s` itself
+        if crate::names::short(crate::types::split_trait_call(name).map_or(name, |(_, m)| m)) == "len" {
+            if let Some((unit, s)) = arg_exprs.first().and_then(string_unit) {
+                let v = self.eval(s);
+                return match unit {
+                    "code_points" => Val::Int(format!("(str.len {})", self.as_str(&v))),
+                    _ => self.builtin("byte_len", std::slice::from_ref(s), vec![v]),
+                };
+            }
+        }
         // `to_string` through `Display` (every type has it): the built-in's
         // model, unless the program implements `Display` for a built-in type
         if (name == "Display::to_string" || name == "to_string") && !self.env.impls.iter().any(|i| i.trait_name == "Display" && matches!(crate::types::texpr_head(&i.for_type).as_str(), "Int" | "Bool" | "String")) {
@@ -2551,31 +2569,46 @@ impl<'a> Vc<'a> {
                 let (s, p) = (self.as_str(&arg(0)), self.as_str(&arg(1)));
                 Val::Bool(format!("(str.suffixof {p} {s})"))
             }
-            // characters start..end, both clamped to 0..len (`str.substr` takes a length)
-            ("slice", 3) if matches!(arg(0), Val::Str(_)) => {
+            // Positions in strings are byte offsets; SMT strings are code points.
+            // On an ASCII string the two are the same, and that is modelled exactly;
+            // on others only bounds are known.
+            ("byte_len", 1) => {
+                let s = self.as_str(&arg(0));
+                Val::Int(self.utf8_len(&s))
+            }
+            // bytes a..b, both clamped to 0..byte_len: on an ASCII string the code
+            // points a..b (`str.substr` takes a length); on any, at most b - a
+            // bytes (an offset inside a character moves back up to 3 bytes)
+            ("byte_slice", 3) => {
                 let s = self.as_str(&arg(0));
                 let (a, b) = (self.as_int(&arg(1)), self.as_int(&arg(2)));
-                let n = format!("(str.len {s})");
+                let n = self.utf8_len(&s);
                 let clamp = |x: &str| format!("(ite (< {x} 0) 0 (ite (> {x} {n}) {n} {x}))");
                 let (a, b) = (clamp(&a), clamp(&b));
-                Val::Str(format!("(str.substr {s} {a} (- {b} {a}))"))
-            }
-            ("get", 2) if matches!(arg(0), Val::Str(_)) => {
-                let s = self.as_str(&arg(0));
-                let i = self.as_int(&arg(1));
-                let string = TypeExpr::Named("String".into(), vec![]);
-                self.option(&string, &format!("(and (<= 0 {i}) (< {i} (str.len {s})))"), Val::Str(format!("(str.at {s} {i})")))
+                let other = self.fresh_why("String", "`byte_slice` of a string that may not be ASCII");
+                let r = format!("(ite {} (str.substr {s} {a} (- {b} {a})) {other})", ascii(&s));
+                let rn = self.utf8_len(&r);
+                let ascii_s = ascii(&s);
+                // a >= b: nothing (moving back keeps the order)
+                self.facts.push(format!("(=> (>= {a} {b}) (= {r} \"\"))"));
+                self.facts.push(format!("(and (>= {rn} 0) (<= {rn} {b}) (<= {rn} (+ (- {b} {a}) 3)) (=> {ascii_s} (= {rn} (ite (< {a} {b}) (- {b} {a}) 0))))"));
+                Val::Str(r)
             }
             ("chars", 1) => {
                 let s = self.as_str(&arg(0));
                 self.new_list(format!("(str.len {s})"), Gen::Type(TypeExpr::Named("String".into(), vec![])))
             }
-            // the first match, counted in characters; "" is found at 0
+            // the first match's byte offset (its code-point offset on an ASCII string,
+            // never less elsewhere); "" is found at 0
             ("index_of", 2) => {
                 let (s, p) = (self.as_str(&arg(0)), self.as_str(&arg(1)));
                 let i = format!("(str.indexof {s} {p} 0)");
+                let b = self.fresh_why("Int", "`index_of` in a string that may not be ASCII");
+                let (sn, pn) = (self.utf8_len(&s), self.utf8_len(&p));
+                // a match ends inside the string
+                self.facts.push(format!("(and (=> {} (= {b} {i})) (=> (= {i} 0) (= {b} 0)) (=> (>= {i} 0) (and (>= {b} {i}) (<= (+ {b} {pn}) {sn}))))", ascii(&s)));
                 let int = TypeExpr::Named("Int".into(), vec![]);
-                self.option(&int, &format!("(>= {i} 0)"), Val::Int(i))
+                self.option(&int, &format!("(>= {i} 0)"), Val::Int(b))
             }
             // every non-overlapping match, left to right (Rust's `str::replace`);
             // an empty pattern is a runtime fault, so that is checked
@@ -3060,7 +3093,8 @@ impl Vc<'_> {
     fn script(&self, ob: &Obligation, leaves: &[String]) -> String {
         // the parameters are in the cone too, so a model satisfies their types
         let (facts, consts) = self.cone(ob, leaves);
-        let mut s = String::from("(set-option :produce-models true)\n(set-logic ALL)\n");
+        // `utf8_len`: a string's length in bytes (`byte_len`), known where it is used
+        let mut s = String::from("(set-option :produce-models true)\n(set-logic ALL)\n(declare-fun utf8_len (String) Int)\n");
         for (n, sort) in &self.decls {
             if consts.contains(n) || leaves.contains(n) {
                 s.push_str(&format!("(declare-const {n} {sort})\n"));
@@ -3388,5 +3422,28 @@ mod tests {
         assert_eq!(parse_str(&m["v1"]).as_deref(), Some("aé\u{0}😀\n\"7\\\u{2ffff}"));
         assert_eq!(m["v2"], "false");
         assert_eq!(parse_str(&m["v3"]).as_deref(), Some("ba"));
+    }
+}
+
+/// Whether SMT string `s` is ASCII (its code points are its bytes).
+fn ascii(s: &str) -> String {
+    format!("(str.in_re {s} (re.* (re.range \"\\u{{0}}\" \"\\u{{7f}}\")))")
+}
+
+/// `s.code_points()` / `s.bytes()` (as a method call, through its trait or
+/// not): the unit and the string.
+fn string_unit(e: &Expr) -> Option<(&'static str, &Expr)> {
+    let (name, recv) = match e {
+        Expr::Method(r, m, args) if args.is_empty() => (m.as_str(), &**r),
+        Expr::Call(f, args) if args.len() == 1 => match &**f {
+            Expr::Var(n) => (n.as_str(), &args[0]),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    match crate::names::short(crate::types::split_trait_call(name).map_or(name, |(_, m)| m)) {
+        "code_points" => Some(("code_points", recv)),
+        "bytes" => Some(("bytes", recv)),
+        _ => None,
     }
 }
