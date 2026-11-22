@@ -4,11 +4,11 @@ Strata code is stored as its syntax tree, not its text, in a binary format of ou
 
 - **Text goes in through an edit.** `strata edit` (from stdin or an editor) and `strata add FILE` parse text and store the result. Nothing else reads text: a `.strata` file that holds text is refused.
 - **Text comes out through the views.** `strata render` prints a module, `render --split DIR` writes one text file per module (`shop/orders.st`), `view` and `strata ui` show it.
-- `strata pack app.strata` writes a bundle; `--file`, `run`, `ui` and every view read it like a package. `strata pack --prelude FILE` writes the prelude's definitions (its types and code, under the names programs use) as a module file, for Strata code that runs trees (`std.ast.eval`).
-- `strata header core.strata` prints a module file's table of contents; `strata header core.strata --tree` prints each definition (a bundle's too) as a `std.ast` value, one per line, and `--text` as the printer writes it, as stored (references qualified: `render` shows them shortened).
+- `strata pack app.strata` writes a bundle; `--file`, `run`, `ui` and every view read it like a package. `strata pack --prelude FILE` writes the prelude's definitions (its types and code, under the names programs use) as a module file, for Strata code that runs trees (`compiler/eval`).
+- `strata header core.strata` prints a module file's table of contents; `strata header core.strata --tree` prints each definition (a bundle's too) as a `compiler/ast` value, one per line, and `--text` as the printer writes it, as stored (references qualified: `render` shows them shortened).
 - In git, `strata setup-git` makes `git diff` and `git log -p` show `.strata` files as text, and merges them definition by definition (a conflict is left as text; `strata resolve FILE` stores it again once fixed).
 
-The format is written by hand in `src/binary.rs`, with no serialization library, so that Strata can read and write it itself: `std.ast.binary` does (in Strata, on the tree `std.ast`, hashes included, with its own SHA-256), tested against `binary.rs` on every module file of the repository (`tests/ast.rs`). This page is its specification; the three are kept in step.
+The format is written by hand in `src/binary.rs`, with no serialization library, so that Strata can read and write it itself: `compiler/binary` does (in Strata, on the tree `compiler/ast`, hashes included, with its own SHA-256), tested against `binary.rs` on every module file of the repository (`tests/ast.rs`). This page is its specification; the three are kept in step.
 
 Design:
 

@@ -1614,7 +1614,7 @@ fn channels_are_closed_and_selected() {
         ("never_closed", "`tx` is never closed here"),
         ("task_never_closes", "the task holds a copy of `tx` and never closes it"),
         ("nested_sender", "a task (a `spawn`, a `race` arm) can capture a sender only on its own"),
-        ("arms", "a `select` arm waits on `rx.recv()`, `tx.send(v)` or `await h`"),
+        ("arms", "a `select` arm waits on `rx.recv()`, `tx.send(v)`, `await h` or `clock.after(d)`"),
         ("named_send", "a `send` arm gives nothing to name"),
         ("race_return", "`return` can't leave a task (a `spawn`, a `race` arm)"),
         ("race_sender", "the task holds a copy of `tx` and never closes it"),
@@ -1729,6 +1729,19 @@ test "the next test runs" {
   assert r == 2 || r == 5
 }
 "#;
+
+/// `clock.after(d)` in a `select`: `d` is a `Duration`, and the arm names
+/// nothing; a test may ask for the `SystemClock`.
+#[test]
+fn clock_arms_are_checked() {
+    let d = tmp("clock-arms");
+    save(&d.join("c.strata"), "use std.time.{SystemClock, ms}\n\nfn named(clock: SystemClock, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    clock.after(ms(5)) as t => 2,\n  }\n}\n\nfn plain(clock: SystemClock, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    clock.after(5) => 2,\n  }\n}\n\nfn not_a_clock(n: Int, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    n.after(ms(5)) => 2,\n  }\n}\n");
+    let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
+    assert!(!ok && out.contains("error in named: an `after` arm gives nothing to name") && out.contains("error in plain: the time an `after` arm waits: expected `std.time.Duration`, found `Int`") && out.contains("error in not_a_clock: an `after` arm waits on a clock: `Int` doesn't implement `Clock`"), "{out}");
+    save(&d.join("t.strata"), "use std.time.{SystemClock, ms}\n\ntest \"the clock in a test\" (clock: SystemClock) {\n  (tx, rx) := channel()\n  r := select {\n    rx.recv() as x => 1,\n    clock.after(ms(1)) => 2,\n  }\n  tx.close()\n  assert r == 2\n}\n");
+    let (ok, out) = strata(&["--file", "t.strata", "test"], &d, None);
+    assert!(ok && out.contains("1 passed, 0 failed"), "{out}");
+}
 
 /// `supervised spawn`: awaiting it gives `Result[T, Panic]`, which must be
 /// handled; `await h except p { … }` is `(await h) except p { … }`; and
@@ -5686,7 +5699,7 @@ fn std_is_edited_as_a_checked_package() {
     let d = tmp("std-edit");
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("std");
     let std = d.join("std");
-    // std's files and submodules (`std/ast/binary.strata`), not the
+    // std's files and any submodules (`std/a/b.strata`), not the
     // `.strata` folder an edit of std leaves there
     fn copy(from: &std::path::Path, to: &std::path::Path) {
         std::fs::create_dir_all(to).unwrap();

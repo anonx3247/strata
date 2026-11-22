@@ -21,6 +21,7 @@ pub const FILES: &[(&str, &[u8])] = &[
     ("io.strata", include_bytes!("../std/io.strata")),
     ("fs.strata", include_bytes!("../std/fs.strata")),
     ("process.strata", include_bytes!("../std/process.strata")),
+    ("time.strata", include_bytes!("../std/time.strata")),
     ("cli.strata", include_bytes!("../std/cli.strata")),
     ("web.strata", include_bytes!("../std/web.strata")),
     ("http.strata", include_bytes!("../std/http.strata")),
@@ -32,16 +33,6 @@ pub const FILES: &[(&str, &[u8])] = &[
     ("unicode.strata", include_bytes!("../std/unicode.strata")),
     ("regex.strata", include_bytes!("../std/regex.strata")),
     ("utf8.strata", include_bytes!("../std/utf8.strata")),
-    ("ast.strata", include_bytes!("../std/ast.strata")),
-    ("ast/binary.strata", include_bytes!("../std/ast/binary.strata")),
-    ("ast/text.strata", include_bytes!("../std/ast/text.strata")),
-    ("ast/lex.strata", include_bytes!("../std/ast/lex.strata")),
-    ("ast/parse.strata", include_bytes!("../std/ast/parse.strata")),
-    ("ast/resolve.strata", include_bytes!("../std/ast/resolve.strata")),
-    ("ast/check.strata", include_bytes!("../std/ast/check.strata")),
-    ("ast/exhaustive.strata", include_bytes!("../std/ast/exhaustive.strata")),
-    ("ast/eval.strata", include_bytes!("../std/ast/eval.strata")),
-    ("ast/builtins.strata", include_bytes!("../std/ast/builtins.strata")),
 ];
 
 /// Native operations, callable only from `std`.
@@ -59,6 +50,9 @@ pub const HOST: &[Builtin] = &[
     Builtin::new("host_remove", "", "(String) -> Result[(), (String, String)]"),
     Builtin::new("host_args", "", "() -> List[String]"),
     Builtin::new("host_env_var", "", "(String) -> Option[String]"),
+    // the monotonic clock, in nanoseconds; waiting (a task that is cancelled stops at once)
+    Builtin::new("host_now", "", "() -> Int"),
+    Builtin::new("host_sleep", "", "(Int) -> ()"),
     Builtin::new("host_code_version", "", "() -> String"),
     Builtin::new("host_code_snapshot", "", "() -> Result[std.code.Snapshot, String]"),
 ];

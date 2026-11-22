@@ -1,33 +1,15 @@
-//! `std.ast.check` (the type checker in Strata) finds the errors `strata
-//! check` finds (clashing definitions, unknown names,
-//! wrong numbers of arguments, type mismatches), worded as it words them.
+//! `compiler/check` and `compiler/exhaustive` (the type checker in Strata:
+//! the compiler package's `check` command) find the errors `strata check`
+//! finds (clashing definitions, unknown names, wrong numbers of arguments,
+//! type mismatches, non-exhaustive matches), worded as it words them.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+#[path = "common/compiler.rs"]
+mod compiler;
+
 const STRATA: &str = env!("CARGO_BIN_EXE_strata");
-
-const CHECKER: &str = r#"use std.fs.{Files, Disk}
-use std.process.{Environment, Process}
-use std.ast.binary.{decode_module}
-use std.ast.check.{definition_errors, variant_errors, expression_errors, type_errors}
-
-fn main(disk: Disk, process: Process) {
-  for a in process.args() {
-    match disk.read_bytes(a) {
-      Ok(bs) => match decode_module(bs) {
-        Ok(ds) => {
-          for e in definition_errors(ds) + variant_errors(ds) + expression_errors(ds) + type_errors(ds) {
-            print(f"error in {e.0}: {e.1}")
-          }
-        },
-        Err(e) => print(e),
-      },
-      Err(_) => print("unreadable"),
-    }
-  }
-}
-"#;
 
 const CLASHES: &str = r#"type Line = { a: Int }
 type E =
@@ -80,6 +62,14 @@ fn k(c: Bool) -> Int {
   let y: String = 3
   if c { [1] } else { "s" }
   0
+}
+fn l(n: Int) -> Int {
+  mut i := 0
+  while i < n
+    invariant i {
+    i += 1
+  }
+  i
 }
 fn main() { print(1) }
 "#;
@@ -175,29 +165,15 @@ fn g(xs: List[Int]) -> Int {
   print(f"{p.x} {nowhere}")
   match ys { [h, ..rest] => h + len(rest) + k, _ => q }
 }
-fn main() { print(f(1) + g([1]) + nope(2)) }
-"#;
-
-const MATCH_CHECKER: &str = r#"use std.fs.{Files, Disk}
-use std.process.{Environment, Process}
-use std.ast.binary.{decode_module}
-use std.ast.exhaustive.{match_errors}
-
-fn main(disk: Disk, process: Process) {
-  for a in process.args() {
-    match disk.read_bytes(a) {
-      Ok(bs) => match decode_module(bs) {
-        Ok(ds) => {
-          for e in match_errors(ds) {
-            print(f"error in {e.0}: {e.1}")
-          }
-        },
-        Err(e) => print(e),
-      },
-      Err(_) => print("unreadable"),
-    }
+fn l(n: Int) -> Int {
+  mut i := 0
+  while i < n
+    invariant i <= n + m {
+    i += 1
   }
+  i
 }
+fn main() { print(f(1) + g([1]) + nope(2) + l(1)) }
 "#;
 
 const MATCHES: &str = r#"type Sh =
@@ -259,7 +235,7 @@ fn generics_as_in_rust() {
 
 #[test]
 fn non_exhaustive_matches_as_in_rust() {
-    same_errors_of(MATCH_CHECKER, "matches", MATCHES, &["non-exhaustive match"]);
+    same_errors("matches", MATCHES, &["non-exhaustive match"]);
 }
 
 #[test]
@@ -277,21 +253,15 @@ fn sum_variables_as_in_rust() {
     same_errors("sums", SUMS, &["expected `"]);
 }
 
-/// `std.ast.check`'s errors on `text` are `strata check`'s lines holding one of `keys`.
+/// The compiler's errors on `text` are `strata check`'s, on the lines holding one of `keys`.
 fn same_errors(name: &str, text: &str, keys: &[&str]) {
-    same_errors_of(CHECKER, name, text, keys);
-}
-
-/// What `checker` prints on `text` is `strata check`'s lines holding one of `keys`.
-fn same_errors_of(checker_text: &str, name: &str, text: &str, keys: &[&str]) {
     let dir = std::env::temp_dir().join(format!("strata-check-test-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let (checker, prog) = (dir.join("check.strata"), dir.join(format!("{name}.strata")));
-    save(&checker, checker_text);
+    let prog = dir.join(format!("{name}.strata"));
     save(&prog, text);
-    let got = Command::new(STRATA).args(["--file", &checker.to_string_lossy(), "run", "--", &prog.to_string_lossy()]).output().unwrap();
-    let got = String::from_utf8_lossy(&got.stdout).to_string();
+    let got = compiler::run(&[std::ffi::OsStr::new("check"), prog.as_os_str()]);
+    let got: String = got.lines().filter(|l| keys.iter().any(|k| l.contains(k))).map(|l| format!("{l}\n")).collect();
     let o = Command::new(STRATA).args(["--file", &prog.to_string_lossy(), "check"]).output().unwrap();
     let all = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
     let want: String = all.lines().filter(|l| keys.iter().any(|k| l.contains(k))).map(|l| format!("{l}\n")).collect();

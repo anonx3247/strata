@@ -806,6 +806,159 @@ fn main() {
 }
 "#;
 
+/// std.time's clock: a `race` as a timeout (the loser cancelled while it
+/// waits on a channel), a five-second sleep cancelled by a quicker arm, a
+/// `select` with an `after` arm; everything freed, and the time taken shows
+/// the long sleep was cut short.
+#[test]
+fn clocks_time_out() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("clock");
+    let (out, code) = case(&d, "clock", CLOCK);
+    assert!(code == 0 && out == "None\n42\ntimed out\ntimeouts 20\ntrue\n", "{out}");
+    let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("clock.strata")).env("STRATA_MEMORY", "check")), &d.join("clock.strata"));
+    assert_eq!(jit, (out, code));
+}
+
+/// `after` follows the clock it is called on: a frozen fake clock's timer
+/// never fires though real time passes (the `recv` wins), one of 0 fires at
+/// once, a clock 1000 times faster fires its ten seconds in about 10 ms, and
+/// the system clock passed as a `Clock` works too; everything freed.
+#[test]
+fn fake_clocks_drive_after() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("fake-clock");
+    let (out, code) = case(&d, "fake-clock", FAKE_CLOCK);
+    assert!(code == 0 && out == "received\nfrozen timer at 0\nfast timer\ntrue\ntimer\n", "{out}");
+    let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("fake-clock.strata")).env("STRATA_MEMORY", "check")), &d.join("fake-clock.strata"));
+    assert_eq!(jit, (out, code));
+}
+
+const FAKE_CLOCK: &str = r#"use std.time.{SystemClock, Clock, Instant, Duration, nanos, ms, seconds, elapsed}
+
+/// A clock whose time never moves.
+type FrozenClock = { at: Int }
+
+impl Clock for FrozenClock {
+  fn now(self) -> Instant {
+    Instant(self.at)
+  }
+
+  fn sleep(self, d: Duration) {
+    ()
+  }
+}
+
+/// A clock running `speed` times faster than the system's.
+type FastClock = { inner: SystemClock, speed: Int }
+
+impl Clock for FastClock {
+  fn now(self) -> Instant {
+    Instant(self.inner.now().value * self.speed)
+  }
+
+  fn sleep(self, d: Duration) {
+    self.inner.sleep(nanos(d.value / self.speed))
+  }
+}
+
+/// Any clock: here the system's, through the `Clock` trait.
+fn timer_of(clock: Clock, rx: Receiver[Int]) -> String {
+  select {
+    rx.recv() as x => "received",
+    clock.after(ms(20)) => "timer",
+  }
+}
+
+fn main(clock: SystemClock) {
+  (tx, rx) := channel()
+  start := clock.now()
+  // the frozen clock's 1 ms never passes, though 50 ms of real time do
+  frozen := FrozenClock { at: 5 }
+  r := scope {
+    spawn {
+      clock.sleep(ms(50))
+      tx.send(1)
+      tx.close()
+    }
+    select {
+      rx.recv() as x => "received",
+      frozen.after(ms(1)) => "frozen timer",
+    }
+  }
+  print(r)
+  // a timer of 0 is ready at once, in any clock's time
+  print(select {
+    rx.recv() as x => "received",
+    frozen.after(nanos(0)) => "frozen timer at 0",
+  })
+  // ten seconds of a clock 1000 times faster are 10 ms of the system's
+  fast := FastClock { inner: clock, speed: 1000 }
+  before := clock.now()
+  print(select {
+    rx.recv() as x => "received",
+    fast.after(seconds(10)) => "fast timer",
+  })
+  print(elapsed(before, clock.now()).value < 2000000000)
+  print(timer_of(clock, rx))
+  tx.close()
+}
+"#;
+
+const CLOCK: &str = r#"use std.time.{SystemClock, Clock, ms, seconds, elapsed}
+
+fn never(rx: Receiver[Int]) -> Int {
+  xs := ["held", "too"]
+  (rx.recv() ?? 0) + len(xs)
+}
+
+fn work(n: Int) -> Int {
+  n * 2
+}
+
+fn timeout(clock: SystemClock, rx: Receiver[Int]) -> Option[Int] {
+  race {
+    never(rx) as r => Some(r),
+    clock.sleep(ms(30)) => None,
+  }
+}
+
+fn main(clock: SystemClock) {
+  (tx, rx) := channel()
+  start := clock.now()
+  print(timeout(clock, rx))
+  r := race {
+    work(21) as n => n,
+    {
+      clock.sleep(seconds(5))
+      0
+    } as z => z,
+  }
+  print(r)
+  s := select {
+    rx.recv() as x => "got",
+    clock.after(ms(20)) => "timed out",
+  }
+  print(s)
+  mut timeouts := 0
+  for i in 0..20 {
+    if timeout(clock, rx) is None {
+      timeouts += 1
+    }
+  }
+  print(f"timeouts {timeouts}")
+  took := elapsed(start, clock.now()).value
+  print(took >= 650000000 && took < 4000000000)
+  tx.close()
+}
+"#;
+
 const CHANNELS: &str = r#"fn work(n: Int) -> Int {
   n * n
 }
