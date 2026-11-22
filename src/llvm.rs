@@ -6474,11 +6474,12 @@ impl Func<'_, '_> {
         Ok(Some(match (name, types) {
             ("split", [_, Ty::Str]) => self.call(&strings, "@strata_str_split", &args)?,
             ("trim", [_]) => self.call(&s, "@strata_str_trim", &args)?,
-            ("contains", [_, Ty::Str]) => self.call(&Ty::Bool, "@strata_str_contains", &args)?,
-            ("starts_with", [_, Ty::Str]) => self.call(&Ty::Bool, "@strata_str_starts_with", &args)?,
-            ("ends_with", [_, Ty::Str]) => self.call(&Ty::Bool, "@strata_str_ends_with", &args)?,
-            ("reverse", [_]) => self.call(&s, "@strata_str_reverse", &args)?,
-            ("chars", [_]) => self.call(&strings, "@strata_str_chars", &args)?,
+            // written in Strata (llvm/prelude.strata), over the string's bytes
+            ("contains", [_, Ty::Str]) => self.call_fn(&prelude("str_contains"), args, Some(Ty::Bool))?,
+            ("starts_with", [_, Ty::Str]) => self.call_fn(&prelude("str_starts_with"), args, Some(Ty::Bool))?,
+            ("ends_with", [_, Ty::Str]) => self.call_fn(&prelude("str_ends_with"), args, Some(Ty::Bool))?,
+            ("reverse", [_]) => self.call_fn(&prelude("str_reverse"), args, Some(s))?,
+            ("chars", [_]) => self.call_fn(&prelude("str_chars"), args, Some(strings))?,
             ("lines", [_]) => self.call_fn(&prelude("lines"), args, Some(strings))?,
             ("get", [_, Ty::Int]) => {
                 let c = self.call(&s, "@strata_str_at", &args)?;
@@ -6489,12 +6490,7 @@ impl Func<'_, '_> {
             }
             ("at", [_, Ty::Int]) => self.call(&s, "@strata_str_at_or_fault", &args)?,
             ("slice", [_, Ty::Int, Ty::Int]) => self.call(&s, "@strata_str_slice", &args)?,
-            ("index_of", [_, Ty::Str]) => {
-                let i = self.call(&Ty::Int, "@strata_str_index_of", &args)?;
-                let ok = self.fresh("found");
-                self.emit(format!("{ok} = icmp sge i64 {}, 0", i.1));
-                self.option_if(&ok, &i, &opt(Ty::Int))?
-            }
+            ("index_of", [_, Ty::Str]) => self.call_fn(&prelude("str_index_of"), args, Some(opt(Ty::Int)))?,
             ("replace", [_, Ty::Str, Ty::Str]) => self.call(&s, "@strata_str_replace", &args)?,
             ("repeat", [_, Ty::Int]) => self.call(&s, "@strata_str_repeat", &args)?,
             ("to_upper" | "to_lower", [_]) => {
