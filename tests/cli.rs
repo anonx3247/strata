@@ -1444,9 +1444,11 @@ fn channels_are_closed_and_selected() {
     for (f, msg) in [
         ("never_closed", "`tx` is never closed here"),
         ("task_never_closes", "the task holds a copy of `tx` and never closes it"),
-        ("nested_sender", "a `spawn` can capture a sender only on its own"),
+        ("nested_sender", "a task (a `spawn`, a `race` arm) can capture a sender only on its own"),
         ("arms", "a `select` arm waits on `rx.recv()`, `tx.send(v)` or `await h`"),
         ("named_send", "a `send` arm gives nothing to name"),
+        ("race_return", "`return` can't leave a task (a `spawn`, a `race` arm)"),
+        ("race_sender", "the task holds a copy of `tx` and never closes it"),
     ] {
         assert!(out.contains(&format!("error in {f}: {msg}")), "{f}: {out}");
     }
@@ -1491,6 +1493,23 @@ fn named_send(tx: Sender[Int]) {
   }
 }
 
+fn race_return(x: Int) -> Int {
+  race {
+    { return 1 } as a => a,
+    x as b => b,
+  }
+}
+
+fn race_sender() -> Int {
+  (tx, out) := channel()
+  r := race {
+    tx.send(1) as a => 1,
+    2 as b => b,
+  }
+  tx.close()
+  r
+}
+
 fn fine(rx: Receiver[Int]) -> Int {
   (tx, out) := channel()
   scope {
@@ -1504,6 +1523,41 @@ fn fine(rx: Receiver[Int]) -> Int {
     rx.recv() as x => x ?? 0,
     out.recv() as y => y ?? 1,
   }
+}
+"#;
+
+/// A panic in a task fails its test without hanging it (the test's thread,
+/// waiting on a channel, stops), and the next test runs; a `race` in a test.
+#[test]
+fn a_task_panic_fails_only_its_test() {
+    let d = tmp("task-panic");
+    save(&d.join("t.strata"), TASK_PANIC);
+    let (ok, out) = strata(&["--file", "t.strata", "test"], &d, None);
+    assert!(!ok, "{out}");
+    assert!(out.contains("index 3 out of range (length 1)") && out.contains("1 passed, 1 failed"), "{out}");
+}
+
+const TASK_PANIC: &str = r#"fn pick(xs: List[Int], i: Int) -> Int {
+  xs[i]
+}
+
+test "a task panics while the test waits" {
+  (tx, rx) := channel()
+  scope {
+    spawn pick([1], 3)
+    for x in rx {
+      print(x)
+    }
+  }
+  tx.close()
+}
+
+test "the next test runs" {
+  r := race {
+    pick([1, 2], 1) as a => a,
+    pick([5], 0) as b => b,
+  }
+  assert r == 2 || r == 5
 }
 "#;
 
@@ -1526,8 +1580,8 @@ fn tasks_stay_in_their_scope() {
     for (f, msg) in [
         ("outside", "`spawn` outside a `scope`"),
         ("leaks", "a task's handle can't leave its `scope`"),
-        ("ret", "`return` can't leave a `spawn`"),
-        ("tries", "`!` can't return from a `spawn`"),
+        ("ret", "`return` can't leave a task (a `spawn`, a `race` arm)"),
+        ("tries", "`!` can't return from a task (a `spawn`, a `race` arm)"),
         ("captured", "a closure or `spawn` can't hold `a`, a task's handle"),
         ("stored", "`hs` is declared outside the `scope`"),
         ("changes", "a closure cannot change `n`"),

@@ -566,9 +566,10 @@ fn tasks_run_on_threads() {
     assert!(code == 0 && out.starts_with("75025 6768\n"), "{out}");
     let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("tasks.strata")).env("STRATA_MEMORY", "check")), &d.join("tasks.strata"));
     assert_eq!(jit, (out, code));
-    // a fault in a task is raised where it is awaited, after the other tasks finish
-    let (out, code) = case(&d, "fault", "fn pick(xs: List[Int], i: Int) -> Int { xs[i] }\nfn main() {\n  r := scope {\n    a := spawn pick([1, 2], 5)\n    b := spawn { print(\"b ran\"); 7 }\n    await a + await b\n  }\n  print(r)\n}\n");
-    assert!(code == 101 && out.contains("b ran\n") && out.contains("fault (Runtime): index 5 out of range (length 2)"), "{out}");
+    // a panic in a task ends the program at once: the main thread, waiting
+    // for values no one will send, doesn't hang
+    let (out, code) = case(&d, "fault", "fn pick(xs: List[Int], i: Int) -> Int { xs[i] }\nfn main() {\n  (tx, rx) := channel()\n  scope {\n    spawn pick([1, 2], 5)\n    for x in rx {\n      print(x)\n    }\n  }\n  tx.close()\n}\n");
+    assert!(code == 101 && out.contains("fault (Runtime): index 5 out of range (length 2)"), "{out}");
 }
 
 /// Channels and `select`, compiled and on the JIT: a pool of workers, a
@@ -591,6 +592,85 @@ fn channels_run_on_threads() {
     let (out, code) = case(&d, "unclosed", "fn main() {\n  (tx, rx) := channel(1)\n  scope {\n    spawn {\n      tx.send(1)\n      if len([1, 2]) > 5 {\n        tx.close()\n      }\n    }\n  }\n  tx.close()\n  for x in rx {\n    print(x)\n  }\n}\n");
     assert!(code == 101 && out.contains("a task ended without closing its copy of a sender"), "{out}");
 }
+
+/// `race`: the first arm to finish wins; the others are cancelled at
+/// their next wait (deep in calls at a `recv`, at a `send` to a full channel,
+/// at an `await` of their own task, in a `select`, in a race of their own)
+/// and leave as `return` would, so everything they held is freed.
+#[test]
+fn races_cancel_the_losers() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("race");
+    let (out, code) = case(&d, "race", RACE);
+    assert!(code == 0 && out == "answer 42\nwon 100 of 100\n1 left in the channel\n", "{out}");
+    let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("race.strata")).env("STRATA_MEMORY", "check")), &d.join("race.strata"));
+    assert_eq!(jit, (out, code));
+}
+
+const RACE: &str = r#"fn hold_and_wait(rx: Receiver[String], depth: Int) -> String {
+  xs := [f"level {depth}", "held"]
+  if depth == 0 {
+    rx.recv() ?? "ended"
+  } else {
+    hold_and_wait(rx, depth - 1) + xs[0]
+  }
+}
+
+fn answer() -> Int {
+  6 * 7
+}
+
+fn inner(rx: Receiver[String]) -> String {
+  race {
+    hold_and_wait(rx, 2) as s => s,
+    hold_and_wait(rx, 3) as t => t,
+  }
+}
+
+fn main() {
+  (tx, rx) := channel()
+  (full, sink) := channel(1)
+  r := race {
+    hold_and_wait(rx, 5) as s => f"waited {s}",
+    answer() as n => f"answer {n}",
+  }
+  print(r)
+  mut wins := 0
+  for i in 0..100 {
+    w := race {
+      {
+        full.send(f"v{i}")
+        full.send(f"w{i}")
+        full.close()
+        "sent"
+      } as a => a,
+      scope {
+        h := spawn hold_and_wait(rx, 3)
+        await h
+      } as b => b,
+      select {
+        rx.recv() as x => x ?? "none",
+      } as c => c,
+      inner(rx) as d => d,
+      [f"{i}", "won"] as e => e[1],
+    }
+    if w == "won" {
+      wins += 1
+    }
+  }
+  print(f"won {wins} of 100")
+  full.close()
+  tx.close()
+  mut n := 0
+  for x in sink {
+    n += 1
+  }
+  print(f"{n} left in the channel")
+}
+"#;
 
 const CHANNELS: &str = r#"fn work(n: Int) -> Int {
   n * n
