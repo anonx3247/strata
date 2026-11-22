@@ -886,15 +886,9 @@ declare i1 @strata_host_make_dir(ptr, ptr, ptr)
 declare i1 @strata_host_remove(ptr, ptr, ptr)
 declare ptr @strata_host_args()
 declare i64 @strata_host_now()
-declare ptr @strata_timeline_new(i64, i1)
 declare ptr @strata_virtual_timeline()
 declare i64 @strata_virtual_now()
 declare void @strata_virtual_sleep(i64)
-declare void @strata_timeline_drop(ptr)
-declare i64 @strata_timeline_now(ptr)
-declare void @strata_timeline_set(ptr, i64)
-declare void @strata_timeline_advance(ptr, i64)
-declare void @strata_timeline_sleep(ptr, i64)
 declare void @strata_host_sleep(i64)
 declare ptr @strata_prog_name()
 declare void @strata_options_error(i1, ptr)
@@ -1451,20 +1445,12 @@ impl<'a> Module<'a> {
     /// A value shown and compared by what it is, not what is in it: a
     /// handle, or a channel's end (`<Sender>`; equal when the same channel).
     fn opaque(&self, t: &Ty) -> bool {
-        self.handle(t) || self.runtime_object(t) || matches!(t, Ty::Con(n, a) if (n == "Sender" || n == "Receiver") && a.len() == 1)
+        self.handle(t) || matches!(t, Ty::Con(n, a) if (n == "Sender" || n == "Receiver") && a.len() == 1)
     }
 
     fn handle(&self, t: &Ty) -> bool {
         // (a task's handle: its scope holds the task, and frees it)
-        !self.runtime_object(t) && matches!(t, Ty::Con(n, args) if args.is_empty() && (self.env.externs.contains_key(n) || self.env.capabilities.contains(n)) || n == "Task" && args.len() == 1)
-    }
-
-    /// A std type declared `extern c type` whose objects the runtime makes
-    /// and counts like a value's (unlike C's handles): std.time's private
-    /// `Timeline` (runtime.c), a `FakeClock`'s time. Counted, freed by its
-    /// runtime drop, shown and compared as itself.
-    fn runtime_object(&self, t: &Ty) -> bool {
-        matches!(t, Ty::Con(n, args) if args.is_empty() && n == "std.time.Timeline")
+        matches!(t, Ty::Con(n, args) if args.is_empty() && (self.env.externs.contains_key(n) || self.env.capabilities.contains(n)) || n == "Task" && args.len() == 1)
     }
 
     /// A record, a sum, one of its variants, or a tuple: a block with a tag.
@@ -3740,10 +3726,6 @@ impl<'m, 'a> Func<'m, 'a> {
             writeln!(self.m.body, "define void {name}(ptr %a) {{\nstart:\n  tail call void @strata_channel_drop(ptr %a)\n  ret void\n}}\n").unwrap();
             return Ok(name);
         }
-        if self.m.runtime_object(&t) {
-            writeln!(self.m.body, "define void {name}(ptr %a) {{\nstart:\n  tail call void @strata_timeline_drop(ptr %a)\n  ret void\n}}\n").unwrap();
-            return Ok(name);
-        }
         let mut h = Func::new(self.m, HashMap::default());
         h.block("start");
         if h.m.boxed(&t) {
@@ -5351,7 +5333,7 @@ impl<'m, 'a> Func<'m, 'a> {
     /// A native operation of std (`host_*`): the runtime's, its result made
     /// an `Option` or a `Result` here (only the generated code knows their tags).
     fn host(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>) -> Res<V> {
-        // a `FakeClock`'s (with the channels': runtime objects)
+        // (with the channels': runtime objects; a `VirtualClock`'s time)
         if let Some(v) = self.channel_builtin(name, &vs, &hint)? {
             return Ok(v);
         }
@@ -6469,23 +6451,10 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.after_builtin("@strata_channel_close")?;
                 (Ty::Unit, String::new())
             }
-            // a `FakeClock`'s time (runtime.c, `Timeline`)
-            ("host_fake_clock", [start]) => {
-                let r = self.call(&Ty::Con("std.time.Timeline".into(), vec![]), "@strata_timeline_new", &[start.clone(), (Ty::Bool, "false".into())])?;
-                self.temp(r)
-            }
             // a `VirtualClock`'s: its run's own time (runtime.c, `strata_virtual_timeline`)
             ("host_virtual_now", []) => self.call(&Ty::Int, "@strata_virtual_now", &[])?,
             ("host_virtual_sleep", [ns]) => {
                 self.call(&Ty::Unit, "@strata_virtual_sleep", &[ns.clone()])?;
-                self.cancel_point()?;
-                (Ty::Unit, String::new())
-            }
-            ("host_fake_now", [t]) => self.call(&Ty::Int, "@strata_timeline_now", &[t.clone()])?,
-            ("host_fake_set", [t, to]) => self.call(&Ty::Unit, "@strata_timeline_set", &[t.clone(), to.clone()])?,
-            ("host_fake_advance", [t, ns]) => self.call(&Ty::Unit, "@strata_timeline_advance", &[t.clone(), ns.clone()])?,
-            ("host_fake_sleep", [t, ns]) => {
-                self.call(&Ty::Unit, "@strata_timeline_sleep", &[t.clone(), ns.clone()])?;
                 self.cancel_point()?;
                 (Ty::Unit, String::new())
             }
@@ -6578,20 +6547,12 @@ impl<'m, 'a> Func<'m, 'a> {
                     let p = self.fresh("op");
                     self.emit(format!("{p} = getelementptr i64, ptr {ops}, i64 {}", 4 * i + 2));
                     let deadline = self.fresh("deadline");
-                    if matches!(&ct, Ty::Con(n, _) if n == "std.time.FakeClock") {
-                        // a fake clock's timer: its deadline in that clock's
-                        // time; moving the time wakes the select (kind 5)
-                        let tl = self.field(&cv, 0, &Ty::Con("std.time.Timeline".into(), vec![]))?;
-                        let now = self.call(&Ty::Int, "@strata_timeline_now", &[tl.clone()])?;
-                        self.emit(format!("{deadline} = add i64 {}, {}", now.1, d.1));
-                        self.emit(format!("store i64 {deadline}, ptr {p}"));
-                        (5, tl, None)
-                    } else if matches!(&ct, Ty::Con(n, _) if n == "std.time.VirtualClock") {
-                        // the run's virtual time: a fake clock's timer (kind 5)
+                    if matches!(&ct, Ty::Con(n, _) if n == "std.time.VirtualClock") {
+                        // the run's virtual time: its moving wakes the select (kind 5)
                         let tl = self.fresh("vtime");
                         self.emit(format!("{tl} = call ptr @strata_virtual_timeline()"));
                         let now = self.fresh("now");
-                        self.emit(format!("{now} = call i64 @strata_timeline_now(ptr {tl})"));
+                        self.emit(format!("{now} = call i64 @strata_virtual_now()"));
                         self.emit(format!("{deadline} = add i64 {now}, {}", d.1));
                         self.emit(format!("store i64 {deadline}, ptr {p}"));
                         (5, (Ty::Unit, tl), None)

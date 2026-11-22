@@ -1010,23 +1010,6 @@ fn fake_clocks_drive_after() {
     assert_eq!(jit, (out, code));
 }
 
-/// std's `FakeClock` mock: its time moves only when told; a sleep of an hour, a
-/// `race` used as a timeout and an `after` arm end when another task moves
-/// the time, with no real waiting, and everything is freed.
-#[test]
-fn std_fake_clocks_move_when_told() {
-    if !have_clang() {
-        eprintln!("skipped: no clang");
-        return;
-    }
-    // a mock exists only in tests: run as one, on the JIT (not built natively)
-    let d = tmp("std-fake-clock");
-    let f = d.join("std-fake-clock.strata");
-    save(&f, STD_FAKE_CLOCK);
-    let (out, code) = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).arg("--file").arg(&f).arg("test").env("STRATA_MEMORY", "check")), &f);
-    assert!(code == 0 && out.contains("✓ a fake clock moves only when told") && out.contains("1 passed, 0 failed"), "{out}");
-}
-
 /// When every task waits and none of the waits ends by itself, nothing can
 /// happen any more: a deadlock is reported (a panic naming each wait), not a
 /// silent hang; a real clock's sleep or a long computation isn't one. A
@@ -1142,88 +1125,6 @@ fn main(clock: VirtualClock) {
   print(s)
   print(clock.now().value / 1000000000)
   tx.close()
-}
-"#;
-
-const STD_FAKE_CLOCK: &str = r#"use std.time.*
-
-fn never(rx: Receiver[Int]) -> Int {
-  rx.recv() ?? 0
-}
-
-test "a fake clock moves only when told" (system: SystemClock) {
-  clock := FakeClock {}
-  start := system.now()
-  // moves the clock forward a second at a time until a value comes on `rx`
-  drive := (rx: Receiver[String]) -> {
-    mut got := ""
-    mut waiting := true
-    while waiting {
-      clock.advance(seconds(1))
-      select {
-        rx.recv() as v => {
-          got = v ?? "ended"
-          waiting = false
-        },
-        clock.after(nanos(0)) => (),
-      }
-    }
-    got
-  }
-  // the time moves only when told
-  assert clock.now().value == 0
-  clock.advance(ms(1500))
-  clock.set(Instant(500))
-  assert clock.now().value == ms(1500).value
-  // a sleep of an hour, woken by the time another task moves
-  (tx, rx) := channel()
-  slept := scope {
-    spawn {
-      t0 := clock.now()
-      clock.sleep(seconds(3600))
-      tx.send(f"slept an hour: {elapsed(t0, clock.now()).value >= seconds(3600).value}")
-      tx.close()
-    }
-    tx.close()
-    drive(rx)
-  }
-  assert slept == "slept an hour: true"
-  // a timeout: a race whose other side never comes, settled by fake time
-  (tx2, rx2) := channel()
-  (never_tx, never_rx) := channel()
-  timed := scope {
-    spawn {
-      r := race {
-        never(never_rx) as v => f"got {v}",
-        clock.sleep(seconds(30)) => "timed out",
-      }
-      tx2.send(r)
-      tx2.close()
-    }
-    tx2.close()
-    drive(rx2)
-  }
-  never_tx.close()
-  assert timed == "timed out"
-  // an `after` arm of the fake clock in a select
-  (tx3, rx3) := channel()
-  (quiet_tx, quiet_rx) := channel()
-  timer := scope {
-    spawn {
-      s := select {
-        quiet_rx.recv() as v => "a value",
-        clock.after(seconds(90)) => "the timer",
-      }
-      tx3.send(s)
-      tx3.close()
-    }
-    tx3.close()
-    drive(rx3)
-  }
-  quiet_tx.close()
-  assert timer == "the timer"
-  // none of the fake hours were waited for
-  assert elapsed(start, system.now()).value < seconds(20).value
 }
 "#;
 

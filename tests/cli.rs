@@ -1798,51 +1798,6 @@ fn in_race() -> String {
 }
 "#;
 
-/// std.time's `Timeline` (a `FakeClock`'s time) is private to std.time: a
-/// program may define its own `Timeline`, and can't name, import or make
-/// std's.
-#[test]
-fn a_program_has_its_own_timeline() {
-    let d = tmp("own-timeline");
-    save(&d.join("own.strata"), OWN_TIMELINE);
-    let (ok, out) = strata(&["--file", "own.strata", "run"], &d, None);
-    assert!(ok && out.contains("[\"start\"]"), "{out}");
-    let (ok, out) = strata(&["--file", "own.strata", "test"], &d, None);
-    assert!(ok && out.contains("1 passed, 0 failed"), "{out}");
-    for (name, src, msg) in [
-        ("made", "fn f() -> Int {\n  t := host_fake_clock(0)\n  1\n}\n", "`host_fake_clock` is internal to the standard library"),
-        ("imported", "use std.time.Timeline\n\nfn f() -> Int {\n  1\n}\n", "`Timeline` is private to module `std.time`"),
-        ("named", "fn f(t: std.time.Timeline) -> Int {\n  1\n}\n", "unknown type `std.time.Timeline`"),
-        // `FakeClock` is a mock: only tests (and other mocks) have one
-        ("mocked", "use std.time.{FakeClock}\n\nfn f() -> Int {\n  clock := FakeClock {}\n  1\n}\n", "`FakeClock` is a mock: it is for tests only"),
-    ] {
-        save(&d.join(format!("{name}.strata")), src);
-        let (ok, out) = strata(&["--file", &format!("{name}.strata"), "check"], &d, None);
-        assert!(!ok && out.contains(msg), "{name}: {out}");
-    }
-}
-
-const OWN_TIMELINE: &str = r#"use std.time.*
-
-/// A program's own `Timeline`: std's is private to std.time.
-type Timeline = { events: List[String] }
-
-fn note(t: Timeline, e: String) -> Timeline {
-  Timeline { events: t.events + [e] }
-}
-
-fn main() {
-  print(note(Timeline { events: [] }, "start").events)
-}
-
-test "a fake clock next to a program's own Timeline" {
-  clock := FakeClock {}
-  clock.advance(seconds(2))
-  t := note(note(Timeline { events: [] }, "start"), f"at {clock.now().value / 1000000000} s")
-  assert t.events == ["start", "at 2 s"]
-}
-"#;
-
 /// A deadlocked test fails with what each task waits on, instead of hanging,
 /// and the next tests run; a test asking for a `VirtualClock` has its own
 /// time, from 0, which settles a timeout by itself.

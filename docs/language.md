@@ -488,7 +488,7 @@ fn fetch_or_give_up(clock: SystemClock, net: Net, url: String) -> Option[Page] {
 
 In a `select`, `clock.after(d) => …` is an arm that happens once `d` has passed, in that clock's time, since the `select` began (it names nothing): `select { jobs.recv() as j => run(j), clock.after(ms(100)) => flush() }`. Any `Clock` works, so a test can pass a stand-in whose time it controls (one that stands still, or runs faster): its `after` arms and its `sleep` follow its time, not the system's.
 
-std has one for tests: `FakeClock`, a mock (so only tests and other mocks have one: `clock := FakeClock {}`, at 0) whose time moves only when told, `clock.advance(seconds(30))` or `clock.set(t)` (never back). Copies share the one time, so one task can move it for the others: every `sleep` and `after` timer of that clock that is due by then ends at once, with no real waiting, so a timeout in a test happens exactly when the test says.
+A test of timeouts asks for a `VirtualClock`, a capability like `SystemClock`: each test (and the program, for `main`) has its own virtual time, at 0 when it starts and shared by its tasks, and it moves by itself: once every task is waiting and one of them waits for this clock (a `sleep`, an `after` timer), its time jumps to the nearest such deadline. A timeout then happens at once, and exactly:
 
 ```rust
 /// Waits for a question; none ever comes.
@@ -496,45 +496,6 @@ fn answer(questions: Receiver[Int]) -> Int {
   questions.recv() ?? 0
 }
 
-test "gives up after 30 seconds" {
-  clock := FakeClock {}
-  (tx, rx) := channel()
-  // nothing is sent on `ask` until the race is over: `answer` never answers
-  (ask, questions) := channel()
-  scope {
-    spawn {
-      r := race {
-        answer(questions) as v => Some(v),
-        clock.sleep(seconds(30)) => None,
-      }
-      tx.send(r)
-      tx.close()
-    }
-    tx.close()
-    // move the time a second at a time until the result comes
-    mut got := Some(0)
-    mut waiting := true
-    while waiting {
-      clock.advance(seconds(1))
-      select {
-        rx.recv() as r => {
-          got = r ?? Some(0)
-          waiting = false
-        },
-        clock.after(nanos(0)) => (),
-      }
-    }
-    assert got == None
-  }
-  ask.close()
-}
-```
-
-The time of a `FakeClock` moves only when the test moves it: a sleep that starts after the time was moved waits for the next move, which is why the test moves it in steps until the answer comes (`clock.after(nanos(0))` keeps the `select` from waiting).
-
-A test that would rather not move the time asks for a `VirtualClock`, a capability like `SystemClock`: each test (and the program, for `main`) has its own virtual time, at 0 when it starts and shared by its tasks, and it moves by itself: once every task is waiting and one of them waits for this clock, its time jumps to the nearest such deadline. The same test needs no task moving the time:
-
-```rust
 test "gives up after 30 seconds" (clock: VirtualClock) {
   (ask, questions) := channel()
   r := race {
@@ -548,6 +509,30 @@ test "gives up after 30 seconds" (clock: VirtualClock) {
 ```
 
 Sleeps of a virtual clock end in the order of their deadlines, each once everything else is waiting, so a test of timers is exact and takes no real time.
+
+A test that needs a time that stands still writes its own mock of `Clock` (std has none: it is a few lines, and each test knows the time it wants; a mock is for tests only):
+
+```rust
+/// The time on a receipt, in seconds.
+fn stamp(clock: Clock) -> String {
+  f"at {clock.now().value / 1000000000} s"
+}
+
+/// A clock stopped at one time.
+mock StoppedClock = { at: Instant }
+
+// (`sleep` is left out: a mock's missing methods are generated)
+impl Clock for StoppedClock {
+  fn now(self) -> Instant {
+    self.at
+  }
+}
+
+test "a receipt shows the time" {
+  clock := StoppedClock { at: Instant(seconds(5).value) }
+  assert stamp(clock) == "at 5 s"
+}
+```
 
 ## Built-in types
 
@@ -748,7 +733,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 |---|---|
 | `std.io` | `Console` (`print`, `write`, `eprint`, `read_line`); `Recorder` / `recorder(input)` / `printed(r)` for tests |
 | `std.fs` | `Files` (`read`, `read_bytes`, `write`, `append`, `exists`, `list`, `make_dir`, `remove`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
-| `std.time` | `Clock` (`now`, `sleep`), the `SystemClock` capability, the `FakeClock` mock (`FakeClock {}`, `advance`, `set`) and the `VirtualClock` capability (its own time per test, moving by itself) for tests; `Duration` (`nanos`, `micros`, `ms`, `seconds`), `Instant`, `elapsed`; `clock.after(d)` as a `select` arm |
+| `std.time` | `Clock` (`now`, `sleep`), the `SystemClock` capability, and the `VirtualClock` capability (its own time per test, moving by itself) for tests; `Duration` (`nanos`, `micros`, `ms`, `seconds`), `Instant`, `elapsed`; `clock.after(d)` as a `select` arm |
 | `std.process` | `Environment` (`args`, `var`), `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
 | `std.code` | `Codebase`, a capability, and the capability trait it implements, `Code` (`version`, `snapshot`): the codebase in the current folder as the tools see it: each `Definition` with its interface and source text, what it uses and what uses it, holes, errors and cached verdicts, and the package's log. `strata ui`'s viewer reads it |
 | `std.cli` | `CommandLine`: a record of options read from the arguments |

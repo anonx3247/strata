@@ -336,7 +336,7 @@ typedef struct Waiter {
   int64_t gen;           // `wake_gen` when it began to wait; -1: not waiting
   const char *what;      // the wait it is in
   _Bool timed;           // its wait ends by itself (a real clock's deadline)
-  struct Timeline *vt;   // a fake clock's time it waits on, and the deadline
+  struct Timeline *vt;   // a `VirtualClock`'s time it waits on, and the deadline
   int64_t vdeadline;
   Str **frames;          // its call stack (its thread's; NULL before it runs)
   int64_t *counts, *runs;
@@ -648,7 +648,7 @@ static Run *this_run(void) {
 static _Bool stuck(void);
 
 // About to wait (holding `chan_lock`), on what is `what` names and, for a
-// fake clock, its time and deadline: 0 when it shouldn't (it was the last
+// `VirtualClock`, its time and deadline: 0 when it shouldn't (it was the last
 // thread to wait, and a virtual clock's time moved, or the run deadlocked
 // in a test: it looks again).
 static _Bool wait_begin_v(const char *what, struct Timeline *vt, int64_t vdeadline) {
@@ -1279,94 +1279,55 @@ void strata_host_sleep(int64_t ns) {
   pthread_mutex_unlock(&chan_lock);
 }
 
-// ---- fake time (std.time.FakeClock) ----
+// ---- virtual time (std.time.VirtualClock) ----
 //
-// A `Timeline` is a time that only moves when told (`advance`, `set`), shared
-// by every copy of the clock holding it (a counted object, as a channel).
-// It is read and moved under `chan_lock`; moving it wakes every waiter, so a
-// task sleeping on it, or a `select` with one of its timers, looks again at
-// once: no polling.
+// A run's own time (`Timeline`), at 0 when it starts (each test has its
+// own), shared by its tasks: it moves by itself, to the nearest deadline
+// waited on, when every thread of the run waits (`stuck`), which wakes the
+// sleepers and the `select`s with one of its timers. The capability holds
+// nothing: its methods find the run's time here. Read and moved under
+// `chan_lock`; not counted (it lives as long as its run).
 
 typedef struct Timeline {
-  int64_t now;  // nanoseconds from the clock's start
-  _Bool virtual_;  // moves by itself to the next deadline when every thread waits
+  int64_t now;  // nanoseconds from the run's start
 } Timeline;
 
-Timeline *strata_timeline_new(int64_t start, _Bool virtual_) {
-  Timeline *t = strata_alloc(sizeof(Timeline));
-  t->now = start;
-  t->virtual_ = virtual_;
+Timeline *strata_virtual_timeline(void) {
+  pthread_mutex_lock(&chan_lock);
+  Run *r = this_run();
+  if (!r->vtime) r->vtime = calloc(1, sizeof(Timeline));
+  Timeline *t = r->vtime;
+  pthread_mutex_unlock(&chan_lock);
   return t;
 }
 
-void strata_timeline_drop(Timeline *t) {
-  if (strata_release(t)) strata_free(t);
-}
-
-int64_t strata_timeline_now(Timeline *t) {
+int64_t strata_virtual_now(void) {
+  Timeline *t = strata_virtual_timeline();
   pthread_mutex_lock(&chan_lock);
   int64_t v = t->now;
   pthread_mutex_unlock(&chan_lock);
   return v;
 }
 
-// Move the time to `to` (never back), waking whoever waits for it.
-void strata_timeline_set(Timeline *t, int64_t to) {
-  pthread_mutex_lock(&chan_lock);
-  if (to > t->now) t->now = to;
-  wake_all();
-  pthread_mutex_unlock(&chan_lock);
-}
-
-// Move the time `ns` forward (not back), waking whoever waits for it.
-void strata_timeline_advance(Timeline *t, int64_t ns) {
-  pthread_mutex_lock(&chan_lock);
-  if (ns > 0) t->now += ns;
-  wake_all();
-  pthread_mutex_unlock(&chan_lock);
-}
-
-// Wait until the time has moved `ns` past now; a cancelled task stops at once.
-void strata_timeline_sleep(Timeline *t, int64_t ns) {
+// Wait until the run's time has moved `ns` past now; a cancelled task stops at once.
+void strata_virtual_sleep(int64_t ns) {
+  Timeline *t = strata_virtual_timeline();
   pthread_mutex_lock(&chan_lock);
   int64_t deadline = t->now + ns;
   while (t->now < deadline && !strata_cancelled()) {
-    if (wait_begin_v("`sleep` on a fake clock", t, deadline)) pthread_cond_wait(&chan_cond, &chan_lock);
+    if (wait_begin_v("a `VirtualClock`'s `sleep`", t, deadline)) pthread_cond_wait(&chan_cond, &chan_lock);
     wait_end();
   }
   pthread_mutex_unlock(&chan_lock);
 }
-
-// ---- virtual time (std.time.VirtualClock) ----
-//
-// A run's own fake time, at 0 when it starts (each test has its own), shared
-// by its tasks: it moves by itself, to the nearest deadline waited on, when
-// every thread of the run waits (`stuck`). The capability holds nothing: its
-// methods find the run's time here. Not counted (it lives as long as its run).
-
-Timeline *strata_virtual_timeline(void) {
-  pthread_mutex_lock(&chan_lock);
-  Run *r = this_run();
-  if (!r->vtime) {
-    r->vtime = calloc(1, sizeof(Timeline));
-    r->vtime->virtual_ = 1;
-  }
-  Timeline *t = r->vtime;
-  pthread_mutex_unlock(&chan_lock);
-  return t;
-}
-
-int64_t strata_virtual_now(void) { return strata_timeline_now(strata_virtual_timeline()); }
-
-void strata_virtual_sleep(int64_t ns) { strata_timeline_sleep(strata_virtual_timeline(), ns); }
 
 // What a `select` arm waits on: kind 0 `recv` (`ok` says whether a value
 // came, into `slot`), 1 `send` (of `slot`), 2 `await` (a task), 3 a timer of
 // the system clock (`clock.after(d)`: `slot` is its deadline, monotonic
 // nanoseconds), 4 a timer of another clock (`slot` is 1 once that clock said
 // its deadline has passed: the compiled code asks the clock, `strata_select`
-// gives -2 when it should ask again), 5 a timer of a `FakeClock` (`target` its
-// `Timeline`, `slot` its deadline in that time: moving the time wakes it).
+// gives -2 when it should ask again), 5 a timer of a `VirtualClock` (`target`
+// the run's `Timeline`, `slot` its deadline in that time: moving the time wakes it).
 typedef struct {
   int64_t kind;
   void *target;
@@ -1445,7 +1406,7 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
         break;
       }
       if (first == INT64_MAX) {
-        // a fake clock's timer: the nearest (a virtual clock may jump to it)
+        // a `VirtualClock`'s timer: the nearest (its time may jump to it)
         Timeline *vt = NULL;
         int64_t vd = 0;
         for (int64_t i = 0; i < n; i++) {
@@ -1490,7 +1451,7 @@ static _Bool stuck(void) {
   Waiter *next = NULL;
   for (Waiter *w = r->first; w; w = w->next) {
     if (w->gen != wake_gen || w->timed) return 0;
-    if (w->vt && w->vt->virtual_ && (!next || w->vdeadline - w->vt->now < next->vdeadline - next->vt->now)) next = w;
+    if (w->vt && (!next || w->vdeadline - w->vt->now < next->vdeadline - next->vt->now)) next = w;
   }
   if (next) {
     if (next->vdeadline > next->vt->now) next->vt->now = next->vdeadline;
