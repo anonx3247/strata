@@ -189,7 +189,7 @@ fn calls_within(e: &Expr, env: &Env, locals: &[String], own: Option<&str>, out: 
                                 self.expr(a);
                                 self.expr(b);
                             }
-                            Stmt::Loop(x) | Stmt::Expr(x) | Stmt::Assert(x) => self.expr(x),
+                            Stmt::Loop(x) | Stmt::Expr(x) | Stmt::Assert(x) | Stmt::Invariant(x) => self.expr(x),
                             Stmt::Comment(_) | Stmt::Break | Stmt::Continue => {}
                         }
                     }
@@ -447,7 +447,7 @@ impl Structural<'_> {
                             self.expr(a, &v);
                             self.expr(b, &v);
                         }
-                        Stmt::Expr(x) | Stmt::Assert(x) | Stmt::Loop(x) => self.expr(x, &v),
+                        Stmt::Expr(x) | Stmt::Assert(x) | Stmt::Loop(x) | Stmt::Invariant(x) => self.expr(x, &v),
                         Stmt::Break | Stmt::Continue | Stmt::Comment(_) => {}
                     }
                 }

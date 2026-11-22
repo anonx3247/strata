@@ -240,6 +240,7 @@ fn stmt(st: &Stmt) -> String {
         Stmt::Assert(e) => tag("Assert", expr(e)),
         Stmt::Comment(ls) => tag("Comment", strs(ls)),
         Stmt::ComptimeFor(p, xs, b) => three("ComptimeFor", p, xs, b),
+        Stmt::Invariant(e) => tag("Invariant", expr(e)),
     }
 }
 

@@ -6547,6 +6547,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let (head, inner, end) = (self.fresh_label("while"), self.fresh_label("do"), self.fresh_label("endwhile"));
                 self.br(&head);
                 self.block(&head);
+                self.loop_invariants(body)?;
                 self.push_scope(true);
                 let cv = self.expr(c)?;
                 self.pop_scope()?;
@@ -6561,6 +6562,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let (head, end) = (self.fresh_label("loop"), self.fresh_label("endloop"));
                 self.br(&head);
                 self.block(&head);
+                self.loop_invariants(body)?;
                 let depth = self.scopes.len();
                 self.push_scope(true);
                 self.loop_body(body, &head, &end, depth)?;
@@ -6583,6 +6585,7 @@ impl<'m, 'a> Func<'m, 'a> {
                     let (head, inner, step, end) = (self.fresh_label("for"), self.fresh_label("for.body"), self.fresh_label("for.next"), self.fresh_label("endfor"));
                     self.br(&head);
                     self.block(&head);
+                    self.loop_invariants(body)?;
                     let i = self.fresh("i");
                     self.emit(format!("{i} = load i64, ptr {counter}"));
                     let n = self.list_len(&v);
@@ -6615,6 +6618,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let (head, inner, step, end) = (self.fresh_label("for"), self.fresh_label("for.body"), self.fresh_label("for.next"), self.fresh_label("endfor"));
                 self.br(&head);
                 self.block(&head);
+                self.loop_invariants(body)?;
                 let i = self.fresh("i");
                 self.emit(format!("{i} = load i64, ptr {counter}"));
                 let more = self.apply(BinOp::Lt, &(Ty::Int, i.clone()), &hi)?;
@@ -6646,7 +6650,32 @@ impl<'m, 'a> Func<'m, 'a> {
             Stmt::Expr(e) => {
                 self.expr(e)?;
             }
-            Stmt::Assert(x) => {
+            Stmt::Assert(x) => self.check_true(x, "assertion failed")?,
+            // (checked at the loop's head: `loop_invariants`)
+            Stmt::Invariant(_) => {}
+            Stmt::Comment(_) => {}
+        }
+        Ok(())
+    }
+
+    /// A loop's `invariant`s, checked at its head: on entry, after every
+    /// pass and `continue`, and when it ends normally.
+    fn loop_invariants(&mut self, body: &Expr) -> Res<()> {
+        let invs: Vec<&Expr> = crate::types::loop_invariants(body).collect();
+        if invs.is_empty() {
+            return Ok(());
+        }
+        self.push_scope(true);
+        for x in invs {
+            self.check_true(x, "invariant failed")?;
+        }
+        self.pop_scope()
+    }
+
+    /// Fault with `what: x` unless `x` is true.
+    fn check_true(&mut self, x: &Expr, what: &str) -> Res<()> {
+        {
+            {
                 // a comparison shows both sides when it fails
                 let (ok, sides) = match x {
                     Expr::Bin(op, l, r) if !matches!(op, BinOp::And | BinOp::Or | BinOp::Implies) => {
@@ -6662,7 +6691,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let (pass, fail) = (self.fresh_label("assert.ok"), self.fresh_label("assert.fail"));
                 self.cond_br(&ok, &pass, &fail);
                 self.block(&fail);
-                let mut parts = vec![Part::Lit(format!("assertion failed: {}", crate::printer::expr(x, 0)))];
+                let mut parts = vec![Part::Lit(format!("{what}: {}", crate::printer::expr(x, 0)))];
                 if let Some((op, a, b)) = sides {
                     let (sa, sb) = (self.shown(&a)?, self.shown(&b)?);
                     parts.extend([Part::Lit(format!(" (left of {} = ", op.symbol())), Part::Val(sa), Part::Lit(", right = ".into()), Part::Val(sb), Part::Lit(")".into())]);
@@ -6670,7 +6699,6 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.fault(Fault::Assert, parts)?;
                 self.block(&pass);
             }
-            Stmt::Comment(_) => {}
         }
         Ok(())
     }

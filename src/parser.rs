@@ -1320,6 +1320,26 @@ impl Parser {
         false
     }
 
+    /// A loop's body, after its `invariant e` clauses (`invariant` is a
+    /// word only there), which become the body's first statements.
+    fn loop_body(&mut self) -> R<Expr> {
+        let mut invs = vec![];
+        while self.eat_kw("invariant") {
+            invs.push(Stmt::Invariant(self.expr_ns()?));
+        }
+        let body = self.block()?;
+        if invs.is_empty() {
+            return Ok(body);
+        }
+        Ok(match body {
+            Expr::Block(ss, last) => {
+                invs.extend(ss);
+                Expr::Block(invs, last)
+            }
+            other => Expr::Block(invs, Box::new(other)),
+        })
+    }
+
     fn block(&mut self) -> R<Expr> {
         self.expect_sym("{")?;
         let old = (self.no_struct, self.no_pipe);
@@ -1367,14 +1387,14 @@ impl Parser {
             } else if self.eat_kw("assert") {
                 stmts.push(Stmt::Assert(self.expr()?));
             } else if self.eat_kw("loop") {
-                stmts.push(Stmt::Loop(self.block()?));
+                stmts.push(Stmt::Loop(self.loop_body()?));
             } else if self.eat_kw("break") {
                 stmts.push(Stmt::Break);
             } else if self.eat_kw("continue") {
                 stmts.push(Stmt::Continue);
             } else if self.eat_kw("while") {
                 let cond = self.expr_ns()?;
-                stmts.push(Stmt::While(cond, self.block()?));
+                stmts.push(Stmt::While(cond, self.loop_body()?));
             } else if self.is_kw("comptime") && matches!(self.peek_at(1), Tok::Ident(f) if f == "for") {
                 // `comptime for v in xs { ... }`: written out once per element while compiling
                 self.next();
@@ -1387,7 +1407,7 @@ impl Parser {
                 let pat = self.pattern()?;
                 self.expect_kw("in")?;
                 let iter = self.expr_ns()?;
-                stmts.push(Stmt::For(pat, iter, self.block()?));
+                stmts.push(Stmt::For(pat, iter, self.loop_body()?));
             } else {
                 let e = self.expr()?;
                 let op = match self.peek() {

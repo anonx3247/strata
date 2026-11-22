@@ -1847,6 +1847,7 @@ impl Rw<'_> {
                         Stmt::Loop(b) => Stmt::Loop(self.expr(b)),
                         Stmt::Break => Stmt::Break,
                         Stmt::Continue => Stmt::Continue,
+                        Stmt::Invariant(x) => Stmt::Invariant(self.expr(x)),
                         Stmt::For(p, it, b) => {
                             let it = self.expr(it);
                             self.push(&[]);

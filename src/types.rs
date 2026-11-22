@@ -1174,6 +1174,8 @@ struct Checker<'a> {
     in_spawn: bool,
     /// How many loops enclose the code being checked (for `break`/`continue`).
     loops: usize,
+    /// The body of the loop being checked (by node): where `invariant` may be written.
+    loop_body: usize,
     /// Written types of immutable variables, for the refinements a `match`
     /// can rely on (`n: Positive`); scopes hold `written:x` -> index here.
     written: Vec<TypeExpr>,
@@ -3453,7 +3455,9 @@ impl<'a> Checker<'a> {
             }
             Expr::Block(stmts, last) => {
                 self.scopes.push(HashMap::default());
+                let mut leading = true;
                 for s in stmts {
+                    leading &= matches!(s, Stmt::Invariant(_));
                     match s {
                         // written out (and checked) where the derived method is specialized
                         Stmt::ComptimeFor(..) => {}
@@ -3506,13 +3510,22 @@ impl<'a> Checker<'a> {
                             let ct = self.infer(c);
                             self.expect(&Ty::Bool, &ct, "while condition");
                             self.loops += 1;
+                            self.loop_body = addr(b);
                             self.infer(b);
                             self.loops -= 1;
                         }
                         Stmt::Loop(b) => {
                             self.loops += 1;
+                            self.loop_body = addr(b);
                             self.infer(b);
                             self.loops -= 1;
+                        }
+                        Stmt::Invariant(x) => {
+                            if self.loop_body != addr(e) || !leading {
+                                self.err(format!("`invariant {}` is written between a loop's header and its body", crate::printer::expr(x, 0)));
+                            }
+                            let t = self.infer(x);
+                            self.expect(&Ty::Bool, &t, "invariant");
                         }
                         Stmt::Break | Stmt::Continue => {
                             if self.loops == 0 {
@@ -3546,9 +3559,25 @@ impl<'a> Checker<'a> {
                                     self.fresh()
                                 }
                             };
+                            // (the loop's variable isn't in scope in its invariants: they hold between elements too)
+                            let bound = pattern_binds(p);
+                            let mut named = None;
+                            for x in loop_invariants(b) {
+                                crate::ast::walk(x, |y| {
+                                    if let Expr::Var(v) = y {
+                                        if named.is_none() && bound.contains(v) {
+                                            named = Some(*v);
+                                        }
+                                    }
+                                });
+                            }
+                            if let Some(x) = named {
+                                self.err(format!("an invariant of `for {} in …` can't name the loop's variable `{x}`: it holds before the first element and after the last too", crate::printer::pat(p)));
+                            }
                             self.scopes.push(HashMap::default());
                             self.pattern(p, &el);
                             self.loops += 1;
+                            self.loop_body = addr(b);
                             self.infer(b);
                             self.loops -= 1;
                             self.scopes.pop();
@@ -4436,6 +4465,7 @@ impl<'a> Checker<'a> {
             task_floor: None,
             in_spawn: false,
             loops: 0,
+            loop_body: 0,
             ret: None,
             written: Vec::new(),
             targets: Vec::new(),
@@ -4564,6 +4594,42 @@ fn check_lowering(prog: &mut Program, env: &Env, record_types: bool) -> (Vec<Dia
     (errors, holes, targets, types)
 }
 
+/// The names a pattern binds.
+fn pattern_binds(p: &Pattern) -> Vec<Symbol> {
+    fn go(p: &Pattern, out: &mut Vec<Symbol>) {
+        match p {
+            Pattern::Bind(x) => out.push(*x),
+            Pattern::List(ps, rest) => {
+                ps.iter().for_each(|p| go(p, out));
+                out.extend(*rest);
+            }
+            Pattern::Tuple(ps) | Pattern::Or(ps) => ps.iter().for_each(|p| go(p, out)),
+            Pattern::Ctor(_, CtorPat::Positional(ps) | CtorPat::Type(ps)) => ps.iter().for_each(|p| go(p, out)),
+            Pattern::Ctor(_, CtorPat::Record(fs, _)) => fs.iter().for_each(|(_, p)| go(p, out)),
+            Pattern::For(a, b, _) => {
+                go(a, out);
+                go(b, out);
+            }
+            _ => {}
+        }
+    }
+    let mut out = vec![];
+    go(p, &mut out);
+    out
+}
+
+/// A loop body's `invariant` clauses (its first statements).
+pub fn loop_invariants(body: &Expr) -> impl Iterator<Item = &Expr> {
+    let ss: &[Stmt] = match body {
+        Expr::Block(ss, _) => ss,
+        _ => &[],
+    };
+    ss.iter().map_while(|s| match s {
+        Stmt::Invariant(x) => Some(x),
+        _ => None,
+    })
+}
+
 /// Each `for p in xs { body }` whose subject (by node) is in `fors`, as
 /// `{ mut $iter_N := xs; loop { match mut $iter_N.next() { Some(p) => body, None => break } } }`.
 /// The rest of the language (compiler, prover, termination) sees an ordinary loop.
@@ -4583,7 +4649,14 @@ fn lower_iterator_fors(prog: &mut Program, fors: &HashMap<usize, bool>) {
                     Arm { comments: vec![], pat: Pattern::Ctor(Symbol::from("Some"), CtorPat::Positional(vec![p])), body },
                     Arm { comments: vec![], pat: Pattern::Ctor(Symbol::from("None"), CtorPat::None), body: Expr::Block(vec![Stmt::Break], Box::new(Expr::Unit)) },
                 ];
-                let looped = Stmt::Loop(Expr::Match(Box::new(next), None, arms));
+                // (the body's invariants stay first in the loop's body)
+                let invs: Vec<Stmt> = loop_invariants(&arms[0].body).map(|x| Stmt::Invariant(x.clone())).collect();
+                let mut arms = arms;
+                if let Expr::Block(ss, _) = &mut arms[0].body {
+                    ss.drain(..invs.len());
+                }
+                let m = Expr::Match(Box::new(next), None, arms);
+                let looped = Stmt::Loop(if invs.is_empty() { m } else { Expr::Block(invs, Box::new(m)) });
                 *s = Stmt::Expr(Expr::Block(vec![Stmt::Var(it, None, xs), looped], Box::new(Expr::Unit)));
             }
         });
@@ -4623,6 +4696,7 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
             task_floor: None,
             in_spawn: false,
             loops: 0,
+            loop_body: 0,
             ret: None,
             written: Vec::new(),
             targets: Vec::new(),
