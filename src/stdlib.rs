@@ -34,6 +34,7 @@ const FILES: &[(&str, &[u8])] = &[
     ("ast.strata", include_bytes!("../std/ast.strata")),
     ("ast/binary.strata", include_bytes!("../std/ast/binary.strata")),
     ("ast/text.strata", include_bytes!("../std/ast/text.strata")),
+    ("ast/lex.strata", include_bytes!("../std/ast/lex.strata")),
     ("ast/eval.strata", include_bytes!("../std/ast/eval.strata")),
 ];
 

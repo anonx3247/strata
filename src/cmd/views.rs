@@ -280,3 +280,49 @@ pub fn view(args: &Args) -> Result<bool, String> {
     print!("{}", view::render(p, &names, level, &st));
     Ok(true)
 }
+
+/// `strata lex FILE`: a text file's tokens (`3:5 nl sp Ident(x)`: where, a
+/// newline or a space before it, what), then its comments, or the lexer's
+/// error. A float is shown by its bits and a string as the printer quotes
+/// it, so `std.ast.lex`'s output can be compared byte for byte.
+pub fn lex(args: &Args) -> Result<bool, String> {
+    use crate::lexer::{FPart, Tok};
+    let file = args.pos.get(1).ok_or("usage: strata lex <FILE>")?;
+    let src = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
+    let quote = |s: &str| format!("\"{}\"", crate::printer::escape(s));
+    let (tokens, comments) = match crate::lexer::lex_with_comments(&src) {
+        Ok(tc) => tc,
+        Err(e) => {
+            println!("error: {e}");
+            return Ok(true);
+        }
+    };
+    for t in &tokens {
+        let what = match &t.tok {
+            Tok::Int(n) => format!("Int({n})"),
+            Tok::BigInt(s) => format!("BigInt({s})"),
+            Tok::Float(f) => format!("Float({})", f.to_bits()),
+            Tok::Str(s) => format!("Str({})", quote(s)),
+            Tok::FStr(ps) => format!(
+                "FStr({})",
+                ps.iter()
+                    .map(|p| match p {
+                        FPart::Lit(s) => quote(s),
+                        FPart::Code(c, l, k) => format!("{{{}@{l}:{k}}}", quote(c)),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Tok::Ident(s) => format!("Ident({s})"),
+            Tok::Hole(s) => format!("Hole({s})"),
+            Tok::Doc(s) => format!("Doc({})", quote(s)),
+            Tok::Sym(s) => format!("Sym({s})"),
+            Tok::Eof => "Eof".to_string(),
+        };
+        println!("{}:{}{}{} {what}", t.line, t.col, if t.nl_before { " nl" } else { "" }, if t.space_before { " sp" } else { "" });
+    }
+    for c in &comments {
+        println!("{}:{} comment {}{}", c.line, c.col, quote(&c.text), if c.trailing { " trailing" } else { "" });
+    }
+    Ok(true)
+}
