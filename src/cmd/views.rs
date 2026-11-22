@@ -108,6 +108,10 @@ pub fn builtins(json_out: bool) -> Result<bool, String> {
 
 /// `strata render`.
 pub fn render(args: &Args) -> Result<bool, String> {
+    if let Some(dir) = crate::core::dir_of(args.val("--file")) {
+        print!("{}", crate::core::render(&dir, args.pos.get(1).map(|s| s.as_str()))?);
+        return Ok(true);
+    }
     let src = load(&args)?;
     // shown as written: each reference as short as the module's `use`s allow
     let p = &resolve::written_form(src.program());

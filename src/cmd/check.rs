@@ -4,6 +4,14 @@ use crate::*;
 
 /// `strata check`.
 pub fn check(args: &Args, json_out: bool) -> Result<bool, String> {
+    if let Some(dir) = crate::core::dir_of(args.val("--file")) {
+        let rep = crate::core::check(&dir);
+        print_errors(&rep);
+        if rep.ok() {
+            println!("ok: core checks");
+        }
+        return Ok(rep.ok());
+    }
     let src = load(&args)?;
     let rep = full_check(src.program());
     if json_out {

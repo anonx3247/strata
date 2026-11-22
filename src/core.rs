@@ -86,3 +86,36 @@ pub fn builtin_fns() -> impl Iterator<Item = &'static crate::ast::FnDecl> {
 /// pattern that isn't a regular expression, a channel used after it ended.
 /// They aren't total, though they have no `requires`.
 pub const NOT_YET_CONTRACTS: &[&str] = &["matches", "channel_send", "channel_recv", "channel_close"];
+
+/// The `core/` folder named by `--file`, if that is what it names.
+pub fn dir_of(file: Option<&str>) -> Option<std::path::PathBuf> {
+    let f = std::path::Path::new(file?);
+    let pkg = crate::package::find(f).ok().flatten().filter(|p| p.name == NAME)?;
+    f.is_dir().then_some(pkg.dir)
+}
+
+/// `strata --file core/ render [MODULE]`: a module as stored (core's names
+/// are global, so there is nothing to shorten).
+pub fn render(dir: &std::path::Path, module: Option<&str>) -> Result<String, String> {
+    let m = crate::stdlib::package_module(NAME, module.unwrap_or("types"));
+    let path = dir.join(crate::store::module_path(&m));
+    let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let decls = crate::binary::decode_module(&bytes)?;
+    Ok(crate::printer::module_file(&Program { decls }, &m))
+}
+
+/// `strata --file core/ check`: core as this strata has it built in (its
+/// files on disk must be those: rebuild after an edit) checks: its code, in
+/// a program of its own, and its builtins' contracts.
+pub fn check(dir: &std::path::Path) -> crate::types::CheckReport {
+    let mut rep = crate::types::check(&Program { decls: vec![] });
+    for (f, bytes) in FILES {
+        if std::fs::read(dir.join(f)).ok().as_deref() != Some(*bytes) {
+            rep.errors.push(crate::types::Diag { decl: format!("core/{f}"), msg: "differs from the core this strata was built with: rebuild strata, then check".into() });
+        }
+    }
+    let builtins = Program { decls: module("builtins.strata").to_vec() };
+    // (as written: resolving would name them `core.builtins.len`)
+    rep.errors.extend(crate::types::check_report_resolved(&builtins).errors);
+    rep
+}
