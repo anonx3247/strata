@@ -111,6 +111,20 @@ fn h() -> List[Int] { [x * 2 for x in ["a"]] }
 fn main() { print(1) }
 "#;
 
+const RESULTS: &str = r#"fn p(s: String) -> Result[Int, String] { Ok(1) }
+fn a(s: String) -> Result[String, String] { n := p(s)!
+  Ok(n) }
+fn b(s: String) -> String { p(s) except e { "x" } }
+fn c(s: String) -> Int { p(s) except { "bad" } }
+fn d(xs: List[Int]) -> String { xs[0] }
+fn e(xs: List[Int]) -> Int { xs[1..2] }
+fn f() -> String { 0..3 }
+fn g(xs: List[Int]) -> Int { xs["a"] }
+fn h(o: Option[Int]) -> Option[String] { n := o?
+  Some(n) }
+fn main() { print(1) }
+"#;
+
 const RECORDS: &str = r#"type Pt = { x: Int, y: Int }
 type Sh =
   | Sq(Int)
@@ -298,6 +312,11 @@ fn builtin_calls_as_in_rust() {
 #[test]
 fn tuples_and_loops_as_in_rust() {
     same_errors("tuples", TUPLES, &["expected `", "Int or Float", "no element"]);
+}
+
+#[test]
+fn results_and_indexes_as_in_rust() {
+    same_errors("results", RESULTS, &["expected `"]);
 }
 
 /// The compiler's errors on `text` are `strata check`'s, on the lines holding one of `keys`.
