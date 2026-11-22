@@ -299,11 +299,14 @@ static void keep_printed(const char *b, size_t n) {
 // Run test `f`: 0 when it got to its end, 1 after a fault (then
 // `strata_test_fault` says which). Each starts as the interpreter's: no
 // call stack, the generators' numbers from the start, nothing printed.
+static void forget_senders(void);
+
 int32_t strata_test(void (*f)(void)) {
   sigjmp_buf here;
   catch_overflow();
   runs = 0;
   rng = test_seed;
+  forget_senders();
   printed_len = 0;
   if (printed) printed[0] = 0;
   capturing = 1;
@@ -438,6 +441,50 @@ _Noreturn void strata_fault(int32_t kind, Str *msg) { fault_at(kind, msg, NULL);
 
 #define TASK_STACK ((size_t)64 << 20)
 
+// Channels, and tasks' ends, under one lock: what changes wakes every
+// waiter, which looks again (simple; a lock per channel can come later).
+static pthread_mutex_t chan_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t chan_cond = PTHREAD_COND_INITIALIZER;
+
+typedef struct Channel {
+  int64_t cap;               // room for values waiting (0: a send waits for its receiver)
+  int64_t *items;            // a ring of slots
+  int64_t head, len, size;
+  int64_t senders;           // copies of the sender not closed yet: one per task holding it
+  int64_t sent, taken;       // values sent and received so far
+  int64_t waiting;           // receivers waiting (an unbuffered send in a `select` can go)
+  void (*drop)(int64_t);     // drops a value left in it (NULL: nothing to drop)
+} Channel;
+
+// The senders this thread holds a copy of and hasn't closed: the channels
+// it made, or a task's shares (`strata_spawn`).
+static _Thread_local Channel **held;
+static _Thread_local int64_t nheld, capheld;
+
+static void hold_sender(Channel *c) {
+  if (nheld == capheld) held = realloc(held, (size_t)(capheld = capheld ? capheld * 2 : 8) * sizeof *held);
+  held[nheld++] = c;
+}
+
+static _Bool holds_sender(Channel *c) {
+  for (int64_t i = 0; i < nheld; i++)
+    if (held[i] == c) return 1;
+  return 0;
+}
+
+// A test starts holding none.
+static void forget_senders(void) { nheld = 0; }
+
+// Whether this thread held `c`, which it no longer does.
+static _Bool unhold_sender(Channel *c) {
+  for (int64_t i = 0; i < nheld; i++)
+    if (held[i] == c) {
+      held[i] = held[--nheld];
+      return 1;
+    }
+  return 0;
+}
+
 typedef struct Task {
   pthread_t thread;
   void *clo;                  // the closure: its function, its drop, ...
@@ -451,6 +498,9 @@ typedef struct Task {
   size_t printed_len;
   uint64_t seed;
   int64_t steps, *given;
+  Channel **shares;           // the senders it holds a copy of
+  int64_t nshares;
+  _Bool done;                 // finished (set under `chan_lock`, for `select`)
   struct Task *next;
 } Task;
 
@@ -470,6 +520,7 @@ static void *task_main(void *arg) {
   counting = t->counting;
   steps = t->steps;
   given = t->given;
+  for (int64_t i = 0; i < t->nshares; i++) hold_sender(t->shares[i]);
   sigjmp_buf here;
   trap = &here;
   if (sigsetjmp(here, 1) == 0) {
@@ -486,6 +537,23 @@ static void *task_main(void *arg) {
   t->printed_len = printed_len;
   printed = NULL;
   printed_len = printed_cap = 0;
+  // a copy of a sender it didn't close is closed now (its receivers would
+  // wait forever), and that is a fault
+  pthread_mutex_lock(&chan_lock);
+  _Bool unclosed = nheld > 0;
+  for (int64_t i = 0; i < nheld; i++) held[i]->senders--;
+  t->done = 1;
+  pthread_cond_broadcast(&chan_cond);
+  pthread_mutex_unlock(&chan_lock);
+  free(held);
+  held = NULL;
+  nheld = capheld = 0;
+  if (unclosed && !t->faulted) {
+    t->faulted = 1;
+    t->kind = 4;
+    t->msg = str_c("a task ended without closing its copy of a sender (`tx.close()`)");
+    t->stack = strdup("");
+  }
   free_alt_stack();
   return NULL;
 }
@@ -501,7 +569,7 @@ void *strata_scope_begin(void) {
 // A task of the innermost scope open on this thread: the checker allows a
 // `spawn` only inside a `scope` (a lambda's included, as a comprehension's
 // body, which runs there).
-void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *)) {
+void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *), Channel **shares, int64_t nshares) {
   TaskScope *s = open_scopes;
   if (!s) strata_fault(4, str_c("`spawn` ran outside its `scope` (a closure that spawns was called after the scope ended)"));
   Task *t = calloc(1, sizeof *t);
@@ -516,6 +584,18 @@ void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *))
   t->counting = counting;
   t->steps = steps;
   t->given = given;
+  // a copy of each sender it captured that this thread still holds: the
+  // task's, to close (one this thread closed stays closed for it too)
+  if (nshares) {
+    t->shares = malloc((size_t)nshares * sizeof *shares);
+    pthread_mutex_lock(&chan_lock);
+    for (int64_t i = 0; i < nshares; i++)
+      if (holds_sender(shares[i])) {
+        shares[i]->senders++;
+        t->shares[t->nshares++] = shares[i];
+      }
+    pthread_mutex_unlock(&chan_lock);
+  }
   if (__atomic_fetch_add(&live_tasks, 1, __ATOMIC_RELAXED) == 0) __atomic_store_n(&threaded, 1, __ATOMIC_RELAXED);
   pthread_attr_t a;
   pthread_attr_init(&a);
@@ -528,6 +608,13 @@ void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *))
     t->faulted = 1;
     t->kind = 6;
     t->msg = str_c("no thread for a task (too many at once)");
+    t->done = 1;
+    for (int64_t i = 0; i < t->nshares; i++) {
+      pthread_mutex_lock(&chan_lock);
+      t->shares[i]->senders--;
+      pthread_cond_broadcast(&chan_cond);
+      pthread_mutex_unlock(&chan_lock);
+    }
   }
   if (s->last) s->last->next = t;
   else s->first = t;
@@ -554,6 +641,7 @@ static void release_scope(TaskScope *s) {
     if (!t->faulted && t->drop) t->drop(&t->out);
     if (strata_release(t->clo)) ((void (*)(void *))(uintptr_t)((int64_t *)t->clo)[1])(t->clo);
     free(t->stack);
+    free(t->shares);
     free(t);
   }
   free(s);
@@ -583,6 +671,151 @@ void *strata_await(Task *t) {
     fault_at(t->kind, t->msg, st ? st : strdup(""));
   }
   return &t->out;
+}
+
+// ---- channels (`channel()`, `send`, `recv`, `close`, `select`) ----
+//
+// A channel holds what was sent (moved in as slots) until it is received
+// (moved out). It has ended once every copy of its sender is closed: then
+// `recv` gives the values left, then nothing.
+
+static void push_item(Channel *c, int64_t v) {
+  if (c->len == c->size) {
+    int64_t size = c->size ? c->size * 2 : 4, *items = malloc((size_t)size * sizeof *items);
+    for (int64_t i = 0; i < c->len; i++) items[i] = c->items[(c->head + i) % c->size];
+    free(c->items);
+    c->items = items;
+    c->head = 0;
+    c->size = size;
+  }
+  c->items[(c->head + c->len++) % c->size] = v;
+  c->sent++;
+}
+
+static int64_t pop_item(Channel *c) {
+  int64_t v = c->items[c->head];
+  c->head = (c->head + 1) % c->size;
+  c->len--;
+  c->taken++;
+  return v;
+}
+
+// A new channel, held twice (its sender and its receiver), and a copy of
+// its sender for this thread.
+Channel *strata_channel_new(int64_t cap, void (*drop)(int64_t)) {
+  if (cap < 0) strata_fault(4, str_c("a channel's buffer can't be negative"));
+  Channel *c = strata_alloc(sizeof(Channel));
+  memset(c, 0, sizeof *c);
+  *count_of(c) = 2;
+  c->cap = cap;
+  c->drop = drop;
+  c->senders = 1;
+  hold_sender(c);
+  return c;
+}
+
+// One end fewer: the last drops what is still in it.
+void strata_channel_drop(Channel *c) {
+  if (!strata_release(c)) return;
+  if (c->drop)
+    for (int64_t i = 0; i < c->len; i++) c->drop(c->items[(c->head + i) % c->size]);
+  free(c->items);
+  strata_free(c);
+}
+
+void strata_channel_send(Channel *c, int64_t v) {
+  pthread_mutex_lock(&chan_lock);
+  if (c->senders == 0) {
+    pthread_mutex_unlock(&chan_lock);
+    if (c->drop) c->drop(v);
+    strata_fault(4, str_c("`send` on a channel that has ended (every copy of its sender was closed)"));
+  }
+  while (c->cap > 0 && c->len >= c->cap) pthread_cond_wait(&chan_cond, &chan_lock);
+  push_item(c, v);
+  int64_t mine = c->sent;
+  pthread_cond_broadcast(&chan_cond);
+  // unbuffered: until a receiver took it
+  while (c->cap == 0 && c->taken < mine) pthread_cond_wait(&chan_cond, &chan_lock);
+  pthread_mutex_unlock(&chan_lock);
+}
+
+// The next value (into `out`), or 0 once the channel has ended and is empty.
+_Bool strata_channel_recv(Channel *c, int64_t *out) {
+  pthread_mutex_lock(&chan_lock);
+  c->waiting++;
+  pthread_cond_broadcast(&chan_cond);
+  while (c->len == 0 && c->senders > 0) pthread_cond_wait(&chan_cond, &chan_lock);
+  c->waiting--;
+  _Bool got = c->len > 0;
+  if (got) *out = pop_item(c);
+  pthread_cond_broadcast(&chan_cond);
+  pthread_mutex_unlock(&chan_lock);
+  return got;
+}
+
+void strata_channel_close(Channel *c) {
+  if (!unhold_sender(c)) strata_fault(4, str_c("`close` of a sender this task doesn't hold, or has closed already"));
+  pthread_mutex_lock(&chan_lock);
+  c->senders--;
+  pthread_cond_broadcast(&chan_cond);
+  pthread_mutex_unlock(&chan_lock);
+}
+
+// What a `select` arm waits on: kind 0 `recv` (`ok` says whether a value
+// came, into `slot`), 1 `send` (of `slot`), 2 `await` (a task).
+typedef struct {
+  int64_t kind;
+  void *target;
+  int64_t slot, ok;
+} SelectOp;
+
+// Wait until one of `ops` can happen, do it, and say which. Arms are looked
+// at from a different one each time (from this thread's numbers), so none
+// is starved.
+int64_t strata_select(SelectOp *ops, int64_t n) {
+  pthread_mutex_lock(&chan_lock);
+  for (int64_t i = 0; i < n; i++)
+    if (ops[i].kind == 1 && ((Channel *)ops[i].target)->senders == 0) {
+      pthread_mutex_unlock(&chan_lock);
+      strata_fault(4, str_c("`send` on a channel that has ended (every copy of its sender was closed)"));
+    }
+  rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+  int64_t start = (int64_t)((rng >> 33) % (uint64_t)n);
+  for (int64_t i = 0; i < n; i++)
+    if (ops[i].kind == 0) ((Channel *)ops[i].target)->waiting++;
+  pthread_cond_broadcast(&chan_cond);
+  int64_t chosen = -1;
+  while (chosen < 0) {
+    for (int64_t k = 0; k < n && chosen < 0; k++) {
+      int64_t i = (start + k) % n;
+      SelectOp *op = &ops[i];
+      if (op->kind == 0) {
+        Channel *c = op->target;
+        if (c->len > 0) {
+          op->slot = pop_item(c);
+          op->ok = 1;
+          chosen = i;
+        } else if (c->senders == 0) {
+          op->ok = 0;
+          chosen = i;
+        }
+      } else if (op->kind == 1) {
+        Channel *c = op->target;
+        if ((c->cap > 0 && c->len < c->cap) || (c->cap == 0 && c->waiting > c->len)) {
+          push_item(c, op->slot);
+          chosen = i;
+        }
+      } else if (((Task *)op->target)->done) {
+        chosen = i;
+      }
+    }
+    if (chosen < 0) pthread_cond_wait(&chan_cond, &chan_lock);
+  }
+  for (int64_t i = 0; i < n; i++)
+    if (ops[i].kind == 0) ((Channel *)ops[i].target)->waiting--;
+  pthread_cond_broadcast(&chan_cond);
+  pthread_mutex_unlock(&chan_lock);
+  return chosen;
 }
 
 // After a fault caught by a trap: the tasks of every scope still open finish.

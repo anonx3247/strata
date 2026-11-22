@@ -348,6 +348,8 @@ pub struct Vc<'a> {
     /// For each loop being run, innermost last: the path and the variables
     /// at each `break`, merged into the state after the loop.
     breaks: Vec<Vec<(Vec<T>, Vec<HashMap<String, Val>>)>>,
+    /// The same at each `continue`: where a pass ends early.
+    continues: Vec<Vec<(Vec<T>, Vec<HashMap<String, Val>>)>>,
     /// Declared types of variables (`let x: T`, `mut p: T`): they hold for
     /// the variable's whole life, so every assignment is checked against
     /// them. Kept by name; a shadowed name keeps all its declarations, which
@@ -522,6 +524,7 @@ impl<'a> Vc<'a> {
             relied_on: Default::default(),
             returns: vec![],
             breaks: vec![],
+            continues: vec![],
             declared: HashMap::default(),
             matched: vec![],
             lists: vec![],
@@ -2662,6 +2665,8 @@ impl<'a> Vc<'a> {
             }
             Expr::Lambda(..) => self.fn_value(e, vec![]).0,
             Expr::Mock(t) => Val::Opaque(format!("`mock {}`", crate::printer::ty(t))),
+            // which arm runs depends on timing
+            Expr::Select(_) => Val::Opaque("which arm of a `select` runs depends on timing".into()),
             // a task's result is its expression's value: `await spawn e` is `e`
             Expr::Mut(x) | Expr::Comptime(x) | Expr::Scope(x) | Expr::Spawn(x) | Expr::Await(x) => self.eval(x),
             Expr::Interp(parts) => {
@@ -3717,11 +3722,24 @@ impl<'a> Vc<'a> {
                 }
                 self.dead = true;
             }
-            Stmt::Continue => self.dead = true,
+            Stmt::Continue => {
+                if !self.dead {
+                    if let Some(frame) = self.continues.last_mut() {
+                        frame.push((self.pc.clone(), self.scopes.clone()));
+                    }
+                }
+                self.dead = true;
+            }
+            // (checked on entry and after every pass: `written_on_entry`, `written_kept`)
+            Stmt::Invariant(_) => {}
             Stmt::While(c, body) => {
+                let head = format!("while {}", crate::printer::expr(c, 0));
+                let written: Vec<Expr> = crate::types::loop_invariants(body).cloned().collect();
+                self.written_on_entry(&written, &head);
                 let entry = self.entry_values(body, c);
-                let invariants = self.infer_invariants(c, body, &entry);
+                let invariants = self.infer_invariants(c, body, &entry, &written);
                 self.havoc_loop(body, Some(c));
+                self.assume_written(&written);
                 // what every pass keeps holds at the head; what the declared
                 // types already say there is left out (it says nothing more)
                 let terms: Vec<Option<T>> = invariants.iter().map(|(_, cand)| self.candidate_value(cand, &entry)).collect();
@@ -3733,24 +3751,16 @@ impl<'a> Vc<'a> {
                 for (((shown, _), t), implied) in invariants.iter().zip(terms).zip(implied) {
                     let Some(t) = t.filter(|_| !implied) else { continue };
                     self.assume(t);
-                    self.invariants.push(format!("invariant of `while {}`: {shown} (inferred)", crate::printer::expr(c, 0)));
+                    self.invariants.push(format!("invariant of `{head}`: {shown} (inferred)"));
                 }
                 self.breaks.push(vec![]);
+                self.continues.push(vec![]);
                 let cv = self.eval(c);
                 let cv = self.as_bool(&cv);
                 let saved = self.scopes.clone();
                 let n = self.pc.len();
                 self.pc.push(cv.clone());
                 // candidate bounds, from the condition's comparisons, before the pass
-                let has_continue = {
-                    let mut found = false;
-                    crate::ast::walk(body, |x| {
-                        if let Expr::Block(ss, _) = x {
-                            found |= ss.iter().any(|s| matches!(s, Stmt::Continue));
-                        }
-                    });
-                    found
-                };
                 let measures = bounds(c);
                 let before: Vec<(String, T)> = measures
                     .iter()
@@ -3762,21 +3772,29 @@ impl<'a> Vc<'a> {
                     })
                     .collect();
                 self.eval(body);
-                let mut info = LoopInfo { what: format!("while {}", crate::printer::expr(c, 0)), candidates: vec![], always_exits: self.dead, reason: None };
-                if has_continue {
-                    info.reason = Some(format!("the loop `{}` uses `continue`", info.what));
-                } else if !self.dead {
-                    // after the pass: either the loop is over, or the bound went down
-                    self.spec += 1;
-                    let again = self.eval(c);
-                    self.spec -= 1;
-                    let again = self.as_bool(&again);
-                    for (m, (shown, b)) in measures.iter().zip(before) {
+                let ends = self.pass_ends(saved.len());
+                self.written_kept(&written, &head, &ends);
+                let mut info = LoopInfo { what: head.clone(), candidates: vec![], always_exits: ends.is_empty(), reason: None };
+                if !ends.is_empty() {
+                    // after every pass (the body's end, each `continue`): either the loop is over, or the bound went down
+                    let (pc, scopes) = (std::mem::take(&mut self.pc), self.scopes.clone());
+                    let mut goals = vec![vec![]; measures.len()];
+                    for (p, s, _) in &ends {
+                        (self.pc, self.scopes) = (p.clone(), s.clone());
                         self.spec += 1;
-                        let v = self.eval(m);
+                        let again = self.eval(c);
+                        let again = self.as_bool(&again);
+                        for (k, (m, (_, b))) in measures.iter().zip(&before).enumerate() {
+                            let v = self.eval(m);
+                            let a = self.as_int(&v);
+                            goals[k].push(implies(&and(&p[n + 1..]), &format!("(or (not {again}) (and (>= {b} 0) (< {a} {b})))")));
+                        }
                         self.spec -= 1;
-                        let a = self.as_int(&v);
-                        let k = self.oblige_termination(format!("loop bound `{shown}`"), format!("(or (not {again}) (and (>= {b} 0) (< {a} {b})))"));
+                    }
+                    (self.pc, self.scopes) = (pc, scopes);
+                    self.pc.truncate(n + 1);
+                    for ((shown, _), g) in before.into_iter().zip(goals) {
+                        let k = self.oblige_termination(format!("loop bound `{shown}`"), and(&g));
                         info.candidates.push((shown, k));
                     }
                 }
@@ -3790,8 +3808,13 @@ impl<'a> Vc<'a> {
             }
             Stmt::For(p, xs, body) => {
                 let xv = self.eval(xs);
+                let head = format!("for {} in {}", crate::printer::pat(p), crate::printer::expr(xs, 0));
+                let written: Vec<Expr> = crate::types::loop_invariants(body).cloned().collect();
+                self.written_on_entry(&written, &head);
                 self.havoc_loop(body, None);
+                self.assume_written(&written);
                 self.breaks.push(vec![]);
+                self.continues.push(vec![]);
                 let saved = self.scopes.clone();
                 let n = self.pc.len();
                 let x = match &xv {
@@ -3810,19 +3833,32 @@ impl<'a> Vc<'a> {
                     self.bind(&x, b);
                 }
                 self.eval(body);
+                let ends = self.pass_ends(saved.len());
+                self.written_kept(&written, &head, &ends);
                 self.pc.truncate(n);
                 self.dead = false;
                 self.scopes = saved;
                 // after the last element the loop's variables are any values
-                // of their types, which covers the state at a `break` too
-                self.breaks.pop();
+                // of their types (and invariants), which covers the state at
+                // a `break` too, unless invariants were assumed: then afresh
+                let breaks = self.breaks.pop().unwrap_or_default();
+                if !breaks.is_empty() && !written.is_empty() {
+                    self.havoc_loop(body, None);
+                }
             }
             Stmt::Loop(body) => {
+                let head = "loop".to_string();
+                let written: Vec<Expr> = crate::types::loop_invariants(body).cloned().collect();
+                self.written_on_entry(&written, &head);
                 self.havoc_loop(body, None);
+                self.assume_written(&written);
                 self.breaks.push(vec![]);
+                self.continues.push(vec![]);
                 let saved = self.scopes.clone();
                 let n = self.pc.len();
                 self.eval(body);
+                let ends = self.pass_ends(saved.len());
+                self.written_kept(&written, &head, &ends);
                 self.pc.truncate(n);
                 self.dead = false;
                 self.scopes = saved;
@@ -3898,6 +3934,59 @@ impl<'a> Vc<'a> {
         }
     }
 
+    /// Where a pass of the innermost loop ended: its body's end (unless no
+    /// path reaches it) and each `continue` (`true`), with their paths and
+    /// their variables down to `depth` scopes (the loop's own).
+    fn pass_ends(&mut self, depth: usize) -> Vec<(Vec<T>, Vec<HashMap<String, Val>>, bool)> {
+        let mut ends: Vec<_> = self.continues.pop().unwrap_or_default().into_iter().map(|(p, s)| (p, s, true)).collect();
+        if !self.dead {
+            ends.insert(0, (self.pc.clone(), self.scopes.clone(), false));
+        }
+        for (_, s, _) in &mut ends {
+            s.truncate(depth);
+        }
+        ends
+    }
+
+    /// A loop's written invariants hold before it.
+    fn written_on_entry(&mut self, written: &[Expr], head: &str) {
+        for x in written {
+            let v = self.eval(x);
+            let b = self.as_bool(&v);
+            self.oblige(format!("invariant `{}` on entry to `{head}`", crate::printer::expr(x, 0)), |_| b);
+        }
+    }
+
+    /// At the loop's head: its written invariants hold (they are checked
+    /// on entry and after every pass).
+    fn assume_written(&mut self, written: &[Expr]) {
+        for x in written {
+            self.spec += 1;
+            let v = self.eval(x);
+            self.spec -= 1;
+            let b = self.as_bool(&v);
+            self.assume(b);
+        }
+    }
+
+    /// A loop's written invariants hold where each pass ends.
+    fn written_kept(&mut self, written: &[Expr], head: &str, ends: &[(Vec<T>, Vec<HashMap<String, Val>>, bool)]) {
+        if written.is_empty() {
+            return;
+        }
+        let (pc, scopes, dead) = (std::mem::take(&mut self.pc), self.scopes.clone(), self.dead);
+        for (p, s, at_continue) in ends {
+            (self.pc, self.scopes, self.dead) = (p.clone(), s.clone(), false);
+            for x in written {
+                let v = self.eval(x);
+                let b = self.as_bool(&v);
+                let at = if *at_continue { "at a `continue` in" } else { "after a pass of" };
+                self.oblige(format!("invariant `{}` {at} `{head}`", crate::printer::expr(x, 0)), |_| b);
+            }
+        }
+        (self.pc, self.scopes, self.dead) = (pc, scopes, dead);
+    }
+
     /// After a loop: the state is the loop head's when it is left normally
     /// (under `normal`, the condition being false), or the state at one of its
     /// `break`s. `n` is the length of the path before the loop, which every
@@ -3947,19 +4036,10 @@ impl<'a> Vc<'a> {
     /// pass runs and those that can be false after it are dropped, until a
     /// pass drops nothing. What remains holds on entry and after every pass,
     /// so at the head of the loop, every time. Shown, with the candidate.
-    fn infer_invariants(&mut self, c: &Expr, body: &Expr, entry: &[(String, String, Val)]) -> Vec<(String, Candidate)> {
+    fn infer_invariants(&mut self, c: &Expr, body: &Expr, entry: &[(String, String, Val)], written: &[Expr]) -> Vec<(String, Candidate)> {
         let Some(solver) = self.solver.clone() else { return vec![] };
-        let has_continue = {
-            let mut found = false;
-            crate::ast::walk(body, |x| {
-                if let Expr::Block(ss, _) = x {
-                    found |= ss.iter().any(|s| matches!(s, Stmt::Continue));
-                }
-            });
-            found
-        };
-        // (a `continue` ends a pass whose state isn't kept; inner loops of a trial infer nothing)
-        if has_continue || self.trial > 0 || self.spec > 0 || self.dead {
+        // (inner loops of a trial infer nothing)
+        if self.trial > 0 || self.spec > 0 || self.dead {
             return vec![];
         }
         let cands = self.invariant_candidates(c, entry);
@@ -3981,6 +4061,12 @@ impl<'a> Vc<'a> {
             self.trial += 1;
             self.spec += 1;
             self.havoc_loop(body, Some(c));
+            // (the written invariants are proven on their own, with these: together they hold)
+            for x in written {
+                let v = self.eval(x);
+                let b = self.as_bool(&v);
+                self.pc.push(b);
+            }
             for (k, cand) in cands.iter().enumerate() {
                 if alive[k] {
                     if let Some(t) = self.candidate_value(cand, entry) {
@@ -3991,16 +4077,28 @@ impl<'a> Vc<'a> {
             let cv = self.eval(c);
             let cv = self.as_bool(&cv);
             self.pc.push(cv);
+            let base = self.pc.len();
+            let depth = self.scopes.len();
             self.breaks.push(vec![]);
+            self.continues.push(vec![]);
             self.eval(body);
             self.breaks.pop();
-            let after: Vec<Option<T>> = if self.dead {
-                // every path left the loop: nothing to keep
-                cands.iter().map(|_| Some("true".to_string())).collect()
-            } else {
-                cands.iter().enumerate().map(|(k, cand)| if alive[k] { self.candidate_value(cand, entry) } else { None }).collect()
-            };
-            let pc_after = self.pc.clone();
+            // kept where every pass ends (none: every path left the loop, nothing to keep)
+            let ends = self.pass_ends(depth);
+            let mut pc_after = std::mem::take(&mut self.pc);
+            pc_after.truncate(base);
+            let mut after: Vec<Option<T>> = cands.iter().map(|_| Some("true".to_string())).collect();
+            for (p, s, _) in &ends {
+                (self.pc, self.scopes) = (p.clone(), s.clone());
+                for (k, cand) in cands.iter().enumerate() {
+                    let v = if alive[k] { self.candidate_value(cand, entry) } else { None };
+                    after[k] = match (after[k].take(), v) {
+                        (Some(acc), Some(v)) => Some(and(&[acc, implies(&and(&p[base..]), &v)])),
+                        _ => None,
+                    };
+                }
+            }
+            self.pc = pc_after.clone();
             self.spec -= 1;
             self.trial -= 1;
             self.returns = returns;

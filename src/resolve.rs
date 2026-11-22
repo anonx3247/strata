@@ -1847,6 +1847,7 @@ impl Rw<'_> {
                         Stmt::Loop(b) => Stmt::Loop(self.expr(b)),
                         Stmt::Break => Stmt::Break,
                         Stmt::Continue => Stmt::Continue,
+                        Stmt::Invariant(x) => Stmt::Invariant(self.expr(x)),
                         Stmt::For(p, it, b) => {
                             let it = self.expr(it);
                             self.push(&[]);
@@ -1877,6 +1878,19 @@ impl Rw<'_> {
             Expr::Scope(x) => Expr::Scope(Box::new(self.expr(x))),
             Expr::Spawn(x) => Expr::Spawn(Box::new(self.expr(x))),
             Expr::Await(x) => Expr::Await(Box::new(self.expr(x))),
+            Expr::Select(arms) => Expr::Select(
+                arms.iter()
+                    .map(|a| {
+                        let op = self.expr(&a.op);
+                        // the result's name is bound in the arm
+                        let names: Vec<Symbol> = a.name.iter().copied().collect();
+                        self.push(&names);
+                        let body = self.expr(&a.body);
+                        self.pop();
+                        SelectArm { comments: a.comments.clone(), op, name: a.name, body }
+                    })
+                    .collect(),
+            ),
             _ => e.clone(),
         }
     }

@@ -1,0 +1,4 @@
+2
+fault (Assert): invariant failed: i < 3 (left of < = 3, right = 3)
+
+--- exit 101
