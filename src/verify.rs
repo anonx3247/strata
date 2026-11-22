@@ -293,19 +293,19 @@ impl Verdict {
 }
 
 /// Why a method is trusted rather than checked: a mock's (its tests check
-/// it) or a capability's own (it reaches the outside world). Code that calls
+/// it) or a capability's own (the runtime's, or the outside world's). Code that calls
 /// foreign code (`extern c`) or takes a capability is checked like any
 /// other: the foreign function's or the capability's contract is assumed
 /// at the call, and compiled code checks it there.
 fn foreign(env: &Env, _f: &FnDecl, imp: Option<&ImplDecl>) -> Option<String> {
-    // a capability's own code reaches the outside world; one passed in can't be made here
+    // a capability's own code is the runtime's; one passed in can't be made here
     if let Some(i) = imp {
         let head = crate::types::texpr_head(&i.for_type);
         if env.types.get(&Symbol::new(&head)).is_some_and(|t| t.mock) {
             return Some(format!("`{}` is a mock, for tests only: its methods are checked by the tests that use it", crate::names::short(&head)));
         }
         if env.capabilities.contains(&Symbol::new(&head)) {
-            return Some(format!("`{}` is a capability: it reaches the outside world (only `strata run` gives one)", crate::names::short(&head)));
+            return Some(format!("`{}` is a capability", crate::names::short(&head)));
         }
     }
     None
