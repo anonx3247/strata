@@ -242,7 +242,7 @@ fn average(xs: List[Int]) -> Int {
 
 - **proven** (`✓`): the SMT solver proved every check. `--checks` lists them.
 - **fuzzed** (`~`): some checks could not be proven, so the function was run on generated inputs and nothing failed. Each unproven check says why, for example *depends on `fold` is not modelled*.
-- **failed** (`✗`): a counterexample. When the solver finds one, it is run in the interpreter first, and reported only if it really fails. Otherwise the fuzzer looks for one.
+- **failed** (`✗`): a counterexample. When the solver finds one, it is run (compiled) first, and reported only if it really fails. Otherwise the fuzzer looks for one.
 - **incomplete** (`○`): the function still has a hole.
 - **assumed** (`≈`): trusted, not checked. These are capabilities (`capability ...`: std's `Terminal`, `Disk` and `Process`, and a program's own) and the code that takes one, which only the runtime can give, and code that reaches C through `extern c`: they call the system, so `verify` never runs them. Their contracts are taken as true, and callers are still checked against those contracts as usual.
 

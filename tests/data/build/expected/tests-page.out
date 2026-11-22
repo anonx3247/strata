@@ -1,9 +1,9 @@
 ✓ text is escaped
-✓ attributes are escaped and events carry their message as JSON
 ✓ void elements have no closing tag
 ✓ style sheets are not escaped but can't close their element
 ✓ a page
 ✓ requests
+✓ attributes are escaped and events carry only their handler's number
 
 6 passed, 0 failed
 

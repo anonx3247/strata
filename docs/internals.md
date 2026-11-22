@@ -13,8 +13,6 @@
 | `src/bench.rs` | front-end timings on the examples: `cargo test --release bench -- --ignored --nocapture` |
 | `src/printer.rs` | tree → text (canonical form, used for hashing) |
 | `src/types.rs`, `src/types/` | type inference, traits, holes (`elaborate_typed`: the program as it runs, with each expression's inferred type, for the compiler); `env.rs` (what is declared), `exhaustive.rs` (exhaustiveness, unreachable arms), `ints.rs` / `reals.rs` (value sets of refinements) |
-| `src/interp.rs` | interpreter: trait dispatch, mocks, runtime contracts, JSON in/out, traces |
-| `src/generate.rs` | value generators derived from types and refinements (used by mocks and fuzzing) |
 | `src/smt.rs`, `src/smt/regexes.rs` | SMT verification: symbolic execution of bodies into proof obligations, Z3 queries, models back to values; regexes translated to SMT-LIB |
 | `src/termination.rs` | termination: call graph, loop bounds, structural and integer recursion; which helpers contracts may see through |
 | `src/verify.rs` | compile-time refinement checks on literals; the layered check (prove, confirm counterexamples, fuzz the rest); contract fuzzing |
@@ -32,4 +30,4 @@
 | `src/stdlib.rs`, `std/` | the standard library (Strata), built into the binary; the native `host_*` operations it alone can call |
 | `src/view.rs` | level-of-detail projections and selectors |
 | `src/ui.rs`, `src/ui/index.html` | `strata ui`: the live viewer (a std-only HTTP server and one page) |
-| `src/serve.rs`, `src/serve/app.js` | `strata serve`: a std-only HTTP server calling the program's `handle` for each request, or running it as an app (`init` / `update` / `view`, sessions in memory, and the page's script) |
+| `src/serve.rs`, `src/serve/app.js` | `strata serve`: a std-only HTTP server calling the program's `handle` for each request, or running it as an app (`init` / `update` / `view`, sessions' models in compiled memory, and the page's script); the program compiled once with the server's functions (`llvm::compile_calls`, `jit::with_calls`) |
