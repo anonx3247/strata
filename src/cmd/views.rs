@@ -189,6 +189,14 @@ pub fn header(args: &Args) -> Result<bool, String> {
     let file = args.pos.get(1).ok_or("usage: strata header <FILE.strata>")?;
     let bytes = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
     // each definition's tree as a `std.ast` value, one per line (a bundle's too)
+    // the definitions as the printer writes them, as stored (not shortened
+    // to their written form, which `render` shows): what `std.ast.text` is
+    // tested against
+    if args.flag("--text") {
+        let decls = binary::read(&bytes).map_err(|e| format!("{file}: {e}"))?.program.decls;
+        print!("{}\n", decls.iter().map(crate::printer::decl).collect::<Vec<_>>().join("\n\n"));
+        return Ok(true);
+    }
     if args.flag("--tree") {
         for d in binary::read(&bytes).map_err(|e| format!("{file}: {e}"))?.program.decls {
             println!("{}", crate::ast_value::decl(&d));

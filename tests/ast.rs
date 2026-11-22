@@ -4,7 +4,8 @@
 //! decoder's trees (as `debug` prints them) are `strata header --tree`'s,
 //! each definition it re-encodes is the file's bytes, and the hashes it
 //! computes are the header's. Cut or corrupted files are errors, never
-//! crashes. Its SHA-256 (private) agrees with the `sha2` crate.
+//! crashes. Its SHA-256 (private) agrees with the `sha2` crate. And
+//! `std.ast.text` prints every definition as `src/printer.rs` does.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,7 @@ const STRATA: &str = env!("CARGO_BIN_EXE_strata");
 const CHECKER: &str = r#"use std.fs.{Files, Disk}
 use std.process.{Environment, Process}
 use std.ast.binary.{read, read_header, encode_definition, hash, interface_hash, code_hash}
+use std.ast.text.{module_text}
 
 fn tree(bytes: List[Int]) -> Result[List[String], String] {
   Ok(read(bytes)!.decls.map(d -> debug(d)))
@@ -99,6 +101,10 @@ fn main(disk: Disk, process: Process) {
       "tree" => tree(bytes),
       "same" => same(bytes),
       "hashes" => hashes(bytes),
+      "text" => match read(bytes) {
+        Ok(img) => Ok(["=== " + path, module_text(img.decls)]),
+        Err(e) => Err(e),
+      },
       _ => bad(bytes),
     }
     match out {
@@ -191,7 +197,11 @@ fn f(x: Int) -> Int
   mut v: Int = -3
   neg := -x
   big := 99999999999999999999999
-  e := [1000000000000000000000.0, -0.0, 0.1, 0.00000015, 123456789.125, 0.5, -0.0]
+  both := scope {
+    t := spawn x + 1
+    await t
+  }
+  e := [1000000000000000000000.0, 1000000000000000.0, -0.0, 0.1, 0.00000015, 123456789.125, 0.5, -0.0]
   v = v + 1
   while v < 0 {
     v = v + 1
@@ -254,7 +264,7 @@ use e.*
 
 /// What `strata header --tree` of the program above must show: a variant
 /// or a field value of each kind.
-const NODES: &[&str] = &["TypeDef", "FnDef", "TestDef", "TraitDef", "ImplDef", "UseDef", "ExternDef", "CapabilityDef", "Alias", "RecordBody", "SumBody", "NoPayload", "Positional", "RecordPayload", "MemberType", "ExternFn", "ExternType", "Named", "FnType", "UnitType", "Refined", "UnionType", "IntLit", "BigIntLit", "FloatLit", "TupleExpr", "StrLit", "BoolLit", "UnitExpr", "Var(", "Hole(", "ListExpr", "CtorExpr", "Call {", "MethodCall", "FieldOf", "Lambda", "Binary", "Unary", "IsExpr", "IfExpr", "MatchExpr", "MutExpr", "Block {", "MockExpr", "Return(", "Try {", "Except {", "Interp(", "Range {", "Index {", "Comp {", "DictExpr", "SetExpr", "Fallback", "Comptime(", "NoArgs", "PositionalArgs", "RecordArgs", "UpdateArgs", "ListComp", "SetComp", "DictComp", "TextPart", "ValuePart", "Some(FmtSpec", "op: Add", "op: Sub", "op: Mul", "op: Div", "op: Mod", "op: Equal", "op: NotEqual", "op: Less,", "op: LessEq", "op: Greater,", "op: GreaterEq", "op: And", "op: Or", "op: Implies", "op: BitAnd", "op: BitOr", "op: BitXor", "op: Shl", "op: Shr", "op: Neg", "op: Not", "TryResult", "TryOption", "Let {", "VarDecl", "Assign {", "While {", "For {", "Loop(", "Break", "Continue", "ExprStmt", "Assert(", "Comment(", "ComptimeFor", "Wild", "Bind(", "IntPat", "StrPat", "BoolPat", "CtorPattern", "ListPat", "TuplePat", "CondPat", "OrPat", "ForPat", "NoPats", "PositionalPats", "RecordPats", "TypePats", "mocked: true", "Some(Derivable", "compile_time: true", "distinct: true", "e+21", "FloatLit(-0.0)", "e-7", "align: Some", "precision: Some", "items: None", "binding: Some", "rest: Some", "capability: true", "derived: true", "terminating: true", "mutable: true", "default: Some", "inclusive: true", "lo: None"];
+const NODES: &[&str] = &["TypeDef", "FnDef", "TestDef", "TraitDef", "ImplDef", "UseDef", "ExternDef", "CapabilityDef", "Alias", "RecordBody", "SumBody", "NoPayload", "Positional", "RecordPayload", "MemberType", "ExternFn", "ExternType", "Named", "FnType", "UnitType", "Refined", "UnionType", "IntLit", "BigIntLit", "FloatLit", "TupleExpr", "StrLit", "BoolLit", "UnitExpr", "Var(", "Hole(", "ListExpr", "CtorExpr", "Call {", "MethodCall", "FieldOf", "Lambda", "Binary", "Unary", "IsExpr", "IfExpr", "MatchExpr", "MutExpr", "Block {", "MockExpr", "Return(", "Try {", "Except {", "Interp(", "Range {", "Index {", "Comp {", "DictExpr", "SetExpr", "Fallback", "Comptime(", "Scope(", "Spawn(", "Await(", "NoArgs", "PositionalArgs", "RecordArgs", "UpdateArgs", "ListComp", "SetComp", "DictComp", "TextPart", "ValuePart", "Some(FmtSpec", "op: Add", "op: Sub", "op: Mul", "op: Div", "op: Mod", "op: Equal", "op: NotEqual", "op: Less,", "op: LessEq", "op: Greater,", "op: GreaterEq", "op: And", "op: Or", "op: Implies", "op: BitAnd", "op: BitOr", "op: BitXor", "op: Shl", "op: Shr", "op: Neg", "op: Not", "TryResult", "TryOption", "Let {", "VarDecl", "Assign {", "While {", "For {", "Loop(", "Break", "Continue", "ExprStmt", "Assert(", "Comment(", "ComptimeFor", "Wild", "Bind(", "IntPat", "StrPat", "BoolPat", "CtorPattern", "ListPat", "TuplePat", "CondPat", "OrPat", "ForPat", "NoPats", "PositionalPats", "RecordPats", "TypePats", "mocked: true", "Some(Derivable", "compile_time: true", "distinct: true", "e+21", "FloatLit(-0.0)", "e-7", "align: Some", "precision: Some", "items: None", "binding: Some", "rest: Some", "capability: true", "derived: true", "terminating: true", "mutable: true", "default: Some", "inclusive: true", "lo: None"];
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("strata-ast-test-{name}-{}", std::process::id()));
@@ -335,6 +345,38 @@ fn every_module_file_reads_and_writes_as_in_rust() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `std.ast.text` prints each module file's definitions as `src/printer.rs`
+/// does (`strata header FILE --text`), byte for byte.
+fn prints_as_in_rust(check: &str, files: &[PathBuf]) {
+    let paths: Vec<String> = files.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    let mut args = vec!["--file", check, "run", "--", "text"];
+    args.extend(paths.iter().map(|s| s.as_str()));
+    let got = run(&args);
+    let mut wrong = vec![];
+    for (i, p) in paths.iter().enumerate() {
+        let start = format!("=== {p}\n");
+        let from = got.find(&start).unwrap_or_else(|| panic!("no text for {p}:\n{got}")) + start.len();
+        let until = paths.get(i + 1).and_then(|n| got[from..].find(&format!("=== {n}\n")).map(|k| from + k)).unwrap_or(got.len());
+        // (`print` ends the text with one more newline)
+        let strata = &got[from..until];
+        let want = run(&["header", p, "--text"]) + "\n";
+        if strata != want {
+            let (g, w): (Vec<&str>, Vec<&str>) = (strata.lines().collect(), want.lines().collect());
+            let at = g.iter().zip(&w).position(|(a, b)| a != b).unwrap_or(g.len().min(w.len()));
+            wrong.push(format!("{p}, line {}:\n  std.ast.text: {:?}\n  Rust:         {:?}", at + 1, g.get(at).unwrap_or(&"(none)"), w.get(at).unwrap_or(&"(none)")));
+        }
+    }
+    assert!(wrong.is_empty(), "{} of {} files print differently:\n{}", wrong.len(), paths.len(), wrong.join("\n"));
+}
+
+#[test]
+fn every_module_file_prints_as_in_rust() {
+    let dir = scratch("print");
+    let files = module_files();
+    prints_as_in_rust(&checker(&dir), &files);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn every_node_reads_and_writes_as_in_rust() {
     let dir = scratch("nodes");
@@ -344,7 +386,9 @@ fn every_node_reads_and_writes_as_in_rust() {
     for n in NODES {
         assert!(tree.contains(n), "the program has no {n}");
     }
-    agree(&checker(&dir), &[file]);
+    let check = checker(&dir);
+    agree(&check, std::slice::from_ref(&file));
+    prints_as_in_rust(&check, &[file]);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
