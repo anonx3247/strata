@@ -312,9 +312,6 @@ fn strings_dicts_and_sets_run_as_interpreted() {
         ("set_element", "fn g(s: Set[Positive]) -> Int { len(s) }\nfn main() -> () { print(g(Set { 1 })) print(g(Set { 3, -2 })) }"),
         ("dict_key", "fn main() { let d: Dict[NonEmptyString, Int] = Dict { \"x\": 1, \"\": 2 } print(d) }"),
         ("set_assigned", "fn main() { mut s: Set[Natural] = Set { 1 } s = insert(s, -1) }"),
-        ("split", "fn main() { print(split(\"abc\", \"\")) }"),
-        ("replace", "fn main() { print(replace(\"abc\", \"\", \"x\")) }"),
-        ("repeat", "fn main() { print(repeat(\"ab\", 3)) print(repeat(\"ab\", -1)) }"),
         ("ord", "fn main() { print(ord(\"a\")) print(ord(\"a\\\"\\n\")) }"),
         ("chr", "fn main() { print(chr(55296)) }"),
         ("string_index", "fn main() { print(\"abc\".graphemes()[2]) print(\"abc\".graphemes()[5]) }"),
@@ -324,6 +321,9 @@ fn strings_dicts_and_sets_run_as_interpreted() {
         let (out, code) = case(&d, name, src);
         assert!(code == 101 && out.contains("fault ("), "{name}: {out}");
     }
+    // `split`, `replace` and `repeat` are total: no argument is wrong
+    let (out, code) = case(&d, "total_strings", "fn main() { print(split(\"abc\", \"\")) print(replace(\"abc\", \"\", \"x\")) print(repeat(\"ab\", 3)) print(repeat(\"ab\", -1)) }");
+    assert_eq!((out.as_str(), code), ("[\"\", \"a\", \"b\", \"c\", \"\"]\nxaxbxcx\nababab\n\n", 0));
 }
 
 const WC_MAIN: &str = r#"fn main() {

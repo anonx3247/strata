@@ -1295,9 +1295,7 @@ impl<'a> Interp<'a> {
             }
             "split" => {
                 let (Str(s), Str(sep)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
-                if sep.is_empty() {
-                    return self.fail(FaultKind::Runtime, "split: empty separator");
-                }
+                // total: an empty separator splits at every character, as Rust's
                 List(s.split(sep.as_str()).map(|p| Str(p.to_string())).collect())
             }
             "trim" => match nx() {
@@ -1531,9 +1529,7 @@ impl<'a> Interp<'a> {
             }
             "replace" => {
                 let (Str(s), Str(from), Str(to)) = (nx(), nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
-                if from.is_empty() {
-                    return self.fail(FaultKind::Runtime, "replace: empty pattern");
-                }
+                // total: an empty pattern is found around every character, as Rust's
                 Str(s.replace(&from, &to))
             }
             "lines" => match nx() {
@@ -1542,10 +1538,11 @@ impl<'a> Interp<'a> {
             },
             "repeat" => {
                 let (Str(s), Int(n)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
-                if n < 0 || (s.len() as i64).saturating_mul(n) > 100_000_000 {
-                    return self.fail(FaultKind::Runtime, format!("repeat: bad count {n}"));
+                // total: no copies for a count below 1
+                if (s.len() as i64).saturating_mul(n) > 100_000_000 {
+                    return self.fail(FaultKind::Limit, "out of memory");
                 }
-                Str(s.repeat(n as usize))
+                Str(s.repeat(n.max(0) as usize))
             }
             "to_upper" | "to_lower" => match nx() {
                 Str(s) => Str(if name == "to_upper" { s.to_uppercase() } else { s.to_lowercase() }),
