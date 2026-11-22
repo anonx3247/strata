@@ -253,6 +253,22 @@ fn loops_forget_variables_changed_anywhere_in_their_body() {
 }
 
 #[test]
+fn every_index_is_checked() {
+    // an index into a list the prover doesn't model as one (`??`'s result, a
+    // closure's) was left unchecked, so `verify` called it proven
+    if !has_solver() {
+        return;
+    }
+    let d = tmp("every-index");
+    let src = "fn first(d: Dict[String, List[Int]]) -> Int {\n  (d.get(\"a\") ?? [])[0]\n}\n\nfn safe(d: Dict[String, List[Int]]) -> Int {\n  xs := d.get(\"a\") ?? [7]\n  if len(xs) > 0 {\n    xs[0]\n  } else {\n    0\n  }\n}\n";
+    save(&d.join("i.strata"), src);
+    let (ok, out) = strata(&["--file", "i.strata", "verify"], &d, None);
+    assert!(!ok && out.contains("✗ first") && out.contains("found by the solver") && !out.contains("bug in the prover"), "{out}");
+    // (not proven yet: a list the prover doesn't model gets a new length at each use)
+    assert!(!out.contains("✗ safe"), "{out}");
+}
+
+#[test]
 fn generators_read_disjunctive_refinements() {
     // without a solver everything is fuzzed: values of `Far` must be generated, not rejected 300 times
     let d = tmp("gen-or");
