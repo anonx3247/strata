@@ -504,8 +504,10 @@ function select(name, scroll = true, record = true) {
   if (record) navPush(name);
   render();
   if (scroll && name) {
-    const el = document.getElementById('card-' + CSS.escape(name));
-    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    // its slice starts with it: back to the top, so the view is read from
+    // there whatever was scrolled to before; in everything, to its card
+    if (S.scope !== 'all' && typeof S.level === 'number') $('#main').scrollTop = 0;
+    else document.getElementById('card-' + CSS.escape(name))?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 }
 
