@@ -101,6 +101,11 @@ type U64 = Int where 0 <= it && it <= 18446744073709551615
 /// program's own, and skipped as the standard library is (by `verify`, the
 /// views). Their names are the prelude's, unqualified.
 pub const PRELUDE_CODE: &str = r#"
+/// Why a supervised task (`spawn supervised e`) ended without a result: the
+/// kind of panic (`Runtime`, `Refinement`, `Requires`, ...), its message, and
+/// the call stack where it happened.
+type Panic = { kind: String, message: String, stack: String }
+
 /// What a `for` loop runs over, besides lists, sets and dicts: `next`
 /// gives the elements one at a time, then `None`.
 trait Iterator[T] {
@@ -3091,9 +3096,17 @@ impl<'a> Checker<'a> {
         let outer = self.task_floor.replace(self.scopes.len());
         let results: Vec<Ty> = arms
             .iter()
-            .map(|a| match self.spawn(&a.op) {
-                Ty::Con(_, mut r) => r.remove(0),
-                t => t,
+            .map(|a| {
+                // `supervised e`: the arm's task is `e`'s, its result a `Result`
+                let (op, supervised) = match &a.op {
+                    Expr::SupervisedSpawn(x) => (&**x, true),
+                    op => (op, false),
+                };
+                let t = match self.spawn(op) {
+                    Ty::Con(_, mut r) => r.remove(0),
+                    t => t,
+                };
+                if supervised { Ty::Con("Result".into(), vec![t, Ty::Con("Panic".into(), vec![])]) } else { t }
             })
             .collect();
         self.task_floor = outer;
@@ -3210,6 +3223,11 @@ impl<'a> Checker<'a> {
             Expr::Tuple(es) => Ty::Con("Tuple".into(), es.iter().map(|e| self.infer(e)).collect()),
             Expr::Comptime(x) => self.infer_at(x, expected),
             Expr::Spawn(x) => self.spawn(x),
+            // a supervised task's panic is its own: awaiting it gives a `Result`
+            Expr::SupervisedSpawn(x) => match self.spawn(x) {
+                Ty::Con(_, mut r) => Ty::Con("Task".into(), vec![Ty::Con("Result".into(), vec![r.remove(0), Ty::Con("Panic".into(), vec![])])]),
+                t => t,
+            },
             Expr::Select(arms) => self.select(arms, expected),
             Expr::Race(arms) => self.race(arms, expected),
             Expr::Await(x) => self.awaited(x),
@@ -5363,7 +5381,7 @@ fn closes(e: &Expr, x: Symbol) -> bool {
     impl crate::ast::Visit for Closes {
         fn expr(&mut self, e: &Expr) {
             match e {
-                Expr::Spawn(_) => return,
+                Expr::Spawn(_) | Expr::SupervisedSpawn(_) => return,
                 // a race arm's left side is a task of its own
                 Expr::Race(arms) => {
                     arms.iter().for_each(|a| self.expr(&a.body));
@@ -5403,7 +5421,7 @@ fn free_vars(e: &Expr) -> Vec<Symbol> {
 pub fn ends_in_spawn(b: &Expr) -> bool {
     match b {
         Expr::Block(_, last) => ends_in_spawn(last),
-        Expr::Spawn(_) => true,
+        Expr::Spawn(_) | Expr::SupervisedSpawn(_) => true,
         _ => false,
     }
 }

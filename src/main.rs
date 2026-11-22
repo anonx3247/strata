@@ -117,10 +117,9 @@ Git:
                                and show .strata files as text in `git diff` and `git log -p`
   sync [BRANCH]                merge BRANCH (default main; origin's if there is a remote)
                                into this branch with the driver, then check; commits the
-                               merge only if `ci` passes
-  ci [--fix]                   what CI requires: every package and script in the repository
-                               checks, exports exist, and every .strata file is in canonical
-                               form, the bytes strata writes for it (--fix rewrites them)
+                               merge only if every package and script checks
+  upgrade                      rewrite every package and script in the repository in the
+                               current binary form (after a change to the format)
 
 Views:
   ui [--port 7777]                the workspace in the browser: agents over ACP, the code
@@ -160,7 +159,9 @@ Running:
                                PATH is a .strata file or a package folder (or --file).
                                It is compiled to machine code in memory (LLVM); what
                                can't be compiled yet is an error saying why.
-                               --trace prints each call and return to stderr
+                               --trace prints each call and return to stderr;
+                               the checks the last `verify` proved are left out
+                               (--all-checks keeps them; `build` too)
   serve [PATH] [--port N]      serve the web: each request is passed to the program's
                                `fn handle(req: Request) -> Response` (std.http), which may
                                also ask for Console and capabilities (default port 8000);
@@ -175,7 +176,7 @@ Running:
                                can't be compiled yet fails, saying why); --with-deps: also
                                those of what it imports (std, dependencies), which are
                                otherwise tested on their own
-  build [PATH] [-o OUT] [--emit-llvm]
+  build [PATH] [-o OUT] [--emit-llvm] [--all-checks] [--no-verify]
                                compile the program to a native executable, through LLVM
                                (needs clang; STRATA_CC chooses another): `main` takes no
                                parameters yet, and only part of the language compiles
@@ -247,12 +248,22 @@ fn read_sources(path: &str) -> Result<Program, String> {
 }
 
 fn load(args: &Args) -> Result<Source, String> {
+    // commands that write code load a package whose settings may name what they are about to write
+    let writes = matches!(args.pos.first().map(|s| s.as_str()), Some("add" | "edit" | "rename" | "move" | "status" | "done" | "abort"));
     if let Some(f) = args.val("--file") {
-        return Ok(Source::File(read_sources(f)?));
+        let p = read_sources(f)?;
+        if !writes {
+            package::check_settings(std::path::Path::new(f), &p)?;
+        }
+        return Ok(Source::File(p));
     }
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let root = Codebase::find(&cwd).ok_or("no package here (no strata.toml in this folder or above: run `strata init`, or pass --file)")?;
-    Ok(Source::Db(Codebase::open(&root)?))
+    let cb = Codebase::open(&root)?;
+    if !writes {
+        package::check_settings(&root, &cb.program)?;
+    }
+    Ok(Source::Db(cb))
 }
 
 /// Full static check: types, exhaustiveness, then literal refinements.
@@ -277,6 +288,24 @@ fn print_errors(rep: &types::CheckReport) {
     for e in &rep.errors {
         eprintln!("error in {}: {}", e.decl, e.msg);
     }
+}
+
+/// Where `verify` keeps what it proved of `src` for `build` (a script's
+/// by its path `file`).
+fn proofs_dir(src: &Source, file: Option<&str>) -> Option<std::path::PathBuf> {
+    match src {
+        Source::Db(cb) => Some(cb.proofs_dir()),
+        Source::File(_) => store::script_proofs_dir(file?),
+    }
+}
+
+/// What `build` and `run` leave out of `src`'s compiled code: the checks the
+/// last `verify` proved, for code unchanged since (none with `--all-checks`).
+fn proofs_for(src: &Source, file: Option<&str>, args: &Args) -> HashMap<String, llvm::Proofs> {
+    if args.flag("--all-checks") {
+        return HashMap::default();
+    }
+    proofs_dir(src, file).map(|d| store::current_proofs(src.program(), &d)).unwrap_or_default()
 }
 
 fn verdicts_for(src: &Source) -> HashMap<String, String> {
@@ -314,7 +343,7 @@ fn run() -> Result<bool, String> {
         "resolve" => cmd::resolve(&args),
         "setup-git" => cmd::setup_git(),
         "sync" => cmd::sync(&args),
-        "ci" => cmd::ci(args.flag("--fix")),
+        "upgrade" => cmd::upgrade(),
         "log" => cmd::log(&args, json_out),
         "ui" => cmd::ui(&args),
         "builtins" => cmd::builtins(json_out),

@@ -331,7 +331,7 @@ fn package_verify_policies() {
     assert!(out.contains("termination: measure (n) goes down at recursive call 1") && out.contains("termination: measure (n) goes down at recursive call 2"), "{out}");
     // a rule must name a module of the package
     std::fs::write(d.join("strata.toml"), "name = \"pol\"\n\n[verify]\nproven = [\"nope\"]\n").unwrap();
-    let (ok, out) = strata(&["ci"], &d, None);
+    let (ok, out) = strata(&["check"], &d, None);
     assert!(!ok && out.contains("[verify] proven names `nope`, which is not a module of this package"), "{out}");
 }
 
@@ -422,6 +422,86 @@ fn wrong(n: Natural) -> Int
     // `lo <= hi` keeps `xs[mid]` in range
     assert!(out.contains("✓ search ") && out.contains("invariant of `while lo < hi`: lo <= hi (inferred)"), "{out}");
     assert!(out.contains("✗ wrong") && out.contains("found by the solver"), "an invariant never hides a bug: {out}");
+}
+
+/// `build` verifies what changed since it was last verified, then leaves
+/// out the runtime checks proven: a function's own (`ensures`, `invariant`,
+/// results, assignments, indexes) and its entry checks when every call
+/// proved them. `--all-checks` keeps them all; an unproven caller keeps the
+/// callee's; `--no-verify` uses only proofs of the code as it is.
+#[test]
+fn proven_checks_are_left_out_of_builds() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("proven-checks");
+    let run = |args: &[&str], stdin: Option<&str>| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_strata"))
+            .args(args)
+            .current_dir(&d)
+            .env("STRATA_CACHE", d.join("cache"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        if let Some(s) = stdin {
+            c.stdin.take().unwrap().write_all(s.as_bytes()).unwrap();
+        }
+        let o = c.wait_with_output().unwrap();
+        (o.status.success(), String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr))
+    };
+    let src = "fn triangle(n: Natural) -> Natural
+  ensures 2 * it == n * (n + 1)
+{
+  mut total: Natural = 0
+  mut i: Natural = 0
+  while i < n
+    invariant 2 * total == i * (i + 1)
+  {
+    i += 1
+    total += i
+  }
+  total
+}
+fn first(xs: List[Natural]) -> Natural
+  requires len(xs) > 0
+{
+  xs[0]
+}
+fn main() {
+  print(triangle(10))
+  print(first([4, 5]))
+}
+";
+    let has = |file: &str, text: &str| std::fs::read(d.join(file)).unwrap().windows(text.len()).any(|w| w == text.as_bytes());
+    assert!(run(&["--file", "t.strata", "edit"], Some(src)).0);
+    // not verified yet: `build` does it first, then not again
+    let (ok, out) = run(&["--file", "t.strata", "build", "-o", "fast"], None);
+    assert!(ok && out.contains("verified 3 changed: 3 proven") && out.contains("runtime checks left out (proven by `strata verify`), 0 kept"), "{out}");
+    let (ok, out) = run(&["--file", "t.strata", "build", "-o", "fast"], None);
+    assert!(ok && !out.contains("verified"), "{out}");
+    let (ok, out) = run(&["--file", "t.strata", "build", "-o", "slow", "--all-checks"], None);
+    assert!(ok, "{out}");
+    for msg in ["postcondition of `triangle`", "invariant failed: 2 * total == i * (i + 1)", "precondition of `first`"] {
+        assert!(!has("fast", msg) && has("slow", msg), "{msg}");
+    }
+    let (ok, out) = run(&["--file", "t.strata", "run"], None);
+    assert!(ok && out.contains("55") && out.contains("4"), "{out}");
+    // a caller that doesn't prove the call keeps the callee's entry check
+    let more = format!("{src}fn risky(xs: List[Natural]) -> Natural {{\n  first(xs)\n}}\n");
+    assert!(run(&["--file", "t.strata", "edit"], Some(&more)).0);
+    let (ok, out) = run(&["--file", "t.strata", "build", "-o", "mixed"], None);
+    assert!(ok, "{out}");
+    assert!(has("mixed", "precondition of `first`") && !has("mixed", "postcondition of `triangle`"), "{out}");
+    // changed code: its old proofs don't count (--no-verify), and a build verifies it again
+    let changed = more.replace("total += i\n", "total += i + 0\n");
+    assert!(run(&["--file", "t.strata", "edit"], Some(&changed)).0);
+    let (ok, out) = run(&["--file", "t.strata", "build", "-o", "stale", "--no-verify"], None);
+    assert!(ok && has("stale", "postcondition of `triangle`"), "{out}");
+    let (ok, out) = run(&["--file", "t.strata", "build", "-o", "again"], None);
+    assert!(ok && out.contains("verified 2 changed") && !has("again", "postcondition of `triangle`"), "{out}");
 }
 
 /// A written `invariant` is checked on entry and where every pass ends
@@ -1574,6 +1654,61 @@ fn clock_arms_are_checked() {
     assert!(ok && out.contains("1 passed, 0 failed"), "{out}");
 }
 
+/// `supervised spawn`: awaiting it gives `Result[T, Panic]`, which must be
+/// handled; `await h except p { … }` is `(await h) except p { … }`; and
+/// `supervised` is still a name anywhere else.
+#[test]
+fn supervised_awaits_give_results() {
+    let d = tmp("supervised");
+    save(&d.join("s.strata"), SUPERVISED_CHECKS);
+    let (ok, out) = strata(&["--file", "s.strata", "check"], &d, None);
+    assert!(!ok, "{out}");
+    assert!(out.contains("error in unhandled:"), "{out}");
+    assert!(!out.contains("error in handled") && !out.contains("error in named") && !out.contains("error in in_race"), "{out}");
+}
+
+const SUPERVISED_CHECKS: &str = r#"fn work(n: Int) -> Int {
+  n * 2
+}
+
+fn unhandled() -> Int {
+  scope {
+    h := supervised spawn work(1)
+    await h + 1
+  }
+}
+
+fn handled() -> Int {
+  scope {
+    h := supervised spawn work(1)
+    g := supervised spawn work(2)
+    a := await h except p { 0 }
+    b := await g except p {
+      print(p.message)
+      len(p.stack.bytes())
+    }
+    a + b
+  }
+}
+
+fn named(supervised: Int) -> Int {
+  scope {
+    h := spawn supervised + 1
+    await h
+  }
+}
+
+fn in_race() -> String {
+  race {
+    supervised work(1) as r => match r {
+      Ok(v) => f"{v}",
+      Err(p) => p.kind,
+    },
+    work(2) as n => f"{n}",
+  }
+}
+"#;
+
 /// Tasks: `spawn` only in a `scope`, and a handle never leaves it.
 #[test]
 fn tasks_stay_in_their_scope() {
@@ -2603,8 +2738,8 @@ fn strata_git(args: &[&str], dir: &std::path::Path) -> (bool, String) {
 }
 
 #[test]
-fn ci_checks_packages_scripts_and_canonical_format() {
-    let d = tmp("ci");
+fn upgrade_rewrites_files_and_packages_check_their_settings() {
+    let d = tmp("upgrade");
     git(&d, &["init", "-q", "-b", "main"]);
     std::fs::create_dir_all(d.join("shop/tools")).unwrap();
     std::fs::write(d.join("shop/strata.toml"), "name = \"shop\"\nexports = [\"orders.total\"]\n").unwrap();
@@ -2616,20 +2751,17 @@ fn ci_checks_packages_scripts_and_canonical_format() {
     save(&d.join("shop/tools/main.strata"), "fn one() -> Int {\n  1\n}\n");
     // a file outside every package is a script
     save(&d.join("loose.strata"), "fn x() -> Int {\n  1\n}\n");
-    let (ok, out) = strata_git(&["ci"], &d);
-    assert!(!ok && out.contains("shop/main.strata: not in canonical form"), "{out}");
-    assert!(out.contains("✓ package shop (shop): 3 definitions") && out.contains("✓ package tools (shop/tools): 1 definitions") && out.contains("✓ loose.strata"), "{out}");
-    let (ok, out) = strata_git(&["ci", "--fix"], &d);
-    assert!(ok, "{out}");
-    let (ok, out) = strata_git(&["ci"], &d);
-    assert!(ok, "{out}");
+    let (ok, out) = strata_git(&["upgrade"], &d);
+    assert!(ok && out.contains("shop/main.strata: rewritten") && !out.contains("orders.strata") && !out.contains("loose.strata"), "{out}");
+    let (ok, out) = strata_git(&["upgrade"], &d);
+    assert!(ok && out.contains("every file is already in the current form"), "{out}");
 
     // exports must name a module or a `pub` definition
     std::fs::write(d.join("shop/strata.toml"), "name = \"shop\"\nexports = [\"orders.totl\", \"run\"]\n").unwrap();
-    let (ok, out) = strata_git(&["ci"], &d);
+    let (ok, out) = strata(&["check"], &d.join("shop"), None);
     assert!(!ok && out.contains("exports `orders.totl`, which is neither") && out.contains("exports `run`, which isn't `pub`"), "{out}");
     std::fs::write(d.join("shop/strata.toml"), "name = \"shop\"\nversion = 1\n").unwrap();
-    let (_, out) = strata_git(&["ci"], &d);
+    let (_, out) = strata(&["check"], &d.join("shop"), None);
     assert!(out.contains("unknown field `version`"), "{out}");
 
     // `init` names the package after its folder; the name stays when the folder moves
@@ -2657,7 +2789,7 @@ fn sync_merges_main_with_the_driver_then_checks() {
 
     // plain git conflicts: f's deletion touches the line before g's signature
     let (ok, out) = strata_git(&["sync", "main"], &d);
-    assert!(ok && out.contains("merged main") && out.contains("✓ app.strata"), "{out}");
+    assert!(ok && out.contains("merged main"), "{out}");
     let merged = text(&d.join("app.strata"));
     assert_eq!(merged, "fn g(y: Int) -> Int {\n  y * 20\n}\n");
     assert!(git(&d, &["log", "-1", "--format=%p"]).split_whitespace().count() == 2, "a merge commit");
@@ -3062,10 +3194,6 @@ fn a_breaking_edit_opens_a_pending_change_with_holes() {
     assert_eq!(std::fs::read_to_string(d.join("strata.log")).unwrap(), "", "nothing logged yet");
     let (_, out) = strata(&["holes"], &d, None);
     assert!(out.contains("?pending_1  in total\n  goal:    Int\n  was:     tax(amount)"), "{out}");
-    // a pending change's holes don't get merged
-    let (ok, out) = strata(&["ci"], &d, None);
-    assert!(!ok && out.contains("?pending_1 in total belongs to an unfinished change"), "{out}");
-
     // an edit that doesn't check in itself is still rejected
     let (ok, out) = strata(&["edit"], &d, Some("fn total(amount: Int) -> Int { amount + true }"));
     assert!(!ok && out.contains("rejected"), "{out}");
@@ -3112,8 +3240,6 @@ fn a_pending_change_can_be_aborted_or_kept_with_its_holes() {
     assert!(ok && out.contains("2 holes kept as ?todo_"), "{out}");
     let m = text(&d.join("main.strata"));
     assert!(m.contains("amount + ?todo_1") && m.contains("?todo_2 * 2"), "{m}");
-    let (ok, out) = strata(&["ci"], &d, None);
-    assert!(ok, "ordinary holes are fine: {out}");
 }
 
 /// A stand-in editor: on its n-th run it keeps what it was shown as

@@ -9,6 +9,9 @@ pub struct Parser {
     /// `|` separates a union's members or a pattern's alternatives): a
     /// bit-or there is written in parentheses.
     no_pipe: bool,
+    /// Parsing what `await` takes: a result's handlers (`except`, `!`, `?`,
+    /// `or { }`) after it are the `await`'s, not the handle's.
+    no_handlers: bool,
     comments: Vec<Comment>,
     used: Vec<bool>,
 }
@@ -59,7 +62,7 @@ impl Parser {
     fn new(src: &str) -> R<Parser> {
         let (toks, comments) = lex_with_comments(src)?;
         let used = vec![false; comments.len()];
-        Ok(Parser { toks, pos: 0, no_struct: false, no_pipe: false, comments, used })
+        Ok(Parser { toks, pos: 0, no_struct: false, no_pipe: false, no_handlers: false, comments, used })
     }
 
     // ---------- comments ----------
@@ -135,6 +138,17 @@ impl Parser {
     }
     fn peek_at(&self, n: usize) -> &Tok {
         &self.toks[(self.pos + n).min(self.toks.len() - 1)].tok
+    }
+    /// Whether the token `n` ahead, on the same line, starts an operand of
+    /// its own (a name, a literal, a block): what follows a prefix word.
+    fn starts_operand_at(&self, n: usize) -> bool {
+        let t = &self.toks[(self.pos + n).min(self.toks.len() - 1)];
+        !t.nl_before && match &t.tok {
+            Tok::Ident(s) => s != "as",
+            Tok::Sym(s) => *s == "{",
+            Tok::Eof => false,
+            _ => true,
+        }
     }
     fn nl_before(&self) -> bool {
         self.toks[self.pos].nl_before
@@ -875,9 +889,13 @@ impl Parser {
         if self.eat_kw("comptime") {
             return Ok(Expr::Comptime(Box::new(self.unary()?)));
         }
-        // `await h`: a task's result
+        // `await h`: a task's result; a handler after it is the result's:
+        // `await h except p { … }` is `(await h) except p { … }`
         if self.eat_kw("await") {
-            return Ok(Expr::Await(Box::new(self.unary()?)));
+            let old = std::mem::replace(&mut self.no_handlers, true);
+            let h = self.unary();
+            self.no_handlers = old;
+            return self.postfix_from(Expr::Await(Box::new(h?)));
         }
         self.postfix()
     }
@@ -916,11 +934,11 @@ impl Parser {
     }
 
     fn args(&mut self) -> R<Vec<Expr>> {
-        let old = (self.no_struct, self.no_pipe);
-        (self.no_struct, self.no_pipe) = (false, false);
+        let old = (self.no_struct, self.no_pipe, self.no_handlers);
+        (self.no_struct, self.no_pipe, self.no_handlers) = (false, false, false);
         // `f(mut x)`: the call may change `x` (its parameter is `mut`); see `marked`
         let r = self.list(")", |p| p.expr());
-        (self.no_struct, self.no_pipe) = old;
+        (self.no_struct, self.no_pipe, self.no_handlers) = old;
         r
     }
 
@@ -958,6 +976,8 @@ impl Parser {
             } else if self.is_sym("[") && !self.nl_before() {
                 self.next();
                 e = Expr::Index(Box::new(e), Box::new(self.index()?));
+            } else if self.no_handlers && (self.is_sym("!") || self.is_sym("?") || self.is_kw("except") || self.is_kw("or")) {
+                break;
             } else if self.is_sym("!") && !self.nl_before() {
                 self.next();
                 e = Expr::Try(Box::new(e), TryKind::Result);
@@ -1010,6 +1030,14 @@ impl Parser {
     }
 
     fn primary(&mut self) -> R<Expr> {
+        // (inside brackets and blocks, handlers are their own again)
+        let old = std::mem::replace(&mut self.no_handlers, false);
+        let r = self.primary_inner();
+        self.no_handlers = old;
+        r
+    }
+
+    fn primary_inner(&mut self) -> R<Expr> {
         match self.peek().clone() {
             Tok::Int(n) => {
                 self.next();
@@ -1173,7 +1201,14 @@ impl Parser {
                 let mut arms = Vec::new();
                 while !self.eat_sym("}") {
                     let mut comments = self.leading();
+                    // a race arm `supervised e`: its task's panic is its own (the
+                    // arm's result a `Result[T, Panic]`), held as `supervised spawn e`
+                    let supervised = race && matches!(self.peek(), Tok::Ident(s) if s == "supervised") && self.starts_operand_at(1);
+                    if supervised {
+                        self.next();
+                    }
                     let op = self.expr_ns()?;
+                    let op = if supervised { Expr::SupervisedSpawn(Box::new(op)) } else { op };
                     let name = if matches!(self.peek(), Tok::Ident(s) if s == "as") {
                         self.next();
                         Some(self.ident()?)
@@ -1192,6 +1227,13 @@ impl Parser {
                 // `spawn e`, the whole expression (as `return e`): run in a new task
                 self.next();
                 Ok(Expr::Spawn(Box::new(self.expr()?)))
+            }
+            // `supervised spawn e`: a task whose panic is its own (`supervised` is a
+            // keyword only right before `spawn`, on the same line: a name elsewhere)
+            Tok::Ident(kw) if kw == "supervised" && matches!(self.peek_at(1), Tok::Ident(s) if s == "spawn") && !self.toks[self.pos + 1].nl_before => {
+                self.next();
+                self.next();
+                Ok(Expr::SupervisedSpawn(Box::new(self.expr()?)))
             }
             Tok::Ident(kw) if kw == "return" => {
                 self.next();

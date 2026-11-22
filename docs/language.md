@@ -449,6 +449,28 @@ fn first_answer(mirrors: Receiver[Page], local: Cache, key: String) -> Page {
 
 A cancelled task stops at its next wait (a `recv`, a `send`, an `await`, a `select`), however deep in calls it is, and leaves as `return` would: what it holds is dropped, nothing after the wait runs, and the tasks it started stop too. Code that doesn't wait runs to its end (a long computation isn't interrupted halfway). The `race` ends once every loser has stopped, then runs the winner's arm. A left side follows a `spawn`'s rules (no `return`, `!` or `?` out of it; a sender it uses is its own copy, to close).
 
+### Supervised tasks
+
+A panic ends the program, wherever it happens. A task started with `supervised spawn` is the exception: its panic ends only that task (and the tasks it started), and awaiting it gives a `Result[T, Panic]` instead of a `T`. The failure is handled where the task is awaited, with what handles any `Result`:
+
+```rust
+fn page(net: Net, url: String) -> Page {
+  scope {
+    h := supervised spawn fetch(net, url)
+    await h except p {
+      log(f"{url}: {p.message}")
+      cached(url)
+    }
+  }
+}
+```
+
+- `Panic` is `{ kind: String, message: String, stack: String }`: the kind (`Runtime`, `Requires`, `Refinement`, …), the message, and the call stack from `main` through each `spawn`.
+- A handler after `await h` is the result's: `await h except p { … }` is `(await h) except p { … }`, and `await h!` is `(await h)!`.
+- When a supervised task panics, every task below it stops at its next wait; its copies of senders are closed (its receivers see the channel end); what it held is freed; its siblings and the task that started it go on. A panic in an ordinary task below it is the supervised task's.
+- In a `race`, an arm can be supervised the same way: `race { supervised fetch(a) as r => …, … }` (`r` is then a `Result[T, Panic]`, and a panic is that arm's result).
+- `supervised` is a keyword only right before `spawn` (and at the start of a `race` arm): it is a name anywhere else.
+
 ### Time: `Clock`
 
 Time comes from outside the program, so it goes through a capability (`std.time`): `main` or a test asks for the `SystemClock` and passes it on (as a `Clock`). `clock.now()` is an `Instant` (monotonic: only the time between two means something, `elapsed(a, b)`), and `clock.sleep(d)` waits for a `Duration` (`nanos`, `micros`, `ms`, `seconds`; `.value` is nanoseconds). Sleeping is a wait like a `recv`: a cancelled task stops sleeping at once. So a `race` makes a timeout:
@@ -669,6 +691,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 | `std.cli` | `CommandLine`: a record of options read from the arguments |
 | `std.typing` | types as compile-time values, for derivable traits: `Type` (`name`, `doc`, `kind`, `args`, `fields`, `elements`, `members`, …, and `check`), `Kind`, `Field`, `Choice`; `setting(key)` reads the package's `strata.toml` while compiling, `compile_error` fails a `derive` with a message |
 | `std.json` | `Json`: records and sum types read from JSON and written to it (`derive Json for Signup`; `Signup.decode(parse(text)!)`, `stringify(s.encode()!)`), and implemented for `Int`, `Float`, `Bool`, `String`, `List[T]`, `Option[T]` and `Dict[String, V]`, so `fn send[T: Json](x: T)` takes them; `JsonValue`, `parse`, `stringify` |
+| `std.toml` | TOML 1.1 read and written in Strata: `parse(text)` gives the document's root table (`List[(String, TomlValue)]`, keys in the order written) or an error saying where (`3:1: `b` is defined twice`); `TomlValue` is `Text`, `Integer`, `Number`, `Boolean`, `Moment` (a `DateTime`: optional `Date`, `Time` and `Offset`, TOML's four kinds), `Array` or `Table`; `lookup(doc, ["server", "port"])`; `stringify(doc)` writes TOML text |
 | `std.http` | `Request`, `Response`, `Method`; `ok_html`, `ok_text`, `ok_json`, `not_found`, `redirect`, …; `Router` (`app.get("/users/:id", handler)`, `req.param("id")`), for `strata serve` |
 | `std.web` | `Html[M]` and `Attr[M]`: HTML as values, one function per element (`div`, `p`, `table`, `button`, …) and attribute (`class`, `href`, `on_click(msg)`, …); `render`, `document(title, head, body)` |
 | `std.regex` | regular expressions written in Strata: `parse(pattern)` gives a `Regex` (`Literal`, `Class` of code-point ranges, `Look`, `Repeat`, `Capture`, `Concat`, `Alternation`) or an error; `show` prints the tree. `compile(r)` makes its Thompson NFA (`List[Inst]`), `is_full_match(prog, text)` runs it as a Pike VM, and `full_match(text, pattern)` does both: what `matches` means. `matcher(pattern)` makes a DFA (`Automaton`) when the pattern asserts nothing but `^` and `$`, else keeps the NFA; `run_matcher(m, text)` runs it. Compiled code uses them for every `matches` |
@@ -693,6 +716,18 @@ derive Json for Signup
 
 signup := Signup.decode(parse(body)!)!
 text := stringify(signup.encode()!)  // {"type":"Signup","email":…,"age":…,"nickname":null}
+```
+
+**TOML** (`std.toml`) is read by a parser written in Strata, for `strata.toml` files once the tools read them in Strata. It checks every rule of TOML 1.1: keys and tables defined twice, tables closed once written (inline tables; tables made by dotted keys can't get a `[header]`, nor header tables dotted keys), integers within 64 bits, dates that exist (`2023-02-29` is an error), seconds that may be left out (`07:32`), inline tables over several lines with a trailing comma, `\e` and `\xHH` escapes. A Strata `Float` is finite, so `inf` and `nan` are errors. `tests/toml.rs` checks it reads documents as the `toml` crate does (the same values, the same documents refused), and that what `stringify` writes reads back as the same value; with `STRATA_TOML_CORPUS` set to a checkout of [toml-test](https://github.com/toml-lang/toml-test), on all of its TOML 1.1 files too.
+
+```rust
+use std.toml.{parse, lookup, Integer}
+
+doc := parse("[server]\nport = 8080\n")!
+port := match lookup(doc, ["server", "port"]) {
+  Some(Integer(n)) => n,
+  _ => 80,
+}
 ```
 
 **Regular expressions** (`std.regex`) are written in Strata, so a self-hosted compiler can use them. `parse` reads the syntax of Rust's `regex` crate (Unicode by default: `\d`, `\w`, `\s` and `.` are Unicode's; `\p{Greek}`, `\p{gc=Lu}`, `\p{age=6.0}`; classes with `&&`, `--`, `~~` and `[[:alpha:]]`; named groups; the flags `imsUuRx`; `\b`, `\b{start}`, `\A`, `\z`; no look-around or back-references) into the tree regex-syntax builds: classes as ranges of code points with `(?i)` folded in, flags gone, the same simplifications (`ab|ac` is `a(?:b|c)`, `a|b` is `[ab]`). `tests/regex.rs` checks the two agree on curated and random patterns. The Unicode data (`std.unicode_tables`) is generated by `tools/unicode_tables.py` from regex-syntax's tables (Unicode 16.0.0).
