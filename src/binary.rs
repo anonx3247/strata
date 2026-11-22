@@ -803,6 +803,7 @@ record!(UseDecl { path, items });
 record!(ExternDecl { lang, item });
 record!(CapabilityDecl { name, methods });
 record!(Arm { comments, pat, body });
+record!(SelectArm { comments, op, name, body });
 record!(LamParam { name, ty });
 record!(CompFor { pat, iter, cond });
 record!(FmtSpec { fill, align, plus, zero, width, precision });
@@ -1043,11 +1044,12 @@ impl Bin for Expr {
             Expr::Scope(x) => put!(w, 34, x),
             Expr::Spawn(x) => put!(w, 35, x),
             Expr::Await(x) => put!(w, 36, x),
+            Expr::Select(arms) => put!(w, 37, arms),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
         r.nest(|r| {
-            Ok(match r.tag("expression", 37)? {
+            Ok(match r.tag("expression", 38)? {
                 0 => Expr::Int(Bin::dec(r)?),
                 1 => Expr::BigInt(Bin::dec(r)?),
                 2 => Expr::Float(Bin::dec(r)?),
@@ -1084,7 +1086,8 @@ impl Bin for Expr {
                 33 => Expr::Comptime(Bin::dec(r)?),
                 34 => Expr::Scope(Bin::dec(r)?),
                 35 => Expr::Spawn(Bin::dec(r)?),
-                _ => Expr::Await(Bin::dec(r)?),
+                36 => Expr::Await(Bin::dec(r)?),
+                _ => Expr::Select(Bin::dec(r)?),
             })
         })
     }
