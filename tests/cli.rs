@@ -335,6 +335,32 @@ fn package_verify_policies() {
     assert!(!ok && out.contains("[verify] proven names `nope`, which is not a module of this package"), "{out}");
 }
 
+/// What termination's solver finds about std's own functions is kept
+/// between runs (std is part of the binary), so a second run doesn't redo it
+/// and says the same.
+#[test]
+fn std_termination_is_kept_between_runs() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    // a copy of examples/hello: it reaches std's functions
+    let d = tmp("std-termination");
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/hello");
+    for e in std::fs::read_dir(&src).unwrap().flatten() {
+        if e.path().extension().is_some_and(|x| x == "strata" || x == "toml") {
+            std::fs::copy(e.path(), d.join(e.file_name())).unwrap();
+        }
+    }
+    let (_, first) = strata(&["--file", ".", "verify", "--force"], &d, None);
+    let root = std::env::var_os("STRATA_CACHE").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".cache/strata"));
+    let kept: String = std::fs::read_dir(root.join("termination")).unwrap().flatten().map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).collect();
+    assert!(kept.lines().any(|l| l.starts_with("L\tstd.")), "std's loops are kept: {kept}");
+    assert!(!kept.contains(".for."), "functions made for a program are not std's own");
+    let (_, second) = strata(&["--file", ".", "verify", "--force"], &d, None);
+    assert_eq!(first, second);
+}
+
 /// The solver and the fuzzer race: a failure the fuzzer finds stops the
 /// solver's processes, so a slow query doesn't hold the verdict up.
 #[test]
