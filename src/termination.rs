@@ -51,6 +51,9 @@ struct Node {
     calls: BTreeSet<String>,
     /// Problems with the node's own loops, if any; or how they end.
     loops: Result<Vec<String>, String>,
+    /// The code whose loops `loops` is about (checked only for the nodes
+    /// the analysis needs: see `analyze`).
+    body: Option<FnDecl>,
 }
 
 fn trait_node(m: &str) -> String {
@@ -644,18 +647,36 @@ fn cannot_fail(env: &Env, f: &FnDecl, total: &dyn Fn(&str) -> bool) -> bool {
     ok
 }
 
-pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
+/// The predicates of the refinements written in `t`.
+fn refinements_in(t: &TypeExpr, out: &mut Vec<Expr>) {
+    match t {
+        TypeExpr::Refined(b, p) => {
+            out.push((**p).clone());
+            refinements_in(b, out);
+        }
+        TypeExpr::Named(_, args) => args.iter().for_each(|a| refinements_in(a, out)),
+        TypeExpr::Union(ms) => ms.iter().for_each(|m| refinements_in(m, out)),
+        TypeExpr::Fn(ps, r) => {
+            ps.iter().for_each(|p| refinements_in(p, out));
+            refinements_in(r, out);
+        }
+        TypeExpr::Unit => {}
+    }
+}
+
+/// The termination verdict of every function and implementation method
+/// (`roots: None`), or of those `roots` reach: a verdict depends only on what
+/// the code calls, and showing that loops end costs a solver run per loop, so
+/// verifying one function does not pay for the whole program's (std's) loops.
+/// The others are left unknown, and none of them is transparent.
+pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>, roots: Option<&HashSet<String>>) -> Analysis {
     let mut nodes: HashMap<String, Node> = HashMap::default();
-    // the loops' bounds, each function's on a thread (each query a solver process)
-    let fns: Vec<(&Symbol, &FnDecl)> = env.fns.iter().collect();
-    let mut fn_loops: HashMap<String, Result<Vec<String>, String>> = crate::par::map(&fns, |(name, f)| (name.to_string(), loops(env, f, solver))).into_iter().collect();
     for (name, f) in &env.fns {
         let mut calls = BTreeSet::new();
         let params: Vec<String> = f.params.iter().map(|p| p.name.to_string()).collect();
         calls_of(&f.body, env, &params, &mut calls);
         f.requires.iter().chain(&f.ensures).for_each(|c| calls_of(c, env, &params, &mut calls));
-        let lp = fn_loops.remove(&name.to_string()).unwrap_or_else(|| loops(env, f, solver));
-        nodes.insert(name.to_string().to_string(), Node { decl: Some(f.clone()), calls, loops: lp });
+        nodes.insert(name.to_string().to_string(), Node { decl: Some(f.clone()), calls, loops: Ok(vec![]), body: Some(f.clone()) });
     }
     for imp in &env.impls {
         let Some(tr) = env.traits.get(&imp.trait_name) else { continue };
@@ -667,8 +688,8 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
             let params: Vec<String> = decl.params.iter().map(|p| p.name.to_string()).collect();
             calls_within(&decl.body, env, &params, Some(&trait_node(&tm.decl.name)), &mut calls);
             let d = crate::verify::for_impl(env, imp, decl);
-            nodes.insert(label.clone(), Node { decl: None, calls, loops: loops(env, &d, solver) });
-            nodes.entry(trait_node(&tm.decl.name)).or_insert(Node { decl: None, calls: BTreeSet::new(), loops: Ok(vec![]) }).calls.insert(label);
+            nodes.insert(label.clone(), Node { decl: None, calls, loops: Ok(vec![]), body: Some(d) });
+            nodes.entry(trait_node(&tm.decl.name)).or_insert(Node { decl: None, calls: BTreeSet::new(), loops: Ok(vec![]), body: None }).calls.insert(label);
         }
         let _ = texpr_head(&imp.for_type);
     }
@@ -676,7 +697,7 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
     // trait methods no implementation defines
     let missing: Vec<String> = nodes.values().flat_map(|n| n.calls.iter().cloned()).filter(|c| !nodes.contains_key(c)).collect();
     for m in missing {
-        nodes.insert(m, Node { decl: None, calls: BTreeSet::new(), loops: Ok(vec![]) });
+        nodes.insert(m, Node { decl: None, calls: BTreeSet::new(), loops: Ok(vec![]), body: None });
     }
 
     // what each node reaches
@@ -691,20 +712,69 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
         seen
     };
     let reaches: HashMap<String, HashSet<String>> = nodes.keys().map(|k| (k.clone(), reach(k))).collect();
-    let mutual = |n: &str| -> Option<String> { nodes[n].calls.iter().find(|c| c.as_str() != n && reaches[c.as_str()].contains(n)).cloned() };
     let recursive: HashSet<String> = nodes.keys().filter(|n| reaches[n.as_str()].contains(n.as_str())).cloned().collect();
+    // the nodes whose verdict is wanted: the roots, the helpers refinements
+    // call (seen through wherever a type is checked), and what they reach
+    let roots: Option<HashSet<String>> = roots.map(|rs| {
+        let mut rs = rs.clone();
+        let mut preds: Vec<Expr> = vec![];
+        for td in env.types.values() {
+            preds.extend(td.refinement.iter().cloned());
+            match &td.body {
+                TypeBody::Alias(a) => refinements_in(a, &mut preds),
+                TypeBody::Record(fs) => fs.iter().for_each(|f| refinements_in(&f.ty, &mut preds)),
+                TypeBody::Sum(vs) => {
+                    for v in vs {
+                        match &v.payload {
+                            Payload::Positional(ts) => ts.iter().for_each(|t| refinements_in(t, &mut preds)),
+                            Payload::Record(fs) => fs.iter().for_each(|f| refinements_in(&f.ty, &mut preds)),
+                            Payload::Type(t) => refinements_in(t, &mut preds),
+                            Payload::None => {}
+                        }
+                    }
+                }
+            }
+        }
+        for f in env.fns.values() {
+            f.params.iter().for_each(|p| refinements_in(&p.ty, &mut preds));
+            refinements_in(&f.ret, &mut preds);
+        }
+        let mut calls = BTreeSet::new();
+        for e in &preds {
+            calls_of(e, env, &["it".to_string()], &mut calls);
+        }
+        rs.extend(calls);
+        rs
+    });
+    let needed: Option<HashSet<String>> = roots.as_ref().map(|rs| rs.iter().filter(|r| nodes.contains_key(r.as_str())).flat_map(|r| reaches[r.as_str()].iter().cloned().chain([r.clone()])).collect());
+    let wanted = |n: &str| needed.as_ref().is_none_or(|s| s.contains(n));
+    let skipped = "not analysed (nothing being verified reaches it)".to_string();
+    // the loops' bounds of what is wanted, each function's on a thread (each
+    // query a solver process)
+    let todo: Vec<(String, FnDecl)> = nodes.iter().filter_map(|(name, n)| n.body.clone().filter(|_| wanted(name)).map(|b| (name.clone(), b))).collect();
+    let found: HashMap<String, Result<Vec<String>, String>> = crate::par::map(&todo, |(name, b)| (name.clone(), loops(env, b, solver))).into_iter().collect();
+    for (name, n) in nodes.iter_mut() {
+        if n.body.is_some() {
+            n.loops = found.get(name).cloned().unwrap_or_else(|| Err(skipped.clone()));
+        }
+    }
+    let mutual = |n: &str| -> Option<String> { nodes[n].calls.iter().find(|c| c.as_str() != n && reaches[c.as_str()].contains(n)).cloned() };
 
     // each node's own verdict, ignoring what it calls
     // the measures of the functions that call themselves on no smaller piece
     // of a parameter, each on a thread (each a few solver processes)
     let needs: Vec<(&String, &FnDecl)> = nodes
         .iter()
-        .filter(|(name, n)| n.loops.is_ok() && mutual(name).is_none() && n.calls.contains(*name))
+        .filter(|(name, n)| wanted(name) && n.loops.is_ok() && mutual(name).is_none() && n.calls.contains(*name))
         .filter_map(|(name, n)| n.decl.as_ref().filter(|f| structural(env, f).is_none()).map(|f| (name, f)))
         .collect();
     let measures: HashMap<String, Option<String>> = crate::par::map(&needs, |(name, f)| ((*name).clone(), measured_recursion(env, f, solver))).into_iter().collect();
     let mut own: HashMap<String, Result<String, String>> = HashMap::default();
     for (name, n) in &nodes {
+        if !wanted(name) {
+            own.insert(name.clone(), Err(skipped.clone()));
+            continue;
+        }
         let r = match &n.loops {
             Err(e) => Err(e.clone()),
             Ok(hows) => {

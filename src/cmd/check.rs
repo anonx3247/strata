@@ -72,7 +72,40 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     jit_fuzzers(&compiled, &env, &chosen, args.flag("--jit"));
     let solver = smt::solver();
     let solver_bin = solver.as_ref();
-    let analysis = termination::analyze(&env, solver_bin);
+    // with a selection, termination is analysed for what the selected code reaches
+    let roots: Option<crate::fx::HashSet<String>> = args.pos.get(1).map(|_| {
+        let mut rs = crate::fx::HashSet::default();
+        for (orig, d) in p.decls.iter().zip(&resolved.decls) {
+            if !names.contains(&orig.qname()) {
+                continue;
+            }
+            match &d.kind {
+                DeclKind::Fn(f) => {
+                    rs.insert(f.name.to_string());
+                }
+                DeclKind::Impl(imp) if imp.is_inherent() => rs.extend(imp.methods.iter().map(|m| types::static_fn(imp, m).name.to_string())),
+                DeclKind::Impl(imp) => {
+                    if matches!(&orig.kind, DeclKind::Impl(i) if i.derived) {
+                        let module = crate::names::module_of(&imp.trait_name).to_string();
+                        let tag = format!(".for.{}.", crate::names::short(&types::texpr_head(&imp.for_type)));
+                        for c in &resolved.decls[p.decls.len()..] {
+                            if let DeclKind::Fn(f) = &c.kind {
+                                if f.name.as_str().contains(&tag) && f.name.as_str().starts_with(&format!("{module}.")) {
+                                    rs.insert(f.name.to_string());
+                                }
+                            }
+                        }
+                    }
+                    if let Some(tr) = env.traits.get(&imp.trait_name) {
+                        rs.extend(tr.methods.iter().map(|m| termination::impl_label(&env, imp, &m.decl.name)));
+                    }
+                }
+                _ => {}
+            }
+        }
+        rs
+    });
+    let analysis = termination::analyze(&env, solver_bin, roots.as_ref());
     let transparent = &analysis.transparent;
     let cross_check: usize = args.val("--cross-check").unwrap_or("20").parse().map_err(|_| "bad --cross-check")?;
     let require: Vec<String> = args.val("--require").map(|r| r.split(',').map(|s| s.trim().to_string()).collect()).unwrap_or_default();

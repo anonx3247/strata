@@ -3,7 +3,8 @@
 //!
 //! The body is executed symbolically. Values are SMT terms (`Int`, `Bool`,
 //! `String`), records and sums are kept as structures of terms (a sum is a tag
-//! plus the payload of every constructor), and lists are tracked by position
+//! plus the payload of every constructor), whose structured parts are made
+//! when the code first reads them (`Val::Lazy`), and lists are tracked by position
 //! where they can be (a checked list's element is a function of its position;
 //! slices, `+` and literals translate positions) and otherwise by their
 //! length only. A branch splits the path condition and the two results are
@@ -66,7 +67,60 @@ pub enum Val {
     /// A function value of a known type: what it does is unknown, but what
     /// it returns is a valid value of `ret`, as any value of that type is.
     FnOf { ret: TypeExpr },
+    /// A part of a value (a field of a record, the payload of a constructor)
+    /// not looked at yet: `Vc::cells[id]`, made the first time it is read
+    /// (`Vc::force`), so that the cost follows what the code reads rather
+    /// than the size of the type.
+    Lazy(usize),
 }
+
+/// How a lazy part is made when it is first read.
+#[derive(Clone, Debug)]
+enum Make {
+    /// A fresh value of the cell's type.
+    Shape,
+    /// The part `of` (of a list's element template) at position `i` inside `outer` (see `place`).
+    View { of: usize, i: T, outer: Vec<T> },
+    /// Part `a` when `c` holds, else part `b` (two branches merged).
+    Merge { c: T, a: usize, b: usize },
+}
+
+/// A lazy part of a value (`Val::Lazy`).
+#[derive(Clone, Debug)]
+struct Cell {
+    ty: TypeExpr,
+    make: Make,
+    /// "The part is a valid `ty`": `true` when `ty` has no refinement, else
+    /// an unknown whose definition is assumed when the part is made. A check
+    /// of the whole value is this term for the part, so checking or assuming
+    /// the validity of a value never makes its parts.
+    valid: T,
+    /// The context it was made in: fresh unknowns are functions of these
+    /// positions, and have this reason.
+    indexing: Option<Vec<String>>,
+    reason: Option<String>,
+    /// The scope (`Vc::regions`) it belongs to; 0 for the function's.
+    region: usize,
+    /// Made with placeholders (a part of a list's element template): what is
+    /// known of it is kept in `facts`, placed for each position, rather than
+    /// assumed.
+    placeholder: bool,
+    value: Option<Val>,
+    facts: Vec<T>,
+}
+
+/// A scope whose facts and unknowns are taken apart from the rest when it
+/// ends (a quantified fact, a list's element template): where they start.
+#[derive(Clone, Debug)]
+struct Region {
+    id: usize,
+    nd: usize,
+    nf: usize,
+}
+
+/// The prover's size budget: at most this many lazy parts per function;
+/// past it, parts are `Opaque` (any value).
+const MAX_CELLS: usize = 200_000;
 
 /// A function applied to list elements (`map`, `filter`, `all`, `find`),
 /// kept so that it can be applied to any element later.
@@ -276,6 +330,19 @@ pub struct Vc<'a> {
     /// The constant standing for each bit operation met (`& x y`), so one met
     /// twice is one value.
     bit_terms: HashMap<String, T>,
+    /// The lazy parts of values (`Val::Lazy`).
+    cells: Vec<Cell>,
+    /// The scopes open, innermost last (see `Region`).
+    regions: Vec<Region>,
+    next_region: usize,
+    /// For two parts compared before either was made: the unknown that
+    /// stands for their equality, and its scope. Its definition (the
+    /// comparison of the made parts) is assumed when one of them is made.
+    eq_atoms: HashMap<(usize, usize), (T, usize)>,
+    /// By part: the parts it was compared with, the equality's unknown and scope.
+    pending: HashMap<usize, Vec<(usize, T, usize)>>,
+    /// Comparing parts made from list element templates, nested this deep.
+    eq_depth: usize,
 }
 
 fn and(ts: &[T]) -> T {
@@ -340,7 +407,7 @@ fn val_key(v: &Val) -> Option<String> {
         Val::Distinct(n, _) => format!("distinct:{n}"),
         Val::Sum { ty, .. } => format!("sum:{ty}"),
         Val::List { .. } => "List*".into(),
-        Val::Union { .. } | Val::Absent | Val::Opaque(_) | Val::FnOf { .. } => return None,
+        Val::Union { .. } | Val::Absent | Val::Opaque(_) | Val::FnOf { .. } | Val::Lazy(_) => return None,
     })
 }
 
@@ -408,6 +475,12 @@ impl<'a> Vc<'a> {
             bound: HashSet::default(),
             fn_args: vec![],
             bit_terms: HashMap::default(),
+            cells: vec![],
+            regions: vec![],
+            next_region: 1,
+            eq_atoms: HashMap::default(),
+            pending: HashMap::default(),
+            eq_depth: 0,
         }
     }
 
@@ -752,15 +825,16 @@ impl<'a> Vc<'a> {
         if fn_sort("Int", args.len()).is_none() {
             return None;
         }
-        let nf = self.facts.len();
+        let scope = self.enter();
         let pc = std::mem::take(&mut self.pc);
         let indexing = self.indexing.replace(args);
         self.spec += 1;
-        let v = self.shape(&t, 0);
+        let v = self.shape(&t);
         let valid = self.check_type(&t, &v, &[]);
         self.spec -= 1;
         self.indexing = indexing;
         self.pc = pc;
+        let (_, nf) = self.leave(scope);
         let mut facts: Vec<T> = self.facts.drain(nf..).collect();
         facts.push(valid);
         let tpl = Template { val: v, facts };
@@ -803,7 +877,15 @@ impl<'a> Vc<'a> {
                 self.lists.push(info);
                 Val::List { len: t(len), id: self.lists.len() - 1 }
             }
-            Val::Unit | Val::Absent | Val::Opaque(_) | Val::FnOf { .. } => v.clone(),
+            // a part with placeholders: the same part at this position, made when read
+            Val::Lazy(id) if self.cells[*id].placeholder => {
+                let c = &self.cells[*id];
+                let valid = t(&c.valid);
+                let placeholder = i.contains("@@") || outer.iter().any(|o| o.contains("@@"));
+                let cell = Cell { ty: c.ty.clone(), make: Make::View { of: *id, i: i.to_string(), outer: outer.to_vec() }, valid, indexing: self.indexing.clone(), reason: c.reason.clone(), region: 0, placeholder, value: None, facts: vec![] };
+                self.new_cell(cell)
+            }
+            Val::Unit | Val::Absent | Val::Opaque(_) | Val::FnOf { .. } | Val::Lazy(_) => v.clone(),
         }
     }
 
@@ -830,7 +912,8 @@ impl<'a> Vc<'a> {
         }
         self.qvars += 1;
         let j = format!("q{}", self.qvars);
-        let (nd, nf, nm) = (self.decls.len(), self.facts.len(), self.matched.len());
+        let scope = self.enter();
+        let nm = self.matched.len();
         let inside = format!("(and (<= 0 {j}) (< {j} {len}))");
         let pc = std::mem::take(&mut self.pc);
         // what is learnt in here is about position `j`: it stays inside
@@ -847,6 +930,7 @@ impl<'a> Vc<'a> {
         self.binding -= 1;
         self.indexing = indexing;
         self.pc = pc;
+        let (nd, nf) = self.leave(scope);
         (self.memo, self.cutoffs) = (memo, cutoffs);
         for (l, n) in self.lists.iter_mut().zip(preds) {
             l.preds.truncate(n);
@@ -882,7 +966,8 @@ impl<'a> Vc<'a> {
     /// one counterexample element (a skolem), so it stays decidable. `None`
     /// when `prop` gives up on the element.
     fn every(&mut self, id: usize, len: &str, prop: impl FnOnce(&mut Self, Val) -> Option<T>) -> Option<T> {
-        let (nd, nf, nm) = (self.decls.len(), self.facts.len(), self.matched.len());
+        let scope = self.enter();
+        let nm = self.matched.len();
         let indexing = self.indexing.take();
         self.binding += 1;
         self.spec += 1;
@@ -900,6 +985,7 @@ impl<'a> Vc<'a> {
         self.spec -= 1;
         self.binding -= 1;
         self.indexing = indexing;
+        let (nd, nf) = self.leave(scope);
         let ant = and(&self.facts[nf..].to_vec());
         self.facts.truncate(nf);
         self.matched.truncate(nm);
@@ -965,6 +1051,10 @@ impl<'a> Vc<'a> {
         }
         match v {
             Val::Int(t) => t.clone(),
+            Val::Lazy(_) => {
+                let v = self.force(v.clone());
+                self.as_int(&v)
+            }
             Val::Opaque(r) => self.fresh_why("Int", &r.clone()),
             _ => self.fresh_why("Int", "a value of an unexpected shape"),
         }
@@ -975,6 +1065,10 @@ impl<'a> Vc<'a> {
         }
         match v {
             Val::Bool(t) => t.clone(),
+            Val::Lazy(_) => {
+                let v = self.force(v.clone());
+                self.as_bool(&v)
+            }
             Val::Opaque(r) => self.fresh_why("Bool", &r.clone()),
             _ => self.fresh_why("Bool", "a value of an unexpected shape"),
         }
@@ -985,6 +1079,10 @@ impl<'a> Vc<'a> {
         }
         match v {
             Val::Str(t) => t.clone(),
+            Val::Lazy(_) => {
+                let v = self.force(v.clone());
+                self.as_str(&v)
+            }
             Val::Opaque(r) => self.fresh_why("String", &r.clone()),
             _ => self.fresh_why("String", "a value of an unexpected shape"),
         }
@@ -999,6 +1097,10 @@ impl<'a> Vc<'a> {
         }
         match v {
             Val::List { len, .. } => len.clone(),
+            Val::Lazy(_) => {
+                let v = self.force(v.clone());
+                self.list_len(&v)
+            }
             Val::Opaque(r) => {
                 let l = self.fresh_why("Int", &r.clone());
                 self.facts.push(format!("(>= {l} 0)"));
@@ -1013,14 +1115,17 @@ impl<'a> Vc<'a> {
 
     // ---- values of a type ----
 
-    /// A value of type `t` with fresh constants, nothing assumed.
-    fn shape(&mut self, t: &TypeExpr, depth: usize) -> Val {
+    /// A value of type `t` with fresh constants, nothing assumed. Its outer
+    /// level is made now; the fields of a record and the payloads of a sum
+    /// that are themselves structured are lazy parts (`Val::Lazy`), made
+    /// when the code reads them.
+    fn shape(&mut self, t: &TypeExpr) -> Val {
         match t {
-            TypeExpr::Union(ms) => self.union_shape(ms, depth).unwrap_or_else(|| Val::Opaque("values of this union type are not modelled (members of overlapping or unknown shapes)".into())),
+            TypeExpr::Union(ms) => self.union_shape(ms).unwrap_or_else(|| Val::Opaque("values of this union type are not modelled (members of overlapping or unknown shapes)".into())),
             TypeExpr::Named(n, args) if self.env.variant_parent(n.sym()).is_some() => {
                 // a variant as a type: a value of its sum with that tag
                 let parent = self.env.variant_parent(n.sym()).unwrap();
-                let v = self.shape(&TypeExpr::Named(Symbol::from(parent), args.clone()), depth);
+                let v = self.shape(&TypeExpr::Named(Symbol::from(parent), args.clone()));
                 if let (Val::Sum { tag, ctors, .. }, true) = (&v, true) {
                     if let Some(k) = ctors.iter().position(|c| &c.0 == n) {
                         self.facts.push(format!("(= {tag} {k})"));
@@ -1028,7 +1133,7 @@ impl<'a> Vc<'a> {
                 }
                 v
             }
-            TypeExpr::Refined(b, _) => self.shape(b, depth),
+            TypeExpr::Refined(b, _) => self.shape(b),
             TypeExpr::Unit => Val::Unit,
             TypeExpr::Fn(_, ret) => Val::FnOf { ret: (**ret).clone() },
             TypeExpr::Named(n, args) => match n.as_str() {
@@ -1042,7 +1147,7 @@ impl<'a> Vc<'a> {
                     let gen_ = args.first().cloned().map(Gen::Type).unwrap_or(Gen::Unknown);
                     self.new_list(len, gen_)
                 }
-                "Tuple" => Val::Tuple(args.iter().map(|a| self.shape(a, depth)).collect()),
+                "Tuple" => Val::Tuple(args.iter().map(|a| self.shape(a)).collect()),
                 // dicts and sets are tracked by their size
                 "Dict" | "Set" => {
                     let len = self.fresh("Int");
@@ -1055,26 +1160,213 @@ impl<'a> Vc<'a> {
                     };
                     let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
                     match &td.body {
-                        TypeBody::Alias(a) if td.distinct => Val::Distinct(n.to_string(), Box::new(self.shape(&subst_texpr(a, &sub), depth))),
-                        TypeBody::Alias(a) => self.shape(&subst_texpr(a, &sub), depth),
-                        _ if depth > 3 => Val::Opaque(format!("`{n}` is recursive; only its outer levels are modelled")),
+                        TypeBody::Alias(a) if td.distinct => Val::Distinct(n.to_string(), Box::new(self.shape(&subst_texpr(a, &sub)))),
+                        TypeBody::Alias(a) => self.shape(&subst_texpr(a, &sub)),
                         TypeBody::Record(_) => {
                             let vs = self.env.variants_of(n, args).unwrap_or_default();
                             let (_, names, tys) = vs.into_iter().next().unwrap_or_default();
                             let names = names.unwrap_or_default();
-                            Val::Rec(n.to_string(), names.into_iter().zip(tys.iter()).map(|(f, t)| (f.to_string(), self.shape(t, depth + 1))).collect())
+                            Val::Rec(n.to_string(), names.into_iter().zip(tys.iter()).map(|(f, t)| (f.to_string(), self.part(t))).collect())
                         }
                         TypeBody::Sum(_) => {
                             let vs = self.env.variants_of(n, args).unwrap_or_default();
                             let tag = self.fresh("Int");
                             self.facts.push(format!("(and (<= 0 {tag}) (< {tag} {}))", vs.len()));
-                            let ctors = vs.iter().map(|(c, _, tys)| (c.to_string(), tys.iter().map(|t| self.shape(t, depth + 1)).collect())).collect();
+                            let ctors = vs.iter().map(|(c, _, tys)| (c.to_string(), tys.iter().map(|t| self.part(t)).collect())).collect();
                             Val::Sum { ty: n.to_string(), args: args.clone(), tag, ctors }
                         }
                     }
                 }
             },
         }
+    }
+
+    // ---- lazy parts ----
+
+    /// A part of a value, of type `t`: made now when it is a plain value, else
+    /// lazily (`Val::Lazy`).
+    fn part(&mut self, t: &TypeExpr) -> Val {
+        if !self.structured(t) {
+            return self.shape(t);
+        }
+        if self.cells.len() >= MAX_CELLS {
+            return Val::Opaque("a part of a value past the prover's size budget (only the parts read first are modelled)".into());
+        }
+        let valid = if self.refined(t, 0) {
+            let old = self.reason.take();
+            let v = self.fresh("Bool");
+            self.reason = old;
+            v
+        } else {
+            "true".into()
+        };
+        let placeholder = self.indexing.as_ref().is_some_and(|ix| ix.iter().any(|a| a.contains("@@")));
+        self.new_cell(Cell { ty: t.clone(), make: Make::Shape, valid, indexing: self.indexing.clone(), reason: self.reason.clone(), region: 0, placeholder, value: None, facts: vec![] })
+    }
+
+    fn new_cell(&mut self, mut c: Cell) -> Val {
+        c.region = self.regions.last().map_or(0, |r| r.id);
+        self.cells.push(c);
+        Val::Lazy(self.cells.len() - 1)
+    }
+
+    /// Is a value of `t` more than one term or list (a record, sum, tuple,
+    /// union): worth making only when read?
+    fn structured(&self, t: &TypeExpr) -> bool {
+        match self.env.expand_alias(t) {
+            TypeExpr::Union(_) => true,
+            TypeExpr::Unit | TypeExpr::Fn(..) | TypeExpr::Refined(..) => false,
+            TypeExpr::Named(n, _) => match n.as_str() {
+                "Int" | "Bool" | "String" | "Float" | "List" | "Dict" | "Set" => false,
+                "Tuple" => true,
+                _ => self.env.variant_parent(n.sym()).is_some() || self.env.types.contains_key(&n.sym()),
+            },
+        }
+    }
+
+    /// `v`, made if it is a lazy part.
+    fn force(&mut self, v: Val) -> Val {
+        match v {
+            Val::Lazy(id) => self.force_cell(id),
+            v => v,
+        }
+    }
+
+    /// Make lazy part `id` (once): in the context it was made in, with what
+    /// its type guarantees defined (its `valid`), its facts placed where its
+    /// scope's are, and the comparisons waiting on it settled.
+    fn force_cell(&mut self, id: usize) -> Val {
+        if let Some(v) = &self.cells[id].value {
+            return v.clone();
+        }
+        let (home, placeholder) = (self.cells[id].region, self.cells[id].placeholder);
+        // a part of an outer scope made inside an inner one (a quantified
+        // fact): it is made as if there, its facts and unknowns before the
+        // inner scopes'
+        let keep = match home {
+            // (a part with placeholders keeps its facts: no scope to place them in)
+            _ if placeholder => 0,
+            0 => 0,
+            _ => match self.regions.iter().position(|r| r.id == home) {
+                Some(p) => p + 1,
+                None => return Val::Opaque("a part of a value made in a scope that has ended".into()),
+            },
+        };
+        let inner = if placeholder { vec![] } else { self.regions.split_off(keep) };
+        let (tail_d, tail_f) = match inner.first() {
+            Some(r) => (self.decls.split_off(r.nd), self.facts.split_off(r.nf)),
+            None => (vec![], vec![]),
+        };
+        let (at_d, at_f) = (self.decls.len(), self.facts.len());
+        let pc = std::mem::take(&mut self.pc);
+        let indexing = std::mem::replace(&mut self.indexing, self.cells[id].indexing.clone());
+        let reason = std::mem::replace(&mut self.reason, self.cells[id].reason.clone());
+        let checking = std::mem::take(&mut self.checking);
+        let proving = std::mem::replace(&mut self.proving, 0);
+        let binding = std::mem::replace(&mut self.binding, 0);
+        let dead = std::mem::replace(&mut self.dead, false);
+        self.spec += 1;
+        let scope = placeholder.then(|| self.enter());
+        let v = self.materialize(id);
+        self.cells[id].value = Some(v.clone());
+        match scope {
+            Some(r) => {
+                let (_, nf) = self.leave(r);
+                self.cells[id].facts = self.facts.split_off(nf);
+            }
+            None => self.settle(id),
+        }
+        self.spec -= 1;
+        self.dead = dead;
+        self.binding = binding;
+        self.proving = proving;
+        self.checking = checking;
+        self.reason = reason;
+        self.indexing = indexing;
+        self.pc = pc;
+        if !inner.is_empty() {
+            let (ad, af) = (self.decls.len() - at_d, self.facts.len() - at_f);
+            self.decls.extend(tail_d);
+            self.facts.extend(tail_f);
+            self.regions.extend(inner.into_iter().map(|r| Region { id: r.id, nd: r.nd + ad, nf: r.nf + af }));
+            // comparisons made in the inner scopes
+            self.settle(id);
+        }
+        v
+    }
+
+    fn materialize(&mut self, id: usize) -> Val {
+        match self.cells[id].make.clone() {
+            Make::Shape => {
+                let t = self.cells[id].ty.clone();
+                let v = self.shape(&t);
+                let valid = self.cells[id].valid.clone();
+                if valid != "true" {
+                    let c = self.check_type(&t, &v, &[]);
+                    self.facts.push(format!("(= {valid} {c})"));
+                }
+                v
+            }
+            Make::View { of, i, outer } => {
+                let base = self.force_cell(of);
+                let v = self.subst_val(&base, &i, &outer);
+                let fs: Vec<T> = self.cells[of].facts.iter().map(|f| place(f, &i, &outer)).collect();
+                self.facts.extend(fs);
+                v
+            }
+            Make::Merge { c, a, b } => {
+                let x = self.force_cell(a);
+                let y = self.force_cell(b);
+                self.merge(&c, &x, &y)
+            }
+        }
+    }
+
+    /// The comparisons of part `id` (now made) with parts it was compared
+    /// with before either was made: each one's unknown is defined by
+    /// comparing the made parts (one level; their parts compare the same way).
+    fn settle(&mut self, id: usize) {
+        let Some(list) = self.pending.remove(&id) else { return };
+        let mut later = vec![];
+        for (y, e, r) in list {
+            if r != 0 && !self.regions.iter().any(|g| g.id == r) {
+                later.push((y, e, r));
+                continue;
+            }
+            if let Some(l) = self.pending.get_mut(&y) {
+                l.retain(|p| !(p.0 == id && p.1 == e));
+            }
+            let a = self.cells[id].value.clone().unwrap_or(Val::Opaque("a part".into()));
+            let b = self.force_cell(y);
+            let q = self.eq(&a, &b);
+            self.facts.push(format!("(= {e} {q})"));
+        }
+        if !later.is_empty() {
+            self.pending.entry(id).or_default().extend(later);
+        }
+    }
+
+    /// Open a scope (see `Region`).
+    fn enter(&mut self) -> usize {
+        let id = self.next_region;
+        self.next_region += 1;
+        self.regions.push(Region { id, nd: self.decls.len(), nf: self.facts.len() });
+        id
+    }
+
+    /// Close scope `id`: where its unknowns and facts start. Comparisons
+    /// made in it that are still waiting are forgotten.
+    fn leave(&mut self, id: usize) -> (usize, usize) {
+        let r = self.regions.pop().expect("a scope is open");
+        debug_assert_eq!(r.id, id);
+        if !self.pending.is_empty() {
+            self.pending.retain(|_, l| {
+                l.retain(|p| p.2 != id);
+                !l.is_empty()
+            });
+            self.eq_atoms.retain(|_, a| a.1 != id);
+        }
+        (r.nd, r.nf)
     }
 
     // ---- unions ----
@@ -1125,7 +1417,7 @@ impl<'a> Vc<'a> {
     /// A value of a union type: one slot per member shape. `None` when two
     /// members could have the same shape in a way the slots can't tell apart
     /// (`List[Int] | List[String]`), or a member's shape is not known.
-    fn union_shape(&mut self, ms: &[TypeExpr], depth: usize) -> Option<Val> {
+    fn union_shape(&mut self, ms: &[TypeExpr]) -> Option<Val> {
         let mut members = vec![];
         for m in ms {
             self.flatten_union(m, &mut members);
@@ -1159,18 +1451,18 @@ impl<'a> Vc<'a> {
                         cs.push(n.to_string());
                     }
                 }
-                let v = self.shape(&TypeExpr::Named(Symbol::from(sum), args.unwrap_or_default()), depth);
+                let v = self.shape(&TypeExpr::Named(Symbol::from(sum), args.unwrap_or_default()));
                 if let (Some(cs), Val::Sum { tag: inner, ctors: all, .. }) = (&ctors, &v) {
                     let ks: Vec<T> = cs.iter().filter_map(|c| all.iter().position(|x| &x.0 == c)).map(|j| format!("(= {inner} {j})")).collect();
                     self.facts.push(implies(&format!("(= {tag} {i})"), &or(&ks)));
                 }
                 v
             } else if ms.len() == 1 {
-                self.shape(&ms[0], depth)
+                self.shape(&ms[0])
             } else {
                 match k.as_str() {
                     // `Positive | Negative`: both are integers
-                    "Int" | "Bool" | "String" | "Unit" => self.shape(&TypeExpr::Named(Symbol::from(k.as_str()), vec![]), depth),
+                    "Int" | "Bool" | "String" | "Unit" => self.shape(&TypeExpr::Named(Symbol::from(k.as_str()), vec![])),
                     _ => return None,
                 }
             };
@@ -1183,6 +1475,10 @@ impl<'a> Vc<'a> {
     /// refinements ignored)? Exact where the shapes are known, else unknown.
     fn shape_test(&mut self, t: &TypeExpr, v: &Val) -> T {
         match v {
+            Val::Lazy(_) => {
+                let v = self.force(v.clone());
+                return self.shape_test(t, &v);
+            }
             Val::Opaque(r) => return self.unknown_bool(&r.clone()),
             Val::Absent => return "false".into(),
             Val::Union { tag, slots } => {
@@ -1243,6 +1539,10 @@ impl<'a> Vc<'a> {
     /// and what makes a value valid for a union.
     fn in_type(&mut self, t: &TypeExpr, v: &Val, extra: &[(String, Val)]) -> T {
         match v {
+            Val::Lazy(_) => {
+                let v = self.force(v.clone());
+                self.in_type(t, &v, extra)
+            }
             Val::Opaque(r) => self.unknown_bool(&r.clone()),
             Val::Absent => "false".into(),
             Val::Union { tag, slots } => {
@@ -1282,6 +1582,10 @@ impl<'a> Vc<'a> {
     /// Does `v` have constructor `c` (`v is Circle`)?
     fn is_ctor(&mut self, v: &Val, c: &str) -> T {
         match v {
+            Val::Lazy(_) => {
+                let v = self.force(v.clone());
+                self.is_ctor(&v, c)
+            }
             Val::Sum { tag, ctors, .. } => match ctors.iter().position(|k| k.0 == c) {
                 Some(k) => format!("(= {tag} {k})"),
                 None => "false".into(),
@@ -1359,6 +1663,10 @@ impl<'a> Vc<'a> {
     /// The field `f` of a value.
     fn field(&mut self, v: &Val, f: &str) -> Val {
         match v {
+            Val::Lazy(_) => {
+                let v = self.force(v.clone());
+                self.field(&v, f)
+            }
             Val::Rec(_, fs) => fs.iter().find(|x| x.0 == f).map(|x| x.1.clone()).unwrap_or(Val::Opaque(format!("field `{f}`"))),
             Val::Distinct(_, inner) if f == "value" => (**inner).clone(),
             Val::Tuple(xs) => f.parse::<usize>().ok().and_then(|i| xs.get(i).cloned()).unwrap_or(Val::Opaque(format!("field `{f}`"))),
@@ -1440,7 +1748,7 @@ impl<'a> Vc<'a> {
 
     /// A fresh value of type `t` that satisfies `t`.
     fn havoc(&mut self, t: &TypeExpr) -> Val {
-        let v = self.shape(t, 0);
+        let v = self.shape(t);
         let c = self.check_type(t, &v, &[]);
         self.assume(c);
         v
@@ -1473,6 +1781,10 @@ impl<'a> Vc<'a> {
             Val::Absent => Val::Absent,
             Val::FnOf { .. } => v.clone(),
             Val::Opaque(r) => Val::Opaque(r.clone()),
+            Val::Lazy(id) => {
+                let t = self.cells[*id].ty.clone();
+                self.havoc(&t)
+            }
         }
     }
 
@@ -1556,6 +1868,18 @@ impl<'a> Vc<'a> {
     /// The condition for `v` to be a valid value of `t`. `extra` are bindings
     /// visible to inline refinements (a function's parameters, for its result).
     fn check_type(&mut self, t: &TypeExpr, v: &Val, extra: &[(String, Val)]) -> T {
+        if let Val::Lazy(id) = v {
+            // a part not made yet is valid for its own type when its `valid` holds
+            if !self.refined(t, 0) {
+                return "true".into();
+            }
+            let ty = self.cells[*id].ty.clone();
+            if &ty == t || self.erased(&ty) == self.erased(t) {
+                return self.cells[*id].valid.clone();
+            }
+            let v = self.force(v.clone());
+            return self.check_type(t, &v, extra);
+        }
         // a recursive type (a tree whose children are trees) is checked to a
         // fixed depth, like `shape` models it: each level would check every
         // element of its lists again
@@ -1743,6 +2067,23 @@ impl<'a> Vc<'a> {
     fn merge(&mut self, c: &str, a: &Val, b: &Val) -> Val {
         match (a, b) {
             (Val::Absent, x) | (x, Val::Absent) => x.clone(),
+            (Val::Lazy(x), Val::Lazy(y)) if x == y => a.clone(),
+            // two parts, one of them not made yet: a part that is either, made
+            // when read (making it here could go on forever: a tree merged
+            // with its own subtree, `if c { t } else { t.left }`, merges each
+            // subtree with the one below it)
+            (Val::Lazy(x), Val::Lazy(y)) if (self.cells[*x].value.is_none() || self.cells[*y].value.is_none()) && self.cells.len() < MAX_CELLS => {
+                let (x, y) = (*x, *y);
+                let (vx, vy) = (self.cells[x].valid.clone(), self.cells[y].valid.clone());
+                let placeholder = self.cells[x].placeholder || self.cells[y].placeholder || c.contains("@@");
+                let cell = Cell { ty: self.cells[x].ty.clone(), make: Make::Merge { c: c.to_string(), a: x, b: y }, valid: ite(c, &vx, &vy), indexing: self.indexing.clone(), reason: self.reason.clone(), region: 0, placeholder, value: None, facts: vec![] };
+                self.new_cell(cell)
+            }
+            (Val::Opaque(r), Val::Lazy(_)) | (Val::Lazy(_), Val::Opaque(r)) => Val::Opaque(r.clone()),
+            (Val::Lazy(_), _) | (_, Val::Lazy(_)) => {
+                let (x, y) = (self.force(a.clone()), self.force(b.clone()));
+                self.merge(c, &x, &y)
+            }
             (Val::Int(x), Val::Int(y)) => Val::Int(ite(c, x, y)),
             (Val::Bool(x), Val::Bool(y)) => Val::Bool(ite(c, x, y)),
             (Val::Str(x), Val::Str(y)) => Val::Str(ite(c, x, y)),
@@ -1840,6 +2181,10 @@ impl<'a> Vc<'a> {
     }
 
     fn pattern(&mut self, p: &Pattern, v: &Val, binds: &mut Vec<(String, Val)>) -> T {
+        if let (Val::Lazy(_), false) = (v, matches!(p, Pattern::Bind(_) | Pattern::Wild)) {
+            let v = self.force(v.clone());
+            return self.pattern(p, &v, binds);
+        }
         if let Val::Union { tag, slots } = v {
             let type_name = self.env.type_pattern(p).is_some();
             if let Some(k) = self.pattern_key(p).filter(|_| !type_name) {
@@ -1998,6 +2343,39 @@ impl<'a> Vc<'a> {
 
     fn eq(&mut self, a: &Val, b: &Val) -> T {
         match (a, b) {
+            (Val::Lazy(x), Val::Lazy(y)) if x == y => "true".into(),
+            (Val::Lazy(x), Val::Lazy(y)) if (self.cells[*x].value.is_none() || self.cells[*y].value.is_none()) && !self.cells[*x].placeholder && !self.cells[*y].placeholder && self.indexing.is_none() => {
+                // a part not made yet: their equality is an unknown, defined when
+                // both are (as for merging, making it here could go on forever)
+                let key = (*x.min(y), *x.max(y));
+                // (one made in a scope that is not open here can't be used here)
+                if let Some((e, r)) = self.eq_atoms.get(&key) {
+                    if *r == 0 || self.regions.iter().any(|g| g.id == *r) {
+                        return e.clone();
+                    }
+                }
+                // (no reason: it is defined as soon as the parts are read)
+                let old = self.reason.take();
+                let e = self.fresh("Bool");
+                self.reason = old;
+                let r = self.regions.last().map_or(0, |g| g.id);
+                self.eq_atoms.insert(key, (e.clone(), r));
+                self.pending.entry(*x).or_default().push((*y, e.clone(), r));
+                self.pending.entry(*y).or_default().push((*x, e.clone(), r));
+                e
+            }
+            (Val::Lazy(x), Val::Lazy(y)) if self.eq_depth > 3 && (self.indexing.is_some() || self.cells[*x].placeholder || self.cells[*y].placeholder) => self.unknown_bool("comparing parts of values nested deeply"),
+            (Val::Opaque(r), Val::Lazy(_)) | (Val::Lazy(_), Val::Opaque(r)) => {
+                let r = r.clone();
+                self.unknown_bool(&r)
+            }
+            (Val::Lazy(_), _) | (_, Val::Lazy(_)) => {
+                let (x, y) = (self.force(a.clone()), self.force(b.clone()));
+                self.eq_depth += 1;
+                let e = self.eq(&x, &y);
+                self.eq_depth -= 1;
+                e
+            }
             (Val::Int(x), Val::Int(y)) | (Val::Bool(x), Val::Bool(y)) | (Val::Str(x), Val::Str(y)) => format!("(= {x} {y})"),
             (Val::Int(x), Val::Opaque(_)) | (Val::Opaque(_), Val::Int(x)) => {
                 let o = if matches!(a, Val::Opaque(_)) { a } else { b };
@@ -2189,7 +2567,13 @@ impl<'a> Vc<'a> {
         }
     }
 
+    /// The value of `e` (made, if it is a part of another value).
     pub fn eval(&mut self, e: &Expr) -> Val {
+        let v = self.eval_expr(e);
+        self.force(v)
+    }
+
+    fn eval_expr(&mut self, e: &Expr) -> Val {
         if self.dead {
             return Val::Unit;
         }
@@ -2402,7 +2786,7 @@ impl<'a> Vc<'a> {
                         // a function value of a known type: some valid value of its result type
                         Val::FnOf { ret } => {
                             let old = self.reason.replace("the result of calling a function value (only its type is known)".into());
-                            let res = self.shape(&ret, 0);
+                            let res = self.shape(&ret);
                             self.reason = old;
                             self.spec += 1;
                             let c = self.check_type(&ret, &res, &[]);
@@ -2528,7 +2912,7 @@ impl<'a> Vc<'a> {
                             (Some(v), _) => v.clone(),
                             (None, Some(t)) => {
                                 let old = self.reason.replace("the arguments of a function value are not known".into());
-                                let v = self.shape(t, 0);
+                                let v = self.shape(t);
                                 self.reason = old;
                                 v
                             }
@@ -2599,7 +2983,7 @@ impl<'a> Vc<'a> {
                         .iter()
                         .map(|t| {
                             let old = self.reason.replace("an argument a function value is called with (only its type is known)".into());
-                            let v = self.shape(t, 0);
+                            let v = self.shape(t);
                             self.reason = old;
                             self.spec += 1;
                             let c = self.check_type(t, &v, &[]);
@@ -2772,7 +3156,7 @@ impl<'a> Vc<'a> {
         }
         let why = format!("the result of `{}` (only its contract is known)", crate::types::shown_name(&label));
         let old = self.reason.replace(why);
-        let res = self.shape(&f.ret, 0);
+        let res = self.shape(&f.ret);
         self.reason = old;
         self.depth += 1;
         self.spec += 1;
@@ -3175,7 +3559,7 @@ impl<'a> Vc<'a> {
                 match rets.first() {
                     Some(ret) if rets.len() == n && rets.iter().all(|r| r == ret) => {
                         let old = self.reason.replace(not_modelled);
-                        let v = self.shape(ret, 0);
+                        let v = self.shape(ret);
                         self.reason = old;
                         v
                     }
@@ -3384,7 +3768,7 @@ impl<'a> Vc<'a> {
         path.reverse();
         let Expr::Var(x) = root else { return };
         let Some(base) = self.lookup(x) else { return };
-        let new = if path.is_empty() { v } else { set_path(base, &path, v) };
+        let new = if path.is_empty() { v } else { self.set_path(base, &path, v) };
         // the variable's declared type holds after every assignment
         for t in self.declared.get(x.as_str()).cloned().unwrap_or_default() {
             if self.refined(&t, 0) {
@@ -3413,6 +3797,23 @@ impl<'a> Vc<'a> {
             }
         }
         self.set(x, new);
+    }
+
+    /// `base` with the field at `path` set to `v`.
+    fn set_path(&mut self, base: Val, path: &[String], v: Val) -> Val {
+        let Some((f, rest)) = path.split_first() else { return v };
+        match self.force(base) {
+            Val::Rec(n, mut fs) => {
+                if let Some(slot) = fs.iter_mut().find(|x| &x.0 == f) {
+                    let old = std::mem::replace(&mut slot.1, Val::Unit);
+                    slot.1 = self.set_path(old, rest, v);
+                }
+                Val::Rec(n, fs)
+            }
+            // a field of a sum or union value: which member's field changed is
+            // not tracked, so the whole value is unknown
+            _ => Val::Opaque("a value whose field was assigned".into()),
+        }
     }
 
     /// After a loop: the state is the loop head's when it is left normally
@@ -3571,21 +3972,6 @@ pub fn type_is_refined(env: &Env, t: &TypeExpr) -> bool {
     Vc::new(env).refined(t, 0)
 }
 
-fn set_path(base: Val, path: &[String], v: Val) -> Val {
-    let Some((f, rest)) = path.split_first() else { return v };
-    match base {
-        Val::Rec(n, mut fs) => {
-            if let Some(slot) = fs.iter_mut().find(|x| &x.0 == f) {
-                let old = std::mem::replace(&mut slot.1, Val::Unit);
-                slot.1 = set_path(old, rest, v);
-            }
-            Val::Rec(n, fs)
-        }
-        // a field of a sum or union value: which member's field changed is
-        // not tracked, so the whole value is unknown
-        _ => Val::Opaque("a value whose field was assigned".into()),
-    }
-}
 
 /// Variables a loop may change: assigned ones, and those passed to `mut` parameters.
 // ---- regular expressions (smt/regexes.rs) ----
@@ -3749,7 +4135,7 @@ impl Vc<'_> {
         let ob = &self.obligations[i];
         let mut leaves = vec![];
         for (_, v) in &self.params {
-            leaves_of(v, &mut leaves);
+            leaves_of(&self.cells, v, &mut leaves);
         }
         let script = self.script(ob, &leaves);
         let run = || -> Option<String> {
@@ -3767,7 +4153,7 @@ impl Vc<'_> {
             "unsat" => Outcome::Proven,
             "sat" => {
                 let model = parse_values(&out[first.len()..]);
-                let args: Option<Vec<(String, Expr)>> = self.params.iter().map(|(n, v)| to_literal(self.env, v, &model).map(|x| (n.clone(), x))).collect();
+                let args: Option<Vec<(String, Expr)>> = self.params.iter().map(|(n, v)| to_literal(self.env, &self.cells, v, &model).map(|x| (n.clone(), x))).collect();
                 let shown = |args: &[(String, Expr)]| args.iter().map(|(n, v)| format!("{n} = {}", crate::printer::literal(v))).collect::<Vec<_>>().join(", ");
                 match args {
                     Some(a) => {
@@ -3815,29 +4201,83 @@ fn str_len_terms(script: &str) -> Vec<String> {
     out
 }
 
-fn leaves_of(v: &Val, out: &mut Vec<String>) {
+/// The unknowns a model must give a value for, to rebuild `v` (the parts made).
+fn leaves_of(cells: &[Cell], v: &Val, out: &mut Vec<String>) {
     match v {
         Val::Int(t) | Val::Bool(t) | Val::Str(t) => out.push(t.clone()),
-        Val::Tuple(xs) => xs.iter().for_each(|x| leaves_of(x, out)),
-        Val::Rec(_, fs) => fs.iter().for_each(|f| leaves_of(&f.1, out)),
+        Val::Tuple(xs) => xs.iter().for_each(|x| leaves_of(cells, x, out)),
+        Val::Rec(_, fs) => fs.iter().for_each(|f| leaves_of(cells, &f.1, out)),
         Val::Sum { tag, ctors, .. } => {
             out.push(tag.clone());
-            ctors.iter().flat_map(|c| &c.1).for_each(|x| leaves_of(x, out));
+            ctors.iter().flat_map(|c| &c.1).for_each(|x| leaves_of(cells, x, out));
         }
         Val::Union { tag, slots } => {
             out.push(tag.clone());
-            slots.iter().for_each(|s| leaves_of(&s.1, out));
+            slots.iter().for_each(|s| leaves_of(cells, &s.1, out));
         }
         Val::List { len, .. } => out.push(len.clone()),
-        Val::Distinct(_, x) => leaves_of(x, out),
+        Val::Distinct(_, x) => leaves_of(cells, x, out),
+        Val::Lazy(id) => {
+            if let Some(x) = &cells[*id].value {
+                leaves_of(cells, x, out)
+            }
+        }
         Val::Unit | Val::Absent | Val::Opaque(_) | Val::FnOf { .. } => {}
     }
 }
 
+/// Some value of type `t`, as code (the simplest one there is): a part of
+/// a counterexample that was never read can be anything. Replaying the
+/// counterexample checks it (an invalid one is discarded there).
+fn some_literal(env: &Env, t: &TypeExpr, depth: usize) -> Option<Expr> {
+    if depth > 8 {
+        return None;
+    }
+    Some(match env.expand_alias(t) {
+        TypeExpr::Unit => Expr::Unit,
+        TypeExpr::Union(ms) => return ms.iter().find_map(|m| some_literal(env, m, depth + 1)),
+        TypeExpr::Named(n, args) => match n.as_str() {
+            "Int" => Expr::Int(0),
+            "Bool" => Expr::Bool(false),
+            "String" => Expr::Str(String::new()),
+            "List" => Expr::List(vec![]),
+            "Tuple" => Expr::Tuple(args.iter().map(|a| some_literal(env, a, depth + 1)).collect::<Option<_>>()?),
+            _ => {
+                let td = env.types.get(&n.sym())?;
+                if td.distinct {
+                    let TypeBody::Alias(a) = &td.body else { return None };
+                    let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
+                    return Some(Expr::Ctor(n, CtorArgs::Positional(vec![some_literal(env, &subst_texpr(a, &sub), depth + 1)?])));
+                }
+                // the constructor with the fewest fields that can be made
+                let mut vs = env.variants_of(&n, &args)?;
+                vs.sort_by_key(|v| v.2.len());
+                vs.into_iter().find_map(|(c, names, tys)| {
+                    let fields: Vec<Expr> = tys.iter().map(|t| some_literal(env, t, depth + 1)).collect::<Option<_>>()?;
+                    Some(Expr::Ctor(
+                        c,
+                        match names {
+                            _ if fields.is_empty() => CtorArgs::None,
+                            Some(ns) => CtorArgs::Record(ns.into_iter().zip(fields).collect()),
+                            None => CtorArgs::Positional(fields),
+                        },
+                    ))
+                })?
+            }
+        },
+        _ => return None,
+    })
+}
+
 /// A parameter's value in a model, as the code that writes it (when it can
 /// be rebuilt: lists only when empty, nothing opaque).
-fn to_literal(env: &Env, v: &Val, m: &HashMap<String, String>) -> Option<Expr> {
+fn to_literal(env: &Env, cells: &[Cell], v: &Val, m: &HashMap<String, String>) -> Option<Expr> {
+    let to_literal = |env: &Env, v: &Val, m: &HashMap<String, String>| to_literal(env, cells, v, m);
     Some(match v {
+        Val::Lazy(id) => match &cells[*id].value {
+            Some(x) => to_literal(env, x, m)?,
+            None => some_literal(env, &cells[*id].ty, 0)?,
+        },
         Val::Int(t) => crate::llvm::native::int_expr(parse_big(m.get(t)?)?),
         Val::Bool(t) => Expr::Bool(m.get(t)? == "true"),
         Val::Str(t) => Expr::Str(parse_str(m.get(t)?)?),
