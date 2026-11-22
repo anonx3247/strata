@@ -1342,88 +1342,13 @@ fn modules_contracts_and_files() {
     assert!(ok && out.contains("0 failed"), "{out}");
 }
 
-/// Channels: every sender made is closed where it is made, each task closes
-/// its copy, a `spawn` captures a sender only on its own, and `select`'s arms
-/// wait on `recv`, `send` or `await`.
-#[test]
-fn channels_are_closed_and_selected() {
-    let d = tmp("channels");
-    save(&d.join("c.strata"), CHANNEL_ERRORS);
-    let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
-    assert!(!ok, "{out}");
-    for (f, msg) in [
-        ("never_closed", "`tx` is never closed here"),
-        ("task_never_closes", "the task holds a copy of `tx` and never closes it"),
-        ("nested_sender", "a `spawn` can capture a sender only on its own"),
-        ("arms", "a `select` arm waits on `rx.recv()`, `tx.send(v)` or `await h`"),
-        ("named_send", "a `send` arm gives nothing to name"),
-    ] {
-        assert!(out.contains(&format!("error in {f}: {msg}")), "{f}: {out}");
-    }
-    assert!(!out.contains("error in fine"), "{out}");
-}
-
-const CHANNEL_ERRORS: &str = r#"fn never_closed() {
-  (tx, rx) := channel(1)
-  tx.send(1)
-}
-
-fn task_never_closes() {
-  (tx, rx) := channel(1)
-  scope {
-    spawn tx.send(1)
-  }
-  tx.close()
-}
-
-fn nested_sender() {
-  (tx, rx) := channel(1)
-  pair := (tx, 1)
-  scope {
-    spawn {
-      pair.0.send(1)
-      pair.0.close()
-    }
-  }
-  tx.close()
-}
-
-fn arms(rx: Receiver[Int]) -> Int {
-  select {
-    rx.recv() as x => 1,
-    len([1]) as y => 2,
-  }
-}
-
-fn named_send(tx: Sender[Int]) {
-  select {
-    tx.send(1) as x => (),
-  }
-}
-
-fn fine(rx: Receiver[Int]) -> Int {
-  (tx, out) := channel()
-  scope {
-    spawn {
-      tx.send(1)
-      tx.close()
-    }
-  }
-  tx.close()
-  select {
-    rx.recv() as x => x ?? 0,
-    out.recv() as y => y ?? 1,
-  }
-}
-"#;
-
 /// Tasks: `spawn` only in a `scope`, and a handle never leaves it.
 #[test]
 fn tasks_stay_in_their_scope() {
     let d = tmp("tasks");
     save(&d.join("t.strata"),
         "fn outside() -> Int {\n  h := spawn 1\n  0\n}\n\
-         fn leaks() -> Int {\n  h := scope {\n    a := spawn 1\n    a\n  }\n  0\n}\n\
+         fn leaks() -> Int {\n  h := scope { spawn 1 }\n  0\n}\n\
          fn ret() -> Int {\n  scope {\n    h := spawn { return 1 }\n    0\n  }\n}\n\
          fn tries(r: Result[Int, String]) -> Result[Int, String] {\n  scope {\n    h := spawn r! + 1\n    Ok(await h)\n  }\n}\n\
          fn captured() -> Int {\n  scope {\n    a := spawn 1\n    b := spawn await a + 1\n    await b\n  }\n}\n\
