@@ -9,8 +9,8 @@
 //! slices, `+` and literals translate positions) and otherwise by their
 //! length only. A branch splits the path condition and the two results are
 //! merged with `ite`. A loop forgets what it changes: those variables become
-//! fresh values that keep only what their types guarantee (loop invariants
-//! come later). After the loop, the state is that one with a `while`'s
+//! fresh values that keep only what their types guarantee, and the loop's
+//! invariants, inferred (`infer_invariants`). After the loop, the state is that one with a `while`'s
 //! condition false, or the state at one of its `break`s.
 //!
 //! Every runtime check of the interpreter is an obligation: a callee's
@@ -176,6 +176,44 @@ struct Template {
     facts: Vec<T>,
 }
 
+/// A candidate loop invariant: a Bool expression over the variables in
+/// scope, `$entry_x` for `x` before the loop, and `it` for `it` (an
+/// `ensures`, of the variable the function returns).
+#[derive(Clone, Debug)]
+struct Candidate {
+    e: Expr,
+    it: Option<String>,
+}
+
+impl Candidate {
+    fn shown(&self) -> String {
+        let s = rename_entry(&crate::printer::expr(&self.e, 0));
+        match &self.it {
+            Some(x) => format!("{s} (it = {x})"),
+            None => s,
+        }
+    }
+}
+
+/// `$entry_x` written `x₀` (its value on entry).
+fn rename_entry(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(k) = rest.find("$entry_") {
+        out.push_str(&rest[..k]);
+        let after = &rest[k + 7..];
+        let n = after.chars().take_while(|c| c.is_alphanumeric() || *c == '_').map(|c| c.len_utf8()).sum::<usize>();
+        out.push_str(&after[..n]);
+        out.push('₀');
+        rest = &after[n..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// At most this many candidate invariants per loop.
+const MAX_CANDIDATES: usize = 40;
+
 /// The most elements a list made by the solver as an input has, and how many
 /// levels of lists and sums inside an input are made.
 pub const INPUT_LEN: usize = 6;
@@ -339,6 +377,17 @@ pub struct Vc<'a> {
     cells: Vec<Cell>,
     /// For inputs made by the solver (`inputs`): each list's first elements.
     input_elems: HashMap<usize, Vec<Val>>,
+    /// The solver, to infer loop invariants while running the body (none:
+    /// loops keep only their variables' declared types).
+    pub solver: Option<Solver>,
+    /// Inside a trial pass of a loop (`infer_invariants`): inner loops infer nothing.
+    trial: usize,
+    /// The function's `ensures`, each with the variable its body returns
+    /// (`it`), and its `requires`: candidate invariants.
+    hints: Vec<(Expr, String)>,
+    requires_hints: Vec<Expr>,
+    /// The invariants inferred, as shown in the report.
+    pub invariants: Vec<String>,
     /// The scopes open, innermost last (see `Region`).
     regions: Vec<Region>,
     next_region: usize,
@@ -484,6 +533,11 @@ impl<'a> Vc<'a> {
             bit_terms: HashMap::default(),
             cells: vec![],
             input_elems: HashMap::default(),
+            solver: None,
+            trial: 0,
+            hints: vec![],
+            requires_hints: vec![],
+            invariants: vec![],
             regions: vec![],
             next_region: 1,
             eq_atoms: HashMap::default(),
@@ -3667,7 +3721,22 @@ impl<'a> Vc<'a> {
             }
             Stmt::Continue => self.dead = true,
             Stmt::While(c, body) => {
+                let entry = self.entry_values(body, c);
+                let invariants = self.infer_invariants(c, body, &entry);
                 self.havoc_loop(body, Some(c));
+                // what every pass keeps holds at the head; what the declared
+                // types already say there is left out (it says nothing more)
+                let terms: Vec<Option<T>> = invariants.iter().map(|(_, cand)| self.candidate_value(cand, &entry)).collect();
+                let mut implied = vec![true; terms.len()];
+                if let Some(solver) = self.solver.clone() {
+                    let pc = self.pc.clone();
+                    self.drop_falsifiable(&solver, &pc, &terms, &mut implied);
+                }
+                for (((shown, _), t), implied) in invariants.iter().zip(terms).zip(implied) {
+                    let Some(t) = t.filter(|_| !implied) else { continue };
+                    self.assume(t);
+                    self.invariants.push(format!("invariant of `while {}`: {shown} (inferred)", crate::printer::expr(c, 0)));
+                }
                 self.breaks.push(vec![]);
                 let cv = self.eval(c);
                 let cv = self.as_bool(&cv);
@@ -3864,6 +3933,232 @@ impl<'a> Vc<'a> {
         self.scopes = scopes;
     }
 
+    /// The variables a loop changes, with their values before it: bound as
+    /// `$entry_x` in candidates (`x >= $entry_x`).
+    fn entry_values(&mut self, body: &Expr, c: &Expr) -> Vec<(String, String, Val)> {
+        let env = self.env;
+        let mut_params = |n: &str| env.mut_params(n);
+        let mut names: Vec<String> = std::iter::once(body).chain([c]).flat_map(|e| changed_vars(e, &mut_params)).collect::<HashSet<String>>().into_iter().collect();
+        names.sort();
+        names.into_iter().filter_map(|x| self.lookup(&x).map(|v| (x.clone(), format!("$entry_{x}"), v))).collect()
+    }
+
+    /// Facts every pass of `while c { body }` keeps, from a list of
+    /// candidates (Houdini): those that can be false on entry are dropped,
+    /// then, from any state where the others and the condition hold, one
+    /// pass runs and those that can be false after it are dropped, until a
+    /// pass drops nothing. What remains holds on entry and after every pass,
+    /// so at the head of the loop, every time. Shown, with the candidate.
+    fn infer_invariants(&mut self, c: &Expr, body: &Expr, entry: &[(String, String, Val)]) -> Vec<(String, Candidate)> {
+        let Some(solver) = self.solver.clone() else { return vec![] };
+        let has_continue = {
+            let mut found = false;
+            crate::ast::walk(body, |x| {
+                if let Expr::Block(ss, _) = x {
+                    found |= ss.iter().any(|s| matches!(s, Stmt::Continue));
+                }
+            });
+            found
+        };
+        // (a `continue` ends a pass whose state isn't kept; inner loops of a trial infer nothing)
+        if has_continue || self.trial > 0 || self.spec > 0 || self.dead {
+            return vec![];
+        }
+        let cands = self.invariant_candidates(c, entry);
+        if cands.is_empty() {
+            return vec![];
+        }
+        // on entry
+        let at_entry: Vec<Option<T>> = cands.iter().map(|k| self.candidate_value(k, entry)).collect();
+        let mut alive: Vec<bool> = at_entry.iter().map(|t| t.is_some()).collect();
+        let pc = self.pc.clone();
+        self.drop_falsifiable(&solver, &pc, &at_entry, &mut alive);
+        // after a pass, from the head
+        for _ in 0..=cands.len() {
+            if !alive.iter().any(|a| *a) {
+                break;
+            }
+            let (scopes, n_pc, dead, n_ob, n_loops, n_rec) = (self.scopes.clone(), self.pc.len(), self.dead, self.obligations.len(), self.loops.len(), self.rec_sites.len());
+            let returns = std::mem::take(&mut self.returns);
+            self.trial += 1;
+            self.spec += 1;
+            self.havoc_loop(body, Some(c));
+            for (k, cand) in cands.iter().enumerate() {
+                if alive[k] {
+                    if let Some(t) = self.candidate_value(cand, entry) {
+                        self.pc.push(t);
+                    }
+                }
+            }
+            let cv = self.eval(c);
+            let cv = self.as_bool(&cv);
+            self.pc.push(cv);
+            self.breaks.push(vec![]);
+            self.eval(body);
+            self.breaks.pop();
+            let after: Vec<Option<T>> = if self.dead {
+                // every path left the loop: nothing to keep
+                cands.iter().map(|_| Some("true".to_string())).collect()
+            } else {
+                cands.iter().enumerate().map(|(k, cand)| if alive[k] { self.candidate_value(cand, entry) } else { None }).collect()
+            };
+            let pc_after = self.pc.clone();
+            self.spec -= 1;
+            self.trial -= 1;
+            self.returns = returns;
+            self.scopes = scopes;
+            self.pc.truncate(n_pc);
+            self.dead = dead;
+            self.obligations.truncate(n_ob);
+            self.loops.truncate(n_loops);
+            self.rec_sites.truncate(n_rec);
+            if !self.drop_falsifiable(&solver, &pc_after, &after, &mut alive) {
+                break;
+            }
+        }
+        cands.into_iter().zip(alive).filter(|(_, a)| *a).map(|(k, _)| (k.shown(), k)).collect()
+    }
+
+    /// Drop (in `alive`) each term that can be false under `pc`; a term that
+    /// is `None` is dropped. Whether any was dropped.
+    fn drop_falsifiable(&self, solver: &Solver, pc: &[T], terms: &[Option<T>], alive: &mut [bool]) -> bool {
+        let mut dropped = false;
+        for (a, t) in alive.iter_mut().zip(terms) {
+            if *a && t.is_none() {
+                *a = false;
+                dropped = true;
+            }
+        }
+        loop {
+            let live: Vec<usize> = (0..terms.len()).filter(|&k| alive[k]).collect();
+            if live.is_empty() {
+                return dropped;
+            }
+            let goal = and(&live.iter().map(|&k| terms[k].clone().unwrap_or_default()).collect::<Vec<_>>());
+            let ob = Obligation { what: "invariant".into(), goal, pc: pc.to_vec(), facts: self.facts.len(), termination: false };
+            let script = self.script(&ob, &[]);
+            let Some(head) = script.find("(check-sat)") else { return dropped };
+            let mut defs = String::new();
+            for (j, &k) in live.iter().enumerate() {
+                defs.push_str(&format!("(declare-const inv{j} Bool)\n(assert (= inv{j} {}))\n", terms[k].as_deref().unwrap_or("true")));
+            }
+            let names: Vec<String> = (0..live.len()).map(|j| format!("inv{j}")).collect();
+            let q = format!("{}{defs}(check-sat)\n(get-value ({}))\n", &script[..head], names.join(" "));
+            let out = run_solver(solver, &q, &std::sync::atomic::AtomicBool::new(false)).ok().flatten().unwrap_or_default();
+            let first = out.lines().next().unwrap_or("").trim();
+            match first {
+                "unsat" => return dropped,
+                "sat" => {
+                    let vals = parse_values(&out[first.len()..]);
+                    let mut any = false;
+                    for (j, &k) in live.iter().enumerate() {
+                        if vals.get(&format!("inv{j}")).map(|v| v.trim()) != Some("true") {
+                            alive[k] = false;
+                            any = true;
+                        }
+                    }
+                    if !any {
+                        // (a model that falsifies none: give up on them all)
+                        live.iter().for_each(|&k| alive[k] = false);
+                    }
+                    dropped = true;
+                }
+                // the solver gave up on them together: each on its own, kept if proven
+                _ => {
+                    for &k in &live {
+                        let ob = Obligation { what: "invariant".into(), goal: terms[k].clone().unwrap_or_default(), pc: pc.to_vec(), facts: self.facts.len(), termination: false };
+                        let q = self.script(&ob, &[]);
+                        let out = run_solver(solver, &q, &std::sync::atomic::AtomicBool::new(false)).ok().flatten().unwrap_or_default();
+                        if out.lines().next().map(str::trim) != Some("unsat") {
+                            alive[k] = false;
+                        }
+                    }
+                    return true;
+                }
+            }
+        }
+    }
+
+    /// The candidates for `while c`'s invariants: the condition's comparisons
+    /// made non-strict (what holds after the last pass too), the `ensures`
+    /// of the variable returned, the `requires`, and each integer the loop
+    /// changes against its value on entry, 0, the integer parameters and the
+    /// other integers it changes. At most `MAX_CANDIDATES`.
+    fn invariant_candidates(&mut self, c: &Expr, entry: &[(String, String, Val)]) -> Vec<Candidate> {
+        let var = |n: &str| Expr::Var(Symbol::new(n));
+        let bin = |op: BinOp, a: Expr, b: Expr| Expr::Bin(op, Box::new(a), Box::new(b));
+        let plain = |e: Expr| Candidate { e, it: None };
+        let mut out: Vec<Candidate> = vec![];
+        fn atoms(e: &Expr, out: &mut Vec<Expr>) {
+            match e {
+                Expr::Bin(BinOp::And, a, b) => {
+                    atoms(a, out);
+                    atoms(b, out);
+                }
+                Expr::Bin(BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Ne, _, _) => out.push(e.clone()),
+                _ => {}
+            }
+        }
+        let mut cs = vec![];
+        atoms(c, &mut cs);
+        for a in cs {
+            let Expr::Bin(op, l, r) = a else { continue };
+            match op {
+                BinOp::Lt | BinOp::Le => out.push(plain(bin(BinOp::Le, *l, *r))),
+                BinOp::Gt | BinOp::Ge => out.push(plain(bin(BinOp::Ge, *l, *r))),
+                BinOp::Ne => {
+                    out.push(plain(bin(BinOp::Le, (*l).clone(), (*r).clone())));
+                    out.push(plain(bin(BinOp::Ge, *l, *r)));
+                }
+                _ => {}
+            }
+        }
+        let changed: Vec<&String> = entry.iter().map(|(x, _, _)| x).collect();
+        for (e, x) in self.hints.clone() {
+            if changed.contains(&&x) {
+                out.push(Candidate { e, it: Some(x) });
+            }
+        }
+        for r in self.requires_hints.clone() {
+            out.push(plain(r));
+        }
+        let ints: Vec<&(String, String, Val)> = entry.iter().filter(|(_, _, v)| matches!(v, Val::Int(_))).collect();
+        let params: Vec<String> = self.params.iter().filter(|(n, v)| matches!(v, Val::Int(_)) && !changed.contains(&n)).map(|(n, _)| n.clone()).collect();
+        for (x, ex, _) in &ints {
+            out.push(plain(bin(BinOp::Ge, var(x), var(ex))));
+            out.push(plain(bin(BinOp::Le, var(x), var(ex))));
+            out.push(plain(bin(BinOp::Ge, var(x), Expr::Int(0))));
+            let others = params.iter().cloned().chain(ints.iter().map(|(y, _, _)| y.clone()).filter(|y| y != x));
+            for y in others {
+                out.push(plain(bin(BinOp::Le, var(x), var(&y))));
+                out.push(plain(bin(BinOp::Ge, var(x), var(&y))));
+            }
+        }
+        let mut seen = HashSet::default();
+        out.retain(|k| seen.insert(k.shown()));
+        out.truncate(MAX_CANDIDATES);
+        out
+    }
+
+    /// A candidate's value in the current state (the loop's variables as
+    /// they are now, `$entry_x` as before the loop). `None` when it isn't
+    /// a known Bool.
+    fn candidate_value(&mut self, k: &Candidate, entry: &[(String, String, Val)]) -> Option<T> {
+        let mut layer: HashMap<String, Val> = entry.iter().map(|(_, ex, v)| (ex.clone(), v.clone())).collect();
+        if let Some(x) = &k.it {
+            layer.insert("it".into(), self.lookup(x)?);
+        }
+        self.scopes.push(layer);
+        self.spec += 1;
+        let v = self.eval(&k.e);
+        self.spec -= 1;
+        self.scopes.pop();
+        match v {
+            Val::Bool(t) => Some(t),
+            _ => None,
+        }
+    }
+
     /// Before a loop: every variable the loop may change takes any value.
     fn havoc_loop(&mut self, body: &Expr, cond: Option<&Expr>) {
         let env = self.env;
@@ -4058,6 +4353,13 @@ impl<'a> Vc<'a> {
             let c = self.pred(r, binds.clone());
             self.pc.push(c);
         }
+        // what a loop may need to keep: the `ensures`, of the variable returned
+        if let Expr::Block(_, tail) = &f.body {
+            if let Expr::Var(x) = &**tail {
+                self.hints = f.ensures.iter().map(|e| (e.clone(), x.to_string())).collect();
+            }
+        }
+        self.requires_hints = f.requires.clone();
         let res = self.eval(&f.body);
         // the result is checked where the body ends, and at every early return
         let mut exits = vec![];

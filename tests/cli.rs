@@ -376,6 +376,54 @@ fn inputs_from_the_solver_meet_narrow_types() {
     assert!(out.contains("✓ first"), "{out}");
 }
 
+/// Loop invariants are inferred: candidates from the condition, the
+/// `ensures`, the `requires` and how the loop's integers change; kept when
+/// they hold on entry and after every pass.
+#[test]
+fn loop_invariants_are_inferred() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("invariants");
+    let src = "fn early(n: Int) -> Int
+  ensures it >= 0 && it <= 10
+{
+  mut i: Int = 0
+  while i < 10 {
+    if i == n { break }
+    i += 1
+  }
+  i
+}
+fn search(xs: List[Int], t: Int) -> Int
+  ensures it >= 0 && it <= len(xs)
+{
+  mut lo: Int = 0
+  mut hi: Int = len(xs)
+  while lo < hi {
+    mid := (lo + hi) / 2
+    if xs[mid] < t { lo = mid + 1 } else { hi = mid }
+  }
+  lo
+}
+fn wrong(n: Natural) -> Int
+  ensures it == n + 1
+{
+  mut i: Int = 0
+  while i < n { i += 1 }
+  i
+}
+";
+    save(&d.join("t.strata"), src);
+    let (ok, out) = strata(&["--file", "t.strata", "verify", "--checks", "--no-race"], &d, None);
+    assert!(!ok, "{out}");
+    assert!(out.contains("✓ early ") && out.contains("invariant of `while i < 10`: i <= 10 (inferred)"), "{out}");
+    // `lo <= hi` keeps `xs[mid]` in range
+    assert!(out.contains("✓ search ") && out.contains("invariant of `while lo < hi`: lo <= hi (inferred)"), "{out}");
+    assert!(out.contains("✗ wrong") && out.contains("found by the solver"), "an invariant never hides a bug: {out}");
+}
+
 /// The solver and the fuzzer race: a failure the fuzzer finds stops the
 /// solver's processes, so a slow query doesn't hold the verdict up.
 #[test]
@@ -1040,7 +1088,8 @@ fn math_example_verifies_as_documented() {
     for name in ["factorial", "gcd", "power", "digit_sum", "ackermann", "triangle", "collatz_steps", "positive_squares", "is_prime", "primes", "first_or_one"] {
         assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven (as docs/verification.md says): {out}");
     }
-    assert!(out.contains("~ isqrt") && out.contains("not proven: ensures it * it <= n"), "{out}");
+    // its loop invariant is inferred (docs/verification.md, "Loops")
+    assert!(out.contains("✓ isqrt") && out.contains("invariant of `while (r + 1) * (r + 1) <= n`: it * it <= n (it = r) (inferred)"), "{out}");
     assert!(out.contains("the pair (`m`, `n`), compared in order") && out.contains("may not terminate: the loop `while x != 1`"), "{out}");
     assert!(out.contains("✗ average") && out.contains("input:   []\n") && out.contains("✗ next_digit") && out.contains("input:   9\n"), "{out}");
 }
