@@ -94,6 +94,8 @@ every change made through strata, committed with them):
                                name, hashes, size and dependencies, read without decoding it;
                                --tree: each definition (a bundle's too) as a `std.ast` value, one per line
                                --text: the definitions as the printer writes them, as stored
+  lex <FILE>                   a text file's tokens, one per line (then its comments), as
+                               the lexer makes them: what `std.ast.lex` is tested against
   (`--file` accepts a folder: each .strata file is a module named after its path.
    `--file F edit [MODULE]` and `--file F add TEXT` change F outside any log: a script,
    or a folder's module, created if new; only what doesn't parse is refused)
@@ -316,6 +318,7 @@ fn run() -> Result<bool, String> {
         "render" => cmd::render(&args),
         "pack" => cmd::pack(&args),
         "header" => cmd::header(&args),
+        "lex" => cmd::lex(&args),
         "interface" => cmd::interface(&args),
         "ast" => cmd::ast(&args),
         "view" => cmd::view(&args),
