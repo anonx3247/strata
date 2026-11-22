@@ -80,16 +80,27 @@ pub fn build(args: &Args) -> Result<bool, String> {
     std::fs::write(&ll, &ir).map_err(|e| e.to_string())?;
     std::fs::write(&rt, llvm::RUNTIME).map_err(|e| e.to_string())?;
     let cc = std::env::var("STRATA_CC").unwrap_or_else(|_| "clang".into());
-    let status = Command::new(&cc)
-        .args(["-O2", "-Wno-override-module", "-o", &out])
-        .arg(&ll)
-        .arg(&rt)
-        // std's precompiled code, linked in (always statically: an executable stands alone)
-        .args(llvm::jit::std_library().map(|l| l.object.clone()))
-        .args(&native)
-        .arg("-lm")
-        .status()
-        .map_err(|e| format!("can't run `{cc}` (a C compiler with LLVM, e.g. clang; set STRATA_CC to choose one): {e}"));
+    // the program and the runtime optimized together (`-flto`: the runtime's
+    // small functions inlined into the program); a linker without LTO gets
+    // them apart, as the JIT does (its runtime is the one built into strata)
+    let link = |lto: bool| {
+        Command::new(&cc)
+            .args(["-O2", "-Wno-override-module", "-o", &out])
+            .args(lto.then_some("-flto"))
+            .arg(&ll)
+            .arg(&rt)
+            // std's precompiled code, linked in (always statically: an executable stands alone)
+            .args(llvm::jit::std_library().map(|l| l.object.clone()))
+            .args(&native)
+            .arg("-lm")
+            .stderr(if lto { std::process::Stdio::null() } else { std::process::Stdio::inherit() })
+            .status()
+            .map_err(|e| format!("can't run `{cc}` (a C compiler with LLVM, e.g. clang; set STRATA_CC to choose one): {e}"))
+    };
+    let status = match link(true) {
+        Ok(s) if s.success() => Ok(s),
+        _ => link(false),
+    };
     let _ = std::fs::remove_dir_all(&dir);
     if !status?.success() {
         return Err(format!("`{cc}` failed on the generated code"));

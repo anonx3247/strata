@@ -845,6 +845,48 @@ declare i1 @strata_cancelled()
 declare void @strata_unwound()
 declare void @strata_scope_cancel(ptr)
 @strata_cancel_any = external global i32
+@strata_slow_counts = external global i32
+; one holder more / fewer (whether that was the last), the count updated here
+; unless the runtime must do it (atomically while tasks run, or checked)
+define internal void @strata.dup(ptr %p) alwaysinline {
+  %slow = load i32, ptr @strata_slow_counts, align 4
+  %rt = icmp ne i32 %slow, 0
+  br i1 %rt, label %runtime, label %here
+runtime:
+  call void @strata_dup(ptr %p)
+  ret void
+here:
+  %cp = getelementptr i64, ptr %p, i64 -1
+  %c = load i64, ptr %cp, align 8
+  %held = icmp sgt i64 %c, 0
+  br i1 %held, label %more, label %done
+more:
+  %n = add i64 %c, 1
+  store i64 %n, ptr %cp, align 8
+  ret void
+done:
+  ret void
+}
+define internal i1 @strata.release(ptr %p) alwaysinline {
+  %slow = load i32, ptr @strata_slow_counts, align 4
+  %rt = icmp ne i32 %slow, 0
+  br i1 %rt, label %runtime, label %here
+runtime:
+  %g = call i1 @strata_release(ptr %p)
+  ret i1 %g
+here:
+  %cp = getelementptr i64, ptr %p, i64 -1
+  %c = load i64, ptr %cp, align 8
+  %held = icmp sgt i64 %c, 0
+  br i1 %held, label %fewer, label %kept
+fewer:
+  %n = sub i64 %c, 1
+  store i64 %n, ptr %cp, align 8
+  %last = icmp eq i64 %n, 0
+  ret i1 %last
+kept:
+  ret i1 false
+}
 declare void @strata_int_dup(i64)
 declare void @strata_int_drop(i64)
 ; an `Int` outside [-2^62, 2^62) is a big integer, an object: only those are counted
@@ -2567,7 +2609,7 @@ impl<'m, 'a> Func<'m, 'a> {
         if self.is_int(&v.0) {
             self.emit(format!("call void @strata.int_dup(i64 {})", v.1));
         } else {
-            self.emit(format!("call void @strata_dup(ptr {})", v.1));
+            self.emit(format!("call void @strata.dup(ptr {})", v.1));
         }
     }
 
@@ -3089,7 +3131,7 @@ impl<'m, 'a> Func<'m, 'a> {
             Ty::Str => {
                 // (owned, as every shown value: held once more)
                 if !constant(&v.1) {
-                    self.emit(format!("call void @strata_dup(ptr {})", v.1));
+                    self.emit(format!("call void @strata.dup(ptr {})", v.1));
                 }
                 Ok(v.1.clone())
             }
@@ -3129,7 +3171,7 @@ impl<'m, 'a> Func<'m, 'a> {
             Ty::Fn(..) => {
                 // how the closure shows
                 let shown = self.field(v, 1, &Ty::Str)?;
-                self.emit(format!("call void @strata_dup(ptr {})", shown.1));
+                self.emit(format!("call void @strata.dup(ptr {})", shown.1));
                 shown.1
             }
             Ty::Con(n, args) if n == "Set" => {
@@ -3734,7 +3776,7 @@ impl<'m, 'a> Func<'m, 'a> {
             h.on_member(&a, |h, m, x| {
                 if h.m.boxes(m) {
                     let (gone, unbox, kept) = (h.fresh("gone"), h.fresh_label("unbox"), h.fresh_label("kept"));
-                    h.emit(format!("{gone} = call i1 @strata_release(ptr %a)"));
+                    h.emit(format!("{gone} = call i1 @strata.release(ptr %a)"));
                     h.emit(format!("br i1 {gone}, label %{unbox}, label %{kept}"));
                     h.block(&unbox);
                     let x = h.field(&a, 0, m)?;
@@ -3757,7 +3799,7 @@ impl<'m, 'a> Func<'m, 'a> {
         h.emit("%null = icmp eq ptr %a, null".into());
         h.emit("br i1 %null, label %kept, label %held".into());
         h.block("held");
-        h.emit("%gone = call i1 @strata_release(ptr %a)".into());
+        h.emit("%gone = call i1 @strata.release(ptr %a)".into());
         h.emit("br i1 %gone, label %last, label %kept".into());
         h.block("last");
         let a: V = (t.clone(), "%a".into());
@@ -3813,7 +3855,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 h.emit("%bp = getelementptr i8, ptr %a, i64 8".into());
                 h.emit("%buf = load ptr, ptr %bp".into());
                 h.emit("call void @strata_free(ptr %a)".into());
-                h.emit("%blast = call i1 @strata_release(ptr %buf)".into());
+                h.emit("%blast = call i1 @strata.release(ptr %buf)".into());
                 h.emit("br i1 %blast, label %elements, label %kept".into());
                 h.block("elements");
                 if h.counted(&et) {
@@ -8164,7 +8206,7 @@ impl Func<'_, '_> {
         let plain = self.m.string(&format!("<mock {tag}>"));
         let mut entries = vec![];
         // as `to_string` and as `debug`
-        for (what, text) in [("show", format!("  call void @strata_dup(ptr {plain})\n  ret ptr {plain}")), ("debug", format!("  call void @strata_dup(ptr {plain})\n  ret ptr {plain}"))] {
+        for (what, text) in [("show", format!("  call void @strata.dup(ptr {plain})\n  ret ptr {plain}")), ("debug", format!("  call void @strata.dup(ptr {plain})\n  ret ptr {plain}"))] {
             let f = format!("@\"mock{what}:{}\"", key(tr_ty));
             writeln!(self.m.body, "define ptr {f}(i64 %v) {{\nentry:\n{text}\n}}\n").unwrap();
             entries.push(f);
