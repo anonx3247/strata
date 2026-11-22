@@ -34,7 +34,10 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
                 return Err(format!("{} Its parameter `{}` is a `{ty}`", not_given(&ty, "`main`"), pm.name));
             }
         }
-        let ir = if args.flag("--trace") { llvm::compile_traced(p, "main") } else { llvm::compile(p, "main") };
+        // the checks the last `verify` proved are left out (unless --all-checks)
+        let file = if matches!(src, Source::File(_)) && args.val("--file").is_none() { Some(path.to_string_lossy().to_string()) } else { args.val("--file").map(String::from) };
+        let proofs = proofs_for(&src, file.as_deref(), args);
+        let ir = llvm::compile_proven(p, "main", proofs, args.flag("--trace")).map(|r| r.0);
         let ir = ir.map_err(|e| format!("the program can't be compiled yet: {e}"))?;
         std::process::exit(llvm::jit::run(&ir, &prog, &program_args)?);
     };

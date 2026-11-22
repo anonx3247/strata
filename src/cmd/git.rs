@@ -129,7 +129,7 @@ pub fn sync(args: &Args) -> Result<bool, String> {
     if is_ancestor("HEAD", &target) {
         crate::git::run(None, &["merge", "--ff-only", &target])?;
         println!("fast-forwarded to {target}");
-        return ci(false);
+        return Ok(true);
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let attrs = crate::git::run(None, &["rev-parse", "--git-path", "strata-sync-attributes"])?.trim().to_string();
@@ -152,7 +152,7 @@ pub fn sync(args: &Args) -> Result<bool, String> {
         for f in conflicted.lines() {
             eprintln!("  {f}");
         }
-        eprintln!("resolve them, run `strata ci`, then `git commit` (or `git merge --abort`)");
+        eprintln!("resolve them, run `strata check`, then `git commit` (or `git merge --abort`)");
         return Ok(false);
     }
     // a rename on one side reaches the other side's new calls, in any file
@@ -160,9 +160,9 @@ pub fn sync(args: &Args) -> Result<bool, String> {
     for note in merge::follow_renames(&top, &base, &target)? {
         println!("{note}");
     }
-    if !ci(false)? {
+    if !merged_checks(&top)? {
         eprintln!("\nthe merge with {target} doesn't check, so it is staged but not committed:");
-        eprintln!("fix it, run `strata ci`, then `git commit` (or `git merge --abort`)");
+        eprintln!("fix it, run `strata check`, then `git commit` (or `git merge --abort`)");
         return Ok(false);
     }
     crate::git::run(None, &["commit", "--no-edit"])?;
@@ -170,11 +170,35 @@ pub fn sync(args: &Args) -> Result<bool, String> {
     Ok(true)
 }
 
-/// What CI requires, over the whole repository (or the current folder outside
-/// git): every package and every script checks, every package's exports name
-/// something, and every `.strata` file is in canonical form (the bytes strata
-/// writes for it). `fix` rewrites the files that aren't.
-pub fn ci(fix: bool) -> Result<bool, String> {
+/// Whether every package and script of a merged repository checks, printing
+/// the errors of those that don't.
+fn merged_checks(top: &std::path::Path) -> Result<bool, String> {
+    let (packages, scripts) = package::discover(top)?;
+    let mut ok = true;
+    for path in packages.iter().chain(&scripts) {
+        let shown = path.strip_prefix(top).unwrap_or(path).display().to_string();
+        let errors: Vec<String> = match package::program(path) {
+            Ok(p) => match package::check_settings(path, &p) {
+                Ok(()) => full_check(&p).errors.iter().map(|e| format!("error in {}: {}", e.decl, e.msg)).collect(),
+                Err(e) => vec![e],
+            },
+            Err(e) => vec![e],
+        };
+        if !errors.is_empty() {
+            ok = false;
+            println!("✗ {shown}:");
+            for e in errors {
+                println!("    {e}");
+            }
+        }
+    }
+    Ok(ok)
+}
+
+/// `strata upgrade`: rewrites every package and script under the repository
+/// (or the current folder outside git) in canonical form, the bytes strata
+/// writes for it now; after a change to the tree or the format.
+pub fn upgrade() -> Result<bool, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let top = crate::git::run(None, &["rev-parse", "--show-toplevel"]).map(|t| std::path::PathBuf::from(t.trim())).unwrap_or(cwd);
     let top = std::fs::canonicalize(&top).unwrap_or(top);
@@ -183,9 +207,9 @@ pub fn ci(fix: bool) -> Result<bool, String> {
         return Err(format!("no .strata files under {}", top.display()));
     }
     let mut ok = true;
+    let mut rewritten = 0;
     for path in packages.iter().chain(&scripts) {
         let shown = path.strip_prefix(&top).unwrap_or(path).display().to_string();
-        let pkg = if path.is_dir() { Some(package::load(path)?) } else { None };
         let p = match package::program(path) {
             Ok(p) => p,
             Err(e) => {
@@ -194,47 +218,25 @@ pub fn ci(fix: bool) -> Result<bool, String> {
                 continue;
             }
         };
-        // canonical: each file is exactly what strata would write for it
-        let canonical: Vec<(std::path::PathBuf, Vec<u8>)> = if pkg.is_some() { store::encode_files(&p) } else { vec![(std::path::PathBuf::new(), store::encode_script(&p))] };
+        let canonical: Vec<(std::path::PathBuf, Vec<u8>)> = if path.is_dir() { store::encode_files(&p) } else { vec![(std::path::PathBuf::new(), store::encode_script(&p))] };
         for (rel, bytes) in package::files(path)? {
             let file = if rel.as_os_str().is_empty() { shown.clone() } else { format!("{shown}/{}", rel.display()) };
-            let want = canonical.iter().find(|(r, _)| *r == rel).map(|(_, b)| b);
-            if want == Some(&bytes) {
-                continue;
-            }
-            if !fix {
-                ok = false;
-                println!("✗ {file}: not in canonical form (`strata ci --fix` rewrites it)");
-            } else if let Some(want) = want {
-                store::write_file(&top.join(&file), want)?;
-                println!("  {file}: rewritten in canonical form");
-            } else {
-                ok = false;
-                println!("✗ {file}: holds no module of its own (named after its path)");
+            match canonical.iter().find(|(r, _)| *r == rel).map(|(_, b)| b) {
+                Some(want) if *want == bytes => {}
+                Some(want) => {
+                    store::write_file(&top.join(&file), want)?;
+                    rewritten += 1;
+                    println!("  {file}: rewritten");
+                }
+                None => {
+                    ok = false;
+                    println!("✗ {file}: holds no module of its own (named after its path)");
+                }
             }
         }
-        let rep = full_check(&p);
-        let mut errors: Vec<String> = rep.errors.iter().map(|e| format!("error in {}: {}", e.decl, e.msg)).collect();
-        // holes of an unfinished change are not to be merged
-        errors.extend(rep.holes.iter().filter(|h| h.name.starts_with(pending::PREFIX)).map(|h| {
-            format!("?{} in {} belongs to an unfinished change: fill it and run `strata done`, or `strata abort`", h.name, h.decl)
-        }));
-        if let Some(pkg) = &pkg {
-            errors.extend(package::bad_exports(pkg, &p).into_iter().chain(package::bad_policy(pkg, &p)).map(|e| format!("{}: {e}", package::FILE)));
-        }
-        let label = match &pkg {
-            Some(pkg) => format!("package {} ({shown})", pkg.name),
-            None => shown.clone(),
-        };
-        if errors.is_empty() {
-            println!("✓ {label}: {} definitions check ({} open holes)", p.decls.len(), rep.holes.len());
-        } else {
-            ok = false;
-            println!("✗ {label}:");
-            for e in errors {
-                println!("    {e}");
-            }
-        }
+    }
+    if ok && rewritten == 0 {
+        println!("every file is already in the current form");
     }
     Ok(ok)
 }

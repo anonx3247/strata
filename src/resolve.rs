@@ -1877,6 +1877,7 @@ impl Rw<'_> {
             Expr::Comptime(x) => Expr::Comptime(Box::new(self.expr(x))),
             Expr::Scope(x) => Expr::Scope(Box::new(self.expr(x))),
             Expr::Spawn(x) => Expr::Spawn(Box::new(self.expr(x))),
+            Expr::SupervisedSpawn(x) => Expr::SupervisedSpawn(Box::new(self.expr(x))),
             Expr::Await(x) => Expr::Await(Box::new(self.expr(x))),
             Expr::Select(arms) | Expr::Race(arms) => {
                 let arms = arms.iter()

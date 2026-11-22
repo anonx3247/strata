@@ -274,6 +274,22 @@ pub fn program(path: &Path) -> Result<Program, String> {
     Ok(Program { decls })
 }
 
+/// When `path` is a package's folder, its `strata.toml` must name what the
+/// package has: exports, and the modules of `[verify]` rules. Every command
+/// that reads a package checks this; those that write code don't, so the
+/// code can be written after the settings that name it.
+pub fn check_settings(path: &Path, p: &Program) -> Result<(), String> {
+    if !path.is_dir() || !path.join(FILE).is_file() {
+        return Ok(());
+    }
+    let pkg = load(&std::fs::canonicalize(path).unwrap_or(path.to_path_buf()))?;
+    let bad: Vec<String> = bad_exports(&pkg, p).into_iter().chain(bad_policy(&pkg, p)).collect();
+    if bad.is_empty() {
+        return Ok(());
+    }
+    Err(format!("{}: {}", pkg.dir.join(FILE).display(), bad.join("; ")))
+}
+
 /// Decode a program's files, as `files` gives them (a bundle, or module files).
 pub fn decode(files: Vec<(PathBuf, Vec<u8>)>) -> Result<Program, String> {
     let mut decls = Vec::new();
@@ -330,7 +346,7 @@ pub fn discover(top: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
 }
 
 /// `[verify]` rules that name a module the package doesn't have.
-pub fn bad_policy(pkg: &Package, p: &Program) -> Vec<String> {
+fn bad_policy(pkg: &Package, p: &Program) -> Vec<String> {
     let mut out = Vec::new();
     for (rule, modules) in pkg.verify.rules() {
         for m in modules {
@@ -345,7 +361,7 @@ pub fn bad_policy(pkg: &Package, p: &Program) -> Vec<String> {
 
 /// Exports that name nothing: each must be a module of the package, or one
 /// of its `pub` definitions.
-pub fn bad_exports(pkg: &Package, p: &Program) -> Vec<String> {
+fn bad_exports(pkg: &Package, p: &Program) -> Vec<String> {
     let mut out = Vec::new();
     for e in pkg.exports.iter().flatten() {
         if p.decls.iter().any(|d| d.module == *e) {

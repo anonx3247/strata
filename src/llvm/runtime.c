@@ -305,8 +305,21 @@ static void forget_senders(void);
 // instead of ending the process. Its tasks share it: once one of them
 // panics, every thread of the run is cancelled (it stops at its next wait),
 // and the end of the task's scope raises the panic in the test's thread.
+//
+// A supervised task (`spawn supervised e`) is such a boundary too, for
+// itself and the tasks below it: its first panic is recorded (kind, message,
+// call stack), every thread inside stops, and the task's result is
+// `Err(Panic { … })`. Inside one, a panic in compiled code returns
+// (`strata_panic`) and the code leaves as a cancelled task does, dropping
+// what it holds; a panic in the runtime (`strata_fault`: a division by zero,
+// an overflow, a stack overflow) jumps out instead, leaving what the task's
+// frames held allocated.
 typedef struct Contained {
   int32_t panicked;
+  _Bool supervised;
+  int32_t kind;     // the first panic (a supervised boundary's)
+  Str *msg;
+  char *stack;
 } Contained;
 static _Thread_local Contained *contained;
 
@@ -417,6 +430,8 @@ const char *strata_test_printed(void) { return printed ? printed : ""; }
 static void finish_open_scopes(void);
 struct Contained;
 static void panic_contained(struct Contained *c);
+static void record_panic(struct Contained *c, int32_t kind, Str *msg, char *stack);
+static char *panic_stack(void);
 
 // A fault: of this thread (`task_stack` NULL), or of a task it started
 // (raised here by `await` or the end of its scope), whose call stack then
@@ -443,8 +458,10 @@ static _Noreturn void fault_at(int32_t kind, Str *msg, char *task_stack) {
   }
   free(task_stack);
   if (trap) {
-    // (a test's tasks stop, rather than wait for what won't come)
-    if (contained) panic_contained(contained);
+    // (a test's tasks stop, rather than wait for what won't come; a
+    // supervised task's panic is kept for its result)
+    if (contained && contained->supervised) record_panic(contained, kind & 255, msg, (kind & 256) ? strdup("") : panic_stack());
+    else if (contained) panic_contained(contained);
     finish_open_scopes();
     fault_kind = kind;
     fault_msg = msg;
@@ -543,7 +560,9 @@ typedef struct Task {
   int32_t cancel;             // told to stop (counted in `strata_cancel_any`)
   _Bool unwound;              // stopped by a cancellation: no result
   struct Task *parent;        // the task that spawned it (NULL: the main thread)
-  Contained *contained;       // the test it runs in, if any
+  Contained *contained;       // the boundary it runs in (a test, a supervised task), if any
+  void (*fail)(void *, Str *, Str *, Str *);  // a supervised task's: stores `Err(Panic { … })`
+  Contained boundary;         // a supervised task's own
   char *origin;               // the call stack where it was spawned
   struct Task *next;
 } Task;
@@ -584,16 +603,50 @@ void strata_scope_cancel(TaskScope *s) {
   pthread_mutex_unlock(&chan_lock);
 }
 
-// A panic inside a test, in one of its tasks: every thread of the test stops.
-static void panic_contained(Contained *c) {
+// A panic inside a boundary (a test, a supervised task): every thread
+// inside stops; the first panic's kind, message and stack are kept (the
+// strings are the boundary's; `msg` NULL: not known here).
+static void record_panic(Contained *c, int32_t kind, Str *msg, char *stack) {
   pthread_mutex_lock(&chan_lock);
   if (!c->panicked) {
     c->panicked = 1;
+    c->kind = kind;
+    c->msg = msg;
+    c->stack = stack;
     __atomic_add_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
+  } else {
+    free(stack);
   }
   pthread_cond_broadcast(&chan_cond);
   pthread_mutex_unlock(&chan_lock);
 }
+
+static void panic_contained(Contained *c) { record_panic(c, 4, NULL, NULL); }
+
+// Where a panic happened, from `main` through each `spawn`.
+static char *panic_stack(void) {
+  char *here = stack_text();
+  if (!task_origin) return here;
+  char *s = malloc(strlen(task_origin) + strlen(here) + 16);
+  sprintf(s, "%s%sspawn%s%s", task_origin, *task_origin ? " -> " : "", *here ? " -> " : "", here);
+  free(here);
+  return s;
+}
+
+// A panic in compiled code: inside a supervised task it is the task's
+// (recorded; the code then leaves its functions, see `fault` in llvm.rs);
+// anywhere else it ends the program, or the test, as `strata_fault`.
+void strata_panic(int32_t kind, Str *msg) {
+  if (contained && contained->supervised) {
+    record_panic(contained, kind & 255, msg, (kind & 256) ? strdup("") : panic_stack());
+    return;
+  }
+  fault_at(kind, msg, NULL);
+}
+
+// Whether the function just called was left by a cancellation or a
+// supervised task's panic (it gave no result).
+_Bool strata_was_unwound(void) { return unwound; }
 
 static void *task_main(void *arg) {
   Task *t = arg;
@@ -614,7 +667,7 @@ static void *task_main(void *arg) {
   if (!contained || sigsetjmp(here, 1) == 0) {
     t->run(t->clo, &t->out);
     t->unwound = unwound;
-  } else {
+  } else if (!t->fail) {
     t->faulted = 1;
     t->kind = fault_kind;
     t->msg = fault_msg;
@@ -623,6 +676,8 @@ static void *task_main(void *arg) {
     panic_contained(contained);
   }
   trap = NULL;
+  // a supervised task that panicked: its result is the panic
+  _Bool died = t->fail && t->boundary.panicked;
   t->printed = printed;
   t->printed_len = printed_len;
   printed = NULL;
@@ -630,7 +685,7 @@ static void *task_main(void *arg) {
   // a copy of a sender it didn't close is closed now (its receivers would
   // wait forever), and that is a panic, unless the task was cancelled
   pthread_mutex_lock(&chan_lock);
-  _Bool unclosed = nheld > 0 && !t->unwound;
+  _Bool unclosed = nheld > 0 && !t->unwound && !died;
   for (int64_t i = 0; i < nheld; i++) held[i]->senders--;
   t->done = 1;
   pthread_cond_broadcast(&chan_cond);
@@ -638,7 +693,14 @@ static void *task_main(void *arg) {
   free(held);
   held = NULL;
   nheld = capheld = 0;
-  if (unclosed && !t->faulted) {
+  if (died) {
+    Contained *b = &t->boundary;
+    Str *msg = b->msg ? b->msg : str_c("a task below it panicked");
+    t->fail(&t->out, str_c(KINDS[b->kind & 255]), msg, str_c(b->stack ? b->stack : ""));
+    free(b->stack);
+    t->unwound = 0;
+    __atomic_sub_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
+  } else if (unclosed && !t->faulted) {
     Str *m = str_c("a task ended without closing its copy of a sender (`tx.close()`)");
     if (!contained) fault_at(4, m, NULL);
     t->faulted = 1;
@@ -665,7 +727,7 @@ void *strata_scope_begin(void) {
 // A task of the innermost scope open on this thread: the checker allows a
 // `spawn` only inside a `scope` (a lambda's included, as a comprehension's
 // body, which runs there).
-void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *), Channel **shares, int64_t nshares) {
+void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), Channel **shares, int64_t nshares) {
   TaskScope *s = open_scopes;
   if (!s) strata_fault(4, str_c("`spawn` ran outside its `scope` (a closure that spawns was called after the scope ended)"));
   Task *t = calloc(1, sizeof *t);
@@ -682,7 +744,12 @@ void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *),
   t->given = given;
   t->parent = self_task;
   t->contained = contained;
-  if (!contained) {
+  if (fail) {
+    t->fail = fail;
+    t->boundary.supervised = 1;
+    t->contained = &t->boundary;
+  }
+  {
     // for a panic's call stack: this task's origin, then where it is
     char *here = stack_text();
     if (task_origin) {
@@ -762,7 +829,8 @@ void strata_scope_end(TaskScope *s) {
   for (Task *t = s->first; t; t = t->next) join(t);
   open_scopes = s->up;
   for (Task *t = s->first; t; t = t->next) {
-    if (t->faulted) {
+    // (inside a supervised task the panic is its own: the code leaves, cancelled)
+    if (t->faulted && !(contained && contained->supervised)) {
       Str *msg = t->msg;
       int32_t kind = t->kind;
       char *st = t->stack;
@@ -783,6 +851,8 @@ void *strata_await(Task *t) {
   pthread_mutex_unlock(&chan_lock);
   if (given_up) return NULL;
   join(t);
+  // inside a supervised task, a panic below it is its own: it leaves (cancelled)
+  if (t->faulted && contained && contained->supervised) return NULL;
   if (t->faulted) {
     char *st = t->stack;
     t->stack = NULL;
