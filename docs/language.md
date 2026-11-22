@@ -297,7 +297,7 @@ fn restock(mut line: Line, extra: Int) { line.qty += extra }   // changes the ca
 restock(mut line, 5)                                           // and the call says so
 ```
 
-Procedural code is normal Strata: `loop { … }` repeats until `break`, and `continue` skips to the next iteration. Method chains can be split across lines:
+Procedural code is normal Strata: `loop { … }` repeats until `break`, and `continue` skips to the next iteration. A loop can state what stays true from pass to pass, between its header and its body: `while i < n` then `invariant 2 * total == i * (i + 1)` on the next line. It is checked at the loop's head when the program runs, and `strata verify` proves it (see [verification](verification.md#loops)); most loops need none, as `verify` infers simple ones. Method chains can be split across lines:
 
 ```rust
 best := scores

@@ -526,6 +526,10 @@ pub enum Stmt {
     /// program is compiled; its body is written out once per element, with
     /// the element known in each copy.
     ComptimeFor(Pattern, Expr, Expr),
+    /// `invariant e`, written between a loop's header and its body
+    /// (`while c invariant e { ... }`) and kept as the first statements of
+    /// the body: true on entry and after every pass and `continue`.
+    Invariant(Expr),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -892,7 +896,7 @@ macro_rules! visitor {
                     v.expr(a);
                     v.expr(b)
                 }
-                Stmt::Loop(x) | Stmt::Expr(x) | Stmt::Assert(x) => v.expr(x),
+                Stmt::Loop(x) | Stmt::Expr(x) | Stmt::Assert(x) | Stmt::Invariant(x) => v.expr(x),
             }
         }
 

@@ -983,10 +983,11 @@ impl Bin for Stmt {
             Stmt::Assert(e) => put!(w, 9, e),
             Stmt::Comment(ls) => put!(w, 10, ls),
             Stmt::ComptimeFor(p, xs, b) => put!(w, 11, p, xs, b),
+            Stmt::Invariant(e) => put!(w, 12, e),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
-        Ok(match r.tag("statement", 11)? {
+        Ok(match r.tag("statement", 12)? {
             0 => Stmt::Let(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
             1 => Stmt::Var(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
             2 => Stmt::Assign(Bin::dec(r)?, Bin::dec(r)?),
@@ -998,7 +999,8 @@ impl Bin for Stmt {
             8 => Stmt::Expr(Bin::dec(r)?),
             9 => Stmt::Assert(Bin::dec(r)?),
             10 => Stmt::Comment(Bin::dec(r)?),
-            _ => Stmt::ComptimeFor(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
+            11 => Stmt::ComptimeFor(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
+            _ => Stmt::Invariant(Bin::dec(r)?),
         })
     }
 }
