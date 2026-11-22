@@ -887,6 +887,9 @@ declare i1 @strata_host_remove(ptr, ptr, ptr)
 declare ptr @strata_host_args()
 declare i64 @strata_host_now()
 declare ptr @strata_timeline_new(i64, i1)
+declare ptr @strata_virtual_timeline()
+declare i64 @strata_virtual_now()
+declare void @strata_virtual_sleep(i64)
 declare void @strata_timeline_drop(ptr)
 declare i64 @strata_timeline_now(ptr)
 declare void @strata_timeline_set(ptr, i64)
@@ -6459,9 +6462,16 @@ impl<'m, 'a> Func<'m, 'a> {
                 (Ty::Unit, String::new())
             }
             // a `FakeClock`'s time (runtime.c, `Timeline`)
-            ("host_fake_clock", [start, virt]) => {
-                let r = self.call(&Ty::Con("std.time.Timeline".into(), vec![]), "@strata_timeline_new", &[start.clone(), virt.clone()])?;
+            ("host_fake_clock", [start]) => {
+                let r = self.call(&Ty::Con("std.time.Timeline".into(), vec![]), "@strata_timeline_new", &[start.clone(), (Ty::Bool, "false".into())])?;
                 self.temp(r)
+            }
+            // a `VirtualClock`'s: its run's own time (runtime.c, `strata_virtual_timeline`)
+            ("host_virtual_now", []) => self.call(&Ty::Int, "@strata_virtual_now", &[])?,
+            ("host_virtual_sleep", [ns]) => {
+                self.call(&Ty::Unit, "@strata_virtual_sleep", &[ns.clone()])?;
+                self.cancel_point()?;
+                (Ty::Unit, String::new())
             }
             ("host_fake_now", [t]) => self.call(&Ty::Int, "@strata_timeline_now", &[t.clone()])?,
             ("host_fake_set", [t, to]) => self.call(&Ty::Unit, "@strata_timeline_set", &[t.clone(), to.clone()])?,
@@ -6568,6 +6578,15 @@ impl<'m, 'a> Func<'m, 'a> {
                         self.emit(format!("{deadline} = add i64 {}, {}", now.1, d.1));
                         self.emit(format!("store i64 {deadline}, ptr {p}"));
                         (5, tl, None)
+                    } else if matches!(&ct, Ty::Con(n, _) if n == "std.time.VirtualClock") {
+                        // the run's virtual time: a fake clock's timer (kind 5)
+                        let tl = self.fresh("vtime");
+                        self.emit(format!("{tl} = call ptr @strata_virtual_timeline()"));
+                        let now = self.fresh("now");
+                        self.emit(format!("{now} = call i64 @strata_timeline_now(ptr {tl})"));
+                        self.emit(format!("{deadline} = add i64 {now}, {}", d.1));
+                        self.emit(format!("store i64 {deadline}, ptr {p}"));
+                        (5, (Ty::Unit, tl), None)
                     } else if matches!(&ct, Ty::Con(n, _) if n == "std.time.SystemClock") {
                         let now = self.fresh("now");
                         self.emit(format!("{now} = call i64 @strata_host_now()"));

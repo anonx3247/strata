@@ -989,8 +989,7 @@ fn answer(rx: Receiver[Int]) -> Int {
   rx.recv() ?? 0
 }
 
-fn main() {
-  clock := virtual_clock()
+fn main(clock: VirtualClock) {
   (tx, rx) := channel()
   // a timeout no task moves the time for
   r := race {

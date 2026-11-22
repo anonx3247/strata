@@ -532,11 +532,10 @@ test "gives up after 30 seconds" {
 
 The time of a `fake_clock()` moves only when the test moves it: a sleep that starts after the time was moved waits for the next move, which is why the test moves it in steps until the answer comes (`clock.after(nanos(0))` keeps the `select` from waiting).
 
-A `virtual_clock()` is a `FakeClock` whose time also moves by itself: once every task of the program (or of the test) is waiting and one of them waits for this clock, its time jumps to the nearest such deadline. The same test needs no task moving the time:
+A test that would rather not move the time asks for a `VirtualClock`, a capability like `SystemClock`: each test (and the program, for `main`) has its own virtual time, at 0 when it starts and shared by its tasks, and it moves by itself: once every task is waiting and one of them waits for this clock, its time jumps to the nearest such deadline. The same test needs no task moving the time:
 
 ```rust
-test "gives up after 30 seconds" {
-  clock := virtual_clock()
+test "gives up after 30 seconds" (clock: VirtualClock) {
   (ask, questions) := channel()
   r := race {
     answer(questions) as v => Some(v),
@@ -749,7 +748,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 |---|---|
 | `std.io` | `Console` (`print`, `write`, `eprint`, `read_line`); `Recorder` / `recorder(input)` / `printed(r)` for tests |
 | `std.fs` | `Files` (`read`, `read_bytes`, `write`, `append`, `exists`, `list`, `make_dir`, `remove`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
-| `std.time` | `Clock` (`now`, `sleep`), the `SystemClock` capability, `FakeClock` (`fake_clock()`, `virtual_clock()`, `advance`, `set`) for tests; `Duration` (`nanos`, `micros`, `ms`, `seconds`), `Instant`, `elapsed`; `clock.after(d)` as a `select` arm |
+| `std.time` | `Clock` (`now`, `sleep`), the `SystemClock` capability, `FakeClock` (`fake_clock()`, `advance`, `set`) and the `VirtualClock` capability (its own time per test, moving by itself) for tests; `Duration` (`nanos`, `micros`, `ms`, `seconds`), `Instant`, `elapsed`; `clock.after(d)` as a `select` arm |
 | `std.process` | `Environment` (`args`, `var`), `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
 | `std.code` | `Codebase`, a capability, and the capability trait it implements, `Code` (`version`, `snapshot`): the codebase in the current folder as the tools see it: each `Definition` with its interface and source text, what it uses and what uses it, holes, errors and cached verdicts, and the package's log. `strata ui`'s viewer reads it |
 | `std.cli` | `CommandLine`: a record of options read from the arguments |

@@ -346,6 +346,7 @@ typedef struct Waiter {
 typedef struct Run {
   Waiter *first, **tail;  // in the order they started
   Contained *test;       // the test's boundary (NULL: the program)
+  struct Timeline *vtime;  // its `VirtualClock`'s time (made at its first use)
   Waiter root;           // its first thread's
 } Run;
 
@@ -406,6 +407,7 @@ int32_t strata_test(void (*f)(void)) {
   my_run = outer_run;
   me = outer_me;
   // a panic of the run itself (a deadlock): the test fails with it
+  free(trun.vtime);
   if (r == 0 && run.panicked && run.msg) {
     r = 1;
     fault_kind = run.kind;
@@ -1246,6 +1248,29 @@ void strata_timeline_sleep(Timeline *t, int64_t ns) {
   }
   pthread_mutex_unlock(&chan_lock);
 }
+
+// ---- virtual time (std.time.VirtualClock) ----
+//
+// A run's own fake time, at 0 when it starts (each test has its own), shared
+// by its tasks: it moves by itself, to the nearest deadline waited on, when
+// every thread of the run waits (`stuck`). The capability holds nothing: its
+// methods find the run's time here. Not counted (it lives as long as its run).
+
+Timeline *strata_virtual_timeline(void) {
+  pthread_mutex_lock(&chan_lock);
+  Run *r = this_run();
+  if (!r->vtime) {
+    r->vtime = calloc(1, sizeof(Timeline));
+    r->vtime->virtual_ = 1;
+  }
+  Timeline *t = r->vtime;
+  pthread_mutex_unlock(&chan_lock);
+  return t;
+}
+
+int64_t strata_virtual_now(void) { return strata_timeline_now(strata_virtual_timeline()); }
+
+void strata_virtual_sleep(int64_t ns) { strata_timeline_sleep(strata_virtual_timeline(), ns); }
 
 // What a `select` arm waits on: kind 0 `recv` (`ok` says whether a value
 // came, into `slot`), 1 `send` (of `slot`), 2 `await` (a task), 3 a timer of

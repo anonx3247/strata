@@ -55,7 +55,10 @@ pub const HOST: &[Builtin] = &[
     Builtin::new("host_sleep", "", "(Int) -> ()"),
     // a `FakeClock`'s time (std.time's private `Timeline`): a runtime object
     // holding a time, in nanoseconds, that moves only when told; copies share it
-    Builtin::new("host_fake_clock", "", "(Int, Bool) -> std.time.Timeline"),
+    Builtin::new("host_fake_clock", "", "(Int) -> std.time.Timeline"),
+    // a `VirtualClock`'s: its run's own time, moving by itself
+    Builtin::new("host_virtual_now", "", "() -> Int"),
+    Builtin::new("host_virtual_sleep", "", "(Int) -> ()"),
     Builtin::new("host_fake_now", "", "(std.time.Timeline) -> Int"),
     Builtin::new("host_fake_set", "", "(std.time.Timeline, Int) -> ()"),
     Builtin::new("host_fake_advance", "", "(std.time.Timeline, Int) -> ()"),
