@@ -541,6 +541,16 @@ fn memory_is_freed() {
     // an operand that borrows a variable a later operand assigns
     let (out, code) = case(&d, "nested_assign", NESTED_ASSIGN);
     assert!(code == 0 && out.starts_with("first 1/1\nsecond 2\n"), "{out}");
+    // values that don't outlive their variable, on the stack: their fields
+    // (strings, a record, a list, a big integer) dropped with the variable,
+    // on every way out of its block
+    let f = d.join("stack.strata");
+    save(&f, STACK_VALUES);
+    let ir = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
+    let ir = String::from_utf8_lossy(&ir.stdout);
+    assert_eq!(ir.matches(" = alloca [").count(), 2, "the values that stay in their block, on the stack:\n{ir}");
+    let (out, code) = case(&d, "stack", STACK_VALUES);
+    assert!(code == 0 && out.ends_with("15840\n1\nfound Ada7 at 1\n"), "{out}");
     let chain = "type Chain = | End | Link(Int, Chain)\nfn main() { mut c: Chain = End mut i := 0 while i < 1000000 { c = Link(i, c) i += 1 } match c { Link(x, _) => print(x), End => print(0) } }\n";
     // natively only: the interpreter takes minutes on this loop
     let f = d.join("chain.strata");
@@ -1985,3 +1995,70 @@ fn impl_type_parameters_compile() {
         assert_eq!((out.as_str(), code), (want, 0));
     }
 }
+
+/// Values that stay in their block (`llvm/escape.rs`), next to values that
+/// don't: those passed to a function that keeps them, copied, or returned.
+const STACK_VALUES: &str = "type Name = { first: String, last: String }
+
+type Person = { name: Name, age: Int, tags: List[String] }
+
+// borrows `n`: a field read
+fn full(n: Name) -> String {
+    n.first + \" \" + n.last
+}
+
+// borrows `p` (passes it on to a function that borrows it)
+fn label(p: Person) -> String {
+    full(p.name) + \"/\" + to_string(len(p.tags))
+}
+
+// keeps `p`
+fn keep(p: Person) -> List[Person] {
+    [p]
+}
+
+// a value on the stack left by `return`
+fn find(names: List[String], wanted: String) -> Int {
+    mut i := 0
+    while i < len(names) {
+        n := Name { first: names[i], last: \"L\" }
+        if n.first == wanted {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+fn main() {
+    mut total := 0
+    mut kept := []
+    mut i := 0
+    while i < 1000 {
+        i += 1
+        n := Name { first: \"Ada\" + to_string(i), last: \"Lovelace\" }
+        p := Person { name: Name { first: \"x\", last: to_string(i) }, age: i * 4611686018427387904, tags: [\"a\", to_string(i)] }
+        if i % 3 == 0 {
+            continue
+        }
+        total += byte_len(full(n)) + byte_len(label(p))
+        if i == 500 {
+            kept = kept + keep(p)
+        }
+        q := Person { name: n, age: i, tags: [] }
+        match q {
+            Person { age, .. } => {
+                total += age % 5
+            },
+        }
+        if i == 998 {
+            break
+        }
+    }
+    print(total)
+    print(len(kept))
+    names := [\"Ada1\", \"Ada7\", \"Bob\"]
+    at := find(names, \"Ada7\")
+    print(f\"found Ada7 at {at}\")
+}
+";
