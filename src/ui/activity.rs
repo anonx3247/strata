@@ -114,7 +114,7 @@ pub fn diff(repo: &Repo, base: &str, head: &str) -> Json {
 /// The structural diff of two programs, as the page renders it.
 pub fn diff_programs(a: &Program, b: &Program) -> Json {
     let w = crate::resolve::written_form;
-    let mut d = crate::diff::diff(&w(a), &w(b), &[], &Vec::new(), &HashMap::default());
+    let mut d = crate::diff::diff(&w(a), &w(b), &[], &Vec::new(), &crate::store::Verdicts::none());
     d["steps"] = json!([]);
     d
 }

@@ -971,3 +971,30 @@ fn static_type_arg(env: &Env, imp: &ImplDecl, f: &FnDecl, d: &mut FnDecl) {
         d.params.insert(0, Param { name: Symbol::from(crate::types::type_arg("Self")), ty, mutable: false, comptime: false });
     }
 }
+
+/// Where strata keeps what it found between runs: `$STRATA_CACHE`, else
+/// `~/.cache/strata`.
+pub fn cache_root() -> Option<std::path::PathBuf> {
+    match std::env::var_os("STRATA_CACHE") {
+        Some(d) => Some(std::path::PathBuf::from(d)),
+        None => Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join(".cache/strata")),
+    }
+}
+
+/// The compiler's sources (std aside), as a hash made when strata is built:
+/// what `verify` finds changes with them.
+pub const SOURCE_HASH: &str = env!("STRATA_SOURCE_HASH");
+
+/// std as built into this binary, as a short hash.
+pub fn std_hash() -> &'static str {
+    static H: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    H.get_or_init(|| {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        for (file, bytes) in crate::stdlib::FILES {
+            h.update(file.as_bytes());
+            h.update(bytes);
+        }
+        h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect()
+    })
+}

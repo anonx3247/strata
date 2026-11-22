@@ -84,14 +84,10 @@ pub fn verify_source(args: &Args, src: &Source, how: &Verifying) -> Result<(bool
         Some(only) => only.clone(),
         None => view::select(p, args.pos.get(1).map(|s| s.as_str()))?,
     };
-    // the verdicts and proofs so far (a package's in its `.strata/`, a script's in ~/.cache/strata/scripts)
+    // the proofs so far (a package's in its `.strata/`, a script's in ~/.cache/strata/scripts)
     let proofs_at = proofs_dir(src, how.file);
-    let mut cache = proofs_at.as_deref().map(store::load_verdicts).unwrap_or_default();
     let mut all_ok = true;
     let mut results = Vec::new();
-    // what is fuzzed, compiled, all in one module (`--jit` says why when something can't be)
-    let chosen: Vec<bool> = p.decls.iter().map(|d| names.contains(&d.qname())).collect();
-    jit_fuzzers(&compiled, &env, &chosen, args.flag("--jit"));
     let solver = smt::solver();
     let solver_bin = solver.as_ref();
     // with a selection, termination is analysed for what the selected code reaches
@@ -157,7 +153,7 @@ pub fn verify_source(args: &Args, src: &Source, how: &Verifying) -> Result<(bool
     // every check to make, by definition: (label, cache key, how), with the
     // definition's key and module; run in parallel below, reported in order
     type Job<'a> = Box<dyn Fn() -> verify::Verdict + Send + Sync + 'a>;
-    let mut defs: Vec<(String, String, String, Vec<(String, String, Job)>)> = vec![];
+    let mut defs: Vec<(usize, String, String, String, Vec<(String, String, Job)>)> = vec![];
     for (i, (orig, d)) in p.decls.iter().zip(&resolved.decls).enumerate() {
         if !names.contains(&orig.qname()) {
             continue;
@@ -228,28 +224,52 @@ pub fn verify_source(args: &Args, src: &Source, how: &Verifying) -> Result<(bool
             }
             _ => {}
         }
-        defs.push((base, orig.module.to_string(), orig.qname(), jobs));
+        defs.push((i, base, orig.module.to_string(), orig.qname(), jobs));
     }
-    // the checks not cached, on as many threads as there are cores: each
+    // verdicts kept from earlier runs (by this compiler, with these
+    // settings), unless --no-cache
+    let race = !args.flag("--no-race");
+    let solver_path = solver.as_ref().map(|s| s.bin.as_str()).unwrap_or("");
+    // std built into strata is part of every program but std itself, whose
+    // closures cover it
+    let is_std = p.decls.iter().any(|d| crate::stdlib::is_std(&d.module) && d.module != types::PRELUDE_MODULE);
+    let std = if is_std { "" } else { verify::std_hash() };
+    let kept = verdicts_at(src, how.file).with_settings(&format!("seed {seed} race {race} solver {solver_path} {skey} std {std}"));
+    let mut found: Vec<Option<verify::Verdict>> =
+        defs.iter().flat_map(|d| &d.4).map(|j| if args.flag("--no-cache") { None } else { kept.get_check(&j.0, &j.1) }).collect();
+    // what is fuzzed, compiled, all in one module (`--jit` says why when
+    // something can't be): only the definitions with a check to run
+    let mut chosen = vec![false; p.decls.len()];
+    let mut at = 0;
+    for (i, _, _, _, jobs) in &defs {
+        chosen[*i] = found[at..at + jobs.len()].iter().any(|v| v.is_none());
+        at += jobs.len();
+    }
+    if chosen.contains(&true) {
+        jit_fuzzers(&compiled, &env, &chosen, args.flag("--jit"));
+    }
+    // the checks not kept, on as many threads as there are cores: each
     // solver query is a process of its own
-    let force = args.flag("--force");
-    let fresh: Vec<bool> = defs.iter().flat_map(|d| &d.3).map(|j| force || !cache.contains_key(&j.1)).collect();
-    let todo: Vec<&Job> = defs.iter().flat_map(|d| &d.3).zip(&fresh).filter(|(_, f)| **f).map(|(j, _)| &j.2).collect();
+    let todo: Vec<&(String, String, Job)> = defs.iter().flat_map(|d| &d.4).zip(&found).filter(|(_, v)| v.is_none()).map(|(j, _)| j).collect();
+    let made = crate::par::map(&todo, |(label, key, job)| {
+        let v = job();
+        kept.put_check(label, key, &v);
+        v
+    });
     // what `build` leaves out: each function's proven checks, for its code as it is now
     let mut proofs = proofs_at.as_deref().map(store::load_proofs).unwrap_or_default();
-    let mut made = crate::par::map(&todo, |job| job()).into_iter();
-    let mut fresh = fresh.into_iter();
-    for (base, module, qname, jobs) in defs {
+    let mut made = made.into_iter();
+    let mut found = found.iter_mut();
+    for (_, base, module, qname, jobs) in defs {
         // verified as it is now (`build` verifies what isn't)
         proofs.verified.insert(qname.clone(), base.clone());
         let mut worst: Option<verify::Verdict> = None;
-        for (label, key, _) in jobs {
-            let (verdict, cached) = match fresh.next() {
-                Some(false) => (cache[&key].clone(), true),
-                _ => (made.next().expect("a verdict per check"), false),
+        for (label, _, _) in jobs {
+            let (verdict, cached) = match found.next().and_then(|v| v.take()) {
+                Some(v) => (v, true),
+                None => (made.next().expect("a verdict per check"), false),
             };
             let verdict = verdict.with_termination(analysis.status.get(&label).cloned());
-            cache.insert(key.clone(), verdict.clone());
             if matches!(verdict, verify::Verdict::Counterexample { .. }) {
                 all_ok = false;
             }
@@ -273,11 +293,10 @@ pub fn verify_source(args: &Args, src: &Source, how: &Verifying) -> Result<(bool
         }
         // the viewer shows one status per definition
         if let Some(w) = worst {
-            cache.insert(base, w);
+            kept.put(&base, &w);
         }
     }
     if let Some(d) = &proofs_at {
-        store::save_verdicts(d, &cache);
         store::save_proofs(d, &proofs);
     }
     // the project's policy
