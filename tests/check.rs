@@ -379,6 +379,42 @@ fn e() -> Int { unicode.next_code("a") }
 fn main() { print(1) }
 "#;
 
+const UNREACHABLE: &str = r#"type Sh =
+  | Sq(Int)
+  | Rc(Int, Int)
+  | Dot
+trait T {
+  fn go(self) -> Int
+}
+fn go() -> Int { 1 }
+fn a(s: Sh) -> Int { match s { Sq(_) => 1, Rc(_, _) => 2, Dot => 3, _ => 4 } }
+fn b(s: Sh) -> Int { match s { _ => 1, Dot => 2 } }
+fn c(s: Sh) -> Int { match s { Dot => 1, Dot => 2, _ => 3 } }
+fn d(b: Bool) -> Int { match b { true => 1, false => 2, _ => 3 } }
+fn e(o: Option[Int]) -> Int { match o { Some(n) => n, None => 0, x => 1 } }
+fn f(n: Int) -> Int { match n { 1 => 1, k => 2, 3 => 3 } }
+fn main() { print(1) }
+"#;
+
+const MISUSE: &str = r#"fn r() -> Result[Int, String] { Ok(1) }
+fn o() -> Option[Int] { None }
+fn a() -> Int { 3 except { 0 } }
+fn b() -> Int { o() except { 0 } }
+fn c() -> Result[Int, String] { n := 3!
+  Ok(n) }
+fn d() -> Option[Int] { n := r()?
+  Some(n) }
+fn e() -> Int {
+  for x in 5 { print(x) }
+  0
+}
+fn f(n: Int) -> Int { n.size }
+fn g(n: Int) -> Int { n(2) }
+fn h(n: Int) -> String { f"{n:.2}" }
+fn k(s: String) -> String { f"{s:+}" }
+fn main() { print(1) }
+"#;
+
 const RECORDS: &str = r#"type Pt = { x: Int, y: Int }
 type Sh =
   | Sq(Int)
@@ -692,6 +728,16 @@ fn names_and_declarations_as_in_rust() {
 #[test]
 fn imported_functions_as_in_rust() {
     same_errors("imports", IMPORTS, &["expected `"]);
+}
+
+#[test]
+fn unreachable_arms_and_method_clashes_as_in_rust() {
+    same_errors("unreachable", UNREACHABLE, &["unreachable match arm", "is both a function"]);
+}
+
+#[test]
+fn misused_values_as_in_rust() {
+    same_errors("misuse", MISUSE, &["needs a Result", "needs an Option", "handle a Result", "needs a List", "cannot access field", "is not a function", "format spec"]);
 }
 
 /// The compiler's errors on `text` are `strata check`'s, on the lines holding one of `keys`.

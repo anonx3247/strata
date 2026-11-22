@@ -87,6 +87,7 @@ unsafe extern "C" {
     fn strata_unwound();
     fn strata_scope_cancel();
     static strata_cancel_any: i32;
+    static strata_slow_counts: i32;
     fn strata_str_eq();
     fn strata_str_len();
     fn strata_fault();
@@ -801,6 +802,9 @@ fn engine_at<'ctx>(ctx: &'ctx Context, ir: &str, optimize: bool) -> Result<inkwe
     // the runtime's data the compiled code reads
     if let Some(g) = module.get_global("strata_cancel_any") {
         engine.add_global_mapping(&g, &raw const strata_cancel_any as usize);
+    }
+    if let Some(g) = module.get_global("strata_slow_counts") {
+        engine.add_global_mapping(&g, &raw const strata_slow_counts as usize);
     }
     // std's precompiled functions: the library's code, loaded once
     for f in module.get_functions() {

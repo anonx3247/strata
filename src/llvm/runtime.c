@@ -69,6 +69,16 @@ static pthread_mutex_t made_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Bool checking;
 #define FREED INT64_MIN
 
+// Whether counts must go through `strata_dup` / `strata_release`: while
+// tasks run (atomic counts) or in check mode. The compiled code reads it and
+// otherwise updates counts itself (`strata.dup`, `strata.release` in the IR).
+int32_t strata_slow_counts;
+
+static void set_threaded(int v) {
+  __atomic_store_n(&threaded, v, __ATOMIC_RELAXED);
+  __atomic_store_n(&strata_slow_counts, v || checking, __ATOMIC_RELAXED);
+}
+
 // In check mode, every object made (to list those still alive at the end).
 static int64_t **made;
 static int64_t nmade, capmade;
@@ -1031,7 +1041,7 @@ void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *),
       }
     pthread_mutex_unlock(&chan_lock);
   }
-  if (__atomic_fetch_add(&live_tasks, 1, __ATOMIC_RELAXED) == 0) __atomic_store_n(&threaded, 1, __ATOMIC_RELAXED);
+  if (__atomic_fetch_add(&live_tasks, 1, __ATOMIC_RELAXED) == 0) set_threaded(1);
   // counted in its run from now: a task not started yet isn't waiting
   pthread_mutex_lock(&chan_lock);
   t->run_of = this_run();
@@ -1045,7 +1055,7 @@ void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *),
   int failed = pthread_create(&t->thread, &a, task_main, t);
   pthread_attr_destroy(&a);
   if (failed) {
-    if (__atomic_sub_fetch(&live_tasks, 1, __ATOMIC_RELAXED) == 0) __atomic_store_n(&threaded, 0, __ATOMIC_RELAXED);
+    if (__atomic_sub_fetch(&live_tasks, 1, __ATOMIC_RELAXED) == 0) set_threaded(0);
     t->joined = 1;
     t->faulted = 1;
     t->kind = 6;
@@ -1072,7 +1082,7 @@ static void join(Task *t) {
   if (t->joined) return;
   pthread_join(t->thread, NULL);
   t->joined = 1;
-  if (__atomic_sub_fetch(&live_tasks, 1, __ATOMIC_RELAXED) == 0) __atomic_store_n(&threaded, 0, __ATOMIC_RELAXED);
+  if (__atomic_sub_fetch(&live_tasks, 1, __ATOMIC_RELAXED) == 0) set_threaded(0);
   if (t->printed) {
     if (capturing) keep_printed(t->printed, t->printed_len);
     free(t->printed);
@@ -2444,6 +2454,7 @@ void strata_init(int32_t argc, char **argv) {
   static _Bool registered;
   const char *m = getenv("STRATA_MEMORY");
   checking = m && !strcmp(m, "check");
+  set_threaded(THREADED);
   if (m && !registered) registered = 1, atexit(memory_stats);
 }
 
