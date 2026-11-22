@@ -167,12 +167,15 @@ pub fn run_tests(args: &Args) -> Result<bool, String> {
         return Ok(false);
     }
     let filter = args.pos.get(1).cloned().unwrap_or_default();
+    // the tests of the project's own files; `--with-deps`: also of what it imports
+    let with_deps = args.flag("--with-deps");
     if args.flag("--emit-llvm") {
         // the tests' IR (`strata.test.N`, in order)
-        print!("{}", llvm::compile_tests(p)?.0);
+        print!("{}", llvm::compile_tests(p, with_deps)?.0);
         return Ok(true);
     }
-    let outcomes = if args.flag("--interpret") { test_interpreted(&resolved, &env, &filter) } else { test_jit(p, &filter)? };
+    let own = if with_deps { usize::MAX } else { p.decls.len() };
+    let outcomes = if args.flag("--interpret") { test_interpreted(&resolved, &env, &filter, own) } else { test_jit(p, &filter, with_deps)? };
     let (mut pass, mut fail) = (0, 0);
     for (name, fault, printed) in outcomes {
         match fault {
@@ -202,9 +205,11 @@ pub fn run_tests(args: &Args) -> Result<bool, String> {
 /// A test's name, the fault that ended it (kind, message, call stack), and what it printed.
 type TestRun = (String, Option<(String, String, String)>, String);
 
-fn test_interpreted(resolved: &Program, env: &types::Env, filter: &str) -> Vec<TestRun> {
+/// `own`: how many of `resolved`'s definitions (the first) are the program's
+/// own; only their tests run.
+fn test_interpreted(resolved: &Program, env: &types::Env, filter: &str, own: usize) -> Vec<TestRun> {
     let mut out = vec![];
-    for d in &resolved.decls {
+    for d in resolved.decls.iter().take(own) {
         let DeclKind::Test(t) = &d.kind else { continue };
         if !t.name.contains(filter) {
             continue;
@@ -233,24 +238,24 @@ fn test_interpreted(resolved: &Program, env: &types::Env, filter: &str) -> Vec<T
 
 /// The tests compiled and run in this process. A test that can't be
 /// compiled yet fails, saying why (the others still run).
-fn test_jit(p: &Program, filter: &str) -> Result<Vec<TestRun>, String> {
+fn test_jit(p: &Program, filter: &str, with_deps: bool) -> Result<Vec<TestRun>, String> {
     let all: Vec<String> = p.decls.iter().filter_map(|d| match &d.kind {
         DeclKind::Test(t) => Some(t.name.to_string()),
         _ => None,
     }).collect();
     let mut skipped: Vec<(String, String)> = vec![];
-    let (ir, names) = match llvm::compile_tests(p) {
+    let (ir, names) = match llvm::compile_tests(p, with_deps) {
         Ok(x) => x,
         Err(_) => {
             // each alone, to leave out only those that don't compile
             for t in &all {
                 let others: Vec<String> = all.iter().filter(|o| *o != t).cloned().collect();
-                if let Err(e) = llvm::compile_tests_except(p, &others) {
+                if let Err(e) = llvm::compile_tests_except(p, &others, with_deps) {
                     skipped.push((t.clone(), e));
                 }
             }
             let skip: Vec<String> = skipped.iter().map(|(t, _)| t.clone()).collect();
-            llvm::compile_tests_except(p, &skip)?
+            llvm::compile_tests_except(p, &skip, with_deps)?
         }
     };
     let which: Vec<usize> = (0..names.len()).filter(|&i| names[i].contains(filter)).collect();

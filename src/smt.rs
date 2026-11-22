@@ -199,6 +199,9 @@ pub struct Vc<'a> {
     binding: usize,
     /// The functions passed to the builtin being called, by argument.
     fn_args: Vec<Option<Func>>,
+    /// The constant standing for each bit operation met (`& x y`), so one met
+    /// twice is one value.
+    bit_terms: HashMap<String, T>,
 }
 
 fn and(ts: &[T]) -> T {
@@ -310,6 +313,7 @@ impl<'a> Vc<'a> {
             lists: vec![],
             binding: 0,
             fn_args: vec![],
+            bit_terms: HashMap::default(),
         }
     }
 
@@ -1109,49 +1113,51 @@ impl<'a> Vc<'a> {
         }
     }
 
-    /// Does checking a value against `t` involve any refinement?
-    fn refined(&self, t: &TypeExpr, depth: usize) -> bool {
-        self.refined_in(t, depth, &mut vec![])
-    }
-
-    /// `refined`, with the types being looked into: a type met again inside
-    /// itself (`Array(List[JsonValue])` in `JsonValue`) adds no refinement
-    /// of its own.
-    fn refined_in(&self, t: &TypeExpr, depth: usize, seen: &mut Vec<TypeExpr>) -> bool {
-        if depth > 8 {
-            return true;
-        }
-        match t {
-            TypeExpr::Refined(..) => true,
-            TypeExpr::Unit | TypeExpr::Fn(..) => false,
-            TypeExpr::Union(ms) => ms.iter().any(|m| self.refined_in(m, depth + 1, seen)),
-            TypeExpr::Named(n, args) if self.env.variant_parent(n.sym()).is_some() => self.refined_in(&TypeExpr::Named(Symbol::from(self.env.variant_parent(n.sym()).unwrap()), args.clone()), depth + 1, seen),
-            TypeExpr::Named(n, args) => {
-                if seen.contains(t) {
-                    return false;
+    /// Does checking a value against `t` involve any refinement? Each type
+    /// it can reach (its arguments, the fields and payloads of its body, the
+    /// sum of a variant) is looked at once, however deep it is (a syntax tree
+    /// nests a dozen types) and however often it is met again (within itself,
+    /// as `Array(List[JsonValue])` in `JsonValue`, or along another path).
+    fn refined(&self, t: &TypeExpr, _depth: usize) -> bool {
+        let mut seen: Vec<TypeExpr> = vec![];
+        let mut todo = vec![t.clone()];
+        while let Some(t) = todo.pop() {
+            if seen.contains(&t) {
+                continue;
+            }
+            seen.push(t.clone());
+            match &t {
+                TypeExpr::Refined(..) => return true,
+                TypeExpr::Unit | TypeExpr::Fn(..) => {}
+                TypeExpr::Union(ms) => todo.extend(ms.iter().cloned()),
+                TypeExpr::Named(n, args) => {
+                    if let Some(parent) = self.env.variant_parent(n.sym()) {
+                        todo.push(TypeExpr::Named(Symbol::from(parent), args.clone()));
+                        continue;
+                    }
+                    todo.extend(args.iter().cloned());
+                    let Some(td) = self.env.types.get(&n.sym()) else { continue };
+                    if td.refinement.is_some() {
+                        return true;
+                    }
+                    match &td.body {
+                        TypeBody::Alias(a) => todo.push(a.clone()),
+                        TypeBody::Record(fs) => todo.extend(fs.iter().map(|f| f.ty.clone())),
+                        TypeBody::Sum(vs) => {
+                            for v in vs {
+                                match &v.payload {
+                                    Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
+                                    Payload::None => {}
+                                    Payload::Positional(ts) => todo.extend(ts.iter().cloned()),
+                                    Payload::Record(fs) => todo.extend(fs.iter().map(|f| f.ty.clone())),
+                                }
+                            }
+                        }
+                    }
                 }
-                if args.iter().any(|a| self.refined_in(a, depth + 1, seen)) {
-                    return true;
-                }
-                let Some(td) = self.env.types.get(&n.sym()) else { return false };
-                if td.refinement.is_some() {
-                    return true;
-                }
-                seen.push(t.clone());
-                let r = match &td.body {
-                    TypeBody::Alias(a) => self.refined_in(a, depth + 1, seen),
-                    TypeBody::Record(fs) => fs.iter().any(|f| self.refined_in(&f.ty, depth + 1, seen)),
-                    TypeBody::Sum(vs) => vs.iter().any(|v| match &v.payload {
-                        Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
-                        Payload::None => false,
-                        Payload::Positional(ts) => ts.iter().any(|t| self.refined_in(t, depth + 1, seen)),
-                        Payload::Record(fs) => fs.iter().any(|f| self.refined_in(&f.ty, depth + 1, seen)),
-                    }),
-                };
-                seen.pop();
-                r
             }
         }
+        false
     }
 
     /// `t` with the type arguments that add no refinement replaced by `_`.
@@ -1717,6 +1723,74 @@ impl<'a> Vc<'a> {
         })
     }
 
+    /// `&`, `|`, `^`, `<<`, `>>`: exact where SMT-LIB's integers can say it
+    /// (a shift by a literal is `*` or `div` by a power of two, `x & (2^k - 1)`
+    /// is `x mod 2^k`, two literals are computed), else a fresh integer with
+    /// what holds of non-negative operands (`0 <= x & y <= x`,
+    /// `max(x, y) <= x | y <= x + y`, `0 <= x ^ y <= x + y`).
+    fn bits(&mut self, op: BinOp, a: Val, b: Val) -> Val {
+        use BinOp::*;
+        if !matches!(a, Val::Int(_)) && !matches!(b, Val::Int(_)) {
+            let r = match (&a, &b) {
+                (Val::Opaque(r), _) | (_, Val::Opaque(r)) => r.clone(),
+                _ => "a value of an unexpected shape".into(),
+            };
+            return Val::Opaque(r);
+        }
+        let (x, y) = (self.as_int(&a), self.as_int(&b));
+        let lit = |t: &str| t.parse::<i64>().ok();
+        let pow2 = |k: i64| format!("{}", num_bigint_pow2(k));
+        if matches!(op, Shl | Shr) {
+            if lit(&y).is_none_or(|k| k < 0) {
+                self.oblige(format!("`{}` by a non-negative number of bits", op.symbol()), |_| format!("(>= {y} 0)"));
+            }
+            if let Some(k) = lit(&y).filter(|k| (0..=4096).contains(k)) {
+                return Val::Int(if op == Shl { format!("(* {x} {})", pow2(k)) } else { format!("(div {x} {})", pow2(k)) });
+            }
+        } else {
+            if let (Some(m), Some(n)) = (lit(&x), lit(&y)) {
+                return Val::Int(num(match op {
+                    BitAnd => m & n,
+                    BitOr => m | n,
+                    _ => m ^ n,
+                }));
+            }
+            // a mask of the low bits
+            let mask = |t: &str| lit(t).filter(|m| *m > 0 && (m & (m + 1)) == 0).map(|m| (m + 1).trailing_zeros() as i64);
+            if op == BitAnd {
+                if let Some(k) = mask(&y) {
+                    return Val::Int(format!("(mod {x} {})", pow2(k)));
+                }
+                if let Some(k) = mask(&x) {
+                    return Val::Int(format!("(mod {y} {})", pow2(k)));
+                }
+            }
+        }
+        // the same operation on the same operands is the same value (a refinement
+        // assumed of `x` and checked again of it are about one number)
+        // (not under a quantifier, whose constants are bound by it)
+        let key = format!("{} {x} {y}", op.symbol());
+        if self.binding == 0 {
+            if let Some(r) = self.bit_terms.get(&key) {
+                return Val::Int(r.clone());
+            }
+        }
+        let r = self.fresh_why("Int", &format!("`{}` is only bounded, not modelled exactly", op.symbol()));
+        if self.binding == 0 {
+            self.bit_terms.insert(key, r.clone());
+        }
+        let nonneg = format!("(and (>= {x} 0) (>= {y} 0))");
+        let fact = match op {
+            BitAnd => format!("(and (=> (>= {x} 0) (and (<= 0 {r}) (<= {r} {x}))) (=> (>= {y} 0) (and (<= 0 {r}) (<= {r} {y}))))"),
+            BitOr => format!("(=> {nonneg} (and (>= {r} {x}) (>= {r} {y}) (<= {r} (+ {x} {y}))))"),
+            BitXor => format!("(=> {nonneg} (and (>= {r} 0) (<= {r} (+ {x} {y}))))"),
+            Shl => format!("(=> (>= {x} 0) (>= {r} {x}))"),
+            _ => format!("(=> (>= {x} 0) (and (<= 0 {r}) (<= {r} {x})))"),
+        };
+        self.facts.push(fact);
+        Val::Int(r)
+    }
+
     fn compare(&mut self, op: BinOp, a: Val, b: Val) -> Val {
         use BinOp::*;
         let sym = match op {
@@ -1875,6 +1949,7 @@ impl<'a> Vc<'a> {
                             Eq => Val::Bool(self.eq(&a, &b)),
                             Ne => Val::Bool(not(&self.eq(&a, &b))),
                             Lt | Le | Gt | Ge => self.compare(*op, a, b),
+                            BitAnd | BitOr | BitXor | Shl | Shr => self.bits(*op, a, b),
                             Add | Sub | Mul | Div | Mod => {
                                 // `+` also joins strings and lists
                                 let joins = |v: &Val| matches!(v, Val::Str(_) | Val::List { .. });
@@ -3493,6 +3568,24 @@ mod tests {
         assert_eq!(m["v2"], "false");
         assert_eq!(parse_str(&m["v3"]).as_deref(), Some("ba"));
     }
+}
+
+/// 2^k, in decimal (k up to a few thousand: SMT-LIB integers are unbounded).
+fn num_bigint_pow2(k: i64) -> String {
+    // decimal digits, least significant first
+    let mut d: Vec<u8> = vec![1];
+    for _ in 0..k {
+        let mut carry = 0;
+        for x in d.iter_mut() {
+            let v = *x * 2 + carry;
+            *x = v % 10;
+            carry = v / 10;
+        }
+        if carry > 0 {
+            d.push(carry);
+        }
+    }
+    d.iter().rev().map(|x| (b'0' + x) as char).collect()
 }
 
 /// Whether SMT string `s` is ASCII (its code points are its bytes).

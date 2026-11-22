@@ -29,6 +29,9 @@ const FILES: &[(&str, &[u8])] = &[
     ("unicode_tables.strata", include_bytes!("../std/unicode_tables.strata")),
     ("unicode.strata", include_bytes!("../std/unicode.strata")),
     ("regex.strata", include_bytes!("../std/regex.strata")),
+    ("utf8.strata", include_bytes!("../std/utf8.strata")),
+    ("ast.strata", include_bytes!("../std/ast.strata")),
+    ("ast/binary.strata", include_bytes!("../std/ast/binary.strata")),
 ];
 
 /// Native operations, callable only from `std`.
@@ -37,6 +40,8 @@ pub const HOST: &[Builtin] = &[
     Builtin::new("host_write", "", "(Int, String) -> ()"),
     Builtin::new("host_read_line", "", "() -> Option[String]"),
     Builtin::new("host_read_file", "", "(String) -> Result[String, (String, String)]"),
+    // the file's bytes, each an `Int` from 0 to 255
+    Builtin::new("host_read_bytes", "", "(String) -> Result[List[Int], (String, String)]"),
     Builtin::new("host_write_file", "", "(String, String, Bool) -> Result[(), (String, String)]"),
     Builtin::new("host_exists", "", "(String) -> Bool"),
     Builtin::new("host_list_dir", "", "(String) -> Result[List[String], (String, String)]"),

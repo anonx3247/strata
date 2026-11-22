@@ -807,7 +807,7 @@ record!(LamParam { name, ty });
 record!(CompFor { pat, iter, cond });
 record!(FmtSpec { fill, align, plus, zero, width, precision });
 
-tags!(BinOp { Add = 0, Sub = 1, Mul = 2, Div = 3, Mod = 4, Eq = 5, Ne = 6, Lt = 7, Le = 8, Gt = 9, Ge = 10, And = 11, Or = 12, Implies = 13 });
+tags!(BinOp { Add = 0, Sub = 1, Mul = 2, Div = 3, Mod = 4, Eq = 5, Ne = 6, Lt = 7, Le = 8, Gt = 9, Ge = 10, And = 11, Or = 12, Implies = 13, BitAnd = 14, BitOr = 15, BitXor = 16, Shl = 17, Shr = 18 });
 tags!(UnOp { Neg = 0, Not = 1 });
 tags!(TryKind { Result = 0, Option = 1 });
 tags!(CompKind { List = 0, Set = 1, Dict = 2 });

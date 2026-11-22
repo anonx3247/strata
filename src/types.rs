@@ -579,6 +579,9 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin::total("parse_int", "", "(String) -> Option[Int]"),
     Builtin::new("parse_float", "", "(String) -> Option[Float]"),
     Builtin::new("float", "", "(Int) -> Float"),
+    // the IEEE 754 bits of a float, from 0 to 2^64 - 1, and back (`None` for a NaN's)
+    Builtin::total("float_bits", "", "(Float) -> Int"),
+    Builtin::total("float_from_bits", "", "(Int) -> Option[Float]"),
     Builtin::new("floor", "", "(Float) -> Int"),
     Builtin::new("ceil", "", "(Float) -> Int"),
     Builtin::new("round", "", "(Float) -> Int"),
@@ -3248,6 +3251,12 @@ impl<'a> Checker<'a> {
                         self.expect(&Ty::Bool, &lt, Lazy(|| format!("left of `{}`", op.symbol())));
                         self.expect(&Ty::Bool, &rt, Lazy(|| format!("right of `{}`", op.symbol())));
                         Ty::Bool
+                    }
+                    // on integers only (a refined one, `U32`, is an `Int`)
+                    BitAnd | BitOr | BitXor | Shl | Shr => {
+                        self.expect(&Ty::Int, &lt, Lazy(|| format!("left of `{}`", op.symbol())));
+                        self.expect(&Ty::Int, &rt, Lazy(|| format!("right of `{}`", op.symbol())));
+                        Ty::Int
                     }
                 }
             }

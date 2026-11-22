@@ -25,6 +25,7 @@ unsafe extern "C" {
     fn strata_host_exists();
     fn strata_host_write_file();
     fn strata_host_read_file();
+    fn strata_host_read_bytes();
     fn strata_host_read_line();
     fn strata_host_write();
     fn strata_pid();
@@ -86,6 +87,11 @@ unsafe extern "C" {
     fn strata_int_sub();
     fn strata_int_add();
     fn strata_mod();
+    fn strata_int_and();
+    fn strata_int_or();
+    fn strata_int_xor();
+    fn strata_shl();
+    fn strata_shr();
     fn strata_fmod();
     fn strata_finite();
     fn strata_show_int();
@@ -140,6 +146,7 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_host_exists", strata_host_exists as *const () as usize),
         ("strata_host_write_file", strata_host_write_file as *const () as usize),
         ("strata_host_read_file", strata_host_read_file as *const () as usize),
+        ("strata_host_read_bytes", strata_host_read_bytes as *const () as usize),
         ("strata_host_read_line", strata_host_read_line as *const () as usize),
         ("strata_host_write", strata_host_write as *const () as usize),
         ("strata_pid", strata_pid as *const () as usize),
@@ -195,6 +202,11 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_int_sub", strata_int_sub as *const () as usize),
         ("strata_int_add", strata_int_add as *const () as usize),
         ("strata_mod", strata_mod as *const () as usize),
+        ("strata_int_and", strata_int_and as *const () as usize),
+        ("strata_int_or", strata_int_or as *const () as usize),
+        ("strata_int_xor", strata_int_xor as *const () as usize),
+        ("strata_shl", strata_shl as *const () as usize),
+        ("strata_shr", strata_shr as *const () as usize),
         ("strata_fmod", strata_fmod as *const () as usize),
         ("strata_finite", strata_finite as *const () as usize),
         ("strata_show_int", strata_show_int as *const () as usize),
