@@ -148,6 +148,18 @@ fn b(p: Pt) -> Int { p.twice("x") }
 fn main() { print(1) }
 "#;
 
+const SUMS: &str = r#"type Sh =
+  | Sq(Int)
+  | Rc(Int, Int)
+  | Dot
+fn a(s: Sh) -> Int { s }
+fn e(o: Option[Int]) -> String { o }
+fn f(o: Option[Int]) -> String { match o { Some(n) => n, None => "z" } }
+fn g(o: Option[Int]) -> String { o ?? 1 }
+fn h(s: Sh) -> Bool { s == 3 }
+fn main() { print(1) }
+"#;
+
 const UNKNOWN: &str = r#"type Pt = { x: Int, y: Int }
 fn f(a: Int) -> Int {
   b := a + c
@@ -258,6 +270,11 @@ fn methods_as_in_rust() {
 #[test]
 fn trait_methods_as_in_rust() {
     same_errors("traits", TRAIT_METHODS, &["expected `", "expects"]);
+}
+
+#[test]
+fn sum_variables_as_in_rust() {
+    same_errors("sums", SUMS, &["expected `"]);
 }
 
 /// `std.ast.check`'s errors on `text` are `strata check`'s lines holding one of `keys`.

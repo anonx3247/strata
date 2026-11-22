@@ -160,7 +160,9 @@ Running:
                                PATH is a .strata file or a package folder (or --file).
                                It is compiled to machine code in memory (LLVM); what
                                can't be compiled yet is an error saying why.
-                               --trace prints each call and return to stderr
+                               --trace prints each call and return to stderr;
+                               the checks the last `verify` proved are left out
+                               (--all-checks keeps them; `build` too)
   serve [PATH] [--port N]      serve the web: each request is passed to the program's
                                `fn handle(req: Request) -> Response` (std.http), which may
                                also ask for Console and capabilities (default port 8000);
@@ -175,7 +177,7 @@ Running:
                                can't be compiled yet fails, saying why); --with-deps: also
                                those of what it imports (std, dependencies), which are
                                otherwise tested on their own
-  build [PATH] [-o OUT] [--emit-llvm]
+  build [PATH] [-o OUT] [--emit-llvm] [--all-checks] [--no-verify]
                                compile the program to a native executable, through LLVM
                                (needs clang; STRATA_CC chooses another): `main` takes no
                                parameters yet, and only part of the language compiles
@@ -277,6 +279,24 @@ fn print_errors(rep: &types::CheckReport) {
     for e in &rep.errors {
         eprintln!("error in {}: {}", e.decl, e.msg);
     }
+}
+
+/// Where `verify` keeps what it proved of `src` for `build` (a script's
+/// by its path `file`).
+fn proofs_dir(src: &Source, file: Option<&str>) -> Option<std::path::PathBuf> {
+    match src {
+        Source::Db(cb) => Some(cb.proofs_dir()),
+        Source::File(_) => store::script_proofs_dir(file?),
+    }
+}
+
+/// What `build` and `run` leave out of `src`'s compiled code: the checks the
+/// last `verify` proved, for code unchanged since (none with `--all-checks`).
+fn proofs_for(src: &Source, file: Option<&str>, args: &Args) -> HashMap<String, llvm::Proofs> {
+    if args.flag("--all-checks") {
+        return HashMap::default();
+    }
+    proofs_dir(src, file).map(|d| store::current_proofs(src.program(), &d)).unwrap_or_default()
 }
 
 fn verdicts_for(src: &Source) -> HashMap<String, String> {

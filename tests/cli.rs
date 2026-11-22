@@ -424,6 +424,86 @@ fn wrong(n: Natural) -> Int
     assert!(out.contains("✗ wrong") && out.contains("found by the solver"), "an invariant never hides a bug: {out}");
 }
 
+/// `build` verifies what changed since it was last verified, then leaves
+/// out the runtime checks proven: a function's own (`ensures`, `invariant`,
+/// results, assignments, indexes) and its entry checks when every call
+/// proved them. `--all-checks` keeps them all; an unproven caller keeps the
+/// callee's; `--no-verify` uses only proofs of the code as it is.
+#[test]
+fn proven_checks_are_left_out_of_builds() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("proven-checks");
+    let run = |args: &[&str], stdin: Option<&str>| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_strata"))
+            .args(args)
+            .current_dir(&d)
+            .env("STRATA_CACHE", d.join("cache"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        if let Some(s) = stdin {
+            c.stdin.take().unwrap().write_all(s.as_bytes()).unwrap();
+        }
+        let o = c.wait_with_output().unwrap();
+        (o.status.success(), String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr))
+    };
+    let src = "fn triangle(n: Natural) -> Natural
+  ensures 2 * it == n * (n + 1)
+{
+  mut total: Natural = 0
+  mut i: Natural = 0
+  while i < n
+    invariant 2 * total == i * (i + 1)
+  {
+    i += 1
+    total += i
+  }
+  total
+}
+fn first(xs: List[Natural]) -> Natural
+  requires len(xs) > 0
+{
+  xs[0]
+}
+fn main() {
+  print(triangle(10))
+  print(first([4, 5]))
+}
+";
+    let has = |file: &str, text: &str| std::fs::read(d.join(file)).unwrap().windows(text.len()).any(|w| w == text.as_bytes());
+    assert!(run(&["--file", "t.strata", "edit"], Some(src)).0);
+    // not verified yet: `build` does it first, then not again
+    let (ok, out) = run(&["--file", "t.strata", "build", "-o", "fast"], None);
+    assert!(ok && out.contains("verified 3 changed: 3 proven") && out.contains("runtime checks left out (proven by `strata verify`), 0 kept"), "{out}");
+    let (ok, out) = run(&["--file", "t.strata", "build", "-o", "fast"], None);
+    assert!(ok && !out.contains("verified"), "{out}");
+    let (ok, out) = run(&["--file", "t.strata", "build", "-o", "slow", "--all-checks"], None);
+    assert!(ok, "{out}");
+    for msg in ["postcondition of `triangle`", "invariant failed: 2 * total == i * (i + 1)", "precondition of `first`"] {
+        assert!(!has("fast", msg) && has("slow", msg), "{msg}");
+    }
+    let (ok, out) = run(&["--file", "t.strata", "run"], None);
+    assert!(ok && out.contains("55") && out.contains("4"), "{out}");
+    // a caller that doesn't prove the call keeps the callee's entry check
+    let more = format!("{src}fn risky(xs: List[Natural]) -> Natural {{\n  first(xs)\n}}\n");
+    assert!(run(&["--file", "t.strata", "edit"], Some(&more)).0);
+    let (ok, out) = run(&["--file", "t.strata", "build", "-o", "mixed"], None);
+    assert!(ok, "{out}");
+    assert!(has("mixed", "precondition of `first`") && !has("mixed", "postcondition of `triangle`"), "{out}");
+    // changed code: its old proofs don't count (--no-verify), and a build verifies it again
+    let changed = more.replace("total += i\n", "total += i + 0\n");
+    assert!(run(&["--file", "t.strata", "edit"], Some(&changed)).0);
+    let (ok, out) = run(&["--file", "t.strata", "build", "-o", "stale", "--no-verify"], None);
+    assert!(ok && has("stale", "postcondition of `triangle`"), "{out}");
+    let (ok, out) = run(&["--file", "t.strata", "build", "-o", "again"], None);
+    assert!(ok && out.contains("verified 2 changed") && !has("again", "postcondition of `triangle`"), "{out}");
+}
+
 /// A written `invariant` is checked on entry and where every pass ends
 /// (`continue` too), assumed at the head, and checked when the program
 /// runs; a `continue` keeps its state for inferred invariants and bounds.
