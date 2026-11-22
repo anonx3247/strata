@@ -3402,8 +3402,7 @@ mod tests {
     /// `std.regex.relations`, as the prover calls it: `(a <= b, b <= a, disjoint)`.
     #[test]
     fn regex_relations_from_std() {
-        // compile-time code runs as the CLI runs it, on a large stack (a test
-        // thread's 2 MB overflows when the result isn't cached yet)
+        // compile-time code runs as the CLI runs it, on a large stack
         std::thread::Builder::new().stack_size(1 << 30).spawn(relations_from_std).unwrap().join().unwrap();
     }
 
