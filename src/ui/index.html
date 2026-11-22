@@ -340,7 +340,7 @@ body.m-both { grid-template-columns: 250px minmax(380px, 1fr) var(--panel-w, 44v
 body.m-both #right { overflow: hidden; }
 body.m-agents { grid-template-columns: 250px minmax(0, 1fr) 0; }
 body.m-agents #right { display: none; }
-body.m-agents #conv, body.m-agents #composer > * { max-width: 900px; margin-left: auto; margin-right: auto; }
+body.m-agents #composer > * { max-width: 760px; margin-left: auto; margin-right: auto; }
 body.m-agents #composer textarea { display: block; }
 .cpanel { display: grid; grid-template-columns: 190px minmax(0, 1fr); height: 100%; }
 .cpanel.nosym { grid-template-columns: minmax(0, 1fr); }
@@ -622,6 +622,24 @@ ins { background: color-mix(in srgb, var(--ok) 17%, transparent); } del { backgr
 .files-other > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; margin: 20px 0 6px; }
 .files-other details > summary { cursor: pointer; font: 12px var(--mono); padding: 3px 0; color: var(--muted); }
 .st-b { font-size: 9.5px; padding: 0 6px; }
+/* ---------- buttons as words, the message box as the whole bottom ---------- */
+.btn, .btn.small, .btn.primary, .btn.danger, .toolbar button.plain, .side-h .btn { border: 0; background: none; padding: 2px 5px; border-radius: 5px; font: 600 12px var(--sans); color: var(--muted); }
+.btn:hover:not(:disabled), .toolbar button.plain:hover { color: var(--text); background: color-mix(in srgb, var(--text) 5%, transparent); border: 0; }
+.btn.primary, .btn.primary:hover:not(:disabled) { color: var(--accent); background: none; }
+.btn.primary:hover:not(:disabled) { background: var(--accent-soft); }
+.btn.danger:hover:not(:disabled) { color: var(--bad); }
+.btn:disabled { opacity: .35; }
+#composer { padding: 0; border-top: 1px solid var(--line); background: var(--panel); }
+#composer textarea { border: 0; border-radius: 0; background: transparent; min-height: 84px; max-height: 40vh; padding: 12px 18px 4px; font-size: 13.5px; resize: none; display: block; }
+#composer textarea:focus { border: 0; }
+#composer .row { padding: 0 12px 8px 18px; margin: 0; gap: 6px; font-size: 11px; }
+#composer label { font-size: 11.5px; font-weight: 600; margin: 0 4px; }
+.perm .opts { gap: 2px; }
+/* the conversation: one reading width (about 90 columns of text), whatever the pane */
+#conv { padding-left: max(24px, calc((100% - 760px) / 2)); padding-right: max(24px, calc((100% - 760px) / 2)); }
+.msg-u { max-width: none; }
+.pill.contract { background: none; color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.sess .wh { color: var(--faint); }
 </style>
 </head>
 <body>
@@ -2131,12 +2149,18 @@ function shortPath(p) {
   if (CFG.repo && p.startsWith(CFG.repo + '/')) return p.slice(CFG.repo.length + 1);
   return p.replace(/^\/Users\/[^/]+/, '~');
 }
+// where a session works, if not in this checkout: its worktree's branch
+function sessWhere(s) {
+  if (!s.cwd || s.cwd === CFG.repo) return '';
+  const w = (ACT.data?.worktrees || []).find(w => w.path === s.cwd);
+  return w?.branch || shortPath(s.cwd);
+}
 function renderAgentsLeft() {
   const sess = AG.list.length ? AG.list.slice().reverse().map(s => {
     const st = statusOf(s), names = sessionNames(s.id).filter(isLive).slice(0, 4);
-    return `<div class="sess ${s.id === AG.sel ? 'sel' : ''}" data-sess="${s.id}"><span class="sdot ${st}"></span><span class="nm">${esc(s.title)}</span><span class="st ${st}">${esc(STATUS_WORD[st] || st)}</span><span class="wh">${esc(shortPath(s.cwd))}</span>${names.length ? `<span class="on-defs">${names.map(n => `<code>${esc(n.split('.').pop())}</code>`).join('')}</span>` : ''}</div>`;
+    return `<div class="sess ${s.id === AG.sel ? 'sel' : ''}" data-sess="${s.id}"><span class="sdot ${st}"></span><span class="nm">${esc(s.title)}</span><span class="st ${st}">${esc(STATUS_WORD[st] || st)}</span>${sessWhere(s) ? `<span class="wh">⎇ ${esc(sessWhere(s))}</span>` : ''}${names.length ? `<span class="on-defs">${names.map(n => `<code>${esc(n.split('.').pop())}</code>`).join('')}</span>` : ''}</div>`;
   }).join('') : '<div class="empty" style="padding:4px 14px 8px">No sessions yet.</div>';
-  setHtml($('#left'), `<div class="side-h"><span>Sessions</span><button class="btn small" data-newsess>+ New session</button></div>${sess}${activityHtml()}`);
+  setHtml($('#left'), `<div class="side-h"><span>Sessions</span><button class="btn small" data-newsess>+ New session</button></div>${sess}`);
 }
 
 // A tool call as one thin line (a dot for its status, its name, its arguments),
@@ -2190,7 +2214,7 @@ function permHtml(p, sid) {
     const o = (p.options || []).find(o => o.optionId === p.answer);
     return `<div class="perm done">${p.auto ? 'allowed' : o ? esc(o.name.toLowerCase()) : 'cancelled'}: ${what}</div>`;
   }
-  return `<div class="perm"><div class="q">Allow ${what}?</div><div class="opts">${(p.options || []).map(o => `<button class="btn small ${o.kind === 'allow_once' ? 'primary' : ''}" data-perm="${sid}" data-rpc="${esc(JSON.stringify(p.rpc))}" data-opt="${esc(o.optionId)}">${esc(o.name)}</button>`).join('')}<button class="btn small" data-perm="${sid}" data-rpc="${esc(JSON.stringify(p.rpc))}" data-opt="">Cancel</button></div></div>`;
+  return `<div class="perm"><div class="q">Allow ${what}?</div><div class="opts">${(p.options || []).map(o => `<button class="btn small ${o.kind === 'allow_once' ? 'primary' : ''}" data-perm="${sid}" data-rpc="${esc(JSON.stringify(p.rpc))}" data-opt="${esc(o.optionId)}">→ ${esc(o.name)}</button>`).join('')}<button class="btn small" data-perm="${sid}" data-rpc="${esc(JSON.stringify(p.rpc))}" data-opt="">Cancel</button></div></div>`;
 }
 function convHtml(id) {
   const items = AG.items[id] || [];
@@ -2226,7 +2250,7 @@ function renderAgentsMain() {
   }
   if (AG.mounted !== s.id) {
     AG.mounted = s.id; $('#main')._html = null;
-    $('#main').innerHTML = `<div id="agent"><div id="agent-h"></div><div id="conv"></div><div id="composer"><textarea id="prompt" placeholder="Tell the agent what to do… (Enter to send, Shift+Enter for a new line)"></textarea><div class="row"><button class="btn primary" data-send>Send</button><button class="btn" data-cancel>Stop the turn</button><label><input type="checkbox" id="auto" ${s.auto_allow ? 'checked' : ''}> allow tools without asking</label><span class="spacer"></span><button class="btn danger small" data-stop>End session</button></div></div></div>`;
+    $('#main').innerHTML = `<div id="agent"><div id="agent-h"></div><div id="conv"></div><div id="composer"><textarea id="prompt" placeholder="Tell the agent what to do"></textarea><div class="row"><span>Enter to send · Shift+Enter for a new line</span><span class="spacer"></span><button class="btn" data-cancel>■ Stop the turn</button><label><input type="checkbox" id="auto" ${s.auto_allow ? 'checked' : ''}> allow tools</label><button class="btn danger" data-stop>× End session</button></div></div></div>`;
     $('#prompt').value = AG.drafts[s.id] || '';
     $('#prompt').addEventListener('input', e => AG.drafts[s.id] = e.target.value);
     $('#prompt').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendPrompt(); } });
@@ -2238,7 +2262,7 @@ function renderAgentsMain() {
   if (atEnd) conv.scrollTop = conv.scrollHeight;
   $('#auto').checked = !!s.auto_allow;
   const ended = s.status === 'stopped' || s.status === 'failed';
-  $('[data-send]').disabled = ended; $('#prompt').disabled = ended; $('[data-cancel]').disabled = s.status !== 'working'; $('[data-stop]').disabled = ended;
+  $('#prompt').disabled = ended; $('#prompt').placeholder = ended ? 'This session has ended.' : 'Tell the agent what to do'; $('[data-cancel]').disabled = s.status !== 'working'; $('[data-stop]').disabled = ended;
 }
 // the right half: the code (or an activity selection's diff) of the session's worktree
 function renderAgentsRight() {

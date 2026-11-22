@@ -28,9 +28,10 @@ pub fn agent_command(dir: &Path) -> String {
     ui_rules(dir).agent.unwrap_or_else(|| DEFAULT_AGENT.to_string())
 }
 
-/// Whether new sessions allow their tools without asking (`[ui] auto_allow`).
+/// Whether new sessions allow their tools without asking (`[ui] auto_allow`;
+/// by default they do: agents ask for little that a person would refuse).
 pub fn auto_allow_default(dir: &Path) -> bool {
-    ui_rules(dir).auto_allow.unwrap_or(false)
+    ui_rules(dir).auto_allow.unwrap_or(true)
 }
 
 fn ui_rules(dir: &Path) -> crate::package::UiRules {

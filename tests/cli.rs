@@ -5045,7 +5045,7 @@ esac
         assert!(get("/api/diff?base=--output=x&head=feature")["error"].is_string());
 
         // an agent session: its turn streams in, and it waits for the permission
-        let s = post("/api/agents", r#"{"title":"three","prompt":"add three"}"#);
+        let s = post("/api/agents", r#"{"title":"three","prompt":"add three","auto_allow":false}"#);
         assert_eq!(s["id"], 1, "{s}");
         let wait_for = |kind: &str| -> serde_json::Value {
             for _ in 0..100 {
