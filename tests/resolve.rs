@@ -160,3 +160,117 @@ fn stores_as_in_rust() {
     assert!(wrong.is_empty(), "{} of {} texts store differently:\n{}", wrong.len(), texts.len(), wrong.join("\n"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The checker for packages: std's module files, `--`, then `TEXT=MODULE`
+/// pairs; the package's definitions stored together, one per line.
+const PACKAGE_CHECKER: &str = r#"use std.fs.{Files, Disk}
+use std.process.{Environment, Process}
+use std.ast.binary.{decode_module}
+use std.ast.parse.{parse_module}
+use std.ast.resolve.{stored}
+
+/// Args: std module files, `--`, then `TEXT=MODULE` pairs of one package:
+/// the package's definitions in stored form, one per line.
+fn main(disk: Disk, process: Process) {
+  mut std := []
+  mut mine := []
+  mut after := false
+  for a in process.args() {
+    if a == "--" {
+      after = true
+    } else if !after {
+      match disk.read_bytes(a) {
+        Ok(bs) => match decode_module(bs) {
+          Ok(ds) => {
+            std = std + ds
+          },
+          Err(_) => {},
+        },
+        Err(_) => {},
+      }
+    } else {
+      parts := split(a, "=")
+      file := get(parts, 0) ?? ""
+      module := get(parts, 1) ?? ""
+      match disk.read(file) {
+        Ok(text) => match parse_module(text, module) {
+          Ok(ds) => {
+            mine = mine + ds
+          },
+          Err(e) => print(f"error: {e}"),
+        },
+        Err(_) => print("unreadable"),
+      }
+    }
+  }
+  for d in stored(mine, std) {
+    print(debug(d))
+  }
+}
+"#;
+
+/// A package's modules (a folder's `.strata` files), each named after its
+/// path (`main` is the root), with a prefix (`std.` for std).
+fn package_modules(dir: &Path, prefix: &str) -> Vec<(PathBuf, String)> {
+    let mut out = vec![];
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                if !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')) {
+                    todo.push(p);
+                }
+            } else if p.extension().is_some_and(|x| x == "strata") {
+                let rel = p.strip_prefix(dir).unwrap().with_extension("").to_string_lossy().replace('/', ".");
+                let m = if rel == "main" && prefix.is_empty() { String::new() } else { format!("{prefix}{rel}") };
+                out.push((p, m));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Every package of the examples, and std: each module's text (as
+/// `render` writes it) parsed as that module, all stored together, are
+/// the package's files' trees (`header --tree`: the files are the stored form).
+#[test]
+fn packages_store_as_in_rust() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("packages");
+    let checker = dir.join("check.strata");
+    let mut c = Command::new(STRATA).args(["--file", &checker.to_string_lossy(), "edit"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    c.stdin.take().unwrap().write_all(PACKAGE_CHECKER.as_bytes()).unwrap();
+    assert!(c.wait_with_output().unwrap().status.success());
+    let mut packages: Vec<(PathBuf, String)> = vec![(root.join("std"), "std.".into())];
+    for e in std::fs::read_dir(root.join("examples")).unwrap() {
+        let p = e.unwrap().path();
+        if p.join("strata.toml").exists() {
+            packages.push((p, String::new()));
+        }
+    }
+    let std_files: Vec<String> = std_files().iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    assert!(packages.len() > 5);
+    for (k, (pkg, prefix)) in packages.iter().enumerate() {
+        let mut args: Vec<String> = vec!["--file".into(), checker.to_string_lossy().into(), "run".into(), "--".into()];
+        if prefix.is_empty() {
+            args.extend(std_files.iter().cloned());
+        }
+        args.push("--".into());
+        let mut want: Vec<String> = vec![];
+        for (i, (file, m)) in package_modules(pkg, prefix).iter().enumerate() {
+            let text = run(&["--file", &pkg.to_string_lossy(), "render", if m.is_empty() { "main" } else { m }]);
+            let t = dir.join(format!("p{k}m{i}.st"));
+            std::fs::write(&t, text).unwrap();
+            args.push(format!("{}={m}", t.display()));
+            want.extend(run(&["header", &file.to_string_lossy(), "--tree"]).lines().map(String::from));
+        }
+        let mut got: Vec<String> = run(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>()).lines().map(String::from).collect();
+        got.sort();
+        want.sort();
+        let wrong: Vec<&String> = got.iter().filter(|g| !want.contains(g)).collect();
+        assert!(got.len() == want.len() && wrong.is_empty(), "{}: {} of {} definitions differ, e.g. {:?}", pkg.display(), wrong.len(), want.len(), wrong.first().map(|s| &s[..s.len().min(300)]));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
