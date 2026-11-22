@@ -4997,10 +4997,31 @@ esac
         ),
     );
 
+    // a saved Claude Code session of this repository, where Claude keeps them
+    let home = d.join("home");
+    let top = std::fs::canonicalize(&repo).unwrap().to_string_lossy().replace(['/', '.'], "-");
+    let saved = home.join(".claude/projects").join(top);
+    std::fs::create_dir_all(&saved).unwrap();
+    std::fs::write(
+        saved.join("0123abcd-0000-4000-8000-000000000001.jsonl"),
+        [
+            r#"{"type":"user","message":{"role":"user","content":"<command-name>/clear</command-name>"},"cwd":"CWD","gitBranch":"main","timestamp":"2026-11-22T10:00:00Z"}"#,
+            r#"{"type":"user","message":{"role":"user","content":"add three<system-reminder>ignore</system-reminder>"},"cwd":"CWD","gitBranch":"main","timestamp":"2026-11-22T10:00:01Z"}"#,
+            r#"{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"On it."},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"strata check"}}]},"cwd":"CWD"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok: 2 definitions check"}]},"cwd":"CWD"}"#,
+            r#"{"type":"assistant","isSidechain":true,"message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"a subagent"}]}}"#,
+            r#"{"type":"ai-title","aiTitle":"Add three"}"#,
+        ]
+        .join("\n")
+        .replace("CWD", &std::fs::canonicalize(&repo).unwrap().to_string_lossy()),
+    )
+    .unwrap();
+
     let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let mut server = Command::new(env!("CARGO_BIN_EXE_strata"))
         .args(["ui", "--port", &port.to_string()])
         .current_dir(repo.join("pkg"))
+        .env("HOME", &home)
         .env("STRATA_UI_AGENT", &agent)
         .env("STRATA_UI_GH", &gh)
         .stdout(Stdio::null())
@@ -5072,6 +5093,19 @@ esac
         assert_eq!(get("/api/agents/1?since=9")["list"].as_array().unwrap().len(), 0);
         post("/api/agents/1/stop", "{}");
         wait_for("exit");
+
+        // saved sessions: listed with their title, read as a live session's events
+        let hist = get("/api/history");
+        assert_eq!(hist[0]["id"], "0123abcd-0000-4000-8000-000000000001", "{hist}");
+        assert_eq!(hist[0]["title"], "Add three");
+        assert_eq!(hist[0]["branch"], "main");
+        let t = get("/api/history/0123abcd-0000-4000-8000-000000000001");
+        let kinds: Vec<String> = t["list"].as_array().unwrap().iter().map(|e| format!("{}{}", e["kind"].as_str().unwrap(), e["update"]["sessionUpdate"].as_str().map(|u| format!(":{u}")).unwrap_or_default())).collect();
+        assert_eq!(kinds, ["user", "user", "update:agent_message_chunk", "update:tool_call", "update:tool_call_update"], "{t}");
+        assert_eq!(t["list"][0]["text"], "/clear");
+        assert_eq!(t["list"][1]["text"], "add three", "reminders left out");
+        assert_eq!(t["list"][3]["update"]["rawInput"]["command"], "strata check");
+        assert!(get("/api/history/..%2Fx")["error"].is_string());
 
         // PRs: the list, the page, the structural diff, the actions
         assert_eq!(get("/api/prs")["prs"][0]["number"], 1);

@@ -19,6 +19,7 @@ const PAGE: &str = include_str!("ui/index.html");
 mod activity;
 mod agents;
 mod prs;
+mod transcripts;
 
 #[derive(Clone)]
 pub enum Target {
@@ -409,9 +410,23 @@ impl App {
         self.repo.as_ref().ok_or_else(|| format!("{} is not in a git repository", self.target.path().display()))
     }
 
+    /// The working directories whose saved agent sessions belong here: the
+    /// repository's worktrees (this one first), else the target's folder.
+    fn session_dirs(&self) -> Vec<PathBuf> {
+        match &self.repo {
+            Some(r) => std::iter::once(r.top.clone()).chain(r.worktrees().into_iter().map(|w| w.0).filter(|w| *w != r.top)).collect(),
+            None => vec![self.target.path().to_path_buf()],
+        }
+    }
+
     /// The folder an agent runs in: the repository (or one of its worktrees,
     /// or a new one), else the target's folder.
     fn agent_dir(&self, place: &Json) -> Result<PathBuf, String> {
+        // a saved session goes on where it was: one of the folders listed
+        if let Some(cwd) = place["resume_cwd"].as_str() {
+            let cwd = std::fs::canonicalize(cwd).map_err(|e| format!("{cwd}: {e}"))?;
+            return if self.session_dirs().contains(&cwd) { Ok(cwd) } else { Err(format!("{} is not this repository or one of its worktrees", cwd.display())) };
+        }
         let Ok(repo) = self.repo() else {
             let p = self.target.path();
             return Ok(if p.is_dir() { p.to_path_buf() } else { p.parent().unwrap_or(Path::new(".")).to_path_buf() });
@@ -544,6 +559,8 @@ fn handle(stream: TcpStream, app: &App) {
             Some(s) => respond_json(stream, &s.events_since(q("since").parse().unwrap_or(0))),
             None => respond_json(stream, &json!({"error": "no such session"})),
         },
+        ["api", "history"] => respond_json(stream, &transcripts::list(&app.session_dirs())),
+        ["api", "history", id] => respond_json(stream, &transcripts::transcript(&app.session_dirs(), id)),
         ["api", "prs"] => respond_json(stream, &app.repo().map(|r| prs::list(r, q("state"))).unwrap_or_else(|e| json!({"error": e}))),
         ["api", "prs", n] => respond_json(stream, &app.repo().map(|r| prs::view(r, n)).unwrap_or_else(|e| json!({"error": e}))),
         ["api", "prs", n, "diff"] => respond_json(stream, &app.repo().map(|r| prs::diff(r, n)).unwrap_or_else(|e| json!({"error": e}))),
@@ -567,7 +584,8 @@ fn post(app: &App, req: &Request) -> Json {
             let command = agents::agent_command(&conf);
             let auto = b["auto_allow"].as_bool().unwrap_or_else(|| agents::auto_allow_default(&conf));
             let title = if text("title").trim().is_empty() { dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default() } else { text("title") };
-            match app.agents.start(dir, title, command, auto) {
+            let load = b["resume"].as_str().filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')).map(String::from);
+            match app.agents.start(dir, title, command, auto, load) {
                 Ok(s) => {
                     if !text("prompt").trim().is_empty() {
                         s.prompt(text("prompt"));

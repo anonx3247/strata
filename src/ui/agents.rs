@@ -57,6 +57,8 @@ struct State {
     /// permission requests not answered yet: their JSON-RPC ids
     asking: Vec<Json>,
     auto_allow: bool,
+    /// a saved session to load (`session/load`) instead of a new one
+    load: Option<String>,
 }
 
 pub struct Session {
@@ -151,7 +153,7 @@ impl Session {
                     let data = err.get("data").map(|d| d.to_string()).unwrap_or_default();
                     st.push(json!({"kind": "error", "message": format!("{}: {text}{}", method.unwrap_or("request"), if data.is_empty() || data == "null" { String::new() } else { format!(" ({data})") })}));
                     match method {
-                        Some("initialize" | "session/new") => st.status = "failed",
+                        Some("initialize" | "session/new" | "session/load") => st.status = "failed",
                         Some("session/prompt") => {
                             st.status = "ready";
                             self.next_queued(&mut st);
@@ -165,7 +167,26 @@ impl Session {
                     Some("initialize") => {
                         st.push(json!({"kind": "agent", "info": r["agentInfo"], "protocolVersion": r["protocolVersion"]}));
                         let cwd = self.cwd.display().to_string();
-                        self.request(&mut st, "session/new", json!({"cwd": cwd, "mcpServers": []}));
+                        match st.load.clone() {
+                            // the agent replays the saved conversation, then it goes on
+                            Some(id) if r["agentCapabilities"]["loadSession"] == true => {
+                                st.push(json!({"kind": "loading", "sessionId": id}));
+                                self.request(&mut st, "session/load", json!({"sessionId": id, "cwd": cwd, "mcpServers": []}));
+                            }
+                            load => {
+                                if load.is_some() {
+                                    st.push(json!({"kind": "error", "message": "this agent can't load a saved session: starting a new one"}));
+                                }
+                                self.request(&mut st, "session/new", json!({"cwd": cwd, "mcpServers": []}));
+                            }
+                        }
+                    }
+                    Some("session/load") => {
+                        st.session_id = st.load.clone();
+                        st.status = "ready";
+                        let id = st.load.clone();
+                        st.push(json!({"kind": "ready", "sessionId": id, "loaded": true}));
+                        self.next_queued(&mut st);
                     }
                     Some("session/new") => {
                         st.session_id = r["sessionId"].as_str().map(|s| s.to_string());
@@ -241,17 +262,22 @@ impl Session {
         self.lock().auto_allow = on;
     }
 
-    /// End the agent's process.
+    /// End the agent: its whole process group (the shell, the agent, what
+    /// the agent started: `npx` runs node, which runs more).
     pub fn stop(&self) {
         if let Some(c) = self.child.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-            let _ = c.kill();
+            let group = format!("-{}", c.id());
+            let killed = Command::new("kill").args(["-TERM", "--", &group]).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+            if !killed {
+                let _ = c.kill();
+            }
         }
     }
 
     pub fn summary(&self) -> Json {
         let st = self.lock();
         json!({"id": self.id, "title": self.title, "cwd": self.cwd, "command": self.command, "started": self.started,
-               "status": st.status, "asking": st.asking.len(), "events": st.events.len(), "auto_allow": st.auto_allow,
+               "status": st.status, "asking": st.asking.len(), "session_id": st.session_id.clone().or(st.load.clone()), "events": st.events.len(), "auto_allow": st.auto_allow,
                "last": st.events.last().and_then(|e| e["t"].as_u64())})
     }
 
@@ -275,8 +301,12 @@ impl Agents {
     }
 
     /// Start `command` in `cwd` and open an ACP session in it.
-    pub fn start(&self, cwd: PathBuf, title: String, command: String, auto_allow: bool) -> Result<Arc<Session>, String> {
-        let mut child = Command::new("sh")
+    pub fn start(&self, cwd: PathBuf, title: String, command: String, auto_allow: bool, load: Option<String>) -> Result<Arc<Session>, String> {
+        let mut cmd = Command::new("sh");
+        // a group of its own, so that stopping it stops everything it started
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+        let mut child = cmd
             .arg("-c")
             .arg(&command)
             .current_dir(&cwd)
@@ -298,7 +328,7 @@ impl Agents {
             started: now(),
             stdin: Mutex::new(stdin),
             child: Mutex::new(Some(child)),
-            st: Mutex::new(State { status: "starting", auto_allow, ..Default::default() }),
+            st: Mutex::new(State { status: "starting", auto_allow, load, ..Default::default() }),
         });
         self.sessions.lock().unwrap_or_else(|e| e.into_inner()).push(s.clone());
         if let Some(out) = stdout {

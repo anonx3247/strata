@@ -678,6 +678,11 @@ label.switch input:checked + .knob::after { transform: translateX(10px); backgro
 #slash .sh { font: 11.5px var(--mono); color: var(--faint); flex: none; }
 #slash .sd { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .msg-u.slashc { font-family: var(--mono); font-size: 12.5px; }
+#resume-bar { display: flex; align-items: center; gap: 10px; padding: 12px 18px; border-top: 1px solid var(--line); background: var(--panel); font-size: 12px; color: var(--muted); }
+.sess.past .nm { font-weight: 500; color: var(--muted); }
+.sess.past.sel .nm, .sess.past:hover .nm { color: var(--text); }
+.sess.past .sdot { background: transparent; border: 1px solid var(--faint); }
+.sess .wh, #agent-h code { display: inline-flex; align-items: center; gap: 4px; } .sess .wh svg.i, #agent-h svg.i { width: 11px; height: 11px; }
 </style>
 </head>
 <body>
@@ -1592,7 +1597,7 @@ function readHash() {
   if (h.has('sel')) S.sel = h.get('sel');
   navPush(S.sel || null);
   if (h.has('scope')) S.scope = h.get('scope');
-  if (h.has('s')) AG.sel = +h.get('s');
+  if (h.has('s')) AG.sel = /^h:/.test(h.get('s')) ? h.get('s') : +h.get('s');
   if (h.has('act')) ACT.want = h.get('act');
   if (h.has('state')) PR.state = h.get('state');
   if (h.has('pr')) PR.sel = +h.get('pr');
@@ -1798,6 +1803,7 @@ const ICONS = {
   play: '<path d="m7 4 13 8-13 8z"/>',
   left: '<path d="m12 19-7-7 7-7M19 12H5"/>',
   right: '<path d="M5 12h14M12 5l7 7-7 7"/>',
+  branch: '<path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
 };
 const icon = n => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n] || ''}</svg>`;
 const api = async (path, body) => {
@@ -2025,7 +2031,7 @@ function renderActDiff() {
 let CFG = {};
 api('/api/config').then(c => { CFG = c; render(); }).catch(() => { });
 // sessions (from the server), their events, and what they fold into
-const AG = { list: [], sel: null, ev: {}, items: {}, snaps: {}, mounted: null, busy: false, drafts: {}, cmds: {}, slash: null, toolOpen: new Map(), toolAll: new Set(), symbols: localStorage.getItem('strata-symbols') !== '0' };
+const AG = { list: [], sel: null, ev: {}, items: {}, snaps: {}, mounted: null, busy: false, drafts: {}, cmds: {}, past: [], pastOpen: false, slash: null, toolOpen: new Map(), toolAll: new Set(), symbols: localStorage.getItem('strata-symbols') !== '0' };
 const STRATA_SUBS = new Set('init add edit rename move status done abort log diff interface render pack header merge-file resolve setup-git sync ci ui view ast check holes verify test run build bench doc fmt deps fetch builtins'.split(' '));
 const SHELL_OP = /^(<<-?|<|>|>>|\||\|\||&&|;|2>&1|&)$/;
 // A `strata …` command in a shell command line: its subcommand, arguments,
@@ -2212,9 +2218,15 @@ async function agentsLoop() {
         if (r.list && r.from === have.length) { have.push(...r.list); AG.items[s.id] = fold(have); const cu = r.list.findLast(e => e.update?.sessionUpdate === 'available_commands_update'); if (cu) AG.cmds[s.id] = cu.update.availableCommands || []; marked = liveFrom(s, r.list) || marked; changed = true; }
       }
     }
+    if (!AG.pastAt || Date.now() - AG.pastAt > 10e3) {
+      AG.pastAt = Date.now();
+      const p = await api('/api/history').catch(() => null);
+      if (Array.isArray(p) && JSON.stringify(p) !== JSON.stringify(AG.past)) { AG.past = p; changed = true; }
+    }
     const sum = JSON.stringify(AG.list.map(s => [s.id, s.status, s.asking, s.auto_allow]));
     if (sum !== AG.sum) { AG.sum = sum; changed = true; }
     if (!AG.sel && AG.list.length) AG.sel = AG.list[AG.list.length - 1].id;
+    if (typeof AG.sel === 'string' && AG.sel.startsWith('h:') && !AG.items[AG.sel] && !AG.opening) { AG.opening = true; openPast(AG.sel.slice(2)).finally(() => AG.opening = false); }
     if (S.mode === 'both') { const s = AG.list.find(x => x.id === AG.sel); if (s) loadSnap(s); }
     if (changed && (S.mode === 'agents' || S.mode === 'both') || marked) render();
   } catch { }
@@ -2238,15 +2250,49 @@ function sessWhere(s) {
 function renderAgentsLeft() {
   const sess = AG.list.length ? AG.list.slice().reverse().map(s => {
     const st = statusOf(s), names = sessionNames(s.id).filter(isLive).slice(0, 4);
-    return `<div class="sess ${s.id === AG.sel ? 'sel' : ''}" data-sess="${s.id}"><span class="sdot ${st}"></span><span class="nm">${esc(s.title)}</span><span class="st ${st}">${esc(STATUS_WORD[st] || st)}</span>${sessWhere(s) ? `<span class="wh">⎇ ${esc(sessWhere(s))}</span>` : ''}${names.length ? `<span class="on-defs">${names.map(n => `<code>${esc(n.split('.').pop())}</code>`).join('')}</span>` : ''}</div>`;
+    return `<div class="sess ${s.id === AG.sel ? 'sel' : ''}" data-sess="${s.id}"><span class="sdot ${st}"></span><span class="nm">${esc(s.title)}</span><span class="st ${st}">${esc(STATUS_WORD[st] || st)}</span>${sessWhere(s) ? `<span class="wh">${icon('branch')}${esc(sessWhere(s))}</span>` : ''}${names.length ? `<span class="on-defs">${names.map(n => `<code>${esc(n.split('.').pop())}</code>`).join('')}</span>` : ''}</div>`;
   }).join('') : '<div class="empty" style="padding:4px 14px 8px">No sessions yet.</div>';
-  setHtml($('#left'), `<div class="side-h"><span>Sessions</span><button class="btn small" data-newsess title="a new agent session">${icon('plus')}New</button></div>${sess}`);
+  // saved sessions of this repository (Claude Code's), not running here
+  const live = new Set(AG.list.map(s => s.session_id).filter(Boolean));
+  const past = AG.past.filter(p => !live.has(p.id));
+  const shown = AG.pastOpen ? past : past.slice(0, 12);
+  const pastHtml = past.length ? `<div class="side-h"><span>Earlier</span><span class="muted" style="text-transform:none;letter-spacing:0">${past.length}</span></div>${shown.map(p => `<div class="sess past ${AG.sel === 'h:' + p.id ? 'sel' : ''}" data-past="${esc(p.id)}" title="${esc(p.title)}"><span class="sdot"></span><span class="nm">${esc(p.title || p.id.slice(0, 8))}</span><span class="st">${ago(p.updated)}</span>${p.branch || p.dir !== CFG.repo ? `<span class="wh">${icon('branch')}${esc(p.branch || shortPath(p.dir))}</span>` : ''}</div>`).join('')}${past.length > shown.length ? `<a class="lnk" style="display:block;padding:4px 14px 10px;font-size:12px" data-pastall>${past.length - shown.length} more</a>` : ''}` : '';
+  setHtml($('#left'), `<div class="side-h"><span>Sessions</span><button class="btn small" data-newsess title="a new agent session">${icon('plus')}New</button></div>${sess}${pastHtml}`);
+}
+// a saved session: its transcript, read once
+async function openPast(id) {
+  AG.sel = 'h:' + id; render();
+  if (AG.items[AG.sel]) return;
+  const r = await api('/api/history/' + id).catch(e => ({ error: String(e) }));
+  AG.pastData = AG.pastData || {};
+  AG.pastData[id] = r;
+  AG.items['h:' + id] = r.error ? [{ t: 'error', message: r.error }] : fold(r.list);
+  render();
+}
+async function resumePast(id) {
+  const p = AG.past.find(x => x.id === id) || AG.pastData?.[id]?.meta || {};
+  const btn = $('[data-resume]'); if (btn) { btn.disabled = true; btn.lastChild.textContent = 'Resuming…'; }
+  const r = await api('/api/agents', { resume: id, resume_cwd: p.cwd || p.dir || CFG.repo, title: p.title || 'resumed' });
+  if (r.error) { banner(r.error); if (btn) btn.disabled = false; return; }
+  AG.sel = r.id; AG.list = await api('/api/agents'); render();
+}
+function renderPastMain() {
+  const id = AG.sel.slice(2), p = AG.past.find(x => x.id === id) || AG.pastData?.[id]?.meta || {};
+  if (AG.mounted !== AG.sel) {
+    AG.mounted = AG.sel; $('#main')._html = null;
+    $('#main').innerHTML = `<div id="agent"><div id="agent-h"></div><div id="conv"></div><div id="resume-bar"></div></div>`;
+  }
+  setHtml($('#agent-h'), `<span class="sdot"></span><span class="t">${esc(p.title || id)}</span><span>saved ${ago(p.updated)}</span><span class="spacer"></span><code title="${esc(p.cwd || '')}">${p.branch ? icon('branch') + esc(p.branch) : esc(shortPath(p.cwd))}</code>`);
+  setHtml($('#conv'), AG.items[AG.sel] ? convHtml(AG.sel) : '<div class="empty-big"><b>Reading the session…</b></div>');
+  setHtml($('#resume-bar'), `<span>A saved Claude Code session${p.messages ? ` · ${p.messages} messages` : ''}. Resume it to go on where it stopped.</span><span class="spacer"></span><button class="btn primary" data-resume="${esc(id)}">${icon('play')}<span>Resume</span></button>`);
 }
 
 // A tool call as one thin line (a dot for its status, its name, its arguments),
 // opening to a short body: what an edit was given, what a command printed.
 const TOOL_NAME = { read: 'Read', edit: 'Edit', delete: 'Delete', move: 'Move', search: 'Search', execute: 'Run', think: 'Think', fetch: 'Fetch', switch_mode: 'Mode', other: 'Tool' };
 function clipLines(text, n) {
+  // (by characters too: a few long lines wrap into many)
+  if (text.length > 1600) { const cut = text.slice(0, 1600); return [cut.slice(0, cut.lastIndexOf('\n') > 0 ? cut.lastIndexOf('\n') : 1600), text.slice(1600).split('\n').length]; }
   const ls = text.split('\n');
   return ls.length > n ? [ls.slice(0, n).join('\n'), ls.length - n] : [text, 0];
 }
@@ -2322,6 +2368,7 @@ function convHtml(id) {
   }).join('');
 }
 function renderAgentsMain() {
+  if (typeof AG.sel === 'string' && AG.sel.startsWith('h:')) { renderPastMain(); return; }
   const s = AG.list.find(x => x.id === AG.sel);
   if (!s) {
     AG.mounted = null;
@@ -2618,7 +2665,7 @@ async function prAction(kind, arg) {
 
 // ---------- clicks in the workspace ----------
 function workspaceClick(e) {
-  const t = e.target.closest('[data-mode],[data-rtab],[data-actb],[data-actc],[data-actu],[data-actdef],[data-actopen],[data-actclear],[data-sess],[data-newsess],[data-nsgo],[data-dlgclose],[data-send],[data-cancel],[data-stop],[data-perm],[data-agdef],[data-symtoggle],[data-tool],[data-toolall],[data-pr],[data-prstate],[data-prreload],[data-prview],[data-pract],[data-prmerge]');
+  const t = e.target.closest('[data-mode],[data-rtab],[data-actb],[data-actc],[data-actu],[data-actdef],[data-actopen],[data-actclear],[data-sess],[data-newsess],[data-nsgo],[data-dlgclose],[data-send],[data-cancel],[data-stop],[data-perm],[data-agdef],[data-symtoggle],[data-past],[data-pastall],[data-resume],[data-tool],[data-toolall],[data-pr],[data-prstate],[data-prreload],[data-prview],[data-pract],[data-prmerge]');
   if (!t) return false;
   const d = t.dataset;
   e.preventDefault();
@@ -2649,6 +2696,9 @@ function workspaceClick(e) {
   if (d.agdef !== undefined) { ACT.sel = null; S.scope = 'slice'; select(d.agdef || null); return true; }
   if (d.tool) { const el = t.closest('.tool'); AG.toolOpen.set(d.tool, !el.classList.contains('open')); render(); return true; }
   if (d.toolall) { AG.toolAll.add(d.toolall); render(); return true; }
+  if (d.past) { openPast(d.past); return true; }
+  if (d.pastall !== undefined) { AG.pastOpen = true; render(); return true; }
+  if (d.resume) { resumePast(d.resume); return true; }
   if (d.symtoggle !== undefined) { AG.symbols = !AG.symbols; localStorage.setItem('strata-symbols', AG.symbols ? '1' : '0'); render(); return true; }
   if (d.pr) { S.mode = 'prs'; loadPr(+d.pr); return true; }
   if (d.prstate) { PR.state = d.prstate; PR.list = null; loadPrs(); return true; }
