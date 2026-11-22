@@ -415,6 +415,12 @@ fn k(s: String) -> String { f"{s:+}" }
 fn main() { print(1) }
 "#;
 
+const EARLY: &str = r#"fn r() -> Result[Int, String] { Ok(1) }
+fn d() -> Result[Int, Int] { Ok(r()!) }
+fn e() -> Result[Int, String] { Ok(r()!) }
+fn main() { print(1) }
+"#;
+
 const RECORDS: &str = r#"type Pt = { x: Int, y: Int }
 type Sh =
   | Sq(Int)
@@ -738,6 +744,11 @@ fn unreachable_arms_and_method_clashes_as_in_rust() {
 #[test]
 fn misused_values_as_in_rust() {
     same_errors("misuse", MISUSE, &["needs a Result", "needs an Option", "handle a Result", "needs a List", "cannot access field", "is not a function", "format spec"]);
+}
+
+#[test]
+fn early_errors_as_in_rust() {
+    same_errors("early", EARLY, &["returns the error early"]);
 }
 
 /// The compiler's errors on `text` are `strata check`'s, on the lines holding one of `keys`.
