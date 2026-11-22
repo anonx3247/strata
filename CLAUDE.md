@@ -5,11 +5,7 @@ Keep track of decisions, open questions and ideas in [IDEAS.md](IDEAS.md); the R
 ## Conventions
 
 - Commit each step (the user wants every change tracked) and push to `origin main` (github.com/anonx3247/strata, private).
-- There is no CI (user's call, until the compiler changes rarely): run `strata ci` before every push.
-- Never run the whole test suite. Run only the tests for what you are
-  changing, by name: `cargo test --release --test cli <filter>` (or `--lib <filter>` for unit tests), with
-  filters matching the feature (`verify`, `json`, `regex`, …) plus any test you add; they must pass before
-  every commit. Check that the examples still round-trip:
+- Keep `cargo test --release` green before every commit; check that the examples still round-trip:
   `strata --file F render > a.st; strata --file b.strata edit < a.st; strata --file b.strata render | diff - a.st`.
 - `.strata` files are binary module files (docs/binary-format.md): write code with `strata edit` (or
   `strata --file F edit < text` outside a package), read it with `strata render`. A change to the tree

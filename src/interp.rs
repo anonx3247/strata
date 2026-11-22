@@ -11,27 +11,6 @@ use num_traits::{FromPrimitive, Signed, ToPrimitive, Zero};
 use crate::fx::HashMap;
 use std::rc::Rc;
 
-/// A call stack as faults show it, outermost first: four or more calls in a
-/// row of one function (a recursion) are one entry, `down (95846 times)`.
-pub fn show_stack(stack: &[String]) -> String {
-    fold_stack(stack).join(" -> ")
-}
-
-/// A call stack's entries, a recursion's calls as one (`show_stack`).
-pub fn fold_stack(stack: &[String]) -> Vec<String> {
-    let mut parts = vec![];
-    let mut i = 0;
-    while i < stack.len() {
-        let n = stack[i..].iter().take_while(|f| **f == stack[i]).count();
-        if n >= 4 {
-            parts.push(format!("{} ({n} times)", stack[i]));
-        } else {
-            parts.extend(std::iter::repeat_n(stack[i].clone(), n));
-        }
-        i += n;
-    }
-    parts
-}
 
 /// A call faults `stack overflow` when less than this much stack is left:
 /// enough for the Rust frames between two calls of the program and for
@@ -326,15 +305,7 @@ fn div_rem_euclid(a: &BigInt, b: &BigInt) -> (BigInt, BigInt) {
     (q, r)
 }
 
-/// The type text of a type, as passed at runtime (`List[Int]`).
-pub fn type_text(t: &TypeExpr) -> String {
-    match t {
-        TypeExpr::Named(n, args) if args.is_empty() => n.to_string(),
-        TypeExpr::Named(n, args) => format!("{n}[{}]", args.iter().map(type_text).collect::<Vec<_>>().join(", ")),
-        TypeExpr::Unit => "Unit".into(),
-        other => crate::printer::ty(other),
-    }
-}
+use crate::printer::type_text;
 
 /// `impl[T] .. for List[T]` called on `List[Int]`: `T` is `Int`.
 fn bind_type_params(pattern: &TypeExpr, t: &TypeExpr, params: &[Symbol], out: &mut Vec<(String, String)>) {

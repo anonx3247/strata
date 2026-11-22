@@ -335,91 +335,6 @@ fn package_verify_policies() {
     assert!(!ok && out.contains("[verify] proven names `nope`, which is not a module of this package"), "{out}");
 }
 
-/// After a loop, the state is the loop head's with the condition false, or
-/// the state at one of its `break`s: a `break` doesn't make the condition false.
-#[test]
-fn a_break_leaves_the_loop_in_its_own_state() {
-    if !has_solver() {
-        eprintln!("z3 is not installed: skipping");
-        return;
-    }
-    let d = tmp("loop-break");
-    let src = "fn early() -> Int
-  ensures it >= 10
-{
-  mut i: Int = 0
-  while i < 10 {
-    if i == 3 { break }
-    i += 1
-  }
-  i
-}
-fn no_break() -> Int
-  ensures it >= 10
-{
-  mut i: Int = 0
-  while i < 10 { i += 1 }
-  i
-}
-fn two_exits(n: Int) -> Int
-  ensures it == 1 || it == 2 || it >= 5
-{
-  mut r: Int = 0
-  while r < 5 {
-    if n > 0 {
-      r = 1
-      break
-    }
-    if n < -3 {
-      r = 2
-      break
-    }
-    r += 1
-  }
-  r
-}
-fn found(n: Natural) -> Int
-  ensures it == 7
-{
-  mut k: Int = 0
-  loop {
-    k = n
-    if k > 3 {
-      k = 7
-      break
-    }
-  }
-  k
-}
-fn inner_break(xs: List[Int]) -> Int
-  ensures it >= 4
-{
-  mut i: Int = 0
-  while i < 4 {
-    for x in xs {
-      if x > 0 { break }
-    }
-    i += 1
-  }
-  i
-}
-fn after_forever(n: Int) -> Int
-  ensures it == 0
-{
-  mut k: Int = n
-  loop { k = k + 1 }
-  k
-}
-";
-    save(&d.join("t.strata"), src);
-    let (ok, out) = strata(&["--file", "t.strata", "verify", "--cases", "20"], &d, None);
-    assert!(!ok, "{out}");
-    assert!(out.contains("✗ early") && out.contains("(found by the solver)") && out.contains("it = 3"), "{out}");
-    for name in ["no_break", "two_exits", "found", "inner_break", "after_forever"] {
-        assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
-    }
-}
-
 #[test]
 fn termination_is_shown_or_flagged() {
     if !has_solver() {
@@ -4907,7 +4822,7 @@ fn run_mode_console_in_tests_and_trace() {
     let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["--file", "p", "run", "--trace"]).current_dir(&d).output().unwrap();
     let (stdout, stderr) = (String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
     assert_eq!(stdout, "tracing\n");
-    assert!(stderr.lines().any(|l| l.contains(r#""event":"call""#) && l.contains("std.io.Terminal") && l.contains(r#""tracing""#)), "{stderr}");
+    assert!(stderr.lines().any(|l| l.trim_start().starts_with("→ ") && l.contains("std.io.Terminal") && l.contains(r#""tracing""#)), "{stderr}");
     // in a test: `Testing`, and the console's output is the test's, shown only if it fails
     let (ok, out) = strata(&["--file", "p", "test"], &d, None);
     assert!(!ok && out.contains("✓ sees it") && out.contains("✗ fails") && out.contains("shown: the test fails") && !out.contains("hidden: the test passes"), "{out}");

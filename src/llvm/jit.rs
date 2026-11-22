@@ -55,8 +55,6 @@ unsafe extern "C" {
     fn strata_str_cmp();
     fn strata_alloc();
     fn strata_dup();
-    fn strata_trace_call();
-    fn strata_trace_return();
     fn strata_ct_keep();
     fn strata_ct_kept() -> i64;
     fn strata_int_dup();
@@ -170,8 +168,9 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_str_cmp", strata_str_cmp as *const () as usize),
         ("strata_alloc", strata_alloc as *const () as usize),
         ("strata_dup", strata_dup as *const () as usize),
-        ("strata_trace_call", strata_trace_call as *const () as usize),
-        ("strata_trace_return", strata_trace_return as *const () as usize),
+        ("strata_trace_arg", trace_arg as *const () as usize),
+        ("strata_trace_call", trace_call as *const () as usize),
+        ("strata_trace_return", trace_return as *const () as usize),
         ("strata_ct_keep", strata_ct_keep as *const () as usize),
         ("strata_int_dup", strata_int_dup as *const () as usize),
         ("strata_int_drop", strata_int_drop as *const () as usize),
@@ -287,6 +286,72 @@ pub fn run_tests(ir: &str, which: &[usize]) -> Result<Vec<TestOutcome>, String> 
         out.push(TestOutcome { fault, printed: text(unsafe { printed() }) });
     }
     Ok(out)
+}
+
+/// `--trace`'s table (`llvm::Traced`), set when traced code is compiled.
+static TRACED: std::sync::Mutex<Option<super::Traced>> = std::sync::Mutex::new(None);
+
+pub fn set_traced(t: super::Traced) {
+    *TRACED.lock().unwrap_or_else(|e| e.into_inner()) = Some(t);
+}
+
+thread_local! {
+    /// The calls traced so far that haven't returned, and the arguments of
+    /// the one being entered.
+    static TRACE: std::cell::RefCell<(usize, Vec<String>)> = const { std::cell::RefCell::new((0, Vec::new())) };
+}
+
+/// A traced value, read by its shape, as the code that writes it.
+fn traced_value(id: i64, which: Option<i64>, raw: i64) -> String {
+    let t = TRACED.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(t) = t.as_ref() else { return "?".into() };
+    let Some((_, args, ret)) = t.fns.get(id as usize) else { return "?".into() };
+    let shape = match which {
+        Some(k) => args.get(k as usize).and_then(|s| s.as_ref()),
+        None => ret.as_ref(),
+    };
+    match shape {
+        // SAFETY: the traced code passes a live value of the shape it was compiled with
+        Some(s) => match unsafe { super::native::read(s, &t.named, raw) } {
+            Ok(v) => crate::printer::literal(&v),
+            Err(m) => format!("<{m}>"),
+        },
+        None => "()".into(),
+    }
+}
+
+fn traced_name(id: i64) -> String {
+    TRACED.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|t| t.fns.get(id as usize)).map(|f| f.0.clone()).unwrap_or_default()
+}
+
+/// `strata_trace_arg(id, k, slot)`: argument `k` of the traced call about to start.
+extern "C" fn trace_arg(id: i64, k: i64, raw: i64) {
+    let v = traced_value(id, Some(k), raw);
+    TRACE.with(|t| t.borrow_mut().1.push(v));
+}
+
+/// `strata_trace_call(id)`: a call, on stderr, indented by depth:
+/// `→ total([Line { .. }])`.
+extern "C" fn trace_call(id: i64) {
+    let name = traced_name(id);
+    TRACE.with(|t| {
+        let mut t = t.borrow_mut();
+        let args = std::mem::take(&mut t.1).join(", ");
+        eprintln!("{}→ {name}({args})", "  ".repeat(t.0));
+        t.0 += 1;
+    });
+}
+
+/// `strata_trace_return(id, slot)`: its return and value: `← total: 2100`.
+extern "C" fn trace_return(id: i64, raw: i64) {
+    let name = traced_name(id);
+    let has = TRACED.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|t| t.fns.get(id as usize)).is_some_and(|f| f.2.is_some());
+    let v = if has { format!(": {}", traced_value(id, None, raw)) } else { String::new() };
+    TRACE.with(|t| {
+        let mut t = t.borrow_mut();
+        t.0 = t.0.saturating_sub(1);
+        eprintln!("{}← {name}{v}", "  ".repeat(t.0));
+    });
 }
 
 /// The shapes of each fuzz driver's arguments, by the driver's address.

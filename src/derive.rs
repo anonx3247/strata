@@ -797,7 +797,7 @@ impl<'a> Expander<'a> {
         let Some(Stmt::Let(_, _, x)) = stmts.pop() else { unreachable!() };
         f.body = Expr::Block(stmts, Box::new(x));
         f.ret = crate::types::ty_to_texpr(&ty);
-        let (ir, roots, shapes) = crate::llvm::compile_comptime(&p, &[name.to_string()]).map_err(|m| format!("`comptime {}` can't be compiled: {m}", shown()))?;
+        let (ir, roots, shapes) = crate::llvm::untraced(|| crate::llvm::compile_comptime(&p, &[name.to_string()])).map_err(|m| format!("`comptime {}` can't be compiled: {m}", shown()))?;
         let mut vs = crate::llvm::jit::comptime(&ir, &roots, &shapes, BUDGET as i64)?;
         match vs.pop() {
             Some(Ok(v)) => {

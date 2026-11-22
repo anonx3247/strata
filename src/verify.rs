@@ -732,7 +732,7 @@ fn fuzz_limited(key: &str, shown: &str, cases: usize, seed: u64, budget: Option<
 
 /// A call stack for a message: deep ones (runaway recursion) are cut short.
 fn short_stack(stack: &[String]) -> String {
-    let stack = crate::interp::fold_stack(stack);
+    let stack = crate::names::fold_stack(stack);
     if stack.len() <= 8 {
         return stack.join(" -> ");
     }
