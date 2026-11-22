@@ -3,6 +3,7 @@ mod fx;
 mod symbol;
 #[cfg(test)]
 mod bench;
+mod ast_value;
 mod binary;
 mod cli;
 mod cmd;
@@ -90,7 +91,8 @@ every change made through strata, committed with them):
   pack <FILE.strata>           the whole program in one file (a bundle, with strata.toml);
                                --file, run, ui and every view read it like a package
   header <FILE.strata>         a module file's table of contents: each definition's kind,
-                               name, hashes, size and dependencies, read without decoding it
+                               name, hashes, size and dependencies, read without decoding it;
+                               --tree: each definition (a bundle's too) as a `std.ast` value, one per line
   (`--file` accepts a folder: each .strata file is a module named after its path.
    `--file F edit [MODULE]` and `--file F add TEXT` change F outside any log: a script,
    or a folder's module, created if new; only what doesn't parse is refused)
@@ -157,8 +159,11 @@ Running:
                                call one function: args are a JSON array validated
                                against the types; --trace prints each call and return
                                to stderr
-  test [FILTER]                run test blocks, compiled (a test that can't be compiled
-                               yet fails, saying why; --interpret: the old interpreter)
+  test [FILTER] [--with-deps]  run the project's own test blocks, compiled (a test that
+                               can't be compiled yet fails, saying why); --with-deps: also
+                               those of what it imports (std, dependencies), which are
+                               otherwise tested on their own; --interpret: the old
+                               interpreter
   build [PATH] [-o OUT] [--emit-llvm]
                                compile the program to a native executable, through LLVM
                                (needs clang; STRATA_CC chooses another): `main` takes no
