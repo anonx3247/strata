@@ -63,6 +63,14 @@ fn k(c: Bool) -> Int {
   if c { [1] } else { "s" }
   0
 }
+fn l(n: Int) -> Int {
+  mut i := 0
+  while i < n
+    invariant i {
+    i += 1
+  }
+  i
+}
 fn main() { print(1) }
 "#;
 
@@ -157,7 +165,15 @@ fn g(xs: List[Int]) -> Int {
   print(f"{p.x} {nowhere}")
   match ys { [h, ..rest] => h + len(rest) + k, _ => q }
 }
-fn main() { print(f(1) + g([1]) + nope(2)) }
+fn l(n: Int) -> Int {
+  mut i := 0
+  while i < n
+    invariant i <= n + m {
+    i += 1
+  }
+  i
+}
+fn main() { print(f(1) + g([1]) + nope(2) + l(1)) }
 "#;
 
 const MATCHES: &str = r#"type Sh =
