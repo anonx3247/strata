@@ -275,9 +275,13 @@ pub fn ship(mut db: Db, id: OrderId) -> Result[Order, ShipError]  ensures ...
 fn helper() -> Int { ... }            // private: invisible outside `orders`
 
 // billing.strata
-use orders.{Order, ship}              // or `use orders.*`, or write `orders.ship(x)`
+from orders use Order, ship           // the names, unqualified
+use std.time                          // the module: `time.now()`, `time.Clock`
+use std.json as j                     // under another name: `j.parse(s)`
 pub fn invoice(o: Order) -> Cents { ... }
 ```
+
+- **Every other module comes in through a `use`**, std's included: `use m` binds the module to its last name (`use shop.orders` gives `orders.ship(x)`), `use m as a` to `a`, and `from m use x, y as z` brings names in unqualified (a type with its constructors, a trait with its methods). A name written in full (`std.json.parse`) still needs a `use` of its module (`use std` covers `std.json` too); without one it is an error saying which `use` to add. Only the prelude (`Option`, `Result`, `Int`, `print`, …) needs none. A long `from` list is printed filled to the line width.
 
 - A module is used **only through its public contract**: `pub` types, function signatures, `requires`/`ensures`, trait laws. Anything else is private, and using it from another module is an error ("`secret` is private to module `a`").
 - `strata interface orders` prints that contract, with a hash. Editing a private definition, or a function body without touching its signature, is reported as "implementation only": nothing outside the module can be affected. Changing a `pub` signature or type says so ("module core: its public contract changed").
@@ -644,7 +648,7 @@ Not yet: `main` asking for a native module's capability, structs passed by value
 A program's entry point is `main`. It asks for what it needs by type, and `strata run` passes it in: its command-line options, and the capabilities it uses.
 
 ```rust
-use std.cli.CommandLine
+from std.cli use CommandLine
 
 /// Greet people by name.
 type Options = {
@@ -714,7 +718,7 @@ The **compiler written in Strata** is the `compiler/` package: a program, not pa
 **JSON** (`std.json`) is read into records and sum types that derive `Json`, in the form a web front end sends: a record is an object (with `"type"`, its type's name, when written; optional when read), a field left out takes its default, an `Option` is the value or `null` (or left out), a sum's variant is an object whose `"type"` names it (`{"type": "Circle", "r": 2}`, one positional field as `"value"`), a sum whose variants carry nothing is a string (`"Quiet"`), a tuple is an array, a `distinct` type is its underlying value, and a union is its member's value (reading takes the first member the JSON fits; members whose JSON overlaps are refused: `Int | Float`, two lists, `String` next to a choice, two members with the same `"type"`). Every refinement is checked, and errors say where: `home.zip: "1234" does not satisfy …`. Keys a record doesn't have are ignored, unless `strata.toml` says `unknown_keys = "error"` under `[json]`; `decode_with(j, Reject)` or `decode_with(j, Ignore)` decides for one call. Integers are within ±(2^53 − 1) both ways, the integers a JavaScript number holds exactly (`std.json.SafeInt`): reading or writing a larger one is an error (`encode` returns a `Result`). A package that wants it proven instead sets `integers = "proven"` under `[json]`: then every integer field must be shown to be a `SafeInt` (typed so, or refined within it), and `strata verify` fails on one that may not be. A type with no such form (a function, `Option[Option[T]]`, a field named `type`, a variant with several positional fields) is an error at the `derive`, as is a field whose type doesn't derive `Json` itself. A generic type derives it for every type argument that has it (`derive Json for Pair` is `Pair[T]` for each `T: Json`). Through the generic impls, `Some(x)` where `x` is written as `null` (`Some(None)`) is an error from `encode`; their elements' refinements are checked by `decode` (`read[List[Port]]("[70000]")` is an `Err` naming `Port`). `to_json` still writes any value in an older, tagged form; `print` shows it as code.
 
 ```rust
-use std.json.{Json, parse, stringify}
+from std.json use Json, parse, stringify
 
 type Signup = { email: String where contains(it, "@"), age: Int where it >= 13, nickname: Option[String] }
 derive Json for Signup
@@ -726,7 +730,7 @@ text := stringify(signup.encode()!)  // {"type":"Signup","email":…,"age":…,"
 **TOML** (`std.toml`) is read by a parser written in Strata, for `strata.toml` files once the tools read them in Strata. It checks every rule of TOML 1.1: keys and tables defined twice, tables closed once written (inline tables; tables made by dotted keys can't get a `[header]`, nor header tables dotted keys), integers within 64 bits, dates that exist (`2023-02-29` is an error), seconds that may be left out (`07:32`), inline tables over several lines with a trailing comma, `\e` and `\xHH` escapes. A Strata `Float` is finite, so `inf` and `nan` are errors. `tests/toml.rs` checks it reads documents as the `toml` crate does (the same values, the same documents refused), and that what `stringify` writes reads back as the same value; with `STRATA_TOML_CORPUS` set to a checkout of [toml-test](https://github.com/toml-lang/toml-test), on all of its TOML 1.1 files too.
 
 ```rust
-use std.toml.{parse, lookup, Integer}
+from std.toml use parse, lookup, Integer
 
 doc := parse("[server]\nport = 8080\n")!
 port := match lookup(doc, ["server", "port"]) {
@@ -738,7 +742,7 @@ port := match lookup(doc, ["server", "port"]) {
 `derive Toml` reads records and sum types from TOML as `derive Json` does from JSON, in the form a configuration file is written: a record is a table of its fields (no `type` key), a field left out takes its default, and an `Option` field is left out for `None` (TOML has no null, so an `Option` anywhere but a field is an error at the `derive`). A sum's variant is a table whose `type` names it (one positional field as `value`), a sum whose variants carry nothing is a string, a tuple is an array, a `Dict[String, V]` a table, and `Date`, `Time`, `DateTime` are TOML's dates and times. Every refinement is checked, errors say where (`servers[0].port: 70000 does not satisfy …`), integers are 64-bit, and keys a record doesn't have are ignored unless `strata.toml` says `unknown_keys = "error"` under `[toml]` (or `from_toml_with(v, Reject)`). The methods are named for TOML (`to_toml`, `from_toml`, `read_toml`, `write_toml`), so a type may derive `Json` too.
 
 ```rust
-use std.toml.Toml
+from std.toml use Toml
 
 type Server = { host: String, port: Int where 0 < it && it < 65536 = 8080 }
 type Config = { name: String, servers: List[Server] = [] }
@@ -752,7 +756,7 @@ text := config.write_toml()!
 **Regular expressions** (`std.regex`) are written in Strata, so a self-hosted compiler can use them. `parse` reads the syntax of Rust's `regex` crate (Unicode by default: `\d`, `\w`, `\s` and `.` are Unicode's; `\p{Greek}`, `\p{gc=Lu}`, `\p{age=6.0}`; classes with `&&`, `--`, `~~` and `[[:alpha:]]`; named groups; the flags `imsUuRx`; `\b`, `\b{start}`, `\A`, `\z`; no look-around or back-references) into the tree regex-syntax builds: classes as ranges of code points with `(?i)` folded in, flags gone, the same simplifications (`ab|ac` is `a(?:b|c)`, `a|b` is `[ab]`). `tests/regex.rs` checks the two agree on curated and random patterns. The Unicode data (`std.unicode_tables`) is generated by `tools/unicode_tables.py` from regex-syntax's tables (Unicode 16.0.0).
 
 ```rust
-use std.regex.{parse, show}
+from std.regex use parse, show
 
 re := parse("(?i)ab|ac")!
 show(re)    // cat(cls(41-41 61-61),cls(42-43 62-63))

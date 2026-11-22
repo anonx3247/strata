@@ -357,12 +357,36 @@ pub struct Decl {
     pub public: bool,
 }
 
-/// `use orders.{Order, ship}` / `use orders.*`
+/// `use std.time` (the module, named `time`: `time.now()`), `use std.time as t`
+/// (named `t`), `from std.time use Clock, Timer as T` (those names, unqualified).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UseDecl {
     pub path: Symbol,
-    /// `None` means everything public (`.*`).
-    pub items: Option<Vec<Symbol>>,
+    /// `use m as a`: the name the module goes by here (by default its last part).
+    pub alias: Option<Symbol>,
+    /// `from m use ...`: the names imported; `None` for `use m` (the module).
+    pub items: Option<Vec<UseItem>>,
+}
+
+/// One name of `from m use ...`: `Clock`, or `Timer as T`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UseItem {
+    pub name: Symbol,
+    pub alias: Option<Symbol>,
+}
+
+impl UseDecl {
+    /// The name `use m` binds the module to: its alias, or its last part.
+    pub fn binding(&self) -> Symbol {
+        self.alias.unwrap_or_else(|| Symbol::new(self.path.rsplit('.').next().unwrap_or(&self.path)))
+    }
+}
+
+impl UseItem {
+    /// The name it is known by here.
+    pub fn local(&self) -> Symbol {
+        self.alias.unwrap_or(self.name)
+    }
 }
 
 impl Decl {

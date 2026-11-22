@@ -277,8 +277,8 @@ pub fn follow_rename(p: &Program, from: &str, to: &str) -> Option<Program> {
         if let DeclKind::Use(u) = &mut d.kind {
             if u.path == module {
                 for item in u.items.iter_mut().flatten() {
-                    if item == short(to) {
-                        *item = Symbol::from(short(from).to_string());
+                    if item.name == short(to) {
+                        item.name = Symbol::from(short(from).to_string());
                     }
                 }
             }

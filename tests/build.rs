@@ -290,7 +290,7 @@ fn derived_traits_compile() {
         return;
     }
     let d = tmp("derived");
-    let (out, code) = case(&d, "derived", r#"use std.typing.{Record, Field}
+    let (out, code) = case(&d, "derived", r#"from std.typing use Record, Field
 
 /// Values from text, field by field.
 derivable(Record) trait FromText {
@@ -360,7 +360,7 @@ fn derived_for_sums_compile() {
     }
     let d = tmp("derived-sums");
     // `comptime for`, a match comprehension, `v.make()`
-    let (out, code) = case(&d, "sums", r#"use std.typing.{Choice, Union}
+    let (out, code) = case(&d, "sums", r#"from std.typing use Choice, Union
 
 /// A choice and its name.
 derivable(Choice) trait Named {
@@ -455,7 +455,7 @@ fn options_from_the_command_line_compile() {
     assert_eq!(codes, [0, 0, 0, 0, 2, 2, 0, 0, 2, 0, 0, 2, 0]);
     // a mutable options parameter, in a script
     let f = d.join("opts.strata");
-    save(&f, "use std.cli.CommandLine\n\ntype Options = {\n  /// How many.\n  count: Option[Int],\n  names: List[String],\n}\n\nderive CommandLine for Options\n\nfn main(mut opts: Options) {\n  opts.names = opts.names + [\"end\"]\n  print(f\"{opts.count} {opts.names}\")\n}\n");
+    save(&f, "from std.cli use CommandLine\n\ntype Options = {\n  /// How many.\n  count: Option[Int],\n  names: List[String],\n}\n\nderive CommandLine for Options\n\nfn main(mut opts: Options) {\n  opts.names = opts.names + [\"end\"]\n  print(f\"{opts.count} {opts.names}\")\n}\n");
     let exe = d.join("opts");
     let b = Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
     assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
@@ -891,7 +891,7 @@ fn fake_clocks_drive_after() {
     assert_eq!(jit, (out, code));
 }
 
-const FAKE_CLOCK: &str = r#"use std.time.{SystemClock, Clock, Instant, Duration, nanos, ms, seconds, elapsed}
+const FAKE_CLOCK: &str = r#"from std.time use SystemClock, Clock, Instant, Duration, nanos, ms, seconds, elapsed
 
 /// A clock whose time never moves.
 type FrozenClock = { at: Int }
@@ -962,7 +962,7 @@ fn main(clock: SystemClock) {
 }
 "#;
 
-const CLOCK: &str = r#"use std.time.{SystemClock, Clock, ms, seconds, elapsed}
+const CLOCK: &str = r#"from std.time use SystemClock, Clock, ms, seconds, elapsed
 
 fn never(rx: Receiver[Int]) -> Int {
   xs := ["held", "too"]
