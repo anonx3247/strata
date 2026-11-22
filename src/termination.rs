@@ -51,6 +51,9 @@ struct Node {
     calls: BTreeSet<String>,
     /// Problems with the node's own loops, if any; or how they end.
     loops: Result<Vec<String>, String>,
+    /// The code whose loops `loops` is about (checked only for the nodes
+    /// the analysis needs: see `analyze`).
+    body: Option<FnDecl>,
 }
 
 fn trait_node(m: &str) -> String {
@@ -644,14 +647,19 @@ fn cannot_fail(env: &Env, f: &FnDecl, total: &dyn Fn(&str) -> bool) -> bool {
     ok
 }
 
-pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
+/// The termination verdict of every function and implementation method
+/// (`roots: None`), or of those `roots` reach: a verdict depends only on what
+/// the code calls, and showing that loops end costs a solver run per loop, so
+/// verifying one function does not pay for the whole program's (std's) loops.
+/// The others are left unknown, and none of them is transparent.
+pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>, roots: Option<&HashSet<String>>) -> Analysis {
     let mut nodes: HashMap<String, Node> = HashMap::default();
     for (name, f) in &env.fns {
         let mut calls = BTreeSet::new();
         let params: Vec<String> = f.params.iter().map(|p| p.name.to_string()).collect();
         calls_of(&f.body, env, &params, &mut calls);
         f.requires.iter().chain(&f.ensures).for_each(|c| calls_of(c, env, &params, &mut calls));
-        nodes.insert(name.to_string().to_string(), Node { decl: Some(f.clone()), calls, loops: loops(env, f, solver) });
+        nodes.insert(name.to_string().to_string(), Node { decl: Some(f.clone()), calls, loops: Ok(vec![]), body: Some(f.clone()) });
     }
     for imp in &env.impls {
         let Some(tr) = env.traits.get(&imp.trait_name) else { continue };
@@ -663,8 +671,8 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
             let params: Vec<String> = decl.params.iter().map(|p| p.name.to_string()).collect();
             calls_within(&decl.body, env, &params, Some(&trait_node(&tm.decl.name)), &mut calls);
             let d = crate::verify::for_impl(env, imp, decl);
-            nodes.insert(label.clone(), Node { decl: None, calls, loops: loops(env, &d, solver) });
-            nodes.entry(trait_node(&tm.decl.name)).or_insert(Node { decl: None, calls: BTreeSet::new(), loops: Ok(vec![]) }).calls.insert(label);
+            nodes.insert(label.clone(), Node { decl: None, calls, loops: Ok(vec![]), body: Some(d) });
+            nodes.entry(trait_node(&tm.decl.name)).or_insert(Node { decl: None, calls: BTreeSet::new(), loops: Ok(vec![]), body: None }).calls.insert(label);
         }
         let _ = texpr_head(&imp.for_type);
     }
@@ -672,7 +680,7 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
     // trait methods no implementation defines
     let missing: Vec<String> = nodes.values().flat_map(|n| n.calls.iter().cloned()).filter(|c| !nodes.contains_key(c)).collect();
     for m in missing {
-        nodes.insert(m, Node { decl: None, calls: BTreeSet::new(), loops: Ok(vec![]) });
+        nodes.insert(m, Node { decl: None, calls: BTreeSet::new(), loops: Ok(vec![]), body: None });
     }
 
     // what each node reaches
@@ -687,12 +695,25 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>) -> Analysis {
         seen
     };
     let reaches: HashMap<String, HashSet<String>> = nodes.keys().map(|k| (k.clone(), reach(k))).collect();
-    let mutual = |n: &str| -> Option<String> { nodes[n].calls.iter().find(|c| c.as_str() != n && reaches[c.as_str()].contains(n)).cloned() };
     let recursive: HashSet<String> = nodes.keys().filter(|n| reaches[n.as_str()].contains(n.as_str())).cloned().collect();
+    // the nodes whose verdict is wanted: the roots and what they reach
+    let needed: Option<HashSet<String>> = roots.map(|rs| rs.iter().filter(|r| nodes.contains_key(r.as_str())).flat_map(|r| reaches[r.as_str()].iter().cloned().chain([r.clone()])).collect());
+    let wanted = |n: &str| needed.as_ref().is_none_or(|s| s.contains(n));
+    let skipped = "not analysed (nothing being verified reaches it)".to_string();
+    for (name, n) in nodes.iter_mut() {
+        if let Some(b) = &n.body {
+            n.loops = if wanted(name) { loops(env, b, solver) } else { Err(skipped.clone()) };
+        }
+    }
+    let mutual = |n: &str| -> Option<String> { nodes[n].calls.iter().find(|c| c.as_str() != n && reaches[c.as_str()].contains(n)).cloned() };
 
     // each node's own verdict, ignoring what it calls
     let mut own: HashMap<String, Result<String, String>> = HashMap::default();
     for (name, n) in &nodes {
+        if !wanted(name) {
+            own.insert(name.clone(), Err(skipped.clone()));
+            continue;
+        }
         let r = match &n.loops {
             Err(e) => Err(e.clone()),
             Ok(hows) => {
