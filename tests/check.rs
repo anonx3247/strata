@@ -421,6 +421,23 @@ fn e() -> Result[Int, String] { Ok(r()!) }
 fn main() { print(1) }
 "#;
 
+const TASKS: &str = r#"fn work() -> Int { 1 }
+fn a() -> Int { await 3 }
+fn b() -> String {
+  scope {
+    h := spawn work()
+    await h
+  }
+}
+fn c() -> Int {
+  scope {
+    h := spawn work()
+    h
+  }
+}
+fn main() { print(1) }
+"#;
+
 const RECORDS: &str = r#"type Pt = { x: Int, y: Int }
 type Sh =
   | Sq(Int)
@@ -749,6 +766,11 @@ fn misused_values_as_in_rust() {
 #[test]
 fn early_errors_as_in_rust() {
     same_errors("early", EARLY, &["returns the error early"]);
+}
+
+#[test]
+fn task_handles_as_in_rust() {
+    same_errors("tasks", TASKS, &["await` takes", "can't leave its", "expected `"]);
 }
 
 /// The compiler's errors on `text` are `strata check`'s, on the lines holding one of `keys`.
