@@ -2068,8 +2068,11 @@ impl<'a> Vc<'a> {
         match (a, b) {
             (Val::Absent, x) | (x, Val::Absent) => x.clone(),
             (Val::Lazy(x), Val::Lazy(y)) if x == y => a.clone(),
-            // two parts not made yet: a part that is either, made when read
-            (Val::Lazy(x), Val::Lazy(y)) if self.cells[*x].value.is_none() && self.cells[*y].value.is_none() && self.cells.len() < MAX_CELLS => {
+            // two parts, one of them not made yet: a part that is either, made
+            // when read (making it here could go on forever: a tree merged
+            // with its own subtree, `if c { t } else { t.left }`, merges each
+            // subtree with the one below it)
+            (Val::Lazy(x), Val::Lazy(y)) if (self.cells[*x].value.is_none() || self.cells[*y].value.is_none()) && self.cells.len() < MAX_CELLS => {
                 let (x, y) = (*x, *y);
                 let (vx, vy) = (self.cells[x].valid.clone(), self.cells[y].valid.clone());
                 let placeholder = self.cells[x].placeholder || self.cells[y].placeholder || c.contains("@@");
@@ -2341,8 +2344,9 @@ impl<'a> Vc<'a> {
     fn eq(&mut self, a: &Val, b: &Val) -> T {
         match (a, b) {
             (Val::Lazy(x), Val::Lazy(y)) if x == y => "true".into(),
-            (Val::Lazy(x), Val::Lazy(y)) if self.cells[*x].value.is_none() && self.cells[*y].value.is_none() && !self.cells[*x].placeholder && !self.cells[*y].placeholder && self.indexing.is_none() => {
-                // neither part is made: their equality is an unknown, defined when one is
+            (Val::Lazy(x), Val::Lazy(y)) if (self.cells[*x].value.is_none() || self.cells[*y].value.is_none()) && !self.cells[*x].placeholder && !self.cells[*y].placeholder && self.indexing.is_none() => {
+                // a part not made yet: their equality is an unknown, defined when
+                // both are (as for merging, making it here could go on forever)
                 let key = (*x.min(y), *x.max(y));
                 // (one made in a scope that is not open here can't be used here)
                 if let Some((e, r)) = self.eq_atoms.get(&key) {
@@ -2350,7 +2354,10 @@ impl<'a> Vc<'a> {
                         return e.clone();
                     }
                 }
-                let e = self.fresh_why("Bool", "comparing parts of values that are not read");
+                // (no reason: it is defined as soon as the parts are read)
+                let old = self.reason.take();
+                let e = self.fresh("Bool");
+                self.reason = old;
                 let r = self.regions.last().map_or(0, |g| g.id);
                 self.eq_atoms.insert(key, (e.clone(), r));
                 self.pending.entry(*x).or_default().push((*y, e.clone(), r));

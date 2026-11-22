@@ -409,7 +409,8 @@ fn inner(ms: Chain, k: Int, j: Int) -> Bool
 /// recursive sum (once ~(fields × variants)^3 terms per element: 20 variants
 /// took over 4 GB) stays small, and a pattern reads as deep as it goes (past
 /// the three levels that were all once modelled), with what the types of
-/// the parts guarantee.
+/// the parts guarantee. A tree merged with its own subtree (`down`) is
+/// merged lazily too.
 #[test]
 fn parts_of_values_are_made_when_read() {
     if !has_solver() {
@@ -456,13 +457,29 @@ fn same(a: Node, b: Node) -> Bool
     _ => true,
   }
 }
+fn down(t: Node, c: Bool) -> Bool
+  ensures it
+{
+  x := if c {
+    t
+  } else {
+    match t {
+      P(l, _) => l,
+      _ => t,
+    }
+  }
+  match x {
+    P(P(_, p), _) => p > 0,
+    _ => x == x,
+  }
+}
 fn main() { print(count([])) }
 ",
     );
     save(&d.join("t.strata"), &src);
     // run under a watchdog: a regression would take gigabytes
     let mut c = Command::new(env!("CARGO_BIN_EXE_strata"))
-        .args(["--file", "t.strata", "verify", "count,deep,same", "--cases", "5"])
+        .args(["--file", "t.strata", "verify", "count,deep,same,down", "--cases", "5"])
         .current_dir(&d)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -481,7 +498,7 @@ fn main() { print(count([])) }
     }
     let o = c.wait_with_output().unwrap();
     let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
-    for name in ["count", "deep", "same"] {
+    for name in ["count", "deep", "same", "down"] {
         assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
     }
 }
