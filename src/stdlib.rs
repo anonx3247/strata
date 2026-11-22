@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 pub const NAME: &str = "std";
 
 /// Its module files (binary, docs/binary-format.md); their modules are named `std.<path>`.
-const FILES: &[(&str, &[u8])] = &[
+pub const FILES: &[(&str, &[u8])] = &[
     ("io.strata", include_bytes!("../std/io.strata")),
     ("fs.strata", include_bytes!("../std/fs.strata")),
     ("process.strata", include_bytes!("../std/process.strata")),
