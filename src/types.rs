@@ -2999,7 +2999,7 @@ impl<'a> Checker<'a> {
                     }
                 }
                 _ if self.holds_sender(&xt) => {
-                    self.err(format!("a `spawn` can capture a sender only on its own (a variable holding it): `{x}` holds one inside"));
+                    self.err(format!("a task (a `spawn`, a `race` arm) can capture a sender only on its own (a variable holding it): `{x}` holds one inside"));
                 }
                 _ => {}
             }
@@ -3063,6 +3063,42 @@ impl<'a> Checker<'a> {
                     r
                 }
                 Some(r) => self.join_union(&r, &bt, "select arms"),
+                None => bt,
+            });
+            self.scopes.pop();
+        }
+        rt.unwrap_or_else(|| self.fresh())
+    }
+
+    /// `race { e as x => body, … }`: each `e` runs as a task of the race's
+    /// own (checked as a `spawn`'s body), `x` its result; the bodies as a
+    /// `select`'s arms.
+    fn race(&mut self, arms: &[SelectArm], expected: Option<&Ty>) -> Ty {
+        if arms.is_empty() {
+            self.err("a `race` needs at least one arm");
+        }
+        let outer = self.task_floor.replace(self.scopes.len());
+        let results: Vec<Ty> = arms
+            .iter()
+            .map(|a| match self.spawn(&a.op) {
+                Ty::Con(_, mut r) => r.remove(0),
+                t => t,
+            })
+            .collect();
+        self.task_floor = outer;
+        let mut rt: Option<Ty> = None;
+        for (a, t) in arms.iter().zip(results) {
+            self.scopes.push(HashMap::default());
+            if let Some(n) = a.name {
+                self.bind(n, t);
+            }
+            let bt = self.infer_at(&a.body, expected);
+            rt = Some(match rt {
+                Some(r) if expected.is_some() => {
+                    self.expect(&r, &bt, "race arm");
+                    r
+                }
+                Some(r) => self.join_union(&r, &bt, "race arms"),
                 None => bt,
             });
             self.scopes.pop();
@@ -3164,6 +3200,7 @@ impl<'a> Checker<'a> {
             Expr::Comptime(x) => self.infer_at(x, expected),
             Expr::Spawn(x) => self.spawn(x),
             Expr::Select(arms) => self.select(arms, expected),
+            Expr::Race(arms) => self.race(arms, expected),
             Expr::Await(x) => self.awaited(x),
             Expr::Scope(b) => {
                 let outer = self.task_floor.replace(self.scopes.len());
@@ -3774,7 +3811,7 @@ impl<'a> Checker<'a> {
                         self.expect(&r, &t, "`return` value");
                     }
                     None if self.in_spawn => {
-                        self.err("`return` can't leave a `spawn`: the expression is the task's result (move the code into a function to return early)");
+                        self.err("`return` can't leave a task (a `spawn`, a `race` arm): the expression is the task's result (move the code into a function to return early)");
                         self.infer(x);
                     }
                     None => {
@@ -3818,7 +3855,7 @@ impl<'a> Checker<'a> {
                             self.err(format!("`{op}` returns {what} early, so the result type must be `{want}`, found `{shown}` (handle it here with `except`)"));
                         }
                     }
-                    None if self.in_spawn => self.err(format!("`{op}` can't return from a `spawn`: handle the {ty_name} with `except` or `match`, or give it back as the task's result")),
+                    None if self.in_spawn => self.err(format!("`{op}` can't return from a task (a `spawn`, a `race` arm): handle the {ty_name} with `except` or `match`, or give it back as the task's result")),
                     None => self.err(format!("`{op}` outside a function: handle the {ty_name} with `except` or `match`")),
                 }
                 inner
@@ -5308,14 +5345,19 @@ pub fn ty_head(t: &Ty) -> Option<Symbol> {
     })
 }
 
-/// Whether `e` calls `x.close()` (outside any `spawn` in it: that would close
-/// the other task's copy).
+/// Whether `e` calls `x.close()` (outside any `spawn` or `race` arm's left
+/// side in it: that would close the other task's copy).
 fn closes(e: &Expr, x: Symbol) -> bool {
     struct Closes(Symbol, bool);
     impl crate::ast::Visit for Closes {
         fn expr(&mut self, e: &Expr) {
             match e {
                 Expr::Spawn(_) => return,
+                // a race arm's left side is a task of its own
+                Expr::Race(arms) => {
+                    arms.iter().for_each(|a| self.expr(&a.body));
+                    return;
+                }
                 Expr::Method(r, m, args) if m == "close" && args.is_empty() && matches!(&**r, Expr::Var(v) if *v == self.0) => self.1 = true,
                 _ => {}
             }

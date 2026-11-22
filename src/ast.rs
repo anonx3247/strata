@@ -617,6 +617,10 @@ pub enum Expr {
     /// waits until one of the operations can happen, does that one only, and
     /// runs its arm.
     Select(Vec<SelectArm>),
+    /// `race { fetch(a) as p => …, fetch(b) as q => … }`: each arm's left
+    /// side runs as a task of its own; the first to finish runs its arm, and
+    /// the others are cancelled (they stop at their next wait).
+    Race(Vec<SelectArm>),
 }
 
 /// One arm of a `select`: an operation that may wait (`rx.recv()`,
@@ -839,7 +843,7 @@ macro_rules! visitor {
                         v.expr(&$($m)? a.body)
                     }
                 }
-                Expr::Select(arms) => {
+                Expr::Select(arms) | Expr::Race(arms) => {
                     for a in arms {
                         v.expr(&$($m)? a.op);
                         v.expr(&$($m)? a.body)

@@ -63,6 +63,26 @@ fn place_of(e: &Expr) -> Option<(String, Vec<String>)> {
     }
 }
 
+/// Whether a program starts tasks: a `spawn` or a `race` anywhere.
+fn uses_tasks(decls: &[Decl]) -> bool {
+    struct Tasks(bool);
+    impl Visit for Tasks {
+        fn expr(&mut self, e: &Expr) {
+            if matches!(e, Expr::Spawn(_) | Expr::Race(_)) {
+                self.0 = true;
+            }
+            if !self.0 {
+                walk_expr(self, e)
+            }
+        }
+    }
+    let mut t = Tasks(false);
+    for d in decls {
+        walk_decl(&mut t, &d.kind);
+    }
+    t.0
+}
+
 /// Whether evaluating `e` may assign a variable: an assignment in a block,
 /// or a `mut` argument or receiver (a lambda's body can't change outer
 /// variables, and runs later).
@@ -73,6 +93,10 @@ fn assigns(e: &Expr) -> bool {
             match e {
                 Expr::Mut(_) => self.0 = true,
                 Expr::Lambda(..) | Expr::Spawn(..) => return,
+                Expr::Race(arms) => {
+                    arms.iter().for_each(|a| self.expr(&a.body));
+                    return;
+                }
                 Expr::Block(stmts, _) if stmts.iter().any(|s| matches!(s, Stmt::Assign(..))) => self.0 = true,
                 _ => {}
             }
@@ -608,7 +632,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers, tasks: uses_tasks(&resolved.program.decls) };
     if !m.proofs.is_empty() {
         m.refs = Refs::of(prog);
     }
@@ -771,6 +795,10 @@ declare i1 @strata_channel_recv(ptr, ptr)
 declare void @strata_channel_close(ptr)
 declare i64 @strata_select(ptr, i64)
 declare ptr @strata_await(ptr)
+declare i1 @strata_cancelled()
+declare void @strata_unwound()
+declare void @strata_scope_cancel(ptr)
+@strata_cancel_any = external global i32
 declare void @strata_int_dup(i64)
 declare void @strata_int_drop(i64)
 ; an `Int` outside [-2^62, 2^62) is a big integer, an object: only those are counted
@@ -1101,6 +1129,9 @@ struct Module<'a> {
     foreign: std::collections::BTreeMap<String, String>,
     /// std's functions precompiled (`jit::std_library`): declared, not compiled.
     precompiled: Option<&'static std::collections::HashSet<String>>,
+    /// Whether the program starts tasks (`spawn`, `race`): then a call that
+    /// may wait is followed by a check for cancellation (`cancel_point`).
+    tasks: bool,
 }
 
 thread_local! {
@@ -1791,6 +1822,7 @@ impl<'a> Module<'a> {
         } else {
             c.emit("ret void".into());
         }
+        c.unwound_exit(&ret, framed)?;
         let text = c.finish();
         writeln!(self.body, "define {} {}({}) {{\n{text}}}\n", self.ll(&ret)?, inst.symbol, sig.join(", ")).unwrap();
         Ok(())
@@ -2095,11 +2127,13 @@ struct Func<'m, 'a> {
     /// The program's function being compiled, whose proofs `proven` reads
     /// (none in a lambda, a helper, or std's and the prelude's code).
     proofs_of: Option<String>,
+    /// Whether a cancellation check leaves through the `unwound` block.
+    unwinds: bool,
 }
 
 impl<'m, 'a> Func<'m, 'a> {
     fn new(m: &'m mut Module<'a>, sub: HashMap<Symbol, Ty>) -> Self {
-        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![], proofs_of: None }
+        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![], unwinds: false, proofs_of: None }
     }
 
     /// The function's text: the slots, then the code.
@@ -2109,6 +2143,66 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let first = self.code.lines().next().unwrap_or("").trim_end_matches(':').to_string();
         format!("entry:\n{}  br label %{first}\n{}", self.allocas, self.code)
+    }
+
+    /// After a call that may wait (a task's `recv`, `send`, `select`,
+    /// `await`, or a function that may do one): if this task was cancelled,
+    /// leave the function as `return` does, dropping what its scopes hold;
+    /// its caller does the same after it. The result isn't stored: callers
+    /// check before they use it. A program without tasks has no checks, and
+    /// one with them reads a global (no cancellation pending: one branch).
+    fn cancel_point(&mut self) -> Res<()> {
+        if !self.m.tasks || self.ret_slot.is_none() || self.terminated {
+            return Ok(());
+        }
+        let (any, maybe, go, out) = (self.fresh("cancels"), self.fresh_label("cancel.maybe"), self.fresh_label("cancel.go"), self.fresh_label("cancel.out"));
+        let z = self.fresh("cancelling");
+        self.emit(format!("{any} = load atomic i32, ptr @strata_cancel_any monotonic, align 4"));
+        self.emit(format!("{z} = icmp ne i32 {any}, 0"));
+        self.emit(format!("br i1 {z}, label %{maybe}, label %{go}, !prof !{{!\"branch_weights\", i32 1, i32 2000}}"));
+        self.block(&maybe);
+        let c = self.fresh("cancelled");
+        self.emit(format!("{c} = call i1 @strata_cancelled()"));
+        self.emit(format!("br i1 {c}, label %{out}, label %{go}"));
+        self.block(&out);
+        self.drop_from(0, None)?;
+        self.br("unwound");
+        self.unwinds = true;
+        self.block(&go);
+        Ok(())
+    }
+
+    /// Where a wait gave up because this task was cancelled (`strata_select`
+    /// gave -1): leave as `cancel_point` does.
+    fn unwind_here(&mut self) -> Res<()> {
+        if !self.m.tasks || self.ret_slot.is_none() {
+            self.emit("unreachable".into());
+            return Ok(());
+        }
+        self.drop_from(0, None)?;
+        self.br("unwound");
+        self.unwinds = true;
+        Ok(())
+    }
+
+    /// The way out taken by `cancel_point`: nothing stored, a zero value
+    /// returned (never used), the thread marked as unwinding.
+    fn unwound_exit(&mut self, ret: &Ty, framed: bool) -> Res<()> {
+        if !self.unwinds {
+            return Ok(());
+        }
+        self.block("unwound");
+        self.emit("call void @strata_unwound()".into());
+        if framed {
+            self.emit("call void @strata_leave()".into());
+        }
+        if has_value(ret) {
+            let ll = self.m.ll(ret)?;
+            self.emit(format!("ret {ll} zeroinitializer"));
+        } else {
+            self.emit("ret void".into());
+        }
+        Ok(())
     }
 
     fn emit(&mut self, line: String) {
@@ -4553,6 +4647,7 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             Expr::Spawn(body) => self.spawn(e, body)?,
             Expr::Select(arms) => self.select(e, arms)?,
+            Expr::Race(arms) => self.race(e, arms)?,
             Expr::Await(h) => {
                 let ht = self.ty_of(h)?;
                 let rt = self.ty_of(e)?;
@@ -5257,9 +5352,9 @@ impl<'m, 'a> Func<'m, 'a> {
         let ret = self.m.lower(&own.ret, &sub)?;
         let (args, backs) = self.bind_args(&own_params, vs, &sub, places, false)?;
         let r = self.call(&ret, &symbol, &args)?;
-        let r = self.temp(r);
         self.write_backs(backs, places)?;
-        Ok(r)
+        self.cancel_point()?;
+        Ok(self.temp(r))
     }
 
     /// Call a function of the program (one instance of it, if generic).
@@ -5295,9 +5390,9 @@ impl<'m, 'a> Func<'m, 'a> {
         let (args, backs) = self.bind_args(&params, vs, &sub, places, true)?;
         let symbol = self.m.want_impls(name, targs.clone(), impls);
         let r = self.call(&ret, &symbol, &args)?;
-        let r = self.temp(r);
         self.write_backs(backs, places)?;
-        Ok(r)
+        self.cancel_point()?;
+        Ok(self.temp(r))
     }
 
     /// A native operation of std (`host_*`): the runtime's, its result made
@@ -5903,14 +5998,14 @@ impl<'m, 'a> Func<'m, 'a> {
             args.push(self.coerce(v, &t)?);
         }
         let r = self.call(&ret, &fp, &args)?;
-        let r = self.temp(r);
         if let Some((place, slot)) = back {
             self.write_back(&place, &slot, &recv, &tm.decl.params[0].ty)?;
         }
         for (place, slot, t, pty) in backs {
             self.write_back(&place, &slot, &t, &pty)?;
         }
-        Ok(r)
+        self.cancel_point()?;
+        Ok(self.temp(r))
     }
 
     /// A trait value `a` passed as `Self` to a method of `imp`'s table
@@ -6087,6 +6182,7 @@ impl<'m, 'a> Func<'m, 'a> {
             all.push((t.clone(), a.1));
         }
         let r = self.call(&rt, &fp, &all)?;
+        self.cancel_point()?;
         Ok(self.temp(r))
     }
 
@@ -6147,7 +6243,14 @@ impl<'m, 'a> Func<'m, 'a> {
     fn spawn(&mut self, e: &Expr, body: &Expr) -> Res<V> {
         let t = self.ty_of(e)?;
         let Ty::Con(_, a) = &t else { return Err("a `spawn` without a task's type".into()) };
-        let rt = a[0].clone();
+        let h = self.spawn_task(&a[0].clone(), body)?;
+        Ok((t, h))
+    }
+
+    /// `body` started as a task (its result of type `rt`) of the innermost
+    /// open scope: its handle.
+    fn spawn_task(&mut self, rt: &Ty, body: &Expr) -> Res<String> {
+        let rt = rt.clone();
         // the senders it captures: a copy of each is the task's, to close
         let mut names: Vec<String> = vars_in(body);
         names.sort();
@@ -6172,7 +6275,102 @@ impl<'m, 'a> Func<'m, 'a> {
         let (run, drop) = self.task_fns(&rt)?;
         let h = self.fresh("task");
         self.emit(format!("{h} = call ptr @strata_spawn(ptr {}, ptr {run}, ptr {drop}, ptr {shares}, i64 {})", clo.1, senders.len()));
-        Ok((t, h))
+        Ok(h)
+    }
+
+    /// `race { e as x => body, … }`: each `e` started as a task of a scope
+    /// of the race's own; `strata_select` waits for the first to finish; the
+    /// others are cancelled (they stop at their next wait), the winner's
+    /// result moves out of its task, the scope ends (waiting for the others
+    /// to stop), then the winner's arm runs.
+    fn race(&mut self, e: &Expr, arms: &[SelectArm]) -> Res<V> {
+        let want = self.ty_of(e)?;
+        let n = arms.len();
+        let rts = arms.iter().map(|a| self.ty_of(&a.op)).collect::<Res<Vec<Ty>>>()?;
+        let mut slots = vec![];
+        for t in &rts {
+            slots.push(if has_value(t) {
+                let s = self.fresh("won");
+                writeln!(self.allocas, "  {s} = alloca {}", self.m.ll(t)?).unwrap();
+                Some(s)
+            } else {
+                None
+            });
+        }
+        let k = self.fresh("winner");
+        let tasks = self.fresh("tasks");
+        self.emit(format!("{tasks} = call ptr @strata_scope_begin()"));
+        self.scoped(false, |c| {
+            c.scopes.last_mut().unwrap().tasks = Some(tasks.clone());
+            let ops = c.fresh("ops");
+            writeln!(c.allocas, "  {ops} = alloca [{} x i64]", 4 * n.max(1)).unwrap();
+            let mut handles = vec![];
+            for (i, a) in arms.iter().enumerate() {
+                let h = c.spawn_task(&rts[i], &a.op)?;
+                let (p, q) = (c.fresh("op"), c.fresh("op"));
+                c.emit(format!("{p} = getelementptr i64, ptr {ops}, i64 {}", 4 * i));
+                c.emit(format!("store i64 2, ptr {p}"));
+                c.emit(format!("{q} = getelementptr i64, ptr {ops}, i64 {}", 4 * i + 1));
+                c.emit(format!("store ptr {h}, ptr {q}"));
+                handles.push(h);
+            }
+            c.emit(format!("{k} = call i64 @strata_select(ptr {ops}, i64 {n})"));
+            c.emit(format!("call void @strata_scope_cancel(ptr {tasks})"));
+            // the winner's result, held here (its task keeps its own until the scope ends)
+            let labels: Vec<String> = (0..n).map(|_| c.fresh_label("race.won")).collect();
+            let (none, end) = (c.fresh_label("race.none"), c.fresh_label("race.got"));
+            let cases: Vec<String> = labels.iter().enumerate().map(|(i, l)| format!("i64 {i}, label %{l}")).collect();
+            c.emit(format!("switch i64 {k}, label %{none} [ {} ]", cases.join(" ")));
+            for i in 0..n {
+                c.block(&labels[i]);
+                if let Some(slot) = &slots[i] {
+                    let ht = Ty::Con("Task".into(), vec![rts[i].clone()]);
+                    let v = c.await_one(&(ht, handles[i].clone()), &rts[i])?;
+                    let v = c.take(v);
+                    let ll = c.m.ll(&rts[i])?;
+                    c.emit(format!("store {ll} {}, ptr {slot}", v.1));
+                }
+                c.br(&end);
+            }
+            // -1: the race itself was cancelled while it waited
+            c.block(&none);
+            c.unwind_here()?;
+            c.block(&end);
+            Ok((Ty::Unit, String::new()))
+        })?;
+        // the winner's arm, with its result
+        let labels: Vec<String> = (0..n).map(|_| self.fresh_label("race.arm")).collect();
+        let (none, end) = (self.fresh_label("race.none"), self.fresh_label("race.end"));
+        let cases: Vec<String> = labels.iter().enumerate().map(|(i, l)| format!("i64 {i}, label %{l}")).collect();
+        self.emit(format!("switch i64 {k}, label %{none} [ {} ]", cases.join(" ")));
+        let mut incoming = vec![];
+        for (i, a) in arms.iter().enumerate() {
+            self.block(&labels[i]);
+            let (rt, slot) = (rts[i].clone(), slots[i].clone());
+            let v = self.branch(&want, |c| {
+                c.scoped(false, |c| {
+                    let got = match &slot {
+                        Some(s) => {
+                            let r = c.fresh("result");
+                            c.emit(format!("{r} = load {}, ptr {s}", c.m.ll(&rt)?));
+                            c.temp((rt.clone(), r))
+                        }
+                        None => (rt.clone(), String::new()),
+                    };
+                    if let Some(name) = &a.name {
+                        c.local_owned(name, got, None)?;
+                    }
+                    c.expr(&a.body)
+                })
+            })?;
+            incoming.push((v, self.cur.clone()));
+            self.br(&end);
+        }
+        self.block(&none);
+        self.emit("unreachable".into());
+        self.block(&end);
+        let r = self.join(&want, incoming)?;
+        Ok(self.temp(r))
     }
 
     // ---- channels ----
@@ -6213,6 +6411,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let v = self.take(v);
                 let s = self.to_slot(&v)?;
                 self.emit(format!("call void @strata_channel_send(ptr {}, i64 {s})", tx.1));
+                self.cancel_point()?;
                 (Ty::Unit, String::new())
             }
             ("channel_close", [tx]) => {
@@ -6225,7 +6424,10 @@ impl<'m, 'a> Func<'m, 'a> {
                 writeln!(self.allocas, "  {out} = alloca i64").unwrap();
                 let ok = self.fresh("ok");
                 self.emit(format!("{ok} = call i1 @strata_channel_recv(ptr {}, ptr {out})", rx.1));
-                self.option_from(&bool_v(&ok), &out, &et)?
+                // (checked once what came is held, so leaving drops it)
+                let r = self.option_from(&bool_v(&ok), &out, &et)?;
+                self.cancel_point()?;
+                r
             }
             _ => return Ok(None),
         }))
@@ -6365,8 +6567,9 @@ impl<'m, 'a> Func<'m, 'a> {
             incoming.push((v, self.cur.clone()));
             self.br(&end);
         }
+        // -1: this task was cancelled while it waited
         self.block(&none);
-        self.emit("unreachable".into());
+        self.unwind_here()?;
         self.block(&end);
         let r = self.join(&want, incoming)?;
         Ok(self.temp(r))
@@ -6406,6 +6609,7 @@ impl<'m, 'a> Func<'m, 'a> {
     fn await_one(&mut self, h: &V, rt: &Ty) -> Res<V> {
         let p = self.fresh("out");
         self.emit(format!("{p} = call ptr @strata_await(ptr {})", h.1));
+        self.cancel_point()?;
         if !has_value(rt) {
             return Ok((rt.clone(), String::new()));
         }
@@ -6509,6 +6713,7 @@ impl<'m, 'a> Func<'m, 'a> {
         } else {
             l.emit("ret void".into());
         }
+        l.unwound_exit(&rt, false)?;
         let text = l.finish();
         let ll = self.m.ll(&rt)?;
         writeln!(self.m.body, "define {ll} {fsym}({}) {{\n{text}}}\n", sig.join(", ")).unwrap();

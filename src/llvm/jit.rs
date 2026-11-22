@@ -76,6 +76,10 @@ unsafe extern "C" {
     fn strata_channel_recv();
     fn strata_channel_close();
     fn strata_select();
+    fn strata_cancelled();
+    fn strata_unwound();
+    fn strata_scope_cancel();
+    static strata_cancel_any: i32;
     fn strata_str_eq();
     fn strata_str_len();
     fn strata_fault();
@@ -204,6 +208,9 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_channel_recv", strata_channel_recv as *const () as usize),
         ("strata_channel_close", strata_channel_close as *const () as usize),
         ("strata_select", strata_select as *const () as usize),
+        ("strata_cancelled", strata_cancelled as *const () as usize),
+        ("strata_unwound", strata_unwound as *const () as usize),
+        ("strata_scope_cancel", strata_scope_cancel as *const () as usize),
         ("strata_str_eq", strata_str_eq as *const () as usize),
         ("strata_str_len", strata_str_len as *const () as usize),
         ("strata_fault", strata_fault as *const () as usize),
@@ -780,6 +787,10 @@ fn engine_at<'ctx>(ctx: &'ctx Context, ir: &str, optimize: bool) -> Result<inkwe
         if let Some(f) = module.get_function(name) {
             engine.add_global_mapping(&f, addr);
         }
+    }
+    // the runtime's data the compiled code reads
+    if let Some(g) = module.get_global("strata_cancel_any") {
+        engine.add_global_mapping(&g, &raw const strata_cancel_any as usize);
     }
     // std's precompiled functions: the library's code, loaded once
     for f in module.get_functions() {
