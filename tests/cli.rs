@@ -579,17 +579,17 @@ fn main() {
 }
 
 /// A selector names definitions or modules (with the modules inside):
-/// `std.ast.check` is that module's definitions, as `std.ast.check.*`; a
+/// `std.json` is that module's definitions, as `std.json.*`; a
 /// part that names nothing is an error, not an empty selection that passes.
 #[test]
 fn selectors_name_modules_and_never_nothing() {
     let d = tmp("selectors");
     let std = format!("{}/std", env!("CARGO_MANIFEST_DIR"));
-    let (ok, by_module) = strata(&["--file", &std, "view", "std.ast.check", "--level", "0"], &d, None);
-    let (_, by_glob) = strata(&["--file", &std, "view", "std.ast.check.*", "--level", "0"], &d, None);
-    assert!(ok && by_module.contains("std.ast.check.") && by_module == by_glob, "{by_module}");
-    let (ok, out) = strata(&["--file", &std, "verify", "std.ast.nothing_here"], &d, None);
-    assert!(!ok && out.contains("`std.ast.nothing_here` names no definition and no module"), "{out}");
+    let (ok, by_module) = strata(&["--file", &std, "view", "std.json", "--level", "0"], &d, None);
+    let (_, by_glob) = strata(&["--file", &std, "view", "std.json.*", "--level", "0"], &d, None);
+    assert!(ok && by_module.contains("std.json.") && by_module == by_glob, "{by_module}");
+    let (ok, out) = strata(&["--file", &std, "verify", "std.json.nothing_here"], &d, None);
+    assert!(!ok && out.contains("`std.json.nothing_here` names no definition and no module"), "{out}");
 }
 
 /// A written `invariant` is checked on entry and where every pass ends
@@ -5472,10 +5472,10 @@ fn extern_c_declarations() {
     assert!(ok && out == db, "{out}");
     let (ok, out) = strata(&["--file", "p", "check"], &d, None);
     assert!(ok, "{out}");
-    // verify runs nothing that reaches C
+    // code calling C is verified like any other: the C function's contract
+    // (`ensures it >= 0`) is assumed at the call (and checked there when run)
     let (_, out) = strata(&["--file", "p", "verify"], &d, None);
-    assert!(out.contains("db.length") && out.contains("assumed: module `db` calls foreign code"), "{out}");
-    assert!(out.contains("assumed: it calls `db.length`, in module `db`, which calls foreign code"), "{out}");
+    assert!(out.contains("✓ db.length ") && out.contains("✓ main ") && !out.contains("assumed"), "{out}");
     // only its own module calls it, submodules included
     save_module(&p, "db.inner", "fn sub() -> U64 { db.strlen(\"x\") }\n");
     let (ok, out) = strata(&["--file", "p", "check"], &d, None);
@@ -5756,9 +5756,9 @@ fn capabilities_given_by_the_runtime() {
     } else {
         assert!(out.contains("clang"), "{out}");
     }
-    // verify runs nothing that needs one
+    // the capability's own code is trusted; code taking one is proven from its contracts
     let (_, out) = strata(&["--file", "p", "verify"], &d, None);
-    assert!(out.contains("assumed: `SystemClock` is a capability") && out.contains("assumed: it takes the capability `SystemClock`"), "{out}");
+    assert!(out.contains("assumed: `SystemClock` is a capability") && out.contains("✓ main "), "{out}");
     assert!(out.contains("clock.late") && !out.contains("panicked"), "{out}");
     // nothing else makes one
     save_module(&p, "bad", "use clock.{SystemClock}\n\nfn forge() -> SystemClock {\n  SystemClock {}\n}\n\nfn mocked() -> SystemClock {\n  mock SystemClock\n}\n\ntest \"asks for an int\" (n: Int) {\n  assert n == 1\n}\n");
