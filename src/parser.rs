@@ -5,6 +5,10 @@ pub struct Parser {
     toks: Vec<Token>,
     pos: usize,
     no_struct: bool,
+    /// A `|` ends the expression (a refinement or a `where` pattern, where
+    /// `|` separates a union's members or a pattern's alternatives): a
+    /// bit-or there is written in parentheses.
+    no_pipe: bool,
     comments: Vec<Comment>,
     used: Vec<bool>,
 }
@@ -55,7 +59,7 @@ impl Parser {
     fn new(src: &str) -> R<Parser> {
         let (toks, comments) = lex_with_comments(src)?;
         let used = vec![false; comments.len()];
-        Ok(Parser { toks, pos: 0, no_struct: false, comments, used })
+        Ok(Parser { toks, pos: 0, no_struct: false, no_pipe: false, comments, used })
     }
 
     // ---------- comments ----------
@@ -666,7 +670,11 @@ impl Parser {
     pub fn type_expr(&mut self) -> R<TypeExpr> {
         let t = self.type_union()?;
         if self.eat_kw("where") {
-            return Ok(TypeExpr::Refined(Box::new(t), Box::new(self.expr_ns()?)));
+            let old = self.no_pipe;
+            self.no_pipe = true;
+            let pred = self.expr_ns();
+            self.no_pipe = old;
+            return Ok(TypeExpr::Refined(Box::new(t), Box::new(pred?)));
         }
         Ok(t)
     }
@@ -761,10 +769,10 @@ impl Parser {
 
     /// expression where a `{` cannot start a record literal / be swallowed
     fn expr_ns(&mut self) -> R<Expr> {
-        let old = self.no_struct;
+        let old = (self.no_struct, self.no_pipe);
         self.no_struct = true;
         let e = self.expr();
-        self.no_struct = old;
+        (self.no_struct, self.no_pipe) = old;
         e
     }
 
@@ -791,15 +799,19 @@ impl Parser {
             0 => &[("||", Or)],
             1 => &[("&&", And)],
             2 => &[("==", Eq), ("!=", Ne), ("<=", Le), (">=", Ge), ("<", Lt), (">", Gt)],
-            4 => &[("+", Add), ("-", Sub)],
-            5 => &[("*", Mul), ("/", Div), ("%", Mod)],
+            4 if !self.no_pipe => &[("|", BitOr)],
+            5 => &[("^", BitXor)],
+            6 => &[("&", BitAnd)],
+            7 => &[("<<", Shl), (">>", Shr)],
+            8 => &[("+", Add), ("-", Sub)],
+            9 => &[("*", Mul), ("/", Div), ("%", Mod)],
             _ => &[],
         };
         table.iter().find(|(t, _)| t == s).map(|(_, op)| *op)
     }
 
     fn binary(&mut self, level: usize) -> R<Expr> {
-        if level > 5 {
+        if level > 9 {
             return self.unary();
         }
         let mut lhs = self.binary(level + 1)?;
@@ -822,7 +834,7 @@ impl Parser {
                 lhs = Expr::Is(Box::new(lhs), ctor);
                 continue;
             }
-            // `|` cannot be a binary op; `-` on a new line starts a new statement
+            // `-` on a new line starts a new statement
             if self.nl_before() && matches!(self.peek(), Tok::Sym("-")) {
                 break;
             }
@@ -900,11 +912,11 @@ impl Parser {
     }
 
     fn args(&mut self) -> R<Vec<Expr>> {
-        let old = self.no_struct;
-        self.no_struct = false;
+        let old = (self.no_struct, self.no_pipe);
+        (self.no_struct, self.no_pipe) = (false, false);
         // `f(mut x)`: the call may change `x` (its parameter is `mut`); see `marked`
         let r = self.list(")", |p| p.expr());
-        self.no_struct = old;
+        (self.no_struct, self.no_pipe) = old;
         r
     }
 
@@ -970,8 +982,8 @@ impl Parser {
     /// What is inside `xs[...]`, past the `[`: an index `i`, or a range
     /// `a..b`, `a..=b`, `a..`, `..b`, `..`.
     fn index(&mut self) -> R<Expr> {
-        let old = self.no_struct;
-        self.no_struct = false;
+        let old = (self.no_struct, self.no_pipe);
+        (self.no_struct, self.no_pipe) = (false, false);
         let lo = if self.is_sym("..") || self.is_sym("..=") { None } else { Some(Box::new(self.binary(0)?)) };
         let inclusive = if self.eat_sym("..=") {
             true
@@ -979,7 +991,7 @@ impl Parser {
             false
         } else if let Some(i) = lo {
             self.expect_sym("]")?;
-            self.no_struct = old;
+            (self.no_struct, self.no_pipe) = old;
             return Ok(*i);
         } else {
             unreachable!()
@@ -989,7 +1001,7 @@ impl Parser {
             return Err(self.err("`..=` needs an end: `xs[a..=b]`"));
         }
         self.expect_sym("]")?;
-        self.no_struct = old;
+        (self.no_struct, self.no_pipe) = old;
         Ok(Expr::Range(lo, hi, inclusive))
     }
 
@@ -1061,16 +1073,16 @@ impl Parser {
                 if self.eat_sym(")") {
                     return Ok(Expr::Unit);
                 }
-                let old = self.no_struct;
-                self.no_struct = false;
+                let old = (self.no_struct, self.no_pipe);
+                (self.no_struct, self.no_pipe) = (false, false);
                 let e = self.expr()?;
                 if self.eat_sym(",") {
                     let mut items = vec![e];
                     items.extend(self.list(")", |p| p.expr())?);
-                    self.no_struct = old;
+                    (self.no_struct, self.no_pipe) = old;
                     return Ok(Expr::Tuple(items));
                 }
-                self.no_struct = old;
+                (self.no_struct, self.no_pipe) = old;
                 self.expect_sym(")")?;
                 Ok(e)
             }
@@ -1079,13 +1091,13 @@ impl Parser {
                 if self.eat_sym("]") {
                     return Ok(Expr::List(vec![]));
                 }
-                let old = self.no_struct;
-                self.no_struct = false;
+                let old = (self.no_struct, self.no_pipe);
+                (self.no_struct, self.no_pipe) = (false, false);
                 let first = self.expr()?;
                 // `[e for x in xs where c for y in ys]`
                 if self.is_kw("for") {
                     let gens = self.comp_fors("]")?;
-                    self.no_struct = old;
+                    (self.no_struct, self.no_pipe) = old;
                     return Ok(Expr::Comp(CompKind::List, Box::new(first), gens));
                 }
                 let mut items = vec![first];
@@ -1094,7 +1106,7 @@ impl Parser {
                 } else {
                     self.expect_sym("]")?;
                 }
-                self.no_struct = old;
+                (self.no_struct, self.no_pipe) = old;
                 Ok(Expr::List(items))
             }
             Tok::Sym("{") => self.block(),
@@ -1229,10 +1241,10 @@ impl Parser {
             return Err(self.err(&format!("put the `{what} {{ … }}` in parentheses here")));
         }
         self.next();
-        let old = self.no_struct;
-        self.no_struct = false;
+        let old = (self.no_struct, self.no_pipe);
+        (self.no_struct, self.no_pipe) = (false, false);
         let r = self.collection_body(dict, tys);
-        self.no_struct = old;
+        (self.no_struct, self.no_pipe) = old;
         r
     }
 
@@ -1296,8 +1308,8 @@ impl Parser {
 
     fn block(&mut self) -> R<Expr> {
         self.expect_sym("{")?;
-        let old = self.no_struct;
-        self.no_struct = false;
+        let old = (self.no_struct, self.no_pipe);
+        (self.no_struct, self.no_pipe) = (false, false);
         let mut stmts = Vec::new();
         while !self.is_sym("}") {
             // a blank line between statements is kept, as "" before what follows
@@ -1403,7 +1415,7 @@ impl Parser {
             }
         }
         self.expect_sym("}")?;
-        self.no_struct = old;
+        (self.no_struct, self.no_pipe) = old;
         let last = match stmts.last() {
             Some(Stmt::Expr(_)) => match stmts.pop() {
                 Some(Stmt::Expr(e)) => e,
@@ -1492,7 +1504,11 @@ impl Parser {
             }
             Tok::Ident(s) if s == "where" => {
                 self.next();
-                Ok(Pattern::Cond(Box::new(self.expr()?)))
+                let old = self.no_pipe;
+                self.no_pipe = true;
+                let cond = self.expr();
+                self.no_pipe = old;
+                Ok(Pattern::Cond(Box::new(cond?)))
             }
             Tok::Ident(s) if s == "true" || s == "false" => {
                 self.next();

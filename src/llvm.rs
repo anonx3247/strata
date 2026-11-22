@@ -200,8 +200,9 @@ pub fn compile_traced(prog: &Program, entry: &str) -> Res<String> {
 /// What a compilation starts from.
 enum Entry<'e> {
     Main(&'e str),
-    /// The tests, but those named here.
-    Tests(&'e [String]),
+    /// The tests, but those named here; with `true`, also those of what the
+    /// program imports (std, dependencies), not only its own.
+    Tests(&'e [String], bool),
     Fuzz(&'e [FuzzTarget]),
     /// std's functions to precompile (`jit::std_library`): only they are exported.
     Library(&'e [String]),
@@ -289,13 +290,16 @@ pub fn compile_fuzz(prog: &Program, targets: &[FuzzTarget]) -> Res<String> {
 
 /// The LLVM IR of a program's `test` blocks: a function per test
 /// (`@"strata.test.N"`, taking and returning nothing), and their names.
-pub fn compile_tests(prog: &Program) -> Res<(String, Vec<String>)> {
-    compile_for(prog, Entry::Tests(&[]))
+/// Only the program's own tests (its files'), unless `with_deps`: what it
+/// imports is tested on its own (std with `--file std`), and compiled and
+/// verified there.
+pub fn compile_tests(prog: &Program, with_deps: bool) -> Res<(String, Vec<String>)> {
+    compile_for(prog, Entry::Tests(&[], with_deps))
 }
 
 /// `compile_tests`, leaving out the tests named in `skip`.
-pub fn compile_tests_except(prog: &Program, skip: &[String]) -> Res<(String, Vec<String>)> {
-    compile_for(prog, Entry::Tests(skip))
+pub fn compile_tests_except(prog: &Program, skip: &[String], with_deps: bool) -> Res<(String, Vec<String>)> {
+    compile_for(prog, Entry::Tests(skip, with_deps))
 }
 
 fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
@@ -373,7 +377,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     };
     // a literal pattern's matcher (a DFA, usually) is made now: data in the
     // program (not for compile-time code or std's library, which have none)
-    let matchers = if matches!(entry, Entry::Main(_) | Entry::Tests(_) | Entry::Fuzz(_)) { literal_patterns(&mut with) } else { HashMap::default() };
+    let matchers = if matches!(entry, Entry::Main(_) | Entry::Tests(..) | Entry::Fuzz(_)) { literal_patterns(&mut with) } else { HashMap::default() };
     let (resolved, types) = crate::types::elaborate_resolved(&with);
     let (env, _) = Env::build(&resolved.program);
     // every constructor gets a tag of its own, so a value's tag says what it is
@@ -454,10 +458,14 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
                 comptime.push((sym_impls(name, &[], &[]), t));
             }
         }
-        Entry::Tests(skip) => {
-            // each test, a function of its own (no frame of its own on the call stack)
-            for d in &resolved.program.decls {
+        Entry::Tests(skip, with_deps) => {
+            // each test, a function of its own (no frame of its own on the call stack);
+            // the program's own definitions come first, what it imports after them
+            for (i, d) in resolved.program.decls.iter().enumerate() {
                 let DeclKind::Test(t) = &d.kind else { continue };
+                if !with_deps && i >= prog.decls.len() {
+                    continue;
+                }
                 if skip.iter().any(|s| s == t.name.as_str()) {
                     continue;
                 }
@@ -587,6 +595,11 @@ declare i64 @strata_int_cmp(i64, i64)
 declare i1 @strata_int_eq(i64, i64)
 declare i64 @strata_int_lit(ptr)
 declare i64 @strata_int_from_i64(i64)
+declare i64 @strata_int_and(i64, i64)
+declare i64 @strata_int_or(i64, i64)
+declare i64 @strata_int_xor(i64, i64)
+declare i64 @strata_shl(i64, i64)
+declare i64 @strata_shr(i64, i64)
 declare i64 @strata_int_from_u64(i64)
 declare i64 @strata_int_bits(i64)
 declare ptr @strata_cstr(ptr, ptr)
@@ -4014,6 +4027,31 @@ impl<'m, 'a> Func<'m, 'a> {
         self.temp((Ty::Int, v))
     }
 
+    /// `&`, `|`, `^` on `Int`s: here when both are small (so is the result:
+    /// a small `Int` is its own 64-bit two's complement), else in the runtime.
+    fn bit_op(&mut self, op: BinOp, a: &V, b: &V) -> V {
+        let (ins, f) = match op {
+            BinOp::BitAnd => ("and", "and"),
+            BinOp::BitOr => ("or", "or"),
+            _ => ("xor", "xor"),
+        };
+        let r = self.fresh("bits");
+        self.emit(format!("{r} = {ins} i64 {}, {}", a.1, b.1));
+        let ok = self.all_small(&[&a.1, &b.1]);
+        let (fast, slow, end) = (self.fresh_label("bits.small"), self.fresh_label("bits.big"), self.fresh_label("bits.done"));
+        self.emit(format!("br i1 {ok}, label %{fast}, label %{slow}"));
+        self.block(&fast);
+        self.br(&end);
+        self.block(&slow);
+        let big = self.fresh("big");
+        self.emit(format!("{big} = call i64 @strata_int_{f}(i64 {}, i64 {})", a.1, b.1));
+        self.br(&end);
+        self.block(&end);
+        let v = self.fresh("n");
+        self.emit(format!("{v} = phi i64 [ {r}, %{fast} ], [ {big}, %{slow} ]"));
+        self.temp((Ty::Int, v))
+    }
+
     /// Whether every one of these `Int`s is small (in [-2^62, 2^62): its two
     /// top bits are equal).
     fn all_small(&mut self, xs: &[&str]) -> String {
@@ -4163,6 +4201,12 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             (Mod, Ty::Int) => {
                 let r = self.call(&Ty::Int, "@strata_mod", &[a.clone(), b.clone()])?;
+                self.temp(r)
+            }
+            (BitAnd | BitOr | BitXor, Ty::Int) => self.bit_op(op, a, b),
+            (Shl | Shr, Ty::Int) => {
+                let f = if op == Shl { "@strata_shl" } else { "@strata_shr" };
+                let r = self.call(&Ty::Int, f, &[a.clone(), b.clone()])?;
                 self.temp(r)
             }
             (Add | Sub | Mul | Div | Mod, Ty::Float) => {

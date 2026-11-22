@@ -417,6 +417,14 @@ pub enum BinOp {
     And,
     Or,
     Implies,
+    /// `&`, `|`, `^` on integers, bit by bit (as two's complement, infinitely
+    /// sign-extended: `-1 & x` is `x`), and `<<`, `>>`: times or floor-divided
+    /// by a power of two (the shift can't be negative).
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 impl BinOp {
@@ -437,6 +445,11 @@ impl BinOp {
             And => "&&",
             Or => "||",
             Implies => "==>",
+            BitAnd => "&",
+            BitOr => "|",
+            BitXor => "^",
+            Shl => "<<",
+            Shr => ">>",
         }
     }
 }

@@ -260,6 +260,11 @@ fn bin_op(op: BinOp) -> &'static str {
         And => "And",
         Or => "Or",
         Implies => "Implies",
+        BitAnd => "BitAnd",
+        BitOr => "BitOr",
+        BitXor => "BitXor",
+        Shl => "Shl",
+        Shr => "Shr",
     }
 }
 

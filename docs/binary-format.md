@@ -8,7 +8,7 @@ Strata code is stored as its syntax tree, not its text, in a binary format of ou
 - `strata header core.strata` prints a module file's table of contents; `strata header core.strata --tree` prints each definition (a bundle's too) as a `std.ast` value, one per line.
 - In git, `strata setup-git` makes `git diff` and `git log -p` show `.strata` files as text, and merges them definition by definition (a conflict is left as text; `strata resolve FILE` stores it again once fixed).
 
-The format is written by hand in `src/binary.rs`, with no serialization library, so that Strata can read and write it itself: `std.ast.binary` does (in Strata, on the tree `std.ast`), tested against `binary.rs` on every module file of the repository (`tests/ast.rs`). This page is its specification; the three are kept in step.
+The format is written by hand in `src/binary.rs`, with no serialization library, so that Strata can read and write it itself: `std.ast.binary` does (in Strata, on the tree `std.ast`, hashes included, with its own SHA-256), tested against `binary.rs` on every module file of the repository (`tests/ast.rs`). This page is its specification; the three are kept in step.
 
 Design:
 
@@ -180,6 +180,7 @@ StrPart  = 0 Lit(str) | 1 Expr(Expr, spec:option(FmtSpec))
 FmtSpec  = fill:char  align:option(char)  plus:bool  zero:bool  width:uint  precision:option(uint)
 
 BinOp    = 0 +  1 -  2 *  3 /  4 %  5 ==  6 !=  7 <  8 <=  9 >  10 >=  11 &&  12 ||  13 ==>
+         | 14 &  15 |  16 ^  17 <<  18 >>
 UnOp     = 0 -  1 !
 TryKind  = 0 `!` (Result)  1 `?` (Option)
 ```

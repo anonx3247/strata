@@ -1,9 +1,10 @@
 //! `std.ast.binary` reads module files and bundles as `src/binary.rs` does,
 //! and writes a definition's bytes as it does. For every module file in the
 //! repository, and for a program using every node of the tree, the Strata
-//! decoder's trees (as `debug` prints them) are `strata header --tree`'s, and
-//! each definition it re-encodes is the file's bytes. Cut or corrupted files
-//! are errors, never crashes.
+//! decoder's trees (as `debug` prints them) are `strata header --tree`'s,
+//! each definition it re-encodes is the file's bytes, and the hashes it
+//! computes are the header's. Cut or corrupted files are errors, never
+//! crashes. Its SHA-256 (private) agrees with the `sha2` crate.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -13,12 +14,14 @@ const STRATA: &str = env!("CARGO_BIN_EXE_strata");
 
 /// The checker, run as `MODE FILE...`: `tree` prints each definition as
 /// `debug` writes it; `same` prints `N/M` (of M definitions, N re-encode to
-/// the file's bytes) and the names of those that don't; `bad` reads every
+/// the file's bytes) and the names of those that don't; `hashes` the same for
+/// the three hashes Strata computes, against the header's; `bad` reads every
 /// prefix of the file and the file with each byte flipped, and prints how many
-/// prefixes were read (none should be).
+/// prefixes were read and how many flipped files read as other trees (none
+/// should).
 const CHECKER: &str = r#"use std.fs.{Files, Disk}
 use std.process.{Environment, Process}
-use std.ast.binary.{read, read_header, encode_definition}
+use std.ast.binary.{read, read_header, encode_definition, hash, interface_hash, code_hash}
 
 fn tree(bytes: List[Int]) -> Result[List[String], String] {
   Ok(read(bytes)!.decls.map(d -> debug(d)))
@@ -40,6 +43,22 @@ fn same(bytes: List[Int]) -> Result[List[String], String] {
   Ok(push(wrong, f"{n}/{m}"))
 }
 
+fn hashes(bytes: List[Int]) -> Result[List[String], String] {
+  decls := read(bytes)!.decls
+  h := read_header(bytes)!
+  mut n := 0
+  mut wrong := []
+  for p in zip(h.entries, decls) {
+    if hash(p.1) == p.0.hash && interface_hash(p.1) == p.0.interface_hash && code_hash(p.1) == p.0.code_hash {
+      n += 1
+    } else {
+      wrong = push(wrong, p.0.name)
+    }
+  }
+  m := len(decls)
+  Ok(push(wrong, f"{n}/{m}"))
+}
+
 fn bad(bytes: List[Int]) -> Result[List[String], String] {
   mut read_cut := 0
   for n in 0..len(bytes) {
@@ -47,18 +66,25 @@ fn bad(bytes: List[Int]) -> Result[List[String], String] {
       read_cut += 1
     }
   }
-  mut read_flipped := 0
+  // a flipped byte is refused, or (in the header's own tables) reads the same trees
+  original := debug(read(bytes)!.decls)
+  mut changed := 0
   for i in 0..len(bytes) {
     flipped := [if j == i {
       255 - b
     } else {
       b
     } for (j, b) in enumerate(bytes)]
-    if read(flipped) is Ok {
-      read_flipped += 1
+    match read(flipped) {
+      Ok(img) => {
+        if debug(img.decls) != original {
+          changed += 1
+        }
+      },
+      Err(_) => (),
     }
   }
-  Ok([f"cut {read_cut}", f"flipped {read_flipped}"])
+  Ok([f"cut {read_cut}", f"changed {changed}"])
 }
 
 fn main(disk: Disk, process: Process) {
@@ -72,6 +98,7 @@ fn main(disk: Disk, process: Process) {
     out := match mode {
       "tree" => tree(bytes),
       "same" => same(bytes),
+      "hashes" => hashes(bytes),
       _ => bad(bytes),
     }
     match out {
@@ -200,6 +227,7 @@ fn f(x: Int) -> Int
   se := Set[Int] { 1, 2 }
   ix := ys[1] + ys[1..][0]
   ok := x < 1 || x <= 2 && x > 3 && x >= 4 && x != 5
+  bits := x & 1 | x ^ 2 << 3 >> 1
   t := comptime twice(2)
   comptime for fld in Self.fields {
     print(fld)
@@ -226,7 +254,7 @@ use e.*
 
 /// What `strata header --tree` of the program above must show: a variant
 /// or a field value of each kind.
-const NODES: &[&str] = &["TypeDef", "FnDef", "TestDef", "TraitDef", "ImplDef", "UseDef", "ExternDef", "CapabilityDef", "Alias", "RecordBody", "SumBody", "NoPayload", "Positional", "RecordPayload", "MemberType", "ExternFn", "ExternType", "Named", "FnType", "UnitType", "Refined", "UnionType", "IntLit", "BigIntLit", "FloatLit", "TupleExpr", "StrLit", "BoolLit", "UnitExpr", "Var(", "Hole(", "ListExpr", "CtorExpr", "Call {", "MethodCall", "FieldOf", "Lambda", "Binary", "Unary", "IsExpr", "IfExpr", "MatchExpr", "MutExpr", "Block {", "MockExpr", "Return(", "Try {", "Except {", "Interp(", "Range {", "Index {", "Comp {", "DictExpr", "SetExpr", "Fallback", "Comptime(", "NoArgs", "PositionalArgs", "RecordArgs", "UpdateArgs", "ListComp", "SetComp", "DictComp", "TextPart", "ValuePart", "Some(FmtSpec", "op: Add", "op: Sub", "op: Mul", "op: Div", "op: Mod", "op: Equal", "op: NotEqual", "op: Less,", "op: LessEq", "op: Greater,", "op: GreaterEq", "op: And", "op: Or", "op: Implies", "op: Neg", "op: Not", "TryResult", "TryOption", "Let {", "VarDecl", "Assign {", "While {", "For {", "Loop(", "Break", "Continue", "ExprStmt", "Assert(", "Comment(", "ComptimeFor", "Wild", "Bind(", "IntPat", "StrPat", "BoolPat", "CtorPattern", "ListPat", "TuplePat", "CondPat", "OrPat", "ForPat", "NoPats", "PositionalPats", "RecordPats", "TypePats", "mocked: true", "Some(Derivable", "compile_time: true", "distinct: true", "e+21", "FloatLit(-0.0)", "e-7", "align: Some", "precision: Some", "items: None", "binding: Some", "rest: Some", "capability: true", "derived: true", "terminating: true", "mutable: true", "default: Some", "inclusive: true", "lo: None"];
+const NODES: &[&str] = &["TypeDef", "FnDef", "TestDef", "TraitDef", "ImplDef", "UseDef", "ExternDef", "CapabilityDef", "Alias", "RecordBody", "SumBody", "NoPayload", "Positional", "RecordPayload", "MemberType", "ExternFn", "ExternType", "Named", "FnType", "UnitType", "Refined", "UnionType", "IntLit", "BigIntLit", "FloatLit", "TupleExpr", "StrLit", "BoolLit", "UnitExpr", "Var(", "Hole(", "ListExpr", "CtorExpr", "Call {", "MethodCall", "FieldOf", "Lambda", "Binary", "Unary", "IsExpr", "IfExpr", "MatchExpr", "MutExpr", "Block {", "MockExpr", "Return(", "Try {", "Except {", "Interp(", "Range {", "Index {", "Comp {", "DictExpr", "SetExpr", "Fallback", "Comptime(", "NoArgs", "PositionalArgs", "RecordArgs", "UpdateArgs", "ListComp", "SetComp", "DictComp", "TextPart", "ValuePart", "Some(FmtSpec", "op: Add", "op: Sub", "op: Mul", "op: Div", "op: Mod", "op: Equal", "op: NotEqual", "op: Less,", "op: LessEq", "op: Greater,", "op: GreaterEq", "op: And", "op: Or", "op: Implies", "op: BitAnd", "op: BitOr", "op: BitXor", "op: Shl", "op: Shr", "op: Neg", "op: Not", "TryResult", "TryOption", "Let {", "VarDecl", "Assign {", "While {", "For {", "Loop(", "Break", "Continue", "ExprStmt", "Assert(", "Comment(", "ComptimeFor", "Wild", "Bind(", "IntPat", "StrPat", "BoolPat", "CtorPattern", "ListPat", "TuplePat", "CondPat", "OrPat", "ForPat", "NoPats", "PositionalPats", "RecordPats", "TypePats", "mocked: true", "Some(Derivable", "compile_time: true", "distinct: true", "e+21", "FloatLit(-0.0)", "e-7", "align: Some", "precision: Some", "items: None", "binding: Some", "rest: Some", "capability: true", "derived: true", "terminating: true", "mutable: true", "default: Some", "inclusive: true", "lo: None"];
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("strata-ast-test-{name}-{}", std::process::id()));
@@ -289,10 +317,12 @@ fn agree(check: &str, files: &[PathBuf]) {
         let at = g.iter().zip(&w).position(|(a, b)| a != b).unwrap_or(g.len().min(w.len()));
         panic!("definition {at} differs:\n  std.ast: {}\n  Rust:    {}", g.get(at).unwrap_or(&"(none)"), w.get(at).unwrap_or(&"(none)"));
     }
-    args[4] = "same";
-    for (p, line) in paths.iter().zip(run(&args).lines()) {
-        let (n, m) = line.split_once('/').unwrap_or_else(|| panic!("{p}: {line}"));
-        assert_eq!(n, m, "{p}: only {line} definitions re-encode to the file's bytes");
+    for (mode, what) in [("same", "re-encode to the file's bytes"), ("hashes", "have the header's three hashes")] {
+        args[4] = mode;
+        for (p, line) in paths.iter().zip(run(&args).lines()) {
+            let (n, m) = line.split_once('/').unwrap_or_else(|| panic!("{p}: {line}"));
+            assert_eq!(n, m, "{p}: only {line} definitions {what}");
+        }
     }
 }
 
@@ -339,8 +369,76 @@ fn bad_input_is_an_error_not_a_crash() {
     let check = checker(&dir);
     let file = root.join("examples/orders.strata");
     let out = run(&["--file", &check, "run", "--", "bad", &file.to_string_lossy()]);
-    // every prefix is refused; a flipped byte may still decode (no hash check
-    // yet), but never crashes
-    assert!(out.starts_with("cut 0\nflipped "), "{out}");
+    // every prefix is refused, and no flipped byte reads as other trees (the
+    // header's hash catches a change inside a definition)
+    assert_eq!(out, "cut 0\nchanged 0\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `std.ast.binary`'s SHA-256 (private: it names definitions, nothing else)
+/// against the `sha2` crate: every length from 0 to 200 bytes (each padding
+/// case, one to four blocks), longer ones around block and power-of-two
+/// edges, inputs of all zeros and all ones, and 20,000 `a`s. FIPS 180's
+/// examples are a test of the module, run by `strata --file std test` and
+/// `--with-deps`, not by other projects' `strata test`.
+#[test]
+fn sha256_agrees_with_the_sha2_crate() {
+    use sha2::{Digest, Sha256};
+    let std_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("std");
+    let std_dir = std_dir.to_string_lossy().into_owned();
+    // pseudo-random bytes, the same on every run (xorshift)
+    let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 24) as u8
+    };
+    let mut inputs: Vec<Vec<u8>> = (0..=200).map(|n| (0..n).map(|_| next()).collect()).collect();
+    for n in [255, 256, 257, 511, 512, 1000, 4095, 4096, 4097, 10_000] {
+        inputs.push((0..n).map(|_| next()).collect());
+    }
+    for n in [1, 55, 56, 64, 128, 1000] {
+        inputs.push(vec![0; n]);
+        inputs.push(vec![0xff; n]);
+    }
+    // `a`s, as FIPS 180's million (which don't fit on a command line): from
+    // 8,192 bytes on, the length in bits takes three bytes, as theirs does
+    inputs.push(vec![b'a'; 20_000]);
+    let wrong: Vec<String> = std::thread::scope(|s| {
+        let chunks: Vec<&[Vec<u8>]> = inputs.chunks(inputs.len() / 8 + 1).collect();
+        let handles: Vec<_> = chunks
+            .into_iter()
+            .map(|chunk| {
+                let std_dir = &std_dir;
+                s.spawn(move || {
+                    let mut wrong = vec![];
+                    for bytes in chunk {
+                        let arg = format!("[{:?}]", bytes);
+                        let out = run(&["--file", std_dir, "run", "std.ast.binary.sha256", &arg]);
+                        let got: Vec<u8> = out.split(|c: char| !c.is_ascii_digit()).filter(|t| !t.is_empty()).map(|t| t.parse().unwrap()).collect();
+                        let want = Sha256::digest(bytes).to_vec();
+                        if got != want {
+                            wrong.push(format!("{} bytes (starting {:?}): got {got:?}, want {want:?}", bytes.len(), &bytes[..bytes.len().min(8)]));
+                        }
+                    }
+                    wrong
+                })
+            })
+            .collect();
+        handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    });
+    assert!(wrong.is_empty(), "{} of {} inputs differ:\n{}", wrong.len(), inputs.len(), wrong.join("\n"));
+    // FIPS 180's examples, the million `a`s included: a test of the module,
+    // run with std's own tests, and only there (std is tested on its own)
+    let out = run(&["--file", &std_dir, "test"]);
+    assert!(out.contains("✓ std.ast.binary: sha256 gives FIPS 180's examples"), "{out}");
+    let dir = scratch("std-tests");
+    let file = dir.join("mine.strata");
+    save(&file, "use std.ast.binary.{version}\n\ntest \"mine\" {\n  assert version() == 1\n}\n");
+    let out = run(&["--file", &file.to_string_lossy(), "test"]);
+    assert_eq!(out, "✓ mine\n\n1 passed, 0 failed\n", "a program's tests are its own, not std's");
+    let out = run(&["--file", &file.to_string_lossy(), "test", "--with-deps"]);
+    assert!(out.contains("✓ std.ast.binary: sha256 gives FIPS 180's examples") && out.contains("2 passed, 0 failed"), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
