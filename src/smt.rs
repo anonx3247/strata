@@ -1148,6 +1148,8 @@ impl<'a> Vc<'a> {
                     self.new_list(len, gen_)
                 }
                 "Tuple" => Val::Tuple(args.iter().map(|a| self.shape(a)).collect()),
+                // a task's handle stands for its result
+                "Task" if args.len() == 1 => self.shape(&args[0]),
                 // dicts and sets are tracked by their size
                 "Dict" | "Set" => {
                     let len = self.fresh("Int");
@@ -2598,7 +2600,8 @@ impl<'a> Vc<'a> {
             }
             Expr::Lambda(..) => self.fn_value(e, vec![]).0,
             Expr::Mock(t) => Val::Opaque(format!("`mock {}`", crate::printer::ty(t))),
-            Expr::Mut(x) | Expr::Comptime(x) => self.eval(x),
+            // a task's result is its expression's value: `await spawn e` is `e`
+            Expr::Mut(x) | Expr::Comptime(x) | Expr::Scope(x) | Expr::Spawn(x) | Expr::Await(x) => self.eval(x),
             Expr::Interp(parts) => {
                 for part in parts {
                     if let StrPart::Expr(x, _) = part {

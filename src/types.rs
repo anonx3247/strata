@@ -1167,6 +1167,11 @@ struct Checker<'a> {
     pending: Vec<(Ty, String, Vec<Ty>, String)>,
     /// Scopes below this index belong outside the closure being checked.
     lambda_floor: usize,
+    /// Inside a `scope` (and no closure or `spawn` since): the index of its
+    /// first variable scope; a `spawn` needs one.
+    task_floor: Option<usize>,
+    /// Checking a `spawn`'s expression: `return`, `!` and `?` can't leave it.
+    in_spawn: bool,
     /// How many loops enclose the code being checked (for `break`/`continue`).
     loops: usize,
     /// Written types of immutable variables, for the refinements a `match`
@@ -2880,15 +2885,72 @@ impl<'a> Checker<'a> {
         }
         let floor = std::mem::replace(&mut self.lambda_floor, self.scopes.len() - 1);
         let loops = std::mem::take(&mut self.loops);
+        // (a lambda in a `scope` may spawn into it: a comprehension's body is
+        // one; one holding a handle can't leave the scope, by its type)
+        let tasks = (self.task_floor, std::mem::take(&mut self.in_spawn));
         let r = self.fresh();
         let outer = self.ret.replace(r.clone());
         let bt = self.infer(body);
         self.expect(&r, &bt, "lambda body");
         self.ret = outer;
         self.loops = loops;
+        (self.task_floor, self.in_spawn) = tasks;
         self.lambda_floor = floor;
         self.scopes.pop();
         Ty::Fn(pts, Box::new(r))
+    }
+
+    /// Whether a type holds a task's handle anywhere.
+    fn holds_task(&self, t: &Ty) -> bool {
+        match self.resolve(t) {
+            Ty::Con(n, args) => n == "Task" || args.iter().any(|a| self.holds_task(a)),
+            Ty::Fn(ps, r) => ps.iter().any(|p| self.holds_task(p)) || self.holds_task(&r),
+            Ty::Union(ms) => ms.iter().any(|m| self.holds_task(m)),
+            _ => false,
+        }
+    }
+
+    /// `spawn e`: `e` checked as a closure's body (its captures are copies,
+    /// it can't change outer variables), in a task of the enclosing `scope`.
+    fn spawn(&mut self, body: &Expr) -> Ty {
+        if self.task_floor.is_none() {
+            self.err("`spawn` outside a `scope`: tasks are started in a `scope { … }`, which waits for them (a function that starts tasks opens its own)");
+        }
+        self.scopes.push(HashMap::default());
+        let floor = std::mem::replace(&mut self.lambda_floor, self.scopes.len() - 1);
+        let loops = std::mem::take(&mut self.loops);
+        let tasks = (self.task_floor.take(), std::mem::replace(&mut self.in_spawn, true));
+        let outer = self.ret.take();
+        let t = self.infer(body);
+        self.ret = outer;
+        self.loops = loops;
+        (self.task_floor, self.in_spawn) = tasks;
+        self.lambda_floor = floor;
+        self.scopes.pop();
+        if self.holds_task(&t) {
+            self.err("a task can't give back another task's handle: await it in the task");
+        }
+        Ty::Con("Task".into(), vec![t])
+    }
+
+    /// `await h`: the result of a task, or of each task of a tuple or list of handles.
+    fn awaited(&mut self, h: &Expr) -> Ty {
+        let t = self.infer(h);
+        match self.resolve(&t) {
+            Ty::Con(n, a) if n == "Task" && a.len() == 1 => a[0].clone(),
+            Ty::Con(n, a) if n == "Tuple" && !a.is_empty() && a.iter().all(|x| matches!(self.resolve(x), Ty::Con(m, _) if m == "Task")) => {
+                Ty::Con("Tuple".into(), a.iter().map(|x| match self.resolve(x) { Ty::Con(_, b) => b[0].clone(), _ => unreachable!() }).collect())
+            }
+            Ty::Con(n, a) if n == "List" && a.len() == 1 && matches!(self.resolve(&a[0]), Ty::Con(m, _) if m == "Task") => {
+                let Ty::Con(_, b) = self.resolve(&a[0]) else { unreachable!() };
+                Ty::Con("List".into(), vec![b[0].clone()])
+            }
+            other => {
+                let shown = self.show(&other);
+                self.err(format!("`await` takes a task's handle (what `spawn` gives), or a tuple or list of them; found `{shown}`"));
+                self.fresh()
+            }
+        }
     }
 
     fn record_hole(&mut self, name: &str, t: Ty) {
@@ -2946,6 +3008,18 @@ impl<'a> Checker<'a> {
             Expr::Float(_) => Ty::Float,
             Expr::Tuple(es) => Ty::Con("Tuple".into(), es.iter().map(|e| self.infer(e)).collect()),
             Expr::Comptime(x) => self.infer_at(x, expected),
+            Expr::Spawn(x) => self.spawn(x),
+            Expr::Await(x) => self.awaited(x),
+            Expr::Scope(b) => {
+                let outer = self.task_floor.replace(self.scopes.len());
+                let t = self.infer_at(b, expected);
+                self.task_floor = outer;
+                if self.holds_task(&t) {
+                    let shown = self.show(&t);
+                    self.err(format!("a task's handle can't leave its `scope` (its result is `{shown}`): await it inside"));
+                }
+                t
+            }
             Expr::Str(_) => Ty::Str,
             Expr::Bool(_) => Ty::Bool,
             Expr::Unit => Ty::Unit,
@@ -2961,6 +3035,10 @@ impl<'a> Checker<'a> {
             }
             Expr::Var(x) => {
                 if let Some(t) = self.lookup(x.sym()) {
+                    let idx = self.scopes.iter().rposition(|s| s.contains_key(&x.sym())).unwrap_or(0);
+                    if idx < self.lambda_floor && self.holds_task(&t) {
+                        self.err(format!("a closure or `spawn` can't hold `{x}`, a task's handle: await it where it was spawned"));
+                    }
                     return t;
                 }
                 if let Some(t) = self.global_fn(x) {
@@ -3414,6 +3492,7 @@ impl<'a> Checker<'a> {
                             let pt = self.end_narrowing(place).unwrap_or_else(|| self.infer(place));
                             let et = self.infer_with(e, Some(&pt));
                             self.expect(&pt, &et, "assignment");
+                            self.check_task_escape(place, &et);
                             // a literal that breaks the variable's declared refinement
                             if let Expr::Var(x) = place {
                                 if let Some(w) = self.written_of(x) {
@@ -3505,6 +3584,10 @@ impl<'a> Checker<'a> {
                         let t = self.infer_with(x, Some(&r));
                         self.expect(&r, &t, "`return` value");
                     }
+                    None if self.in_spawn => {
+                        self.err("`return` can't leave a `spawn`: the expression is the task's result (move the code into a function to return early)");
+                        self.infer(x);
+                    }
                     None => {
                         self.err("`return` outside a function");
                         self.infer(x);
@@ -3546,6 +3629,7 @@ impl<'a> Checker<'a> {
                             self.err(format!("`{op}` returns {what} early, so the result type must be `{want}`, found `{shown}` (handle it here with `except`)"));
                         }
                     }
+                    None if self.in_spawn => self.err(format!("`{op}` can't return from a `spawn`: handle the {ty_name} with `except` or `match`, or give it back as the task's result")),
                     None => self.err(format!("`{op}` outside a function: handle the {ty_name} with `except` or `match`")),
                 }
                 inner
@@ -3636,6 +3720,22 @@ impl<'a> Checker<'a> {
             self.err(format!("cannot {what} `{x}`: it is not mutable (declare it with `mut {x} := …`, or make it a `mut` parameter)"));
         } else if idx < self.lambda_floor {
             self.err(format!("a closure cannot change `{x}`, which belongs to the enclosing function"));
+        } else if self.task_floor.is_some_and(|f| idx < f) && self.scopes[idx].get(&x.sym()).is_some_and(|t| self.holds_task(&t.clone())) {
+            self.err(format!("`{x}` is declared outside the `scope`, so a task's handle can't be stored in it"));
+        }
+    }
+
+    /// After `place = e` with `e` of type `t`: a handle can't go into a
+    /// variable declared outside the innermost `scope`.
+    fn check_task_escape(&mut self, place: &Expr, t: &Ty) {
+        let mut root = place;
+        while let Expr::Field(r, _) = root {
+            root = r;
+        }
+        let (Expr::Var(x), Some(f)) = (root, self.task_floor) else { return };
+        let idx = self.scopes.iter().rposition(|s| s.contains_key(&x.sym()));
+        if idx.is_some_and(|i| i < f) && self.holds_task(t) {
+            self.err(format!("`{x}` is declared outside the `scope`, so a task's handle can't be stored in it"));
         }
     }
 
@@ -4333,6 +4433,8 @@ impl<'a> Checker<'a> {
             bounds: HashMap::default(),
             pending: Vec::new(),
             lambda_floor: 0,
+            task_floor: None,
+            in_spawn: false,
             loops: 0,
             ret: None,
             written: Vec::new(),
@@ -4518,6 +4620,8 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
             bounds: HashMap::default(),
             pending: Vec::new(),
             lambda_floor: 0,
+            task_floor: None,
+            in_spawn: false,
             loops: 0,
             ret: None,
             written: Vec::new(),
