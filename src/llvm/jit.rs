@@ -76,6 +76,12 @@ unsafe extern "C" {
     fn strata_channel_recv();
     fn strata_channel_close();
     fn strata_select();
+    fn strata_timeline_new();
+    fn strata_timeline_drop();
+    fn strata_timeline_now();
+    fn strata_timeline_set();
+    fn strata_timeline_advance();
+    fn strata_timeline_sleep();
     fn strata_host_now();
     fn strata_host_sleep();
     fn strata_cancelled();
@@ -114,10 +120,8 @@ unsafe extern "C" {
     fn strata_fmod();
     fn strata_finite();
     fn strata_show_int();
-    fn strata_json_int();
     fn strata_show_float();
     fn strata_show_bool();
-    fn strata_json_str();
     fn strata_debug_str();
     fn strata_print();
     fn strata_str_split();
@@ -212,6 +216,12 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_channel_recv", strata_channel_recv as *const () as usize),
         ("strata_channel_close", strata_channel_close as *const () as usize),
         ("strata_select", strata_select as *const () as usize),
+        ("strata_timeline_new", strata_timeline_new as *const () as usize),
+        ("strata_timeline_drop", strata_timeline_drop as *const () as usize),
+        ("strata_timeline_now", strata_timeline_now as *const () as usize),
+        ("strata_timeline_set", strata_timeline_set as *const () as usize),
+        ("strata_timeline_advance", strata_timeline_advance as *const () as usize),
+        ("strata_timeline_sleep", strata_timeline_sleep as *const () as usize),
         ("strata_host_now", strata_host_now as *const () as usize),
         ("strata_host_sleep", strata_host_sleep as *const () as usize),
         ("strata_cancelled", strata_cancelled as *const () as usize),
@@ -249,10 +259,8 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_fmod", strata_fmod as *const () as usize),
         ("strata_finite", strata_finite as *const () as usize),
         ("strata_show_int", strata_show_int as *const () as usize),
-        ("strata_json_int", strata_json_int as *const () as usize),
         ("strata_show_float", strata_show_float as *const () as usize),
         ("strata_show_bool", strata_show_bool as *const () as usize),
-        ("strata_json_str", strata_json_str as *const () as usize),
         ("strata_debug_str", strata_debug_str as *const () as usize),
         ("strata_print", strata_print as *const () as usize),
         ("strata_str_split", strata_str_split as *const () as usize),
