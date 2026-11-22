@@ -852,7 +852,12 @@ fn compare_flag_agrees_on_a_script() {
     let o = Command::new(STRATA).args(["--file", &prog.to_string_lossy(), "check", "--compare"]).env("STRATA_CACHE", &cache).output().unwrap();
     let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(0), "{out}");
-    assert!(out.contains("compare: the checkers agree (") && !out.contains("only in"), "{out}");
+    assert!(out.contains("compare: they agree (") && !out.contains("only in"), "{out}");
     assert!(out.contains("error in f:"), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
+    // a package: its modules checked together
+    let pkg = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/tasks");
+    let o = Command::new(STRATA).args(["--file", &pkg.to_string_lossy(), "check", "--compare"]).env("STRATA_CACHE", &cache).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(0), "{out}");
 }

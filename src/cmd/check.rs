@@ -12,6 +12,9 @@ pub fn check(args: &Args, json_out: bool) -> Result<bool, String> {
         }
         return Ok(rep.ok());
     }
+    if args.flag("--strata") {
+        return super::compare::check_strata(args.val("--file").unwrap_or("."));
+    }
     let src = load(&args)?;
     let rep = full_check(src.program());
     if json_out {
@@ -24,8 +27,7 @@ pub fn check(args: &Args, json_out: bool) -> Result<bool, String> {
         }
     }
     if args.flag("--compare") {
-        let file = args.val("--file").ok_or("--compare checks a script (one file given with --file) for now, not a package")?;
-        return super::compare::compare(file, &rep);
+        return super::compare::compare(args.val("--file").unwrap_or("."), &rep);
     }
     Ok(rep.ok())
 }
