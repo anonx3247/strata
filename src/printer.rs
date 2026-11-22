@@ -216,8 +216,11 @@ fn args(es: &[Expr], d: usize) -> String {
         .join(", ")
 }
 
+/// A float literal: its digits (Rust's shortest, never an exponent), with a
+/// point, so it reads back as a `Float` (`1e15` is `1000000000000000.0`).
 pub fn float(f: f64) -> String {
-    if f.fract() == 0.0 && f.abs() < 1e15 { format!("{f:.1}") } else { format!("{f}") }
+    let s = format!("{f}");
+    if s.contains('.') || !f.is_finite() { s } else { s + ".0" }
 }
 
 /// Target line width for rendered code.
