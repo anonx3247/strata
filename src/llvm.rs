@@ -63,6 +63,51 @@ fn place_of(e: &Expr) -> Option<(String, Vec<String>)> {
     }
 }
 
+/// The runtime's builtins that find panics and, inside a supervised task,
+/// return after recording one (`soft_fault` in runtime.c): the compiled code
+/// checks right after calling them (`after_builtin`).
+const SOFT_FAULTS: &[&str] = &[
+    "@strata_div",
+    "@strata_mod",
+    "@strata_shl",
+    "@strata_shr",
+    "@strata_int_to_float",
+    "@strata_finite",
+    "@strata_float_to_int",
+    "@strata_sqrt",
+    "@strata_str_at_or_fault",
+    "@strata_str_split",
+    "@strata_str_replace",
+    "@strata_str_repeat",
+    "@strata_str_ord",
+    "@strata_str_byte_at",
+    "@strata_str_chr",
+    "@strata_channel_new",
+    "@strata_channel_close",
+    "@strata_str_from_c",
+];
+
+/// Whether a program supervises tasks: a `supervised spawn` (or a
+/// supervised `race` arm) anywhere.
+fn uses_supervised(decls: &[Decl]) -> bool {
+    struct Supervised(bool);
+    impl Visit for Supervised {
+        fn expr(&mut self, e: &Expr) {
+            if matches!(e, Expr::SupervisedSpawn(_)) {
+                self.0 = true;
+            }
+            if !self.0 {
+                walk_expr(self, e)
+            }
+        }
+    }
+    let mut s = Supervised(false);
+    for d in decls {
+        walk_decl(&mut s, &d.kind);
+    }
+    s.0
+}
+
 /// Whether a program starts tasks: a `spawn` or a `race` anywhere.
 fn uses_tasks(decls: &[Decl]) -> bool {
     struct Tasks(bool);
@@ -632,7 +677,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers, tasks: uses_tasks(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()) };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers, tasks: uses_tasks(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()), supervises: uses_supervised(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()) };
     if !m.proofs.is_empty() {
         m.refs = Refs::of(prog);
     }
@@ -1142,6 +1187,10 @@ struct Module<'a> {
     /// Whether the program starts tasks (`spawn`, `race`): then a call that
     /// may wait is followed by a check for cancellation (`cancel_point`).
     tasks: bool,
+    /// Whether the program supervises tasks (`supervised spawn`), or is
+    /// std's library: then a builtin that finds a panic is checked after
+    /// (`after_builtin`).
+    supervises: bool,
 }
 
 thread_local! {
@@ -2487,7 +2536,10 @@ impl<'m, 'a> Func<'m, 'a> {
             CType::Int { bits: 64, signed: false } => self.emit(format!("{r} = call i64 @strata_int_from_u64(i64 {raw})")),
             CType::Int { bits, signed: true } => self.emit(format!("{r} = sext i{bits} {raw} to i64")),
             CType::Int { bits, signed: false } => self.emit(format!("{r} = zext i{bits} {raw} to i64")),
-            CType::Str => self.emit(format!("{r} = call ptr @strata_str_from_c(ptr {raw}, ptr {callee})")),
+            CType::Str => {
+                self.emit(format!("{r} = call ptr @strata_str_from_c(ptr {raw}, ptr {callee})"));
+                self.after_builtin("@strata_str_from_c")?;
+            }
             CType::Double | CType::Bool => return Ok((t.clone(), raw.to_string())),
             CType::Handle => {
                 // NULL is no handle: such a result is declared `Option[...]`
@@ -2727,15 +2779,30 @@ impl<'m, 'a> Func<'m, 'a> {
         for a in args.iter().filter(|a| has_value(&a.0)) {
             xs.push(format!("{} {}", self.m.ll(&a.0)?, a.1));
         }
-        if has_value(ret) {
+        let r = if has_value(ret) {
             let r = self.fresh("c");
             let ll = self.m.ll(ret)?;
             self.emit(format!("{r} = call {ll} {f}({})", xs.join(", ")));
-            Ok((ret.clone(), r))
+            (ret.clone(), r)
         } else {
             self.emit(format!("call void {f}({})", xs.join(", ")));
-            Ok((ret.clone(), String::new()))
+            (ret.clone(), String::new())
+        };
+        self.after_builtin(f)?;
+        Ok(r)
+    }
+
+    /// After a call of the runtime's builtin `f`: if it is one that finds
+    /// panics (a division by zero, `sqrt` of a negative number, ...), inside
+    /// a supervised task the panic is recorded and the builtin returns, so
+    /// leave here, before its harmless result is used (`soft_fault` in
+    /// runtime.c). Only in programs that supervise tasks (and std's library):
+    /// others pay nothing.
+    fn after_builtin(&mut self, f: &str) -> Res<()> {
+        if self.m.supervises && SOFT_FAULTS.contains(&f) {
+            self.cancel_point()?;
         }
+        Ok(())
     }
 
     fn string(&mut self, s: &str) -> V {
@@ -6534,6 +6601,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 // held twice: by the sender and the receiver
                 let c = self.fresh("chan");
                 self.emit(format!("{c} = call ptr @strata_channel_new(i64 {cap}, ptr {drop})"));
+                self.after_builtin("@strata_channel_new")?;
                 let b = self.fresh("ends");
                 self.emit(format!("{b} = call ptr @strata_alloc(i64 24)"));
                 self.emit(format!("store i64 0, ptr {b}"));
@@ -6552,6 +6620,7 @@ impl<'m, 'a> Func<'m, 'a> {
             }
             ("channel_close", [tx]) => {
                 self.emit(format!("call void @strata_channel_close(ptr {})", tx.1));
+                self.after_builtin("@strata_channel_close")?;
                 (Ty::Unit, String::new())
             }
             // a `FakeClock`'s time (runtime.c, `Timeline`)

@@ -309,11 +309,13 @@ static void forget_senders(void);
 // A supervised task (`spawn supervised e`) is such a boundary too, for
 // itself and the tasks below it: its first panic is recorded (kind, message,
 // call stack), every thread inside stops, and the task's result is
-// `Err(Panic { … })`. Inside one, a panic in compiled code returns
-// (`strata_panic`) and the code leaves as a cancelled task does, dropping
-// what it holds; a panic in the runtime (`strata_fault`: a division by zero,
-// an overflow, a stack overflow) jumps out instead, leaving what the task's
-// frames held allocated.
+// `Err(Panic { … })`. Inside one, a panic returns and the code leaves as a
+// cancelled task does, dropping what it holds: one in compiled code
+// (`strata_panic`), and one the runtime finds in a builtin (`soft_fault`: a
+// division by zero, a negative shift, `sqrt` of a negative number, ...: the
+// builtin gives back a harmless value, and the compiled code leaves right
+// after the call). Only a stack overflow and running out of memory still
+// jump out (`strata_fault`), leaving what the task's frames held allocated.
 typedef struct Contained {
   int32_t panicked;
   _Bool supervised;
@@ -644,6 +646,25 @@ void strata_panic(int32_t kind, Str *msg) {
   fault_at(kind, msg, NULL);
 }
 
+// A panic a builtin finds (a division by zero, `ord` of a long string, ...):
+// inside a supervised task it is the task's, recorded, and this returns 1:
+// the builtin then gives back a harmless value (0, an empty string), which
+// the compiled code never uses, since it checks for the panic right after
+// the call (`soft_faults` in llvm.rs) and leaves. Anywhere else it ends the
+// program, or the test, as `strata_fault`.
+static _Bool soft_fault(int32_t kind, Str *msg) {
+  if (contained && contained->supervised) {
+    record_panic(contained, kind & 255, msg, (kind & 256) ? strdup("") : panic_stack());
+    return 1;
+  }
+  fault_at(kind, msg, NULL);
+}
+
+// The empty string a builtin gives back after a contained panic: a
+// constant (a count of 0), never freed.
+static int64_t no_str_words[2] = {0, 0};
+#define NO_STR ((Str *)&no_str_words[1])
+
 // Whether the function just called was left by a cancellation or a
 // supervised task's panic (it gave no result).
 _Bool strata_was_unwound(void) { return unwound; }
@@ -891,7 +912,7 @@ static int64_t pop_item(Channel *c) {
 // A new channel, held twice (its sender and its receiver), and a copy of
 // its sender for this thread.
 Channel *strata_channel_new(int64_t cap, void (*drop)(int64_t)) {
-  if (cap < 0) strata_fault(4, str_c("a channel's buffer can't be negative"));
+  if (cap < 0 && soft_fault(4, str_c("a channel's buffer can't be negative"))) return NULL;
   Channel *c = strata_alloc(sizeof(Channel));
   memset(c, 0, sizeof *c);
   *count_of(c) = 2;
@@ -916,7 +937,8 @@ void strata_channel_send(Channel *c, int64_t v) {
   if (c->senders == 0) {
     pthread_mutex_unlock(&chan_lock);
     if (c->drop) c->drop(v);
-    strata_fault(4, str_c("`send` on a channel that has ended (every copy of its sender was closed)"));
+    soft_fault(4, str_c("`send` on a channel that has ended (every copy of its sender was closed)"));
+    return;
   }
   while (c->cap > 0 && c->len >= c->cap && !strata_cancelled()) pthread_cond_wait(&chan_cond, &chan_lock);
   if (c->cap > 0 && c->len >= c->cap) {
@@ -949,7 +971,10 @@ _Bool strata_channel_recv(Channel *c, int64_t *out) {
 }
 
 void strata_channel_close(Channel *c) {
-  if (!unhold_sender(c)) strata_fault(4, str_c("`close` of a sender this task doesn't hold, or has closed already"));
+  if (!unhold_sender(c)) {
+    soft_fault(4, str_c("`close` of a sender this task doesn't hold, or has closed already"));
+    return;
+  }
   pthread_mutex_lock(&chan_lock);
   c->senders--;
   pthread_cond_broadcast(&chan_cond);
@@ -1065,7 +1090,13 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
   for (int64_t i = 0; i < n; i++)
     if (ops[i].kind == 1 && ((Channel *)ops[i].target)->senders == 0) {
       pthread_mutex_unlock(&chan_lock);
-      strata_fault(4, str_c("`send` on a channel that has ended (every copy of its sender was closed)"));
+      soft_fault(4, str_c("`send` on a channel that has ended (every copy of its sender was closed)"));
+      // (contained: nothing happened, as for a cancelled `select`)
+      for (int64_t k = 0; k < n; k++) {
+        Channel *c = ops[k].target;
+        if (ops[k].kind == 1 && c->drop) c->drop(ops[k].slot);
+      }
+      return -1;
     }
   rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
   int64_t start = (int64_t)((rng >> 33) % (uint64_t)n);
@@ -1384,7 +1415,7 @@ int64_t strata_int_abs(int64_t a) {
 }
 
 int64_t strata_div(int64_t a, int64_t b) {
-  if (b == 0) strata_fault(4, str_c("division by zero"));
+  if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
   if (!is_big(a) && !is_big(b)) {
     // Euclidean: the remainder is never negative
     int64_t q = a / b, r = a % b;
@@ -1400,7 +1431,7 @@ int64_t strata_div(int64_t a, int64_t b) {
 }
 
 int64_t strata_mod(int64_t a, int64_t b) {
-  if (b == 0) strata_fault(4, str_c("division by zero"));
+  if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
   if (!is_big(a) && !is_big(b)) {
     if (b == -1) return 0;
     int64_t r = a % b;
@@ -1466,10 +1497,12 @@ int64_t strata_int_and(int64_t a, int64_t b) { return bit_op(a, b, AND); }
 int64_t strata_int_or(int64_t a, int64_t b) { return bit_op(a, b, OR); }
 int64_t strata_int_xor(int64_t a, int64_t b) { return bit_op(a, b, XOR); }
 
-// The shift `n` as a count of bits; a negative one is a fault.
+// The shift `n` as a count of bits; a negative one is a fault (-1 after a
+// contained one).
 static int64_t shift_of(int64_t n, const char *op) {
   if (n < 0 || (is_big(n) && big_at(n)->sign < 0)) {
-    strata_fault(4, strata_concat(str_c(op), str_c(" by a negative number of bits")));
+    soft_fault(4, strata_concat_owned(str_c(op), str_c(" by a negative number of bits")));
+    return -1;
   }
   return is_big(n) ? INT64_MAX : n;
 }
@@ -1477,8 +1510,8 @@ static int64_t shift_of(int64_t n, const char *op) {
 // `a << n`: `a` times 2^n.
 int64_t strata_shl(int64_t a, int64_t n) {
   int64_t k = shift_of(n, "`<<`");
-  if (a == 0) return 0;
-  if (k > ((int64_t)1 << 32)) strata_fault(6, str_c("`<<` by more than 2^32 bits"));
+  if (k < 0 || a == 0) return 0;
+  if (k > ((int64_t)1 << 32) && soft_fault(6, str_c("`<<` by more than 2^32 bits"))) return 0;
   if (!is_big(a) && k < 62) {
     int64_t lim = (int64_t)1 << (62 - k);
     if (a > -lim && a < lim) return a * ((int64_t)1 << k);
@@ -1583,7 +1616,8 @@ double strata_int_to_float(int64_t v) {
   free(x.d);
   if (!isfinite(d)) {
     Str *m = big_show(v);
-    strata_fault(4, strata_concat(m, str_c(" is too large for a Float")));
+    soft_fault(4, strata_concat_owned(m, str_c(" is too large for a Float")));
+    return 0.0;
   }
   return x.sign < 0 ? -d : d;
 }
@@ -1649,7 +1683,10 @@ int64_t strata_int_from_u64(uint64_t raw) {
 char *strata_cstr(Str *s, Str *callee) {
   if (memchr(s->bytes, 0, (size_t)s->len)) {
     Str *m = strata_concat_owned(strata_concat_owned(str_c("a string passed to `"), (strata_dup(callee), callee)), str_c("` holds a NUL character, which C would read as its end"));
-    strata_fault(4, m);
+    soft_fault(4, m);
+    char *e = malloc(1);  // (contained: the call is still made, then the code leaves)
+    if (e) *e = 0;
+    return e;
   }
   char *c = malloc((size_t)s->len + 1);
   if (!c) {
@@ -1667,7 +1704,8 @@ void strata_cstr_free(char *c) { free(c); }
 Str *strata_str_from_c(const char *c, Str *callee) {
   if (!c) {
     Str *m = strata_concat_owned(strata_concat_owned(str_c("`"), (strata_dup(callee), callee)), str_c("` returned NULL for a `String`"));
-    strata_fault(4, m);
+    soft_fault(4, m);
+    return NO_STR;
   }
   return str_c(c);
 }
@@ -1865,14 +1903,18 @@ Str *strata_debug_str(Str *s) {
 // A float operation's result must be finite (no NaN or infinity).
 double strata_finite(double r, double a, double b, Str *op) {
   if (isfinite(r)) return r;
-  Str *m = strata_concat(strata_concat(strata_concat(show_float_plain(a), str_c(" ")), op), str_c(" "));
-  strata_fault(4, strata_concat(strata_concat(m, show_float_plain(b)), str_c(" is not a finite number")));
+  // (`op` is the caller's: not consumed)
+  Str *head = strata_concat_owned(show_float_plain(a), str_c(" ")), *m = strata_concat(head, op);
+  str_drop(head);
+  m = strata_concat_owned(m, str_c(" "));
+  soft_fault(4, strata_concat_owned(strata_concat_owned(m, show_float_plain(b)), str_c(" is not a finite number")));
+  return 0.0;
 }
 
 // `floor`, `ceil`, `round` of `x` gave `r`, a whole number: as an Int
 // (exactly, a big integer when it isn't small).
 int64_t strata_float_to_int(double r, double x) {
-  if (!isfinite(r)) strata_fault(4, strata_concat(show_float_plain(x), str_c(" is not a whole number")));
+  if (!isfinite(r) && soft_fault(4, strata_concat_owned(show_float_plain(x), str_c(" is not a whole number")))) return 0;
   if (r >= -4611686018427387904.0 && r < 4611686018427387904.0) return (int64_t)r;
   int e;
   double m = frexp(fabs(r), &e);  // |r| = m * 2^e, 0.5 <= m < 1
@@ -1890,7 +1932,8 @@ int64_t strata_float_to_int(double r, double x) {
 
 double strata_sqrt(double x) {
   if (x >= 0) return sqrt(x);
-  strata_fault(4, strata_concat(str_c("sqrt of negative number "), show_float_plain(x)));
+  soft_fault(4, strata_concat_owned(str_c("sqrt of negative number "), show_float_plain(x)));
+  return 0.0;
 }
 
 // ---- lists ----
@@ -2353,7 +2396,7 @@ static int64_t find_from(Str *s, Str *sub, int64_t from) {
 static List *push_str(List *l, Str *s) { return append(l, (int64_t)(intptr_t)s); }
 
 List *strata_str_split(Str *s, Str *sep) {
-  if (sep->len == 0) strata_fault(4, str_c("split: empty separator"));
+  if (sep->len == 0 && soft_fault(4, str_c("split: empty separator"))) return strata_list_new(0);
   List *l = strata_list_new(4);
   int64_t start = 0, at;
   while ((at = find_from(s, sep, start)) >= 0) {
@@ -2453,7 +2496,8 @@ Str *strata_str_at_or_fault(Str *s, int64_t k) {
   if (c) return c;
   char buf[96];
   snprintf(buf, sizeof buf, "index %lld out of range (length %lld)", (long long)k, (long long)strata_str_len(s));
-  strata_fault(4, str_c(buf));
+  soft_fault(4, str_c(buf));
+  return NO_STR;
 }
 
 // Characters `a` to `b`, clamped to the string (as in Python).
@@ -2470,7 +2514,7 @@ Str *strata_str_slice(Str *s, int64_t a, int64_t b) {
 }
 
 Str *strata_str_replace(Str *s, Str *from, Str *to) {
-  if (from->len == 0) strata_fault(4, str_c("replace: empty pattern"));
+  if (from->len == 0 && soft_fault(4, str_c("replace: empty pattern"))) return NO_STR;
   Str *out = str_from("", 0);
   int64_t start = 0, at;
   while ((at = find_from(s, from, start)) >= 0) {
@@ -2489,7 +2533,8 @@ Str *strata_str_repeat(Str *s, int64_t n) {
   if (n < 0) {
     char buf[64];
     snprintf(buf, sizeof buf, "repeat: negative count %lld", (long long)n);
-    strata_fault(4, str_c(buf));
+    soft_fault(4, str_c(buf));
+    return NO_STR;
   }
   if (s->len > 0 && n > (INT64_MAX - 64) / s->len) {
     fputs("fault (Limit): out of memory\n", stderr);
@@ -2601,7 +2646,8 @@ int64_t strata_str_ord(Str *s) {
     int32_t c = utf8_at(s, 0, &n);
     if (n == s->len) return c;
   }
-  strata_fault(4, strata_concat(str_c("ord needs a single character, got "), debug_str(s)));
+  soft_fault(4, strata_concat_owned(str_c("ord needs a single character, got "), debug_str(s)));
+  return 0;
 }
 
 // A string's length in UTF-8 bytes, and its byte `i` (0 to 255): what the
@@ -2612,7 +2658,8 @@ int64_t strata_str_byte_at(Str *s, int64_t i) {
   if (i < 0 || i >= s->len) {
     char buf[96];
     snprintf(buf, sizeof buf, "byte %lld out of range (%lld bytes)", (long long)i, (long long)s->len);
-    strata_fault(4, str_c(buf));
+    soft_fault(4, str_c(buf));
+    return 0;
   }
   return (unsigned char)s->bytes[i];
 }
@@ -2621,7 +2668,8 @@ Str *strata_str_chr(int64_t c) {
   if (c < 0 || c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF)) {
     char buf[64];
     snprintf(buf, sizeof buf, "chr: %lld is not a character", (long long)c);
-    strata_fault(4, str_c(buf));
+    soft_fault(4, str_c(buf));
+    return NO_STR;
   }
   char b[4];
   return str_from(b, utf8_put((int32_t)c, b));

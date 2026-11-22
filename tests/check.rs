@@ -87,6 +87,44 @@ fn m(xs: List[Int]) -> String { sum(xs) }
 fn main() { print(1) }
 "#;
 
+const TUPLES: &str = r#"fn a() -> (Int, String) { (1, 2) }
+fn b(p: (Int, String)) -> Int { p.1 }
+fn c(p: (Int, String)) -> String { (n, s) := p
+  n }
+fn d(xs: List[Int]) -> String {
+  mut out := ""
+  for x in xs { out = out + x }
+  out
+}
+fn e(xs: List[(Int, String)]) -> Int {
+  mut t := 0
+  for (n, s) in xs { t = t + s }
+  t
+}
+fn f(xs: List[String]) -> Int {
+  mut t := 0
+  for (i, s) in enumerate(xs) { t = t + s }
+  t
+}
+fn g(p: (Int, Int)) -> Int { p.2 }
+fn h() -> List[Int] { [x * 2 for x in ["a"]] }
+fn main() { print(1) }
+"#;
+
+const RESULTS: &str = r#"fn p(s: String) -> Result[Int, String] { Ok(1) }
+fn a(s: String) -> Result[String, String] { n := p(s)!
+  Ok(n) }
+fn b(s: String) -> String { p(s) except e { "x" } }
+fn c(s: String) -> Int { p(s) except { "bad" } }
+fn d(xs: List[Int]) -> String { xs[0] }
+fn e(xs: List[Int]) -> Int { xs[1..2] }
+fn f() -> String { 0..3 }
+fn g(xs: List[Int]) -> Int { xs["a"] }
+fn h(o: Option[Int]) -> Option[String] { n := o?
+  Some(n) }
+fn main() { print(1) }
+"#;
+
 const RECORDS: &str = r#"type Pt = { x: Int, y: Int }
 type Sh =
   | Sq(Int)
@@ -269,6 +307,16 @@ fn sum_variables_as_in_rust() {
 #[test]
 fn builtin_calls_as_in_rust() {
     same_errors("builtins", BUILTINS, &["expected `", "no version of"]);
+}
+
+#[test]
+fn tuples_and_loops_as_in_rust() {
+    same_errors("tuples", TUPLES, &["expected `", "Int or Float", "no element"]);
+}
+
+#[test]
+fn results_and_indexes_as_in_rust() {
+    same_errors("results", RESULTS, &["expected `"]);
 }
 
 /// The compiler's errors on `text` are `strata check`'s, on the lines holding one of `keys`.
