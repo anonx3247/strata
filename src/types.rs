@@ -798,6 +798,8 @@ pub fn check_resolved(mut r: crate::resolve::Resolution) -> Checked {
     errors.extend(errs);
     let report = CheckReport { errors, holes };
     let compiled = rooted(&r.program);
+    // (before a rewrite moves the expressions the types are keyed by)
+    annotate_lambdas(&mut r.program, &types);
     if !needs_rewrite(&env) {
         let (env, _) = Env::build(&r.program);
         return Checked { report, program: r.program, env, compiled };
@@ -806,6 +808,32 @@ pub fn check_resolved(mut r: crate::resolve::Resolution) -> Checked {
     // a rewrite can add parameters (type arguments): the environment is the rewritten program's
     let (env, _) = Env::build(&r.program);
     Checked { report, program: r.program, env, compiled }
+}
+
+/// Each lambda parameter written without a type gets the one the checker
+/// found, when it is concrete (no type variable): the prover then knows it
+/// (`x -> x * 2` over Ints multiplies Ints).
+fn annotate_lambdas(program: &mut Program, types: &HashMap<usize, Ty>) {
+    fn concrete(t: &Ty) -> bool {
+        match t {
+            Ty::Var(_) | Ty::Rigid(_) => false,
+            Ty::Con(_, a) | Ty::Union(a) => a.iter().all(concrete),
+            Ty::Fn(ps, r) => ps.iter().all(concrete) && concrete(r),
+            _ => true,
+        }
+    }
+    for d in &mut program.decls {
+        crate::ast::decl_exprs_mut(&mut d.kind, |e| {
+            let at = addr(e);
+            let Expr::Lambda(ps, _) = e else { return };
+            let Some(Ty::Fn(tys, _)) = types.get(&at) else { return };
+            for (p, t) in ps.iter_mut().zip(tys) {
+                if p.ty.is_none() && concrete(t) {
+                    p.ty = Some(ty_to_texpr(t));
+                }
+            }
+        });
+    }
 }
 
 /// Whether elaborating changes the program: method calls to resolve by type,
@@ -1056,9 +1084,13 @@ struct Checker<'a> {
     callee: bool,
     /// Method calls marked `mut` (`mut q.claim(2)`), by node: they change their receiver.
     marked: HashSet<usize>,
-    /// The type of each expression, by node address (resolved at the end),
-    /// when asked for (the compiler): `None` otherwise.
+    /// The type of each expression, by node address (resolved at the end):
+    /// every one when asked for (the compiler, `all_types`), else lambdas
+    /// only; `None` when nothing is recorded.
     types: Option<Vec<(usize, Ty)>>,
+    /// Record every expression's type in `types`, not only lambdas' (which
+    /// `annotate_lambdas` writes in).
+    all_types: bool,
     /// `for` loops over an `Iterator`, by their subject's node, and whether
     /// it is a `FiniteIterator`.
     iter_fors: Vec<(usize, bool)>,
@@ -2775,7 +2807,9 @@ impl<'a> Checker<'a> {
             self.recv_seen.insert(e as *const Expr as usize, t.clone());
         }
         if let Some(ts) = &mut self.types {
-            ts.push((e as *const Expr as usize, t.clone()));
+            if self.all_types || matches!(e, Expr::Lambda(..)) {
+                ts.push((e as *const Expr as usize, t.clone()));
+            }
         }
         t
     }
@@ -4163,6 +4197,7 @@ impl<'a> Checker<'a> {
             callee: false,
             marked: HashSet::default(),
             types: None,
+            all_types: false,
             iter_fors: Vec::new(),
         }
     }
@@ -4346,7 +4381,8 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
         insts: Vec::new(),
         callee: false,
         marked: HashSet::default(),
-        types: record_types.then(Vec::new),
+        types: Some(Vec::new()),
+        all_types: record_types,
         iter_fors: Vec::new(),
         };
         match &d.kind {

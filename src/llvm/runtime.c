@@ -199,9 +199,9 @@ int64_t strata_str_len(Str *s) {
 // (`down (95846 times)`), so a deep one costs nothing to keep; only the
 // first FRAMES runs are kept.
 #define FRAMES 4096
-static Str *frames[FRAMES];
-static int64_t counts[FRAMES];
-static int64_t runs;  // runs in use, counting those past FRAMES
+static _Thread_local Str *frames[FRAMES];
+static _Thread_local int64_t counts[FRAMES];
+static _Thread_local int64_t runs;  // runs in use, counting those past FRAMES
 
 void strata_enter(Str *name) {
   if (runs > 0 && runs <= FRAMES && frames[runs - 1] == name) {
@@ -218,7 +218,7 @@ void strata_enter(Str *name) {
 // `strata run --trace`: a JSON line per call and return, on stderr, as the
 // interpreter wrote them (the depth counted here). `fn` is the name as JSON;
 // the arguments and value are JSON made by the generated code (consumed).
-static int64_t trace_depth;
+static _Thread_local int64_t trace_depth;
 
 void strata_trace_call(Str *fn, Str *args) {
   trace_depth++;
@@ -267,15 +267,17 @@ static void print_stack(void) {
 // `strata_test`: a fault ends the test (back here, not out of the process),
 // and what it prints is kept, as the interpreter does.
 
-static uint64_t rng;  // the generators' state (below)
-static uint64_t test_seed = 7;  // where a test's numbers start
-static sigjmp_buf *trap;
+// A run's state is per thread: the JIT may run code on several threads at
+// once (compile-time code in one, a test or fuzz case in another).
+static _Thread_local uint64_t rng = 7;  // the generators' state (below)
+static _Thread_local uint64_t test_seed = 7;  // where a test's numbers start
+static _Thread_local sigjmp_buf *trap;
 static void catch_overflow(void);
-static int32_t fault_kind;
-static Str *fault_msg;
-static char *fault_stack, *printed;
-static size_t printed_len, printed_cap;
-static _Bool capturing;
+static _Thread_local int32_t fault_kind;
+static _Thread_local Str *fault_msg;
+static _Thread_local char *fault_stack, *printed;
+static _Thread_local size_t printed_len, printed_cap;
+static _Thread_local _Bool capturing;
 
 static void keep_printed(const char *b, size_t n) {
   if (printed_len + n + 1 > printed_cap) printed = realloc(printed, printed_cap = (printed_len + n + 1) * 2);
@@ -315,11 +317,11 @@ int32_t strata_test(void (*f)(void)) {
 // (each loop iteration and call is a step): past it, a `Limit` fault.
 
 _Noreturn void strata_fault(int32_t kind, Str *msg);
-static char *fuzz_args;
-static size_t fuzz_len, fuzz_cap;
+static _Thread_local char *fuzz_args;
+static _Thread_local size_t fuzz_len, fuzz_cap;
 
-static int64_t steps;
-static _Bool counting;
+static _Thread_local int64_t steps;
+static _Thread_local _Bool counting;
 
 void strata_fuzz_arg(Str *json) {
   size_t need = fuzz_len + (size_t)json->len + 2;
@@ -363,7 +365,7 @@ void strata_seed(int64_t seed) { rng = (uint64_t)seed; }
 
 // Compile-time code's value (`strata.ct.N` hands it over), for the compiler
 // to read (src/llvm/native.rs).
-static int64_t ct_kept;
+static _Thread_local int64_t ct_kept;
 void strata_ct_keep(int64_t v) { ct_kept = v; }
 int64_t strata_ct_kept(void) { return ct_kept; }
 
@@ -916,7 +918,7 @@ Str *strata_str_from_c(const char *c, Str *callee) {
 // picks with these, from bounds the compiler read in the refinements. The
 // numbers are a fixed sequence (splitmix64 from 7), not the interpreter's.
 
-static uint64_t rng = 7;
+// (`rng`, the state, is defined above)
 
 static uint64_t next_random(void) {
   uint64_t z = (rng += UINT64_C(0x9E3779B97F4A7C15));
@@ -1699,11 +1701,17 @@ Str *strata_str_replace(Str *s, Str *from, Str *to) {
   return strata_concat_owned(out, str_from(s->bytes + start, s->len - start));
 }
 
+// A count that is not negative is accepted: a string too large to hold is
+// out of memory, as when it is built any other way.
 Str *strata_str_repeat(Str *s, int64_t n) {
-  if (n < 0 || (s->len > 0 && n > 100000000 / s->len)) {
+  if (n < 0) {
     char buf[64];
-    snprintf(buf, sizeof buf, "repeat: bad count %lld", (long long)n);
+    snprintf(buf, sizeof buf, "repeat: negative count %lld", (long long)n);
     strata_fault(4, str_c(buf));
+  }
+  if (s->len > 0 && n > (INT64_MAX - 64) / s->len) {
+    fputs("fault (Limit): out of memory\n", stderr);
+    exit(101);
   }
   Str *o = str_alloc(s->len * n);
   for (int64_t i = 0; i < n; i++) memcpy(o->bytes + i * s->len, s->bytes, (size_t)s->len);
