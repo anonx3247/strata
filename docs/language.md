@@ -449,7 +449,7 @@ fn first_answer(mirrors: Receiver[Page], local: Cache, key: String) -> Page {
 }
 ```
 
-A cancelled task stops at its next wait (a `recv`, a `send`, an `await`, a `select`), however deep in calls it is, and leaves as `return` would: what it holds is dropped, nothing after the wait runs, and the tasks it started stop too. Code that doesn't wait runs to its end (a long computation isn't interrupted halfway). The `race` ends once every loser has stopped, then runs the winner's arm. A left side follows a `spawn`'s rules (no `return`, `!` or `?` out of it; a sender it uses is its own copy, to close).
+A cancelled task stops at its next wait (a `recv`, a `send`, an `await`, a `select`, a `sleep`, a console's `read_line`), however deep in calls it is, and leaves as `return` would: what it holds is dropped, nothing after the wait runs, and the tasks it started stop too. Code that doesn't wait runs to its end (a long computation isn't interrupted halfway). The `race` ends once every loser has stopped, then runs the winner's arm. A left side follows a `spawn`'s rules (no `return`, `!` or `?` out of it; a sender it uses is its own copy, to close).
 
 ### Supervised tasks
 

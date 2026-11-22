@@ -15,6 +15,8 @@
 #define _GNU_SOURCE  // pthread_getattr_np
 #endif
 #include <dirent.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <errno.h>
 #include <math.h>
@@ -730,11 +732,95 @@ _Bool strata_cancelled(void) {
 // The compiled code left a function because of a cancellation.
 void strata_unwound(void) { unwound = 1; }
 
-// Tell a task to stop (under `chan_lock`; waiters are woken by the caller).
+// ---- waiting for input, cancellably ----
+//
+// A host read (stdin's `read_line`; a socket's, with std.net) can wait for
+// ever, outside `chan_lock`'s condition variable. A thread that can be
+// cancelled (a task's, or a test's) waits for its descriptor with `poll`,
+// together with a wake pipe of its own; a cancellation writes a byte to the
+// pipe of every thread waiting so (`wake_readers`), which looks again: if it
+// was cancelled the read gives up and the compiled code leaves
+// (`cancel_point`), as after any other wait. Only threads in such a wait are
+// woken, and code that doesn't wait for input pays nothing.
+
+typedef struct Reader {
+  int wake[2];  // the pipe: read end, write end (both non-blocking)
+  struct Reader *next, *prev;
+} Reader;
+static Reader *readers;                // threads waiting for input (under `chan_lock`)
+static _Thread_local Reader *my_reader;  // this thread's pipe, made at its first wait
+
+// Wake every thread waiting for input (under `chan_lock`).
+static void wake_readers(void) {
+  for (Reader *r = readers; r; r = r->next) {
+    char b = 1;
+    if (write(r->wake[1], &b, 1) < 0) { /* full: a wake is already pending */ }
+  }
+}
+
+static void unlink_reader(Reader *r) {
+  if (r->prev) r->prev->next = r->next;
+  else readers = r->next;
+  if (r->next) r->next->prev = r->prev;
+  r->next = r->prev = NULL;
+}
+
+// Wait until `fd` can be read from (or is at its end, or failed: the read
+// says which): 1; or until this thread is cancelled: 0. A thread nothing can
+// cancel (the main thread outside a test) doesn't wait here: 1 at once.
+static _Bool wait_readable(int fd) {
+  if (!self_task && !contained) return 1;
+  if (!my_reader) {
+    Reader *r = calloc(1, sizeof *r);
+    if (!r || pipe(r->wake) != 0) {
+      free(r);
+      return 1;  // no pipe: an uncancellable wait, as before
+    }
+    for (int i = 0; i < 2; i++) {
+      fcntl(r->wake[i], F_SETFL, fcntl(r->wake[i], F_GETFL) | O_NONBLOCK);
+      fcntl(r->wake[i], F_SETFD, FD_CLOEXEC);
+    }
+    my_reader = r;
+  }
+  for (;;) {
+    pthread_mutex_lock(&chan_lock);
+    if (strata_cancelled()) {
+      pthread_mutex_unlock(&chan_lock);
+      return 0;
+    }
+    my_reader->next = readers;
+    if (readers) readers->prev = my_reader;
+    readers = my_reader;
+    pthread_mutex_unlock(&chan_lock);
+    struct pollfd p[2] = {{.fd = fd, .events = POLLIN}, {.fd = my_reader->wake[0], .events = POLLIN}};
+    int n = poll(p, 2, -1);
+    pthread_mutex_lock(&chan_lock);
+    unlink_reader(my_reader);
+    pthread_mutex_unlock(&chan_lock);
+    char drain[64];
+    while (read(my_reader->wake[0], drain, sizeof drain) > 0) {}
+    if (n < 0 && errno != EINTR) return 1;  // let the read report it
+    if (n > 0 && p[0].revents) return 1;
+    // woken (by a cancellation, maybe another thread's) or interrupted: look again
+  }
+}
+
+// A thread's pipe, closed when its task ends.
+static void forget_reader(void) {
+  if (!my_reader) return;
+  close(my_reader->wake[0]);
+  close(my_reader->wake[1]);
+  free(my_reader);
+  my_reader = NULL;
+}
+
+// Tell a task to stop (under `chan_lock`; waiters are woken by the caller,
+// except those waiting for input, woken here).
 static void cancel_task(Task *t) {
   if (t->done || t->cancel) return;
   __atomic_store_n(&t->cancel, 1, __ATOMIC_RELAXED);
   __atomic_add_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
+  wake_readers();
 }
 
 // A race's losers: every task of the scope not finished yet.
@@ -756,6 +842,7 @@ static void record_panic(Contained *c, int32_t kind, Str *msg, char *stack) {
     c->msg = msg;
     c->stack = stack;
     __atomic_add_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
+    wake_readers();
   } else {
     free(stack);
   }
@@ -883,6 +970,7 @@ static void *task_main(void *arg) {
   self_task = NULL;
   contained = NULL;
   task_origin = NULL;
+  forget_reader();
   free_alt_stack();
   return NULL;
 }
@@ -2452,15 +2540,65 @@ void strata_host_write(int64_t fd, Str *text) {
   }
 }
 
-// A line without its end, or NULL at the end of the input.
+// Whether `f` has input read from its descriptor and not taken yet (then a
+// `getc` doesn't wait). Platforms whose `FILE` we can't look into say no:
+// a line already buffered there waits for more input (or the end) first.
+static _Bool input_buffered(FILE *f) {
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+  return f->_r > 0;
+#elif defined(__GLIBC__)
+  return f->_IO_read_ptr < f->_IO_read_end;
+#else
+  (void)f;
+  return 0;
+#endif
+}
+
+// A line without its end, or NULL at the end of the input. In a task (or a
+// test) it can be cancelled while it waits: NULL then too, and the compiled
+// code leaves (`cancel_point`); what it had read of the line is dropped.
 Str *strata_host_read_line(void) {
-  size_t cap = 0;
-  char *line = NULL;
-  ssize_t n = getline(&line, &cap, stdin);
-  if (n <= 0) return NULL;
+  if (!self_task && !contained) {
+    size_t cap = 0;
+    char *line = NULL;
+    ssize_t n = getline(&line, &cap, stdin);
+    if (n <= 0) {
+      free(line);
+      return NULL;
+    }
+    if (n > 0 && line[n - 1] == '\n') n--;
+    if (n > 0 && line[n - 1] == '\r') n--;
+    Str *s = str_from(line, n);
+    free(line);
+    return s;
+  }
+  // a character at a time from stdin's buffer; before each refill, a
+  // cancellable wait for the descriptor (the refill then takes what is there)
+  size_t cap = 128, n = 0;
+  char *line = malloc(cap);
+  int c = EOF;
+  // (stdin isn't locked across the wait: another task reading it would be
+  // stuck on the lock, where it can't be cancelled)
+  for (;;) {
+    if (!input_buffered(stdin) && !wait_readable(fileno(stdin))) {
+      free(line);
+      return NULL;
+    }
+    c = getc(stdin);
+    if (c == EOF) break;
+    if (n + 1 >= cap) line = realloc(line, cap *= 2);
+    line[n++] = (char)c;
+    if (c == '\n') break;
+  }
+  if (n == 0 && c == EOF) {
+    free(line);
+    return NULL;
+  }
   if (n > 0 && line[n - 1] == '\n') n--;
   if (n > 0 && line[n - 1] == '\r') n--;
-  return str_from(line, n);
+  Str *s = str_from(line, (int64_t)n);
+  free(line);
+  return s;
 }
 
 Str *strata_host_read_file(Str *path, Str **kind, Str **msg) {
