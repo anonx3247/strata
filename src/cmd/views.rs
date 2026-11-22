@@ -326,3 +326,20 @@ pub fn lex(args: &Args) -> Result<bool, String> {
     }
     Ok(true)
 }
+
+/// `strata parse FILE`: a text file parsed as a script, each definition as
+/// the `std.ast` value `debug` prints, one per line, as the parser gives it
+/// (storing it would qualify its references), or the parser's error.
+pub fn parse(args: &Args) -> Result<bool, String> {
+    let file = args.pos.get(1).ok_or("usage: strata parse <FILE>")?;
+    let src = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
+    match crate::parser::parse_program(&src) {
+        Ok(p) => {
+            for d in &p.decls {
+                println!("{}", crate::ast_value::decl(d));
+            }
+        }
+        Err(e) => println!("error: {e}"),
+    }
+    Ok(true)
+}
