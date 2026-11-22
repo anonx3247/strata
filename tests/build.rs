@@ -840,6 +840,105 @@ fn fake_clocks_drive_after() {
     assert_eq!(jit, (out, code));
 }
 
+/// std's `FakeClock`: its time moves only when told; a sleep of an hour, a
+/// `race` used as a timeout and an `after` arm end when another task moves
+/// the time, with no real waiting, and everything is freed.
+#[test]
+fn std_fake_clocks_move_when_told() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("std-fake-clock");
+    let (out, code) = case(&d, "std-fake-clock", STD_FAKE_CLOCK);
+    assert!(code == 0 && out == "0\n1500000000\nslept an hour: true\ntimed out\nthe timer\ntrue\n", "{out}");
+    let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("std-fake-clock.strata")).env("STRATA_MEMORY", "check")), &d.join("std-fake-clock.strata"));
+    assert_eq!(jit, (out, code));
+}
+
+const STD_FAKE_CLOCK: &str = r#"use std.time.*
+
+/// Moves `clock` forward a second at a time until a value comes on `rx`.
+fn drive(clock: FakeClock, rx: Receiver[String]) -> String {
+  mut got := ""
+  mut waiting := true
+  while waiting {
+    clock.advance(seconds(1))
+    select {
+      rx.recv() as v => {
+        got = v ?? "ended"
+        waiting = false
+      },
+      clock.after(nanos(0)) => (),
+    }
+  }
+  got
+}
+
+fn never(rx: Receiver[Int]) -> Int {
+  rx.recv() ?? 0
+}
+
+fn main(system: SystemClock) {
+  clock := fake_clock()
+  start := system.now()
+  // the time moves only when told
+  print(clock.now().value)
+  clock.advance(ms(1500))
+  clock.set(Instant(500))
+  print(clock.now().value)
+  // a sleep of an hour, woken by the time another task moves
+  (tx, rx) := channel()
+  slept := scope {
+    spawn {
+      t0 := clock.now()
+      clock.sleep(seconds(3600))
+      tx.send(f"slept an hour: {elapsed(t0, clock.now()).value >= seconds(3600).value}")
+      tx.close()
+    }
+    tx.close()
+    drive(clock, rx)
+  }
+  print(slept)
+  // a timeout: a race whose other side never comes, settled by fake time
+  (tx2, rx2) := channel()
+  (never_tx, never_rx) := channel()
+  timed := scope {
+    spawn {
+      r := race {
+        never(never_rx) as v => f"got {v}",
+        clock.sleep(seconds(30)) => "timed out",
+      }
+      tx2.send(r)
+      tx2.close()
+    }
+    tx2.close()
+    drive(clock, rx2)
+  }
+  never_tx.close()
+  print(timed)
+  // an `after` arm of the fake clock in a select
+  (tx3, rx3) := channel()
+  (quiet_tx, quiet_rx) := channel()
+  timer := scope {
+    spawn {
+      s := select {
+        quiet_rx.recv() as v => "a value",
+        clock.after(seconds(90)) => "the timer",
+      }
+      tx3.send(s)
+      tx3.close()
+    }
+    tx3.close()
+    drive(clock, rx3)
+  }
+  quiet_tx.close()
+  print(timer)
+  // none of the fake hours were waited for
+  print(elapsed(start, system.now()).value < seconds(20).value)
+}
+"#;
+
 const FAKE_CLOCK: &str = r#"use std.time.{SystemClock, Clock, Instant, Duration, nanos, ms, seconds, elapsed}
 
 /// A clock whose time never moves.

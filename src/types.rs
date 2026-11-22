@@ -580,7 +580,7 @@ pub fn union_alias(t: &TypeDecl) -> bool {
 /// The types every program has without defining them, by the names code
 /// writes (a tuple is written `(A, B)` and `()` is written so: `Tuple` and
 /// `Unit` are free to name other things).
-pub const BUILTIN_TYPES: [&str; 9] = ["Int", "Float", "Bool", "String", "List", "Set", "Dict", "Sender", "Receiver"];
+pub const BUILTIN_TYPES: [&str; 10] = ["Int", "Float", "Bool", "String", "List", "Set", "Dict", "Sender", "Receiver", "Timeline"];
 
 pub fn prelude() -> &'static Program {
     static P: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
@@ -598,6 +598,12 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin::new("channel_send", "A", "(Sender[A], A) -> ()"),
     Builtin::new("channel_recv", "A", "(Receiver[A]) -> Option[A]"),
     Builtin::new("channel_close", "A", "(Sender[A]) -> ()"),
+    // a time that moves only when told (std.time's `FakeClock`): nanoseconds
+    Builtin::new("timeline", "", "(Int) -> Timeline"),
+    Builtin::new("timeline_now", "", "(Timeline) -> Int"),
+    Builtin::new("timeline_set", "", "(Timeline, Int) -> ()"),
+    Builtin::new("timeline_advance", "", "(Timeline, Int) -> ()"),
+    Builtin::new("timeline_sleep", "", "(Timeline, Int) -> ()"),
     Builtin::total("len", "K,V", "(Dict[K, V]) -> Int"),
     Builtin::total("len", "A", "(Set[A]) -> Int"),
     Builtin::total("contains", "A", "(Set[A], A) -> Bool"),
@@ -1557,6 +1563,7 @@ impl<'a> Checker<'a> {
                     "List" if largs.len() == 1 => Ty::Con("List".into(), largs),
                     "Sender" if largs.len() == 1 => Ty::Con("Sender".into(), largs),
                     "Receiver" if largs.len() == 1 => Ty::Con("Receiver".into(), largs),
+                    "Timeline" if largs.is_empty() => Ty::Con("Timeline".into(), vec![]),
                     _ => match self.env.types.get(&n.sym()) {
                         Some(td) => {
                             if td.params.len() != largs.len() {

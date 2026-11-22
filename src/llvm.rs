@@ -842,6 +842,12 @@ declare i1 @strata_host_make_dir(ptr, ptr, ptr)
 declare i1 @strata_host_remove(ptr, ptr, ptr)
 declare ptr @strata_host_args()
 declare i64 @strata_host_now()
+declare ptr @strata_timeline_new(i64)
+declare void @strata_timeline_drop(ptr)
+declare i64 @strata_timeline_now(ptr)
+declare void @strata_timeline_set(ptr, i64)
+declare void @strata_timeline_advance(ptr, i64)
+declare void @strata_timeline_sleep(ptr, i64)
 declare void @strata_host_sleep(i64)
 declare ptr @strata_prog_name()
 declare void @strata_options_error(i1, ptr)
@@ -1396,7 +1402,7 @@ impl<'a> Module<'a> {
     /// A value shown and compared by what it is, not what is in it: a
     /// handle, or a channel's end (`<Sender>`; equal when the same channel).
     fn opaque(&self, t: &Ty) -> bool {
-        self.handle(t) || matches!(t, Ty::Con(n, a) if (n == "Sender" || n == "Receiver") && a.len() == 1)
+        self.handle(t) || matches!(t, Ty::Con(n, a) if (n == "Sender" || n == "Receiver") && a.len() == 1) || matches!(t, Ty::Con(n, _) if n == "Timeline")
     }
 
     fn handle(&self, t: &Ty) -> bool {
@@ -3814,6 +3820,10 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         if matches!(&t, Ty::Con(n, _) if n == "Sender" || n == "Receiver") {
             writeln!(self.m.body, "define void {name}(ptr %a) {{\nstart:\n  tail call void @strata_channel_drop(ptr %a)\n  ret void\n}}\n").unwrap();
+            return Ok(name);
+        }
+        if matches!(&t, Ty::Con(n, _) if n == "Timeline") {
+            writeln!(self.m.body, "define void {name}(ptr %a) {{\nstart:\n  tail call void @strata_timeline_drop(ptr %a)\n  ret void\n}}\n").unwrap();
             return Ok(name);
         }
         let mut h = Func::new(self.m, HashMap::default());
@@ -6532,6 +6542,19 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.emit(format!("call void @strata_channel_close(ptr {})", tx.1));
                 (Ty::Unit, String::new())
             }
+            // a `FakeClock`'s time (runtime.c, `Timeline`)
+            ("timeline", [start]) => {
+                let r = self.call(&Ty::Con("Timeline".into(), vec![]), "@strata_timeline_new", &[start.clone()])?;
+                self.temp(r)
+            }
+            ("timeline_now", [t]) => self.call(&Ty::Int, "@strata_timeline_now", &[t.clone()])?,
+            ("timeline_set", [t, to]) => self.call(&Ty::Unit, "@strata_timeline_set", &[t.clone(), to.clone()])?,
+            ("timeline_advance", [t, ns]) => self.call(&Ty::Unit, "@strata_timeline_advance", &[t.clone(), ns.clone()])?,
+            ("timeline_sleep", [t, ns]) => {
+                self.call(&Ty::Unit, "@strata_timeline_sleep", &[t.clone(), ns.clone()])?;
+                self.cancel_point()?;
+                (Ty::Unit, String::new())
+            }
             ("channel_recv", [rx]) => {
                 let et = elem(self.m, &rx.0)?;
                 let out = self.fresh("recvd");
@@ -6621,7 +6644,16 @@ impl<'m, 'a> Func<'m, 'a> {
                     let p = self.fresh("op");
                     self.emit(format!("{p} = getelementptr i64, ptr {ops}, i64 {}", 4 * i + 2));
                     let deadline = self.fresh("deadline");
-                    if matches!(&ct, Ty::Con(n, _) if n == "std.time.SystemClock") {
+                    if matches!(&ct, Ty::Con(n, _) if n == "std.time.FakeClock") {
+                        // a fake clock's timer: its deadline in that clock's
+                        // time; moving the time wakes the select (kind 5)
+                        let tl_ty = Ty::Con("Timeline".into(), vec![]);
+                        let tl = self.field(&cv, 0, &tl_ty)?;
+                        let now = self.call(&Ty::Int, "@strata_timeline_now", &[tl.clone()])?;
+                        self.emit(format!("{deadline} = add i64 {}, {}", now.1, d.1));
+                        self.emit(format!("store i64 {deadline}, ptr {p}"));
+                        (5, tl, None)
+                    } else if matches!(&ct, Ty::Con(n, _) if n == "std.time.SystemClock") {
                         let now = self.fresh("now");
                         self.emit(format!("{now} = call i64 @strata_host_now()"));
                         self.emit(format!("{deadline} = add i64 {now}, {}", d.1));
