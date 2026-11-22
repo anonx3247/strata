@@ -36,7 +36,13 @@ fn gh(repo: &Repo, args: &[&str], input: Option<&str>) -> Result<String, String>
 }
 
 fn gh_json(repo: &Repo, args: &[&str]) -> Result<Json, String> {
-    let out = gh(repo, args, None)?;
+    let out = gh(repo, args, None).map_err(|e| {
+        if e.contains("none of the git remotes") {
+            format!("This repository has no GitHub remote, so it has no pull requests ({}).", repo.top.display())
+        } else {
+            e
+        }
+    })?;
     serde_json::from_str(&out).map_err(|e| format!("gh answered something that isn't JSON: {e}"))
 }
 
@@ -167,7 +173,8 @@ pub fn diff(repo: &Repo, n: &str) -> Json {
         Ok(s) => s.trim().to_string(),
         Err(e) => return json!({"error": e}),
     };
-    let names = repo.git(&["diff", "--name-only", &mb, head_oid]).unwrap_or_default();
+    // (a package's log, `strata.log`, isn't code: the diff leaves it out)
+    let names: String = repo.git(&["diff", "--name-only", &mb, head_oid]).unwrap_or_default().lines().filter(|f| !f.ends_with("strata.log")).map(|f| format!("{f}\n")).collect();
     // .strata files: structurally, one diff per package (or script) they're in
     let mut groups: Vec<(String, bool)> = vec![];
     for f in names.lines().filter(|f| f.ends_with(".strata")) {
@@ -191,7 +198,7 @@ pub fn diff(repo: &Repo, n: &str) -> Json {
         })
         .collect();
     // every other file: by line
-    let patch = repo.git(&["diff", "--no-color", "-M", &mb, head_oid, "--", ".", ":(exclude)*.strata"]).unwrap_or_default();
+    let patch = repo.git(&["diff", "--no-color", "-M", &mb, head_oid, "--", ".", ":(exclude)*.strata", ":(exclude)*strata.log"]).unwrap_or_default();
     let mut text: Vec<Json> = vec![];
     let mut total = 0;
     for chunk in patch.split("\ndiff --git ").filter(|c| !c.trim().is_empty()) {

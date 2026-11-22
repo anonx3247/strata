@@ -336,7 +336,20 @@ a.chfull { display: inline-block; font-size: 11.5px; margin: 2px 2px 8px; }
 #pal .r .mod { margin-left: auto; color: var(--faint); font-size: 11px; flex: none; }
 #pal .hint { color: var(--faint); font-size: 11px; padding: 6px 14px; border-top: 1px solid var(--line); }
 /* ---------- workspace: three modes ---------- */
-body.m-agents { grid-template-columns: 260px minmax(380px, 1fr) 46vw; }
+body.m-agents { grid-template-columns: 250px minmax(380px, 1fr) var(--panel-w, 40vw); }
+body.m-agents #right { overflow: hidden; }
+.cpanel { display: grid; grid-template-columns: 190px minmax(0, 1fr); height: 100%; }
+.cpanel.nosym { grid-template-columns: 0 minmax(0, 1fr); }
+.cp-sym { overflow: auto; border-right: 1px solid var(--line); background: var(--panel); padding-bottom: 20px; }
+.cpanel.nosym .cp-sym { display: none; }
+.cp-sym .item { padding: 2px 10px; font-size: 12px; }
+.cp-sym .mod-h { padding: 8px 10px 2px; }
+.cp-code { overflow: auto; min-width: 0; }
+.cp-code #code { padding: 0; max-width: none; }
+.panel-b { padding: 12px 16px 50px; }
+#split { position: fixed; top: 46px; bottom: 0; width: 6px; cursor: col-resize; z-index: 20; display: none; }
+#split:hover, body.dragging #split { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+body.dragging { user-select: none; cursor: col-resize; }
 body.m-prs { grid-template-columns: 300px minmax(420px, 1fr) 330px; }
 body.m-agents #right, body.m-prs #right { background: var(--bg); }
 #modes button { font: 600 12.5px var(--display); padding: 4px 13px; letter-spacing: .01em; }
@@ -497,6 +510,11 @@ select.field { padding: 5px 8px; }
 .stack .si.cur { background: var(--accent-soft); cursor: default; font-weight: 600; }
 .stack .si code { font: 11px var(--mono); color: var(--faint); margin-left: auto; }
 .stack .si.base { color: var(--faint); cursor: default; }
+.cmt.checks > summary { cursor: pointer; list-style: none; border-bottom: 0; }
+.cmt.checks[open] > summary { border-bottom: 1px solid var(--line); }
+.cmt.checks > summary::-webkit-details-marker { display: none; }
+.lbl3 { font: 600 10.5px var(--sans); text-transform: uppercase; letter-spacing: .6px; color: var(--faint); margin: 12px 0 2px; }
+#pr h2.sect { margin-top: 26px; }
 .ptabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin: 14px 0 14px; }
 .ptabs button { font: 500 12.5px var(--sans); background: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted); padding: 7px 12px; cursor: pointer; }
 .ptabs button.on { color: var(--text); border-bottom-color: var(--accent); }
@@ -559,6 +577,7 @@ select.field { padding: 5px 8px; }
 <aside id="right"></aside>
 <svg id="arrow"></svg>
 <div id="tip"></div>
+<div id="split" title="drag to resize"></div>
 <div id="dlg"><div class="box-d" id="dlg-b"></div></div>
 <div id="pal"><div class="box-p"><input id="pal-q" placeholder="Go to a definition…" autocomplete="off" spellcheck="false"><div class="res" id="pal-res"></div><div class="hint">↑ ↓ to move · Enter to open · Esc to close</div></div></div>
 
@@ -710,7 +729,8 @@ function select(name, scroll = true, record = true) {
   if (scroll && name) {
     // its slice starts with it: back to the top, so the view is read from
     // there whatever was scrolled to before; in everything, to its card
-    if (S.scope !== 'all' && typeof S.level === 'number') $('#main').scrollTop = 0;
+    if (S.mode === 'agents') { const c = $('#right .cp-code'); if (c) c.scrollTop = 0; }
+    else if (S.scope !== 'all' && typeof S.level === 'number') $('#main').scrollTop = 0;
     else document.getElementById('card-' + CSS.escape(name))?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 }
@@ -735,7 +755,9 @@ function renderHeader() {
     ? S.data.errors.map(e => `<div class="err"><a data-go="${esc(e.decl)}">${esc(e.decl)}</a>: ${esc(e.msg)}</div>`).join('') : '';
 }
 
-function renderLeft() {
+function renderLeft() { setHtml($('#left'), symbolsHtml()); }
+// every definition, by module and kind: the Code mode's left column, and the agents' code panel
+function symbolsHtml() {
   const groups = [['capability', 'Capabilities'], ['type', 'Types'], ['trait', 'Traits'], ['extern', 'Foreign'], ['impl', 'Implementations'], ['fn', 'Functions'], ['test', 'Tests']];
   const vis = new Set(visible().map(d => d.name));
   const mods = [...new Set(S.data.decls.map(d => d.module))];
@@ -751,15 +773,16 @@ function renderLeft() {
         <span class="kind k-${d.kind}">${KIND[d.kind]}</span><span class="lbl">${esc(d.label)}</span><span class="spacer"></span>${liveDot(d.name)}<span class="dot ${cls}"></span></div>`;
     }).join('')}</div>`;
   }).join('');
-  $('#left').innerHTML = !many ? section(S.data.decls) : mods.map(m => {
+  let html = !many ? section(S.data.decls) : mods.map(m => {
     const decls = S.data.decls.filter(d => d.module === m && d.kind !== 'use');
     const uses = S.data.decls.filter(d => d.module === m && d.kind === 'use').map(d => d.label.replace(/^use /, ''));
     const open = !S.closedMods?.has(m);
     return `<div class="mod"><div class="mod-h" data-mod="${esc(m)}">${open ? '▾' : '▸'} <b>${esc(m || '(root)')}</b> <span class="muted">${decls.length}</span>${uses.length ? `<div class="mod-uses">uses ${esc(uses.join(', '))}</div>` : ''}</div>${open ? section(decls) : ''}</div>`;
   }).join('');
   const mocks = S.data.decls.filter(d => d.mock).length;
-  if (mocks) $('#left').innerHTML += `<div class="group"><a class="muted" style="display:block;padding:6px 14px;cursor:pointer" data-mocks>${S.showMocks ? 'hide' : 'show'} ${mocks} mock${mocks > 1 ? 's' : ''} (for tests)</a></div>`;
-  if (S.data.decls.some(d => d.view_inline || d.view_separate || d.folded_into)) $('#left').innerHTML += `<div class="group"><a class="muted" style="display:block;padding:6px 14px;cursor:pointer" data-members title="How a union's members are shown: inside it (a type with a doc, an impl or a derive stays on its own), or each as a definition of its own">union members: <b>${S.members === 'inline' ? 'inline' : 'separate'}</b> (switch)</a></div>`;
+  if (mocks) html += `<div class="group"><a class="muted" style="display:block;padding:6px 14px;cursor:pointer" data-mocks>${S.showMocks ? 'hide' : 'show'} ${mocks} mock${mocks > 1 ? 's' : ''} (for tests)</a></div>`;
+  if (S.data.decls.some(d => d.view_inline || d.view_separate || d.folded_into)) html += `<div class="group"><a class="muted" style="display:block;padding:6px 14px;cursor:pointer" data-members title="How a union's members are shown: inside it (a type with a doc, an impl or a derive stays on its own), or each as a definition of its own">union members: <b>${S.members === 'inline' ? 'inline' : 'separate'}</b> (switch)</a></div>`;
+  return html;
 }
 
 // ---------- type map: types and traits as a general graph ----------
@@ -1008,6 +1031,7 @@ function renderTypes() {
     regions += `<rect class="region" x="${bb.x - 24}" y="${bb.y - 44}" width="${bb.w + 48}" height="${bb.h + 68}" rx="16"/>
       <text class="region-l" x="${bb.x - 12}" y="${bb.y - 22}">${esc(m || '(root)')}</text>`;
   }
+  main._html = null; // drawn here, not through setHtml
   main.innerHTML = `<svg id="tmap" width="100%" height="100%">
       <defs>${mk('has', cv('--muted'))}${mk('refines', cv('--type'))}${mk('alias', cv('--type'))}${mk('op', cv('--effect'))}${mk('implements', cv('--accent'))}${mk('extends', cv('--accent'))}</defs>
       <g id="tview" transform="translate(${v.x},${v.y}) scale(${v.k})">${regions}${edges}${nodes}${labels}</g></svg>
@@ -1109,7 +1133,9 @@ function card(d) {
     <pre>${meta}${code}</pre></div>`;
 }
 
-function renderCode() {
+function renderCode() { setHtml($('#main'), codeHtml()); }
+// the code: the selection's slice, or everything (`narrow`: the agents' panel)
+function codeHtml(narrow) {
   const by = byName();
   let body;
   if (S.sel && by[S.sel] && S.scope !== 'all') {
@@ -1121,7 +1147,7 @@ function renderCode() {
   }
   const all = `<button class="plain" data-all="${S.allOpen ? 0 : 1}" title="Keys: 1 collapse all, 2 expand all">${S.allOpen ? 'collapse all' : 'expand all'}</button>`;
   const scope = S.sel ? `<div class="seg"><button data-s="slice" class="${S.scope !== 'all' ? 'on' : ''}">Around ${esc(by[S.sel]?.label || '')}</button><button data-s="all" class="${S.scope === 'all' ? 'on' : ''}">Everything</button></div>` : '<span>Select a definition to see it with its dependencies and references.</span>';
-  $('#main').innerHTML = `<div id="code"><div class="toolbar">${scope}${all}<span>hover a name to see where it is · click to go there</span></div>${body}</div>`;
+  return `<div id="code"><div class="toolbar">${scope}${all}${narrow ? '' : '<span>hover a name to see where it is · click to go there</span>'}</div>${body}</div>`;
 }
 
 // ---------- inspector: description, neighbours, status, history ----------
@@ -1266,8 +1292,26 @@ function headerLines(lines) {
   const i = lines.findIndex(l => l.s !== '-' && l.s !== 'fold' && /\{\s*$/.test(l.t));
   return i < 0 ? lines : lines.slice(0, i + 1).map((l, j) => j === i ? { ...l, t: l.t.replace(/\s*\{\s*$/, ''), segs: l.segs && l.segs.map(([k, t], n, a) => n === a.length - 1 ? [k, t.replace(/\s*\{\s*$/, '')] : [k, t]) } : l);
 }
+// the doc comment as it is written, `///` lines, with its changes marked in place
+function docLines(it) {
+  let segs;
+  if (it.doc_diff) segs = it.doc_diff;
+  else if (it.mk === 'add' && it.doc) segs = [['+', it.doc]];
+  else return '';
+  const added = it.mk === 'add' || segs.every(([k]) => k === '+');
+  const words = segs.flatMap(([k, t]) => t.split(/(?<=\s)/).filter(Boolean).map(w => [k, w]));
+  const lines = []; let line = [], len = 0;
+  for (const w of words) { if (len && len + w[1].length > 88) { lines.push(line); line = []; len = 0; } line.push(w); len += w[1].length; }
+  if (line.length) lines.push(line);
+  return lines.map(ws => {
+    // consecutive words of one kind make one mark
+    const runs = []; for (const [k, t] of ws) { const r = runs.at(-1); if (r && r[0] === k) r[1] += t; else runs.push([k, t]); }
+    const html = runs.map(([k, t]) => added || k === '=' || k === ' ' ? esc(t) : k === '-' ? `<del>${esc(t)}</del>` : `<ins>${esc(t)}</ins>`).join('');
+    return `<span class="ln ${added ? 'add' : 'chg'}"><span class="sg">${added ? '+' : '~'}</span><span class="code"><span class="t-doc">/// ${html}</span></span></span>`;
+  }).join('');
+}
 function chBody(it, resolve) {
-  const pre = ls => `<pre class="d">${ls.map((l, i) => chLine(l, resolve, it.id + ':' + i)).join('')}</pre>`;
+  const pre = ls => `<pre class="d">${docLines(it)}${ls.map((l, i) => chLine(l, resolve, it.id + ':' + i)).join('')}</pre>`;
   const more = (label) => `<a class="lnk chfull" data-chfull="${esc(it.id)}">${label}</a>`;
   if (chFull(it)) return pre(it.lines) + (it.compact ? more('show less ▴') : '');
   const ren = renamedWords(it);
@@ -1276,9 +1320,14 @@ function chBody(it, resolve) {
     return ren.map(([k, a, b]) => `<div class="ren-line">${k ? `<span class="muted">${esc(k)}</span> ` : ''}${k ? `${esc(it.label)}.` : ''}<del>${esc(a)}</del> → ${k ? `${esc(it.label)}.` : ''}<ins>${esc(b)}</ins></div>`).join('') + more('show the code ▸');
   }
   const bodyChanged = it.what.includes('body changed');
-  if (it.kind === 'fn' && !bodyChanged && it.what.every(w => w === 'signature changed' || CONTRACT.test(w))) {
+  // a new doc (or contract, or signature) and nothing else: the signature, not the body
+  if (it.what.length && it.what.every(w => w === 'doc changed')
+      || it.kind === 'fn' && !bodyChanged && it.what.every(w => w === 'signature changed' || w === 'doc changed' || CONTRACT.test(w))) {
     it.compact = true;
-    return pre(headerLines(it.lines)) + more('show the whole definition ▸');
+    // a type's or trait's header keeps its braces, folded
+    const h = headerLines(it.lines), all = it.lines.flatMap(l => l.s === 'fold' ? l.hidden : [l]);
+    if (it.kind !== 'fn' && it.kind !== 'test' && h.length < all.length) h[h.length - 1] = { ...h[h.length - 1], t: h[h.length - 1].t + ' { … }', segs: null, s: h[h.length - 1].s === '~' ? ' ' : h[h.length - 1].s };
+    return pre(h) + more('show the whole definition ▸');
   }
   it.compact = false;
   return pre(it.lines);
@@ -1341,8 +1390,7 @@ function chCard(it) {
   return `<div class="card ${it.id === CH.sel ? 'sel' : ''}" id="ch-${esc(it.id)}">
     <div class="gut" data-chpick="${esc(it.id)}"><span class="mk ${it.mk}">${MK[it.mk]}</span></div>
     <div>
-      <div class="what"><span class="k ${it.mk}">${what}</span>${it.detail.map(d => `<span>${words(d)}</span>`).join('')}${v}<span class="meta">${esc(it.module || '(root)')}${steps}</span></div>
-      ${it.doc_diff ? `<div class="docd"><span class="tag">doc</span>${it.doc_diff.map(([k, t]) => k === '-' ? `<del>${words(t)}</del>` : k === '+' ? `<ins>${words(t)}</ins>` : words(t)).join('')}</div>` : ''}
+      <div class="what"><span class="k ${it.mk}">${what}</span>${it.detail.filter(d => d !== it.doc).map(d => `<span>${words(d)}</span>`).join('')}${v}<span class="meta">${esc(it.module || '(root)')}${steps}</span></div>
       ${chBody(it, resolve)}
       ${refs}${followersHtml(it)}
     </div></div>`;
@@ -1400,8 +1448,8 @@ function ago(t) {
 function syncHash() {
   const h = new URLSearchParams({ mode: S.mode });
   if (S.mode === 'code') { h.set('level', S.level); if (S.allOpen) h.set('all', 1); if (S.sel) h.set('sel', S.sel); if (S.scope !== 'all') h.set('scope', S.scope); if (ACT.sel) h.set('act', ACT.sel.key); }
-  if (S.mode === 'agents') { if (AG.sel) h.set('s', AG.sel); if (AG.def) h.set('def', AG.def); if (ACT.sel) h.set('act', ACT.sel.key); }
-  if (S.mode === 'prs') { h.set('state', PR.state); if (PR.sel) h.set('pr', PR.sel); if (PR.tab !== 'conversation') h.set('tab', PR.tab); }
+  if (S.mode === 'agents') { if (AG.sel) h.set('s', AG.sel); if (S.sel) h.set('sel', S.sel); if (ACT.sel) h.set('act', ACT.sel.key); }
+  if (S.mode === 'prs') { h.set('state', PR.state); if (PR.sel) h.set('pr', PR.sel); }
   history.replaceState(null, '', '#' + h);
 }
 function readHash() {
@@ -1416,11 +1464,9 @@ function readHash() {
   navPush(S.sel || null);
   if (h.has('scope')) S.scope = h.get('scope');
   if (h.has('s')) AG.sel = +h.get('s');
-  if (h.has('def')) AG.def = h.get('def');
   if (h.has('act')) ACT.want = h.get('act');
   if (h.has('state')) PR.state = h.get('state');
   if (h.has('pr')) PR.sel = +h.get('pr');
-  if (h.has('tab')) PR.tab = h.get('tab');
 }
 
 // set a region's HTML only when it changed: a poll that brings nothing new
@@ -1429,7 +1475,13 @@ function setHtml(el, html) { if (el._html !== html) { el._html = html; el.innerH
 
 var render = function () {
   syncHash();
+  if (S.lastMode !== S.mode) {
+    // another mode drew these regions: draw them again, whatever was cached
+    for (const id of ['#left', '#main', '#right']) $(id)._html = null;
+    AG.mounted = null; S.lastMode = S.mode;
+  }
   document.body.className = 'm-' + S.mode;
+  placeSplit();
   for (const b of $('#modes').children) b.classList.toggle('on', b.dataset.mode === S.mode);
   if (S.mode === 'agents') { renderAgents(); return; }
   if (S.mode === 'prs') { renderPrs(); return; }
@@ -1504,7 +1556,7 @@ document.addEventListener('click', e => {
   if (t.dataset.go) {
     clearArrow();
     // in the agents' code panel, a reference opens its slice there
-    if (S.mode === 'agents') { AG.def = t.dataset.go; render(); $('#right').scrollTop = 0; return; }
+    if (S.mode === 'agents') { ACT.sel = null; if (S.scope === 'all') S.scope = 'slice'; select(t.dataset.go); return; }
     if (S.scope === 'all') S.scope = 'slice';
     if (ACT.sel) { ACT.sel = null; S.level = 1; }
     select(t.dataset.go, typeof S.level === 'number'); return;
@@ -1564,7 +1616,9 @@ function palClose() { $('#pal').classList.remove('on'); $('#pal-q').blur(); }
 function palGo(k) {
   const it = PAL.items[k]; if (!it) return;
   palClose();
-  S.mode = 'code'; S.level = 1; S.scope = 'slice'; ACT.sel = null; select(it.d.name);
+  // in the agents mode it opens in the code panel beside the conversation
+  if (S.mode !== 'agents') { S.mode = 'code'; S.level = 1; }
+  S.scope = 'slice'; ACT.sel = null; select(it.d.name);
 }
 window.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'p') {
@@ -1801,14 +1855,14 @@ document.addEventListener('scroll', () => $('#tip').classList.remove('on'), true
 // the Code mode with something selected in the activity: its diffs on the code
 function renderActDiff() {
   const s = ACT.sel;
-  $('#main').innerHTML = `<div id="changes"><div class="selbar"><span>Changes in</span><b>${esc(s.label)}</b><span class="spacer"></span><a class="lnk" data-actclear>show the code (Esc)</a></div>${diffHtml(ACT.diff)}</div>`;
+  setHtml($('#main'), `<div id="changes"><div class="selbar"><span>Changes in</span><b>${esc(s.label)}</b><span class="spacer"></span><a class="lnk" data-actclear>show the code (Esc)</a></div>${diffHtml(ACT.diff)}</div>`);
 }
 
 // ---------- agents: ACP sessions ----------
 let CFG = {};
 api('/api/config').then(c => { CFG = c; render(); }).catch(() => { });
 // sessions (from the server), their events, and what they fold into
-const AG = { list: [], sel: null, ev: {}, items: {}, def: null, snaps: {}, mounted: null, busy: false, drafts: {} };
+const AG = { list: [], sel: null, ev: {}, items: {}, snaps: {}, mounted: null, busy: false, drafts: {}, symbols: localStorage.getItem('strata-symbols') !== '0' };
 const STRATA_SUBS = new Set('init add edit rename move status done abort log diff interface render pack header merge-file resolve setup-git sync ci ui view ast check holes verify test run build bench doc fmt deps fetch builtins'.split(' '));
 const SHELL_OP = /^(<<-?|<|>|>>|\||\|\||&&|;|2>&1|&)$/;
 // A `strata …` command in a shell command line: its subcommand, arguments,
@@ -2008,7 +2062,7 @@ function toolHtml(tc, sid) {
     const head = `<div class="tool-h"><span class="sub">strata ${esc(sc.sub)}</span><span class="ttl">${esc(sc.args)}${sc.file ? ` <span class="muted">· ${esc(sc.file)}</span>` : ''}</span>${st}</div>`;
     if (sc.sub === 'edit' || sc.sub === 'add') {
       const names = editedNames(sc.input);
-      const defs = [...names.map(n => [n, false]), ...sc.removed.map(n => [n, true])].map(([n, rm]) => { const d = findDef(data, n, sc.module); const q = d ? d.name : (sc.module ? sc.module + '.' + n : n); return `<a data-agdef="${esc(q)}" class="${AG.def === q ? 'on' : ''}" title="${rm ? 'removed' : 'show its slice in the code panel'}">${rm ? '− ' : ''}${esc(n)}</a>`; }).join('');
+      const defs = [...names.map(n => [n, false]), ...sc.removed.map(n => [n, true])].map(([n, rm]) => { const d = findDef(data, n, sc.module); const q = d ? d.name : (sc.module ? sc.module + '.' + n : n); return `<a data-agdef="${esc(q)}" class="${S.sel === q ? 'on' : ''}" title="${rm ? 'removed' : 'show its slice in the code panel'}">${rm ? '− ' : ''}${esc(n)}</a>`; }).join('');
       const input = sc.input != null ? `<pre>${highlight(sc.input, resolver(sc.module || ''))}</pre>` : sc.inputFrom ? `<div class="lbl2">text from <code>${esc(sc.inputFrom)}</code></div>` : '';
       return `<div class="tool strata">${head}<div class="tool-b">${defs ? `<div class="defs">${defs}</div>` : ''}<div class="lbl2">${sc.module ? `into module ${esc(sc.module)}` : 'the edit'}</div>${input}${out ? `<div class="lbl2">result</div><pre class="out">${colorOut(out)}</pre>` : ''}</div></div>`;
     }
@@ -2087,18 +2141,31 @@ function renderAgentsRight() {
   if (!data) { setHtml($('#right'), '<div class="panel-b"><div class="empty">Loading the code…</div></div>'); return; }
   const err = s && AG.snaps[s.cwd]?.err;
   const html = withData(data, () => {
-    const by = byName(), keepSel = S.sel; S.sel = AG.def;
-    try {
-      if (AG.def && by[AG.def]) {
-        return `<div class="panel-h"><span>${esc(where)}</span><b>${esc(by[AG.def].label)}</b><span class="spacer"></span><a class="lnk" data-agdef="">all the code</a></div><div class="panel-b">${sectionsFor(AG.def).map(([title, ns]) => (title ? `<h2 class="sect">${title} <span class="muted">${ns.length}</span></h2>` : '') + `<div class="cgroup">${ns.map(n => card(by[n])).join('')}</div>`).join('')}</div>`;
-      }
-      const touched = s ? sessionNames(s.id).filter(n => by[n]) : [];
-      const rest = data.decls.filter(d => d.kind !== 'use' && !touched.includes(d.name) && shownAlone(d) && !d.mock);
-      const missing = AG.def && !by[AG.def] ? `<div class="box warn" style="margin-bottom:12px"><code>${esc(AG.def)}</code> isn't in the code ${err ? '' : 'here'} (yet, or any more).</div>` : '';
-      return `<div class="panel-h"><span>Code</span><b>${esc(where)}</b><span class="spacer"></span><span>${data.decls.length} definitions</span></div><div class="panel-b">${err ? `<div class="box warn">${esc(err)}</div>` : ''}${missing}${touched.length ? `<h2 class="sect" style="margin-top:0">Edited in this session <span class="muted">${touched.length}</span></h2><div class="cgroup">${touched.map(n => card(by[n])).join('')}</div><h2 class="sect">Everything else</h2>` : ''}<div class="cgroup">${rest.map(card).join('')}</div></div>`;
-    } finally { S.sel = keepSel; }
+    const by = byName();
+    const missing = S.sel && !by[S.sel] ? `<div class="box warn" style="margin:0 0 12px"><code>${esc(S.sel)}</code> isn't in the code here (yet, or any more).</div>` : '';
+    return `<div class="cpanel ${AG.symbols ? '' : 'nosym'}"><div class="cp-sym">${symbolsHtml()}</div><div class="cp-code"><div class="panel-h"><button class="btn small" data-symtoggle title="the list of definitions">${AG.symbols ? '◂' : '▸'} Symbols</button><span>Code</span><b>${esc(where)}</b><span class="spacer"></span>${navButtons()}</div><div class="panel-b">${err ? `<div class="box warn">${esc(err)}</div>` : ''}${missing}${codeHtml(true)}</div></div></div>`;
   });
   setHtml($('#right'), html);
+}
+// the splitter between the conversation and the code panel: drag to resize (kept)
+function placeSplit() {
+  const sp = $('#split');
+  if (S.mode !== 'agents') { sp.style.display = 'none'; return; }
+  sp.style.display = 'block';
+  requestAnimationFrame(() => { sp.style.left = ($('#right').getBoundingClientRect().left - 3) + 'px'; });
+}
+{
+  const w = localStorage.getItem('strata-panel-w');
+  if (w) document.body.style.setProperty('--panel-w', w);
+  let drag = false;
+  document.addEventListener('mousedown', e => { if (e.target.id === 'split') { drag = true; e.preventDefault(); document.body.classList.add('dragging'); } });
+  document.addEventListener('mousemove', e => {
+    if (!drag) return;
+    const w = Math.max(320, Math.min(innerWidth - 600, innerWidth - e.clientX)) + 'px';
+    document.body.style.setProperty('--panel-w', w); localStorage.setItem('strata-panel-w', w); placeSplit();
+  });
+  document.addEventListener('mouseup', () => { drag = false; document.body.classList.remove('dragging'); });
+  window.addEventListener('resize', placeSplit);
 }
 function withData(data, f) { const keep = S.data; S.data = data; try { return f(); } finally { S.data = keep; } }
 function renderAgents() {
@@ -2138,12 +2205,12 @@ async function startSession() {
   $('[data-nsgo]').disabled = true; $('[data-nsgo]').textContent = 'Starting…';
   const r = await api('/api/agents', body);
   if (r.error) { $('[data-nsgo]').disabled = false; $('[data-nsgo]').textContent = 'Start'; $('#ns-err').innerHTML = `<span class="badc">${esc(r.error)}</span>`; return; }
-  closeDialog(); AG.sel = r.id; S.mode = 'agents'; AG.def = null;
+  closeDialog(); AG.sel = r.id; S.mode = 'agents';
   AG.list = await api('/api/agents'); render(); loadActivity();
 }
 
 // ---------- PRs ----------
-const PR = { state: 'open', list: null, sel: null, view: null, diff: null, tab: 'conversation', busy: '', result: null, draft: '' };
+const PR = { state: 'open', list: null, sel: null, view: null, diff: null, busy: '', result: null, draft: '' };
 async function loadPrs() {
   PR.list = null; render();
   PR.list = await api('/api/prs?state=' + PR.state).catch(e => ({ error: String(e) }));
@@ -2152,12 +2219,11 @@ async function loadPrs() {
 }
 async function loadPr(n, keepTab) {
   PR.sel = n; PR.view = null; PR.diff = null; PR.result = keepTab ? PR.result : null;
-  if (!keepTab) PR.tab = 'conversation';
   render();
   const v = await api('/api/prs/' + n).catch(e => ({ error: String(e) }));
   if (PR.sel !== n) return;
   PR.view = v; render();
-  if (PR.tab === 'diff') loadPrDiff();
+  if (!v.error) loadPrDiff();
 }
 async function loadPrDiff() {
   if (PR.diff || !PR.sel) return;
@@ -2222,18 +2288,19 @@ function renderPrMain() {
     ...(v.comments || []).map(c => ({ t: c.createdAt, html: `<div class="cmt"><div class="cmt-h"><b>${esc(who(c.author))}</b><span>commented ${when(c.createdAt)}</span></div><div class="cmt-b md">${md(c.body)}</div></div>` })),
     ...(v.reviews || []).map(r => ({ t: r.submittedAt, html: `<div class="cmt"><div class="cmt-h"><b>${esc(who(r.author))}</b><span class="rv ${esc(r.state)}">${esc((r.state || '').replace(/_/g, ' ').toLowerCase())}</span><span>${when(r.submittedAt)}</span></div>${r.body ? `<div class="cmt-b md">${md(r.body)}</div>` : ''}</div>` })),
   ].sort((a, b) => (a.t || '').localeCompare(b.t || ''));
-  const tabs = [['conversation', 'Conversation', events.length], ['commits', 'Commits', (v.commits || []).length], ['checks', 'Checks', total], ['diff', 'Diff', (v.files || []).length]];
-  let body = '';
-  if (PR.tab === 'conversation') body = `<div class="cmt desc"><div class="cmt-h"><b>${esc(who(v.author))}</b><span>opened ${when(v.createdAt)}</span></div><div class="cmt-b md">${v.body ? md(v.body) : '<span class="muted">No description.</span>'}</div></div>${events.map(e => e.html).join('')}`;
-  if (PR.tab === 'commits') body = (v.commits || []).map(c => `<div class="cm-l"><code>${esc((c.oid || '').slice(0, 7))}</code><span>${esc(c.messageHeadline)}</span><span class="who">${esc((c.authors || []).map(a => a.name || a.login).join(', '))} · ${when(c.committedDate || c.authoredDate)}</span></div>`).join('') || '<div class="empty">No commits.</div>';
-  if (PR.tab === 'checks') body = ((v.statusCheckRollup || []).map(c => { const [cl, ic] = checkIcon(c); return `<div class="ck"><span class="ic ${cl}">${ic}</span><span>${esc(c.workflowName ? c.workflowName + ' / ' : '')}${esc(c.name || c.context)}</span><span class="muted">${esc((c.conclusion || c.state || c.status || '').toLowerCase())}</span>${c.detailsUrl || c.targetUrl ? `<a href="${esc(c.detailsUrl || c.targetUrl)}" target="_blank" rel="noreferrer">details ↗</a>` : ''}</div>`; }).join('') || '<div class="empty">No checks.</div>')
-    + ((v.runs || []).length ? `<h2 class="sect">CI runs on ${esc(v.headRefName)}</h2>${v.runs.map(r => { const [cl, ic] = checkIcon(r); return `<div class="ck"><span class="ic ${cl}">${ic}</span><span>${esc(r.name)}: ${esc(r.displayTitle)}</span><span class="muted">${esc(r.event)} · ${esc((r.headSha || '').slice(0, 7))} · ${when(r.createdAt)}</span><a href="${esc(r.url)}" target="_blank" rel="noreferrer">run ↗</a></div>`; }).join('')}` : '');
-  if (PR.tab === 'diff') body = prDiffHtml();
+  const checks = (v.statusCheckRollup || []).map(c => { const [cl, ic] = checkIcon(c); return `<div class="ck"><span class="ic ${cl}">${ic}</span><span>${esc(c.workflowName ? c.workflowName + ' / ' : '')}${esc(c.name || c.context)}</span><span class="muted">${esc((c.conclusion || c.state || c.status || '').toLowerCase())}</span>${c.detailsUrl || c.targetUrl ? `<a href="${esc(c.detailsUrl || c.targetUrl)}" target="_blank" rel="noreferrer">details ↗</a>` : ''}</div>`; }).join('');
+  const runs = (v.runs || []).map(r => { const [cl, ic] = checkIcon(r); return `<div class="ck"><span class="ic ${cl}">${ic}</span><span>${esc(r.name)}: ${esc(r.displayTitle)}</span><span class="muted">${esc(r.event)} · ${esc((r.headSha || '').slice(0, 7))} · ${when(r.createdAt)}</span><a href="${esc(r.url)}" target="_blank" rel="noreferrer">run ↗</a></div>`; }).join('');
+  const verdict = !total ? 'No checks' : n.bad ? `<span class="badc">${n.bad} failing</span>` : n.run ? `<span class="warnc">${n.run} running</span>` : '<span class="okc">All checks passed</span>';
+  const checksBox = `<details class="cmt checks" ${n.bad || n.run ? 'open' : ''}><summary class="cmt-h"><b>${verdict}</b><span>${n.ok} of ${total} passed${n.skip ? `, ${n.skip} skipped` : ''}${(v.runs || []).length ? ` · ${v.runs.length} CI run${v.runs.length > 1 ? 's' : ''}` : ''}</span></summary><div class="cmt-b">${checks || '<div class="empty">No checks.</div>'}${runs ? `<div class="lbl3">CI runs on ${esc(v.headRefName)}</div>${runs}` : ''}</div></details>`;
+  const conversation = `<div class="cmt desc"><div class="cmt-h"><b>${esc(who(v.author))}</b><span>opened ${when(v.createdAt)}</span></div><div class="cmt-b md">${v.body ? md(v.body) : '<span class="muted">No description.</span>'}</div></div>${events.map(e => e.html).join('')}`;
+  const commits = (v.commits || []).map(c => `<div class="cm-l"><code>${esc((c.oid || '').slice(0, 7))}</code><span>${esc(c.messageHeadline)}</span><span class="who">${esc((c.authors || []).map(a => a.name || a.login).join(', '))} · ${when(c.committedDate || c.authoredDate)}</span></div>`).join('') || '<div class="empty">No commits.</div>';
   setHtml($('#main'), `<div id="pr"><h1>${esc(v.title)} <span class="n">#${v.number}</span></h1>
-    <div class="pr-meta"><span class="st-b ${st}">${st.toLowerCase()}</span><span>${esc(who(v.author))} wants to merge into <code>${esc(v.baseRefName)}</code> from <code>${esc(v.headRefName)}</code></span><span class="okc">+${v.additions}</span><span class="badc">−${v.deletions}</span>${total ? `<span>${n.ok}/${total} checks ✓${n.bad ? ` · <span class="badc">${n.bad} failing</span>` : ''}${n.run ? ` · ${n.run} running` : ''}</span>` : ''}<a class="lnk" href="${esc(v.url)}" target="_blank" rel="noreferrer">on GitHub ↗</a></div>
-    ${stack}
-    <div class="ptabs">${tabs.map(([k, l, c]) => `<button data-prtab="${k}" class="${PR.tab === k ? 'on' : ''}">${l}<span class="c">${c}</span></button>`).join('')}</div>
-    <div id="changes" style="padding:0;max-width:none">${body}</div></div>`);
+    <div class="pr-meta"><span class="st-b ${st}">${st.toLowerCase()}</span><span>${esc(who(v.author))} wants to merge ${(v.commits || []).length} commit${(v.commits || []).length === 1 ? '' : 's'} into <code>${esc(v.baseRefName)}</code> from <code>${esc(v.headRefName)}</code></span><span class="okc">+${v.additions}</span><span class="badc">−${v.deletions}</span><a class="lnk" href="${esc(v.url)}" target="_blank" rel="noreferrer">on GitHub ↗</a></div>
+    ${stack}${checksBox}
+    <h2 class="sect">Conversation <span class="muted">${events.length + 1}</span></h2>${conversation}
+    <h2 class="sect">Commits <span class="muted">${(v.commits || []).length}</span></h2><div class="cmt"><div class="cmt-b">${commits}</div></div>
+    <h2 class="sect" id="pr-files">Files changed <span class="muted">${(PR.diff?.files || v.files || []).length}</span></h2>
+    <div id="changes" style="padding:0;max-width:none">${prDiffHtml()}</div></div>`);
 }
 function renderPrRight() {
   const v = PR.view;
@@ -2283,7 +2350,7 @@ async function prAction(kind, arg) {
 
 // ---------- clicks in the workspace ----------
 function workspaceClick(e) {
-  const t = e.target.closest('[data-mode],[data-rtab],[data-actb],[data-actc],[data-actu],[data-actdef],[data-actopen],[data-actclear],[data-sess],[data-newsess],[data-nsgo],[data-dlgclose],[data-send],[data-cancel],[data-stop],[data-perm],[data-agdef],[data-pr],[data-prstate],[data-prreload],[data-prtab],[data-pract],[data-prmerge]');
+  const t = e.target.closest('[data-mode],[data-rtab],[data-actb],[data-actc],[data-actu],[data-actdef],[data-actopen],[data-actclear],[data-sess],[data-newsess],[data-nsgo],[data-dlgclose],[data-send],[data-cancel],[data-stop],[data-perm],[data-agdef],[data-symtoggle],[data-pr],[data-prstate],[data-prreload],[data-pract],[data-prmerge]');
   if (!t) return false;
   const d = t.dataset;
   e.preventDefault();
@@ -2303,7 +2370,7 @@ function workspaceClick(e) {
     return true;
   }
   if (d.actclear !== undefined) { ACT.sel = null; ACT.diff = null; render(); return true; }
-  if (d.sess) { AG.sel = +d.sess; AG.def = null; render(); loadSnap(AG.list.find(x => x.id === AG.sel)); return true; }
+  if (d.sess) { AG.sel = +d.sess; render(); loadSnap(AG.list.find(x => x.id === AG.sel)); return true; }
   if (d.newsess !== undefined) { newSessionDialog(); return true; }
   if (d.nsgo !== undefined) { startSession(); return true; }
   if (d.dlgclose !== undefined) { closeDialog(); return true; }
@@ -2311,11 +2378,11 @@ function workspaceClick(e) {
   if (d.cancel !== undefined) { api(`/api/agents/${AG.sel}/cancel`, {}); return true; }
   if (d.stop !== undefined) { if (confirm('End this session? The agent process is stopped.')) api(`/api/agents/${AG.sel}/stop`, {}); return true; }
   if (d.perm) { const opt = d.opt || null; api(`/api/agents/${d.perm}/answer`, { rpc: JSON.parse(d.rpc), option: opt }).then(r => r.error && banner(r.error)); t.closest('.perm').style.opacity = .5; return true; }
-  if (d.agdef !== undefined) { AG.def = d.agdef || null; ACT.sel = null; render(); $('#right').scrollTop = 0; return true; }
+  if (d.agdef !== undefined) { ACT.sel = null; S.scope = 'slice'; select(d.agdef || null); return true; }
+  if (d.symtoggle !== undefined) { AG.symbols = !AG.symbols; localStorage.setItem('strata-symbols', AG.symbols ? '1' : '0'); render(); return true; }
   if (d.pr) { S.mode = 'prs'; loadPr(+d.pr); return true; }
   if (d.prstate) { PR.state = d.prstate; loadPrs(); return true; }
   if (d.prreload !== undefined) { loadPrs(); return true; }
-  if (d.prtab) { PR.tab = d.prtab; render(); if (PR.tab === 'diff') loadPrDiff(); return true; }
   if (d.pract) { prAction(d.pract); return true; }
   if (d.prmerge) { prAction('merge', d.prmerge); return true; }
   return false;
