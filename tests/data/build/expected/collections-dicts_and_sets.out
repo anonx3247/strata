@@ -43,7 +43,7 @@ Set { Set { 0 }, Set { 1, 2 } }
 Dict { "x": Set { 1 }, "y": Set {} }
 Dict { "k": Dict { 1: "one", 2: "two" } }
 Dict { "a": 1, "b": 2, "c": 3 } Set { 1, 2, 3 }
-Set { 1, 2, 3 }{"a":1,"b":2,"c":3}
+Set { 1, 2, 3 }
 Dict { "a": 1, "b": 2, "c": 3 }
 
 --- exit 0

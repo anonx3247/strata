@@ -196,16 +196,15 @@ fn bool_v(b: &str) -> V {
     (Ty::Bool, b.to_string())
 }
 
-/// The entries of a trait value's table: showing the value as JSON and as
-/// `to_string`, dropping and holding it, comparing two of the same type,
+/// The entries of a trait value's table: showing the value as `to_string`
+/// and as `debug`, dropping and holding it, comparing two of the same type,
 /// then the trait's methods.
-const DYN_JSON: usize = 0;
-const DYN_SHOW: usize = 1;
-const DYN_DEBUG: usize = 2;
-const DYN_DROP: usize = 3;
-const DYN_DUP: usize = 4;
-const DYN_EQ: usize = 5;
-const DYN_METHODS: usize = 6;
+const DYN_SHOW: usize = 0;
+const DYN_DEBUG: usize = 1;
+const DYN_DROP: usize = 2;
+const DYN_DUP: usize = 3;
+const DYN_EQ: usize = 4;
+const DYN_METHODS: usize = 5;
 
 /// Fault kinds, as numbered in the runtime (`KINDS` in runtime.c).
 #[derive(Clone, Copy)]
@@ -952,10 +951,8 @@ declare ptr @strata_range(i64, i64)
 declare i64 @llvm.smax.i64(i64, i64)
 declare i64 @llvm.smin.i64(i64, i64)
 declare ptr @strata_show_int(i64)
-declare ptr @strata_json_int(i64)
 declare ptr @strata_show_float(double)
 declare ptr @strata_show_bool(i1)
-declare ptr @strata_json_str(ptr)
 declare ptr @strata_debug_str(ptr)
 declare void @strata_print(ptr)
 declare ptr @strata_str_split(ptr, ptr)
@@ -3220,43 +3217,6 @@ impl<'m, 'a> Func<'m, 'a> {
         self.debug(v)
     }
 
-    /// A value as JSON (`to_json`, `derive Json`).
-    fn json(&mut self, v: &V) -> Res<String> {
-        let t = self.m.repr(&v.0)?;
-        if self.m.opaque(&t) {
-            // only its type: what it points to is C's
-            return Ok(self.m.string(&format!("\"<{}>\"", crate::names::short(&key(&t)))));
-        }
-        if self.is_dyn(&t) {
-            return self.dyn_entry_call(v, DYN_JSON);
-        }
-        Ok(match &t {
-            Ty::Int => self.call(&Ty::Str, "@strata_json_int", &[v.clone()])?.1,
-            Ty::Float => self.call(&Ty::Str, "@strata_show_float", &[v.clone()])?.1,
-            Ty::Bool => self.call(&Ty::Str, "@strata_show_bool", &[v.clone()])?.1,
-            Ty::Str => self.call(&Ty::Str, "@strata_json_str", &[v.clone()])?.1,
-            Ty::Unit => self.m.string("null"),
-            _ if is_never(&t) => self.m.string("null"),
-            Ty::Fn(..) => {
-                // how the closure shows, as a JSON string
-                let shown = self.field(v, 1, &Ty::Str)?;
-                self.call(&Ty::Str, "@strata_json_str", &[shown])?.1
-            }
-            Ty::Con(n, _) if n == "Set" => {
-                let l = self.as_list(v)?;
-                self.json(&l)?
-            }
-            t if self.m.boxed(t) => {
-                let f = self.helper("json", t)?;
-                self.call(&Ty::Str, &f, &[(t.clone(), v.1.clone())])?.1
-            }
-            t if self.m.nominal(t) || matches!(t, Ty::Con(l, _) if l == "List" || l == "Dict") => {
-                let f = self.helper("json", t)?;
-                self.call(&Ty::Str, &f, &[(t.clone(), v.1.clone())])?.1
-            }
-            t => return Err(format!("showing a `{}` is not compiled yet", key(t))),
-        })
-    }
 
     /// Whether two values are equal (structurally).
     fn equal(&mut self, a: &V, b: &V) -> Res<V> {
@@ -3527,10 +3487,9 @@ impl<'m, 'a> Func<'m, 'a> {
                 h.emit("ret i1 false".into());
                 format!("define i1 {name}(ptr %a, ptr %b)")
             }
-            "json" | "show" | "debug" if h.m.boxed(t) => {
+            "show" | "debug" if h.m.boxed(t) => {
                 h.on_member(&a, |h, _, x| {
                     let s = match what {
-                        "json" => h.json(&x)?,
                         "show" => h.show(&x)?,
                         _ => h.debug(&x)?,
                     };
@@ -3702,73 +3661,6 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
                 format!("define ptr {name}(ptr %a)")
             }
-            "json" if matches!(t, Ty::Con(d, _) if d == "Dict") => {
-                // an object when the keys are strings (or there are none), else an array of pairs
-                let (kt, vt) = (args[0].clone(), args[1].clone());
-                let object = kt == Ty::Str;
-                let pair = Ty::Con("Tuple".into(), args.clone());
-                let n = h.list_len(&a);
-                let empty = h.fresh("empty");
-                h.emit(format!("{empty} = icmp eq i64 {}, 0", n.1));
-                h.emit(format!("br i1 {empty}, label %none, label %some"));
-                h.block("none");
-                let braces = h.m.string("{}");
-                h.emit(format!("ret ptr {braces}"));
-                h.block("some");
-                let acc = h.fresh("acc");
-                writeln!(h.allocas, "  {acc} = alloca ptr").unwrap();
-                let open = h.m.string(if object { "{" } else { "[" });
-                h.emit(format!("store ptr {open}, ptr {acc}"));
-                let (empty_s, comma) = (h.m.string(""), h.m.string(","));
-                h.each(&a, &pair, |h, i, p| {
-                    let first = h.fresh("first");
-                    h.emit(format!("{first} = icmp eq i64 {i}, 0"));
-                    let sep = h.fresh("sep");
-                    h.emit(format!("{sep} = select i1 {first}, ptr {empty_s}, ptr {comma}"));
-                    let (k, v) = (h.field(p, 0, &kt)?, h.field(p, 1, &vt)?);
-                    let (kj, vj) = (h.json(&k)?, h.json(&v)?);
-                    let cur = h.fresh("cur");
-                    h.emit(format!("{cur} = load ptr, ptr {acc}"));
-                    let parts = if object {
-                        vec![Part::Val(cur), Part::Val(sep), Part::Val(kj), Part::Lit(":".into()), Part::Val(vj)]
-                    } else {
-                        vec![Part::Val(cur), Part::Val(sep), Part::Lit("[".into()), Part::Val(kj), Part::Lit(",".into()), Part::Val(vj), Part::Lit("]".into())]
-                    };
-                    let s = h.concat(parts)?;
-                    h.emit(format!("store ptr {}, ptr {acc}", s.1));
-                    Ok(())
-                })?;
-                let cur = h.fresh("cur");
-                h.emit(format!("{cur} = load ptr, ptr {acc}"));
-                let s = h.concat(vec![Part::Val(cur), Part::Lit(if object { "}" } else { "]" }.into())])?;
-                h.emit(format!("ret ptr {}", s.1));
-                format!("define ptr {name}(ptr %a)")
-            }
-            "json" if list => {
-                let et = args[0].clone();
-                let acc = h.fresh("acc");
-                writeln!(h.allocas, "  {acc} = alloca ptr").unwrap();
-                let open = h.m.string("[");
-                h.emit(format!("store ptr {open}, ptr {acc}"));
-                let (empty, comma) = (h.m.string(""), h.m.string(","));
-                h.each(&a, &et, |h, i, x| {
-                    let first = h.fresh("first");
-                    h.emit(format!("{first} = icmp eq i64 {i}, 0"));
-                    let sep = h.fresh("sep");
-                    h.emit(format!("{sep} = select i1 {first}, ptr {empty}, ptr {comma}"));
-                    let j = h.json(x)?;
-                    let cur = h.fresh("cur");
-                    h.emit(format!("{cur} = load ptr, ptr {acc}"));
-                    let s = h.concat(vec![Part::Val(cur), Part::Val(sep), Part::Val(j)])?;
-                    h.emit(format!("store ptr {}, ptr {acc}", s.1));
-                    Ok(())
-                })?;
-                let cur = h.fresh("cur");
-                h.emit(format!("{cur} = load ptr, ptr {acc}"));
-                let s = h.concat(vec![Part::Val(cur), Part::Lit("]".into())])?;
-                h.emit(format!("ret ptr {}", s.1));
-                format!("define ptr {name}(ptr %a)")
-            }
             "eq" => {
                 // the same block, or the same constructor and equal fields
                 let same = h.fresh("same");
@@ -3824,59 +3716,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 })?;
                 format!("define ptr {name}(ptr %a)")
             }
-            _ => {
-                // serde_json's compact form, fields in declaration order
-                let fields_json = |h: &mut Func, fs: &[FieldInfo], parts: &mut Vec<Part>, record: bool| -> Res<()> {
-                    parts.push(Part::Lit(if record { "{" } else { "[" }.into()));
-                    for (i, f) in fs.iter().enumerate() {
-                        if i > 0 {
-                            parts.push(Part::Lit(",".into()));
-                        }
-                        if let (true, Some(n)) = (record, &f.name) {
-                            parts.push(Part::Lit(format!("{}:", serde_json::to_string(n).unwrap())));
-                        }
-                        let x = h.field(&a, i, &f.ty)?;
-                        let s = h.json(&x)?;
-                        parts.push(Part::Val(s));
-                    }
-                    parts.push(Part::Lit(if record { "}" } else { "]" }.into()));
-                    Ok(())
-                };
-                if tuple {
-                    let fs: Vec<FieldInfo> = args.iter().map(|t| FieldInfo { name: None, texpr: TypeExpr::Unit, ty: t.clone() }).collect();
-                    let mut parts = vec![];
-                    fields_json(&mut h, &fs, &mut parts, false)?;
-                    let s = h.concat(parts)?;
-                    h.emit(format!("ret ptr {}", s.1));
-                } else {
-                    let tc = t.clone();
-                    h.on_ctor(&a, "", |h, c| {
-                        let fs = h.m.fields(c, &h.m.ctor_args(c, &tc))?;
-                        let is_record = matches!(h.m.env.types.get(&Symbol::new(c)).map(|td| &td.body), Some(TypeBody::Record(_)));
-                        let named = |c: &str| serde_json::to_string(crate::names::short(c)).unwrap();
-                        let mut parts = vec![];
-                        if is_record {
-                            fields_json(h, &fs, &mut parts, true)?;
-                        } else if fs.is_empty() {
-                            parts.push(Part::Lit(named(c)));
-                        } else if fs.len() == 1 && fs[0].name.is_none() {
-                            parts.push(Part::Lit(format!("{{{}:", named(c))));
-                            let x = h.field(&a, 0, &fs[0].ty)?;
-                            let s = h.json(&x)?;
-                            parts.push(Part::Val(s));
-                            parts.push(Part::Lit("}".into()));
-                        } else {
-                            parts.push(Part::Lit(format!("{{{}:", named(c))));
-                            fields_json(h, &fs, &mut parts, fs[0].name.is_some())?;
-                            parts.push(Part::Lit("}".into()));
-                        }
-                        let s = h.concat(parts)?;
-                        h.emit(format!("ret ptr {}", s.1));
-                        Ok(())
-                    })?;
-                }
-                format!("define ptr {name}(ptr %a)")
-            }
+            _ => return Err(format!("no `{what}` helper for a `{}`", key(t))),
         };
         let text = h.finish();
         writeln!(self.m.body, "{sig} {{\n{text}}}\n").unwrap();
@@ -5727,10 +5567,6 @@ impl<'m, 'a> Func<'m, 'a> {
                 let r = self.call(&types[0], "@strata_list_slice", &[vs[0].clone(), (Ty::Int, ends[0].clone()), (Ty::Int, to)])?;
                 self.temp((vs[0].0.clone(), r.1))
             }
-            ("to_json", [_]) => {
-                let s = self.json(&vs[0])?;
-                self.temp((Ty::Str, s))
-            }
             ("range", [Ty::Int, Ty::Int]) => {
                 let r = self.call(&Ty::Con("List".into(), vec![Ty::Int]), "@strata_range", &vs)?;
                 self.temp(r)
@@ -6157,8 +5993,8 @@ impl<'m, 'a> Func<'m, 'a> {
         let head = Module::head(imp).ok_or(format!("a `{}` can't be a `{tr}`", key(imp)))?;
         let ll = self.m.ll(imp)?;
         let mut entries = vec![];
-        // showing it: as JSON, as `to_string` (`Display`), and as `debug`
-        for (i, what) in ["json", "show", "debug"].iter().enumerate() {
+        // showing it: as `to_string` (`Display`) and as `debug`
+        for (i, what) in ["show", "debug"].iter().enumerate() {
             let f = format!("@\"dyn{what}:{}\"", key(imp));
             entries.push(f.clone());
             if !self.m.helpers.insert(f.clone()) {
@@ -6168,8 +6004,7 @@ impl<'m, 'a> Func<'m, 'a> {
             h.block("start");
             let v = h.from_slot("%v", imp)?;
             let s = match i {
-                0 => h.json(&v)?,
-                1 => h.show(&v)?,
+                0 => h.show(&v)?,
                 _ => h.debug(&v)?,
             };
             h.emit(format!("ret ptr {s}"));
@@ -8338,11 +8173,10 @@ impl Func<'_, '_> {
         }
         self.m.vtables.entry(key(tr_ty)).or_default().push((name.clone(), mock_marker(tr_ty)));
         let tag = key(tr_ty).replace('"', "");
-        let shown = self.m.string(&format!("\"<mock {tag}>\""));
         let plain = self.m.string(&format!("<mock {tag}>"));
         let mut entries = vec![];
-        // as JSON (a string), as `to_string` and as `debug`
-        for (what, text) in [("json", format!("  call void @strata_dup(ptr {shown})\n  ret ptr {shown}")), ("show", format!("  call void @strata_dup(ptr {plain})\n  ret ptr {plain}")), ("debug", format!("  call void @strata_dup(ptr {plain})\n  ret ptr {plain}"))] {
+        // as `to_string` and as `debug`
+        for (what, text) in [("show", format!("  call void @strata_dup(ptr {plain})\n  ret ptr {plain}")), ("debug", format!("  call void @strata_dup(ptr {plain})\n  ret ptr {plain}"))] {
             let f = format!("@\"mock{what}:{}\"", key(tr_ty));
             writeln!(self.m.body, "define ptr {f}(i64 %v) {{\nentry:\n{text}\n}}\n").unwrap();
             entries.push(f);

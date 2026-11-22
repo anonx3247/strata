@@ -5160,15 +5160,15 @@ derive Json for Doc
 
 fn main() {
   d := Doc { shapes: [Circle { r: 1.0 }, Square { side: 2.0 }, Moved(3), Dot], ids: [1, "a"] }
-  match d.encode() {
+  match d.to_json() {
     Ok(j) => {
       print(stringify(j))
-      print(Doc.decode(j) == Ok(d))
+      print(Doc.from_json(j) == Ok(d))
     },
     Err(e) => print(e),
   }
   match parse("{\"shapes\": [\"Dot\", {\"type\": \"Nope\"}], \"ids\": []}") {
-    Ok(j) => print(Doc.decode(j)),
+    Ok(j) => print(Doc.from_json(j)),
     Err(e) => print(e),
   }
 }
@@ -5420,10 +5420,10 @@ fn main() {
     Drawn { shape: Square { side: 2.0 }, at: Some(80) },
     Drawn { shape: Circle { r: 1.0 }, at: None },
   ], who: UserId("u1") }
-  match x.encode() {
+  match x.to_json() {
     Ok(j) => {
       print(std.json.stringify(j))
-      print(All.decode(j) == Ok(x))
+      print(All.from_json(j) == Ok(x))
     },
     Err(e) => print(e),
   }
@@ -5431,7 +5431,7 @@ fn main() {
     "{\"tree\": \"Leaf\", \"pair\": {\"a\": 1, \"b\": 2}, \"events\": [{\"type\": \"Drawn\", \"shape\": {\"type\": \"Circle\", \"r\": 1.0}, \"at\": 70000}], \"who\": \"u\"}",
   )
   match bad {
-    Ok(j) => print(All.decode(j)),
+    Ok(j) => print(All.from_json(j)),
     Err(e) => print(e),
   }
   print(Holder { s: Circle { r: 1.0 }, n: 1 }.docs())
@@ -5464,8 +5464,8 @@ fn json_is_derived() {
         assert!(!ok && out.contains(want), "{src}: {out}");
     }
     // an integer beyond what a JSON number holds exactly isn't written:
-    // `encode` returns an error, and verify has nothing to report
-    let big = "use std.json.Json\n\ntype A = { x: Int }\n\nderive Json for A\n\nfn main() {\n  print(A { x: 9007199254740992 }.encode())\n  print(A { x: 3 }.encode() is Ok)\n}\n";
+    // `to_json` returns an error, and verify has nothing to report
+    let big = "use std.json.Json\n\ntype A = { x: Int }\n\nderive Json for A\n\nfn main() {\n  print(A { x: 9007199254740992 }.to_json())\n  print(A { x: 3 }.to_json() is Ok)\n}\n";
     let (ok, out) = strata(&["--file", "big.strata", "edit"], &d, Some(big));
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "big.strata"], &d, None);
@@ -5480,11 +5480,11 @@ fn json_is_derived() {
     assert!(ok, "{out}");
     let (ok, out) = strata(&["verify", "--cases", "20"], &q, None);
     assert!(!ok && out.contains("✗ std.json.encode_as.for.A.") && out.contains("does not satisfy `std.json.SafeInt`") && !out.contains("✗ std.json.encode_as.for.B."), "{out}");
-    // a package can make `decode` refuse keys a record doesn't have
+    // a package can make `from_json` refuse keys a record doesn't have
     let p = d.join("strict");
     std::fs::create_dir_all(&p).unwrap();
     std::fs::write(p.join("strata.toml"), "name = \"strict\"\n\n[json]\nunknown_keys = \"error\"\n").unwrap();
-    let src = "use std.json.{Json, Ignore, parse}\n\ntype A = { x: Int }\n\nderive Json for A\n\nfn main() {\n  j := parse(\"{\\\"x\\\": 1, \\\"y\\\": 2}\") !! std.json.Null\n  print(A.decode(j))\n  print(A.decode_with(j, Ignore))\n}\n";
+    let src = "use std.json.{Json, Ignore, parse}\n\ntype A = { x: Int }\n\nderive Json for A\n\nfn main() {\n  j := parse(\"{\\\"x\\\": 1, \\\"y\\\": 2}\") !! std.json.Null\n  print(A.from_json(j))\n  print(A.from_json_with(j, Ignore))\n}\n";
     let (ok, out) = strata(&["--file", "./", "edit", "main"], &p, Some(src));
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "."], &p, None);

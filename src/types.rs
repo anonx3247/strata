@@ -700,7 +700,6 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin::total("to_string", "A", "(A) -> String"),
     Builtin::total("debug", "A", "(A) -> String"),
     // the value as compact JSON, as `strata run` writes it
-    Builtin::total("to_json", "A", "(A) -> String"),
     // a line of output, shown as by `to_string`: on the terminal under `strata run`,
     // into the test's own buffer under `strata test`, nowhere under `verify`
     Builtin::new("print", "A", "(A) -> ()"),
