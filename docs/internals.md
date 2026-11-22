@@ -29,6 +29,7 @@
 | `std/json.strata` | JSON text and the derived `Json` trait, in Strata |
 | `std/regex.strata`, `std/unicode.strata`, `std/unicode_tables.strata`, `tools/unicode_tables.py` | regular expressions in Strata: the parser and the tree (as regex-syntax's `Hir`), sets of code points, Unicode properties and case folding; the tables are generated from regex-syntax's by the script; `tests/regex.rs` compares the trees with regex-syntax's |
 | `std/ast.strata`, `std/ast/binary.strata`, `std/utf8.strata`, `src/ast_value.rs` | the syntax tree in Strata, and the binary format read and written by Strata code; `ast_value` writes a Rust tree as the `std.ast` value `debug` prints (`strata header FILE --tree`), which `tests/ast.rs` compares with the Strata decoder's |
+| `std/ast/eval.strata`, `std/ast/text.strata` | the first piece of the front end in Strata: a program run from its stored trees (its own name and method resolution, values as `std.ast` literals), and code as text for its messages; `tests/eval.rs` runs the programs `tests/build.rs` compiles (shared in `tests/common/programs.rs`) and compares their recorded outputs |
 | `src/stdlib.rs`, `std/` | the standard library (Strata), built into the binary; the native `host_*` operations it alone can call |
 | `src/view.rs` | level-of-detail projections and selectors |
 | `src/ui.rs`, `src/ui/index.html` | `strata ui`: the live viewer (a std-only HTTP server and one page) |
