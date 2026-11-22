@@ -1561,6 +1561,61 @@ test "the next test runs" {
 }
 "#;
 
+/// `supervised spawn`: awaiting it gives `Result[T, Panic]`, which must be
+/// handled; `await h except p { … }` is `(await h) except p { … }`; and
+/// `supervised` is still a name anywhere else.
+#[test]
+fn supervised_awaits_give_results() {
+    let d = tmp("supervised");
+    save(&d.join("s.strata"), SUPERVISED_CHECKS);
+    let (ok, out) = strata(&["--file", "s.strata", "check"], &d, None);
+    assert!(!ok, "{out}");
+    assert!(out.contains("error in unhandled:"), "{out}");
+    assert!(!out.contains("error in handled") && !out.contains("error in named") && !out.contains("error in in_race"), "{out}");
+}
+
+const SUPERVISED_CHECKS: &str = r#"fn work(n: Int) -> Int {
+  n * 2
+}
+
+fn unhandled() -> Int {
+  scope {
+    h := supervised spawn work(1)
+    await h + 1
+  }
+}
+
+fn handled() -> Int {
+  scope {
+    h := supervised spawn work(1)
+    g := supervised spawn work(2)
+    a := await h except p { 0 }
+    b := await g except p {
+      print(p.message)
+      len(p.stack.bytes())
+    }
+    a + b
+  }
+}
+
+fn named(supervised: Int) -> Int {
+  scope {
+    h := spawn supervised + 1
+    await h
+  }
+}
+
+fn in_race() -> String {
+  race {
+    supervised work(1) as r => match r {
+      Ok(v) => f"{v}",
+      Err(p) => p.kind,
+    },
+    work(2) as n => f"{n}",
+  }
+}
+"#;
+
 /// Tasks: `spawn` only in a `scope`, and a handle never leaves it.
 #[test]
 fn tasks_stay_in_their_scope() {

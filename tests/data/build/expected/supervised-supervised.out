@@ -1,0 +1,11 @@
+panicked (Runtime): index 4 out of range (length 2) at main -> spawn -> pick (5 times)
+ok 42
+panicked (Requires): precondition of `half` violated: requires n % 2 == 0 (with n = 3) at main -> spawn -> half
+panicked (Runtime): index 4 out of range (length 1) at main -> spawn -> pick (5 times); received ["one"]
+panicked (Runtime): index 4 out of range (length 1) at main -> spawn -> spawn -> pick (5 times)
+50 of 50 panicked
+fell back after: precondition of `half` violated: requires n % 2 == 0 (with n = 5)
+0
+lost: Runtime
+
+--- exit 0

@@ -369,6 +369,7 @@ fn expr(e: &Expr) -> String {
         Expr::Comptime(x) => tag("Comptime", expr(x)),
         Expr::Scope(x) => tag("Scope", expr(x)),
         Expr::Spawn(x) => tag("Spawn", expr(x)),
+        Expr::SupervisedSpawn(x) => tag("SupervisedSpawn", expr(x)),
         Expr::Await(x) => tag("Await", expr(x)),
         Expr::Select(arms) => {
             let arm = |a: &SelectArm| rec("SelectArm", &[("comments", strs(&a.comments)), ("op", expr(&a.op)), ("name", opt(&a.name, |n| s(n))), ("body", expr(&a.body))]);

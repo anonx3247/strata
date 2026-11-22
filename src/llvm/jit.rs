@@ -77,6 +77,8 @@ unsafe extern "C" {
     fn strata_channel_close();
     fn strata_select();
     fn strata_cancelled();
+    fn strata_panic();
+    fn strata_was_unwound();
     fn strata_unwound();
     fn strata_scope_cancel();
     static strata_cancel_any: i32;
@@ -209,6 +211,8 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_channel_close", strata_channel_close as *const () as usize),
         ("strata_select", strata_select as *const () as usize),
         ("strata_cancelled", strata_cancelled as *const () as usize),
+        ("strata_panic", strata_panic as *const () as usize),
+        ("strata_was_unwound", strata_was_unwound as *const () as usize),
         ("strata_unwound", strata_unwound as *const () as usize),
         ("strata_scope_cancel", strata_scope_cancel as *const () as usize),
         ("strata_str_eq", strata_str_eq as *const () as usize),
