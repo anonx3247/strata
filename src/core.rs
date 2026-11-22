@@ -12,9 +12,10 @@
 /// The package's name, and its modules' prefix (`core.types`).
 pub const NAME: &str = "core";
 
-/// Whether a module belongs to `core`.
+/// Whether a module belongs to `core` (`core.types`, ...: core has no root
+/// module, so a package's own module named `core` isn't one).
 pub fn is_core(module: &str) -> bool {
-    module == NAME || module.starts_with("core.")
+    module.starts_with("core.")
 }
 
 use crate::ast::{Decl, DeclKind, ExternItem, Lang, Program, Symbol};
