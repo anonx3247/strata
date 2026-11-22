@@ -504,11 +504,6 @@ impl Codebase {
         fs::read_to_string(self.cache().join("verdicts.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
 
-    pub fn save_verdicts(&self, v: &HashMap<String, crate::verify::Verdict>) {
-        let _ = fs::create_dir_all(self.cache());
-        let _ = fs::write(self.cache().join("verdicts.json"), serde_json::to_string_pretty(v).unwrap());
-    }
-
     /// Where `verify` keeps what it proved for `build` (`proofs`).
     pub fn proofs_dir(&self) -> PathBuf {
         self.cache()

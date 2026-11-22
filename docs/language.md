@@ -216,7 +216,7 @@ test "the real clock" (sys: SystemClock) {
 - A capability has no constructor: `SystemClock {}`, `mock SystemClock`, JSON input and `SystemClock.seconds()` are all errors. A program's signature (`main`'s parameters) lists every capability it can use.
 - `main` names the capabilities it may use and picks among them in ordinary code (an option choosing SQLite or Postgres), handing the rest of the program a capability trait value (`late(sys)`).
 - A test may ask for capabilities the same way (`test "..." (sys: SystemClock) { ... }`); one that doesn't uses fakes.
-- `verify` never runs a capability's code, nor code that takes one: it reports them as assumed.
+- `verify` never runs a capability's code (it reports it as assumed), nor code that takes one; that code is proven from the capability's contracts like any other.
 - The viewer colours capabilities and capability traits apart from other types.
 
 std's are capabilities too: `Disk` (`std.fs`, for `Files`) and `Process` (`std.process`, for `Environment`), which `main` names. `Console` is the one capability the environment chooses, so `main` asks for the trait: it gets the terminal under `strata run`. A test may ask for it too (`test "..." (mut console: Console) { ... }`): what it writes is the test's own output, shown only if the test fails. Under `strata run --trace`, the console's calls are in the trace with the rest, what was written and what was read.
@@ -634,7 +634,7 @@ libs = ["m"]             # libraries (-lm)
 - **Faults at the boundary.** Arguments are checked against their types (`I8` is in range) and `requires` before the call; the result against its type and `ensures` after it. A string holding a NUL character can't be passed (C would read it as its end).
 - **The name is the C symbol**, so an extern function can't be renamed (wrap it instead).
 - **Only its own module calls it.** Extern definitions are never `pub`, and code in other modules (submodules included) can't call them. The module that declares them gives the rest of the program its own functions, or a capability for what touches the outside world, so a signature still shows what code can touch.
-- **Contracts are assumed.** `verify` never proves or runs foreign code: a function in a module that declares externs, one that takes one of its types, and one that calls into it are all reported as assumed.
+- **Contracts are assumed.** `verify` never proves foreign code: a foreign function's contract (`ensures it >= 0`) is taken as true where it is called, and the code calling it is verified like any other (fuzzing runs the compiled code, C included). A compiled program checks that contract at each call, as nothing proves it.
 - **Calling C** works wherever code runs: `strata build`, and `strata run` / `strata test` with the JIT, which compiles the `[native]` sources into a library with clang and loads it. C's own library (`strlen`, …) needs no `[native]`.
 
 Not yet: `main` asking for a native module's capability, structs passed by value, callbacks, buffers, and other languages (`extern python`, `extern ts`, `extern rust`, with values crossing as `Json`; see IDEAS.md).
