@@ -1798,40 +1798,62 @@ fn in_race() -> String {
 }
 "#;
 
-/// std.time's `Timeline` (a `FakeClock`'s time) is private to std.time: a
-/// program may define its own `Timeline`, and can't name, import or make
-/// std's.
+/// A deadlocked test fails with what each task waits on, instead of hanging,
+/// and the next tests run; a test asking for a `VirtualClock` has its own
+/// time, from 0, which settles a timeout by itself.
 #[test]
-fn a_program_has_its_own_timeline() {
-    let d = tmp("own-timeline");
-    save(&d.join("own.strata"), OWN_TIMELINE);
-    let (ok, out) = strata(&["--file", "own.strata", "run"], &d, None);
-    assert!(ok && out.contains("[\"start\", \"at 2 s\"]"), "{out}");
-    for (name, src, msg) in [
-        ("made", "fn f() -> Int {\n  t := host_fake_clock(0)\n  1\n}\n", "`host_fake_clock` is internal to the standard library"),
-        ("imported", "from std.time use Timeline\n\nfn f() -> Int {\n  1\n}\n", "`Timeline` is private to module `std.time`"),
-        ("named", "fn f(t: std.time.Timeline) -> Int {\n  1\n}\n", "`std.time.Timeline` is private to module `std.time`"),
-    ] {
-        save(&d.join(format!("{name}.strata")), src);
-        let (ok, out) = strata(&["--file", &format!("{name}.strata"), "check"], &d, None);
-        assert!(!ok && out.contains(msg), "{name}: {out}");
+fn a_deadlocked_test_fails() {
+    let d = tmp("deadlocked-test");
+    save(&d.join("t.strata"), DEADLOCKED_TESTS);
+    let (ok, out) = strata(&["--file", "t.strata", "test"], &d, None);
+    assert!(!ok, "{out}");
+    assert!(out.contains("✗ two tasks wait for each other") && out.contains("deadlock: every task is waiting, so none can go on: the test waits in the end of a `scope`"), "{out}");
+    assert!(out.contains("the test waits in `recv`") && out.contains("✓ a timeout on a virtual clock") && out.contains("✓ each test has its own virtual time, from 0") && out.contains("2 passed, 2 failed"), "{out}");
+}
+
+const DEADLOCKED_TESTS: &str = r#"from std.time use VirtualClock, seconds
+
+test "two tasks wait for each other" {
+  (atx, arx) := channel()
+  (btx, brx) := channel()
+  scope {
+    spawn {
+      x := brx.recv() ?? 0
+      atx.send(x)
+      atx.close()
     }
+    spawn {
+      y := arx.recv() ?? 0
+      btx.send(y)
+      btx.close()
+    }
+  }
+  atx.close()
+  btx.close()
 }
 
-const OWN_TIMELINE: &str = r#"from std.time use fake_clock, seconds
-
-/// A program's own `Timeline`: std's is private to std.time.
-type Timeline = { events: List[String] }
-
-fn note(t: Timeline, e: String) -> Timeline {
-  Timeline { events: t.events + [e] }
+test "the test itself waits for nothing" {
+  (tx, rx) := channel()
+  x := rx.recv() ?? 0
+  tx.close()
+  assert x == 0
 }
 
-fn main() {
-  clock := fake_clock()
-  clock.advance(seconds(2))
-  t := note(note(Timeline { events: [] }, "start"), f"at {clock.now().value / 1000000000} s")
-  print(t.events)
+test "a timeout on a virtual clock" (clock: VirtualClock) {
+  (tx, rx) := channel()
+  r := race {
+    rx.recv() as v => v ?? 0,
+    clock.sleep(seconds(5)) => -1,
+  }
+  tx.close()
+  assert r == -1
+  assert clock.now().value == seconds(5).value
+}
+
+test "each test has its own virtual time, from 0" (clock: VirtualClock) {
+  assert clock.now().value == 0
+  clock.sleep(seconds(2))
+  assert clock.now().value == seconds(2).value
 }
 "#;
 

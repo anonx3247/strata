@@ -1,0 +1,3 @@
+fault (Runtime): deadlock: every task is waiting, so none can go on: main waits in the end of a `scope`, at main; a task waits in `recv`, at main -> spawn -> Receiver.recv; a task waits in `recv`, at main -> spawn -> Receiver.recv
+
+--- exit 101
