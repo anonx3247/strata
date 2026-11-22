@@ -1525,6 +1525,7 @@ static _Bool stuck(void) {
     for (Waiter *w = r->first; w; w = w->next)
       if (w->task) cancel_task(w->task);
     wake_all();
+    wake_readers();
     return 1;
   }
   pthread_mutex_unlock(&chan_lock);
