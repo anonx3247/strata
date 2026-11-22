@@ -331,6 +331,15 @@ fn written_as_rendered() {
         let want = run(&["--file", &f.to_string_lossy(), "render"]);
         cases.push((f, std_files.iter().map(|p| p.to_string_lossy().into_owned()).collect(), want));
     }
+    // unions written as the named ones (`named_unions`), which the
+    // repository's code doesn't need
+    let unions = dir.join("unions.strata");
+    let mut c = Command::new(STRATA).args(["--file", &unions.to_string_lossy(), "edit"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    c.stdin.take().unwrap().write_all(b"/// a circle\ntype Circle = { r: Float }\n/// a square\ntype Square = { s: Float }\ntype Dot = { at: Int }\ntype Shape = Circle | Square\ntype Pair[A, B] = List[A] | Option[B]\nfn area(s: Circle | Square) -> Float { 0.0 }\nfn any(s: Square | Circle | Dot) -> Int { 0 }\nfn pair(p: List[Int] | Option[String]) -> Int { 0 }\n").unwrap();
+    assert!(c.wait_with_output().unwrap().status.success());
+    let rendered = run(&["--file", &unions.to_string_lossy(), "render"]);
+    assert!(rendered.contains("fn area(s: Shape)") && rendered.contains("Shape | Dot") && rendered.contains("Pair[Int, String]"), "{rendered}");
+    cases.push((unions, std_files.iter().map(|p| p.to_string_lossy().into_owned()).collect(), rendered));
     for (f, m) in package_modules(&root.join("std"), "std.") {
         let want = run(&["--file", &root.join("std").to_string_lossy(), "render", &m]);
         cases.push((f.clone(), std_files.iter().filter(|p| **p != f).map(|p| p.to_string_lossy().into_owned()).collect(), want));
