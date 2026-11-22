@@ -233,7 +233,10 @@ pub fn verify_source(args: &Args, src: &Source, how: &Verifying) -> Result<(bool
                 }
                 for law in &tr.laws {
                     let key = verify::wrapper_name(i, &format!("law.{}", law.name));
-                    jobs.push((format!("law {} for {ty}", law.name), format!("{base}:law:{}:{cases}", law.name), Box::new(move || verify::check_law(imp, law, &key, cases, seed))));
+                    let label = format!("law {} for {ty}", law.name);
+                    let n = cc(&label);
+                    let wrapper = verify::law_wrapper(env, imp, i, law);
+                    jobs.push((label, format!("{base}:law:{}:{cases}:{n}:{skey}", law.name), Box::new(move || verify::check_law(env, imp, &wrapper, law, &key, solver_bin, transparent, cases, n, seed))));
                 }
             }
             _ => {}

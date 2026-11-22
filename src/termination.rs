@@ -989,6 +989,25 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>, roots: Option<&Ha
                 changed = true;
             }
         }
+        // a trait implementation's methods, by their labels (`Money.combine`):
+        // seen through where a call's receiver has a known type
+        for imp in &env.impls {
+            for m in &imp.methods {
+                let label = impl_label(env, imp, &m.name);
+                if transparent.contains_key(&label) || recursive.contains(&label) {
+                    continue;
+                }
+                let assumed = match memo.get(&label) {
+                    Some(Termination::Proven { .. }) => false,
+                    Some(Termination::Assumed { .. }) => true,
+                    _ => continue,
+                };
+                if cannot_fail(env, &crate::verify::method_decl(env, imp, m), &|g| transparent.contains_key(g)) {
+                    transparent.insert(label, assumed);
+                    changed = true;
+                }
+            }
+        }
     }
     let status = memo.into_iter().filter(|(k, _)| !k.starts_with("trait method ")).collect();
     Analysis { status, recursive: recursive.into_iter().filter(|k| !k.starts_with("trait method ")).collect(), transparent }

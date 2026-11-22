@@ -362,6 +362,11 @@ pub struct Vc<'a> {
     qvars: usize,
     /// Unknowns bound by a quantifier (`every`): not free in what contains it.
     bound: HashSet<String>,
+    /// Lists compared by position, nested this deep.
+    eq_depth: usize,
+    /// The type a method without `self` is called on (`Money.empty()`), for
+    /// the call being made.
+    called_on: Option<String>,
     /// The functions passed to the builtin being called, by argument.
     fn_args: Vec<Option<Func>>,
     /// The constant standing for each bit operation met (`& x y`), so one met
@@ -536,6 +541,8 @@ impl<'a> Vc<'a> {
             qvars: 0,
             bound: HashSet::default(),
             fn_args: vec![],
+            called_on: None,
+            eq_depth: 0,
             bit_terms: HashMap::default(),
             sorts: Default::default(),
             defs: vec![],
@@ -1036,6 +1043,49 @@ impl<'a> Vc<'a> {
         Some(format!("(forall (({j} Int)) (=> {inside} {}))", and(&body)))
     }
 
+    /// `a == b` for two lists known by position: equal lengths, and equal
+    /// elements at every position (the elements of each made at a quantified
+    /// position, as `forall_positions` makes them). `None` when either list
+    /// isn't known by position, or comparing made unknowns of their own.
+    fn eq_lists(&mut self, (a, la): (usize, &str), (b, lb): (usize, &str)) -> Option<T> {
+        if !self.positional(a) || !self.positional(b) {
+            return None;
+        }
+        self.qvars += 1;
+        let j = format!("q{}", self.qvars);
+        let scope = self.enter();
+        let nm = self.matched.len();
+        let inside = format!("(and (<= 0 {j}) (< {j} {la}))");
+        let pc = std::mem::take(&mut self.pc);
+        let preds: Vec<usize> = self.lists.iter().map(|l| l.preds.len()).collect();
+        let (memo, cutoffs) = (self.memo.clone(), self.cutoffs.clone());
+        let indexing = self.indexing.replace(vec![j.clone()]);
+        self.binding += 1;
+        self.spec += 1;
+        let p = match (self.element_at(a, &j, &inside), self.element_at(b, &j, &inside)) {
+            (Some(x), Some(y)) => Some(self.eq(&x, &y)),
+            _ => None,
+        };
+        self.spec -= 1;
+        self.binding -= 1;
+        self.indexing = indexing;
+        self.pc = pc;
+        let (nd, nf) = self.leave(scope);
+        (self.memo, self.cutoffs) = (memo, cutoffs);
+        for (l, n) in self.lists.iter_mut().zip(preds) {
+            l.preds.truncate(n);
+        }
+        let known: Vec<T> = self.facts.drain(nf..).collect();
+        self.matched.truncate(nm);
+        let p = p?;
+        if self.decls[nd..].iter().any(|d| d.args == 0 && !self.bound.contains(&d.name)) {
+            return None;
+        }
+        let mut premise = vec![inside];
+        premise.extend(known);
+        Some(format!("(and (= {la} {lb}) (forall (({j} Int)) (=> {} {p})))", and(&premise)))
+    }
+
     /// From now on, `f` holds for every element of list `id` when `guard`
     /// does: for the elements made so far, and for every one made later.
     fn know_all(&mut self, id: usize, guard: T, f: Func) {
@@ -1255,7 +1305,12 @@ impl<'a> Vc<'a> {
                 }
                 _ => {
                     let Some(td) = self.env.types.get(&n.sym()).cloned() else {
-                        return Val::Opaque(format!("values of the generic type `{n}` are not known"));
+                        // a type parameter (or a trait as a type): a value of a sort
+                        // nothing is known of, but equal to itself
+                        return match self.sort_of(t) {
+                            Some(sort) => Val::Data { ty: t.clone(), t: self.fresh_why(&sort, &format!("values of the generic type `{n}` are not known")) },
+                            None => Val::Opaque(format!("values of the generic type `{n}` are not known")),
+                        };
                     };
                     let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
                     match &td.body {
@@ -2313,7 +2368,17 @@ impl<'a> Vc<'a> {
                 }
                 format!("(= {x} {y})")
             }
-            (Val::List { len: l1, .. }, Val::List { len: l2, .. }) => {
+            (Val::List { len: l1, id: i1 }, Val::List { len: l2, id: i2 }) => {
+                let (l1, l2, i1, i2) = (l1.clone(), l2.clone(), *i1, *i2);
+                // by position, where both are known so
+                if self.eq_depth < 2 {
+                    self.eq_depth += 1;
+                    let e = self.eq_lists((i1, &l1), (i2, &l2));
+                    self.eq_depth -= 1;
+                    if let Some(e) = e {
+                        return e;
+                    }
+                }
                 // equal lists have equal lengths; the elements are not tracked
                 let b = self.unknown_bool("the elements of a list are not tracked");
                 self.facts.push(format!("(=> {b} (= {l1} {l2}))"));
@@ -2860,8 +2925,14 @@ impl<'a> Vc<'a> {
     /// list builtin is checked on one arbitrary element of the list.
     fn call_exprs(&mut self, name: &str, exprs: &[Expr]) -> Val {
         // `Trait::empty(type, ..)`: the type argument only picks the implementation
+        let mut called_on = None;
         let exprs = match self.env.method_contract(name) {
-            Some((_, d)) if !crate::resolve::takes_self(d) && exprs.len() == d.params.len() + 1 => &exprs[1..],
+            Some((_, d)) if !crate::resolve::takes_self(d) && exprs.len() == d.params.len() + 1 => {
+                if let Expr::Str(h) = &exprs[0] {
+                    called_on = Some(h.clone());
+                }
+                &exprs[1..]
+            }
             _ => exprs,
         };
         let mut vals: Vec<Option<Val>> = exprs.iter().map(|e| if self.is_fn(e) { None } else { Some(self.eval(e)) }).collect();
@@ -2918,6 +2989,7 @@ impl<'a> Vc<'a> {
         let _ = fn_result_ty;
         let funcs: Vec<Option<Func>> = exprs.iter().map(|e| if self.is_fn(e) { self.func_of(e) } else { None }).collect();
         let saved = std::mem::replace(&mut self.fn_args, funcs);
+        self.called_on = called_on;
         let r = self.call(name, exprs, vals);
         self.fn_args = saved;
         if let Some(k) = key {
@@ -3013,6 +3085,27 @@ impl<'a> Vc<'a> {
             self.write_back(&f.params, arg_exprs, &args);
             return r;
         }
+        // a trait's method on a value of a known type: that implementation's
+        // (seen through in a contract when it ends and can't fail)
+        let called_on = self.called_on.take();
+        if let Some((imp, decl)) = self.implementation(name, called_on, &args) {
+            let decl = crate::verify::method_decl(env, imp, decl);
+            let label = crate::termination::impl_label(env, imp, &decl.name);
+            if self.spec > 0 && self.depth < 4 {
+                if let Some(&assumed) = self.transparent.get(&label) {
+                    if assumed {
+                        self.relied_on.insert(label);
+                    }
+                    let binds: HashMap<String, Val> = decl.params.iter().map(|p| p.name.to_string()).zip(args.iter().cloned()).collect();
+                    self.depth += 1;
+                    let saved = std::mem::replace(&mut self.scopes, vec![binds]);
+                    let r = self.eval(&decl.body);
+                    self.scopes = saved;
+                    self.depth -= 1;
+                    return r;
+                }
+            }
+        }
         if let Some((_, decl)) = env.method_contract(name) {
             let r = self.call_contract(name, decl, &[], &[], &args);
             self.write_back(&decl.params, arg_exprs, &args);
@@ -3026,6 +3119,36 @@ impl<'a> Vc<'a> {
             return Val::Opaque(format!("the result of method `{name}` (it depends on the receiver's type)"));
         }
         self.builtin(name, arg_exprs, args)
+    }
+
+    /// The implementation a trait method call runs, and its method (its own
+    /// or the trait's default), when the receiver's type is known: from its
+    /// value, or the type's name a method without `self` is called with.
+    fn implementation(&self, name: &str, called_on: Option<String>, args: &[Val]) -> Option<(&'a ImplDecl, &'a FnDecl)> {
+        let env = self.env;
+        let (tr, m) = crate::types::split_trait_call(name)?;
+        let head = match (called_on, args.first()) {
+            (Some(h), _) => h,
+            (None, Some(v)) => self.head_of(v)?,
+            _ => return None,
+        };
+        let imp = env.impls.iter().find(|i| i.trait_name == tr && crate::types::texpr_head(&i.for_type) == head)?;
+        let decl = imp.methods.iter().find(|x| x.name == m || crate::names::short(&x.name) == crate::names::short(m)).or_else(|| env.traits.get(&imp.trait_name)?.methods.iter().find(|x| crate::names::short(&x.decl.name) == crate::names::short(m) && x.default).map(|x| &x.decl))?;
+        Some((imp, decl))
+    }
+
+    /// The type a value has, by its head (`Money`, `List`), when its shape says.
+    fn head_of(&self, v: &Val) -> Option<String> {
+        Some(match v {
+            Val::Int(_) => "Int".into(),
+            Val::Bool(_) => "Bool".into(),
+            Val::Str(_) => "String".into(),
+            Val::Rec(n, _) | Val::Distinct(n, _) => n.clone(),
+            Val::Sum { ty, .. } => ty.clone(),
+            Val::List { .. } => "List".into(),
+            Val::Data { ty, .. } => crate::types::texpr_head(&self.sort_type(ty)).to_string(),
+            _ => return None,
+        })
     }
 
     /// `mut` parameters may have been changed by the callee.
