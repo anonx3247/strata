@@ -4815,9 +4815,10 @@ fn a_trait_method_named_like_a_builtin_leaves_the_builtin() {
 fn long_list_literals_compile_in_linear_time() {
     let d = tmp("long-literal");
     save(&d.join("t.strata"), "fn total(xs: List[Int]) -> Int {\n  sum(xs)\n}\n");
-    let arg = format!("[[{}]]", vec!["1"; 100_000].join(","));
+    // 60,000 elements: one argument stays under Linux's 128 KB (3.6 s before, 0.08 s now)
+    let arg = format!("[[{}]]", vec!["1"; 60_000].join(","));
     let start = std::time::Instant::now();
     let (ok, out) = strata(&["--file", "t.strata", "run", "total", &arg], &d, None);
-    assert!(ok && out.trim() == "100000", "{out}");
-    assert!(start.elapsed().as_secs() < 5, "took {:?}", start.elapsed());
+    assert!(ok && out.trim() == "60000", "{out}");
+    assert!(start.elapsed().as_secs_f64() < 2.0, "took {:?}", start.elapsed());
 }
