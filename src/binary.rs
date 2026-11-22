@@ -1047,11 +1047,12 @@ impl Bin for Expr {
             Expr::Spawn(x) => put!(w, 35, x),
             Expr::Await(x) => put!(w, 36, x),
             Expr::Select(arms) => put!(w, 37, arms),
+            Expr::Race(arms) => put!(w, 38, arms),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
         r.nest(|r| {
-            Ok(match r.tag("expression", 38)? {
+            Ok(match r.tag("expression", 39)? {
                 0 => Expr::Int(Bin::dec(r)?),
                 1 => Expr::BigInt(Bin::dec(r)?),
                 2 => Expr::Float(Bin::dec(r)?),
@@ -1089,7 +1090,8 @@ impl Bin for Expr {
                 34 => Expr::Scope(Bin::dec(r)?),
                 35 => Expr::Spawn(Bin::dec(r)?),
                 36 => Expr::Await(Bin::dec(r)?),
-                _ => Expr::Select(Bin::dec(r)?),
+                37 => Expr::Select(Bin::dec(r)?),
+                _ => Expr::Race(Bin::dec(r)?),
             })
         })
     }

@@ -35,7 +35,7 @@ $ strata --file examples/math.strata verify
 - **Incomplete programs still check.** A typed hole (`?name`) has a goal type, a context and obligations: a precise task to hand to an agent.
 - **Capabilities are values.** A database or a clock is a trait passed as a parameter, so a signature shows what code can touch, and a test passes a fake or `mock`.
 - **Values read as code.** Every value is shown as it would be written (`Circle { radius: 2 }`), in messages, traces and counterexamples, and `strata run f ARGS` takes its arguments that way. JSON is a library (`derive Json`), read against the types, refinements included.
-- **Concurrency without colouring.** `scope`, `spawn` and `await` run tasks on threads, with channels and `select`; any function can block, and there is no `async`.
+- **Concurrency without colouring.** `scope`, `spawn` and `await` run tasks on threads, with channels, `select` and `race` (the losers cancelled); any function can block, and there is no `async`.
 
 > Status: **an experimental draft**, in Rust: code is compiled through LLVM, in memory (`strata run`, `test`, `serve`, compile-time code) or to an executable (`strata build`).
 

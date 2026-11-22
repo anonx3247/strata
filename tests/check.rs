@@ -102,6 +102,52 @@ fn m(p: Pt) -> Int { p == Dot }
 fn main() { print(1) }
 "#;
 
+const GENERICS: &str = r#"type Box[T] = { item: T }
+fn id[T](x: T) -> T { x }
+fn first[T](xs: List[T], d: T) -> T { d }
+fn a() -> String { id(1) }
+fn b() -> Int { first([1, 2], "z") }
+fn c[T](x: T) -> Int { x }
+fn d() -> Box[Int] { Box { item: "s" } }
+fn e(b: Box[String]) -> Int { b.item }
+fn f() -> Option[Int] { Some("x") }
+fn g() -> Result[Int, String] { Err(3) }
+fn mk() -> Option[Int] { None }
+fn h() -> Int { mk() ?? "d" }
+fn k() -> Option[String] { Some(id(2)) }
+fn m() -> Option[Int] { 3 }
+fn main() { print(1) }
+"#;
+
+const METHODS: &str = r#"type Pt = { x: Int, y: Int }
+impl Pt {
+  fn norm(self) -> Int { self.x + self.y }
+  fn scale(self, k: Int) -> Pt { Pt { x: self.x * k, y: self.y * k } }
+  fn bad(self) -> String { self.x }
+}
+fn a(p: Pt) -> String { p.norm() }
+fn b(p: Pt) -> Pt { p.scale("2") }
+fn c(p: Pt) -> Int { p.scale(2, 3).norm() }
+fn e(p: Pt) -> Int { p.scale(2).x }
+fn main() { print(1) }
+"#;
+
+const TRAIT_METHODS: &str = r#"type Pt = { x: Int, y: Int }
+trait Area {
+  fn area(self) -> Int
+}
+impl Area for Pt {
+  fn area(self) -> Int { "a" }
+}
+impl Pt {
+  fn me(self) -> Self { 3 }
+}
+fn twice(p: Pt, k: Int) -> Int { k }
+fn a(p: Pt) -> String { p.area() }
+fn b(p: Pt) -> Int { p.twice("x") }
+fn main() { print(1) }
+"#;
+
 const UNKNOWN: &str = r#"type Pt = { x: Int, y: Int }
 fn f(a: Int) -> Int {
   b := a + c
@@ -154,6 +200,21 @@ fn statement_types_as_in_rust() {
 #[test]
 fn record_and_sum_types_as_in_rust() {
     same_errors("records", RECORDS, &["expected `", "Int or Float", "has no field", "missing field"]);
+}
+
+#[test]
+fn generics_as_in_rust() {
+    same_errors("generics", GENERICS, &["expected `", "handle an Option"]);
+}
+
+#[test]
+fn methods_as_in_rust() {
+    same_errors("methods", METHODS, &["expected `", "expects"]);
+}
+
+#[test]
+fn trait_methods_as_in_rust() {
+    same_errors("traits", TRAIT_METHODS, &["expected `", "expects"]);
 }
 
 /// `std.ast.check`'s errors on `text` are `strata check`'s lines holding one of `keys`.

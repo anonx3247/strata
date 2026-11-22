@@ -379,7 +379,7 @@ squares := scope { await [spawn x * x for x in xs] }
 
 Tasks share nothing that can change, so the result doesn't depend on timing: `scope { a := spawn f(); b := spawn g(); await (a, b) }` is `(f(), g())`, and `verify` reasons about it as such. What a task uses from around it is a copy at `spawn` time, as in a lambda: it can't change outer variables (`spawn { n += 1 }` is an error), and `return`, `!` and `?` can't leave it (handle the error in the task, or make it the task's result).
 
-A handle stays in its scope: a scope can't give one back, a task can't hold another's, and one can't be stored in a variable declared outside. A fault in a task (an index out of range, a broken contract) is raised where the task is awaited, or at the end of its scope, once the scope's other tasks have finished; its call stack shows where: `main -> spawn -> pick`.
+A handle stays in its scope: a scope can't give one back, a task can't hold another's, and one can't be stored in a variable declared outside. A fault in a task (an index out of range, a broken contract) ends the program at once, as anywhere else: nothing catches it, and the other tasks don't run on (a thread waiting for what the failed task would have sent doesn't hang). Its call stack shows where the task was started and where it failed: `main -> spawn -> pick`. Under `strata test` it fails that test only: the test's other tasks stop at their next wait, and the next test runs.
 
 A `scope` whose last line is a `spawn` (`scope { spawn work() }`) gives `()`: the handle isn't its value. Tasks run on threads, one per task for now.
 
@@ -433,6 +433,21 @@ loop {
 ```
 
 An arm is `rx.recv()` (its `as` name is an `Option`), `tx.send(v)` (nothing to name) or `await h` (the task's result). An arm that doesn't happen has done nothing: a value it would have sent isn't sent, and a task it awaits keeps running. A `recv` on a channel that has ended is always ready (with `None`), so a loop over several channels stops looking at one once it ends. When several arms can happen, which one does is not fixed.
+
+### `race`
+
+`race` has the same arms as `select`, but each arm's left side is any expression, run as a task of its own. The first to finish runs its arm, with its result as the `as` name; the others are cancelled:
+
+```rust
+fn first_answer(mirrors: Receiver[Page], local: Cache, key: String) -> Page {
+  race {
+    mirrors.recv() as p => p ?? not_found(key),
+    lookup(local, key) as hit => hit,
+  }
+}
+```
+
+A cancelled task stops at its next wait (a `recv`, a `send`, an `await`, a `select`), however deep in calls it is, and leaves as `return` would: what it holds is dropped, nothing after the wait runs, and the tasks it started stop too. Code that doesn't wait runs to its end (a long computation isn't interrupted halfway). The `race` ends once every loser has stopped, then runs the winner's arm. A left side follows a `spawn`'s rules (no `return`, `!` or `?` out of it; a sender it uses is its own copy, to close).
 
 ## Built-in types
 

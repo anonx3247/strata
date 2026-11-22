@@ -1166,7 +1166,8 @@ impl Parser {
             }
             // `select { op as x => e, … }` (`select` followed by `{`: std.web's
             // `select(…)` stays a call)
-            Tok::Ident(kw) if kw == "select" && matches!(self.peek_at(1), Tok::Sym("{")) => {
+            Tok::Ident(kw) if (kw == "select" || kw == "race") && matches!(self.peek_at(1), Tok::Sym("{")) => {
+                let race = kw == "race";
                 self.next();
                 self.expect_sym("{")?;
                 let mut arms = Vec::new();
@@ -1185,7 +1186,7 @@ impl Parser {
                     comments.extend(self.trailing());
                     arms.push(SelectArm { comments, op, name, body });
                 }
-                Ok(Expr::Select(arms))
+                Ok(if race { Expr::Race(arms) } else { Expr::Select(arms) })
             }
             Tok::Ident(kw) if kw == "spawn" => {
                 // `spawn e`, the whole expression (as `return e`): run in a new task
