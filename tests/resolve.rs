@@ -17,7 +17,7 @@ const STRATA: &str = env!("CARGO_BIN_EXE_strata");
 
 /// Text rendering never makes, each with what it tests.
 const CASES: &[(&str, &str)] = &[
-    ("imports", "use std.io.{Console, recorder}\nuse std.fs.*\nuse std.json\nfn f(mut c: Console, x: Int) -> Int { r := recorder([]); mut c.print(\"a\"); y := std.json.parse(\"1\"); Some(x) ?? 0 }\n"),
+    ("imports", "from std.io use Console, recorder as rec\nuse std.fs as files\nuse std.json\nfn f(mut c: Console, x: Int, d: files.Disk) -> Int { r := rec([]); mut c.print(\"a\"); y := json.parse(\"1\"); z := std.json.parse(\"2\"); Some(x) ?? 0 }\n"),
     ("locals", "type Line = { sku: String }\nfn Line2(x: Int) -> Int { x }\nfn f(Line: Int, print: Int) -> Int { g := (f: Int) -> f + Line; match Some(1) { Some(f) => f, None => print } }\nfn main() { print(f(1, 2)) }\n"),
     ("unions", "type Circle = { r: Float }\ntype Square = { s: Float }\ntype Shape = | Circle | Square\ntype Mixed = | Circle | Dot\ntype P = | Some(Int) | Other\ntype G[T] = | T | Leaf\nfn f(s: Shape) -> Int { 0 }\n"),
     ("types", "type T[A] = | Leaf | Node(T[A], A, T[A])\ntrait Size { fn size(self) -> Int }\nimpl[A] Size for T[A] { fn size(self) -> Int { match self { Leaf => 0, Node(l, _, r) => l.size() + 1 + r.size() } } }\nfn g[A: Size](x: A) -> Int where it > 0 { x.size() }\n"),
@@ -248,7 +248,7 @@ fn use_errors_as_in_rust() {
     let pkg = dir.join("pkg");
     std::fs::create_dir_all(&pkg).unwrap();
     std::fs::write(pkg.join("strata.toml"), "name = \"p\"\n").unwrap();
-    for (m, text) in [("util", "pub fn shown(x: Int) -> Int { x }\nfn secret() -> Int { 1 }\npub mock Fake = {}\npub extern c fn strlen(s: String) -> U64\n"), ("main", "use nothere.{x}\nuse util.{shown, missing, secret, Fake}\nfn main() { print(shown(1) + util.secret()) f := Fake {} n := util.strlen(\"a\") }\ntest \"fake\" { f := Fake {} }\n")] {
+    for (m, text) in [("util", "pub fn shown(x: Int) -> Int { x }\nfn secret() -> Int { 1 }\npub mock Fake = {}\npub extern c fn strlen(s: String) -> U64\n"), ("main", "from nothere use x\nfrom util use shown, missing, secret, Fake\nfn main() { print(shown(1) + util.secret()) f := Fake {} n := util.strlen(\"a\") }\nfn g() -> Int { j := std.json.parse(\"1\") 0 }\ntest \"fake\" { f := Fake {} }\n")] {
         let mut c = Command::new(STRATA).args(["--file", &format!("{}/", pkg.display()), "edit", m]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         c.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
         c.wait_with_output().unwrap();
@@ -260,7 +260,7 @@ fn use_errors_as_in_rust() {
     let got: Vec<String> = compiler::run(&args).lines().map(String::from).collect();
     let o = Command::new(STRATA).args(["--file", &format!("{}/", pkg.display()), "check"]).output().unwrap();
     let check = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
-    let want: Vec<String> = check.lines().filter(|l| l.starts_with("error in use ") || l.contains("is private to") || l.contains("internal to the standard library") || l.contains("is a mock") || l.contains("foreign function")).map(String::from).collect();
+    let want: Vec<String> = check.lines().filter(|l| l.starts_with("error in use ") || l.contains("is private to") || l.contains("internal to the standard library") || l.contains("is a mock") || l.contains("foreign function") || l.contains("which this module doesn't use")).map(String::from).collect();
     assert!(got.len() >= 5, "{got:?}");
     assert_eq!(got, want, "{check}");
     let _ = std::fs::remove_dir_all(&dir);

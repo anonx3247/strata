@@ -345,7 +345,7 @@ fn package_verify_policies() {
     std::fs::write(d.join("strata.toml"), "name = \"pol\"\n\n[verify]\nterminates = [\"*\"]\nno_recursion = [\"core\"]\nproven = [\"core\"]\n").unwrap();
     save_module(&d, "core",
         "pub fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }\npub fn spin(n: Int) -> Int {\n  mut k := n\n  loop {\n    if k == 1 { break }\n    k = k - 1\n  }\n  k\n}\n");
-    save_module(&d, "main", "use core.*\nfn fib(n: Natural) -> Natural { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\n");
+    save_module(&d, "main", "from core use fact, spin\nfn fib(n: Natural) -> Natural { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\n");
     let (ok, out) = strata(&["--file", ".", "verify", "--cases", "20"], &d, None);
     assert!(!ok && out.contains("policy: `core.fact` is recursive (strata.toml [verify])") && out.contains("policy: `core.spin` may not terminate"), "{out}");
     assert!(!out.contains("`fib` is recursive"), "no_recursion covers only `core`: {out}");
@@ -1583,7 +1583,7 @@ fn modules_contracts_and_files() {
     // private definitions are not part of the contract
     std::fs::create_dir_all(d.join("p")).unwrap();
     save_module(&d.join("p"), "a", "pub fn open() -> Int { secret() }\nfn secret() -> Int { 1 }\n");
-    save_module(&d.join("p"), "b", "use a.*\nfn f() -> Int { open() + secret() }\nfn g() -> Int { a.secret() }\n");
+    save_module(&d.join("p"), "b", "from a use open\nfn f() -> Int { open() + secret() }\nfn g() -> Int { a.secret() }\n");
     let (ok, out) = strata(&["--file", "p", "check"], &d, None);
     assert!(!ok && out.contains("`secret` is private to module `a`") && out.contains("`a.secret` is private to module `a`"), "{out}");
     // a package keeps qualified names; a private edit leaves dependents alone
@@ -1735,10 +1735,10 @@ test "the next test runs" {
 #[test]
 fn clock_arms_are_checked() {
     let d = tmp("clock-arms");
-    save(&d.join("c.strata"), "use std.time.{SystemClock, ms}\n\nfn named(clock: SystemClock, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    clock.after(ms(5)) as t => 2,\n  }\n}\n\nfn plain(clock: SystemClock, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    clock.after(5) => 2,\n  }\n}\n\nfn not_a_clock(n: Int, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    n.after(ms(5)) => 2,\n  }\n}\n");
+    save(&d.join("c.strata"), "from std.time use SystemClock, ms\n\nfn named(clock: SystemClock, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    clock.after(ms(5)) as t => 2,\n  }\n}\n\nfn plain(clock: SystemClock, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    clock.after(5) => 2,\n  }\n}\n\nfn not_a_clock(n: Int, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    n.after(ms(5)) => 2,\n  }\n}\n");
     let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
     assert!(!ok && out.contains("error in named: an `after` arm gives nothing to name") && out.contains("error in plain: the time an `after` arm waits: expected `std.time.Duration`, found `Int`") && out.contains("error in not_a_clock: an `after` arm waits on a clock: `Int` doesn't implement `Clock`"), "{out}");
-    save(&d.join("t.strata"), "use std.time.{SystemClock, ms}\n\ntest \"the clock in a test\" (clock: SystemClock) {\n  (tx, rx) := channel()\n  r := select {\n    rx.recv() as x => 1,\n    clock.after(ms(1)) => 2,\n  }\n  tx.close()\n  assert r == 2\n}\n");
+    save(&d.join("t.strata"), "from std.time use SystemClock, ms\n\ntest \"the clock in a test\" (clock: SystemClock) {\n  (tx, rx) := channel()\n  r := select {\n    rx.recv() as x => 1,\n    clock.after(ms(1)) => 2,\n  }\n  tx.close()\n  assert r == 2\n}\n");
     let (ok, out) = strata(&["--file", "t.strata", "test"], &d, None);
     assert!(ok && out.contains("1 passed, 0 failed"), "{out}");
 }
@@ -1811,7 +1811,7 @@ fn a_deadlocked_test_fails() {
     assert!(out.contains("the test waits in `recv`") && out.contains("✓ a timeout on a virtual clock") && out.contains("✓ each test has its own virtual time, from 0") && out.contains("2 passed, 2 failed"), "{out}");
 }
 
-const DEADLOCKED_TESTS: &str = r#"use std.time.*
+const DEADLOCKED_TESTS: &str = r#"from std.time use VirtualClock, seconds
 
 test "two tasks wait for each other" {
   (atx, arx) := channel()
@@ -2041,7 +2041,7 @@ pub fn twice(xs: List[Int]) -> Int {
   tally(size(xs))
 }
 "#;
-    let b = r#"use a.{size, Box}
+    let b = r#"from a use size, Box
 fn count(x: Int) -> Int { x }
 fn total(b: Box) -> Int { a.size(b.items) + size([]) + count(1) }
 test "boxes" {
@@ -2077,7 +2077,7 @@ test "boxes" {
     let (ok, out) = strata(&["rename", "a.Box", "Crate"], &d, None);
     assert!(ok, "{out}");
     let r = strata(&["render", "a"], &d, None).1 + &strata(&["render", "b"], &d, None).1;
-    for s in ["pub fn length(xs: List[Int])", "n := length(xs)", "tally(length(xs))", "use a.{length, Crate}", "length(b.items) + length([])", "fn total(b: Crate)", "Crate { items: [1, 2] }"] {
+    for s in ["pub fn length(xs: List[Int])", "n := length(xs)", "tally(length(xs))", "from a use length, Crate", "length(b.items) + length([])", "fn total(b: Crate)", "Crate { items: [1, 2] }"] {
         assert!(r.contains(s), "missing {s:?} in\n{r}");
     }
     let (ok, out) = strata(&["test"], &d, None);
@@ -2892,7 +2892,7 @@ fn upgrade_rewrites_files_and_packages_check_their_settings() {
     std::fs::create_dir_all(d.join("shop/tools")).unwrap();
     std::fs::write(d.join("shop/strata.toml"), "name = \"shop\"\nexports = [\"orders.total\"]\n").unwrap();
     // main is stored before orders exists: its header says `run` uses nothing
-    save(&d.join("shop/main.strata"), "use orders.total\n\nfn run() -> Int {\n  total([1, 2])\n}\n");
+    save(&d.join("shop/main.strata"), "from orders use total\n\nfn run() -> Int {\n  total([1, 2])\n}\n");
     save(&d.join("shop/orders.strata"), "pub fn total(xs: List[Int]) -> Int { sum(xs) }\n");
     // a package nested in another is a separate program: its `use` doesn't see shop's modules
     std::fs::write(d.join("shop/tools/strata.toml"), "name = \"tools\"\n").unwrap();
@@ -2963,7 +2963,7 @@ fn the_log_is_committed_and_splits_git_diffs_into_steps() {
     git(&d, &["init", "-q", "-b", "main"]);
     assert!(strata(&["init"], &d, None).0);
     save(&d.join("a.strata"), "pub fn area(w: Int, h: Int) -> Int {\n  w * h\n}\n");
-    save(&d.join("b.strata"), "use a.area\n\nfn square(s: Int) -> Int {\n  area(s, s)\n}\n");
+    save(&d.join("b.strata"), "from a use area\n\nfn square(s: Int) -> Int {\n  area(s, s)\n}\n");
     git(&d, &["add", "."]);
     git(&d, &["commit", "-q", "-m", "base"]);
 
@@ -2998,7 +2998,7 @@ fn sync_carries_logged_renames_into_the_other_sides_files() {
     git(&d, &["init", "-q", "-b", "main"]);
     assert!(strata(&["init"], &d, None).0);
     save(&d.join("a.strata"), "pub fn area(w: Int, h: Int) -> Int {\n  w * h\n}\n");
-    save(&d.join("b.strata"), "use a.area\n\nfn square(s: Int) -> Int {\n  area(s, s)\n}\n");
+    save(&d.join("b.strata"), "from a use area\n\nfn square(s: Int) -> Int {\n  area(s, s)\n}\n");
     git(&d, &["add", "."]);
     git(&d, &["commit", "-q", "-m", "base"]);
 
@@ -3006,7 +3006,7 @@ fn sync_carries_logged_renames_into_the_other_sides_files() {
     git(&d, &["checkout", "-q", "-b", "feature"]);
     assert!(strata(&["rename", "area", "rect_area"], &d, None).0);
     git(&d, &["checkout", "-q", "main"]);
-    save(&d.join("c.strata"), "use a.area\n\nfn cube(s: Int) -> Int {\n  area(s, s) * s\n}\n");
+    save(&d.join("c.strata"), "from a use area\n\nfn cube(s: Int) -> Int {\n  area(s, s) * s\n}\n");
     git(&d, &["add", "."]);
     git(&d, &["commit", "-q", "-m", "cubes"]);
     git(&d, &["checkout", "-q", "feature"]);
@@ -3015,7 +3015,7 @@ fn sync_carries_logged_renames_into_the_other_sides_files() {
     assert!(ok && out.contains("merged main"), "{out}");
     assert!(out.contains("merge: theirs code follows the rename a.area → a.rect_area (c.use a, c.cube)"), "{out}");
     let c = text(&d.join("c.strata"));
-    assert_eq!(c, "use a.rect_area\n\nfn cube(s: Int) -> Int {\n  rect_area(s, s) * s\n}\n");
+    assert_eq!(c, "from a use rect_area\n\nfn cube(s: Int) -> Int {\n  rect_area(s, s) * s\n}\n");
     // the fix is logged, and part of the merge commit
     let log = std::fs::read_to_string(d.join("strata.log")).unwrap();
     assert!(log.contains("\"follows\""), "{log}");
@@ -3080,9 +3080,9 @@ fn std_io_programs_run_with_capabilities_and_exit_codes() {
 
     // an exit code, writing files and environment variables
     save(&d.join("prog.strata"),
-        r#"use std.io.Console
-use std.fs.{Disk, FsError}
-use std.process.{Process, ExitCode}
+        r#"from std.io use Console
+from std.fs use Disk, FsError
+from std.process use Process, ExitCode
 
 fn main(mut console: Console, mut files: Disk, env: Process) -> Result[ExitCode, FsError] {
   mut files.write("out/x.txt", "a")!
@@ -3109,7 +3109,7 @@ fn main(mut console: Console, mut files: Disk, env: Process) -> Result[ExitCode,
     assert!(code != 0 && err.contains("can ask for `Console`"), "{err}");
 
     // verify never reaches the real system: capabilities are mocks there
-    save(&d.join("greet.strata"), "use std.io.Console\n\nfn greet(mut c: Console, n: Int) -> () {\n  mut c.print(f\"MARKER {n}\")\n}\n");
+    save(&d.join("greet.strata"), "from std.io use Console\n\nfn greet(mut c: Console, n: Int) -> () {\n  mut c.print(f\"MARKER {n}\")\n}\n");
     let (_, out, err) = strata_code(&["--file", "greet.strata", "verify", "--cases", "20"], &d, "");
     assert!(!out.contains("MARKER") && !err.contains("MARKER"), "{out}{err}");
     let (ok, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "check"], &d, None);
@@ -3154,7 +3154,7 @@ fn string_escapes_round_trip() {
 }
 
 const SHAPES: &str = "pub type Shape =\n  | Circle { radius: Int }\n  | Square(Int)\n\npub type Line = { sku: String, qty: Int }\n\npub trait Sized {\n  fn size(self) -> Int\n}\n\nimpl Sized for Line {\n  fn size(self) -> Int {\n    self.qty\n  }\n}\n";
-const SHAPES_MAIN: &str = "use shapes.*\n\nfn area(s: Shape) -> Int {\n  match s {\n    Circle { radius } => 3 * radius * radius,\n    Square(n) => n * n,\n  }\n}\n\nfn bigger(l: Line) -> Line {\n  Line { ..l, qty: l.qty + 1 }\n}\n\ntest \"shapes\" {\n  assert area(Circle { radius: 1 }) == 3\n  assert Square(2) is Square\n  l := Line { sku: \"a\", qty: 2 }\n  assert bigger(l).size() == 3\n  assert l.size() == 2\n}\n";
+const SHAPES_MAIN: &str = "from shapes use Shape, Circle, Square, Line, Sized\n\nfn area(s: Shape) -> Int {\n  match s {\n    Circle { radius } => 3 * radius * radius,\n    Square(n) => n * n,\n  }\n}\n\nfn bigger(l: Line) -> Line {\n  Line { ..l, qty: l.qty + 1 }\n}\n\ntest \"shapes\" {\n  assert area(Circle { radius: 1 }) == 3\n  assert Square(2) is Square\n  l := Line { sku: \"a\", qty: 2 }\n  assert bigger(l).size() == 3\n  assert l.size() == 2\n}\n";
 
 #[test]
 fn rename_variants_methods_and_fields() {
@@ -3184,7 +3184,7 @@ fn rename_variants_methods_and_fields() {
 
     // the diff says what was renamed, and folds the code that only follows it
     let (ok, out) = strata(&["diff", "--step", "0"], &d, None);
-    assert!(ok && out.contains("~ shapes.Shape  (variant `Circle` renamed to `Round`)") && out.contains("only a name changed · 2 references updated") && !out.contains("~ area"), "{out}");
+    assert!(ok && out.contains("~ shapes.Shape  (variant `Circle` renamed to `Round`)") && out.contains("only a name changed · 3 references updated") && !out.contains("~ area"), "{out}");
     let (_, out) = strata(&["diff", "--step", "1"], &d, None);
     assert!(out.contains("~ shapes.Sized  (method `size` renamed to `measure`)"), "{out}");
     let (_, out) = strata(&["diff", "--step", "2"], &d, None);
@@ -3222,7 +3222,7 @@ fn sync_follows_member_renames() {
     assert!(strata(&["rename", "Circle", "Round"], &d, None).0);
     assert!(strata(&["rename", "Line.qty", "quantity"], &d, None).0);
     git(&d, &["checkout", "-q", "main"]);
-    save(&d.join("extra.strata"), "use shapes.*\n\nfn unit() -> Shape {\n  Circle { radius: 1 }\n}\n\nfn doubled(l: Line) -> Int {\n  l.qty * 2\n}\n");
+    save(&d.join("extra.strata"), "from shapes use Shape, Circle, Line\n\nfn unit() -> Shape {\n  Circle { radius: 1 }\n}\n\nfn doubled(l: Line) -> Int {\n  l.qty * 2\n}\n");
     git(&d, &["add", "."]);
     git(&d, &["commit", "-q", "-m", "extra"]);
     git(&d, &["checkout", "-q", "feature"]);
@@ -3272,17 +3272,17 @@ fn move_a_definition_to_another_module() {
     let d = tmp("move");
     assert!(strata(&["init"], &d, None).0);
     save(&d.join("orders.strata"), "pub type Order = { id: String, total: Int }\n\nfn doubled(o: Order) -> Int {\n  o.total * 2\n}\n\npub fn charge(o: Order) -> Int {\n  o.total + 1\n}\n\npub fn ship(o: Order) -> Int {\n  charge(o) + doubled(o)\n}\n");
-    save(&d.join("billing.strata"), "use orders.{Order, charge}\n\npub fn invoice(o: Order) -> Int {\n  charge(o) + orders.ship(o)\n}\n");
-    save(&d.join("main.strata"), "use orders.*\n\ntest \"charges\" {\n  o := Order { id: \"a\", total: 1 }\n  assert charge(o) == 2\n  assert orders.charge(o) == 2\n  assert ship(o) == 4\n}\n");
+    save(&d.join("billing.strata"), "from orders use Order, charge\n\npub fn invoice(o: Order) -> Int {\n  charge(o) + orders.ship(o)\n}\n");
+    save(&d.join("main.strata"), "from orders use Order, charge, ship\n\ntest \"charges\" {\n  o := Order { id: \"a\", total: 1 }\n  assert charge(o) == 2\n  assert orders.charge(o) == 2\n  assert ship(o) == 4\n}\n");
 
     let (ok, out) = strata(&["move", "charge", "billing"], &d, None);
     assert!(ok && out.contains("moved orders.charge from orders to billing (billing.strata)"), "{out}");
-    assert!(out.contains("updated 3 definitions that refer to it: billing.invoice, test \"charges\", orders.ship") && out.contains("orders: use billing.charge") && out.contains("main: use billing.charge"), "{out}");
+    assert!(out.contains("updated 3 definitions that refer to it: billing.invoice, test \"charges\", orders.ship") && out.contains("orders: from billing use charge") && out.contains("main: from billing use charge"), "{out}");
     let (o, b, m) = (text(&d.join("orders.strata")), text(&d.join("billing.strata")), text(&d.join("main.strata")));
-    assert!(o.starts_with("use billing.charge\n") && !o.contains("fn charge"), "{o}");
-    assert!(b.starts_with("use orders.Order\n") && b.contains("pub fn charge(o: Order) -> Int"), "{b}");
+    assert!(o.starts_with("from billing use charge\n") && !o.contains("fn charge"), "{o}");
+    assert!(b.starts_with("from orders use Order\n") && b.contains("pub fn charge(o: Order) -> Int"), "{b}");
     // `orders.charge(o)` was stored as a reference to the definition: now `billing.charge`, shown short since imported
-    assert!(m.contains("use billing.charge") && m.contains("assert charge(o) == 2") && !m.contains("orders.charge"), "{m}");
+    assert!(m.contains("from billing use charge") && m.contains("assert charge(o) == 2") && !m.contains("orders.charge"), "{m}");
     let (ok, out) = strata(&["test"], &d, None);
     assert!(ok && out.contains("1 passed"), "{out}");
 
@@ -3305,7 +3305,7 @@ fn sync_follows_moves() {
     git(&d, &["init", "-q", "-b", "main"]);
     assert!(strata(&["init"], &d, None).0);
     save(&d.join("orders.strata"), "pub type Order = { id: String, total: Int }\n\npub fn charge(o: Order) -> Int {\n  o.total + 1\n}\n");
-    save(&d.join("billing.strata"), "use orders.Order\n\npub fn invoice(o: Order) -> Int {\n  o.total\n}\n");
+    save(&d.join("billing.strata"), "from orders use Order\n\npub fn invoice(o: Order) -> Int {\n  o.total\n}\n");
     git(&d, &["add", "."]);
     git(&d, &["commit", "-q", "-m", "base"]);
 
@@ -3313,7 +3313,7 @@ fn sync_follows_moves() {
     git(&d, &["checkout", "-q", "-b", "feature"]);
     assert!(strata(&["move", "charge", "billing"], &d, None).0);
     git(&d, &["checkout", "-q", "main"]);
-    save(&d.join("report.strata"), "use orders.{Order, charge}\n\nfn twice(o: Order) -> Int {\n  charge(o) + orders.charge(o)\n}\n");
+    save(&d.join("report.strata"), "from orders use Order, charge\n\nfn twice(o: Order) -> Int {\n  charge(o) + orders.charge(o)\n}\n");
     git(&d, &["add", "."]);
     git(&d, &["commit", "-q", "-m", "report"]);
     git(&d, &["checkout", "-q", "feature"]);
@@ -3322,7 +3322,7 @@ fn sync_follows_moves() {
     assert!(ok && out.contains("merged main") && out.contains("follows the rename orders.charge → billing.charge"), "{out}");
     // both calls name the same definition: stored alike, shown short where it is imported
     let r = text(&d.join("report.strata"));
-    assert!(r.contains("use orders.Order") && r.contains("use billing.charge") && r.contains("charge(o) + charge(o)"), "{r}");
+    assert!(r.contains("from orders use Order") && r.contains("from billing use charge") && r.contains("charge(o) + charge(o)"), "{r}");
 }
 
 const TAXES: &str = "fn tax(amount: Int) -> Int {\n  amount / 10\n}\n\nfn total(amount: Int) -> Int {\n  amount + tax(amount)\n}\n\nfn double_tax(a: Int) -> Int {\n  tax(a) * 2\n}\n\ntest \"totals\" {\n  assert total(100) == 110\n}\n";
@@ -3471,7 +3471,7 @@ fn edit_opens_modules_and_the_whole_package() {
     let pkg = d.join("pkg");
     std::fs::create_dir_all(pkg.join("shop")).unwrap();
     assert!(strata(&["init"], &pkg, None).0);
-    save(&pkg.join("main.strata"), "use shop.orders.{price}\n\nfn total() -> Int {\n  price() + 1\n}\n");
+    save(&pkg.join("main.strata"), "from shop.orders use price\n\nfn total() -> Int {\n  price() + 1\n}\n");
     save(&pkg.join("shop/orders.strata"), "pub fn price() -> Int {\n  10\n}\n");
 
     // the whole package: one file per module, given to the editor together
@@ -3514,7 +3514,7 @@ fn edit_opens_modules_and_the_whole_package() {
     std::fs::create_dir_all(&ed).unwrap();
     let editor = fake_editor(&ed, &[]);
     assert!(strata_with_editor(&["edit", "main", "--editor"], &pkg, &editor).0);
-    assert!(std::fs::read_to_string(ed.join("seen1.st")).unwrap().starts_with("use shop.orders"));
+    assert!(std::fs::read_to_string(ed.join("seen1.st")).unwrap().starts_with("from shop.orders use price"));
 
     // neither a module nor a definition
     let (ok, out) = strata_with_editor(&["edit", "nothing_here", "--editor"], &pkg, "true");
@@ -3927,7 +3927,7 @@ test "unknown type" {
 fn print_goes_to_the_terminal_a_test_buffer_or_nowhere() {
     let d = tmp("print");
     save(&d.join("p.strata"),
-        r#"use std.io.Console
+        r#"from std.io use Console
 
 fn double(n: Int) -> Int {
   print(f"doubling {n}")
@@ -3968,8 +3968,8 @@ fn command_line_options_are_read_into_a_record() {
     std::fs::write(d.join("tool/strata.toml"), "name = \"tool\"\n").unwrap();
     save(&d.join("tool/kinds.strata"), "pub type Mode =\n  | Fast\n  | DryRun\n");
     save(&d.join("tool/main.strata"),
-        r#"use std.cli.CommandLine
-use kinds.*
+        r#"from std.cli use CommandLine
+from kinds use Mode, Fast, DryRun
 
 /// Copy things.
 type Options = {
@@ -4029,7 +4029,7 @@ fn main(opts: Options) {
         assert!(out.contains(want), "missing {want:?} in\n{out}");
     }
     // a record that can't be read from arguments is a check error
-    save(&d.join("bad.strata"), "use std.cli.CommandLine\n\ntype Opts = { pairs: List[(Int, Int)] }\n\nderive CommandLine for Opts\n");
+    save(&d.join("bad.strata"), "from std.cli use CommandLine\n\ntype Opts = { pairs: List[(Int, Int)] }\n\nderive CommandLine for Opts\n");
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok && out.contains("`Opts.pairs` is a `List[(Int, Int)]`"), "{out}");
     // field docs round-trip
@@ -4042,8 +4042,8 @@ fn method_names_follow_the_receiver_across_modules_and_builtins() {
     let d = tmp("names");
     // `Console.write` / `Files.write` from two modules, `Files.remove` / the builtin `remove`
     save(&d.join("main.strata"),
-        r#"use std.io.{Console, recorder, printed}
-use std.fs.{Disk, Files, NotFound, mem_files}
+        r#"from std.io use Console, recorder, printed
+from std.fs use Disk, Files, NotFound, mem_files
 
 fn save(mut console: Console, mut files: Files) {
   mut files.write("a.txt", "hi") except { () }
@@ -4095,8 +4095,8 @@ fn shared_method_names_across_modules() {
     save_module(&d, "a", "pub trait Sized {\n  fn size(self) -> Int\n}\n");
     save_module(&d, "b", "pub trait Weighed {\n  fn size(self) -> Int\n}\n");
     save_module(&d, "main",
-        r#"use a.Sized
-use b.Weighed
+        r#"from a use Sized
+from b use Weighed
 
 type Box = { n: Int }
 type Bag = { n: Int }
@@ -4136,8 +4136,8 @@ test "each call means its receiver's size" {
     assert!(ok && out.contains("1 passed"), "{out}");
     // two traits of the receiver have the name, from different modules: an error, as within one
     save_module(&d, "amb",
-        r#"use a.Sized
-use b.Weighed
+        r#"from a use Sized
+from b use Weighed
 
 type Two = { n: Int }
 impl Sized for Two {
@@ -4250,11 +4250,11 @@ fn std_web_renders_and_proves_pages() {
     assert!(ok && out.starts_with("<!DOCTYPE html>") && out.contains("&lt;script&gt;alert(1)&lt;/script&gt;"), "text is escaped: {out}");
     assert!(out.contains(r#"<a href="/?sort=year">By year</a>"#), "{out}");
     // an inline script can't be an attribute: caught when checking
-    save(&d.join("bad.strata"), "use std.web.{Html, render, attr, button}\nfn b() -> String { render(button([attr(\"onclick\", \"evil()\")], [])) }\n");
+    save(&d.join("bad.strata"), "from std.web use Html, render, attr, button\nfn b() -> String { render(button([attr(\"onclick\", \"evil()\")], [])) }\n");
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
     assert!(!ok && out.contains("does not satisfy `std.web.AttrName`"), "{out}");
     // nor can `Html` be built around the functions that check names
-    save(&d.join("sneak.strata"), "use std.web.{Html, render}\nfn b() -> String { render(Html { node: Element { tag: \"x y\", attrs: [], children: [] } }) }\n");
+    save(&d.join("sneak.strata"), "from std.web use Html, render\nfn b() -> String { render(Html { node: Element { tag: \"x y\", attrs: [], children: [] } }) }\n");
     let (ok, out) = strata(&["--file", "sneak.strata", "check"], &d, None);
     assert!(!ok && out.contains("`Element` is private to module `std.web`"), "{out}");
     if !has_solver() {
@@ -4284,7 +4284,7 @@ fn serve_calls_handle_for_each_request() {
     // a free port: bound, then released for the server
     let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
     save(&d.join("app.strata"),
-        r#"use std.http.{Request, Response, ok_text, ok_json, not_found}
+        r#"from std.http use Request, Response, ok_text, ok_json, not_found
 fn handle(req: Request) -> Response {
   q := get(req.query, "q") or { "-" }
   match req.path {
@@ -4340,7 +4340,7 @@ impl Counter {
   }
 }
 ");
-    let src = "use counter.Counter
+    let src = "from counter use Counter
 
 type Twice = { f: (Natural) -> Natural }
 
@@ -4393,8 +4393,8 @@ fn serve_app_capabilities_timers_and_keys() {
     let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
     std::fs::write(d.join("note.txt"), "first").unwrap();
     save(&d.join("app.strata"),
-        r#"use std.web.{Html, div, text, every, key_bindings, focused, input}
-use std.fs.{Disk, Files}
+        r#"from std.web use Html, div, text, every, key_bindings, focused, input
+from std.fs use Disk, Files
 type Model = { note: String, searching: Bool }
 type Msg =
   | Check
@@ -4459,7 +4459,7 @@ fn code_capability_reads_the_codebase() {
     save_module(&d, "core", "/// Doubles.\npub fn double(x: Int) -> Int { x * 2 }\n\nfn quad(x: Int) -> Int { double(double(x)) }\n");
     // the program is outside the package it reads (the current folder)
     let prog = tmp("code-cap-prog").join("show.strata");
-    save(&prog, r#"use std.code.{Codebase}
+    save(&prog, r#"from std.code use Codebase
 fn main(code: Codebase) {
   match code.snapshot() {
     Ok(s) => {
@@ -4548,7 +4548,7 @@ fn serve_runs_an_app() {
     let d = tmp("serve-app");
     let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
     save(&d.join("app.strata"),
-        r#"use std.web.{Html, div, button, text, on_click}
+        r#"from std.web use Html, div, button, text, on_click
 type Model = { n: Int where 0 <= it && it <= 3 }
 type Msg =
   | Up
@@ -4613,7 +4613,7 @@ fn view(model: Model) -> Html[Msg] {
         std::panic::resume_unwind(e);
     }
     // the three functions' signatures are checked before serving
-    save(&d.join("bad.strata"), "use std.web.{Html, text}\nfn init() -> Int {\n  0\n}\nfn update(m: Int, msg: String) -> String {\n  msg\n}\nfn view(m: Int) -> Html[String] {\n  text(\"x\")\n}\n");
+    save(&d.join("bad.strata"), "from std.web use Html, text\nfn init() -> Int {\n  0\n}\nfn update(m: Int, msg: String) -> String {\n  msg\n}\nfn view(m: Int) -> Html[String] {\n  text(\"x\")\n}\n");
     let (ok, out) = strata(&["serve", "bad.strata"], &d, None);
     assert!(!ok && out.contains("`update` takes and returns the model `Int`"), "{out}");
     // the example app is proven: `update` keeps the model's refinements, and
@@ -4828,7 +4828,7 @@ fn derive(derive: Int) -> Int {
 #[test]
 fn derived_traits_are_specialized() {
     let d = tmp("derive-expand");
-    let text = r#"use std.typing.{Record, Field}
+    let text = r#"from std.typing use Record, Field
 
 /// Values from text, field by field.
 derivable(Record) trait FromText {
@@ -4895,8 +4895,8 @@ fn main() {
     // what can't be derived says why, at the `derive`
     let bad = [
         ("trait Plain { fn p(self) -> Int }\ntype A = { x: Int }\nderive Plain for A\n", "`Plain` can't be derived: only a `derivable` trait can"),
-        ("use std.typing.Record\nderivable(Record) trait Sized { derived fn n(self) -> Int { comptime len(Self.fields) } }\ntype S =\n  | One\n  | Two\nderive Sized for S\n", "`Sized` can only be derived for a `Record`, and `S` isn't one"),
-        ("use std.typing.Record\nderivable(Record) trait Sized\n  requires len(Self.fields) > 1 { derived fn n(self) -> Int { comptime len(Self.fields) } }\ntype A = { x: Int }\nderive Sized for A\n", "`A` doesn't meet what `Sized` requires: len(Self.fields) > 1"),
+        ("from std.typing use Record\nderivable(Record) trait Sized { derived fn n(self) -> Int { comptime len(Self.fields) } }\ntype S =\n  | One\n  | Two\nderive Sized for S\n", "`Sized` can only be derived for a `Record`, and `S` isn't one"),
+        ("from std.typing use Record\nderivable(Record) trait Sized\n  requires len(Self.fields) > 1 { derived fn n(self) -> Int { comptime len(Self.fields) } }\ntype A = { x: Int }\nderive Sized for A\n", "`A` doesn't meet what `Sized` requires: len(Self.fields) > 1"),
     ];
     for (k, (src, want)) in bad.iter().enumerate() {
         let f = format!("bad{k}.strata");
@@ -4915,7 +4915,7 @@ fn variant_names_are_per_module() {
     std::fs::write(d.join("strata.toml"), "name = \"vn\"\n").unwrap();
     let (ok, out) = strata(&["--file", "./", "edit", "geo"], &d, Some("pub type Shape =\n  | Circle { r: Int }\n  | Square { s: Int }\n"));
     assert!(ok, "{out}");
-    let (ok, out) = strata(&["--file", "./", "edit", "main"], &d, Some("use geo.Shape\n\ntype Circle = { cx: Int }\n\nfn main() {\n  a := geo.Circle { r: 1 }\n  b := Circle { cx: 2 }\n  print(f\"{a} {b}\")\n}\n"));
+    let (ok, out) = strata(&["--file", "./", "edit", "main"], &d, Some("from geo use Shape\n\ntype Circle = { cx: Int }\n\nfn main() {\n  a := geo.Circle { r: 1 }\n  b := Circle { cx: 2 }\n  print(f\"{a} {b}\")\n}\n"));
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "."], &d, None);
     assert!(ok && out.contains(r#"Circle { r: 1 } Circle { cx: 2 }"#), "{out}");
@@ -5162,7 +5162,7 @@ fn json_for_named_unions() {
     assert_eq!(out, "{\"type\":\"Doc\",\"shapes\":[{\"type\":\"Circle\",\"r\":1.0},{\"type\":\"Square\",\"side\":2.0},{\"type\":\"Moved\",\"value\":3},{\"type\":\"Dot\"}],\"ids\":[1,\"a\"]}\ntrue\nErr(\"shapes[1]: `Nope` is not one of Circle, Square, Moved, Dot\")\n");
 }
 
-const JSON_UNIONS: &str = r##"use std.json.{Json, parse, stringify}
+const JSON_UNIONS: &str = r##"from std.json use Json, parse, stringify
 
 type Circle = { r: Float }
 
@@ -5318,10 +5318,10 @@ fn unions_naming_the_same_set_in_two_modules() {
     let d = tmp("unions-two-modules");
     let edit = |m: &str, text: &str| strata(&["--file", "./", "edit", m], &d, Some(text));
     assert!(edit("shapes", "pub trait Show {\n  fn show(self) -> String\n}\n\npub type Circle = { r: Int }\n\npub type Square = { s: Int }\n").0);
-    assert!(edit("geo", "use shapes.{Show, Circle, Square}\n\npub type Shape = Circle | Square\n\nimpl Show for Shape {\n  fn show(self) -> String = \"geo\"\n}\n").0);
-    let (ok, out) = edit("ui", "use shapes.{Circle, Square}\n\npub type Figure = Circle | Square\n");
+    assert!(edit("geo", "from shapes use Show, Circle, Square\n\npub type Shape = Circle | Square\n\nimpl Show for Shape {\n  fn show(self) -> String = \"geo\"\n}\n").0);
+    let (ok, out) = edit("ui", "from shapes use Circle, Square\n\npub type Figure = Circle | Square\n");
     assert!(ok, "{out}");
-    let (ok, out) = edit("ui", "use shapes.{Show, Circle, Square}\n\npub type Figure = Circle | Square\n\nimpl Show for Figure {\n  fn show(self) -> String = \"ui\"\n}\n");
+    let (ok, out) = edit("ui", "from shapes use Show, Circle, Square\n\npub type Figure = Circle | Square\n\nimpl Show for Figure {\n  fn show(self) -> String = \"ui\"\n}\n");
     assert!(!ok && out.contains("`ui.Figure` and `geo.Shape` name the same set and both implement `Show`"), "{out}");
 }
 
@@ -5373,9 +5373,9 @@ fn derives_see_every_kind_of_type() {
     assert_eq!(lines[3], r#"["Circle: A circle, by its radius.; Square: A square, by its side.", ""]"#);
 }
 
-const KINDS_PROGRAM: &str = r##"use std.json.Json
+const KINDS_PROGRAM: &str = r##"from std.json use Json
 
-use std.typing.{Record, Union}
+from std.typing use Record, Union
 
 /// A circle, by its radius.
 type Circle = { r: Float }
@@ -5480,14 +5480,14 @@ fn json_is_derived() {
     ];
     for (k, (src, want)) in bad.iter().enumerate() {
         let f = format!("bad{k}.strata");
-        let (ok, out) = strata(&["--file", &f, "edit"], &d, Some(&format!("use std.json.Json\n\n{src}\n\nderive Json for A\n")));
+        let (ok, out) = strata(&["--file", &f, "edit"], &d, Some(&format!("from std.json use Json\n\n{src}\n\nderive Json for A\n")));
         assert!(!ok && out.contains(want), "{src}: {out}");
         let (ok, out) = strata(&["--file", &f, "check"], &d, None);
         assert!(!ok && out.contains(want), "{src}: {out}");
     }
     // an integer beyond what a JSON number holds exactly isn't written:
     // `to_json` returns an error, and verify has nothing to report
-    let big = "use std.json.Json\n\ntype A = { x: Int }\n\nderive Json for A\n\nfn main() {\n  print(A { x: 9007199254740992 }.to_json())\n  print(A { x: 3 }.to_json() is Ok)\n}\n";
+    let big = "from std.json use Json\n\ntype A = { x: Int }\n\nderive Json for A\n\nfn main() {\n  print(A { x: 9007199254740992 }.to_json())\n  print(A { x: 3 }.to_json() is Ok)\n}\n";
     let (ok, out) = strata(&["--file", "big.strata", "edit"], &d, Some(big));
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "big.strata"], &d, None);
@@ -5498,7 +5498,7 @@ fn json_is_derived() {
     let q = d.join("proven");
     std::fs::create_dir_all(&q).unwrap();
     std::fs::write(q.join("strata.toml"), "name = \"proven\"\n\n[json]\nintegers = \"proven\"\n").unwrap();
-    let (ok, out) = strata(&["--file", "./", "edit", "main"], &q, Some("use std.json.{Json, SafeInt}\n\ntype A = { x: Int }\n\nderive Json for A\n\ntype B = { id: SafeInt, n: Int where 0 <= it && it < 100 }\n\nderive Json for B\n"));
+    let (ok, out) = strata(&["--file", "./", "edit", "main"], &q, Some("from std.json use Json, SafeInt\n\ntype A = { x: Int }\n\nderive Json for A\n\ntype B = { id: SafeInt, n: Int where 0 <= it && it < 100 }\n\nderive Json for B\n"));
     assert!(ok, "{out}");
     let (ok, out) = strata(&["verify", "--cases", "20"], &q, None);
     assert!(!ok && out.contains("✗ std.json.encode_as.for.A.") && out.contains("does not satisfy `std.json.SafeInt`") && !out.contains("✗ std.json.encode_as.for.B."), "{out}");
@@ -5506,7 +5506,7 @@ fn json_is_derived() {
     let p = d.join("strict");
     std::fs::create_dir_all(&p).unwrap();
     std::fs::write(p.join("strata.toml"), "name = \"strict\"\n\n[json]\nunknown_keys = \"error\"\n").unwrap();
-    let src = "use std.json.{Json, Ignore, parse}\n\ntype A = { x: Int }\n\nderive Json for A\n\nfn main() {\n  j := parse(\"{\\\"x\\\": 1, \\\"y\\\": 2}\") !! std.json.Null\n  print(A.from_json(j))\n  print(A.from_json_with(j, Ignore))\n}\n";
+    let src = "from std.json use Json, Ignore, parse\n\ntype A = { x: Int }\n\nderive Json for A\n\nfn main() {\n  j := parse(\"{\\\"x\\\": 1, \\\"y\\\": 2}\") !! std.json.Null\n  print(A.from_json(j))\n  print(A.from_json_with(j, Ignore))\n}\n";
     let (ok, out) = strata(&["--file", "./", "edit", "main"], &p, Some(src));
     assert!(ok, "{out}");
     let (ok, out) = strata(&["run", "."], &p, None);
@@ -5576,7 +5576,7 @@ fn extern_c_declarations() {
 #[test]
 fn comptime_code_runs_while_compiling() {
     let d = tmp("comptime-runs");
-    let src = "use std.typing.Record\n\nfn shout(s: String) -> String {\n  s + \"!\"\n}\n\nfn spin(n: Int) -> Int {\n  mut i := n\n  while i > 0 { i = i + 1 }\n  i\n}\n\nderivable(Record) trait Names\n  requires len(Self.fields) > 1 {\n  derived fn names(self) -> List[String] {\n    comptime Self.fields.map(f -> shout(f.name))\n  }\n  derived fn count(self) -> Int {\n    comptime COUNT\n  }\n}\n\ntype P = { x: Int, label: String }\n\nderive Names for P\n\nfn main() {\n  p := P { x: 1, label: \"a\" }\n  print(p.names())\n  print(p.count())\n}\n";
+    let src = "from std.typing use Record\n\nfn shout(s: String) -> String {\n  s + \"!\"\n}\n\nfn spin(n: Int) -> Int {\n  mut i := n\n  while i > 0 { i = i + 1 }\n  i\n}\n\nderivable(Record) trait Names\n  requires len(Self.fields) > 1 {\n  derived fn names(self) -> List[String] {\n    comptime Self.fields.map(f -> shout(f.name))\n  }\n  derived fn count(self) -> Int {\n    comptime COUNT\n  }\n}\n\ntype P = { x: Int, label: String }\n\nderive Names for P\n\nfn main() {\n  p := P { x: 1, label: \"a\" }\n  print(p.names())\n  print(p.count())\n}\n";
     let run = |count: &str| {
         // stored either way; the edit already says when it doesn't check
         let (ok, out) = strata(&["--file", "c.strata", "edit"], &d, Some(&src.replace("COUNT", count)));
@@ -5599,7 +5599,7 @@ fn comptime_code_runs_while_compiling() {
 #[test]
 fn comptime_in_ordinary_code_runs_while_compiling() {
     let d = tmp("comptime-anywhere");
-    let src = "use std.regex.{parse, show}\n\nfn shout(s: String) -> String {\n  s + \"!\"\n}\n\nfn main() {\n  r := comptime parse(\"(?i)ab|ac\")\n  print(match r {\n    Ok(x) => show(x),\n    Err(e) => e,\n  })\n  print(comptime shout(\"hi\"))\n}\n";
+    let src = "from std.regex use parse, show\n\nfn shout(s: String) -> String {\n  s + \"!\"\n}\n\nfn main() {\n  r := comptime parse(\"(?i)ab|ac\")\n  print(match r {\n    Ok(x) => show(x),\n    Err(e) => e,\n  })\n  print(comptime shout(\"hi\"))\n}\n";
     let (ok, out) = strata(&["--file", "c.strata", "edit"], &d, Some(src));
     assert!(ok, "{out}");
     let (ok, out) = strata(&["--file", "c.strata", "run"], &d, None);
@@ -5793,7 +5793,7 @@ fn capabilities_given_by_the_runtime() {
     std::fs::write(p.join("strata.toml"), "name = \"p\"\n").unwrap();
     let clock = "/// Reading the time.\npub capability trait Clock {\n  fn now(self) -> Int\n}\n\n/// The machine's clock.\npub capability SystemClock {\n  /// Seconds, as the system tells.\n  fn seconds() -> Int {\n    42\n  }\n}\n\nimpl Clock for SystemClock {\n  fn now(self) -> Int {\n    self.seconds()\n  }\n}\n\npub type Fixed = { at: Int }\n\nimpl Clock for Fixed {\n  fn now(self) -> Int {\n    self.at\n  }\n}\n\npub fn late(c: Clock) -> Bool {\n  c.now() > 40\n}\n";
     save_module(&p, "clock", clock);
-    let main = "use clock.{SystemClock, Fixed, late}\n\nfn main(sys: SystemClock) {\n  print(f\"{sys.seconds()} {late(sys)} {late(Fixed { at: 1 })}\")\n}\n\ntest \"the real clock\" (sys: SystemClock) {\n  assert late(sys)\n}\n\ntest \"a fixed clock\" {\n  assert !late(Fixed { at: 1 })\n}\n";
+    let main = "from clock use SystemClock, Fixed, late\n\nfn main(sys: SystemClock) {\n  print(f\"{sys.seconds()} {late(sys)} {late(Fixed { at: 1 })}\")\n}\n\ntest \"the real clock\" (sys: SystemClock) {\n  assert late(sys)\n}\n\ntest \"a fixed clock\" {\n  assert !late(Fixed { at: 1 })\n}\n";
     save_module(&p, "main", main);
     // the text round-trips
     for (m, src) in [("clock", clock), ("main", main)] {
@@ -5820,7 +5820,7 @@ fn capabilities_given_by_the_runtime() {
     assert!(out.contains("assumed: `SystemClock` is a capability") && out.contains("✓ main "), "{out}");
     assert!(out.contains("clock.late") && !out.contains("panicked"), "{out}");
     // nothing else makes one
-    save_module(&p, "bad", "use clock.{SystemClock}\n\nfn forge() -> SystemClock {\n  SystemClock {}\n}\n\nfn mocked() -> SystemClock {\n  mock SystemClock\n}\n\ntest \"asks for an int\" (n: Int) {\n  assert n == 1\n}\n");
+    save_module(&p, "bad", "from clock use SystemClock\n\nfn forge() -> SystemClock {\n  SystemClock {}\n}\n\nfn mocked() -> SystemClock {\n  mock SystemClock\n}\n\ntest \"asks for an int\" (n: Int) {\n  assert n == 1\n}\n");
     let (ok, out) = strata(&["--file", "p", "check"], &d, None);
     assert!(!ok, "{out}");
     for m in [
@@ -5836,10 +5836,10 @@ fn capabilities_given_by_the_runtime() {
     assert!(!ok && out.contains("a capability's functions don't take `self`"), "{out}");
     // std's: `main` names `Disk` and `Process`, and calls their traits' methods
     // without the traits imported; `Files` itself is for code below `main`
-    save(&d.join("std_caps.strata"), "use std.fs.{Disk}\nuse std.process.{Process}\n\nfn main(mut disk: Disk, process: Process) {\n  mut disk.write(\"cap.txt\", \"hi\") except { () }\n  print(disk.read(\"cap.txt\") except { \"?\" })\n  mut disk.remove(\"cap.txt\") except { () }\n  print(disk.exists(\"cap.txt\"))\n  print(len(process.args()))\n}\n");
+    save(&d.join("std_caps.strata"), "from std.fs use Disk\nfrom std.process use Process\n\nfn main(mut disk: Disk, process: Process) {\n  mut disk.write(\"cap.txt\", \"hi\") except { () }\n  print(disk.read(\"cap.txt\") except { \"?\" })\n  mut disk.remove(\"cap.txt\") except { () }\n  print(disk.exists(\"cap.txt\"))\n  print(len(process.args()))\n}\n");
     let (ok, out) = strata(&["run", "std_caps.strata", "--", "a", "b"], &d, None);
     assert!(ok && out == "hi\nfalse\n2\n", "{out}");
-    save(&d.join("asks_files.strata"), "use std.fs.{Files}\n\nfn main(files: Files) {\n  print(files.exists(\"x\"))\n}\n");
+    save(&d.join("asks_files.strata"), "from std.fs use Files\n\nfn main(files: Files) {\n  print(files.exists(\"x\"))\n}\n");
     let (ok, out) = strata(&["run", "asks_files.strata"], &d, None);
     assert!(!ok && out.contains("Name the capability instead, `disk: Disk` (std.fs), and pass it where `Files` is wanted"), "{out}");
 }
@@ -5867,7 +5867,7 @@ fn run_mode_console_in_tests_and_trace() {
     let p = d.join("p");
     std::fs::create_dir_all(&p).unwrap();
     std::fs::write(p.join("strata.toml"), "name = \"p\"\n").unwrap();
-    let src = "use std.io.{Console}\nuse std.process.{RunMode, Running, Testing, Tracing}\n\nfn describe(mode: RunMode) -> String {\n  match mode {\n    Running => \"running\",\n    Testing => \"testing\",\n    Tracing => \"tracing\",\n  }\n}\n\nfn main(mut console: Console, mode: RunMode) {\n  mut console.print(describe(mode))\n}\n\ntest \"sees it\" (mode: RunMode, mut console: Console) {\n  mut console.print(\"hidden: the test passes\")\n  assert mode == Testing\n}\n\ntest \"fails\" (mut console: Console) {\n  mut console.print(\"shown: the test fails\")\n  assert false\n}\n";
+    let src = "from std.io use Console\nfrom std.process use RunMode, Running, Testing, Tracing\n\nfn describe(mode: RunMode) -> String {\n  match mode {\n    Running => \"running\",\n    Testing => \"testing\",\n    Tracing => \"tracing\",\n  }\n}\n\nfn main(mut console: Console, mode: RunMode) {\n  mut console.print(describe(mode))\n}\n\ntest \"sees it\" (mode: RunMode, mut console: Console) {\n  mut console.print(\"hidden: the test passes\")\n  assert mode == Testing\n}\n\ntest \"fails\" (mut console: Console) {\n  mut console.print(\"shown: the test fails\")\n  assert false\n}\n";
     save_module(&p, "main", src);
     // hidden by default
     let (ok, out) = strata(&["--file", "p", "check"], &d, None);
@@ -5890,7 +5890,7 @@ fn run_mode_console_in_tests_and_trace() {
 #[test]
 fn mocks_for_tests() {
     let d = tmp("mocks");
-    let src = "use std.fs.{Files, FsError}\n\n/// An in-memory disk, for tests.\nmock MemDisk = { files: Dict[String, String] = Dict[String, String] {} }\n\nimpl Files for MemDisk {\n  fn read(self, path: String) -> Result[String, FsError] {\n    Ok(get(self.files, path) ?? \"nothing\")\n  }\n\n  fn write(mut self, path: String, text: String) -> Result[(), FsError] {\n    self.files = insert(self.files, path, text)\n    Ok(())\n  }\n}\n\nfn save_then_load(mut fs: Files, text: String) -> Result[String, FsError] {\n  (mut fs.write(\"a.txt\", text))!\n  fs.read(\"a.txt\")\n}\n\ntest \"saving then loading\" {\n  mut fs := MemDisk {}\n  assert save_then_load(mut fs, \"hi\") == Ok(\"hi\")\n  x := fs.exists(\"a.txt\")\n  assert x || !x\n}\n";
+    let src = "from std.fs use Files, FsError\n\n/// An in-memory disk, for tests.\nmock MemDisk = { files: Dict[String, String] = Dict[String, String] {} }\n\nimpl Files for MemDisk {\n  fn read(self, path: String) -> Result[String, FsError] {\n    Ok(get(self.files, path) ?? \"nothing\")\n  }\n\n  fn write(mut self, path: String, text: String) -> Result[(), FsError] {\n    self.files = insert(self.files, path, text)\n    Ok(())\n  }\n}\n\nfn save_then_load(mut fs: Files, text: String) -> Result[String, FsError] {\n  (mut fs.write(\"a.txt\", text))!\n  fs.read(\"a.txt\")\n}\n\ntest \"saving then loading\" {\n  mut fs := MemDisk {}\n  assert save_then_load(mut fs, \"hi\") == Ok(\"hi\")\n  x := fs.exists(\"a.txt\")\n  assert x || !x\n}\n";
     save(&d.join("m.strata"), src);
     let (ok, out) = strata(&["--file", "m.strata", "render"], &d, None);
     assert!(ok && out == src, "{out}");
