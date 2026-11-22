@@ -2608,6 +2608,8 @@ impl<'a> Vc<'a> {
             }
             Expr::Lambda(..) => self.fn_value(e, vec![]).0,
             Expr::Mock(t) => Val::Opaque(format!("`mock {}`", crate::printer::ty(t))),
+            // which arm runs depends on timing
+            Expr::Select(_) => Val::Opaque("which arm of a `select` runs depends on timing".into()),
             // a task's result is its expression's value: `await spawn e` is `e`
             Expr::Mut(x) | Expr::Comptime(x) | Expr::Scope(x) | Expr::Spawn(x) | Expr::Await(x) => self.eval(x),
             Expr::Interp(parts) => {

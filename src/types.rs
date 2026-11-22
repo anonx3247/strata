@@ -269,6 +269,43 @@ impl[T] FiniteIterator[T] for ListIter[T] {
   }
 }
 
+/// The sending end of a channel (`channel()` gives both ends). `send`
+/// waits while the channel is full (an unbuffered one: until a receiver
+/// takes the value). Each task holding it closes it once, when it is done
+/// sending: the channel ends when all have.
+trait Sending[T] {
+  fn send(self, value: T)
+  fn close(self)
+}
+
+impl[T] Sending[T] for Sender[T] {
+  fn send(self, value: T) {
+    channel_send(self, value)
+  }
+  fn close(self) {
+    channel_close(self)
+  }
+}
+
+/// The receiving end of a channel: `recv` waits for a value, and gives
+/// `None` once the channel has ended and is empty; `for v in rx` takes them
+/// all.
+trait Receiving[T] {
+  fn recv(self) -> Option[T]
+}
+
+impl[T] Receiving[T] for Receiver[T] {
+  fn recv(self) -> Option[T] {
+    channel_recv(self)
+  }
+}
+
+impl[T] Iterator[T] for Receiver[T] {
+  fn next(mut self) -> Option[T] {
+    channel_recv(self)
+  }
+}
+
 /// A collection whose elements can be walked as an iterator: `xs.iter()`.
 /// (A list isn't an iterator itself: its `map` and `filter` are the
 /// builtins, which give lists.)
@@ -418,7 +455,7 @@ impl[I: FiniteIterator[T], T] FiniteIterator[T] for Filtered[I, T] {
 const ITERATOR_BUILTINS: &[&str] = &["map", "filter", "fold", "len", "get", "at", "slice", "take", "drop"];
 
 /// The built-in types with type arguments, which impls can be written for.
-const BUILTIN_HEADS: &[&str] = &["List", "Set", "Dict", "String"];
+const BUILTIN_HEADS: &[&str] = &["List", "Set", "Dict", "String", "Sender", "Receiver"];
 
 /// The module the prelude's code is in, once added to a program.
 pub const PRELUDE_MODULE: &str = "std.prelude";
@@ -538,7 +575,7 @@ pub fn union_alias(t: &TypeDecl) -> bool {
 /// The types every program has without defining them, by the names code
 /// writes (a tuple is written `(A, B)` and `()` is written so: `Tuple` and
 /// `Unit` are free to name other things).
-pub const BUILTIN_TYPES: [&str; 7] = ["Int", "Float", "Bool", "String", "List", "Set", "Dict"];
+pub const BUILTIN_TYPES: [&str; 9] = ["Int", "Float", "Bool", "String", "List", "Set", "Dict", "Sender", "Receiver"];
 
 pub fn prelude() -> &'static Program {
     static P: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
@@ -548,6 +585,14 @@ pub fn prelude() -> &'static Program {
 /// Builtin functions and their type schemes.
 pub const BUILTINS: &[Builtin] = &[
     Builtin::total("len", "A", "(List[A]) -> Int"),
+    // a channel's two ends, with room for `n` values waiting (none: a send
+    // waits for a receiver); its methods are the prelude's (`Sending`,
+    // `Receiving`), over these
+    Builtin::new("channel", "A", "() -> (Sender[A], Receiver[A])"),
+    Builtin::new("channel", "A", "(Int) -> (Sender[A], Receiver[A])"),
+    Builtin::new("channel_send", "A", "(Sender[A], A) -> ()"),
+    Builtin::new("channel_recv", "A", "(Receiver[A]) -> Option[A]"),
+    Builtin::new("channel_close", "A", "(Sender[A]) -> ()"),
     Builtin::total("len", "K,V", "(Dict[K, V]) -> Int"),
     Builtin::total("len", "A", "(Set[A]) -> Int"),
     Builtin::total("contains", "A", "(Set[A], A) -> Bool"),
@@ -1503,6 +1548,8 @@ impl<'a> Checker<'a> {
                     "String" => Ty::Str,
                     "Unit" => Ty::Unit,
                     "List" if largs.len() == 1 => Ty::Con("List".into(), largs),
+                    "Sender" if largs.len() == 1 => Ty::Con("Sender".into(), largs),
+                    "Receiver" if largs.len() == 1 => Ty::Con("Receiver".into(), largs),
                     _ => match self.env.types.get(&n.sym()) {
                         Some(td) => {
                             if td.params.len() != largs.len() {
@@ -2900,6 +2947,15 @@ impl<'a> Checker<'a> {
         Ty::Fn(pts, Box::new(r))
     }
 
+    /// Whether a type holds a channel's sender anywhere.
+    fn holds_sender(&self, t: &Ty) -> bool {
+        match self.resolve(t) {
+            Ty::Con(n, args) => n == "Sender" || args.iter().any(|a| self.holds_sender(a)),
+            Ty::Union(ms) => ms.iter().any(|m| self.holds_sender(m)),
+            _ => false,
+        }
+    }
+
     /// Whether a type holds a task's handle anywhere.
     fn holds_task(&self, t: &Ty) -> bool {
         match self.resolve(t) {
@@ -2923,6 +2979,29 @@ impl<'a> Checker<'a> {
         let outer = self.ret.take();
         let t = self.infer(body);
         self.ret = outer;
+        // each sender it captures is this task's copy, to close
+        let mut seen = HashSet::default();
+        for x in free_vars(body) {
+            if !seen.insert(x) {
+                continue;
+            }
+            let Some(idx) = self.scopes.iter().rposition(|s| s.contains_key(&x)) else { continue };
+            if idx >= self.scopes.len() - 1 {
+                continue;
+            }
+            let xt = self.resolve(&self.scopes[idx][&x].clone());
+            match &xt {
+                Ty::Con(n, _) if n == "Sender" => {
+                    if !closes(body, x) {
+                        self.err(format!("the task holds a copy of `{x}` and never closes it: call `{x}.close()` in it when it is done sending"));
+                    }
+                }
+                _ if self.holds_sender(&xt) => {
+                    self.err(format!("a `spawn` can capture a sender only on its own (a variable holding it): `{x}` holds one inside"));
+                }
+                _ => {}
+            }
+        }
         self.loops = loops;
         (self.task_floor, self.in_spawn) = tasks;
         self.lambda_floor = floor;
@@ -2931,6 +3010,79 @@ impl<'a> Checker<'a> {
             self.err("a task can't give back another task's handle: await it in the task");
         }
         Ty::Con("Task".into(), vec![t])
+    }
+
+    /// `select { op as x => body, … }`: each `op` is `rx.recv()` (`x` an
+    /// `Option`), `tx.send(v)` (no result) or `await h` (`x` the result).
+    fn select(&mut self, arms: &[SelectArm], expected: Option<&Ty>) -> Ty {
+        if arms.is_empty() {
+            self.err("a `select` needs at least one arm");
+        }
+        let mut rt: Option<Ty> = None;
+        for a in arms {
+            let got: Option<Ty> = match &a.op {
+                Expr::Method(r, m, args) if m == "recv" && args.is_empty() => {
+                    let t = self.infer(r);
+                    let el = self.fresh();
+                    self.expect(&Ty::Con("Receiver".into(), vec![el.clone()]), &t, "`recv` in a `select`");
+                    Some(Ty::Con("Option".into(), vec![el]))
+                }
+                Expr::Method(s, m, args) if m == "send" && args.len() == 1 => {
+                    let t = self.infer(s);
+                    let el = self.fresh();
+                    self.expect(&Ty::Con("Sender".into(), vec![el.clone()]), &t, "`send` in a `select`");
+                    let vt = self.infer_with(&args[0], Some(&el));
+                    self.expect(&el, &vt, "the value sent");
+                    if a.name.is_some() {
+                        self.err("a `send` arm gives nothing to name: drop its `as`");
+                    }
+                    None
+                }
+                Expr::Await(h) => {
+                    let t = self.infer(h);
+                    let r = self.fresh();
+                    self.expect(&Ty::Con("Task".into(), vec![r.clone()]), &t, "`await` in a `select`");
+                    Some(r)
+                }
+                _ => {
+                    self.err("a `select` arm waits on `rx.recv()`, `tx.send(v)` or `await h`");
+                    self.infer(&a.op);
+                    None
+                }
+            };
+            self.scopes.push(HashMap::default());
+            if let (Some(n), Some(t)) = (a.name, got) {
+                self.bind(n, t);
+            }
+            let bt = self.infer_at(&a.body, expected);
+            rt = Some(match rt {
+                Some(r) if expected.is_some() => {
+                    self.expect(&r, &bt, "select arm");
+                    r
+                }
+                Some(r) => self.join_union(&r, &bt, "select arms"),
+                None => bt,
+            });
+            self.scopes.pop();
+        }
+        rt.unwrap_or_else(|| self.fresh())
+    }
+
+    /// A sender made in this block (`(tx, rx) := channel(…)`) must be closed
+    /// in it: otherwise its receivers wait forever. (A `spawn`'s copy is its
+    /// own task's to close: one inside a `spawn` doesn't count.)
+    fn check_senders_closed(&mut self, stmts: &[Stmt], last: &Expr) {
+        for (i, s) in stmts.iter().enumerate() {
+            let Stmt::Let(Pattern::Tuple(ps), _, Expr::Call(f, _)) = s else { continue };
+            let (Expr::Var(c), Some(Pattern::Bind(tx))) = (&**f, ps.first()) else { continue };
+            if c != "channel" || self.lookup(c.sym()).is_some() {
+                continue;
+            }
+            let rest = stmts[i + 1..].iter().map(|s| Expr::Block(vec![s.clone()], Box::new(Expr::Unit)));
+            if !rest.chain(std::iter::once(last.clone())).any(|e| closes(&e, *tx)) {
+                self.err(format!("`{tx}` is never closed here, so its receivers would wait forever: call `{tx}.close()` when this task is done sending (each task holding it closes its own)"));
+            }
+        }
     }
 
     /// `await h`: the result of a task, or of each task of a tuple or list of handles.
@@ -3009,10 +3161,17 @@ impl<'a> Checker<'a> {
             Expr::Tuple(es) => Ty::Con("Tuple".into(), es.iter().map(|e| self.infer(e)).collect()),
             Expr::Comptime(x) => self.infer_at(x, expected),
             Expr::Spawn(x) => self.spawn(x),
+            Expr::Select(arms) => self.select(arms, expected),
             Expr::Await(x) => self.awaited(x),
             Expr::Scope(b) => {
                 let outer = self.task_floor.replace(self.scopes.len());
-                let t = self.infer_at(b, expected);
+                // `scope { …; spawn e }`: the last task's handle isn't its value
+                let t = if ends_in_spawn(b) {
+                    self.infer(b);
+                    Ty::Unit
+                } else {
+                    self.infer_at(b, expected)
+                };
                 self.task_floor = outer;
                 if self.holds_task(&t) {
                     let shown = self.show(&t);
@@ -3452,6 +3611,7 @@ impl<'a> Checker<'a> {
                 rt.unwrap_or_else(|| self.fresh())
             }
             Expr::Block(stmts, last) => {
+                self.check_senders_closed(stmts, last);
                 self.scopes.push(HashMap::default());
                 for s in stmts {
                     match s {
@@ -5072,4 +5232,51 @@ pub fn ty_head(t: &Ty) -> Option<Symbol> {
         Ty::Con(h, _) => h.clone(),
         _ => return None,
     })
+}
+
+/// Whether `e` calls `x.close()` (outside any `spawn` in it: that would close
+/// the other task's copy).
+fn closes(e: &Expr, x: Symbol) -> bool {
+    struct Closes(Symbol, bool);
+    impl crate::ast::Visit for Closes {
+        fn expr(&mut self, e: &Expr) {
+            match e {
+                Expr::Spawn(_) => return,
+                Expr::Method(r, m, args) if m == "close" && args.is_empty() && matches!(&**r, Expr::Var(v) if *v == self.0) => self.1 = true,
+                _ => {}
+            }
+            if !self.1 {
+                crate::ast::walk_expr(self, e)
+            }
+        }
+    }
+    let mut c = Closes(x, false);
+    crate::ast::Visit::expr(&mut c, e);
+    c.1
+}
+
+/// The variables an expression mentions.
+fn free_vars(e: &Expr) -> Vec<Symbol> {
+    struct Vars(Vec<Symbol>);
+    impl crate::ast::Visit for Vars {
+        fn expr(&mut self, e: &Expr) {
+            if let Expr::Var(x) = e {
+                self.0.push(*x);
+            }
+            crate::ast::walk_expr(self, e)
+        }
+    }
+    let mut v = Vars(vec![]);
+    crate::ast::Visit::expr(&mut v, e);
+    v.0
+}
+
+/// Whether a block's value is a `spawn` (`scope { spawn e }`, whose value is
+/// then `()`).
+pub fn ends_in_spawn(b: &Expr) -> bool {
+    match b {
+        Expr::Block(_, last) => ends_in_spawn(last),
+        Expr::Spawn(_) => true,
+        _ => false,
+    }
 }

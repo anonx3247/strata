@@ -609,6 +609,23 @@ pub enum Expr {
     /// `await h`: a task's result; of a tuple or list of handles, a tuple or
     /// list of results.
     Await(Box<Expr>),
+    /// `select { rx.recv() as x => …, tx.send(v) => …, await h as r => … }`:
+    /// waits until one of the operations can happen, does that one only, and
+    /// runs its arm.
+    Select(Vec<SelectArm>),
+}
+
+/// One arm of a `select`: an operation that may wait (`rx.recv()`,
+/// `tx.send(v)`, `await h`), the name its result gets (`as x`), and the code
+/// run when it is the one that happens.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SelectArm {
+    /// `//` comment lines just above it, as written ("" is a blank line between groups).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<String>,
+    pub op: Expr,
+    pub name: Option<Symbol>,
+    pub body: Expr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -815,6 +832,12 @@ macro_rules! visitor {
                     v.expr(s);
                     for a in arms {
                         v.pattern(&$($m)? a.pat);
+                        v.expr(&$($m)? a.body)
+                    }
+                }
+                Expr::Select(arms) => {
+                    for a in arms {
+                        v.expr(&$($m)? a.op);
                         v.expr(&$($m)? a.body)
                     }
                 }

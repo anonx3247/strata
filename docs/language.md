@@ -381,7 +381,58 @@ Tasks share nothing that can change, so the result doesn't depend on timing: `sc
 
 A handle stays in its scope: a scope can't give one back, a task can't hold another's, and one can't be stored in a variable declared outside. A fault in a task (an index out of range, a broken contract) is raised where the task is awaited, or at the end of its scope, once the scope's other tasks have finished; its call stack shows where: `main -> spawn -> pick`.
 
-Tasks run on threads, one per task for now. Channels and `select` come next (IDEAS.md, "Concurrency").
+A `scope` whose last line is a `spawn` (`scope { spawn work() }`) gives `()`: the handle isn't its value. Tasks run on threads, one per task for now.
+
+### Channels and `select`
+
+Tasks pass values to each other through channels. `channel(n)` gives a channel's two ends, with room for `n` values waiting; `channel()` has none, so a `send` waits until a receiver takes the value. The type of what goes through is inferred from its use.
+
+```rust
+fn squares(jobs: List[Int]) -> Int {
+  (tx, rx) := channel(16)
+  (out, results) := channel()
+  scope {
+    spawn {
+      for j in jobs { tx.send(j) }
+      tx.close()
+    }
+    for _ in 0..4 {
+      spawn {
+        for j in rx { out.send(j * j) }
+        out.close()
+      }
+    }
+    tx.close()
+    out.close()
+    mut total := 0
+    for r in results { total += r }
+    total
+  }
+}
+```
+
+- `tx.send(v)` moves `v` into the channel, waiting while it is full. `rx.recv()` gives `Some(v)`, or `None` once the channel has ended and is empty; `for v in rx` takes every value, then stops.
+- **Closing is explicit, once per task.** Each task holding the sender (the one that made the channel, and every `spawn` that uses it) calls `tx.close()` when it is done sending; the channel ends when all of them have. The checker requires it where the channel is made and in each task that uses the sender; a task that still ends without closing (the call was in a branch not taken) has its copy closed for it, and that is a fault. A `spawn` takes a sender only as a variable of its own, not inside a tuple or record.
+- Any number of tasks can send to one channel and receive from it. `Sender[T]` and `Receiver[T]` are the types of the two ends.
+
+`select` waits on several operations and does the first one that can happen, and only that one:
+
+```rust
+loop {
+  select {
+    jobs.recv() as j => match j {
+      Some(x) => run(x),
+      None => break,
+    },
+    results.send(last) => {
+      sent += 1
+    },
+    await download as d => show(d),
+  }
+}
+```
+
+An arm is `rx.recv()` (its `as` name is an `Option`), `tx.send(v)` (nothing to name) or `await h` (the task's result). An arm that doesn't happen has done nothing: a value it would have sent isn't sent, and a task it awaits keeps running. A `recv` on a channel that has ended is always ready (with `None`), so a loop over several channels stops looking at one once it ends. When several arms can happen, which one does is not fixed.
 
 ## Built-in types
 

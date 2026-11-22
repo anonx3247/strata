@@ -471,6 +471,15 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Spawn(x) => format!("spawn {}", expr(x, d)),
         Expr::Await(x) => format!("await {}", wrap(x, 11, d)),
         Expr::Scope(b) => format!("scope {}", block(b, d)),
+        Expr::Select(arms) => {
+            let mut out = "select {\n".to_string();
+            for a in arms {
+                out += &comments(&a.comments, d + 1);
+                let as_name = a.name.as_ref().map(|n| format!(" as {n}")).unwrap_or_default();
+                out += &format!("{}{}{as_name} => {},\n", ind(d + 1), expr(&a.op, d + 1), expr(&a.body, d + 1));
+            }
+            out + &ind(d) + "}"
+        }
         Expr::Interp(parts) => {
             let mut s = "f\"".to_string();
             for p in parts {
