@@ -508,6 +508,56 @@ impl Codebase {
         let _ = fs::create_dir_all(self.cache());
         let _ = fs::write(self.cache().join("verdicts.json"), serde_json::to_string_pretty(v).unwrap());
     }
+
+    /// Where `verify` keeps what it proved for `build` (`proofs`).
+    pub fn proofs_dir(&self) -> PathBuf {
+        self.cache()
+    }
+}
+
+/// Where `verify` keeps what it proved of a script (a file outside a
+/// package): `~/.cache/strata/scripts/<its path's hash>` (`STRATA_CACHE`).
+pub fn script_proofs_dir(file: &str) -> Option<PathBuf> {
+    use sha2::{Digest, Sha256};
+    let path = fs::canonicalize(file).ok()?;
+    let key: String = Sha256::digest(path.to_string_lossy().as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
+    let root = match std::env::var_os("STRATA_CACHE") {
+        Some(d) => PathBuf::from(d),
+        None => PathBuf::from(std::env::var_os("HOME")?).join(".cache/strata"),
+    };
+    Some(root.join("scripts").join(key))
+}
+
+/// Each function's checks `verify` proved (by the function's name), kept in `dir`.
+pub fn load_proofs(dir: &Path) -> HashMap<String, Proved> {
+    fs::read_to_string(dir.join("proofs.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+pub fn save_proofs(dir: &Path, v: &HashMap<String, Proved>) {
+    let _ = fs::create_dir_all(dir);
+    let _ = fs::write(dir.join("proofs.json"), serde_json::to_string_pretty(v).unwrap());
+}
+
+/// What `build` may leave out of `p`: the proofs made for each function's
+/// code as it is now (its definition's hash, with all it depends on, unchanged).
+pub fn current_proofs(p: &Program, dir: &Path) -> HashMap<String, crate::llvm::Proofs> {
+    let closures = Closures::new(p);
+    load_proofs(dir)
+        .into_iter()
+        .filter(|(_, pr)| closures.hash(&pr.decl) == pr.hash)
+        .map(|(name, pr)| (name, crate::llvm::Proofs { proven: pr.proven, open: pr.open }))
+        .collect()
+}
+
+/// A function's checks as `verify` left them: proven or not, for the
+/// definition `decl` whose hash (with what it depends on) was `hash`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Proved {
+    pub decl: String,
+    pub hash: String,
+    pub proven: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open: Vec<String>,
 }
 
 /// Each module of `p` as a module file: (path in its package, bytes).

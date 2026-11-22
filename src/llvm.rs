@@ -178,6 +178,27 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
 
 thread_local! {
     static TRACING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// What `verify` proved, for the next compilation (`compile_proven`),
+    /// and how many checks it then left out and kept.
+    static PROOFS: std::cell::RefCell<(HashMap<String, Proofs>, usize, usize)> = std::cell::RefCell::new(Default::default());
+}
+
+/// What `verify` found of one function's checks, by what each is called
+/// (`assert x > 0`, `ensures it >= 0`, `index in range`): those proven,
+/// and those it didn't prove (refuted, unknown, stopped).
+#[derive(Debug, Clone, Default)]
+pub struct Proofs {
+    pub proven: Vec<String>,
+    pub open: Vec<String>,
+}
+
+/// `compile`, leaving out the runtime checks `proofs` (by function) shows
+/// proven. Also returns how many checks were left out and how many kept.
+pub fn compile_proven(prog: &Program, entry: &str, proofs: HashMap<String, Proofs>, traced: bool) -> Res<(String, usize, usize)> {
+    PROOFS.with(|p| *p.borrow_mut() = (proofs, 0, 0));
+    let r = if traced { compile_traced(prog, entry) } else { compile(prog, entry) };
+    let (_, out, kept) = PROOFS.with(|p| std::mem::take(&mut *p.borrow_mut()));
+    Ok((r?, out, kept))
 }
 
 /// `f` compiling without tracing: compile-time code made while a traced
@@ -205,6 +226,79 @@ pub fn compile_traced(prog: &Program, entry: &str) -> Res<String> {
     let r = compile(prog, entry);
     TRACING.with(|t| t.set(false));
     r
+}
+
+/// Where each function is referred to (called, or taken as a value): the
+/// bodies of the functions that do, and the functions also referred to
+/// anywhere else (a contract, a type's refinement, a test, an impl's
+/// method) or by a method call's name. A function's entry checks are
+/// proven at each call, by its caller: they are left out only when every
+/// reference is in a body whose proofs cover them.
+#[derive(Default)]
+struct Refs {
+    callers: HashMap<String, HashSet<String>>,
+    elsewhere: HashSet<String>,
+    methods: HashSet<String>,
+}
+
+impl Refs {
+    fn of(prog: &Program) -> Refs {
+        struct Walk<'r> {
+            refs: &'r mut Refs,
+            from: Option<String>,
+        }
+        impl crate::ast::Visit for Walk<'_> {
+            fn expr(&mut self, e: &Expr) {
+                match e {
+                    Expr::Var(x) => match &self.from {
+                        Some(f) => {
+                            self.refs.callers.entry(x.to_string()).or_default().insert(f.clone());
+                        }
+                        None => {
+                            self.refs.elsewhere.insert(x.to_string());
+                        }
+                    },
+                    Expr::Method(_, m, _) => {
+                        self.refs.methods.insert(crate::names::short(m).to_string());
+                    }
+                    _ => {}
+                }
+                crate::ast::walk_expr(self, e)
+            }
+            fn ty(&mut self, t: &TypeExpr) {
+                let from = self.from.take();
+                crate::ast::walk_ty(self, t);
+                self.from = from;
+            }
+            fn pattern(&mut self, p: &Pattern) {
+                let from = self.from.take();
+                crate::ast::walk_pattern(self, p);
+                self.from = from;
+            }
+        }
+        let mut refs = Refs::default();
+        for d in &prog.decls {
+            let mut w = Walk { refs: &mut refs, from: None };
+            match &d.kind {
+                DeclKind::Fn(f) => {
+                    use crate::ast::Visit;
+                    let mut contract = f.clone();
+                    contract.body = Expr::Unit;
+                    crate::ast::walk_decl(&mut w, &DeclKind::Fn(contract));
+                    w.from = Some(f.name.to_string());
+                    w.expr(&f.body);
+                }
+                k => crate::ast::walk_decl(&mut w, k),
+            }
+        }
+        refs
+    }
+}
+
+/// Whether `verify`'s check `e` is the one called `k`: the same, or with
+/// what it checks (`assigning \`x\`: Natural`) or how (` (early return)`).
+fn same_check(e: &str, k: &str) -> bool {
+    e.strip_prefix(k).is_some_and(|rest| rest.is_empty() || rest.starts_with(':') || rest.starts_with(" ("))
 }
 
 /// What a compilation starts from.
@@ -503,7 +597,10 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)), refs: Refs::default(), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers };
+    if !m.proofs.is_empty() {
+        m.refs = Refs::of(prog);
+    }
     // std's precompiled functions, but while making them, tracing, or in a library
     if !BUILDING_STD.with(|b| b.get()) && !m.tracing && !matches!(entry, Entry::Library(_)) {
         m.precompiled = jit::std_library().map(|l| &l.names);
@@ -634,6 +731,11 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     if m.tracing {
         jit::set_traced(std::mem::take(&mut m.traced));
     }
+    PROOFS.with(|p| {
+        let mut p = p.borrow_mut();
+        p.1 += m.left_out;
+        p.2 += m.kept;
+    });
     let mut out = String::from("; Strata, compiled by `strata build`\n\n");
     out += &m.globals;
     out += "\n";
@@ -970,6 +1072,13 @@ struct Module<'a> {
     traced: Traced,
     /// `strata run --trace`: each function of the program reports its calls and returns.
     tracing: bool,
+    /// What `verify` proved, by function (`compile_proven`); empty: every check is kept.
+    proofs: HashMap<String, Proofs>,
+    /// Who refers to each function (`Refs`), when there are proofs.
+    refs: Refs,
+    /// The checks of the program's own functions left out as proven, and kept.
+    left_out: usize,
+    kept: usize,
     /// Generators made (by the type and hints they generate), and mock methods.
     gens: HashMap<String, String>,
     /// The tables made for each trait type (by its key), with the implementation.
@@ -1513,6 +1622,9 @@ impl<'a> Module<'a> {
         }
         let ret = self.lower(&f.ret, &sub)?;
         let mut c = Func::new(self, sub);
+        if !c.m.proofs.is_empty() && !name.starts_with("std.") && !name.starts_with(PRELUDE_MODULE) {
+            c.proofs_of = Some(name.to_string());
+        }
         let mut sig = vec![];
         for (p, t) in f.params.iter().zip(&params) {
             if p.mutable {
@@ -1584,9 +1696,15 @@ impl<'a> Module<'a> {
         // the written types of the program's own declaration (inline refinements are its nodes)
         for p in own.own_params {
             let v = c.load(&p.name)?;
+            if has_value(&v.0) && c.needs_check(&p.ty) && c.proven_at_calls(&crate::types::shown_name(&format!("argument `{}` of `{name}`", p.name))) {
+                continue;
+            }
             c.check(&p.ty, &v, &format!("argument `{}` of `{name}`", p.name), false)?;
         }
         for r in own.requires.clone() {
+            if c.proven_at_calls(&crate::types::shown_name(&format!("precondition of `{name}`: requires {}", crate::printer::expr(r, 0)))) {
+                continue;
+            }
             c.push_scope(true);
             let ok = c.expr(r)?;
             c.pop_scope()?;
@@ -1631,6 +1749,10 @@ impl<'a> Module<'a> {
             let slot = c.local("it", &ret, None)?;
             c.store(&result, &slot)?;
             for en in own.ensures.clone() {
+                let k = format!("ensures {}", crate::printer::expr(en, 0));
+                if c.proven(|e| same_check(e, &k)) {
+                    continue;
+                }
                 c.push_scope(true);
                 let ok = c.expr(en)?;
                 c.pop_scope()?;
@@ -1957,11 +2079,14 @@ struct Func<'m, 'a> {
     terminated: bool,
     /// The places of the arguments of the call being compiled (for `mut` parameters).
     places: Vec<Option<(String, Vec<String>)>>,
+    /// The program's function being compiled, whose proofs `proven` reads
+    /// (none in a lambda, a helper, or std's and the prelude's code).
+    proofs_of: Option<String>,
 }
 
 impl<'m, 'a> Func<'m, 'a> {
     fn new(m: &'m mut Module<'a>, sub: HashMap<Symbol, Ty>) -> Self {
-        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![] }
+        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![], proofs_of: None }
     }
 
     /// The function's text: the slots, then the code.
@@ -3700,7 +3825,64 @@ impl<'m, 'a> Func<'m, 'a> {
     /// parameters, for its result type). A record or variant was checked
     /// when it was built, so only fields of a type argument's type are.
     fn check(&mut self, t: &TypeExpr, v: &V, ctx: &str, outer: bool) -> Res<()> {
+        // what `verify` calls the same check
+        let key = if ctx == "let binding" {
+            Some(format!("`let` annotated `{}`", crate::printer::ty(t)))
+        } else if ctx.starts_with("result of `") {
+            Some(crate::types::shown_name(ctx))
+        } else if ctx.starts_with("assigning `") || ctx.starts_with("constructing `") {
+            Some(ctx.to_string())
+        } else {
+            // (an argument's type is the caller's to prove)
+            None
+        };
+        self.check_keyed(t, v, ctx, outer, key)
+    }
+
+    /// `check`, left out when `verify` proved the check called `key`.
+    fn check_keyed(&mut self, t: &TypeExpr, v: &V, ctx: &str, outer: bool, key: Option<String>) -> Res<()> {
+        if !has_value(&v.0) || !self.needs_check(t) {
+            return Ok(());
+        }
+        if let Some(k) = key {
+            if self.proven(|e| same_check(e, &k)) {
+                return Ok(());
+            }
+        }
         self.check_in(t, v, &[Part::Lit(ctx.to_string())], outer)
+    }
+
+    /// Whether every call of this function proves its entry check `key`
+    /// (`argument \`n\` of \`f\``, `precondition of \`f\`: requires …`): each
+    /// function referring to it proved it there. Counted.
+    fn proven_at_calls(&mut self, key: &str) -> bool {
+        let Some(name) = self.proofs_of.clone() else { return false };
+        let refs = &self.m.refs;
+        let ok = name != "main"
+            && !refs.elsewhere.contains(&name)
+            && !refs.methods.contains(crate::names::short(&name))
+            && refs.callers.get(&name).is_some_and(|cs| {
+                cs.iter().all(|g| self.m.proofs.get(g).is_some_and(|p| p.proven.iter().any(|e| same_check(e, key)) && !p.open.iter().any(|e| same_check(e, key))))
+            });
+        if ok {
+            self.m.left_out += 1;
+        } else {
+            self.m.kept += 1;
+        }
+        ok
+    }
+
+    /// Whether `verify` proved every check of this function that `is` picks
+    /// (at least one, none left open): such a check is left out. Counted.
+    fn proven(&mut self, is: impl Fn(&str) -> bool) -> bool {
+        let Some(name) = &self.proofs_of else { return false };
+        let ok = self.m.proofs.get(name).is_some_and(|p| p.proven.iter().any(|e| is(e)) && !p.open.iter().any(|e| is(e)));
+        if ok {
+            self.m.left_out += 1;
+        } else {
+            self.m.kept += 1;
+        }
+        ok
     }
 
     /// `check`, with a context built at run time (a list element's index).
@@ -4832,7 +5014,8 @@ impl<'m, 'a> Func<'m, 'a> {
         if let Some(d) = &l.declared {
             if !(path.is_empty() && crate::types::refinement_within(self.m.env, param, d) == Some(true)) {
                 let v = self.load(root)?;
-                self.check(d, &v, &format!("assigning `{shown}`"), false)?;
+                // (`verify` calls it writing back)
+                self.check_keyed(d, &v, &format!("assigning `{shown}`"), false, Some(format!("writing back `{shown}`")))?;
             }
         }
         Ok(())
@@ -5271,6 +5454,10 @@ impl<'m, 'a> Func<'m, 'a> {
                 let (from, to) = if name == "take" { ("0".to_string(), k) } else { (k, n.1.clone()) };
                 let r = self.call(&types[0], "@strata_list_slice", &[vs[0].clone(), (Ty::Int, from), (Ty::Int, to)])?;
                 self.temp((vs[0].0.clone(), r.1))
+            }
+            ("at", [t, Ty::Int]) if list_elem(t).is_some() && self.proven(|e| e == "index in range") => {
+                let et = list_elem(t).unwrap();
+                self.list_at(&vs[0], &vs[1].1, &et)?
             }
             ("at", [t, Ty::Int]) if list_elem(t).is_some() => {
                 let et = list_elem(t).unwrap();
@@ -6891,7 +7078,12 @@ impl<'m, 'a> Func<'m, 'a> {
             Stmt::Expr(e) => {
                 self.expr(e)?;
             }
-            Stmt::Assert(x) => self.check_true(x, "assertion failed")?,
+            Stmt::Assert(x) => {
+                let k = format!("assert {}", crate::printer::expr(x, 0));
+                if !self.proven(|e| same_check(e, &k)) {
+                    self.check_true(x, "assertion failed")?
+                }
+            }
             // (checked at the loop's head: `loop_invariants`)
             Stmt::Invariant(_) => {}
             Stmt::Comment(_) => {}
@@ -6908,7 +7100,11 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         self.push_scope(true);
         for x in invs {
-            self.check_true(x, "invariant failed")?;
+            // proven on entry and where every pass ends
+            let k = format!("invariant `{}` ", crate::printer::expr(x, 0));
+            if !self.proven(|e| e.starts_with(&k)) {
+                self.check_true(x, "invariant failed")?;
+            }
         }
         self.pop_scope()
     }

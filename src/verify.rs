@@ -201,6 +201,9 @@ pub enum Verdict {
     /// The solver proved every check (listed).
     Proven {
         checks: Vec<String>,
+        /// Checks true by the types alone (not listed): left out by `build` too.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        given: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         terminates: Option<crate::termination::Termination>,
     },
@@ -213,6 +216,12 @@ pub enum Verdict {
         proven: usize,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         unproven: Vec<String>,
+        /// The checks proven, and those not (refuted, unknown, stopped), by
+        /// name: what `build` leaves out, and keeps (`proofs`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        checks: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        open: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         terminates: Option<crate::termination::Termination>,
     },
@@ -387,7 +396,7 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, key: &str, solver
     };
     let shown = decl.name.to_string();
     let fuzz = |proven: usize, unproven: Vec<String>| match fuzz_limited(key, &shown, cases, seed, None) {
-        Verdict::Fuzzed { cases, discarded, .. } => Verdict::Fuzzed { cases, discarded, proven, unproven, terminates: None },
+        Verdict::Fuzzed { cases, discarded, .. } => Verdict::Fuzzed { cases, discarded, proven, unproven, checks: vec![], open: vec![], terminates: None },
         // not fuzzed either: say what the solver couldn't prove
         Verdict::Skipped { reason } if !unproven.is_empty() => Verdict::Skipped { reason: format!("{reason}; not proven: {}", unproven.join("; ")) },
         other => other,
@@ -420,7 +429,7 @@ pub static RACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 /// cross-check of what it does.
 #[allow(clippy::too_many_arguments)]
 fn solve_then_fuzz(vc: &crate::smt::Vc, bin: &crate::smt::Solver, key: &str, shown: &str, decl: &FnDecl, method: bool, cases: usize, cross_check: usize, seed: u64) -> Verdict {
-    let (mut proven, mut unproven) = (vec![], vec![]);
+    let (mut proven, mut unproven, mut open) = (vec![], vec![], vec![]);
     // every obligation at once (each a solver process), then read in order
     let outcomes: Vec<Option<crate::smt::Outcome>> = std::thread::scope(|sc| {
         let handles: Vec<_> = (0..vc.obligations.len()).map(|i| (!vc.obligations[i].termination).then(|| sc.spawn(move || vc.solve(bin, i)))).collect();
@@ -437,11 +446,20 @@ fn solve_then_fuzz(vc: &crate::smt::Vc, bin: &crate::smt::Solver, key: &str, sho
                     Some(Verdict::Counterexample { args, kind, message, .. }) => {
                         return Verdict::Counterexample { args, kind, message, found_by: "solver".into(), terminates: None };
                     }
-                    _ => unproven.push(format!("{what}: {msg}, but running it did not fail")),
+                    _ => {
+                        unproven.push(format!("{what}: {msg}, but running it did not fail"));
+                        open.push(what);
+                    }
                 }
             }
-            crate::smt::Outcome::Unknown(msg) => unproven.push(format!("{what}: {msg}")),
-            crate::smt::Outcome::Stopped => unproven.push(format!("{what}: stopped")),
+            crate::smt::Outcome::Unknown(msg) => {
+                unproven.push(format!("{what}: {msg}"));
+                open.push(what);
+            }
+            crate::smt::Outcome::Stopped => {
+                unproven.push(format!("{what}: stopped"));
+                open.push(what);
+            }
         }
     }
     for g in &vc.relied_on {
@@ -455,10 +473,10 @@ fn solve_then_fuzz(vc: &crate::smt::Vc, bin: &crate::smt::Solver, key: &str, sho
                 return Verdict::Counterexample { args, kind, message: prover_bug(&message), found_by: "cross-check".into(), terminates: None };
             }
         }
-        return Verdict::Proven { checks: proven, terminates: None };
+        return Verdict::Proven { checks: proven, given: vc.given.clone(), terminates: None };
     }
     match or_solver_inputs(fuzz_limited(key, shown, cases, seed, None), vc, bin, key, shown, decl, method, cases, seed) {
-        Verdict::Fuzzed { cases, discarded, .. } => Verdict::Fuzzed { cases, discarded, proven: proven.len(), unproven, terminates: None },
+        Verdict::Fuzzed { cases, discarded, .. } => Verdict::Fuzzed { cases, discarded, proven: proven.len(), unproven, checks: proven.iter().chain(&vc.given).cloned().collect(), open, terminates: None },
         Verdict::Skipped { reason } if !unproven.is_empty() => Verdict::Skipped { reason: format!("{reason}; not proven: {}", unproven.join("; ")) },
         other => other,
     }
@@ -515,7 +533,7 @@ fn race(vc: &crate::smt::Vc, bin: &crate::smt::Solver, key: &str, shown: &str, d
         }).collect();
         let outcomes: Vec<Option<crate::smt::Outcome>> = handles.into_iter().map(|h| h.map(|h| h.join().expect("a solver thread"))).collect();
         // (the fuzzer is told only once the cases it may run are settled, below)
-        let (mut proven, mut unproven) = (vec![], vec![]);
+        let (mut proven, mut unproven, mut open) = (vec![], vec![], vec![]);
         let mut stopped = false;
         for (i, out) in outcomes.into_iter().enumerate() {
             let Some(out) = out else { continue };
@@ -531,11 +549,20 @@ fn race(vc: &crate::smt::Vc, bin: &crate::smt::Solver, key: &str, shown: &str, d
                             let _ = fuzzer.join();
                             return Verdict::Counterexample { args, kind, message, found_by: "solver".into(), terminates: None };
                         }
-                        _ => unproven.push(format!("{what}: {msg}, but running it did not fail")),
+                        _ => {
+                        unproven.push(format!("{what}: {msg}, but running it did not fail"));
+                        open.push(what);
+                    }
                     }
                 }
-                crate::smt::Outcome::Unknown(msg) => unproven.push(format!("{what}: {msg}")),
-                crate::smt::Outcome::Stopped => stopped = true,
+                crate::smt::Outcome::Unknown(msg) => {
+                    unproven.push(format!("{what}: {msg}"));
+                    open.push(what);
+                }
+                crate::smt::Outcome::Stopped => {
+                    stopped = true;
+                    open.push(what);
+                }
             }
         }
         for g in &vc.relied_on {
@@ -552,13 +579,13 @@ fn race(vc: &crate::smt::Vc, bin: &crate::smt::Solver, key: &str, shown: &str, d
                     return Verdict::Counterexample { args, kind, message: prover_bug(&message), found_by: "cross-check".into(), terminates: None };
                 }
             }
-            return Verdict::Proven { checks: proven, terminates: None };
+            return Verdict::Proven { checks: proven, given: vc.given.clone(), terminates: None };
         }
         budget.store(FULL, Relaxed);
         solved.store(true, Relaxed);
         let fuzzed = or_solver_inputs(fuzzer.join().expect("the fuzzer"), vc, bin, key, shown, decl, method, cases, seed);
         match fuzzed {
-            Verdict::Fuzzed { cases, discarded, .. } => Verdict::Fuzzed { cases, discarded, proven: proven.len(), unproven, terminates: None },
+            Verdict::Fuzzed { cases, discarded, .. } => Verdict::Fuzzed { cases, discarded, proven: proven.len(), unproven, checks: proven.iter().chain(&vc.given).cloned().collect(), open, terminates: None },
             Verdict::Skipped { reason } if !unproven.is_empty() => Verdict::Skipped { reason: format!("{reason}; not proven: {}", unproven.join("; ")) },
             other => other,
         }
@@ -618,7 +645,7 @@ fn or_solver_inputs(v: Verdict, vc: &crate::smt::Vc, bin: &crate::smt::Solver, k
     if ok == 0 {
         return v;
     }
-    Verdict::Fuzzed { cases: ok, discarded, proven: 0, unproven: vec![], terminates: None }
+    Verdict::Fuzzed { cases: ok, discarded, proven: 0, unproven: vec![], checks: vec![], open: vec![], terminates: None }
 }
 
 /// What running a function on one input showed.
@@ -944,7 +971,7 @@ fn fuzz_capped(key: &str, shown: &str, cases: usize, seed: u64, budget: &std::sy
     if ok == 0 && discarded > 0 {
         return Verdict::Skipped { reason: format!("all {discarded} generated inputs violated the precondition") };
     }
-    Verdict::Fuzzed { cases: ok, discarded, proven: 0, unproven: vec![], terminates: None }
+    Verdict::Fuzzed { cases: ok, discarded, proven: 0, unproven: vec![], checks: vec![], open: vec![], terminates: None }
 }
 
 /// A call stack for a message: deep ones (runaway recursion) are cut short.

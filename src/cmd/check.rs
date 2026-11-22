@@ -135,7 +135,7 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     // every check to make, by definition: (label, cache key, how), with the
     // definition's key and module; run in parallel below, reported in order
     type Job<'a> = Box<dyn Fn() -> verify::Verdict + Send + Sync + 'a>;
-    let mut defs: Vec<(String, String, Vec<(String, String, Job)>)> = vec![];
+    let mut defs: Vec<(String, String, String, Vec<(String, String, Job)>)> = vec![];
     for (i, (orig, d)) in p.decls.iter().zip(&resolved.decls).enumerate() {
         if !names.contains(&orig.qname()) {
             continue;
@@ -206,16 +206,19 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
             }
             _ => {}
         }
-        defs.push((base, orig.module.to_string(), jobs));
+        defs.push((base, orig.module.to_string(), orig.qname(), jobs));
     }
     // the checks not cached, on as many threads as there are cores: each
     // solver query is a process of its own
     let force = args.flag("--force");
-    let fresh: Vec<bool> = defs.iter().flat_map(|d| &d.2).map(|j| force || !cache.contains_key(&j.1)).collect();
-    let todo: Vec<&Job> = defs.iter().flat_map(|d| &d.2).zip(&fresh).filter(|(_, f)| **f).map(|(j, _)| &j.2).collect();
+    let fresh: Vec<bool> = defs.iter().flat_map(|d| &d.3).map(|j| force || !cache.contains_key(&j.1)).collect();
+    let todo: Vec<&Job> = defs.iter().flat_map(|d| &d.3).zip(&fresh).filter(|(_, f)| **f).map(|(j, _)| &j.2).collect();
+    // what `build` leaves out: each function's proven checks, for its code as it is now
+    let proofs_at = proofs_dir(&src, args.val("--file"));
+    let mut proofs = proofs_at.as_deref().map(store::load_proofs).unwrap_or_default();
     let mut made = crate::par::map(&todo, |job| job()).into_iter();
     let mut fresh = fresh.into_iter();
-    for (base, module, jobs) in defs {
+    for (base, module, qname, jobs) in defs {
         let mut worst: Option<verify::Verdict> = None;
         for (label, key, _) in jobs {
             let (verdict, cached) = match fresh.next() {
@@ -230,6 +233,18 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
             if worst.as_ref().map_or(true, |w| verdict.rank() > w.rank()) {
                 worst = Some(verdict.clone());
             }
+            match &verdict {
+                verify::Verdict::Proven { checks, given, .. } => {
+                    let proven = checks.iter().chain(given).cloned().collect();
+                    proofs.insert(label.clone(), store::Proved { decl: qname.clone(), hash: base.clone(), proven, open: vec![] });
+                }
+                verify::Verdict::Fuzzed { checks, open, .. } if !checks.is_empty() => {
+                    proofs.insert(label.clone(), store::Proved { decl: qname.clone(), hash: base.clone(), proven: checks.clone(), open: open.clone() });
+                }
+                _ => {
+                    proofs.remove(&label);
+                }
+            }
             module_of.insert(label.clone(), module.clone());
             results.push((label, verdict, cached));
         }
@@ -240,6 +255,9 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     }
     if let Source::Db(cb) = &src {
         cb.save_verdicts(&cache);
+    }
+    if let Some(d) = &proofs_at {
+        store::save_proofs(d, &proofs);
     }
     // the project's policy
     let mut violations = vec![];

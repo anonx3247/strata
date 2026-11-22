@@ -15,7 +15,11 @@ pub fn build(args: &Args) -> Result<bool, String> {
         print_errors(&rep);
         return Ok(false);
     }
-    let ir = llvm::compile(p, "main")?;
+    // the checks the last `verify` proved are left out (unless --all-checks)
+    let file = args.pos.get(1).map(|s| s.as_str()).or(args.val("--file"));
+    let proofs = proofs_for(&src, file, args);
+    let used = !proofs.is_empty();
+    let (ir, left_out, kept) = llvm::compile_proven(p, "main", proofs, false)?;
     if args.flag("--emit-llvm") {
         match args.val("-o") {
             Some(out) => std::fs::write(out, &ir).map_err(|e| format!("{out}: {e}"))?,
@@ -54,6 +58,10 @@ pub fn build(args: &Args) -> Result<bool, String> {
     if !status?.success() {
         return Err(format!("`{cc}` failed on the generated code"));
     }
-    eprintln!("built {out}");
+    if used {
+        eprintln!("built {out}: {left_out} runtime checks left out (proven by `strata verify`), {kept} kept");
+    } else {
+        eprintln!("built {out}");
+    }
     Ok(true)
 }
