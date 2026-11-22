@@ -292,12 +292,12 @@ impl Verdict {
     }
 }
 
-/// Why a function can't be run here because it reaches foreign code
-/// (`extern c`), which only compiled code calls: it is in a module that
-/// declares externs (a native module), takes one of its types, or calls one of
-/// its functions, directly or through other functions.
-fn foreign(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>) -> Option<String> {
-    use crate::names::module_of;
+/// Why a method is trusted rather than checked: a mock's (its tests check
+/// it) or a capability's own (it reaches the outside world). Code that calls
+/// foreign code (`extern c`) or takes a capability is checked like any
+/// other: the foreign function's or the capability's contract is assumed
+/// at the call, and compiled code checks it there.
+fn foreign(env: &Env, _f: &FnDecl, imp: Option<&ImplDecl>) -> Option<String> {
     // a capability's own code reaches the outside world; one passed in can't be made here
     if let Some(i) = imp {
         let head = crate::types::texpr_head(&i.for_type);
@@ -308,53 +308,18 @@ fn foreign(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>) -> Option<String> {
             return Some(format!("`{}` is a capability: it reaches the outside world (only `strata run` gives one)", crate::names::short(&head)));
         }
     }
-    for p in &f.params {
-        let mut named = Vec::new();
-        crate::ast::Visit::ty(&mut Names(&mut named), &p.ty);
-        if let Some(n) = named.iter().find(|n| env.capabilities.contains(*n)) {
-            return Some(format!("it takes the capability `{}`, which only the runtime makes", crate::names::short(n)));
-        }
-    }
-    if env.externs.is_empty() {
-        return None;
-    }
-    let native: crate::fx::HashSet<&str> = env.externs.keys().map(|q| module_of(q)).collect();
-    let shown = |m: &str| if m.is_empty() { "main".to_string() } else { m.to_string() };
-    let home = match imp {
-        Some(i) => module_of(&crate::types::texpr_head(&i.for_type)).to_string(),
-        None => module_of(&f.name).to_string(),
-    };
-    if native.contains(home.as_str()) {
-        return Some(format!("module `{}` calls foreign code (`extern`): only compiled code runs it", shown(&home)));
-    }
-    for p in &f.params {
-        let mut named = Vec::new();
-        crate::ast::Visit::ty(&mut Names(&mut named), &p.ty);
-        if let Some(n) = named.iter().find(|n| native.contains(module_of(n))) {
-            return Some(format!("it takes `{n}`, from module `{}`, which calls foreign code", shown(module_of(n))));
-        }
-    }
-    // the functions it calls, and theirs
-    let mut seen = crate::fx::HashSet::default();
-    let mut todo = vec![f.body.clone()];
-    while let Some(body) = todo.pop() {
-        let mut called = None;
-        crate::ast::walk(&body, |e| {
-            if let Expr::Var(n) = e {
-                if called.is_none() && env.fns.contains_key(n) && seen.insert(*n) {
-                    if native.contains(module_of(n)) {
-                        called = Some(*n);
-                    } else if let Some(g) = env.fns.get(n) {
-                        todo.push(g.body.clone());
-                    }
-                }
-            }
-        });
-        if let Some(n) = called {
-            return Some(format!("it calls `{n}`, in module `{}`, which calls foreign code: only compiled code runs it", shown(module_of(&n))));
-        }
-    }
     None
+}
+
+/// The capability a function takes, if any: the solver proves such a
+/// function from the capability's contracts, but nothing can make one to
+/// run it with (only `strata run` does), so it isn't fuzzed.
+fn takes_capability(env: &Env, f: &FnDecl) -> Option<Symbol> {
+    f.params.iter().find_map(|p| {
+        let mut named = Vec::new();
+        crate::ast::Visit::ty(&mut Names(&mut named), &p.ty);
+        named.into_iter().find(|n| env.capabilities.contains(n))
+    })
 }
 
 /// The type names in a type.
@@ -414,10 +379,19 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, key: &str, solver
     vc.transparent = transparent.clone();
     vc.solver = Some(bin.clone());
     vc.function(&decl, &decl.name);
-    if !RACE.load(std::sync::atomic::Ordering::Relaxed) {
-        return solve_then_fuzz(&vc, bin, key, &shown, &decl, imp.is_some(), cases, cross_check, seed);
+    let v = if !RACE.load(std::sync::atomic::Ordering::Relaxed) {
+        solve_then_fuzz(&vc, bin, key, &shown, &decl, imp.is_some(), cases, cross_check, seed)
+    } else {
+        race(&vc, bin, key, &shown, &decl, imp.is_some(), cases, cross_check, seed)
+    };
+    // (what the solver leaves of a function taking a capability can't be run: say why)
+    match (v, takes_capability(env, f)) {
+        (Verdict::Skipped { reason }, Some(c)) => {
+            let rest = reason.split_once("; not proven: ").map(|(_, r)| format!("; not proven: {r}")).unwrap_or_default();
+            Verdict::Skipped { reason: format!("it takes the capability `{}`, which only `strata run` gives, so it isn't fuzzed{rest}", crate::names::short(&c)) }
+        }
+        (v, _) => v,
     }
-    race(&vc, bin, key, &shown, &decl, imp.is_some(), cases, cross_check, seed)
 }
 
 /// Race the fuzzer against the solver (`race`); `verify --no-race` turns it
@@ -996,4 +970,31 @@ fn static_type_arg(env: &Env, imp: &ImplDecl, f: &FnDecl, d: &mut FnDecl) {
         let ty = TypeExpr::Named(crate::types::TYPE_ARG.into(), vec![whole]);
         d.params.insert(0, Param { name: Symbol::from(crate::types::type_arg("Self")), ty, mutable: false, comptime: false });
     }
+}
+
+/// Where strata keeps what it found between runs: `$STRATA_CACHE`, else
+/// `~/.cache/strata`.
+pub fn cache_root() -> Option<std::path::PathBuf> {
+    match std::env::var_os("STRATA_CACHE") {
+        Some(d) => Some(std::path::PathBuf::from(d)),
+        None => Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join(".cache/strata")),
+    }
+}
+
+/// The compiler's sources (std aside), as a hash made when strata is built:
+/// what `verify` finds changes with them.
+pub const SOURCE_HASH: &str = env!("STRATA_SOURCE_HASH");
+
+/// std as built into this binary, as a short hash.
+pub fn std_hash() -> &'static str {
+    static H: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    H.get_or_init(|| {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        for (file, bytes) in crate::stdlib::FILES {
+            h.update(file.as_bytes());
+            h.update(bytes);
+        }
+        h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect()
+    })
 }

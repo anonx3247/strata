@@ -133,10 +133,14 @@ Views:
 Checking:
   check [--json]               types, exhaustiveness, literal refinements
   holes [--json]               typed holes with goal type, context and obligations
-  verify [SELECTOR] [--cases N] [--checks] [--smt] [--require R,..] [--no-race] [--json]
+  verify [SELECTOR] [--cases N] [--checks] [--smt] [--require R,..] [--no-race] [--no-cache] [--json]
                                prove every contract with an SMT solver (z3), confirm
-                               its counterexamples by running them, fuzz the rest;
-                               results cached by content hash. --checks lists the
+                               its counterexamples by running them, fuzz the rest.
+                               A check's verdict is kept (in the git repository, shared
+                               by its worktrees, else ~/.cache/strata/verdicts) under
+                               a hash of its definition and all it depends on, the
+                               flags, solver and strata binary: an unchanged check
+                               says (cached) (--no-cache: run all). --checks lists the
                                proven checks, --smt prints the solver queries.
                                Each function also says whether it terminates.
                                --require (proven, terminates, no-recursion) fails
@@ -306,6 +310,15 @@ fn proofs_for(src: &Source, file: Option<&str>, args: &Args) -> HashMap<String, 
         return HashMap::default();
     }
     proofs_dir(src, file).map(|d| store::current_proofs(src.program(), &d)).unwrap_or_default()
+}
+
+/// `verify`'s verdicts for `src` (a package, or the script or folder `file`).
+fn verdicts_at(src: &Source, file: Option<&str>) -> store::Verdicts {
+    match (src, file) {
+        (Source::Db(cb), _) => cb.load_verdicts(),
+        (Source::File(_), Some(f)) => store::Verdicts::at(std::path::Path::new(f)),
+        _ => store::Verdicts::none(),
+    }
 }
 
 fn verdicts_for(src: &Source) -> HashMap<String, String> {
