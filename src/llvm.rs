@@ -180,6 +180,24 @@ thread_local! {
     static TRACING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// `f` compiling without tracing: compile-time code made while a traced
+/// program compiles (a literal pattern's matcher) is the compiler's work,
+/// not the program's.
+pub fn untraced<R>(f: impl FnOnce() -> R) -> R {
+    let was = TRACING.with(|t| t.replace(false));
+    let r = f();
+    TRACING.with(|t| t.set(was));
+    r
+}
+
+/// `compile_comptime`, traced (`strata run f [args] --trace`).
+pub fn compile_traced_comptime(prog: &Program, fns: &[String]) -> Res<(String, Vec<Shape>, Shapes)> {
+    TRACING.with(|t| t.set(true));
+    let r = compile_comptime(prog, fns);
+    TRACING.with(|t| t.set(false));
+    r
+}
+
 /// `compile`, each function of the program reporting its calls and returns
 /// on stderr as the interpreter's `--trace` did (`strata_trace_call`).
 pub fn compile_traced(prog: &Program, entry: &str) -> Res<String> {
@@ -192,8 +210,9 @@ pub fn compile_traced(prog: &Program, entry: &str) -> Res<String> {
 /// What a compilation starts from.
 enum Entry<'e> {
     Main(&'e str),
-    /// The tests, but those named here.
-    Tests(&'e [String]),
+    /// The tests, but those named here; with `true`, also those of what the
+    /// program imports (std, dependencies), not only its own.
+    Tests(&'e [String], bool),
     Fuzz(&'e [FuzzTarget]),
     /// std's functions to precompile (`jit::std_library`): only they are exported.
     Library(&'e [String]),
@@ -245,6 +264,14 @@ pub enum Shape {
     Union(Vec<(Option<i64>, Shape)>),
 }
 
+/// What `--trace` reads: each traced function instance's name, arguments'
+/// shapes (`None`: no value) and result's, and the named shapes they use.
+#[derive(Debug, Clone, Default)]
+pub struct Traced {
+    pub fns: Vec<(String, Vec<Option<Shape>>, Option<Shape>)>,
+    pub named: Shapes,
+}
+
 /// A constructor of a named shape: its tag, name, whether it makes a record
 /// (else a variant), and its fields.
 #[derive(Debug, Clone)]
@@ -253,10 +280,6 @@ pub struct CtorShape {
     pub name: String,
     pub record: bool,
     pub fields: Vec<(Option<String>, Shape)>,
-    /// Each field's default, when it has one that is data (as JSON, which
-    /// the host fills in where JSON leaves the field out); `Err` when
-    /// computing it would run code.
-    pub defaults: Vec<Option<Result<serde_json::Value, String>>>,
 }
 
 /// The named shapes a set of shapes refers to.
@@ -304,26 +327,91 @@ pub struct FuzzTarget {
 }
 
 /// The LLVM IR of fuzz drivers (`@"strata.fuzz.N"` for target N): each
-/// generates the target's arguments, records them (`strata_fuzz_arg`), and
+/// generates the target's arguments, hands them over (`strata_fuzz_keep`), and
 /// calls it. Loops and calls count steps (`strata_step`).
-pub fn compile_fuzz(prog: &Program, targets: &[FuzzTarget]) -> Res<String> {
-    Ok(compile_with(prog, Entry::Fuzz(targets), true)?.0)
+pub fn compile_fuzz(prog: &Program, targets: &[FuzzTarget]) -> Res<(String, Vec<Vec<Shape>>, Shapes)> {
+    let (ir, _, shapes) = compile_with(prog, Entry::Fuzz(targets), true)?;
+    let (mut all, named) = shapes.unwrap_or_default();
+    // split back into each driver's
+    let mut per = vec![];
+    for t in targets {
+        let rest = all.split_off(t.params.len().min(all.len()));
+        per.push(std::mem::replace(&mut all, rest));
+    }
+    Ok((ir, per, named))
 }
 
 /// The LLVM IR of a program's `test` blocks: a function per test
 /// (`@"strata.test.N"`, taking and returning nothing), and their names.
-pub fn compile_tests(prog: &Program) -> Res<(String, Vec<String>)> {
-    compile_for(prog, Entry::Tests(&[]))
+/// Only the program's own tests (its files'), unless `with_deps`: what it
+/// imports is tested on its own (std with `--file std`), and compiled and
+/// verified there.
+pub fn compile_tests(prog: &Program, with_deps: bool) -> Res<(String, Vec<String>)> {
+    compile_for(prog, Entry::Tests(&[], with_deps))
 }
 
 /// `compile_tests`, leaving out the tests named in `skip`.
-pub fn compile_tests_except(prog: &Program, skip: &[String]) -> Res<(String, Vec<String>)> {
-    compile_for(prog, Entry::Tests(skip))
+pub fn compile_tests_except(prog: &Program, skip: &[String], with_deps: bool) -> Res<(String, Vec<String>)> {
+    compile_for(prog, Entry::Tests(skip, with_deps))
 }
 
 fn compile_for(prog: &Program, entry: Entry) -> Res<(String, Vec<String>)> {
     let (ir, tests, _) = compile_with(prog, entry, false)?;
     Ok((ir, tests))
+}
+
+/// The matcher of each literal pattern of `matches` (`std.regex.matcher`),
+/// made while compiling (cached), as a function returning it as data
+/// (`strata.matcher.N`), added to `p`: by pattern, the function's name. A
+/// pattern that isn't a regex has none: matched when the program runs, it
+/// faults saying why. The program's code is left as written (its messages
+/// show `matches(it, "…")`).
+fn literal_patterns(p: &mut Program) -> HashMap<String, String> {
+    let mut patterns: Vec<String> = vec![];
+    for d in &p.decls {
+        let mut k = d.kind.clone();
+        crate::ast::decl_all_exprs_mut(&mut k, |e| {
+            if let Expr::Call(f, args) = e {
+                if let (Expr::Var(n), [_, Expr::Str(s)]) = (&**f, args.as_slice()) {
+                    if n.as_str() == "matches" && !patterns.contains(s) {
+                        patterns.push(s.clone());
+                    }
+                }
+            }
+        });
+    }
+    // (std is there, under qualified names, when the program calls `matches`)
+    let mut out = HashMap::default();
+    if patterns.is_empty() || !p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Fn(f) if f.name.as_str() == "std.regex.matcher")) {
+        return out;
+    }
+    let calls: Vec<Expr> = patterns.iter().map(|s| Expr::Call(Box::new(Expr::Var(Symbol::new("std.regex.matcher"))), vec![Expr::Str(s.clone())])).collect();
+    let made = crate::derive::comptime_literals(p, &calls);
+    for (i, (s, m)) in patterns.iter().zip(made).enumerate() {
+        let Ok(m) = m else { continue };
+        if matches!(&m, Expr::Ctor(c, _) if c.as_str().ends_with("NotARegex")) {
+            continue;
+        }
+        let name = format!("strata.matcher.{i}");
+        let f = FnDecl {
+            doc: vec![],
+            comments: vec![],
+            name: Symbol::new(&name),
+            type_params: vec![],
+            bounds: vec![],
+            params: vec![],
+            ret: TypeExpr::Named(Symbol::new("std.regex.Matcher"), vec![]),
+            requires: vec![],
+            ensures: vec![],
+            terminates: false,
+            body: m,
+            comptime: false,
+            derived: false,
+        };
+        p.decls.push(Decl { comments: vec![], doc: vec![], kind: DeclKind::Fn(f), module: Symbol::new(""), public: false });
+        out.insert(s.clone(), name);
+    }
+    out
 }
 
 #[allow(clippy::type_complexity)]
@@ -333,13 +421,17 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     // the list built-ins in Strata, compiled with the program
     let mut with = prog.clone();
     let prelude = crate::binary::decode_module(PRELUDE).map_err(|e| format!("llvm/prelude.strata: {e}"))?;
-    let (resolved, types) = if resolved {
+    let mut with = if resolved {
         with.decls.extend(crate::resolve::resolve(&Program { decls: prelude }).program.decls);
-        crate::types::elaborate_resolved(&with)
+        with
     } else {
         with.decls.extend(prelude);
-        crate::types::elaborate_typed(&with)
+        crate::resolve::resolve(&with).program
     };
+    // a literal pattern's matcher (a DFA, usually) is made now: data in the
+    // program (not for compile-time code or std's library, which have none)
+    let matchers = if matches!(entry, Entry::Main(_) | Entry::Tests(..) | Entry::Fuzz(_)) { literal_patterns(&mut with) } else { HashMap::default() };
+    let (resolved, types) = crate::types::elaborate_resolved(&with);
     let (env, _) = Env::build(&resolved.program);
     // every constructor gets a tag of its own, so a value's tag says what it is
     let mut ctors: Vec<&Symbol> = env.ctors.keys().collect();
@@ -384,7 +476,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), regexes: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers };
     // std's precompiled functions, but while making them, tracing, or in a library
     if !BUILDING_STD.with(|b| b.get()) && !m.tracing && !matches!(entry, Entry::Library(_)) {
         m.precompiled = jit::std_library().map(|l| &l.names);
@@ -434,10 +526,14 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
             }
             return Ok((String::new(), vec![], Some((roots, named))));
         }
-        Entry::Tests(skip) => {
-            // each test, a function of its own (no frame of its own on the call stack)
-            for d in &resolved.program.decls {
+        Entry::Tests(skip, with_deps) => {
+            // each test, a function of its own (no frame of its own on the call stack);
+            // the program's own definitions come first, what it imports after them
+            for (i, d) in resolved.program.decls.iter().enumerate() {
                 let DeclKind::Test(t) = &d.kind else { continue };
+                if !with_deps && i >= prog.decls.len() {
+                    continue;
+                }
                 if skip.iter().any(|s| s == t.name.as_str()) {
                     continue;
                 }
@@ -495,6 +591,15 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         }
         shapes = Some((roots, named));
     }
+    if matches!(entry, Entry::Fuzz(_)) {
+        // each driver's arguments, one after another
+        let (per, named) = std::mem::take(&mut m.fuzz_kept);
+        shapes = Some((per.into_iter().flatten().collect(), named));
+    }
+    // what `--trace` reads values by (the JIT's hooks print them)
+    if m.tracing {
+        jit::set_traced(std::mem::take(&mut m.traced));
+    }
     let mut out = String::from("; Strata, compiled by `strata build`\n\n");
     out += &m.globals;
     out += "\n";
@@ -542,6 +647,7 @@ declare ptr @strata_host_read_line()
 declare ptr @strata_host_read_file(ptr, ptr, ptr)
 declare ptr @strata_host_code_version()
 declare ptr @strata_host_code_snapshot(ptr)
+declare ptr @strata_host_read_bytes(ptr, ptr, ptr)
 declare i1 @strata_host_write_file(ptr, ptr, i1, ptr, ptr)
 declare i1 @strata_host_exists(ptr)
 declare ptr @strata_host_list_dir(ptr, ptr, ptr)
@@ -558,13 +664,13 @@ declare i64 @strata_str_len(ptr)
 declare void @strata_fault(i32, ptr) noreturn
 declare void @strata_enter(ptr)
 declare void @strata_step()
-declare void @strata_fuzz_arg(ptr)
+declare void @strata_fuzz_keep(i64, i64)
 declare void @strata_ct_keep(i64)
 declare i64 @strata_given(i64)
 declare void @strata_leave()
-declare i1 @strata_regex_match(ptr, ptr)
-declare void @strata_trace_call(ptr, ptr)
-declare void @strata_trace_return(ptr, ptr)
+declare void @strata_trace_arg(i64, i64, i64)
+declare void @strata_trace_call(i64)
+declare void @strata_trace_return(i64, i64)
 declare void @strata_overflow() noreturn cold
 declare void @strata_main_error(ptr)
 declare i64 @strata_div(i64, i64)
@@ -575,6 +681,11 @@ declare i64 @strata_int_cmp(i64, i64)
 declare i1 @strata_int_eq(i64, i64)
 declare i64 @strata_int_lit(ptr)
 declare i64 @strata_int_from_i64(i64)
+declare i64 @strata_int_and(i64, i64)
+declare i64 @strata_int_or(i64, i64)
+declare i64 @strata_int_xor(i64, i64)
+declare i64 @strata_shl(i64, i64)
+declare i64 @strata_shr(i64, i64)
 declare i64 @strata_int_from_u64(i64)
 declare i64 @strata_int_bits(i64)
 declare ptr @strata_cstr(ptr, ptr)
@@ -622,8 +733,10 @@ declare ptr @strata_str_replace(ptr, ptr, ptr)
 declare ptr @strata_str_repeat(ptr, i64)
 declare ptr @strata_str_case(ptr, ptr, i64, ptr, i64, i1)
 declare i1 @strata_str_is(ptr, i64, ptr, i64)
-declare i1 @strata_dfa_match(ptr, ptr, i64, ptr, ptr, ptr)
 declare i64 @strata_str_ord(ptr)
+declare i64 @strata_str_byte_len(ptr)
+declare i64 @strata_str_byte_at(ptr, i64)
+declare ptr @strata_str_byte_slice(ptr, i64, i64)
 declare ptr @strata_str_chr(i64)
 declare i1 @strata_parse_int(ptr, ptr)
 declare i1 @strata_parse_float(ptr, ptr)
@@ -787,6 +900,8 @@ struct Module<'a> {
     strings: HashMap<String, String>,
     /// How many constant lists and blocks there are (they are named by number).
     constants: usize,
+    /// The function returning each literal pattern's matcher (`literal_patterns`).
+    matchers: HashMap<String, String>,
     /// Each constant list or block by its contents, so equal ones are one.
     constant_of: HashMap<String, String>,
     /// Compiled functions.
@@ -803,10 +918,14 @@ struct Module<'a> {
     box_tags: HashMap<String, i64>,
     /// Compiled for `strata verify --jit`: loops and calls count steps.
     fuzzing: bool,
+    /// The shapes of each fuzz driver's arguments (handed to the runtime as
+    /// they are made: `strata_fuzz_keep`), and the named shapes they use.
+    fuzz_kept: (Vec<Vec<Shape>>, Shapes),
+    /// `--trace`: each traced function instance (its id is its place): its
+    /// name, its arguments' shapes (`None`: no value) and its result's.
+    traced: Traced,
     /// `strata run --trace`: each function of the program reports its calls and returns.
     tracing: bool,
-    /// The tables of each regex `matches` uses (its globals' name, and its classes).
-    regexes: HashMap<String, (String, usize)>,
     /// Generators made (by the type and hints they generate), and mock methods.
     gens: HashMap<String, String>,
     /// The tables made for each trait type (by its key), with the implementation.
@@ -825,12 +944,20 @@ thread_local! {
     static BUILDING_STD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// `f` run as part of making std's library: code compiled meanwhile (std's
+/// own `comptime` expressions, evaluated when std is resolved) doesn't wait
+/// for the library being made, which would wait for itself.
+pub fn building_std<T>(f: impl FnOnce() -> T) -> T {
+    let was = BUILDING_STD.with(|b| b.replace(true));
+    let r = f();
+    BUILDING_STD.with(|b| b.set(was));
+    r
+}
+
 /// Make std's library: `names` compiled, everything else they use kept
 /// internal to it (helpers, lambdas, generic instances: each program has its own).
 pub fn compile_library(prog: &Program, names: &[String]) -> Res<String> {
-    BUILDING_STD.with(|b| b.set(true));
-    let r = compile_with(prog, Entry::Library(names), false);
-    BUILDING_STD.with(|b| b.set(false));
+    let r = building_std(|| compile_with(prog, Entry::Library(names), false));
     let ir = r?.0;
     let exported: Vec<String> = names.iter().map(|n| format!("{}(", sym_impls(n, &[], &[]))).collect();
     Ok(ir
@@ -1131,6 +1258,47 @@ impl<'a> Module<'a> {
         !self.nominal(&self.repr(m).unwrap_or(Ty::Unit))
     }
 
+    /// The named union a union type is (`Shape` for `Circle | Square`), as
+    /// the checker finds it (`Checker::union_name`): its methods are its own.
+    fn union_name(&self, t: &Ty) -> Option<String> {
+        // a sum counts as its variants (`Circle | Shape$own` is `Circle | Square | Dot`)
+        let exact = |ms: Vec<Ty>| {
+            let mut k: Vec<String> = ms.iter().flat_map(|m| match self.ctors_of(m) {
+                cs if cs.is_empty() => vec![key(m)],
+                cs => cs,
+            }).collect();
+            k.sort();
+            k.dedup();
+            k
+        };
+        let want = exact(self.members(t));
+        if want.len() < 2 {
+            return None;
+        }
+        let mut names: Vec<&Symbol> = self.env.types.iter().filter(|(_, td)| crate::types::union_alias(td)).map(|(n, _)| n).collect();
+        names.sort();
+        // one without type parameters, exactly; else a generic one, its
+        // members paired by what they are (`List[T]` with `List[Int]`): the
+        // checker made sure no two of its members are alike
+        if let Some(n) = names.iter().find(|n| self.env.types[**n].params.is_empty() && self.lower(&TypeExpr::Named(***n, vec![]), &HashMap::default()).is_ok_and(|u| exact(self.members(&u)) == want)) {
+            return Some(n.to_string());
+        }
+        let heads = |ms: Vec<Ty>| {
+            let mut k: Vec<String> = ms.iter().flat_map(|m| match self.ctors_of(m) {
+                cs if cs.is_empty() => vec![Module::head(m).unwrap_or_else(|| key(m))],
+                cs => cs,
+            }).collect();
+            k.sort();
+            k
+        };
+        let want = heads(self.members(t));
+        names.into_iter().filter(|n| !self.env.types[*n].params.is_empty()).find(|n| {
+            let ps = &self.env.types[*n].params;
+            let sub: HashMap<Symbol, Ty> = ps.iter().map(|p| (*p, Ty::Unit)).collect();
+            self.lower(&TypeExpr::Named(**n, ps.iter().map(|p| TypeExpr::Named(*p, vec![])).collect()), &sub).is_ok_and(|u| heads(self.members(&u)) == want)
+        }).map(|n| n.to_string())
+    }
+
     /// The members of a union type (itself, for any other type).
     fn members(&self, t: &Ty) -> Vec<Ty> {
         match self.repr(t) {
@@ -1203,14 +1371,7 @@ impl<'a> Module<'a> {
                         for f in self.fields(&c, &self.ctor_args(&c, &r))? {
                             fields.push((f.name.clone(), self.shape(&f.ty, named)?));
                         }
-                        let defaults = fields
-                            .iter()
-                            .map(|(n, _)| {
-                                let e = self.env.field_default(&c, n.as_deref()?)?;
-                                Some(native::constant(self.env, &e).map(|v| crate::interp::to_json(&v)).ok_or(format!("its default, `{}`, is computed", crate::printer::expr(&e, 0))))
-                            })
-                            .collect();
-                        cs.push(CtorShape { tag: self.tags[&c], name: c.clone(), record, fields, defaults });
+                        cs.push(CtorShape { tag: self.tags[&c], name: c.clone(), record, fields });
                     }
                     named.named.insert(k.clone(), cs);
                 }
@@ -1254,6 +1415,7 @@ impl<'a> Module<'a> {
             TypeBody::Sum(vs) => {
                 let v = vs.iter().find(|v| v.name == c).unwrap();
                 match &v.payload {
+                    Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
                     Payload::None => Ok(vec![]),
                     Payload::Positional(ts) => ts.iter().map(|t| mk(None, t)).collect(),
                     Payload::Record(fs) => fs.iter().map(|f| mk(Some(f.name.to_string()), &f.ty)).collect(),
@@ -1311,7 +1473,8 @@ impl<'a> Module<'a> {
         // on the call stack a fault shows (the program's functions, as the interpreter's)
         let framed = !name.starts_with(PRELUDE_MODULE) && !name.starts_with("test \"") && name != COMPTIME;
         if framed {
-            let n = c.m.string(name);
+            // a prelude trait's method by its short name (`ListIter.next`)
+            let n = c.m.string(&crate::types::shown_name(name));
             c.emit(format!("call void @strata_enter(ptr {n})"));
         }
         if c.m.fuzzing {
@@ -1327,31 +1490,43 @@ impl<'a> Module<'a> {
             let slot = c.local(&p.name, t, None)?;
             c.store(&(t.clone(), format!("%p.{}", p.name)), &slot)?;
         }
-        // a capability holds nothing: the runtime's is a null pointer
+        // what a test asks for: a capability holds nothing (the runtime's is a null
+        // pointer), `Console` is the terminal (a test's output is its own), the run
+        // mode is `Testing`
         for p in inst.given {
             let t = c.m.lower(&p.ty, &HashMap::default())?;
+            let wanted = crate::printer::ty(&p.ty);
+            let v = if wanted == crate::cmd::CONSOLE {
+                c.coerce((Ty::Con(Symbol::new("std.io.Terminal"), vec![]), "null".into()), &t)?
+            } else if wanted == crate::cmd::RUN_MODE {
+                (t.clone(), c.m.nullary("std.process.Testing"))
+            } else {
+                (t.clone(), "null".into())
+            };
+            let v = c.take(v);
             let slot = c.local(&p.name, &t, None)?;
-            c.store(&(t, "null".into()), &slot)?;
+            c.store(&v, &slot)?;
         }
         if c.m.tracing && framed && !name.starts_with("strata_") {
-            // `{"event":"call","fn":…,"args":[…],"depth":n}` (the runtime adds the depth)
-            let mut parts = vec![Part::Lit("[".into())];
-            for (i, p) in f.params.iter().enumerate() {
+            // each argument handed to strata (`strata_trace_arg`, read by its shape), then the call
+            let id = c.m.traced.fns.len();
+            let mut named = std::mem::take(&mut c.m.traced.named);
+            let mut shapes = vec![];
+            for (k, p) in f.params.iter().enumerate() {
                 let v = c.load(&p.name)?;
-                if i > 0 {
-                    parts.push(Part::Lit(",".into()));
-                }
                 if has_value(&v.0) {
-                    let shown = c.json(&v)?;
-                    parts.push(Part::Val(shown));
+                    shapes.push(Some(c.m.shape(&v.0, &mut named)?));
+                    let slot = c.as_slot(&v)?;
+                    c.emit(format!("call void @strata_trace_arg(i64 {id}, i64 {k}, i64 {slot})"));
                 } else {
-                    parts.push(Part::Lit("null".into()));
+                    shapes.push(None);
                 }
             }
-            parts.push(Part::Lit("]".into()));
-            let args = c.concat(parts)?;
-            let n = c.m.string(&serde_json::to_string(name).unwrap());
-            c.emit(format!("call void @strata_trace_call(ptr {n}, ptr {})", args.1));
+            let result = if has_value(&ret) { Some(c.m.shape(&ret, &mut named)?) } else { None };
+            c.m.traced.named = named;
+            c.m.traced.fns.push((name.to_string(), shapes, result));
+            c.emit(format!("call void @strata_trace_call(i64 {id})"));
+            c.trace_id = Some(id);
         }
         // the written types of the program's own declaration (inline refinements are its nodes)
         for p in own.own_params {
@@ -1365,7 +1540,7 @@ impl<'a> Module<'a> {
             let (pass, fail) = (c.fresh_label("requires.ok"), c.fresh_label("requires.fail"));
             c.cond_br(&ok, &pass, &fail);
             c.block(&fail);
-            let mut parts = vec![Part::Lit(format!("precondition of `{name}` violated: requires {} (with ", crate::printer::expr(r, 0)))];
+            let mut parts = vec![Part::Lit(crate::types::shown_name(&format!("precondition of `{name}` violated: requires {} (with ", crate::printer::expr(r, 0))))];
             for (i, p) in f.params.iter().enumerate() {
                 let v = c.load(&p.name)?;
                 let shown = c.json(&v)?;
@@ -1418,10 +1593,9 @@ impl<'a> Module<'a> {
             }
             c.pop_scope()?;
         }
-        if c.m.tracing && framed && !name.starts_with("strata_") {
-            let shown = if has_value(&ret) { c.json(&result)? } else { c.m.string("null") };
-            let n = c.m.string(&serde_json::to_string(name).unwrap());
-            c.emit(format!("call void @strata_trace_return(ptr {n}, ptr {shown})"));
+        if let Some(id) = c.trace_id {
+            let slot = if has_value(&ret) { c.as_slot(&result)? } else { "0".into() };
+            c.emit(format!("call void @strata_trace_return(i64 {id}, i64 {slot})"));
         }
         if framed {
             c.emit("call void @strata_leave()".into());
@@ -1477,6 +1651,21 @@ impl<'a> Module<'a> {
                     impls.push(None);
                     continue;
                 }
+            }
+            // how it runs, when the package lets it ask: `Running`, or `Tracing` under --trace
+            if wanted == crate::cmd::RUN_MODE && crate::cmd::run_mode_allowed() {
+                let which = if c.m.tracing { "std.process.Tracing" } else { "std.process.Running" };
+                let v = (Ty::Con(Symbol::new(crate::cmd::RUN_MODE), vec![]), c.m.nullary(which));
+                if p.mutable {
+                    let slot = c.fresh("mode");
+                    writeln!(c.allocas, "  {slot} = alloca ptr").unwrap();
+                    c.emit(format!("store ptr {}, ptr {slot}", v.1));
+                    args.push((Ty::Str, slot));
+                } else {
+                    args.push(v);
+                }
+                impls.push(None);
+                continue;
             }
             // `Console`: the one capability the environment chooses, the terminal here
             if wanted != crate::cmd::CONSOLE || !c.m.env.capabilities.contains(&Symbol::new("std.io.Terminal")) {
@@ -1700,6 +1889,8 @@ struct Func<'m, 'a> {
     fail_marks: HashMap<String, usize>,
     /// The result's type and slot.
     ret_slot: Option<(Ty, String)>,
+    /// `--trace`: this function's id among the traced (it reports its return).
+    trace_id: Option<usize>,
     /// The current block, and whether it has ended (with a jump or `ret`).
     cur: String,
     terminated: bool,
@@ -1709,7 +1900,7 @@ struct Func<'m, 'a> {
 
 impl<'m, 'a> Func<'m, 'a> {
     fn new(m: &'m mut Module<'a>, sub: HashMap<Symbol, Ty>) -> Self {
-        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, cur: String::new(), terminated: true, places: vec![] }
+        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![] }
     }
 
     /// The function's text: the slots, then the code.
@@ -2122,10 +2313,16 @@ impl<'m, 'a> Func<'m, 'a> {
     /// assign a variable: in `f(x, { x = g(); 1 })` the assignment drops
     /// the value `x` held, which the call still reads.
     fn operands(&mut self, es: &[&Expr]) -> Res<Vec<V>> {
+        // whether some operand after each one may assign: from the right, once
+        // (asking it of the rest for each operand was quadratic in a list literal)
+        let mut later = vec![false; es.len()];
+        for i in (0..es.len().saturating_sub(1)).rev() {
+            later[i] = later[i + 1] || assigns(es[i + 1]);
+        }
         let mut vs = vec![];
         for (i, e) in es.iter().enumerate() {
             let v = self.expr(e)?;
-            let v = if es[i + 1..].iter().any(|x| assigns(x)) { self.hold(v) } else { v };
+            let v = if later[i] { self.hold(v) } else { v };
             vs.push(v);
         }
         Ok(vs)
@@ -2287,14 +2484,17 @@ impl<'m, 'a> Func<'m, 'a> {
     /// fits one: a small `Int`, `()`, or a constant object (a string, a
     /// constant list or block: `@...` or `getelementptr`, never freed).
     fn constant_slot(&mut self, v: &V) -> Res<Option<(&'static str, String)>> {
-        if is_never(&v.0) || !constant(&v.1) {
+        if is_never(&v.0) {
             return Ok(None);
         }
         Ok(match self.m.repr(&v.0)? {
             Ty::Int if v.1.parse::<i64>().is_ok() => Some(("i64", v.1.clone())),
             Ty::Unit => Some(("i64", "0".into())),
-            Ty::Int | Ty::Float | Ty::Bool => None,
-            _ if v.1 == "null" || v.1 == "poison" || v.1.is_empty() => None,
+            // a float literal is its bits in hex (`0x3FF8000000000000`)
+            Ty::Float => v.1.strip_prefix("0x").and_then(|h| u64::from_str_radix(h, 16).ok()).map(|b| ("i64", (b as i64).to_string())),
+            Ty::Bool if v.1 == "true" || v.1 == "false" => Some(("i64", if v.1 == "true" { "1" } else { "0" }.into())),
+            Ty::Int | Ty::Bool => None,
+            _ if !constant(&v.1) || v.1 == "null" || v.1 == "poison" || v.1.is_empty() => None,
             _ => Some(("ptr", v.1.clone())),
         })
     }
@@ -2322,14 +2522,20 @@ impl<'m, 'a> Func<'m, 'a> {
         if vs.is_empty() {
             return Ok(None);
         }
-        let Some((ty, arr)) = self.constant_slots(vs)? else { return Ok(None) };
-        let key = format!("block {tag} {arr}");
+        let mut tys = vec![];
+        let mut items = vec![];
+        for v in vs {
+            let Some((k, c)) = self.constant_slot(v)? else { return Ok(None) };
+            tys.push(k);
+            items.push(format!("{k} {c}"));
+        }
+        let key = format!("block {tag} {}", items.join(", "));
         if let Some(at) = self.m.constant_of.get(&key) {
             return Ok(Some(at.clone()));
         }
         let g = format!("@.const.{}", self.m.constants);
         self.m.constants += 1;
-        writeln!(self.m.globals, "{g} = private unnamed_addr constant {{ i64, i64, {ty} }} {{ i64 0, i64 {tag}, {arr} }}, align 8").unwrap();
+        writeln!(self.m.globals, "{g} = private unnamed_addr constant {{ i64, i64, {} }} {{ i64 0, i64 {tag}, {} }}, align 8", tys.join(", "), items.join(", ")).unwrap();
         let at = format!("getelementptr inbounds (i8, ptr {g}, i64 8)");
         self.m.constant_of.insert(key, at.clone());
         Ok(Some(at))
@@ -2570,6 +2776,31 @@ impl<'m, 'a> Func<'m, 'a> {
             self.call(&Ty::Unit, &f, &[(t, v.1.clone())])?;
         }
         Ok(())
+    }
+
+    /// A value as the 8-byte slot it is kept in (`native::read` reads it):
+    /// itself, a float's bits, a Bool widened, a pointer's address.
+    fn as_slot(&mut self, v: &V) -> Res<String> {
+        let ll = self.m.ll(&v.0)?;
+        Ok(match ll {
+            "void" => "0".into(),
+            "i64" => v.1.clone(),
+            "double" => {
+                let r = self.fresh("slot");
+                self.emit(format!("{r} = bitcast double {} to i64", v.1));
+                r
+            }
+            "i1" => {
+                let r = self.fresh("slot");
+                self.emit(format!("{r} = zext i1 {} to i64", v.1));
+                r
+            }
+            _ => {
+                let r = self.fresh("slot");
+                self.emit(format!("{r} = ptrtoint ptr {} to i64", v.1));
+                r
+            }
+        })
     }
 
     /// A value as JSON, for messages and nested in other values.
@@ -3509,8 +3740,17 @@ impl<'m, 'a> Func<'m, 'a> {
     fn holds(&mut self, written: &TypeExpr, v: &V) -> Res<V> {
         let TypeExpr::Named(name, _) = written else { return self.unsupported("this type pattern") };
         if self.m.boxed(&v.0) {
-            // the member first, then its refinements on the value as it
-            let target = self.lower(written)?;
+            // the member first, then its refinements on the value as it; a
+            // generic one named without its arguments (`List =>`) is the
+            // union's member of that name (`List[Int]`)
+            let bare = match written {
+                TypeExpr::Named(n, a) if a.is_empty() => self.m.members(&v.0).into_iter().find(|m| Module::head(m).as_deref() == Some(n.as_str()) && !Module::args_of(m).is_empty()),
+                _ => None,
+            };
+            let target = match bare {
+                Some(m) => m,
+                None => self.lower(written)?,
+            };
             let is = self.holds_member(v, &target)?;
             if self.m.boxed(&target) || self.m.members(&target).len() > 1 {
                 return Ok(is);
@@ -3956,7 +4196,6 @@ impl<'m, 'a> Func<'m, 'a> {
             Expr::Mut(x) => self.expr(x)?,
             // evaluated at build time once deriving lands; until then, as written
             Expr::Comptime(x) => self.expr(x)?,
-            Expr::Describe(_) => return self.unsupported("a type's description outside a derived method"),
             Expr::Mock(t) => {
                 let tr_ty = self.lower(t)?;
                 if !self.is_dyn(&tr_ty) {
@@ -4024,6 +4263,31 @@ impl<'m, 'a> Func<'m, 'a> {
         let v = self.fresh("n");
         self.emit(format!("{v} = phi i64 [ {r}, %{fast} ], [ {big}, %{slow} ]"));
         // a new value (a big one is an object)
+        self.temp((Ty::Int, v))
+    }
+
+    /// `&`, `|`, `^` on `Int`s: here when both are small (so is the result:
+    /// a small `Int` is its own 64-bit two's complement), else in the runtime.
+    fn bit_op(&mut self, op: BinOp, a: &V, b: &V) -> V {
+        let (ins, f) = match op {
+            BinOp::BitAnd => ("and", "and"),
+            BinOp::BitOr => ("or", "or"),
+            _ => ("xor", "xor"),
+        };
+        let r = self.fresh("bits");
+        self.emit(format!("{r} = {ins} i64 {}, {}", a.1, b.1));
+        let ok = self.all_small(&[&a.1, &b.1]);
+        let (fast, slow, end) = (self.fresh_label("bits.small"), self.fresh_label("bits.big"), self.fresh_label("bits.done"));
+        self.emit(format!("br i1 {ok}, label %{fast}, label %{slow}"));
+        self.block(&fast);
+        self.br(&end);
+        self.block(&slow);
+        let big = self.fresh("big");
+        self.emit(format!("{big} = call i64 @strata_int_{f}(i64 {}, i64 {})", a.1, b.1));
+        self.br(&end);
+        self.block(&end);
+        let v = self.fresh("n");
+        self.emit(format!("{v} = phi i64 [ {r}, %{fast} ], [ {big}, %{slow} ]"));
         self.temp((Ty::Int, v))
     }
 
@@ -4178,6 +4442,12 @@ impl<'m, 'a> Func<'m, 'a> {
                 let r = self.call(&Ty::Int, "@strata_mod", &[a.clone(), b.clone()])?;
                 self.temp(r)
             }
+            (BitAnd | BitOr | BitXor, Ty::Int) => self.bit_op(op, a, b),
+            (Shl | Shr, Ty::Int) => {
+                let f = if op == Shl { "@strata_shl" } else { "@strata_shr" };
+                let r = self.call(&Ty::Int, f, &[a.clone(), b.clone()])?;
+                self.temp(r)
+            }
             (Add | Sub | Mul | Div | Mod, Ty::Float) => {
                 let r = match op {
                     Mod => self.call(&Ty::Float, "@strata_fmod", &[a.clone(), b.clone()])?,
@@ -4251,30 +4521,40 @@ impl<'m, 'a> Func<'m, 'a> {
             return self.expr(args[1]);
         }
         if name == "matches" && args.len() == 2 && self.lookup(name).is_none() && !self.m.env.fns.contains_key(&Symbol::new(name)) {
-            // a pattern built at run time: the runtime's engine (Rust's `regex`, under the JIT)
-            let Expr::Str(re) = args[1] else {
-                let vs = self.operands(&args)?;
-                return self.call(&Ty::Bool, "@strata_regex_match", &vs);
-            };
-            // a literal pattern, compiled to a DFA now
-            let v = self.expr(args[0])?;
-            if is_never(&v.0) {
-                return Ok(v);
+            // a literal pattern: its matcher, made while compiling (a DFA, usually)
+            if let Expr::Str(re) = args[1] {
+                if let Some(f) = self.m.matchers.get(re.as_str()).cloned() {
+                    let x = self.expr(args[0])?;
+                    if is_never(&x.0) {
+                        return Ok(x);
+                    }
+                    let m = self.call_fn(&f, vec![], None)?;
+                    return self.call_fn("std.regex.run_matcher", vec![m, x], Some(Ty::Bool));
+                }
             }
-            return match self.m.regex(re)? {
-                Ok((g, nc)) => {
-                    let t = |part: &str| (Ty::Str, format!("@\"{g}.{part}\""));
-                    self.call(&Ty::Bool, "@strata_dfa_match", &[(Ty::Str, v.1), t("cls"), (Ty::Int, nc.to_string()), t("next"), t("dead"), t("end")])
+            // std.regex's engine: a pattern built at run time, or a literal one
+            // that isn't a regex
+            {
+                let vs = self.operands(&args)?;
+                if vs.iter().any(|v| is_never(&v.0)) {
+                    return Ok(never());
                 }
-                Err(msg) => {
-                    // (the interpreter shows no call stack for this one)
-                    let m = self.string(&msg);
-                    self.emit(format!("call void @strata_fault(i32 {}, ptr {})", Fault::Runtime as i32 | 256, m.1));
-                    self.emit("unreachable".into());
-                    self.dead();
-                    Ok(never())
-                }
-            };
+                let code = self.call_fn("std.regex.match_code", vs.clone(), Some(Ty::Int))?;
+                // -1: not a regex, a fault saying why
+                let bad = self.apply(BinOp::Eq, &code, &(Ty::Int, "-1".into()))?;
+                let (fail, ok) = (self.fresh_label("bad_regex"), self.fresh_label("regex_ok"));
+                self.cond_br(&bad, &fail, &ok);
+                self.block(&fail);
+                // (its temporaries are its own: the block ends in the fault)
+                self.push_scope(true);
+                let why = self.call_fn("std.regex.pattern_error", vec![vs[1].clone()], Some(Ty::Str))?;
+                let msg = self.concat(vec![Part::Lit("bad regex: ".into()), Part::Val(why.1.clone())])?;
+                self.emit(format!("call void @strata_fault(i32 {}, ptr {})", Fault::Runtime as i32 | 256, msg.1));
+                self.emit("unreachable".into());
+                self.pop_scope()?;
+                self.block(&ok);
+                return self.apply(BinOp::Eq, &code, &(Ty::Int, "1".into()));
+            }
         }
         if self.lookup(name).is_some() {
             // a local closure
@@ -4410,6 +4690,10 @@ impl<'m, 'a> Func<'m, 'a> {
         if self.m.env.is_method(Symbol::new(name)) {
             if let Some(recv) = vs.first().map(|v| v.0.clone()) {
                 if matches!(self.m.repr(&recv)?, Ty::Union(_)) {
+                    // a named union's own implementation, else each member's
+                    if let Some(h) = self.m.union_name(&recv).filter(|h| self.m.resolve_method(name, h).is_some_and(|(tr, _)| self.m.impl_of(&tr, h).is_some())) {
+                        return self.method_target(name, recv, h, vs, hint, &places);
+                    }
                     return self.call_on_union(name, vs, hint, &places);
                 }
                 if self.is_dyn(&recv) || Module::head(&recv).is_some_and(|h| self.m.resolve_method(name, &h).is_some() || self.m.ctors_of(&recv).iter().any(|c| self.m.resolve_method(name, c).is_some())) {
@@ -4500,7 +4784,7 @@ impl<'m, 'a> Func<'m, 'a> {
         if vs.iter().any(|v| is_never(&v.0)) {
             return Ok(never());
         }
-        let head = Module::head(&recv).ok_or(format!("`{name}` on a `{}`", key(&recv)))?;
+        let head = Module::head(&recv).or_else(|| self.m.union_name(&recv)).ok_or(format!("`{name}` on a `{}`", key(&recv)))?;
         // a refined alias (`Positive`) has its base type's methods
         let head = match &recv {
             Ty::Con(n, _) if crate::types::refined_alias(self.m.env, *n) => Module::head(&self.m.repr(&recv)?).unwrap_or(head),
@@ -4585,7 +4869,7 @@ impl<'m, 'a> Func<'m, 'a> {
 
     /// `call_fn`, with the places of the arguments (for `mut` parameters).
     fn call_fn_at(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
-        let f = &self.m.env.fns[&Symbol::new(name)];
+        let f = self.m.env.fns.get(&Symbol::new(name)).ok_or_else(|| format!("`{name}` is not in the program"))?;
         if f.params.len() != vs.len() {
             return Err(format!("`{name}` takes {} arguments", f.params.len()));
         }
@@ -4633,7 +4917,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let r = self.call(&s_ty, &format!("@strata_{name}"), &vs)?;
                 self.optional(&r, &t)?
             }
-            "host_read_file" | "host_list_dir" => {
+            "host_read_file" | "host_list_dir" | "host_read_bytes" => {
                 // a value, or NULL and the failure
                 let (k, m) = (self.fresh("kind"), self.fresh("msg"));
                 writeln!(self.allocas, "  {k} = alloca ptr\n  {m} = alloca ptr").unwrap();
@@ -4642,7 +4926,12 @@ impl<'m, 'a> Func<'m, 'a> {
                 let r = self.call(&s_ty, &format!("@strata_{name}"), &args)?;
                 let ok = self.fresh("ok");
                 self.emit(format!("{ok} = icmp ne ptr {}, null", r.1));
-                let okv = (if name == "host_list_dir" { lst } else { Ty::Str }, r.1);
+                let okv = match name {
+                    "host_list_dir" => lst,
+                    "host_read_bytes" => Ty::Con(Symbol::new("List"), vec![Ty::Int]),
+                    _ => Ty::Str,
+                };
+                let okv = (okv, r.1);
                 self.outcome(&ok, Some(okv), &k, &m, &t)?
             }
             "host_code_version" => {
@@ -4859,6 +5148,21 @@ impl<'m, 'a> Func<'m, 'a> {
                 (a.clone(), r)
             }
             ("float", [Ty::Int]) => self.call(&Ty::Float, "@strata_int_to_float", &vs)?,
+            ("float_bits", [Ty::Float]) => {
+                let b = self.fresh("bits");
+                self.emit(format!("{b} = bitcast double {} to i64", vs[0].1));
+                let r = self.call(&Ty::Int, "@strata_int_from_u64", &[(Ty::Int, b)])?;
+                self.temp(r)
+            }
+            ("float_from_bits", [Ty::Int]) => {
+                // the low 64 bits; a NaN is not a `Float`
+                let b = self.call(&Ty::Int, "@strata_int_bits", &vs)?;
+                let f = self.fresh("f");
+                self.emit(format!("{f} = bitcast i64 {} to double", b.1));
+                let ok = self.fresh("num");
+                self.emit(format!("{ok} = fcmp ord double {f}, 0.0"));
+                self.option_if(&ok, &(Ty::Float, f), &Ty::Con("Option".into(), vec![Ty::Float]))?
+            }
             ("sqrt", [Ty::Float]) => {
                 // no NaN: the square root of a negative number is a fault
                 self.call(&Ty::Float, "@strata_sqrt", &vs)?
@@ -5548,6 +5852,12 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         self.check_new(c, &vals, &fs)?;
         let vals: Vec<V> = vals.into_iter().zip(&fs).map(|(v, f)| self.coerce(v, &f.ty)).collect::<Res<_>>()?;
+        // every field a constant: the value is one too, built once (its checks are made above)
+        if let Some(b) = self.constant_block(self.m.tags[c], &vals)? {
+            let v = (t, b);
+            self.check_type_refinement(c, &v)?;
+            return Ok(v);
+        }
         let p = self.block_of(self.m.tags[c], &vals)?;
         let v = self.temp((t, p));
         self.check_type_refinement(c, &v)?;
@@ -6156,8 +6466,12 @@ impl<'m, 'a> Func<'m, 'a> {
 }
 
 impl Module<'_> {
-    /// Fuzz driver `i`: generate the arguments (each recorded as JSON), then call.
+    /// Fuzz driver `i`: generate the arguments, each handed to the runtime
+    /// as it is made (`strata_fuzz_keep`: read by its shape, before the call
+    /// can change it), then call.
     fn fuzz_driver(&mut self, i: usize, t: &FuzzTarget) -> Res<()> {
+        let mut named = std::mem::take(&mut self.fuzz_kept.1);
+        let mut shapes = vec![];
         let mut c = Func::new(self, HashMap::default());
         c.block("start");
         let mut vs = vec![];
@@ -6165,9 +6479,9 @@ impl Module<'_> {
         for (k, (_, ty, mutable)) in t.params.iter().enumerate() {
             let v = c.generate(ty, &Hints::default(), "0")?;
             let v = c.temp(v);
-            let j = c.json(&v)?;
-            c.emit(format!("call void @strata_fuzz_arg(ptr {j})"));
-            c.drop_value(&(Ty::Str, j))?;
+            shapes.push(c.m.shape(&v.0, &mut named)?);
+            let slot = c.as_slot(&v)?;
+            c.emit(format!("call void @strata_fuzz_keep(i64 {k}, i64 {slot})"));
             let local = format!("fuzz.arg{k}");
             c.local_owned(&local, v, None)?;
             vs.push(c.load(&local)?);
@@ -6178,6 +6492,8 @@ impl Module<'_> {
         c.emit("ret void".into());
         let text = c.finish();
         writeln!(self.body, "define void @\"strata.fuzz.{i}\"() {{\n{text}}}\n").unwrap();
+        self.fuzz_kept.0.push(shapes);
+        self.fuzz_kept.1 = named;
         Ok(())
     }
 
@@ -6291,6 +6607,15 @@ impl Module<'_> {
                 }
                 self.bind_targs(r, s, params, out);
             }
+            // a union's members, paired by what they are (`List[T]` with `List[Int]`)
+            (TypeExpr::Union(ws), Ty::Union(ts)) => {
+                for w in ws {
+                    let head = crate::types::texpr_head(w);
+                    if let Some(x) = ts.iter().find(|x| Module::head(x).as_deref() == Some(head.as_str())) {
+                        self.bind_targs(w, x, params, out);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -6363,75 +6688,6 @@ fn char_ranges(which: &str) -> &'static [[u32; 2]] {
 
 impl Module<'_> {
     /// A Unicode table as a global of `i32`s, and its number of rows.
-    /// The DFA of `matches(s, re)` (the interpreter's `^(?:re)$`, from the
-    /// same engine), as tables: each byte's class, the next state of each
-    /// (state, class), whether a state is dead, and whether it matches at
-    /// the end. The start state is 0. `Ok(Err(m))`: `re` is not a regex (the
-    /// interpreter's message).
-    fn regex(&mut self, re: &str) -> Res<Result<(String, usize), String>> {
-        use regex_automata::dfa::{dense, Automaton, StartKind};
-        use regex_automata::util::primitives::StateID;
-        use regex_automata::{Anchored, Input};
-        let full = format!("^(?:{re})$");
-        if let Err(e) = regex::Regex::new(&full) {
-            return Ok(Err(format!("bad regex: {e}")));
-        }
-        let g = format!("re:{}", self.strings.len() + self.helpers.len());
-        let key = format!("regex:{re}");
-        if let Some(known) = self.regexes.get(&key) {
-            return Ok(Ok(known.clone()));
-        }
-        let config = dense::Config::new().start_kind(StartKind::Anchored).dfa_size_limit(Some(64 << 20)).determinize_size_limit(Some(64 << 20));
-        let syntax = regex_automata::util::syntax::Config::new().unicode(true).utf8(true).nest_limit(250);
-        let dfa = dense::Builder::new().configure(config).syntax(syntax).build(&full).map_err(|e| format!("the regex `{re}` ({e})"))?;
-        let start = dfa.start_state_forward(&Input::new("").anchored(Anchored::Yes)).map_err(|e| format!("the regex `{re}` ({e})"))?;
-        // the classes, and a byte standing for each
-        let classes = dfa.byte_classes();
-        let nc = classes.alphabet_len() - 1;
-        let mut rep: Vec<Option<u8>> = vec![None; nc];
-        let cls: Vec<usize> = (0..=255u8).map(|b| classes.get(b) as usize).collect();
-        for b in 0..=255u8 {
-            let c = classes.get(b) as usize;
-            if c < nc && rep[c].is_none() {
-                rep[c] = Some(b);
-            }
-        }
-        // the states reachable from the start, numbered as they are found
-        let mut ids: HashMap<StateID, usize> = HashMap::default();
-        let mut order = vec![start];
-        ids.insert(start, 0);
-        let mut i = 0;
-        let mut next: Vec<usize> = vec![];
-        while i < order.len() {
-            let sid = order[i];
-            for c in 0..nc {
-                let n = rep[c].map_or(sid, |b| dfa.next_state(sid, b));
-                if dfa.is_quit_state(n) {
-                    return Err(format!("the regex `{re}` (its DFA gives up on some input)"));
-                }
-                let k = *ids.entry(n).or_insert_with(|| {
-                    order.push(n);
-                    order.len() - 1
-                });
-                next.push(k);
-            }
-            i += 1;
-            if order.len() * nc > 4 << 20 {
-                return Err(format!("the regex `{re}` (its DFA is too large)"));
-            }
-        }
-        let dead: Vec<u8> = order.iter().map(|&sid| dfa.is_dead_state(sid) as u8).collect();
-        let end: Vec<u8> = order.iter().map(|&sid| dfa.is_match_state(dfa.next_eoi_state(sid)) as u8).collect();
-        let list = |xs: &[String]| xs.join(", ");
-        writeln!(self.globals, "@\"{g}.cls\" = private unnamed_addr constant [256 x i16] [{}], align 2", list(&cls.iter().map(|c| format!("i16 {c}")).collect::<Vec<_>>())).unwrap();
-        writeln!(self.globals, "@\"{g}.next\" = private unnamed_addr constant [{} x i32] [{}], align 4", next.len(), list(&next.iter().map(|c| format!("i32 {c}")).collect::<Vec<_>>())).unwrap();
-        writeln!(self.globals, "@\"{g}.dead\" = private unnamed_addr constant [{} x i8] [{}], align 1", dead.len(), list(&dead.iter().map(|c| format!("i8 {c}")).collect::<Vec<_>>())).unwrap();
-        writeln!(self.globals, "@\"{g}.end\" = private unnamed_addr constant [{} x i8] [{}], align 1", end.len(), list(&end.iter().map(|c| format!("i8 {c}")).collect::<Vec<_>>())).unwrap();
-        self.helpers.insert(g.clone());
-        self.regexes.insert(key, (g.clone(), nc));
-        Ok(Ok((g, nc)))
-    }
-
     fn unicode_table(&mut self, which: &str) -> (String, usize) {
         let (cells, rows): (Vec<u32>, usize) = match which {
             "upper" | "lower" => {
@@ -6492,13 +6748,14 @@ impl Func<'_, '_> {
         let strings = Ty::Con("List".into(), vec![Ty::Str]);
         let opt = |t: Ty| Ty::Con("Option".into(), vec![t]);
         Ok(Some(match (name, types) {
-            ("split", [_, Ty::Str]) => self.call(&strings, "@strata_str_split", &args)?,
+            ("split", [_, Ty::Str]) => self.call_fn(&prelude("str_split"), args, Some(strings))?,
             ("trim", [_]) => self.call(&s, "@strata_str_trim", &args)?,
-            ("contains", [_, Ty::Str]) => self.call(&Ty::Bool, "@strata_str_contains", &args)?,
-            ("starts_with", [_, Ty::Str]) => self.call(&Ty::Bool, "@strata_str_starts_with", &args)?,
-            ("ends_with", [_, Ty::Str]) => self.call(&Ty::Bool, "@strata_str_ends_with", &args)?,
-            ("reverse", [_]) => self.call(&s, "@strata_str_reverse", &args)?,
-            ("chars", [_]) => self.call(&strings, "@strata_str_chars", &args)?,
+            // written in Strata (llvm/prelude.strata), over the string's bytes
+            ("contains", [_, Ty::Str]) => self.call_fn(&prelude("str_contains"), args, Some(Ty::Bool))?,
+            ("starts_with", [_, Ty::Str]) => self.call_fn(&prelude("str_starts_with"), args, Some(Ty::Bool))?,
+            ("ends_with", [_, Ty::Str]) => self.call_fn(&prelude("str_ends_with"), args, Some(Ty::Bool))?,
+            ("reverse", [_]) => self.call_fn(&prelude("str_reverse"), args, Some(s))?,
+            ("chars", [_]) => self.call_fn(&prelude("str_chars"), args, Some(strings))?,
             ("lines", [_]) => self.call_fn(&prelude("lines"), args, Some(strings))?,
             ("get", [_, Ty::Int]) => {
                 let c = self.call(&s, "@strata_str_at", &args)?;
@@ -6509,14 +6766,9 @@ impl Func<'_, '_> {
             }
             ("at", [_, Ty::Int]) => self.call(&s, "@strata_str_at_or_fault", &args)?,
             ("slice", [_, Ty::Int, Ty::Int]) => self.call(&s, "@strata_str_slice", &args)?,
-            ("index_of", [_, Ty::Str]) => {
-                let i = self.call(&Ty::Int, "@strata_str_index_of", &args)?;
-                let ok = self.fresh("found");
-                self.emit(format!("{ok} = icmp sge i64 {}, 0", i.1));
-                self.option_if(&ok, &i, &opt(Ty::Int))?
-            }
-            ("replace", [_, Ty::Str, Ty::Str]) => self.call(&s, "@strata_str_replace", &args)?,
-            ("repeat", [_, Ty::Int]) => self.call(&s, "@strata_str_repeat", &args)?,
+            ("index_of", [_, Ty::Str]) => self.call_fn(&prelude("str_index_of"), args, Some(opt(Ty::Int)))?,
+            ("replace", [_, Ty::Str, Ty::Str]) => self.call_fn(&prelude("str_replace"), args, Some(s))?,
+            ("repeat", [_, Ty::Int]) => self.call_fn(&prelude("str_repeat"), args, Some(s))?,
             ("to_upper" | "to_lower", [_]) => {
                 let (table, n) = self.m.unicode_table(if name == "to_upper" { "upper" } else { "lower" });
                 let (cased, m) = self.m.unicode_table("cased");
@@ -6534,6 +6786,9 @@ impl Func<'_, '_> {
                 self.call(&Ty::Bool, "@strata_str_is", &[args[0].clone(), (Ty::Int, class.into()), (Ty::Str, ranges), (Ty::Int, n.to_string())])?
             }
             ("ord", [_]) => self.call(&Ty::Int, "@strata_str_ord", &args)?,
+            ("byte_len", [_]) => self.call(&Ty::Int, "@strata_str_byte_len", &args)?,
+            ("byte_at", [_, Ty::Int]) => self.call(&Ty::Int, "@strata_str_byte_at", &args)?,
+            ("byte_slice", [_, Ty::Int, Ty::Int]) => self.call(&s, "@strata_str_byte_slice", &args)?,
             ("chr", [Ty::Int]) => self.call(&s, "@strata_str_chr", &args)?,
             ("parse_int" | "parse_float", [_]) => {
                 let t = if name == "parse_int" { Ty::Int } else { Ty::Float };
@@ -6875,7 +7130,7 @@ impl Func<'_, '_> {
             let (pass, fail) = (h.fresh_label("requires.ok"), h.fresh_label("requires.fail"));
             h.cond_br(&ok, &pass, &fail);
             h.block(&fail);
-            h.fault(Fault::Requires, vec![Part::Lit(format!("precondition of `{tn}.{m}` violated: requires {}", crate::printer::expr(r, 0)))])?;
+            h.fault(Fault::Requires, vec![Part::Lit(crate::types::shown_name(&format!("precondition of `{tn}.{m}` violated: requires {}", crate::printer::expr(r, 0))))])?;
             h.block(&pass);
         }
         // the result's written type, with the trait's types in
@@ -7000,7 +7255,7 @@ impl Func<'_, '_> {
         };
         if let TypeExpr::Named(n, args) = t {
             if n == crate::types::TYPE_ARG {
-                let s = self.string(&args.first().map(crate::interp::type_text).unwrap_or_default());
+                let s = self.string(&args.first().map(crate::printer::type_text).unwrap_or_default());
                 return Ok(s);
             }
         }
@@ -7283,13 +7538,20 @@ fn ty_texpr(t: &Ty) -> TypeExpr {
     }
 }
 
-/// Strings matching `re`, made now (as the interpreter's generator makes them).
+/// Strings matching `re`, made now (`std.regex.samples`: the same ones
+/// every time), or why there are none.
 fn regex_samples(re: &str) -> Res<Vec<String>> {
-    use rand::SeedableRng;
-    use rand::RngExt;
-    let mut parser = regex_syntax::ParserBuilder::new().unicode(false).build();
-    let hir = parser.parse(re).map_err(|e| format!("bad regex {re:?}: {e}"))?;
-    let g = rand_regex::Regex::with_hir(hir, 8).map_err(|e| e.to_string())?;
-    let mut rng = rand::rngs::StdRng::seed_from_u64(7);
-    Ok((0..32).map(|_| rng.sample::<String, _>(&g)).collect())
+    let v = crate::stdlib::regex_value("samples", vec![Expr::Str(re.to_string()), Expr::Int(32), Expr::Int(7)])?;
+    let texts = |xs: &[Expr]| xs.iter().map(|x| if let Expr::Str(s) = x { Ok(s.clone()) } else { Err(format!("a sample of {re:?} is not a string")) }).collect::<Res<Vec<String>>>();
+    match v {
+        Expr::Ctor(c, CtorArgs::Positional(xs)) if c.as_str().ends_with("Ok") => match xs.as_slice() {
+            [Expr::List(xs)] => texts(xs),
+            _ => Err(format!("the samples of {re:?} are not a list")),
+        },
+        Expr::Ctor(c, CtorArgs::Positional(xs)) if c.as_str().ends_with("Err") => match xs.as_slice() {
+            [Expr::Str(m)] => Err(format!("can't generate strings matching {re:?}: {m}")),
+            _ => Err(format!("can't generate strings matching {re:?}")),
+        },
+        _ => Err(format!("no samples of {re:?}")),
+    }
 }

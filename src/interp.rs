@@ -11,27 +11,6 @@ use num_traits::{FromPrimitive, Signed, ToPrimitive, Zero};
 use crate::fx::HashMap;
 use std::rc::Rc;
 
-/// A call stack as faults show it, outermost first: four or more calls in a
-/// row of one function (a recursion) are one entry, `down (95846 times)`.
-pub fn show_stack(stack: &[String]) -> String {
-    fold_stack(stack).join(" -> ")
-}
-
-/// A call stack's entries, a recursion's calls as one (`show_stack`).
-pub fn fold_stack(stack: &[String]) -> Vec<String> {
-    let mut parts = vec![];
-    let mut i = 0;
-    while i < stack.len() {
-        let n = stack[i..].iter().take_while(|f| **f == stack[i]).count();
-        if n >= 4 {
-            parts.push(format!("{} ({n} times)", stack[i]));
-        } else {
-            parts.extend(std::iter::repeat_n(stack[i].clone(), n));
-        }
-        i += n;
-    }
-    parts
-}
 
 /// A call faults `stack overflow` when less than this much stack is left:
 /// enough for the Rust frames between two calls of the program and for
@@ -326,15 +305,7 @@ fn div_rem_euclid(a: &BigInt, b: &BigInt) -> (BigInt, BigInt) {
     (q, r)
 }
 
-/// The type text of a type, as passed at runtime (`List[Int]`).
-pub fn type_text(t: &TypeExpr) -> String {
-    match t {
-        TypeExpr::Named(n, args) if args.is_empty() => n.to_string(),
-        TypeExpr::Named(n, args) => format!("{n}[{}]", args.iter().map(type_text).collect::<Vec<_>>().join(", ")),
-        TypeExpr::Unit => "Unit".into(),
-        other => crate::printer::ty(other),
-    }
-}
+use crate::printer::type_text;
 
 /// `impl[T] .. for List[T]` called on `List[Int]`: `T` is `Int`.
 fn bind_type_params(pattern: &TypeExpr, t: &TypeExpr, params: &[Symbol], out: &mut Vec<(String, String)>) {
@@ -585,13 +556,7 @@ impl<'a> Interp<'a> {
             },
             "host_code_version" => Str(crate::ui::code_version(std::path::Path::new(&crate::ui::code_root()))),
             "host_code_snapshot" => match crate::ui::code_snapshot(std::path::Path::new(&crate::ui::code_root())) {
-                Ok(j) => {
-                    let t = crate::ast::TypeExpr::Named("std.code.Snapshot".into(), vec![]);
-                    match self.from_json(&t, &j, "snapshot") {
-                        Ok(v) => Variant("Ok".into(), Fields::pos(vec![v])),
-                        Err(e) => return self.fail(FaultKind::Runtime, format!("the codebase's snapshot doesn't fit `std.code.Snapshot`: {e}")),
-                    }
-                }
+                Ok(e) => Variant("Ok".into(), Fields::pos(vec![self.eval(&e, &None)?])),
                 Err(e) => Variant("Err".into(), Fields::pos(vec![Str(e)])),
             },
             _ => return self.fail(FaultKind::Runtime, format!("unknown host operation `{name}`")),
@@ -832,6 +797,7 @@ impl<'a> Interp<'a> {
                         TypeBody::Alias(a) => self.plain(a, &ps),
                         TypeBody::Record(fs) => fs.iter().all(|f| self.plain(&f.ty, &ps)),
                         TypeBody::Sum(vs) => vs.iter().all(|v| match &v.payload {
+                            Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
                             Payload::None => true,
                             Payload::Positional(ts) => ts.iter().all(|t| self.plain(t, &ps)),
                             Payload::Record(fs) => fs.iter().all(|f| self.plain(&f.ty, &ps)),
@@ -1305,9 +1271,7 @@ impl<'a> Interp<'a> {
             }
             "split" => {
                 let (Str(s), Str(sep)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
-                if sep.is_empty() {
-                    return self.fail(FaultKind::Runtime, "split: empty separator");
-                }
+                // total: an empty separator splits at every character, as Rust's
                 List(s.split(sep.as_str()).map(|p| Str(p.to_string())).collect())
             }
             "trim" => match nx() {
@@ -1507,18 +1471,41 @@ impl<'a> Interp<'a> {
                     _ => return self.fail(FaultKind::Runtime, "bad args"),
                 }
             }
+            // byte offsets, as compiled code (the interpreter is frozen, but `serve` still runs on it)
             "index_of" => {
                 let (Str(s), Str(sub)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
                 match s.find(&sub) {
-                    Some(byte) => Variant("Some".into(), Fields::pos(vec![Int(s[..byte].chars().count() as i64)])),
+                    Some(byte) => Variant("Some".into(), Fields::pos(vec![Int(byte as i64)])),
                     None => Variant("None".into(), Fields::None),
                 }
             }
+            "byte_len" => {
+                let Str(s) = nx() else { return self.fail(FaultKind::Runtime, "bad args") };
+                Int(s.len() as i64)
+            }
+            "byte_at" => {
+                let (Str(s), Int(i)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                match usize::try_from(i).ok().and_then(|i| s.as_bytes().get(i)) {
+                    Some(b) => Int(*b as i64),
+                    None => return self.fail(FaultKind::Runtime, format!("byte {i} out of range ({} bytes)", s.len())),
+                }
+            }
+            "byte_slice" => {
+                let (Str(s), Int(a), Int(b)) = (nx(), nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
+                let n = s.len() as i64;
+                // an offset inside a character moves back to its start, as compiled
+                let start = |mut i: usize| {
+                    while !s.is_char_boundary(i) {
+                        i -= 1;
+                    }
+                    i
+                };
+                let (a, b) = (start(a.clamp(0, n) as usize), start(b.clamp(0, n) as usize));
+                Str(if a < b { s[a..b].to_string() } else { String::new() })
+            }
             "replace" => {
                 let (Str(s), Str(from), Str(to)) = (nx(), nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
-                if from.is_empty() {
-                    return self.fail(FaultKind::Runtime, "replace: empty pattern");
-                }
+                // total: an empty pattern is found around every character, as Rust's
                 Str(s.replace(&from, &to))
             }
             "lines" => match nx() {
@@ -1527,10 +1514,11 @@ impl<'a> Interp<'a> {
             },
             "repeat" => {
                 let (Str(s), Int(n)) = (nx(), nx()) else { return self.fail(FaultKind::Runtime, "bad args") };
-                if n < 0 || (s.len() as i64).saturating_mul(n) > 100_000_000 {
-                    return self.fail(FaultKind::Runtime, format!("repeat: bad count {n}"));
+                // total: no copies for a count below 1
+                if (s.len() as i64).saturating_mul(n) > 100_000_000 {
+                    return self.fail(FaultKind::Limit, "out of memory");
                 }
-                Str(s.repeat(n as usize))
+                Str(s.repeat(n.max(0) as usize))
             }
             "to_upper" | "to_lower" => match nx() {
                 Str(s) => Str(if name == "to_upper" { s.to_uppercase() } else { s.to_lowercase() }),
@@ -1726,7 +1714,6 @@ impl<'a> Interp<'a> {
                 v
             }
             Expr::Mut(x) | Expr::Comptime(x) => self.eval(x, s)?,
-            Expr::Describe(t) => return self.fail(FaultKind::Runtime, format!("`${}` is only known in a derived method", crate::printer::ty(t))),
             // `$self_type(type, call)`: the call's receiver type, whole, for the method it reaches
             Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if n == crate::types::SELF_TYPE) && args.len() == 2 => {
                 // (a type parameter the caller wasn't given leaves it unknown)

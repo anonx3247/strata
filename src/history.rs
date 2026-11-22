@@ -138,7 +138,7 @@ pub fn log_range(cb: &Codebase, from: Option<usize>, to: Option<usize>) -> Resul
 }
 
 /// The program at a git revision: a file, or a folder of `.strata` module files.
-fn sources_at(path: &Path, rev: &str) -> Result<Program, String> {
+pub(crate) fn sources_at(path: &Path, rev: &str) -> Result<Program, String> {
     if path.is_dir() {
         let mut files = Vec::new();
         for rel in crate::git::run(Some(path), &["ls-tree", "-r", "--name-only", rev, "--", "."])?.lines().filter(|l| l.ends_with(".strata")) {

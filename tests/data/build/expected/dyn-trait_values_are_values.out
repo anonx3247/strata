@@ -1,0 +1,5 @@
+Recorder { input: [], out: "job 1\njob 1\n", err: [] }
+Recorder { input: [], out: "job 1\n", err: [] }
+Worker { console: Recorder { input: [], out: "job 1\njob 1\n", err: [] }, count: 1 }
+
+--- exit 0

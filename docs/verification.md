@@ -26,7 +26,7 @@ fn next_digit(d: Digit) -> Digit {
 
 ```text
 ✗ next_digit               Refinement violation (found by the solver)
-    input:   [9]
+    input:   9
     result of `next_digit`: 10 does not satisfy `Digit` (where 0 <= it && it <= 9)
 ```
 
@@ -200,7 +200,7 @@ fn average(xs: List[Int]) -> Int {
 
 ```text
 ✗ average                  Runtime violation (found by the solver)
-    input:   [[]]
+    input:   []
     division by zero (stack: average)
 ```
 

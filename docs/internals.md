@@ -28,6 +28,7 @@
 | `src/derive.rs`, `std/typing.strata` | derived traits: each `derive Trait for Type` becomes an ordinary `impl`, its `derived fn`s specialized for the type at compile time (`comptime`, `make` / `try_make`, `f.of(x)`, `match comptime` / `if comptime`, methods called on types known while compiling, copies of functions with `comptime` parameters) |
 | `std/json.strata` | JSON text and the derived `Json` trait, in Strata |
 | `std/regex.strata`, `std/unicode.strata`, `std/unicode_tables.strata`, `tools/unicode_tables.py` | regular expressions in Strata: the parser and the tree (as regex-syntax's `Hir`), sets of code points, Unicode properties and case folding; the tables are generated from regex-syntax's by the script; `tests/regex.rs` compares the trees with regex-syntax's |
+| `std/ast.strata`, `std/ast/binary.strata`, `std/utf8.strata`, `src/ast_value.rs` | the syntax tree in Strata, and the binary format read and written by Strata code; `ast_value` writes a Rust tree as the `std.ast` value `debug` prints (`strata header FILE --tree`), which `tests/ast.rs` compares with the Strata decoder's |
 | `src/stdlib.rs`, `std/` | the standard library (Strata), built into the binary; the native `host_*` operations it alone can call |
 | `src/view.rs` | level-of-detail projections and selectors |
 | `src/ui.rs`, `src/ui/index.html` | `strata ui`: the live viewer (a std-only HTTP server and one page) |

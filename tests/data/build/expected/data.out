@@ -1,0 +1,26 @@
+Line { sku: "tea", qty: 3, price: 450 }
+1350
+Line { sku: "tea", qty: 5, price: 450 }
+Line { sku: "tea", qty: 3, price: 10 }
+false
+true
+18.0
+Dot
+Some(Dot)
+Rect(1.0, 2.5)
+1
+a
+("x", 1)
+Ok(2)
+Err("3 is odd")
+-1
+8
+Some(21)
+None
+big circle, circle, rect or dot, nothing
+true
+6
+4
+fault (Refinement): constructing `Range`: {"lo":9,"hi":5} does not satisfy `Range` (where it.lo <= it.hi)
+
+--- exit 101

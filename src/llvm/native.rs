@@ -3,11 +3,12 @@
 //! off}` over a buffer `{cap, used, data}`, a record, variant or tuple a
 //! block of 8-byte slots after a tag, a union's other members in a box
 //! `{tag, value}`, a big integer a pointer kept outside the small range),
-//! guided by the value's `Shape`. Compile-time code's results come back so;
-//! the FFI will pass values the same way.
+//! guided by the value's `Shape`, as a literal: the code that writes the
+//! value (`P { x: 1 }`, `Some("a")`, `Set { 1, 2 }`). Compile-time code's
+//! results come back so; the FFI will pass values the same way.
 
 use super::{Shape, Shapes};
-use crate::interp::{Fields, Value};
+use crate::ast::{CtorArgs, Expr, Symbol};
 use num_bigint::{BigInt, Sign};
 
 type Res<X> = Result<X, String>;
@@ -19,10 +20,19 @@ unsafe fn slot(p: i64, i: usize) -> i64 {
 
 const SMALL: i64 = 1 << 62;
 
+/// An integer as a literal: `Int` when it fits in 64 bits, else its digits
+/// (so equal numbers are equal literals).
+pub fn int_expr(n: BigInt) -> Expr {
+    match i64::try_from(&n) {
+        Ok(k) => Expr::Int(k),
+        Err(_) => Expr::BigInt(n.to_string()),
+    }
+}
+
 /// An `Int`'s value: small, or a big integer's digits.
-unsafe fn int(raw: i64) -> Value {
+unsafe fn int(raw: i64) -> Expr {
     if (-SMALL..SMALL).contains(&raw) {
-        return Value::Int(raw);
+        return Expr::Int(raw);
     }
     // the inverse of runtime.c's `int_of`: the block's address, over 8
     let k = if raw > 0 { (raw as u64).wrapping_sub(SMALL as u64) } else { ((-(raw + 1)) as u64).wrapping_sub(SMALL as u64) };
@@ -34,7 +44,7 @@ unsafe fn int(raw: i64) -> Value {
         0 => Sign::NoSign,
         _ => Sign::Plus,
     };
-    crate::interp::int_value(BigInt::from_slice(s, digits))
+    int_expr(BigInt::from_slice(s, digits))
 }
 
 unsafe fn string(p: i64) -> String {
@@ -58,24 +68,33 @@ unsafe fn elements(p: i64) -> Vec<i64> {
 /// # Safety
 /// `raw` must be a live value of that shape, made by code compiled with the
 /// `Shapes` given.
-pub unsafe fn read(s: &Shape, shapes: &Shapes, raw: i64) -> Res<Value> {
+pub unsafe fn read(s: &Shape, shapes: &Shapes, raw: i64) -> Res<Expr> {
+    // a capability is a null pointer (the runtime's): shown by its type, `Terminal`
+    let pointer = matches!(s, Shape::Str | Shape::List(_) | Shape::Set(_) | Shape::Dict(..) | Shape::Tuple(_) | Shape::Named(_) | Shape::Union(_));
+    if pointer && raw == 0 {
+        return match s {
+            Shape::Named(k) => Ok(Expr::Ctor(Symbol::new(k), CtorArgs::None)),
+            _ => Err("a null pointer".into()),
+        };
+    }
     unsafe {
         Ok(match s {
             Shape::Int => int(raw),
-            Shape::Float => Value::Float(f64::from_bits(raw as u64)),
-            Shape::Bool => Value::Bool(raw & 1 != 0),
-            Shape::Unit => Value::Unit,
-            Shape::Str => Value::Str(string(raw)),
-            Shape::List(e) => Value::List(elements(raw).into_iter().map(|x| read(e, shapes, x)).collect::<Res<_>>()?),
-            Shape::Set(e) => Value::Set(elements(raw).into_iter().map(|x| read(e, shapes, x)).collect::<Res<_>>()?),
-            Shape::Dict(k, v) => Value::Dict(
+            Shape::Float => Expr::Float(f64::from_bits(raw as u64)),
+            Shape::Bool => Expr::Bool(raw & 1 != 0),
+            Shape::Unit => Expr::Unit,
+            Shape::Str => Expr::Str(string(raw)),
+            Shape::List(e) => Expr::List(elements(raw).into_iter().map(|x| read(e, shapes, x)).collect::<Res<_>>()?),
+            Shape::Set(e) => Expr::Set(vec![], elements(raw).into_iter().map(|x| read(e, shapes, x)).collect::<Res<_>>()?),
+            Shape::Dict(k, v) => Expr::Dict(
+                vec![],
                 elements(raw)
                     .into_iter()
                     .map(|pair| Ok((read(k, shapes, slot(pair, 1))?, read(v, shapes, slot(pair, 2))?)))
                     .collect::<Res<_>>()?,
             ),
-            Shape::Tuple(ts) => Value::Tuple(ts.iter().enumerate().map(|(i, t)| read(t, shapes, slot(raw, i + 1))).collect::<Res<_>>()?),
-            Shape::Distinct(n, inner) => Value::Distinct(n.clone(), Box::new(read(inner, shapes, raw)?)),
+            Shape::Tuple(ts) => Expr::Tuple(ts.iter().enumerate().map(|(i, t)| read(t, shapes, slot(raw, i + 1))).collect::<Res<_>>()?),
+            Shape::Distinct(n, inner) => Expr::Ctor(Symbol::new(n), CtorArgs::Positional(vec![read(inner, shapes, raw)?])),
             Shape::Named(k) => {
                 let tag = slot(raw, 0);
                 let cs = shapes.named.get(k).ok_or(format!("no shape for `{k}`"))?;
@@ -84,15 +103,14 @@ pub unsafe fn read(s: &Shape, shapes: &Shapes, raw: i64) -> Res<Value> {
                 for (i, (_, f)) in c.fields.iter().enumerate() {
                     vals.push(read(f, shapes, slot(raw, i + 1))?);
                 }
-                let named: Vec<(String, Value)> = c.fields.iter().zip(vals.iter()).filter_map(|((n, _), v)| n.clone().map(|n| (n, v.clone()))).collect();
-                if c.record {
-                    Value::Record(c.name.clone(), named)
-                } else if c.fields.is_empty() {
-                    Value::Variant(c.name.clone(), Fields::None)
-                } else if c.fields.iter().all(|(n, _)| n.is_some()) {
-                    Value::Variant(c.name.clone(), Fields::rec(named))
+                let name = Symbol::new(&c.name);
+                if c.fields.is_empty() && !c.record {
+                    Expr::Ctor(name, CtorArgs::None)
+                } else if c.record || c.fields.iter().all(|(n, _)| n.is_some()) {
+                    // in declaration order
+                    Expr::Ctor(name, CtorArgs::Record(c.fields.iter().zip(vals).map(|((n, _), v)| (Symbol::new(n.as_deref().unwrap_or("")), v)).collect()))
                 } else {
-                    Value::Variant(c.name.clone(), Fields::pos(vals))
+                    Expr::Ctor(name, CtorArgs::Positional(vals))
                 }
             }
             Shape::Union(ms) => {
@@ -116,14 +134,10 @@ pub unsafe fn read(s: &Shape, shapes: &Shapes, raw: i64) -> Res<Value> {
 
 // ---- values the host makes, for compiled code ----
 //
-// What crosses into compiled code from outside (`Codebase`'s snapshot; an
-// app's messages, a server's requests) comes as JSON, as `interp::to_json`
-// writes values: read against the shape of the type it should be (`decode`),
-// then laid out in memory (`write`). Values from outside are complete: a
-// missing field is an error, not its default. Refinements are not checked
-// here: the compiled code they are handed to checks them.
-
-use serde_json::Value as Json;
+// What strata hands to compiled code (`Codebase`'s snapshot; a server's
+// requests) is a literal: an `Expr` of data, as `read` gives back, laid out
+// in memory by the shape of its type (`write`). Refinements are not checked
+// here: the compiled code it is handed to checks them (`Entry::Call`).
 
 unsafe extern "C" {
     pub(super) fn strata_alloc(n: i64) -> *mut i64;
@@ -193,227 +207,121 @@ fn new_int(n: &BigInt) -> i64 {
     }
 }
 
-/// The value of `e` when it is data: literals, lists and tuples of them,
-/// constructors given them (a field's default, filled in for JSON that
-/// leaves the field out). `None` when something would have to run.
-pub fn constant(env: &crate::types::Env, e: &crate::ast::Expr) -> Option<Value> {
-    use crate::ast::{CtorArgs, Expr, UnOp};
-    Some(match e {
-        Expr::Int(n) => Value::Int(*n),
-        Expr::BigInt(b) => crate::interp::int_value(b.parse().ok()?),
-        Expr::Float(x) => Value::Float(*x),
-        Expr::Bool(b) => Value::Bool(*b),
-        Expr::Str(t) => Value::Str(t.clone()),
-        Expr::Unit => Value::Unit,
-        Expr::Un(UnOp::Neg, x) => match constant(env, x)? {
-            Value::Int(n) => crate::interp::int_value(-BigInt::from(n)),
-            Value::Big(n) => crate::interp::int_value(-n),
-            Value::Float(f) => Value::Float(-f),
-            _ => return None,
-        },
-        Expr::List(xs) => Value::List(xs.iter().map(|x| constant(env, x)).collect::<Option<_>>()?),
-        Expr::Tuple(xs) => Value::Tuple(xs.iter().map(|x| constant(env, x)).collect::<Option<_>>()?),
-        Expr::Ctor(c, args) => {
-            let tname = *env.ctors.get(c)?;
-            let td = env.types.get(&tname)?;
-            match args {
-                CtorArgs::None => Value::Variant(c.to_string(), Fields::None),
-                CtorArgs::Positional(es) => Value::Variant(c.to_string(), Fields::pos(es.iter().map(|x| constant(env, x)).collect::<Option<_>>()?)),
-                CtorArgs::Record(fs) => {
-                    let order = env.variants_of(&tname, &[]).and_then(|vs| vs.into_iter().find(|v| &v.0 == c)).and_then(|v| v.1)?;
-                    let mut vals = vec![];
-                    for f in &order {
-                        let (_, fe) = fs.iter().find(|(n, _)| n == f)?;
-                        vals.push((f.to_string(), constant(env, fe)?));
-                    }
-                    if matches!(td.body, crate::ast::TypeBody::Record(_)) { Value::Record(c.to_string(), vals) } else { Value::Variant(c.to_string(), Fields::rec(vals)) }
+/// A constructor's name without its module.
+fn short(c: &str) -> &str {
+    c.rsplit('.').next().unwrap_or(c)
+}
+
+/// The constructor of shape `k` named `name` (qualified or not).
+fn ctor<'a>(shapes: &'a Shapes, k: &str, name: &str) -> Option<&'a super::CtorShape> {
+    shapes.named.get(k)?.iter().find(|c| c.name == name || short(&c.name) == short(name))
+}
+
+/// Whether the literal `e` is a value of shape `s` (to find a union's member).
+fn fits(s: &Shape, shapes: &Shapes, e: &Expr) -> bool {
+    match (s, e) {
+        (Shape::Union(ms), _) => ms.iter().any(|(_, m)| fits(m, shapes, e)),
+        (Shape::Int, Expr::Int(_) | Expr::BigInt(_)) | (Shape::Float, Expr::Float(_)) | (Shape::Bool, Expr::Bool(_)) | (Shape::Unit, Expr::Unit) | (Shape::Str, Expr::Str(_)) => true,
+        (Shape::List(t), Expr::List(xs)) | (Shape::Set(t), Expr::Set(_, xs)) => xs.iter().all(|x| fits(t, shapes, x)),
+        (Shape::Dict(k, v), Expr::Dict(_, kvs)) => kvs.iter().all(|(a, b)| fits(k, shapes, a) && fits(v, shapes, b)),
+        (Shape::Tuple(ts), Expr::Tuple(xs)) => ts.len() == xs.len() && ts.iter().zip(xs).all(|(t, x)| fits(t, shapes, x)),
+        (Shape::Distinct(n, _), Expr::Ctor(c, _)) => short(n) == short(c.as_str()),
+        (Shape::Named(k), Expr::Ctor(c, _)) => ctor(shapes, k, c.as_str()).is_some(),
+        _ => false,
+    }
+}
+
+/// Compiled code's order on the elements of a set or the keys of a dict
+/// (llvm.rs's `cmp` helper): numbers by value, strings by their bytes,
+/// tuples and lists element by element. `None` for a value it orders by its
+/// JSON, which the host doesn't write.
+fn order(a: &Expr, b: &Expr) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+    let big = |e: &Expr| match e {
+        Expr::Int(n) => Some(BigInt::from(*n)),
+        Expr::BigInt(d) => d.parse().ok(),
+        _ => None,
+    };
+    Some(match (a, b) {
+        (Expr::Int(_) | Expr::BigInt(_), _) => big(a)?.cmp(&big(b)?),
+        (Expr::Float(x), Expr::Float(y)) => x.total_cmp(y),
+        (Expr::Bool(x), Expr::Bool(y)) => x.cmp(y),
+        (Expr::Str(x), Expr::Str(y)) => x.as_bytes().cmp(y.as_bytes()),
+        (Expr::Unit, Expr::Unit) => Ordering::Equal,
+        (Expr::Tuple(xs), Expr::Tuple(ys)) | (Expr::List(xs), Expr::List(ys)) => {
+            for (x, y) in xs.iter().zip(ys) {
+                match order(x, y)? {
+                    Ordering::Equal => {}
+                    o => return Some(o),
                 }
-                CtorArgs::Update(..) => return None,
             }
+            xs.len().cmp(&ys.len())
         }
         _ => return None,
     })
 }
 
-/// A constructor's name as JSON writes it: without its module.
-fn short(c: &str) -> &str {
-    c.rsplit('.').next().unwrap_or(c)
-}
-
-/// The value of shape `s` that the JSON `j` writes (as `interp::to_json`
-/// does); `path` says where, for the error.
-pub fn decode(s: &Shape, shapes: &Shapes, j: &Json, path: &str) -> Res<Value> {
-    let bad = |what: &str| Err(format!("{path}: expected {what}, got {j}"));
-    Ok(match s {
-        Shape::Unit => match j {
-            Json::Null => Value::Unit,
-            _ => return bad("null"),
-        },
-        // a larger integer may come as a string of digits
-        Shape::Int => match j {
-            Json::Number(n) if n.is_i64() || n.is_u64() => crate::interp::int_value(n.to_string().parse().unwrap()),
-            Json::String(t) => match t.parse::<BigInt>() {
-                Ok(n) => crate::interp::int_value(n),
-                Err(_) => return bad("an integer"),
-            },
-            _ => return bad("an integer"),
-        },
-        Shape::Float => match j.as_f64() {
-            Some(f) => Value::Float(f),
-            None => return bad("a number"),
-        },
-        Shape::Bool => match j.as_bool() {
-            Some(b) => Value::Bool(b),
-            None => return bad("a boolean"),
-        },
-        Shape::Str => match j.as_str() {
-            Some(t) => Value::Str(t.to_string()),
-            None => return bad("a string"),
-        },
-        Shape::List(e) | Shape::Set(e) => {
-            let Some(xs) = j.as_array() else { return bad("an array") };
-            let vs = xs.iter().enumerate().map(|(i, x)| decode(e, shapes, x, &format!("{path}[{i}]"))).collect::<Res<Vec<_>>>()?;
-            if matches!(s, Shape::Set(_)) { crate::interp::make_set(vs) } else { Value::List(vs) }
-        }
-        Shape::Dict(k, v) => {
-            let mut pairs = vec![];
-            if let Some(o) = j.as_object() {
-                for (key, x) in o {
-                    pairs.push((decode(k, shapes, &Json::String(key.clone()), &format!("{path} key {key:?}"))?, decode(v, shapes, x, &format!("{path}[{key:?}]"))?));
-                }
-            } else if let Some(xs) = j.as_array() {
-                for (i, x) in xs.iter().enumerate() {
-                    let Some([kj, vj]) = x.as_array().and_then(|a| <&[Json; 2]>::try_from(a.as_slice()).ok()) else {
-                        return Err(format!("{path}[{i}]: expected a [key, value] pair"));
-                    };
-                    pairs.push((decode(k, shapes, kj, &format!("{path}[{i}].key"))?, decode(v, shapes, vj, &format!("{path}[{i}].value"))?));
-                }
-            } else {
-                return bad("an object or an array of [key, value] pairs");
-            }
-            crate::interp::make_dict(pairs)
-        }
-        Shape::Tuple(ts) => match j.as_array().filter(|a| a.len() == ts.len()) {
-            Some(xs) => Value::Tuple(ts.iter().zip(xs).enumerate().map(|(i, (t, x))| decode(t, shapes, x, &format!("{path}.{i}"))).collect::<Res<_>>()?),
-            None => return bad(&format!("an array of {} values", ts.len())),
-        },
-        Shape::Distinct(n, inner) => Value::Distinct(n.clone(), Box::new(decode(inner, shapes, j, path)?)),
-        // the first member the JSON is a value of
-        Shape::Union(ms) => match ms.iter().find_map(|(_, m)| decode(m, shapes, j, path).ok()) {
-            Some(v) => v,
-            None => return bad("a value of one of the union's types"),
-        },
-        Shape::Named(k) => {
-            let cs = shapes.named.get(k).ok_or(format!("no shape for `{k}`"))?;
-            let record = cs.len() == 1 && cs[0].record;
-            // a record is its fields; a variant `"C"`, or `{"C": payload}`
-            let (name, payload) = if record {
-                (cs[0].name.as_str(), j)
-            } else if let Some(t) = j.as_str() {
-                (t, &Json::Null)
-            } else if let Some((c, x)) = j.as_object().filter(|o| o.len() == 1).and_then(|o| o.iter().next()) {
-                (c.as_str(), x)
-            } else {
-                return bad(&format!("one of {}", cs.iter().map(|c| short(&c.name)).collect::<Vec<_>>().join(" | ")));
-            };
-            let Some(c) = cs.iter().find(|c| c.name == name || short(&c.name) == name) else {
-                // a variant as a type (`e: TooBig`) has one constructor
-                if let [only] = cs.as_slice() {
-                    return bad(&format!("a `{}`", short(&only.name)));
-                }
-                return Err(format!("{path}: `{name}` is not a constructor of `{}`", short(k)));
-            };
-            let p = if record { path.to_string() } else { format!("{path}.{}", short(&c.name)) };
-            let named = !c.fields.is_empty() && c.fields.iter().all(|(n, _)| n.is_some());
-            if named {
-                let Some(obj) = payload.as_object() else { return Err(format!("{p}: expected an object")) };
-                let mut fs = vec![];
-                for (i, (n, f)) in c.fields.iter().enumerate() {
-                    let n = n.clone().unwrap_or_default();
-                    let v = match (obj.get(&n), c.defaults.get(i).cloned().flatten()) {
-                        (Some(x), _) => decode(f, shapes, x, &format!("{p}.{n}"))?,
-                        // left out: its default (checked with the rest, by the compiled code)
-                        (None, Some(Ok(d))) => decode(f, shapes, &d, &format!("{p}.{n}"))?,
-                        (None, Some(Err(why))) => return Err(format!("{p}: missing field `{n}`: {why}, so give it")),
-                        (None, None) => return Err(format!("{p}: missing field `{n}`")),
-                    };
-                    fs.push((n.clone(), v));
-                }
-                if let Some(extra) = obj.keys().find(|key| !c.fields.iter().any(|(n, _)| n.as_deref() == Some(key.as_str()))) {
-                    return Err(format!("{p}: unknown field `{extra}`"));
-                }
-                if c.record { Value::Record(c.name.clone(), fs) } else { Value::Variant(c.name.clone(), Fields::rec(fs)) }
-            } else if c.fields.is_empty() {
-                Value::Variant(c.name.clone(), Fields::None)
-            } else {
-                let items: Vec<Json> = if c.fields.len() == 1 { vec![payload.clone()] } else { payload.as_array().cloned().unwrap_or_default() };
-                if items.len() != c.fields.len() {
-                    return Err(format!("{p}: expected {} values", c.fields.len()));
-                }
-                Value::Variant(c.name.clone(), Fields::pos(c.fields.iter().zip(&items).enumerate().map(|(i, ((_, f), x))| decode(f, shapes, x, &format!("{p}.{i}"))).collect::<Res<_>>()?))
-            }
-        }
-    })
-}
-
-/// Whether `v` is a value of shape `s` (to find a union's member).
-fn fits(s: &Shape, shapes: &Shapes, v: &Value) -> bool {
-    match (s, v) {
-        (Shape::Union(ms), _) => ms.iter().any(|(_, m)| fits(m, shapes, v)),
-        (Shape::Int, Value::Int(_) | Value::Big(_)) | (Shape::Float, Value::Float(_)) | (Shape::Bool, Value::Bool(_)) | (Shape::Unit, Value::Unit) | (Shape::Str, Value::Str(_)) => true,
-        (Shape::List(e), Value::List(xs)) | (Shape::Set(e), Value::Set(xs)) => xs.iter().all(|x| fits(e, shapes, x)),
-        (Shape::Dict(k, e), Value::Dict(kvs)) => kvs.iter().all(|(a, b)| fits(k, shapes, a) && fits(e, shapes, b)),
-        (Shape::Tuple(ts), Value::Tuple(xs)) => ts.len() == xs.len() && ts.iter().zip(xs).all(|(t, x)| fits(t, shapes, x)),
-        (Shape::Distinct(n, _), Value::Distinct(m, _)) => n == m,
-        (Shape::Named(k), Value::Record(c, _) | Value::Variant(c, _)) => shapes.named.get(k).is_some_and(|cs| cs.iter().any(|x| &x.name == c)),
-        _ => false,
+/// `xs` sorted in compiled code's order, without repeats (by the first key).
+fn sorted<'a, T>(mut xs: Vec<T>, key: impl Fn(&T) -> &'a Expr) -> Res<Vec<T>> {
+    let mut unordered = None;
+    xs.sort_by(|a, b| {
+        order(key(a), key(b)).unwrap_or_else(|| {
+            unordered = Some(crate::printer::literal(key(a)));
+            std::cmp::Ordering::Equal
+        })
+    });
+    if let Some(v) = unordered {
+        return Err(format!("the host can't order {v} in a set or as a key (compiled code orders it by its JSON)"));
     }
+    xs.dedup_by(|a, b| order(key(a), key(b)) == Some(std::cmp::Ordering::Equal));
+    Ok(xs)
 }
 
-/// Lay `v`, a value of shape `s`, out in compiled code's memory, as `read`
-/// reads it: the slot that holds it, its objects held once.
-pub fn write(s: &Shape, shapes: &Shapes, v: &Value) -> Res<i64> {
-    let wrong = || Err(format!("{} is not a value of shape {s:?}", crate::interp::show(v)));
-    let all = |e: &Shape, xs: &[Value]| xs.iter().map(|x| write(e, shapes, x)).collect::<Res<Vec<_>>>();
-    Ok(match (s, v) {
-        (Shape::Int, Value::Int(n)) => new_int(&BigInt::from(*n)),
-        (Shape::Int, Value::Big(n)) => new_int(n),
-        (Shape::Float, Value::Float(f)) => f.to_bits() as i64,
-        (Shape::Bool, Value::Bool(b)) => *b as i64,
-        (Shape::Unit, Value::Unit) => 0,
-        (Shape::Str, Value::Str(t)) => new_string(t),
-        (Shape::List(e), Value::List(xs)) | (Shape::Set(e), Value::Set(xs)) => new_list(&all(e, xs)?),
+/// Lay the literal `e`, a value of shape `s`, out in compiled code's
+/// memory, as `read` reads it: the slot that holds it, its objects held once.
+pub fn write(s: &Shape, shapes: &Shapes, e: &Expr) -> Res<i64> {
+    let wrong = || Err(format!("{} is not a value of shape {s:?}", crate::printer::literal(e)));
+    let all = |t: &Shape, xs: &[&Expr]| xs.iter().map(|x| write(t, shapes, x)).collect::<Res<Vec<_>>>();
+    Ok(match (s, e) {
+        (Shape::Int, Expr::Int(n)) => new_int(&BigInt::from(*n)),
+        (Shape::Int, Expr::BigInt(d)) => new_int(&d.parse().map_err(|_| format!("`{d}` is not an integer"))?),
+        (Shape::Float, Expr::Float(f)) => f.to_bits() as i64,
+        (Shape::Bool, Expr::Bool(b)) => *b as i64,
+        (Shape::Unit, Expr::Unit) => 0,
+        (Shape::Str, Expr::Str(t)) => new_string(t),
+        (Shape::List(t), Expr::List(xs)) => new_list(&all(t, &xs.iter().collect::<Vec<_>>())?),
+        (Shape::Set(t), Expr::Set(_, xs)) => new_list(&all(t, &sorted(xs.iter().collect(), |x| *x)?)?),
         // a sorted list of (key, value) pairs
-        (Shape::Dict(k, e), Value::Dict(kvs)) => {
-            let pairs = kvs.iter().map(|(a, b)| Ok(new_block(0, &[write(k, shapes, a)?, write(e, shapes, b)?]))).collect::<Res<Vec<_>>>()?;
+        (Shape::Dict(k, v), Expr::Dict(_, kvs)) => {
+            let kvs = sorted(kvs.iter().collect(), |kv| &kv.0)?;
+            let pairs = kvs.iter().map(|(a, b)| Ok(new_block(0, &[write(k, shapes, a)?, write(v, shapes, b)?]))).collect::<Res<Vec<_>>>()?;
             new_list(&pairs)
         }
-        (Shape::Tuple(ts), Value::Tuple(xs)) if ts.len() == xs.len() => new_block(0, &ts.iter().zip(xs).map(|(t, x)| write(t, shapes, x)).collect::<Res<Vec<_>>>()?),
-        (Shape::Distinct(_, inner), Value::Distinct(_, x)) => write(inner, shapes, x)?,
+        (Shape::Tuple(ts), Expr::Tuple(xs)) if ts.len() == xs.len() => new_block(0, &ts.iter().zip(xs).map(|(t, x)| write(t, shapes, x)).collect::<Res<Vec<_>>>()?),
+        (Shape::Distinct(_, inner), Expr::Ctor(_, CtorArgs::Positional(xs))) if xs.len() == 1 => write(inner, shapes, &xs[0])?,
         // the member it is a value of: in a box with that member's tag, or as it is
-        (Shape::Union(ms), _) => match ms.iter().find(|(_, m)| fits(m, shapes, v)) {
-            Some((Some(tag), m)) => new_block(*tag, &[write(m, shapes, v)?]),
-            Some((None, m)) => write(m, shapes, v)?,
+        (Shape::Union(ms), _) => match ms.iter().find(|(_, m)| fits(m, shapes, e)) {
+            Some((Some(tag), m)) => new_block(*tag, &[write(m, shapes, e)?]),
+            Some((None, m)) => write(m, shapes, e)?,
             None => return wrong(),
         },
-        (Shape::Named(k), Value::Record(name, _) | Value::Variant(name, _)) => {
-            let cs = shapes.named.get(k).ok_or(format!("no shape for `{k}`"))?;
-            let Some(c) = cs.iter().find(|c| &c.name == name) else { return wrong() };
-            let given: Vec<(Option<&str>, &Value)> = match v {
-                Value::Record(_, fs) => fs.iter().map(|(n, x)| (Some(n.as_str()), x)).collect(),
-                Value::Variant(_, Fields::Rec(fs)) => fs.iter().map(|(n, x)| (Some(n.as_str()), x)).collect(),
-                Value::Variant(_, Fields::Pos(xs)) => xs.iter().map(|x| (None, x)).collect(),
-                _ => vec![],
+        (Shape::Named(k), Expr::Ctor(name, args)) => {
+            let Some(c) = ctor(shapes, k, name.as_str()) else { return wrong() };
+            let given: Vec<(Option<&str>, &Expr)> = match args {
+                CtorArgs::None => vec![],
+                CtorArgs::Record(fs) => fs.iter().map(|(n, x)| (Some(n.as_str()), x)).collect(),
+                CtorArgs::Positional(xs) => xs.iter().map(|x| (None, x)).collect(),
+                CtorArgs::Update(..) => return wrong(),
             };
             if given.len() != c.fields.len() {
-                return wrong();
+                return Err(format!("`{}` has {} fields, given {}", short(&c.name), c.fields.len(), given.len()));
             }
             // fields by name when they have one, else in order
             let mut slots = vec![];
             for (i, (n, f)) in c.fields.iter().enumerate() {
-                let x = match n {
-                    Some(n) => given.iter().find(|(g, _)| *g == Some(n.as_str())).map(|(_, x)| *x).ok_or(format!("{name} has no field `{n}`"))?,
-                    None => given[i].1,
+                let x = match (n, given[i].0) {
+                    (Some(n), Some(_)) => given.iter().find(|(g, _)| *g == Some(n.as_str())).map(|(_, x)| *x).ok_or(format!("`{}` has no field `{n}` given", short(&c.name)))?,
+                    _ => given[i].1,
                 };
                 slots.push(write(f, shapes, x)?);
             }
@@ -427,8 +335,8 @@ pub fn write(s: &Shape, shapes: &Shapes, v: &Value) -> Res<i64> {
 mod tests {
     use super::*;
 
-    /// JSON → a value → compiled memory → a value → JSON gives back the
-    /// JSON, for every kind of shape.
+    /// A literal → compiled memory → a literal gives it back (sets and
+    /// dicts sorted, as compiled code keeps them), for every kind of shape.
     #[test]
     fn values_cross_both_ways() {
         let src = r#"
@@ -456,36 +364,30 @@ type Everything = {
         let prog = crate::parser::parse_program(src).unwrap();
         let t = crate::ast::TypeExpr::Named("Everything".into(), vec![]);
         let (roots, shapes) = crate::llvm::shapes_of(&prog, &[t]).unwrap();
-        let j: Json = serde_json::from_str(
-            r#"{"id": 7, "tags": ["b", "a"], "scores": {"x": 1, "y": -2}, "keyed": [[3, true], [1, false]],
-                "pos": [4, true], "either": "text", "many": [1, {"Circle": {"r": 1.5}}, ["s"], "Dot"],
-                "big": "123456789012345678901234567890", "small": -4611686018427387904, "nothing": null,
-                "maybe": {"Some": {"Pair": [2, "two"]}}, "figures": [{"Square": 2.0}, "Dot"]}"#,
-        )
-        .unwrap();
-        let v = decode(&roots[0], &shapes, &j, "x").unwrap();
-        let raw = write(&roots[0], &shapes, &v).unwrap();
+        let lit = |s: &str| crate::parser::parse_expr(s).unwrap();
+        let given = lit(r#"Everything { id: Id(7), tags: Set { "b", "a", "b" }, scores: { "y": -2, "x": 1 }, keyed: { 3: true, 1: false },
+            pos: (4, true), either: "text", many: [1, Circle { r: 1.5 }, ["s"], Dot],
+            big: 123456789012345678901234567890, small: -4611686018427387904, nothing: (),
+            maybe: Some(Pair(2, "two")), figures: [Square(2.0), Dot] }"#);
+        let raw = write(&roots[0], &shapes, &given).unwrap();
         let back = unsafe { read(&roots[0], &shapes, raw) }.unwrap();
-        assert_eq!(back, v);
-        // (sets and dicts come back sorted, as compiled code keeps them)
-        let want: Json = serde_json::from_str(
-            r#"{"id": 7, "tags": ["a", "b"], "scores": {"x": 1, "y": -2}, "keyed": [[1, false], [3, true]],
-                "pos": [4, true], "either": "text", "many": [1, {"Circle": {"r": 1.5}}, ["s"], "Dot"],
-                "big": "123456789012345678901234567890", "small": -4611686018427387904, "nothing": null,
-                "maybe": {"Some": {"Pair": [2, "two"]}}, "figures": [{"Square": 2.0}, "Dot"]}"#,
-        )
-        .unwrap();
-        assert_eq!(crate::interp::to_json(&back), want);
+        assert_eq!(
+            crate::printer::literal(&back),
+            crate::printer::literal(&lit(r#"Everything { id: Id(7), tags: Set { "a", "b" }, scores: { "x": 1, "y": -2 }, keyed: { 1: false, 3: true },
+            pos: (4, true), either: "text", many: [1, Circle { r: 1.5 }, ["s"], Dot],
+            big: 123456789012345678901234567890, small: -4611686018427387904, nothing: (),
+            maybe: Some(Pair(2, "two")), figures: [Square(2.0), Dot] }"#))
+        );
     }
 
-    /// What doesn't fit is an error that says where.
+    /// What doesn't fit is an error that says what.
     #[test]
-    fn decoding_says_where() {
+    fn writing_says_what_does_not_fit() {
         let prog = crate::parser::parse_program("type P = { name: String, at: List[Int] }\n").unwrap();
         let (roots, shapes) = crate::llvm::shapes_of(&prog, &[crate::ast::TypeExpr::Named("P".into(), vec![])]).unwrap();
-        let err = |j: &str| decode(&roots[0], &shapes, &serde_json::from_str(j).unwrap(), "p").unwrap_err();
-        assert_eq!(err(r#"{"name": "a", "at": [1, "x"]}"#), r#"p.at[1]: expected an integer, got "x""#);
-        assert_eq!(err(r#"{"name": "a"}"#), "p: missing field `at`");
-        assert_eq!(err(r#"{"name": "a", "at": [], "z": 1}"#), "p: unknown field `z`");
+        let err = |s: &str| write(&roots[0], &shapes, &crate::parser::parse_expr(s).unwrap()).unwrap_err();
+        assert!(err(r#"P { name: "a", at: [1, "x"] }"#).starts_with(r#""x" is not a value of shape Int"#), "{}", err(r#"P { name: "a", at: [1, "x"] }"#));
+        assert_eq!(err(r#"P { name: "a" }"#), "`P` has 2 fields, given 1");
+        assert_eq!(err(r#"P { name: "a", z: [] }"#), "`P` has no field `at` given");
     }
 }

@@ -25,7 +25,6 @@
 //! `div` and `mod` and like the interpreter.
 
 use crate::ast::*;
-use crate::interp::{Fields, Value};
 use crate::types::{subst_texpr, Env};
 use crate::fx::{HashMap, HashSet};
 use std::io::Write;
@@ -199,6 +198,9 @@ pub struct Vc<'a> {
     binding: usize,
     /// The functions passed to the builtin being called, by argument.
     fn_args: Vec<Option<Func>>,
+    /// The constant standing for each bit operation met (`& x y`), so one met
+    /// twice is one value.
+    bit_terms: HashMap<String, T>,
 }
 
 fn and(ts: &[T]) -> T {
@@ -310,6 +312,7 @@ impl<'a> Vc<'a> {
             lists: vec![],
             binding: 0,
             fn_args: vec![],
+            bit_terms: HashMap::default(),
         }
     }
 
@@ -347,6 +350,8 @@ impl<'a> Vc<'a> {
         if g == "true" {
             return;
         }
+        // (the prelude's names as written: `self.len()`, not `self.FiniteIterator::std.prelude.len()`)
+        let what = crate::types::shown_name(&what);
         self.obligations.push(Obligation { what, goal: g.clone(), pc: self.pc.clone(), facts: self.facts.len(), termination: false });
         // past a check, execution continues only if it held
         self.pc.push(g);
@@ -1107,48 +1112,51 @@ impl<'a> Vc<'a> {
         }
     }
 
-    /// Does checking a value against `t` involve any refinement?
-    fn refined(&self, t: &TypeExpr, depth: usize) -> bool {
-        self.refined_in(t, depth, &mut vec![])
-    }
-
-    /// `refined`, with the types being looked into: a type met again inside
-    /// itself (`Array(List[JsonValue])` in `JsonValue`) adds no refinement
-    /// of its own.
-    fn refined_in(&self, t: &TypeExpr, depth: usize, seen: &mut Vec<TypeExpr>) -> bool {
-        if depth > 8 {
-            return true;
-        }
-        match t {
-            TypeExpr::Refined(..) => true,
-            TypeExpr::Unit | TypeExpr::Fn(..) => false,
-            TypeExpr::Union(ms) => ms.iter().any(|m| self.refined_in(m, depth + 1, seen)),
-            TypeExpr::Named(n, args) if self.env.variant_parent(n.sym()).is_some() => self.refined_in(&TypeExpr::Named(Symbol::from(self.env.variant_parent(n.sym()).unwrap()), args.clone()), depth + 1, seen),
-            TypeExpr::Named(n, args) => {
-                if seen.contains(t) {
-                    return false;
+    /// Does checking a value against `t` involve any refinement? Each type
+    /// it can reach (its arguments, the fields and payloads of its body, the
+    /// sum of a variant) is looked at once, however deep it is (a syntax tree
+    /// nests a dozen types) and however often it is met again (within itself,
+    /// as `Array(List[JsonValue])` in `JsonValue`, or along another path).
+    fn refined(&self, t: &TypeExpr, _depth: usize) -> bool {
+        let mut seen: Vec<TypeExpr> = vec![];
+        let mut todo = vec![t.clone()];
+        while let Some(t) = todo.pop() {
+            if seen.contains(&t) {
+                continue;
+            }
+            seen.push(t.clone());
+            match &t {
+                TypeExpr::Refined(..) => return true,
+                TypeExpr::Unit | TypeExpr::Fn(..) => {}
+                TypeExpr::Union(ms) => todo.extend(ms.iter().cloned()),
+                TypeExpr::Named(n, args) => {
+                    if let Some(parent) = self.env.variant_parent(n.sym()) {
+                        todo.push(TypeExpr::Named(Symbol::from(parent), args.clone()));
+                        continue;
+                    }
+                    todo.extend(args.iter().cloned());
+                    let Some(td) = self.env.types.get(&n.sym()) else { continue };
+                    if td.refinement.is_some() {
+                        return true;
+                    }
+                    match &td.body {
+                        TypeBody::Alias(a) => todo.push(a.clone()),
+                        TypeBody::Record(fs) => todo.extend(fs.iter().map(|f| f.ty.clone())),
+                        TypeBody::Sum(vs) => {
+                            for v in vs {
+                                match &v.payload {
+                                    Payload::Type(_) => unreachable!("a union member defined elsewhere is desugared away"),
+                                    Payload::None => {}
+                                    Payload::Positional(ts) => todo.extend(ts.iter().cloned()),
+                                    Payload::Record(fs) => todo.extend(fs.iter().map(|f| f.ty.clone())),
+                                }
+                            }
+                        }
+                    }
                 }
-                if args.iter().any(|a| self.refined_in(a, depth + 1, seen)) {
-                    return true;
-                }
-                let Some(td) = self.env.types.get(&n.sym()) else { return false };
-                if td.refinement.is_some() {
-                    return true;
-                }
-                seen.push(t.clone());
-                let r = match &td.body {
-                    TypeBody::Alias(a) => self.refined_in(a, depth + 1, seen),
-                    TypeBody::Record(fs) => fs.iter().any(|f| self.refined_in(&f.ty, depth + 1, seen)),
-                    TypeBody::Sum(vs) => vs.iter().any(|v| match &v.payload {
-                        Payload::None => false,
-                        Payload::Positional(ts) => ts.iter().any(|t| self.refined_in(t, depth + 1, seen)),
-                        Payload::Record(fs) => fs.iter().any(|f| self.refined_in(&f.ty, depth + 1, seen)),
-                    }),
-                };
-                seen.pop();
-                r
             }
         }
+        false
     }
 
     /// `t` with the type arguments that add no refinement replaced by `_`.
@@ -1694,6 +1702,9 @@ impl<'a> Vc<'a> {
                 (Val::Opaque(r), _) | (_, Val::Opaque(r)) => r.clone(),
                 _ => "a value of an unexpected shape".into(),
             };
+            // float arithmetic faults on a result that isn't finite (and an
+            // unknown value may be an Int divided by zero): not known to hold
+            self.oblige(format!("`{}` gives a finite number", op.symbol()), |vc| vc.unknown_bool(&r));
             return Val::Opaque(r);
         }
         let (x, y) = (self.as_int(&a), self.as_int(&b));
@@ -1709,6 +1720,74 @@ impl<'a> Vc<'a> {
             }
             _ => unreachable!(),
         })
+    }
+
+    /// `&`, `|`, `^`, `<<`, `>>`: exact where SMT-LIB's integers can say it
+    /// (a shift by a literal is `*` or `div` by a power of two, `x & (2^k - 1)`
+    /// is `x mod 2^k`, two literals are computed), else a fresh integer with
+    /// what holds of non-negative operands (`0 <= x & y <= x`,
+    /// `max(x, y) <= x | y <= x + y`, `0 <= x ^ y <= x + y`).
+    fn bits(&mut self, op: BinOp, a: Val, b: Val) -> Val {
+        use BinOp::*;
+        if !matches!(a, Val::Int(_)) && !matches!(b, Val::Int(_)) {
+            let r = match (&a, &b) {
+                (Val::Opaque(r), _) | (_, Val::Opaque(r)) => r.clone(),
+                _ => "a value of an unexpected shape".into(),
+            };
+            return Val::Opaque(r);
+        }
+        let (x, y) = (self.as_int(&a), self.as_int(&b));
+        let lit = |t: &str| t.parse::<i64>().ok();
+        let pow2 = |k: i64| format!("{}", num_bigint_pow2(k));
+        if matches!(op, Shl | Shr) {
+            if lit(&y).is_none_or(|k| k < 0) {
+                self.oblige(format!("`{}` by a non-negative number of bits", op.symbol()), |_| format!("(>= {y} 0)"));
+            }
+            if let Some(k) = lit(&y).filter(|k| (0..=4096).contains(k)) {
+                return Val::Int(if op == Shl { format!("(* {x} {})", pow2(k)) } else { format!("(div {x} {})", pow2(k)) });
+            }
+        } else {
+            if let (Some(m), Some(n)) = (lit(&x), lit(&y)) {
+                return Val::Int(num(match op {
+                    BitAnd => m & n,
+                    BitOr => m | n,
+                    _ => m ^ n,
+                }));
+            }
+            // a mask of the low bits
+            let mask = |t: &str| lit(t).filter(|m| *m > 0 && (m & (m + 1)) == 0).map(|m| (m + 1).trailing_zeros() as i64);
+            if op == BitAnd {
+                if let Some(k) = mask(&y) {
+                    return Val::Int(format!("(mod {x} {})", pow2(k)));
+                }
+                if let Some(k) = mask(&x) {
+                    return Val::Int(format!("(mod {y} {})", pow2(k)));
+                }
+            }
+        }
+        // the same operation on the same operands is the same value (a refinement
+        // assumed of `x` and checked again of it are about one number)
+        // (not under a quantifier, whose constants are bound by it)
+        let key = format!("{} {x} {y}", op.symbol());
+        if self.binding == 0 {
+            if let Some(r) = self.bit_terms.get(&key) {
+                return Val::Int(r.clone());
+            }
+        }
+        let r = self.fresh_why("Int", &format!("`{}` is only bounded, not modelled exactly", op.symbol()));
+        if self.binding == 0 {
+            self.bit_terms.insert(key, r.clone());
+        }
+        let nonneg = format!("(and (>= {x} 0) (>= {y} 0))");
+        let fact = match op {
+            BitAnd => format!("(and (=> (>= {x} 0) (and (<= 0 {r}) (<= {r} {x}))) (=> (>= {y} 0) (and (<= 0 {r}) (<= {r} {y}))))"),
+            BitOr => format!("(=> {nonneg} (and (>= {r} {x}) (>= {r} {y}) (<= {r} (+ {x} {y}))))"),
+            BitXor => format!("(=> {nonneg} (and (>= {r} 0) (<= {r} (+ {x} {y}))))"),
+            Shl => format!("(=> (>= {x} 0) (>= {r} {x}))"),
+            _ => format!("(=> (>= {x} 0) (and (<= 0 {r}) (<= {r} {x})))"),
+        };
+        self.facts.push(fact);
+        Val::Int(r)
     }
 
     fn compare(&mut self, op: BinOp, a: Val, b: Val) -> Val {
@@ -1768,7 +1847,6 @@ impl<'a> Vc<'a> {
             Expr::Lambda(..) => self.fn_value(e, vec![]).0,
             Expr::Mock(t) => Val::Opaque(format!("`mock {}`", crate::printer::ty(t))),
             Expr::Mut(x) | Expr::Comptime(x) => self.eval(x),
-            Expr::Describe(_) => Val::Opaque("a type's description".into()),
             Expr::Interp(parts) => {
                 for part in parts {
                     if let StrPart::Expr(x, _) = part {
@@ -1870,6 +1948,7 @@ impl<'a> Vc<'a> {
                             Eq => Val::Bool(self.eq(&a, &b)),
                             Ne => Val::Bool(not(&self.eq(&a, &b))),
                             Lt | Le | Gt | Ge => self.compare(*op, a, b),
+                            BitAnd | BitOr | BitXor | Shl | Shr => self.bits(*op, a, b),
                             Add | Sub | Mul | Div | Mod => {
                                 // `+` also joins strings and lists
                                 let joins = |v: &Val| matches!(v, Val::Str(_) | Val::List { .. });
@@ -2074,7 +2153,25 @@ impl<'a> Vc<'a> {
         match e {
             Expr::Lambda(ps, body) => {
                 // its checks hold on every call; a `return` leaves the lambda only
-                self.scopes.push(ps.iter().enumerate().map(|(i, p)| (p.name.to_string(), arg(i))).collect());
+                // an argument not given is any value of the parameter's type, when it is known
+                let vals: Vec<(String, Val)> = ps
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| {
+                        let v = match (args.get(i), &p.ty) {
+                            (Some(v), _) => v.clone(),
+                            (None, Some(t)) => {
+                                let old = self.reason.replace("the arguments of a function value are not known".into());
+                                let v = self.shape(t, 0);
+                                self.reason = old;
+                                v
+                            }
+                            (None, None) => arg(i),
+                        };
+                        (p.name.to_string(), v)
+                    })
+                    .collect();
+                self.scopes.push(vals.into_iter().collect());
                 let returns = std::mem::take(&mut self.returns);
                 let dead = self.dead;
                 let r = self.eval(body);
@@ -2212,7 +2309,25 @@ impl<'a> Vc<'a> {
         (!key.contains("Opaque(")).then_some(key)
     }
 
+    /// `byte_len(s)`: the SMT function `utf8_len`, with what is known of it.
+    fn utf8_len(&mut self, s: &str) -> T {
+        let (n, chars) = (format!("(utf8_len {s})"), format!("(str.len {s})"));
+        self.facts.push(format!("(and (<= {chars} {n}) (<= {n} (* 4 {chars})) (=> {} (= {n} {chars})))", ascii(s)));
+        n
+    }
+
     fn call(&mut self, name: &str, arg_exprs: &[Expr], args: Vec<Val>) -> Val {
+        // `len(s.code_points())` is the SMT string's length (its code points), and
+        // `len(s.bytes())` its `byte_len`: modelled on `s` itself
+        if crate::names::short(crate::types::split_trait_call(name).map_or(name, |(_, m)| m)) == "len" {
+            if let Some((unit, s)) = arg_exprs.first().and_then(string_unit) {
+                let v = self.eval(s);
+                return match unit {
+                    "code_points" => Val::Int(format!("(str.len {})", self.as_str(&v))),
+                    _ => self.builtin("byte_len", std::slice::from_ref(s), vec![v]),
+                };
+            }
+        }
         // `to_string` through `Display` (every type has it): the built-in's
         // model, unless the program implements `Display` for a built-in type
         if (name == "Display::to_string" || name == "to_string") && !self.env.impls.iter().any(|i| i.trait_name == "Display" && matches!(crate::types::texpr_head(&i.for_type).as_str(), "Int" | "Bool" | "String")) {
@@ -2289,7 +2404,7 @@ impl<'a> Vc<'a> {
             let b = binds.clone();
             self.oblige(format!("precondition of `{label}`: requires {}", crate::printer::expr(r, 0)), |vc| vc.pred(r, b));
         }
-        let why = format!("the result of `{label}` (only its contract is known)");
+        let why = format!("the result of `{}` (only its contract is known)", crate::types::shown_name(&label));
         let old = self.reason.replace(why);
         let res = self.shape(&f.ret, 0);
         self.reason = old;
@@ -2321,6 +2436,7 @@ impl<'a> Vc<'a> {
     fn builtin(&mut self, name: &str, arg_exprs: &[Expr], a: Vec<Val>) -> Val {
         let arg = |i: usize| a.get(i).cloned().unwrap_or(Val::Opaque("a missing argument".into()));
         let not_modelled = format!("`{name}` is not modelled");
+        self.builtin_faults(name, &a);
         match (name, a.len()) {
             ("len" | "str_len", 1) => match arg(0) {
                 Val::Str(s) => Val::Int(format!("(str.len {s})")),
@@ -2406,6 +2522,15 @@ impl<'a> Vc<'a> {
                 let k = format!("(ite (< {n} 0) 0 (ite (< {n} {l}) {n} {l}))");
                 let id = self.list_id(&arg(0));
                 self.new_list(if name == "take" { k } else { format!("(- {l} {k})") }, Gen::Sub(id))
+            }
+            // elements start..end of a list, both clamped to 0..len
+            ("slice", 3) if matches!(arg(0), Val::List { .. }) => {
+                let l = self.list_len(&arg(0));
+                let (a, b) = (self.as_int(&arg(1)), self.as_int(&arg(2)));
+                let clamp = |x: &str| format!("(ite (< {x} 0) 0 (ite (> {x} {l}) {l} {x}))");
+                let (a, b) = (clamp(&a), clamp(&b));
+                let id = self.list_id(&arg(0));
+                self.new_list(format!("(ite (< {a} {b}) (- {b} {a}) 0)"), Gen::Sub(id))
             }
             ("reverse" | "sort" | "sort_by", _) if !matches!(arg(0), Val::Str(_)) => {
                 let l = self.list_len(&arg(0));
@@ -2549,38 +2674,55 @@ impl<'a> Vc<'a> {
                 let (s, p) = (self.as_str(&arg(0)), self.as_str(&arg(1)));
                 Val::Bool(format!("(str.suffixof {p} {s})"))
             }
-            // characters start..end, both clamped to 0..len (`str.substr` takes a length)
-            ("slice", 3) if matches!(arg(0), Val::Str(_)) => {
+            // Positions in strings are byte offsets; SMT strings are code points.
+            // On an ASCII string the two are the same, and that is modelled exactly;
+            // on others only bounds are known.
+            ("byte_len", 1) => {
+                let s = self.as_str(&arg(0));
+                Val::Int(self.utf8_len(&s))
+            }
+            // bytes a..b, both clamped to 0..byte_len: on an ASCII string the code
+            // points a..b (`str.substr` takes a length); on any, at most b - a
+            // bytes (an offset inside a character moves back up to 3 bytes)
+            ("byte_slice", 3) => {
                 let s = self.as_str(&arg(0));
                 let (a, b) = (self.as_int(&arg(1)), self.as_int(&arg(2)));
-                let n = format!("(str.len {s})");
+                let n = self.utf8_len(&s);
                 let clamp = |x: &str| format!("(ite (< {x} 0) 0 (ite (> {x} {n}) {n} {x}))");
                 let (a, b) = (clamp(&a), clamp(&b));
-                Val::Str(format!("(str.substr {s} {a} (- {b} {a}))"))
-            }
-            ("get", 2) if matches!(arg(0), Val::Str(_)) => {
-                let s = self.as_str(&arg(0));
-                let i = self.as_int(&arg(1));
-                let string = TypeExpr::Named("String".into(), vec![]);
-                self.option(&string, &format!("(and (<= 0 {i}) (< {i} (str.len {s})))"), Val::Str(format!("(str.at {s} {i})")))
+                let other = self.fresh_why("String", "`byte_slice` of a string that may not be ASCII");
+                let r = format!("(ite {} (str.substr {s} {a} (- {b} {a})) {other})", ascii(&s));
+                let rn = self.utf8_len(&r);
+                let ascii_s = ascii(&s);
+                // a >= b: nothing (moving back keeps the order)
+                self.facts.push(format!("(=> (>= {a} {b}) (= {r} \"\"))"));
+                self.facts.push(format!("(and (>= {rn} 0) (<= {rn} {b}) (<= {rn} (+ (- {b} {a}) 3)) (=> {ascii_s} (= {rn} (ite (< {a} {b}) (- {b} {a}) 0))))"));
+                Val::Str(r)
             }
             ("chars", 1) => {
                 let s = self.as_str(&arg(0));
-                self.new_list(format!("(str.len {s})"), Gen::Type(TypeExpr::Named("String".into(), vec![])))
+                // each element is one character
+                self.new_list(format!("(str.len {s})"), Gen::Type(crate::types::parse_type_str("String where len(it) == 1")))
             }
-            // the first match, counted in characters; "" is found at 0
+            // the first match's byte offset (its code-point offset on an ASCII string,
+            // never less elsewhere); "" is found at 0
             ("index_of", 2) => {
                 let (s, p) = (self.as_str(&arg(0)), self.as_str(&arg(1)));
                 let i = format!("(str.indexof {s} {p} 0)");
+                let b = self.fresh_why("Int", "`index_of` in a string that may not be ASCII");
+                let (sn, pn) = (self.utf8_len(&s), self.utf8_len(&p));
+                // a match ends inside the string
+                self.facts.push(format!("(and (=> {} (= {b} {i})) (=> (= {i} 0) (= {b} 0)) (=> (>= {i} 0) (and (>= {b} {i}) (<= (+ {b} {pn}) {sn}))))", ascii(&s)));
                 let int = TypeExpr::Named("Int".into(), vec![]);
-                self.option(&int, &format!("(>= {i} 0)"), Val::Int(i))
+                self.option(&int, &format!("(>= {i} 0)"), Val::Int(b))
             }
-            // every non-overlapping match, left to right (Rust's `str::replace`);
-            // an empty pattern is a runtime fault, so that is checked
+            // every non-overlapping match, left to right (Rust's `str::replace`); an
+            // empty pattern is found around every character (SMT's replace_all leaves
+            // the string alone there: not modelled)
             ("replace", 3) => {
                 let (s, from, to) = (self.as_str(&arg(0)), self.as_str(&arg(1)), self.as_str(&arg(2)));
-                self.oblige("`replace` with a pattern that is not empty".into(), |_| format!("(not (= {from} \"\"))"));
-                Val::Str(format!("(str.replace_all {s} {from} {to})"))
+                let around = self.fresh_why("String", "`replace` with an empty pattern");
+                Val::Str(format!("(ite (= {from} \"\") {around} (str.replace_all {s} {from} {to}))"))
             }
             ("to_string", 1) => match arg(0) {
                 Val::Str(s) => Val::Str(s),
@@ -2608,6 +2750,19 @@ impl<'a> Vc<'a> {
                 let some = self.fresh_why("Bool", "`parse_int` of a string with whitespace, `+` or `_`");
                 let int = TypeExpr::Named("Int".into(), vec![]);
                 self.option(&int, &format!("(or {pos} {neg} (and (not {none}) {some}))"), Val::Int(payload))
+            }
+            // (within what SMT strings hold; `builtin_faults` checks the code point)
+            ("chr", 1) if matches!(arg(0), Val::Int(_)) => {
+                let n = self.as_int(&arg(0));
+                let c = self.fresh_why("String", "`chr` of a code point past U+2FFFF");
+                self.facts.push(format!("(= (str.len {c}) 1)"));
+                self.facts.push(format!("(=> (<= {n} {MAX_CHAR}) (= {c} (str.from_code {n})))"));
+                Val::Str(c)
+            }
+            // (one character: `builtin_faults` checks it)
+            ("ord", 1) => {
+                let s = self.as_str(&arg(0));
+                Val::Int(format!("(str.to_code {s})"))
             }
             // ASCII digits only, and not empty
             ("is_digit", 1) => {
@@ -2642,6 +2797,31 @@ impl<'a> Vc<'a> {
                     _ => Val::Opaque(not_modelled),
                 }
             }
+        }
+    }
+
+    /// The checks of a builtin that faults on some arguments (as compiled
+    /// code does): exact where the arguments are modelled, unknown (never
+    /// proven) where they are floats.
+    fn builtin_faults(&mut self, name: &str, a: &[Val]) {
+        let floats = "floats are not modelled yet";
+        match (name, a) {
+            ("chr", [Val::Int(n)]) => self.oblige("`chr` of a code point that is a character".into(), |_| {
+                format!("(and (<= 0 {n}) (<= {n} 1114111) (not (and (<= 55296 {n}) (<= {n} 57343))))")
+            }),
+            ("chr", [_]) => self.oblige("`chr` of a code point that is a character".into(), |vc| vc.unknown_bool("`chr` of a value not modelled")),
+            ("ord", [Val::Str(s)]) => self.oblige("`ord` of a single character".into(), |_| format!("(= (str.len {s}) 1)")),
+            // (`split` and `repeat` are total: an empty separator splits at every
+            // character, a count below 1 gives ""; out of memory isn't modelled)
+            ("ord", _) => self.oblige(format!("`{name}` with arguments it accepts"), |vc| vc.unknown_bool(&format!("`{name}` of a value not modelled"))),
+            // a Float past 1.79e308 is no number
+            ("float", [Val::Int(n)]) => self.oblige("`float` of an Int a Float can hold".into(), |_| {
+                let big = format!("1{}", "0".repeat(308));
+                format!("(and (< {n} {big}) (< (- {big}) {n}))")
+            }),
+            ("sqrt", [_]) => self.oblige("`sqrt` of a number that is not negative".into(), |vc| vc.unknown_bool(floats)),
+            ("floor" | "ceil" | "round", [_]) => self.oblige(format!("`{name}` of a finite number"), |vc| vc.unknown_bool(floats)),
+            _ => {}
         }
     }
 
@@ -2908,6 +3088,8 @@ impl<'a> Vc<'a> {
         for (pc, v) in std::mem::take(&mut self.returns) {
             exits.push((pc, v, " (early return)"));
         }
+        // a prelude trait's method by its short name (`FiniteIterator::len`)
+        let label = crate::types::shown_name(label);
         for (pc, res, how) in exits {
             self.pc = pc;
             self.dead = false;
@@ -2981,7 +3163,7 @@ pub enum Outcome {
     Proven,
     /// The solver found values that break the obligation (not yet confirmed
     /// by running them): parameter name -> value.
-    Refuted(Vec<(String, Value)>, String),
+    Refuted(Vec<(String, Expr)>, String),
     Unknown(String),
 }
 
@@ -3056,7 +3238,8 @@ impl Vc<'_> {
     fn script(&self, ob: &Obligation, leaves: &[String]) -> String {
         // the parameters are in the cone too, so a model satisfies their types
         let (facts, consts) = self.cone(ob, leaves);
-        let mut s = String::from("(set-option :produce-models true)\n(set-logic ALL)\n");
+        // `utf8_len`: a string's length in bytes (`byte_len`), known where it is used
+        let mut s = String::from("(set-option :produce-models true)\n(set-logic ALL)\n(declare-fun utf8_len (String) Int)\n");
         for (n, sort) in &self.decls {
             if consts.contains(n) || leaves.contains(n) {
                 s.push_str(&format!("(declare-const {n} {sort})\n"));
@@ -3110,8 +3293,8 @@ impl Vc<'_> {
             "unsat" => Outcome::Proven,
             "sat" => {
                 let model = parse_values(&out[first.len()..]);
-                let args: Option<Vec<(String, Value)>> = self.params.iter().map(|(n, v)| to_value(self.env, v, &model).map(|x| (n.clone(), x))).collect();
-                let shown = |args: &[(String, Value)]| args.iter().map(|(n, v)| format!("{n} = {}", crate::interp::to_json(v))).collect::<Vec<_>>().join(", ");
+                let args: Option<Vec<(String, Expr)>> = self.params.iter().map(|(n, v)| to_literal(self.env, v, &model).map(|x| (n.clone(), x))).collect();
+                let shown = |args: &[(String, Expr)]| args.iter().map(|(n, v)| format!("{n} = {}", crate::printer::literal(v))).collect::<Vec<_>>().join(", ");
                 match args {
                     Some(a) => {
                         let s = shown(&a);
@@ -3144,37 +3327,37 @@ fn leaves_of(v: &Val, out: &mut Vec<String>) {
     }
 }
 
-/// A parameter's value in a model, as an interpreter value (when it can be
-/// rebuilt: lists only when empty, nothing opaque).
-fn to_value(env: &Env, v: &Val, m: &HashMap<String, String>) -> Option<Value> {
+/// A parameter's value in a model, as the code that writes it (when it can
+/// be rebuilt: lists only when empty, nothing opaque).
+fn to_literal(env: &Env, v: &Val, m: &HashMap<String, String>) -> Option<Expr> {
     Some(match v {
-        Val::Int(t) => crate::interp::int_value(parse_big(m.get(t)?)?),
-        Val::Bool(t) => Value::Bool(m.get(t)? == "true"),
-        Val::Str(t) => Value::Str(parse_str(m.get(t)?)?),
-        Val::Unit => Value::Unit,
-        Val::Tuple(xs) => Value::Tuple(xs.iter().map(|x| to_value(env, x, m)).collect::<Option<_>>()?),
-        Val::Rec(n, fs) => Value::Record(n.clone(), fs.iter().map(|(f, x)| to_value(env, x, m).map(|y| (f.clone(), y))).collect::<Option<_>>()?),
-        Val::Distinct(n, x) => Value::Distinct(n.clone(), Box::new(to_value(env, x, m)?)),
+        Val::Int(t) => crate::llvm::native::int_expr(parse_big(m.get(t)?)?),
+        Val::Bool(t) => Expr::Bool(m.get(t)? == "true"),
+        Val::Str(t) => Expr::Str(parse_str(m.get(t)?)?),
+        Val::Unit => Expr::Unit,
+        Val::Tuple(xs) => Expr::Tuple(xs.iter().map(|x| to_literal(env, x, m)).collect::<Option<_>>()?),
+        Val::Rec(n, fs) => Expr::Ctor(Symbol::new(n), CtorArgs::Record(fs.iter().map(|(f, x)| to_literal(env, x, m).map(|y| (Symbol::new(f), y))).collect::<Option<_>>()?)),
+        Val::Distinct(n, x) => Expr::Ctor(Symbol::new(n), CtorArgs::Positional(vec![to_literal(env, x, m)?])),
         Val::List { len, .. } => {
             if parse_int(m.get(len)?)? != 0 {
                 return None;
             }
-            Value::List(vec![])
+            Expr::List(vec![])
         }
         Val::Sum { ty, args, tag, ctors } => {
             let k = parse_int(m.get(tag)?)? as usize;
             let (c, payload) = ctors.get(k)?;
             let vs = env.variants_of(ty, args)?;
-            let fields: Vec<Value> = payload.iter().map(|x| to_value(env, x, m)).collect::<Option<_>>()?;
+            let fields: Vec<Expr> = payload.iter().map(|x| to_literal(env, x, m)).collect::<Option<_>>()?;
             let f = match &vs.get(k)?.1 {
-                _ if fields.is_empty() => Fields::None,
-                Some(names) => Fields::rec(names.iter().map(|n| n.to_string()).zip(fields).collect()),
-                None => Fields::pos(fields),
+                _ if fields.is_empty() => CtorArgs::None,
+                Some(names) => CtorArgs::Record(names.iter().copied().zip(fields).collect()),
+                None => CtorArgs::Positional(fields),
             };
-            Value::Variant(c.clone(), f)
+            Expr::Ctor(Symbol::new(c), f)
         }
         // a union value is its active member's value
-        Val::Union { tag, slots } => to_value(env, &slots.get(parse_int(m.get(tag)?)? as usize)?.1, m)?,
+        Val::Union { tag, slots } => to_literal(env, &slots.get(parse_int(m.get(tag)?)? as usize)?.1, m)?,
         // a function can't be shown as a counterexample
         Val::Absent | Val::Opaque(_) | Val::FnOf { .. } => return None,
     })
@@ -3326,6 +3509,30 @@ mod tests {
         }
     }
 
+    /// `std.regex.relations`, as the prover calls it: `(a <= b, b <= a, disjoint)`.
+    #[test]
+    fn regex_relations_from_std() {
+        // compile-time code runs as the CLI runs it, on a large stack
+        std::thread::Builder::new().stack_size(1 << 30).spawn(relations_from_std).unwrap().join().unwrap();
+    }
+
+    fn relations_from_std() {
+        for (a, b, want) in [
+            ("[a-c]+", "[a-z]+", (true, false, false)),
+            ("[0-9]+", "[a-z]+", (false, false, true)),
+            ("a|b", "b|a", (true, true, false)),
+            ("\\d{3}", "\\d+", (true, false, false)),
+            ("\\d{3}", "\\d{2}", (false, false, true)),
+            ("\\w+", "[a-z]+", (false, true, false)),
+            ("\\p{L}+", "[0-9]*", (false, false, true)),
+            // undecided: a pattern a DFA can't match, or no regex at all
+            ("a\\bb", "ab", (false, false, false)),
+            ("(", "a", (false, false, false)),
+        ] {
+            assert_eq!(regex_relations(a, b), want, "{a} vs {b}");
+        }
+    }
+
     /// The ranges of a translated character class (a union of ranges and single characters).
     fn parsed_ranges(t: &str) -> Vec<(char, char)> {
         let lits: Vec<char> = t.split('"').skip(1).step_by(2).map(|x| parse_str(&format!("\"{x}\"")).unwrap().chars().next().unwrap()).collect();
@@ -3359,5 +3566,46 @@ mod tests {
         assert_eq!(parse_str(&m["v1"]).as_deref(), Some("aé\u{0}😀\n\"7\\\u{2ffff}"));
         assert_eq!(m["v2"], "false");
         assert_eq!(parse_str(&m["v3"]).as_deref(), Some("ba"));
+    }
+}
+
+/// 2^k, in decimal (k up to a few thousand: SMT-LIB integers are unbounded).
+fn num_bigint_pow2(k: i64) -> String {
+    // decimal digits, least significant first
+    let mut d: Vec<u8> = vec![1];
+    for _ in 0..k {
+        let mut carry = 0;
+        for x in d.iter_mut() {
+            let v = *x * 2 + carry;
+            *x = v % 10;
+            carry = v / 10;
+        }
+        if carry > 0 {
+            d.push(carry);
+        }
+    }
+    d.iter().rev().map(|x| (b'0' + x) as char).collect()
+}
+
+/// Whether SMT string `s` is ASCII (its code points are its bytes).
+fn ascii(s: &str) -> String {
+    format!("(str.in_re {s} (re.* (re.range \"\\u{{0}}\" \"\\u{{7f}}\")))")
+}
+
+/// `s.code_points()` / `s.bytes()` (as a method call, through its trait or
+/// not): the unit and the string.
+fn string_unit(e: &Expr) -> Option<(&'static str, &Expr)> {
+    let (name, recv) = match e {
+        Expr::Method(r, m, args) if args.is_empty() => (m.as_str(), &**r),
+        Expr::Call(f, args) if args.len() == 1 => match &**f {
+            Expr::Var(n) => (n.as_str(), &args[0]),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    match crate::names::short(crate::types::split_trait_call(name).map_or(name, |(_, m)| m)) {
+        "code_points" => Some(("code_points", recv)),
+        "bytes" => Some(("bytes", recv)),
+        _ => None,
     }
 }

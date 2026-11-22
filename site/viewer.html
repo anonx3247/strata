@@ -102,6 +102,8 @@ pre { margin: 0; padding: 10px 14px; background: var(--code-bg); font: 12.5px/1.
 .t-ctl { color: var(--kw-ctl); } .t-spec { color: var(--kw-spec); } .t-lit { color: var(--num); }
 /* a reference keeps its token colour; only the underline marks it clickable */
 a.ref.t-ty { color: var(--base); } a.ref.t-uty { color: var(--utype); }
+/* capabilities and capability traits: what reaches the outside world */
+.t-cap, a.ref.t-cap { color: var(--effect); font-weight: 600; } .k-capability { color: var(--effect); }
 .t-hole { background: var(--hole-bg); border-radius: 3px; padding: 0 2px; font-weight: 600; }
 a.ref { color: inherit; text-decoration: underline dotted var(--faint); text-underline-offset: 3px; cursor: pointer; }
 a.ref:hover { color: var(--accent); text-decoration-color: var(--accent); }
@@ -168,7 +170,7 @@ h2.sect { font: 600 11px var(--sans); text-transform: uppercase; letter-spacing:
 .tedge.implements, .tedge.extends { stroke: var(--accent); stroke-width: 1.6; }
 .tedge.extends { stroke-dasharray: 7 3; }
 .lg.impl { border-top: 2px solid var(--accent); }
-.k-trait { color: var(--accent); } .k-impl { color: var(--accent); }
+.k-trait { color: var(--accent); } .k-impl { color: var(--accent); } .k-extern { color: var(--effect); }
 /* flow graph */
 .fctl { display: flex; align-items: center; gap: 10px; margin: 4px 0 10px; font-size: 11.5px; }
 .fctl .seg button { padding: 2px 9px; font-size: 11.5px; }
@@ -395,7 +397,7 @@ const lv = x => isNaN(+x) ? x : +x;
 const S = { data: null, raw: '', level: 1, sel: null, scope: 'slice', q: '', over: {}, prevHash: {}, flash: new Set(), prevLog: 0, newLog: 0, showTests: false, open: {}, allOpen: false };
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const KIND = { type: 'T', fn: 'ƒ', test: '✓', trait: '◆', impl: '⊢' };
+const KIND = { type: 'T', fn: 'ƒ', test: '✓', trait: '◆', impl: '⊢', extern: '⇄', capability: '⚿' };
 const byName = () => Object.fromEntries(S.data.decls.map(d => [d.name, d]));
 
 function status(d) {
@@ -409,6 +411,7 @@ function status(d) {
   if (v && v.status === 'fuzzed') return [loops ? 'warn' : 'ok', 'fuzzed ' + v.cases + loops];
   if (v && v.status === 'assumed') return ['none', 'assumed'];
   if (d.kind === 'fn') return ['none', 'unverified'];
+  if (d.kind === 'extern') return ['none', 'foreign: assumed'];
   return ['', ''];
 }
 
@@ -417,7 +420,7 @@ function status(d) {
 // (including matching), and what states rules the checker and fuzzer hold
 // the code to. `true`/`false` are literals.
 const KW_GROUPS = {
-  'kw': 'type distinct fn test let mut trait impl derive derivable derived comptime pub use module',
+  'kw': 'type distinct fn test let mut trait impl derive derivable derived comptime extern capability pub use module',
   'ctl': 'if else match is while for in loop break continue return except',
   'spec': 'where requires ensures assert law mock it',
   'lit': 'true false',
@@ -449,6 +452,16 @@ function resolver(mod) {
   };
 }
 
+// the names of capabilities and capability traits, coloured apart wherever they appear
+let capNames = null, capData = null;
+function capabilityNames() {
+  if (capData !== S.data) {
+    capData = S.data;
+    capNames = new Set((S.data?.decls || []).filter(d => d.kind === 'capability' || d.capability).map(d => d.name));
+  }
+  return capNames;
+}
+
 function highlight(src, resolve) {
   const re = /(\/\/\/[^\n]*)|(\/\/[^\n]*)|("(?:[^"\\]|\\.)*")|(\?[A-Za-z_]\w*)|(\b\d+\b)|([A-Za-z_]\w*)/g;
   let out = '', last = 0, m;
@@ -471,7 +484,8 @@ function highlight(src, resolve) {
       // may be a parameter or local that shadows one (`policy`)
       const called = /^\s*[([]/.test(src.slice(re.lastIndex, re.lastIndex + 3));
       const target = cls || called ? resolve(id) : null;
-      out += target ? `<a class="ref ${cls}" data-go="${esc(target)}">${id}</a>` : (cls ? `<span class="${cls}">${id}</span>` : id);
+      const shown = target && capabilityNames().has(target) ? 't-cap' : cls;
+      out += target ? `<a class="ref ${shown}" data-go="${esc(target)}">${id}</a>` : (cls ? `<span class="${cls}">${id}</span>` : id);
     }
   }
   return out + esc(src.slice(last));
@@ -550,16 +564,17 @@ function renderHeader() {
 }
 
 function renderLeft() {
-  const groups = [['type', 'Types'], ['trait', 'Traits'], ['impl', 'Implementations'], ['fn', 'Functions'], ['test', 'Tests']];
+  const groups = [['capability', 'Capabilities'], ['type', 'Types'], ['trait', 'Traits'], ['extern', 'Foreign'], ['impl', 'Implementations'], ['fn', 'Functions'], ['test', 'Tests']];
   const vis = new Set(visible().map(d => d.name));
   const mods = [...new Set(S.data.decls.map(d => d.module))];
   const many = mods.length > 1 || mods[0] !== '';
   const section = (decls) => groups.map(([k, title]) => {
-    const items = decls.filter(d => d.kind === k);
+    // mocks are for tests: hidden unless shown (a test's mocks still open from its code)
+    const items = decls.filter(d => d.kind === k && (S.showMocks || !d.mock));
     if (!items.length) return '';
     return `<div class="group"><h4>${title}</h4>${items.map(d => {
       const [cls] = status(d);
-      const priv = many && d.module && !d.public && d.kind !== 'test' && d.kind !== 'impl';
+      const priv = many && d.module && !d.public && d.kind !== 'test' && d.kind !== 'impl' && d.kind !== 'extern';
       return `<div class="item ${d.name === S.sel ? 'sel' : ''} ${vis.has(d.name) ? '' : 'dim'} ${priv ? 'private' : ''}" data-go="${esc(d.name)}" title="${esc(d.name)}${priv ? ' (private to its module)' : ''}">
         <span class="kind k-${d.kind}">${KIND[d.kind]}</span><span class="lbl">${esc(d.label)}</span><span class="spacer"></span><span class="dot ${cls}"></span></div>`;
     }).join('')}</div>`;
@@ -570,6 +585,8 @@ function renderLeft() {
     const open = !S.closedMods?.has(m);
     return `<div class="mod"><div class="mod-h" data-mod="${esc(m)}">${open ? '▾' : '▸'} <b>${esc(m || '(root)')}</b> <span class="muted">${decls.length}</span>${uses.length ? `<div class="mod-uses">uses ${esc(uses.join(', '))}</div>` : ''}</div>${open ? section(decls) : ''}</div>`;
   }).join('');
+  const mocks = S.data.decls.filter(d => d.mock).length;
+  if (mocks) $('#left').innerHTML += `<div class="group"><a class="muted" style="display:block;padding:6px 14px;cursor:pointer" data-mocks>${S.showMocks ? 'hide' : 'show'} ${mocks} mock${mocks > 1 ? 's' : ''} (for tests)</a></div>`;
 }
 
 // ---------- type map: types and traits as a general graph ----------
@@ -1305,9 +1322,12 @@ var render = function () {
 // ---------- live polling ----------
 async function poll() {
   try {
-    const r = await fetch('/api/state', { cache: 'no-store' });
-    const txt = await r.text();
+    // the server answers 304 while nothing changed: no download, no parse, no render
+    const r = await fetch('/api/state', { cache: 'no-store', headers: S.etag ? { 'If-None-Match': S.etag } : {} });
     $('#live').classList.remove('off'); $('#live span').textContent = 'live';
+    if (r.status === 304) return;
+    const txt = await r.text();
+    S.etag = r.headers.get('ETag');
     if (txt !== S.raw) {
       S.raw = txt;
       const data = JSON.parse(txt);
@@ -1328,6 +1348,8 @@ async function poll() {
     $('#live').classList.add('off'); $('#live span').textContent = 'disconnected';
   }
 }
+// poll again 1.5s after the last answer (not every 1.5s: a slow snapshot would pile requests up)
+async function pollLoop() { await poll(); setTimeout(pollLoop, 1500); }
 
 // ---------- events ----------
 document.addEventListener('click', e => {
@@ -1350,11 +1372,12 @@ document.addEventListener('click', e => {
   }
   const nb = e.target.closest('[data-nav]');
   if (nb) { if (!nb.disabled) navGo(+nb.dataset.nav); return; }
-  const t = e.target.closest('[data-toggle],[data-all],[data-go],[data-pick],[data-l],[data-s],[data-mod]');
+  const t = e.target.closest('[data-toggle],[data-all],[data-go],[data-pick],[data-l],[data-s],[data-mod],[data-mocks]');
   if (!t) return;
   if (t.dataset.toggle) { const d = byName()[t.dataset.toggle]; if (d) { S.open[d.name] = !isOpen(d); render(); } return; }
   if (t.dataset.all) { S.allOpen = t.dataset.all === '1'; S.open = {}; render(); return; }
   if (t.dataset.l) { S.level = lv(t.dataset.l); render(); if (S.level === 'changes') loadChanges(); return; }
+  if (t.dataset.mocks !== undefined) { S.showMocks = !S.showMocks; render(); return; }
   if (t.dataset.mod !== undefined) { S.closedMods ||= new Set(); S.closedMods.has(t.dataset.mod) ? S.closedMods.delete(t.dataset.mod) : S.closedMods.add(t.dataset.mod); render(); return; }
   if (t.dataset.s) { if (!t.disabled) { S.scope = t.dataset.s; render(); } return; }
   if (t.dataset.go) { clearArrow(); if (S.scope === 'all') S.scope = 'slice'; select(t.dataset.go, typeof S.level === 'number'); return; }
@@ -1442,7 +1465,7 @@ window.addEventListener('error', e => { $('#banner').innerHTML = `<div class="er
 const _render = render;
 render = function () { try { _render(); } catch (err) { $('#banner').innerHTML = `<div class="err">viewer error: ${esc(err.message)} ${esc((err.stack || '').split('\n')[1] || '')}</div>`; } };
 tmEvents();
-poll(); setInterval(poll, 1500);
+pollLoop();
 </script>
 <script>
 window.addEventListener('message', e => {

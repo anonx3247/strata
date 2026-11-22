@@ -787,7 +787,7 @@ macro_rules! put {
 // ── the tree ────────────────────────────────────────────────────────────────
 
 record!(Decl { comments, doc, module, public, kind });
-record!(TypeDecl { distinct, name, params, body, refinement });
+record!(TypeDecl { distinct, name, params, body, refinement, mock });
 record!(Field { comments, doc, name, ty, default });
 record!(Variant { comments, name, payload });
 record!(Param { name, ty, mutable, comptime });
@@ -807,7 +807,7 @@ record!(LamParam { name, ty });
 record!(CompFor { pat, iter, cond });
 record!(FmtSpec { fill, align, plus, zero, width, precision });
 
-tags!(BinOp { Add = 0, Sub = 1, Mul = 2, Div = 3, Mod = 4, Eq = 5, Ne = 6, Lt = 7, Le = 8, Gt = 9, Ge = 10, And = 11, Or = 12, Implies = 13 });
+tags!(BinOp { Add = 0, Sub = 1, Mul = 2, Div = 3, Mod = 4, Eq = 5, Ne = 6, Lt = 7, Le = 8, Gt = 9, Ge = 10, And = 11, Or = 12, Implies = 13, BitAnd = 14, BitOr = 15, BitXor = 16, Shl = 17, Shr = 18 });
 tags!(UnOp { Neg = 0, Not = 1 });
 tags!(TryKind { Result = 0, Option = 1 });
 tags!(CompKind { List = 0, Set = 1, Dict = 2 });
@@ -878,13 +878,15 @@ impl Bin for Payload {
             Payload::None => w.byte(0),
             Payload::Positional(ts) => put!(w, 1, ts),
             Payload::Record(fs) => put!(w, 2, fs),
+            Payload::Type(t) => put!(w, 3, t),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
-        Ok(match r.tag("variant payload", 2)? {
+        Ok(match r.tag("variant payload", 3)? {
             0 => Payload::None,
             1 => Payload::Positional(Bin::dec(r)?),
-            _ => Payload::Record(Bin::dec(r)?),
+            2 => Payload::Record(Bin::dec(r)?),
+            _ => Payload::Type(Bin::dec(r)?),
         })
     }
 }
@@ -1038,7 +1040,6 @@ impl Bin for Expr {
             Expr::Set(tys, xs) => put!(w, 31, tys, xs),
             Expr::Or(x, fb) => put!(w, 32, x, fb),
             Expr::Comptime(x) => put!(w, 33, x),
-            Expr::Describe(t) => put!(w, 34, t),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
@@ -1077,8 +1078,7 @@ impl Bin for Expr {
                 30 => Expr::Dict(Bin::dec(r)?, Bin::dec(r)?),
                 31 => Expr::Set(Bin::dec(r)?, Bin::dec(r)?),
                 32 => Expr::Or(Bin::dec(r)?, Bin::dec(r)?),
-                33 => Expr::Comptime(Bin::dec(r)?),
-                _ => Expr::Describe(Bin::dec(r)?),
+                _ => Expr::Comptime(Bin::dec(r)?),
             })
         })
     }

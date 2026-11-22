@@ -132,3 +132,20 @@ pub fn render(stored: &Program, names: &BTreeSet<String>, level: u8, st: &Status
     }
     parts.join("\n\n") + "\n"
 }
+
+/// The definitions of mocks (`mock MemFiles = { ... }`) and their
+/// implementations, by qualified name: hidden from views unless asked for.
+pub fn mock_decls(p: &Program) -> crate::fx::HashSet<String> {
+    let mocks: crate::fx::HashSet<(Symbol, String)> = p.decls.iter().filter_map(|d| match &d.kind {
+        DeclKind::Type(t) if t.mock => Some((d.module, t.name.to_string())),
+        _ => None,
+    }).collect();
+    p.decls.iter().filter(|d| match &d.kind {
+        DeclKind::Type(t) => t.mock,
+        DeclKind::Impl(i) => {
+            let head = crate::types::texpr_head(&i.for_type);
+            mocks.iter().any(|(m, n)| *n == head || crate::names::qualify(m, n) == head)
+        }
+        _ => false,
+    }).map(|d| d.qname()).collect()
+}

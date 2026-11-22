@@ -105,7 +105,15 @@ fn describe(v: Int | String) -> String {
 }
 ```
 
-**Variants are types.** `type ShapeError = | Empty | TooBig { max: Int }` declares the types `Empty` and `TooBig`, and `ShapeError` is `Empty | TooBig`. A function can take `e: TooBig` (and read `e.max`), or return `Result[Shape, TooBig]`. Constructors still need wrapping (`Err(TooBig { max: 9 })`), so `Result[Int, Int]` stays unambiguous. Since a variant is a type, its name must be unique in its module (another module's type of the same name is told apart by its module, as `geo.Circle`).
+**A union declares its members or names them.** `type Shape = Circle | Square { side: Float } | Dot` uses the record `Circle` and declares `Square` (a record) and `Dot` (an atom: a type with one value). A bare name is the type of that name when one is in scope, and is declared by the union only when nothing has that name; a member written with fields (`Moved(Int)`, `Square { .. }`) is declared. The same union can be written with a bar before each member, one per line, and `type ShapeError = | Empty | TooBig { max: Int }` declares both its members. A member declared in a union is a type like any other: a function can take `e: TooBig` (and read `e.max`), or return `Result[Shape, TooBig]`, and an atom or tuple-shaped type can be declared on its own too (`type Dot`, `type Moved(Int)`), to be used in several unions. Constructors still need wrapping (`Err(TooBig { max: 9 })`), so `Result[Int, Int]` stays unambiguous. A member declared in a union has its name unique in its module (another module's type of the same name is told apart by its module, as `geo.Circle`). `edit` warns when a new member is named like an existing type (`Circel` next to `Circle`).
+
+**Only bare members flatten.** `type S2 = S | C` with `type S = A | B` is `A | B | C`; `type S3 = D(S) | E` is `D | E`: `D` is a new type holding an `S`.
+
+**A union's type parameters are wrapped**, in a member it declares (`type Option[T] = Some(T) | None`, `type OrError[T] = Value(T) | Problem`) or in a type (`type Many[T] = List[T] | Problem`): never a member on its own (`T | Problem`), nor two members alike (`List[A] | List[B]`), which couldn't be told apart. A union of two types is written `A | B` where it is used; there is no `Either[A, B]`. So a generic union is named by its members too: `List[Int] | Problem` is `Many[Int]` (and renders so), and `impl[T] Show for Many[T]` applies to it.
+
+**A named union names a set of values.** A member fits it without wrapping, and the same set written out (`x: Circle | Square | Dot`) is that type: `strata render` writes it as `x: Shape` (named subsets too: `B | C | D` is `A | D` when `type A = B | C`). A named union can have `impl`s, methods and `derive`s; for a value typed by it (or by its set), its own apply, and for a value of a member, the member's own. Two modules may name the same set (`geo.Shape`, `ui.Figure`), but not both implement a trait (or have a method of the same name) for it: a value of the set wouldn't know which applies. A union that adds nothing is refused as a bare alias is: one that is a single type once normalized (`type U = Int | Positive`), or a second name in its module for a set already named there, in the root module or in the prelude (`type Answer = Some(Int) | None` is `Option[Int]`). `distinct type Answer = Some(Int) | None` is a separate type, built as `Answer(Some(3))` and read with `.value`.
+
+`strata render` shows a type that one union lists inside it, unless it has a doc, an `impl` or a `derive` of its own (then on its own); `--members separate` shows each member on its own instead (in `strata ui`: *union members: inline (switch)*). Both read back as the same program.
 
 **Patterns are sets of values**, and an arm takes what the arms above it left:
 
@@ -150,6 +158,32 @@ fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, (ac
 
 **Capabilities are traits too.** There are no separate effects: a backend (database, queue, console, clock) is a trait, and code that uses one takes an implementation as a parameter or holds it in a field: `fn ship(mut db: Db, ...)`, `type PrintWorker = { console: Console }`. A trait used as a type means "any implementation": `db: Db` is shorthand for `fn ship[D: Db](db: D, ...)`. Name the type parameter only when it must tie things together, as in `combine_all[T: Combine](first: T, rest: List[T]) -> T`. A method that changes its value says `mut self` (`fn save(mut self, o: Order)`). Tests pass a fake implementation or `mock Db`. Async and iterators will be designed as their own language features.
 
+**Mocks: fakes for tests.** A fake is declared like a type, with `mock` in place of `type`, and implemented like any type; its implementations may leave methods out:
+
+```rust
+/// An in-memory disk, for tests.
+mock MemDisk = { files: Dict[String, String] = Dict[String, String] {} }
+
+impl Files for MemDisk {
+  fn read(self, path: String) -> Result[String, FsError] { Ok(get(self.files, path) ?? "") }
+  fn write(mut self, path: String, text: String) -> Result[(), FsError] {
+    self.files = insert(self.files, path, text)
+    Ok(())
+  }
+  // exists, list, ...: left out, generated
+}
+
+test "saving then loading" {
+  mut fs := MemDisk {}
+  assert save_then_load(mut fs, "hi") == Ok("hi")
+}
+```
+
+- A method left out answers as `mock Files` does: it checks the method's `requires` and gives a result within its type and `ensures`.
+- A mock is for tests only: a `test`, another mock, or an `impl` for one may name it; anything else is an error, so a fake never reaches a real run.
+- `verify` reports a mock's methods as assumed (the tests that use it check them). `strata view` and the viewer hide mocks and their implementations unless asked (`view --mocks`, "show mocks").
+- A mock holds data: a record (`mock FixedClock = {}` for none).
+
 **Capabilities given by the runtime.** A trait that reaches the outside world is marked `capability trait`; anything may implement it, fakes for tests included. The real thing is a `capability`: functions that reach the outside world, holding no data. Only the runtime makes one, for `main` or a test that asks for it by name, and its functions are called on that value, so holding it is the permission:
 
 ```rust
@@ -185,7 +219,16 @@ test "the real clock" (sys: SystemClock) {
 - `verify` never runs a capability's code, nor code that takes one: it reports them as assumed.
 - The viewer colours capabilities and capability traits apart from other types.
 
-std's are capabilities too: `Disk` (`std.fs`, for `Files`) and `Process` (`std.process`, for `Environment`), which `main` names. `Console` is the one capability the environment chooses, so `main` asks for the trait: it gets the terminal under `strata run`, and a test's own output in a test.
+std's are capabilities too: `Disk` (`std.fs`, for `Files`) and `Process` (`std.process`, for `Environment`), which `main` names. `Console` is the one capability the environment chooses, so `main` asks for the trait: it gets the terminal under `strata run`. A test may ask for it too (`test "..." (mut console: Console) { ... }`): what it writes is the test's own output, shown only if the test fails. Under `strata run --trace`, the console's calls are in the trace with the rest, what was written and what was read.
+
+**How the program is run** is hidden by default, so a program behaves the same everywhere. A package that needs to know says so in `strata.toml`:
+
+```toml
+[run]
+mode = true
+```
+
+Then `main` and tests may ask for a `RunMode` (`std.process`): `Running` under `strata run` or in a built executable, `Testing` in a test, `Tracing` under `--trace`. Without it, asking is an error that says how to allow it.
 
 **A type's own methods.** `impl Item { ... }` gives a type methods of its own, with no trait. A method with `self` is called on a value (`item.priced(42)`). One without `self` is called on the type, which makes it a constructor: `Item.new("tea")`. Only a record, sum or `distinct` type defined in the program can have them, in the module that defines it, and in a single `impl Item` block.
 
@@ -274,7 +317,7 @@ Only a variable declared `mut`, a `mut` parameter, or a field of one can be chan
 
 There are no shared references, so nothing changes behind your back: `ys := xs` is a copy, and changing `xs` afterwards leaves `ys` as it was (the same holds for passing a value or storing it in a field). There is no `copy` or `clone` to call; the copying is the compiler's business (compiled code shares the value and copies it only when one side changes it while the other still holds it). A declared type holds for the variable's whole life: every assignment is checked against it (`line.qty = 120` fails if `qty` is a `Quantity`; `x = -1` fails if `x` was declared `mut x: Positive`), at compile time for literals and at runtime otherwise, and so is the value a `mut` argument writes back. Passing a `Positive` variable to a `mut k: Int` parameter is a compile error, since the function could store any `Int` in it. Closures cannot change outer variables.
 
-**Ranges, slices and comprehensions.** `0..n` is the integers from `0` to `n - 1`, and `1..=n` includes `n`; a range is a `List[Int]` (`for i in 0..n { … }`, `(0..n).map(…)`). A list or string is sliced with a range: `xs[1..3]`, `s[..3]`, `xs[2..]`, `xs[..=i]`, clamped to its length as in Python. There are no negative indices: the end of `xs` is `len(xs)`, as in `xs[..len(xs) - 1]`. One element is `xs[i]` (`s[i]` is a one-character string): `i` must be in range, which is checked when the code runs and proven by `verify` (`xs[0]` on a `NonEmpty[Int]` is proven; `xs[len(xs) - 1]` on any list is not). `get(xs, i)` gives an `Option` instead. A comprehension builds a list from one or more others, with a `where` to keep only some elements, as in a refinement:
+**Ranges, slices and comprehensions.** `0..n` is the integers from `0` to `n - 1`, and `1..=n` includes `n`; a range is a `List[Int]` (`for i in 0..n { … }`, `(0..n).map(…)`). A list is sliced with a range: `xs[1..3]`, `xs[..3]`, `xs[2..]`, `xs[..=i]`, clamped to its length as in Python (so is a finite iterator, such as a string's units: `s.graphemes()[..3]`). There are no negative indices: the end of `xs` is `len(xs)`, as in `xs[..len(xs) - 1]`. One element is `xs[i]`: `i` must be in range, which is checked when the code runs and proven by `verify` (`xs[0]` on a `NonEmpty[Int]` is proven; `xs[len(xs) - 1]` on any list is not). `get(xs, i)` gives an `Option` instead. A comprehension builds a list from one or more others, with a `where` to keep only some elements, as in a refinement:
 
 ```rust
 [x * x for x in xs where x > 0]
@@ -286,7 +329,7 @@ Set { x % 3 for x in xs }
 
 They are written in the tree as such, so they render back as written. When the program is resolved they become the builtins (`range`, `slice`, `map`, `filter`, `fold`), so the checker, the interpreter and the prover treat them exactly as those calls.
 
-Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7`, with optional parameter types (`(s: String) -> len(s)`; a refined one, such as `(n: Positive) -> …`, is checked on every call, like a named function's) and a block for a longer body (`x -> { ... }`). `return e` leaves the enclosing function or lambda early.
+Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7`, with optional parameter types (`(s: String) -> s + "!"`; a refined one, such as `(n: Positive) -> …`, is checked on every call, like a named function's) and a block for a longer body (`x -> { ... }`). `return e` leaves the enclosing function or lambda early.
 
 ## Errors: `Result`, `Option`, `!`, `?`, `except` and `or`
 
@@ -328,7 +371,7 @@ n := parse(s) except e { return describe_error(e) }      // ... or a block, with
 | `Dict[K, V]` | `Dict { "a": 1, "b": 2 }`, `Dict[String, Int] {}`, `dict(pairs)` from a list of pairs, `get`, `insert`, `remove`, `keys`, `values`, `items`; a JSON object when keys are strings |
 | `Set[T]` | `Set { 1, 2 }`, `Set[Int] {}`, `set(xs)` from a list, `insert`, `union`, `intersection`, `difference`, `to_list` |
 
-`+` adds numbers and joins strings and lists (`"a" + "b"`, `[1] + [2]`). **Strings** are UTF-8 and indexed by character: `len`, `chars`, `s[i]`, `get(s, i)`, slices `s[start..end]` (clamped, as in Python; also on lists), `index_of`, `contains`, `starts_with`, `ends_with`, `split`, `join`, `lines`, `trim`, `replace`, `repeat`, `reverse`, `to_upper`, `to_lower`, `is_digit` / `is_alpha` / `is_space`, `ord` / `chr`, `parse_int`, `matches` (regex). `to_json(x)` gives any value as compact JSON, as `strata run` writes it. **f-strings** interpolate any expression, shown as by `to_string` (`Display`, below): `f"{name} has {len(xs)} items"` (`{{` and `}}` are literal braces). A **format spec** follows a `:`, as in Python: `[[fill]align][+][0][width][.precision]`. `{price:.2}` gives two decimal places (or keeps at most 2 characters of a `String`), `{name:<12}` / `{n:>5}` / `{title:*^20}` pad to a width (numbers align right by default, everything else left), `{n:05}` pads with zeros after the sign, `{delta:+}` always shows the sign. A spec that doesn't suit the type is a check error.
+`+` adds numbers and joins strings and lists (`"a" + "b"`, `[1] + [2]`). **Bits**: `&`, `|`, `^` work on `Int`s bit by bit, as two's complement infinitely sign-extended (as in Python: `-1 & x` is `x`, big integers included), `a << n` is `a` times 2^n and `a >> n` is `a` divided by 2^n rounded down (`-5 >> 1` is `-3`); a negative `n` is a fault, which `verify` looks for. They bind as in Rust and Python, tighter than comparisons (`x & 255 == x` is `(x & 255) == x`): `|`, then `^`, then `&`, then the shifts, then `+` / `-`. A bit operation compared is shown in parentheses, `(x & 255) == x`, since C (and so most readers) puts `==` first. In a refinement or a `where` pattern, where `|` separates a union's members or a pattern's alternatives, a bit-or must be in parentheses (`where (it | 1) == 3 | 0`). **Strings** are UTF-8, and a string isn't counted or indexed itself: the unit is named, `s.bytes()`, `s.code_points()` or `s.graphemes()` (iterators: `len(s.graphemes())`, `s.graphemes()[i]`; see Iterators), and `len(s)`, `s[i]`, `s[a..b]` say so. Positions in a string are byte offsets: `index_of(s, sub)` gives one, and `byte_slice(s, a, b)` cuts at them in constant time (clamped to the string; an offset inside a character moves back to its start), with `byte_len(s)`. String functions don't fail: `split(s, "")` splits at every character (`["", "a", "b", ""]`), `replace(s, "", x)` puts `x` around every character, and `repeat(s, n)` with `n < 1` is `""`. Also `chars`, `contains`, `starts_with`, `ends_with`, `split`, `join`, `lines`, `trim`, `replace`, `repeat`, `reverse`, `to_upper`, `to_lower`, `is_digit` / `is_alpha` / `is_space`, `ord` / `chr`, `parse_int`, `matches` (regex). `to_json(x)` gives any value as compact JSON, as `strata run` writes it. **f-strings** interpolate any expression, shown as by `to_string` (`Display`, below): `f"{name} has {len(xs)} items"` (`{{` and `}}` are literal braces). A **format spec** follows a `:`, as in Python: `[[fill]align][+][0][width][.precision]`. `{price:.2}` gives two decimal places (or keeps at most 2 characters of a `String`), `{name:<12}` / `{n:>5}` / `{title:*^20}` pad to a width (numbers align right by default, everything else left), `{n:05}` pads with zeros after the sign, `{delta:+}` always shows the sign. A spec that doesn't suit the type is a check error. `float_bits` / `float_from_bits` give a float's IEEE 754 bits as an `Int`, and back (`None` for a NaN's).
 
 **Showing values: `Debug` and `Display`.** Every type has two traits without saying so. `Debug` (`debug(x)`, `x.debug()`) writes a value as it is written in code: `Some("hi")`, `Point { x: 1, y: 2 }`, `[1, 2]`, `(1, "a")`, `Dict { "a": 1 }`, `Set { 1, 2 }`, `UserId(7)`, strings quoted. `Display` (`to_string(x)`, `x.to_string()`) is what `print` and f-strings show: a `String` is its text, anything else its `debug`; inside a list, a record or any other value, the parts are shown with `debug` (as Python's `str` of a list uses `repr`), so `["a b"]` and `["a", "b"]` stay apart. A type replaces either with an impl of its own, which is used everywhere it is shown (nested values too):
 
@@ -342,7 +385,96 @@ print(Some(Secret { key: "k" }))   // Some(Secret { key: *** })
 
 All values are immutable (`insert` returns a new dict). Dicts and sets are kept in canonical order, so equal collections are equal values and serialise identically. `len`, `contains`, `get`, `insert`, `remove`, `sum`, `min`, `max` and `abs` work across the types they make sense for. `strata builtins` lists every builtin with its signature. See `examples/builtins.strata`.
 
-**Not yet:** lazy iterators, generators and async, which will be designed as language features of their own.
+**Iterators.** Besides lists, sets and dicts, a `for` loop runs over any value whose type implements the prelude's `Iterator`: `next` gives the elements one at a time, then `None`.
+
+```rust
+trait Iterator[T] {
+  fn next(mut self) -> Option[T]
+}
+
+type Countdown = { n: Int }
+
+impl Iterator[Int] for Countdown {
+  fn next(mut self) -> Option[Int] {
+    if self.n == 0 { None } else { self.n -= 1; Some(self.n + 1) }
+  }
+}
+
+c := Countdown { n: 3 }
+for i in c { print(i) }            // 3, 2, 1
+```
+
+Such a loop works on its own copy of the iterator (`c` is unchanged afterwards), and takes `break`, `continue` and patterns as any `for`. Generic code asks for the trait: `fn collect[T, I: Iterator[T]](it: I) -> List[T]`. `verify` doesn't show that such a loop ends, as it does for a list's: the iterator may never return `None`.
+
+An iterator that ends implements `FiniteIterator` too, a supertrait: its `len` is how many elements `next` still gives.
+
+```rust
+trait FiniteIterator[T]: Iterator[T] {
+  fn len(self) -> Natural
+  fn fold[B](self, init: B, f: (B, T) -> B) -> B   // given
+  fn to_list(self) -> List[T]                      // given
+}
+```
+
+`verify` shows that a `for` loop over a `FiniteIterator` ends, as one over a list: it relies on `len` (which it doesn't check yet). Over an iterator that may be unbounded, it says the loop may not end. `fold` is only on finite iterators: on an unbounded one it would never return (`fold` needs a `FiniteIterator`: `N` is an `Iterator` but not a `FiniteIterator`).
+
+Every iterator has `map` and `filter`, which are lazy: they give another iterator, which does the work as the loop asks for elements, so they work on unbounded iterators too. Mapped or filtered, a finite iterator is still one (a filtered one's `len` counts the elements kept). A function passed to them must end, as the code it is written in must: `verify` follows a lambda's calls from the function it is written in (`it calls spin, which may not terminate`), which is what shows `fold` over a mapped and filtered finite iterator ends.
+
+```rust
+type Naturals = { at: Int }   // impl Iterator[Int]: 0, 1, 2, … without end
+
+squares := Naturals { at: 0 }.filter(n -> n % 2 == 0).map(n -> n * n)
+for s in squares {
+  if s > 100 { break }
+  print(s)                     // 0, 4, 16, 36, 64, 100
+}
+Count { at: 0, end: 5 }.map(n -> n + 1).fold(0, (a, b) -> a + b)   // 15
+```
+
+On a list, `xs.map(f)`, `filter` and `fold` are still the builtins, which give a list.
+
+A comprehension over an iterator is an iterator: lazy, so it can be unbounded, and finite when its source is. Set and dict comprehensions collect a finite one.
+
+```rust
+odd_squares := [n * n for n in Naturals { at: 0 } where n % 2 == 1]   // 1, 9, 25, … on demand
+[x * 2 for x in Count { at: 0, end: 4 }].to_list()                    // [0, 2, 4, 6]
+Set { x % 2 for x in Count { at: 0, end: 4 } }                        // Set { 0, 1 }
+```
+
+A list, a set or a dict isn't an iterator itself (its `map` and `filter` are the builtins, which give lists), but `iter()` gives one, finite: the prelude's `ListIter`, over a list's elements, a set's in order, or a dict's entries by key. A range is a list, so `(0..n).iter()` works too.
+
+```rust
+fn total[I: FiniteIterator[Int]](it: I) -> Int { it.fold(0, (a, b) -> a + b) }
+
+total([3, 1, 2].iter())                  // 6
+total((0..5).iter())                     // 10
+for (k, v) in d.iter() { … }             // a dict's entries, by key
+```
+
+A string isn't an iterator either: its unit is always named, and each is a finite iterator.
+
+```rust
+s := "héllo 👋🏽"
+s.bytes()          // its UTF-8 bytes, 0 to 255: 104, 195, 169, …
+s.code_points()    // its code points (Unicode scalar values): 104, 233, …, 128075, 127997
+s.graphemes()      // its grapheme clusters (UAX #29), as strings: "h", "é", …, "👋🏽"
+s.graphemes().len()                                   // 7
+[chr(c) for c in s.code_points() where c > 127]       // lazily: "é", "👋", "🏽"
+```
+
+Each walks the string once: `bytes()` and `code_points()` are the prelude's, read from the UTF-8 bytes (the only native part, `byte_len` and `byte_at`); `graphemes()` is `std.unicode`'s (loaded for a program that calls it), Unicode 16.0's extended grapheme clusters, combining marks, emoji sequences, flags, Hangul syllables and Indic conjuncts included (it agrees with every case of Unicode's GraphemeBreakTest.txt).
+
+A finite iterator is measured, indexed and sliced as a list is, with the same syntax: `len(it)`, `it[i]` (`at`; its precondition is that `i` is in range), `get(it, i)`, `it[a..b]`, `it[a..]`. Slicing is lazy (`drop` then `take`), and `join` collects a finite iterator of strings. Every iterator has `take(n)` (finite, even on an unbounded one) and `drop(n)`. Each walks the iterator from the start, so indexing is linear in `i`.
+
+```rust
+s := "héllo 👋🏽!"
+len(s.graphemes())                  // 8   (len(s.bytes()) is 16)
+s.graphemes()[6]                    // "👋🏽"
+join(s.graphemes()[1..3], "")       // "él"
+Naturals { at: 0 }.drop(3).take(4)  // 3, 4, 5, 6
+```
+
+**Not yet:** a nested comprehension whose inner source is an iterator, generators and async.
 
 ## Foreign functions: `extern c`
 
@@ -416,22 +548,25 @@ cat README.md | strata run examples/wc
 
 **Command-line options** are a record that implements `CommandLine` (`std.cli`); the trait has no methods. Each field is read from the arguments by its type: a `Bool` is a flag (`--loud`), an `Option[T]` an option with a value (`--times 3` or `--times=3`), a `List[T]` the remaining positional arguments, and any other field a required positional argument, in field order, or an option (`--times 3`) when it has a default. A field left out takes its default. `T` is an `Int`, `Float`, `String`, a refinement of one, or a choice (a type whose variants carry nothing: `type Count = | Lines | Words` is `lines` or `words`). Names take dashes (`dry_run` is `--dry-run`), `--` ends the options, every refinement is checked (`--times: 0 does not satisfy …`), and a mistake exits with code 2. `--help` is built from the record's and fields' `///` doc comments. `strata check` rejects a `CommandLine` record a command line can't fill.
 
-`main` can also ask for `Console` (`std.io`; the environment chooses it: the terminal) and capabilities, in any order: std's `Disk` (`std.fs`), `Process` (`std.process`) and `Codebase` (`std.code`: the codebase itself, as the tools see it, a `Code`), or the program's own. It names them, and passes them on where `Files` or `Environment` is wanted: `fn main(mut console: Console, disk: Disk) { wc(mut console, disk) }`, with `wc` taking any `Files` so that tests can pass `mem_files(...)`. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [JSON-ARGS]` still calls a single function.
+`main` can also ask for `Console` (`std.io`; the environment chooses it: the terminal) and capabilities, in any order: std's `Disk` (`std.fs`), `Process` (`std.process`) and `Codebase` (`std.code`: the codebase itself, as the tools see it, a `Code`), or the program's own. It names them, and passes them on where `Files` or `Environment` is wanted: `fn main(mut console: Console, disk: Disk) { wc(mut console, disk) }`, with `wc` taking any `Files` so that tests can pass `mem_files(...)`. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [ARGS]` still calls a single function (its arguments written as code).
 
 The **standard library** is the `std/` package, written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency:
 
 | Module | What it has |
 |---|---|
 | `std.io` | `Console` (`print`, `write`, `eprint`, `read_line`); `Recorder` / `recorder(input)` / `printed(r)` for tests |
-| `std.fs` | `Files` (`read`, `write`, `append`, `exists`, `list`, `make_dir`, `remove`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
+| `std.fs` | `Files` (`read`, `read_bytes`, `write`, `append`, `exists`, `list`, `make_dir`, `remove`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
 | `std.process` | `Environment` (`args`, `var`), `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
 | `std.code` | `Codebase`, a capability, and the capability trait it implements, `Code` (`version`, `snapshot`): the codebase in the current folder as the tools see it: each `Definition` with its interface and source text, what it uses and what uses it, holes, errors and cached verdicts, and the package's log. `strata ui`'s viewer reads it |
 | `std.cli` | `CommandLine`: a record of options read from the arguments |
 | `std.json` | `Json`: records and sum types read from JSON and written to it (`derive Json for Signup`; `Signup.decode(parse(text)!)`, `stringify(s.encode()!)`), and implemented for `Int`, `Float`, `Bool`, `String`, `List[T]`, `Option[T]` and `Dict[String, V]`, so `fn send[T: Json](x: T)` takes them; `JsonValue`, `parse`, `stringify` |
 | `std.http` | `Request`, `Response`, `Method`; `ok_html`, `ok_text`, `ok_json`, `not_found`, `redirect`, …; `Router` (`app.get("/users/:id", handler)`, `req.param("id")`), for `strata serve` |
 | `std.web` | `Html[M]` and `Attr[M]`: HTML as values, one function per element (`div`, `p`, `table`, `button`, …) and attribute (`class`, `href`, `on_click(msg)`, …); `render`, `document(title, head, body)` |
-| `std.regex` | regular expressions written in Strata: `parse(pattern)` gives a `Regex` (`Literal`, `Class` of code-point ranges, `Look`, `Repeat`, `Capture`, `Concat`, `Alternation`) or an error; `show` prints the tree. Matching comes next (`matches` still uses Rust's `regex` crate) |
+| `std.regex` | regular expressions written in Strata: `parse(pattern)` gives a `Regex` (`Literal`, `Class` of code-point ranges, `Look`, `Repeat`, `Capture`, `Concat`, `Alternation`) or an error; `show` prints the tree. `compile(r)` makes its Thompson NFA (`List[Inst]`), `is_full_match(prog, text)` runs it as a Pike VM, and `full_match(text, pattern)` does both: what `matches` means. `matcher(pattern)` makes a DFA (`Automaton`) when the pattern asserts nothing but `^` and `$`, else keeps the NFA; `run_matcher(m, text)` runs it. Compiled code uses them for every `matches` |
 | `std.unicode` | sets of code points as `List[(Int, Int)]` ranges (`union`, `intersect`, `difference`, `negate`, `contains_code`), properties (`property("Greek")`, `property_value("gc", "Lu")`), simple case folding (`case_fold`); Unicode 16.0 tables in `std.unicode_tables` |
+| `std.utf8` | text as UTF-8 bytes (`List[Int]`, each 0 to 255) and back: `encode(text)`, `decode(bytes)` / `decode_range(bytes, start, end)` (`None` if they aren't UTF-8) |
+| `std.ast` | Strata's syntax tree as Strata types (`Decl`, `DeclKind`, `TypeExpr`, `Expr`, `Stmt`, `Pattern`, …), node for node as the compiler's |
+| `std.ast.binary` | `.strata` files read and written in Strata: `read(bytes)` (a module file or a bundle), `read_header`, `decode_module` (checking each definition's hash), `decode_definition`, `encode_definition` (a definition's bytes, exactly as strata writes them), `hash` / `interface_hash` / `code_hash`; `without_notes` (in `std.ast`). Its SHA-256 is private: it names definitions, and std has no public hash function until one has been reviewed as cryptography |
 
 **JSON** (`std.json`) is read into records and sum types that derive `Json`, in the form a web front end sends: a record is an object (with `"type"`, its type's name, when written; optional when read), a field left out takes its default, an `Option` is the value or `null` (or left out), a sum's variant is an object whose `"type"` names it (`{"type": "Circle", "r": 2}`, one positional field as `"value"`), a sum whose variants carry nothing is a string (`"Quiet"`), a tuple is an array, a `distinct` type is its underlying value, and a union is its member's value (reading takes the first member the JSON fits; members whose JSON overlaps are refused: `Int | Float`, two lists, `String` next to a choice, two members with the same `"type"`). Every refinement is checked, and errors say where: `home.zip: "1234" does not satisfy …`. Keys a record doesn't have are ignored, unless `strata.toml` says `unknown_keys = "error"` under `[json]`; `decode_with(j, Reject)` or `decode_with(j, Ignore)` decides for one call. Integers are within ±(2^53 − 1) both ways, the integers a JavaScript number holds exactly (`std.json.SafeInt`): reading or writing a larger one is an error (`encode` returns a `Result`). A package that wants it proven instead sets `integers = "proven"` under `[json]`: then every integer field must be shown to be a `SafeInt` (typed so, or refined within it), and `strata verify` fails on one that may not be. A type with no such form (a function, `Option[Option[T]]`, a field named `type`, a variant with several positional fields) is an error at the `derive`, as is a field whose type doesn't derive `Json` itself. A generic type derives it for every type argument that has it (`derive Json for Pair` is `Pair[T]` for each `T: Json`). Through the generic impls, `Some(x)` where `x` is written as `null` (`Some(None)`) is an error from `encode`; their elements' refinements are checked by `decode` (`read[List[Port]]("[70000]")` is an `Err` naming `Port`). `to_json` and `print` still write any value in the older, tagged form.
 

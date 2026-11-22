@@ -1,0 +1,5 @@
+error: `--count` needs a value
+
+Run `opts --help` for the options.
+
+--- exit 2

@@ -16,7 +16,7 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
         _ => path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "main".into()),
     };
     let p = src.program();
-    let types::Checked { report: rep, env, compiled, .. } = full_checked(p);
+    let types::Checked { report: rep, env, .. } = full_checked(p);
     if !rep.ok() {
         print_errors(&rep);
         return Ok(false);
@@ -42,90 +42,136 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
         let ir = ir.map_err(|e| format!("the program can't be compiled yet: {e}"))?;
         std::process::exit(llvm::jit::run(&ir, &prog, &program_args)?);
     };
-    if !args.flag("--interpret") {
-        return call_compiled(args, &compiled, &env, name, rest.get(1).map(|s| s.as_str()).unwrap_or("[]"));
-    }
-    let f = env.fns.get(&name.sym()).ok_or(format!("no function `{name}`"))?.clone();
-    let raw: serde_json::Value = serde_json::from_str(rest.get(1).map(|s| s.as_str()).unwrap_or("[]")).map_err(|e| format!("args: {e}"))?;
-    let raw = raw.as_array().cloned().ok_or("args must be a JSON array")?;
-    if raw.len() != f.params.len() {
-        return Err(format!("`{name}` takes {} arguments", f.params.len()));
-    }
-    let seed: u64 = args.val("--seed").unwrap_or("1").parse().map_err(|_| "bad --seed")?;
-    let mut it = interp::Interp::new(&env, seed);
-    it.tracing = args.flag("--trace");
-    // what it prints comes before its result
-    it.output = interp::Output::Terminal;
-    let mut vals = Vec::new();
-    for (pm, j) in f.params.iter().zip(&raw) {
-        vals.push(it.from_json(&pm.ty, j, &pm.name).map_err(|e| format!("invalid input: {e}"))?);
-    }
-    let res = it.call_fn(name, vals);
-    if it.tracing {
-        for t in &it.trace {
-            eprintln!("{t}");
-        }
-    }
-    match res {
-        Ok(v) => println!("{}", serde_json::to_string_pretty(&interp::to_json(&v)).unwrap()),
-        Err(fault) => {
-            println!("{}", serde_json::to_string_pretty(&json!({"fault": fault})).unwrap());
-            return Ok(false);
-        }
-    }
-    Ok(true)
+    call(args, p, &env, name, rest.get(1).map(|s| s.as_str()).unwrap_or(""))
 }
 
-/// `strata run f [JSON-ARGS]`, compiled: the arguments (read against the
-/// parameters' types) written into a function that calls `f`, whose result
-/// is read back and printed as JSON; a fault as `{"fault": ..}`.
-fn call_compiled(args: &Args, resolved: &Program, env: &types::Env, name: &str, raw: &str) -> Result<bool, String> {
+/// The function `strata run f ARGS` runs: `f` called on the arguments, as
+/// they are written (Strata code: `"abc", 3`, `Circle { radius: 2 }`).
+const PROBE: &str = "strata_run_call";
+
+/// `strata run f ARGS`: the arguments, written as code, in a function that
+/// calls `f`, checked with the program (so a wrong argument is an error
+/// before anything runs), then run, compiled (`--interpret`: by the old
+/// interpreter); the result printed as the code that writes it.
+fn call(args: &Args, p: &Program, env: &types::Env, name: &str, raw: &str) -> Result<bool, String> {
     let f = env.fns.get(&name.sym()).ok_or(format!("no function `{name}`"))?.clone();
     if !f.type_params.is_empty() {
         return Err(format!("`{name}` is generic: call it from a function that says which types it is used at"));
     }
-    let raw: serde_json::Value = serde_json::from_str(raw).map_err(|e| format!("args: {e}"))?;
-    let raw = raw.as_array().cloned().ok_or("args must be a JSON array")?;
-    if raw.len() != f.params.len() {
+    let Expr::Call(_, given) = crate::parser::parse_expr(&format!("f({raw})")).map_err(|e| format!("the arguments: {e}"))? else {
+        return Err("the arguments: expected values separated by commas".into());
+    };
+    if given.len() != f.params.len() {
         return Err(format!("`{name}` takes {} arguments", f.params.len()));
     }
-    // the call compiled first: it gives the parameters' shapes
-    let (ir, roots, shapes) = llvm::compile_call(resolved, name, args.flag("--trace")).map_err(|e| format!("`{name}` can't be compiled yet: {e}"))?;
-    let probe = "strata.ct.0";
-    // the arguments read against them and written into memory, once the
-    // runtime has started (their refinements are checked by `f`, which names
-    // the argument)
-    let write = || {
-        let mut slots = vec![];
-        for ((pm, shape), j) in f.params.iter().zip(&roots[1..]).zip(&raw) {
-            let v = llvm::native::decode(shape, &shapes, j, pm.name.as_str()).map_err(|e| format!("invalid input: {e}"))?;
-            slots.push(llvm::native::write(shape, &shapes, &v).map_err(|e| format!("invalid input: {e}"))?);
+    let mut stmts = vec![];
+    let mut call_args = vec![];
+    for (i, (pm, x)) in f.params.iter().zip(given).enumerate() {
+        let n = Symbol::new(&format!("strata_arg_{i}"));
+        if pm.mutable {
+            stmts.push(Stmt::Var(n, Some(pm.ty.clone()), x));
+            call_args.push(Expr::Mut(Box::new(Expr::Var(n))));
+        } else {
+            // (its type and refinements are checked where `f` takes it, which names the argument)
+            stmts.push(Stmt::Let(Pattern::Bind(n), None, x));
+            call_args.push(Expr::Var(n));
         }
-        Ok(slots)
+    }
+    let probe = FnDecl {
+        doc: vec![],
+        comments: vec![],
+        name: Symbol::new(PROBE),
+        type_params: vec![],
+        bounds: vec![],
+        params: vec![],
+        ret: f.ret.clone(),
+        requires: vec![],
+        ensures: vec![],
+        terminates: false,
+        body: Expr::Block(stmts, Box::new(Expr::Call(Box::new(Expr::Var(Symbol::new(name))), call_args))),
+        comptime: false,
+        derived: false,
     };
-    let (result, printed) = llvm::jit::run_call(&ir, &roots[0], &shapes, true, &write)?;
+    // in the function's own module (it may be private there), the arguments
+    // written as that module writes values
+    let module = p
+        .decls
+        .iter()
+        .find(|d| matches!(&d.kind, DeclKind::Fn(g) if crate::names::qualified(d.module, g.name).as_str() == name))
+        .map(|d| d.module)
+        .unwrap_or_default();
+    let mut probe = probe;
+    if let Expr::Block(_, call) = &mut probe.body {
+        if let Expr::Call(f, _) = &mut **call {
+            **f = Expr::Var(Symbol::new(crate::names::short(name)));
+        }
+    }
+    let mut with = p.clone();
+    with.decls.push(Decl { comments: vec![], doc: vec![], kind: DeclKind::Fn(probe), module, public: false });
+    let probe_name = crate::names::qualified(module, Symbol::new(PROBE)).to_string();
+    let checked = full_checked(&with);
+    if let Some(e) = checked.report.errors.iter().find(|e| e.decl == probe_name) {
+        return Err(format!("invalid input: {}", e.msg));
+    }
+    if args.flag("--interpret") {
+        return call_interpreted(args, &checked.env, name, &probe_name);
+    }
+    let ir = if args.flag("--trace") {
+        llvm::compile_traced_comptime(&checked.compiled, &[probe_name.clone()])
+    } else {
+        llvm::compile_comptime(&checked.compiled, &[probe_name.clone()])
+    };
+    let (ir, roots, shapes) = ir.map_err(|e| format!("`{name}` can't be compiled yet: {e}"))?;
+    let (result, printed) = llvm::jit::run_kept(&ir, &roots, &shapes, i64::MAX, true)?.pop().ok_or("nothing ran")?;
     print!("{printed}");
     match result {
         Ok(v) => {
-            println!("{}", serde_json::to_string_pretty(&interp::to_json(&v)).unwrap());
+            println!("{}", printer::literal(&v));
             Ok(true)
         }
         Err(fault) => {
-            let stack: Vec<&str> = fault.stack.split(" -> ").filter(|s| !s.is_empty() && *s != probe).collect();
+            let stack: Vec<&str> = fault.stack.split(" -> ").filter(|s| !s.is_empty() && *s != probe_name).collect();
             // an argument that breaks its type's refinement (checked by `f` on entry)
             let arg = fault.message.strip_prefix("argument `").and_then(|m| m.split_once(&format!("` of `{name}`: ")));
             if fault.kind == "Refinement" && stack.len() <= 1 {
                 if let Some((param, rest)) = arg {
                     return Err(format!("invalid input: {param}: {rest}"));
                 }
-                if stack.is_empty() {
-                    return Err(format!("invalid input: {}", fault.message.strip_prefix("let binding: ").unwrap_or(&fault.message)));
-                }
             }
-            println!("{}", serde_json::to_string_pretty(&json!({"fault": {"kind": fault.kind, "msg": fault.message, "stack": stack}})).unwrap());
+            eprintln!("fault ({}): {}", fault.kind, fault.message);
+            if !stack.is_empty() {
+                eprintln!("    stack: {}", stack.join(" -> "));
+            }
             Ok(false)
         }
     }
+}
+
+/// `call`, run by the old interpreter.
+fn call_interpreted(args: &Args, env: &types::Env, name: &str, probe: &str) -> Result<bool, String> {
+    let seed: u64 = args.val("--seed").unwrap_or("1").parse().map_err(|_| "bad --seed")?;
+    let mut it = interp::Interp::new(env, seed);
+    it.tracing = args.flag("--trace");
+    // what it prints comes before its result
+    it.output = interp::Output::Terminal;
+    let res = it.call_fn(probe, vec![]);
+    if it.tracing {
+        for t in &it.trace {
+            eprintln!("{t}");
+        }
+    }
+    match res {
+        Ok(v) => println!("{}", it.debug_value(&v).map_err(|f| f.msg)?),
+        Err(fault) => {
+            let stack: Vec<String> = fault.stack.iter().filter(|s| *s != probe && *s != name).cloned().collect();
+            eprintln!("fault ({:?}): {}", fault.kind, fault.msg);
+            if !stack.is_empty() {
+                eprintln!("    stack: {}", stack.join(" -> "));
+            }
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// `strata test`: each `test` block, compiled when this strata has the JIT
@@ -140,12 +186,15 @@ pub fn run_tests(args: &Args) -> Result<bool, String> {
         return Ok(false);
     }
     let filter = args.pos.get(1).cloned().unwrap_or_default();
+    // the tests of the project's own files; `--with-deps`: also of what it imports
+    let with_deps = args.flag("--with-deps");
     if args.flag("--emit-llvm") {
         // the tests' IR (`strata.test.N`, in order)
-        print!("{}", llvm::compile_tests(p)?.0);
+        print!("{}", llvm::compile_tests(p, with_deps)?.0);
         return Ok(true);
     }
-    let outcomes = if args.flag("--interpret") { test_interpreted(&resolved, &env, &filter) } else { test_jit(p, &filter)? };
+    let own = if with_deps { usize::MAX } else { p.decls.len() };
+    let outcomes = if args.flag("--interpret") { test_interpreted(&resolved, &env, &filter, own) } else { test_jit(p, &filter, with_deps)? };
     let (mut pass, mut fail) = (0, 0);
     for (name, fault, printed) in outcomes {
         match fault {
@@ -175,9 +224,11 @@ pub fn run_tests(args: &Args) -> Result<bool, String> {
 /// A test's name, the fault that ended it (kind, message, call stack), and what it printed.
 type TestRun = (String, Option<(String, String, String)>, String);
 
-fn test_interpreted(resolved: &Program, env: &types::Env, filter: &str) -> Vec<TestRun> {
+/// `own`: how many of `resolved`'s definitions (the first) are the program's
+/// own; only their tests run.
+fn test_interpreted(resolved: &Program, env: &types::Env, filter: &str, own: usize) -> Vec<TestRun> {
     let mut out = vec![];
-    for d in &resolved.decls {
+    for d in resolved.decls.iter().take(own) {
         let DeclKind::Test(t) = &d.kind else { continue };
         if !t.name.contains(filter) {
             continue;
@@ -188,11 +239,13 @@ fn test_interpreted(resolved: &Program, env: &types::Env, filter: &str) -> Vec<T
         // the capabilities it asks for, made as for `main`
         let mut scope = None;
         for p in &t.params {
-            if let Some(v) = capability(env, &printer::ty(&p.ty)) {
+            let ty = printer::ty(&p.ty);
+            let v = if ty == RUN_MODE { Some(run_mode("Testing")) } else { capability(env, &ty) };
+            if let Some(v) = v {
                 scope = interp::extend(&scope, &p.name, v);
             }
         }
-        let fault = it.eval(&t.body, &scope).err().map(|f| (format!("{:?}", f.kind), f.msg, crate::interp::show_stack(&f.stack)));
+        let fault = it.eval(&t.body, &scope).err().map(|f| (format!("{:?}", f.kind), f.msg, crate::names::show_stack(&f.stack)));
         let printed = match &it.output {
             interp::Output::Buffer(b) => b.clone(),
             _ => String::new(),
@@ -204,24 +257,24 @@ fn test_interpreted(resolved: &Program, env: &types::Env, filter: &str) -> Vec<T
 
 /// The tests compiled and run in this process. A test that can't be
 /// compiled yet fails, saying why (the others still run).
-fn test_jit(p: &Program, filter: &str) -> Result<Vec<TestRun>, String> {
+fn test_jit(p: &Program, filter: &str, with_deps: bool) -> Result<Vec<TestRun>, String> {
     let all: Vec<String> = p.decls.iter().filter_map(|d| match &d.kind {
         DeclKind::Test(t) => Some(t.name.to_string()),
         _ => None,
     }).collect();
     let mut skipped: Vec<(String, String)> = vec![];
-    let (ir, names) = match llvm::compile_tests(p) {
+    let (ir, names) = match llvm::compile_tests(p, with_deps) {
         Ok(x) => x,
         Err(_) => {
             // each alone, to leave out only those that don't compile
             for t in &all {
                 let others: Vec<String> = all.iter().filter(|o| *o != t).cloned().collect();
-                if let Err(e) = llvm::compile_tests_except(p, &others) {
+                if let Err(e) = llvm::compile_tests_except(p, &others, with_deps) {
                     skipped.push((t.clone(), e));
                 }
             }
             let skip: Vec<String> = skipped.iter().map(|(t, _)| t.clone()).collect();
-            llvm::compile_tests_except(p, &skip)?
+            llvm::compile_tests_except(p, &skip, with_deps)?
         }
     };
     let which: Vec<usize> = (0..names.len()).filter(|&i| names[i].contains(filter)).collect();
@@ -243,6 +296,9 @@ fn test_jit(p: &Program, filter: &str) -> Result<Vec<TestRun>, String> {
 /// the environment chooses: the terminal (a test's output is its own).
 pub fn capability(env: &types::Env, ty: &str) -> Option<interp::Value> {
     use interp::Value;
+    if ty == RUN_MODE {
+        return run_mode_allowed().then(|| run_mode("Running"));
+    }
     let made = if ty == CONSOLE { "std.io.Terminal" } else { ty };
     env.capabilities.contains(&Symbol::new(made)).then(|| Value::Record(made.into(), Default::default()))
 }
@@ -250,9 +306,24 @@ pub fn capability(env: &types::Env, ty: &str) -> Option<interp::Value> {
 /// The capability trait the environment fills in.
 pub const CONSOLE: &str = "std.io.Console";
 
+/// How the program is run (std.process): hidden unless strata.toml says
+/// `mode = true` under `[run]`.
+pub const RUN_MODE: &str = "std.process.RunMode";
+
+/// Whether the package lets `main` and tests ask for its `RunMode`.
+pub fn run_mode_allowed() -> bool {
+    crate::package::setting("run.mode").as_deref() == Some("true")
+}
+
+/// A `RunMode` (`Running`, `Testing`, `Tracing`), for the interpreter.
+pub fn run_mode(which: &str) -> interp::Value {
+    interp::Value::Variant(format!("std.process.{which}"), interp::Fields::None)
+}
+
 /// Why `main` can't ask for `ty`, with what to ask for instead.
 pub fn not_given(ty: &str, what: &str) -> String {
     let instead = match ty {
+        RUN_MODE => " How the program is run is hidden by default, so it behaves the same everywhere: to let it ask, say `mode = true` under `[run]` in strata.toml.",
         "std.fs.Files" => " Name the capability instead, `disk: Disk` (std.fs), and pass it where `Files` is wanted.",
         "std.process.Environment" => " Name the capability instead, `process: Process` (std.process), and pass it where `Environment` is wanted.",
         _ => "",
@@ -300,6 +371,7 @@ pub fn run_main(_p: &Program, env: &types::Env, prog: &str, program_args: Vec<St
     for pm in &f.params {
         let ty = printer::ty(&pm.ty);
         vals.push(match ty.as_str() {
+            _ if ty == RUN_MODE && trace && run_mode_allowed() => run_mode("Tracing"),
             _ if capability(env, &ty).is_some() => capability(env, &ty).unwrap(),
             // options read from the command line
             // `Options.from_args(program, args)`, derived in Strata (std.cli)
@@ -359,7 +431,7 @@ pub fn run_main(_p: &Program, env: &types::Env, prog: &str, program_args: Vec<St
         Err(fault) => {
             eprintln!("fault ({:?}): {}", fault.kind, fault.msg);
             if !fault.stack.is_empty() {
-                eprintln!("    stack: {}", crate::interp::show_stack(&fault.stack));
+                eprintln!("    stack: {}", crate::names::show_stack(&fault.stack));
             }
             Ok(101)
         }

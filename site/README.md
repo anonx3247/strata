@@ -1,6 +1,6 @@
 # site: Strata, presented
 
-An interactive page that presents Strata through what it fixes: structural changes instead of line diffs, verification instead of tests that miss cases, contracts that re-check their users, edits that can't break the codebase. It replays a recorded agent session in the real viewer.
+A presentation of Strata as slides. It starts from how an agent works in a codebase of text files today (an illustration), then shows Strata's three ideas: types as contracts, proving over testing, and the code is the AST. Each comes with recorded examples. It ends with the rest of the language, briefly.
 
 ```sh
 cargo build --release
@@ -10,6 +10,12 @@ cd site && python3 -m http.server 8000    # then open http://127.0.0.1:8000
 
 Opening `site/index.html` directly from disk works too.
 
-- `build.mjs` runs `strata` on scratch packages (from `examples/`), records each command's output and the viewer's `/api/state` and `/api/changes` after each step, and writes `data/*.js`. Nothing shown on the page is written by hand.
-- `viewer.html` is generated from `src/ui/index.html`: the same viewer, forced to its dark theme, answering its API calls from the snapshots the page posts to it. Re-run the build after changing the viewer.
-- `index.html`, `style.css` and `app.js` are the page; `docs.html` renders `docs/learn-strata.md`, `verification.md` and `tools.md` (recorded into `data/docs.js` by the build), with `common.js`'s Strata highlighting; in Tools, the viewer's screenshot is replaced by a tour of the real viewer (`data/tour.js`). ← → step through whichever stepper is on screen, also from inside an embedded viewer, which passes them up.
+- **Moving around**: ← → (or space, PageUp / PageDown) step through a slide, then on to the next; the dots at the bottom jump to a slide. The address names the slide and the step (`index.html#session/5`), so a link opens there.
+- **What is shown**: code typed out as it is written, beside a graph of the codebase (each definition a node, placed by how deep its dependencies go; an edge is a use) that shows what changed, what is re-checked, holes, verdicts and counterexamples. No embedded viewer.
+- `build.mjs` runs `strata` on scratch packages (from `examples/`, and small programs it stores with `strata edit`, so one that stops checking fails the build), records each command's output and the codebase after each step, and writes `data/*.js`. Nothing on the slides is written by hand.
+- `index.html`, `slides.css` and `app.js` are the deck; `style.css` and `common.js` (Strata highlighting, terminal colouring, steppers) are shared with `docs.html`, which renders `docs/learn-strata.md`, `verification.md` and `tools.md` (recorded into `data/docs.js`). In Tools, the viewer's screenshot is replaced by a tour of the real viewer (`data/tour.js`, in `viewer.html`).
+- `viewer.html` is generated from `src/ui/index.html`: the same viewer, forced to its dark theme, answering its API calls from the snapshots the docs post to it. Re-run the build after changing the viewer.
+
+## Hosting
+
+The folder is a static site: everything it shows is committed in `data/`, so hosting it needs no build and no `strata`. On Vercel, import the repository and set **Root Directory** to `site`; `site/vercel.json` turns the build off and serves the folder as it is. Re-run `node site/build.mjs` and commit `site/data/` to update what the site shows. Links to files of the repository other than the three doc pages go to GitHub.

@@ -3,6 +3,7 @@ mod fx;
 mod symbol;
 #[cfg(test)]
 mod bench;
+mod ast_value;
 mod binary;
 mod cli;
 mod cmd;
@@ -90,7 +91,8 @@ every change made through strata, committed with them):
   pack <FILE.strata>           the whole program in one file (a bundle, with strata.toml);
                                --file, run, ui and every view read it like a package
   header <FILE.strata>         a module file's table of contents: each definition's kind,
-                               name, hashes, size and dependencies, read without decoding it
+                               name, hashes, size and dependencies, read without decoding it;
+                               --tree: each definition (a bundle's too) as a `std.ast` value, one per line
   (`--file` accepts a folder: each .strata file is a module named after its path.
    `--file F edit [MODULE]` and `--file F add TEXT` change F outside any log: a script,
    or a folder's module, created if new; only what doesn't parse is refused)
@@ -115,9 +117,12 @@ Git:
                                form, the bytes strata writes for it (--fix rewrites them)
 
 Views:
-  ui [--port 7777]                live viewer in the browser (map, levels, holes, activity)
+  ui [--port 7777]                the workspace in the browser: agents over ACP, the code
+                                  with its git activity, PRs (through gh)
   ui --strata                     the viewer written in Strata (std.web, std.code): code view only for now
-  view [SELECTOR] [--level 0-2]   SELECTOR: name | prefix* | slice:Name | a,b
+  view [SELECTOR] [--level 0-2] [--mocks]
+                                  SELECTOR: name | prefix* | slice:Name | a,b (mocks
+                                  only with --mocks or by name)
   ast <name>                      the stored syntax tree as JSON
 
 Checking:
@@ -152,12 +157,17 @@ Running:
                                `fn handle(req: Request) -> Response` (std.http), which may
                                also ask for Console and capabilities (default port 8000);
                                or run it as an app: `init`, `update` and `view` (std.web)
-  run <fn> [JSON-ARGS] [--trace]
-                               call one function: args are a JSON array validated
-                               against the types; --trace prints each call and return
+  run <fn> [ARGS] [--trace]
+                               call one function: ARGS are its arguments written as
+                               code (`\"abc\", 3`, `Circle { radius: 2 }`), checked
+                               against the types; the result is printed as code;
+                               --trace prints each call and return
                                to stderr
-  test [FILTER]                run test blocks, compiled (a test that can't be compiled
-                               yet fails, saying why; --interpret: the old interpreter)
+  test [FILTER] [--with-deps]  run the project's own test blocks, compiled (a test that
+                               can't be compiled yet fails, saying why); --with-deps: also
+                               those of what it imports (std, dependencies), which are
+                               otherwise tested on their own; --interpret: the old
+                               interpreter
   build [PATH] [-o OUT] [--emit-llvm]
                                compile the program to a native executable, through LLVM
                                (needs clang; STRATA_CC chooses another): `main` takes no
@@ -176,7 +186,7 @@ struct Args {
 impl Args {
     fn parse() -> Args {
         let raw: Vec<String> = std::env::args().skip(1).collect();
-        let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed", "--port", "--split", "--from", "--to", "--step", "--base", "--require", "--cross-check", "-o"];
+        let valued = ["-m", "--level", "--cases", "--file", "--rm", "--seed", "--port", "--split", "--members", "--from", "--to", "--step", "--base", "--require", "--cross-check", "-o"];
         let (mut pos, mut flags) = (Vec::new(), HashMap::<String, Vec<String>>::default());
         let mut i = 0;
         while i < raw.len() {

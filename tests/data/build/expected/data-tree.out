@@ -1,0 +1,4 @@
+10
+Node(Node(Leaf, 1, Leaf), 2, Leaf)
+
+--- exit 0

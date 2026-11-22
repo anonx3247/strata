@@ -40,6 +40,10 @@ pub enum Payload {
     None,
     Positional(Vec<TypeExpr>),
     Record(Vec<Field>),
+    /// A member of a union that is a type defined elsewhere (`Circle` in
+    /// `type Shape = Circle | Square { side: Float }`): the variant's name
+    /// is that type's.
+    Type(TypeExpr),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -72,6 +76,10 @@ pub struct TypeDecl {
     pub body: TypeBody,
     /// Refinement predicate over `it`.
     pub refinement: Option<Expr>,
+    /// `mock MemFiles = { ... }`: a fake for tests. Used only in tests and
+    /// other mocks; its implementations may leave methods out (generated).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mock: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -409,6 +417,14 @@ pub enum BinOp {
     And,
     Or,
     Implies,
+    /// `&`, `|`, `^` on integers, bit by bit (as two's complement, infinitely
+    /// sign-extended: `-1 & x` is `x`), and `<<`, `>>`: times or floor-divided
+    /// by a power of two (the shift can't be negative).
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 impl BinOp {
@@ -429,6 +445,11 @@ impl BinOp {
             And => "&&",
             Or => "||",
             Implies => "==>",
+            BitAnd => "&",
+            BitOr => "|",
+            BitXor => "^",
+            Shl => "<<",
+            Shr => ">>",
         }
     }
 }
@@ -563,9 +584,6 @@ pub enum Expr {
     /// `comptime e`: evaluated while the program is compiled; the value is
     /// put in the program.
     Comptime(Box<Expr>),
-    /// `$Self`, `$f.type`: the description of a type (a `std.typing.Record`
-    /// or `Sum`), known while the program is compiled.
-    Describe(TypeExpr),
     /// `a..b` (`b` excluded), `a..=b` (`b` included): the integers between,
     /// as a `List[Int]`. An end may be left out only in a slice (`xs[2..]`).
     Range(Option<Box<Expr>>, Option<Box<Expr>>, bool),
@@ -795,7 +813,7 @@ macro_rules! visitor {
                     stmts.into_iter().for_each(|s| $stmt(v, s));
                     v.expr(last)
                 }
-                Expr::Mock(t) | Expr::Describe(t) => v.ty(t),
+                Expr::Mock(t) => v.ty(t),
                 Expr::Interp(parts) => {
                     for p in parts {
                         if let StrPart::Expr(x, _) = p {
@@ -938,6 +956,7 @@ macro_rules! visitor {
                                     Payload::None => {}
                                     Payload::Positional(ts) => ts.into_iter().for_each(|t| v.ty(t)),
                                     Payload::Record(fs) => fields(v, fs),
+                                    Payload::Type(t) => v.ty(t),
                                 }
                             }
                         }
@@ -1026,6 +1045,31 @@ impl<F: FnMut(&mut Expr)> VisitMut for ExprsMut<F> {
     fn ty(&mut self, _: &mut TypeExpr) {}
 }
 
+/// `ExprsMut`, innermost first, going into types and patterns too: the
+/// refinements written in them (`zip: String where len(it.code_points()) == 5`)
+/// and their `where` conditions.
+struct ExprsMutTyped<F>(F);
+
+impl<F: FnMut(&mut Expr)> VisitMut for ExprsMutTyped<F> {
+    fn expr(&mut self, e: &mut Expr) {
+        walk_expr_mut(self, e);
+        (self.0)(e);
+    }
+    // (a pattern's `where` conditions run too)
+    fn pattern(&mut self, p: &mut Pattern) {
+        walk_pattern_mut(self, p)
+    }
+    fn ty(&mut self, t: &mut TypeExpr) {
+        walk_ty_mut(self, t)
+    }
+}
+
+/// Every expression of a declaration, innermost first, those in its types'
+/// refinements and its patterns' conditions too.
+pub fn decl_exprs_mut_post_typed(d: &mut DeclKind, f: impl FnMut(&mut Expr)) {
+    walk_decl_mut(&mut ExprsMutTyped(f), d)
+}
+
 /// Visit `e` and every expression inside it, outermost first (not those in
 /// patterns or types).
 pub fn walk(e: &Expr, f: impl FnMut(&Expr)) {
@@ -1036,6 +1080,23 @@ pub fn walk(e: &Expr, f: impl FnMut(&Expr)) {
 /// not those in patterns or written types), outermost first, allowing changes.
 pub fn decl_exprs_mut(d: &mut DeclKind, f: impl FnMut(&mut Expr)) {
     walk_decl_mut(&mut ExprsMut { f, post: false }, d)
+}
+
+/// `decl_exprs_mut`, and also the refinements in written types
+/// (`s: String where matches(it, "…")`), outermost first.
+pub fn decl_all_exprs_mut(d: &mut DeclKind, f: impl FnMut(&mut Expr)) {
+    struct All<F>(F);
+    impl<F: FnMut(&mut Expr)> VisitMut for All<F> {
+        fn expr(&mut self, e: &mut Expr) {
+            (self.0)(e);
+            walk_expr_mut(self, e);
+        }
+        fn pattern(&mut self, _: &mut Pattern) {}
+        fn ty(&mut self, t: &mut TypeExpr) {
+            walk_ty_mut(self, t);
+        }
+    }
+    walk_decl_mut(&mut All(f), d)
 }
 
 /// The same, innermost first: a node is changed after everything inside it.

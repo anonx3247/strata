@@ -52,12 +52,39 @@ pub fn of_pred(e: &Expr) -> Option<Ints> {
 
 /// The lengths for which a condition on `len(it)` holds (never negative).
 pub fn of_len_pred(e: &Expr) -> Option<Ints> {
-    let is_len = |e: &Expr| match e {
-        Expr::Call(f, a) => matches!(&**f, Expr::Var(n) if n == "len") && matches!(a.as_slice(), [Expr::Var(x)] if x == "it"),
-        Expr::Method(r, m, a) => m == "len" && a.is_empty() && matches!(&**r, Expr::Var(x) if x == "it"),
+    // `it`, or a string's code points (`it.code_points()`: its length)
+    let subject = |e: &Expr| match e {
+        Expr::Var(x) => x == "it",
+        Expr::Method(r, m, a) => crate::names::short(crate::types::split_trait_call(m).map_or(m.as_str(), |(_, m)| m)) == "code_points" && a.is_empty() && matches!(&**r, Expr::Var(x) if x == "it"),
         _ => false,
     };
-    Some(and(&of_pred_on(e, &is_len)?, &vec![(0, MAX)]))
+    let is_len = |e: &Expr| match e {
+        Expr::Call(f, a) => matches!(&**f, Expr::Var(n) if crate::names::short(crate::types::split_trait_call(n).map_or(n.as_str(), |(_, m)| m)) == "len") && matches!(a.as_slice(), [x] if subject(x)),
+        Expr::Method(r, m, a) => m == "len" && a.is_empty() && subject(r),
+        _ => false,
+    };
+    // `it != ""` / `it == ""` (`NonEmptyString`) are conditions on the length too
+    let mut e = e.clone();
+    empty_as_len(&mut e);
+    Some(and(&of_pred_on(&e, &is_len)?, &vec![(0, MAX)]))
+}
+
+/// `it != ""` as `len(it) > 0` and `it == ""` as `len(it) == 0`, everywhere in `e`.
+fn empty_as_len(e: &mut Expr) {
+    let empty_test = |l: &Expr, r: &Expr| matches!((l, r), (Expr::Var(x), Expr::Str(s)) | (Expr::Str(s), Expr::Var(x)) if x == "it" && s.is_empty());
+    if let Expr::Bin(op @ (BinOp::Ne | BinOp::Eq), l, r) = e {
+        if empty_test(l, r) {
+            let len = Expr::Call(Box::new(Expr::Var("len".into())), vec![Expr::Var("it".into())]);
+            *e = if *op == BinOp::Ne { Expr::Bin(BinOp::Gt, Box::new(len), Box::new(Expr::Int(0))) } else { Expr::Bin(BinOp::Eq, Box::new(len), Box::new(Expr::Int(0))) };
+            return;
+        }
+    }
+    if let Expr::Bin(_, l, r) = e {
+        empty_as_len(l);
+        empty_as_len(r);
+    } else if let Expr::Un(_, x) = e {
+        empty_as_len(x);
+    }
 }
 
 /// A superset of the integers for which a condition on `it` holds: as

@@ -1,0 +1,6 @@
+<closure (x) -> …>
+H { name: "h", on: <fn twice> }
+[<closure (x) -> …>, <closure (a) -> …>]
+4
+
+--- exit 0
