@@ -77,12 +77,12 @@ $ strata edit                             # the whole package, one file per modu
 $ strata edit shop < defs.strata          # piped: the definitions go into the module `shop`
 
 $ strata run total '[Line { sku: "tea", qty: 2, unit_price: 450 }, Line { sku: "cup", qty: 1, unit_price: 1200 }]' --trace
-{"event":"call","fn":"total","args":[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]],"depth":1}
-{"event":"call","fn":"line_total","args":[{"sku":"tea","qty":2,"unit_price":450}],"depth":2}
-{"event":"return","fn":"line_total","value":900,"depth":2}
-{"event":"call","fn":"line_total","args":[{"sku":"cup","qty":1,"unit_price":1200}],"depth":2}
-{"event":"return","fn":"line_total","value":1200,"depth":2}
-{"event":"return","fn":"total","value":2100,"depth":1}
+→ total([Line { sku: "tea", qty: 2, unit_price: 450 }, Line { sku: "cup", qty: 1, unit_price: 1200 }])
+  → line_total(Line { sku: "tea", qty: 2, unit_price: 450 })
+  ← line_total: 900
+  → line_total(Line { sku: "cup", qty: 1, unit_price: 1200 })
+  ← line_total: 1200
+← total: 2100
 2100
 
 $ strata run total '[]'                      # the arguments, as code, checked against the types
@@ -240,4 +240,4 @@ The `.strata` files are what you commit. They are binary, so `.gitattributes` ma
 - **`strata setup-git`** points this clone's git config at the driver and at `strata render --file` to show `.strata` files as text, and `.gitattributes` has `*.strata binary merge=strata diff=strata`, so `git merge`, `git pull`, `git diff` and `git log -p` use them.
 - **Every change is a commit.** In a git repository, each change made through strata (an `edit`, `rename`, `move` or `add` that goes through, or a pending change at `strata done`) is committed with its message: `git log` is the history of changes, you can go back to any of them, and branches work as usual. Only the package's files are committed; whatever else is staged is left alone. Edits during a pending change aren't committed until it's done. Turn it off with `auto_commit = false` in `strata.toml`, or `--no-commit` on one command.
 - **`strata sync [main]`** merges `origin/main` (or the local branch, without a remote) into the current branch with the driver, whether or not `setup-git` was run. Renames that either side made with `strata rename` (read from both sides' `strata.log`) are then applied to the other side's code, in every file: a call that main added to `area` becomes a call to `rect_area` if your branch renamed it, unless a local named `rect_area` would capture it. Then it runs `strata ci` and commits the merge only if that passes; otherwise the merge is left staged, so you can fix it or `git merge --abort`.
-- **`strata ci [--fix]`**, run before pushing: every package and script in the repository checks, every package's exports exist, and every `.strata` file is in canonical form (exactly the bytes strata writes for it; `--fix` rewrites it). GitHub doesn't run merge drivers, so merge `main` into a branch with `strata sync` and run `strata ci` on the result before it lands. (There is no CI for now; a workflow can run `strata ci` on the pull request's merge ref, as a required check with branches up to date.)
+- **`strata ci [--fix]`** is what CI runs: every package and script in the repository checks, every package's exports exist, and every `.strata` file is in canonical form (exactly the bytes strata writes for it; `--fix` rewrites it). GitHub doesn't run merge drivers, so `.github/workflows/strata.yml` runs `strata ci` on the pull request's merge ref. Make it a required check, and require branches to be up to date before merging. Then a branch lands only once it was merged with `main` by `strata sync` and the result checks.

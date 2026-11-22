@@ -69,6 +69,14 @@ unsafe fn elements(p: i64) -> Vec<i64> {
 /// `raw` must be a live value of that shape, made by code compiled with the
 /// `Shapes` given.
 pub unsafe fn read(s: &Shape, shapes: &Shapes, raw: i64) -> Res<Expr> {
+    // a capability is a null pointer (the runtime's): shown by its type, `Terminal`
+    let pointer = matches!(s, Shape::Str | Shape::List(_) | Shape::Set(_) | Shape::Dict(..) | Shape::Tuple(_) | Shape::Named(_) | Shape::Union(_));
+    if pointer && raw == 0 {
+        return match s {
+            Shape::Named(k) => Ok(Expr::Ctor(Symbol::new(k), CtorArgs::None)),
+            _ => Err("a null pointer".into()),
+        };
+    }
     unsafe {
         Ok(match s {
             Shape::Int => int(raw),

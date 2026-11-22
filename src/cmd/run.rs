@@ -245,7 +245,7 @@ fn test_interpreted(resolved: &Program, env: &types::Env, filter: &str, own: usi
                 scope = interp::extend(&scope, &p.name, v);
             }
         }
-        let fault = it.eval(&t.body, &scope).err().map(|f| (format!("{:?}", f.kind), f.msg, crate::interp::show_stack(&f.stack)));
+        let fault = it.eval(&t.body, &scope).err().map(|f| (format!("{:?}", f.kind), f.msg, crate::names::show_stack(&f.stack)));
         let printed = match &it.output {
             interp::Output::Buffer(b) => b.clone(),
             _ => String::new(),
@@ -431,7 +431,7 @@ pub fn run_main(_p: &Program, env: &types::Env, prog: &str, program_args: Vec<St
         Err(fault) => {
             eprintln!("fault ({:?}): {}", fault.kind, fault.msg);
             if !fault.stack.is_empty() {
-                eprintln!("    stack: {}", crate::interp::show_stack(&fault.stack));
+                eprintln!("    stack: {}", crate::names::show_stack(&fault.stack));
             }
             Ok(101)
         }
