@@ -1504,7 +1504,6 @@ _Bool strata_str_starts_with(Str *s, Str *p) { return p->len <= s->len && memcmp
 
 _Bool strata_str_ends_with(Str *s, Str *p) { return p->len <= s->len && memcmp(s->bytes + s->len - p->len, p->bytes, (size_t)p->len) == 0; }
 
-// The character index of the first `sub`, or -1.
 // The byte offset of the first match of `sub`, or -1.
 int64_t strata_str_index_of(Str *s, Str *sub) {
   return find_from(s, sub, 0);
