@@ -7,7 +7,8 @@
 //! length only. A branch splits the path condition and the two results are
 //! merged with `ite`. A loop forgets what it changes: those variables become
 //! fresh values that keep only what their types guarantee (loop invariants
-//! come later).
+//! come later). After the loop, the state is that one with a `while`'s
+//! condition false, or the state at one of its `break`s.
 //!
 //! Every runtime check of the interpreter is an obligation: a callee's
 //! parameter refinements and `requires`, constructor and field refinements,
@@ -184,6 +185,9 @@ pub struct Vc<'a> {
     pub relied_on: std::collections::BTreeSet<String>,
     /// Early returns (`return e`, `e!`, `e?`): the path and the value.
     returns: Vec<(Vec<T>, Val)>,
+    /// For each loop being run, innermost last: the path and the variables
+    /// at each `break`, merged into the state after the loop.
+    breaks: Vec<Vec<(Vec<T>, Vec<HashMap<String, Val>>)>>,
     /// Declared types of variables (`let x: T`, `mut p: T`): they hold for
     /// the variable's whole life, so every assignment is checked against
     /// them. Kept by name; a shadowed name keeps all its declarations, which
@@ -305,6 +309,7 @@ impl<'a> Vc<'a> {
             transparent: HashMap::default(),
             relied_on: Default::default(),
             returns: vec![],
+            breaks: vec![],
             declared: HashMap::default(),
             matched: vec![],
             lists: vec![],
@@ -2799,9 +2804,18 @@ impl<'a> Vc<'a> {
                 let b = self.as_bool(&v);
                 self.oblige(format!("assert {}", crate::printer::expr(e, 0)), |_| b);
             }
-            Stmt::Break | Stmt::Continue => self.dead = true,
+            Stmt::Break => {
+                if !self.dead {
+                    if let Some(frame) = self.breaks.last_mut() {
+                        frame.push((self.pc.clone(), self.scopes.clone()));
+                    }
+                }
+                self.dead = true;
+            }
+            Stmt::Continue => self.dead = true,
             Stmt::While(c, body) => {
                 self.havoc_loop(body, Some(c));
+                self.breaks.push(vec![]);
                 let cv = self.eval(c);
                 let cv = self.as_bool(&cv);
                 let saved = self.scopes.clone();
@@ -2850,11 +2864,14 @@ impl<'a> Vc<'a> {
                 self.pc.truncate(n);
                 self.dead = false;
                 self.scopes = saved;
-                self.pc.push(not(&cv));
+                // left when the condition is false, or at a `break`
+                let breaks = self.breaks.pop().unwrap_or_default();
+                self.leave_loop(n, Some(not(&cv)), breaks);
             }
             Stmt::For(p, xs, body) => {
                 let xv = self.eval(xs);
                 self.havoc_loop(body, None);
+                self.breaks.push(vec![]);
                 let saved = self.scopes.clone();
                 let n = self.pc.len();
                 let x = match &xv {
@@ -2876,15 +2893,22 @@ impl<'a> Vc<'a> {
                 self.pc.truncate(n);
                 self.dead = false;
                 self.scopes = saved;
+                // after the last element the loop's variables are any values
+                // of their types, which covers the state at a `break` too
+                self.breaks.pop();
             }
             Stmt::Loop(body) => {
                 self.havoc_loop(body, None);
+                self.breaks.push(vec![]);
                 let saved = self.scopes.clone();
                 let n = self.pc.len();
                 self.eval(body);
                 self.pc.truncate(n);
                 self.dead = false;
                 self.scopes = saved;
+                // left only at a `break`
+                let breaks = self.breaks.pop().unwrap_or_default();
+                self.leave_loop(n, None, breaks);
             }
         }
     }
@@ -2935,6 +2959,39 @@ impl<'a> Vc<'a> {
             }
         }
         self.set(x, new);
+    }
+
+    /// After a loop: the state is the loop head's when it is left normally
+    /// (under `normal`, the condition being false), or the state at one of its
+    /// `break`s. `n` is the length of the path before the loop, which every
+    /// `break`'s path extends; `self.scopes` is the loop head's state.
+    fn leave_loop(&mut self, n: usize, normal: Option<T>, breaks: Vec<(Vec<T>, Vec<HashMap<String, Val>>)>) {
+        let depth = self.scopes.len();
+        let mut exits: Vec<(T, Vec<HashMap<String, Val>>)> =
+            breaks.into_iter().map(|(pc, mut s)| (and(pc.get(n..).unwrap_or_default()), { s.truncate(depth); s })).collect();
+        let mut alive: Vec<T> = exits.iter().map(|e| e.0.clone()).collect();
+        alive.extend(normal.clone());
+        if alive.is_empty() {
+            // never left: what follows is unreachable
+            self.dead = true;
+            return;
+        }
+        self.pc.push(or(&alive));
+        // the paths are disjoint: a pass that breaks began with the condition true
+        let mut scopes = match normal {
+            Some(_) => std::mem::take(&mut self.scopes),
+            None => exits.pop().unwrap().1,
+        };
+        for (g, other) in exits.into_iter().rev() {
+            for (layer, o) in scopes.iter_mut().zip(&other) {
+                for (name, val) in layer.iter_mut() {
+                    if let Some(ov) = o.get(name) {
+                        *val = self.merge(&g, ov, val);
+                    }
+                }
+            }
+        }
+        self.scopes = scopes;
     }
 
     /// Before a loop: every variable the loop may change takes any value.
