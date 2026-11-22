@@ -424,10 +424,11 @@ fn wrong(n: Natural) -> Int
     assert!(out.contains("✗ wrong") && out.contains("found by the solver"), "an invariant never hides a bug: {out}");
 }
 
-/// `build` leaves out the runtime checks the last `verify` proved, for
-/// code unchanged since: a function's own (`ensures`, `invariant`, results,
-/// assignments, indexes) and its entry checks when every call proved them.
-/// `--all-checks` keeps them all; an unproven caller keeps the callee's.
+/// `build` verifies what changed since it was last verified, then leaves
+/// out the runtime checks proven: a function's own (`ensures`, `invariant`,
+/// results, assignments, indexes) and its entry checks when every call
+/// proved them. `--all-checks` keeps them all; an unproven caller keeps the
+/// callee's; `--no-verify` uses only proofs of the code as it is.
 #[test]
 fn proven_checks_are_left_out_of_builds() {
     if !has_solver() {
@@ -476,10 +477,11 @@ fn main() {
 ";
     let has = |file: &str, text: &str| std::fs::read(d.join(file)).unwrap().windows(text.len()).any(|w| w == text.as_bytes());
     assert!(run(&["--file", "t.strata", "edit"], Some(src)).0);
-    let (ok, out) = run(&["--file", "t.strata", "verify"], None);
-    assert!(ok, "{out}");
+    // not verified yet: `build` does it first, then not again
     let (ok, out) = run(&["--file", "t.strata", "build", "-o", "fast"], None);
-    assert!(ok && out.contains("runtime checks left out (proven by `strata verify`), 0 kept"), "{out}");
+    assert!(ok && out.contains("verified 3 changed: 3 proven") && out.contains("runtime checks left out (proven by `strata verify`), 0 kept"), "{out}");
+    let (ok, out) = run(&["--file", "t.strata", "build", "-o", "fast"], None);
+    assert!(ok && !out.contains("verified"), "{out}");
     let (ok, out) = run(&["--file", "t.strata", "build", "-o", "slow", "--all-checks"], None);
     assert!(ok, "{out}");
     for msg in ["postcondition of `triangle`", "invariant failed: 2 * total == i * (i + 1)", "precondition of `first`"] {
@@ -490,15 +492,16 @@ fn main() {
     // a caller that doesn't prove the call keeps the callee's entry check
     let more = format!("{src}fn risky(xs: List[Natural]) -> Natural {{\n  first(xs)\n}}\n");
     assert!(run(&["--file", "t.strata", "edit"], Some(&more)).0);
-    run(&["--file", "t.strata", "verify"], None);
     let (ok, out) = run(&["--file", "t.strata", "build", "-o", "mixed"], None);
     assert!(ok, "{out}");
     assert!(has("mixed", "precondition of `first`") && !has("mixed", "postcondition of `triangle`"), "{out}");
-    // changed code: its old proofs don't count
+    // changed code: its old proofs don't count (--no-verify), and a build verifies it again
     let changed = more.replace("total += i\n", "total += i + 0\n");
     assert!(run(&["--file", "t.strata", "edit"], Some(&changed)).0);
-    let (ok, out) = run(&["--file", "t.strata", "build", "-o", "stale"], None);
+    let (ok, out) = run(&["--file", "t.strata", "build", "-o", "stale", "--no-verify"], None);
     assert!(ok && has("stale", "postcondition of `triangle`"), "{out}");
+    let (ok, out) = run(&["--file", "t.strata", "build", "-o", "again"], None);
+    assert!(ok && out.contains("verified 2 changed") && !has("again", "postcondition of `triangle`"), "{out}");
 }
 
 /// A written `invariant` is checked on entry and where every pass ends

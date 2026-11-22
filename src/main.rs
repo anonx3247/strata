@@ -177,7 +177,7 @@ Running:
                                can't be compiled yet fails, saying why); --with-deps: also
                                those of what it imports (std, dependencies), which are
                                otherwise tested on their own
-  build [PATH] [-o OUT] [--emit-llvm] [--all-checks]
+  build [PATH] [-o OUT] [--emit-llvm] [--all-checks] [--no-verify]
                                compile the program to a native executable, through LLVM
                                (needs clang; STRATA_CC chooses another): `main` takes no
                                parameters yet, and only part of the language compiles

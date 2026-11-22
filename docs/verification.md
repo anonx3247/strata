@@ -281,18 +281,18 @@ fn average(xs: List[Int]) -> Int {
 
 ## What is proven isn't checked again
 
-A program checks its contracts when it runs: `requires`, `ensures`, refined types, `assert`, `invariant`, indexes. Once `verify` has proven a check, `strata build` and `strata run` leave it out of the compiled code, so proven code pays nothing for it:
+A program checks its contracts when it runs: `requires`, `ensures`, refined types, `assert`, `invariant`, indexes. Once `verify` has proven a check, `strata build` and `strata run` leave it out of the compiled code, so proven code pays nothing for it. `build` first verifies what changed since it was last verified (what didn't is cached), so a build is as proven as it can be:
 
 ```text
-$ strata --file t.strata verify
 $ strata --file t.strata build
+verified 3 changed: 3 proven, 0 fuzzed
 built t: 7 runtime checks left out (proven by `strata verify`), 0 kept
 ```
 
 - **Each check counts on its own.** A function `verify` only fuzzed still loses the checks it proved; the others stay, as do all of a function with a counterexample.
 - **A function's entry checks** (its parameters' types, its `requires`) are proven where it is called. They are left out when every call proved them: each function that refers to it proved the call, and nothing else refers to it (a contract, a type's refinement, a test, a trait's method). A single caller that doesn't prove the call keeps them, for everyone.
 - **What a proof assumed still holds.** A proof may rest on another function's `ensures`, or on code `verify` can't see (outside code, a capability); that function's checks stay unless they are proven themselves, so a broken assumption faults where it breaks.
-- **Only proofs of the code as it is.** `verify` keeps what it proved with each function's hash, with everything it depends on (`.strata/` in a package, `~/.cache/strata/scripts/` for a script). A function changed since keeps all its checks until `verify` runs again.
+- **Only proofs of the code as it is.** `verify` keeps what it proved with each function's hash, with everything it depends on (`.strata/` in a package, `~/.cache/strata/scripts/` for a script, with its verdicts). `build` verifies what changed first; `run` (compiled in memory, to start fast) and `build --no-verify` use what was proven before, and a function changed since keeps all its checks.
 - **`--all-checks`** compiles every check back in (`build`, `run`). The fuzzer and the cross-check always run with every check: they are how a mistake of the prover's shows.
 
 The standard library is compiled once with its checks, and checks that run in C (division by zero, a string's index) stay.

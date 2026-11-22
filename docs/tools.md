@@ -93,7 +93,7 @@ Outside a package, `strata --file F edit < text` writes a script (or a folder's 
 
 ## Compiling to native code
 
-`strata build` compiles a program to an executable through LLVM: it writes LLVM IR as text, and `clang` compiles it with a small C runtime (`STRATA_CC` chooses another compiler). `--emit-llvm` prints the IR instead. The checks the last `strata verify` proved are left out of the program (`--all-checks` keeps them; see [verification](verification.md#what-is-proven-isnt-checked-again)).
+`strata build` compiles a program to an executable through LLVM: it writes LLVM IR as text, and `clang` compiles it with a small C runtime (`STRATA_CC` chooses another compiler). `--emit-llvm` prints the IR instead. `build` first verifies what changed since it was last verified (`--no-verify` doesn't), and the checks proven are left out of the program (`--all-checks` keeps them; see [verification](verification.md#what-is-proven-isnt-checked-again)).
 
 ```text
 $ strata build tests/data/build/numbers.strata -o numbers

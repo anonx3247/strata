@@ -236,6 +236,8 @@ pub fn compile_traced(prog: &Program, entry: &str) -> Res<String> {
 /// reference is in a body whose proofs cover them.
 #[derive(Default)]
 struct Refs {
+    /// The program's own functions (not std's, nor the prelude's): those whose proofs count.
+    own: HashSet<String>,
     callers: HashMap<String, HashSet<String>>,
     elsewhere: HashSet<String>,
     methods: HashSet<String>,
@@ -277,6 +279,15 @@ impl Refs {
             }
         }
         let mut refs = Refs::default();
+        for d in prog.decls.iter().filter(|d| d.module.as_str() != "std" && !d.module.as_str().starts_with("std.")) {
+            match &d.kind {
+                DeclKind::Fn(f) => {
+                    refs.own.insert(f.name.to_string());
+                }
+                DeclKind::Impl(imp) if imp.is_inherent() => refs.own.extend(imp.methods.iter().map(|m| crate::types::static_fn(imp, m).name.to_string())),
+                _ => {}
+            }
+        }
         for d in &prog.decls {
             let mut w = Walk { refs: &mut refs, from: None };
             match &d.kind {
@@ -597,7 +608,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)), refs: Refs::default(), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers };
     if !m.proofs.is_empty() {
         m.refs = Refs::of(prog);
     }
@@ -1622,7 +1633,7 @@ impl<'a> Module<'a> {
         }
         let ret = self.lower(&f.ret, &sub)?;
         let mut c = Func::new(self, sub);
-        if !c.m.proofs.is_empty() && !name.starts_with("std.") && !name.starts_with(PRELUDE_MODULE) {
+        if !c.m.proofs.is_empty() && c.m.refs.own.contains(name) {
             c.proofs_of = Some(name.to_string());
         }
         let mut sig = vec![];
@@ -2008,6 +2019,8 @@ enum Part {
     Lit(String),
     /// An operand holding a string.
     Val(String),
+    /// An `Int` operand, shown only if the message is made (a fault).
+    Int(String),
 }
 
 /// A local variable: its slot, and the declared type every assignment must fit.
@@ -2623,6 +2636,10 @@ impl<'m, 'a> Func<'m, 'a> {
                 Part::Lit(s) if s.is_empty() => continue,
                 Part::Lit(s) => self.string(&s),
                 Part::Val(op) => (Ty::Str, op),
+                Part::Int(op) => {
+                    let s = self.shown(&(Ty::Int, op))?;
+                    (Ty::Str, s)
+                }
             };
             acc = Some(match acc {
                 None => v,
@@ -3831,7 +3848,9 @@ impl<'m, 'a> Func<'m, 'a> {
         } else if ctx.starts_with("result of `") {
             Some(crate::types::shown_name(ctx))
         } else if ctx.starts_with("assigning `") || ctx.starts_with("constructing `") {
-            Some(ctx.to_string())
+            // (a field's check is part of the value's: `constructing \`C\`: C.f`)
+            let end = ctx[ctx.find('`').unwrap() + 1..].find('`').map(|i| ctx.find('`').unwrap() + 2 + i);
+            Some(end.map_or(ctx, |e| &ctx[..e]).to_string())
         } else {
             // (an argument's type is the caller's to prove)
             None
@@ -3929,11 +3948,13 @@ impl<'m, 'a> Func<'m, 'a> {
                 let et = self.m.repr(&self.lower(&args[0])?)?;
                 let et_written = args[0].clone();
                 let ctx = ctx.to_vec();
-                // (what a message would show is made first: a temporary, unless it is used)
+                // (the index is shown only when an element fails)
                 self.each(v, &et, |c, i, x| {
-                    let shown = c.shown(&(Ty::Int, i.to_string()))?;
-                    let shown = c.temp((Ty::Str, shown)).1;
-                    let inner = within(&ctx, vec![Part::Lit(": [".into()), Part::Val(shown), Part::Lit("]".into())]);
+                    if c.m.fuzzing {
+                        // (a long list is work: it counts against a run's budget)
+                        c.emit("call void @strata_step()".into());
+                    }
+                    let inner = within(&ctx, vec![Part::Lit(": [".into()), Part::Int(i.to_string()), Part::Lit("]".into())]);
                     c.check_in(&et_written, x, &inner, false)
                 })?;
             }
@@ -4036,7 +4057,8 @@ impl<'m, 'a> Func<'m, 'a> {
     /// The refinement of the type itself (`type Range = { lo: Int, hi: Int } where it.lo <= it.hi`).
     fn check_type_refinement(&mut self, c: &str, v: &V) -> Res<()> {
         let tname = self.m.env.ctors[&Symbol::new(c)].clone();
-        if let Some(r) = self.m.refinement(&tname) {
+        let k = format!("constructing `{c}`");
+        if let Some(r) = self.m.refinement(&tname).filter(|_| !self.proven(|e| same_check(e, &k))) {
             let ok = self.with_it(v, false, |s| s.expr(r))?;
             self.fail_unless(&ok, &format!("constructing `{c}`"), v, format!("does not satisfy `{tname}` (where {})", crate::printer::expr(&r, 0)))?;
         }
@@ -6553,7 +6575,8 @@ impl<'m, 'a> Func<'m, 'a> {
             let CtorArgs::Positional(xs) = args else { return Err(format!("`{c}` takes one value")) };
             let v = self.expr(&xs[0])?;
             self.check(&TypeExpr::Named(Symbol::from(Symbol::from(c)), vec![]), &v, &format!("constructing `{c}`"), false)?;
-            if let Some(r) = self.m.refinement(c) {
+            let k = format!("constructing `{c}`");
+            if let Some(r) = self.m.refinement(c).filter(|_| !self.proven(|e| same_check(e, &k))) {
                 let ok = self.with_it(&v, false, |s| s.expr(r))?;
                 self.fail_unless(&ok, &format!("constructing `{c}`"), &v, format!("does not satisfy `{c}` (where {})", crate::printer::expr(r, 0)))?;
             }

@@ -384,6 +384,9 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, key: &str, solver
     if let Some(why) = foreign(env, f, imp) {
         return Verdict::Assumed { why };
     }
+    // no parameters: every run is the same run (a `main` may be the whole
+    // program's work), so once is enough, to fuzz or to cross-check
+    let (cases, cross_check) = if f.params.is_empty() && imp.is_none() { (cases.min(1), cross_check.min(1)) } else { (cases, cross_check) };
     let decl = match imp {
         None => f.clone(),
         Some(imp) => {

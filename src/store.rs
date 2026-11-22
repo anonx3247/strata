@@ -528,14 +528,24 @@ pub fn script_proofs_dir(file: &str) -> Option<PathBuf> {
     Some(root.join("scripts").join(key))
 }
 
-/// Each function's checks `verify` proved (by the function's name), kept in `dir`.
-pub fn load_proofs(dir: &Path) -> HashMap<String, Proved> {
+/// What `verify` proved, kept in `dir` (`proofs.json`).
+pub fn load_proofs(dir: &Path) -> ProofFile {
     fs::read_to_string(dir.join("proofs.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
 }
 
-pub fn save_proofs(dir: &Path, v: &HashMap<String, Proved>) {
+pub fn save_proofs(dir: &Path, v: &ProofFile) {
     let _ = fs::create_dir_all(dir);
     let _ = fs::write(dir.join("proofs.json"), serde_json::to_string_pretty(v).unwrap());
+}
+
+/// `verify`'s verdicts, by cache key, kept in `dir` (`verdicts.json`).
+pub fn load_verdicts(dir: &Path) -> HashMap<String, crate::verify::Verdict> {
+    fs::read_to_string(dir.join("verdicts.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+pub fn save_verdicts(dir: &Path, v: &HashMap<String, crate::verify::Verdict>) {
+    let _ = fs::create_dir_all(dir);
+    let _ = fs::write(dir.join("verdicts.json"), serde_json::to_string_pretty(v).unwrap());
 }
 
 /// What `build` may leave out of `p`: the proofs made for each function's
@@ -543,10 +553,34 @@ pub fn save_proofs(dir: &Path, v: &HashMap<String, Proved>) {
 pub fn current_proofs(p: &Program, dir: &Path) -> HashMap<String, crate::llvm::Proofs> {
     let closures = Closures::new(p);
     load_proofs(dir)
+        .functions
         .into_iter()
         .filter(|(_, pr)| closures.hash(&pr.decl) == pr.hash)
         .map(|(name, pr)| (name, crate::llvm::Proofs { proven: pr.proven, open: pr.open }))
         .collect()
+}
+
+/// The definitions `verify` checks (functions, impls) that it hasn't
+/// verified as they are now: what `build` verifies first.
+pub fn unverified(p: &Program, dir: &Path) -> std::collections::BTreeSet<String> {
+    let closures = Closures::new(p);
+    let done = load_proofs(dir).verified;
+    p.decls
+        .iter()
+        .filter(|d| matches!(d.kind, DeclKind::Fn(_) | DeclKind::Impl(_)))
+        .map(|d| d.qname())
+        .filter(|q| done.get(q) != Some(&closures.hash(q)))
+        .collect()
+}
+
+/// `proofs.json`: each definition verified, with its hash then, and each
+/// function's checks.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ProofFile {
+    #[serde(default)]
+    pub verified: HashMap<String, String>,
+    #[serde(default)]
+    pub functions: HashMap<String, Proved>,
 }
 
 /// A function's checks as `verify` left them: proven or not, for the

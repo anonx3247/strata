@@ -2,6 +2,37 @@
 
 use crate::*;
 
+/// Before building: verify the definitions changed since they were last
+/// verified (as `strata verify` does, with its caches), and say how it went.
+fn verify_first(args: &Args, src: &Source, file: Option<&str>) -> Result<(), String> {
+    let Some(dir) = proofs_dir(src, file) else { return Ok(()) };
+    let todo = store::unverified(src.program(), &dir);
+    if todo.is_empty() {
+        return Ok(());
+    }
+    if smt::solver().is_none() {
+        eprintln!("note: no SMT solver (install z3): nothing is proven, so every check stays");
+        return Ok(());
+    }
+    let how = cmd::check::Verifying { file, only: Some(todo), quiet: true, json: false };
+    let (_, results) = cmd::check::verify_source(args, src, &how)?;
+    let (mut proven, mut fuzzed, mut failed) = (0, 0, vec![]);
+    for (name, v, _) in &results {
+        match v {
+            verify::Verdict::Proven { .. } => proven += 1,
+            verify::Verdict::Fuzzed { .. } => fuzzed += 1,
+            verify::Verdict::Counterexample { .. } => failed.push(format!("`{}`", name.strip_prefix(crate::resolve::ROOT_FN).unwrap_or(name))),
+            _ => {}
+        }
+    }
+    let mut line = format!("verified {} changed: {proven} proven, {fuzzed} fuzzed", results.len());
+    if !failed.is_empty() {
+        line += &format!(", {} with a counterexample ({}: see `strata verify`)", failed.len(), failed.join(", "));
+    }
+    eprintln!("{line}");
+    Ok(())
+}
+
 /// `strata build [PATH] [-o OUT] [--emit-llvm]`: compile the program's `main`
 /// to LLVM IR, then (unless --emit-llvm) to an executable with clang.
 pub fn build(args: &Args) -> Result<bool, String> {
@@ -15,8 +46,13 @@ pub fn build(args: &Args) -> Result<bool, String> {
         print_errors(&rep);
         return Ok(false);
     }
-    // the checks the last `verify` proved are left out (unless --all-checks)
+    // what changed since it was last verified is verified now, then the
+    // checks proven are left out (--all-checks keeps them; --no-verify uses
+    // only what was verified before)
     let file = args.pos.get(1).map(|s| s.as_str()).or(args.val("--file"));
+    if !args.flag("--all-checks") && !args.flag("--no-verify") {
+        verify_first(args, &src, file)?;
+    }
     let proofs = proofs_for(&src, file, args);
     let used = !proofs.is_empty();
     let (ir, left_out, kept) = llvm::compile_proven(p, "main", proofs, false)?;
