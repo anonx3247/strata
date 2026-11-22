@@ -926,6 +926,7 @@ declare ptr @strata_host_read_bytes(ptr, ptr, ptr)
 declare i1 @strata_host_write_file(ptr, ptr, i1, ptr, ptr)
 declare i1 @strata_host_exists(ptr)
 declare ptr @strata_host_list_dir(ptr, ptr, ptr)
+declare ptr @strata_host_run(ptr, ptr, ptr, ptr, ptr)
 declare i1 @strata_host_make_dir(ptr, ptr, ptr)
 declare i1 @strata_host_remove(ptr, ptr, ptr)
 declare ptr @strata_host_args()
@@ -5466,7 +5467,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.cancel_point()?;
                 r
             }
-            "host_read_file" | "host_list_dir" | "host_read_bytes" => {
+            "host_read_file" | "host_list_dir" | "host_read_bytes" | "host_run" => {
                 // a value, or NULL and the failure
                 let (k, m) = (self.fresh("kind"), self.fresh("msg"));
                 writeln!(self.allocas, "  {k} = alloca ptr\n  {m} = alloca ptr").unwrap();
@@ -5476,7 +5477,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let ok = self.fresh("ok");
                 self.emit(format!("{ok} = icmp ne ptr {}, null", r.1));
                 let okv = match name {
-                    "host_list_dir" => lst,
+                    "host_list_dir" | "host_run" => lst,
                     "host_read_bytes" => Ty::Con(Symbol::new("List"), vec![Ty::Int]),
                     _ => Ty::Str,
                 };

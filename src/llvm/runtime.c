@@ -27,7 +27,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
+#include <spawn.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 // A string: its length in bytes, then its UTF-8 bytes (not NUL-terminated).
@@ -2696,6 +2698,97 @@ Str *strata_host_env_var(Str *name) {
 }
 
 int64_t strata_pid(void) { return (int64_t)getpid(); }
+
+// Runs a program (looked up in PATH, never through a shell) with its
+// arguments in a working directory (`""`: this process's), its standard input
+// empty, and waits: `[exit code, stdout, stderr]` (the code as decimal text; a
+// program killed by a signal gives 128 + the signal, as shells do), or NULL and
+// the failure when it can't be started.
+static Str *read_all_into(char **b, size_t *n, size_t *cap, int fd) {
+  char tmp[65536];
+  ssize_t r = read(fd, tmp, sizeof tmp);
+  if (r <= 0) return NULL;
+  if (*n + (size_t)r > *cap) *b = realloc(*b, *cap = (*n + (size_t)r) * 2);
+  memcpy(*b + *n, tmp, (size_t)r);
+  *n += (size_t)r;
+  return (Str *)1;
+}
+
+List *strata_host_run(Str *program, List *args, Str *dir, Str **kind, Str **msg) {
+  int64_t argc = args->len;
+  char **argv = calloc((size_t)argc + 2, sizeof(char *));
+  argv[0] = strndup(program->bytes, (size_t)program->len);
+  for (int64_t i = 0; i < argc; i++) {
+    Str *a = (Str *)(intptr_t)args->buf->data[args->off + i];
+    argv[i + 1] = strndup(a->bytes, (size_t)a->len);
+  }
+  int out[2], err[2];
+  if (pipe(out) != 0) { os_error(kind, msg); return NULL; }
+  if (pipe(err) != 0) { os_error(kind, msg); close(out[0]); close(out[1]); return NULL; }
+  posix_spawn_file_actions_t fa;
+  posix_spawn_file_actions_init(&fa);
+  posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+  posix_spawn_file_actions_adddup2(&fa, out[1], 1);
+  posix_spawn_file_actions_adddup2(&fa, err[1], 2);
+  posix_spawn_file_actions_addclose(&fa, out[0]);
+  posix_spawn_file_actions_addclose(&fa, err[0]);
+  posix_spawn_file_actions_addclose(&fa, out[1]);
+  posix_spawn_file_actions_addclose(&fa, err[1]);
+  char *d = dir->len ? strndup(dir->bytes, (size_t)dir->len) : NULL;
+  if (d) posix_spawn_file_actions_addchdir_np(&fa, d);
+  extern char **environ;
+  pid_t pid;
+  int e = posix_spawnp(&pid, argv[0], &fa, NULL, argv, environ);
+  posix_spawn_file_actions_destroy(&fa);
+  close(out[1]);
+  close(err[1]);
+  for (int64_t i = 0; i <= argc; i++) free(argv[i]);
+  free(argv);
+  if (e != 0) {
+    close(out[0]);
+    close(err[0]);
+    errno = e;
+    os_error(kind, msg);
+    char buf[600];
+    snprintf(buf, sizeof buf, "can't run `%.*s`%s%s: %.*s", (int)program->len, program->bytes,
+             d ? " in " : "", d ? d : "", (int)(*msg)->len, (*msg)->bytes);
+    free(d);
+    *msg = str_c(buf);
+    return NULL;
+  }
+  free(d);
+  char *ob = NULL, *eb = NULL;
+  size_t on = 0, oc = 0, en = 0, ec = 0;
+  struct pollfd fds[2] = {{out[0], POLLIN, 0}, {err[0], POLLIN, 0}};
+  int open_fds = 2;
+  while (open_fds > 0) {
+    if (poll(fds, 2, -1) < 0) {
+      if (errno == EINTR) continue;
+      break;
+    }
+    for (int k = 0; k < 2; k++) {
+      if (fds[k].fd < 0 || !(fds[k].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+      if (!(k == 0 ? read_all_into(&ob, &on, &oc, fds[k].fd) : read_all_into(&eb, &en, &ec, fds[k].fd))) {
+        close(fds[k].fd);
+        fds[k].fd = -1;
+        open_fds--;
+      }
+    }
+  }
+  int status = 0;
+  while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+  int code = WIFEXITED(status) ? WEXITSTATUS(status) : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1;
+  char cbuf[24];
+  snprintf(cbuf, sizeof cbuf, "%d", code);
+  List *l = strata_list_new(3);
+  l = append(l, (int64_t)(intptr_t)str_c(cbuf));
+  l = append(l, (int64_t)(intptr_t)str_from(ob ? ob : "", (int64_t)on));
+  l = append(l, (int64_t)(intptr_t)str_from(eb ? eb : "", (int64_t)en));
+  free(ob);
+  free(eb);
+  return l;
+}
+
 
 // ---- strings ----
 //

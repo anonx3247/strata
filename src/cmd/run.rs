@@ -257,9 +257,10 @@ pub fn not_given(ty: &str, what: &str) -> String {
         RUN_MODE => " How the program is run is hidden by default, so it behaves the same everywhere: to let it ask, say `mode = true` under `[run]` in strata.toml.",
         "std.fs.Files" => " Name the capability instead, `disk: Disk` (std.fs), and pass it where `Files` is wanted.",
         "std.process.Environment" => " Name the capability instead, `process: Process` (std.process), and pass it where `Environment` is wanted.",
+        "std.process.Commands" => " Name the capability instead, `mut launcher: Launcher` (std.process), and pass it where `Commands` is wanted.",
         _ => "",
     };
-    format!("{what} can ask for `Console` (std.io), capabilities (`Disk` from std.fs, `Process` from std.process, or the program's own `capability ...`), and options: a record that implements `CommandLine` (std.cli).{instead}")
+    format!("{what} can ask for `Console` (std.io), capabilities (`Disk` from std.fs, `Process` or `Launcher` from std.process, or the program's own `capability ...`), and options: a record that implements `CommandLine` (std.cli).{instead}")
 }
 
 /// `strata serve [PATH] [--port N]`: serve the program's `handle`, or run
