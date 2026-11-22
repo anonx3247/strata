@@ -115,6 +115,30 @@ fn field(f: &Field) -> String {
     }
 }
 
+/// `from m use a, b, c`: on one line if it fits, else filled to the width
+/// with the rest indented (`extra`: what goes before it, `pub `).
+fn use_list(head: &str, items: &[String], extra: usize) -> String {
+    let one = format!("{head} {}", items.join(", "));
+    if one.chars().count() + extra <= WIDTH {
+        return one;
+    }
+    let mut out = head.to_string();
+    let mut line = out.chars().count() + extra;
+    for (k, it) in items.iter().enumerate() {
+        let piece = if k + 1 < items.len() { format!("{it},") } else { it.clone() };
+        if line + 1 + piece.chars().count() > WIDTH && k > 0 {
+            out += "\n  ";
+            line = 2;
+        } else {
+            out += " ";
+            line += 1;
+        }
+        out += &piece;
+        line += piece.chars().count();
+    }
+    out
+}
+
 fn ind(n: usize) -> String {
     "  ".repeat(n)
 }
@@ -949,11 +973,18 @@ pub fn decl_body(d: &Decl) -> String {
         DeclKind::Trait(t) => trait_decl(t),
         DeclKind::Impl(i) => impl_decl(i),
         DeclKind::Use(u) => match &u.items {
-            None => format!("use {}.*", u.path),
-            // the module only, its names used qualified (`db.open()`)
-            Some(items) if items.is_empty() => format!("use {}", u.path),
-            Some(items) if items.len() == 1 => format!("use {}.{}", u.path, items[0]),
-            Some(items) => format!("use {}.{{{}}}", u.path, crate::symbol::join(items, ", ")),
+            // the module, its names written `time.now()`
+            None => match u.alias {
+                Some(a) => format!("use {} as {a}", u.path),
+                None => format!("use {}", u.path),
+            },
+            Some(items) => {
+                let items: Vec<String> = items.iter().map(|i| match i.alias {
+                    Some(a) => format!("{} as {a}", i.name),
+                    None => i.name.to_string(),
+                }).collect();
+                use_list(&format!("from {} use", u.path), &items, if d.public { 4 } else { 0 })
+            }
         },
         DeclKind::Extern(e) => match &e.item {
             ExternItem::Fn(f) => format!("extern {} {}", e.lang.name(), fn_signature(f)),

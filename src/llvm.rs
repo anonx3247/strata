@@ -845,6 +845,48 @@ declare i1 @strata_cancelled()
 declare void @strata_unwound()
 declare void @strata_scope_cancel(ptr)
 @strata_cancel_any = external global i32
+@strata_slow_counts = external global i32
+; one holder more / fewer (whether that was the last), the count updated here
+; unless the runtime must do it (atomically while tasks run, or checked)
+define internal void @strata.dup(ptr %p) alwaysinline {
+  %slow = load i32, ptr @strata_slow_counts, align 4
+  %rt = icmp ne i32 %slow, 0
+  br i1 %rt, label %runtime, label %here
+runtime:
+  call void @strata_dup(ptr %p)
+  ret void
+here:
+  %cp = getelementptr i64, ptr %p, i64 -1
+  %c = load i64, ptr %cp, align 8
+  %held = icmp sgt i64 %c, 0
+  br i1 %held, label %more, label %done
+more:
+  %n = add i64 %c, 1
+  store i64 %n, ptr %cp, align 8
+  ret void
+done:
+  ret void
+}
+define internal i1 @strata.release(ptr %p) alwaysinline {
+  %slow = load i32, ptr @strata_slow_counts, align 4
+  %rt = icmp ne i32 %slow, 0
+  br i1 %rt, label %runtime, label %here
+runtime:
+  %g = call i1 @strata_release(ptr %p)
+  ret i1 %g
+here:
+  %cp = getelementptr i64, ptr %p, i64 -1
+  %c = load i64, ptr %cp, align 8
+  %held = icmp sgt i64 %c, 0
+  br i1 %held, label %fewer, label %kept
+fewer:
+  %n = sub i64 %c, 1
+  store i64 %n, ptr %cp, align 8
+  %last = icmp eq i64 %n, 0
+  ret i1 %last
+kept:
+  ret i1 false
+}
 declare void @strata_int_dup(i64)
 declare void @strata_int_drop(i64)
 ; an `Int` outside [-2^62, 2^62) is a big integer, an object: only those are counted
@@ -886,12 +928,9 @@ declare i1 @strata_host_make_dir(ptr, ptr, ptr)
 declare i1 @strata_host_remove(ptr, ptr, ptr)
 declare ptr @strata_host_args()
 declare i64 @strata_host_now()
-declare ptr @strata_timeline_new(i64)
-declare void @strata_timeline_drop(ptr)
-declare i64 @strata_timeline_now(ptr)
-declare void @strata_timeline_set(ptr, i64)
-declare void @strata_timeline_advance(ptr, i64)
-declare void @strata_timeline_sleep(ptr, i64)
+declare ptr @strata_virtual_timeline()
+declare i64 @strata_virtual_now()
+declare void @strata_virtual_sleep(i64)
 declare void @strata_host_sleep(i64)
 declare ptr @strata_prog_name()
 declare void @strata_options_error(i1, ptr)
@@ -1448,20 +1487,12 @@ impl<'a> Module<'a> {
     /// A value shown and compared by what it is, not what is in it: a
     /// handle, or a channel's end (`<Sender>`; equal when the same channel).
     fn opaque(&self, t: &Ty) -> bool {
-        self.handle(t) || self.runtime_object(t) || matches!(t, Ty::Con(n, a) if (n == "Sender" || n == "Receiver") && a.len() == 1)
+        self.handle(t) || matches!(t, Ty::Con(n, a) if (n == "Sender" || n == "Receiver") && a.len() == 1)
     }
 
     fn handle(&self, t: &Ty) -> bool {
         // (a task's handle: its scope holds the task, and frees it)
-        !self.runtime_object(t) && matches!(t, Ty::Con(n, args) if args.is_empty() && (self.env.externs.contains_key(n) || self.env.capabilities.contains(n)) || n == "Task" && args.len() == 1)
-    }
-
-    /// A std type declared `extern c type` whose objects the runtime makes
-    /// and counts like a value's (unlike C's handles): std.time's private
-    /// `Timeline` (runtime.c), a `FakeClock`'s time. Counted, freed by its
-    /// runtime drop, shown and compared as itself.
-    fn runtime_object(&self, t: &Ty) -> bool {
-        matches!(t, Ty::Con(n, args) if args.is_empty() && n == "std.time.Timeline")
+        matches!(t, Ty::Con(n, args) if args.is_empty() && (self.env.externs.contains_key(n) || self.env.capabilities.contains(n)) || n == "Task" && args.len() == 1)
     }
 
     /// A record, a sum, one of its variants, or a tuple: a block with a tag.
@@ -2578,7 +2609,7 @@ impl<'m, 'a> Func<'m, 'a> {
         if self.is_int(&v.0) {
             self.emit(format!("call void @strata.int_dup(i64 {})", v.1));
         } else {
-            self.emit(format!("call void @strata_dup(ptr {})", v.1));
+            self.emit(format!("call void @strata.dup(ptr {})", v.1));
         }
     }
 
@@ -3100,7 +3131,7 @@ impl<'m, 'a> Func<'m, 'a> {
             Ty::Str => {
                 // (owned, as every shown value: held once more)
                 if !constant(&v.1) {
-                    self.emit(format!("call void @strata_dup(ptr {})", v.1));
+                    self.emit(format!("call void @strata.dup(ptr {})", v.1));
                 }
                 Ok(v.1.clone())
             }
@@ -3140,7 +3171,7 @@ impl<'m, 'a> Func<'m, 'a> {
             Ty::Fn(..) => {
                 // how the closure shows
                 let shown = self.field(v, 1, &Ty::Str)?;
-                self.emit(format!("call void @strata_dup(ptr {})", shown.1));
+                self.emit(format!("call void @strata.dup(ptr {})", shown.1));
                 shown.1
             }
             Ty::Con(n, args) if n == "Set" => {
@@ -3737,10 +3768,6 @@ impl<'m, 'a> Func<'m, 'a> {
             writeln!(self.m.body, "define void {name}(ptr %a) {{\nstart:\n  tail call void @strata_channel_drop(ptr %a)\n  ret void\n}}\n").unwrap();
             return Ok(name);
         }
-        if self.m.runtime_object(&t) {
-            writeln!(self.m.body, "define void {name}(ptr %a) {{\nstart:\n  tail call void @strata_timeline_drop(ptr %a)\n  ret void\n}}\n").unwrap();
-            return Ok(name);
-        }
         let mut h = Func::new(self.m, HashMap::default());
         h.block("start");
         if h.m.boxed(&t) {
@@ -3749,7 +3776,7 @@ impl<'m, 'a> Func<'m, 'a> {
             h.on_member(&a, |h, m, x| {
                 if h.m.boxes(m) {
                     let (gone, unbox, kept) = (h.fresh("gone"), h.fresh_label("unbox"), h.fresh_label("kept"));
-                    h.emit(format!("{gone} = call i1 @strata_release(ptr %a)"));
+                    h.emit(format!("{gone} = call i1 @strata.release(ptr %a)"));
                     h.emit(format!("br i1 {gone}, label %{unbox}, label %{kept}"));
                     h.block(&unbox);
                     let x = h.field(&a, 0, m)?;
@@ -3772,7 +3799,7 @@ impl<'m, 'a> Func<'m, 'a> {
         h.emit("%null = icmp eq ptr %a, null".into());
         h.emit("br i1 %null, label %kept, label %held".into());
         h.block("held");
-        h.emit("%gone = call i1 @strata_release(ptr %a)".into());
+        h.emit("%gone = call i1 @strata.release(ptr %a)".into());
         h.emit("br i1 %gone, label %last, label %kept".into());
         h.block("last");
         let a: V = (t.clone(), "%a".into());
@@ -3828,7 +3855,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 h.emit("%bp = getelementptr i8, ptr %a, i64 8".into());
                 h.emit("%buf = load ptr, ptr %bp".into());
                 h.emit("call void @strata_free(ptr %a)".into());
-                h.emit("%blast = call i1 @strata_release(ptr %buf)".into());
+                h.emit("%blast = call i1 @strata.release(ptr %buf)".into());
                 h.emit("br i1 %blast, label %elements, label %kept".into());
                 h.block("elements");
                 if h.counted(&et) {
@@ -5348,7 +5375,7 @@ impl<'m, 'a> Func<'m, 'a> {
     /// A native operation of std (`host_*`): the runtime's, its result made
     /// an `Option` or a `Result` here (only the generated code knows their tags).
     fn host(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>) -> Res<V> {
-        // a `FakeClock`'s (with the channels': runtime objects)
+        // (with the channels': runtime objects; a `VirtualClock`'s time)
         if let Some(v) = self.channel_builtin(name, &vs, &hint)? {
             return Ok(v);
         }
@@ -5369,9 +5396,17 @@ impl<'m, 'a> Func<'m, 'a> {
                 let r = self.call(&lst, "@strata_host_args", &[])?;
                 self.temp(r)
             }
-            "host_read_line" | "host_env_var" => {
+            "host_env_var" => {
                 let r = self.call(&s_ty, &format!("@strata_{name}"), &vs)?;
                 self.optional(&r, &t)?
+            }
+            // a wait for input: a cancelled task gives up (NULL) and leaves,
+            // checked once the line is held, so leaving drops it
+            "host_read_line" => {
+                let r = self.call(&s_ty, "@strata_host_read_line", &vs)?;
+                let r = self.optional(&r, &t)?;
+                self.cancel_point()?;
+                r
             }
             "host_read_file" | "host_list_dir" | "host_read_bytes" => {
                 // a value, or NULL and the failure
@@ -6458,16 +6493,10 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.after_builtin("@strata_channel_close")?;
                 (Ty::Unit, String::new())
             }
-            // a `FakeClock`'s time (runtime.c, `Timeline`)
-            ("host_fake_clock", [start]) => {
-                let r = self.call(&Ty::Con("std.time.Timeline".into(), vec![]), "@strata_timeline_new", &[start.clone()])?;
-                self.temp(r)
-            }
-            ("host_fake_now", [t]) => self.call(&Ty::Int, "@strata_timeline_now", &[t.clone()])?,
-            ("host_fake_set", [t, to]) => self.call(&Ty::Unit, "@strata_timeline_set", &[t.clone(), to.clone()])?,
-            ("host_fake_advance", [t, ns]) => self.call(&Ty::Unit, "@strata_timeline_advance", &[t.clone(), ns.clone()])?,
-            ("host_fake_sleep", [t, ns]) => {
-                self.call(&Ty::Unit, "@strata_timeline_sleep", &[t.clone(), ns.clone()])?;
+            // a `VirtualClock`'s: its run's own time (runtime.c, `strata_virtual_timeline`)
+            ("host_virtual_now", []) => self.call(&Ty::Int, "@strata_virtual_now", &[])?,
+            ("host_virtual_sleep", [ns]) => {
+                self.call(&Ty::Unit, "@strata_virtual_sleep", &[ns.clone()])?;
                 self.cancel_point()?;
                 (Ty::Unit, String::new())
             }
@@ -6560,14 +6589,15 @@ impl<'m, 'a> Func<'m, 'a> {
                     let p = self.fresh("op");
                     self.emit(format!("{p} = getelementptr i64, ptr {ops}, i64 {}", 4 * i + 2));
                     let deadline = self.fresh("deadline");
-                    if matches!(&ct, Ty::Con(n, _) if n == "std.time.FakeClock") {
-                        // a fake clock's timer: its deadline in that clock's
-                        // time; moving the time wakes the select (kind 5)
-                        let tl = self.field(&cv, 0, &Ty::Con("std.time.Timeline".into(), vec![]))?;
-                        let now = self.call(&Ty::Int, "@strata_timeline_now", &[tl.clone()])?;
-                        self.emit(format!("{deadline} = add i64 {}, {}", now.1, d.1));
+                    if matches!(&ct, Ty::Con(n, _) if n == "std.time.VirtualClock") {
+                        // the run's virtual time: its moving wakes the select (kind 5)
+                        let tl = self.fresh("vtime");
+                        self.emit(format!("{tl} = call ptr @strata_virtual_timeline()"));
+                        let now = self.fresh("now");
+                        self.emit(format!("{now} = call i64 @strata_virtual_now()"));
+                        self.emit(format!("{deadline} = add i64 {now}, {}", d.1));
                         self.emit(format!("store i64 {deadline}, ptr {p}"));
-                        (5, tl, None)
+                        (5, (Ty::Unit, tl), None)
                     } else if matches!(&ct, Ty::Con(n, _) if n == "std.time.SystemClock") {
                         let now = self.fresh("now");
                         self.emit(format!("{now} = call i64 @strata_host_now()"));
@@ -8176,7 +8206,7 @@ impl Func<'_, '_> {
         let plain = self.m.string(&format!("<mock {tag}>"));
         let mut entries = vec![];
         // as `to_string` and as `debug`
-        for (what, text) in [("show", format!("  call void @strata_dup(ptr {plain})\n  ret ptr {plain}")), ("debug", format!("  call void @strata_dup(ptr {plain})\n  ret ptr {plain}"))] {
+        for (what, text) in [("show", format!("  call void @strata.dup(ptr {plain})\n  ret ptr {plain}")), ("debug", format!("  call void @strata.dup(ptr {plain})\n  ret ptr {plain}"))] {
             let f = format!("@\"mock{what}:{}\"", key(tr_ty));
             writeln!(self.m.body, "define ptr {f}(i64 %v) {{\nentry:\n{text}\n}}\n").unwrap();
             entries.push(f);

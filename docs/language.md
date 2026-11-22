@@ -275,9 +275,13 @@ pub fn ship(mut db: Db, id: OrderId) -> Result[Order, ShipError]  ensures ...
 fn helper() -> Int { ... }            // private: invisible outside `orders`
 
 // billing.strata
-use orders.{Order, ship}              // or `use orders.*`, or write `orders.ship(x)`
+from orders use Order, ship           // the names, unqualified
+use std.time                          // the module: `time.now()`, `time.Clock`
+use std.json as j                     // under another name: `j.parse(s)`
 pub fn invoice(o: Order) -> Cents { ... }
 ```
+
+- **Every other module comes in through a `use`**, std's included: `use m` binds the module to its last name (`use shop.orders` gives `orders.ship(x)`), `use m as a` to `a`, and `from m use x, y as z` brings names in unqualified (a type with its constructors, a trait with its methods). A name written in full (`std.json.parse`) still needs a `use` of its module (`use std` covers `std.json` too); without one it is an error saying which `use` to add. Only the prelude (`Option`, `Result`, `Int`, `print`, …) needs none. A long `from` list is printed filled to the line width.
 
 - A module is used **only through its public contract**: `pub` types, function signatures, `requires`/`ensures`, trait laws. Anything else is private, and using it from another module is an error ("`secret` is private to module `a`").
 - `strata interface orders` prints that contract, with a hash. Editing a private definition, or a function body without touching its signature, is reported as "implementation only": nothing outside the module can be affected. Changing a `pub` signature or type says so ("module core: its public contract changed").
@@ -381,6 +385,8 @@ Tasks share nothing that can change, so the result doesn't depend on timing: `sc
 
 A handle stays in its scope: a scope can't give one back, a task can't hold another's, and one can't be stored in a variable declared outside. A fault in a task (an index out of range, a broken contract) ends the program at once, as anywhere else: nothing catches it, and the other tasks don't run on (a thread waiting for what the failed task would have sent doesn't hang). Its call stack shows where the task was started and where it failed: `main -> spawn -> pick`. Under `strata test` it fails that test only: the test's other tasks stop at their next wait, and the next test runs.
 
+**A deadlock is a panic, not a hang.** When every task of the program is waiting (in a `recv`, a `send`, a `select`, an `await`, the end of a `scope`, a fake clock's sleep) and none of the waits can end by itself (a real clock's sleep or `after` timer can: it isn't a deadlock), nothing can ever happen again. The program stops with what each task waits on, and where: `deadlock: every task is waiting, so none can go on: main waits in the end of a `scope`, at main; a task waits in `recv`, at main -> spawn -> Receiver.recv; …`. Under `strata test` the test fails with it. A task reading the console or a file isn't waiting in this sense: it can go on by itself.
+
 A `scope` whose last line is a `spawn` (`scope { spawn work() }`) gives `()`: the handle isn't its value. Tasks run on threads, one per task for now.
 
 ### Channels and `select`
@@ -447,7 +453,7 @@ fn first_answer(mirrors: Receiver[Page], local: Cache, key: String) -> Page {
 }
 ```
 
-A cancelled task stops at its next wait (a `recv`, a `send`, an `await`, a `select`), however deep in calls it is, and leaves as `return` would: what it holds is dropped, nothing after the wait runs, and the tasks it started stop too. Code that doesn't wait runs to its end (a long computation isn't interrupted halfway). The `race` ends once every loser has stopped, then runs the winner's arm. A left side follows a `spawn`'s rules (no `return`, `!` or `?` out of it; a sender it uses is its own copy, to close).
+A cancelled task stops at its next wait (a `recv`, a `send`, an `await`, a `select`, a `sleep`, a console's `read_line`), however deep in calls it is, and leaves as `return` would: what it holds is dropped, nothing after the wait runs, and the tasks it started stop too. Code that doesn't wait runs to its end (a long computation isn't interrupted halfway). The `race` ends once every loser has stopped, then runs the winner's arm. A left side follows a `spawn`'s rules (no `return`, `!` or `?` out of it; a sender it uses is its own copy, to close).
 
 ### Supervised tasks
 
@@ -486,7 +492,7 @@ fn fetch_or_give_up(clock: SystemClock, net: Net, url: String) -> Option[Page] {
 
 In a `select`, `clock.after(d) => …` is an arm that happens once `d` has passed, in that clock's time, since the `select` began (it names nothing): `select { jobs.recv() as j => run(j), clock.after(ms(100)) => flush() }`. Any `Clock` works, so a test can pass a stand-in whose time it controls (one that stands still, or runs faster): its `after` arms and its `sleep` follow its time, not the system's.
 
-std has one: a `FakeClock` (`fake_clock()`, at 0) whose time moves only when told, `clock.advance(seconds(30))` or `clock.set(t)` (never back). Copies share the one time, so one task can move it for the others: every `sleep` and `after` timer of that clock that is due by then ends at once, with no real waiting, so a timeout in a test happens exactly when the test says.
+A test of timeouts asks for a `VirtualClock`, a capability like `SystemClock`: each test (and the program, for `main`) has its own virtual time, at 0 when it starts and shared by its tasks, and it moves by itself: once every task is waiting and one of them waits for this clock (a `sleep`, an `after` timer), its time jumps to the nearest such deadline. A timeout then happens at once, and exactly:
 
 ```rust
 /// Waits for a question; none ever comes.
@@ -494,41 +500,43 @@ fn answer(questions: Receiver[Int]) -> Int {
   questions.recv() ?? 0
 }
 
-test "gives up after 30 seconds" {
-  clock := fake_clock()
-  (tx, rx) := channel()
-  // nothing is sent on `ask` until the race is over: `answer` never answers
+test "gives up after 30 seconds" (clock: VirtualClock) {
   (ask, questions) := channel()
-  scope {
-    spawn {
-      r := race {
-        answer(questions) as v => Some(v),
-        clock.sleep(seconds(30)) => None,
-      }
-      tx.send(r)
-      tx.close()
-    }
-    tx.close()
-    // move the time a second at a time until the result comes
-    mut got := Some(0)
-    mut waiting := true
-    while waiting {
-      clock.advance(seconds(1))
-      select {
-        rx.recv() as r => {
-          got = r ?? Some(0)
-          waiting = false
-        },
-        clock.after(nanos(0)) => (),
-      }
-    }
-    assert got == None
+  r := race {
+    answer(questions) as v => Some(v),
+    clock.sleep(seconds(30)) => None,
   }
   ask.close()
+  assert r == None
+  assert clock.now().value == seconds(30).value
 }
 ```
 
-The time moves when the test moves it, not when every task is waiting: a sleep that starts after the time was moved waits for the next move, which is why the test moves it in steps until the answer comes (`clock.after(nanos(0))` keeps the `select` from waiting). Moving the time on its own once every task waits is planned (it needs the runtime to tell that every task is blocked, as deadlock detection does).
+Sleeps of a virtual clock end in the order of their deadlines, each once everything else is waiting, so a test of timers is exact and takes no real time.
+
+A test that needs a time that stands still writes its own mock of `Clock` (std has none: it is a few lines, and each test knows the time it wants; a mock is for tests only):
+
+```rust
+/// The time on a receipt, in seconds.
+fn stamp(clock: Clock) -> String {
+  f"at {clock.now().value / 1000000000} s"
+}
+
+/// A clock stopped at one time.
+mock StoppedClock = { at: Instant }
+
+// (`sleep` is left out: a mock's missing methods are generated)
+impl Clock for StoppedClock {
+  fn now(self) -> Instant {
+    self.at
+  }
+}
+
+test "a receipt shows the time" {
+  clock := StoppedClock { at: Instant(seconds(5).value) }
+  assert stamp(clock) == "at 5 s"
+}
+```
 
 ## Built-in types
 
@@ -688,7 +696,7 @@ Not yet: `main` asking for a native module's capability, structs passed by value
 A program's entry point is `main`. It asks for what it needs by type, and `strata run` passes it in: its command-line options, and the capabilities it uses.
 
 ```rust
-use std.cli.CommandLine
+from std.cli use CommandLine
 
 /// Greet people by name.
 type Options = {
@@ -729,7 +737,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 |---|---|
 | `std.io` | `Console` (`print`, `write`, `eprint`, `read_line`); `Recorder` / `recorder(input)` / `printed(r)` for tests |
 | `std.fs` | `Files` (`read`, `read_bytes`, `write`, `append`, `exists`, `list`, `make_dir`, `remove`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
-| `std.time` | `Clock` (`now`, `sleep`), the `SystemClock` capability, `FakeClock` (`fake_clock()`, `advance`, `set`) for tests; `Duration` (`nanos`, `micros`, `ms`, `seconds`), `Instant`, `elapsed`; `clock.after(d)` as a `select` arm |
+| `std.time` | `Clock` (`now`, `sleep`), the `SystemClock` capability, and the `VirtualClock` capability (its own time per test, moving by itself) for tests; `Duration` (`nanos`, `micros`, `ms`, `seconds`), `Instant`, `elapsed`; `clock.after(d)` as a `select` arm |
 | `std.process` | `Environment` (`args`, `var`), `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
 | `std.code` | `Codebase`, a capability, and the capability trait it implements, `Code` (`version`, `snapshot`): the codebase in the current folder as the tools see it: each `Definition` with its interface and source text, what it uses and what uses it, holes, errors and cached verdicts, and the package's log. `strata ui`'s viewer reads it |
 | `std.cli` | `CommandLine`: a record of options read from the arguments |
@@ -758,7 +766,7 @@ The **compiler written in Strata** is the `compiler/` package: a program, not pa
 **JSON** (`std.json`) is read into records and sum types that derive `Json`, in the form a web front end sends: a record is an object (with `"type"`, its type's name, when written; optional when read), a field left out takes its default, an `Option` is the value or `null` (or left out), a sum's variant is an object whose `"type"` names it (`{"type": "Circle", "r": 2}`, one positional field as `"value"`), a sum whose variants carry nothing is a string (`"Quiet"`), a tuple is an array, a `distinct` type is its underlying value, and a union is its member's value (reading takes the first member the JSON fits; members whose JSON overlaps are refused: `Int | Float`, two lists, `String` next to a choice, two members with the same `"type"`). Every refinement is checked, and errors say where: `home.zip: "1234" does not satisfy …`. Keys a record doesn't have are ignored, unless `strata.toml` says `unknown_keys = "error"` under `[json]`; `from_json_with(j, Reject)` or `from_json_with(j, Ignore)` decides for one call. Integers are within ±(2^53 − 1) both ways, the integers a JavaScript number holds exactly (`std.json.SafeInt`): reading or writing a larger one is an error (`to_json` returns a `Result`). A package that wants it proven instead sets `integers = "proven"` under `[json]`: then every integer field must be shown to be a `SafeInt` (typed so, or refined within it), and `strata verify` fails on one that may not be. A type with no such form (a function, `Option[Option[T]]`, a field named `type`, a variant with several positional fields) is an error at the `derive`, as is a field whose type doesn't derive `Json` itself. A generic type derives it for every type argument that has it (`derive Json for Pair` is `Pair[T]` for each `T: Json`). Through the generic impls, `Some(x)` where `x` is written as `null` (`Some(None)`) is an error from `to_json`; their elements' refinements are checked by `from_json` (`read[List[Port]]("[70000]")` is an `Err` naming `Port`). `print` shows any value as code.
 
 ```rust
-use std.json.{Json, parse, stringify}
+from std.json use Json, parse, stringify
 
 type Signup = { email: String where contains(it, "@"), age: Int where it >= 13, nickname: Option[String] }
 derive Json for Signup
@@ -770,7 +778,7 @@ text := stringify(signup.to_json()!)  // {"type":"Signup","email":…,"age":…,
 **TOML** (`std.toml`) is read by a parser written in Strata, for `strata.toml` files once the tools read them in Strata. It checks every rule of TOML 1.1: keys and tables defined twice, tables closed once written (inline tables; tables made by dotted keys can't get a `[header]`, nor header tables dotted keys), integers within 64 bits, dates that exist (`2023-02-29` is an error), seconds that may be left out (`07:32`), inline tables over several lines with a trailing comma, `\e` and `\xHH` escapes. A Strata `Float` is finite, so `inf` and `nan` are errors. `tests/toml.rs` checks it reads documents as the `toml` crate does (the same values, the same documents refused), and that what `stringify` writes reads back as the same value; with `STRATA_TOML_CORPUS` set to a checkout of [toml-test](https://github.com/toml-lang/toml-test), on all of its TOML 1.1 files too.
 
 ```rust
-use std.toml.{parse, lookup, Integer}
+from std.toml use parse, lookup, Integer
 
 doc := parse("[server]\nport = 8080\n")!
 port := match lookup(doc, ["server", "port"]) {
@@ -782,7 +790,7 @@ port := match lookup(doc, ["server", "port"]) {
 `derive Toml` reads records and sum types from TOML as `derive Json` does from JSON, in the form a configuration file is written: a record is a table of its fields (no `type` key), a field left out takes its default, and an `Option` field is left out for `None` (TOML has no null, so an `Option` anywhere but a field is an error at the `derive`). A sum's variant is a table whose `type` names it (one positional field as `value`), a sum whose variants carry nothing is a string, a tuple is an array, a `Dict[String, V]` a table, and `Date`, `Time`, `DateTime` are TOML's dates and times. Every refinement is checked, errors say where (`servers[0].port: 70000 does not satisfy …`), integers are 64-bit, and keys a record doesn't have are ignored unless `strata.toml` says `unknown_keys = "error"` under `[toml]` (or `from_toml_with(v, Reject)`). The methods are named for TOML (`to_toml`, `from_toml`, `read_toml`, `write_toml`), so a type may derive `Json` too.
 
 ```rust
-use std.toml.Toml
+from std.toml use Toml
 
 type Server = { host: String, port: Int where 0 < it && it < 65536 = 8080 }
 type Config = { name: String, servers: List[Server] = [] }
@@ -796,7 +804,7 @@ text := config.write_toml()!
 **Regular expressions** (`std.regex`) are written in Strata, so a self-hosted compiler can use them. `parse` reads the syntax of Rust's `regex` crate (Unicode by default: `\d`, `\w`, `\s` and `.` are Unicode's; `\p{Greek}`, `\p{gc=Lu}`, `\p{age=6.0}`; classes with `&&`, `--`, `~~` and `[[:alpha:]]`; named groups; the flags `imsUuRx`; `\b`, `\b{start}`, `\A`, `\z`; no look-around or back-references) into the tree regex-syntax builds: classes as ranges of code points with `(?i)` folded in, flags gone, the same simplifications (`ab|ac` is `a(?:b|c)`, `a|b` is `[ab]`). `tests/regex.rs` checks the two agree on curated and random patterns. The Unicode data (`std.unicode_tables`) is generated by `tools/unicode_tables.py` from regex-syntax's tables (Unicode 16.0.0).
 
 ```rust
-use std.regex.{parse, show}
+from std.regex use parse, show
 
 re := parse("(?i)ab|ac")!
 show(re)    // cat(cls(41-41 61-61),cls(42-43 62-63))

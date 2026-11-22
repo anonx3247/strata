@@ -53,13 +53,9 @@ pub const HOST: &[Builtin] = &[
     // the monotonic clock, in nanoseconds; waiting (a task that is cancelled stops at once)
     Builtin::new("host_now", "", "() -> Int"),
     Builtin::new("host_sleep", "", "(Int) -> ()"),
-    // a `FakeClock`'s time (std.time's private `Timeline`): a runtime object
-    // holding a time, in nanoseconds, that moves only when told; copies share it
-    Builtin::new("host_fake_clock", "", "(Int) -> std.time.Timeline"),
-    Builtin::new("host_fake_now", "", "(std.time.Timeline) -> Int"),
-    Builtin::new("host_fake_set", "", "(std.time.Timeline, Int) -> ()"),
-    Builtin::new("host_fake_advance", "", "(std.time.Timeline, Int) -> ()"),
-    Builtin::new("host_fake_sleep", "", "(std.time.Timeline, Int) -> ()"),
+    // a `VirtualClock`'s: its run's own time, moving by itself
+    Builtin::new("host_virtual_now", "", "() -> Int"),
+    Builtin::new("host_virtual_sleep", "", "(Int) -> ()"),
     Builtin::new("host_code_version", "", "() -> String"),
     Builtin::new("host_code_snapshot", "", "() -> Result[std.code.Snapshot, String]"),
 ];
@@ -107,12 +103,37 @@ fn run_time_pattern(d: &crate::ast::DeclKind) -> bool {
     found
 }
 
+/// Whether a definition names something of std in full (`std.json.parse`,
+/// `x: std.io.Console`): with std in scope, the resolver then says which
+/// `use` it needs.
+fn names_std(k: &crate::ast::DeclKind) -> bool {
+    use crate::ast::{Expr, TypeExpr, Visit};
+    struct Find(bool);
+    impl Visit for Find {
+        fn expr(&mut self, e: &Expr) {
+            if let Expr::Var(x) = e {
+                self.0 |= x.as_str() == NAME || x.starts_with("std.");
+            }
+            crate::ast::walk_expr(self, e)
+        }
+        fn ty(&mut self, t: &TypeExpr) {
+            if let TypeExpr::Named(n, _) = t {
+                self.0 |= n.starts_with("std.");
+            }
+            crate::ast::walk_ty(self, t)
+        }
+    }
+    let mut f = Find(false);
+    crate::ast::walk_decl(&mut f, k);
+    f.0
+}
+
 /// `p` with the standard library added after its own definitions, if it uses
 /// it and does not already contain it (when `std/` itself is being checked).
 pub fn with_std(p: &Program) -> Option<Program> {
     use crate::ast::DeclKind;
     // (`matches` is std.regex's, compiled; `s.graphemes()` std.unicode's)
-    let uses = p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Use(u) if is_std(&u.path))) || p.decls.iter().any(|d| run_time_pattern(&d.kind));
+    let uses = p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Use(u) if is_std(&u.path))) || p.decls.iter().any(|d| run_time_pattern(&d.kind) || names_std(&d.kind));
     // a resolved program has it already, under qualified names in the root module
     let has_std = p.decls.iter().any(|d| {
         // (the prelude's code is added to every program: it says nothing about std)
@@ -141,7 +162,7 @@ pub fn regex_value(name: &str, args: Vec<crate::ast::Expr>) -> Result<crate::ast
     use std::cell::RefCell;
     use std::collections::HashMap;
     thread_local! {
-        static STD: Option<Program> = crate::parser::parse_program("use std.regex.*\n").ok().map(|p| crate::resolve::resolve(&p).program);
+        static STD: Option<Program> = crate::parser::parse_program("use std.regex\n").ok().map(|p| crate::resolve::resolve(&p).program);
         static DONE: RefCell<HashMap<String, Result<Expr, String>>> = Default::default();
     }
     let call = Expr::Call(Box::new(Expr::Var(Symbol::new(&format!("std.regex.{name}")))), args);

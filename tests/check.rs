@@ -1,7 +1,8 @@
-//! `compiler/check` and `compiler/exhaustive` (the type checker in Strata:
+//! `compiler/check`, `compiler/exhaustive` and `compiler/contracts` (the type checker in Strata:
 //! the compiler package's `check` command) find the errors `strata check`
 //! finds (clashing definitions, unknown names, wrong numbers of arguments,
-//! type mismatches, non-exhaustive matches), worded as it words them.
+//! type mismatches, non-exhaustive matches, contracts and refinements), worded
+//! as it words them.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -140,6 +141,258 @@ fn h(s: Sh) -> Int {
   if s is Sq { return s }
   0
 }
+fn main() { print(1) }
+"#;
+
+const CONTRACTS: &str = r#"type Pos = Int where it > 0
+type Bad = Int where it + 1
+type Name = String where it != "" && len(it.code_points()) <= 3
+type Pt = { x: Int where it >= 0 = -1, y: Int where 1 < it = 2, n: Name = "abcd" }
+type Sh =
+  | Sq { side: Pos = 0 }
+  | Dot
+fn f(a: Int where it > 0) -> Int where it > 1
+  requires 1
+  requires it > 0
+  ensures "s"
+  ensures it > a
+{ a + 1 }
+fn g(a: Int where 3, b: Float) -> Pos
+  requires b * 2.0
+  ensures it
+{ 1 }
+fn h(mut n: Name) -> Int {
+  mut p: Pos = 1
+  p = 0
+  p = -3
+  mut q: Int where it < 10 || it == 20 = 1
+  q = 20
+  q = 15
+  n = ""
+  n = "ok"
+  if q > 2 { p = 0 }
+  q
+}
+trait Sz {
+  fn size(self) -> Int requires 2 ensures 1.5
+  law nonneg(x: Self): 3
+  law ok(x: Self): x.size() >= 0
+}
+impl Sz for Pt {
+  fn size(self) -> Int requires 7 ensures it % 2 { 1 }
+}
+test "t" (n: Int, xs: List[Int]) { assert true }
+fn main() { print(1) }
+"#;
+
+const MUTS: &str = r#"type Pt = { x: Int, y: Int }
+fn bump(mut n: Int) { n += 1 }
+fn show(n: Int) -> Int { n }
+fn shift(mut p: Pt) { p.x = 3 }
+fn a() {
+  x := 1
+  x = 2
+  mut y := 1
+  y = 3
+  bump(y)
+  bump(mut y)
+  show(mut y)
+  bump(mut x)
+  bump(3)
+  q := mut y
+  p := Pt { x: 1, y: 2 }
+  p.x = 4
+  shift(mut p)
+  mut r := Pt { x: 1, y: 2 }
+  shift(r)
+  f := k -> { y = k }
+  f(mut y)
+  for i in [1, 2] { i = 3 }
+  if true {
+    y := 5
+    y = 6
+  }
+  y = 7
+}
+fn b(n: Int, mut m: Int) {
+  n = 1
+  m = 2
+  bump(mut n)
+}
+fn c(mut n: Int) {
+  n := 1
+  n = 2
+}
+fn main() { print(1) }
+"#;
+
+const TRAITS: &str = r#"trait Area {
+  fn area(self) -> Int
+}
+type Sq = { s: Int }
+type Pt = { x: Int }
+impl Area for Sq {
+  fn area(self) -> Int { self.s * self.s }
+}
+type Box[T] = { item: T }
+impl[T] Box[T] {
+  fn get(self) -> T { self.item }
+  fn bad(self) -> Int { self.item }
+}
+fn total[T: Area](xs: List[T]) -> Int { 0 }
+fn a(q: Sq) -> String { q.area() }
+fn b(p: Pt) -> Int { total([p]) }
+fn c(b: Box[Int]) -> String { b.get() }
+fn d[T: Area](x: T) -> String { x.area() }
+fn main() { print(1) }
+"#;
+
+const UNIONS: &str = r#"type Id = Int | String
+type Small = Int where it < 10
+fn a(n: Natural) -> String { n }
+fn b(n: Natural) -> Int { n + 1 }
+fn c(x: Int | String) -> Bool { x }
+fn d() -> Id { 2.5 }
+fn e() -> Id { 3 }
+fn f(s: Small) -> String { s }
+fn g(n: Int) -> Natural { n }
+fn h() -> Natural { -1 }
+fn k(x: Id) -> Int { x }
+fn a2(x: Bool | String | Int) -> Float { x }
+fn b2(c: Bool) -> Float { if c { "s" } else { 1 } }
+fn d2() -> Float { let y: Id = 3
+  y }
+fn e2(c: Bool) -> Float { z := if c { "s" } else { 1 }
+  z }
+fn main() { print(1) }
+"#;
+
+const STATIC: &str = r#"type Item = { n: Int }
+impl Item {
+  fn new(n: Int) -> Item { Item { n } }
+  fn size(self) -> Int { self.n }
+}
+trait Zero {
+  fn zero() -> Self
+}
+impl Zero for Item {
+  fn zero() -> Self { Item { n: 0 } }
+}
+fn a() -> Int { Item.new(1) }
+fn b() -> Item { Item.new("x") }
+fn c() -> Item { Item.make() }
+fn d[T: Zero]() -> Int { T.zero() }
+fn e(i: Item) -> Int { i.nope() }
+fn f() -> String { Item.zero() }
+fn main() { print(1) }
+"#;
+
+const UNION_ARMS: &str = r#"fn a(x: Int | String) -> String { if x is Int { x } else { x } }
+fn b(x: Int | String) -> Bool {
+  if x is String { return true }
+  x
+}
+fn c(x: Int | String) -> Bool { match x { Int => x, String => false } }
+fn main() { print(1) }
+"#;
+
+const WHOLE_ARMS: &str = r#"type Sh =
+  | Sq(Int)
+  | Rc(Int, Int)
+  | Dot
+fn a(x: Int | String) -> Bool { match x { Int => true, other => other } }
+fn b(s: Sh) -> Int { match s { Dot => 0, other => other } }
+fn c(s: Sh) -> Int { match s { Dot => 0, Sq(_) => 1, other => other } }
+fn d(o: Option[Int]) -> String { match o { None => "n", other => other } }
+fn e(mut s: Sh) -> Int { match s { Sq(_) => {
+  s = Dot
+  s
+}, _ => 0 } }
+fn main() { print(1) }
+"#;
+
+const TRAIT_VALUES: &str = r#"trait Shape {
+  fn area(self) -> Int
+}
+trait Named: Shape {
+  fn name(self) -> String
+}
+type Sq = { s: Int }
+type Pt = { x: Int }
+impl Shape for Sq {
+  fn area(self) -> Int { self.s }
+}
+impl Named for Sq {
+  fn name(self) -> String { "sq" }
+}
+fn a(xs: List[Shape]) -> String { (xs[0] ?? Sq { s: 1 }).area() }
+fn b() -> List[Shape] { [Sq { s: 1 }, Pt { x: 2 }] }
+fn c(s: Shape) -> String { s.area() }
+fn d(s: Shape) -> Int { s }
+fn e[T: Named](x: T) -> String { x.area() }
+fn f(q: Sq) -> Shape { q }
+fn main() { print(1) }
+"#;
+
+const DECLARATIONS: &str = r#"type Box[T] = { item: T }
+type Sh =
+  | Sq(Int)
+  | Rc { w: Int, h: Int }
+trait Area {
+  fn area(self) -> Int
+  fn name(self) -> String
+}
+type Pt = { x: Int }
+impl Area for Pt {
+  fn area(self) -> Int { 1 }
+  fn extra(self) -> Int { 2 }
+}
+impl Pt {
+  fn dup(self) -> Int { 1 }
+  fn dup(self) -> Int { 2 }
+}
+trait Bad: Pt {
+  fn f(self) -> Int
+}
+fn a(x: Nope) -> Int { 1 }
+fn b(x: Box[Int, Int]) -> Int { 1 }
+fn c() -> Int { Ghost(1) }
+fn d(s: Sh) -> Int { match s { Sq(a, b) => a, Rc { w } => w } }
+fn e(s: Sh) -> Int { match s { Sq(n) | Rc { w: m, .. } => 1 } }
+fn f() -> Self { 1 }
+fn g() -> Int {
+  break
+  1
+}
+fn h[T: Ghosty](x: T) -> Int { 1 }
+fn k(s: Sh) -> Int { match s { Zap => 1, _ => 2 } }
+fn main() { print(1) }
+"#;
+
+const IMPORTS: &str = r#"from std.utf8 use encode, decode
+use std.unicode
+fn a() -> String { encode("x") }
+fn b() -> List[Int] { encode(1) }
+fn c(bs: List[Int]) -> String { decode(bs) }
+fn d() -> String { unicode.max_code() }
+fn e() -> Int { unicode.next_code("a") }
+fn main() { print(1) }
+"#;
+
+const UNREACHABLE: &str = r#"type Sh =
+  | Sq(Int)
+  | Rc(Int, Int)
+  | Dot
+trait T {
+  fn go(self) -> Int
+}
+fn go() -> Int { 1 }
+fn a(s: Sh) -> Int { match s { Sq(_) => 1, Rc(_, _) => 2, Dot => 3, _ => 4 } }
+fn b(s: Sh) -> Int { match s { _ => 1, Dot => 2 } }
+fn c(s: Sh) -> Int { match s { Dot => 1, Dot => 2, _ => 3 } }
+fn d(b: Bool) -> Int { match b { true => 1, false => 2, _ => 3 } }
+fn e(o: Option[Int]) -> Int { match o { Some(n) => n, None => 0, x => 1 } }
+fn f(n: Int) -> Int { match n { 1 => 1, k => 2, 3 => 3 } }
 fn main() { print(1) }
 "#;
 
@@ -342,6 +595,127 @@ fn narrowed_variables_as_in_rust() {
     same_errors("narrowed", NARROWED, &["expected `", "has no field"]);
 }
 
+#[test]
+fn bounds_and_generic_impls_as_in_rust() {
+    same_errors("bounds", TRAITS, &["expected `", "does not implement"]);
+}
+
+#[test]
+fn mut_rules_as_in_rust() {
+    same_errors("muts", MUTS, &["mut", "closure"]);
+}
+
+#[test]
+fn unions_and_refinements_as_in_rust() {
+    same_errors("unions", UNIONS, &["expected `"]);
+}
+
+#[test]
+fn static_calls_and_unknown_methods_as_in_rust() {
+    same_errors("static", STATIC, &["expected `", "has no method", "unknown function", "needs"]);
+}
+
+#[test]
+fn contracts_and_refinements_as_in_rust() {
+    same_errors("contracts", CONTRACTS, &["clause", "refinement", "law `", "does not satisfy", "unknown variable `it`"]);
+}
+
+/// Capabilities and concurrency: `spawn` outside a `scope`, what a task can't
+/// leave, `select` and `race` arms, senders never closed, a capability made
+/// by the program, a test asking for a non-capability, a `pub extern`.
+const CAPABILITIES: &str = r#"capability NightLamp {
+  fn on() -> Int { 1 }
+}
+type Pt = { x: Int }
+pub extern c fn cabs(x: I64) -> I64
+fn work(n: Int) -> Int { n + 1 }
+fn opt(n: Int) -> Option[Int] { Some(n) }
+fn loose() -> Int {
+  h := spawn work(1)
+  await h
+}
+fn sel(tx: Sender[Int], rx: Receiver[Int]) -> Int {
+  scope {
+    h := spawn work(2)
+    select {
+      work(3) as y => 1,
+      tx.send(1) as z => 2,
+      await h as r => r,
+    }
+  }
+}
+fn empty() -> Int {
+  select { }
+}
+fn none() -> Int {
+  race { }
+}
+fn tasks() -> Int {
+  scope {
+    a := spawn { return 1 }
+    b := spawn { opt(2)? }
+    c := spawn { xs := [1, 2].map(x -> spawn work(x))
+      0 }
+    await a
+  }
+}
+fn chans() -> Int {
+  scope {
+    (tx, rx) := channel(1)
+    (ty, ry) := channel(1)
+    h := spawn { tx.send(1)
+      0 }
+    g := spawn { ty.send(1)
+      ty.close()
+      0 }
+    ty.close()
+    1
+  }
+}
+fn racer() -> Int {
+  race {
+    work(1) as a => a,
+    { return 2 } as b => b,
+  }
+}
+fn lamp() -> Int {
+  l := NightLamp
+  1
+}
+test "asks" (n: Int, p: Pt, l: NightLamp) { assert true }
+fn main() { print(1) }
+"#;
+
+#[test]
+fn union_arms_as_in_rust() {
+    same_errors("union-arms", UNION_ARMS, &["expected `"]);
+}
+
+#[test]
+fn whole_value_and_assigning_arms_as_in_rust() {
+    same_errors("whole-arms", WHOLE_ARMS, &["expected `"]);
+}
+
+#[test]
+fn trait_values_and_supertraits_as_in_rust() {
+    same_errors("trait-values", TRAIT_VALUES, &["expected `", "does not implement", "handle an Option"]);
+}
+
+#[test]
+fn names_and_declarations_as_in_rust() {
+    same_errors("declarations", DECLARATIONS, &["missing method", "is not a method of", "is defined twice", "supertrait", "unknown type", "type arguments, got", "unknown constructor", "pattern `", "alternatives of", "only means something", "outside a loop", "is not a trait"]);
+}
+
+#[test]
+fn imported_functions_as_in_rust() {
+    same_errors("imports", IMPORTS, &["expected `"]);
+}
+
+#[test]
+fn unreachable_arms_and_method_clashes_as_in_rust() {
+    same_errors("unreachable", UNREACHABLE, &["unreachable match arm", "is both a function"]);
+}
+
 /// The compiler's errors on `text` are `strata check`'s, on the lines holding one of `keys`.
 fn same_errors(name: &str, text: &str, keys: &[&str]) {
     let dir = std::env::temp_dir().join(format!("strata-check-test-{name}-{}", std::process::id()));
@@ -357,4 +731,13 @@ fn same_errors(name: &str, text: &str, keys: &[&str]) {
     assert!(!want.is_empty(), "{all}");
     assert_eq!(got, want);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn capabilities_and_concurrency_as_in_rust() {
+    same_errors(
+        "capabilities",
+        CAPABILITIES,
+        &["outside a `scope`", "can't leave a task", "can't return from a task", "needs at least one arm", "arm waits on", "gives nothing to name", "never closed here", "holds a copy of", "is a capability", "test parameter", "never `pub`"],
+    );
 }

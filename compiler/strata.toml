@@ -1,6 +1,7 @@
 # The compiler written in Strata: the syntax tree (`ast`), the binary format
 # (`binary`), the printer (`text`), lexer, parser, resolver, type checker
-# (`check`, `exhaustive`) and an evaluator (`eval`). A program, not a
+# (`check`, `exhaustive`), an evaluator (`eval`) and the code generator
+# (`codegen`, LLVM IR as text). A program, not a
 # library: its `main` runs one step of the front end on files
 # (`strata --file compiler run -- lex FILE`), which the tests compare with
 # the Rust front end; later `strata` will run it as its front end.
