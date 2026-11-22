@@ -50,6 +50,11 @@ fn prelude(name: &str) -> String {
     format!("{PRELUDE_MODULE}.{name}")
 }
 
+/// Where a `mut` argument's changes go: its variable, the path of fields
+/// (`x`, `o.status`), and whether no other argument of the call mentions
+/// the variable (then a whole variable is moved into the call: `bind_args`).
+type Place = Option<(String, Vec<String>, bool)>;
+
 /// The place an argument names (`x`, `o.status`): its variable and the path of fields.
 fn place_of(e: &Expr) -> Option<(String, Vec<String>)> {
     match e {
@@ -2224,7 +2229,7 @@ struct Func<'m, 'a> {
     cur: String,
     terminated: bool,
     /// The places of the arguments of the call being compiled (for `mut` parameters).
-    places: Vec<Option<(String, Vec<String>)>>,
+    places: Vec<Place>,
     /// The program's function being compiled, whose proofs `proven` reads
     /// (none in a lambda, a helper, or std's and the prelude's code).
     proofs_of: Option<String>,
@@ -5125,7 +5130,15 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let hint = self.ty_of(call).ok();
         // where a `mut` parameter's changes go: the argument's place
-        self.places = args.iter().map(|a| place_of(a)).collect();
+        self.places = args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let (root, path) = place_of(a)?;
+                let alone = args.iter().enumerate().all(|(j, b)| j == i || !vars_in(b).contains(&root));
+                Some((root, path, alone))
+            })
+            .collect();
         self.call_values(name, vs, hint)
     }
 
@@ -5133,8 +5146,8 @@ impl<'m, 'a> Func<'m, 'a> {
     /// argument (held once more), written back to the place after the call.
     /// (Not the variable's own slot: the callee drops what it replaces, and
     /// the caller may still be reading the old value, as in `f(x, mut x.pop())`.)
-    fn mut_slot(&mut self, place: &Option<(String, Vec<String>)>, v: &V, param: &str) -> Res<String> {
-        let Some((root, _)) = place else { return Err(format!("the argument for the `mut` parameter `{param}` must be a variable or its field")) };
+    fn mut_slot(&mut self, place: &Place, v: &V, param: &str) -> Res<String> {
+        let Some((root, _, _)) = place else { return Err(format!("the argument for the `mut` parameter `{param}` must be a variable or its field")) };
         self.lookup(root).ok_or(format!("`{root}` is not a local variable"))?;
         let tmp = self.fresh("mutarg");
         writeln!(self.allocas, "  {tmp} = alloca {}", self.m.ll(&v.0)?).unwrap();
@@ -5145,10 +5158,23 @@ impl<'m, 'a> Func<'m, 'a> {
 
     /// After a call: a field passed `mut` goes back into its variable; the
     /// variable's declared type holds (`assigning \`x\``).
-    fn write_back(&mut self, place: &Option<(String, Vec<String>)>, slot: &str, t: &Ty, param: &TypeExpr) -> Res<()> {
-        let Some((root, path)) = place else { return Ok(()) };
+    fn write_back(&mut self, place: &Place, slot: &str, t: &Ty, param: &TypeExpr) -> Res<()> {
+        let Some((root, path, alone)) = place else { return Ok(()) };
         let l = self.lookup(root).ok_or(format!("`{root}` is not a local variable"))?;
         let shown = std::iter::once(root.clone()).chain(path.iter().cloned()).collect::<Vec<_>>().join(".");
+        if *alone && path.is_empty() && self.movable(t) {
+            // moved in (`bind_args`): back into the variable, which held nothing meanwhile
+            let r = self.fresh("back");
+            self.emit(format!("{r} = load ptr, ptr {slot}"));
+            self.store(&(l.t.clone(), r), &l.slot)?;
+            if let Some(d) = &l.declared {
+                if crate::types::refinement_within(self.m.env, param, d) != Some(true) {
+                    let v = self.load(root)?;
+                    self.check_keyed(d, &v, &format!("assigning `{shown}`"), false, Some(format!("writing back `{shown}`")))?;
+                }
+            }
+            return Ok(());
+        }
         // the slot's value (owned) goes back into the place
         let r = self.fresh("back");
         let ll = self.m.ll(t)?;
@@ -5179,7 +5205,7 @@ impl<'m, 'a> Func<'m, 'a> {
     /// `per_impl`: a trait-typed parameter takes the implementation passed
     /// (a function, compiled once per implementation); otherwise (a method,
     /// compiled once) it takes a trait value.
-    fn bind_args(&mut self, params: &[Param], vs: Vec<V>, sub: &HashMap<Symbol, Ty>, places: &[Option<(String, Vec<String>)>], per_impl: bool) -> Res<(Vec<V>, Vec<(usize, String, Ty, TypeExpr)>)> {
+    fn bind_args(&mut self, params: &[Param], vs: Vec<V>, sub: &HashMap<Symbol, Ty>, places: &[Place], per_impl: bool) -> Res<(Vec<V>, Vec<(usize, String, Ty, TypeExpr)>)> {
         let mut out = vec![];
         let mut backs = vec![];
         for (i, (p, v)) in params.iter().zip(vs).enumerate() {
@@ -5187,6 +5213,21 @@ impl<'m, 'a> Func<'m, 'a> {
             let t = if as_passed { v.0.clone() } else { self.m.lower(&p.ty, sub)? };
             if p.mutable {
                 let place = places.get(i).cloned().flatten();
+                if let Some((root, path, true)) = &place {
+                    if path.is_empty() && self.movable(&t) {
+                        // the variable's value moved into the call (left null
+                        // meanwhile: nothing else in the call reads it), so a
+                        // value only it held is changed in place by the callee
+                        let l = self.lookup(root).ok_or(format!("`{root}` is not a local variable"))?;
+                        let tmp = self.fresh("mutarg");
+                        writeln!(self.allocas, "  {tmp} = alloca ptr").unwrap();
+                        self.emit(format!("store ptr {}, ptr {tmp}", v.1));
+                        self.emit(format!("store ptr null, ptr {}", l.slot));
+                        out.push((Ty::Str, tmp.clone()));
+                        backs.push((i, tmp, t, p.ty.clone()));
+                        continue;
+                    }
+                }
                 let slot = self.mut_slot(&place, &(t.clone(), v.1), &p.name)?;
                 out.push((Ty::Str, slot.clone()));
                 backs.push((i, slot, t, p.ty.clone()));
@@ -5199,7 +5240,13 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok((out, backs))
     }
 
-    fn write_backs(&mut self, backs: Vec<(usize, String, Ty, TypeExpr)>, places: &[Option<(String, Vec<String>)>]) -> Res<()> {
+    /// Whether a `mut` argument of type `t` can be moved into the call: a
+    /// counted object whose drop takes a null (left in the variable meanwhile).
+    fn movable(&self, t: &Ty) -> bool {
+        self.counted(t) && !self.is_int(t) && !self.m.boxed(t) && !self.m.opaque(t) && !self.is_dyn(t) && !matches!(t, Ty::Con(n, _) if n == "Sender" || n == "Receiver")
+    }
+
+    fn write_backs(&mut self, backs: Vec<(usize, String, Ty, TypeExpr)>, places: &[Place]) -> Res<()> {
         for (i, slot, t, param) in backs {
             let place = places.get(i).cloned().flatten();
             self.write_back(&place, &slot, &t, &param)?;
@@ -5264,7 +5311,7 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     /// A trait method on a union's value: each member's implementation, by the member.
-    fn call_on_union(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
+    fn call_on_union(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>, places: &[Place]) -> Res<V> {
         if vs.iter().any(|v| is_never(&v.0)) {
             return Ok(never());
         }
@@ -5310,7 +5357,7 @@ impl<'m, 'a> Func<'m, 'a> {
     /// unless the method has no `self`). The implementation is chosen here,
     /// from the type; a variant with an implementation of its own is chosen
     /// by its tag.
-    fn call_method(&mut self, name: &str, recv: Ty, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
+    fn call_method(&mut self, name: &str, recv: Ty, vs: Vec<V>, hint: Option<Ty>, places: &[Place]) -> Res<V> {
         if vs.iter().any(|v| is_never(&v.0)) {
             return Ok(never());
         }
@@ -5360,7 +5407,7 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     /// Call the implementation of `name` for type `head` (on a `recv`).
-    fn method_target(&mut self, name: &str, recv: Ty, head: String, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
+    fn method_target(&mut self, name: &str, recv: Ty, head: String, vs: Vec<V>, hint: Option<Ty>, places: &[Place]) -> Res<V> {
         // `Debug` and `Display` without an impl of the type's own: the built-in forms
         let m = crate::types::split_trait_call(name).map_or(name, |(_, m)| m);
         if matches!(m, "debug" | "to_string") && vs.len() == 1 && self.m.resolve_method(name, &head).is_none_or(|(tr, _)| self.m.impl_of(&tr, &head).is_none()) {
@@ -5398,7 +5445,7 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     /// `call_fn`, with the places of the arguments (for `mut` parameters).
-    fn call_fn_at(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
+    fn call_fn_at(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>, places: &[Place]) -> Res<V> {
         let f = self.m.env.fns.get(&Symbol::new(name)).ok_or_else(|| format!("`{name}` is not in the program"))?;
         if f.params.len() != vs.len() {
             return Err(format!("`{name}` takes {} arguments", f.params.len()));
@@ -5977,7 +6024,7 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     /// Call `name` on a value of a trait type, through its table.
-    fn dyn_call(&mut self, name: &str, recv: Ty, vs: Vec<V>, hint: Option<Ty>, places: &[Option<(String, Vec<String>)>]) -> Res<V> {
+    fn dyn_call(&mut self, name: &str, recv: Ty, vs: Vec<V>, hint: Option<Ty>, places: &[Place]) -> Res<V> {
         let Ty::Con(tr, _) = &recv else { unreachable!() };
         let m = crate::types::split_trait_call(name).map_or(name, |(_, m)| m);
         let methods = self.dyn_methods(tr);
@@ -7398,6 +7445,20 @@ impl<'m, 'a> Func<'m, 'a> {
                 }
                 let shown = crate::printer::expr(place, 0);
                 let cur = self.load(x)?;
+                // (declared as the record's own type, without type arguments,
+                // the record's check is the one `in_place_field` rules out)
+                let plain = match &l.declared {
+                    None => true,
+                    Some(d @ TypeExpr::Named(_, targs)) => targs.is_empty() && self.lower(d).ok().map(|t| self.m.repr(&t).ok()) == Some(self.m.repr(&cur.0).ok()),
+                    Some(_) => false,
+                };
+                if path.len() == 1 && plain {
+                    if let Some((tys, texprs, i, c)) = self.in_place_field(&cur.0, &path[0])? {
+                        let new = self.set_field_in_place(&cur, &tys, &texprs, (i, &path[0]), &c, v, &shown)?;
+                        self.replace(&l, new)?;
+                        return Ok(());
+                    }
+                }
                 let new = self.set_path(&cur, &path.iter().map(|s| s.to_string()).collect::<Vec<_>>(), v, &shown)?;
                 let new = self.coerce(new, &l.t)?;
                 if let Some(t) = &l.declared {
@@ -7666,6 +7727,69 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok(())
     }
 
+    /// Field `f` of a value of type `t`, when an assignment to it can change
+    /// the value in place: `t` is a record (one constructor) or a tuple, with
+    /// no refinement of its own to check on the new value. Its field types,
+    /// as written, its position and the constructor (`None`: a tuple).
+    fn in_place_field(&self, t: &Ty, f: &str) -> Res<Option<(Vec<Ty>, Vec<TypeExpr>, usize, Option<String>)>> {
+        let t = self.m.repr(t)?;
+        if self.m.boxed(&t) || self.is_dyn(&t) {
+            return Ok(None);
+        }
+        if let Ty::Con(n, args) = &t {
+            if n == "Tuple" {
+                let Ok(i) = f.parse::<usize>() else { return Ok(None) };
+                if i >= args.len() {
+                    return Ok(None);
+                }
+                return Ok(Some((args.clone(), vec![], i, None)));
+            }
+        }
+        let cs = self.m.ctors_of(&t);
+        let [c] = cs.as_slice() else { return Ok(None) };
+        if self.m.is_distinct(c) || self.m.refinement(&self.m.env.ctors[&Symbol::new(c)]).is_some() {
+            return Ok(None);
+        }
+        let fs = self.m.fields(c, &self.m.ctor_args(c, &t))?;
+        let Some(i) = fs.iter().position(|x| x.name.as_deref() == Some(f)) else { return Ok(None) };
+        Ok(Some((fs.iter().map(|x| x.ty.clone()).collect(), fs.iter().map(|x| x.texpr.clone()).collect(), i, Some(c.clone()))))
+    }
+
+    /// `x.f = v` (`cur` is `x`'s value): when nothing but `x` holds it (a
+    /// count of 1), the field is replaced in place (its old value dropped),
+    /// else in a copy, as `set_in` does. Either way the result is a value
+    /// the caller owns (in place: `cur` held once more, which `replace`
+    /// gives back when it drops the old value).
+    #[allow(clippy::too_many_arguments)]
+    fn set_field_in_place(&mut self, cur: &V, tys: &[Ty], texprs: &[TypeExpr], (i, f): (usize, &str), c: &Option<String>, v: V, shown: &str) -> Res<V> {
+        let v = self.coerce(v, &tys[i])?;
+        if let Some(c) = c {
+            let ctx = format!("assigning `{shown}`");
+            self.check(&texprs[i], &v, &format!("{ctx}: {}.{f}", crate::names::short(c)), false)?;
+        }
+        let v = self.take(v);
+        let uniq = self.fresh("unique");
+        self.emit(format!("{uniq} = call i1 @strata_unique(ptr {})", cur.1));
+        let (here, copy, done) = (self.fresh_label("set.here"), self.fresh_label("set.copy"), self.fresh_label("set.done"));
+        self.emit(format!("br i1 {uniq}, label %{here}, label %{copy}"));
+        self.block(&here);
+        let old = self.field(cur, i, &tys[i])?;
+        self.set_field(&cur.1, i, &v)?;
+        self.drop_value(&old)?;
+        self.emit(format!("call void @strata.dup(ptr {})", cur.1));
+        let from_here = self.cur.clone();
+        self.br(&done);
+        self.block(&copy);
+        let p = self.copy_block(cur, tys, Some(i))?;
+        self.set_field(&p, i, &v)?;
+        let from_copy = self.cur.clone();
+        self.br(&done);
+        self.block(&done);
+        let r = self.fresh("set");
+        self.emit(format!("{r} = phi ptr [ {}, %{from_here} ], [ {p}, %{from_copy} ]", cur.1));
+        Ok(self.temp((cur.0.clone(), r)))
+    }
+
     /// Store `new` in variable `l`, which owns it (taken); its old value is
     /// dropped when the enclosing statement ends (something in it may still
     /// read the old one, as `f(x, mut x.pop())` does).
@@ -7701,7 +7825,7 @@ impl Module<'_> {
             let local = format!("fuzz.arg{k}");
             c.local_owned(&local, v, None)?;
             vs.push(c.load(&local)?);
-            places.push(mutable.then(|| (local.clone(), vec![])));
+            places.push(mutable.then(|| (local.clone(), vec![], false)));
         }
         c.call_fn_at(&t.name, vs, None, &places)?;
         c.drop_from(0, None)?;
