@@ -231,8 +231,8 @@ A folder with a `strata.toml` is a **package**. Its `.strata` files are its modu
 name = "tasks"                         # `strata init` uses the folder's name; it stays when the folder moves (a worktree, a rename)
 exports = ["core", "memory.MemQueue"]  # optional: modules or definitions other packages can use; default every `pub`
 
-[deps]                                 # accepted, not fetched yet
-json = "https://example.com/strata-json"
+[deps]                                 # other packages, by local path (read by the compiler in Strata, `compiler/deps`)
+json = { path = "../json" }
 
 [verify]                               # what `strata verify` requires (see Verification)
 proven = ["core"]
@@ -244,6 +244,8 @@ integers = "proven"                    # integer fields must be proven to fit a 
 [toml]                                 # how `std.toml`'s derived `Toml` reads TOML here
 unknown_keys = "error"                 # `from_toml` refuses keys a record doesn't have (default: "ignore")
 ```
+
+**Dependencies.** `[deps]` names other packages by local path (`json = { path = "../json" }`; the key is the dependency's `name`). A dependency's modules are named with its package's name as prefix, as std's are with `std`: its root module (`main.strata`) is `json`, its module `text` is `json.text`. Inside the dependency nothing changes (its root module stays visible short to its other modules); everywhere else it is reached only through `use` (`use json`, `from json use parse`, `use json.text`), and only its `pub` definitions. There are no cycles between packages: if `a` depends on `b`, `b` may not depend on `a`, directly or through others (`dependency cycle: a -> b -> a`); cycles between the modules of one package are fine. std depends on nothing. A dependency is checked, verified and tested in its own package: the commands report and test only the package's own definitions (`strata test --with-deps` also runs dependencies' tests). So far this is built in the compiler written in Strata (`compiler/deps`, its `package [--std DIR] DIR` command); the Rust `strata` commands don't load dependencies yet.
 
 Loading a package (for `check`, `run`, `verify`, …) fails on an export that names nothing, or a definition that isn't `pub`.
 
