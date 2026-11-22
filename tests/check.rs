@@ -396,6 +396,48 @@ fn f(n: Int) -> Int { match n { 1 => 1, k => 2, 3 => 3 } }
 fn main() { print(1) }
 "#;
 
+const MISUSE: &str = r#"fn r() -> Result[Int, String] { Ok(1) }
+fn o() -> Option[Int] { None }
+fn a() -> Int { 3 except { 0 } }
+fn b() -> Int { o() except { 0 } }
+fn c() -> Result[Int, String] { n := 3!
+  Ok(n) }
+fn d() -> Option[Int] { n := r()?
+  Some(n) }
+fn e() -> Int {
+  for x in 5 { print(x) }
+  0
+}
+fn f(n: Int) -> Int { n.size }
+fn g(n: Int) -> Int { n(2) }
+fn h(n: Int) -> String { f"{n:.2}" }
+fn k(s: String) -> String { f"{s:+}" }
+fn main() { print(1) }
+"#;
+
+const EARLY: &str = r#"fn r() -> Result[Int, String] { Ok(1) }
+fn d() -> Result[Int, Int] { Ok(r()!) }
+fn e() -> Result[Int, String] { Ok(r()!) }
+fn main() { print(1) }
+"#;
+
+const TASKS: &str = r#"fn work() -> Int { 1 }
+fn a() -> Int { await 3 }
+fn b() -> String {
+  scope {
+    h := spawn work()
+    await h
+  }
+}
+fn c() -> Int {
+  scope {
+    h := spawn work()
+    h
+  }
+}
+fn main() { print(1) }
+"#;
+
 const RECORDS: &str = r#"type Pt = { x: Int, y: Int }
 type Sh =
   | Sq(Int)
@@ -714,6 +756,21 @@ fn imported_functions_as_in_rust() {
 #[test]
 fn unreachable_arms_and_method_clashes_as_in_rust() {
     same_errors("unreachable", UNREACHABLE, &["unreachable match arm", "is both a function"]);
+}
+
+#[test]
+fn misused_values_as_in_rust() {
+    same_errors("misuse", MISUSE, &["needs a Result", "needs an Option", "handle a Result", "needs a List", "cannot access field", "is not a function", "format spec"]);
+}
+
+#[test]
+fn early_errors_as_in_rust() {
+    same_errors("early", EARLY, &["returns the error early"]);
+}
+
+#[test]
+fn task_handles_as_in_rust() {
+    same_errors("tasks", TASKS, &["await` takes", "can't leave its", "expected `"]);
 }
 
 /// The compiler's errors on `text` are `strata check`'s, on the lines holding one of `keys`.
