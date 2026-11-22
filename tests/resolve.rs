@@ -57,6 +57,7 @@ fn main(disk: Disk, process: Process) {
 const CASES: &[(&str, &str)] = &[
     ("imports", "use std.io.{Console, recorder}\nuse std.fs.*\nuse std.json\nfn f(mut c: Console, x: Int) -> Int { r := recorder([]); mut c.print(\"a\"); y := std.json.parse(\"1\"); Some(x) ?? 0 }\n"),
     ("locals", "type Line = { sku: String }\nfn Line2(x: Int) -> Int { x }\nfn f(Line: Int, print: Int) -> Int { g := (f: Int) -> f + Line; match Some(1) { Some(f) => f, None => print } }\nfn main() { print(f(1, 2)) }\n"),
+    ("unions", "type Circle = { r: Float }\ntype Square = { s: Float }\ntype Shape = | Circle | Square\ntype Mixed = | Circle | Dot\ntype P = | Some(Int) | Other\ntype G[T] = | T | Leaf\nfn f(s: Shape) -> Int { 0 }\n"),
     ("types", "type T[A] = | Leaf | Node(T[A], A, T[A])\ntrait Size { fn size(self) -> Int }\nimpl[A] Size for T[A] { fn size(self) -> Int { match self { Leaf => 0, Node(l, _, r) => l.size() + 1 + r.size() } } }\nfn g[A: Size](x: A) -> Int where it > 0 { x.size() }\n"),
 ];
 
