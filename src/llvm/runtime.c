@@ -1595,11 +1595,17 @@ Str *strata_str_replace(Str *s, Str *from, Str *to) {
   return strata_concat_owned(out, str_from(s->bytes + start, s->len - start));
 }
 
+// A count that is not negative is accepted: a string too large to hold is
+// out of memory, as when it is built any other way.
 Str *strata_str_repeat(Str *s, int64_t n) {
-  if (n < 0 || (s->len > 0 && n > 100000000 / s->len)) {
+  if (n < 0) {
     char buf[64];
-    snprintf(buf, sizeof buf, "repeat: bad count %lld", (long long)n);
+    snprintf(buf, sizeof buf, "repeat: negative count %lld", (long long)n);
     strata_fault(4, str_c(buf));
+  }
+  if (s->len > 0 && n > (INT64_MAX - 64) / s->len) {
+    fputs("fault (Limit): out of memory\n", stderr);
+    exit(101);
   }
   Str *o = str_alloc(s->len * n);
   for (int64_t i = 0; i < n; i++) memcpy(o->bytes + i * s->len, s->bytes, (size_t)s->len);

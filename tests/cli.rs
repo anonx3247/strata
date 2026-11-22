@@ -655,6 +655,41 @@ fn far() -> Bool ensures it { len("TAG".code_points()) == 9 }
     assert!(out.contains("✗ far") && !out.contains("bug in the prover"), "{out}");
 }
 
+/// Builtins that fault on some arguments are checks: proven where the
+/// arguments allow it, refuted with an input where they don't; float
+/// arithmetic (not modelled) is never assumed finite.
+#[test]
+fn builtins_that_fault_are_checked() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("builtin-faults");
+    let src = r#"fn bad_chr(n: Int) -> String { chr(n) }
+fn good_chr(n: Int where 97 <= it && it <= 122) -> String ensures len(it) == 1 { chr(n) }
+fn bad_ord(s: String) -> Int { ord(s) }
+fn good_ord(s: String) -> Int { if len(s) == 1 { ord(s) } else { 0 } }
+fn each_ord(s: String) -> Int { chars(s).fold(0, (a, c) -> a + ord(c)) }
+fn round_trip() -> Bool ensures it { ord(chr(955)) == 955 }
+fn bad_split(s: String, sep: String) -> Int { len(split(s, sep)) }
+fn bad_repeat(s: String, n: Int) -> String { repeat(s, n) }
+fn good_repeat(n: Int where 0 <= it && it <= 10) -> String { repeat("ab", n) }
+fn floats(x: Float) -> Float { x * x }
+fn doubled(xs: List[Int]) -> List[Int] { xs.map(x -> x * 2) }
+"#;
+    save(&d.join("f.strata"), src);
+    let (ok, out) = strata(&["--file", "f.strata", "verify", "--cases", "30"], &d, None);
+    assert!(!ok, "{out}");
+    let line = |name: &str| out.lines().find(|l| l.split_whitespace().nth(1) == Some(name)).unwrap_or("").to_string();
+    for name in ["good_chr", "good_ord", "each_ord", "round_trip", "good_repeat", "doubled"] {
+        assert!(line(name).starts_with("✓"), "{name} should be proven: {out}");
+    }
+    for name in ["bad_chr", "bad_ord", "bad_split", "bad_repeat"] {
+        assert!(line(name).starts_with("✗") && line(name).contains("found by the solver"), "{name} should be refuted by the solver: {out}");
+    }
+    assert!(line("floats").starts_with("~") && out.contains("`*` gives a finite number"), "{out}");
+}
+
 #[test]
 fn fuzzes_strings_a_refinement_pattern_matches() {
     // inputs made by `std.regex.samples`: Unicode classes and word
@@ -4822,4 +4857,22 @@ fn a_trait_method_named_like_a_builtin_leaves_the_builtin() {
     assert!(ok, "{out}");
     let (ok, out) = strata(&["--file", "t.strata", "run"], &d, None);
     assert!(ok && out == "Some((2, \"b\"))\nSome(\"a\")\n", "{out}");
+}
+
+// A long list literal compiles in linear time: whether a later operand may
+// assign was asked of the rest for each element (100,000 elements took 9 s
+// through `run f ARGS`, which writes its arguments as literals; 0.1 s now).
+#[test]
+fn long_list_literals_compile_in_linear_time() {
+    let d = tmp("long-literal");
+    save(&d.join("t.strata"), "fn total(xs: List[Int]) -> Int {\n  sum(xs)\n}\n");
+    // 60,000 elements: one argument stays under Linux's 128 KB (3.6 s before, 0.08 s now)
+    let arg = format!("[[{}]]", vec!["1"; 60_000].join(","));
+    // (a first run may precompile std, once per strata binary)
+    let (ok, out) = strata(&["--file", "t.strata", "run", "total", "[[1, 2]]"], &d, None);
+    assert!(ok && out.trim() == "3", "{out}");
+    let start = std::time::Instant::now();
+    let (ok, out) = strata(&["--file", "t.strata", "run", "total", &arg], &d, None);
+    assert!(ok && out.trim() == "60000", "{out}");
+    assert!(start.elapsed().as_secs_f64() < 2.0, "took {:?}", start.elapsed());
 }
