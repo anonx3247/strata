@@ -318,7 +318,7 @@ fn solver_flags_follow_the_solver() {
     // fake solvers that record how they are called: cvc5 gets its own flags
     let d = tmp("solver-flags");
     save(&d.join("b.strata"), "type Quantity = Int where 1 <= it && it <= 99\nfn clamp(q: Quantity) -> Quantity { if q < 99 { q + 1 } else { q } }\n");
-    for (name, version, expected) in [("cvc5", "This is cvc5 version 1.4.2", "--lang smt2 --produce-models --rlimit-per="), ("z3", "Z3 version 4.15.0 - 64 bit", "-in -T:20 rlimit=")] {
+    for (name, version, expected) in [("cvc5", "This is cvc5 version 1.4.2", "--lang smt2 --produce-models --dt-nested-rec --rlimit-per="), ("z3", "Z3 version 4.15.0 - 64 bit", "-in -T:20 rlimit=")] {
         let fake = d.join(format!("fake-{name}"));
         let log = d.join(format!("{name}.log"));
         std::fs::write(&fake, format!("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '{version}'; exit 0; fi\necho \"$@\" >> {}\ncat > /dev/null\necho unsat\n", log.display())).unwrap();

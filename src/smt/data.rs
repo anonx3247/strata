@@ -58,9 +58,10 @@ fn sym(name: &str) -> String {
     format!("|{}|", name.replace(['|', '\\'], ""))
 }
 
-/// The name of the datatype of `t` (a sort type).
+/// The name of the datatype of `t` (a sort type). Every sort's name starts
+/// with `T:`, so that none is one the solver defines (`Set`, `Array`, `Seq`).
 fn dt_name(t: &TypeExpr) -> String {
-    crate::printer::ty(t).replace(['|', '\\'], "")
+    format!("T:{}", crate::printer::ty(t).replace(['|', '\\'], ""))
 }
 
 /// The names of the datatypes a sort mentions.
@@ -220,6 +221,7 @@ impl Vc<'_> {
     }
 
     fn opaque_sort(&mut self, name: &str) -> String {
+        let name = &format!("T:{name}");
         if !self.sorts.index.contains_key(name) {
             self.sorts.index.insert(name.to_string(), self.sorts.defs.len());
             self.sorts.defs.push((name.to_string(), SortDef::Opaque));
@@ -230,6 +232,7 @@ impl Vc<'_> {
     /// Declare datatype `name` (once), its constructors made by `ctors`.
     fn datatype(&mut self, name: &str, ctors: impl FnOnce(&mut Self) -> Vec<(String, Vec<String>)>) -> String {
         let name = name.replace(['|', '\\'], "");
+        let name = if name.starts_with("T:") { name } else { format!("T:{name}") };
         if !self.sorts.index.contains_key(&name) {
             let i = self.sorts.defs.len();
             self.sorts.index.insert(name.clone(), i);
@@ -251,13 +254,13 @@ impl Vc<'_> {
     pub(super) fn sort_of(&mut self, t: &TypeExpr) -> Option<String> {
         let t = self.sort_type(t);
         Some(match &t {
-            TypeExpr::Unit => self.datatype("Unit", |_| vec![("Unit.unit".into(), vec![])]),
+            TypeExpr::Unit => self.datatype("T:Unit", |_| vec![("T:Unit.unit".into(), vec![])]),
             TypeExpr::Fn(..) => self.opaque_sort("Fn"),
             TypeExpr::Refined(..) => unreachable!("refinements are looked through"),
             TypeExpr::Union(ms) => {
                 let groups = self.union_groups(ms)?;
                 let sorts: Vec<String> = groups.iter().map(|g| self.field_sort(&g.1)).collect();
-                let name = format!("Union({})", sorts.join(",").replace('|', ""));
+                let name = format!("T:Union({})", sorts.join(",").replace('|', ""));
                 self.datatype(&name, |_| sorts.iter().enumerate().map(|(k, s)| (format!("{name}.{k}"), vec![s.clone()])).collect())
             }
             TypeExpr::Named(n, args) => match n.as_str() {
@@ -266,7 +269,7 @@ impl Vc<'_> {
                 "List" => match args.first() {
                     Some(a) => {
                         let item = self.field_sort(a);
-                        let name = format!("List({})", item.replace('|', ""));
+                        let name = format!("T:List({})", item.replace('|', ""));
                         if !self.sorts.index.contains_key(&name) {
                             self.sorts.index.insert(name.clone(), self.sorts.defs.len());
                             self.sorts.defs.push((name.clone(), SortDef::List(item)));
