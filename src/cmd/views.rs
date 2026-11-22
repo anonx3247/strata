@@ -133,6 +133,19 @@ pub fn render(args: &Args) -> Result<bool, String> {
 /// the package's `strata.toml`).
 pub fn pack(args: &Args) -> Result<bool, String> {
     let out = args.pos.get(1).ok_or("usage: strata pack <FILE.strata>")?;
+    // the prelude's definitions, its types and its code, as a module file of
+    // the root module, named as programs write them (`Option`, `CodePoints`):
+    // what every program runs with, for Strata code that runs trees
+    // (`std.ast.eval`). As parsed: storing would resolve its names against
+    // the prelude itself.
+    if args.flag("--prelude") {
+        let mut p = crate::parser::parse_program(crate::types::PRELUDE).map_err(|e| format!("the prelude: {e}"))?;
+        p.decls.extend(crate::parser::parse_program(crate::types::PRELUDE_CODE).map_err(|e| format!("the prelude's code: {e}"))?.decls);
+        let bytes = binary::encode_module(&p, "", &Default::default());
+        store::write_file(std::path::Path::new(out), &bytes)?;
+        println!("wrote {out}: the prelude, {} definitions, {} bytes", p.decls.len(), bytes.len());
+        return Ok(true);
+    }
     let src = load(&args)?;
     let dir = match (&src, args.val("--file")) {
         (Source::Db(cb), _) => Some(cb.root().to_path_buf()),
