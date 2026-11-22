@@ -369,6 +369,16 @@ fn k(s: Sh) -> Int { match s { Zap => 1, _ => 2 } }
 fn main() { print(1) }
 "#;
 
+const IMPORTS: &str = r#"from std.utf8 use encode, decode
+use std.unicode
+fn a() -> String { encode("x") }
+fn b() -> List[Int] { encode(1) }
+fn c(bs: List[Int]) -> String { decode(bs) }
+fn d() -> String { unicode.max_code() }
+fn e() -> Int { unicode.next_code("a") }
+fn main() { print(1) }
+"#;
+
 const RECORDS: &str = r#"type Pt = { x: Int, y: Int }
 type Sh =
   | Sq(Int)
@@ -677,6 +687,11 @@ fn trait_values_and_supertraits_as_in_rust() {
 #[test]
 fn names_and_declarations_as_in_rust() {
     same_errors("declarations", DECLARATIONS, &["missing method", "is not a method of", "is defined twice", "supertrait", "unknown type", "type arguments, got", "unknown constructor", "pattern `", "alternatives of", "only means something", "outside a loop", "is not a trait"]);
+}
+
+#[test]
+fn imported_functions_as_in_rust() {
+    same_errors("imports", IMPORTS, &["expected `"]);
 }
 
 /// The compiler's errors on `text` are `strata check`'s, on the lines holding one of `keys`.
