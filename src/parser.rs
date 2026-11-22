@@ -378,9 +378,29 @@ impl Parser {
                 if self.is_sym("[") || self.is_sym("=") {
                     return Err(self.err(&format!("`extern {lang_name} type {name}` is an opaque handle: no type parameters, no definition")));
                 }
-                ExternItem::Type(name)
+                ExternItem::Type(name, vec![])
             };
             DeclKind::Extern(ExternDecl { lang, item })
+        } else if self.is_kw("builtin") && matches!(self.peek_at(1), Tok::Ident(k) if k == "fn" || k == "type") {
+            // `builtin fn len[A](xs: List[A]) -> Int`, `builtin type List[T]`:
+            // what the compiler provides, declared in `core` (contextual)
+            self.next();
+            let item = if self.eat_kw("fn") {
+                let (f, has_body) = self.fn_rest(true)?;
+                if has_body {
+                    return Err(self.err(&format!("`builtin fn {}` has no body: the compiler provides it", f.name)));
+                }
+                ExternItem::Fn(f)
+            } else {
+                self.expect_kw("type")?;
+                let name = self.ident()?;
+                let params = self.type_params()?;
+                if self.is_sym("=") {
+                    return Err(self.err(&format!("`builtin type {name}` has no definition: the compiler provides it")));
+                }
+                ExternItem::Type(name, params)
+            };
+            DeclKind::Extern(ExternDecl { lang: Lang::Builtin, item })
         } else if self.is_kw("derivable") && matches!(self.peek_at(1), Tok::Sym("(")) {
             // `derivable(Record) trait ...`: contextual, like `distinct`
             self.next();
@@ -630,7 +650,7 @@ impl Parser {
             let name = self.ident()?;
             let payload = match self.payload()? {
                 // a built-in type is never declared again
-                Payload::None if crate::types::BUILTIN_TYPES.contains(&name.as_str()) => Payload::Type(TypeExpr::Named(name, vec![])),
+                Payload::None if crate::types::builtin_types().contains(&name.as_str()) => Payload::Type(TypeExpr::Named(name, vec![])),
                 p => p,
             };
             Variant { comments: vec![], name, payload }

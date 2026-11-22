@@ -551,6 +551,15 @@ fn memory_is_freed() {
     assert_eq!(ir.matches(" = alloca [").count(), 2, "the values that stay in their block, on the stack:\n{ir}");
     let (out, code) = case(&d, "stack", STACK_VALUES);
     assert!(code == 0 && out.ends_with("15840\n1\nfound Ada7 at 1\n"), "{out}");
+    // a field assigned in place when nothing else holds the value, in a
+    // copy when something does (another variable, a list, an operand, a
+    // task, a constant)
+    let f = d.join("in_place.strata");
+    save(&f, IN_PLACE);
+    let ir = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
+    assert!(String::from_utf8_lossy(&ir.stdout).contains("@strata_unique(ptr"), "no assignment in place");
+    let (out, code) = case(&d, "in_place", IN_PLACE);
+    assert!(code == 0 && out.ends_with("done\n"), "{out}");
     let chain = "type Chain = | End | Link(Int, Chain)\nfn main() { mut c: Chain = End mut i := 0 while i < 1000000 { c = Link(i, c) i += 1 } match c { Link(x, _) => print(x), End => print(0) } }\n";
     // natively only: the interpreter takes minutes on this loop
     let f = d.join("chain.strata");
@@ -2060,5 +2069,97 @@ fn main() {
     names := [\"Ada1\", \"Ada7\", \"Bob\"]
     at := find(names, \"Ada7\")
     print(f\"found Ada7 at {at}\")
+}
+";
+
+/// Fields assigned in place, and the values that must not change with them.
+const IN_PLACE: &str = "type State = { n: Int, name: String, errs: List[String], at: (Int, String) }
+
+type P = { x: Int, y: Int }
+
+fn bump(mut s: State) {
+    s.n += 1
+    s.errs = push(s.errs, \"bumped\")
+}
+
+// replaces the whole value moved in
+fn reset(mut s: State) {
+    s = State { n: 42, name: \"reset\", errs: [\"r\"], at: (4, \"d\") }
+}
+
+// another argument mentions the variable: not moved
+fn set_n(mut s: State, n: Int) {
+    s.n = n
+}
+
+// passes it on
+fn twice(mut s: State) {
+    bump(mut s)
+    bump(mut s)
+}
+
+fn both(a: State, b: Int) -> String {
+    f\"{a.n} {b}\"
+}
+
+fn main() {
+    mut s := State { n: 0, name: \"s\", errs: [], at: (0, \"a\") }
+    mut i := 0
+    while i < 1000 {
+        s.n += 1
+        s.name = \"s\" + to_string(i)
+        s.errs = push(s.errs, to_string(i))
+        i += 1
+    }
+    print(f\"{s.n} {s.name} {len(s.errs)}\")
+    // a copy keeps its value
+    t := s
+    s.n = -1
+    print(f\"{t.n} {s.n}\")
+    // so does the value in a list
+    xs := [s]
+    s.name = \"changed\"
+    print(f\"{xs[0].name} {s.name}\")
+    // an operand that reads `s` before a later one assigns it
+    print(both(s, {
+        s.n = 7
+        2
+    }))
+    // a loop over a field the body assigns
+    mut k := 0
+    for e in s.errs {
+        if k < 3 {
+            s.errs = push(s.errs, e)
+        }
+        k += 1
+    }
+    print(f\"{k} {len(s.errs)}\")
+    // a `mut` parameter
+    bump(mut s)
+    print(f\"{s.n} {s.errs[len(s.errs) - 1]}\")
+    twice(mut s)
+    set_n(mut s, s.n + 1)
+    print(f\"{s.n} {len(s.errs)}\")
+    u := s
+    reset(mut s)
+    print(f\"{s.n} {s.name} {u.n} {u.name}\")
+    // a task holding `s` while it changes
+    r := scope {
+        h := spawn s.n * 10
+        s.n = 100
+        await h
+    }
+    print(f\"{r} {s.n}\")
+    // a tuple field, and a tuple
+    s.at = (1, \"b\")
+    mut pair := (1, \"one\")
+    pair.1 = \"uno\"
+    print(f\"{s.at.1} {pair.1}\")
+    // a constant record (every field a literal): never written in place
+    mut c := P { x: 1, y: 2 }
+    c.x = 10
+    d := P { x: 1, y: 2 }
+    print(f\"{c.x} {d.x}\")
+    print(\"done\")
 }
 ";

@@ -1,0 +1,8 @@
+# `core`: what every program has without a `use`, below the standard
+# library: the builtin types and functions the compiler provides, `Option`,
+# `Result`, the traits and refinements every program names, and the code
+# every program gets (iterators, channels' methods, a string's units).
+# Built into `strata`, like std. It depends on nothing; std depends on it.
+# Only `core` may declare `builtin` definitions.
+name = "core"
+auto_commit = false

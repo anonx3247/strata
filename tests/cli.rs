@@ -6251,6 +6251,34 @@ fn ui_page_defines_each_name_once() {
     assert!(twice.is_empty(), "defined more than once in src/ui/index.html: {twice:?}");
 }
 
+/// `core`: the builtin types and functions are declared in it (`builtin
+/// type`, `builtin fn` with `requires` where they fail), and nowhere else.
+#[test]
+fn core_declares_the_builtins() {
+    let d = tmp("core_builtins");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let core = root.join("core");
+    let core = core.to_str().unwrap();
+    // the files are those strata is built with, and they check
+    let (ok, out) = strata(&["--file", core, "check"], &d, None);
+    assert!(ok && out.contains("ok: core checks"), "{out}");
+    let (ok, out) = strata(&["--file", core, "render", "builtins"], &d, None);
+    assert!(ok && out.contains("builtin fn at[A](xs: List[A], i: Int) -> A\n  requires 0 <= i && i < len(xs)\n"), "{out}");
+    let (ok, out) = strata(&["--file", core, "render", "types"], &d, None);
+    assert!(ok && out.contains("builtin type Dict[K, V]\n") && out.contains("type Option[T] ="), "{out}");
+    // `strata builtins` lists core's
+    let (ok, out) = strata(&["builtins"], &d, None);
+    assert!(ok && out.contains("at[A](List[A], Int) -> A") && out.contains("builtin type Int"), "{out}");
+    // the syntax round-trips; anywhere but core, a `builtin` definition is refused
+    let src = "builtin type Pair[A, B]\n\nbuiltin fn first[A, B](p: Pair[A, B]) -> A\n  requires true\n";
+    let (_, out) = strata(&["--file", "x.strata", "edit"], &d, Some(src));
+    assert!(out.contains("`builtin` definitions are only in `core`: `first`") && out.contains("`builtin` definitions are only in `core`: `Pair`"), "{out}");
+    let (ok, out) = strata(&["--file", "x.strata", "render"], &d, None);
+    assert!(ok && out == src, "{out}");
+    let (ok, out) = strata(&["--file", "y.strata", "edit"], &d, Some("builtin fn f() -> Int { 1 }\n"));
+    assert!(!ok && out.contains("`builtin fn f` has no body: the compiler provides it"), "{out}");
+}
+
 /// `Commands` (std.process): `main` (or a test) names `Launcher` and runs real
 /// programs, never through a shell; code that takes `Commands` is tested with
 /// `mock Commands` or a mock type, and proven from `run`'s contract.
