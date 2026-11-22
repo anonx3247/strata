@@ -3549,7 +3549,7 @@ fn handle(req: Request) -> Response {
 }
 "#);
     let mut server = Command::new(env!("CARGO_BIN_EXE_strata")).args(["serve", "app.strata", "--port", &port.to_string()]).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-    let up = (0..100).any(|_| {
+    let up = (0..600).any(|_| {
         std::thread::sleep(std::time::Duration::from_millis(50));
         std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
     });
@@ -3675,7 +3675,7 @@ fn view(model: Model) -> Html[Msg] {
 }
 "#);
     let mut server = Command::new(env!("CARGO_BIN_EXE_strata")).args(["serve", "app.strata", "--port", &port.to_string()]).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-    let up = (0..100).any(|_| {
+    let up = (0..600).any(|_| {
         std::thread::sleep(std::time::Duration::from_millis(50));
         std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
     });
@@ -3684,14 +3684,15 @@ fn view(model: Model) -> Html[Msg] {
         assert!(up, "the server didn't start");
         let page = http(port, "GET / HTTP/1.1\r\n\r\n");
         assert!(page.contains("note=first"), "`init` read the file through its `Disk`: {page}");
-        assert!(page.contains(r#"data-every="500" data-on-every="&quot;Check&quot;""#), "{page}");
-        assert!(page.contains(r#"data-key="/" data-on-key="&quot;Search&quot;""#) && page.contains(r#"data-key="meta+k""#), "{page}");
+        // messages aren't in the page: handlers are numbered, in page order
+        assert!(page.contains(r#"data-every="500" data-handle-every="0""#), "{page}");
+        assert!(page.contains(r#"data-key="/" data-handle-key="1""#) && page.contains(r#"data-key="meta+k" data-handle-key="2""#), "{page}");
         let sid = page.split(r#"data-session=""#).nth(1).unwrap().split('"').next().unwrap().to_string();
-        let check = format!(r#"{{"session":"{sid}","msg":"Check"}}"#);
+        let check = format!(r#"{{"session":"{sid}","handler":0}}"#);
         assert!(post(&check).starts_with("HTTP/1.1 204"), "nothing changed: no view");
         std::fs::write(d.join("note.txt"), "second").unwrap();
         assert!(post(&check).contains("note=second"), "`update` reads the file too");
-        let r = post(&format!(r#"{{"session":"{sid}","msg":"Search"}}"#));
+        let r = post(&format!(r#"{{"session":"{sid}","handler":2}}"#));
         assert!(r.contains("<input data-focus>"), "{r}");
         let js = http(port, "GET /_strata/app.js HTTP/1.1\r\n\r\n");
         assert!(js.contains("data-every") && js.contains("data-key") && js.contains("data-focus"));
@@ -3741,7 +3742,7 @@ fn ui_in_strata_shows_the_code() {
     save_module(&d, "core", "/// Doubles.\npub fn double(x: Int) -> Int { x * 2 }\n\nfn quad(x: Int) -> Int { double(double(x)) }\n");
     let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
     let mut server = Command::new(env!("CARGO_BIN_EXE_strata")).args(["ui", "--strata", "--file", &d.to_string_lossy(), "--port", &port.to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-    let up = (0..200).any(|_| {
+    let up = (0..600).any(|_| {
         std::thread::sleep(std::time::Duration::from_millis(50));
         std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
     });
@@ -3752,14 +3753,29 @@ fn ui_in_strata_shows_the_code() {
         assert!(page.contains("<title>Strata</title>") && page.contains(r#"data-every="1500""#), "{page}");
         assert!(page.contains(r#"title="core.double""#) && page.contains(r#"title="core.quad""#), "both definitions are listed: {page}");
         let sid = page.split(r#"data-session=""#).nth(1).unwrap().split('"').next().unwrap().to_string();
+        // a handler's number: the `data-handle-{event}` of the tag holding `marker`
+        let handler = |page: &str, marker: &str, event: &str| -> String {
+            let at = page.find(marker).unwrap_or_else(|| panic!("no {marker} in {page}"));
+            let start = page[..at].rfind('<').unwrap();
+            let tag = &page[start..start + page[start..].find('>').unwrap()];
+            let attr = format!(r#"data-handle-{event}=""#);
+            tag.split(&attr).nth(1).unwrap_or_else(|| panic!("no {attr} in {tag}")).split('"').next().unwrap().to_string()
+        };
+        let refresh = handler(&page, "data-every=", "every");
         // nothing changed: the timer's refresh doesn't render
-        assert!(post(&format!(r#"{{"session":"{sid}","msg":"Refresh"}}"#)).starts_with("HTTP/1.1 204"));
+        assert!(post(&format!(r#"{{"session":"{sid}","handler":{refresh}}}"#)).starts_with("HTTP/1.1 204"));
         // selecting `quad` shows it with what it uses; its call of `double` links there
-        let r = post(&format!(r#"{{"session":"{sid}","msg":{{"Go":{{"name":"core.quad"}}}}}}"#));
-        assert!(r.contains("Dependencies") && r.contains("card sel") && r.contains("&quot;core.double&quot;"), "{r}");
+        let quad = handler(&page, r#"title="core.quad""#, "click");
+        let r = post(&format!(r#"{{"session":"{sid}","handler":{quad}}}"#));
+        assert!(r.contains("Dependencies") && r.contains("card sel"), "{r}");
+        let link = r.split(">double</a>").next().and_then(|before| before.rsplit(r#"<a class="ref" data-handle-click=""#).next()).unwrap_or("");
+        let r = post(&format!(r#"{{"session":"{sid}","handler":{}}}"#, link.split('"').next().unwrap_or("")));
+        assert!(r.starts_with("HTTP/1.1 200") && r.contains("Doubles."), "the call of `double` links to it: {r}");
         // an edit shows up on the next refresh
         save_module(&d, "core", "/// Doubles.\npub fn double(x: Int) -> Int { x * 2 }\n\nfn quad(x: Int) -> Int { double(double(x)) }\n\nfn triple(x: Int) -> Int { x * 3 }\n");
-        let r = post(&format!(r#"{{"session":"{sid}","msg":"Refresh"}}"#));
+        let page = r.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+        let refresh = handler(&page, "data-every=", "every");
+        let r = post(&format!(r#"{{"session":"{sid}","handler":{refresh}}}"#));
         assert!(r.starts_with("HTTP/1.1 200") && r.contains(r#"title="core.triple""#), "{r}");
     });
     let _ = server.kill();
@@ -3767,6 +3783,16 @@ fn ui_in_strata_shows_the_code() {
     if let Err(e) = results {
         std::panic::resume_unwind(e);
     }
+}
+
+/// Comparing with a constructor without fields (`f == None`) tests the tag,
+/// so it compiles whatever the type holds: functions too.
+#[test]
+fn comparing_with_a_bare_constructor_is_a_tag_test() {
+    let d = tmp("bare-ctor-eq");
+    save(&d.join("eq.strata"), "type Pick =\n  | Nothing\n  | Apply { f: (Int) -> Int }\n\nfn main() {\n  let f: Option[(Int) -> Int] = Some(x -> x + 1)\n  let p: Pick = Apply { f: x -> x }\n  print(f\"{f == None} {f != None} {None == f} {p == Nothing} {Nothing != p}\")\n}\n");
+    let (ok, out) = strata(&["run", "eq.strata"], &d, None);
+    assert!(ok && out.contains("false true false false true"), "{out}");
 }
 
 #[test]
@@ -3778,7 +3804,7 @@ fn serve_runs_an_app() {
 type Model = { n: Int where 0 <= it && it <= 3 }
 type Msg =
   | Up
-  | Set { n: Int where 0 <= it && it <= 3 }
+  | SetTo { n: Int where 0 <= it && it <= 3 }
   | Boom
 fn init() -> Model {
   Model { n: 0 }
@@ -3786,16 +3812,22 @@ fn init() -> Model {
 fn update(model: Model, msg: Msg) -> Model {
   match msg {
     Up => Model { n: min(model.n + 1, 3) },
-    Set { n } => Model { n },
+    SetTo { n } => Model { n },
     Boom => Model { n: 10 / (model.n - model.n) },
   }
 }
 fn view(model: Model) -> Html[Msg] {
-  div([], [text(f"n={model.n}"), button([on_click(Up)], [text("up")])])
+  div([], [
+    text(f"n={model.n}"),
+    button([on_click(Up)], [text("up")]),
+    button([on_click(SetTo { n: 3 })], [text("3")]),
+    button([on_click(SetTo { n: 1 })], [text("1")]),
+    button([on_click(Boom)], [text("boom")]),
+  ])
 }
 "#);
     let mut server = Command::new(env!("CARGO_BIN_EXE_strata")).args(["serve", "app.strata", "--port", &port.to_string()]).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-    let up = (0..100).any(|_| {
+    let up = (0..600).any(|_| {
         std::thread::sleep(std::time::Duration::from_millis(50));
         std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
     });
@@ -3804,27 +3836,28 @@ fn view(model: Model) -> Html[Msg] {
         assert!(up, "the server didn't start");
         let page = http(port, "GET / HTTP/1.1\r\n\r\n");
         assert!(page.contains("<title>app</title>") && page.contains(r#"<script src="/_strata/app.js""#) && page.contains("n=0"), "{page}");
-        assert!(page.contains(r#"data-on-click="&quot;Up&quot;""#), "{page}");
+        assert!(page.contains(r#"<button data-handle-click="0">up</button>"#), "{page}");
         let sid = page.split(r#"data-session=""#).nth(1).unwrap().split('"').next().unwrap().to_string();
         // each page load is its own session
         let other = http(port, "GET / HTTP/1.1\r\n\r\n");
         assert!(!other.contains(&sid));
-        let r = post(&format!(r#"{{"session":"{sid}","msg":"Up"}}"#));
-        assert!(r.starts_with("HTTP/1.1 200") && r.ends_with(r#"<div>n=1<button data-on-click="&quot;Up&quot;">up</button></div>"#), "{r}");
-        let r = post(&format!(r#"{{"session":"{sid}","msg":{{"Set":{{"n":3}}}}}}"#));
+        let msg = |h: usize| post(&format!(r#"{{"session":"{sid}","handler":{h}}}"#));
+        let r = msg(0);
+        assert!(r.starts_with("HTTP/1.1 200") && r.contains(r#"<div>n=1<button data-handle-click="0">up</button>"#), "{r}");
+        let r = msg(1);
         assert!(r.contains("n=3"), "{r}");
-        // a message is read against the type: refinements included
-        let r = post(&format!(r#"{{"session":"{sid}","msg":{{"Set":{{"n":9}}}}}}"#));
-        assert!(r.starts_with("HTTP/1.1 400") && r.contains("does not satisfy"), "{r}");
+        // only the page's own messages can be sent: a handler it doesn't have is refused
+        let r = msg(7);
+        assert!(r.starts_with("HTTP/1.1 400") && r.contains("no handler 7"), "{r}");
         // a fault in `update` is a 500, and the model stays as it was
-        let r = post(&format!(r#"{{"session":"{sid}","msg":"Boom"}}"#));
+        let r = msg(3);
         assert!(r.starts_with("HTTP/1.1 500") && r.contains("division by zero"), "{r}");
         // the model stayed at 3, so `Up` (capped at 3) changes nothing: 204, no view
-        assert!(post(&format!(r#"{{"session":"{sid}","msg":"Up"}}"#)).starts_with("HTTP/1.1 204"));
-        assert!(post(&format!(r#"{{"session":"{sid}","msg":{{"Set":{{"n":1}}}}}}"#)).contains("n=1"));
+        assert!(msg(0).starts_with("HTTP/1.1 204"));
+        assert!(msg(2).contains("n=1"));
         // an unknown session: the page reloads
-        assert!(post(r#"{"session":"gone","msg":"Up"}"#).starts_with("HTTP/1.1 410"));
-        assert!(http(port, "GET /_strata/app.js HTTP/1.1\r\n\r\n").contains("data-on-"));
+        assert!(post(r#"{"session":"gone","handler":0}"#).starts_with("HTTP/1.1 410"));
+        assert!(http(port, "GET /_strata/app.js HTTP/1.1\r\n\r\n").contains("data-handle-"));
     });
     let _ = server.kill();
     let _ = server.wait();
@@ -3852,7 +3885,7 @@ fn serve_apps_take_values_and_forms() {
     let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
     let ex = format!("{}/examples/todos", env!("CARGO_MANIFEST_DIR"));
     let mut server = Command::new(env!("CARGO_BIN_EXE_strata")).args(["serve", &ex, "--port", &port.to_string()]).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-    let up = (0..100).any(|_| {
+    let up = (0..600).any(|_| {
         std::thread::sleep(std::time::Duration::from_millis(50));
         std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
     });

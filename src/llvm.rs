@@ -263,6 +263,9 @@ pub enum Shape {
     Distinct(String, Box<Shape>),
     /// A union: each member, with its box's tag if it is boxed.
     Union(Vec<(Option<i64>, Shape)>),
+    /// A value the host only holds and hands back, never reads or writes
+    /// (an app's model, which may hold functions): why it can't, otherwise.
+    Opaque(String),
 }
 
 /// What `--trace` reads: each traced function instance's name, arguments'
@@ -602,7 +605,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     let mut shapes = None;
     if let Some(tys) = called {
         let mut named = Shapes::default();
-        let roots = tys.iter().map(|t| m.shape(t, &mut named)).collect::<Res<Vec<_>>>()?;
+        let roots = tys.iter().map(|t| m.shape(t, &mut named).unwrap_or_else(Shape::Opaque)).collect();
         shapes = Some((roots, named));
     }
     if !comptime.is_empty() {
@@ -4420,6 +4423,32 @@ impl<'m, 'a> Func<'m, 'a> {
             self.br(&end);
             self.block(&end);
             return self.join(&Ty::Bool, vec![(bool_v(short), from), (b, from_b)]);
+        }
+        // against a constructor without fields (`x == None`): its tag, as
+        // `x is None`, whatever else the type holds (functions too)
+        if matches!(op, Eq | Ne) {
+            let bare = |e: &Expr| match e {
+                Expr::Ctor(c, crate::ast::CtorArgs::None) if self.m.env.ctors.contains_key(c) => Some(*c),
+                _ => None,
+            };
+            let test = match (bare(l), bare(r)) {
+                (_, Some(c)) => Some((l, c)),
+                (Some(c), None) => Some((r, c)),
+                _ => None,
+            };
+            if let Some((x, c)) = test.filter(|(_, c)| !self.m.is_distinct(c)) {
+                let v = self.expr(x)?;
+                if is_never(&v.0) {
+                    return Ok(v);
+                }
+                let is = self.tag_in(&v, &[c.to_string()])?;
+                if op == Eq {
+                    return Ok(is);
+                }
+                let r = self.fresh("ne");
+                self.emit(format!("{r} = xor i1 {}, true", is.1));
+                return Ok(bool_v(&r));
+            }
         }
         let ab = self.operands(&[l, r])?;
         self.apply(op, &ab[0], &ab[1])

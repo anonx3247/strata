@@ -543,7 +543,8 @@ impl Calls<'_> {
             )
         };
         let text = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().to_string();
-        let _one = one_run();
+        // (not under `one_run`: a call may need strata to run compiled code,
+        // `Codebase`'s snapshot verifying, which it does on a thread of its own)
         unsafe { strata_set_given(args.as_ptr()) };
         // (no steps are counted: the budget is never reached)
         let r = if unsafe { fuzz(self.entries[i], 1, i64::MAX) } != 0 {
@@ -709,7 +710,15 @@ extern "C" fn code_snapshot(err: *mut i64) -> i64 {
         Ok(s) => s,
         Err(e) => return fail(e.clone()),
     };
-    let e = match crate::ui::code_snapshot(std::path::Path::new(&crate::ui::code_root())) {
+    // made on a thread of its own: making it runs compiled code (verifying
+    // refinements), which would reset this thread's run (its trap, what it printed)
+    let made = std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(|| crate::ui::code_snapshot(std::path::Path::new(&crate::ui::code_root())))
+        .map_err(|e| e.to_string())
+        .and_then(|t| t.join().map_err(|_| "making the snapshot panicked".to_string()))
+        .and_then(|r| r);
+    let e = match made {
         Ok(e) => e,
         Err(e) => return fail(e),
     };

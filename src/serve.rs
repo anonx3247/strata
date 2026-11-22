@@ -215,8 +215,7 @@ fn handle_server(p: &Program, env: &Env) -> Result<(String, Server, Mode), Strin
 }
 
 /// The calls of an app: `init`; the page of a model; the message of a page's
-/// handler; `update`; whether two models are the same; and dropping what the
-/// host holds.
+/// handler; `update`; and dropping what the host holds.
 fn app_server(p: &Program, env: &Env, title: &str) -> Result<(String, Server, Mode), String> {
     let a = app_fns(env)?;
     let (m, msg) = (a.model.clone(), a.msg.clone());
@@ -241,7 +240,6 @@ fn app_server(p: &Program, env: &Env, title: &str) -> Result<(String, Server, Mo
             m.clone(),
             &format!("match msg {{ Some(m) => update(model, m{}), None => model }}", names(&update_caps)),
         )?,
-        wrapper("strata_serve_same", vec![("a", m.clone()), ("b", m.clone())], named("Bool", vec![]), "a == b")?,
         wrapper("strata_serve_drop_model", vec![("model", m.clone())], TypeExpr::Unit, "()")?,
         wrapper("strata_serve_drop_text", vec![("text", string())], TypeExpr::Unit, "()")?,
         wrapper("strata_serve_drop_message", vec![("msg", opt_msg)], TypeExpr::Unit, "()")?,
@@ -252,7 +250,6 @@ fn app_server(p: &Program, env: &Env, title: &str) -> Result<(String, Server, Mo
         CallEntry { name: "strata_serve_page".into(), args: lent(1) },
         CallEntry { name: "strata_serve_message".into(), args: vec![Arg::Lent, Arg::Given, Arg::Given, Arg::Given] },
         CallEntry { name: "strata_serve_update".into(), args: lent(2 + update_caps.len()) },
-        CallEntry { name: "strata_serve_same".into(), args: lent(2) },
         CallEntry { name: "strata_serve_drop_model".into(), args: vec![Arg::Moved] },
         CallEntry { name: "strata_serve_drop_text".into(), args: vec![Arg::Moved] },
         CallEntry { name: "strata_serve_drop_message".into(), args: vec![Arg::Moved] },
@@ -374,14 +371,15 @@ const APP_JS: &str = include_str!("serve/app.js");
 /// The most sessions kept; past it, the oldest is dropped (its page reloads).
 const MAX_SESSIONS: usize = 1000;
 
-/// An app's sessions: each one's model, held in compiled code's memory.
+/// An app's sessions: each one's model, held in compiled code's memory, and
+/// the page it was last sent.
 struct App {
     /// The page's title: the program's name.
     title: String,
     /// How many capabilities `init` and `update` ask for.
     init_caps: usize,
     update_caps: usize,
-    sessions: HashMap<String, i64>,
+    sessions: HashMap<String, (i64, String)>,
     /// Session ids, oldest first.
     order: Vec<String>,
 }
@@ -408,7 +406,7 @@ impl App {
                     }
                 };
                 let id = format!("{:032x}", rand::random::<u128>());
-                self.keep(run, id.clone(), model);
+                self.keep(run, id.clone(), model, body.clone());
                 let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('"', "&quot;");
                 let page = format!(
                     "<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{}</title><script src=\"/_strata/app.js\" defer></script></head><body><div id=\"strata-app\" data-session=\"{id}\">{body}</div></body></html>\n",
@@ -428,7 +426,8 @@ impl App {
         let Ok(sent) = serde_json::from_str::<Json>(body) else { return error(400, "the message is not JSON".into()) };
         let id = sent["session"].as_str().unwrap_or("").to_string();
         // the server restarted, or the session was dropped: the page reloads
-        let Some(&model) = self.sessions.get(&id) else { return text(410, "this session has ended: reload the page".into()) };
+        let Some((model, shown)) = self.sessions.get(&id) else { return text(410, "this session has ended: reload the page".into()) };
+        let model = *model;
         let Some(handler) = sent["handler"].as_i64() else { return error(400, "the handler is not a number".into()) };
         let value = Expr::Str(sent["value"].as_str().unwrap_or("").to_string());
         let mut fields = vec![];
@@ -471,18 +470,6 @@ impl App {
             Ok(n) => n,
             Err(e) => return error(500, e),
         };
-        // nothing changed (a timer's check found nothing new): the page stays
-        match run.call("strata_serve_same", &[model, new]).map(|b| b & 1 == 1) {
-            Ok(true) => {
-                run.drop("strata_serve_drop_model", new);
-                return (204, vec![], String::new());
-            }
-            Ok(false) => {}
-            Err(e) => {
-                run.drop("strata_serve_drop_model", new);
-                return error(500, e);
-            }
-        }
         let body = match App::render(run, new) {
             Ok(b) => b,
             Err(e) => {
@@ -490,20 +477,26 @@ impl App {
                 return error(500, e);
             }
         };
+        // the page the user sees changes to the new model's either way
+        let same = body == *shown;
         run.drop("strata_serve_drop_model", model);
-        self.sessions.insert(id, new);
+        self.sessions.insert(id, (new, body.clone()));
+        // nothing to show (a timer's check found nothing new): the page stays
+        if same {
+            return (204, vec![], String::new());
+        }
         (200, vec![("content-type".into(), "text/html; charset=utf-8".into())], body)
     }
 
-    fn keep(&mut self, run: &Run, id: String, model: i64) {
+    fn keep(&mut self, run: &Run, id: String, model: i64, shown: String) {
         if self.order.len() >= MAX_SESSIONS {
             let old = self.order.remove(0);
-            if let Some(m) = self.sessions.remove(&old) {
+            if let Some((m, _)) = self.sessions.remove(&old) {
                 run.drop("strata_serve_drop_model", m);
             }
         }
         self.order.push(id.clone());
-        self.sessions.insert(id, model);
+        self.sessions.insert(id, (model, shown));
     }
 }
 
