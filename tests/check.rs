@@ -1,7 +1,8 @@
-//! `compiler/check` and `compiler/exhaustive` (the type checker in Strata:
+//! `compiler/check`, `compiler/exhaustive` and `compiler/contracts` (the type checker in Strata:
 //! the compiler package's `check` command) find the errors `strata check`
 //! finds (clashing definitions, unknown names, wrong numbers of arguments,
-//! type mismatches, non-exhaustive matches), worded as it words them.
+//! type mismatches, non-exhaustive matches, contracts and refinements), worded
+//! as it words them.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -140,6 +141,47 @@ fn h(s: Sh) -> Int {
   if s is Sq { return s }
   0
 }
+fn main() { print(1) }
+"#;
+
+const CONTRACTS: &str = r#"type Pos = Int where it > 0
+type Bad = Int where it + 1
+type Name = String where it != "" && len(it.code_points()) <= 3
+type Pt = { x: Int where it >= 0 = -1, y: Int where 1 < it = 2, n: Name = "abcd" }
+type Sh =
+  | Sq { side: Pos = 0 }
+  | Dot
+fn f(a: Int where it > 0) -> Int where it > 1
+  requires 1
+  requires it > 0
+  ensures "s"
+  ensures it > a
+{ a + 1 }
+fn g(a: Int where 3, b: Float) -> Pos
+  requires b * 2.0
+  ensures it
+{ 1 }
+fn h(mut n: Name) -> Int {
+  mut p: Pos = 1
+  p = 0
+  p = -3
+  mut q: Int where it < 10 || it == 20 = 1
+  q = 20
+  q = 15
+  n = ""
+  n = "ok"
+  if q > 2 { p = 0 }
+  q
+}
+trait Sz {
+  fn size(self) -> Int requires 2 ensures 1.5
+  law nonneg(x: Self): 3
+  law ok(x: Self): x.size() >= 0
+}
+impl Sz for Pt {
+  fn size(self) -> Int requires 7 ensures it % 2 { 1 }
+}
+test "t" (n: Int, xs: List[Int]) { assert true }
 fn main() { print(1) }
 "#;
 
@@ -462,6 +504,11 @@ fn unions_and_refinements_as_in_rust() {
 #[test]
 fn static_calls_and_unknown_methods_as_in_rust() {
     same_errors("static", STATIC, &["expected `", "has no method", "unknown function", "needs"]);
+}
+
+#[test]
+fn contracts_and_refinements_as_in_rust() {
+    same_errors("contracts", CONTRACTS, &["clause", "refinement", "law `", "does not satisfy", "unknown variable `it`"]);
 }
 
 /// Capabilities and concurrency: `spawn` outside a `scope`, what a task can't
