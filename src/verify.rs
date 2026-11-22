@@ -455,7 +455,7 @@ fn solve_then_fuzz(vc: &crate::smt::Vc, bin: &crate::smt::Solver, key: &str, sho
         }
         return Verdict::Proven { checks: proven, terminates: None };
     }
-    match fuzz_limited(key, shown, cases, seed, None) {
+    match or_solver_inputs(fuzz_limited(key, shown, cases, seed, None), vc, bin, key, shown, decl, method, cases, seed) {
         Verdict::Fuzzed { cases, discarded, .. } => Verdict::Fuzzed { cases, discarded, proven: proven.len(), unproven, terminates: None },
         Verdict::Skipped { reason } if !unproven.is_empty() => Verdict::Skipped { reason: format!("{reason}; not proven: {}", unproven.join("; ")) },
         other => other,
@@ -553,7 +553,8 @@ fn race(vc: &crate::smt::Vc, bin: &crate::smt::Solver, key: &str, shown: &str, d
         }
         budget.store(FULL, Relaxed);
         solved.store(true, Relaxed);
-        match fuzzer.join().expect("the fuzzer") {
+        let fuzzed = or_solver_inputs(fuzzer.join().expect("the fuzzer"), vc, bin, key, shown, decl, method, cases, seed);
+        match fuzzed {
             Verdict::Fuzzed { cases, discarded, .. } => Verdict::Fuzzed { cases, discarded, proven: proven.len(), unproven, terminates: None },
             Verdict::Skipped { reason } if !unproven.is_empty() => Verdict::Skipped { reason: format!("{reason}; not proven: {}", unproven.join("; ")) },
             other => other,
@@ -574,7 +575,87 @@ pub fn smt_queries(env: &Env, f: &FnDecl, transparent: &crate::fx::HashMap<Strin
 /// there, of the probe's own: the input is discarded), then calling it. Its
 /// own precondition unmet discards it too. `None`: nothing to conclude.
 fn replay(key: &str, shown: &str, decl: &FnDecl, method: bool, vals: &[Expr]) -> Option<Verdict> {
+    match replay_all(key, shown, decl, method, &[vals.to_vec()])?.pop()? {
+        Ran::Failed(v) => Some(v),
+        _ => None,
+    }
+}
+
+/// How many inputs the solver makes for a function random values can't be
+/// made for (each a solver query).
+const SOLVER_INPUTS: usize = 20;
+
+/// The fuzzer's verdict; or, when it couldn't make inputs (a refinement
+/// random values rarely meet: a sorted list, a record whose fields depend on
+/// each other), the function run on inputs the solver makes.
+#[allow(clippy::too_many_arguments)]
+fn or_solver_inputs(v: Verdict, vc: &crate::smt::Vc, bin: &crate::smt::Solver, key: &str, shown: &str, decl: &FnDecl, method: bool, cases: usize, seed: u64) -> Verdict {
+    let gave_up = matches!(&v, Verdict::Skipped { reason } if reason.contains("could not generate") || reason.contains("generated inputs violated the precondition"));
+    if !gave_up {
+        return v;
+    }
+    let mut ivc = crate::smt::Vc::new(vc.env());
+    ivc.transparent = vc.transparent.clone();
+    let inputs = ivc.inputs(decl, bin, SOLVER_INPUTS.min(cases.max(1)), seed);
+    if inputs.is_empty() {
+        return v;
+    }
+    let Some(ran) = replay_all(key, shown, decl, method, &inputs) else { return v };
+    let (mut ok, mut discarded) = (0, 0);
+    for r in ran {
+        match r {
+            Ran::Passed => ok += 1,
+            Ran::Discarded => discarded += 1,
+            Ran::Failed(Verdict::Counterexample { args, kind, message, .. }) => {
+                return Verdict::Counterexample { args, kind, message, found_by: "fuzzer, on inputs from the solver".into(), terminates: None };
+            }
+            Ran::Failed(other) => return other,
+        }
+    }
+    if ok == 0 {
+        return v;
+    }
+    Verdict::Fuzzed { cases: ok, discarded, proven: 0, unproven: vec![], terminates: None }
+}
+
+/// What running a function on one input showed.
+enum Ran {
+    Passed,
+    /// Not an input it accepts: a value outside its parameter's type, or its
+    /// own precondition unmet.
+    Discarded,
+    Failed(Verdict),
+}
+
+/// Run what `key` names on each of `inputs`, compiled as one module.
+fn replay_all(key: &str, shown: &str, decl: &FnDecl, method: bool, inputs: &[Vec<Expr>]) -> Option<Vec<Ran>> {
     let prog = PROGRAM.get()?;
+    let probes: Vec<Decl> = inputs.iter().enumerate().map(|(k, vals)| probe(&format!("strata_verify_replay_{k}"), replay_stmts(key, decl, method, vals))).collect();
+    let faults = run_probes(prog, probes, JIT_STEPS).ok()?;
+    Some(
+        faults
+            .into_iter()
+            .zip(inputs)
+            .map(|(fault, vals)| {
+                let Some(fault) = fault else { return Ran::Passed };
+                let stack = frames(&fault.stack);
+                // an argument not of its parameter's type (a fault of the probe, which has no frame)
+                if stack.is_empty() && fault.kind == "Refinement" {
+                    return Ran::Discarded;
+                }
+                if fault.kind == "Requires" && stack.len() == 1 && fault.message.starts_with(&format!("precondition of `{key}` violated")) {
+                    return Ran::Discarded;
+                }
+                let shown_vals: Vec<&Expr> = decl.params.iter().zip(vals).filter(|(p, _)| !(method && p.name == crate::types::type_arg("Self"))).map(|(_, v)| v).collect();
+                Ran::Failed(counterexample(fault, shown_vals.iter().map(|v| crate::printer::literal(v)).collect(), key, shown))
+            })
+            .collect(),
+    )
+}
+
+/// The statements of a probe calling what `key` names on `vals`: each bound
+/// at its parameter's type, then the call.
+fn replay_stmts(key: &str, decl: &FnDecl, method: bool, vals: &[Expr]) -> Vec<Stmt> {
     // a method's checked form has the hidden type argument first; its wrapper doesn't
     let params: Vec<&Param> = decl.params.iter().filter(|p| !(method && p.name == crate::types::type_arg("Self"))).collect();
     let vals: Vec<&Expr> = decl.params.iter().zip(vals).filter(|(p, _)| !(method && p.name == crate::types::type_arg("Self"))).map(|(_, v)| v).collect();
@@ -594,16 +675,7 @@ fn replay(key: &str, shown: &str, decl: &FnDecl, method: bool, vals: &[Expr]) ->
         }
     }
     stmts.push(Stmt::Let(Pattern::Wild, None, Expr::Call(Box::new(Expr::Var(Symbol::new(key))), args)));
-    let fault = run_probes(prog, vec![probe("strata_verify_replay", stmts)], JIT_STEPS).ok()?.pop()??;
-    let stack = frames(&fault.stack);
-    // an argument not of its parameter's type (a fault of the probe, which has no frame)
-    if stack.is_empty() && fault.kind == "Refinement" {
-        return None;
-    }
-    if fault.kind == "Requires" && stack.len() == 1 && fault.message.starts_with(&format!("precondition of `{key}` violated")) {
-        return None;
-    }
-    Some(counterexample(fault, vals.iter().map(|v| crate::printer::literal(v)).collect(), key, shown))
+    stmts
 }
 
 /// Replace `Self` (and the impl's type parameters, at `Int`) in a method
