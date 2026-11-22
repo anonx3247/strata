@@ -2,6 +2,7 @@
 
 mod build;
 mod check;
+pub mod compare;
 mod codebase;
 mod git;
 mod run;
