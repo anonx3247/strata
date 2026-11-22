@@ -1010,102 +1010,121 @@ fn fake_clocks_drive_after() {
     assert_eq!(jit, (out, code));
 }
 
-/// std's `FakeClock`: its time moves only when told; a sleep of an hour, a
-/// `race` used as a timeout and an `after` arm end when another task moves
-/// the time, with no real waiting, and everything is freed.
+/// When every task waits and none of the waits ends by itself, nothing can
+/// happen any more: a deadlock is reported (a panic naming each wait), not a
+/// silent hang; a real clock's sleep or a long computation isn't one. A
+/// virtual clock's time jumps to the nearest deadline once every task waits:
+/// a timeout, sleeps in the order of their deadlines, an `after` arm, with no
+/// task moving the time.
 #[test]
-fn std_fake_clocks_move_when_told() {
+fn waits_are_known() {
     if !have_clang() {
         eprintln!("skipped: no clang");
         return;
     }
-    let d = tmp("std-fake-clock");
-    let (out, code) = case(&d, "std-fake-clock", STD_FAKE_CLOCK);
-    assert!(code == 0 && out == "0\n1500000000\nslept an hour: true\ntimed out\nthe timer\ntrue\n", "{out}");
-    let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("std-fake-clock.strata")).env("STRATA_MEMORY", "check")), &d.join("std-fake-clock.strata"));
-    assert_eq!(jit, (out, code));
+    let d = tmp("waits");
+    let (out, code) = case(&d, "deadlock", DEADLOCK);
+    assert!(code == 101 && out.contains("deadlock: every task is waiting, so none can go on: main waits in the end of a `scope`, at main; a task waits in `recv`"), "{out}");
+    let (jit_out, jit_code) = output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("deadlock.strata")));
+    assert!(jit_code == 101 && jit_out.contains("deadlock: every task is waiting"), "{jit_out}");
+    for (name, src, want) in [("not-deadlocked", NOT_DEADLOCKED, "1\n196418\n"), ("virtual-time", VIRTUAL_TIME, "timed out\n30\none\ntwo\nthree\n33\nafter 10 s\n43\n")] {
+        let (out, code) = case(&d, name, src);
+        assert!(code == 0 && out == want, "{name}: {out}");
+        let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join(format!("{name}.strata"))).env("STRATA_MEMORY", "check")), &d.join(format!("{name}.strata")));
+        assert_eq!(jit, (out, code), "{name}");
+    }
 }
 
-const STD_FAKE_CLOCK: &str = r#"from std.time use SystemClock, FakeClock, Instant, Duration, fake_clock, nanos, ms, seconds, elapsed
-
-/// Moves `clock` forward a second at a time until a value comes on `rx`.
-fn drive(clock: FakeClock, rx: Receiver[String]) -> String {
-  mut got := ""
-  mut waiting := true
-  while waiting {
-    clock.advance(seconds(1))
-    select {
-      rx.recv() as v => {
-        got = v ?? "ended"
-        waiting = false
-      },
-      clock.after(nanos(0)) => (),
+const DEADLOCK: &str = r#"fn main() {
+  (atx, arx) := channel()
+  (btx, brx) := channel()
+  scope {
+    spawn {
+      x := brx.recv() ?? 0
+      atx.send(x)
+      atx.close()
+    }
+    spawn {
+      y := arx.recv() ?? 0
+      btx.send(y)
+      btx.close()
     }
   }
-  got
+  atx.close()
+  btx.close()
+}
+"#;
+
+const NOT_DEADLOCKED: &str = r#"from std.time use SystemClock, ms
+
+fn fib(n: Int) -> Int {
+  if n < 2 {
+    n
+  } else {
+    fib(n - 1) + fib(n - 2)
+  }
 }
 
-fn never(rx: Receiver[Int]) -> Int {
-  rx.recv() ?? 0
-}
-
-fn main(system: SystemClock) {
-  clock := fake_clock()
-  start := system.now()
-  // the time moves only when told
-  print(clock.now().value)
-  clock.advance(ms(1500))
-  clock.set(Instant(500))
-  print(clock.now().value)
-  // a sleep of an hour, woken by the time another task moves
+fn main(clock: SystemClock) {
   (tx, rx) := channel()
-  slept := scope {
+  // a real sleep while the main thread waits: not a deadlock
+  scope {
     spawn {
-      t0 := clock.now()
-      clock.sleep(seconds(3600))
-      tx.send(f"slept an hour: {elapsed(t0, clock.now()).value >= seconds(3600).value}")
+      clock.sleep(ms(100))
+      tx.send(1)
       tx.close()
     }
     tx.close()
-    drive(clock, rx)
+    print(rx.recv() ?? 0)
   }
-  print(slept)
-  // a timeout: a race whose other side never comes, settled by fake time
-  (tx2, rx2) := channel()
-  (never_tx, never_rx) := channel()
-  timed := scope {
+  // a long computation while the main thread waits: not a deadlock
+  r := scope {
+    h := spawn fib(27)
+    await h
+  }
+  print(r)
+}
+"#;
+
+const VIRTUAL_TIME: &str = r#"from std.time use VirtualClock, seconds
+
+fn answer(rx: Receiver[Int]) -> Int {
+  rx.recv() ?? 0
+}
+
+fn main(clock: VirtualClock) {
+  (tx, rx) := channel()
+  // a timeout no task moves the time for
+  r := race {
+    answer(rx) as v => f"answer {v}",
+    clock.sleep(seconds(30)) => "timed out",
+  }
+  print(r)
+  print(clock.now().value / 1000000000)
+  // sleeps end in the order of their deadlines
+  scope {
     spawn {
-      r := race {
-        never(never_rx) as v => f"got {v}",
-        clock.sleep(seconds(30)) => "timed out",
-      }
-      tx2.send(r)
-      tx2.close()
+      clock.sleep(seconds(3))
+      print("three")
     }
-    tx2.close()
-    drive(clock, rx2)
-  }
-  never_tx.close()
-  print(timed)
-  // an `after` arm of the fake clock in a select
-  (tx3, rx3) := channel()
-  (quiet_tx, quiet_rx) := channel()
-  timer := scope {
     spawn {
-      s := select {
-        quiet_rx.recv() as v => "a value",
-        clock.after(seconds(90)) => "the timer",
-      }
-      tx3.send(s)
-      tx3.close()
+      clock.sleep(seconds(1))
+      print("one")
     }
-    tx3.close()
-    drive(clock, rx3)
+    spawn {
+      clock.sleep(seconds(2))
+      print("two")
+    }
   }
-  quiet_tx.close()
-  print(timer)
-  // none of the fake hours were waited for
-  print(elapsed(start, system.now()).value < seconds(20).value)
+  print(clock.now().value / 1000000000)
+  // an `after` arm
+  s := select {
+    rx.recv() as v => f"got {v ?? 0}",
+    clock.after(seconds(10)) => "after 10 s",
+  }
+  print(s)
+  print(clock.now().value / 1000000000)
+  tx.close()
 }
 "#;
 
