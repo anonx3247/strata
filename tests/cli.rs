@@ -1806,11 +1806,15 @@ fn a_program_has_its_own_timeline() {
     let d = tmp("own-timeline");
     save(&d.join("own.strata"), OWN_TIMELINE);
     let (ok, out) = strata(&["--file", "own.strata", "run"], &d, None);
-    assert!(ok && out.contains("[\"start\", \"at 2 s\"]"), "{out}");
+    assert!(ok && out.contains("[\"start\"]"), "{out}");
+    let (ok, out) = strata(&["--file", "own.strata", "test"], &d, None);
+    assert!(ok && out.contains("1 passed, 0 failed"), "{out}");
     for (name, src, msg) in [
         ("made", "fn f() -> Int {\n  t := host_fake_clock(0)\n  1\n}\n", "`host_fake_clock` is internal to the standard library"),
         ("imported", "use std.time.Timeline\n\nfn f() -> Int {\n  1\n}\n", "`Timeline` is private to module `std.time`"),
         ("named", "fn f(t: std.time.Timeline) -> Int {\n  1\n}\n", "unknown type `std.time.Timeline`"),
+        // `FakeClock` is a mock: only tests (and other mocks) have one
+        ("mocked", "use std.time.{FakeClock}\n\nfn f() -> Int {\n  clock := FakeClock {}\n  1\n}\n", "`FakeClock` is a mock: it is for tests only"),
     ] {
         save(&d.join(format!("{name}.strata")), src);
         let (ok, out) = strata(&["--file", &format!("{name}.strata"), "check"], &d, None);
@@ -1828,10 +1832,14 @@ fn note(t: Timeline, e: String) -> Timeline {
 }
 
 fn main() {
-  clock := fake_clock()
+  print(note(Timeline { events: [] }, "start").events)
+}
+
+test "a fake clock next to a program's own Timeline" {
+  clock := FakeClock {}
   clock.advance(seconds(2))
   t := note(note(Timeline { events: [] }, "start"), f"at {clock.now().value / 1000000000} s")
-  print(t.events)
+  assert t.events == ["start", "at 2 s"]
 }
 "#;
 

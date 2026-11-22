@@ -488,7 +488,7 @@ fn fetch_or_give_up(clock: SystemClock, net: Net, url: String) -> Option[Page] {
 
 In a `select`, `clock.after(d) => …` is an arm that happens once `d` has passed, in that clock's time, since the `select` began (it names nothing): `select { jobs.recv() as j => run(j), clock.after(ms(100)) => flush() }`. Any `Clock` works, so a test can pass a stand-in whose time it controls (one that stands still, or runs faster): its `after` arms and its `sleep` follow its time, not the system's.
 
-std has one: a `FakeClock` (`fake_clock()`, at 0) whose time moves only when told, `clock.advance(seconds(30))` or `clock.set(t)` (never back). Copies share the one time, so one task can move it for the others: every `sleep` and `after` timer of that clock that is due by then ends at once, with no real waiting, so a timeout in a test happens exactly when the test says.
+std has one for tests: `FakeClock`, a mock (so only tests and other mocks have one: `clock := FakeClock {}`, at 0) whose time moves only when told, `clock.advance(seconds(30))` or `clock.set(t)` (never back). Copies share the one time, so one task can move it for the others: every `sleep` and `after` timer of that clock that is due by then ends at once, with no real waiting, so a timeout in a test happens exactly when the test says.
 
 ```rust
 /// Waits for a question; none ever comes.
@@ -497,7 +497,7 @@ fn answer(questions: Receiver[Int]) -> Int {
 }
 
 test "gives up after 30 seconds" {
-  clock := fake_clock()
+  clock := FakeClock {}
   (tx, rx) := channel()
   // nothing is sent on `ask` until the race is over: `answer` never answers
   (ask, questions) := channel()
@@ -530,7 +530,7 @@ test "gives up after 30 seconds" {
 }
 ```
 
-The time of a `fake_clock()` moves only when the test moves it: a sleep that starts after the time was moved waits for the next move, which is why the test moves it in steps until the answer comes (`clock.after(nanos(0))` keeps the `select` from waiting).
+The time of a `FakeClock` moves only when the test moves it: a sleep that starts after the time was moved waits for the next move, which is why the test moves it in steps until the answer comes (`clock.after(nanos(0))` keeps the `select` from waiting).
 
 A test that would rather not move the time asks for a `VirtualClock`, a capability like `SystemClock`: each test (and the program, for `main`) has its own virtual time, at 0 when it starts and shared by its tasks, and it moves by itself: once every task is waiting and one of them waits for this clock, its time jumps to the nearest such deadline. The same test needs no task moving the time:
 
@@ -748,7 +748,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 |---|---|
 | `std.io` | `Console` (`print`, `write`, `eprint`, `read_line`); `Recorder` / `recorder(input)` / `printed(r)` for tests |
 | `std.fs` | `Files` (`read`, `read_bytes`, `write`, `append`, `exists`, `list`, `make_dir`, `remove`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
-| `std.time` | `Clock` (`now`, `sleep`), the `SystemClock` capability, `FakeClock` (`fake_clock()`, `advance`, `set`) and the `VirtualClock` capability (its own time per test, moving by itself) for tests; `Duration` (`nanos`, `micros`, `ms`, `seconds`), `Instant`, `elapsed`; `clock.after(d)` as a `select` arm |
+| `std.time` | `Clock` (`now`, `sleep`), the `SystemClock` capability, the `FakeClock` mock (`FakeClock {}`, `advance`, `set`) and the `VirtualClock` capability (its own time per test, moving by itself) for tests; `Duration` (`nanos`, `micros`, `ms`, `seconds`), `Instant`, `elapsed`; `clock.after(d)` as a `select` arm |
 | `std.process` | `Environment` (`args`, `var`), `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
 | `std.code` | `Codebase`, a capability, and the capability trait it implements, `Code` (`version`, `snapshot`): the codebase in the current folder as the tools see it: each `Definition` with its interface and source text, what it uses and what uses it, holes, errors and cached verdicts, and the package's log. `strata ui`'s viewer reads it |
 | `std.cli` | `CommandLine`: a record of options read from the arguments |
