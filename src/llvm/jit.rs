@@ -4,6 +4,7 @@
 //! machine code in memory. Its runtime calls go to the C runtime built into
 //! strata (build.rs), the one `strata build` links with.
 
+use crate::ast::Expr;
 use inkwell::OptimizationLevel;
 use inkwell::context::Context;
 use inkwell::memory_buffer::MemoryBuffer;
@@ -37,8 +38,6 @@ unsafe extern "C" {
     fn strata_init();
     fn strata_seed();
     fn strata_step();
-    fn strata_fuzz_arg();
-    fn strata_fuzz_args();
     fn strata_fuzz();
     fn strata_test_printed();
     fn strata_test_stack();
@@ -153,8 +152,7 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_init", strata_init as *const () as usize),
         ("strata_seed", strata_seed as *const () as usize),
         ("strata_step", strata_step as *const () as usize),
-        ("strata_fuzz_arg", strata_fuzz_arg as *const () as usize),
-        ("strata_fuzz_args", strata_fuzz_args as *const () as usize),
+        ("strata_fuzz_keep", fuzz_keep as *const () as usize),
         ("strata_fuzz", strata_fuzz as *const () as usize),
         ("strata_test_printed", strata_test_printed as *const () as usize),
         ("strata_test_stack", strata_test_stack as *const () as usize),
@@ -291,15 +289,39 @@ pub fn run_tests(ir: &str, which: &[usize]) -> Result<Vec<TestOutcome>, String> 
     Ok(out)
 }
 
+/// The shapes of each fuzz driver's arguments, by the driver's address.
+static FUZZ_SHAPES: std::sync::Mutex<Option<(std::collections::HashMap<usize, Vec<super::Shape>>, super::Shapes)>> = std::sync::Mutex::new(None);
+
+thread_local! {
+    /// The driver running (its address), and the arguments it made so far.
+    static FUZZING: std::cell::RefCell<(usize, Vec<Expr>)> = const { std::cell::RefCell::new((0, Vec::new())) };
+}
+
+/// `strata_fuzz_keep(k, slot)`: the running driver's argument `k`, just
+/// made, read by its shape (before the call it is passed to can change it).
+extern "C" fn fuzz_keep(k: i64, raw: i64) {
+    let shapes = FUZZ_SHAPES.lock().unwrap_or_else(|e| e.into_inner());
+    let Some((per, named)) = shapes.as_ref() else { return };
+    FUZZING.with(|f| {
+        let mut f = f.borrow_mut();
+        let Some(shape) = per.get(&f.0).and_then(|ss| ss.get(k as usize)) else { return };
+        // SAFETY: the driver passes a live value of the shape it was compiled with
+        let v = unsafe { super::native::read(shape, named, raw) }.unwrap_or_else(|m| Expr::Str(format!("<{m}>")));
+        f.1.push(v);
+    });
+}
+
 /// The fuzz drivers of IR `compile_fuzz` made, compiled for good (the
-/// engine lives as long as the process): their addresses, in order.
-pub fn fuzzers(ir: &str, n: usize) -> Result<Vec<usize>, String> {
+/// engine lives as long as the process): their addresses, in order. `shapes`:
+/// each one's arguments'.
+pub fn fuzzers(ir: &str, shapes: Vec<Vec<super::Shape>>, named: super::Shapes) -> Result<Vec<usize>, String> {
     use std::ffi::c_char;
     let ctx: &'static Context = Box::leak(Box::new(Context::create()));
     // unoptimized: compiling the drivers costs more than optimizing saves on a few hundred cases
     let engine = engine_at(ctx, ir, false)?;
-    let addrs = (0..n).map(|i| engine.get_function_address(&format!("strata.fuzz.{i}")).map_err(|e| e.to_string())).collect::<Result<Vec<_>, _>>()?;
+    let addrs = (0..shapes.len()).map(|i| engine.get_function_address(&format!("strata.fuzz.{i}")).map_err(|e| e.to_string())).collect::<Result<Vec<_>, _>>()?;
     std::mem::forget(engine);
+    *FUZZ_SHAPES.lock().unwrap_or_else(|e| e.into_inner()) = Some((addrs.iter().copied().zip(shapes).collect(), named));
     type Init = unsafe extern "C" fn(i32, *const *const c_char);
     let init: Init = unsafe { std::mem::transmute(strata_init as *const ()) };
     let name = std::ffi::CString::new("verify").unwrap();
@@ -311,31 +333,31 @@ pub fn fuzzers(ir: &str, n: usize) -> Result<Vec<usize>, String> {
 
 /// One fuzzing case of the driver at `addr`, seeded, within `budget` steps:
 /// the fault that ended it (kind, message, call stack), if any, and its
-/// arguments as JSON. (Not reentrant: the runtime's state is global.)
-pub fn fuzz_case(addr: usize, seed: u64, budget: i64) -> (Option<(String, String, String)>, String) {
+/// arguments, as the code that writes them.
+pub fn fuzz_case(addr: usize, seed: u64, budget: i64) -> (Option<(String, String, String)>, Vec<Expr>) {
     let _one = one_run();
     use std::ffi::{c_char, CStr};
     type Fuzz = unsafe extern "C" fn(unsafe extern "C" fn(), i64, i64) -> i32;
     type Text = unsafe extern "C" fn() -> *const c_char;
     type Message = unsafe extern "C" fn() -> *const i64;
-    let (fuzz, kind, message, stack, args): (Fuzz, Text, Message, Text, Text) = unsafe {
+    let (fuzz, kind, message, stack): (Fuzz, Text, Message, Text) = unsafe {
         (
             std::mem::transmute(strata_fuzz as *const ()),
             std::mem::transmute(strata_test_kind as *const ()),
             std::mem::transmute(strata_test_message as *const ()),
             std::mem::transmute(strata_test_stack as *const ()),
-            std::mem::transmute(strata_fuzz_args as *const ()),
         )
     };
     let text = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().to_string();
     let f: unsafe extern "C" fn() = unsafe { std::mem::transmute(addr) };
+    FUZZING.with(|f| *f.borrow_mut() = (addr, vec![]));
     let failed = unsafe { fuzz(f, seed as i64, budget) } != 0;
     let fault = failed.then(|| {
         let m = unsafe { message() };
         let msg = unsafe { std::slice::from_raw_parts(m.add(1) as *const u8, *m as usize) };
         (text(unsafe { kind() }), String::from_utf8_lossy(msg).to_string(), text(unsafe { stack() }))
     });
-    (fault, text(unsafe { args() }))
+    (fault, FUZZING.with(|f| std::mem::take(&mut f.borrow_mut().1)))
 }
 
 /// A fault that ended compiled code: its kind (`Refinement`, `Limit`, ...),
@@ -358,13 +380,13 @@ fn one_run() -> std::sync::MutexGuard<'static, ()> {
     RUNTIME.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-pub fn comptime(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget: i64) -> Result<Vec<Result<crate::interp::Value, Fault>>, String> {
+pub fn comptime(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget: i64) -> Result<Vec<Result<crate::ast::Expr, Fault>>, String> {
     Ok(run_kept(ir, roots, shapes, budget, false)?.into_iter().map(|(r, _)| r).collect())
 }
 
 /// `comptime`, optionally optimized (`strata run f [args]`: what it runs may
 /// be long), with what each one printed.
-pub fn run_kept(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget: i64, optimize: bool) -> Result<Vec<(Result<crate::interp::Value, Fault>, String)>, String> {
+pub fn run_kept(ir: &str, roots: &[super::Shape], shapes: &super::Shapes, budget: i64, optimize: bool) -> Result<Vec<(Result<crate::ast::Expr, Fault>, String)>, String> {
     use std::ffi::{c_char, CStr};
     let ctx = Context::create();
     let engine = engine_at(&ctx, ir, optimize)?;

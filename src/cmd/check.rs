@@ -264,7 +264,7 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
             }
             verify::Verdict::Counterexample { args, kind, message, found_by, .. } => {
                 let by = if found_by.is_empty() { String::new() } else { format!(" (found by the {found_by})") };
-                println!("✗ {n:<24} {kind} violation{by}{c}\n    input:   {args}");
+                println!("✗ {n:<24} {kind} violation{by}{c}\n    input:   {}", args.join(", "));
                 println!("    {message}");
             }
             verify::Verdict::Incomplete { message, .. } => println!("○ {n:<24} incomplete: {message}{c}"),
@@ -340,7 +340,7 @@ fn jit_fuzzers(resolved: &Program, env: &types::Env, chosen: &[bool], say_why: b
     // all at once; when that fails, each alone, to leave out only what doesn't compile
     let mut failed = HashMap::default();
     let ir = match llvm::compile_fuzz(&prog, &targets) {
-        Ok(ir) => Some(ir),
+        Ok(made) => Some(made),
         Err(_) => {
             let mut ok = vec![];
             for t in targets.drain(..) {
@@ -358,7 +358,7 @@ fn jit_fuzzers(resolved: &Program, env: &types::Env, chosen: &[bool], say_why: b
             llvm::compile_fuzz(&prog, &targets).ok()
         }
     };
-    let drivers = match ir.map(|ir| llvm::jit::fuzzers(&ir, targets.len())) {
+    let drivers = match ir.map(|(ir, shapes, named)| llvm::jit::fuzzers(&ir, shapes, named)) {
         Some(Ok(addrs)) => targets.iter().zip(addrs).map(|(t, a)| (t.name.clone(), a)).collect(),
         Some(Err(e)) => {
             if say_why {
