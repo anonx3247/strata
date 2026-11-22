@@ -314,6 +314,51 @@ fn cross_check_catches_a_wrong_prover() {
 }
 
 #[test]
+fn values_are_datatypes_in_the_prover() {
+    if !has_solver() {
+        return;
+    }
+    // records and sums are SMT datatypes: a value is never one of its own
+    // parts, equal values have equal parts, a pattern three levels deep is
+    // read through selectors
+    let d = tmp("smt-datatypes");
+    let src = "type Tree = Leaf | Node { left: Tree, value: Int, right: Tree }
+
+fn not_own_child(t: Tree) -> Bool
+  ensures it
+{
+  match t {
+    Leaf => true,
+    Node { left, .. } => t != left,
+  }
+}
+
+fn same_left(a: Tree, b: Tree) -> Bool
+  requires a == b
+  ensures it
+{
+  match (a, b) {
+    (Node { left: l1, .. }, Node { left: l2, .. }) => l1 == l2,
+    _ => true,
+  }
+}
+
+fn grand(t: Tree) -> Int
+  requires match t { Node { left: Node { left: Node { value, .. }, .. }, .. } => value > 0, _ => false }
+  ensures it > 0
+{
+  match t {
+    Node { left: Node { left: Node { value, .. }, .. }, .. } => value,
+    _ => 1,
+  }
+}
+";
+    save(&d.join("b.strata"), src);
+    let (ok, out) = strata(&["--file", "b.strata", "verify", "--no-race"], &d, None);
+    assert!(ok && out.contains("✓ not_own_child") && out.contains("✓ same_left") && out.contains("✓ grand"), "{out}");
+}
+
+#[test]
 fn solver_flags_follow_the_solver() {
     // fake solvers that record how they are called: cvc5 gets its own flags
     let d = tmp("solver-flags");

@@ -2,9 +2,10 @@
 //! SMT solver (Z3) proves or refutes.
 //!
 //! The body is executed symbolically. Values are SMT terms (`Int`, `Bool`,
-//! `String`), records and sums are kept as structures of terms (a sum is a tag
-//! plus the payload of every constructor), whose structured parts are made
-//! when the code first reads them (`Val::Lazy`), and lists are tracked by position
+//! `String`), records and sums are structures of terms at their outer level
+//! (a sum is a tag plus the payload of every constructor), whose structured
+//! parts are terms of SMT datatypes, opened when the code first reads them
+//! (`Val::Data`, `data.rs`), and lists are tracked by position
 //! where they can be (a checked list's element is a function of its position;
 //! slices, `+` and literals translate positions) and otherwise by their
 //! length only. A branch splits the path condition and the two results are
