@@ -1,7 +1,8 @@
-//! `compiler/check` and `compiler/exhaustive` (the type checker in Strata:
+//! `compiler/check`, `compiler/exhaustive` and `compiler/contracts` (the type checker in Strata:
 //! the compiler package's `check` command) find the errors `strata check`
 //! finds (clashing definitions, unknown names, wrong numbers of arguments,
-//! type mismatches, non-exhaustive matches), worded as it words them.
+//! type mismatches, non-exhaustive matches, contracts and refinements), worded
+//! as it words them.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -143,6 +144,88 @@ fn h(s: Sh) -> Int {
 fn main() { print(1) }
 "#;
 
+const CONTRACTS: &str = r#"type Pos = Int where it > 0
+type Bad = Int where it + 1
+type Name = String where it != "" && len(it.code_points()) <= 3
+type Pt = { x: Int where it >= 0 = -1, y: Int where 1 < it = 2, n: Name = "abcd" }
+type Sh =
+  | Sq { side: Pos = 0 }
+  | Dot
+fn f(a: Int where it > 0) -> Int where it > 1
+  requires 1
+  requires it > 0
+  ensures "s"
+  ensures it > a
+{ a + 1 }
+fn g(a: Int where 3, b: Float) -> Pos
+  requires b * 2.0
+  ensures it
+{ 1 }
+fn h(mut n: Name) -> Int {
+  mut p: Pos = 1
+  p = 0
+  p = -3
+  mut q: Int where it < 10 || it == 20 = 1
+  q = 20
+  q = 15
+  n = ""
+  n = "ok"
+  if q > 2 { p = 0 }
+  q
+}
+trait Sz {
+  fn size(self) -> Int requires 2 ensures 1.5
+  law nonneg(x: Self): 3
+  law ok(x: Self): x.size() >= 0
+}
+impl Sz for Pt {
+  fn size(self) -> Int requires 7 ensures it % 2 { 1 }
+}
+test "t" (n: Int, xs: List[Int]) { assert true }
+fn main() { print(1) }
+"#;
+
+const MUTS: &str = r#"type Pt = { x: Int, y: Int }
+fn bump(mut n: Int) { n += 1 }
+fn show(n: Int) -> Int { n }
+fn shift(mut p: Pt) { p.x = 3 }
+fn a() {
+  x := 1
+  x = 2
+  mut y := 1
+  y = 3
+  bump(y)
+  bump(mut y)
+  show(mut y)
+  bump(mut x)
+  bump(3)
+  q := mut y
+  p := Pt { x: 1, y: 2 }
+  p.x = 4
+  shift(mut p)
+  mut r := Pt { x: 1, y: 2 }
+  shift(r)
+  f := k -> { y = k }
+  f(mut y)
+  for i in [1, 2] { i = 3 }
+  if true {
+    y := 5
+    y = 6
+  }
+  y = 7
+}
+fn b(n: Int, mut m: Int) {
+  n = 1
+  m = 2
+  bump(mut n)
+}
+fn c(mut n: Int) {
+  n := 1
+  n = 2
+}
+fn main() { print(1) }
+"#;
+
 const TRAITS: &str = r#"trait Area {
   fn area(self) -> Int
 }
@@ -181,6 +264,26 @@ fn d2() -> Float { let y: Id = 3
   y }
 fn e2(c: Bool) -> Float { z := if c { "s" } else { 1 }
   z }
+fn main() { print(1) }
+"#;
+
+const STATIC: &str = r#"type Item = { n: Int }
+impl Item {
+  fn new(n: Int) -> Item { Item { n } }
+  fn size(self) -> Int { self.n }
+}
+trait Zero {
+  fn zero() -> Self
+}
+impl Zero for Item {
+  fn zero() -> Self { Item { n: 0 } }
+}
+fn a() -> Int { Item.new(1) }
+fn b() -> Item { Item.new("x") }
+fn c() -> Item { Item.make() }
+fn d[T: Zero]() -> Int { T.zero() }
+fn e(i: Item) -> Int { i.nope() }
+fn f() -> String { Item.zero() }
 fn main() { print(1) }
 "#;
 
@@ -389,9 +492,90 @@ fn bounds_and_generic_impls_as_in_rust() {
 }
 
 #[test]
+fn mut_rules_as_in_rust() {
+    same_errors("muts", MUTS, &["mut", "closure"]);
+}
+
+#[test]
 fn unions_and_refinements_as_in_rust() {
     same_errors("unions", UNIONS, &["expected `"]);
 }
+
+#[test]
+fn static_calls_and_unknown_methods_as_in_rust() {
+    same_errors("static", STATIC, &["expected `", "has no method", "unknown function", "needs"]);
+}
+
+#[test]
+fn contracts_and_refinements_as_in_rust() {
+    same_errors("contracts", CONTRACTS, &["clause", "refinement", "law `", "does not satisfy", "unknown variable `it`"]);
+}
+
+/// Capabilities and concurrency: `spawn` outside a `scope`, what a task can't
+/// leave, `select` and `race` arms, senders never closed, a capability made
+/// by the program, a test asking for a non-capability, a `pub extern`.
+const CAPABILITIES: &str = r#"capability NightLamp {
+  fn on() -> Int { 1 }
+}
+type Pt = { x: Int }
+pub extern c fn cabs(x: I64) -> I64
+fn work(n: Int) -> Int { n + 1 }
+fn opt(n: Int) -> Option[Int] { Some(n) }
+fn loose() -> Int {
+  h := spawn work(1)
+  await h
+}
+fn sel(tx: Sender[Int], rx: Receiver[Int]) -> Int {
+  scope {
+    h := spawn work(2)
+    select {
+      work(3) as y => 1,
+      tx.send(1) as z => 2,
+      await h as r => r,
+    }
+  }
+}
+fn empty() -> Int {
+  select { }
+}
+fn none() -> Int {
+  race { }
+}
+fn tasks() -> Int {
+  scope {
+    a := spawn { return 1 }
+    b := spawn { opt(2)? }
+    c := spawn { xs := [1, 2].map(x -> spawn work(x))
+      0 }
+    await a
+  }
+}
+fn chans() -> Int {
+  scope {
+    (tx, rx) := channel(1)
+    (ty, ry) := channel(1)
+    h := spawn { tx.send(1)
+      0 }
+    g := spawn { ty.send(1)
+      ty.close()
+      0 }
+    ty.close()
+    1
+  }
+}
+fn racer() -> Int {
+  race {
+    work(1) as a => a,
+    { return 2 } as b => b,
+  }
+}
+fn lamp() -> Int {
+  l := NightLamp
+  1
+}
+test "asks" (n: Int, p: Pt, l: NightLamp) { assert true }
+fn main() { print(1) }
+"#;
 
 /// The compiler's errors on `text` are `strata check`'s, on the lines holding one of `keys`.
 fn same_errors(name: &str, text: &str, keys: &[&str]) {
@@ -408,4 +592,13 @@ fn same_errors(name: &str, text: &str, keys: &[&str]) {
     assert!(!want.is_empty(), "{all}");
     assert_eq!(got, want);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn capabilities_and_concurrency_as_in_rust() {
+    same_errors(
+        "capabilities",
+        CAPABILITIES,
+        &["outside a `scope`", "can't leave a task", "can't return from a task", "needs at least one arm", "arm waits on", "gives nothing to name", "never closed here", "holds a copy of", "is a capability", "test parameter", "never `pub`"],
+    );
 }
