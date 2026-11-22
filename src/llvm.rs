@@ -180,6 +180,16 @@ thread_local! {
     static TRACING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// `f` compiling without tracing: compile-time code made while a traced
+/// program compiles (a literal pattern's matcher) is the compiler's work,
+/// not the program's.
+pub fn untraced<R>(f: impl FnOnce() -> R) -> R {
+    let was = TRACING.with(|t| t.replace(false));
+    let r = f();
+    TRACING.with(|t| t.set(was));
+    r
+}
+
 /// `compile_comptime`, traced (`strata run f [args] --trace`).
 pub fn compile_traced_comptime(prog: &Program, fns: &[String]) -> Res<(String, Vec<Shape>, Shapes)> {
     TRACING.with(|t| t.set(true));
@@ -246,6 +256,14 @@ pub enum Shape {
     Distinct(String, Box<Shape>),
     /// A union: each member, with its box's tag if it is boxed.
     Union(Vec<(Option<i64>, Shape)>),
+}
+
+/// What `--trace` reads: each traced function instance's name, arguments'
+/// shapes (`None`: no value) and result's, and the named shapes they use.
+#[derive(Debug, Clone, Default)]
+pub struct Traced {
+    pub fns: Vec<(String, Vec<Option<Shape>>, Option<Shape>)>,
+    pub named: Shapes,
 }
 
 /// A constructor of a named shape: its tag, name, whether it makes a record
@@ -431,7 +449,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers };
     // std's precompiled functions, but while making them, tracing, or in a library
     if !BUILDING_STD.with(|b| b.get()) && !m.tracing && !matches!(entry, Entry::Library(_)) {
         m.precompiled = jit::std_library().map(|l| &l.names);
@@ -531,6 +549,10 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         let (per, named) = std::mem::take(&mut m.fuzz_kept);
         shapes = Some((per.into_iter().flatten().collect(), named));
     }
+    // what `--trace` reads values by (the JIT's hooks print them)
+    if m.tracing {
+        jit::set_traced(std::mem::take(&mut m.traced));
+    }
     let mut out = String::from("; Strata, compiled by `strata build`\n\n");
     out += &m.globals;
     out += "\n";
@@ -596,8 +618,9 @@ declare void @strata_step()
 declare void @strata_fuzz_keep(i64, i64)
 declare void @strata_ct_keep(i64)
 declare void @strata_leave()
-declare void @strata_trace_call(ptr, ptr)
-declare void @strata_trace_return(ptr, ptr)
+declare void @strata_trace_arg(i64, i64, i64)
+declare void @strata_trace_call(i64)
+declare void @strata_trace_return(i64, i64)
 declare void @strata_overflow() noreturn cold
 declare void @strata_main_error(ptr)
 declare i64 @strata_div(i64, i64)
@@ -848,6 +871,9 @@ struct Module<'a> {
     /// The shapes of each fuzz driver's arguments (handed to the runtime as
     /// they are made: `strata_fuzz_keep`), and the named shapes they use.
     fuzz_kept: (Vec<Vec<Shape>>, Shapes),
+    /// `--trace`: each traced function instance (its id is its place): its
+    /// name, its arguments' shapes (`None`: no value) and its result's.
+    traced: Traced,
     /// `strata run --trace`: each function of the program reports its calls and returns.
     tracing: bool,
     /// Generators made (by the type and hints they generate), and mock methods.
@@ -1432,24 +1458,25 @@ impl<'a> Module<'a> {
             c.store(&v, &slot)?;
         }
         if c.m.tracing && framed && !name.starts_with("strata_") {
-            // `{"event":"call","fn":…,"args":[…],"depth":n}` (the runtime adds the depth)
-            let mut parts = vec![Part::Lit("[".into())];
-            for (i, p) in f.params.iter().enumerate() {
+            // each argument handed to strata (`strata_trace_arg`, read by its shape), then the call
+            let id = c.m.traced.fns.len();
+            let mut named = std::mem::take(&mut c.m.traced.named);
+            let mut shapes = vec![];
+            for (k, p) in f.params.iter().enumerate() {
                 let v = c.load(&p.name)?;
-                if i > 0 {
-                    parts.push(Part::Lit(",".into()));
-                }
                 if has_value(&v.0) {
-                    let shown = c.json(&v)?;
-                    parts.push(Part::Val(shown));
+                    shapes.push(Some(c.m.shape(&v.0, &mut named)?));
+                    let slot = c.as_slot(&v)?;
+                    c.emit(format!("call void @strata_trace_arg(i64 {id}, i64 {k}, i64 {slot})"));
                 } else {
-                    parts.push(Part::Lit("null".into()));
+                    shapes.push(None);
                 }
             }
-            parts.push(Part::Lit("]".into()));
-            let args = c.concat(parts)?;
-            let n = c.m.string(&serde_json::to_string(name).unwrap());
-            c.emit(format!("call void @strata_trace_call(ptr {n}, ptr {})", args.1));
+            let result = if has_value(&ret) { Some(c.m.shape(&ret, &mut named)?) } else { None };
+            c.m.traced.named = named;
+            c.m.traced.fns.push((name.to_string(), shapes, result));
+            c.emit(format!("call void @strata_trace_call(i64 {id})"));
+            c.trace_id = Some(id);
         }
         // the written types of the program's own declaration (inline refinements are its nodes)
         for p in own.own_params {
@@ -1516,10 +1543,9 @@ impl<'a> Module<'a> {
             }
             c.pop_scope()?;
         }
-        if c.m.tracing && framed && !name.starts_with("strata_") {
-            let shown = if has_value(&ret) { c.json(&result)? } else { c.m.string("null") };
-            let n = c.m.string(&serde_json::to_string(name).unwrap());
-            c.emit(format!("call void @strata_trace_return(ptr {n}, ptr {shown})"));
+        if let Some(id) = c.trace_id {
+            let slot = if has_value(&ret) { c.as_slot(&result)? } else { "0".into() };
+            c.emit(format!("call void @strata_trace_return(i64 {id}, i64 {slot})"));
         }
         if framed {
             c.emit("call void @strata_leave()".into());
@@ -1766,6 +1792,8 @@ struct Func<'m, 'a> {
     fail_marks: HashMap<String, usize>,
     /// The result's type and slot.
     ret_slot: Option<(Ty, String)>,
+    /// `--trace`: this function's id among the traced (it reports its return).
+    trace_id: Option<usize>,
     /// The current block, and whether it has ended (with a jump or `ret`).
     cur: String,
     terminated: bool,
@@ -1775,7 +1803,7 @@ struct Func<'m, 'a> {
 
 impl<'m, 'a> Func<'m, 'a> {
     fn new(m: &'m mut Module<'a>, sub: HashMap<Symbol, Ty>) -> Self {
-        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, cur: String::new(), terminated: true, places: vec![] }
+        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![] }
     }
 
     /// The function's text: the slots, then the code.
@@ -7026,7 +7054,7 @@ impl Func<'_, '_> {
         };
         if let TypeExpr::Named(n, args) = t {
             if n == crate::types::TYPE_ARG {
-                let s = self.string(&args.first().map(crate::interp::type_text).unwrap_or_default());
+                let s = self.string(&args.first().map(crate::printer::type_text).unwrap_or_default());
                 return Ok(s);
             }
         }

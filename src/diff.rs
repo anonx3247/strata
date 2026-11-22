@@ -609,6 +609,26 @@ fn effective_renames(old: &Program, new: &Program, renames: &[(String, String)])
 
 /// The structural diff from `old` to `new`.
 pub fn diff(old: &Program, new: &Program, renames: &[(String, String)], steps: &StepNames, verdicts: &HashMap<String, Verdict>) -> Json {
+    // each side's dependency graph and code hashes, built once (resolving is
+    // costly) and only if a closure hash is needed: to look a verdict up
+    // (with none, there's nothing to look up)
+    type Closure = (std::collections::BTreeMap<String, std::collections::BTreeSet<String>>, HashMap<String, String>);
+    let closures = |p: &Program| -> Closure { (store::graph(p), p.decls.iter().map(|d| (d.qname(), store::code_hash(d))).collect()) };
+    let (old_c, new_c) = (std::cell::OnceCell::<Closure>::new(), std::cell::OnceCell::<Closure>::new());
+    let closure_old = |n: &str| {
+        if verdicts.is_empty() {
+            return String::new();
+        }
+        let (g, h) = old_c.get_or_init(|| closures(old));
+        store::closure_hash_in(g, h, n)
+    };
+    let closure_new = |n: &str| {
+        if verdicts.is_empty() {
+            return String::new();
+        }
+        let (g, h) = new_c.get_or_init(|| closures(new));
+        store::closure_hash_in(g, h, n)
+    };
     // renames of a variant, trait method or field: (from, to, kind, owning definition)
     let members: Vec<(String, String, &str, String)> = renames
         .iter()
@@ -793,8 +813,8 @@ pub fn diff(old: &Program, new: &Program, renames: &[(String, String)], steps: &
         let owned: Vec<String> = [o.map(|x| x.qname()), n.map(|x| x.qname())].into_iter().flatten().collect();
         let name_refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
         let verdict = {
-            let before = o.map(|o| verdict_word(verdicts.get(&store::closure_hash(old, &o.qname()))));
-            let after = n.map(|n| verdict_word(verdicts.get(&store::closure_hash(new, &n.qname()))));
+            let before = o.map(|o| verdict_word(verdicts.get(&closure_old(&o.qname()))));
+            let after = n.map(|n| verdict_word(verdicts.get(&closure_new(&n.qname()))));
             json!({"before": before, "after": after})
         };
         let sect = section(kind, mk, interface_changed);
@@ -822,8 +842,8 @@ pub fn diff(old: &Program, new: &Program, renames: &[(String, String)], steps: &
     for d in &new.decls {
         let q = d.qname();
         let oq = renamed_to.get(q.as_str()).map(|s| s.to_string()).unwrap_or(q.clone());
-        let before_hash = om.get(&oq).map(|_| store::closure_hash(old, &oq));
-        let after_hash = store::closure_hash(new, &q);
+        let before_hash = om.get(&oq).map(|_| closure_old(&oq));
+        let after_hash = closure_new(&q);
         if before_hash.as_deref() == Some(after_hash.as_str()) {
             continue;
         }

@@ -215,30 +215,13 @@ void strata_enter(Str *name) {
   runs++;
 }
 
-// `strata run --trace`: a JSON line per call and return, on stderr, as the
-// interpreter wrote them (the depth counted here). `fn` is the name as JSON;
-// the arguments and value are JSON made by the generated code (consumed).
-static _Thread_local int64_t trace_depth;
-
-void strata_trace_call(Str *fn, Str *args) {
-  trace_depth++;
-  fprintf(stderr, "{\"event\":\"call\",\"fn\":%.*s,\"args\":%.*s,\"depth\":%lld}\n", (int)fn->len, fn->bytes, (int)args->len, args->bytes, (long long)trace_depth);
-  str_drop(args);
-}
-
-void strata_trace_return(Str *fn, Str *value) {
-  fprintf(stderr, "{\"event\":\"return\",\"fn\":%.*s,\"value\":%.*s,\"depth\":%lld}\n", (int)fn->len, fn->bytes, (int)value->len, value->bytes, (long long)trace_depth);
-  trace_depth--;
-  str_drop(value);
-}
-
 void strata_leave(void) {
   if (runs <= FRAMES && --counts[runs - 1] > 0) return;
   runs--;
 }
 
 // The call stack as `strata run` shows it ("" when empty): as the
-// interpreter's `show_stack`, four or more calls in a row of one function
+// `names::show_stack`, four or more calls in a row of one function
 // are one entry.
 static char *stack_text(void) {
   size_t n = 16;

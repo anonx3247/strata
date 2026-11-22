@@ -41,6 +41,8 @@ pub struct Package {
     pub json: JsonRules,
     /// `[native]`: the C that `extern c` declarations are linked to
     pub native: Native,
+    /// `[ui]`: the viewer's settings
+    pub ui: UiRules,
 }
 
 /// `[run]`: `mode = true` lets `main` and tests ask how the program is run
@@ -154,6 +156,18 @@ struct Raw {
     native: Native,
     #[serde(default)]
     run: RunRules,
+    #[serde(default)]
+    ui: UiRules,
+}
+
+/// `[ui]`: the viewer's settings (`strata ui`).
+#[derive(serde::Deserialize, Clone, Default, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct UiRules {
+    /// the command that runs an agent over ACP, in the Agents mode
+    pub agent: Option<String>,
+    /// new agent sessions run their tools without asking
+    pub auto_allow: Option<bool>,
 }
 
 pub fn load(dir: &Path) -> Result<Package, String> {
@@ -187,7 +201,7 @@ pub fn load(dir: &Path) -> Result<Package, String> {
         }
     }
     let _ = NATIVE.set((dir.to_path_buf(), raw.native.clone()));
-    Ok(Package { dir: dir.to_path_buf(), name: raw.name, exports: raw.exports, verify: raw.verify, auto_commit: raw.auto_commit.unwrap_or(true), json: raw.json, native: raw.native })
+    Ok(Package { dir: dir.to_path_buf(), name: raw.name, exports: raw.exports, verify: raw.verify, auto_commit: raw.auto_commit.unwrap_or(true), json: raw.json, native: raw.native, ui: raw.ui })
 }
 
 /// The package a file or folder belongs to: the nearest folder at or above it

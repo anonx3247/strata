@@ -117,7 +117,8 @@ Git:
                                form, the bytes strata writes for it (--fix rewrites them)
 
 Views:
-  ui [--port 7777]                live viewer in the browser (map, levels, holes, activity)
+  ui [--port 7777]                the workspace in the browser: agents over ACP, the code
+                                  with its git activity, PRs (through gh)
   view [SELECTOR] [--level 0-2] [--mocks]
                                   SELECTOR: name | prefix* | slice:Name | a,b (mocks
                                   only with --mocks or by name)

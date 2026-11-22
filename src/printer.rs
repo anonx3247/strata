@@ -226,6 +226,9 @@ pub const WIDTH: usize = 80;
 /// Would this single-line text overflow the width at indent depth `d`?
 /// (12 columns are kept for whatever precedes it on the line, e.g. `x := `.)
 fn too_long(s: &str, d: usize) -> bool {
+    if ONE_LINE.with(|o| o.get()) {
+        return false;
+    }
     let mut lines = s.lines();
     lines.next().map_or(0, |l| l.chars().count()) + 2 * d + 12 > WIDTH || lines.any(|l| l.chars().count() > WIDTH)
 }
@@ -274,12 +277,21 @@ fn shown(n: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+thread_local! {
+    /// Printing on one line, however long (`literal`).
+    static ONE_LINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// A value (a literal: what compiled code or the solver gave back) as code
-/// writes it: constructors by their own names (`Circle`, not `shop.Circle`).
+/// writes it, on one line (it is shown in a message or a trace):
+/// constructors by their own names (`Circle`, not `shop.Circle`).
 pub fn literal(e: &Expr) -> String {
     let mut e = e.clone();
     crate::ast::VisitMut::expr(&mut Shorten, &mut e);
-    expr(&e, 0)
+    let was = ONE_LINE.with(|o| o.replace(true));
+    let s = expr(&e, 0);
+    ONE_LINE.with(|o| o.set(was));
+    s
 }
 
 struct Shorten;
@@ -884,4 +896,14 @@ pub fn decl_body(d: &Decl) -> String {
 /// One module's declarations, as the file that holds it.
 pub fn module_file(p: &Program, m: &str) -> String {
     p.decls.iter().filter(|d| d.module == m).map(decl).collect::<Vec<_>>().join("\n\n") + "\n"
+}
+
+/// The type text of a type, as passed at runtime (`List[Int]`).
+pub fn type_text(t: &TypeExpr) -> String {
+    match t {
+        TypeExpr::Named(n, args) if args.is_empty() => n.to_string(),
+        TypeExpr::Named(n, args) => format!("{n}[{}]", args.iter().map(type_text).collect::<Vec<_>>().join(", ")),
+        TypeExpr::Unit => "Unit".into(),
+        other => ty(other),
+    }
 }
