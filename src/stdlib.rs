@@ -50,6 +50,9 @@ pub const HOST: &[Builtin] = &[
     Builtin::new("host_remove", "", "(String) -> Result[(), (String, String)]"),
     Builtin::new("host_args", "", "() -> List[String]"),
     Builtin::new("host_env_var", "", "(String) -> Option[String]"),
+    // runs a program (no shell) with its arguments in a folder (`""`: the current one):
+    // `[exit code as decimal text, stdout, stderr]`, or the failure to start it
+    Builtin::new("host_run", "", "(String, List[String], String) -> Result[List[String], (String, String)]"),
     // the monotonic clock, in nanoseconds; waiting (a task that is cancelled stops at once)
     Builtin::new("host_now", "", "() -> Int"),
     Builtin::new("host_sleep", "", "(Int) -> ()"),

@@ -23,6 +23,7 @@ unsafe extern "C" {
     fn strata_host_remove();
     fn strata_host_make_dir();
     fn strata_host_list_dir();
+    fn strata_host_run();
     fn strata_host_exists();
     fn strata_host_write_file();
     fn strata_host_read_file();
@@ -164,6 +165,7 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_host_remove", strata_host_remove as *const () as usize),
         ("strata_host_make_dir", strata_host_make_dir as *const () as usize),
         ("strata_host_list_dir", strata_host_list_dir as *const () as usize),
+        ("strata_host_run", strata_host_run as *const () as usize),
         ("strata_host_exists", strata_host_exists as *const () as usize),
         ("strata_host_write_file", strata_host_write_file as *const () as usize),
         ("strata_host_read_file", strata_host_read_file as *const () as usize),

@@ -23,6 +23,10 @@ pub fn check(args: &Args, json_out: bool) -> Result<bool, String> {
             println!("ok: {n} definitions check ({} open holes)", rep.holes.len());
         }
     }
+    if args.flag("--compare") {
+        let file = args.val("--file").ok_or("--compare checks a script (one file given with --file) for now, not a package")?;
+        return super::compare::compare(file, &rep);
+    }
     Ok(rep.ok())
 }
 

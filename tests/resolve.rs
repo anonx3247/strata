@@ -265,3 +265,114 @@ fn use_errors_as_in_rust() {
     assert_eq!(got, want, "{check}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Write `text` as module `m` of the package in `dir` (named `name`, with
+/// `deps` as its `[deps]` lines).
+fn package_module(dir: &Path, name: &str, deps: &str, m: &str, text: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("strata.toml"), format!("name = \"{name}\"\n[deps]\n{deps}")).unwrap();
+    if text.is_empty() {
+        return;
+    }
+    let mut c = Command::new(STRATA).args(["--file", &format!("{}/", dir.display()), "edit", m]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    c.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+    c.wait_with_output().unwrap();
+}
+
+/// Path dependencies (`compiler/deps`, the compiler's `package` command): a
+/// dependency's modules are named with its package's name (`json`,
+/// `json.text`), reached through `use`; its private definitions are refused;
+/// a missing dependency and a cycle between packages are errors.
+#[test]
+fn path_dependencies() {
+    let dir = scratch("deps");
+    let std_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("std");
+    let package = |p: &str| compiler::run(&["package", "--std", &std_dir.to_string_lossy(), &dir.join(p).to_string_lossy()]);
+    let json = dir.join("json");
+    package_module(&json, "json", "", "main", "pub type Tok = { n: Int }\npub fn parse(s: String) -> Tok { Tok { n: helper(s) } }\nfn helper(s: String) -> Int { 1 }\n");
+    package_module(&json, "json", "", "text", "pub fn twice(s: String) -> Int { parse(s).n + helper(s) }\n");
+    let dep = "json = { path = \"../json\" }\n";
+    package_module(&dir.join("app"), "app", dep, "main", "from json use parse, Tok\nuse json.text\nfn first(t: Tok) -> Int { t.n }\nfn main() { print(first(parse(\"x\")) + text.twice(\"y\")) }\n");
+    let out = package("app");
+    assert!(!out.contains("error"), "{out}");
+    assert!(out.contains("fn first(t: json.Tok)") && out.contains("json.parse(\"x\")") && out.contains("json.text.twice(\"y\")"), "{out}");
+    package_module(&dir.join("private"), "private", dep, "main", "from json use helper\nfn main() { print(helper(\"x\")) }\n");
+    assert!(package("private").contains("error in main: `helper` is private to module `json`"));
+    package_module(&dir.join("missing"), "missing", "nope = { path = \"../nope\" }\n", "", "");
+    let out = package("missing");
+    assert!(out.starts_with("error: dependency `nope`: no package at"), "{out}");
+    package_module(&dir.join("a"), "a", "b = { path = \"../b\" }\n", "", "");
+    package_module(&dir.join("b"), "b", "c = { path = \"../c\" }\n", "", "");
+    package_module(&dir.join("c"), "c", "a = { path = \"../a\" }\n", "", "");
+    assert_eq!(package("a").trim(), "error: dependency cycle: a -> b -> c -> a");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Git dependencies (`compiler/deps`): `[deps]` names a git URL (here a
+/// local bare repository, `file://`), fetched into the cache
+/// (`$STRATA_CACHE`) and pinned in strata.lock, which later runs reuse until
+/// `update` moves it.
+#[test]
+fn git_dependencies() {
+    let dir = scratch("git-deps");
+    let std_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("std");
+    let cache = dir.join("cache");
+    let run = |args: &[&str]| {
+        let o = Command::new(compiler::exe()).args(args).env("STRATA_CACHE", &cache).output().unwrap();
+        String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr)
+    };
+    let git = |d: &Path, args: &[&str]| {
+        let o = Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]).args(args).current_dir(d).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    // the dependency's repository: a commit tagged v1, then a second one
+    let src = dir.join("json");
+    package_module(&src, "json", "", "main", "pub fn parse(s: String) -> Int { 1 }\n");
+    git(&src, &["init", "-q"]);
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-q", "-m", "one"]);
+    git(&src, &["tag", "v1"]);
+    let first = git(&src, &["rev-parse", "HEAD"]);
+    git(&dir, &["clone", "-q", "--bare", "json", "json.git"]);
+    let url = format!("file://{}", dir.join("json.git").display());
+    let app = dir.join("app");
+    package_module(&app, "app", &format!("json = \"{url}\"\n"), "main", "from json use parse\nfn main() { print(parse(\"x\")) }\n");
+    let package = || run(&["package", "--std", &std_dir.to_string_lossy(), &app.to_string_lossy()]);
+    let out = package();
+    assert!(!out.contains("error") && out.contains("json.parse(\"x\")"), "{out}");
+    let lock = std::fs::read_to_string(app.join("strata.lock")).unwrap();
+    assert!(lock.contains(&format!("[[git]]\nname = \"json\"\nurl = \"{url}\"\ncommit = \"{first}\"\n")), "{lock}");
+    // the cache: a bare clone, and the commit's files
+    let key = std::fs::read_dir(cache.join("deps/repos")).unwrap().next().unwrap().unwrap().file_name().to_string_lossy().trim_end_matches(".git").to_string();
+    assert!(key.starts_with(&format!("{}-", dir.join("json.git").display().to_string().replace('/', "_"))) && key.len() > 9, "{key}");
+    assert!(cache.join("deps").join(&key).join(&first).join("main.strata").exists());
+    // a new commit upstream: the lock is kept (not even rewritten) until `update`
+    std::fs::write(src.join("notes.txt"), "two").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-q", "-m", "two"]);
+    let second = git(&src, &["rev-parse", "HEAD"]);
+    git(&src, &["push", "-q", &dir.join("json.git").to_string_lossy(), "main"]);
+    let before = std::fs::metadata(app.join("strata.lock")).unwrap().modified().unwrap();
+    assert!(!package().contains("error"));
+    assert_eq!(std::fs::read_to_string(app.join("strata.lock")).unwrap(), lock);
+    assert_eq!(std::fs::metadata(app.join("strata.lock")).unwrap().modified().unwrap(), before);
+    let out = run(&["update", &app.to_string_lossy()]);
+    assert!(out.contains(&format!("commit = \"{second}\"")), "{out}");
+    assert!(cache.join("deps").join(&key).join(&second).join("notes.txt").exists());
+    // a tag, and a branch of the same repository: two entries, sorted
+    package_module(&app, "app", &format!("json = {{ git = \"{url}\", tag = \"v1\" }}\n"), "", "");
+    assert!(!package().contains("error"));
+    let lock = std::fs::read_to_string(app.join("strata.lock")).unwrap();
+    assert!(lock.contains(&format!("tag = \"v1\"\ncommit = \"{first}\"")) && !lock.contains(&second), "{lock}");
+    // what can't be: a missing tag, two of rev/tag/branch, unknown keys
+    package_module(&app, "app", &format!("json = {{ git = \"{url}\", tag = \"v9\" }}\n"), "", "");
+    assert!(package().contains(&format!("error: dependency `json`: {url} has no tag v9")));
+    package_module(&app, "app", &format!("json = {{ git = \"{url}\", tag = \"v1\", branch = \"main\" }}\n"), "", "");
+    assert!(package().contains("at most one of rev, tag and branch"));
+    package_module(&app, "app", "json = { git = \"x\", path = \"../json\" }\n", "", "");
+    assert!(package().contains("`path` or `git`, not both"));
+    package_module(&app, "app", "json = { got = \"x\" }\n", "", "");
+    assert!(package().contains("unknown key `got`"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -37,6 +37,7 @@ use std::collections::VecDeque;
 use crate::fx::{HashMap, HashSet};
 use std::fmt::Write;
 
+pub mod escape;
 pub mod jit;
 pub mod native;
 
@@ -676,7 +677,8 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers, tasks: uses_tasks(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()), supervises: uses_supervised(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()) };
+    let keeps = escape::Kept::of(&bodies);
+    let mut m = Module { env: &env, types: &types, keeps, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers, tasks: uses_tasks(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()), supervises: uses_supervised(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()) };
     if !m.proofs.is_empty() {
         m.refs = Refs::of(prog);
     }
@@ -924,6 +926,7 @@ declare ptr @strata_host_read_bytes(ptr, ptr, ptr)
 declare i1 @strata_host_write_file(ptr, ptr, i1, ptr, ptr)
 declare i1 @strata_host_exists(ptr)
 declare ptr @strata_host_list_dir(ptr, ptr, ptr)
+declare ptr @strata_host_run(ptr, ptr, ptr, ptr, ptr)
 declare i1 @strata_host_make_dir(ptr, ptr, ptr)
 declare i1 @strata_host_remove(ptr, ptr, ptr)
 declare ptr @strata_host_args()
@@ -1164,6 +1167,9 @@ struct Module<'a> {
     types: &'a HashMap<usize, Ty>,
     /// Each function's own declaration in the program (its body, `requires`, `ensures`).
     bodies: HashMap<String, &'a FnDecl>,
+    /// Which parameters each function may keep (`escape`): a value passed
+    /// to one it doesn't keep can live on the caller's stack.
+    keeps: escape::Kept,
     /// Traits and their implementations, as written (their bodies are what the checker typed).
     traits: HashMap<Symbol, &'a TraitDecl>,
     impls: Vec<&'a ImplDecl>,
@@ -2228,11 +2234,20 @@ struct Func<'m, 'a> {
     /// In the function's `exit` block (its result's checks): nothing left to
     /// drop there, so a panic can't leave as a cancellation does.
     in_exit: bool,
+    /// The constructor (by node address) of the `x := C { … }` being
+    /// compiled, when `x` doesn't escape its block: its value goes on the
+    /// stack (`stack_block`).
+    stack_ctor: Option<usize>,
+    /// The field types of the value the last `stack_block` made.
+    stack_made: Option<Vec<Ty>>,
+    /// The slots of variables holding a value on the stack, with its field
+    /// types: when the variable is dropped, only its fields are.
+    stack_slots: HashMap<String, Vec<Ty>>,
 }
 
 impl<'m, 'a> Func<'m, 'a> {
     fn new(m: &'m mut Module<'a>, sub: HashMap<Symbol, Ty>) -> Self {
-        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![], unwinds: false, in_exit: false, proofs_of: None }
+        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![], unwinds: false, in_exit: false, proofs_of: None, stack_ctor: None, stack_made: None, stack_slots: HashMap::default() }
     }
 
     /// The function's text: the slots, then the code.
@@ -2653,7 +2668,19 @@ impl<'m, 'a> Func<'m, 'a> {
             let x = self.fresh("old");
             let ll = if self.is_int(t) { "i64" } else { "ptr" };
             self.emit(format!("{x} = load {ll}, ptr {slot}"));
-            self.drop_value(&(t.clone(), x))?;
+            match self.stack_slots.get(slot).cloned() {
+                // a value on the stack: only what it holds
+                Some(tys) => {
+                    let v = (t.clone(), x);
+                    for (i, ft) in tys.iter().enumerate() {
+                        if self.counted(ft) {
+                            let f = self.field(&v, i, ft)?;
+                            self.drop_value(&f)?;
+                        }
+                    }
+                }
+                None => self.drop_value(&(t.clone(), x))?,
+            }
         }
         Ok(())
     }
@@ -3001,6 +3028,26 @@ impl<'m, 'a> Func<'m, 'a> {
         let fields: Vec<V> = fields.iter().map(|f| self.take(f.clone())).collect();
         let p = self.fresh("obj");
         self.emit(format!("{p} = call ptr @strata_alloc(i64 {})", 8 * (fields.len() + 1)));
+        self.emit(format!("store i64 {tag}, ptr {p}"));
+        for (i, f) in fields.iter().enumerate() {
+            let s = self.to_slot(f)?;
+            let at = self.fresh("at");
+            self.emit(format!("{at} = getelementptr i64, ptr {p}, i64 {}", i + 1));
+            self.emit(format!("store i64 {s}, ptr {at}"));
+        }
+        Ok(p)
+    }
+
+    /// `block_of`, in a slot of the function's frame, with a count of 0 (as
+    /// a constant: nothing counts it or frees it), for a value that doesn't
+    /// outlive the variable it is bound to (`escape`); the variable's drop
+    /// drops its fields (`stack_slots`).
+    fn stack_block(&mut self, tag: i64, fields: &[V]) -> Res<String> {
+        let fields: Vec<V> = fields.iter().map(|f| self.take(f.clone())).collect();
+        let (frame, p) = (self.fresh("stack"), self.fresh("obj"));
+        writeln!(self.allocas, "  {frame} = alloca [{} x i64], align 8", fields.len() + 2).unwrap();
+        self.emit(format!("store i64 0, ptr {frame}"));
+        self.emit(format!("{p} = getelementptr i64, ptr {frame}, i64 1"));
         self.emit(format!("store i64 {tag}, ptr {p}"));
         for (i, f) in fields.iter().enumerate() {
             let s = self.to_slot(f)?;
@@ -4447,9 +4494,21 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.temp(r)
             }
             Expr::Block(stmts, last) => self.scoped(false, |s| {
-                for st in stmts {
+                for (i, st) in stmts.iter().enumerate() {
+                    // `x := C { … }` with `x` staying in the block: on the stack
+                    if let Stmt::Let(Pattern::Bind(x), None, c @ Expr::Ctor(_, args)) = st {
+                        if !matches!(args, CtorArgs::None) && !escape::escapes_after(stmts, i, last, x, &s.m.keeps) {
+                            s.stack_ctor = Some(c as *const Expr as usize);
+                        }
+                    }
                     s.push_scope(true);
                     let r = s.stmt(st);
+                    s.stack_ctor = None;
+                    if let (Some(tys), Stmt::Let(Pattern::Bind(x), ..)) = (s.stack_made.take(), st) {
+                        if let Some(l) = s.lookup(x) {
+                            s.stack_slots.insert(l.slot, tys);
+                        }
+                    }
                     match r {
                         Ok(()) => s.pop_scope()?,
                         Err(e) => {
@@ -5408,7 +5467,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.cancel_point()?;
                 r
             }
-            "host_read_file" | "host_list_dir" | "host_read_bytes" => {
+            "host_read_file" | "host_list_dir" | "host_read_bytes" | "host_run" => {
                 // a value, or NULL and the failure
                 let (k, m) = (self.fresh("kind"), self.fresh("msg"));
                 writeln!(self.allocas, "  {k} = alloca ptr\n  {m} = alloca ptr").unwrap();
@@ -5418,7 +5477,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let ok = self.fresh("ok");
                 self.emit(format!("{ok} = icmp ne ptr {}, null", r.1));
                 let okv = match name {
-                    "host_list_dir" => lst,
+                    "host_list_dir" | "host_run" => lst,
                     "host_read_bytes" => Ty::Con(Symbol::new("List"), vec![Ty::Int]),
                     _ => Ty::Str,
                 };
@@ -6973,7 +7032,13 @@ impl<'m, 'a> Func<'m, 'a> {
             self.check_type_refinement(c, &v)?;
             return Ok(v);
         }
-        let p = self.block_of(self.m.tags[c], &vals)?;
+        let on_stack = self.stack_ctor.take() == Some(e as *const Expr as usize) && !self.m.boxed(&t) && !self.is_dyn(&t);
+        let p = if on_stack {
+            self.stack_made = Some(fs.iter().map(|f| f.ty.clone()).collect());
+            self.stack_block(self.m.tags[c], &vals)?
+        } else {
+            self.block_of(self.m.tags[c], &vals)?
+        };
         let v = self.temp((t, p));
         self.check_type_refinement(c, &v)?;
         Ok(v)

@@ -4156,7 +4156,8 @@ pub fn show_ty(t: &Ty) -> String {
         Ty::Bool => "Bool".into(),
         Ty::Str => "String".into(),
         Ty::Unit => "()".into(),
-        Ty::Var(v) => format!("?T{v}"),
+        // a type not worked out yet: `_` (its number means nothing to the reader)
+        Ty::Var(_) => "_".into(),
         Ty::Rigid(n) => n.to_string(),
         Ty::Con(n, a) if a.is_empty() => n.to_string(),
         Ty::Con(n, a) => format!("{n}[{}]", a.iter().map(show_ty).collect::<Vec<_>>().join(", ")),
