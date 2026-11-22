@@ -143,6 +143,47 @@ fn h(s: Sh) -> Int {
 fn main() { print(1) }
 "#;
 
+const TRAITS: &str = r#"trait Area {
+  fn area(self) -> Int
+}
+type Sq = { s: Int }
+type Pt = { x: Int }
+impl Area for Sq {
+  fn area(self) -> Int { self.s * self.s }
+}
+type Box[T] = { item: T }
+impl[T] Box[T] {
+  fn get(self) -> T { self.item }
+  fn bad(self) -> Int { self.item }
+}
+fn total[T: Area](xs: List[T]) -> Int { 0 }
+fn a(q: Sq) -> String { q.area() }
+fn b(p: Pt) -> Int { total([p]) }
+fn c(b: Box[Int]) -> String { b.get() }
+fn d[T: Area](x: T) -> String { x.area() }
+fn main() { print(1) }
+"#;
+
+const UNIONS: &str = r#"type Id = Int | String
+type Small = Int where it < 10
+fn a(n: Natural) -> String { n }
+fn b(n: Natural) -> Int { n + 1 }
+fn c(x: Int | String) -> Bool { x }
+fn d() -> Id { 2.5 }
+fn e() -> Id { 3 }
+fn f(s: Small) -> String { s }
+fn g(n: Int) -> Natural { n }
+fn h() -> Natural { -1 }
+fn k(x: Id) -> Int { x }
+fn a2(x: Bool | String | Int) -> Float { x }
+fn b2(c: Bool) -> Float { if c { "s" } else { 1 } }
+fn d2() -> Float { let y: Id = 3
+  y }
+fn e2(c: Bool) -> Float { z := if c { "s" } else { 1 }
+  z }
+fn main() { print(1) }
+"#;
+
 const RECORDS: &str = r#"type Pt = { x: Int, y: Int }
 type Sh =
   | Sq(Int)
@@ -340,6 +381,16 @@ fn results_and_indexes_as_in_rust() {
 #[test]
 fn narrowed_variables_as_in_rust() {
     same_errors("narrowed", NARROWED, &["expected `", "has no field"]);
+}
+
+#[test]
+fn bounds_and_generic_impls_as_in_rust() {
+    same_errors("bounds", TRAITS, &["expected `", "does not implement"]);
+}
+
+#[test]
+fn unions_and_refinements_as_in_rust() {
+    same_errors("unions", UNIONS, &["expected `"]);
 }
 
 /// The compiler's errors on `text` are `strata check`'s, on the lines holding one of `keys`.
