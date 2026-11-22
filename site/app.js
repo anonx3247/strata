@@ -529,14 +529,16 @@ feature('contracts', {
   ],
 });
 feature('loops', {
-  kicker: 'Termination', title: 'Functions, and whether they end.',
+  kicker: 'Loops and termination', title: 'Functions, and whether they end.',
   steps: [
     { file: 'examples/math.strata', code: V.loops.ackermann.code, hot: /ackermann\(/, where: '~/math', outs: [V.loops.ackermann.verify],
       say: '<code>verify</code> also checks that functions finish. For a recursive function it looks for a measure that goes down on every call and is never negative. For Ackermann\'s function, that is the pair <code>(m, n)</code>, compared in order.' },
-    { title: 'Loops, and loop invariants next.', file: 'examples/math.strata', code: V.loops.isqrt.code, hot: /while|ensures/, where: '~/math', outs: [V.loops.isqrt.verify],
-      say: 'A <code>while</code> loop ends when a bound goes down on every pass, and here it does. The postcondition after the loop needs a loop invariant, <code>r * r &lt;= n</code> on every pass, and the verifier doesn\'t take invariants yet. So it fuzzed the postcondition instead, and says so. Loop invariants are the next step.' },
-    { title: 'And it says when it can\'t tell.', file: 'examples/math.strata', code: V.loops.collatz.code, hot: /while/, where: '~/math', outs: [V.loops.collatz.verify],
-      say: 'Whether the Collatz sequence always reaches 1 is an open problem. The verifier proves every assignment in the loop, and reports that the loop may not end, with the bounds it tried.' },
+    { title: 'Loops, and invariants found for you.', file: 'examples/math.strata', code: V.loops.isqrt.code, hot: /^\s*(while|ensures)/, where: '~/math', outs: [V.loops.isqrt.verify],
+      say: 'A <code>while</code> loop ends when a bound goes down on every pass, and here it does. The postcondition needs a fact that holds on every pass, <code>r * r &lt;= n</code>: a loop invariant. For now it is fuzzed, and the output says so. Next, the verifier will find such facts itself: it guesses them from the loop\'s condition, the contract and the body, and keeps those that every pass preserves. What is left is proven. A written <code>invariant</code> clause is only planned for when that isn\'t enough.' },
+    { title: 'Most of what a loop keeps is a type.', file: 'examples/math.strata', code: V.loops.collatz.code, hot: /mut|while/, where: '~/math', outs: [V.loops.collatz.verify],
+      say: 'A variable\'s type is checked at every assignment and holds on every pass, so <code>x</code> stays positive through the loop without an invariant. Whether the Collatz sequence always reaches 1 is an open problem: the verifier proves every assignment, and reports that the loop may not end, with the bounds it tried.' },
+    { title: 'Types can say what a list keeps.', file: 'records', code: V.loops.sorted.code, hot: /^type|best\[/, where: '~/records', outs: [V.loops.sorted.verify],
+      say: 'The prover knows each element of a list by its position. So a type can say that a list is sorted, and <code>verify</code> proves that <code>record</code> keeps it sorted. <code>record_wrong</code> compares with the first record instead of the last, and the fuzzer gives the readings that break it.' },
   ],
 });
 feature('shares', {
@@ -1023,6 +1025,15 @@ function drawTree(el, roots, fast) {
         say: '<code>derive CommandLine for Options</code> is Strata code that runs while compiling. It reads the type\'s fields, doc comments, defaults and constraints, and generates an ordinary <code>impl</code>: a parser, with its help text, that refuses values outside the constraints.' },
       { title: 'The same for JSON.', file: 'signup', code: F.derive.json, hot: /^derive|where/, where: '~/signup', outs: [F.derive.json_run],
         say: '<code>derive Json</code> generates the encoder and the decoder: a signup is written to JSON and read back. Reading checks every constraint, and an error names the field and the condition it broke.' },
+    ],
+  });
+  feature('tasks', {
+    kicker: K, title: 'Concurrency, without coloring.',
+    steps: [
+      { file: 'concurrency: designed, not built yet', code: L.tasks.spawn, hot: /scope \{|spawn |await /,
+        say: 'Decided, not built yet: there is one kind of function, and any function may block, so there is no <code>async</code> marking callers. <code>spawn</code> starts a task and <code>await</code> takes its result, for one task, a tuple or a list. A task belongs to its <code>scope</code>, which ends only once every task started in it has. Tasks share nothing that can change, so to <code>verify</code>, <code>await (spawn f(), spawn g())</code> is just <code>(f(), g())</code>.' },
+      { title: 'Channels, and waiting on several things.', file: 'concurrency: designed, not built yet', code: L.tasks.channels, hot: /channel\[|\.send|\.close|select \{|\) as |download as/,
+        say: 'Tasks talk through channels. Each one has a fixed size, so a fast sender waits for its receivers, and every sender has to be closed, which the checker sees. <code>select</code> waits on several operations and completes exactly one: the others did nothing, so a message that lost is still in the channel.' },
     ],
   });
 }

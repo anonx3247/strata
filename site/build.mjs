@@ -663,6 +663,29 @@ fn main() {
     V.loops = {};
     for (const [k, f] of [['ackermann', 'ackermann'], ['isqrt', 'isqrt'], ['collatz', 'collatz_steps']])
       V.loops[k] = { code: defs(src, [`fn ${f}(`]), verify: out(dir, ['verify', f, '--checks']) };
+    // what a list keeps, said by its type and proven by position
+    const s = prog('records', `/// Numbers in increasing order: each one is at least the one before it.
+type Sorted = List[Int] where all(1..len(it), i -> it[i - 1] <= it[i])
+
+/// Adds a reading if it beats the last record.
+fn record(best: Sorted, x: Int) -> Sorted {
+  if len(best) == 0 || x > best[len(best) - 1] {
+    push(best, x)
+  } else {
+    best
+  }
+}
+
+/// The same, compared with the first record instead of the last.
+fn record_wrong(best: Sorted, x: Int) -> Sorted {
+  if len(best) == 0 || x > best[0] {
+    push(best, x)
+  } else {
+    best
+  }
+}
+`);
+    V.loops.sorted = { code: run(s, ['render']).out.trim(), verify: out(s, ['verify']) };
   }
   // more of the language: data types, traits, values, comptime
   {
@@ -794,6 +817,60 @@ fn main() {
 }
 `);
     L.comptime = { src: c.src, run: c.run };
+    // Concurrency is decided (IDEAS.md, "Concurrency: structured tasks without coloring") but not built:
+    // this code doesn't parse yet, so it is shown as written, not stored. Store it with `one` once it is built.
+    L.tasks = {
+      spawn: `/// Two pages at once. \`scope\` ends when every task started in it has.
+fn fetch_both(net: Net, a: Url, b: Url) -> (Page, Page) {
+  scope {
+    x := spawn fetch(net, a)
+    y := spawn fetch(net, b)
+    await (x, y)
+  }
+}
+
+/// Any number of pages, one task each.
+fn fetch_all(net: Net, urls: List[Url]) -> List[Page] {
+  scope {
+    await [spawn fetch(net, u) for u in urls]
+  }
+}`,
+      channels: `/// The squares of 0 to 99, sent from one task to another through a channel
+/// with room for 8 values.
+fn total_of_squares() -> Int {
+  (tx, rx) := channel[Int](8)
+  scope {
+    spawn {
+      for n in 0..100 {
+        tx.send(n * n)
+      }
+      tx.close()
+    }
+    mut total := 0
+    for v in rx {
+      total += v
+    }
+    total
+  }
+}
+
+/// Commands as they come, a download, and a flush every second.
+fn serve(net: Net, clock: Clock, commands: Receiver[Command], url: Url) {
+  scope {
+    download := spawn fetch(net, url)
+    loop {
+      select {
+        commands.recv() as c => handle(c),
+        await download as page => {
+          show(page)
+          break
+        },
+        clock.after(1.seconds) => flush(),
+      }
+    }
+  }
+}`,
+    };
     V.lang = L;
   }
   emit('verify', V);

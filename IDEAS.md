@@ -736,7 +736,7 @@ Not yet:
   2. Three ideas: types as contracts, proving over testing, the code is the AST.
   3. Verification first:
      - contracts spelled out (refinements, `requires` / `ensures`, what the solver checks);
-     - loops and termination: measures for recursion, bounds for `while`; loop invariants are not built yet (the verifier fuzzes what would need one), shown as the next step;
+     - loops and termination (user, 2026-11-22: as decided in "Loops and invariants"): measures for recursion, bounds for `while`; invariants inferred next (written `invariant` clauses only if that falls short), fuzzed until then; what a loop keeps is mostly a variable's type (Collatz); a `Sorted` list type proven by position;
      - tests that miss a detail, against one line;
      - many tests against one `ensures`;
      - fuzzing as many tests at once;
@@ -758,6 +758,7 @@ Not yet:
      - value semantics with reference counting, and `mut` visible at declarations and calls (a call without it refused);
      - the everyday syntax;
      - `comptime` (tables computed while compiling), with derive built on it (CLI, JSON both ways).
+     - concurrency (user, 2026-11-22, before it is built): `scope` / `spawn` / `await`, channels and `select`, as decided in "Concurrency: structured tasks without coloring"; the code is shown as written and marked "designed, not built yet" (it can't be stored until it parses); store it with `strata edit` and record a run once it is built.
   - Each section opens with its title, which then moves out of the way.
   - No history of the page, nothing about unmerged branches, and wording without the usual AI idioms (claudisms.ai).
 - **Everything shown is recorded** by `site/build.mjs` from the real CLI, the new-feature slides included (small packages stored with `strata edit`, so a snippet that stops checking breaks the build).
