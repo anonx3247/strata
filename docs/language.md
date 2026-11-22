@@ -449,6 +449,28 @@ fn first_answer(mirrors: Receiver[Page], local: Cache, key: String) -> Page {
 
 A cancelled task stops at its next wait (a `recv`, a `send`, an `await`, a `select`), however deep in calls it is, and leaves as `return` would: what it holds is dropped, nothing after the wait runs, and the tasks it started stop too. Code that doesn't wait runs to its end (a long computation isn't interrupted halfway). The `race` ends once every loser has stopped, then runs the winner's arm. A left side follows a `spawn`'s rules (no `return`, `!` or `?` out of it; a sender it uses is its own copy, to close).
 
+### Supervised tasks
+
+A panic ends the program, wherever it happens. A task started with `supervised spawn` is the exception: its panic ends only that task (and the tasks it started), and awaiting it gives a `Result[T, Panic]` instead of a `T`. The failure is handled where the task is awaited, with what handles any `Result`:
+
+```rust
+fn page(net: Net, url: String) -> Page {
+  scope {
+    h := supervised spawn fetch(net, url)
+    await h except p {
+      log(f"{url}: {p.message}")
+      cached(url)
+    }
+  }
+}
+```
+
+- `Panic` is `{ kind: String, message: String, stack: String }`: the kind (`Runtime`, `Requires`, `Refinement`, …), the message, and the call stack from `main` through each `spawn`.
+- A handler after `await h` is the result's: `await h except p { … }` is `(await h) except p { … }`, and `await h!` is `(await h)!`.
+- When a supervised task panics, every task below it stops at its next wait; its copies of senders are closed (its receivers see the channel end); what it held is freed; its siblings and the task that started it go on. A panic in an ordinary task below it is the supervised task's.
+- In a `race`, an arm can be supervised the same way: `race { supervised fetch(a) as r => …, … }` (`r` is then a `Result[T, Panic]`, and a panic is that arm's result).
+- `supervised` is a keyword only right before `spawn` (and at the start of a `race` arm): it is a name anywhere else.
+
 ## Built-in types
 
 | Type | Notes |

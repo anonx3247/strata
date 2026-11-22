@@ -621,6 +621,10 @@ pub enum Expr {
     /// side runs as a task of its own; the first to finish runs its arm, and
     /// the others are cancelled (they stop at their next wait).
     Race(Vec<SelectArm>),
+    /// `supervised spawn e`: `e` run in a new task whose panic ends only that
+    /// task; awaiting its handle gives `Result[T, Panic]`. (As a `race` arm's
+    /// left side, written `supervised e`: that arm's task.)
+    SupervisedSpawn(Box<Expr>),
 }
 
 /// One arm of a `select`: an operation that may wait (`rx.recv()`,
@@ -818,7 +822,7 @@ macro_rules! visitor {
                     v.expr(f);
                     xs.into_iter().for_each(|x| v.expr(x))
                 }
-                Expr::Field(r, _) | Expr::Is(r, _) | Expr::Un(_, r) | Expr::Return(r) | Expr::Mut(r) | Expr::Try(r, _) | Expr::Comptime(r) | Expr::Scope(r) | Expr::Spawn(r) | Expr::Await(r) => v.expr(r),
+                Expr::Field(r, _) | Expr::Is(r, _) | Expr::Un(_, r) | Expr::Return(r) | Expr::Mut(r) | Expr::Try(r, _) | Expr::Comptime(r) | Expr::Scope(r) | Expr::Spawn(r) | Expr::SupervisedSpawn(r) | Expr::Await(r) => v.expr(r),
                 Expr::Lambda(ps, body) => {
                     for p in ps {
                         if let Some(t) = &$($m)? p.ty {

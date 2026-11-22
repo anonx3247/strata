@@ -2676,6 +2676,8 @@ impl<'a> Vc<'a> {
             Expr::Race(_) => Val::Opaque("which arm of a `race` wins depends on timing".into()),
             // a task's result is its expression's value: `await spawn e` is `e`
             Expr::Mut(x) | Expr::Comptime(x) | Expr::Scope(x) | Expr::Spawn(x) | Expr::Await(x) => self.eval(x),
+            // whether a supervised task panics isn't known here
+            Expr::SupervisedSpawn(_) => Val::Opaque("a supervised task's result (it may have panicked)".into()),
             Expr::Interp(parts) => {
                 for part in parts {
                     if let StrPart::Expr(x, _) = part {

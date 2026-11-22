@@ -68,7 +68,7 @@ fn uses_tasks(decls: &[Decl]) -> bool {
     struct Tasks(bool);
     impl Visit for Tasks {
         fn expr(&mut self, e: &Expr) {
-            if matches!(e, Expr::Spawn(_) | Expr::Race(_)) {
+            if matches!(e, Expr::Spawn(_) | Expr::SupervisedSpawn(_) | Expr::Race(_)) {
                 self.0 = true;
             }
             if !self.0 {
@@ -92,7 +92,7 @@ fn assigns(e: &Expr) -> bool {
         fn expr(&mut self, e: &Expr) {
             match e {
                 Expr::Mut(_) => self.0 = true,
-                Expr::Lambda(..) | Expr::Spawn(..) => return,
+                Expr::Lambda(..) | Expr::Spawn(..) | Expr::SupervisedSpawn(..) => return,
                 Expr::Race(arms) => {
                     arms.iter().for_each(|a| self.expr(&a.body));
                     return;
@@ -632,7 +632,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers, tasks: uses_tasks(&resolved.program.decls) };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers, tasks: uses_tasks(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()) };
     if !m.proofs.is_empty() {
         m.refs = Refs::of(prog);
     }
@@ -787,7 +787,9 @@ declare ptr @strata_alloc(i64)
 declare void @strata_dup(ptr)
 declare ptr @strata_scope_begin()
 declare void @strata_scope_end(ptr)
-declare ptr @strata_spawn(ptr, ptr, ptr, ptr, i64)
+declare ptr @strata_spawn(ptr, ptr, ptr, ptr, ptr, i64)
+declare i1 @strata_was_unwound()
+declare void @strata_panic(i32, ptr)
 declare ptr @strata_channel_new(i64, ptr)
 declare void @strata_channel_drop(ptr)
 declare void @strata_channel_send(ptr, i64)
@@ -1776,6 +1778,7 @@ impl<'a> Module<'a> {
         // every way out: the result's refinement, then the postconditions
         // (each way out dropped what the body held)
         c.block("exit");
+        c.in_exit = true;
         c.forget_drops();
         let result = if has_value(&ret) {
             let slot = c.ret_slot.clone().unwrap().1;
@@ -2129,11 +2132,14 @@ struct Func<'m, 'a> {
     proofs_of: Option<String>,
     /// Whether a cancellation check leaves through the `unwound` block.
     unwinds: bool,
+    /// In the function's `exit` block (its result's checks): nothing left to
+    /// drop there, so a panic can't leave as a cancellation does.
+    in_exit: bool,
 }
 
 impl<'m, 'a> Func<'m, 'a> {
     fn new(m: &'m mut Module<'a>, sub: HashMap<Symbol, Ty>) -> Self {
-        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![], unwinds: false, proofs_of: None }
+        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![], unwinds: false, in_exit: false, proofs_of: None }
     }
 
     /// The function's text: the slots, then the code.
@@ -2744,10 +2750,23 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     /// Stop with a fault; the code after it is unreachable.
+    ///
+    /// In a program with tasks, inside a function's body, a panic may be a
+    /// supervised task's own (`spawn supervised`): `strata_panic` then
+    /// records it and returns, and the function leaves as a cancelled one
+    /// does (dropping what it holds; its callers follow), so the dying task
+    /// frees what it held. Anywhere else `strata_panic` ends the program.
     fn fault(&mut self, kind: Fault, msg: Vec<Part>) -> Res<()> {
         let m = self.concat(msg)?;
-        self.emit(format!("call void @strata_fault(i32 {}, ptr {})", kind as i32, m.1));
-        self.emit("unreachable".into());
+        if self.m.tasks && self.ret_slot.is_some() && !self.in_exit {
+            self.emit(format!("call void @strata_panic(i32 {}, ptr {})", kind as i32, m.1));
+            self.drop_from(0, None)?;
+            self.br("unwound");
+            self.unwinds = true;
+        } else {
+            self.emit(format!("call void @strata_fault(i32 {}, ptr {})", kind as i32, m.1));
+            self.emit("unreachable".into());
+        }
         self.dead();
         Ok(())
     }
@@ -4638,14 +4657,18 @@ impl<'m, 'a> Func<'m, 'a> {
             Expr::Scope(b) => {
                 let s = self.fresh("tasks");
                 self.emit(format!("{s} = call ptr @strata_scope_begin()"));
-                self.scoped(false, |c| {
+                let v = self.scoped(false, |c| {
                     c.scopes.last_mut().unwrap().tasks = Some(s.clone());
                     let v = c.expr(b)?;
                     // `scope { …; spawn e }` is `()` (a handle isn't counted)
                     Ok(if crate::types::ends_in_spawn(b) && !is_never(&v.0) { (Ty::Unit, String::new()) } else { v })
-                })?
+                })?;
+                // (a task in it may have panicked inside a supervised one: then this one leaves)
+                self.cancel_point()?;
+                v
             }
             Expr::Spawn(body) => self.spawn(e, body)?,
+            Expr::SupervisedSpawn(body) => self.supervised_spawn(e, body)?,
             Expr::Select(arms) => self.select(e, arms)?,
             Expr::Race(arms) => self.race(e, arms)?,
             Expr::Await(h) => {
@@ -6250,6 +6273,22 @@ impl<'m, 'a> Func<'m, 'a> {
     /// `body` started as a task (its result of type `rt`) of the innermost
     /// open scope: its handle.
     fn spawn_task(&mut self, rt: &Ty, body: &Expr) -> Res<String> {
+        self.start_task(rt, body, false)
+    }
+
+    /// `spawn supervised e`: a task whose panic is its own; its result is
+    /// `Ok(v)`, or `Err(Panic { … })` (built by its `fail` function).
+    fn supervised_spawn(&mut self, e: &Expr, body: &Expr) -> Res<V> {
+        let t = self.ty_of(e)?;
+        let Ty::Con(_, a) = &t else { return Err("a `spawn supervised` without a task's type".into()) };
+        let Ty::Con(_, r) = self.m.repr(&a[0])? else { return Err("a `spawn supervised` without a `Result`".into()) };
+        let h = self.start_task(&r[0].clone(), body, true)?;
+        Ok((t, h))
+    }
+
+    /// `body` started as a task of the innermost open scope (its result of
+    /// type `rt`; a supervised task's is `Result[rt, Panic]`): its handle.
+    fn start_task(&mut self, rt: &Ty, body: &Expr, supervised: bool) -> Res<String> {
         let rt = rt.clone();
         // the senders it captures: a copy of each is the task's, to close
         let mut names: Vec<String> = vars_in(body);
@@ -6272,10 +6311,63 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         let clo = self.closure_of(Ty::Fn(vec![], Box::new(rt.clone())), &[], body)?;
         let clo = self.take(clo);
-        let (run, drop) = self.task_fns(&rt)?;
+        let (run, drop, fail) = if supervised { self.supervised_fns(&rt)? } else {
+            let (run, drop) = self.task_fns(&rt)?;
+            (run, drop, "null".to_string())
+        };
         let h = self.fresh("task");
-        self.emit(format!("{h} = call ptr @strata_spawn(ptr {}, ptr {run}, ptr {drop}, ptr {shares}, i64 {})", clo.1, senders.len()));
+        self.emit(format!("{h} = call ptr @strata_spawn(ptr {}, ptr {run}, ptr {drop}, ptr {fail}, ptr {shares}, i64 {})", clo.1, senders.len()));
         Ok(h)
+    }
+
+    /// For a supervised task whose closure gives a `t`: the function that
+    /// runs it and stores `Ok(v)` (nothing, if it was cancelled), the one
+    /// dropping a stored `Result[t, Panic]`, and the one storing
+    /// `Err(Panic { kind, message, stack })` after a panic (from the
+    /// runtime's strings, which it takes).
+    fn supervised_fns(&mut self, t: &Ty) -> Res<(String, String, String)> {
+        let k = key(t);
+        let panic = Ty::Con("Panic".into(), vec![]);
+        let res = Ty::Con("Result".into(), vec![t.clone(), panic.clone()]);
+        let (run, fail) = (format!("@\"task.srun:{k}\""), format!("@\"task.sfail:{k}\""));
+        // (the result's drop takes the slot it is stored in)
+        let (_, drop) = self.task_fns(&res)?;
+        if self.m.helpers.insert(run.clone()) {
+            let mut h = Func::new(self.m, HashMap::default());
+            h.block("start");
+            h.emit("%raw = load i64, ptr %c".into());
+            h.emit("%f = inttoptr i64 %raw to ptr".into());
+            let v = h.call(t, "%f", &[(Ty::Str, "%c".into())])?;
+            h.emit("%unwound = call i1 @strata_was_unwound()".into());
+            h.emit("br i1 %unwound, label %none, label %some".into());
+            h.block("some");
+            let ok = *h.m.tags.get("Ok").ok_or("no `Ok`")?;
+            // (owned: moved into the block, not held once more)
+            let v = h.temp(v);
+            let b = h.block_of(ok, &[v])?;
+            h.emit(format!("store ptr {b}, ptr %out"));
+            h.emit("ret void".into());
+            h.block("none");
+            h.emit("ret void".into());
+            let text = h.finish();
+            writeln!(self.m.body, "define void {run}(ptr %c, ptr %out) {{\n{text}}}\n").unwrap();
+        }
+        if self.m.helpers.insert(fail.clone()) {
+            let mut h = Func::new(self.m, HashMap::default());
+            h.block("start");
+            let ptag = *h.m.tags.get("Panic").ok_or("no `Panic`")?;
+            let err = *h.m.tags.get("Err").ok_or("no `Err`")?;
+            // (the strings are owned: moved into the record, as the record into `Err`)
+            let fields: Vec<V> = ["%kind", "%msg", "%stack"].iter().map(|s| h.temp((Ty::Str, s.to_string()))).collect();
+            let p = h.block_of(ptag, &fields)?;
+            let p = h.temp((panic, p));
+            let b = h.block_of(err, &[p])?;
+            h.emit(format!("store ptr {b}, ptr %out"));
+            h.emit("ret void".into());
+            let text = h.finish();
+            writeln!(self.m.body, "define void {fail}(ptr %out, ptr %kind, ptr %msg, ptr %stack) {{\n{text}}}\n").unwrap();
+        }
+        Ok((run, drop, fail))
     }
 
     /// `race { e as x => body, … }`: each `e` started as a task of a scope
@@ -6286,7 +6378,14 @@ impl<'m, 'a> Func<'m, 'a> {
     fn race(&mut self, e: &Expr, arms: &[SelectArm]) -> Res<V> {
         let want = self.ty_of(e)?;
         let n = arms.len();
-        let rts = arms.iter().map(|a| self.ty_of(&a.op)).collect::<Res<Vec<Ty>>>()?;
+        // a supervised arm's task gives a `Result[T, Panic]`
+        let rts = arms
+            .iter()
+            .map(|a| match &a.op {
+                Expr::SupervisedSpawn(x) => Ok(Ty::Con("Result".into(), vec![self.ty_of(x)?, Ty::Con("Panic".into(), vec![])])),
+                op => self.ty_of(op),
+            })
+            .collect::<Res<Vec<Ty>>>()?;
         let mut slots = vec![];
         for t in &rts {
             slots.push(if has_value(t) {
@@ -6306,7 +6405,13 @@ impl<'m, 'a> Func<'m, 'a> {
             writeln!(c.allocas, "  {ops} = alloca [{} x i64]", 4 * n.max(1)).unwrap();
             let mut handles = vec![];
             for (i, a) in arms.iter().enumerate() {
-                let h = c.spawn_task(&rts[i], &a.op)?;
+                let h = match &a.op {
+                    Expr::SupervisedSpawn(x) => {
+                        let inner = c.ty_of(x)?;
+                        c.start_task(&inner, x, true)?
+                    }
+                    op => c.spawn_task(&rts[i], op)?,
+                };
                 let (p, q) = (c.fresh("op"), c.fresh("op"));
                 c.emit(format!("{p} = getelementptr i64, ptr {ops}, i64 {}", 4 * i));
                 c.emit(format!("store i64 2, ptr {p}"));

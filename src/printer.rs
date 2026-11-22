@@ -176,7 +176,7 @@ fn prec(e: &Expr) -> u8 {
             BinOp::Mul | BinOp::Div | BinOp::Mod => 10,
         },
         Expr::Is(..) => 3,
-        Expr::Lambda(..) | Expr::Return(..) | Expr::Spawn(..) | Expr::Range(..) => 0,
+        Expr::Lambda(..) | Expr::Return(..) | Expr::Spawn(..) | Expr::SupervisedSpawn(..) | Expr::Range(..) => 0,
         Expr::Except(..) | Expr::Or(..) if shorthand(e) => 4,
         Expr::Except(..) | Expr::Or(..) => 11,
         Expr::Un(..) | Expr::Mut(..) | Expr::Await(..) => 11,
@@ -260,10 +260,30 @@ pub fn head(e: &Expr, d: usize) -> String {
 
 /// Whether `e` has a literal with braces outside every delimiter (call
 /// arguments, indexes, lists and parentheses end the parser's restriction).
+/// What a result's handler (`!`, `?`, `except`, `or { }`) applies to: an
+/// `await` without parentheses (`await h except p { … }` is the awaited
+/// result's), anything else as a postfix's operand.
+fn handled(x: &Expr, d: usize) -> String {
+    match x {
+        Expr::Await(_) => expr(x, d),
+        _ => wrap(x, 12, d),
+    }
+}
+
+/// Whether a handler (`!`, `?`, `except`, `or { }`) ends `e` or the chain
+/// of fields, calls and indexes it starts.
+fn handler_on_spine(e: &Expr) -> bool {
+    match e {
+        Expr::Try(..) | Expr::Except(..) | Expr::Or(..) => true,
+        Expr::Field(x, _) | Expr::Method(x, _, _) | Expr::Index(x, _) | Expr::Call(x, _) => handler_on_spine(x),
+        _ => false,
+    }
+}
+
 fn brace_on_spine(e: &Expr) -> bool {
     match e {
         Expr::Ctor(_, CtorArgs::Record(_) | CtorArgs::Update(..)) | Expr::Dict(..) | Expr::Set(..) => true,
-        Expr::Call(x, _) | Expr::Method(x, _, _) | Expr::Field(x, _) | Expr::Index(x, _) | Expr::Un(_, x) | Expr::Is(x, _) | Expr::Mut(x) | Expr::Try(x, _) | Expr::Return(x) | Expr::Spawn(x) | Expr::Await(x) | Expr::Lambda(_, x) => brace_on_spine(x),
+        Expr::Call(x, _) | Expr::Method(x, _, _) | Expr::Field(x, _) | Expr::Index(x, _) | Expr::Un(_, x) | Expr::Is(x, _) | Expr::Mut(x) | Expr::Try(x, _) | Expr::Return(x) | Expr::Spawn(x) | Expr::SupervisedSpawn(x) | Expr::Await(x) | Expr::Lambda(_, x) => brace_on_spine(x),
         Expr::Bin(_, l, r) | Expr::Or(l, r) | Expr::Except(l, _, r) => brace_on_spine(l) || brace_on_spine(r),
         Expr::Range(lo, hi, _) => lo.as_deref().is_some_and(brace_on_spine) || hi.as_deref().is_some_and(brace_on_spine),
         _ => false,
@@ -472,6 +492,10 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         // `comptime` takes a unary expression: `comptime (a ?? b)`
         Expr::Comptime(x) => format!("comptime {}", wrap(x, 11, d)),
         Expr::Spawn(x) => format!("spawn {}", expr(x, d)),
+        Expr::SupervisedSpawn(x) => format!("supervised spawn {}", expr(x, d)),
+        // (a handler on the operand's chain needs parentheses: `await (a!)`,
+        // since `await a!` is `(await a)!`)
+        Expr::Await(x) if handler_on_spine(x) => format!("await ({})", expr(x, d)),
         Expr::Await(x) => format!("await {}", wrap(x, 11, d)),
         Expr::Scope(b) => format!("scope {}", block(b, d)),
         Expr::Select(arms) | Expr::Race(arms) => {
@@ -479,7 +503,12 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             for a in arms {
                 out += &comments(&a.comments, d + 1);
                 let as_name = a.name.as_ref().map(|n| format!(" as {n}")).unwrap_or_default();
-                out += &format!("{}{}{as_name} => {},\n", ind(d + 1), expr(&a.op, d + 1), expr(&a.body, d + 1));
+                // a supervised race arm is `supervised e`
+                let op = match &a.op {
+                    Expr::SupervisedSpawn(x) if matches!(e, Expr::Race(_)) => format!("supervised {}", expr(x, d + 1)),
+                    op => expr(op, d + 1),
+                };
+                out += &format!("{}{op}{as_name} => {},\n", ind(d + 1), expr(&a.body, d + 1));
             }
             out + &ind(d) + "}"
         }
@@ -524,7 +553,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Set(tys, xs) => collection("Set", tys, &xs.iter().map(|x| expr(x, d)).collect::<Vec<_>>()),
         Expr::Return(x) if **x == Expr::Unit => "return".into(),
         Expr::Return(x) => format!("return {}", expr(x, d)),
-        Expr::Try(x, k) => format!("{}{}", wrap(x, 12, d), if *k == TryKind::Result { "!" } else { "?" }),
+        Expr::Try(x, k) => format!("{}{}", handled(x, d), if *k == TryKind::Result { "!" } else { "?" }),
         Expr::Except(x, _, fb) if shorthand(e) => format!("{} !! {}", wrap(x, 5, d), wrap(fb, 4, d)),
         Expr::Or(x, fb) if shorthand(e) => format!("{} ?? {}", wrap(x, 5, d), wrap(fb, 4, d)),
         Expr::Except(_, _, fb) | Expr::Or(_, fb) => {
@@ -534,7 +563,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
                 Expr::Or(x, _) => (x, "or".to_string()),
                 _ => unreachable!(),
             };
-            let head = format!("{} {keyword}", wrap(x, 12, d));
+            let head = format!("{} {keyword}", handled(x, d));
             // a short fallback stays on the line: `load(p) except { default() }`
             let short = match &**fb {
                 Expr::Block(..) => None,
