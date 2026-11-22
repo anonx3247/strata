@@ -74,6 +74,19 @@ fn l(n: Int) -> Int {
 fn main() { print(1) }
 "#;
 
+const BUILTINS: &str = r#"fn a() -> String { abs(3) }
+fn b() -> Int { abs("x") }
+fn c(xs: List[Int]) -> String { len(xs) }
+fn d(xs: List[Int]) -> Int { push(xs, "s") }
+fn e(s: String) -> Int { split(s, ",") }
+fn f(xs: List[String]) -> String { join(xs, 3) }
+fn g() -> Int { sqrt(2.0) }
+fn h(xs: List[Int]) -> Int { xs.map(x -> x + 1) }
+fn k(s: String) -> Bool { s.starts_with(1) }
+fn m(xs: List[Int]) -> String { sum(xs) }
+fn main() { print(1) }
+"#;
+
 const RECORDS: &str = r#"type Pt = { x: Int, y: Int }
 type Sh =
   | Sq(Int)
@@ -251,6 +264,11 @@ fn trait_methods_as_in_rust() {
 #[test]
 fn sum_variables_as_in_rust() {
     same_errors("sums", SUMS, &["expected `"]);
+}
+
+#[test]
+fn builtin_calls_as_in_rust() {
+    same_errors("builtins", BUILTINS, &["expected `", "no version of"]);
 }
 
 /// The compiler's errors on `text` are `strata check`'s, on the lines holding one of `keys`.
