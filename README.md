@@ -21,7 +21,7 @@ fn next_digit(d: Digit) -> Digit {
 $ strata --file examples/math.strata verify
 ✓ factorial                proven (2 checks)
 ✗ next_digit               Refinement violation (found by the solver)
-    input:   [9]
+    input:   9
     result of `next_digit`: 10 does not satisfy `Digit` (where 0 <= it && it <= 9)
 ```
 

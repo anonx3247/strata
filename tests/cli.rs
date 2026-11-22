@@ -225,14 +225,14 @@ test \"big integers\" {
     save(&d.join("b.strata"), src);
     let (ok, out) = strata(&["--file", "b.strata", "test"], &d, None);
     assert!(ok && out.contains("1 passed"), "{out}");
-    // larger than 64 bits in JSON: a number up to 2^64 - 1, or a string of digits
-    let (ok, out) = strata(&["--file", "b.strata", "run", "widen", "[18446744073709551614]"], &d, None);
-    assert!(ok && out.contains("\"18446744073709551615\""), "{out}");
-    let (ok, out) = strata(&["--file", "b.strata", "run", "widen", "[\"18446744073709551615\"]"], &d, None);
+    // larger than 64 bits, written as any integer is
+    let (ok, out) = strata(&["--file", "b.strata", "run", "widen", "18446744073709551614"], &d, None);
+    assert!(ok && out.trim() == "18446744073709551615", "{out}");
+    let (ok, out) = strata(&["--file", "b.strata", "run", "widen", "18446744073709551615"], &d, None);
     assert!(!ok && out.contains("18446744073709551616") && out.contains("does not satisfy `U64`"), "{out}");
     if has_solver() {
         let (ok, out) = strata(&["--file", "b.strata", "verify", "wrap,neg,widen", "--cases", "20"], &d, None);
-        assert!(!ok && out.contains("input:   [255]") && out.contains("input:   [-128]") && out.contains("input:   [\"18446744073709551615\"]"), "sized types catch overflow: {out}");
+        assert!(!ok && out.contains("input:   255\n") && out.contains("input:   -128\n") && out.contains("input:   18446744073709551615\n"), "sized types catch overflow: {out}");
     }
     // render keeps big literals
     let (_, r) = strata(&["--file", "b.strata", "render"], &d, None);
@@ -473,7 +473,7 @@ fn bad_countdown(start: Natural) -> Int {
     for name in ["area", "grow", "small", "countdown"] {
         assert!(out.contains(&format!("✓ {name} ")), "{name} should be proven: {out}");
     }
-    assert!(out.contains("✗ bad_small") && out.contains("input:   [-2]"), "{out}");
+    assert!(out.contains("✗ bad_small") && out.contains("input:   -2\n"), "{out}");
     assert!(out.contains("✗ bad_countdown") && out.contains("assigning `k`: -1 does not satisfy `Natural`"), "a declared type holds after assignment: {out}");
     // what a `mut` argument held before the call is forgotten, field or not
     let src = "type Box = { n: Int }
@@ -555,7 +555,7 @@ fn bad_common(v: One | Two) -> Positive { v.n - 1 }
         let line = out.lines().find(|l| l.split_whitespace().nth(1) == Some(name)).unwrap_or("");
         assert!(line.starts_with("✗") && line.contains("found by the solver"), "{name} should be refuted by the solver: {out}");
     }
-    assert!(out.contains("input:   [{\"radius\":1}]") && out.contains("input:   [\"C\"]"), "counterexamples are union members: {out}");
+    assert!(out.contains("input:   Circle { radius: 1 }\n") && out.contains("input:   C\n"), "counterexamples are union members: {out}");
 }
 
 #[test]
@@ -605,9 +605,9 @@ fn empty_rep(s: String, p: String) -> String { replace(s, p, "b") }
     assert!(out.contains("~ spaced") && !out.contains("✗ empty_rep"), "{out}");
     // a big offset is clamped like any other, and one inside a character moves back to its start
     save(&d.join("b.strata"), "fn s(t: String) -> String { byte_slice(t, 0, 99999999999999999999) }\nfn m(t: String) -> String { byte_slice(t, 0, 2) }\n");
-    let (ok, out) = strata(&["--file", "b.strata", "run", "s", "[\"abc\"]"], &d, None);
+    let (ok, out) = strata(&["--file", "b.strata", "run", "s", "\"abc\""], &d, None);
     assert!(ok && out.contains("\"abc\""), "{out}");
-    let (ok, out) = strata(&["--file", "b.strata", "run", "m", "[\"aé\"]"], &d, None);
+    let (ok, out) = strata(&["--file", "b.strata", "run", "m", "\"aé\""], &d, None);
     assert!(ok && out.contains("\"a\""), "{out}");
 }
 
@@ -706,7 +706,7 @@ fn sku(s: String where matches(it, "[A-Z]{3}-[0-9]{4}")) -> Int ensures it == 99
     assert!(!ok && !out.contains("skipped") && !out.contains("internal error"), "{out}");
     assert!(out.lines().any(|l| l.starts_with("~ shout") && l.contains("fuzzed: 30 cases")), "{out}");
     let sku = out.lines().skip_while(|l| !l.starts_with("✗ sku")).nth(1).unwrap_or("");
-    assert!(sku.contains("input:   [\"") && sku.contains("-"), "refuted, with an input: {out}");
+    assert!(sku.contains("input:   \"") && sku.contains("-"), "refuted, with an input: {out}");
 }
 
 #[test]
@@ -726,7 +726,7 @@ fn math_example_verifies_as_documented() {
     }
     assert!(out.contains("~ isqrt") && out.contains("not proven: ensures it * it <= n"), "{out}");
     assert!(out.contains("the pair (`m`, `n`), compared in order") && out.contains("may not terminate: the loop `while x != 1`"), "{out}");
-    assert!(out.contains("✗ average") && out.contains("input:   [[]]") && out.contains("✗ next_digit") && out.contains("input:   [9]"), "{out}");
+    assert!(out.contains("✗ average") && out.contains("input:   []\n") && out.contains("✗ next_digit") && out.contains("input:   9\n"), "{out}");
 }
 
 #[test]
@@ -826,11 +826,11 @@ fn codebase_edits_are_checked_and_atomic() {
 }
 
 #[test]
-fn json_inputs_are_validated_against_refinements() {
-    let d = tmp("json");
-    let (ok, out) = strata(&["--file", &example(), "run", "total", r#"[[{"sku":"a","qty":0,"unit_price":5}]]"#], &d, None);
-    assert!(!ok && out.contains("Line.qty: 0 does not satisfy `Quantity`"), "{out}");
-    let (ok, out) = strata(&["--file", &example(), "run", "total", r#"[[{"sku":"a","qty":2,"unit_price":5}]]"#], &d, None);
+fn run_inputs_are_validated_against_refinements() {
+    let d = tmp("run-inputs");
+    let (ok, out) = strata(&["--file", &example(), "run", "total", r#"[Line { sku: "a", qty: 0, unit_price: 5 }]"#], &d, None);
+    assert!(!ok && out.contains("`Line.qty`: 0 does not satisfy `Quantity`"), "{out}");
+    let (ok, out) = strata(&["--file", &example(), "run", "total", r#"[Line { sku: "a", qty: 2, unit_price: 5 }]"#], &d, None);
     assert!(ok && out.trim() == "10", "{out}");
 }
 
@@ -1444,11 +1444,11 @@ fn unions_variants_as_types_and_narrowing() {
         let (_, r2) = strata(&["--file", "r.strata", "render"], &d, None);
         assert_eq!(r1, r2);
     }
-    // JSON input picks the union member it is a valid value of
-    let (ok, out) = strata(&["--file", "u.strata", "run", "area", r#"[{"radius": 2}]"#], &d, None);
+    // an argument of a union type is a value of one of its members
+    let (ok, out) = strata(&["--file", "u.strata", "run", "area", "Circle { radius: 2 }"], &d, None);
     assert!(ok && out.trim() == "12", "{out}");
-    let (ok, out) = strata(&["--file", "u.strata", "run", "max_of", r#"["NonEmptyErr"]"#], &d, None);
-    assert!(!ok && out.contains("expected a `TooBig`"), "{out}");
+    let (ok, out) = strata(&["--file", "u.strata", "run", "max_of", "NonEmptyErr"], &d, None);
+    assert!(!ok && out.contains("expected `TooBig`, found `ShapeError`"), "{out}");
 
     save(&d.join("bad.strata"), BAD);
     let (ok, out) = strata(&["--file", "bad.strata", "check"], &d, None);
@@ -1687,7 +1687,7 @@ fn or_patterns_refined_scrutinees_lengths_floats_and_variance() {
     assert!(out.contains("in lit: refinement violated at compile time in assigning `x`: -1 does not satisfy `Positive`"), "{out}");
     assert!(out.contains("in wb: call to `set_neg`, argument 1: `p` is declared `Positive`, but the `mut` parameter is `Int`"), "{out}");
     save(&d.join("mut_run.strata"), "fn a(mut n: Positive) -> Int {\n  n = n - 10\n  n\n}\n");
-    let (ok, out) = strata(&["--file", "mut_run.strata", "run", "a", "[3]"], &d, None);
+    let (ok, out) = strata(&["--file", "mut_run.strata", "run", "a", "3"], &d, None);
     assert!(!ok && out.contains("assigning `n`: -7 does not satisfy `Positive`"), "{out}");
     let (ok, out) = check("or_bad.strata", "type Light = | Red | Amber | Green\nfn a(l: Light) -> Bool { match l { Red | Amber => false } }\nfn b(p: (Int, Int)) -> Int { match p { (0, x) | (y, 0) => 1, _ => 2 } }\n");
     assert!(!ok && out.contains("`Green` is not covered") && out.contains("must bind the same names"), "{out}");
@@ -3633,10 +3633,10 @@ fn ranges_slices_and_comprehensions() {
     assert!(ok, "{out}");
     let (ok, out) = strata(&["--file", "sugar.strata", "render"], &d, None);
     assert!(ok && out == written, "{out}");
-    let (ok, out) = strata(&["--file", &src, "run", "first", "[[]]"], &d, None);
+    let (ok, out) = strata(&["--file", &src, "run", "first", "[]"], &d, None);
     assert!(!ok && out.contains("does not satisfy"), "{out}");
     save(&d.join("last.strata"), "fn last(xs: List[Int]) -> Int { xs[len(xs) - 1] }");
-    let (ok, out) = strata(&["--file", "last.strata", "run", "last", "[[]]"], &d, None);
+    let (ok, out) = strata(&["--file", "last.strata", "run", "last", "[]"], &d, None);
     assert!(!ok && out.contains("index -1 out of range (length 0)"), "{out}");
     for (code, err) in [
         ("fn f(xs: List[Int]) -> List[Int] { xs[1..=] }", "`..=` needs an end"),
@@ -3693,9 +3693,9 @@ fn record_defaults() {
     assert!(ok, "{out}");
     save(&d.join("again.strata"), &out);
     assert_eq!(text(&d.join("again.strata")), out);
-    // JSON input: a missing key takes the default
+    // an argument: a field left out takes its default
     save(&d.join("r.strata"), "type R = { n: Int = 1, s: String }\nfn f(r: R) -> Int { r.n }\n");
-    let (ok, out) = strata(&["--file", "r.strata", "run", "f", r#"[{"s": "x"}]"#], &d, None);
+    let (ok, out) = strata(&["--file", "r.strata", "run", "f", r#"R { s: "x" }"#], &d, None);
     assert!(ok && out.trim() == "1", "{out}");
     // checked where the type is defined
     save(&d.join("bad.strata"), "type R = { n: Int where it > 0 = 0 }\ntype S = { s: String = 1 }\n");
@@ -4877,9 +4877,9 @@ fn long_list_literals_compile_in_linear_time() {
     let d = tmp("long-literal");
     save(&d.join("t.strata"), "fn total(xs: List[Int]) -> Int {\n  sum(xs)\n}\n");
     // 60,000 elements: one argument stays under Linux's 128 KB (3.6 s before, 0.08 s now)
-    let arg = format!("[[{}]]", vec!["1"; 60_000].join(","));
+    let arg = format!("[{}]", vec!["1"; 60_000].join(","));
     // (a first run may precompile std, once per strata binary)
-    let (ok, out) = strata(&["--file", "t.strata", "run", "total", "[[1, 2]]"], &d, None);
+    let (ok, out) = strata(&["--file", "t.strata", "run", "total", "[1, 2]"], &d, None);
     assert!(ok && out.trim() == "3", "{out}");
     let start = std::time::Instant::now();
     let (ok, out) = strata(&["--file", "t.strata", "run", "total", &arg], &d, None);

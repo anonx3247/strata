@@ -155,9 +155,11 @@ Running:
                                `fn handle(req: Request) -> Response` (std.http), which may
                                also ask for Console and capabilities (default port 8000);
                                or run it as an app: `init`, `update` and `view` (std.web)
-  run <fn> [JSON-ARGS] [--trace]
-                               call one function: args are a JSON array validated
-                               against the types; --trace prints each call and return
+  run <fn> [ARGS] [--trace]
+                               call one function: ARGS are its arguments written as
+                               code (`\"abc\", 3`, `Circle { radius: 2 }`), checked
+                               against the types; the result is printed as code;
+                               --trace prints each call and return
                                to stderr
   test [FILTER] [--with-deps]  run the project's own test blocks, compiled (a test that
                                can't be compiled yet fails, saying why); --with-deps: also
