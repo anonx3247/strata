@@ -287,6 +287,15 @@ fn f() -> String { Item.zero() }
 fn main() { print(1) }
 "#;
 
+const UNION_ARMS: &str = r#"fn a(x: Int | String) -> String { if x is Int { x } else { x } }
+fn b(x: Int | String) -> Bool {
+  if x is String { return true }
+  x
+}
+fn c(x: Int | String) -> Bool { match x { Int => x, String => false } }
+fn main() { print(1) }
+"#;
+
 const RECORDS: &str = r#"type Pt = { x: Int, y: Int }
 type Sh =
   | Sq(Int)
@@ -576,6 +585,11 @@ fn lamp() -> Int {
 test "asks" (n: Int, p: Pt, l: NightLamp) { assert true }
 fn main() { print(1) }
 "#;
+
+#[test]
+fn union_arms_as_in_rust() {
+    same_errors("union-arms", UNION_ARMS, &["expected `"]);
+}
 
 /// The compiler's errors on `text` are `strata check`'s, on the lines holding one of `keys`.
 fn same_errors(name: &str, text: &str, keys: &[&str]) {
