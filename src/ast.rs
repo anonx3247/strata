@@ -526,6 +526,10 @@ pub enum Stmt {
     /// program is compiled; its body is written out once per element, with
     /// the element known in each copy.
     ComptimeFor(Pattern, Expr, Expr),
+    /// `invariant e`, written between a loop's header and its body
+    /// (`while c invariant e { ... }`) and kept as the first statements of
+    /// the body: true on entry and after every pass and `continue`.
+    Invariant(Expr),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -609,6 +613,23 @@ pub enum Expr {
     /// `await h`: a task's result; of a tuple or list of handles, a tuple or
     /// list of results.
     Await(Box<Expr>),
+    /// `select { rx.recv() as x => …, tx.send(v) => …, await h as r => … }`:
+    /// waits until one of the operations can happen, does that one only, and
+    /// runs its arm.
+    Select(Vec<SelectArm>),
+}
+
+/// One arm of a `select`: an operation that may wait (`rx.recv()`,
+/// `tx.send(v)`, `await h`), the name its result gets (`as x`), and the code
+/// run when it is the one that happens.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SelectArm {
+    /// `//` comment lines just above it, as written ("" is a blank line between groups).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<String>,
+    pub op: Expr,
+    pub name: Option<Symbol>,
+    pub body: Expr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -818,6 +839,12 @@ macro_rules! visitor {
                         v.expr(&$($m)? a.body)
                     }
                 }
+                Expr::Select(arms) => {
+                    for a in arms {
+                        v.expr(&$($m)? a.op);
+                        v.expr(&$($m)? a.body)
+                    }
+                }
                 Expr::Block(stmts, last) => {
                     stmts.into_iter().for_each(|s| $stmt(v, s));
                     v.expr(last)
@@ -892,7 +919,7 @@ macro_rules! visitor {
                     v.expr(a);
                     v.expr(b)
                 }
-                Stmt::Loop(x) | Stmt::Expr(x) | Stmt::Assert(x) => v.expr(x),
+                Stmt::Loop(x) | Stmt::Expr(x) | Stmt::Assert(x) | Stmt::Invariant(x) => v.expr(x),
             }
         }
 

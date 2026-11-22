@@ -40,6 +40,7 @@ fn main(disk: Disk, process: Process) {
 const CASES: &[(&str, &str)] = &[
     ("comments", "// a\n\n// b\n/// doc\n// between\npub fn f(x: Int) -> Int { // trailing\n  // above\n  y := x\n\n  // after a blank\n  y + 1 // end\n} // after\n\ntype T = {\n  // c\n  /// d\n  a: Int, // t\n  b: Int = 2,\n}\n\ntype S =\n  // v\n  | A // w\n  | B(Int)\n"),
     ("shorthands", "use a.b.{c, d}\nuse a.*\nuse a.b.C\nuse a\nextern c fn strlen(s: String) -> U64\nextern c type Handle\nfn g[T: Ord + Hash, U](mut x: T, comptime y: U) -> T requires x > 0 ensures it > 0 terminates = ?todo\nfn h() { q := [x * 2 for x in xs where x > 0 for y in ys]; s := Set { x for x in xs }; d := Dict { k: v for (k, v) in kv }; e := Dict[String, Int] {}; f := (a, b) -> a + b; g := x -> x; m := match v as w { Some(x) => x, None => 0, }; r := xs[1..]; r2 := xs[..=2]; r3 := xs[a..b]; mut q.claim(2).len(); z := L { ..l, a: 1, b }; t := (1, \"a\"); u := -3 + -x; v2 := !!b; w2 := a ?? b !! c; return }\n"),
+    ("tasks", "fn t(rx: Receiver[Int], tx: Sender[Int]) { scope { h := spawn f(1) + 2; loop { select { // c\n rx.recv() as x => g(x), tx.send(1) => (), await h as r => break, } } }; select(a, b) }\n"),
     ("patterns", "fn p(v: Int) -> Int { match v { 0 | 1 => 1, -2 => 2, where it > 3 => 3, \"s\" => 4, [a, b, ..rest] => 5, [..] => 6, (x, _) => 7, Some(Circle { r, .. }) => 8, shop.Pending { id: i } => 9, Option[x] => 10, true => 11, _ => 0 } }\n"),
     ("let_untyped", "fn f() { let x = 1 }"),
     ("assign_call", "fn f() { g(x) = 1 }"),
