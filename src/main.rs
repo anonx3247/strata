@@ -159,8 +159,11 @@ Running:
                                call one function: args are a JSON array validated
                                against the types; --trace prints each call and return
                                to stderr
-  test [FILTER]                run test blocks, compiled (a test that can't be compiled
-                               yet fails, saying why; --interpret: the old interpreter)
+  test [FILTER] [--with-deps]  run the project's own test blocks, compiled (a test that
+                               can't be compiled yet fails, saying why); --with-deps: also
+                               those of what it imports (std, dependencies), which are
+                               otherwise tested on their own; --interpret: the old
+                               interpreter
   build [PATH] [-o OUT] [--emit-llvm]
                                compile the program to a native executable, through LLVM
                                (needs clang; STRATA_CC chooses another): `main` takes no
