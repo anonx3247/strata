@@ -799,7 +799,8 @@ record!(Law { comments, doc, name, params, body });
 record!(TraitDecl { name, params, supers, methods, laws, derivable, capability });
 record!(Derivable { kind, requires });
 record!(ImplDecl { type_params, bounds, trait_name, trait_args, for_type, methods, derived });
-record!(UseDecl { path, items });
+record!(UseDecl { path, alias, items });
+record!(UseItem { name, alias });
 record!(ExternDecl { lang, item });
 record!(CapabilityDecl { name, methods });
 record!(Arm { comments, pat, body });
@@ -1256,8 +1257,8 @@ fn f(x: Int) -> Int requires x > 0 ensures it >= 0 terminates {
   if "s".len() == 1 { return 1 } else { f(mut v) }
 }
 test "t" { assert f(1) == 1 }
-use a.b.{c, d}
-use e.*
+from a.b use c, d as x
+use e as f
 "#;
         // not every line has to check: only parse, then round-trip the tree
         let program = crate::parser::parse_module_file(src, "m").unwrap_or_else(|e| panic!("{e}"));

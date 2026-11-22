@@ -14,7 +14,17 @@ pub fn decl(d: &Decl) -> String {
         DeclKind::Test(t) => tag("TestDef", rec("TestDecl", &[("name", s(&t.name)), ("params", list(&t.params, param)), ("body", expr(&t.body))])),
         DeclKind::Trait(t) => tag("TraitDef", trait_decl(t)),
         DeclKind::Impl(i) => tag("ImplDef", impl_decl(i)),
-        DeclKind::Use(u) => tag("UseDef", rec("UseDecl", &[("path", s(&u.path)), ("items", opt(&u.items, |xs| strs(xs)))])),
+        DeclKind::Use(u) => tag(
+            "UseDef",
+            rec(
+                "UseDecl",
+                &[
+                    ("path", s(&u.path)),
+                    ("alias", opt(&u.alias, |a| s(a))),
+                    ("items", opt(&u.items, |xs| list(xs, |i| rec("UseItem", &[("name", s(&i.name)), ("alias", opt(&i.alias, |a| s(a)))])))),
+                ],
+            ),
+        ),
         DeclKind::Extern(e) => {
             let item = match &e.item {
                 ExternItem::Fn(f) => tag("ExternFn", fn_decl(f)),

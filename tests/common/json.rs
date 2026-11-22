@@ -3,7 +3,7 @@
 
 /// The program `std.json` is tested with: records, sums, choices, options,
 /// defaults, lists, dictionaries, refinements, and JSON text both ways.
-pub const PROGRAM: &str = r#"use std.json.{Json, JsonValue, Reject, parse, stringify}
+pub const PROGRAM: &str = r#"from std.json use Json, JsonValue, Reject, parse, stringify
 
 type Address = { city: String, zip: String where len(it.code_points()) == 5 }
 
@@ -125,7 +125,7 @@ Err("payload: expected Positive or String or Address, got []")
 
 /// The built-in types are `Json` too: generic code over `T: Json`.
 #[allow(dead_code)]
-pub const BUILTINS: &str = r#"use std.json.{Json, parse, stringify}
+pub const BUILTINS: &str = r#"from std.json use Json, parse, stringify
 
 type P = { name: String, tags: List[String] }
 
@@ -348,7 +348,7 @@ z
 "#;
 
 #[allow(dead_code)]
-pub const GENERIC_DERIVE: &str = r#"use std.json.{Json, parse, stringify}
+pub const GENERIC_DERIVE: &str = r#"from std.json use Json, parse, stringify
 
 type Pair[T] = { a: T, b: T }
 
@@ -370,7 +370,7 @@ Ok(Box { p: Pair { a: 3, b: 4 } })
 "#;
 
 #[allow(dead_code)]
-pub const OPTION_OPTION: &str = r#"use std.json.{Json, stringify}
+pub const OPTION_OPTION: &str = r#"from std.json use Json, stringify
 
 fn send[T: Json](x: T) -> String {
   match x.to_json() {
@@ -396,7 +396,7 @@ null
 "#;
 
 #[allow(dead_code)]
-pub const ROOT_BUILTIN_NAME: &str = r#"use std.io.{Console, recorder, printed}
+pub const ROOT_BUILTIN_NAME: &str = r#"from std.io use Console, recorder, printed
 
 fn get(x: Int) -> Int { x * 10 }
 
@@ -416,7 +416,7 @@ pub const ROOT_BUILTIN_NAME_OUTPUT: &str = r#"40
 /// Refined aliases kept by name in type arguments: `List[Port]` decoded
 /// through the generic impls checks `Port`; `T.check(x)` on any type.
 #[allow(dead_code)]
-pub const REFINED: &str = r#"use std.json.{Json, parse}
+pub const REFINED: &str = r#"from std.json use Json, parse
 
 type Port = Int
   where 1 <= it && it <= 65535
@@ -471,7 +471,7 @@ Ok(())
 /// Refined aliases with type parameters (`Many[Int]`) and refinements
 /// written as type arguments (`List[Int where it % 2 == 0]`).
 #[allow(dead_code)]
-pub const REFINED_MORE: &str = r#"use std.json.{Json, parse}
+pub const REFINED_MORE: &str = r#"from std.json use Json, parse
 
 type Many[T] = List[T]
   where len(it) >= 2
