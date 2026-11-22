@@ -484,7 +484,7 @@ fn fetch_or_give_up(clock: SystemClock, net: Net, url: String) -> Option[Page] {
 }
 ```
 
-In a `select`, `clock.after(d) => …` is an arm that happens once `d` has passed since the `select` began (it names nothing): `select { jobs.recv() as j => run(j), clock.after(ms(100)) => flush() }`.
+In a `select`, `clock.after(d) => …` is an arm that happens once `d` has passed, in that clock's time, since the `select` began (it names nothing): `select { jobs.recv() as j => run(j), clock.after(ms(100)) => flush() }`. Any `Clock` works, so a test can pass a stand-in whose time it controls (one that stands still, or runs faster): its `after` arms and its `sleep` follow its time, not the system's.
 
 ## Built-in types
 

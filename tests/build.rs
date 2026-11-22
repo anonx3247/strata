@@ -823,6 +823,94 @@ fn clocks_time_out() {
     assert_eq!(jit, (out, code));
 }
 
+/// `after` follows the clock it is called on: a frozen fake clock's timer
+/// never fires though real time passes (the `recv` wins), one of 0 fires at
+/// once, a clock 1000 times faster fires its ten seconds in about 10 ms, and
+/// the system clock passed as a `Clock` works too; everything freed.
+#[test]
+fn fake_clocks_drive_after() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("fake-clock");
+    let (out, code) = case(&d, "fake-clock", FAKE_CLOCK);
+    assert!(code == 0 && out == "received\nfrozen timer at 0\nfast timer\ntrue\ntimer\n", "{out}");
+    let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("fake-clock.strata")).env("STRATA_MEMORY", "check")), &d.join("fake-clock.strata"));
+    assert_eq!(jit, (out, code));
+}
+
+const FAKE_CLOCK: &str = r#"use std.time.{SystemClock, Clock, Instant, Duration, nanos, ms, seconds, elapsed}
+
+/// A clock whose time never moves.
+type FrozenClock = { at: Int }
+
+impl Clock for FrozenClock {
+  fn now(self) -> Instant {
+    Instant(self.at)
+  }
+
+  fn sleep(self, d: Duration) {
+    ()
+  }
+}
+
+/// A clock running `speed` times faster than the system's.
+type FastClock = { inner: SystemClock, speed: Int }
+
+impl Clock for FastClock {
+  fn now(self) -> Instant {
+    Instant(self.inner.now().value * self.speed)
+  }
+
+  fn sleep(self, d: Duration) {
+    self.inner.sleep(nanos(d.value / self.speed))
+  }
+}
+
+/// Any clock: here the system's, through the `Clock` trait.
+fn timer_of(clock: Clock, rx: Receiver[Int]) -> String {
+  select {
+    rx.recv() as x => "received",
+    clock.after(ms(20)) => "timer",
+  }
+}
+
+fn main(clock: SystemClock) {
+  (tx, rx) := channel()
+  start := clock.now()
+  // the frozen clock's 1 ms never passes, though 50 ms of real time do
+  frozen := FrozenClock { at: 5 }
+  r := scope {
+    spawn {
+      clock.sleep(ms(50))
+      tx.send(1)
+      tx.close()
+    }
+    select {
+      rx.recv() as x => "received",
+      frozen.after(ms(1)) => "frozen timer",
+    }
+  }
+  print(r)
+  // a timer of 0 is ready at once, in any clock's time
+  print(select {
+    rx.recv() as x => "received",
+    frozen.after(nanos(0)) => "frozen timer at 0",
+  })
+  // ten seconds of a clock 1000 times faster are 10 ms of the system's
+  fast := FastClock { inner: clock, speed: 1000 }
+  before := clock.now()
+  print(select {
+    rx.recv() as x => "received",
+    fast.after(seconds(10)) => "fast timer",
+  })
+  print(elapsed(before, clock.now()).value < 2000000000)
+  print(timer_of(clock, rx))
+  tx.close()
+}
+"#;
+
 const CLOCK: &str = r#"use std.time.{SystemClock, Clock, ms, seconds, elapsed}
 
 fn never(rx: Receiver[Int]) -> Int {

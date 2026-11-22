@@ -1646,9 +1646,9 @@ test "the next test runs" {
 #[test]
 fn clock_arms_are_checked() {
     let d = tmp("clock-arms");
-    save(&d.join("c.strata"), "use std.time.{SystemClock, ms}\n\nfn named(clock: SystemClock, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    clock.after(ms(5)) as t => 2,\n  }\n}\n\nfn plain(clock: SystemClock, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    clock.after(5) => 2,\n  }\n}\n");
+    save(&d.join("c.strata"), "use std.time.{SystemClock, ms}\n\nfn named(clock: SystemClock, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    clock.after(ms(5)) as t => 2,\n  }\n}\n\nfn plain(clock: SystemClock, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    clock.after(5) => 2,\n  }\n}\n\nfn not_a_clock(n: Int, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    n.after(ms(5)) => 2,\n  }\n}\n");
     let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
-    assert!(!ok && out.contains("error in named: an `after` arm gives nothing to name") && out.contains("error in plain: the time an `after` arm waits: expected `std.time.Duration`, found `Int`"), "{out}");
+    assert!(!ok && out.contains("error in named: an `after` arm gives nothing to name") && out.contains("error in plain: the time an `after` arm waits: expected `std.time.Duration`, found `Int`") && out.contains("error in not_a_clock: an `after` arm waits on a clock: `Int` doesn't implement `Clock`"), "{out}");
     save(&d.join("t.strata"), "use std.time.{SystemClock, ms}\n\ntest \"the clock in a test\" (clock: SystemClock) {\n  (tx, rx) := channel()\n  r := select {\n    rx.recv() as x => 1,\n    clock.after(ms(1)) => 2,\n  }\n  tx.close()\n  assert r == 2\n}\n");
     let (ok, out) = strata(&["--file", "t.strata", "test"], &d, None);
     assert!(ok && out.contains("1 passed, 0 failed"), "{out}");

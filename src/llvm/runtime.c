@@ -991,8 +991,11 @@ void strata_host_sleep(int64_t ns) {
 }
 
 // What a `select` arm waits on: kind 0 `recv` (`ok` says whether a value
-// came, into `slot`), 1 `send` (of `slot`), 2 `await` (a task), 3 a timer
-// (`clock.after(d)`: `slot` is `d` in nanoseconds, from the `select`'s start).
+// came, into `slot`), 1 `send` (of `slot`), 2 `await` (a task), 3 a timer of
+// the system clock (`clock.after(d)`: `slot` is its deadline, monotonic
+// nanoseconds), 4 a timer of another clock (`slot` is 1 once that clock said
+// its deadline has passed: the compiled code asks the clock, `strata_select`
+// gives -2 when it should ask again).
 typedef struct {
   int64_t kind;
   void *target;
@@ -1012,13 +1015,14 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
     }
   rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
   int64_t start = (int64_t)((rng >> 33) % (uint64_t)n);
-  // the timers' deadlines, and the first of them
-  int64_t began = mono_ns(), first = INT64_MAX;
-  for (int64_t i = 0; i < n; i++)
-    if (ops[i].kind == 3) {
-      ops[i].slot = began + (ops[i].slot > 0 ? ops[i].slot : 0);
-      if (ops[i].slot < first) first = ops[i].slot;
-    }
+  // the first of the system clock's deadlines; whether another clock's
+  // timer needs asking again (then this wait is short)
+  int64_t first = INT64_MAX;
+  _Bool other_clocks = 0;
+  for (int64_t i = 0; i < n; i++) {
+    if (ops[i].kind == 3 && ops[i].slot < first) first = ops[i].slot;
+    if (ops[i].kind == 4) other_clocks = 1;
+  }
   for (int64_t i = 0; i < n; i++)
     if (ops[i].kind == 0) ((Channel *)ops[i].target)->waiting++;
   pthread_cond_broadcast(&chan_cond);
@@ -1045,12 +1049,20 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
         }
       } else if (op->kind == 2) {
         if (((Task *)op->target)->done) chosen = i;
-      } else if (mono_ns() >= op->slot) {
+      } else if (op->kind == 3 ? mono_ns() >= op->slot : op->slot != 0) {
         chosen = i;
       }
     }
     if (chosen < 0) {
       if (strata_cancelled()) break;
+      if (other_clocks) {
+        // another clock's time may have moved: wait a little, then let the
+        // compiled code ask it again
+        int64_t soon = mono_ns() + 1000000;
+        wait_until(first < soon ? first : soon);
+        chosen = -2;
+        break;
+      }
       if (first == INT64_MAX) pthread_cond_wait(&chan_cond, &chan_lock);
       else wait_until(first);
     }
@@ -1058,7 +1070,7 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
   for (int64_t i = 0; i < n; i++)
     if (ops[i].kind == 0) ((Channel *)ops[i].target)->waiting--;
   pthread_cond_broadcast(&chan_cond);
-  if (chosen >= 0) {
+  if (chosen >= 0 || chosen == -2) {
     pthread_mutex_unlock(&chan_lock);
     return chosen;
   }
