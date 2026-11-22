@@ -1164,29 +1164,6 @@ impl Parser {
                 }
                 Ok(Expr::Match(Box::new(scrut), name, arms))
             }
-            // `select { op as x => e, … }` (`select` followed by `{`: std.web's
-            // `select(…)` stays a call)
-            Tok::Ident(kw) if kw == "select" && matches!(self.peek_at(1), Tok::Sym("{")) => {
-                self.next();
-                self.expect_sym("{")?;
-                let mut arms = Vec::new();
-                while !self.eat_sym("}") {
-                    let mut comments = self.leading();
-                    let op = self.expr_ns()?;
-                    let name = if matches!(self.peek(), Tok::Ident(s) if s == "as") {
-                        self.next();
-                        Some(self.ident()?)
-                    } else {
-                        None
-                    };
-                    self.expect_sym("=>")?;
-                    let body = self.expr()?;
-                    self.eat_sym(",");
-                    comments.extend(self.trailing());
-                    arms.push(SelectArm { comments, op, name, body });
-                }
-                Ok(Expr::Select(arms))
-            }
             Tok::Ident(kw) if kw == "spawn" => {
                 // `spawn e`, the whole expression (as `return e`): run in a new task
                 self.next();
@@ -1343,26 +1320,6 @@ impl Parser {
         false
     }
 
-    /// A loop's body, after its `invariant e` clauses (`invariant` is a
-    /// word only there), which become the body's first statements.
-    fn loop_body(&mut self) -> R<Expr> {
-        let mut invs = vec![];
-        while self.eat_kw("invariant") {
-            invs.push(Stmt::Invariant(self.expr_ns()?));
-        }
-        let body = self.block()?;
-        if invs.is_empty() {
-            return Ok(body);
-        }
-        Ok(match body {
-            Expr::Block(ss, last) => {
-                invs.extend(ss);
-                Expr::Block(invs, last)
-            }
-            other => Expr::Block(invs, Box::new(other)),
-        })
-    }
-
     fn block(&mut self) -> R<Expr> {
         self.expect_sym("{")?;
         let old = (self.no_struct, self.no_pipe);
@@ -1410,14 +1367,14 @@ impl Parser {
             } else if self.eat_kw("assert") {
                 stmts.push(Stmt::Assert(self.expr()?));
             } else if self.eat_kw("loop") {
-                stmts.push(Stmt::Loop(self.loop_body()?));
+                stmts.push(Stmt::Loop(self.block()?));
             } else if self.eat_kw("break") {
                 stmts.push(Stmt::Break);
             } else if self.eat_kw("continue") {
                 stmts.push(Stmt::Continue);
             } else if self.eat_kw("while") {
                 let cond = self.expr_ns()?;
-                stmts.push(Stmt::While(cond, self.loop_body()?));
+                stmts.push(Stmt::While(cond, self.block()?));
             } else if self.is_kw("comptime") && matches!(self.peek_at(1), Tok::Ident(f) if f == "for") {
                 // `comptime for v in xs { ... }`: written out once per element while compiling
                 self.next();
@@ -1430,7 +1387,7 @@ impl Parser {
                 let pat = self.pattern()?;
                 self.expect_kw("in")?;
                 let iter = self.expr_ns()?;
-                stmts.push(Stmt::For(pat, iter, self.loop_body()?));
+                stmts.push(Stmt::For(pat, iter, self.block()?));
             } else {
                 let e = self.expr()?;
                 let op = match self.peek() {

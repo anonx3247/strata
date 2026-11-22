@@ -240,7 +240,6 @@ fn stmt(st: &Stmt) -> String {
         Stmt::Assert(e) => tag("Assert", expr(e)),
         Stmt::Comment(ls) => tag("Comment", strs(ls)),
         Stmt::ComptimeFor(p, xs, b) => three("ComptimeFor", p, xs, b),
-        Stmt::Invariant(e) => tag("Invariant", expr(e)),
     }
 }
 
@@ -370,10 +369,6 @@ fn expr(e: &Expr) -> String {
         Expr::Scope(x) => tag("Scope", expr(x)),
         Expr::Spawn(x) => tag("Spawn", expr(x)),
         Expr::Await(x) => tag("Await", expr(x)),
-        Expr::Select(arms) => {
-            let arm = |a: &SelectArm| rec("SelectArm", &[("comments", strs(&a.comments)), ("op", expr(&a.op)), ("name", opt(&a.name, |n| s(n))), ("body", expr(&a.body))]);
-            tag("Select", list(arms, arm))
-        }
     }
 }
 

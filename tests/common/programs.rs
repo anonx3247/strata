@@ -16,7 +16,6 @@ pub const FAULTS: &[(&str, &str, i32)] = &[
     ("division", "fn main() { print(-7 / 2) print(-7 % 2) print(7 / -2) print(1 / 0) }", 101),
     ("floats", "fn main() { print(0.1 + 0.2) print(1000000000000000000000.0) print(0.00000015) print(100.0) print(-5.5 % 2.0) print(1.0 / 0.0) }", 101),
     ("exit_code", "fn main() -> Int { 3 }", 3),
-    ("invariant", "fn f(n: Int) -> Int { mut i := 0 while i < n invariant i < 3 { i = i + 1 if i == 1 { continue } } i }\nfn main() { print(f(2)) print(f(5)) }", 101),
     (
         "loops",
         "fn g(n: Int) -> Int { mut i := 0 while i < 10 { i = i + 1 if i == n { break } if i % 2 == 0 { continue } } i }\n\
