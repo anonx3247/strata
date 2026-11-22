@@ -467,7 +467,7 @@ fn page(net: Net, url: String) -> Page {
 
 - `Panic` is `{ kind: String, message: String, stack: String }`: the kind (`Runtime`, `Requires`, `Refinement`, …), the message, and the call stack from `main` through each `spawn`.
 - A handler after `await h` is the result's: `await h except p { … }` is `(await h) except p { … }`, and `await h!` is `(await h)!`.
-- When a supervised task panics, every task below it stops at its next wait; its copies of senders are closed (its receivers see the channel end); what it held is freed; its siblings and the task that started it go on. A panic in an ordinary task below it is the supervised task's.
+- When a supervised task panics, every task below it stops at its next wait; its copies of senders are closed (its receivers see the channel end); what it held is freed (a division by zero or a bad builtin argument included; only a stack overflow or running out of memory leaves it allocated); its siblings and the task that started it go on. A panic in an ordinary task below it is the supervised task's.
 - In a `race`, an arm can be supervised the same way: `race { supervised fetch(a) as r => …, … }` (`r` is then a `Result[T, Panic]`, and a panic is that arm's result).
 - `supervised` is a keyword only right before `spawn` (and at the start of a `race` arm): it is a name anywhere else.
 
