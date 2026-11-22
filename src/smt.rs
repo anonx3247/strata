@@ -3642,6 +3642,32 @@ impl Solver {
     }
 }
 
+/// Solver processes running at once, at most one per core: `verify` checks
+/// functions, and each function's obligations, in parallel.
+static RUNNING: (std::sync::Mutex<usize>, std::sync::Condvar) = (std::sync::Mutex::new(0), std::sync::Condvar::new());
+
+/// A place to run a solver process, held until dropped.
+pub struct SolverSlot;
+
+pub fn solver_slot() -> SolverSlot {
+    let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let (lock, cv) = &RUNNING;
+    let mut n = lock.lock().unwrap_or_else(|e| e.into_inner());
+    while *n >= cores {
+        n = cv.wait(n).unwrap_or_else(|e| e.into_inner());
+    }
+    *n += 1;
+    SolverSlot
+}
+
+impl Drop for SolverSlot {
+    fn drop(&mut self) {
+        let (lock, cv) = &RUNNING;
+        *lock.lock().unwrap_or_else(|e| e.into_inner()) -= 1;
+        cv.notify_one();
+    }
+}
+
 /// Resource limits per obligation: deterministic, unlike a timeout. The
 /// units differ; both are a few seconds of hard nonlinear arithmetic.
 const Z3_RLIMIT: u64 = 20_000_000;
@@ -3692,7 +3718,13 @@ impl Vc<'_> {
         for p in &ob.pc {
             s.push_str(&format!("(assert {p})\n"));
         }
-        s.push_str(&format!("(assert (not {}))\n(check-sat)\n", ob.goal));
+        s.push_str(&format!("(assert (not {}))\n", ob.goal));
+        // no string is longer than memory: without this bound Z3 tries to
+        // build a string of 10^308 characters to refute `len(s) < 10^308`
+        for t in str_len_terms(&s) {
+            s.push_str(&format!("(assert (< {t} 18446744073709551616))\n"));
+        }
+        s.push_str("(check-sat)\n");
         if !leaves.is_empty() {
             s.push_str(&format!("(get-value ({}))\n", leaves.join(" ")));
         }
@@ -3721,6 +3753,7 @@ impl Vc<'_> {
         }
         let script = self.script(ob, &leaves);
         let run = || -> Option<String> {
+            let _slot = solver_slot();
             let mut child = Command::new(&solver.bin).args(solver.args()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
             child.stdin.take()?.write_all(script.as_bytes()).ok()?;
             let out = child.wait_with_output().ok()?;
@@ -3747,6 +3780,39 @@ impl Vc<'_> {
             _ => Outcome::Unknown(format!("the solver gave up{because}")),
         }
     }
+}
+
+/// The `(str.len x)` terms of a script whose `x` is free of quantified
+/// variables (a constant, or a function of constants).
+fn str_len_terms(script: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let mut rest = script;
+    while let Some(k) = rest.find("(str.len ") {
+        let t = &rest[k..];
+        let mut depth = 0;
+        let mut end = t.len();
+        for (i, c) in t.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let term = &t[..end];
+        // (a term under a quantifier names its bound variables: left out)
+        let free = !term.contains('"') && term.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '.').all(|w| w.is_empty() || w == "str.len" || (w.starts_with('v') && w[1..].chars().all(|c| c.is_ascii_digit())) || w.chars().all(|c| c.is_ascii_digit()));
+        if free && !out.iter().any(|o| o == term) {
+            out.push(term.to_string());
+        }
+        rest = &t[9..];
+    }
+    out
 }
 
 fn leaves_of(v: &Val, out: &mut Vec<String>) {

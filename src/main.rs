@@ -1,5 +1,6 @@
 mod ast;
 mod fx;
+mod par;
 mod symbol;
 #[cfg(test)]
 mod bench;
@@ -269,10 +270,11 @@ fn print_errors(rep: &types::CheckReport) {
 fn verdicts_for(src: &Source) -> HashMap<String, String> {
     let Source::Db(cb) = src else { return HashMap::default() };
     let cache = cb.load_verdicts();
+    let closures = store::Closures::new(&cb.program);
     cb.program
         .decls
         .iter()
-        .filter_map(|d| cache.get(&store::closure_hash(&cb.program, &d.qname())).map(|v| (d.qname(), v.tag())))
+        .filter_map(|d| cache.get(&closures.hash(&d.qname())).map(|v| (d.qname(), v.tag())))
         .collect()
 }
 

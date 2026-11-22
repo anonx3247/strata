@@ -326,6 +326,25 @@ pub fn closure_hash(p: &Program, name: &str) -> String {
     closure_hash_in(&graph(p), &hashes, name)
 }
 
+/// [`closure_hash`] of many definitions of one program, with the graph and
+/// each definition's hash made once (making them is the cost: resolving the
+/// program).
+pub struct Closures {
+    graph: BTreeMap<String, BTreeSet<String>>,
+    hashes: HashMap<String, String>,
+}
+
+impl Closures {
+    pub fn new(p: &Program) -> Self {
+        Closures { graph: graph(p), hashes: p.decls.iter().map(|d| (d.qname(), code_hash(d))).collect() }
+    }
+
+    /// The same key as `closure_hash(p, name)`.
+    pub fn hash(&self, name: &str) -> String {
+        closure_hash_in(&self.graph, &self.hashes, name)
+    }
+}
+
 /// [`closure_hash`] from the program's graph and each definition's [`code_hash`],
 /// to hash many definitions without rebuilding them.
 pub fn closure_hash_in(g: &BTreeMap<String, BTreeSet<String>>, hashes: &HashMap<String, String>, name: &str) -> String {
