@@ -1695,6 +1695,9 @@ impl<'a> Vc<'a> {
                 (Val::Opaque(r), _) | (_, Val::Opaque(r)) => r.clone(),
                 _ => "a value of an unexpected shape".into(),
             };
+            // float arithmetic faults on a result that isn't finite (and an
+            // unknown value may be an Int divided by zero): not known to hold
+            self.oblige(format!("`{}` gives a finite number", op.symbol()), |vc| vc.unknown_bool(&r));
             return Val::Opaque(r);
         }
         let (x, y) = (self.as_int(&a), self.as_int(&b));
@@ -2074,7 +2077,25 @@ impl<'a> Vc<'a> {
         match e {
             Expr::Lambda(ps, body) => {
                 // its checks hold on every call; a `return` leaves the lambda only
-                self.scopes.push(ps.iter().enumerate().map(|(i, p)| (p.name.to_string(), arg(i))).collect());
+                // an argument not given is any value of the parameter's type, when it is known
+                let vals: Vec<(String, Val)> = ps
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| {
+                        let v = match (args.get(i), &p.ty) {
+                            (Some(v), _) => v.clone(),
+                            (None, Some(t)) => {
+                                let old = self.reason.replace("the arguments of a function value are not known".into());
+                                let v = self.shape(t, 0);
+                                self.reason = old;
+                                v
+                            }
+                            (None, None) => arg(i),
+                        };
+                        (p.name.to_string(), v)
+                    })
+                    .collect();
+                self.scopes.push(vals.into_iter().collect());
                 let returns = std::mem::take(&mut self.returns);
                 let dead = self.dead;
                 let r = self.eval(body);
@@ -2321,6 +2342,7 @@ impl<'a> Vc<'a> {
     fn builtin(&mut self, name: &str, arg_exprs: &[Expr], a: Vec<Val>) -> Val {
         let arg = |i: usize| a.get(i).cloned().unwrap_or(Val::Opaque("a missing argument".into()));
         let not_modelled = format!("`{name}` is not modelled");
+        self.builtin_faults(name, &a);
         match (name, a.len()) {
             ("len" | "str_len", 1) => match arg(0) {
                 Val::Str(s) => Val::Int(format!("(str.len {s})")),
@@ -2406,6 +2428,15 @@ impl<'a> Vc<'a> {
                 let k = format!("(ite (< {n} 0) 0 (ite (< {n} {l}) {n} {l}))");
                 let id = self.list_id(&arg(0));
                 self.new_list(if name == "take" { k } else { format!("(- {l} {k})") }, Gen::Sub(id))
+            }
+            // elements start..end of a list, both clamped to 0..len
+            ("slice", 3) if matches!(arg(0), Val::List { .. }) => {
+                let l = self.list_len(&arg(0));
+                let (a, b) = (self.as_int(&arg(1)), self.as_int(&arg(2)));
+                let clamp = |x: &str| format!("(ite (< {x} 0) 0 (ite (> {x} {l}) {l} {x}))");
+                let (a, b) = (clamp(&a), clamp(&b));
+                let id = self.list_id(&arg(0));
+                self.new_list(format!("(ite (< {a} {b}) (- {b} {a}) 0)"), Gen::Sub(id))
             }
             ("reverse" | "sort" | "sort_by", _) if !matches!(arg(0), Val::Str(_)) => {
                 let l = self.list_len(&arg(0));
@@ -2566,7 +2597,8 @@ impl<'a> Vc<'a> {
             }
             ("chars", 1) => {
                 let s = self.as_str(&arg(0));
-                self.new_list(format!("(str.len {s})"), Gen::Type(TypeExpr::Named("String".into(), vec![])))
+                // each element is one character
+                self.new_list(format!("(str.len {s})"), Gen::Type(crate::types::parse_type_str("String where len(it) == 1")))
             }
             // the first match, counted in characters; "" is found at 0
             ("index_of", 2) => {
@@ -2609,6 +2641,19 @@ impl<'a> Vc<'a> {
                 let int = TypeExpr::Named("Int".into(), vec![]);
                 self.option(&int, &format!("(or {pos} {neg} (and (not {none}) {some}))"), Val::Int(payload))
             }
+            // (within what SMT strings hold; `builtin_faults` checks the code point)
+            ("chr", 1) if matches!(arg(0), Val::Int(_)) => {
+                let n = self.as_int(&arg(0));
+                let c = self.fresh_why("String", "`chr` of a code point past U+2FFFF");
+                self.facts.push(format!("(= (str.len {c}) 1)"));
+                self.facts.push(format!("(=> (<= {n} {MAX_CHAR}) (= {c} (str.from_code {n})))"));
+                Val::Str(c)
+            }
+            // (one character: `builtin_faults` checks it)
+            ("ord", 1) => {
+                let s = self.as_str(&arg(0));
+                Val::Int(format!("(str.to_code {s})"))
+            }
             // ASCII digits only, and not empty
             ("is_digit", 1) => {
                 let s = self.as_str(&arg(0));
@@ -2642,6 +2687,32 @@ impl<'a> Vc<'a> {
                     _ => Val::Opaque(not_modelled),
                 }
             }
+        }
+    }
+
+    /// The checks of a builtin that faults on some arguments (as compiled
+    /// code does): exact where the arguments are modelled, unknown (never
+    /// proven) where they are floats.
+    fn builtin_faults(&mut self, name: &str, a: &[Val]) {
+        let floats = "floats are not modelled yet";
+        match (name, a) {
+            ("chr", [Val::Int(n)]) => self.oblige("`chr` of a code point that is a character".into(), |_| {
+                format!("(and (<= 0 {n}) (<= {n} 1114111) (not (and (<= 55296 {n}) (<= {n} 57343))))")
+            }),
+            ("chr", [_]) => self.oblige("`chr` of a code point that is a character".into(), |vc| vc.unknown_bool("`chr` of a value not modelled")),
+            ("ord", [Val::Str(s)]) => self.oblige("`ord` of a single character".into(), |_| format!("(= (str.len {s}) 1)")),
+            ("split", [_, Val::Str(sep)]) => self.oblige("`split` with a separator that is not empty".into(), |_| format!("(not (= {sep} \"\"))")),
+            // (a string too large to hold is out of memory, which isn't modelled)
+            ("repeat", [_, Val::Int(n)]) => self.oblige("`repeat` with a count that is not negative".into(), |_| format!("(>= {n} 0)")),
+            ("ord" | "split" | "repeat", _) => self.oblige(format!("`{name}` with arguments it accepts"), |vc| vc.unknown_bool(&format!("`{name}` of a value not modelled"))),
+            // a Float past 1.79e308 is no number
+            ("float", [Val::Int(n)]) => self.oblige("`float` of an Int a Float can hold".into(), |_| {
+                let big = format!("1{}", "0".repeat(308));
+                format!("(and (< {n} {big}) (< (- {big}) {n}))")
+            }),
+            ("sqrt", [_]) => self.oblige("`sqrt` of a number that is not negative".into(), |vc| vc.unknown_bool(floats)),
+            ("floor" | "ceil" | "round", [_]) => self.oblige(format!("`{name}` of a finite number"), |vc| vc.unknown_bool(floats)),
+            _ => {}
         }
     }
 
