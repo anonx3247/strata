@@ -407,11 +407,8 @@ pub static RACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 #[allow(clippy::too_many_arguments)]
 fn solve_then_fuzz(vc: &crate::smt::Vc, bin: &crate::smt::Solver, key: &str, shown: &str, decl: &FnDecl, method: bool, cases: usize, cross_check: usize, seed: u64) -> Verdict {
     let (mut proven, mut unproven, mut open) = (vec![], vec![], vec![]);
-    // every obligation at once (each a solver process), then read in order
-    let outcomes: Vec<Option<crate::smt::Outcome>> = std::thread::scope(|sc| {
-        let handles: Vec<_> = (0..vc.obligations.len()).map(|i| (!vc.obligations[i].termination).then(|| sc.spawn(move || vc.solve(bin, i)))).collect();
-        handles.into_iter().map(|h| h.map(|h| h.join().expect("a solver thread"))).collect()
-    });
+    // every obligation, in one solver process
+    let outcomes = vc.solve_all(bin, |i| !vc.obligations[i].termination, &std::sync::atomic::AtomicBool::new(false));
     for (i, out) in outcomes.into_iter().enumerate() {
         let Some(out) = out else { continue };
         let what = vc.obligations[i].what.clone();
@@ -504,11 +501,7 @@ fn race(vc: &crate::smt::Vc, bin: &crate::smt::Solver, key: &str, shown: &str, d
             }
             v
         });
-        let handles: Vec<_> = (0..vc.obligations.len()).map(|i| {
-            let stop = &stop_solver;
-            (!vc.obligations[i].termination).then(|| sc.spawn(move || vc.solve_until(bin, i, stop)))
-        }).collect();
-        let outcomes: Vec<Option<crate::smt::Outcome>> = handles.into_iter().map(|h| h.map(|h| h.join().expect("a solver thread"))).collect();
+        let outcomes = vc.solve_all(bin, |i| !vc.obligations[i].termination, &stop_solver);
         // (the fuzzer is told only once the cases it may run are settled, below)
         let (mut proven, mut unproven, mut open) = (vec![], vec![], vec![]);
         let mut stopped = false;
