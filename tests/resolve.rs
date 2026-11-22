@@ -363,3 +363,67 @@ fn written_as_rendered() {
     assert!(wrong.is_empty(), "{} of {} files are written differently: {wrong:?}", wrong.len(), cases.len());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The errors checker: std's module files, `--`, a package's module files;
+/// each of the resolver's errors as `strata check` writes it.
+const ERRORS_CHECKER: &str = r#"use std.fs.{Files, Disk}
+use std.process.{Environment, Process}
+use std.ast.binary.{decode_module}
+use std.ast.resolve.{errors}
+
+fn main(disk: Disk, process: Process) {
+  mut std := []
+  mut mine := []
+  mut after := false
+  for a in process.args() {
+    if a == "--" {
+      after = true
+    } else {
+      match disk.read_bytes(a) {
+        Ok(bs) => match decode_module(bs) {
+          Ok(ds) => if after {
+            mine = mine + ds
+          } else {
+            std = std + ds
+          },
+          Err(e) => print(e),
+        },
+        Err(_) => print("unreadable"),
+      }
+    }
+  }
+  for e in errors(mine, std) {
+    print(f"error in {e.0}: {e.1}")
+  }
+}
+"#;
+
+/// A `use` of a module there isn't, of what a module doesn't have, or of a
+/// private definition: the errors `strata check` gives for them.
+#[test]
+fn use_errors_as_in_rust() {
+    let dir = scratch("errors");
+    let pkg = dir.join("pkg");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("strata.toml"), "name = \"p\"\n").unwrap();
+    for (m, text) in [("util", "pub fn shown(x: Int) -> Int { x }\nfn secret() -> Int { 1 }\n"), ("main", "use nothere.{x}\nuse util.{shown, missing, secret}\nfn main() { print(shown(1)) }\n")] {
+        let mut c = Command::new(STRATA).args(["--file", &format!("{}/", pkg.display()), "edit", m]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        c.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+        c.wait_with_output().unwrap();
+    }
+    let checker = dir.join("check.strata");
+    let mut c = Command::new(STRATA).args(["--file", &checker.to_string_lossy(), "edit"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    c.stdin.take().unwrap().write_all(ERRORS_CHECKER.as_bytes()).unwrap();
+    assert!(c.wait_with_output().unwrap().status.success());
+    let mut args: Vec<String> = vec!["--file".into(), checker.to_string_lossy().into(), "run".into(), "--".into()];
+    args.extend(std_files().iter().map(|p| p.to_string_lossy().into_owned()));
+    args.push("--".into());
+    args.extend(["util.strata", "main.strata"].iter().map(|f| pkg.join(f).to_string_lossy().into_owned()));
+    let got: Vec<String> = run(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>()).lines().map(String::from).collect();
+    let o = Command::new(STRATA).args(["--file", &format!("{}/", pkg.display()), "check"]).output().unwrap();
+    let check = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+    let want: Vec<String> = check.lines().filter(|l| l.starts_with("error in use ")).map(String::from).collect();
+    assert_eq!(got.len(), 3, "{got:?}");
+    assert_eq!(got, want, "{check}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
