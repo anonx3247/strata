@@ -9,14 +9,14 @@ const STRATA: &str = env!("CARGO_BIN_EXE_strata");
 const CHECKER: &str = r#"use std.fs.{Files, Disk}
 use std.process.{Environment, Process}
 use std.ast.binary.{decode_module}
-use std.ast.check.{definition_errors}
+use std.ast.check.{definition_errors, variant_errors}
 
 fn main(disk: Disk, process: Process) {
   for a in process.args() {
     match disk.read_bytes(a) {
       Ok(bs) => match decode_module(bs) {
         Ok(ds) => {
-          for e in definition_errors(ds) {
+          for e in definition_errors(ds) + variant_errors(ds) {
             print(f"error in {e.0}: {e.1}")
           }
         },
@@ -28,16 +28,11 @@ fn main(disk: Disk, process: Process) {
 }
 "#;
 
-const CLASHES: &str = r#"type X = { a: Int }
-fn f() -> Int { 1 }
-fn f() -> Int { 2 }
+const CLASHES: &str = r#"type Line = { a: Int }
+type E =
+  | Line(Int)
+  | Y
 type Option = { b: Int }
-trait Show { fn show(self) -> String }
-impl X { fn one(self) -> Int { 1 } }
-impl X { fn two(self) -> Int { 2 } }
-impl Show for X { fn show(self) -> String { "x" } }
-impl Show for X { fn show(self) -> String { "y" } }
-type X = { c: Int }
 fn main() { print(1) }
 "#;
 
@@ -59,7 +54,7 @@ fn clashes_as_in_rust() {
     let got = String::from_utf8_lossy(&got.stdout).to_string();
     let o = Command::new(STRATA).args(["--file", &prog.to_string_lossy(), "check"]).output().unwrap();
     let all = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
-    let want: String = all.lines().filter(|l| ["defined twice", "already defined in the prelude", "two `impl", "already implemented"].iter().any(|k| l.contains(k))).map(|l| format!("{l}\n")).collect();
+    let want: String = all.lines().filter(|l| ["defined twice", "already defined in the prelude", "two `impl", "already implemented", "a variant is a type of its own"].iter().any(|k| l.contains(k))).map(|l| format!("{l}\n")).collect();
     assert!(!want.is_empty(), "{all}");
     assert_eq!(got, want);
     let _ = std::fs::remove_dir_all(&dir);
