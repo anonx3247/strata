@@ -2032,7 +2032,7 @@ let CFG = {};
 api('/api/config').then(c => { CFG = c; render(); }).catch(() => { });
 // sessions (from the server), their events, and what they fold into
 const AG = { list: [], sel: null, ev: {}, items: {}, snaps: {}, mounted: null, busy: false, drafts: {}, cmds: {}, past: [], pastOpen: false, slash: null, toolOpen: new Map(), toolAll: new Set(), symbols: localStorage.getItem('strata-symbols') !== '0' };
-const STRATA_SUBS = new Set('init add edit rename move status done abort log diff interface render pack header merge-file resolve setup-git sync ci ui view ast check holes verify test run build bench doc fmt deps fetch builtins'.split(' '));
+const STRATA_SUBS = new Set('init add edit rename move status done abort log diff interface render pack header merge-file resolve setup-git sync upgrade ui view ast check holes verify test run build bench doc fmt deps fetch builtins'.split(' '));
 const SHELL_OP = /^(<<-?|<|>|>>|\||\|\||&&|;|2>&1|&)$/;
 // A `strata …` command in a shell command line: its subcommand, arguments,
 // and for `edit`, the text piped in (a here-document, an echo, or a file)

@@ -4,7 +4,7 @@
 
 | File | What it is |
 |---|---|
-| `src/main.rs`, `src/cmd/` | the command line: arguments and dispatch, then one function per command (`codebase.rs`: changing the package; `git.rs`: merge driver, sync, ci; `views.rs`; `check.rs`; `run.rs`) |
+| `src/main.rs`, `src/cmd/` | the command line: arguments and dispatch, then one function per command (`codebase.rs`: changing the package; `git.rs`: merge driver, sync, upgrade; `views.rs`; `check.rs`; `run.rs`) |
 | `src/ast.rs` | the syntax tree (the canonical representation), and the walkers every pass uses (`Visit`, `VisitMut`) |
 | `src/symbol.rs` | interned names: every identifier in the tree is a `Symbol`, a `u32` into one table of texts, so names compare, hash and copy as integers (`x.sym()` turns text into one) |
 | `src/names.rs` | qualified names: `short`, `module_of`, `qualify`, `qualified`; a fault's call stack folded and shown (`fold_stack`, `show_stack`) |
