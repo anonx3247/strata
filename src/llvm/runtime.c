@@ -1578,18 +1578,6 @@ Str *strata_show_int(int64_t n) {
   return str_c((snprintf(buf, sizeof buf, "%lld", (long long)n), buf));
 }
 
-// An `Int` in JSON, as the interpreter writes it: a number while it fits
-// in 64 bits, else its digits as a string.
-Str *strata_json_int(int64_t n) {
-  Str *d = strata_show_int(n);
-  if (!is_big(n)) return d;
-  Big *b = big_at(n);
-  uint64_t m = b->n <= 2 ? b->d[0] | (b->n > 1 ? (uint64_t)b->d[1] << 32 : 0) : UINT64_MAX;
-  if (b->n <= 2 && m <= (uint64_t)INT64_MAX + (b->sign < 0)) return d;
-  Str *q = strata_concat_owned(strata_concat_owned(str_c("\""), d), str_c("\""));
-  return q;
-}
-
 // A 64-bit integer as an `Int` (a big integer when it isn't small).
 int64_t strata_int_from_i64(int64_t raw) {
   if (!is_big(raw)) return raw;
@@ -1798,31 +1786,6 @@ static Str *show_float_plain(double x) {
 }
 
 Str *strata_show_bool(_Bool b) { return str_c(b ? "true" : "false"); }
-
-// A string as JSON (quoted, escaped), for fault messages.
-Str *strata_json_str(Str *s) {
-  Str *o = str_alloc(s->len * 6 + 2);
-  char *p = o->bytes;
-  *p++ = '"';
-  for (int64_t i = 0; i < s->len; i++) {
-    unsigned char c = (unsigned char)s->bytes[i];
-    switch (c) {
-    case '"': p += sprintf(p, "\\\""); break;
-    case '\\': p += sprintf(p, "\\\\"); break;
-    case '\n': p += sprintf(p, "\\n"); break;
-    case '\r': p += sprintf(p, "\\r"); break;
-    case '\t': p += sprintf(p, "\\t"); break;
-    case '\b': p += sprintf(p, "\\b"); break;
-    case '\f': p += sprintf(p, "\\f"); break;
-    default:
-      if (c < 0x20) p += sprintf(p, "\\u%04x", c);
-      else *p++ = (char)c;
-    }
-  }
-  *p++ = '"';
-  o->len = p - o->bytes;
-  return o;
-}
 
 // A string as `Debug` writes it: a Strata string literal, escaped as the
 // printer escapes (\n, \t, \", and a backslash that would start one).

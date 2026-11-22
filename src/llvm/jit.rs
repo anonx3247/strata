@@ -114,10 +114,8 @@ unsafe extern "C" {
     fn strata_fmod();
     fn strata_finite();
     fn strata_show_int();
-    fn strata_json_int();
     fn strata_show_float();
     fn strata_show_bool();
-    fn strata_json_str();
     fn strata_debug_str();
     fn strata_print();
     fn strata_str_split();
@@ -249,10 +247,8 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_fmod", strata_fmod as *const () as usize),
         ("strata_finite", strata_finite as *const () as usize),
         ("strata_show_int", strata_show_int as *const () as usize),
-        ("strata_json_int", strata_json_int as *const () as usize),
         ("strata_show_float", strata_show_float as *const () as usize),
         ("strata_show_bool", strata_show_bool as *const () as usize),
-        ("strata_json_str", strata_json_str as *const () as usize),
         ("strata_debug_str", strata_debug_str as *const () as usize),
         ("strata_print", strata_print as *const () as usize),
         ("strata_str_split", strata_str_split as *const () as usize),
