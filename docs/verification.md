@@ -108,7 +108,13 @@ fn triangle(n: Natural) -> Natural {
 
 A loop is verified from any state its variables can be in: the variables it changes take any values of their declared types, and one pass is checked from there. After a `while`, the state is that one with the condition false, or the state at one of its `break`s (a `break` leaves the loop with the condition still true). A `loop` is left only at a `break`; with none, the code after it is never reached. After a `for`, the variables it changed are any values of their types.
 
-A `while` loop ends when a bound taken from its condition goes down on every pass. A property that holds *after* a loop usually needs a loop invariant, which the verifier doesn't infer yet: then the check is fuzzed, and the result says so.
+A `while` loop ends when a bound taken from its condition goes down on every pass. A property that holds *after* a loop usually needs a loop invariant: a fact true at the head of the loop every time. The verifier infers them. The candidates are:
+- the condition's comparisons, made non-strict (`i < n` gives `i <= n`, which still holds after the last pass);
+- the function's `ensures`, about the variable it returns;
+- its `requires`;
+- each integer the loop changes, compared with its value on entry (`x₀`), with 0, with the integer parameters, and with the other integers it changes.
+
+Those that can be false on entry are dropped. Then, from any state where the others and the condition hold, one pass runs, and those that can be false after it are dropped, until a pass drops nothing. What remains holds on entry and after every pass, so it is assumed at the head. A fact the declared types already give is left out. `--checks` lists the invariants found:
 
 ```rust
 fn isqrt(n: Natural) -> Natural
@@ -122,10 +128,17 @@ fn isqrt(n: Natural) -> Natural
 ```
 
 ```text
-~ isqrt                    fuzzed: 200 cases, 0 discarded by `requires`; 3 of 4 checks proven
-    not proven: ensures it * it <= n: the solver found a possible counterexample: n = 0, but running it did not fail
+✓ isqrt                    proven (6 checks)
+    proven:  `let` annotated `Natural`
+    proven:  assigning `r`: Natural
+    proven:  result of `isqrt`: Natural
+    proven:  ensures it * it <= n
+    proven:  invariant of `while (r + 1) * (r + 1) <= n`: it * it <= n (it = r) (inferred)
+    proven:  invariant of `while (r + 1) * (r + 1) <= n`: r <= n (inferred)
     terminates: `while (r + 1) * (r + 1) <= n` ends: `n - (r + 1) * (r + 1) + 1` goes down on every pass
 ```
+
+An invariant no candidate states is not found: a sum's closed form (`total == i * (i - 1) / 2`) is one. Then the check is fuzzed, and the result says so. A loop with `continue` infers none yet: the state at a `continue` isn't kept.
 
 Termination is never assumed. Whether the Collatz sequence always reaches 1 is an open problem, so:
 
