@@ -92,19 +92,34 @@ fn call(args: &Args, p: &Program, env: &types::Env, name: &str, raw: &str) -> Re
         comptime: false,
         derived: false,
     };
+    // in the function's own module (it may be private there), the arguments
+    // written as that module writes values
+    let module = p
+        .decls
+        .iter()
+        .find(|d| matches!(&d.kind, DeclKind::Fn(g) if crate::names::qualified(d.module, g.name).as_str() == name))
+        .map(|d| d.module)
+        .unwrap_or_default();
+    let mut probe = probe;
+    if let Expr::Block(_, call) = &mut probe.body {
+        if let Expr::Call(f, _) = &mut **call {
+            **f = Expr::Var(Symbol::new(crate::names::short(name)));
+        }
+    }
     let mut with = p.clone();
-    with.decls.push(Decl { comments: vec![], doc: vec![], kind: DeclKind::Fn(probe), module: Default::default(), public: false });
+    with.decls.push(Decl { comments: vec![], doc: vec![], kind: DeclKind::Fn(probe), module, public: false });
+    let probe_name = crate::names::qualified(module, Symbol::new(PROBE)).to_string();
     let checked = full_checked(&with);
-    if let Some(e) = checked.report.errors.iter().find(|e| e.decl == PROBE) {
+    if let Some(e) = checked.report.errors.iter().find(|e| e.decl == probe_name) {
         return Err(format!("invalid input: {}", e.msg));
     }
     if args.flag("--interpret") {
-        return call_interpreted(args, &checked.env, name);
+        return call_interpreted(args, &checked.env, name, &probe_name);
     }
     let ir = if args.flag("--trace") {
-        llvm::compile_traced_comptime(&checked.compiled, &[PROBE.to_string()])
+        llvm::compile_traced_comptime(&checked.compiled, &[probe_name.clone()])
     } else {
-        llvm::compile_comptime(&checked.compiled, &[PROBE.to_string()])
+        llvm::compile_comptime(&checked.compiled, &[probe_name.clone()])
     };
     let (ir, roots, shapes) = ir.map_err(|e| format!("`{name}` can't be compiled yet: {e}"))?;
     let (result, printed) = llvm::jit::run_kept(&ir, &roots, &shapes, i64::MAX, true)?.pop().ok_or("nothing ran")?;
@@ -115,7 +130,7 @@ fn call(args: &Args, p: &Program, env: &types::Env, name: &str, raw: &str) -> Re
             Ok(true)
         }
         Err(fault) => {
-            let stack: Vec<&str> = fault.stack.split(" -> ").filter(|s| !s.is_empty() && *s != PROBE).collect();
+            let stack: Vec<&str> = fault.stack.split(" -> ").filter(|s| !s.is_empty() && *s != probe_name).collect();
             // an argument that breaks its type's refinement (checked by `f` on entry)
             let arg = fault.message.strip_prefix("argument `").and_then(|m| m.split_once(&format!("` of `{name}`: ")));
             if fault.kind == "Refinement" && stack.len() <= 1 {
@@ -133,13 +148,13 @@ fn call(args: &Args, p: &Program, env: &types::Env, name: &str, raw: &str) -> Re
 }
 
 /// `call`, run by the old interpreter.
-fn call_interpreted(args: &Args, env: &types::Env, name: &str) -> Result<bool, String> {
+fn call_interpreted(args: &Args, env: &types::Env, name: &str, probe: &str) -> Result<bool, String> {
     let seed: u64 = args.val("--seed").unwrap_or("1").parse().map_err(|_| "bad --seed")?;
     let mut it = interp::Interp::new(env, seed);
     it.tracing = args.flag("--trace");
     // what it prints comes before its result
     it.output = interp::Output::Terminal;
-    let res = it.call_fn(PROBE, vec![]);
+    let res = it.call_fn(probe, vec![]);
     if it.tracing {
         for t in &it.trace {
             eprintln!("{t}");
@@ -148,7 +163,7 @@ fn call_interpreted(args: &Args, env: &types::Env, name: &str) -> Result<bool, S
     match res {
         Ok(v) => println!("{}", it.debug_value(&v).map_err(|f| f.msg)?),
         Err(fault) => {
-            let stack: Vec<String> = fault.stack.iter().filter(|s| *s != PROBE && *s != name).cloned().collect();
+            let stack: Vec<String> = fault.stack.iter().filter(|s| *s != probe && *s != name).cloned().collect();
             eprintln!("fault ({:?}): {}", fault.kind, fault.msg);
             if !stack.is_empty() {
                 eprintln!("    stack: {}", stack.join(" -> "));

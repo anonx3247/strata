@@ -414,7 +414,7 @@ fn sha256_agrees_with_the_sha2_crate() {
                 s.spawn(move || {
                     let mut wrong = vec![];
                     for bytes in chunk {
-                        let arg = format!("[{:?}]", bytes);
+                        let arg = format!("{:?}", bytes);
                         let out = run(&["--file", std_dir, "run", "std.ast.binary.sha256", &arg]);
                         let got: Vec<u8> = out.split(|c: char| !c.is_ascii_digit()).filter(|t| !t.is_empty()).map(|t| t.parse().unwrap()).collect();
                         let want = Sha256::digest(bytes).to_vec();
