@@ -119,6 +119,7 @@ Git:
 Views:
   ui [--port 7777]                the workspace in the browser: agents over ACP, the code
                                   with its git activity, PRs (through gh)
+  ui --strata                     the viewer written in Strata (std.web, std.code): code view only for now
   view [SELECTOR] [--level 0-2] [--mocks]
                                   SELECTOR: name | prefix* | slice:Name | a,b (mocks
                                   only with --mocks or by name)

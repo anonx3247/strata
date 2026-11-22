@@ -324,6 +324,37 @@ int32_t strata_fuzz(void (*f)(void), int64_t seed, int64_t budget) {
 
 void strata_seed(int64_t seed) { rng = (uint64_t)seed; }
 
+// The `Code` capability (std.code): the codebase as typed values, which
+// strata builds (src/ui.rs) and writes into this program's memory
+// (src/llvm/native.rs) when it runs one. A built program has none.
+typedef Str *(*CodeVersion)(void);
+typedef void *(*CodeSnapshot)(Str **err);
+static CodeVersion code_version;
+static CodeSnapshot code_snapshot;
+void strata_set_code_host(CodeVersion v, CodeSnapshot s) {
+  code_version = v;
+  code_snapshot = s;
+}
+
+static void no_code(void) { strata_fault(4, str_c("`Codebase` is given only under `strata run` and `strata serve` (a built program has none)")); }
+
+Str *strata_host_code_version(void) {
+  if (!code_version) no_code();
+  return code_version();
+}
+
+// The snapshot, or NULL and the failure in `*err`.
+void *strata_host_code_snapshot(Str **err) {
+  if (!code_snapshot) no_code();
+  return code_snapshot(err);
+}
+
+// Values the host wrote into memory for compiled code to take
+// (`strata_run_call`'s arguments; llvm.rs, `Entry::Call`).
+static _Thread_local int64_t *given;
+void strata_set_given(int64_t *g) { given = g; }
+int64_t strata_given(int64_t i) { return given[i]; }
+
 // Compile-time code's value (`strata.ct.N` hands it over), for the compiler
 // to read (src/llvm/native.rs).
 static _Thread_local int64_t ct_kept;

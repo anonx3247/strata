@@ -710,3 +710,125 @@ fn mentions(t: &TypeExpr, out: &mut Vec<String>) {
         TypeExpr::Union(ms) => ms.iter().for_each(|m| mentions(m, out)),
     }
 }
+
+// ---- the codebase for Strata programs (`std.code`) ----
+
+/// The codebase a `Code` capability reads: the current folder, unless the
+/// viewer set it to the one it shows.
+static CODE_ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+pub fn code_root() -> String {
+    CODE_ROOT.get().cloned().unwrap_or_else(|| ".".into())
+}
+
+/// Make `Code` capabilities read `root` (once, before any is handed out).
+pub fn set_code_root(root: &str) {
+    let _ = CODE_ROOT.set(root.to_string());
+}
+
+/// A package's folder is read as the package (with its log and cached
+/// verdicts); anything else as source files.
+fn target_of(root: &std::path::Path) -> Target {
+    if root.is_dir() && root.join(crate::package::FILE).is_file() {
+        Target::Db(root.to_path_buf())
+    } else {
+        Target::File(root.to_path_buf())
+    }
+}
+
+/// What changes whenever the code under `root` does: compare it to skip
+/// reading a snapshot that hasn't changed.
+pub fn code_version(root: &std::path::Path) -> String {
+    format!("{:016x}", fingerprint(&target_of(root)))
+}
+
+/// The snapshot of the code under `root`, a `std.code.Snapshot` written as a
+/// literal; kept, per folder, until its files change.
+pub fn code_snapshot(root: &std::path::Path) -> Result<std::sync::Arc<Expr>, String> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, (u64, std::sync::Arc<Expr>)>>> = std::sync::OnceLock::new();
+    let target = target_of(root);
+    let fp = fingerprint(&target);
+    let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((f, e)) = cache.get(root) {
+        if *f == fp {
+            return Ok(e.clone());
+        }
+    }
+    let s = snapshot(&target);
+    if let Some(e) = s["fatal"].as_str() {
+        return Err(e.to_string());
+    }
+    let e = std::sync::Arc::new(for_strata(&s, &format!("{fp:016x}")));
+    cache.insert(root.to_path_buf(), (fp, e.clone()));
+    Ok(e)
+}
+
+/// The viewer's snapshot as a `std.code.Snapshot` literal.
+fn for_strata(s: &Json, version: &str) -> Expr {
+    use crate::ast::{CtorArgs, Symbol};
+    let record = |name: &str, fs: Vec<(&str, Expr)>| Expr::Ctor(Symbol::new(&format!("std.code.{name}")), CtorArgs::Record(fs.into_iter().map(|(n, e)| (Symbol::new(n), e)).collect()));
+    let str_ = |j: &Json| Expr::Str(j.as_str().unwrap_or("").to_string());
+    let strs = |j: &Json| Expr::List(j.as_array().into_iter().flatten().filter_map(|x| x.as_str().map(|t| Expr::Str(t.into()))).collect());
+    let opt = |e: Option<Expr>| match e {
+        Some(e) => Expr::Ctor(Symbol::new("Some"), CtorArgs::Positional(vec![e])),
+        None => Expr::Ctor(Symbol::new("None"), CtorArgs::None),
+    };
+    let opt_str = |j: &Json| opt(j.as_str().map(|t| Expr::Str(t.into())));
+    let opt_int = |j: &Json| opt(j.as_i64().map(Expr::Int));
+    let each = |j: &Json| j.as_array().cloned().unwrap_or_default();
+    let definitions = each(&s["decls"])
+        .iter()
+        .map(|d| {
+            record(
+                "Definition",
+                vec![
+                    ("name", str_(&d["name"])),
+                    ("module", str_(&d["module"])),
+                    ("label", str_(&d["label"])),
+                    ("kind", str_(&d["kind"])),
+                    ("public", Expr::Bool(d["public"].as_bool().unwrap_or(false))),
+                    ("doc", str_(&d["doc"])),
+                    ("hash", str_(&d["hash"])),
+                    ("interface", str_(&d["text"]["1"])),
+                    ("source", str_(&d["text"]["2"])),
+                    ("deps", strs(&d["deps"])),
+                    ("refs", strs(&d["refs"])),
+                    ("impls", strs(&d["impls"])),
+                    ("holes", Expr::List(each(&d["holes"]).iter().map(|h| str_(&h["name"])).collect())),
+                    ("errors", strs(&d["errors"])),
+                    ("verdict", opt_str(&d["verdict"]["status"])),
+                    ("last_change", opt_int(&d["last_change"])),
+                ],
+            )
+        })
+        .collect();
+    let errors = each(&s["errors"])
+        .iter()
+        .map(|e| {
+            let msg = e["msg"].as_str().unwrap_or("");
+            Expr::Str(match e["decl"].as_str().filter(|d| !d.is_empty()) {
+                Some(d) => format!("{d}: {msg}"),
+                None => msg.to_string(),
+            })
+        })
+        .collect();
+    let log = each(&s["log"])
+        .iter()
+        .map(|e| {
+            let changes = each(&e["changes"])
+                .iter()
+                .map(|c| {
+                    let what = match (c["old"].is_null(), c["new"].is_null()) {
+                        (true, _) => "added",
+                        (_, true) => "removed",
+                        _ if c["interface_changed"] == true => "interface",
+                        _ => "body",
+                    };
+                    record("Change", vec![("name", str_(&c["name"])), ("what", Expr::Str(what.into()))])
+                })
+                .collect();
+            record("Entry", vec![("message", str_(&e["message"])), ("time", opt_int(&e["time"])), ("changes", Expr::List(changes))])
+        })
+        .collect();
+    record("Snapshot", vec![("version", Expr::Str(version.into())), ("label", str_(&s["label"])), ("definitions", Expr::List(definitions)), ("errors", Expr::List(errors)), ("log", Expr::List(log))])
+}

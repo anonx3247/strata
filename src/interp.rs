@@ -554,6 +554,11 @@ impl<'a> Interp<'a> {
                 Ok(v) => some(Str(v)),
                 Err(_) => none(),
             },
+            "host_code_version" => Str(crate::ui::code_version(std::path::Path::new(&crate::ui::code_root()))),
+            "host_code_snapshot" => match crate::ui::code_snapshot(std::path::Path::new(&crate::ui::code_root())) {
+                Ok(e) => Variant("Ok".into(), Fields::pos(vec![self.eval(&e, &None)?])),
+                Err(e) => Variant("Err".into(), Fields::pos(vec![Str(e)])),
+            },
             _ => return self.fail(FaultKind::Runtime, format!("unknown host operation `{name}`")),
         })
     }

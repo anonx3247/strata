@@ -3640,6 +3640,136 @@ test \"methods\" {
 }
 
 #[test]
+fn serve_app_capabilities_timers_and_keys() {
+    let d = tmp("serve-app-caps");
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    std::fs::write(d.join("note.txt"), "first").unwrap();
+    save(&d.join("app.strata"),
+        r#"use std.web.{Html, div, text, every, key_bindings, focused, input}
+use std.fs.{Disk, Files}
+type Model = { note: String, searching: Bool }
+type Msg =
+  | Check
+  | Search
+fn note(files: Files) -> String {
+  match files.read("note.txt") {
+    Ok(t) => t,
+    Err(_) => "none",
+  }
+}
+fn init(disk: Disk) -> Model {
+  Model { note: note(disk), searching: false }
+}
+fn update(model: Model, msg: Msg, disk: Disk) -> Model {
+  match msg {
+    Check => Model { ..model, note: note(disk) },
+    Search => Model { ..model, searching: true },
+  }
+}
+fn view(model: Model) -> Html[Msg] {
+  div([every(500, Check)], [
+    key_bindings([("/", Search), ("meta+k", Search)]),
+    text(f"note={model.note}"),
+    if model.searching { input([focused()]) } else { text("") },
+  ])
+}
+"#);
+    let mut server = Command::new(env!("CARGO_BIN_EXE_strata")).args(["serve", "app.strata", "--port", &port.to_string()]).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let up = (0..100).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    });
+    let post = |body: &str| http(port, &format!("POST /_strata/msg HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
+    let results = std::panic::catch_unwind(|| {
+        assert!(up, "the server didn't start");
+        let page = http(port, "GET / HTTP/1.1\r\n\r\n");
+        assert!(page.contains("note=first"), "`init` read the file through its `Disk`: {page}");
+        assert!(page.contains(r#"data-every="500" data-on-every="&quot;Check&quot;""#), "{page}");
+        assert!(page.contains(r#"data-key="/" data-on-key="&quot;Search&quot;""#) && page.contains(r#"data-key="meta+k""#), "{page}");
+        let sid = page.split(r#"data-session=""#).nth(1).unwrap().split('"').next().unwrap().to_string();
+        let check = format!(r#"{{"session":"{sid}","msg":"Check"}}"#);
+        assert!(post(&check).starts_with("HTTP/1.1 204"), "nothing changed: no view");
+        std::fs::write(d.join("note.txt"), "second").unwrap();
+        assert!(post(&check).contains("note=second"), "`update` reads the file too");
+        let r = post(&format!(r#"{{"session":"{sid}","msg":"Search"}}"#));
+        assert!(r.contains("<input data-focus>"), "{r}");
+        let js = http(port, "GET /_strata/app.js HTTP/1.1\r\n\r\n");
+        assert!(js.contains("data-every") && js.contains("data-key") && js.contains("data-focus"));
+    });
+    let _ = server.kill();
+    let _ = server.wait();
+    if let Err(e) = results {
+        std::panic::resume_unwind(e);
+    }
+}
+
+#[test]
+fn code_capability_reads_the_codebase() {
+    let d = tmp("code-cap");
+    std::fs::write(d.join("strata.toml"), "name = \"demo\"\n").unwrap();
+    save_module(&d, "core", "/// Doubles.\npub fn double(x: Int) -> Int { x * 2 }\n\nfn quad(x: Int) -> Int { double(double(x)) }\n");
+    // the program is outside the package it reads (the current folder)
+    let prog = tmp("code-cap-prog").join("show.strata");
+    save(&prog, r#"use std.code.{Codebase}
+fn main(code: Codebase) {
+  match code.snapshot() {
+    Ok(s) => {
+      for x in s.definitions {
+        print(f"{x.name} {x.kind} deps={x.deps} refs={x.refs} doc={x.doc} iface={x.interface}")
+      }
+      print(f"log={len(s.log)} same={s.version == code.version()}")
+    },
+    Err(e) => print(f"error {e}"),
+  }
+}
+"#);
+    let (ok, out) = strata(&["run", &prog.to_string_lossy()], &d, None);
+    assert!(ok, "{out}");
+    assert!(out.contains(r#"core.double fn deps=[] refs=["core.quad"] doc=Doubles. iface=pub fn double(x: Int) -> Int"#), "{out}");
+    assert!(out.contains(r#"core.quad fn deps=["core.double"] refs=[]"#), "{out}");
+    assert!(out.contains("same=true"), "{out}");
+    // a file that doesn't decode is an `Err`, not a fault
+    std::fs::write(d.join("core.strata"), "garbage").unwrap();
+    let (_, out) = strata(&["run", &prog.to_string_lossy()], &d, None);
+    assert!(out.contains("error ") && out.contains("core.strata"), "{out}");
+}
+
+#[test]
+fn ui_in_strata_shows_the_code() {
+    let d = tmp("ui-strata");
+    std::fs::write(d.join("strata.toml"), "name = \"demo\"\n").unwrap();
+    save_module(&d, "core", "/// Doubles.\npub fn double(x: Int) -> Int { x * 2 }\n\nfn quad(x: Int) -> Int { double(double(x)) }\n");
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    let mut server = Command::new(env!("CARGO_BIN_EXE_strata")).args(["ui", "--strata", "--file", &d.to_string_lossy(), "--port", &port.to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let up = (0..200).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    });
+    let post = |body: &str| http(port, &format!("POST /_strata/msg HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
+    let results = std::panic::catch_unwind(|| {
+        assert!(up, "the viewer didn't start");
+        let page = http(port, "GET / HTTP/1.1\r\n\r\n");
+        assert!(page.contains("<title>Strata</title>") && page.contains(r#"data-every="1500""#), "{page}");
+        assert!(page.contains(r#"title="core.double""#) && page.contains(r#"title="core.quad""#), "both definitions are listed: {page}");
+        let sid = page.split(r#"data-session=""#).nth(1).unwrap().split('"').next().unwrap().to_string();
+        // nothing changed: the timer's refresh doesn't render
+        assert!(post(&format!(r#"{{"session":"{sid}","msg":"Refresh"}}"#)).starts_with("HTTP/1.1 204"));
+        // selecting `quad` shows it with what it uses; its call of `double` links there
+        let r = post(&format!(r#"{{"session":"{sid}","msg":{{"Go":{{"name":"core.quad"}}}}}}"#));
+        assert!(r.contains("Dependencies") && r.contains("card sel") && r.contains("&quot;core.double&quot;"), "{r}");
+        // an edit shows up on the next refresh
+        save_module(&d, "core", "/// Doubles.\npub fn double(x: Int) -> Int { x * 2 }\n\nfn quad(x: Int) -> Int { double(double(x)) }\n\nfn triple(x: Int) -> Int { x * 3 }\n");
+        let r = post(&format!(r#"{{"session":"{sid}","msg":"Refresh"}}"#));
+        assert!(r.starts_with("HTTP/1.1 200") && r.contains(r#"title="core.triple""#), "{r}");
+    });
+    let _ = server.kill();
+    let _ = server.wait();
+    if let Err(e) = results {
+        std::panic::resume_unwind(e);
+    }
+}
+
+#[test]
 fn serve_runs_an_app() {
     let d = tmp("serve-app");
     let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
@@ -3689,7 +3819,9 @@ fn view(model: Model) -> Html[Msg] {
         // a fault in `update` is a 500, and the model stays as it was
         let r = post(&format!(r#"{{"session":"{sid}","msg":"Boom"}}"#));
         assert!(r.starts_with("HTTP/1.1 500") && r.contains("division by zero"), "{r}");
-        assert!(post(&format!(r#"{{"session":"{sid}","msg":"Up"}}"#)).contains("n=3"));
+        // the model stayed at 3, so `Up` (capped at 3) changes nothing: 204, no view
+        assert!(post(&format!(r#"{{"session":"{sid}","msg":"Up"}}"#)).starts_with("HTTP/1.1 204"));
+        assert!(post(&format!(r#"{{"session":"{sid}","msg":{{"Set":{{"n":1}}}}}}"#)).contains("n=1"));
         // an unknown session: the page reloads
         assert!(post(r#"{"session":"gone","msg":"Up"}"#).starts_with("HTTP/1.1 410"));
         assert!(http(port, "GET /_strata/app.js HTTP/1.1\r\n\r\n").contains("data-on-"));

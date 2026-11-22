@@ -400,7 +400,7 @@ pub fn run_main(_p: &Program, env: &types::Env, prog: &str, program_args: Vec<St
             }
             _ => {
                 return Err(format!(
-                    "`main` can ask for `Console` (std.io), `Files` (std.fs), `Environment` (std.process), and options: a record that implements `CommandLine` (std.cli). Its parameter `{}` is a `{ty}`",
+                    "`main` can ask for `Console` (std.io), `Files` (std.fs), `Environment` (std.process), `Code` (std.code), and options: a record that implements `CommandLine` (std.cli). Its parameter `{}` is a `{ty}`",
                     pm.name
                 ))
             }

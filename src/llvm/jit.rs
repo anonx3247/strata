@@ -53,8 +53,12 @@ unsafe extern "C" {
     fn strata_float_to_int();
     fn strata_main_error();
     fn strata_str_cmp();
-    fn strata_alloc();
     fn strata_dup();
+    fn strata_set_code_host(v: extern "C" fn() -> i64, s: extern "C" fn(*mut i64) -> i64);
+    fn strata_host_code_version();
+    fn strata_host_code_snapshot();
+    fn strata_given();
+    pub(super) fn strata_set_given(g: *const i64);
     fn strata_ct_keep();
     fn strata_ct_kept() -> i64;
     fn strata_int_dup();
@@ -143,6 +147,9 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_host_exists", strata_host_exists as *const () as usize),
         ("strata_host_write_file", strata_host_write_file as *const () as usize),
         ("strata_host_read_file", strata_host_read_file as *const () as usize),
+        ("strata_host_code_version", strata_host_code_version as *const () as usize),
+        ("strata_host_code_snapshot", strata_host_code_snapshot as *const () as usize),
+        ("strata_given", strata_given as *const () as usize),
         ("strata_host_read_bytes", strata_host_read_bytes as *const () as usize),
         ("strata_host_read_line", strata_host_read_line as *const () as usize),
         ("strata_host_write", strata_host_write as *const () as usize),
@@ -166,7 +173,7 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_float_to_int", strata_float_to_int as *const () as usize),
         ("strata_main_error", strata_main_error as *const () as usize),
         ("strata_str_cmp", strata_str_cmp as *const () as usize),
-        ("strata_alloc", strata_alloc as *const () as usize),
+        ("strata_alloc", super::native::strata_alloc as *const () as usize),
         ("strata_dup", strata_dup as *const () as usize),
         ("strata_trace_arg", trace_arg as *const () as usize),
         ("strata_trace_call", trace_call as *const () as usize),
@@ -617,7 +624,42 @@ fn std_symbol(name: &str) -> Option<usize> {
     (!a.is_null()).then_some(a as usize)
 }
 
+/// `Code.version()` for compiled code (std.code): the codebase's fingerprint.
+extern "C" fn code_version() -> i64 {
+    super::native::new_string(&crate::ui::code_version(std::path::Path::new(&crate::ui::code_root())))
+}
+
+/// `Code.snapshot()` for compiled code: the snapshot (src/ui.rs) read against
+/// `std.code.Snapshot` and written into compiled memory, or 0 and the
+/// failure in `*err`.
+extern "C" fn code_snapshot(err: *mut i64) -> i64 {
+    let fail = |m: String| {
+        unsafe { *err = super::native::new_string(&m) };
+        0
+    };
+    // the shape of a snapshot: std's, the same in every program (tags come from names)
+    static SHAPE: std::sync::OnceLock<Result<(super::Shape, super::Shapes), String>> = std::sync::OnceLock::new();
+    let shape = SHAPE.get_or_init(|| {
+        let t = crate::ast::TypeExpr::Named("std.code.Snapshot".into(), vec![]);
+        let (mut roots, shapes) = super::shapes_of(crate::stdlib::program(), &[t])?;
+        Ok((roots.pop().ok_or("no shape for `std.code.Snapshot`")?, shapes))
+    });
+    let (root, shapes) = match shape {
+        Ok(s) => s,
+        Err(e) => return fail(e.clone()),
+    };
+    let e = match crate::ui::code_snapshot(std::path::Path::new(&crate::ui::code_root())) {
+        Ok(e) => e,
+        Err(e) => return fail(e),
+    };
+    match super::native::write(root, shapes, &e) {
+        Ok(p) => p,
+        Err(e) => fail(format!("the codebase's snapshot doesn't fit `std.code.Snapshot`: {e}")),
+    }
+}
+
 fn engine_at<'ctx>(ctx: &'ctx Context, ir: &str, optimize: bool) -> Result<inkwell::execution_engine::ExecutionEngine<'ctx>, String> {
+    unsafe { strata_set_code_host(code_version, code_snapshot) };
     Target::initialize_native(&InitializationConfig::default())?;
     let buf = MemoryBuffer::create_from_memory_range_copy(ir.as_bytes(), "strata");
     let module = ctx.create_module_from_ir(buf).map_err(|e| format!("LLVM rejected the generated IR: {e}"))?;

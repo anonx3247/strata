@@ -218,6 +218,12 @@ enum Entry<'e> {
     Library(&'e [String]),
     /// Compile-time code: functions without parameters, whose results are kept.
     Comptime(&'e [String]),
+    /// A function called with arguments the host writes (`strata_given`):
+    /// `@"strata.ct.0"` calls it and keeps its result, as compile-time code does.
+    Call(&'e str),
+    /// Nothing compiled: the shapes of these types, for values the host
+    /// writes or reads (`native::write`, `native::read`).
+    Shapes(&'e [TypeExpr]),
 }
 
 /// Tags from here on are union boxes' (`box_tag`); below, constructors' (0 is a tuple's).
@@ -290,6 +296,27 @@ pub fn compile_comptime(prog: &Program, fns: &[String]) -> Res<(String, Vec<Shap
     let (ir, _, shapes) = compile_with(prog, Entry::Comptime(fns), true)?;
     let (roots, named) = shapes.unwrap_or_default();
     Ok((ir, roots, named))
+}
+
+/// The IR of a call of `name` (a function of the resolved `prog`) with
+/// arguments the host writes into memory: `@"strata.ct.0"` reads argument `i`
+/// with `strata_given(i)`, calls the function (which checks its arguments'
+/// refinements and its contract), keeps its result (`strata_ct_keep`) and
+/// drops the arguments. The shapes: the result's, then each parameter's.
+pub fn compile_call(prog: &Program, name: &str, traced: bool) -> Res<(String, Vec<Shape>, Shapes)> {
+    TRACING.with(|t| t.set(traced));
+    let r = compile_with(prog, Entry::Call(name), true);
+    TRACING.with(|t| t.set(false));
+    let (ir, _, shapes) = r?;
+    let (roots, named) = shapes.unwrap_or_default();
+    Ok((ir, roots, named))
+}
+
+/// How values of `types` are laid out in memory, in any program that has
+/// them: tags come from names, so a shape found in `prog` holds wherever the
+/// types mean the same (std's, in every program).
+pub fn shapes_of(prog: &Program, types: &[TypeExpr]) -> Res<(Vec<Shape>, Shapes)> {
+    Ok(compile_with(prog, Entry::Shapes(types), false)?.2.unwrap_or_default())
 }
 
 /// A function `strata verify --jit` fuzzes: its name, and its parameters'
@@ -458,7 +485,13 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     // compile-time code counts steps too (its budget)
     m.fuzzing = matches!(entry, Entry::Fuzz(_) | Entry::Comptime(_));
     let mut comptime: Vec<(String, Ty)> = vec![];
+    // `Entry::Call`'s result and parameter types, for their shapes
+    let mut called: Option<Vec<Ty>> = None;
     match entry {
+        Entry::Call(name) => {
+            let f = env.fns.get(&Symbol::new(name)).ok_or(format!("no function `{name}`"))?.clone();
+            called = Some(m.call_entry(name, &f)?);
+        }
         Entry::Fuzz(targets) => {
             for (i, t) in targets.iter().enumerate() {
                 m.fuzz_driver(i, t).map_err(|e| format!("can't compile the fuzzing of `{}`: {e}", t.name))?;
@@ -483,6 +516,15 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
                 let t = m.lower(&f.ret, &HashMap::default())?;
                 comptime.push((sym_impls(name, &[], &[]), t));
             }
+        }
+        Entry::Shapes(types) => {
+            let mut named = Shapes::default();
+            let mut roots = vec![];
+            for t in types.iter() {
+                let t = m.lower(t, &HashMap::default())?;
+                roots.push(m.shape(&t, &mut named)?);
+            }
+            return Ok((String::new(), vec![], Some((roots, named))));
         }
         Entry::Tests(skip, with_deps) => {
             // each test, a function of its own (no frame of its own on the call stack);
@@ -527,6 +569,11 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     }
     // compile-time code: a function per expression handing its value to the runtime, and its shape
     let mut shapes = None;
+    if let Some(tys) = called {
+        let mut named = Shapes::default();
+        let roots = tys.iter().map(|t| m.shape(t, &mut named)).collect::<Res<Vec<_>>>()?;
+        shapes = Some((roots, named));
+    }
     if !comptime.is_empty() {
         let mut named = Shapes::default();
         let mut roots = vec![];
@@ -598,6 +645,8 @@ declare i64 @strata_pid()
 declare void @strata_host_write(i64, ptr)
 declare ptr @strata_host_read_line()
 declare ptr @strata_host_read_file(ptr, ptr, ptr)
+declare ptr @strata_host_code_version()
+declare ptr @strata_host_code_snapshot(ptr)
 declare ptr @strata_host_read_bytes(ptr, ptr, ptr)
 declare i1 @strata_host_write_file(ptr, ptr, i1, ptr, ptr)
 declare i1 @strata_host_exists(ptr)
@@ -617,6 +666,7 @@ declare void @strata_enter(ptr)
 declare void @strata_step()
 declare void @strata_fuzz_keep(i64, i64)
 declare void @strata_ct_keep(i64)
+declare i64 @strata_given(i64)
 declare void @strata_leave()
 declare void @strata_trace_arg(i64, i64, i64)
 declare void @strata_trace_call(i64)
@@ -1684,6 +1734,53 @@ impl<'a> Module<'a> {
     }
 }
 
+impl<'a> Module<'a> {
+    /// `Entry::Call`'s function: `name`'s arguments read from the host's
+    /// slots, the call, its result kept, the arguments dropped. The result's
+    /// type, then the parameters'.
+    fn call_entry(&mut self, name: &str, f: &FnDecl) -> Res<Vec<Ty>> {
+        if !f.type_params.is_empty() {
+            return Err(format!("`{name}` is generic"));
+        }
+        let mut c = Func::new(self, HashMap::default());
+        c.block("start");
+        let ret = c.m.lower(&f.ret, &HashMap::default())?;
+        let mut tys = vec![ret.clone()];
+        let mut args = vec![];
+        for (i, p) in f.params.iter().enumerate() {
+            let t = c.m.lower(&p.ty, &HashMap::default())?;
+            tys.push(t.clone());
+            let raw = c.fresh("given");
+            c.emit(format!("{raw} = call i64 @strata_given(i64 {i})"));
+            // the host's: held by this function, dropped at the end; checked
+            // all the way down, as nothing made it here
+            let v = c.from_slot(&raw, &t)?;
+            c.validate(&v)?;
+            if p.mutable {
+                let slot = c.fresh("arg");
+                writeln!(c.allocas, "  {slot} = alloca {}", c.m.ll(&t)?).unwrap();
+                if has_value(&t) {
+                    c.emit(format!("store {} {}, ptr {slot}", c.m.ll(&t)?, v.1));
+                }
+                c.own_slot(&t, &slot);
+                args.push((Ty::Str, slot));
+            } else {
+                args.push(c.temp(v));
+            }
+        }
+        let sym = c.m.want_impls(name, vec![], vec![None; f.params.len()]);
+        let r = c.call(&ret, &sym, &args)?;
+        let slot = if has_value(&ret) { c.to_slot(&r)? } else { "0".into() };
+        // (the result is the host's now: not dropped)
+        c.emit(format!("call void @strata_ct_keep(i64 {slot})"));
+        c.drop_from(0, None)?;
+        c.emit("ret void".into());
+        let text = c.finish();
+        writeln!(self.body, "define void @\"strata.ct.0\"() {{\n{text}}}\n").unwrap();
+        Ok(tys)
+    }
+}
+
 impl Func<'_, '_> {
     /// `main`'s options, read from the arguments by the derived
     /// `from_args` (std.cli): `--help` prints the help and exits with 0, bad
@@ -2657,6 +2754,30 @@ impl<'m, 'a> Func<'m, 'a> {
         })
     }
 
+    /// Check a value made outside compiled code (the host wrote it) as
+    /// making it here would have: every constructor's fields and type, all
+    /// the way down, and a `distinct` type's refinement. Faults on the first
+    /// that fails.
+    fn validate(&mut self, v: &V) -> Res<()> {
+        if let Ty::Con(n, _) = &v.0 {
+            if self.m.is_distinct(n) {
+                if let Some(r) = self.m.refinement(n.as_str()) {
+                    let ok = self.with_it(v, false, |s| s.expr(r))?;
+                    self.fail_unless(&ok, crate::names::short(n), v, format!("does not satisfy `{}` (where {})", crate::names::short(n), crate::printer::expr(r, 0)))?;
+                }
+                let inner = (self.m.repr(&v.0)?, v.1.clone());
+                return self.validate(&inner);
+            }
+        }
+        let t = self.m.repr(&v.0)?;
+        let deep = self.m.boxed(&t) || self.m.nominal(&t) || matches!(&t, Ty::Con(n, _) if n == "List" || n == "Set" || n == "Dict" || n == "Tuple");
+        if deep && !self.m.handle(&t) && !self.is_dyn(&t) {
+            let f = self.helper("valid", &t)?;
+            self.call(&Ty::Unit, &f, &[(t, v.1.clone())])?;
+        }
+        Ok(())
+    }
+
     /// A value as the 8-byte slot it is kept in (`native::read` reads it):
     /// itself, a float's bits, a Bool widened, a pointer's address.
     fn as_slot(&mut self, v: &V) -> Res<String> {
@@ -3010,6 +3131,54 @@ impl<'m, 'a> Func<'m, 'a> {
                 let s = h.concat(vec![Part::Val(cur), Part::Lit(close.into())])?;
                 h.emit(format!("ret ptr {}", s.1));
                 format!("define ptr {name}(ptr %a)")
+            }
+            "valid" => {
+                // every part, then each constructor's fields and its type, as making it checks them
+                let elements = |h: &mut Func, l: &V| -> Res<()> {
+                    let et = h.elem_ty(&l.0)?;
+                    h.each(l, &et, |h, _, x| h.validate(x))
+                };
+                match h.m.repr(t)? {
+                    _ if tuple => {
+                        for (i, et) in args.iter().enumerate() {
+                            let x = h.field(&a, i, et)?;
+                            h.validate(&x)?;
+                        }
+                        h.emit("ret void".into());
+                    }
+                    Ty::Con(n, _) if n == "List" => {
+                        elements(&mut h, &a)?;
+                        h.emit("ret void".into());
+                    }
+                    Ty::Con(n, _) if n == "Set" || n == "Dict" => {
+                        let l = h.as_list(&a)?;
+                        elements(&mut h, &l)?;
+                        h.emit("ret void".into());
+                    }
+                    r if h.m.boxed(&r) => {
+                        h.on_member(&a, |h, _, x| {
+                            h.validate(&x)?;
+                            h.emit("ret void".into());
+                            Ok(())
+                        })?;
+                    }
+                    _ => {
+                        let tc = t.clone();
+                        h.on_ctor(&a, "", |h, c| {
+                            let fs = h.m.fields(c, &h.m.ctor_args(c, &tc))?;
+                            for (i, f) in fs.iter().enumerate() {
+                                let x = h.field(&a, i, &f.ty)?;
+                                let fname = f.name.clone().unwrap_or(i.to_string());
+                                h.check(&f.texpr, &x, &format!("{}.{fname}", crate::names::short(c)), false)?;
+                                h.validate(&x)?;
+                            }
+                            h.check_type_refinement(c, &a)?;
+                            h.emit("ret void".into());
+                            Ok(())
+                        })?;
+                    }
+                }
+                format!("define void {name}(ptr %a)")
             }
             "debug" => {
                 // as written in code: `(a, b)`, `Name { f: v }`, `Name(a, b)`, `Name`
@@ -4764,6 +4933,38 @@ impl<'m, 'a> Func<'m, 'a> {
                 };
                 let okv = (okv, r.1);
                 self.outcome(&ok, Some(okv), &k, &m, &t)?
+            }
+            "host_code_version" => {
+                let r = self.call(&s_ty, "@strata_host_code_version", &[])?;
+                self.temp(r)
+            }
+            "host_code_snapshot" => {
+                // the snapshot, or NULL and the failure (a string)
+                let e = self.fresh("err");
+                writeln!(self.allocas, "  {e} = alloca ptr").unwrap();
+                let args = [(Ty::Str, e.clone())];
+                let snap = Ty::Con(Symbol::new("std.code.Snapshot"), vec![]);
+                let r = self.call(&snap, "@strata_host_code_snapshot", &args)?;
+                let r = self.temp(r);
+                let ok = self.fresh("ok");
+                self.emit(format!("{ok} = icmp ne ptr {}, null", r.1));
+                let (good, bad, end) = (self.fresh_label("ok"), self.fresh_label("err"), self.fresh_label("res"));
+                self.cond_br(&bool_v(&ok), &good, &bad);
+                self.block(&good);
+                let okb = self.block_of(self.m.tags["Ok"], &[r])?;
+                let from_ok = self.cur.clone();
+                self.br(&end);
+                self.block(&bad);
+                let m = self.fresh("msg");
+                self.emit(format!("{m} = load ptr, ptr {e}"));
+                let m = self.temp((Ty::Str, m));
+                let errb = self.block_of(self.m.tags["Err"], &[m])?;
+                let from_err = self.cur.clone();
+                self.br(&end);
+                self.block(&end);
+                let x = self.fresh("r");
+                self.emit(format!("{x} = phi ptr [ {okb}, %{from_ok} ], [ {errb}, %{from_err} ]"));
+                self.temp((t.clone(), x))
             }
             "host_write_file" | "host_make_dir" | "host_remove" => {
                 let (k, m) = (self.fresh("kind"), self.fresh("msg"));
