@@ -256,7 +256,7 @@ fn full_check(p: &Program) -> types::CheckReport {
 /// `full_check`, keeping the elaborated program and its environment, which
 /// running, testing and verifying work from: the program is resolved and
 /// type-checked once.
-fn full_checked(p: &Program) -> types::Checked {
+pub fn full_checked(p: &Program) -> types::Checked {
     let mut c = types::check_and_elaborate(p);
     for d in verify::refinements_in(&c.program, &c.compiled, &c.env) {
         if !c.report.errors.iter().any(|e| e.decl == d.decl && e.msg == d.msg) {

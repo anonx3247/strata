@@ -352,7 +352,7 @@ pub fn serve_program(args: &Args) -> Result<bool, String> {
         print_errors(&rep);
         return Ok(false);
     }
-    crate::serve::serve(&env, port, &name)?;
+    crate::serve::serve(p, &env, port, &name)?;
     Ok(true)
 }
 

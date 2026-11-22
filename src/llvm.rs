@@ -218,9 +218,10 @@ enum Entry<'e> {
     Library(&'e [String]),
     /// Compile-time code: functions without parameters, whose results are kept.
     Comptime(&'e [String]),
-    /// A function called with arguments the host writes (`strata_given`):
-    /// `@"strata.ct.0"` calls it and keeps its result, as compile-time code does.
-    Call(&'e str),
+    /// Functions called with arguments the host writes (`strata_given`):
+    /// `@"strata.ct.N"` calls the Nth and keeps its result, as compile-time
+    /// code does.
+    Calls(&'e [CallEntry]),
     /// Nothing compiled: the shapes of these types, for values the host
     /// writes or reads (`native::write`, `native::read`).
     Shapes(&'e [TypeExpr]),
@@ -298,18 +299,41 @@ pub fn compile_comptime(prog: &Program, fns: &[String]) -> Res<(String, Vec<Shap
     Ok((ir, roots, named))
 }
 
-/// The IR of a call of `name` (a function of the resolved `prog`) with
-/// arguments the host writes into memory: `@"strata.ct.0"` reads argument `i`
-/// with `strata_given(i)`, calls the function (which checks its arguments'
-/// refinements and its contract), keeps its result (`strata_ct_keep`) and
-/// drops the arguments. The shapes: the result's, then each parameter's.
-pub fn compile_call(prog: &Program, name: &str, traced: bool) -> Res<(String, Vec<Shape>, Shapes)> {
-    TRACING.with(|t| t.set(traced));
-    let r = compile_with(prog, Entry::Call(name), true);
-    TRACING.with(|t| t.set(false));
-    let (ir, _, shapes) = r?;
-    let (roots, named) = shapes.unwrap_or_default();
-    Ok((ir, roots, named))
+/// A function the host calls (`compile_calls`), and how it gets each argument.
+#[derive(Debug, Clone)]
+pub struct CallEntry {
+    pub name: String,
+    pub args: Vec<Arg>,
+}
+
+/// How a host-called function gets an argument.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Arg {
+    /// Written by the host: checked all the way down, as nothing made it
+    /// here, and dropped after the call.
+    Given,
+    /// Held by the host (a session's model, a capability): lent to the
+    /// call, not checked, not dropped.
+    Lent,
+    /// Made by compiled code and handed back: not checked, dropped after the call.
+    Moved,
+}
+
+/// The IR of calls of `calls` (functions of the resolved `prog`) with
+/// arguments the host writes into memory: `@"strata.ct.N"` reads argument
+/// `i` of the Nth with `strata_given(i)`, calls the function (which checks
+/// its arguments' refinements and its contract), keeps its result
+/// (`strata_ct_keep`: the host's from then on) and drops the arguments it
+/// was given. The shapes, per call: the result's, then each parameter's.
+pub fn compile_calls(prog: &Program, calls: &[CallEntry]) -> Res<(String, Vec<Vec<Shape>>, Shapes)> {
+    let (ir, _, shapes) = compile_with(prog, Entry::Calls(calls), true)?;
+    let (mut all, named) = shapes.unwrap_or_default();
+    let mut per = vec![];
+    for c in calls {
+        let rest = all.split_off((c.args.len() + 1).min(all.len()));
+        per.push(std::mem::replace(&mut all, rest));
+    }
+    Ok((ir, per, named))
 }
 
 /// How values of `types` are laid out in memory, in any program that has
@@ -485,12 +509,19 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     // compile-time code counts steps too (its budget)
     m.fuzzing = matches!(entry, Entry::Fuzz(_) | Entry::Comptime(_));
     let mut comptime: Vec<(String, Ty)> = vec![];
-    // `Entry::Call`'s result and parameter types, for their shapes
+    // `Entry::Calls`' results and parameter types, for their shapes
     let mut called: Option<Vec<Ty>> = None;
     match entry {
-        Entry::Call(name) => {
-            let f = env.fns.get(&Symbol::new(name)).ok_or(format!("no function `{name}`"))?.clone();
-            called = Some(m.call_entry(name, &f)?);
+        Entry::Calls(calls) => {
+            let mut tys = vec![];
+            for (i, c) in calls.iter().enumerate() {
+                let f = env.fns.get(&Symbol::new(&c.name)).ok_or(format!("no function `{}`", c.name))?.clone();
+                if c.args.len() != f.params.len() {
+                    return Err(format!("`{}` takes {} arguments", c.name, f.params.len()));
+                }
+                tys.extend(m.call_entry(i, &c.name, &f, &c.args)?);
+            }
+            called = Some(tys);
         }
         Entry::Fuzz(targets) => {
             for (i, t) in targets.iter().enumerate() {
@@ -1735,10 +1766,10 @@ impl<'a> Module<'a> {
 }
 
 impl<'a> Module<'a> {
-    /// `Entry::Call`'s function: `name`'s arguments read from the host's
-    /// slots, the call, its result kept, the arguments dropped. The result's
-    /// type, then the parameters'.
-    fn call_entry(&mut self, name: &str, f: &FnDecl) -> Res<Vec<Ty>> {
+    /// `Entry::Calls`' function `i`: `name`'s arguments read from the host's
+    /// slots, the call, its result kept, the arguments dropped but those
+    /// lent. The result's type, then the parameters'.
+    fn call_entry(&mut self, i: usize, name: &str, f: &FnDecl, how: &[Arg]) -> Res<Vec<Ty>> {
         if !f.type_params.is_empty() {
             return Err(format!("`{name}` is generic"));
         }
@@ -1747,23 +1778,29 @@ impl<'a> Module<'a> {
         let ret = c.m.lower(&f.ret, &HashMap::default())?;
         let mut tys = vec![ret.clone()];
         let mut args = vec![];
-        for (i, p) in f.params.iter().enumerate() {
+        for (k, p) in f.params.iter().enumerate() {
             let t = c.m.lower(&p.ty, &HashMap::default())?;
             tys.push(t.clone());
             let raw = c.fresh("given");
-            c.emit(format!("{raw} = call i64 @strata_given(i64 {i})"));
-            // the host's: held by this function, dropped at the end; checked
-            // all the way down, as nothing made it here
+            c.emit(format!("{raw} = call i64 @strata_given(i64 {k})"));
             let v = c.from_slot(&raw, &t)?;
-            c.validate(&v)?;
+            if how[k] == Arg::Given {
+                c.validate(&v)?;
+            }
+            let lent = how[k] == Arg::Lent;
             if p.mutable {
                 let slot = c.fresh("arg");
                 writeln!(c.allocas, "  {slot} = alloca {}", c.m.ll(&t)?).unwrap();
                 if has_value(&t) {
                     c.emit(format!("store {} {}, ptr {slot}", c.m.ll(&t)?, v.1));
                 }
-                c.own_slot(&t, &slot);
+                // (what a lent one holds after the call stays the host's: a capability)
+                if !lent {
+                    c.own_slot(&t, &slot);
+                }
                 args.push((Ty::Str, slot));
+            } else if lent {
+                args.push(v);
             } else {
                 args.push(c.temp(v));
             }
@@ -1776,7 +1813,7 @@ impl<'a> Module<'a> {
         c.drop_from(0, None)?;
         c.emit("ret void".into());
         let text = c.finish();
-        writeln!(self.body, "define void @\"strata.ct.0\"() {{\n{text}}}\n").unwrap();
+        writeln!(self.body, "define void @\"strata.ct.{i}\"() {{\n{text}}}\n").unwrap();
         Ok(tys)
     }
 }
