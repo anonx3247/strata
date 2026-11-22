@@ -1798,6 +1798,43 @@ fn in_race() -> String {
 }
 "#;
 
+/// std.time's `Timeline` (a `FakeClock`'s time) is private to std.time: a
+/// program may define its own `Timeline`, and can't name, import or make
+/// std's.
+#[test]
+fn a_program_has_its_own_timeline() {
+    let d = tmp("own-timeline");
+    save(&d.join("own.strata"), OWN_TIMELINE);
+    let (ok, out) = strata(&["--file", "own.strata", "run"], &d, None);
+    assert!(ok && out.contains("[\"start\", \"at 2 s\"]"), "{out}");
+    for (name, src, msg) in [
+        ("made", "fn f() -> Int {\n  t := host_fake_clock(0)\n  1\n}\n", "`host_fake_clock` is internal to the standard library"),
+        ("imported", "use std.time.Timeline\n\nfn f() -> Int {\n  1\n}\n", "`Timeline` is private to module `std.time`"),
+        ("named", "fn f(t: std.time.Timeline) -> Int {\n  1\n}\n", "unknown type `std.time.Timeline`"),
+    ] {
+        save(&d.join(format!("{name}.strata")), src);
+        let (ok, out) = strata(&["--file", &format!("{name}.strata"), "check"], &d, None);
+        assert!(!ok && out.contains(msg), "{name}: {out}");
+    }
+}
+
+const OWN_TIMELINE: &str = r#"use std.time.*
+
+/// A program's own `Timeline`: std's is private to std.time.
+type Timeline = { events: List[String] }
+
+fn note(t: Timeline, e: String) -> Timeline {
+  Timeline { events: t.events + [e] }
+}
+
+fn main() {
+  clock := fake_clock()
+  clock.advance(seconds(2))
+  t := note(note(Timeline { events: [] }, "start"), f"at {clock.now().value / 1000000000} s")
+  print(t.events)
+}
+"#;
+
 /// Tasks: `spawn` only in a `scope`, and a handle never leaves it.
 #[test]
 fn tasks_stay_in_their_scope() {
