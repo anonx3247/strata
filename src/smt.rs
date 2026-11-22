@@ -390,6 +390,9 @@ pub struct Vc<'a> {
     requires_hints: Vec<Expr>,
     /// The invariants inferred, as shown in the report.
     pub invariants: Vec<String>,
+    /// Checks true whatever the values (by the types alone): proven
+    /// without a query, kept for `build` (not listed).
+    pub given: Vec<String>,
     /// The scopes open, innermost last (see `Region`).
     regions: Vec<Region>,
     next_region: usize,
@@ -541,6 +544,7 @@ impl<'a> Vc<'a> {
             hints: vec![],
             requires_hints: vec![],
             invariants: vec![],
+            given: vec![],
             regions: vec![],
             next_region: 1,
             eq_atoms: HashMap::default(),
@@ -585,6 +589,8 @@ impl<'a> Vc<'a> {
         self.proving -= 1;
         self.spec -= 1;
         if g == "true" {
+            // true whatever the values: no query, but proven all the same
+            self.given.push(crate::types::shown_name(&what));
             return;
         }
         // (the prelude's names as written: `self.len()`, not `self.FiniteIterator::std.prelude.len()`)
