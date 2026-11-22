@@ -2642,12 +2642,13 @@ impl<'a> Vc<'a> {
                 let int = TypeExpr::Named("Int".into(), vec![]);
                 self.option(&int, &format!("(>= {i} 0)"), Val::Int(b))
             }
-            // every non-overlapping match, left to right (Rust's `str::replace`);
-            // an empty pattern is a runtime fault, so that is checked
+            // every non-overlapping match, left to right (Rust's `str::replace`); an
+            // empty pattern is found around every character (SMT's replace_all leaves
+            // the string alone there: not modelled)
             ("replace", 3) => {
                 let (s, from, to) = (self.as_str(&arg(0)), self.as_str(&arg(1)), self.as_str(&arg(2)));
-                self.oblige("`replace` with a pattern that is not empty".into(), |_| format!("(not (= {from} \"\"))"));
-                Val::Str(format!("(str.replace_all {s} {from} {to})"))
+                let around = self.fresh_why("String", "`replace` with an empty pattern");
+                Val::Str(format!("(ite (= {from} \"\") {around} (str.replace_all {s} {from} {to}))"))
             }
             ("to_string", 1) => match arg(0) {
                 Val::Str(s) => Val::Str(s),
@@ -2736,10 +2737,9 @@ impl<'a> Vc<'a> {
             }),
             ("chr", [_]) => self.oblige("`chr` of a code point that is a character".into(), |vc| vc.unknown_bool("`chr` of a value not modelled")),
             ("ord", [Val::Str(s)]) => self.oblige("`ord` of a single character".into(), |_| format!("(= (str.len {s}) 1)")),
-            ("split", [_, Val::Str(sep)]) => self.oblige("`split` with a separator that is not empty".into(), |_| format!("(not (= {sep} \"\"))")),
-            // (a string too large to hold is out of memory, which isn't modelled)
-            ("repeat", [_, Val::Int(n)]) => self.oblige("`repeat` with a count that is not negative".into(), |_| format!("(>= {n} 0)")),
-            ("ord" | "split" | "repeat", _) => self.oblige(format!("`{name}` with arguments it accepts"), |vc| vc.unknown_bool(&format!("`{name}` of a value not modelled"))),
+            // (`split` and `repeat` are total: an empty separator splits at every
+            // character, a count below 1 gives ""; out of memory isn't modelled)
+            ("ord", _) => self.oblige(format!("`{name}` with arguments it accepts"), |vc| vc.unknown_bool(&format!("`{name}` of a value not modelled"))),
             // a Float past 1.79e308 is no number
             ("float", [Val::Int(n)]) => self.oblige("`float` of an Int a Float can hold".into(), |_| {
                 let big = format!("1{}", "0".repeat(308));
