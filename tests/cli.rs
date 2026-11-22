@@ -361,6 +361,21 @@ fn std_termination_is_kept_between_runs() {
     assert_eq!(first, second);
 }
 
+/// A type random values rarely meet (consecutive integers) gets its inputs
+/// from the solver: the bug, only on lists longer than three, is found.
+#[test]
+fn inputs_from_the_solver_meet_narrow_types() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("solver-inputs");
+    save(&d.join("s.strata"), "type Steps = List[Int] where len(it) >= 3 && all(1..len(it), i -> it[i] == it[i - 1] + 1)\nfn last(xs: Steps) -> Int\n  ensures it == xs[0] + 2\n{\n  xs[len(xs) - 1]\n}\nfn first(xs: Steps) -> Int\n  ensures it == xs[1] - 1\n{\n  xs[0]\n}\n");
+    let (ok, out) = strata(&["--file", "s.strata", "verify"], &d, None);
+    assert!(!ok && out.contains("✗ last") && out.contains("found by the fuzzer, on inputs from the solver"), "{out}");
+    assert!(out.contains("✓ first"), "{out}");
+}
+
 /// The solver and the fuzzer race: a failure the fuzzer finds stops the
 /// solver's processes, so a slow query doesn't hold the verdict up.
 #[test]
