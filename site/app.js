@@ -378,7 +378,7 @@ const V = D.verify, F = D.features;
     return alive();
   };
   const STEPS = [
-    { h: 'First, it has to find its way around.', say: 'Given a task, an agent first builds a map of the codebase in its head: where each declaration lives, which files it is in, what uses it. It gets there by reading files and searching them, again and again.',
+    { h: 'What does an agent do with a coding task? First, it finds its way around.', say: 'It builds a map of the codebase in its head: where each declaration lives, which files it is in, what uses it. It gets there by reading files and searching them, again and again.',
       async run(a, fast) {
         const steps = [
           ['grep -rn "class Order" .', ['orders/models.py:12: class Order(BaseModel):', 'api/schemas.py:40: class OrderOut(BaseModel):'], [[0, 3], [6, 8]]],
@@ -529,11 +529,11 @@ feature('contracts', {
   ],
 });
 feature('loops', {
-  kicker: 'Loops and termination', title: 'Loops, and whether they end.',
+  kicker: 'Termination', title: 'Functions, and whether they end.',
   steps: [
     { file: 'examples/math.strata', code: V.loops.ackermann.code, hot: /ackermann\(/, where: '~/math', outs: [V.loops.ackermann.verify],
-      say: '<code>verify</code> also checks that functions finish. For recursion it looks for a measure that goes down on every call and is never negative. For Ackermann\'s function, that is the pair <code>(m, n)</code>, compared in order.' },
-    { title: 'Loop invariants come next.', file: 'examples/math.strata', code: V.loops.isqrt.code, hot: /while|ensures/, where: '~/math', outs: [V.loops.isqrt.verify],
+      say: '<code>verify</code> also checks that functions finish. For a recursive function it looks for a measure that goes down on every call and is never negative. For Ackermann\'s function, that is the pair <code>(m, n)</code>, compared in order.' },
+    { title: 'Loops, and loop invariants next.', file: 'examples/math.strata', code: V.loops.isqrt.code, hot: /while|ensures/, where: '~/math', outs: [V.loops.isqrt.verify],
       say: 'A <code>while</code> loop ends when a bound goes down on every pass, and here it does. The postcondition after the loop needs a loop invariant, <code>r * r &lt;= n</code> on every pass, and the verifier doesn\'t take invariants yet. So it fuzzed the postcondition instead, and says so. Loop invariants are the next step.' },
     { title: 'And it says when it can\'t tell.', file: 'examples/math.strata', code: V.loops.collatz.code, hot: /while/, where: '~/math', outs: [V.loops.collatz.verify],
       say: 'Whether the Collatz sequence always reaches 1 is an open problem. The verifier proves every assignment in the loop, and reports that the loop may not end, with the bounds it tried.' },
@@ -608,16 +608,18 @@ feature('mocks', {
 feature('capabilities', {
   kicker: 'Side effects', title: 'Capabilities.',
   steps: [
-    { file: 'examples/wc', code: F.capabilities.main + '\n\n' + F.capabilities.wc, hot: /Console|Disk|Files/,
+    { title: 'Side effects stay at the edges.', file: 'examples/wc', code: F.capabilities.main + '\n\n' + F.capabilities.wc, hot: /^fn main/,
+      say: 'Side effects reach the outside world: the terminal, the disk, the network, C code. Nothing there can be proven, so their boundaries have to be clear and kept apart from the rest. Then the rest can be proven, and it is plain where verification stops.' },
+    { title: 'Capabilities.', file: 'examples/wc', code: F.capabilities.main + '\n\n' + F.capabilities.wc, hot: /Console|Disk|Files/,
       say: 'Code reaches the outside world, the terminal, the disk or the network, only through capabilities. Only the runtime creates one, and only for <code>main</code>, which passes them on as traits like <code>Console</code> and <code>Files</code>. So the signatures show which code can have side effects.' },
-    { title: 'Side effects stay at the edges.', file: 'examples/wc', code: F.capabilities.main + '\n\n' + F.capabilities.wc, hot: /^fn main|^fn wc/, where: '~/wc', outs: [F.capabilities.verify_out],
-      say: 'This is what keeps the rest provable. The verifier can\'t reason about a disk, so it assumes the code that holds one, <code>main</code> here, and proves the rest: <code>wc</code> is checked against what <code>Console</code> and <code>Files</code> promise.' },
+    { title: 'The verifier knows where it stops.', file: 'examples/wc', code: F.capabilities.main + '\n\n' + F.capabilities.wc, hot: /^fn main|^fn wc/, where: '~/wc', outs: [F.capabilities.verify_out],
+      say: 'The verifier can\'t reason about a disk, so it assumes the code that holds one, <code>main</code> here, and proves the rest: <code>wc</code> is checked against what <code>Console</code> and <code>Files</code> promise.' },
     { title: 'C code, the same way.', file: 'examples/fuzzy · module text', code: F.native.externs, hot: /^extern c/, where: '~/fuzzy', outs: [F.native.fuzzy_verify],
       say: '<code>extern c</code> declares a C function with a signature and contracts, checked at run time in both directions. The verifier assumes it, and only the module that declares it may call it, so the assumption stays in one place.' },
   ],
 });
 
-// ───────────────────────── one piece at a time ─────────────────────────
+// ───────────────────────── what a change reaches ─────────────────────────
 {
   const ss = D.session, g0 = ss[0].graph, graph = new Graph($('#build-graph'));
   const every = [...new Map(ss.flatMap(s => s.graph).map(d => [d.name, d])).values()];
@@ -625,10 +627,10 @@ feature('capabilities', {
   const iface = n => { const t = g0.find(d => d.name === n).text.split('\n').filter(l => !l.startsWith('///')); const i = t.findIndex(l => /\{\s*$/.test(l)); return t.slice(0, i + 1).join('\n').replace(/\s*\{\s*$/, ''); };
   const proof = fix.out.split('$ strata verify refund\n')[1];
   const STEPS = [
-    { h: 'You only need the signature.', say: 'To prove <code>refund</code>, the solver uses <code>total</code>\'s signature and contract, and not how it computes the result. An agent changing <code>refund</code> can work the same way, and so can a person reviewing it: if the contracts around it are right, their bodies can stay unread.',
+    { h: 'Signatures and contracts.', say: 'How <code>total</code> is written doesn\'t matter to <code>refund</code>: only that it does what its signature and contract say. So the solver proves <code>refund</code> from those alone. That is why code has functions, types and abstractions at all, and here it holds more than ever: an agent changing <code>refund</code>, or a person reviewing it, can leave the bodies around it unread.',
       term: ['strata verify refund', { cmd: 'strata verify refund', out: proof }], card: ['what the proof relies on', [iface('total'), g0.find(d => d.name === 'Cents').text.split('\n').filter(l => !l.startsWith('///')).join('\n')].join('\n\n')],
       graph: fast => graph.set(fix.graph, { layout: every, focus: 'refund', fast }) },
-    { h: 'A change inside a body stays there.', say: 'The fix to <code>refund</code> changed its body, not its signature or contract. Nothing that uses it has to be checked again, and the edit says so. An agent can work on one definition, and leave everything else as it was.',
+    { h: 'A change inside a body stays there.', say: 'Strata works out what each change reaches. The fix to <code>refund</code> changed its body, not its signature or contract, so it reaches nothing else: nothing that uses it has to be checked again, and the edit says so. A change to a contract would reach every user, and only them.',
       term: ['~/shop', { cmd: fix.cmd, out: fix.out.split('\n\n$ strata verify')[0] }], graph: fast => graph.set(fix.graph, { layout: every, changed: new Set(['refund']), fast }) },
     { h: 'Unfinished code still checks.', say: 'A definition can be left as a hole, <code>?refund_policy</code> here, and everything around it still type-checks and verifies. <code>strata holes</code> says what is missing: the type to produce, what is in scope, and the contract to meet.',
       term: ['~/shop', { cmd: 'strata holes', out: D.orders.holes }], card: ['refund, for now', g0.find(d => d.name === 'refund').text], graph: fast => graph.set(g0, { layout: every, focus: 'refund', fast }) },
