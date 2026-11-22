@@ -4832,6 +4832,8 @@ fn long_list_literals_compile_in_linear_time() {
     let (ok, out) = strata(&["--file", "t.strata", "run", "total", &arg], &d, None);
     assert!(ok && out.trim() == "60000", "{out}");
     assert!(start.elapsed().as_secs_f64() < 2.0, "took {:?}", start.elapsed());
+}
+
 // `&`, `|`, `^`, `<<`, `>>` on integers, small and big, as Python's (two's
 // complement, infinitely sign-extended; `>>` rounds down), with Rust's
 // precedence (`&` before `==`); a negative shift is a fault, and `verify`
