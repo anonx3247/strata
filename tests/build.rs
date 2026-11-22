@@ -614,9 +614,10 @@ fn races_cancel_the_losers() {
 /// `Err(Panic { … })`: deep in calls, a broken `requires`, a dead task's
 /// sender copy closed (its receiver's loop ends), an ordinary task's panic
 /// below a supervised one, `await h except p { … }`, a supervised `race`
-/// arm; everything the dying tasks held is freed. A panic the runtime
-/// detects (a division by zero) still jumps out of the task, leaving what
-/// its frames held: a known gap (IDEAS.md), checked so fixing it shows.
+/// arm; everything the dying tasks held is freed, the runtime's builtins'
+/// panics too (a division by zero, a negative shift, `sqrt`, `ord`, `chr`,
+/// a byte out of range, a float that isn't finite: deep in calls, every
+/// frame holding lists, 50 times).
 #[test]
 fn supervised_tasks_keep_running() {
     if !have_clang() {
@@ -628,13 +629,35 @@ fn supervised_tasks_keep_running() {
     assert!(code == 0 && out.contains("50 of 50 panicked\nfell back after: precondition of `half` violated") && out.ends_with("lost: Runtime\n"), "{out}");
     let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("supervised.strata")).env("STRATA_MEMORY", "check")), &d.join("supervised.strata"));
     assert_eq!(jit, (out, code));
-    let f = d.join("division.strata");
-    save(&f, SUPERVISED_DIVISION);
+    let (out, code) = case(&d, "builtins", SUPERVISED_BUILTINS);
+    assert!(code == 0 && out.contains("Runtime: division by zero\n") && out.contains("Runtime: 11 / 0 is not a finite number\n") && out.ends_with("50 of 50 panicked, the program goes on\n"), "{out}");
+    let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("builtins.strata")).env("STRATA_MEMORY", "check")), &d.join("builtins.strata"));
+    assert_eq!(jit, (out, code));
+    // a stack overflow can't return: the task still dies alone (its `await`
+    // gives the panic), but what its frames held stays allocated (IDEAS.md)
+    let f = d.join("overflow.strata");
+    save(&f, SUPERVISED_OVERFLOW);
     let (out, code) = output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(&f).env("STRATA_MEMORY", "check"));
-    assert!(code == 0 && out.contains("Runtime: division by zero"), "{out}");
-    // the known gap: fixed, this becomes " 0 live" (then check it with `freed_everything`)
-    assert!(!out.contains(" 0 live"), "{out}");
+    assert!(code == 0 && out.contains("Limit: stack overflow (recursion too deep)\nstill running\n") && !out.contains(" 0 live"), "{out}");
 }
+
+const SUPERVISED_OVERFLOW: &str = r#"fn down(n: Int, xs: List[String]) -> Int {
+  ys := [f"{n}"]
+  down(n + 1, xs) + len(ys)
+}
+
+fn main() {
+  r := scope {
+    h := supervised spawn down(0, [])
+    await h
+  }
+  match r {
+    Ok(v) => print(v),
+    Err(p) => print(f"{p.kind}: {p.message}"),
+  }
+  print("still running")
+}
+"#;
 
 const SUPERVISED: &str = r#"fn pick(xs: List[Int], i: Int) -> Int {
   ys := [f"held {i}", "more"]
@@ -728,19 +751,47 @@ fn main() {
 }
 "#;
 
-const SUPERVISED_DIVISION: &str = r#"fn div(xs: List[String], n: Int) -> Int {
-  len(xs) / n
+const SUPERVISED_BUILTINS: &str = r#"fn deep(xs: List[String], n: Int, k: Int) -> Int {
+  ys := [f"frame {n}", "held"]
+  if n == 0 {
+    boom(k, xs) + len(ys)
+  } else {
+    deep(xs + ys, n - 1, k) + len(ys)
+  }
+}
+
+fn boom(k: Int, xs: List[String]) -> Int {
+  zero := len(xs) - len(xs)
+  match k % 8 {
+    0 => len(xs) / zero,
+    1 => len(xs) % zero,
+    2 => 1 << (zero - 1),
+    3 => floor(sqrt(float(zero - 1))),
+    4 => ord(xs[0]),
+    5 => byte_len(chr(zero - 1)),
+    6 => byte_at(xs[0], 100),
+    _ => floor(float(len(xs)) / float(zero)),
+  }
 }
 
 fn main() {
-  r := scope {
-    h := supervised spawn div([f"a{1}"], 0)
-    await h
+  mut n := 0
+  for i in 0..50 {
+    r := scope {
+      h := supervised spawn deep([f"start {i}"], 5, i)
+      await h
+    }
+    match r {
+      Ok(v) => print(f"no panic: {v}"),
+      Err(p) => {
+        n += 1
+        if i < 8 {
+          print(f"{p.kind}: {p.message}")
+        }
+      },
+    }
   }
-  match r {
-    Ok(v) => print(v),
-    Err(p) => print(f"{p.kind}: {p.message}"),
-  }
+  print(f"{n} of 50 panicked, the program goes on")
 }
 "#;
 

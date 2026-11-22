@@ -1,0 +1,11 @@
+Runtime: division by zero
+Runtime: division by zero
+Runtime: `<<` by a negative number of bits
+Runtime: sqrt of negative number -1
+Runtime: ord needs a single character, got "start 4"
+Runtime: chr: -1 is not a character
+Runtime: byte 100 out of range (7 bytes)
+Runtime: 11 / 0 is not a finite number
+50 of 50 panicked, the program goes on
+
+--- exit 0
