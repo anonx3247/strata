@@ -281,7 +281,7 @@ fn packages_store_as_in_rust() {
 const WRITTEN_CHECKER: &str = r#"use std.fs.{Files, Disk}
 use std.process.{Environment, Process}
 use std.ast.binary.{decode_module}
-use std.ast.resolve.{written}
+use std.ast.resolve.{written, inline_members}
 use std.ast.text.{module_text}
 
 /// Args: std module files, `--`, then one stored module file: its text as
@@ -307,7 +307,7 @@ fn main(disk: Disk, process: Process) {
       }
     }
   }
-  print(module_text(written(mine, std)))
+  print(module_text(inline_members(written(mine, std))))
 }
 "#;
 
@@ -340,6 +340,14 @@ fn written_as_rendered() {
     let rendered = run(&["--file", &unions.to_string_lossy(), "render"]);
     assert!(rendered.contains("fn area(s: Shape)") && rendered.contains("Shape | Dot") && rendered.contains("Pair[Int, String]"), "{rendered}");
     cases.push((unions, std_files.iter().map(|p| p.to_string_lossy().into_owned()).collect(), rendered));
+    // and, without docs, the members shown inside their union (`members_view`)
+    let inline = dir.join("inline.strata");
+    let mut c = Command::new(STRATA).args(["--file", &inline.to_string_lossy(), "edit"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    c.stdin.take().unwrap().write_all(b"type Circle = { r: Float }\ntype Dot\ntype Square = { s: Float }\nimpl Square { fn area(self) -> Float { 0.0 } }\ntype Shape = Circle | Dot | Square\n").unwrap();
+    assert!(c.wait_with_output().unwrap().status.success());
+    let rendered = run(&["--file", &inline.to_string_lossy(), "render"]);
+    assert!(rendered.contains("| Circle { r: Float }"), "{rendered}");
+    cases.push((inline, std_files.iter().map(|p| p.to_string_lossy().into_owned()).collect(), rendered));
     for (f, m) in package_modules(&root.join("std"), "std.") {
         let want = run(&["--file", &root.join("std").to_string_lossy(), "render", &m]);
         cases.push((f.clone(), std_files.iter().filter(|p| **p != f).map(|p| p.to_string_lossy().into_owned()).collect(), want));
