@@ -1164,29 +1164,6 @@ impl Parser {
                 }
                 Ok(Expr::Match(Box::new(scrut), name, arms))
             }
-            // `select { op as x => e, … }` (`select` followed by `{`: std.web's
-            // `select(…)` stays a call)
-            Tok::Ident(kw) if kw == "select" && matches!(self.peek_at(1), Tok::Sym("{")) => {
-                self.next();
-                self.expect_sym("{")?;
-                let mut arms = Vec::new();
-                while !self.eat_sym("}") {
-                    let mut comments = self.leading();
-                    let op = self.expr_ns()?;
-                    let name = if matches!(self.peek(), Tok::Ident(s) if s == "as") {
-                        self.next();
-                        Some(self.ident()?)
-                    } else {
-                        None
-                    };
-                    self.expect_sym("=>")?;
-                    let body = self.expr()?;
-                    self.eat_sym(",");
-                    comments.extend(self.trailing());
-                    arms.push(SelectArm { comments, op, name, body });
-                }
-                Ok(Expr::Select(arms))
-            }
             Tok::Ident(kw) if kw == "spawn" => {
                 // `spawn e`, the whole expression (as `return e`): run in a new task
                 self.next();
