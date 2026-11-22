@@ -363,7 +363,8 @@ fn solver_flags_follow_the_solver() {
     // fake solvers that record how they are called: cvc5 gets its own flags
     let d = tmp("solver-flags");
     save(&d.join("b.strata"), "type Quantity = Int where 1 <= it && it <= 99\nfn clamp(q: Quantity) -> Quantity { if q < 99 { q + 1 } else { q } }\n");
-    for (name, version, expected) in [("cvc5", "This is cvc5 version 1.4.2", "--lang smt2 --produce-models --dt-nested-rec --rlimit-per="), ("z3", "Z3 version 4.15.0 - 64 bit", "-in -T:20 rlimit=")] {
+    // (a function's queries in one process take a time limit per query: `-t` for Z3)
+    for (name, version, expected) in [("cvc5", "This is cvc5 version 1.4.2", ["--lang smt2 --produce-models --dt-nested-rec --rlimit-per=", "--lang smt2 --produce-models --dt-nested-rec --rlimit-per="]), ("z3", "Z3 version 4.15.0 - 64 bit", ["-in -T:20 rlimit=", "-in -t:20000 rlimit="])] {
         let fake = d.join(format!("fake-{name}"));
         let log = d.join(format!("{name}.log"));
         std::fs::write(&fake, format!("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '{version}'; exit 0; fi\necho \"$@\" >> {}\ncat > /dev/null\necho unsat\n", log.display())).unwrap();
@@ -376,7 +377,7 @@ fn solver_flags_follow_the_solver() {
         let out = String::from_utf8_lossy(&o.stdout);
         assert!(o.status.success() && out.contains("✓ clamp"), "{out}");
         let calls = std::fs::read_to_string(&log).unwrap();
-        assert!(calls.lines().count() > 0 && calls.lines().all(|l| l.starts_with(expected)), "{name} was called as: {calls}");
+        assert!(calls.lines().count() > 0 && calls.lines().all(|l| expected.iter().any(|e| l.starts_with(e))), "{name} was called as: {calls}");
     }
 }
 
