@@ -249,7 +249,7 @@ void strata_leave(void) {
 // The call stack as `strata run` shows it ("" when empty): as the
 // `names::show_stack`, four or more calls in a row of one function
 // are one entry.
-static char *stack_text(void) {
+static char *stack_from(Str **frames, int64_t *counts, int64_t runs) {
   size_t n = 16;
   for (int64_t i = 0; i < runs && i < FRAMES; i++) n += ((size_t)frames[i]->len + 4) * (counts[i] < 4 ? (size_t)counts[i] : 1) + 32;
   char *t = malloc(n), *p = t;
@@ -262,6 +262,8 @@ static char *stack_text(void) {
   if (runs > FRAMES) strcpy(p, " -> ...");
   return t;
 }
+
+static char *stack_text(void) { return stack_from(frames, counts, runs); }
 
 static void print_stack(void) {
   if (runs == 0) return;
@@ -325,6 +327,48 @@ typedef struct Contained {
 } Contained;
 static _Thread_local Contained *contained;
 
+// (see "knowing when every thread of a run waits", below)
+struct Timeline;
+struct Task;
+typedef struct Waiter {
+  int64_t gen;           // `wake_gen` when it began to wait; -1: not waiting
+  const char *what;      // the wait it is in
+  _Bool timed;           // its wait ends by itself (a real clock's deadline)
+  struct Timeline *vt;   // a fake clock's time it waits on, and the deadline
+  int64_t vdeadline;
+  Str **frames;          // its call stack (its thread's; NULL before it runs)
+  int64_t *counts, *runs;
+  struct Task *task;     // NULL: the run's first thread
+  const char *origin;    // where its task was spawned, if known
+  struct Waiter *next, **back;
+} Waiter;
+
+typedef struct Run {
+  Waiter *first, **tail;  // in the order they started
+  Contained *test;       // the test's boundary (NULL: the program)
+  Waiter root;           // its first thread's
+} Run;
+
+static int64_t wake_gen;  // under `chan_lock`
+static _Thread_local Run *my_run;
+static _Thread_local Waiter *me;
+
+static void add_waiter(Run *r, Waiter *w) {
+  if (!r->tail) r->tail = &r->first;
+  w->gen = -1;
+  w->next = NULL;
+  w->back = r->tail;
+  *r->tail = w;
+  r->tail = &w->next;
+}
+
+static void remove_waiter(Run *r, Waiter *w) {
+  *w->back = w->next;
+  if (w->next) w->next->back = w->back;
+  else r->tail = w->back;
+}
+
+
 // Cancellations pending (tasks told to stop, runs that panicked): while it
 // is 0, compiled code doesn't look further (`cancel_point` in llvm.rs).
 int32_t strata_cancel_any;
@@ -340,6 +384,16 @@ int32_t strata_test(void (*f)(void)) {
   capturing = 1;
   Contained run = {0}, *outer = contained;
   contained = &run;
+  // its own run: its threads' waits are counted apart from the program's
+  Run trun = {0}, *outer_run = my_run;
+  Waiter *outer_me = me;
+  trun.test = &run;
+  trun.root.frames = frames;
+  trun.root.counts = counts;
+  trun.root.runs = &runs;
+  add_waiter(&trun, &trun.root);
+  my_run = &trun;
+  me = &trun.root;
   trap = &here;
   int32_t r = 1;
   if (sigsetjmp(here, 1) == 0) {
@@ -349,6 +403,16 @@ int32_t strata_test(void (*f)(void)) {
   trap = NULL;
   capturing = 0;
   contained = outer;
+  my_run = outer_run;
+  me = outer_me;
+  // a panic of the run itself (a deadlock): the test fails with it
+  if (r == 0 && run.panicked && run.msg) {
+    r = 1;
+    fault_kind = run.kind;
+    fault_msg = run.msg;
+    free(fault_stack);
+    fault_stack = run.stack;
+  }
   if (run.panicked) __atomic_sub_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
   return r;
 }
@@ -543,6 +607,78 @@ static _Bool unhold_sender(Channel *c) {
   return 0;
 }
 
+// ---- knowing when every thread of a run waits ----
+//
+// A run is the program, or one `strata test` or fuzz case: its first thread
+// and every task started under it. Each has a `Waiter` in its run's list,
+// from its `spawn` to its end. A thread about to wait in a Strata wait (a
+// `recv`, `send`, `select`, `await`, the end of a `scope`, a sleep) says so
+// under `chan_lock` (`wait_begin`), and stops saying so when it wakes
+// (`wait_end`). Every wake-up of `chan_cond` (`wake_all`) moves `wake_gen`
+// on, so a thread woken but not yet running again doesn't count as waiting.
+// When the last thread of a run starts to wait and no wait ends by itself (a
+// real clock's deadline), nothing can happen any more: a virtual clock's time
+// jumps to its next deadline (`stuck`), or, if none waits on one, that is a
+// deadlock, a panic. Host I/O (the console, files) isn't a wait here: a
+// thread in it can still go on by itself.
+// Wake every waiter (holding `chan_lock`): something they wait on may have changed.
+static void wake_all(void) {
+  wake_gen++;
+  pthread_cond_broadcast(&chan_cond);
+}
+
+// This thread's run: the program's is made at its first wait or `spawn`.
+static Run *this_run(void) {
+  if (!my_run) {
+    Run *r = calloc(1, sizeof *r);
+    r->root.frames = frames;
+    r->root.counts = counts;
+    r->root.runs = &runs;
+    add_waiter(r, &r->root);
+    my_run = r;
+    me = &r->root;
+  }
+  return my_run;
+}
+
+static _Bool stuck(void);
+
+// About to wait (holding `chan_lock`), on what is `what` names and, for a
+// fake clock, its time and deadline: 0 when it shouldn't (it was the last
+// thread to wait, and a virtual clock's time moved, or the run deadlocked
+// in a test: it looks again).
+static _Bool wait_begin_v(const char *what, struct Timeline *vt, int64_t vdeadline) {
+  this_run();
+  me->gen = wake_gen;
+  me->what = what;
+  me->timed = 0;
+  me->vt = vt;
+  me->vdeadline = vdeadline;
+  return !stuck();
+}
+
+static _Bool wait_begin(const char *what) { return wait_begin_v(what, NULL, 0); }
+
+// About to wait for a real clock's deadline (or a short while): it ends by itself.
+static void timed_begin(const char *what) {
+  this_run();
+  me->gen = wake_gen;
+  me->what = what;
+  me->timed = 1;
+  me->vt = NULL;
+}
+
+static void wait_end(void) {
+  if (me) me->gen = -1;
+}
+
+// One wait on `chan_cond` (holding `chan_lock`), counted.
+#define WAIT(what) \
+  do { \
+    if (wait_begin(what)) pthread_cond_wait(&chan_cond, &chan_lock); \
+    wait_end(); \
+  } while (0)
+
 typedef struct Task {
   pthread_t thread;
   void *clo;                  // the closure: its function, its drop, ...
@@ -566,6 +702,8 @@ typedef struct Task {
   void (*fail)(void *, Str *, Str *, Str *);  // a supervised task's: stores `Err(Panic { … })`
   Contained boundary;         // a supervised task's own
   char *origin;               // the call stack where it was spawned
+  Run *run_of;                // the run it belongs to
+  Waiter w;                   // its place in that run's list
   struct Task *next;
 } Task;
 
@@ -601,7 +739,7 @@ static void cancel_task(Task *t) {
 void strata_scope_cancel(TaskScope *s) {
   pthread_mutex_lock(&chan_lock);
   for (Task *t = s->first; t; t = t->next) cancel_task(t);
-  pthread_cond_broadcast(&chan_cond);
+  wake_all();
   pthread_mutex_unlock(&chan_lock);
 }
 
@@ -619,7 +757,7 @@ static void record_panic(Contained *c, int32_t kind, Str *msg, char *stack) {
   } else {
     free(stack);
   }
-  pthread_cond_broadcast(&chan_cond);
+  wake_all();
   pthread_mutex_unlock(&chan_lock);
 }
 
@@ -682,6 +820,13 @@ static void *task_main(void *arg) {
   contained = t->contained;
   task_origin = t->origin;
   unwound = 0;
+  pthread_mutex_lock(&chan_lock);
+  my_run = t->run_of;
+  me = &t->w;
+  t->w.frames = frames;
+  t->w.counts = counts;
+  t->w.runs = &runs;
+  pthread_mutex_unlock(&chan_lock);
   // outside a test a panic ends the program (no trap); inside one it ends the task
   sigjmp_buf here;
   trap = contained ? &here : NULL;
@@ -709,7 +854,10 @@ static void *task_main(void *arg) {
   _Bool unclosed = nheld > 0 && !t->unwound && !died;
   for (int64_t i = 0; i < nheld; i++) held[i]->senders--;
   t->done = 1;
-  pthread_cond_broadcast(&chan_cond);
+  remove_waiter(t->run_of, &t->w);
+  me = NULL;
+  my_run = NULL;
+  wake_all();
   pthread_mutex_unlock(&chan_lock);
   free(held);
   held = NULL;
@@ -794,6 +942,13 @@ void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *),
     pthread_mutex_unlock(&chan_lock);
   }
   if (__atomic_fetch_add(&live_tasks, 1, __ATOMIC_RELAXED) == 0) __atomic_store_n(&threaded, 1, __ATOMIC_RELAXED);
+  // counted in its run from now: a task not started yet isn't waiting
+  pthread_mutex_lock(&chan_lock);
+  t->run_of = this_run();
+  t->w.task = t;
+  t->w.origin = t->origin;
+  add_waiter(t->run_of, &t->w);
+  pthread_mutex_unlock(&chan_lock);
   pthread_attr_t a;
   pthread_attr_init(&a);
   pthread_attr_setstacksize(&a, TASK_STACK);
@@ -805,11 +960,15 @@ void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *),
     t->faulted = 1;
     t->kind = 6;
     t->msg = str_c("no thread for a task (too many at once)");
+    pthread_mutex_lock(&chan_lock);
     t->done = 1;
+    remove_waiter(t->run_of, &t->w);
+    wake_all();
+    pthread_mutex_unlock(&chan_lock);
     for (int64_t i = 0; i < t->nshares; i++) {
       pthread_mutex_lock(&chan_lock);
       t->shares[i]->senders--;
-      pthread_cond_broadcast(&chan_cond);
+      wake_all();
       pthread_mutex_unlock(&chan_lock);
     }
   }
@@ -847,6 +1006,17 @@ static void release_scope(TaskScope *s) {
 }
 
 void strata_scope_end(TaskScope *s) {
+  // (a wait like the others: its tasks may all be waiting too)
+  if (s->first) {
+    pthread_mutex_lock(&chan_lock);
+    for (;;) {
+      Task *t = s->first;
+      while (t && t->done) t = t->next;
+      if (!t) break;
+      WAIT("the end of a `scope`");
+    }
+    pthread_mutex_unlock(&chan_lock);
+  }
   for (Task *t = s->first; t; t = t->next) join(t);
   open_scopes = s->up;
   for (Task *t = s->first; t; t = t->next) {
@@ -867,7 +1037,7 @@ void strata_scope_end(TaskScope *s) {
 // while it waited (the compiled code then leaves: `cancel_point`).
 void *strata_await(Task *t) {
   pthread_mutex_lock(&chan_lock);
-  while (!t->done && !strata_cancelled()) pthread_cond_wait(&chan_cond, &chan_lock);
+  while (!t->done && !strata_cancelled()) WAIT("`await`");
   _Bool given_up = !t->done;
   pthread_mutex_unlock(&chan_lock);
   if (given_up) return NULL;
@@ -940,7 +1110,7 @@ void strata_channel_send(Channel *c, int64_t v) {
     soft_fault(4, str_c("`send` on a channel that has ended (every copy of its sender was closed)"));
     return;
   }
-  while (c->cap > 0 && c->len >= c->cap && !strata_cancelled()) pthread_cond_wait(&chan_cond, &chan_lock);
+  while (c->cap > 0 && c->len >= c->cap && !strata_cancelled()) WAIT("`send` (the channel is full)");
   if (c->cap > 0 && c->len >= c->cap) {
     // cancelled while it waited: nothing sent
     pthread_mutex_unlock(&chan_lock);
@@ -949,9 +1119,9 @@ void strata_channel_send(Channel *c, int64_t v) {
   }
   push_item(c, v);
   int64_t mine = c->sent;
-  pthread_cond_broadcast(&chan_cond);
+  wake_all();
   // unbuffered: until a receiver took it
-  while (c->cap == 0 && c->taken < mine && !strata_cancelled()) pthread_cond_wait(&chan_cond, &chan_lock);
+  while (c->cap == 0 && c->taken < mine && !strata_cancelled()) WAIT("`send` (no one has taken it)");
   pthread_mutex_unlock(&chan_lock);
 }
 
@@ -959,13 +1129,13 @@ void strata_channel_send(Channel *c, int64_t v) {
 _Bool strata_channel_recv(Channel *c, int64_t *out) {
   pthread_mutex_lock(&chan_lock);
   c->waiting++;
-  pthread_cond_broadcast(&chan_cond);
+  wake_all();
   _Bool stop = 0;
-  while (c->len == 0 && c->senders > 0 && !(stop = strata_cancelled())) pthread_cond_wait(&chan_cond, &chan_lock);
+  while (c->len == 0 && c->senders > 0 && !(stop = strata_cancelled())) WAIT("`recv`");
   c->waiting--;
   _Bool got = c->len > 0 && !stop;
   if (got) *out = pop_item(c);
-  pthread_cond_broadcast(&chan_cond);
+  wake_all();
   pthread_mutex_unlock(&chan_lock);
   return got;
 }
@@ -977,7 +1147,7 @@ void strata_channel_close(Channel *c) {
   }
   pthread_mutex_lock(&chan_lock);
   c->senders--;
-  pthread_cond_broadcast(&chan_cond);
+  wake_all();
   pthread_mutex_unlock(&chan_lock);
 }
 
@@ -1011,7 +1181,11 @@ int64_t strata_host_now(void) { return mono_ns(); }
 void strata_host_sleep(int64_t ns) {
   int64_t deadline = mono_ns() + ns;
   pthread_mutex_lock(&chan_lock);
-  while (mono_ns() < deadline && !strata_cancelled()) wait_until(deadline);
+  while (mono_ns() < deadline && !strata_cancelled()) {
+    timed_begin("`sleep`");
+    wait_until(deadline);
+    wait_end();
+  }
   pthread_mutex_unlock(&chan_lock);
 }
 
@@ -1025,11 +1199,13 @@ void strata_host_sleep(int64_t ns) {
 
 typedef struct Timeline {
   int64_t now;  // nanoseconds from the clock's start
+  _Bool virtual_;  // moves by itself to the next deadline when every thread waits
 } Timeline;
 
-Timeline *strata_timeline_new(int64_t start) {
+Timeline *strata_timeline_new(int64_t start, _Bool virtual_) {
   Timeline *t = strata_alloc(sizeof(Timeline));
   t->now = start;
+  t->virtual_ = virtual_;
   return t;
 }
 
@@ -1048,7 +1224,7 @@ int64_t strata_timeline_now(Timeline *t) {
 void strata_timeline_set(Timeline *t, int64_t to) {
   pthread_mutex_lock(&chan_lock);
   if (to > t->now) t->now = to;
-  pthread_cond_broadcast(&chan_cond);
+  wake_all();
   pthread_mutex_unlock(&chan_lock);
 }
 
@@ -1056,7 +1232,7 @@ void strata_timeline_set(Timeline *t, int64_t to) {
 void strata_timeline_advance(Timeline *t, int64_t ns) {
   pthread_mutex_lock(&chan_lock);
   if (ns > 0) t->now += ns;
-  pthread_cond_broadcast(&chan_cond);
+  wake_all();
   pthread_mutex_unlock(&chan_lock);
 }
 
@@ -1064,7 +1240,10 @@ void strata_timeline_advance(Timeline *t, int64_t ns) {
 void strata_timeline_sleep(Timeline *t, int64_t ns) {
   pthread_mutex_lock(&chan_lock);
   int64_t deadline = t->now + ns;
-  while (t->now < deadline && !strata_cancelled()) pthread_cond_wait(&chan_cond, &chan_lock);
+  while (t->now < deadline && !strata_cancelled()) {
+    if (wait_begin_v("`sleep` on a fake clock", t, deadline)) pthread_cond_wait(&chan_cond, &chan_lock);
+    wait_end();
+  }
   pthread_mutex_unlock(&chan_lock);
 }
 
@@ -1110,7 +1289,7 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
   }
   for (int64_t i = 0; i < n; i++)
     if (ops[i].kind == 0) ((Channel *)ops[i].target)->waiting++;
-  pthread_cond_broadcast(&chan_cond);
+  wake_all();
   int64_t chosen = -1;
   while (chosen < 0) {
     for (int64_t k = 0; k < n && chosen < 0; k++) {
@@ -1146,17 +1325,35 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
         // another clock's time may have moved: wait a little, then let the
         // compiled code ask it again
         int64_t soon = mono_ns() + 1000000;
+        timed_begin("`select`");
         wait_until(first < soon ? first : soon);
+        wait_end();
         chosen = -2;
         break;
       }
-      if (first == INT64_MAX) pthread_cond_wait(&chan_cond, &chan_lock);
-      else wait_until(first);
+      if (first == INT64_MAX) {
+        // a fake clock's timer: the nearest (a virtual clock may jump to it)
+        Timeline *vt = NULL;
+        int64_t vd = 0;
+        for (int64_t i = 0; i < n; i++) {
+          Timeline *tl = ops[i].target;
+          if (ops[i].kind == 5 && (!vt || ops[i].slot - tl->now < vd - vt->now)) {
+            vt = tl;
+            vd = ops[i].slot;
+          }
+        }
+        if (wait_begin_v("`select`", vt, vd)) pthread_cond_wait(&chan_cond, &chan_lock);
+        wait_end();
+      } else {
+        timed_begin("`select`");
+        wait_until(first);
+        wait_end();
+      }
     }
   }
   for (int64_t i = 0; i < n; i++)
     if (ops[i].kind == 0) ((Channel *)ops[i].target)->waiting--;
-  pthread_cond_broadcast(&chan_cond);
+  wake_all();
   if (chosen >= 0 || chosen == -2) {
     pthread_mutex_unlock(&chan_lock);
     return chosen;
@@ -1169,6 +1366,57 @@ give_up:
     if (ops[i].kind == 1 && c->drop) c->drop(ops[i].slot);
   }
   return -1;
+}
+
+// The last thread of its run is about to wait (holding `chan_lock`): if every
+// thread of the run waits and none of their waits ends by itself, a virtual
+// clock moves to its nearest deadline (1: look again), or the run is
+// deadlocked: a panic (the program ends; a test fails, its tasks stop).
+static _Bool stuck(void) {
+  Run *r = my_run;
+  Waiter *next = NULL;
+  for (Waiter *w = r->first; w; w = w->next) {
+    if (w->gen != wake_gen || w->timed) return 0;
+    if (w->vt && w->vt->virtual_ && (!next || w->vdeadline - w->vt->now < next->vdeadline - next->vt->now)) next = w;
+  }
+  if (next) {
+    if (next->vdeadline > next->vt->now) next->vt->now = next->vdeadline;
+    wake_all();
+    return 1;
+  }
+  // what each thread waits on, and where
+  size_t cap = 256, len = 0;
+  char *m = malloc(cap);
+  len = (size_t)snprintf(m, cap, "deadlock: every task is waiting, so none can go on:");
+  for (Waiter *w = r->first; w; w = w->next) {
+    char *st = w->frames ? stack_from(w->frames, w->counts, *w->runs) : strdup("");
+    const char *o = w->origin ? w->origin : "";
+    size_t need = strlen(st) + strlen(o) + strlen(w->what) + 64;
+    if (len + need >= cap) m = realloc(m, cap = (len + need) * 2);
+    len += (size_t)sprintf(m + len, "%s %s waits in %s, at %s%s%s%s", w == r->first ? "" : ";", w->task ? "a task" : (r->test ? "the test" : "main"), w->what,
+                           o, *o ? " -> spawn" : "", *o && *st ? " -> " : "", *st ? st : (*o ? "" : "its start"));
+    free(st);
+  }
+  Str *msg = str_c(m);
+  free(m);
+  if (r->test) {
+    // the test fails with it: its tasks stop, and so does its thread
+    Contained *c = r->test;
+    if (!c->panicked) {
+      c->panicked = 1;
+      c->kind = 4;
+      c->msg = msg;
+      c->stack = strdup("");
+      __atomic_add_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
+    }
+    for (Waiter *w = r->first; w; w = w->next)
+      if (w->task) cancel_task(w->task);
+    wake_all();
+    return 1;
+  }
+  pthread_mutex_unlock(&chan_lock);
+  trap = NULL;
+  fault_at(4 | 256, msg, NULL);
 }
 
 // After a fault caught by a trap: the tasks of every scope still open finish.

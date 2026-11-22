@@ -381,6 +381,8 @@ Tasks share nothing that can change, so the result doesn't depend on timing: `sc
 
 A handle stays in its scope: a scope can't give one back, a task can't hold another's, and one can't be stored in a variable declared outside. A fault in a task (an index out of range, a broken contract) ends the program at once, as anywhere else: nothing catches it, and the other tasks don't run on (a thread waiting for what the failed task would have sent doesn't hang). Its call stack shows where the task was started and where it failed: `main -> spawn -> pick`. Under `strata test` it fails that test only: the test's other tasks stop at their next wait, and the next test runs.
 
+**A deadlock is a panic, not a hang.** When every task of the program is waiting (in a `recv`, a `send`, a `select`, an `await`, the end of a `scope`, a fake clock's sleep) and none of the waits can end by itself (a real clock's sleep or `after` timer can: it isn't a deadlock), nothing can ever happen again. The program stops with what each task waits on, and where: `deadlock: every task is waiting, so none can go on: main waits in the end of a `scope`, at main; a task waits in `recv`, at main -> spawn -> Receiver.recv; …`. Under `strata test` the test fails with it. A task reading the console or a file isn't waiting in this sense: it can go on by itself.
+
 A `scope` whose last line is a `spawn` (`scope { spawn work() }`) gives `()`: the handle isn't its value. Tasks run on threads, one per task for now.
 
 ### Channels and `select`
@@ -528,7 +530,25 @@ test "gives up after 30 seconds" {
 }
 ```
 
-The time moves when the test moves it, not when every task is waiting: a sleep that starts after the time was moved waits for the next move, which is why the test moves it in steps until the answer comes (`clock.after(nanos(0))` keeps the `select` from waiting). Moving the time on its own once every task waits is planned (it needs the runtime to tell that every task is blocked, as deadlock detection does).
+The time of a `fake_clock()` moves only when the test moves it: a sleep that starts after the time was moved waits for the next move, which is why the test moves it in steps until the answer comes (`clock.after(nanos(0))` keeps the `select` from waiting).
+
+A `virtual_clock()` is a `FakeClock` whose time also moves by itself: once every task of the program (or of the test) is waiting and one of them waits for this clock, its time jumps to the nearest such deadline. The same test needs no task moving the time:
+
+```rust
+test "gives up after 30 seconds" {
+  clock := virtual_clock()
+  (ask, questions) := channel()
+  r := race {
+    answer(questions) as v => Some(v),
+    clock.sleep(seconds(30)) => None,
+  }
+  ask.close()
+  assert r == None
+  assert clock.now().value == seconds(30).value
+}
+```
+
+Sleeps of a virtual clock end in the order of their deadlines, each once everything else is waiting, so a test of timers is exact and takes no real time.
 
 ## Built-in types
 
@@ -729,7 +749,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 |---|---|
 | `std.io` | `Console` (`print`, `write`, `eprint`, `read_line`); `Recorder` / `recorder(input)` / `printed(r)` for tests |
 | `std.fs` | `Files` (`read`, `read_bytes`, `write`, `append`, `exists`, `list`, `make_dir`, `remove`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
-| `std.time` | `Clock` (`now`, `sleep`), the `SystemClock` capability, `FakeClock` (`fake_clock()`, `advance`, `set`) for tests; `Duration` (`nanos`, `micros`, `ms`, `seconds`), `Instant`, `elapsed`; `clock.after(d)` as a `select` arm |
+| `std.time` | `Clock` (`now`, `sleep`), the `SystemClock` capability, `FakeClock` (`fake_clock()`, `virtual_clock()`, `advance`, `set`) for tests; `Duration` (`nanos`, `micros`, `ms`, `seconds`), `Instant`, `elapsed`; `clock.after(d)` as a `select` arm |
 | `std.process` | `Environment` (`args`, `var`), `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
 | `std.code` | `Codebase`, a capability, and the capability trait it implements, `Code` (`version`, `snapshot`): the codebase in the current folder as the tools see it: each `Definition` with its interface and source text, what it uses and what uses it, holes, errors and cached verdicts, and the package's log. `strata ui`'s viewer reads it |
 | `std.cli` | `CommandLine`: a record of options read from the arguments |

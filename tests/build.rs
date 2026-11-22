@@ -907,6 +907,125 @@ fn std_fake_clocks_move_when_told() {
     assert_eq!(jit, (out, code));
 }
 
+/// When every task waits and none of the waits ends by itself, nothing can
+/// happen any more: a deadlock is reported (a panic naming each wait), not a
+/// silent hang; a real clock's sleep or a long computation isn't one. A
+/// virtual clock's time jumps to the nearest deadline once every task waits:
+/// a timeout, sleeps in the order of their deadlines, an `after` arm, with no
+/// task moving the time.
+#[test]
+fn waits_are_known() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("waits");
+    let (out, code) = case(&d, "deadlock", DEADLOCK);
+    assert!(code == 101 && out.contains("deadlock: every task is waiting, so none can go on: main waits in the end of a `scope`, at main; a task waits in `recv`"), "{out}");
+    let (jit_out, jit_code) = output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("deadlock.strata")));
+    assert!(jit_code == 101 && jit_out.contains("deadlock: every task is waiting"), "{jit_out}");
+    for (name, src, want) in [("not-deadlocked", NOT_DEADLOCKED, "1\n196418\n"), ("virtual-time", VIRTUAL_TIME, "timed out\n30\none\ntwo\nthree\n33\nafter 10 s\n43\n")] {
+        let (out, code) = case(&d, name, src);
+        assert!(code == 0 && out == want, "{name}: {out}");
+        let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join(format!("{name}.strata"))).env("STRATA_MEMORY", "check")), &d.join(format!("{name}.strata")));
+        assert_eq!(jit, (out, code), "{name}");
+    }
+}
+
+const DEADLOCK: &str = r#"fn main() {
+  (atx, arx) := channel()
+  (btx, brx) := channel()
+  scope {
+    spawn {
+      x := brx.recv() ?? 0
+      atx.send(x)
+      atx.close()
+    }
+    spawn {
+      y := arx.recv() ?? 0
+      btx.send(y)
+      btx.close()
+    }
+  }
+  atx.close()
+  btx.close()
+}
+"#;
+
+const NOT_DEADLOCKED: &str = r#"use std.time.*
+
+fn fib(n: Int) -> Int {
+  if n < 2 {
+    n
+  } else {
+    fib(n - 1) + fib(n - 2)
+  }
+}
+
+fn main(clock: SystemClock) {
+  (tx, rx) := channel()
+  // a real sleep while the main thread waits: not a deadlock
+  scope {
+    spawn {
+      clock.sleep(ms(100))
+      tx.send(1)
+      tx.close()
+    }
+    tx.close()
+    print(rx.recv() ?? 0)
+  }
+  // a long computation while the main thread waits: not a deadlock
+  r := scope {
+    h := spawn fib(27)
+    await h
+  }
+  print(r)
+}
+"#;
+
+const VIRTUAL_TIME: &str = r#"use std.time.*
+
+fn answer(rx: Receiver[Int]) -> Int {
+  rx.recv() ?? 0
+}
+
+fn main() {
+  clock := virtual_clock()
+  (tx, rx) := channel()
+  // a timeout no task moves the time for
+  r := race {
+    answer(rx) as v => f"answer {v}",
+    clock.sleep(seconds(30)) => "timed out",
+  }
+  print(r)
+  print(clock.now().value / 1000000000)
+  // sleeps end in the order of their deadlines
+  scope {
+    spawn {
+      clock.sleep(seconds(3))
+      print("three")
+    }
+    spawn {
+      clock.sleep(seconds(1))
+      print("one")
+    }
+    spawn {
+      clock.sleep(seconds(2))
+      print("two")
+    }
+  }
+  print(clock.now().value / 1000000000)
+  // an `after` arm
+  s := select {
+    rx.recv() as v => f"got {v ?? 0}",
+    clock.after(seconds(10)) => "after 10 s",
+  }
+  print(s)
+  print(clock.now().value / 1000000000)
+  tx.close()
+}
+"#;
+
 const STD_FAKE_CLOCK: &str = r#"use std.time.*
 
 /// Moves `clock` forward a second at a time until a value comes on `rx`.

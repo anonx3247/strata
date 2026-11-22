@@ -886,7 +886,7 @@ declare i1 @strata_host_make_dir(ptr, ptr, ptr)
 declare i1 @strata_host_remove(ptr, ptr, ptr)
 declare ptr @strata_host_args()
 declare i64 @strata_host_now()
-declare ptr @strata_timeline_new(i64)
+declare ptr @strata_timeline_new(i64, i1)
 declare void @strata_timeline_drop(ptr)
 declare i64 @strata_timeline_now(ptr)
 declare void @strata_timeline_set(ptr, i64)
@@ -6459,8 +6459,8 @@ impl<'m, 'a> Func<'m, 'a> {
                 (Ty::Unit, String::new())
             }
             // a `FakeClock`'s time (runtime.c, `Timeline`)
-            ("host_fake_clock", [start]) => {
-                let r = self.call(&Ty::Con("std.time.Timeline".into(), vec![]), "@strata_timeline_new", &[start.clone()])?;
+            ("host_fake_clock", [start, virt]) => {
+                let r = self.call(&Ty::Con("std.time.Timeline".into(), vec![]), "@strata_timeline_new", &[start.clone(), virt.clone()])?;
                 self.temp(r)
             }
             ("host_fake_now", [t]) => self.call(&Ty::Int, "@strata_timeline_now", &[t.clone()])?,
