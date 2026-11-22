@@ -12,13 +12,34 @@ use serde_json::{json, Value as Json};
 use crate::fx::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const PAGE: &str = include_str!("ui/index.html");
 
+mod activity;
+mod agents;
+mod prs;
+
+#[derive(Clone)]
 pub enum Target {
     Db(PathBuf),
     File(PathBuf),
+}
+
+impl Target {
+    fn path(&self) -> &Path {
+        match self {
+            Target::Db(p) | Target::File(p) => p,
+        }
+    }
+
+    /// The same kind of target, somewhere else (another worktree).
+    fn at(&self, path: PathBuf) -> Target {
+        match self {
+            Target::Db(_) => Target::Db(path),
+            Target::File(_) => Target::File(path),
+        }
+    }
 }
 
 /// Drop the declaration's doc comment (the `///` lines above it, which may
@@ -282,28 +303,6 @@ fn parse_query(q: &str) -> HashMap<String, String> {
     q.split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (decode(k), decode(v))).filter(|(_, v)| !v.is_empty()).collect()
 }
 
-/// The structural diff for the viewer's Changes view: patches of the
-/// codebase's log, or git history of the source files.
-/// On an error (a base that doesn't exist or doesn't parse), the options
-/// still come back, so the viewer can always offer another range.
-fn changes(target: &Target, q: &HashMap<String, String>) -> Json {
-    let num = |k: &str| q.get(k).and_then(|v| v.parse::<usize>().ok());
-    let base = q.get("base").map(|s| s.as_str());
-    match target {
-        Target::Db(root) => match Codebase::open(root) {
-            Ok(cb) => match crate::history::log_range(&cb, num("from"), num("to")).and_then(|r| r.diff(num("step"))) {
-                Ok(j) => j,
-                Err(e) => json!({"error": e, "options": crate::history::log_options(&cb, num("from"), num("to"))}),
-            },
-            Err(e) => json!({"error": e}),
-        },
-        Target::File(f) => match crate::history::git_range(f, base).and_then(|r| r.diff(num("step"))) {
-            Ok(j) => j,
-            Err(e) => json!({"error": e, "options": crate::history::git_options(f, base)}),
-        },
-    }
-}
-
 fn respond(mut s: TcpStream, status: &str, ctype: &str, body: &[u8]) {
     let head = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
@@ -317,6 +316,11 @@ fn respond(mut s: TcpStream, status: &str, ctype: &str, body: &[u8]) {
 /// target (path, size, modification time), so the viewer rebuilds the
 /// snapshot only when something changed, not on every poll.
 fn fingerprint(target: &Target) -> u64 {
+    fingerprint_of(target.path())
+}
+
+/// The fingerprint of the files under a folder (or of one file).
+fn fingerprint_of(path: &Path) -> u64 {
     use std::hash::{Hash, Hasher};
     fn walk(p: &std::path::Path, h: &mut impl Hasher, depth: usize) {
         let Ok(md) = std::fs::metadata(p) else { return };
@@ -341,15 +345,13 @@ fn fingerprint(target: &Target) -> u64 {
         }
     }
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    match target {
-        Target::Db(root) => walk(root, &mut h, 0),
-        Target::File(f) => walk(f, &mut h, 0),
-    }
+    walk(path, &mut h, 0);
     h.finish()
 }
 
-/// The last snapshot and the fingerprint it was made at.
-type Cache = std::sync::Mutex<Option<(u64, std::sync::Arc<String>)>>;
+/// The last snapshot of each target shown (the viewer's own, and the same
+/// target in other worktrees) and the fingerprint it was made at.
+type Cache = std::sync::Mutex<HashMap<PathBuf, (u64, std::sync::Arc<String>)>>;
 
 /// The snapshot as JSON text, rebuilt only if the files changed since the last one.
 fn cached_snapshot(target: &Target, cache: &Cache) -> (u64, std::sync::Arc<String>) {
@@ -357,13 +359,13 @@ fn cached_snapshot(target: &Target, cache: &Cache) -> (u64, std::sync::Arc<Strin
     // instead of building their own
     let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
     let fp = fingerprint(target);
-    if let Some((f, body)) = c.as_ref() {
+    if let Some((f, body)) = c.get(target.path()) {
         if *f == fp {
             return (fp, body.clone());
         }
     }
     let body = std::sync::Arc::new(snapshot(target).to_string());
-    *c = Some((fp, body.clone()));
+    c.insert(target.path().to_path_buf(), (fp, body.clone()));
     (fp, body)
 }
 
@@ -376,58 +378,255 @@ fn respond_etag(mut s: TcpStream, etag: u64, body: &[u8]) {
     let _ = s.write_all(body);
 }
 
-fn handle(stream: TcpStream, target: &Target, cache: &Cache) {
-    let mut reader = BufReader::new(&stream);
-    let mut line = String::new();
-    if reader.read_line(&mut line).is_err() {
-        return;
+fn respond_json(s: TcpStream, j: &Json) {
+    respond(s, "200 OK", "application/json", j.to_string().as_bytes())
+}
+
+/// What the viewer serves: the target, its repository, the agents it runs.
+struct App {
+    target: Target,
+    cache: Cache,
+    agents: agents::Agents,
+    repo: Option<activity::Repo>,
+    port: u16,
+}
+
+impl App {
+    /// The target as another worktree of the repository has it (`wt`), or the viewer's own.
+    fn target_in(&self, wt: Option<&String>) -> Result<Target, String> {
+        let (Some(wt), Some(repo)) = (wt, &self.repo) else { return Ok(self.target.clone()) };
+        let wt = std::fs::canonicalize(wt).map_err(|e| format!("{wt}: {e}"))?;
+        if wt == repo.top {
+            return Ok(self.target.clone());
+        }
+        if !repo.worktrees().iter().any(|(p, _, _)| *p == wt) {
+            return Err(format!("{} is not a worktree of this repository", wt.display()));
+        }
+        Ok(self.target.at(repo.in_worktree(&wt)))
     }
-    // the headers: only `If-None-Match` matters
-    let mut if_none_match = None;
+
+    fn repo(&self) -> Result<&activity::Repo, String> {
+        self.repo.as_ref().ok_or_else(|| format!("{} is not in a git repository", self.target.path().display()))
+    }
+
+    /// The folder an agent runs in: the repository (or one of its worktrees,
+    /// or a new one), else the target's folder.
+    fn agent_dir(&self, place: &Json) -> Result<PathBuf, String> {
+        let Ok(repo) = self.repo() else {
+            let p = self.target.path();
+            return Ok(if p.is_dir() { p.to_path_buf() } else { p.parent().unwrap_or(Path::new(".")).to_path_buf() });
+        };
+        if let Some(name) = place["new"].as_str() {
+            let ok = !name.is_empty() && !name.starts_with('-') && !name.contains("..") && name.chars().all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c));
+            if !ok {
+                return Err(format!("`{name}` can't be a branch name: letters, digits, - _ . / only"));
+            }
+            let dir = repo.top.join(".claude").join("worktrees").join(name);
+            let d = dir.display().to_string();
+            let base = repo.default_branch();
+            let exists = crate::git::ok(Some(&repo.top), &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]);
+            if exists {
+                repo.git(&["worktree", "add", &d, name])?;
+            } else {
+                repo.git(&["worktree", "add", "-b", name, &d, &base])?;
+            }
+            return Ok(std::fs::canonicalize(&dir).unwrap_or(dir));
+        }
+        match place["worktree"].as_str() {
+            None | Some("") => Ok(repo.top.clone()),
+            Some(w) => {
+                let w = std::fs::canonicalize(w).map_err(|e| format!("{w}: {e}"))?;
+                if repo.worktrees().iter().any(|(p, _, _)| *p == w) {
+                    Ok(w)
+                } else {
+                    Err(format!("{} is not a worktree of this repository", w.display()))
+                }
+            }
+        }
+    }
+}
+
+/// A request, as far as the viewer reads it.
+struct Request {
+    method: String,
+    path: String,
+    query: HashMap<String, String>,
+    if_none_match: Option<String>,
+    host: Option<String>,
+    origin: Option<String>,
+    /// `X-Strata: 1`: sent by the page with every POST. A web page elsewhere
+    /// can't send it without the viewer's permission, which it never gives.
+    marked: bool,
+    body: Json,
+}
+
+fn read_request(stream: &TcpStream) -> Option<Request> {
+    use std::io::Read;
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).ok()?;
+    let mut parts = line.split_whitespace();
+    let method = parts.next()?.to_string();
+    let target = parts.next().unwrap_or("/").to_string();
+    let (mut if_none_match, mut host, mut origin, mut marked, mut len) = (None, None, None, false, 0usize);
     loop {
         let mut h = String::new();
         if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
             break;
         }
         if let Some((k, v)) = h.split_once(':') {
-            if k.trim().eq_ignore_ascii_case("if-none-match") {
-                if_none_match = Some(v.trim().trim_matches('"').to_string());
+            let (k, v) = (k.trim().to_ascii_lowercase(), v.trim().to_string());
+            match k.as_str() {
+                "if-none-match" => if_none_match = Some(v.trim_matches('"').to_string()),
+                "host" => host = Some(v),
+                "origin" => origin = Some(v),
+                "x-strata" => marked = v == "1",
+                "content-length" => len = v.parse().unwrap_or(0),
+                _ => {}
             }
         }
     }
-    let target_path = line.split_whitespace().nth(1).unwrap_or("/");
-    let (path, query) = target_path.split_once('?').unwrap_or((target_path, ""));
-    match path {
-        "/api/changes" => {
-            let body = changes(target, &parse_query(query)).to_string();
-            respond(stream, "200 OK", "application/json", body.as_bytes())
+    let mut body = vec![0u8; len.min(8 << 20)];
+    if reader.read_exact(&mut body).is_err() {
+        body.clear();
+    }
+    let (path, query) = target.split_once('?').unwrap_or((&target, ""));
+    Some(Request {
+        method,
+        path: path.to_string(),
+        query: parse_query(query),
+        if_none_match,
+        host,
+        origin,
+        marked,
+        body: serde_json::from_slice(&body).unwrap_or(Json::Null),
+    })
+}
+
+fn handle(stream: TcpStream, app: &App) {
+    let Some(req) = read_request(&stream) else { return };
+    // only this machine's pages: a name that resolves here (DNS rebinding) is refused
+    let hosts = [format!("127.0.0.1:{}", app.port), format!("localhost:{}", app.port)];
+    if !req.host.as_ref().is_some_and(|h| hosts.contains(h)) || req.origin.as_ref().is_some_and(|o| !hosts.iter().any(|h| *o == format!("http://{h}"))) {
+        return respond(stream, "403 Forbidden", "text/plain", b"the viewer answers only its own page");
+    }
+    if req.method == "POST" {
+        if !req.marked {
+            return respond(stream, "403 Forbidden", "text/plain", b"the viewer answers only its own page");
         }
-        "/" | "/index.html" => respond(stream, "200 OK", "text/html; charset=utf-8", PAGE.as_bytes()),
-        "/api/state" => {
-            let (etag, body) = cached_snapshot(target, cache);
-            if if_none_match.as_deref() == Some(format!("{etag:x}").as_str()) {
+        return respond_json(stream, &post(app, &req));
+    }
+    let seg: Vec<&str> = req.path.trim_matches('/').split('/').collect();
+    let q = |k: &str| req.query.get(k).map(|s| s.as_str()).unwrap_or("");
+    match seg.as_slice() {
+        [""] | ["index.html"] => respond(stream, "200 OK", "text/html; charset=utf-8", PAGE.as_bytes()),
+        ["api", "state"] => {
+            let target = match app.target_in(req.query.get("wt")) {
+                Ok(t) => t,
+                Err(e) => return respond_json(stream, &json!({"fatal": e})),
+            };
+            let (etag, body) = cached_snapshot(&target, &app.cache);
+            if req.if_none_match.as_deref() == Some(format!("{etag:x}").as_str()) {
                 let mut s = stream;
                 let _ = s.write_all(format!("HTTP/1.1 304 Not Modified\r\nETag: \"{etag:x}\"\r\nConnection: close\r\n\r\n").as_bytes());
             } else {
                 respond_etag(stream, etag, body.as_bytes())
             }
         }
+        ["api", "config"] => {
+            let dir = app.repo.as_ref().map(|r| r.path.clone()).unwrap_or(app.target.path().to_path_buf());
+            respond_json(stream, &json!({"agent": agents::agent_command(&dir), "auto_allow": agents::auto_allow_default(&dir), "repo": app.repo.as_ref().map(|r| &r.top), "rel": app.repo.as_ref().map(|r| &r.rel)}))
+        }
+        ["api", "activity"] => respond_json(stream, &app.repo().map(activity::activity).unwrap_or_else(|e| json!({"error": e}))),
+        ["api", "diff"] => respond_json(stream, &app.repo().map(|r| activity::diff(r, q("base"), q("head"))).unwrap_or_else(|e| json!({"error": e}))),
+        ["api", "agents"] => respond_json(stream, &app.agents.list()),
+        ["api", "agents", id] => match id.parse().ok().and_then(|id| app.agents.get(id)) {
+            Some(s) => respond_json(stream, &s.events_since(q("since").parse().unwrap_or(0))),
+            None => respond_json(stream, &json!({"error": "no such session"})),
+        },
+        ["api", "prs"] => respond_json(stream, &app.repo().map(|r| prs::list(r, q("state"))).unwrap_or_else(|e| json!({"error": e}))),
+        ["api", "prs", n] => respond_json(stream, &app.repo().map(|r| prs::view(r, n)).unwrap_or_else(|e| json!({"error": e}))),
+        ["api", "prs", n, "diff"] => respond_json(stream, &app.repo().map(|r| prs::diff(r, n)).unwrap_or_else(|e| json!({"error": e}))),
         _ => respond(stream, "404 Not Found", "text/plain", b"not found"),
+    }
+}
+
+/// The page's actions: agents started and prompted, permissions answered, PRs reviewed and merged.
+fn post(app: &App, req: &Request) -> Json {
+    let seg: Vec<&str> = req.path.trim_matches('/').split('/').collect();
+    let b = &req.body;
+    let text = |k: &str| b[k].as_str().unwrap_or("").to_string();
+    let session = |id: &str| id.parse().ok().and_then(|id| app.agents.get(id)).ok_or_else(|| json!({"error": "no such session"}));
+    match seg.as_slice() {
+        ["api", "agents"] => {
+            let dir = match app.agent_dir(b) {
+                Ok(d) => d,
+                Err(e) => return json!({"error": e}),
+            };
+            let conf = app.repo.as_ref().map(|r| r.path.clone()).unwrap_or(app.target.path().to_path_buf());
+            let command = agents::agent_command(&conf);
+            let auto = b["auto_allow"].as_bool().unwrap_or_else(|| agents::auto_allow_default(&conf));
+            let title = if text("title").trim().is_empty() { dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default() } else { text("title") };
+            match app.agents.start(dir, title, command, auto) {
+                Ok(s) => {
+                    if !text("prompt").trim().is_empty() {
+                        s.prompt(text("prompt"));
+                    }
+                    s.summary()
+                }
+                Err(e) => json!({"error": e}),
+            }
+        }
+        ["api", "agents", id, action] => {
+            let s = match session(id) {
+                Ok(s) => s,
+                Err(e) => return e,
+            };
+            match *action {
+                "prompt" if !text("text").trim().is_empty() => s.prompt(text("text")),
+                "prompt" => return json!({"error": "nothing to send"}),
+                "answer" => {
+                    if let Err(e) = s.answer(&b["rpc"], b["option"].as_str()) {
+                        return json!({"error": e});
+                    }
+                }
+                "cancel" => s.cancel(),
+                "stop" => s.stop(),
+                "auto" => s.set_auto_allow(b["on"].as_bool().unwrap_or(false)),
+                _ => return json!({"error": format!("no action `{action}`")}),
+            }
+            s.summary()
+        }
+        ["api", "prs", n, action] => {
+            let repo = match app.repo() {
+                Ok(r) => r,
+                Err(e) => return json!({"error": e}),
+            };
+            match *action {
+                "comment" => prs::comment(repo, n, &text("body")),
+                "review" => prs::review(repo, n, &text("event"), &text("body")),
+                "merge" => prs::merge(repo, n, b["stack"].as_bool().unwrap_or(false)),
+                _ => json!({"error": format!("no action `{action}`")}),
+            }
+        }
+        _ => json!({"error": format!("no action at {}", req.path)}),
     }
 }
 
 pub fn serve(target: Target, port: u16) -> Result<(), String> {
     let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| format!("cannot listen on port {port}: {e}"))?;
     println!("Strata viewer on http://127.0.0.1:{port}  (Ctrl-C to stop)");
-    let shared = std::sync::Arc::new((target, Cache::default()));
+    let repo = activity::Repo::of(target.path());
+    let app = std::sync::Arc::new(App { target, cache: Cache::default(), agents: agents::Agents::default(), repo, port });
     for stream in listener.incoming().flatten() {
-        // one thread per connection: a snapshot being rebuilt doesn't hold up the page or the Changes view
-        let shared = shared.clone();
-        let spawned = std::thread::Builder::new().stack_size(64 << 20).spawn(move || handle(stream, &shared.0, &shared.1));
+        // one thread per connection: a snapshot being rebuilt doesn't hold up the page or the agents
+        let app = app.clone();
+        let spawned = std::thread::Builder::new().stack_size(64 << 20).spawn(move || handle(stream, &app));
         if let Err(e) = spawned {
             eprintln!("viewer: cannot start a thread: {e}");
         }
     }
+    app.agents.stop_all();
     Ok(())
 }
 
