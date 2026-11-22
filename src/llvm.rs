@@ -282,10 +282,18 @@ pub struct FuzzTarget {
 }
 
 /// The LLVM IR of fuzz drivers (`@"strata.fuzz.N"` for target N): each
-/// generates the target's arguments, records them (`strata_fuzz_arg`), and
+/// generates the target's arguments, hands them over (`strata_fuzz_keep`), and
 /// calls it. Loops and calls count steps (`strata_step`).
-pub fn compile_fuzz(prog: &Program, targets: &[FuzzTarget]) -> Res<String> {
-    Ok(compile_with(prog, Entry::Fuzz(targets), true)?.0)
+pub fn compile_fuzz(prog: &Program, targets: &[FuzzTarget]) -> Res<(String, Vec<Vec<Shape>>, Shapes)> {
+    let (ir, _, shapes) = compile_with(prog, Entry::Fuzz(targets), true)?;
+    let (mut all, named) = shapes.unwrap_or_default();
+    // split back into each driver's
+    let mut per = vec![];
+    for t in targets {
+        let rest = all.split_off(t.params.len().min(all.len()));
+        per.push(std::mem::replace(&mut all, rest));
+    }
+    Ok((ir, per, named))
 }
 
 /// The LLVM IR of a program's `test` blocks: a function per test
@@ -423,7 +431,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         DeclKind::Type(t) => t.refinement.as_ref().map(|r| (t.name.to_string(), r)),
         _ => None,
     }).collect();
-    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers };
+    let mut m = Module { env: &env, types: &types, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), tracing: TRACING.with(|t| t.get()), box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers };
     // std's precompiled functions, but while making them, tracing, or in a library
     if !BUILDING_STD.with(|b| b.get()) && !m.tracing && !matches!(entry, Entry::Library(_)) {
         m.precompiled = jit::std_library().map(|l| &l.names);
@@ -518,6 +526,11 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         }
         shapes = Some((roots, named));
     }
+    if matches!(entry, Entry::Fuzz(_)) {
+        // each driver's arguments, one after another
+        let (per, named) = std::mem::take(&mut m.fuzz_kept);
+        shapes = Some((per.into_iter().flatten().collect(), named));
+    }
     let mut out = String::from("; Strata, compiled by `strata build`\n\n");
     out += &m.globals;
     out += "\n";
@@ -580,7 +593,7 @@ declare i64 @strata_str_len(ptr)
 declare void @strata_fault(i32, ptr) noreturn
 declare void @strata_enter(ptr)
 declare void @strata_step()
-declare void @strata_fuzz_arg(ptr)
+declare void @strata_fuzz_keep(i64, i64)
 declare void @strata_ct_keep(i64)
 declare void @strata_leave()
 declare void @strata_trace_call(ptr, ptr)
@@ -832,6 +845,9 @@ struct Module<'a> {
     box_tags: HashMap<String, i64>,
     /// Compiled for `strata verify --jit`: loops and calls count steps.
     fuzzing: bool,
+    /// The shapes of each fuzz driver's arguments (handed to the runtime as
+    /// they are made: `strata_fuzz_keep`), and the named shapes they use.
+    fuzz_kept: (Vec<Vec<Shape>>, Shapes),
     /// `strata run --trace`: each function of the program reports its calls and returns.
     tracing: bool,
     /// Generators made (by the type and hints they generate), and mock methods.
@@ -2610,6 +2626,31 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.call(&Ty::Str, &f, &[(t.clone(), v.1.clone())])?.1
             }
             t => return Err(format!("showing a `{}` is not compiled yet", key(t))),
+        })
+    }
+
+    /// A value as the 8-byte slot it is kept in (`native::read` reads it):
+    /// itself, a float's bits, a Bool widened, a pointer's address.
+    fn as_slot(&mut self, v: &V) -> Res<String> {
+        let ll = self.m.ll(&v.0)?;
+        Ok(match ll {
+            "void" => "0".into(),
+            "i64" => v.1.clone(),
+            "double" => {
+                let r = self.fresh("slot");
+                self.emit(format!("{r} = bitcast double {} to i64", v.1));
+                r
+            }
+            "i1" => {
+                let r = self.fresh("slot");
+                self.emit(format!("{r} = zext i1 {} to i64", v.1));
+                r
+            }
+            _ => {
+                let r = self.fresh("slot");
+                self.emit(format!("{r} = ptrtoint ptr {} to i64", v.1));
+                r
+            }
         })
     }
 
@@ -6196,8 +6237,12 @@ impl<'m, 'a> Func<'m, 'a> {
 }
 
 impl Module<'_> {
-    /// Fuzz driver `i`: generate the arguments (each recorded as JSON), then call.
+    /// Fuzz driver `i`: generate the arguments, each handed to the runtime
+    /// as it is made (`strata_fuzz_keep`: read by its shape, before the call
+    /// can change it), then call.
     fn fuzz_driver(&mut self, i: usize, t: &FuzzTarget) -> Res<()> {
+        let mut named = std::mem::take(&mut self.fuzz_kept.1);
+        let mut shapes = vec![];
         let mut c = Func::new(self, HashMap::default());
         c.block("start");
         let mut vs = vec![];
@@ -6205,9 +6250,9 @@ impl Module<'_> {
         for (k, (_, ty, mutable)) in t.params.iter().enumerate() {
             let v = c.generate(ty, &Hints::default(), "0")?;
             let v = c.temp(v);
-            let j = c.json(&v)?;
-            c.emit(format!("call void @strata_fuzz_arg(ptr {j})"));
-            c.drop_value(&(Ty::Str, j))?;
+            shapes.push(c.m.shape(&v.0, &mut named)?);
+            let slot = c.as_slot(&v)?;
+            c.emit(format!("call void @strata_fuzz_keep(i64 {k}, i64 {slot})"));
             let local = format!("fuzz.arg{k}");
             c.local_owned(&local, v, None)?;
             vs.push(c.load(&local)?);
@@ -6218,6 +6263,8 @@ impl Module<'_> {
         c.emit("ret void".into());
         let text = c.finish();
         writeln!(self.body, "define void @\"strata.fuzz.{i}\"() {{\n{text}}}\n").unwrap();
+        self.fuzz_kept.0.push(shapes);
+        self.fuzz_kept.1 = named;
         Ok(())
     }
 

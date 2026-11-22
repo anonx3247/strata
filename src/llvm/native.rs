@@ -3,11 +3,12 @@
 //! off}` over a buffer `{cap, used, data}`, a record, variant or tuple a
 //! block of 8-byte slots after a tag, a union's other members in a box
 //! `{tag, value}`, a big integer a pointer kept outside the small range),
-//! guided by the value's `Shape`. Compile-time code's results come back so;
-//! the FFI will pass values the same way.
+//! guided by the value's `Shape`, as a literal: the code that writes the
+//! value (`P { x: 1 }`, `Some("a")`, `Set { 1, 2 }`). Compile-time code's
+//! results come back so; the FFI will pass values the same way.
 
 use super::{Shape, Shapes};
-use crate::interp::{Fields, Value};
+use crate::ast::{CtorArgs, Expr, Symbol};
 use num_bigint::{BigInt, Sign};
 
 type Res<X> = Result<X, String>;
@@ -19,10 +20,19 @@ unsafe fn slot(p: i64, i: usize) -> i64 {
 
 const SMALL: i64 = 1 << 62;
 
+/// An integer as a literal: `Int` when it fits in 64 bits, else its digits
+/// (so equal numbers are equal literals).
+pub fn int_expr(n: BigInt) -> Expr {
+    match i64::try_from(&n) {
+        Ok(k) => Expr::Int(k),
+        Err(_) => Expr::BigInt(n.to_string()),
+    }
+}
+
 /// An `Int`'s value: small, or a big integer's digits.
-unsafe fn int(raw: i64) -> Value {
+unsafe fn int(raw: i64) -> Expr {
     if (-SMALL..SMALL).contains(&raw) {
-        return Value::Int(raw);
+        return Expr::Int(raw);
     }
     // the inverse of runtime.c's `int_of`: the block's address, over 8
     let k = if raw > 0 { (raw as u64).wrapping_sub(SMALL as u64) } else { ((-(raw + 1)) as u64).wrapping_sub(SMALL as u64) };
@@ -34,7 +44,7 @@ unsafe fn int(raw: i64) -> Value {
         0 => Sign::NoSign,
         _ => Sign::Plus,
     };
-    crate::interp::int_value(BigInt::from_slice(s, digits))
+    int_expr(BigInt::from_slice(s, digits))
 }
 
 unsafe fn string(p: i64) -> String {
@@ -58,24 +68,25 @@ unsafe fn elements(p: i64) -> Vec<i64> {
 /// # Safety
 /// `raw` must be a live value of that shape, made by code compiled with the
 /// `Shapes` given.
-pub unsafe fn read(s: &Shape, shapes: &Shapes, raw: i64) -> Res<Value> {
+pub unsafe fn read(s: &Shape, shapes: &Shapes, raw: i64) -> Res<Expr> {
     unsafe {
         Ok(match s {
             Shape::Int => int(raw),
-            Shape::Float => Value::Float(f64::from_bits(raw as u64)),
-            Shape::Bool => Value::Bool(raw & 1 != 0),
-            Shape::Unit => Value::Unit,
-            Shape::Str => Value::Str(string(raw)),
-            Shape::List(e) => Value::List(elements(raw).into_iter().map(|x| read(e, shapes, x)).collect::<Res<_>>()?),
-            Shape::Set(e) => Value::Set(elements(raw).into_iter().map(|x| read(e, shapes, x)).collect::<Res<_>>()?),
-            Shape::Dict(k, v) => Value::Dict(
+            Shape::Float => Expr::Float(f64::from_bits(raw as u64)),
+            Shape::Bool => Expr::Bool(raw & 1 != 0),
+            Shape::Unit => Expr::Unit,
+            Shape::Str => Expr::Str(string(raw)),
+            Shape::List(e) => Expr::List(elements(raw).into_iter().map(|x| read(e, shapes, x)).collect::<Res<_>>()?),
+            Shape::Set(e) => Expr::Set(vec![], elements(raw).into_iter().map(|x| read(e, shapes, x)).collect::<Res<_>>()?),
+            Shape::Dict(k, v) => Expr::Dict(
+                vec![],
                 elements(raw)
                     .into_iter()
                     .map(|pair| Ok((read(k, shapes, slot(pair, 1))?, read(v, shapes, slot(pair, 2))?)))
                     .collect::<Res<_>>()?,
             ),
-            Shape::Tuple(ts) => Value::Tuple(ts.iter().enumerate().map(|(i, t)| read(t, shapes, slot(raw, i + 1))).collect::<Res<_>>()?),
-            Shape::Distinct(n, inner) => Value::Distinct(n.clone(), Box::new(read(inner, shapes, raw)?)),
+            Shape::Tuple(ts) => Expr::Tuple(ts.iter().enumerate().map(|(i, t)| read(t, shapes, slot(raw, i + 1))).collect::<Res<_>>()?),
+            Shape::Distinct(n, inner) => Expr::Ctor(Symbol::new(n), CtorArgs::Positional(vec![read(inner, shapes, raw)?])),
             Shape::Named(k) => {
                 let tag = slot(raw, 0);
                 let cs = shapes.named.get(k).ok_or(format!("no shape for `{k}`"))?;
@@ -84,15 +95,14 @@ pub unsafe fn read(s: &Shape, shapes: &Shapes, raw: i64) -> Res<Value> {
                 for (i, (_, f)) in c.fields.iter().enumerate() {
                     vals.push(read(f, shapes, slot(raw, i + 1))?);
                 }
-                let named: Vec<(String, Value)> = c.fields.iter().zip(vals.iter()).filter_map(|((n, _), v)| n.clone().map(|n| (n, v.clone()))).collect();
-                if c.record {
-                    Value::Record(c.name.clone(), named)
-                } else if c.fields.is_empty() {
-                    Value::Variant(c.name.clone(), Fields::None)
-                } else if c.fields.iter().all(|(n, _)| n.is_some()) {
-                    Value::Variant(c.name.clone(), Fields::rec(named))
+                let name = Symbol::new(&c.name);
+                if c.fields.is_empty() && !c.record {
+                    Expr::Ctor(name, CtorArgs::None)
+                } else if c.record || c.fields.iter().all(|(n, _)| n.is_some()) {
+                    // in declaration order
+                    Expr::Ctor(name, CtorArgs::Record(c.fields.iter().zip(vals).map(|((n, _), v)| (Symbol::new(n.as_deref().unwrap_or("")), v)).collect()))
                 } else {
-                    Value::Variant(c.name.clone(), Fields::pos(vals))
+                    Expr::Ctor(name, CtorArgs::Positional(vals))
                 }
             }
             Shape::Union(ms) => {
