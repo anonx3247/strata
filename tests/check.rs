@@ -1,5 +1,6 @@
 //! `std.ast.check` (the type checker in Strata) finds the errors `strata
-//! check` finds (clashing definitions, unknown names), worded as it words them.
+//! check` finds (clashing definitions, unknown names,
+//! wrong numbers of arguments), worded as it words them.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -9,14 +10,14 @@ const STRATA: &str = env!("CARGO_BIN_EXE_strata");
 const CHECKER: &str = r#"use std.fs.{Files, Disk}
 use std.process.{Environment, Process}
 use std.ast.binary.{decode_module}
-use std.ast.check.{definition_errors, variant_errors, unknown_names}
+use std.ast.check.{definition_errors, variant_errors, expression_errors}
 
 fn main(disk: Disk, process: Process) {
   for a in process.args() {
     match disk.read_bytes(a) {
       Ok(bs) => match decode_module(bs) {
         Ok(ds) => {
-          for e in definition_errors(ds) + variant_errors(ds) + unknown_names(ds) {
+          for e in definition_errors(ds) + variant_errors(ds) + expression_errors(ds) {
             print(f"error in {e.0}: {e.1}")
           }
         },
@@ -34,6 +35,19 @@ type E =
   | Y
 type Option = { b: Int }
 fn main() { print(1) }
+"#;
+
+const ARITY: &str = r#"type Pt = { x: Int, y: Int }
+type Sh =
+  | Sq(Int)
+  | Rc(Int, Int)
+fn f(a: Int, b: Int) -> Int { a + b }
+fn g(x: Int) -> Int { f(f(x)) + zz }
+fn h() -> Sh { Rc(f(1), yy, 3) }
+fn m() -> Sh { Sq }
+fn n() -> Pt { Pt(1, 2) }
+fn o(f: Int) -> Int { f }
+fn main() { print(g(1)) }
 "#;
 
 const UNKNOWN: &str = r#"type Pt = { x: Int, y: Int }
@@ -68,6 +82,11 @@ fn clashes_as_in_rust() {
 #[test]
 fn unknown_names_as_in_rust() {
     same_errors("unknown", UNKNOWN, &["unknown variable"]);
+}
+
+#[test]
+fn arity_as_in_rust() {
+    same_errors("arity", ARITY, &["unknown variable", "expects", "needs"]);
 }
 
 /// `std.ast.check`'s errors on `text` are `strata check`'s lines holding one of `keys`.
