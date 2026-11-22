@@ -34,7 +34,8 @@ $ strata --file examples/math.strata verify
 - **You work on definitions, not files.** Definitions are syntax trees identified by content hash; text is a view at the level of detail you need, and every edit is checked against the whole codebase before it is committed.
 - **Incomplete programs still check.** A typed hole (`?name`) has a goal type, a context and obligations: a precise task to hand to an agent.
 - **Capabilities are values.** A database or a clock is a trait passed as a parameter, so a signature shows what code can touch, and a test passes a fake or `mock`.
-- **Everything is JSON.** Every value serializes to JSON, and JSON inputs are parsed against the types, refinements included.
+- **Values read as code.** Every value is shown as it would be written (`Circle { radius: 2 }`), in messages, traces and counterexamples, and `strata run f ARGS` takes its arguments that way. JSON is a library (`derive Json`), read against the types, refinements included.
+- **Concurrency without colouring.** `scope`, `spawn` and `await` run tasks on threads, with channels, `select` and `race` (the losers cancelled); any function can block, and there is no `async`.
 
 > Status: **an experimental draft**, in Rust: code is compiled through LLVM, in memory (`strata run`, `test`, `serve`, compile-time code) or to an executable (`strata build`).
 
