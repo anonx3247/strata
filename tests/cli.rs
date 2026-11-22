@@ -1810,7 +1810,7 @@ fn a_program_has_its_own_timeline() {
     for (name, src, msg) in [
         ("made", "fn f() -> Int {\n  t := host_fake_clock(0)\n  1\n}\n", "`host_fake_clock` is internal to the standard library"),
         ("imported", "from std.time use Timeline\n\nfn f() -> Int {\n  1\n}\n", "`Timeline` is private to module `std.time`"),
-        ("named", "fn f(t: std.time.Timeline) -> Int {\n  1\n}\n", "unknown type `std.time.Timeline`"),
+        ("named", "fn f(t: std.time.Timeline) -> Int {\n  1\n}\n", "`std.time.Timeline` is private to module `std.time`"),
     ] {
         save(&d.join(format!("{name}.strata")), src);
         let (ok, out) = strata(&["--file", &format!("{name}.strata"), "check"], &d, None);

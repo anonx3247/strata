@@ -645,7 +645,7 @@ fn reads_are_cancelled() {
     }
 }
 
-const IO_BLOCKED: &str = r#"use std.io.{Console}
+const IO_BLOCKED: &str = r#"from std.io use Console
 
 
 fn line_of(c: Console) -> String {
@@ -688,7 +688,7 @@ fn main(console: Console) {
 }
 "#;
 
-const IO_LINES: &str = r#"use std.io.{Console}
+const IO_LINES: &str = r#"from std.io use Console
 
 fn line_of(c: Console) -> String {
   mut d := c
@@ -1026,7 +1026,7 @@ fn std_fake_clocks_move_when_told() {
     assert_eq!(jit, (out, code));
 }
 
-const STD_FAKE_CLOCK: &str = r#"from std.time use SystemClock, FakeClock, fake_clock, nanos, ms, seconds, elapsed
+const STD_FAKE_CLOCK: &str = r#"from std.time use SystemClock, FakeClock, Instant, Duration, fake_clock, nanos, ms, seconds, elapsed
 
 /// Moves `clock` forward a second at a time until a value comes on `rx`.
 fn drive(clock: FakeClock, rx: Receiver[String]) -> String {
