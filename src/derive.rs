@@ -1380,7 +1380,7 @@ impl<'a> Expander<'a> {
         // `if { it := x; cond } { Ok(()) } else { Err(msg) }`, after `first`
         let test = |cond: &Expr, msg: String, first: Expr| {
             let holds = Expr::Block(vec![Stmt::Let(Pattern::Bind(Symbol::new("it")), None, x.clone())], Box::new(cond.clone()));
-            let shown = Expr::Call(Box::new(Expr::Var(Symbol::new("to_json"))), vec![x.clone()]);
+            let shown = Expr::Call(Box::new(Expr::Var(Symbol::new("debug"))), vec![x.clone()]);
             let err = Expr::Ctor(Symbol::new("Err"), CtorArgs::Positional(vec![Expr::Interp(vec![StrPart::Expr(shown, None), StrPart::Lit(format!(" {msg}"))])]));
             let this = Expr::If(Box::new(holds), Box::new(ok()), Box::new(err));
             let e = Symbol::new("checked.err");

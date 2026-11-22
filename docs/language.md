@@ -383,7 +383,7 @@ print([Money { cents: 5 }])        // [Money { cents: 5 }]: parts by their `debu
 print(Some(Secret { key: "k" }))   // Some(Secret { key: *** })
 ```
 
-All values are immutable (`insert` returns a new dict). Dicts and sets are kept in canonical order, so equal collections are equal values and serialise identically. `len`, `contains`, `get`, `insert`, `remove`, `sum`, `min`, `max` and `abs` work across the types they make sense for. `strata builtins` lists every builtin with its signature. See `examples/builtins.strata`.
+All values are immutable (`insert` returns a new dict). Dicts and sets are kept in canonical order, so equal collections are equal values and serialise identically: numbers and strings in their natural order, a `distinct` value as what it is made of, variants in the order they are declared (then field by field), tuples, records and lists element by element. `len`, `contains`, `get`, `insert`, `remove`, `sum`, `min`, `max` and `abs` work across the types they make sense for. `strata builtins` lists every builtin with its signature. See `examples/builtins.strata`.
 
 **Iterators.** Besides lists, sets and dicts, a `for` loop runs over any value whose type implements the prelude's `Iterator`: `next` gives the elements one at a time, then `None`.
 
