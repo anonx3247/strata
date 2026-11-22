@@ -1878,8 +1878,8 @@ impl Rw<'_> {
             Expr::Scope(x) => Expr::Scope(Box::new(self.expr(x))),
             Expr::Spawn(x) => Expr::Spawn(Box::new(self.expr(x))),
             Expr::Await(x) => Expr::Await(Box::new(self.expr(x))),
-            Expr::Select(arms) => Expr::Select(
-                arms.iter()
+            Expr::Select(arms) | Expr::Race(arms) => {
+                let arms = arms.iter()
                     .map(|a| {
                         let op = self.expr(&a.op);
                         // the result's name is bound in the arm
@@ -1889,8 +1889,9 @@ impl Rw<'_> {
                         self.pop();
                         SelectArm { comments: a.comments.clone(), op, name: a.name, body }
                     })
-                    .collect(),
-            ),
+                    .collect();
+                if matches!(e, Expr::Race(_)) { Expr::Race(arms) } else { Expr::Select(arms) }
+            }
             _ => e.clone(),
         }
     }

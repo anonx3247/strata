@@ -301,6 +301,19 @@ static void keep_printed(const char *b, size_t n) {
 // call stack, the generators' numbers from the start, nothing printed.
 static void forget_senders(void);
 
+// A run inside `strata_test` (a test, a fuzz case): a panic there fails it
+// instead of ending the process. Its tasks share it: once one of them
+// panics, every thread of the run is cancelled (it stops at its next wait),
+// and the end of the task's scope raises the panic in the test's thread.
+typedef struct Contained {
+  int32_t panicked;
+} Contained;
+static _Thread_local Contained *contained;
+
+// Cancellations pending (tasks told to stop, runs that panicked): while it
+// is 0, compiled code doesn't look further (`cancel_point` in llvm.rs).
+int32_t strata_cancel_any;
+
 int32_t strata_test(void (*f)(void)) {
   sigjmp_buf here;
   catch_overflow();
@@ -310,6 +323,8 @@ int32_t strata_test(void (*f)(void)) {
   printed_len = 0;
   if (printed) printed[0] = 0;
   capturing = 1;
+  Contained run = {0}, *outer = contained;
+  contained = &run;
   trap = &here;
   int32_t r = 1;
   if (sigsetjmp(here, 1) == 0) {
@@ -318,6 +333,8 @@ int32_t strata_test(void (*f)(void)) {
   }
   trap = NULL;
   capturing = 0;
+  contained = outer;
+  if (run.panicked) __atomic_sub_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
   return r;
 }
 
@@ -398,16 +415,25 @@ const char *strata_test_printed(void) { return printed ? printed : ""; }
 
 // A fault: its kind, then 256 if the interpreter shows no call stack for it.
 static void finish_open_scopes(void);
+struct Contained;
+static void panic_contained(struct Contained *c);
 
 // A fault: of this thread (`task_stack` NULL), or of a task it started
 // (raised here by `await` or the end of its scope), whose call stack then
 // follows this thread's. Caught by a trap (a test, a task), every task this
 // thread started finishes first.
+static _Thread_local char *task_origin;  // where this thread's task was spawned
+
 static _Noreturn void fault_at(int32_t kind, Str *msg, char *task_stack) {
   char *stack = NULL;
   if (!(kind & 256)) {
     char *here = stack_text();
-    if (task_stack) {
+    if (!task_stack && task_origin && !trap) {
+      // a panic in a task, ending the program: where it was spawned, then where it is
+      stack = malloc(strlen(task_origin) + strlen(here) + 16);
+      sprintf(stack, "%s%sspawn%s%s", task_origin, *task_origin ? " -> " : "", *here ? " -> " : "", here);
+      free(here);
+    } else if (task_stack) {
       stack = malloc(strlen(here) + strlen(task_stack) + 16);
       sprintf(stack, "%s%sspawn%s%s", here, *here ? " -> " : "", *task_stack ? " -> " : "", task_stack);
       free(here);
@@ -417,6 +443,8 @@ static _Noreturn void fault_at(int32_t kind, Str *msg, char *task_stack) {
   }
   free(task_stack);
   if (trap) {
+    // (a test's tasks stop, rather than wait for what won't come)
+    if (contained) panic_contained(contained);
     finish_open_scopes();
     fault_kind = kind;
     fault_msg = msg;
@@ -424,6 +452,11 @@ static _Noreturn void fault_at(int32_t kind, Str *msg, char *task_stack) {
     fault_stack = stack;
     siglongjmp(*trap, 1);
   }
+  // a panic ends the program, whichever thread it is in (the first to
+  // panic reports; another waits for the end)
+  static int32_t ending;
+  if (__atomic_exchange_n(&ending, 1, __ATOMIC_ACQ_REL)) for (;;) pause();
+  flockfile(stdout);  // (no other thread prints after this)
   fflush(stdout);
   fprintf(stderr, "fault (%s): %.*s\n", KINDS[kind & 255], (int)msg->len, msg->bytes);
   if (stack && *stack) fprintf(stderr, "    stack: %s\n", stack);
@@ -436,8 +469,14 @@ _Noreturn void strata_fault(int32_t kind, Str *msg) { fault_at(kind, msg, NULL);
 //
 // A task runs on a thread of its own. Its closure (holding what it
 // captured) and its result belong to its scope: the end of the scope waits
-// for every task, then drops them. A fault in a task ends the task; `await`
-// or the end of the scope raises it in the thread that started it.
+// for every task, then drops them. A panic in a task ends the program, as
+// anywhere; inside a test it fails the test (see `Contained`).
+//
+// Cancelling a task (a `race`'s losers) stops it at its next wait: `send`,
+// `recv`, `select` and `await` give up, and the compiled code leaves each
+// function as `return` would, dropping what it holds (`cancel_point` in
+// llvm.rs), so nothing runs after the wait and nothing leaks. A task is
+// cancelled when it or a task above it (the one that spawned it, ...) is.
 
 #define TASK_STACK ((size_t)64 << 20)
 
@@ -501,6 +540,11 @@ typedef struct Task {
   Channel **shares;           // the senders it holds a copy of
   int64_t nshares;
   _Bool done;                 // finished (set under `chan_lock`, for `select`)
+  int32_t cancel;             // told to stop (counted in `strata_cancel_any`)
+  _Bool unwound;              // stopped by a cancellation: no result
+  struct Task *parent;        // the task that spawned it (NULL: the main thread)
+  Contained *contained;       // the test it runs in, if any
+  char *origin;               // the call stack where it was spawned
   struct Task *next;
 } Task;
 
@@ -510,7 +554,46 @@ typedef struct TaskScope {
 } TaskScope;
 
 static _Thread_local TaskScope *open_scopes;
+static _Thread_local Task *self_task;  // the task this thread runs (NULL: the main thread)
+static _Thread_local _Bool unwound;    // the last function left by a cancellation
 static void free_alt_stack(void);
+
+// Whether this thread should stop at its next wait.
+_Bool strata_cancelled(void) {
+  if (contained && __atomic_load_n(&contained->panicked, __ATOMIC_RELAXED)) return 1;
+  for (Task *t = self_task; t; t = t->parent)
+    if (__atomic_load_n(&t->cancel, __ATOMIC_RELAXED)) return 1;
+  return 0;
+}
+
+// The compiled code left a function because of a cancellation.
+void strata_unwound(void) { unwound = 1; }
+
+// Tell a task to stop (under `chan_lock`; waiters are woken by the caller).
+static void cancel_task(Task *t) {
+  if (t->done || t->cancel) return;
+  __atomic_store_n(&t->cancel, 1, __ATOMIC_RELAXED);
+  __atomic_add_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
+}
+
+// A race's losers: every task of the scope not finished yet.
+void strata_scope_cancel(TaskScope *s) {
+  pthread_mutex_lock(&chan_lock);
+  for (Task *t = s->first; t; t = t->next) cancel_task(t);
+  pthread_cond_broadcast(&chan_cond);
+  pthread_mutex_unlock(&chan_lock);
+}
+
+// A panic inside a test, in one of its tasks: every thread of the test stops.
+static void panic_contained(Contained *c) {
+  pthread_mutex_lock(&chan_lock);
+  if (!c->panicked) {
+    c->panicked = 1;
+    __atomic_add_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
+  }
+  pthread_cond_broadcast(&chan_cond);
+  pthread_mutex_unlock(&chan_lock);
+}
 
 static void *task_main(void *arg) {
   Task *t = arg;
@@ -521,16 +604,23 @@ static void *task_main(void *arg) {
   steps = t->steps;
   given = t->given;
   for (int64_t i = 0; i < t->nshares; i++) hold_sender(t->shares[i]);
+  self_task = t;
+  contained = t->contained;
+  task_origin = t->origin;
+  unwound = 0;
+  // outside a test a panic ends the program (no trap); inside one it ends the task
   sigjmp_buf here;
-  trap = &here;
-  if (sigsetjmp(here, 1) == 0) {
+  trap = contained ? &here : NULL;
+  if (!contained || sigsetjmp(here, 1) == 0) {
     t->run(t->clo, &t->out);
+    t->unwound = unwound;
   } else {
     t->faulted = 1;
     t->kind = fault_kind;
     t->msg = fault_msg;
     t->stack = fault_stack;
     fault_stack = NULL;
+    panic_contained(contained);
   }
   trap = NULL;
   t->printed = printed;
@@ -538,9 +628,9 @@ static void *task_main(void *arg) {
   printed = NULL;
   printed_len = printed_cap = 0;
   // a copy of a sender it didn't close is closed now (its receivers would
-  // wait forever), and that is a fault
+  // wait forever), and that is a panic, unless the task was cancelled
   pthread_mutex_lock(&chan_lock);
-  _Bool unclosed = nheld > 0;
+  _Bool unclosed = nheld > 0 && !t->unwound;
   for (int64_t i = 0; i < nheld; i++) held[i]->senders--;
   t->done = 1;
   pthread_cond_broadcast(&chan_cond);
@@ -549,11 +639,17 @@ static void *task_main(void *arg) {
   held = NULL;
   nheld = capheld = 0;
   if (unclosed && !t->faulted) {
+    Str *m = str_c("a task ended without closing its copy of a sender (`tx.close()`)");
+    if (!contained) fault_at(4, m, NULL);
     t->faulted = 1;
     t->kind = 4;
-    t->msg = str_c("a task ended without closing its copy of a sender (`tx.close()`)");
+    t->msg = m;
     t->stack = strdup("");
+    panic_contained(contained);
   }
+  self_task = NULL;
+  contained = NULL;
+  task_origin = NULL;
   free_alt_stack();
   return NULL;
 }
@@ -584,6 +680,19 @@ void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *),
   t->counting = counting;
   t->steps = steps;
   t->given = given;
+  t->parent = self_task;
+  t->contained = contained;
+  if (!contained) {
+    // for a panic's call stack: this task's origin, then where it is
+    char *here = stack_text();
+    if (task_origin) {
+      t->origin = malloc(strlen(task_origin) + strlen(here) + 16);
+      sprintf(t->origin, "%s%sspawn%s%s", task_origin, *task_origin ? " -> " : "", *here ? " -> " : "", here);
+      free(here);
+    } else {
+      t->origin = here;
+    }
+  }
   // a copy of each sender it captured that this thread still holds: the
   // task's, to close (one this thread closed stays closed for it too)
   if (nshares) {
@@ -638,7 +747,9 @@ static void join(Task *t) {
 static void release_scope(TaskScope *s) {
   for (Task *t = s->first, *next; t; t = next) {
     next = t->next;
-    if (!t->faulted && t->drop) t->drop(&t->out);
+    if (!t->faulted && !t->unwound && t->drop) t->drop(&t->out);
+    if (t->cancel) __atomic_sub_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
+    free(t->origin);
     if (strata_release(t->clo)) ((void (*)(void *))(uintptr_t)((int64_t *)t->clo)[1])(t->clo);
     free(t->stack);
     free(t->shares);
@@ -663,7 +774,14 @@ void strata_scope_end(TaskScope *s) {
   release_scope(s);
 }
 
+// The task's result, once it has finished; NULL if this task was cancelled
+// while it waited (the compiled code then leaves: `cancel_point`).
 void *strata_await(Task *t) {
+  pthread_mutex_lock(&chan_lock);
+  while (!t->done && !strata_cancelled()) pthread_cond_wait(&chan_cond, &chan_lock);
+  _Bool given_up = !t->done;
+  pthread_mutex_unlock(&chan_lock);
+  if (given_up) return NULL;
   join(t);
   if (t->faulted) {
     char *st = t->stack;
@@ -730,12 +848,18 @@ void strata_channel_send(Channel *c, int64_t v) {
     if (c->drop) c->drop(v);
     strata_fault(4, str_c("`send` on a channel that has ended (every copy of its sender was closed)"));
   }
-  while (c->cap > 0 && c->len >= c->cap) pthread_cond_wait(&chan_cond, &chan_lock);
+  while (c->cap > 0 && c->len >= c->cap && !strata_cancelled()) pthread_cond_wait(&chan_cond, &chan_lock);
+  if (c->cap > 0 && c->len >= c->cap) {
+    // cancelled while it waited: nothing sent
+    pthread_mutex_unlock(&chan_lock);
+    if (c->drop) c->drop(v);
+    return;
+  }
   push_item(c, v);
   int64_t mine = c->sent;
   pthread_cond_broadcast(&chan_cond);
   // unbuffered: until a receiver took it
-  while (c->cap == 0 && c->taken < mine) pthread_cond_wait(&chan_cond, &chan_lock);
+  while (c->cap == 0 && c->taken < mine && !strata_cancelled()) pthread_cond_wait(&chan_cond, &chan_lock);
   pthread_mutex_unlock(&chan_lock);
 }
 
@@ -744,9 +868,10 @@ _Bool strata_channel_recv(Channel *c, int64_t *out) {
   pthread_mutex_lock(&chan_lock);
   c->waiting++;
   pthread_cond_broadcast(&chan_cond);
-  while (c->len == 0 && c->senders > 0) pthread_cond_wait(&chan_cond, &chan_lock);
+  _Bool stop = 0;
+  while (c->len == 0 && c->senders > 0 && !(stop = strata_cancelled())) pthread_cond_wait(&chan_cond, &chan_lock);
   c->waiting--;
-  _Bool got = c->len > 0;
+  _Bool got = c->len > 0 && !stop;
   if (got) *out = pop_item(c);
   pthread_cond_broadcast(&chan_cond);
   pthread_mutex_unlock(&chan_lock);
@@ -774,6 +899,7 @@ typedef struct {
 // is starved.
 int64_t strata_select(SelectOp *ops, int64_t n) {
   pthread_mutex_lock(&chan_lock);
+  if (strata_cancelled()) goto give_up;
   for (int64_t i = 0; i < n; i++)
     if (ops[i].kind == 1 && ((Channel *)ops[i].target)->senders == 0) {
       pthread_mutex_unlock(&chan_lock);
@@ -809,13 +935,26 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
         chosen = i;
       }
     }
-    if (chosen < 0) pthread_cond_wait(&chan_cond, &chan_lock);
+    if (chosen < 0) {
+      if (strata_cancelled()) break;
+      pthread_cond_wait(&chan_cond, &chan_lock);
+    }
   }
   for (int64_t i = 0; i < n; i++)
     if (ops[i].kind == 0) ((Channel *)ops[i].target)->waiting--;
   pthread_cond_broadcast(&chan_cond);
+  if (chosen >= 0) {
+    pthread_mutex_unlock(&chan_lock);
+    return chosen;
+  }
+give_up:
+  // cancelled while it waited: nothing happened; the values its sends held are dropped
   pthread_mutex_unlock(&chan_lock);
-  return chosen;
+  for (int64_t i = 0; i < n; i++) {
+    Channel *c = ops[i].target;
+    if (ops[i].kind == 1 && c->drop) c->drop(ops[i].slot);
+  }
+  return -1;
 }
 
 // After a fault caught by a trap: the tasks of every scope still open finish.
