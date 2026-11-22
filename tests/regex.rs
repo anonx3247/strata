@@ -465,3 +465,220 @@ fn random_samples_match() {
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
     samples_match("samples-random", (0..n).map(|_| random_pattern(&mut rng)).collect());
 }
+
+// ---------------- the prover's model ----------------
+
+/// The old Rust translation (regex-syntax's HIR to SMT-LIB), the reference
+/// for `std.regex.smt_model`.
+mod reference_smt {
+    pub const MAX_CHAR: u32 = 0x2FFFF;
+    pub const MAX_RANGES: usize = 24;
+
+    #[derive(Clone, Copy, PartialEq)]
+    pub enum Mode {
+        Exact,
+        Under,
+        Over,
+    }
+
+    fn re_empty() -> String {
+        "(str.to_re \"\")".into()
+    }
+
+    fn str_lit(s: &str) -> String {
+        let mut out = String::from("\"");
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\"\""),
+                ' '..='~' if c != '\\' => out.push(c),
+                _ => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            }
+        }
+        out.push('"');
+        out
+    }
+
+    /// `ExactModel(r)` or `Between(under, over)` as text, as std.regex prints them.
+    pub fn model(re: &str) -> Option<String> {
+        let hir = parse_regex(re)?;
+        let mut widest = 0;
+        let exact = hir_to_smt(&hir, true, true, Mode::Exact, &mut widest)?;
+        if widest <= MAX_RANGES {
+            return Some(format!("exact {exact}"));
+        }
+        Some(format!("between {} {}", hir_to_smt(&hir, true, true, Mode::Under, &mut 0)?, hir_to_smt(&hir, true, true, Mode::Over, &mut 0)?))
+    }
+
+    fn parse_regex(re: &str) -> Option<regex_syntax::hir::Hir> {
+        regex_syntax::ParserBuilder::new()
+            // `regex::Regex::new`'s settings (regex-automata's `syntax::Config` defaults)
+            .case_insensitive(false)
+            .multi_line(false)
+            .dot_matches_new_line(false)
+            .crlf(false)
+            .line_terminator(b'\n')
+            .swap_greed(false)
+            .ignore_whitespace(false)
+            .unicode(true)
+            .utf8(true)
+            .nest_limit(250)
+            .octal(false)
+            .build()
+            // (the pattern alone, at the text's start and end: wrapped in
+            // `^(?:…)$`, a `(?x)` comment would swallow the wrapper)
+            .parse(re)
+            .ok()
+    }
+
+    fn class_ranges(c: &regex_syntax::hir::ClassUnicode, mode: Mode) -> Vec<(u32, u32)> {
+        let mut rs: Vec<(u32, u32)> = c.ranges().iter().filter(|r| r.start() as u32 <= MAX_CHAR).map(|r| (r.start() as u32, (r.end() as u32).min(MAX_CHAR))).collect();
+        if rs.len() <= MAX_RANGES || mode == Mode::Exact {
+            return rs;
+        }
+        match mode {
+            Mode::Under => {
+                let mut order: Vec<usize> = (0..rs.len()).collect();
+                order.sort_by_key(|&i| (rs[i].0 > 0xFF, std::cmp::Reverse(rs[i].1 - rs[i].0), i));
+                let mut keep: Vec<usize> = order.into_iter().take(MAX_RANGES).collect();
+                keep.sort();
+                keep.into_iter().map(|i| rs[i]).collect()
+            }
+            _ => {
+                // fill the smallest gaps between neighbours until few enough ranges are left
+                let mut gaps: Vec<(u32, usize)> = (1..rs.len()).map(|i| (rs[i].0 - rs[i - 1].1, i)).collect();
+                gaps.sort();
+                let mut fill = vec![false; rs.len()];
+                for &(_, i) in gaps.iter().take(rs.len() - MAX_RANGES) {
+                    fill[i] = true;
+                }
+                let mut out: Vec<(u32, u32)> = vec![];
+                for (i, r) in rs.drain(..).enumerate() {
+                    match out.last_mut() {
+                        Some(last) if fill[i] => last.1 = r.1,
+                        _ => out.push(r),
+                    }
+                }
+                out
+            }
+        }
+    }
+
+    fn hir_to_smt(h: &regex_syntax::hir::Hir, at_start: bool, at_end: bool, mode: Mode, widest: &mut usize) -> Option<String> {
+        use regex_syntax::hir::{Class, HirKind, Look};
+        let zero_start = |h: &regex_syntax::hir::Hir| matches!(h.kind(), HirKind::Empty | HirKind::Look(Look::Start));
+        let zero_end = |h: &regex_syntax::hir::Hir| matches!(h.kind(), HirKind::Empty | HirKind::Look(Look::End));
+        Some(match h.kind() {
+            HirKind::Empty => re_empty(),
+            HirKind::Literal(lit) => {
+                let s = std::str::from_utf8(&lit.0).ok()?;
+                if s.chars().any(|c| c as u32 > MAX_CHAR) {
+                    return None;
+                }
+                format!("(str.to_re {})", str_lit(s))
+            }
+            HirKind::Class(Class::Unicode(c)) => {
+                // characters past MAX_CHAR are in no SMT string: dropped
+                *widest = (*widest).max(c.ranges().len());
+                let items: Vec<String> = class_ranges(c, mode)
+                    .into_iter()
+                    .map(|(lo, hi)| {
+                        let (lo, hi) = (char::from_u32(lo).unwrap(), char::from_u32(hi).unwrap());
+                        if lo == hi {
+                            format!("(str.to_re {})", str_lit(&lo.to_string()))
+                        } else {
+                            format!("(re.range {} {})", str_lit(&lo.to_string()), str_lit(&hi.to_string()))
+                        }
+                    })
+                    .collect();
+                match items.len() {
+                    0 => "re.none".into(),
+                    1 => items[0].clone(),
+                    _ => format!("(re.union {})", items.join(" ")),
+                }
+            }
+            // an ASCII class (`(?-u)\\s`) is the same over code points; other bytes aren't characters
+            HirKind::Class(Class::Bytes(b)) if b.ranges().iter().all(|r| r.end() < 0x80) => {
+                let c = regex_syntax::hir::ClassUnicode::new(b.ranges().iter().map(|r| regex_syntax::hir::ClassUnicodeRange::new(r.start() as char, r.end() as char)));
+                return hir_to_smt(&regex_syntax::hir::Hir::class(Class::Unicode(c)), at_start, at_end, mode, widest);
+            }
+            HirKind::Class(Class::Bytes(_)) => return None,
+            HirKind::Look(Look::Start) if at_start => re_empty(),
+            HirKind::Look(Look::End) if at_end => re_empty(),
+            HirKind::Look(_) => return None,
+            // greedy or lazy, a repetition matches the same strings
+            HirKind::Repetition(r) => {
+                let sub = hir_to_smt(&r.sub, false, false, mode, widest)?;
+                match (r.min, r.max) {
+                    (0, None) => format!("(re.* {sub})"),
+                    (1, None) => format!("(re.+ {sub})"),
+                    (n, None) => format!("(re.++ ((_ re.loop {n} {n}) {sub}) (re.* {sub}))"),
+                    (0, Some(1)) => format!("(re.opt {sub})"),
+                    (lo, Some(hi)) if lo <= hi => format!("((_ re.loop {lo} {hi}) {sub})"),
+                    _ => return None,
+                }
+            }
+            HirKind::Capture(c) => hir_to_smt(&c.sub, at_start, at_end, mode, widest)?,
+            HirKind::Concat(xs) => {
+                let mut items = vec![];
+                for (i, x) in xs.iter().enumerate() {
+                    let s = at_start && xs[..i].iter().all(zero_start);
+                    let e = at_end && xs[i + 1..].iter().all(zero_end);
+                    let t = hir_to_smt(x, s, e, mode, widest)?;
+                    if t != re_empty() {
+                        items.push(t);
+                    }
+                }
+                match items.len() {
+                    0 => re_empty(),
+                    1 => items.pop().unwrap(),
+                    _ => format!("(re.++ {})", items.join(" ")),
+                }
+            }
+            HirKind::Alternation(xs) => {
+                let items: Vec<String> = xs.iter().map(|x| hir_to_smt(x, at_start, at_end, mode, widest)).collect::<Option<_>>()?;
+                format!("(re.union {})", items.join(" "))
+            }
+        })
+    }
+}
+
+/// `std.regex.smt_model` against the reference, text for text. The one
+/// difference on purpose: a pattern std.regex refuses (`a)|(b`) has no model.
+fn same_smt_models(name: &str, patterns: Vec<String>) {
+    let patterns: Vec<String> = patterns.into_iter().filter(|p| regex_syntax::ParserBuilder::new().build().parse(p).is_ok()).collect();
+    let list = patterns.iter().map(|p| literal(p)).collect::<Vec<_>>().join(",\n    ");
+    let got = run(
+        name,
+        &format!("use std.regex.{{smt_model, ExactModel, Between}}\n\nfn main() {{\n  for p in [\n    {list},\n  ] {{\n    print(match smt_model(p) {{\n      Some(ExactModel(r)) => \"exact \" + r,\n      Some(Between(u, o)) => \"between \" + u + \" \" + o,\n      None => \"none\",\n    }})\n  }}\n}}\n"),
+    );
+    assert_eq!(got.len(), patterns.len(), "one line per pattern");
+    let (mut wrong, mut modelled) = (vec![], 0);
+    for (p, g) in patterns.iter().zip(&got) {
+        let want = reference_smt::model(p).unwrap_or_else(|| "none".into());
+        if *g == want {
+            modelled += (want != "none") as usize;
+        } else if !(g == "none" && regex::Regex::new(p).is_err()) {
+            wrong.push(format!("pattern {p:?}\n  std.regex: {g}\n  reference: {want}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{} of {} differ:\n{}", wrong.len(), patterns.len(), wrong.join("\n"));
+    assert!(modelled > 0, "some patterns are modelled");
+}
+
+#[test]
+fn curated_smt_models_as_before() {
+    let patterns = [
+        "ab", "^ab$", "a|^b$", "ord_[a-z0-9]{6}", "[A-Za-z0-9_-]{1,64}", "a(b|c)*d?", "a{2,}", "\\d", "\\w", "\\s", "\\p{L}", "(?i)k", "(?i)[a-zß]",
+        "[^a]", ".", "\\d{3}", "[a-z_]+", "(?i)\\w", "\\bword\\b", "(?m)^a$", "a^b", "a$b", "(^a)*", "\u{10FFFF}", "(?-u:\\xFF)", "(", "a{3,2}",
+        "\"quoted\"", "back\\\\slash", "tab\\there", "λ+", "\\Aab\\z", "^^a$$", "(?s).", "x{0}", "(a|)", "[[:alpha:]]+", "\\p{Greek}{2,}",
+    ];
+    same_smt_models("smt-curated", patterns.iter().map(|p| p.to_string()).collect());
+}
+
+#[test]
+fn random_smt_models_as_before() {
+    let seed = std::env::var("REGEX_SEED").ok().and_then(|n| n.parse().ok()).unwrap_or(17);
+    let n = std::env::var("REGEX_CASES").ok().and_then(|n| n.parse().ok()).unwrap_or(1500);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+    same_smt_models("smt-random", (0..n).map(|_| random_pattern(&mut rng)).collect());
+}
