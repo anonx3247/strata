@@ -579,17 +579,17 @@ fn main() {
 }
 
 /// A selector names definitions or modules (with the modules inside):
-/// `std.ast.check` is that module's definitions, as `std.ast.check.*`; a
+/// `std.json` is that module's definitions, as `std.json.*`; a
 /// part that names nothing is an error, not an empty selection that passes.
 #[test]
 fn selectors_name_modules_and_never_nothing() {
     let d = tmp("selectors");
     let std = format!("{}/std", env!("CARGO_MANIFEST_DIR"));
-    let (ok, by_module) = strata(&["--file", &std, "view", "std.ast.check", "--level", "0"], &d, None);
-    let (_, by_glob) = strata(&["--file", &std, "view", "std.ast.check.*", "--level", "0"], &d, None);
-    assert!(ok && by_module.contains("std.ast.check.") && by_module == by_glob, "{by_module}");
-    let (ok, out) = strata(&["--file", &std, "verify", "std.ast.nothing_here"], &d, None);
-    assert!(!ok && out.contains("`std.ast.nothing_here` names no definition and no module"), "{out}");
+    let (ok, by_module) = strata(&["--file", &std, "view", "std.json", "--level", "0"], &d, None);
+    let (_, by_glob) = strata(&["--file", &std, "view", "std.json.*", "--level", "0"], &d, None);
+    assert!(ok && by_module.contains("std.json.") && by_module == by_glob, "{by_module}");
+    let (ok, out) = strata(&["--file", &std, "verify", "std.json.nothing_here"], &d, None);
+    assert!(!ok && out.contains("`std.json.nothing_here` names no definition and no module"), "{out}");
 }
 
 /// A written `invariant` is checked on entry and where every pass ends
