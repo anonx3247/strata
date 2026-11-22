@@ -5,7 +5,8 @@ Keep track of decisions, open questions and ideas in [IDEAS.md](IDEAS.md); the R
 ## Conventions
 
 - Commit each step (the user wants every change tracked) and push to `origin main` (github.com/anonx3247/strata, private).
-- Never run the whole test suite (CI doesn't run `cargo test` either). Run only the tests for what you are
+- There is no CI (user's call, until the compiler changes rarely): run `strata ci` before every push.
+- Never run the whole test suite. Run only the tests for what you are
   changing, by name: `cargo test --release --test cli <filter>` (or `--lib <filter>` for unit tests), with
   filters matching the feature (`verify`, `json`, `regex`, …) plus any test you add; they must pass before
   every commit. Check that the examples still round-trip:
