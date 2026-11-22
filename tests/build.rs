@@ -593,6 +593,125 @@ fn channels_run_on_threads() {
     assert!(code == 101 && out.contains("a task ended without closing its copy of a sender"), "{out}");
 }
 
+/// Run `c` with stdin given `input`, then (if `close`) closed, or else a pipe
+/// held open with nothing more written: a read of it then waits for ever
+/// unless it is cancelled. Killed (and the test failed) after `secs`.
+fn output_with_stdin(c: &mut Command, input: &str, close: bool, secs: u64) -> (String, i32) {
+    let mut child = c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(input.as_bytes()).unwrap();
+    let held = if close { drop(stdin); None } else { Some(stdin) };
+    let start = std::time::Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if start.elapsed().as_secs() >= secs {
+            let _ = child.kill();
+            panic!("still waiting for input after {secs} s: the read wasn't cancelled");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    drop(held);
+    let o = child.wait_with_output().unwrap();
+    let err: String = String::from_utf8_lossy(&o.stderr).lines().filter(|l| !l.starts_with("    stack:")).map(|l| format!("{l}\n")).collect();
+    (String::from_utf8_lossy(&o.stdout).to_string() + &err, o.status.code().unwrap_or(-1))
+}
+
+/// A task waiting for input is cancelled like any waiting task: a `race`
+/// whose loser waits in `read_line` on a stdin held open (nothing written)
+/// ends at once, 20 times; so does a supervised task's reader when its
+/// sibling panics. A task's `read_line` (the cancellable one) reads the
+/// lines given, the second and third from what the first read buffered.
+/// Natively and on the JIT, everything freed.
+#[test]
+fn reads_are_cancelled() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("io-cancel");
+    let strata = env!("CARGO_BIN_EXE_strata");
+    for (name, src, input, close, want) in [
+        ("blocked", IO_BLOCKED, "", false, "the reader lost 20 of 20 races\ncontained: index 3 out of range (length 1)\n"),
+        ("lines", IO_LINES, "first\nsecond\n", true, "first | second | the end of the input\n"),
+    ] {
+        let f = d.join(format!("{name}.strata"));
+        save(&f, src);
+        let exe = d.join(name);
+        let b = Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
+        assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
+        let native = freed_everything(output_with_stdin(Command::new(&exe).env("STRATA_MEMORY", "check"), input, close, 20), &f);
+        assert_eq!(native, (want.to_string(), 0), "{name}");
+        let jit = freed_everything(output_with_stdin(Command::new(strata).args(["run", "--jit"]).arg(&f).env("STRATA_MEMORY", "check"), input, close, 60), &f);
+        assert_eq!(jit, native, "{name}");
+    }
+}
+
+const IO_BLOCKED: &str = r#"use std.io.{Console}
+
+
+fn line_of(c: Console) -> String {
+  mut d := c
+  mut d.read_line() ?? "the end of the input"
+}
+
+fn pick(xs: List[Int], i: Int) -> Int {
+  xs[i]
+}
+
+fn reads_and_fails(c: Console) -> String {
+  scope {
+    r := spawn line_of(c)
+    p := spawn pick([1], 3)
+    f"{await r} {await p}"
+  }
+}
+
+fn main(console: Console) {
+  mut lost := 0
+  for i in 0..20 {
+    r := race {
+      line_of(console) as line => f"read {line}",
+      [f"{i}", "computed"] as xs => xs[1],
+    }
+    if r == "computed" {
+      lost += 1
+    }
+  }
+  print(f"the reader lost {lost} of 20 races")
+  s := scope {
+    h := supervised spawn reads_and_fails(console)
+    match await h {
+      Ok(v) => v,
+      Err(p) => f"contained: {p.message}",
+    }
+  }
+  print(s)
+}
+"#;
+
+const IO_LINES: &str = r#"use std.io.{Console}
+
+fn line_of(c: Console) -> String {
+  mut d := c
+  mut d.read_line() ?? "the end of the input"
+}
+
+fn main(console: Console) {
+  a := scope {
+    h := spawn line_of(console)
+    await h
+  }
+  b := scope {
+    h := spawn line_of(console)
+    await h
+  }
+  c := scope {
+    h := spawn line_of(console)
+    await h
+  }
+  print(f"{a} | {b} | {c}")
+}
+"#;
+
 /// `race`: the first arm to finish wins; the others are cancelled at
 /// their next wait (deep in calls at a `recv`, at a `send` to a full channel,
 /// at an `await` of their own task, in a `select`, in a race of their own)
