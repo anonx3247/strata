@@ -803,6 +803,7 @@ record!(UseDecl { path, items });
 record!(ExternDecl { lang, item });
 record!(CapabilityDecl { name, methods });
 record!(Arm { comments, pat, body });
+record!(SelectArm { comments, op, name, body });
 record!(LamParam { name, ty });
 record!(CompFor { pat, iter, cond });
 record!(FmtSpec { fill, align, plus, zero, width, precision });
@@ -983,10 +984,11 @@ impl Bin for Stmt {
             Stmt::Assert(e) => put!(w, 9, e),
             Stmt::Comment(ls) => put!(w, 10, ls),
             Stmt::ComptimeFor(p, xs, b) => put!(w, 11, p, xs, b),
+            Stmt::Invariant(e) => put!(w, 12, e),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
-        Ok(match r.tag("statement", 11)? {
+        Ok(match r.tag("statement", 12)? {
             0 => Stmt::Let(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
             1 => Stmt::Var(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
             2 => Stmt::Assign(Bin::dec(r)?, Bin::dec(r)?),
@@ -998,7 +1000,8 @@ impl Bin for Stmt {
             8 => Stmt::Expr(Bin::dec(r)?),
             9 => Stmt::Assert(Bin::dec(r)?),
             10 => Stmt::Comment(Bin::dec(r)?),
-            _ => Stmt::ComptimeFor(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
+            11 => Stmt::ComptimeFor(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
+            _ => Stmt::Invariant(Bin::dec(r)?),
         })
     }
 }
@@ -1043,11 +1046,12 @@ impl Bin for Expr {
             Expr::Scope(x) => put!(w, 34, x),
             Expr::Spawn(x) => put!(w, 35, x),
             Expr::Await(x) => put!(w, 36, x),
+            Expr::Select(arms) => put!(w, 37, arms),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
         r.nest(|r| {
-            Ok(match r.tag("expression", 37)? {
+            Ok(match r.tag("expression", 38)? {
                 0 => Expr::Int(Bin::dec(r)?),
                 1 => Expr::BigInt(Bin::dec(r)?),
                 2 => Expr::Float(Bin::dec(r)?),
@@ -1084,7 +1088,8 @@ impl Bin for Expr {
                 33 => Expr::Comptime(Bin::dec(r)?),
                 34 => Expr::Scope(Bin::dec(r)?),
                 35 => Expr::Spawn(Bin::dec(r)?),
-                _ => Expr::Await(Bin::dec(r)?),
+                36 => Expr::Await(Bin::dec(r)?),
+                _ => Expr::Select(Bin::dec(r)?),
             })
         })
     }

@@ -106,7 +106,7 @@ fn triangle(n: Natural) -> Natural {
     terminates: no recursion, and only `for` loops
 ```
 
-A loop is verified from any state its variables can be in: the variables it changes take any values of their declared types, and one pass is checked from there. After a `while`, the state is that one with the condition false, or the state at one of its `break`s (a `break` leaves the loop with the condition still true). A `loop` is left only at a `break`; with none, the code after it is never reached. After a `for`, the variables it changed are any values of their types.
+A loop is verified from any state its variables can be in: the variables it changes take any values of their declared types, and one pass is checked from there. After a `while`, the state is that one with the condition false, or the state at one of its `break`s (a `break` leaves the loop with the condition still true). A `loop` is left only at a `break`; with none, the code after it is never reached. After a `for`, the variables it changed are any values of their types. A pass ends where its body ends or at a `continue`: what must hold after a pass is checked at each.
 
 A `while` loop ends when a bound taken from its condition goes down on every pass. A property that holds *after* a loop usually needs a loop invariant: a fact true at the head of the loop every time. The verifier infers them. The candidates are:
 - the condition's comparisons, made non-strict (`i < n` gives `i <= n`, which still holds after the last pass);
@@ -114,7 +114,7 @@ A `while` loop ends when a bound taken from its condition goes down on every pas
 - its `requires`;
 - each integer the loop changes, compared with its value on entry (`x₀`), with 0, with the integer parameters, and with the other integers it changes.
 
-Those that can be false on entry are dropped. Then, from any state where the others and the condition hold, one pass runs, and those that can be false after it are dropped, until a pass drops nothing. What remains holds on entry and after every pass, so it is assumed at the head. A fact the declared types already give is left out. `--checks` lists the invariants found:
+Those that can be false on entry are dropped. Then, from any state where the others and the condition hold, one pass runs, and those that can be false after it (where its body ends, or at a `continue`) are dropped, until a pass drops nothing. What remains holds on entry and after every pass, so it is assumed at the head. A fact the declared types already give is left out. `--checks` lists the invariants found:
 
 ```rust
 fn isqrt(n: Natural) -> Natural
@@ -138,7 +138,37 @@ fn isqrt(n: Natural) -> Natural
     terminates: `while (r + 1) * (r + 1) <= n` ends: `n - (r + 1) * (r + 1) + 1` goes down on every pass
 ```
 
-An invariant no candidate states is not found: a sum's closed form (`total == i * (i - 1) / 2`) is one. Then the check is fuzzed, and the result says so. A loop with `continue` infers none yet: the state at a `continue` isn't kept.
+An invariant no candidate states is not found: a sum's closed form is one. Then the check is fuzzed, and the result says so, unless the loop states it. An `invariant e` clause, one per line between a loop's header and its body (as a function's `requires`), is proven on entry and after every pass, including at each `continue`, and then assumed at the head, with the inferred ones (each may need the others):
+
+```rust
+fn triangle_closed(n: Natural) -> Natural
+  ensures 2 * it == n * (n + 1) {
+  mut total: Natural = 0
+  mut i: Natural = 0
+  while i < n
+    invariant 2 * total == i * (i + 1) {
+    i += 1
+    total += i
+  }
+  total
+}
+```
+
+```text
+✓ triangle_closed          proven (9 checks)
+    proven:  `let` annotated `Natural`
+    proven:  `let` annotated `Natural`
+    proven:  invariant `2 * total == i * (i + 1)` on entry to `while i < n`
+    proven:  assigning `i`: Natural
+    proven:  assigning `total`: Natural
+    proven:  invariant `2 * total == i * (i + 1)` after a pass of `while i < n`
+    proven:  result of `triangle_closed`: Natural
+    proven:  ensures 2 * it == n * (n + 1)
+    proven:  invariant of `while i < n`: i <= n (inferred)
+    terminates: `while i < n` ends: `n - i` goes down on every pass
+```
+
+A written invariant is also checked when the program runs, at the loop's head: on entry, after every pass and `continue`, and when the loop ends normally (not at a `break`, whose state it needn't describe). `for` and `loop` take them too. A `for` loop's invariant can't name the loop's variable: it holds before the first element and after the last, where there is none.
 
 Termination is never assumed. Whether the Collatz sequence always reaches 1 is an open problem, so:
 
