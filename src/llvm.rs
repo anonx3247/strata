@@ -636,6 +636,7 @@ declare i1 @strata_str_is(ptr, i64, ptr, i64)
 declare i64 @strata_str_ord(ptr)
 declare i64 @strata_str_byte_len(ptr)
 declare i64 @strata_str_byte_at(ptr, i64)
+declare ptr @strata_str_byte_slice(ptr, i64, i64)
 declare ptr @strata_str_chr(i64)
 declare i1 @strata_parse_int(ptr, ptr)
 declare i1 @strata_parse_float(ptr, ptr)
@@ -1432,7 +1433,7 @@ impl<'a> Module<'a> {
             let (pass, fail) = (c.fresh_label("requires.ok"), c.fresh_label("requires.fail"));
             c.cond_br(&ok, &pass, &fail);
             c.block(&fail);
-            let mut parts = vec![Part::Lit(format!("precondition of `{name}` violated: requires {} (with ", crate::printer::expr(r, 0)))];
+            let mut parts = vec![Part::Lit(crate::types::shown_name(&format!("precondition of `{name}` violated: requires {} (with ", crate::printer::expr(r, 0))))];
             for (i, p) in f.params.iter().enumerate() {
                 let v = c.load(&p.name)?;
                 let shown = c.json(&v)?;
@@ -6450,6 +6451,7 @@ impl Func<'_, '_> {
             ("ord", [_]) => self.call(&Ty::Int, "@strata_str_ord", &args)?,
             ("byte_len", [_]) => self.call(&Ty::Int, "@strata_str_byte_len", &args)?,
             ("byte_at", [_, Ty::Int]) => self.call(&Ty::Int, "@strata_str_byte_at", &args)?,
+            ("byte_slice", [_, Ty::Int, Ty::Int]) => self.call(&s, "@strata_str_byte_slice", &args)?,
             ("chr", [Ty::Int]) => self.call(&s, "@strata_str_chr", &args)?,
             ("parse_int" | "parse_float", [_]) => {
                 let t = if name == "parse_int" { Ty::Int } else { Ty::Float };
@@ -6791,7 +6793,7 @@ impl Func<'_, '_> {
             let (pass, fail) = (h.fresh_label("requires.ok"), h.fresh_label("requires.fail"));
             h.cond_br(&ok, &pass, &fail);
             h.block(&fail);
-            h.fault(Fault::Requires, vec![Part::Lit(format!("precondition of `{tn}.{m}` violated: requires {}", crate::printer::expr(r, 0)))])?;
+            h.fault(Fault::Requires, vec![Part::Lit(crate::types::shown_name(&format!("precondition of `{tn}.{m}` violated: requires {}", crate::printer::expr(r, 0))))])?;
             h.block(&pass);
         }
         // the result's written type, with the trait's types in

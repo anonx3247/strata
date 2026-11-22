@@ -9,7 +9,8 @@ x y
 ["a", "ñ", "b", "€", "😀"]
 [Some("ë"), None, None]
 ["él", "hé", "", "llo"]
-[Some(3), None, Some(0)]
+["hé", "llo", "h", 6]
+[Some(4), None, Some(0)]
 a+=b+=c+=+=|ba
 ababab||
 ["STRASSE Ǆ ʼN", "οδος σ ας. i̇", "SS", "ǆ"]
