@@ -89,16 +89,16 @@ every change made through strata, committed with them):
                                (as text files: `shop/orders.st`, never read back)
   pack <FILE.strata>           the whole program in one file (a bundle, with strata.toml);
                                --file, run, ui and every view read it like a package;
-                               --prelude: the prelude's definitions instead (for std.ast.eval)
+                               --prelude: the prelude's definitions instead (for compiler/eval)
   header <FILE.strata>         a module file's table of contents: each definition's kind,
                                name, hashes, size and dependencies, read without decoding it;
-                               --tree: each definition (a bundle's too) as a `std.ast` value, one per line
+                               --tree: each definition (a bundle's too) as a `compiler/ast` value, one per line
                                --text: the definitions as the printer writes them, as stored
   lex <FILE>                   a text file's tokens, one per line (then its comments), as
-                               the lexer makes them: what `std.ast.lex` is tested against
-  parse <FILE>                 a text file parsed as a script: each definition as a `std.ast`
-                               value, one per line, as parsed (not stored): for `std.ast.parse`;
-                               --stored: as stored (references qualified), for `std.ast.resolve`
+                               the lexer makes them: what `compiler/lex` is tested against
+  parse <FILE>                 a text file parsed as a script: each definition as a `compiler/ast`
+                               value, one per line, as parsed (not stored): for `compiler/parse`;
+                               --stored: as stored (references qualified), for `compiler/resolve`
   (`--file` accepts a folder: each .strata file is a module named after its path.
    `--file F edit [MODULE]` and `--file F add TEXT` change F outside any log: a script,
    or a folder's module, created if new; only what doesn't parse is refused)

@@ -159,7 +159,7 @@ pub fn pack(args: &Args) -> Result<bool, String> {
     // the prelude's definitions, its types and its code, as a module file of
     // the root module, named as programs write them (`Option`, `CodePoints`):
     // what every program runs with, for Strata code that runs trees
-    // (`std.ast.eval`). As parsed: storing would resolve its names against
+    // (`compiler/eval`). As parsed: storing would resolve its names against
     // the prelude itself.
     if args.flag("--prelude") {
         let mut p = crate::parser::parse_program(crate::types::PRELUDE).map_err(|e| format!("the prelude: {e}"))?;
@@ -188,9 +188,9 @@ pub fn pack(args: &Args) -> Result<bool, String> {
 pub fn header(args: &Args) -> Result<bool, String> {
     let file = args.pos.get(1).ok_or("usage: strata header <FILE.strata>")?;
     let bytes = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
-    // each definition's tree as a `std.ast` value, one per line (a bundle's too)
+    // each definition's tree as a `compiler/ast` value, one per line (a bundle's too)
     // the definitions as the printer writes them, as stored (not shortened
-    // to their written form, which `render` shows): what `std.ast.text` is
+    // to their written form, which `render` shows): what `compiler/text` is
     // tested against
     if args.flag("--text") {
         let decls = binary::read(&bytes).map_err(|e| format!("{file}: {e}"))?.program.decls;
@@ -284,7 +284,7 @@ pub fn view(args: &Args) -> Result<bool, String> {
 /// `strata lex FILE`: a text file's tokens (`3:5 nl sp Ident(x)`: where, a
 /// newline or a space before it, what), then its comments, or the lexer's
 /// error. A float is shown by its bits and a string as the printer quotes
-/// it, so `std.ast.lex`'s output can be compared byte for byte.
+/// it, so `compiler/lex`'s output can be compared byte for byte.
 pub fn lex(args: &Args) -> Result<bool, String> {
     use crate::lexer::{FPart, Tok};
     let file = args.pos.get(1).ok_or("usage: strata lex <FILE>")?;
@@ -328,7 +328,7 @@ pub fn lex(args: &Args) -> Result<bool, String> {
 }
 
 /// `strata parse FILE`: a text file parsed as a script, each definition as
-/// the `std.ast` value `debug` prints, one per line, as the parser gives it
+/// the `compiler/ast` value `debug` prints, one per line, as the parser gives it
 /// (storing it would qualify its references), or the parser's error.
 pub fn parse(args: &Args) -> Result<bool, String> {
     let file = args.pos.get(1).ok_or("usage: strata parse <FILE>")?;
