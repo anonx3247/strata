@@ -94,6 +94,26 @@ Still open:
 - **`except` inside a `for` header** reads badly: `for _ in 0..opts.times except { 1 } {`. Proposed: the renderer parenthesizes any header expression (`for`, `while`, `if`, `match`) that ends in a `}`: `for _ in 0..(opts.times except { 1 }) {`. The parser accepts both. Done instead (user's choice, 2026-11-21): `or { … }` / `??` for an `Option` (`Expr::Or`) and `except { … }` / `!!` for a `Result` (`Expr::Except`), each only on its own type, so `Result[Option[T], E]` isn't ambiguous. The short forms are what the renderer writes for a single-value, one-line fallback. So `for _ in 0..opts.times ?? 1 {`.
 - **`len(xs)` and `xs.len()`** are both accepted, as for every builtin; the renderer could pick one form (method form for chains, say) so code reads the same everywhere.
 
+#### Proven `ensures` narrow the result at the call site (raised by the user 2026-11-22; not decided, not built)
+
+A function's proven `ensures` that ties the result's member to its inputs becomes the result's type where it is called, so a caller that knows something about the arguments gets the narrowed result without a `match` or an unwrap. `verify` already uses a callee's contract at each call site; what is new is the type checker narrowing with it. Since types are sets and refinements are types, `ensures o is Paid ==> it is Shipped` is the result's type at a call with a `Paid`: a return type that depends on the arguments, used by ordinary narrowing, `match` coverage and codegen (no tag check). Dafny, F* and Liquid Haskell let postconditions reach callers as proof facts; TypeScript's overloads and conditional types do the type half without proof; the two together, without type-level programming, is Strata's.
+
+Examples:
+- **Lookup after a membership test.** `fn get(self: Dict[K, V], k: K) -> Option[V] ensures it is Some <==> self.contains(k)`; inside `if users.contains(id) { … }`, `users.get(id)` is a `Some(User)`. One total function would do for both `get` and `at` (the `requires` that faults otherwise): callers that can show the key is there get the value, the others match.
+- **State transitions (typestate in one type).** `fn ship(o: Order) -> Order ensures o is Paid ==> it is Shipped ensures o is Pending ==> it is Pending`; in a `Paid` arm, `ship(o).tracking` reads without matching again. No `ship(o: Paid) -> Shipped` beside a version for an `Order`.
+- **Combinators that keep the variant.** `map_err(r, f) ensures it is Ok <==> r is Ok` (the user's first example, wrapping an error's message): after `r` is matched as `Ok`, a chain `r.map_err(wrap).map(normalize)` is still `Ok`.
+- **Validation.** `parse_port(s) -> Result[Port, PortError] ensures all_digits(s) && 1 <= len(s) && len(s) <= 4 ==> it is Ok`: a literal or a checked string needs no error handling.
+
+Proposed shape (Claude):
+- Only a **proven** `ensures` narrows ("proven ⇒ no runtime check"): an unproven one would be unsound, or need a runtime check, i.e. a fault.
+- **Two levels.** (a) Conditions the checker already decides: `param is T`, refinements, facts from `match` arms; the checker substitutes the arguments into the `ensures` (transitions, combinators). (b) Any condition (`self.contains(k)`, `all_digits(s)`): decided by the SMT backend at the call site, so the narrowing comes from `verify` or a cached proof, not the plain checker (lookup, validation).
+
+Open questions:
+- Does `if cond { … }` narrow on a proven condition (needed for the lookup), not just `match` and `is`?
+- With `==>` only the `then` side narrows; does an `else` branch need `<==>`, and should the checker suggest it?
+- How the narrowed type shows in the viewer and in `render` (hover on the call: `Shipped`, from which `ensures`).
+- What a caller's narrowing depends on when the callee's body changes: a callee whose `ensures` stops being proven breaks its callers' types, so the proof is part of its interface (and of the interface hash).
+
 #### Default values for record fields (built 2026-11-20)
 
 `field: T = value` in a record (or a variant's record payload); see docs/language.md, "Records and defaults". Decided: any expression with no variables in scope (not the other fields), checked against the field's type where the type is defined, and evaluated each time it is used. It applies in constructors (`desugar::defaults` fills them in after resolution), JSON input (`std.json`'s derived `decode`), and the command line (a scalar field with a default is an option, `--times 3`; a `List` field's default is used when no arguments are left). Mocks and fuzzing still generate every field. Not done: defaults for other types (`type Port = Int where … = 8080`), which the user set aside; a flag whose default is `true` can't be turned off from the command line yet (`--no-x`).
