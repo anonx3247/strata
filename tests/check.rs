@@ -164,6 +164,26 @@ fn d[T: Area](x: T) -> String { x.area() }
 fn main() { print(1) }
 "#;
 
+const UNIONS: &str = r#"type Id = Int | String
+type Small = Int where it < 10
+fn a(n: Natural) -> String { n }
+fn b(n: Natural) -> Int { n + 1 }
+fn c(x: Int | String) -> Bool { x }
+fn d() -> Id { 2.5 }
+fn e() -> Id { 3 }
+fn f(s: Small) -> String { s }
+fn g(n: Int) -> Natural { n }
+fn h() -> Natural { -1 }
+fn k(x: Id) -> Int { x }
+fn a2(x: Bool | String | Int) -> Float { x }
+fn b2(c: Bool) -> Float { if c { "s" } else { 1 } }
+fn d2() -> Float { let y: Id = 3
+  y }
+fn e2(c: Bool) -> Float { z := if c { "s" } else { 1 }
+  z }
+fn main() { print(1) }
+"#;
+
 const RECORDS: &str = r#"type Pt = { x: Int, y: Int }
 type Sh =
   | Sq(Int)
@@ -366,6 +386,11 @@ fn narrowed_variables_as_in_rust() {
 #[test]
 fn bounds_and_generic_impls_as_in_rust() {
     same_errors("bounds", TRAITS, &["expected `", "does not implement"]);
+}
+
+#[test]
+fn unions_and_refinements_as_in_rust() {
+    same_errors("unions", UNIONS, &["expected `"]);
 }
 
 /// Capabilities and concurrency: `spawn` outside a `scope`, what a task can't
