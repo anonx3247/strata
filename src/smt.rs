@@ -37,6 +37,20 @@ use std::process::{Command, Stdio};
 /// An SMT-LIB term.
 type T = String;
 
+/// Whether an obligation is a partial operation's precondition (an index in
+/// range, a divisor not zero, a builtin's argument it accepts): the checks
+/// IDEAS.md "Failures" asks to measure.
+fn is_partial_op(what: &str) -> bool {
+    what == "index in range" || what == "no division by zero" || what.starts_with("`chr` of") || what.starts_with("`ord` of") || what.starts_with("`float` of") || what.starts_with("`sqrt` of") || what.ends_with("of a finite number") || what.ends_with("gives a finite number") || what.ends_with("by a non-negative number of bits") || what.ends_with("with arguments it accepts")
+}
+
+/// `STRATA_PARTIAL_OPS=off`: leave partial operations' preconditions out of
+/// `verify`, to measure what they cost (they stay checked at run time).
+fn partial_ops_off() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OFF.get_or_init(|| std::env::var("STRATA_PARTIAL_OPS").is_ok_and(|v| v == "off"))
+}
+
 #[derive(Clone, Debug)]
 pub enum Val {
     Int(T),
@@ -580,7 +594,7 @@ impl<'a> Vc<'a> {
 
     /// Record an obligation built by `goal` (which itself makes none).
     fn oblige(&mut self, what: String, goal: impl FnOnce(&mut Self) -> T) {
-        if self.spec > 0 || self.dead {
+        if self.spec > 0 || self.dead || (partial_ops_off() && is_partial_op(&what)) {
             return;
         }
         self.spec += 1;
@@ -3262,7 +3276,11 @@ impl<'a> Vc<'a> {
         Val::Sum { ty: "Option".into(), args: vec![t.clone()], tag: ite(some, &ks.to_string(), &kn.to_string()), ctors }
     }
 
-    fn builtin(&mut self, name: &str, arg_exprs: &[Expr], a: Vec<Val>) -> Val {
+    fn builtin(&mut self, name: &str, arg_exprs: &[Expr], mut a: Vec<Val>) -> Val {
+        // an index's list made first (read from a field), so its check is the real one
+        if name == "at" && matches!(a.first(), Some(Val::Lazy(_))) {
+            a[0] = self.force(a[0].clone());
+        }
         let arg = |i: usize| a.get(i).cloned().unwrap_or(Val::Opaque("a missing argument".into()));
         let not_modelled = format!("`{name}` is not modelled");
         self.builtin_faults(name, &a);
@@ -3431,6 +3449,15 @@ impl<'a> Vc<'a> {
                 let i = self.as_int(&arg(1));
                 self.oblige("index in range".into(), |_| format!("(and (<= 0 {i}) (< {i} (str.len {s})))"));
                 Val::Str(format!("(str.at {s} {i})"))
+            }
+            // an index into a list of another shape (a union's list member, a
+            // list not modelled): checked against its length all the same (it
+            // was left unchecked, so `(d.get(k) ?? [])[0]` was "proven")
+            ("at", 2) if !matches!(arg(0), Val::Str(_)) => {
+                let l = self.list_len(&arg(0));
+                let i = self.as_int(&arg(1));
+                self.oblige("index in range".into(), |_| format!("(and (<= 0 {i}) (< {i} {l}))"));
+                Val::Opaque(not_modelled)
             }
             ("get", 2) if matches!(arg(0), Val::List { .. }) => {
                 let l = self.list_len(&arg(0));

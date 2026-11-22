@@ -21,6 +21,7 @@ const FILES: &[(&str, &[u8])] = &[
     ("io.strata", include_bytes!("../std/io.strata")),
     ("fs.strata", include_bytes!("../std/fs.strata")),
     ("process.strata", include_bytes!("../std/process.strata")),
+    ("time.strata", include_bytes!("../std/time.strata")),
     ("cli.strata", include_bytes!("../std/cli.strata")),
     ("web.strata", include_bytes!("../std/web.strata")),
     ("http.strata", include_bytes!("../std/http.strata")),
@@ -49,6 +50,9 @@ pub const HOST: &[Builtin] = &[
     Builtin::new("host_remove", "", "(String) -> Result[(), (String, String)]"),
     Builtin::new("host_args", "", "() -> List[String]"),
     Builtin::new("host_env_var", "", "(String) -> Option[String]"),
+    // the monotonic clock, in nanoseconds; waiting (a task that is cancelled stops at once)
+    Builtin::new("host_now", "", "() -> Int"),
+    Builtin::new("host_sleep", "", "(Int) -> ()"),
     Builtin::new("host_code_version", "", "() -> String"),
     Builtin::new("host_code_snapshot", "", "() -> Result[std.code.Snapshot, String]"),
 ];

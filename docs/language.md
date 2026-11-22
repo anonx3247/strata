@@ -471,6 +471,21 @@ fn page(net: Net, url: String) -> Page {
 - In a `race`, an arm can be supervised the same way: `race { supervised fetch(a) as r => …, … }` (`r` is then a `Result[T, Panic]`, and a panic is that arm's result).
 - `supervised` is a keyword only right before `spawn` (and at the start of a `race` arm): it is a name anywhere else.
 
+### Time: `Clock`
+
+Time comes from outside the program, so it goes through a capability (`std.time`): `main` or a test asks for the `SystemClock` and passes it on (as a `Clock`). `clock.now()` is an `Instant` (monotonic: only the time between two means something, `elapsed(a, b)`), and `clock.sleep(d)` waits for a `Duration` (`nanos`, `micros`, `ms`, `seconds`; `.value` is nanoseconds). Sleeping is a wait like a `recv`: a cancelled task stops sleeping at once. So a `race` makes a timeout:
+
+```rust
+fn fetch_or_give_up(clock: SystemClock, net: Net, url: String) -> Option[Page] {
+  race {
+    fetch(net, url) as p => Some(p),
+    clock.sleep(seconds(2)) => None,
+  }
+}
+```
+
+In a `select`, `clock.after(d) => …` is an arm that happens once `d` has passed, in that clock's time, since the `select` began (it names nothing): `select { jobs.recv() as j => run(j), clock.after(ms(100)) => flush() }`. Any `Clock` works, so a test can pass a stand-in whose time it controls (one that stands still, or runs faster): its `after` arms and its `sleep` follow its time, not the system's.
+
 ## Built-in types
 
 | Type | Notes |
@@ -670,6 +685,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 |---|---|
 | `std.io` | `Console` (`print`, `write`, `eprint`, `read_line`); `Recorder` / `recorder(input)` / `printed(r)` for tests |
 | `std.fs` | `Files` (`read`, `read_bytes`, `write`, `append`, `exists`, `list`, `make_dir`, `remove`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
+| `std.time` | `Clock` (`now`, `sleep`), the `SystemClock` capability; `Duration` (`nanos`, `micros`, `ms`, `seconds`), `Instant`, `elapsed`; `clock.after(d)` as a `select` arm |
 | `std.process` | `Environment` (`args`, `var`), `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
 | `std.code` | `Codebase`, a capability, and the capability trait it implements, `Code` (`version`, `snapshot`): the codebase in the current folder as the tools see it: each `Definition` with its interface and source text, what it uses and what uses it, holes, errors and cached verdicts, and the package's log. `strata ui`'s viewer reads it |
 | `std.cli` | `CommandLine`: a record of options read from the arguments |

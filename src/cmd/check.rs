@@ -82,7 +82,7 @@ pub fn verify_source(args: &Args, src: &Source, how: &Verifying) -> Result<(bool
     let selected = how.only.is_some() || args.pos.get(1).is_some();
     let names = match &how.only {
         Some(only) => only.clone(),
-        None => view::select(p, args.pos.get(1).map(|s| s.as_str())),
+        None => view::select(p, args.pos.get(1).map(|s| s.as_str()))?,
     };
     // the verdicts and proofs so far (a package's in its `.strata/`, a script's in ~/.cache/strata/scripts)
     let proofs_at = proofs_dir(src, how.file);

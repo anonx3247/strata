@@ -253,6 +253,22 @@ fn loops_forget_variables_changed_anywhere_in_their_body() {
 }
 
 #[test]
+fn every_index_is_checked() {
+    // an index into a list the prover doesn't model as one (`??`'s result, a
+    // closure's) was left unchecked, so `verify` called it proven
+    if !has_solver() {
+        return;
+    }
+    let d = tmp("every-index");
+    let src = "fn first(d: Dict[String, List[Int]]) -> Int {\n  (d.get(\"a\") ?? [])[0]\n}\n\nfn safe(d: Dict[String, List[Int]]) -> Int {\n  xs := d.get(\"a\") ?? [7]\n  if len(xs) > 0 {\n    xs[0]\n  } else {\n    0\n  }\n}\n";
+    save(&d.join("i.strata"), src);
+    let (ok, out) = strata(&["--file", "i.strata", "verify"], &d, None);
+    assert!(!ok && out.contains("✗ first") && out.contains("found by the solver") && !out.contains("bug in the prover"), "{out}");
+    // (not proven yet: a list the prover doesn't model gets a new length at each use)
+    assert!(!out.contains("✗ safe"), "{out}");
+}
+
+#[test]
 fn generators_read_disjunctive_refinements() {
     // without a solver everything is fuzzed: values of `Far` must be generated, not rejected 300 times
     let d = tmp("gen-or");
@@ -502,6 +518,20 @@ fn main() {
     assert!(ok && has("stale", "postcondition of `triangle`"), "{out}");
     let (ok, out) = run(&["--file", "t.strata", "build", "-o", "again"], None);
     assert!(ok && out.contains("verified 2 changed") && !has("again", "postcondition of `triangle`"), "{out}");
+}
+
+/// A selector names definitions or modules (with the modules inside):
+/// `std.ast.check` is that module's definitions, as `std.ast.check.*`; a
+/// part that names nothing is an error, not an empty selection that passes.
+#[test]
+fn selectors_name_modules_and_never_nothing() {
+    let d = tmp("selectors");
+    let std = format!("{}/std", env!("CARGO_MANIFEST_DIR"));
+    let (ok, by_module) = strata(&["--file", &std, "view", "std.ast.check", "--level", "0"], &d, None);
+    let (_, by_glob) = strata(&["--file", &std, "view", "std.ast.check.*", "--level", "0"], &d, None);
+    assert!(ok && by_module.contains("std.ast.check.") && by_module == by_glob, "{by_module}");
+    let (ok, out) = strata(&["--file", &std, "verify", "std.ast.nothing_here"], &d, None);
+    assert!(!ok && out.contains("`std.ast.nothing_here` names no definition and no module"), "{out}");
 }
 
 /// A written `invariant` is checked on entry and where every pass ends
@@ -1525,7 +1555,7 @@ fn channels_are_closed_and_selected() {
         ("never_closed", "`tx` is never closed here"),
         ("task_never_closes", "the task holds a copy of `tx` and never closes it"),
         ("nested_sender", "a task (a `spawn`, a `race` arm) can capture a sender only on its own"),
-        ("arms", "a `select` arm waits on `rx.recv()`, `tx.send(v)` or `await h`"),
+        ("arms", "a `select` arm waits on `rx.recv()`, `tx.send(v)`, `await h` or `clock.after(d)`"),
         ("named_send", "a `send` arm gives nothing to name"),
         ("race_return", "`return` can't leave a task (a `spawn`, a `race` arm)"),
         ("race_sender", "the task holds a copy of `tx` and never closes it"),
@@ -1640,6 +1670,19 @@ test "the next test runs" {
   assert r == 2 || r == 5
 }
 "#;
+
+/// `clock.after(d)` in a `select`: `d` is a `Duration`, and the arm names
+/// nothing; a test may ask for the `SystemClock`.
+#[test]
+fn clock_arms_are_checked() {
+    let d = tmp("clock-arms");
+    save(&d.join("c.strata"), "use std.time.{SystemClock, ms}\n\nfn named(clock: SystemClock, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    clock.after(ms(5)) as t => 2,\n  }\n}\n\nfn plain(clock: SystemClock, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    clock.after(5) => 2,\n  }\n}\n\nfn not_a_clock(n: Int, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    n.after(ms(5)) => 2,\n  }\n}\n");
+    let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
+    assert!(!ok && out.contains("error in named: an `after` arm gives nothing to name") && out.contains("error in plain: the time an `after` arm waits: expected `std.time.Duration`, found `Int`") && out.contains("error in not_a_clock: an `after` arm waits on a clock: `Int` doesn't implement `Clock`"), "{out}");
+    save(&d.join("t.strata"), "use std.time.{SystemClock, ms}\n\ntest \"the clock in a test\" (clock: SystemClock) {\n  (tx, rx) := channel()\n  r := select {\n    rx.recv() as x => 1,\n    clock.after(ms(1)) => 2,\n  }\n  tx.close()\n  assert r == 2\n}\n");
+    let (ok, out) = strata(&["--file", "t.strata", "test"], &d, None);
+    assert!(ok && out.contains("1 passed, 0 failed"), "{out}");
+}
 
 /// `supervised spawn`: awaiting it gives `Result[T, Panic]`, which must be
 /// handled; `await h except p { … }` is `(await h) except p { … }`; and
