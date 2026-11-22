@@ -749,14 +749,26 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>, roots: Option<&Ha
     let needed: Option<HashSet<String>> = roots.as_ref().map(|rs| rs.iter().filter(|r| nodes.contains_key(r.as_str())).flat_map(|r| reaches[r.as_str()].iter().cloned().chain([r.clone()])).collect());
     let wanted = |n: &str| needed.as_ref().is_none_or(|s| s.contains(n));
     let skipped = "not analysed (nothing being verified reaches it)".to_string();
+    // the loops' bounds of what is wanted, each function's on a thread (each
+    // query a solver process)
+    let todo: Vec<(String, FnDecl)> = nodes.iter().filter_map(|(name, n)| n.body.clone().filter(|_| wanted(name)).map(|b| (name.clone(), b))).collect();
+    let found: HashMap<String, Result<Vec<String>, String>> = crate::par::map(&todo, |(name, b)| (name.clone(), loops(env, b, solver))).into_iter().collect();
     for (name, n) in nodes.iter_mut() {
-        if let Some(b) = &n.body {
-            n.loops = if wanted(name) { loops(env, b, solver) } else { Err(skipped.clone()) };
+        if n.body.is_some() {
+            n.loops = found.get(name).cloned().unwrap_or_else(|| Err(skipped.clone()));
         }
     }
     let mutual = |n: &str| -> Option<String> { nodes[n].calls.iter().find(|c| c.as_str() != n && reaches[c.as_str()].contains(n)).cloned() };
 
     // each node's own verdict, ignoring what it calls
+    // the measures of the functions that call themselves on no smaller piece
+    // of a parameter, each on a thread (each a few solver processes)
+    let needs: Vec<(&String, &FnDecl)> = nodes
+        .iter()
+        .filter(|(name, n)| wanted(name) && n.loops.is_ok() && mutual(name).is_none() && n.calls.contains(*name))
+        .filter_map(|(name, n)| n.decl.as_ref().filter(|f| structural(env, f).is_none()).map(|f| (name, f)))
+        .collect();
+    let measures: HashMap<String, Option<String>> = crate::par::map(&needs, |(name, f)| ((*name).clone(), measured_recursion(env, f, solver))).into_iter().collect();
     let mut own: HashMap<String, Result<String, String>> = HashMap::default();
     for (name, n) in &nodes {
         if !wanted(name) {
@@ -773,7 +785,7 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>, roots: Option<&Ha
                 } else if n.calls.contains(name) {
                     match n.decl.as_ref().and_then(|f| structural(env, f)) {
                         Some(p) => Ok(format!("each recursive call gets a smaller piece of `{p}`")),
-                        None => match n.decl.as_ref().and_then(|f| measured_recursion(env, f, solver)) {
+                        None => match measures.get(name).cloned().unwrap_or_else(|| n.decl.as_ref().and_then(|f| measured_recursion(env, f, solver))) {
                             Some(m) => Ok(format!("{m} goes down on every recursive call and is never negative there")),
                             None => Err("it calls itself, and nothing was found that gets smaller on every call (a piece of a parameter, or a non-negative measure of the parameters)".into()),
                         },

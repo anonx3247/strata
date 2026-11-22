@@ -13,6 +13,7 @@
 
 use crate::ast::*;
 use crate::llvm::jit::Fault;
+
 use crate::types::{Diag, Env};
 use serde::Serialize;
 
@@ -401,12 +402,16 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, key: &str, solver
     vc.transparent = transparent.clone();
     vc.function(&decl, &decl.name);
     let (mut proven, mut unproven) = (vec![], vec![]);
-    for i in 0..vc.obligations.len() {
-        if vc.obligations[i].termination {
-            continue;
-        }
+    // every obligation at once (each a solver process), then read in order
+    let outcomes: Vec<Option<crate::smt::Outcome>> = std::thread::scope(|sc| {
+        let vc = &vc;
+        let handles: Vec<_> = (0..vc.obligations.len()).map(|i| (!vc.obligations[i].termination).then(|| sc.spawn(move || vc.solve(bin, i)))).collect();
+        handles.into_iter().map(|h| h.map(|h| h.join().expect("a solver thread"))).collect()
+    });
+    for (i, out) in outcomes.into_iter().enumerate() {
+        let Some(out) = out else { continue };
         let what = vc.obligations[i].what.clone();
-        match vc.solve(bin, i) {
+        match out {
             crate::smt::Outcome::Proven => proven.push(what),
             crate::smt::Outcome::Refuted(args, msg) => {
                 let vals: Vec<Expr> = args.into_iter().map(|a| a.1).collect();
