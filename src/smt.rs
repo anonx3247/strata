@@ -319,7 +319,9 @@ const MAX_TYPE_NESTING: usize = 2;
 
 pub struct Vc<'a> {
     env: &'a Env,
-    decls: Vec<(String, &'static str)>,
+    decls: Vec<Decl>,
+    /// Names of fresh unknowns made so far.
+    next_var: usize,
     /// Facts about fresh values (each guarded by the path it was made on).
     facts: Vec<T>,
     /// Why a fresh constant is unconstrained (it stands for something not modelled).
@@ -435,20 +437,25 @@ fn or(ts: &[T]) -> T {
         _ => format!("(or {})", ts.join(" ")),
     }
 }
-/// The sort of a function from a position to a value of `sort`.
-fn fn_sort(sort: &str, arity: usize) -> Option<&'static str> {
-    Some(match (sort, arity) {
-        ("Int", 1) => "(Int) Int",
-        ("Bool", 1) => "(Int) Bool",
-        ("String", 1) => "(Int) String",
-        ("Int", 2) => "(Int Int) Int",
-        ("Bool", 2) => "(Int Int) Bool",
-        ("String", 2) => "(Int Int) String",
-        ("Int", 3) => "(Int Int Int) Int",
-        ("Bool", 3) => "(Int Int Int) Bool",
-        ("String", 3) => "(Int Int Int) String",
-        _ => return None,
-    })
+/// The most positions an unknown can be a function of (a list's element
+/// inside lists inside lists).
+const MAX_POSITIONS: usize = 3;
+
+/// A fresh unknown: a constant (`args` 0) or a function of `args` positions.
+#[derive(Clone, Debug)]
+struct Decl {
+    name: String,
+    args: usize,
+    sort: String,
+}
+
+impl Decl {
+    fn declaration(&self) -> String {
+        match self.args {
+            0 => format!("(declare-const {} {})", self.name, self.sort),
+            n => format!("(declare-fun {} ({}) {})", self.name, vec!["Int"; n].join(" "), self.sort),
+        }
+    }
 }
 
 fn not(t: &str) -> T {
@@ -520,6 +527,7 @@ impl<'a> Vc<'a> {
         Vc {
             env,
             decls: vec![],
+            next_var: 0,
             facts: vec![],
             reasons: HashMap::default(),
             reason: None,
@@ -567,19 +575,20 @@ impl<'a> Vc<'a> {
         }
     }
 
-    fn fresh(&mut self, sort: &'static str) -> T {
-        let n = format!("v{}", self.decls.len());
-        let indexed = self.indexing.as_ref().and_then(|args| fn_sort(sort, args.len()));
-        self.decls.push((n.clone(), indexed.unwrap_or(sort)));
+    fn fresh(&mut self, sort: &str) -> T {
+        let n = format!("v{}", self.next_var);
+        self.next_var += 1;
+        let args = self.indexing.as_ref().filter(|a| a.len() <= MAX_POSITIONS);
+        self.decls.push(Decl { name: n.clone(), args: args.map_or(0, |a| a.len()), sort: sort.to_string() });
         if let Some(r) = &self.reason {
             self.reasons.insert(n.clone(), r.clone());
         }
-        match (indexed, &self.indexing) {
-            (Some(_), Some(args)) => format!("({n} {})", args.join(" ")),
-            _ => n,
+        match args {
+            Some(args) => format!("({n} {})", args.join(" ")),
+            None => n,
         }
     }
-    fn fresh_why(&mut self, sort: &'static str, why: &str) -> T {
+    fn fresh_why(&mut self, sort: &str, why: &str) -> T {
         let old = self.reason.replace(why.to_string());
         let t = self.fresh(sort);
         self.reason = old;
@@ -907,7 +916,7 @@ impl<'a> Vc<'a> {
         let n = self.lists[root].outer.len();
         let mut args: Vec<String> = (0..n).map(|k| format!("@@o{k}")).collect();
         args.push(IDX.to_string());
-        if fn_sort("Int", args.len()).is_none() {
+        if args.len() > MAX_POSITIONS {
             return None;
         }
         let scope = self.enter();
@@ -1024,7 +1033,7 @@ impl<'a> Vc<'a> {
         self.matched.truncate(nm);
         let p = p?;
         // (an unknown of a sort that can't be a function of `j` would be one for every position)
-        if self.decls[nd..].iter().any(|(n, s)| !s.starts_with('(') && !self.bound.contains(n)) {
+        if self.decls[nd..].iter().any(|d| d.args == 0 && !self.bound.contains(&d.name)) {
             return None;
         }
         // what is known of the elements, and of the unknowns made for them, holds at every position
@@ -1076,8 +1085,8 @@ impl<'a> Vc<'a> {
         self.matched.truncate(nm);
         let p = p?;
         // (functions of a position belong to a list's template, not to this element)
-        let bound: Vec<String> = self.decls[nd..].iter().filter(|(_, s)| !s.starts_with('(')).map(|(n, s)| format!("({n} {s})")).collect();
-        let names: Vec<String> = self.decls[nd..].iter().filter(|(_, s)| !s.starts_with('(')).map(|(n, _)| n.clone()).collect();
+        let bound: Vec<String> = self.decls[nd..].iter().filter(|d| d.args == 0).map(|d| format!("({} {})", d.name, d.sort)).collect();
+        let names: Vec<String> = self.decls[nd..].iter().filter(|d| d.args == 0).map(|d| d.name.clone()).collect();
         self.bound.extend(names);
         let body = implies(&ant, &p);
         Some(if bound.is_empty() { body } else { format!("(forall ({}) {body})", bound.join(" ")) })
@@ -4710,13 +4719,10 @@ impl Vc<'_> {
         let (facts, consts) = self.cone(ob, leaves);
         // `utf8_len`: a string's length in bytes (`byte_len`), known where it is used
         let mut s = String::from("(set-option :produce-models true)\n(set-logic ALL)\n(declare-fun utf8_len (String) Int)\n");
-        for (n, sort) in &self.decls {
-            if consts.contains(n) || leaves.contains(n) {
-                if sort.starts_with('(') {
-                    s.push_str(&format!("(declare-fun {n} {sort})\n"));
-                } else {
-                    s.push_str(&format!("(declare-const {n} {sort})\n"));
-                }
+        for d in &self.decls {
+            if consts.contains(&d.name) || leaves.contains(&d.name) {
+                s.push_str(&d.declaration());
+                s.push('\n');
             }
         }
         for f in facts {
