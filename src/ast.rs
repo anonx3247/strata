@@ -600,6 +600,15 @@ pub enum Expr {
     Dict(Vec<TypeExpr>, Vec<(Expr, Expr)>),
     /// `Set { 1, 2 }`, `Set[Int] {}`.
     Set(Vec<TypeExpr>, Vec<Expr>),
+    /// `scope { … }`: a block that ends only once every task spawned in it
+    /// has finished, awaited or not.
+    Scope(Box<Expr>),
+    /// `spawn e`: `e` run in a new task of the enclosing `scope`; a handle,
+    /// `Task[T]`.
+    Spawn(Box<Expr>),
+    /// `await h`: a task's result; of a tuple or list of handles, a tuple or
+    /// list of results.
+    Await(Box<Expr>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -784,7 +793,7 @@ macro_rules! visitor {
                     v.expr(f);
                     xs.into_iter().for_each(|x| v.expr(x))
                 }
-                Expr::Field(r, _) | Expr::Is(r, _) | Expr::Un(_, r) | Expr::Return(r) | Expr::Mut(r) | Expr::Try(r, _) | Expr::Comptime(r) => v.expr(r),
+                Expr::Field(r, _) | Expr::Is(r, _) | Expr::Un(_, r) | Expr::Return(r) | Expr::Mut(r) | Expr::Try(r, _) | Expr::Comptime(r) | Expr::Scope(r) | Expr::Spawn(r) | Expr::Await(r) => v.expr(r),
                 Expr::Lambda(ps, body) => {
                     for p in ps {
                         if let Some(t) = &$($m)? p.ty {

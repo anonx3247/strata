@@ -72,7 +72,7 @@ fn assigns(e: &Expr) -> bool {
         fn expr(&mut self, e: &Expr) {
             match e {
                 Expr::Mut(_) => self.0 = true,
-                Expr::Lambda(..) => return,
+                Expr::Lambda(..) | Expr::Spawn(..) => return,
                 Expr::Block(stmts, _) if stmts.iter().any(|s| matches!(s, Stmt::Assign(..))) => self.0 = true,
                 _ => {}
             }
@@ -648,6 +648,10 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
 const DECLARATIONS: &str = "\
 declare ptr @strata_alloc(i64)
 declare void @strata_dup(ptr)
+declare ptr @strata_scope_begin()
+declare void @strata_scope_end(ptr)
+declare ptr @strata_spawn(ptr, ptr, ptr)
+declare ptr @strata_await(ptr)
 declare void @strata_int_dup(i64)
 declare void @strata_int_drop(i64)
 ; an `Int` outside [-2^62, 2^62) is a big integer, an object: only those are counted
@@ -1229,7 +1233,8 @@ impl<'a> Module<'a> {
 
     /// An `extern c type`: a pointer C made, never counted, read or freed here.
     fn handle(&self, t: &Ty) -> bool {
-        matches!(t, Ty::Con(n, args) if args.is_empty() && (self.env.externs.contains_key(n) || self.env.capabilities.contains(n)))
+        // (a task's handle: its scope holds the task, and frees it)
+        matches!(t, Ty::Con(n, args) if args.is_empty() && (self.env.externs.contains_key(n) || self.env.capabilities.contains(n)) || n == "Task" && args.len() == 1)
     }
 
     /// A record, a sum, one of its variants, or a tuple: a block with a tag.
@@ -1903,6 +1908,8 @@ struct Scope {
     temps: Vec<V>,
     /// A statement's or a branch's: its variables belong to the enclosing scope.
     transparent: bool,
+    /// A `scope { … }`'s: the runtime's record of its tasks, joined when it ends.
+    tasks: Option<String>,
 }
 
 /// An operand that is a constant (never counted, never freed).
@@ -2287,6 +2294,10 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     fn drop_scope(&mut self, s: &Scope, keep: Option<&str>) -> Res<()> {
+        if let Some(t) = &s.tasks {
+            // every task of the scope finishes before it does
+            self.emit(format!("call void @strata_scope_end(ptr {t})"));
+        }
         for v in s.temps.iter().rev() {
             if Some(v.1.as_str()) != keep {
                 self.drop_value(v)?;
@@ -4307,6 +4318,24 @@ impl<'m, 'a> Func<'m, 'a> {
             Expr::Mut(x) => self.expr(x)?,
             // evaluated at build time once deriving lands; until then, as written
             Expr::Comptime(x) => self.expr(x)?,
+            Expr::Scope(b) => {
+                let s = self.fresh("tasks");
+                self.emit(format!("{s} = call ptr @strata_scope_begin()"));
+                self.scoped(false, |c| {
+                    c.scopes.last_mut().unwrap().tasks = Some(s.clone());
+                    c.expr(b)
+                })?
+            }
+            Expr::Spawn(body) => self.spawn(e, body)?,
+            Expr::Await(h) => {
+                let ht = self.ty_of(h)?;
+                let rt = self.ty_of(e)?;
+                let v = self.expr(h)?;
+                if is_never(&v.0) {
+                    return Ok(never());
+                }
+                self.awaited(&v, &ht, &rt)?
+            }
             Expr::Mock(t) => {
                 let tr_ty = self.lower(t)?;
                 if !self.is_dyn(&tr_ty) {
@@ -5876,6 +5905,110 @@ impl<'m, 'a> Func<'m, 'a> {
     /// `x -> body`: a function of its own, closing over the variables it uses.
     fn lambda(&mut self, e: &Expr, ps: &[LamParam], body: &Expr) -> Res<V> {
         let t = self.ty_of(e)?;
+        self.closure_of(t, ps, body)
+    }
+
+    /// `spawn e`: `e` as a closure of no parameters, started as a task of
+    /// the enclosing `scope`, which holds the closure and the result.
+    fn spawn(&mut self, e: &Expr, body: &Expr) -> Res<V> {
+        let t = self.ty_of(e)?;
+        let Ty::Con(_, a) = &t else { return Err("a `spawn` without a task's type".into()) };
+        let rt = a[0].clone();
+        let clo = self.closure_of(Ty::Fn(vec![], Box::new(rt.clone())), &[], body)?;
+        let clo = self.take(clo);
+        let (run, drop) = self.task_fns(&rt)?;
+        let h = self.fresh("task");
+        self.emit(format!("{h} = call ptr @strata_spawn(ptr {}, ptr {run}, ptr {drop})", clo.1));
+        Ok((t, h))
+    }
+
+    /// For a task whose result has type `t`: the function that runs its
+    /// closure and stores the result, and the one that drops a stored
+    /// result (`null` when there is nothing to drop).
+    fn task_fns(&mut self, t: &Ty) -> Res<(String, String)> {
+        let k = key(t);
+        let run = format!("@\"task.run:{k}\"");
+        let drop = if self.counted(t) { format!("@\"task.drop:{k}\"") } else { "null".to_string() };
+        if self.m.helpers.insert(run.clone()) {
+            let ll = self.m.ll(t)?;
+            let call = if ll == "void" {
+                "  call void %f(ptr %c)\n".to_string()
+            } else {
+                format!("  %r = call {ll} %f(ptr %c)\n  store {ll} %r, ptr %out\n")
+            };
+            writeln!(self.m.body, "define void {run}(ptr %c, ptr %out) {{\nstart:\n  %raw = load i64, ptr %c\n  %f = inttoptr i64 %raw to ptr\n{call}  ret void\n}}\n").unwrap();
+        }
+        if drop != "null" && self.m.helpers.insert(drop.clone()) {
+            let ll = self.m.ll(t)?;
+            let mut h = Func::new(self.m, HashMap::default());
+            h.block("start");
+            h.emit(format!("%v = load {ll}, ptr %out"));
+            h.drop_value(&(t.clone(), "%v".into()))?;
+            h.emit("ret void".into());
+            let text = h.finish();
+            writeln!(self.m.body, "define void {drop}(ptr %out) {{\n{text}}}\n").unwrap();
+        }
+        Ok((run, drop))
+    }
+
+    /// The result of the task `h` (type `rt`), held: the task keeps its own
+    /// until its scope ends, so `await` can be asked twice.
+    fn await_one(&mut self, h: &V, rt: &Ty) -> Res<V> {
+        let p = self.fresh("out");
+        self.emit(format!("{p} = call ptr @strata_await(ptr {})", h.1));
+        if !has_value(rt) {
+            return Ok((rt.clone(), String::new()));
+        }
+        let ll = self.m.ll(rt)?;
+        let r = self.fresh("result");
+        self.emit(format!("{r} = load {ll}, ptr {p}"));
+        Ok(self.hold((rt.clone(), r)))
+    }
+
+    /// `await` of `v`, of type `ht`: a handle, or a tuple or list of them; `rt` the result's type.
+    fn awaited(&mut self, v: &V, ht: &Ty, rt: &Ty) -> Res<V> {
+        match self.m.repr(ht)? {
+            Ty::Con(n, a) if n == "Task" => self.await_one(v, &a[0]),
+            Ty::Con(n, hs) if n == "Tuple" => {
+                let Ty::Con(_, rs) = self.m.repr(rt)? else { return Err("`await` of a tuple without a tuple's type".into()) };
+                let mut vs = vec![];
+                for (i, (h, r)) in hs.iter().zip(&rs).enumerate() {
+                    let x = self.field(v, i, h)?;
+                    vs.push(self.await_one(&x, r)?);
+                }
+                let b = self.block_of(0, &vs)?;
+                Ok(self.temp((rt.clone(), b)))
+            }
+            Ty::Con(n, a) if n == "List" => {
+                let ht = a[0].clone();
+                let et = self.elem_ty(rt)?;
+                let acc = self.fresh("awaited");
+                writeln!(self.allocas, "  {acc} = alloca ptr").unwrap();
+                let len = self.list_len(v);
+                let l0 = self.call(rt, "@strata_list_new", &[len])?;
+                self.emit(format!("store ptr {}, ptr {acc}", l0.1));
+                let (lt, kind) = (rt.clone(), self.elements_kind(&et));
+                self.each(v, &ht, |c, _, x| {
+                    let y = c.await_one(x, &et)?;
+                    let y = c.take(y);
+                    let s = c.to_slot(&y)?;
+                    let cur = c.fresh("cur");
+                    c.emit(format!("{cur} = load ptr, ptr {acc}"));
+                    let next = c.call(&Ty::Str, "@strata_list_push", &[(Ty::Str, cur.clone()), (Ty::Int, s), kind.clone()])?;
+                    c.drop_value(&(lt.clone(), cur))?;
+                    c.emit(format!("store ptr {}, ptr {acc}", next.1));
+                    Ok(())
+                })?;
+                let r = self.fresh("awaited");
+                self.emit(format!("{r} = load ptr, ptr {acc}"));
+                Ok(self.temp((rt.clone(), r)))
+            }
+            other => Err(format!("`await` of `{}`", key(&other))),
+        }
+    }
+
+    /// A closure of type `t` (a function type) with parameters `ps` and `body`.
+    fn closure_of(&mut self, t: Ty, ps: &[LamParam], body: &Expr) -> Res<V> {
         let Ty::Fn(pts, rt) = t.clone() else { return Err("a lambda without a function type".into()) };
         let names: Vec<Symbol> = ps.iter().map(|p| p.name.clone()).collect();
         let mut free: Vec<String> = vars_in(body).into_iter().filter(|x| !names.iter().any(|n| n == x.as_str()) && self.lookup(x).is_some()).collect();

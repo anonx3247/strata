@@ -1874,6 +1874,9 @@ impl Rw<'_> {
             }
             // compile-time code calls the module's functions like any other
             Expr::Comptime(x) => Expr::Comptime(Box::new(self.expr(x))),
+            Expr::Scope(x) => Expr::Scope(Box::new(self.expr(x))),
+            Expr::Spawn(x) => Expr::Spawn(Box::new(self.expr(x))),
+            Expr::Await(x) => Expr::Await(Box::new(self.expr(x))),
             _ => e.clone(),
         }
     }

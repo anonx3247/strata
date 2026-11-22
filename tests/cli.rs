@@ -1293,6 +1293,37 @@ fn modules_contracts_and_files() {
     assert!(ok && out.contains("0 failed"), "{out}");
 }
 
+/// Tasks: `spawn` only in a `scope`, and a handle never leaves it.
+#[test]
+fn tasks_stay_in_their_scope() {
+    let d = tmp("tasks");
+    save(&d.join("t.strata"),
+        "fn outside() -> Int {\n  h := spawn 1\n  0\n}\n\
+         fn leaks() -> Int {\n  h := scope { spawn 1 }\n  0\n}\n\
+         fn ret() -> Int {\n  scope {\n    h := spawn { return 1 }\n    0\n  }\n}\n\
+         fn tries(r: Result[Int, String]) -> Result[Int, String] {\n  scope {\n    h := spawn r! + 1\n    Ok(await h)\n  }\n}\n\
+         fn captured() -> Int {\n  scope {\n    a := spawn 1\n    b := spawn await a + 1\n    await b\n  }\n}\n\
+         fn stored() -> Int {\n  mut hs := []\n  scope {\n    hs = [spawn 1]\n    0\n  }\n}\n\
+         fn changes() -> Int {\n  mut n := 0\n  scope {\n    h := spawn { n += 1; n }\n    await h\n  }\n}\n\
+         fn not_task() -> Int {\n  await 3\n}\n\
+         fn fine(xs: List[Int]) -> (Int, List[Int]) {\n  scope {\n    a := spawn len(xs)\n    (await a, await [spawn x * 2 for x in xs])\n  }\n}\n");
+    let (ok, out) = strata(&["--file", "t.strata", "check"], &d, None);
+    assert!(!ok, "{out}");
+    for (f, msg) in [
+        ("outside", "`spawn` outside a `scope`"),
+        ("leaks", "a task's handle can't leave its `scope`"),
+        ("ret", "`return` can't leave a `spawn`"),
+        ("tries", "`!` can't return from a `spawn`"),
+        ("captured", "a closure or `spawn` can't hold `a`, a task's handle"),
+        ("stored", "`hs` is declared outside the `scope`"),
+        ("changes", "a closure cannot change `n`"),
+        ("not_task", "`await` takes a task's handle"),
+    ] {
+        assert!(out.contains(&format!("error in {f}: {msg}")), "{f}: {out}");
+    }
+    assert!(!out.contains("error in fine"), "{out}");
+}
+
 #[test]
 fn procedural_mutation_is_explicit() {
     let d = tmp("mutation");

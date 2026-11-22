@@ -51,6 +51,16 @@ static const char *KINDS[] = {"Refinement", "Requires", "Ensures", "Assert", "Ru
 
 static int64_t allocated, freed;
 
+// While a task runs (`spawn`), threads may hold the same objects, so counts
+// change atomically; with none alive, they don't. Either way a count of 1
+// means only this thread can see the object. Set before the first task's
+// thread starts and cleared after the last one is joined, so it never
+// changes while another thread reads it.
+static int threaded;
+static int live_tasks;
+static pthread_mutex_t made_lock = PTHREAD_MUTEX_INITIALIZER;
+#define THREADED __atomic_load_n(&threaded, __ATOMIC_RELAXED)
+
 // With STRATA_MEMORY=check, freed objects are kept, filled with garbage and
 // marked, so that touching one again stops the program instead of reading
 // whatever reuses the memory.
@@ -78,10 +88,14 @@ void *strata_alloc(int64_t n) {
     exit(101);
   }
   *c = 1;
-  allocated++;
+  int th = THREADED;
+  if (th) __atomic_fetch_add(&allocated, 1, __ATOMIC_RELAXED);
+  else allocated++;
   if (checking) {
+    if (th) pthread_mutex_lock(&made_lock);
     if (nmade == capmade) made = realloc(made, (size_t)(capmade = capmade ? capmade * 2 : 1024) * sizeof *made);
     made[nmade++] = c;
+    if (th) pthread_mutex_unlock(&made_lock);
   }
   return c + 1;
 }
@@ -89,6 +103,12 @@ void *strata_alloc(int64_t n) {
 // One more holder of `p`.
 void strata_dup(void *p) {
   int64_t *c = count_of(p);
+  if (THREADED) {
+    int64_t v = __atomic_load_n(c, __ATOMIC_RELAXED);
+    if (v > 0) __atomic_fetch_add(c, 1, __ATOMIC_RELAXED);
+    else if (v == FREED) freed_again("dup");
+    return;
+  }
   if (*c > 0) ++*c;
   else if (*c == FREED) freed_again("dup");
 }
@@ -97,13 +117,19 @@ void strata_dup(void *p) {
 // drops what the object holds and frees it.
 _Bool strata_release(void *p) {
   int64_t *c = count_of(p);
+  if (THREADED) {
+    int64_t v = __atomic_load_n(c, __ATOMIC_RELAXED);
+    if (v == FREED) freed_again("drop");
+    return v > 0 && __atomic_sub_fetch(c, 1, __ATOMIC_ACQ_REL) == 0;
+  }
   if (*c == FREED) freed_again("drop");
   return *c > 0 && --*c == 0;
 }
 
 // Give an object's memory back (its contents already dropped).
 void strata_free(void *p) {
-  freed++;
+  if (THREADED) __atomic_fetch_add(&freed, 1, __ATOMIC_RELAXED);
+  else freed++;
   int64_t *c = count_of(p);
   if (checking) {
     memset(p, 0xDB, usable_size(c) - 8);
@@ -119,7 +145,7 @@ static void str_drop(void *s) {
 }
 
 // Whether `p` has a single holder, so it may be changed in place.
-_Bool strata_unique(void *p) { return *count_of(p) == 1; }
+_Bool strata_unique(void *p) { return THREADED ? __atomic_load_n(count_of(p), __ATOMIC_ACQUIRE) == 1 : *count_of(p) == 1; }
 
 // With STRATA_MEMORY set, how many objects the program made and freed.
 // In check mode, the first few still alive: their count, size and first
@@ -368,18 +394,205 @@ const char *strata_test_stack(void) { return fault_stack ? fault_stack : ""; }
 const char *strata_test_printed(void) { return printed ? printed : ""; }
 
 // A fault: its kind, then 256 if the interpreter shows no call stack for it.
-_Noreturn void strata_fault(int32_t kind, Str *msg) {
+static void finish_open_scopes(void);
+
+// A fault: of this thread (`task_stack` NULL), or of a task it started
+// (raised here by `await` or the end of its scope), whose call stack then
+// follows this thread's. Caught by a trap (a test, a task), every task this
+// thread started finishes first.
+static _Noreturn void fault_at(int32_t kind, Str *msg, char *task_stack) {
+  char *stack = NULL;
+  if (!(kind & 256)) {
+    char *here = stack_text();
+    if (task_stack) {
+      stack = malloc(strlen(here) + strlen(task_stack) + 16);
+      sprintf(stack, "%s%sspawn%s%s", here, *here ? " -> " : "", *task_stack ? " -> " : "", task_stack);
+      free(here);
+    } else {
+      stack = here;
+    }
+  }
+  free(task_stack);
   if (trap) {
+    finish_open_scopes();
     fault_kind = kind;
     fault_msg = msg;
     free(fault_stack);
-    fault_stack = kind & 256 ? NULL : stack_text();
+    fault_stack = stack;
     siglongjmp(*trap, 1);
   }
   fflush(stdout);
   fprintf(stderr, "fault (%s): %.*s\n", KINDS[kind & 255], (int)msg->len, msg->bytes);
-  if (!(kind & 256)) print_stack();
+  if (stack && *stack) fprintf(stderr, "    stack: %s\n", stack);
   exit(101);
+}
+
+_Noreturn void strata_fault(int32_t kind, Str *msg) { fault_at(kind, msg, NULL); }
+
+// ---- tasks (`scope`, `spawn`, `await`) ----
+//
+// A task runs on a thread of its own. Its closure (holding what it
+// captured) and its result belong to its scope: the end of the scope waits
+// for every task, then drops them. A fault in a task ends the task; `await`
+// or the end of the scope raises it in the thread that started it.
+
+#define TASK_STACK ((size_t)64 << 20)
+
+typedef struct Task {
+  pthread_t thread;
+  void *clo;                  // the closure: its function, its drop, ...
+  void (*run)(void *, void *);  // calls the closure, stores the result
+  void (*drop)(void *);       // drops a stored result (NULL: nothing to drop)
+  int64_t out;                // the result (every compiled value fits)
+  _Bool joined, faulted, capturing, counting;
+  int32_t kind;
+  Str *msg;
+  char *stack, *printed;
+  size_t printed_len;
+  uint64_t seed;
+  int64_t steps, *given;
+  struct Task *next;
+} Task;
+
+typedef struct TaskScope {
+  Task *first, *last;
+  struct TaskScope *up;
+} TaskScope;
+
+static _Thread_local TaskScope *open_scopes;
+static void free_alt_stack(void);
+
+static void *task_main(void *arg) {
+  Task *t = arg;
+  catch_overflow();
+  rng = t->seed;
+  capturing = t->capturing;
+  counting = t->counting;
+  steps = t->steps;
+  given = t->given;
+  sigjmp_buf here;
+  trap = &here;
+  if (sigsetjmp(here, 1) == 0) {
+    t->run(t->clo, &t->out);
+  } else {
+    t->faulted = 1;
+    t->kind = fault_kind;
+    t->msg = fault_msg;
+    t->stack = fault_stack;
+    fault_stack = NULL;
+  }
+  trap = NULL;
+  t->printed = printed;
+  t->printed_len = printed_len;
+  printed = NULL;
+  printed_len = printed_cap = 0;
+  free_alt_stack();
+  return NULL;
+}
+
+void *strata_scope_begin(void) {
+  TaskScope *s = calloc(1, sizeof *s);
+  if (!s) strata_fault(6, str_c("out of memory"));
+  s->up = open_scopes;
+  open_scopes = s;
+  return s;
+}
+
+// A task of the innermost scope open on this thread: the checker allows a
+// `spawn` only inside a `scope` (a lambda's included, as a comprehension's
+// body, which runs there).
+void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *)) {
+  TaskScope *s = open_scopes;
+  if (!s) strata_fault(4, str_c("`spawn` ran outside its `scope` (a closure that spawns was called after the scope ended)"));
+  Task *t = calloc(1, sizeof *t);
+  if (!t) strata_fault(6, str_c("out of memory"));
+  t->clo = clo;
+  t->run = run;
+  t->drop = drop;
+  // the task's numbers: from this thread's, so a run repeats
+  rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+  t->seed = rng ^ (rng >> 29);
+  t->capturing = capturing;
+  t->counting = counting;
+  t->steps = steps;
+  t->given = given;
+  if (__atomic_fetch_add(&live_tasks, 1, __ATOMIC_RELAXED) == 0) __atomic_store_n(&threaded, 1, __ATOMIC_RELAXED);
+  pthread_attr_t a;
+  pthread_attr_init(&a);
+  pthread_attr_setstacksize(&a, TASK_STACK);
+  int failed = pthread_create(&t->thread, &a, task_main, t);
+  pthread_attr_destroy(&a);
+  if (failed) {
+    if (__atomic_sub_fetch(&live_tasks, 1, __ATOMIC_RELAXED) == 0) __atomic_store_n(&threaded, 0, __ATOMIC_RELAXED);
+    t->joined = 1;
+    t->faulted = 1;
+    t->kind = 6;
+    t->msg = str_c("no thread for a task (too many at once)");
+  }
+  if (s->last) s->last->next = t;
+  else s->first = t;
+  s->last = t;
+  return t;
+}
+
+static void join(Task *t) {
+  if (t->joined) return;
+  pthread_join(t->thread, NULL);
+  t->joined = 1;
+  if (__atomic_sub_fetch(&live_tasks, 1, __ATOMIC_RELAXED) == 0) __atomic_store_n(&threaded, 0, __ATOMIC_RELAXED);
+  if (t->printed) {
+    if (capturing) keep_printed(t->printed, t->printed_len);
+    free(t->printed);
+    t->printed = NULL;
+  }
+}
+
+// Drop a finished scope's tasks: each result, closure and record.
+static void release_scope(TaskScope *s) {
+  for (Task *t = s->first, *next; t; t = next) {
+    next = t->next;
+    if (!t->faulted && t->drop) t->drop(&t->out);
+    if (strata_release(t->clo)) ((void (*)(void *))(uintptr_t)((int64_t *)t->clo)[1])(t->clo);
+    free(t->stack);
+    free(t);
+  }
+  free(s);
+}
+
+void strata_scope_end(TaskScope *s) {
+  for (Task *t = s->first; t; t = t->next) join(t);
+  open_scopes = s->up;
+  for (Task *t = s->first; t; t = t->next) {
+    if (t->faulted) {
+      Str *msg = t->msg;
+      int32_t kind = t->kind;
+      char *st = t->stack;
+      t->stack = NULL;
+      release_scope(s);
+      fault_at(kind, msg, st ? st : strdup(""));
+    }
+  }
+  release_scope(s);
+}
+
+void *strata_await(Task *t) {
+  join(t);
+  if (t->faulted) {
+    char *st = t->stack;
+    t->stack = NULL;
+    fault_at(t->kind, t->msg, st ? st : strdup(""));
+  }
+  return &t->out;
+}
+
+// After a fault caught by a trap: the tasks of every scope still open finish.
+static void finish_open_scopes(void) {
+  while (open_scopes) {
+    TaskScope *s = open_scopes;
+    for (Task *t = s->first; t; t = t->next) join(t);
+    open_scopes = s->up;
+    release_scope(s);
+  }
 }
 
 // ---- integers ----
@@ -1258,8 +1471,10 @@ void strata_print(Str *s) {
     keep_printed("\n", 1);
     return;
   }
+  flockfile(stdout);
   fwrite(s->bytes, 1, (size_t)s->len, stdout);
   fputc('\n', stdout);
+  funlockfile(stdout);
 }
 
 // ---- the system (the `host_*` operations of std) ----
@@ -1294,9 +1509,17 @@ static void on_segv(int sig, siginfo_t *info, void *ctx) {
 
 // Once per thread: the thread's stack (the JIT runs on strata's own, larger
 // than the process's limit) and a stack for the handler.
+static _Thread_local char *alt;
+
+static void free_alt_stack(void) {
+  stack_t off = {.ss_flags = SS_DISABLE};
+  sigaltstack(&off, NULL);
+  free(alt);
+  alt = NULL;
+}
+
 static void catch_overflow(void) {
   if (stack_hi) return;
-  static _Thread_local char *alt;
   if (!alt) alt = malloc(65536);
   stack_t ss = {.ss_sp = alt, .ss_size = 65536, .ss_flags = 0};
   sigaltstack(&ss, NULL);

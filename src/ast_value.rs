@@ -366,6 +366,9 @@ fn expr(e: &Expr) -> String {
         Expr::Set(tys, xs) => rec("SetExpr", &[("types", list(tys, ty)), ("elems", exprs(xs))]),
         Expr::Or(x, fb) => rec("Fallback", &[("value", expr(x)), ("fallback", expr(fb))]),
         Expr::Comptime(x) => tag("Comptime", expr(x)),
+        Expr::Scope(x) => tag("Scope", expr(x)),
+        Expr::Spawn(x) => tag("Spawn", expr(x)),
+        Expr::Await(x) => tag("Await", expr(x)),
     }
 }
 
