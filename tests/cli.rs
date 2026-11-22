@@ -666,9 +666,9 @@ fn builtins_that_fault_are_checked() {
     }
     let d = tmp("builtin-faults");
     let src = r#"fn bad_chr(n: Int) -> String { chr(n) }
-fn good_chr(n: Int where 97 <= it && it <= 122) -> String ensures len(it) == 1 { chr(n) }
+fn good_chr(n: Int where 97 <= it && it <= 122) -> String ensures len(it.code_points()) == 1 { chr(n) }
 fn bad_ord(s: String) -> Int { ord(s) }
-fn good_ord(s: String) -> Int { if len(s) == 1 { ord(s) } else { 0 } }
+fn good_ord(s: String) -> Int { if len(s.code_points()) == 1 { ord(s) } else { 0 } }
 fn each_ord(s: String) -> Int { chars(s).fold(0, (a, c) -> a + ord(c)) }
 fn round_trip() -> Bool ensures it { ord(chr(955)) == 955 }
 fn bad_split(s: String, sep: String) -> Int { len(split(s, sep)) }
