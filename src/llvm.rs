@@ -5369,9 +5369,17 @@ impl<'m, 'a> Func<'m, 'a> {
                 let r = self.call(&lst, "@strata_host_args", &[])?;
                 self.temp(r)
             }
-            "host_read_line" | "host_env_var" => {
+            "host_env_var" => {
                 let r = self.call(&s_ty, &format!("@strata_{name}"), &vs)?;
                 self.optional(&r, &t)?
+            }
+            // a wait for input: a cancelled task gives up (NULL) and leaves,
+            // checked once the line is held, so leaving drops it
+            "host_read_line" => {
+                let r = self.call(&s_ty, "@strata_host_read_line", &vs)?;
+                let r = self.optional(&r, &t)?;
+                self.cancel_point()?;
+                r
             }
             "host_read_file" | "host_list_dir" | "host_read_bytes" => {
                 // a value, or NULL and the failure
