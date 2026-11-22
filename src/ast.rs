@@ -312,16 +312,20 @@ pub struct ExternDecl {
     pub item: ExternItem,
 }
 
-/// The language of an `extern` (only C so far).
+/// The language of an `extern`: C, or `Builtin` for what the compiler and
+/// its runtime provide (`builtin fn len[A](xs: List[A]) -> Int`, `builtin
+/// type Int`), declared only in the `core` package.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Lang {
     C,
+    Builtin,
 }
 
 impl Lang {
     pub fn name(self) -> &'static str {
         match self {
             Lang::C => "c",
+            Lang::Builtin => "builtin",
         }
     }
     pub fn from_name(s: &str) -> Option<Lang> {
@@ -337,8 +341,9 @@ pub enum ExternItem {
     /// `extern c fn strlen(s: String) -> U64`: a signature with contracts and
     /// no body (`body` is `()`); the symbol is the function's name.
     Fn(FnDecl),
-    /// `extern c type Sqlite3`: an opaque handle (a pointer), only passed back.
-    Type(Symbol),
+    /// `extern c type Sqlite3`: an opaque handle (a pointer), only passed back;
+    /// `builtin type List[T]`: a type the compiler provides, with its parameters.
+    Type(Symbol, Vec<Symbol>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -405,7 +410,7 @@ impl Decl {
             DeclKind::Use(u) => format!("use {}", u.path),
             DeclKind::Extern(e) => match &e.item {
                 ExternItem::Fn(f) => f.name.to_string(),
-                ExternItem::Type(t) => t.to_string(),
+                ExternItem::Type(t, _) => t.to_string(),
             },
             DeclKind::Capability(c) => c.name.to_string(),
         }
@@ -1065,7 +1070,7 @@ macro_rules! visitor {
                 DeclKind::Use(_) => {}
                 DeclKind::Extern(e) => match &$($m)? e.item {
                     ExternItem::Fn(f) => $func(v, f),
-                    ExternItem::Type(_) => {}
+                    ExternItem::Type(..) => {}
                 },
                 DeclKind::Capability(c) => {
                     for m in &$($m)? c.methods {

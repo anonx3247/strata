@@ -987,8 +987,11 @@ pub fn decl_body(d: &Decl) -> String {
             }
         },
         DeclKind::Extern(e) => match &e.item {
+            ExternItem::Fn(f) if e.lang == Lang::Builtin => format!("builtin {}", fn_signature(f)),
             ExternItem::Fn(f) => format!("extern {} {}", e.lang.name(), fn_signature(f)),
-            ExternItem::Type(t) => format!("extern {} type {t}", e.lang.name()),
+            ExternItem::Type(t, ps) if ps.is_empty() && e.lang == Lang::Builtin => format!("builtin type {t}"),
+            ExternItem::Type(t, ps) if e.lang == Lang::Builtin => format!("builtin type {t}[{}]", ps.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")),
+            ExternItem::Type(t, _) => format!("extern {} type {t}", e.lang.name()),
         },
     };
     (if d.public { "pub " } else { "" }).to_string() + &body

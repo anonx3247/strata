@@ -90,7 +90,7 @@ fn ui_in_strata(target: ui::Target, port: u16) -> Result<bool, String> {
 /// `strata builtins`.
 pub fn builtins(json_out: bool) -> Result<bool, String> {
     if json_out {
-        let out: Vec<_> = types::BUILTINS.iter().map(|b| json!({"name": b.name, "type_params": b.params, "signature": b.sig, "total": b.total})).collect();
+        let out: Vec<_> = types::builtins().iter().map(|b| json!({"name": b.name, "type_params": b.params, "signature": b.sig, "total": b.total})).collect();
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
         println!("// prelude types\n");
@@ -98,7 +98,7 @@ pub fn builtins(json_out: bool) -> Result<bool, String> {
             println!("{}\n", printer::decl(&d));
         }
         println!("// builtin functions\n");
-        for b in types::BUILTINS {
+        for b in types::builtins() {
             let tp = if b.params.is_empty() { String::new() } else { format!("[{}]", b.params) };
             println!("{}{tp}{}", b.name, b.sig);
         }
@@ -162,8 +162,13 @@ pub fn pack(args: &Args) -> Result<bool, String> {
     // (`compiler/eval`). As parsed: storing would resolve its names against
     // the prelude itself.
     if args.flag("--prelude") {
-        let mut p = crate::parser::parse_program(crate::types::PRELUDE).map_err(|e| format!("the prelude: {e}"))?;
-        p.decls.extend(crate::parser::parse_program(crate::types::PRELUDE_CODE).map_err(|e| format!("the prelude's code: {e}"))?.decls);
+        // (core's types and code; its builtins are the evaluator's own)
+        let mut p = crate::core::types();
+        p.decls.extend(crate::core::prelude().decls);
+        p.decls.retain(|d| !matches!(&d.kind, crate::ast::DeclKind::Extern(e) if e.lang == crate::ast::Lang::Builtin));
+        for d in &mut p.decls {
+            d.module = crate::ast::Symbol::EMPTY;
+        }
         let bytes = binary::encode_module(&p, "", &Default::default());
         store::write_file(std::path::Path::new(out), &bytes)?;
         println!("wrote {out}: the prelude, {} definitions, {} bytes", p.decls.len(), bytes.len());

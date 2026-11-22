@@ -3653,7 +3653,7 @@ impl<'a> Vc<'a> {
             _ => {
                 // anything else: a fresh value of the builtin's result type, when it has one
                 // (when every version of it returns the same type, free of type variables)
-                let rets: Vec<TypeExpr> = crate::types::BUILTINS
+                let rets: Vec<TypeExpr> = crate::types::builtins()
                     .iter()
                     .filter(|b| b.name == name)
                     .filter_map(|b| match crate::types::parse_type_str(b.sig) {
@@ -3661,7 +3661,7 @@ impl<'a> Vc<'a> {
                         _ => None,
                     })
                     .collect();
-                let n = crate::types::BUILTINS.iter().filter(|b| b.name == name).count();
+                let n = crate::types::builtins().iter().filter(|b| b.name == name).count();
                 match rets.first() {
                     Some(ret) if rets.len() == n && rets.iter().all(|r| r == ret) => {
                         let old = self.reason.replace(not_modelled);

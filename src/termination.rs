@@ -538,7 +538,7 @@ fn candidate_measures(env: &Env, f: &FnDecl) -> Vec<Expr> {
     let only_params = |e: &Expr| {
         let mut ok = true;
         crate::ast::walk(e, |x| match x {
-            Expr::Var(n) => ok &= params.contains(n.as_str()) || env.fns.contains_key(&n.sym()) || crate::types::BUILTINS.iter().any(|b| b.name == n),
+            Expr::Var(n) => ok &= params.contains(n.as_str()) || env.fns.contains_key(&n.sym()) || crate::types::builtins().iter().any(|b| b.name == n),
             Expr::Lambda(..) | Expr::Hole(_) | Expr::Float(_) | Expr::Str(_) => ok = false,
             _ => {}
         });

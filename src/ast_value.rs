@@ -28,10 +28,11 @@ pub fn decl(d: &Decl) -> String {
         DeclKind::Extern(e) => {
             let item = match &e.item {
                 ExternItem::Fn(f) => tag("ExternFn", fn_decl(f)),
-                ExternItem::Type(t) => tag("ExternType", s(t)),
+                ExternItem::Type(t, ps) => format!("ExternType({}, {})", s(t), strs(ps)),
             };
             let lang = match e.lang {
                 Lang::C => "C".to_string(),
+                Lang::Builtin => "Builtin".to_string(),
             };
             tag("ExternDef", rec("ExternDecl", &[("lang", lang), ("item", item)]))
         }

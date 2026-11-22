@@ -31,429 +31,6 @@ pub fn field_owners(tagged: &Program) -> HashMap<String, BTreeSet<String>> {
     FIELD_PROBE.with(|p| p.borrow_mut().take()).unwrap_or_default()
 }
 
-pub const PRELUDE: &str = r#"
-/// How a value is written in code: `Some("hi")`, `Point { x: 1, y: 2 }`,
-/// `[1, 2]`. Every type has it; `impl Debug for T` replaces it.
-trait Debug {
-  fn debug(self) -> String
-}
-
-/// How a value is shown to people: what `print`, f-strings and `to_string`
-/// write. Every type has it: its `debug` (a `String` is its text);
-/// `impl Display for T` replaces it.
-trait Display {
-  fn to_string(self) -> String
-}
-
-/// An optional value.
-type Option[T] =
-  | None
-  | Some(T)
-
-/// The result of an operation that can fail.
-type Result[T, E] =
-  | Ok(T)
-  | Err(E)
-
-
-// Common refinements. They are structural: an `Int` can be passed wherever a
-// `Natural` is expected (checked at the boundary), and a `Positive` is a `Natural`.
-
-/// 0, 1, 2, ...
-type Natural = Int where it >= 0
-/// 1, 2, 3, ...
-type Positive = Int where it > 0
-/// -1, -2, ...
-type Negative = Int where it < 0
-type NonZero = Int where it != 0
-/// A share between 0.0 and 1.0.
-type Probability = Float where 0.0 <= it && it <= 1.0
-type Percentage = Float where 0.0 <= it && it <= 100.0
-/// A list with at least one element.
-type NonEmpty[T] = List[T] where len(it) > 0
-/// A string with at least one character.
-type NonEmptyString = String where it != ""
-
-// Sized integers: `Int` with the range of a machine integer. They are checked
-// like any refinement; a compiler can store each in its own width.
-
-/// -128 ..= 127
-type I8 = Int where -128 <= it && it <= 127
-/// -32768 ..= 32767
-type I16 = Int where -32768 <= it && it <= 32767
-/// -2^31 ..= 2^31 - 1
-type I32 = Int where -2147483648 <= it && it <= 2147483647
-/// -2^63 ..= 2^63 - 1
-type I64 = Int where -9223372036854775808 <= it && it <= 9223372036854775807
-/// 0 ..= 255
-type U8 = Int where 0 <= it && it <= 255
-/// 0 ..= 65535
-type U16 = Int where 0 <= it && it <= 65535
-/// 0 ..= 2^32 - 1
-type U32 = Int where 0 <= it && it <= 4294967295
-/// 0 ..= 2^64 - 1
-type U64 = Int where 0 <= it && it <= 18446744073709551615
-"#;
-
-/// The prelude's definitions that carry code (default methods, impls):
-/// added to every program when it is resolved (`with_prelude_code`), in the
-/// module `std.prelude`, so they are checked, compiled and run as the
-/// program's own, and skipped as the standard library is (by `verify`, the
-/// views). Their names are the prelude's, unqualified.
-pub const PRELUDE_CODE: &str = r#"
-/// Why a supervised task (`spawn supervised e`) ended without a result: the
-/// kind of panic (`Runtime`, `Refinement`, `Requires`, ...), its message, and
-/// the call stack where it happened.
-type Panic = { kind: String, message: String, stack: String }
-
-/// What a `for` loop runs over, besides lists, sets and dicts: `next`
-/// gives the elements one at a time, then `None`.
-trait Iterator[T] {
-  fn next(mut self) -> Option[T]
-
-  fn map[B](self, f: (T) -> B) -> Mapped[Self, T, B] {
-    Mapped { inner: self, f: f }
-  }
-
-  fn filter(self, keep: (T) -> Bool) -> Filtered[Self, T] {
-    Filtered { inner: self, keep: keep }
-  }
-
-  /// The first `n` elements (all, if there are fewer): finite, even when
-  /// this iterator isn't.
-  fn take(self, n: Int) -> Taken[Self, T] {
-    Taken { inner: self, left: if n > 0 { n } else { 0 } }
-  }
-
-  /// The elements after the first `n`.
-  fn drop(self, n: Int) -> Dropped[Self, T] {
-    Dropped { inner: self, skip: if n > 0 { n } else { 0 } }
-  }
-}
-
-type Taken[I, T] = { inner: I, left: Natural }
-
-impl[I: Iterator[T], T] Iterator[T] for Taken[I, T] {
-  fn next(mut self) -> Option[T] {
-    if self.left == 0 {
-      return None
-    }
-    self.left -= 1
-    mut self.inner.next()
-  }
-}
-
-/// At most `left` elements (each `next` takes one off): counted on a copy,
-/// without going further.
-impl[I: Iterator[T], T] FiniteIterator[T] for Taken[I, T] {
-  fn len(self) -> Natural {
-    mut n: Natural = 0
-    for _ in self {
-      n += 1
-    }
-    n
-  }
-}
-
-type Dropped[I, T] = { inner: I, skip: Natural }
-
-impl[I: Iterator[T], T] Iterator[T] for Dropped[I, T] {
-  fn next(mut self) -> Option[T] {
-    for _ in 0..self.skip {
-      mut self.inner.next()
-    }
-    self.skip = 0
-    mut self.inner.next()
-  }
-}
-
-impl[I: FiniteIterator[T], T] FiniteIterator[T] for Dropped[I, T] {
-  fn len(self) -> Natural {
-    n := self.inner.len()
-    if n > self.skip { n - self.skip } else { 0 }
-  }
-}
-
-type Mapped[I, A, B] = { inner: I, f: (A) -> B }
-
-impl[I: Iterator[A], A, B] Iterator[B] for Mapped[I, A, B] {
-  fn next(mut self) -> Option[B] {
-    match mut self.inner.next() {
-      Some(x) => Some((self.f)(x)),
-      None => None,
-    }
-  }
-}
-
-type Filtered[I, T] = { inner: I, keep: (T) -> Bool }
-
-impl[I: Iterator[T], T] Iterator[T] for Filtered[I, T] {
-  fn next(mut self) -> Option[T] {
-    loop {
-      match mut self.inner.next() {
-        Some(x) => if (self.keep)(x) { return Some(x) },
-        None => { return None },
-      }
-    }
-    None
-  }
-}
-
-/// An iterator that ends: `len` is how many elements `next` still gives.
-/// A `for` loop over one is shown to end.
-/// `fold` is here, not in `Iterator`: on an unbounded iterator it would never
-/// return. It ends as its loop does, given that `f` ends (checked where the
-/// function passed is written).
-trait FiniteIterator[T]: Iterator[T] {
-  fn len(self) -> Natural
-
-  fn fold[B](self, init: B, f: (B, T) -> B) -> B {
-    mut acc := init
-    for x in self {
-      acc = f(acc, x)
-    }
-    acc
-  }
-
-  /// Element `i` (from 0), if there is one.
-  fn get(self, i: Int) -> Option[T] {
-    mut k := 0
-    for x in self {
-      if k == i {
-        return Some(x)
-      }
-      k += 1
-    }
-    None
-  }
-
-  /// Element `i` (from 0): `it[i]`.
-  fn at(self, i: Int) -> T
-    requires 0 <= i && i < self.len()
-  {
-    match self.get(i) {
-      Some(x) => x,
-      None => self.to_list()[i],
-    }
-  }
-
-  /// The elements from `a` up to (not including) `b`, lazily: `it[a..b]`.
-  fn slice(self, a: Int, b: Int) -> Taken[Dropped[Self, T], T] {
-    self.drop(a).take(b - (if a > 0 { a } else { 0 }))
-  }
-
-  /// The elements, in a list.
-  fn to_list(self) -> List[T] {
-    mut out := []
-    for x in self {
-      out = push(out, x)
-    }
-    out
-  }
-}
-
-/// The elements of a list one at a time, from `at`: what `iter()` gives
-/// on a list, a set (in order) or a dict (its entries, by key).
-type ListIter[T] = { items: List[T], at: Natural }
-
-impl[T] Iterator[T] for ListIter[T] {
-  fn next(mut self) -> Option[T] {
-    if self.at < len(self.items) {
-      x := self.items[self.at]
-      self.at += 1
-      Some(x)
-    } else {
-      None
-    }
-  }
-}
-
-impl[T] FiniteIterator[T] for ListIter[T] {
-  fn len(self) -> Natural {
-    if self.at < len(self.items) { len(self.items) - self.at } else { 0 }
-  }
-}
-
-/// The sending end of a channel (`channel()` gives both ends). `send`
-/// waits while the channel is full (an unbuffered one: until a receiver
-/// takes the value). Each task holding it closes it once, when it is done
-/// sending: the channel ends when all have.
-trait Sending[T] {
-  fn send(self, value: T)
-  fn close(self)
-}
-
-impl[T] Sending[T] for Sender[T] {
-  fn send(self, value: T) {
-    channel_send(self, value)
-  }
-  fn close(self) {
-    channel_close(self)
-  }
-}
-
-/// The receiving end of a channel: `recv` waits for a value, and gives
-/// `None` once the channel has ended and is empty; `for v in rx` takes them
-/// all.
-trait Receiving[T] {
-  fn recv(self) -> Option[T]
-}
-
-impl[T] Receiving[T] for Receiver[T] {
-  fn recv(self) -> Option[T] {
-    channel_recv(self)
-  }
-}
-
-impl[T] Iterator[T] for Receiver[T] {
-  fn next(mut self) -> Option[T] {
-    channel_recv(self)
-  }
-}
-
-/// A collection whose elements can be walked as an iterator: `xs.iter()`.
-/// (A list isn't an iterator itself: its `map` and `filter` are the
-/// builtins, which give lists.)
-trait Iterable[T] {
-  fn iter(self) -> ListIter[T]
-}
-
-impl[T] Iterable[T] for List[T] {
-  fn iter(self) -> ListIter[T] {
-    ListIter { items: self, at: 0 }
-  }
-}
-
-impl[T] Iterable[T] for Set[T] {
-  fn iter(self) -> ListIter[T] {
-    ListIter { items: to_list(self), at: 0 }
-  }
-}
-
-impl[K, V] Iterable[(K, V)] for Dict[K, V] {
-  fn iter(self) -> ListIter[(K, V)] {
-    ListIter { items: items(self), at: 0 }
-  }
-}
-
-/// A string's UTF-8 bytes (0 to 255), from byte `at`: `s.bytes()`.
-type Bytes = { text: String, at: Natural }
-
-impl Iterator[Int] for Bytes {
-  fn next(mut self) -> Option[Int] {
-    if self.at < byte_len(self.text) {
-      b := byte_at(self.text, self.at)
-      self.at += 1
-      Some(b)
-    } else {
-      None
-    }
-  }
-}
-
-impl FiniteIterator[Int] for Bytes {
-  fn len(self) -> Natural {
-    if self.at < byte_len(self.text) { byte_len(self.text) - self.at } else { 0 }
-  }
-}
-
-/// A string's code points (Unicode scalar values), from byte `at`:
-/// `s.code_points()`. Each is read once from its UTF-8 bytes.
-type CodePoints = { text: String, at: Natural }
-
-impl Iterator[Int] for CodePoints {
-  fn next(mut self) -> Option[Int] {
-    // from inside a code point's bytes (10xxxxxx), the next one's start
-    while self.at < byte_len(self.text) && byte_at(self.text, self.at) >= 128 && byte_at(self.text, self.at) < 192 {
-      self.at += 1
-    }
-    if self.at >= byte_len(self.text) {
-      return None
-    }
-    lead := byte_at(self.text, self.at)
-    if lead < 128 {
-      self.at += 1
-      return Some(lead)
-    }
-    // 110xxxxx, 1110xxxx or 11110xxx, then 10xxxxxx bytes
-    (n, first) := if lead >= 240 { (4, lead - 240) } else if lead >= 224 { (3, lead - 224) } else { (2, lead - 192) }
-    mut c := first
-    for k in 1..n {
-      c = c * 64 + (byte_at(self.text, self.at + k) - 128)
-    }
-    self.at += n
-    Some(c)
-  }
-}
-
-impl FiniteIterator[Int] for CodePoints {
-  fn len(self) -> Natural {
-    // the bytes that start a code point (not 10xxxxxx)
-    mut n := 0
-    for b in (Bytes { text: self.text, at: self.at }) {
-      if b < 128 || b >= 192 {
-        n += 1
-      }
-    }
-    n
-  }
-}
-
-/// A string's units, each an iterator: its UTF-8 bytes and its code points
-/// (a string is neither itself: the unit is always named). Its graphemes
-/// are `std.unicode`'s.
-trait TextUnits {
-  fn bytes(self) -> Bytes
-  fn code_points(self) -> CodePoints
-}
-
-impl TextUnits for String {
-  fn bytes(self) -> Bytes {
-    Bytes { text: self, at: 0 }
-  }
-
-  fn code_points(self) -> CodePoints {
-    CodePoints { text: self, at: 0 }
-  }
-}
-
-/// `Set { e for x in it }` on a finite iterator (`set(it)` on one).
-fn set_of[T, I: FiniteIterator[T]](it: I) -> Set[T] {
-  set(it.to_list())
-}
-
-/// `join(it, sep)` on a finite iterator of strings.
-fn join_of[I: FiniteIterator[String]](it: I, sep: String) -> String {
-  join(it.to_list(), sep)
-}
-
-/// `Dict { k: v for x in it }` on a finite iterator (`dict(it)` on one).
-fn dict_of[K, V, I: FiniteIterator[(K, V)]](it: I) -> Dict[K, V] {
-  dict(it.to_list())
-}
-
-/// A finite iterator mapped is as long.
-impl[I: FiniteIterator[A], A, B] FiniteIterator[B] for Mapped[I, A, B] {
-  fn len(self) -> Natural {
-    self.inner.len()
-  }
-}
-
-/// A finite iterator filtered: its length is counted, on a copy (the
-/// elements `keep` keeps).
-impl[I: FiniteIterator[T], T] FiniteIterator[T] for Filtered[I, T] {
-  fn len(self) -> Natural {
-    mut n := 0
-    for x in self.inner {
-      if (self.keep)(x) {
-        n += 1
-      }
-    }
-    n
-  }
-}
-"#;
-
 /// The builtins on lists that every iterator has as methods (lazy `map`
 /// and `filter`; `fold` on a `FiniteIterator`): called on an iterator, the
 /// call is its method's. Comprehensions are made of them.
@@ -462,8 +39,11 @@ const ITERATOR_BUILTINS: &[&str] = &["map", "filter", "fold", "len", "get", "at"
 /// The built-in types with type arguments, which impls can be written for.
 const BUILTIN_HEADS: &[&str] = &["List", "Set", "Dict", "String", "Sender", "Receiver"];
 
-/// The module the prelude's code is in, once added to a program.
-pub const PRELUDE_MODULE: &str = "std.prelude";
+/// The module the prelude's code is in (`core/prelude.strata`): added to
+/// every program when it is resolved (`with_prelude_code`), so it is
+/// checked, compiled and run as the program's own, and skipped as the
+/// standard library is (by `verify`, the views). Its names are unqualified.
+pub const PRELUDE_MODULE: &str = "core.prelude";
 
 /// A name as messages show it: a prelude trait's method short
 /// (`fold`, not `std.prelude.fold`; `FiniteIterator::len`).
@@ -480,11 +60,11 @@ pub fn shown_name(name: &str) -> String {
     s
 }
 
-/// The prelude's code, parsed once (`PRELUDE_CODE`).
+/// The prelude's code (`core.prelude`), read once.
 pub fn prelude_code() -> &'static Program {
     static P: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
     P.get_or_init(|| {
-        let mut p = crate::parser::parse_program(PRELUDE_CODE).expect("prelude code parses");
+        let mut p = crate::core::prelude();
         for d in &mut p.decls {
             d.module = Symbol::new(PRELUDE_MODULE);
             match &mut d.kind {
@@ -514,7 +94,7 @@ fn prelude_method(m: Symbol) -> Symbol {
 fn prelude_traits() -> &'static [Symbol] {
     static T: std::sync::OnceLock<Vec<Symbol>> = std::sync::OnceLock::new();
     T.get_or_init(|| {
-        crate::parser::parse_program(PRELUDE_CODE).expect("prelude code parses").decls.iter().filter_map(|d| if let DeclKind::Trait(t) = &d.kind { Some(t.name) } else { None }).collect()
+        crate::core::prelude().decls.iter().filter_map(|d| if let DeclKind::Trait(t) = &d.kind { Some(t.name) } else { None }).collect()
     })
 }
 
@@ -552,20 +132,42 @@ pub struct Builtin {
     pub params: &'static str,
     pub sig: &'static str,
     pub total: bool,
+    /// its declaration in `core.builtins` (std's host operations have none)
+    pub decl: Option<&'static FnDecl>,
 }
 
 impl Builtin {
     pub const fn new(name: &'static str, params: &'static str, sig: &'static str) -> Builtin {
-        Builtin { name, params, sig, total: false }
+        Builtin { name, params, sig, total: false, decl: None }
     }
-    pub const fn total(name: &'static str, params: &'static str, sig: &'static str) -> Builtin {
-        Builtin { name, params, sig, total: true }
-    }
+}
+
+/// The builtin functions (`core.builtins`), each signature once, in the
+/// order written: total when they have no `requires` (and fail in no way
+/// not yet written as one, `core::NOT_YET_CONTRACTS`).
+pub fn builtins() -> &'static [Builtin] {
+    static B: std::sync::OnceLock<Vec<Builtin>> = std::sync::OnceLock::new();
+    B.get_or_init(|| {
+        let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+        crate::core::builtin_fns()
+            .map(|f| {
+                let params: Vec<String> = f.params.iter().map(|p| crate::printer::ty(&p.ty)).collect();
+                let tps: Vec<&str> = f.type_params.iter().map(|t| t.as_str()).collect();
+                Builtin {
+                    name: f.name.as_str(),
+                    params: leak(tps.join(",")),
+                    sig: leak(format!("({}) -> {}", params.join(", "), crate::printer::ty(&f.ret))),
+                    total: f.requires.is_empty() && !crate::core::NOT_YET_CONTRACTS.contains(&f.name.as_str()),
+                    decl: Some(f),
+                }
+            })
+            .collect()
+    })
 }
 
 /// Whether every overload of the builtin `name` always returns.
 pub fn total_builtin(name: &str) -> bool {
-    let mut all = BUILTINS.iter().filter(|b| b.name == name).peekable();
+    let mut all = builtins().iter().filter(|b| b.name == name).peekable();
     all.peek().is_some() && all.all(|b| b.total)
 }
 
@@ -577,133 +179,19 @@ pub fn union_alias(t: &TypeDecl) -> bool {
     matches!(t.body, TypeBody::Alias(TypeExpr::Union(_))) && !t.distinct && t.refinement.is_none()
 }
 
-/// The types every program has without defining them, by the names code
-/// writes (a tuple is written `(A, B)` and `()` is written so: `Tuple` and
-/// `Unit` are free to name other things).
-pub const BUILTIN_TYPES: [&str; 9] = ["Int", "Float", "Bool", "String", "List", "Set", "Dict", "Sender", "Receiver"];
-
-pub fn prelude() -> &'static Program {
-    static P: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
-    P.get_or_init(|| crate::parser::parse_program(PRELUDE).expect("prelude parses"))
+/// The types every program has without defining them (`core.types`'
+/// `builtin type`s), by the names code writes (a tuple is written `(A, B)`
+/// and `()` is written so: `Tuple` and `Unit` are free to name other things).
+pub fn builtin_types() -> &'static [&'static str] {
+    static T: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    T.get_or_init(|| crate::core::builtin_types().iter().map(|(t, _)| t.as_str()).collect())
 }
 
-/// Builtin functions and their type schemes.
-pub const BUILTINS: &[Builtin] = &[
-    Builtin::total("len", "A", "(List[A]) -> Int"),
-    // a channel's two ends, with room for `n` values waiting (none: a send
-    // waits for a receiver); its methods are the prelude's (`Sending`,
-    // `Receiving`), over these
-    Builtin::new("channel", "A", "() -> (Sender[A], Receiver[A])"),
-    Builtin::new("channel", "A", "(Int) -> (Sender[A], Receiver[A])"),
-    Builtin::new("channel_send", "A", "(Sender[A], A) -> ()"),
-    Builtin::new("channel_recv", "A", "(Receiver[A]) -> Option[A]"),
-    Builtin::new("channel_close", "A", "(Sender[A]) -> ()"),
-    Builtin::total("len", "K,V", "(Dict[K, V]) -> Int"),
-    Builtin::total("len", "A", "(Set[A]) -> Int"),
-    Builtin::total("contains", "A", "(Set[A], A) -> Bool"),
-    Builtin::total("contains", "K,V", "(Dict[K, V], K) -> Bool"),
-    Builtin::total("contains", "", "(String, String) -> Bool"),
-    Builtin::total("get", "K,V", "(Dict[K, V], K) -> Option[V]"),
-    Builtin::total("dict", "K,V", "(List[(K, V)]) -> Dict[K, V]"),
-    Builtin::total("insert", "K,V", "(Dict[K, V], K, V) -> Dict[K, V]"),
-    Builtin::total("insert", "A", "(Set[A], A) -> Set[A]"),
-    Builtin::total("remove", "K,V", "(Dict[K, V], K) -> Dict[K, V]"),
-    Builtin::total("remove", "A", "(Set[A], A) -> Set[A]"),
-    Builtin::total("keys", "K,V", "(Dict[K, V]) -> List[K]"),
-    Builtin::total("values", "K,V", "(Dict[K, V]) -> List[V]"),
-    Builtin::total("items", "K,V", "(Dict[K, V]) -> List[(K, V)]"),
-    Builtin::total("map_values", "K,V,W", "(Dict[K, V], (V) -> W) -> Dict[K, W]"),
-    Builtin::total("set", "A", "(List[A]) -> Set[A]"),
-    Builtin::total("to_list", "A", "(Set[A]) -> List[A]"),
-    Builtin::total("union", "A", "(Set[A], Set[A]) -> Set[A]"),
-    Builtin::total("intersection", "A", "(Set[A], Set[A]) -> Set[A]"),
-    Builtin::total("difference", "A", "(Set[A], Set[A]) -> Set[A]"),
-    Builtin::total("zip", "A,B", "(List[A], List[B]) -> List[(A, B)]"),
-    Builtin::total("enumerate", "A", "(List[A]) -> List[(Int, A)]"),
-    Builtin::total("sort", "A", "(List[A]) -> List[A]"),
-    Builtin::total("sort_by", "A,B", "(List[A], (A) -> B) -> List[A]"),
-    Builtin::total("reverse", "A", "(List[A]) -> List[A]"),
-    Builtin::total("join", "", "(List[String], String) -> String"),
-    Builtin::total("split", "", "(String, String) -> List[String]"),
-    Builtin::total("trim", "", "(String) -> String"),
-    Builtin::total("parse_int", "", "(String) -> Option[Int]"),
-    Builtin::new("parse_float", "", "(String) -> Option[Float]"),
-    Builtin::new("float", "", "(Int) -> Float"),
-    // the IEEE 754 bits of a float, from 0 to 2^64 - 1, and back (`None` for a NaN's)
-    Builtin::total("float_bits", "", "(Float) -> Int"),
-    Builtin::total("float_from_bits", "", "(Int) -> Option[Float]"),
-    Builtin::new("floor", "", "(Float) -> Int"),
-    Builtin::new("ceil", "", "(Float) -> Int"),
-    Builtin::new("round", "", "(Float) -> Int"),
-    Builtin::new("sqrt", "", "(Float) -> Float"),
-    // the operations on floats without their fault: `None` where the result
-    // isn't a finite number (for code that can't rule that out, as an
-    // evaluator of other programs)
-    Builtin::total("checked_add", "", "(Float, Float) -> Option[Float]"),
-    Builtin::total("checked_sub", "", "(Float, Float) -> Option[Float]"),
-    Builtin::total("checked_mul", "", "(Float, Float) -> Option[Float]"),
-    Builtin::total("checked_div", "", "(Float, Float) -> Option[Float]"),
-    Builtin::total("checked_rem", "", "(Float, Float) -> Option[Float]"),
-    Builtin::total("checked_sqrt", "", "(Float) -> Option[Float]"),
-    Builtin::total("checked_floor", "", "(Float) -> Option[Int]"),
-    Builtin::total("checked_ceil", "", "(Float) -> Option[Int]"),
-    Builtin::total("checked_round", "", "(Float) -> Option[Int]"),
-    Builtin::total("map", "A,B", "(List[A], (A) -> B) -> List[B]"),
-    Builtin::total("filter", "A", "(List[A], (A) -> Bool) -> List[A]"),
-    Builtin::total("fold", "A,B", "(List[A], B, (B, A) -> B) -> B"),
-    Builtin::total("all", "A", "(List[A], (A) -> Bool) -> Bool"),
-    Builtin::total("any", "A", "(List[A], (A) -> Bool) -> Bool"),
-    Builtin::total("contains", "A", "(List[A], A) -> Bool"),
-    Builtin::total("push", "A", "(List[A], A) -> List[A]"),
-    Builtin::total("take", "A", "(List[A], Int) -> List[A]"),
-    Builtin::total("drop", "A", "(List[A], Int) -> List[A]"),
-    Builtin::total("find", "A", "(List[A], (A) -> Bool) -> Option[A]"),
-    Builtin::total("count", "A", "(List[A], (A) -> Bool) -> Int"),
-    Builtin::total("get", "A", "(List[A], Int) -> Option[A]"),
-    // `xs[i]`: fails unless `0 <= i < len(xs)`
-    Builtin::new("at", "A", "(List[A], Int) -> A"),
-    Builtin::total("sum", "", "(List[Int]) -> Int"),
-    Builtin::total("sum", "", "(List[Float]) -> Float"),
-    Builtin::new("range", "", "(Int, Int) -> List[Int]"),
-    Builtin::total("abs", "", "(Int) -> Int"),
-    Builtin::total("abs", "", "(Float) -> Float"),
-    Builtin::total("min", "", "(Int, Int) -> Int"),
-    Builtin::total("min", "", "(Float, Float) -> Float"),
-    Builtin::total("max", "", "(Int, Int) -> Int"),
-    Builtin::total("max", "", "(Float, Float) -> Float"),
-    Builtin::new("matches", "", "(String, String) -> Bool"),
-    Builtin::total("starts_with", "", "(String, String) -> Bool"),
-    // strings are UTF-8: positions in them are byte offsets (`index_of`,
-    // `byte_slice`); counting and indexing name a unit (`s.graphemes()[i]`)
-    Builtin::new("ends_with", "", "(String, String) -> Bool"),
-    Builtin::new("chars", "", "(String) -> List[String]"),
-    Builtin::new("slice", "A", "(List[A], Int, Int) -> List[A]"),
-    // the byte offset of the first match ("" is found at 0)
-    Builtin::new("index_of", "", "(String, String) -> Option[Int]"),
-    // the bytes from offset `a` to `b`, clamped to the string; an offset inside a
-    // character moves back to its start
-    Builtin::total("byte_slice", "", "(String, Int, Int) -> String"),
-    Builtin::total("replace", "", "(String, String, String) -> String"),
-    Builtin::new("lines", "", "(String) -> List[String]"),
-    Builtin::total("repeat", "", "(String, Int) -> String"),
-    Builtin::total("reverse", "", "(String) -> String"),
-    Builtin::new("to_upper", "", "(String) -> String"),
-    Builtin::new("to_lower", "", "(String) -> String"),
-    Builtin::new("is_digit", "", "(String) -> Bool"),
-    Builtin::new("is_alpha", "", "(String) -> Bool"),
-    Builtin::new("is_space", "", "(String) -> Bool"),
-    Builtin::new("ord", "", "(String) -> Int"),
-    // a string's UTF-8 bytes, what `s.bytes()` / `s.code_points()` read (the prelude's)
-    Builtin::total("byte_len", "", "(String) -> Int"),
-    Builtin::new("byte_at", "", "(String, Int) -> Int"),
-    Builtin::new("chr", "", "(Int) -> String"),
-    Builtin::total("to_string", "A", "(A) -> String"),
-    Builtin::total("debug", "A", "(A) -> String"),
-    // the value as compact JSON, as `strata run` writes it
-    // a line of output, shown as by `to_string`: on the terminal under `strata run`,
-    // into the test's own buffer under `strata test`, nowhere under `verify`
-    Builtin::new("print", "A", "(A) -> ()"),
-];
+/// The types and traits every program names (`core.types`), read once.
+pub fn prelude() -> &'static Program {
+    static P: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
+    P.get_or_init(crate::core::types)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ty {
@@ -996,7 +484,7 @@ fn needs_rewrite(env: &Env) -> bool {
     // a trait method named like a builtin (`Files.remove`) may mean the builtin
     // or two modules' traits share a method name (`Console.write`, `Files.write`)
     let mut shorts: Vec<&str> = env.traits.values().flat_map(|t| t.methods.iter().map(|m| crate::names::short(&m.decl.name))).collect();
-    let like_builtin = shorts.iter().any(|s| BUILTINS.iter().any(|b| b.name == *s));
+    let like_builtin = shorts.iter().any(|s| builtins().iter().any(|b| b.name == *s));
     shorts.sort();
     let across = shorts.windows(2).any(|w| w[0] == w[1]);
     !(env.inherent.is_empty() && !shared && !statics && !like_builtin && !across)
@@ -2039,6 +1527,30 @@ impl<'a> Checker<'a> {
         self.scopes.pop();
     }
 
+    /// A `builtin fn`'s signature: its contracts are about its parameters
+    /// (`requires 0 <= i && i < len(xs)`).
+    fn check_builtin_fn(&mut self, f: &FnDecl) {
+        self.rigid.extend(f.type_params.iter().cloned());
+        self.scopes.push(HashMap::default());
+        for p in &f.params {
+            let t = self.lower(&p.ty, &HashMap::default());
+            self.bind(p.name, t);
+        }
+        let ret = self.lower(&f.ret, &HashMap::default());
+        for r in &f.requires {
+            let t = self.infer(r);
+            self.expect(&Ty::Bool, &t, "requires clause");
+        }
+        self.scopes.push(HashMap::default());
+        self.bind(("it").sym(), ret);
+        for en in &f.ensures {
+            let t = self.infer(en);
+            self.expect(&Ty::Bool, &t, "ensures clause");
+        }
+        self.scopes.pop();
+        self.scopes.pop();
+    }
+
     /// Whether a type crosses the C ABI: a sized integer, `Float`, `Bool`,
     /// `String` (copied each way), `()`, or an `extern c type` handle. A `mut`
     /// parameter is an out-pointer, so it can't be a `String` or `()`.
@@ -2158,7 +1670,7 @@ impl<'a> Checker<'a> {
     /// The type of the builtin `name` (or std's host operation), whatever else
     /// the name means.
     fn builtin_fn(&mut self, name: &str) -> Option<Ty> {
-        let Builtin { params: ps, sig, .. } = BUILTINS.iter().chain(crate::stdlib::HOST).find(|b| b.name == name)?;
+        let Builtin { params: ps, sig, .. } = builtins().iter().chain(crate::stdlib::HOST).find(|b| b.name == name)?;
         let ps: Vec<Symbol> = ps.split(',').filter(|s| !s.is_empty()).map(Symbol::from).collect();
         Some(self.instantiate(&ps, &parse_type_str(sig)))
     }
@@ -2342,7 +1854,7 @@ impl<'a> Checker<'a> {
         // A trait method named like a built-in one (`find`) is the trait's only
         // on a receiver whose type implements it: on a list, the built-in
         // (decided below, by the receiver's traits).
-        let builtin_too = dotted && self.lookup(m.sym()).is_none() && self.env.is_method_on_receiver(m.sym()) && BUILTINS.iter().any(|b| b.name == m);
+        let builtin_too = dotted && self.lookup(m.sym()).is_none() && self.env.is_method_on_receiver(m.sym()) && builtins().iter().any(|b| b.name == m);
         if !builtin_too && (self.lookup(m.sym()).is_some() || self.env.fns.contains_key(&Symbol::new(m))) {
             if !dotted || !all.first().is_some_and(|r| self.has_own_method(r, m)) {
                 return None;
@@ -2420,7 +1932,7 @@ impl<'a> Checker<'a> {
                 let muts = self.mut_mask(&mq);
                 Some(self.call_with(ft, all, &Lazy(|| format!("call to `{sm}`")), &muts))
             }
-            [] if head.as_deref().is_some_and(|h| ["Int", "Float", "Bool", "String", "List", "Dict", "Set"].contains(&h)) && BUILTINS.iter().any(|b| b.name == sm) => {
+            [] if head.as_deref().is_some_and(|h| ["Int", "Float", "Bool", "String", "List", "Dict", "Set"].contains(&h)) && builtins().iter().any(|b| b.name == sm) => {
                 self.targets.push((site, Target::Builtin(sm.clone())));
                 if let Some(t) = self.overloaded(sm.sym(), all) {
                     return Some(t);
@@ -4064,7 +3576,7 @@ impl<'a> Checker<'a> {
         if self.lookup(name).is_some() || self.env.fns.contains_key(&name.sym()) {
             return None;
         }
-        let cands: Vec<_> = BUILTINS.iter().filter(|b| b.name == name).collect();
+        let cands: Vec<_> = builtins().iter().filter(|b| b.name == name).collect();
         if cands.len() < 2 {
             return None;
         }
@@ -5188,6 +4700,14 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
             // its functions are checked as the type's own methods (`resolve` makes them an `impl`)
             DeclKind::Capability(_) => {}
             DeclKind::Use(_) => {}
+            DeclKind::Extern(e) if e.lang == crate::ast::Lang::Builtin => {
+                if !crate::core::is_core(&d.module) {
+                    c.err(format!("`builtin` definitions are only in `core`: `{}` is what the compiler provides, declared there", crate::names::short(&d.name())));
+                }
+                if let ExternItem::Fn(f) = &e.item {
+                    c.check_builtin_fn(f);
+                }
+            }
             DeclKind::Extern(e) => {
                 let kw = format!("extern {}", e.lang.name());
                 if d.public {
