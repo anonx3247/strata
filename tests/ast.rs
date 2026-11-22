@@ -1,11 +1,13 @@
-//! `std.ast.binary` reads module files and bundles as `src/binary.rs` does,
+//! `compiler/binary` (the compiler package's `tree`, `same`, `hashes` and
+//! `bad` commands) reads module files and bundles as `src/binary.rs` does,
 //! and writes a definition's bytes as it does. For every module file in the
 //! repository, and for a program using every node of the tree, the Strata
 //! decoder's trees (as `debug` prints them) are `strata header --tree`'s,
 //! each definition it re-encodes is the file's bytes, and the hashes it
 //! computes are the header's. Cut or corrupted files are errors, never
 //! crashes. Its SHA-256 (private) agrees with the `sha2` crate. And
-//! `std.ast.text` prints every definition as `src/printer.rs` does.
+//! `compiler/text` (its `text` command) prints every definition as
+//! `src/printer.rs` does.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -13,111 +15,8 @@ use std::process::{Command, Stdio};
 
 const STRATA: &str = env!("CARGO_BIN_EXE_strata");
 
-/// The checker, run as `MODE FILE...`: `tree` prints each definition as
-/// `debug` writes it; `same` prints `N/M` (of M definitions, N re-encode to
-/// the file's bytes) and the names of those that don't; `hashes` the same for
-/// the three hashes Strata computes, against the header's; `bad` reads every
-/// prefix of the file and the file with each byte flipped, and prints how many
-/// prefixes were read and how many flipped files read as other trees (none
-/// should).
-const CHECKER: &str = r#"use std.fs.{Files, Disk}
-use std.process.{Environment, Process}
-use std.ast.binary.{read, read_header, encode_definition, hash, interface_hash, code_hash}
-use std.ast.text.{module_text}
-
-fn tree(bytes: List[Int]) -> Result[List[String], String] {
-  Ok(read(bytes)!.decls.map(d -> debug(d)))
-}
-
-fn same(bytes: List[Int]) -> Result[List[String], String] {
-  decls := read(bytes)!.decls
-  h := read_header(bytes)!
-  mut n := 0
-  mut wrong := []
-  for p in zip(h.entries, decls) {
-    if encode_definition(p.1) == slice(bytes, p.0.offset, p.0.offset + p.0.size) {
-      n += 1
-    } else {
-      wrong = push(wrong, p.0.name)
-    }
-  }
-  m := len(decls)
-  Ok(push(wrong, f"{n}/{m}"))
-}
-
-fn hashes(bytes: List[Int]) -> Result[List[String], String] {
-  decls := read(bytes)!.decls
-  h := read_header(bytes)!
-  mut n := 0
-  mut wrong := []
-  for p in zip(h.entries, decls) {
-    if hash(p.1) == p.0.hash && interface_hash(p.1) == p.0.interface_hash && code_hash(p.1) == p.0.code_hash {
-      n += 1
-    } else {
-      wrong = push(wrong, p.0.name)
-    }
-  }
-  m := len(decls)
-  Ok(push(wrong, f"{n}/{m}"))
-}
-
-fn bad(bytes: List[Int]) -> Result[List[String], String] {
-  mut read_cut := 0
-  for n in 0..len(bytes) {
-    if read(slice(bytes, 0, n)) is Ok {
-      read_cut += 1
-    }
-  }
-  // a flipped byte is refused, or (in the header's own tables) reads the same trees
-  original := debug(read(bytes)!.decls)
-  mut changed := 0
-  for i in 0..len(bytes) {
-    flipped := [if j == i {
-      255 - b
-    } else {
-      b
-    } for (j, b) in enumerate(bytes)]
-    match read(flipped) {
-      Ok(img) => {
-        if debug(img.decls) != original {
-          changed += 1
-        }
-      },
-      Err(_) => (),
-    }
-  }
-  Ok([f"cut {read_cut}", f"changed {changed}"])
-}
-
-fn main(disk: Disk, process: Process) {
-  args := process.args()
-  mode := get(args, 0) ?? ""
-  for path in drop(args, 1) {
-    bytes := match disk.read_bytes(path) {
-      Ok(bs) => bs,
-      Err(_) => [],
-    }
-    out := match mode {
-      "tree" => tree(bytes),
-      "same" => same(bytes),
-      "hashes" => hashes(bytes),
-      "text" => match read(bytes) {
-        Ok(img) => Ok(["=== " + path, module_text(img.decls)]),
-        Err(e) => Err(e),
-      },
-      _ => bad(bytes),
-    }
-    match out {
-      Ok(lines) => {
-        for l in lines {
-          print(l)
-        }
-      },
-      Err(e) => print(f"error: {e}"),
-    }
-  }
-}
-"#;
+#[path = "common/compiler.rs"]
+mod compiler;
 
 /// A program with every node of the tree (it parses; it needn't check).
 const EVERY_NODE: &str = r#"/// doc
@@ -288,19 +187,12 @@ fn run(args: &[&str]) -> String {
     String::from_utf8(o.stdout).unwrap()
 }
 
-/// The checker, stored once per test.
-fn checker(dir: &Path) -> String {
-    let file = dir.join("check.strata");
-    save(&file, CHECKER);
-    file.to_string_lossy().into_owned()
-}
-
 /// Every module file in the repository: std, the examples, test data and the
 /// compiled prelude.
 fn module_files() -> Vec<PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut out = vec![];
-    let mut todo = vec![root.join("std"), root.join("examples"), root.join("tests/data"), root.join("src/llvm")];
+    let mut todo = vec![root.join("std"), root.join("compiler"), root.join("examples"), root.join("tests/data"), root.join("src/llvm")];
     while let Some(d) = todo.pop() {
         for e in std::fs::read_dir(&d).unwrap() {
             let p = e.unwrap().path();
@@ -317,20 +209,20 @@ fn module_files() -> Vec<PathBuf> {
 
 /// The Strata decoder agrees with Rust's on `files`: the same trees, and
 /// each definition re-encoded to the same bytes.
-fn agree(check: &str, files: &[PathBuf]) {
+fn agree(files: &[PathBuf]) {
     let paths: Vec<String> = files.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-    let mut args = vec!["--file", check, "run", "--", "tree"];
+    let mut args = vec!["tree"];
     args.extend(paths.iter().map(|s| s.as_str()));
-    let got = run(&args);
+    let got = compiler::run(&args);
     let want: String = paths.iter().map(|p| run(&["header", p, "--tree"])).collect();
     if got != want {
         let (g, w): (Vec<&str>, Vec<&str>) = (got.lines().collect(), want.lines().collect());
         let at = g.iter().zip(&w).position(|(a, b)| a != b).unwrap_or(g.len().min(w.len()));
-        panic!("definition {at} differs:\n  std.ast: {}\n  Rust:    {}", g.get(at).unwrap_or(&"(none)"), w.get(at).unwrap_or(&"(none)"));
+        panic!("definition {at} differs:\n  compiler/binary: {}\n  Rust:            {}", g.get(at).unwrap_or(&"(none)"), w.get(at).unwrap_or(&"(none)"));
     }
     for (mode, what) in [("same", "re-encode to the file's bytes"), ("hashes", "have the header's three hashes")] {
-        args[4] = mode;
-        for (p, line) in paths.iter().zip(run(&args).lines()) {
+        args[0] = mode;
+        for (p, line) in paths.iter().zip(compiler::run(&args).lines()) {
             let (n, m) = line.split_once('/').unwrap_or_else(|| panic!("{p}: {line}"));
             assert_eq!(n, m, "{p}: only {line} definitions {what}");
         }
@@ -339,20 +231,18 @@ fn agree(check: &str, files: &[PathBuf]) {
 
 #[test]
 fn every_module_file_reads_and_writes_as_in_rust() {
-    let dir = scratch("files");
     let files = module_files();
     assert!(files.len() > 30, "{files:?}");
-    agree(&checker(&dir), &files);
-    let _ = std::fs::remove_dir_all(&dir);
+    agree(&files);
 }
 
-/// `std.ast.text` prints each module file's definitions as `src/printer.rs`
+/// `compiler/text` prints each module file's definitions as `src/printer.rs`
 /// does (`strata header FILE --text`), byte for byte.
-fn prints_as_in_rust(check: &str, files: &[PathBuf]) {
+fn prints_as_in_rust(files: &[PathBuf]) {
     let paths: Vec<String> = files.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-    let mut args = vec!["--file", check, "run", "--", "text"];
+    let mut args = vec!["text"];
     args.extend(paths.iter().map(|s| s.as_str()));
-    let got = run(&args);
+    let got = compiler::run(&args);
     let mut wrong = vec![];
     for (i, p) in paths.iter().enumerate() {
         let start = format!("=== {p}\n");
@@ -364,7 +254,7 @@ fn prints_as_in_rust(check: &str, files: &[PathBuf]) {
         if strata != want {
             let (g, w): (Vec<&str>, Vec<&str>) = (strata.lines().collect(), want.lines().collect());
             let at = g.iter().zip(&w).position(|(a, b)| a != b).unwrap_or(g.len().min(w.len()));
-            wrong.push(format!("{p}, line {}:\n  std.ast.text: {:?}\n  Rust:         {:?}", at + 1, g.get(at).unwrap_or(&"(none)"), w.get(at).unwrap_or(&"(none)")));
+            wrong.push(format!("{p}, line {}:\n  compiler/text: {:?}\n  Rust:          {:?}", at + 1, g.get(at).unwrap_or(&"(none)"), w.get(at).unwrap_or(&"(none)")));
         }
     }
     assert!(wrong.is_empty(), "{} of {} files print differently:\n{}", wrong.len(), paths.len(), wrong.join("\n"));
@@ -372,10 +262,8 @@ fn prints_as_in_rust(check: &str, files: &[PathBuf]) {
 
 #[test]
 fn every_module_file_prints_as_in_rust() {
-    let dir = scratch("print");
     let files = module_files();
-    prints_as_in_rust(&checker(&dir), &files);
-    let _ = std::fs::remove_dir_all(&dir);
+    prints_as_in_rust(&files);
 }
 
 #[test]
@@ -387,9 +275,8 @@ fn every_node_reads_and_writes_as_in_rust() {
     for n in NODES {
         assert!(tree.contains(n), "the program has no {n}");
     }
-    let check = checker(&dir);
-    agree(&check, std::slice::from_ref(&file));
-    prints_as_in_rust(&check, &[file]);
+    agree(std::slice::from_ref(&file));
+    prints_as_in_rust(&[file]);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -399,9 +286,8 @@ fn bundles_read_as_in_rust() {
     let bundle = dir.join("tasks.strata");
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     run(&["--file", &root.join("examples/tasks").to_string_lossy(), "pack", &bundle.to_string_lossy()]);
-    let check = checker(&dir);
     let b = bundle.to_string_lossy();
-    let got = run(&["--file", &check, "run", "--", "tree", &b]);
+    let got = compiler::run(&["tree", &*b]);
     assert!(got.lines().count() > 10, "{got}");
     assert_eq!(got, run(&["header", &b, "--tree"]));
     let _ = std::fs::remove_dir_all(&dir);
@@ -409,28 +295,24 @@ fn bundles_read_as_in_rust() {
 
 #[test]
 fn bad_input_is_an_error_not_a_crash() {
-    let dir = scratch("bad");
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let check = checker(&dir);
     let file = root.join("examples/orders.strata");
-    let out = run(&["--file", &check, "run", "--", "bad", &file.to_string_lossy()]);
+    let out = compiler::run(&["bad", &*file.to_string_lossy()]);
     // every prefix is refused, and no flipped byte reads as other trees (the
     // header's hash catches a change inside a definition)
     assert_eq!(out, "cut 0\nchanged 0\n");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `std.ast.binary`'s SHA-256 (private: it names definitions, nothing else)
+/// `compiler/binary`'s SHA-256 (private: it names definitions, nothing else)
 /// against the `sha2` crate: every length from 0 to 200 bytes (each padding
 /// case, one to four blocks), longer ones around block and power-of-two
 /// edges, inputs of all zeros and all ones, and 20,000 `a`s. FIPS 180's
-/// examples are a test of the module, run by `strata --file std test` and
-/// `--with-deps`, not by other projects' `strata test`.
+/// examples are a test of the module, run by `strata --file compiler test`.
 #[test]
 fn sha256_agrees_with_the_sha2_crate() {
     use sha2::{Digest, Sha256};
-    let std_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("std");
-    let std_dir = std_dir.to_string_lossy().into_owned();
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("compiler");
+    let dir = dir.to_string_lossy().into_owned();
     // pseudo-random bytes, the same on every run (xorshift)
     let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
     let mut next = || {
@@ -455,12 +337,12 @@ fn sha256_agrees_with_the_sha2_crate() {
         let handles: Vec<_> = chunks
             .into_iter()
             .map(|chunk| {
-                let std_dir = &std_dir;
+                let dir = &dir;
                 s.spawn(move || {
                     let mut wrong = vec![];
                     for bytes in chunk {
                         let arg = format!("{:?}", bytes);
-                        let out = run(&["--file", std_dir, "run", "std.ast.binary.sha256", &arg]);
+                        let out = run(&["--file", dir, "run", "binary.sha256", &arg]);
                         let got: Vec<u8> = out.split(|c: char| !c.is_ascii_digit()).filter(|t| !t.is_empty()).map(|t| t.parse().unwrap()).collect();
                         let want = Sha256::digest(bytes).to_vec();
                         if got != want {
@@ -474,16 +356,7 @@ fn sha256_agrees_with_the_sha2_crate() {
         handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
     });
     assert!(wrong.is_empty(), "{} of {} inputs differ:\n{}", wrong.len(), inputs.len(), wrong.join("\n"));
-    // FIPS 180's examples, the million `a`s included: a test of the module,
-    // run with std's own tests, and only there (std is tested on its own)
-    let out = run(&["--file", &std_dir, "test"]);
-    assert!(out.contains("✓ std.ast.binary: sha256 gives FIPS 180's examples"), "{out}");
-    let dir = scratch("std-tests");
-    let file = dir.join("mine.strata");
-    save(&file, "use std.ast.binary.{version}\n\ntest \"mine\" {\n  assert version() == 1\n}\n");
-    let out = run(&["--file", &file.to_string_lossy(), "test"]);
-    assert_eq!(out, "✓ mine\n\n1 passed, 0 failed\n", "a program's tests are its own, not std's");
-    let out = run(&["--file", &file.to_string_lossy(), "test", "--with-deps"]);
-    assert!(out.contains("✓ std.ast.binary: sha256 gives FIPS 180's examples") && out.contains("2 passed, 0 failed"), "{out}");
-    let _ = std::fs::remove_dir_all(&dir);
+    // FIPS 180's examples, the million `a`s included: a test of the module
+    let out = run(&["--file", &dir, "test", "FIPS"]);
+    assert!(out.contains("✓ binary: sha256 gives FIPS 180's examples"), "{out}");
 }

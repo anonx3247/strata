@@ -5597,7 +5597,7 @@ fn std_is_edited_as_a_checked_package() {
     let d = tmp("std-edit");
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("std");
     let std = d.join("std");
-    // std's files and submodules (`std/ast/binary.strata`), not the
+    // std's files and any submodules (`std/a/b.strata`), not the
     // `.strata` folder an edit of std leaves there
     fn copy(from: &std::path::Path, to: &std::path::Path) {
         std::fs::create_dir_all(to).unwrap();

@@ -1,12 +1,12 @@
-//! The syntax tree as a `std.ast` value, written in Strata syntax: what
-//! `debug` prints for the same tree decoded by `std.ast.binary`. Names follow
-//! `std/ast.strata` (`IntLit`, `pre` / `post`, …), which mirrors `ast.rs`
+//! The syntax tree as a `compiler/ast` value, written in Strata syntax: what
+//! `debug` prints for the same tree decoded by `compiler/binary`. Names follow
+//! `compiler/ast.strata` (`IntLit`, `pre` / `post`, …), which mirrors `ast.rs`
 //! node for node. `strata header FILE --tree` prints it; the tests compare it
 //! with what the Strata decoder reads from every module file.
 
 use crate::ast::*;
 
-/// A definition as a `std.ast.Decl` value.
+/// A definition as a `Decl` value (`compiler/ast`).
 pub fn decl(d: &Decl) -> String {
     let kind = match &d.kind {
         DeclKind::Type(t) => tag("TypeDef", type_decl(t)),
