@@ -357,6 +357,32 @@ n := parse(s) except e { return describe_error(e) }      // ... or a block, with
 - Each works on its own type only: `except` / `!!` on an `Option`, or `or` / `??` on a `Result`, is an error. So a `Result[Option[T], E]` reads one way: `(load(k) !! None) ?? default` handles the error, then the missing value.
 - They chain: `load(path)!.lines()`, `find(xs, p)?.name`.
 
+## Tasks: `scope`, `spawn` and `await`
+
+Work runs in parallel in tasks. A `scope` starts them and ends only once every task in it has finished:
+
+```rust
+fn fetch_both(net: Net) -> (Page, Page) {
+  scope {
+    a := spawn fetch(net, url1)
+    b := spawn fetch(net, url2)
+    await (a, b)
+  }
+}
+
+squares := scope { await [spawn x * x for x in xs] }
+```
+
+- `spawn e` runs the expression `e` (all of it, as `return e` takes all of it) in a new task, and gives a handle, `Task[T]`. It must be inside a `scope`.
+- `await h` waits for the task and gives its result; `await (a, b)` gives a tuple of results, `await hs` a list. It takes what follows it like `-` does, so `(await hs).len()` needs the parentheses.
+- There is no `async` function: any function can be called in a task, and a call that waits (a read, a long computation) is a plain call. Nothing about a function says whether tasks run it.
+
+Tasks share nothing that can change, so the result doesn't depend on timing: `scope { a := spawn f(); b := spawn g(); await (a, b) }` is `(f(), g())`, and `verify` reasons about it as such. What a task uses from around it is a copy at `spawn` time, as in a lambda: it can't change outer variables (`spawn { n += 1 }` is an error), and `return`, `!` and `?` can't leave it (handle the error in the task, or make it the task's result).
+
+A handle stays in its scope: a scope can't give one back, a task can't hold another's, and one can't be stored in a variable declared outside. A fault in a task (an index out of range, a broken contract) is raised where the task is awaited, or at the end of its scope, once the scope's other tasks have finished; its call stack shows where: `main -> spawn -> pick`.
+
+Tasks run on threads, one per task for now. Channels and `select` come next (IDEAS.md, "Concurrency").
+
 ## Built-in types
 
 | Type | Notes |

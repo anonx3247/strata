@@ -361,6 +361,21 @@ fn std_termination_is_kept_between_runs() {
     assert_eq!(first, second);
 }
 
+/// A type random values rarely meet (consecutive integers) gets its inputs
+/// from the solver: the bug, only on lists longer than three, is found.
+#[test]
+fn inputs_from_the_solver_meet_narrow_types() {
+    if !has_solver() {
+        eprintln!("z3 is not installed: skipping");
+        return;
+    }
+    let d = tmp("solver-inputs");
+    save(&d.join("s.strata"), "type Steps = List[Int] where len(it) >= 3 && all(1..len(it), i -> it[i] == it[i - 1] + 1)\nfn last(xs: Steps) -> Int\n  ensures it == xs[0] + 2\n{\n  xs[len(xs) - 1]\n}\nfn first(xs: Steps) -> Int\n  ensures it == xs[1] - 1\n{\n  xs[0]\n}\n");
+    let (ok, out) = strata(&["--file", "s.strata", "verify"], &d, None);
+    assert!(!ok && out.contains("✗ last") && out.contains("found by the fuzzer, on inputs from the solver"), "{out}");
+    assert!(out.contains("✓ first"), "{out}");
+}
+
 /// The solver and the fuzzer race: a failure the fuzzer finds stops the
 /// solver's processes, so a slow query doesn't hold the verdict up.
 #[test]
@@ -1276,6 +1291,37 @@ fn modules_contracts_and_files() {
     assert!(text(&pkg.join("core.strata")).contains("all(reported, r -> contains(claimed, r))"), "the edit is in the file");
     let (ok, out) = strata(&["test"], &pkg, None);
     assert!(ok && out.contains("0 failed"), "{out}");
+}
+
+/// Tasks: `spawn` only in a `scope`, and a handle never leaves it.
+#[test]
+fn tasks_stay_in_their_scope() {
+    let d = tmp("tasks");
+    save(&d.join("t.strata"),
+        "fn outside() -> Int {\n  h := spawn 1\n  0\n}\n\
+         fn leaks() -> Int {\n  h := scope { spawn 1 }\n  0\n}\n\
+         fn ret() -> Int {\n  scope {\n    h := spawn { return 1 }\n    0\n  }\n}\n\
+         fn tries(r: Result[Int, String]) -> Result[Int, String] {\n  scope {\n    h := spawn r! + 1\n    Ok(await h)\n  }\n}\n\
+         fn captured() -> Int {\n  scope {\n    a := spawn 1\n    b := spawn await a + 1\n    await b\n  }\n}\n\
+         fn stored() -> Int {\n  mut hs := []\n  scope {\n    hs = [spawn 1]\n    0\n  }\n}\n\
+         fn changes() -> Int {\n  mut n := 0\n  scope {\n    h := spawn { n += 1; n }\n    await h\n  }\n}\n\
+         fn not_task() -> Int {\n  await 3\n}\n\
+         fn fine(xs: List[Int]) -> (Int, List[Int]) {\n  scope {\n    a := spawn len(xs)\n    (await a, await [spawn x * 2 for x in xs])\n  }\n}\n");
+    let (ok, out) = strata(&["--file", "t.strata", "check"], &d, None);
+    assert!(!ok, "{out}");
+    for (f, msg) in [
+        ("outside", "`spawn` outside a `scope`"),
+        ("leaks", "a task's handle can't leave its `scope`"),
+        ("ret", "`return` can't leave a `spawn`"),
+        ("tries", "`!` can't return from a `spawn`"),
+        ("captured", "a closure or `spawn` can't hold `a`, a task's handle"),
+        ("stored", "`hs` is declared outside the `scope`"),
+        ("changes", "a closure cannot change `n`"),
+        ("not_task", "`await` takes a task's handle"),
+    ] {
+        assert!(out.contains(&format!("error in {f}: {msg}")), "{f}: {out}");
+    }
+    assert!(!out.contains("error in fine"), "{out}");
 }
 
 #[test]

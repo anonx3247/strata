@@ -176,10 +176,10 @@ fn prec(e: &Expr) -> u8 {
             BinOp::Mul | BinOp::Div | BinOp::Mod => 10,
         },
         Expr::Is(..) => 3,
-        Expr::Lambda(..) | Expr::Return(..) | Expr::Range(..) => 0,
+        Expr::Lambda(..) | Expr::Return(..) | Expr::Spawn(..) | Expr::Range(..) => 0,
         Expr::Except(..) | Expr::Or(..) if shorthand(e) => 4,
         Expr::Except(..) | Expr::Or(..) => 11,
-        Expr::Un(..) | Expr::Mut(..) => 11,
+        Expr::Un(..) | Expr::Mut(..) | Expr::Await(..) => 11,
         _ => 12,
     }
 }
@@ -263,7 +263,7 @@ pub fn head(e: &Expr, d: usize) -> String {
 fn brace_on_spine(e: &Expr) -> bool {
     match e {
         Expr::Ctor(_, CtorArgs::Record(_) | CtorArgs::Update(..)) | Expr::Dict(..) | Expr::Set(..) => true,
-        Expr::Call(x, _) | Expr::Method(x, _, _) | Expr::Field(x, _) | Expr::Index(x, _) | Expr::Un(_, x) | Expr::Is(x, _) | Expr::Mut(x) | Expr::Try(x, _) | Expr::Return(x) | Expr::Lambda(_, x) => brace_on_spine(x),
+        Expr::Call(x, _) | Expr::Method(x, _, _) | Expr::Field(x, _) | Expr::Index(x, _) | Expr::Un(_, x) | Expr::Is(x, _) | Expr::Mut(x) | Expr::Try(x, _) | Expr::Return(x) | Expr::Spawn(x) | Expr::Await(x) | Expr::Lambda(_, x) => brace_on_spine(x),
         Expr::Bin(_, l, r) | Expr::Or(l, r) | Expr::Except(l, _, r) => brace_on_spine(l) || brace_on_spine(r),
         Expr::Range(lo, hi, _) => lo.as_deref().is_some_and(brace_on_spine) || hi.as_deref().is_some_and(brace_on_spine),
         _ => false,
@@ -471,6 +471,9 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Mut(x) => format!("mut {}", expr(x, d)),
         // `comptime` takes a unary expression: `comptime (a ?? b)`
         Expr::Comptime(x) => format!("comptime {}", wrap(x, 11, d)),
+        Expr::Spawn(x) => format!("spawn {}", expr(x, d)),
+        Expr::Await(x) => format!("await {}", wrap(x, 11, d)),
+        Expr::Scope(b) => format!("scope {}", block(b, d)),
         Expr::Interp(parts) => {
             let mut s = "f\"".to_string();
             for p in parts {

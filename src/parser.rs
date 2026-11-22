@@ -49,7 +49,7 @@ fn is_upper(s: &str) -> bool {
 
 const KEYWORDS: &[&str] = &[
     "type", "fn", "test", "let", "if", "else", "match", "mock", "where", "mut", "while", "for", "in", "loop", "break", "continue",
-    "requires", "ensures", "terminates", "true", "false", "is", "assert", "trait", "impl", "law", "for", "pub", "use", "return", "except", "or", "comptime",
+    "requires", "ensures", "terminates", "true", "false", "is", "assert", "trait", "impl", "law", "for", "pub", "use", "return", "except", "or", "comptime", "scope", "spawn", "await",
 ];
 
 impl Parser {
@@ -875,6 +875,10 @@ impl Parser {
         if self.eat_kw("comptime") {
             return Ok(Expr::Comptime(Box::new(self.unary()?)));
         }
+        // `await h`: a task's result
+        if self.eat_kw("await") {
+            return Ok(Expr::Await(Box::new(self.unary()?)));
+        }
         self.postfix()
     }
 
@@ -1126,6 +1130,11 @@ impl Parser {
                 };
                 Ok(Expr::If(Box::new(c), Box::new(t), Box::new(f)))
             }
+            Tok::Ident(kw) if kw == "scope" => {
+                // `scope { … }`: its tasks all finish before it does
+                self.next();
+                Ok(Expr::Scope(Box::new(self.block()?)))
+            }
             Tok::Ident(kw) if kw == "match" => {
                 self.next();
                 let scrut = self.expr_ns()?;
@@ -1154,6 +1163,11 @@ impl Parser {
                     arms.push(Arm { comments, pat, body });
                 }
                 Ok(Expr::Match(Box::new(scrut), name, arms))
+            }
+            Tok::Ident(kw) if kw == "spawn" => {
+                // `spawn e`, the whole expression (as `return e`): run in a new task
+                self.next();
+                Ok(Expr::Spawn(Box::new(self.expr()?)))
             }
             Tok::Ident(kw) if kw == "return" => {
                 self.next();
