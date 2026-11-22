@@ -166,6 +166,44 @@ fn g(xs: List[Int]) -> Int {
 fn main() { print(f(1) + g([1]) + nope(2)) }
 "#;
 
+const MATCH_CHECKER: &str = r#"use std.fs.{Files, Disk}
+use std.process.{Environment, Process}
+use std.ast.binary.{decode_module}
+use std.ast.exhaustive.{match_errors}
+
+fn main(disk: Disk, process: Process) {
+  for a in process.args() {
+    match disk.read_bytes(a) {
+      Ok(bs) => match decode_module(bs) {
+        Ok(ds) => {
+          for e in match_errors(ds) {
+            print(f"error in {e.0}: {e.1}")
+          }
+        },
+        Err(e) => print(e),
+      },
+      Err(_) => print("unreadable"),
+    }
+  }
+}
+"#;
+
+const MATCHES: &str = r#"type Sh =
+  | Sq(Int)
+  | Rc { w: Int, h: Int }
+  | Dot
+fn a(s: Sh) -> Int { match s { Sq(n) => n, Dot => 0 } }
+fn b(o: Option[Int]) -> Int { match o { Some(n) => n } }
+fn c(r: Result[Int, String]) -> Int { match r { Err(_) => 0 } }
+fn d(x: Bool) -> Int { match x { true => 1 } }
+fn e(s: Sh) -> Int { match s { Rc { w, h } => w, Sq(_) | Dot => 0 } }
+fn g(o: Option[Sh]) -> Int { match o { None => 1 } }
+fn h(s: Sh) -> Int { match s { Sq(n) => n, _ => 0 } }
+fn mk() -> Option[Sh] { None }
+fn m() -> Int { match mk() { None => 0 } }
+fn main() { print(1) }
+"#;
+
 fn save(file: &std::path::Path, text: &str) {
     let mut c = Command::new(STRATA).args(["--file", &file.to_string_lossy(), "edit"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     c.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
@@ -208,6 +246,11 @@ fn generics_as_in_rust() {
 }
 
 #[test]
+fn non_exhaustive_matches_as_in_rust() {
+    same_errors_of(MATCH_CHECKER, "matches", MATCHES, &["non-exhaustive match"]);
+}
+
+#[test]
 fn methods_as_in_rust() {
     same_errors("methods", METHODS, &["expected `", "expects"]);
 }
@@ -219,11 +262,16 @@ fn trait_methods_as_in_rust() {
 
 /// `std.ast.check`'s errors on `text` are `strata check`'s lines holding one of `keys`.
 fn same_errors(name: &str, text: &str, keys: &[&str]) {
+    same_errors_of(CHECKER, name, text, keys);
+}
+
+/// What `checker` prints on `text` is `strata check`'s lines holding one of `keys`.
+fn same_errors_of(checker_text: &str, name: &str, text: &str, keys: &[&str]) {
     let dir = std::env::temp_dir().join(format!("strata-check-test-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let (checker, prog) = (dir.join("check.strata"), dir.join(format!("{name}.strata")));
-    save(&checker, CHECKER);
+    save(&checker, checker_text);
     save(&prog, text);
     let got = Command::new(STRATA).args(["--file", &checker.to_string_lossy(), "run", "--", &prog.to_string_lossy()]).output().unwrap();
     let got = String::from_utf8_lossy(&got.stdout).to_string();
