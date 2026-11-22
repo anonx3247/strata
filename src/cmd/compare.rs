@@ -33,7 +33,17 @@ fn strata_check(file: &str) -> Result<Vec<String>, String> {
         args.extend(["--std".to_string(), s.to_string_lossy().into_owned()]);
     }
     args.push(file.to_string());
-    Ok(run_compiler(&exe, &args)?.lines().filter(|l| l.starts_with("error in ")).map(String::from).collect())
+    // an error's message may go on over indented lines (`available:` overloads)
+    let mut errs: Vec<String> = vec![];
+    for l in run_compiler(&exe, &args)?.lines() {
+        if l.starts_with("error in ") {
+            errs.push(l.to_string());
+        } else if let (Some(e), true) = (errs.last_mut(), l.starts_with("  ")) {
+            e.push('\n');
+            e.push_str(l);
+        }
+    }
+    Ok(errs)
 }
 
 /// `strata check --strata`: the Strata checker's errors alone. Whether none.
@@ -86,14 +96,17 @@ fn report(mut rust: Vec<String>, mut strata: Vec<String>, what: &str) -> bool {
     false
 }
 
-/// `strata lex|parse|render|run|build --strata|--compare` on a script.
+/// `strata lex|parse|render|run|build --strata|--compare` on a script, or
+/// (all but `build`) a package: `lex` and `parse` on each module's text,
+/// `render` on each module file, `run` on the package packed into a bundle.
 /// `--strata` prints the Strata implementation's output; `--compare` also
 /// runs this executable without the flag and compares (for `run` and `build`,
 /// the programs' stdout, stderr and exit code).
 pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
     let file = args.val("--file").map(String::from).or_else(|| args.pos.get(1).cloned()).ok_or(format!("{cmd} --strata/--compare: give a script (--file F)"))?;
-    if !Path::new(&file).is_file() {
-        return Err(format!("{cmd} --strata/--compare covers a script (one file) for now, not a folder or package"));
+    let package = Path::new(&file).is_dir();
+    if package && cmd == "build" {
+        return Err("build --strata/--compare covers a script (one file) for now, not a folder or package".into());
     }
     if cmd == "render" && args.pos.len() > 1 {
         return Err("render --strata/--compare renders a whole script, not chosen definitions".into());
@@ -121,6 +134,46 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
     let scratch = std::env::temp_dir().join(format!("strata-compare-{}", std::process::id()));
     fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
     let strata_lines = |out: String| -> Vec<String> { out.lines().filter(|l| !l.starts_with("=== ")).map(String::from).collect() };
+    let one = |module: &String, unit: &String| -> Result<(Vec<String>, Vec<String>), String> {
+        let (theirs, rust_args): (Vec<String>, Vec<String>) = match cmd {
+            "lex" => (vec!["lex".into(), unit.clone()], vec!["lex".into(), unit.clone()]),
+            "parse" if args.flag("--stored") => ([vec!["stored".into()], std_files(), vec!["--".into(), unit.clone()]].concat(), vec!["parse".into(), "--stored".into(), unit.clone()]),
+            "parse" => (vec!["parse".into(), unit.clone()], vec!["parse".into(), unit.clone()]),
+            "render" => (vec!["text".into(), unit.clone()], if module.is_empty() { vec!["--file".into(), file.clone(), "render".into()] } else { vec!["--file".into(), file.clone(), "render".into(), module.clone()] }),
+            _ => {
+                let prelude = scratch.join("prelude.strata");
+                let me = std::env::current_exe().map_err(|e| e.to_string())?;
+                let o = Command::new(&me).arg("pack").arg("--prelude").arg(&prelude).output().map_err(|e| e.to_string())?;
+                if !o.status.success() {
+                    return Err(format!("packing the prelude: {}", String::from_utf8_lossy(&o.stderr).trim()));
+                }
+                let p = prelude.to_string_lossy().into_owned();
+                ([vec!["eval".into(), p], std_files(), vec!["--".into(), unit.clone()]].concat(), ["--file", &file, "run", "--", "one", "two words"].map(String::from).to_vec())
+            }
+        };
+        let mut ours = strata_lines(run_compiler(&exe, &theirs)?);
+        if cmd == "run" {
+            // `OUTPUT…`, `--- exit N`, `===`
+            ours.retain(|l| l != "===");
+            if let Some(l) = ours.pop() {
+                ours.push(format!("exit: {}", l.trim_start_matches("--- exit ")));
+            }
+        }
+        if cmd == "render" && ours.last().is_some_and(|l| l.is_empty()) {
+            ours.pop();
+        }
+        if !compare {
+            return Ok((vec![], ours));
+        }
+        let o = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).args(&rust_args).output().map_err(|e| e.to_string())?;
+        let mut rust: Vec<String> = String::from_utf8_lossy(&o.stdout).lines().map(String::from).collect();
+        if cmd == "run" {
+            // a fault's message (not the stack under it)
+            rust.extend(String::from_utf8_lossy(&o.stderr).lines().filter(|l| !l.trim_start().starts_with("stack:")).map(String::from));
+            rust.push(format!("exit: {}", o.status.code().unwrap_or(-1)));
+        }
+        Ok((rust, ours))
+    };
     let result = (|| -> Result<bool, String> {
         match cmd {
             "build" => {
@@ -157,48 +210,58 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                 Ok(report(outcome(&rust)?, outcome(&ours)?, "lines"))
             }
             _ => {
-                let (theirs, rust_args): (Vec<String>, Vec<String>) = match cmd {
-                    "lex" => (vec!["lex".into(), file.clone()], vec!["lex".into(), file.clone()]),
-                    "parse" if args.flag("--stored") => ([vec!["stored".into()], std_files(), vec!["--".into(), file.clone()]].concat(), vec!["parse".into(), "--stored".into(), file.clone()]),
-                    "parse" => (vec!["parse".into(), file.clone()], vec!["parse".into(), file.clone()]),
-                    "render" => (vec!["text".into(), file.clone()], vec!["--file".into(), file.clone(), "render".into()]),
-                    _ => {
-                        let prelude = scratch.join("prelude.strata");
-                        let me = std::env::current_exe().map_err(|e| e.to_string())?;
-                        let o = Command::new(&me).arg("pack").arg("--prelude").arg(&prelude).output().map_err(|e| e.to_string())?;
-                        if !o.status.success() {
-                            return Err(format!("packing the prelude: {}", String::from_utf8_lossy(&o.stderr).trim()));
-                        }
-                        let p = prelude.to_string_lossy().into_owned();
-                        ([vec!["eval".into(), p], std_files(), vec!["--".into(), file.clone()]].concat(), ["--file", &file, "run", "--", "one", "two words"].map(String::from).to_vec())
+                // a package: each module file on its own (`lex`, `parse`,
+                // `render`, lines prefixed with the module's name), or the
+                // whole program packed into a bundle (`run`)
+                let mut units: Vec<(String, String)> = vec![];
+                if !package {
+                    units.push((String::new(), file.clone()));
+                } else if cmd == "run" {
+                    let bundle = scratch.join("program.strata");
+                    let o = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).args(["--file", &file, "pack"]).arg(&bundle).output().map_err(|e| e.to_string())?;
+                    if !o.status.success() {
+                        return Err(format!("packing {file}: {}", String::from_utf8_lossy(&o.stderr).trim()));
                     }
-                };
-                let mut ours = strata_lines(run_compiler(&exe, &theirs)?);
-                if cmd == "run" {
-                    // `OUTPUT…`, `--- exit N`, `===`
-                    ours.retain(|l| l != "===");
-                    if let Some(l) = ours.pop() {
-                        ours.push(format!("exit: {}", l.trim_start_matches("--- exit ")));
+                    units.push((String::new(), bundle.to_string_lossy().into_owned()));
+                } else {
+                    let mut found = vec![];
+                    sources(Path::new(&file), Path::new(&file), &mut found);
+                    found.retain(|(rel, _)| rel.ends_with(".strata"));
+                    found.sort();
+                    for (rel, path) in found {
+                        let module = rel.trim_end_matches(".strata").replace('/', ".");
+                        if cmd == "render" {
+                            units.push((module, path.to_string_lossy().into_owned()));
+                            continue;
+                        }
+                        // `lex` and `parse` read text: the module's, as `render` writes it
+                        let o = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).args(["--file", &file, "render", &module]).output().map_err(|e| e.to_string())?;
+                        if !o.status.success() {
+                            return Err(format!("rendering {module}: {}", String::from_utf8_lossy(&o.stderr).trim()));
+                        }
+                        let text = scratch.join(format!("{module}.strata"));
+                        fs::write(&text, &o.stdout).map_err(|e| e.to_string())?;
+                        units.push((module, text.to_string_lossy().into_owned()));
                     }
                 }
-                if cmd == "render" && ours.last().is_some_and(|l| l.is_empty()) {
-                    ours.pop();
+                let (mut all_rust, mut all_ours) = (vec![], vec![]);
+                let mut code = None;
+                for (module, unit) in &units {
+                    let (rust, mut ours) = one(module, unit)?;
+                    if cmd == "run" && !compare {
+                        code = ours.pop();
+                    }
+                    let tag = |l: String| if module.is_empty() { l } else { format!("{module}: {l}") };
+                    all_rust.extend(rust.into_iter().map(tag));
+                    all_ours.extend(ours.into_iter().map(tag));
                 }
                 if !compare {
-                    let code = if cmd == "run" { ours.pop() } else { None };
-                    for l in &ours {
+                    for l in &all_ours {
                         println!("{l}");
                     }
                     return Ok(code.is_none_or(|c| c == "exit: 0"));
                 }
-                let o = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).args(&rust_args).output().map_err(|e| e.to_string())?;
-                let mut rust: Vec<String> = String::from_utf8_lossy(&o.stdout).lines().map(String::from).collect();
-                if cmd == "run" {
-                    // a fault's message (not the stack under it)
-                    rust.extend(String::from_utf8_lossy(&o.stderr).lines().filter(|l| !l.trim_start().starts_with("stack:")).map(String::from));
-                    rust.push(format!("exit: {}", o.status.code().unwrap_or(-1)));
-                }
-                Ok(report(rust, ours, "lines"))
+                Ok(report(all_rust, all_ours, "lines"))
             }
         }
     })();

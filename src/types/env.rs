@@ -74,8 +74,14 @@ impl Env {
                 }
             }
         }
-        for d in prelude.decls.iter().chain(prog.decls.iter()) {
+        for (k, d) in prelude.decls.iter().chain(prog.decls.iter()).enumerate() {
             let name = d.name();
+            // a program's type, trait or function named as a prelude one: an error,
+            // and the prelude's stays (the prelude's own code still checks against it)
+            if k >= prelude.decls.len() && !matches!(d.kind, DeclKind::Impl(_) | DeclKind::Test(_) | DeclKind::Use(_)) && prelude.decls.iter().any(|p| p.name() == name) {
+                errs.push(Diag { decl: name.clone(), msg: format!("`{name}` is already defined in the prelude (use it, or pick another name)") });
+                continue;
+            }
             let dup = match &d.kind {
                 DeclKind::Type(t) => {
                     match &t.body {
