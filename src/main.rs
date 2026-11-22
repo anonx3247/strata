@@ -97,7 +97,8 @@ every change made through strata, committed with them):
   lex <FILE>                   a text file's tokens, one per line (then its comments), as
                                the lexer makes them: what `std.ast.lex` is tested against
   parse <FILE>                 a text file parsed as a script: each definition as a `std.ast`
-                               value, one per line, as parsed (not stored): for `std.ast.parse`
+                               value, one per line, as parsed (not stored): for `std.ast.parse`;
+                               --stored: as stored (references qualified), for `std.ast.resolve`
   (`--file` accepts a folder: each .strata file is a module named after its path.
    `--file F edit [MODULE]` and `--file F add TEXT` change F outside any log: a script,
    or a folder's module, created if new; only what doesn't parse is refused)

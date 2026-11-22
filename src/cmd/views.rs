@@ -335,6 +335,8 @@ pub fn parse(args: &Args) -> Result<bool, String> {
     let src = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
     match crate::parser::parse_program(&src) {
         Ok(p) => {
+            // `--stored`: as it would be stored, every reference qualified
+            let p = if args.flag("--stored") { crate::resolve::stored_form(&p) } else { p };
             for d in &p.decls {
                 println!("{}", crate::ast_value::decl(d));
             }
