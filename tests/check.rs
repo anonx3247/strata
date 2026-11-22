@@ -416,8 +416,11 @@ fn main() { print(1) }
 "#;
 
 const EARLY: &str = r#"fn r() -> Result[Int, String] { Ok(1) }
+fn o() -> Option[Int] { None }
+fn a() -> Int { r()! }
+fn b() -> Int { o()? }
+fn c() -> Option[Int] { Some(r()!) }
 fn d() -> Result[Int, Int] { Ok(r()!) }
-fn e() -> Result[Int, String] { Ok(r()!) }
 fn main() { print(1) }
 "#;
 
@@ -791,7 +794,7 @@ fn misused_values_as_in_rust() {
 
 #[test]
 fn early_errors_as_in_rust() {
-    same_errors("early", EARLY, &["returns the error early"]);
+    same_errors("early", EARLY, &["returns the error early", "returns `None` early"]);
 }
 
 #[test]
