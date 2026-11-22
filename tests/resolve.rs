@@ -406,7 +406,7 @@ fn use_errors_as_in_rust() {
     let pkg = dir.join("pkg");
     std::fs::create_dir_all(&pkg).unwrap();
     std::fs::write(pkg.join("strata.toml"), "name = \"p\"\n").unwrap();
-    for (m, text) in [("util", "pub fn shown(x: Int) -> Int { x }\nfn secret() -> Int { 1 }\n"), ("main", "use nothere.{x}\nuse util.{shown, missing, secret}\nfn main() { print(shown(1)) }\n")] {
+    for (m, text) in [("util", "pub fn shown(x: Int) -> Int { x }\nfn secret() -> Int { 1 }\n"), ("main", "use nothere.{x}\nuse util.{shown, missing, secret}\nfn main() { print(shown(1) + util.secret()) }\n")] {
         let mut c = Command::new(STRATA).args(["--file", &format!("{}/", pkg.display()), "edit", m]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         c.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
         c.wait_with_output().unwrap();
@@ -422,8 +422,8 @@ fn use_errors_as_in_rust() {
     let got: Vec<String> = run(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>()).lines().map(String::from).collect();
     let o = Command::new(STRATA).args(["--file", &format!("{}/", pkg.display()), "check"]).output().unwrap();
     let check = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
-    let want: Vec<String> = check.lines().filter(|l| l.starts_with("error in use ")).map(String::from).collect();
-    assert_eq!(got.len(), 3, "{got:?}");
+    let want: Vec<String> = check.lines().filter(|l| l.starts_with("error in use ") || l.contains("is private to") || l.contains("internal to the standard library")).map(String::from).collect();
+    assert_eq!(got.len(), 4, "{got:?}");
     assert_eq!(got, want, "{check}");
     let _ = std::fs::remove_dir_all(&dir);
 }
