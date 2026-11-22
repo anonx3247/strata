@@ -296,6 +296,21 @@ fn c(x: Int | String) -> Bool { match x { Int => x, String => false } }
 fn main() { print(1) }
 "#;
 
+const WHOLE_ARMS: &str = r#"type Sh =
+  | Sq(Int)
+  | Rc(Int, Int)
+  | Dot
+fn a(x: Int | String) -> Bool { match x { Int => true, other => other } }
+fn b(s: Sh) -> Int { match s { Dot => 0, other => other } }
+fn c(s: Sh) -> Int { match s { Dot => 0, Sq(_) => 1, other => other } }
+fn d(o: Option[Int]) -> String { match o { None => "n", other => other } }
+fn e(mut s: Sh) -> Int { match s { Sq(_) => {
+  s = Dot
+  s
+}, _ => 0 } }
+fn main() { print(1) }
+"#;
+
 const RECORDS: &str = r#"type Pt = { x: Int, y: Int }
 type Sh =
   | Sq(Int)
@@ -589,6 +604,11 @@ fn main() { print(1) }
 #[test]
 fn union_arms_as_in_rust() {
     same_errors("union-arms", UNION_ARMS, &["expected `"]);
+}
+
+#[test]
+fn whole_value_and_assigning_arms_as_in_rust() {
+    same_errors("whole-arms", WHOLE_ARMS, &["expected `"]);
 }
 
 /// The compiler's errors on `text` are `strata check`'s, on the lines holding one of `keys`.
