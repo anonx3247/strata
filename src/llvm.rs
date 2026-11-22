@@ -1402,12 +1402,20 @@ impl<'a> Module<'a> {
     /// A value shown and compared by what it is, not what is in it: a
     /// handle, or a channel's end (`<Sender>`; equal when the same channel).
     fn opaque(&self, t: &Ty) -> bool {
-        self.handle(t) || matches!(t, Ty::Con(n, a) if (n == "Sender" || n == "Receiver") && a.len() == 1) || matches!(t, Ty::Con(n, _) if n == "Timeline")
+        self.handle(t) || self.runtime_object(t) || matches!(t, Ty::Con(n, a) if (n == "Sender" || n == "Receiver") && a.len() == 1)
     }
 
     fn handle(&self, t: &Ty) -> bool {
         // (a task's handle: its scope holds the task, and frees it)
-        matches!(t, Ty::Con(n, args) if args.is_empty() && (self.env.externs.contains_key(n) || self.env.capabilities.contains(n)) || n == "Task" && args.len() == 1)
+        !self.runtime_object(t) && matches!(t, Ty::Con(n, args) if args.is_empty() && (self.env.externs.contains_key(n) || self.env.capabilities.contains(n)) || n == "Task" && args.len() == 1)
+    }
+
+    /// A std type declared `extern c type` whose objects the runtime makes
+    /// and counts like a value's (unlike C's handles): std.time's private
+    /// `Timeline` (runtime.c), a `FakeClock`'s time. Counted, freed by its
+    /// runtime drop, shown and compared as itself.
+    fn runtime_object(&self, t: &Ty) -> bool {
+        matches!(t, Ty::Con(n, args) if args.is_empty() && n == "std.time.Timeline")
     }
 
     /// A record, a sum, one of its variants, or a tuple: a block with a tag.
@@ -3822,7 +3830,7 @@ impl<'m, 'a> Func<'m, 'a> {
             writeln!(self.m.body, "define void {name}(ptr %a) {{\nstart:\n  tail call void @strata_channel_drop(ptr %a)\n  ret void\n}}\n").unwrap();
             return Ok(name);
         }
-        if matches!(&t, Ty::Con(n, _) if n == "Timeline") {
+        if self.m.runtime_object(&t) {
             writeln!(self.m.body, "define void {name}(ptr %a) {{\nstart:\n  tail call void @strata_timeline_drop(ptr %a)\n  ret void\n}}\n").unwrap();
             return Ok(name);
         }
@@ -5433,6 +5441,10 @@ impl<'m, 'a> Func<'m, 'a> {
     /// A native operation of std (`host_*`): the runtime's, its result made
     /// an `Option` or a `Result` here (only the generated code knows their tags).
     fn host(&mut self, name: &str, vs: Vec<V>, hint: Option<Ty>) -> Res<V> {
+        // a `FakeClock`'s (with the channels': runtime objects)
+        if let Some(v) = self.channel_builtin(name, &vs, &hint)? {
+            return Ok(v);
+        }
         let t = hint.clone().unwrap_or(Ty::Unit);
         let s_ty = Ty::Str;
         let lst = Ty::Con(Symbol::new("List"), vec![Ty::Str]);
@@ -6543,14 +6555,14 @@ impl<'m, 'a> Func<'m, 'a> {
                 (Ty::Unit, String::new())
             }
             // a `FakeClock`'s time (runtime.c, `Timeline`)
-            ("timeline", [start]) => {
-                let r = self.call(&Ty::Con("Timeline".into(), vec![]), "@strata_timeline_new", &[start.clone()])?;
+            ("host_fake_clock", [start]) => {
+                let r = self.call(&Ty::Con("std.time.Timeline".into(), vec![]), "@strata_timeline_new", &[start.clone()])?;
                 self.temp(r)
             }
-            ("timeline_now", [t]) => self.call(&Ty::Int, "@strata_timeline_now", &[t.clone()])?,
-            ("timeline_set", [t, to]) => self.call(&Ty::Unit, "@strata_timeline_set", &[t.clone(), to.clone()])?,
-            ("timeline_advance", [t, ns]) => self.call(&Ty::Unit, "@strata_timeline_advance", &[t.clone(), ns.clone()])?,
-            ("timeline_sleep", [t, ns]) => {
+            ("host_fake_now", [t]) => self.call(&Ty::Int, "@strata_timeline_now", &[t.clone()])?,
+            ("host_fake_set", [t, to]) => self.call(&Ty::Unit, "@strata_timeline_set", &[t.clone(), to.clone()])?,
+            ("host_fake_advance", [t, ns]) => self.call(&Ty::Unit, "@strata_timeline_advance", &[t.clone(), ns.clone()])?,
+            ("host_fake_sleep", [t, ns]) => {
                 self.call(&Ty::Unit, "@strata_timeline_sleep", &[t.clone(), ns.clone()])?;
                 self.cancel_point()?;
                 (Ty::Unit, String::new())
@@ -6647,8 +6659,7 @@ impl<'m, 'a> Func<'m, 'a> {
                     if matches!(&ct, Ty::Con(n, _) if n == "std.time.FakeClock") {
                         // a fake clock's timer: its deadline in that clock's
                         // time; moving the time wakes the select (kind 5)
-                        let tl_ty = Ty::Con("Timeline".into(), vec![]);
-                        let tl = self.field(&cv, 0, &tl_ty)?;
+                        let tl = self.field(&cv, 0, &Ty::Con("std.time.Timeline".into(), vec![]))?;
                         let now = self.call(&Ty::Int, "@strata_timeline_now", &[tl.clone()])?;
                         self.emit(format!("{deadline} = add i64 {}, {}", now.1, d.1));
                         self.emit(format!("store i64 {deadline}, ptr {p}"));

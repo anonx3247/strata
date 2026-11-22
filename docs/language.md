@@ -489,31 +489,42 @@ In a `select`, `clock.after(d) => …` is an arm that happens once `d` has passe
 std has one: a `FakeClock` (`fake_clock()`, at 0) whose time moves only when told, `clock.advance(seconds(30))` or `clock.set(t)` (never back). Copies share the one time, so one task can move it for the others: every `sleep` and `after` timer of that clock that is due by then ends at once, with no real waiting, so a timeout in a test happens exactly when the test says.
 
 ```rust
+/// Waits for a question; none ever comes.
+fn answer(questions: Receiver[Int]) -> Int {
+  questions.recv() ?? 0
+}
+
 test "gives up after 30 seconds" {
   clock := fake_clock()
   (tx, rx) := channel()
+  // nothing is sent on `ask` until the race is over: `answer` never answers
+  (ask, questions) := channel()
   scope {
     spawn {
-      r := race { never_answers() as v => Some(v), clock.sleep(seconds(30)) => None }
+      r := race {
+        answer(questions) as v => Some(v),
+        clock.sleep(seconds(30)) => None,
+      }
       tx.send(r)
       tx.close()
     }
     tx.close()
-    // move the time a second at a time until the answer comes
-    mut answer := Some(0)
+    // move the time a second at a time until the result comes
+    mut got := Some(0)
     mut waiting := true
     while waiting {
       clock.advance(seconds(1))
       select {
         rx.recv() as r => {
-          answer = r ?? Some(0)
+          got = r ?? Some(0)
           waiting = false
         },
         clock.after(nanos(0)) => (),
       }
     }
-    assert answer == None
+    assert got == None
   }
+  ask.close()
 }
 ```
 
