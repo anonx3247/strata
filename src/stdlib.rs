@@ -40,6 +40,7 @@ const FILES: &[(&str, &[u8])] = &[
     ("ast/resolve.strata", include_bytes!("../std/ast/resolve.strata")),
     ("ast/check.strata", include_bytes!("../std/ast/check.strata")),
     ("ast/eval.strata", include_bytes!("../std/ast/eval.strata")),
+    ("ast/builtins.strata", include_bytes!("../std/ast/builtins.strata")),
 ];
 
 /// Native operations, callable only from `std`.
