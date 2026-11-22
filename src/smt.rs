@@ -3992,7 +3992,7 @@ impl<'a> Vc<'a> {
             }
             let names: Vec<String> = (0..live.len()).map(|j| format!("inv{j}")).collect();
             let q = format!("{}{defs}(check-sat)\n(get-value ({}))\n", &script[..head], names.join(" "));
-            let out = run_solver(solver, &q, &std::sync::atomic::AtomicBool::new(false)).ok().flatten().unwrap_or_default();
+            let out = run_solver(solver, &q, Limit::Search, &std::sync::atomic::AtomicBool::new(false)).ok().flatten().unwrap_or_default();
             let first = out.lines().next().unwrap_or("").trim();
             match first {
                 "unsat" => return dropped,
@@ -4016,7 +4016,7 @@ impl<'a> Vc<'a> {
                     for &k in &live {
                         let ob = Obligation { what: "invariant".into(), goal: terms[k].clone().unwrap_or_default(), pc: pc.to_vec(), facts: self.facts.len(), termination: false };
                         let q = self.script(&ob, &[]);
-                        let out = run_solver(solver, &q, &std::sync::atomic::AtomicBool::new(false)).ok().flatten().unwrap_or_default();
+                        let out = run_solver(solver, &q, Limit::Search, &std::sync::atomic::AtomicBool::new(false)).ok().flatten().unwrap_or_default();
                         if out.lines().next().map(str::trim) != Some("unsat") {
                             alive[k] = false;
                         }
@@ -4204,7 +4204,7 @@ impl<'a> Vc<'a> {
         for k in 0..n {
             let s = seed.wrapping_add(k as u64) % 1_000_000;
             let q = format!("(set-option :smt.random_seed {s})\n(set-option :sat.random_seed {s})\n{}{defs}{blocked}(check-sat)\n(get-value ({}))\n", &script[..head], names.join(" "));
-            let Ok(Some(out)) = run_solver(solver, &q, &never) else { break };
+            let Ok(Some(out)) = run_solver(solver, &q, Limit::Search, &never) else { break };
             let first = out.lines().next().unwrap_or("").trim();
             if first != "sat" {
                 break;
@@ -4415,20 +4415,112 @@ pub fn solver() -> Option<Solver> {
 impl Solver {
     /// The command line: a deterministic resource limit per query (so
     /// results can be cached), and a time limit only as a backstop.
-    fn args(&self) -> Vec<String> {
+    /// In a session (`Session`), the time limit is per query and the
+    /// solver takes `push` / `pop`.
+    fn args(&self, limit: Limit, session: bool) -> Vec<String> {
         match self.kind {
-            SolverKind::Z3 => vec!["-in".into(), "-T:20".into(), format!("rlimit={Z3_RLIMIT}")],
-            SolverKind::Cvc5 => vec!["--lang".into(), "smt2".into(), "--produce-models".into(), "--dt-nested-rec".into(), format!("--rlimit-per={CVC5_RLIMIT}"), "--tlimit-per=20000".into()],
+            SolverKind::Z3 => {
+                let rlimit = match limit {
+                    Limit::Proof => Z3_PROOF_RLIMIT,
+                    Limit::Search => Z3_RLIMIT,
+                };
+                vec!["-in".into(), if session { "-t:20000".into() } else { "-T:20".into() }, format!("rlimit={rlimit}")]
+            }
+            SolverKind::Cvc5 => {
+                let mut a: Vec<String> = vec!["--lang".into(), "smt2".into(), "--produce-models".into(), "--dt-nested-rec".into(), format!("--rlimit-per={CVC5_RLIMIT}"), "--tlimit-per=20000".into()];
+                if session {
+                    a.push("--incremental".into());
+                }
+                a
+            }
         }
+    }
+}
+
+/// How much a query may cost: a proof, or a search for a model (loop
+/// invariants, inputs), which may take longer.
+#[derive(Clone, Copy, Debug)]
+pub enum Limit {
+    Proof,
+    Search,
+}
+
+/// Why a session gave no answer.
+enum SessionEnd {
+    /// `stop` was set (the process is killed).
+    Stopped,
+    /// The process ended or couldn't be written to.
+    Dead,
+}
+
+/// A solver process answering one function's queries in turn (`solve_all`).
+struct Session {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    lines: std::sync::mpsc::Receiver<String>,
+    _slot: SolverSlot,
+}
+
+/// Printed after each answer, to know where it ends.
+const ANSWERED: &str = "@@answered";
+
+impl Session {
+    fn start(solver: &Solver, stop: &std::sync::atomic::AtomicBool) -> Option<Session> {
+        let slot = solver_slot_until(stop)?;
+        let mut child = Command::new(&solver.bin).args(solver.args(Limit::Proof, true)).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+        let stdin = child.stdin.take()?;
+        let stdout = child.stdout.take()?;
+        let (tx, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Some(Session { child, stdin, lines, _slot: slot })
+    }
+
+    /// Send `text`, and read what the solver prints for it.
+    fn send(&mut self, text: &str, stop: &std::sync::atomic::AtomicBool) -> Result<String, SessionEnd> {
+        use std::sync::mpsc::RecvTimeoutError;
+        if self.stdin.write_all(format!("{text}(echo \"{ANSWERED}\")\n").as_bytes()).and_then(|_| self.stdin.flush()).is_err() {
+            return Err(SessionEnd::Dead);
+        }
+        let mut out = String::new();
+        loop {
+            if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = self.child.kill();
+                return Err(SessionEnd::Stopped);
+            }
+            match self.lines.recv_timeout(std::time::Duration::from_millis(5)) {
+                Ok(line) if line.trim().trim_matches('"') == ANSWERED => return Ok(out),
+                Ok(line) => {
+                    out.push_str(&line);
+                    out.push('\n');
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return Err(SessionEnd::Dead),
+            }
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
 /// Run `script` on the solver: its answer, `Ok(None)` if it can't be run,
 /// `Err(())` once `stop` is set (the process is killed).
-fn run_solver(solver: &Solver, script: &str, stop: &std::sync::atomic::AtomicBool) -> Result<Option<String>, ()> {
+fn run_solver(solver: &Solver, script: &str, limit: Limit, stop: &std::sync::atomic::AtomicBool) -> Result<Option<String>, ()> {
     use std::sync::atomic::Ordering::Relaxed;
     let Some(_slot) = solver_slot_until(stop) else { return Err(()) };
-    let Ok(mut child) = Command::new(&solver.bin).args(solver.args()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return Ok(None) };
+    let Ok(mut child) = Command::new(&solver.bin).args(solver.args(limit, false)).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return Ok(None) };
     let Some(mut stdin) = child.stdin.take() else { return Ok(None) };
     if stdin.write_all(script.as_bytes()).is_err() {
         let _ = child.kill();
@@ -4493,9 +4585,15 @@ impl Drop for SolverSlot {
     }
 }
 
-/// Resource limits per obligation: deterministic, unlike a timeout. The
-/// units differ; both are a few seconds of hard nonlinear arithmetic.
+/// Resource limits per query: deterministic, unlike a timeout. The units
+/// differ; both are a few seconds of hard nonlinear arithmetic. A search for
+/// a model (`Limit::Search`) gets Z3's whole limit; a proof gets a tenth of
+/// it: over std, the examples and `compiler` (1,109 proofs), the hardest
+/// proof took 422,229 units, and the time past that was spent only on
+/// checks the solver can't prove, looking for a counterexample (up to 18M
+/// units, 16 s, for one; a counterexample is the fuzzer's job too).
 const Z3_RLIMIT: u64 = 20_000_000;
+const Z3_PROOF_RLIMIT: u64 = 2_000_000;
 const CVC5_RLIMIT: u64 = 5_000_000;
 
 impl Vc<'_> {
@@ -4525,11 +4623,24 @@ impl Vc<'_> {
     }
 
     fn script(&self, ob: &Obligation, leaves: &[String]) -> String {
-        // the parameters are in the cone too, so a model satisfies their types
-        let (facts, consts) = self.cone(ob, leaves);
+        self.header() + &self.body(ob, leaves)
+    }
+
+    /// What every query of this function starts with: the options and the
+    /// sorts.
+    fn header(&self) -> String {
         // `utf8_len`: a string's length in bytes (`byte_len`), known where it is used
         let mut s = String::from("(set-option :produce-models true)\n(set-logic ALL)\n(declare-fun utf8_len (String) Int)\n");
         s.push_str(&self.sorts.declarations());
+        s
+    }
+
+    /// An obligation's query after the header: what it depends on, the
+    /// negated goal, `check-sat` and the model's values of `leaves`.
+    fn body(&self, ob: &Obligation, leaves: &[String]) -> String {
+        // the parameters are in the cone too, so a model satisfies their types
+        let (facts, consts) = self.cone(ob, leaves);
+        let mut s = String::new();
         for d in &self.decls {
             if consts.contains(&d.name) {
                 s.push_str(&d.declaration());
@@ -4587,21 +4698,72 @@ impl Vc<'_> {
         self.solve_until(solver, i, &std::sync::atomic::AtomicBool::new(false))
     }
 
-    /// `solve`, giving up (`Stopped`) as soon as `stop` is set: the solver
-    /// process is killed.
-    pub fn solve_until(&self, solver: &Solver, i: usize, stop: &std::sync::atomic::AtomicBool) -> Outcome {
-        let ob = &self.obligations[i];
+    /// The terms a counterexample is read from: the parameters' leaves.
+    fn leaves(&self) -> Vec<String> {
         let mut leaves = vec![];
         for (_, v) in &self.params {
             leaves_of(&self.lists, v, &mut leaves);
         }
         leaves.dedup();
-        let script = self.script(ob, &leaves);
-        let out = match run_solver(solver, &script, stop) {
-            Err(()) => return Outcome::Stopped,
-            Ok(None) => return Outcome::Unknown("the solver could not be run".into()),
-            Ok(Some(out)) => out,
-        };
+        leaves
+    }
+
+    /// `solve`, giving up (`Stopped`) as soon as `stop` is set: the solver
+    /// process is killed.
+    pub fn solve_until(&self, solver: &Solver, i: usize, stop: &std::sync::atomic::AtomicBool) -> Outcome {
+        let leaves = self.leaves();
+        let script = self.script(&self.obligations[i], &leaves);
+        match run_solver(solver, &script, Limit::Proof, stop) {
+            Err(()) => Outcome::Stopped,
+            Ok(None) => Outcome::Unknown("the solver could not be run".into()),
+            Ok(Some(out)) => self.outcome(i, &leaves, &out),
+        }
+    }
+
+    /// The obligations `which` selects, solved in one solver process (each
+    /// between `push` and `pop`, the sorts declared once): the outcome of
+    /// each, `None` for the others. Starting a process takes longer than
+    /// most queries. Everything is `Stopped` once `stop` is set.
+    pub fn solve_all(&self, solver: &Solver, which: impl Fn(usize) -> bool, stop: &std::sync::atomic::AtomicBool) -> Vec<Option<Outcome>> {
+        let n = self.obligations.len();
+        let mut out: Vec<Option<Outcome>> = (0..n).map(|_| None).collect();
+        let todo: Vec<usize> = (0..n).filter(|&i| which(i)).collect();
+        if todo.is_empty() {
+            return out;
+        }
+        let leaves = self.leaves();
+        let mut session = Session::start(solver, stop);
+        if let Some(s) = &mut session {
+            if s.send(&self.header(), stop).is_err() {
+                session = None;
+            }
+        }
+        for i in todo {
+            if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                out[i] = Some(Outcome::Stopped);
+                continue;
+            }
+            let answer = match &mut session {
+                Some(s) => s.send(&format!("(push)\n{}(pop)\n", self.body(&self.obligations[i], &leaves)), stop),
+                None => Err(SessionEnd::Dead),
+            };
+            out[i] = Some(match answer {
+                Ok(text) => self.outcome(i, &leaves, &text),
+                Err(SessionEnd::Stopped) => Outcome::Stopped,
+                // (the process died: this one, and the rest, each on its own)
+                Err(SessionEnd::Dead) => {
+                    session = None;
+                    self.solve_until(solver, i, stop)
+                }
+            });
+        }
+        out
+    }
+
+    /// What the solver's answer to obligation `i` says.
+    fn outcome(&self, i: usize, leaves: &[String], out: &str) -> Outcome {
+        let ob = &self.obligations[i];
+        let leaves = leaves.to_vec();
         let first = out.lines().next().unwrap_or("").trim();
         let why = self.why(ob);
         let because = if why.is_empty() { String::new() } else { format!(" (depends on {})", why.join("; ")) };
