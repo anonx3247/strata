@@ -311,6 +311,29 @@ fn e(mut s: Sh) -> Int { match s { Sq(_) => {
 fn main() { print(1) }
 "#;
 
+const TRAIT_VALUES: &str = r#"trait Shape {
+  fn area(self) -> Int
+}
+trait Named: Shape {
+  fn name(self) -> String
+}
+type Sq = { s: Int }
+type Pt = { x: Int }
+impl Shape for Sq {
+  fn area(self) -> Int { self.s }
+}
+impl Named for Sq {
+  fn name(self) -> String { "sq" }
+}
+fn a(xs: List[Shape]) -> String { (xs[0] ?? Sq { s: 1 }).area() }
+fn b() -> List[Shape] { [Sq { s: 1 }, Pt { x: 2 }] }
+fn c(s: Shape) -> String { s.area() }
+fn d(s: Shape) -> Int { s }
+fn e[T: Named](x: T) -> String { x.area() }
+fn f(q: Sq) -> Shape { q }
+fn main() { print(1) }
+"#;
+
 const RECORDS: &str = r#"type Pt = { x: Int, y: Int }
 type Sh =
   | Sq(Int)
@@ -609,6 +632,11 @@ fn union_arms_as_in_rust() {
 #[test]
 fn whole_value_and_assigning_arms_as_in_rust() {
     same_errors("whole-arms", WHOLE_ARMS, &["expected `"]);
+}
+
+#[test]
+fn trait_values_and_supertraits_as_in_rust() {
+    same_errors("trait-values", TRAIT_VALUES, &["expected `", "does not implement", "handle an Option"]);
 }
 
 /// The compiler's errors on `text` are `strata check`'s, on the lines holding one of `keys`.
