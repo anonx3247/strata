@@ -148,6 +148,7 @@ fn cases() -> Vec<(String, String, Want)> {
         ("memory-features", programs::MEMORY.to_string()),
         ("memory-nested_assign", programs::NESTED_ASSIGN.to_string()),
         ("bigint-bigint", programs::BIG_INTEGERS.to_string()),
+        ("floats-checked", programs::CHECKED_FLOATS.to_string()),
     ] {
         out.push((key.to_string(), text, Want::Recorded));
     }

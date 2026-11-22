@@ -102,6 +102,17 @@ fn case(dir: &Path, name: &str, src: &str) -> (String, i32) {
 }
 
 #[test]
+fn checked_float_operations_compile() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("floats");
+    let (out, code) = case(&d, "checked", programs::CHECKED_FLOATS);
+    assert!(out.starts_with("[Some(3.5), Some(1.0000000000000001e+295), None, None, None, Some(-1.5), Some(0.5), None]\n") && code == 101, "{out}");
+}
+
+#[test]
 fn numbers_compile_and_run_as_interpreted() {
     if !have_clang() {
         eprintln!("skipped: no clang");

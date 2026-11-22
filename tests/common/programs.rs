@@ -714,3 +714,17 @@ fn main() {
   print(len(zs))
 }
 "#;
+
+/// `floats-checked`: the float operations that give `None` where `+`, `*`,
+/// `floor`, ... fault (a result that isn't a finite number), and the fault
+/// of the operation itself, which `checked_mul` avoids.
+pub const CHECKED_FLOATS: &str = r#"fn main() {
+  big := 1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000.0
+  print([checked_add(1.5, 2.0), checked_mul(big, 10.0), checked_mul(big, big), checked_div(1.0, 0.0), checked_div(0.0, 0.0), checked_sub(0.5, 2.0), checked_rem(-5.5, 2.0), checked_rem(1.0, 0.0)])
+  print([checked_sqrt(2.0), checked_sqrt(-1.0), checked_sqrt(0.0)])
+  print([checked_floor(-2.5), checked_ceil(-2.5), checked_round(2.5), checked_round(-0.5)])
+  print([f"{0.125:.2}", f"{2.675:.2}", f"{-0.0:.1}", f"{999.9995:.3}"])
+  print(sqrt(2.25))
+  print(big * big)
+}
+"#;

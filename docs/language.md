@@ -361,7 +361,7 @@ n := parse(s) except e { return describe_error(e) }      // ... or a block, with
 
 | Type | Notes |
 |---|---|
-| `Int`, `Float`, `Bool`, `String` | `Int` never overflows: it is a machine integer while it fits and a big integer when it doesn't (like Python), literals included. `Float` is never NaN or infinite. There is no implicit Int/Float mixing (`float(n)`, `round(x)`) |
+| `Int`, `Float`, `Bool`, `String` | `Int` never overflows: it is a machine integer while it fits and a big integer when it doesn't (like Python), literals included. `Float` is never NaN or infinite: an operation whose result would be is a fault (`1e308 * 10.0`). Where that can't be ruled out (code that runs other programs' arithmetic), `checked_add`, `checked_sub`, `checked_mul`, `checked_div`, `checked_rem`, `checked_sqrt` give an `Option[Float]` and `checked_floor`, `checked_ceil`, `checked_round` an `Option[Int]`, `None` instead of the fault. There is no implicit Int/Float mixing (`float(n)`, `round(x)`) |
 | `I8` … `I64`, `U8` … `U64` | sized integers: `Int` refinements with a machine integer's range (`U8 = Int where 0 <= it && it <= 255`), checked and verified like any refinement, so `verify` finds where a `U8` would overflow |
 | `()` | the unit type: "no meaningful value", Python's `None` as a *type* |
 | `Option[T]` | `None` or `Some(x)`: a value that may be absent |
