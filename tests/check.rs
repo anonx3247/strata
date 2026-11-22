@@ -1,6 +1,6 @@
 //! `std.ast.check` (the type checker in Strata) finds the errors `strata
 //! check` finds (clashing definitions, unknown names,
-//! wrong numbers of arguments), worded as it words them.
+//! wrong numbers of arguments, type mismatches), worded as it words them.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -10,14 +10,14 @@ const STRATA: &str = env!("CARGO_BIN_EXE_strata");
 const CHECKER: &str = r#"use std.fs.{Files, Disk}
 use std.process.{Environment, Process}
 use std.ast.binary.{decode_module}
-use std.ast.check.{definition_errors, variant_errors, expression_errors}
+use std.ast.check.{definition_errors, variant_errors, expression_errors, type_errors}
 
 fn main(disk: Disk, process: Process) {
   for a in process.args() {
     match disk.read_bytes(a) {
       Ok(bs) => match decode_module(bs) {
         Ok(ds) => {
-          for e in definition_errors(ds) + variant_errors(ds) + expression_errors(ds) {
+          for e in definition_errors(ds) + variant_errors(ds) + expression_errors(ds) + type_errors(ds) {
             print(f"error in {e.0}: {e.1}")
           }
         },
@@ -48,6 +48,40 @@ fn m() -> Sh { Sq }
 fn n() -> Pt { Pt(1, 2) }
 fn o(f: Int) -> Int { f }
 fn main() { print(g(1)) }
+"#;
+
+const TYPES: &str = r#"fn f(a: Int) -> Int { a + "x" }
+fn g(a: Int) -> String { a }
+fn h(s: String) -> Int { f(s) }
+fn k() -> Bool { 1 < 2.5 }
+fn m() -> Int { x := true
+ x + 1 }
+fn n() -> List[Int] { [1, "a"] }
+fn o(b: Bool) -> Int { if b { 1 } else { "no" } }
+fn p() -> Float { 1 }
+fn main() { print(1) }
+"#;
+
+const STATEMENTS: &str = r#"fn g(x: Int) -> Int { x }
+fn a() { g(1) }
+fn b(c: Bool) -> Int { if c { 1 } }
+fn d(c: Bool) { if c { g(1) } }
+fn e() -> Int {
+  mut s := 0
+  s = "x"
+  while 1 { s += 1 }
+  assert 2
+  -true
+  !3
+  return "r"
+}
+fn h(c: Bool) -> Int { match c { true => 1, false => "f" } }
+fn k(c: Bool) -> Int {
+  let y: String = 3
+  if c { [1] } else { "s" }
+  0
+}
+fn main() { print(1) }
 "#;
 
 const UNKNOWN: &str = r#"type Pt = { x: Int, y: Int }
@@ -87,6 +121,16 @@ fn unknown_names_as_in_rust() {
 #[test]
 fn arity_as_in_rust() {
     same_errors("arity", ARITY, &["unknown variable", "expects", "needs"]);
+}
+
+#[test]
+fn types_as_in_rust() {
+    same_errors("types", TYPES, &["expected `", "Int or Float"]);
+}
+
+#[test]
+fn statement_types_as_in_rust() {
+    same_errors("statements", STATEMENTS, &["expected `", "Int or Float"]);
 }
 
 /// `std.ast.check`'s errors on `text` are `strata check`'s lines holding one of `keys`.

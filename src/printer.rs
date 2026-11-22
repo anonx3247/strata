@@ -474,15 +474,6 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Spawn(x) => format!("spawn {}", expr(x, d)),
         Expr::Await(x) => format!("await {}", wrap(x, 11, d)),
         Expr::Scope(b) => format!("scope {}", block(b, d)),
-        Expr::Select(arms) => {
-            let mut out = "select {\n".to_string();
-            for a in arms {
-                out += &comments(&a.comments, d + 1);
-                let as_name = a.name.as_ref().map(|n| format!(" as {n}")).unwrap_or_default();
-                out += &format!("{}{}{as_name} => {},\n", ind(d + 1), expr(&a.op, d + 1), expr(&a.body, d + 1));
-            }
-            out + &ind(d) + "}"
-        }
         Expr::Interp(parts) => {
             let mut s = "f\"".to_string();
             for p in parts {
@@ -558,21 +549,6 @@ fn collection(name: &str, tys: &[TypeExpr], entries: &[String]) -> String {
     }
 }
 
-/// A loop body's `invariant e` clauses, each on its own line under the
-/// header (as a function's `requires`), and the body without them.
-fn loop_clauses(b: &Expr, d: usize) -> (String, Expr) {
-    let Expr::Block(ss, last) = b else { return (String::new(), b.clone()) };
-    let n = ss.iter().take_while(|s| matches!(s, Stmt::Invariant(_))).count();
-    if n == 0 {
-        return (String::new(), b.clone());
-    }
-    let invs = ss[..n].iter().map(|s| match s {
-        Stmt::Invariant(e) => format!("\n{}  invariant {}", ind(d), head(e, d + 1)),
-        _ => unreachable!(),
-    });
-    (invs.collect(), Expr::Block(ss[n..].to_vec(), last.clone()))
-}
-
 /// Render an expression as a `{ ... }` block.
 pub fn block(e: &Expr, d: usize) -> String {
     let (stmts, last): (&[Stmt], &Expr) = match e {
@@ -605,25 +581,14 @@ pub fn block(e: &Expr, d: usize) -> String {
                 }
                 _ => format!("{} = {}", expr(p, d + 1), expr(e, d + 1)),
             },
-            Stmt::While(c, b) => {
-                let (invs, b) = loop_clauses(b, d + 1);
-                format!("while {}{invs} {}", head(c, d + 1), block(&b, d + 1))
-            }
-            Stmt::Loop(b) => {
-                let (invs, b) = loop_clauses(b, d + 1);
-                format!("loop{invs} {}", block(&b, d + 1))
-            }
+            Stmt::While(c, b) => format!("while {} {}", head(c, d + 1), block(b, d + 1)),
+            Stmt::Loop(b) => format!("loop {}", block(b, d + 1)),
             Stmt::Break => "break".into(),
             Stmt::Continue => "continue".into(),
-            Stmt::For(p, it, b) => {
-                let (invs, b) = loop_clauses(b, d + 1);
-                format!("for {} in {}{invs} {}", pat(p), head(it, d + 1), block(&b, d + 1))
-            }
+            Stmt::For(p, it, b) => format!("for {} in {} {}", pat(p), head(it, d + 1), block(b, d + 1)),
             Stmt::ComptimeFor(p, it, b) => format!("comptime for {} in {} {}", pat(p), head(it, d + 1), block(b, d + 1)),
             Stmt::Expr(e) => expr(e, d + 1),
             Stmt::Assert(e) => format!("assert {}", expr(e, d + 1)),
-            // (only first in a loop's body, where `loop_clauses` takes it)
-            Stmt::Invariant(e) => format!("invariant {}", expr(e, d + 1)),
             Stmt::Comment(_) => unreachable!(),
         };
         out += "\n";

@@ -650,13 +650,7 @@ declare ptr @strata_alloc(i64)
 declare void @strata_dup(ptr)
 declare ptr @strata_scope_begin()
 declare void @strata_scope_end(ptr)
-declare ptr @strata_spawn(ptr, ptr, ptr, ptr, i64)
-declare ptr @strata_channel_new(i64, ptr)
-declare void @strata_channel_drop(ptr)
-declare void @strata_channel_send(ptr, i64)
-declare i1 @strata_channel_recv(ptr, ptr)
-declare void @strata_channel_close(ptr)
-declare i64 @strata_select(ptr, i64)
+declare ptr @strata_spawn(ptr, ptr, ptr)
 declare ptr @strata_await(ptr)
 declare void @strata_int_dup(i64)
 declare void @strata_int_drop(i64)
@@ -1238,12 +1232,6 @@ impl<'a> Module<'a> {
     }
 
     /// An `extern c type`: a pointer C made, never counted, read or freed here.
-    /// A value shown and compared by what it is, not what is in it: a
-    /// handle, or a channel's end (`<Sender>`; equal when the same channel).
-    fn opaque(&self, t: &Ty) -> bool {
-        self.handle(t) || matches!(t, Ty::Con(n, a) if (n == "Sender" || n == "Receiver") && a.len() == 1)
-    }
-
     fn handle(&self, t: &Ty) -> bool {
         // (a task's handle: its scope holds the task, and frees it)
         matches!(t, Ty::Con(n, args) if args.is_empty() && (self.env.externs.contains_key(n) || self.env.capabilities.contains(n)) || n == "Task" && args.len() == 1)
@@ -2751,7 +2739,7 @@ impl<'m, 'a> Func<'m, 'a> {
             return self.debug(v);
         }
         let t = self.m.repr(&v.0)?;
-        if self.m.opaque(&t) {
+        if self.m.handle(&t) {
             return self.shown(v);
         }
         if self.is_dyn(&t) {
@@ -2779,9 +2767,6 @@ impl<'m, 'a> Func<'m, 'a> {
     fn debug(&mut self, v: &V) -> Res<String> {
         if let Some(s) = self.text_impl("Debug", "debug", v)? {
             return Ok(s);
-        }
-        if self.m.opaque(&self.m.repr(&v.0)?) {
-            return self.shown(v);
         }
         // a `distinct` value: `UserId(7)` (it is represented as what it is made of)
         if let Ty::Con(n, _) = &v.0 {
@@ -2876,7 +2861,7 @@ impl<'m, 'a> Func<'m, 'a> {
     /// type (`<Db>`: what it points to is C's).
     fn shown(&mut self, v: &V) -> Res<String> {
         let t = self.m.repr(&v.0)?;
-        if self.m.opaque(&t) {
+        if self.m.handle(&t) {
             return Ok(self.m.string(&format!("<{}>", crate::names::short(&key(&t)))));
         }
         self.debug(v)
@@ -2885,7 +2870,7 @@ impl<'m, 'a> Func<'m, 'a> {
     /// A value as JSON (`to_json`, `derive Json`).
     fn json(&mut self, v: &V) -> Res<String> {
         let t = self.m.repr(&v.0)?;
-        if self.m.opaque(&t) {
+        if self.m.handle(&t) {
             // only its type: what it points to is C's
             return Ok(self.m.string(&format!("\"<{}>\"", crate::names::short(&key(&t)))));
         }
@@ -2924,7 +2909,7 @@ impl<'m, 'a> Func<'m, 'a> {
     fn equal(&mut self, a: &V, b: &V) -> Res<V> {
         let t = self.m.repr(&a.0)?;
         Ok(match &t {
-            t if self.m.opaque(t) => {
+            t if self.m.handle(t) => {
                 // the same pointer
                 let r = self.fresh("eq");
                 self.emit(format!("{r} = icmp eq ptr {}, {}", a.1, b.1));
@@ -3553,10 +3538,6 @@ impl<'m, 'a> Func<'m, 'a> {
         let t = collection(&t).map(|c| c.1).unwrap_or(t);
         let name = format!("@\"drop:{}\"", key(&t));
         if !self.m.helpers.insert(name.clone()) {
-            return Ok(name);
-        }
-        if matches!(&t, Ty::Con(n, _) if n == "Sender" || n == "Receiver") {
-            writeln!(self.m.body, "define void {name}(ptr %a) {{\nstart:\n  tail call void @strata_channel_drop(ptr %a)\n  ret void\n}}\n").unwrap();
             return Ok(name);
         }
         let mut h = Func::new(self.m, HashMap::default());
@@ -4342,13 +4323,10 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.emit(format!("{s} = call ptr @strata_scope_begin()"));
                 self.scoped(false, |c| {
                     c.scopes.last_mut().unwrap().tasks = Some(s.clone());
-                    let v = c.expr(b)?;
-                    // `scope { …; spawn e }` is `()` (a handle isn't counted)
-                    Ok(if crate::types::ends_in_spawn(b) && !is_never(&v.0) { (Ty::Unit, String::new()) } else { v })
+                    c.expr(b)
                 })?
             }
             Expr::Spawn(body) => self.spawn(e, body)?,
-            Expr::Select(arms) => self.select(e, arms)?,
             Expr::Await(h) => {
                 let ht = self.ty_of(h)?;
                 let rt = self.ty_of(e)?;
@@ -4894,9 +4872,6 @@ impl<'m, 'a> Func<'m, 'a> {
             }
         }
         if let Some(v) = self.string_builtin(name, &vs)? {
-            return Ok(v);
-        }
-        if let Some(v) = self.channel_builtin(name, &vs, &hint)? {
             return Ok(v);
         }
         if let Some(v) = self.collection_builtin(name, &vs, &hint)? {
@@ -5939,228 +5914,12 @@ impl<'m, 'a> Func<'m, 'a> {
         let t = self.ty_of(e)?;
         let Ty::Con(_, a) = &t else { return Err("a `spawn` without a task's type".into()) };
         let rt = a[0].clone();
-        // the senders it captures: a copy of each is the task's, to close
-        let mut names: Vec<String> = vars_in(body);
-        names.sort();
-        names.dedup();
-        let mut senders = vec![];
-        for x in &names {
-            if let Some(l) = self.lookup(x) {
-                if matches!(self.m.repr(&l.t)?, Ty::Con(n, _) if n == "Sender") {
-                    senders.push(self.load(x)?);
-                }
-            }
-        }
-        let shares = self.fresh("shares");
-        writeln!(self.allocas, "  {shares} = alloca [{} x ptr]", senders.len().max(1)).unwrap();
-        for (i, s) in senders.iter().enumerate() {
-            let p = self.fresh("share");
-            self.emit(format!("{p} = getelementptr ptr, ptr {shares}, i64 {i}"));
-            self.emit(format!("store ptr {}, ptr {p}", s.1));
-        }
         let clo = self.closure_of(Ty::Fn(vec![], Box::new(rt.clone())), &[], body)?;
         let clo = self.take(clo);
         let (run, drop) = self.task_fns(&rt)?;
         let h = self.fresh("task");
-        self.emit(format!("{h} = call ptr @strata_spawn(ptr {}, ptr {run}, ptr {drop}, ptr {shares}, i64 {})", clo.1, senders.len()));
+        self.emit(format!("{h} = call ptr @strata_spawn(ptr {}, ptr {run}, ptr {drop})", clo.1));
         Ok((t, h))
-    }
-
-    // ---- channels ----
-    //
-    // A channel is one runtime object (runtime.c, `Channel`), counted like
-    // any value: its `Sender` and `Receiver` both point to it. What is sent
-    // moves into it, as a slot, and moves out to the receiver.
-
-    /// `channel()`, `channel(n)` and the operations the prelude's `Sending`
-    /// and `Receiving` methods call.
-    fn channel_builtin(&mut self, name: &str, vs: &[V], hint: &Option<Ty>) -> Res<Option<V>> {
-        let elem = |m: &Module, t: &Ty| -> Res<Ty> {
-            match m.repr(t)? {
-                Ty::Con(n, a) if (n == "Sender" || n == "Receiver") && a.len() == 1 => Ok(a[0].clone()),
-                other => Err(format!("`{}` is not a channel's end", key(&other))),
-            }
-        };
-        Ok(Some(match (name, vs) {
-            ("channel", [] | [_]) => {
-                let Some(t) = hint.clone() else { return Err("`channel()` without its type".into()) };
-                let Ty::Con(_, ends) = self.m.repr(&t)? else { return Err("`channel()` without its type".into()) };
-                let et = elem(self.m, &ends[0])?;
-                let cap = vs.first().map(|v| v.1.clone()).unwrap_or_else(|| "0".into());
-                let drop = self.slot_drop_fn(&et)?;
-                // held twice: by the sender and the receiver
-                let c = self.fresh("chan");
-                self.emit(format!("{c} = call ptr @strata_channel_new(i64 {cap}, ptr {drop})"));
-                let b = self.fresh("ends");
-                self.emit(format!("{b} = call ptr @strata_alloc(i64 24)"));
-                self.emit(format!("store i64 0, ptr {b}"));
-                self.set_field(&b, 0, &(ends[0].clone(), c.clone()))?;
-                self.set_field(&b, 1, &(ends[1].clone(), c))?;
-                self.temp((t, b))
-            }
-            ("channel_send", [tx, v]) => {
-                let et = elem(self.m, &tx.0)?;
-                let v = self.coerce(v.clone(), &et)?;
-                let v = self.take(v);
-                let s = self.to_slot(&v)?;
-                self.emit(format!("call void @strata_channel_send(ptr {}, i64 {s})", tx.1));
-                (Ty::Unit, String::new())
-            }
-            ("channel_close", [tx]) => {
-                self.emit(format!("call void @strata_channel_close(ptr {})", tx.1));
-                (Ty::Unit, String::new())
-            }
-            ("channel_recv", [rx]) => {
-                let et = elem(self.m, &rx.0)?;
-                let out = self.fresh("recvd");
-                writeln!(self.allocas, "  {out} = alloca i64").unwrap();
-                let ok = self.fresh("ok");
-                self.emit(format!("{ok} = call i1 @strata_channel_recv(ptr {}, ptr {out})", rx.1));
-                self.option_from(&bool_v(&ok), &out, &et)?
-            }
-            _ => return Ok(None),
-        }))
-    }
-
-    /// `Some` of the value in the slot at `out` (owned: it moves into the
-    /// `Some`) when `ok`, else `None`.
-    fn option_from(&mut self, ok: &V, out: &str, et: &Ty) -> Res<V> {
-        let opt = Ty::Con("Option".into(), vec![et.clone()]);
-        let (some, none, end) = (self.fresh_label("got.some"), self.fresh_label("got.none"), self.fresh_label("got.end"));
-        self.cond_br(ok, &some, &none);
-        self.block(&some);
-        let s = self.fresh("slot");
-        self.emit(format!("{s} = load i64, ptr {out}"));
-        let x = self.from_slot(&s, et)?;
-        let x = self.temp(x);
-        let b = self.block_of(self.m.tags["Some"], &[x])?;
-        let from_some = self.cur.clone();
-        self.br(&end);
-        self.block(&none);
-        let nothing = self.m.nullary("None");
-        self.br(&end);
-        self.block(&end);
-        let r = self.fresh("opt");
-        self.emit(format!("{r} = phi ptr [ {b}, %{from_some} ], [ {nothing}, %{none} ]"));
-        Ok(self.temp((opt, r)))
-    }
-
-    /// The function dropping a value of type `t` held as a slot (an `i64`),
-    /// as a channel holds what was sent: `null` when there is nothing to drop.
-    fn slot_drop_fn(&mut self, t: &Ty) -> Res<String> {
-        if !self.counted(t) {
-            return Ok("null".into());
-        }
-        let name = format!("@\"slot.drop:{}\"", key(t));
-        if self.m.helpers.insert(name.clone()) {
-            let mut h = Func::new(self.m, HashMap::default());
-            h.block("start");
-            let v = h.from_slot("%s", t)?;
-            h.drop_value(&v)?;
-            h.emit("ret void".into());
-            let text = h.finish();
-            writeln!(self.m.body, "define void {name}(i64 %s) {{\n{text}}}\n").unwrap();
-        }
-        Ok(name)
-    }
-
-    /// `select { … }`: each arm's operation described to the runtime
-    /// (`strata_select`: 32 bytes each: kind (0 recv, 1 send, 2 await), the
-    /// channel or task, the slot, whether a value came), which does the
-    /// first that can happen; then that arm runs.
-    fn select(&mut self, e: &Expr, arms: &[SelectArm]) -> Res<V> {
-        let want = self.ty_of(e)?;
-        let n = arms.len();
-        let ops = self.fresh("ops");
-        writeln!(self.allocas, "  {ops} = alloca [{} x i64]", 4 * n.max(1)).unwrap();
-        // what each arm waits on (a send's value is taken: the channel or the
-        // arm that loses drops it)
-        let mut sent: Vec<Option<V>> = vec![];
-        let mut targets: Vec<V> = vec![];
-        for (i, a) in arms.iter().enumerate() {
-            let (kind, target, value) = match &a.op {
-                Expr::Method(r, _, args) if args.is_empty() => (0, self.expr(r)?, None),
-                Expr::Method(s, _, args) => {
-                    let tx = self.expr(s)?;
-                    let et = match self.m.repr(&tx.0)? {
-                        Ty::Con(_, a) => a[0].clone(),
-                        _ => return Err("`send` in a `select` without a sender".into()),
-                    };
-                    let v = self.expr(&args[0])?;
-                    let v = self.coerce(v, &et)?;
-                    let v = self.take(v);
-                    (1, tx, Some(v))
-                }
-                Expr::Await(h) => (2, self.expr(h)?, None),
-                _ => return Err("a `select` arm that isn't `recv`, `send` or `await`".into()),
-            };
-            let at = |k: usize| format!("{}", 4 * i + k);
-            let p = self.fresh("op");
-            self.emit(format!("{p} = getelementptr i64, ptr {ops}, i64 {}", at(0)));
-            self.emit(format!("store i64 {kind}, ptr {p}"));
-            let q = self.fresh("op");
-            self.emit(format!("{q} = getelementptr i64, ptr {ops}, i64 {}", at(1)));
-            self.emit(format!("store ptr {}, ptr {q}", target.1));
-            if let Some(v) = &value {
-                let s = self.to_slot(v)?;
-                let r = self.fresh("op");
-                self.emit(format!("{r} = getelementptr i64, ptr {ops}, i64 {}", at(2)));
-                self.emit(format!("store i64 {s}, ptr {r}"));
-            }
-            sent.push(value);
-            targets.push(target);
-        }
-        let k = self.fresh("chosen");
-        self.emit(format!("{k} = call i64 @strata_select(ptr {ops}, i64 {n})"));
-        let labels: Vec<String> = (0..n).map(|_| self.fresh_label("sel.arm")).collect();
-        let (none, end) = (self.fresh_label("sel.none"), self.fresh_label("sel.end"));
-        let cases: Vec<String> = labels.iter().enumerate().map(|(i, l)| format!("i64 {i}, label %{l}")).collect();
-        self.emit(format!("switch i64 {k}, label %{none} [ {} ]", cases.join(" ")));
-        let mut incoming = vec![];
-        for (i, a) in arms.iter().enumerate() {
-            self.block(&labels[i]);
-            let v = self.branch(&want, |c| {
-                // the values the other arms would have sent
-                for (j, s) in sent.iter().enumerate() {
-                    if let (Some(s), true) = (s, j != i) {
-                        c.drop_value(s)?;
-                    }
-                }
-                c.scoped(false, |c| {
-                    let got: Option<V> = match &a.op {
-                        Expr::Method(_, _, args) if args.is_empty() => {
-                            let et = match c.m.repr(&targets[i].0)? {
-                                Ty::Con(_, a) => a[0].clone(),
-                                _ => return Err("`recv` in a `select` without a receiver".into()),
-                            };
-                            let (okp, ok, slot) = (c.fresh("okp"), c.fresh("ok"), c.fresh("slotp"));
-                            c.emit(format!("{okp} = getelementptr i64, ptr {ops}, i64 {}", 4 * i + 3));
-                            let okw = c.fresh("okw");
-                            c.emit(format!("{okw} = load i64, ptr {okp}"));
-                            c.emit(format!("{ok} = icmp ne i64 {okw}, 0"));
-                            c.emit(format!("{slot} = getelementptr i64, ptr {ops}, i64 {}", 4 * i + 2));
-                            Some(c.option_from(&bool_v(&ok), &slot, &et)?)
-                        }
-                        Expr::Await(_) => {
-                            let Ty::Con(_, r) = c.m.repr(&targets[i].0)? else { return Err("`await` in a `select` without a task".into()) };
-                            Some(c.await_one(&targets[i], &r[0])?)
-                        }
-                        _ => None,
-                    };
-                    if let (Some(name), Some(v)) = (&a.name, got) {
-                        c.local_owned(name, v, None)?;
-                    }
-                    c.expr(&a.body)
-                })
-            })?;
-            incoming.push((v, self.cur.clone()));
-            self.br(&end);
-        }
-        self.block(&none);
-        self.emit("unreachable".into());
-        self.block(&end);
-        let r = self.join(&want, incoming)?;
-        Ok(self.temp(r))
     }
 
     /// For a task whose result has type `t`: the function that runs its
@@ -6788,7 +6547,6 @@ impl<'m, 'a> Func<'m, 'a> {
                 let (head, inner, end) = (self.fresh_label("while"), self.fresh_label("do"), self.fresh_label("endwhile"));
                 self.br(&head);
                 self.block(&head);
-                self.loop_invariants(body)?;
                 self.push_scope(true);
                 let cv = self.expr(c)?;
                 self.pop_scope()?;
@@ -6803,7 +6561,6 @@ impl<'m, 'a> Func<'m, 'a> {
                 let (head, end) = (self.fresh_label("loop"), self.fresh_label("endloop"));
                 self.br(&head);
                 self.block(&head);
-                self.loop_invariants(body)?;
                 let depth = self.scopes.len();
                 self.push_scope(true);
                 self.loop_body(body, &head, &end, depth)?;
@@ -6826,7 +6583,6 @@ impl<'m, 'a> Func<'m, 'a> {
                     let (head, inner, step, end) = (self.fresh_label("for"), self.fresh_label("for.body"), self.fresh_label("for.next"), self.fresh_label("endfor"));
                     self.br(&head);
                     self.block(&head);
-                    self.loop_invariants(body)?;
                     let i = self.fresh("i");
                     self.emit(format!("{i} = load i64, ptr {counter}"));
                     let n = self.list_len(&v);
@@ -6859,7 +6615,6 @@ impl<'m, 'a> Func<'m, 'a> {
                 let (head, inner, step, end) = (self.fresh_label("for"), self.fresh_label("for.body"), self.fresh_label("for.next"), self.fresh_label("endfor"));
                 self.br(&head);
                 self.block(&head);
-                self.loop_invariants(body)?;
                 let i = self.fresh("i");
                 self.emit(format!("{i} = load i64, ptr {counter}"));
                 let more = self.apply(BinOp::Lt, &(Ty::Int, i.clone()), &hi)?;
@@ -6891,32 +6646,7 @@ impl<'m, 'a> Func<'m, 'a> {
             Stmt::Expr(e) => {
                 self.expr(e)?;
             }
-            Stmt::Assert(x) => self.check_true(x, "assertion failed")?,
-            // (checked at the loop's head: `loop_invariants`)
-            Stmt::Invariant(_) => {}
-            Stmt::Comment(_) => {}
-        }
-        Ok(())
-    }
-
-    /// A loop's `invariant`s, checked at its head: on entry, after every
-    /// pass and `continue`, and when it ends normally.
-    fn loop_invariants(&mut self, body: &Expr) -> Res<()> {
-        let invs: Vec<&Expr> = crate::types::loop_invariants(body).collect();
-        if invs.is_empty() {
-            return Ok(());
-        }
-        self.push_scope(true);
-        for x in invs {
-            self.check_true(x, "invariant failed")?;
-        }
-        self.pop_scope()
-    }
-
-    /// Fault with `what: x` unless `x` is true.
-    fn check_true(&mut self, x: &Expr, what: &str) -> Res<()> {
-        {
-            {
+            Stmt::Assert(x) => {
                 // a comparison shows both sides when it fails
                 let (ok, sides) = match x {
                     Expr::Bin(op, l, r) if !matches!(op, BinOp::And | BinOp::Or | BinOp::Implies) => {
@@ -6932,7 +6662,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 let (pass, fail) = (self.fresh_label("assert.ok"), self.fresh_label("assert.fail"));
                 self.cond_br(&ok, &pass, &fail);
                 self.block(&fail);
-                let mut parts = vec![Part::Lit(format!("{what}: {}", crate::printer::expr(x, 0)))];
+                let mut parts = vec![Part::Lit(format!("assertion failed: {}", crate::printer::expr(x, 0)))];
                 if let Some((op, a, b)) = sides {
                     let (sa, sb) = (self.shown(&a)?, self.shown(&b)?);
                     parts.extend([Part::Lit(format!(" (left of {} = ", op.symbol())), Part::Val(sa), Part::Lit(", right = ".into()), Part::Val(sb), Part::Lit(")".into())]);
@@ -6940,6 +6670,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.fault(Fault::Assert, parts)?;
                 self.block(&pass);
             }
+            Stmt::Comment(_) => {}
         }
         Ok(())
     }
