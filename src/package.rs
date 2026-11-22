@@ -103,6 +103,15 @@ pub struct JsonRules {
     pub integers: Option<String>,
 }
 
+/// `[toml]`: how `std.toml`'s derived `Toml` reads TOML in this package
+/// (`unknown_keys = "error"`: a key a record doesn't have is an error).
+#[derive(serde::Deserialize, Default, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct TomlRules {
+    #[serde(default)]
+    pub unknown_keys: Option<String>,
+}
+
 /// The settings of the package a command works on (the first one loaded),
 /// for compile-time code: `std.typing.setting("json.unknown_keys")`.
 static SETTINGS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
@@ -153,6 +162,8 @@ struct Raw {
     #[serde(default)]
     json: JsonRules,
     #[serde(default)]
+    toml: TomlRules,
+    #[serde(default)]
     native: Native,
     #[serde(default)]
     run: RunRules,
@@ -184,7 +195,15 @@ pub fn load(dir: &Path) -> Result<Package, String> {
             return Err(format!("{}: [json] integers is \"checked\" or \"proven\", not {k:?}", path.display()));
         }
     }
+    if let Some(k) = &raw.toml.unknown_keys {
+        if k != "error" && k != "ignore" {
+            return Err(format!("{}: [toml] unknown_keys is \"error\" or \"ignore\", not {k:?}", path.display()));
+        }
+    }
     let mut settings = vec![];
+    if let Some(k) = &raw.toml.unknown_keys {
+        settings.push(("toml.unknown_keys".to_string(), k.clone()));
+    }
     if let Some(k) = &raw.json.unknown_keys {
         settings.push(("json.unknown_keys".to_string(), k.clone()));
     }

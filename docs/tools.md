@@ -239,6 +239,9 @@ proven = ["core"]
 [json]                                 # how `std.json` reads JSON here
 unknown_keys = "error"                 # `decode` refuses keys a record doesn't have (default: "ignore")
 integers = "proven"                    # integer fields must be proven to fit a JSON number (default: "checked", an error from `encode`)
+
+[toml]                                 # how `std.toml`'s derived `Toml` reads TOML here
+unknown_keys = "error"                 # `from_toml` refuses keys a record doesn't have (default: "ignore")
 ```
 
 Loading a package (for `check`, `run`, `verify`, …) fails on an export that names nothing, or a definition that isn't `pub`.
