@@ -726,6 +726,8 @@ declare ptr @strata_host_list_dir(ptr, ptr, ptr)
 declare i1 @strata_host_make_dir(ptr, ptr, ptr)
 declare i1 @strata_host_remove(ptr, ptr, ptr)
 declare ptr @strata_host_args()
+declare i64 @strata_host_now()
+declare void @strata_host_sleep(i64)
 declare ptr @strata_prog_name()
 declare void @strata_options_error(i1, ptr)
 declare ptr @strata_host_env_var(ptr)
@@ -5199,6 +5201,13 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok(match name {
             "host_write" => self.call(&Ty::Unit, "@strata_host_write", &vs)?,
             "host_exists" => self.call(&Ty::Bool, "@strata_host_exists", &vs)?,
+            "host_now" => self.call(&Ty::Int, "@strata_host_now", &[])?,
+            "host_sleep" => {
+                let r = self.call(&Ty::Unit, "@strata_host_sleep", &vs)?;
+                // a wait: a cancelled task stops here
+                self.cancel_point()?;
+                r
+            }
             "host_args" => {
                 let r = self.call(&lst, "@strata_host_args", &[])?;
                 self.temp(r)
@@ -6282,6 +6291,15 @@ impl<'m, 'a> Func<'m, 'a> {
         for (i, a) in arms.iter().enumerate() {
             let (kind, target, value) = match &a.op {
                 Expr::Method(r, _, args) if args.is_empty() => (0, self.expr(r)?, None),
+                // `clock.after(d)`: a timer, `d` (nanoseconds) from the select's start
+                Expr::Method(clock, m, args) if m == "after" && args.len() == 1 => {
+                    self.expr(clock)?;
+                    let d = self.expr(&args[0])?;
+                    let p = self.fresh("op");
+                    self.emit(format!("{p} = getelementptr i64, ptr {ops}, i64 {}", 4 * i + 2));
+                    self.emit(format!("store i64 {}, ptr {p}", d.1));
+                    (3, (Ty::Unit, "null".to_string()), None)
+                }
                 Expr::Method(s, _, args) => {
                     let tx = self.expr(s)?;
                     let et = match self.m.repr(&tx.0)? {

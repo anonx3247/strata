@@ -1445,7 +1445,7 @@ fn channels_are_closed_and_selected() {
         ("never_closed", "`tx` is never closed here"),
         ("task_never_closes", "the task holds a copy of `tx` and never closes it"),
         ("nested_sender", "a task (a `spawn`, a `race` arm) can capture a sender only on its own"),
-        ("arms", "a `select` arm waits on `rx.recv()`, `tx.send(v)` or `await h`"),
+        ("arms", "a `select` arm waits on `rx.recv()`, `tx.send(v)`, `await h` or `clock.after(d)`"),
         ("named_send", "a `send` arm gives nothing to name"),
         ("race_return", "`return` can't leave a task (a `spawn`, a `race` arm)"),
         ("race_sender", "the task holds a copy of `tx` and never closes it"),
@@ -1560,6 +1560,19 @@ test "the next test runs" {
   assert r == 2 || r == 5
 }
 "#;
+
+/// `clock.after(d)` in a `select`: `d` is a `Duration`, and the arm names
+/// nothing; a test may ask for the `SystemClock`.
+#[test]
+fn clock_arms_are_checked() {
+    let d = tmp("clock-arms");
+    save(&d.join("c.strata"), "use std.time.{SystemClock, ms}\n\nfn named(clock: SystemClock, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    clock.after(ms(5)) as t => 2,\n  }\n}\n\nfn plain(clock: SystemClock, rx: Receiver[Int]) -> Int {\n  select {\n    rx.recv() as x => 1,\n    clock.after(5) => 2,\n  }\n}\n");
+    let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
+    assert!(!ok && out.contains("error in named: an `after` arm gives nothing to name") && out.contains("error in plain: the time an `after` arm waits: expected `std.time.Duration`, found `Int`"), "{out}");
+    save(&d.join("t.strata"), "use std.time.{SystemClock, ms}\n\ntest \"the clock in a test\" (clock: SystemClock) {\n  (tx, rx) := channel()\n  r := select {\n    rx.recv() as x => 1,\n    clock.after(ms(1)) => 2,\n  }\n  tx.close()\n  assert r == 2\n}\n");
+    let (ok, out) = strata(&["--file", "t.strata", "test"], &d, None);
+    assert!(ok && out.contains("1 passed, 0 failed"), "{out}");
+}
 
 /// Tasks: `spawn` only in a `scope`, and a handle never leaves it.
 #[test]
