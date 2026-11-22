@@ -249,6 +249,8 @@ fn loops(env: &Env, f: &FnDecl, solver: Option<&crate::smt::Solver>) -> Result<V
     }
     let Some(bin) = solver else { return Err("it has a `while` loop, and no SMT solver was found to check its bound".into()) };
     let mut vc = crate::smt::Vc::new(env);
+    // (the loops' invariants help show their bounds go down)
+    vc.solver = Some(bin.clone());
     vc.function(f, &f.name);
     let mut hows = vec![];
     for lp in vc.loops.clone() {
