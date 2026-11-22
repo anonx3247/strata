@@ -4817,6 +4817,9 @@ fn long_list_literals_compile_in_linear_time() {
     save(&d.join("t.strata"), "fn total(xs: List[Int]) -> Int {\n  sum(xs)\n}\n");
     // 60,000 elements: one argument stays under Linux's 128 KB (3.6 s before, 0.08 s now)
     let arg = format!("[[{}]]", vec!["1"; 60_000].join(","));
+    // (a first run may precompile std, once per strata binary)
+    let (ok, out) = strata(&["--file", "t.strata", "run", "total", "[[1, 2]]"], &d, None);
+    assert!(ok && out.trim() == "3", "{out}");
     let start = std::time::Instant::now();
     let (ok, out) = strata(&["--file", "t.strata", "run", "total", &arg], &d, None);
     assert!(ok && out.trim() == "60000", "{out}");
