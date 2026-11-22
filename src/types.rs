@@ -782,11 +782,6 @@ impl TypeRef {
     }
 }
 
-/// The head of a type's runtime text: `List` of `List[Int]`.
-pub fn type_text_head(t: &str) -> &str {
-    t.split('[').next().unwrap_or(t)
-}
-
 /// A type's runtime text read back (`List[Int]`): names with arguments.
 pub fn parse_type_text(t: &str) -> TypeExpr {
     fn go(s: &[char], i: &mut usize) -> TypeExpr {

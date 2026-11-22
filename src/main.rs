@@ -11,9 +11,7 @@ mod desugar;
 mod derive;
 mod diff;
 mod history;
-mod generate;
 mod git;
-mod interp;
 mod lexer;
 mod llvm;
 mod merge;
@@ -150,9 +148,6 @@ Running:
                                It is compiled to machine code in memory (LLVM); what
                                can't be compiled yet is an error saying why.
                                --trace prints each call and return to stderr
-  run --interpret [PATH] [-- ARGS..]
-                               the old interpreter, kept to compare with until it is
-                               removed
   serve [PATH] [--port N]      serve the web: each request is passed to the program's
                                `fn handle(req: Request) -> Response` (std.http), which may
                                also ask for Console and capabilities (default port 8000);
@@ -166,8 +161,7 @@ Running:
   test [FILTER] [--with-deps]  run the project's own test blocks, compiled (a test that
                                can't be compiled yet fails, saying why); --with-deps: also
                                those of what it imports (std, dependencies), which are
-                               otherwise tested on their own; --interpret: the old
-                               interpreter
+                               otherwise tested on their own
   build [PATH] [-o OUT] [--emit-llvm]
                                compile the program to a native executable, through LLVM
                                (needs clang; STRATA_CC chooses another): `main` takes no
@@ -256,7 +250,7 @@ fn full_check(p: &Program) -> types::CheckReport {
 /// `full_check`, keeping the elaborated program and its environment, which
 /// running, testing and verifying work from: the program is resolved and
 /// type-checked once.
-fn full_checked(p: &Program) -> types::Checked {
+pub fn full_checked(p: &Program) -> types::Checked {
     let mut c = types::check_and_elaborate(p);
     for d in verify::refinements_in(&c.program, &c.compiled, &c.env) {
         if !c.report.errors.iter().any(|e| e.decl == d.decl && e.msg == d.msg) {
@@ -329,8 +323,8 @@ fn run() -> Result<bool, String> {
 
 
 fn main() -> ExitCode {
-    // a deep (but legal) recursion in the interpreter needs more than the
-    // default stack; its own depth limit should be what stops it
+    // compiled code (the JIT, compile-time code) runs on this thread: a deep
+    // but legal recursion goes until the memory ends, not the default stack
     let result = std::thread::Builder::new().stack_size(1 << 30).spawn(run).expect("start the main thread").join().unwrap_or_else(|_| Err("internal error".into()));
     match result {
         Ok(true) => ExitCode::SUCCESS,

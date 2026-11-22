@@ -916,8 +916,6 @@ fn run_compiles_by_default_with_the_jit() {
     save(&f, "fn main() {\n  mut n := 1\n  for _ in 0..70 {\n    n = n * 2\n  }\n  print(n)\n}\n");
     let (out, code) = output(Command::new(strata).arg("run").arg(&f));
     assert_eq!((out.as_str(), code), ("1180591620717411303424\n", 0), "compiled");
-    let (out, code) = output(Command::new(strata).args(["run", "--interpret"]).arg(&f));
-    assert_eq!((out.as_str(), code), ("1180591620717411303424\n", 0));
     let f = d.join("regex.strata");
     save(&f, "fn main() { print(matches(\"a1\", \"[a-z][0-9]\")) }\n");
     assert_eq!(output(Command::new(strata).arg("run").arg(&f)), ("true\n".to_string(), 0));
@@ -1541,16 +1539,14 @@ test "runaway" {
 }
 "#,
     );
-    let o = Command::new(strata).args(["run", "--interpret"]).arg(&f).output().unwrap();
+    let o = Command::new(strata).args(["run"]).arg(&f).output().unwrap();
     let (out, err) = (String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
     assert_eq!((out.as_ref(), o.status.code()), ("20000\n20000\n", Some(101)), "{err}");
     assert!(err.starts_with("fault (Limit): stack overflow (recursion too deep)\n    stack: main -> down ("), "{err}");
     assert!(err.ends_with(" times)\n") && err.lines().count() == 2, "{err}");
-    for how in ["--interpret", "--jit"] {
-        let o = Command::new(strata).args(["test", how, "--file"]).arg(&f).output().unwrap();
-        let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
-        assert!(out.contains("✗ runaway\n    Limit: stack overflow (recursion too deep)\n    stack: down (") && out.contains("0 passed, 1 failed"), "{how}: {out}");
-    }
+    let o = Command::new(strata).args(["test", "--file"]).arg(&f).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+    assert!(out.contains("✗ runaway\n    Limit: stack overflow (recursion too deep)\n    stack: down (") && out.contains("0 passed, 1 failed"), "{out}");
 
 }
 
@@ -1698,9 +1694,6 @@ pub fn nul_string() -> String {
         assert!(out.contains("`nothing` gave NULL for a `Counter` (declare it `Option[Counter]` if it can be NULL)"), "{out}");
         assert!(out.contains("a string passed to `shout` holds a NUL character"), "{out}");
     }
-    // the interpreter doesn't call C
-    let (out, code) = output(Command::new(strata).args(["run", "--interpret", "."]).current_dir(&d));
-    assert!(code != 0 && out.contains("`neg8` is an `extern c` function: only compiled code calls it"), "{out}");
 }
 
 /// `for` over an `Iterator`, compiled (not compared with the interpreter,
