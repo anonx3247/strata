@@ -201,7 +201,7 @@ Comments are part of the tree, so they survive every edit and render. A `//` com
 
 All rendered code is formatted to about 80 columns: long argument lists, record literals, method chains, `&&` / `||` / `+` chains, parameter lists and doc comments are broken across lines.
 
-Selectors: `name`, `prefix*`, `slice:Name` (Name, what it uses, and what uses it), or a comma-separated combination.
+Selectors: `name` (a definition, or a module with the modules inside it: `std.ast.check`), `prefix*`, `module:m`, `slice:Name` (Name, what it uses, and what uses it), or a comma-separated combination. A part that names nothing is an error.
 Every view is Strata text, so an agent can edit what it sees and send it back with `strata edit`.
 
 ## How it is stored
