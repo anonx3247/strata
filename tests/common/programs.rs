@@ -1,5 +1,5 @@
 //! Programs shared by tests/build.rs (compiled) and tests/eval.rs (run by
-//! `std.ast.eval`): each one's output is recorded in tests/data/build/expected,
+//! `compiler/eval`): each one's output is recorded in tests/data/build/expected,
 //! under its test's folder and its name (`faults-division`).
 #![allow(dead_code)]
 

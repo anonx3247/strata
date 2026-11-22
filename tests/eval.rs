@@ -1,5 +1,5 @@
-//! `std.ast.eval` runs programs from their stored trees, in Strata, as the
-//! compiled programs run them: for each program of tests/build.rs below, it
+//! `compiler/eval` (the compiler package's `eval` command) runs programs
+//! from their stored trees, in Strata, as the compiled programs run them: for each program of tests/build.rs below, it
 //! prints what the compiled program printed, ends with the same fault or
 //! error, and gives the same exit code (the outputs recorded in
 //! tests/data/build/expected).
@@ -9,54 +9,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const STRATA: &str = env!("CARGO_BIN_EXE_strata");
-
-/// The checker, run as `BASE... -- FILE...`: each file's program run with
-/// the definitions of the base files (the prelude, std), its output then
-/// `--- exit N`, then `===`.
-const CHECKER: &str = r#"use std.io.{Console}
-use std.fs.{Files, Disk}
-use std.process.{Environment, Process}
-use std.ast.binary.{read}
-use std.ast.eval.{run}
-
-fn decls_of(disk: Disk, f: String) -> List[std.ast.Decl] {
-  match disk.read_bytes(f) {
-    Ok(bytes) => match read(bytes) {
-      Ok(img) => img.decls,
-      Err(e) => {
-        print(f"error: {f}: {e}")
-        []
-      },
-    },
-    Err(e) => {
-      print(f"error: {f}: {e}")
-      []
-    },
-  }
-}
-
-fn main(mut console: Console, disk: Disk, process: Process) {
-  args := process.args()
-  mut base := []
-  mut programs := []
-  mut after := false
-  for a in args {
-    if a == "--" {
-      after = true
-    } else if after {
-      programs = push(programs, a)
-    } else {
-      base = base + decls_of(disk, a)
-    }
-  }
-  for f in programs {
-    r := run(base + decls_of(disk, f), ["one", "two words"])
-    mut console.write(r.stdout + r.stderr)
-    print(f"--- exit {r.code}")
-    print("===")
-  }
-}
-"#;
 
 /// std's module files (what a program may `use`).
 fn std_files() -> Vec<PathBuf> {
@@ -103,6 +55,9 @@ fn strata(args: &[&str]) {
     let o = Command::new(STRATA).args(args).output().unwrap();
     assert!(o.status.success(), "strata {args:?}: {}", String::from_utf8_lossy(&o.stderr));
 }
+
+#[path = "common/compiler.rs"]
+mod compiler;
 
 #[path = "common/programs.rs"]
 mod programs;
@@ -197,10 +152,6 @@ fn programs_run_as_compiled() {
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let d = scratch("programs");
-    let checker = d.join("check.strata");
-    save(&checker, CHECKER);
-    let exe = d.join("check");
-    strata(&["build", &checker.to_string_lossy(), "-o", &exe.to_string_lossy()]);
     let prelude = d.join("prelude.strata");
     strata(&["pack", "--prelude", &prelude.to_string_lossy()]);
     let mut programs: Vec<(String, PathBuf, Want)> = FILES.iter().map(|f| (f.to_string(), root.join("tests/data/build").join(format!("{f}.strata")), Want::Recorded)).collect();
@@ -209,8 +160,8 @@ fn programs_run_as_compiled() {
         save(&f, &text);
         programs.push((key, f, want));
     }
-    let mut c = Command::new(&exe);
-    c.arg(&prelude).args(std_files()).arg("--").args(programs.iter().map(|p| &p.1));
+    let mut c = Command::new(compiler::exe());
+    c.arg("eval").arg(&prelude).args(std_files()).arg("--").args(programs.iter().map(|p| &p.1));
     let o = c.output().unwrap();
     assert!(o.status.success(), "the checker failed: {}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8(o.stdout).unwrap();
@@ -225,7 +176,7 @@ fn programs_run_as_compiled() {
             Want::Text(t) => format!("{t}\n--- exit 0\n"),
         };
         if got != want {
-            wrong.push(format!("{key}:\n--- std.ast.eval\n{got}--- compiled\n{want}"));
+            wrong.push(format!("{key}:\n--- compiler/eval\n{got}--- compiled\n{want}"));
         }
     }
     assert_eq!(runs.len(), programs.len() + 1, "{out}");
