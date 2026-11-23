@@ -81,6 +81,13 @@ pub unsafe fn read(s: &Shape, shapes: &Shapes, raw: i64) -> Res<Expr> {
         Ok(match s {
             Shape::Opaque(why) => return Err(why.clone()),
             Shape::Int => int(raw),
+            Shape::Sized(w) => {
+                let n = if w.signed || w.bits < 64 { raw as i128 } else { raw as u64 as i128 };
+                match i64::try_from(n) {
+                    Ok(n) => Expr::Int(n),
+                    Err(_) => Expr::BigInt(n.to_string()),
+                }
+            }
             Shape::Float => Expr::Float(f64::from_bits(raw as u64)),
             Shape::Bool => Expr::Bool(raw & 1 != 0),
             Shape::Unit => Expr::Unit,
@@ -222,7 +229,7 @@ fn ctor<'a>(shapes: &'a Shapes, k: &str, name: &str) -> Option<&'a super::CtorSh
 fn fits(s: &Shape, shapes: &Shapes, e: &Expr) -> bool {
     match (s, e) {
         (Shape::Union(ms), _) => ms.iter().any(|(_, m)| fits(m, shapes, e)),
-        (Shape::Int, Expr::Int(_) | Expr::BigInt(_)) | (Shape::Float, Expr::Float(_)) | (Shape::Bool, Expr::Bool(_)) | (Shape::Unit, Expr::Unit) | (Shape::Str, Expr::Str(_)) => true,
+        (Shape::Int | Shape::Sized(_), Expr::Int(_) | Expr::BigInt(_)) | (Shape::Float, Expr::Float(_)) | (Shape::Bool, Expr::Bool(_)) | (Shape::Unit, Expr::Unit) | (Shape::Str, Expr::Str(_)) => true,
         (Shape::List(t), Expr::List(xs)) | (Shape::Set(t), Expr::Set(_, xs)) => xs.iter().all(|x| fits(t, shapes, x)),
         (Shape::Dict(k, v), Expr::Dict(_, kvs)) => kvs.iter().all(|(a, b)| fits(k, shapes, a) && fits(v, shapes, b)),
         (Shape::Tuple(ts), Expr::Tuple(xs)) => ts.len() == xs.len() && ts.iter().zip(xs).all(|(t, x)| fits(t, shapes, x)),
@@ -286,6 +293,8 @@ pub fn write(s: &Shape, shapes: &Shapes, e: &Expr) -> Res<i64> {
     Ok(match (s, e) {
         (Shape::Int, Expr::Int(n)) => new_int(&BigInt::from(*n)),
         (Shape::Int, Expr::BigInt(d)) => new_int(&d.parse().map_err(|_| format!("`{d}` is not an integer"))?),
+        (Shape::Sized(w), Expr::Int(n)) => w.wrap(*n as i128) as i64,
+        (Shape::Sized(w), Expr::BigInt(d)) => w.wrap(d.parse().map_err(|_| format!("`{d}` is not an integer"))?) as i64,
         (Shape::Float, Expr::Float(f)) => f.to_bits() as i64,
         (Shape::Bool, Expr::Bool(b)) => *b as i64,
         (Shape::Unit, Expr::Unit) => 0,

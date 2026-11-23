@@ -33,6 +33,12 @@ unsafe extern "C" {
     fn strata_pid();
     fn strata_int_from_u64();
     fn strata_int_bits();
+    fn strata_word_div();
+    fn strata_word_mod();
+    fn strata_uword_div();
+    fn strata_uword_mod();
+    fn strata_word_shift_fault();
+    fn strata_int_fit();
     fn strata_cstr();
     fn strata_cstr_free();
     fn strata_str_from_c();
@@ -100,6 +106,8 @@ unsafe extern "C" {
     fn strata_leave();
     fn strata_overflow();
     fn strata_div();
+    fn strata_div_nz();
+    fn strata_mod_nz();
     fn strata_gen_string();
     fn strata_gen_len();
     fn strata_gen_float();
@@ -159,6 +167,12 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_concat", strata_concat as *const () as usize),
         ("strata_int_from_u64", strata_int_from_u64 as *const () as usize),
         ("strata_int_bits", strata_int_bits as *const () as usize),
+        ("strata_word_div", strata_word_div as *const () as usize),
+        ("strata_word_mod", strata_word_mod as *const () as usize),
+        ("strata_uword_div", strata_uword_div as *const () as usize),
+        ("strata_uword_mod", strata_uword_mod as *const () as usize),
+        ("strata_word_shift_fault", strata_word_shift_fault as *const () as usize),
+        ("strata_int_fit", strata_int_fit as *const () as usize),
         ("strata_cstr", strata_cstr as *const () as usize),
         ("strata_cstr_free", strata_cstr_free as *const () as usize),
         ("strata_str_from_c", strata_str_from_c as *const () as usize),
@@ -242,6 +256,8 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_leave", strata_leave as *const () as usize),
         ("strata_overflow", strata_overflow as *const () as usize),
         ("strata_div", strata_div as *const () as usize),
+        ("strata_div_nz", strata_div_nz as *const () as usize),
+        ("strata_mod_nz", strata_mod_nz as *const () as usize),
         ("strata_gen_string", strata_gen_string as *const () as usize),
         ("strata_gen_len", strata_gen_len as *const () as usize),
         ("strata_gen_float", strata_gen_float as *const () as usize),
@@ -653,7 +669,7 @@ fn make_std_library() -> Result<StdLibrary, String> {
     let std = crate::stdlib::program();
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let meta = std::fs::metadata(&exe).map_err(|e| e.to_string())?;
-    let key: String = Sha256::digest(format!("v2{:?}{}{:?}", meta.modified().ok(), meta.len(), std).as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
+    let key: String = Sha256::digest(format!("v3{:?}{}{:?}", meta.modified().ok(), meta.len(), std).as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
     let root = match std::env::var_os("STRATA_CACHE") {
         Some(d) => std::path::PathBuf::from(d),
         None => std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache/strata"),

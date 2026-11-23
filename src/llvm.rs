@@ -32,7 +32,7 @@
 //! named.
 
 use crate::ast::*;
-use crate::types::{Env, Ty};
+use crate::types::{Env, Ty, Width};
 use std::collections::VecDeque;
 use crate::fx::{HashMap, HashSet};
 use std::fmt::Write;
@@ -91,6 +91,12 @@ const SOFT_FAULTS: &[&str] = &[
     "@strata_channel_new",
     "@strata_channel_close",
     "@strata_str_from_c",
+    "@strata_word_div",
+    "@strata_word_mod",
+    "@strata_uword_div",
+    "@strata_uword_mod",
+    "@strata_word_shift_fault",
+    "@strata_int_fit",
 ];
 
 /// Whether a program supervises tasks: a `supervised spawn` (or a
@@ -286,6 +292,16 @@ enum Fault {
 
 type Res<X> = Result<X, String>;
 
+/// The LLVM type of a sized integer: its own width.
+fn word_ll(w: Width) -> &'static str {
+    match w.bits {
+        8 => "i8",
+        16 => "i16",
+        32 => "i32",
+        _ => "i64",
+    }
+}
+
 /// A type as written in symbol names: `Int`, `Option[String]`, `(Int, Bool)`.
 fn key(t: &Ty) -> String {
     let list = |ts: &[Ty]| ts.iter().map(key).collect::<Vec<_>>().join(", ");
@@ -310,6 +326,10 @@ fn key(t: &Ty) -> String {
 pub fn compile(prog: &Program, entry: &str) -> Res<String> {
     Ok(compile_for(prog, Entry::Main(entry))?.0)
 }
+
+/// `--all-checks`: std is compiled with the program, every check kept,
+/// rather than taken from its library (where its checks are left out).
+pub static ALL_CHECKS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 thread_local! {
     static TRACING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -490,6 +510,8 @@ const COMPTIME: &str = "compile-time code";
 #[derive(Debug, Clone)]
 pub enum Shape {
     Int,
+    /// A sized integer, in its slot sign- or zero-extended.
+    Sized(Width),
     Float,
     Bool,
     Unit,
@@ -744,7 +766,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         _ => None,
     }).collect();
     let keeps = escape::Kept::of(&bodies);
-    let mut m = Module { env: &env, types: &types, keeps, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers, tasks: uses_tasks(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()), supervises: uses_supervised(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()) };
+    let mut m = Module { env: &env, types: &types, keeps, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), std_proven: matches!(entry, Entry::Library(_)), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers, tasks: uses_tasks(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()), supervises: uses_supervised(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()) };
     // core's `builtin static` blocks: zeroed, one each (the runtime's state)
     let mut statics: Vec<(&Symbol, &i64)> = env.statics.iter().collect();
     statics.sort();
@@ -753,9 +775,17 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     }
     if !m.proofs.is_empty() {
         m.refs = Refs::of(prog);
+        // the program's own trait implementations' methods, by `verify`'s labels
+        for d in prog.decls.iter().filter(|d| d.module.as_str() != "std" && !d.module.as_str().starts_with("std.")) {
+            if let DeclKind::Impl(imp) = &d.kind {
+                if let (false, Some(tr)) = (imp.is_inherent(), env.traits.get(&imp.trait_name)) {
+                    m.refs.own.extend(tr.methods.iter().map(|tm| crate::termination::impl_label(&env, imp, &tm.decl.name)));
+                }
+            }
+        }
     }
     // std's precompiled functions, but while making them, tracing, or in a library
-    if !BUILDING_STD.with(|b| b.get()) && !m.tracing && !matches!(entry, Entry::Library(_)) {
+    if !BUILDING_STD.with(|b| b.get()) && !m.tracing && !matches!(entry, Entry::Library(_)) && !ALL_CHECKS.load(std::sync::atomic::Ordering::Relaxed) {
         m.precompiled = jit::std_library().map(|l| &l.names);
     }
     let mut tests = vec![];
@@ -821,7 +851,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
                 if skip.iter().any(|s| s == t.name.as_str()) {
                     continue;
                 }
-                let inst = Instance { label: format!("test {:?}", t.name.to_string()), symbol: format!("@\"strata.test.{}\"", tests.len()), impls: vec![], params: vec![], ret: TypeExpr::Unit, own_params: &[], own_ret: &TypeExpr::Unit, requires: vec![], ensures: vec![], body: &t.body, sub: HashMap::default(), given: &t.params };
+                let inst = Instance { label: format!("test {:?}", t.name.to_string()), proof_key: String::new(), verify_name: String::new(), symbol: format!("@\"strata.test.{}\"", tests.len()), impls: vec![], params: vec![], ret: TypeExpr::Unit, own_params: &[], own_ret: &TypeExpr::Unit, requires: vec![], ensures: vec![], body: &t.body, sub: HashMap::default(), given: &t.params };
                 m.instance(&inst).map_err(|e| format!("can't compile test {:?}: {e}", t.name.to_string()))?;
                 tests.push(t.name.to_string());
             }
@@ -1031,6 +1061,7 @@ declare void @strata_trace_return(i64, i64)
 declare void @strata_overflow() noreturn cold
 declare void @strata_main_error(ptr)
 declare i64 @strata_div(i64, i64)
+declare i64 @strata_div_nz(i64, i64)
 declare i64 @strata_int_add(i64, i64)
 declare i64 @strata_int_sub(i64, i64)
 declare i64 @strata_int_mul(i64, i64)
@@ -1045,6 +1076,12 @@ declare i64 @strata_shl(i64, i64)
 declare i64 @strata_shr(i64, i64)
 declare i64 @strata_int_from_u64(i64)
 declare i64 @strata_int_bits(i64)
+declare i64 @strata_word_div(i64, i64)
+declare i64 @strata_word_mod(i64, i64)
+declare i64 @strata_uword_div(i64, i64)
+declare i64 @strata_uword_mod(i64, i64)
+declare void @strata_word_shift_fault(ptr)
+declare i64 @strata_int_fit(i64, i64, i64, ptr)
 declare ptr @strata_cstr(ptr, ptr)
 declare void @strata_cstr_free(ptr)
 declare ptr @strata_str_from_c(ptr, ptr)
@@ -1056,6 +1093,7 @@ declare i64 @strata_gen_len(ptr, i64)
 declare ptr @strata_gen_string(i64)
 declare double @strata_int_to_float(i64)
 declare i64 @strata_mod(i64, i64)
+declare i64 @strata_mod_nz(i64, i64)
 declare double @strata_fmod(double, double)
 declare double @strata_finite(double, double, double, ptr)
 declare i64 @strata_float_to_int(double, double)
@@ -1175,6 +1213,11 @@ impl MethodInst {
 struct Instance<'a> {
     /// Its name in messages (`total`, `Item.price`).
     label: String,
+    /// What `verify` calls it: the name its proofs are kept under
+    /// (`termination::impl_label` for a trait method, `Money.combine`), and
+    /// the name its checks say (`Combine::combine`).
+    proof_key: String,
+    verify_name: String,
     symbol: String,
     /// The implementation each trait-typed parameter takes (`None`: not one).
     impls: Vec<Option<Ty>>,
@@ -1288,6 +1331,11 @@ struct Module<'a> {
     tracing: bool,
     /// What `verify` proved, by function (`compile_proven`); empty: every check is kept.
     proofs: HashMap<String, Proofs>,
+    /// Making std's library: std is proven (all of it, each version: its
+    /// verification requires it, `std_is_proven`), so the checks inside
+    /// its functions are left out; those of their arguments and `requires`
+    /// stay, for they are the calling program's to prove.
+    std_proven: bool,
     /// Who refers to each function (`Refs`), when there are proofs.
     refs: Refs,
     /// The checks of the program's own functions left out as proven, and kept.
@@ -1521,7 +1569,10 @@ impl<'a> Module<'a> {
             ensures.extend(&own.ensures);
         }
         let label = format!("{}.{}", mi.head, crate::names::short(&mi.method));
-        let inst = Instance { label, symbol: mi.symbol(), impls: vec![], params: own.params.clone(), ret: own.ret.clone(), own_params: &own.params, own_ret: &own.ret, requires, ensures, body: &own.body, sub, given: &[] };
+        let imp = self.impl_of(&mi.tr, &mi.head).ok_or(format!("`{}` does not implement `{}`", mi.head, mi.tr))?;
+        let proof_key = crate::termination::impl_label(self.env, imp, &mi.method);
+        let verify_name = crate::types::shown_name(&crate::types::trait_call(&mi.tr, &mi.method));
+        let inst = Instance { label, proof_key, verify_name, symbol: mi.symbol(), impls: vec![], params: own.params.clone(), ret: own.ret.clone(), own_params: &own.params, own_ret: &own.ret, requires, ensures, body: &own.body, sub, given: &[] };
         self.instance(&inst)
     }
 
@@ -1593,6 +1644,7 @@ impl<'a> Module<'a> {
             Ty::Bool => "i1",
             Ty::Unit => "void",
             _ if is_never(t) => "void",
+            r if Width::of_ty(&r).is_some() => word_ll(Width::of_ty(&r).unwrap()),
             Ty::Str | Ty::Con(..) | Ty::Fn(..) => "ptr",
             Ty::Union(_) => "ptr",
             other => return Err(format!("the type `{}` is not compiled yet", key(&other))),
@@ -1638,6 +1690,11 @@ impl<'a> Module<'a> {
     }
 
     /// A record, a sum, one of its variants, or a tuple: a block with a tag.
+    /// The sized integer type values of `t` are (`U32`, or a `distinct` one over it).
+    fn sized(&self, t: &Ty) -> Option<Width> {
+        Width::of_ty(&self.repr(t).ok()?)
+    }
+
     fn nominal(&self, t: &Ty) -> bool {
         match t {
             Ty::Con(n, _) if n == "Tuple" => true,
@@ -1782,6 +1839,7 @@ impl<'a> Module<'a> {
         let r = self.repr(t)?;
         Ok(match &r {
             Ty::Int => Shape::Int,
+            r if Width::of_ty(r).is_some() => Shape::Sized(Width::of_ty(r).unwrap()),
             Ty::Float => Shape::Float,
             Ty::Bool => Shape::Bool,
             Ty::Unit => Shape::Unit,
@@ -1869,6 +1927,8 @@ impl<'a> Module<'a> {
         let sub: HashMap<Symbol, Ty> = f.type_params.iter().cloned().zip(targs.iter().cloned()).collect();
         let inst = Instance {
             label: name.to_string(),
+            proof_key: name.to_string(),
+            verify_name: crate::types::shown_name(name),
             symbol: sym_impls(name, targs, impls),
             impls: impls.to_vec(),
             params: f.params.clone(),
@@ -1901,8 +1961,9 @@ impl<'a> Module<'a> {
         }
         let ret = self.lower(&f.ret, &sub)?;
         let mut c = Func::new(self, sub);
-        if !c.m.proofs.is_empty() && c.m.refs.own.contains(name) {
-            c.proofs_of = Some(name.to_string());
+        if !c.m.proofs.is_empty() && c.m.refs.own.contains(&inst.proof_key) {
+            c.proofs_of = Some(inst.proof_key.clone());
+            c.result_key = Some(format!("result of `{}`", inst.verify_name));
         }
         let mut sig = vec![];
         for (p, t) in f.params.iter().zip(&params) {
@@ -2369,6 +2430,8 @@ struct Func<'m, 'a> {
     /// The program's function being compiled, whose proofs `proven` reads
     /// (none in a lambda, a helper, or std's and the prelude's code).
     proofs_of: Option<String>,
+    /// What `verify` calls the check of its result (`result of \`f\``).
+    result_key: Option<String>,
     /// Whether a cancellation check leaves through the `unwound` block.
     unwinds: bool,
     /// In the function's `exit` block (its result's checks): nothing left to
@@ -2390,7 +2453,7 @@ struct Func<'m, 'a> {
 
 impl<'m, 'a> Func<'m, 'a> {
     fn new(m: &'m mut Module<'a>, sub: HashMap<Symbol, Ty>) -> Self {
-        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![], unwinds: false, in_exit: false, proofs_of: None, stack_ctors: HashSet::default(), stack_temps: HashMap::default(), stack_made: HashMap::default(), stack_slots: HashMap::default() }
+        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![], unwinds: false, in_exit: false, proofs_of: None, result_key: None, stack_ctors: HashSet::default(), stack_temps: HashMap::default(), stack_made: HashMap::default(), stack_slots: HashMap::default() }
     }
 
     /// The function's text: the slots, then the code.
@@ -2687,8 +2750,8 @@ impl<'m, 'a> Func<'m, 'a> {
     fn to_c(&mut self, v: &V, ct: CType, callee: &str) -> Res<String> {
         let r = self.fresh("toc");
         match ct {
-            CType::Int { bits: 64, .. } => self.emit(format!("{r} = call i64 @strata_int_bits(i64 {})", v.1)),
-            CType::Int { bits, .. } => self.emit(format!("{r} = trunc i64 {} to i{bits}", v.1)),
+            // a sized integer is the C value already
+            CType::Int { .. } => return Ok(v.1.clone()),
             CType::Str => self.emit(format!("{r} = call ptr @strata_cstr(ptr {}, ptr {callee})", v.1)),
             CType::Double | CType::Bool | CType::Handle => return Ok(v.1.clone()),
             CType::OptHandle => {
@@ -2718,10 +2781,7 @@ impl<'m, 'a> Func<'m, 'a> {
     fn from_c(&mut self, raw: &str, ct: CType, t: &Ty, callee: &str, symbol: &str) -> Res<V> {
         let r = self.fresh("fromc");
         match ct {
-            CType::Int { bits: 64, signed: true } => self.emit(format!("{r} = call i64 @strata_int_from_i64(i64 {raw})")),
-            CType::Int { bits: 64, signed: false } => self.emit(format!("{r} = call i64 @strata_int_from_u64(i64 {raw})")),
-            CType::Int { bits, signed: true } => self.emit(format!("{r} = sext i{bits} {raw} to i64")),
-            CType::Int { bits, signed: false } => self.emit(format!("{r} = zext i{bits} {raw} to i64")),
+            CType::Int { .. } => return Ok((t.clone(), raw.to_string())),
             CType::Str => {
                 self.emit(format!("{r} = call ptr @strata_str_from_c(ptr {raw}, ptr {callee})"));
                 self.after_builtin("@strata_str_from_c")?;
@@ -2755,7 +2815,7 @@ impl<'m, 'a> Func<'m, 'a> {
     /// An `Int` is: a big one is an object (a small one, most of them, is
     /// skipped by the inline test of `@strata.int_dup` / `@strata.int_drop`).
     fn counted(&self, t: &Ty) -> bool {
-        has_value(t) && !is_never(t) && !self.m.handle(t) && !matches!(self.m.repr(t), Ok(Ty::Float | Ty::Bool | Ty::Unit) | Err(_))
+        has_value(t) && !is_never(t) && !self.m.handle(t) && self.m.sized(t).is_none() && !matches!(self.m.repr(t), Ok(Ty::Float | Ty::Bool | Ty::Unit) | Err(_))
     }
 
     fn is_int(&self, t: &Ty) -> bool {
@@ -3066,6 +3126,14 @@ impl<'m, 'a> Func<'m, 'a> {
             Ty::Int => return Ok(v.1.clone()),
             Ty::Unit => return Ok("0".into()),
             _ if is_never(&v.0) => return Ok("0".into()),
+            t if Width::of_ty(&t).is_some() => {
+                let w = Width::of_ty(&t).unwrap();
+                if w.bits == 64 {
+                    return Ok(v.1.clone());
+                }
+                let ext = if w.signed { "sext" } else { "zext" };
+                self.emit(format!("{r} = {ext} {} {} to i64", word_ll(w), v.1));
+            }
             Ty::Float => self.emit(format!("{r} = bitcast double {} to i64", v.1)),
             Ty::Bool => self.emit(format!("{r} = zext i1 {} to i64", v.1)),
             _ => self.emit(format!("{r} = ptrtoint ptr {} to i64", v.1)),
@@ -3079,6 +3147,13 @@ impl<'m, 'a> Func<'m, 'a> {
         match self.m.repr(t)? {
             Ty::Int => return Ok((t.clone(), s.to_string())),
             Ty::Unit => return Ok((Ty::Unit, String::new())),
+            u if Width::of_ty(&u).is_some() => {
+                let w = Width::of_ty(&u).unwrap();
+                if w.bits == 64 {
+                    return Ok((t.clone(), s.to_string()));
+                }
+                self.emit(format!("{r} = trunc i64 {s} to {}", word_ll(w)));
+            }
             Ty::Float => self.emit(format!("{r} = bitcast i64 {s} to double")),
             Ty::Bool => self.emit(format!("{r} = trunc i64 {s} to i1")),
             _ => self.emit(format!("{r} = inttoptr i64 {s} to ptr")),
@@ -3095,6 +3170,11 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         Ok(match self.m.repr(&v.0)? {
             Ty::Int if v.1.parse::<i64>().is_ok() => Some(("i64", v.1.clone())),
+            t if Width::of_ty(&t).is_some() => {
+                let w = Width::of_ty(&t).unwrap();
+                // (a constant is written as the signed reading of its bits)
+                v.1.parse::<i64>().ok().map(|n| ("i64", if w.signed || w.bits == 64 { n } else { n & ((1i64 << w.bits) - 1) }.to_string()))
+            }
             Ty::Unit => Some(("i64", "0".into())),
             // a float literal is its bits in hex (`0x3FF8000000000000`)
             Ty::Float => v.1.strip_prefix("0x").and_then(|h| u64::from_str_radix(h, 16).ok()).map(|b| ("i64", (b as i64).to_string())),
@@ -3358,6 +3438,10 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         Ok(match &t {
             Ty::Int => self.call(&Ty::Str, "@strata_show_int", &[v.clone()])?.1,
+            t if Width::of_ty(t).is_some() => {
+                let n = self.word_to_int(Width::of_ty(t).unwrap(), v)?;
+                self.call(&Ty::Str, "@strata_show_int", &[n])?.1
+            }
             Ty::Float => self.call(&Ty::Str, "@strata_show_float", &[v.clone()])?.1,
             Ty::Bool => self.call(&Ty::Str, "@strata_show_bool", &[v.clone()])?.1,
             Ty::Str => self.call(&Ty::Str, "@strata_debug_str", &[v.clone()])?.1,
@@ -3476,6 +3560,11 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.emit(format!("{r} = icmp eq {} {}, {}", self.m.ll(&t)?, a.1, b.1));
                 bool_v(&r)
             }
+            t if Width::of_ty(t).is_some() => {
+                let r = self.fresh("eq");
+                self.emit(format!("{r} = icmp eq {} {}, {}", self.m.ll(t)?, a.1, b.1));
+                bool_v(&r)
+            }
             Ty::Float => {
                 let r = self.fresh("eq");
                 self.emit(format!("{r} = fcmp oeq double {}, {}", a.1, b.1));
@@ -3557,6 +3646,13 @@ impl<'m, 'a> Func<'m, 'a> {
                     Ty::Int => {
                         let c = h.call(&Ty::Int, "@strata_int_cmp", &[a.clone(), b.clone()])?;
                         h.emit(format!("ret i64 {}", c.1));
+                    }
+                    r if Width::of_ty(&r).is_some() => {
+                        let (lt, gt) = (h.fresh("l"), h.fresh("g"));
+                        let (pl, pg) = if Width::of_ty(&r).unwrap().signed { ("slt", "sgt") } else { ("ult", "ugt") };
+                        h.emit(format!("{lt} = icmp {pl} {ll} %a, %b"));
+                        h.emit(format!("{gt} = icmp {pg} {ll} %a, %b"));
+                        three(&mut h, &lt, &gt);
                     }
                     Ty::Bool => {
                         let (lt, gt) = (h.fresh("l"), h.fresh("g"));
@@ -4108,7 +4204,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let key = if ctx == "let binding" {
             Some(format!("`let` annotated `{}`", crate::printer::ty(t)))
         } else if ctx.starts_with("result of `") {
-            Some(crate::types::shown_name(ctx))
+            Some(self.result_key.clone().unwrap_or_else(|| crate::types::shown_name(ctx)))
         } else if ctx.starts_with("assigning `") || ctx.starts_with("constructing `") {
             // (a field's check is part of the value's: `constructing \`C\`: C.f`)
             let end = ctx[ctx.find('`').unwrap() + 1..].find('`').map(|i| ctx.find('`').unwrap() + 2 + i);
@@ -4156,6 +4252,10 @@ impl<'m, 'a> Func<'m, 'a> {
     /// Whether `verify` proved every check of this function that `is` picks
     /// (at least one, none left open): such a check is left out. Counted.
     fn proven(&mut self, is: impl Fn(&str) -> bool) -> bool {
+        if self.m.std_proven {
+            self.m.left_out += 1;
+            return true;
+        }
         let Some(name) = &self.proofs_of else { return false };
         let ok = self.m.proofs.get(name).is_some_and(|p| p.proven.iter().any(|e| is(e)) && !p.open.iter().any(|e| is(e)));
         if ok {
@@ -4617,6 +4717,11 @@ impl<'m, 'a> Func<'m, 'a> {
                 let v = self.expr(x)?;
                 match self.m.repr(&v.0)? {
                     Ty::Int => self.int_op("ssub", &(Ty::Int, "0".into()), &v),
+                    t if Width::of_ty(&t).is_some() => {
+                        let r = self.fresh("neg");
+                        self.emit(format!("{r} = sub {} 0, {}", word_ll(Width::of_ty(&t).unwrap()), v.1));
+                        (v.0.clone(), r)
+                    }
                     Ty::Float => {
                         let r = self.fresh("neg");
                         self.emit(format!("{r} = fneg double {}", v.1));
@@ -4993,6 +5098,142 @@ impl<'m, 'a> Func<'m, 'a> {
     }
 
     /// An integer literal: itself when small, else a big integer made at run time.
+    /// A sized integer as an `Int` (a big one for a 64-bit value beyond
+    /// the small range).
+    fn word_to_int(&mut self, w: Width, v: &V) -> Res<V> {
+        let r = self.fresh("int");
+        if w.bits < 64 {
+            let ext = if w.signed { "sext" } else { "zext" };
+            self.emit(format!("{r} = {ext} {} {} to i64", word_ll(w), v.1));
+            return Ok((Ty::Int, r));
+        }
+        let f = if w.signed { "@strata_int_from_i64" } else { "@strata_int_from_u64" };
+        let r = self.call(&Ty::Int, f, &[(Ty::Int, v.1.clone())])?;
+        Ok(self.temp(r))
+    }
+
+    /// `x.to_int()`, `to_u32(n)` (its range checked) and `wrap_u32(n)`; a
+    /// constant (an integer literal of a sized type is `to_u32(5)`) folded.
+    fn word_builtin(&mut self, name: &str, types: &[Ty], vs: &[V]) -> Res<Option<V>> {
+        if let ("to_int", [t]) = (name, types) {
+            return Ok(match Width::of_ty(t) {
+                Some(w) => Some(self.word_to_int(w, &vs[0])?),
+                None => None,
+            });
+        }
+        let Some((w, wraps)) = crate::types::sized::conversion(name) else { return Ok(None) };
+        if types != [Ty::Int] {
+            return Ok(None);
+        }
+        let ty = Ty::Con(Symbol::new(w.name()), vec![]);
+        if let Ok(n) = vs[0].1.parse::<i64>() {
+            if wraps || w.holds(n as i128) {
+                return Ok(Some((ty, (w.wrap(n as i128) as i64).to_string())));
+            }
+        }
+        let bits = if wraps {
+            self.call(&Ty::Int, "@strata_int_bits", &vs[..1])?
+        } else {
+            let (lo, hi) = (self.int_lit(&w.min().to_string()), self.int_lit(&w.max().to_string()));
+            let shown = self.m.string(w.name());
+            self.call(&Ty::Int, "@strata_int_fit", &[vs[0].clone(), lo, hi, (Ty::Str, shown)])?
+        };
+        if w.bits == 64 {
+            return Ok(Some((ty, bits.1)));
+        }
+        let r = self.fresh("word");
+        self.emit(format!("{r} = trunc i64 {} to {}", bits.1, word_ll(w)));
+        Ok(Some((ty, r)))
+    }
+
+    /// An operation on two sized integers of type `w`: `Int`'s, then the
+    /// result modulo 2^bits (the machine's wrapping instructions).
+    fn word_op(&mut self, op: BinOp, w: Width, a: &V, b: &V) -> Res<V> {
+        use BinOp::*;
+        let ll = word_ll(w);
+        let r = self.fresh("w");
+        let simple = |s: &mut Self, ins: &str| -> V {
+            s.emit(format!("{r} = {ins} {ll} {}, {}", a.1, b.1));
+            (a.0.clone(), r.clone())
+        };
+        let compare = |s: &mut Self, signed: &str, unsigned: &str| -> V {
+            s.emit(format!("{r} = icmp {} {ll} {}, {}", if w.signed { signed } else { unsigned }, a.1, b.1));
+            bool_v(&r)
+        };
+        Ok(match op {
+            Add => simple(self, "add"),
+            Sub => simple(self, "sub"),
+            Mul => simple(self, "mul"),
+            BitAnd => simple(self, "and"),
+            BitOr => simple(self, "or"),
+            BitXor => simple(self, "xor"),
+            Lt => compare(self, "slt", "ult"),
+            Le => compare(self, "sle", "ule"),
+            Gt => compare(self, "sgt", "ugt"),
+            Ge => compare(self, "sge", "uge"),
+            Div | Mod => {
+                // in 64 bits (`Int`'s Euclidean division), then truncated
+                let wide = |s: &mut Self, x: &V| -> String {
+                    if w.bits == 64 {
+                        return x.1.clone();
+                    }
+                    let e = s.fresh("wide");
+                    s.emit(format!("{e} = {} {ll} {} to i64", if w.signed { "sext" } else { "zext" }, x.1));
+                    e
+                };
+                let (x, y) = (wide(self, a), wide(self, b));
+                let f = match (op, w.signed) {
+                    (Div, true) => "@strata_word_div",
+                    (Div, false) => "@strata_uword_div",
+                    (_, true) => "@strata_word_mod",
+                    _ => "@strata_uword_mod",
+                };
+                let q = self.call(&Ty::Int, f, &[(Ty::Int, x), (Ty::Int, y)])?;
+                if w.bits == 64 {
+                    return Ok((a.0.clone(), q.1));
+                }
+                self.emit(format!("{r} = trunc i64 {} to {ll}", q.1));
+                (a.0.clone(), r)
+            }
+            Shl | Shr => {
+                // by `bits` or more: every bit shifted out (`>>` of a negative
+                // number leaves -1); by a negative number (signed): `Int`'s fault
+                let k = b.1.parse::<i64>().ok();
+                if w.signed && k.is_none_or(|k| k < 0) {
+                    let (neg, bad, ok) = (self.fresh("neg"), self.fresh_label("shift.neg"), self.fresh_label("shift.ok"));
+                    self.emit(format!("{neg} = icmp slt {ll} {}, 0", b.1));
+                    self.emit(format!("br i1 {neg}, label %{bad}, label %{ok}"));
+                    self.block(&bad);
+                    let msg = self.m.string(&format!("`{}`", op.symbol()));
+                    self.call(&Ty::Unit, "@strata_word_shift_fault", &[(Ty::Str, msg)])?;
+                    self.br(&ok);
+                    self.block(&ok);
+                }
+                let ins = match (op, w.signed) {
+                    (Shl, _) => "shl",
+                    (_, true) => "ashr",
+                    _ => "lshr",
+                };
+                if k.is_some_and(|k| (0..w.bits as i64).contains(&k)) {
+                    return Ok(simple(self, ins));
+                }
+                let big = self.fresh("big");
+                self.emit(format!("{big} = icmp uge {ll} {}, {}", b.1, w.bits));
+                if ins == "ashr" {
+                    let n = self.fresh("n");
+                    self.emit(format!("{n} = select i1 {big}, {ll} {}, {ll} {}", w.bits - 1, b.1));
+                    self.emit(format!("{r} = ashr {ll} {}, {n}", a.1));
+                    return Ok((a.0.clone(), r));
+                }
+                let sh = self.fresh("sh");
+                self.emit(format!("{sh} = {ins} {ll} {}, {}", a.1, b.1));
+                self.emit(format!("{r} = select i1 {big}, {ll} 0, {ll} {sh}"));
+                (a.0.clone(), r)
+            }
+            Eq | Ne | And | Or | Implies => unreachable!("handled by `apply`"),
+        })
+    }
+
     fn int_lit(&mut self, digits: &str) -> V {
         if let Ok(n) = digits.parse::<i64>() {
             if (-(1i64 << 62)..(1i64 << 62)).contains(&n) {
@@ -5083,6 +5324,9 @@ impl<'m, 'a> Func<'m, 'a> {
             self.emit(format!("{r} = xor i1 {}, true", e.1));
             return Ok(bool_v(&r));
         }
+        if let Some(w) = Width::of_ty(&t) {
+            return self.word_op(op, w, a, b);
+        }
         let cmp = |s: &mut Self, ins: &str| -> Res<V> {
             let r = s.fresh("cmp");
             let ll = s.m.ll(&t)?;
@@ -5114,12 +5358,16 @@ impl<'m, 'a> Func<'m, 'a> {
             (Add, Ty::Int) => self.int_op("sadd", a, b),
             (Sub, Ty::Int) => self.int_op("ssub", a, b),
             (Mul, Ty::Int) => self.int_op("smul", a, b),
-            (Div, Ty::Int) => {
-                let r = self.call(&Ty::Int, "@strata_div", &[a.clone(), b.clone()])?;
-                self.temp(r)
-            }
-            (Mod, Ty::Int) => {
-                let r = self.call(&Ty::Int, "@strata_mod", &[a.clone(), b.clone()])?;
+            // (proven: the runtime's division without its check for 0)
+            (Div | Mod, Ty::Int) => {
+                let nz = self.proven(|e| e == "no division by zero");
+                let f = match (op, nz) {
+                    (Div, false) => "@strata_div",
+                    (Div, true) => "@strata_div_nz",
+                    (_, false) => "@strata_mod",
+                    (_, true) => "@strata_mod_nz",
+                };
+                let r = self.call(&Ty::Int, f, &[a.clone(), b.clone()])?;
                 self.temp(r)
             }
             (BitAnd | BitOr | BitXor, Ty::Int) => self.bit_op(op, a, b),
@@ -5806,6 +6054,9 @@ impl<'m, 'a> Func<'m, 'a> {
             Ty::Con(l, a) if l == "List" => Some(a[0].clone()),
             _ => None,
         };
+        if let Some(r) = self.word_builtin(name, &types, &vs)? {
+            return Ok(r);
+        }
         Ok(match (name, types.as_slice()) {
             ("len", [t]) if list_elem(t).is_some() => self.list_len(&vs[0]),
             ("push", [t, _]) if list_elem(t).is_some() => {
@@ -9041,6 +9292,14 @@ impl Func<'_, '_> {
                 _ => self.unsupported(&format!("generating a value of `{}`", crate::printer::ty(t))),
             };
         };
+        if let Some(w) = Width::of(n.as_str()) {
+            // an `Int` as `Int`'s values are made, wrapped into the type's range
+            let (g, k) = self.pairs(&bounded(&hints.ints(), 1000, 100));
+            let r = self.fresh("i");
+            self.emit(format!("{r} = call i64 @strata_gen_int(ptr {g}, i64 {k})"));
+            let n = self.temp((Ty::Int, r));
+            return Ok(self.word_builtin(&w.wrap_fn(), &[Ty::Int], &[n])?.expect("a sized conversion"));
+        }
         match n.as_str() {
             "Int" => {
                 let (g, k) = self.pairs(&bounded(&hints.ints(), 1000, 100));

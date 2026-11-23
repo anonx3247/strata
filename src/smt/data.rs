@@ -264,7 +264,8 @@ impl Vc<'_> {
                 self.datatype(&name, |_| sorts.iter().enumerate().map(|(k, s)| (format!("{name}.{k}"), vec![s.clone()])).collect())
             }
             TypeExpr::Named(n, args) => match n.as_str() {
-                "Int" | "Bool" | "String" => n.to_string(),
+"Int" | "Bool" | "String" => n.to_string(),
+                s if Width::of(s).is_some() => "Int".to_string(),
                 "Float" | "Dict" | "Set" | "_" => self.opaque_sort(n),
                 "List" => match args.first() {
                     Some(a) => {
@@ -395,6 +396,11 @@ impl Vc<'_> {
             },
             TypeExpr::Named(n, args) => match n.as_str() {
                 "Int" => Val::Int(t),
+                s if Width::of(s).is_some() => {
+                    let w = Width::of(s).unwrap();
+                    self.facts.push(super::word_range(w, &t));
+                    super::word(w, t)
+                }
                 "Bool" => Val::Bool(t),
                 "String" => {
                     if !self.str_terms.contains(&t) {
@@ -421,7 +427,7 @@ impl Vc<'_> {
                 "Tuple" => Val::Data { ty: ty.clone(), t },
                 _ if self.env.variant_parent(n.sym()).is_some() => Val::Data { ty: ty.clone(), t },
                 _ => match self.env.types.get(&n.sym()).cloned() {
-                    None => Val::Opaque(format!("values of the generic type `{n}` are not known")),
+                    None => Val::Data { ty: ty.clone(), t },
                     Some(td) => {
                         let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
                         match &td.body {
@@ -578,6 +584,7 @@ impl Vc<'_> {
             }
             TypeExpr::Named(n, args) => match n.as_str() {
                 "Int" => crate::llvm::native::int_expr(parse_big(&x.to_string())?),
+                s if Width::of(s).is_some() => crate::llvm::native::int_expr(parse_big(&x.to_string())?),
                 "Bool" => Expr::Bool(x.atom()? == "true"),
                 "String" => Expr::Str(parse_str(&x.to_string())?),
                 "List" => {
