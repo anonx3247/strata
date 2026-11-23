@@ -263,7 +263,6 @@ void strata_free(void *p) {
   free(c);
 }
 
-
 // Whether `p` has a single holder, so it may be changed in place.
 _Bool strata_unique(void *p) { return THREADED ? __atomic_load_n(count_of(p), __ATOMIC_ACQUIRE) == 1 : *count_of(p) == 1; }
 #else
@@ -331,6 +330,7 @@ static Str *str_from(const char *c, int64_t len) {
 
 static Str *str_c(const char *c) { return str_from(c, (int64_t)strlen(c)); }
 
+#ifndef STRATA_CORE_RT
 Str *strata_concat(Str *a, Str *b) {
   Str *s = str_alloc(a->len + b->len);
   memcpy(s->bytes, a->bytes, (size_t)a->len);
@@ -362,6 +362,14 @@ int64_t strata_str_len(Str *s) {
     if ((s->bytes[i] & 0xC0) != 0x80) n++;
   return n;
 }
+#else
+// (core.rt's: the string functions, below too)
+Str *strata_concat(Str *a, Str *b);
+Str *strata_concat_owned(Str *a, Str *b);
+int64_t strata_str_len(Str *s);
+int64_t strata_str_cmp(Str *a, Str *b);
+Str *strata_str_trim(Str *s);
+#endif
 
 // ---- faults ----
 
@@ -470,7 +478,6 @@ static void keep_printed(const char *b, size_t n) {
   printed[printed_len] = 0;
 }
 
-
 // Run test `f`: 0 when it got to its end, 1 after a fault (then
 // `strata_test_fault` says which). Each starts as the interpreter's: no
 // call stack, the generators' numbers from the start, nothing printed.
@@ -541,7 +548,6 @@ static void remove_waiter(Run *r, Waiter *w) {
   if (w->next) w->next->back = w->back;
   else r->tail = w->back;
 }
-
 
 // Cancellations pending (tasks told to stop, runs that panicked): while it
 // is 0, compiled code doesn't look further (`cancel_point` in llvm.rs).
@@ -1094,6 +1100,9 @@ static _Bool soft_fault(int32_t kind, Str *msg) {
   }
   fault_at(kind, msg, NULL);
 }
+
+// `soft_fault` for core.rt (core.mem's `raw_fault`), which takes `msg`.
+_Bool strata_soft_fault(int64_t kind, Str *msg) { return soft_fault((int32_t)kind, msg); }
 
 // The empty string a builtin gives back after a contained panic: a
 // constant (a count of 0), never freed.
@@ -2444,6 +2453,7 @@ static Str *show_float_plain(double x) {
 
 Str *strata_show_bool(_Bool b) { return str_c(b ? "true" : "false"); }
 
+#ifndef STRATA_CORE_RT
 // A string as `Debug` writes it: a Strata string literal, escaped as the
 // printer escapes (\n, \t, \", and a backslash that would start one).
 Str *strata_debug_str(Str *s) {
@@ -2463,6 +2473,7 @@ Str *strata_debug_str(Str *s) {
   o->len = p - o->bytes;
   return o;
 }
+#endif
 
 // A float operation's result must be finite (no NaN or infinity).
 double strata_finite(double r, double a, double b, Str *op) {
@@ -3146,7 +3157,6 @@ Str *strata_host_read_stdin(void) {
 // (not a pipe or a file).
 _Bool strata_host_terminal(int64_t fd) { return fd >= 0 && fd <= 2 && isatty((int)fd); }
 
-
 List *strata_host_args(void) {
   List *l = strata_list_new(prog_argc);
   for (int i = 0; i < prog_argc; i++) l = append(l, (int64_t)(intptr_t)str_c(prog_argv[i]));
@@ -3322,7 +3332,6 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str *input, List *env,
   return l;
 }
 
-
 // ---- strings ----
 //
 // The string built-ins (`interp::Interp::builtin`). Strings are UTF-8 and
@@ -3330,6 +3339,16 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str *input, List *env,
 // mappings, `is_alpha`) takes a table the compiler made from Rust's own
 // (`llvm.rs`, `unicode_table`), so both agree.
 
+// A character in UTF-8 at `o`: how many bytes it took.
+static int utf8_put(int32_t c, char *o) {
+  if (c < 0x80) return o[0] = (char)c, 1;
+  if (c < 0x800) return o[0] = (char)(0xC0 | (c >> 6)), o[1] = (char)(0x80 | (c & 0x3F)), 2;
+  if (c < 0x10000) return o[0] = (char)(0xE0 | (c >> 12)), o[1] = (char)(0x80 | ((c >> 6) & 0x3F)), o[2] = (char)(0x80 | (c & 0x3F)), 3;
+  o[0] = (char)(0xF0 | (c >> 18)), o[1] = (char)(0x80 | ((c >> 12) & 0x3F)), o[2] = (char)(0x80 | ((c >> 6) & 0x3F)), o[3] = (char)(0x80 | (c & 0x3F));
+  return 4;
+}
+
+#ifndef STRATA_CORE_RT
 // The character at byte `i` (valid UTF-8), and its length in bytes.
 static int32_t utf8_at(Str *s, int64_t i, int *n) {
   unsigned char c = (unsigned char)s->bytes[i];
@@ -3337,14 +3356,6 @@ static int32_t utf8_at(Str *s, int64_t i, int *n) {
   if (c < 0xE0) return *n = 2, ((c & 0x1F) << 6) | (s->bytes[i + 1] & 0x3F);
   if (c < 0xF0) return *n = 3, ((c & 0x0F) << 12) | ((s->bytes[i + 1] & 0x3F) << 6) | (s->bytes[i + 2] & 0x3F);
   return *n = 4, ((c & 0x07) << 18) | ((s->bytes[i + 1] & 0x3F) << 12) | ((s->bytes[i + 2] & 0x3F) << 6) | (s->bytes[i + 3] & 0x3F);
-}
-
-static int utf8_put(int32_t c, char *o) {
-  if (c < 0x80) return o[0] = (char)c, 1;
-  if (c < 0x800) return o[0] = (char)(0xC0 | (c >> 6)), o[1] = (char)(0x80 | (c & 0x3F)), 2;
-  if (c < 0x10000) return o[0] = (char)(0xE0 | (c >> 12)), o[1] = (char)(0x80 | ((c >> 6) & 0x3F)), o[2] = (char)(0x80 | (c & 0x3F)), 3;
-  o[0] = (char)(0xF0 | (c >> 18)), o[1] = (char)(0x80 | ((c >> 12) & 0x3F)), o[2] = (char)(0x80 | ((c >> 6) & 0x3F)), o[3] = (char)(0x80 | (c & 0x3F));
-  return 4;
 }
 
 // The byte where character `k` starts (the end, past the last one).
@@ -3358,27 +3369,6 @@ static int64_t char_offset(Str *s, int64_t k) {
   }
   return i;
 }
-
-// The first place `sub` occurs in `s` at or after byte `from`, or -1.
-static int64_t find_from(Str *s, Str *sub, int64_t from) {
-  for (int64_t i = from; i + sub->len <= s->len; i++)
-    if (memcmp(s->bytes + i, sub->bytes, (size_t)sub->len) == 0) return i;
-  return -1;
-}
-
-static List *push_str(List *l, Str *s) { return append(l, (int64_t)(intptr_t)s); }
-
-List *strata_str_split(Str *s, Str *sep) {
-  if (sep->len == 0 && soft_fault(4, str_c("split: empty separator"))) return strata_list_new(0);
-  List *l = strata_list_new(4);
-  int64_t start = 0, at;
-  while ((at = find_from(s, sep, start)) >= 0) {
-    l = push_str(l, str_from(s->bytes + start, at - start));
-    start = at + sep->len;
-  }
-  return push_str(l, str_from(s->bytes + start, s->len - start));
-}
-
 // Unicode's White_Space, as Rust's `char::is_whitespace`.
 static int is_space(int32_t c) {
   return (c >= 9 && c <= 13) || c == 32 || c == 0x85 || c == 0xA0 || c == 0x1680 || (c >= 0x2000 && c <= 0x200A) || c == 0x2028 || c == 0x2029 || c == 0x202F || c == 0x205F || c == 0x3000;
@@ -3401,17 +3391,6 @@ Str *strata_str_trim(Str *s) {
   return str_from(s->bytes + a, b - a);
 }
 
-_Bool strata_str_contains(Str *s, Str *sub) { return find_from(s, sub, 0) >= 0; }
-
-_Bool strata_str_starts_with(Str *s, Str *p) { return p->len <= s->len && memcmp(s->bytes, p->bytes, (size_t)p->len) == 0; }
-
-_Bool strata_str_ends_with(Str *s, Str *p) { return p->len <= s->len && memcmp(s->bytes + s->len - p->len, p->bytes, (size_t)p->len) == 0; }
-
-// The byte offset of the first match of `sub`, or -1.
-int64_t strata_str_index_of(Str *s, Str *sub) {
-  return find_from(s, sub, 0);
-}
-
 // The bytes from offset `a` to `b`, both clamped to 0..len; an offset inside
 // a character's bytes moves back to its start (never a fault).
 static int64_t char_start(Str *s, int64_t i) {
@@ -3427,30 +3406,6 @@ Str *strata_str_byte_slice(Str *s, int64_t a, int64_t b) {
   b = char_start(s, b);
   if (b <= a) return str_from("", 0);
   return str_from(s->bytes + a, b - a);
-}
-
-Str *strata_str_reverse(Str *s) {
-  Str *o = str_alloc(s->len);
-  int64_t i = 0;
-  while (i < s->len) {
-    int n;
-    utf8_at(s, i, &n);
-    memcpy(o->bytes + s->len - i - n, s->bytes + i, (size_t)n);
-    i += n;
-  }
-  return o;
-}
-
-List *strata_str_chars(Str *s) {
-  List *l = strata_list_new(s->len);
-  int64_t i = 0;
-  while (i < s->len) {
-    int n;
-    utf8_at(s, i, &n);
-    l = push_str(l, str_from(s->bytes + i, n));
-    i += n;
-  }
-  return l;
 }
 
 // Character `k`, or NULL when there is none.
@@ -3484,38 +3439,6 @@ Str *strata_str_slice(Str *s, int64_t a, int64_t b) {
     j += n;
   }
   return str_from(s->bytes + i, j - i);
-}
-
-Str *strata_str_replace(Str *s, Str *from, Str *to) {
-  if (from->len == 0 && soft_fault(4, str_c("replace: empty pattern"))) return NO_STR;
-  Str *out = str_from("", 0);
-  int64_t start = 0, at;
-  while ((at = find_from(s, from, start)) >= 0) {
-    out = strata_concat_owned(out, str_from(s->bytes + start, at - start));
-    Str *next = strata_concat(out, to);
-    str_drop(out);
-    out = next;
-    start = at + from->len;
-  }
-  return strata_concat_owned(out, str_from(s->bytes + start, s->len - start));
-}
-
-// A count that is not negative is accepted: a string too large to hold is
-// out of memory, as when it is built any other way.
-Str *strata_str_repeat(Str *s, int64_t n) {
-  if (n < 0) {
-    char buf[64];
-    snprintf(buf, sizeof buf, "repeat: negative count %lld", (long long)n);
-    soft_fault(4, str_c(buf));
-    return NO_STR;
-  }
-  if (s->len > 0 && n > (INT64_MAX - 64) / s->len) {
-    fputs("fault (Limit): out of memory\n", stderr);
-    exit(101);
-  }
-  Str *o = str_alloc(s->len * n);
-  for (int64_t i = 0; i < n; i++) memcpy(o->bytes + i * s->len, s->bytes, (size_t)s->len);
-  return o;
 }
 
 // Whether `c` is in a table of ranges (pairs of first and last).
@@ -3647,6 +3570,7 @@ Str *strata_str_chr(int64_t c) {
   char b[4];
   return str_from(b, utf8_put((int32_t)c, b));
 }
+#endif
 
 // `parse_int`, as Rust's `BigInt` reads the trimmed string: a sign, then a
 // digit, then digits and `_`. False when it isn't a number; a fault when it

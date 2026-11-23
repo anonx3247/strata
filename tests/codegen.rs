@@ -2520,6 +2520,98 @@ fn core_rt_compiled_by_codegen() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// core.rt's strings and integers (runtime.c's, moved to Strata): programs
+/// built with core.rt (compiled by compiler/codegen) and with the C
+/// runtime's versions give the same output, faults (their messages, exit
+/// codes, inside a supervised task too) and check mode's report (the same
+/// objects made, freed and left alive).
+#[test]
+fn core_rt_strings_and_integers_as_in_c() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["codegen", "--core-rt"]).output().unwrap();
+    let ir = String::from_utf8_lossy(&ours.stdout).into_owned();
+    assert!(!ir.lines().any(|l| l.starts_with("error")), "{ir}");
+    let dir = scratch("core-rt-strings");
+    let rt = dir.join("core_rt.ll");
+    std::fs::write(&rt, &ir).unwrap();
+    // each program's output, error output and exit code, with core.rt and with C
+    let both = |name: &str, text: &str| -> String {
+        let file = dir.join(format!("{name}.strata"));
+        save(&file, text);
+        let prog = Command::new(compiler::exe()).current_dir(root).arg("codegen").arg(&file).output().unwrap();
+        let ll = dir.join(format!("{name}.ll"));
+        std::fs::write(&ll, &prog.stdout).unwrap();
+        let mut outs = vec![];
+        for with_rt in [true, false] {
+            let exe = dir.join(format!("{name}-{}", if with_rt { "rt" } else { "c" }));
+            let mut c = Command::new("clang");
+            c.args(["-O2", "-Wno-override-module", "-o"]).arg(&exe).arg(&ll).arg(root.join("src/llvm/runtime.c"));
+            if with_rt {
+                c.arg("-DSTRATA_CORE_RT").arg(&rt);
+            }
+            let o = c.arg("-lm").output().unwrap();
+            assert!(o.status.success(), "{name}: {}", String::from_utf8_lossy(&o.stderr));
+            let r = Command::new(&exe).env("STRATA_MEMORY", "check").output().unwrap();
+            outs.push(format!("{}\n-- stderr\n{}\n-- {:?}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr), r.status.code()));
+        }
+        assert_eq!(outs[0], outs[1], "{name}: core.rt (left) and C (right) differ");
+        outs.remove(0)
+    };
+    let out = both("strings", CORE_RT_STRINGS);
+    assert!(out.starts_with("héllo, wörld ∑ 😀\n23 true false [\"\", \"ab\", \"abc\", \"b\", \"é\"]\n"), "{out}");
+    assert!(out.contains("HÉLLO, WÖRLD ∑ 😀 σας οδος STRASSE\n"), "{out}");
+    assert!(out.contains("byte 10 out of range (3 bytes)\n0\nchr: -1 is not a character\nord needs a single character, got \"ab\\n\"\n-1\n"), "{out}");
+    assert!(out.contains("memory: ") && out.contains(" 0 live"), "{out}");
+    // a fault ending the program: its message, and what was left alive
+    for (i, e) in ["byte_at(\"abc\", 3)", "chr(55296)", "ord(\"\\n\\u{1}x\")"].iter().enumerate() {
+        let out = both(&format!("fault{i}"), &format!("fn main() {{\n  print(\"start\")\n  x := {e}\n  print(x)\n}}\n"));
+        assert!(out.contains("fault (Runtime): ") && out.ends_with("Some(101)"), "{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+const CORE_RT_STRINGS: &str = r#"fn bad_byte(s: String) -> Int {
+  byte_at(s, 10)
+}
+
+fn bad_chr(n: Int) -> String {
+  chr(n)
+}
+
+fn bad_ord(s: String) -> Int {
+  ord(s)
+}
+
+fn main() {
+  s := "  héllo, wörld ∑ 😀  "
+  t := trim(s)
+  print(t)
+  print(f"{byte_len(t)} {t == "héllo, wörld ∑ 😀"} {t == "x"} {sort(["b", "abc", "ab", "", "é"])}")
+  print(t + "!" + s)
+  print(f"{byte_slice(t, 2, 9)} {byte_slice(t, -4, 3)} {byte_slice(t, 5, 2)}")
+  print(f"{ord("∑")} {chr(128512)} {chr(233)} {chr(65)} {byte_at(t, 1)}")
+  print(debug("a\"b\\n\tc\\"))
+  print(f"{to_upper(t)} {to_lower("ΣΑΣ ΟΔΟΣ")} {to_upper("straße")}")
+  print(f"{is_digit("123")} {is_alpha("abc1")} {is_alpha("éa")} {is_space(" \t")} {is_digit("")}")
+  print(f"{parse_int(" 12_345 ")} {parse_int("x")} {parse_int("-99999999999999999999999")}")
+  scope {
+    h := supervised spawn bad_byte("abc")
+    print(await h except p {
+      print(p.message)
+      0
+    })
+    g := supervised spawn bad_chr(-1)
+    print(await g except p { p.message })
+    k := supervised spawn bad_ord("ab\n")
+    print(await k except p {
+      print(p.message)
+      -1
+    })
+  }
+  print(f"{bad_ord("é")} {bad_chr(97)}")
+}
+"#;
+
 /// `strata build --compare`: compiler/codegen's executable does what Rust's
 /// does on the build tests' programs and the example packages with a `main`
 /// (the measure for switching `build` over).
