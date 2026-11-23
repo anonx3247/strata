@@ -42,3 +42,28 @@ fn pick[T](c: Bool, a: T, b: T) -> T {
 fn pick_pos(a: Pos, b: Pos) -> Pos {
   pick(a > b, a, b)
 }
+
+fn doubled(xs: List[Natural]) -> List[Natural]
+  ensures len(it) == len(xs)
+{
+  xs.map(double)
+}
+
+fn quadruple(n: Natural) -> Natural
+  ensures it == double(double(n))
+{
+  n * 4
+}
+
+fn wrong_quadruple(n: Natural) -> Natural
+  ensures it == double(n)
+{
+  n * 4
+}
+
+fn halved(n: Int) -> Int
+  requires n % 2 == 0
+  ensures it == halve(n)
+{
+  n / 2
+}
