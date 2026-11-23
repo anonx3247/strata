@@ -498,9 +498,9 @@ pub fn available() -> bool {
 /// its error, before printing anything, so Rust's runs instead).
 const NOT_COVERED: &str = "not covered by compiler/";
 
-/// Whether `render` or `run` as given is the Strata side's by default: a
-/// whole script rendered with no view's options; a program's `main` run
-/// (`run [PATH] [-- ARGS]`, no `--trace`).
+/// Whether `render` as given is the Strata side's by default: a whole
+/// script rendered with no view's options. (`run` is compiler/codegen's
+/// and the compiler's JIT's: `run::run_program`.)
 pub fn covers_by_default(args: &crate::Args, cmd: &str) -> bool {
     if !available() {
         return false;
@@ -511,10 +511,6 @@ pub fn covers_by_default(args: &crate::Args, cmd: &str) -> bool {
             args.pos.len() == 1
                 && file.is_some_and(|f| Path::new(f).is_file())
                 && !["--split", "--members", "--level", "--prelude", "--text", "--tree", "--mocks", "--json"].iter().any(|f| args.flags.contains_key(*f))
-        }
-        "run" => {
-            let path = args.pos.get(1).map(|s| s.as_str()).or(args.val("--file"));
-            args.pos.len() <= 2 && path.is_some_and(|p| Path::new(p).exists()) && !args.flag("--trace") && !args.flag("--jit")
         }
         _ => false,
     }
@@ -562,7 +558,7 @@ fn std_dir(compiler: &Path) -> Option<PathBuf> {
 
 /// The compiler package built (`strata build`), kept in
 /// `~/.cache/strata/compiler/<hash>` (`STRATA_CACHE`): the hash covers the
-/// package's and std's files and this executable, so a change rebuilds it.
+/// package's files (its C in `c/` too) and std's, and this executable, so a change rebuilds it.
 fn built(dir: &Path) -> Result<PathBuf, String> {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -570,6 +566,14 @@ fn built(dir: &Path) -> Result<PathBuf, String> {
     sources(dir, dir, &mut files);
     if let Some(s) = std_dir(dir) {
         sources(&s, &s, &mut files);
+    }
+    // (and its own C: `[native]`'s sources, c/jit.c)
+    let c = dir.join("c");
+    for e in fs::read_dir(&c).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.extension().is_some_and(|x| x == "c" || x == "h") {
+            files.push((p.strip_prefix(dir).unwrap_or(&p).to_string_lossy().into_owned(), p));
+        }
     }
     files.sort();
     for (rel, path) in &files {
@@ -650,3 +654,70 @@ pub fn fuzz_ir(file: &str, prog: &crate::ast::Program, targets: &[crate::llvm::F
     Ok((ir, per, named))
 }
 
+
+/// What `strata run` hands the compiler's JIT besides the program: one
+/// function's call (`run f ARGS`): the module file holding the function
+/// that makes it (`codegen --call`), and the function called.
+pub struct Call {
+    pub module_file: Vec<u8>,
+    pub fun: String,
+}
+
+/// `strata run`'s default: the program (a script or a package's folder,
+/// `path`) compiled by compiler/codegen and run by the compiler's JIT
+/// (`compiler jit`), named `name`, without the checks `proofs` lists (as
+/// `llvm::proofs_text` writes them); or the call `call` made, its result
+/// printed. Its exit code. An error starting with `compiler/codegen doesn't
+/// cover` when codegen can't compile it yet (nothing ran: the caller runs
+/// it with `llvm.rs`).
+pub fn jit_run(path: &Path, name: &str, proofs: &str, trace: bool, call: Option<&Call>, program_args: &[String]) -> Result<i32, String> {
+    let (exe, _) = compiler()?;
+    let root = compiler_dir().and_then(|d| d.canonicalize().ok()).and_then(|d| Some(d.parent()?.to_path_buf())).ok_or("no repository around compiler/")?;
+    let path = path.canonicalize().map_err(|e| format!("{}: {e}", path.display()))?;
+    let scratch = std::env::temp_dir().join(format!("strata-jit-{}", std::process::id()));
+    fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
+    let errors = scratch.join("errors.txt");
+    let proven = scratch.join("proofs.txt");
+    fs::write(&proven, proofs).map_err(|e| e.to_string())?;
+    let mut c = Command::new(&exe);
+    c.current_dir(root).arg("jit");
+    // (std's precompiled code: loaded, not compiled again)
+    let std_lib = std_library(&exe);
+    if let Some(l) = &std_lib {
+        c.arg("--load").arg(&l.shared);
+    }
+    c.arg("--name").arg(name).arg("--errors").arg(&errors);
+    if let Some(call) = call {
+        c.arg("--fun").arg(&call.fun);
+    }
+    c.arg("--proofs").arg(&proven);
+    if let Some(l) = &std_lib {
+        c.arg("--precompiled").arg(&l.names);
+    }
+    if trace {
+        c.arg("--trace");
+    }
+    if let Some(call) = call {
+        let made = scratch.join("call.strata");
+        fs::write(&made, &call.module_file).map_err(|e| e.to_string())?;
+        c.arg("--call").arg(made);
+    }
+    let status = c.arg(&path).arg("--").args(program_args).status().map_err(|e| format!("running {}: {e}", exe.display()));
+    let not_covered = fs::read_to_string(&errors).unwrap_or_default();
+    let _ = fs::remove_dir_all(&scratch);
+    let status = status?;
+    if status.code() == Some(3) && !not_covered.trim().is_empty() {
+        let missing: Vec<&str> = not_covered.lines().filter(|l| l.starts_with("error:")).collect();
+        return Err(format!("compiler/codegen doesn't cover this program yet:\n{}", missing.join("\n")));
+    }
+    Ok(status.code().unwrap_or(1))
+}
+
+/// Whether `path` is the compiler package itself (or inside it), which
+/// compiler/codegen doesn't compile: building it would need it built.
+pub fn is_compiler(path: &Path) -> bool {
+    match (compiler_dir().and_then(|d| d.canonicalize().ok()), path.canonicalize()) {
+        (Some(dir), Ok(p)) => p.starts_with(&dir),
+        _ => true,
+    }
+}

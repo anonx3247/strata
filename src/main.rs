@@ -380,10 +380,8 @@ fn run() -> Result<bool, String> {
             Err(_) => {}
         }
     }
-    // `render` (a whole script) and `run` (a program's `main`) are the Strata
-    // side's too, unless `--rust`; what it doesn't cover (a package's module,
-    // a view's options, one function called, a program the evaluator can't
-    // run) is Rust's
+    // `render` (a whole script) is the Strata side's too, unless `--rust`;
+    // what it doesn't cover (a package's module, a view's options) is Rust's
     if !args.flag("--rust") && cmd::compare::covers_by_default(&args, cmd) {
         if let Ok(ok) = cmd::compare::command(&args, cmd) {
             return Ok(ok);
