@@ -1,6 +1,6 @@
 //! The JIT: `strata run --jit` runs the program's LLVM IR in this process.
 //! The IR is the text `compile` writes (one code generator for both): LLVM's
-//! libraries parse it, optimize it as clang -O2 would, and compile it to
+//! libraries parse it, optimize it as clang -O2 would with `--release`, and compile it to
 //! machine code in memory. Its runtime calls go to the C runtime built into
 //! strata (build.rs), the one `strata build` links with.
 
@@ -625,12 +625,24 @@ impl Calls<'_> {
     }
 }
 
-/// Run the IR's `main` with the program's arguments; its exit code. A fault
-/// exits the process from the runtime, as a compiled program does.
-/// The IR compiled in memory (optimized as clang -O2 would), its runtime
+static RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `--release`: programs, tests and `strata run f` compiled optimized (as
+/// clang -O2 would); by default unoptimized (-O0), which compiles several
+/// times faster. (`verify`'s fuzzing optimizes either way: its cases run
+/// many times; compile-time code and probes never do: they run once.)
+pub fn set_release(on: bool) {
+    RELEASE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn release() -> bool {
+    RELEASE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The IR compiled in memory (optimized with `--release`), its runtime
 /// calls mapped to the runtime built into strata.
 fn engine<'ctx>(ctx: &'ctx Context, ir: &str) -> Result<inkwell::execution_engine::ExecutionEngine<'ctx>, String> {
-    engine_at(ctx, ir, true)
+    engine_at(ctx, ir, release())
 }
 
 /// `engine`, optimized or not: code run once (compile-time code, a probe)

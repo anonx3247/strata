@@ -344,6 +344,10 @@ pub enum ExternItem {
     /// `extern c type Sqlite3`: an opaque handle (a pointer), only passed back;
     /// `builtin type List[T]`: a type the compiler provides, with its parameters.
     Type(Symbol, Vec<Symbol>),
+    /// `builtin static allocator: 512`: a block of that many bytes, zeroed,
+    /// one per program, at a fixed address; its name is a `Ptr` to it (core
+    /// only: the state of the runtime written in Strata).
+    Static(Symbol, i64),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -410,7 +414,7 @@ impl Decl {
             DeclKind::Use(u) => format!("use {}", u.path),
             DeclKind::Extern(e) => match &e.item {
                 ExternItem::Fn(f) => f.name.to_string(),
-                ExternItem::Type(t, _) => t.to_string(),
+                ExternItem::Type(t, _) | ExternItem::Static(t, _) => t.to_string(),
             },
             DeclKind::Capability(c) => c.name.to_string(),
         }
@@ -1070,7 +1074,7 @@ macro_rules! visitor {
                 DeclKind::Use(_) => {}
                 DeclKind::Extern(e) => match &$($m)? e.item {
                     ExternItem::Fn(f) => $func(v, f),
-                    ExternItem::Type(..) => {}
+                    ExternItem::Type(..) | ExternItem::Static(..) => {}
                 },
                 DeclKind::Capability(c) => {
                     for m in &$($m)? c.methods {

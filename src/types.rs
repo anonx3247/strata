@@ -1671,6 +1671,13 @@ impl<'a> Checker<'a> {
     fn global_fn(&mut self, name: &str) -> Option<Ty> {
         // the environment outlives the checker: borrow from it, don't copy
         let env = self.env;
+        // core's `builtin static`: its block's address
+        if env.statics.contains_key(&name.sym()) {
+            if !self.in_core {
+                self.err(core_only_error(crate::names::short(name)));
+            }
+            return Some(Ty::Con("Ptr".into(), vec![]));
+        }
         if let Some(f) = env.fns.get(&name.sym()) {
             let vars: HashMap<Symbol, Ty> = f.type_params.iter().map(|p| (p.clone(), self.fresh())).collect();
             let fty = self.lower(&Self::fn_scheme(&f), &vars);
@@ -4827,7 +4834,7 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
             DeclKind::Capability(_) => {}
             DeclKind::Use(_) => {}
             DeclKind::Extern(e) if e.lang == crate::ast::Lang::Builtin => {
-                if !crate::core::is_core(&d.module) {
+                if !c.in_core {
                     c.err(format!("`builtin` definitions are only in `core`: `{}` is what the compiler provides, declared there", crate::names::short(&d.name())));
                 }
                 if let ExternItem::Fn(f) = &e.item {

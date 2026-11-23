@@ -10,6 +10,9 @@ use std::process::{Command, Stdio};
 #[path = "common/compiler.rs"]
 mod compiler;
 
+#[path = "common/json.rs"]
+mod json_case;
+
 const STRATA: &str = env!("CARGO_BIN_EXE_strata");
 
 /// What the front end's checks added in step 4 of self-hosting cover: `for`
@@ -146,6 +149,29 @@ fn main() {
 }
 "#;
 
+
+/// `derive`s that fail: a field named `type`, a variant with several
+/// positional fields, a type that doesn't derive what a field needs.
+const BAD_DERIVES: &str = r#"from std.json use Json
+
+type Bad = { type: Int }
+
+derive Json for Bad
+
+type Pairs =
+  | Two(Int, Int)
+  | None2
+
+derive Json for Pairs
+
+type Inner = { x: Int }
+
+type Outer = { inner: Inner }
+
+derive Json for Outer
+
+fn main() { print(1) }
+"#;
 
 const CLASHES: &str = r#"type Line = { a: Int }
 type E =
@@ -727,6 +753,16 @@ fn save(file: &std::path::Path, text: &str) {
 }
 
 #[test]
+fn derives_as_in_rust() {
+    // derived code checks (each `derive` written out first) ...
+    for (name, text) in [("json", json_case::PROGRAM), ("generic_derive", json_case::GENERIC_DERIVE), ("refined", json_case::REFINED), ("builtins", json_case::BUILTINS)] {
+        same_check(name, text, false);
+    }
+    // ... and a `derive` that can't be made says why
+    same_errors("bad_derives", BAD_DERIVES);
+}
+
+#[test]
 fn clashes_as_in_rust() {
     same_errors("clashes", CLASHES);
 }
@@ -950,6 +986,11 @@ fn iterables_bounds_receivers_and_externs_as_in_rust() {
 }
 
 fn same_errors(name: &str, text: &str) {
+    same_check(name, text, true)
+}
+
+/// The two checkers give the same errors for `text` (some, if `some`).
+fn same_check(name: &str, text: &str, some: bool) {
     let dir = std::env::temp_dir().join(format!("strata-check-test-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -963,7 +1004,7 @@ fn same_errors(name: &str, text: &str) {
     };
     let o = Command::new(STRATA).args(["--file", &prog.to_string_lossy(), "check"]).output().unwrap();
     let all = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
-    assert!(!errors(&all).is_empty(), "{all}");
+    assert!(!some || !errors(&all).is_empty(), "{all}");
     assert_eq!(errors(&got), errors(&all));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1034,9 +1075,17 @@ fn compare_flag_agrees_on_a_script() {
 }
 
 /// Raw memory (`core.mem`) used outside core.
-const CORE_MEM: &str = "fn main() {\n  p := raw_alloc(8)\n  store_i64(p, 0, 1)\n  print(load_i64(p, 0))\n}\n\nfn keep(p: Ptr, f: (Int) -> Ptr) -> List[Ptr] {\n  [p]\n}\n";
+const CORE_MEM: &str = "fn main() {\n  p := raw_alloc(8)\n  store_i64(p, 0, 1)\n  print(load_i64(p, 0))\n}\n\nfn keep(p: Ptr, f: (Int) -> Ptr) -> List[Ptr] {\n  [p]\n}\n\n// a `Ptr` written inside a body\nfn hidden() -> Int {\n  let q: Ptr = raw_alloc(8)\n  g := (x: Ptr) -> 1\n  0\n}\n";
 
 #[test]
 fn raw_memory_outside_core_as_in_rust() {
     same_errors("core_mem", CORE_MEM);
+}
+
+/// A `builtin static` (core's runtime state) declared outside core.
+const CORE_STATIC: &str = "builtin static mine: 8\n\nfn main() {\n  print(1)\n}\n";
+
+#[test]
+fn builtin_static_outside_core_as_in_rust() {
+    same_errors("core_static", CORE_STATIC);
 }
