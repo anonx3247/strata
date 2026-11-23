@@ -693,7 +693,11 @@ pub fn distance(a: String, b: String) -> Natural {
 [native]
 sources = ["c/text.c"]   # the package's own C files
 libs = ["m"]             # libraries (-lm)
+include_dirs = []        # folders of headers the C files include (-I)
+lib_dirs = []            # folders the libraries are in (-L, and searched at run time)
 ```
+
+Paths are relative to the package's folder, or absolute (`compiler/strata.toml` links LLVM's C library from Homebrew's `/opt/homebrew/opt/llvm`).
 
 - **What crosses.** The sized integers (`I8` … `I64`, `U8` … `U64`, C's `int8_t` … `uint64_t`), `Float` (`double`), `Bool`, `String` (copied each way, as a NUL-terminated string), `()` (`void`, as a result), `extern c type` handles, and `Option` of a handle (a pointer that may be NULL: `None`). `Int` doesn't: its size isn't fixed. A `mut` parameter is an out-pointer (`mut db: Option[Sqlite3]` is a `sqlite3 **`): copied in, and back out after the call, as `mut` always is. A `String` can't be `mut`.
 - **A handle** (`extern c type Sqlite3`) is a type with no constructor and nothing inside: only C makes one, Strata code passes it back. It isn't counted or freed by Strata (C frees it, through a function you call); two handles are equal when they are the same pointer. A C function that gives NULL where a handle is declared is a fault: declare that result `Option[Sqlite3]`.

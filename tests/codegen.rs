@@ -2112,8 +2112,12 @@ fn foreign_calls_do_what_rust_compiled_ones_do() {
     let dir = scratch("ffi");
     let pkg = dir.join("ffi");
     std::fs::create_dir_all(pkg.join("c")).unwrap();
-    std::fs::write(pkg.join("strata.toml"), "name = \"ffi\"\n\n[native]\nsources = [\"c/lib.c\"]\nlibs = [\"m\"]\n").unwrap();
-    std::fs::write(pkg.join("c/lib.c"), "#include <stdint.h>
+    // (a header from `include_dirs`)
+    std::fs::create_dir_all(pkg.join("include")).unwrap();
+    std::fs::write(pkg.join("include/greeting.h"), "#define GREETING \"hello, %s!\"\n").unwrap();
+    std::fs::write(pkg.join("strata.toml"), "name = \"ffi\"\n\n[native]\nsources = [\"c/lib.c\"]\nlibs = [\"m\"]\ninclude_dirs = [\"include\"]\n").unwrap();
+    std::fs::write(pkg.join("c/lib.c"), "#include <greeting.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -2126,7 +2130,7 @@ uint8_t low_byte(uint32_t x) { return (uint8_t)(x & 0xff); }
 int8_t negate8(int8_t x) { return (int8_t)-x; }
 const char *greet(const char *name) {
   static char buf[256];
-  snprintf(buf, sizeof buf, \"hello, %s!\", name);
+  snprintf(buf, sizeof buf, GREETING, name);
   return buf;
 }
 size_t name_len(const char *s) { return strlen(s); }
