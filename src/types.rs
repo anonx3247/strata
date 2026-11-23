@@ -1936,6 +1936,8 @@ impl<'a> Checker<'a> {
                     if let Some(imp) = env.inherent.get(h) {
                         if let Some(f) = imp.methods.iter().find(|x| short(&x.name) == sm && crate::resolve::takes_self(x)) {
                             self.targets.push((site, Target::Own(crate::resolve::static_name(h, &f.name))));
+                            // its `mut` parameters, `mut self` included, say so at the call
+                            self.check_mut_params(&f.params, &sm, all, recv_marked);
                             let ft = self.own_method_ty(&imp, &f);
                             let muts: Vec<Option<TypeExpr>> = f.params.iter().map(|p| p.mutable.then(|| p.ty.clone())).collect();
                             return Some(self.call_with(ft, all, &Lazy(|| format!("call to `{sm}`")), &muts));
@@ -3562,6 +3564,11 @@ impl<'a> Checker<'a> {
             }
             return;
         };
+        self.check_mut_params(&params, callee, args, recv);
+    }
+
+    /// `check_mut_args` with the callee's parameters known.
+    fn check_mut_params(&mut self, params: &[Param], callee: &str, args: &[&Expr], recv: Option<bool>) {
         for (i, (p, a)) in params.iter().zip(args).enumerate() {
             let receiver = i == 0 && recv.is_some();
             let marked = if receiver { recv == Some(true) } else { marks_arg(a) };

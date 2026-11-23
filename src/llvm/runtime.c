@@ -321,25 +321,33 @@ int64_t strata_str_len(Str *s) {
 // (`down (95846 times)`), so a deep one costs nothing to keep; only the
 // first FRAMES runs are kept.
 #define FRAMES 4096
-static _Thread_local Str *frames[FRAMES];
-static _Thread_local int64_t counts[FRAMES];
-static _Thread_local int64_t runs;  // runs in use, counting those past FRAMES
+// (one thread-local, so entering and leaving look it up once: on macOS
+// each thread-local is a call to find)
+static _Thread_local struct {
+  int64_t runs;  // runs in use, counting those past FRAMES
+  Str *frames[FRAMES];
+  int64_t counts[FRAMES];
+} calls;
 
 void strata_enter(Str *name) {
-  if (runs > 0 && runs <= FRAMES && frames[runs - 1] == name) {
-    counts[runs - 1]++;
+  __typeof__(calls) *c = &calls;
+  int64_t r = c->runs;
+  if (r > 0 && r <= FRAMES && c->frames[r - 1] == name) {
+    c->counts[r - 1]++;
     return;
   }
-  if (runs < FRAMES) {
-    frames[runs] = name;
-    counts[runs] = 1;
+  if (r < FRAMES) {
+    c->frames[r] = name;
+    c->counts[r] = 1;
   }
-  runs++;
+  c->runs = r + 1;
 }
 
 void strata_leave(void) {
-  if (runs <= FRAMES && --counts[runs - 1] > 0) return;
-  runs--;
+  __typeof__(calls) *c = &calls;
+  int64_t r = c->runs;
+  if (r <= FRAMES && --c->counts[r - 1] > 0) return;
+  c->runs = r - 1;
 }
 
 // The call stack as `strata run` shows it ("" when empty): as the
@@ -359,10 +367,10 @@ static char *stack_from(Str **frames, int64_t *counts, int64_t runs) {
   return t;
 }
 
-static char *stack_text(void) { return stack_from(frames, counts, runs); }
+static char *stack_text(void) { return stack_from(calls.frames, calls.counts, calls.runs); }
 
 static void print_stack(void) {
-  if (runs == 0) return;
+  if (calls.runs == 0) return;
   char *t = stack_text();
   fprintf(stderr, "    stack: %s\n", t);
   free(t);
@@ -473,7 +481,7 @@ int32_t strata_cancel_any;
 int32_t strata_test(void (*f)(void)) {
   sigjmp_buf here;
   catch_overflow();
-  runs = 0;
+  calls.runs = 0;
   rng = test_seed;
   forget_senders();
   printed_len = 0;
@@ -485,9 +493,9 @@ int32_t strata_test(void (*f)(void)) {
   Run trun = {0}, *outer_run = my_run;
   Waiter *outer_me = me;
   trun.test = &run;
-  trun.root.frames = frames;
-  trun.root.counts = counts;
-  trun.root.runs = &runs;
+  trun.root.frames = calls.frames;
+  trun.root.counts = calls.counts;
+  trun.root.runs = &calls.runs;
   add_waiter(&trun, &trun.root);
   my_run = &trun;
   me = &trun.root;
@@ -729,9 +737,9 @@ static void wake_all(void) {
 static Run *this_run(void) {
   if (!my_run) {
     Run *r = calloc(1, sizeof *r);
-    r->root.frames = frames;
-    r->root.counts = counts;
-    r->root.runs = &runs;
+    r->root.frames = calls.frames;
+    r->root.counts = calls.counts;
+    r->root.runs = &calls.runs;
     add_waiter(r, &r->root);
     my_run = r;
     me = &r->root;
@@ -1006,9 +1014,9 @@ static void *task_main(void *arg) {
   pthread_mutex_lock(&chan_lock);
   my_run = t->run_of;
   me = &t->w;
-  t->w.frames = frames;
-  t->w.counts = counts;
-  t->w.runs = &runs;
+  t->w.frames = calls.frames;
+  t->w.counts = calls.counts;
+  t->w.runs = &calls.runs;
   pthread_mutex_unlock(&chan_lock);
   // outside a test a panic ends the program (no trap); inside one it ends the task
   sigjmp_buf here;
@@ -2566,7 +2574,7 @@ static void catch_overflow(void) {
 
 // The program's arguments, without its name; a closed pipe ends it quietly.
 void strata_init(int32_t argc, char **argv) {
-  runs = 0;
+  calls.runs = 0;
   rng = 7;
   catch_overflow();
   prog_argc = argc > 0 ? argc - 1 : 0;
