@@ -108,12 +108,15 @@ fn cases() -> Vec<(String, String, Want)> {
         out.push((key.to_string(), text, Want::Recorded));
     }
     for (key, text, want) in [
-        ("impl-statics-statics", json_case::STATICS, json_case::STATICS_OUTPUT),
+        ("traits-traits_example", "`T.empty()` in a generic function: the type the caller asks for"),
+    ("impl-statics-statics", json_case::STATICS, json_case::STATICS_OUTPUT),
         ("impl-statics-text", json_case::TEXT, json_case::TEXT_OUTPUT),
         ("impl-statics-self_methods", json_case::SELF_METHODS, json_case::SELF_METHODS_OUTPUT),
         ("impl-statics-root_builtin_name", json_case::ROOT_BUILTIN_NAME, json_case::ROOT_BUILTIN_NAME_OUTPUT),
         ("impl-statics-builtins", json_case::BUILTINS, json_case::BUILTINS_OUTPUT),
         ("impl-statics-option_option", json_case::OPTION_OPTION, json_case::OPTION_OPTION_OUTPUT),
+        ("json-program", json_case::PROGRAM, json_case::OUTPUT),
+        ("impl-statics-generic_derive", json_case::GENERIC_DERIVE, json_case::GENERIC_DERIVE_OUTPUT),
         ("impl-statics-refined", json_case::REFINED, json_case::REFINED_OUTPUT),
         ("iterators-iterators", json_case::ITERATORS, json_case::ITERATORS_OUTPUT),
         ("iterators-lazy", json_case::LAZY_ITERATORS, json_case::LAZY_ITERATORS_OUTPUT),
@@ -131,14 +134,13 @@ fn cases() -> Vec<(String, String, Want)> {
 /// Programs the evaluator doesn't run yet, and why.
 const NOT_YET: &[(&str, &str)] = &[
     ("capabilities-files_and_environment", "files: the evaluator gives a program no `Disk` yet"),
-    ("impl-statics-builtins", "`derive Json`, made while compiling"),
-    ("impl-statics-refined", "`derive Json`, made while compiling"),
-    // a type parameter's static method needs the call's types, which the
-    // type checker gives (the front end's next piece)
-    ("impl-statics-self_methods", "`T.zero()`: a type parameter's static method"),
-    ("impl-statics-statics", "`T.zero()`: a type parameter's static method"),
-    ("iterators-iterators", "`T.zero()`: a type parameter's static method"),
-    ("traits-traits_example", "`T.empty()`: a type parameter's static method"),
+    // a generic function's type parameter known only from what the call
+    // must return (`read[T]` in `fn ints() -> Result[List[Int], String] { read(..) }`):
+    // needs the checker's types
+    ("impl-statics-builtins", "`T.from_json(..)` in `read[T]`: the type the caller asks for"),
+    ("impl-statics-refined", "`T.from_json(..)` in `read[T]`: the type the caller asks for"),
+    ("impl-statics-self_methods", "`T.zero()` where no value shows `T` (`Cell { v: None }`)"),
+    ("impl-statics-statics", "`T.zero()` in `zero_of[T]()`: the type the caller asks for"),
 ];
 
 /// The stored programs of tests/data/build.
