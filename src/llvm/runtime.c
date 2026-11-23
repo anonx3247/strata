@@ -114,6 +114,17 @@ void *strata_alloc(int64_t n) {
   return c + 1;
 }
 
+// A raw block (core.mem's `raw_alloc`): not counted, not cleared; out of
+// memory ends the program, as for any allocation.
+void *strata_raw_alloc(int64_t n) {
+  void *p = malloc((size_t)n);
+  if (!p) {
+    fputs("fault (Limit): out of memory\n", stderr);
+    exit(101);
+  }
+  return p;
+}
+
 // One more holder of `p`.
 void strata_dup(void *p) {
   int64_t *c = count_of(p);
@@ -2336,6 +2347,17 @@ void strata_list_insert(List *xs, int64_t i, int64_t x) {
   b->data[i] = x;
   b->used++;
   xs->len++;
+}
+
+// In an owned list: element `i` taken out (the rest moved down) and
+// returned, for the caller to drop.
+int64_t strata_list_remove_at(List *xs, int64_t i) {
+  Buf *b = xs->buf;
+  int64_t old = b->data[i];
+  memmove(b->data + i, b->data + i + 1, (size_t)(b->used - i - 1) * 8);
+  b->used--;
+  xs->len--;
+  return old;
 }
 
 // Add `x` to a list nothing else holds yet (one the runtime is making).
