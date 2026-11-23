@@ -1963,6 +1963,9 @@ fn procedural_mutation_is_explicit() {
          fn unmarked_receiver() {\n  mut l := Line { qty: 1 }\n  l.tick()\n}\n\
          fn needless_receiver() -> Int {\n  mut l := Line { qty: 1 }\n  mut l.peek()\n}\n\
          fn stray() -> Int {\n  mut n := 1\n  m := mut n\n  m\n}\n\
+         type Box = { n: Int }\n\
+         impl Box { fn bump(mut self) { self.n = self.n + 1 }  fn twice(mut self) { self.bump()\n mut self.bump() } }\n\
+         fn own_unmarked() {\n  mut b := Box { n: 1 }\n  b.bump()\n}\n\
          fn first(ls: List[Line]) -> Line { Line { qty: 1 } }\n",
     );
     let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
@@ -1975,6 +1978,9 @@ fn procedural_mutation_is_explicit() {
     assert!(out.contains("in unmarked_receiver: `tick` changes its receiver (`mut self`): write `mut l.tick(…)`"), "{out}");
     assert!(out.contains("in needless_receiver: `mut l.peek(…)`: `peek` doesn't change its receiver"), "{out}");
     assert!(out.contains("in stray: `mut n` marks an argument"), "{out}");
+    // a type's own methods too, inside its `impl` as well
+    assert!(out.contains("in own_unmarked: `bump` changes its receiver (`mut self`): write `mut b.bump(…)`"), "{out}");
+    assert!(out.contains("in impl Box: `bump` changes its receiver (`mut self`): write `mut self.bump(…)`"), "{out}");
     // results are not places: name them first
     let (ok, out) = strata(&["--file", "r.strata", "edit"], &d, Some("fn f(xs: List[Int]) {\n  mut first(xs).tick()\n}\n"));
     assert!(!ok && out.contains("only a variable or a field can be `mut`"), "{out}");
