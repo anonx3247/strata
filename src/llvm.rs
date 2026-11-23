@@ -177,6 +177,67 @@ fn vars_in(e: &Expr) -> Vec<String> {
     v.0
 }
 
+/// The functions a call to which can't fault, nor anything they call: count
+/// updates, allocation, drops, integer arithmetic, LLVM's intrinsics (running
+/// out of memory ends the program without a call stack).
+const NEVER_FAULT: &[&str] = &[
+    "strata.dup",
+    "strata.release",
+    "strata.int_dup",
+    "strata.int_drop",
+    "strata_dup",
+    "strata_release",
+    "strata_int_dup",
+    "strata_int_drop",
+    "strata_alloc",
+    "strata_free",
+    "strata_unique",
+    "strata_int_lit",
+    "strata_int_add",
+    "strata_int_sub",
+    "strata_int_mul",
+    "strata_int_cmp",
+    "strata_int_eq",
+    "strata_int_and",
+    "strata_int_or",
+    "strata_int_xor",
+    "strata_concat",
+    "strata_str_eq",
+    "strata_show_int",
+    "strata_show_bool",
+    "strata_list_new",
+    "strata_list_push",
+];
+
+/// Whether a function's code (its IR) may fault, in it or in what it
+/// calls: a call to anything not known never to (`NEVER_FAULT`, LLVM's
+/// intrinsics, drop functions), or a fault of its own.
+fn can_fault(text: &str) -> bool {
+    for line in text.lines() {
+        let Some(i) = line.find("call ") else { continue };
+        let rest = &line[i..];
+        // (an indirect call has no `@` before its arguments)
+        let head = &rest[..rest.find('(').unwrap_or(rest.len())];
+        let Some(at) = head.find('@') else { return true };
+        let name = &rest[at + 1..];
+        let name = match name.strip_prefix('"') {
+            Some(q) => &q[..q.find('"').unwrap_or(q.len())],
+            None => &name[..name.find('(').unwrap_or(name.len())],
+        };
+        if name == "strata_enter" || name == "strata_leave" || name.starts_with("llvm.") || name.starts_with("drop:") || NEVER_FAULT.contains(&name) {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+/// A function's code without its frame on the call stack (`strata_enter`
+/// / `strata_leave`): nothing in it can fault, so no fault shows it.
+fn unframed(text: &str) -> String {
+    text.lines().filter(|l| !l.contains("call void @strata_enter(") && !l.contains("call void @strata_leave()")).map(|l| format!("{l}\n")).collect()
+}
+
 /// The runtime's C source, compiled with the program.
 pub const RUNTIME: &str = include_str!("llvm/runtime.c");
 
@@ -1990,7 +2051,10 @@ impl<'a> Module<'a> {
             c.emit("ret void".into());
         }
         c.unwound_exit(&ret, framed)?;
-        let text = c.finish();
+        let mut text = c.finish();
+        if framed && !can_fault(&text) {
+            text = unframed(&text);
+        }
         writeln!(self.body, "define {} {}({}) {{\n{text}}}\n", self.ll(&ret)?, inst.symbol, sig.join(", ")).unwrap();
         Ok(())
     }
