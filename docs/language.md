@@ -107,6 +107,16 @@ fn describe(v: Int | String) -> String {
 
 **A union declares its members or names them.** `type Shape = Circle | Square { side: Float } | Dot` uses the record `Circle` and declares `Square` (a record) and `Dot` (an atom: a type with one value). A bare name is the type of that name when one is in scope, and is declared by the union only when nothing has that name; a member written with fields (`Moved(Int)`, `Square { .. }`) is declared. The same union can be written with a bar before each member, one per line, and `type ShapeError = | Empty | TooBig { max: Int }` declares both its members. A member declared in a union is a type like any other: a function can take `e: TooBig` (and read `e.max`), or return `Result[Shape, TooBig]`, and an atom or tuple-shaped type can be declared on its own too (`type Dot`, `type Moved(Int)`), to be used in several unions. Constructors still need wrapping (`Err(TooBig { max: 9 })`), so `Result[Int, Int]` stays unambiguous. A member declared in a union has its name unique in its module (another module's type of the same name is told apart by its module, as `geo.Circle`). `edit` warns when a new member is named like an existing type (`Circel` next to `Circle`).
 
+**A member it declares can have a `///` doc comment**, written above its `|`, as a record's field can: `std.typing` gives it to derived traits (a `CommandLine` union shows it as the command's help).
+
+```rust
+type Command =
+  /// Show the history.
+  | Log
+  /// Replace definitions, read from standard input.
+  | Edit { module: Option[String] }
+```
+
 **Only bare members flatten.** `type S2 = S | C` with `type S = A | B` is `A | B | C`; `type S3 = D(S) | E` is `D | E`: `D` is a new type holding an `S`.
 
 **A union's type parameters are wrapped**, in a member it declares (`type Option[T] = Some(T) | None`, `type OrError[T] = Value(T) | Problem`) or in a type (`type Many[T] = List[T] | Problem`): never a member on its own (`T | Problem`), nor two members alike (`List[A] | List[B]`), which couldn't be told apart. A union of two types is written `A | B` where it is used; there is no `Either[A, B]`. So a generic union is named by its members too: `List[Int] | Problem` is `Many[Int]` (and renders so), and `impl[T] Show for Many[T]` applies to it.
