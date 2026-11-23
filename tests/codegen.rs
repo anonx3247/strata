@@ -51,11 +51,9 @@ fn memory(exe: &Path) -> String {
     err.lines().find(|l| l.starts_with("memory: ")).unwrap_or_default().to_string()
 }
 
-/// The program at `file` built by Rust and by Strata: their outcomes.
-fn both(dir: &Path, name: &str, file: &Path) -> ((String, String, Option<i32>), (String, String, Option<i32>)) {
-    let rust = dir.join(format!("{name}-rust"));
-    let o = Command::new(STRATA).arg("build").arg(file).arg("-o").arg(&rust).output().unwrap();
-    assert!(o.status.success(), "{name}: strata build: {}", String::from_utf8_lossy(&o.stderr));
+/// The program at `file` built by compiler/codegen (its IR linked with the C
+/// runtime by clang): the executable.
+fn ours(dir: &Path, name: &str, file: &Path) -> PathBuf {
     let ir = compiler::run(&["codegen".to_string(), file.to_string_lossy().into_owned()]);
     assert!(!ir.starts_with("error: "), "{name}: not compiled by compiler/codegen:\n{ir}");
     let ll = dir.join(format!("{name}.ll"));
@@ -64,6 +62,15 @@ fn both(dir: &Path, name: &str, file: &Path) -> ((String, String, Option<i32>), 
     let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/llvm/runtime.c");
     let o = Command::new(cc()).args(["-O2", "-Wno-override-module", "-o"]).arg(&ours).arg(&ll).arg(&runtime).arg("-lm").output().unwrap();
     assert!(o.status.success(), "{name}: clang refused compiler/codegen's IR: {}", String::from_utf8_lossy(&o.stderr));
+    ours
+}
+
+/// The program at `file` built by Rust and by Strata: their outcomes.
+fn both(dir: &Path, name: &str, file: &Path) -> ((String, String, Option<i32>), (String, String, Option<i32>)) {
+    let rust = dir.join(format!("{name}-rust"));
+    let o = Command::new(STRATA).arg("build").arg(file).arg("-o").arg(&rust).output().unwrap();
+    assert!(o.status.success(), "{name}: strata build: {}", String::from_utf8_lossy(&o.stderr));
+    let ours = ours(dir, name, file);
     let (r, o) = (outcome(&rust), outcome(&ours));
     // a program that ends normally frees everything it made
     if r.2 == Some(0) {
@@ -514,8 +521,13 @@ fn show_id(i: Id) -> String {
 fn main() {
   print(show_id(3))
   print(show_id(\"x\"))
-  let j: Id = 50
+  let j: Id = 5
   print(j)
+  mut k: Id = \"a\"
+  k = 7
+  print(k)
+  k = \"b\" + \"c\"
+  print(k)
 }
 "),
     ("refined_union_broken", "type Small = Int where it < 10
@@ -2034,6 +2046,24 @@ fn compiled_programs_do_what_rust_compiled_ones_do() {
         let (rust, ours) = both(&dir, name, &file);
         assert_eq!(ours, rust, "{name}: (stdout, stderr, exit code) of compiler/codegen's build vs strata build's");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A union with refined members checks a `let`'s value too (`llvm.rs`
+/// checks it only where the value is already a union: an argument, a
+/// result).
+#[test]
+fn a_let_of_a_union_with_refined_members_is_checked() {
+    if !have_clang() {
+        return;
+    }
+    let dir = scratch("refined-let");
+    let file = dir.join("refined_let.strata");
+    save(&file, "type Small = Int where it < 10\n\ntype Id = Small | String\n\nfn main() {\n    let j: Id = 5\n    print(j)\n    let k: Id = 50\n    print(k)\n}\n");
+    let (out, err, code) = outcome(&ours(&dir, "refined_let", &file));
+    assert_eq!(out, "5\n");
+    assert!(err.starts_with("fault (Refinement): let binding: 50 is not a `Small | String`"), "{err}");
+    assert_eq!(code, Some(101));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
