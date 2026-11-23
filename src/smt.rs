@@ -30,7 +30,7 @@
 //! `div` and `mod` and like the interpreter.
 
 use crate::ast::*;
-use crate::types::{subst_texpr, Env};
+use crate::types::{subst_texpr, Env, Width};
 use crate::fx::{HashMap, HashSet};
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -449,6 +449,40 @@ fn implies(a: &str, b: &str) -> T {
 fn ite(c: &str, a: &str, b: &str) -> T {
     if a == b { a.to_string() } else { format!("(ite {c} {a} {b})") }
 }
+/// A sized integer value's type (`Val::Distinct("U32", Int)`).
+fn word_of(v: &Val) -> Option<Width> {
+    match v {
+        Val::Distinct(n, _) => Width::of(n),
+        _ => None,
+    }
+}
+
+/// What a sized integer `x` of type `w` always is: within its range.
+fn word_range(w: Width, x: &str) -> T {
+    let lo = if w.min() < 0 { format!("(- {})", -w.min()) } else { w.min().to_string() };
+    format!("(and (<= {lo} {x}) (<= {x} {}))", w.max())
+}
+
+/// `x` modulo 2^bits, as a value of the sized type `w` (two's complement
+/// for a signed one): what an operation on sized integers gives.
+fn wrap_term(w: Width, x: &str) -> T {
+    if let Ok(n) = x.parse::<i128>() {
+        let r = w.wrap(n);
+        return if r < 0 { format!("(- {})", -r) } else { r.to_string() };
+    }
+    let m = num_bigint::BigInt::from(1) << w.bits;
+    if w.signed {
+        let h = num_bigint::BigInt::from(1) << (w.bits - 1);
+        format!("(- (mod (+ {x} {h}) {m}) {h})")
+    } else {
+        format!("(mod {x} {m})")
+    }
+}
+
+fn word(w: Width, t: T) -> Val {
+    Val::Distinct(w.name().to_string(), Box::new(Val::Int(t)))
+}
+
 fn num(n: i64) -> T {
     if n < 0 { format!("(- {})", n.unsigned_abs()) } else { n.to_string() }
 }
@@ -1147,6 +1181,7 @@ impl<'a> Vc<'a> {
         }
         match v {
             Val::Int(t) => t.clone(),
+            Val::Distinct(_, x) if word_of(v).is_some() => self.as_int(x),
             Val::Data { .. } => {
                 let v = self.force(v.clone());
                 self.as_int(&v)
@@ -1238,6 +1273,12 @@ impl<'a> Vc<'a> {
                 "Bool" => Val::Bool(self.fresh("Bool")),
                 "String" => Val::Str(self.fresh("String")),
                 "Float" => Val::Opaque("floats are not modelled yet".into()),
+                s if Width::of(s).is_some() => {
+                    let w = Width::of(s).unwrap();
+                    let x = self.fresh("Int");
+                    self.facts.push(word_range(w, &x));
+                    word(w, x)
+                }
                 "List" => {
                     let len = self.fresh("Int");
                     self.facts.push(format!("(>= {len} 0)"));
@@ -2579,6 +2620,10 @@ impl<'a> Vc<'a> {
             }
             Expr::Un(UnOp::Neg, x) => match self.eval(x) {
                 Val::Int(t) => Val::Int(format!("(- {t})")),
+                v if word_of(&v).is_some() => {
+                    let (w, t) = (word_of(&v).unwrap(), self.as_int(&v));
+                    word(w, wrap_term(w, &format!("(- {t})")))
+                }
                 other => other,
             },
             Expr::Un(UnOp::Not, x) => {
@@ -2605,6 +2650,19 @@ impl<'a> Vc<'a> {
                     _ => {
                         let a = self.eval(l);
                         let b = self.eval(r);
+                        // sized integers: `Int`'s operation, then wrapped (the operands are of one type)
+                        if let Some(w) = word_of(&a).or(word_of(&b)) {
+                            let (x, y) = (Val::Int(self.as_int(&a)), Val::Int(self.as_int(&b)));
+                            let r = match op {
+                                Eq => return Val::Bool(self.eq(&x, &y)),
+                                Ne => return Val::Bool(not(&self.eq(&x, &y))),
+                                Lt | Le | Gt | Ge => return self.compare(*op, x, y),
+                                BitAnd | BitOr | BitXor | Shl | Shr => self.bits(*op, x, y),
+                                _ => self.arith(*op, x, y),
+                            };
+                            let r = self.as_int(&r);
+                            return word(w, wrap_term(w, &r));
+                        }
                         match op {
                             Eq => Val::Bool(self.eq(&a, &b)),
                             Ne => Val::Bool(not(&self.eq(&a, &b))),
@@ -3100,6 +3158,19 @@ impl<'a> Vc<'a> {
         let arg = |i: usize| a.get(i).cloned().unwrap_or(Val::Opaque("a missing argument".into()));
         let not_modelled = format!("`{name}` is not modelled");
         self.builtin_faults(name, &a);
+        if let ("to_int", [v]) = (name, a.as_slice()) {
+            if word_of(v).is_some() {
+                return Val::Int(self.as_int(v));
+            }
+        }
+        if let (Some((w, wraps)), 1) = (crate::types::sized::conversion(name), a.len()) {
+            let x = self.as_int(&arg(0));
+            if wraps {
+                return word(w, wrap_term(w, &x));
+            }
+            self.oblige(format!("`{name}` of an Int that fits in `{}`", w.name()), |_| word_range(w, &x));
+            return word(w, x);
+        }
         match (name, a.len()) {
             ("len" | "str_len", 1) => match arg(0) {
                 Val::Str(s) => Val::Int(format!("(str.len {s})")),
@@ -4886,6 +4957,7 @@ impl Vc<'_> {
             Val::Unit => Expr::Unit,
             Val::Tuple(xs) => Expr::Tuple(xs.iter().map(|x| self.to_literal(x, m)).collect::<Option<_>>()?),
             Val::Rec(n, fs) => Expr::Ctor(Symbol::new(n), CtorArgs::Record(fs.iter().map(|(f, x)| self.to_literal(x, m).map(|y| (Symbol::new(f), y))).collect::<Option<_>>()?)),
+            Val::Distinct(_, x) if word_of(v).is_some() => self.to_literal(x, m)?,
             Val::Distinct(n, x) => Expr::Ctor(Symbol::new(n), CtorArgs::Positional(vec![self.to_literal(x, m)?])),
             Val::List { len, id } => {
                 let n = parse_int(&text(len)?)?;

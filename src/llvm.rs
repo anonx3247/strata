@@ -9116,6 +9116,14 @@ impl Func<'_, '_> {
                 _ => self.unsupported(&format!("generating a value of `{}`", crate::printer::ty(t))),
             };
         };
+        if let Some(w) = Width::of(n.as_str()) {
+            // an `Int` as `Int`'s values are made, wrapped into the type's range
+            let (g, k) = self.pairs(&bounded(&hints.ints(), 1000, 100));
+            let r = self.fresh("i");
+            self.emit(format!("{r} = call i64 @strata_gen_int(ptr {g}, i64 {k})"));
+            let n = self.temp((Ty::Int, r));
+            return Ok(self.word_builtin(&w.wrap_fn(), &[Ty::Int], &[n])?.expect("a sized conversion"));
+        }
         match n.as_str() {
             "Int" => {
                 let (g, k) = self.pairs(&bounded(&hints.ints(), 1000, 100));
