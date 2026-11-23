@@ -2543,6 +2543,47 @@ fn std_precompiled_once_links_with_programs() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `strata run` through compiler/codegen and the compiler's JIT (its
+/// default, when not `--rust` or `STRATA_BACKEND=rust`): a program's
+/// `main`, and one function called on arguments written as code (`run f
+/// ARGS`, `codegen --call`), print what Rust's `llvm.rs` prints, the
+/// result as the code that writes it, a fault with its call stack, an
+/// argument that breaks a refinement as invalid input, with the same exit
+/// codes.
+#[test]
+fn run_goes_through_the_compiler_jit() {
+    let dir = scratch("run-jit");
+    let file = dir.join("calls.strata");
+    save(&file, "type Shape = Circle { radius: Int } | Square { side: Int }\n\ntype Small = Int where it < 10\n\ntype Pair = { name: String, sizes: List[Int] }\n\nfn area(s: Shape) -> Int {\n    match s {\n        Circle { radius } => 3 * radius * radius,\n        Square { side } => side * side,\n    }\n}\n\nfn tiny(x: Small) -> Small {\n    x\n}\n\nfn greet(name: String) -> String {\n    print(\"hi\")\n    \"hello \" + name\n}\n\nfn boom(x: Int) -> Int {\n    100 / x\n}\n\nfn grow(p: Pair, n: Int) -> Pair {\n    Pair { ..p, sizes: p.sizes + [n] }\n}\n\nfn bump(mut n: Int) {\n    n += 1\n    print(n)\n}\n\nfn main() {\n    print(area(Circle { radius: 2 }))\n    print(boom(0))\n}\n");
+    let run = |args: &[&str], rust: bool| {
+        let mut c = Command::new(STRATA);
+        c.current_dir(&dir).args(args);
+        if rust {
+            c.env("STRATA_BACKEND", "rust");
+        } else {
+            c.env_remove("STRATA_BACKEND").env("STRATA_COMPILER", Path::new(env!("CARGO_MANIFEST_DIR")).join("compiler"));
+        }
+        let o = c.output().unwrap();
+        (String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).lines().filter(|l| !l.starts_with("building the Strata compiler")).collect::<Vec<_>>().join("\n"), o.status.code())
+    };
+    let cases: [&[&str]; 8] = [
+        &["run", "calls.strata"],
+        &["--file", "calls.strata", "run", "area", "Circle { radius: 2 }"],
+        &["--file", "calls.strata", "run", "greet", "\"bob\""],
+        &["--file", "calls.strata", "run", "tiny", "3"],
+        &["--file", "calls.strata", "run", "tiny", "12"],
+        &["--file", "calls.strata", "run", "boom", "0"],
+        &["--file", "calls.strata", "run", "grow", "Pair { name: \"a\", sizes: [1] }, 2"],
+        &["--file", "calls.strata", "run", "bump", "4"],
+    ];
+    for args in cases {
+        let (ours, rust) = (run(args, false), run(args, true));
+        assert!(!ours.1.contains("using llvm.rs"), "{args:?}: {}", ours.1);
+        assert_eq!(rust, ours, "{args:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `compiler fuzz`: compiler/codegen's drivers (`codegen --fuzz-text`) run
 /// in the compiler's own process by its JIT (compiler/c/jit.c), each case's
 /// arguments handed back as code: the verdict of each function is the one
