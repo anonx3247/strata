@@ -546,7 +546,8 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             let mut s = "f\"".to_string();
             for p in parts {
                 match p {
-                    StrPart::Lit(l) => s += &escape(l).replace('{', "{{").replace('}', "}}"),
+                    // a lone `\` before a brace is written `\\`: `\{{` would read as `\{` then `{`
+                    StrPart::Lit(l) => s += &escape(l).replace("\\{", "\\\\{").replace("\\}", "\\\\}").replace('{', "{{").replace('}', "}}"),
                     StrPart::Expr(e, spec) => s += &format!("{{{}{}}}", expr_inline(e, 0), spec.as_ref().map(|f| format!(":{f}")).unwrap_or_default()),
                 }
             }
@@ -1015,5 +1016,22 @@ pub fn type_text(t: &TypeExpr) -> String {
         TypeExpr::Named(n, args) => format!("{n}[{}]", args.iter().map(type_text).collect::<Vec<_>>().join(", ")),
         TypeExpr::Unit => "Unit".into(),
         other => ty(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parser::parse_expr;
+
+    #[test]
+    fn fstring_with_escaped_braces_round_trips() {
+        // `\{` and `\}` are literal braces; a backslash stored before a brace prints as `\\`
+        for src in [r#"f"a \{ {x} \} b""#, r#"f"{k} = \{ path = \"../{k}\" \}""#, r#"f"\\{x}\\""#] {
+            let e = parse_expr(src).unwrap();
+            let printed = super::expr(&e, 0);
+            let back = parse_expr(&printed).unwrap_or_else(|err| panic!("{printed}: {err:?}"));
+            assert_eq!(super::expr(&back, 0), printed);
+            assert_eq!(back, e, "{src} printed as {printed}");
+        }
     }
 }
