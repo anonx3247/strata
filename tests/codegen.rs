@@ -2487,3 +2487,50 @@ fn jit_traces_as_rust_traces() {
     assert_eq!(String::from_utf8_lossy(&rust.stdout), String::from_utf8_lossy(&ours.stdout));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// std precompiled once (plan item C21): `compiler codegen --library` holds
+/// std's functions that don't change per program (`; precompiled NAME`
+/// lines, each an exported symbol); a program compiled with `--precompiled
+/// NAMES` declares them instead, and linked with the library's object it
+/// does what the program compiled whole does (and frees everything).
+#[test]
+fn std_precompiled_once_links_with_programs() {
+    if !have_clang() {
+        return;
+    }
+    let dir = scratch("stdlib");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ir = compiler::run(&["codegen", "--library"]);
+    assert!(!ir.lines().any(|l| l.starts_with("error")), "{}", ir.lines().filter(|l| l.starts_with("error")).collect::<Vec<_>>().join("\n"));
+    let names: Vec<&str> = ir.lines().filter_map(|l| l.strip_prefix("; precompiled ")).collect();
+    assert!(names.len() > 100 && names.contains(&"std.json.parse"), "{names:?}");
+    std::fs::write(dir.join("std.ll"), &ir).unwrap();
+    std::fs::write(dir.join("names"), names.join("\n")).unwrap();
+    let o = Command::new(cc()).args(["-O2", "-fPIC", "-Wno-override-module", "-c", "-o"]).arg(dir.join("std.o")).arg(dir.join("std.ll")).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let runtime = root.join("src/llvm/runtime.c");
+    for ex in ["wc", "page"] {
+        let pkg = root.join("examples").join(ex);
+        let whole = compiler::run(&["codegen".to_string(), pkg.to_string_lossy().into_owned()]);
+        let part = compiler::run(&["codegen".to_string(), "--precompiled".to_string(), dir.join("names").to_string_lossy().into_owned(), pkg.to_string_lossy().into_owned()]);
+        assert!(!part.starts_with("error") && part.len() < whole.len(), "{ex}: {}", &part[..part.len().min(400)]);
+        let mut outs = vec![];
+        for (k, text) in [("whole", &whole), ("part", &part)] {
+            let (ll, exe) = (dir.join(format!("{ex}-{k}.ll")), dir.join(format!("{ex}-{k}")));
+            std::fs::write(&ll, text).unwrap();
+            let mut c = Command::new(cc());
+            c.args(["-O2", "-Wno-override-module", "-o"]).arg(&exe).arg(&ll).arg(&runtime);
+            if k == "part" {
+                c.arg(dir.join("std.o"));
+            }
+            let o = c.arg("-lm").output().unwrap();
+            assert!(o.status.success(), "{ex} {k}: {}", String::from_utf8_lossy(&o.stderr));
+            let run = Command::new(&exe).current_dir(&pkg).env("STRATA_MEMORY", "check").output().unwrap();
+            let err = String::from_utf8_lossy(&run.stderr).into_owned();
+            assert!(err.contains(" 0 live"), "{ex} {k}: {err}");
+            outs.push((String::from_utf8_lossy(&run.stdout).into_owned(), run.status.code()));
+        }
+        assert_eq!(outs[0], outs[1], "{ex}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

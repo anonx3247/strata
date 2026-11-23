@@ -43,6 +43,71 @@ fn run_compiler(exe: &Path, args: &[String]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
+/// std precompiled by compiler/codegen (plan item C21): its functions that
+/// compile once for every program (`compiler codegen --library`), as an
+/// object `build` links statically and a shared library the compiler's JIT
+/// loads, with their names (`--precompiled`). Kept beside the built
+/// compiler, whose cache key covers std's files. `None` with
+/// `STRATA_NO_STD_LIBRARY`, or when it can't be made (each program then
+/// compiles the std code it uses).
+struct StdLibrary {
+    names: PathBuf,
+    object: PathBuf,
+    shared: PathBuf,
+}
+
+fn std_library(exe: &Path) -> Option<StdLibrary> {
+    if std::env::var_os("STRATA_NO_STD_LIBRARY").is_some() {
+        return None;
+    }
+    let dir = exe.parent()?.join("std");
+    let lib = StdLibrary { names: dir.join("names"), object: dir.join("std.o"), shared: dir.join(if cfg!(target_os = "macos") { "libstd.dylib" } else { "libstd.so" }) };
+    if lib.names.is_file() {
+        return Some(lib);
+    }
+    let made = (|| -> Result<(), String> {
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let ir = run_compiler(exe, &["codegen".into(), "--library".into()])?;
+        if ir.lines().any(|l| l.starts_with("error")) {
+            return Err(ir.lines().filter(|l| l.starts_with("error")).collect::<Vec<_>>().join("\n"));
+        }
+        // (each step to a file of its own, renamed when done: another
+        // process may be making it too)
+        let id = std::process::id();
+        let ll = dir.join(format!("std.{id}.ll"));
+        fs::write(&ll, &ir).map_err(|e| e.to_string())?;
+        let cc = std::env::var("STRATA_CC").unwrap_or_else(|_| "clang".into());
+        let (obj, shared) = (dir.join(format!("std.{id}.o")), dir.join(format!("libstd.{id}")));
+        let mut so: Vec<&str> = vec!["-O2", "-fPIC", "-shared", "-Wno-override-module"];
+        if cfg!(target_os = "macos") {
+            so.extend(["-undefined", "dynamic_lookup"]);
+        }
+        for args in [vec!["-O2", "-fPIC", "-Wno-override-module", "-c", "-o"], [so, vec!["-o"]].concat()] {
+            let out = if args.contains(&"-c") { &obj } else { &shared };
+            let o = Command::new(&cc).args(&args).arg(out).arg(&ll).output().map_err(|e| format!("running {cc}: {e}"))?;
+            if !o.status.success() {
+                return Err(String::from_utf8_lossy(&o.stderr).into_owned());
+            }
+        }
+        let _ = fs::remove_file(&ll);
+        fs::rename(&obj, &lib.object).map_err(|e| e.to_string())?;
+        fs::rename(&shared, &lib.shared).map_err(|e| e.to_string())?;
+        let names: Vec<&str> = ir.lines().filter_map(|l| l.strip_prefix("; precompiled ")).collect();
+        let tmp = dir.join(format!("names.{id}"));
+        fs::write(&tmp, names.join("\n") + "\n").map_err(|e| e.to_string())?;
+        fs::rename(&tmp, &lib.names).map_err(|e| e.to_string())
+    })();
+    match made {
+        Ok(()) => Some(lib),
+        Err(e) => {
+            if std::env::var_os("STRATA_DEBUG").is_some() {
+                eprintln!("note: std is compiled with each program: {e}");
+            }
+            None
+        }
+    }
+}
+
 /// The Strata checker's error lines on `file` (a script or a package folder).
 fn strata_check(file: &str) -> Result<Vec<String>, String> {
     let (exe, std) = compiler()?;
@@ -143,7 +208,12 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
         let path = Path::new(&file).canonicalize().map_err(|e| format!("{file}: {e}"))?;
         // (`--trace`: each call and return on stderr, shown by the compiled code)
         let trace: &[&str] = if args.flag("--trace") { &["--trace"] } else { &[] };
-        let status = Command::new(&exe).current_dir(root).arg("jit").args(trace).arg(path).arg("--").args(&program_args).status().map_err(|e| e.to_string())?;
+        // (std's precompiled code: loaded, not compiled again)
+        let mut pre: Vec<std::ffi::OsString> = vec![];
+        if let Some(l) = std_library(&exe) {
+            pre.extend(["--load".into(), l.shared.into_os_string(), "--precompiled".into(), l.names.into_os_string()]);
+        }
+        let status = Command::new(&exe).current_dir(root).arg("jit").args(&pre).args(trace).arg(path).arg("--").args(&program_args).status().map_err(|e| e.to_string())?;
         std::process::exit(status.code().unwrap_or(1));
     }
     let std_files = || -> Vec<String> {
@@ -304,7 +374,14 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                     crate::llvm::proofs_text(src.program(), &proofs)
                 };
                 fs::write(&proven, facts).map_err(|e| e.to_string())?;
-                let ir = run_compiler(&exe, &["codegen".into(), "--proofs".into(), proven.to_string_lossy().into_owned(), file.clone()])?;
+                // std's precompiled code: declared here, linked in (statically)
+                let std_lib = std_library(&exe);
+                let mut cg: Vec<String> = vec!["codegen".into(), "--proofs".into(), proven.to_string_lossy().into_owned()];
+                if let Some(l) = &std_lib {
+                    cg.extend(["--precompiled".into(), l.names.to_string_lossy().into_owned()]);
+                }
+                cg.push(file.clone());
+                let ir = run_compiler(&exe, &cg)?;
                 let missing: Vec<&str> = ir.lines().filter(|l| l.starts_with("error:")).collect();
                 if !missing.is_empty() {
                     return Err(format!("compiler/codegen doesn't cover this program yet:\n{}", missing.join("\n")));
@@ -315,7 +392,7 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                 // a package's own C (`[native]`), for its `extern c` declarations
                 let mut native = crate::package::find(Path::new(&file)).ok().flatten().map(|p| p.native.clang_args(&p.dir)).unwrap_or_default();
                 native.retain(|a| a != "-lm");
-                let o = Command::new(&cc).args(["-O2", "-Wno-override-module", "-o"]).arg(&ours).arg(&ll).arg(&runtime).args(&native).arg("-lm").output().map_err(|e| format!("running {cc}: {e}"))?;
+                let o = Command::new(&cc).args(["-O2", "-Wno-override-module", "-o"]).arg(&ours).arg(&ll).arg(&runtime).args(std_lib.as_ref().map(|l| l.object.clone())).args(&native).arg("-lm").output().map_err(|e| format!("running {cc}: {e}"))?;
                 if !o.status.success() {
                     return Err(format!("{cc} refused compiler/codegen's IR: {}", String::from_utf8_lossy(&o.stderr).trim()));
                 }

@@ -9,6 +9,7 @@
 #include <llvm-c/LLJIT.h>
 #include <llvm-c/Orc.h>
 #include <llvm-c/Target.h>
+#include <dlfcn.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,4 +75,12 @@ int32_t jit_run_main(const char *ir, const char *args) {
   fflush(stdout);
   fflush(stderr);
   exit(code);
+}
+
+// Load a shared library into this process for the JIT to find its symbols
+// (std's precompiled code): 0 when loaded, else 1 (after saying why).
+int32_t jit_load(const char *path) {
+  if (dlopen(path, RTLD_NOW | RTLD_GLOBAL)) return 0;
+  fprintf(stderr, "note: can't load %s: %s\n", path, dlerror());
+  return 1;
 }
