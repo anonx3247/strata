@@ -435,7 +435,7 @@ pub fn covers_by_default(args: &crate::Args, cmd: &str) -> bool {
         }
         "run" => {
             let path = args.pos.get(1).map(|s| s.as_str()).or(args.val("--file"));
-            args.pos.len() <= 2 && path.is_some_and(|p| Path::new(p).exists()) && !args.flag("--trace")
+            args.pos.len() <= 2 && path.is_some_and(|p| Path::new(p).exists()) && !args.flag("--trace") && !args.flag("--jit")
         }
         _ => false,
     }

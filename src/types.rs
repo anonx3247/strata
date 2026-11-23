@@ -702,6 +702,10 @@ struct Checker<'a> {
     env: &'a Env,
     /// checking one of core's own definitions: it may use raw memory (`core.mem`)
     in_core: bool,
+    /// checking a function of core.rt (the allocator, which allocates
+    /// nothing): each arithmetic operation met and its type, refused on
+    /// `Int` (a big integer past 2^62), `String` or `List` once known
+    core_rt: Option<Vec<(&'static str, Ty)>>,
     subst: Vec<Option<Ty>>,
     scopes: Vec<HashMap<Symbol, Ty>>,
     rigid: BTreeSet<Symbol>,
@@ -3123,6 +3127,9 @@ impl<'a> Checker<'a> {
                     let rt = if lit(r) { self.infer_with(r, Some(&lt)) } else { self.infer_with(r, want.as_ref()) };
                     (lt, rt)
                 };
+                if let (Some(a), Add | Sub | Mul | Div | Mod | Shl) = (&mut self.core_rt, op) {
+                    a.push((op.symbol(), lt.clone()));
+                }
                 match op {
                     // `+` also joins strings and lists
                     Add if [&lt, &rt].iter().any(|t| joinable(&self.resolve(t))) => {
@@ -3164,6 +3171,9 @@ impl<'a> Checker<'a> {
             }
             Expr::Un(UnOp::Neg, x) => {
                 let t = self.infer(x);
+                if let (Some(a), false) = (&mut self.core_rt, matches!(&**x, Expr::Int(_) | Expr::BigInt(_))) {
+                    a.push(("-", t.clone()));
+                }
                 match self.resolve(&t) {
                     Ty::Int | Ty::Float => {}
                     s if Width::of_ty(&s).is_some() => {}
@@ -4318,6 +4328,7 @@ impl<'a> Checker<'a> {
         Checker {
             env,
             in_core: false,
+            core_rt: None,
             subst: Vec::new(),
             scopes: vec![HashMap::default()],
             rigid: BTreeSet::new(),
@@ -4537,6 +4548,67 @@ fn lower_iterator_fors(prog: &mut Program, fors: &HashMap<usize, bool>) {
     }
 }
 
+/// How the errors of core.rt's functions that would allocate start: core.rt
+/// is the allocator (and reference counting), so it makes no objects.
+const CORE_RT_ALLOCATES: &str = "core.rt can't allocate (it is the allocator): ";
+
+/// What in a function of core.rt would allocate, each where it is: lists,
+/// tuples and constructors made at run time (a constant's is built once),
+/// dicts, sets, closures, strings put together, ranges, comprehensions,
+/// tasks, `?`, and calls to anything but core.rt's functions, core.mem's and
+/// the conversions between integers. (`Int` arithmetic is refused once its
+/// types are known, in `infer`.)
+fn core_rt_allocations(f: &FnDecl) -> Vec<String> {
+    // a literal, or a list, tuple or constructor of them: one constant block
+    fn constant(e: &Expr) -> bool {
+        match e {
+            Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Unit => true,
+            Expr::Un(UnOp::Neg, x) => matches!(&**x, Expr::Int(_) | Expr::Float(_)),
+            Expr::List(xs) | Expr::Tuple(xs) => !xs.is_empty() && xs.iter().all(constant),
+            Expr::Ctor(_, CtorArgs::None) => true,
+            Expr::Ctor(_, CtorArgs::Positional(xs)) => xs.iter().all(constant),
+            Expr::Ctor(_, CtorArgs::Record(fs)) => fs.iter().all(|(_, x)| constant(x)),
+            _ => false,
+        }
+    }
+    let callable = |n: &str| {
+        let short = crate::names::short(n);
+        builtins().iter().any(|b| b.core_only && b.name == short) || crate::types::sized::conversion(short).is_some() || crate::core::owns("core.rt", n)
+    };
+    let mut out = vec![];
+    let mut kind = DeclKind::Fn(f.clone());
+    crate::ast::decl_all_exprs_mut(&mut kind, |e| {
+        let e: &Expr = e;
+        let what = match e {
+            Expr::List(_) | Expr::Tuple(_) | Expr::Ctor(..) if constant(e) => return,
+            Expr::List(_) => "a list made at run time".to_string(),
+            Expr::Tuple(_) => "a tuple made at run time".into(),
+            Expr::Ctor(c, _) => format!("`{}` made at run time", crate::names::short(c)),
+            Expr::Dict(..) => "a dict".into(),
+            Expr::Set(..) => "a set".into(),
+            Expr::Lambda(..) => "a closure".into(),
+            Expr::Interp(_) => "a string put together".into(),
+            Expr::Range(..) => "a range".into(),
+            Expr::Comp(..) => "a comprehension".into(),
+            Expr::Spawn(_) | Expr::SupervisedSpawn(_) | Expr::Scope(_) | Expr::Await(_) | Expr::Select(_) | Expr::Race(_) => "a task".into(),
+            Expr::Mock(_) => "a mock".into(),
+            Expr::Try(..) => "`?`".into(),
+            Expr::Except(..) => "`except`".into(),
+            Expr::BigInt(_) => "a big integer".into(),
+            Expr::Call(callee, _) => match &**callee {
+                Expr::Var(n) if callable(n) => return,
+                Expr::Var(n) => format!("a call to `{}` (core.rt calls only its own functions, core.mem's and the conversions between integers)", crate::names::short(n)),
+                _ => "a call to a function value".into(),
+            },
+            Expr::Method(_, m, _) if crate::types::sized::conversion(m.as_str()).is_some() => return,
+            Expr::Method(_, m, _) => format!("a call to `{m}` (core.rt calls only its own functions, core.mem's and the conversions between integers)"),
+            _ => return,
+        };
+        out.push(format!("{CORE_RT_ALLOCATES}{what}"));
+    });
+    out
+}
+
 /// Check every declaration of a resolved program (see `Decided`).
 fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
     let (mut errors, mut holes, mut targets, mut types, mut iter_fors) = (Vec::new(), Vec::new(), Vec::new(), HashMap::default(), HashMap::default());
@@ -4550,6 +4622,7 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
         let mut c = Checker {
             env: &env,
             in_core: crate::core::owns(&d.module, &d.name()),
+            core_rt: { (d.name().strip_prefix("core.rt.").is_some_and(|n| !n.contains('.')) && matches!(d.kind, DeclKind::Fn(_)) && crate::core::owns(&d.module, &d.name())).then(Vec::new) },
             subst: Vec::new(),
             scopes: vec![HashMap::default()],
                 rigid: BTreeSet::new(),
@@ -4670,7 +4743,21 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
                 }
             }
             DeclKind::Fn(f) => {
+                if c.core_rt.is_some() {
+                    for m in core_rt_allocations(f) {
+                        c.err(m);
+                    }
+                }
                 c.check_fn(f);
+                for (op, t) in c.core_rt.take().unwrap_or_default() {
+                    let what = match c.resolve(&t) {
+                        Ty::Int => format!("`{op}` on `Int` (a big integer past 2^62): compute with a machine integer (`I64`)"),
+                        Ty::Str => format!("`{op}` on `String` (a new one)"),
+                        Ty::Con(n, _) if n == "List" => format!("`{op}` on `List` (a new one)"),
+                        _ => continue,
+                    };
+                    c.err(format!("{CORE_RT_ALLOCATES}{what}"));
+                }
             }
             DeclKind::Trait(t) => {
                 c.rigid = t.params.iter().cloned().collect();

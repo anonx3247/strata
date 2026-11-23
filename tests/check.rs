@@ -991,11 +991,26 @@ fn same_errors(name: &str, text: &str) {
 
 /// The two checkers give the same errors for `text` (some, if `some`).
 fn same_check(name: &str, text: &str, some: bool) {
+    same_check_in(name, &[(&format!("{name}.strata"), text)], some)
+}
+
+/// The same for a package of the modules `files` (path, text), or one file.
+fn same_check_in(name: &str, files: &[(&str, &str)], some: bool) {
     let dir = std::env::temp_dir().join(format!("strata-check-test-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let prog = dir.join(format!("{name}.strata"));
-    save(&prog, text);
+    for (path, text) in files {
+        let p = dir.join(path);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        if path.ends_with(".toml") {
+            std::fs::write(&p, text).unwrap();
+        } else {
+            save(&p, text);
+        }
+    }
+    let prog = if files.len() == 1 { dir.join(files[0].0) } else { dir.clone() };
     let got = compiler::run(&[std::ffi::OsStr::new("check"), prog.as_os_str()]);
     let errors = |out: &str| -> Vec<String> {
         let mut v: Vec<String> = out.lines().filter(|l| l.starts_with("error in ") || l.starts_with("  ")).map(String::from).collect();
@@ -1088,4 +1103,13 @@ const CORE_STATIC: &str = "builtin static mine: 8\n\nfn main() {\n  print(1)\n}\
 #[test]
 fn builtin_static_outside_core_as_in_rust() {
     same_errors("core_static", CORE_STATIC);
+}
+
+/// core.rt is the allocator: its functions make no objects (a package's
+/// `core.rt` defining one of core.rt's functions stands for it).
+const CORE_RT: &str = "fn strata_unique(p: Ptr) -> Bool {\n  n := 5\n  m := n + 1\n  xs := [n, m]\n  ys := [1, 2]\n  t := (n, 2)\n  s := f\"{n}\"\n  g := (x: Int) -> x\n  o := Some(n)\n  k := None\n  c := Some(3)\n  w := \"a\" + \"b\"\n  print(s)\n  r := -n\n  q := -8\n  u := atomic_load_i64(p, -8)\n  v := u + 1\n  bump() == v && strata_unique(p)\n}\n\nfn bump() -> I64 {\n  to_i64(1)\n}\n";
+
+#[test]
+fn core_rt_allocates_nothing_as_in_rust() {
+    same_check_in("core_rt", &[("strata.toml", "name = \"p\"\n"), ("main.strata", "fn main() {}\n"), ("core/rt.strata", CORE_RT)], true);
 }
