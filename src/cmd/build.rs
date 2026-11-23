@@ -4,7 +4,7 @@ use crate::*;
 
 /// Before building: verify the definitions changed since they were last
 /// verified (as `strata verify` does, with its caches), and say how it went.
-fn verify_first(args: &Args, src: &Source, file: Option<&str>) -> Result<(), String> {
+pub(crate) fn verify_first(args: &Args, src: &Source, file: Option<&str>) -> Result<(), String> {
     let Some(dir) = proofs_dir(src, file) else { return Ok(()) };
     let todo = store::unverified(src.program(), &dir);
     if todo.is_empty() {

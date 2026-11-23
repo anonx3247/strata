@@ -116,6 +116,8 @@ fn same(file: &Path, cache: &Path) -> (usize, usize) {
 /// numbers.
 /// Step 4: `while` (invariants inferred and written), `for` over lists,
 /// `loop`, `break`, `continue`.
+/// Step 5: method calls (through the one trait declaring them, else any
+/// value of their result), function names as values, generic functions.
 #[test]
 fn smt_outcomes_as_in_rust() {
     if !have_z3() {
@@ -128,6 +130,7 @@ fn smt_outcomes_as_in_rust() {
         ("step2", include_str!("data/smt/step2.st")),
         ("step3", include_str!("data/smt/step3.st")),
         ("step4", include_str!("data/smt/step4.st")),
+        ("step5", include_str!("data/smt/step5.st")),
     ] {
         let file = dir.join(format!("{name}.strata"));
         save(&file, text);
