@@ -492,7 +492,7 @@ fn what_is_not_compiled_yet_is_named() {
     let why = "can't compile `main`: calling `copies` (it mentions `Self` inside another type) on a value of the trait type `Many` is not compiled yet";
     assert!(!o.status.success() && err.contains(why), "{err}");
     // `strata run` says so too (nothing is interpreted instead)
-    let o = Command::new(env!("CARGO_BIN_EXE_strata")).arg("run").arg(&f).output().unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(&f).output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(!o.status.success() && err.contains(&format!("the program can't be compiled yet: {why}")), "{err}");
 }
@@ -1523,7 +1523,7 @@ fn fields_trait_equality_and_stacks_compile() {
     let b = Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
     assert!(b.status.success(), "{}", String::from_utf8_lossy(&b.stderr));
     let native = Command::new(&exe).output().unwrap();
-    let interp = Command::new(strata).arg("run").arg(&f).output().unwrap();
+    let interp = Command::new(strata).args(["run", "--jit"]).arg(&f).output().unwrap();
     let err = String::from_utf8_lossy(&native.stderr).to_string();
     assert_eq!(err, String::from_utf8_lossy(&interp.stderr));
     assert!(err.contains("    stack: main -> Thing.describe -> inner -> half\n"), "{err}");
