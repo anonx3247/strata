@@ -126,6 +126,23 @@ fn numbers_compile_and_run_as_interpreted() {
     assert_eq!(code, 101);
 }
 
+/// Sized integers in their own widths: wrapping arithmetic, Euclidean
+/// division, shifts past the width, unsigned order, conversions (the last
+/// one out of range: a fault).
+#[test]
+fn sized_integers_wrap_in_their_widths() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("sized");
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/build/sized.strata");
+    let (out, code) = built_as_expected(&file, &d);
+    assert!(out.starts_with("0\n4294967300\n"), "{out}");
+    assert!(out.contains("fault (Runtime): `300` doesn't fit in `U8`"), "{out}");
+    assert_eq!(code, 101);
+}
+
 #[test]
 fn faults_and_control_flow_match_the_interpreter() {
     if !have_clang() {
@@ -1889,7 +1906,7 @@ extern c fn nothing() -> Counter
 extern c fn twice(mut x: I32)
 
 pub fn numbers() -> List[Int] {
-  [neg8(5), neg8(-128), inc8(254), umax(), imin(), half(umax()), (if even(4) { 1 } else { 0 })]
+  [neg8(5).to_int(), neg8(-128).to_int(), inc8(254).to_int(), umax().to_int(), imin().to_int(), half(umax()).to_int(), (if even(4) { 1 } else { 0 })]
 }
 
 pub fn texts() -> String {
@@ -1906,20 +1923,20 @@ pub fn counting() -> List[Int] {
       first := counter_bump(h)
       second := counter_bump(h)
       counter_close(h)
-      [code, first, second, x]
+      [code.to_int(), first.to_int(), second.to_int(), x.to_int()]
     }
-    None => [code],
+    None => [code.to_int()],
   }
 }
 
 pub fn refused() -> List[Int] {
   mut c: Option[Counter] = None
   code := counter_open(-1, mut c)
-  [code, (if c == None { 1 } else { 0 })]
+  [code.to_int(), (if c == None { 1 } else { 0 })]
 }
 
 pub fn null_handle() -> Int {
-  counter_bump(nothing())
+  counter_bump(nothing()).to_int()
 }
 
 pub fn nul_string() -> String {

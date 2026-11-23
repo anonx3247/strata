@@ -2080,6 +2080,58 @@ int64_t strata_int_from_i64(int64_t raw) {
   return int_of(x);
 }
 
+// ---- sized integers (`I8` … `U64`) ----
+//
+// Compiled inline but for these: an operation is `Int`'s, then the result
+// modulo 2^bits. The generated code passes a signed type's value sign-extended
+// to 64 bits, an unsigned one's zero-extended, and truncates the result.
+
+// Euclidean `/` and `%` (the remainder is never negative), as `Int`'s.
+int64_t strata_word_div(int64_t a, int64_t b) {
+  if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
+  if (b == 0) return 0;
+  if (b == -1) return (int64_t)((uint64_t)0 - (uint64_t)a);
+  int64_t q = a / b, r = a % b;
+  if (r < 0) q = b > 0 ? q - 1 : q + 1;
+  return q;
+}
+
+int64_t strata_word_mod(int64_t a, int64_t b) {
+  if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
+  if (b == 0 || b == -1) return 0;
+  int64_t r = a % b;
+  if (r < 0) r = b > 0 ? r + b : r - b;
+  return r;
+}
+
+uint64_t strata_uword_div(uint64_t a, uint64_t b) {
+  if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
+  return b == 0 ? 0 : a / b;
+}
+
+uint64_t strata_uword_mod(uint64_t a, uint64_t b) {
+  if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
+  return b == 0 ? 0 : a % b;
+}
+
+// A shift of a signed type by a negative number of bits, as `Int`'s.
+void strata_word_shift_fault(Str *op) {
+  soft_fault(4, strata_concat_owned((strata_dup(op), op), str_c(" by a negative number of bits")));
+}
+
+int64_t strata_int_bits(int64_t v);
+
+// `to_u32(n)` and the like: `n`'s low 64 bits, when `n` is in lo ..= hi
+// (both `Int`s); else a fault naming the type.
+int64_t strata_int_fit(int64_t n, int64_t lo, int64_t hi, Str *ty) {
+  if (strata_int_cmp(lo, n) > 0 || strata_int_cmp(n, hi) > 0) {
+    Str *m = strata_concat_owned(strata_concat_owned(strata_concat_owned(str_c("`"), strata_show_int(n)), str_c("` doesn't fit in `")), (strata_dup(ty), ty));
+    soft_fault(4, strata_concat_owned(m, str_c("`")));
+    return 0;
+  }
+  return strata_int_bits(n);
+}
+
 // ---- foreign calls (`extern c`) ----
 //
 // What the generated code converts a value with, on its way to C and back.
