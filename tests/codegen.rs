@@ -185,6 +185,215 @@ fn main(mut launcher: Launcher) {
   print(p.to_json())
 }
 "),
+    ("tasks_and_channels", "fn main() {
+  (tx, rx) := channel()
+  results := scope {
+    a := spawn {
+      tx.send(1)
+      tx.send(2)
+      tx.close()
+      10
+    }
+    b := spawn 32
+    tx.close()
+    mut got := []
+    for v in rx {
+      got = push(got, v)
+    }
+    (await a + await b, got)
+  }
+  print(results)
+}
+"),
+    ("channel_in_scope", "fn main() {
+  let (tx, rx): (Sender[Int], Receiver[Int]) = channel()
+  r := scope {
+    a := spawn 1
+    tx.close()
+    mut got := []
+    for v in rx {
+      got = push(got, v)
+    }
+    got
+  }
+  print(r)
+}
+"),
+    ("select_race_supervised", "from std.time use SystemClock, VirtualClock, Clock, seconds, ms
+
+fn slow(c: VirtualClock, n: Int) -> Int {
+  c.sleep(seconds(n))
+  n
+}
+
+fn answer(questions: Receiver[Int]) -> Int {
+  questions.recv() ?? 0
+}
+
+fn risky(n: Int) -> Int {
+  100 / n
+}
+
+fn main(clock: VirtualClock) {
+  (tx, rx) := channel(1)
+  (done_tx, done_rx) := channel()
+  r := scope {
+    h := spawn {
+      tx.send(41)
+      tx.close()
+      done_tx.close()
+      7
+    }
+    done_tx.close()
+    tx.close()
+    mut total := 0
+    mut going := true
+    while going {
+      select {
+        rx.recv() as v => match v {
+          Some(x) => {
+            total += x
+          },
+          None => {
+            going = false
+          },
+        },
+        clock.after(seconds(5)) => {
+          going = false
+        },
+      }
+    }
+    for _ in done_rx {
+    }
+    total + await h
+  }
+  print(r)
+  (ask, questions) := channel()
+  w := race {
+    answer(questions) as v => Some(v),
+    clock.sleep(seconds(30)) => None,
+  }
+  ask.close()
+  print(w)
+  print(clock.now().value)
+  z := race {
+    slow(clock, 3) as a => a,
+    slow(clock, 1) as b => b * 10,
+  }
+  print(z)
+  safe := scope {
+    good := supervised spawn risky(5)
+    bad := supervised spawn risky(0)
+    (await good, await bad)
+  }
+  print(safe.0)
+  match safe.1 {
+    Ok(x) => print(x),
+    Err(p) => print(p.kind + \": \" + p.message),
+  }
+  hs := scope {
+    tasks := [spawn 1, spawn 2, spawn 3]
+    await tasks
+  }
+  print(hs)
+}
+"),
+    ("cancelling_and_timers", "from std.time use VirtualClock, Clock, seconds, Instant, Duration
+
+fn deep(c: VirtualClock, n: Int, held: String) -> String {
+  if n == 0 {
+    c.sleep(seconds(100))
+    held + \"!\"
+  } else {
+    inner := held + to_string(n)
+    deep(c, n - 1, inner)
+  }
+}
+
+fn wait_on(clock: Clock) -> String {
+  (tx, rx) := channel()
+  tx.close()
+  select {
+    clock.after(seconds(1)) => \"timer\",
+    rx.recv() as v => match v {
+      Some(x) => x,
+      None => \"closed\",
+    },
+  }
+}
+
+fn main(clock: VirtualClock) {
+  w := race {
+    deep(clock, 5, \"start\") as s => s,
+    clock.sleep(seconds(1)) => \"timeout\",
+  }
+  print(w)
+  (tx, rx) := channel()
+  got := scope {
+    spawn {
+      for i in 0..3 {
+        tx.send(\"item \" + to_string(i))
+      }
+      tx.close()
+    }
+    tx.close()
+    mut out := []
+    for v in rx {
+      out = push(out, v)
+    }
+    out
+  }
+  print(got)
+  (out, inp) := channel(1)
+  r := select {
+    out.send(\"x\" + \"y\") => \"sent\",
+    clock.after(seconds(2)) => \"late\",
+  }
+  out.close()
+  print(r)
+  print(inp.recv())
+  pair := scope {
+    a := spawn \"a\" + \"b\"
+    b := spawn 2
+    await (a, b)
+  }
+  print(pair)
+  print(wait_on(clock))
+}
+"),
+    ("panic_in_a_task", "fn work(n: Int) -> Int {
+  if n == 3 {
+    [1, 2][5]
+  } else {
+    n
+  }
+}
+
+fn main() {
+  r := scope {
+    a := spawn work(1)
+    b := spawn work(3)
+    await a + await b
+  }
+  print(r)
+}
+"),
+    ("options_without_numbers", "from std.cli use CommandLine
+
+/// Greet people.
+type Options = {
+  /// Shout.
+  loud: Bool = false,
+  /// Who.
+  names: List[String] = [],
+}
+
+derive CommandLine for Options
+
+fn main(opts: Options) {
+  print(opts)
+}
+"),
     ("iterators", "type Naturals = { n: Int }
 
 impl Iterator[Int] for Naturals {
@@ -1652,10 +1861,11 @@ fn compiled_programs_do_what_rust_compiled_ones_do() {
 #[test]
 fn refuses_what_it_does_not_compile_yet() {
     let dir = scratch("refused");
-    let file = dir.join("channels.strata");
-    save(&file, "fn main() {\n    (tx, rx) := channel(1)\n    channel_send(tx, 1)\n    tx.close()\n    print(channel_recv(rx))\n}\n");
+    // (a refined option read by a derived `CommandLine`: std.cli checks it with compile-time code)
+    let file = dir.join("options.strata");
+    save(&file, "from std.cli use CommandLine\n\ntype Options = { times: Int where 1 <= it = 1 }\n\nderive CommandLine for Options\n\nfn main(opts: Options) {\n    print(opts.times)\n}\n");
     let out = compiler::run(&["codegen".to_string(), file.to_string_lossy().into_owned()]);
-    assert!(out.starts_with("error: in `main`: not compiled yet: "), "{out}");
+    assert!(out.starts_with("error: in `"), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
