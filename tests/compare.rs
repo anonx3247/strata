@@ -82,9 +82,9 @@ fn compare_build() {
 }
 
 /// A package (two modules, one using the other): `lex` and `parse` agree on
-/// each module's text and `run` on the program packed into one bundle.
-/// (`render` covers packages too, but `compiler text` prints a stored tree's
-/// names as stored, `util.twice`, not as short as the imports allow.)
+/// each module's text, `render` on each module (names as short as its
+/// imports allow: `twice`, not `util.twice`), and `run` on the program
+/// packed into one bundle.
 #[test]
 fn compare_on_a_package() {
     if !have_clang() {
@@ -103,6 +103,7 @@ fn compare_on_a_package() {
     agrees(&["--file", &d, "lex"]);
     agrees(&["--file", &d, "parse"]);
     agrees(&["--file", &d, "parse", "--stored"]);
+    agrees(&["--file", &d, "render"]);
     agrees(&["--file", &d, "run"]);
     let _ = std::fs::remove_dir_all(&dir);
 }
