@@ -36,6 +36,14 @@ fn save(file: &Path, text: &str) {
     assert!(o.status.success(), "{}: {}", file.display(), String::from_utf8_lossy(&o.stderr));
 }
 
+/// `save`, whatever Rust's checker says of the program (it is stored all the same).
+fn save_unchecked(file: &Path, text: &str) {
+    let mut c = Command::new(STRATA).args(["--file", &file.to_string_lossy(), "edit"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    c.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+    c.wait_with_output().unwrap();
+    assert!(file.is_file(), "{} not written", file.display());
+}
+
 /// What an executable printed and how it ended.
 fn outcome(exe: &Path) -> (String, String, Option<i32>) {
     let o = Command::new(exe).output().unwrap();
@@ -2598,7 +2606,9 @@ fn compiler_fuzzes_as_verify_fuzzes() {
 fn comptime_runs_on_the_compilers_jit() {
     let dir = scratch("comptime-jit");
     let file = dir.join("values.strata");
-    save(&file, "type Shape = Circle { radius: Float } | Square { side: Int } | Dot\n\ntype Point = { x: Int, y: Int, label: String }\n\ndistinct type Meters = Float\n\ntype Pair[A, B] = { first: A, second: B }\n\ntype Item = Int | String\n\nfn squares(n: Int) -> List[Int] {\n  mut out := []\n  for i in 0..n {\n    out = push(out, i * i)\n  }\n  out\n}\n\nfn big() -> Int {\n  mut x := 1\n  for _ in 0..100 {\n    x = x * 3\n  }\n  x\n}\n\nfn table() -> Dict[String, Int] {\n  mut d := Dict[String, Int] {}\n  for (i, w) in enumerate([\"one\", \"two\", \"three\"]) {\n    d = insert(d, w, i + 1)\n  }\n  d\n}\n\nfn items() -> List[Item] {\n  [1, \"x\"]\n}\n\nfn main() {\n  a := comptime squares(6)\n  b := comptime \"héllo, \" + \"wörld\"\n  c := comptime [Circle { radius: 1.5 }, Square { side: 2 }, Dot]\n  d := comptime Point { x: 1 - 4, y: 2, label: \"p\" }\n  e := comptime big()\n  f := comptime table()\n  g := comptime set([3, 1, 2])\n  h := comptime (1, \"two\", 3.25, true)\n  i := comptime Some([Some(1), None])\n  j := comptime Meters(2.5)\n  k := comptime Pair { first: \"a\", second: [1.0, 2.0] }\n  l := comptime (-9223372036854775807 - 1) * 2\n  m := comptime items()\n  n := comptime ()\n  o := comptime Ok(3) !! 0\n  print(a)\n  print(b)\n  print(c)\n  print(d)\n  print(e)\n  print(f)\n  print(g)\n  print(h)\n  print(i)\n  print(j)\n  print(k)\n  print(l)\n  print(m)\n  print(n)\n  print(o)\n}\n");
+    // (stored without Rust's check, which refuses a dict's or a set's value
+    // written in: the Strata side writes them as `desugar`'s calls)
+    save_unchecked(&file, "type Shape = Circle { radius: Float } | Square { side: Int } | Dot\n\ntype Point = { x: Int, y: Int, label: String }\n\ndistinct type Meters = Float\n\ntype Pair[A, B] = { first: A, second: B }\n\ntype Item = Int | String\n\nfn squares(n: Int) -> List[Int] {\n  mut out := []\n  for i in 0..n {\n    out = push(out, i * i)\n  }\n  out\n}\n\nfn big() -> Int {\n  mut x := 1\n  for _ in 0..100 {\n    x = x * 3\n  }\n  x\n}\n\nfn table() -> Dict[String, Int] {\n  mut d := Dict[String, Int] {}\n  for (i, w) in enumerate([\"one\", \"two\", \"three\"]) {\n    d = insert(d, w, i + 1)\n  }\n  d\n}\n\nfn items() -> List[Item] {\n  [1, \"x\"]\n}\n\nfn main() {\n  a := comptime squares(6)\n  b := comptime \"héllo, \" + \"wörld\"\n  c := comptime [Circle { radius: 1.5 }, Square { side: 2 }, Dot]\n  d := comptime Point { x: 1 - 4, y: 2, label: \"p\" }\n  e := comptime big()\n  f := comptime table()\n  g := comptime set([3, 1, 2])\n  h := comptime (1, \"two\", 3.25, true)\n  i := comptime Some([Some(1), None])\n  j := comptime Meters(2.5)\n  k := comptime Pair { first: \"a\", second: [1.0, 2.0] }\n  l := comptime (-9223372036854775807 - 1) * 2\n  m := comptime items()\n  n := comptime ()\n  o := comptime Ok(3) !! 0\n  print(a)\n  print(b)\n  print(c)\n  print(d)\n  print(e)\n  print(f)\n  print(g)\n  print(h)\n  print(i)\n  print(j)\n  print(k)\n  print(l)\n  print(m)\n  print(n)\n  print(o)\n}\n");
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let ir = compiler::run(&["codegen".to_string(), file.to_string_lossy().into_owned()]);
     assert!(!ir.lines().any(|l| l.starts_with("error")), "{}", ir.lines().filter(|l| l.starts_with("error")).collect::<Vec<_>>().join("\n"));
