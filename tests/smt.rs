@@ -134,6 +134,7 @@ fn smt_outcomes_as_in_rust() {
         ("step4", include_str!("data/smt/step4.st")),
         ("step5", include_str!("data/smt/step5.st")),
         ("step7", include_str!("data/smt/step7.st")),
+        ("step10", include_str!("data/smt/step10.st")),
     ] {
         let file = dir.join(format!("{name}.strata"));
         save(&file, text);
