@@ -549,6 +549,23 @@ fn main() {
   print(total([1, 2, 3].iter().map(x -> x * 10)))
 }
 "),
+    ("supervised_string_panic", "fn risky(s: String, n: Int) -> String {
+  repeat(s, n)
+}
+
+fn main() {
+  r := scope {
+    a := supervised spawn risky(\"ab\", 0 - 1)
+    b := supervised spawn risky(\"ab\", 2)
+    (await a, await b)
+  }
+  match r.0 {
+    Ok(x) => print(x),
+    Err(p) => print(p.kind),
+  }
+  print(r.1)
+}
+"),
     ("iterators", "type Naturals = { n: Int }
 
 impl Iterator[Int] for Naturals {
