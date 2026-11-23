@@ -1079,7 +1079,7 @@ declare i1 @strata_host_exists(ptr)
 declare ptr @strata_host_list_dir(ptr, ptr, ptr)
 declare ptr @strata_host_run(ptr, ptr, ptr, ptr, ptr, i1, ptr, ptr)
 declare ptr @strata_host_read_stdin()
-declare i1 @strata_host_stdin_terminal()
+declare i1 @strata_host_terminal(i64)
 declare i1 @strata_host_is_dir(ptr)
 declare i1 @strata_host_write_bytes(ptr, ptr, ptr, ptr)
 declare i1 @strata_host_rename(ptr, ptr, ptr, ptr)
@@ -5973,7 +5973,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let lst = Ty::Con(Symbol::new("List"), vec![Ty::Str]);
         Ok(match name {
             "host_write" => self.call(&Ty::Unit, "@strata_host_write", &vs)?,
-            "host_exists" | "host_is_dir" | "host_stdin_terminal" => self.call(&Ty::Bool, &format!("@strata_{name}"), &vs)?,
+            "host_exists" | "host_is_dir" | "host_terminal" => self.call(&Ty::Bool, &format!("@strata_{name}"), &vs)?,
             "host_read_stdin" | "host_current_dir" => {
                 let r = self.call(&s_ty, &format!("@strata_{name}"), &[])?;
                 self.temp(r)
