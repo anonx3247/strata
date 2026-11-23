@@ -2421,7 +2421,8 @@ fn main() {
     // (the compiler built once, in the cache: verdicts not kept, so both run every check)
     let run = |how: &str| {
         let o = Command::new(STRATA).arg("--file").arg(&file).args(["verify", how, "--no-cache"]).env("STRATA_COMPILER", Path::new(env!("CARGO_MANIFEST_DIR")).join("compiler")).output().unwrap();
-        String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr)
+        // (stdout: stderr may say the compiler is being built)
+        String::from_utf8_lossy(&o.stdout).into_owned()
     };
     let (rust, ours) = (run("--no-race"), run("--strata"));
     assert!(rust.contains("found by the fuzzer"), "{rust}");
