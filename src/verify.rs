@@ -322,6 +322,16 @@ fn takes_capability(env: &Env, f: &FnDecl) -> Option<Symbol> {
     })
 }
 
+/// Whether a parameter's type names core.values' `Raw` (a compiled value's
+/// address).
+fn takes_raw(f: &FnDecl) -> bool {
+    f.params.iter().any(|p| {
+        let mut named = Vec::new();
+        crate::ast::Visit::ty(&mut Names(&mut named), &p.ty);
+        named.iter().any(|n| n.as_str() == "Raw")
+    })
+}
+
 /// The type names in a type.
 struct Names<'a>(&'a mut Vec<Symbol>);
 impl crate::ast::Visit for Names<'_> {
@@ -348,6 +358,11 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, key: &str, solver
     // the real terminal, disk and process: trusted, never run here (only `strata run` reaches the system)
     if let Some(why) = foreign(env, f, imp) {
         return Verdict::Assumed { why };
+    }
+    // a compiled value's address (core.values' `Raw`): only what compiled
+    // code made is read, so it is never run on made-up ones
+    if takes_raw(f) {
+        return Verdict::Assumed { why: "it reads compiled values (`Raw`), which only compiled code makes: it isn't run on made-up ones".into() };
     }
     // no parameters: every run is the same run (a `main` may be the whole
     // program's work), so once is enough, to fuzz or to cross-check

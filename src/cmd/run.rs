@@ -37,11 +37,40 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
         // the checks the last `verify` proved are left out (unless --all-checks)
         let file = if matches!(src, Source::File(_)) && args.val("--file").is_none() { Some(path.to_string_lossy().to_string()) } else { args.val("--file").map(String::from) };
         let proofs = proofs_for(&src, file.as_deref(), args);
+        // compiled by compiler/codegen and run by the compiler's JIT (unless
+        // `--rust` or `STRATA_BACKEND=rust`); what it doesn't cover yet is
+        // `llvm.rs`'s
+        if let Some(at) = jit_path(args, file.as_deref()) {
+            let facts = if at.is_dir() { String::new() } else { llvm::proofs_text(p, &proofs) };
+            match cmd::compare::jit_run(&at, &prog, &facts, args.flag("--trace"), None, &program_args) {
+                Ok(code) => std::process::exit(code),
+                Err(e) if e.contains("doesn't cover") => note_fallback(&e),
+                Err(e) => return Err(e),
+            }
+        }
         let ir = llvm::compile_proven(p, "main", proofs, args.flag("--trace")).map(|r| r.0);
         let ir = ir.map_err(|e| format!("the program can't be compiled yet: {e}"))?;
         std::process::exit(llvm::jit::run(&ir, &prog, &program_args)?);
     };
-    call(args, p, &env, name, rest.get(1).map(|s| s.as_str()).unwrap_or(""))
+    let file = if matches!(src, Source::File(_)) && args.val("--file").is_none() { Some(path.to_string_lossy().to_string()) } else { args.val("--file").map(String::from) };
+    call(args, p, &env, name, rest.get(1).map(|s| s.as_str()).unwrap_or(""), jit_path(args, file.as_deref()))
+}
+
+/// Where the program `strata run` runs is, when the compiler's JIT runs it
+/// (compiler/codegen's code): a script or package found on disk, not the
+/// compiler package itself, without `--rust` or `STRATA_BACKEND=rust`.
+fn jit_path(args: &Args, file: Option<&str>) -> Option<std::path::PathBuf> {
+    if args.flag("--rust") || cmd::compare::rust_backend() || !cmd::compare::available() {
+        return None;
+    }
+    let at = std::path::PathBuf::from(file.unwrap_or("."));
+    (at.exists() && !cmd::compare::is_compiler(&at)).then_some(at)
+}
+
+/// What `strata run` says when compiler/codegen doesn't cover the program
+/// yet, before `llvm.rs` runs it.
+fn note_fallback(e: &str) {
+    eprintln!("note: {}; using llvm.rs", e.lines().next().unwrap_or_default().trim_end_matches(':'));
 }
 
 /// The function `strata run f ARGS` runs: `f` called on the arguments, as
@@ -52,7 +81,7 @@ const PROBE: &str = "strata_run_call";
 /// calls `f`, checked with the program (so a wrong argument is an error
 /// before anything runs), then run, compiled; the result printed as the
 /// code that writes it.
-fn call(args: &Args, p: &Program, env: &types::Env, name: &str, raw: &str) -> Result<bool, String> {
+fn call(args: &Args, p: &Program, env: &types::Env, name: &str, raw: &str, jit: Option<std::path::PathBuf>) -> Result<bool, String> {
     let f = env.fns.get(&name.sym()).ok_or(format!("no function `{name}`"))?.clone();
     if !f.type_params.is_empty() {
         return Err(format!("`{name}` is generic: call it from a function that says which types it is used at"));
@@ -113,6 +142,31 @@ fn call(args: &Args, p: &Program, env: &types::Env, name: &str, raw: &str) -> Re
     let checked = full_checked(&with);
     if let Some(e) = checked.report.errors.iter().find(|e| e.decl == probe_name) {
         return Err(format!("invalid input: {}", e.msg));
+    }
+    // compiled by compiler/codegen and run by the compiler's JIT: the probe
+    // again, its result's `debug` text (the value as code) as its own, in a
+    // module file of its own (stored: references qualified) for `codegen
+    // --call` to add to the program
+    if let Some(at) = jit {
+        let mut shown = with.clone();
+        if let Some(Decl { kind: DeclKind::Fn(f), .. }) = shown.decls.last_mut() {
+            f.ret = TypeExpr::Named(Symbol::new("String"), vec![]);
+            if let Expr::Block(_, last) = &mut f.body {
+                let made = std::mem::replace(&mut **last, Expr::Unit);
+                **last = Expr::Call(Box::new(Expr::Var(Symbol::new("debug"))), vec![made]);
+            }
+        }
+        let stored = crate::resolve::stored_form(&shown);
+        let probe = Program { decls: stored.decls.last().cloned().into_iter().collect() };
+        let call = cmd::compare::Call { module_file: crate::binary::encode_module(&probe, module.as_str(), &Default::default()), fun: name.to_string() };
+        match cmd::compare::jit_run(&at, "main", "", args.flag("--trace"), Some(&call), &[]) {
+            Ok(0) => return Ok(true),
+            // (`error: invalid input: …`, said by the JIT)
+            Ok(2) => std::process::exit(2),
+            Ok(_) => return Ok(false),
+            Err(e) if e.contains("doesn't cover") => note_fallback(&e),
+            Err(e) => return Err(e),
+        }
     }
     let ir = if args.flag("--trace") {
         llvm::compile_traced_comptime(&checked.compiled, &[probe_name.clone()])

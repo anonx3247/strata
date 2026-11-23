@@ -183,6 +183,18 @@ struct Raw {
     run: RunRules,
     #[serde(default)]
     ui: UiRules,
+    #[serde(default)]
+    values: ValueRules,
+}
+
+/// `[values]`: `read = true` lets the package read compiled values back
+/// (`core.values`' `Raw`): the compiler, which runs compile-time code
+/// compiled and reads its value.
+#[derive(serde::Deserialize, Default, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ValueRules {
+    #[serde(default)]
+    pub read: bool,
 }
 
 /// `[ui]`: the viewer's settings (`strata ui`).
@@ -226,6 +238,9 @@ pub fn load(dir: &Path) -> Result<Package, String> {
     }
     if raw.run.mode {
         settings.push(("run.mode".to_string(), "true".to_string()));
+    }
+    if raw.values.read {
+        settings.push(("values.read".to_string(), "true".to_string()));
     }
     let _ = SETTINGS.set(settings);
     for src in &raw.native.sources {
