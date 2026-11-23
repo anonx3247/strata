@@ -1045,3 +1045,17 @@ pub fn std_hash() -> &'static str {
         h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect()
     })
 }
+
+/// The fuzzer's verdict on a function alone, as lines (`verify --fuzz`):
+/// `fuzzed: N cases, D discarded`, `skipped: WHY`, `incomplete: WHAT`, or
+/// `counterexample KIND: MESSAGE` and `input: ARGS`.
+pub fn fuzz_lines(key: &str, cases: usize, seed: u64) -> Vec<String> {
+    let (cases, seed) = (cases, seed);
+    match fuzz_limited(key, key, cases, seed, None) {
+        Verdict::Fuzzed { cases, discarded, .. } => vec![format!("fuzzed: {cases} cases, {discarded} discarded")],
+        Verdict::Skipped { reason } => vec![format!("skipped: {reason}")],
+        Verdict::Incomplete { message, .. } => vec![format!("incomplete: {message}")],
+        Verdict::Counterexample { args, kind, message, .. } => vec![format!("counterexample {kind}: {message}"), format!("input: {}", args.join(", "))],
+        other => vec![other.tag()],
+    }
+}
