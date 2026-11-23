@@ -183,6 +183,67 @@ fn vars_in(e: &Expr) -> Vec<String> {
     v.0
 }
 
+/// The functions a call to which can't fault, nor anything they call: count
+/// updates, allocation, drops, integer arithmetic, LLVM's intrinsics (running
+/// out of memory ends the program without a call stack).
+const NEVER_FAULT: &[&str] = &[
+    "strata.dup",
+    "strata.release",
+    "strata.int_dup",
+    "strata.int_drop",
+    "strata_dup",
+    "strata_release",
+    "strata_int_dup",
+    "strata_int_drop",
+    "strata_alloc",
+    "strata_free",
+    "strata_unique",
+    "strata_int_lit",
+    "strata_int_add",
+    "strata_int_sub",
+    "strata_int_mul",
+    "strata_int_cmp",
+    "strata_int_eq",
+    "strata_int_and",
+    "strata_int_or",
+    "strata_int_xor",
+    "strata_concat",
+    "strata_str_eq",
+    "strata_show_int",
+    "strata_show_bool",
+    "strata_list_new",
+    "strata_list_push",
+];
+
+/// Whether a function's code (its IR) may fault, in it or in what it
+/// calls: a call to anything not known never to (`NEVER_FAULT`, LLVM's
+/// intrinsics, drop functions), or a fault of its own.
+fn can_fault(text: &str) -> bool {
+    for line in text.lines() {
+        let Some(i) = line.find("call ") else { continue };
+        let rest = &line[i..];
+        // (an indirect call has no `@` before its arguments)
+        let head = &rest[..rest.find('(').unwrap_or(rest.len())];
+        let Some(at) = head.find('@') else { return true };
+        let name = &rest[at + 1..];
+        let name = match name.strip_prefix('"') {
+            Some(q) => &q[..q.find('"').unwrap_or(q.len())],
+            None => &name[..name.find('(').unwrap_or(name.len())],
+        };
+        if name == "strata_enter" || name == "strata_leave" || name.starts_with("llvm.") || name.starts_with("drop:") || NEVER_FAULT.contains(&name) {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+/// A function's code without its frame on the call stack (`strata_enter`
+/// / `strata_leave`): nothing in it can fault, so no fault shows it.
+fn unframed(text: &str) -> String {
+    text.lines().filter(|l| !l.contains("call void @strata_enter(") && !l.contains("call void @strata_leave()")).map(|l| format!("{l}\n")).collect()
+}
+
 /// The runtime's C source, compiled with the program.
 pub const RUNTIME: &str = include_str!("llvm/runtime.c");
 
@@ -265,6 +326,10 @@ fn key(t: &Ty) -> String {
 pub fn compile(prog: &Program, entry: &str) -> Res<String> {
     Ok(compile_for(prog, Entry::Main(entry))?.0)
 }
+
+/// `--all-checks`: std is compiled with the program, every check kept,
+/// rather than taken from its library (where its checks are left out).
+pub static ALL_CHECKS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 thread_local! {
     static TRACING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -701,12 +766,20 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         _ => None,
     }).collect();
     let keeps = escape::Kept::of(&bodies);
-    let mut m = Module { env: &env, types: &types, keeps, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers, tasks: uses_tasks(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()), supervises: uses_supervised(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()) };
+    let mut m = Module { env: &env, types: &types, keeps, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), std_proven: matches!(entry, Entry::Library(_)), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers, tasks: uses_tasks(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()), supervises: uses_supervised(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()) };
     if !m.proofs.is_empty() {
         m.refs = Refs::of(prog);
+        // the program's own trait implementations' methods, by `verify`'s labels
+        for d in prog.decls.iter().filter(|d| d.module.as_str() != "std" && !d.module.as_str().starts_with("std.")) {
+            if let DeclKind::Impl(imp) = &d.kind {
+                if let (false, Some(tr)) = (imp.is_inherent(), env.traits.get(&imp.trait_name)) {
+                    m.refs.own.extend(tr.methods.iter().map(|tm| crate::termination::impl_label(&env, imp, &tm.decl.name)));
+                }
+            }
+        }
     }
     // std's precompiled functions, but while making them, tracing, or in a library
-    if !BUILDING_STD.with(|b| b.get()) && !m.tracing && !matches!(entry, Entry::Library(_)) {
+    if !BUILDING_STD.with(|b| b.get()) && !m.tracing && !matches!(entry, Entry::Library(_)) && !ALL_CHECKS.load(std::sync::atomic::Ordering::Relaxed) {
         m.precompiled = jit::std_library().map(|l| &l.names);
     }
     let mut tests = vec![];
@@ -772,7 +845,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
                 if skip.iter().any(|s| s == t.name.as_str()) {
                     continue;
                 }
-                let inst = Instance { label: format!("test {:?}", t.name.to_string()), symbol: format!("@\"strata.test.{}\"", tests.len()), impls: vec![], params: vec![], ret: TypeExpr::Unit, own_params: &[], own_ret: &TypeExpr::Unit, requires: vec![], ensures: vec![], body: &t.body, sub: HashMap::default(), given: &t.params };
+                let inst = Instance { label: format!("test {:?}", t.name.to_string()), proof_key: String::new(), verify_name: String::new(), symbol: format!("@\"strata.test.{}\"", tests.len()), impls: vec![], params: vec![], ret: TypeExpr::Unit, own_params: &[], own_ret: &TypeExpr::Unit, requires: vec![], ensures: vec![], body: &t.body, sub: HashMap::default(), given: &t.params };
                 m.instance(&inst).map_err(|e| format!("can't compile test {:?}: {e}", t.name.to_string()))?;
                 tests.push(t.name.to_string());
             }
@@ -982,6 +1055,7 @@ declare void @strata_trace_return(i64, i64)
 declare void @strata_overflow() noreturn cold
 declare void @strata_main_error(ptr)
 declare i64 @strata_div(i64, i64)
+declare i64 @strata_div_nz(i64, i64)
 declare i64 @strata_int_add(i64, i64)
 declare i64 @strata_int_sub(i64, i64)
 declare i64 @strata_int_mul(i64, i64)
@@ -1013,6 +1087,7 @@ declare i64 @strata_gen_len(ptr, i64)
 declare ptr @strata_gen_string(i64)
 declare double @strata_int_to_float(i64)
 declare i64 @strata_mod(i64, i64)
+declare i64 @strata_mod_nz(i64, i64)
 declare double @strata_fmod(double, double)
 declare double @strata_finite(double, double, double, ptr)
 declare i64 @strata_float_to_int(double, double)
@@ -1132,6 +1207,11 @@ impl MethodInst {
 struct Instance<'a> {
     /// Its name in messages (`total`, `Item.price`).
     label: String,
+    /// What `verify` calls it: the name its proofs are kept under
+    /// (`termination::impl_label` for a trait method, `Money.combine`), and
+    /// the name its checks say (`Combine::combine`).
+    proof_key: String,
+    verify_name: String,
     symbol: String,
     /// The implementation each trait-typed parameter takes (`None`: not one).
     impls: Vec<Option<Ty>>,
@@ -1245,6 +1325,11 @@ struct Module<'a> {
     tracing: bool,
     /// What `verify` proved, by function (`compile_proven`); empty: every check is kept.
     proofs: HashMap<String, Proofs>,
+    /// Making std's library: std is proven (all of it, each version: its
+    /// verification requires it, `std_is_proven`), so the checks inside
+    /// its functions are left out; those of their arguments and `requires`
+    /// stay, for they are the calling program's to prove.
+    std_proven: bool,
     /// Who refers to each function (`Refs`), when there are proofs.
     refs: Refs,
     /// The checks of the program's own functions left out as proven, and kept.
@@ -1421,7 +1506,10 @@ impl<'a> Module<'a> {
             ensures.extend(&own.ensures);
         }
         let label = format!("{}.{}", mi.head, crate::names::short(&mi.method));
-        let inst = Instance { label, symbol: mi.symbol(), impls: vec![], params: own.params.clone(), ret: own.ret.clone(), own_params: &own.params, own_ret: &own.ret, requires, ensures, body: &own.body, sub, given: &[] };
+        let imp = self.impl_of(&mi.tr, &mi.head).ok_or(format!("`{}` does not implement `{}`", mi.head, mi.tr))?;
+        let proof_key = crate::termination::impl_label(self.env, imp, &mi.method);
+        let verify_name = crate::types::shown_name(&crate::types::trait_call(&mi.tr, &mi.method));
+        let inst = Instance { label, proof_key, verify_name, symbol: mi.symbol(), impls: vec![], params: own.params.clone(), ret: own.ret.clone(), own_params: &own.params, own_ret: &own.ret, requires, ensures, body: &own.body, sub, given: &[] };
         self.instance(&inst)
     }
 
@@ -1776,6 +1864,8 @@ impl<'a> Module<'a> {
         let sub: HashMap<Symbol, Ty> = f.type_params.iter().cloned().zip(targs.iter().cloned()).collect();
         let inst = Instance {
             label: name.to_string(),
+            proof_key: name.to_string(),
+            verify_name: crate::types::shown_name(name),
             symbol: sym_impls(name, targs, impls),
             impls: impls.to_vec(),
             params: f.params.clone(),
@@ -1808,8 +1898,9 @@ impl<'a> Module<'a> {
         }
         let ret = self.lower(&f.ret, &sub)?;
         let mut c = Func::new(self, sub);
-        if !c.m.proofs.is_empty() && c.m.refs.own.contains(name) {
-            c.proofs_of = Some(name.to_string());
+        if !c.m.proofs.is_empty() && c.m.refs.own.contains(&inst.proof_key) {
+            c.proofs_of = Some(inst.proof_key.clone());
+            c.result_key = Some(format!("result of `{}`", inst.verify_name));
         }
         let mut sig = vec![];
         for (p, t) in f.params.iter().zip(&params) {
@@ -1968,7 +2059,10 @@ impl<'a> Module<'a> {
             c.emit("ret void".into());
         }
         c.unwound_exit(&ret, framed)?;
-        let text = c.finish();
+        let mut text = c.finish();
+        if framed && !can_fault(&text) {
+            text = unframed(&text);
+        }
         writeln!(self.body, "define {} {}({}) {{\n{text}}}\n", self.ll(&ret)?, inst.symbol, sig.join(", ")).unwrap();
         Ok(())
     }
@@ -2272,6 +2366,8 @@ struct Func<'m, 'a> {
     /// The program's function being compiled, whose proofs `proven` reads
     /// (none in a lambda, a helper, or std's and the prelude's code).
     proofs_of: Option<String>,
+    /// What `verify` calls the check of its result (`result of \`f\``).
+    result_key: Option<String>,
     /// Whether a cancellation check leaves through the `unwound` block.
     unwinds: bool,
     /// In the function's `exit` block (its result's checks): nothing left to
@@ -2293,7 +2389,7 @@ struct Func<'m, 'a> {
 
 impl<'m, 'a> Func<'m, 'a> {
     fn new(m: &'m mut Module<'a>, sub: HashMap<Symbol, Ty>) -> Self {
-        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![], unwinds: false, in_exit: false, proofs_of: None, stack_ctors: HashSet::default(), stack_temps: HashMap::default(), stack_made: HashMap::default(), stack_slots: HashMap::default() }
+        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![], unwinds: false, in_exit: false, proofs_of: None, result_key: None, stack_ctors: HashSet::default(), stack_temps: HashMap::default(), stack_made: HashMap::default(), stack_slots: HashMap::default() }
     }
 
     /// The function's text: the slots, then the code.
@@ -4044,7 +4140,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let key = if ctx == "let binding" {
             Some(format!("`let` annotated `{}`", crate::printer::ty(t)))
         } else if ctx.starts_with("result of `") {
-            Some(crate::types::shown_name(ctx))
+            Some(self.result_key.clone().unwrap_or_else(|| crate::types::shown_name(ctx)))
         } else if ctx.starts_with("assigning `") || ctx.starts_with("constructing `") {
             // (a field's check is part of the value's: `constructing \`C\`: C.f`)
             let end = ctx[ctx.find('`').unwrap() + 1..].find('`').map(|i| ctx.find('`').unwrap() + 2 + i);
@@ -4092,6 +4188,10 @@ impl<'m, 'a> Func<'m, 'a> {
     /// Whether `verify` proved every check of this function that `is` picks
     /// (at least one, none left open): such a check is left out. Counted.
     fn proven(&mut self, is: impl Fn(&str) -> bool) -> bool {
+        if self.m.std_proven {
+            self.m.left_out += 1;
+            return true;
+        }
         let Some(name) = &self.proofs_of else { return false };
         let ok = self.m.proofs.get(name).is_some_and(|p| p.proven.iter().any(|e| is(e)) && !p.open.iter().any(|e| is(e)));
         if ok {
@@ -5192,12 +5292,16 @@ impl<'m, 'a> Func<'m, 'a> {
             (Add, Ty::Int) => self.int_op("sadd", a, b),
             (Sub, Ty::Int) => self.int_op("ssub", a, b),
             (Mul, Ty::Int) => self.int_op("smul", a, b),
-            (Div, Ty::Int) => {
-                let r = self.call(&Ty::Int, "@strata_div", &[a.clone(), b.clone()])?;
-                self.temp(r)
-            }
-            (Mod, Ty::Int) => {
-                let r = self.call(&Ty::Int, "@strata_mod", &[a.clone(), b.clone()])?;
+            // (proven: the runtime's division without its check for 0)
+            (Div | Mod, Ty::Int) => {
+                let nz = self.proven(|e| e == "no division by zero");
+                let f = match (op, nz) {
+                    (Div, false) => "@strata_div",
+                    (Div, true) => "@strata_div_nz",
+                    (_, false) => "@strata_mod",
+                    (_, true) => "@strata_mod_nz",
+                };
+                let r = self.call(&Ty::Int, f, &[a.clone(), b.clone()])?;
                 self.temp(r)
             }
             (BitAnd | BitOr | BitXor, Ty::Int) => self.bit_op(op, a, b),

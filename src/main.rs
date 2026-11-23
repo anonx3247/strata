@@ -136,7 +136,7 @@ Views:
 Checking:
   check [--json]               types, exhaustiveness, literal refinements
   holes [--json]               typed holes with goal type, context and obligations
-  verify [SELECTOR] [--cases N] [--checks] [--smt] [--require R,..] [--no-race] [--no-cache] [--json]
+  verify [SELECTOR] [--cases N] [--checks] [--smt] [--obligations] [--require R,..] [--no-race] [--no-cache] [--json]
                                prove every contract with an SMT solver (z3), confirm
                                its counterexamples by running them, fuzz the rest.
                                A check's verdict is kept (in the git repository, shared
@@ -144,7 +144,9 @@ Checking:
                                a hash of its definition and all it depends on, the
                                flags, solver and strata binary: an unchanged check
                                says (cached) (--no-cache: run all). --checks lists the
-                               proven checks, --smt prints the solver queries.
+                               proven checks, --smt prints the solver queries,
+                               --obligations each obligation with the solver's
+                               answer (proven, refuted, unknown), nothing run.
                                Each function also says whether it terminates.
                                --require (proven, terminates, no-recursion) fails
                                the run when a checked function falls short (as do
@@ -310,6 +312,7 @@ fn proofs_dir(src: &Source, file: Option<&str>) -> Option<std::path::PathBuf> {
 /// last `verify` proved, for code unchanged since (none with `--all-checks`).
 fn proofs_for(src: &Source, file: Option<&str>, args: &Args) -> HashMap<String, llvm::Proofs> {
     if args.flag("--all-checks") {
+        llvm::ALL_CHECKS.store(true, std::sync::atomic::Ordering::Relaxed);
         return HashMap::default();
     }
     proofs_dir(src, file).map(|d| store::current_proofs(src.program(), &d)).unwrap_or_default()

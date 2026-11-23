@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/resource.h>
 #include <spawn.h>
 #include <sys/stat.h>
@@ -94,9 +95,75 @@ static _Noreturn void freed_again(const char *what) {
   abort();
 }
 
+// Small objects (with their count word, at most OBJECT_MAX bytes: most are
+// Options, tuples, records, list headers and short strings) come from free
+// lists, one per size class (16-byte steps), carved from 64 KB chunks of
+// one reserved range of addresses; `strata_free` knows them by their
+// address, and each chunk's class from `chunk_class`. Much cheaper than
+// malloc and free for objects made and dropped all the time. The lists are
+// shared by all threads, behind a spinlock (one atomic exchange when no
+// other thread wants it). Bigger objects, and every object in check mode
+// (whose freed objects are kept and marked), are malloc's.
+#define OBJECT_MAX 256
+#define CLASSES (OBJECT_MAX / 16 + 1)
+#define CHUNK ((size_t)1 << 16)
+#define REGION ((size_t)1 << 34)
+static char *region, *region_next;
+static uint8_t chunk_class[REGION / CHUNK];
+static void *free_list[CLASSES];
+static int small_lock;
+
+static void small_lock_take(void) {
+  while (__atomic_exchange_n(&small_lock, 1, __ATOMIC_ACQUIRE))
+    while (__atomic_load_n(&small_lock, __ATOMIC_RELAXED)) {}
+}
+
+static void small_lock_give(void) { __atomic_store_n(&small_lock, 0, __ATOMIC_RELEASE); }
+
+static int in_region(void *c) { return region && (char *)c >= region && (char *)c < region + REGION; }
+
+// A block of class `k` (16 * k bytes), or NULL when the region is used up
+// (or couldn't be reserved): malloc's then.
+static int64_t *small_alloc(int k) {
+  small_lock_take();
+  void *b = free_list[k];
+  if (!b) {
+    if (!region) {
+      void *r = mmap(NULL, REGION, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+      region_next = region = r == MAP_FAILED ? NULL : r;
+    }
+    if (!region || region_next + CHUNK > region + REGION) {
+      small_lock_give();
+      return NULL;
+    }
+    char *chunk = region_next;
+    region_next += CHUNK;
+    chunk_class[(size_t)(chunk - region) / CHUNK] = (uint8_t)k;
+    size_t size = (size_t)k * 16;
+    // the chunk's blocks, linked through their first word
+    for (char *q = chunk + CHUNK - size - (CHUNK % size); q >= chunk; q -= size) {
+      *(void **)q = b;
+      b = q;
+    }
+  }
+  free_list[k] = *(void **)b;
+  small_lock_give();
+  return b;
+}
+
+static void small_free(int64_t *c) {
+  int k = chunk_class[(size_t)((char *)c - region) / CHUNK];
+  small_lock_take();
+  *(void **)c = free_list[k];
+  free_list[k] = c;
+  small_lock_give();
+}
+
 // A new object of `n` bytes, held once.
 void *strata_alloc(int64_t n) {
-  int64_t *c = malloc((size_t)n + 8);
+  int64_t *c = NULL;
+  if (!checking && n + 8 <= OBJECT_MAX) c = small_alloc((int)((n + 8 + 15) / 16));
+  if (!c) c = malloc((size_t)n + 8);
   if (!c) {
     fputs("fault (Limit): out of memory\n", stderr);
     exit(101);
@@ -156,6 +223,10 @@ void strata_free(void *p) {
   if (THREADED) __atomic_fetch_add(&freed, 1, __ATOMIC_RELAXED);
   else freed++;
   int64_t *c = count_of(p);
+  if (in_region(c)) {
+    small_free(c);
+    return;
+  }
   if (checking) {
     memset(p, 0xDB, usable_size(c) - 8);
     *c = FREED;
@@ -250,25 +321,33 @@ int64_t strata_str_len(Str *s) {
 // (`down (95846 times)`), so a deep one costs nothing to keep; only the
 // first FRAMES runs are kept.
 #define FRAMES 4096
-static _Thread_local Str *frames[FRAMES];
-static _Thread_local int64_t counts[FRAMES];
-static _Thread_local int64_t runs;  // runs in use, counting those past FRAMES
+// (one thread-local, so entering and leaving look it up once: on macOS
+// each thread-local is a call to find)
+static _Thread_local struct {
+  int64_t runs;  // runs in use, counting those past FRAMES
+  Str *frames[FRAMES];
+  int64_t counts[FRAMES];
+} calls;
 
 void strata_enter(Str *name) {
-  if (runs > 0 && runs <= FRAMES && frames[runs - 1] == name) {
-    counts[runs - 1]++;
+  __typeof__(calls) *c = &calls;
+  int64_t r = c->runs;
+  if (r > 0 && r <= FRAMES && c->frames[r - 1] == name) {
+    c->counts[r - 1]++;
     return;
   }
-  if (runs < FRAMES) {
-    frames[runs] = name;
-    counts[runs] = 1;
+  if (r < FRAMES) {
+    c->frames[r] = name;
+    c->counts[r] = 1;
   }
-  runs++;
+  c->runs = r + 1;
 }
 
 void strata_leave(void) {
-  if (runs <= FRAMES && --counts[runs - 1] > 0) return;
-  runs--;
+  __typeof__(calls) *c = &calls;
+  int64_t r = c->runs;
+  if (r <= FRAMES && --c->counts[r - 1] > 0) return;
+  c->runs = r - 1;
 }
 
 // The call stack as `strata run` shows it ("" when empty): as the
@@ -288,10 +367,10 @@ static char *stack_from(Str **frames, int64_t *counts, int64_t runs) {
   return t;
 }
 
-static char *stack_text(void) { return stack_from(frames, counts, runs); }
+static char *stack_text(void) { return stack_from(calls.frames, calls.counts, calls.runs); }
 
 static void print_stack(void) {
-  if (runs == 0) return;
+  if (calls.runs == 0) return;
   char *t = stack_text();
   fprintf(stderr, "    stack: %s\n", t);
   free(t);
@@ -402,7 +481,7 @@ int32_t strata_cancel_any;
 int32_t strata_test(void (*f)(void)) {
   sigjmp_buf here;
   catch_overflow();
-  runs = 0;
+  calls.runs = 0;
   rng = test_seed;
   forget_senders();
   printed_len = 0;
@@ -414,9 +493,9 @@ int32_t strata_test(void (*f)(void)) {
   Run trun = {0}, *outer_run = my_run;
   Waiter *outer_me = me;
   trun.test = &run;
-  trun.root.frames = frames;
-  trun.root.counts = counts;
-  trun.root.runs = &runs;
+  trun.root.frames = calls.frames;
+  trun.root.counts = calls.counts;
+  trun.root.runs = &calls.runs;
   add_waiter(&trun, &trun.root);
   my_run = &trun;
   me = &trun.root;
@@ -658,9 +737,9 @@ static void wake_all(void) {
 static Run *this_run(void) {
   if (!my_run) {
     Run *r = calloc(1, sizeof *r);
-    r->root.frames = frames;
-    r->root.counts = counts;
-    r->root.runs = &runs;
+    r->root.frames = calls.frames;
+    r->root.counts = calls.counts;
+    r->root.runs = &calls.runs;
     add_waiter(r, &r->root);
     my_run = r;
     me = &r->root;
@@ -935,9 +1014,9 @@ static void *task_main(void *arg) {
   pthread_mutex_lock(&chan_lock);
   my_run = t->run_of;
   me = &t->w;
-  t->w.frames = frames;
-  t->w.counts = counts;
-  t->w.runs = &runs;
+  t->w.frames = calls.frames;
+  t->w.counts = calls.counts;
+  t->w.runs = &calls.runs;
   pthread_mutex_unlock(&chan_lock);
   // outside a test a panic ends the program (no trap); inside one it ends the task
   sigjmp_buf here;
@@ -1760,8 +1839,9 @@ int64_t strata_int_abs(int64_t a) {
   return int_of(x);
 }
 
-int64_t strata_div(int64_t a, int64_t b) {
-  if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
+// `a / b` for a `b` that isn't 0: what `verify` proved (`no division by
+// zero`), so the compiled code calls this without the check.
+int64_t strata_div_nz(int64_t a, int64_t b) {
   if (!is_big(a) && !is_big(b)) {
     // Euclidean: the remainder is never negative
     int64_t q = a / b, r = a % b;
@@ -1776,8 +1856,13 @@ int64_t strata_div(int64_t a, int64_t b) {
   return q;
 }
 
-int64_t strata_mod(int64_t a, int64_t b) {
+int64_t strata_div(int64_t a, int64_t b) {
   if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
+  return strata_div_nz(a, b);
+}
+
+// `a % b` for a `b` that isn't 0 (see `strata_div_nz`).
+int64_t strata_mod_nz(int64_t a, int64_t b) {
   if (!is_big(a) && !is_big(b)) {
     if (b == -1) return 0;
     int64_t r = a % b;
@@ -1790,6 +1875,11 @@ int64_t strata_mod(int64_t a, int64_t b) {
   free(x.d), free(y.d);
   strata_int_drop(q);
   return r;
+}
+
+int64_t strata_mod(int64_t a, int64_t b) {
+  if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
+  return strata_mod_nz(a, b);
 }
 
 // ---- bits: `&`, `|`, `^`, `<<`, `>>` ----
@@ -2547,7 +2637,7 @@ static void catch_overflow(void) {
 
 // The program's arguments, without its name; a closed pipe ends it quietly.
 void strata_init(int32_t argc, char **argv) {
-  runs = 0;
+  calls.runs = 0;
   rng = 7;
   catch_overflow();
   prog_argc = argc > 0 ? argc - 1 : 0;
