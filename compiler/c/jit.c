@@ -84,3 +84,97 @@ int32_t jit_load(const char *path) {
   fprintf(stderr, "note: can't load %s: %s\n", path, dlerror());
   return 1;
 }
+
+// ---- fuzzing (the compiler's own `verify`) ----
+//
+// The fuzz drivers compiler/codegen makes (`codegen --fuzz-text`, one
+// `strata.fuzz.N` per function checked) compiled once, then run case by case
+// in this process: `strata_fuzz` (runtime.c) runs one as a test, seeded and
+// within a step budget, and the fault that ended it, if any, and the case's
+// arguments (as code) are read back.
+
+typedef struct {
+  int64_t len;
+  char bytes[];
+} Str;
+// (the runtime's, in this process: looked up when called, since this file
+// is also linked where there is no runtime)
+static void *runtime_fn(const char *name) { return dlsym(RTLD_DEFAULT, name); }
+
+static LLVMOrcLLJITRef fuzz_jit;
+static char *fuzz_error;
+
+// Compile the drivers' IR: 0 when done, else 1 (`jit_fuzz_error` says why).
+int32_t jit_fuzz_load(const char *ir) {
+  free(fuzz_error);
+  fuzz_error = NULL;
+  if (LLVMInitializeNativeTarget() || LLVMInitializeNativeAsmPrinter()) {
+    fuzz_error = strdup("the JIT has no target for this machine");
+    return 1;
+  }
+  LLVMContextRef ctx = LLVMContextCreate();
+  LLVMMemoryBufferRef buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(ir, strlen(ir), "strata-fuzz");
+  LLVMModuleRef mod;
+  char *msg = NULL;
+  if (LLVMParseIRInContext(ctx, buf, &mod, &msg)) {
+    fuzz_error = strdup(msg ? msg : "LLVM rejected the generated IR");
+    LLVMDisposeMessage(msg);
+    return 1;
+  }
+  LLVMErrorRef e = LLVMOrcCreateLLJIT(&fuzz_jit, LLVMOrcCreateLLJITBuilder());
+  if (!e) {
+    LLVMOrcDefinitionGeneratorRef gen;
+    e = LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess(&gen, LLVMOrcLLJITGetGlobalPrefix(fuzz_jit), NULL, NULL);
+    if (!e) {
+      LLVMOrcJITDylibAddGenerator(LLVMOrcLLJITGetMainJITDylib(fuzz_jit), gen);
+      LLVMOrcThreadSafeContextRef tsc = LLVMOrcCreateNewThreadSafeContextFromLLVMContext(ctx);
+      LLVMOrcThreadSafeModuleRef tsm = LLVMOrcCreateNewThreadSafeModule(mod, tsc);
+      e = LLVMOrcLLJITAddLLVMIRModule(fuzz_jit, LLVMOrcLLJITGetMainJITDylib(fuzz_jit), tsm);
+    }
+  }
+  if (e) {
+    char *m = LLVMGetErrorMessage(e);
+    fuzz_error = strdup(m);
+    LLVMDisposeErrorMessage(m);
+    return 1;
+  }
+  return 0;
+}
+
+const char *jit_fuzz_error(void) { return fuzz_error ? fuzz_error : ""; }
+
+// One case of driver `i`: 0 when it passed, 1 when a fault ended it, -1
+// when there is no such driver.
+int32_t jit_fuzz_case(int64_t i, int64_t seed, int64_t budget) {
+  char name[64];
+  snprintf(name, sizeof name, "strata.fuzz.%lld", (long long)i);
+  LLVMOrcExecutorAddress addr;
+  LLVMErrorRef e = LLVMOrcLLJITLookup(fuzz_jit, &addr, name);
+  if (e) {
+    LLVMConsumeError(e);
+    return -1;
+  }
+  int32_t (*fuzz)(void (*)(void), int64_t, int64_t) = runtime_fn("strata_fuzz");
+  if (!fuzz) return -1;
+  return fuzz((void (*)(void))(uintptr_t)addr, seed, budget) != 0;
+}
+
+static const char *runtime_text(const char *name) {
+  const char *(*f)(void) = runtime_fn(name);
+  return f ? f() : "";
+}
+
+const char *jit_fault_kind(void) { return runtime_text("strata_test_kind"); }
+
+static char *fault_text;
+const char *jit_fault_message(void) {
+  Str *(*message)(void) = runtime_fn("strata_test_message");
+  Str *m = message ? message() : NULL;
+  free(fault_text);
+  fault_text = m ? strndup(m->bytes, (size_t)m->len) : strdup("");
+  return fault_text;
+}
+
+const char *jit_fault_stack(void) { return runtime_text("strata_test_stack"); }
+
+const char *jit_fuzz_args(void) { return runtime_text("strata_fuzz_args"); }
