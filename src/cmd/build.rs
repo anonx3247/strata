@@ -50,10 +50,15 @@ pub fn build(args: &Args) -> Result<bool, String> {
     // checks proven are left out (--all-checks keeps them; --no-verify uses
     // only what was verified before)
     let file = args.pos.get(1).map(|s| s.as_str()).or(args.val("--file"));
-    if !args.flag("--all-checks") && !args.flag("--no-verify") {
-        verify_first(args, &src, file)?;
-    }
-    let proofs = proofs_for(&src, file, args);
+    // (verified by `compiler verify`, unless `--rust`: see `strata_verifies`)
+    let proofs = if strata_verifies(args) && !args.flag("--all-checks") {
+        cmd::compare::proofs_of_text(&cmd::compare::strata_proofs(std::path::Path::new(&path), !args.flag("--no-verify"))?.unwrap_or_default())
+    } else {
+        if !args.flag("--all-checks") && !args.flag("--no-verify") {
+            verify_first(args, &src, file)?;
+        }
+        proofs_for(&src, file, args)
+    };
     let used = !proofs.is_empty();
     let (ir, left_out, kept) = llvm::compile_proven(p, "main", proofs, false)?;
     if args.flag("--emit-llvm") {
