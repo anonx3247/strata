@@ -21,12 +21,14 @@ fn run_compiler(exe: &Path, args: &[String]) -> Result<String, String> {
     // it reads `core/` from the folder it runs in, the repository's root: the
     // files it is given, made absolute
     let root = compiler_dir().and_then(|d| d.canonicalize().ok()).and_then(|d| Some(d.parent()?.to_path_buf()));
+    // (not the program's own arguments, after `--program`: they are its to read)
+    let own = args.iter().position(|a| a == "--program").unwrap_or(args.len());
     let args: Vec<String> = args
         .iter()
         .enumerate()
         .map(|(k, a)| match Path::new(a).canonicalize() {
             // (the first is the command's name)
-            Ok(abs) if k > 0 && root.is_some() => abs.to_string_lossy().into_owned(),
+            Ok(abs) if k > 0 && k < own && root.is_some() => abs.to_string_lossy().into_owned(),
             _ => a.clone(),
         })
         .collect();
@@ -127,9 +129,14 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
     if cmd == "render" && args.pos.len() > 1 {
         return Err("render --strata/--compare renders a whole script, not chosen definitions".into());
     }
-    if cmd == "run" && args.flags.contains_key("--") {
-        return Err("run --strata/--compare runs the program with the arguments `one` and `two words` (as tests/eval.rs does), not chosen ones".into());
-    }
+    // `run`: the program's arguments (`-- ARGS`, else `one` and `two words`,
+    // as tests/eval.rs gives them) and its name, for `--help`: its
+    // package's, or the file's (as `strata run` names it)
+    let program_args: Vec<String> = args.flags.get("--").cloned().unwrap_or_else(|| vec!["one".into(), "two words".into()]);
+    let program_name = match crate::package::find(Path::new(&file)) {
+        Ok(Some(pkg)) => pkg.name,
+        _ => Path::new(&file).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "main".into()),
+    };
     let compare = args.flag("--compare");
     let (exe, std) = compiler()?;
     let std_files = || -> Vec<String> {
@@ -178,7 +185,10 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                     return Err(format!("packing the prelude: {}", String::from_utf8_lossy(&o.stderr).trim()));
                 }
                 let p = prelude.to_string_lossy().into_owned();
-                ([vec!["eval".into(), p], std_files(), vec!["--".into(), unit.clone()]].concat(), ["--file", &file, "run", "--", "one", "two words"].map(String::from).to_vec())
+                (
+                    [vec!["eval".into(), p], std_files(), vec!["--".into(), unit.clone(), "--program".into(), program_name.clone()], program_args.clone()].concat(),
+                    [["--file", &file, "run", "--"].map(String::from).to_vec(), program_args.clone()].concat(),
+                )
             }
         };
         let mut ours = strata_lines(run_compiler(&exe, &theirs)?);

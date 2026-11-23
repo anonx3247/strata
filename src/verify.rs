@@ -378,6 +378,7 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, key: &str, solver
     let mut vc = crate::smt::Vc::new(env);
     vc.transparent = transparent.clone();
     vc.solver = Some(bin.clone());
+    vc.examples = true;
     vc.function(&decl, &decl.name);
     let v = if !RACE.load(std::sync::atomic::Ordering::Relaxed) {
         solve_then_fuzz(&vc, bin, key, &shown, &decl, imp.is_some(), cases, cross_check, seed)
@@ -741,7 +742,7 @@ pub fn for_impl(env: &Env, imp: &ImplDecl, f: &FnDecl) -> FnDecl {
 /// An implementation's method as checked: its signature for the
 /// implementation, the trait's contract (which binds every implementation)
 /// before its own.
-fn method_decl(env: &Env, imp: &ImplDecl, f: &FnDecl) -> FnDecl {
+pub fn method_decl(env: &Env, imp: &ImplDecl, f: &FnDecl) -> FnDecl {
     let mut d = for_impl(env, imp, f);
     if let Some(tm) = env.traits.get(&imp.trait_name).and_then(|t| t.methods.iter().find(|m| m.decl.name == f.name)) {
         if !std::ptr::eq(&tm.decl, f) {
@@ -799,34 +800,44 @@ pub fn wrappers(env: &Env, prog: &Program, chosen: &[bool]) -> Vec<FnDecl> {
             out.push(w);
         }
         for law in &tr.laws {
-            let as_fn = FnDecl {
-                doc: vec![],
-                comments: vec![],
-                name: Symbol::new(&wrapper_name(i, &format!("law.{}", law.name))),
-                type_params: vec![],
-                bounds: vec![],
-                params: law.params.clone(),
-                ret: TypeExpr::Named("Bool".into(), vec![]),
-                requires: vec![],
-                ensures: vec![Expr::Var(Symbol::new("it"))],
-                terminates: false,
-                body: law.body.clone(),
-                comptime: false,
-                derived: false,
-            };
-            let mut kind = DeclKind::Fn(for_impl(env, imp, &as_fn));
-            // `Self.empty()` in a law means this implementation's
-            let self_arg = crate::types::type_arg("Self");
-            decl_exprs_mut(&mut kind, |e| {
-                if matches!(e, Expr::Var(x) if x.as_str() == self_arg) {
-                    *e = Expr::Str(head.to_string());
-                }
-            });
-            let DeclKind::Fn(f) = kind else { unreachable!() };
-            out.push(f);
+            out.push(law_wrapper(env, imp, i, law));
         }
     }
     out
+}
+
+/// A law of implementation `imp` (declaration `i`) as a function: its
+/// parameters, `Self` this implementation's type, its result the law,
+/// ensured to hold. Fuzzed compiled, and proven like any function.
+pub fn law_wrapper(env: &Env, imp: &ImplDecl, i: usize, law: &Law) -> FnDecl {
+    let head = crate::types::texpr_head(&crate::types::subst_texpr(&imp.for_type, &imp.type_params.iter().map(|p| (p.clone(), TypeExpr::Named("Int".into(), vec![]))).collect()));
+    let as_fn = FnDecl {
+        doc: vec![],
+        comments: vec![],
+        name: Symbol::new(&wrapper_name(i, &format!("law.{}", law.name))),
+        type_params: vec![],
+        bounds: vec![],
+        params: law.params.clone(),
+        ret: TypeExpr::Named("Bool".into(), vec![]),
+        requires: vec![],
+        // the law is a property, as an `ensures` is: the solver sees through
+        // the methods it calls (`check_law`), and the compiled code checks it
+        ensures: vec![law.body.clone()],
+        terminates: false,
+        body: Expr::Bool(true),
+        comptime: false,
+        derived: false,
+    };
+    let mut kind = DeclKind::Fn(for_impl(env, imp, &as_fn));
+    // `Self.empty()` in a law means this implementation's
+    let self_arg = crate::types::type_arg("Self");
+    decl_exprs_mut(&mut kind, |e| {
+        if matches!(e, Expr::Var(x) if x.as_str() == self_arg) {
+            *e = Expr::Str(head.to_string());
+        }
+    });
+    let DeclKind::Fn(f) = kind else { unreachable!() };
+    f
 }
 
 /// Fuzz an implementation's method that only the trait defines (its default).
@@ -834,11 +845,23 @@ pub fn fuzz_impl_method(imp: &ImplDecl, method: &str, key: &str, cases: usize, s
     fuzz_limited(key, &crate::types::trait_call(&imp.trait_name, method), cases, seed, None)
 }
 
-/// Check a trait law for one implementation with generated inputs: its
+/// Check a trait law for one implementation: proven by the solver where it
+/// can be (its wrapper, `law_wrapper`, checked as any function), else with
+/// generated inputs: its
 /// wrapper ensures it holds.
-pub fn check_law(imp: &ImplDecl, law: &Law, key: &str, cases: usize, seed: u64) -> Verdict {
+#[allow(clippy::too_many_arguments)]
+pub fn check_law(env: &Env, imp: &ImplDecl, wrapper: &FnDecl, law: &Law, key: &str, solver: Option<&crate::smt::Solver>, transparent: &crate::fx::HashMap<String, bool>, cases: usize, cross_check: usize, seed: u64) -> Verdict {
     let shown = format!("law `{}`", law.name);
-    match fuzz_limited(key, &shown, cases, seed, None) {
+    let verdict = match solver {
+        Some(_) => match check_fn(env, wrapper, None, key, solver, transparent, cases, cross_check, seed) {
+            // (its one check is the law: `ensures it`)
+            Verdict::Fuzzed { cases, discarded, proven, unproven, checks, open, terminates } => Verdict::Fuzzed { cases, discarded, proven, unproven: unproven.into_iter().map(|u| law_check(&u, &shown)).collect(), checks, open, terminates },
+            Verdict::Proven { checks, given, terminates } => Verdict::Proven { checks: checks.into_iter().map(|c| law_check(&c, &shown)).collect(), given, terminates },
+            other => other,
+        },
+        None => fuzz_limited(key, &shown, cases, seed, None),
+    };
+    match verdict {
         Verdict::Counterexample { args, kind, message, found_by, terminates } => {
             if kind == "Ensures" && message.contains(&format!("of {shown}")) && message.ends_with(&format!("(stack: {shown})")) || kind == "Ensures" && message.ends_with("(stack: )") {
                 let with: Vec<String> = law.params.iter().zip(&args).map(|(p, v)| format!("{} = {v}", p.name)).collect();
@@ -853,6 +876,17 @@ pub fn check_law(imp: &ImplDecl, law: &Law, key: &str, cases: usize, seed: u64) 
             Verdict::Counterexample { args, kind, message: format!("evaluating law `{}`: {message}", law.name), found_by, terminates }
         }
         other => other,
+    }
+}
+
+/// A check of a law's wrapper as the report names it: its `ensures` is the law.
+fn law_check(check: &str, shown: &str) -> String {
+    match check.strip_prefix("ensures ") {
+        Some(rest) => match rest.split_once(": ") {
+            Some((_, why)) => format!("{shown}: {why}"),
+            None => shown.to_string(),
+        },
+        None => check.to_string(),
     }
 }
 

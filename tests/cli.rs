@@ -314,6 +314,73 @@ fn cross_check_catches_a_wrong_prover() {
 }
 
 #[test]
+fn laws_are_proven_by_the_solver() {
+    if !has_solver() {
+        return;
+    }
+    let d = tmp("laws-proven");
+    let (ok, out) = strata(&["--file", &format!("{}/examples/traits.strata", env!("CARGO_MANIFEST_DIR")), "verify", "--no-race"], &d, None);
+    assert!(!ok, "Midpoint breaks associativity: {out}");
+    for law in ["law associative for Money", "law associative for List[T]", "law identity for Money", "law identity for List[T]"] {
+        assert!(out.contains(&format!("✓ {law}")), "{law}: {out}");
+    }
+    assert!(out.contains("✗ law associative for Midpoint") && out.contains("found by the solver"), "{out}");
+}
+
+#[test]
+fn match_coverage_and_list_counterexamples_from_the_solver() {
+    if !has_solver() {
+        return;
+    }
+    let d = tmp("match-coverage");
+    // arms whose conditions the checker can't decide: the prover shows some arm matches
+    let src = "fn even(n: Int) -> Bool { n % 2 == 0 }
+
+fn parity(n: Int) -> String {
+  match n {
+    where even(it) => \"even\",
+    where !even(it) => \"odd\",
+  }
+}
+
+fn broken(n: Int) -> String {
+  match n {
+    where even(it) => \"even\",
+    where it % 3 == 0 => \"three\",
+  }
+}
+
+type Point = { x: Int, y: Int }
+
+fn sum_x(ps: List[Point]) -> Int
+  requires len(ps) >= 2
+  ensures it != 7
+{
+  ps[0].x + ps[1].x
+}
+";
+    save(&d.join("b.strata"), src);
+    let (_, out) = strata(&["--file", "b.strata", "verify", "--no-race"], &d, None);
+    assert!(out.contains("✓ parity"), "{out}");
+    assert!(out.contains("✗ broken") && out.contains("no match arm for") && out.contains("found by the solver"), "{out}");
+    // a counterexample with a non-empty list, from the solver
+    assert!(out.contains("✗ sum_x") && out.contains("[Point {"), "{out}");
+}
+
+#[test]
+fn std_is_proven() {
+    if !has_solver() {
+        return;
+    }
+    // std's precompiled library leaves out the checks inside its functions
+    // (`llvm::Module::std_proven`): every function of std must be proven
+    // (slow, several minutes of CPU: run it by name when std changes)
+    let d = tmp("std-proven");
+    let (ok, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "verify", "--cases", "10", "--require", "proven"], &d, None);
+    assert!(ok && !out.contains("is not proven"), "{out}");
+}
+
+#[test]
 fn values_are_datatypes_in_the_prover() {
     if !has_solver() {
         return;
@@ -492,7 +559,8 @@ fn inputs_from_the_solver_meet_narrow_types() {
     let d = tmp("solver-inputs");
     save(&d.join("s.strata"), "type Steps = List[Int] where len(it) >= 3 && all(1..len(it), i -> it[i] == it[i - 1] + 1)\nfn last(xs: Steps) -> Int\n  ensures it == xs[0] + 2\n{\n  xs[len(xs) - 1]\n}\nfn first(xs: Steps) -> Int\n  ensures it == xs[1] - 1\n{\n  xs[0]\n}\n");
     let (ok, out) = strata(&["--file", "s.strata", "verify"], &d, None);
-    assert!(!ok && out.contains("✗ last") && out.contains("found by the fuzzer, on inputs from the solver"), "{out}");
+    // (the solver shows it, a list of four; else the fuzzer, on inputs from the solver)
+    assert!(!ok && out.contains("✗ last") && (out.contains("found by the fuzzer, on inputs from the solver") || out.contains("found by the solver")), "{out}");
     assert!(out.contains("✓ first"), "{out}");
 }
 
@@ -1581,7 +1649,7 @@ fn traits_laws_and_distinct_types() {
     let (ok, out) = strata(&["--file", &ex, "test"], &d, None);
     assert!(ok && out.contains("0 failed"), "{out}");
     let (ok, out) = strata(&["--file", &ex, "verify"], &d, None);
-    assert!(!ok && out.contains("law `associative` does not hold for `Midpoint`") && out.contains("~ law associative for Money"), "{out}");
+    assert!(!ok && out.contains("law `associative` does not hold for `Midpoint`") && out.contains("✓ law associative for Money"), "{out}");
     assert!(passed(&out, "combine_all") && passed(&out, "receipt"), "bounded generics checked at an implementing type: {out}");
     save(&d.join("e.strata"),
         "type Name = String\n\

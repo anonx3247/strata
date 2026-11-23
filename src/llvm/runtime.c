@@ -1839,8 +1839,9 @@ int64_t strata_int_abs(int64_t a) {
   return int_of(x);
 }
 
-int64_t strata_div(int64_t a, int64_t b) {
-  if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
+// `a / b` for a `b` that isn't 0: what `verify` proved (`no division by
+// zero`), so the compiled code calls this without the check.
+int64_t strata_div_nz(int64_t a, int64_t b) {
   if (!is_big(a) && !is_big(b)) {
     // Euclidean: the remainder is never negative
     int64_t q = a / b, r = a % b;
@@ -1855,8 +1856,13 @@ int64_t strata_div(int64_t a, int64_t b) {
   return q;
 }
 
-int64_t strata_mod(int64_t a, int64_t b) {
+int64_t strata_div(int64_t a, int64_t b) {
   if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
+  return strata_div_nz(a, b);
+}
+
+// `a % b` for a `b` that isn't 0 (see `strata_div_nz`).
+int64_t strata_mod_nz(int64_t a, int64_t b) {
   if (!is_big(a) && !is_big(b)) {
     if (b == -1) return 0;
     int64_t r = a % b;
@@ -1869,6 +1875,11 @@ int64_t strata_mod(int64_t a, int64_t b) {
   free(x.d), free(y.d);
   strata_int_drop(q);
   return r;
+}
+
+int64_t strata_mod(int64_t a, int64_t b) {
+  if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
+  return strata_mod_nz(a, b);
 }
 
 // ---- bits: `&`, `|`, `^`, `<<`, `>>` ----

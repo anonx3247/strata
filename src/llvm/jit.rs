@@ -100,6 +100,8 @@ unsafe extern "C" {
     fn strata_leave();
     fn strata_overflow();
     fn strata_div();
+    fn strata_div_nz();
+    fn strata_mod_nz();
     fn strata_gen_string();
     fn strata_gen_len();
     fn strata_gen_float();
@@ -242,6 +244,8 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_leave", strata_leave as *const () as usize),
         ("strata_overflow", strata_overflow as *const () as usize),
         ("strata_div", strata_div as *const () as usize),
+        ("strata_div_nz", strata_div_nz as *const () as usize),
+        ("strata_mod_nz", strata_mod_nz as *const () as usize),
         ("strata_gen_string", strata_gen_string as *const () as usize),
         ("strata_gen_len", strata_gen_len as *const () as usize),
         ("strata_gen_float", strata_gen_float as *const () as usize),
@@ -653,7 +657,7 @@ fn make_std_library() -> Result<StdLibrary, String> {
     let std = crate::stdlib::program();
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let meta = std::fs::metadata(&exe).map_err(|e| e.to_string())?;
-    let key: String = Sha256::digest(format!("v2{:?}{}{:?}", meta.modified().ok(), meta.len(), std).as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
+    let key: String = Sha256::digest(format!("v3{:?}{}{:?}", meta.modified().ok(), meta.len(), std).as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
     let root = match std::env::var_os("STRATA_CACHE") {
         Some(d) => std::path::PathBuf::from(d),
         None => std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache/strata"),

@@ -421,7 +421,7 @@ impl Vc<'_> {
                 "Tuple" => Val::Data { ty: ty.clone(), t },
                 _ if self.env.variant_parent(n.sym()).is_some() => Val::Data { ty: ty.clone(), t },
                 _ => match self.env.types.get(&n.sym()).cloned() {
-                    None => Val::Opaque(format!("values of the generic type `{n}` are not known")),
+                    None => Val::Data { ty: ty.clone(), t },
                     Some(td) => {
                         let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
                         match &td.body {
