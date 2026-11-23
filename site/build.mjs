@@ -4,9 +4,8 @@
 //
 //   cargo build --release && node site/build.mjs
 //
-// Writes site/data/*.js (one `STRATA[...] = {...}` per scene) and
-// site/viewer.html (the real viewer, src/ui/index.html, with a shim that
-// answers its API calls from those snapshots).
+// Writes site/data/*.js (one `STRATA[...] = {...}` per scene) and copies
+// docs/images to site/images for the docs pages.
 
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, cpSync } from 'node:fs';
@@ -230,16 +229,6 @@ fn discount(amount: Cents) -> Cents {
   // the page draws each step's codebase as a graph; it needs the Changes view only for the diffs it shows
   const DIFFS = ['It fills them, and closes the change', 'A rename is one change', 'It fixes it, and proves it'];
   emit('session', session.map(x => ({ ...x, state: undefined, changes: DIFFS.includes(x.title) ? x.changes : undefined, graph: graph(x.state) })));
-  // the docs' tour of the viewer: a few moments of the same session
-  const pickSnap = (t, keep = []) => { const x = session.find(y => y.title === t); return { state: x.state, changes: Object.fromEntries(Object.entries(x.changes).filter(([k]) => k === 'all' || keep.includes(k))) }; };
-  const last = session.at(-1), stepId = t => String(last.changes.all.steps.find(s => s.title === t).id);
-  emit('tour', {
-    verified: pickSnap('A codebase, checked and verified'),
-    refuted: pickSnap('Verification finds the bug'),
-    holes: pickSnap('A breaking change becomes holes'),
-    final: pickSnap(last.title, [stepId('rename Shipped → Sent'), stepId('coupons')]),
-    steps: { rename: +stepId('rename Shipped → Sent'), coupons: +stepId('coupons') },
-  });
 }
 
 // ─────────────── contracts: tighten one, then change a signature ───────────────
@@ -661,8 +650,31 @@ fn main() {
     const dir = pkg('v-math', [join(EX, 'math.strata')]);
     const src = run(dir, ['render']).out;
     V.loops = {};
-    for (const [k, f] of [['ackermann', 'ackermann'], ['isqrt', 'isqrt'], ['collatz', 'collatz_steps']])
+    for (const [k, f] of [['ackermann', 'ackermann'], ['isqrt', 'isqrt'], ['triangle', 'triangle_closed'], ['collatz', 'collatz_steps']])
       V.loops[k] = { code: defs(src, [`fn ${f}(`]), verify: out(dir, ['verify', f, '--checks']) };
+    // what a list keeps, said by its type and proven by position
+    const s = prog('records', `/// Numbers in increasing order: each one is at least the one before it.
+type Sorted = List[Int] where all(1..len(it), i -> it[i - 1] <= it[i])
+
+/// Adds a reading if it beats the last record.
+fn record(best: Sorted, x: Int) -> Sorted {
+  if len(best) == 0 || x > best[len(best) - 1] {
+    push(best, x)
+  } else {
+    best
+  }
+}
+
+/// The same, compared with the first record instead of the last.
+fn record_wrong(best: Sorted, x: Int) -> Sorted {
+  if len(best) == 0 || x > best[0] {
+    push(best, x)
+  } else {
+    best
+  }
+}
+`);
+    V.loops.sorted = { code: run(s, ['render']).out.trim(), verify: out(s, ['verify']) };
   }
   // more of the language: data types, traits, values, comptime
   {
@@ -794,6 +806,101 @@ fn main() {
 }
 `);
     L.comptime = { src: c.src, run: c.run };
+    // concurrency: tasks, channels and select, race and supervised tasks
+    const tk = one('primes', `/// How many primes there are from \`lo\` up to \`hi\`, by trial division.
+fn count_primes(lo: Int, hi: Int) -> Int {
+  len([n for n in lo..hi where n >= 2 && all(2..n, d -> n % d != 0)])
+}
+
+/// The primes below \`n\` and from \`n\` to twice \`n\`, a task for each.
+fn halves(n: Int) -> (Int, Int) {
+  scope {
+    below := spawn count_primes(0, n)
+    above := spawn count_primes(n, 2 * n)
+    await (below, above)
+  }
+}
+
+/// The primes below \`n\`, counted in four tasks, a quarter each.
+fn primes_below(n: Int) -> Int {
+  scope {
+    sum(await [spawn count_primes(i * n / 4, (i + 1) * n / 4) for i in 0..4])
+  }
+}
+
+fn main() {
+  print(halves(1000))
+  print(primes_below(2000))
+}
+`);
+    const ch = one('progress', `/// The primes below \`n\`, counted by a task that reports its progress.
+fn with_progress(n: Int) -> (Int, List[Int]) {
+  (tx, rx) := channel()
+  scope {
+    work := spawn {
+      mut found := 0
+      for c in 0..n / 500 {
+        found += len([k for k in c * 500..(c + 1) * 500 where k >= 2 && all(2..k, d -> k % d != 0)])
+        tx.send((c + 1) * 500)
+      }
+      tx.close()
+      found
+    }
+    tx.close()
+    mut reports := []
+    mut primes := None
+    while primes == None {
+      select {
+        rx.recv() as r => match r {
+          Some(k) => {
+            reports = push(reports, k)
+          },
+          None => {},
+        },
+        await work as found => {
+          primes = Some(found)
+        },
+      }
+    }
+    (primes ?? 0, reports)
+  }
+}
+
+fn main() {
+  print(with_progress(2000))
+}
+`);
+    const rc = one('readings', `from std.time use Clock, VirtualClock, seconds
+
+/// The first reading, or \`None\` after 30 seconds. The loser is cancelled.
+fn first_reading(readings: Receiver[Int], clock: Clock) -> Option[Int] {
+  race {
+    readings.recv() as r => r,
+    clock.sleep(seconds(30)) => None,
+  }
+}
+
+/// The average of each batch, each in a task of its own. When one fails,
+/// the others go on, and its panic is handled where it is awaited.
+fn averages(batches: List[List[Int]]) -> List[String] {
+  scope {
+    tasks := [supervised spawn sum(b) / len(b) for b in batches]
+    [match await h {
+      Ok(a) => f"{a}",
+      Err(p) => p.message,
+    } for h in tasks]
+  }
+}
+
+fn main(clock: VirtualClock) {
+  (tx, rx) := channel()
+  print(first_reading(rx, clock))
+  tx.close()
+  print(clock.now().value / 1000000000)
+  print(averages([[4, 6], [], [1, 2, 3]]))
+}
+`);
+    L.tasks = { spawn: tk, channels: ch, race: rc };
     V.lang = L;
   }
   emit('verify', V);
@@ -811,7 +918,7 @@ function markdown(md) {
     const codes = [];
     t = t.replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`);
     t = esc(t)
-      .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => `<img alt="${alt}" src="${src.startsWith('http') ? src : repoFile(src) + '?raw=true'}">`)
+      .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => src.startsWith('images/') ? `<a class="shot" href="${src}" target="_blank"><img alt="${alt}" src="${src}"></a>` : `<img alt="${alt}" src="${src.startsWith('http') ? src : repoFile(src) + '?raw=true'}">`)
       .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, txt, href) => {
         const [f, frag] = href.split('#');
         const page = PAGES[f.replace(/^\.\.?\/(docs\/)?/, '')];
@@ -869,55 +976,9 @@ function markdown(md) {
     docs[id] = { title: md.match(/^# (.*)/m)[1], ...markdown(md.replace(/^# .*\n/, '')) };
   }
   emit('docs', docs);
-}
-
-// ─────────────── the viewer, answering from recorded snapshots ───────────────
-{
-  const page = readFileSync(join(ROOT, 'src/ui/index.html'), 'utf8');
-  const before = `<script>
-// site/: the real viewer (src/ui/index.html), fed by the presentation instead of
-// a running \`strata ui\`. The page posts {state, changes} snapshots recorded by
-// site/build.mjs; the viewer's own polling picks each one up.
-window.__SNAP = null;
-let __wake = [];
-const __fetch = window.fetch.bind(window);
-window.fetch = async (url, opts) => {
-  const u = new URL(url, location.href);
-  if (!u.pathname.endsWith('/api/state') && !u.pathname.endsWith('/api/changes')) return __fetch(url, opts);
-  if (!window.__SNAP) await new Promise(r => __wake.push(r));
-  const s = window.__SNAP;
-  const body = u.pathname.endsWith('/api/state') ? s.state
-    : (s.changes[u.searchParams.get('step') ?? 'all'] ?? s.changes.all ?? { error: 'not recorded' });
-  return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
-};
-</script>
-`;
-  const after = `<script>
-window.addEventListener('message', e => {
-  const m = e.data || {};
-  if (m.type !== 'strata-snap') return;
-  window.__SNAP = { state: m.state, changes: m.changes || {} };
-  __wake.splice(0).forEach(r => r());
-  if (m.level != null) S.level = m.level;
-  if (m.step !== undefined) { CH.step = m.step; CH.sel = m.change || null; }
-  if (m.sel !== undefined) { S.sel = m.sel; S.scope = m.sel ? 'slice' : 'all'; if (m.sel) S.open[m.sel] = true; }
-  poll().then(() => { render(); $('#main').scrollTop = 0; if (S.level === 'changes') loadChanges(true); });
-});
-// the page around the viewer steps with ← →: pass them up instead of using them here
-addEventListener('keydown', e => {
-  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' || e.metaKey || e.ctrlKey || e.altKey || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
-  e.preventDefault(); e.stopImmediatePropagation();
-  parent.postMessage({ type: 'strata-key', key: e.key }, '*');
-}, true);
-parent.postMessage({ type: 'strata-ready' }, '*');
-</script>
-`;
-  // the viewer is dark, in the site's colours, already
-  const themed = page;
-  const i = themed.indexOf('<script>');
-  const j = themed.lastIndexOf('</body>');
-  writeFileSync(join(SITE, 'viewer.html'), '<!-- generated by site/build.mjs from src/ui/index.html: do not edit -->\n' + themed.slice(0, i) + before + themed.slice(i, j) + after + themed.slice(j));
-  console.log('  viewer.html');
+  // the docs' pictures, served by the site itself
+  rmSync(join(SITE, 'images'), { recursive: true, force: true });
+  cpSync(join(ROOT, 'docs', 'images'), join(SITE, 'images'), { recursive: true });
 }
 
 rmSync(WORK, { recursive: true, force: true });
