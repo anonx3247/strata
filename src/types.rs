@@ -39,19 +39,24 @@ const ITERATOR_BUILTINS: &[&str] = &["map", "filter", "fold", "len", "get", "at"
 /// The built-in types with type arguments, which impls can be written for.
 const BUILTIN_HEADS: &[&str] = &["List", "Set", "Dict", "String", "Sender", "Receiver"];
 
-/// The module the prelude's code is in (`core/prelude.strata`): added to
-/// every program when it is resolved (`with_prelude_code`), so it is
-/// checked, compiled and run as the program's own, and skipped as the
-/// standard library is (by `verify`, the views). Its names are unqualified.
-pub const PRELUDE_MODULE: &str = "core.prelude";
+/// Whether a module is one of core's code modules (`core.iter`, ...): what
+/// a program gets when it uses it (`with_prelude_code`), checked, compiled
+/// and run as the program's own, and skipped as the standard library is (by
+/// `verify`, the views). Its names are unqualified.
+pub fn is_prelude_module(m: &str) -> bool {
+    crate::core::CODE.contains(&m)
+}
 
 /// A name as messages show it: a prelude trait's method short
-/// (`fold`, not `core.prelude.fold`; `FiniteIterator::len`).
+/// (`fold`, not `core.iter.fold`; `FiniteIterator::len`).
 pub fn shown_name(name: &str) -> String {
-    let mut s = name.replace(&format!("{PRELUDE_MODULE}."), "");
+    let mut s = name.to_string();
+    for m in crate::core::CODE {
+        s = s.replace(&format!("{m}."), "");
+    }
     // a call through a prelude trait, as written (`self.len()`, not `self.FiniteIterator::len()`;
     // `len(..)`, not `FiniteIterator::len(..)`)
-    for t in prelude_traits() {
+    for (t, _) in prelude_traits() {
         s = s.replace(&format!(".{t}::"), ".");
         if let Some(rest) = s.strip_prefix(&format!("{t}::")) {
             s = rest.to_string();
@@ -60,21 +65,22 @@ pub fn shown_name(name: &str) -> String {
     s
 }
 
-/// The prelude's code (`core.prelude`), read once.
+/// core's code modules (`core.iter`, `core.channel`, ...), read once: each
+/// trait's methods and each function named in its module (`core.iter.len`).
 pub fn prelude_code() -> &'static Program {
     static P: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
     P.get_or_init(|| {
-        let mut p = crate::core::prelude();
+        let mut p = crate::core::code();
         for d in &mut p.decls {
-            d.module = Symbol::new(PRELUDE_MODULE);
+            let m = d.module;
             match &mut d.kind {
                 DeclKind::Trait(t) => {
-                    for m in &mut t.methods {
-                        m.decl.name = prelude_method(m.decl.name);
+                    for x in &mut t.methods {
+                        x.decl.name = prelude_method(m, x.decl.name);
                     }
                 }
-                // (named apart from the program's: `core.prelude.set_of`)
-                DeclKind::Fn(f) => f.name = prelude_method(f.name),
+                // (named apart from the program's: `core.iter.set_of`)
+                DeclKind::Fn(f) => f.name = prelude_method(m, f.name),
                 _ => {}
             }
         }
@@ -83,30 +89,28 @@ pub fn prelude_code() -> &'static Program {
     })
 }
 
-/// A method of a prelude trait as named once resolved (`core.prelude.len`),
+/// A method of a prelude trait as named once resolved (`core.iter.len`),
 /// as std's are named in their modules: apart from the builtins of the same
 /// name (`len(xs)` on a list).
-fn prelude_method(m: Symbol) -> Symbol {
-    Symbol::from(format!("{PRELUDE_MODULE}.{m}").as_str())
+fn prelude_method(module: Symbol, m: Symbol) -> Symbol {
+    Symbol::from(format!("{module}.{m}").as_str())
 }
 
-/// The traits of the prelude's code.
-fn prelude_traits() -> &'static [Symbol] {
-    static T: std::sync::OnceLock<Vec<Symbol>> = std::sync::OnceLock::new();
-    T.get_or_init(|| {
-        crate::core::prelude().decls.iter().filter_map(|d| if let DeclKind::Trait(t) = &d.kind { Some(t.name) } else { None }).collect()
-    })
+/// The traits of core's code, with their modules.
+fn prelude_traits() -> &'static [(Symbol, Symbol)] {
+    static T: std::sync::OnceLock<Vec<(Symbol, Symbol)>> = std::sync::OnceLock::new();
+    T.get_or_init(|| crate::core::code().decls.iter().filter_map(|d| if let DeclKind::Trait(t) = &d.kind { Some((t.name, d.module)) } else { None }).collect())
 }
 
 /// The methods of each impl of a prelude trait named as the trait's are
-/// (`fn len` in `impl FiniteIterator[Int] for Count` is `core.prelude.len`).
+/// (`fn len` in `impl FiniteIterator[Int] for Count` is `core.iter.len`).
 fn qualify_prelude_impls(p: &mut Program) {
     for d in &mut p.decls {
         if let DeclKind::Impl(i) = &mut d.kind {
-            if prelude_traits().contains(&i.trait_name) {
-                for m in &mut i.methods {
-                    if !m.name.contains('.') {
-                        m.name = prelude_method(m.name);
+            if let Some((_, m)) = prelude_traits().iter().find(|(t, _)| *t == i.trait_name) {
+                for x in &mut i.methods {
+                    if !x.name.contains('.') {
+                        x.name = prelude_method(*m, x.name);
                     }
                 }
             }
@@ -114,13 +118,14 @@ fn qualify_prelude_impls(p: &mut Program) {
     }
 }
 
-/// `p` with the prelude's code after its own definitions, unless it has it
-/// already (resolved before), and its impls of the prelude's traits naming
-/// their methods as the traits do.
+/// `p` with the code of core it uses (`core::needed`) after its own
+/// definitions, unless it has it already (resolved before), and its impls
+/// of the prelude's traits naming their methods as the traits do.
 pub fn with_prelude_code(p: &mut Program) {
-    if !p.decls.iter().any(|d| d.module == PRELUDE_MODULE) {
+    if !p.decls.iter().any(|d| is_prelude_module(&d.module)) {
         qualify_prelude_impls(p);
-        p.decls.extend(prelude_code().decls.iter().cloned());
+        let used = crate::core::needed(p);
+        p.decls.extend(prelude_code().decls.iter().filter(|d| used.contains(d.module.as_str())).cloned());
     }
 }
 
@@ -134,11 +139,13 @@ pub struct Builtin {
     pub total: bool,
     /// its declaration in `core.builtins` (std's host operations have none)
     pub decl: Option<&'static FnDecl>,
+    /// raw memory (`core.mem`): only core's own modules can call it
+    pub core_only: bool,
 }
 
 impl Builtin {
     pub const fn new(name: &'static str, params: &'static str, sig: &'static str) -> Builtin {
-        Builtin { name, params, sig, total: false, decl: None }
+        Builtin { name, params, sig, total: false, decl: None, core_only: false }
     }
 }
 
@@ -150,19 +157,27 @@ pub fn builtins() -> &'static [Builtin] {
     B.get_or_init(|| {
         let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
         crate::core::builtin_fns()
-            .map(|f| {
+            .map(|(module, f)| {
+                let core_only = module == crate::core::MEM;
                 let params: Vec<String> = f.params.iter().map(|p| crate::printer::ty(&p.ty)).collect();
                 let tps: Vec<&str> = f.type_params.iter().map(|t| t.as_str()).collect();
                 Builtin {
                     name: f.name.as_str(),
                     params: leak(tps.join(",")),
                     sig: leak(format!("({}) -> {}", params.join(", "), crate::printer::ty(&f.ret))),
-                    total: f.requires.is_empty() && !crate::core::NOT_YET_CONTRACTS.contains(&f.name.as_str()),
+                    // (raw memory is never total: nothing checks an address)
+                    total: f.requires.is_empty() && !core_only && !crate::core::NOT_YET_CONTRACTS.contains(&f.name.as_str()),
                     decl: Some(f),
+                    core_only,
                 }
             })
             .collect()
     })
+}
+
+/// Using raw memory (`core.mem`'s `Ptr` and functions) outside core.
+fn core_only_error(name: &str) -> String {
+    format!("`{name}` is core's: only core's modules can use raw memory (`core.mem`)")
 }
 
 /// Whether every overload of the builtin `name` always returns.
@@ -673,6 +688,8 @@ impl<F: Fn() -> String> Label for Lazy<F> {
 
 struct Checker<'a> {
     env: &'a Env,
+    /// checking one of core's own definitions: it may use raw memory (`core.mem`)
+    in_core: bool,
     subst: Vec<Option<Ty>>,
     scopes: Vec<HashMap<Symbol, Ty>>,
     rigid: BTreeSet<Symbol>,
@@ -1044,6 +1061,12 @@ impl<'a> Checker<'a> {
                     "List" if largs.len() == 1 => Ty::Con("List".into(), largs),
                     "Sender" if largs.len() == 1 => Ty::Con("Sender".into(), largs),
                     "Receiver" if largs.len() == 1 => Ty::Con("Receiver".into(), largs),
+                    "Ptr" if largs.is_empty() => {
+                        if !self.in_core {
+                            self.err(core_only_error("Ptr"));
+                        }
+                        Ty::Con("Ptr".into(), vec![])
+                    }
                     _ => match self.env.types.get(&n.sym()) {
                         Some(td) => {
                             if td.params.len() != largs.len() {
@@ -1670,9 +1693,17 @@ impl<'a> Checker<'a> {
     /// The type of the builtin `name` (or std's host operation), whatever else
     /// the name means.
     fn builtin_fn(&mut self, name: &str) -> Option<Ty> {
-        let Builtin { params: ps, sig, .. } = builtins().iter().chain(crate::stdlib::HOST).find(|b| b.name == name)?;
+        let Builtin { params: ps, sig, core_only, .. } = builtins().iter().chain(crate::stdlib::HOST).find(|b| b.name == name)?;
+        if *core_only && !self.in_core {
+            self.err(core_only_error(name));
+        }
         let ps: Vec<Symbol> = ps.split(',').filter(|s| !s.is_empty()).map(Symbol::from).collect();
-        Some(self.instantiate(&ps, &parse_type_str(sig)))
+        // (its signature's `Ptr` is said once, by the call)
+        let outer = self.in_core;
+        self.in_core = outer || *core_only;
+        let t = self.instantiate(&ps, &parse_type_str(sig));
+        self.in_core = outer;
+        Some(t)
     }
 
     /// A method name means the method of that name among the traits of the
@@ -1798,7 +1829,7 @@ impl<'a> Checker<'a> {
             self.pending.truncate(snap.1);
             return None;
         }
-        let f = prelude_method(Symbol::from(target));
+        let f = prelude_method(Symbol::new("core.iter"), Symbol::from(target));
         self.targets.push((site, Target::Own(f.to_string())));
         let ft = self.global_fn(&f)?;
         Some(self.call_with(ft, args, &Lazy(|| format!("call to `{n}`")), &[]))
@@ -4187,6 +4218,7 @@ impl<'a> Checker<'a> {
     fn new(env: &'a Env, decl: String) -> Self {
         Checker {
             env,
+            in_core: false,
             subst: Vec::new(),
             scopes: vec![HashMap::default()],
             rigid: BTreeSet::new(),
@@ -4418,6 +4450,7 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
         }
         let mut c = Checker {
             env: &env,
+            in_core: crate::core::owns(&d.module, &d.name()),
             subst: Vec::new(),
             scopes: vec![HashMap::default()],
                 rigid: BTreeSet::new(),

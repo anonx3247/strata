@@ -229,6 +229,12 @@ fn wrap(e: &Expr, min: u8, d: usize) -> String {
     if prec(e) < min { format!("({s})") } else { s }
 }
 
+/// A called expression: a field in parentheses (`(b.f)(1)` calls the
+/// function in field `f`; `b.f(1)` would be the method `f`).
+fn callee(f: &Expr, d: usize) -> String {
+    if matches!(f, Expr::Field(..)) { format!("({})", expr(f, d)) } else { wrap(f, 12, d) }
+}
+
 fn args(es: &[Expr], d: usize) -> String {
     es.iter()
         .map(|e| match e {
@@ -315,9 +321,9 @@ fn brace_on_spine(e: &Expr) -> bool {
 }
 
 /// A name as written: the prelude's methods, which only checked code holds
-/// (`FiniteIterator::core.prelude.len`, in messages), short (`len`).
+/// (`FiniteIterator::core.iter.len`, in messages), short (`len`).
 fn shown(n: &str) -> std::borrow::Cow<'_, str> {
-    if n.contains(crate::types::PRELUDE_MODULE) {
+    if crate::core::CODE.iter().any(|m| n.contains(m)) {
         std::borrow::Cow::Owned(crate::types::shown_name(n))
     } else {
         std::borrow::Cow::Borrowed(n)
@@ -380,7 +386,7 @@ pub fn expr(e: &Expr, d: usize) -> String {
             }
             s
         }
-        Expr::Call(f, es) if !es.is_empty() => format!("{}{}", wrap(f, 12, d), broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d)),
+        Expr::Call(f, es) if !es.is_empty() => format!("{}{}", callee(f, d), broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d)),
         Expr::List(es) if !es.is_empty() => broken("[", es.iter().map(|a| expr(a, d + 1)).collect(), "]", d),
         Expr::Tuple(es) => broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d),
         Expr::Ctor(c, CtorArgs::Record(fs)) => broken(
@@ -468,7 +474,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             }));
             format!("{c} {{ {} }}", parts.join(", "))
         }
-        Expr::Call(f, es) => format!("{}({})", wrap(f, 12, d), args(es, d)),
+        Expr::Call(f, es) => format!("{}({})", callee(f, d), args(es, d)),
         Expr::Method(r, m, es) => format!("{}.{}({})", wrap(r, 12, d), shown(m), args(es, d)),
         Expr::Field(r, f) => format!("{}.{f}", wrap(r, 12, d)),
         Expr::Lambda(ps, b) => format!("{} -> {}", lambda_params(ps), expr(b, d)),

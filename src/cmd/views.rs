@@ -168,7 +168,7 @@ pub fn pack(args: &Args) -> Result<bool, String> {
     if args.flag("--prelude") {
         // (core's types and code; its builtins are the evaluator's own)
         let mut p = crate::core::types();
-        p.decls.extend(crate::core::prelude().decls);
+        p.decls.extend(crate::core::code().decls);
         p.decls.retain(|d| !matches!(&d.kind, crate::ast::DeclKind::Extern(e) if e.lang == crate::ast::Lang::Builtin));
         for d in &mut p.decls {
             d.module = crate::ast::Symbol::EMPTY;
