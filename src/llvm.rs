@@ -1108,6 +1108,7 @@ declare i64 @llvm.smax.i64(i64, i64)
 declare ptr @strata_raw_alloc(i64)
 declare ptr @strata_raw_reserve(i64)
 declare i64 @strata_raw_size(ptr)
+declare void @strata_raw_fail(ptr)
 declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)
 declare void @free(ptr)
 declare i64 @llvm.smin.i64(i64, i64)
@@ -6184,6 +6185,10 @@ impl<'m, 'a> Func<'m, 'a> {
             ("raw_size", [_]) => self.call(&Ty::Con("I64".into(), vec![]), "@strata_raw_size", &vs)?,
             ("raw_free", [_]) => {
                 self.emit(format!("call void @free(ptr {})", vs[0].1));
+                (Ty::Unit, "0".into())
+            }
+            ("raw_fail", [_]) => {
+                self.emit(format!("call void @strata_raw_fail(ptr {})", vs[0].1));
                 (Ty::Unit, "0".into())
             }
             ("raw_fill", [_, _, _]) => {

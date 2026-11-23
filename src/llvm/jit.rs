@@ -118,6 +118,7 @@ unsafe extern "C" {
     fn strata_raw_alloc();
     fn strata_raw_reserve();
     fn strata_raw_size();
+    fn strata_raw_fail();
     fn strata_int_to_float();
     fn strata_int_lit();
     fn strata_int_eq();
@@ -270,6 +271,7 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_raw_alloc", strata_raw_alloc as *const () as usize),
         ("strata_raw_reserve", strata_raw_reserve as *const () as usize),
         ("strata_raw_size", strata_raw_size as *const () as usize),
+        ("strata_raw_fail", strata_raw_fail as *const () as usize),
         ("strata_int_to_float", strata_int_to_float as *const () as usize),
         ("strata_int_lit", strata_int_lit as *const () as usize),
         ("strata_int_eq", strata_int_eq as *const () as usize),
