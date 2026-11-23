@@ -120,6 +120,8 @@ fn same(file: &Path, cache: &Path) -> (usize, usize) {
 /// value of their result), function names as values, generic functions;
 /// calls seen through in contracts (step 6).
 /// Step 7: `matches` with a literal pattern (std.regex's SMT translation).
+/// Step 13: union values: values of different shapes merged, union types,
+/// patterns naming a type, `is` with a type, fields and equality of unions.
 #[test]
 fn smt_outcomes_as_in_rust() {
     if !have_z3() {
@@ -135,6 +137,7 @@ fn smt_outcomes_as_in_rust() {
         ("step5", include_str!("data/smt/step5.st")),
         ("step7", include_str!("data/smt/step7.st")),
         ("step10", include_str!("data/smt/step10.st")),
+        ("step13", include_str!("data/smt/step13.st")),
     ] {
         let file = dir.join(format!("{name}.strata"));
         save(&file, text);
