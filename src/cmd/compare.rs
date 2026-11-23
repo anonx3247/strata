@@ -33,6 +33,9 @@ fn run_compiler(exe: &Path, args: &[String]) -> Result<String, String> {
         })
         .collect();
     let mut c = Command::new(exe);
+    // whether what it prints for us shows colors (std.term's rule): the
+    // program run by compiler/'s evaluator writes to our terminal
+    c.env("STRATA_COLORS", colors());
     if let Some(r) = &root {
         c.current_dir(r);
     }
@@ -41,6 +44,22 @@ fn run_compiler(exe: &Path, args: &[String]) -> Result<String, String> {
         return Err(format!("the Strata implementation failed ({}): {}", o.status, String::from_utf8_lossy(&o.stderr).trim()));
     }
     Ok(String::from_utf8_lossy(&o.stdout).into_owned())
+}
+
+/// `out,err`: which of standard output and error show colors (a terminal,
+/// unless `NO_COLOR` is set or `TERM` is `dumb`; `FORCE_COLOR` forces them).
+fn colors() -> String {
+    use std::io::IsTerminal;
+    let set = |v: &str| std::env::var(v).is_ok_and(|x| !x.is_empty());
+    let on = |tty: bool| set("FORCE_COLOR") || (tty && !set("NO_COLOR") && std::env::var("TERM").map_or(true, |t| t != "dumb"));
+    let mut out = vec![];
+    if on(std::io::stdout().is_terminal()) {
+        out.push("out");
+    }
+    if on(std::io::stderr().is_terminal()) {
+        out.push("err");
+    }
+    out.join(",")
 }
 
 /// std precompiled by compiler/codegen (plan item C21): its functions that

@@ -1,0 +1,12 @@
+---
+// The links in the header: back to the landing page and the tour, then GitHub.
+import Default from '@astrojs/starlight/components/SocialIcons.astro';
+---
+<a class="strata-nav" href="/tour.html">Tour</a>
+<a class="strata-nav" href="/">strata-lang.dev</a>
+<Default />
+<style>
+  .strata-nav { color: var(--sl-color-gray-2); text-decoration: none; font-size: var(--sl-text-sm); font-weight: 500; padding: 0 .35rem; white-space: nowrap; }
+  .strata-nav:hover { color: var(--sl-color-white); }
+  @media (max-width: 50rem) { .strata-nav { display: none; } }
+</style>

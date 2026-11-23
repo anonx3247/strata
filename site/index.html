@@ -4,232 +4,91 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Strata: a language for working with agents</title>
+<meta name="description" content="An experimental programming language where types carry contracts that are proven, code is stored as its syntax tree, and every edit is checked before it is stored.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
 <link rel="stylesheet" href="style.css">
-<link rel="stylesheet" href="slides.css">
+<link rel="stylesheet" href="landing.css">
 </head>
-<body class="deck-page">
+<body class="landing">
 <div class="bands"><svg id="bands" preserveAspectRatio="none" viewBox="0 0 1600 1000"></svg></div>
-<div id="sect"><span></span></div>
-<div id="wipe"><i></i><i></i><i></i><i></i></div>
-<div id="progress"></div>
-<a id="docs-link" href="https://github.com/anonx3247/strata">GitHub →</a>
 
-<main id="deck">
+<header class="top">
+  <a class="mark" href="index.html"><span class="glyph"><i></i><i></i><i></i></span>Strata</a>
+  <nav>
+    <a href="tour.html">Tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/docs/learn-strata/">Learn</a>
+    <a class="gh" href="https://github.com/anonx3247/strata">GitHub →</a>
+  </nav>
+</header>
 
-<!-- ═════════════════════════ title ═════════════════════════ -->
-<section class="slide" id="hero" data-nav="Strata">
-  <div class="inner">
-    <h1 id="title">Strata</h1>
-    <div class="tag"><span class="typed" id="tagline"></span></div>
-    <p class="lede fx" style="--d:1.6s">An experimental programming language where types carry contracts that are proven, code is stored as its syntax tree, and every edit is checked before it is stored.</p>
-    <div class="cue fx" style="--d:2.2s"><kbd>→</kbd> or <kbd>space</kbd> to begin</div>
-  </div>
-</section>
+<main>
+  <section class="hero">
+    <div class="pitch">
+      <div class="kicker rise" style="--d:0s">An experimental programming language</div>
+      <h1 id="title">Strata</h1>
+      <p class="tag rise" style="--d:.5s">A language for working with agents. <span class="dim">Code that says what it means, checked and proven as it is written.</span></p>
 
-<!-- ═════════════════════════ how an agent works today ═════════════════════════ -->
-<section class="slide" id="today" data-section="The problem" data-nav="How agents work today" data-steps="5">
-  <div class="split today">
-    <div class="col">
-      <div class="kicker fx">The problem</div>
-      <h2 class="fx small" id="today-h"></h2>
-      <div class="say" id="today-say"></div>
-      <div class="pane term fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">the agent's terminal</span><span class="count bad" id="today-count"></span></div><div class="body wrap" id="today-term"></div></div>
+      <div class="install rise" style="--d:.8s">
+        <div class="install-bar"><span class="dots"><i></i><i></i><i></i></span><span>install</span><span class="soon">coming soon</span></div>
+        <div class="install-line">
+          <code id="install-cmd"></code>
+          <button id="copy" title="Copy to the clipboard">Copy</button>
+        </div>
+      </div>
+
+      <div class="ctas rise" style="--d:1s">
+        <a class="tour-btn" href="tour.html">
+          <span class="big">Take the tour</span>
+          <span class="small">The ideas on real programs, every output recorded from the real CLI</span>
+          <span class="arrow">→</span>
+        </a>
+        <div class="minor">
+          <a href="/docs/learn-strata/">Learn Strata in Y minutes</a>
+          <a href="https://github.com/anonx3247/strata">Read the code on GitHub</a>
+        </div>
+      </div>
     </div>
-    <div class="col"><div class="files fx" id="files"></div><p class="caption illus">An illustration of a typical agent session in a codebase of text files.</p></div>
-  </div>
-</section>
 
-<!-- ═════════════════════════ three ideas ═════════════════════════ -->
-<section class="slide" id="ideas" data-section="What Strata does about it" data-nav="Three ideas" data-steps="4">
-  <div class="kicker fx">What Strata does about it</div>
-  <h2 class="fx small">Three ideas.</h2>
-  <div class="ideas" id="ideas-cards"></div>
-  <div class="fixes" id="ideas-fixes"></div>
-</section>
-
-<!-- ═════════════════════════ types as contracts, proving over testing ═════════════════════════ -->
-<section class="slide feature" id="contracts" data-section="Types as contracts" data-nav="Types as contracts" data-steps="3"></section>
-<section class="slide feature" id="loops" data-section="Loops and termination" data-nav="Loops and termination" data-steps="5"></section>
-<section class="slide feature" id="shares" data-section="Proving over testing" data-nav="Tests miss things" data-steps="3"></section>
-<section class="slide feature" id="points" data-nav="One line, not four tests" data-steps="2"></section>
-
-<section class="slide" id="verdicts" data-nav="Verdicts" data-steps="2">
-  <div class="split wide-right">
-    <div class="col">
-      <div class="kicker fx">Proving over testing</div>
-      <h2 class="fx small">Proven, fuzzed, or refuted, with the input that breaks it.</h2>
-      <p class="lede" id="verdicts-say"></p>
-      <div class="pane fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">$ strata verify · examples/math.strata</span></div><div class="body wrap" id="math-verify"></div></div>
+    <div class="showcase rise" style="--d:.6s">
+      <div class="vtabs" id="tabs"></div>
+      <div class="pane code"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title" id="file">math.strata</span></div><div class="body" id="code"></div></div>
+      <div class="pane out"><div class="bar"><span class="title">$ strata verify</span><span class="count" id="badge"></span></div><div class="body wrap" id="out"></div></div>
     </div>
-    <div class="graph fx" id="math-graph"></div>
-  </div>
-</section>
+  </section>
 
-<section class="slide feature" id="mocks" data-nav="Mocks" data-steps="3"></section>
-<section class="slide feature" id="capabilities" data-section="Side effects" data-nav="Side effects" data-steps="4"></section>
+  <section class="ideas">
+    <a class="idea" href="tour.html#contracts">
+      <div class="n">01</div>
+      <h3>Types as contracts</h3>
+      <p>Types carry constraints, and functions say what they need and what they promise. Both are part of the signature, and both are checked wherever the code is used.</p>
+      <span class="go">See it in the tour →</span>
+    </a>
+    <a class="idea" href="tour.html#shares">
+      <div class="n">02</div>
+      <h3>Proving over testing</h3>
+      <p>An SMT solver proves each contract for every input, or finds the input that breaks it. A fuzzer covers what it can't prove. Most tests become a line in a signature.</p>
+      <span class="go">See it in the tour →</span>
+    </a>
+    <a class="idea" href="tour.html#ast">
+      <div class="n">03</div>
+      <h3>The code is the AST</h3>
+      <p>Code is stored as its syntax tree. Text is rendered when someone wants to read it, and edits are parsed back in, so diffs, merges and views work on definitions instead of lines.</p>
+      <span class="go">See it in the tour →</span>
+    </a>
+  </section>
 
-<section class="slide" id="build" data-section="What a change reaches" data-nav="What a change reaches" data-steps="4">
-  <div class="split wide-right">
-    <div class="col">
-      <div class="kicker fx">What a change reaches</div>
-      <h2 class="fx small" id="build-h"></h2>
-      <div class="say" id="build-say"></div>
-      <div class="pane term fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title" id="build-term-title"></span></div><div class="body wrap" id="build-term"></div></div>
-    </div>
-    <div class="col stage">
-      <div class="graph fx" id="build-graph"></div>
-      <div class="pane code-card" id="build-code"><div class="bar"><span class="title" id="build-code-title"></span></div><div class="body"></div></div>
-    </div>
-  </div>
-</section>
-
-<!-- ═════════════════════════ the code is the AST ═════════════════════════ -->
-<section class="slide" id="ast" data-section="The code is the AST" data-nav="From text to a graph" data-steps="5">
-  <div class="split wide-right">
-    <div class="col">
-      <div class="kicker fx">The code is the AST</div>
-      <h2 class="fx small" id="ast-h"></h2>
-      <div class="say" id="ast-say"></div>
-      <div class="pane code-pane fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title" id="ast-title"></span></div><div class="body" id="ast-code"></div></div>
-    </div>
-    <div class="astage fx" id="astage"><div class="tokens" id="ast-tokens"></div><div class="tree" id="ast-tree"></div><div class="graph" id="ast-graph"></div></div>
-  </div>
-</section>
-
-<section class="slide" id="tree" data-nav="Strata stores the graph">
-  <div class="split wide-right">
-    <div class="col">
-      <div class="kicker fx">The code is the AST</div>
-      <h2 class="fx small">Strata stores the graph, not the text.</h2>
-      <div class="say" id="tree-say"></div>
-      <div class="pane code-pane fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">orders.strata · rendered as text</span></div><div class="body" id="tree-code"></div></div>
-    </div>
-    <div class="graph fx" id="tree-graph"></div>
-  </div>
-</section>
-
-<section class="slide" id="diffs" data-nav="Structural changes" data-steps="4">
-  <div class="kicker fx">Structural changes</div>
-  <h2 class="fx small" id="diff-h"></h2>
-  <p class="lede" id="diff-say"></p>
-  <div class="bigdiff" id="bigdiff"><div class="pane"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">$ git diff · examples/tasks</span><span class="count bad" id="big-count"></span></div><div class="body" id="big-body"></div></div></div>
-  <div class="diffview" id="diffview">
-    <div class="tabs" id="diff-tabs"></div>
-    <div class="vs">
-      <div class="side old"><h4>✗ line diff <span class="big-n" id="ld-n"></span></h4><div class="pane"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">git diff</span><span class="count bad" id="ld-count"></span></div><div class="body" id="ld-body"></div></div></div>
-      <div class="side new"><h4>✓ structural change <span class="big-n" id="sd-n"></span></h4><div class="pane"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title" id="sd-title">strata diff</span><span class="count ok" id="sd-count"></span></div><div class="body wrap" id="sd-body" style="white-space:normal"></div></div></div>
-    </div>
-  </div>
-</section>
-
-
-
-<section class="slide" id="travel" data-nav="Changes follow the graph" data-steps="9">
-  <div class="split wide-right">
-    <div class="col">
-      <div class="kicker fx">The code is the AST</div>
-      <div class="say" id="travel-say"></div>
-      <div class="pane term fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title" id="travel-term-title">~/shop</span></div><div class="body wrap" id="travel-term"></div></div>
-    </div>
-    <div class="col stage">
-      <div class="graph fx" id="travel-graph"></div>
-      <div class="pane code-card" id="travel-code"><div class="bar"><span class="title">piped into strata edit</span></div><div class="body"></div></div>
-      <div class="stamp" id="travel-stamp"></div>
-    </div>
-  </div>
-</section>
-
-<section class="slide" id="merge" data-nav="Agents in parallel" data-steps="3">
-  <div class="kicker fx">The code is the AST</div>
-  <h2 class="fx small">Several agents, at the same time.</h2>
-  <p class="lede" id="merge-say"></p>
-  <div class="lanes fx" id="lanes"></div>
-  <div class="three">
-    <div class="pane" data-k="0"><div class="bar"><span class="title">agent A, on main</span></div><div class="body wrap" id="m-a"></div></div>
-    <div class="pane" data-k="1"><div class="bar"><span class="title">agent B, on agent-b</span></div><div class="body wrap" id="m-b"></div></div>
-    <div class="pane" data-k="2"><div class="bar"><span class="title">agent B: strata sync main</span></div><div class="body wrap" id="m-sync"></div></div>
-  </div>
-</section>
-
-<section class="slide" id="views" data-nav="Only what it needs" data-steps="4">
-  <div class="split wide-right">
-    <div class="col">
-      <div class="kicker fx">The code is the AST</div>
-      <h2 class="fx small" id="views-h"></h2>
-      <div class="say" id="views-say"></div>
-      <div class="pane code-pane fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title" id="views-title"></span><span class="count ok" id="views-count"></span></div><div class="body" id="views-code"></div></div>
-    </div>
-    <div class="graph fx" id="views-graph"></div>
-  </div>
-</section>
-
-<section class="slide" id="edit" data-nav="Editing with text" data-steps="5">
-  <div class="split wide-right">
-    <div class="col">
-      <div class="kicker fx">The code is the AST</div>
-      <h2 class="fx small" id="edit-h"></h2>
-      <div class="say" id="edit-say"></div>
-      <div class="pane term fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title" id="edit-term-title"></span></div><div class="body wrap" id="edit-term"></div></div>
-    </div>
-    <div class="astage fx" id="estage"><div class="tokens" id="edit-tokens"></div><div class="tree" id="edit-tree"></div><div class="graph" id="edit-graph"></div><div class="rendered" id="edit-rendered"></div></div>
-  </div>
-</section>
-
-<!-- ═════════════════════════ the rest ═════════════════════════ -->
-<section class="slide feature" id="adt" data-section="More of the language" data-nav="Algebraic data types" data-steps="2"></section>
-<section class="slide feature" id="traits" data-nav="Traits"></section>
-<section class="slide feature" id="values" data-nav="Values and mut" data-steps="2"></section>
-<section class="slide feature" id="sugar" data-nav="Everyday syntax"></section>
-<section class="slide feature" id="comptime" data-nav="Compile time" data-steps="3"></section>
-<section class="slide feature" id="tasks" data-nav="Concurrency" data-steps="3"></section>
-
-<section class="slide" id="engine" data-nav="Under the hood" data-steps="2">
-  <div class="kicker fx">Under the hood</div>
-  <h2 class="fx small">Compiled everywhere, and more and more of it written in Strata.</h2>
-  <div class="split">
-    <div class="col">
-      <div class="facts" id="facts"></div>
-    </div>
-    <div class="col">
-      <div class="pane code-pane"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">std.regex, written in Strata</span></div><div class="body" id="std-code"></div></div>
-      <div class="pane term" style="margin-top:16px"><div class="bar"><span class="title">~/regex</span></div><div class="body wrap" id="std-term"></div></div>
-    </div>
-  </div>
-</section>
-
-<section class="slide" id="start" data-nav="Try it">
-  <div class="kicker fx">Try it</div>
-  <h2 class="fx small">Strata is an experiment. You can try it.</h2>
-  <div class="pane cmds fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">terminal</span></div><div class="body" id="start-cmds"></div></div>
-  <div class="links fx">
-    <a href="docs.html?d=learn-strata"><b>Learn Strata in Y minutes →</b><span>The language on one page, as one valid file. Give it to an agent before it writes Strata.</span></a>
-    <a href="docs.html?d=verification"><b>Verification →</b><span>What <code>strata verify</code> proves, and how it says so.</span></a>
-    <a href="docs.html?d=tools"><b>Tools →</b><span>The command line, the viewer, packages and git.</span></a>
-    <a href="https://github.com/anonx3247/strata"><b>GitHub →</b><span>The code, the docs and the examples.</span></a>
-  </div>
-  <footer class="fx">Every output of <code>strata</code> on these slides was recorded from the real CLI by <code>site/build.mjs</code>.</footer>
-</section>
-
+  <footer>
+    <span>Strata is an experiment, built in the open.</span>
+    <span><a href="tour.html">Tour</a> · <a href="/docs/">Docs</a> · <a href="https://github.com/anonx3247/strata">GitHub</a></span>
+  </footer>
 </main>
 
-<nav id="hud">
-  <div class="where"><span id="hud-n"></span><b id="hud-title"></b></div>
-  <div id="dots"></div>
-  <div class="ctl"><span id="hud-sub"></span><button id="hud-prev" title="previous (←)">←</button><button id="hud-next" title="next (→)">→</button></div>
-</nav>
-
 <script>window.STRATA = {};</script>
-<script src="data/orders.js"></script>
-<script src="data/contract.js"></script>
 <script src="data/math.js"></script>
-<script src="data/session.js"></script>
-<script src="data/features.js"></script>
-<script src="data/rename.js"></script>
-<script src="data/verify.js"></script>
 <script src="common.js"></script>
-<script src="app.js"></script>
+<script src="landing.js"></script>
 </body>
 </html>
