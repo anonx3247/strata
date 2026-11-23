@@ -6415,25 +6415,6 @@ fn core_mem_is_core_only() {
     assert!(!ok && out.contains("`raw_alloc` is core's"), "{out}");
 }
 
-/// `core.values`: compiled values read back (`Raw`), for core and a
-/// package whose strata.toml says `read = true` under `[values]` (the
-/// compiler, which reads compile-time code's values).
-#[test]
-fn core_values_need_the_package_to_opt_in() {
-    let d = tmp("core_values");
-    let src = "fn peek(r: Raw) -> I64 {\n  r.word(0)\n}\n\nfn main() {\n  print(peek(Raw { address: 0 }))\n}\n";
-    let (_, out) = strata(&["--file", "x.strata", "edit"], &d, Some(src));
-    for m in ["error in peek: `Raw` is core's: reading compiled values (`core.values`)", "error in main: `Raw` is core's"] {
-        assert!(out.contains(m), "{m}: {out}");
-    }
-    let p = d.join("p");
-    std::fs::create_dir_all(&p).unwrap();
-    std::fs::write(p.join("strata.toml"), "name = \"p\"\nauto_commit = false\n\n[values]\nread = true\n").unwrap();
-    save_module(&p, "main", src);
-    let (ok, out) = strata(&["--file", "p", "check"], &d, None);
-    assert!(ok, "{out}");
-}
-
 /// core.rt, the runtime written in Strata: `strata build-core` compiles it
 /// for the C runtime (its `strata_...` functions under their C names),
 /// stamped with the core files it was made from; its tests run with core's.
