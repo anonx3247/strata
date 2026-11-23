@@ -184,16 +184,24 @@ Running:
                                against the types; the result is printed as code;
                                --trace prints each call and return
                                to stderr
-  test [FILTER] [--with-deps]  run the project's own test blocks, compiled (a test that
+  test [FILTER] [--with-deps] [--rust]
+                               run the project's own test blocks, compiled (a test that
                                can't be compiled yet fails, saying why); --with-deps: also
                                those of what it imports (std, dependencies), which are
-                               otherwise tested on their own
+                               otherwise tested on their own. With --file, compiled by
+                               compiler/codegen (the code generator written in Strata),
+                               else, or where it doesn't cover them yet, or with --rust
+                               (or STRATA_BACKEND=rust), by the Rust one
   build-core [-o FILE]         compile core.rt (the runtime written in Strata) to LLVM IR for
                                the C runtime: the second stage of building strata itself
                                (tools/bootstrap.sh writes it to target/core_rt.ll, which
                                build.rs then links instead of the C versions)
-  build [PATH] [-o OUT] [--emit-llvm] [--all-checks] [--no-verify] [--release]
-                               compile the program to a native executable, through LLVM
+  build [PATH] [-o OUT] [--emit-llvm] [--all-checks] [--no-verify] [--release] [--rust]
+                               compile the program to a native executable, through LLVM:
+                               by compiler/codegen (the code generator written in Strata),
+                               or, where it doesn't cover the program yet, with
+                               --emit-llvm, for the compiler package itself, or with
+                               --rust (or STRATA_BACKEND=rust), by the Rust one
                                (unoptimized, -O0, unless --release: -O2 and the runtime
                                inlined; `run` and `test` take --release too)
                                (needs clang; STRATA_CC chooses another): `main` takes no
@@ -360,6 +368,17 @@ fn run() -> Result<bool, String> {
     let strata_default = matches!(cmd, "lex" | "parse") && !args.flag("--rust") && cmd::compare::available();
     if strata_default || matches!(cmd, "lex" | "parse" | "render" | "run" | "build" | "test") && (args.flag("--strata") || args.flag("--compare")) {
         return cmd::compare::command(&args, cmd);
+    }
+    // `build` and `test` are compiler/codegen's by default (user, 2026-11-23),
+    // unless `--rust` or `STRATA_BACKEND=rust`; what it doesn't cover yet is
+    // built by `llvm.rs`. (The compiler package itself is always built by
+    // Rust: building it with compiler/codegen would need it built first.)
+    if matches!(cmd, "build" | "test") && !args.flag("--rust") && !cmd::compare::rust_backend() && cmd::compare::codegen_by_default(&args, cmd) {
+        match cmd::compare::command(&args, cmd) {
+            Ok(ok) => return Ok(ok),
+            Err(e) if e.contains("doesn't cover") || e.contains("refused compiler/codegen's IR") => eprintln!("note: {}; using llvm.rs", e.lines().next().unwrap_or_default().trim_end_matches(':')),
+            Err(_) => {}
+        }
     }
     // `render` (a whole script) and `run` (a program's `main`) are the Strata
     // side's too, unless `--rust`; what it doesn't cover (a package's module,
