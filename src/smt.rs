@@ -198,6 +198,12 @@ const MAX_CANDIDATES: usize = 40;
 /// levels of lists and sums inside an input are made.
 pub const INPUT_LEN: usize = 6;
 const INPUT_DEPTH: usize = 3;
+/// For a counterexample's lists (`example_facts`): one level of lists
+/// inside a parameter's list's elements.
+const EXAMPLE_DEPTH: usize = 1;
+/// The most terms `open_input` makes a model give values for (6 elements
+/// of 6 elements of records of lists grow fast).
+const MAX_INPUT_LEAVES: usize = 400;
 
 /// Stands for the position in a `Template`'s terms; `@@o0`, `@@o1`, … for
 /// the positions of the lists it is inside of.
@@ -364,6 +370,16 @@ pub struct Vc<'a> {
     bound: HashSet<String>,
     /// Lists compared by position, nested this deep.
     eq_depth: usize,
+    /// The parameters' lists' first elements (`open_input`), to show a
+    /// counterexample with non-empty lists: what is known of them, kept out
+    /// of the queries until a counterexample needs them (`express`), and
+    /// the terms the model is asked for.
+    example_facts: Vec<T>,
+    example_leaves: Vec<String>,
+    /// Make those (`verify`'s own proofs; not termination's queries).
+    pub examples: bool,
+    /// How many levels of lists and sums `open_input` makes.
+    input_depth: usize,
     /// The type a method without `self` is called on (`Money.empty()`), for
     /// the call being made.
     called_on: Option<String>,
@@ -543,6 +559,10 @@ impl<'a> Vc<'a> {
             fn_args: vec![],
             called_on: None,
             eq_depth: 0,
+            example_facts: vec![],
+            example_leaves: vec![],
+            examples: false,
+            input_depth: INPUT_DEPTH,
             bit_terms: HashMap::default(),
             sorts: Default::default(),
             defs: vec![],
@@ -2732,6 +2752,12 @@ impl<'a> Vc<'a> {
                     alts.push((and(&g), binds, &a.body));
                     prev.push(cond);
                 }
+                // arms with conditions the checker can't decide: some arm matches
+                // (else the compiled code's `no match arm` fault)
+                if arms.iter().any(|a| self.undecided(&a.pat)) {
+                    let all = or(&prev);
+                    self.oblige("some arm of the `match` matches".into(), |_| all);
+                }
                 self.branches_narrowed(alts, narrow)
             }
             Expr::Block(stmts, last) => {
@@ -3135,6 +3161,26 @@ impl<'a> Vc<'a> {
         let imp = env.impls.iter().find(|i| i.trait_name == tr && crate::types::texpr_head(&i.for_type) == head)?;
         let decl = imp.methods.iter().find(|x| x.name == m || crate::names::short(&x.name) == crate::names::short(m)).or_else(|| env.traits.get(&imp.trait_name)?.methods.iter().find(|x| crate::names::short(&x.decl.name) == crate::names::short(m) && x.default).map(|x| &x.decl))?;
         Some((imp, decl))
+    }
+
+    /// Whether a pattern has a condition the checker can't decide (its
+    /// `match` is left to the prover): a `where` that isn't a bound on an
+    /// integer, a length or a float, or a refined type by name.
+    fn undecided(&self, p: &Pattern) -> bool {
+        match p {
+            Pattern::Cond(_) => true,
+            Pattern::Ctor(c, cp) => {
+                let refined = !self.env.ctors.contains_key(&c.sym()) && self.env.types.get(&c.sym()).is_some_and(|td| td.refinement.is_some());
+                refined
+                    || match cp {
+                        CtorPat::Positional(ps) | CtorPat::Type(ps) => ps.iter().any(|p| self.undecided(p)),
+                        CtorPat::Record(fs, _) => fs.iter().any(|(_, p)| self.undecided(p)),
+                        CtorPat::None => false,
+                    }
+            }
+            Pattern::List(ps, _) | Pattern::Tuple(ps) | Pattern::Or(ps) => ps.iter().any(|p| self.undecided(p)),
+            _ => false,
+        }
     }
 
     /// The type a value has, by its head (`Money`, `List`), when its shape says.
@@ -4366,7 +4412,7 @@ impl<'a> Vc<'a> {
     /// list's first `INPUT_LEN` elements (kept in `input_elems`), down to
     /// `INPUT_DEPTH` levels; collect the lists' lengths and every leaf.
     fn open_input(&mut self, v: &Val, depth: usize, lens: &mut Vec<T>, leaves: &mut Vec<(T, String)>) {
-        if depth > INPUT_DEPTH {
+        if depth > self.input_depth || leaves.len() > MAX_INPUT_LEAVES {
             return;
         }
         let v = self.force(v.clone());
@@ -4418,6 +4464,18 @@ impl<'a> Vc<'a> {
             }
             self.params.push((p.name.to_string(), v.clone()));
             self.bind(&p.name, v);
+        }
+        // the lists' first elements, for a counterexample to show (their facts
+        // set aside): one level of lists inside them, at most so many terms
+        if self.examples {
+            let (nf, mut lens, mut leaves) = (self.facts.len(), vec![], vec![]);
+            self.input_depth = EXAMPLE_DEPTH;
+            for (_, v) in self.params.clone() {
+                self.open_input(&v, 0, &mut lens, &mut leaves);
+            }
+            self.input_depth = INPUT_DEPTH;
+            self.example_facts = self.facts.split_off(nf);
+            self.example_leaves = leaves.into_iter().map(|l| l.0).collect();
         }
         let binds = self.params.clone();
         for r in &f.requires {
@@ -4568,6 +4626,9 @@ pub enum Limit {
     Search,
 }
 
+/// How an unknown outcome starts when the model had no literal for a value.
+const COULD_NOT_EXPRESS: &str = "the solver found a possible counterexample it could not express";
+
 /// Printed after each answer of a batch, to know where it ends.
 const ANSWERED: &str = "@@answered";
 
@@ -4713,9 +4774,14 @@ const CVC5_RLIMIT: u64 = 5_000_000;
 impl Vc<'_> {
     /// The free constants an obligation depends on (its cone of influence).
     fn cone(&self, ob: &Obligation, seeds: &[String]) -> (Vec<T>, HashSet<String>) {
+        self.cone_with(ob, seeds, &[])
+    }
+
+    /// `cone`, with `extra` facts known too.
+    fn cone_with(&self, ob: &Obligation, seeds: &[String], extra: &[T]) -> (Vec<T>, HashSet<String>) {
         let consts = |t: &str| -> Vec<String> { t.split(|c: char| !c.is_alphanumeric() && c != '_').filter(|w| w.starts_with('v') && w[1..].chars().all(|c| c.is_ascii_digit()) && w.len() > 1).map(String::from).collect() };
         // (definitions hold on every path: those made later too)
-        let facts: Vec<&T> = self.defs.iter().chain(&self.facts[..ob.facts]).collect();
+        let facts: Vec<&T> = self.defs.iter().chain(&self.facts[..ob.facts]).chain(extra).collect();
         let mut seen: HashSet<String> = consts(&ob.goal).into_iter().chain(ob.pc.iter().flat_map(|p| consts(p))).chain(seeds.iter().flat_map(|s| consts(s))).collect();
         let fact_consts: Vec<Vec<String>> = facts.iter().map(|f| consts(f)).collect();
         let mut used = vec![false; facts.len()];
@@ -4752,8 +4818,13 @@ impl Vc<'_> {
     /// An obligation's query after the header: what it depends on, the
     /// negated goal, `check-sat` and the model's values of `leaves`.
     fn body(&self, ob: &Obligation, leaves: &[String]) -> String {
+        self.body_with(ob, leaves, &[])
+    }
+
+    /// `body`, with `extra` facts known too.
+    fn body_with(&self, ob: &Obligation, leaves: &[String], extra: &[T]) -> String {
         // the parameters are in the cone too, so a model satisfies their types
-        let (facts, consts) = self.cone(ob, leaves);
+        let (facts, consts) = self.cone_with(ob, leaves, extra);
         let mut s = String::new();
         for d in &self.decls {
             if consts.contains(&d.name) {
@@ -4830,7 +4901,30 @@ impl Vc<'_> {
         match run_solver(solver, &script, Limit::Proof, stop) {
             Err(()) => Outcome::Stopped,
             Ok(None) => Outcome::Unknown("the solver could not be run".into()),
-            Ok(Some(out)) => self.outcome(i, &leaves, &out),
+            Ok(Some(out)) => {
+                let o = self.outcome(i, &leaves, &out);
+                self.express(solver, i, o, stop)
+            }
+        }
+    }
+
+    /// A counterexample the model couldn't show (a non-empty list): asked
+    /// again with the parameters' lists' first elements (`example_facts`),
+    /// so a list of up to `INPUT_LEN` elements is shown.
+    fn express(&self, solver: &Solver, i: usize, o: Outcome, stop: &std::sync::atomic::AtomicBool) -> Outcome {
+        let Outcome::Unknown(msg) = &o else { return o };
+        if !msg.starts_with(COULD_NOT_EXPRESS) || self.example_leaves.is_empty() {
+            return o;
+        }
+        let mut leaves = self.leaves();
+        leaves.extend(self.example_leaves.iter().cloned());
+        let script = self.header() + &self.body_with(&self.obligations[i], &leaves, &self.example_facts);
+        match run_solver(solver, &script, Limit::Proof, stop) {
+            Ok(Some(out)) => match self.outcome(i, &leaves, &out) {
+                r @ Outcome::Refuted(..) => r,
+                _ => o,
+            },
+            _ => o,
         }
     }
 
@@ -4858,6 +4952,11 @@ impl Vc<'_> {
                 for &i in &todo[done..] {
                     out[i] = Some(self.solve_until(solver, i, stop));
                 }
+                for &i in &todo[..done] {
+                    if let Some(o) = out[i].take() {
+                        out[i] = Some(self.express(solver, i, o, stop));
+                    }
+                }
             }
         }
         out
@@ -4881,7 +4980,7 @@ impl Vc<'_> {
                         let s = shown(&a);
                         Outcome::Refuted(a, format!("the solver found a possible counterexample: {s}{because}"))
                     }
-                    None => Outcome::Unknown(format!("the solver found a possible counterexample it could not express{because}")),
+                    None => Outcome::Unknown(format!("{COULD_NOT_EXPRESS}{because}")),
                 }
             }
             _ => Outcome::Unknown(format!("the solver gave up{because}")),

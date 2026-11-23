@@ -686,6 +686,14 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     let mut m = Module { env: &env, types: &types, keeps, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers, tasks: uses_tasks(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()), supervises: uses_supervised(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()) };
     if !m.proofs.is_empty() {
         m.refs = Refs::of(prog);
+        // the program's own trait implementations' methods, by `verify`'s labels
+        for d in prog.decls.iter().filter(|d| d.module.as_str() != "std" && !d.module.as_str().starts_with("std.")) {
+            if let DeclKind::Impl(imp) = &d.kind {
+                if let (false, Some(tr)) = (imp.is_inherent(), env.traits.get(&imp.trait_name)) {
+                    m.refs.own.extend(tr.methods.iter().map(|tm| crate::termination::impl_label(&env, imp, &tm.decl.name)));
+                }
+            }
+        }
     }
     // std's precompiled functions, but while making them, tracing, or in a library
     if !BUILDING_STD.with(|b| b.get()) && !m.tracing && !matches!(entry, Entry::Library(_)) {
@@ -754,7 +762,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
                 if skip.iter().any(|s| s == t.name.as_str()) {
                     continue;
                 }
-                let inst = Instance { label: format!("test {:?}", t.name.to_string()), symbol: format!("@\"strata.test.{}\"", tests.len()), impls: vec![], params: vec![], ret: TypeExpr::Unit, own_params: &[], own_ret: &TypeExpr::Unit, requires: vec![], ensures: vec![], body: &t.body, sub: HashMap::default(), given: &t.params };
+                let inst = Instance { label: format!("test {:?}", t.name.to_string()), proof_key: String::new(), verify_name: String::new(), symbol: format!("@\"strata.test.{}\"", tests.len()), impls: vec![], params: vec![], ret: TypeExpr::Unit, own_params: &[], own_ret: &TypeExpr::Unit, requires: vec![], ensures: vec![], body: &t.body, sub: HashMap::default(), given: &t.params };
                 m.instance(&inst).map_err(|e| format!("can't compile test {:?}: {e}", t.name.to_string()))?;
                 tests.push(t.name.to_string());
             }
@@ -1102,6 +1110,11 @@ impl MethodInst {
 struct Instance<'a> {
     /// Its name in messages (`total`, `Item.price`).
     label: String,
+    /// What `verify` calls it: the name its proofs are kept under
+    /// (`termination::impl_label` for a trait method, `Money.combine`), and
+    /// the name its checks say (`Combine::combine`).
+    proof_key: String,
+    verify_name: String,
     symbol: String,
     /// The implementation each trait-typed parameter takes (`None`: not one).
     impls: Vec<Option<Ty>>,
@@ -1391,7 +1404,10 @@ impl<'a> Module<'a> {
             ensures.extend(&own.ensures);
         }
         let label = format!("{}.{}", mi.head, crate::names::short(&mi.method));
-        let inst = Instance { label, symbol: mi.symbol(), impls: vec![], params: own.params.clone(), ret: own.ret.clone(), own_params: &own.params, own_ret: &own.ret, requires, ensures, body: &own.body, sub, given: &[] };
+        let imp = self.impl_of(&mi.tr, &mi.head).ok_or(format!("`{}` does not implement `{}`", mi.head, mi.tr))?;
+        let proof_key = crate::termination::impl_label(self.env, imp, &mi.method);
+        let verify_name = crate::types::shown_name(&crate::types::trait_call(&mi.tr, &mi.method));
+        let inst = Instance { label, proof_key, verify_name, symbol: mi.symbol(), impls: vec![], params: own.params.clone(), ret: own.ret.clone(), own_params: &own.params, own_ret: &own.ret, requires, ensures, body: &own.body, sub, given: &[] };
         self.instance(&inst)
     }
 
@@ -1738,6 +1754,8 @@ impl<'a> Module<'a> {
         let sub: HashMap<Symbol, Ty> = f.type_params.iter().cloned().zip(targs.iter().cloned()).collect();
         let inst = Instance {
             label: name.to_string(),
+            proof_key: name.to_string(),
+            verify_name: crate::types::shown_name(name),
             symbol: sym_impls(name, targs, impls),
             impls: impls.to_vec(),
             params: f.params.clone(),
@@ -1770,8 +1788,9 @@ impl<'a> Module<'a> {
         }
         let ret = self.lower(&f.ret, &sub)?;
         let mut c = Func::new(self, sub);
-        if !c.m.proofs.is_empty() && c.m.refs.own.contains(name) {
-            c.proofs_of = Some(name.to_string());
+        if !c.m.proofs.is_empty() && c.m.refs.own.contains(&inst.proof_key) {
+            c.proofs_of = Some(inst.proof_key.clone());
+            c.result_key = Some(format!("result of `{}`", inst.verify_name));
         }
         let mut sig = vec![];
         for (p, t) in f.params.iter().zip(&params) {
@@ -2234,6 +2253,8 @@ struct Func<'m, 'a> {
     /// The program's function being compiled, whose proofs `proven` reads
     /// (none in a lambda, a helper, or std's and the prelude's code).
     proofs_of: Option<String>,
+    /// What `verify` calls the check of its result (`result of \`f\``).
+    result_key: Option<String>,
     /// Whether a cancellation check leaves through the `unwound` block.
     unwinds: bool,
     /// In the function's `exit` block (its result's checks): nothing left to
@@ -2252,7 +2273,7 @@ struct Func<'m, 'a> {
 
 impl<'m, 'a> Func<'m, 'a> {
     fn new(m: &'m mut Module<'a>, sub: HashMap<Symbol, Ty>) -> Self {
-        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![], unwinds: false, in_exit: false, proofs_of: None, stack_ctor: None, stack_made: None, stack_slots: HashMap::default() }
+        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![], unwinds: false, in_exit: false, proofs_of: None, result_key: None, stack_ctor: None, stack_made: None, stack_slots: HashMap::default() }
     }
 
     /// The function's text: the slots, then the code.
@@ -3965,7 +3986,7 @@ impl<'m, 'a> Func<'m, 'a> {
         let key = if ctx == "let binding" {
             Some(format!("`let` annotated `{}`", crate::printer::ty(t)))
         } else if ctx.starts_with("result of `") {
-            Some(crate::types::shown_name(ctx))
+            Some(self.result_key.clone().unwrap_or_else(|| crate::types::shown_name(ctx)))
         } else if ctx.starts_with("assigning `") || ctx.starts_with("constructing `") {
             // (a field's check is part of the value's: `constructing \`C\`: C.f`)
             let end = ctx[ctx.find('`').unwrap() + 1..].find('`').map(|i| ctx.find('`').unwrap() + 2 + i);

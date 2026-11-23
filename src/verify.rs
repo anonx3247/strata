@@ -378,6 +378,7 @@ pub fn check_fn(env: &Env, f: &FnDecl, imp: Option<&ImplDecl>, key: &str, solver
     let mut vc = crate::smt::Vc::new(env);
     vc.transparent = transparent.clone();
     vc.solver = Some(bin.clone());
+    vc.examples = true;
     vc.function(&decl, &decl.name);
     let v = if !RACE.load(std::sync::atomic::Ordering::Relaxed) {
         solve_then_fuzz(&vc, bin, key, &shown, &decl, imp.is_some(), cases, cross_check, seed)
