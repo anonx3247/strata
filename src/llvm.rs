@@ -951,7 +951,8 @@ declare void @strata_scope_cancel(ptr)
 @strata_cancel_any = external global i32
 @strata_slow_counts = external global i32
 ; one holder more / fewer (whether that was the last), the count updated here
-; unless the runtime must do it (atomically while tasks run, or checked)
+; unless the runtime must do it (atomically while tasks run, or checked):
+; then core.rt's `strata_dup` / `strata_release` (core/rt.strata), in Strata
 define internal void @strata.dup(ptr %p) alwaysinline {
   %slow = load i32, ptr @strata_slow_counts, align 4
   %rt = icmp ne i32 %slow, 0
