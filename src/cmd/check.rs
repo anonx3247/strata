@@ -111,7 +111,8 @@ pub fn verify_source(args: &Args, src: &Source, how: &Verifying) -> Result<(bool
     let solver = smt::solver();
     let solver_bin = solver.as_ref();
     // with a selection, termination is analysed for what the selected code reaches
-    let roots: Option<crate::fx::HashSet<String>> = selected.then(|| {
+    // (`--termination` analyses what the selection reaches, as compiler/termination does)
+    let roots: Option<crate::fx::HashSet<String>> = (selected || args.flag("--termination")).then(|| {
         let mut rs = crate::fx::HashSet::default();
         for (orig, d) in p.decls.iter().zip(&resolved.decls) {
             if !names.contains(&orig.qname()) {
@@ -163,6 +164,45 @@ pub fn verify_source(args: &Args, src: &Source, how: &Verifying) -> Result<(bool
                 for (what, q) in verify::smt_queries(&env, f, transparent).into_iter().chain(termination::queries(&env, f, solver_bin)) {
                     println!("; {} — {what}\n{q}", f.name);
                 }
+            }
+        }
+        return Ok((true, vec![]));
+    }
+    if args.flag("--termination") {
+        // each function's and implementation method's termination, and
+        // whether a contract may see through it (compared with `compiler
+        // termination`, the analysis written in Strata: tests/smt.rs)
+        let mut shown: Vec<String> = vec![];
+        for (orig, d) in p.decls.iter().zip(&resolved.decls) {
+            if !names.contains(&orig.qname()) {
+                continue;
+            }
+            match &d.kind {
+                DeclKind::Fn(f) if !f.params.iter().any(|p| p.comptime) => shown.push(f.name.to_string()),
+                DeclKind::Impl(imp) if !imp.is_inherent() => {
+                    if let Some(tr) = env.traits.get(&imp.trait_name) {
+                        for m in &tr.methods {
+                            if m.default || imp.methods.iter().any(|x| x.name == m.decl.name) {
+                                shown.push(termination::impl_label(&env, imp, &m.decl.name));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for n in shown {
+            println!("fn {n}");
+            match analysis.status.get(&n) {
+                Some(termination::Termination::Proven { how }) => println!("  proven: {how}"),
+                Some(termination::Termination::Assumed { by }) => println!("  assumed: {}", by.join(", ")),
+                Some(termination::Termination::Unknown { reason }) => println!("  unknown: {reason}"),
+                None => println!("  none"),
+            }
+            match analysis.transparent.get(&n) {
+                Some(true) => println!("  transparent (assumed)"),
+                Some(false) => println!("  transparent"),
+                None => {}
             }
         }
         return Ok((true, vec![]));
