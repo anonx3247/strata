@@ -190,3 +190,34 @@ const char *jit_fault_message(void) {
 const char *jit_fault_stack(void) { return runtime_text("strata_test_stack"); }
 
 const char *jit_fuzz_args(void) { return runtime_text("strata_fuzz_args"); }
+
+// ---- compile-time values (`comptime e`, compiler/derive) ----
+//
+// A module of calls (`codegen` with calls: `strata.call.N`, each handing its
+// value over with `strata_ct_keep`), loaded by `jit_fuzz_load`, run call by
+// call as a fuzz case runs: within a step budget, a fault caught. The value
+// stays in this process for the compiler to read (core.values' `Raw`).
+
+// Call `strata.call.i` of module `m`: 0 when it ended (its value's address
+// in `jit_kept`), 1 when a fault ended it (`jit_fault_message`), -1 when
+// there is no such call.
+int32_t jit_call_case(int32_t m, int64_t i, int64_t budget) {
+  if (m < 0 || m >= fuzz_count) return -1;
+  char name[64];
+  snprintf(name, sizeof name, "strata.call.%lld", (long long)i);
+  LLVMOrcExecutorAddress addr;
+  LLVMErrorRef e = LLVMOrcLLJITLookup(fuzz_jits[m], &addr, name);
+  if (e) {
+    LLVMConsumeError(e);
+    return -1;
+  }
+  int32_t (*fuzz)(void (*)(void), int64_t, int64_t) = runtime_fn("strata_fuzz");
+  if (!fuzz) return -1;
+  return fuzz((void (*)(void))(uintptr_t)addr, 7, budget) != 0;
+}
+
+// The address of the value the last call handed over.
+int64_t jit_kept(void) {
+  int64_t (*kept)(void) = runtime_fn("strata_ct_kept");
+  return kept ? kept() : 0;
+}

@@ -550,6 +550,18 @@ int32_t strata_cancel_any;
 int32_t strata_test(void (*f)(void)) {
   sigjmp_buf here;
   catch_overflow();
+  // the caller's own call stack (a compiled host, such as the compiler
+  // running compile-time code in its own process, has frames of its own),
+  // kept aside while the run's starts from nothing, then put back
+  int64_t outer_runs = calls.runs, kept = outer_runs < FRAMES ? outer_runs : FRAMES;
+  Str **outer_frames = NULL;
+  int64_t *outer_counts = NULL;
+  if (kept > 0) {
+    outer_frames = malloc((size_t)kept * sizeof(Str *));
+    outer_counts = malloc((size_t)kept * sizeof(int64_t));
+    memcpy(outer_frames, calls.frames, (size_t)kept * sizeof(Str *));
+    memcpy(outer_counts, calls.counts, (size_t)kept * sizeof(int64_t));
+  }
   calls.runs = 0;
   rng = test_seed;
   forget_senders();
@@ -577,6 +589,13 @@ int32_t strata_test(void (*f)(void)) {
   trap = NULL;
   capturing = 0;
   contained = outer;
+  if (kept > 0) {
+    memcpy(calls.frames, outer_frames, (size_t)kept * sizeof(Str *));
+    memcpy(calls.counts, outer_counts, (size_t)kept * sizeof(int64_t));
+    free(outer_frames);
+    free(outer_counts);
+  }
+  calls.runs = outer_runs;
   my_run = outer_run;
   me = outer_me;
   // a panic of the run itself (a deadlock): the test fails with it

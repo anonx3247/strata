@@ -13,3 +13,8 @@ sources = ["c/jit.c"]
 libs = ["LLVM-C"]
 include_dirs = ["/opt/homebrew/opt/llvm/include"]
 lib_dirs = ["/opt/homebrew/opt/llvm/lib"]
+
+# Compile-time code is compiled and run by the JIT, and its value read back
+# from memory by its type (codegen's `read_back`, core.values' `Raw`)
+[values]
+read = true
