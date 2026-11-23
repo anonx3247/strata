@@ -34,6 +34,22 @@ pub fn colours(cmd: &str) -> bool {
 pub fn line(l: &str) -> String {
     let t = l.trim_start();
     let whole = |c: &str| format!("{c}{l}{RESET}");
+    // `strata diff`: section headings, added and removed lines, folded ones, words changed in a line
+    if l.len() > 2 && l.chars().all(|c| c.is_ascii_uppercase() || c == ' ') {
+        return format!("{BOLD}{INPUT}{l}{RESET}");
+    }
+    if l.starts_with("  + ") {
+        return whole(OK);
+    }
+    if l.starts_with("  - ") {
+        return whole(BAD);
+    }
+    if l.starts_with("  ~ ") || l.contains("[-") || l.contains("{+") {
+        return words(l);
+    }
+    if l.starts_with(char::is_whitespace) && t.starts_with("… ") {
+        return whole(DIM);
+    }
     if t.starts_with('✓') {
         return whole(OK);
     }
@@ -65,6 +81,28 @@ pub fn line(l: &str) -> String {
             }
         }
         out = out.replace("(interface changed)", &format!("({WARN}interface changed{RESET})"));
+    }
+    out
+}
+
+/// A diff's changed line: `~` orange, `[-removed-]` red, `{+added+}` green, `◀ …` orange.
+fn words(l: &str) -> String {
+    let mut out = String::new();
+    let mut rest = l;
+    if let Some(r) = rest.strip_prefix("  ~ ") {
+        out += &format!("  {WARN}~{RESET} ");
+        rest = r;
+    }
+    while !rest.is_empty() {
+        let next = [("[-", "-]", BAD), ("{+", "+}", OK), ("◀ ", "", WARN)].into_iter().filter_map(|(a, z, c)| rest.find(a).map(|i| (i, a, z, c))).min_by_key(|x| x.0);
+        let Some((i, _, z, c)) = next else {
+            out += rest;
+            break;
+        };
+        out += &rest[..i];
+        let end = if z.is_empty() { rest.len() } else { rest[i..].find(z).map_or(rest.len(), |j| i + j + z.len()) };
+        out += &format!("{c}{}{RESET}", &rest[i..end]);
+        rest = &rest[end..];
     }
     out
 }
@@ -239,5 +277,8 @@ mod tests {
         assert_eq!(line("?refund_policy  in refund"), format!("{HOLE}?refund_policy{RESET}  in refund"));
         assert_eq!(line("a ? b"), "a ? b");
         assert_eq!(line("issue #12"), "issue #12");
+        assert!(line("  + OutOfStock").starts_with(OK) && line("  - old").starts_with(BAD));
+        assert_eq!(line("TYPES"), format!("{BOLD}{INPUT}TYPES{RESET}"));
+        assert_eq!(line("  ~   | [-Shipped-]{+Sent+} {"), format!("  {WARN}~{RESET}   | {BAD}[-Shipped-]{RESET}{OK}{{+Sent+}}{RESET} {{"));
     }
 }
