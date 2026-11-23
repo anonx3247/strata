@@ -40,10 +40,38 @@ fn functions(out: &str) -> Vec<(String, Vec<String>)> {
         if let Some(n) = l.strip_prefix("fn ") {
             fns.push((n.to_string(), vec![]));
         } else if let (Some(line), Some(f)) = (l.strip_prefix("  "), fns.last_mut()) {
-            f.1.push(line.to_string());
+            f.1.push(untyped_lambdas(line));
         }
     }
     fns
+}
+
+/// A line with each lambda's parameter type left out (`(w: String) -> e`
+/// is `w -> e`): Rust's verifier reads the checker's tree, where a lambda's
+/// parameter has its inferred type written in; `compiler/check` doesn't
+/// write it yet. The obligation and its outcome are the same.
+fn untyped_lambdas(line: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(k) = rest.find('(') {
+        out.push_str(&rest[..k]);
+        let after = &rest[k + 1..];
+        let name_len = after.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(after.len());
+        let typed = name_len > 0 && after[name_len..].starts_with(": ");
+        let close = after.find(") -> ");
+        match (typed, close) {
+            (true, Some(c)) if !after[..c].contains('(') || after[..c].matches('(').count() == after[..c].matches(')').count() => {
+                out.push_str(&after[..name_len]);
+                rest = &after[c + 1..];
+            }
+            _ => {
+                out.push('(');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The script at `file` through both verifiers: the functions
@@ -82,6 +110,10 @@ fn same(file: &Path, cache: &Path) -> (usize, usize) {
 /// Step 2: records, sums (`Option`, `Result`), tuples and distinct types as
 /// datatypes; constructors, fields, updates, `match` and patterns, `is`,
 /// `!` / `?`, `except` / `??`.
+/// Step 3: lists (and dicts and sets by their size): literals, indexing,
+/// slices, `+`, list patterns, element types, lambdas passed to `map`,
+/// `filter`, `all`, `any`, `find`; the builtins on lists, strings and
+/// numbers.
 #[test]
 fn smt_outcomes_as_in_rust() {
     if !have_z3() {
@@ -89,7 +121,11 @@ fn smt_outcomes_as_in_rust() {
         return;
     }
     let dir = scratch("steps");
-    for (name, text) in [("step1", include_str!("data/smt/step1.st")), ("step2", include_str!("data/smt/step2.st"))] {
+    for (name, text) in [
+        ("step1", include_str!("data/smt/step1.st")),
+        ("step2", include_str!("data/smt/step2.st")),
+        ("step3", include_str!("data/smt/step3.st")),
+    ] {
         let file = dir.join(format!("{name}.strata"));
         save(&file, text);
         let (covered, all) = same(&file, &dir);
