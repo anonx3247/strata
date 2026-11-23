@@ -599,7 +599,7 @@ impl<'a> Expander<'a> {
             "Type",
             vec![
                 ("name", some(Expr::Str(name.clone()))),
-                ("doc", Expr::List(vec![])),
+                ("doc", strs(&v.doc)),
                 ("kind", atom(&q(kind))),
                 ("args", Expr::List(vec![])),
                 ("written", Expr::Str(name)),

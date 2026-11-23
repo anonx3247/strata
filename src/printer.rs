@@ -701,7 +701,7 @@ pub fn type_decl(t: &TypeDecl) -> String {
     // an atom or a tuple-shaped type on its own: `type Dot`, `type Moved(Int)`
     if let TypeBody::Sum(vs) = &t.body {
         if let [v] = vs.as_slice() {
-            if crate::names::short(&v.name) == crate::names::short(&t.name) && !t.distinct && !t.mock && t.refinement.is_none() && !has_comments(&v.comments) {
+            if crate::names::short(&v.name) == crate::names::short(&t.name) && !t.distinct && !t.mock && t.refinement.is_none() && !has_comments(&v.comments) && v.doc.is_empty() {
                 match &v.payload {
                     Payload::None => return format!("type {}{tp}", t.name),
                     Payload::Positional(ts) => return format!("type {}{tp}({})", t.name, ts.iter().map(ty).collect::<Vec<_>>().join(", ")),
@@ -731,6 +731,9 @@ pub fn type_decl(t: &TypeDecl) -> String {
                 s += comments(&v.comments, 1).trim_end_matches('\n');
                 if has_comments(&v.comments) {
                     s += "\n";
+                }
+                for l in &v.doc {
+                    s += &format!("  ///{}{l}\n", if l.is_empty() { "" } else { " " });
                 }
                 s += "  | ";
                 if !matches!(v.payload, Payload::Type(_)) {

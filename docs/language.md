@@ -107,6 +107,16 @@ fn describe(v: Int | String) -> String {
 
 **A union declares its members or names them.** `type Shape = Circle | Square { side: Float } | Dot` uses the record `Circle` and declares `Square` (a record) and `Dot` (an atom: a type with one value). A bare name is the type of that name when one is in scope, and is declared by the union only when nothing has that name; a member written with fields (`Moved(Int)`, `Square { .. }`) is declared. The same union can be written with a bar before each member, one per line, and `type ShapeError = | Empty | TooBig { max: Int }` declares both its members. A member declared in a union is a type like any other: a function can take `e: TooBig` (and read `e.max`), or return `Result[Shape, TooBig]`, and an atom or tuple-shaped type can be declared on its own too (`type Dot`, `type Moved(Int)`), to be used in several unions. Constructors still need wrapping (`Err(TooBig { max: 9 })`), so `Result[Int, Int]` stays unambiguous. A member declared in a union has its name unique in its module (another module's type of the same name is told apart by its module, as `geo.Circle`). `edit` warns when a new member is named like an existing type (`Circel` next to `Circle`).
 
+**A member it declares can have a `///` doc comment**, written above its `|`, as a record's field can: `std.typing` gives it to derived traits (a `CommandLine` union shows it as the command's help).
+
+```rust
+type Command =
+  /// Show the history.
+  | Log
+  /// Replace definitions, read from standard input.
+  | Edit { module: Option[String] }
+```
+
 **Only bare members flatten.** `type S2 = S | C` with `type S = A | B` is `A | B | C`; `type S3 = D(S) | E` is `D | E`: `D` is a new type holding an `S`.
 
 **Patterns are sets of values**, and an arm takes what the arms above it left:
@@ -530,7 +540,7 @@ cat README.md | strata run examples/wc
 
 **`print(x)`** is always available, with no `use`. It writes `x` (as `to_string` shows it) and a newline wherever the code runs: to the terminal under `strata run`, into the test's own buffer under `strata test` (shown only if the test fails), and nowhere under `verify`. It is a convenience; code whose output a test should check, or that a caller should control, takes a `Console`.
 
-**Command-line options** are a record that derives `CommandLine` (`std.cli`): each field is read from the arguments by its type (a `Bool` is a flag, a `List[T]` the remaining arguments, a field with a default an option), every refinement is checked, and `--help` is built from the `///` doc comments.
+**Command-line options** are a record that derives `CommandLine` (`std.cli`): each field is read from the arguments by its type (a `Bool` is a flag, a `List[T]` the remaining arguments, a field with a default an option), every refinement is checked, and `--help` is built from the `///` doc comments. A union that derives `CommandLine` is a set of commands (`Edit` is `edit`), each with its own options.
 
 `main` can also ask for `Console` and capabilities (`Disk`, `Process`, the program's own), in any order, and passes them on where a trait (`Files`, `Environment`) is wanted, so tests can pass stand-ins. It returns `()`, an `ExitCode`, or a `Result` of either: an `Err` is written to standard error and the exit code is 1.
 

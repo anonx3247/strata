@@ -616,15 +616,36 @@ impl Parser {
         // own: a union of one member, named as it is
         if !self.is_sym("=") && (self.is_sym("(") || !self.is_sym("{")) {
             let payload = if self.is_sym("(") { self.payload()? } else { Payload::None };
-            return Ok(TypeDecl { distinct: false, name, params, body: TypeBody::Sum(vec![Variant { comments: vec![], name, payload }]), refinement: None, mock: false });
+            return Ok(TypeDecl { distinct: false, name, params, body: TypeBody::Sum(vec![Variant { comments: vec![], doc: vec![], name, payload }]), refinement: None, mock: false });
         }
         self.expect_sym("=")?;
-        let body = if self.is_sym("|") {
+        // (the first member's `///` doc comes before its `|`)
+        let mut docs = 0;
+        while matches!(self.peek_at(docs), Tok::Doc(_)) {
+            docs += 1;
+        }
+        let body = if matches!(self.peek_at(docs), Tok::Sym("|")) {
             let mut vs = Vec::new();
-            while self.is_sym("|") {
+            loop {
+                // a member's `///` doc comment comes before its `|` (one
+                // that isn't followed by a `|` is the next definition's)
+                let mut n = 0;
+                while matches!(self.peek_at(n), Tok::Doc(_)) {
+                    n += 1;
+                }
+                if !matches!(self.peek_at(n), Tok::Sym("|")) {
+                    break;
+                }
                 let mut comments = self.leading();
+                let mut doc = Vec::new();
+                while let Tok::Doc(d) = self.peek().clone() {
+                    doc.push(d);
+                    self.next();
+                }
+                comments.extend(self.leading());
                 self.next();
-                vs.push(self.member(&mut comments)?);
+                let v = self.member(&mut comments)?;
+                vs.push(Variant { doc, ..v });
             }
             Self::union_of(vs)
         } else if self.eat_sym("{") {
@@ -664,10 +685,10 @@ impl Parser {
                 Payload::None if crate::types::builtin_types().contains(&name.as_str()) => Payload::Type(TypeExpr::Named(name, vec![])),
                 p => p,
             };
-            Variant { comments: vec![], name, payload }
+            Variant { comments: vec![], doc: vec![], name, payload }
         } else {
             let t = self.type_expr_plain()?;
-            Variant { comments: vec![], name: Symbol::new(&crate::types::texpr_head(&t)), payload: Payload::Type(t) }
+            Variant { comments: vec![], doc: vec![], name: Symbol::new(&crate::types::texpr_head(&t)), payload: Payload::Type(t) }
         };
         comments.extend(self.trailing());
         Ok(Variant { comments: std::mem::take(comments), ..v })
