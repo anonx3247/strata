@@ -30,6 +30,7 @@ pub const FILES: &[(&str, &[u8])] = &[
     ("channel.strata", include_bytes!("../core/channel.strata")),
     ("text.strata", include_bytes!("../core/text.strata")),
     ("task.strata", include_bytes!("../core/task.strata")),
+    ("rt.strata", include_bytes!("../core/rt.strata")),
 ];
 
 /// The modules of code a program gets when it uses them (`needed`):
@@ -233,6 +234,11 @@ pub fn owns(module: &str, name: &str) -> bool {
     is_core(&module) && FILES.iter().any(|(f, _)| module_of(f) == module && crate::core::module(f).iter().any(|d| d.name() == short))
 }
 
+/// A core module's definitions (by its file, `rt.strata`), as written.
+pub fn module_decls(file: &str) -> Vec<Decl> {
+    module(file).to_vec()
+}
+
 /// `core.mem` for `mem.strata`.
 fn module_of(file: &str) -> String {
     format!("{NAME}.{}", file.trim_end_matches(".strata"))
@@ -276,9 +282,13 @@ pub fn check(dir: &std::path::Path) -> crate::types::CheckReport {
     rep
 }
 
-/// core's own tests (`test` blocks in its modules), as a program.
+/// core's own tests (`test` blocks in its modules), as a program, with
+/// the functions of the modules programs don't get by themselves (core.rt's).
 pub fn tests() -> Program {
-    let decls = FILES.iter().flat_map(|(f, _)| module(f).iter().filter(|d| matches!(d.kind, DeclKind::Test(_))).cloned()).collect();
+    let decls = FILES
+        .iter()
+        .flat_map(|(f, _)| module(f).iter().filter(move |d| matches!(d.kind, DeclKind::Test(_)) || (*f == "rt.strata" && !is_builtin(d))).cloned())
+        .collect();
     Program { decls }
 }
 

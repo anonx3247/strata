@@ -169,8 +169,16 @@ static void str_drop(void *s) {
   if (strata_release(s)) strata_free(s);
 }
 
+// The runtime written in Strata (core/rt.strata) replaces these when it is
+// linked in (`STRATA_CORE_RT`: every executable, and strata itself from the
+// second stage of its build on); without it, as when strata is first built,
+// they are C.
+#ifndef STRATA_CORE_RT
 // Whether `p` has a single holder, so it may be changed in place.
 _Bool strata_unique(void *p) { return THREADED ? __atomic_load_n(count_of(p), __ATOMIC_ACQUIRE) == 1 : *count_of(p) == 1; }
+#else
+_Bool strata_unique(void *p);
+#endif
 
 // With STRATA_MEMORY set, how many objects the program made and freed.
 // In check mode, the first few still alive: their count, size and first
