@@ -142,7 +142,7 @@ const NOT_YET: &[(&str, &str)] = &[
 ];
 
 /// The stored programs of tests/data/build.
-const FILES: &[&str] = &["numbers", "lists", "data"];
+const FILES: &[&str] = &["numbers", "lists", "data", "sized"];
 
 #[test]
 fn programs_run_as_compiled() {

@@ -126,6 +126,23 @@ fn numbers_compile_and_run_as_interpreted() {
     assert_eq!(code, 101);
 }
 
+/// Sized integers in their own widths: wrapping arithmetic, Euclidean
+/// division, shifts past the width, unsigned order, conversions (the last
+/// one out of range: a fault).
+#[test]
+fn sized_integers_wrap_in_their_widths() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("sized");
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/build/sized.strata");
+    let (out, code) = built_as_expected(&file, &d);
+    assert!(out.starts_with("0\n4294967300\n"), "{out}");
+    assert!(out.contains("fault (Runtime): `300` doesn't fit in `U8`"), "{out}");
+    assert_eq!(code, 101);
+}
+
 #[test]
 fn faults_and_control_flow_match_the_interpreter() {
     if !have_clang() {
