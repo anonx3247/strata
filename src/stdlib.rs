@@ -67,6 +67,8 @@ pub const HOST: &[Builtin] = &[
     Builtin::new("host_current_dir", "", "() -> String"),
     // the monotonic clock, in nanoseconds; waiting (a task that is cancelled stops at once)
     Builtin::new("host_now", "", "() -> Int"),
+    // the wall clock: nanoseconds since 1970-01-01 UTC (it may go back)
+    Builtin::new("host_wall_now", "", "() -> Int"),
     Builtin::new("host_sleep", "", "(Int) -> ()"),
     // a `VirtualClock`'s: its run's own time, moving by itself
     Builtin::new("host_virtual_now", "", "() -> Int"),

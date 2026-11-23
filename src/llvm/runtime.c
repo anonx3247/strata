@@ -1457,6 +1457,13 @@ static void wait_until(int64_t deadline) {
 
 int64_t strata_host_now(void) { return mono_ns(); }
 
+// The wall clock: nanoseconds since 1970-01-01 UTC.
+int64_t strata_host_wall_now(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_REALTIME, &t);
+  return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+}
+
 void strata_host_sleep(int64_t ns) {
   int64_t deadline = mono_ns() + ns;
   pthread_mutex_lock(&chan_lock);
