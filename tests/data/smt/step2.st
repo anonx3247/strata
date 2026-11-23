@@ -188,3 +188,36 @@ fn let_pattern(p: Point) -> Int {
   Point { x, y } := p
   x + y
 }
+
+fn sign(n: Int) -> Int {
+  match n {
+    where it > 0 => 1,
+    where it < 0 => -1,
+    _ => 0,
+  }
+}
+
+fn parity(n: Int) -> String {
+  match n {
+    where it % 2 == 0 => "even",
+    where it % 2 == 1 => "odd",
+  }
+}
+
+fn thirds(n: Int) -> Int {
+  match n {
+    where it % 3 == 0 => 0,
+    where it % 3 == 1 => 1,
+  }
+}
+
+fn radius_of(s: Shape) -> Pos {
+  match s {
+    Circle { radius: where it > 0 } => s.radius,
+    _ => 1,
+  }
+}
+
+fn generic_eq[T](a: T, b: T) -> Bool {
+  a == b
+}
