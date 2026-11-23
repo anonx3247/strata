@@ -869,6 +869,510 @@ fn main() {
 }
 ",
     ),
+    (
+        "methods_and_traits",
+        "type P = { x: Int, y: Int }
+
+type Circle = { r: Float }
+
+type Square = { side: Float }
+
+type Box[T] = { item: T }
+
+trait Shape {
+    fn area(self) -> Float
+
+    fn name(self) -> String
+
+    fn describe(self) -> String {
+        f\"{self.name()} of area {self.area()}\"
+    }
+}
+
+trait Named {
+    fn label(self) -> String
+}
+
+impl P {
+    fn origin() -> P {
+        P { x: 0, y: 0 }
+    }
+
+    fn plus(self, o: P) -> P {
+        P { x: self.x + o.x, y: self.y + o.y }
+    }
+
+    fn norm1(self) -> Int {
+        abs(self.x) + abs(self.y)
+    }
+}
+
+impl Display for P {
+    fn to_string(self) -> String {
+        f\"<{self.x}, {self.y}>\"
+    }
+}
+
+impl Shape for Circle {
+    fn area(self) -> Float {
+        3.0 * self.r * self.r
+    }
+
+    fn name(self) -> String {
+        \"circle\"
+    }
+}
+
+impl Shape for Square {
+    fn area(self) -> Float {
+        self.side * self.side
+    }
+
+    fn name(self) -> String {
+        \"square\"
+    }
+
+    fn describe(self) -> String {
+        f\"a square, side {self.side}\"
+    }
+}
+
+impl Named for Circle {
+    fn label(self) -> String {
+        \"C\"
+    }
+}
+
+impl[T] Box[T] {
+    fn get(self) -> T {
+        self.item
+    }
+
+    fn map[U](self, f: (T) -> U) -> Box[U] {
+        Box { item: f(self.item) }
+    }
+}
+
+fn total_area[T: Shape](xs: List[T]) -> Float {
+    fold(xs, 0.0, (acc, s) -> acc + s.area())
+}
+
+fn biggest(shapes: List[Shape]) -> String {
+    mut best := \"\"
+    mut most := -1.0
+    for s in shapes {
+        if s.area() > most {
+            most = s.area()
+            best = s.describe()
+        }
+    }
+    best
+}
+
+fn main() {
+    p := P.origin().plus(P { x: 3, y: -4 })
+    print(p)
+    print(f\"p = {p}, norm {p.norm1()}\")
+    print([p, P { x: 1, y: 1 }])
+    print(Circle { r: 1.0 }.describe())
+    print(Square { side: 2.0 }.describe())
+    print(Circle { r: 2.0 }.label())
+    b := Box { item: 21 }
+    print(b.get())
+    print(b.map(x -> x * 2).get())
+    print(b.map(x -> f\"#{x}\"))
+    print(total_area([Circle { r: 1.0 }, Circle { r: 2.0 }]))
+    let shapes: List[Shape] = [Circle { r: 1.0 }, Square { side: 3.0 }, Circle { r: 0.5 }]
+    print(biggest(shapes))
+    for s in shapes {
+        print(s.name())
+    }
+    print(shapes)
+    let one: Shape = Square { side: 1.0 }
+    print(one == Square { side: 1.0 })
+    print(one.describe())
+}
+",
+    ),
+    (
+        "failures_as_values",
+        "type Problem = | Empty | TooBig { max: Int }
+
+fn parse(s: String) -> Result[Int, String] {
+    match parse_int(s) {
+        Some(n) => Ok(n),
+        None => Err(f\"not a number: {s}\"),
+    }
+}
+
+fn check(n: Int) -> Result[Int, Problem] {
+    if n == 0 {
+        return Err(Empty)
+    }
+    if n > 100 {
+        return Err(TooBig { max: 100 })
+    }
+    Ok(n)
+}
+
+fn sum_two(a: String, b: String) -> Result[Int, String] {
+    x := parse(a)!
+    y := parse(b)!
+    Ok(x + y)
+}
+
+fn first_even(xs: List[Int]) -> Option[Int] {
+    x := find(xs, n -> n % 2 == 0)?
+    Some(x * 10)
+}
+
+fn main() -> Result[(), String] {
+    print(sum_two(\"2\", \"40\"))
+    print(sum_two(\"2\", \"x\"))
+    print(first_even([1, 3, 4]))
+    print(first_even([1, 3]))
+    print(parse(\"7\") except { 0 })
+    print(parse(\"q\") except e { byte_len(e) })
+    print(check(500) except e {
+        match e {
+            Empty => -1,
+            TooBig { max } => max,
+        }
+    })
+    print(get([1, 2], 5) ?? 99)
+    print(get([1, 2], 1) ?? 99)
+    print(parse_int(\"12\") ?? 0)
+    n := parse(\"8\")!
+    print(n)
+    bad := parse(\"nope\")!
+    print(bad)
+    Ok(())
+}
+",
+    ),
+    (
+        "main_result_code",
+        "fn main() -> Result[Int, String] {
+    print(\"exiting with 3\")
+    Ok(3)
+}
+",
+    ),
+    (
+        "mutation",
+        "type Inner = { y: Int, tag: String }
+
+type Outer = { x: Int, inner: Inner, items: List[String] }
+
+type Counter = { n: Int, log: List[String] }
+
+impl Counter {
+    fn bump(mut self, by: Int) {
+        self.n += by
+        self.log = push(self.log, f\"+{by}\")
+    }
+
+    fn total(self) -> Int {
+        self.n
+    }
+}
+
+fn push_twice(mut xs: List[Int], x: Int) {
+    xs = push(xs, x)
+    xs = push(xs, x * 10)
+}
+
+fn rename(mut o: Outer, name: String) {
+    o.inner.tag = name
+}
+
+fn swap(mut a: String, mut b: String) {
+    t := a
+    a = b
+    b = t
+}
+
+fn main() {
+    mut xs := [1]
+    push_twice(mut xs, 2)
+    print(xs)
+    mut o := Outer { x: 1, inner: Inner { y: 2, tag: \"a\" }, items: [] }
+    keep := o
+    o.x = 10
+    o.inner.y = 20
+    o.items = push(o.items, \"first\" + \"!\")
+    print(o)
+    print(keep)
+    rename(mut o, \"renamed\")
+    print(o.inner)
+    mut c := Counter { n: 0, log: [] }
+    c.bump(3)
+    c.bump(4)
+    print(c.total())
+    print(c)
+    mut p := \"left\"
+    mut q := \"right\"
+    swap(mut p, mut q)
+    print(f\"{p} {q}\")
+    mut pair := (1, \"one\")
+    pair.0 = 2
+    print(pair)
+}
+",
+    ),
+    (
+        "unions_and_distinct",
+        "type Circle = { r: Float }
+
+type Shape = Circle | Square { side: Float } | Dot
+
+type Id = Int | String
+
+distinct type UserId = Int
+
+distinct type Label = String
+
+fn area(s: Shape) -> Float {
+    match s {
+        Circle { r } => 3.0 * r * r,
+        Square { side } => side * side,
+        Dot => 0.0,
+    }
+}
+
+fn describe(id: Id) -> String {
+    match id {
+        Int => f\"number {id + 1}\",
+        String => f\"text {id}\",
+    }
+}
+
+fn small(n: Natural) -> I32 {
+    n * 2
+}
+
+fn main() {
+    let shapes: List[Shape] = [Circle { r: 1.0 }, Square { side: 2.0 }, Dot]
+    for s in shapes {
+        print(area(s))
+    }
+    print(shapes)
+    let a: Id = 41
+    let b: Id = \"hi\"
+    print(describe(a))
+    print(describe(b))
+    print(a)
+    print(b)
+    print([a, b])
+    print(a == b)
+    let c: Id = 41
+    print(a == c)
+    print(sort([b, a, c]))
+    if b is String {
+        print(f\"{b}!\")
+    }
+    print(a is Int)
+    u := UserId(7)
+    print(u)
+    print(u.value + 1)
+    print(u == UserId(7))
+    print(sort([UserId(9), UserId(3)]))
+    l := Label(\"x\")
+    print(f\"{l} {l.value}\")
+    print(small(4))
+    let one: Shape = Dot
+    print(one == Dot)
+}
+",
+    ),
+    (
+        "contract_1",
+        "fn half(n: Int) -> Int
+    requires n % 2 == 0
+{
+    n / 2
+}
+
+fn main() {
+    print(half(4))
+    print(half(read_odd()))
+}
+
+fn read_odd() -> Int {
+    parse_int(\"3\") ?? 0
+}
+",
+    ),
+    (
+        "contract_2",
+        "fn pos(n: Int) -> Int
+    ensures it > 0
+{
+    n - 10
+}
+
+fn main() {
+    print(pos(read(20)))
+    print(pos(read(5)))
+}
+
+fn read(n: Int) -> Int {
+    parse_int(f\"{n}\") ?? 0
+}
+",
+    ),
+    (
+        "contract_3",
+        "type Small = Int where it < 10
+
+fn f(x: Small) -> Small {
+    x + 1
+}
+
+fn main() {
+    print(f(read(3)))
+    print(f(read(9)))
+}
+
+fn read(n: Int) -> Int {
+    parse_int(f\"{n}\") ?? 0
+}
+",
+    ),
+    (
+        "contract_4",
+        "fn g(n: Natural) -> Int {
+    n
+}
+
+fn main() {
+    print(g(read(3)))
+    let k: Positive = read(0)
+    print(k)
+}
+
+fn read(n: Int) -> Int {
+    parse_int(f\"{n}\") ?? 0
+}
+",
+    ),
+    (
+        "contract_5",
+        "type Range = { lo: Int, hi: Int } where it.lo <= it.hi
+
+fn main() {
+    r := Range { lo: 1, hi: read(5) }
+    print(r)
+    q := Range { lo: 1, hi: read(0) }
+    print(q)
+}
+
+fn read(n: Int) -> Int {
+    parse_int(f\"{n}\") ?? 0
+}
+",
+    ),
+    (
+        "contract_11",
+        "fn g(n: Natural) -> Int {
+    n
+}
+
+fn main() {
+    print(g(read(-1)))
+}
+
+fn read(n: Int) -> Int {
+    parse_int(f\"{n}\") ?? 0
+}
+",
+    ),
+    (
+        "contract_12",
+        "type Item = { name: String, qty: Positive }
+
+fn main() {
+    print(Item { name: \"a\", qty: read(0) })
+}
+
+fn read(n: Int) -> Int {
+    parse_int(f\"{n}\") ?? 0
+}
+",
+    ),
+    (
+        "contract_13",
+        "fn main() {
+    mut k: Natural = 3
+    k = k - read(5)
+    print(k)
+}
+
+fn read(n: Int) -> Int {
+    parse_int(f\"{n}\") ?? 0
+}
+",
+    ),
+    (
+        "contract_14",
+        "fn main() {
+    mut i := 0
+    while i < 5
+        invariant i <= read(3)
+    {
+        i += 1
+    }
+}
+
+fn read(n: Int) -> Int {
+    parse_int(f\"{n}\") ?? 0
+}
+",
+    ),
+    (
+        "contract_15",
+        "fn total(xs: List[Natural]) -> Int {
+    fold(xs, 0, (a, x) -> a + x)
+}
+
+fn main() {
+    print(total([1, read(-2)]))
+}
+
+fn read(n: Int) -> Int {
+    parse_int(f\"{n}\") ?? 0
+}
+",
+    ),
+    (
+        "contract_16",
+        "fn h(x: Int where it > 5) -> Int {
+    x
+}
+
+fn main() {
+    print(h(read(2)))
+}
+
+fn read(n: Int) -> Int {
+    parse_int(f\"{n}\") ?? 0
+}
+",
+    ),
+    (
+        "contract_17",
+        "distinct type Age = Int where it >= 0
+
+fn main() {
+    print(Age(read(4)))
+    print(Age(read(-4)))
+}
+
+fn read(n: Int) -> Int {
+    parse_int(f\"{n}\") ?? 0
+}
+",
+    ),
 ];
 
 #[test]
@@ -890,8 +1394,8 @@ fn compiled_programs_do_what_rust_compiled_ones_do() {
 #[test]
 fn refuses_what_it_does_not_compile_yet() {
     let dir = scratch("refused");
-    let file = dir.join("methods.strata");
-    save(&file, "type P = { x: Int }\n\nimpl P {\n    fn get_x(self) -> Int {\n        self.x\n    }\n}\n\nfn main() {\n    print(P { x: 1 }.get_x())\n}\n");
+    let file = dir.join("channels.strata");
+    save(&file, "fn main() {\n    (tx, rx) := channel(1)\n    channel_send(tx, 1)\n    tx.close()\n    print(channel_recv(rx))\n}\n");
     let out = compiler::run(&["codegen".to_string(), file.to_string_lossy().into_owned()]);
     assert!(out.starts_with("error: in `main`: not compiled yet: "), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
