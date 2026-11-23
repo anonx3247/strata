@@ -99,6 +99,7 @@ unsafe extern "C" {
     fn strata_virtual_now();
     fn strata_virtual_sleep();
     fn strata_host_now();
+    fn strata_host_wall_now();
     fn strata_host_sleep();
     fn strata_cancelled();
     fn strata_panic();
@@ -262,6 +263,7 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_virtual_now", strata_virtual_now as *const () as usize),
         ("strata_virtual_sleep", strata_virtual_sleep as *const () as usize),
         ("strata_host_now", strata_host_now as *const () as usize),
+        ("strata_host_wall_now", strata_host_wall_now as *const () as usize),
         ("strata_host_sleep", strata_host_sleep as *const () as usize),
         ("strata_cancelled", strata_cancelled as *const () as usize),
         ("strata_panic", strata_panic as *const () as usize),
