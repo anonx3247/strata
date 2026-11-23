@@ -226,6 +226,55 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
     };
     let result = (|| -> Result<bool, String> {
         match cmd {
+            // the tests' IR from `compiler codegen --tests` (`strata.test.N`, each
+            // after a line naming it), run as `strata test` runs its own
+            "test" => {
+                let ir = run_compiler(&exe, &["codegen".into(), "--tests".into(), file.clone()])?;
+                let missing: Vec<&str> = ir.lines().filter(|l| l.starts_with("error:")).collect();
+                if !missing.is_empty() {
+                    return Err(format!("compiler/codegen doesn't cover these tests yet:\n{}", missing.join("\n")));
+                }
+                let names: Vec<String> = ir.lines().filter_map(|l| l.strip_prefix("; test ")).map(|l| l.split_once(": ").map(|x| x.1.to_string()).unwrap_or_default()).collect();
+                let filter = if args.val("--file").is_some() { args.pos.get(1).cloned().unwrap_or_default() } else { String::new() };
+                let which: Vec<usize> = (0..names.len()).filter(|&i| names[i].contains(&filter)).collect();
+                let runs = crate::llvm::jit::run_tests(&ir, &which)?;
+                let (mut pass, mut fail, mut ours) = (0, 0, vec![]);
+                for (&i, r) in which.iter().zip(runs) {
+                    match r.fault {
+                        None => {
+                            pass += 1;
+                            ours.push(format!("✓ {}", names[i]));
+                        }
+                        Some((kind, msg, stack)) => {
+                            fail += 1;
+                            ours.push(format!("✗ {}", names[i]));
+                            ours.push(format!("    {kind}: {msg}"));
+                            if !stack.is_empty() {
+                                ours.push(format!("    stack: {stack}"));
+                            }
+                            if !r.printed.is_empty() {
+                                ours.push("    printed:".into());
+                                ours.extend(r.printed.lines().map(|l| format!("      {l}")));
+                            }
+                        }
+                    }
+                }
+                ours.push(String::new());
+                ours.push(format!("{pass} passed, {fail} failed"));
+                if !compare {
+                    for l in &ours {
+                        println!("{l}");
+                    }
+                    return Ok(fail == 0);
+                }
+                let mut rust_args = vec!["--file".to_string(), file.clone(), "test".to_string()];
+                if !filter.is_empty() {
+                    rust_args.push(filter);
+                }
+                let o = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).args(&rust_args).output().map_err(|e| e.to_string())?;
+                let rust: Vec<String> = String::from_utf8_lossy(&o.stdout).lines().map(String::from).collect();
+                Ok(report(rust, ours, "lines"))
+            }
             "build" => {
                 let runtime = compiler_dir().and_then(|d| d.canonicalize().ok()).and_then(|d| Some(d.parent()?.join("src/llvm/runtime.c"))).filter(|r| r.is_file()).ok_or("build --strata/--compare needs the repository's src/llvm/runtime.c beside compiler/")?;
                 let ll = scratch.join("program.ll");

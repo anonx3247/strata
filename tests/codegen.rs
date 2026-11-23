@@ -2015,3 +2015,61 @@ fn main() {
     assert!(m.ends_with(" 0 live"), "compiler/codegen's build leaks: {m}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `strata test --compare`: the tests compiled by compiler/codegen
+/// (`codegen --tests`) and run as `strata test` runs its own give the same
+/// report (passing, failing with what they printed, the console, a virtual
+/// clock, a fault).
+#[test]
+fn tests_run_as_strata_test_runs_them() {
+    let dir = scratch("tests");
+    let file = dir.join("tests.strata");
+    save(&file, "from std.io use Console, recorder, printed
+from std.time use VirtualClock, Clock, seconds
+
+fn double(n: Int) -> Int {
+  n * 2
+}
+
+fn greet(mut c: Console, who: String) {
+  mut c.print(\"hi \" + who)
+}
+
+test \"doubles\" {
+  assert double(2) == 4
+}
+
+test \"fails on purpose\" {
+  print(\"about to fail\")
+  assert double(3) == 7
+}
+
+test \"records\" {
+  mut r := recorder([])
+  greet(mut r, \"Ada\")
+  assert printed(r) == [\"hi Ada\"]
+}
+
+test \"uses the console\" (mut console: Console) {
+  greet(mut console, \"you\")
+}
+
+test \"sleeps virtually\" (clock: VirtualClock) {
+  clock.sleep(seconds(5))
+  assert clock.now().value == seconds(5).value
+}
+
+test \"index out of range\" {
+  xs := [1, 2]
+  print(xs[double(2)])
+}
+
+fn main() {
+  print(double(1))
+}
+");
+    let o = Command::new(STRATA).arg("--file").arg(&file).args(["test", "--compare"]).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("compare: they agree"), "{out}{}", String::from_utf8_lossy(&o.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
+}
