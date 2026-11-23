@@ -55,6 +55,9 @@ unsafe extern "C" {
     fn strata_main_error();
     fn strata_str_cmp();
     fn strata_dup();
+    fn strata_list_owned();
+    fn strata_list_put();
+    fn strata_list_insert();
     fn strata_set_code_host(v: extern "C" fn() -> i64, s: extern "C" fn(*mut i64) -> i64);
     fn strata_host_code_version();
     fn strata_host_code_snapshot();
@@ -198,6 +201,9 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_str_cmp", strata_str_cmp as *const () as usize),
         ("strata_alloc", super::native::strata_alloc as *const () as usize),
         ("strata_dup", strata_dup as *const () as usize),
+        ("strata_list_owned", strata_list_owned as *const () as usize),
+        ("strata_list_put", strata_list_put as *const () as usize),
+        ("strata_list_insert", strata_list_insert as *const () as usize),
         ("strata_trace_arg", trace_arg as *const () as usize),
         ("strata_trace_call", trace_call as *const () as usize),
         ("strata_trace_return", trace_return as *const () as usize),

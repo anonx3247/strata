@@ -593,102 +593,102 @@ fn save(file: &std::path::Path, text: &str) {
 
 #[test]
 fn clashes_as_in_rust() {
-    same_errors("clashes", CLASHES, &["defined twice", "already defined in the prelude", "two `impl", "already implemented", "a variant is a type of its own"]);
+    same_errors("clashes", CLASHES);
 }
 
 #[test]
 fn unknown_names_as_in_rust() {
-    same_errors("unknown", UNKNOWN, &["unknown variable"]);
+    same_errors("unknown", UNKNOWN);
 }
 
 #[test]
 fn arity_as_in_rust() {
-    same_errors("arity", ARITY, &["unknown variable", "expects", "needs"]);
+    same_errors("arity", ARITY);
 }
 
 #[test]
 fn types_as_in_rust() {
-    same_errors("types", TYPES, &["expected `", "Int or Float"]);
+    same_errors("types", TYPES);
 }
 
 #[test]
 fn statement_types_as_in_rust() {
-    same_errors("statements", STATEMENTS, &["expected `", "Int or Float"]);
+    same_errors("statements", STATEMENTS);
 }
 
 #[test]
 fn record_and_sum_types_as_in_rust() {
-    same_errors("records", RECORDS, &["expected `", "Int or Float", "has no field", "missing field"]);
+    same_errors("records", RECORDS);
 }
 
 #[test]
 fn generics_as_in_rust() {
-    same_errors("generics", GENERICS, &["expected `", "handle an Option"]);
+    same_errors("generics", GENERICS);
 }
 
 #[test]
 fn non_exhaustive_matches_as_in_rust() {
-    same_errors("matches", MATCHES, &["non-exhaustive match"]);
+    same_errors("matches", MATCHES);
 }
 
 #[test]
 fn methods_as_in_rust() {
-    same_errors("methods", METHODS, &["expected `", "expects"]);
+    same_errors("methods", METHODS);
 }
 
 #[test]
 fn trait_methods_as_in_rust() {
-    same_errors("traits", TRAIT_METHODS, &["expected `", "expects"]);
+    same_errors("traits", TRAIT_METHODS);
 }
 
 #[test]
 fn sum_variables_as_in_rust() {
-    same_errors("sums", SUMS, &["expected `"]);
+    same_errors("sums", SUMS);
 }
 
 #[test]
 fn builtin_calls_as_in_rust() {
-    same_errors("builtins", BUILTINS, &["expected `", "no version of"]);
+    same_errors("builtins", BUILTINS);
 }
 
 #[test]
 fn tuples_and_loops_as_in_rust() {
-    same_errors("tuples", TUPLES, &["expected `", "Int or Float", "no element"]);
+    same_errors("tuples", TUPLES);
 }
 
 #[test]
 fn results_and_indexes_as_in_rust() {
-    same_errors("results", RESULTS, &["expected `"]);
+    same_errors("results", RESULTS);
 }
 
 #[test]
 fn narrowed_variables_as_in_rust() {
-    same_errors("narrowed", NARROWED, &["expected `", "has no field"]);
+    same_errors("narrowed", NARROWED);
 }
 
 #[test]
 fn bounds_and_generic_impls_as_in_rust() {
-    same_errors("bounds", TRAITS, &["expected `", "does not implement"]);
+    same_errors("bounds", TRAITS);
 }
 
 #[test]
 fn mut_rules_as_in_rust() {
-    same_errors("muts", MUTS, &["mut", "closure"]);
+    same_errors("muts", MUTS);
 }
 
 #[test]
 fn unions_and_refinements_as_in_rust() {
-    same_errors("unions", UNIONS, &["expected `"]);
+    same_errors("unions", UNIONS);
 }
 
 #[test]
 fn static_calls_and_unknown_methods_as_in_rust() {
-    same_errors("static", STATIC, &["expected `", "has no method", "unknown function", "needs"]);
+    same_errors("static", STATIC);
 }
 
 #[test]
 fn contracts_and_refinements_as_in_rust() {
-    same_errors("contracts", CONTRACTS, &["clause", "refinement", "law `", "does not satisfy", "unknown variable `it`"]);
+    same_errors("contracts", CONTRACTS);
 }
 
 /// Capabilities and concurrency: `spawn` outside a `scope`, what a task can't
@@ -759,78 +759,78 @@ fn main() { print(1) }
 
 #[test]
 fn union_arms_as_in_rust() {
-    same_errors("union-arms", UNION_ARMS, &["expected `"]);
+    same_errors("union-arms", UNION_ARMS);
 }
 
 #[test]
 fn whole_value_and_assigning_arms_as_in_rust() {
-    same_errors("whole-arms", WHOLE_ARMS, &["expected `"]);
+    same_errors("whole-arms", WHOLE_ARMS);
 }
 
 #[test]
 fn trait_values_and_supertraits_as_in_rust() {
-    same_errors("trait-values", TRAIT_VALUES, &["expected `", "does not implement", "handle an Option"]);
+    same_errors("trait-values", TRAIT_VALUES);
 }
 
 #[test]
 fn names_and_declarations_as_in_rust() {
-    same_errors("declarations", DECLARATIONS, &["missing method", "is not a method of", "is defined twice", "supertrait", "unknown type", "type arguments, got", "unknown constructor", "pattern `", "alternatives of", "only means something", "outside a loop", "is not a trait"]);
+    same_errors("declarations", DECLARATIONS);
 }
 
 #[test]
 fn imported_functions_as_in_rust() {
-    same_errors("imports", IMPORTS, &["expected `"]);
+    same_errors("imports", IMPORTS);
 }
 
 #[test]
 fn unreachable_arms_and_method_clashes_as_in_rust() {
-    same_errors("unreachable", UNREACHABLE, &["unreachable match arm", "is both a function"]);
+    same_errors("unreachable", UNREACHABLE);
 }
 
 #[test]
 fn misused_values_as_in_rust() {
-    same_errors("misuse", MISUSE, &["needs a Result", "needs an Option", "handle a Result", "needs a List", "cannot access field", "is not a function", "format spec"]);
+    same_errors("misuse", MISUSE);
 }
 
 #[test]
 fn early_errors_as_in_rust() {
-    same_errors("early", EARLY, &["returns the error early", "returns `None` early"]);
+    same_errors("early", EARLY);
 }
 
 #[test]
 fn task_handles_as_in_rust() {
-    same_errors("tasks", TASKS, &["await` takes", "can't leave its", "expected `"]);
+    same_errors("tasks", TASKS);
 }
 
 #[test]
 fn handles_kept_in_their_scope_as_in_rust() {
-    same_errors("handles", HANDLES, &["declared outside the", "can't hold"]);
+    same_errors("handles", HANDLES);
 }
 
-/// The compiler's errors on `text` are `strata check`'s, on the lines holding one of `keys`.
-fn same_errors(name: &str, text: &str, keys: &[&str]) {
+/// The compiler's errors on `text` are `strata check`'s, all of them (in
+/// any order).
+fn same_errors(name: &str, text: &str) {
     let dir = std::env::temp_dir().join(format!("strata-check-test-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let prog = dir.join(format!("{name}.strata"));
     save(&prog, text);
     let got = compiler::run(&[std::ffi::OsStr::new("check"), prog.as_os_str()]);
-    let got: String = got.lines().filter(|l| keys.iter().any(|k| l.contains(k))).map(|l| format!("{l}\n")).collect();
+    let errors = |out: &str| -> Vec<String> {
+        let mut v: Vec<String> = out.lines().filter(|l| l.starts_with("error in ") || l.starts_with("  ")).map(String::from).collect();
+        v.sort();
+        v
+    };
     let o = Command::new(STRATA).args(["--file", &prog.to_string_lossy(), "check"]).output().unwrap();
     let all = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
-    let want: String = all.lines().filter(|l| keys.iter().any(|k| l.contains(k))).map(|l| format!("{l}\n")).collect();
-    assert!(!want.is_empty(), "{all}");
-    assert_eq!(got, want);
+    assert!(!errors(&all).is_empty(), "{all}");
+    assert_eq!(errors(&got), errors(&all));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn capabilities_and_concurrency_as_in_rust() {
-    same_errors(
-        "capabilities",
-        CAPABILITIES,
-        &["outside a `scope`", "can't leave a task", "can't return from a task", "needs at least one arm", "arm waits on", "gives nothing to name", "never closed here", "holds a copy of", "is a capability", "test parameter", "never `pub`"],
-    );
+    same_errors("capabilities", CAPABILITIES);
 }
 
 /// `strata check --compare` runs both checkers on a script: they agree on

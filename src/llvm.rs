@@ -920,6 +920,9 @@ done:
 declare i1 @strata_release(ptr)
 declare void @strata_free(ptr)
 declare i1 @strata_unique(ptr)
+declare i1 @strata_list_owned(ptr)
+declare i64 @strata_list_put(ptr, i64, i64)
+declare void @strata_list_insert(ptr, i64, i64)
 declare void @strata_init(i32, ptr)
 declare i64 @strata_pid()
 declare void @strata_host_write(i64, ptr)
@@ -7498,7 +7501,10 @@ impl<'m, 'a> Func<'m, 'a> {
                 path.reverse();
                 let Expr::Var(x) = root else { return self.unsupported("assigning to anything but a variable or its fields") };
                 let l = self.lookup(x).ok_or(format!("`{x}` is not a local variable"))?;
-                let v = self.expr(e)?;
+                let v = match self.insert_in_place(place, e)? {
+                    Some(v) => v,
+                    None => self.expr(e)?,
+                };
                 if is_never(&v.0) {
                     return Ok(());
                 }
@@ -7847,6 +7853,122 @@ impl<'m, 'a> Func<'m, 'a> {
         let r = self.fresh("set");
         self.emit(format!("{r} = phi ptr [ {}, %{from_here} ], [ {p}, %{from_copy} ]", cur.1));
         Ok(self.temp((cur.0.clone(), r)))
+    }
+
+    /// `x = insert(x, …)` / `x.f = insert(x.f, …)` on a dictionary or set
+    /// (`e` the assigned value, `place` the assigned place): the old value
+    /// is dead afterwards, so when nothing else holds it (its list and
+    /// buffer held once; for a field, the record too) the element goes in
+    /// place, with no copy; else as `insert` does. Either way the result is
+    /// owned (in place: the list held once more, given back when the old
+    /// value is dropped). `None` if `e` isn't such a call.
+    fn insert_in_place(&mut self, place: &Expr, e: &Expr) -> Res<Option<V>> {
+        let (target, rest): (&Expr, Vec<&Expr>) = match e {
+            Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if n == "insert") && !args.is_empty() => (&args[0], args[1..].iter().collect()),
+            Expr::Method(r, n, args) if n == "insert" => (&**r, args.iter().collect()),
+            _ => return Ok(None),
+        };
+        let root = match place {
+            Expr::Var(x) => x,
+            Expr::Field(r, _) => match &**r {
+                Expr::Var(x) => x,
+                _ => return Ok(None),
+            },
+            _ => return Ok(None),
+        };
+        // the built-in (not a function of the program's), on the place itself,
+        // with values that don't mention its variable (one could be the value itself)
+        if target != place || self.lookup("insert").is_some() || self.m.bodies.contains_key("insert") || rest.iter().any(|a| vars_in(a).contains(&root.to_string())) {
+            return Ok(None);
+        }
+        let t = self.m.repr(&self.ty_of(target)?)?;
+        let Some((kind, _)) = collection(&t) else { return Ok(None) };
+        let Ty::Con(_, targs) = t.clone() else { return Ok(None) };
+        if rest.len() != if kind == "Set" { 1 } else { 2 } {
+            return Ok(None);
+        }
+        let vs = self.operands(&rest)?;
+        if vs.iter().any(|v| is_never(&v.0)) {
+            return Ok(Some(never()));
+        }
+        let vs: Vec<V> = vs.into_iter().zip(&targs).map(|(v, t)| self.coerce(v, t)).collect::<Res<_>>()?;
+        let cur = self.expr(target)?;
+        let c = self.as_list(&cur)?;
+        // held once: the list (and the record holding it)
+        let owned = self.fresh("owned");
+        self.emit(format!("{owned} = call i1 @strata_list_owned(ptr {})", cur.1));
+        let ok = if let Expr::Field(r, _) = place {
+            let rv = self.expr(r)?;
+            let (u, both) = (self.fresh("unique"), self.fresh("owned"));
+            self.emit(format!("{u} = call i1 @strata_unique(ptr {})", rv.1));
+            self.emit(format!("{both} = and i1 {owned}, {u}"));
+            both
+        } else {
+            owned
+        };
+        let (here, copy, done) = (self.fresh_label("insert.here"), self.fresh_label("insert.copy"), self.fresh_label("insert.done"));
+        self.emit(format!("br i1 {ok}, label %{here}, label %{copy}"));
+        // in place: the element (the values held once more: the statement's
+        // end drops them as it does on the other way), at its position
+        self.block(&here);
+        // (the branch's temporaries, the position, dropped in it)
+        self.push_scope(true);
+        for v in &vs {
+            if self.counted(&v.0) && !constant(&v.1) {
+                self.dup_value(v);
+            }
+        }
+        let slots: Vec<String> = vs.iter().map(|v| self.to_slot(v)).collect::<Res<_>>()?;
+        let elem = if kind == "Set" {
+            slots[0].clone()
+        } else {
+            let (p, a, b, s) = (self.fresh("pair"), self.fresh("at"), self.fresh("at"), self.fresh("slot"));
+            self.emit(format!("{p} = call ptr @strata_alloc(i64 24)"));
+            self.emit(format!("store i64 0, ptr {p}"));
+            self.emit(format!("{a} = getelementptr i64, ptr {p}, i64 1"));
+            self.emit(format!("store i64 {}, ptr {a}", slots[0]));
+            self.emit(format!("{b} = getelementptr i64, ptr {p}, i64 2"));
+            self.emit(format!("store i64 {}, ptr {b}", slots[1]));
+            self.emit(format!("{s} = ptrtoint ptr {p} to i64"));
+            s
+        };
+        let o = self.ordering(&targs[0])?;
+        let at = self.call_fn(&prelude(if kind == "Set" { "set_slot" } else { "dict_slot" }), vec![c.clone(), vs[0].clone(), o], Some(Ty::Int))?;
+        let (put, add, placed) = (self.fresh_label("insert.put"), self.fresh_label("insert.add"), self.fresh_label("insert.placed"));
+        let found = self.fresh("found");
+        self.emit(format!("{found} = icmp sge i64 {}, 0", at.1));
+        self.emit(format!("br i1 {found}, label %{put}, label %{add}"));
+        self.block(&put);
+        let old = self.fresh("old");
+        self.emit(format!("{old} = call i64 @strata_list_put(ptr {}, i64 {}, i64 {elem})", cur.1, at.1));
+        let et = self.elem_ty(&c.0)?;
+        let old = self.from_slot(&old, &et)?;
+        self.drop_value(&old)?;
+        self.br(&placed);
+        self.block(&add);
+        let i = self.fresh("i");
+        self.emit(format!("{i} = sub i64 -1, {}", at.1));
+        self.emit(format!("call void @strata_list_insert(ptr {}, i64 {i}, i64 {elem})", cur.1));
+        self.br(&placed);
+        self.block(&placed);
+        self.emit(format!("call void @strata.dup(ptr {})", cur.1));
+        self.pop_scope()?;
+        let from_here = self.cur.clone();
+        self.br(&done);
+        // else a new one, as `insert` makes it
+        self.block(&copy);
+        self.push_scope(true);
+        let mut args = vec![cur.clone()];
+        args.extend(vs.iter().cloned());
+        let made = self.call_values("insert", args, Some(cur.0.clone()))?;
+        let made = self.take(made);
+        self.pop_scope()?;
+        let from_copy = self.cur.clone();
+        self.br(&done);
+        self.block(&done);
+        let r = self.fresh("inserted");
+        self.emit(format!("{r} = phi ptr [ {}, %{from_here} ], [ {}, %{from_copy} ]", cur.1, made.1));
+        Ok(Some(self.temp((cur.0.clone(), r))))
     }
 
     /// Store `new` in variable `l`, which owns it (taken); its old value is
