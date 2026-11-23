@@ -2955,6 +2955,8 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str **kind, Str **msg)
     snprintf(buf, sizeof buf, "can't run `%.*s`%s%s: %.*s", (int)program->len, program->bytes,
              d ? " in " : "", d ? d : "", (int)(*msg)->len, (*msg)->bytes);
     free(d);
+    // (the OS's message, now inside the fuller one)
+    str_drop(*msg);
     *msg = str_c(buf);
     return NULL;
   }

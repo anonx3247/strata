@@ -358,7 +358,7 @@ fn run() -> Result<bool, String> {
     // `lex` and `parse` are the Strata front end's (`compiler/`) unless
     // `--rust`, or when no compiler package is found
     let strata_default = matches!(cmd, "lex" | "parse") && !args.flag("--rust") && cmd::compare::available();
-    if strata_default || matches!(cmd, "lex" | "parse" | "render" | "run" | "build") && (args.flag("--strata") || args.flag("--compare")) {
+    if strata_default || matches!(cmd, "lex" | "parse" | "render" | "run" | "build" | "test") && (args.flag("--strata") || args.flag("--compare")) {
         return cmd::compare::command(&args, cmd);
     }
     // `render` (a whole script) and `run` (a program's `main`) are the Strata
