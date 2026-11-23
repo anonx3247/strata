@@ -190,3 +190,42 @@ fn smt_outcomes_on_std_as_in_rust() {
         }
     }
 }
+
+/// `compiler termination` (the termination analysis written in Strata,
+/// `compiler/termination`): each function's and implementation method's
+/// verdict, and whether a contract may see through it, as `strata verify
+/// --termination` gives them, on the step programs, the repository's
+/// scripts and a few std modules.
+#[test]
+fn termination_as_in_rust() {
+    if !have_z3() {
+        eprintln!("skipped: no z3");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("termination");
+    let mut files: Vec<(PathBuf, Option<String>)> = vec![];
+    for (name, text) in [("step4", include_str!("data/smt/step4.st")), ("step5", include_str!("data/smt/step5.st")), ("termination", include_str!("data/smt/termination.st"))] {
+        let file = dir.join(format!("{name}.strata"));
+        save(&file, text);
+        files.push((file, None));
+    }
+    for d in ["examples", "tests/data"] {
+        let mut found: Vec<PathBuf> = std::fs::read_dir(root.join(d)).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|x| x == "strata")).collect();
+        found.sort();
+        files.extend(found.into_iter().map(|f| (f, None)));
+    }
+    for m in ["utf8", "json", "regex", "unicode"] {
+        files.push((root.join(format!("std/{m}.strata")), Some(format!("std.{m}.*"))));
+    }
+    for (f, std_module) in files {
+        let rust = match &std_module {
+            Some(sel) => Command::new(STRATA).current_dir(root).args(["--file", "std", "verify", sel, "--termination"]).output().unwrap(),
+            None => Command::new(STRATA).args(["--file", &f.to_string_lossy(), "verify", "--termination"]).output().unwrap(),
+        };
+        assert!(rust.status.success(), "{}: strata verify --termination: {}", f.display(), String::from_utf8_lossy(&rust.stderr));
+        let ours = Command::new(compiler::exe()).current_dir(root).arg("termination").arg(&f).env("STRATA_CACHE", &dir).output().unwrap();
+        assert!(ours.status.success(), "{}: compiler termination: {}", f.display(), String::from_utf8_lossy(&ours.stderr));
+        assert_eq!(functions(&String::from_utf8_lossy(&rust.stdout)), functions(&String::from_utf8_lossy(&ours.stdout)), "{}: Rust's verdicts, then compiler/termination's", f.display());
+    }
+}

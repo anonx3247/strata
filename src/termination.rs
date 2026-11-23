@@ -638,7 +638,11 @@ fn cannot_fail(env: &Env, f: &FnDecl, total: &dyn Fn(&str) -> bool) -> bool {
         Expr::Bin(BinOp::Div | BinOp::Mod, _, d) => ok &= matches!(&**d, Expr::Int(n) if *n != 0),
         Expr::Ctor(c, _) => ok &= !refined(&env.ctors.get(&c.sym()).cloned().unwrap_or_default()),
         Expr::Call(g, _) => {
+            // (`$self_type(t, call)` only marks the call's receiver type: the call is what runs)
             if let Expr::Var(n) = &**g {
+                if n.as_str() == crate::types::SELF_TYPE {
+                    return;
+                }
                 ok &= if env.fns.contains_key(&n.sym()) { total(n) } else { !env.is_method(n.sym()) && crate::types::total_builtin(n) };
             }
         }
