@@ -233,4 +233,11 @@ fn verify_as_in_rust() {
         assert!(ours.status.success(), "compiler verify {name}: {}", String::from_utf8_lossy(&ours.stderr));
         assert_eq!(String::from_utf8_lossy(&rust.stdout), String::from_utf8_lossy(&ours.stdout), "{name}");
     }
+    // a package: its modules, a `derive CommandLine` and the copies of
+    // std.cli's functions it makes (one with a counterexample)
+    let hello = root.join("examples/hello");
+    let rust = Command::new(STRATA).arg("--file").arg(&hello).args(["verify", "--no-race", "--no-cache"]).env("STRATA_CACHE", &dir).output().unwrap();
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["verify", "--no-cache"]).arg(&hello).env("STRATA_CACHE", &dir).output().unwrap();
+    assert!(ours.status.success(), "compiler verify hello: {}", String::from_utf8_lossy(&ours.stderr));
+    assert_eq!(String::from_utf8_lossy(&rust.stdout), String::from_utf8_lossy(&ours.stdout), "hello");
 }
