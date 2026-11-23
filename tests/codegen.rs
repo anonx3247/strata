@@ -1106,8 +1106,8 @@ fn main() {
     rename(mut o, \"renamed\")
     print(o.inner)
     mut c := Counter { n: 0, log: [] }
-    c.bump(3)
-    c.bump(4)
+    mut c.bump(3)
+    mut c.bump(4)
     print(c.total())
     print(c)
     mut p := \"left\"
