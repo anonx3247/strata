@@ -1,4 +1,4 @@
-// Shared by the presentation (app.js) and the docs pages (docs.html):
+// Shared by the tour (app.js) and the landing page (landing.js):
 // highlighting for Strata code, strata's terminal output and line diffs.
 'use strict';
 const $ = (s, el = document) => el.querySelector(s);

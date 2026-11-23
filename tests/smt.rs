@@ -223,10 +223,22 @@ fn verify_as_in_rust() {
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let dir = scratch("verify");
-    let file = dir.join("verify.strata");
-    save(&file, include_str!("data/smt/verify.st"));
-    let rust = Command::new(STRATA).arg("--file").arg(&file).args(["verify", "--no-race", "--no-cache"]).env("STRATA_CACHE", &dir).output().unwrap();
-    let ours = Command::new(compiler::exe()).current_dir(root).arg("verify").arg(&file).env("STRATA_CACHE", &dir).output().unwrap();
-    assert!(ours.status.success(), "compiler verify: {}", String::from_utf8_lossy(&ours.stderr));
-    assert_eq!(String::from_utf8_lossy(&rust.stdout), String::from_utf8_lossy(&ours.stdout));
+    // functions; then trait methods (own, default, static), a type's own
+    // methods, laws (one holding, one not) and a derived impl; then sized
+    // integers (wrapped arithmetic, checked and wrapping conversions)
+    for (name, text) in [("verify", include_str!("data/smt/verify.st")), ("verify_traits", include_str!("data/smt/verify_traits.st")), ("verify_sized", include_str!("data/smt/verify_sized.st"))] {
+        let file = dir.join(format!("{name}.strata"));
+        save(&file, text);
+        let rust = Command::new(STRATA).arg("--file").arg(&file).args(["verify", "--no-race", "--no-cache"]).env("STRATA_CACHE", &dir).output().unwrap();
+        let ours = Command::new(compiler::exe()).current_dir(root).arg("verify").arg(&file).env("STRATA_CACHE", &dir).output().unwrap();
+        assert!(ours.status.success(), "compiler verify {name}: {}", String::from_utf8_lossy(&ours.stderr));
+        assert_eq!(String::from_utf8_lossy(&rust.stdout), String::from_utf8_lossy(&ours.stdout), "{name}");
+    }
+    // a package: its modules, a `derive CommandLine` and the copies of
+    // std.cli's functions it makes (one with a counterexample)
+    let hello = root.join("examples/hello");
+    let rust = Command::new(STRATA).arg("--file").arg(&hello).args(["verify", "--no-race", "--no-cache"]).env("STRATA_CACHE", &dir).output().unwrap();
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["verify", "--no-cache"]).arg(&hello).env("STRATA_CACHE", &dir).output().unwrap();
+    assert!(ours.status.success(), "compiler verify hello: {}", String::from_utf8_lossy(&ours.stderr));
+    assert_eq!(String::from_utf8_lossy(&rust.stdout), String::from_utf8_lossy(&ours.stdout), "hello");
 }

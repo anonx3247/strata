@@ -2394,10 +2394,10 @@ fn main() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `verify --jit --strata`: what the solver leaves is fuzzed by
-/// compiler/codegen's drivers (`codegen --fuzz`), with the same verdicts,
-/// cases and counterexamples as Rust's drivers give (postconditions seeing
-/// the parameters).
+/// `verify --strata`: `compiler verify` (what the solver leaves fuzzed by
+/// compiler/codegen's drivers in the compiler's JIT) gives the same
+/// verdicts, cases and counterexamples as `verify --no-race`
+/// (postconditions seeing the parameters); `--compare` says they agree.
 #[test]
 fn fuzzing_as_verify_fuzzes() {
     let dir = scratch("fuzz");
@@ -2426,17 +2426,17 @@ fn main() {
   print(half(3.0))
 }
 ");
-    let run = |strata: bool, cache: &str| {
-        let mut c = Command::new(STRATA);
-        c.arg("--file").arg(&file).args(["verify", "--jit"]).env("STRATA_CACHE", dir.join(cache));
-        if strata {
-            c.arg("--strata");
-        }
-        String::from_utf8_lossy(&c.output().unwrap().stdout).into_owned()
+    // (the compiler built once, in the cache: verdicts not kept, so both run every check)
+    let run = |how: &str| {
+        let o = Command::new(STRATA).arg("--file").arg(&file).args(["verify", how, "--no-cache"]).env("STRATA_COMPILER", Path::new(env!("CARGO_MANIFEST_DIR")).join("compiler")).output().unwrap();
+        // (stdout: stderr may say the compiler is being built)
+        String::from_utf8_lossy(&o.stdout).into_owned()
     };
-    let (rust, ours) = (run(false, "rust"), run(true, "strata"));
+    let (rust, ours) = (run("--no-race"), run("--strata"));
     assert!(rust.contains("found by the fuzzer"), "{rust}");
     assert_eq!(rust, ours);
+    let compared = run("--compare");
+    assert!(compared.contains("compare: they agree"), "{compared}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

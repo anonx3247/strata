@@ -25,7 +25,7 @@ unsafe extern "C" {
     fn strata_host_list_dir();
     fn strata_host_run();
     fn strata_host_read_stdin();
-    fn strata_host_stdin_terminal();
+    fn strata_host_terminal();
     fn strata_host_is_dir();
     fn strata_host_write_bytes();
     fn strata_host_rename();
@@ -197,7 +197,7 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_host_list_dir", strata_host_list_dir as *const () as usize),
         ("strata_host_run", strata_host_run as *const () as usize),
         ("strata_host_read_stdin", strata_host_read_stdin as *const () as usize),
-        ("strata_host_stdin_terminal", strata_host_stdin_terminal as *const () as usize),
+        ("strata_host_terminal", strata_host_terminal as *const () as usize),
         ("strata_host_is_dir", strata_host_is_dir as *const () as usize),
         ("strata_host_write_bytes", strata_host_write_bytes as *const () as usize),
         ("strata_host_rename", strata_host_rename as *const () as usize),

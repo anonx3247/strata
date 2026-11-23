@@ -6611,3 +6611,30 @@ impl[T] Result[T, FsError] {
         assert_eq!(out, "[0, 255, 10]\ntrue false false\ntrue\ntrue\nfalse\npiped in\nhello\n\non the terminal\ncode 0 out 0\nstdin: abc\ndef\n", "{flags:?}");
     }
 }
+
+#[test]
+fn colors_only_where_asked_for() {
+    let d = tmp("colors");
+    save(&d.join("a.strata"), "from std.io use Console\nfrom std.term use Output, Errors\n\nfn main(mut console: Console) -> Result[(), String] {\n  p := console.paint(Output)\n  mut console.print(p.green(\"ok\"))\n  Err(\"no\")\n}\n");
+    let hello = format!("{}/examples/hello", env!("CARGO_MANIFEST_DIR"));
+    let run = |args: &[&str], env: &[(&str, &str)]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(args).current_dir(&d).env_remove("NO_COLOR").env_remove("FORCE_COLOR").envs(env.iter().copied()).output().unwrap();
+        (String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string())
+    };
+    let esc = "\u{1b}[";
+    // by compiler/'s evaluator and compiled: a pipe gets plain text, FORCE_COLOR colors
+    for flags in [&[][..], &["--rust"][..]] {
+        let with = |a: &[&'static str]| -> Vec<&'static str> { [&["run"][..], flags, a].concat() };
+        let (out, err) = run(&with(&["a.strata"]), &[]);
+        assert!(out == "ok\n" && err.ends_with("error: no\n"), "{flags:?}: {out:?} {err:?}");
+        let (out, err) = run(&with(&["a.strata"]), &[("FORCE_COLOR", "1")]);
+        assert!(out == format!("{esc}32mok{esc}0m\n") && err.contains(&format!("error:{esc}")), "{flags:?}: {out:?} {err:?}");
+        let hello: &'static str = Box::leak(hello.clone().into_boxed_str());
+        let (out, _) = run(&with(&[hello, "--", "--help"]), &[("FORCE_COLOR", "1")]);
+        assert!(out.contains(&format!("{esc}1mUsage:{esc}0m hello")), "{flags:?}: {out:?}");
+        let (_, err) = run(&with(&[hello, "--", "--times", "0"]), &[("FORCE_COLOR", "1")]);
+        assert!(err.contains("error:") && err.contains(esc), "{flags:?}: {err:?}");
+        let (_, err) = run(&with(&[hello, "--", "--times", "0"]), &[]);
+        assert!(err.starts_with("error: --times"), "{flags:?}: {err:?}");
+    }
+}

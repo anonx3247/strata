@@ -1,0 +1,20 @@
+---
+title: Strata documentation
+description: Learn Strata, a language for working with agents, where types carry contracts that are proven and code is stored as its syntax tree.
+tableOfContents: false
+---
+
+import { LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+Strata is an experimental language for working with agents. Constraints live in the types, contracts are proven by an SMT solver (or fuzzed when they can't be), unfinished code is a typed hole, and side effects are capabilities passed as parameters.
+
+<CardGrid>
+  <LinkCard title="The language" href="/docs/language/" description="Types and refinements, unions and patterns, traits, modules, mutation, errors, tasks, and programs." />
+  <LinkCard title="Verification" href="/docs/verification/" description="What strata verify proves, with examples and the verifier's output." />
+  <LinkCard title="Tools" href="/docs/tools/" description="The command line, structural diffs, packages and git." />
+  <LinkCard title="Learn Strata in Y minutes" href="/docs/learn-strata/" description="The language in one valid file. Give it to an agent before it writes Strata." />
+</CardGrid>
+
+The annex has the fine print: the [language](/docs/language-reference/), [verification](/docs/verification-reference/) and [tools](/docs/tools-reference/) references. [Internals](/docs/internals/) is for working on Strata itself.
+
+New to Strata? [The tour](/tour.html) shows the ideas on real programs, with every output recorded from the real CLI.

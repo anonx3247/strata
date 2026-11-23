@@ -2653,10 +2653,23 @@ List *strata_range(int64_t lo, int64_t hi) {
   return l;
 }
 
-// `main` returned `Err(e)`.
+// Whether to color what goes to stream `fd`: a terminal, unless `NO_COLOR`
+// is set or `TERM` is `dumb`; `FORCE_COLOR` forces it (as std.term decides).
+static _Bool colors(int fd) {
+  const char *f = getenv("FORCE_COLOR");
+  if (f && *f) return 1;
+  const char *n = getenv("NO_COLOR");
+  if (n && *n) return 0;
+  const char *t = getenv("TERM");
+  if (t && !strcmp(t, "dumb")) return 0;
+  return isatty(fd);
+}
+
+// `main` returned `Err(e)` (`error:` in red on a terminal).
 void strata_main_error(Str *shown) {
   fflush(stdout);
-  fprintf(stderr, "error: %.*s\n", (int)shown->len, shown->bytes);
+  if (colors(2)) fprintf(stderr, "\x1b[1;31merror:\x1b[0m %.*s\n", (int)shown->len, shown->bytes);
+  else fprintf(stderr, "error: %.*s\n", (int)shown->len, shown->bytes);
 }
 
 // ---- output ----
@@ -2771,13 +2784,35 @@ Str *strata_prog_name(void) {
 
 // The options could not be read: the help asked for (on standard output), or
 // what is wrong with the arguments (on standard error).
+
+// `--help` (its section headings, `Usage:`, `Options:`…, in bold on a
+// terminal), or what is wrong with the arguments (`error:` in red).
 void strata_options_error(_Bool help, Str *text) {
   if (help) {
-    fwrite(text->bytes, 1, (size_t)text->len, stdout);
+    _Bool on = colors(1);
+    const char *s = text->bytes, *end = s + text->len;
+    while (s < end) {
+      const char *nl = memchr(s, '\n', (size_t)(end - s));
+      const char *e = nl ? nl : end;
+      // a heading: a capitalized word or two at the start, then `:`
+      const char *c = memchr(s, ':', (size_t)(e - s));
+      _Bool heading = on && c && s[0] >= 'A' && s[0] <= 'Z' && (c + 1 == e || c[1] == ' ') && c - s < 20 && !memchr(s, '`', (size_t)(c - s));
+      if (heading) {
+        fputs("\x1b[1m", stdout);
+        fwrite(s, 1, (size_t)(c + 1 - s), stdout);
+        fputs("\x1b[0m", stdout);
+        fwrite(c + 1, 1, (size_t)(e - c - 1), stdout);
+      } else {
+        fwrite(s, 1, (size_t)(e - s), stdout);
+      }
+      if (nl) fputc('\n', stdout);
+      s = nl ? nl + 1 : end;
+    }
     fflush(stdout);
   } else {
     fflush(stdout);
-    fprintf(stderr, "error: %.*s\n", (int)text->len, text->bytes);
+    if (colors(2)) fprintf(stderr, "\x1b[1;31merror:\x1b[0m %.*s\n", (int)text->len, text->bytes);
+    else fprintf(stderr, "error: %.*s\n", (int)text->len, text->bytes);
   }
 }
 
@@ -3100,8 +3135,10 @@ Str *strata_host_read_stdin(void) {
   return s;
 }
 
-// Whether standard input is a terminal (not a pipe or a file).
-_Bool strata_host_stdin_terminal(void) { return isatty(0); }
+// Whether a stream (0: standard input, 1: output, 2: error) is a terminal
+// (not a pipe or a file).
+_Bool strata_host_terminal(int64_t fd) { return fd >= 0 && fd <= 2 && isatty((int)fd); }
+
 
 List *strata_host_args(void) {
   List *l = strata_list_new(prog_argc);

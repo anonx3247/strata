@@ -1,0 +1,18 @@
+{
+  "name": "strata-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync": "node sync.mjs",
+    "dev": "node sync.mjs && astro dev",
+    "build": "node sync.mjs && astro build"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.43.1",
+    "astro": "^7.4.1",
+    "sharp": "^0.35.5"
+  },
+  "engines": {
+    "node": ">=22.22.0"
+  }
+}

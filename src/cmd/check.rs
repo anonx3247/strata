@@ -65,11 +65,10 @@ pub fn holes(args: &Args, json_out: bool) -> Result<bool, String> {
 
 /// `strata verify`.
 pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
-    // `--strata`: fuzz drivers from compiler/codegen (a script's)
-    if args.flag("--strata") {
-        if let Some(f) = args.val("--file") {
-            let _ = crate::cmd::compare::FUZZ_SCRIPT.set(f.to_string());
-        }
+    // `--strata`: `compiler verify`, the command written in Strata;
+    // `--compare`: that and `verify --no-race`, line by line
+    if args.flag("--strata") || args.flag("--compare") {
+        return crate::cmd::compare::verify(args);
     }
     let src = load(&args)?;
     let how = Verifying { file: args.val("--file"), only: None, quiet: false, json: json_out };
@@ -547,11 +546,7 @@ fn jit_fuzzers(resolved: &Program, env: &types::Env, chosen: &[bool], say_why: b
     let mut failed = HashMap::default();
     // a target that can't be compiled is named in the error: leave it out and
     // compile the others again (one more compile per such target, not one per target)
-    // (`verify --strata`: compiler/codegen's drivers, for a script)
-    let fuzz = |targets: &[llvm::FuzzTarget]| match crate::cmd::compare::FUZZ_SCRIPT.get() {
-        Some(file) => crate::cmd::compare::fuzz_ir(file, &prog, targets),
-        None => llvm::compile_fuzz(&prog, targets),
-    };
+    let fuzz = |targets: &[llvm::FuzzTarget]| llvm::compile_fuzz(&prog, targets);
     let mut first = fuzz(&targets);
     while let Err(e) = &first {
         let Some(i) = targets.iter().position(|t| e.contains(&format!("can't compile the fuzzing of `{}`", t.name))) else { break };
