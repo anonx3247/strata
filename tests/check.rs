@@ -14,7 +14,7 @@ const STRATA: &str = env!("CARGO_BIN_EXE_strata");
 
 /// What the front end's checks added in step 4 of self-hosting cover: `for`
 /// over what isn't iterable, trait bounds of trait methods used as
-/// functions, `mut` receivers of trait methods, built-ins' and `mut`
+/// functions, `mut` receivers (of trait methods and of a type's own), built-ins' and `mut`
 /// parameters' exact types, clock arms, `extern c` types, a plain alias.
 const FRONT: &str = r#"from std.time use SystemClock, ms
 
@@ -46,7 +46,7 @@ impl Counter for Line {
 }
 
 impl Line {
-  // (a method's own calls aren't held to `mut self.m()`)
+  // (inside a method too)
   fn twice(mut self) {
     self.tick()
     self.tick()
@@ -58,6 +58,19 @@ extern c type Handle
 extern c fn abs(x: Int) -> List[Int]
 
 extern c fn fill(mut s: String, h: Handle) -> I32
+
+type Box = { n: Int }
+
+impl Box {
+  fn bump(mut self) {
+    self.n += 1
+  }
+}
+
+fn own_unmarked() {
+  mut b := Box { n: 1 }
+  b.bump()
+}
 
 fn over_record(l: Line) {
   for x in l {
