@@ -242,3 +242,25 @@ fn verify_as_in_rust() {
     assert!(ours.status.success(), "compiler verify hello: {}", String::from_utf8_lossy(&ours.stderr));
     assert_eq!(String::from_utf8_lossy(&rust.stdout), String::from_utf8_lossy(&ours.stdout), "hello");
 }
+
+/// `compiler verify` when codegen can't compile one function yet (`units`:
+/// `graphemes`): the drivers are compiled together, and on an error the set
+/// is split in halves until that one is alone (`compiled_drivers`, as Rust's
+/// `jit_fuzzers` since #357), so the others are still fuzzed (`sq`: floats
+/// aren't modelled, so it is fuzzed, not proven).
+#[test]
+fn verify_fuzzes_around_what_cant_be_compiled() {
+    if !have_z3() {
+        eprintln!("skipped: no z3");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("verify-uncompiled");
+    let file = dir.join("u.strata");
+    save(&file, include_str!("data/smt/verify_uncompiled.st"));
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["verify", "--no-cache"]).arg(&file).env("STRATA_CACHE", &dir).output().unwrap();
+    let out = String::from_utf8_lossy(&ours.stdout);
+    assert!(out.contains("~ sq                       fuzzed: 200 cases"), "{out}");
+    assert!(out.contains("✓ a ") && out.contains("✓ b ") && out.contains("✓ c "), "{out}");
+}
+
