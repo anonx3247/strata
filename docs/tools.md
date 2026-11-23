@@ -89,6 +89,8 @@ $ strata run total '[]'                      # the arguments, as code, checked a
 error: invalid input: lines: [] does not satisfy `NonEmpty` (where len(it) > 0)
 ```
 
+On a terminal, what the tools say is coloured as above: proven green, failures red, fuzzed or incomplete orange, a counterexample's input amber, hashes dim, holes yellow, and in a diff what was removed red and what was added green. As for programs (`std.term`), colour is on when the output is a terminal, `NO_COLOR` is unset and `TERM` isn't `dumb`; `FORCE_COLOR` forces it.
+
 ## Compiling to native code
 
 `strata build` compiles a program to an executable through LLVM (`clang` compiles the IR with a small runtime). Programs are compiled unoptimized (`-O0`), which is fastest to build; `--release` compiles at `-O2`. `build` first verifies what changed since it was last verified, and the checks proven are left out of the program (`--all-checks` keeps them; see [verification](verification.md#what-is-proven-isnt-checked-again)).
