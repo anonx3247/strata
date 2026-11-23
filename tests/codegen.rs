@@ -394,6 +394,46 @@ fn main(opts: Options) {
   print(opts)
 }
 "),
+    ("refined_options", "from std.cli use CommandLine
+from std.io use Console
+
+/// Greet people by name.
+type Options = {
+  /// Shout the greeting.
+  loud: Bool = false,
+  /// Say it this many times.
+  times: Int where 1 <= it && it <= 10 = 1,
+  /// Who to greet (the world if nobody).
+  names: List[String] = [],
+}
+
+derive CommandLine for Options
+
+fn main(opts: Options, mut console: Console) {
+  who := if len(opts.names) == 0 {
+    \"world\"
+  } else {
+    join(opts.names, \" and \")
+  }
+  for _ in 0..opts.times {
+    text := f\"hello, {who}!\"
+    mut console.print(if opts.loud {
+      to_upper(text)
+    } else {
+      text
+    })
+  }
+  mut going := true
+  while going {
+    match mut console.read_line() {
+      Some(l) => print(\"read \" + l),
+      None => {
+        going = false
+      },
+    }
+  }
+}
+"),
     ("iterators", "type Naturals = { n: Int }
 
 impl Iterator[Int] for Naturals {
@@ -1861,9 +1901,9 @@ fn compiled_programs_do_what_rust_compiled_ones_do() {
 #[test]
 fn refuses_what_it_does_not_compile_yet() {
     let dir = scratch("refused");
-    // (a refined option read by a derived `CommandLine`: std.cli checks it with compile-time code)
-    let file = dir.join("options.strata");
-    save(&file, "from std.cli use CommandLine\n\ntype Options = { times: Int where 1 <= it = 1 }\n\nderive CommandLine for Options\n\nfn main(opts: Options) {\n    print(opts.times)\n}\n");
+    // (an iterator as a trait value: trait values with type arguments)
+    let file = dir.join("iterator_value.strata");
+    save(&file, "fn total(it: Iterator[Int]) -> Int {\n    mut t := 0\n    for x in it {\n        t += x\n    }\n    t\n}\n\nfn main() {\n    print(total([1, 2].iter()))\n}\n");
     let out = compiler::run(&["codegen".to_string(), file.to_string_lossy().into_owned()]);
     assert!(out.starts_with("error: in `"), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
