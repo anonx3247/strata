@@ -165,13 +165,17 @@ POST / 405 (0 ms)
 
 ## The viewer
 
-![The Strata viewer, showing collatz_steps from examples/math.strata: its code, six proven checks, and "may not terminate"](images/viewer.png)
+![The Strata viewer in Code mode: refund selected, with its dependencies and test, and the Details tab](images/viewer-code.png)
 
-*`strata ui` on [`examples/math.strata`](../examples/math.strata) after `strata verify`. Left: every definition, with a dot for its status. Middle: the selected function and what surrounds it. Right (the Details tab): its description, neighbours, and what the verifier said: six checks proven, termination not shown.*
+*`strata ui` on a small order system after `strata verify`. Left: every definition, with a dot for its status. Middle: `refund` and what surrounds it. Right, the Details tab: its description, its neighbours, and what the verifier proved.*
 
 `strata ui` serves a local workspace in the browser. In the header, **Agents** and **Code** are each on or off: both on (the default), the conversation is on the left and the code on the right; one alone takes the whole width. **PRs** is a mode of its own. It re-reads the codebase every 1.5 seconds, so edits made through the CLI (by you or by agents) appear as they are made. It answers only its own page (on `127.0.0.1`), since it can run agents and merge PRs, and it reads git and GitHub through the local `git` and `gh`: it never holds a token.
 
 **Agents.** Left: the agent sessions (*New*); one working in another worktree names its branch. Under *Earlier*, the Claude Code sessions saved for this repository and its worktrees: click one to read it, *Resume* to go on with it. Middle: the selected session's conversation, streamed in as the agent works. Right: the code, as in the Code mode (the same selection, with the list of definitions beside it; drag its edge to resize; `⌘P` opens a definition there). A session runs an agent over ACP (the Agent Client Protocol) in this checkout, in another worktree of the repository, or in a new worktree (`.claude/worktrees/<branch>`, from the default branch); the code panel shows the code as that worktree has it. The agent is `npx -y @agentclientprotocol/claude-agent-acp` (Claude Code) unless `STRATA_UI_AGENT` or `[ui] agent = "..."` in `strata.toml` says otherwise. When the agent asks before running a tool, the conversation shows its options; By default a session allows its tools itself; untick *allow tools* (per session, or `[ui] auto_allow = false` in `strata.toml`) to be asked. `strata` commands the agent runs are shown for what they are: `strata edit` shows the text it was given, highlighted, with the definitions it names (click one to open its slice in the code panel); `check`, `verify`, `test`, `run` and `render` show their output; other tools are a collapsible block.
+
+![An agent session: the conversation in the middle, its strata commands and their output, and the code it changed on the right](images/viewer-agents.png)
+
+*Agents and Code both on: a session asked to add `units`. Its `strata edit` and `strata verify` are shown with their output, and the definitions it touched have a dot in the list.*
 
 **Code.**
 
@@ -182,7 +186,19 @@ POST / 405 (0 ms)
 - **Activity** (right, and in the Agents mode): the history from git, by branch (this checkout's first, then the repository's other worktrees, branches with commits of their own, and the default branch's latest commits), then by commit, then by the definitions each commit added, removed or changed (and whether their interface changed), plus each worktree's uncommitted changes. Hover an entry for a summary. Click a commit, a branch or a definition to see the structural diffs on the code; *clear* (or `Esc`) shows the code again. A commit whose files are in an older format says it can't be read. A pulsing dot marks the definitions agents are working on: those a `strata edit` names, those in files their tools change, and those that just changed on disk.
   Each changed definition says what happened in words (a variant added, a method added, a stronger guarantee, renamed) and shows its code with the changes marked in place: unchanged members and lines fold away, keeping the lines that enclose each change; a new `ensures` is bold with a *stronger guarantee* pill (a removed one: *weaker*, a new `requires`: *stricter precondition*); a mostly rewritten body falls back to a line diff; a doc change is a word diff. Each change shows only what it needs: a rename is one line (`Order.Shipped → Order.Sent`); a new signature or contract shows the signature and its conditions, not the body; a changed body is shown. Definitions that only follow an interface change (a rename, or call sites given a new argument) are listed under it, each opening to its own diff, and *show the code* opens the whole definition. Changes are ordered types → interfaces → implementations → tests, then verification before → after. `strata diff` prints the same thing as text (or `--json`).
 
+![The activity: commits with the definitions each changed, and the structural diff of one](images/viewer-activity.png)
+
+*A commit picked in the activity: `total` took a new parameter, shown in place, and its two call sites follow it.*
+
+![The type map of examples/tasks: one region per module](images/viewer-types.png)
+
+*The type map of [`examples/tasks`](../examples/tasks): types and traits, one region per module.*
+
 **PRs.** The pull requests (open, merged, closed or all; stacked PRs are grouped), and a page for each: its description, comments, reviews and commits, or (*Diff*) the files changed from where it left its base: structural for `.strata` files, the others by line, folded (a package's `strata.log` is left out). The checks and CI runs are listed on the right, with the actions. From the page you can comment, approve, request changes and merge. *Merge the stack* merges top-down: this PR into its base, then the one below into its base, and so on; a PR that is behind its base is updated first, and if GitHub won't merge it yet, auto-merge is turned on (it merges once CI passes) and the rest waits.
+
+![A pull request: the list on the left, the files changed, and the checks, merge and review on the right](images/viewer-prs.png)
+
+*PRs: this repository's pull requests, one opened at its diff, with its checks and actions.*
 
 - The URL keeps the view, e.g. `#mode=code&level=1&sel=refund` or `#mode=prs&pr=12`, so you can send someone or an agent exactly what you're looking at.
 - Keys: `⌘P` / `Ctrl+P` opens a palette to jump to any definition by name (fuzzy, recent ones first), `a` agents, `c` code, `p` PRs, `t` type map, `1` collapse all, `2` expand all, `/` filters, `Esc` clears the selection, `←` / `→` go back and forward through the definitions you have visited (the toolbar has the same buttons).

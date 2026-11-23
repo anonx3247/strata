@@ -4,9 +4,8 @@
 //
 //   cargo build --release && node site/build.mjs
 //
-// Writes site/data/*.js (one `STRATA[...] = {...}` per scene) and
-// site/viewer.html (the real viewer, src/ui/index.html, with a shim that
-// answers its API calls from those snapshots).
+// Writes site/data/*.js (one `STRATA[...] = {...}` per scene) and copies
+// docs/images to site/images for the docs pages.
 
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, cpSync } from 'node:fs';
@@ -230,16 +229,6 @@ fn discount(amount: Cents) -> Cents {
   // the page draws each step's codebase as a graph; it needs the Changes view only for the diffs it shows
   const DIFFS = ['It fills them, and closes the change', 'A rename is one change', 'It fixes it, and proves it'];
   emit('session', session.map(x => ({ ...x, state: undefined, changes: DIFFS.includes(x.title) ? x.changes : undefined, graph: graph(x.state) })));
-  // the docs' tour of the viewer: a few moments of the same session
-  const pickSnap = (t, keep = []) => { const x = session.find(y => y.title === t); return { state: x.state, changes: Object.fromEntries(Object.entries(x.changes).filter(([k]) => k === 'all' || keep.includes(k))) }; };
-  const last = session.at(-1), stepId = t => String(last.changes.all.steps.find(s => s.title === t).id);
-  emit('tour', {
-    verified: pickSnap('A codebase, checked and verified'),
-    refuted: pickSnap('Verification finds the bug'),
-    holes: pickSnap('A breaking change becomes holes'),
-    final: pickSnap(last.title, [stepId('rename Shipped → Sent'), stepId('coupons')]),
-    steps: { rename: +stepId('rename Shipped → Sent'), coupons: +stepId('coupons') },
-  });
 }
 
 // ─────────────── contracts: tighten one, then change a signature ───────────────
@@ -929,7 +918,7 @@ function markdown(md) {
     const codes = [];
     t = t.replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`);
     t = esc(t)
-      .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => `<img alt="${alt}" src="${src.startsWith('http') ? src : repoFile(src) + '?raw=true'}">`)
+      .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => src.startsWith('images/') ? `<a class="shot" href="${src}" target="_blank"><img alt="${alt}" src="${src}"></a>` : `<img alt="${alt}" src="${src.startsWith('http') ? src : repoFile(src) + '?raw=true'}">`)
       .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, txt, href) => {
         const [f, frag] = href.split('#');
         const page = PAGES[f.replace(/^\.\.?\/(docs\/)?/, '')];
@@ -987,55 +976,9 @@ function markdown(md) {
     docs[id] = { title: md.match(/^# (.*)/m)[1], ...markdown(md.replace(/^# .*\n/, '')) };
   }
   emit('docs', docs);
-}
-
-// ─────────────── the viewer, answering from recorded snapshots ───────────────
-{
-  const page = readFileSync(join(ROOT, 'src/ui/index.html'), 'utf8');
-  const before = `<script>
-// site/: the real viewer (src/ui/index.html), fed by the presentation instead of
-// a running \`strata ui\`. The page posts {state, changes} snapshots recorded by
-// site/build.mjs; the viewer's own polling picks each one up.
-window.__SNAP = null;
-let __wake = [];
-const __fetch = window.fetch.bind(window);
-window.fetch = async (url, opts) => {
-  const u = new URL(url, location.href);
-  if (!u.pathname.endsWith('/api/state') && !u.pathname.endsWith('/api/changes')) return __fetch(url, opts);
-  if (!window.__SNAP) await new Promise(r => __wake.push(r));
-  const s = window.__SNAP;
-  const body = u.pathname.endsWith('/api/state') ? s.state
-    : (s.changes[u.searchParams.get('step') ?? 'all'] ?? s.changes.all ?? { error: 'not recorded' });
-  return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
-};
-</script>
-`;
-  const after = `<script>
-window.addEventListener('message', e => {
-  const m = e.data || {};
-  if (m.type !== 'strata-snap') return;
-  window.__SNAP = { state: m.state, changes: m.changes || {} };
-  __wake.splice(0).forEach(r => r());
-  if (m.level != null) S.level = m.level;
-  if (m.step !== undefined) { CH.step = m.step; CH.sel = m.change || null; }
-  if (m.sel !== undefined) { S.sel = m.sel; S.scope = m.sel ? 'slice' : 'all'; if (m.sel) S.open[m.sel] = true; }
-  poll().then(() => { render(); $('#main').scrollTop = 0; if (S.level === 'changes') loadChanges(true); });
-});
-// the page around the viewer steps with ← →: pass them up instead of using them here
-addEventListener('keydown', e => {
-  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' || e.metaKey || e.ctrlKey || e.altKey || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
-  e.preventDefault(); e.stopImmediatePropagation();
-  parent.postMessage({ type: 'strata-key', key: e.key }, '*');
-}, true);
-parent.postMessage({ type: 'strata-ready' }, '*');
-</script>
-`;
-  // the viewer is dark, in the site's colours, already
-  const themed = page;
-  const i = themed.indexOf('<script>');
-  const j = themed.lastIndexOf('</body>');
-  writeFileSync(join(SITE, 'viewer.html'), '<!-- generated by site/build.mjs from src/ui/index.html: do not edit -->\n' + themed.slice(0, i) + before + themed.slice(i, j) + after + themed.slice(j));
-  console.log('  viewer.html');
+  // the docs' pictures, served by the site itself
+  rmSync(join(SITE, 'images'), { recursive: true, force: true });
+  cpSync(join(ROOT, 'docs', 'images'), join(SITE, 'images'), { recursive: true });
 }
 
 rmSync(WORK, { recursive: true, force: true });

@@ -129,36 +129,3 @@ async function typeInto(body, s, alive = () => true) {
   return true;
 }
 
-// ───────────────────────── the real viewer, in a frame ─────────────────────────
-class Viewer {
-  constructor(el, label) {
-    this.el = el; this.w = +el.dataset.w || 1400; this.h = +el.dataset.h || 900;
-    this.ready = false; this.pending = null; this.views = el.dataset.views;
-    el.innerHTML = `<div class="chrome"><span class="dots"><i></i><i></i><i></i></span><span class="url">${esc(label)}</span><span class="live">live</span></div><div class="stage"><div class="hint">interactive · click around</div></div>`;
-    this.stage = $('.stage', el);
-    this.iframe = document.createElement('iframe');
-    this.iframe.title = 'Strata viewer'; this.iframe.width = this.w; this.iframe.height = this.h;
-    this.stage.appendChild(this.iframe);
-    addEventListener('message', e => {
-      if (e.source !== this.iframe.contentWindow || e.data?.type !== 'strata-ready') return;
-      this.ready = true; if (this.pending) this.post(this.pending);
-    });
-    new ResizeObserver(() => this.fit()).observe(el);
-    const lazy = new IntersectionObserver(es => { if (es[0].isIntersecting) { this.iframe.src = 'viewer.html#level=1'; lazy.disconnect(); } }, { rootMargin: '600px' });
-    lazy.observe(el);
-    this.stage.addEventListener('pointerenter', () => { $('.hint', el).style.opacity = 0; }, { once: true });
-  }
-  fit() {
-    const s = Math.min(1, this.el.clientWidth / this.w);
-    this.iframe.style.transform = `scale(${s})`;
-    this.stage.style.height = this.h * s + 'px';
-  }
-  setLabel(t) { $('.url', this.el).textContent = t; }
-  /** Show a recorded snapshot: {state, changes}, and what to select. */
-  show(snap, opts = {}) {
-    this.pending = { type: 'strata-snap', state: snap.state, changes: snap.changes, ...opts };
-    if (this.ready) this.post(this.pending);
-  }
-  post(m) { this.iframe.contentWindow.postMessage(m, '*'); }
-}
-
