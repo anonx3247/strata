@@ -262,7 +262,7 @@ fn add(xs: Sorted, x: Int) -> Sorted {
     result of `add`: [-952, 0, 1000, -676] does not satisfy `Sorted` (…)
 ```
 
-An element of a list of a checked type is a function of its position: its integers, strings and booleans are SMT functions of the position, so equal positions hold equal elements, and the list inside an element (a record's field) is a function of both positions. `all(xs, p)` and `all(lo..hi, i -> …)`, once known, become a fact quantified over the positions, which reaches the elements the code takes. Not yet: a non-empty list as a counterexample (here the fuzzer finds it), positions after `filter` and `sort` (only "some element of the list" is known there), and quantified facts nested inside one another with strings (the agent loop's `answers`), on which the solver times out.
+An element of a list of a checked type is a function of its position: its integers, strings and booleans are SMT functions of the position, so equal positions hold equal elements, and the list inside an element (a record's field) is a function of both positions. `all(xs, p)` and `all(lo..hi, i -> …)`, once known, become a fact quantified over the positions, which reaches the elements the code takes. A counterexample with a non-empty list is shown with up to 6 elements: the first elements of the parameters' lists are made when the function is, and asked for when the model has a non-empty list. Not yet: positions after `filter` and `sort` (only "some element of the list" is known there), and quantified facts nested inside one another (a conversation whose every tool result answers some earlier message), which the solver proves only by instantiating them by the thousand, past what a proof may cost.
 
 ## Bugs the solver finds
 
@@ -295,7 +295,7 @@ built t: 7 runtime checks left out (proven by `strata verify`), 0 kept
 - **Only proofs of the code as it is.** `verify` keeps what it proved with each function's hash, with everything it depends on (`.strata/` in a package, `~/.cache/strata/scripts/` for a script, with its verdicts). `build` verifies what changed first; `run` (compiled in memory, to start fast) and `build --no-verify` use what was proven before, and a function changed since keeps all its checks.
 - **`--all-checks`** compiles every check back in (`build`, `run`). The fuzzer and the cross-check always run with every check: they are how a mistake of the prover's shows.
 
-The standard library is compiled once with its checks, and checks that run in C (division by zero, a string's index) stay.
+Trait methods count too: their proofs are found under `verify`'s names for them (`Money.combine`). A proven division calls the runtime's division without its check for 0. The standard library is proven, all of it (the test `std_is_proven` keeps it so), so its precompiled library leaves out the checks inside its functions; those of their arguments and `requires` stay, since the calling program proves them or not. `--all-checks` compiles std with the program, every check kept. Other checks that run in C (a string's index, `split`'s separator) stay.
 
 ## Reference
 

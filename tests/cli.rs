@@ -314,6 +314,60 @@ fn cross_check_catches_a_wrong_prover() {
 }
 
 #[test]
+fn laws_are_proven_by_the_solver() {
+    if !has_solver() {
+        return;
+    }
+    let d = tmp("laws-proven");
+    let (ok, out) = strata(&["--file", &format!("{}/examples/traits.strata", env!("CARGO_MANIFEST_DIR")), "verify", "--no-race"], &d, None);
+    assert!(!ok, "Midpoint breaks associativity: {out}");
+    for law in ["law associative for Money", "law associative for List[T]", "law identity for Money", "law identity for List[T]"] {
+        assert!(out.contains(&format!("✓ {law}")), "{law}: {out}");
+    }
+    assert!(out.contains("✗ law associative for Midpoint") && out.contains("found by the solver"), "{out}");
+}
+
+#[test]
+fn match_coverage_and_list_counterexamples_from_the_solver() {
+    if !has_solver() {
+        return;
+    }
+    let d = tmp("match-coverage");
+    // arms whose conditions the checker can't decide: the prover shows some arm matches
+    let src = "fn even(n: Int) -> Bool { n % 2 == 0 }
+
+fn parity(n: Int) -> String {
+  match n {
+    where even(it) => \"even\",
+    where !even(it) => \"odd\",
+  }
+}
+
+fn broken(n: Int) -> String {
+  match n {
+    where even(it) => \"even\",
+    where it % 3 == 0 => \"three\",
+  }
+}
+
+type Point = { x: Int, y: Int }
+
+fn sum_x(ps: List[Point]) -> Int
+  requires len(ps) >= 2
+  ensures it != 7
+{
+  ps[0].x + ps[1].x
+}
+";
+    save(&d.join("b.strata"), src);
+    let (_, out) = strata(&["--file", "b.strata", "verify", "--no-race"], &d, None);
+    assert!(out.contains("✓ parity"), "{out}");
+    assert!(out.contains("✗ broken") && out.contains("no match arm for") && out.contains("found by the solver"), "{out}");
+    // a counterexample with a non-empty list, from the solver
+    assert!(out.contains("✗ sum_x") && out.contains("[Point {"), "{out}");
+}
+
+#[test]
 fn std_is_proven() {
     if !has_solver() {
         return;
