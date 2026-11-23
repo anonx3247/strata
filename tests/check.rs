@@ -12,6 +12,128 @@ mod compiler;
 
 const STRATA: &str = env!("CARGO_BIN_EXE_strata");
 
+/// What the front end's checks added in step 4 of self-hosting cover: `for`
+/// over what isn't iterable, trait bounds of trait methods used as
+/// functions, `mut` receivers of trait methods, built-ins' and `mut`
+/// parameters' exact types, clock arms, `extern c` types, a plain alias.
+const FRONT: &str = r#"from std.time use SystemClock, ms
+
+type Name = String
+
+type Line = { qty: Int }
+
+type Shape =
+  | Square { side: Int }
+  | Circle { radius: Int }
+
+trait Priced {
+  fn price(self) -> Int
+}
+
+trait Counter {
+  fn tick(mut self)
+  fn peek(self) -> Int
+}
+
+impl Counter for Line {
+  fn tick(mut self) {
+    self.qty += 1
+  }
+
+  fn peek(self) -> Int {
+    self.qty
+  }
+}
+
+impl Line {
+  // (a method's own calls aren't held to `mut self.m()`)
+  fn twice(mut self) {
+    self.tick()
+    self.tick()
+  }
+}
+
+extern c type Handle
+
+extern c fn abs(x: Int) -> List[Int]
+
+extern c fn fill(mut s: String, h: Handle) -> I32
+
+fn over_record(l: Line) {
+  for x in l {
+    print(x)
+  }
+}
+
+fn over_string(s: String) {
+  for c in s {
+    print(c)
+  }
+}
+
+fn over_param[I](it: I) {
+  for x in it {
+    print(x)
+  }
+}
+
+fn nobound[T](xs: List[T]) -> Int {
+  sum(xs.map(price))
+}
+
+fn notimpl() -> Int {
+  true.price()
+}
+
+fn unmarked() {
+  mut l := Line { qty: 1 }
+  l.tick()
+}
+
+fn needless() -> Int {
+  mut l := Line { qty: 1 }
+  mut l.peek()
+}
+
+fn builtin() -> Int {
+  mut xs := [1]
+  len(mut xs)
+}
+
+fn grow(mut shapes: List[Shape]) {
+  shapes += [Square { side: 1 }]
+}
+
+fn exact() -> Int {
+  mut cs := [Circle { radius: 1 }]
+  grow(mut cs)
+  len(cs)
+}
+
+fn not_a_clock(n: Int, rx: Receiver[Int]) -> Int {
+  select {
+    rx.recv() as x => 1,
+    n.after(ms(5)) => 2,
+  }
+}
+
+fn plain(clock: SystemClock, rx: Receiver[Int]) -> Int {
+  select {
+    rx.recv() as x => 1,
+    clock.after(5) => 2,
+  }
+}
+
+fn forge() -> Handle {
+  Handle(1)
+}
+
+fn main() {
+  print(1)
+}
+"#;
+
+
 const CLASHES: &str = r#"type Line = { a: Int }
 type E =
   | Line(Int)
@@ -809,6 +931,11 @@ fn handles_kept_in_their_scope_as_in_rust() {
 
 /// The compiler's errors on `text` are `strata check`'s, all of them (in
 /// any order).
+#[test]
+fn iterables_bounds_receivers_and_externs_as_in_rust() {
+    same_errors("front", FRONT);
+}
+
 fn same_errors(name: &str, text: &str) {
     let dir = std::env::temp_dir().join(format!("strata-check-test-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
