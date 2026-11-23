@@ -2234,3 +2234,19 @@ fn main() {
     assert_eq!(rust, ours);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `strata build --compare`: compiler/codegen's executable does what Rust's
+/// does on the build tests' programs and the example packages with a `main`
+/// (the measure for switching `build` over).
+#[test]
+fn build_compare_agrees_on_the_programs_and_examples() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut targets: Vec<PathBuf> = ["data", "lists", "numbers", "sized"].iter().map(|n| root.join(format!("tests/data/build/{n}.strata"))).collect();
+    targets.extend(["hello", "fuzzy", "wc", "page"].iter().map(|n| root.join("examples").join(n)));
+    for t in targets {
+        let (dir, arg) = if t.is_dir() { (t.clone(), ".".to_string()) } else { (root.to_path_buf(), t.to_string_lossy().into_owned()) };
+        let o = Command::new(STRATA).current_dir(&dir).arg("build").arg(&arg).arg("--compare").env("STRATA_COMPILER", root.join("compiler")).output().unwrap();
+        let out = String::from_utf8_lossy(&o.stdout);
+        assert!(out.contains("compare: they agree"), "{}: {out}{}", t.display(), String::from_utf8_lossy(&o.stderr));
+    }
+}
