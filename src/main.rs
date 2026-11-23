@@ -95,11 +95,13 @@ every change made through strata, committed with them):
                                name, hashes, size and dependencies, read without decoding it;
                                --tree: each definition (a bundle's too) as a `compiler/ast` value, one per line
                                --text: the definitions as the printer writes them, as stored
-  lex <FILE>                   a text file's tokens, one per line (then its comments), as
-                               the lexer makes them: what `compiler/lex` is tested against
-  parse <FILE>                 a text file parsed as a script: each definition as a `compiler/ast`
-                               value, one per line, as parsed (not stored): for `compiler/parse`;
-                               --stored: as stored (references qualified), for `compiler/resolve`
+  lex <FILE> [--rust]          a text file's tokens, one per line (then its comments), by
+                               the lexer written in Strata (`compiler/lex`); --rust: by the
+                               Rust lexer (the reference `compiler/lex` is tested against)
+  parse <FILE> [--rust]        a text file parsed as a script: each definition as a `compiler/ast`
+                               value, one per line, as parsed (not stored), by `compiler/parse`;
+                               --stored: as stored (references qualified), by `compiler/resolve`;
+                               --rust: by the Rust parser
   (`--file` accepts a folder: each .strata file is a module named after its path.
    `--file F edit [MODULE]` and `--file F add TEXT` change F outside any log: a script,
    or a folder's module, created if new; only what doesn't parse is refused)
@@ -344,7 +346,10 @@ fn run() -> Result<bool, String> {
         return Ok(true);
     };
     let json_out = args.flag("--json");
-    if matches!(cmd, "lex" | "parse" | "render" | "run" | "build") && (args.flag("--strata") || args.flag("--compare")) {
+    // `lex` and `parse` are the Strata front end's (`compiler/`) unless
+    // `--rust`, or when no compiler package is found
+    let strata_default = matches!(cmd, "lex" | "parse") && !args.flag("--rust") && cmd::compare::available();
+    if strata_default || matches!(cmd, "lex" | "parse" | "render" | "run" | "build") && (args.flag("--strata") || args.flag("--compare")) {
         return cmd::compare::command(&args, cmd);
     }
     match cmd {

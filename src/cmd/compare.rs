@@ -147,15 +147,29 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
         out.sort();
         out
     };
+    // a package's module files other than `unit` (none for a script)
+    let siblings = |unit: &String| -> Vec<String> {
+        if !package {
+            return vec![];
+        }
+        let mut found = vec![];
+        sources(Path::new(&file), Path::new(&file), &mut found);
+        let mut out: Vec<String> = found.into_iter().filter(|(rel, p)| rel.ends_with(".strata") && p.to_string_lossy() != unit.as_str()).map(|(_, p)| p.to_string_lossy().into_owned()).collect();
+        out.sort();
+        out
+    };
     let scratch = std::env::temp_dir().join(format!("strata-compare-{}", std::process::id()));
     fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
     let strata_lines = |out: String| -> Vec<String> { out.lines().filter(|l| !l.starts_with("=== ")).map(String::from).collect() };
     let one = |module: &String, unit: &String| -> Result<(Vec<String>, Vec<String>), String> {
         let (theirs, rust_args): (Vec<String>, Vec<String>) = match cmd {
-            "lex" => (vec!["lex".into(), unit.clone()], vec!["lex".into(), unit.clone()]),
-            "parse" if args.flag("--stored") => ([vec!["stored".into()], std_files(), vec!["--".into(), unit.clone()]].concat(), vec!["parse".into(), "--stored".into(), unit.clone()]),
-            "parse" => (vec!["parse".into(), unit.clone()], vec!["parse".into(), unit.clone()]),
-            "render" => (vec!["text".into(), unit.clone()], if module.is_empty() { vec!["--file".into(), file.clone(), "render".into()] } else { vec!["--file".into(), file.clone(), "render".into(), module.clone()] }),
+            "lex" => (vec!["lex".into(), unit.clone()], vec!["lex".into(), "--rust".into(), unit.clone()]),
+            "parse" if args.flag("--stored") => ([vec!["stored".into()], std_files(), vec!["--".into(), unit.clone()]].concat(), vec!["parse".into(), "--rust".into(), "--stored".into(), unit.clone()]),
+            "parse" => (vec!["parse".into(), unit.clone()], vec!["parse".into(), "--rust".into(), unit.clone()]),
+            // written back as `strata render` writes it (names as short as
+            // the module's imports allow): std's and the package's other
+            // modules give the names
+            "render" => ([vec!["written".into()], std_files(), siblings(unit), vec!["--".into(), unit.clone()]].concat(), if module.is_empty() { vec!["--file".into(), file.clone(), "render".into()] } else { vec!["--file".into(), file.clone(), "render".into(), module.clone()] }),
             _ => {
                 let prelude = scratch.join("prelude.strata");
                 let me = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -182,6 +196,9 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
             return Ok((vec![], ours));
         }
         let o = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).args(&rust_args).output().map_err(|e| e.to_string())?;
+        if cmd == "render" && !o.status.success() {
+            return Err(format!("rendering {}: {}", if module.is_empty() { &file } else { module }, String::from_utf8_lossy(&o.stderr).trim()));
+        }
         let mut rust: Vec<String> = String::from_utf8_lossy(&o.stdout).lines().map(String::from).collect();
         if cmd == "run" {
             // a fault's message (not the stack under it)
@@ -244,8 +261,11 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                     sources(Path::new(&file), Path::new(&file), &mut found);
                     found.retain(|(rel, _)| rel.ends_with(".strata"));
                     found.sort();
+                    // std's modules are named `std.io`, ...
+                    let is_std = fs::read_to_string(Path::new(&file).join("strata.toml")).is_ok_and(|t| t.lines().any(|l| l.trim() == "name = \"std\""));
                     for (rel, path) in found {
                         let module = rel.trim_end_matches(".strata").replace('/', ".");
+                        let module = if is_std { format!("std.{module}") } else { module };
                         if cmd == "render" {
                             units.push((module, path.to_string_lossy().into_owned()));
                             continue;
@@ -283,6 +303,12 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
     })();
     let _ = fs::remove_dir_all(&scratch);
     result
+}
+
+/// Whether a compiler package is there to run (`lex` and `parse` use it by
+/// default).
+pub fn available() -> bool {
+    compiler_dir().is_some()
 }
 
 /// The compiler package: `STRATA_COMPILER`, else a `compiler/` folder (with
