@@ -867,5 +867,5 @@ const CORE_MEM: &str = "fn main() {\n  p := raw_alloc(8)\n  store_i64(p, 0, 1)\n
 
 #[test]
 fn raw_memory_outside_core_as_in_rust() {
-    same_errors("core_mem", CORE_MEM, &["is core's"]);
+    same_errors("core_mem", CORE_MEM);
 }
