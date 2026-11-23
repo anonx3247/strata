@@ -51,7 +51,7 @@ impl Kept {
 
     /// Whether calling `f` may keep its argument `i` (yes for anything not
     /// the program's function).
-    fn keeps(&self, f: &str, i: usize) -> bool {
+    pub fn keeps(&self, f: &str, i: usize) -> bool {
         self.0.get(f).is_none_or(|ps| ps.get(i).copied().unwrap_or(true))
     }
 }
