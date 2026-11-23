@@ -1032,10 +1032,6 @@ pub fn cache_root() -> Option<std::path::PathBuf> {
     }
 }
 
-/// The compiler's sources (std aside), as a hash made when strata is built:
-/// what `verify` finds changes with them.
-pub const SOURCE_HASH: &str = env!("STRATA_SOURCE_HASH");
-
 /// std as built into this binary, as a short hash.
 pub fn std_hash() -> &'static str {
     static H: std::sync::OnceLock<String> = std::sync::OnceLock::new();

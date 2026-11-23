@@ -84,7 +84,7 @@ every change made through strata, committed with them):
                                with --file, git: `diff [BASE]` compares BASE (default HEAD)
                                with the working tree, one step per commit
   interface <module>           a module's public contract: what other modules can use
-  render [MODULE] [--split DIR]
+  render [MODULE] [--split DIR] [--rust]
                                print a module as text (L2): the file that holds it (the
                                root module is `main`); --split writes one file per module
                                (as text files: `shop/orders.st`, never read back)
@@ -142,8 +142,9 @@ Checking:
                                A check's verdict is kept (in the git repository, shared
                                by its worktrees, else ~/.cache/strata/verdicts) under
                                a hash of its definition and all it depends on, the
-                               flags, solver and strata binary: an unchanged check
-                               says (cached) (--no-cache: run all). --checks lists the
+                               flags and solver, across strata builds: only what
+                               changed runs, the rest says (cached) (--no-cache:
+                               run all again). --checks lists the
                                proven checks, --smt prints the solver queries,
                                --obligations each obligation with the solver's
                                answer (proven, refuted, unknown), nothing run.
@@ -162,7 +163,9 @@ Checking:
                                can't be compiled yet is skipped)
 
 Running:
-  run [PATH] [-- ARGS..]       run the program: `main` gets the capabilities it asks for
+  run [PATH] [--rust] [-- ARGS..]
+                               run the program (by compiler/'s evaluator; --rust, or what
+                               it can't run: compiled): `main` gets the capabilities it asks for
                                (Console; Disk, Process from std; its own) and ARGS; it
                                returns (), an ExitCode, or a Result (Err: exit code 1).
                                PATH is a .strata file or a package folder (or --file).
@@ -185,8 +188,14 @@ Running:
                                can't be compiled yet fails, saying why); --with-deps: also
                                those of what it imports (std, dependencies), which are
                                otherwise tested on their own
-  build [PATH] [-o OUT] [--emit-llvm] [--all-checks] [--no-verify]
+  build-core [-o FILE]         compile core.rt (the runtime written in Strata) to LLVM IR for
+                               the C runtime: the second stage of building strata itself
+                               (tools/bootstrap.sh writes it to target/core_rt.ll, which
+                               build.rs then links instead of the C versions)
+  build [PATH] [-o OUT] [--emit-llvm] [--all-checks] [--no-verify] [--release]
                                compile the program to a native executable, through LLVM
+                               (unoptimized, -O0, unless --release: -O2 and the runtime
+                               inlined; `run` and `test` take --release too)
                                (needs clang; STRATA_CC chooses another): `main` takes no
                                parameters yet, and only part of the language compiles
                                (Int, Float, Bool, String, functions, control flow,
@@ -345,11 +354,21 @@ fn run() -> Result<bool, String> {
         return Ok(true);
     };
     let json_out = args.flag("--json");
+    llvm::jit::set_release(args.flag("--release"));
     // `lex` and `parse` are the Strata front end's (`compiler/`) unless
     // `--rust`, or when no compiler package is found
     let strata_default = matches!(cmd, "lex" | "parse") && !args.flag("--rust") && cmd::compare::available();
     if strata_default || matches!(cmd, "lex" | "parse" | "render" | "run" | "build") && (args.flag("--strata") || args.flag("--compare")) {
         return cmd::compare::command(&args, cmd);
+    }
+    // `render` (a whole script) and `run` (a program's `main`) are the Strata
+    // side's too, unless `--rust`; what it doesn't cover (a package's module,
+    // a view's options, one function called, a program the evaluator can't
+    // run) is Rust's
+    if !args.flag("--rust") && cmd::compare::covers_by_default(&args, cmd) {
+        if let Ok(ok) = cmd::compare::command(&args, cmd) {
+            return Ok(ok);
+        }
     }
     match cmd {
         "help" | "--help" => {
@@ -387,6 +406,7 @@ fn run() -> Result<bool, String> {
         "serve" => cmd::serve_program(&args),
         "test" => cmd::run_tests(&args),
         "build" => cmd::build(&args),
+        "build-core" => cmd::build_core(&args),
         other => Err(format!("unknown command `{other}` (try `strata help`)")),
     }
 }

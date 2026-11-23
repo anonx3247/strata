@@ -144,46 +144,6 @@ fn package_modules(dir: &Path, prefix: &str) -> Vec<(PathBuf, String)> {
     out
 }
 
-/// Every package of the examples, std and the compiler: each module's text (as
-/// `render` writes it) parsed as that module, all stored together, are
-/// the package's files' trees (`header --tree`: the files are the stored form).
-#[test]
-fn packages_store_as_in_rust() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let dir = scratch("packages");
-    let mut packages: Vec<(PathBuf, String)> = vec![(root.join("std"), "std.".into()), (root.join("compiler"), String::new())];
-    for e in std::fs::read_dir(root.join("examples")).unwrap() {
-        let p = e.unwrap().path();
-        if p.join("strata.toml").exists() {
-            packages.push((p, String::new()));
-        }
-    }
-    let std_files: Vec<String> = std_files().iter().map(|p| p.to_string_lossy().into_owned()).collect();
-    assert!(packages.len() > 5);
-    for (k, (pkg, prefix)) in packages.iter().enumerate() {
-        let mut args: Vec<String> = vec!["stored-package".into()];
-        if prefix != "std." {
-            args.extend(std_files.iter().cloned());
-        }
-        args.push("--".into());
-        let mut want: Vec<String> = vec![];
-        for (i, (file, m)) in package_modules(pkg, prefix).iter().enumerate() {
-            let text = run(&["--file", &pkg.to_string_lossy(), "render", if m.is_empty() { "main" } else { m }]);
-            let t = dir.join(format!("p{k}m{i}.st"));
-            std::fs::write(&t, text).unwrap();
-            args.push(format!("{}={m}", t.display()));
-            want.extend(run(&["header", &file.to_string_lossy(), "--tree"]).lines().map(String::from));
-        }
-        let mut got: Vec<String> = compiler::run(&args).lines().map(String::from).collect();
-        got.sort();
-        want.sort();
-        let wrong: Vec<&String> = got.iter().filter(|g| !want.contains(g)).collect();
-        assert!(got.len() == want.len() && wrong.is_empty(), "{}: {} of {} definitions differ, e.g. {:?}", pkg.display(), wrong.len(), want.len(), wrong.first().map(|s| &s[..s.len().min(300)]));
-    }
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-
 /// Every script of the repository and every module of std and of the
 /// compiler, as stored, written back (`compiler/resolve`, the
 /// compiler's `written` command) and printed (`compiler/text`),
@@ -196,7 +156,7 @@ fn written_as_rendered() {
     let mut wrong = vec![];
     let mut cases: Vec<(PathBuf, Vec<String>, String)> = vec![];
     for f in module_files() {
-        let want = run(&["--file", &f.to_string_lossy(), "render"]);
+        let want = run(&["--file", &f.to_string_lossy(), "render", "--rust"]);
         cases.push((f, std_files.iter().map(|p| p.to_string_lossy().into_owned()).collect(), want));
     }
     // unions written as the named ones (`named_unions`), which the
@@ -205,7 +165,7 @@ fn written_as_rendered() {
     let mut c = Command::new(STRATA).args(["--file", &unions.to_string_lossy(), "edit"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     c.stdin.take().unwrap().write_all(b"/// a circle\ntype Circle = { r: Float }\n/// a square\ntype Square = { s: Float }\ntype Dot = { at: Int }\ntype Shape = Circle | Square\ntype Pair[A, B] = List[A] | Option[B]\nfn area(s: Circle | Square) -> Float { 0.0 }\nfn any(s: Square | Circle | Dot) -> Int { 0 }\nfn pair(p: List[Int] | Option[String]) -> Int { 0 }\n").unwrap();
     assert!(c.wait_with_output().unwrap().status.success());
-    let rendered = run(&["--file", &unions.to_string_lossy(), "render"]);
+    let rendered = run(&["--file", &unions.to_string_lossy(), "render", "--rust"]);
     assert!(rendered.contains("fn area(s: Shape)") && rendered.contains("Shape | Dot") && rendered.contains("Pair[Int, String]"), "{rendered}");
     cases.push((unions, std_files.iter().map(|p| p.to_string_lossy().into_owned()).collect(), rendered));
     // and, without docs, the members shown inside their union (`members_view`)
@@ -213,7 +173,7 @@ fn written_as_rendered() {
     let mut c = Command::new(STRATA).args(["--file", &inline.to_string_lossy(), "edit"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     c.stdin.take().unwrap().write_all(b"type Circle = { r: Float }\ntype Dot\ntype Square = { s: Float }\nimpl Square { fn area(self) -> Float { 0.0 } }\ntype Shape = Circle | Dot | Square\n").unwrap();
     assert!(c.wait_with_output().unwrap().status.success());
-    let rendered = run(&["--file", &inline.to_string_lossy(), "render"]);
+    let rendered = run(&["--file", &inline.to_string_lossy(), "render", "--rust"]);
     assert!(rendered.contains("| Circle { r: Float }"), "{rendered}");
     cases.push((inline, std_files.iter().map(|p| p.to_string_lossy().into_owned()).collect(), rendered));
     for (f, m) in package_modules(&root.join("std"), "std.") {

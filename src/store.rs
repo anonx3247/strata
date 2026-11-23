@@ -260,7 +260,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             }
             out.remove(c.name.as_str());
         }
-        DeclKind::Use(_) | DeclKind::Extern(ExternDecl { item: ExternItem::Type(..), .. }) => {}
+        DeclKind::Use(_) | DeclKind::Extern(ExternDecl { item: ExternItem::Type(..) | ExternItem::Static(..), .. }) => {}
         DeclKind::Extern(ExternDecl { item: ExternItem::Fn(f), .. }) => {
             f.params.iter().for_each(|p| ty(&p.ty, &mut out));
             ty(&f.ret, &mut out);
@@ -540,8 +540,8 @@ pub fn save_proofs(dir: &Path, v: &ProofFile) {
 /// renamed into place, so runs at the same time neither see half a verdict
 /// nor lose one another's.
 ///
-/// A check's verdict (`get_check`) is under `<compiler>/`, the hash of the
-/// compiler's sources made when strata is built, and its key is a hash of
+/// A check's verdict (`get_check`) is under `checks/`, kept across builds of
+/// the compiler (`verify --no-cache` runs them again), and its key is a hash of
 /// the check's label, its key (the closure hash of its definition, with all
 /// it depends on, and the cases), and the run's settings (seed, race,
 /// solver, std's hash). A definition's latest verdict, the worst of its
@@ -578,8 +578,8 @@ impl Verdicts {
         }
     }
 
-    /// The same verdicts, for checks run with `settings`; other compilers'
-    /// verdicts unused for two weeks are removed.
+    /// The same verdicts, for checks run with `settings`; folders of the
+    /// older layout (one per compiler) unused for two weeks are removed.
     pub fn with_settings(mut self, settings: &str) -> Verdicts {
         self.settings = format!("{VERDICTS_FORMAT}:{settings}");
         if let Some(r) = &self.root {
@@ -587,12 +587,10 @@ impl Verdicts {
             for e in fs::read_dir(r).into_iter().flatten().flatten() {
                 let name = e.file_name();
                 let stale = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > old);
-                if stale && name != crate::verify::SOURCE_HASH && name != "definitions" {
+                if stale && name != "checks" && name != "definitions" {
                     let _ = fs::remove_dir_all(e.path());
                 }
             }
-            // the folder's time says when this compiler was last used
-            let _ = fs::File::open(r.join(crate::verify::SOURCE_HASH)).and_then(|f| f.set_modified(std::time::SystemTime::now()));
         }
         self
     }
@@ -600,7 +598,7 @@ impl Verdicts {
     fn check_file(&self, label: &str, key: &str) -> Option<PathBuf> {
         use sha2::{Digest, Sha256};
         let h: String = Sha256::digest(format!("{}\n{label}\n{key}", self.settings).as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
-        Some(self.root.as_ref()?.join(crate::verify::SOURCE_HASH).join(&h[..2]).join(&h[2..]))
+        Some(self.root.as_ref()?.join("checks").join(&h[..2]).join(&h[2..]))
     }
 
     fn definition_file(&self, hash: &str) -> Option<PathBuf> {

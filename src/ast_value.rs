@@ -29,6 +29,7 @@ pub fn decl(d: &Decl) -> String {
             let item = match &e.item {
                 ExternItem::Fn(f) => tag("ExternFn", fn_decl(f)),
                 ExternItem::Type(t, ps) => format!("ExternType({}, {})", s(t), strs(ps)),
+                ExternItem::Static(n, size) => format!("ExternStatic({}, {size})", s(n)),
             };
             let lang = match e.lang {
                 Lang::C => "C".to_string(),

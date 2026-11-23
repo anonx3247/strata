@@ -811,6 +811,12 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     }).collect();
     let keeps = escape::Kept::of(&bodies);
     let mut m = Module { env: &env, types: &types, keeps, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), std_proven: matches!(entry, Entry::Library(_)), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers, tasks: uses_tasks(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()), supervises: uses_supervised(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()) };
+    // core's `builtin static` blocks: zeroed, one each (the runtime's state)
+    let mut statics: Vec<(&Symbol, &i64)> = env.statics.iter().collect();
+    statics.sort();
+    for (n, size) in statics {
+        writeln!(m.globals, "{} = internal global [{size} x i8] zeroinitializer, align 16", static_sym(n)).unwrap();
+    }
     if !m.proofs.is_empty() {
         m.refs = Refs::of(prog);
         // the program's own trait implementations' methods, by `verify`'s labels
@@ -1427,6 +1433,63 @@ pub fn compile_library(prog: &Program, names: &[String]) -> Res<String> {
         .join("\n"))
 }
 
+/// The global holding a `builtin static` block.
+fn static_sym(name: &str) -> String {
+    format!("@\"static:{name}\"")
+}
+
+/// `core.rt`, the runtime written in Strata, as LLVM IR to link with the C
+/// runtime (built without its own versions: `STRATA_CORE_RT`): each function
+/// named `strata_...` exported under that name, with C's calling convention
+/// (`Ptr` a pointer, `Bool` a `_Bool`, `()` nothing); the rest internal.
+pub fn compile_core_rt() -> Res<String> {
+    let prog = Program { decls: crate::core::module_decls("rt.strata").into_iter().filter(|d| !matches!(d.kind, DeclKind::Test(_))).collect() };
+    let resolved = crate::resolve::resolve(&prog);
+    if let Some(e) = resolved.errors.first() {
+        return Err(format!("core.rt: {e:?}"));
+    }
+    let fns: Vec<FnDecl> = resolved.program.decls.iter().filter_map(|d| match &d.kind {
+        DeclKind::Fn(f) if crate::names::short(&f.name).starts_with("strata_") => Some(f.clone()),
+        _ => None,
+    }).collect();
+    let names: Vec<String> = fns.iter().map(|f| f.name.to_string()).collect();
+    let ir = compile_with(&prog, Entry::Library(&names), false)?.0;
+    let exported: Vec<String> = names.iter().map(|n| format!("{}(", sym_impls(n, &[], &[]))).collect();
+    let mut out: Vec<String> = ir
+        .lines()
+        .map(|l| if l.starts_with("define ") && !l.starts_with("define internal ") && !exported.iter().any(|e| l.contains(e.as_str())) { l.replacen("define ", "define internal ", 1) } else { l.to_string() })
+        .collect();
+    // (the runtime's declarations of what is defined here instead)
+    let c_names: Vec<String> = fns.iter().map(|f| format!("@{}(", crate::names::short(&f.name))).collect();
+    out.retain(|l| !(l.starts_with("declare ") && c_names.iter().any(|c| l.contains(c.as_str()))));
+    // C's names, calling the compiled functions
+    let c_ty = |t: &TypeExpr| -> Res<&'static str> {
+        Ok(match t {
+            TypeExpr::Unit => "void",
+            TypeExpr::Named(n, a) if a.is_empty() && n.as_str() == "Ptr" => "ptr",
+            TypeExpr::Named(n, a) if a.is_empty() && n.as_str() == "Bool" => "i1",
+            other => return Err(format!("core.rt: `{}` doesn't cross to C yet", crate::printer::ty(other))),
+        })
+    };
+    for f in &fns {
+        let c = crate::names::short(&f.name);
+        let ret = c_ty(&f.ret)?;
+        let ps = f.params.iter().enumerate().map(|(i, p)| Ok(format!("{} %a{i}", c_ty(&p.ty)?))).collect::<Res<Vec<_>>>()?;
+        let args = ps.join(", ");
+        let call = format!("call {ret} {}({args})", sym_impls(&f.name, &[], &[]));
+        let attr = if ret == "i1" { "zeroext " } else { "" };
+        out.push(String::new());
+        out.push(format!("define {attr}{ret} @{c}({args}) {{"));
+        if ret == "void" {
+            out.push(format!("  {call}\n  ret void"));
+        } else {
+            out.push(format!("  %r = {call}\n  ret {ret} %r"));
+        }
+        out.push("}".into());
+    }
+    Ok(out.join("\n") + "\n")
+}
+
 /// Whether std's function `f` can be precompiled: not generic, nothing it
 /// takes is a trait (compiled per implementation) or known only while compiling.
 pub fn precompilable(f: &FnDecl, env: &Env) -> bool {
@@ -1957,7 +2020,8 @@ impl<'a> Module<'a> {
         }
         c.block("entry.body");
         // on the call stack a fault shows (the program's functions, as the interpreter's)
-        let framed = !name.starts_with(PRELUDE_MODULE) && !name.starts_with("test \"") && name != COMPTIME;
+        // (nor core.rt's: the runtime, called from C)
+        let framed = !name.starts_with(PRELUDE_MODULE) && !name.starts_with("core.rt.") && !name.starts_with("test \"") && name != COMPTIME;
         if framed {
             // a prelude trait's method by its short name (`ListIter.next`)
             let n = c.m.string(&crate::types::shown_name(name));
@@ -4663,6 +4727,8 @@ impl<'m, 'a> Func<'m, 'a> {
             Expr::Bool(b) => bool_v(&b.to_string()),
             Expr::Str(s) => self.string(s),
             Expr::Unit => (Ty::Unit, String::new()),
+            // core's `builtin static`: its block's address
+            Expr::Var(x) if self.lookup(x).is_none() && self.m.env.statics.contains_key(x) => (Ty::Con("Ptr".into(), vec![]), static_sym(x)),
             Expr::Var(x) if self.lookup(x).is_none() => self.function_value(e, x)?,
             Expr::Var(x) => self.load(x)?,
             Expr::Hole(h) => {
@@ -6167,7 +6233,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.emit(format!("{r} = getelementptr i8, ptr {}, i64 {}", vs[0].1, n.1));
                 (p.clone(), r)
             }
-            ("load_i64" | "load_u8" | "store_i64" | "store_u8" | "atomic_add_i64", [_, Ty::Int, ..]) => {
+            ("load_i64" | "load_u8" | "store_i64" | "store_u8" | "atomic_add_i64" | "atomic_load_i64", [_, Ty::Int, ..]) => {
                 let at = self.call(&Ty::Int, "@strata_int_bits", &vs[1..2])?;
                 let a = self.fresh("at");
                 self.emit(format!("{a} = getelementptr i8, ptr {}, i64 {}", vs[0].1, at.1));
@@ -6176,6 +6242,12 @@ impl<'m, 'a> Func<'m, 'a> {
                     "load_i64" => {
                         let w = self.fresh("w");
                         self.emit(format!("{w} = load i64, ptr {a}"));
+                        let r = self.call(&Ty::Int, "@strata_int_from_i64", &[(Ty::Int, w)])?;
+                        self.temp(r)
+                    }
+                    "atomic_load_i64" => {
+                        let w = self.fresh("w");
+                        self.emit(format!("{w} = load atomic i64, ptr {a} acquire, align 8"));
                         let r = self.call(&Ty::Int, "@strata_int_from_i64", &[(Ty::Int, w)])?;
                         self.temp(r)
                     }
