@@ -1003,7 +1003,7 @@ fn compare_flag_agrees_on_a_script() {
 }
 
 /// Raw memory (`core.mem`) used outside core.
-const CORE_MEM: &str = "fn main() {\n  p := raw_alloc(8)\n  store_i64(p, 0, 1)\n  print(load_i64(p, 0))\n}\n\nfn keep(p: Ptr, f: (Int) -> Ptr) -> List[Ptr] {\n  [p]\n}\n";
+const CORE_MEM: &str = "fn main() {\n  p := raw_alloc(8)\n  store_i64(p, 0, 1)\n  print(load_i64(p, 0))\n}\n\nfn keep(p: Ptr, f: (Int) -> Ptr) -> List[Ptr] {\n  [p]\n}\n\n// a `Ptr` written inside a body\nfn hidden() -> Int {\n  let q: Ptr = raw_alloc(8)\n  g := (x: Ptr) -> 1\n  0\n}\n";
 
 #[test]
 fn raw_memory_outside_core_as_in_rust() {
