@@ -32,6 +32,7 @@
   article strong { color: var(--text); }
   article blockquote { margin: 20px 0; padding: 12px 18px; border-left: 3px solid var(--accent2); background: #f0b45c0d; border-radius: 0 10px 10px 0; color: var(--muted); }
   article img { max-width: 100%; border-radius: 12px; border: 1px solid var(--line2); margin: 10px 0; }
+  article a.shot img { width: min(1300px, calc(100vw - 290px - 12vw)); max-width: none; cursor: zoom-in; }
   article table { border-collapse: collapse; width: 100%; margin: 20px 0; font-size: 15px; }
   article th, article td { border-bottom: 1px solid var(--line); padding: 9px 12px; text-align: left; vertical-align: top; }
   article th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
@@ -43,12 +44,6 @@
   .pager a:hover { border-color: var(--accent); text-decoration: none; }
   .pager a span { display: block; color: var(--muted); font-size: 13px; }
   .pager a.next { text-align: right; }
-  .tour { margin: 26px 0 30px; width: min(1300px, calc(100vw - 290px - 12vw)); }
-  .tour .steps { margin: 0 0 14px; }
-  .tour-say { min-height: 52px; color: #cfcec8; margin-bottom: 14px; font-size: 16px; }
-  .tour-say b { color: var(--text); margin-right: 6px; }
-  .tour .controls { display: flex; gap: 8px; margin-top: 14px; align-items: center; }
-  .tour .controls .n { font: 13px var(--mono); color: var(--muted); margin-left: auto; }
 </style>
 </head>
 <body>
@@ -60,7 +55,6 @@
 <article id="doc"></article>
 <script>window.STRATA = {};</script>
 <script src="data/docs.js"></script>
-<script src="data/tour.js"></script>
 <script src="common.js"></script>
 <script>
 const ORDER = ['learn-strata', 'verification', 'tools'];
@@ -79,37 +73,6 @@ for (const pre of $$('pre.code')) {
   if (lang === 'rust' || lang === 'strata') pre.innerHTML = hl(src);
   else if (lang === 'text') { if (/^\$ |^[✓✗~○] /m.test(src)) pre.innerHTML = term(src); }
   else if (lang === 'sh' || lang === 'toml') pre.innerHTML = shHtml(src);
-}
-// Tools → The viewer: instead of a screenshot, a tour of the real viewer, on a recorded codebase
-const shot = $$('article img').find(im => /viewer\.png$/.test(im.getAttribute('src')));
-if (shot && STRATA.tour) {
-  const T = STRATA.tour, p = shot.closest('p'), cap = p.nextElementSibling;
-  if (cap && /^<em>/.test(cap.innerHTML.trim())) cap.outerHTML = '';
-  p.outerHTML = `<div class="tour" id="tour"><div class="steps"></div><div class="tour-say" id="tour-say"></div>
-    <div class="frame" id="tour-viewer" data-w="1400" data-h="820"></div><div class="controls"></div></div>`;
-  const stops = [
-    { snap: T.verified, sel: 'ship', level: 1, t: 'The code view',
-      say: 'The selected definition comes first, open, then what it depends on, what uses it, and its tests, each as its interface. The dot in the margin is its status; <i>show body ▸</i> opens one.' },
-    { snap: T.verified, sel: 'Order', level: 1, t: 'Follow a name',
-      say: 'Every name in the code is a link. Hover one for an arrow to where it is on screen, click it to go there. On the right, the inspector: the description, a graph of neighbours, the status and the history.' },
-    { snap: T.refuted, sel: 'refund', level: 1, t: 'What the verifier said',
-      say: 'After <code>strata verify</code>, a definition the verifier refuted shows it in red, and the inspector gives the input that breaks it.' },
-    { snap: T.holes, sel: 'refund', level: 1, t: 'Holes',
-      say: 'A change that broke its callers left holes: each one, in the inspector, with its goal type, what was there, and what is in scope.' },
-    { snap: T.final, sel: null, level: 'types', t: 'The type map',
-      say: 'Types and traits, and how they depend on each other. Click a card to see its relations, drag cards, scroll to zoom, double-click to open one in the code view.' },
-    { snap: T.final, sel: null, level: 'changes', step: T.steps.rename, t: 'Changes: a rename',
-      say: 'The history, change by change. A rename is one line; what only followed it is listed under it.' },
-    { snap: T.final, sel: null, level: 'changes', step: T.steps.coupons, t: 'Changes: a new signature',
-      say: 'A signature that changed, with its body, and the call sites that had to follow it: click one to see it.' },
-  ];
-  const tv = new Viewer($('#tour-viewer'), 'strata ui · ~/shop');
-  const st = new Stepper($('#tour'), stops.map(x => x.t), k => {
-    const x = stops[k];
-    $('#tour-say').innerHTML = `<b>${esc(x.t)}</b> ${x.say}`;
-    tv.show(x.snap, { sel: x.sel, level: x.level, ...(x.step != null ? { step: x.step } : {}) });
-  });
-  st.go(0);
 }
 if (location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView();
 // the table of contents follows the reading position

@@ -989,7 +989,7 @@ Not yet:
   2. Three ideas: types as contracts, proving over testing, the code is the AST.
   3. Verification first:
      - contracts spelled out (refinements, `requires` / `ensures`, what the solver checks);
-     - loops and termination: measures for recursion, bounds for `while`, invariants (inferred, or written with `invariant`), what a loop keeps being mostly a variable's type, lists known by position (the slides on main still show invariants as the next step; PR #199 updates them, and the user will ask for the tour again);
+     - loops and termination: measures for recursion, bounds for `while`, invariants (inferred, or written with `invariant`), what a loop keeps being mostly a variable's type (Collatz), a `Sorted` list type proven by position;
      - tests that miss a detail, against one line;
      - many tests against one `ensures`;
      - fuzzing as many tests at once;
@@ -1011,7 +1011,7 @@ Not yet:
      - value semantics with reference counting, and `mut` visible at declarations and calls (a call without it refused);
      - the everyday syntax;
      - `comptime` (tables computed while compiling), with derive built on it (CLI, JSON both ways);
-     - concurrency (user, 2026-11-22): `scope` / `spawn` / `await`, channels and `select` (PR #199, written before they were built; to record from the real CLI now that they are).
+     - concurrency (user, 2026-11-22; three steps, user 2026-11-23): `scope` / `spawn` / `await`, channels and `select`, then `race` and `supervised` tasks; stored with `strata edit` and run.
   - Each section opens with its title, which then moves out of the way.
   - No history of the page, nothing about unmerged branches, and wording without the usual AI idioms (claudisms.ai).
 - **Everything shown is recorded** by `site/build.mjs` from the real CLI, the new-feature slides included (small packages stored with `strata edit`, so a snippet that stops checking breaks the build). Broken since the viewer workspace (#181): the build asks `strata ui` for `/api/changes`, which is gone (the structural-diff scenes need it moved to `/api/diff`); a single scene can still be recorded on its own.
