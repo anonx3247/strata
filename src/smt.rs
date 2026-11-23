@@ -3218,7 +3218,8 @@ impl<'a> Vc<'a> {
         let env = self.env;
         let (tr, m) = crate::types::split_trait_call(name)?;
         let head = match (called_on, args.first()) {
-            (Some(h), _) => h,
+            // a type's text (`List[Int]`): its head picks the implementation
+            (Some(h), _) => crate::types::texpr_head(&crate::types::parse_type_text(&h)).to_string(),
             (None, Some(v)) => self.head_of(v)?,
             _ => return None,
         };
