@@ -32,6 +32,7 @@ type R[T] = {
 
 type S =
   | A
+  /// A variant's doc.
   | B(Int, Float)
   | C { x: Int | String, y: Int where it < 5 }
 

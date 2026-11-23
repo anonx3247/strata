@@ -3,7 +3,7 @@
 Strata code is stored as its syntax tree, not its text, in a binary format of our own: a `.strata` file is a **module file** (`main.strata`, `shop/orders.strata`), or a whole program in one **bundle** file. Text is a view of it.
 
 - **Text goes in through an edit.** `strata edit` (from stdin or an editor) and `strata add FILE` parse text and store the result. Nothing else reads text: a `.strata` file that holds text is refused.
-- **Text comes out through the views.** `strata render` prints a module, `render --split DIR` writes one text file per module (`shop/orders.st`), `view` and `strata ui` show it.
+- **Text comes out through the views.** `strata render` prints a module, `render --split DIR` writes one text file per module (`shop/orders.st`), and `view` shows it.
 - `strata pack app.strata` writes a bundle; `--file`, `run`, `ui` and every view read it like a package. `strata pack --prelude FILE` writes the prelude's definitions (its types and code, under the names programs use) as a module file, for Strata code that runs trees (`compiler/eval`).
 - `strata header core.strata` prints a module file's table of contents; `strata header core.strata --tree` prints each definition (a bundle's too) as a `compiler/ast` value, one per line, and `--text` as the printer writes it, as stored (references qualified: `render` shows them shortened).
 - In git, `strata setup-git` makes `git diff` and `git log -p` show `.strata` files as text, and merges them definition by definition (a conflict is left as text; `strata resolve FILE` stores it again once fixed).
@@ -109,7 +109,7 @@ DeclKind    = 0 TypeDecl | 1 FnDecl | 2 TestDecl | 3 TraitDecl | 4 ImplDecl | 5 
 TypeDecl    = distinct:bool  name:str  params:list(str)  body:TypeBody  refinement:option(Expr)  mock:bool
 TypeBody    = 0 Alias(TypeExpr) | 1 Record(list(Field)) | 2 Sum(list(Variant))
 Field       = comments:list(str)  doc:list(str)  name:str  ty:TypeExpr  default:option(Expr)
-Variant     = comments:list(str)  name:str  payload:Payload
+Variant     = comments:list(str)  doc:list(str)  name:str  payload:Payload
 Payload     = 0 None | 1 Positional(list(TypeExpr)) | 2 Record(list(Field))
             | 3 Type(TypeExpr)        a union member defined elsewhere (`Circle` in `Circle | Square { .. }`)
 

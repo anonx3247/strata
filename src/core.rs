@@ -1,5 +1,5 @@
 //! `core`: what every program has without a `use`, below the standard
-//! library (docs/language.md, "core"). The `core/` package, built into the
+//! library (docs/internals.md, "core"). The `core/` package, built into the
 //! binary as std is: the builtin types and functions the compiler provides
 //! (`builtin type Int`, `builtin fn len[A](xs: List[A]) -> Int`, with
 //! `requires` where they can fail), the types and traits every program

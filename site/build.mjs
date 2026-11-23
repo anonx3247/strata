@@ -4,8 +4,8 @@
 //
 //   cargo build --release && node site/build.mjs
 //
-// Writes site/data/*.js (one `STRATA[...] = {...}` per scene) and copies
-// docs/images to site/images for the docs pages.
+// Writes site/data/*.js (one `STRATA[...] = {...}` per scene). The docs are a
+// site of their own, built by docs-site/.
 
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, cpSync } from 'node:fs';
@@ -904,81 +904,6 @@ fn main(clock: VirtualClock) {
     V.lang = L;
   }
   emit('verify', V);
-}
-
-// ─────────────── the docs, as pages ───────────────
-/** A small markdown renderer: enough for docs/learn-strata.md, verification.md and tools.md. */
-function markdown(md) {
-  const esc = t => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const PAGES = { 'learn-strata.md': 'learn-strata', 'verification.md': 'verification', 'tools.md': 'tools' };
-  // a file of the repository that isn't one of these pages: on GitHub, so the site can be hosted alone
-  const REPO = 'https://github.com/anonx3247/strata/blob/main/';
-  const repoFile = href => REPO + new URL(href, 'https://repo/docs/').pathname.slice(1);
-  const inline = t => {
-    const codes = [];
-    t = t.replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`);
-    t = esc(t)
-      .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => src.startsWith('images/') ? `<a class="shot" href="${src}" target="_blank"><img alt="${alt}" src="${src}"></a>` : `<img alt="${alt}" src="${src.startsWith('http') ? src : repoFile(src) + '?raw=true'}">`)
-      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, txt, href) => {
-        const [f, frag] = href.split('#');
-        const page = PAGES[f.replace(/^\.\.?\/(docs\/)?/, '')];
-        const to = page ? `docs.html?d=${page}${frag ? '#' + frag : ''}` : href.startsWith('http') || href.startsWith('#') ? href : repoFile(href);
-        return `<a href="${to}">${txt}</a>`;
-      })
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/(^|[^*\w])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>');
-    return t.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${esc(codes[+i])}</code>`);
-  };
-  const slug = t => t.toLowerCase().replace(/<[^>]+>/g, '').replace(/[^a-z0-9 -]/g, '').trim().replace(/ +/g, '-');
-  const lines = md.split('\n'), out = [], toc = [];
-  for (let i = 0; i < lines.length;) {
-    const l = lines[i];
-    if (/^```/.test(l)) {
-      const lang = l.slice(3).trim(), body = [];
-      for (i++; i < lines.length && !/^```/.test(lines[i]); i++) body.push(lines[i]);
-      i++;
-      out.push(`<pre class="code" data-lang="${lang || 'text'}">${esc(body.join('\n'))}</pre>`);
-    } else if (/^#{1,4} /.test(l)) {
-      const n = l.match(/^#+/)[0].length, text = inline(l.slice(n + 1)), id = slug(l.slice(n + 1));
-      if (n === 2 || n === 3) toc.push({ n, id, text: text.replace(/<[^>]+>/g, '') });
-      out.push(`<h${n} id="${id}">${text}</h${n}>`); i++;
-    } else if (/^\|/.test(l)) {
-      const rows = [];
-      for (; i < lines.length && /^\|/.test(lines[i]); i++) rows.push(lines[i]);
-      const cells = r => r.replace(/^\||\|$/g, '').split(/(?<!\\)\|/).map(c => inline(c.trim().replace(/\\\|/g, '|')));
-      const [head, , ...body] = rows;
-      out.push(`<table><thead><tr>${cells(head).map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>${body.map(r => `<tr>${cells(r).map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
-    } else if (/^\s*([-*]|\d+\.) /.test(l)) {
-      const ordered = /^\s*\d+\./.test(l), items = [];
-      for (; i < lines.length && (/^\s*([-*]|\d+\.) /.test(lines[i]) || (/^\s+\S/.test(lines[i]) && items.length)); i++) {
-        if (/^\s*([-*]|\d+\.) /.test(lines[i])) items.push(lines[i].replace(/^\s*([-*]|\d+\.) /, ''));
-        else items[items.length - 1] += ' ' + lines[i].trim();
-      }
-      const tag = ordered ? 'ol' : 'ul';
-      out.push(`<${tag}>${items.map(t => `<li>${inline(t)}</li>`).join('')}</${tag}>`);
-    } else if (/^> /.test(l)) {
-      const q = [];
-      for (; i < lines.length && /^>/.test(lines[i]); i++) q.push(lines[i].replace(/^> ?/, ''));
-      out.push(`<blockquote>${inline(q.join(' '))}</blockquote>`);
-    } else if (!l.trim()) i++;
-    else {
-      const p = [];
-      for (; i < lines.length && lines[i].trim() && !/^(```|#{1,4} |\||> |\s*([-*]|\d+\.) )/.test(lines[i]); i++) p.push(lines[i]);
-      out.push(`<p>${inline(p.join(' '))}</p>`);
-    }
-  }
-  return { html: out.join('\n'), toc };
-}
-{
-  const docs = {};
-  for (const [id, file] of [['learn-strata', 'learn-strata.md'], ['verification', 'verification.md'], ['tools', 'tools.md']]) {
-    const md = readFileSync(join(ROOT, 'docs', file), 'utf8');
-    docs[id] = { title: md.match(/^# (.*)/m)[1], ...markdown(md.replace(/^# .*\n/, '')) };
-  }
-  emit('docs', docs);
-  // the docs' pictures, served by the site itself
-  rmSync(join(SITE, 'images'), { recursive: true, force: true });
-  cpSync(join(ROOT, 'docs', 'images'), join(SITE, 'images'), { recursive: true });
 }
 
 rmSync(WORK, { recursive: true, force: true });

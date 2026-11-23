@@ -51,6 +51,9 @@ pub struct Variant {
     /// `//` comment lines just above it, as written ("" is a blank line between groups).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comments: Vec<String>,
+    /// Its `///` doc comment, line by line (a command's help, in `std.cli`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub doc: Vec<String>,
     pub name: Symbol,
     pub payload: Payload,
 }
@@ -289,7 +292,7 @@ pub enum DeclKind {
     Impl(ImplDecl),
     Use(UseDecl),
     /// `extern c fn ...` / `extern c type ...`: a definition made in another
-    /// language, called through its ABI (docs/language.md, "Foreign functions").
+    /// language, called through its ABI (docs/language-reference.md, "Foreign functions").
     Extern(ExternDecl),
     /// `capability Sqlite { fn open(path: String) -> ... }`: functions that
     /// reach the outside world, holding no data. Only the runtime makes one,

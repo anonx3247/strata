@@ -2634,10 +2634,23 @@ List *strata_range(int64_t lo, int64_t hi) {
   return l;
 }
 
-// `main` returned `Err(e)`.
+// Whether to color what goes to stream `fd`: a terminal, unless `NO_COLOR`
+// is set or `TERM` is `dumb`; `FORCE_COLOR` forces it (as std.term decides).
+static _Bool colors(int fd) {
+  const char *f = getenv("FORCE_COLOR");
+  if (f && *f) return 1;
+  const char *n = getenv("NO_COLOR");
+  if (n && *n) return 0;
+  const char *t = getenv("TERM");
+  if (t && !strcmp(t, "dumb")) return 0;
+  return isatty(fd);
+}
+
+// `main` returned `Err(e)` (`error:` in red on a terminal).
 void strata_main_error(Str *shown) {
   fflush(stdout);
-  fprintf(stderr, "error: %.*s\n", (int)shown->len, shown->bytes);
+  if (colors(2)) fprintf(stderr, "\x1b[1;31merror:\x1b[0m %.*s\n", (int)shown->len, shown->bytes);
+  else fprintf(stderr, "error: %.*s\n", (int)shown->len, shown->bytes);
 }
 
 // ---- output ----
@@ -2752,13 +2765,35 @@ Str *strata_prog_name(void) {
 
 // The options could not be read: the help asked for (on standard output), or
 // what is wrong with the arguments (on standard error).
+
+// `--help` (its section headings, `Usage:`, `Options:`…, in bold on a
+// terminal), or what is wrong with the arguments (`error:` in red).
 void strata_options_error(_Bool help, Str *text) {
   if (help) {
-    fwrite(text->bytes, 1, (size_t)text->len, stdout);
+    _Bool on = colors(1);
+    const char *s = text->bytes, *end = s + text->len;
+    while (s < end) {
+      const char *nl = memchr(s, '\n', (size_t)(end - s));
+      const char *e = nl ? nl : end;
+      // a heading: a capitalized word or two at the start, then `:`
+      const char *c = memchr(s, ':', (size_t)(e - s));
+      _Bool heading = on && c && s[0] >= 'A' && s[0] <= 'Z' && (c + 1 == e || c[1] == ' ') && c - s < 20 && !memchr(s, '`', (size_t)(c - s));
+      if (heading) {
+        fputs("\x1b[1m", stdout);
+        fwrite(s, 1, (size_t)(c + 1 - s), stdout);
+        fputs("\x1b[0m", stdout);
+        fwrite(c + 1, 1, (size_t)(e - c - 1), stdout);
+      } else {
+        fwrite(s, 1, (size_t)(e - s), stdout);
+      }
+      if (nl) fputc('\n', stdout);
+      s = nl ? nl + 1 : end;
+    }
     fflush(stdout);
   } else {
     fflush(stdout);
-    fprintf(stderr, "error: %.*s\n", (int)text->len, text->bytes);
+    if (colors(2)) fprintf(stderr, "\x1b[1;31merror:\x1b[0m %.*s\n", (int)text->len, text->bytes);
+    else fprintf(stderr, "error: %.*s\n", (int)text->len, text->bytes);
   }
 }
 
@@ -2971,6 +3006,121 @@ _Bool strata_host_remove(Str *path, Str **kind, Str **msg) {
   return 1;
 }
 
+// Whether `path` is a folder (following links).
+_Bool strata_host_is_dir(Str *path) {
+  struct stat st;
+  return stat(cstr(path), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+// Replace the file's contents with `bytes` (each an `Int` from 0 to 255).
+_Bool strata_host_write_bytes(Str *path, List *bytes, Str **kind, Str **msg) {
+  FILE *f = fopen(cstr(path), "wb");
+  if (!f) {
+    os_error(kind, msg);
+    return 0;
+  }
+  size_t n = (size_t)bytes->len;
+  unsigned char *buf = malloc(n ? n : 1);
+  for (size_t i = 0; i < n; i++) buf[i] = (unsigned char)bytes->buf->data[bytes->off + (int64_t)i];
+  size_t put = fwrite(buf, 1, n, f);
+  free(buf);
+  if (put < n) {
+    os_error(kind, msg);
+    fclose(f);
+    return 0;
+  }
+  if (fclose(f) != 0) {
+    os_error(kind, msg);
+    return 0;
+  }
+  return 1;
+}
+
+// Move a file or folder (replacing a file at `to`).
+_Bool strata_host_rename(Str *from, Str *to, Str **kind, Str **msg) {
+  char *a = strndup(from->bytes, (size_t)from->len);
+  int r = rename(a, cstr(to));
+  free(a);
+  if (r != 0) {
+    os_error(kind, msg);
+    return 0;
+  }
+  return 1;
+}
+
+static int remove_tree(const char *p) {
+  struct stat st;
+  if (lstat(p, &st) != 0) return -1;
+  if (!S_ISDIR(st.st_mode)) return unlink(p);
+  DIR *d = opendir(p);
+  if (!d) return -1;
+  struct dirent *e;
+  int r = 0;
+  while (r == 0 && (e = readdir(d))) {
+    if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+    size_t n = strlen(p) + strlen(e->d_name) + 2;
+    char *c = malloc(n);
+    snprintf(c, n, "%s/%s", p, e->d_name);
+    r = remove_tree(c);
+    free(c);
+  }
+  closedir(d);
+  return r == 0 ? rmdir(p) : r;
+}
+
+// Remove a file, or a folder and all it holds (`rm -r`; links are removed,
+// not followed).
+_Bool strata_host_remove_all(Str *path, Str **kind, Str **msg) {
+  char *p = strndup(path->bytes, (size_t)path->len);
+  int r = remove_tree(p);
+  free(p);
+  if (r != 0) {
+    os_error(kind, msg);
+    return 0;
+  }
+  return 1;
+}
+
+// The absolute path, links and `..` resolved; the file must exist.
+Str *strata_host_absolute(Str *path, Str **kind, Str **msg) {
+  char *r = realpath(cstr(path), NULL);
+  if (!r) {
+    os_error(kind, msg);
+    return NULL;
+  }
+  Str *s = str_c(r);
+  free(r);
+  return s;
+}
+
+// The current folder, absolute (`""` if it was removed).
+Str *strata_host_current_dir(void) {
+  char *r = getcwd(NULL, 0);
+  Str *s = str_c(r ? r : "");
+  free(r);
+  return s;
+}
+
+// What is left of standard input, whole (after the lines `read_line` took).
+Str *strata_host_read_stdin(void) {
+  size_t cap = 4096, len = 0;
+  char *buf = malloc(cap);
+  size_t got;
+  while ((got = fread(buf + len, 1, cap - len, stdin)) > 0) {
+    len += got;
+    if (len == cap) buf = realloc(buf, cap *= 2);
+  }
+  clearerr(stdin);
+  Str *s = str_from(buf, (int64_t)len);
+  free(buf);
+  return s;
+}
+
+// Whether a stream (0: standard input, 1: output, 2: error) is a terminal
+// (not a pipe or a file).
+_Bool strata_host_terminal(int64_t fd) { return fd >= 0 && fd <= 2 && isatty((int)fd); }
+
+
 List *strata_host_args(void) {
   List *l = strata_list_new(prog_argc);
   for (int i = 0; i < prog_argc; i++) l = append(l, (int64_t)(intptr_t)str_c(prog_argv[i]));
@@ -2999,7 +3149,36 @@ static Str *read_all_into(char **b, size_t *n, size_t *cap, int fd) {
   return (Str *)1;
 }
 
-List *strata_host_run(Str *program, List *args, Str *dir, Str **kind, Str **msg) {
+// The environment for a child: this process's, with each `NAME=VALUE` of
+// `env` set (replacing the variable of that name).
+static char **child_environ(List *env) {
+  extern char **environ;
+  size_t n = 0;
+  while (environ[n]) n++;
+  char **out = calloc(n + (size_t)env->len + 1, sizeof(char *));
+  size_t k = 0;
+  for (size_t i = 0; i < n; i++) {
+    const char *eq = strchr(environ[i], '=');
+    size_t name = eq ? (size_t)(eq - environ[i]) : strlen(environ[i]);
+    _Bool replaced = 0;
+    for (int64_t j = 0; j < env->len && !replaced; j++) {
+      Str *v = (Str *)(intptr_t)env->buf->data[env->off + j];
+      replaced = (size_t)v->len > name && v->bytes[name] == '=' && !memcmp(v->bytes, environ[i], name);
+    }
+    if (!replaced) out[k++] = strdup(environ[i]);
+  }
+  for (int64_t j = 0; j < env->len; j++) {
+    Str *v = (Str *)(intptr_t)env->buf->data[env->off + j];
+    out[k++] = strndup(v->bytes, (size_t)v->len);
+  }
+  out[k] = NULL;
+  return out;
+}
+
+// `input` is written to its standard input (then closed); `env` holds
+// `NAME=VALUE`s set for it; `inherit`: it uses this process's standard input,
+// output and error (a terminal, for an editor), and `[code, "", ""]` comes back.
+List *strata_host_run(Str *program, List *args, Str *dir, Str *input, List *env, _Bool inherit, Str **kind, Str **msg) {
   int64_t argc = args->len;
   char **argv = calloc((size_t)argc + 2, sizeof(char *));
   argv[0] = strndup(program->bytes, (size_t)program->len);
@@ -3007,31 +3186,54 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str **kind, Str **msg)
     Str *a = (Str *)(intptr_t)args->buf->data[args->off + i];
     argv[i + 1] = strndup(a->bytes, (size_t)a->len);
   }
-  int out[2], err[2];
-  if (pipe(out) != 0) { os_error(kind, msg); return NULL; }
-  if (pipe(err) != 0) { os_error(kind, msg); close(out[0]); close(out[1]); return NULL; }
+  int out[2] = {-1, -1}, err[2] = {-1, -1}, in[2] = {-1, -1};
+  _Bool feed = !inherit && input->len > 0;
+  if (!inherit) {
+    if (pipe(out) != 0) { os_error(kind, msg); return NULL; }
+    if (pipe(err) != 0) { os_error(kind, msg); close(out[0]); close(out[1]); return NULL; }
+    if (feed && pipe(in) != 0) { os_error(kind, msg); close(out[0]); close(out[1]); close(err[0]); close(err[1]); return NULL; }
+  }
   posix_spawn_file_actions_t fa;
   posix_spawn_file_actions_init(&fa);
-  posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
-  posix_spawn_file_actions_adddup2(&fa, out[1], 1);
-  posix_spawn_file_actions_adddup2(&fa, err[1], 2);
-  posix_spawn_file_actions_addclose(&fa, out[0]);
-  posix_spawn_file_actions_addclose(&fa, err[0]);
-  posix_spawn_file_actions_addclose(&fa, out[1]);
-  posix_spawn_file_actions_addclose(&fa, err[1]);
+  if (!inherit) {
+    if (feed) {
+      posix_spawn_file_actions_adddup2(&fa, in[0], 0);
+      posix_spawn_file_actions_addclose(&fa, in[0]);
+      posix_spawn_file_actions_addclose(&fa, in[1]);
+    } else {
+      posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    }
+    posix_spawn_file_actions_adddup2(&fa, out[1], 1);
+    posix_spawn_file_actions_adddup2(&fa, err[1], 2);
+    posix_spawn_file_actions_addclose(&fa, out[0]);
+    posix_spawn_file_actions_addclose(&fa, err[0]);
+    posix_spawn_file_actions_addclose(&fa, out[1]);
+    posix_spawn_file_actions_addclose(&fa, err[1]);
+  } else {
+    fflush(stdout);
+    fflush(stderr);
+  }
   char *d = dir->len ? strndup(dir->bytes, (size_t)dir->len) : NULL;
   if (d) posix_spawn_file_actions_addchdir_np(&fa, d);
-  extern char **environ;
+  char **envp = child_environ(env);
   pid_t pid;
-  int e = posix_spawnp(&pid, argv[0], &fa, NULL, argv, environ);
+  int e = posix_spawnp(&pid, argv[0], &fa, NULL, argv, envp);
   posix_spawn_file_actions_destroy(&fa);
-  close(out[1]);
-  close(err[1]);
+  for (char **v = envp; *v; v++) free(*v);
+  free(envp);
+  if (!inherit) {
+    close(out[1]);
+    close(err[1]);
+  }
+  if (feed) close(in[0]);
   for (int64_t i = 0; i <= argc; i++) free(argv[i]);
   free(argv);
   if (e != 0) {
-    close(out[0]);
-    close(err[0]);
+    if (!inherit) {
+      close(out[0]);
+      close(err[0]);
+    }
+    if (feed) close(in[1]);
     errno = e;
     os_error(kind, msg);
     char buf[600];
@@ -3046,21 +3248,39 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str **kind, Str **msg)
   free(d);
   char *ob = NULL, *eb = NULL;
   size_t on = 0, oc = 0, en = 0, ec = 0;
-  struct pollfd fds[2] = {{out[0], POLLIN, 0}, {err[0], POLLIN, 0}};
-  int open_fds = 2;
-  while (open_fds > 0) {
-    if (poll(fds, 2, -1) < 0) {
-      if (errno == EINTR) continue;
-      break;
-    }
-    for (int k = 0; k < 2; k++) {
-      if (fds[k].fd < 0 || !(fds[k].revents & (POLLIN | POLLHUP | POLLERR))) continue;
-      if (!(k == 0 ? read_all_into(&ob, &on, &oc, fds[k].fd) : read_all_into(&eb, &en, &ec, fds[k].fd))) {
-        close(fds[k].fd);
-        fds[k].fd = -1;
-        open_fds--;
+  if (!inherit) {
+    // the input is written as the child reads it, while its output is taken
+    // (a child that writes before it reads all its input must not block us)
+    size_t sent = 0;
+    if (feed) fcntl(in[1], F_SETFL, fcntl(in[1], F_GETFL) | O_NONBLOCK);
+    struct pollfd fds[3] = {{out[0], POLLIN, 0}, {err[0], POLLIN, 0}, {feed ? in[1] : -1, POLLOUT, 0}};
+    int open_fds = 2;
+    // (a child that exits without reading: its pipe breaks, not us)
+    void (*was)(int) = feed ? signal(SIGPIPE, SIG_IGN) : NULL;
+    while (open_fds > 0 || fds[2].fd >= 0) {
+      if (poll(fds, 3, -1) < 0) {
+        if (errno == EINTR) continue;
+        break;
+      }
+      for (int k = 0; k < 2; k++) {
+        if (fds[k].fd < 0 || !(fds[k].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+        if (!(k == 0 ? read_all_into(&ob, &on, &oc, fds[k].fd) : read_all_into(&eb, &en, &ec, fds[k].fd))) {
+          close(fds[k].fd);
+          fds[k].fd = -1;
+          open_fds--;
+        }
+      }
+      if (fds[2].fd >= 0 && fds[2].revents) {
+        ssize_t w = (fds[2].revents & POLLOUT) ? write(fds[2].fd, input->bytes + sent, (size_t)input->len - sent) : -1;
+        if (w > 0) sent += (size_t)w;
+        if (w < 0 && errno == EAGAIN) continue;
+        if (w < 0 || sent == (size_t)input->len) {
+          close(fds[2].fd);
+          fds[2].fd = -1;
+        }
       }
     }
+    if (feed) signal(SIGPIPE, was);
   }
   int status = 0;
   while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}

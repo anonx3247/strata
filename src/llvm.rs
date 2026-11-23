@@ -1077,7 +1077,15 @@ declare ptr @strata_host_read_bytes(ptr, ptr, ptr)
 declare i1 @strata_host_write_file(ptr, ptr, i1, ptr, ptr)
 declare i1 @strata_host_exists(ptr)
 declare ptr @strata_host_list_dir(ptr, ptr, ptr)
-declare ptr @strata_host_run(ptr, ptr, ptr, ptr, ptr)
+declare ptr @strata_host_run(ptr, ptr, ptr, ptr, ptr, i1, ptr, ptr)
+declare ptr @strata_host_read_stdin()
+declare i1 @strata_host_terminal(i64)
+declare i1 @strata_host_is_dir(ptr)
+declare i1 @strata_host_write_bytes(ptr, ptr, ptr, ptr)
+declare i1 @strata_host_rename(ptr, ptr, ptr, ptr)
+declare i1 @strata_host_remove_all(ptr, ptr, ptr)
+declare ptr @strata_host_absolute(ptr, ptr, ptr)
+declare ptr @strata_host_current_dir()
 declare i1 @strata_host_make_dir(ptr, ptr, ptr)
 declare i1 @strata_host_remove(ptr, ptr, ptr)
 declare ptr @strata_host_args()
@@ -5965,7 +5973,11 @@ impl<'m, 'a> Func<'m, 'a> {
         let lst = Ty::Con(Symbol::new("List"), vec![Ty::Str]);
         Ok(match name {
             "host_write" => self.call(&Ty::Unit, "@strata_host_write", &vs)?,
-            "host_exists" => self.call(&Ty::Bool, "@strata_host_exists", &vs)?,
+            "host_exists" | "host_is_dir" | "host_terminal" => self.call(&Ty::Bool, &format!("@strata_{name}"), &vs)?,
+            "host_read_stdin" | "host_current_dir" => {
+                let r = self.call(&s_ty, &format!("@strata_{name}"), &[])?;
+                self.temp(r)
+            }
             "host_now" => self.call(&Ty::Int, "@strata_host_now", &[])?,
             "host_sleep" => {
                 let r = self.call(&Ty::Unit, "@strata_host_sleep", &vs)?;
@@ -5989,7 +6001,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.cancel_point()?;
                 r
             }
-            "host_read_file" | "host_list_dir" | "host_read_bytes" | "host_run" => {
+            "host_read_file" | "host_list_dir" | "host_read_bytes" | "host_run" | "host_absolute" => {
                 // a value, or NULL and the failure
                 let (k, m) = (self.fresh("kind"), self.fresh("msg"));
                 writeln!(self.allocas, "  {k} = alloca ptr\n  {m} = alloca ptr").unwrap();
@@ -6038,7 +6050,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.emit(format!("{x} = phi ptr [ {okb}, %{from_ok} ], [ {errb}, %{from_err} ]"));
                 self.temp((t.clone(), x))
             }
-            "host_write_file" | "host_make_dir" | "host_remove" => {
+            "host_write_file" | "host_make_dir" | "host_remove" | "host_write_bytes" | "host_rename" | "host_remove_all" => {
                 let (k, m) = (self.fresh("kind"), self.fresh("msg"));
                 writeln!(self.allocas, "  {k} = alloca ptr\n  {m} = alloca ptr").unwrap();
                 let mut args = vs.clone();

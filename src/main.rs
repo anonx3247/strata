@@ -8,6 +8,7 @@ mod ast_value;
 mod binary;
 mod cli;
 mod cmd;
+mod color;
 mod desugar;
 mod core;
 mod derive;
@@ -362,6 +363,11 @@ fn run() -> Result<bool, String> {
         return Ok(true);
     };
     let json_out = args.flag("--json");
+    // the tools' words coloured on a terminal (not JSON, nor an edit in $EDITOR, which needs the terminal itself)
+    let in_editor = cmd == "edit" && (args.flag("--editor") || std::io::IsTerminal::is_terminal(&std::io::stdin()));
+    if color::colours(cmd) && !json_out && !in_editor {
+        color::start();
+    }
     llvm::jit::set_release(args.flag("--release"));
     // `lex` and `parse` are the Strata front end's (`compiler/`) unless
     // `--rust`, or when no compiler package is found
@@ -435,12 +441,14 @@ fn main() -> ExitCode {
     // compiled code (the JIT, compile-time code) runs on this thread: a deep
     // but legal recursion goes until the memory ends, not the default stack
     let result = std::thread::Builder::new().stack_size(1 << 30).spawn(run).expect("start the main thread").join().unwrap_or_else(|_| Err("internal error".into()));
-    match result {
+    let code = match result {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::from(2)
         }
-    }
+    };
+    color::finish();
+    code
 }

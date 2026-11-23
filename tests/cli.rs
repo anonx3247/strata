@@ -6449,3 +6449,173 @@ fn builtin_statics_are_core_state() {
     let (ok, out) = strata(&["--file", core.to_str().unwrap(), "test"], &d, None);
     assert!(ok && out.contains("✓ core.rt: a static block is one per program, zeroed at the start"), "{out}");
 }
+
+#[test]
+fn commands_are_read_into_a_union() {
+    let d = tmp("cli-commands");
+    std::fs::create_dir_all(d.join("tool")).unwrap();
+    std::fs::write(d.join("tool/strata.toml"), "name = \"tool\"\n").unwrap();
+    save_module(&d.join("tool"), "main", r#"from std.cli use CommandLine
+from std.io use Console
+
+/// A tool with commands.
+type Tool = {
+  /// The file or folder to work on.
+  file: Option[String],
+  /// -v Say more.
+  verbose: Bool,
+  command: Command,
+}
+
+/// The commands.
+type Command =
+  /// Show the history.
+  | Log
+  /// Replace definitions, read from standard input.
+  | Edit {
+    /// [module] The module to change (default: the root).
+    module: Option[String],
+    /// -m The log message.
+    message: Option[String],
+    /// --rm A definition to remove.
+    rm: List[String] = [],
+  }
+  /// Run the program.
+  | Run {
+    /// [path] The program.
+    path: Option[String],
+    /// Its arguments.
+    args: List[String],
+  }
+
+derive CommandLine for Tool
+
+derive CommandLine for Command
+
+fn main(mut console: Console, opts: Tool) {
+  print(opts)
+  match opts.command {
+    Edit { .. } => {
+      text := mut console.read_all()
+      print(f"stdin: {len(lines(text))} lines; interactive: {console.interactive()}")
+    },
+    _ => (),
+  }
+}
+"#);
+    let run = |args: &[&str], stdin: &str| {
+        let mut a = vec!["run", "tool", "--"];
+        a.extend_from_slice(args);
+        strata_code(&a, &d, stdin)
+    };
+    // global options before the command, a command's optional positional,
+    // short names, an option given again and again, standard input
+    let (code, out, err) = run(&["-v", "edit", "shop", "-m", "hi", "--rm", "a", "--rm", "b"], "one\ntwo\n");
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains(r#"Tool { file: None, verbose: true, command: Edit { module: Some("shop"), message: Some("hi"), rm: ["a", "b"] } }"#), "{out}");
+    assert!(out.contains("stdin: 2 lines; interactive: false"), "{out}");
+    let (_, out, _) = run(&["--file", "f.strata", "log"], "");
+    assert!(out.contains(r#"Tool { file: Some("f.strata"), verbose: false, command: Log }"#), "{out}");
+    // an optional positional takes only what comes before `--`
+    let (_, out, _) = run(&["run", "x", "--", "--foo", "bar"], "");
+    assert!(out.contains(r#"Run { path: Some("x"), args: ["--foo", "bar"] }"#), "{out}");
+    let (_, out, _) = run(&["run", "--", "--foo"], "");
+    assert!(out.contains(r#"Run { path: None, args: ["--foo"] }"#), "{out}");
+    // the help lists the commands, with their docs; a command has its own
+    let (code, out, _) = run(&["--help"], "");
+    assert_eq!(code, 0);
+    for want in ["A tool with commands.", "Usage: tool [OPTIONS] <command> [ARGS]...", "Commands:", "  log ", "Show the history.", "-v, --verbose", "Run `tool <command> --help`"] {
+        assert!(out.contains(want), "missing {want:?} in\n{out}");
+    }
+    let (code, out, _) = run(&["edit", "--help"], "");
+    assert_eq!(code, 0);
+    for want in ["Replace definitions, read from standard input.", "Usage: tool edit [OPTIONS] [module]", "[module]", "The module to change (default: the root).", "-m, --message <String>", "--rm <String>..."] {
+        assert!(out.contains(want), "missing {want:?} in\n{out}");
+    }
+    for (args, want) in [
+        (vec![], "missing <command> (the commands are log, edit, run)"),
+        (vec!["bogus"], "unknown command `bogus` (the commands are log, edit, run)"),
+        (vec!["edit", "-x"], "unknown option `-x`"),
+        (vec!["edit", "a", "b"], "unexpected argument `b`"),
+        (vec!["edit", "-m", "a", "-m", "b"], "`--message` is given twice"),
+    ] {
+        let (code, out, err) = run(&args, "");
+        assert!(code == 2 && out.is_empty() && err.contains(want), "{args:?}: {err}");
+    }
+}
+
+#[test]
+fn files_processes_and_standard_input() {
+    let d = tmp("fs-process");
+    save(&d.join("a.strata"), r#"from std.io use Console
+from std.fs use Files, Disk, FsError
+from std.process use Environment, Process, Launcher, Commands, RunOptions
+from std.cli use read_input
+
+fn main(mut console: Console, mut disk: Disk, process: Process, mut launcher: Launcher) -> Result[(), String] {
+  dir := "fsplay"
+  mut disk.remove_all(dir) except { () }
+  mut disk.make_dir(dir + "/sub").or_text()!
+  mut disk.write_bytes(dir + "/sub/b.bin", [0, 255, 10]).or_text()!
+  print(disk.read_bytes(dir + "/sub/b.bin").or_text()!)
+  mut disk.rename(dir + "/sub/b.bin", dir + "/c.bin").or_text()!
+  print(f"{disk.is_dir(dir + "/sub")} {disk.is_dir(dir + "/c.bin")} {disk.exists(dir + "/sub/b.bin")}")
+  print(ends_with(disk.absolute(dir).or_text()!, "/fsplay"))
+  print(starts_with(process.current_dir(), "/"))
+  mut disk.remove_all(dir).or_text()!
+  print(disk.exists(dir))
+  r := mut launcher.run_with("sh", ["-c", "cat; echo $GREET"], "", RunOptions { input: "piped in\n", env: [("GREET", "hello")] })!
+  print(r.out)
+  t := mut launcher.run_with("sh", ["-c", "echo on the terminal"], "", RunOptions { terminal: true })!
+  print(f"code {t.code} out {len(t.out.bytes())}")
+  text := read_input(mut console, disk, "-").or_text()!
+  print(f"stdin: {text}")
+  Ok(())
+}
+
+impl[T] Result[T, FsError] {
+  fn or_text(self) -> Result[T, String] {
+    match self {
+      Ok(x) => Ok(x),
+      Err(e) => Err(f"{e}"),
+    }
+  }
+}
+"#);
+    // by compiler/ and by llvm.rs
+    for flags in [&[][..], &["--rust"][..]] {
+        let mut args = vec!["run"];
+        args.extend_from_slice(flags);
+        args.push("a.strata");
+        let (code, out, err) = strata_code(&args, &d, "abc\ndef");
+        assert_eq!(code, 0, "{flags:?}: {err}");
+        assert_eq!(out, "[0, 255, 10]\ntrue false false\ntrue\ntrue\nfalse\npiped in\nhello\n\non the terminal\ncode 0 out 0\nstdin: abc\ndef\n", "{flags:?}");
+    }
+}
+
+#[test]
+fn colors_only_where_asked_for() {
+    let d = tmp("colors");
+    save(&d.join("a.strata"), "from std.io use Console\nfrom std.term use Output, Errors\n\nfn main(mut console: Console) -> Result[(), String] {\n  p := console.paint(Output)\n  mut console.print(p.green(\"ok\"))\n  Err(\"no\")\n}\n");
+    let hello = format!("{}/examples/hello", env!("CARGO_MANIFEST_DIR"));
+    let run = |args: &[&str], env: &[(&str, &str)]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(args).current_dir(&d).env_remove("NO_COLOR").env_remove("FORCE_COLOR").envs(env.iter().copied()).output().unwrap();
+        (String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string())
+    };
+    let esc = "\u{1b}[";
+    // by compiler/'s evaluator and compiled: a pipe gets plain text, FORCE_COLOR colors
+    for flags in [&[][..], &["--rust"][..]] {
+        let with = |a: &[&'static str]| -> Vec<&'static str> { [&["run"][..], flags, a].concat() };
+        let (out, err) = run(&with(&["a.strata"]), &[]);
+        assert!(out == "ok\n" && err.ends_with("error: no\n"), "{flags:?}: {out:?} {err:?}");
+        let (out, err) = run(&with(&["a.strata"]), &[("FORCE_COLOR", "1")]);
+        assert!(out == format!("{esc}32mok{esc}0m\n") && err.contains(&format!("error:{esc}")), "{flags:?}: {out:?} {err:?}");
+        let hello: &'static str = Box::leak(hello.clone().into_boxed_str());
+        let (out, _) = run(&with(&[hello, "--", "--help"]), &[("FORCE_COLOR", "1")]);
+        assert!(out.contains(&format!("{esc}1mUsage:{esc}0m hello")), "{flags:?}: {out:?}");
+        let (_, err) = run(&with(&[hello, "--", "--times", "0"]), &[("FORCE_COLOR", "1")]);
+        assert!(err.contains("error:") && err.contains(esc), "{flags:?}: {err:?}");
+        let (_, err) = run(&with(&[hello, "--", "--times", "0"]), &[]);
+        assert!(err.starts_with("error: --times"), "{flags:?}: {err:?}");
+    }
+}
