@@ -2067,6 +2067,37 @@ fn a_let_of_a_union_with_refined_members_is_checked() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `strata build` and `strata test` are compiler/codegen's by default (the
+/// tests run with `STRATA_BACKEND=rust`, from .cargo/config.toml, so it is
+/// removed here): a program it compiles is built by it; one it doesn't
+/// cover yet is built by Rust, with a note.
+#[test]
+fn build_and_test_use_compiler_codegen_by_default() {
+    if !have_clang() {
+        return;
+    }
+    let dir = scratch("default");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let default = |args: &[&str]| {
+        let o = Command::new(STRATA).current_dir(&dir).args(args).env_remove("STRATA_BACKEND").env("STRATA_COMPILER", root.join("compiler")).output().unwrap();
+        (String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned(), o.status.success())
+    };
+    let file = dir.join("ok.strata");
+    save(&file, "fn double(n: Int) -> Int {\n    n * 2\n}\n\ntest \"double\" {\n    assert double(2) == 4\n}\n\nfn main() {\n    print(double(21))\n}\n");
+    let (out, err, ok) = default(&["build", "ok.strata", "-o", "ok"]);
+    assert!(ok && out.contains("(compiler/codegen)"), "{out}{err}");
+    assert_eq!(outcome(&dir.join("ok")).0, "42\n");
+    let (out, err, ok) = default(&["--file", "ok.strata", "test"]);
+    assert!(ok && out.contains("✓ double") && out.contains("1 passed, 0 failed"), "{out}{err}");
+    // (not covered yet: built by Rust)
+    let file = dir.join("field.strata");
+    save(&file, "type Holder = { it: Iterator[Int] }\n\nfn main() {\n    h := Holder { it: [1, 2].iter() }\n    for x in h.it {\n        print(x)\n    }\n}\n");
+    let (out, err, ok) = default(&["build", "field.strata", "-o", "field"]);
+    assert!(ok && !out.contains("(compiler/codegen)") && err.contains("using llvm.rs"), "{out}{err}");
+    assert_eq!(outcome(&dir.join("field")).0, "1\n2\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn refuses_what_it_does_not_compile_yet() {
     let dir = scratch("refused");

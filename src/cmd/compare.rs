@@ -275,7 +275,7 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                     }
                     return Ok(fail == 0);
                 }
-                let mut rust_args = vec!["--file".to_string(), file.clone(), "test".to_string()];
+                let mut rust_args = vec!["--file".to_string(), file.clone(), "test".to_string(), "--rust".to_string()];
                 if !filter.is_empty() {
                     rust_args.push(filter);
                 }
@@ -322,7 +322,7 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                     return Ok(true);
                 }
                 let rust = scratch.join("rust");
-                let o = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).arg("build").arg(&file).arg("-o").arg(&rust).output().map_err(|e| e.to_string())?;
+                let o = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).arg("build").arg("--rust").arg(&file).arg("-o").arg(&rust).output().map_err(|e| e.to_string())?;
                 if !o.status.success() {
                     return Err(format!("the Rust build failed: {}", String::from_utf8_lossy(&o.stderr).trim()));
                 }
@@ -441,6 +441,28 @@ pub fn covers_by_default(args: &crate::Args, cmd: &str) -> bool {
     }
 }
 
+/// Whether `STRATA_BACKEND=rust` asks for the Rust code generator (as
+/// `--rust` does).
+pub fn rust_backend() -> bool {
+    std::env::var("STRATA_BACKEND").is_ok_and(|v| v == "rust")
+}
+
+/// Whether `build` or `test` as given is compiler/codegen's by default: a
+/// program or package named (`test`: with `--file`), not the compiler
+/// package itself (its build would need itself), without the options only
+/// the Rust side has (`--emit-llvm`; `test`'s `--with-deps`, `--jit`,
+/// `--interpret`).
+pub fn codegen_by_default(args: &crate::Args, cmd: &str) -> bool {
+    let Some(dir) = compiler_dir().and_then(|d| d.canonicalize().ok()) else { return false };
+    let path = match cmd {
+        "build" => args.pos.get(1).map(String::from).or(args.val("--file").map(String::from)),
+        _ => args.val("--file").map(String::from),
+    };
+    let Some(path) = path.and_then(|p| Path::new(&p).canonicalize().ok()) else { return false };
+    let own = ["--emit-llvm", "--with-deps", "--jit", "--interpret", "--port"];
+    path != dir && !path.starts_with(&dir) && !own.iter().any(|f| args.flags.contains_key(*f)) && (cmd != "build" || args.pos.len() <= 2)
+}
+
 /// The compiler package: `STRATA_COMPILER`, else a `compiler/` folder (with
 /// strata.toml) in the current folder or above, else beside the executable
 /// (`target/release/strata` in the repository).
@@ -494,7 +516,8 @@ fn built(dir: &Path) -> Result<PathBuf, String> {
     fs::create_dir_all(&out).map_err(|e| format!("--compare: {}: {e}", out.display()))?;
     eprintln!("building the Strata compiler ({}) into {} ...", dir.display(), out.display());
     let tmp = out.join(format!("compiler.{}", std::process::id()));
-    let o = Command::new(&me).arg("build").arg("--no-verify").arg(dir).arg("-o").arg(&tmp).output().map_err(|e| e.to_string())?;
+    // (by Rust: never compiler/codegen, which this build makes)
+    let o = Command::new(&me).arg("build").arg("--rust").arg("--no-verify").arg(dir).arg("-o").arg(&tmp).env("STRATA_BACKEND", "rust").output().map_err(|e| e.to_string())?;
     if !o.status.success() {
         let _ = fs::remove_file(&tmp);
         return Err(format!("--compare: strata build {} failed:\n{}{}", dir.display(), String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)));

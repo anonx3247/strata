@@ -16,6 +16,11 @@ Keep track of decisions, open questions and ideas in [IDEAS.md](IDEAS.md); the R
   filters matching the feature (`verify`, `json`, `regex`, …) plus any test you add; they must pass before
   every commit. Check that the examples still round-trip:
   `strata --file F render > a.st; strata --file b.strata edit < a.st; strata --file b.strata render | diff - a.st`.
+- `strata build` and `strata test --file F` use compiler/codegen (the code generator written in Strata) by
+  default, falling back to `llvm.rs` where it doesn't cover a program yet (with a `note:`); `--rust` or
+  `STRATA_BACKEND=rust` asks for `llvm.rs`. `verify` stays on Rust. Cargo's tests run with
+  `STRATA_BACKEND=rust` (.cargo/config.toml), so they keep checking `llvm.rs`. The first default build
+  after a change to `compiler/` or `std/` rebuilds the compiler package (about 2 minutes, cached).
 - `.strata` files are binary module files (docs/binary-format.md): write code with `strata edit` (or
   `strata --file F edit < text` outside a package), read it with `strata render`. A change to the tree
   re-encodes the repository's files ("Changing the format" in that doc); the format version stays 1 until
