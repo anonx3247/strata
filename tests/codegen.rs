@@ -2471,6 +2471,29 @@ fn jit_runs_programs_as_built_ones_run() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `run --strata --jit` with std's precompiled library loaded into the
+/// compiler's process: a program's calls of std (`examples/hello`'s
+/// `std.cli`) reach the library's code, not the compiler executable's own
+/// copies of the same functions (compiled by Rust, laid out differently:
+/// `no match arm for Some(...)` in `std.cli.where_of` before).
+#[test]
+fn jit_uses_the_std_library_not_the_compilers_copies() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let hello = root.join("examples/hello");
+    for args in [vec!["Ann"], vec!["--times", "2", "--loud", "Bo"], vec!["--times", "11", "Bo"]] {
+        let run = |strata: bool| {
+            let mut c = Command::new(STRATA);
+            c.current_dir(&hello).arg("run");
+            if strata {
+                c.args(["--strata", "--jit"]);
+            }
+            let o = c.arg(".").arg("--").args(&args).env("STRATA_COMPILER", root.join("compiler")).output().unwrap();
+            (String::from_utf8_lossy(&o.stdout).into_owned(), o.status.code())
+        };
+        assert_eq!(run(false), run(true), "{args:?}");
+    }
+}
+
 /// `--trace` through compiler/codegen (`compiler jit --trace`, which `strata
 /// run --strata --jit --trace` runs): each call and return on stderr, its
 /// values shown by the compiled code, as `strata run --trace` shows them.

@@ -1,7 +1,8 @@
 // The JIT the compiler written in Strata runs programs with (plan item C20):
-// LLVM's LLJIT through its C API. The IR is compiler/codegen's; the
-// runtime functions it calls (`strata_*`) are found in this process, the
-// compiler's own executable, which runtime.c is linked into.
+// LLVM's LLJIT through its C API. The IR is compiler/codegen's; what it
+// declares is found in the libraries loaded first (`jit_load`), then in this
+// process, the compiler's own executable, which runtime.c is linked into
+// (the runtime's `strata_*` functions).
 
 #include <llvm-c/Core.h>
 #include <llvm-c/Error.h>
@@ -14,6 +15,31 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+// The libraries `jit_load` loaded (std's precompiled code, a package's C),
+// in order. The JIT finds a symbol in them before it looks in this process:
+// the compiler's executable has its own copies of std's functions (it is a
+// Strata program too, compiled by Rust's code generator, whose values are
+// laid out differently), and those must not stand in for the library's.
+static char *loaded_libs[64];
+static int loaded_count;
+
+// Where a JIT looks for what its module declares: each loaded library, then
+// this process (the runtime's `strata_*` functions). An error, or NULL.
+static LLVMErrorRef add_generators(LLVMOrcLLJITRef jit) {
+  LLVMOrcJITDylibRef main = LLVMOrcLLJITGetMainJITDylib(jit);
+  char prefix = LLVMOrcLLJITGetGlobalPrefix(jit);
+  LLVMOrcDefinitionGeneratorRef gen;
+  for (int i = 0; i < loaded_count; i++) {
+    LLVMErrorRef e = LLVMOrcCreateDynamicLibrarySearchGeneratorForPath(&gen, loaded_libs[i], prefix, NULL, NULL);
+    if (e) return e;
+    LLVMOrcJITDylibAddGenerator(main, gen);
+  }
+  LLVMErrorRef e = LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess(&gen, prefix, NULL, NULL);
+  if (e) return e;
+  LLVMOrcJITDylibAddGenerator(main, gen);
+  return NULL;
+}
 
 static int failed(LLVMErrorRef e, const char *what) {
   char *m = LLVMGetErrorMessage(e);
@@ -43,11 +69,9 @@ int32_t jit_run_main(const char *ir, const char *args) {
   LLVMOrcLLJITRef jit;
   LLVMErrorRef e = LLVMOrcCreateLLJIT(&jit, LLVMOrcCreateLLJITBuilder());
   if (e) return failed(e, "can't start");
-  // the runtime: this process's own symbols
-  LLVMOrcDefinitionGeneratorRef gen;
-  e = LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess(&gen, LLVMOrcLLJITGetGlobalPrefix(jit), NULL, NULL);
+  // the loaded libraries, then the runtime: this process's own symbols
+  e = add_generators(jit);
   if (e) return failed(e, "can't see the runtime");
-  LLVMOrcJITDylibAddGenerator(LLVMOrcLLJITGetMainJITDylib(jit), gen);
   LLVMOrcThreadSafeContextRef tsc = LLVMOrcCreateNewThreadSafeContextFromLLVMContext(ctx);
   LLVMOrcThreadSafeModuleRef tsm = LLVMOrcCreateNewThreadSafeModule(mod, tsc);
   e = LLVMOrcLLJITAddLLVMIRModule(jit, LLVMOrcLLJITGetMainJITDylib(jit), tsm);
@@ -80,7 +104,10 @@ int32_t jit_run_main(const char *ir, const char *args) {
 // Load a shared library into this process for the JIT to find its symbols
 // (std's precompiled code): 0 when loaded, else 1 (after saying why).
 int32_t jit_load(const char *path) {
-  if (dlopen(path, RTLD_NOW | RTLD_GLOBAL)) return 0;
+  if (dlopen(path, RTLD_NOW | RTLD_GLOBAL)) {
+    if (loaded_count < 64) loaded_libs[loaded_count++] = strdup(path);
+    return 0;
+  }
   fprintf(stderr, "note: can't load %s: %s\n", path, dlerror());
   return 1;
 }
@@ -132,10 +159,8 @@ int32_t jit_fuzz_load(const char *ir) {
   LLVMOrcLLJITRef fuzz_jit;
   LLVMErrorRef e = LLVMOrcCreateLLJIT(&fuzz_jit, LLVMOrcCreateLLJITBuilder());
   if (!e) {
-    LLVMOrcDefinitionGeneratorRef gen;
-    e = LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess(&gen, LLVMOrcLLJITGetGlobalPrefix(fuzz_jit), NULL, NULL);
+    e = add_generators(fuzz_jit);
     if (!e) {
-      LLVMOrcJITDylibAddGenerator(LLVMOrcLLJITGetMainJITDylib(fuzz_jit), gen);
       LLVMOrcThreadSafeContextRef tsc = LLVMOrcCreateNewThreadSafeContextFromLLVMContext(ctx);
       LLVMOrcThreadSafeModuleRef tsm = LLVMOrcCreateNewThreadSafeModule(mod, tsc);
       e = LLVMOrcLLJITAddLLVMIRModule(fuzz_jit, LLVMOrcLLJITGetMainJITDylib(fuzz_jit), tsm);
