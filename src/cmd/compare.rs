@@ -512,3 +512,31 @@ fn sources(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
         }
     }
 }
+
+/// The script `verify --strata` fuzzes with compiler/codegen's drivers.
+pub static FUZZ_SCRIPT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// `verify --strata`'s fuzz drivers: compiler/codegen's (`codegen --fuzz`,
+/// `strata.fuzz.N` for target N) of the script `file`, with the shapes their
+/// arguments are read back by (as `llvm::compile_fuzz` gives them). A target
+/// the Strata side can't compile (a method's wrapper) makes it an error, so
+/// the caller compiles that one with Rust.
+pub fn fuzz_ir(file: &str, prog: &crate::ast::Program, targets: &[crate::llvm::FuzzTarget]) -> Result<(String, Vec<Vec<crate::llvm::Shape>>, crate::llvm::Shapes), String> {
+    let (exe, _) = compiler()?;
+    let names: Vec<String> = targets.iter().map(|t| t.name.clone()).collect();
+    let ir = run_compiler(&exe, &["codegen".into(), "--fuzz".into(), names.join(","), file.to_string()])?;
+    let missing: Vec<&str> = ir.lines().filter(|l| l.starts_with("error:")).collect();
+    if !missing.is_empty() {
+        let first = targets.iter().find(|t| missing.iter().any(|m| m.contains(&format!("`{}`", t.name)))).or(targets.first());
+        return Err(format!("can't compile the fuzzing of `{}`: {}", first.map(|t| t.name.as_str()).unwrap_or(""), missing.join("; ")));
+    }
+    let types: Vec<crate::ast::TypeExpr> = targets.iter().flat_map(|t| t.params.iter().map(|p| p.1.clone())).collect();
+    let (mut all, named) = crate::llvm::shapes_of(prog, &types)?;
+    let mut per = vec![];
+    for t in targets {
+        let rest = all.split_off(t.params.len().min(all.len()));
+        per.push(std::mem::replace(&mut all, rest));
+    }
+    Ok((ir, per, named))
+}
+

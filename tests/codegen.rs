@@ -2141,3 +2141,49 @@ fn main() {
     assert!(out.contains("compare: they agree"), "{out}{}", String::from_utf8_lossy(&o.stderr));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `verify --jit --strata`: what the solver leaves is fuzzed by
+/// compiler/codegen's drivers (`codegen --fuzz`), with the same verdicts,
+/// cases and counterexamples as Rust's drivers give (postconditions seeing
+/// the parameters).
+#[test]
+fn fuzzing_as_verify_fuzzes() {
+    let dir = scratch("fuzz");
+    let file = dir.join("fuzz.strata");
+    save(&file, "type Point = { x: Float, y: Float }
+
+fn half(x: Float) -> Float
+  ensures it <= x || x < 0.0
+{
+  x / 2.0
+}
+
+fn norm1(p: Point) -> Float
+  ensures it >= 0.0
+{
+  abs(p.x) + abs(p.y)
+}
+
+fn wrong(x: Float) -> Float
+  ensures it > x
+{
+  x * 2.0
+}
+
+fn main() {
+  print(half(3.0))
+}
+");
+    let run = |strata: bool, cache: &str| {
+        let mut c = Command::new(STRATA);
+        c.arg("--file").arg(&file).args(["verify", "--jit"]).env("STRATA_CACHE", dir.join(cache));
+        if strata {
+            c.arg("--strata");
+        }
+        String::from_utf8_lossy(&c.output().unwrap().stdout).into_owned()
+    };
+    let (rust, ours) = (run(false, "rust"), run(true, "strata"));
+    assert!(rust.contains("found by the fuzzer"), "{rust}");
+    assert_eq!(rust, ours);
+    let _ = std::fs::remove_dir_all(&dir);
+}
