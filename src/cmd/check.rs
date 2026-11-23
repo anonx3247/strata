@@ -161,6 +161,23 @@ pub fn verify_source(args: &Args, src: &Source, how: &Verifying) -> Result<(bool
         }
         return Ok((true, vec![]));
     }
+    if args.flag("--obligations") {
+        // the solver's answer to each obligation, nothing run (compared with
+        // `compiler smt`, the verifier written in Strata: tests/smt.rs)
+        let Some(bin) = solver_bin else { return Err("no SMT solver was found (install z3)".into()) };
+        for (orig, d) in p.decls.iter().zip(&resolved.decls) {
+            if let (true, DeclKind::Fn(f)) = (names.contains(&orig.qname()), &d.kind) {
+                if f.params.iter().any(|p| p.comptime) {
+                    continue;
+                }
+                println!("fn {}", f.name);
+                for line in verify::obligation_outcomes(&env, f, transparent, bin) {
+                    println!("  {line}");
+                }
+            }
+        }
+        return Ok((true, vec![]));
+    }
     let closures = store::Closures::new(p);
     // results depend on the solver: it is part of the cache key
     let skey = solver.as_ref().map(|s| s.version.clone()).unwrap_or("no-solver".into());

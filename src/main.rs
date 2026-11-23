@@ -134,7 +134,7 @@ Views:
 Checking:
   check [--json]               types, exhaustiveness, literal refinements
   holes [--json]               typed holes with goal type, context and obligations
-  verify [SELECTOR] [--cases N] [--checks] [--smt] [--require R,..] [--no-race] [--no-cache] [--json]
+  verify [SELECTOR] [--cases N] [--checks] [--smt] [--obligations] [--require R,..] [--no-race] [--no-cache] [--json]
                                prove every contract with an SMT solver (z3), confirm
                                its counterexamples by running them, fuzz the rest.
                                A check's verdict is kept (in the git repository, shared
@@ -142,7 +142,9 @@ Checking:
                                a hash of its definition and all it depends on, the
                                flags, solver and strata binary: an unchanged check
                                says (cached) (--no-cache: run all). --checks lists the
-                               proven checks, --smt prints the solver queries.
+                               proven checks, --smt prints the solver queries,
+                               --obligations each obligation with the solver's
+                               answer (proven, refuted, unknown), nothing run.
                                Each function also says whether it terminates.
                                --require (proven, terminates, no-recursion) fails
                                the run when a checked function falls short (as do
