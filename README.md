@@ -64,20 +64,14 @@ strata add path/to/examples/orders.strata
 strata view --level 0              # map of everything
 strata view slice:Order --level 1  # Order, what it uses, what uses it: interfaces only
 strata holes                       # what's left to implement
-strata ui                          # open http://127.0.0.1:7777: agents, the code, PRs
 ```
-
-`strata ui` is a workspace in the browser: agent sessions over ACP, the code with its git activity, and PRs. Here its Code mode shows the order system after `strata verify`: every definition with its status, `refund` with what it uses and its test, and, in Details, what the verifier proved. [Tools](docs/tools.md#the-viewer) shows the other modes.
-
-![The Strata viewer in Code mode: refund selected, with its dependencies and test, and the Details tab](docs/images/viewer-code.png)
 
 ## Documentation
 
-- [Learn Strata in Y minutes](docs/learn-strata.md): the whole language and the tools on one page, as one valid file. Give it to an agent before it writes Strata.
-- [The language](docs/language.md): types, refinements, unions, traits, modules, mutation, errors, the standard library.
+- [The language](docs/language.md): types, refinements, unions, traits, modules, mutation, errors, tasks, programs.
 - [Verification](docs/verification.md): what `strata verify` proves, with examples and the verifier's output.
-- [Tools](docs/tools.md): the command line, the viewer, storage, packages and git.
-- [Internals](docs/internals.md): how the source is laid out.
-- [The binary format](docs/binary-format.md): code stored as its syntax tree, a module file per module, each with a header.
+- [Tools](docs/tools.md): the command line, structural diffs, storage, packages and git.
+- Annex: [Learn Strata in Y minutes](docs/learn-strata.md) (the language in one valid file, for agents), and the references for [the language](docs/language-reference.md), [verification](docs/verification-reference.md) and [the tools](docs/tools-reference.md).
+- [Internals](docs/internals.md): how the source is laid out, `core`, the compiler; [the binary format](docs/binary-format.md).
 - [Ideas, decisions and open questions](IDEAS.md): where Strata is going.
-- [site/](site/README.md): an interactive presentation of Strata, built from the real tools' output.
+- [site/](site/README.md): the website (strata-lang.dev): a landing page and an interactive tour built from the real tools' output; [docs-site/](docs-site/README.md) publishes these docs on it.

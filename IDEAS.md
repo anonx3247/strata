@@ -118,6 +118,10 @@ Open questions:
 
 `field: T = value` in a record (or a variant's record payload); see docs/language.md, "Records and defaults". Decided: any expression with no variables in scope (not the other fields), checked against the field's type where the type is defined, and evaluated each time it is used. It applies in constructors (`desugar::defaults` fills them in after resolution), JSON input (`std.json`'s derived `from_json`), and the command line (a scalar field with a default is an option, `--times 3`; a `List` field's default is used when no arguments are left). Mocks and fuzzing still generate every field. Not done: defaults for other types (`type Port = Int where … = 8080`), which the user set aside; a flag whose default is `true` can't be turned off from the command line yet (`--no-x`).
 
+### Generated docs for std (user, 2026-11-23; not built)
+
+The standard library gets a reference page per module on the docs site (`docs-site/`, Starlight), generated from its `///` doc comments instead of written by hand: the language guide only names the modules, and the hand-written table of what each has (docs/language-reference.md, "The standard library") goes once the pages exist. A `strata doc` command (or a step of `docs-site/sync.mjs`) would write Markdown per module: each public definition's interface (`render --level 1`) with its doc comment, grouped by kind, linked to the types it names. To settle: whether it is a `strata` command (usable on any package, as `cargo doc` is) or the site's script only, and how examples in doc comments are checked.
+
 ### Web UIs (direction agreed with the user 2026-11-20; steps 1-4 built, each step's "Not yet" below)
 
 The second place Strata should be useful, after the command line: UIs in the
