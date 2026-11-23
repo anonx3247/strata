@@ -142,8 +142,9 @@ Checking:
                                A check's verdict is kept (in the git repository, shared
                                by its worktrees, else ~/.cache/strata/verdicts) under
                                a hash of its definition and all it depends on, the
-                               flags, solver and strata binary: an unchanged check
-                               says (cached) (--no-cache: run all). --checks lists the
+                               flags and solver, across strata builds: only what
+                               changed runs, the rest says (cached) (--no-cache:
+                               run all again). --checks lists the
                                proven checks, --smt prints the solver queries,
                                --obligations each obligation with the solver's
                                answer (proven, refuted, unknown), nothing run.
