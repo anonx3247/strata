@@ -624,8 +624,9 @@ fn built(dir: &Path) -> Result<PathBuf, String> {
     Ok(exe)
 }
 
-/// The `.strata` files and settings under `dir` (not hidden folders such as
-/// the package's cache), with their paths relative to `root`.
+/// The `.strata` files, settings and C (`[native]`: the compiler's JIT is
+/// `c/jit.c`) under `dir` (not hidden folders such as the package's
+/// cache), with their paths relative to `root`.
 fn sources(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     for e in rd.flatten() {
@@ -636,7 +637,7 @@ fn sources(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
         }
         if p.is_dir() {
             sources(root, &p, out);
-        } else if name.ends_with(".strata") || name == "strata.toml" || name == "strata.lock" {
+        } else if name.ends_with(".strata") || name == "strata.toml" || name == "strata.lock" || name.ends_with(".c") || name.ends_with(".h") {
             out.push((p.strip_prefix(root).unwrap_or(&p).to_string_lossy().into_owned(), p));
         }
     }
