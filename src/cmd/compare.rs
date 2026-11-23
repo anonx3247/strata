@@ -141,7 +141,9 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
     if cmd == "run" && args.flag("--jit") && !compare {
         let root = compiler_dir().and_then(|d| d.canonicalize().ok()).and_then(|d| Some(d.parent()?.to_path_buf())).ok_or("no repository around compiler/")?;
         let path = Path::new(&file).canonicalize().map_err(|e| format!("{file}: {e}"))?;
-        let status = Command::new(&exe).current_dir(root).arg("jit").arg(path).arg("--").args(&program_args).status().map_err(|e| e.to_string())?;
+        // (`--trace`: each call and return on stderr, shown by the compiled code)
+        let trace: &[&str] = if args.flag("--trace") { &["--trace"] } else { &[] };
+        let status = Command::new(&exe).current_dir(root).arg("jit").args(trace).arg(path).arg("--").args(&program_args).status().map_err(|e| e.to_string())?;
         std::process::exit(status.code().unwrap_or(1));
     }
     let std_files = || -> Vec<String> {

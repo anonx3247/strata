@@ -358,6 +358,26 @@ void strata_leave(void) {
   c->runs = r - 1;
 }
 
+// `--trace` (compiler/codegen's): each traced call and return on stderr,
+// indented by depth, its values shown by the compiled code:
+// `→ total([1, 2])`, then `← total: 3`.
+static _Thread_local int64_t trace_depth;
+
+void strata_trace_enter(Str *name, Str *args) {
+  for (int64_t i = 0; i < trace_depth; i++) fputs("  ", stderr);
+  fprintf(stderr, "\xe2\x86\x92 %.*s(%.*s)\n", (int)name->len, name->bytes, (int)args->len, args->bytes);
+  trace_depth++;
+}
+
+void strata_trace_leave(Str *name, Str *value) {
+  if (trace_depth > 0) trace_depth--;
+  for (int64_t i = 0; i < trace_depth; i++) fputs("  ", stderr);
+  if (value)
+    fprintf(stderr, "\xe2\x86\x90 %.*s: %.*s\n", (int)name->len, name->bytes, (int)value->len, value->bytes);
+  else
+    fprintf(stderr, "\xe2\x86\x90 %.*s\n", (int)name->len, name->bytes);
+}
+
 // The call stack as `strata run` shows it ("" when empty): as the
 // `names::show_stack`, four or more calls in a row of one function
 // are one entry.

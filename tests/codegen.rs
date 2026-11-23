@@ -2470,3 +2470,20 @@ fn jit_runs_programs_as_built_ones_run() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `--trace` through compiler/codegen (`compiler jit --trace`, which `strata
+/// run --strata --jit --trace` runs): each call and return on stderr, its
+/// values shown by the compiled code, as `strata run --trace` shows them.
+#[test]
+fn jit_traces_as_rust_traces() {
+    let dir = scratch("trace");
+    let file = dir.join("traced.strata");
+    save(&file, "type Point = { x: Int, y: Int }\n\nfn total(xs: List[Int]) -> Int {\n    fold(xs, 0, (a, b) -> a + b)\n}\n\nfn shift(p: Point, d: Int) -> Point {\n    Point { x: p.x + d, y: p.y }\n}\n\nfn greet(name: String) {\n    print(\"hi \" + name)\n}\n\nfn fact(n: Int) -> Int {\n    if n <= 1 {\n        1\n    } else {\n        n * fact(n - 1)\n    }\n}\n\nfn main() {\n    print(total([1, 2, 3]))\n    print(shift(Point { x: 1, y: 2 }, 3))\n    greet(\"ann\")\n    print(fact(3))\n}\n");
+    let rust = Command::new(STRATA).args(["run", "--rust", "--trace"]).arg(&file).output().unwrap();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["jit", "--trace"]).arg(&file).output().unwrap();
+    assert!(String::from_utf8_lossy(&ours.stderr).contains("    → fact(1)\n"), "{}", String::from_utf8_lossy(&ours.stderr));
+    assert_eq!(String::from_utf8_lossy(&rust.stderr), String::from_utf8_lossy(&ours.stderr));
+    assert_eq!(String::from_utf8_lossy(&rust.stdout), String::from_utf8_lossy(&ours.stdout));
+    let _ = std::fs::remove_dir_all(&dir);
+}
