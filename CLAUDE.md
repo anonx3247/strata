@@ -11,6 +11,8 @@ Keep track of decisions, open questions and ideas in [IDEAS.md](IDEAS.md); the R
   expression, a new error) goes into the matching `compiler/` module in the same PR, with its test
   (tests/lex.rs, parse.rs, ast.rs, resolve.rs, check.rs, eval.rs compare the two). Edit it with
   `strata --file compiler/ edit MODULE` (start from `strata --file compiler render MODULE`).
+- `tests/resolve.rs` `packages_store_as_in_rust` (compiler/resolve's stored form vs Rust's) is known to fail and is no longer
+  maintained (user's call): don't run it, don't fix it, don't count it as a regression.
 - Never run the whole test suite. Run only the tests for what you are
   changing, by name: `cargo test --release --test cli <filter>` (or `--lib <filter>` for unit tests), with
   filters matching the feature (`verify`, `json`, `regex`, …) plus any test you add; they must pass before
