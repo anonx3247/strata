@@ -803,7 +803,7 @@ pub fn members_view(p: &Program, view: Members) -> Program {
                     TypeBody::Sum(vs) if own(t) => vs[0].payload.clone(),
                     _ => continue,
                 };
-                fold.insert(name, (*u, Variant { comments: d.comments.clone(), name: t.name, payload }));
+                fold.insert(name, (*u, Variant { comments: d.comments.clone(), doc: vec![], name: t.name, payload }));
             }
             for (k, d) in p.decls.iter().enumerate() {
                 let DeclKind::Type(t) = &d.kind else {
@@ -816,14 +816,14 @@ pub fn members_view(p: &Program, view: Members) -> Program {
                 let into = |m: &TypeExpr| -> Variant {
                     match m {
                         TypeExpr::Named(n, a) if a.is_empty() && fold.get(short(n)).is_some_and(|(u, _)| *u == k) => fold[short(n)].1.clone(),
-                        _ => Variant { comments: vec![], name: Symbol::new(&crate::types::texpr_head(m)), payload: Payload::Type(m.clone()) },
+                        _ => Variant { comments: vec![], doc: vec![], name: Symbol::new(&crate::types::texpr_head(m)), payload: Payload::Type(m.clone()) },
                     }
                 };
                 let body = match &t.body {
                     // (a union folding a member in declares it)
                     TypeBody::Alias(TypeExpr::Union(ms)) if ms.iter().any(|m| !matches!(into(m).payload, Payload::Type(_))) => TypeBody::Sum(ms.iter().map(into).collect()),
                     TypeBody::Sum(vs) => TypeBody::Sum(vs.iter().map(|v| match &v.payload {
-                        Payload::Type(m) => Variant { comments: v.comments.clone(), ..into(m) },
+                        Payload::Type(m) => Variant { comments: v.comments.clone(), doc: v.doc.clone(), ..into(m) },
                         _ => v.clone(),
                     }).collect()),
                     b => b.clone(),
@@ -1995,10 +1995,11 @@ impl Rw<'_> {
                                 // a member defined elsewhere: a reference to it
                                 Payload::Type(t) => {
                                     let t = self.ty(t);
-                                    Variant { comments: v.comments.clone(), name: Symbol::new(&crate::types::texpr_head(&t)), payload: Payload::Type(t) }
+                                    Variant { comments: v.comments.clone(), doc: v.doc.clone(), name: Symbol::new(&crate::types::texpr_head(&t)), payload: Payload::Type(t) }
                                 }
                                 _ => Variant {
                                 comments: v.comments.clone(),
+                                doc: v.doc.clone(),
                                 name: self.declared(m, v.name),
                                 payload: match &v.payload {
                                     Payload::Type(_) => unreachable!(),

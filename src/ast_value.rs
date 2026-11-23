@@ -138,7 +138,7 @@ fn variant(v: &Variant) -> String {
         Payload::Record(fs) => tag("RecordPayload", list(fs, field)),
         Payload::Type(t) => tag("MemberType", ty(t)),
     };
-    rec("Variant", &[("comments", strs(&v.comments)), ("name", s(&v.name)), ("payload", payload)])
+    rec("Variant", &[("comments", strs(&v.comments)), ("doc", strs(&v.doc)), ("name", s(&v.name)), ("payload", payload)])
 }
 
 fn fn_decl(f: &FnDecl) -> String {

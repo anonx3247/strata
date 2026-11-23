@@ -51,6 +51,9 @@ pub struct Variant {
     /// `//` comment lines just above it, as written ("" is a blank line between groups).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comments: Vec<String>,
+    /// Its `///` doc comment, line by line (a command's help, in `std.cli`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub doc: Vec<String>,
     pub name: Symbol,
     pub payload: Payload,
 }

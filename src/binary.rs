@@ -207,6 +207,7 @@ pub fn without_notes(mut d: Decl) -> Decl {
             TypeBody::Sum(vs) => {
                 for v in vs {
                     v.comments.clear();
+                    v.doc.clear();
                     if let Payload::Record(fs) = &mut v.payload {
                         fields(fs)
                     }
@@ -789,7 +790,7 @@ macro_rules! put {
 record!(Decl { comments, doc, module, public, kind });
 record!(TypeDecl { distinct, name, params, body, refinement, mock });
 record!(Field { comments, doc, name, ty, default });
-record!(Variant { comments, name, payload });
+record!(Variant { comments, doc, name, payload });
 record!(Param { name, ty, mutable, comptime });
 record!(Bound { param, traits });
 record!(FnDecl { doc, comments, name, type_params, bounds, params, ret, requires, ensures, terminates, body, comptime, derived });
