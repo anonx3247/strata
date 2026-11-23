@@ -2073,3 +2073,71 @@ fn main() {
     assert!(out.contains("compare: they agree"), "{out}{}", String::from_utf8_lossy(&o.stderr));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Mocks (`mock T`): their methods' results generated (refined types,
+/// records, lists, options, floats) until their `ensures` hold, their
+/// `requires` checked; the same report as `strata test`'s.
+#[test]
+fn mocks_as_strata_test_runs_them() {
+    let dir = scratch("mocks");
+    let file = dir.join("mocks.strata");
+    save(&file, "type Score = Int where 0 <= it && it <= 100
+
+type Item = { name: String, qty: Int where it > 0 }
+
+trait Store {
+  fn price(self, sku: String) -> Int
+    ensures it >= 0
+  fn score(self) -> Score
+  fn items(self, n: Int) -> List[Item]
+    requires n >= 0
+  fn pick(self) -> Option[Bool]
+  fn ratio(self) -> Float
+}
+
+fn total(s: Store, skus: List[String]) -> Int {
+  skus.map(k -> s.price(k)).sum()
+}
+
+test \"prices are never negative\" {
+  s := mock Store
+  assert total(s, [\"a\", \"b\", \"c\"]) >= 0
+}
+
+test \"scores are in range\" {
+  s := mock Store
+  for _ in 0..20 {
+    x := s.score()
+    assert 0 <= x && x <= 100
+  }
+}
+
+test \"items have quantities\" {
+  s := mock Store
+  for it in s.items(3) {
+    assert it.qty > 0
+  }
+}
+
+test \"shows as a mock\" {
+  s := mock Store
+  o := s.pick()
+  assert o == None || o == Some(true) || o == Some(false)
+  r := s.ratio()
+  assert r == r
+}
+
+test \"requires is checked\" {
+  s := mock Store
+  print(len(s.items(-1)))
+}
+
+fn main() {
+  print(1)
+}
+");
+    let o = Command::new(STRATA).arg("--file").arg(&file).args(["test", "--compare"]).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("compare: they agree"), "{out}{}", String::from_utf8_lossy(&o.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
+}
