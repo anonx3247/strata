@@ -2252,7 +2252,7 @@ fn main() {
     std::fs::write(&ll, &ir).unwrap();
     let ours = dir.join("ffi-strata");
     let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/llvm/runtime.c");
-    let o = Command::new(cc()).args(["-O2", "-Wno-override-module", "-o"]).arg(&ours).arg(&ll).arg(&runtime).arg(pkg.join("c/lib.c")).arg("-lm").output().unwrap();
+    let o = Command::new(cc()).args(["-O2", "-Wno-override-module", "-o"]).arg(&ours).arg(&ll).arg(&runtime).arg(format!("-I{}", pkg.join("include").display())).arg(pkg.join("c/lib.c")).arg("-lm").output().unwrap();
     assert!(o.status.success(), "clang refused compiler/codegen's IR: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(outcome(&rust), outcome(&ours));
     let m = memory(&ours);
