@@ -406,12 +406,22 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                     return Err(format!("compiler/codegen doesn't cover this program yet:\n{}", missing.join("\n")));
                 }
                 fs::write(&ll, ir).map_err(|e| e.to_string())?;
+                // core.rt, the runtime written in Strata (the allocator),
+                // compiled by compiler/codegen too: linked in place of the C
+                // runtime's own versions (`STRATA_CORE_RT`), as `build --rust`
+                // links Rust's compile of it
+                let core_rt_ir = run_compiler(&exe, &["codegen".into(), "--core-rt".into()])?;
+                if let Some(e) = core_rt_ir.lines().find(|l| l.starts_with("error")) {
+                    return Err(format!("compiler/codegen can't compile core.rt: {e}"));
+                }
+                let core_rt = scratch.join("core_rt.ll");
+                fs::write(&core_rt, core_rt_ir).map_err(|e| e.to_string())?;
                 let ours = if compare { scratch.join("strata") } else { PathBuf::from(args.val("-o").map(String::from).unwrap_or_else(|| Path::new(&file).file_stem().unwrap().to_string_lossy().into_owned())) };
                 let cc = std::env::var("STRATA_CC").unwrap_or_else(|_| "clang".into());
                 // a package's own C (`[native]`), for its `extern c` declarations
                 let mut native = crate::package::find(Path::new(&file)).ok().flatten().map(|p| p.native.clang_args(&p.dir)).unwrap_or_default();
                 native.retain(|a| a != "-lm");
-                let o = Command::new(&cc).args(["-O2", "-Wno-override-module", "-o"]).arg(&ours).arg(&ll).arg(&runtime).args(std_lib.as_ref().map(|l| l.object.clone())).args(&native).arg("-lm").output().map_err(|e| format!("running {cc}: {e}"))?;
+                let o = Command::new(&cc).args(["-O2", "-Wno-override-module", "-DSTRATA_CORE_RT", "-o"]).arg(&ours).arg(&ll).arg(&core_rt).arg(&runtime).args(std_lib.as_ref().map(|l| l.object.clone())).args(&native).arg("-lm").output().map_err(|e| format!("running {cc}: {e}"))?;
                 if !o.status.success() {
                     return Err(format!("{cc} refused compiler/codegen's IR: {}", String::from_utf8_lossy(&o.stderr).trim()));
                 }

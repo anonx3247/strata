@@ -2432,6 +2432,94 @@ fn main() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `compiler codegen --core-rt`: core.rt (the runtime written in Strata:
+/// the allocator, over core.mem's raw memory and `builtin static` blocks)
+/// compiled by compiler/codegen, each `strata_...` function under its C
+/// name and with no call-stack frames or cancellation points, as Rust's
+/// `llvm::compile_core_rt` makes it. Programs linked with it in place of the
+/// C runtime's versions (`STRATA_CORE_RT`: with those compiled out, a
+/// missing function fails the link) behave as with the C allocator: the
+/// same output, nothing left alive at the end in check mode
+/// (`STRATA_MEMORY=check`), through small objects, blocks past the small
+/// sizes and tasks (counts changed atomically); and, ending in a fault, the
+/// same objects reported alive, which core.rt's own tallies find.
+#[test]
+fn core_rt_compiled_by_codegen() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["codegen", "--core-rt"]).output().unwrap();
+    let ir = String::from_utf8_lossy(&ours.stdout).into_owned();
+    assert!(!ir.lines().any(|l| l.starts_with("error")), "{ir}");
+    for f in ["strata_alloc", "strata_dup", "strata_release", "strata_free", "strata_unique", "strata_memory_start", "strata_memory_made"] {
+        assert!(ir.contains(&format!("define ")) && ir.lines().any(|l| l.starts_with("define ") && l.contains(&format!(" @{f}("))), "{f} not defined under its C name");
+    }
+    assert!(!ir.contains("call void @strata_enter") && !ir.contains("call i1 @strata_cancelled"), "core.rt has frames or cancellation points");
+    let dir = scratch("core-rt");
+    let rt = dir.join("core_rt.ll");
+    std::fs::write(&rt, &ir).unwrap();
+    // built with core.rt, and with the C runtime's own allocator
+    let build = |name: &str, text: &str| -> (PathBuf, PathBuf) {
+        let file = dir.join(format!("{name}.strata"));
+        save(&file, text);
+        let prog = Command::new(compiler::exe()).current_dir(root).arg("codegen").arg(&file).output().unwrap();
+        let ll = dir.join(format!("{name}.ll"));
+        std::fs::write(&ll, &prog.stdout).unwrap();
+        let mut out = vec![];
+        for with_rt in [true, false] {
+            let exe = dir.join(format!("{name}-{}", if with_rt { "rt" } else { "c" }));
+            let mut c = Command::new("clang");
+            c.args(["-O2", "-Wno-override-module", "-o"]).arg(&exe).arg(&ll).arg(root.join("src/llvm/runtime.c"));
+            if with_rt {
+                c.arg("-DSTRATA_CORE_RT").arg(&rt);
+            }
+            let o = c.arg("-lm").output().unwrap();
+            assert!(o.status.success(), "{name}: {}", String::from_utf8_lossy(&o.stderr));
+            out.push(exe);
+        }
+        (out.remove(0), out.remove(0))
+    };
+    let run = |exe: &PathBuf| Command::new(exe).env("STRATA_MEMORY", "check").output().unwrap();
+    // small objects, blocks past the small sizes (a 2000-element list, long
+    // strings), and objects made and dropped by tasks
+    let (rt_exe, c_exe) = build("work", r#"fn main() {
+  xs := [1, 2, 3].map(x -> x * 2)
+  big := range(0, 2000).map(n -> n * n)
+  long := join(range(0, 300).map(n -> to_string(n)), ",")
+  sums := scope {
+    a := spawn fold(range(0, 500).map(n -> [n, n + 1]), 0, (s, p) -> s + len(p))
+    b := spawn byte_len(join(range(0, 200).map(n -> f"item {n}"), ";"))
+    (await a, await b)
+  }
+  print(f"{xs} {len(big)} {big[1999]} {byte_len(long)} {sums}")
+}
+"#);
+    // check mode's summary, `memory: N allocated, M freed, K live` (core.rt's
+    // own tallies: a free it didn't count shows here, and only here)
+    let summary = |o: &std::process::Output| -> (u64, u64, u64) {
+        let err = String::from_utf8_lossy(&o.stderr).into_owned();
+        let line = err.lines().find(|l| l.starts_with("memory: ")).unwrap_or_else(|| panic!("no memory summary: {err}")).to_string();
+        let n: Vec<u64> = line.split(|c: char| !c.is_ascii_digit()).filter(|x| !x.is_empty()).map(|x| x.parse().unwrap()).collect();
+        (n[0], n[1], n[2])
+    };
+    let (a, b) = (run(&rt_exe), run(&c_exe));
+    assert!(String::from_utf8_lossy(&a.stdout).starts_with("[2, 4, 6] 2000 3996001 1089 (1000, "), "{}", String::from_utf8_lossy(&a.stdout));
+    assert_eq!(a.stdout, b.stdout);
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    let (made, freed, live_n) = summary(&a);
+    assert!(made > 2000 && made == freed && live_n == 0, "core.rt: {made} allocated, {freed} freed, {live_n} live");
+    assert_eq!(summary(&a), summary(&b), "core.rt's tallies differ from the C allocator's");
+    // a fault: what is still alive is reported, and it is what the C
+    // allocator reports (the tallies, and each object's count and size)
+    let (rt_exe, c_exe) = build("fault", "fn half(n: Int) -> Int\n  requires n % 2 == 0 {\n  n / 2\n}\n\nfn main() {\n  xs := [4, 2, 3].map(x -> half(x))\n  print(xs)\n}\n");
+    let live = |o: &std::process::Output| -> Vec<String> {
+        String::from_utf8_lossy(&o.stderr).lines().filter(|l| l.trim_start().starts_with("live:")).map(|l| l.split(", first word").next().unwrap_or("").to_string()).collect()
+    };
+    let (a, b) = (run(&rt_exe), run(&c_exe));
+    assert!(!live(&a).is_empty() && summary(&a).2 > 0, "core.rt reported nothing alive after a fault: {}", String::from_utf8_lossy(&a.stderr));
+    assert_eq!(summary(&a), summary(&b));
+    assert_eq!(live(&a), live(&b));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `strata build --compare`: compiler/codegen's executable does what Rust's
 /// does on the build tests' programs and the example packages with a `main`
 /// (the measure for switching `build` over).
