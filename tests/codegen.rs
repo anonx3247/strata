@@ -2534,3 +2534,56 @@ fn std_precompiled_once_links_with_programs() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `compiler fuzz`: compiler/codegen's drivers (`codegen --fuzz-text`) run
+/// in the compiler's own process by its JIT (compiler/c/jit.c), each case's
+/// arguments handed back as code: the verdict of each function is the one
+/// `strata verify --fuzz` gets from Rust's drivers (cases, discards, the
+/// counterexample and its message). A function compiler/codegen can't
+/// compile yet is left out of the comparison.
+#[test]
+fn compiler_fuzzes_as_verify_fuzzes() {
+    let dir = scratch("compiler-fuzz");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = vec![];
+    for (name, text) in [
+        ("step1", include_str!("data/smt/step1.st")),
+        ("step2", include_str!("data/smt/step2.st")),
+        ("step3", include_str!("data/smt/step3.st")),
+        ("step4", include_str!("data/smt/step4.st")),
+        ("termination", include_str!("data/smt/termination.st")),
+    ] {
+        let file = dir.join(format!("{name}.strata"));
+        save(&file, text);
+        files.push(file);
+    }
+    files.push(root.join("examples/math.strata"));
+    let lines = |out: &[u8]| -> Vec<(String, Vec<String>)> {
+        let mut fns: Vec<(String, Vec<String>)> = vec![];
+        for l in String::from_utf8_lossy(out).lines() {
+            if let Some(n) = l.strip_prefix("fn ") {
+                fns.push((n.to_string(), vec![]));
+            } else if let (Some(x), Some(f)) = (l.strip_prefix("  "), fns.last_mut()) {
+                f.1.push(x.to_string());
+            }
+        }
+        fns
+    };
+    let mut compared = 0;
+    for f in files {
+        let rust = Command::new(STRATA).arg("--file").arg(&f).args(["verify", "--fuzz"]).output().unwrap();
+        assert!(rust.status.success(), "{}: {}", f.display(), String::from_utf8_lossy(&rust.stderr));
+        let ours = Command::new(compiler::exe()).current_dir(root).arg("fuzz").arg(&f).output().unwrap();
+        assert!(ours.status.success(), "{}: {}", f.display(), String::from_utf8_lossy(&ours.stderr));
+        let rust = lines(&rust.stdout);
+        for (n, verdict) in lines(&ours.stdout) {
+            if verdict.first().is_some_and(|v| v.starts_with("skipped: it can't be compiled yet")) {
+                continue;
+            }
+            let r = rust.iter().find(|x| x.0 == n).unwrap_or_else(|| panic!("{}: `{n}` is not among Rust's", f.display()));
+            assert_eq!(r.1, verdict, "{}: `{n}`: Rust's verdict, then compiler fuzz's", f.display());
+            compared += 1;
+        }
+    }
+    assert!(compared > 50, "only {compared} functions compared");
+}

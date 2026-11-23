@@ -612,7 +612,25 @@ void strata_step(void) {
   }
 }
 
+// The running case's arguments as code, for the compiler written in Strata
+// (compiler/codegen's drivers with `--fuzz-text`: `strata_fuzz_arg`), each
+// followed by a 0x1f byte; emptied when a case starts.
+static _Thread_local char *fuzz_args;
+static _Thread_local size_t fuzz_args_len;
+
+void strata_fuzz_arg(Str *s) {
+  fuzz_args = realloc(fuzz_args, fuzz_args_len + (size_t)s->len + 2);
+  memcpy(fuzz_args + fuzz_args_len, s->bytes, (size_t)s->len);
+  fuzz_args_len += (size_t)s->len;
+  fuzz_args[fuzz_args_len++] = 0x1f;
+  fuzz_args[fuzz_args_len] = 0;
+}
+
+const char *strata_fuzz_args(void) { return fuzz_args ? fuzz_args : ""; }
+
 int32_t strata_fuzz(void (*f)(void), int64_t seed, int64_t budget) {
+  fuzz_args_len = 0;
+  if (fuzz_args) fuzz_args[0] = 0;
   steps = budget;
   counting = 1;
   test_seed = (uint64_t)seed;

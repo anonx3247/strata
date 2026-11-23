@@ -316,7 +316,7 @@ pub fn verify_source(args: &Args, src: &Source, how: &Verifying) -> Result<(bool
     let std = if is_std { "" } else { verify::std_hash() };
     let kept = verdicts_at(src, how.file).with_settings(&format!("seed {seed} race {race} solver {solver_path} {skey} std {std}"));
     let mut found: Vec<Option<verify::Verdict>> =
-        defs.iter().flat_map(|d| &d.4).map(|j| if args.flag("--no-cache") { None } else { kept.get_check(&j.0, &j.1) }).collect();
+        defs.iter().flat_map(|d| &d.4).map(|j| if args.flag("--no-cache") || args.flag("--fuzz") { None } else { kept.get_check(&j.0, &j.1) }).collect();
     // what is fuzzed, compiled, all in one module (`--jit` says why when
     // something can't be): only the definitions with a check to run
     let mut chosen = vec![false; p.decls.len()];
@@ -330,6 +330,22 @@ pub fn verify_source(args: &Args, src: &Source, how: &Verifying) -> Result<(bool
     }
     // the checks not kept, on as many threads as there are cores: each
     // solver query is a process of its own
+    if args.flag("--fuzz") {
+        // each function's fuzzing alone, no solver (compared with `compiler
+        // fuzz`, which runs compiler/codegen's drivers in its own JIT: tests/codegen.rs)
+        for (orig, d) in p.decls.iter().zip(&resolved.decls) {
+            if let (true, DeclKind::Fn(f)) = (names.contains(&orig.qname()), &d.kind) {
+                if f.params.iter().any(|p| p.comptime) {
+                    continue;
+                }
+                println!("fn {}", f.name);
+                for line in verify::fuzz_lines(&f.name, cases, seed) {
+                    println!("  {line}");
+                }
+            }
+        }
+        return Ok((true, vec![]));
+    }
     let todo: Vec<&(String, String, Job)> = defs.iter().flat_map(|d| &d.4).zip(&found).filter(|(_, v)| v.is_none()).map(|(j, _)| j).collect();
     let made = crate::par::map(&todo, |(label, key, job)| {
         let v = job();
