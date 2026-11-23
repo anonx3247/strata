@@ -51,11 +51,9 @@ fn memory(exe: &Path) -> String {
     err.lines().find(|l| l.starts_with("memory: ")).unwrap_or_default().to_string()
 }
 
-/// The program at `file` built by Rust and by Strata: their outcomes.
-fn both(dir: &Path, name: &str, file: &Path) -> ((String, String, Option<i32>), (String, String, Option<i32>)) {
-    let rust = dir.join(format!("{name}-rust"));
-    let o = Command::new(STRATA).arg("build").arg(file).arg("-o").arg(&rust).output().unwrap();
-    assert!(o.status.success(), "{name}: strata build: {}", String::from_utf8_lossy(&o.stderr));
+/// The program at `file` built by compiler/codegen (its IR linked with the C
+/// runtime by clang): the executable.
+fn ours(dir: &Path, name: &str, file: &Path) -> PathBuf {
     let ir = compiler::run(&["codegen".to_string(), file.to_string_lossy().into_owned()]);
     assert!(!ir.starts_with("error: "), "{name}: not compiled by compiler/codegen:\n{ir}");
     let ll = dir.join(format!("{name}.ll"));
@@ -64,6 +62,15 @@ fn both(dir: &Path, name: &str, file: &Path) -> ((String, String, Option<i32>), 
     let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/llvm/runtime.c");
     let o = Command::new(cc()).args(["-O2", "-Wno-override-module", "-o"]).arg(&ours).arg(&ll).arg(&runtime).arg("-lm").output().unwrap();
     assert!(o.status.success(), "{name}: clang refused compiler/codegen's IR: {}", String::from_utf8_lossy(&o.stderr));
+    ours
+}
+
+/// The program at `file` built by Rust and by Strata: their outcomes.
+fn both(dir: &Path, name: &str, file: &Path) -> ((String, String, Option<i32>), (String, String, Option<i32>)) {
+    let rust = dir.join(format!("{name}-rust"));
+    let o = Command::new(STRATA).arg("build").arg(file).arg("-o").arg(&rust).output().unwrap();
+    assert!(o.status.success(), "{name}: strata build: {}", String::from_utf8_lossy(&o.stderr));
+    let ours = ours(dir, name, file);
     let (r, o) = (outcome(&rust), outcome(&ours));
     // a program that ends normally frees everything it made
     if r.2 == Some(0) {
@@ -514,8 +521,13 @@ fn show_id(i: Id) -> String {
 fn main() {
   print(show_id(3))
   print(show_id(\"x\"))
-  let j: Id = 50
+  let j: Id = 5
   print(j)
+  mut k: Id = \"a\"
+  k = 7
+  print(k)
+  k = \"b\" + \"c\"
+  print(k)
 }
 "),
     ("refined_union_broken", "type Small = Int where it < 10
@@ -2037,6 +2049,55 @@ fn compiled_programs_do_what_rust_compiled_ones_do() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A union with refined members checks a `let`'s value too (`llvm.rs`
+/// checks it only where the value is already a union: an argument, a
+/// result).
+#[test]
+fn a_let_of_a_union_with_refined_members_is_checked() {
+    if !have_clang() {
+        return;
+    }
+    let dir = scratch("refined-let");
+    let file = dir.join("refined_let.strata");
+    save(&file, "type Small = Int where it < 10\n\ntype Id = Small | String\n\nfn main() {\n    let j: Id = 5\n    print(j)\n    let k: Id = 50\n    print(k)\n}\n");
+    let (out, err, code) = outcome(&ours(&dir, "refined_let", &file));
+    assert_eq!(out, "5\n");
+    assert!(err.starts_with("fault (Refinement): let binding: 50 is not a `Small | String`"), "{err}");
+    assert_eq!(code, Some(101));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `strata build` and `strata test` are compiler/codegen's by default (the
+/// tests run with `STRATA_BACKEND=rust`, from .cargo/config.toml, so it is
+/// removed here): a program it compiles is built by it; one it doesn't
+/// cover yet is built by Rust, with a note.
+#[test]
+fn build_and_test_use_compiler_codegen_by_default() {
+    if !have_clang() {
+        return;
+    }
+    let dir = scratch("default");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let default = |args: &[&str]| {
+        let o = Command::new(STRATA).current_dir(&dir).args(args).env_remove("STRATA_BACKEND").env("STRATA_COMPILER", root.join("compiler")).output().unwrap();
+        (String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned(), o.status.success())
+    };
+    let file = dir.join("ok.strata");
+    save(&file, "fn double(n: Int) -> Int {\n    n * 2\n}\n\ntest \"double\" {\n    assert double(2) == 4\n}\n\nfn main() {\n    print(double(21))\n}\n");
+    let (out, err, ok) = default(&["build", "ok.strata", "-o", "ok"]);
+    assert!(ok && out.contains("(compiler/codegen)"), "{out}{err}");
+    assert_eq!(outcome(&dir.join("ok")).0, "42\n");
+    let (out, err, ok) = default(&["--file", "ok.strata", "test"]);
+    assert!(ok && out.contains("✓ double") && out.contains("1 passed, 0 failed"), "{out}{err}");
+    // (not covered yet: built by Rust)
+    let file = dir.join("field.strata");
+    save(&file, "type Holder = { it: Iterator[Int] }\n\nfn main() {\n    h := Holder { it: [1, 2].iter() }\n    for x in h.it {\n        print(x)\n    }\n}\n");
+    let (out, err, ok) = default(&["build", "field.strata", "-o", "field"]);
+    assert!(ok && !out.contains("(compiler/codegen)") && err.contains("using llvm.rs"), "{out}{err}");
+    assert_eq!(outcome(&dir.join("field")).0, "1\n2\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn refuses_what_it_does_not_compile_yet() {
     let dir = scratch("refused");
@@ -2082,8 +2143,12 @@ fn foreign_calls_do_what_rust_compiled_ones_do() {
     let dir = scratch("ffi");
     let pkg = dir.join("ffi");
     std::fs::create_dir_all(pkg.join("c")).unwrap();
-    std::fs::write(pkg.join("strata.toml"), "name = \"ffi\"\n\n[native]\nsources = [\"c/lib.c\"]\nlibs = [\"m\"]\n").unwrap();
-    std::fs::write(pkg.join("c/lib.c"), "#include <stdint.h>
+    // (a header from `include_dirs`)
+    std::fs::create_dir_all(pkg.join("include")).unwrap();
+    std::fs::write(pkg.join("include/greeting.h"), "#define GREETING \"hello, %s!\"\n").unwrap();
+    std::fs::write(pkg.join("strata.toml"), "name = \"ffi\"\n\n[native]\nsources = [\"c/lib.c\"]\nlibs = [\"m\"]\ninclude_dirs = [\"include\"]\n").unwrap();
+    std::fs::write(pkg.join("c/lib.c"), "#include <greeting.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -2096,7 +2161,7 @@ uint8_t low_byte(uint32_t x) { return (uint8_t)(x & 0xff); }
 int8_t negate8(int8_t x) { return (int8_t)-x; }
 const char *greet(const char *name) {
   static char buf[256];
-  snprintf(buf, sizeof buf, \"hello, %s!\", name);
+  snprintf(buf, sizeof buf, GREETING, name);
   return buf;
 }
 size_t name_len(const char *s) { return strlen(s); }
@@ -2187,7 +2252,7 @@ fn main() {
     std::fs::write(&ll, &ir).unwrap();
     let ours = dir.join("ffi-strata");
     let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/llvm/runtime.c");
-    let o = Command::new(cc()).args(["-O2", "-Wno-override-module", "-o"]).arg(&ours).arg(&ll).arg(&runtime).arg(pkg.join("c/lib.c")).arg("-lm").output().unwrap();
+    let o = Command::new(cc()).args(["-O2", "-Wno-override-module", "-o"]).arg(&ours).arg(&ll).arg(&runtime).arg(format!("-I{}", pkg.join("include").display())).arg(pkg.join("c/lib.c")).arg("-lm").output().unwrap();
     assert!(o.status.success(), "clang refused compiler/codegen's IR: {}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(outcome(&rust), outcome(&ours));
     let m = memory(&ours);
@@ -2402,6 +2467,70 @@ fn jit_runs_programs_as_built_ones_run() {
         let theirs = Command::new(&rust).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&theirs.stdout), String::from_utf8_lossy(&ours.stdout), "{name}");
         assert_eq!(theirs.status.code(), ours.status.code(), "{name}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--trace` through compiler/codegen (`compiler jit --trace`, which `strata
+/// run --strata --jit --trace` runs): each call and return on stderr, its
+/// values shown by the compiled code, as `strata run --trace` shows them.
+#[test]
+fn jit_traces_as_rust_traces() {
+    let dir = scratch("trace");
+    let file = dir.join("traced.strata");
+    save(&file, "type Point = { x: Int, y: Int }\n\nfn total(xs: List[Int]) -> Int {\n    fold(xs, 0, (a, b) -> a + b)\n}\n\nfn shift(p: Point, d: Int) -> Point {\n    Point { x: p.x + d, y: p.y }\n}\n\nfn greet(name: String) {\n    print(\"hi \" + name)\n}\n\nfn fact(n: Int) -> Int {\n    if n <= 1 {\n        1\n    } else {\n        n * fact(n - 1)\n    }\n}\n\nfn main() {\n    print(total([1, 2, 3]))\n    print(shift(Point { x: 1, y: 2 }, 3))\n    greet(\"ann\")\n    print(fact(3))\n}\n");
+    let rust = Command::new(STRATA).args(["run", "--rust", "--trace"]).arg(&file).output().unwrap();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["jit", "--trace"]).arg(&file).output().unwrap();
+    assert!(String::from_utf8_lossy(&ours.stderr).contains("    → fact(1)\n"), "{}", String::from_utf8_lossy(&ours.stderr));
+    assert_eq!(String::from_utf8_lossy(&rust.stderr), String::from_utf8_lossy(&ours.stderr));
+    assert_eq!(String::from_utf8_lossy(&rust.stdout), String::from_utf8_lossy(&ours.stdout));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// std precompiled once (plan item C21): `compiler codegen --library` holds
+/// std's functions that don't change per program (`; precompiled NAME`
+/// lines, each an exported symbol); a program compiled with `--precompiled
+/// NAMES` declares them instead, and linked with the library's object it
+/// does what the program compiled whole does (and frees everything).
+#[test]
+fn std_precompiled_once_links_with_programs() {
+    if !have_clang() {
+        return;
+    }
+    let dir = scratch("stdlib");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ir = compiler::run(&["codegen", "--library"]);
+    assert!(!ir.lines().any(|l| l.starts_with("error")), "{}", ir.lines().filter(|l| l.starts_with("error")).collect::<Vec<_>>().join("\n"));
+    let names: Vec<&str> = ir.lines().filter_map(|l| l.strip_prefix("; precompiled ")).collect();
+    assert!(names.len() > 100 && names.contains(&"std.json.parse"), "{names:?}");
+    std::fs::write(dir.join("std.ll"), &ir).unwrap();
+    std::fs::write(dir.join("names"), names.join("\n")).unwrap();
+    let o = Command::new(cc()).args(["-O2", "-fPIC", "-Wno-override-module", "-c", "-o"]).arg(dir.join("std.o")).arg(dir.join("std.ll")).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let runtime = root.join("src/llvm/runtime.c");
+    for ex in ["wc", "page"] {
+        let pkg = root.join("examples").join(ex);
+        let whole = compiler::run(&["codegen".to_string(), pkg.to_string_lossy().into_owned()]);
+        let part = compiler::run(&["codegen".to_string(), "--precompiled".to_string(), dir.join("names").to_string_lossy().into_owned(), pkg.to_string_lossy().into_owned()]);
+        assert!(!part.starts_with("error") && part.len() < whole.len(), "{ex}: {}", &part[..part.len().min(400)]);
+        let mut outs = vec![];
+        for (k, text) in [("whole", &whole), ("part", &part)] {
+            let (ll, exe) = (dir.join(format!("{ex}-{k}.ll")), dir.join(format!("{ex}-{k}")));
+            std::fs::write(&ll, text).unwrap();
+            let mut c = Command::new(cc());
+            c.args(["-O2", "-Wno-override-module", "-o"]).arg(&exe).arg(&ll).arg(&runtime);
+            if k == "part" {
+                c.arg(dir.join("std.o"));
+            }
+            let o = c.arg("-lm").output().unwrap();
+            assert!(o.status.success(), "{ex} {k}: {}", String::from_utf8_lossy(&o.stderr));
+            let run = Command::new(&exe).current_dir(&pkg).env("STRATA_MEMORY", "check").output().unwrap();
+            let err = String::from_utf8_lossy(&run.stderr).into_owned();
+            assert!(err.contains(" 0 live"), "{ex} {k}: {err}");
+            outs.push((String::from_utf8_lossy(&run.stdout).into_owned(), run.status.code()));
+        }
+        assert_eq!(outs[0], outs[1], "{ex}");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

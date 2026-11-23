@@ -7,5 +7,9 @@
 # the Rust front end; later `strata` will run it as its front end.
 name = "compiler"
 
+# LLVM's C API, for the JIT (`compiler jit`): where Homebrew puts LLVM
 [native]
-sources = ["c/jit.c", "/opt/homebrew/opt/llvm/lib/libLLVM-C.dylib"]
+sources = ["c/jit.c"]
+libs = ["LLVM-C"]
+include_dirs = ["/opt/homebrew/opt/llvm/include"]
+lib_dirs = ["/opt/homebrew/opt/llvm/lib"]

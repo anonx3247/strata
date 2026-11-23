@@ -43,6 +43,71 @@ fn run_compiler(exe: &Path, args: &[String]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
+/// std precompiled by compiler/codegen (plan item C21): its functions that
+/// compile once for every program (`compiler codegen --library`), as an
+/// object `build` links statically and a shared library the compiler's JIT
+/// loads, with their names (`--precompiled`). Kept beside the built
+/// compiler, whose cache key covers std's files. `None` with
+/// `STRATA_NO_STD_LIBRARY`, or when it can't be made (each program then
+/// compiles the std code it uses).
+struct StdLibrary {
+    names: PathBuf,
+    object: PathBuf,
+    shared: PathBuf,
+}
+
+fn std_library(exe: &Path) -> Option<StdLibrary> {
+    if std::env::var_os("STRATA_NO_STD_LIBRARY").is_some() {
+        return None;
+    }
+    let dir = exe.parent()?.join("std");
+    let lib = StdLibrary { names: dir.join("names"), object: dir.join("std.o"), shared: dir.join(if cfg!(target_os = "macos") { "libstd.dylib" } else { "libstd.so" }) };
+    if lib.names.is_file() {
+        return Some(lib);
+    }
+    let made = (|| -> Result<(), String> {
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let ir = run_compiler(exe, &["codegen".into(), "--library".into()])?;
+        if ir.lines().any(|l| l.starts_with("error")) {
+            return Err(ir.lines().filter(|l| l.starts_with("error")).collect::<Vec<_>>().join("\n"));
+        }
+        // (each step to a file of its own, renamed when done: another
+        // process may be making it too)
+        let id = std::process::id();
+        let ll = dir.join(format!("std.{id}.ll"));
+        fs::write(&ll, &ir).map_err(|e| e.to_string())?;
+        let cc = std::env::var("STRATA_CC").unwrap_or_else(|_| "clang".into());
+        let (obj, shared) = (dir.join(format!("std.{id}.o")), dir.join(format!("libstd.{id}")));
+        let mut so: Vec<&str> = vec!["-O2", "-fPIC", "-shared", "-Wno-override-module"];
+        if cfg!(target_os = "macos") {
+            so.extend(["-undefined", "dynamic_lookup"]);
+        }
+        for args in [vec!["-O2", "-fPIC", "-Wno-override-module", "-c", "-o"], [so, vec!["-o"]].concat()] {
+            let out = if args.contains(&"-c") { &obj } else { &shared };
+            let o = Command::new(&cc).args(&args).arg(out).arg(&ll).output().map_err(|e| format!("running {cc}: {e}"))?;
+            if !o.status.success() {
+                return Err(String::from_utf8_lossy(&o.stderr).into_owned());
+            }
+        }
+        let _ = fs::remove_file(&ll);
+        fs::rename(&obj, &lib.object).map_err(|e| e.to_string())?;
+        fs::rename(&shared, &lib.shared).map_err(|e| e.to_string())?;
+        let names: Vec<&str> = ir.lines().filter_map(|l| l.strip_prefix("; precompiled ")).collect();
+        let tmp = dir.join(format!("names.{id}"));
+        fs::write(&tmp, names.join("\n") + "\n").map_err(|e| e.to_string())?;
+        fs::rename(&tmp, &lib.names).map_err(|e| e.to_string())
+    })();
+    match made {
+        Ok(()) => Some(lib),
+        Err(e) => {
+            if std::env::var_os("STRATA_DEBUG").is_some() {
+                eprintln!("note: std is compiled with each program: {e}");
+            }
+            None
+        }
+    }
+}
+
 /// The Strata checker's error lines on `file` (a script or a package folder).
 fn strata_check(file: &str) -> Result<Vec<String>, String> {
     let (exe, std) = compiler()?;
@@ -141,7 +206,14 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
     if cmd == "run" && args.flag("--jit") && !compare {
         let root = compiler_dir().and_then(|d| d.canonicalize().ok()).and_then(|d| Some(d.parent()?.to_path_buf())).ok_or("no repository around compiler/")?;
         let path = Path::new(&file).canonicalize().map_err(|e| format!("{file}: {e}"))?;
-        let status = Command::new(&exe).current_dir(root).arg("jit").arg(path).arg("--").args(&program_args).status().map_err(|e| e.to_string())?;
+        // (`--trace`: each call and return on stderr, shown by the compiled code)
+        let trace: &[&str] = if args.flag("--trace") { &["--trace"] } else { &[] };
+        // (std's precompiled code: loaded, not compiled again)
+        let mut pre: Vec<std::ffi::OsString> = vec![];
+        if let Some(l) = std_library(&exe) {
+            pre.extend(["--load".into(), l.shared.into_os_string(), "--precompiled".into(), l.names.into_os_string()]);
+        }
+        let status = Command::new(&exe).current_dir(root).arg("jit").args(&pre).args(trace).arg(path).arg("--").args(&program_args).status().map_err(|e| e.to_string())?;
         std::process::exit(status.code().unwrap_or(1));
     }
     let std_files = || -> Vec<String> {
@@ -275,7 +347,7 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                     }
                     return Ok(fail == 0);
                 }
-                let mut rust_args = vec!["--file".to_string(), file.clone(), "test".to_string()];
+                let mut rust_args = vec!["--file".to_string(), file.clone(), "test".to_string(), "--rust".to_string()];
                 if !filter.is_empty() {
                     rust_args.push(filter);
                 }
@@ -302,7 +374,14 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                     crate::llvm::proofs_text(src.program(), &proofs)
                 };
                 fs::write(&proven, facts).map_err(|e| e.to_string())?;
-                let ir = run_compiler(&exe, &["codegen".into(), "--proofs".into(), proven.to_string_lossy().into_owned(), file.clone()])?;
+                // std's precompiled code: declared here, linked in (statically)
+                let std_lib = std_library(&exe);
+                let mut cg: Vec<String> = vec!["codegen".into(), "--proofs".into(), proven.to_string_lossy().into_owned()];
+                if let Some(l) = &std_lib {
+                    cg.extend(["--precompiled".into(), l.names.to_string_lossy().into_owned()]);
+                }
+                cg.push(file.clone());
+                let ir = run_compiler(&exe, &cg)?;
                 let missing: Vec<&str> = ir.lines().filter(|l| l.starts_with("error:")).collect();
                 if !missing.is_empty() {
                     return Err(format!("compiler/codegen doesn't cover this program yet:\n{}", missing.join("\n")));
@@ -313,7 +392,7 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                 // a package's own C (`[native]`), for its `extern c` declarations
                 let mut native = crate::package::find(Path::new(&file)).ok().flatten().map(|p| p.native.clang_args(&p.dir)).unwrap_or_default();
                 native.retain(|a| a != "-lm");
-                let o = Command::new(&cc).args(["-O2", "-Wno-override-module", "-o"]).arg(&ours).arg(&ll).arg(&runtime).args(&native).arg("-lm").output().map_err(|e| format!("running {cc}: {e}"))?;
+                let o = Command::new(&cc).args(["-O2", "-Wno-override-module", "-o"]).arg(&ours).arg(&ll).arg(&runtime).args(std_lib.as_ref().map(|l| l.object.clone())).args(&native).arg("-lm").output().map_err(|e| format!("running {cc}: {e}"))?;
                 if !o.status.success() {
                     return Err(format!("{cc} refused compiler/codegen's IR: {}", String::from_utf8_lossy(&o.stderr).trim()));
                 }
@@ -322,7 +401,7 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                     return Ok(true);
                 }
                 let rust = scratch.join("rust");
-                let o = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).arg("build").arg(&file).arg("-o").arg(&rust).output().map_err(|e| e.to_string())?;
+                let o = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).arg("build").arg("--rust").arg(&file).arg("-o").arg(&rust).output().map_err(|e| e.to_string())?;
                 if !o.status.success() {
                     return Err(format!("the Rust build failed: {}", String::from_utf8_lossy(&o.stderr).trim()));
                 }
@@ -441,6 +520,28 @@ pub fn covers_by_default(args: &crate::Args, cmd: &str) -> bool {
     }
 }
 
+/// Whether `STRATA_BACKEND=rust` asks for the Rust code generator (as
+/// `--rust` does).
+pub fn rust_backend() -> bool {
+    std::env::var("STRATA_BACKEND").is_ok_and(|v| v == "rust")
+}
+
+/// Whether `build` or `test` as given is compiler/codegen's by default: a
+/// program or package named (`test`: with `--file`), not the compiler
+/// package itself (its build would need itself), without the options only
+/// the Rust side has (`--emit-llvm`; `test`'s `--with-deps`, `--jit`,
+/// `--interpret`).
+pub fn codegen_by_default(args: &crate::Args, cmd: &str) -> bool {
+    let Some(dir) = compiler_dir().and_then(|d| d.canonicalize().ok()) else { return false };
+    let path = match cmd {
+        "build" => args.pos.get(1).map(String::from).or(args.val("--file").map(String::from)),
+        _ => args.val("--file").map(String::from),
+    };
+    let Some(path) = path.and_then(|p| Path::new(&p).canonicalize().ok()) else { return false };
+    let own = ["--emit-llvm", "--with-deps", "--jit", "--interpret", "--port"];
+    path != dir && !path.starts_with(&dir) && !own.iter().any(|f| args.flags.contains_key(*f)) && (cmd != "build" || args.pos.len() <= 2)
+}
+
 /// The compiler package: `STRATA_COMPILER`, else a `compiler/` folder (with
 /// strata.toml) in the current folder or above, else beside the executable
 /// (`target/release/strata` in the repository).
@@ -494,7 +595,8 @@ fn built(dir: &Path) -> Result<PathBuf, String> {
     fs::create_dir_all(&out).map_err(|e| format!("--compare: {}: {e}", out.display()))?;
     eprintln!("building the Strata compiler ({}) into {} ...", dir.display(), out.display());
     let tmp = out.join(format!("compiler.{}", std::process::id()));
-    let o = Command::new(&me).arg("build").arg("--no-verify").arg(dir).arg("-o").arg(&tmp).output().map_err(|e| e.to_string())?;
+    // (by Rust: never compiler/codegen, which this build makes)
+    let o = Command::new(&me).arg("build").arg("--rust").arg("--no-verify").arg(dir).arg("-o").arg(&tmp).env("STRATA_BACKEND", "rust").output().map_err(|e| e.to_string())?;
     if !o.status.success() {
         let _ = fs::remove_file(&tmp);
         return Err(format!("--compare: strata build {} failed:\n{}{}", dir.display(), String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)));

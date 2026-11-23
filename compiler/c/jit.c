@@ -3,40 +3,13 @@
 // runtime functions it calls (`strata_*`) are found in this process, the
 // compiler's own executable, which runtime.c is linked into.
 
-#include <stddef.h>
-// (LLVM's C API, declared here: a package's C has no include path)
-typedef struct LLVMOpaqueContext *LLVMContextRef;
-typedef struct LLVMOpaqueModule *LLVMModuleRef;
-typedef struct LLVMOpaqueMemoryBuffer *LLVMMemoryBufferRef;
-typedef struct LLVMOpaqueError *LLVMErrorRef;
-typedef struct LLVMOrcOpaqueThreadSafeContext *LLVMOrcThreadSafeContextRef;
-typedef struct LLVMOrcOpaqueThreadSafeModule *LLVMOrcThreadSafeModuleRef;
-typedef struct LLVMOrcOpaqueLLJIT *LLVMOrcLLJITRef;
-typedef struct LLVMOrcOpaqueLLJITBuilder *LLVMOrcLLJITBuilderRef;
-typedef struct LLVMOrcOpaqueJITDylib *LLVMOrcJITDylibRef;
-typedef struct LLVMOrcOpaqueDefinitionGenerator *LLVMOrcDefinitionGeneratorRef;
-typedef unsigned long long LLVMOrcExecutorAddress;
-char *LLVMGetErrorMessage(LLVMErrorRef);
-void LLVMDisposeErrorMessage(char *);
-void LLVMDisposeMessage(char *);
-int LLVMInitializeAArch64Target(void);
-int LLVMInitializeAArch64TargetInfo(void);
-int LLVMInitializeAArch64TargetMC(void);
-int LLVMInitializeAArch64AsmPrinter(void);
-LLVMContextRef LLVMContextCreate(void);
-LLVMOrcThreadSafeContextRef LLVMOrcCreateNewThreadSafeContextFromLLVMContext(LLVMContextRef);
-LLVMMemoryBufferRef LLVMCreateMemoryBufferWithMemoryRangeCopy(const char *, size_t, const char *);
-int LLVMParseIRInContext(LLVMContextRef, LLVMMemoryBufferRef, LLVMModuleRef *, char **);
-LLVMOrcLLJITBuilderRef LLVMOrcCreateLLJITBuilder(void);
-LLVMErrorRef LLVMOrcCreateLLJIT(LLVMOrcLLJITRef *, LLVMOrcLLJITBuilderRef);
-char LLVMOrcLLJITGetGlobalPrefix(LLVMOrcLLJITRef);
-LLVMErrorRef LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess(LLVMOrcDefinitionGeneratorRef *, char, void *, void *);
-LLVMOrcJITDylibRef LLVMOrcLLJITGetMainJITDylib(LLVMOrcLLJITRef);
-void LLVMOrcJITDylibAddGenerator(LLVMOrcJITDylibRef, LLVMOrcDefinitionGeneratorRef);
-LLVMOrcThreadSafeModuleRef LLVMOrcCreateNewThreadSafeModule(LLVMModuleRef, LLVMOrcThreadSafeContextRef);
-LLVMErrorRef LLVMOrcLLJITAddLLVMIRModule(LLVMOrcLLJITRef, LLVMOrcJITDylibRef, LLVMOrcThreadSafeModuleRef);
-LLVMErrorRef LLVMOrcLLJITLookup(LLVMOrcLLJITRef, LLVMOrcExecutorAddress *, const char *);
-
+#include <llvm-c/Core.h>
+#include <llvm-c/Error.h>
+#include <llvm-c/IRReader.h>
+#include <llvm-c/LLJIT.h>
+#include <llvm-c/Orc.h>
+#include <llvm-c/Target.h>
+#include <dlfcn.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,10 +26,11 @@ static int failed(LLVMErrorRef e, const char *what) {
 // after a newline): its exit code, or 70 when the
 // JIT can't run it.
 int32_t jit_run_main(const char *ir, const char *args) {
-  LLVMInitializeAArch64TargetInfo();
-  LLVMInitializeAArch64Target();
-  LLVMInitializeAArch64TargetMC();
-  LLVMInitializeAArch64AsmPrinter();
+  // (the machine's own target, whichever it is)
+  if (LLVMInitializeNativeTarget() || LLVMInitializeNativeAsmPrinter()) {
+    fprintf(stderr, "error: the JIT has no target for this machine\n");
+    return 70;
+  }
   LLVMContextRef ctx = LLVMContextCreate();
   LLVMMemoryBufferRef buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(ir, strlen(ir), "strata");
   LLVMModuleRef mod;
@@ -101,4 +75,12 @@ int32_t jit_run_main(const char *ir, const char *args) {
   fflush(stdout);
   fflush(stderr);
   exit(code);
+}
+
+// Load a shared library into this process for the JIT to find its symbols
+// (std's precompiled code): 0 when loaded, else 1 (after saying why).
+int32_t jit_load(const char *path) {
+  if (dlopen(path, RTLD_NOW | RTLD_GLOBAL)) return 0;
+  fprintf(stderr, "note: can't load %s: %s\n", path, dlerror());
+  return 1;
 }

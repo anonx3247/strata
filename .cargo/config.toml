@@ -1,0 +1,5 @@
+# The tests check the Rust code generator (`llvm.rs`) where they build or
+# test programs: `build` and `test` default to compiler/codegen, so they are
+# pinned to Rust here. A test of the default removes it (tests/codegen.rs).
+[env]
+STRATA_BACKEND = "rust"
