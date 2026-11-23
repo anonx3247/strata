@@ -16,7 +16,7 @@ pub fn exe() -> &'static Path {
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("compiler");
         let o = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(root.join("compiler")).arg("-o").arg(&exe).output().unwrap();
-        assert!(o.status.success(), "strata build compiler: {}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+        assert!(o.status.success(), "strata build compiler ({}): {}{}", o.status, String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
         exe
     })
 }
