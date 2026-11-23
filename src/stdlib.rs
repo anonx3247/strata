@@ -50,9 +50,19 @@ pub const HOST: &[Builtin] = &[
     Builtin::new("host_remove", "", "(String) -> Result[(), (String, String)]"),
     Builtin::new("host_args", "", "() -> List[String]"),
     Builtin::new("host_env_var", "", "(String) -> Option[String]"),
-    // runs a program (no shell) with its arguments in a folder (`""`: the current one):
-    // `[exit code as decimal text, stdout, stderr]`, or the failure to start it
-    Builtin::new("host_run", "", "(String, List[String], String) -> Result[List[String], (String, String)]"),
+    // runs a program (no shell) with its arguments in a folder (`""`: the current one), its
+    // standard input (`""`: none), `NAME=VALUE`s set in its environment, and whether it uses
+    // this process's terminal (then its output isn't kept): `[exit code as decimal text,
+    // stdout, stderr]`, or the failure to start it
+    Builtin::new("host_run", "", "(String, List[String], String, String, List[String], Bool) -> Result[List[String], (String, String)]"),
+    Builtin::new("host_read_stdin", "", "() -> String"),
+    Builtin::new("host_stdin_terminal", "", "() -> Bool"),
+    Builtin::new("host_is_dir", "", "(String) -> Bool"),
+    Builtin::new("host_write_bytes", "", "(String, List[Int]) -> Result[(), (String, String)]"),
+    Builtin::new("host_rename", "", "(String, String) -> Result[(), (String, String)]"),
+    Builtin::new("host_remove_all", "", "(String) -> Result[(), (String, String)]"),
+    Builtin::new("host_absolute", "", "(String) -> Result[String, (String, String)]"),
+    Builtin::new("host_current_dir", "", "() -> String"),
     // the monotonic clock, in nanoseconds; waiting (a task that is cancelled stops at once)
     Builtin::new("host_now", "", "() -> Int"),
     Builtin::new("host_sleep", "", "(Int) -> ()"),
