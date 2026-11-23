@@ -1,0 +1,27 @@
+{
+  "name": "strata-output",
+  "displayName": "Strata output",
+  "scopeName": "text.strata-output",
+  "patterns": [
+    { "match": "^(\\$) (.*?)(\\s{2,}#.*)?$",
+      "captures": { "1": { "name": "keyword.other.prompt.strata-output" }, "2": { "name": "entity.name.command.strata-output" }, "3": { "name": "comment.line.strata-output" } } },
+    { "name": "markup.inserted.strata-output", "match": "^\\s*✓.*$" },
+    { "name": "markup.deleted.strata-output", "match": "^\\s*(✗|error|rejected|fault).*$" },
+    { "name": "markup.changed.strata-output", "match": "^\\s*[~○≈]\\s.*$" },
+    { "name": "markup.changed.strata-output", "match": "^\\s*re-check dependents.*$" },
+    { "name": "string.other.input.strata-output", "match": "^\\s+input:.*$" },
+    { "name": "comment.line.strata-output", "match": "^(committed to git|Auto-merging|Automatic merge).*$" },
+    { "name": "markup.info.strata-output", "match": "^strata: .*applied.*$" },
+    { "begin": "^(?=(fn|type|test|trait|impl)\\s+\\S)", "end": "$",
+      "patterns": [
+        { "name": "markup.bold.strata-output", "match": "\\b(added|changed)\\b" },
+        { "name": "markup.changed.strata-output", "match": "interface changed" },
+        { "include": "#hash" }
+      ] },
+    { "name": "variable.other.hole.strata", "match": "\\?[a-z_][a-z0-9_]*" },
+    { "include": "#hash" }
+  ],
+  "repository": {
+    "hash": { "name": "comment.hash.strata-output", "match": "#[0-9a-f]{8,}…?" }
+  }
+}

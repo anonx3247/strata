@@ -8,7 +8,7 @@ For more depth: [the language](language.md), [verification](verification.md), [t
 
 ```rust
 // A comment belongs to what follows it; /// doc comments describe the next
-// definition, field or variant (the viewer and --help show them).
+// definition, field or variant (--help and the views show them).
 
 // ─── 1. Values and expressions ─────────────────────────────────────────────
 fn basics() -> Int {
@@ -675,7 +675,6 @@ strata edit [MODULE] -m "why" < defs.strata
 strata rename OLD NEW                 # functions, types, variants, trait methods, fields (Type.field)
 strata move NAME MODULE               # to another module, imports follow
 strata log / strata diff              # the change history, as structural diffs
-strata ui                             # live viewer in the browser (http://127.0.0.1:7777)
 ```
 
 An `edit` that breaks code elsewhere turns each broken use into a hole (`?pending_1`, …) and opens a pending change: fill them with more `edit`s, then `strata done` (or `strata abort`). In a git repository every recorded change is also a commit.

@@ -27,7 +27,7 @@ export default defineConfig({
       ],
       expressiveCode: {
         themes: [json('./src/strata-dark.json'), 'github-light'],
-        shiki: { langs: [json('./src/strata.tmLanguage.json')] },
+        shiki: { langs: [json('./src/strata.tmLanguage.json'), json('./src/strata-output.tmLanguage.json')] },
         styleOverrides: { borderRadius: '10px', codeFontFamily: '"Fira Code", ui-monospace, monospace', codeFontSize: '0.86rem' },
       },
       sidebar: [
