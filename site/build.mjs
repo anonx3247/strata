@@ -1,4 +1,4 @@
-// Builds the data behind the presentation (site/index.html) by running the
+// Builds the data behind the presentation (site/tour.html, and the landing page site/index.html) by running the
 // real `strata` CLI: every command output and every viewer snapshot shown on
 // the page is recorded here, nothing is written by hand.
 //
