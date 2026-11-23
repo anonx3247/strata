@@ -101,8 +101,19 @@ fn names_in(k: &DeclKind, out: &mut std::collections::HashSet<String>) {
             crate::ast::walk_ty(self, t)
         }
     }
-    if let DeclKind::Impl(i) = k {
-        out.insert(crate::names::short(&i.trait_name).to_string());
+    match k {
+        DeclKind::Impl(i) => {
+            out.insert(crate::names::short(&i.trait_name).to_string());
+        }
+        // a type or trait named like core's: its module comes in, so the
+        // clash is said (`ListIter` is already defined in the prelude)
+        DeclKind::Type(t) => {
+            out.insert(crate::names::short(&t.name).to_string());
+        }
+        DeclKind::Trait(t) => {
+            out.insert(crate::names::short(&t.name).to_string());
+        }
+        _ => {}
     }
     crate::ast::walk_decl(&mut Names(out), k);
 }
@@ -140,7 +151,7 @@ fn triggers(m: &str) -> std::collections::HashSet<String> {
     out
 }
 
-fn file_of(m: &str) -> String {
+pub fn file_of(m: &str) -> String {
     format!("{}.strata", m.trim_start_matches("core."))
 }
 
@@ -243,7 +254,7 @@ pub fn dir_of(file: Option<&str>) -> Option<std::path::PathBuf> {
 /// are global, so there is nothing to shorten).
 pub fn render(dir: &std::path::Path, module: Option<&str>) -> Result<String, String> {
     let m = crate::stdlib::package_module(NAME, module.unwrap_or("types"));
-    let path = dir.join(crate::store::module_path(&m));
+    let path = dir.join(file_of(&m));
     let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let decls = crate::binary::decode_module(&bytes)?;
     Ok(crate::printer::module_file(&Program { decls }, &m))

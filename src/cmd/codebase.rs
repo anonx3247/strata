@@ -55,7 +55,7 @@ fn edit_core(args: &Args, dir: &std::path::Path) -> Result<bool, String> {
     let mut text = String::new();
     std::io::stdin().read_to_string(&mut text).map_err(|e| e.to_string())?;
     let p = parser::parse_module_file(&text, &module).map_err(|e| format!("parse error at {e}"))?;
-    let path = dir.join(store::module_path(&module));
+    let path = dir.join(crate::core::file_of(&module));
     let bytes = binary::encode_module(&p, &module, &Default::default());
     std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     println!("{}: {} definitions (rebuild strata to use them)", path.display(), p.decls.len());
