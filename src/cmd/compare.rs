@@ -686,6 +686,22 @@ pub fn jit_run(path: &Path, name: &str, proofs: &str, trace: bool, call: Option<
     if let Some(l) = &std_lib {
         c.arg("--load").arg(&l.shared);
     }
+    // the package's C (`[native]`), for its `extern c` functions: a shared
+    // library loaded too
+    let pkg = if path.is_dir() { crate::package::find(&path).ok().flatten() } else { None };
+    if let Some(pkg) = pkg.filter(|p| !p.native.is_empty()) {
+        let lib = scratch.join(if cfg!(target_os = "macos") { "native.dylib" } else { "native.so" });
+        // (an empty file, so libraries alone still make a library)
+        let empty = scratch.join("empty.c");
+        fs::write(&empty, "").map_err(|e| e.to_string())?;
+        let cc = std::env::var("STRATA_CC").unwrap_or_else(|_| "clang".into());
+        let o = Command::new(&cc).args(["-shared", "-fPIC", "-O2", "-o"]).arg(&lib).arg(&empty).args(pkg.native.clang_args(&pkg.dir)).output().map_err(|e| format!("can't run `{cc}` to compile the package's C ([native] in strata.toml): {e}"))?;
+        if !o.status.success() {
+            let _ = fs::remove_dir_all(&scratch);
+            return Err(format!("`{cc}` failed on the package's C ([native] in strata.toml):\n{}", String::from_utf8_lossy(&o.stderr).trim_end()));
+        }
+        c.arg("--load").arg(&lib);
+    }
     c.arg("--name").arg(name).arg("--errors").arg(&errors);
     if let Some(call) = call {
         c.arg("--fun").arg(&call.fun);

@@ -22,6 +22,30 @@ static int failed(LLVMErrorRef e, const char *what) {
   return 70;
 }
 
+// The shared libraries `jit_load` loaded (std's precompiled code), searched
+// before the process: the compiler is a Strata program itself, built with
+// std, so the process holds functions of the same names (`strata:std...`)
+// compiled for itself, which a program's code must not call.
+static char *loaded[16];
+static int nloaded;
+
+// The JIT's symbols: the libraries loaded, then this process's (the
+// runtime's `strata_*`). NULL, or the error.
+static LLVMErrorRef add_symbols(LLVMOrcLLJITRef jit) {
+  LLVMOrcJITDylibRef main = LLVMOrcLLJITGetMainJITDylib(jit);
+  char prefix = LLVMOrcLLJITGetGlobalPrefix(jit);
+  LLVMOrcDefinitionGeneratorRef gen;
+  for (int i = 0; i < nloaded; i++) {
+    LLVMErrorRef e = LLVMOrcCreateDynamicLibrarySearchGeneratorForPath(&gen, loaded[i], prefix, NULL, NULL);
+    if (e) return e;
+    LLVMOrcJITDylibAddGenerator(main, gen);
+  }
+  LLVMErrorRef e = LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess(&gen, prefix, NULL, NULL);
+  if (e) return e;
+  LLVMOrcJITDylibAddGenerator(main, gen);
+  return NULL;
+}
+
 // The IR compiled by a JIT of its own, the runtime (`strata_*`) found in
 // this process: NULL when it can't be (after saying why).
 static LLVMOrcLLJITRef compiled(const char *ir) {
@@ -42,11 +66,9 @@ static LLVMOrcLLJITRef compiled(const char *ir) {
   LLVMOrcLLJITRef jit;
   LLVMErrorRef e = LLVMOrcCreateLLJIT(&jit, LLVMOrcCreateLLJITBuilder());
   if (e) return failed(e, "can't start"), NULL;
-  // the runtime: this process's own symbols
-  LLVMOrcDefinitionGeneratorRef gen;
-  e = LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess(&gen, LLVMOrcLLJITGetGlobalPrefix(jit), NULL, NULL);
+  // std's precompiled code, then the runtime: this process's own symbols
+  e = add_symbols(jit);
   if (e) return failed(e, "can't see the runtime"), NULL;
-  LLVMOrcJITDylibAddGenerator(LLVMOrcLLJITGetMainJITDylib(jit), gen);
   LLVMOrcThreadSafeContextRef tsc = LLVMOrcCreateNewThreadSafeContextFromLLVMContext(ctx);
   LLVMOrcThreadSafeModuleRef tsm = LLVMOrcCreateNewThreadSafeModule(mod, tsc);
   e = LLVMOrcLLJITAddLLVMIRModule(jit, LLVMOrcLLJITGetMainJITDylib(jit), tsm);
@@ -174,7 +196,10 @@ int32_t jit_run_call(const char *ir, const char *probe, const char *fun) {
 // Load a shared library into this process for the JIT to find its symbols
 // (std's precompiled code): 0 when loaded, else 1 (after saying why).
 int32_t jit_load(const char *path) {
-  if (dlopen(path, RTLD_NOW | RTLD_GLOBAL)) return 0;
+  if (dlopen(path, RTLD_NOW | RTLD_GLOBAL)) {
+    if (nloaded < 16) loaded[nloaded++] = strdup(path);
+    return 0;
+  }
   fprintf(stderr, "note: can't load %s: %s\n", path, dlerror());
   return 1;
 }
@@ -209,10 +234,8 @@ int32_t jit_fuzz_load(const char *ir) {
   }
   LLVMErrorRef e = LLVMOrcCreateLLJIT(&fuzz_jit, LLVMOrcCreateLLJITBuilder());
   if (!e) {
-    LLVMOrcDefinitionGeneratorRef gen;
-    e = LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess(&gen, LLVMOrcLLJITGetGlobalPrefix(fuzz_jit), NULL, NULL);
+    e = add_symbols(fuzz_jit);
     if (!e) {
-      LLVMOrcJITDylibAddGenerator(LLVMOrcLLJITGetMainJITDylib(fuzz_jit), gen);
       LLVMOrcThreadSafeContextRef tsc = LLVMOrcCreateNewThreadSafeContextFromLLVMContext(ctx);
       LLVMOrcThreadSafeModuleRef tsm = LLVMOrcCreateNewThreadSafeModule(mod, tsc);
       e = LLVMOrcLLJITAddLLVMIRModule(fuzz_jit, LLVMOrcLLJITGetMainJITDylib(fuzz_jit), tsm);
