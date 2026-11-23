@@ -212,16 +212,20 @@ int32_t jit_load(const char *path) {
 // within a step budget, and the fault that ended it, if any, and the case's
 // arguments (as code) are read back.
 
-static LLVMOrcLLJITRef fuzz_jit;
+// Each module compiled (a program's fuzz drivers, a batch of probes), kept
+// while the compiler runs.
+static LLVMOrcLLJITRef fuzz_jits[256];
+static int fuzz_count;
 static char *fuzz_error;
 
-// Compile the drivers' IR: 0 when done, else 1 (`jit_fuzz_error` says why).
+// Compile the drivers' IR: its handle (0 and up), else -1 (`jit_fuzz_error`
+// says why).
 int32_t jit_fuzz_load(const char *ir) {
   free(fuzz_error);
   fuzz_error = NULL;
   if (LLVMInitializeNativeTarget() || LLVMInitializeNativeAsmPrinter()) {
     fuzz_error = strdup("the JIT has no target for this machine");
-    return 1;
+    return -1;
   }
   LLVMContextRef ctx = LLVMContextCreate();
   LLVMMemoryBufferRef buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(ir, strlen(ir), "strata-fuzz");
@@ -230,8 +234,13 @@ int32_t jit_fuzz_load(const char *ir) {
   if (LLVMParseIRInContext(ctx, buf, &mod, &msg)) {
     fuzz_error = strdup(msg ? msg : "LLVM rejected the generated IR");
     LLVMDisposeMessage(msg);
-    return 1;
+    return -1;
   }
+  if (fuzz_count == 256) {
+    fuzz_error = strdup("too many modules compiled");
+    return -1;
+  }
+  LLVMOrcLLJITRef fuzz_jit;
   LLVMErrorRef e = LLVMOrcCreateLLJIT(&fuzz_jit, LLVMOrcCreateLLJITBuilder());
   if (!e) {
     e = add_symbols(fuzz_jit);
@@ -245,16 +254,19 @@ int32_t jit_fuzz_load(const char *ir) {
     char *m = LLVMGetErrorMessage(e);
     fuzz_error = strdup(m);
     LLVMDisposeErrorMessage(m);
-    return 1;
+    return -1;
   }
-  return 0;
+  fuzz_jits[fuzz_count] = fuzz_jit;
+  return fuzz_count++;
 }
 
 const char *jit_fuzz_error(void) { return fuzz_error ? fuzz_error : ""; }
 
-// One case of driver `i`: 0 when it passed, 1 when a fault ended it, -1
-// when there is no such driver.
-int32_t jit_fuzz_case(int64_t i, int64_t seed, int64_t budget) {
+// One case of driver `i` of module `m`: 0 when it passed, 1 when a fault
+// ended it, -1 when there is no such driver.
+int32_t jit_fuzz_case(int32_t m, int64_t i, int64_t seed, int64_t budget) {
+  if (m < 0 || m >= fuzz_count) return -1;
+  LLVMOrcLLJITRef fuzz_jit = fuzz_jits[m];
   char name[64];
   snprintf(name, sizeof name, "strata.fuzz.%lld", (long long)i);
   LLVMOrcExecutorAddress addr;
