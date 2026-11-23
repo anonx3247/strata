@@ -31,11 +31,18 @@ pub const FILES: &[(&str, &[u8])] = &[
     ("text.strata", include_bytes!("../core/text.strata")),
     ("task.strata", include_bytes!("../core/task.strata")),
     ("rt.strata", include_bytes!("../core/rt.strata")),
+    ("values.strata", include_bytes!("../core/values.strata")),
 ];
 
 /// The modules of code a program gets when it uses them (`needed`):
-/// iterators, channels, a string's units, supervised tasks' `Panic`.
-pub const CODE: &[&str] = &["core.iter", "core.channel", "core.text", "core.task"];
+/// iterators, channels, a string's units, supervised tasks' `Panic`, and
+/// compiled values read back (`Raw`: only core and the packages that opt in,
+/// `VALUES`).
+pub const CODE: &[&str] = &["core.iter", "core.channel", "core.text", "core.task", "core.values"];
+
+/// The module of compiled values read back (`Raw`): core's modules, and a
+/// package whose strata.toml says `read = true` under `[values]`, can use it.
+pub const VALUES: &str = "core.values";
 
 /// The module of raw memory (`Ptr`, `raw_alloc`, `load_i64`, ...): only
 /// core's own modules can use it.

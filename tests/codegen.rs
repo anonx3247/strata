@@ -2610,3 +2610,4 @@ fn compiler_fuzzes_as_verify_fuzzes() {
     }
     assert!(compared > 50, "only {compared} functions compared");
 }
+

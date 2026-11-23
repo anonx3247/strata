@@ -182,6 +182,14 @@ fn core_only_error(name: &str) -> String {
     format!("`{name}` is core's: only core's modules can use raw memory (`core.mem`)")
 }
 
+/// `core.values`' type: a compiled value's address, read back.
+const VALUES_RAW: &str = "Raw";
+
+/// Naming `Raw` (core.values) outside core, in a package that doesn't opt in.
+fn values_error() -> String {
+    "`Raw` is core's: reading compiled values (`core.values`) is for core's modules and a package whose strata.toml says `read = true` under `[values]`".to_string()
+}
+
 /// Whether every overload of the builtin `name` always returns.
 pub fn total_builtin(name: &str) -> bool {
     let mut all = builtins().iter().filter(|b| b.name == name).peekable();
@@ -702,6 +710,8 @@ struct Checker<'a> {
     env: &'a Env,
     /// checking one of core's own definitions: it may use raw memory (`core.mem`)
     in_core: bool,
+    /// `Raw` named where it may not be: said once per definition
+    values_said: bool,
     /// checking a function of core.rt (the allocator, which allocates
     /// nothing): each arithmetic operation met and its type, refused on
     /// `Int` (a big integer past 2^62), `String` or `List` once known
@@ -1086,6 +1096,10 @@ impl<'a> Checker<'a> {
                     }
                     _ => match self.env.types.get(&n.sym()) {
                         Some(td) => {
+                            if n.as_str() == VALUES_RAW && !self.reads_values() && !self.values_said {
+                                self.values_said = true;
+                                self.err(values_error());
+                            }
                             if td.params.len() != largs.len() {
                                 self.err(format!("type `{n}` expects {} type arguments, got {}", td.params.len(), largs.len()));
                             }
@@ -2751,9 +2765,19 @@ impl<'a> Checker<'a> {
         self.holes.push((name.to_string(), t, ctx));
     }
 
+    /// Whether this definition may read compiled values (`core.values`):
+    /// core's own, or the package's strata.toml opts in.
+    fn reads_values(&self) -> bool {
+        self.in_core || crate::package::setting("values.read").as_deref() == Some("true")
+    }
+
     fn ctor_type(&mut self, c: Symbol) -> Option<(Ty, Vec<(Option<Symbol>, Ty)>)> {
         let env = self.env;
         let tname = *env.ctors.get(&c.sym())?;
+        if tname.as_str() == VALUES_RAW && !self.reads_values() && !self.values_said {
+            self.values_said = true;
+            self.err(values_error());
+        }
         let td = &env.types[&tname];
         let vars: HashMap<Symbol, Ty> = td.params.iter().map(|p| (p.clone(), self.fresh())).collect();
         let result = Ty::Con(tname.clone(), td.params.iter().map(|p| vars[p].clone()).collect());
@@ -4328,6 +4352,7 @@ impl<'a> Checker<'a> {
         Checker {
             env,
             in_core: false,
+            values_said: false,
             core_rt: None,
             subst: Vec::new(),
             scopes: vec![HashMap::default()],
@@ -4622,6 +4647,7 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
         let mut c = Checker {
             env: &env,
             in_core: crate::core::owns(&d.module, &d.name()),
+            values_said: false,
             core_rt: { (d.name().strip_prefix("core.rt.").is_some_and(|n| !n.contains('.')) && matches!(d.kind, DeclKind::Fn(_)) && crate::core::owns(&d.module, &d.name())).then(Vec::new) },
             subst: Vec::new(),
             scopes: vec![HashMap::default()],

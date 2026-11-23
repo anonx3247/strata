@@ -1097,6 +1097,15 @@ fn raw_memory_outside_core_as_in_rust() {
     same_errors("core_mem", CORE_MEM);
 }
 
+/// Compiled values read back (`core.values`' `Raw`) where the package
+/// doesn't opt in: said once per definition.
+const RAW_VALUES: &str = "fn peek(r: Raw) -> I64 {\n  r.word(0)\n}\n\nfn main() {\n  print(peek(Raw { address: 0 }))\n}\n\nfn fine() -> Int {\n  1\n}\n";
+
+#[test]
+fn raw_values_outside_core_as_in_rust() {
+    same_errors("raw_values", RAW_VALUES);
+}
+
 /// A `builtin static` (core's runtime state) declared outside core.
 const CORE_STATIC: &str = "builtin static mine: 8\n\nfn main() {\n  print(1)\n}\n";
 
