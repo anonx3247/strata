@@ -3835,6 +3835,36 @@ fn as_value(q: Q) -> List[String] {
     assert!(!ok && out.contains("`impl Int`: methods can only be added to a record, sum or `distinct` type") && out.contains("`Q` has no method `nope` called on the type"), "{out}");
 }
 
+/// A generic implementation's method without `self` is fuzzed through a
+/// wrapper calling it on the whole instance (`List[Int]`): named by its head
+/// alone, `T` was unknown in `T.make(n)` and nothing could be fuzzed with
+/// it (and `verify` compiled every target alone to find out which).
+#[test]
+fn generic_static_methods_are_fuzzed() {
+    let d = tmp("generic-static");
+    save(&d.join("g.strata"), r#"trait Make {
+  fn make(n: Int) -> Option[Self]
+}
+
+impl Make for Int {
+  fn make(n: Int) -> Option[Int] {
+    Some(n)
+  }
+}
+
+impl[T: Make] Make for List[T] {
+  fn make(n: Int) -> Option[List[T]] {
+    match T.make(n) {
+      Some(x) => Some([x]),
+      None => None,
+    }
+  }
+}
+"#);
+    let (ok, out) = strata(&["--file", "g.strata", "verify", "--jit"], &d, None);
+    assert!(ok && out.contains("✓ List[T].make") && !out.contains("can't be fuzzed"), "{out}");
+}
+
 #[test]
 fn trait_methods_without_self() {
     let d = tmp("static-methods");

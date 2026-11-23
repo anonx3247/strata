@@ -769,6 +769,14 @@ pub fn method_decl(env: &Env, imp: &ImplDecl, f: &FnDecl) -> FnDecl {
     d
 }
 
+/// An implementation's type as its wrappers call it (`List[Int]`, not
+/// `List`): with its type parameters at `impl_instance`'s types, which the
+/// wrappers' signatures use too. The head alone leaves them unknown, and
+/// a method using them (`T.from_toml_at` in `List[T]`'s) can't be compiled.
+fn instance_text(env: &Env, imp: &ImplDecl) -> String {
+    crate::printer::ty(&crate::types::subst_texpr(&imp.for_type, &impl_instance(env, imp)))
+}
+
 /// The wrapper of what the declaration at `index` (an implementation) has
 /// under `what` (a method's name, or `law.NAME`).
 pub fn wrapper_name(index: usize, what: &str) -> String {
@@ -791,7 +799,7 @@ pub fn wrappers(env: &Env, prog: &Program, chosen: &[bool]) -> Vec<FnDecl> {
             continue;
         }
         let Some(tr) = env.traits.get(&imp.trait_name) else { continue };
-        let head = crate::types::texpr_head(&crate::types::subst_texpr(&imp.for_type, &imp.type_params.iter().map(|p| (p.clone(), TypeExpr::Named("Int".into(), vec![]))).collect()));
+        let whole = instance_text(env, imp);
         for m in &tr.methods {
             let Some(decl) = imp.methods.iter().find(|x| x.name == m.decl.name).or(if m.default { Some(&m.decl) } else { None }) else { continue };
             if !decl.type_params.is_empty() || decl.params.iter().any(|p| p.comptime || matches!(p.ty, TypeExpr::Fn(..))) {
@@ -808,7 +816,7 @@ pub fn wrappers(env: &Env, prog: &Program, chosen: &[bool]) -> Vec<FnDecl> {
                 let recv = rest.remove(0);
                 Expr::Method(Box::new(recv), Symbol::new(&call), rest)
             } else {
-                let mut args = vec![Expr::Str(head.to_string())];
+                let mut args = vec![Expr::Str(whole.clone())];
                 args.extend(vars);
                 Expr::Call(Box::new(Expr::Var(Symbol::new(&call))), args)
             };
@@ -825,7 +833,7 @@ pub fn wrappers(env: &Env, prog: &Program, chosen: &[bool]) -> Vec<FnDecl> {
 /// parameters, `Self` this implementation's type, its result the law,
 /// ensured to hold. Fuzzed compiled, and proven like any function.
 pub fn law_wrapper(env: &Env, imp: &ImplDecl, i: usize, law: &Law) -> FnDecl {
-    let head = crate::types::texpr_head(&crate::types::subst_texpr(&imp.for_type, &imp.type_params.iter().map(|p| (p.clone(), TypeExpr::Named("Int".into(), vec![]))).collect()));
+    let whole = instance_text(env, imp);
     let as_fn = FnDecl {
         doc: vec![],
         comments: vec![],
@@ -848,7 +856,7 @@ pub fn law_wrapper(env: &Env, imp: &ImplDecl, i: usize, law: &Law) -> FnDecl {
     let self_arg = crate::types::type_arg("Self");
     decl_exprs_mut(&mut kind, |e| {
         if matches!(e, Expr::Var(x) if x.as_str() == self_arg) {
-            *e = Expr::Str(head.to_string());
+            *e = Expr::Str(whole.clone());
         }
     });
     let DeclKind::Fn(f) = kind else { unreachable!() };
