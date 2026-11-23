@@ -2587,3 +2587,27 @@ fn compiler_fuzzes_as_verify_fuzzes() {
     }
     assert!(compared > 50, "only {compared} functions compared");
 }
+
+/// `comptime e` compiled by compiler/codegen and run by the compiler's JIT
+/// in its own process, its value read back from memory by its type
+/// (codegen's `read_back`, core.values): records, sums, `distinct`,
+/// generic records, unions, tuples, lists, sets, dicts, strings, floats,
+/// big integers, `()`: the program prints what compiler/eval computes for
+/// them (its output, recorded), and frees everything.
+#[test]
+fn comptime_runs_on_the_compilers_jit() {
+    let dir = scratch("comptime-jit");
+    let file = dir.join("values.strata");
+    save(&file, "type Shape = Circle { radius: Float } | Square { side: Int } | Dot\n\ntype Point = { x: Int, y: Int, label: String }\n\ndistinct type Meters = Float\n\ntype Pair[A, B] = { first: A, second: B }\n\ntype Item = Int | String\n\nfn squares(n: Int) -> List[Int] {\n  mut out := []\n  for i in 0..n {\n    out = push(out, i * i)\n  }\n  out\n}\n\nfn big() -> Int {\n  mut x := 1\n  for _ in 0..100 {\n    x = x * 3\n  }\n  x\n}\n\nfn table() -> Dict[String, Int] {\n  mut d := Dict[String, Int] {}\n  for (i, w) in enumerate([\"one\", \"two\", \"three\"]) {\n    d = insert(d, w, i + 1)\n  }\n  d\n}\n\nfn items() -> List[Item] {\n  [1, \"x\"]\n}\n\nfn main() {\n  a := comptime squares(6)\n  b := comptime \"héllo, \" + \"wörld\"\n  c := comptime [Circle { radius: 1.5 }, Square { side: 2 }, Dot]\n  d := comptime Point { x: 1 - 4, y: 2, label: \"p\" }\n  e := comptime big()\n  f := comptime table()\n  g := comptime set([3, 1, 2])\n  h := comptime (1, \"two\", 3.25, true)\n  i := comptime Some([Some(1), None])\n  j := comptime Meters(2.5)\n  k := comptime Pair { first: \"a\", second: [1.0, 2.0] }\n  l := comptime (-9223372036854775807 - 1) * 2\n  m := comptime items()\n  n := comptime ()\n  o := comptime Ok(3) !! 0\n  print(a)\n  print(b)\n  print(c)\n  print(d)\n  print(e)\n  print(f)\n  print(g)\n  print(h)\n  print(i)\n  print(j)\n  print(k)\n  print(l)\n  print(m)\n  print(n)\n  print(o)\n}\n");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ir = compiler::run(&["codegen".to_string(), file.to_string_lossy().into_owned()]);
+    assert!(!ir.lines().any(|l| l.starts_with("error")), "{}", ir.lines().filter(|l| l.starts_with("error")).collect::<Vec<_>>().join("\n"));
+    std::fs::write(dir.join("values.ll"), &ir).unwrap();
+    let exe = dir.join("values");
+    let o = Command::new(cc()).args(["-O0", "-w", "-o"]).arg(&exe).arg(dir.join("values.ll")).arg(root.join("src/llvm/runtime.c")).arg("-lm").output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = Command::new(&exe).env("STRATA_MEMORY", "check").output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "[0, 1, 4, 9, 16, 25]\nhéllo, wörld\n[Circle { radius: 1.5 }, Square { side: 2 }, Dot]\nPoint { x: -3, y: 2, label: \"p\" }\n515377520732011331036461129765621272702107522001\nDict { \"one\": 1, \"three\": 3, \"two\": 2 }\nSet { 1, 2, 3 }\n(1, \"two\", 3.25, true)\nSome([Some(1), None])\nMeters(2.5)\nPair { first: \"a\", second: [1.0, 2.0] }\n-18446744073709551616\n[1, \"x\"]\n()\n3\n");
+    assert!(String::from_utf8_lossy(&o.stderr).contains(" 0 live"), "{}", String::from_utf8_lossy(&o.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
+}
