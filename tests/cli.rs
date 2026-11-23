@@ -214,9 +214,10 @@ fn has_solver() -> bool {
 fn ints_grow_past_64_bits() {
     let d = tmp("bigint");
     let src = "fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }
-fn wrap(x: U8) -> U8 { x + 1 }
-fn neg(x: I8) -> I8 { 0 - x }
-fn widen(x: U64) -> U64 { x + 1 }
+fn wrap(x: U8) -> U8 ensures it.to_int() == x.to_int() + 1 { x + 1 }
+fn neg(x: I8) -> I8 ensures it.to_int() == 0 - x.to_int() { 0 - x }
+fn widen(x: U64) -> U64 ensures it.to_int() == x.to_int() + 1 { x + 1 }
+fn wraps(x: U64) -> U64 { x + 1 }
 test \"big integers\" {
   assert fact(25) == 15511210043330985984000000
   assert fact(25) / fact(24) == 25
@@ -233,13 +234,14 @@ test \"big integers\" {
     let (ok, out) = strata(&["--file", "b.strata", "test"], &d, None);
     assert!(ok && out.contains("1 passed"), "{out}");
     // larger than 64 bits, written as any integer is
-    let (ok, out) = strata(&["--file", "b.strata", "run", "widen", "18446744073709551614"], &d, None);
+    let (ok, out) = strata(&["--file", "b.strata", "run", "wraps", "18446744073709551614"], &d, None);
     assert!(ok && out.trim() == "18446744073709551615", "{out}");
-    let (ok, out) = strata(&["--file", "b.strata", "run", "widen", "18446744073709551615"], &d, None);
-    assert!(!ok && out.contains("18446744073709551616") && out.contains("does not satisfy `U64`"), "{out}");
+    // a sized integer wraps around
+    let (ok, out) = strata(&["--file", "b.strata", "run", "wraps", "18446744073709551615"], &d, None);
+    assert!(ok && out.trim() == "0", "{out}");
     if has_solver() {
         let (ok, out) = strata(&["--file", "b.strata", "verify", "wrap,neg,widen", "--cases", "20"], &d, None);
-        assert!(!ok && out.contains("input:   255\n") && out.contains("input:   -128\n") && out.contains("input:   18446744073709551615\n"), "sized types catch overflow: {out}");
+        assert!(!ok && out.contains("input:   255\n") && out.contains("input:   -128\n") && out.contains("input:   18446744073709551615\n"), "verify models sized types' wrapping: {out}");
     }
     // render keeps big literals
     let (_, r) = strata(&["--file", "b.strata", "render"], &d, None);
