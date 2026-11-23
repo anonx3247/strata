@@ -49,9 +49,10 @@ static int failed(LLVMErrorRef e, const char *what) {
   return 70;
 }
 
-// Run the IR's `main` with these arguments: its exit code, or 70 when the
+// Run the IR's `main` with these arguments (the program's name first, each
+// after a newline): its exit code, or 70 when the
 // JIT can't run it.
-int32_t jit_run_main(const char *ir, const char *argv0) {
+int32_t jit_run_main(const char *ir, const char *args) {
   LLVMInitializeAArch64TargetInfo();
   LLVMInitializeAArch64Target();
   LLVMInitializeAArch64TargetMC();
@@ -81,8 +82,21 @@ int32_t jit_run_main(const char *ir, const char *argv0) {
   e = LLVMOrcLLJITLookup(jit, &addr, "main");
   if (e) return failed(e, "has no main");
   int (*entry)(int, char **) = (int (*)(int, char **))(uintptr_t)addr;
-  char *args[] = {(char *)argv0, NULL};
-  int code = entry(1, args);
+  // the program's name and arguments, separated by newlines
+  char *copy = strdup(args);
+  char *argv[256];
+  int argc = 0;
+  for (char *p = copy, *at = copy; argc < 255; p++) {
+    if (*p == '\n' || *p == 0) {
+      int end = *p == 0;
+      *p = 0;
+      argv[argc++] = at;
+      at = p + 1;
+      if (end) break;
+    }
+  }
+  argv[argc] = NULL;
+  int code = entry(argc, argv);
   // (the program's exit code is the process's: nothing runs after it)
   fflush(stdout);
   fflush(stderr);
