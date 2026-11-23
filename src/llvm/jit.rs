@@ -647,7 +647,7 @@ fn make_std_library() -> Result<StdLibrary, String> {
     let std = crate::stdlib::program();
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let meta = std::fs::metadata(&exe).map_err(|e| e.to_string())?;
-    let key: String = Sha256::digest(format!("v2{:?}{}{:?}", meta.modified().ok(), meta.len(), std).as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
+    let key: String = Sha256::digest(format!("v3{:?}{}{:?}", meta.modified().ok(), meta.len(), std).as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
     let root = match std::env::var_os("STRATA_CACHE") {
         Some(d) => std::path::PathBuf::from(d),
         None => std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache/strata"),

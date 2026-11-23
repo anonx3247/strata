@@ -314,6 +314,19 @@ fn cross_check_catches_a_wrong_prover() {
 }
 
 #[test]
+fn std_is_proven() {
+    if !has_solver() {
+        return;
+    }
+    // std's precompiled library leaves out the checks inside its functions
+    // (`llvm::Module::std_proven`): every function of std must be proven
+    // (slow, several minutes of CPU: run it by name when std changes)
+    let d = tmp("std-proven");
+    let (ok, out) = strata(&["--file", &format!("{}/std", env!("CARGO_MANIFEST_DIR")), "verify", "--cases", "10", "--require", "proven"], &d, None);
+    assert!(ok && !out.contains("is not proven"), "{out}");
+}
+
+#[test]
 fn values_are_datatypes_in_the_prover() {
     if !has_solver() {
         return;

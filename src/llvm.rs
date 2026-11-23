@@ -250,6 +250,10 @@ pub fn compile(prog: &Program, entry: &str) -> Res<String> {
     Ok(compile_for(prog, Entry::Main(entry))?.0)
 }
 
+/// `--all-checks`: std is compiled with the program, every check kept,
+/// rather than taken from its library (where its checks are left out).
+pub static ALL_CHECKS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 thread_local! {
     static TRACING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// What `verify` proved, for the next compilation (`compile_proven`),
@@ -683,7 +687,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         _ => None,
     }).collect();
     let keeps = escape::Kept::of(&bodies);
-    let mut m = Module { env: &env, types: &types, keeps, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers, tasks: uses_tasks(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()), supervises: uses_supervised(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()) };
+    let mut m = Module { env: &env, types: &types, keeps, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), std_proven: matches!(entry, Entry::Library(_)), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers, tasks: uses_tasks(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()), supervises: uses_supervised(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()) };
     if !m.proofs.is_empty() {
         m.refs = Refs::of(prog);
         // the program's own trait implementations' methods, by `verify`'s labels
@@ -696,7 +700,7 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
         }
     }
     // std's precompiled functions, but while making them, tracing, or in a library
-    if !BUILDING_STD.with(|b| b.get()) && !m.tracing && !matches!(entry, Entry::Library(_)) {
+    if !BUILDING_STD.with(|b| b.get()) && !m.tracing && !matches!(entry, Entry::Library(_)) && !ALL_CHECKS.load(std::sync::atomic::Ordering::Relaxed) {
         m.precompiled = jit::std_library().map(|l| &l.names);
     }
     let mut tests = vec![];
@@ -1230,6 +1234,11 @@ struct Module<'a> {
     tracing: bool,
     /// What `verify` proved, by function (`compile_proven`); empty: every check is kept.
     proofs: HashMap<String, Proofs>,
+    /// Making std's library: std is proven (all of it, each version: its
+    /// verification requires it, `std_is_proven`), so the checks inside
+    /// its functions are left out; those of their arguments and `requires`
+    /// stay, for they are the calling program's to prove.
+    std_proven: bool,
     /// Who refers to each function (`Refs`), when there are proofs.
     refs: Refs,
     /// The checks of the program's own functions left out as proven, and kept.
@@ -4036,6 +4045,10 @@ impl<'m, 'a> Func<'m, 'a> {
     /// Whether `verify` proved every check of this function that `is` picks
     /// (at least one, none left open): such a check is left out. Counted.
     fn proven(&mut self, is: impl Fn(&str) -> bool) -> bool {
+        if self.m.std_proven {
+            self.m.left_out += 1;
+            return true;
+        }
         let Some(name) = &self.proofs_of else { return false };
         let ok = self.m.proofs.get(name).is_some_and(|p| p.proven.iter().any(|e| is(e)) && !p.open.iter().any(|e| is(e)));
         if ok {
