@@ -2382,3 +2382,26 @@ fn build_compare_agrees_on_the_programs_and_examples() {
         assert!(out.contains("compare: they agree"), "{}: {out}{}", t.display(), String::from_utf8_lossy(&o.stderr));
     }
 }
+
+/// `compiler jit`: compiler/codegen's IR run in the compiler's own process
+/// by LLVM's JIT (compiler/c/jit.c) does what Rust's executable does: its
+/// output and its exit code.
+#[test]
+fn jit_runs_programs_as_built_ones_run() {
+    let dir = scratch("jit");
+    let chosen: Vec<_> = PROGRAMS.iter().filter(|(n, _)| ["arithmetic", "iterators", "tasks_and_channels", "regex_matches"].contains(n)).collect();
+    assert_eq!(chosen.len(), 4);
+    for (name, text) in chosen {
+        let file = dir.join(format!("{name}.strata"));
+        save(&file, text);
+        let rust = dir.join(format!("{name}-rust"));
+        let o = Command::new(STRATA).arg("build").arg(&file).arg("-o").arg(&rust).output().unwrap();
+        assert!(o.status.success(), "{name}: strata build: {}", String::from_utf8_lossy(&o.stderr));
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let ours = Command::new(compiler::exe()).current_dir(root).arg("jit").arg(&file).output().unwrap();
+        let theirs = Command::new(&rust).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&theirs.stdout), String::from_utf8_lossy(&ours.stdout), "{name}");
+        assert_eq!(theirs.status.code(), ours.status.code(), "{name}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
