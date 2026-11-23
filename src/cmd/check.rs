@@ -65,9 +65,11 @@ pub fn holes(args: &Args, json_out: bool) -> Result<bool, String> {
 
 /// `strata verify`.
 pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
-    // `--strata`: `compiler verify`, the command written in Strata;
-    // `--compare`: that and `verify --no-race`, line by line
-    if args.flag("--strata") || args.flag("--compare") {
+    // `compiler verify`, the command written in Strata, unless `--rust`,
+    // `STRATA_BACKEND=rust` or `--json` (Rust's only), or no compiler
+    // package is found; `--compare`: that and `verify --rust --no-race`,
+    // line by line
+    if crate::strata_verifies(args) && !json_out || args.flag("--strata") || args.flag("--compare") {
         return crate::cmd::compare::verify(args);
     }
     let src = load(&args)?;

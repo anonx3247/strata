@@ -18,8 +18,9 @@ Keep track of decisions, open questions and ideas in [IDEAS.md](IDEAS.md); the R
   `strata --file F render > a.st; strata --file b.strata edit < a.st; strata --file b.strata render | diff - a.st`.
 - `strata build` and `strata test --file F` use compiler/codegen (the code generator written in Strata) by
   default, falling back to `llvm.rs` where it doesn't cover a program yet (with a `note:`); `--rust` or
-  `STRATA_BACKEND=rust` asks for `llvm.rs`. `verify` stays on Rust. Cargo's tests run with
-  `STRATA_BACKEND=rust` (.cargo/config.toml), so they keep checking `llvm.rs`. The first default build
+  `STRATA_BACKEND=rust` asks for `llvm.rs`. `strata verify` is the Strata verifier (`compiler verify`), and so
+  is what `build` and `run` leave out; `--rust` or `STRATA_BACKEND=rust` asks for Rust's. Cargo's tests run with
+  `STRATA_BACKEND=rust` (.cargo/config.toml), so they keep checking `llvm.rs` and Rust's verifier. The first default build
   after a change to `compiler/` or `std/` rebuilds the compiler package (about 2 minutes, cached).
 - `.strata` files are binary module files (docs/binary-format.md): write code with `strata edit` (or
   `strata --file F edit < text` outside a package), read it with `strata render`. A change to the tree

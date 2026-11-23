@@ -382,15 +382,11 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                 // keeps them all, `--no-verify` uses what was proven before)
                 // (a package's: not yet, its checks all kept)
                 let proven = scratch.join("proofs.txt");
-                let facts = if package {
+                // (verified by `compiler verify`, its record read by `compiler proofs`)
+                let facts = if package || args.flag("--all-checks") {
                     String::new()
                 } else {
-                    let src = crate::Source::File(crate::read_sources(&file)?);
-                    if !args.flag("--all-checks") && !args.flag("--no-verify") {
-                        crate::cmd::verify_first(args, &src, Some(&file))?;
-                    }
-                    let proofs = crate::proofs_for(&src, Some(&file), args);
-                    crate::llvm::proofs_text(src.program(), &proofs)
+                    strata_proofs(Path::new(&file), !args.flag("--no-verify"))?.unwrap_or_default()
                 };
                 fs::write(&proven, facts).map_err(|e| e.to_string())?;
                 // std's precompiled code: declared here, linked in (statically)
@@ -639,43 +635,78 @@ fn sources(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
     }
 }
 
-/// `verify --strata`: `compiler verify` on the script or package (its
-/// report printed; it fails on a counterexample or a policy broken);
-/// `--compare`: also `strata verify --no-race` (the Strata side has no race
-/// yet), and the lines only one of them gives.
+/// `strata verify` (unless `--rust`, `STRATA_BACKEND=rust`, or no compiler
+/// package): `compiler verify` on the script or package (`--file`, else the
+/// package around the current folder), its report printed and its exit
+/// code kept; a selection (`verify NAME`) as `--only`. `--obligations`,
+/// `--termination`, `--fuzz` and `--smt` are `compiler smt`, `termination`,
+/// `fuzz` and `smt --queries`. `--compare`: also `strata verify --rust
+/// --no-race` (the Strata side has no race), and the lines only one of them
+/// gives.
 pub fn verify(args: &crate::Args) -> Result<bool, String> {
-    let file = args.val("--file").map(String::from).ok_or("verify --strata/--compare: give a script or package (--file F)")?;
-    if args.pos.len() > 1 {
-        return Err("verify --strata/--compare verifies the whole script or package, not chosen definitions".into());
-    }
+    let file = match args.val("--file") {
+        Some(f) => f.to_string(),
+        None => {
+            let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+            let root = crate::Codebase::find(&cwd).ok_or("no package here (no strata.toml in this folder or above: run `strata init`, or pass --file)")?;
+            root.to_string_lossy().into_owned()
+        }
+    };
+    let file = Path::new(&file).canonicalize().map_err(|e| format!("{file}: {e}"))?.to_string_lossy().into_owned();
+    let selection = args.pos.get(1).cloned();
     let (exe, _) = compiler()?;
-    let mut ours_args: Vec<String> = vec!["verify".into()];
+    let mut ours_args: Vec<String> = vec![];
     let mut rust_args: Vec<String> = vec!["--file".into(), file.clone(), "verify".into(), "--rust".into(), "--no-race".into()];
-    for v in ["--cases", "--seed", "--cross-check", "--require"] {
+    let mode = ["--obligations", "--termination", "--fuzz", "--smt"].into_iter().find(|m| args.flag(m));
+    match mode {
+        Some("--obligations") => ours_args.push("smt".into()),
+        Some("--termination") => ours_args.push("termination".into()),
+        Some("--smt") => ours_args.extend(["smt".into(), "--queries".into()]),
+        Some(_) => ours_args.push("fuzz".into()),
+        None => ours_args.push("verify".into()),
+    }
+    if let Some(m) = mode {
+        rust_args.push(m.into());
+    }
+    let opts: &[&str] = match mode {
+        None => &["--cases", "--seed", "--cross-check", "--require"],
+        Some("--fuzz") => &["--cases", "--seed"],
+        _ => &[],
+    };
+    for v in opts {
         if let Some(x) = args.val(v) {
             ours_args.extend([v.to_string(), x.to_string()]);
             rust_args.extend([v.to_string(), x.to_string()]);
         }
     }
-    for f in ["--checks", "--no-cache"] {
-        if args.flag(f) {
-            ours_args.push(f.into());
-            rust_args.push(f.into());
+    if mode.is_none() {
+        for f in ["--checks", "--no-cache"] {
+            if args.flag(f) {
+                ours_args.push(f.into());
+                rust_args.push(f.into());
+            }
+        }
+        // std's precompiled code, loaded into the compiler's JIT: what the
+        // drivers call of std isn't compiled again (std.web's takes minutes)
+        if let Some(l) = std_library(&exe) {
+            ours_args.extend(["--load".into(), l.shared.to_string_lossy().into_owned(), "--precompiled".into(), l.names.to_string_lossy().into_owned()]);
         }
     }
-    // std's precompiled code, loaded into the compiler's JIT: what the
-    // drivers call of std isn't compiled again (std.web's takes minutes)
-    if let Some(l) = std_library(&exe) {
-        ours_args.extend(["--load".into(), l.shared.to_string_lossy().into_owned(), "--precompiled".into(), l.names.to_string_lossy().into_owned()]);
+    if let Some(sel) = &selection {
+        ours_args.extend(["--only".into(), sel.clone()]);
+        rust_args.push(sel.clone());
     }
     ours_args.push(file.clone());
-    let ours: Vec<String> = run_compiler(&exe, &ours_args)?.lines().map(String::from).collect();
     if !args.flag("--compare") {
-        for l in &ours {
-            println!("{l}");
-        }
-        return Ok(!ours.iter().any(|l| l.starts_with('✗') || l.starts_with("policy: `") && !l.starts_with("policy: `proven` accepts")));
+        // (exit 1: a counterexample or a rule broken; 2: a mistake in the
+        // arguments, already said)
+        return match compiler_status(&exe, &ours_args)? {
+            0 => Ok(true),
+            1 => Ok(false),
+            code => std::process::exit(code),
+        };
     }
+    let ours: Vec<String> = compiler_output(&exe, &ours_args)?.lines().map(String::from).collect();
     let o = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).args(&rust_args).output().map_err(|e| e.to_string())?;
     let rust: Vec<String> = String::from_utf8_lossy(&o.stdout).lines().map(String::from).collect();
     // (whether a verdict was kept from an earlier run differs between the two caches)
@@ -683,6 +714,66 @@ pub fn verify(args: &crate::Args) -> Result<bool, String> {
     Ok(report(plain(rust), plain(ours), "lines"))
 }
 
+/// The built compiler run with `args` in the repository's root (it reads
+/// `core/` and `std/` there), printing to our stdout and stderr: its exit
+/// code.
+fn compiler_status(exe: &Path, args: &[String]) -> Result<i32, String> {
+    let root = compiler_dir().and_then(|d| d.canonicalize().ok()).and_then(|d| Some(d.parent()?.to_path_buf())).ok_or("no repository around compiler/")?;
+    let status = Command::new(exe).env("STRATA_COLORS", colors()).current_dir(root).args(args).status().map_err(|e| format!("running {}: {e}", exe.display()))?;
+    Ok(status.code().unwrap_or(1))
+}
+
+/// The built compiler's stdout for `args`, whatever its exit code (its
+/// stderr passed on).
+fn compiler_output(exe: &Path, args: &[String]) -> Result<String, String> {
+    let root = compiler_dir().and_then(|d| d.canonicalize().ok()).and_then(|d| Some(d.parent()?.to_path_buf())).ok_or("no repository around compiler/")?;
+    let o = Command::new(exe).current_dir(root).args(args).stderr(std::process::Stdio::inherit()).output().map_err(|e| format!("running {}: {e}", exe.display()))?;
+    Ok(String::from_utf8_lossy(&o.stdout).into_owned())
+}
+
+/// What the last `verify` proved of the script or package `file` (its code
+/// as it is now), as `compiler codegen --proofs` reads it (`compiler
+/// proofs`): verified first when `verify` is set (`build`: what changed
+/// since, `compiler verify --quiet`, its line on stderr). `None` when the
+/// compiler package isn't there or no SMT solver is.
+pub fn strata_proofs(file: &Path, verify: bool) -> Result<Option<String>, String> {
+    if !available() {
+        return Ok(None);
+    }
+    let (exe, _) = compiler()?;
+    let file = file.canonicalize().map_err(|e| format!("{}: {e}", file.display()))?.to_string_lossy().into_owned();
+    if verify {
+        if crate::smt::solver().is_none() {
+            eprintln!("note: no SMT solver (install z3): nothing is proven, so every check stays");
+            return Ok(None);
+        }
+        let mut a: Vec<String> = vec!["verify".into(), "--quiet".into()];
+        if let Some(l) = std_library(&exe) {
+            a.extend(["--load".into(), l.shared.to_string_lossy().into_owned(), "--precompiled".into(), l.names.to_string_lossy().into_owned()]);
+        }
+        a.push(file.clone());
+        // (a counterexample doesn't stop the build: its checks stay)
+        compiler_status(&exe, &a)?;
+    }
+    compiler_output(&exe, &["proofs".into(), file]).map(Some)
+}
+
+/// `strata_proofs`'s text as `llvm.rs` takes it: each function's checks
+/// proven and left open (the entry facts are its own to find).
+pub fn proofs_of_text(text: &str) -> crate::fx::HashMap<String, crate::llvm::Proofs> {
+    let mut out: crate::fx::HashMap<String, crate::llvm::Proofs> = Default::default();
+    for l in text.lines() {
+        let mut parts = l.splitn(3, '\t');
+        let (Some(what), Some(f), Some(check)) = (parts.next(), parts.next(), parts.next()) else { continue };
+        let e = out.entry(f.to_string()).or_insert_with(|| crate::llvm::Proofs { proven: vec![], open: vec![] });
+        match what {
+            "proven" => e.proven.push(check.to_string()),
+            "open" => e.open.push(check.to_string()),
+            _ => {}
+        }
+    }
+    out
+}
 
 /// What `strata run` hands the compiler's JIT besides the program: one
 /// function's call (`run f ARGS`): the module file holding the function

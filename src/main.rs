@@ -336,6 +336,13 @@ fn proofs_for(src: &Source, file: Option<&str>, args: &Args) -> HashMap<String, 
     proofs_dir(src, file).map(|d| store::current_proofs(src.program(), &d)).unwrap_or_default()
 }
 
+/// Whether `verify` (and what `build` and `run` leave out) is the Strata
+/// side's (`compiler verify`): unless `--rust` or `STRATA_BACKEND=rust`,
+/// and when a compiler package is found.
+fn strata_verifies(args: &Args) -> bool {
+    !args.flag("--rust") && !cmd::compare::rust_backend() && cmd::compare::available()
+}
+
 /// `verify`'s verdicts for `src` (a package, or the script or folder `file`).
 fn verdicts_at(src: &Source, file: Option<&str>) -> store::Verdicts {
     match (src, file) {

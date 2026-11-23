@@ -36,12 +36,24 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
         }
         // the checks the last `verify` proved are left out (unless --all-checks)
         let file = if matches!(src, Source::File(_)) && args.val("--file").is_none() { Some(path.to_string_lossy().to_string()) } else { args.val("--file").map(String::from) };
-        let proofs = proofs_for(&src, file.as_deref(), args);
+        // (what `compiler verify` proved, unless `--rust`: see `strata_verifies`)
+        let strata_proofs = match (&file, strata_verifies(args) && !args.flag("--all-checks")) {
+            (Some(f), true) => cmd::compare::strata_proofs(std::path::Path::new(f), false)?,
+            _ => None,
+        };
+        let proofs = match &strata_proofs {
+            Some(text) => cmd::compare::proofs_of_text(text),
+            None => proofs_for(&src, file.as_deref(), args),
+        };
         // compiled by compiler/codegen and run by the compiler's JIT (unless
         // `--rust` or `STRATA_BACKEND=rust`); what it doesn't cover yet is
         // `llvm.rs`'s
         if let Some(at) = jit_path(args, file.as_deref()) {
-            let facts = if at.is_dir() { String::new() } else { llvm::proofs_text(p, &proofs) };
+            let facts = match &strata_proofs {
+                _ if at.is_dir() => String::new(),
+                Some(text) => text.clone(),
+                None => llvm::proofs_text(p, &proofs),
+            };
             match cmd::compare::jit_run(&at, &prog, &facts, args.flag("--trace"), None, &program_args) {
                 Ok(code) => std::process::exit(code),
                 Err(e) if e.contains("doesn't cover") => note_fallback(&e),

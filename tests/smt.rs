@@ -231,7 +231,8 @@ fn verify_as_in_rust() {
         save(&file, text);
         let rust = Command::new(STRATA).arg("--file").arg(&file).args(["verify", "--no-race", "--no-cache"]).env("STRATA_CACHE", &dir).output().unwrap();
         let ours = Command::new(compiler::exe()).current_dir(root).arg("verify").arg(&file).env("STRATA_CACHE", &dir).output().unwrap();
-        assert!(ours.status.success(), "compiler verify {name}: {}", String::from_utf8_lossy(&ours.stderr));
+        // (as Rust's: exit 1 when a counterexample is found)
+        assert_eq!(ours.status.code(), rust.status.code(), "compiler verify {name}: {}", String::from_utf8_lossy(&ours.stderr));
         assert_eq!(String::from_utf8_lossy(&rust.stdout), String::from_utf8_lossy(&ours.stdout), "{name}");
     }
     // a package: its modules, a `derive CommandLine` and the copies of
@@ -239,6 +240,77 @@ fn verify_as_in_rust() {
     let hello = root.join("examples/hello");
     let rust = Command::new(STRATA).arg("--file").arg(&hello).args(["verify", "--no-race", "--no-cache"]).env("STRATA_CACHE", &dir).output().unwrap();
     let ours = Command::new(compiler::exe()).current_dir(root).args(["verify", "--no-cache"]).arg(&hello).env("STRATA_CACHE", &dir).output().unwrap();
-    assert!(ours.status.success(), "compiler verify hello: {}", String::from_utf8_lossy(&ours.stderr));
+    assert_eq!(ours.status.code(), rust.status.code(), "compiler verify hello: {}", String::from_utf8_lossy(&ours.stderr));
     assert_eq!(String::from_utf8_lossy(&rust.stdout), String::from_utf8_lossy(&ours.stdout), "hello");
+}
+
+/// `strata verify` is `compiler verify`: what it chooses (`verify NAME`,
+/// `prefix*`, a module, a name that names nothing), the program checked
+/// first, and a package's `[verify]` rules, as Rust's verify does them.
+#[test]
+fn verify_chooses_checks_and_rules_as_in_rust() {
+    if !have_z3() {
+        eprintln!("skipped: no z3");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("choose");
+    let pkg = dir.join("pol");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("strata.toml"), "name = \"pol\"\n\n[verify]\nterminates = [\"*\"]\nno_recursion = [\"core\"]\nproven = [\"core\"]\n").unwrap();
+    save(&pkg.join("core.strata"), "pub fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }\npub fn spin(n: Int) -> Int {\n  mut k := n\n  loop {\n    if k == 1 { break }\n    k = k - 1\n  }\n  k\n}\n");
+    save(&pkg.join("main.strata"), "from core use fact, spin\nfn fib(n: Natural) -> Natural { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\n");
+    let bad = dir.join("bad.strata");
+    std::fs::write(dir.join("bad.st"), "fn f(x: Int) -> Int {\n  x + \"a\"\n}\n").unwrap();
+    let _ = Command::new(STRATA).args(["--file", &bad.to_string_lossy(), "edit"]).stdin(std::fs::File::open(dir.join("bad.st")).unwrap()).output().unwrap();
+    for (file, chosen) in [(&pkg, None), (&pkg, Some("core.fact")), (&pkg, Some("core")), (&pkg, Some("fi*")), (&pkg, Some("nope")), (&bad, None)] {
+        let mut rust_args = vec!["--file".to_string(), file.to_string_lossy().into_owned(), "verify".into(), "--no-race".into(), "--no-cache".into(), "--cases".into(), "20".into()];
+        let mut ours_args = vec!["verify".to_string(), "--no-cache".into(), "--cases".into(), "20".into()];
+        if let Some(c) = chosen {
+            rust_args.push(c.into());
+            ours_args.extend(["--only".into(), c.into()]);
+        }
+        ours_args.push(file.to_string_lossy().into_owned());
+        let rust = Command::new(STRATA).args(&rust_args).env("STRATA_CACHE", &dir).output().unwrap();
+        let ours = Command::new(compiler::exe()).current_dir(root).args(&ours_args).env("STRATA_CACHE", &dir).output().unwrap();
+        let what = format!("{} {chosen:?}", file.display());
+        assert_eq!(ours.status.code(), rust.status.code(), "{what}: {}", String::from_utf8_lossy(&ours.stderr));
+        assert_eq!(String::from_utf8_lossy(&rust.stdout), String::from_utf8_lossy(&ours.stdout), "{what}");
+        assert_eq!(String::from_utf8_lossy(&rust.stderr), String::from_utf8_lossy(&ours.stderr), "{what}");
+    }
+}
+
+/// What `compiler verify` proved is what `build` leaves out (`compiler
+/// proofs`: its checks, and a function's entry checks its every caller
+/// proved) for the code as it is: a function changed since loses its
+/// proofs, and each definition's status (`compiler verdicts`) follows.
+#[test]
+fn proofs_and_statuses_follow_the_code() {
+    if !have_z3() {
+        eprintln!("skipped: no z3");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("proofs");
+    let file = dir.join("p.strata");
+    let main = "fn main() {\n  print(to_string(clamp(15, 0, 10)))\n}\n";
+    save(&file, &format!("fn clamp(x: Int, lo: Int, hi: Int) -> Int\n  requires lo <= hi\n  ensures lo <= it && it <= hi\n{{\n  if x < lo {{ lo }} else if x > hi {{ hi }} else {{ x }}\n}}\n\n{main}"));
+    let compiler = |args: &[&str]| -> String {
+        let o = Command::new(compiler::exe()).current_dir(root).args(args).arg(&file).env("STRATA_CACHE", &dir).output().unwrap();
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    compiler(&["verify", "--quiet"]);
+    let proofs = compiler(&["proofs"]);
+    for line in ["proven\tclamp\tensures lo <= it && it <= hi", "proven\tmain\tprecondition of `clamp`: requires lo <= hi", "entry\tclamp\trequires 0"] {
+        assert!(proofs.lines().any(|l| l == line), "{line}: {proofs}");
+    }
+    assert_eq!(compiler(&["verdicts"]), "clamp\tproven\nmain\tproven\n");
+    // `clamp` broken: its proofs and `main`'s (which calls it) are gone,
+    // until verified again, which finds the counterexample
+    save(&file, "fn clamp(x: Int, lo: Int, hi: Int) -> Int\n  requires lo <= hi\n  ensures lo <= it && it <= hi\n{\n  if x < lo { lo } else { x }\n}\n");
+    assert_eq!(compiler(&["proofs"]), "");
+    assert_eq!(compiler(&["verdicts"]), "");
+    compiler(&["verify", "--quiet"]);
+    assert!(!compiler(&["proofs"]).contains("proven\tclamp"));
+    assert_eq!(compiler(&["verdicts"]), "clamp\tCOUNTEREXAMPLE\nmain\tCOUNTEREXAMPLE\n");
 }
