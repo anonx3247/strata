@@ -108,13 +108,13 @@ fn cases() -> Vec<(String, String, Want)> {
         out.push((key.to_string(), text, Want::Recorded));
     }
     for (key, text, want) in [
-        ("traits-traits_example", "`T.empty()` in a generic function: the type the caller asks for"),
-    ("impl-statics-statics", json_case::STATICS, json_case::STATICS_OUTPUT),
+        ("impl-statics-statics", json_case::STATICS, json_case::STATICS_OUTPUT),
         ("impl-statics-text", json_case::TEXT, json_case::TEXT_OUTPUT),
         ("impl-statics-self_methods", json_case::SELF_METHODS, json_case::SELF_METHODS_OUTPUT),
         ("impl-statics-root_builtin_name", json_case::ROOT_BUILTIN_NAME, json_case::ROOT_BUILTIN_NAME_OUTPUT),
         ("impl-statics-builtins", json_case::BUILTINS, json_case::BUILTINS_OUTPUT),
         ("impl-statics-option_option", json_case::OPTION_OPTION, json_case::OPTION_OPTION_OUTPUT),
+        ("impl-statics-refined_more", json_case::REFINED_MORE, json_case::REFINED_MORE_OUTPUT),
         ("json-program", json_case::PROGRAM, json_case::OUTPUT),
         ("impl-statics-generic_derive", json_case::GENERIC_DERIVE, json_case::GENERIC_DERIVE_OUTPUT),
         ("impl-statics-refined", json_case::REFINED, json_case::REFINED_OUTPUT),
@@ -134,13 +134,9 @@ fn cases() -> Vec<(String, String, Want)> {
 /// Programs the evaluator doesn't run yet, and why.
 const NOT_YET: &[(&str, &str)] = &[
     ("capabilities-files_and_environment", "files: the evaluator gives a program no `Disk` yet"),
-    // a generic function's type parameter known only from what the call
-    // must return (`read[T]` in `fn ints() -> Result[List[Int], String] { read(..) }`):
-    // needs the checker's types
-    ("impl-statics-builtins", "`T.from_json(..)` in `read[T]`: the type the caller asks for"),
-    ("impl-statics-refined", "`T.from_json(..)` in `read[T]`: the type the caller asks for"),
-    ("impl-statics-self_methods", "`T.zero()` where no value shows `T` (`Cell { v: None }`)"),
-    ("impl-statics-statics", "`T.zero()` in `zero_of[T]()`: the type the caller asks for"),
+    // `map` is overloaded (lists, iterators): the checker leaves the
+    // lambda's parameter open, so `x.padded(n)` doesn't know `x: List[T]`
+    ("impl-statics-self_methods", "`xs.map(x -> x.padded(n))`: the lambda parameter's type"),
 ];
 
 /// The stored programs of tests/data/build.
