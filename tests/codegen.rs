@@ -74,7 +74,7 @@ fn both(dir: &Path, name: &str, file: &Path) -> ((String, String, Option<i32>), 
 }
 
 /// Programs of the constructs compiled so far (step 1: scalars, functions,
-/// control flow; step 2: records, sums, tuples, `match`; step 3: counting), each ending as it ends
+/// control flow; step 2: records, sums, tuples, `match`; step 3: counting; then group A of the plan: lists, generic functions, closures, the prelude, core's built-ins, sets and dicts, format specs), each ending as it ends
 /// (normally, with an exit code, or with a fault).
 const PROGRAMS: &[(&str, &str)] = &[
     (
@@ -587,6 +587,287 @@ fn main() {
     print(b)
 }
 ",
+    ),    (
+        "lists",
+        "type Item = { name: String, qty: Int }
+
+fn total(items: List[Item]) -> Int {
+    mut sum := 0
+    for it in items {
+        sum += it.qty
+    }
+    sum
+}
+
+fn squares(n: Int) -> List[Int] {
+    mut out := []
+    for i in 0..n {
+        out = push(out, i * i)
+    }
+    out
+}
+
+fn describe(xs: List[Int]) -> String {
+    match xs {
+        [] => \"empty\",
+        [x] => f\"one: {x}\",
+        [a, b, ..rest] => f\"{a}, {b} and {len(rest)} more\",
+    }
+}
+
+fn main() {
+    xs := [3, 1, 4, 1, 5, 9, 2, 6]
+    print(xs)
+    print(len(xs))
+    print(xs[2])
+    print(xs[2..5])
+    print(xs[..3])
+    print(xs[6..])
+    print(xs[1..=2])
+    print(xs.len())
+    print(get(xs, 1))
+    print(get(xs, 10))
+    print(take(xs, 2))
+    print(drop(xs, 6))
+    print(xs + [7, 8])
+    print(squares(6))
+    print(describe([]))
+    print(describe([42]))
+    print(describe(xs))
+    items := [Item { name: \"tea\", qty: 2 }, Item { name: \"cake\", qty: 3 }]
+    print(items)
+    print(total(items))
+    names := [\"a\" + \"b\", \"c\"]
+    print(names)
+    print(names == [\"ab\", \"c\"])
+    print([[1, 2], [3]] == [[1, 2], [3]])
+    print([1, 2] == [1, 3])
+    print([(1, \"x\"), (2, \"y\")])
+    mut acc := \"\"
+    for (n, s) in [(1, \"x\"), (2, \"y\")] {
+        if n == 2 {
+            break
+        }
+        acc = acc + s
+    }
+    print(acc)
+    mut count := 0
+    for i in 1..=10 {
+        if i % 2 == 0 {
+            continue
+        }
+        count += i
+    }
+    print(count)
+    big := [1 << 70, 2]
+    print(big)
+    print(range(2, 5))
+    let ys: List[String] = []
+    print(push(ys, \"z\"))
+}
+",
+    ),
+    (
+        "list_index_out_of_range",
+        "fn main() {
+    xs := [1, 2, 3]
+    print(xs[1])
+    print(xs[3])
+}
+",
+    ),
+    (
+        "closures_and_generics",
+        "type Pair[A, B] = { first: A, second: B }
+
+fn twice[T](x: T, f: (T) -> T) -> T {
+    f(f(x))
+}
+
+fn pair_of[A, B](a: A, b: B) -> Pair[A, B] {
+    Pair { first: a, second: b }
+}
+
+fn first_or[T](xs: List[T], d: T) -> T {
+    match xs {
+        [x, ..] => x,
+        [] => d,
+    }
+}
+
+fn adder(n: Int) -> (Int) -> Int {
+    x -> x + n
+}
+
+fn is_even(n: Int) -> Bool {
+    n % 2 == 0
+}
+
+fn main() {
+    print(twice(3, x -> x * 10))
+    print(twice(\"ab\", s -> s + s))
+    print(pair_of(1, \"one\"))
+    print(pair_of([1.5], Some(true)))
+    print(first_or([7, 8], 0))
+    print(first_or([], \"none\"))
+    add5 := adder(5)
+    print(add5(1))
+    print(twice(1, adder(100)))
+    xs := [1, 2, 3, 4, 5, 6]
+    suffix := \"!\"
+    print(map(xs, x -> x * x))
+    print(xs.map(x -> f\"{x}{suffix}\"))
+    print(filter(xs, is_even))
+    print(xs.filter(x -> x > 3).map(x -> x - 3))
+    print(fold(xs, 0, (acc, x) -> acc + x))
+    print(all(xs, x -> x > 0))
+    print(any(xs, x -> x > 5))
+    print(find(xs, x -> x > 4))
+    print(count(xs, is_even))
+    print(contains(xs, 4))
+    print(reverse(xs))
+    print(join([\"a\", \"b\", \"c\"], \"-\"))
+    print(zip(xs, [\"a\", \"b\"]))
+    print(enumerate([\"x\", \"y\"]))
+    print(sum(xs))
+    print(sum([1.5, 2.25]))
+    print([x * 2 for x in xs where x % 3 == 0])
+    print([(a, b) for a in [1, 2] for b in [\"p\", \"q\"]])
+    print([n for n in 0..4])
+    names := [Pair { first: \"z\", second: 1 }, Pair { first: \"y\", second: 2 }]
+    print(names.map(p -> p.first))
+    mut total := 0
+    for f in [adder(1), adder(2), x -> x * 3] {
+        total += f(10)
+    }
+    print(total)
+}
+",
+    ),
+    (
+        "generic_result_wanted",
+        "fn empty[T]() -> List[T] {
+    []
+}
+
+fn nothing[T]() -> Option[T] {
+    None
+}
+
+fn main() {
+    let xs: List[String] = empty()
+    print(push(xs, \"a\" + \"b\"))
+    let o: Option[List[Int]] = nothing()
+    print(o)
+    mut ys: List[Int] = empty()
+    ys = push(ys, 3)
+    print(ys)
+}
+",
+    ),
+    (
+        "builtins_sets_dicts_formats",
+        "type Card = { suit: String, rank: Int }
+
+type Level = Low | Mid(Int) | High { why: String }
+
+fn main() {
+    s := \"  Hello, World  \"
+    t := trim(s)
+    print(t)
+    print(split(\"a,b,,c\", \",\"))
+    print(contains(t, \"World\"))
+    print(starts_with(t, \"Hell\"))
+    print(ends_with(t, \"x\"))
+    print(index_of(t, \"o\"))
+    print(index_of(t, \"z\"))
+    print(replace(t, \"l\", \"L\"))
+    print(repeat(\"ab\", 3))
+    print(reverse(\"héllo\"))
+    print(chars(\"añb\"))
+    print(lines(\"one\\ntwo\\r\\nthree\\n\"))
+    print(ord(\"A\"))
+    print(chr(97))
+    print(byte_len(\"é\"))
+    print(byte_at(\"A\", 0))
+    print(byte_slice(\"hello\", 1, 3))
+    print(parse_int(\"42\"))
+    print(parse_int(\"123456789012345678901234567890\"))
+    print(parse_int(\"x\"))
+    print(parse_float(\"2.5\"))
+    print(to_string(12) + debug(\"q\"))
+    print(abs(-5))
+    print(abs(-2.5))
+    print(min(3, 7))
+    print(max(2.5, 1.5))
+    print(float(7))
+    print(floor(2.7))
+    print(ceil(2.1))
+    print(round(2.5))
+    print(sqrt(16.0))
+    print(checked_div(1.0, 0.0))
+    print(checked_add(1.0, 2.0))
+    print(checked_sqrt(-1.0))
+    print(checked_floor(3.9))
+    print(float_bits(1.0))
+    print(float_from_bits(4607182418800017408))
+    print(sort([5, 3, 9, 1, 3]))
+    print(sort([\"pear\", \"apple\", \"fig\"]))
+    print(sort([2.5, -1.0, 0.0]))
+    print(sort([(2, \"b\"), (1, \"z\"), (2, \"a\")]))
+    print(sort([High { why: \"x\" }, Mid(3), Low, Mid(1)]))
+    print(sort_by([Card { suit: \"h\", rank: 3 }, Card { suit: \"s\", rank: 1 }], c -> c.rank))
+    ns := Set { 3, 1, 2, 3 }
+    print(ns)
+    print(len(ns))
+    print(contains(ns, 2))
+    print(insert(ns, 0))
+    print(remove(ns, 3))
+    print(union(ns, Set { 9, 1 }))
+    print(intersection(ns, Set { 2, 3, 4 }))
+    print(difference(ns, Set { 1 }))
+    print(to_list(ns))
+    print(set([\"b\", \"a\", \"b\"]))
+    ages := Dict { \"bo\": 30, \"al\": 25 }
+    print(ages)
+    print(get(ages, \"al\"))
+    print(get(ages, \"zz\"))
+    print(contains(ages, \"bo\"))
+    print(insert(ages, \"cy\", 41))
+    print(insert(ages, \"al\", 26))
+    print(remove(ages, \"bo\"))
+    print(keys(ages))
+    print(values(ages))
+    print(items(ages))
+    print(map_values(ages, a -> a + 1))
+    mut total := 0
+    for (name, age) in ages {
+        total += age
+    }
+    print(total)
+    for n in ns {
+        print(n)
+    }
+    let empty: Dict[String, Int] = Dict {}
+    print(empty)
+    print(Set[Int] {})
+    print(ns == Set { 1, 2, 3 })
+    print(Set { x for x in [1, 2, 2, 3] })
+    pi := 3.14159
+    n := 42
+    w := \"hi\"
+    print(f\"[{pi:.2}] [{n:>6}] [{n:<6}] [{n:^6}] [{n:06}] [{n:+}] [{w:*>5}] [{w:.1}]\")
+}
+",
+    ),
+    (
+        "unicode",
+        "fn main() {
+    for s in [\"hello World\", \"straße\", \"ΟΔΥΣΣΕΥΣ\", \"İstanbul\", \"ǅ\", \"ﬃ\", \"123\", \"١٢٣\", \"  \\t\", \"\", \"abc1\", \"日本語\", \"Ünïcödé\"] {
+        print(f\"{s}: {to_upper(s)} {to_lower(s)} {is_digit(s)} {is_alpha(s)} {is_space(s)}\")
+    }
+}
+",
     ),
 ];
 
@@ -609,8 +890,8 @@ fn compiled_programs_do_what_rust_compiled_ones_do() {
 #[test]
 fn refuses_what_it_does_not_compile_yet() {
     let dir = scratch("refused");
-    let file = dir.join("lists.strata");
-    save(&file, "fn main() {\n    xs := [1, 2]\n    print(xs)\n}\n");
+    let file = dir.join("methods.strata");
+    save(&file, "type P = { x: Int }\n\nimpl P {\n    fn get_x(self) -> Int {\n        self.x\n    }\n}\n\nfn main() {\n    print(P { x: 1 }.get_x())\n}\n");
     let out = compiler::run(&["codegen".to_string(), file.to_string_lossy().into_owned()]);
     assert!(out.starts_with("error: in `main`: not compiled yet: "), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
