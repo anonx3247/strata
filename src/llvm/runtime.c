@@ -184,12 +184,22 @@ void *strata_alloc(int64_t n) {
 // A raw block (core.mem's `raw_alloc`): not counted, not cleared; out of
 // memory ends the program, as for any allocation.
 void *strata_raw_alloc(int64_t n) {
-  void *p = malloc((size_t)n);
+  void *p = malloc(n > 0 ? (size_t)n : 1);
   if (!p) {
     fputs("fault (Limit): out of memory\n", stderr);
     exit(101);
   }
   return p;
+}
+
+// How many bytes a raw block holds (core.mem's `raw_size`).
+int64_t strata_raw_size(void *p) { return (int64_t)usable_size(p); }
+
+// A reserved range of addresses, zeroed, paged in as it is touched (core.mem's
+// `raw_reserve`); NULL when the system refuses it.
+void *strata_raw_reserve(int64_t n) {
+  void *r = n > 0 ? mmap(NULL, (size_t)n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0) : MAP_FAILED;
+  return r == MAP_FAILED ? NULL : r;
 }
 
 // One more holder of `p`.

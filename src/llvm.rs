@@ -1106,6 +1106,9 @@ declare ptr @strata_concat_owned(ptr, ptr)
 declare ptr @strata_range(i64, i64)
 declare i64 @llvm.smax.i64(i64, i64)
 declare ptr @strata_raw_alloc(i64)
+declare ptr @strata_raw_reserve(i64)
+declare i64 @strata_raw_size(ptr)
+declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)
 declare void @free(ptr)
 declare i64 @llvm.smin.i64(i64, i64)
 declare ptr @strata_show_int(i64)
@@ -1424,6 +1427,7 @@ pub fn compile_core_rt() -> Res<String> {
             TypeExpr::Unit => "void",
             TypeExpr::Named(n, a) if a.is_empty() && n.as_str() == "Ptr" => "ptr",
             TypeExpr::Named(n, a) if a.is_empty() && n.as_str() == "Bool" => "i1",
+            TypeExpr::Named(n, a) if a.is_empty() && Width::of(n.as_str()).is_some() => word_ll(Width::of(n.as_str()).unwrap()),
             other => return Err(format!("core.rt: `{}` doesn't cross to C yet", crate::printer::ty(other))),
         })
     };
@@ -6173,64 +6177,71 @@ impl<'m, 'a> Func<'m, 'a> {
                 (a.clone(), r)
             }
             ("float", [Ty::Int]) => self.call(&Ty::Float, "@strata_int_to_float", &vs)?,
-            // raw memory (core.mem): plain loads and stores; an `Int` crosses
-            // as its low 64 bits, and comes back from a word as any `Int`
-            ("raw_alloc", [Ty::Int]) => {
-                let n = self.call(&Ty::Int, "@strata_int_bits", &vs)?;
-                self.call(&Ty::Con("Ptr".into(), vec![]), "@strata_raw_alloc", &[n])?
-            }
+            // raw memory (core.mem): plain loads and stores, on machine
+            // integers (`I64`, `U8`)
+            ("raw_alloc", [_]) => self.call(&Ty::Con("Ptr".into(), vec![]), "@strata_raw_alloc", &vs)?,
+            ("raw_reserve", [_]) => self.call(&Ty::Con("Ptr".into(), vec![]), "@strata_raw_reserve", &vs)?,
+            ("raw_size", [_]) => self.call(&Ty::Con("I64".into(), vec![]), "@strata_raw_size", &vs)?,
             ("raw_free", [_]) => {
                 self.emit(format!("call void @free(ptr {})", vs[0].1));
                 (Ty::Unit, "0".into())
             }
-            ("ptr_offset", [p, Ty::Int]) => {
-                let n = self.call(&Ty::Int, "@strata_int_bits", &vs[1..])?;
+            ("raw_fill", [_, _, _]) => {
+                self.emit(format!("call void @llvm.memset.p0.i64(ptr {}, i8 {}, i64 {}, i1 false)", vs[0].1, vs[1].1, vs[2].1));
+                (Ty::Unit, "0".into())
+            }
+            ("ptr_offset", [p, _]) => {
                 let r = self.fresh("at");
-                self.emit(format!("{r} = getelementptr i8, ptr {}, i64 {}", vs[0].1, n.1));
+                self.emit(format!("{r} = getelementptr i8, ptr {}, i64 {}", vs[0].1, vs[1].1));
                 (p.clone(), r)
             }
-            ("load_i64" | "load_u8" | "store_i64" | "store_u8" | "atomic_add_i64" | "atomic_load_i64", [_, Ty::Int, ..]) => {
-                let at = self.call(&Ty::Int, "@strata_int_bits", &vs[1..2])?;
+            ("address", [_]) => {
+                let r = self.fresh("addr");
+                self.emit(format!("{r} = ptrtoint ptr {} to i64", vs[0].1));
+                (Ty::Con("I64".into(), vec![]), r)
+            }
+            ("ptr_at", [_]) => {
+                let r = self.fresh("ptr");
+                self.emit(format!("{r} = inttoptr i64 {} to ptr", vs[0].1));
+                (Ty::Con("Ptr".into(), vec![]), r)
+            }
+            ("load_i64" | "load_u8" | "store_i64" | "store_u8" | "atomic_load_i64" | "atomic_store_i64" | "atomic_add_i64" | "atomic_swap_i64", [_, _, ..]) => {
                 let a = self.fresh("at");
-                self.emit(format!("{a} = getelementptr i8, ptr {}, i64 {}", vs[0].1, at.1));
-                let word = |c: &mut Self, v: &V| c.call(&Ty::Int, "@strata_int_bits", std::slice::from_ref(v));
+                self.emit(format!("{a} = getelementptr i8, ptr {}, i64 {}", vs[0].1, vs[1].1));
+                let i64t = Ty::Con("I64".into(), vec![]);
+                let w = self.fresh("w");
                 match name {
                     "load_i64" => {
-                        let w = self.fresh("w");
-                        self.emit(format!("{w} = load i64, ptr {a}"));
-                        let r = self.call(&Ty::Int, "@strata_int_from_i64", &[(Ty::Int, w)])?;
-                        self.temp(r)
+                        self.emit(format!("{w} = load i64, ptr {a}, align 8"));
+                        (i64t, w)
                     }
                     "atomic_load_i64" => {
-                        let w = self.fresh("w");
                         self.emit(format!("{w} = load atomic i64, ptr {a} acquire, align 8"));
-                        let r = self.call(&Ty::Int, "@strata_int_from_i64", &[(Ty::Int, w)])?;
-                        self.temp(r)
+                        (i64t, w)
                     }
                     "load_u8" => {
-                        let (b, w) = (self.fresh("b"), self.fresh("w"));
-                        self.emit(format!("{b} = load i8, ptr {a}"));
-                        self.emit(format!("{w} = zext i8 {b} to i64"));
-                        (Ty::Int, w)
+                        self.emit(format!("{w} = load i8, ptr {a}"));
+                        (Ty::Con("U8".into(), vec![]), w)
                     }
                     "store_i64" => {
-                        let v = word(self, &vs[2])?;
-                        self.emit(format!("store i64 {}, ptr {a}", v.1));
+                        self.emit(format!("store i64 {}, ptr {a}, align 8", vs[2].1));
+                        (Ty::Unit, "0".into())
+                    }
+                    "atomic_store_i64" => {
+                        self.emit(format!("store atomic i64 {}, ptr {a} release, align 8", vs[2].1));
                         (Ty::Unit, "0".into())
                     }
                     "store_u8" => {
-                        let v = word(self, &vs[2])?;
-                        let b = self.fresh("b");
-                        self.emit(format!("{b} = trunc i64 {} to i8", v.1));
-                        self.emit(format!("store i8 {b}, ptr {a}"));
+                        self.emit(format!("store i8 {}, ptr {a}", vs[2].1));
                         (Ty::Unit, "0".into())
                     }
+                    "atomic_add_i64" => {
+                        self.emit(format!("{w} = atomicrmw add ptr {a}, i64 {} acq_rel, align 8", vs[2].1));
+                        (i64t, w)
+                    }
                     _ => {
-                        let v = word(self, &vs[2])?;
-                        let w = self.fresh("w");
-                        self.emit(format!("{w} = atomicrmw add ptr {a}, i64 {} seq_cst", v.1));
-                        let r = self.call(&Ty::Int, "@strata_int_from_i64", &[(Ty::Int, w)])?;
-                        self.temp(r)
+                        self.emit(format!("{w} = atomicrmw xchg ptr {a}, i64 {} acq_rel, align 8", vs[2].1));
+                        (i64t, w)
                     }
                 }
             }
