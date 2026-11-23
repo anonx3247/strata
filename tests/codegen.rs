@@ -481,6 +481,25 @@ fn main() {
   print(bad)
 }
 "),
+    ("refined_record_assigned", "type Range = { lo: Int, hi: Int } where it.lo <= it.hi
+
+fn main() {
+  mut r := Range { lo: 1, hi: 5 }
+  r.lo = 3
+  print(r)
+  print(r)
+}
+"),
+    ("refined_record_broken", "type Range = { lo: Int, hi: Int } where it.lo <= it.hi
+
+fn main() {
+  mut r := Range { lo: 1, hi: 5 }
+  r.lo = 3
+  print(r)
+  r.lo = 9
+  print(r)
+}
+"),
     ("iterators", "type Naturals = { n: Int }
 
 impl Iterator[Int] for Naturals {
