@@ -108,7 +108,7 @@ fn stores_as_in_rust() {
         let start = format!("=== {}\n", p.display());
         let from = got.find(&start).unwrap_or_else(|| panic!("no trees for {name}")) + start.len();
         let until = paths.get(i + 1).and_then(|n| got[from..].find(&format!("=== {n}\n")).map(|k| from + k)).unwrap_or(got.len());
-        let want = run(&["parse", &p.to_string_lossy(), "--stored"]);
+        let want = run(&["parse", "--rust", &p.to_string_lossy(), "--stored"]);
         let strata = &got[from..until];
         if strata != want {
             let (g, w): (Vec<&str>, Vec<&str>) = (strata.lines().collect(), want.lines().collect());
