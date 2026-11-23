@@ -2390,8 +2390,14 @@ impl<'a> Vc<'a> {
             }
             (Val::List { len: l1, id: i1 }, Val::List { len: l2, id: i2 }) => {
                 let (l1, l2, i1, i2) = (l1.clone(), l2.clone(), *i1, *i2);
-                // by position, where both are known so
-                if self.eq_depth < 2 {
+                if i1 == i2 {
+                    return format!("(= {l1} {l2})");
+                }
+                // by position, where both are known so: only in a goal, where
+                // the quantifier is negated (the solver picks one position, a
+                // witness), never in a fact it would have to instantiate; and
+                // not inside a quantified fact
+                if self.proving > 0 && self.eq_depth < 2 && self.indexing.is_none() && self.regions.is_empty() {
                     self.eq_depth += 1;
                     let e = self.eq_lists((i1, &l1), (i2, &l2));
                     self.eq_depth -= 1;

@@ -96,6 +96,8 @@ unsafe extern "C" {
     fn strata_leave();
     fn strata_overflow();
     fn strata_div();
+    fn strata_div_nz();
+    fn strata_mod_nz();
     fn strata_gen_string();
     fn strata_gen_len();
     fn strata_gen_float();
@@ -233,6 +235,8 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_leave", strata_leave as *const () as usize),
         ("strata_overflow", strata_overflow as *const () as usize),
         ("strata_div", strata_div as *const () as usize),
+        ("strata_div_nz", strata_div_nz as *const () as usize),
+        ("strata_mod_nz", strata_mod_nz as *const () as usize),
         ("strata_gen_string", strata_gen_string as *const () as usize),
         ("strata_gen_len", strata_gen_len as *const () as usize),
         ("strata_gen_float", strata_gen_float as *const () as usize),

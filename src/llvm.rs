@@ -968,6 +968,7 @@ declare void @strata_trace_return(i64, i64)
 declare void @strata_overflow() noreturn cold
 declare void @strata_main_error(ptr)
 declare i64 @strata_div(i64, i64)
+declare i64 @strata_div_nz(i64, i64)
 declare i64 @strata_int_add(i64, i64)
 declare i64 @strata_int_sub(i64, i64)
 declare i64 @strata_int_mul(i64, i64)
@@ -993,6 +994,7 @@ declare i64 @strata_gen_len(ptr, i64)
 declare ptr @strata_gen_string(i64)
 declare double @strata_int_to_float(i64)
 declare i64 @strata_mod(i64, i64)
+declare i64 @strata_mod_nz(i64, i64)
 declare double @strata_fmod(double, double)
 declare double @strata_finite(double, double, double, ptr)
 declare i64 @strata_float_to_int(double, double)
@@ -4983,12 +4985,16 @@ impl<'m, 'a> Func<'m, 'a> {
             (Add, Ty::Int) => self.int_op("sadd", a, b),
             (Sub, Ty::Int) => self.int_op("ssub", a, b),
             (Mul, Ty::Int) => self.int_op("smul", a, b),
-            (Div, Ty::Int) => {
-                let r = self.call(&Ty::Int, "@strata_div", &[a.clone(), b.clone()])?;
-                self.temp(r)
-            }
-            (Mod, Ty::Int) => {
-                let r = self.call(&Ty::Int, "@strata_mod", &[a.clone(), b.clone()])?;
+            // (proven: the runtime's division without its check for 0)
+            (Div | Mod, Ty::Int) => {
+                let nz = self.proven(|e| e == "no division by zero");
+                let f = match (op, nz) {
+                    (Div, false) => "@strata_div",
+                    (Div, true) => "@strata_div_nz",
+                    (_, false) => "@strata_mod",
+                    (_, true) => "@strata_mod_nz",
+                };
+                let r = self.call(&Ty::Int, f, &[a.clone(), b.clone()])?;
                 self.temp(r)
             }
             (BitAnd | BitOr | BitXor, Ty::Int) => self.bit_op(op, a, b),
