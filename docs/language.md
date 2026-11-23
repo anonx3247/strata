@@ -156,9 +156,9 @@ fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, (ac
 - **Laws** are checked by `strata verify` against every implementation: proven by the solver, which sees through the implementation's methods (when they end and can't fail), else with generated inputs. In `examples/traits.strata`, both laws are proven for `Money` and for `List[T]`, and the solver finds that averaging (`Midpoint`) is not associative.
 - **Generic functions** are fuzzed with a type that actually implements their bounds.
 
-**Capabilities are traits too.** There are no separate effects: a backend (database, queue, console, clock) is a trait, and code that uses one takes an implementation as a parameter or holds it in a field: `fn ship(mut db: Db, ...)`, `type PrintWorker = { console: Console }`. A trait used as a type means "any implementation": `db: Db` is shorthand for `fn ship[D: Db](db: D, ...)`. Name the type parameter only when it must tie things together, as in `combine_all[T: Combine](first: T, rest: List[T]) -> T`. A method that changes its value says `mut self` (`fn save(mut self, o: Order)`). Tests pass a fake implementation or `mock Db`. Iterators and tasks are language features of their own, not capabilities (see Iterators, and Tasks).
+**Capabilities are traits too.** There are no separate effects: a backend (database, queue, console, clock) is a trait, and code that uses one takes an implementation as a parameter or holds it in a field: `fn ship(mut db: Db, ...)`, `type PrintWorker = { console: Console }`. A trait used as a type means "any implementation": `db: Db` is shorthand for `fn ship[D: Db](db: D, ...)`. Name the type parameter only when it must tie things together, as in `combine_all[T: Combine](first: T, rest: List[T]) -> T`. A method that changes its value says `mut self` (`fn save(mut self, o: Order)`). Tests pass a `mock Db`. Iterators and tasks are language features of their own, not capabilities (see Iterators, and Tasks).
 
-**Mocks: fakes for tests.** A fake is declared like a type, with `mock` in place of `type`, and implemented like any type; its implementations may leave methods out:
+**Mocks, for tests.** A mock is declared like a type, with `mock` in place of `type`, and implemented like any type; its implementations may leave methods out:
 
 ```rust
 /// An in-memory disk, for tests.
@@ -180,11 +180,11 @@ test "saving then loading" {
 ```
 
 - A method left out answers as `mock Files` does: it checks the method's `requires` and gives a result within its type and `ensures`.
-- A mock is for tests only: a `test`, another mock, or an `impl` for one may name it; anything else is an error, so a fake never reaches a real run.
+- A mock is for tests only: a `test`, another mock, or an `impl` for one may name it; anything else is an error, so a mock never reaches a real run.
 - `verify` reports a mock's methods as assumed (the tests that use it check them). `strata view` and the viewer hide mocks and their implementations unless asked (`view --mocks`, "show mocks").
 - A mock holds data: a record (`mock FixedClock = {}` for none).
 
-**Capabilities given by the runtime.** A trait that reaches the outside world is marked `capability trait`; anything may implement it, fakes for tests included. The real thing is a `capability`: functions that reach the outside world, holding no data. Only the runtime makes one, for `main` or a test that asks for it by name, and its functions are called on that value, so holding it is the permission:
+**Capabilities given by the runtime.** A trait that reaches the outside world is marked `capability trait`; anything may implement it, mocks for tests included. The real thing is a `capability`: functions that reach the outside world, holding no data. Only the runtime makes one, for `main` or a test that asks for it by name, and its functions are called on that value, so holding it is the permission:
 
 ```rust
 /// Reading the time.
@@ -201,7 +201,7 @@ impl Clock for SystemClock {
   fn now(self) -> Int { self.seconds() }
 }
 
-/// Any clock: the system's, or a fake in a test.
+/// Any clock: the system's, or a mock in a test.
 fn late(c: Clock) -> Bool { c.now() > 40 }
 
 fn main(sys: SystemClock) {
@@ -215,7 +215,7 @@ test "the real clock" (sys: SystemClock) {
 
 - A capability has no constructor: `SystemClock {}`, `mock SystemClock`, JSON input and `SystemClock.seconds()` are all errors. A program's signature (`main`'s parameters) lists every capability it can use.
 - `main` names the capabilities it may use and picks among them in ordinary code (an option choosing SQLite or Postgres), handing the rest of the program a capability trait value (`late(sys)`).
-- A test may ask for capabilities the same way (`test "..." (sys: SystemClock) { ... }`); one that doesn't uses fakes.
+- A test may ask for capabilities the same way (`test "..." (sys: SystemClock) { ... }`); one that doesn't uses mocks.
 - `verify` never runs a capability's code (it reports it as assumed), nor code that takes one; that code is proven from the capability's contracts like any other.
 - The viewer colours capabilities and capability traits apart from other types.
 
@@ -385,7 +385,7 @@ Tasks share nothing that can change, so the result doesn't depend on timing: `sc
 
 A handle stays in its scope: a scope can't give one back, a task can't hold another's, and one can't be stored in a variable declared outside. A fault in a task (an index out of range, a broken contract) ends the program at once, as anywhere else: nothing catches it, and the other tasks don't run on (a thread waiting for what the failed task would have sent doesn't hang). Its call stack shows where the task was started and where it failed: `main -> spawn -> pick`. Under `strata test` it fails that test only: the test's other tasks stop at their next wait, and the next test runs.
 
-**A deadlock is a panic, not a hang.** When every task of the program is waiting (in a `recv`, a `send`, a `select`, an `await`, the end of a `scope`, a fake clock's sleep) and none of the waits can end by itself (a real clock's sleep or `after` timer can: it isn't a deadlock), nothing can ever happen again. The program stops with what each task waits on, and where: `deadlock: every task is waiting, so none can go on: main waits in the end of a `scope`, at main; a task waits in `recv`, at main -> spawn -> Receiver.recv; …`. Under `strata test` the test fails with it. A task reading the console or a file isn't waiting in this sense: it can go on by itself.
+**A deadlock is a panic, not a hang.** When every task of the program is waiting (in a `recv`, a `send`, a `select`, an `await`, the end of a `scope`, a virtual clock's sleep) and none of the waits can end by itself (a real clock's sleep or `after` timer can: it isn't a deadlock), nothing can ever happen again. The program stops with what each task waits on, and where: `deadlock: every task is waiting, so none can go on: main waits in the end of a `scope`, at main; a task waits in `recv`, at main -> spawn -> Receiver.recv; …`. Under `strata test` the test fails with it. A task reading the console or a file isn't waiting in this sense: it can go on by itself.
 
 A `scope` whose last line is a `spawn` (`scope { spawn work() }`) gives `()`: the handle isn't its value. Tasks run on threads, one per task for now.
 
