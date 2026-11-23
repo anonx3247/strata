@@ -141,7 +141,7 @@ fn triggers(m: &str) -> std::collections::HashSet<String> {
                 ExternItem::Fn(f) => {
                     out.insert(f.name.to_string());
                 }
-                ExternItem::Type(t, _) => {
+                ExternItem::Type(t, _) | ExternItem::Static(t, _) => {
                     out.insert(t.to_string());
                 }
             },
@@ -191,7 +191,7 @@ pub fn builtin_types() -> &'static [(Symbol, Vec<Symbol>)] {
             .filter_map(|d| match &d.kind {
                 DeclKind::Extern(e) if e.lang == Lang::Builtin => match &e.item {
                     ExternItem::Type(t, ps) => Some((*t, ps.clone())),
-                    ExternItem::Fn(_) => None,
+                    ExternItem::Fn(_) | ExternItem::Static(..) => None,
                 },
                 _ => None,
             })
@@ -206,7 +206,7 @@ pub fn builtin_fns() -> impl Iterator<Item = (Symbol, &'static crate::ast::FnDec
     FILES.iter().flat_map(|(f, _)| module(f)).filter_map(|d| match &d.kind {
         DeclKind::Extern(e) if e.lang == Lang::Builtin => match &e.item {
             ExternItem::Fn(f) => Some((d.module, f)),
-            ExternItem::Type(..) => None,
+            ExternItem::Type(..) | ExternItem::Static(..) => None,
         },
         _ => None,
     })
@@ -287,7 +287,7 @@ pub fn check(dir: &std::path::Path) -> crate::types::CheckReport {
 pub fn tests() -> Program {
     let decls = FILES
         .iter()
-        .flat_map(|(f, _)| module(f).iter().filter(move |d| matches!(d.kind, DeclKind::Test(_)) || (*f == "rt.strata" && !is_builtin(d))).cloned())
+        .flat_map(|(f, _)| module(f).iter().filter(move |d| matches!(d.kind, DeclKind::Test(_)) || (*f == "rt.strata" && (!is_builtin(d) || matches!(&d.kind, DeclKind::Extern(e) if matches!(e.item, ExternItem::Static(..)))))).cloned())
         .collect();
     Program { decls }
 }

@@ -999,6 +999,7 @@ pub fn decl_body(d: &Decl) -> String {
             ExternItem::Type(t, ps) if ps.is_empty() && e.lang == Lang::Builtin => format!("builtin type {t}"),
             ExternItem::Type(t, ps) if e.lang == Lang::Builtin => format!("builtin type {t}[{}]", ps.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")),
             ExternItem::Type(t, _) => format!("extern {} type {t}", e.lang.name()),
+            ExternItem::Static(n, size) => format!("builtin static {n}: {size}"),
         },
     };
     (if d.public { "pub " } else { "" }).to_string() + &body

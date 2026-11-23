@@ -1009,3 +1009,11 @@ const CORE_MEM: &str = "fn main() {\n  p := raw_alloc(8)\n  store_i64(p, 0, 1)\n
 fn raw_memory_outside_core_as_in_rust() {
     same_errors("core_mem", CORE_MEM);
 }
+
+/// A `builtin static` (core's runtime state) declared outside core.
+const CORE_STATIC: &str = "builtin static mine: 8\n\nfn main() {\n  print(1)\n}\n";
+
+#[test]
+fn builtin_static_outside_core_as_in_rust() {
+    same_errors("core_static", CORE_STATIC);
+}

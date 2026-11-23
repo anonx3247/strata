@@ -260,7 +260,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             }
             out.remove(c.name.as_str());
         }
-        DeclKind::Use(_) | DeclKind::Extern(ExternDecl { item: ExternItem::Type(..), .. }) => {}
+        DeclKind::Use(_) | DeclKind::Extern(ExternDecl { item: ExternItem::Type(..) | ExternItem::Static(..), .. }) => {}
         DeclKind::Extern(ExternDecl { item: ExternItem::Fn(f), .. }) => {
             f.params.iter().for_each(|p| ty(&p.ty, &mut out));
             ty(&f.ret, &mut out);

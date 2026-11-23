@@ -745,6 +745,12 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     }).collect();
     let keeps = escape::Kept::of(&bodies);
     let mut m = Module { env: &env, types: &types, keeps, bodies, traits, impls, refinements, tags, globals: String::new(), strings: HashMap::default(), constants: 0, constant_of: HashMap::default(), body: String::new(), queue: VecDeque::new(), seen: HashSet::default(), helpers: HashSet::default(), lambdas: 0, fuzzing: false, fuzz_kept: Default::default(), traced: Default::default(), tracing: TRACING.with(|t| t.get()), proofs: if matches!(entry, Entry::Main(_)) { PROOFS.with(|p| std::mem::take(&mut p.borrow_mut().0)) } else { HashMap::default() }, refs: Refs::default(), left_out: 0, kept: 0, box_tags: HashMap::default(), gens: HashMap::default(), vtables: HashMap::default(), dispatch: vec![], foreign: Default::default(), precompiled: None, matchers, tasks: uses_tasks(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()), supervises: uses_supervised(&resolved.program.decls) || BUILDING_STD.with(|b| b.get()) };
+    // core's `builtin static` blocks: zeroed, one each (the runtime's state)
+    let mut statics: Vec<(&Symbol, &i64)> = env.statics.iter().collect();
+    statics.sort();
+    for (n, size) in statics {
+        writeln!(m.globals, "{} = internal global [{size} x i8] zeroinitializer, align 16", static_sym(n)).unwrap();
+    }
     if !m.proofs.is_empty() {
         m.refs = Refs::of(prog);
     }
@@ -1333,6 +1339,11 @@ pub fn compile_library(prog: &Program, names: &[String]) -> Res<String> {
         .map(|l| if l.starts_with("define ") && !l.starts_with("define internal ") && !exported.iter().any(|e| l.contains(e.as_str())) { l.replacen("define ", "define internal ", 1) } else { l.to_string() })
         .collect::<Vec<_>>()
         .join("\n"))
+}
+
+/// The global holding a `builtin static` block.
+fn static_sym(name: &str) -> String {
+    format!("@\"static:{name}\"")
 }
 
 /// `core.rt`, the runtime written in Strata, as LLVM IR to link with the C
@@ -4572,6 +4583,8 @@ impl<'m, 'a> Func<'m, 'a> {
             Expr::Bool(b) => bool_v(&b.to_string()),
             Expr::Str(s) => self.string(s),
             Expr::Unit => (Ty::Unit, String::new()),
+            // core's `builtin static`: its block's address
+            Expr::Var(x) if self.lookup(x).is_none() && self.m.env.statics.contains_key(x) => (Ty::Con("Ptr".into(), vec![]), static_sym(x)),
             Expr::Var(x) if self.lookup(x).is_none() => self.function_value(e, x)?,
             Expr::Var(x) => self.load(x)?,
             Expr::Hole(h) => {
