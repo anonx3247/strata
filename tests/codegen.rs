@@ -1891,3 +1891,127 @@ fn leaves_out_what_verify_proved() {
     assert!(proven.contains("@strata_div_nz("), "{proven}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A package calling C through `extern c` (its `[native]` C file and libm):
+/// sized integers, floats, booleans and strings across, handles (an
+/// `Option` of one for NULL), `mut` out-pointers, contracts.
+#[test]
+fn foreign_calls_do_what_rust_compiled_ones_do() {
+    if !have_clang() {
+        return;
+    }
+    let dir = scratch("ffi");
+    let pkg = dir.join("ffi");
+    std::fs::create_dir_all(pkg.join("c")).unwrap();
+    std::fs::write(pkg.join("strata.toml"), "name = \"ffi\"\n\n[native]\nsources = [\"c/lib.c\"]\nlibs = [\"m\"]\n").unwrap();
+    std::fs::write(pkg.join("c/lib.c"), "#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <stdbool.h>
+
+int32_t add32(int32_t a, int32_t b) { return a + b; }
+double half(double x) { return x / 2; }
+bool is_even(int64_t n) { return n % 2 == 0; }
+uint8_t low_byte(uint32_t x) { return (uint8_t)(x & 0xff); }
+int8_t negate8(int8_t x) { return (int8_t)-x; }
+const char *greet(const char *name) {
+  static char buf[256];
+  snprintf(buf, sizeof buf, \"hello, %s!\", name);
+  return buf;
+}
+size_t name_len(const char *s) { return strlen(s); }
+typedef struct { int32_t n; } Counter;
+Counter *counter_new(int32_t start) { Counter *c = malloc(sizeof *c); c->n = start; return c; }
+void counter_bump(Counter *c) { c->n++; }
+int32_t counter_get(Counter *c) { return c->n; }
+void counter_free(Counter *c) { free(c); }
+Counter *maybe_counter(bool make) { return make ? counter_new(7) : NULL; }
+void double_it(int32_t *x) { *x *= 2; }
+void reset_counter(Counter **c) { counter_free(*c); *c = counter_new(100); }
+").unwrap();
+    save(&pkg.join("main.strata"), "extern c type Counter
+
+extern c fn add32(a: I32, b: I32) -> I32
+
+extern c fn half(x: Float) -> Float
+
+extern c fn is_even(n: I64) -> Bool
+
+extern c fn low_byte(x: U32) -> U8
+
+extern c fn negate8(x: I8) -> I8
+
+extern c fn greet(name: String) -> String
+
+extern c fn name_len(s: String) -> U64
+
+extern c fn counter_new(start: I32) -> Counter
+
+extern c fn counter_bump(c: Counter)
+
+extern c fn counter_get(c: Counter) -> I32
+
+extern c fn counter_free(c: Counter)
+
+extern c fn maybe_counter(make: Bool) -> Option[Counter]
+
+extern c fn double_it(mut x: I32)
+
+extern c fn reset_counter(mut c: Counter)
+
+extern c fn cbrt(x: Float) -> Float
+
+extern c fn positive(x: I32) -> I32
+  requires x > 0
+  ensures it > 0
+
+fn main() {
+  print(add32(40, 2))
+  print(half(5.0))
+  print(is_even(10))
+  print(is_even(7))
+  print(low_byte(4660))
+  print(negate8(-128))
+  print(greet(\"Ada\"))
+  print(name_len(\"four\"))
+  c := counter_new(1)
+  counter_bump(c)
+  counter_bump(c)
+  print(counter_get(c))
+  print(c == c)
+  mut d := counter_new(5)
+  reset_counter(mut d)
+  print(counter_get(d))
+  counter_free(d)
+  counter_free(c)
+  match maybe_counter(true) {
+    Some(m) => {
+      print(counter_get(m))
+      counter_free(m)
+    },
+    None => print(\"none\"),
+  }
+  print(maybe_counter(false) is None)
+  mut x: I32 = 21
+  double_it(mut x)
+  print(x)
+  print(cbrt(27.0))
+}
+");
+    let rust = dir.join("ffi-rust");
+    let o = Command::new(STRATA).arg("build").arg(&pkg).arg("-o").arg(&rust).output().unwrap();
+    assert!(o.status.success(), "strata build: {}", String::from_utf8_lossy(&o.stderr));
+    let ir = compiler::run(&["codegen".to_string(), pkg.to_string_lossy().into_owned()]);
+    assert!(!ir.starts_with("error: "), "not compiled by compiler/codegen:\n{ir}");
+    let ll = dir.join("ffi.ll");
+    std::fs::write(&ll, &ir).unwrap();
+    let ours = dir.join("ffi-strata");
+    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/llvm/runtime.c");
+    let o = Command::new(cc()).args(["-O2", "-Wno-override-module", "-o"]).arg(&ours).arg(&ll).arg(&runtime).arg(pkg.join("c/lib.c")).arg("-lm").output().unwrap();
+    assert!(o.status.success(), "clang refused compiler/codegen's IR: {}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(outcome(&rust), outcome(&ours));
+    let m = memory(&ours);
+    assert!(m.ends_with(" 0 live"), "compiler/codegen's build leaks: {m}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -253,7 +253,10 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                 fs::write(&ll, ir).map_err(|e| e.to_string())?;
                 let ours = if compare { scratch.join("strata") } else { PathBuf::from(args.val("-o").map(String::from).unwrap_or_else(|| Path::new(&file).file_stem().unwrap().to_string_lossy().into_owned())) };
                 let cc = std::env::var("STRATA_CC").unwrap_or_else(|_| "clang".into());
-                let o = Command::new(&cc).args(["-O2", "-Wno-override-module", "-o"]).arg(&ours).arg(&ll).arg(&runtime).arg("-lm").output().map_err(|e| format!("running {cc}: {e}"))?;
+                // a package's own C (`[native]`), for its `extern c` declarations
+                let mut native = crate::package::find(Path::new(&file)).ok().flatten().map(|p| p.native.clang_args(&p.dir)).unwrap_or_default();
+                native.retain(|a| a != "-lm");
+                let o = Command::new(&cc).args(["-O2", "-Wno-override-module", "-o"]).arg(&ours).arg(&ll).arg(&runtime).args(&native).arg("-lm").output().map_err(|e| format!("running {cc}: {e}"))?;
                 if !o.status.success() {
                     return Err(format!("{cc} refused compiler/codegen's IR: {}", String::from_utf8_lossy(&o.stderr).trim()));
                 }
