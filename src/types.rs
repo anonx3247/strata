@@ -12,6 +12,8 @@ mod env;
 mod exhaustive;
 pub mod ints;
 pub mod reals;
+pub mod sized;
+pub use sized::Width;
 pub use env::Env;
 use exhaustive::*;
 
@@ -293,6 +295,9 @@ pub enum Target {
     /// module's method of the same name (`console.write(s)` with `Files`
     /// imported after `Console`). Written as `Trait::method`.
     Other(String, String),
+    /// An integer literal of a sized type: written as its conversion,
+    /// `to_u32(5)`, so what runs and what is proven see the type.
+    Sized(Width),
 }
 
 /// A type as passed at runtime: a type with its arguments (`List[Int]`),
@@ -455,7 +460,7 @@ pub fn check_resolved(mut r: crate::resolve::Resolution) -> Checked {
     let compiled = rooted(&r.program);
     // (before a rewrite moves the expressions the types are keyed by)
     annotate_lambdas(&mut r.program, &types);
-    if !needs_rewrite(&env) {
+    if !needs_rewrite(&env) && !targets.iter().any(|(_, t)| matches!(t, Target::Sized(_))) {
         let (env, _) = Env::build(&r.program);
         return Checked { report, program: r.program, env, compiled };
     }
@@ -583,6 +588,13 @@ fn rewrite_node(e: &mut Expr, t: Option<&Target>, types: &mut HashMap<usize, Ty>
             (Target::Other(tr, mq), Expr::Call(f, _)) => **f = Expr::Var(Symbol::from(trait_call(tr, mq))),
             (Target::Builtin(b), Expr::Method(_, m, _)) => *m = Symbol::from(b.as_str()),
             (Target::Builtin(b), Expr::Call(f, _)) => **f = Expr::Var(Symbol::from(b.as_str())),
+            (Target::Sized(w), Expr::Int(_) | Expr::BigInt(_) | Expr::Un(UnOp::Neg, _)) => {
+                let lit = std::mem::replace(e, Expr::Unit);
+                *e = Expr::Call(Box::new(Expr::Var(Symbol::from(w.to_fn().as_str()))), vec![lit]);
+                if let Expr::Call(_, args) = &*e {
+                    types.insert(addr(&args[0]), Ty::Int);
+                }
+            }
             _ => {}
         }
     }
@@ -1058,6 +1070,7 @@ impl<'a> Checker<'a> {
                     "Bool" => Ty::Bool,
                     "String" => Ty::Str,
                     "Unit" => Ty::Unit,
+                    s if largs.is_empty() && Width::of(s).is_some() => Ty::Con(n.sym(), vec![]),
                     "List" if largs.len() == 1 => Ty::Con("List".into(), largs),
                     "Sender" if largs.len() == 1 => Ty::Con("Sender".into(), largs),
                     "Receiver" if largs.len() == 1 => Ty::Con("Receiver".into(), largs),
@@ -1578,13 +1591,12 @@ impl<'a> Checker<'a> {
     /// `String` (copied each way), `()`, or an `extern c type` handle. A `mut`
     /// parameter is an out-pointer, so it can't be a `String` or `()`.
     fn ffi_type(&self, t: &TypeExpr, mutable: bool) -> Result<(), String> {
-        const SIZED: [&str; 8] = ["I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64"];
         let shown = crate::printer::ty(t);
         match t {
             TypeExpr::Unit if !mutable => Ok(()),
             TypeExpr::Named(n, args) if args.is_empty() => {
                 let n = n.as_str();
-                if SIZED.contains(&n) || n == "Float" || n == "Bool" || self.env.externs.contains_key(&n.sym()) {
+                if Width::of(n).is_some() || n == "Float" || n == "Bool" || self.env.externs.contains_key(&n.sym()) {
                     Ok(())
                 } else if n == "String" && !mutable {
                     Ok(())
@@ -2765,7 +2777,7 @@ impl<'a> Checker<'a> {
 
     fn infer_node(&mut self, e: &Expr, expected: Option<&Ty>) -> Ty {
         match e {
-            Expr::Int(_) | Expr::BigInt(_) => Ty::Int,
+            Expr::Int(_) | Expr::BigInt(_) => self.int_literal(e, expected),
             Expr::Float(_) => Ty::Float,
             Expr::Tuple(es) => Ty::Con("Tuple".into(), es.iter().map(|e| self.infer(e)).collect()),
             Expr::Comptime(x) => self.infer_at(x, expected),
@@ -3086,8 +3098,22 @@ impl<'a> Checker<'a> {
             }
             Expr::Lambda(ps, body) => self.lambda(ps, None, body),
             Expr::Bin(op, l, r) => {
-                let (lt, rt) = (self.infer(l), self.infer(r));
                 use BinOp::*;
+                // an integer literal beside a sized integer is one (`x + 1`), and so
+                // are the operands of arithmetic whose result is to be one
+                let lit = |e: &Expr| matches!(e, Expr::Int(_) | Expr::BigInt(_));
+                let want = match op {
+                    Eq | Ne | Lt | Le | Gt | Ge | And | Or | Implies => None,
+                    _ => expected.map(|t| self.resolve(t)).filter(|t| Width::of_ty(t).is_some()),
+                };
+                let (lt, rt) = if lit(l) && !lit(r) {
+                    let rt = self.infer_with(r, want.as_ref());
+                    (self.infer_with(l, Some(&rt)), rt)
+                } else {
+                    let lt = self.infer_with(l, want.as_ref());
+                    let rt = if lit(r) { self.infer_with(r, Some(&lt)) } else { self.infer_with(r, want.as_ref()) };
+                    (lt, rt)
+                };
                 match op {
                     // `+` also joins strings and lists
                     Add if [&lt, &rt].iter().any(|t| joinable(&self.resolve(t))) => {
@@ -3111,18 +3137,27 @@ impl<'a> Checker<'a> {
                         self.expect(&Ty::Bool, &rt, Lazy(|| format!("right of `{}`", op.symbol())));
                         Ty::Bool
                     }
-                    // on integers only (a refined one, `U32`, is an `Int`)
+                    // on integers only: `Int`, or a sized one (both the same)
                     BitAnd | BitOr | BitXor | Shl | Shr => {
+                        if let Some(t) = self.sized_operands(&lt, &rt, op) {
+                            return t;
+                        }
                         self.expect(&Ty::Int, &lt, Lazy(|| format!("left of `{}`", op.symbol())));
                         self.expect(&Ty::Int, &rt, Lazy(|| format!("right of `{}`", op.symbol())));
                         Ty::Int
                     }
                 }
             }
+            // a negative literal of a sized type (`-2^63`, beyond 64 bits once negated)
+            Expr::Un(UnOp::Neg, x) if matches!(&**x, Expr::Int(_) | Expr::BigInt(_)) && expected.is_some_and(|t| Width::of_ty(&self.resolve(t)).is_some()) => {
+                self.infer(x);
+                self.int_literal(e, expected)
+            }
             Expr::Un(UnOp::Neg, x) => {
                 let t = self.infer(x);
                 match self.resolve(&t) {
                     Ty::Int | Ty::Float => {}
+                    s if Width::of_ty(&s).is_some() => {}
                     Ty::Var(_) => self.expect(&Ty::Int, &t, "operand of `-`"),
                     other => self.err(format!("operand of `-` must be Int or Float, found `{}`", show_ty(&other))),
                 }
@@ -3593,12 +3628,55 @@ impl<'a> Checker<'a> {
     /// Arithmetic and comparison: both sides the same numeric type, no implicit
     /// Int/Float mixing. Unknown operands default to Int.
     fn numeric(&mut self, lt: &Ty, rt: &Ty, op: &BinOp) {
+        if self.sized_operands(lt, rt, op).is_some() {
+            return;
+        }
         self.expect(lt, rt, Lazy(|| format!("`{}` operands", op.symbol())));
         match self.resolve(lt) {
             Ty::Int | Ty::Float => {}
             Ty::Var(_) => self.expect(&Ty::Int, lt, Lazy(|| format!("`{}` operands", op.symbol()))),
             other => self.err(format!("`{}` needs Int or Float operands, found `{}` (convert with `float(n)` / `round(x)`)", op.symbol(), show_ty(&other))),
         }
+    }
+
+    /// Operands of which one is a sized integer: the other must be of the same
+    /// type (no conversion is implicit). `None` when neither is one.
+    fn sized_operands(&mut self, lt: &Ty, rt: &Ty, op: &BinOp) -> Option<Ty> {
+        let (l, r) = (self.resolve(lt), self.resolve(rt));
+        let w = Width::of_ty(&l).or(Width::of_ty(&r))?;
+        if matches!(l, Ty::Var(_)) || matches!(r, Ty::Var(_)) {
+            self.expect(lt, rt, Lazy(|| format!("`{}` operands", op.symbol())));
+        } else if l != r {
+            let n = w.name().to_lowercase();
+            self.err(format!(
+                "`{}` operands: `{}` and `{}` don't mix: convert one first (`x.to_int()`, `n.to_{n}()`, `n.wrap_{n}()`)",
+                op.symbol(),
+                show_ty(&l),
+                show_ty(&r)
+            ));
+        }
+        Some(Ty::Con(Symbol::from(w.name()), vec![]))
+    }
+
+    /// An integer literal: of the sized type its place expects (which it must
+    /// fit; it becomes a conversion, `to_u32(5)`), else an `Int`.
+    fn int_literal(&mut self, e: &Expr, expected: Option<&Ty>) -> Ty {
+        let Some(w) = expected.and_then(|t| Width::of_ty(&self.resolve(t))) else { return Ty::Int };
+        let n = match e {
+            Expr::Int(n) => Some(*n as i128),
+            Expr::BigInt(d) => d.parse::<i128>().ok(),
+            Expr::Un(UnOp::Neg, x) => match &**x {
+                Expr::Int(n) => Some(-(*n as i128)),
+                Expr::BigInt(d) => d.parse::<i128>().ok().map(|n| -n),
+                _ => None,
+            },
+            _ => None,
+        };
+        if !n.is_some_and(|n| w.holds(n)) {
+            self.err(format!("`{}` doesn't fit in `{}` ({})", crate::printer::expr(e, 0), w.name(), w.range()));
+        }
+        self.targets.push((e as *const Expr as usize, Target::Sized(w)));
+        Ty::Con(Symbol::from(w.name()), vec![])
     }
 
     /// Builtins with several signatures (`len`, `contains`, `get`, ...): pick the
@@ -3729,6 +3807,13 @@ impl<'a> Checker<'a> {
                 (t.clone(), P::Any)
             }
             Pattern::Int(n) => {
+                // a sized integer's literal
+                if let Some(w) = Width::of_ty(&self.resolve(t)) {
+                    if !w.holds(*n as i128) {
+                        self.err(format!("`{n}` doesn't fit in `{}` ({})", w.name(), w.range()));
+                    }
+                    return (t.clone(), P::Ints(ints::point(*n as i128)));
+                }
                 self.expect(t, &Ty::Int, "pattern");
                 (Ty::Int, P::Ints(ints::point(*n as i128)))
             }
