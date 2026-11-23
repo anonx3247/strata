@@ -22,7 +22,7 @@ $ strata --file examples/math.strata verify
 ✓ factorial                proven (2 checks)
 ✗ next_digit               Refinement violation (found by the solver)
     input:   9
-    result of `next_digit`: 10 does not satisfy `Digit` (where 0 <= it && it <= 9)
+    result of `next_digit`: 10 does not satisfy `Digit` (where 0 <= it && it <= 9) (stack: next_digit)
 ```
 
 `factorial` is proven for every input: its result is always positive, and it always terminates. `next_digit` is refuted with the input that breaks it, before anything runs.
@@ -33,11 +33,11 @@ $ strata --file examples/math.strata verify
 - **Contracts are proven, not just tested.** An SMT solver (Z3 or cvc5) proves what it can; what it can't prove is fuzzed, and every result says which. Termination is shown too, or flagged.
 - **You work on definitions, not files.** Definitions are syntax trees identified by content hash; text is a view at the level of detail you need, and every edit is checked against the whole codebase before it is committed.
 - **Incomplete programs still check.** A typed hole (`?name`) has a goal type, a context and obligations: a precise task to hand to an agent.
-- **Capabilities are values.** A database or a clock is a trait passed as a parameter, so a signature shows what code can touch, and a test passes a fake or `mock`.
+- **Capabilities are values.** A database or a clock is a trait passed as a parameter, so a signature shows what code can touch, and a test passes a `mock`.
 - **Values read as code.** Every value is shown as it would be written (`Circle { radius: 2 }`), in messages, traces and counterexamples, and `strata run f ARGS` takes its arguments that way. JSON is a library (`derive Json`), read against the types, refinements included.
 - **Concurrency without colouring.** `scope`, `spawn` and `await` run tasks on threads, with channels, `select` and `race` (the losers cancelled); any function can block, and there is no `async`.
 
-> Status: **an experimental draft**, in Rust: code is compiled through LLVM, in memory (`strata run`, `test`, `serve`, compile-time code) or to an executable (`strata build`).
+> Status: **an experimental draft**. The compiler is written twice, in Rust (`src/`) and in Strata (`compiler/`), and the two are kept at parity. The Strata one already does most of the work by default: lexing, parsing, rendering, running a program, and generating the code of `strata build` and `strata test` (falling back to Rust's where it can't yet; `--rust` asks for Rust's). Its verifier is being ported. Code is compiled through LLVM, to an executable (`strata build`) or in memory (the JIT, for `verify`'s fuzzing, `serve` and compile-time code), and the runtime's memory allocator is written in Strata too (`core.rt`).
 
 ## Try it
 
@@ -67,9 +67,9 @@ strata holes                       # what's left to implement
 strata ui                          # open http://127.0.0.1:7777: agents, the code, PRs
 ```
 
-`strata ui` is a workspace in the browser: agent sessions over ACP, the code with its git activity, and PRs. Here its Code mode shows `examples/math.strata` after `strata verify`: every definition with its status, the selected function's code, and what the verifier said about it, here proven, but not shown to terminate (it is the Collatz sequence).
+`strata ui` is a workspace in the browser: agent sessions over ACP, the code with its git activity, and PRs. Here its Code mode shows the order system after `strata verify`: every definition with its status, `refund` with what it uses and its test, and, in Details, what the verifier proved. [Tools](docs/tools.md#the-viewer) shows the other modes.
 
-![The Strata viewer, showing collatz_steps from examples/math.strata: its code, six proven checks, and "may not terminate"](docs/images/viewer.png)
+![The Strata viewer in Code mode: refund selected, with its dependencies and test, and the Details tab](docs/images/viewer-code.png)
 
 ## Documentation
 
