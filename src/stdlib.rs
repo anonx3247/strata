@@ -23,6 +23,7 @@ pub const FILES: &[(&str, &[u8])] = &[
     ("process.strata", include_bytes!("../std/process.strata")),
     ("time.strata", include_bytes!("../std/time.strata")),
     ("cli.strata", include_bytes!("../std/cli.strata")),
+    ("term.strata", include_bytes!("../std/term.strata")),
     ("web.strata", include_bytes!("../std/web.strata")),
     ("http.strata", include_bytes!("../std/http.strata")),
     ("typing.strata", include_bytes!("../std/typing.strata")),
@@ -56,7 +57,8 @@ pub const HOST: &[Builtin] = &[
     // stdout, stderr]`, or the failure to start it
     Builtin::new("host_run", "", "(String, List[String], String, String, List[String], Bool) -> Result[List[String], (String, String)]"),
     Builtin::new("host_read_stdin", "", "() -> String"),
-    Builtin::new("host_stdin_terminal", "", "() -> Bool"),
+    // whether a stream (0, 1 or 2) is a terminal
+    Builtin::new("host_terminal", "", "(Int) -> Bool"),
     Builtin::new("host_is_dir", "", "(String) -> Bool"),
     Builtin::new("host_write_bytes", "", "(String, List[Int]) -> Result[(), (String, String)]"),
     Builtin::new("host_rename", "", "(String, String) -> Result[(), (String, String)]"),

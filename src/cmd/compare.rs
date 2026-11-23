@@ -33,6 +33,9 @@ fn run_compiler(exe: &Path, args: &[String]) -> Result<String, String> {
         })
         .collect();
     let mut c = Command::new(exe);
+    // whether what it prints for us shows colors (std.term's rule): the
+    // program run by compiler/'s evaluator writes to our terminal
+    c.env("STRATA_COLORS", colors());
     if let Some(r) = &root {
         c.current_dir(r);
     }
@@ -41,6 +44,22 @@ fn run_compiler(exe: &Path, args: &[String]) -> Result<String, String> {
         return Err(format!("the Strata implementation failed ({}): {}", o.status, String::from_utf8_lossy(&o.stderr).trim()));
     }
     Ok(String::from_utf8_lossy(&o.stdout).into_owned())
+}
+
+/// `out,err`: which of standard output and error show colors (a terminal,
+/// unless `NO_COLOR` is set or `TERM` is `dumb`; `FORCE_COLOR` forces them).
+fn colors() -> String {
+    use std::io::IsTerminal;
+    let set = |v: &str| std::env::var(v).is_ok_and(|x| !x.is_empty());
+    let on = |tty: bool| set("FORCE_COLOR") || (tty && !set("NO_COLOR") && std::env::var("TERM").map_or(true, |t| t != "dumb"));
+    let mut out = vec![];
+    if on(std::io::stdout().is_terminal()) {
+        out.push("out");
+    }
+    if on(std::io::stderr().is_terminal()) {
+        out.push("err");
+    }
+    out.join(",")
 }
 
 /// std precompiled by compiler/codegen (plan item C21): its functions that
@@ -627,31 +646,48 @@ fn sources(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
     }
 }
 
-/// The script `verify --strata` fuzzes with compiler/codegen's drivers.
-pub static FUZZ_SCRIPT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-/// `verify --strata`'s fuzz drivers: compiler/codegen's (`codegen --fuzz`,
-/// `strata.fuzz.N` for target N) of the script `file`, with the shapes their
-/// arguments are read back by (as `llvm::compile_fuzz` gives them). A target
-/// the Strata side can't compile (a method's wrapper) makes it an error, so
-/// the caller compiles that one with Rust.
-pub fn fuzz_ir(file: &str, prog: &crate::ast::Program, targets: &[crate::llvm::FuzzTarget]) -> Result<(String, Vec<Vec<crate::llvm::Shape>>, crate::llvm::Shapes), String> {
+/// `verify --strata`: `compiler verify` on the script or package (its
+/// report printed; it fails on a counterexample or a policy broken);
+/// `--compare`: also `strata verify --no-race` (the Strata side has no race
+/// yet), and the lines only one of them gives.
+pub fn verify(args: &crate::Args) -> Result<bool, String> {
+    let file = args.val("--file").map(String::from).ok_or("verify --strata/--compare: give a script or package (--file F)")?;
+    if args.pos.len() > 1 {
+        return Err("verify --strata/--compare verifies the whole script or package, not chosen definitions".into());
+    }
     let (exe, _) = compiler()?;
-    let names: Vec<String> = targets.iter().map(|t| t.name.clone()).collect();
-    let ir = run_compiler(&exe, &["codegen".into(), "--fuzz".into(), names.join(","), file.to_string()])?;
-    let missing: Vec<&str> = ir.lines().filter(|l| l.starts_with("error:")).collect();
-    if !missing.is_empty() {
-        let first = targets.iter().find(|t| missing.iter().any(|m| m.contains(&format!("`{}`", t.name)))).or(targets.first());
-        return Err(format!("can't compile the fuzzing of `{}`: {}", first.map(|t| t.name.as_str()).unwrap_or(""), missing.join("; ")));
+    let mut ours_args: Vec<String> = vec!["verify".into()];
+    let mut rust_args: Vec<String> = vec!["--file".into(), file.clone(), "verify".into(), "--rust".into(), "--no-race".into()];
+    for v in ["--cases", "--seed", "--cross-check", "--require"] {
+        if let Some(x) = args.val(v) {
+            ours_args.extend([v.to_string(), x.to_string()]);
+            rust_args.extend([v.to_string(), x.to_string()]);
+        }
     }
-    let types: Vec<crate::ast::TypeExpr> = targets.iter().flat_map(|t| t.params.iter().map(|p| p.1.clone())).collect();
-    let (mut all, named) = crate::llvm::shapes_of(prog, &types)?;
-    let mut per = vec![];
-    for t in targets {
-        let rest = all.split_off(t.params.len().min(all.len()));
-        per.push(std::mem::replace(&mut all, rest));
+    for f in ["--checks", "--no-cache"] {
+        if args.flag(f) {
+            ours_args.push(f.into());
+            rust_args.push(f.into());
+        }
     }
-    Ok((ir, per, named))
+    // std's precompiled code, loaded into the compiler's JIT: what the
+    // drivers call of std isn't compiled again (std.web's takes minutes)
+    if let Some(l) = std_library(&exe) {
+        ours_args.extend(["--load".into(), l.shared.to_string_lossy().into_owned(), "--precompiled".into(), l.names.to_string_lossy().into_owned()]);
+    }
+    ours_args.push(file.clone());
+    let ours: Vec<String> = run_compiler(&exe, &ours_args)?.lines().map(String::from).collect();
+    if !args.flag("--compare") {
+        for l in &ours {
+            println!("{l}");
+        }
+        return Ok(!ours.iter().any(|l| l.starts_with('✗') || l.starts_with("policy: `") && !l.starts_with("policy: `proven` accepts")));
+    }
+    let o = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).args(&rust_args).output().map_err(|e| e.to_string())?;
+    let rust: Vec<String> = String::from_utf8_lossy(&o.stdout).lines().map(String::from).collect();
+    // (whether a verdict was kept from an earlier run differs between the two caches)
+    let plain = |ls: Vec<String>| -> Vec<String> { ls.into_iter().map(|l| l.replace(" (cached)", "")).collect() };
+    Ok(report(plain(rust), plain(ours), "lines"))
 }
 
 
