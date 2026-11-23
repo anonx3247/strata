@@ -83,6 +83,8 @@ int32_t jit_run_main(const char *ir, const char *argv0) {
   int (*entry)(int, char **) = (int (*)(int, char **))(uintptr_t)addr;
   char *args[] = {(char *)argv0, NULL};
   int code = entry(1, args);
+  // (the program's exit code is the process's: nothing runs after it)
   fflush(stdout);
-  return code;
+  fflush(stderr);
+  exit(code);
 }
