@@ -77,6 +77,114 @@ fn both(dir: &Path, name: &str, file: &Path) -> ((String, String, Option<i32>), 
 /// control flow; step 2: records, sums, tuples, `match`; step 3: counting; then group A of the plan: lists, generic functions, closures, the prelude, core's built-ins, sets and dicts, format specs), each ending as it ends
 /// (normally, with an exit code, or with a fault).
 const PROGRAMS: &[(&str, &str)] = &[
+    ("console", "from std.io use Console
+
+fn greet(mut c: Console, who: String) {
+  mut c.print(\"hello \" + who)
+}
+
+fn main(mut console: Console) {
+  greet(mut console, \"you\")
+  mut console.write(\"no newline\")
+  mut console.eprint(\"to stderr\")
+}
+"),
+    ("recorder", "from std.io use recorder, printed
+
+fn main() {
+  r := recorder([\"a\"])
+  print(printed(r))
+}
+"),
+    ("own_capability", "capability Db {}
+
+fn main(db: Db) {
+  print(1)
+}
+"),
+    ("disk_and_process", "from std.fs use Disk, Files, FsError
+from std.process use Process, Environment, ExitCode
+
+fn copy(mut f: Files, from: String, to: String) -> Result[Int, FsError] {
+  text := f.read(from)!
+  mut f.write(to, text + \"!\")!
+  Ok(len(text.bytes()))
+}
+
+fn main(mut disk: Disk, process: Process) -> Result[ExitCode, String] {
+  dir := \"/tmp/strata-codegen-c4\"
+  mut disk.make_dir(dir) except e {
+    return Err(f\"no dir: {e}\")
+  }
+  mut disk.write(dir + \"/a.txt\", \"hello\") except e {
+    return Err(f\"{e}\")
+  }
+  print(copy(mut disk, dir + \"/a.txt\", dir + \"/b.txt\"))
+  print(disk.read(dir + \"/b.txt\"))
+  print(disk.read(dir + \"/missing.txt\"))
+  print(disk.exists(dir + \"/b.txt\"))
+  print(disk.list(dir))
+  print(disk.read_bytes(dir + \"/a.txt\"))
+  mut disk.remove(dir + \"/a.txt\") except e {
+    return Err(f\"{e}\")
+  }
+  mut disk.remove(dir + \"/b.txt\") except e {
+    return Err(f\"{e}\")
+  }
+  print(disk.list(dir))
+  print(process.args())
+  print(process.var(\"STRATA_SURELY_UNSET\"))
+  print(process.var(\"HOME\") is Some)
+  Ok(3)
+}
+"),
+    ("console_input", "from std.io use Console
+
+fn main(mut console: Console) {
+  mut going := true
+  mut n := 0
+  while going {
+    match mut console.read_line() {
+      Some(l) => {
+        n += 1
+        mut console.print(f\"{n}: {l}\")
+      },
+      None => {
+        going = false
+      },
+    }
+  }
+  mut console.eprint(\"done\")
+}
+"),
+    ("json_and_regex", "from std.json use Json, parse, stringify
+from std.regex use full_match
+
+fn main() {
+  match parse(\"{\\\"a\\\": [1, 2.5, true, null, \\\"s\\\"], \\\"b\\\": {}}\") {
+    Ok(j) => print(stringify(j)),
+    Err(e) => print(e),
+  }
+  print(parse(\"[1,\"))
+  print(full_match(\"ab1\", \"[a-z]+[0-9]\"))
+  print(full_match(\"ab\", \"[a-z]+[0-9]\"))
+  print(full_match(\"x\", \"(\"))
+}
+"),
+    ("launcher_and_json", "from std.process use Launcher, Commands
+from std.json use Json
+
+type Point = { x: Int, y: Int }
+
+derive Json for Point
+
+fn main(mut launcher: Launcher) {
+  print(mut launcher.run(\"echo\", [\"hi\", \"there\"], \"\"))
+  print(mut launcher.run(\"no-such-program-x\", [], \"\"))
+  p := Point { x: 1, y: 2 }
+  print(p.to_json())
+}
+"),
     ("iterators", "type Naturals = { n: Int }
 
 impl Iterator[Int] for Naturals {

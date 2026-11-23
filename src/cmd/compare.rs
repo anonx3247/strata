@@ -123,9 +123,6 @@ fn report(mut rust: Vec<String>, mut strata: Vec<String>, what: &str) -> bool {
 pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
     let file = args.val("--file").map(String::from).or_else(|| args.pos.get(1).cloned()).ok_or(format!("{cmd} --strata/--compare: give a script (--file F)"))?;
     let package = Path::new(&file).is_dir();
-    if package && cmd == "build" {
-        return Err("build --strata/--compare covers a script (one file) for now, not a folder or package".into());
-    }
     if cmd == "render" && args.pos.len() > 1 {
         return Err("render --strata/--compare renders a whole script, not chosen definitions".into());
     }
@@ -225,13 +222,19 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                 // the checks `verify` proved, left out as `strata build` leaves
                 // them out (what changed since verified first; `--all-checks`
                 // keeps them all, `--no-verify` uses what was proven before)
-                let src = crate::Source::File(crate::read_sources(&file)?);
-                if !args.flag("--all-checks") && !args.flag("--no-verify") {
-                    crate::cmd::verify_first(args, &src, Some(&file))?;
-                }
-                let proofs = crate::proofs_for(&src, Some(&file), args);
+                // (a package's: not yet, its checks all kept)
                 let proven = scratch.join("proofs.txt");
-                fs::write(&proven, crate::llvm::proofs_text(src.program(), &proofs)).map_err(|e| e.to_string())?;
+                let facts = if package {
+                    String::new()
+                } else {
+                    let src = crate::Source::File(crate::read_sources(&file)?);
+                    if !args.flag("--all-checks") && !args.flag("--no-verify") {
+                        crate::cmd::verify_first(args, &src, Some(&file))?;
+                    }
+                    let proofs = crate::proofs_for(&src, Some(&file), args);
+                    crate::llvm::proofs_text(src.program(), &proofs)
+                };
+                fs::write(&proven, facts).map_err(|e| e.to_string())?;
                 let ir = run_compiler(&exe, &["codegen".into(), "--proofs".into(), proven.to_string_lossy().into_owned(), file.clone()])?;
                 let missing: Vec<&str> = ir.lines().filter(|l| l.starts_with("error:")).collect();
                 if !missing.is_empty() {
