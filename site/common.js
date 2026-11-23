@@ -7,7 +7,7 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const KW = new Set(('fn type trait impl for in if else match while loop return break continue mut let pub use test assert ' +
-  'requires ensures where it self Self true false mock distinct derive derivable derived comptime or except invariant law as is scope spawn await select').split(' '));
+  'requires ensures where it self Self true false mock distinct derive derivable derived comptime or except invariant law as is scope spawn await select race supervised').split(' '));
 /** Strata source, highlighted. */
 function hl(code) {
   const re = /(\/\/[^\n]*)|(f?"(?:[^"\\]|\\.)*")|(\?[a-z_][a-z0-9_]*)|(\b\d[\d_]*(?:\.\d+)?\b)|([A-Za-z_][A-Za-z0-9_]*)(?=\s*\()|([A-Za-z_][A-Za-z0-9_]*)|([\s\S])/g;

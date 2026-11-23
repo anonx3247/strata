@@ -661,7 +661,7 @@ fn main() {
     const dir = pkg('v-math', [join(EX, 'math.strata')]);
     const src = run(dir, ['render']).out;
     V.loops = {};
-    for (const [k, f] of [['ackermann', 'ackermann'], ['isqrt', 'isqrt'], ['collatz', 'collatz_steps']])
+    for (const [k, f] of [['ackermann', 'ackermann'], ['isqrt', 'isqrt'], ['triangle', 'triangle_closed'], ['collatz', 'collatz_steps']])
       V.loops[k] = { code: defs(src, [`fn ${f}(`]), verify: out(dir, ['verify', f, '--checks']) };
     // what a list keeps, said by its type and proven by position
     const s = prog('records', `/// Numbers in increasing order: each one is at least the one before it.
@@ -817,60 +817,101 @@ fn main() {
 }
 `);
     L.comptime = { src: c.src, run: c.run };
-    // Concurrency is decided (IDEAS.md, "Concurrency: structured tasks without coloring") but not built:
-    // this code doesn't parse yet, so it is shown as written, not stored. Store it with `one` once it is built.
-    L.tasks = {
-      spawn: `/// Two pages at once. \`scope\` ends when every task started in it has.
-fn fetch_both(net: Net, a: Url, b: Url) -> (Page, Page) {
+    // concurrency: tasks, channels and select, race and supervised tasks
+    const tk = one('primes', `/// How many primes there are from \`lo\` up to \`hi\`, by trial division.
+fn count_primes(lo: Int, hi: Int) -> Int {
+  len([n for n in lo..hi where n >= 2 && all(2..n, d -> n % d != 0)])
+}
+
+/// The primes below \`n\` and from \`n\` to twice \`n\`, a task for each.
+fn halves(n: Int) -> (Int, Int) {
   scope {
-    x := spawn fetch(net, a)
-    y := spawn fetch(net, b)
-    await (x, y)
+    below := spawn count_primes(0, n)
+    above := spawn count_primes(n, 2 * n)
+    await (below, above)
   }
 }
 
-/// Any number of pages, one task each.
-fn fetch_all(net: Net, urls: List[Url]) -> List[Page] {
+/// The primes below \`n\`, counted in four tasks, a quarter each.
+fn primes_below(n: Int) -> Int {
   scope {
-    await [spawn fetch(net, u) for u in urls]
+    sum(await [spawn count_primes(i * n / 4, (i + 1) * n / 4) for i in 0..4])
   }
-}`,
-      channels: `/// The squares of 0 to 99, sent from one task to another through a channel
-/// with room for 8 values.
-fn total_of_squares() -> Int {
-  (tx, rx) := channel[Int](8)
+}
+
+fn main() {
+  print(halves(1000))
+  print(primes_below(2000))
+}
+`);
+    const ch = one('progress', `/// The primes below \`n\`, counted by a task that reports its progress.
+fn with_progress(n: Int) -> (Int, List[Int]) {
+  (tx, rx) := channel()
   scope {
-    spawn {
-      for n in 0..100 {
-        tx.send(n * n)
+    work := spawn {
+      mut found := 0
+      for c in 0..n / 500 {
+        found += len([k for k in c * 500..(c + 1) * 500 where k >= 2 && all(2..k, d -> k % d != 0)])
+        tx.send((c + 1) * 500)
       }
       tx.close()
+      found
     }
-    mut total := 0
-    for v in rx {
-      total += v
+    tx.close()
+    mut reports := []
+    mut primes := None
+    while primes == None {
+      select {
+        rx.recv() as r => match r {
+          Some(k) => {
+            reports = push(reports, k)
+          },
+          None => {},
+        },
+        await work as found => {
+          primes = Some(found)
+        },
+      }
     }
-    total
+    (primes ?? 0, reports)
   }
 }
 
-/// Commands as they come, a download, and a flush every second.
-fn serve(net: Net, clock: Clock, commands: Receiver[Command], url: Url) {
-  scope {
-    download := spawn fetch(net, url)
-    loop {
-      select {
-        commands.recv() as c => handle(c),
-        await download as page => {
-          show(page)
-          break
-        },
-        clock.after(1.seconds) => flush(),
-      }
-    }
+fn main() {
+  print(with_progress(2000))
+}
+`);
+    const rc = one('readings', `from std.time use Clock, VirtualClock, seconds
+
+/// The first reading, or \`None\` after 30 seconds. The loser is cancelled.
+fn first_reading(readings: Receiver[Int], clock: Clock) -> Option[Int] {
+  race {
+    readings.recv() as r => r,
+    clock.sleep(seconds(30)) => None,
   }
-}`,
-    };
+}
+
+/// The average of each batch, each in a task of its own. When one fails,
+/// the others go on, and its panic is handled where it is awaited.
+fn averages(batches: List[List[Int]]) -> List[String] {
+  scope {
+    tasks := [supervised spawn sum(b) / len(b) for b in batches]
+    [match await h {
+      Ok(a) => f"{a}",
+      Err(p) => p.message,
+    } for h in tasks]
+  }
+}
+
+fn main(clock: VirtualClock) {
+  (tx, rx) := channel()
+  print(first_reading(rx, clock))
+  tx.close()
+  print(clock.now().value / 1000000000)
+  print(averages([[4, 6], [], [1, 2, 3]]))
+}
+`);
+    L.tasks = { spawn: tk, channels: ch, race: rc };
     V.lang = L;
   }
   emit('verify', V);

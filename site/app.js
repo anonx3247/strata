@@ -533,12 +533,14 @@ feature('loops', {
   steps: [
     { file: 'examples/math.strata', code: V.loops.ackermann.code, hot: /ackermann\(/, where: '~/math', outs: [V.loops.ackermann.verify],
       say: '<code>verify</code> also checks that functions finish. For a recursive function it looks for a measure that goes down on every call and is never negative. For Ackermann\'s function, that is the pair <code>(m, n)</code>, compared in order.' },
-    { title: 'Loops, and invariants found for you.', file: 'examples/math.strata', code: V.loops.isqrt.code, hot: /^\s*(while|ensures)/, where: '~/math', outs: [V.loops.isqrt.verify],
-      say: 'A <code>while</code> loop ends when a bound goes down on every pass, and here it does. The postcondition needs a fact that holds on every pass, <code>r * r &lt;= n</code>: a loop invariant. For now it is fuzzed, and the output says so. Next, the verifier will find such facts itself: it guesses them from the loop\'s condition, the contract and the body, and keeps those that every pass preserves. What is left is proven. A written <code>invariant</code> clause is only planned for when that isn\'t enough.' },
+    { title: 'Loops, and the invariants they keep.', file: 'examples/math.strata', code: V.loops.isqrt.code, hot: /^\s*(while|ensures)/, where: '~/math', outs: [V.loops.isqrt.verify],
+      say: 'A <code>while</code> loop ends when a bound goes down on every pass, and here it does. The postcondition needs a fact that holds on every pass, <code>r * r &lt;= n</code>: a loop invariant. Nobody wrote it. The verifier guesses candidates from the loop\'s condition, the contract and the body, keeps those that every pass preserves, and proves the postcondition from them. <code>--checks</code> lists the ones it found.' },
+    { title: 'And an invariant it can\'t guess is written.', file: 'examples/math.strata', code: V.loops.triangle.code, hot: /^\s*(invariant|ensures)/, where: '~/math', outs: [V.loops.triangle.verify],
+      say: 'A sum\'s closed form is not among the guesses. An <code>invariant</code> clause states it, between the loop\'s header and its body. It is proven on entry and after every pass, then used with the inferred ones to prove the contract.' },
     { title: 'Most of what a loop keeps is a type.', file: 'examples/math.strata', code: V.loops.collatz.code, hot: /mut|while/, where: '~/math', outs: [V.loops.collatz.verify],
       say: 'A variable\'s type is checked at every assignment and holds on every pass, so <code>x</code> stays positive through the loop without an invariant. Whether the Collatz sequence always reaches 1 is an open problem: the verifier proves every assignment, and reports that the loop may not end, with the bounds it tried.' },
     { title: 'Types can say what a list keeps.', file: 'records', code: V.loops.sorted.code, hot: /^type|best\[/, where: '~/records', outs: [V.loops.sorted.verify],
-      say: 'The prover knows each element of a list by its position. So a type can say that a list is sorted, and <code>verify</code> proves that <code>record</code> keeps it sorted. <code>record_wrong</code> compares with the first record instead of the last, and the fuzzer gives the readings that break it.' },
+      say: 'The prover knows each element of a list by its position. So a type can say that a list is sorted, and <code>verify</code> proves that <code>record</code> keeps it sorted. <code>record_wrong</code> compares with the first record instead of the last, and the solver gives the readings that break it.' },
   ],
 });
 feature('shares', {
@@ -1030,10 +1032,12 @@ function drawTree(el, roots, fast) {
   feature('tasks', {
     kicker: K, title: 'Concurrency, without coloring.',
     steps: [
-      { file: 'concurrency: designed, not built yet', code: L.tasks.spawn, hot: /scope \{|spawn |await /,
-        say: 'Decided, not built yet: there is one kind of function, and any function may block, so there is no <code>async</code> marking callers. <code>spawn</code> starts a task and <code>await</code> takes its result, for one task, a tuple or a list. A task belongs to its <code>scope</code>, which ends only once every task started in it has. Tasks share nothing that can change, so to <code>verify</code>, <code>await (spawn f(), spawn g())</code> is just <code>(f(), g())</code>.' },
-      { title: 'Channels, and waiting on several things.', file: 'concurrency: designed, not built yet', code: L.tasks.channels, hot: /channel\[|\.send|\.close|select \{|\) as |download as/,
-        say: 'Tasks talk through channels. Each one has a fixed size, so a fast sender waits for its receivers, and every sender has to be closed, which the checker sees. <code>select</code> waits on several operations and completes exactly one: the others did nothing, so a message that lost is still in the channel.' },
+      { file: 'primes', code: L.tasks.spawn.src, hot: /scope \{|spawn |await /, where: '~/primes', outs: [L.tasks.spawn.run],
+        say: 'There is one kind of function, and any of them may wait, so there is no <code>async</code> marking callers. <code>spawn</code> starts a task and <code>await</code> takes its result, for one task, a tuple or a list. A task belongs to its <code>scope</code>, which ends only once every task started in it has. Tasks share nothing that can change, so to <code>verify</code>, <code>await (spawn f(), spawn g())</code> is just <code>(f(), g())</code>.' },
+      { title: 'Channels, and waiting on several things.', file: 'progress', code: L.tasks.channels.src, hot: /channel\(|\.send|\.close|select \{|\) as |work as/, where: '~/progress', outs: [L.tasks.channels.run],
+        say: 'Tasks pass values through channels. A channel has a fixed size, here none, so a sender waits for a receiver, and each task holding a sender closes it, which the checker requires. <code>select</code> waits on several operations and does exactly one: here a progress report, or the end of the count. An arm that loses does nothing, so a report it would have taken stays in the channel.' },
+      { title: 'Timeouts, and tasks allowed to fail.', file: 'readings', code: L.tasks.race.src, hot: /race \{|supervised spawn|Err\(p\)|clock: VirtualClock/, where: '~/readings', outs: [L.tasks.race.run],
+        say: '<code>race</code> runs each arm as a task, keeps the first to finish and cancels the others at their next wait: a reading, or a timeout. A <code>VirtualClock</code> moves time forward when every task is waiting, so the 30 seconds pass at once and exactly. A task started with <code>supervised spawn</code> may panic without ending the program: awaiting it gives a <code>Result</code>, handled like any other.' },
     ],
   });
 }
@@ -1043,7 +1047,7 @@ function drawTree(el, roots, fast) {
   const facts = [
     ['LLVM', 'One code generator. <code>run</code>, <code>test</code> and <code>verify</code> compile on the JIT, <code>strata build</code> makes executables.'],
     ['RC', 'Memory by reference counting: a value is freed when nothing holds it, and updated in place when only one thing does.'],
-    ['std', 'Written in Strata and precompiled. Rust is used only for the native I/O layer.'],
+    ['std', 'Written in Strata and precompiled. Its only Rust is the native I/O layer. The memory allocator is Strata too, and so is a second compiler, from lexer to code generator, kept at parity with the Rust one.'],
     ['∞', 'No limits on loops or recursion: <code>Int</code> grows into a big integer, and running out of stack is a fault that says where.'],
   ];
   $('#facts').innerHTML = facts.map(([b, t], i) => `<div style="transition-delay:${i * 90}ms"><b>${b}</b><span>${t}</span></div>`).join('');
