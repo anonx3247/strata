@@ -2338,6 +2338,17 @@ void strata_list_insert(List *xs, int64_t i, int64_t x) {
   xs->len++;
 }
 
+// In an owned list: element `i` taken out (the rest moved down) and
+// returned, for the caller to drop.
+int64_t strata_list_remove_at(List *xs, int64_t i) {
+  Buf *b = xs->buf;
+  int64_t old = b->data[i];
+  memmove(b->data + i, b->data + i + 1, (size_t)(b->used - i - 1) * 8);
+  b->used--;
+  xs->len--;
+  return old;
+}
+
 // Add `x` to a list nothing else holds yet (one the runtime is making).
 static List *append(List *l, int64_t x) {
   Buf *b = l->buf;
