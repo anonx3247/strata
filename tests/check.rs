@@ -1122,3 +1122,19 @@ const CORE_RT: &str = "fn strata_unique(p: Ptr) -> Bool {\n  n := 5\n  m := n + 
 fn core_rt_allocates_nothing_as_in_rust() {
     same_check_in("core_rt", &[("strata.toml", "name = \"p\"\n"), ("main.strata", "fn main() {}\n"), ("core/rt.strata", CORE_RT)], true);
 }
+
+/// Two modules with a function of the same name (one private): a call is to
+/// its own module's (`report` in main, `util.report` in util), never to the
+/// other module's private one, whatever their number of parameters.
+#[test]
+fn same_name_in_two_modules_as_in_rust() {
+    same_check_in(
+        "same_name",
+        &[
+            ("strata.toml", "name = \"p\"\n"),
+            ("util.strata", "fn report(a: Int) -> Int { a }\npub fn other(x: Int) -> Int { report(x, 2) }\n"),
+            ("main.strata", "use util\nfn report(a: Int, b: Int, c: Int) -> Int { a + b + c }\nfn main() { print(report(1, 2, 3) + util.other(1)) }\n"),
+        ],
+        true,
+    );
+}
