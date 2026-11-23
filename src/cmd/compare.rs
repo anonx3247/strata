@@ -222,7 +222,17 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
             "build" => {
                 let runtime = compiler_dir().and_then(|d| d.canonicalize().ok()).and_then(|d| Some(d.parent()?.join("src/llvm/runtime.c"))).filter(|r| r.is_file()).ok_or("build --strata/--compare needs the repository's src/llvm/runtime.c beside compiler/")?;
                 let ll = scratch.join("program.ll");
-                let ir = run_compiler(&exe, &["codegen".into(), file.clone()])?;
+                // the checks `verify` proved, left out as `strata build` leaves
+                // them out (what changed since verified first; `--all-checks`
+                // keeps them all, `--no-verify` uses what was proven before)
+                let src = crate::Source::File(crate::read_sources(&file)?);
+                if !args.flag("--all-checks") && !args.flag("--no-verify") {
+                    crate::cmd::verify_first(args, &src, Some(&file))?;
+                }
+                let proofs = crate::proofs_for(&src, Some(&file), args);
+                let proven = scratch.join("proofs.txt");
+                fs::write(&proven, crate::llvm::proofs_text(src.program(), &proofs)).map_err(|e| e.to_string())?;
+                let ir = run_compiler(&exe, &["codegen".into(), "--proofs".into(), proven.to_string_lossy().into_owned(), file.clone()])?;
                 let missing: Vec<&str> = ir.lines().filter(|l| l.starts_with("error:")).collect();
                 if !missing.is_empty() {
                     return Err(format!("compiler/codegen doesn't cover this program yet:\n{}", missing.join("\n")));

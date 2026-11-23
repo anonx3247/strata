@@ -1457,3 +1457,26 @@ fn refuses_what_it_does_not_compile_yet() {
     assert!(out.starts_with("error: in `main`: not compiled yet: "), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `codegen --proofs FILE` (what `strata build --strata` hands it from
+/// `verify`, as `llvm::proofs_text` writes it) leaves out the checks proven:
+/// an argument's and a precondition every call proves, a result's, a
+/// `let`'s, an index's, and a division's check for 0.
+#[test]
+fn leaves_out_what_verify_proved() {
+    let dir = scratch("proven");
+    let file = dir.join("proven.strata");
+    save(
+        &file,
+        "fn half(n: Natural) -> Natural {\n    n * 2\n}\n\nfn pick(xs: List[Int], i: Int) -> Int\n    requires 0 <= i && i < len(xs)\n{\n    xs[i]\n}\n\nfn safe(a: Int, b: Int) -> Int {\n    if b == 0 {\n        0\n    } else {\n        a / b\n    }\n}\n\nfn main() {\n    let x: Positive = 3\n    print(half(x) + pick([1, 2, 3], 1) + safe(7, 2))\n}\n",
+    );
+    let proofs = dir.join("proofs.txt");
+    std::fs::write(&proofs, "proven\thalf\tresult of `half`: Natural\nproven\tsafe\tno division by zero\nproven\tmain\t`let` annotated `Positive`\nproven\tpick\tindex in range\nentry\thalf\targument n\nentry\tpick\trequires 0\n").unwrap();
+    let checks = |ir: &str| ["does not satisfy", "precondition of", "out of range", "@strata_div("].iter().filter(|m| ir.contains(*m)).count();
+    let all = compiler::run(&["codegen".to_string(), file.to_string_lossy().into_owned()]);
+    assert_eq!(checks(&all), 4, "{all}");
+    let proven = compiler::run(&["codegen".to_string(), "--proofs".to_string(), proofs.to_string_lossy().into_owned(), file.to_string_lossy().into_owned()]);
+    assert_eq!(checks(&proven), 0, "{proven}");
+    assert!(proven.contains("@strata_div_nz("), "{proven}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
