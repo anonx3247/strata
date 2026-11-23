@@ -29,7 +29,9 @@ fn files(name: &str) -> (PathBuf, PathBuf) {
 /// `strata ARGS --compare` exits 0 and says the two agree.
 fn agrees(args: &[&str]) {
     let cache = std::env::temp_dir().join("strata-compare-test-cache");
-    let o = Command::new(STRATA).args(args).arg("--compare").env("STRATA_CACHE", &cache).output().unwrap();
+    // (`--compare` before the program's own arguments, after `--`)
+    let at = args.iter().position(|a| *a == "--").unwrap_or(args.len());
+    let o = Command::new(STRATA).args(&args[..at]).arg("--compare").args(&args[at..]).env("STRATA_CACHE", &cache).output().unwrap();
     let out = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(0), "{args:?}: {out}");
     assert!(out.contains("compare: they agree (") && !out.contains("only in"), "{out}");
@@ -70,6 +72,23 @@ fn compare_run() {
     }
     let (_, stored) = files("run");
     agrees(&["--file", &stored.to_string_lossy(), "run"]);
+}
+
+/// `run` gives `main` its options (a record deriving `CommandLine`) from
+/// the arguments after `--`, and a `Disk` to read the files they name: the
+/// help, a bad option, a refinement an option breaks, a file read.
+#[test]
+fn compare_run_with_options() {
+    if !have_clang() {
+        return eprintln!("skipped: no clang");
+    }
+    let root = env!("CARGO_MANIFEST_DIR");
+    let (hello, wc) = (format!("{root}/examples/hello"), format!("{root}/examples/wc"));
+    agrees(&["--file", &hello, "run", "--", "Ada", "--loud"]);
+    agrees(&["--file", &hello, "run", "--", "--help"]);
+    agrees(&["--file", &hello, "run", "--", "--times", "0"]);
+    agrees(&["--file", &wc, "run", "--", "--bogus"]);
+    agrees(&["--file", &wc, "run", "--", &format!("{root}/README.md")]);
 }
 
 #[test]
