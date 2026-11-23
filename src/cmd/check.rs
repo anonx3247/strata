@@ -562,17 +562,33 @@ fn jit_fuzzers(resolved: &Program, env: &types::Env, chosen: &[bool], say_why: b
     let ir = match first {
         Ok(made) => Some(made),
         Err(_) => {
-            let mut ok = vec![];
-            for t in targets.drain(..) {
-                match llvm::compile_fuzz(&prog, std::slice::from_ref(&t)) {
-                    Ok(_) => ok.push(t),
-                    Err(e) => {
+            // an error that names no target (it is in code a target reaches):
+            // halve the targets until each failing one is alone, a few
+            // compiles per such target, not one per target
+            fn split(prog: &Program, ts: Vec<llvm::FuzzTarget>, ok: &mut Vec<llvm::FuzzTarget>, failed: &mut HashMap<String, String>, say_why: bool) {
+                match llvm::compile_fuzz(prog, &ts) {
+                    Ok(_) => ok.extend(ts),
+                    Err(e) if ts.len() == 1 => {
                         if say_why {
-                            eprintln!("note: `{}` can't be fuzzed: {e}", t.name);
+                            eprintln!("note: `{}` can't be fuzzed: {e}", ts[0].name);
                         }
-                        failed.insert(t.name.clone(), format!("it can't be compiled yet: {e}"));
+                        failed.insert(ts[0].name.clone(), format!("it can't be compiled yet: {e}"));
+                    }
+                    Err(_) => {
+                        let mut ts = ts;
+                        let back = ts.split_off(ts.len() / 2);
+                        split(prog, ts, ok, failed, say_why);
+                        split(prog, back, ok, failed, say_why);
                     }
                 }
+            }
+            let mut ok = vec![];
+            if targets.len() > 1 {
+                let back = targets.split_off(targets.len() / 2);
+                split(&prog, std::mem::take(&mut targets), &mut ok, &mut failed, say_why);
+                split(&prog, back, &mut ok, &mut failed, say_why);
+            } else {
+                split(&prog, std::mem::take(&mut targets), &mut ok, &mut failed, say_why);
             }
             targets = ok;
             llvm::compile_fuzz(&prog, &targets).ok()
