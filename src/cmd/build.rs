@@ -87,12 +87,26 @@ pub fn build(args: &Args) -> Result<bool, String> {
     // linker without LTO gets them apart, as the JIT does); by default
     // unoptimized (-O0), which compiles several times faster
     let release = llvm::jit::release();
+    // core.rt (the allocator) optimized on its own, whatever the build: as
+    // its own object it gets the C compiler's CPU (its atomics as the C
+    // runtime's), which IR linked with `-flto` doesn't
+    let core_obj = dir.join("core_rt.o");
+    let compiled = Command::new(&cc)
+        .args(["-O2", "-Wno-override-module", "-c", "-o"])
+        .arg(&core_obj)
+        .arg(&core_rt)
+        .status()
+        .map_err(|e| format!("can't run `{cc}` (a C compiler with LLVM, e.g. clang; set STRATA_CC to choose one): {e}"))?;
+    if !compiled.success() {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err(format!("`{cc}` failed on core.rt"));
+    }
     let link = |lto: bool| {
         Command::new(&cc)
             .args([if release { "-O2" } else { "-O0" }, "-Wno-override-module", "-o", &out])
             .args(lto.then_some("-flto"))
             .arg(&ll)
-            .arg(&core_rt)
+            .arg(&core_obj)
             .arg("-DSTRATA_CORE_RT")
             .arg(&rt)
             // std's precompiled code, linked in (always statically: an executable stands alone)
