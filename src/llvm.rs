@@ -1090,6 +1090,7 @@ declare i1 @strata_host_make_dir(ptr, ptr, ptr)
 declare i1 @strata_host_remove(ptr, ptr, ptr)
 declare ptr @strata_host_args()
 declare i64 @strata_host_now()
+declare i64 @strata_host_wall_now()
 declare ptr @strata_virtual_timeline()
 declare i64 @strata_virtual_now()
 declare void @strata_virtual_sleep(i64)
@@ -5979,6 +5980,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.temp(r)
             }
             "host_now" => self.call(&Ty::Int, "@strata_host_now", &[])?,
+            "host_wall_now" => self.call(&Ty::Int, "@strata_host_wall_now", &[])?,
             "host_sleep" => {
                 let r = self.call(&Ty::Unit, "@strata_host_sleep", &vs)?;
                 // a wait: a cancelled task stops here

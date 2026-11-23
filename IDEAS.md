@@ -574,6 +574,7 @@ What has no Strata counterpart yet (about 9,000 lines of Rust): the codebase too
 4. **Structural diff** (`compiler/diff`): `diff` (patch ranges, `--file` against git).
 5. **Merging** (`compiler/merge`, git): `merge-file`, `resolve`, `setup-git`, `sync`, `upgrade` (and naming core's files as core does: today's `upgrade` says `holds no module of its own` for each).
 6. **Views**: `view`, `interface`, `header`, `holes`, `pack`.
+   `render` goes into `view` (user, 2026-11-23): on a module, `view --level 2` already prints what `render` prints, so `view MODULE` (or a file) is the module as stored, round-tripping (mocks shown, since the module is named), `view --split DIR` replaces `render --split`, git's textconv calls `view`, and `render` is removed (tests, docs, CLAUDE.md moved to `view`). In the views step.
 7. **The driver**: `compiler/main` becomes the `strata` command, its options one `derive CommandLine` union (global `--file`, then the command); the Rust binary hands each ported command to it, as `lex` and `parse` do now, then the Rust versions go. `verify`, `build`, `test` and `run` stay Rust's until their own ports (verify in Strata, codegen) are done.
 
 ### Long-term goal: self-hosting
