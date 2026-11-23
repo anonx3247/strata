@@ -6245,7 +6245,7 @@ impl<'m, 'a> Func<'m, 'a> {
                         (i64t, w)
                     }
                     _ => {
-                        self.emit(format!("{w} = atomicrmw xchg ptr {a}, i64 {} acq_rel, align 8", vs[2].1));
+                        self.emit(format!("{w} = atomicrmw xchg ptr {a}, i64 {} acquire, align 8", vs[2].1));
                         (i64t, w)
                     }
                 }
