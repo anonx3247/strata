@@ -117,7 +117,9 @@ fn same(file: &Path, cache: &Path) -> (usize, usize) {
 /// Step 4: `while` (invariants inferred and written), `for` over lists,
 /// `loop`, `break`, `continue`.
 /// Step 5: method calls (through the one trait declaring them, else any
-/// value of their result), function names as values, generic functions.
+/// value of their result), function names as values, generic functions;
+/// calls seen through in contracts (step 6).
+/// Step 7: `matches` with a literal pattern (std.regex's SMT translation).
 #[test]
 fn smt_outcomes_as_in_rust() {
     if !have_z3() {
@@ -131,6 +133,7 @@ fn smt_outcomes_as_in_rust() {
         ("step3", include_str!("data/smt/step3.st")),
         ("step4", include_str!("data/smt/step4.st")),
         ("step5", include_str!("data/smt/step5.st")),
+        ("step7", include_str!("data/smt/step7.st")),
     ] {
         let file = dir.join(format!("{name}.strata"));
         save(&file, text);
