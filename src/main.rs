@@ -188,8 +188,10 @@ Running:
                                can't be compiled yet fails, saying why); --with-deps: also
                                those of what it imports (std, dependencies), which are
                                otherwise tested on their own
-  build [PATH] [-o OUT] [--emit-llvm] [--all-checks] [--no-verify]
+  build [PATH] [-o OUT] [--emit-llvm] [--all-checks] [--no-verify] [--release]
                                compile the program to a native executable, through LLVM
+                               (unoptimized, -O0, unless --release: -O2 and the runtime
+                               inlined; `run` and `test` take --release too)
                                (needs clang; STRATA_CC chooses another): `main` takes no
                                parameters yet, and only part of the language compiles
                                (Int, Float, Bool, String, functions, control flow,
@@ -348,6 +350,7 @@ fn run() -> Result<bool, String> {
         return Ok(true);
     };
     let json_out = args.flag("--json");
+    llvm::jit::set_release(args.flag("--release"));
     // `lex` and `parse` are the Strata front end's (`compiler/`) unless
     // `--rust`, or when no compiler package is found
     let strata_default = matches!(cmd, "lex" | "parse") && !args.flag("--rust") && cmd::compare::available();
