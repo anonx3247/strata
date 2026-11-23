@@ -2031,6 +2031,9 @@ fn procedural_mutation_is_explicit() {
          fn unmarked_receiver() {\n  mut l := Line { qty: 1 }\n  l.tick()\n}\n\
          fn needless_receiver() -> Int {\n  mut l := Line { qty: 1 }\n  mut l.peek()\n}\n\
          fn stray() -> Int {\n  mut n := 1\n  m := mut n\n  m\n}\n\
+         type Box = { n: Int }\n\
+         impl Box { fn bump(mut self) { self.n = self.n + 1 }  fn twice(mut self) { self.bump()\n mut self.bump() } }\n\
+         fn own_unmarked() {\n  mut b := Box { n: 1 }\n  b.bump()\n}\n\
          fn first(ls: List[Line]) -> Line { Line { qty: 1 } }\n",
     );
     let (ok, out) = strata(&["--file", "c.strata", "check"], &d, None);
@@ -2043,6 +2046,9 @@ fn procedural_mutation_is_explicit() {
     assert!(out.contains("in unmarked_receiver: `tick` changes its receiver (`mut self`): write `mut l.tick(…)`"), "{out}");
     assert!(out.contains("in needless_receiver: `mut l.peek(…)`: `peek` doesn't change its receiver"), "{out}");
     assert!(out.contains("in stray: `mut n` marks an argument"), "{out}");
+    // a type's own methods too, inside its `impl` as well
+    assert!(out.contains("in own_unmarked: `bump` changes its receiver (`mut self`): write `mut b.bump(…)`"), "{out}");
+    assert!(out.contains("in impl Box: `bump` changes its receiver (`mut self`): write `mut self.bump(…)`"), "{out}");
     // results are not places: name them first
     let (ok, out) = strata(&["--file", "r.strata", "edit"], &d, Some("fn f(xs: List[Int]) {\n  mut first(xs).tick()\n}\n"));
     assert!(!ok && out.contains("only a variable or a field can be `mut`"), "{out}");
@@ -6376,4 +6382,33 @@ fn commands_run_programs() {
     assert!(ok && out.contains("3 passed"), "{out}");
     let (ok, out) = strata(&["--file", "lib.strata", "verify"], &d, None);
     assert!(ok && out.contains("status_code") && out.contains("proven"), "{out}");
+}
+
+/// `core.mem`: raw memory (`Ptr`, `raw_alloc`, loads and stores), compiled
+/// to plain loads and stores, usable only by core's own modules.
+#[test]
+fn core_mem_is_core_only() {
+    let d = tmp("core_mem");
+    let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("core");
+    let core = core.to_str().unwrap();
+    // core's own tests use it
+    let (ok, out) = strata(&["--file", core, "test"], &d, None);
+    assert!(ok && out.contains("✓ core.mem: a block holds the words and bytes stored in it") && out.contains("2 passed"), "{out}");
+    // anywhere else it is refused, its type included
+    let src = "fn main() {\n  p := raw_alloc(8)\n  store_i64(p, 0, 1)\n}\n\nfn keep(p: Ptr) -> Ptr {\n  p\n}\n";
+    let (_, out) = strata(&["--file", "x.strata", "edit"], &d, Some(src));
+    for m in [
+        "error in main: `raw_alloc` is core's: only core's modules can use raw memory (`core.mem`)",
+        "error in main: `store_i64` is core's",
+        "error in keep: `Ptr` is core's",
+    ] {
+        assert!(out.contains(m), "{m}: {out}");
+    }
+    // a package's module named like core's is not core
+    let p = d.join("p");
+    std::fs::create_dir_all(&p).unwrap();
+    save_module(&p, "main", "fn main() {}\n");
+    save_module(&p, "core.mem", "pub fn grab() -> Int {\n  load_i64(raw_alloc(8), 0)\n}\n");
+    let (ok, out) = strata(&["--file", "p", "check"], &d, None);
+    assert!(!ok && out.contains("`raw_alloc` is core's"), "{out}");
 }

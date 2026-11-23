@@ -108,7 +108,7 @@ fn stores_as_in_rust() {
         let start = format!("=== {}\n", p.display());
         let from = got.find(&start).unwrap_or_else(|| panic!("no trees for {name}")) + start.len();
         let until = paths.get(i + 1).and_then(|n| got[from..].find(&format!("=== {n}\n")).map(|k| from + k)).unwrap_or(got.len());
-        let want = run(&["parse", &p.to_string_lossy(), "--stored"]);
+        let want = run(&["parse", "--rust", &p.to_string_lossy(), "--stored"]);
         let strata = &got[from..until];
         if strata != want {
             let (g, w): (Vec<&str>, Vec<&str>) = (strata.lines().collect(), want.lines().collect());
@@ -305,6 +305,48 @@ fn path_dependencies() {
     package_module(&dir.join("b"), "b", "c = { path = \"../c\" }\n", "", "");
     package_module(&dir.join("c"), "c", "a = { path = \"../a\" }\n", "", "");
     assert_eq!(package("a").trim(), "error: dependency cycle: a -> b -> c -> a");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What a package sees of a dependency (the compiler's `check` command): its
+/// definitions are read lazily (a module the package doesn't reach isn't
+/// even read: here it isn't a module file at all), its root module's
+/// variants are short in its other modules, its tests are left out unless
+/// `--with-deps`, only what its strata.toml `exports` is usable, and a
+/// module of the package can't be named like a dependency.
+#[test]
+fn dependency_rules() {
+    let dir = scratch("dep-rules");
+    let std_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("std");
+    let check = |p: &str, more: &[&str]| {
+        let mut args = vec!["check".to_string(), "--std".into(), std_dir.to_string_lossy().into_owned()];
+        args.extend(more.iter().map(|s| s.to_string()));
+        args.push(dir.join(p).to_string_lossy().into_owned());
+        compiler::run(&args)
+    };
+    let json = dir.join("json");
+    package_module(&json, "json", "", "main", "pub type Kind = | Num | Word(String)\npub fn parse(s: String) -> Kind { Num }\n");
+    package_module(&json, "json", "", "text", "pub fn k() -> Kind { match parse(\"x\") { Num => Word(\"n\"), w => w } }\ntest \"k\" { assert k() == Word(\"n\") }\n");
+    package_module(&json, "json", "", "spare", "pub fn unused() -> Int { 1 }\ntest \"broken\"(n: Int) { assert unused() == n }\n");
+    let dep = "json = { path = \"../json\" }\n";
+    package_module(&dir.join("app"), "app", dep, "main", "from json use Word\nuse json.text\nfn main() { print(text.k() == Word(\"n\")) }\n");
+    // spare's failing test is left out, and with it everything else of spare
+    assert_eq!(check("app", &[]), "");
+    let out = check("app", &["--with-deps"]);
+    assert_eq!(out.trim(), "error in test \"json.spare: broken\": test parameter `n: Int`: a test asks only for capabilities (`capability ...`), `Console`, or (when strata.toml allows it) `RunMode`");
+    // a module the package doesn't reach isn't read: not even when it isn't a module file
+    std::fs::write(json.join("spare.strata"), "not a module file").unwrap();
+    assert_eq!(check("app", &[]), "");
+    // exports: modules or definitions; the rest of what is `pub` can't be used from outside
+    std::fs::write(json.join("strata.toml"), "name = \"json\"\nexports = [\"text\", \"Kind\"]\n").unwrap();
+    package_module(&dir.join("hidden"), "hidden", dep, "main", "from json use parse, Kind\nuse json.text\nfn main() { print(text.k() == Num) }\n");
+    let out = check("hidden", &[]);
+    assert!(out.contains("error in use json: `parse` isn't exported by package `json` (only what its strata.toml's `exports` lists is part of its contract)"), "{out}");
+    assert_eq!(out.lines().count(), 1, "{out}");
+    // a module named like a dependency
+    package_module(&dir.join("clash"), "clash", dep, "json", "pub fn f() -> Int { 1 }\n");
+    let out = check("clash", &[]);
+    assert!(out.starts_with("error: module `json` is named like the dependency `json`"), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

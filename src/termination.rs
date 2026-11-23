@@ -901,7 +901,7 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>, roots: Option<&Ha
             Err(e) => Err(e.clone()),
             Ok(hows) => {
                 if let Some(other) = mutual(name) {
-                    // a trait method by its short name (`next`, not `core.prelude.next`)
+                    // a trait method by its short name (`next`, not `core.iter.next`)
                     let shown = other.strip_prefix("trait method ").map_or(other.as_str(), crate::names::short);
                     Err(format!("it is recursive through `{shown}`"))
                 } else if n.calls.contains(name) {
@@ -942,7 +942,7 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>, roots: Option<&Ha
                     Termination::Proven { .. } => {}
                     Termination::Assumed { by } => assumed.extend(by),
                     Termination::Unknown { .. } => {
-                        // a trait method by its short name (`next`, not `core.prelude.next`)
+                        // a trait method by its short name (`next`, not `core.iter.next`)
                         let shown = c.strip_prefix("trait method ").map_or(c.as_str(), crate::names::short);
                         t = Termination::Unknown { reason: format!("it calls `{shown}`, which may not terminate") };
                         break;

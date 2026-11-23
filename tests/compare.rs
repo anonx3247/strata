@@ -80,3 +80,30 @@ fn compare_build() {
     let (_, stored) = files("build");
     agrees(&["build", &stored.to_string_lossy()]);
 }
+
+/// A package (two modules, one using the other): `lex` and `parse` agree on
+/// each module's text, `render` on each module (names as short as its
+/// imports allow: `twice`, not `util.twice`), and `run` on the program
+/// packed into one bundle.
+#[test]
+fn compare_on_a_package() {
+    if !have_clang() {
+        return eprintln!("skipped: no clang");
+    }
+    let dir = std::env::temp_dir().join(format!("strata-compare-package-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("strata.toml"), "name = \"p\"\n").unwrap();
+    for (m, text) in [("util", "pub fn twice(n: Int) -> Int {\n  n * 2\n}\n"), ("main", "from util use twice\n\nfn main() {\n  print(twice(21))\n}\n")] {
+        let mut c = Command::new(STRATA).args(["--file", &format!("{}/", dir.display()), "edit", m]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        std::io::Write::write_all(c.stdin.as_mut().unwrap(), text.as_bytes()).unwrap();
+        c.wait_with_output().unwrap();
+    }
+    let d = dir.to_string_lossy();
+    agrees(&["--file", &d, "lex"]);
+    agrees(&["--file", &d, "parse"]);
+    agrees(&["--file", &d, "parse", "--stored"]);
+    agrees(&["--file", &d, "render"]);
+    agrees(&["--file", &d, "run"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}

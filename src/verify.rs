@@ -571,6 +571,30 @@ pub fn smt_queries(env: &Env, f: &FnDecl, transparent: &crate::fx::HashMap<Strin
     (0..vc.obligations.len()).filter(|&i| !vc.obligations[i].termination).map(|i| (vc.obligations[i].what.clone(), vc.smtlib(i))).collect()
 }
 
+/// Each obligation of a function with the solver's answer, nothing run
+/// (`verify --obligations`): `proven`, `refuted` (the solver found values
+/// breaking it) or `unknown`, then what it is; the obligations true
+/// whatever the values (no query) are `proven`. Termination's are left out.
+pub fn obligation_outcomes(env: &Env, f: &FnDecl, transparent: &crate::fx::HashMap<String, bool>, bin: &crate::smt::Solver) -> Vec<String> {
+    let mut vc = crate::smt::Vc::new(env);
+    vc.transparent = transparent.clone();
+    vc.solver = Some(bin.clone());
+    vc.function(f, &f.name);
+    let outcomes = vc.solve_all(bin, |i| !vc.obligations[i].termination, &std::sync::atomic::AtomicBool::new(false));
+    let mut lines = vec![];
+    for (i, out) in outcomes.into_iter().enumerate() {
+        let Some(out) = out else { continue };
+        let tag = match out {
+            crate::smt::Outcome::Proven => "proven",
+            crate::smt::Outcome::Refuted(..) => "refuted",
+            crate::smt::Outcome::Unknown(_) | crate::smt::Outcome::Stopped => "unknown",
+        };
+        lines.push(format!("{tag} {}", vc.obligations[i].what));
+    }
+    lines.extend(vc.given.iter().map(|g| format!("proven {g}")));
+    lines
+}
+
 /// Run what `key` names on the solver's counterexample, compiled: a probe
 /// binding each value to its parameter's type (an invalid one is a fault
 /// there, of the probe's own: the input is discarded), then calling it. Its

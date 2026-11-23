@@ -95,11 +95,13 @@ every change made through strata, committed with them):
                                name, hashes, size and dependencies, read without decoding it;
                                --tree: each definition (a bundle's too) as a `compiler/ast` value, one per line
                                --text: the definitions as the printer writes them, as stored
-  lex <FILE>                   a text file's tokens, one per line (then its comments), as
-                               the lexer makes them: what `compiler/lex` is tested against
-  parse <FILE>                 a text file parsed as a script: each definition as a `compiler/ast`
-                               value, one per line, as parsed (not stored): for `compiler/parse`;
-                               --stored: as stored (references qualified), for `compiler/resolve`
+  lex <FILE> [--rust]          a text file's tokens, one per line (then its comments), by
+                               the lexer written in Strata (`compiler/lex`); --rust: by the
+                               Rust lexer (the reference `compiler/lex` is tested against)
+  parse <FILE> [--rust]        a text file parsed as a script: each definition as a `compiler/ast`
+                               value, one per line, as parsed (not stored), by `compiler/parse`;
+                               --stored: as stored (references qualified), by `compiler/resolve`;
+                               --rust: by the Rust parser
   (`--file` accepts a folder: each .strata file is a module named after its path.
    `--file F edit [MODULE]` and `--file F add TEXT` change F outside any log: a script,
    or a folder's module, created if new; only what doesn't parse is refused)
@@ -134,7 +136,7 @@ Views:
 Checking:
   check [--json]               types, exhaustiveness, literal refinements
   holes [--json]               typed holes with goal type, context and obligations
-  verify [SELECTOR] [--cases N] [--checks] [--smt] [--require R,..] [--no-race] [--no-cache] [--json]
+  verify [SELECTOR] [--cases N] [--checks] [--smt] [--obligations] [--require R,..] [--no-race] [--no-cache] [--json]
                                prove every contract with an SMT solver (z3), confirm
                                its counterexamples by running them, fuzz the rest.
                                A check's verdict is kept (in the git repository, shared
@@ -142,7 +144,9 @@ Checking:
                                a hash of its definition and all it depends on, the
                                flags, solver and strata binary: an unchanged check
                                says (cached) (--no-cache: run all). --checks lists the
-                               proven checks, --smt prints the solver queries.
+                               proven checks, --smt prints the solver queries,
+                               --obligations each obligation with the solver's
+                               answer (proven, refuted, unknown), nothing run.
                                Each function also says whether it terminates.
                                --require (proven, terminates, no-recursion) fails
                                the run when a checked function falls short (as do
@@ -341,7 +345,10 @@ fn run() -> Result<bool, String> {
         return Ok(true);
     };
     let json_out = args.flag("--json");
-    if matches!(cmd, "lex" | "parse" | "render" | "run" | "build") && (args.flag("--strata") || args.flag("--compare")) {
+    // `lex` and `parse` are the Strata front end's (`compiler/`) unless
+    // `--rust`, or when no compiler package is found
+    let strata_default = matches!(cmd, "lex" | "parse") && !args.flag("--rust") && cmd::compare::available();
+    if strata_default || matches!(cmd, "lex" | "parse" | "render" | "run" | "build") && (args.flag("--strata") || args.flag("--compare")) {
         return cmd::compare::command(&args, cmd);
     }
     match cmd {

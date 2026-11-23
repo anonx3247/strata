@@ -161,6 +161,23 @@ pub fn verify_source(args: &Args, src: &Source, how: &Verifying) -> Result<(bool
         }
         return Ok((true, vec![]));
     }
+    if args.flag("--obligations") {
+        // the solver's answer to each obligation, nothing run (compared with
+        // `compiler smt`, the verifier written in Strata: tests/smt.rs)
+        let Some(bin) = solver_bin else { return Err("no SMT solver was found (install z3)".into()) };
+        for (orig, d) in p.decls.iter().zip(&resolved.decls) {
+            if let (true, DeclKind::Fn(f)) = (names.contains(&orig.qname()), &d.kind) {
+                if f.params.iter().any(|p| p.comptime) {
+                    continue;
+                }
+                println!("fn {}", f.name);
+                for line in verify::obligation_outcomes(&env, f, transparent, bin) {
+                    println!("  {line}");
+                }
+            }
+        }
+        return Ok((true, vec![]));
+    }
     let closures = store::Closures::new(p);
     // results depend on the solver: it is part of the cache key
     let skey = solver.as_ref().map(|s| s.version.clone()).unwrap_or("no-solver".into());
@@ -218,7 +235,7 @@ pub fn verify_source(args: &Args, src: &Source, how: &Verifying) -> Result<(bool
                     let key = verify::wrapper_name(i, crate::names::short(&mname));
                     let own = imp.methods.iter().find(|x| x.name == mname);
                     // a default of the prelude's traits (`map` on any iterator) is library code
-                    if own.is_none() && mname.as_str().starts_with(&format!("{}.", types::PRELUDE_MODULE)) {
+                    if own.is_none() && crate::core::CODE.iter().any(|m| mname.as_str().starts_with(&format!("{m}."))) {
                         continue;
                     }
                     let decl = own.or(if m.default { Some(&m.decl) } else { None });
@@ -249,7 +266,7 @@ pub fn verify_source(args: &Args, src: &Source, how: &Verifying) -> Result<(bool
     let solver_path = solver.as_ref().map(|s| s.bin.as_str()).unwrap_or("");
     // std built into strata is part of every program but std itself, whose
     // closures cover it
-    let is_std = p.decls.iter().any(|d| crate::stdlib::is_std(&d.module) && d.module != types::PRELUDE_MODULE);
+    let is_std = p.decls.iter().any(|d| crate::stdlib::is_std(&d.module) && !types::is_prelude_module(&d.module));
     let std = if is_std { "" } else { verify::std_hash() };
     let kept = verdicts_at(src, how.file).with_settings(&format!("seed {seed} race {race} solver {solver_path} {skey} std {std}"));
     let mut found: Vec<Option<verify::Verdict>> =
