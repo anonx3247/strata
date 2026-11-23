@@ -544,7 +544,7 @@ cat README.md | strata run examples/wc
 
 `main` can also ask for `Console` and capabilities (`Disk`, `Process`, the program's own), in any order, and passes them on where a trait (`Files`, `Environment`) is wanted, so tests can pass stand-ins. It returns `()`, an `ExitCode`, or a `Result` of either: an `Err` is written to standard error and the exit code is 1.
 
-The **standard library** is the `std/` package, written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency. It has the console, files, time and processes (`std.io`, `std.fs`, `std.time`, `std.process`), command lines (`std.cli`), JSON and TOML (`std.json`, `std.toml`), web servers and apps (`std.http`, `std.web`), and regular expressions and Unicode (`std.regex`, `std.unicode`). Each module will get a page generated from its doc comments; until then the [reference](language-reference.md#the-standard-library) says what each has.
+The **standard library** is the `std/` package, written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency. It has the console, files, time and processes (`std.io`, `std.fs`, `std.time`, `std.process`), command lines (`std.cli`), JSON and TOML (`std.json`, `std.toml`), HTTP and HTML as values (`std.http`, `std.web`), and regular expressions and Unicode (`std.regex`, `std.unicode`). Each module will get a page generated from its doc comments; until then the [reference](language-reference.md#the-standard-library) says what each has.
 
 **JSON**: a type that derives `Json` is read from JSON and written to it, every refinement checked:
 
@@ -557,50 +557,5 @@ derive Json for Signup
 signup := Signup.from_json(parse(body)!)!
 text := stringify(signup.to_json()!)  // {"type":"Signup","email":…,"age":…,"nickname":null}
 ```
-
-**Web servers** (`std.http`) define `fn handle(req: Request) -> Response`, which `strata serve` calls for each request. Routes are written as with Hono or Express, on a `Router`:
-
-```rust
-fn app() -> Router {
-  mut app := Router.new()
-  app.get("/", req -> redirect("/users"))
-  app.get("/users/:id", show_user)
-  app
-}
-
-fn show_user(req: Request) -> Response {
-  id := req.param("id") or { return not_found() }
-  ok_text(f"user {id}")
-}
-
-fn handle(req: Request) -> Response {
-  app().handle(req)
-}
-```
-
-**Apps** follow the Elm architecture: a model, messages, and three functions that `strata serve` runs (see `examples/counter`):
-
-```rust
-type Model = { count: Int where 0 <= it && it <= 100 }
-
-type Msg =
-  | Increment
-  | Reset
-
-fn init() -> Model { Model { count: 0 } }
-
-fn update(model: Model, msg: Msg) -> Model {
-  match msg {
-    Increment => Model { count: min(model.count + 1, 100) },
-    Reset => Model { count: 0 },
-  }
-}
-
-fn view(model: Model) -> Html[Msg] {
-  div([], [text(f"{model.count}"), button([on_click(Increment)], [text("+")])])
-}
-```
-
-`update` is a plain function: tests call it, and `strata verify` proves that every message keeps the model valid.
 
 **C functions** are declared with `extern c fn`, a signature with contracts and no body; see the [reference](language-reference.md#foreign-functions-extern-c).

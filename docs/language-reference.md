@@ -340,14 +340,4 @@ re := parse("(?i)ab|ac")!
 show(re)    // cat(cls(41-41 61-61),cls(42-43 62-63))
 ```
 
-**Web servers** (`std.http`) define `fn handle(req: Request) -> Response`, which `strata serve` calls for each request. Routes are written as with Hono or Express, on a `Router`:
-
-**Routes.**
-Routes are tried in order; `:name` segments are captured, and `req.param(name)` is an `Option` (a handler can be called without its route). A `HEAD` request uses the `GET` routes; no route for the path is a 404, and routes for it but not for its method a 405.
-
-**Apps.**
-Events carry a message (`on_click(Reset)`), or make one from what the user entered: `on_input(s -> Typed { text: s })` for a field's value as it is typed, `on_change(make)` for a select or a checkbox (`"true"` / `"false"`), and `on_submit_form(fields -> Submitted { fields })` for a form's fields by name (a `Dict[String, String]`). Checking what was entered is ordinary code in `update`, so a refused form can keep its error in the model and show it next to the field (see `examples/todos`). `every(1500, Refresh)` sends a message on a timer while its element is on the page, `on_key("/", Search)` (or `key_bindings([...])`) when a key is pressed; `focused()` and `revealed()` focus an element or scroll it into view when they appear; `init` and `update` may ask for capabilities (`Files`) after their other parameters.
-
-**HTML** (`std.web`) is built as values and rendered to text; see `examples/page`. Text is always escaped. Tag and attribute names are checked where they are written: `element` and `attr` take a `TagName` and an `AttrName`, and an attribute can't be an inline script (`attr("onclick", …)` is rejected when checking). `Html` and `Attr` are records around private types, so only those functions make them; the types themselves have nothing left to check, and the verifier passes over views. Events are attributes too: `on_click(msg)` carries a value of the page's message type `M`. The message isn't written into the page: `render` numbers the page's handlers (`data-handle-click="3"`), the page sends the number back, and `dispatch(page, n, value, fields)` gives handler `n`'s message (`strata serve` does this with the page it served, so a page can only send its own messages). A page without events is an `Html[()]`. The text inside a `<style>` element (`style_sheet(css)`) isn't escaped, but can't close the element.
-
 Each capability is a trait, so code that prints takes a `Console`, and its signature says so. The real implementations are capabilities the runtime makes, for `main` and for a test that names one; nothing else can create them. Other tests pass the in-memory stand-ins (see `examples/wc`), or `mock Console`. Only `std` can call the native `host_*` operations underneath; `verify` and fuzzing never run code that reaches them.

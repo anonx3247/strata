@@ -191,6 +191,15 @@
       "settings": {
         "fontStyle": "bold"
       }
+    },
+    {
+      "scope": [
+        "markup.heading.strata-output"
+      ],
+      "settings": {
+        "foreground": "#f0b45c",
+        "fontStyle": "bold"
+      }
     }
   ]
 }

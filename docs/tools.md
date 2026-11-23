@@ -114,25 +114,78 @@ brew install llvm                      # or apt.llvm.org's llvm-23-dev
 LLVM_SYS_231_PREFIX=$(brew --prefix llvm) cargo build --release
 ```
 
-## Serving the web
-
-`strata serve [PATH] [--port N]` (default port 8000) runs a program as a web server: each request is turned into a `std.http.Request` and passed to the program's `fn handle(req: Request) -> Response`. Like `main`, `handle` may also ask for `Console` and capabilities (`Disk`, `Process`, the program's own). The program is compiled once, when the server starts (the JIT, as `strata run`; with a few functions of the server's, written in Strata and checked with the program), and requests are handled one at a time by that compiled code. A runtime fault, or a response the server can't send (a header holding a line break), becomes a 500 that says why, and every request is logged:
-
-```text
-$ strata serve examples/page
-Serving on http://127.0.0.1:8000  (Ctrl-C to stop)
-GET / 200 (17 ms)
-GET /languages/haskell 200 (0 ms)
-POST / 405 (0 ms)
-```
-
-**Apps.** A program with no `handle` but with `init`, `update` and `view` is served as an app (the Elm architecture): `fn init() -> Model`, `fn update(model: Model, msg: Msg) -> Model`, `fn view(model: Model) -> Html[Msg]`. Each page load starts a session whose model the server keeps; the page sends what the user does, one message at a time, and the new view is patched in, so focus and scroll stay. A page can only send the messages it offers. See `examples/counter`, and `examples/todos` for a form.
-
-`handle` is a plain function, so tests call it directly (`handle(get_request("/"))`). See `examples/page` and, for routes, `std.http.Router` in [the language](language.md).
-
 ## Structural diffs
 
-`strata diff` shows changes by definition rather than by line: each changed definition says what happened in words (a variant added, a method added, a stronger guarantee, renamed), and shows only what it needs. A rename is one line (`Order.Shipped → Order.Sent`); a new signature or contract shows the signature and its conditions, not the body; a changed body is shown with what didn't change folded away. Definitions that only follow an interface change (a rename, call sites given a new argument) are listed under it. Changes are ordered types → interfaces → implementations → tests, then verification before → after. `--json` gives the same for other tools.
+`strata diff` shows changes by definition rather than by line. Here, after four changes to `examples/orders.strata` made through strata (a variant renamed with `strata rename`, a stronger `ensures`, a new variant, a body rewritten as a loop):
+
+```text
+$ strata diff
+patches 2–5 of 5
+  step 1 rename Shipped → Sent  (4 definitions)
+  step 2 discount: never more than 10% off  (1 definition)
+  step 3 a new ShipError  (1 definition)
+  step 4 total as a loop  (1 definition)
+
+5 changed  ·  3 interface changes
+
+TYPES
+
+~ Order  (variant `Shipped` renamed to `Sent`)
+    only a name changed · 3 references updated
+    type Order =
+      | Pending { id: OrderId, lines: NonEmpty[Line] }
+  ~   | [-Shipped-]{+Sent+} { id: OrderId, lines: NonEmpty[Line], tracking: NonEmptyString }
+      | Cancelled { id: OrderId, reason: NonEmptyString }
+
+~ ShipError  (variant `OutOfStock` added)
+    interface changed · used by 2, 4 depend on it in all
+    type ShipError =
+    … NotFound and NotPending unchanged
+  +   | OutOfStock { sku: NonEmptyString }
+
+INTERFACES
+
+~ discount  (guarantee changed)
+    interface changed · used by 1
+    fn discount(amount: Cents) -> Cents
+  ~   ensures it <= amount {+&& it * 10 >= amount * 9 +}{    ◀ contract changed
+      if amount >= 10000 {
+    … 4 lines unchanged
+    }
+
+IMPLEMENTATIONS
+
+~ total  (body changed)
+    most of it changed, so it is shown as a line diff
+    implementation only · nothing else needs re-checking
+    fn total(lines: NonEmpty[Line]) -> Cents {
+  -   sum(lines.map(line_total))
+  +   mut sum := 0
+  +   for l in lines {
+  +     sum += line_total(l)
+  +   }
+  +   sum
+    }
+
+TESTS
+
+~ test "shipping a pending order saves it as shipped"  (body changed)
+    test "shipping a pending order saves it as shipped" {
+    … 6 lines unchanged
+  -   assert db.order == Some(
+  ~ [-    Shipped-]{+  assert+} {+db.order == Some(Sent +}{ id: "ord_abc123", lines: [line], tracking: "TRK1" }[-,-]{+)+}
+  -   )
+    }
+```
+
+Each changed definition says what happened in words, and shows only what it needs:
+
+- **A rename is one line.** `Order` shows the variant renamed; the three definitions that only followed the rename (`order_id`, `ship`, a test) are counted, not shown, unless their body changed otherwise (the test, below).
+- **A new variant** is shown on its own, with the members that didn't change folded away (`… NotFound and NotPending unchanged`), and how much depends on the type.
+- **A contract change** is marked on its line (`◀ contract changed`): `discount` promises more, and its body is folded.
+- **A body change** is shown with what didn't change folded away, or as a line diff when most of it changed (`total`); "implementation only" says nothing else needs checking again.
+
+Changes are ordered types → interfaces → implementations → tests. `strata diff --step 2` shows one change, `--from` / `--to` a range of the log, `--json` the same for other tools. In a git repository, `strata --file F diff [BASE]` compares a file with a commit (default `HEAD`), and `git diff` shows `.strata` files the same way after `strata setup-git`.
 
 ## Views (levels of detail)
 

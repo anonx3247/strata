@@ -639,9 +639,9 @@ fn main(opts: Options, mut console: Console) {
 }
 ```
 
-Tests pass stand-ins instead of the real capabilities: `recorder(input)` / `printed(r)` for a `Console`, `mem_files([(path, text)])` for `Files`, `fake_environment(args, vars)`, or `mock Trait`. Only `main` (under `strata run`, `strata serve`, or as a built executable) and a test that names a capability reach the real terminal, disk or network.
+Tests pass stand-ins instead of the real capabilities: `recorder(input)` / `printed(r)` for a `Console`, `mem_files([(path, text)])` for `Files`, `fake_environment(args, vars)`, or `mock Trait`. Only `main` (under `strata run`, or as a built executable) and a test that names a capability reach the real terminal, disk or network.
 
-The standard library is written in Strata and needs no dependency: `std.io`, `std.fs`, `std.process`, `std.cli`, `std.http` (`Request`, `Response`, `Router`: `app.get("/users/:id", handler)`, `req.param("id")`) and `std.web` (`Html[M]` as values: `div([class("x")], [text("hi")])`, `on_click(msg)`). A web server defines `fn handle(req: Request) -> Response`; an app defines `init() -> Model`, `update(model, msg) -> Model` and `view(model) -> Html[Msg]` (the Elm architecture). Both run with `strata serve`. See `examples/hello`, `wc`, `page`, `counter`, `todos`. `strata builtins` lists every builtin with its signature.
+The standard library is written in Strata and needs no dependency: `std.io`, `std.fs`, `std.process`, `std.cli`, `std.http` (requests and responses) and `std.web` (HTML as values). See `examples/hello` and `wc`. `strata builtins` lists every builtin with its signature.
 
 ## The tools
 
@@ -655,7 +655,6 @@ strata verify NAME --checks   # …listing every check and how it was settled
 strata holes                  # each ?hole: goal type, what's in scope, what it must satisfy
 strata run [PATH] -- ARGS     # run main
 strata run FN 'ARGS'         # call one function; args written as code, checked against the types (--trace)
-strata serve [PATH]           # run `handle` or an app (init/update/view) on http://127.0.0.1:8000
 strata build [PATH] -o OUT    # native executable through LLVM
 strata builtins               # every builtin and prelude type
 ```
