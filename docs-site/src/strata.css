@@ -1,0 +1,34 @@
+/* Strata's colours and type, from the landing page (site/style.css). */
+:root {
+  --sl-font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --sl-font-mono: "Fira Code", ui-monospace, "SF Mono", Menlo, monospace;
+}
+:root[data-theme='dark'] {
+  --sl-color-accent-low: #23284a;
+  --sl-color-accent: #8ea2ff;
+  --sl-color-accent-high: #d4dbff;
+  --sl-color-white: #ecebe6;
+  --sl-color-gray-1: #e4e3de;
+  --sl-color-gray-2: #c4c3bd;
+  --sl-color-gray-3: #9b9a94;
+  --sl-color-gray-4: #5f6069;
+  --sl-color-gray-5: #323743;
+  --sl-color-gray-6: #171a21;
+  --sl-color-black: #0d0e12;
+  --sl-color-bg-nav: #0f1016;
+  --sl-color-bg-sidebar: #0f1016;
+  --sl-color-hairline: #262a33;
+  --sl-color-hairline-light: #262a33;
+}
+:root[data-theme='light'] {
+  --sl-color-accent-low: #e3e7ff;
+  --sl-color-accent: #4a5fd6;
+  --sl-color-accent-high: #1f2a6b;
+}
+h1, h2, h3, h4, .site-title { font-family: "Space Grotesk", "Inter", sans-serif; letter-spacing: -0.02em; }
+.site-title { font-weight: 600; }
+.sl-markdown-content :not(pre) > code { border-radius: 5px; }
+/* the docs' tables are wide: let them scroll instead of squeezing */
+.sl-markdown-content table { display: block; overflow-x: auto; }
+.site-title img { height: 1.05rem; width: auto; }
+:root[data-theme='dark'] .sl-markdown-content :not(pre) > code { background: #ffffff0d; border: 1px solid #ffffff14; color: var(--sl-color-gray-1); }
