@@ -1047,9 +1047,7 @@ Not yet:
 
 ## Known gaps
 
-- Rust checker (seen 2026-11-23, not fixed): `comptime` over a range is an internal error ("a range, slice or comprehension was not desugared"); `List.make(n)` written in source is refused ("expects 1 arguments, got 2").
-- `compiler verify` (now `strata verify`'s default) still lacks: the race (solver and fuzzer run one after the other, as `--no-race`); solver-made inputs when random ones rarely meet a refinement; choosing definitions by name (`compiler verify NAME`: it verifies the whole file or package); Rust's "entry" facts in the proof list, and `build --strata` reads Rust's list, not the one the Strata side writes; speed (std.toml 17 s against Rust's 3 s, mostly solver waits and SHA-256 in Strata).
-- `compiler/smt` reports "not covered" for static methods of generic impls (`List[T].from_toml_at` in std.toml and std.json) and for `graphemes` (which compiler/codegen doesn't compile either); Rust encodes both.
+- `compiler verify` (now `strata verify`'s default) behind Rust (checked with `verify --compare` 2026-11-23): it stalls on examples/traits (13 min, then dies; Rust: seconds); no solver-made inputs when random ones rarely meet a refinement or `requires`; generic functions not fuzzed (`T` not given a type); strings for a `matches` refinement not generated from the regex; `graphemes` not covered by compiler/smt; a package's proofs not passed to `build`. Left aside (user): the race, `--json`, speed, nested quantified facts, what the prover doesn't model.
 - A list holding both an `Option[Int]` and an `Option[Float]` (`[a, b]`) makes LLVM refuse the IR (a `switch` with duplicate cases, seen 2026-11-22). `float_from_bits` gives infinities (only a NaN is `None`), though a `Float` is never infinite.
 - A `Bool` option whose default is `true` can't be turned off (no `--no-x`), and `javascript:` URLs in `std.web`'s `href` aren't rejected (both listed where they were decided).
 - FFI is C only (`extern c`, see "Foreign functions: `extern LANG`"): `main` can't yet ask for a native module's capability, and there is no std SQLite module yet.
