@@ -118,7 +118,7 @@ fn call(args: &Args, p: &Program, env: &types::Env, name: &str, raw: &str) -> Re
         llvm::compile_comptime(&checked.compiled, &[probe_name.clone()])
     };
     let (ir, roots, shapes) = ir.map_err(|e| format!("`{name}` can't be compiled yet: {e}"))?;
-    let (result, printed) = llvm::jit::run_kept(&ir, &roots, &shapes, i64::MAX, true)?.pop().ok_or("nothing ran")?;
+    let (result, printed) = llvm::jit::run_kept(&ir, &roots, &shapes, i64::MAX, llvm::jit::release())?.pop().ok_or("nothing ran")?;
     print!("{printed}");
     match result {
         Ok(v) => {

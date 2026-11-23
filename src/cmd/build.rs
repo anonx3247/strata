@@ -80,12 +80,14 @@ pub fn build(args: &Args) -> Result<bool, String> {
     std::fs::write(&ll, &ir).map_err(|e| e.to_string())?;
     std::fs::write(&rt, llvm::RUNTIME).map_err(|e| e.to_string())?;
     let cc = std::env::var("STRATA_CC").unwrap_or_else(|_| "clang".into());
-    // the program and the runtime optimized together (`-flto`: the runtime's
-    // small functions inlined into the program); a linker without LTO gets
-    // them apart, as the JIT does (its runtime is the one built into strata)
+    // `--release`: the program and the runtime optimized together (-O2,
+    // `-flto`: the runtime's small functions inlined into the program; a
+    // linker without LTO gets them apart, as the JIT does); by default
+    // unoptimized (-O0), which compiles several times faster
+    let release = llvm::jit::release();
     let link = |lto: bool| {
         Command::new(&cc)
-            .args(["-O2", "-Wno-override-module", "-o", &out])
+            .args([if release { "-O2" } else { "-O0" }, "-Wno-override-module", "-o", &out])
             .args(lto.then_some("-flto"))
             .arg(&ll)
             .arg(&rt)
@@ -97,8 +99,8 @@ pub fn build(args: &Args) -> Result<bool, String> {
             .status()
             .map_err(|e| format!("can't run `{cc}` (a C compiler with LLVM, e.g. clang; set STRATA_CC to choose one): {e}"))
     };
-    let status = match link(true) {
-        Ok(s) if s.success() => Ok(s),
+    let status = match link(release) {
+        Ok(s) if s.success() || !release => Ok(s),
         _ => link(false),
     };
     let _ = std::fs::remove_dir_all(&dir);
