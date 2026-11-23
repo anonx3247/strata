@@ -71,8 +71,10 @@ fn call(args: &Args, p: &Program, env: &types::Env, name: &str, raw: &str) -> Re
             stmts.push(Stmt::Var(n, Some(pm.ty.clone()), x));
             call_args.push(Expr::Mut(Box::new(Expr::Var(n))));
         } else {
-            // (its type and refinements are checked where `f` takes it, which names the argument)
-            stmts.push(Stmt::Let(Pattern::Bind(n), None, x));
+            // (its type and refinements are checked where `f` takes it, which names the
+            // argument; a sized integer's type is given, so a literal is one)
+            let sized = matches!(&pm.ty, TypeExpr::Named(t, a) if a.is_empty() && types::Width::of(t.as_str()).is_some());
+            stmts.push(Stmt::Let(Pattern::Bind(n), sized.then(|| pm.ty.clone()), x));
             call_args.push(Expr::Var(n));
         }
     }

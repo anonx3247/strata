@@ -99,7 +99,9 @@ fn halve(n: Natural) -> Int where it >= 0 && it * 2 <= n {
 }
 
 // The prelude has: Natural, Positive, Negative, NonZero, Probability,
-// Percentage, NonEmpty[T], NonEmptyString, and I8..I64 / U8..U64.
+// Percentage, NonEmpty[T], NonEmptyString. I8..I64 / U8..U64 are machine
+// integers of their own (wrapping arithmetic, no mixing with Int: convert
+// with `x.to_int()`, `n.to_u8()`, `n.wrap_u8()`).
 // `type Name = String` alone is an error: add `where`, or use `distinct`.
 
 // A distinct type is nominal: it never mixes with its base or other types.

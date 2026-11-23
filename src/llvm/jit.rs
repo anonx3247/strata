@@ -33,6 +33,12 @@ unsafe extern "C" {
     fn strata_pid();
     fn strata_int_from_u64();
     fn strata_int_bits();
+    fn strata_word_div();
+    fn strata_word_mod();
+    fn strata_uword_div();
+    fn strata_uword_mod();
+    fn strata_word_shift_fault();
+    fn strata_int_fit();
     fn strata_cstr();
     fn strata_cstr_free();
     fn strata_str_from_c();
@@ -161,6 +167,12 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_concat", strata_concat as *const () as usize),
         ("strata_int_from_u64", strata_int_from_u64 as *const () as usize),
         ("strata_int_bits", strata_int_bits as *const () as usize),
+        ("strata_word_div", strata_word_div as *const () as usize),
+        ("strata_word_mod", strata_word_mod as *const () as usize),
+        ("strata_uword_div", strata_uword_div as *const () as usize),
+        ("strata_uword_mod", strata_uword_mod as *const () as usize),
+        ("strata_word_shift_fault", strata_word_shift_fault as *const () as usize),
+        ("strata_int_fit", strata_int_fit as *const () as usize),
         ("strata_cstr", strata_cstr as *const () as usize),
         ("strata_cstr_free", strata_cstr_free as *const () as usize),
         ("strata_str_from_c", strata_str_from_c as *const () as usize),
