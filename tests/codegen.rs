@@ -77,6 +77,99 @@ fn both(dir: &Path, name: &str, file: &Path) -> ((String, String, Option<i32>), 
 /// control flow; step 2: records, sums, tuples, `match`; step 3: counting; then group A of the plan: lists, generic functions, closures, the prelude, core's built-ins, sets and dicts, format specs), each ending as it ends
 /// (normally, with an exit code, or with a fault).
 const PROGRAMS: &[(&str, &str)] = &[
+    ("iterators", "type Naturals = { n: Int }
+
+impl Iterator[Int] for Naturals {
+  fn next(mut self) -> Option[Int] {
+    self.n += 1
+    Some(self.n - 1)
+  }
+}
+
+fn total[I: FiniteIterator[Int]](it: I) -> Int {
+  it.fold(0, (a, x) -> a + x)
+}
+
+fn firsts[I: Iterator[Int]](it: I, n: Int) -> List[Int] {
+  mut out := []
+  for x in it.take(n) {
+    out = push(out, x)
+  }
+  out
+}
+
+fn main() {
+  xs := [5, 6, 7, 8, 9]
+  print(xs.iter().drop(2).to_list())
+  print(xs.iter().filter(x -> x % 2 == 0).len())
+  print(total(xs.iter().map(x -> x * 2)))
+  print(xs.iter().get(3))
+  print(xs.iter().get(9))
+  it := xs.iter()
+  print(it[1])
+  print(it[1..3].to_list())
+  print(firsts(Naturals { n: 10 }, 4))
+  print(Naturals { n: 0 }.filter(x -> x % 3 == 0).take(3).to_list())
+  s := Set { 3, 1, 2 }
+  for x in s.iter() {
+    print(x)
+  }
+  d := Dict { \"a\": 1, \"b\": 2 }
+  for (k, v) in d.iter() {
+    print(f\"{k}={v}\")
+  }
+  print([x + 1 for x in xs.iter().take(2)])
+  print(join([\"a\", \"b\", \"c\"].iter().map(s -> s + \"!\"), \", \"))
+  print(set(xs.iter().map(x -> x % 3)))
+  print(dict(xs.iter().map(x -> (x, x * x)).take(2)))
+}
+"),
+    ("iterator_loops", "type Count = { at: Int, end: Int }
+
+impl Iterator[Int] for Count {
+  fn next(mut self) -> Option[Int] {
+    if self.at >= self.end {
+      return None
+    }
+    self.at += 1
+    Some(self.at)
+  }
+}
+
+impl FiniteIterator[Int] for Count {
+  fn len(self) -> Natural {
+    if self.end > self.at {
+      self.end - self.at
+    } else {
+      0
+    }
+  }
+}
+
+fn main() {
+  c := Count { at: 0, end: 6 }
+  for x in c {
+    if x == 2 {
+      continue
+    }
+    if x == 5 {
+      break
+    }
+    for y in c.take(2) {
+      print(f\"{x} {y}\")
+    }
+  }
+  print(c.at)
+  print(c.len())
+  print(c.to_list())
+  print(c.fold(0, (a, b) -> a + b))
+  print(c[2])
+  words := [\"x\", \"yy\", \"zzz\"]
+  for (i, w) in enumerate(words) {
+    print(f\"{i}:{w}\")
+  }
+}
+"),
     ("sized", "type Pixel = { r: U8, g: U8 }
 
 fn rotr(x: U32, n: U32) -> U32 {
