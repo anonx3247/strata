@@ -161,3 +161,31 @@ fn smt_outcomes_on_scripts_as_in_rust() {
     }
     assert!(covered > 0, "no function of the scripts is covered");
 }
+
+/// std's modules (a few, quick to verify): the functions `compiler/smt`
+/// covers agree, named as Rust names them (`std.utf8.encode`).
+#[test]
+fn smt_outcomes_on_std_as_in_rust() {
+    if !have_z3() {
+        eprintln!("skipped: no z3");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("std");
+    for m in ["utf8", "time", "http", "process"] {
+        let o = Command::new(STRATA).current_dir(root).args(["--file", "std", "verify", &format!("std.{m}.*"), "--obligations"]).output().unwrap();
+        assert!(o.status.success(), "std.{m}: {}", String::from_utf8_lossy(&o.stderr));
+        let rust = functions(&String::from_utf8_lossy(&o.stdout));
+        let o = Command::new(compiler::exe()).current_dir(root).arg("smt").arg(format!("std/{m}.strata")).env("STRATA_CACHE", &dir).output().unwrap();
+        assert!(o.status.success(), "compiler smt std/{m}: {}", String::from_utf8_lossy(&o.stderr));
+        let ours = functions(&String::from_utf8_lossy(&o.stdout));
+        assert!(!ours.is_empty(), "std.{m}: no function");
+        for (n, ls) in ours {
+            if ls.first().is_some_and(|l| l.starts_with("not covered")) {
+                continue;
+            }
+            let r = rust.iter().find(|f| f.0 == n).map(|f| f.1.clone()).unwrap_or_else(|| panic!("std.{m}: `{n}` is not among Rust's functions"));
+            assert_eq!(r, ls, "std.{m}: `{n}`: Rust's outcomes, then compiler/smt's");
+        }
+    }
+}
