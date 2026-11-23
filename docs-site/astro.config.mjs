@@ -31,8 +31,8 @@ export default defineConfig({
         styleOverrides: { borderRadius: '10px', codeFontFamily: '"Fira Code", ui-monospace, monospace', codeFontSize: '0.86rem' },
       },
       sidebar: [
-        { label: 'Start here', items: [{ label: 'Overview', link: '/' }, 'learn-strata'] },
-        { label: 'Guides', items: ['language', 'verification', 'tools'] },
+        { label: 'Guide', items: [{ label: 'Overview', link: '/' }, 'language', 'verification', 'tools'] },
+        { label: 'Annex', items: ['learn-strata', 'language-reference', 'verification-reference', 'tools-reference'] },
         { label: 'Internals', items: ['internals', 'binary-format'] },
       ],
       lastUpdated: false,

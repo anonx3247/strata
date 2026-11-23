@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync, rmSync, mkdirSync, cpSync, readdirSync } f
 const DOCS = new URL('../docs/', import.meta.url), OUT = new URL('./src/content/docs/', import.meta.url);
 const REPO = 'https://github.com/anonx3247/strata/blob/main/';
 // the pages, in the sidebar's order (astro.config.mjs groups them)
-const PAGES = ['learn-strata', 'language', 'verification', 'tools', 'internals', 'binary-format'];
+const PAGES = ['language', 'verification', 'tools', 'learn-strata', 'language-reference', 'verification-reference', 'tools-reference', 'internals', 'binary-format'];
 
 rmSync(OUT, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });

@@ -289,7 +289,7 @@ pub enum DeclKind {
     Impl(ImplDecl),
     Use(UseDecl),
     /// `extern c fn ...` / `extern c type ...`: a definition made in another
-    /// language, called through its ABI (docs/language.md, "Foreign functions").
+    /// language, called through its ABI (docs/language-reference.md, "Foreign functions").
     Extern(ExternDecl),
     /// `capability Sqlite { fn open(path: String) -> ... }`: functions that
     /// reach the outside world, holding no data. Only the runtime makes one,
