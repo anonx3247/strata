@@ -1606,7 +1606,7 @@ impl Rw<'_> {
     fn covers(&self, m: &str) -> bool {
         m == self.module.as_str()
             || m.is_empty()
-            || m == crate::types::PRELUDE_MODULE
+            || crate::types::is_prelude_module(m)
             || m == "strata.compiled"
             || self.uses.iter().any(|(path, items)| path == m || (items.is_none() && m.starts_with(&format!("{path}."))))
     }

@@ -209,7 +209,7 @@ fn snapshot(target: &Target) -> Json {
     // (the prelude's code, added to every program, isn't the program's; nor
     // is the standard library's, which resolving brings in: the map is the
     // program's types, whether it uses std's or not)
-    let own = |d: &&Decl| d.module != crate::types::PRELUDE_MODULE && !is_std(d);
+    let own = |d: &&Decl| !crate::types::is_prelude_module(&d.module) && !is_std(d);
     for d in rp.decls.iter().filter(own) {
         match &d.kind {
             DeclKind::Type(t) => {

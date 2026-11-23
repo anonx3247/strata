@@ -923,6 +923,7 @@ declare i1 @strata_unique(ptr)
 declare i1 @strata_list_owned(ptr)
 declare i64 @strata_list_put(ptr, i64, i64)
 declare void @strata_list_insert(ptr, i64, i64)
+declare i64 @strata_list_remove_at(ptr, i64)
 declare void @strata_init(i32, ptr)
 declare i64 @strata_pid()
 declare void @strata_host_write(i64, ptr)
@@ -999,6 +1000,8 @@ declare ptr @strata_list_concat(ptr, ptr, i64)
 declare ptr @strata_concat_owned(ptr, ptr)
 declare ptr @strata_range(i64, i64)
 declare i64 @llvm.smax.i64(i64, i64)
+declare ptr @strata_raw_alloc(i64)
+declare void @free(ptr)
 declare i64 @llvm.smin.i64(i64, i64)
 declare ptr @strata_show_int(i64)
 declare ptr @strata_show_float(double)
@@ -1506,7 +1509,8 @@ impl<'a> Module<'a> {
 
     fn handle(&self, t: &Ty) -> bool {
         // (a task's handle: its scope holds the task, and frees it)
-        matches!(t, Ty::Con(n, args) if args.is_empty() && (self.env.externs.contains_key(n) || self.env.capabilities.contains(n)) || n == "Task" && args.len() == 1)
+        // (core.mem's `Ptr`: an address, never counted)
+        matches!(t, Ty::Con(n, args) if args.is_empty() && (self.env.externs.contains_key(n) || self.env.capabilities.contains(n) || n == "Ptr") || n == "Task" && args.len() == 1)
     }
 
     /// A record, a sum, one of its variants, or a tuple: a block with a tag.
@@ -2242,12 +2246,15 @@ struct Func<'m, 'a> {
     /// In the function's `exit` block (its result's checks): nothing left to
     /// drop there, so a panic can't leave as a cancellation does.
     in_exit: bool,
-    /// The constructor (by node address) of the `x := C { … }` being
-    /// compiled, when `x` doesn't escape its block: its value goes on the
-    /// stack (`stack_block`).
-    stack_ctor: Option<usize>,
-    /// The field types of the value the last `stack_block` made.
-    stack_made: Option<Vec<Ty>>,
+    /// The constructors (by node address) whose values go on the stack
+    /// (`stack_block`): `x := C { … }` when `x` doesn't escape its block,
+    /// `f(C { … })` when `f` doesn't keep that argument.
+    stack_ctors: HashSet<usize>,
+    /// Temporaries on the stack, with their field types: when they are
+    /// dropped, only their fields are.
+    stack_temps: HashMap<String, Vec<Ty>>,
+    /// The field types of the values `stack_block` made, by constructor node.
+    stack_made: HashMap<usize, Vec<Ty>>,
     /// The slots of variables holding a value on the stack, with its field
     /// types: when the variable is dropped, only its fields are.
     stack_slots: HashMap<String, Vec<Ty>>,
@@ -2255,7 +2262,7 @@ struct Func<'m, 'a> {
 
 impl<'m, 'a> Func<'m, 'a> {
     fn new(m: &'m mut Module<'a>, sub: HashMap<Symbol, Ty>) -> Self {
-        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![], unwinds: false, in_exit: false, proofs_of: None, stack_ctor: None, stack_made: None, stack_slots: HashMap::default() }
+        Func { m, sub, named_targs: None, allocas: String::new(), code: String::new(), tmp: 0, label: 0, scopes: vec![Scope::default()], loops: vec![], fail_marks: HashMap::default(), ret_slot: None, trace_id: None, cur: String::new(), terminated: true, places: vec![], unwinds: false, in_exit: false, proofs_of: None, stack_ctors: HashSet::default(), stack_temps: HashMap::default(), stack_made: HashMap::default(), stack_slots: HashMap::default() }
     }
 
     /// The function's text: the slots, then the code.
@@ -2669,7 +2676,10 @@ impl<'m, 'a> Func<'m, 'a> {
         }
         for v in s.temps.iter().rev() {
             if Some(v.1.as_str()) != keep {
-                self.drop_value(v)?;
+                match self.stack_temps.get(&v.1).cloned() {
+                    Some(tys) => self.drop_fields(v, &tys)?,
+                    None => self.drop_value(v)?,
+                }
             }
         }
         for (t, slot) in s.owned.iter().rev() {
@@ -2677,17 +2687,19 @@ impl<'m, 'a> Func<'m, 'a> {
             let ll = if self.is_int(t) { "i64" } else { "ptr" };
             self.emit(format!("{x} = load {ll}, ptr {slot}"));
             match self.stack_slots.get(slot).cloned() {
-                // a value on the stack: only what it holds
-                Some(tys) => {
-                    let v = (t.clone(), x);
-                    for (i, ft) in tys.iter().enumerate() {
-                        if self.counted(ft) {
-                            let f = self.field(&v, i, ft)?;
-                            self.drop_value(&f)?;
-                        }
-                    }
-                }
+                Some(tys) => self.drop_fields(&(t.clone(), x), &tys)?,
                 None => self.drop_value(&(t.clone(), x))?,
+            }
+        }
+        Ok(())
+    }
+
+    /// A value on the stack going away: only what it holds is dropped.
+    fn drop_fields(&mut self, v: &V, tys: &[Ty]) -> Res<()> {
+        for (i, ft) in tys.iter().enumerate() {
+            if self.counted(ft) {
+                let f = self.field(v, i, ft)?;
+                self.drop_value(&f)?;
             }
         }
         Ok(())
@@ -4506,13 +4518,20 @@ impl<'m, 'a> Func<'m, 'a> {
                     // `x := C { … }` with `x` staying in the block: on the stack
                     if let Stmt::Let(Pattern::Bind(x), None, c @ Expr::Ctor(_, args)) = st {
                         if !matches!(args, CtorArgs::None) && !escape::escapes_after(stmts, i, last, x, &s.m.keeps) {
-                            s.stack_ctor = Some(c as *const Expr as usize);
+                            s.stack_ctors.insert(c as *const Expr as usize);
                         }
                     }
                     s.push_scope(true);
                     let r = s.stmt(st);
-                    s.stack_ctor = None;
-                    if let (Some(tys), Stmt::Let(Pattern::Bind(x), ..)) = (s.stack_made.take(), st) {
+                    let made = match st {
+                        Stmt::Let(_, _, c) => {
+                            let at = c as *const Expr as usize;
+                            s.stack_ctors.remove(&at);
+                            s.stack_made.remove(&at)
+                        }
+                        _ => None,
+                    };
+                    if let (Some(tys), Stmt::Let(Pattern::Bind(x), ..)) = (made, st) {
                         if let Some(l) = s.lookup(x) {
                             s.stack_slots.insert(l.slot, tys);
                         }
@@ -5128,7 +5147,32 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.named_targs = Some(named);
             }
         }
-        let vs = self.operands(&args)?;
+        // `f(C { … })`, `f` not keeping that argument (of the constructor's
+        // own type, so the call doesn't box it): on the stack
+        let mut stacked = vec![];
+        if let Some(f) = self.m.bodies.get(name).copied() {
+            for (i, a) in args.iter().enumerate() {
+                let (Expr::Ctor(_, cargs), Some(p)) = (a, f.params.get(i)) else { continue };
+                if matches!(cargs, CtorArgs::None) || p.mutable || self.m.keeps.keeps(name, i) {
+                    continue;
+                }
+                let same = match (self.m.lower(&p.ty, &HashMap::default()), self.ty_of(a)) {
+                    (Ok(pt), Ok(at)) => self.m.repr(&pt).ok() == self.m.repr(&at).ok(),
+                    _ => false,
+                };
+                if same {
+                    let at = *a as *const Expr as usize;
+                    self.stack_ctors.insert(at);
+                    stacked.push(at);
+                }
+            }
+        }
+        let vs = self.operands(&args);
+        for at in stacked {
+            self.stack_ctors.remove(&at);
+            self.stack_made.remove(&at);
+        }
+        let vs = vs?;
         if vs.iter().any(|v| is_never(&v.0)) {
             return Ok(never());
         }
@@ -5748,6 +5792,61 @@ impl<'m, 'a> Func<'m, 'a> {
                 (a.clone(), r)
             }
             ("float", [Ty::Int]) => self.call(&Ty::Float, "@strata_int_to_float", &vs)?,
+            // raw memory (core.mem): plain loads and stores; an `Int` crosses
+            // as its low 64 bits, and comes back from a word as any `Int`
+            ("raw_alloc", [Ty::Int]) => {
+                let n = self.call(&Ty::Int, "@strata_int_bits", &vs)?;
+                self.call(&Ty::Con("Ptr".into(), vec![]), "@strata_raw_alloc", &[n])?
+            }
+            ("raw_free", [_]) => {
+                self.emit(format!("call void @free(ptr {})", vs[0].1));
+                (Ty::Unit, "0".into())
+            }
+            ("ptr_offset", [p, Ty::Int]) => {
+                let n = self.call(&Ty::Int, "@strata_int_bits", &vs[1..])?;
+                let r = self.fresh("at");
+                self.emit(format!("{r} = getelementptr i8, ptr {}, i64 {}", vs[0].1, n.1));
+                (p.clone(), r)
+            }
+            ("load_i64" | "load_u8" | "store_i64" | "store_u8" | "atomic_add_i64", [_, Ty::Int, ..]) => {
+                let at = self.call(&Ty::Int, "@strata_int_bits", &vs[1..2])?;
+                let a = self.fresh("at");
+                self.emit(format!("{a} = getelementptr i8, ptr {}, i64 {}", vs[0].1, at.1));
+                let word = |c: &mut Self, v: &V| c.call(&Ty::Int, "@strata_int_bits", std::slice::from_ref(v));
+                match name {
+                    "load_i64" => {
+                        let w = self.fresh("w");
+                        self.emit(format!("{w} = load i64, ptr {a}"));
+                        let r = self.call(&Ty::Int, "@strata_int_from_i64", &[(Ty::Int, w)])?;
+                        self.temp(r)
+                    }
+                    "load_u8" => {
+                        let (b, w) = (self.fresh("b"), self.fresh("w"));
+                        self.emit(format!("{b} = load i8, ptr {a}"));
+                        self.emit(format!("{w} = zext i8 {b} to i64"));
+                        (Ty::Int, w)
+                    }
+                    "store_i64" => {
+                        let v = word(self, &vs[2])?;
+                        self.emit(format!("store i64 {}, ptr {a}", v.1));
+                        (Ty::Unit, "0".into())
+                    }
+                    "store_u8" => {
+                        let v = word(self, &vs[2])?;
+                        let b = self.fresh("b");
+                        self.emit(format!("{b} = trunc i64 {} to i8", v.1));
+                        self.emit(format!("store i8 {b}, ptr {a}"));
+                        (Ty::Unit, "0".into())
+                    }
+                    _ => {
+                        let v = word(self, &vs[2])?;
+                        let w = self.fresh("w");
+                        self.emit(format!("{w} = atomicrmw add ptr {a}, i64 {} seq_cst", v.1));
+                        let r = self.call(&Ty::Int, "@strata_int_from_i64", &[(Ty::Int, w)])?;
+                        self.temp(r)
+                    }
+                }
+            }
             ("float_bits", [Ty::Float]) => {
                 let b = self.fresh("bits");
                 self.emit(format!("{b} = bitcast double {} to i64", vs[0].1));
@@ -7082,10 +7181,13 @@ impl<'m, 'a> Func<'m, 'a> {
             self.check_type_refinement(c, &v)?;
             return Ok(v);
         }
-        let on_stack = self.stack_ctor.take() == Some(e as *const Expr as usize) && !self.m.boxed(&t) && !self.is_dyn(&t);
+        let on_stack = self.stack_ctors.remove(&(e as *const Expr as usize)) && !self.m.boxed(&t) && !self.is_dyn(&t);
         let p = if on_stack {
-            self.stack_made = Some(fs.iter().map(|f| f.ty.clone()).collect());
-            self.stack_block(self.m.tags[c], &vals)?
+            let tys: Vec<Ty> = fs.iter().map(|f| f.ty.clone()).collect();
+            self.stack_made.insert(e as *const Expr as usize, tys.clone());
+            let p = self.stack_block(self.m.tags[c], &vals)?;
+            self.stack_temps.insert(p.clone(), tys);
+            p
         } else {
             self.block_of(self.m.tags[c], &vals)?
         };
@@ -7443,7 +7545,7 @@ impl<'m, 'a> Func<'m, 'a> {
                 path.reverse();
                 let Expr::Var(x) = root else { return self.unsupported("assigning to anything but a variable or its fields") };
                 let l = self.lookup(x).ok_or(format!("`{x}` is not a local variable"))?;
-                let v = match self.insert_in_place(place, e)? {
+                let v = match self.update_in_place(place, e)? {
                     Some(v) => v,
                     None => self.expr(e)?,
                 };
@@ -7797,19 +7899,24 @@ impl<'m, 'a> Func<'m, 'a> {
         Ok(self.temp((cur.0.clone(), r)))
     }
 
-    /// `x = insert(x, …)` / `x.f = insert(x.f, …)` on a dictionary or set
-    /// (`e` the assigned value, `place` the assigned place): the old value
-    /// is dead afterwards, so when nothing else holds it (its list and
-    /// buffer held once; for a field, the record too) the element goes in
-    /// place, with no copy; else as `insert` does. Either way the result is
-    /// owned (in place: the list held once more, given back when the old
-    /// value is dropped). `None` if `e` isn't such a call.
-    fn insert_in_place(&mut self, place: &Expr, e: &Expr) -> Res<Option<V>> {
-        let (target, rest): (&Expr, Vec<&Expr>) = match e {
-            Expr::Call(f, args) if matches!(&**f, Expr::Var(n) if n == "insert") && !args.is_empty() => (&args[0], args[1..].iter().collect()),
-            Expr::Method(r, n, args) if n == "insert" => (&**r, args.iter().collect()),
+    /// `x = insert(x, …)` / `x.f = insert(x.f, …)` (or `remove`) on a
+    /// dictionary or set (`e` the assigned value, `place` the assigned
+    /// place): the old value is dead afterwards, so when nothing else holds
+    /// it (its list and buffer held once; for a field, the record too) the
+    /// element goes in place (or out), with no copy; else as the built-in
+    /// does. Either way the result is owned (in place: the list held once
+    /// more, given back when the old value is dropped). `None` if `e` isn't
+    /// such a call.
+    fn update_in_place(&mut self, place: &Expr, e: &Expr) -> Res<Option<V>> {
+        let (name, target, rest): (&str, &Expr, Vec<&Expr>) = match e {
+            Expr::Call(f, args) if !args.is_empty() => match &**f {
+                Expr::Var(n) if n == "insert" || n == "remove" => (n.as_str(), &args[0], args[1..].iter().collect()),
+                _ => return Ok(None),
+            },
+            Expr::Method(r, n, args) if n == "insert" || n == "remove" => (n.as_str(), &**r, args.iter().collect()),
             _ => return Ok(None),
         };
+        let removing = name == "remove";
         let root = match place {
             Expr::Var(x) => x,
             Expr::Field(r, _) => match &**r {
@@ -7820,13 +7927,13 @@ impl<'m, 'a> Func<'m, 'a> {
         };
         // the built-in (not a function of the program's), on the place itself,
         // with values that don't mention its variable (one could be the value itself)
-        if target != place || self.lookup("insert").is_some() || self.m.bodies.contains_key("insert") || rest.iter().any(|a| vars_in(a).contains(&root.to_string())) {
+        if target != place || self.lookup(name).is_some() || self.m.bodies.contains_key(name) || rest.iter().any(|a| vars_in(a).contains(&root.to_string())) {
             return Ok(None);
         }
         let t = self.m.repr(&self.ty_of(target)?)?;
         let Some((kind, _)) = collection(&t) else { return Ok(None) };
         let Ty::Con(_, targs) = t.clone() else { return Ok(None) };
-        if rest.len() != if kind == "Set" { 1 } else { 2 } {
+        if rest.len() != if kind == "Set" || removing { 1 } else { 2 } {
             return Ok(None);
         }
         let vs = self.operands(&rest)?;
@@ -7848,8 +7955,42 @@ impl<'m, 'a> Func<'m, 'a> {
         } else {
             owned
         };
-        let (here, copy, done) = (self.fresh_label("insert.here"), self.fresh_label("insert.copy"), self.fresh_label("insert.done"));
+        let (here, copy, done) = (self.fresh_label("update.here"), self.fresh_label("update.copy"), self.fresh_label("update.done"));
         self.emit(format!("br i1 {ok}, label %{here}, label %{copy}"));
+        if removing {
+            // out of place: the element (or key's pair) found, dropped
+            self.block(&here);
+            self.push_scope(true);
+            let o = self.ordering(&targs[0])?;
+            let at = self.call_fn(&prelude(if kind == "Set" { "set_slot" } else { "dict_slot" }), vec![c.clone(), vs[0].clone(), o], Some(Ty::Int))?;
+            let (out, kept) = (self.fresh_label("remove.out"), self.fresh_label("remove.kept"));
+            let found = self.fresh("found");
+            self.emit(format!("{found} = icmp sge i64 {}, 0", at.1));
+            self.emit(format!("br i1 {found}, label %{out}, label %{kept}"));
+            self.block(&out);
+            let old = self.fresh("old");
+            self.emit(format!("{old} = call i64 @strata_list_remove_at(ptr {}, i64 {})", cur.1, at.1));
+            let et = self.elem_ty(&c.0)?;
+            let old = self.from_slot(&old, &et)?;
+            self.drop_value(&old)?;
+            self.br(&kept);
+            self.block(&kept);
+            self.emit(format!("call void @strata.dup(ptr {})", cur.1));
+            self.pop_scope()?;
+            let from_here = self.cur.clone();
+            self.br(&done);
+            self.block(&copy);
+            self.push_scope(true);
+            let made = self.call_values(name, vec![cur.clone(), vs[0].clone()], Some(cur.0.clone()))?;
+            let made = self.take(made);
+            self.pop_scope()?;
+            let from_copy = self.cur.clone();
+            self.br(&done);
+            self.block(&done);
+            let r = self.fresh("removed");
+            self.emit(format!("{r} = phi ptr [ {}, %{from_here} ], [ {}, %{from_copy} ]", cur.1, made.1));
+            return Ok(Some(self.temp((cur.0.clone(), r))));
+        }
         // in place: the element (the values held once more: the statement's
         // end drops them as it does on the other way), at its position
         self.block(&here);
@@ -7902,7 +8043,7 @@ impl<'m, 'a> Func<'m, 'a> {
         self.push_scope(true);
         let mut args = vec![cur.clone()];
         args.extend(vs.iter().cloned());
-        let made = self.call_values("insert", args, Some(cur.0.clone()))?;
+        let made = self.call_values(name, args, Some(cur.0.clone()))?;
         let made = self.take(made);
         self.pop_scope()?;
         let from_copy = self.cur.clone();

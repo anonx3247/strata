@@ -159,7 +159,7 @@ pub fn with_std(p: &Program) -> Option<Program> {
     // a resolved program has it already, under qualified names in the root module
     let has_std = p.decls.iter().any(|d| {
         // (the prelude's code is added to every program: it says nothing about std)
-        (is_std(&d.module) && d.module != crate::types::PRELUDE_MODULE)
+        (is_std(&d.module) && !crate::types::is_prelude_module(&d.module))
             || match &d.kind {
                 DeclKind::Type(t) => is_std(&t.name),
                 DeclKind::Trait(t) => is_std(&t.name),
