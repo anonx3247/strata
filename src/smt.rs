@@ -198,6 +198,12 @@ const MAX_CANDIDATES: usize = 40;
 /// levels of lists and sums inside an input are made.
 pub const INPUT_LEN: usize = 6;
 const INPUT_DEPTH: usize = 3;
+/// For a counterexample's lists (`example_facts`): one level of lists
+/// inside a parameter's list's elements.
+const EXAMPLE_DEPTH: usize = 1;
+/// The most terms `open_input` makes a model give values for (6 elements
+/// of 6 elements of records of lists grow fast).
+const MAX_INPUT_LEAVES: usize = 400;
 
 /// Stands for the position in a `Template`'s terms; `@@o0`, `@@o1`, … for
 /// the positions of the lists it is inside of.
@@ -362,6 +368,21 @@ pub struct Vc<'a> {
     qvars: usize,
     /// Unknowns bound by a quantifier (`every`): not free in what contains it.
     bound: HashSet<String>,
+    /// Lists compared by position, nested this deep.
+    eq_depth: usize,
+    /// The parameters' lists' first elements (`open_input`), to show a
+    /// counterexample with non-empty lists: what is known of them, kept out
+    /// of the queries until a counterexample needs them (`express`), and
+    /// the terms the model is asked for.
+    example_facts: Vec<T>,
+    example_leaves: Vec<String>,
+    /// Make those (`verify`'s own proofs; not termination's queries).
+    pub examples: bool,
+    /// How many levels of lists and sums `open_input` makes.
+    input_depth: usize,
+    /// The type a method without `self` is called on (`Money.empty()`), for
+    /// the call being made.
+    called_on: Option<String>,
     /// The functions passed to the builtin being called, by argument.
     fn_args: Vec<Option<Func>>,
     /// The constant standing for each bit operation met (`& x y`), so one met
@@ -536,6 +557,12 @@ impl<'a> Vc<'a> {
             qvars: 0,
             bound: HashSet::default(),
             fn_args: vec![],
+            called_on: None,
+            eq_depth: 0,
+            example_facts: vec![],
+            example_leaves: vec![],
+            examples: false,
+            input_depth: INPUT_DEPTH,
             bit_terms: HashMap::default(),
             sorts: Default::default(),
             defs: vec![],
@@ -1036,6 +1063,49 @@ impl<'a> Vc<'a> {
         Some(format!("(forall (({j} Int)) (=> {inside} {}))", and(&body)))
     }
 
+    /// `a == b` for two lists known by position: equal lengths, and equal
+    /// elements at every position (the elements of each made at a quantified
+    /// position, as `forall_positions` makes them). `None` when either list
+    /// isn't known by position, or comparing made unknowns of their own.
+    fn eq_lists(&mut self, (a, la): (usize, &str), (b, lb): (usize, &str)) -> Option<T> {
+        if !self.positional(a) || !self.positional(b) {
+            return None;
+        }
+        self.qvars += 1;
+        let j = format!("q{}", self.qvars);
+        let scope = self.enter();
+        let nm = self.matched.len();
+        let inside = format!("(and (<= 0 {j}) (< {j} {la}))");
+        let pc = std::mem::take(&mut self.pc);
+        let preds: Vec<usize> = self.lists.iter().map(|l| l.preds.len()).collect();
+        let (memo, cutoffs) = (self.memo.clone(), self.cutoffs.clone());
+        let indexing = self.indexing.replace(vec![j.clone()]);
+        self.binding += 1;
+        self.spec += 1;
+        let p = match (self.element_at(a, &j, &inside), self.element_at(b, &j, &inside)) {
+            (Some(x), Some(y)) => Some(self.eq(&x, &y)),
+            _ => None,
+        };
+        self.spec -= 1;
+        self.binding -= 1;
+        self.indexing = indexing;
+        self.pc = pc;
+        let (nd, nf) = self.leave(scope);
+        (self.memo, self.cutoffs) = (memo, cutoffs);
+        for (l, n) in self.lists.iter_mut().zip(preds) {
+            l.preds.truncate(n);
+        }
+        let known: Vec<T> = self.facts.drain(nf..).collect();
+        self.matched.truncate(nm);
+        let p = p?;
+        if self.decls[nd..].iter().any(|d| d.args == 0 && !self.bound.contains(&d.name)) {
+            return None;
+        }
+        let mut premise = vec![inside];
+        premise.extend(known);
+        Some(format!("(and (= {la} {lb}) (forall (({j} Int)) (=> {} {p})))", and(&premise)))
+    }
+
     /// From now on, `f` holds for every element of list `id` when `guard`
     /// does: for the elements made so far, and for every one made later.
     fn know_all(&mut self, id: usize, guard: T, f: Func) {
@@ -1255,7 +1325,12 @@ impl<'a> Vc<'a> {
                 }
                 _ => {
                     let Some(td) = self.env.types.get(&n.sym()).cloned() else {
-                        return Val::Opaque(format!("values of the generic type `{n}` are not known"));
+                        // a type parameter (or a trait as a type): a value of a sort
+                        // nothing is known of, but equal to itself
+                        return match self.sort_of(t) {
+                            Some(sort) => Val::Data { ty: t.clone(), t: self.fresh_why(&sort, &format!("values of the generic type `{n}` are not known")) },
+                            None => Val::Opaque(format!("values of the generic type `{n}` are not known")),
+                        };
                     };
                     let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
                     match &td.body {
@@ -2313,7 +2388,23 @@ impl<'a> Vc<'a> {
                 }
                 format!("(= {x} {y})")
             }
-            (Val::List { len: l1, .. }, Val::List { len: l2, .. }) => {
+            (Val::List { len: l1, id: i1 }, Val::List { len: l2, id: i2 }) => {
+                let (l1, l2, i1, i2) = (l1.clone(), l2.clone(), *i1, *i2);
+                if i1 == i2 {
+                    return format!("(= {l1} {l2})");
+                }
+                // by position, where both are known so: only in a goal, where
+                // the quantifier is negated (the solver picks one position, a
+                // witness), never in a fact it would have to instantiate; and
+                // not inside a quantified fact
+                if self.proving > 0 && self.eq_depth < 2 && self.indexing.is_none() && self.regions.is_empty() {
+                    self.eq_depth += 1;
+                    let e = self.eq_lists((i1, &l1), (i2, &l2));
+                    self.eq_depth -= 1;
+                    if let Some(e) = e {
+                        return e;
+                    }
+                }
                 // equal lists have equal lengths; the elements are not tracked
                 let b = self.unknown_bool("the elements of a list are not tracked");
                 self.facts.push(format!("(=> {b} (= {l1} {l2}))"));
@@ -2667,6 +2758,12 @@ impl<'a> Vc<'a> {
                     alts.push((and(&g), binds, &a.body));
                     prev.push(cond);
                 }
+                // arms with conditions the checker can't decide: some arm matches
+                // (else the compiled code's `no match arm` fault)
+                if arms.iter().any(|a| self.undecided(&a.pat)) {
+                    let all = or(&prev);
+                    self.oblige("some arm of the `match` matches".into(), |_| all);
+                }
                 self.branches_narrowed(alts, narrow)
             }
             Expr::Block(stmts, last) => {
@@ -2860,8 +2957,14 @@ impl<'a> Vc<'a> {
     /// list builtin is checked on one arbitrary element of the list.
     fn call_exprs(&mut self, name: &str, exprs: &[Expr]) -> Val {
         // `Trait::empty(type, ..)`: the type argument only picks the implementation
+        let mut called_on = None;
         let exprs = match self.env.method_contract(name) {
-            Some((_, d)) if !crate::resolve::takes_self(d) && exprs.len() == d.params.len() + 1 => &exprs[1..],
+            Some((_, d)) if !crate::resolve::takes_self(d) && exprs.len() == d.params.len() + 1 => {
+                if let Expr::Str(h) = &exprs[0] {
+                    called_on = Some(h.clone());
+                }
+                &exprs[1..]
+            }
             _ => exprs,
         };
         let mut vals: Vec<Option<Val>> = exprs.iter().map(|e| if self.is_fn(e) { None } else { Some(self.eval(e)) }).collect();
@@ -2918,6 +3021,7 @@ impl<'a> Vc<'a> {
         let _ = fn_result_ty;
         let funcs: Vec<Option<Func>> = exprs.iter().map(|e| if self.is_fn(e) { self.func_of(e) } else { None }).collect();
         let saved = std::mem::replace(&mut self.fn_args, funcs);
+        self.called_on = called_on;
         let r = self.call(name, exprs, vals);
         self.fn_args = saved;
         if let Some(k) = key {
@@ -3013,6 +3117,27 @@ impl<'a> Vc<'a> {
             self.write_back(&f.params, arg_exprs, &args);
             return r;
         }
+        // a trait's method on a value of a known type: that implementation's
+        // (seen through in a contract when it ends and can't fail)
+        let called_on = self.called_on.take();
+        if let Some((imp, decl)) = self.implementation(name, called_on, &args) {
+            let decl = crate::verify::method_decl(env, imp, decl);
+            let label = crate::termination::impl_label(env, imp, &decl.name);
+            if self.spec > 0 && self.depth < 4 {
+                if let Some(&assumed) = self.transparent.get(&label) {
+                    if assumed {
+                        self.relied_on.insert(label);
+                    }
+                    let binds: HashMap<String, Val> = decl.params.iter().map(|p| p.name.to_string()).zip(args.iter().cloned()).collect();
+                    self.depth += 1;
+                    let saved = std::mem::replace(&mut self.scopes, vec![binds]);
+                    let r = self.eval(&decl.body);
+                    self.scopes = saved;
+                    self.depth -= 1;
+                    return r;
+                }
+            }
+        }
         if let Some((_, decl)) = env.method_contract(name) {
             let r = self.call_contract(name, decl, &[], &[], &args);
             self.write_back(&decl.params, arg_exprs, &args);
@@ -3026,6 +3151,56 @@ impl<'a> Vc<'a> {
             return Val::Opaque(format!("the result of method `{name}` (it depends on the receiver's type)"));
         }
         self.builtin(name, arg_exprs, args)
+    }
+
+    /// The implementation a trait method call runs, and its method (its own
+    /// or the trait's default), when the receiver's type is known: from its
+    /// value, or the type's name a method without `self` is called with.
+    fn implementation(&self, name: &str, called_on: Option<String>, args: &[Val]) -> Option<(&'a ImplDecl, &'a FnDecl)> {
+        let env = self.env;
+        let (tr, m) = crate::types::split_trait_call(name)?;
+        let head = match (called_on, args.first()) {
+            (Some(h), _) => h,
+            (None, Some(v)) => self.head_of(v)?,
+            _ => return None,
+        };
+        let imp = env.impls.iter().find(|i| i.trait_name == tr && crate::types::texpr_head(&i.for_type) == head)?;
+        let decl = imp.methods.iter().find(|x| x.name == m || crate::names::short(&x.name) == crate::names::short(m)).or_else(|| env.traits.get(&imp.trait_name)?.methods.iter().find(|x| crate::names::short(&x.decl.name) == crate::names::short(m) && x.default).map(|x| &x.decl))?;
+        Some((imp, decl))
+    }
+
+    /// Whether a pattern has a condition the checker can't decide (its
+    /// `match` is left to the prover): a `where` that isn't a bound on an
+    /// integer, a length or a float, or a refined type by name.
+    fn undecided(&self, p: &Pattern) -> bool {
+        match p {
+            Pattern::Cond(_) => true,
+            Pattern::Ctor(c, cp) => {
+                let refined = !self.env.ctors.contains_key(&c.sym()) && self.env.types.get(&c.sym()).is_some_and(|td| td.refinement.is_some());
+                refined
+                    || match cp {
+                        CtorPat::Positional(ps) | CtorPat::Type(ps) => ps.iter().any(|p| self.undecided(p)),
+                        CtorPat::Record(fs, _) => fs.iter().any(|(_, p)| self.undecided(p)),
+                        CtorPat::None => false,
+                    }
+            }
+            Pattern::List(ps, _) | Pattern::Tuple(ps) | Pattern::Or(ps) => ps.iter().any(|p| self.undecided(p)),
+            _ => false,
+        }
+    }
+
+    /// The type a value has, by its head (`Money`, `List`), when its shape says.
+    fn head_of(&self, v: &Val) -> Option<String> {
+        Some(match v {
+            Val::Int(_) => "Int".into(),
+            Val::Bool(_) => "Bool".into(),
+            Val::Str(_) => "String".into(),
+            Val::Rec(n, _) | Val::Distinct(n, _) => n.clone(),
+            Val::Sum { ty, .. } => ty.clone(),
+            Val::List { .. } => "List".into(),
+            Val::Data { ty, .. } => crate::types::texpr_head(&self.sort_type(ty)).to_string(),
+            _ => return None,
+        })
     }
 
     /// `mut` parameters may have been changed by the callee.
@@ -4243,7 +4418,7 @@ impl<'a> Vc<'a> {
     /// list's first `INPUT_LEN` elements (kept in `input_elems`), down to
     /// `INPUT_DEPTH` levels; collect the lists' lengths and every leaf.
     fn open_input(&mut self, v: &Val, depth: usize, lens: &mut Vec<T>, leaves: &mut Vec<(T, String)>) {
-        if depth > INPUT_DEPTH {
+        if depth > self.input_depth || leaves.len() > MAX_INPUT_LEAVES {
             return;
         }
         let v = self.force(v.clone());
@@ -4295,6 +4470,18 @@ impl<'a> Vc<'a> {
             }
             self.params.push((p.name.to_string(), v.clone()));
             self.bind(&p.name, v);
+        }
+        // the lists' first elements, for a counterexample to show (their facts
+        // set aside): one level of lists inside them, at most so many terms
+        if self.examples {
+            let (nf, mut lens, mut leaves) = (self.facts.len(), vec![], vec![]);
+            self.input_depth = EXAMPLE_DEPTH;
+            for (_, v) in self.params.clone() {
+                self.open_input(&v, 0, &mut lens, &mut leaves);
+            }
+            self.input_depth = INPUT_DEPTH;
+            self.example_facts = self.facts.split_off(nf);
+            self.example_leaves = leaves.into_iter().map(|l| l.0).collect();
         }
         let binds = self.params.clone();
         for r in &f.requires {
@@ -4445,6 +4632,9 @@ pub enum Limit {
     Search,
 }
 
+/// How an unknown outcome starts when the model had no literal for a value.
+const COULD_NOT_EXPRESS: &str = "the solver found a possible counterexample it could not express";
+
 /// Printed after each answer of a batch, to know where it ends.
 const ANSWERED: &str = "@@answered";
 
@@ -4590,9 +4780,14 @@ const CVC5_RLIMIT: u64 = 5_000_000;
 impl Vc<'_> {
     /// The free constants an obligation depends on (its cone of influence).
     fn cone(&self, ob: &Obligation, seeds: &[String]) -> (Vec<T>, HashSet<String>) {
+        self.cone_with(ob, seeds, &[])
+    }
+
+    /// `cone`, with `extra` facts known too.
+    fn cone_with(&self, ob: &Obligation, seeds: &[String], extra: &[T]) -> (Vec<T>, HashSet<String>) {
         let consts = |t: &str| -> Vec<String> { t.split(|c: char| !c.is_alphanumeric() && c != '_').filter(|w| w.starts_with('v') && w[1..].chars().all(|c| c.is_ascii_digit()) && w.len() > 1).map(String::from).collect() };
         // (definitions hold on every path: those made later too)
-        let facts: Vec<&T> = self.defs.iter().chain(&self.facts[..ob.facts]).collect();
+        let facts: Vec<&T> = self.defs.iter().chain(&self.facts[..ob.facts]).chain(extra).collect();
         let mut seen: HashSet<String> = consts(&ob.goal).into_iter().chain(ob.pc.iter().flat_map(|p| consts(p))).chain(seeds.iter().flat_map(|s| consts(s))).collect();
         let fact_consts: Vec<Vec<String>> = facts.iter().map(|f| consts(f)).collect();
         let mut used = vec![false; facts.len()];
@@ -4629,8 +4824,13 @@ impl Vc<'_> {
     /// An obligation's query after the header: what it depends on, the
     /// negated goal, `check-sat` and the model's values of `leaves`.
     fn body(&self, ob: &Obligation, leaves: &[String]) -> String {
+        self.body_with(ob, leaves, &[])
+    }
+
+    /// `body`, with `extra` facts known too.
+    fn body_with(&self, ob: &Obligation, leaves: &[String], extra: &[T]) -> String {
         // the parameters are in the cone too, so a model satisfies their types
-        let (facts, consts) = self.cone(ob, leaves);
+        let (facts, consts) = self.cone_with(ob, leaves, extra);
         let mut s = String::new();
         for d in &self.decls {
             if consts.contains(&d.name) {
@@ -4707,7 +4907,30 @@ impl Vc<'_> {
         match run_solver(solver, &script, Limit::Proof, stop) {
             Err(()) => Outcome::Stopped,
             Ok(None) => Outcome::Unknown("the solver could not be run".into()),
-            Ok(Some(out)) => self.outcome(i, &leaves, &out),
+            Ok(Some(out)) => {
+                let o = self.outcome(i, &leaves, &out);
+                self.express(solver, i, o, stop)
+            }
+        }
+    }
+
+    /// A counterexample the model couldn't show (a non-empty list): asked
+    /// again with the parameters' lists' first elements (`example_facts`),
+    /// so a list of up to `INPUT_LEN` elements is shown.
+    fn express(&self, solver: &Solver, i: usize, o: Outcome, stop: &std::sync::atomic::AtomicBool) -> Outcome {
+        let Outcome::Unknown(msg) = &o else { return o };
+        if !msg.starts_with(COULD_NOT_EXPRESS) || self.example_leaves.is_empty() {
+            return o;
+        }
+        let mut leaves = self.leaves();
+        leaves.extend(self.example_leaves.iter().cloned());
+        let script = self.header() + &self.body_with(&self.obligations[i], &leaves, &self.example_facts);
+        match run_solver(solver, &script, Limit::Proof, stop) {
+            Ok(Some(out)) => match self.outcome(i, &leaves, &out) {
+                r @ Outcome::Refuted(..) => r,
+                _ => o,
+            },
+            _ => o,
         }
     }
 
@@ -4735,6 +4958,11 @@ impl Vc<'_> {
                 for &i in &todo[done..] {
                     out[i] = Some(self.solve_until(solver, i, stop));
                 }
+                for &i in &todo[..done] {
+                    if let Some(o) = out[i].take() {
+                        out[i] = Some(self.express(solver, i, o, stop));
+                    }
+                }
             }
         }
         out
@@ -4758,7 +4986,7 @@ impl Vc<'_> {
                         let s = shown(&a);
                         Outcome::Refuted(a, format!("the solver found a possible counterexample: {s}{because}"))
                     }
-                    None => Outcome::Unknown(format!("the solver found a possible counterexample it could not express{because}")),
+                    None => Outcome::Unknown(format!("{COULD_NOT_EXPRESS}{because}")),
                 }
             }
             _ => Outcome::Unknown(format!("the solver gave up{because}")),

@@ -312,6 +312,7 @@ fn proofs_dir(src: &Source, file: Option<&str>) -> Option<std::path::PathBuf> {
 /// last `verify` proved, for code unchanged since (none with `--all-checks`).
 fn proofs_for(src: &Source, file: Option<&str>, args: &Args) -> HashMap<String, llvm::Proofs> {
     if args.flag("--all-checks") {
+        llvm::ALL_CHECKS.store(true, std::sync::atomic::Ordering::Relaxed);
         return HashMap::default();
     }
     proofs_dir(src, file).map(|d| store::current_proofs(src.program(), &d)).unwrap_or_default()

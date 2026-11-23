@@ -3829,7 +3829,7 @@ impl<'a> Checker<'a> {
                     Refn::Ints(s) => P::Ints(s),
                     Refn::Lens(s) => P::Lens(s),
                     Refn::Reals(r) => P::Reals(r),
-                    Refn::Opaque => P::Lit,
+                    Refn::Opaque => P::Cond,
                 };
                 (pt, set)
             }
@@ -4092,7 +4092,7 @@ impl<'a> Checker<'a> {
             Ty::Con(n, _) if n == "List" => ints::of_len_pred(pred).map(P::Lens),
             _ => None,
         };
-        set.unwrap_or(P::Lit)
+        set.unwrap_or(P::Cond)
     }
 
     /// The values a written type leaves out, as a set (for `match` coverage):
