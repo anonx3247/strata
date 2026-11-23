@@ -536,6 +536,19 @@ fn main() {
   print(j)
 }
 "),
+    ("iterator_parameter", "fn total(it: Iterator[Int]) -> Int {
+  mut t := 0
+  for x in it {
+    t += x
+  }
+  t
+}
+
+fn main() {
+  print(total([1, 2].iter()))
+  print(total([1, 2, 3].iter().map(x -> x * 10)))
+}
+"),
     ("iterators", "type Naturals = { n: Int }
 
 impl Iterator[Int] for Naturals {
@@ -2003,9 +2016,9 @@ fn compiled_programs_do_what_rust_compiled_ones_do() {
 #[test]
 fn refuses_what_it_does_not_compile_yet() {
     let dir = scratch("refused");
-    // (an iterator as a trait value: trait values with type arguments)
+    // (an iterator held as a trait value: its element type is lost)
     let file = dir.join("iterator_value.strata");
-    save(&file, "fn total(it: Iterator[Int]) -> Int {\n    mut t := 0\n    for x in it {\n        t += x\n    }\n    t\n}\n\nfn main() {\n    print(total([1, 2].iter()))\n}\n");
+    save(&file, "fn main() {\n    let it: Iterator[Int] = [1, 2].iter()\n    for x in it {\n        print(x)\n    }\n}\n");
     let out = compiler::run(&["codegen".to_string(), file.to_string_lossy().into_owned()]);
     assert!(out.starts_with("error: in `"), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
