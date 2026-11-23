@@ -224,8 +224,9 @@ fn verify_as_in_rust() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let dir = scratch("verify");
     // functions; then trait methods (own, default, static), a type's own
-    // methods, laws (one holding, one not) and a derived impl
-    for (name, text) in [("verify", include_str!("data/smt/verify.st")), ("verify_traits", include_str!("data/smt/verify_traits.st"))] {
+    // methods, laws (one holding, one not) and a derived impl; then sized
+    // integers (wrapped arithmetic, checked and wrapping conversions)
+    for (name, text) in [("verify", include_str!("data/smt/verify.st")), ("verify_traits", include_str!("data/smt/verify_traits.st")), ("verify_sized", include_str!("data/smt/verify_sized.st"))] {
         let file = dir.join(format!("{name}.strata"));
         save(&file, text);
         let rust = Command::new(STRATA).arg("--file").arg(&file).args(["verify", "--no-race", "--no-cache"]).env("STRATA_CACHE", &dir).output().unwrap();
