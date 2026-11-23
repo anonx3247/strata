@@ -54,8 +54,10 @@ pub struct RunRules {
     pub mode: bool,
 }
 
-/// `[native]`: C files of the package (paths relative to its folder), and
-/// libraries to link, for the `extern c` declarations of its modules.
+/// `[native]`: C files of the package (paths relative to its folder),
+/// libraries to link, and the folders where their headers (`include_dirs`)
+/// and the libraries (`lib_dirs`) are (relative to the package's folder, or
+/// absolute), for the `extern c` declarations of its modules.
 #[derive(serde::Deserialize, Default, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Native {
@@ -63,6 +65,10 @@ pub struct Native {
     pub sources: Vec<String>,
     #[serde(default)]
     pub libs: Vec<String>,
+    #[serde(default)]
+    pub include_dirs: Vec<String>,
+    #[serde(default)]
+    pub lib_dirs: Vec<String>,
 }
 
 impl Native {
@@ -77,8 +83,16 @@ static NATIVE: std::sync::OnceLock<(PathBuf, Native)> = std::sync::OnceLock::new
 
 impl Native {
     /// What clang is given to link it in: the package's C files and `-l` libraries.
+    /// (A library folder is also the executable's run-time search path, so
+    /// a shared library found there at link time is found when it runs.)
     pub fn clang_args(&self, dir: &Path) -> Vec<String> {
-        let mut out: Vec<String> = self.sources.iter().map(|s| dir.join(s).to_string_lossy().to_string()).collect();
+        let path = |d: &String| dir.join(d).to_string_lossy().to_string();
+        let mut out: Vec<String> = self.include_dirs.iter().map(|d| format!("-I{}", path(d))).collect();
+        out.extend(self.sources.iter().map(path));
+        for d in &self.lib_dirs {
+            out.push(format!("-L{}", path(d)));
+            out.push(format!("-Wl,-rpath,{}", path(d)));
+        }
         out.extend(self.libs.iter().map(|l| format!("-l{l}")));
         out
     }
@@ -217,6 +231,13 @@ pub fn load(dir: &Path) -> Result<Package, String> {
     for src in &raw.native.sources {
         if !dir.join(src).is_file() {
             return Err(format!("{}: [native] sources: no file {src:?} in the package", path.display()));
+        }
+    }
+    for (key, dirs) in [("include_dirs", &raw.native.include_dirs), ("lib_dirs", &raw.native.lib_dirs)] {
+        for d in dirs {
+            if !dir.join(d).is_dir() {
+                return Err(format!("{}: [native] {key}: no folder {d:?}", path.display()));
+            }
         }
     }
     let _ = NATIVE.set((dir.to_path_buf(), raw.native.clone()));
