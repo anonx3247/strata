@@ -53,8 +53,10 @@ static const char *KINDS[] = {"Refinement", "Requires", "Ensures", "Assert", "Ru
 #define usable_size malloc_usable_size
 #endif
 
-
+#ifndef STRATA_CORE_RT
 static int64_t allocated, freed;
+static pthread_mutex_t made_lock = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 // While a task runs (`spawn`), threads may hold the same objects, so counts
 // change atomically; with none alive, they don't. Either way a count of 1
@@ -63,7 +65,6 @@ static int64_t allocated, freed;
 // changes while another thread reads it.
 static int threaded;
 static int live_tasks;
-static pthread_mutex_t made_lock = PTHREAD_MUTEX_INITIALIZER;
 #define THREADED __atomic_load_n(&threaded, __ATOMIC_RELAXED)
 
 // With STRATA_MEMORY=check, freed objects are kept, filled with garbage and
@@ -77,17 +78,55 @@ static _Bool checking;
 // otherwise updates counts itself (`strata.dup`, `strata.release` in the IR).
 int32_t strata_slow_counts;
 
+void strata_memory_threaded(_Bool on);
+
 static void set_threaded(int v) {
   __atomic_store_n(&threaded, v, __ATOMIC_RELAXED);
   __atomic_store_n(&strata_slow_counts, v || checking, __ATOMIC_RELAXED);
+#ifdef STRATA_CORE_RT
+  strata_memory_threaded(v);
+#endif
 }
-
-// In check mode, every object made (to list those still alive at the end).
-static int64_t **made;
-static int64_t nmade, capmade;
 
 // The count word of an object.
 static int64_t *count_of(void *p) { return (int64_t *)p - 1; }
+
+// A raw block (core.mem's `raw_alloc`): not counted, not cleared; out of
+// memory ends the program, as for any allocation.
+void *strata_raw_alloc(int64_t n) {
+  void *p = malloc(n > 0 ? (size_t)n : 1);
+  if (!p) {
+    fputs("fault (Limit): out of memory\n", stderr);
+    exit(101);
+  }
+  return p;
+}
+
+// Stops the program (core.mem's `raw_fail`): memory used wrongly.
+_Noreturn void strata_raw_fail(Str *m) {
+  fflush(stdout);
+  fprintf(stderr, "%.*s\n", (int)m->len, m->bytes);
+  abort();
+}
+
+// How many bytes a raw block holds (core.mem's `raw_size`).
+int64_t strata_raw_size(void *p) { return (int64_t)usable_size(p); }
+
+// A reserved range of addresses, zeroed, paged in as it is touched (core.mem's
+// `raw_reserve`); NULL when the system refuses it.
+void *strata_raw_reserve(int64_t n) {
+  void *r = n > 0 ? mmap(NULL, (size_t)n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0) : MAP_FAILED;
+  return r == MAP_FAILED ? NULL : r;
+}
+
+// The runtime written in Strata (core/rt.strata) replaces these when it is
+// linked in (`STRATA_CORE_RT`: every executable, and strata itself from the
+// second stage of its build on); without it, as when strata is first built,
+// they are C.
+#ifndef STRATA_CORE_RT
+// In check mode, every object made (to list those still alive at the end).
+static int64_t **made;
+static int64_t nmade, capmade;
 
 static _Noreturn void freed_again(const char *what) {
   fflush(stdout);
@@ -181,17 +220,6 @@ void *strata_alloc(int64_t n) {
   return c + 1;
 }
 
-// A raw block (core.mem's `raw_alloc`): not counted, not cleared; out of
-// memory ends the program, as for any allocation.
-void *strata_raw_alloc(int64_t n) {
-  void *p = malloc((size_t)n);
-  if (!p) {
-    fputs("fault (Limit): out of memory\n", stderr);
-    exit(101);
-  }
-  return p;
-}
-
 // One more holder of `p`.
 void strata_dup(void *p) {
   int64_t *c = count_of(p);
@@ -235,31 +263,44 @@ void strata_free(void *p) {
   free(c);
 }
 
+
+// Whether `p` has a single holder, so it may be changed in place.
+_Bool strata_unique(void *p) { return THREADED ? __atomic_load_n(count_of(p), __ATOMIC_ACQUIRE) == 1 : *count_of(p) == 1; }
+#else
+void *strata_alloc(int64_t n);
+void strata_dup(void *p);
+_Bool strata_release(void *p);
+void strata_free(void *p);
+_Bool strata_unique(void *p);
+// core.rt's tallies and the objects made in check mode (count words)
+int64_t strata_memory_allocated(void);
+int64_t strata_memory_freed(void);
+int64_t *strata_memory_made(int64_t i);
+void strata_memory_start(_Bool check);
+void strata_memory_threaded(_Bool on);
+#endif
+
 // A string has nothing in it to drop.
 static void str_drop(void *s) {
   if (strata_release(s)) strata_free(s);
 }
-
-// The runtime written in Strata (core/rt.strata) replaces these when it is
-// linked in (`STRATA_CORE_RT`: every executable, and strata itself from the
-// second stage of its build on); without it, as when strata is first built,
-// they are C.
-#ifndef STRATA_CORE_RT
-// Whether `p` has a single holder, so it may be changed in place.
-_Bool strata_unique(void *p) { return THREADED ? __atomic_load_n(count_of(p), __ATOMIC_ACQUIRE) == 1 : *count_of(p) == 1; }
-#else
-_Bool strata_unique(void *p);
-#endif
 
 // With STRATA_MEMORY set, how many objects the program made and freed.
 // In check mode, the first few still alive: their count, size and first
 // word (a block's tag, a string's or a list's length), as text if it reads
 // as a string.
 static void memory_stats(void) {
+#ifdef STRATA_CORE_RT
+  int64_t allocated = strata_memory_allocated(), freed = strata_memory_freed();
+#endif
   fprintf(stderr, "memory: %lld allocated, %lld freed, %lld live\n", (long long)allocated, (long long)freed, (long long)(allocated - freed));
   int shown = 0;
+#ifdef STRATA_CORE_RT
+  for (int64_t i = 0, *c; (c = strata_memory_made(i)) && shown < 20; i++) {
+#else
   for (int64_t i = 0; i < nmade && shown < 20; i++) {
     int64_t *c = made[i];
+#endif
     if (*c == FREED) continue;
     shown++;
     size_t size = usable_size(c) - 8;
@@ -2673,11 +2714,15 @@ void strata_init(int32_t argc, char **argv) {
   if (argc > 0 && argv[0]) prog_name = argv[0];
   signal(SIGPIPE, SIG_IGN);
   // (what compile-time code made before, in this process, isn't the program's)
-  allocated = freed = 0;
-  nmade = 0;
   static _Bool registered;
   const char *m = getenv("STRATA_MEMORY");
   checking = m && !strcmp(m, "check");
+#ifdef STRATA_CORE_RT
+  strata_memory_start(checking);
+#else
+  allocated = freed = 0;
+  nmade = 0;
+#endif
   set_threaded(THREADED);
   if (m && !registered) registered = 1, atexit(memory_stats);
 }
