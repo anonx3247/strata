@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/resource.h>
 #include <spawn.h>
 #include <sys/stat.h>
@@ -94,9 +95,75 @@ static _Noreturn void freed_again(const char *what) {
   abort();
 }
 
+// Small objects (with their count word, at most OBJECT_MAX bytes: most are
+// Options, tuples, records, list headers and short strings) come from free
+// lists, one per size class (16-byte steps), carved from 64 KB chunks of
+// one reserved range of addresses; `strata_free` knows them by their
+// address, and each chunk's class from `chunk_class`. Much cheaper than
+// malloc and free for objects made and dropped all the time. The lists are
+// shared by all threads, behind a spinlock (one atomic exchange when no
+// other thread wants it). Bigger objects, and every object in check mode
+// (whose freed objects are kept and marked), are malloc's.
+#define OBJECT_MAX 256
+#define CLASSES (OBJECT_MAX / 16 + 1)
+#define CHUNK ((size_t)1 << 16)
+#define REGION ((size_t)1 << 34)
+static char *region, *region_next;
+static uint8_t chunk_class[REGION / CHUNK];
+static void *free_list[CLASSES];
+static int small_lock;
+
+static void small_lock_take(void) {
+  while (__atomic_exchange_n(&small_lock, 1, __ATOMIC_ACQUIRE))
+    while (__atomic_load_n(&small_lock, __ATOMIC_RELAXED)) {}
+}
+
+static void small_lock_give(void) { __atomic_store_n(&small_lock, 0, __ATOMIC_RELEASE); }
+
+static int in_region(void *c) { return region && (char *)c >= region && (char *)c < region + REGION; }
+
+// A block of class `k` (16 * k bytes), or NULL when the region is used up
+// (or couldn't be reserved): malloc's then.
+static int64_t *small_alloc(int k) {
+  small_lock_take();
+  void *b = free_list[k];
+  if (!b) {
+    if (!region) {
+      void *r = mmap(NULL, REGION, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+      region_next = region = r == MAP_FAILED ? NULL : r;
+    }
+    if (!region || region_next + CHUNK > region + REGION) {
+      small_lock_give();
+      return NULL;
+    }
+    char *chunk = region_next;
+    region_next += CHUNK;
+    chunk_class[(size_t)(chunk - region) / CHUNK] = (uint8_t)k;
+    size_t size = (size_t)k * 16;
+    // the chunk's blocks, linked through their first word
+    for (char *q = chunk + CHUNK - size - (CHUNK % size); q >= chunk; q -= size) {
+      *(void **)q = b;
+      b = q;
+    }
+  }
+  free_list[k] = *(void **)b;
+  small_lock_give();
+  return b;
+}
+
+static void small_free(int64_t *c) {
+  int k = chunk_class[(size_t)((char *)c - region) / CHUNK];
+  small_lock_take();
+  *(void **)c = free_list[k];
+  free_list[k] = c;
+  small_lock_give();
+}
+
 // A new object of `n` bytes, held once.
 void *strata_alloc(int64_t n) {
-  int64_t *c = malloc((size_t)n + 8);
+  int64_t *c = NULL;
+  if (!checking && n + 8 <= OBJECT_MAX) c = small_alloc((int)((n + 8 + 15) / 16));
+  if (!c) c = malloc((size_t)n + 8);
   if (!c) {
     fputs("fault (Limit): out of memory\n", stderr);
     exit(101);
@@ -156,6 +223,10 @@ void strata_free(void *p) {
   if (THREADED) __atomic_fetch_add(&freed, 1, __ATOMIC_RELAXED);
   else freed++;
   int64_t *c = count_of(p);
+  if (in_region(c)) {
+    small_free(c);
+    return;
+  }
   if (checking) {
     memset(p, 0xDB, usable_size(c) - 8);
     *c = FREED;
